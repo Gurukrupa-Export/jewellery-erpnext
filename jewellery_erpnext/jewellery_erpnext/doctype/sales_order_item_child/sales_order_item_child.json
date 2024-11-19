@@ -1,0 +1,167 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-11-20 16:11:50.178315",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "delivery_date",
+  "column_break_ux0ca",
+  "item_name",
+  "warehouse",
+  "section_break_mtign",
+  "quantity",
+  "rate",
+  "amount",
+  "column_break_hbxoh",
+  "uom",
+  "uom_conversion_factor",
+  "section_break_pphcx",
+  "serial_no",
+  "column_break_3xsq3",
+  "batch_no",
+  "section_break_vzgsj",
+  "bom_number",
+  "column_break_z6lqd",
+  "gross_weight",
+  "section_break_u9wlh",
+  "description"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "item_code.item_name",
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Item Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "delivery_date",
+   "fieldtype": "Date",
+   "label": "Delivery Date",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "quantity",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Quantity",
+   "reqd": 1
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Currency",
+   "label": "Rate"
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Amount"
+  },
+  {
+   "fetch_from": "item_code.stock_uom",
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "UOM",
+   "options": "UOM",
+   "reqd": 1
+  },
+  {
+   "fieldname": "uom_conversion_factor",
+   "fieldtype": "Int",
+   "label": "UOM Conversion Factor"
+  },
+  {
+   "fetch_from": "item_code.description",
+   "fieldname": "description",
+   "fieldtype": "Text Editor",
+   "label": "Description",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_ux0ca",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_mtign",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_hbxoh",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_pphcx",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "serial_no",
+   "fieldtype": "Small Text",
+   "label": "Serial No"
+  },
+  {
+   "fieldname": "section_break_vzgsj",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_3xsq3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "label": "Batch No",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "bom_number",
+   "fieldtype": "Link",
+   "label": "BOM Number",
+   "options": "BOM"
+  },
+  {
+   "fieldname": "column_break_z6lqd",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gross_weight",
+   "fieldtype": "Data",
+   "label": "Gross Weight"
+  },
+  {
+   "fieldname": "section_break_u9wlh",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Warehouse",
+   "options": "Warehouse"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2023-12-13 13:25:37.829135",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Sales Order Item Child",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

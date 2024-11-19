@@ -1,0 +1,87 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-12-27 17:15:21.232201",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "weight_type",
+  "sieve_size",
+  "sieve_size_range",
+  "size_in_mm",
+  "standard_tolerance_wt",
+  "from_tolerance_wt",
+  "to_tolerance_wt",
+  "product_wt"
+ ],
+ "fields": [
+  {
+   "description": "Default BOM Minus(-) Tolerance Wt",
+   "fieldname": "from_tolerance_wt",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "From Tolerance wt"
+  },
+  {
+   "description": "Default BOM Plus (+) Tolerance Wt",
+   "fieldname": "to_tolerance_wt",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "To Tolerance wt"
+  },
+  {
+   "description": "Default BOM",
+   "fieldname": "standard_tolerance_wt",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Standard Tolerance Wt"
+  },
+  {
+   "description": "PMO Value",
+   "fieldname": "product_wt",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Product Wt"
+  },
+  {
+   "fieldname": "weight_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Weight Type",
+   "options": "Tolerance Weight Type"
+  },
+  {
+   "fieldname": "sieve_size_range",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Sieve Size Range",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "sieve_size",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Sieve Size",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "size_in_mm",
+   "fieldtype": "Float",
+   "label": "Size In MM"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2023-12-28 12:08:32.164488",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Diamond Product Tolerance",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

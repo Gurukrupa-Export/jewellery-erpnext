@@ -1,0 +1,1807 @@
+{
+ "Item": [
+  {
+   "dt": "Item",
+   "fieldname": "custom_inventory_type_can_be_customer_goods",
+   "fieldtype": "Check",
+   "insert_after": "custom_is_manufacturing_item",
+   "is_system_generated": 1,
+   "label": "Inventory Type Can be Customer Goods",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_item_chain_length",
+   "fieldtype": "Table",
+   "insert_after": "version_type",
+   "is_system_generated": 1,
+   "label": "Item Chain Length",
+   "module": "Jewellery Erpnext",
+   "options": "Item Chain Length"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_is_manufacturing_item",
+   "fieldtype": "Check",
+   "insert_after": "include_item_in_manufacturing",
+   "is_system_generated": 1,
+   "label": "Is Manufacturing Item",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "product_dimension",
+   "fieldtype": "Data",
+   "insert_after": "sizer_type",
+   "label": "Product Dimension",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "item_image",
+   "dt": "Item",
+   "fieldname": "item_image_preview",
+   "fieldtype": "Image",
+   "insert_after": "image",
+   "label": "Item Image Preview",
+   "module": "Jewellery Erpnext",
+   "options": "image"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "item_subcategory",
+   "fieldtype": "Link",
+   "insert_after": "item_category",
+   "label": "Item Subcategory",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "setting_type",
+   "fieldtype": "Link",
+   "insert_after": "item_category_code",
+   "label": "Setting Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "product_shape",
+   "fieldtype": "Link",
+   "insert_after": "productivity",
+   "label": "Product Shape",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "default": "Studded",
+   "dt": "Item",
+   "fieldname": "productivity",
+   "fieldtype": "Select",
+   "insert_after": "manufacturing_type",
+   "label": "Productivity",
+   "module": "Jewellery Erpnext",
+   "options": "\nStudded\nPlain"
+  },
+  {
+   "default": "Casted",
+   "dt": "Item",
+   "fieldname": "manufacturing_type",
+   "fieldtype": "Select",
+   "insert_after": "column_break_41",
+   "label": "Manufacturing Type",
+   "module": "Jewellery Erpnext",
+   "options": "\nCasted\nHandmade\nCNC"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "designer",
+   "fieldtype": "Data",
+   "insert_after": "product_dimension",
+   "label": "Designer",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "design_date",
+   "fieldtype": "Date",
+   "insert_after": "modified_sequence",
+   "label": "Design Date",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "launch_date",
+   "fieldtype": "Date",
+   "insert_after": "design_date",
+   "label": "Launch Date",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "stylebio",
+   "fieldtype": "Data",
+   "insert_after": "custom_reason_for_design_code_",
+   "label": "Old StyleBio",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "section_break_13",
+   "fieldtype": "Section Break",
+   "insert_after": "over_billing_allowance",
+   "label": "Product Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_41",
+   "fieldtype": "Column Break",
+   "insert_after": "launch_date",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "sizer_type",
+   "fieldtype": "Link",
+   "insert_after": "product_shape",
+   "label": "Sizer Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Item",
+   "fetch_from": "item_subcategory.parent_attribute_value",
+   "fieldname": "item_category",
+   "fieldtype": "Link",
+   "insert_after": "section_break_13",
+   "label": "Item Category",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Item",
+   "fetch_from": "item_category.category_code",
+   "fieldname": "item_category_code",
+   "fieldtype": "Data",
+   "insert_after": "item_subcategory",
+   "label": "Item Category Code",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "sequence",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "insert_after": "approx_diamond",
+   "label": "Sequence",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "modified_from",
+   "fieldtype": "Link",
+   "insert_after": "item_code",
+   "label": "Mod From",
+   "module": "Jewellery Erpnext",
+   "options": "Item"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "modified_sequence",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "insert_after": "sequence",
+   "label": "Modified Sequence",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "is_design_code",
+   "fieldtype": "Check",
+   "insert_after": "naming_series",
+   "label": "Is Design Code",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "section_break_50",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_old_item_sub_setting",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval: doc.has_variants && doc.variant_based_on == \"Item Attribute\"",
+   "dt": "Item",
+   "fieldname": "subcategory",
+   "fieldtype": "Link",
+   "insert_after": "variant_based_on",
+   "label": "Subcategory",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "sketch_image",
+   "fieldtype": "Attach",
+   "insert_after": "section_break_icpiu",
+   "label": "Sketch Image",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "sketch_image_preview",
+   "fieldtype": "Image",
+   "insert_after": "sketch_image",
+   "label": "Sketch Image Preview",
+   "module": "Jewellery Erpnext",
+   "options": "sketch_image"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "approx_gold",
+   "fieldtype": "Float",
+   "insert_after": "sub_setting_type",
+   "label": "Approx Gold",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "approx_diamond",
+   "fieldtype": "Float",
+   "insert_after": "approx_gold",
+   "label": "Approx Diamond",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "tag_no",
+   "fieldtype": "Link",
+   "insert_after": "include_item_in_manufacturing",
+   "label": "Master Serial No",
+   "module": "Jewellery Erpnext",
+   "options": "Serial No"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "master_bom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "insert_after": "tag_no",
+   "label": "Master BOM",
+   "module": "Jewellery Erpnext",
+   "options": "BOM"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "mould",
+   "fieldtype": "Data",
+   "insert_after": "stock_uom",
+   "label": "Mould",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "images",
+   "fieldtype": "Tab Break",
+   "insert_after": "is_system_item",
+   "label": "Images",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "attach_cad_file",
+   "fieldtype": "Attach",
+   "insert_after": "files_",
+   "label": "CAD File",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_colour_images",
+   "fieldtype": "Section Break",
+   "insert_after": "sketch_image_preview",
+   "label": "CAD Colour Images",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "front_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_colour_images",
+   "label": "Colour Image Front View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_colour_front_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "front_view",
+   "label": "CAD Colour Front View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "back_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_colour_front_view_preview",
+   "label": "Colour Image Back View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_colour_back_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "back_view",
+   "label": "CAD Colour Back View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_168",
+   "fieldtype": "Column Break",
+   "insert_after": "cad_colour_back_view_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "left_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_168",
+   "label": "Colour Image Left View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_colour_left_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "left_view",
+   "label": "CAD Colour Left View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "right_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_colour_left_view_preview",
+   "label": "Colour Image Right View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_colour_right_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "right_view",
+   "label": "CAD Colour Right View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_173",
+   "fieldtype": "Column Break",
+   "insert_after": "cad_colour_right_view_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "top_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_173",
+   "label": "Colour Image Top View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_colour_top_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "top_view",
+   "label": "CAD Colour Top View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "bottom_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_colour_top_view_preview",
+   "label": "Colour Image Bottom View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_colour_blttom_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "bottom_view",
+   "label": "CAD Colour Bottom View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "diamond_image_front_view_",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_diamond_images",
+   "label": "Diamond Image Front View ",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_diamond_front_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "diamond_image_front_view_",
+   "label": "CAD Diamond Front View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "diamond_image_back_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_diamond_front_view_preview",
+   "label": "Diamond Image Back View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_diamond_back_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "diamond_image_back_view",
+   "label": "CAD Diamond Back View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_182",
+   "fieldtype": "Column Break",
+   "insert_after": "cad_diamond_back_view_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "diamond_image_left_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_182",
+   "label": "Diamond Image Left View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_diamond_left_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "diamond_image_left_view",
+   "label": "CAD Diamond Left View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "diamond_image_right_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_diamond_left_view_preview",
+   "label": "Diamond Image Right View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_diamond_right_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "diamond_image_right_view",
+   "label": "CAD Diamond Right View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_187",
+   "fieldtype": "Column Break",
+   "insert_after": "cad_diamond_right_view_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "diamond_image_top_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_187",
+   "label": "Diamond Image Top View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_diamond_top_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "diamond_image_top_view",
+   "label": "CAD Diamond Top View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "diamond_image_bottom_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_diamond_top_view_preview",
+   "label": "Diamond Image Bottom View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_diamond_bottom_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "diamond_image_bottom_view",
+   "label": "CAD Diamond Bottom View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_diamond_images",
+   "fieldtype": "Section Break",
+   "insert_after": "cad_colour_blttom_view_preview",
+   "label": "Cad Diamond Images",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_split_view_images",
+   "fieldtype": "Section Break",
+   "insert_after": "cad_diamond_bottom_view_preview",
+   "label": "CAD Split View Images",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_1",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_split_view_images",
+   "label": "Split View 1",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_1_preview",
+   "fieldtype": "Image",
+   "insert_after": "split_view_1",
+   "label": "Split View 1 Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_",
+   "fieldtype": "Attach Image",
+   "insert_after": "split_view_1_preview",
+   "label": "Split View 2",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_2_preview",
+   "fieldtype": "Image",
+   "insert_after": "split_view_",
+   "label": "Split View 2 Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_198",
+   "fieldtype": "Column Break",
+   "insert_after": "split_view_2_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_3",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_198",
+   "label": "Split View 3",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_3_preview",
+   "fieldtype": "Image",
+   "insert_after": "split_view_3",
+   "label": "Split View 3 Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_4",
+   "fieldtype": "Attach Image",
+   "insert_after": "split_view_3_preview",
+   "label": "Split View 4",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_4_preview",
+   "fieldtype": "Image",
+   "insert_after": "split_view_4",
+   "label": "Split View 4 Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_203",
+   "fieldtype": "Column Break",
+   "insert_after": "split_view_4_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_5",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_203",
+   "label": "Split View 5",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_5_preview",
+   "fieldtype": "Image",
+   "insert_after": "split_view_5",
+   "label": "Split View 5 Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_6",
+   "fieldtype": "Attach Image",
+   "insert_after": "split_view_5_preview",
+   "label": "Split View 6",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "split_view_6_preview",
+   "fieldtype": "Image",
+   "insert_after": "split_view_6",
+   "label": "Split View 6 Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "others_cad_images_",
+   "fieldtype": "Section Break",
+   "insert_after": "split_view_6_preview",
+   "label": "Others Cad Images ",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_pcs_numbering_image",
+   "fieldtype": "Attach Image",
+   "insert_after": "others_cad_images_",
+   "label": "CAD Pcs Numbering Image",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_pcs_numbering_image_preview",
+   "fieldtype": "Image",
+   "insert_after": "cad_pcs_numbering_image",
+   "label": "CAD Pcs Numbering Image Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_211",
+   "fieldtype": "Column Break",
+   "insert_after": "cad_pcs_numbering_image_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_214",
+   "fieldtype": "Column Break",
+   "insert_after": "rpt_pcs_image_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_3d_image",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_214",
+   "label": "Cad 3D Image",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_3d_image_preview",
+   "fieldtype": "Image",
+   "insert_after": "cad_3d_image",
+   "label": "Cad 3D Image Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "master_finish_images",
+   "fieldtype": "Section Break",
+   "insert_after": "cad_3d_image_preview",
+   "label": "Master Finish Images",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_front_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "master_finish_images",
+   "label": "Finish Front View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_front_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "finish_front_view",
+   "label": "Finish Front View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish__back_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "finish_front_view_preview",
+   "label": "Finish  Back View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_back_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "finish__back_view",
+   "label": "Finish Back View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_227",
+   "fieldtype": "Column Break",
+   "insert_after": "finish_back_view_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_left_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_227",
+   "label": "Finish Left View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_left_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "finish_left_view",
+   "label": "Finish Left View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_right_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "finish_left_view_preview",
+   "label": "Finish Right View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_right_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "finish_right_view",
+   "label": "Finish Right View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_232",
+   "fieldtype": "Column Break",
+   "insert_after": "finish_right_view_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_top_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_232",
+   "label": "Finish Top View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_top_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "finish_top_view",
+   "label": "Finish Top View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_bottom_view",
+   "fieldtype": "Attach Image",
+   "insert_after": "finish_top_view_preview",
+   "label": "Finish Bottom View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "finish_bottom_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "finish_bottom_view",
+   "label": "Finish Bottom View Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "files_",
+   "fieldtype": "Section Break",
+   "insert_after": "finish_bottom_view_preview",
+   "label": "Design Code Files ",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_236",
+   "fieldtype": "Column Break",
+   "insert_after": "attach_rpt_file",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "support_cam_file",
+   "fieldtype": "Attach",
+   "insert_after": "column_break_236",
+   "label": "Support Cam File",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_pcs_numbering_file",
+   "fieldtype": "Attach",
+   "insert_after": "support_cam_file",
+   "label": "CAD Pcs numbering File",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_3d_videos_",
+   "fieldtype": "Section Break",
+   "insert_after": "rendered_image_5_preview",
+   "label": "CAD Rendered Videos ",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "3d_videos_1",
+   "fieldtype": "Attach",
+   "insert_after": "cad_3d_videos_",
+   "label": "Rendered Videos 1",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_238",
+   "fieldtype": "Column Break",
+   "insert_after": "3d_videos_1",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "3d_videos_2",
+   "fieldtype": "Attach",
+   "insert_after": "column_break_238",
+   "label": "Rendered Videos 2",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_240",
+   "fieldtype": "Column Break",
+   "insert_after": "3d_videos_2",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "3d_videos_3",
+   "fieldtype": "Attach",
+   "insert_after": "column_break_240",
+   "label": "Rendered Videos 3",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "more_information",
+   "fieldtype": "Tab Break",
+   "insert_after": "usa_states",
+   "label": "More Information",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "section_break_248",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_cam_weight_detail",
+   "label": "CAD Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "old_tag_no",
+   "fieldtype": "Data",
+   "insert_after": "stylebio",
+   "label": "Old Tag No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "maching_design_id",
+   "fieldtype": "Data",
+   "insert_after": "master_bom",
+   "label": "Similar Design Code",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "design_supplier",
+   "fieldtype": "Link",
+   "insert_after": "delivered_by_supplier",
+   "label": "Design Supplier",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "product_supplier",
+   "fieldtype": "Link",
+   "insert_after": "design_supplier",
+   "label": "Product Supplier",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "sub_setting_type",
+   "fieldtype": "Link",
+   "insert_after": "setting_type",
+   "label": "Sub Setting Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "section_break_icpiu",
+   "fieldtype": "Section Break",
+   "insert_after": "images",
+   "label": "Sketch Image",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "section_break_ihl3r",
+   "fieldtype": "Section Break",
+   "insert_after": "item_image_preview",
+   "label": "Order Form Detail",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_qujga",
+   "fieldtype": "Column Break",
+   "insert_after": "order_form_type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "creativity",
+   "fieldtype": "Tab Break",
+   "hidden": 1,
+   "insert_after": "design_attribute",
+   "label": "Creativity",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "territories",
+   "fieldtype": "Tab Break",
+   "insert_after": "nagas",
+   "label": "Territories",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_lfxkd",
+   "fieldtype": "Column Break",
+   "insert_after": "india_states",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "stepping",
+   "fieldtype": "Check",
+   "insert_after": "creativity",
+   "label": "Stepping",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "fusion",
+   "fieldtype": "Check",
+   "insert_after": "stepping",
+   "label": "Fusion",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "drops",
+   "fieldtype": "Check",
+   "insert_after": "fusion",
+   "label": "Drops",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "coin",
+   "fieldtype": "Check",
+   "insert_after": "drops",
+   "label": "Coin",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_u6nr8",
+   "fieldtype": "Column Break",
+   "insert_after": "coin",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "gold_wire",
+   "fieldtype": "Check",
+   "insert_after": "column_break_u6nr8",
+   "label": "Gold Wire (dat)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "gold_ball",
+   "fieldtype": "Check",
+   "insert_after": "gold_wire",
+   "label": "Gold Ball",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "flows",
+   "fieldtype": "Check",
+   "insert_after": "gold_ball",
+   "label": "Flows",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "nagas",
+   "fieldtype": "Check",
+   "insert_after": "flows",
+   "label": "Nakshi",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cad_rendered_images_",
+   "fieldtype": "Section Break",
+   "insert_after": "cad_pcs_numbering_file",
+   "label": "CAD Rendered Images ",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_1",
+   "fieldtype": "Attach Image",
+   "insert_after": "cad_rendered_images_",
+   "label": "Rendered Image 1",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_d5zwa",
+   "fieldtype": "Column Break",
+   "insert_after": "rendered_image_1_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_2",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_d5zwa",
+   "label": "Rendered Image 2",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_fk2zu",
+   "fieldtype": "Column Break",
+   "insert_after": "rendered_image_2_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_3",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_fk2zu",
+   "label": "Rendered Image 3",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_c5sga",
+   "fieldtype": "Column Break",
+   "insert_after": "rendered_image_3_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_4",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_c5sga",
+   "label": "Rendered Image 4",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "column_break_ytm6o",
+   "fieldtype": "Column Break",
+   "insert_after": "rendered_image_4_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_5",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_ytm6o",
+   "label": "Rendered Image 5",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_1_preview",
+   "fieldtype": "Image",
+   "insert_after": "rendered_image_1",
+   "label": "Rendered Image 1 Preview",
+   "module": "Jewellery Erpnext",
+   "options": "rendered_image_1"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_2_preview",
+   "fieldtype": "Image",
+   "insert_after": "rendered_image_2",
+   "label": "Rendered Image 2 Preview",
+   "module": "Jewellery Erpnext",
+   "options": "rendered_image_2"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_3_preview",
+   "fieldtype": "Image",
+   "insert_after": "rendered_image_3",
+   "label": "Rendered Image 3 Preview",
+   "module": "Jewellery Erpnext",
+   "options": "rendered_image_3"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_4_preview",
+   "fieldtype": "Image",
+   "insert_after": "rendered_image_4",
+   "label": "Rendered Image 4 Preview",
+   "module": "Jewellery Erpnext",
+   "options": "rendered_image_4"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rendered_image_5_preview",
+   "fieldtype": "Image",
+   "insert_after": "rendered_image_5",
+   "label": "Rendered Image 5 Preview",
+   "module": "Jewellery Erpnext",
+   "options": "rendered_image_5"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "cam_details",
+   "fieldtype": "Section Break",
+   "insert_after": "more_information",
+   "label": "CAM Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "momkash_details",
+   "fieldtype": "Section Break",
+   "insert_after": "weight_estimated_details_",
+   "label": "Momkash Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_cam_weight_detail",
+   "fieldtype": "Table",
+   "insert_after": "custom_section_break_qtbmi",
+   "label": "Cam Weight Detail",
+   "module": "Jewellery Erpnext",
+   "options": "Cam Weight Detail"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_column_break_r72bs",
+   "fieldtype": "Column Break",
+   "insert_after": "rpt_wt_recevie",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_section_break_qtbmi",
+   "fieldtype": "Section Break",
+   "insert_after": "estimated_rpt_wt",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "New Design",
+   "dt": "Item",
+   "fieldname": "custom_reason_for_design_code_",
+   "fieldtype": "Link",
+   "insert_after": "modified_from",
+   "label": "Reason for Design Code ",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "order_form_type",
+   "fieldtype": "Select",
+   "insert_after": "section_break_ihl3r",
+   "label": "Order Form Type",
+   "module": "Jewellery Erpnext",
+   "options": "\nOrder\nSketch Order"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "order_form_id",
+   "fieldtype": "Dynamic Link",
+   "insert_after": "column_break_qujga",
+   "label": "Order Form ID",
+   "module": "Jewellery Erpnext",
+   "options": "order_form_type"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_cad_order_id",
+   "fieldtype": "Link",
+   "insert_after": "order_form_id",
+   "label": "CAD Order ID",
+   "module": "Jewellery Erpnext",
+   "options": "Order"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_cad_order_form_id",
+   "fieldtype": "Link",
+   "insert_after": "custom_cad_order_id",
+   "label": "CAD Order Form ID",
+   "module": "Jewellery Erpnext",
+   "options": "Order Form"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "design_attribute",
+   "fieldtype": "Table",
+   "insert_after": "tab_break_teoqk",
+   "label": "Design Attribute",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attributes"
+  },
+  {
+   "depends_on": "eval:doc.item_group!=\"Consumables\" && doc.item_group!=\"Chemicals\" && doc.item_group!=\"Office Supplies\" && doc.item_group!=\"Medical Supplies\" && doc.item_group!=\"Machinery\" && doc.item_group!=\"Electrical Accessories\" && doc.item_group!=\"Tools & Accessories\"",
+   "dt": "Item",
+   "fieldname": "tab_break_teoqk",
+   "fieldtype": "Tab Break",
+   "insert_after": "3d_videos_3",
+   "label": "Design Attribute",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "india_states",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "india",
+   "label": "States",
+   "module": "Jewellery Erpnext",
+   "options": "Territory Multi Select"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "india",
+   "fieldtype": "Check",
+   "insert_after": "territories",
+   "label": "INDIA",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "usa",
+   "fieldtype": "Check",
+   "insert_after": "column_break_lfxkd",
+   "label": "USA",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "usa_states",
+   "fieldtype": "Select",
+   "insert_after": "usa",
+   "label": "States",
+   "module": "Jewellery Erpnext",
+   "options": "\nUSA"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "platform_wt",
+   "fieldtype": "Float",
+   "insert_after": "cam_details",
+   "label": "Platform Wt",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "estimated_rpt_wt",
+   "fieldtype": "Float",
+   "insert_after": "rpt_wt_loss",
+   "label": "Est. RPT WT",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rpt_wt_loss",
+   "fieldtype": "Float",
+   "insert_after": "custom_column_break_r72bs",
+   "label": "RPT Wt Loss",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rpt_wt_recevie",
+   "fieldtype": "Float",
+   "insert_after": "rpt_wt_issue",
+   "label": "RPT Wt Recevie",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rpt_wt_issue",
+   "fieldtype": "Float",
+   "insert_after": "platform_wt",
+   "label": "RPT Wt Issue",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rpt_pcs_image_preview",
+   "fieldtype": "Image",
+   "insert_after": "rpt_pcs_image",
+   "label": "RPT Pcs Image Preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "rpt_pcs_image",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_211",
+   "label": "RPT Pcs Image",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "attach_rpt_file",
+   "fieldtype": "Attach",
+   "insert_after": "attach_cad_file",
+   "label": "RPT File",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "mould_details",
+   "fieldtype": "Section Break",
+   "insert_after": "section_break_248",
+   "label": "Mould Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "weight_estimated_details_",
+   "fieldtype": "Table",
+   "insert_after": "mould_details",
+   "label": "Cad To Finish Weight Est. Details",
+   "module": "Jewellery Erpnext",
+   "options": "Cad To Finish Weight Estimated Details"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "is_system_item",
+   "fieldtype": "Check",
+   "insert_after": "weight",
+   "label": "Is System Item",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_old_item_subcategory",
+   "fieldtype": "Data",
+   "insert_after": "item_subcategory",
+   "label": "Old Item Subcategory",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_old_sub_setting_type",
+   "fieldtype": "Data",
+   "insert_after": "sub_setting_type",
+   "label": "Old Sub Setting Type",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_old_item_sub_setting",
+   "fieldtype": "Data",
+   "insert_after": "custom_old_item_sub_category",
+   "label": "Old Item Sub Setting",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_old_item_sub_category",
+   "fieldtype": "Data",
+   "insert_after": "custom_old_item_category",
+   "label": "Old Item Sub Category",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_old_item_category",
+   "fieldtype": "Data",
+   "insert_after": "designer",
+   "label": "Old Item Category",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_age_group",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "tab_break_teoqk",
+   "label": "Age Group",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_alphabetnumber",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_age_group",
+   "label": "Alphabet/Number",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_animalbirds",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_alphabetnumber",
+   "label": "Animal/Birds",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_collection",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_animalbirds",
+   "label": "Collection",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_design_style",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_collection",
+   "label": "Design Style",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_gender",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_design_style",
+   "label": "Gender",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_lines__rows",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_gender",
+   "label": "Lines & Rows",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_column_break_unkpo",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_lines__rows",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_language",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_column_break_unkpo",
+   "label": "Language",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_occasion",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_language",
+   "label": "Occasion",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_rhodium",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_occasion",
+   "label": "Rhodium",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_religious",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_rhodium",
+   "label": "Religious",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_shapes",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_religious",
+   "label": "Shapes",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_zodiac",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_shapes",
+   "label": "Zodiac",
+   "module": "Jewellery Erpnext",
+   "options": "Design Attribute - Multiselect",
+   "read_only": 1
+  },
+  {
+   "dt": "Item",
+   "fieldname": "version_type",
+   "fieldtype": "Link",
+   "insert_after": "launch_date",
+   "label": "Version Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_repair_order_form",
+   "fieldtype": "Link",
+   "insert_after": "custom_cad_order_form_id",
+   "label": "Repair Order Form",
+   "module": "Jewellery Erpnext",
+   "options": "Repair Order Form"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_repair_order",
+   "fieldtype": "Link",
+   "insert_after": "custom_repair_order_form",
+   "label": "Repair Order",
+   "module": "Jewellery Erpnext",
+   "options": "Repair Order"
+  },
+  {
+   "description": "You can search code by the description of the category.",
+   "dt": "Item",
+   "fetch_from": "item_group.gst_hsn_code",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_hsn_code",
+   "fieldtype": "Link",
+   "insert_after": "item_group",
+   "is_system_generated": 1,
+   "label": "HSN/SAC",
+   "mandatory_depends_on": "eval:gst_settings.validate_hsn_code && doc.is_sales_item",
+   "module": "Jewellery Erpnext",
+   "options": "GST HSN Code"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "is_ineligible_for_itc",
+   "fieldtype": "Check",
+   "insert_after": "item_tax_section_break",
+   "is_system_generated": 1,
+   "label": "Is Ineligible for Input Tax Credit",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fetch_from": "custom_sketch_order_id.sketch_order_form",
+   "fieldname": "custom_sketch_order_form_id",
+   "fieldtype": "Link",
+   "is_system_generated": 1,
+   "label": "Sketch Order Form ID",
+   "module": "Jewellery Erpnext",
+   "options": "Sketch Order Form"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_sketch_order_id",
+   "fieldtype": "Link",
+   "insert_after": "custom_sketch_order_form_id",
+   "is_system_generated": 1,
+   "label": "Sketch Order ID",
+   "module": "Jewellery Erpnext",
+   "options": "Sketch Order"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_box_no",
+   "fieldtype": "Int",
+   "insert_after": "allow_negative_stock",
+   "is_system_generated": 1,
+   "label": "Box No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_box_table",
+   "fieldtype": "Table",
+   "insert_after": "custom_box_no",
+   "is_system_generated": 1,
+   "label": "Box Table",
+   "module": "Jewellery Erpnext",
+   "options": "Item Box Table"
+  },
+  {
+   "depends_on": "eval: doc.has_variants == 1;",
+   "dt": "Item",
+   "fieldname": "custom_is_loss_item",
+   "fieldtype": "Check",
+   "insert_after": "custom_ignore_work_order",
+   "is_system_generated": 1,
+   "label": "Is Loss Item",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval: doc.variant_of == \"F\";",
+   "dt": "Item",
+   "fieldname": "custom_ignore_work_order",
+   "fieldtype": "Check",
+   "insert_after": "include_item_in_manufacturing",
+   "is_system_generated": 1,
+   "label": "Ignore Work Order",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.custom_is_set_item",
+   "dt": "Item",
+   "fieldname": "custom_set_item_table",
+   "fieldtype": "Table",
+   "insert_after": "custom_is_set_item",
+   "label": "Set Item Table",
+   "module": "Jewellery Erpnext",
+   "options": "Set Item Table"
+  },
+  {
+   "depends_on": "eval:doc.custom_is_sufix_item",
+   "dt": "Item",
+   "fieldname": "custom_sufix_item_table",
+   "fieldtype": "Table",
+   "insert_after": "custom_is_sufix_item",
+   "label": "Sufix Item Table",
+   "module": "Jewellery Erpnext",
+   "options": "Sufix Item Table"
+  },
+  {
+   "depends_on": "eval:doc.custom_is_similar_item",
+   "dt": "Item",
+   "fieldname": "custom_similar_item_table",
+   "fieldtype": "Table",
+   "insert_after": "custom_is_similar_item",
+   "label": "Similar Item Table",
+   "module": "Jewellery Erpnext",
+   "options": "Similar Item Table"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_is_set_item",
+   "fieldtype": "Check",
+   "insert_after": "custom_sufix_item_table",
+   "label": "Is Set Item",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_is_sufix_item",
+   "fieldtype": "Check",
+   "insert_after": "custom_similar_item_table",
+   "label": "Is Sufix Item",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_is_similar_item",
+   "fieldtype": "Check",
+   "insert_after": "custom_section_break_0c3kb",
+   "label": "Is Similar Item",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_section_break_0c3kb",
+   "fieldtype": "Section Break",
+   "insert_after": "over_billing_allowance",
+   "label": "Item Reference",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_created_from",
+   "fieldtype": "Data",
+   "insert_after": "mould",
+   "label": "Created From",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

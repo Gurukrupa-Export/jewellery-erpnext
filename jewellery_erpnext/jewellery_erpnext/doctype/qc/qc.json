@@ -1,0 +1,259 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "QC.#####",
+ "creation": "2023-05-17 11:06:06.048366",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "manufacturing_work_order",
+  "manufacturing_operation",
+  "operation",
+  "gross_wt",
+  "received_gross_wt",
+  "allowed_loss_percentage",
+  "allowed_diamond_loss",
+  "allowed_gemstone_loss",
+  "manual_inspection",
+  "column_break_fn0zx",
+  "posting_date",
+  "status",
+  "qc_person",
+  "employee_ir",
+  "emp_ir_id",
+  "rejection_reason",
+  "start_time",
+  "finish_time",
+  "time_taken",
+  "duplicate_qc",
+  "previous_qc",
+  "section_break_naim4",
+  "quality_inspection_template",
+  "readings",
+  "employee_loss_details",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Operation",
+   "options": "Manufacturing Operation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "qc_person",
+   "fieldtype": "Link",
+   "label": "QC Person",
+   "options": "Employee"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Pending\nWIP\nAccepted\nRejected\nForce Approved"
+  },
+  {
+   "depends_on": "eval:doc.status=='Reject'",
+   "fieldname": "rejection_reason",
+   "fieldtype": "Link",
+   "label": "Rejection Reason",
+   "options": "QC Rejection Reason"
+  },
+  {
+   "default": "now",
+   "fieldname": "start_time",
+   "fieldtype": "Datetime",
+   "label": "Start Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finish_time",
+   "fieldtype": "Datetime",
+   "label": "Finish Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "time_taken",
+   "fieldtype": "Time",
+   "label": "Time Taken",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_fn0zx",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order",
+   "reqd": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date"
+  },
+  {
+   "fieldname": "section_break_naim4",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "quality_inspection_template",
+   "fieldtype": "Link",
+   "label": "Quality Inspection Template",
+   "options": "Quality Inspection Template"
+  },
+  {
+   "fieldname": "readings",
+   "fieldtype": "Table",
+   "label": "Readings",
+   "options": "QC Readings"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "QC",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "manual_inspection",
+   "fieldtype": "Check",
+   "label": "Manual Inspection"
+  },
+  {
+   "fieldname": "employee_ir",
+   "fieldtype": "Link",
+   "label": "Employee IR",
+   "options": "Employee IR",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_operation.gross_wt",
+   "fieldname": "gross_wt",
+   "fieldtype": "Float",
+   "label": "Gross Wt",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "received_gross_wt",
+   "fieldtype": "Float",
+   "label": "Received Gross Wt"
+  },
+  {
+   "fetch_from": "operation.allowed_loss_percentage",
+   "fieldname": "allowed_loss_percentage",
+   "fieldtype": "Float",
+   "label": "Standard Process Loss Percentage",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_operation.operation",
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "Operation",
+   "options": "Department Operation",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "operation.allowed_diamond_loss",
+   "fieldname": "allowed_diamond_loss",
+   "fieldtype": "Float",
+   "label": "Per Diamond Average Loss Weight",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "operation.allowed_gemstone_loss",
+   "fieldname": "allowed_gemstone_loss",
+   "fieldtype": "Float",
+   "label": "Per Gemstone Average Loss Weight",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "duplicate_qc",
+   "fieldtype": "Link",
+   "label": "Duplicate QC",
+   "options": "QC",
+   "read_only": 1
+  },
+  {
+   "fieldname": "previous_qc",
+   "fieldtype": "Link",
+   "label": "Previous QC",
+   "options": "QC",
+   "read_only": 1
+  },
+  {
+   "fieldname": "emp_ir_id",
+   "fieldtype": "Link",
+   "label": "Emp IR ID(Issue)",
+   "options": "Employee IR",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "employee_loss_details",
+   "fieldtype": "Table",
+   "label": "Loss Details",
+   "options": "Employee Loss Details"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2024-01-13 19:50:50.287922",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "QC",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "select": 1,
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "MFG. QC Manager",
+   "select": 1,
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

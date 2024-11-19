@@ -1,0 +1,112 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-05-24 15:10:11.273771",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "metal_type",
+  "item_code",
+  "refining_gold_weight",
+  "metal_weight",
+  "metal_purity",
+  "pure_weight",
+  "after_burn_weight",
+  "powder_weight",
+  "column_break_lhcwj",
+  "dustname",
+  "dust_item",
+  "dust_weight"
+ ],
+ "fields": [
+  {
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "metal_weight",
+   "fieldtype": "Link",
+   "label": "Metal Weight",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Metal Purity",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "pure_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Pure Weight"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fieldname": "dust_weight",
+   "fieldtype": "Float",
+   "label": "Dust Weight",
+   "precision": "2"
+  },
+  {
+   "fieldname": "after_burn_weight",
+   "fieldtype": "Float",
+   "label": "After Burn Weight",
+   "precision": "2"
+  },
+  {
+   "fieldname": "powder_weight",
+   "fieldtype": "Float",
+   "label": "Powder Weight",
+   "precision": "2"
+  },
+  {
+   "fieldname": "refining_gold_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Refining Gold Weight",
+   "precision": "2"
+  },
+  {
+   "fieldname": "column_break_lhcwj",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "dustname",
+   "fieldtype": "Link",
+   "label": "Dust Type",
+   "options": "Dust Type"
+  },
+  {
+   "fetch_from": "dustname.item_code",
+   "fetch_if_empty": 1,
+   "fieldname": "dust_item",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Dust Item",
+   "options": "Item"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-05-17 13:09:09.303457",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Refined Gold",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

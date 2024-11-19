@@ -1,0 +1,26 @@
+<table class="table table-bordered table-hover" width='100%' style="border: 1px solid #d1d8dd;border-collapse: collapse;">
+	<thead>
+		<tr>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">ID</th>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">Stock Entry</th>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">FG BOM</th>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">Serial No</th>
+		</tr>
+	</thead>
+	<tbody>
+	{% for index, item in enumerate(data) %}
+		<tr>
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{index + 1}}</td>
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+				<a href=>{{ frappe.utils.get_link_to_form('Stock Entry', item.purchase_document_no) }}</a>
+			</td>
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+				<a href=>{{ frappe.utils.get_link_to_form('BOM', item.name) }}</a>
+			</td>
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+				<a href=>{{ frappe.utils.get_link_to_form('Serial No', item.serial_no) }}</a>
+			</td>
+		</tr>
+	{% endfor %}
+	</tbody>
+	</table>

@@ -1,0 +1,51 @@
+{
+ "Employee Transfer": [
+  {
+   "dt": "Employee Transfer",
+   "fieldname": "custom_expenses",
+   "fieldtype": "Section Break",
+   "insert_after": "amended_from",
+   "label": "Expenses",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Employee Transfer",
+   "fieldname": "custom_relocation_expense",
+   "fieldtype": "Currency",
+   "insert_after": "custom_expenses",
+   "label": "Relocation Expense",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Employee Transfer",
+   "fieldname": "custom_column_break_pmhsd",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_relocation_expense",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Employee Transfer",
+   "fieldname": "custom_amount_validity",
+   "fieldtype": "Date",
+   "insert_after": "custom_column_break_pmhsd",
+   "label": "Amount Validity",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Employee Transfer",
+   "fieldname": "custom_column_break_skoku",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_amount_validity",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Employee Transfer",
+   "fieldname": "custom_validity_status",
+   "fieldtype": "Select",
+   "insert_after": "custom_column_break_skoku",
+   "label": "Validity Status",
+   "module": "Jewellery Erpnext",
+   "options": "Pending\nCompleted"
+  }
+ ]
+}

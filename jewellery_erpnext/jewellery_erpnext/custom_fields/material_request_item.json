@@ -1,0 +1,202 @@
+{
+ "Material Request Item": [
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_pure_qty",
+   "fieldtype": "Float",
+   "insert_after": "qty",
+   "label": "Pure Qty",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "valuation_rate",
+   "fieldtype": "Currency",
+   "insert_after": "inventory_type",
+   "label": "Valuation Rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "insert_after": "page_break",
+   "label": "Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "insert_after": "customer",
+   "label": "Inventory Type",
+   "module": "Jewellery Erpnext",
+   "options": "Inventory Type"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "inventory_dimensions",
+   "fieldtype": "Section Break",
+   "insert_after": "section_break_46",
+   "is_system_generated": 1,
+   "label": "Inventory Dimensions",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request Item",
+   "fetch_from": "item_code.variant_of",
+   "fieldname": "custom_variant_of",
+   "fieldtype": "Link",
+   "insert_after": "schedule_date",
+   "label": "Variant Of",
+   "module": "Jewellery Erpnext",
+   "options": "Item"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Material Request Item",
+   "fetch_from": "item_code.gst_hsn_code",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_hsn_code",
+   "fieldtype": "Data",
+   "insert_after": "description",
+   "is_system_generated": 1,
+   "label": "HSN/SAC",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_inventory_detail",
+   "fieldtype": "Section Break",
+   "insert_after": "section_break_46",
+   "is_system_generated": 1,
+   "label": "Inventory Detail",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_alternative_item",
+   "fieldtype": "Link",
+   "insert_after": "col_break1",
+   "label": "Alternative Item",
+   "module": "Jewellery Erpnext",
+   "options": "Item"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_against_stock_entry",
+   "fieldtype": "Link",
+   "insert_after": "custom_ste_details",
+   "label": "Against Stock Entry",
+   "module": "Jewellery Erpnext",
+   "options": "Stock Entry"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_ste_details",
+   "fieldtype": "Data",
+   "insert_after": "accounting_dimensions_section",
+   "label": "STE Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "insert_after": "dimension_col_break",
+   "is_system_generated": 1,
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_sub_setting_type",
+   "fieldtype": "Link",
+   "insert_after": "expense_account",
+   "label": "Sub Setting Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_is_customer_item",
+   "fieldtype": "Check",
+   "insert_after": "inventory_dimensions",
+   "label": "Is Customer Item",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "insert_after": "serial_no",
+   "label": "Batch No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "serial_no",
+   "fieldtype": "Data",
+   "insert_after": "cost_center",
+   "label": "Serial No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_insurance_amount",
+   "fieldtype": "Currency",
+   "insert_after": "custom_insurance_rate",
+   "label": "Insurance Amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fetch_from": "item_group.custom_insurance_rate",
+   "fieldname": "custom_insurance_rate",
+   "fieldtype": "Currency",
+   "insert_after": "item_name",
+   "label": "Insurance Rate",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "pcs",
+   "fieldtype": "Data",
+   "insert_after": "reference_docname",
+   "label": "Pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "reference_docname",
+   "fieldtype": "Data",
+   "insert_after": "reference_doctype",
+   "label": "Reference Docname",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "reference_doctype",
+   "fieldtype": "Data",
+   "insert_after": "material_request_plan_item",
+   "label": "Reference Doctype",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request Item",
+   "fieldname": "custom_scan_alternate_item",
+   "fieldtype": "Data",
+   "label": "Scan Alternate Item",
+   "module": "Jewellery Erpnext",
+   "options": "Barcode"
+  }
+ ]
+}

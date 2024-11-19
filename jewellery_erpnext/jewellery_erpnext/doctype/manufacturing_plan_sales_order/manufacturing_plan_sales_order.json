@@ -1,0 +1,47 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:MP-{YYYY}-{#####}",
+ "creation": "2023-03-29 17:40:05.967119",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sales_order",
+  "customer"
+ ],
+ "fields": [
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Sales Order",
+   "options": "Sales Order",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sales_order.customer",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2023-05-08 00:21:25.032540",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Manufacturing Plan Sales Order",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

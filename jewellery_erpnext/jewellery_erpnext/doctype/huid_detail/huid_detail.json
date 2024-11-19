@@ -1,0 +1,51 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-09-03 03:42:53.669262",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "huid",
+  "certification_no",
+  "date",
+  "certification_date"
+ ],
+ "fields": [
+  {
+   "fieldname": "huid",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "HUID"
+  },
+  {
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Date"
+  },
+  {
+   "fieldname": "certification_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Certification No"
+  },
+  {
+   "fieldname": "certification_date",
+   "fieldtype": "Date",
+   "label": "Certification Date"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-04-24 14:10:10.720315",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "HUID Detail",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

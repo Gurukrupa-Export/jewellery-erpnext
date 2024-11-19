@@ -1,0 +1,93 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-12-18 18:01:55.513475",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "diamond_sieve_size",
+  "size_in_mm",
+  "pcs",
+  "from_weight",
+  "to_weight",
+  "for_universal_value",
+  "diamond_shape",
+  "diamond_quality",
+  "weight",
+  "per_pcs_average_weight"
+ ],
+ "fields": [
+  {
+   "fieldname": "diamond_shape",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Diamond shape",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "diamond_quality",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Diamond Quality",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "from_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "From Weight"
+  },
+  {
+   "fieldname": "to_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "To Weight"
+  },
+  {
+   "default": "0",
+   "fieldname": "for_universal_value",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "For Universal Value"
+  },
+  {
+   "fieldname": "diamond_sieve_size",
+   "fieldtype": "Link",
+   "label": "Diamond Sieve Size",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "size_in_mm",
+   "fieldtype": "Float",
+   "label": "Size in MM"
+  },
+  {
+   "fieldname": "pcs",
+   "fieldtype": "Int",
+   "label": "Pcs"
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight"
+  },
+  {
+   "fieldname": "per_pcs_average_weight",
+   "fieldtype": "Float",
+   "label": "Per Pcs Average weight"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-07-22 11:16:16.429479",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Attribute Value Diamond Sieve Size",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

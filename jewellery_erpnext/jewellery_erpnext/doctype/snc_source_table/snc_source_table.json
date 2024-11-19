@@ -1,0 +1,89 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-01-17 12:45:57.710560",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "default_bom_rm",
+  "bom_qty",
+  "bom_pcs",
+  "row_material",
+  "qty",
+  "pcs",
+  "uom",
+  "sub_setting_type",
+  "is_customer_item"
+ ],
+ "fields": [
+  {
+   "fieldname": "default_bom_rm",
+   "fieldtype": "Link",
+   "label": "Default BOM RM",
+   "options": "Item"
+  },
+  {
+   "fieldname": "bom_qty",
+   "fieldtype": "Float",
+   "label": "BOM Qty"
+  },
+  {
+   "fieldname": "bom_pcs",
+   "fieldtype": "Float",
+   "label": "BOM PCS"
+  },
+  {
+   "fieldname": "row_material",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Row Material",
+   "options": "Item"
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Qty"
+  },
+  {
+   "fieldname": "pcs",
+   "fieldtype": "Float",
+   "label": "Pcs"
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "uom",
+   "options": "UOM"
+  },
+  {
+   "fieldname": "sub_setting_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Sub Setting Type",
+   "options": "Attribute Value"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_customer_item",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Customer Item"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-01-17 16:01:32.031246",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "SNC Source Table",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,98 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-05-18 15:47:50.855090",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "serial_number",
+  "item_code",
+  "metal_purity",
+  "metal_weight",
+  "pcs",
+  "gross_weight",
+  "net_weight",
+  "pure_weight",
+  "quantity"
+ ],
+ "fields": [
+  {
+   "fieldname": "serial_number",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Serial Number",
+   "options": "Serial No"
+  },
+  {
+   "fieldname": "metal_weight",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "in_list_view": 1,
+   "label": " Metal Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Metal Purity",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pcs",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": " Pcs"
+  },
+  {
+   "fetch_from": "serial_number.item_code",
+   "fetch_if_empty": 1,
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": " Design ID",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pure_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Pure Weight"
+  },
+  {
+   "fieldname": "gross_weight",
+   "fieldtype": "Float",
+   "label": "Gross Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "net_weight",
+   "fieldtype": "Float",
+   "label": "Net Weight",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "quantity",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Quantity"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2023-11-10 15:42:36.021819",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Refining Serial No Detail",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

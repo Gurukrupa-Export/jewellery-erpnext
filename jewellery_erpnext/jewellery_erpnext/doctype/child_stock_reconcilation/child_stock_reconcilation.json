@@ -1,0 +1,256 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2024-04-22 13:29:08.001760",
+ "default_view": "List",
+ "description": "This tool helps you to update or fix the quantity and valuation of stock in the system. It is typically used to synchronise the system values and what actually exists in your warehouses.",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "stock_reconcillation",
+  "company",
+  "purpose",
+  "col1",
+  "posting_date",
+  "posting_time",
+  "set_posting_time",
+  "section_break_8",
+  "set_warehouse",
+  "box_number",
+  "section_break_22",
+  "scan_barcode",
+  "column_break_12",
+  "scan_mode",
+  "sb9",
+  "items",
+  "section_break_9",
+  "expense_account",
+  "column_break_13",
+  "difference_amount",
+  "accounting_dimensions_section",
+  "cost_center",
+  "dimension_col_break",
+  "section_break_ay9b",
+  "get_previous_child_stock_reconcilliation_number",
+  "previous_child_stock_reconciliation",
+  "previous_child_stock",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "no_copy": 1,
+   "options": "MAT-RECO-.YYYY.-",
+   "print_hide": 1,
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "stock_reconcillation",
+   "fieldtype": "Link",
+   "label": "Stock Reconcillation",
+   "options": "Stock Reconciliation"
+  },
+  {
+   "fetch_from": "stock_reconcillation.company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "remember_last_selected_value": 1,
+   "reqd": 1
+  },
+  {
+   "fetch_from": "stock_reconcillation.purpose",
+   "fieldname": "purpose",
+   "fieldtype": "Select",
+   "label": "Purpose",
+   "options": "\nOpening Stock\nStock Reconciliation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "col1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Today",
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "hidden": 1,
+   "in_list_view": 1,
+   "label": "Posting Date",
+   "oldfieldname": "reconciliation_date",
+   "oldfieldtype": "Date"
+  },
+  {
+   "fieldname": "posting_time",
+   "fieldtype": "Time",
+   "hidden": 1,
+   "in_list_view": 1,
+   "label": "Posting Time",
+   "oldfieldname": "reconciliation_time",
+   "oldfieldtype": "Time"
+  },
+  {
+   "default": "0",
+   "fieldname": "set_posting_time",
+   "fieldtype": "Check",
+   "label": "Edit Posting Date and Time"
+  },
+  {
+   "fieldname": "section_break_8",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fetch_from": "stock_reconcillation.set_warehouse",
+   "fieldname": "set_warehouse",
+   "fieldtype": "Link",
+   "label": "Default Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "depends_on": "eval:doc.previous_child_stock_reconciliation == 0;",
+   "fieldname": "box_number",
+   "fieldtype": "Int",
+   "label": "Box Number",
+   "mandatory_depends_on": "eval:doc.previous_child_stock_reconciliation == 0;"
+  },
+  {
+   "depends_on": "eval:!doc.docstatus",
+   "fieldname": "section_break_22",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "scan_barcode",
+   "fieldtype": "Data",
+   "label": "Scan Barcode",
+   "options": "Barcode"
+  },
+  {
+   "fieldname": "column_break_12",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Disables auto-fetching of existing quantity",
+   "fieldname": "scan_mode",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Scan Mode"
+  },
+  {
+   "fieldname": "sb9",
+   "fieldtype": "Section Break"
+  },
+  {
+   "allow_bulk_edit": 1,
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Items",
+   "mandatory_depends_on": "eval:doc.previous_child_stock_reconciliation ==1;",
+   "options": "Child Stock Reconcilation Item"
+  },
+  {
+   "fieldname": "section_break_9",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "expense_account",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Difference Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "column_break_13",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "difference_amount",
+   "fieldtype": "Currency",
+   "label": "Difference Amount",
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "fieldname": "accounting_dimensions_section",
+   "fieldtype": "Section Break",
+   "label": "Accounting Dimensions"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "dimension_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_ay9b",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "get_previous_child_stock_reconcilliation_number",
+   "fieldtype": "Button",
+   "label": "Get Previous Child Stock Reconcilliation Number "
+  },
+  {
+   "default": "0",
+   "fieldname": "previous_child_stock_reconciliation",
+   "fieldtype": "Check",
+   "label": "Previous Child Stock Reconciliation"
+  },
+  {
+   "depends_on": "eval:doc.previous_child_stock_reconciliation ==1;",
+   "fieldname": "previous_child_stock",
+   "fieldtype": "Table",
+   "label": "Previous Child Stock",
+   "options": "Previous Child Stock Reconciliation"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Child Stock Reconcilation",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  }
+ ],
+ "icon": "fa fa-upload-alt",
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2024-04-24 19:01:04.247929",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Child Stock Reconcilation",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Stock Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "search_fields": "posting_date",
+ "show_name_in_global_search": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

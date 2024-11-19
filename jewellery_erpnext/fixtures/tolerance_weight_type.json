@@ -1,0 +1,82 @@
+[
+ {
+  "diamond": 0,
+  "docstatus": 0,
+  "doctype": "Tolerance Weight Type",
+  "gemstone": 0,
+  "metal": 1,
+  "modified": "2023-12-26 11:27:42.989610",
+  "name": "Net Weight",
+  "weight": "Net Weight"
+ },
+ {
+  "diamond": 0,
+  "docstatus": 0,
+  "doctype": "Tolerance Weight Type",
+  "gemstone": 0,
+  "metal": 1,
+  "modified": "2023-12-26 11:27:50.354328",
+  "name": "Gross Weight",
+  "weight": "Gross Weight"
+ },
+ {
+  "diamond": 1,
+  "docstatus": 0,
+  "doctype": "Tolerance Weight Type",
+  "gemstone": 0,
+  "metal": 0,
+  "modified": "2023-12-30 19:51:24.689360",
+  "name": "MM Size wise",
+  "weight": "MM Size wise"
+ },
+ {
+  "diamond": 1,
+  "docstatus": 0,
+  "doctype": "Tolerance Weight Type",
+  "gemstone": 0,
+  "metal": 0,
+  "modified": "2023-12-30 19:55:02.433010",
+  "name": "Group Size wise",
+  "weight": "Group Size wise"
+ },
+ {
+  "diamond": 1,
+  "docstatus": 0,
+  "doctype": "Tolerance Weight Type",
+  "gemstone": 1,
+  "metal": 0,
+  "modified": "2023-12-30 19:38:05.492535",
+  "name": "Weight wise",
+  "weight": "Weight wise"
+ },
+ {
+  "diamond": 1,
+  "docstatus": 0,
+  "doctype": "Tolerance Weight Type",
+  "gemstone": 0,
+  "metal": 0,
+  "modified": "2023-12-30 19:51:15.282084",
+  "name": "Universal",
+  "weight": "Universal"
+ },
+ {
+  "diamond": 0,
+  "docstatus": 0,
+  "doctype": "Tolerance Weight Type",
+  "gemstone": 1,
+  "metal": 0,
+  "modified": "2023-12-30 18:55:40.478890",
+  "name": "Weight Range",
+  "weight": "Weight Range"
+ },
+ {
+  "diamond": 0,
+  "docstatus": 0,
+  "doctype": "Tolerance Weight Type",
+  "gemstone": 1,
+  "metal": 0,
+  "modified": "2023-12-30 18:56:59.068043",
+  "name": "Gemstone Type Range",
+  "weight": "Gemstone Type Range"
+ }
+]

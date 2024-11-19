@@ -1,0 +1,34 @@
+<!-- <div>
+	Entry Count: <b> {{total_qty}}</b>
+</div>
+<table class="table table-bordered table-hover" width='100%' style="border: 1px solid #d1d8dd;border-collapse: collapse;">
+<thead>
+	<tr>
+		<th style="border: 1px solid #d1d8dd; font-size: 11px;">Manufacturing Operation</th>
+		<th style="border: 1px solid #d1d8dd; font-size: 11px;">Operation Status</th>
+		<th style="border: 1px solid #d1d8dd; font-size: 11px;">Stock Entry</th>
+		<th style="border: 1px solid #d1d8dd; font-size: 11px;">Item Name</th>
+		<th style="border: 1px solid #d1d8dd; font-size: 11px;">Qty</th>
+		<th style="border: 1px solid #d1d8dd; font-size: 11px;">UOM</th>
+	</tr>
+</thead>
+<tbody>
+{% for item in data %}
+	<tr>
+		<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+			<a href=>{{ frappe.utils.get_link_to_form('Manufacturing Operation', item.manufacturing_operation) }}</a>
+		</td>
+		{% set doc = frappe.get_doc('Manufacturing Operation', item.manufacturing_operation) %}
+		<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+			{{doc.status}}
+		</td>
+		<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+			<a href=>{{ frappe.utils.get_link_to_form('Stock Entry', item.name) }}</a>
+		</td>
+		<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.item_name }}</td>
+		<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.qty }}</td>
+		<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.uom }}</td>
+	</tr>
+{% endfor %}
+</tbody>
+</table> -->

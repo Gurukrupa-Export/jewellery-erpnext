@@ -1,0 +1,56 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-04-23 17:52:45.510340",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "warehouse",
+  "purpose",
+  "has_box",
+  "allow_maual_weight_add"
+ ],
+ "fields": [
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "has_box",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Has Box",
+   "options": "\nYes\nNo"
+  },
+  {
+   "default": "0",
+   "fieldname": "allow_maual_weight_add",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Allow Maual Weight add"
+  },
+  {
+   "fieldname": "purpose",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Purpose",
+   "options": "\nOpening Stock\nStock Reconciliation"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-04-23 18:55:46.827486",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Stock Reconciliation template Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

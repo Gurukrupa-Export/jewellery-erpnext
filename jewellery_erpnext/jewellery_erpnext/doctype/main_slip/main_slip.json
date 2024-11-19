@@ -1,0 +1,486 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2023-03-30 13:10:30.963414",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "section_break_nv7vg",
+  "company",
+  "manufacturer",
+  "loss_warehouse",
+  "warehouse",
+  "raw_material_warehouse",
+  "type_abbr",
+  "column_break_lbsmh",
+  "color_abbr",
+  "department",
+  "for_subcontracting",
+  "employee",
+  "subcontractor",
+  "dep_abbr",
+  "section_break_i4ngw",
+  "loss_details",
+  "is_tree_reqd",
+  "issue_metal",
+  "receive_metal",
+  "pending_metal",
+  "column_break_6ug6u",
+  "used_gold_count",
+  "operation_issue",
+  "operation_receive",
+  "operation",
+  "check_color",
+  "section_break_6h8u2",
+  "tree_number",
+  "tree_wax_wt",
+  "column_break_b1a2u",
+  "computed_gold_wt",
+  "metal_details_section",
+  "metal_type",
+  "metal_touch",
+  "column_break_uuxlq",
+  "multicolour",
+  "allowed_colours",
+  "metal_colour",
+  "metal_purity",
+  "section_break_rou6s",
+  "flask_size",
+  "powder_wt",
+  "water_weight",
+  "column_break_64zs9",
+  "is_wax_setting",
+  "boric_powder_weight",
+  "special_powder_weight",
+  "section_break_rr9oa",
+  "column_break_uzau",
+  "main_slip_operation",
+  "batch_details",
+  "stock_details",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "depends_on": "eval:!doc.for_subcontracting",
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "in_filter": 1,
+   "in_global_search": 1,
+   "in_list_view": 1,
+   "in_preview": 1,
+   "in_standard_filter": 1,
+   "label": "Employee",
+   "mandatory_depends_on": "eval:!doc.for_subcontracting",
+   "options": "Employee",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Operation",
+   "options": "Department Operation",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.is_tree_reqd",
+   "fieldname": "tree_number",
+   "fieldtype": "Link",
+   "label": "Tree Number",
+   "options": "Tree Number",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.is_tree_reqd",
+   "fieldname": "tree_wax_wt",
+   "fieldtype": "Float",
+   "label": "Tree Wax Wt"
+  },
+  {
+   "depends_on": "eval:doc.is_tree_reqd",
+   "fieldname": "computed_gold_wt",
+   "fieldtype": "Float",
+   "label": "Computed Gold Wt",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "flask_size",
+   "fieldtype": "Link",
+   "label": "Flask Size",
+   "options": "Flask Size",
+   "read_only_depends_on": "eval:doc.workflow_state==\"Completed\";"
+  },
+  {
+   "fieldname": "used_gold_count",
+   "fieldtype": "Data",
+   "label": "Used Gold Count"
+  },
+  {
+   "fieldname": "column_break_6ug6u",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_rr9oa",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "label": "Metal Purity",
+   "options": "Attribute Value",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";",
+   "reqd": 1
+  },
+  {
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal Type",
+   "options": "Attribute Value",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval: doc.check_color==1 && doc.multicolour == 0",
+   "fieldname": "metal_colour",
+   "fieldtype": "Link",
+   "label": "Metal Color",
+   "options": "Attribute Value",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "fieldname": "main_slip_operation",
+   "fieldtype": "Table",
+   "label": "Main Slip Operation",
+   "options": "Main Slip Operation"
+  },
+  {
+   "fieldname": "operation_issue",
+   "fieldtype": "Float",
+   "label": "Manufacturing Operation Issue",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fetch_from": "operation.tree_no_reqd",
+   "fieldname": "is_tree_reqd",
+   "fieldtype": "Check",
+   "label": "Is Tree Required",
+   "read_only": 1
+  },
+  {
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "label": "Metal Touch",
+   "options": "Attribute Value",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";",
+   "reqd": 1
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "fetch_from": "operation.department",
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "fieldname": "dep_abbr",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Abbr",
+   "read_only": 1
+  },
+  {
+   "fieldname": "type_abbr",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "type_abbr",
+   "read_only": 1
+  },
+  {
+   "fieldname": "color_abbr",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "color_abbr",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fetch_from": "operation.check_colour_in_main_slip",
+   "fieldname": "check_color",
+   "fieldtype": "Check",
+   "label": "Check Color",
+   "read_only": 1
+  },
+  {
+   "fieldname": "operation_receive",
+   "fieldtype": "Float",
+   "label": "Manufacturing Operation Receive",
+   "read_only": 1
+  },
+  {
+   "fieldname": "issue_metal",
+   "fieldtype": "Float",
+   "label": "Issue Gold",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receive_metal",
+   "fieldtype": "Float",
+   "label": "Receive Gold",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pending_metal",
+   "fieldtype": "Float",
+   "label": "Pending Gold",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Main Slip",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "metal_details_section",
+   "fieldtype": "Section Break",
+   "label": "Metal Details"
+  },
+  {
+   "fieldname": "column_break_uuxlq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_lbsmh",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_i4ngw",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "collapsible": 1,
+   "collapsible_depends_on": "eval:doc.__islocal",
+   "fieldname": "section_break_nv7vg",
+   "fieldtype": "Section Break",
+   "label": "Company Details"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_6h8u2",
+   "fieldtype": "Section Break",
+   "label": "Tree Details"
+  },
+  {
+   "fieldname": "column_break_b1a2u",
+   "fieldtype": "Column Break"
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval: doc.operation == 'Casting B1'",
+   "fieldname": "section_break_rou6s",
+   "fieldtype": "Section Break",
+   "label": "Flask Details"
+  },
+  {
+   "fieldname": "column_break_64zs9",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "description": "Water Wt =  ( Powder Wt * Water Value) / POWDER VALUE",
+   "fieldname": "water_weight",
+   "fieldtype": "Float",
+   "label": "Water Weight",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.is_wax_setting == 1;",
+   "description": "Special Powder Boric Wt = ( Powder Wt * SPECIAL POWDER BORIC VALUE ) / POWDER VALUE",
+   "fieldname": "special_powder_weight",
+   "fieldtype": "Float",
+   "label": "Special Powder Weight",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.is_wax_setting == 1;",
+   "description": "Boric Powder Wt = ( Powder Wt * BORIC VALUE ) / POWDER VALUE",
+   "fieldname": "boric_powder_weight",
+   "fieldtype": "Float",
+   "label": "Boric Powder Weight",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fetch_from": "flask_size.default_powder_wt",
+   "fieldname": "powder_wt",
+   "fieldtype": "Float",
+   "label": "Powder Wt",
+   "read_only_depends_on": "eval:doc.workflow_state==\"Completed\";"
+  },
+  {
+   "default": "0",
+   "fieldname": "for_subcontracting",
+   "fieldtype": "Check",
+   "label": "For Subcontracting",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";",
+   "set_only_once": 1
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Work Station Warehouse",
+   "options": "Warehouse",
+   "read_only": 1,
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "depends_on": "eval:doc.for_subcontracting",
+   "fieldname": "subcontractor",
+   "fieldtype": "Link",
+   "in_preview": 1,
+   "label": "Sub Contractor",
+   "mandatory_depends_on": "eval:doc.for_subcontracting",
+   "options": "Supplier",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.check_color==1",
+   "fieldname": "multicolour",
+   "fieldtype": "Check",
+   "label": " Multicolour",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "depends_on": "eval:doc.check_color==1 && doc.multicolour == 1",
+   "description": "P=Pink, Y=Yellow, W=White",
+   "fieldname": "allowed_colours",
+   "fieldtype": "Data",
+   "label": "Allowed Colours",
+   "length": 3,
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "fieldname": "raw_material_warehouse",
+   "fieldtype": "Link",
+   "label": "Raw Material Warehouse",
+   "options": "Warehouse",
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Naming Series",
+   "options": "\nMSL.#####\n.dep_abbr.-.type_abbr.-.metal_touch.-.metal_purity.-.#####\n.dep_abbr.-.type_abbr.-.metal_touch.-.metal_purity.-.color_abbr.-.#####"
+  },
+  {
+   "fieldname": "column_break_uzau",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "stock_details",
+   "fieldtype": "Table",
+   "label": "Stock Details",
+   "options": "Main Slip SE Details"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "batch_details",
+   "fieldtype": "Table",
+   "label": "Batch Details",
+   "options": "Main Slip SE Details"
+  },
+  {
+   "fetch_from": "manufacturer.default_loss_warehouse",
+   "fieldname": "loss_warehouse",
+   "fieldtype": "Link",
+   "label": "Loss Warehouse",
+   "options": "Warehouse",
+   "read_only": 1,
+   "read_only_depends_on": "eval:doc.workflow_state==\"In Use\";"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "loss_details",
+   "fieldtype": "Table",
+   "label": "Loss Details",
+   "options": "Loss Details"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "is_wax_setting",
+   "fieldtype": "Check",
+   "label": "Is Wax Setting",
+   "read_only_depends_on": "eval: doc.workflow_state == \"Completed\";"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [
+  {
+   "link_doctype": "Material Request",
+   "link_fieldname": "main_slip"
+  },
+  {
+   "link_doctype": "Stock Entry",
+   "link_fieldname": "main_slip"
+  }
+ ],
+ "modified": "2024-07-22 16:35:00.474958",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Main Slip",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "search_fields": "employee, subcontractor",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

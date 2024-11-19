@@ -1,0 +1,237 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "MP-.abbr.-.YYYY.-.#####",
+ "creation": "2023-03-29 17:13:20.635791",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_aedbn",
+  "company",
+  "posting_date",
+  "column_break_ymty6",
+  "branch",
+  "department",
+  "abbr",
+  "amended_from",
+  "section_break_tkb7i",
+  "select_manufacture_order",
+  "get_sales_order",
+  "get_repair_order",
+  "get_mwo",
+  "sales_order",
+  "manufacturing_work_order",
+  "setting_type",
+  "is_subcontracting",
+  "supplier",
+  "estimated_date",
+  "purchase_type",
+  "get_items_for_production_order",
+  "manufacturing_plan_table",
+  "section_break_cjenr",
+  "total_planned_qty",
+  "column_break_ahq2y",
+  "total_produced_qty"
+ ],
+ "fields": [
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Manufacturing Plan",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.docstatus == 0",
+   "fieldname": "get_items_for_production_order",
+   "fieldtype": "Button",
+   "label": "Get Items for Production Order",
+   "options": "get_items_for_production"
+  },
+  {
+   "depends_on": "eval:doc.select_manufacture_order==\"Manufacturing\"",
+   "fieldname": "get_sales_order",
+   "fieldtype": "Button",
+   "label": "Get Sales Order"
+  },
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Table",
+   "label": "Sales Order",
+   "options": "Manufacturing Plan Sales Order"
+  },
+  {
+   "fieldname": "manufacturing_plan_table",
+   "fieldtype": "Table",
+   "label": "Manufacturing Plan Table",
+   "options": "Manufacturing Plan Table"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Branch"
+  },
+  {
+   "fieldname": "section_break_tkb7i",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_ymty6",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_cjenr",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "total_planned_qty",
+   "fieldtype": "Float",
+   "label": "Total Planned Qty",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "total_produced_qty",
+   "fieldtype": "Float",
+   "label": "Total Produced Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_ahq2y",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Today",
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "company.abbr",
+   "fieldname": "abbr",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Abbr",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_aedbn",
+   "fieldtype": "Section Break",
+   "label": "Company Details"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department",
+   "read_only": 1
+  },
+  {
+   "fieldname": "select_manufacture_order",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Select Manufacture Order",
+   "options": "\nManufacturing\nRepair\nFinding Manufacturing",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.select_manufacture_order==\"Repair\"",
+   "fieldname": "get_repair_order",
+   "fieldtype": "Button",
+   "label": "Get Repair Order"
+  },
+  {
+   "fieldname": "setting_type",
+   "fieldtype": "Link",
+   "label": "Setting Type",
+   "options": "Attribute Value"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_subcontracting",
+   "fieldtype": "Check",
+   "label": "Is Subcontracting"
+  },
+  {
+   "depends_on": "eval: doc.is_subcontracting == 1;",
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier"
+  },
+  {
+   "depends_on": "eval: doc.is_subcontracting == 1;",
+   "fieldname": "estimated_date",
+   "fieldtype": "Date",
+   "label": "Estimated Date"
+  },
+  {
+   "depends_on": "eval: doc.is_subcontracting == 1;",
+   "fieldname": "purchase_type",
+   "fieldtype": "Link",
+   "label": "Purchase Type",
+   "options": "Purchase Type"
+  },
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Table",
+   "label": "Manufacturing Work Order",
+   "options": "MWO Table"
+  },
+  {
+   "fieldname": "get_mwo",
+   "fieldtype": "Button",
+   "label": "Get MWO"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [
+  {
+   "link_doctype": "Parent Manufacturing Order",
+   "link_fieldname": "manufacturing_plan"
+  },
+  {
+   "link_doctype": "Purchase Order",
+   "link_fieldname": "manufacturing_plan"
+  }
+ ],
+ "modified": "2024-06-13 16:57:21.321020",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Manufacturing Plan",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

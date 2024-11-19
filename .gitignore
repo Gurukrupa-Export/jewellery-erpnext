@@ -1,0 +1,10 @@
+.DS_Store
+*.pyc
+*.egg-info
+*.swp
+tags
+jewellery_erpnext/docs/current
+node_modules/
+frappe-semgrep-rules/
+jewellery_erpnext/public/node_modules
+results.txt

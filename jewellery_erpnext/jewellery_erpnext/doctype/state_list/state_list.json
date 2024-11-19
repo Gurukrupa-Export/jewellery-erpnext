@@ -1,0 +1,79 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-04-26 14:50:29.934101",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "state",
+  "iso",
+  "capital",
+  "column_break_d843",
+  "zone",
+  "official_languages",
+  "vehicle_code"
+ ],
+ "fields": [
+  {
+   "fieldname": "state",
+   "fieldtype": "Data",
+   "label": "State"
+  },
+  {
+   "fieldname": "iso",
+   "fieldtype": "Data",
+   "label": "ISO"
+  },
+  {
+   "fieldname": "capital",
+   "fieldtype": "Data",
+   "label": "Capital"
+  },
+  {
+   "fieldname": "column_break_d843",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "zone",
+   "fieldtype": "Data",
+   "label": "Zone"
+  },
+  {
+   "fieldname": "official_languages",
+   "fieldtype": "Data",
+   "label": "Official languages"
+  },
+  {
+   "fieldname": "vehicle_code",
+   "fieldtype": "Data",
+   "label": "Vehicle code"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2024-04-26 14:52:53.039050",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "State List",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1,
+ "track_views": 1
+}

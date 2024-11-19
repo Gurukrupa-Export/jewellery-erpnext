@@ -1,0 +1,80 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2022-09-06 20:08:04.081512",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "finding_size_in_mm",
+  "finding_size_length_x_width",
+  "finding_size_thickness_x_width",
+  "finding_size_in_inch",
+  "finding_size_mm_per_inch",
+  "weight",
+  "product_dimension"
+ ],
+ "fields": [
+  {
+   "fieldname": "finding_size_in_mm",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "in mm"
+  },
+  {
+   "fieldname": "finding_size_length_x_width",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Length x Width"
+  },
+  {
+   "fieldname": "finding_size_thickness_x_width",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Thickness x Width"
+  },
+  {
+   "fieldname": "finding_size_in_inch",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "in Inch"
+  },
+  {
+   "fieldname": "finding_size_mm_per_inch",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "mm per inch"
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Weight"
+  },
+  {
+   "fieldname": "product_dimension",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Product Dimension"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2023-06-07 12:36:27.309480",
+ "modified_by": "Administrator",
+ "module": "Gurukrupa Exports",
+ "name": "Attribute Value Finding Type Weight",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

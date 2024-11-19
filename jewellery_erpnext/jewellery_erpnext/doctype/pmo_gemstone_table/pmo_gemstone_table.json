@@ -1,0 +1,197 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-01-25 13:06:00.510773",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item",
+  "price_list_type",
+  "gemstone_type",
+  "cut_or_cab",
+  "stone_shape",
+  "gemstone_quality",
+  "gemstone_grade",
+  "is_customer_item",
+  "total_gemstone_rate",
+  "column_break_8",
+  "gemstone_size",
+  "gemstone_code",
+  "sub_setting_type",
+  "pcs",
+  "quantity",
+  "weight_in_gms",
+  "stock_uom",
+  "item_variant",
+  "gemstone_rate_for_specified_quantity",
+  "navratna",
+  "gemstone_pr",
+  "per_pc_or_per_carat"
+ ],
+ "fields": [
+  {
+   "default": "G",
+   "fieldname": "item",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Item ",
+   "options": "Item"
+  },
+  {
+   "fetch_if_empty": 1,
+   "fieldname": "price_list_type",
+   "fieldtype": "Select",
+   "label": "Price List Type",
+   "options": "Weight (in cts)\nFixed\nMultiplier"
+  },
+  {
+   "fieldname": "gemstone_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": " Type",
+   "options": "Attribute Value",
+   "reqd": 1
+  },
+  {
+   "fetch_if_empty": 1,
+   "fieldname": "cut_or_cab",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Cut and Cab",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "stone_shape",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": " Shape",
+   "options": "Attribute Value",
+   "reqd": 1
+  },
+  {
+   "default": "Precious",
+   "fieldname": "gemstone_quality",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": " Quality",
+   "options": "Attribute Value"
+  },
+  {
+   "default": "Real",
+   "fieldname": "gemstone_grade",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": " Grade",
+   "options": "Attribute Value"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_customer_item",
+   "fieldtype": "Check",
+   "label": "Is Customer Item"
+  },
+  {
+   "fieldname": "total_gemstone_rate",
+   "fieldtype": "Currency",
+   "label": "Rate"
+  },
+  {
+   "fieldname": "column_break_8",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gemstone_size",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": " Size",
+   "options": "Attribute Value",
+   "reqd": 1
+  },
+  {
+   "fieldname": "gemstone_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Stone Code",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "sub_setting_type",
+   "fieldtype": "Link",
+   "label": "Sub Setting Type",
+   "options": "Attribute Value"
+  },
+  {
+   "default": "1",
+   "fieldname": "pcs",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Pcs"
+  },
+  {
+   "fieldname": "quantity",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Weight in cts",
+   "reqd": 1
+  },
+  {
+   "fieldname": "weight_in_gms",
+   "fieldtype": "Float",
+   "label": "Weight in Gms",
+   "read_only": 1
+  },
+  {
+   "default": "cts",
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "in_list_view": 1,
+   "label": "Stock UOM",
+   "options": "UOM",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_variant",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "in_list_view": 1,
+   "label": "Item Variant"
+  },
+  {
+   "fieldname": "gemstone_rate_for_specified_quantity",
+   "fieldtype": "Currency",
+   "label": "Amount"
+  },
+  {
+   "fieldname": "navratna",
+   "fieldtype": "Data",
+   "label": "Navratna"
+  },
+  {
+   "fieldname": "gemstone_pr",
+   "fieldtype": "Link",
+   "label": "Gemstone PR",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "per_pc_or_per_carat",
+   "fieldtype": "Link",
+   "label": "Per Pc or Per Carat",
+   "options": "Attribute Value"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-06-25 12:41:16.815604",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "PMO Gemstone Table",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,34 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-11-17 15:07:57.133192",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sales_person"
+ ],
+ "fields": [
+  {
+   "columns": 5,
+   "fieldname": "sales_person",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Sales Person",
+   "options": "Sales Person"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2023-11-21 12:28:47.234361",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Sale Person Child Table",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

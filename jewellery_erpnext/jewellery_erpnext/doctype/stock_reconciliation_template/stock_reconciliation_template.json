@@ -1,0 +1,86 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-04-23 17:41:48.464152",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "template_status",
+  "automation_type",
+  "items",
+  "section_break_qbaq",
+  "day",
+  "column_break_xo8a",
+  "time",
+  "date"
+ ],
+ "fields": [
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Items",
+   "options": "Stock Reconciliation template Item"
+  },
+  {
+   "fieldname": "day",
+   "fieldtype": "Select",
+   "label": "Day",
+   "options": "\nEvery Day : Working\nEnd of Month : Working\nEnd of the Year : Working"
+  },
+  {
+   "fieldname": "template_status",
+   "fieldtype": "Select",
+   "label": "Template status",
+   "options": "\nActive\nDe - active"
+  },
+  {
+   "fieldname": "column_break_xo8a",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_qbaq",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "automation_type",
+   "fieldtype": "Select",
+   "label": "Automation Type",
+   "options": "\nAuto Generate\nManually Generate"
+  },
+  {
+   "depends_on": "eval:doc.day != \"Every Day : Working\";",
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "label": "Date"
+  },
+  {
+   "fieldname": "time",
+   "fieldtype": "Time",
+   "label": "Time"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2024-04-24 14:47:37.790223",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Stock Reconciliation template",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

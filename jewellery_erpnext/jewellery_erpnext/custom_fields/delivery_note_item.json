@@ -1,0 +1,222 @@
+{
+ "Delivery Note Item": [
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "insert_after": "dimension_col_break",
+   "is_system_generated": 1,
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "inventory_dimension",
+   "fieldtype": "Section Break",
+   "insert_after": "page_break",
+   "is_system_generated": 1,
+   "label": "Inventory Dimension",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "insert_after": "inventory_dimension",
+   "is_system_generated": 1,
+   "label": "Source Inventory Type",
+   "module": "Jewellery Erpnext",
+   "options": "Inventory Type"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "inventory_dimension_col_break",
+   "fieldtype": "Column Break",
+   "insert_after": "inventory_type",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:parent.is_internal_customer == 1",
+   "dt": "Delivery Note Item",
+   "fieldname": "to_inventory_type",
+   "fieldtype": "Link",
+   "insert_after": "inventory_dimension_col_break",
+   "is_system_generated": 1,
+   "label": "Target Inventory Type",
+   "module": "Jewellery Erpnext",
+   "options": "Inventory Type"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Delivery Note Item",
+   "fetch_from": "item_code.gst_hsn_code",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_hsn_code",
+   "fieldtype": "Data",
+   "insert_after": "description",
+   "is_system_generated": 1,
+   "label": "HSN/SAC",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fetch_from": "item_tax_template.gst_treatment",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_treatment",
+   "fieldtype": "Autocomplete",
+   "insert_after": "item_tax_template",
+   "is_system_generated": 1,
+   "label": "GST Treatment",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Taxable\nZero-Rated\nNil-Rated\nExempted\nNon-GST",
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "taxable_value",
+   "fieldtype": "Currency",
+   "insert_after": "base_net_amount",
+   "is_system_generated": 1,
+   "label": "Taxable Value",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "gst_details_section",
+   "fieldtype": "Section Break",
+   "insert_after": "taxable_value",
+   "is_system_generated": 1,
+   "label": "GST Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "igst_rate",
+   "fieldtype": "Float",
+   "insert_after": "gst_details_section",
+   "is_system_generated": 1,
+   "label": "IGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "cgst_rate",
+   "fieldtype": "Float",
+   "insert_after": "igst_rate",
+   "is_system_generated": 1,
+   "label": "CGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "sgst_rate",
+   "fieldtype": "Float",
+   "insert_after": "cgst_rate",
+   "is_system_generated": 1,
+   "label": "SGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "cess_rate",
+   "fieldtype": "Float",
+   "insert_after": "sgst_rate",
+   "is_system_generated": 1,
+   "label": "CESS Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "cess_non_advol_rate",
+   "fieldtype": "Float",
+   "insert_after": "cess_rate",
+   "is_system_generated": 1,
+   "label": "CESS Non Advol Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "cb_gst_details",
+   "fieldtype": "Column Break",
+   "insert_after": "cess_non_advol_rate",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "igst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cb_gst_details",
+   "is_system_generated": 1,
+   "label": "IGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "cgst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "igst_amount",
+   "is_system_generated": 1,
+   "label": "CGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "sgst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cgst_amount",
+   "is_system_generated": 1,
+   "label": "SGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "cess_amount",
+   "fieldtype": "Currency",
+   "insert_after": "sgst_amount",
+   "is_system_generated": 1,
+   "label": "CESS Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "cess_non_advol_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cess_amount",
+   "is_system_generated": 1,
+   "label": "CESS Non Advol Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  }
+ ]
+}

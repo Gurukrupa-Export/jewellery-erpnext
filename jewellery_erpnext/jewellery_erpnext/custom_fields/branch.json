@@ -1,0 +1,70 @@
+{
+ "Branch": [
+  {
+   "dt": "Branch",
+   "fieldname": "custom_customer",
+   "fieldtype": "Link",
+   "insert_after": "custom_supplier",
+   "label": "Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer"
+  },
+  {
+   "dt": "Branch",
+   "fieldname": "custom_supplier",
+   "fieldtype": "Link",
+   "insert_after": "state",
+   "label": "Supplier",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier"
+  },
+  {
+   "dt": "Branch",
+   "fieldname": "branch_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "insert_after": "branch",
+   "label": "Branch Name",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Branch",
+   "fieldname": "branch_address",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "insert_after": "branch_name",
+   "label": "Branch Address- Billing",
+   "module": "Jewellery Erpnext",
+   "options": "Address"
+  },
+  {
+   "dt": "Branch",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "insert_after": "branch_address",
+   "label": "Company",
+   "module": "Jewellery Erpnext",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "dt": "Branch",
+   "fieldname": "state",
+   "fieldtype": "Link",
+   "insert_after": "branch_address_shipping",
+   "label": "State",
+   "module": "Jewellery Erpnext",
+   "options": "State List"
+  },
+  {
+   "dt": "Branch",
+   "fieldname": "branch_address_shipping",
+   "fieldtype": "Link",
+   "insert_after": "company",
+   "label": "Branch Address - Shipping",
+   "module": "Jewellery Erpnext",
+   "options": "Address"
+  }
+ ]
+}

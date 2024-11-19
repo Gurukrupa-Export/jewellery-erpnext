@@ -1,0 +1,234 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "SNC-.#####",
+ "creation": "2024-01-15 17:29:48.589094",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "details_section",
+  "manufacturing_operation",
+  "manufacturing_work_order",
+  "parent_manufacturing_order",
+  "company",
+  "column_break_ofkba",
+  "manufacturer",
+  "department",
+  "for_fg",
+  "design_id_bom",
+  "total_weight",
+  "manufacturing_details_section",
+  "fg_serial_no",
+  "column_break_z1ja",
+  "fg_bom",
+  "section_break_a8aud",
+  "serial_summery",
+  "type",
+  "fg_details",
+  "bom_summery",
+  "sfg_details",
+  "source_table",
+  "amended_from",
+  "serial_no",
+  "new_item"
+ ],
+ "fields": [
+  {
+   "default": "Manufacturing",
+   "fetch_from": "parent_manufacturing_order.type",
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "label": "Type",
+   "options": "\nManufacturing\nRaw Material Interchange\nRepairing\nRepair"
+  },
+  {
+   "fieldname": "fg_details",
+   "fieldtype": "Table",
+   "label": "FG Details",
+   "options": "SNC FG Details"
+  },
+  {
+   "fieldname": "sfg_details",
+   "fieldtype": "Table",
+   "hidden": 1,
+   "label": "SFG Details",
+   "options": "SNC SFG Details"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Serial Number Creator",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "source_table",
+   "fieldtype": "Table",
+   "label": "Source Table",
+   "options": "SNC Source Table",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Data",
+   "label": "Manufacturing Operation"
+  },
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "parent_manufacturing_order",
+   "fieldtype": "Link",
+   "label": "Parent Manufacturing Order",
+   "options": "Parent Manufacturing Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_ofkba",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "for_fg",
+   "fieldtype": "Check",
+   "label": "For Fg",
+   "read_only": 1
+  },
+  {
+   "fieldname": "design_id_bom",
+   "fieldtype": "Link",
+   "label": "BOM",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_weight",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "label": "Total Weight"
+  },
+  {
+   "fieldname": "section_break_a8aud",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Data",
+   "label": "Manufacturing Operation"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "details_section",
+   "fieldtype": "Section Break",
+   "label": "Details"
+  },
+  {
+   "fieldname": "serial_summery",
+   "fieldtype": "HTML"
+  },
+  {
+   "fieldname": "bom_summery",
+   "fieldtype": "HTML"
+  },
+  {
+   "fieldname": "serial_no",
+   "fieldtype": "Link",
+   "label": "Serial No",
+   "options": "Serial No"
+  },
+  {
+   "fieldname": "new_item",
+   "fieldtype": "Link",
+   "label": "New Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "manufacturing_details_section",
+   "fieldtype": "Section Break",
+   "label": "Manufacturing Details"
+  },
+  {
+   "fieldname": "fg_serial_no",
+   "fieldtype": "Link",
+   "label": "FG Serial No",
+   "options": "Serial No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_z1ja",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "fg_bom",
+   "fieldtype": "Link",
+   "label": "Fg BOM",
+   "options": "BOM",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [
+  {
+   "link_doctype": "Stock Entry",
+   "link_fieldname": "custom_serial_number_creator"
+  },
+  {
+   "link_doctype": "BOM",
+   "link_fieldname": "custom_serial_number_creator"
+  }
+ ],
+ "modified": "2024-08-08 14:49:47.083153",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Serial Number Creator",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

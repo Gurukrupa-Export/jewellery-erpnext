@@ -1,0 +1,53 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-04-26 10:21:28.457126",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "language",
+  "read",
+  "write",
+  "speak"
+ ],
+ "fields": [
+  {
+   "fieldname": "language",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Language ",
+   "options": "Language"
+  },
+  {
+   "default": "0",
+   "fieldname": "read",
+   "fieldtype": "Check",
+   "label": "Read"
+  },
+  {
+   "default": "0",
+   "fieldname": "write",
+   "fieldtype": "Check",
+   "label": "Write"
+  },
+  {
+   "default": "0",
+   "fieldname": "speak",
+   "fieldtype": "Check",
+   "label": "Speak"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-04-26 10:21:28.457126",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Employee Languages",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

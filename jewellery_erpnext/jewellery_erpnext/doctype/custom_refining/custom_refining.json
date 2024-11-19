@@ -1,0 +1,325 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{dustname}-{MM}-{YY}-{#####}",
+ "creation": "2023-05-18 15:12:56.646288",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "refining_type",
+  "posting_date",
+  "column_break_06oji",
+  "multiple_operation",
+  "multiple_department",
+  "parent_manufacturing_order",
+  "get_parent_production_order",
+  "manufacturing_work_order",
+  "scan_barcode",
+  "refining_serial_no_detail",
+  "is_subconracting",
+  "subcontracting_order",
+  "subcontracting_purchase_order",
+  "department",
+  "operation",
+  "employee",
+  "employee_name",
+  "dustname",
+  "date_from",
+  "date_to",
+  "column_break_kxxvj",
+  "dust_weight",
+  "after_burn_weight",
+  "powder_weight",
+  "refining_gold_weight",
+  "purity",
+  "fine_weight",
+  "data_15",
+  "recovered_diamond",
+  "recovered_gemstone",
+  "refined_gold",
+  "custom_refining_operation_detail",
+  "custom_refining_department_detail",
+  "gross_pure_weight",
+  "refined_fine_weight",
+  "refining_loss",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "refining_type",
+   "fieldtype": "Select",
+   "label": "Refining Type",
+   "options": "\nParent Manufacturing Order\nSerial Number\nRecovery Material"
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date"
+  },
+  {
+   "fieldname": "column_break_06oji",
+   "fieldtype": "Section Break"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type == 'Recovery Material'",
+   "fieldname": "multiple_operation",
+   "fieldtype": "Check",
+   "label": "For Multiple Operations"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type == 'Recovery Material'",
+   "fieldname": "multiple_department",
+   "fieldtype": "Check",
+   "label": "For Multiple Department"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Parent Manufacturing Order'",
+   "fieldname": "parent_manufacturing_order",
+   "fieldtype": "Link",
+   "label": "Parent Manufacturing Order",
+   "options": "Parent Manufacturing Order"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Parent Manufacturing Order'",
+   "fieldname": "get_parent_production_order",
+   "fieldtype": "Button",
+   "label": "Get Parent Production Order"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Parent Manufacturing Order'",
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Table",
+   "label": "Manufacturing Work Order Refining Details",
+   "options": "Manufacturing Work Order Refining Details"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Serial Number'",
+   "fieldname": "scan_barcode",
+   "fieldtype": "Data",
+   "label": "Scan barcode",
+   "options": "Barcode"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Serial Number'",
+   "fieldname": "refining_serial_no_detail",
+   "fieldtype": "Table",
+   "label": "Refining Serial No Detail",
+   "options": "Refining Serial No Detail"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type == 'Serial Number'",
+   "fieldname": "is_subconracting",
+   "fieldtype": "Check",
+   "label": "Is Subconracting"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Serial Number' && doc.is_subconracting",
+   "fieldname": "subcontracting_order",
+   "fieldtype": "Link",
+   "label": "Subcontracting Order",
+   "options": "Subcontracting Order"
+  },
+  {
+   "default": "\u200e ",
+   "depends_on": "eval:doc.refining_type == 'Serial Number' && doc.is_subconracting",
+   "fetch_from": "subcontracting_order.purchase_order",
+   "fieldname": "subcontracting_purchase_order",
+   "fieldtype": "Read Only",
+   "label": "Subcontracting Purchase Order"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material' && doc.multiple_operation==0 && doc.multiple_department==0",
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material' && doc.multiple_operation==0 && doc.multiple_department==0",
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "Operation",
+   "options": "Operation"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material' && doc.multiple_operation==0 && doc.multiple_department==0",
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "Employee",
+   "options": "Employee"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material' && doc.multi_operation==0 && doc.for_multiple_department==0",
+   "fetch_from": "employee.employee_name",
+   "fieldname": "employee_name",
+   "fieldtype": "Data",
+   "label": "Employee Name"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material'",
+   "fieldname": "dustname",
+   "fieldtype": "Link",
+   "label": "Dust Type",
+   "options": "Dust Type"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material'",
+   "fieldname": "date_from",
+   "fieldtype": "Date",
+   "label": "From"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material'",
+   "fieldname": "date_to",
+   "fieldtype": "Date",
+   "label": "To"
+  },
+  {
+   "fieldname": "column_break_kxxvj",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material'",
+   "fieldname": "dust_weight",
+   "fieldtype": "Float",
+   "label": "Dust Weight"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material'",
+   "fieldname": "after_burn_weight",
+   "fieldtype": "Float",
+   "label": "After Burn Weight"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:(doc.refining_type == 'Recovery Material' || doc.refining_type == 'Serial Number' || doc.refining_type == 'Parent Manufacturing Order') && doc.is_subconracting == 0",
+   "fieldname": "powder_weight",
+   "fieldtype": "Float",
+   "label": "Powder Weight"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:(doc.refining_type == 'Recovery Material' || doc.refining_type == 'Serial Number' || doc.refining_type == 'Parent Manufacturing Order') && doc.is_subconracting == 0",
+   "fieldname": "refining_gold_weight",
+   "fieldtype": "Float",
+   "label": "Refining Gold Weight"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material' || doc.refining_type == 'Serial Number' || doc.refining_type == 'Parent Manufacturing Order'",
+   "fieldname": "purity",
+   "fieldtype": "Float",
+   "label": "Purity"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type == 'Recovery Material' || doc.refining_type == 'Serial Number' || doc.refining_type == 'Parent Manufacturing Order'",
+   "fieldname": "fine_weight",
+   "fieldtype": "Float",
+   "label": "Fine Weight"
+  },
+  {
+   "fieldname": "data_15",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Parent Manufacturing Order' || doc.refining_type == 'Serial Number'",
+   "fieldname": "refined_gold",
+   "fieldtype": "Table",
+   "label": "Manufacturing Work Order Metal Weight",
+   "options": "Refined Gold"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material' && doc.multiple_operation == 1",
+   "fieldname": "custom_refining_operation_detail",
+   "fieldtype": "Table",
+   "label": "Custom Refining Operation Detail",
+   "options": "Custom Refining Operation Detail"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Recovery Material' && doc.multiple_department == 1",
+   "fieldname": "custom_refining_department_detail",
+   "fieldtype": "Table",
+   "label": "Custom Refining Department Detail",
+   "options": "Custom Refining Department Detail"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type == 'Parent Manufacturing Order' || doc.refining_type == 'Serial Number'",
+   "fieldname": "gross_pure_weight",
+   "fieldtype": "Float",
+   "label": "Gross Pure Weight"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type == 'Parent Manufacturing Order' || doc.refining_type == 'Serial Number'",
+   "fieldname": "refined_fine_weight",
+   "fieldtype": "Float",
+   "label": "Refined Fine Weight"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type == 'Parent Manufacturing Order' || doc.refining_type == 'Serial Number'",
+   "fieldname": "refining_loss",
+   "fieldtype": "Float",
+   "label": "Refining Loss"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Custom Refining",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Parent Production Order' || doc.refining_type == 'Serial Number'",
+   "fieldname": "recovered_diamond",
+   "fieldtype": "Table",
+   "label": "Recovered Diamond",
+   "options": "Recovered Diamond"
+  },
+  {
+   "depends_on": "eval:doc.refining_type == 'Parent Manufacturing Order' || doc.refining_type == 'Serial Number'",
+   "fieldname": "recovered_gemstone",
+   "fieldtype": "Table",
+   "label": "Recovered Gemstone",
+   "options": "Recovered Gemstone"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2023-07-19 18:34:21.712094",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Custom Refining",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1,
+ "track_views": 1
+}

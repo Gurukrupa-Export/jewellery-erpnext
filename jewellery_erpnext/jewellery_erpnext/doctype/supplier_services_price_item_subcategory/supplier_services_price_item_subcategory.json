@@ -1,0 +1,77 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-05-29 17:42:28.779956",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "sub_category",
+  "rate_per_gm",
+  "rate_per_pc",
+  "rate_per_diamond",
+  "column_break_dvx1",
+  "wastage",
+  "rate_per_gm_threshold",
+  "supplier_fg_purchase_rate"
+ ],
+ "fields": [
+  {
+   "fieldname": "rate_per_gm",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Rate per gm"
+  },
+  {
+   "fieldname": "rate_per_pc",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Rate per pc"
+  },
+  {
+   "fieldname": "rate_per_diamond",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Rate per diamond"
+  },
+  {
+   "fieldname": "column_break_dvx1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "wastage",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Wastage"
+  },
+  {
+   "fieldname": "rate_per_gm_threshold",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Rate per gm Threshold"
+  },
+  {
+   "fieldname": "supplier_fg_purchase_rate",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Supplier FG Purchase Rate"
+  },
+  {
+   "fieldname": "sub_category",
+   "fieldtype": "Link",
+   "label": "Sub Category",
+   "options": "Attribute Value"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-06-05 11:35:09.662111",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Supplier Services Price Item Subcategory",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -1,0 +1,198 @@
+{
+ "Supplier": [
+  {
+   "dt": "Supplier",
+   "fieldname": "custom_consider_purchase_receipt_as_customergoods",
+   "fieldtype": "Check",
+   "insert_after": "country",
+   "label": "Consider Purchase Receipt as Customer\u00a0Goods",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.is_transporter",
+   "dt": "Supplier",
+   "fieldname": "gst_transporter_id",
+   "fieldtype": "Data",
+   "insert_after": "supplier_type",
+   "is_system_generated": 1,
+   "label": "GST Transporter ID",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "Unregistered",
+   "dt": "Supplier",
+   "fieldname": "gst_category",
+   "fieldtype": "Select",
+   "insert_after": "gst_transporter_id",
+   "is_system_generated": 1,
+   "label": "GST Category",
+   "module": "Jewellery Erpnext",
+   "options": "Registered Regular\nRegistered Composition\nUnregistered\nSEZ\nOverseas\nUIN Holders"
+  },
+  {
+   "depends_on": "eval:in_list([\"SEZ\", \"Overseas\"], doc.gst_category)",
+   "dt": "Supplier",
+   "fieldname": "export_type",
+   "fieldtype": "Select",
+   "insert_after": "gst_category",
+   "is_system_generated": 1,
+   "label": "Export Type",
+   "mandatory_depends_on": "eval:in_list([\"SEZ\", \"Overseas\"], doc.gst_category)",
+   "module": "Jewellery Erpnext",
+   "options": "\nWith Payment of Tax\nWithout Payment of Tax"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "is_msme",
+   "fieldtype": "Check",
+   "insert_after": "section_break_hnpah",
+   "label": "Is MSME",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "operations",
+   "fieldtype": "Table",
+   "insert_after": "custom_tab_break_jztie",
+   "label": "Type of Works",
+   "module": "Jewellery Erpnext",
+   "options": "Operation MultiSelect"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "section_break_hnpah",
+   "fieldtype": "Section Break",
+   "insert_after": "purchase_type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "column_break_csgpp",
+   "fieldtype": "Column Break",
+   "insert_after": "is_msme",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "custom_territory",
+   "fieldtype": "Link",
+   "insert_after": "supplier_type",
+   "label": "Territory",
+   "module": "Jewellery Erpnext",
+   "options": "Territory"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "custom_territory_code",
+   "fieldtype": "Data",
+   "insert_after": "custom_territory",
+   "label": "Territory Code",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.is_msme==1",
+   "dt": "Supplier",
+   "fieldname": "custom_msme_number",
+   "fieldtype": "Data",
+   "insert_after": "column_break_csgpp",
+   "label": "MSME Number",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "purchase_type",
+   "fieldtype": "Table",
+   "insert_after": "column_break_1mqv",
+   "label": "Purchase Type",
+   "module": "Jewellery Erpnext",
+   "options": "Purchase Type Multiselect"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "custom_tab_break_jztie",
+   "fieldtype": "Tab Break",
+   "insert_after": "additional_details",
+   "label": "Additional Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "additional_details",
+   "fieldtype": "Tab Break",
+   "insert_after": "portal_users",
+   "label": "Additional Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "tax_details_section",
+   "fieldtype": "Section Break",
+   "insert_after": "tax_withholding_category",
+   "is_system_generated": 1,
+   "label": "Tax Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "gstin",
+   "fieldtype": "Autocomplete",
+   "insert_after": "tax_details_section",
+   "is_system_generated": 1,
+   "label": "GSTIN / UIN",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "tax_details_column_break",
+   "fieldtype": "Column Break",
+   "insert_after": "pan",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:in_list([\"Registered Regular\", \"Overseas\", \"Unregistered\"], doc.gst_category)",
+   "dt": "Supplier",
+   "fieldname": "is_reverse_charge_applicable",
+   "fieldtype": "Check",
+   "insert_after": "gst_transporter_id",
+   "is_system_generated": 1,
+   "label": "Reverse Charge Applicable",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "pan",
+   "fieldtype": "Data",
+   "insert_after": "gstin",
+   "is_system_generated": 1,
+   "label": "PAN",
+   "module": "Jewellery Erpnext",
+   "read_only_depends_on": "eval: doc.gstin"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "custom_is_external_supplier",
+   "fieldtype": "Check",
+   "insert_after": "column_break_16",
+   "label": "Is External Customer",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "custom_certification_charges",
+   "fieldtype": "Currency",
+   "insert_after": "payment_terms",
+   "label": "Certification Charges",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "irs_1099",
+   "fieldtype": "Check",
+   "insert_after": "tax_id",
+   "is_system_generated": 1,
+   "label": "Is IRS 1099 reporting required for supplier?",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

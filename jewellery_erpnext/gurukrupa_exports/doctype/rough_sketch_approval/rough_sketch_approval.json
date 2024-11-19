@@ -1,0 +1,68 @@
+{
+ "actions": [],
+ "autoname": "autoincrement",
+ "creation": "2022-10-04 14:15:14.778415",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "designer",
+  "designer_name",
+  "approved",
+  "reject",
+  "fs_count"
+ ],
+ "fields": [
+  {
+   "fetch_from": "Employee",
+   "fieldname": "designer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Designer",
+   "options": "Employee",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "designer.employee_name",
+   "fieldname": "designer_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Designer Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approved",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Approved",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "reject",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Reject",
+   "permlevel": 1
+  },
+  {
+   "fieldname": "fs_count",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "fs_count",
+   "no_copy": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-07-03 17:52:03.686774",
+ "modified_by": "Administrator",
+ "module": "Gurukrupa Exports",
+ "name": "Rough Sketch Approval",
+ "naming_rule": "Autoincrement",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

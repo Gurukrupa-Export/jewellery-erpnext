@@ -1,0 +1,53 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-07-29 16:21:58.279002",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_ctoy",
+  "rake",
+  "tray_no",
+  "box_no"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_ctoy",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "rake",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Rake",
+   "reqd": 1
+  },
+  {
+   "fieldname": "tray_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Tray No",
+   "reqd": 1
+  },
+  {
+   "fieldname": "box_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Box No",
+   "reqd": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-07-29 16:34:42.384325",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Mould Reference",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

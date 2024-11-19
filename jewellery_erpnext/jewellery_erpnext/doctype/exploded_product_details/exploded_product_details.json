@@ -1,0 +1,259 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-09-01 12:11:40.197065",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "serial_no",
+  "item_code",
+  "parent_manufacturing_order",
+  "manufacturing_work_order",
+  "bom",
+  "metal_touch",
+  "metal_colour",
+  "tree_no",
+  "column_break_xsw31",
+  "docname",
+  "supply_raw_material",
+  "huid",
+  "certification",
+  "item_details_section",
+  "category",
+  "sub_category",
+  "setting_type",
+  "amount",
+  "weight_details_section",
+  "gross_weight",
+  "gold_weight",
+  "chain_weight",
+  "other_weight",
+  "column_break_pzyse",
+  "diamond_weight",
+  "diamond_pcs",
+  "diamond_color",
+  "diamond_purity",
+  "receive_metal_purity",
+  "stone_pcs",
+  "stone_weight",
+  "main_slip"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "docname",
+   "fieldtype": "Data",
+   "label": "Reference Docname",
+   "read_only": 1
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "fieldname": "supply_raw_material",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Supply Raw Material",
+   "read_only": 1
+  },
+  {
+   "fieldname": "serial_no",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Serial No",
+   "options": "Serial No",
+   "read_only": 1
+  },
+  {
+   "columns": 1,
+   "fieldname": "huid",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "HUID",
+   "mandatory_depends_on": "eval:parent.type == \"Receive\" && parent.__islocal == 0",
+   "read_only_depends_on": "eval:parent.type == \"Issue\""
+  },
+  {
+   "fieldname": "column_break_xsw31",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Metal Touch",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "item_details_section",
+   "fieldtype": "Section Break",
+   "label": "Item Details"
+  },
+  {
+   "fetch_from": "item_code.item_category",
+   "fieldname": "category",
+   "fieldtype": "Link",
+   "label": "Category",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from": "item_code.item_subcategory",
+   "fieldname": "sub_category",
+   "fieldtype": "Link",
+   "label": "Sub Category",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from": "item_code.setting_type",
+   "fieldname": "setting_type",
+   "fieldtype": "Link",
+   "label": "Setting Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "weight_details_section",
+   "fieldtype": "Section Break",
+   "label": "Weight Details"
+  },
+  {
+   "fieldname": "gross_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Gross Weight"
+  },
+  {
+   "fieldname": "gold_weight",
+   "fieldtype": "Float",
+   "label": "Gold Weight"
+  },
+  {
+   "fieldname": "chain_weight",
+   "fieldtype": "Float",
+   "label": "Chain Weight"
+  },
+  {
+   "fieldname": "other_weight",
+   "fieldtype": "Float",
+   "label": "Other Weight"
+  },
+  {
+   "fieldname": "column_break_pzyse",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "diamond_weight",
+   "fieldtype": "Float",
+   "label": "Diamond weight"
+  },
+  {
+   "fieldname": "diamond_pcs",
+   "fieldtype": "Int",
+   "label": "Diamond Pcs"
+  },
+  {
+   "fieldname": "stone_pcs",
+   "fieldtype": "Int",
+   "label": "Stone Pcs"
+  },
+  {
+   "fetch_from": "bom.gemstone_weight",
+   "fieldname": "stone_weight",
+   "fieldtype": "Float",
+   "label": "Stone Weight"
+  },
+  {
+   "depends_on": "eval:parent.service_type == \"Diamond Certificate service\"",
+   "fieldname": "diamond_color",
+   "fieldtype": "Link",
+   "label": "Diamond Color",
+   "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval:parent.service_type == \"Diamond Certificate service\"",
+   "fieldname": "diamond_purity",
+   "fieldtype": "Link",
+   "label": "Diamond Purity",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "bom",
+   "fieldtype": "Link",
+   "label": "BOM",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "metal_colour",
+   "fieldtype": "Link",
+   "label": "Metal Colour",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "certification",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Certification",
+   "mandatory_depends_on": "eval:parent.type == \"Receive\" && parent.__islocal == 0",
+   "read_only_depends_on": "eval:parent.type == \"Issue\""
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Amount"
+  },
+  {
+   "fieldname": "tree_no",
+   "fieldtype": "Link",
+   "label": "Tree No",
+   "options": "Tree Number"
+  },
+  {
+   "fieldname": "main_slip",
+   "fieldtype": "Link",
+   "label": "Main Slip",
+   "options": "Main Slip"
+  },
+  {
+   "fieldname": "receive_metal_purity",
+   "fieldtype": "Data",
+   "label": "Receive Metal Purity"
+  },
+  {
+   "fieldname": "parent_manufacturing_order",
+   "fieldtype": "Link",
+   "label": "Parent Manufacturing Order",
+   "options": "Parent Manufacturing Order"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-09-09 17:19:47.085096",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Exploded Product Details",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

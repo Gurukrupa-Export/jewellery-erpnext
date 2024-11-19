@@ -1,0 +1,64 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-12-26 15:55:09.751557",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "metal_type",
+  "from_tolerance_wt",
+  "to_tolerance_wt",
+  "standard_tolerance_wt",
+  "product_wt"
+ ],
+ "fields": [
+  {
+   "description": "Default BOM Minus(-) Tolerance Wt",
+   "fieldname": "from_tolerance_wt",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "From Tolerance wt"
+  },
+  {
+   "description": "Default BOM Plus (+) Tolerance Wt",
+   "fieldname": "to_tolerance_wt",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "To Tolerance wt"
+  },
+  {
+   "description": "Default BOM",
+   "fieldname": "standard_tolerance_wt",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Standard Tolerance Wt"
+  },
+  {
+   "description": "PMO Value",
+   "fieldname": "product_wt",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Product Wt"
+  },
+  {
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Metal Type",
+   "options": "Attribute Value"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2023-12-27 19:59:59.743997",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Metal Product Tolerance",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

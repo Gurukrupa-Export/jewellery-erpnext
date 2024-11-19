@@ -1,0 +1,32 @@
+{
+ "Stock Reconciliation": [
+  {
+   "dt": "Stock Reconciliation",
+   "fieldname": "custom_auto_creation",
+   "fieldtype": "Check",
+   "insert_after": "custom_get_child_stock_reconcilliation",
+   "is_system_generated": 1,
+   "label": "Auto Creation",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Reconciliation",
+   "fieldname": "custom_get_child_stock_reconcilliation",
+   "fieldtype": "Button",
+   "insert_after": "sb9",
+   "is_system_generated": 1,
+   "label": "Get Child Stock Reconcilliation",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Reconciliation",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "insert_after": "dimension_col_break",
+   "is_system_generated": 1,
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  }
+ ]
+}

@@ -1,0 +1,116 @@
+{
+ "Department": [
+  {
+   "dt": "Department",
+   "fieldname": "section_break_4",
+   "fieldtype": "Section Break",
+   "insert_after": "disabled",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "payroll_cost_center",
+   "fieldtype": "Link",
+   "insert_after": "section_break_4",
+   "is_system_generated": 1,
+   "label": "Payroll Cost Center",
+   "module": "Jewellery Erpnext",
+   "options": "Cost Center"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "column_break_9",
+   "fieldtype": "Column Break",
+   "insert_after": "payroll_cost_center",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "Days for which Holidays are blocked for this department.",
+   "dt": "Department",
+   "fieldname": "leave_block_list",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "insert_after": "column_break_9",
+   "is_system_generated": 1,
+   "label": "Leave Block List",
+   "module": "Jewellery Erpnext",
+   "options": "Leave Block List"
+  },
+  {
+   "description": "The first Approver in the list will be set as the default Approver.",
+   "dt": "Department",
+   "fieldname": "approvers",
+   "fieldtype": "Section Break",
+   "insert_after": "leave_block_list",
+   "is_system_generated": 1,
+   "label": "Approvers",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "shift_request_approver",
+   "fieldtype": "Table",
+   "insert_after": "approvers",
+   "is_system_generated": 1,
+   "label": "Shift Request Approver",
+   "module": "Jewellery Erpnext",
+   "options": "Department Approver"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "leave_approvers",
+   "fieldtype": "Table",
+   "insert_after": "shift_request_approver",
+   "is_system_generated": 1,
+   "label": "Leave Approver",
+   "module": "Jewellery Erpnext",
+   "options": "Department Approver"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "expense_approvers",
+   "fieldtype": "Table",
+   "insert_after": "leave_approvers",
+   "is_system_generated": 1,
+   "label": "Expense Approver",
+   "module": "Jewellery Erpnext",
+   "options": "Department Approver"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "custom_abbreviation",
+   "fieldtype": "Data",
+   "insert_after": "department_name",
+   "label": "Abbreviation",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "insert_after": "parent_department",
+   "label": "Manufacturer",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturer"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "custom_can_not_make_dg_entry",
+   "fieldtype": "Check",
+   "insert_after": "manufacturer",
+   "is_system_generated": 1,
+   "label": "Cannot make loss on diamond/gemstone in repair Product",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "custom_apply_product_tolerance",
+   "fieldtype": "Check",
+   "insert_after": "custom_can_not_make_dg_entry",
+   "label": "Apply Product Tolerance",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

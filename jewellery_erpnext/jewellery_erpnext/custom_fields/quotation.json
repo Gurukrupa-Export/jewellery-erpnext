@@ -1,0 +1,204 @@
+{
+ "Quotation": [
+  {
+   "default": "0",
+   "dt": "Quotation",
+   "fieldname": "is_reverse_charge",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "insert_after": "customer_name",
+   "is_system_generated": 1,
+   "label": "Is Reverse Charge",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Quotation",
+   "fieldname": "gst_breakup_table",
+   "fieldtype": "Text Editor",
+   "insert_after": "section_gst_breakup",
+   "is_system_generated": 1,
+   "label": "GST Breakup Table",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "section_gst_breakup",
+   "fieldtype": "Section Break",
+   "insert_after": "other_charges_calculation",
+   "is_system_generated": 1,
+   "label": "GST Breakup",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "place_of_supply",
+   "fieldtype": "Autocomplete",
+   "insert_after": "gst_category",
+   "is_system_generated": 1,
+   "label": "Place of Supply",
+   "module": "Jewellery Erpnext",
+   "options": "01-Jammu and Kashmir\n02-Himachal Pradesh\n03-Punjab\n04-Chandigarh\n05-Uttarakhand\n06-Haryana\n07-Delhi\n08-Rajasthan\n09-Uttar Pradesh\n10-Bihar\n11-Sikkim\n12-Arunachal Pradesh\n13-Nagaland\n14-Manipur\n15-Mizoram\n16-Tripura\n17-Meghalaya\n18-Assam\n19-West Bengal\n20-Jharkhand\n21-Odisha\n22-Chhattisgarh\n23-Madhya Pradesh\n24-Gujarat\n26-Dadra and Nagar Haveli and Daman and Diu\n27-Maharashtra\n29-Karnataka\n30-Goa\n31-Lakshadweep Islands\n32-Kerala\n33-Tamil Nadu\n34-Puducherry\n35-Andaman and Nicobar Islands\n36-Telangana\n37-Andhra Pradesh\n38-Ladakh\n96-Other Countries\n97-Other Territory"
+  },
+  {
+   "dt": "Quotation",
+   "fetch_from": "customer_address.gst_category",
+   "fieldname": "gst_category",
+   "fieldtype": "Data",
+   "insert_after": "billing_address_gstin",
+   "is_system_generated": 1,
+   "label": "GST Category",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
+   "fetch_from": "customer_address.gstin",
+   "fieldname": "billing_address_gstin",
+   "fieldtype": "Data",
+   "insert_after": "address_display",
+   "is_system_generated": 1,
+   "label": "Billing Address GSTIN",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.gst_category == \"SEZ\" || (doc.gst_category == \"Overseas\" && doc.place_of_supply == \"96-Other Countries\")",
+   "dt": "Quotation",
+   "fieldname": "is_export_with_gst",
+   "fieldtype": "Check",
+   "insert_after": "is_reverse_charge",
+   "is_system_generated": 1,
+   "label": "Is Export With Payment of GST",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fetch_from": "company.supplier_code",
+   "fieldname": "supplier_code",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "insert_after": "company",
+   "label": "Supplier Code",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "ref_customer",
+   "fieldtype": "Link",
+   "insert_after": "customer_name",
+   "label": "Ref Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_updated_shipping_territory",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "branch",
+   "label": "Updated Shipping Territory",
+   "module": "Jewellery Erpnext",
+   "options": "Territory Multi Select"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "insert_after": "amended_from",
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "parcel_place",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "service_type",
+   "label": "Shipping Territory",
+   "module": "Jewellery Erpnext",
+   "options": "Territory Multi Select"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "section_break_fyn09",
+   "fieldtype": "Section Break",
+   "insert_after": "competitors",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "item_details",
+   "fieldtype": "Section Break",
+   "insert_after": "diamond_quality",
+   "label": "Item Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "service_type",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "valid_till",
+   "label": "Service Type",
+   "module": "Jewellery Erpnext",
+   "options": "Service Type 2"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "finding_weight_for_chain",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "insert_after": "items",
+   "label": "Finding Weight For Chain",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "column_break_24",
+   "fieldtype": "Column Break",
+   "insert_after": "gold_rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "diamond_quality",
+   "fieldtype": "Link",
+   "insert_after": "column_break_24",
+   "label": "Diamond Quality",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "default": "0",
+   "dt": "Quotation",
+   "fieldname": "gold_rate_with_gst",
+   "fieldtype": "Currency",
+   "insert_after": "items_section",
+   "label": "Gold Rate With GST",
+   "module": "Jewellery Erpnext",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "dt": "Quotation",
+   "fieldname": "gold_rate",
+   "fieldtype": "Currency",
+   "insert_after": "gold_rate_with_gst",
+   "label": "Gold Rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "exempt_from_sales_tax",
+   "fieldtype": "Check",
+   "insert_after": "taxes_and_charges",
+   "is_system_generated": 1,
+   "label": "Is customer exempted from sales tax?",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

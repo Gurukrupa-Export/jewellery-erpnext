@@ -1,0 +1,30 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-04-26 10:39:05.478178",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "hobbies"
+ ],
+ "fields": [
+  {
+   "fieldname": "hobbies",
+   "fieldtype": "Data",
+   "label": "Hobbies"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-04-26 10:40:08.404945",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Employees Hobbies",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

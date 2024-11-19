@@ -1,0 +1,30 @@
+<h4>Manufacturing Process BOM row material's:</h4>
+<table class="table table-bordered table-hover" width='100%'
+    style="border: 1px solid #d1d8dd;border-collapse: collapse;">
+    <thead>
+        <tr>
+            <th style="border: 1px solid #d1d8dd; font-size: 11px;">ID</th>
+            <th style="border: 1px solid #d1d8dd; font-size: 11px;">Default BOM RM</th>
+            <th style="border: 1px solid #d1d8dd; font-size: 11px;">BOM Qty</th>
+            <th style="border: 1px solid #d1d8dd; font-size: 11px;">UOM</th>
+            <!-- <th style="border: 1px solid #d1d8dd; font-size: 11px;">BOM PCS</th> -->
+        </tr>
+    </thead>
+    <tbody>
+        {% for index, item in enumerate(data) %}
+        <tr>
+            <td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{index + 1}}</td>
+            <td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+                <a href=>{{ frappe.utils.get_link_to_form('Item', item.item_code) }}</a>
+            </td>
+            <td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{item.qty}}
+                <!-- <a href=>{{ frappe.utils.get_link_to_form('BOM', item.qty) }}</a> -->
+            </td>
+            <td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{item.uom}}</td>
+            <!-- <td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+										<a href=>{{ frappe.utils.get_link_to_form('Serial No', item.serial_no) }}</a>
+									</td> -->
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>

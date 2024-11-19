@@ -1,0 +1,205 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:operation",
+ "creation": "2023-05-03 11:48:04.196986",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "operation",
+  "abbreviation",
+  "department",
+  "company",
+  "is_last_operation",
+  "is_subcontracted",
+  "allow_zero_qty_wo",
+  "service_item",
+  "column_break_otjqr",
+  "is_qc_reqd",
+  "is_main_slip_required",
+  "check_purity_in_main_slip",
+  "check_touch_in_main_slip",
+  "check_colour_in_main_slip",
+  "tree_no_reqd",
+  "update_gold_count",
+  "is_mould_manufacturer",
+  "supplier_group",
+  "loss_details_section",
+  "allowed_loss_percentage",
+  "column_break_stayp",
+  "allowed_diamond_loss",
+  "allowed_gemstone_loss"
+ ],
+ "fields": [
+  {
+   "fieldname": "operation",
+   "fieldtype": "Data",
+   "label": "Operation",
+   "unique": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_last_operation",
+   "fieldtype": "Check",
+   "label": "Is Last Operation"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_main_slip_required",
+   "fieldtype": "Check",
+   "label": "Is Main Slip Required"
+  },
+  {
+   "default": "0",
+   "fieldname": "check_purity_in_main_slip",
+   "fieldtype": "Check",
+   "label": "Check Purity in Main Slip"
+  },
+  {
+   "default": "0",
+   "fieldname": "check_colour_in_main_slip",
+   "fieldtype": "Check",
+   "label": "Check Colour in Main Slip"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "in_standard_filter": 1,
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "default": "0",
+   "fieldname": "tree_no_reqd",
+   "fieldtype": "Check",
+   "label": "Is Tree Number Required"
+  },
+  {
+   "fieldname": "column_break_otjqr",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_qc_reqd",
+   "fieldtype": "Check",
+   "label": "Is QC Required"
+  },
+  {
+   "fieldname": "allowed_loss_percentage",
+   "fieldtype": "Float",
+   "label": "Standard Process Loss Percentage"
+  },
+  {
+   "fieldname": "loss_details_section",
+   "fieldtype": "Section Break",
+   "label": "Loss Details"
+  },
+  {
+   "fieldname": "column_break_stayp",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "allowed_diamond_loss",
+   "fieldtype": "Float",
+   "label": "Per Diamond Average Loss Weight",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "allowed_gemstone_loss",
+   "fieldtype": "Float",
+   "label": "Per Gemstone Average Loss Weight",
+   "non_negative": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_subcontracted",
+   "fieldtype": "Check",
+   "label": "Is Subcontracted"
+  },
+  {
+   "depends_on": "eval:doc.is_subcontracted",
+   "fieldname": "service_item",
+   "fieldtype": "Link",
+   "label": "Service Item",
+   "mandatory_depends_on": "eval:doc.is_subcontracted",
+   "options": "Item"
+  },
+  {
+   "fetch_from": "department.company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "abbreviation",
+   "fieldtype": "Data",
+   "label": "Abbreviation"
+  },
+  {
+   "default": "0",
+   "fieldname": "update_gold_count",
+   "fieldtype": "Check",
+   "label": "Update Gold Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "check_touch_in_main_slip",
+   "fieldtype": "Check",
+   "label": "Check Touch in Main Slip"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval: doc.is_subcontracted == 1;",
+   "fieldname": "allow_zero_qty_wo",
+   "fieldtype": "Check",
+   "label": "Allow Zero Qty WO"
+  },
+  {
+   "depends_on": "eval: doc.is_subcontracted == 1;",
+   "fieldname": "supplier_group",
+   "fieldtype": "Link",
+   "label": "Supplier Group",
+   "mandatory_depends_on": "eval: doc.is_subcontracted == 1;",
+   "options": "Supplier Group"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_mould_manufacturer",
+   "fieldtype": "Check",
+   "label": "Is Mould Manufacturer"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2024-10-21 17:23:05.025304",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Department Operation",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1,
+ "track_views": 1
+}

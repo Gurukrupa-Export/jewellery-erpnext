@@ -1,0 +1,201 @@
+{
+    "Purchase Order": [
+     {
+      "dt": "Purchase Order",
+      "fetch_from": "supplier_address.gstin",
+      "fieldname": "supplier_gstin",
+      "fieldtype": "Data",
+      "insert_after": "supplier_address",
+      "is_system_generated": 1,
+      "label": "Supplier GSTIN",
+      "module": "Jewellery Erpnext",
+      "read_only": 1
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "sign",
+      "fieldtype": "Signature",
+      "insert_after": "connections_tab",
+      "label": "Sign",
+      "mandatory_depends_on": "eval:!doc.is_subcontracted",
+      "module": "Jewellery Erpnext"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "manufacturing_plan",
+      "fieldtype": "Link",
+      "insert_after": "status",
+      "label": "Manufacturing Plan",
+      "module": "Jewellery Erpnext",
+      "options": "Manufacturing Plan",
+      "read_only": 1
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "rowname",
+      "fieldtype": "Data",
+      "insert_after": "manufacturing_plan",
+      "label": "Reference Rowname",
+      "module": "Jewellery Erpnext",
+      "read_only": 1
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "employee_ir",
+      "fieldtype": "Link",
+      "insert_after": "column_break_75",
+      "label": "Employee IR",
+      "module": "Jewellery Erpnext",
+      "options": "Employee IR"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "si_reference_field",
+      "fieldtype": "Link",
+      "insert_after": "schedule_date",
+      "label": "SI Reference Field",
+      "module": "Jewellery Erpnext",
+      "options": "Sales Invoice"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "branch",
+      "fieldtype": "Link",
+      "insert_after": "dimension_col_break",
+      "is_system_generated": 1,
+      "label": "Branch",
+      "module": "Jewellery Erpnext",
+      "options": "Branch"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "purchase_type",
+      "fieldtype": "Link",
+      "insert_after": "get_items_from_open_material_requests",
+      "label": "Purchase Type",
+      "module": "Jewellery Erpnext",
+      "options": "Purchase Type"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "gold_rate",
+      "fieldtype": "Currency",
+      "insert_after": "custom_column_break_wby4d",
+      "label": "Gold Rate",
+      "module": "Jewellery Erpnext"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "gold_rate_with_gst",
+      "fieldtype": "Currency",
+      "insert_after": "section_break_dshwd",
+      "label": "Gold Rate With GST",
+      "module": "Jewellery Erpnext"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "section_break_dshwd",
+      "fieldtype": "Section Break",
+      "insert_after": "ignore_pricing_rule",
+      "label": "Gold Rate With GST",
+      "module": "Jewellery Erpnext"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "ref_customer",
+      "fieldtype": "Link",
+      "insert_after": "purchase_type",
+      "label": "Ref Customer",
+      "module": "Jewellery Erpnext",
+      "options": "Customer",
+      "read_only": 1
+     },
+     {
+      "dt": "Purchase Order",
+      "fetch_from": "supplier_address.gst_category",
+      "fieldname": "gst_category",
+      "fieldtype": "Data",
+      "insert_after": "supplier_gstin",
+      "is_system_generated": 1,
+      "label": "GST Category",
+      "module": "Jewellery Erpnext",
+      "read_only": 1
+     },
+     {
+      "default": "0",
+      "dt": "Purchase Order",
+      "fieldname": "is_reverse_charge",
+      "fieldtype": "Check",
+      "insert_after": "apply_tds",
+      "is_system_generated": 1,
+      "label": "Is Reverse Charge",
+      "module": "Jewellery Erpnext"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "section_gst_breakup",
+      "fieldtype": "Section Break",
+      "insert_after": "other_charges_calculation",
+      "is_system_generated": 1,
+      "label": "GST Breakup",
+      "module": "Jewellery Erpnext"
+     },
+     {
+      "allow_on_submit": 1,
+      "dt": "Purchase Order",
+      "fieldname": "gst_breakup_table",
+      "fieldtype": "Long Text",
+      "insert_after": "section_gst_breakup",
+      "is_system_generated": 1,
+      "label": "GST Breakup Table",
+      "module": "Jewellery Erpnext",
+      "read_only": 1
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "custom_column_break_wby4d",
+      "fieldtype": "Column Break",
+      "insert_after": "gold_rate_with_gst",
+      "module": "Jewellery Erpnext"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "product_certification",
+      "fieldtype": "Link",
+      "insert_after": "company",
+      "is_system_generated": 1,
+      "label": "Product Certification",
+      "module": "Jewellery Erpnext",
+      "options": "Product Certification"
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "custom_product_certification",
+      "fieldtype": "Link",
+      "insert_after": "company",
+      "is_system_generated": 1,
+      "label": "Product Certification",
+      "module": "Jewellery Erpnext",
+      "options": "Product Certification"
+     },
+     {
+        "dt": "Purchase Order",
+        "fieldname": "custom_quotation",
+        "fieldtype": "Link",
+        "insert_after": "custom_customer_po",
+        "label": "Quotation",
+        "module": "Jewellery Erpnext",
+        "options": "Quotation",
+        "read_only": 1
+    },
+    {
+        "dt": "Purchase Order",
+        "fieldname": "custom_customer_po",
+        "fieldtype": "Data",
+        "insert_after": "si_reference_field",
+        "label": "Customer PO",
+        "module": "Jewellery Erpnext",
+        "read_only": 1
+    }
+    ]
+   }
