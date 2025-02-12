@@ -1,0 +1,119 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "format:{assortment_type_naming}-{date}",
+ "creation": "2024-12-31 15:57:57.365362",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "company_name",
+  "date",
+  "column_break_6tcv",
+  "company_branch",
+  "assortment_type",
+  "assortment_type_naming",
+  "work_details_section",
+  "work_details",
+  "total_work"
+ ],
+ "fields": [
+  {
+   "default": "Sadguru Diamonds",
+   "fieldname": "company_name",
+   "fieldtype": "Read Only",
+   "label": "Company Name"
+  },
+  {
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_6tcv",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Sadguru Diamond H.O.",
+   "fieldname": "company_branch",
+   "fieldtype": "Read Only",
+   "in_list_view": 1,
+   "label": "Branch Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "assortment_type",
+   "fieldtype": "Select",
+   "label": "Assortment Type",
+   "options": "\nHand Work\nTweezers Work"
+  },
+  {
+   "fieldname": "assortment_type_naming",
+   "fieldtype": "Select",
+   "label": "assortment_type_naming",
+   "options": "HA\nTW",
+   "read_only": 1
+  },
+  {
+   "fieldname": "work_details_section",
+   "fieldtype": "Section Break",
+   "label": "Work Details"
+  },
+  {
+   "fieldname": "work_details",
+   "fieldtype": "Table",
+   "label": "Work Details",
+   "options": "Total Work"
+  },
+  {
+   "fieldname": "total_work",
+   "fieldtype": "Float",
+   "label": "Total Work",
+   "precision": "3"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-01-02 13:12:50.696995",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Assortment",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1,
+ "track_views": 1
+}

@@ -1,0 +1,138 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-03-18 19:21:21.400532",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "batch_no",
+  "item_code",
+  "variant_of",
+  "qty",
+  "consume_qty",
+  "stock_entry",
+  "employee_qty",
+  "column_break_nwef",
+  "mop_qty",
+  "mop_consume_qty",
+  "se_item",
+  "auto_created",
+  "inventory_type",
+  "customer",
+  "create_loss_entry"
+ ],
+ "fields": [
+  {
+   "fetch_from": "se_item.batch_no",
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Batch No",
+   "options": "Batch"
+  },
+  {
+   "default": "0",
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "MSL QTY"
+  },
+  {
+   "default": "0",
+   "fieldname": "consume_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "MSL Consume QTY"
+  },
+  {
+   "fetch_from": "batch_no.item",
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fieldname": "se_item",
+   "fieldtype": "Link",
+   "label": "SE Item",
+   "options": "Stock Entry Detail"
+  },
+  {
+   "default": "0",
+   "fieldname": "auto_created",
+   "fieldtype": "Check",
+   "label": "Auto Created",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_nwef",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "mop_qty",
+   "fieldtype": "Float",
+   "label": "MOP Qty"
+  },
+  {
+   "default": "0",
+   "fieldname": "mop_consume_qty",
+   "fieldtype": "Float",
+   "label": "MOP Consume Qty"
+  },
+  {
+   "fetch_from": "se_item.inventory_type",
+   "fetch_if_empty": 1,
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "label": "Inventory Type",
+   "options": "Inventory Type"
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "se_item.customer",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "depends_on": "eval: doc.parentfield == \"batch_details\";",
+   "fieldname": "create_loss_entry",
+   "fieldtype": "Button",
+   "label": "Create Loss Entry"
+  },
+  {
+   "fetch_from": "item_code.variant_of",
+   "fieldname": "variant_of",
+   "fieldtype": "Data",
+   "label": "Variant Of",
+   "read_only": 1
+  },
+  {
+   "fieldname": "employee_qty",
+   "fieldtype": "Float",
+   "label": "Employee Qty"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-12-23 14:34:55.091136",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Main Slip SE Details",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

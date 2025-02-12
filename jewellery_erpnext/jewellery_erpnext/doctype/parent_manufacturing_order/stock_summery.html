@@ -1,0 +1,43 @@
+<!-- <table class="table table-bordered table-hover" width='100%' style="border: 1px solid #d1d8dd;border-collapse: collapse;">
+	<thead>
+		<tr>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">Manufacturing Work Order</th>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">Manufacturing Operation</th>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">Stock Entry</th>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">Item Code</th>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">Inventory Type</th>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">PCS</th>
+			<th style="border: 1px solid #d1d8dd; font-size: 11px;">Batch No</th>
+			<th style="text-align:end;border: 1px solid #d1d8dd; font-size: 11px;">Qty</th>
+			<th style="text-align:end;border: 1px solid #d1d8dd; font-size: 11px;">UOM</th>
+		</tr>
+	</thead>
+	<tbody>
+	{% for item in data %}
+		<tr>
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+				<a href=>{{ frappe.utils.get_link_to_form('Manufacturing Work Order', item.manufacturing_work_order) }}</a>
+			</td>
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+				<a href=>{{ frappe.utils.get_link_to_form('Manufacturing Operation', item.manufacturing_operation) }}</a>
+			</td>
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+				<a href=>{{ frappe.utils.get_link_to_form('Stock Entry', item.parent) }}</a>
+			</td>
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.item_code }}</td>
+			<td style="text-align:end;border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.inventory_type}} </td>
+			<td style="text-align:end;border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.pcs}} </td>
+			<td style="text-align:end;border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.batch_no}} </td>
+			<td style="text-align:end;border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.qty}} </td>
+			<td style="text-align:end;border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.uom}} </td>
+		</tr>
+	{% endfor %}
+	</tbody>
+	<tfoot>
+		<tr>
+			<td colspan="7" style="font-weight: 700; text-align:end;border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">Gross Wt</td>
+			<td style="font-weight: 700; text-align:end;border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ total_qty }} gms</td>
+			<td style="text-align:end;border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem"></td>
+		</tr>
+	</tfoot>
+	</table> -->

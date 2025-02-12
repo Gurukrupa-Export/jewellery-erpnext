@@ -1,0 +1,862 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:MOP-{######}",
+ "creation": "2023-04-26 01:35:18.614223",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "tab_break_c0w88",
+  "status",
+  "column_break_gvheq",
+  "previous_se_data_updated",
+  "section_break_o4oog",
+  "company",
+  "manufacturer",
+  "abbr",
+  "column_break_wotev",
+  "department",
+  "section_break_8ac16",
+  "manufacturing_work_order",
+  "manufacturing_order",
+  "manufacturing_plan",
+  "for_fg",
+  "fg_bom",
+  "operation",
+  "is_last_operation",
+  "type",
+  "column_break_7",
+  "for_subcontracting",
+  "subcontractor",
+  "employee",
+  "main_slip_no",
+  "previous_operation",
+  "previous_mop",
+  "is_finding",
+  "section_break_10",
+  "department_issue_id",
+  "department_ir_status",
+  "column_break_13",
+  "department_receive_id",
+  "employee_ir",
+  "section_break_ccpns",
+  "qty",
+  "column_break_swroi",
+  "rodium",
+  "section_break_15",
+  "item_code",
+  "design_id_bom",
+  "column_break_wnrc8",
+  "finish_good_serial_number",
+  "serial_no",
+  "section_break_535sx",
+  "metal_type",
+  "metal_touch",
+  "column_break_g5rb9",
+  "metal_colour",
+  "metal_purity",
+  "section_break_26",
+  "stock_entry_details",
+  "section_break_dvel5",
+  "loss_details",
+  "section_break_34ylz",
+  "cad_numbering_file",
+  "support_cam_file",
+  "column_break_29",
+  "platform_wt",
+  "rpt_wt_issue",
+  "rpt_wt_receive",
+  "rpt_wt_loss",
+  "estimated_rpt_wt",
+  "ref_name",
+  "tab_break_fw3mn",
+  "section_break_tjs3",
+  "bom_summery",
+  "section_break_nlzla",
+  "prev_gross_wt",
+  "gross_wt",
+  "net_wt",
+  "finding_wt",
+  "diamond_wt_in_gram",
+  "gemstone_wt_in_gram",
+  "other_wt",
+  "column_break_oyjmw",
+  "received_gross_wt",
+  "received_net_wt",
+  "loss_wt",
+  "diamond_wt",
+  "gemstone_wt",
+  "diamond_pcs",
+  "gemstone_pcs",
+  "section_break_pnns",
+  "mop_balance_table",
+  "section_break_sdty",
+  "department_source_table",
+  "department_target_table",
+  "employee_source_table",
+  "employee_target_table",
+  "section_break_vwqj",
+  "stock_summery",
+  "stock_entry",
+  "time_log_tab",
+  "employee_timer_section",
+  "start_time",
+  "started_time",
+  "column_break_ydae",
+  "finish_time",
+  "current_time",
+  "column_break_zbak",
+  "time_taken",
+  "total_minutes",
+  "section_break_fqd2",
+  "on_hold",
+  "time_logs",
+  "department_starttime",
+  "column_break_ym8b",
+  "department_finishtime",
+  "section_break_ce6q",
+  "department_time_logs"
+ ],
+ "fields": [
+  {
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "label": "Type",
+   "options": "\nManufacturing Work Order\nMain Slip"
+  },
+  {
+   "fieldname": "main_slip_no",
+   "fieldtype": "Link",
+   "label": "Main Slip No",
+   "options": "Main Slip"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fetch_from":"previous_mop.operation",
+   "fieldname": "previous_operation",
+   "fieldtype": "Link",
+   "label": "Previous Operation",
+   "no_copy": 1,
+   "options": "Department Operation"
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "Operation",
+   "no_copy": 1,
+   "options": "Department Operation"
+  },
+  {
+   "fieldname": "column_break_7",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "no_copy": 1,
+   "options": "Not Started\nOn Hold\nWIP\nQC Pending\nQC Completed\nFinished\nRevert"
+  },
+  {
+   "depends_on": "eval:!doc.for_subcontracting",
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "Employee",
+   "no_copy": 1,
+   "options": "Employee"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_10",
+   "fieldtype": "Section Break",
+   "label": "Department IR Details"
+  },
+  {
+   "fieldname": "department_issue_id",
+   "fieldtype": "Link",
+   "label": "Department Issue ID",
+   "no_copy": 1,
+   "options": "Department IR",
+   "read_only": 1
+  },
+  {
+   "fieldname": "department_ir_status",
+   "fieldtype": "Select",
+   "label": "Department IR status",
+   "no_copy": 1,
+   "options": "\nIn-Transit\nReceived\nRevert",
+   "read_only": 1
+  },
+  {
+   "fieldname": "department_receive_id",
+   "fieldtype": "Link",
+   "label": "Department Receive ID",
+   "no_copy": 1,
+   "options": "Department IR",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_13",
+   "fieldtype": "Column Break"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_15",
+   "fieldtype": "Section Break",
+   "label": "Design Details"
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "label": "Qty"
+  },
+  {
+   "fieldname": "gross_wt",
+   "fieldtype": "Float",
+   "label": "Gross Wt",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "serial_no",
+   "fieldtype": "Small Text",
+   "label": "Serial No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rodium",
+   "fieldtype": "Data",
+   "label": "Rodium"
+  },
+  {
+   "fieldname": "start_time",
+   "fieldtype": "Datetime",
+   "label": "Start Time",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "finish_time",
+   "fieldtype": "Datetime",
+   "label": "Finish Time",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:(doc.start_time && doc.finish_time)",
+   "fieldname": "time_taken",
+   "fieldtype": "Time",
+   "label": "Time Taken",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_26",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval: doc.operation == \"RPT Digital File Generation\";",
+   "fieldname": "cad_numbering_file",
+   "fieldtype": "Attach",
+   "label": "CAD numbering File",
+   "no_copy": 1
+  },
+  {
+   "depends_on": "eval: doc.operation == \"RPT Support Generation\";",
+   "fieldname": "support_cam_file",
+   "fieldtype": "Attach",
+   "label": "Support CAM File",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "column_break_29",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval: doc.operation == \"Mould Filling\";",
+   "fieldname": "platform_wt",
+   "fieldtype": "Float",
+   "label": "Platform wt",
+   "no_copy": 1
+  },
+  {
+   "depends_on": "eval: doc.operation == \"Mould Filling\";",
+   "fieldname": "rpt_wt_issue",
+   "fieldtype": "Float",
+   "label": "RPT Wt ISSUE",
+   "no_copy": 1
+  },
+  {
+   "depends_on": "eval: doc.operation == \"Mould Filling\";",
+   "fieldname": "rpt_wt_receive",
+   "fieldtype": "Float",
+   "label": "RPT Wt RECEIVE",
+   "no_copy": 1
+  },
+  {
+   "depends_on": "eval: doc.operation == \"Mould Filling\";",
+   "fieldname": "rpt_wt_loss",
+   "fieldtype": "Float",
+   "label": "RPT Wt LOSS",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "estimated_rpt_wt",
+   "fieldtype": "Float",
+   "label": "Estimated RPT WT",
+   "no_copy": 1
+  },
+  {
+   "fetch_from": "manufacturing_work_order.metal_colour",
+   "fieldname": "metal_colour",
+   "fieldtype": "Link",
+   "label": "Metal Colour",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fetch_from": "company.abbr",
+   "fieldname": "abbr",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Abbr",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.item_code",
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Design Code",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_work_order.master_bom",
+   "fieldname": "design_id_bom",
+   "fieldtype": "Link",
+   "label": "Design Code BOM",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "label": "Metal Touch",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.metal_purity",
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "label": "Metal Purity",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "diamond_wt",
+   "fieldtype": "Float",
+   "label": "Diamond Wt (cts)",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "gemstone_wt",
+   "fieldtype": "Float",
+   "label": "Gemstone Wt (cts)",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "other_wt",
+   "fieldtype": "Float",
+   "label": "Other Wt",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "net_wt",
+   "fieldtype": "Float",
+   "label": "Net wt",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "finding_wt",
+   "fieldtype": "Float",
+   "label": "Finding WT",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_nlzla",
+   "fieldtype": "Section Break",
+   "label": "Weight Details"
+  },
+  {
+   "fieldname": "column_break_oyjmw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "received_gross_wt",
+   "fieldtype": "Float",
+   "label": "Received Gross Wt",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "received_net_wt",
+   "fieldtype": "Float",
+   "label": "Received Net Wt",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "loss_wt",
+   "fieldtype": "Float",
+   "label": "Loss Wt",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "diamond_pcs",
+   "fieldtype": "Float",
+   "label": "Diamond Pcs",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "gemstone_pcs",
+   "fieldtype": "Float",
+   "label": "Gemstone Pcs",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "diamond_wt_in_gram",
+   "fieldtype": "Float",
+   "label": "Diamond Wt (in gram)",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_entry_details",
+   "fieldtype": "HTML",
+   "label": "Stock Entry Details"
+  },
+  {
+   "fieldname": "section_break_dvel5",
+   "fieldtype": "Section Break",
+   "label": "Loss Details"
+  },
+  {
+   "fieldname": "tab_break_c0w88",
+   "fieldtype": "Tab Break",
+   "label": "Details"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_o4oog",
+   "fieldtype": "Section Break",
+   "label": "Company Details"
+  },
+  {
+   "fieldname": "section_break_8ac16",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_wotev",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_wnrc8",
+   "fieldtype": "Column Break"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_535sx",
+   "fieldtype": "Section Break",
+   "label": "Metal Detail"
+  },
+  {
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "column_break_g5rb9",
+   "fieldtype": "Column Break"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_ccpns",
+   "fieldtype": "Section Break",
+   "label": "Order Details"
+  },
+  {
+   "fieldname": "column_break_swroi",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gemstone_wt_in_gram",
+   "fieldtype": "Float",
+   "label": "Gemstone Wt (in gram)",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fetch_from": "operation.is_last_operation",
+   "fieldname": "is_last_operation",
+   "fieldtype": "Check",
+   "label": "Is Last Operation",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fetch_from": "manufacturing_work_order.for_fg",
+   "fieldname": "for_fg",
+   "fieldtype": "Check",
+   "label": "For FG",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_gvheq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "loss_details",
+   "fieldtype": "Table",
+   "label": "Loss Details",
+   "no_copy": 1,
+   "options": "Operation Loss Details"
+  },
+  {
+   "fieldname": "section_break_34ylz",
+   "fieldtype": "Section Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "for_subcontracting",
+   "fieldtype": "Check",
+   "label": "For Subcontracting",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.for_subcontracting",
+   "fieldname": "subcontractor",
+   "fieldtype": "Link",
+   "label": "Subcontractor",
+   "no_copy": 1,
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "employee_ir",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Employee IR",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "prev_gross_wt",
+   "fieldtype": "Float",
+   "label": "Previous gross wt",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_work_order.manufacturing_order",
+   "fieldname": "manufacturing_order",
+   "fieldtype": "Data",
+   "label": "Parent Manufacturing Order"
+  },
+  {
+   "fieldname": "finish_good_serial_number",
+   "fieldtype": "Link",
+   "label": "Finish Good Serial Number",
+   "options": "Serial No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fg_bom",
+   "fieldtype": "Link",
+   "label": "FG Bom",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ref_name",
+   "fieldtype": "Data",
+   "label": "Ref Name",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "tab_break_fw3mn",
+   "fieldtype": "Tab Break",
+   "label": "MOP Details"
+  },
+  {
+   "fieldname": "stock_summery",
+   "fieldtype": "HTML",
+   "hidden": 1
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "HTML",
+   "hidden": 1
+  },
+  {
+   "fieldname": "department_source_table",
+   "fieldtype": "Table",
+   "label": "Department Source Table",
+   "no_copy": 1,
+   "options": "Department Source Table",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "department_target_table",
+   "fieldtype": "Table",
+   "label": "Department Target Table",
+   "no_copy": 1,
+   "options": "Department Target Table",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "employee_source_table",
+   "fieldtype": "Table",
+   "label": "Employee Source Table",
+   "no_copy": 1,
+   "options": "Employee Source Table",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "employee_target_table",
+   "fieldtype": "Table",
+   "label": "Employee Target Table",
+   "no_copy": 1,
+   "options": "Employee Target Table",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_vwqj",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "label": "HTML Table's"
+  },
+  {
+   "fieldname": "section_break_sdty",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "mop_balance_table",
+   "fieldtype": "Table",
+   "in_filter": 1,
+   "in_standard_filter": 1,
+   "label": "Balance Table",
+   "options": "MOP Balance Table",
+   "read_only": 1
+  },
+  {
+   "fieldname": "time_log_tab",
+   "fieldtype": "Tab Break",
+   "label": "Time Log"
+  },
+  {
+   "fieldname": "column_break_zbak",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "started_time",
+   "fieldtype": "Datetime",
+   "label": "Started Time",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "current_time",
+   "fieldtype": "Int",
+   "label": "Current Time",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "section_break_fqd2",
+   "fieldtype": "Section Break",
+   "hidden": 1
+  },
+  {
+   "fieldname": "time_logs",
+   "fieldtype": "Table",
+   "label": "Employee Timer Logs",
+   "no_copy": 1,
+   "options": "Manufacturing Operation Time Log"
+  },
+  {
+   "fieldname": "total_minutes",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "label": "Total Minutes",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "on_hold",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "On HOLD",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "previous_mop",
+   "fieldtype": "Link",
+   "label": "Previous MOP",
+   "options": "Manufacturing Operation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_pnns",
+   "fieldtype": "Section Break",
+   "label": "Department Timer"
+  },
+  {
+   "fieldname": "department_time_logs",
+   "fieldtype": "Table",
+   "label": "Department Timer Logs",
+   "options": "Manufacturing Operation Department Time Log"
+  },
+  {
+   "fieldname": "employee_timer_section",
+   "fieldtype": "Section Break",
+   "label": "Employee Timer"
+  },
+  {
+   "fieldname": "column_break_ydae",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_ym8b",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_ce6q",
+   "fieldtype": "Section Break",
+   "label": "Department Timer"
+  },
+  {
+   "fieldname": "department_starttime",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Department Start Time"
+  },
+  {
+   "fieldname": "department_finishtime",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Department Finish Time"
+  },
+  {
+   "fieldname": "section_break_tjs3",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "bom_summery",
+   "fieldtype": "HTML",
+   "label": "BOM Summery"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.manufacturing_plan",
+   "fieldname": "manufacturing_plan",
+   "fieldtype": "Link",
+   "label": "Manufacturing Plan",
+   "options": "Manufacturing Plan"
+  },
+  {
+   "default": "0",
+   "fieldname": "previous_se_data_updated",
+   "fieldtype": "Check",
+   "label": "Previous SE Data Updated",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fetch_from": "manufacturing_work_order.is_finding_mwo",
+   "fieldname": "is_finding",
+   "fieldtype": "Check",
+   "label": "Is Finding",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [
+  {
+   "link_doctype": "Stock Entry",
+   "link_fieldname": "manufacturing_operation",
+   "parent_doctype": "Stock Entry"
+  },
+  {
+   "link_doctype": "QC",
+   "link_fieldname": "manufacturing_operation"
+  },
+  {
+   "link_doctype": "Serial Number Creator",
+   "link_fieldname": "manufacturing_operation"
+  }
+ ],
+ "modified": "2024-12-18 15:35:14.981692",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Manufacturing Operation",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "show_preview_popup": 1,
+ "show_title_field_in_link": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "operation",
+ "track_changes": 1
+}

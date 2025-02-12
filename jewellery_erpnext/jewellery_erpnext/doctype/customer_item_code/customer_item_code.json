@@ -1,0 +1,53 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-01-09 14:45:47.714938",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_vuk4",
+  "customer",
+  "outright_code",
+  "outwork"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_vuk4",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "outright_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Outright Code",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "outwork",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Outwork",
+   "options": "Attribute Value"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-01-09 14:53:29.388124",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Customer Item Code",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

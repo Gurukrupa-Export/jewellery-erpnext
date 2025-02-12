@@ -1,0 +1,266 @@
+{
+ "Attribute Value": [
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_consider_as_gold_item",
+   "fieldtype": "Check",
+   "insert_after": "custom_is_gemstone_quality",
+   "label": "Consider As Gold Item",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_is_gemstone_pr",
+   "fieldtype": "Check",
+   "insert_after": "custom_is_gemstone_grade",
+   "label": "Is Gemstone PR",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_is_gemstone_quality",
+   "fieldtype": "Check",
+   "insert_after": "is_gemstone_size",
+   "label": "Is Gemstone Quality",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_is_consumables",
+   "fieldtype": "Check",
+   "insert_after": "is_product_size",
+   "label": "Is Consumables",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_batch_or_serial_no",
+   "fieldtype": "Select",
+   "insert_after": "parent_attribute_value",
+   "label": "Batch or Serial No",
+   "module": "Jewellery Erpnext",
+   "options": "Batch\nSerial No"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_batch_abbreviation",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "insert_after": "custom_batch_or_serial_no",
+   "label": "Batch Abbreviation",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "column_break_aqw23",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_to_weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_setting_type",
+   "fieldtype": "Check",
+   "insert_after": "is_diamond_size_in_mm",
+   "label": "Is Setting Type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_metal_touch",
+   "fieldtype": "Check",
+   "insert_after": "is_metal_type",
+   "label": "Is Metal Touch",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_metal_colour",
+   "fieldtype": "Check",
+   "insert_after": "is_metal_purity",
+   "label": "Is Metal Colour",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_metal_type",
+   "fieldtype": "Check",
+   "insert_after": "attribute_value",
+   "label": "Is Metal Type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "column_break_apejt",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_consider_as_gold_item",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_finding_category",
+   "fieldtype": "Check",
+   "insert_after": "column_break_apejt",
+   "label": "Is Finding Category",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_gemstone_type",
+   "fieldtype": "Check",
+   "insert_after": "custom_is_gemstone_pr",
+   "label": "Is Gemstone Type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_diamond_quality",
+   "fieldtype": "Check",
+   "insert_after": "is_diamond_sieve_size_range",
+   "label": "Is Diamond Quality",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_diamond_size_in_mm",
+   "fieldtype": "Check",
+   "insert_after": "column_break_11",
+   "label": "Is Diamond Size(In MM)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_gemstone_size",
+   "fieldtype": "Check",
+   "insert_after": "is_gemstone_type",
+   "label": "Is Gemstone Size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "is_product_size",
+   "fieldtype": "Check",
+   "insert_after": "custom_is_market_diamond_sieve_size",
+   "label": "Is Product Size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval: doc.is_gemstone_size",
+   "dt": "Attribute Value",
+   "fieldname": "gemstone_sizes",
+   "fieldtype": "Table",
+   "insert_after": "section_break_15",
+   "label": "Gemstone Sizes",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value Gemstone Size"
+  },
+  {
+   "depends_on": "eval: doc.is_diamond_sieve_size",
+   "dt": "Attribute Value",
+   "fieldname": "description",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "insert_after": "gemstone_sizes",
+   "label": "Description",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.is_finding_size",
+   "dt": "Attribute Value",
+   "fieldname": "section_break_pqwh8",
+   "fieldtype": "Section Break",
+   "insert_after": "diamond_sieve_size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "attribute_value_finding_size",
+   "fieldtype": "Table",
+   "insert_after": "section_break_pqwh8",
+   "label": "Attribute Value Finding Size",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value Finding Size"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_is_diamond_type",
+   "fieldtype": "Check",
+   "insert_after": "column_break_7",
+   "label": "Is Diamond Type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_is_gemstone_grade",
+   "fieldtype": "Check",
+   "insert_after": "is_sub_setting_type",
+   "label": "Is Gemstone Grade",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_section_break_9am4p",
+   "fieldtype": "Section Break",
+   "insert_after": "abbreviation",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_image",
+   "fieldtype": "Attach Image",
+   "insert_after": "custom_section_break_9am4p",
+   "label": "Image",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_image_preview",
+   "fieldtype": "Image",
+   "insert_after": "custom_image",
+   "module": "Jewellery Erpnext",
+   "options": "custom_image"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_is_market_diamond_sieve_size",
+   "fieldtype": "Check",
+   "insert_after": "is_customer_diamond_quality",
+   "label": "Is Market Diamond Sieve Size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.is_gemstone_type",
+   "dt": "Attribute Value",
+   "fieldname": "custom_section_break_d302z",
+   "fieldtype": "Section Break",
+   "insert_after": "attribute_value_finding_size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_attribute_value_gemstone_type",
+   "fieldtype": "Table",
+   "insert_after": "custom_section_break_d302z",
+   "label": "Attribute Value Gemstone Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value Gemstone Type"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_from_weight",
+   "fieldtype": "Float",
+   "insert_after": "weight_in_cts",
+   "label": "From Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Attribute Value",
+   "fieldname": "custom_to_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_from_weight",
+   "label": "To Weight",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

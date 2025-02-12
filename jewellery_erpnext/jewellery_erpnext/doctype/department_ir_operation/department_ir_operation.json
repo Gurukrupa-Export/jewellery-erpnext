@@ -1,0 +1,115 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-05-03 17:35:32.574105",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "manufacturing_work_order",
+  "manufacturing_operation",
+  "status",
+  "parent_manufacturing_order",
+  "gross_wt",
+  "diamond_wt",
+  "section_break_tvkr",
+  "net_wt",
+  "finding_wt",
+  "other_wt",
+  "gemstone_wt",
+  "diamond_pcs",
+  "gemstone_pcs"
+ ],
+ "fields": [
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Operation",
+   "no_copy": 1,
+   "options": "Manufacturing Operation"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Status",
+   "no_copy": 1
+  },
+  {
+   "fetch_from": "manufacturing_operation.manufacturing_work_order",
+   "fetch_if_empty": 1,
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.manufacturing_order",
+   "fetch_if_empty": 1,
+   "fieldname": "parent_manufacturing_order",
+   "fieldtype": "Link",
+   "label": "Parent Manufacturing Order",
+   "options": "Parent Manufacturing Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gross_wt",
+   "fieldtype": "Float",
+   "label": "Gross Wt"
+  },
+  {
+   "fieldname": "diamond_wt",
+   "fieldtype": "Float",
+   "label": "Diamond Wt"
+  },
+  {
+   "fieldname": "section_break_tvkr",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "net_wt",
+   "fieldtype": "Float",
+   "label": "Net Wt"
+  },
+  {
+   "fieldname": "finding_wt",
+   "fieldtype": "Float",
+   "label": "Finding Wt"
+  },
+  {
+   "fieldname": "other_wt",
+   "fieldtype": "Float",
+   "label": "Other Wt"
+  },
+  {
+   "fieldname": "gemstone_wt",
+   "fieldtype": "Float",
+   "label": "Gemstone Wt"
+  },
+  {
+   "fieldname": "diamond_pcs",
+   "fieldtype": "Data",
+   "label": "Diamond Pcs"
+  },
+  {
+   "fieldname": "gemstone_pcs",
+   "fieldtype": "Data",
+   "label": "Gemstone Pcs"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-07-23 16:50:04.199511",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Department IR Operation",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

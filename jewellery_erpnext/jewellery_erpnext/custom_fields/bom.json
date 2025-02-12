@@ -1,0 +1,2272 @@
+{
+ "BOM": [
+  {
+   "dt": "BOM",
+   "fetch_from": "item.custom_cad_order_form_id",
+   "fieldname": "custom_cad_order_form_id",
+   "fieldtype": "Link",
+   "insert_after": "custom_order_form_type",
+   "label": "CAD Order Form ID",
+   "module": "Jewellery Erpnext",
+   "options": "Order Form"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "2_in_1",
+   "fieldtype": "Link",
+   "insert_after": "two_in_one",
+   "label": "2 in 1",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "chain_size",
+   "fieldtype": "Float",
+   "insert_after": "chain_weight",
+   "label": "Chain Size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "width",
+   "fieldtype": "Float",
+   "insert_after": "height",
+   "label": "Width",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "height",
+   "fieldtype": "Float",
+   "insert_after": "section_break_rrk43",
+   "label": "Height",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "length",
+   "fieldtype": "Float",
+   "insert_after": "column_break_fe1i8",
+   "label": "Length",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "product_usage",
+   "fieldtype": "Data",
+   "insert_after": "product_size",
+   "label": "Product Usage",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "product_shape",
+   "fieldtype": "Data",
+   "insert_after": "breadth",
+   "label": "Product Shape",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "design_style",
+   "fieldtype": "Data",
+   "insert_after": "product_usage",
+   "label": "Design Style",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "vanki_type",
+   "fieldtype": "Data",
+   "insert_after": "design_style",
+   "label": "Vanki Type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "diamond_type",
+   "fieldtype": "Link",
+   "insert_after": "section_break_pclqq",
+   "label": "Diamond Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "stone_shape",
+   "fieldtype": "Link",
+   "insert_after": "diamond_type",
+   "label": "Stone Shape",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "stone_colour",
+   "fieldtype": "Link",
+   "insert_after": "diamond_quality",
+   "label": "Stone Colour",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_shape",
+   "fieldtype": "Link",
+   "insert_after": "section_break_6fswi",
+   "label": "Gemstone Shape",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_grade",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_size",
+   "label": "Gemstone Grade",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "cut_or_cab",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_quality",
+   "label": "Cut Or Cab",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_size",
+   "fieldtype": "Link",
+   "insert_after": "column_break_wmgnk",
+   "label": "Gemstone Size",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finding_category",
+   "fieldtype": "Link",
+   "insert_after": "section_break_ndidp",
+   "label": "Finding Category",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finding_subcategory",
+   "fieldtype": "Link",
+   "insert_after": "column_break_ifciu",
+   "label": "Finding Subcategory",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finding_metal_type",
+   "fieldtype": "Link",
+   "insert_after": "finding_category",
+   "label": "Finding Metal Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finding_metal_touch",
+   "fieldtype": "Link",
+   "insert_after": "finding_metal_type",
+   "label": "Finding Metal Touch",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finding_metal_purity",
+   "fieldtype": "Link",
+   "insert_after": "finding_metal_colour",
+   "label": "Finding Metal Purity",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finding_metal_colour",
+   "fieldtype": "Link",
+   "insert_after": "finding_subcategory",
+   "label": "Finding Metal Colour",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "leather_belt",
+   "fieldtype": "Link",
+   "insert_after": "black_beed",
+   "label": "Leather Belt",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "customer_gold",
+   "fieldtype": "Link",
+   "insert_after": "section_break_160",
+   "label": "Customer Gold",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "customer_diamond",
+   "fieldtype": "Link",
+   "insert_after": "customer_gold",
+   "label": "Customer Diamond",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "customer_stone",
+   "fieldtype": "Link",
+   "insert_after": "customer_diamond",
+   "label": "Customer Stone",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "customer_sample",
+   "fieldtype": "Link",
+   "insert_after": "column_break_f4t8f",
+   "label": "Customer Sample",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "customer_voucher_no",
+   "fieldtype": "Data",
+   "insert_after": "customer_chain",
+   "label": "Customer Voucher No",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "changeable_type",
+   "fieldtype": "Link",
+   "insert_after": "stone_changeable",
+   "is_system_generated": 1,
+   "label": "changeable_type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "metal_target",
+   "fieldtype": "Float",
+   "insert_after": "section_break_3vra3",
+   "is_system_generated": 1,
+   "label": "Metal Target",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "chain_thickness",
+   "fieldtype": "Float",
+   "insert_after": "chain",
+   "label": "Chain Thickness",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "capganthan",
+   "fieldtype": "Link",
+   "insert_after": "round_kadi",
+   "label": "Cap/Ganthan",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "charm",
+   "fieldtype": "Link",
+   "insert_after": "metal_target",
+   "label": "Charm",
+   "mandatory_depends_on": "eval:in_list([\"Chain Pendant\", \"Cuban Chain\", \"Nakshi Choker\", \n\"Nakshi Haram\", \"Nakshi Necklace\", \"Fancy Necklace\", \"Collar Necklace\",\n\"Choker Necklace\", \"Addigai Necklace\", \"Cocktail Chain\",\n\"Cocktail Chain Haram\", \"Charm Necklace\", \"Chik Chokar\",\n\"Haram Necklace\", \"Kantha/Hasli Necklace\", \"Kids Necklace\", \n\"Lariat Necklace\", \"Layered Necklace\", \"Magdi Necklace\",\n\"Mala Necklace\", \"Padhakam Necklace\", \"Short Necklace\",\n\"Station Necklace\", \"Tennis Necklace\", \n\"Nakshi Chain\", \"God Pendant\", \"Slider Pendant\",\n\"Nakshi Pendant\", \"Locket Pendant\", \"Kid Pendant\", \"Fancy Pendant\",\n\"Casual Pendant\", \"Cocktail Pendant\"], doc.item_subcategory) && doc.bom_type == 'Template'",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "count_of_spiral_turns",
+   "fieldtype": "Int",
+   "insert_after": "space_between_mugappu",
+   "label": "Count of Spiral Turns",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "two_in_one",
+   "fieldtype": "Link",
+   "insert_after": "back_side_size",
+   "is_system_generated": 1,
+   "label": "Two in One",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "custom_other_wt_2",
+   "fieldtype": "Float",
+   "insert_after": "custom_other_wt_1",
+   "is_system_generated": 1,
+   "label": "Other WT 2",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "custom_other_wt_1",
+   "fieldtype": "Float",
+   "insert_after": "column_break_kqmbl",
+   "is_system_generated": 1,
+   "label": "Other WT 1",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "custom_other_item_2",
+   "fieldtype": "Link",
+   "insert_after": "custom_other_item_1",
+   "is_system_generated": 1,
+   "label": "Other Item 2",
+   "module": "Jewellery Erpnext",
+   "options": "Item"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "custom_other_item_1",
+   "fieldtype": "Link",
+   "insert_after": "section_break_olkss",
+   "is_system_generated": 1,
+   "label": "Other Item 1",
+   "module": "Jewellery Erpnext",
+   "options": "Item"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_metal_detail",
+   "fieldtype": "Section Break",
+   "insert_after": "bom_metal_details",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_diamond_detail",
+   "fieldtype": "Section Break",
+   "insert_after": "bom_diamond_details",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_gemstone_detail",
+   "fieldtype": "Section Break",
+   "insert_after": "navratna",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "metal_detail",
+   "fieldtype": "Table",
+   "insert_after": "bom_metal_detail",
+   "is_system_generated": 1,
+   "label": "Metal Detail",
+   "module": "Jewellery Erpnext",
+   "options": "BOM Metal Detail"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "diamond_detail",
+   "fieldtype": "Table",
+   "insert_after": "section_break_xwsyp",
+   "is_system_generated": 1,
+   "label": "Diamond Detail",
+   "module": "Jewellery Erpnext",
+   "options": "BOM Diamond Detail"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_detail",
+   "fieldtype": "Table",
+   "insert_after": "bom_gemstone_detail",
+   "is_system_generated": 1,
+   "label": "Gemstone Detail",
+   "module": "Jewellery Erpnext",
+   "options": "BOM Gemstone Detail"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_finding_detail_",
+   "fieldtype": "Section Break",
+   "insert_after": "bom_finding_details",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finding_detail",
+   "fieldtype": "Table",
+   "insert_after": "bom_finding_detail_",
+   "is_system_generated": 1,
+   "label": "Finding Detail",
+   "module": "Jewellery Erpnext",
+   "options": "BOM Finding Detail"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "description": "Comparison: 10grams = 1 Carat",
+   "dt": "BOM",
+   "fieldname": "gold_to_diamond_ratio",
+   "fieldtype": "Float",
+   "insert_after": "product_ratio",
+   "label": "Metal to Diamond Ratio(Incl. of Finding)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_33",
+   "fieldtype": "Column Break",
+   "insert_after": "net_wt_add_on",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "description": "Avg. Diamond Weight = Total Diamond Weight / Total No. of Pcs",
+   "dt": "BOM",
+   "fieldname": "diamond_ratio",
+   "fieldtype": "Float",
+   "insert_after": "column_break_n2h3h",
+   "label": "Avg. Diamond Weight(In Carat)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "total_diamond_weight",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "insert_after": "column_break_45",
+   "label": "Total Diamond Weight",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "total_metal_weight",
+   "fieldtype": "Float",
+   "insert_after": "metal_detail",
+   "label": "Total Metal Weight",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "total_gemstone_weight",
+   "fieldtype": "Float",
+   "insert_after": "column_break_86",
+   "label": "Total Gemstone Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "description": "(Metal and Finding Weight)",
+   "dt": "BOM",
+   "fieldname": "metal_and_finding_weight",
+   "fieldtype": "Float",
+   "insert_after": "gross_weight",
+   "label": "Net Weight (In Gram)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "diamond_weight",
+   "fieldtype": "Float",
+   "insert_after": "column_break_33",
+   "label": "Diamond Weight (In Carat)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "total_diamond_pcs",
+   "fieldtype": "Int",
+   "insert_after": "section_break_83",
+   "label": "Total Diamond Pcs",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_50",
+   "fieldtype": "Section Break",
+   "insert_after": "gemstone_detail",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "total_gemstone_pcs",
+   "fieldtype": "Int",
+   "insert_after": "section_break_50",
+   "label": "Total Gemstone Pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_86",
+   "fieldtype": "Column Break",
+   "insert_after": "total_gemstone_pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "finding_weight",
+   "fieldtype": "Float",
+   "insert_after": "column_break_8dbhl",
+   "label": "Finding Weight",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_level",
+   "fieldtype": "Int",
+   "insert_after": "connections_tab",
+   "label": "BOM Level",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "product_size",
+   "fieldtype": "Float",
+   "insert_after": "width",
+   "label": "Product Size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "gross_weight",
+   "fieldtype": "Float",
+   "insert_after": "metal_weight",
+   "label": "Gross Weight (In Gram)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_60",
+   "fieldtype": "Column Break",
+   "insert_after": "amended_from",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "other_weight",
+   "fieldtype": "Float",
+   "insert_after": "gemstone_weight",
+   "label": "Other Weight (In Gram)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_59",
+   "fieldtype": "Section Break",
+   "insert_after": "diamond_ratio",
+   "label": "Compute Making Charges On",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "total_other_weight",
+   "fieldtype": "Float",
+   "insert_after": "column_break_brwh7",
+   "label": "Total Other Weight",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "gemstone_weight",
+   "fieldtype": "Float",
+   "insert_after": "diamond_weight",
+   "label": "Gemstone Weight (In Carat)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "other_detail",
+   "fieldtype": "Table",
+   "insert_after": "bom_other_details",
+   "label": "Other Detail",
+   "module": "Jewellery Erpnext",
+   "options": "BOM Other Detail"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "metal_colour",
+   "fieldtype": "Link",
+   "insert_after": "column_break_ocdyz",
+   "label": "Metal Colour",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "enamal",
+   "fieldtype": "Link",
+   "insert_after": "black_beed_line",
+   "label": "Enamal",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "rhodium",
+   "fieldtype": "Link",
+   "insert_after": "leather_belt",
+   "label": "Rhodium",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_type",
+   "fieldtype": "Link",
+   "insert_after": "qty",
+   "label": "Gemstone Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "changeable",
+   "fieldtype": "Select",
+   "insert_after": "detachable",
+   "label": "Changeable",
+   "module": "Jewellery Erpnext",
+   "options": "\nYes\nNo"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "hinges",
+   "fieldtype": "Link",
+   "insert_after": "kadi_type",
+   "label": "Hinges",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "back_belt_patti",
+   "fieldtype": "Link",
+   "insert_after": "total_mugappu",
+   "label": "Back Belt Patti",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "black_beed",
+   "fieldtype": "Link",
+   "insert_after": "custom_other_item_2",
+   "label": "Black Beed",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "hook_type",
+   "fieldtype": "Link",
+   "insert_after": "chain_size",
+   "label": "Hook Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "lock_type",
+   "fieldtype": "Link",
+   "insert_after": "chain_length",
+   "label": "Lock Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "kadi_type",
+   "fieldtype": "Link",
+   "insert_after": "lock_type",
+   "label": "Kadi Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "chain",
+   "fieldtype": "Link",
+   "insert_after": "finding_metal_touch",
+   "label": "Chain",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "chain_type",
+   "fieldtype": "Link",
+   "insert_after": "finding_metal_purity",
+   "label": "Chain Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "customer_chain",
+   "fieldtype": "Link",
+   "insert_after": "customer_sample",
+   "label": "Chain From",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "detachable",
+   "fieldtype": "Link",
+   "insert_after": "vanki_type",
+   "label": "Detachable",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "back_chain",
+   "fieldtype": "Link",
+   "insert_after": "section_break_fjfjl",
+   "label": "Back Chain",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "back_belt",
+   "fieldtype": "Link",
+   "insert_after": "column_break_he8cz",
+   "label": "Back Belt",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_28",
+   "fieldtype": "Column Break",
+   "insert_after": "kadi_to_mugappu",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_quality",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_shape",
+   "label": "Gemstone Quality",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "screw_type",
+   "fieldtype": "Link",
+   "insert_after": "hook_type",
+   "label": "Screw Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fetch_from": "item.item_category",
+   "fieldname": "item_category",
+   "fieldtype": "Link",
+   "insert_after": "section_break_yjmqn",
+   "label": "Item Category",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fetch_from": "item.item_subcategory",
+   "fieldname": "item_subcategory",
+   "fieldtype": "Link",
+   "insert_after": "column_break_jzv1f",
+   "label": "Item Subcategory",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "nakshi_from",
+   "fieldtype": "Link",
+   "insert_after": "sizer_type",
+   "label": "Nakshi From",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_95",
+   "fieldtype": "Column Break",
+   "insert_after": "total_diamond_weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "tag_no",
+   "fieldtype": "Link",
+   "insert_after": "metal_type",
+   "label": "Serial No",
+   "module": "Jewellery Erpnext",
+   "options": "Serial No"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_83",
+   "fieldtype": "Section Break",
+   "insert_after": "diamond_detail",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_45",
+   "fieldtype": "Column Break",
+   "insert_after": "total_diamond_pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0.00",
+   "dt": "BOM",
+   "fieldname": "sgl_charges",
+   "fieldtype": "Currency",
+   "insert_after": "section_break_wdq2n",
+   "label": "SGL Charges",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0.00",
+   "dt": "BOM",
+   "fieldname": "hallmark_charges",
+   "fieldtype": "Currency",
+   "insert_after": "column_break_29",
+   "label": "Hallmark Charges",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0.00",
+   "dt": "BOM",
+   "fieldname": "dhc_charges",
+   "fieldtype": "Currency",
+   "insert_after": "sgl_charges",
+   "label": "DHC Charges",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0.00",
+   "dt": "BOM",
+   "fieldname": "igi_charges",
+   "fieldtype": "Currency",
+   "insert_after": "hallmark_charges",
+   "label": "IGI Charges",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "scrap",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "insert_after": "column_break_60",
+   "label": "Scrap",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_scrap_item",
+   "fieldtype": "Table",
+   "insert_after": "scrap",
+   "label": "BOM Scrap Item",
+   "module": "Jewellery Erpnext",
+   "options": "BOM Scrap Item"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_metal_details",
+   "fieldtype": "Tab Break",
+   "insert_after": "section_break_usbsj",
+   "label": "Metal",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_diamond_details",
+   "fieldtype": "Tab Break",
+   "insert_after": "total_finding_amount",
+   "label": "Diamond",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_gemstone_details",
+   "fieldtype": "Tab Break",
+   "insert_after": "total_diamond_amount",
+   "label": "Gemstone",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_other_details",
+   "fieldtype": "Tab Break",
+   "insert_after": "total_gemstone_amount",
+   "label": "Other Materials",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_finding_details",
+   "fieldtype": "Tab Break",
+   "insert_after": "total_wastage_amount",
+   "label": "Finding",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "specifications",
+   "fieldtype": "Tab Break",
+   "insert_after": "items",
+   "label": "Specifications",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gold_target",
+   "fieldtype": "Float",
+   "insert_after": "charm",
+   "label": "Gold Target",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "diamond_target",
+   "fieldtype": "Float",
+   "insert_after": "column_break_al88c",
+   "label": "Diamond Target",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "black_beed_line",
+   "fieldtype": "Float",
+   "insert_after": "custom_other_wt_2",
+   "label": "Black Beed Line",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "chain_length",
+   "fieldtype": "Float",
+   "insert_after": "chain_type",
+   "label": "Chain Length",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_length",
+   "fieldtype": "Float",
+   "insert_after": "nakshi_from",
+   "label": "Total Length",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "chain_weight",
+   "fieldtype": "Float",
+   "insert_after": "chain_thickness",
+   "label": "Chain Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "back_chain_size",
+   "fieldtype": "Float",
+   "insert_after": "back_chain",
+   "label": "Back Chain Size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "back_side_size",
+   "fieldtype": "Float",
+   "insert_after": "total_length",
+   "label": "Back Side Size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "kadi_to_mugappu",
+   "fieldtype": "Float",
+   "insert_after": "number_of_ant",
+   "label": "Kadi to Mugappu",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "space_between_mugappu",
+   "fieldtype": "Float",
+   "insert_after": "column_break_28",
+   "label": "Space between Mugappu",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "breadth",
+   "fieldtype": "Float",
+   "insert_after": "length",
+   "label": "Breadth",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "back_belt_length",
+   "fieldtype": "Float",
+   "insert_after": "back_belt",
+   "label": "Back Belt Length",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_17",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_creation_docname",
+   "label": "Product Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_29",
+   "fieldtype": "Column Break",
+   "insert_after": "dhc_charges",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "images",
+   "fieldtype": "Tab Break",
+   "insert_after": "modified_specifications",
+   "label": "Images",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finish_images",
+   "fieldtype": "Section Break",
+   "insert_after": "images",
+   "label": "BOM Finish Images",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "front_view_finish",
+   "fieldtype": "Attach Image",
+   "insert_after": "finish_images",
+   "label": "BOM Finish Images Front View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "back_view_finish",
+   "fieldtype": "Attach Image",
+   "insert_after": "finish_front_view_preview",
+   "label": "BOM Finish Images Back View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_195",
+   "fieldtype": "Column Break",
+   "insert_after": "finish_back_view_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "left_view_finish",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_195",
+   "label": "BOM Finish Images Left View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "right_view_finish",
+   "fieldtype": "Attach Image",
+   "insert_after": "finish_left_view_preview",
+   "label": "BOM Finish Images Right View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_198",
+   "fieldtype": "Column Break",
+   "insert_after": "finish_right_view_preview",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "top_view_finish",
+   "fieldtype": "Attach Image",
+   "insert_after": "column_break_198",
+   "label": "BOM Finish Images Top View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bottom_view_finish",
+   "fieldtype": "Attach Image",
+   "insert_after": "finish_top_view_preview",
+   "label": "BOM Finish Images Bottom View",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finish_front_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "front_view_finish",
+   "label": "BOM Finish Images Front View Preview",
+   "module": "Jewellery Erpnext",
+   "options": "front_view_finish"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finish_back_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "back_view_finish",
+   "label": "BOM Finish Images Back View Preview",
+   "module": "Jewellery Erpnext",
+   "options": "back_view_finish"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finish_left_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "left_view_finish",
+   "label": "BOM Finish Images Left View Preview",
+   "module": "Jewellery Erpnext",
+   "options": "left_view_finish"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finish_right_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "right_view_finish",
+   "label": "BOM Finish Images Right View Preview",
+   "module": "Jewellery Erpnext",
+   "options": "right_view_finish"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finish_top_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "top_view_finish",
+   "label": "BOM Finish Images Top View Preview",
+   "module": "Jewellery Erpnext",
+   "options": "top_view_finish"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finish_bottom_view_preview",
+   "fieldtype": "Image",
+   "insert_after": "bottom_view_finish",
+   "label": "BOM Finish Images Bottom View Preview",
+   "module": "Jewellery Erpnext",
+   "options": "bottom_view_finish"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "other_bom_amount",
+   "fieldtype": "Currency",
+   "insert_after": "finding_bom_amount",
+   "label": "Other BOM Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "selling_price_list",
+   "fieldtype": "Link",
+   "insert_after": "customer",
+   "label": "Selling Price List",
+   "module": "Jewellery Erpnext",
+   "options": "Price List"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_bom_amount",
+   "fieldtype": "Currency",
+   "insert_after": "diamond_bom_amount",
+   "label": "Gemstone BOM Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "diamond_bom_amount",
+   "fieldtype": "Currency",
+   "insert_after": "gold_bom_amount",
+   "label": "Diamond BOM amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "BOM",
+   "fieldname": "total_bom_amount",
+   "fieldtype": "Currency",
+   "insert_after": "making_charge",
+   "label": "Total BOM Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "making_charge",
+   "fieldtype": "Currency",
+   "insert_after": "other_bom_amount",
+   "label": "Making Charge",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "BOM",
+   "fieldname": "gold_bom_amount",
+   "fieldtype": "Currency",
+   "insert_after": "gold_rate_with_gst",
+   "label": "Gold BOM Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0.00",
+   "dt": "BOM",
+   "fieldname": "gold_rate_with_gst",
+   "fieldtype": "Currency",
+   "insert_after": "bom_rates",
+   "label": "Gold Rate With GST",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "insert_after": "image",
+   "label": "Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_rates",
+   "fieldtype": "Tab Break",
+   "insert_after": "base_total_cost",
+   "label": "BOM Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0",
+   "dt": "BOM",
+   "fieldname": "metal_weight",
+   "fieldtype": "Float",
+   "insert_after": "section_break_17",
+   "label": "Metal Weight (In Gram)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "defualt_specifications",
+   "fieldtype": "Text",
+   "insert_after": "section_break_qywla",
+   "label": "Default Specifications",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "modified_specifications",
+   "fieldtype": "Text",
+   "insert_after": "defualt_specifications",
+   "label": "Modified Specifications",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_160",
+   "fieldtype": "Section Break",
+   "insert_after": "enamal",
+   "label": "Customer Goods Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "diamond_grade",
+   "fieldtype": "Link",
+   "insert_after": "bom_diamond_detail",
+   "label": "Diamond Grade",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "net_wt_add_on",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "insert_after": "metal_and_finding_weight",
+   "label": "Net Wt add on",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "Diamond Inclusive = Gross Wt - Stone Wt(in gram) - Finding Wt - Other Wt ",
+   "dt": "BOM",
+   "fieldname": "diamond_inclusive",
+   "fieldtype": "Data",
+   "insert_after": "section_break_59",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "Net Wt = Gross Wt - Diamond Wt(in gram) - Stone Wt(in gram) - Finding Wt - Other Wt",
+   "dt": "BOM",
+   "fieldname": "net_wt",
+   "fieldtype": "Data",
+   "insert_after": "column_break_f6tab",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_wdq2n",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "insert_after": "net_wt",
+   "label": "Certification Charges",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_f6tab",
+   "fieldtype": "Column Break",
+   "insert_after": "diamond_inclusive",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "BOM",
+   "fieldname": "total_diamond_weight_per_gram",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "insert_after": "column_break_95",
+   "label": "Total Diamond Weight(In gms)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_rmtxg",
+   "fieldtype": "Column Break",
+   "insert_after": "other_weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_diamond_weight_in_gms",
+   "fieldtype": "Float",
+   "insert_after": "finding_weight_",
+   "label": "Total Diamond Weight (In Gram)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_gemstone_weight_in_gms",
+   "fieldtype": "Float",
+   "insert_after": "total_diamond_weight_in_gms",
+   "label": "Total Gemstone Weight (In Gram)",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "setting_type",
+   "fieldtype": "Link",
+   "insert_after": "column_break_vxxb4",
+   "label": "Setting Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_qajgl",
+   "fieldtype": "Column Break",
+   "insert_after": "diamond_grade",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_xwsyp",
+   "fieldtype": "Section Break",
+   "insert_after": "column_break_qajgl",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "navratna",
+   "fieldtype": "Check",
+   "insert_after": "bom_gemstone_details",
+   "label": "Navratna",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "product_ratio",
+   "fieldtype": "Section Break",
+   "insert_after": "total_gemstone_weight_in_gms",
+   "label": "Product Ratio",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_n2h3h",
+   "fieldtype": "Column Break",
+   "insert_after": "metal_to_diamond_ratio_excl_of_finding",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_ai9uf",
+   "fieldtype": "Column Break",
+   "insert_after": "total_gemstone_weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_gemstone_weight_per_gram",
+   "fieldtype": "Float",
+   "insert_after": "column_break_ai9uf",
+   "label": "Total Gemstone Weight(In gms)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_dqw2x",
+   "fieldtype": "Section Break",
+   "insert_after": "finding_detail",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "finding_pcs",
+   "fieldtype": "Int",
+   "insert_after": "section_break_dqw2x",
+   "label": "Total Finding Pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_finding_weight_per_gram",
+   "fieldtype": "Float",
+   "insert_after": "column_break_oj6cj",
+   "label": "Total Finding Weight(In gms)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_8dbhl",
+   "fieldtype": "Column Break",
+   "insert_after": "finding_pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_oj6cj",
+   "fieldtype": "Column Break",
+   "insert_after": "finding_weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_6n58x",
+   "fieldtype": "Section Break",
+   "insert_after": "finish_bottom_view_preview",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_other_pcs",
+   "fieldtype": "Int",
+   "insert_after": "section_break_dbrar",
+   "label": "Total Other Pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "BOM",
+   "fieldname": "finding_bom_amount",
+   "fieldtype": "Currency",
+   "insert_after": "column_break_usg8m",
+   "label": "Finding BOM Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "BOM",
+   "fieldname": "finding_weight_",
+   "fieldtype": "Float",
+   "insert_after": "column_break_rmtxg",
+   "label": "Finding Weight (In Gram)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_type1",
+   "fieldtype": "Link",
+   "insert_after": "section_break_s9het",
+   "label": "Gemstone Type1",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "sizer_type",
+   "fieldtype": "Link",
+   "insert_after": "product_shape",
+   "label": "Sizer Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_type2",
+   "fieldtype": "Link",
+   "insert_after": "column_break_lur9h",
+   "label": "Gemstone Type2",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_type3",
+   "fieldtype": "Link",
+   "insert_after": "column_break_vodng",
+   "label": "Gemstone Type3",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_type4",
+   "fieldtype": "Link",
+   "insert_after": "column_break_1tdce",
+   "label": "Gemstone Type4",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_type5",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_type1",
+   "label": "Gemstone Type5",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_type6",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_type2",
+   "label": "Gemstone Type6",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_type7",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_type3",
+   "label": "Gemstone Type7",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_type8",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_type4",
+   "label": "Gemstone Type8",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "stone_changeable",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_grade",
+   "label": "Stone Changeable",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_vodng",
+   "fieldtype": "Column Break",
+   "insert_after": "gemstone_type6",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_1tdce",
+   "fieldtype": "Column Break",
+   "insert_after": "gemstone_type7",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_lur9h",
+   "fieldtype": "Column Break",
+   "insert_after": "gemstone_type5",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_usbsj",
+   "fieldtype": "Section Break",
+   "insert_after": "section_break_6n58x",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_s9het",
+   "fieldtype": "Section Break",
+   "insert_after": "gemstone_type",
+   "label": "Gemstone Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "sub_setting_type1",
+   "fieldtype": "Link",
+   "insert_after": "setting_type",
+   "label": "Sub Setting Type1",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "sub_setting_type2",
+   "fieldtype": "Link",
+   "insert_after": "sub_setting_type1",
+   "label": "Sub Setting Type2",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "qty",
+   "fieldtype": "Int",
+   "insert_after": "section_break_1gpaf",
+   "label": "No. of Pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "insert_after": "uom",
+   "label": "Metal Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "insert_after": "metal_type_",
+   "label": "Metal Touch",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_ndidp",
+   "fieldtype": "Section Break",
+   "insert_after": "changeable_type",
+   "label": "Finding Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_jzv1f",
+   "fieldtype": "Column Break",
+   "insert_after": "item_category",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_rrk43",
+   "fieldtype": "Section Break",
+   "insert_after": "item_subcategory",
+   "label": "Product Dimensions",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_usg8m",
+   "fieldtype": "Column Break",
+   "insert_after": "gemstone_bom_amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "insert_after": "metal_colour",
+   "label": "Metal Purity",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "description": "Comparison: 10grams = 1 Carat",
+   "dt": "BOM",
+   "fieldname": "metal_to_diamond_ratio_excl_of_finding",
+   "fieldtype": "Float",
+   "insert_after": "gold_to_diamond_ratio",
+   "label": "Metal to Diamond Ratio(Excl. of Finding)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_f4t8f",
+   "fieldtype": "Column Break",
+   "insert_after": "customer_stone",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_brwh7",
+   "fieldtype": "Column Break",
+   "insert_after": "total_other_pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_yjmqn",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_order_id",
+   "label": "Item Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_fe1i8",
+   "fieldtype": "Column Break",
+   "insert_after": "changeable",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_3vra3",
+   "fieldtype": "Section Break",
+   "insert_after": "2_in_1",
+   "label": "Weight Traget",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_al88c",
+   "fieldtype": "Column Break",
+   "insert_after": "gold_target",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_t9ij3",
+   "fieldtype": "Section Break",
+   "insert_after": "diamond_target",
+   "label": "Metal Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "metal_type_",
+   "fieldtype": "Link",
+   "insert_after": "section_break_t9ij3",
+   "label": "Metal Type ",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_ocdyz",
+   "fieldtype": "Column Break",
+   "insert_after": "metal_touch",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_pclqq",
+   "fieldtype": "Section Break",
+   "insert_after": "metal_purity",
+   "label": "Diamond Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_1gpaf",
+   "fieldtype": "Section Break",
+   "insert_after": "sub_setting_type2",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "diamond_quality",
+   "fieldtype": "Link",
+   "insert_after": "stone_shape",
+   "label": "Diamond Quality",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_vxxb4",
+   "fieldtype": "Column Break",
+   "insert_after": "stone_colour",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_6fswi",
+   "fieldtype": "Section Break",
+   "insert_after": "gemstone_type8",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_wmgnk",
+   "fieldtype": "Column Break",
+   "insert_after": "cut_or_cab",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_fjfjl",
+   "fieldtype": "Section Break",
+   "insert_after": "hinges",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_ifciu",
+   "fieldtype": "Column Break",
+   "insert_after": "feature",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "round_kadi",
+   "fieldtype": "Link",
+   "insert_after": "screw_type",
+   "label": "Round Kadi",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_he8cz",
+   "fieldtype": "Column Break",
+   "insert_after": "back_chain_size",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_ohx8r",
+   "fieldtype": "Section Break",
+   "insert_after": "back_belt_length",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "distance_between_kadi_to_mugappu",
+   "fieldtype": "Float",
+   "insert_after": "section_break_ohx8r",
+   "label": "Distance Between Kadi To Mugappu",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "number_of_ant",
+   "fieldtype": "Float",
+   "insert_after": "distance_between_kadi_to_mugappu",
+   "label": "Number Of Ant",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_mugappu",
+   "fieldtype": "Float",
+   "insert_after": "count_of_spiral_turns",
+   "label": "Total Mugappu",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_olkss",
+   "fieldtype": "Section Break",
+   "insert_after": "back_belt_patti",
+   "label": "Other Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_kqmbl",
+   "fieldtype": "Column Break",
+   "insert_after": "rhodium",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_qywla",
+   "fieldtype": "Section Break",
+   "insert_after": "customer_voucher_no",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_dbrar",
+   "fieldtype": "Section Break",
+   "insert_after": "other_detail",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_metal_amount",
+   "fieldtype": "Currency",
+   "insert_after": "total_metal_weight",
+   "label": "Total Metal Amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_finding_amount",
+   "fieldtype": "Currency",
+   "insert_after": "total_finding_weight_per_gram",
+   "label": "Total Finding Amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_diamond_amount",
+   "fieldtype": "Currency",
+   "insert_after": "total_diamond_weight_per_gram",
+   "label": "Total Diamond Amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_gemstone_amount",
+   "fieldtype": "Currency",
+   "insert_after": "total_gemstone_weight_per_gram",
+   "label": "Total Gemstone Amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_making_amount",
+   "fieldtype": "Currency",
+   "insert_after": "total_metal_amount",
+   "label": "Total Making Amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_wastage_amount",
+   "fieldtype": "Currency",
+   "insert_after": "total_making_amount",
+   "label": "Total Wastage  Amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "column_break_b9te9",
+   "fieldtype": "Column Break",
+   "insert_after": "sale_amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "custom_order_form_type",
+   "fieldtype": "Select",
+   "insert_after": "specifications",
+   "label": "Order Form Type",
+   "module": "Jewellery Erpnext",
+   "options": "Order"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "section_break_kixee",
+   "fieldtype": "Section Break",
+   "insert_after": "total_bom_amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "certification_amount",
+   "fieldtype": "Currency",
+   "insert_after": "section_break_kixee",
+   "label": "Certification Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "hallmarking_amount",
+   "fieldtype": "Currency",
+   "insert_after": "certification_amount",
+   "label": "Hallmarking Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "sale_amount",
+   "fieldtype": "Currency",
+   "insert_after": "hallmarking_amount",
+   "label": "Sale Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "custom_duty_amount",
+   "fieldtype": "Currency",
+   "insert_after": "column_break_b9te9",
+   "label": "Custom Duty Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "freight_amount",
+   "fieldtype": "Currency",
+   "insert_after": "custom_duty_amount",
+   "label": "Freight Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fetch_from": "item.custom_cad_order_id",
+   "fieldname": "custom_order_id",
+   "fieldtype": "Link",
+   "insert_after": "custom_cad_order_form_id",
+   "is_system_generated": 1,
+   "label": "Order ID",
+   "module": "Jewellery Erpnext",
+   "options": "Order"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "insert_after": "item",
+   "label": "BOM Type",
+   "module": "Jewellery Erpnext",
+   "options": "Template\nQuotation\nSales Order\nFinish Goods\nManufacturing Process"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "feature",
+   "fieldtype": "Link",
+   "insert_after": "round_kadi",
+   "is_system_generated": 1,
+   "label": "feature",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "fg_purchase_amout",
+   "fieldtype": "Section Break",
+   "insert_after": "freight_amount",
+   "label": "FG Purchase Amout",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "diamond_fg_purchase",
+   "fieldtype": "Currency",
+   "insert_after": "making_fg_purchase",
+   "label": "Diamond FG Purchase",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_fg_purchase",
+   "fieldtype": "Currency",
+   "insert_after": "diamond_fg_purchase",
+   "label": "Gemstone FG Purchase",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "making_fg_purchase",
+   "fieldtype": "Currency",
+   "insert_after": "fg_purchase_amout",
+   "label": "Making FG Purchase",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "operation_time_diff",
+   "fieldtype": "Float",
+   "insert_after": "actual_operation_time",
+   "is_system_generated": 1,
+   "label": "Operation Time Diff",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "total_operation_time",
+   "fieldtype": "Float",
+   "insert_after": "operations",
+   "is_system_generated": 1,
+   "label": "Total Operation Time",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "actual_operation_time",
+   "fieldtype": "Float",
+   "insert_after": "total_operation_time",
+   "is_system_generated": 1,
+   "label": "Actual Operation Time",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "bom",
+   "fieldtype": "Link",
+   "insert_after": "tag_no",
+   "is_system_generated": 1,
+   "label": "BOM",
+   "module": "Jewellery Erpnext",
+   "options": "BOM"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "custom_serial_number_creator",
+   "fieldtype": "Link",
+   "insert_after": "bom",
+   "label": "Serial Number Creator",
+   "module": "Jewellery Erpnext",
+   "options": "Serial Number Creator",
+   "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "doc_pricision",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "is_system_generated": 1,
+   "label": "doc_pricision",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "diamond_pricision",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "insert_after": "doc_pricision",
+   "is_system_generated": 1,
+   "label": "diamond_pricision",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "gemstone_pricision",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "insert_after": "diamond_pricision",
+   "is_system_generated": 1,
+   "label": "gemstone_pricision",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "BOM",
+   "fieldname": "custom_creation_doctype",
+   "fieldtype": "Link",
+   "insert_after": "selling_price_list",
+   "is_system_generated": 1,
+   "label": "Creation Doctype",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "BOM",
+   "fieldname": "custom_creation_docname",
+   "fieldtype": "Dynamic Link",
+   "insert_after": "custom_creation_doctype",
+   "is_system_generated": 1,
+   "label": "Creation Docname",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "custom_creation_doctype",
+   "read_only": 1
+  }
+ ]
+}

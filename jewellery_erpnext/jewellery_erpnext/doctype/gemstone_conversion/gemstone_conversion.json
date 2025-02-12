@@ -1,0 +1,303 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "GCON.#####",
+ "creation": "2024-02-02 21:38:56.883297",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "details_tab",
+  "employee",
+  "column_break_pfim",
+  "date",
+  "column_break_v3jso",
+  "company",
+  "column_break_2culq",
+  "department",
+  "column_break_g0kkz",
+  "manufacturer",
+  "column_break_ae5r8",
+  "branch",
+  "section_break_6lpva",
+  "source_warehouse",
+  "column_break_6oxul",
+  "target_warehouse",
+  "column_break_aw0qk",
+  "stock_entry",
+  "gemstone_converter_tab",
+  "g_source_item",
+  "g_source_qty",
+  "batch",
+  "loss_type",
+  "column_break_ynarw",
+  "g_target_item",
+  "g_target_qty",
+  "g_loss_item",
+  "g_loss_qty",
+  "section_break_l5w6",
+  "sc_target_table",
+  "section_break_ciwv5",
+  "batch_avail_qty",
+  "inventory_type",
+  "customer",
+  "supplier",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "details_tab",
+   "fieldtype": "Tab Break",
+   "label": "Details"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_2culq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_g0kkz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_ae5r8",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Today",
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_6lpva",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "source_warehouse",
+   "fieldtype": "Link",
+   "label": "Source Warehouse",
+   "options": "Warehouse",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_6oxul",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "target_warehouse",
+   "fieldtype": "Link",
+   "label": "Target Warehouse",
+   "options": "Warehouse",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_v3jso",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "Employee",
+   "options": "Employee",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_aw0qk",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "gemstone_converter_tab",
+   "fieldtype": "Tab Break",
+   "label": "Gemstone Converter"
+  },
+  {
+   "fieldname": "g_source_item",
+   "fieldtype": "Link",
+   "label": "Source Item",
+   "options": "Item"
+  },
+  {
+   "depends_on": "eval:doc.g_source_item",
+   "fieldname": "g_source_qty",
+   "fieldtype": "Float",
+   "label": "Source Qty"
+  },
+  {
+   "depends_on": "eval:doc.g_source_qty",
+   "fieldname": "g_loss_item",
+   "fieldtype": "Link",
+   "label": "Loss Item",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.g_loss_item",
+   "fieldname": "g_loss_qty",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "label": "Loss Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_ynarw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.g_source_qty",
+   "fieldname": "g_target_item",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Target Item",
+   "options": "Item"
+  },
+  {
+   "depends_on": "eval:doc.g_target_item",
+   "fieldname": "g_target_qty",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "label": "Target Qty"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Gemstone Conversion",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "depends_on": "eval:doc.g_source_item",
+   "fieldname": "batch",
+   "fieldtype": "Link",
+   "label": "Batch",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "section_break_ciwv5",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "label": "Inventory Type",
+   "options": "Inventory Type",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "batch_avail_qty",
+   "fieldtype": "Float",
+   "label": "Batch Available Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_pfim",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Branch"
+  },
+  {
+   "fieldname": "loss_type",
+   "fieldtype": "Link",
+   "label": "Loss Type",
+   "options": "Loss Type",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_l5w6",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "sc_target_table",
+   "fieldtype": "Table",
+   "label": "SC Target Table",
+   "options": "SC Target Table"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [
+  {
+   "link_doctype": "Stock Entry",
+   "link_fieldname": "custom_gemstone_conversion"
+  }
+ ],
+ "modified": "2024-12-11 11:53:51.714987",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Gemstone Conversion",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

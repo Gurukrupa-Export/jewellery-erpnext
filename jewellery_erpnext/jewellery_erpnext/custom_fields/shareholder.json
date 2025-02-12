@@ -1,0 +1,92 @@
+{
+ "Shareholder": [
+  {
+   "depends_on": "eval:doc.custom_activate_interest_calculation == 1",
+   "dt": "Shareholder",
+   "fieldname": "custom_section_break_s6dje",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_duration",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Shareholder",
+   "fieldname": "custom_shareholder_table",
+   "fieldtype": "Table",
+   "insert_after": "custom_section_break_s6dje",
+   "label": "Shareholder Table",
+   "module": "Jewellery Erpnext",
+   "options": "Shareholder Table"
+  },
+  {
+   "dt": "Shareholder",
+   "fieldname": "custom_column_break_tjzrb",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_interest_rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Shareholder",
+   "fieldname": "custom_column_break_8pem1",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_final_amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Shareholder",
+   "fieldname": "custom_total_interest_amount",
+   "fieldtype": "Float",
+   "insert_after": "custom_shareholder_table",
+   "label": "Total Interest Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Shareholder",
+   "fieldname": "custom_duration",
+   "fieldtype": "Int",
+   "insert_after": "custom_column_break_tjzrb",
+   "label": "Duration(In Days)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Shareholder",
+   "fieldname": "custom_interest_rate",
+   "fieldtype": "Link",
+   "insert_after": "custom_column_break_8pem1",
+   "label": "Interest Rate",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Shareholder",
+   "fieldname": "custom_final_amount",
+   "fieldtype": "Float",
+   "insert_after": "custom_amount",
+   "label": "Final Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Shareholder",
+   "fieldname": "custom_amount",
+   "fieldtype": "Float",
+   "insert_after": "custom_section_break_viwvd",
+   "label": "Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.custom_activate_interest_calculation == 1",
+   "dt": "Shareholder",
+   "fieldname": "custom_section_break_viwvd",
+   "fieldtype": "Section Break",
+   "insert_after": "contact_list",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Shareholder",
+   "fieldname": "custom_activate_interest_calculation",
+   "fieldtype": "Check",
+   "insert_after": "is_company",
+   "label": "Activate Interest Calculation",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

@@ -1,0 +1,442 @@
+{
+    "actions": [],
+    "allow_rename": 1,
+    "creation": "2022-05-06 15:13:33.595294",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+     "design_type",
+     "tag__design_id",
+     "item_code",
+     "master_bom_no",
+     "column_break_8",
+     "delivery_date",
+     "tag_id",
+     "estimated_duedate",
+     "is_repairing",
+     "section_break_21",
+     "reference_design_code_1",
+     "reference_serial_no_1",
+     "column_break_2ffuz",
+     "reference_design_code_2",
+     "reference_serial_no_2",
+     "column_break_nof5b",
+     "reference_design_code_3",
+     "reference_serial_no_3",
+     "section_break_2aad",
+     "category",
+     "subcategory",
+     "setting_type",
+     "sub_setting_type1",
+     "sub_setting_type2",
+     "column_break_15",
+     "qty",
+     "metal_type",
+     "metal_touch",
+     "metal_colour",
+     "budget",
+     "section_break_4e54",
+     "metal_target",
+     "is_metal_target_range",
+     "metal_target_from_range",
+     "column_break_8oa4",
+     "diamond_target",
+     "is_diamond_target_range",
+     "diamond_target_from_range",
+     "section_break_2dwg",
+     "product_size",
+     "sizer_type",
+     "nakshi_from",
+     "column_break_cmq1",
+     "length",
+     "width",
+     "height",
+     "nakshi_weight",
+     "section_break_33",
+     "gemstone_type1",
+     "column_break_37",
+     "gemstone_size",
+     "section_break_8",
+     "design_image1",
+     "column_break_lgrp",
+     "design_image2",
+     "column_break_zgvm",
+     "design_image3",
+     "column_break_qykn",
+     "design_image4",
+     "section_break_ggt8"
+    ],
+    "fields": [
+     {
+      "fieldname": "design_type",
+      "fieldtype": "Select",
+      "label": "Design Type",
+      "options": "\nNew Design\nMod",
+      "reqd": 1
+     },
+     {
+      "depends_on": "eval: ((doc.design_type==\"Mod\")||(doc.design_type==\"Similar\"))",
+      "fieldname": "tag__design_id",
+      "fieldtype": "Link",
+      "label": "Design Code",
+      "mandatory_depends_on": "eval: ((doc.design_type==\"Mod\")||(doc.design_type==\"Similar\"))",
+      "options": "Item"
+     },
+     {
+      "depends_on": "eval:(doc.design_type==\"Mod\")",
+      "fetch_from": "tag__design_id.item_code",
+      "fieldname": "item_code",
+      "fieldtype": "Data",
+      "hidden": 1,
+      "label": "Item Code"
+     },
+     {
+      "depends_on": "eval: ((doc.design_type==\"Mod\")||(doc.design_type==\"Similar\"))\r\n",
+      "fetch_from": "tag__design_id.tag_no",
+      "fieldname": "tag_id",
+      "fieldtype": "Link",
+      "hidden": 1,
+      "label": "Serial No",
+      "options": "Serial No"
+     },
+     {
+      "depends_on": "eval:((doc.design_type==\"Mod\"))",
+      "fetch_from": "tag__design_id.master_bom",
+      "fieldname": "master_bom_no",
+      "fieldtype": "Link",
+      "hidden": 1,
+      "label": "Master BOM",
+      "options": "BOM"
+     },
+     {
+      "fieldname": "reference_design_code_1",
+      "fieldtype": "Link",
+      "label": "Reference Design Code 1",
+      "options": "Item"
+     },
+     {
+      "fieldname": "column_break_8",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fetch_from": "tag__design_id.item_category",
+      "fetch_if_empty": 1,
+      "fieldname": "category",
+      "fieldtype": "Link",
+      "label": "Item Category",
+      "options": "Attribute Value",
+      "reqd": 1
+     },
+     {
+      "fieldname": "subcategory",
+      "fieldtype": "Link",
+      "label": "Item Subcategory",
+      "options": "Attribute Value",
+      "reqd": 1
+     },
+     {
+      "default": "1",
+      "fieldname": "qty",
+      "fieldtype": "Int",
+      "label": "No of Designs",
+      "reqd": 1
+     },
+     {
+      "fieldname": "delivery_date",
+      "fieldtype": "Date",
+      "in_list_view": 1,
+      "label": "Delivery Date"
+     },
+     {
+      "fieldname": "estimated_duedate",
+      "fieldtype": "Date",
+      "in_list_view": 1,
+      "label": "Estimated Due Date"
+     },
+     {
+      "fieldname": "design_image1",
+      "fieldtype": "Attach Image",
+      "label": "Design Image1"
+     },
+     {
+      "fieldname": "section_break_8",
+      "fieldtype": "Section Break",
+      "label": "Design Image"
+     },
+     {
+      "fieldname": "section_break_21",
+      "fieldtype": "Section Break",
+      "hidden": 1
+     },
+     {
+      "fetch_from": "tag__design_id.setting_type",
+      "fetch_if_empty": 1,
+      "fieldname": "setting_type",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Setting Type",
+      "options": "Attribute Value",
+      "reqd": 1
+     },
+     {
+      "depends_on": "eval:doc.setting_type == 'Open'",
+      "fieldname": "sub_setting_type2",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Sub Setting type2",
+      "mandatory_depends_on": "eval:doc.setting_type == 'Open'",
+      "options": "Attribute Value"
+     },
+     {
+      "fieldname": "column_break_15",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "diamond_target",
+      "fieldtype": "Float",
+      "label": "Diamond Target",
+      "reqd": 1
+     },
+     {
+      "fieldname": "product_size",
+      "fieldtype": "Data",
+      "label": "Product Size",
+      "reqd": 1
+     },
+     {
+      "fieldname": "budget",
+      "fieldtype": "Float",
+      "in_list_view": 1,
+      "label": "Budget",
+      "reqd": 1
+     },
+     {
+      "fieldname": "section_break_33",
+      "fieldtype": "Section Break"
+     },
+     {
+      "fieldname": "gemstone_type1",
+      "fieldtype": "Link",
+      "label": "Gemstone Type1",
+      "options": "Attribute Value"
+     },
+     {
+      "fieldname": "column_break_37",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "reference_serial_no_1",
+      "fieldtype": "Link",
+      "label": "Reference Serial No 1",
+      "options": "Serial No"
+     },
+     {
+      "fieldname": "column_break_2ffuz",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "reference_design_code_2",
+      "fieldtype": "Link",
+      "label": "Reference Design Code 2",
+      "options": "Item"
+     },
+     {
+      "fieldname": "reference_serial_no_2",
+      "fieldtype": "Link",
+      "label": "Reference Serial No 2",
+      "options": "Serial No"
+     },
+     {
+      "fieldname": "column_break_nof5b",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "reference_design_code_3",
+      "fieldtype": "Link",
+      "label": "Reference Design Code 3",
+      "options": "Item"
+     },
+     {
+      "fieldname": "reference_serial_no_3",
+      "fieldtype": "Link",
+      "label": "Reference Serial No 3",
+      "options": "Serial No"
+     },
+     {
+      "fieldname": "gemstone_size",
+      "fieldtype": "Link",
+      "label": "Gemstone Size",
+      "options": "Attribute Value"
+     },
+     {
+      "default": "0",
+      "fieldname": "is_repairing",
+      "fieldtype": "Check",
+      "hidden": 1,
+      "label": "Is Repairing",
+      "read_only": 1
+     },
+     {
+      "fieldname": "section_break_2aad",
+      "fieldtype": "Section Break"
+     },
+     {
+      "fieldname": "sub_setting_type1",
+      "fieldtype": "Link",
+      "in_list_view": 1,
+      "label": "Sub Setting Type1",
+      "options": "Attribute Value",
+      "reqd": 1
+     },
+     {
+      "fieldname": "metal_type",
+      "fieldtype": "Link",
+      "label": "Metal Type",
+      "options": "Attribute Value",
+      "reqd": 1
+     },
+     {
+      "fieldname": "metal_touch",
+      "fieldtype": "Link",
+      "label": "Metal Touch",
+      "options": "Attribute Value",
+      "reqd": 1
+     },
+     {
+      "fieldname": "metal_colour",
+      "fieldtype": "Link",
+      "label": "Metal Colour",
+      "options": "Attribute Value",
+      "reqd": 1
+     },
+     {
+      "fieldname": "section_break_4e54",
+      "fieldtype": "Section Break"
+     },
+     {
+      "fieldname": "metal_target",
+      "fieldtype": "Float",
+      "label": "Metal Target",
+      "reqd": 1
+     },
+     {
+      "fieldname": "sizer_type",
+      "fieldtype": "Link",
+      "label": "Sizer Type",
+      "options": "Attribute Value",
+      "reqd": 1
+     },
+     {
+      "fieldname": "column_break_cmq1",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "length",
+      "fieldtype": "Float",
+      "label": "Length"
+     },
+     {
+      "fieldname": "width",
+      "fieldtype": "Float",
+      "label": "Width"
+     },
+     {
+      "fieldname": "height",
+      "fieldtype": "Float",
+      "label": "Height"
+     },
+     {
+      "fieldname": "nakshi_from",
+      "fieldtype": "Link",
+      "hidden": 1,
+      "label": "Nakshi From",
+      "options": "Attribute Value"
+     },
+     {
+      "fieldname": "nakshi_weight",
+      "fieldtype": "Float",
+      "hidden": 1,
+      "label": "Nakshi Weight",
+      "options": "Attribute Value"
+     },
+     {
+      "fieldname": "column_break_lgrp",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "design_image2",
+      "fieldtype": "Attach Image",
+      "label": "Design Image2"
+     },
+     {
+      "fieldname": "column_break_zgvm",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "design_image3",
+      "fieldtype": "Attach Image",
+      "label": "Design Image3"
+     },
+     {
+      "fieldname": "column_break_qykn",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "design_image4",
+      "fieldtype": "Attach Image",
+      "label": "Design Image4"
+     },
+     {
+      "fieldname": "section_break_ggt8",
+      "fieldtype": "Section Break"
+     },
+     {
+      "default": "0",
+      "fieldname": "is_metal_target_range",
+      "fieldtype": "Check",
+      "label": "Is Metal Target Range"
+     },
+     {
+      "depends_on": "eval: doc.is_metal_target_range == 1",
+      "fieldname": "metal_target_from_range",
+      "fieldtype": "Link",
+      "label": "Metal Target Range",
+      "options": "Attribute Value"
+     },
+     {
+      "fieldname": "column_break_8oa4",
+      "fieldtype": "Column Break"
+     },
+     {
+      "default": "0",
+      "fieldname": "is_diamond_target_range",
+      "fieldtype": "Check",
+      "label": "Is Diamond Target Range"
+     },
+     {
+      "depends_on": "eval: doc.is_diamond_target_range == 1",
+      "fieldname": "diamond_target_from_range",
+      "fieldtype": "Link",
+      "label": "Diamond Target Range",
+      "options": "Attribute Value"
+     },
+     {
+      "fieldname": "section_break_2dwg",
+      "fieldtype": "Section Break"
+     }
+    ],
+    "hide_toolbar": 1,
+    "index_web_pages_for_search": 1,
+    "istable": 1,
+    "links": [],
+    "modified": "2024-08-26 10:40:19.532831",
+    "modified_by": "Administrator",
+    "module": "Gurukrupa Exports",
+    "name": "Sketch Order Form Detail",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
+   }

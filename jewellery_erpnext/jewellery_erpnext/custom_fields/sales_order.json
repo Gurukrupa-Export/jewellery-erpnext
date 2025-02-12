@@ -1,0 +1,402 @@
+{
+ "Sales Order": [
+  {
+   "dt": "Sales Order",
+   "fetch_from": "company_address.gstin",
+   "fieldname": "company_gstin",
+   "fieldtype": "Data",
+   "insert_after": "company_address",
+   "is_system_generated": 1,
+   "label": "Company GSTIN",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "exempt_from_sales_tax",
+   "fieldtype": "Check",
+   "insert_after": "taxes_and_charges",
+   "is_system_generated": 1,
+   "label": "Is customer exempted from sales tax?",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fetch_from": "customer_address.gstin",
+   "fieldname": "billing_address_gstin",
+   "fieldtype": "Data",
+   "insert_after": "customer_address",
+   "is_system_generated": 1,
+   "label": "Billing Address GSTIN",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Sales Order",
+   "fetch_from": "shipping_address_name.gstin",
+   "fieldname": "customer_gstin",
+   "fieldtype": "Data",
+   "insert_after": "shipping_address_name",
+   "is_system_generated": 1,
+   "label": "Customer GSTIN",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "gold_rate",
+   "fieldtype": "Currency",
+   "insert_after": "column_break_jkkc9",
+   "label": "Metal Rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "default": "0",
+   "dt": "Sales Order",
+   "fieldname": "gold_rate_with_gst",
+   "fieldtype": "Currency",
+   "insert_after": "section_break_plvgd",
+   "label": "Metal Rate With GST",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:doc.company !='Sadguru Diamond'",
+   "dt": "Sales Order",
+   "fieldname": "section_break_plvgd",
+   "fieldtype": "Section Break",
+   "insert_after": "reserve_stock",
+   "label": "Gold Rate With GST",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "insert_after": "dimension_col_break",
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  },
+  {
+   "depends_on": "eval:doc.company != 'Sadguru Diamond'",
+   "dt": "Sales Order",
+   "fieldname": "order_details",
+   "fieldtype": "Section Break",
+   "insert_after": "is_export_with_gst",
+   "label": "Order Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "company_name",
+   "fieldtype": "Data",
+   "insert_after": "order_details",
+   "label": "Company Name",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "customer_code",
+   "fieldtype": "Data",
+   "insert_after": "company_name",
+   "label": "Customer Code",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "order_form",
+   "fieldtype": "Link",
+   "insert_after": "customer_code",
+   "label": "Order Form",
+   "module": "Jewellery Erpnext",
+   "options": "Order Form"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "salesman_name",
+   "fieldtype": "Data",
+   "insert_after": "custom_repair_order_form",
+   "label": "Salesman Name",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "column_break_lylqx",
+   "fieldtype": "Column Break",
+   "insert_after": "salesman_name",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "order_branch_name",
+   "fieldtype": "Data",
+   "insert_after": "column_break_lylqx",
+   "label": "Order Branch name",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "order_form_date",
+   "fieldtype": "Date",
+   "insert_after": "order_branch_name",
+   "label": "Order Form Date",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "parcel_type",
+   "fieldtype": "Link",
+   "insert_after": "service_type",
+   "label": "Parcel Type",
+   "module": "Jewellery Erpnext",
+   "options": "Parcel Place List"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "service_type",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_column_break_9b6ti",
+   "label": "Service Type",
+   "module": "Jewellery Erpnext",
+   "options": "Service Type 2"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "parcel_place",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "order_form_date",
+   "label": "Shipping Territory",
+   "module": "Jewellery Erpnext",
+   "options": "Territory Multi Select"
+  },
+  {
+   "depends_on": "eval:doc.company != 'Sadguru Diamond'",
+   "dt": "Sales Order",
+   "fieldname": "custom_diamond_quality",
+   "fieldtype": "Link",
+   "insert_after": "company",
+   "label": "Diamond Quality",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.company != 'Sadguru Diamond'",
+   "dt": "Sales Order",
+   "fieldname": "custom_updated_delivery_date",
+   "fieldtype": "Date",
+   "insert_after": "custom_update_delivery_date",
+   "label": "Updated Delivery Date",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Sales Order",
+   "fieldname": "custom_updated_shipping_territory",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "parcel_place",
+   "label": "Updated Shipping Territory",
+   "module": "Jewellery Erpnext",
+   "options": "Territory Multi Select"
+  },
+  {
+   "depends_on": "eval:doc.company != 'Sadguru Diamond'",
+   "dt": "Sales Order",
+   "fieldname": "custom_section_break_enm3o",
+   "fieldtype": "Section Break",
+   "insert_after": "amended_from",
+   "label": "Sales Teams",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_sales_teams",
+   "fieldtype": "Table",
+   "insert_after": "custom_section_break_enm3o",
+   "label": "Sales Teams",
+   "module": "Jewellery Erpnext",
+   "options": "Sale Person Child Table"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_repair_order_form",
+   "fieldtype": "Link",
+   "insert_after": "order_form",
+   "label": "Repair Order Form",
+   "module": "Jewellery Erpnext",
+   "options": "Repair Order Form"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "ref_customer",
+   "fieldtype": "Link",
+   "insert_after": "customer_name",
+   "label": "Ref Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.gst_category == \"SEZ\" || (doc.gst_category == \"Overseas\" && doc.place_of_supply == \"96-Other Countries\")",
+   "dt": "Sales Order",
+   "fieldname": "is_export_with_gst",
+   "fieldtype": "Check",
+   "insert_after": "is_reverse_charge",
+   "is_system_generated": 1,
+   "label": "Is Export With Payment of GST",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "gst_section",
+   "fieldtype": "Section Break",
+   "insert_after": "gst_vehicle_type",
+   "is_system_generated": 1,
+   "label": "GST Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "depends_on": "eval:gst_settings.enable_sales_through_ecommerce_operators",
+   "dt": "Sales Order",
+   "fieldname": "ecommerce_gstin",
+   "fieldtype": "Data",
+   "insert_after": "gst_section",
+   "is_system_generated": 1,
+   "label": "E-commerce GSTIN",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "gst_col_break",
+   "fieldtype": "Column Break",
+   "insert_after": "ecommerce_gstin",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fetch_from": "customer_address.gst_category",
+   "fieldname": "gst_category",
+   "fieldtype": "Data",
+   "insert_after": "billing_address_gstin",
+   "is_system_generated": 1,
+   "label": "GST Category",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_gst_breakup",
+   "fieldtype": "Section Break",
+   "insert_after": "other_charges_calculation",
+   "is_system_generated": 1,
+   "label": "GST Breakup",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Sales Order",
+   "fieldname": "custom_gst_breakup_table",
+   "fieldtype": "Long Text",
+   "insert_after": "custom_gst_breakup",
+   "is_system_generated": 1,
+   "label": "GST Breakup Table",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "dt": "Sales Order",
+   "fieldname": "is_reverse_charge",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "insert_after": "skip_delivery_note",
+   "is_system_generated": 1,
+   "label": "Is Reverse Charge",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "sales_type",
+   "fieldtype": "Link",
+   "insert_after": "order_type",
+   "label": "Sales Type",
+   "module": "Jewellery Erpnext",
+   "options": "Sales Type"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "section_gst_breakup",
+   "fieldtype": "Section Break",
+   "insert_after": "other_charges_calculation",
+   "is_system_generated": 1,
+   "label": "GST Breakup",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Sales Order",
+   "fieldname": "gst_breakup_table",
+   "fieldtype": "Long Text",
+   "insert_after": "section_gst_breakup",
+   "is_system_generated": 1,
+   "label": "GST Breakup Table",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "column_break_jkkc9",
+   "fieldtype": "Column Break",
+   "insert_after": "gold_rate_with_gst",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_column_break_9b6ti",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_updated_shipping_territory",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_jewelex_order_no",
+   "fieldtype": "Data",
+   "insert_after": "po_date",
+   "is_system_generated": 1,
+   "label": "Jewelex Order No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "place_of_supply",
+   "fieldtype": "Autocomplete",
+   "insert_after": "gst_category",
+   "is_system_generated": 1,
+   "label": "Place of Supply",
+   "module": "Jewellery Erpnext",
+   "options": "01-Jammu and Kashmir\n02-Himachal Pradesh\n03-Punjab\n04-Chandigarh\n05-Uttarakhand\n06-Haryana\n07-Delhi\n08-Rajasthan\n09-Uttar Pradesh\n10-Bihar\n11-Sikkim\n12-Arunachal Pradesh\n13-Nagaland\n14-Manipur\n15-Mizoram\n16-Tripura\n17-Meghalaya\n18-Assam\n19-West Bengal\n20-Jharkhand\n21-Odisha\n22-Chhattisgarh\n23-Madhya Pradesh\n24-Gujarat\n26-Dadra and Nagar Haveli and Daman and Diu\n27-Maharashtra\n29-Karnataka\n30-Goa\n31-Lakshadweep Islands\n32-Kerala\n33-Tamil Nadu\n34-Puducherry\n35-Andaman and Nicobar Islands\n36-Telangana\n37-Andhra Pradesh\n38-Ladakh\n96-Other Countries\n97-Other Territory"
+  },
+  {
+   "allow_on_submit": 1,
+   "depends_on": "eval:gst_settings.enable_sales_through_ecommerce_operators && doc.ecommerce_gstin",
+   "dt": "Sales Order",
+   "fieldname": "ecommerce_supply_type",
+   "fieldtype": "Data",
+   "insert_after": "ecommerce_gstin",
+   "is_system_generated": 1,
+   "label": "E-commerce Supply Type",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.docstatus == 1;",
+   "dt": "Sales Order",
+   "fieldname": "custom_update_delivery_date",
+   "fieldtype": "Check",
+   "insert_after": "delivery_date",
+   "label": "Update Delivery Date",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

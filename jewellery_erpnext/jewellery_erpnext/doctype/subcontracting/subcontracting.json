@@ -1,0 +1,343 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "SUBCON.#####",
+ "creation": "2024-03-11 17:00:51.998619",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_554z",
+  "department",
+  "supplier",
+  "source_doc",
+  "transaction_type",
+  "column_break_bykf",
+  "date",
+  "main_slip",
+  "metal_purity",
+  "purity_percentage",
+  "employee_ir_type",
+  "section_break_yywe",
+  "work_order",
+  "column_break_jcc3",
+  "manufacturing_order",
+  "column_break_aonq",
+  "operation",
+  "column_break_eirf",
+  "company",
+  "column_break_rl1a",
+  "manufacturer",
+  "branch",
+  "section_break_0pnp",
+  "source_warehouse",
+  "column_break_13c5",
+  "target_warehouse",
+  "column_break_31jc",
+  "stock_entry",
+  "parent_stock_entry",
+  "metal_details_section",
+  "metal_type",
+  "metal_touch",
+  "column_break_c1i6",
+  "metal_colour",
+  "subcontracting_tab",
+  "section_break_fycz",
+  "source_table",
+  "section_break_vkvp",
+  "finish_item",
+  "batch_no",
+  "section_break_bdaa",
+  "sum_source_table",
+  "purity_wise_allowed_source_qty",
+  "column_break_owbg",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_554z",
+   "fieldtype": "Tab Break",
+   "label": "Details"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Subcontracting",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "column_break_bykf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Today",
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "label": "Date"
+  },
+  {
+   "fieldname": "section_break_yywe",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Link",
+   "label": "Work Order",
+   "options": "Manufacturing Work Order"
+  },
+  {
+   "fieldname": "column_break_jcc3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "work_order.manufacturing_order",
+   "fieldname": "manufacturing_order",
+   "fieldtype": "Link",
+   "label": "Manufacturing Order",
+   "options": "Parent Manufacturing Order"
+  },
+  {
+   "fieldname": "column_break_aonq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "Operation",
+   "options": "Manufacturing Operation"
+  },
+  {
+   "fieldname": "column_break_eirf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "column_break_rl1a",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer"
+  },
+  {
+   "fieldname": "section_break_0pnp",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "source_warehouse",
+   "fieldtype": "Link",
+   "label": "Source Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "column_break_13c5",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "target_warehouse",
+   "fieldtype": "Link",
+   "label": "Target Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "column_break_31jc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Stock Entry",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "subcontracting_tab",
+   "fieldtype": "Tab Break",
+   "label": "Subcontracting"
+  },
+  {
+   "fieldname": "section_break_fycz",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "source_table",
+   "fieldtype": "Table",
+   "label": "Source Table",
+   "options": "SM Source Table"
+  },
+  {
+   "fieldname": "section_break_bdaa",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "employee_ir_type",
+   "fieldtype": "Select",
+   "label": "Employee IR Type",
+   "options": "\nIssue\nReceive"
+  },
+  {
+   "fieldname": "sum_source_table",
+   "fieldtype": "Float",
+   "label": "Sum Source Table",
+   "read_only": 1
+  },
+  {
+   "fieldname": "purity_wise_allowed_source_qty",
+   "fieldtype": "Float",
+   "label": "Allowed Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Branch"
+  },
+  {
+   "fieldname": "main_slip",
+   "fieldtype": "Link",
+   "label": "Main Slip",
+   "options": "Main Slip"
+  },
+  {
+   "fetch_from": "operation.metal_purity",
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "label": "Metal Purity",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "metal_purity.purity_percentage",
+   "fieldname": "purity_percentage",
+   "fieldtype": "Float",
+   "label": "Purity Percentage",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_vkvp",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "finish_item",
+   "fieldtype": "Link",
+   "label": "Finish Item",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_owbg",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "source_doc",
+   "fieldtype": "Link",
+   "label": "Source Doc",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "transaction_type",
+   "fieldtype": "Select",
+   "label": "Transaction Type",
+   "options": "Issue\nReceive"
+  },
+  {
+   "fieldname": "metal_details_section",
+   "fieldtype": "Section Break",
+   "label": "Metal Details"
+  },
+  {
+   "fetch_from": "operation.metal_type",
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal Type",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "operation.metal_touch",
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "label": "Metal Touch",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_c1i6",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "operation.metal_colour",
+   "fieldname": "metal_colour",
+   "fieldtype": "Link",
+   "label": "Metal Colour",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.transaction_type == \"Issue\";",
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "label": "Batch No",
+   "options": "Batch",
+   "read_only": 1
+  },
+  {
+   "fieldname": "parent_stock_entry",
+   "fieldtype": "Link",
+   "label": "Parent Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2024-03-28 12:03:56.815323",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Subcontracting",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

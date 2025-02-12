@@ -1,0 +1,130 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-04-26 11:12:32.145466",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "name1",
+  "relation",
+  "occupation",
+  "column_break_atke",
+  "birth_date",
+  "age",
+  "section_break_yvlg",
+  "document_name",
+  "column_break_bou6",
+  "document_number",
+  "section_break_9g5h",
+  "same_as_present",
+  "address",
+  "column_break_t34o",
+  "same_as_permanent",
+  "section_break_8ja4",
+  "is_nominee",
+  "nominee_share"
+ ],
+ "fields": [
+  {
+   "fieldname": "name1",
+   "fieldtype": "Data",
+   "label": "Name"
+  },
+  {
+   "fieldname": "relation",
+   "fieldtype": "Link",
+   "label": "Relation",
+   "options": "Employee Relations"
+  },
+  {
+   "fieldname": "occupation",
+   "fieldtype": "Data",
+   "label": "Occupation"
+  },
+  {
+   "fieldname": "column_break_atke",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "birth_date",
+   "fieldtype": "Date",
+   "label": "Birth Date"
+  },
+  {
+   "fieldname": "age",
+   "fieldtype": "Data",
+   "label": "Age"
+  },
+  {
+   "fieldname": "section_break_yvlg",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "document_name",
+   "fieldtype": "Data",
+   "label": "Document Name"
+  },
+  {
+   "fieldname": "column_break_bou6",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "document_number",
+   "fieldtype": "Data",
+   "label": "Document Number"
+  },
+  {
+   "fieldname": "section_break_9g5h",
+   "fieldtype": "Section Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "same_as_present",
+   "fieldtype": "Check",
+   "label": "Same as Present"
+  },
+  {
+   "fieldname": "address",
+   "fieldtype": "Data",
+   "label": "Address"
+  },
+  {
+   "fieldname": "column_break_t34o",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "same_as_permanent",
+   "fieldtype": "Check",
+   "label": "Same as Permanent"
+  },
+  {
+   "fieldname": "section_break_8ja4",
+   "fieldtype": "Section Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_nominee",
+   "fieldtype": "Check",
+   "label": "Is Nominee"
+  },
+  {
+   "fieldname": "nominee_share",
+   "fieldtype": "Percent",
+   "label": "Nominee Share"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-04-26 11:23:00.510458",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Employee Family Background",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

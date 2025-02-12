@@ -1,0 +1,337 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-03-29 16:11:22.088507",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "sales_order",
+  "docname",
+  "item_code",
+  "manufacturing_bom",
+  "bom",
+  "mould_no",
+  "delivery_date",
+  "estimated_delivery_date",
+  "manufacturing_end_date",
+  "customer",
+  "customer_po",
+  "child_po",
+  "column_break_p3gkl",
+  "pending_qty",
+  "manufacturing_order_qty",
+  "subcontracting_qty",
+  "qty_per_manufacturing_order",
+  "subcontracting",
+  "supplier",
+  "purchase_type",
+  "produced_qty",
+  "order_form_date",
+  "diamond_quality",
+  "section_break_p9a7o",
+  "customer_weight",
+  "customer_sample",
+  "customer_voucher_no",
+  "customer_gold",
+  "column_break_o2sdt",
+  "customer_diamond",
+  "customer_stone",
+  "customer_good",
+  "section_break_ueyw",
+  "order_form_type",
+  "repair_type",
+  "product_type",
+  "column_break_qhwk",
+  "serial_no",
+  "serial_id_bom",
+  "mwo"
+ ],
+ "fields": [
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Sales Order",
+   "options": "Sales Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "mould_no",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Mould No",
+   "read_only": 1
+  },
+  {
+   "columns": 1,
+   "fieldname": "pending_qty",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Pending Qty",
+   "read_only": 1
+  },
+  {
+   "columns": 1,
+   "default": "0",
+   "fieldname": "subcontracting",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Subcontracting"
+  },
+  {
+   "fieldname": "docname",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Docname",
+   "options": "Sales Order Item",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "produced_qty",
+   "fieldtype": "Int",
+   "label": "Produced Qty",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sales_order.delivery_date",
+   "fieldname": "delivery_date",
+   "fieldtype": "Date",
+   "label": "Delivery Date"
+  },
+  {
+   "fieldname": "column_break_p3gkl",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "order_form_date",
+   "fieldtype": "Date",
+   "label": "Order Form Date"
+  },
+  {
+   "fieldname": "diamond_quality",
+   "fieldtype": "Link",
+   "label": "Diamond Quality",
+   "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval: doc.subcontracting",
+   "fetch_from": "item_code.product_supplier",
+   "fetch_if_empty": 1,
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier Name",
+   "mandatory_depends_on": "eval: doc.subcontracting",
+   "options": "Supplier"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "estimated_delivery_date",
+   "fieldtype": "Date",
+   "label": "Estimated Delivery Date",
+   "mandatory_depends_on": "eval: doc.subcontracting"
+  },
+  {
+   "fieldname": "manufacturing_end_date",
+   "fieldtype": "Date",
+   "label": "Manufacturing End Date"
+  },
+  {
+   "columns": 1,
+   "fieldname": "manufacturing_order_qty",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Manufacturing Order Qty"
+  },
+  {
+   "columns": 1,
+   "default": "1",
+   "fieldname": "qty_per_manufacturing_order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Qty Per Manufacturing Order",
+   "reqd": 1
+  },
+  {
+   "fieldname": "bom",
+   "fieldtype": "Link",
+   "label": "BOM",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval: doc.subcontracting",
+   "fieldname": "subcontracting_qty",
+   "fieldtype": "Int",
+   "label": "Subcontracting Qty",
+   "mandatory_depends_on": "eval: doc.subcontracting"
+  },
+  {
+   "fieldname": "section_break_p9a7o",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "Fetch From Sales Order",
+   "fieldname": "customer_sample",
+   "fieldtype": "Link",
+   "label": "Customer Sample",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "description": "Fetch From Sales Order",
+   "fieldname": "customer_voucher_no",
+   "fieldtype": "Data",
+   "label": "Customer Voucher No",
+   "read_only": 1
+  },
+  {
+   "description": "Fetch From Sales Order",
+   "fieldname": "customer_gold",
+   "fieldtype": "Select",
+   "label": "Customer Gold",
+   "options": "\nYes\nNo",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_o2sdt",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Fetch From Sales Order",
+   "fieldname": "customer_diamond",
+   "fieldtype": "Select",
+   "label": "Customer Diamond",
+   "options": "\nYes\nNo",
+   "read_only": 1
+  },
+  {
+   "description": "Fetch From Sales Order",
+   "fieldname": "customer_stone",
+   "fieldtype": "Select",
+   "label": "Customer Stone",
+   "options": "\nYes\nNo",
+   "read_only": 1
+  },
+  {
+   "description": "Fetch From Sales Order",
+   "fieldname": "customer_good",
+   "fieldtype": "Select",
+   "label": "Customer Good",
+   "options": "\nYes\nNo",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manufacturing_bom",
+   "fieldtype": "Link",
+   "label": "Manufacturing BOM",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "purchase_type",
+   "fieldtype": "Link",
+   "label": "Purchase Type",
+   "mandatory_depends_on": "eval: doc.subcontracting == 1",
+   "options": "Purchase Type"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_ueyw",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "order_form_type",
+   "fieldtype": "Select",
+   "label": "Order Form Type",
+   "options": "\nOrder\nRepair Order"
+  },
+  {
+   "fieldname": "repair_type",
+   "fieldtype": "Link",
+   "label": "Repair Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "column_break_qhwk",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "product_type",
+   "fieldtype": "Link",
+   "label": "Product Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "serial_no",
+   "fieldtype": "Link",
+   "label": "Serial No",
+   "options": "Serial No"
+  },
+  {
+   "fieldname": "serial_id_bom",
+   "fieldtype": "Link",
+   "label": "Serial ID BOM",
+   "options": "BOM"
+  },
+  {
+   "fieldname": "customer_weight",
+   "fieldtype": "Float",
+   "label": "Customer Weight"
+  },
+  {
+   "fieldname": "mwo",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "MWO",
+   "options": "Manufacturing Work Order"
+  },
+  {
+   "fetch_from": "sales_order.po_no",
+   "fieldname": "customer_po",
+   "fieldtype": "Data",
+   "label": "Customer PO"
+  },
+  {
+   "fetch_from": "docname.custom_child_po_no",
+   "fieldname": "child_po",
+   "fieldtype": "Data",
+   "label": "Child PO",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-08-30 15:17:07.470355",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Manufacturing Plan Table",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

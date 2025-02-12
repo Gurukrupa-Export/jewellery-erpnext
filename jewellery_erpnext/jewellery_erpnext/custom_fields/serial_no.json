@@ -1,0 +1,76 @@
+{
+ "Serial No": [
+  {
+   "dt": "Serial No",
+   "fieldname": "custom_repair_type",
+   "fieldtype": "Link",
+   "insert_after": "custom_product_type",
+   "label": "Repair Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Serial No",
+   "fieldname": "custom_product_type",
+   "fieldtype": "Link",
+   "insert_after": "company",
+   "label": "Product Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Serial No",
+   "fieldname": "custom_bom_no",
+   "fieldtype": "Link",
+   "insert_after": "item_code",
+   "label": "BOM No",
+   "module": "Jewellery Erpnext",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "dt": "Serial No",
+   "fieldname": "custom_serial_no_table",
+   "fieldtype": "Table",
+   "insert_after": "custom_serial_number_details",
+   "label": "Serial No Table",
+   "module": "Jewellery Erpnext",
+   "options": "Serial No Table"
+  },
+  {
+   "dt": "Serial No",
+   "fieldname": "custom_serial_number_details",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_jwelex_tag_no",
+   "label": "Serial Number Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Serial No",
+   "fieldname": "huid",
+   "fieldtype": "Table",
+   "insert_after": "batch_no",
+   "label": "HUID",
+   "module": "Jewellery Erpnext",
+   "options": "HUID Detail"
+  },
+  {
+   "dt": "Serial No",
+   "fieldname": "custom_jwelex_tag_no",
+   "fieldtype": "Data",
+   "insert_after": "purchase_document_no",
+   "label": "Jwelex Tag No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Serial No",
+   "fetch_from": "custom_bom_no.gross_weight",
+   "fieldname": "custom_gross_wt",
+   "fieldtype": "Float",
+   "insert_after": "custom_bom_no",
+   "label": "Gross Wt",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  }
+ ]
+}

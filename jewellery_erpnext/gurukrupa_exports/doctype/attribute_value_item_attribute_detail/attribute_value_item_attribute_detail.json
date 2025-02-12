@@ -1,0 +1,96 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2022-05-12 00:18:59.819794",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_attribute",
+  "in_cad",
+  "in_bom",
+  "in_bom_flow",
+  "in_cad_flow",
+  "suffix",
+  "only_variant",
+  "in_item_variant",
+  "allow_zero_values"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_attribute",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Attribute",
+   "options": "Item Attribute"
+  },
+  {
+   "default": "1",
+   "fieldname": "in_cad",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "In CAD"
+  },
+  {
+   "default": "0",
+   "fieldname": "in_bom",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "In BOM"
+  },
+  {
+   "default": "0",
+   "fieldname": "in_bom_flow",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "In BOM Flow"
+  },
+  {
+   "default": "0",
+   "fieldname": "in_cad_flow",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "In CAD Flow"
+  },
+  {
+   "default": "0",
+   "fieldname": "suffix",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Suffix"
+  },
+  {
+   "default": "0",
+   "fieldname": "only_variant",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Only Variant"
+  },
+  {
+   "default": "0",
+   "fieldname": "in_item_variant",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "In Item Variant"
+  },
+  {
+   "default": "0",
+   "fieldname": "allow_zero_values",
+   "fieldtype": "Check",
+   "label": "Allow Zero Values"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-04-03 10:43:55.993934",
+ "modified_by": "Administrator",
+ "module": "Gurukrupa Exports",
+ "name": "Attribute Value Item Attribute Detail",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

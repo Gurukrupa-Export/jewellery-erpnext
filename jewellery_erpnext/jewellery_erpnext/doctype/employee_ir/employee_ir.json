@@ -1,0 +1,387 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "EMP-IR-.#####",
+ "creation": "2023-03-30 12:10:03.470947",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_rzndq",
+  "company",
+  "department",
+  "column_break_jtffh",
+  "manufacturer",
+  "date_time",
+  "section_break_5eq34",
+  "type",
+  "transfer_type",
+  "emp_ir_id",
+  "column_break_lqjl2",
+  "subcontracting",
+  "section_break_pk7m5",
+  "operation",
+  "employee",
+  "column_break_mooif",
+  "main_slip",
+  "show_manufacturing_operation",
+  "is_main_slip_required",
+  "is_qc_reqd",
+  "section_break_unylm",
+  "next_operation",
+  "previous_operation",
+  "subcontractor",
+  "section_break_jttnk",
+  "wastage",
+  "column_break_bmpc3",
+  "making",
+  "column_break_lwchv",
+  "handling",
+  "section_break_nrv3i",
+  "get_operations",
+  "column_break_aasjr",
+  "scan_mop",
+  "scan_mwo",
+  "section_break_shn6x",
+  "employee_ir_operations",
+  "summary",
+  "section_break_g3ck",
+  "no_of_moulds",
+  "mould_reference",
+  "section_break_dxdag",
+  "calculate_loss",
+  "mop_loss_details_total",
+  "employee_loss_details",
+  "manually_book_loss_details",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Employee IR",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Type",
+   "options": "Issue\nReceive"
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "Employee",
+   "mandatory_depends_on": "eval: doc.subcontracting == \"No\";",
+   "options": "Employee"
+  },
+  {
+   "depends_on": "eval:doc.type==\"Issue\"",
+   "fieldname": "next_operation",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Next Operation",
+   "options": "Department Operation"
+  },
+  {
+   "default": "Now",
+   "fieldname": "date_time",
+   "fieldtype": "Datetime",
+   "label": "Date / Time",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "Operation",
+   "options": "Department Operation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "subcontracting",
+   "fieldtype": "Select",
+   "label": "Subcontracting",
+   "options": "No\nYes"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.subcontracting == \"Yes\"",
+   "fieldname": "wastage",
+   "fieldtype": "Check",
+   "label": "Wastage"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.subcontracting == \"Yes\"",
+   "fieldname": "making",
+   "fieldtype": "Check",
+   "label": "Making"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.subcontracting == \"Yes\"",
+   "fieldname": "handling",
+   "fieldtype": "Check",
+   "label": "Handling"
+  },
+  {
+   "default": "0",
+   "fieldname": "show_manufacturing_operation",
+   "fieldtype": "Check",
+   "label": "Show Manufacturing Operation from Last Operation"
+  },
+  {
+   "depends_on": "eval: doc.docstatus != 1",
+   "fieldname": "get_operations",
+   "fieldtype": "Button",
+   "label": "Get Manufacturing Operations"
+  },
+  {
+   "allow_bulk_edit": 1,
+   "fieldname": "employee_ir_operations",
+   "fieldtype": "Table",
+   "label": "Employee IR Operations",
+   "no_copy": 1,
+   "options": "Employee IR Operation"
+  },
+  {
+   "fieldname": "previous_operation",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Previous Operation",
+   "options": "Department Operation"
+  },
+  {
+   "fetch_from": "operation.department",
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer"
+  },
+  {
+   "default": "0",
+   "fetch_from": "operation.is_main_slip_required",
+   "fieldname": "is_main_slip_required",
+   "fieldtype": "Check",
+   "label": "Is Main Slip Required"
+  },
+  {
+   "depends_on": "eval:doc.is_main_slip_required",
+   "fieldname": "main_slip",
+   "fieldtype": "Link",
+   "label": "Main Slip No",
+   "mandatory_depends_on": "eval:doc.is_main_slip_required",
+   "options": "Main Slip"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_rzndq",
+   "fieldtype": "Section Break",
+   "label": "Company Details"
+  },
+  {
+   "fieldname": "section_break_5eq34",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_jtffh",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_pk7m5",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_mooif",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_nrv3i",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "section_break_unylm",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval:doc.subcontracting == \"Yes\"",
+   "fieldname": "section_break_jttnk",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_bmpc3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_lwchv",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fetch_from": "operation.is_qc_reqd",
+   "fieldname": "is_qc_reqd",
+   "fieldtype": "Check",
+   "label": "Is QC Required",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.subcontracting == \"Yes\"",
+   "fieldname": "subcontractor",
+   "fieldtype": "Link",
+   "label": "Sub contractor Name",
+   "mandatory_depends_on": "eval:doc.subcontracting == \"Yes\"",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "column_break_lqjl2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_aasjr",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_shn6x",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval: doc.docstatus != 1",
+   "fieldname": "scan_mop",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Scan MOP",
+   "options": "Barcode"
+  },
+  {
+   "depends_on": "eval: doc.docstatus != 1",
+   "fieldname": "scan_mwo",
+   "fieldtype": "Data",
+   "label": "Scan MWO",
+   "options": "Barcode"
+  },
+  {
+   "fieldname": "employee_loss_details",
+   "fieldtype": "Table",
+   "label": "Loss Details",
+   "no_copy": 1,
+   "options": "Employee Loss Details",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_dxdag",
+   "fieldtype": "Section Break"
+  },
+  {
+   "description": "Sum of Loss Details table Respective Manufacturing Operation",
+   "fieldname": "mop_loss_details_total",
+   "fieldtype": "Float",
+   "label": "MOP Loss Details Total",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "emp_ir_id",
+   "fieldtype": "Data",
+   "label": "Emp IR ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manually_book_loss_details",
+   "fieldtype": "Table",
+   "label": "Manually Book Loss Details",
+   "no_copy": 1,
+   "options": "Manually Book Loss Details"
+  },
+  {
+   "fieldname": "calculate_loss",
+   "fieldtype": "Button",
+   "label": "Calculate Loss",
+   "no_copy": 1
+  },
+  {
+   "fieldname": "transfer_type",
+   "fieldtype": "Select",
+   "label": "Type of Work",
+   "options": "Next Operation\nRepairing"
+  },
+  {
+   "fieldname": "summary",
+   "fieldtype": "HTML",
+   "label": "Summary"
+  },
+  {
+   "fieldname": "section_break_g3ck",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval: doc.type == \"Receive\";",
+   "fieldname": "no_of_moulds",
+   "fieldtype": "Int",
+   "label": "No of Moulds"
+  },
+  {
+   "depends_on": "eval: doc.no_of_moulds > 0;",
+   "fieldname": "mould_reference",
+   "fieldtype": "Table",
+   "label": "Mould Reference",
+   "options": "Mould Reference"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [
+  {
+   "link_doctype": "Stock Entry",
+   "link_fieldname": "employee_ir"
+  },
+  {
+   "link_doctype": "Purchase Order",
+   "link_fieldname": "employee_ir"
+  },
+  {
+   "link_doctype": "QC",
+   "link_fieldname": "employee_ir"
+  }
+ ],
+ "modified": "2024-07-29 16:26:02.206938",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Employee IR",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

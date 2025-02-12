@@ -1,0 +1,812 @@
+{
+ "Quotation Item": [
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_hallmarking_amount",
+   "fieldtype": "Float",
+   "insert_after": "making_charge",
+   "label": "Hallmarking Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_section_break_ef83a",
+   "fieldtype": "Section Break",
+   "insert_after": "metal_colour",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "cess_non_advol_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cess_amount",
+   "is_system_generated": 1,
+   "label": "CESS Non Advol Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "cess_amount",
+   "fieldtype": "Currency",
+   "insert_after": "sgst_amount",
+   "is_system_generated": 1,
+   "label": "CESS Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "sgst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cgst_amount",
+   "is_system_generated": 1,
+   "label": "SGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "cgst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "igst_amount",
+   "is_system_generated": 1,
+   "label": "CGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "igst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cb_gst_details",
+   "is_system_generated": 1,
+   "label": "IGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "cb_gst_details",
+   "fieldtype": "Column Break",
+   "insert_after": "cess_non_advol_rate",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "cess_non_advol_rate",
+   "fieldtype": "Float",
+   "insert_after": "cess_rate",
+   "is_system_generated": 1,
+   "label": "CESS Non Advol Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "cess_rate",
+   "fieldtype": "Float",
+   "insert_after": "sgst_rate",
+   "is_system_generated": 1,
+   "label": "CESS Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "sgst_rate",
+   "fieldtype": "Float",
+   "insert_after": "cgst_rate",
+   "is_system_generated": 1,
+   "label": "SGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "cgst_rate",
+   "fieldtype": "Float",
+   "insert_after": "igst_rate",
+   "is_system_generated": 1,
+   "label": "CGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "igst_rate",
+   "fieldtype": "Float",
+   "insert_after": "gst_details_section",
+   "is_system_generated": 1,
+   "label": "IGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "gst_details_section",
+   "fieldtype": "Section Break",
+   "insert_after": "taxable_value",
+   "is_system_generated": 1,
+   "label": "GST Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "taxable_value",
+   "fieldtype": "Currency",
+   "insert_after": "base_net_amount",
+   "is_system_generated": 1,
+   "label": "Taxable Value",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "item_tax_template.gst_treatment",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_treatment",
+   "fieldtype": "Autocomplete",
+   "insert_after": "item_tax_template",
+   "is_system_generated": 1,
+   "label": "GST Treatment",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Taxable\nZero-Rated\nNil-Rated\nExempted\nNon-GST",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Quotation Item",
+   "fetch_from": "item_code.gst_hsn_code",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_hsn_code",
+   "fieldtype": "Data",
+   "insert_after": "description",
+   "is_system_generated": 1,
+   "label": "HSN/SAC",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_new_bom",
+   "fieldtype": "Link",
+   "insert_after": "custom_new_item_code",
+   "label": "New BOM",
+   "module": "Jewellery Erpnext",
+   "options": "BOM"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_new_item_code",
+   "fieldtype": "Link",
+   "insert_after": "custom_bom_weight",
+   "label": "New Item Code",
+   "module": "Jewellery Erpnext",
+   "options": "Item"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_required_design",
+   "fieldtype": "Select",
+   "insert_after": "copy_bom",
+   "label": "Required Design",
+   "module": "Jewellery Erpnext",
+   "options": "\nNo\nCAD\nManual"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_bom_weight",
+   "fieldtype": "Float",
+   "insert_after": "project",
+   "label": "BOM Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_serial_id_bom",
+   "fieldtype": "Link",
+   "insert_after": "serial_no",
+   "label": "Serial Id BOM",
+   "module": "Jewellery Erpnext",
+   "options": "BOM"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_repair_type",
+   "fieldtype": "Link",
+   "insert_after": "custom_product_type",
+   "label": "Repair Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_product_type",
+   "fieldtype": "Link",
+   "insert_after": "column_break_gktla",
+   "label": "Product Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_customer_weight",
+   "fieldtype": "Float",
+   "insert_after": "salesman_name",
+   "label": "Customer Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_repair_bom",
+   "fieldtype": "Link",
+   "insert_after": "setting_type",
+   "label": "Repair Bom",
+   "module": "Jewellery Erpnext",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_customer_good",
+   "fieldtype": "Select",
+   "insert_after": "custom_column_break_mrwpd",
+   "label": "Customer Good",
+   "module": "Jewellery Erpnext",
+   "options": "\nYes\nNo"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_column_break_mrwpd",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_stone",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_customer_stone",
+   "fieldtype": "Select",
+   "insert_after": "custom_column_break_xa0vl",
+   "label": "Customer Stone",
+   "module": "Jewellery Erpnext",
+   "options": "\nYes\nNo"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_column_break_xa0vl",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_diamond",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_customer_diamond",
+   "fieldtype": "Select",
+   "insert_after": "custom_column_break_anbls",
+   "label": "Customer Diamond",
+   "module": "Jewellery Erpnext",
+   "options": "\nYes\nNo"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_column_break_anbls",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_gold",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_customer_gold",
+   "fieldtype": "Select",
+   "insert_after": "custom_column_break_tsfif",
+   "label": "Customer Gold",
+   "module": "Jewellery Erpnext",
+   "options": "\nYes\nNo"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_column_break_tsfif",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_voucher_no",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_customer_voucher_no",
+   "fieldtype": "Data",
+   "insert_after": "custom_column_break_byt7v",
+   "label": "Customer Voucher No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_column_break_byt7v",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_sample",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_customer_sample",
+   "fieldtype": "Link",
+   "insert_after": "custom_section_break_nklbw",
+   "label": "Customer Sample",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_section_break_nklbw",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_repair_type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_updated_delivery_date",
+   "fieldtype": "Date",
+   "insert_after": "parcel_place",
+   "label": "Updated Delivery Date",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "insert_after": "diamond_quality",
+   "label": "Metal Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "insert_after": "metal_type",
+   "label": "Metal Touch",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "salesman_name",
+   "fieldtype": "Link",
+   "insert_after": "custom_po_details",
+   "label": "Sales Person",
+   "module": "Jewellery Erpnext",
+   "options": "Sales Person"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "po_no",
+   "fieldtype": "Data",
+   "insert_after": "custom_updated_delivery_date",
+   "label": "Customer PO no",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "parcel_place",
+   "fieldtype": "Link",
+   "insert_after": "delivery_date",
+   "label": "Parcel Place",
+   "module": "Jewellery Erpnext",
+   "options": "Parcel Place List"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "column_break_qbt7p",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_new_bom",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "gemstone_grade",
+   "fieldtype": "Link",
+   "insert_after": "diamond_grade",
+   "label": "Gemstone Grade",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "gemstone_type",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_quality",
+   "label": "Gemstone Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "column_break_raxbk",
+   "fieldtype": "Column Break",
+   "insert_after": "bom_rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "item_code.manufacturing_type",
+   "fieldname": "manufacturing_type",
+   "fieldtype": "Select",
+   "insert_after": "custom_repair_bom",
+   "label": "Manufacturing Type",
+   "module": "Jewellery Erpnext",
+   "options": "\nCasted\nHandmade\nCNC",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "column_break_kf5jh",
+   "fieldtype": "Column Break",
+   "insert_after": "old_stylebio",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "item_code.stylebio",
+   "fieldname": "old_stylebio",
+   "fieldtype": "Data",
+   "insert_after": "item_subcategory",
+   "label": "Old StyleBio",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "quotation_bom",
+   "fieldtype": "Link",
+   "insert_after": "item_name",
+   "label": "Quotation BOM",
+   "module": "Jewellery Erpnext",
+   "options": "BOM"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "diamond_grade",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "in_list_view": 1,
+   "insert_after": "gemstone_cut_or_cab",
+   "label": "Diamond Grade",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "gemstone_quality",
+   "fieldtype": "Link",
+   "insert_after": "metal_color",
+   "label": "Gemstone Quality",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "gemstone_cut_or_cab",
+   "fieldtype": "Link",
+   "insert_after": "metal_touch",
+   "label": "Gemstone Cut Or Cab",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "edit_bom",
+   "fieldtype": "Button",
+   "in_list_view": 1,
+   "label": "Edit BOM",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "delivery_date",
+   "fieldtype": "Date",
+   "insert_after": "order_form_date",
+   "label": "Delivery Date",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "order_form_date",
+   "fieldtype": "Date",
+   "insert_after": "column_break_qbt7p",
+   "label": "Order Form Date",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "column_break_gktla",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "insert_after": "branch",
+   "label": "Project",
+   "module": "Jewellery Erpnext",
+   "options": "Project"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "insert_after": "order_form_id",
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "order_form_id",
+   "fieldtype": "Dynamic Link",
+   "insert_after": "order_form_type",
+   "label": "Order Form ID",
+   "module": "Jewellery Erpnext",
+   "options": "order_form_type"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "order_details",
+   "fieldtype": "Section Break",
+   "insert_after": "manufacturing_type",
+   "label": "Order Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "insert_after": "custom_required_design",
+   "label": "Metal Purity",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "column_break_lnlpo",
+   "fieldtype": "Column Break",
+   "insert_after": "gemstone_bom_rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "metal_colour",
+   "fieldtype": "Link",
+   "insert_after": "gemstone_type",
+   "is_system_generated": 1,
+   "label": "Metal Colour",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "item_code.setting_type",
+   "fieldname": "setting_type",
+   "fieldtype": "Link",
+   "insert_after": "column_break_kf5jh",
+   "label": "Setting Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "column_break_3dcl6",
+   "fieldtype": "Column Break",
+   "insert_after": "stylebio",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "item_code.stylebio",
+   "fieldname": "stylebio",
+   "fieldtype": "Data",
+   "insert_after": "item_category",
+   "label": "Old StyleBio",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "item_code.item_subcategory",
+   "fieldname": "item_subcategory",
+   "fieldtype": "Link",
+   "insert_after": "column_break_3dcl6",
+   "label": "Item Subcategory",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "item_code.item_category",
+   "fieldname": "item_category",
+   "fieldtype": "Link",
+   "insert_after": "item_details",
+   "label": "Item Category",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "item_details",
+   "fieldtype": "Section Break",
+   "insert_after": "remarks",
+   "label": "Item Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "serial_no",
+   "fieldtype": "Link",
+   "insert_after": "item_code",
+   "label": "Serial No",
+   "module": "Jewellery Erpnext",
+   "options": "Serial No"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "finding_weight_for_chain",
+   "fieldtype": "Currency",
+   "insert_after": "column_break_lnlpo",
+   "label": "Finding Weight For Chain",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "remarks",
+   "fieldtype": "Text",
+   "insert_after": "custom_section_break_ef83a",
+   "label": "Remarks",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "diamond_quality",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "insert_after": "custom_serial_id_bom",
+   "label": "Diamond Quality",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value",
+   "reqd": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "quotation_bom.making_charge",
+   "fieldname": "making_charge",
+   "fieldtype": "Currency",
+   "insert_after": "other_bom_rate",
+   "label": "Making Charge",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "copy_bom",
+   "fieldtype": "Link",
+   "insert_after": "quotation_bom",
+   "label": "Copy BOM",
+   "module": "Jewellery Erpnext",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "quotation_bom.gold_bom_amount",
+   "fieldname": "gold_bom_rate",
+   "fieldtype": "Currency",
+   "insert_after": "column_break_raxbk",
+   "label": "Gold BOM Rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "quotation_bom.diamond_bom_amount",
+   "fieldname": "diamond_bom_rate",
+   "fieldtype": "Currency",
+   "insert_after": "gold_bom_rate",
+   "label": "Diamond BOM Rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "quotation_bom.gemstone_bom_amount",
+   "fieldname": "gemstone_bom_rate",
+   "fieldtype": "Currency",
+   "insert_after": "diamond_bom_rate",
+   "label": "Gemstone BOM rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "quotation_bom.other_bom_amount",
+   "fieldname": "other_bom_rate",
+   "fieldtype": "Currency",
+   "insert_after": "finding_weight_for_chain",
+   "label": "Other BOM Rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "quotation_bom.total_bom_amount",
+   "fieldname": "bom_rate",
+   "fieldtype": "Currency",
+   "insert_after": "base_price_list_rate",
+   "label": "BOM Rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_po_details",
+   "fieldtype": "Link",
+   "insert_after": "po_no",
+   "label": "PO Details",
+   "module": "Jewellery Erpnext",
+   "options": "Purchase Order Item"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "metal_color",
+   "fieldtype": "Link",
+   "insert_after": "metal_purity",
+   "label": "Metal Color",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Quotation Item",
+   "fetch_from": "item_code.subcategory",
+   "fieldname": "custom_item_sub_category",
+   "fieldtype": "Link",
+   "insert_after": "metal_colour",
+   "label": "Item Sub Category",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "custom_customer_finding",
+   "fieldtype": "Select",
+   "insert_after": "custom_customer_good",
+   "label": "customer_finding",
+   "module": "Jewellery Erpnext",
+   "options": "No\nYes"
+  },
+  {
+   "dt": "Quotation Item",
+   "fieldname": "order_form_type",
+   "fieldtype": "Select",
+   "insert_after": "order_details",
+   "label": "Order Form Type",
+   "module": "Jewellery Erpnext",
+   "options": "\nOrder\nRepair Order"
+  }
+ ]
+}

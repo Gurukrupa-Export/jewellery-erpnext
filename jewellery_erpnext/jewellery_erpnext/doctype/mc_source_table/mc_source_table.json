@@ -1,0 +1,106 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-02-09 13:16:05.499008",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "qty",
+  "batch",
+  "batch_available_qty",
+  "inventory_type",
+  "column_break_srdw",
+  "customer",
+  "supplier",
+  "total",
+  "purity_percentage"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item_code",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Qty",
+   "reqd": 1
+  },
+  {
+   "fieldname": "batch",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Batch",
+   "options": "Batch"
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "batch_available_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Batch Available Qty",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Inventory Type",
+   "options": "Inventory Type",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Supplier",
+   "options": "Supplier",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total",
+   "fieldtype": "Float",
+   "label": "Total",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_srdw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "purity_percentage",
+   "fieldtype": "Float",
+   "label": "Purity Percentage"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-09-02 17:48:09.579956",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "MC Source Table",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

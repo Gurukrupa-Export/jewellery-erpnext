@@ -1,0 +1,154 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-01-15 17:40:16.867311",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "row_material",
+  "qty",
+  "pcs",
+  "uom",
+  "id",
+  "batch_no",
+  "column_break_xnlw",
+  "inventory_type",
+  "customer",
+  "default_bom_rm",
+  "bom_qty",
+  "bom_pcs",
+  "sub_setting_type",
+  "is_customer_item",
+  "serial_no",
+  "sed_item"
+ ],
+ "fields": [
+  {
+   "fieldname": "default_bom_rm",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Default BOM RM",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "row_material",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Row Material",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Qty"
+  },
+  {
+   "fieldname": "pcs",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Pcs",
+   "read_only": 1
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "uom",
+   "options": "UOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sub_setting_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Sub Setting Type",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_customer_item",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Customer Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "id",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "id",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bom_qty",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "in_list_view": 1,
+   "label": "BOM Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "bom_pcs",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "in_list_view": 1,
+   "label": "BOM PCS",
+   "read_only": 1
+  },
+  {
+   "fieldname": "serial_no",
+   "fieldtype": "Link",
+   "label": "Serial No",
+   "options": "Serial No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "label": "Batch No",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "column_break_xnlw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "label": "Inventory Type",
+   "options": "Inventory Type"
+  },
+  {
+   "fieldname": "sed_item",
+   "fieldtype": "Link",
+   "label": "SED Item",
+   "options": "Stock Entry Detail",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sed_item.customer",
+   "fetch_if_empty": 1,
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-07-18 12:11:07.968603",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "SNC FG Details",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

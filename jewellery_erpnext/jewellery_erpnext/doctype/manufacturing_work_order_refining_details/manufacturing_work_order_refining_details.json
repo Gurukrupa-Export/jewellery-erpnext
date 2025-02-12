@@ -1,0 +1,91 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-05-18 15:28:33.717558",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "manufacturing_work_order",
+  "manufacturing_operation",
+  "parent_manufacturing_work_order",
+  "item_code",
+  "metal_type",
+  "metal_purity",
+  "metal_weight",
+  "pcs"
+ ],
+ "fields": [
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.manufacturing_order",
+   "fieldname": "parent_manufacturing_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Parent Manufacturing Work Order",
+   "options": "Parent Manufacturing Order"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.item_code",
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Design ID",
+   "options": "Item"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.metal_type",
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.metal_purity",
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Metal Purity",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.metal_weight",
+   "fieldname": "metal_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Metal Weight"
+  },
+  {
+   "fetch_from": "manufacturing_work_order.qty",
+   "fieldname": "pcs",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Pcs"
+  },
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Link",
+   "label": "Manufacturing Operation",
+   "options": "Manufacturing Operation",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2023-09-18 11:35:32.754730",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Manufacturing Work Order Refining Details",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

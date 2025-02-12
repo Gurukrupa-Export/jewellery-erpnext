@@ -1,0 +1,89 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-07-22 18:39:28.175074",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "design_attributes",
+  "design_attribute_value_1",
+  "design_attribute_value_2",
+  "design_attribute_value_3",
+  "design_attribute_value_4",
+  "design_attribute_value_5",
+  "design_attribute_value_6",
+  "design_attribute_value_7",
+  "design_attribute_value_8"
+ ],
+ "fields": [
+  {
+   "fieldname": "design_attributes",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Design Attributes",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "design_attribute_value_1",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Design Attribute value 1",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "design_attribute_value_2",
+   "fieldtype": "Link",
+   "label": "Design Attribute value 2",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "design_attribute_value_3",
+   "fieldtype": "Link",
+   "label": "Design Attribute value 3",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "design_attribute_value_4",
+   "fieldtype": "Link",
+   "label": "Design Attribute value 4",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "design_attribute_value_5",
+   "fieldtype": "Link",
+   "label": "Design Attribute value 5",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "design_attribute_value_6",
+   "fieldtype": "Link",
+   "label": "Design Attribute value 6",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "design_attribute_value_7",
+   "fieldtype": "Link",
+   "label": "Design Attribute value 7",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "design_attribute_value_8",
+   "fieldtype": "Link",
+   "label": "Design Attribute value 8",
+   "options": "Attribute Value"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2023-07-28 18:02:29.478767",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Design Attributes",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

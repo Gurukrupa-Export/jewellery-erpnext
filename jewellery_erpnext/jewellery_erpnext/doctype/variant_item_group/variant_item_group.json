@@ -1,0 +1,45 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-08-14 15:46:42.293857",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_x770",
+  "item_variant",
+  "item_group"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_x770",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "item_variant",
+   "fieldtype": "Link",
+   "label": "Item Variant",
+   "options": "Item",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "item_group",
+   "fieldtype": "Link",
+   "label": "Item Group",
+   "options": "Item Group",
+   "in_list_view": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-08-14 15:47:08.793339",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Variant Item Group",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

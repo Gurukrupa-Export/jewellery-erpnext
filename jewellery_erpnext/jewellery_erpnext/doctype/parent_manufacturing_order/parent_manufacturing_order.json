@@ -1,0 +1,930 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "PMO-.abbr.-.item_code.-.####",
+ "creation": "2023-03-03 22:09:50.290798",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "details_tab",
+  "section_break_zhfmv",
+  "company",
+  "posting_date",
+  "column_break_gkjvw",
+  "branch",
+  "department",
+  "section_break_ahpbp",
+  "sales_order_item",
+  "new_item",
+  "repair_type",
+  "product_type",
+  "abbr",
+  "customer",
+  "item_code",
+  "serial_no",
+  "rowname",
+  "amended_from",
+  "column_break_lhbfx",
+  "huid",
+  "master_bom",
+  "item_category",
+  "serial_id_bom",
+  "item_sub_category",
+  "setting_type",
+  "customer_details_section",
+  "is_customer_gold",
+  "is_customer_diamond",
+  "is_customer_gemstone",
+  "is_customer_material",
+  "customer_provided_material_section",
+  "customer_weight",
+  "customer_sample",
+  "customer_voucher_no",
+  "customer_gold",
+  "column_break_bmzqq",
+  "customer_diamond",
+  "customer_stone",
+  "customer_good",
+  "default_material_request_department_section",
+  "diamond_department",
+  "column_break_eyifr",
+  "gemstone_department",
+  "column_break_xfaep",
+  "finding_department",
+  "column_break_zep9i",
+  "other_material_department",
+  "column_break_zpp9f",
+  "metal_department",
+  "section_break_cuzmc",
+  "type",
+  "diamond_quality",
+  "manufacturer",
+  "column_break_tfrsq",
+  "use_custom_diamond_grade",
+  "diamond_grade",
+  "qty",
+  "gemstone_details_section",
+  "gemstone_table",
+  "section_break_6kkih",
+  "metal_type",
+  "metal_touch",
+  "column_break_dk0s1",
+  "metal_colour",
+  "metal_purity",
+  "gold_section",
+  "metal_product_tolerance",
+  "diamond_product_tolerance",
+  "gemstone_product_tolerance",
+  "section_break_royco",
+  "order_remarks",
+  "serial_no_details_section",
+  "product_certification_details",
+  "order_details_tab",
+  "order_form_id",
+  "quotation",
+  "sales_order",
+  "manufacturing_plan",
+  "column_break_0hg6a",
+  "order_form_type",
+  "order_type",
+  "po_no",
+  "child_po",
+  "project",
+  "column_break_acoov",
+  "order_form_date",
+  "salesman_name",
+  "service_type",
+  "jewelex_order_no",
+  "parent_details_section",
+  "parent_quotation",
+  "parent_sales_order",
+  "parent_mp",
+  "ref_customer",
+  "delivery_details_tab",
+  "delivery_date",
+  "estimated_delivery_date",
+  "manufacturing_end_date",
+  "column_break_t9v9f",
+  "due_days",
+  "est_delivery_days",
+  "manufacturing_end_due_days",
+  "images_tab",
+  "section_break_1xrgj",
+  "finish_good_image",
+  "preview",
+  "mop_details_tab",
+  "item_weight_detail_section",
+  "gross_weight",
+  "net_weight",
+  "diamond_weight",
+  "column_break_kuzf",
+  "gemstone_weight",
+  "finding_weight",
+  "other_weight",
+  "section_break_okxuw",
+  "stock_summery",
+  "show_details_section",
+  "stock_entry_details",
+  "sent_for_customer_approval",
+  "customer_status",
+  "pmo_operation_cost"
+ ],
+ "fields": [
+  {
+   "fieldname": "details_tab",
+   "fieldtype": "Tab Break",
+   "label": "Details"
+  },
+  {
+   "fieldname": "sales_order_item",
+   "fieldtype": "Link",
+   "label": "Sales Order Item",
+   "options": "Sales Order Item",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sales_order.company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sales_order.customer",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer Code",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sales_order.project",
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "label": "Project",
+   "options": "Project"
+  },
+  {
+   "fetch_from": "sales_order_item.item_code",
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Design Code",
+   "options": "Item"
+  },
+  {
+   "fetch_from": "sales_order_item.serial_no",
+   "fetch_if_empty": 1,
+   "fieldname": "serial_no",
+   "fieldtype": "Link",
+   "label": "Serial No",
+   "options": "Serial No"
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Int",
+   "label": "Qty",
+   "reqd": 1
+  },
+  {
+   "fieldname": "manufacturing_plan",
+   "fieldtype": "Link",
+   "label": "Manufacturing Plan ID",
+   "options": "Manufacturing Plan",
+   "read_only": 1
+  },
+  {
+   "fieldname": "rowname",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Reference Row",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Parent Manufacturing Order",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_lhbfx",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "sales_order.branch",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "label": "Branch",
+   "options": "Branch"
+  },
+  {
+   "default": "Today",
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sales_order.delivery_date",
+   "fieldname": "delivery_date",
+   "fieldtype": "Date",
+   "label": "Delivery Date"
+  },
+  {
+   "fetch_from": "sales_order.order_type",
+   "fieldname": "order_type",
+   "fieldtype": "Data",
+   "label": "Order Type"
+  },
+  {
+   "fieldname": "master_bom",
+   "fieldtype": "Link",
+   "label": "Master BOM",
+   "options": "BOM"
+  },
+  {
+   "fetch_from": "item_code.item_category",
+   "fieldname": "item_category",
+   "fieldtype": "Link",
+   "label": "Item Category",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "serial_id_bom",
+   "fieldtype": "Link",
+   "label": "Serial ID BOM",
+   "options": "BOM"
+  },
+  {
+   "fetch_from": "item_code.item_subcategory",
+   "fieldname": "item_sub_category",
+   "fieldtype": "Link",
+   "label": "Item Sub Category",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "item_code.setting_type",
+   "fieldname": "setting_type",
+   "fieldtype": "Link",
+   "label": "Setting Type",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sales_order_item.diamond_quality",
+   "fieldname": "diamond_quality",
+   "fieldtype": "Link",
+   "label": "Diamond Quality",
+   "mandatory_depends_on": "eval: doc.type != \"Finding Manufacturing\";",
+   "options": "Attribute Value"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_6kkih",
+   "fieldtype": "Section Break",
+   "label": "Metal Details"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturer",
+   "mandatory_depends_on": "eval:!doc.__islocal",
+   "options": "Manufacturer",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "sales_order_item.diamond_grade",
+   "fetch_if_empty": 1,
+   "fieldname": "diamond_grade",
+   "fieldtype": "Link",
+   "label": "Diamond Grade",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "column_break_dk0s1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_if_empty": 1,
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "label": "Metal Purity",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from": "sales_order_item.metal_colour",
+   "fetch_if_empty": 1,
+   "fieldname": "metal_colour",
+   "fieldtype": "Link",
+   "label": "Metal Colour",
+   "options": "Attribute Value"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_royco",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "label": "Remark"
+  },
+  {
+   "fieldname": "order_remarks",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "Parent Manufacturing Order Remarks"
+  },
+  {
+   "fieldname": "order_details_tab",
+   "fieldtype": "Tab Break",
+   "label": "Order Details"
+  },
+  {
+   "fetch_from": "sales_order_item.order_form_id",
+   "fieldname": "order_form_id",
+   "fieldtype": "Dynamic Link",
+   "label": "Order Form Id",
+   "options": "order_form_type"
+  },
+  {
+   "fieldname": "sales_order",
+   "fieldtype": "Link",
+   "label": "Sales Order Id",
+   "options": "Sales Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_0hg6a",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "sales_order_item.prevdoc_docname",
+   "fieldname": "quotation",
+   "fieldtype": "Link",
+   "label": "Quotation Id",
+   "options": "Quotation"
+  },
+  {
+   "fetch_from": "sales_order_item.order_form_date",
+   "fieldname": "order_form_date",
+   "fieldtype": "Date",
+   "label": "Order form date"
+  },
+  {
+   "fieldname": "service_type",
+   "fieldtype": "Table MultiSelect",
+   "label": "Service Type",
+   "options": "Service Type 2"
+  },
+  {
+   "fieldname": "column_break_acoov",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "sales_order.po_no",
+   "fieldname": "po_no",
+   "fieldtype": "Data",
+   "label": "Customer PO No"
+  },
+  {
+   "fetch_from": "sales_order.salesman_name",
+   "fieldname": "salesman_name",
+   "fieldtype": "Link",
+   "label": "Sales Person",
+   "options": "Sales Person"
+  },
+  {
+   "fetch_from": "company.abbr",
+   "fieldname": "abbr",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Abbr",
+   "read_only": 1
+  },
+  {
+   "fieldname": "estimated_delivery_date",
+   "fieldtype": "Date",
+   "label": "Est. Delivery Date"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "manufacturing_end_date",
+   "fieldtype": "Date",
+   "label": "Est. MFG End Date"
+  },
+  {
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "label": "Metal Touch",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from": "sales_order_item.order_form_type",
+   "fieldname": "order_form_type",
+   "fieldtype": "Link",
+   "label": "Order Form Type",
+   "options": "DocType"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_zhfmv",
+   "fieldtype": "Section Break",
+   "label": "Company Details"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_cuzmc",
+   "fieldtype": "Section Break",
+   "label": "Manufacturing details"
+  },
+  {
+   "fieldname": "column_break_tfrsq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "manufacturing_end_due_days",
+   "fieldtype": "Int",
+   "label": "Est. MFG End Due Days"
+  },
+  {
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "images_tab",
+   "fieldtype": "Tab Break",
+   "label": "Images"
+  },
+  {
+   "fieldname": "finish_good_image",
+   "fieldtype": "Attach Image",
+   "label": "Finish Good Image"
+  },
+  {
+   "fieldname": "preview",
+   "fieldtype": "Image",
+   "label": "Preview",
+   "options": "finish_good_image"
+  },
+  {
+   "fieldname": "delivery_details_tab",
+   "fieldtype": "Tab Break",
+   "label": "Delivery Details"
+  },
+  {
+   "fieldname": "column_break_t9v9f",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "due_days",
+   "fieldtype": "Int",
+   "label": "Due Days"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "est_delivery_days",
+   "fieldtype": "Int",
+   "label": "Est. Delivery Days"
+  },
+  {
+   "fieldname": "section_break_1xrgj",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_ahpbp",
+   "fieldtype": "Section Break",
+   "label": "Design Details"
+  },
+  {
+   "fieldname": "column_break_gkjvw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "huid",
+   "fieldtype": "Data",
+   "label": "HUID/Certification No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gemstone_details_section",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "label": "Gemstone Details"
+  },
+  {
+   "fieldname": "gemstone_table",
+   "fieldtype": "Table",
+   "hidden": 1,
+   "options": "PMO Gemstone Table"
+  },
+  {
+   "fieldname": "mop_details_tab",
+   "fieldtype": "Tab Break",
+   "label": "MOP Details"
+  },
+  {
+   "fieldname": "stock_entry_details",
+   "fieldtype": "HTML",
+   "hidden": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "show_details_section",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "label": "Operation Movement"
+  },
+  {
+   "fieldname": "stock_summery",
+   "fieldtype": "HTML",
+   "hidden": 1
+  },
+  {
+   "fieldname": "section_break_okxuw",
+   "fieldtype": "Section Break",
+   "hidden": 1,
+   "label": "Summary"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "gold_section",
+   "fieldtype": "Section Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "metal_product_tolerance",
+   "fieldtype": "Table",
+   "label": "Metal Product Tolerance",
+   "options": "Metal Product Tolerance"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "diamond_product_tolerance",
+   "fieldtype": "Table",
+   "label": "Diamond Product Tolerance",
+   "options": "Diamond Product Tolerance"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "gemstone_product_tolerance",
+   "fieldtype": "Table",
+   "label": "Gemstone Product Tolerance",
+   "options": "Gemstone Product Tolerance"
+  },
+  {
+   "fieldname": "diamond_department",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Diamond Department",
+   "mandatory_depends_on": "eval: doc.type != \"Finding Manufacturing\"",
+   "options": "Department"
+  },
+  {
+   "fieldname": "gemstone_department",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Gemstone Department",
+   "mandatory_depends_on": "eval: doc.type != \"Finding Manufacturing\"",
+   "options": "Department"
+  },
+  {
+   "fieldname": "default_material_request_department_section",
+   "fieldtype": "Section Break",
+   "label": "Default Material Request Department"
+  },
+  {
+   "fieldname": "column_break_eyifr",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_xfaep",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "finding_department",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Finding Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "column_break_zep9i",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "other_material_department",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Other Material Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "column_break_zpp9f",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "metal_department",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "Metal Department",
+   "options": "Department"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "customer_provided_material_section",
+   "fieldtype": "Section Break",
+   "label": "Customer Provided Material",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_sample",
+   "fieldtype": "Data",
+   "label": "Customer Sample",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_voucher_no",
+   "fieldtype": "Data",
+   "label": "Customer Voucher No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_gold",
+   "fieldtype": "Data",
+   "label": "Customer Gold",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_bmzqq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "customer_diamond",
+   "fieldtype": "Data",
+   "label": "Customer Diamond",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_stone",
+   "fieldtype": "Data",
+   "label": "Customer Stone",
+   "read_only": 1
+  },
+  {
+   "fieldname": "customer_good",
+   "fieldtype": "Data",
+   "label": "Customer Good",
+   "read_only": 1
+  },
+  {
+   "fieldname": "new_item",
+   "fieldtype": "Link",
+   "label": "New Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "repair_type",
+   "fieldtype": "Link",
+   "label": "Repair Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "product_type",
+   "fieldtype": "Link",
+   "label": "Product Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "customer_weight",
+   "fieldtype": "Float",
+   "label": "Customer Weight"
+  },
+  {
+   "fieldname": "customer_details_section",
+   "fieldtype": "Section Break",
+   "label": "Customer Details"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_customer_gold",
+   "fieldtype": "Check",
+   "label": "Is Customer Gold"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_customer_diamond",
+   "fieldtype": "Check",
+   "label": "Is Customer Diamond"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_customer_gemstone",
+   "fieldtype": "Check",
+   "label": "Is Customer Gemstone"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_customer_material",
+   "fieldtype": "Check",
+   "label": "Is Customer Material"
+  },
+  {
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "label": "Type",
+   "options": "\nManufacturing\nRepair\nFinding Manufacturing"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "item_weight_detail_section",
+   "fieldtype": "Section Break",
+   "label": "ITEM WEIGHT DETAIL"
+  },
+  {
+   "description": "Sum of all { MFG WORK ORDER GROSS WEIGHT }",
+   "fieldname": "gross_weight",
+   "fieldtype": "Float",
+   "label": "Gross Weight",
+   "precision": "2"
+  },
+  {
+   "description": "Sum of all { MFG WORK ORDER NET WEIGHT }",
+   "fieldname": "net_weight",
+   "fieldtype": "Float",
+   "label": "Net Weight",
+   "precision": "2"
+  },
+  {
+   "description": "Sum of all { MFG WORK ORDER DIAMOND WEIGHT }",
+   "fieldname": "diamond_weight",
+   "fieldtype": "Float",
+   "label": "Diamond Weight",
+   "precision": "2"
+  },
+  {
+   "fieldname": "column_break_kuzf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Sum of all { MFG WORK ORDER GEMSTONE WEIGHT }",
+   "fieldname": "gemstone_weight",
+   "fieldtype": "Float",
+   "label": "Gemstone Weight",
+   "precision": "2"
+  },
+  {
+   "fieldname": "finding_weight",
+   "fieldtype": "Float",
+   "label": "Finding Weight",
+   "precision": "2"
+  },
+  {
+   "fieldname": "other_weight",
+   "fieldtype": "Float",
+   "label": "Other Weight",
+   "precision": "2"
+  },
+  {
+   "default": "0",
+   "fieldname": "sent_for_customer_approval",
+   "fieldtype": "Check",
+   "label": "Sent for Customer Approval"
+  },
+  {
+   "fieldname": "customer_status",
+   "fieldtype": "Select",
+   "label": "Customer Status",
+   "options": "Issue\nReceive"
+  },
+  {
+   "fieldname": "serial_no_details_section",
+   "fieldtype": "Section Break",
+   "label": "Serial No Details"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "product_certification_details",
+   "fieldtype": "Table",
+   "label": "Product Certification Details",
+   "options": "HUID Detail",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "sales_order.custom_jewelex_order_no",
+   "fieldname": "jewelex_order_no",
+   "fieldtype": "Data",
+   "label": "Jewelex Order No"
+  },
+  {
+   "fetch_from": "sales_order_item.custom_child_po_no",
+   "fieldname": "child_po",
+   "fieldtype": "Data",
+   "label": "Child PO",
+   "read_only": 1
+  },
+  {
+   "fieldname": "parent_details_section",
+   "fieldtype": "Section Break",
+   "label": "Parent Details"
+  },
+  {
+   "fieldname": "parent_quotation",
+   "fieldtype": "Link",
+   "label": "Parent Quotation",
+   "options": "Quotation"
+  },
+  {
+   "fieldname": "parent_sales_order",
+   "fieldtype": "Link",
+   "label": "Parent Sales Order",
+   "options": "Sales Order"
+  },
+  {
+   "fieldname": "parent_mp",
+   "fieldtype": "Link",
+   "label": "Parent MP",
+   "options": "Manufacturing Plan"
+  },
+  {
+   "fetch_from": "parent_sales_order.customer",
+   "fieldname": "ref_customer",
+   "fieldtype": "Link",
+   "label": "Ref Customer",
+   "options": "Customer"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "pmo_operation_cost",
+   "fieldtype": "Table",
+   "label": "PMO Operation Cost",
+   "no_copy": 1,
+   "options": "PMO Operation Cost",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "use_custom_diamond_grade",
+   "fieldtype": "Check",
+   "label": "Use Custom Diamond Grade"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [
+  {
+   "link_doctype": "Material Request",
+   "link_fieldname": "manufacturing_order"
+  },
+  {
+   "link_doctype": "Manufacturing Work Order",
+   "link_fieldname": "manufacturing_order"
+  },
+  {
+   "link_doctype": "Stock Entry",
+   "link_fieldname": "manufacturing_order"
+  }
+ ],
+ "modified": "2024-11-28 13:55:07.776657",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Parent Manufacturing Order",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

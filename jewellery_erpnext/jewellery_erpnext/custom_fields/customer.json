@@ -1,0 +1,506 @@
+{
+ "Customer": [
+  {
+   "dt": "Customer",
+   "fieldname": "custom_customer_grade",
+   "fieldtype": "Data",
+   "insert_after": "old_customer_code",
+   "label": "Customer Grade",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_ignore_po_creation_for_certification",
+   "fieldtype": "Check",
+   "insert_after": "custom_certification_charges",
+   "is_system_generated": 1,
+   "label": "Ignore PO creation for Certification",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_certification_charges",
+   "fieldtype": "Currency",
+   "insert_after": "image",
+   "is_system_generated": 1,
+   "label": "Certification Charges",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_consider_2_digit_for_gemstone",
+   "fieldtype": "Check",
+   "insert_after": "custom_consider_2_digit_for_diamond",
+   "is_system_generated": 1,
+   "label": "Consider 2 Digit for Gemstone",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_consider_2_digit_for_diamond",
+   "fieldtype": "Check",
+   "insert_after": "custom_consider_2_digit_for_bom",
+   "is_system_generated": 1,
+   "label": "Consider 2 Digit for Diamond",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_gemstone_price_multiplier",
+   "fieldtype": "Float",
+   "insert_after": "customer_details",
+   "is_system_generated": 1,
+   "label": "Gemstone Price Multiplier",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "section_break_cjxn6",
+   "fieldtype": "Section Break",
+   "insert_after": "diamond_grades",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "production_criteria",
+   "fieldtype": "Tab Break",
+   "insert_after": "portal_users",
+   "is_system_generated": 1,
+   "label": "Production Criteria",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "column_break_2fbrf",
+   "fieldtype": "Column Break",
+   "insert_after": "defaults_tab",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "sales_type",
+   "fieldtype": "Table",
+   "insert_after": "compute_making_charges_on",
+   "label": "Sales Type",
+   "module": "Jewellery Erpnext",
+   "options": "Sales Type Multiselect"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_sequence",
+   "fieldtype": "Int",
+   "insert_after": "basic_info",
+   "label": "Sequence",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_territory_code",
+   "fieldtype": "Data",
+   "insert_after": "territory",
+   "label": "Territory Code",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_consider_2_digit_for_bom",
+   "fieldtype": "Check",
+   "insert_after": "custom_sketch_workflow_state",
+   "label": "Consider 2 Digit for BOM",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_customer_code",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "in_list_view": 1,
+   "insert_after": "customer_name",
+   "label": "Customer Codes",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "column_break_bak3e",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_ignore_department_for_mop",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "tax_details_column_break",
+   "fieldtype": "Column Break",
+   "insert_after": "pan",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "gstin",
+   "fieldtype": "Autocomplete",
+   "insert_after": "tax_details_section",
+   "is_system_generated": 1,
+   "label": "GSTIN / UIN",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "tax_details_section",
+   "fieldtype": "Section Break",
+   "insert_after": "tax_withholding_category",
+   "is_system_generated": 1,
+   "label": "Tax Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "column_break_6v9nw",
+   "fieldtype": "Column Break",
+   "hidden": 1,
+   "insert_after": "sales_type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "section_break_yfp4k",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_consider_2_digit_for_gemstone",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_sketch_workflow_state",
+   "fieldtype": "Select",
+   "insert_after": "cfa",
+   "label": "Sketch Workflow State",
+   "module": "Jewellery Erpnext",
+   "options": "\nInternal\nExternal"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_order_type_criteria",
+   "fieldtype": "Table",
+   "insert_after": "brand",
+   "label": "Order Type Criteria",
+   "module": "Jewellery Erpnext",
+   "options": "Order Type"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "old_customer_code",
+   "fieldtype": "Data",
+   "insert_after": "customer_group",
+   "label": "Old Customer Code",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "section_break_fn76t",
+   "fieldtype": "Section Break",
+   "insert_after": "parcel_place",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "section_break_c8abm",
+   "fieldtype": "Section Break",
+   "insert_after": "default_price_list",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "column_break_ug5bi",
+   "fieldtype": "Column Break",
+   "insert_after": "service_type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "metal_criteria",
+   "fieldtype": "Table",
+   "insert_after": "custom_gemstone_price_list_type",
+   "label": "Metal Criteria",
+   "module": "Jewellery Erpnext",
+   "options": "Metal Criteria"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "column_break_eve3d",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_approval_warehouse",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "parcel_place",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "column_break_ug5bi",
+   "label": "Parcel Place",
+   "module": "Jewellery Erpnext",
+   "options": "Parcel Place MultiSelect"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "diamont_quality",
+   "fieldtype": "Section Break",
+   "insert_after": "diamond_quality",
+   "label": "Diamond Quality",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "section_break_21",
+   "fieldtype": "Section Break",
+   "insert_after": "column_break_bak3e",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "service_type",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "section_break_21",
+   "label": "Service Type",
+   "module": "Jewellery Erpnext",
+   "options": "Service Type 2"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "pan",
+   "fieldtype": "Data",
+   "insert_after": "gstin",
+   "is_system_generated": 1,
+   "label": "PAN",
+   "module": "Jewellery Erpnext",
+   "read_only_depends_on": "eval: doc.gstin"
+  },
+  {
+   "description": "Diamond Inclusive = Gross Wt - Stone Wt(in gram) - Chain Wt - Other Wt\n\n<br> Net Wt = Gross Wt - Diamond Wt(in gram) - Stone Wt(in gram) - Chain Wt - Other Wt",
+   "dt": "Customer",
+   "fieldname": "compute_making_charges_on",
+   "fieldtype": "Select",
+   "insert_after": "section_break_yfp4k",
+   "label": "Compute Making Charges On",
+   "module": "Jewellery Erpnext",
+   "options": "Diamond Inclusive\nNet Wt"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "diamond_grades",
+   "fieldtype": "Table",
+   "insert_after": "diamont_quality",
+   "label": "Diamond Grades",
+   "module": "Jewellery Erpnext",
+   "options": "Customer Diamond Grade"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "diamond_price_list",
+   "fieldtype": "Select",
+   "insert_after": "column_break_6v9nw",
+   "label": "Diamond Price List Type",
+   "module": "Jewellery Erpnext",
+   "options": "\nSieve Size Range\nWeight (in cts)\nSize (in mm)"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "brand",
+   "fieldtype": "Data",
+   "insert_after": "production_criteria",
+   "label": "Brand",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "cfa",
+   "fieldtype": "Data",
+   "insert_after": "column_break_eve3d",
+   "label": "CFA",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "vendor_code",
+   "fieldtype": "Data",
+   "insert_after": "gender",
+   "label": "Vendor Code",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "collection_code",
+   "fieldtype": "Table",
+   "insert_after": "product_dimension_code",
+   "label": "Collection Code",
+   "module": "Jewellery Erpnext",
+   "options": "Customer Collection Code"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "product_dimension_code",
+   "fieldtype": "Table",
+   "insert_after": "column_break_67",
+   "label": "Product Dimension Code",
+   "module": "Jewellery Erpnext",
+   "options": "Customer Product Dimension Code"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "column_break_67",
+   "fieldtype": "Column Break",
+   "insert_after": "gemstone_code",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "gemstone_code",
+   "fieldtype": "Table",
+   "insert_after": "metal_line_details",
+   "label": "Gemstone Code",
+   "module": "Jewellery Erpnext",
+   "options": "Customer Gemstone Code"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "metal_line_details",
+   "fieldtype": "Table",
+   "insert_after": "section_break_fn76t",
+   "label": "Metal Line Details",
+   "module": "Jewellery Erpnext",
+   "options": "Customer Metal Line No"
+  },
+  {
+   "depends_on": "eval:in_list([\"SEZ\", \"Overseas\", \"Deemed Export\"], doc.gst_category)",
+   "dt": "Customer",
+   "fieldname": "export_type",
+   "fieldtype": "Select",
+   "insert_after": "gst_category",
+   "is_system_generated": 1,
+   "label": "Export Type",
+   "mandatory_depends_on": "eval:in_list([\"SEZ\", \"Overseas\", \"Deemed Export\"], doc.gst_category)",
+   "module": "Jewellery Erpnext",
+   "options": "\nWith Payment of Tax\nWithout Payment of Tax"
+  },
+  {
+   "default": "Unregistered",
+   "dt": "Customer",
+   "fieldname": "gst_category",
+   "fieldtype": "Select",
+   "insert_after": "customer_type",
+   "is_system_generated": 1,
+   "label": "GST Category",
+   "module": "Jewellery Erpnext",
+   "options": "Registered Regular\nRegistered Composition\nUnregistered\nSEZ\nOverseas\nConsumer\nDeemed Export\nUIN Holders"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "exempt_from_sales_tax",
+   "fieldtype": "Check",
+   "insert_after": "represents_company",
+   "is_system_generated": 1,
+   "label": "Is customer exempted from sales tax?",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_approval_warehouse",
+   "fieldtype": "Link",
+   "insert_after": "custom_item_categories",
+   "is_system_generated": 1,
+   "label": "Approval Warehouse",
+   "module": "Jewellery Erpnext",
+   "options": "Warehouse"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_allowed_item_category_for_invoice",
+   "fieldtype": "Select",
+   "insert_after": "custom_order_type_criteria",
+   "is_system_generated": 1,
+   "label": "Allowed Item Category For Invoice",
+   "module": "Jewellery Erpnext",
+   "options": "Mix\nUnique\nMix\u00a0and\u00a0Unique"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_ignore_department_for_mop",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "section_break_cjxn6",
+   "is_system_generated": 1,
+   "label": "Ignore Department For MOP",
+   "module": "Jewellery Erpnext",
+   "options": "Ignore Department For MOP"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_gemstone_price_list_type",
+   "fieldtype": "Select",
+   "insert_after": "diamond_price_list",
+   "is_system_generated": 1,
+   "label": "Gemstone Price List Type",
+   "module": "Jewellery Erpnext",
+   "options": "Weight (in cts)\nFixed\nMultiplier"
+  },
+  {
+   "depends_on": "eval: doc.custom_allowed_item_category_for_invoice == \"Mix\u00a0and\u00a0Unique\";",
+   "dt": "Customer",
+   "fieldname": "custom_item_categories",
+   "fieldtype": "Table",
+   "insert_after": "custom_allowed_item_category_for_invoice",
+   "is_system_generated": 1,
+   "label": "Item Categories",
+   "module": "Jewellery Erpnext",
+   "options": "Item Category Multiselect"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "is_npa",
+   "fieldtype": "Check",
+   "insert_after": "loan_details_tab",
+   "is_system_generated": 1,
+   "label": "Is NPA",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "loan_details_tab",
+   "fieldtype": "Tab Break",
+   "insert_after": "email_id",
+   "is_system_generated": 1,
+   "label": "Loan Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_production_criteria",
+   "fieldtype": "Tab Break",
+   "insert_after": "portal_users",
+   "label": "Production Criteria",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "diamond_quality",
+   "fieldtype": "Section Break",
+   "insert_after": "metal_criteria",
+   "label": "Diamond Quality",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "section_break_43",
+   "fieldtype": "Section Break",
+   "insert_after": "column_break_nwor",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_separate_hallmarking_invoice",
+   "fieldtype": "Check",
+   "insert_after": "custom_ignore_po_creation_for_certification",
+   "label": "Separate Hallmarking invoice",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

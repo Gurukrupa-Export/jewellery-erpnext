@@ -1,0 +1,92 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2023-06-12 17:21:03.392058",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "item_code",
+  "category",
+  "category_code",
+  "column_break_4",
+  "momkash_no",
+  "rack_no",
+  "box_no"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": ".category_code.-.#####"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fetch_from": "item_code.item_category",
+   "fieldname": "category",
+   "fieldtype": "Link",
+   "label": "Category",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from": "category.category_code",
+   "fieldname": "category_code",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Category Code"
+  },
+  {
+   "fieldname": "column_break_4",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "momkash_no",
+   "fieldtype": "Int",
+   "label": "Momkash No"
+  },
+  {
+   "fieldname": "rack_no",
+   "fieldtype": "Int",
+   "label": "Tray No"
+  },
+  {
+   "fieldname": "box_no",
+   "fieldtype": "Int",
+   "label": "Box No"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2023-08-27 23:24:28.684556",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Momkash",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

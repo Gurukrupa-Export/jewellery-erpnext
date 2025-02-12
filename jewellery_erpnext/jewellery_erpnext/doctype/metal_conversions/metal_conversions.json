@@ -1,0 +1,431 @@
+{
+    "actions": [],
+    "allow_rename": 1,
+    "autoname": "MCON.#####",
+    "creation": "2024-02-02 18:13:19.370797",
+    "default_view": "List",
+    "doctype": "DocType",
+    "editable_grid": 1,
+    "engine": "InnoDB",
+    "field_order": [
+     "details_tab",
+     "employee",
+     "column_break_nvr33",
+     "multiple_metal_converter",
+     "date",
+     "column_break_v3jso",
+     "company",
+     "column_break_g0kkz",
+     "department",
+     "column_break_ae5r8",
+     "manufacturer",
+     "column_break_2culq",
+     "branch",
+     "section_break_6lpva",
+     "source_warehouse",
+     "column_break_6oxul",
+     "target_warehouse",
+     "column_break_aw0qk",
+     "stock_entry",
+     "metal_converter_tab",
+     "source_item",
+     "source_qty",
+     "batch",
+     "source_batch_details",
+     "source_alloy_check",
+     "source_alloy",
+     "source_alloy_batch",
+     "source_alloy_qty",
+     "alloy_batch_details",
+     "column_break_bncqn",
+     "target_item",
+     "target_qty",
+     "target_alloy_check",
+     "target_alloy",
+     "target_alloy_qty",
+     "section_break_9izc4",
+     "batch_available_qty",
+     "inventory_type",
+     "customer",
+     "supplier",
+     "section_break_6tcjy",
+     "source_attribute_value",
+     "multiple_metal_converter_tab",
+     "mc_source_table",
+     "section_break_xldck",
+     "calculate",
+     "alloy_check",
+     "column_break_l5hbm",
+     "m_target_item",
+     "m_target_qty",
+     "column_break_k32gx",
+     "alloy",
+     "alloy_batch",
+     "alloy_qty",
+     "amended_from"
+    ],
+    "fields": [
+     {
+      "fieldname": "details_tab",
+      "fieldtype": "Tab Break",
+      "label": "Details"
+     },
+     {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "label": "Company",
+      "options": "Company",
+      "reqd": 1
+     },
+     {
+      "fieldname": "column_break_2culq",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "department",
+      "fieldtype": "Link",
+      "label": "Department",
+      "options": "Department",
+      "reqd": 1
+     },
+     {
+      "fieldname": "column_break_g0kkz",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "manufacturer",
+      "fieldtype": "Link",
+      "label": "Manufacturer",
+      "options": "Manufacturer",
+      "reqd": 1
+     },
+     {
+      "fieldname": "column_break_ae5r8",
+      "fieldtype": "Column Break"
+     },
+     {
+      "default": "Today",
+      "fieldname": "date",
+      "fieldtype": "Date",
+      "in_list_view": 1,
+      "label": "Date",
+      "reqd": 1
+     },
+     {
+      "fieldname": "section_break_6lpva",
+      "fieldtype": "Section Break"
+     },
+     {
+      "fieldname": "source_warehouse",
+      "fieldtype": "Link",
+      "label": "Source Warehouse",
+      "options": "Warehouse",
+      "reqd": 1
+     },
+     {
+      "fieldname": "column_break_6oxul",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "target_warehouse",
+      "fieldtype": "Link",
+      "label": "Target Warehouse",
+      "options": "Warehouse",
+      "read_only": 1,
+      "reqd": 1
+     },
+     {
+      "fieldname": "column_break_v3jso",
+      "fieldtype": "Section Break"
+     },
+     {
+      "fieldname": "employee",
+      "fieldtype": "Link",
+      "label": "Employee",
+      "options": "Employee",
+      "reqd": 1
+     },
+     {
+      "fieldname": "column_break_aw0qk",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "stock_entry",
+      "fieldtype": "Link",
+      "label": "Stock Entry",
+      "options": "Stock Entry"
+     },
+     {
+      "collapsible": 1,
+      "depends_on": "eval:doc.multiple_metal_converter ==0",
+      "fieldname": "metal_converter_tab",
+      "fieldtype": "Tab Break",
+      "label": "Metal Converter"
+     },
+     {
+      "fieldname": "source_item",
+      "fieldtype": "Link",
+      "label": "Source Item",
+      "options": "Item"
+     },
+     {
+      "fieldname": "source_qty",
+      "fieldtype": "Float",
+      "label": "Source Qty"
+     },
+     {
+      "default": "0",
+      "fieldname": "source_alloy_check",
+      "fieldtype": "Check",
+      "hidden": 1,
+      "label": "Source Alloy Check"
+     },
+     {
+      "depends_on": "eval:doc.source_alloy_check == 1",
+      "fieldname": "source_alloy",
+      "fieldtype": "Link",
+      "label": "Source Alloy",
+      "options": "Item"
+     },
+     {
+      "fieldname": "source_alloy_qty",
+      "fieldtype": "Data",
+      "label": "Source Alloy Qty"
+     },
+     {
+      "fieldname": "column_break_bncqn",
+      "fieldtype": "Column Break"
+     },
+     {
+      "depends_on": "eval:doc.source_qty",
+      "fieldname": "target_item",
+      "fieldtype": "Link",
+      "label": "Target Item",
+      "options": "Item"
+     },
+     {
+      "depends_on": "eval:doc.target_item",
+      "fieldname": "target_qty",
+      "fieldtype": "Float",
+      "label": "Target Qty",
+      "read_only": 1
+     },
+     {
+      "default": "0",
+      "fieldname": "target_alloy_check",
+      "fieldtype": "Check",
+      "hidden": 1,
+      "label": "Target Alloy Check"
+     },
+     {
+      "depends_on": "eval:doc.target_alloy_check == 1 ",
+      "fieldname": "target_alloy",
+      "fieldtype": "Link",
+      "label": "Target Alloy",
+      "options": "Item"
+     },
+     {
+      "depends_on": "eval:doc.target_alloy_check",
+      "fieldname": "target_alloy_qty",
+      "fieldtype": "Float",
+      "label": "Target Alloy Qty",
+      "read_only": 1
+     },
+     {
+      "fieldname": "amended_from",
+      "fieldtype": "Link",
+      "label": "Amended From",
+      "no_copy": 1,
+      "options": "Metal Conversions",
+      "print_hide": 1,
+      "read_only": 1,
+      "search_index": 1
+     },
+     {
+      "fieldname": "section_break_6tcjy",
+      "fieldtype": "Section Break"
+     },
+     {
+      "fieldname": "source_attribute_value",
+      "fieldtype": "Data",
+      "hidden": 1,
+      "label": "Source Attribute Value"
+     },
+     {
+      "depends_on": "eval:doc.source_item",
+      "fieldname": "batch",
+      "fieldtype": "Link",
+      "hidden": 1,
+      "label": "Batch",
+      "options": "Batch"
+     },
+     {
+      "depends_on": "eval:doc.batch",
+      "fieldname": "batch_available_qty",
+      "fieldtype": "Float",
+      "label": "Batch Available Qty",
+      "read_only": 1
+     },
+     {
+      "depends_on": "eval:doc.batch",
+      "fieldname": "inventory_type",
+      "fieldtype": "Link",
+      "label": "Inventory Type",
+      "options": "Inventory Type",
+      "read_only": 1
+     },
+     {
+      "depends_on": "eval:doc.batch",
+      "fieldname": "customer",
+      "fieldtype": "Link",
+      "label": "Customer",
+      "options": "Customer",
+      "read_only": 1
+     },
+     {
+      "fieldname": "section_break_9izc4",
+      "fieldtype": "Section Break"
+     },
+     {
+      "depends_on": "eval:doc.batch",
+      "fieldname": "supplier",
+      "fieldtype": "Link",
+      "label": "Supplier",
+      "options": "Supplier",
+      "read_only": 1
+     },
+     {
+      "fieldname": "column_break_nvr33",
+      "fieldtype": "Column Break"
+     },
+     {
+      "default": "0",
+      "fieldname": "multiple_metal_converter",
+      "fieldtype": "Check",
+      "label": "Multiple Metal Converter"
+     },
+     {
+      "depends_on": "eval:doc.multiple_metal_converter ==1",
+      "fieldname": "multiple_metal_converter_tab",
+      "fieldtype": "Tab Break",
+      "label": "Multiple Metal Converter"
+     },
+     {
+      "fieldname": "mc_source_table",
+      "fieldtype": "Table",
+      "label": "Source Table",
+      "options": "MC Source Table"
+     },
+     {
+      "fieldname": "m_target_item",
+      "fieldtype": "Link",
+      "label": "Target Item",
+      "options": "Item"
+     },
+     {
+      "fieldname": "m_target_qty",
+      "fieldtype": "Float",
+      "label": "Target Qty",
+      "read_only": 1
+     },
+     {
+      "fieldname": "column_break_k32gx",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "calculate",
+      "fieldtype": "Button",
+      "label": "Calculate"
+     },
+     {
+      "fieldname": "section_break_xldck",
+      "fieldtype": "Section Break"
+     },
+     {
+      "fieldname": "column_break_l5hbm",
+      "fieldtype": "Column Break"
+     },
+     {
+      "default": "0",
+      "description": "After calculate alloy return negative then field is auto check",
+      "fieldname": "alloy_check",
+      "fieldtype": "Check",
+      "label": "Alloy Check",
+      "read_only": 1
+     },
+     {
+      "fieldname": "alloy",
+      "fieldtype": "Link",
+      "label": "Alloy",
+      "options": "Item"
+     },
+     {
+      "fieldname": "alloy_qty",
+      "fieldtype": "Float",
+      "label": "Alloy Qty",
+      "read_only": 1
+     },
+     {
+      "fieldname": "branch",
+      "fieldtype": "Link",
+      "label": "Branch",
+      "options": "Branch"
+     },
+     {
+      "fieldname": "alloy_batch",
+      "fieldtype": "Link",
+      "label": "Alloy Batch",
+      "options": "Batch"
+     },
+     {
+      "depends_on": "eval:doc.source_alloy_check == 1",
+      "fieldname": "source_alloy_batch",
+      "fieldtype": "Link",
+      "hidden": 1,
+      "label": "Source Alloy Batch",
+      "no_copy": 1,
+      "options": "Batch"
+     },
+     {
+      "fieldname": "alloy_batch_details",
+      "fieldtype": "Table",
+      "label": "Alloy Batch Details",
+      "options": "Alloy Batch Details"
+     },
+     {
+      "fieldname": "source_batch_details",
+      "fieldtype": "Table",
+      "label": "Source Batch Details",
+      "options": "Alloy Batch Details"
+     }
+    ],
+    "index_web_pages_for_search": 1,
+    "is_submittable": 1,
+    "links": [
+     {
+      "link_doctype": "Stock Entry",
+      "link_fieldname": "custom_metal_conversion_reference"
+     }
+    ],
+    "modified": "2025-01-30 16:06:31.034045",
+    "modified_by": "Administrator",
+    "module": "Jewellery Erpnext",
+    "name": "Metal Conversions",
+    "naming_rule": "Expression (old style)",
+    "owner": "Administrator",
+    "permissions": [
+     {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+     }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
+   }

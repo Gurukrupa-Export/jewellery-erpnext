@@ -1,0 +1,340 @@
+{
+ "Quotation": [
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_customer_finding",
+   "fieldtype": "Select",
+   "insert_after": "custom_column_break_oegc8",
+   "label": "Customer Finding",
+   "module": "Jewellery Erpnext",
+   "options": "No\nYes"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_column_break_oegc8",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_good",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_sales_type",
+   "fieldtype": "Link",
+   "insert_after": "order_type",
+   "label": "Sales Type",
+   "module": "Jewellery Erpnext",
+   "options": "Sales Type"
+  },
+  {
+   "dt": "Quotation",
+   "fetch_from": "company_address.gstin",
+   "fieldname": "company_gstin",
+   "fieldtype": "Data",
+   "insert_after": "company_address",
+   "is_system_generated": 1,
+   "label": "Company GSTIN",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "dt": "Quotation",
+   "fieldname": "is_reverse_charge",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "insert_after": "customer_name",
+   "is_system_generated": 1,
+   "label": "Is Reverse Charge",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Quotation",
+   "fieldname": "gst_breakup_table",
+   "fieldtype": "Text Editor",
+   "insert_after": "section_gst_breakup",
+   "is_system_generated": 1,
+   "label": "GST Breakup Table",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "section_gst_breakup",
+   "fieldtype": "Section Break",
+   "insert_after": "other_charges_calculation",
+   "is_system_generated": 1,
+   "label": "GST Breakup",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "place_of_supply",
+   "fieldtype": "Autocomplete",
+   "insert_after": "gst_category",
+   "is_system_generated": 1,
+   "label": "Place of Supply",
+   "module": "Jewellery Erpnext",
+   "options": "01-Jammu and Kashmir\n02-Himachal Pradesh\n03-Punjab\n04-Chandigarh\n05-Uttarakhand\n06-Haryana\n07-Delhi\n08-Rajasthan\n09-Uttar Pradesh\n10-Bihar\n11-Sikkim\n12-Arunachal Pradesh\n13-Nagaland\n14-Manipur\n15-Mizoram\n16-Tripura\n17-Meghalaya\n18-Assam\n19-West Bengal\n20-Jharkhand\n21-Odisha\n22-Chhattisgarh\n23-Madhya Pradesh\n24-Gujarat\n26-Dadra and Nagar Haveli and Daman and Diu\n27-Maharashtra\n29-Karnataka\n30-Goa\n31-Lakshadweep Islands\n32-Kerala\n33-Tamil Nadu\n34-Puducherry\n35-Andaman and Nicobar Islands\n36-Telangana\n37-Andhra Pradesh\n38-Ladakh\n96-Other Countries\n97-Other Territory"
+  },
+  {
+   "dt": "Quotation",
+   "fetch_from": "customer_address.gst_category",
+   "fieldname": "gst_category",
+   "fieldtype": "Data",
+   "insert_after": "billing_address_gstin",
+   "is_system_generated": 1,
+   "label": "GST Category",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
+   "fetch_from": "customer_address.gstin",
+   "fieldname": "billing_address_gstin",
+   "fieldtype": "Data",
+   "insert_after": "address_display",
+   "is_system_generated": 1,
+   "label": "Billing Address GSTIN",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.gst_category == \"SEZ\" || (doc.gst_category == \"Overseas\" && doc.place_of_supply == \"96-Other Countries\")",
+   "dt": "Quotation",
+   "fieldname": "is_export_with_gst",
+   "fieldtype": "Check",
+   "insert_after": "is_reverse_charge",
+   "is_system_generated": 1,
+   "label": "Is Export With Payment of GST",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fetch_from": "company.supplier_code",
+   "fieldname": "supplier_code",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "insert_after": "company",
+   "label": "Supplier Code",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "ref_customer",
+   "fieldtype": "Link",
+   "insert_after": "customer_name",
+   "label": "Ref Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_updated_shipping_territory",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "branch",
+   "label": "Updated Shipping Territory",
+   "module": "Jewellery Erpnext",
+   "options": "Territory Multi Select"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "insert_after": "amended_from",
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "parcel_place",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "service_type",
+   "label": "Shipping Territory",
+   "module": "Jewellery Erpnext",
+   "options": "Territory Multi Select"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "section_break_fyn09",
+   "fieldtype": "Section Break",
+   "insert_after": "competitors",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "item_details",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_customer_finding",
+   "label": "Item Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "service_type",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "valid_till",
+   "label": "Service Type",
+   "module": "Jewellery Erpnext",
+   "options": "Service Type 2"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "finding_weight_for_chain",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "insert_after": "items",
+   "label": "Finding Weight For Chain",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "column_break_24",
+   "fieldtype": "Column Break",
+   "insert_after": "gold_rate",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "diamond_quality",
+   "fieldtype": "Link",
+   "insert_after": "column_break_24",
+   "label": "Diamond Quality",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "default": "0",
+   "dt": "Quotation",
+   "fieldname": "gold_rate_with_gst",
+   "fieldtype": "Currency",
+   "insert_after": "items_section",
+   "label": "Gold Rate With GST",
+   "module": "Jewellery Erpnext",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "dt": "Quotation",
+   "fieldname": "gold_rate",
+   "fieldtype": "Currency",
+   "insert_after": "gold_rate_with_gst",
+   "label": "Gold Rate",
+   "module": "Jewellery Erpnext",
+   "reqd": 1
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "exempt_from_sales_tax",
+   "fieldtype": "Check",
+   "insert_after": "taxes_and_charges",
+   "is_system_generated": 1,
+   "label": "Is customer exempted from sales tax?",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_section_break_oa5hf",
+   "fieldtype": "Section Break",
+   "insert_after": "diamond_quality",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_customer_gold",
+   "fieldtype": "Select",
+   "insert_after": "custom_section_break_oa5hf",
+   "label": "Customer Gold",
+   "module": "Jewellery Erpnext",
+   "options": "\nYes\nNo"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_column_break_scfru",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_gold",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_customer_diamond",
+   "fieldtype": "Select",
+   "insert_after": "custom_column_break_scfru",
+   "label": "Customer Diamond",
+   "module": "Jewellery Erpnext",
+   "options": "\nYes\nNo"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_column_break_arh5m",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_diamond",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_customer_stone",
+   "fieldtype": "Select",
+   "insert_after": "custom_column_break_arh5m",
+   "label": "Customer Stone",
+   "module": "Jewellery Erpnext",
+   "options": "\nYes\nNo"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_column_break_8cbsz",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_customer_stone",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_customer_good",
+   "fieldtype": "Select",
+   "insert_after": "custom_column_break_8cbsz",
+   "label": "Customer Good",
+   "module": "Jewellery Erpnext",
+   "options": "\nYes\nNo"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_bom_creation_logs",
+   "fieldtype": "Long Text",
+   "insert_after": "custom_bom_logs",
+   "label": "BOM Creation Logs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_bom_logs",
+   "fieldtype": "HTML",
+   "insert_after": "custom_bom_error_logs",
+   "label": "BOM Logs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_bom_error_logs",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_updated_shipping_territory",
+   "label": "BOM Error Logs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Quotation",
+   "fieldname": "workflow_state",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Workflow State",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Workflow State"
+  }
+ ]
+}

@@ -1,0 +1,42 @@
+{
+ "Parent Manufacturing Order": [
+  {
+   "dt": "Parent Manufacturing Order",
+   "fieldname": "custom_jwelex_batch_no",
+   "fieldtype": "Data",
+   "insert_after": "setting_type",
+   "label": "Jwelex Batch No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Parent Manufacturing Order",
+   "fetch_from": "sales_order.custom_updated_delivery_date",
+   "fetch_if_empty": 1,
+   "fieldname": "custom_updated_delivery_date",
+   "fieldtype": "Date",
+   "insert_after": "delivery_date",
+   "label": "Updated Delivery Date",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Parent Manufacturing Order",
+   "fieldname": "inventory_dimension",
+   "fieldtype": "Section Break",
+   "insert_after": "stock_entry_details",
+   "is_system_generated": 1,
+   "label": "Inventory Dimension",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Parent Manufacturing Order",
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "insert_after": "inventory_dimension",
+   "is_system_generated": 1,
+   "label": "Inventory Type",
+   "module": "Jewellery Erpnext",
+   "options": "Inventory Type"
+  }
+ ]
+}

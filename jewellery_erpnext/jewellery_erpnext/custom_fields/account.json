@@ -1,0 +1,97 @@
+{
+ "Account": [
+  {
+   "dt": "Account",
+   "fieldname": "custom_pan",
+   "fieldtype": "Data",
+   "insert_after": "custom_pan_number",
+   "label": "PAN",
+   "module": "Jewellery Erpnext",
+   "options": "Service Type 2"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_pincode",
+   "fieldtype": "Data",
+   "insert_after": "custom_country",
+   "label": "Pincode",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_country",
+   "fieldtype": "Link",
+   "insert_after": "custom_mobile_number",
+   "label": "Country",
+   "module": "Jewellery Erpnext",
+   "options": "Country"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_state",
+   "fieldtype": "Link",
+   "insert_after": "custom_address",
+   "label": "State",
+   "module": "Jewellery Erpnext",
+   "options": "State List"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_address",
+   "fieldtype": "Long Text",
+   "insert_after": "custom_name",
+   "label": "Address",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_name",
+   "fieldtype": "Data",
+   "insert_after": "custom_details",
+   "label": "Name",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_details",
+   "fieldtype": "Tab Break",
+   "insert_after": "include_in_gross",
+   "label": "Additional Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_sales_type",
+   "fieldtype": "Link",
+   "insert_after": "custom_purchase_type",
+   "label": "Sales Type",
+   "module": "Jewellery Erpnext",
+   "options": "Sales Type"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_purchase_type",
+   "fieldtype": "Link",
+   "insert_after": "custom_pan",
+   "label": "Purchase Type",
+   "module": "Jewellery Erpnext",
+   "options": "Purchase Type"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_other_details",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_state",
+   "label": "Other details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Account",
+   "fieldname": "custom_pan_number",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_pincode",
+   "label": "Pan Number",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

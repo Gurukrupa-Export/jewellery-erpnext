@@ -1,0 +1,85 @@
+{
+ "Warehouse": [
+  {
+   "dt": "Warehouse",
+   "fieldname": "section_break_29",
+   "fieldtype": "Section Break",
+   "insert_after": "old_parent",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Warehouse",
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "insert_after": "section_break_29",
+   "label": "Cost Center",
+   "module": "Jewellery Erpnext",
+   "options": "Cost Center"
+  },
+  {
+   "depends_on": "eval:!doc.is_group",
+   "dt": "Warehouse",
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "insert_after": "company",
+   "label": "Employee",
+   "module": "Jewellery Erpnext",
+   "options": "Employee"
+  },
+  {
+   "depends_on": "eval: doc.is_group",
+   "dt": "Warehouse",
+   "fieldname": "custom_manufacturing_operation",
+   "fieldtype": "Link",
+   "insert_after": "department",
+   "label": "Manufacturing Operation",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturing Operation"
+  },
+  {
+   "dt": "Warehouse",
+   "fieldname": "custom_operation",
+   "fieldtype": "Link",
+   "insert_after": "employee",
+   "label": "Operation",
+   "module": "Jewellery Erpnext",
+   "options": "Department Operation"
+  },
+  {
+   "dt": "Warehouse",
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "insert_after": "column_break_3",
+   "label": "Department",
+   "module": "Jewellery Erpnext",
+   "options": "Department"
+  },
+  {
+   "dt": "Warehouse",
+   "fieldname": "subcontractor",
+   "fieldtype": "Link",
+   "insert_after": "department",
+   "label": "Supplier",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier"
+  },
+  {
+   "dt": "Warehouse",
+   "fieldname": "custom_abbr",
+   "fieldtype": "Data",
+   "insert_after": "department",
+   "label": "Abbr",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Warehouse",
+   "fieldname": "custom_branch",
+   "fieldtype": "Link",
+   "insert_after": "section_break_29",
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  }
+ ]
+}

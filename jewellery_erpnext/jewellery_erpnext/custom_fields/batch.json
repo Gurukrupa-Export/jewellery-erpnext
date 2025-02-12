@@ -1,0 +1,85 @@
+{
+ "Batch": [
+  {
+   "dt": "Batch",
+   "fieldname": "custom_pure_metal_qty",
+   "fieldtype": "Float",
+   "insert_after": "batch_qty",
+   "label": "Pure Metal Qty",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_alloy_rate",
+   "fieldtype": "Currency",
+   "insert_after": "custom_metal_rate",
+   "label": "Alloy Rate",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_metal_rate",
+   "fieldtype": "Currency",
+   "insert_after": "supplier",
+   "label": "Metal Rate",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_voucher_detail_no",
+   "fieldtype": "Data",
+   "insert_after": "reference_name",
+   "label": "Voucher Detail No",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_inventory_type",
+   "fieldtype": "Link",
+   "insert_after": "custom_voucher_detail_no",
+   "label": "Inventory Type",
+   "module": "Jewellery Erpnext",
+   "options": "Inventory Type",
+   "read_only": 1
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_customer",
+   "fieldtype": "Link",
+   "insert_after": "custom_inventory_type",
+   "label": "Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_origin_entries",
+   "fieldtype": "Table",
+   "insert_after": "custom_section_break_jhbup",
+   "label": "Batch MultiSelect",
+   "module": "Jewellery Erpnext",
+   "options": "Batch MultiSelect"
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_customer_voucher_type",
+   "fieldtype": "Select",
+   "insert_after": "custom_customer",
+   "label": "Customer Voucher Type",
+   "module": "Jewellery Erpnext",
+   "options": "\nCustomer Sample Goods\nCustomer Subcontracting\nCustomer Repair"
+  },
+  {
+   "dt": "Batch",
+   "fieldname": "custom_section_break_jhbup",
+   "fieldtype": "Section Break",
+   "insert_after": "produced_qty",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

@@ -1,0 +1,232 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "Department-IR-.####",
+ "creation": "2023-03-30 11:46:48.688145",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_dakci",
+  "company",
+  "date_time",
+  "column_break_h17xp",
+  "manufacturer",
+  "section_break_ajpe3",
+  "amended_from",
+  "section_break_hojel",
+  "type",
+  "transfer_type",
+  "section_break_h51le",
+  "receive_against",
+  "section_break_swvwl",
+  "previous_department",
+  "next_department",
+  "is_finding",
+  "column_break_csby3",
+  "current_department",
+  "section_break_xypwf",
+  "show_manufacturing_operation",
+  "get_operations",
+  "column_break_blnpo",
+  "scan_mop",
+  "scan_mwo",
+  "section_break_5huxg",
+  "department_ir_operation",
+  "summary"
+ ],
+ "fields": [
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Department IR",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Type",
+   "options": "Issue\nReceive"
+  },
+  {
+   "fieldname": "current_department",
+   "fieldtype": "Link",
+   "label": "Current Department",
+   "options": "Department"
+  },
+  {
+   "depends_on": "eval:doc.type==\"Issue\"",
+   "fieldname": "next_department",
+   "fieldtype": "Link",
+   "label": "Next Department",
+   "no_copy": 1,
+   "options": "Department"
+  },
+  {
+   "default": "1",
+   "fieldname": "show_manufacturing_operation",
+   "fieldtype": "Check",
+   "label": "Show Manufacturing Operation from Last Operation"
+  },
+  {
+   "depends_on": "eval: doc.docstatus != 1",
+   "fieldname": "get_operations",
+   "fieldtype": "Button",
+   "label": "Get Manufacturing Operations"
+  },
+  {
+   "allow_bulk_edit": 1,
+   "fieldname": "department_ir_operation",
+   "fieldtype": "Table",
+   "label": "Department IR Operations",
+   "options": "Department IR Operation"
+  },
+  {
+   "default": "Now",
+   "fieldname": "date_time",
+   "fieldtype": "Datetime",
+   "label": "Date / Time",
+   "no_copy": 1
+  },
+  {
+   "depends_on": "eval:doc.type==\"Receive\"",
+   "fieldname": "receive_against",
+   "fieldtype": "Link",
+   "label": "Receive Against",
+   "options": "Department IR"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "depends_on": "eval:doc.type==\"Receive\"",
+   "fieldname": "previous_department",
+   "fieldtype": "Link",
+   "label": "Previous Department",
+   "no_copy": 1,
+   "options": "Department"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_dakci",
+   "fieldtype": "Section Break",
+   "label": "Company Details"
+  },
+  {
+   "fieldname": "column_break_h17xp",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_ajpe3",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer"
+  },
+  {
+   "fieldname": "column_break_csby3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_xypwf",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "section_break_hojel",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "section_break_h51le",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_blnpo",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_5huxg",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval: doc.docstatus != 1",
+   "fieldname": "scan_mop",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Scan MOP",
+   "options": "Barcode"
+  },
+  {
+   "depends_on": "eval: doc.docstatus != 1",
+   "fieldname": "scan_mwo",
+   "fieldtype": "Data",
+   "label": "Scan MWO",
+   "options": "Barcode"
+  },
+  {
+   "fieldname": "section_break_swvwl",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "transfer_type",
+   "fieldtype": "Select",
+   "label": "Transfer Type",
+   "options": "Next Department\nRepairing"
+  },
+  {
+   "fieldname": "summary",
+   "fieldtype": "HTML",
+   "label": "Summary"
+  },
+  {
+   "default": "0",
+   "fetch_from": "next_department.custom_is_finding",
+   "fieldname": "is_finding",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Is Finding"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [
+  {
+   "link_doctype": "Stock Entry",
+   "link_fieldname": "department_ir"
+  }
+ ],
+ "modified": "2024-12-18 16:01:57.145212",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Department IR",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

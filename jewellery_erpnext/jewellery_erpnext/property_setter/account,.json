@@ -1,0 +1,13 @@
+{
+    "Account" : [
+        {
+            "doctype_or_field": "DocType",
+            "doctype": "Account",
+            "field_name": "field",
+            "row_name": null,
+            "property": "field_order",
+            "value": ["properties", "column_break0", "disabled", "account_name", "account_number", "is_group", "company", "root_type", "report_type", "account_currency", "custom_purchase_type", "custom_sales_type", "column_break1", "parent_account", "account_type", "tax_rate", "freeze_account", "balance_must_be", "lft", "rgt", "old_parent", "include_in_gross", "custom_details", "custom_name", "custom_address", "custom_state", "custom_column_break_jytjs", "custom_mobile_number", "custom_country", "custom_pincode", "custom_section_break_kgdss", "custom_pan"],
+            "property_type": "Data"
+        }
+    ]
+}

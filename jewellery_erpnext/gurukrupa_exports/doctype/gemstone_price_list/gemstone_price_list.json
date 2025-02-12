@@ -1,0 +1,278 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "format:GSP-.######",
+ "creation": "2022-07-25 19:09:11.229961",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "price_list",
+  "customer",
+  "gemstone_code",
+  "gemstone_type",
+  "cut_or_cab",
+  "stone_shape",
+  "gemstone_quality",
+  "gemstone_size",
+  "supplier_fg_purchase_rate",
+  "gemstone_pr",
+  "per_pc_or_per_carat",
+  "column_break_8",
+  "price_list_type",
+  "from_weight",
+  "to_weight",
+  "item",
+  "bom",
+  "rate",
+  "handling_rate",
+  "currency",
+  "effective_from",
+  "gemstone_grade",
+  "section_break_yc6y",
+  "from_stone_size",
+  "from_size_weight",
+  "from_size_height",
+  "column_break_hf3d",
+  "to_stone_size",
+  "to_size_weight",
+  "to_size_height",
+  "section_break_et0i",
+  "gemstone_multiplier",
+  "supplier_fg_multiplier"
+ ],
+ "fields": [
+  {
+   "fieldname": "price_list",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Price List",
+   "options": "Price List"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "gemstone_code",
+   "fieldtype": "Data",
+   "label": "Stone Code"
+  },
+  {
+   "depends_on": "eval: doc.price_list_type != \"Multiplier\";",
+   "fieldname": "gemstone_type",
+   "fieldtype": "Link",
+   "label": "Stone Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "cut_or_cab",
+   "fieldtype": "Link",
+   "label": "Cut or Cab",
+   "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval: doc.price_list_type != \"Multiplier\";",
+   "fieldname": "stone_shape",
+   "fieldtype": "Link",
+   "label": "Stone Shape",
+   "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval: doc.price_list_type != \"Multiplier\";",
+   "fieldname": "gemstone_quality",
+   "fieldtype": "Link",
+   "label": "Stone Quality",
+   "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval: doc.price_list_type != \"Multiplier\";",
+   "fieldname": "gemstone_size",
+   "fieldtype": "Link",
+   "label": "Stone Size",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "column_break_8",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.price_list_type =='Weight (in cts)'",
+   "fieldname": "from_weight",
+   "fieldtype": "Float",
+   "label": "From Weight (in cts)"
+  },
+  {
+   "depends_on": "eval:doc.price_list_type=='Weight (in cts)'",
+   "fieldname": "to_weight",
+   "fieldtype": "Float",
+   "label": "To Weight (in cts)"
+  },
+  {
+   "depends_on": "eval:doc.price_list_type=='Fixed'",
+   "fieldname": "item",
+   "fieldtype": "Link",
+   "label": "Item",
+   "options": "Item"
+  },
+  {
+   "depends_on": "eval:doc.price_list_type=='Fixed'",
+   "fieldname": "bom",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "BOM",
+   "options": "BOM"
+  },
+  {
+   "depends_on": "eval: doc.price_list_type != \"Multiplier\";",
+   "fieldname": "rate",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Rate"
+  },
+  {
+   "fieldname": "handling_rate",
+   "fieldtype": "Float",
+   "label": "Gemstone Handling Rate"
+  },
+  {
+   "depends_on": "eval: doc.price_list_type != \"Multiplier\";",
+   "fetch_from": "customer.default_currency",
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "fieldname": "effective_from",
+   "fieldtype": "Date",
+   "label": "Effective From"
+  },
+  {
+   "fieldname": "supplier_fg_purchase_rate",
+   "fieldtype": "Currency",
+   "label": "Supplier FG Purchase Rate",
+   "precision": "3"
+  },
+  {
+   "fieldname": "gemstone_grade",
+   "fieldtype": "Link",
+   "label": "Gemstone Grade",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "to_stone_size",
+   "fieldtype": "Link",
+   "label": "To Stone size",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "from_stone_size",
+   "fieldtype": "Link",
+   "label": "From Stone size",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "price_list_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Price List Type",
+   "options": "Weight (in cts)\nFixed\nMultiplier"
+  },
+  {
+   "fieldname": "column_break_hf3d",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval: doc.price_list_type == \"Multiplier\";",
+   "fieldname": "section_break_et0i",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "gemstone_multiplier",
+   "fieldtype": "Table",
+   "label": "Gemstone Multiplier",
+   "options": "Gemstone Multiplier"
+  },
+  {
+   "depends_on": "eval: doc.price_list_type == \"Multiplier\";",
+   "fieldname": "section_break_yc6y",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "supplier_fg_multiplier",
+   "fieldtype": "Table",
+   "label": "Supplier FG Multiplier",
+   "options": "Gemstone Multiplier"
+  },
+  {
+   "fieldname": "gemstone_pr",
+   "fieldtype": "Link",
+   "label": "Gemstone PR",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "per_pc_or_per_carat",
+   "fieldtype": "Link",
+   "label": "Per Pc or Per Carat",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from": "from_stone_size.weight",
+   "fieldname": "from_size_weight",
+   "fieldtype": "Float",
+   "label": "From size Weight",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "from_stone_size.height",
+   "fieldname": "from_size_height",
+   "fieldtype": "Float",
+   "label": "From size Height",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "to_stone_size.weight",
+   "fieldname": "to_size_weight",
+   "fieldtype": "Float",
+   "label": "To size Weight",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "to_stone_size.height",
+   "fieldname": "to_size_height",
+   "fieldtype": "Float",
+   "label": "To size Height",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-01-06 13:35:01.344797",
+ "modified_by": "Administrator",
+ "module": "Gurukrupa Exports",
+ "name": "Gemstone Price List",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

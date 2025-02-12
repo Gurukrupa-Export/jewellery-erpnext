@@ -1,0 +1,33 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-12-21 19:28:37.484156",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "purchase_type"
+ ],
+ "fields": [
+  {
+   "fieldname": "purchase_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Purchase Type",
+   "options": "Purchase Type",
+   "reqd": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-02-14 18:35:16.920373",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Purchase Type Multiselect",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

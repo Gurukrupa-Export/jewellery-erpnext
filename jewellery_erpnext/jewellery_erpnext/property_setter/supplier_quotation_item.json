@@ -1,0 +1,13 @@
+{
+    "Supplier Quotation Item": [
+        {
+            "doctype_or_field": "DocType",
+            "doctype": "Supplier Quotation Item",
+            "field_name": "field",
+            "row_name": null,
+            "property": "field_order",
+            "value": ["item_code", "supplier_part_no", "item_name", "column_break_3", "lead_time_days", "expected_delivery_date", "is_free_item", "section_break_5", "description", "gst_hsn_code", "is_ineligible_for_itc", "item_group", "brand", "col_break1", "image", "image_view", "quantity_and_rate", "qty", "stock_uom", "col_break2", "uom", "conversion_factor", "stock_qty", "sec_break_price_list", "price_list_rate", "discount_percentage", "discount_amount", "col_break_price_list", "base_price_list_rate", "sec_break1", "rate", "amount", "item_tax_template", "gst_treatment", "col_break3", "base_rate", "base_amount", "pricing_rules", "section_break_24", "net_rate", "net_amount", "column_break_27", "base_net_rate", "base_net_amount", "taxable_value", "gst_details_section", "igst_rate", "cgst_rate", "sgst_rate", "cess_rate", "cess_non_advol_rate", "cb_gst_details", "igst_amount", "cgst_amount", "sgst_amount", "cess_amount", "cess_non_advol_amount", "item_weight_details", "weight_per_unit", "total_weight", "column_break_23", "weight_uom", "warehouse_and_reference", "warehouse", "prevdoc_doctype", "material_request", "sales_order", "request_for_quotation", "col_break4", "material_request_item", "request_for_quotation_item", "item_tax_rate", "manufacture_details", "manufacturer", "column_break_15", "manufacturer_part_no", "ad_sec_break", "cost_center", "dimension_col_break", "branch", "project", "section_break_44", "page_break"],
+            "property_type": "Data"
+        }
+    ]
+}

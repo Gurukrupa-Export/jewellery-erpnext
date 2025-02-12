@@ -1,0 +1,12 @@
+{
+ "Payment Schedule": [
+  {
+   "dt": "Payment Schedule",
+   "fieldname": "custom_invoice_portion",
+   "fieldtype": "Percent",
+   "insert_after": "invoice_portion",
+   "label": "Invoice Portion",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

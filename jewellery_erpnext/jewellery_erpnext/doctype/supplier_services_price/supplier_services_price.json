@@ -1,0 +1,92 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:SSP-{supplier}-{####}",
+ "creation": "2024-05-29 17:35:29.336869",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "supplier",
+  "column_break_3s23",
+  "purchase_type",
+  "section_break_adzh",
+  "metal_type",
+  "column_break_y8tq",
+  "type_of_subcontracting",
+  "section_break_rjps",
+  "subcategory"
+ ],
+ "fields": [
+  {
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "column_break_3s23",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "purchase_type",
+   "fieldtype": "Link",
+   "label": "Purchase Type",
+   "options": "Purchase Type"
+  },
+  {
+   "fieldname": "section_break_rjps",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "subcategory",
+   "fieldtype": "Table",
+   "label": "Subcategory",
+   "options": "Supplier Services Price Item Subcategory"
+  },
+  {
+   "fieldname": "section_break_adzh",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "column_break_y8tq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "type_of_subcontracting",
+   "fieldtype": "Link",
+   "label": "Type Of Subcontracting",
+   "options": "Department Operation"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2024-06-05 12:55:12.281578",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Supplier Services Price",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

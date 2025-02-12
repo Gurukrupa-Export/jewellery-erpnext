@@ -1,0 +1,186 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "field:item_name",
+ "creation": "2024-02-26 16:44:50.420379",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_buny",
+  "item_name",
+  "is_for_metal",
+  "is_for_finding",
+  "is_for_making",
+  "is_for_finding_making",
+  "is_for_freight",
+  "metal_type",
+  "metal_purity",
+  "uom",
+  "column_break_qcmx",
+  "is_for_diamond",
+  "is_for_gemstone",
+  "is_for_hallmarking",
+  "is_for_certification",
+  "is_for_labour",
+  "diamond_type",
+  "hsn_code",
+  "sales_type",
+  "charge_type"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_buny",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "label": "Item Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_metal",
+   "fieldtype": "Check",
+   "label": "Is For Metal"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_finding",
+   "fieldtype": "Check",
+   "label": "Is For Finding"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_diamond",
+   "fieldtype": "Check",
+   "label": "Is For Diamond"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_gemstone",
+   "fieldtype": "Check",
+   "label": "Is For Gemstone"
+  },
+  {
+   "fieldname": "column_break_qcmx",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_hallmarking",
+   "fieldtype": "Check",
+   "label": "Is for Hallmarking"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_certification",
+   "fieldtype": "Check",
+   "label": "Is for Certification"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_making",
+   "fieldtype": "Check",
+   "label": "Is for Making"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_finding_making",
+   "fieldtype": "Check",
+   "label": "Is For Finding Making"
+  },
+  {
+   "fieldname": "hsn_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "HSN Code",
+   "options": "GST HSN Code",
+   "reqd": 1
+  },
+  {
+   "default": "Nos",
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "label": "UOM",
+   "options": "UOM",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_freight",
+   "fieldtype": "Check",
+   "label": "Is For Freight"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_labour",
+   "fieldtype": "Check",
+   "label": "Is for Labour"
+  },
+  {
+   "depends_on": "eval: doc.is_for_metal == 1 || doc.is_for_finding == 1 || doc.is_for_making == 1 || doc.is_for_finding_making || doc.is_for_labour == 1",
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "sales_type",
+   "fieldtype": "Table MultiSelect",
+   "label": "Sales Type",
+   "options": "Sales Type Multiselect",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval: doc.is_for_metal == 1 || doc.is_for_finding == 1 || doc.is_for_making == 1 || doc.is_for_finding_making || doc.is_for_labour == 1",
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "label": "Metal Touch",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "charge_type",
+   "fieldtype": "Link",
+   "label": "Charge Type",
+   "options": "Default Charges",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval: doc.is_for_diamond == 1;",
+   "fieldname": "diamond_type",
+   "fieldtype": "Link",
+   "label": "Diamond Type",
+   "link_filters": "[[\"Attribute Value\", \"custom_is_diamond_type\", \"=\", 1]]",
+   "mandatory_depends_on": "eval: doc.is_for_diamond == 1;",
+   "options": "Attribute Value"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-01-03 15:27:16.432090",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "E Invoice Item",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

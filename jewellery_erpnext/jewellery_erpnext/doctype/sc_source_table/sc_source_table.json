@@ -1,0 +1,87 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2024-02-01 17:06:58.912558",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "qty",
+  "batch",
+  "batch_available_qty",
+  "inventory_type",
+  "customer",
+  "supplier"
+ ],
+ "fields": [
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Qty",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item_code",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fieldname": "batch",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Batch",
+   "options": "Batch"
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "batch_available_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Batch Available Qty",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Inventory Type",
+   "options": "Inventory Type",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.batch",
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier",
+   "options": "Supplier",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-09-04 11:23:22.250564",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "SC Source Table",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

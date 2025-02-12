@@ -1,0 +1,265 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2023-05-20 10:07:26.917341",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "service_type",
+  "column_break_afv8c",
+  "date",
+  "department",
+  "receive_against",
+  "section_break_6xngr",
+  "naming_series",
+  "type",
+  "customer",
+  "brand_type",
+  "type_of_certification",
+  "invoice_no",
+  "landed_cost_voucher",
+  "column_break_x0eny",
+  "supplier",
+  "biling_type",
+  "diamond_colour",
+  "diamond_purity",
+  "reciept_no",
+  "cetri_charge",
+  "extra_charges",
+  "total_amount",
+  "hall_marking_details_section",
+  "product_details",
+  "exploded_product_details",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "service_type",
+   "fieldtype": "Select",
+   "label": "Service Type",
+   "options": "\nHall Marking Service\nDiamond Certificate service\nFire Assy Service\nXRF Services"
+  },
+  {
+   "fieldname": "column_break_afv8c",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Today",
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Date",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_6xngr",
+   "fieldtype": "Section Break"
+  },
+  {
+   "depends_on": "eval: doc.service_type == 'Hall Marking Service' || doc.service_type == 'Diamond Certificate service'",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "CRT-.YYYY.-",
+   "print_hide": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "label": "Type",
+   "options": "Issue\nReceive"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Diamond Certificate service')",
+   "fieldname": "brand_type",
+   "fieldtype": "Select",
+   "label": "Brand Type",
+   "options": "\nCo-Brand\nB2B"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Diamond Certificate service')",
+   "fieldname": "type_of_certification",
+   "fieldtype": "Select",
+   "label": "Type Of Certification",
+   "options": "\nIGI\nDHC"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Hall Marking Service' || doc.service_type == 'Diamond Certificate service') && doc.type == 'Receive'",
+   "fieldname": "invoice_no",
+   "fieldtype": "Link",
+   "label": "Invoice No",
+   "options": "Purchase Invoice"
+  },
+  {
+   "fieldname": "column_break_x0eny",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Hall Marking Service' || doc.service_type == 'Diamond Certificate service') && doc.type == 'Receive'",
+   "fieldname": "biling_type",
+   "fieldtype": "Select",
+   "label": "Biling Type",
+   "options": "\nIs Customer\nIs Gurukrupa Exports"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Diamond Certificate service')",
+   "fieldname": "diamond_colour",
+   "fieldtype": "Link",
+   "label": "Diamond Colour",
+   "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Diamond Certificate service')",
+   "fieldname": "diamond_purity",
+   "fieldtype": "Link",
+   "label": "Diamond Purity",
+   "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Diamond Certificate service')",
+   "fieldname": "reciept_no",
+   "fieldtype": "Data",
+   "label": "Reciept No"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Diamond Certificate service') && doc.type == 'Receive'",
+   "fieldname": "cetri_charge",
+   "fieldtype": "Float",
+   "label": "Cetri Charge"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Diamond Certificate service') && doc.type == 'Receive'",
+   "fieldname": "extra_charges",
+   "fieldtype": "Float",
+   "label": "Extra Charges"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Hall Marking Service' || doc.service_type == 'Diamond Certificate service') && doc.type == 'Receive'",
+   "fetch_from": "invoice_no.total",
+   "fieldname": "total_amount",
+   "fieldtype": "Float",
+   "label": "Total Amount"
+  },
+  {
+   "depends_on": "eval: doc.service_type",
+   "fieldname": "hall_marking_details_section",
+   "fieldtype": "Section Break",
+   "label": "Product Details"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "depends_on": "eval: (doc.service_type == 'Diamond Certificate service')",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer Name",
+   "options": "Customer"
+  },
+  {
+   "depends_on": "eval: doc.service_type != 'Diamond Certificate servicee'",
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Supplier Name",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "allow_bulk_edit": 1,
+   "fieldname": "product_details",
+   "fieldtype": "Table",
+   "options": "Product Details"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Product Certification",
+   "print_hide": 1,
+   "read_only": 1
+  },
+  {
+   "allow_bulk_edit": 1,
+   "fieldname": "exploded_product_details",
+   "fieldtype": "Table",
+   "label": "Exploded Product Details",
+   "options": "Exploded Product Details"
+  },
+  {
+   "depends_on": "eval:doc.type == \"Receive\"",
+   "fieldname": "landed_cost_voucher",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Landed Cost Voucher",
+   "options": "Landed Cost Voucher"
+  },
+  {
+   "depends_on": "eval:doc.type == \"Receive\"",
+   "fieldname": "receive_against",
+   "fieldtype": "Link",
+   "label": "Receive Against",
+   "options": "Product Certification"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [
+  {
+   "link_doctype": "Stock Entry",
+   "link_fieldname": "product_certification"
+  },
+  {
+   "link_doctype": "Product Certification",
+   "link_fieldname": "receive_against"
+  },
+  {
+   "link_doctype": "Purchase Order",
+   "link_fieldname": "supplier"
+  }
+ ],
+ "modified": "2024-07-24 11:40:25.018849",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Product Certification",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "amend": 1,
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "select": 1,
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1,
+ "track_views": 1
+}

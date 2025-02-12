@@ -1,0 +1,13 @@
+{
+    "Employee Transfer": [
+        {
+            "doctype_or_field": "DocType",
+            "doctype": "Employee Transfer",
+            "field_name": "field",
+            "row_name": null,
+            "property": "field_order",
+            "value": ["employee", "employee_name", "transfer_date", "column_break_3", "company", "new_company", "department", "details_section", "transfer_details", "reallocate_leaves", "create_new_employee_id", "new_employee_id", "amended_from", "custom_expenses", "custom_relocation_expense", "custom_column_break_pmhsd", "custom_amount_validity", "custom_column_break_skoku", "custom_validity_status"],
+            "property_type": "Data"
+        }
+    ]
+}

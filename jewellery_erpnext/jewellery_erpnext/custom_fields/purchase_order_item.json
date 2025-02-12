@@ -1,0 +1,445 @@
+{
+ "Purchase Order Item": [
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "serial_no",
+   "fieldtype": "Small Text",
+   "insert_after": "manufacturing_bom",
+   "is_system_generated": 1,
+   "label": "Serial No",
+   "module": "Jewellery Erpnext",
+   "options": "Serial No"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_column_break_27cdo",
+   "fieldtype": "Column Break",
+   "insert_after": "gemstone_amount",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_gross_wt",
+   "fieldtype": "Float",
+   "insert_after": "stock_uom",
+   "is_system_generated": 1,
+   "label": "Gross WT",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fetch_from": "item_code.is_ineligible_for_itc",
+   "fetch_if_empty": 1,
+   "fieldname": "is_ineligible_for_itc",
+   "fieldtype": "Check",
+   "insert_after": "gst_hsn_code",
+   "is_system_generated": 1,
+   "label": "Is Ineligible for Input Tax Credit",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "cess_non_advol_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cess_amount",
+   "is_system_generated": 1,
+   "label": "CESS Non Advol Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "cess_amount",
+   "fieldtype": "Currency",
+   "insert_after": "sgst_amount",
+   "is_system_generated": 1,
+   "label": "CESS Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "sgst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cgst_amount",
+   "is_system_generated": 1,
+   "label": "SGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "cgst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "igst_amount",
+   "is_system_generated": 1,
+   "label": "CGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "igst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cb_gst_details",
+   "is_system_generated": 1,
+   "label": "IGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "cb_gst_details",
+   "fieldtype": "Column Break",
+   "insert_after": "cess_non_advol_rate",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "cess_non_advol_rate",
+   "fieldtype": "Float",
+   "insert_after": "cess_rate",
+   "is_system_generated": 1,
+   "label": "CESS Non Advol Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "cess_rate",
+   "fieldtype": "Float",
+   "insert_after": "sgst_rate",
+   "is_system_generated": 1,
+   "label": "CESS Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "sgst_rate",
+   "fieldtype": "Float",
+   "insert_after": "cgst_rate",
+   "is_system_generated": 1,
+   "label": "SGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "cgst_rate",
+   "fieldtype": "Float",
+   "insert_after": "igst_rate",
+   "is_system_generated": 1,
+   "label": "CGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "igst_rate",
+   "fieldtype": "Float",
+   "insert_after": "gst_details_section",
+   "is_system_generated": 1,
+   "label": "IGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "gst_details_section",
+   "fieldtype": "Section Break",
+   "insert_after": "taxable_value",
+   "is_system_generated": 1,
+   "label": "GST Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "taxable_value",
+   "fieldtype": "Currency",
+   "insert_after": "base_net_amount",
+   "is_system_generated": 1,
+   "label": "Taxable Value",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fetch_from": "item_tax_template.gst_treatment",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_treatment",
+   "fieldtype": "Autocomplete",
+   "insert_after": "item_tax_template",
+   "is_system_generated": 1,
+   "label": "GST Treatment",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Taxable\nZero-Rated\nNil-Rated\nExempted\nNon-GST",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "metal_amount",
+   "fieldtype": "Currency",
+   "insert_after": "section_break_ygjbn",
+   "label": "Metal Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_custom_duty_amount",
+   "fieldtype": "Currency",
+   "insert_after": "custom_hallmarking_amount",
+   "label": "custom_custom_duty_amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_hallmarking_amount",
+   "fieldtype": "Currency",
+   "insert_after": "custom_freight_amount",
+   "label": "custom_hallmarking_amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_freight_amount",
+   "fieldtype": "Currency",
+   "insert_after": "custom_certification_amount",
+   "label": "custom_freight_amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_certification_amount",
+   "fieldtype": "Currency",
+   "insert_after": "custom_column_break_27cdo",
+   "label": "custom_certification_amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "gemstone_amount",
+   "fieldtype": "Currency",
+   "insert_after": "diamond_amount",
+   "label": "gemstone_amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "diamond_amount",
+   "fieldtype": "Currency",
+   "insert_after": "finding_amount",
+   "label": "diamond_amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "finding_amount",
+   "fieldtype": "Currency",
+   "insert_after": "making_amount",
+   "label": "finding_amount",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "making_amount",
+   "fieldtype": "Currency",
+   "insert_after": "metal_amount",
+   "label": "Making Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "section_break_ygjbn",
+   "fieldtype": "Section Break",
+   "insert_after": "apply_tds",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "diamond_quality",
+   "fieldtype": "Link",
+   "insert_after": "item_group",
+   "label": "Diamond Quality",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "manufacturing_bom",
+   "fieldtype": "Link",
+   "insert_after": "column_break_4",
+   "label": "Manufacturing BOM",
+   "module": "Jewellery Erpnext",
+   "options": "BOM"
+  },
+  {
+   "depends_on": "eval: parent.purchase_type == 'FG Purchase';",
+   "dt": "Purchase Order Item",
+   "fieldname": "edit_bom",
+   "fieldtype": "Button",
+   "label": "Edit BOM",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "insert_after": "dimension_col_break",
+   "is_system_generated": 1,
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Link",
+   "insert_after": "col_break5",
+   "label": "Manufacturing Operation",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturing Operation",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Purchase Order Item",
+   "fetch_from": "item_code.gst_hsn_code",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_hsn_code",
+   "fieldtype": "Data",
+   "insert_after": "description",
+   "is_system_generated": 1,
+   "label": "HSN/SAC",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_pmo",
+   "fieldtype": "Link",
+   "insert_after": "blanket_order_rate",
+   "is_system_generated": 1,
+   "label": "PMO",
+   "module": "Jewellery Erpnext",
+   "options": "Parent Manufacturing Order"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_child_po_no",
+   "fieldtype": "Data",
+   "insert_after": "custom_pmo",
+   "is_system_generated": 1,
+   "label": "Child PO NO",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_m_plan_details",
+   "fieldtype": "Link",
+   "insert_after": "custom_manufacturing_plan",
+   "label": "M Plan Details",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturing Plan Table",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_manufacturing_plan",
+   "fieldtype": "Link",
+   "insert_after": "custom_child_po_no",
+   "label": "Manufacturing Plan",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturing Plan",
+   "read_only": 1
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_wastage",
+   "fieldtype": "Float",
+   "insert_after": "custom_column_break_fuwae",
+   "label": "Wastage",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_column_break_fuwae",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_metal_purity",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_metal_purity",
+   "fieldtype": "Link",
+   "insert_after": "custom_section_break_w0jjk",
+   "label": "Metal Purity",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_section_break_w0jjk",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_rate99_5",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_rate99_5",
+   "fieldtype": "Float",
+   "insert_after": "custom_column_break_fnpb1",
+   "label": "Rate(99_5)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_column_break_fnpb1",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_rate99_9",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_rate99_9",
+   "fieldtype": "Float",
+   "insert_after": "custom_section_break_evrcx",
+   "label": "Rate(99_9)",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_section_break_evrcx",
+   "fieldtype": "Section Break",
+   "insert_after": "stock_qty",
+   "module": "Jewellery Erpnext"
+  }
+ ]
+}

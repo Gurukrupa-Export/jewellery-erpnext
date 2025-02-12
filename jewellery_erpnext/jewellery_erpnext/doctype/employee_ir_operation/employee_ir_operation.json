@@ -1,0 +1,176 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2023-05-03 15:21:46.465307",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "manufacturing_work_order",
+  "manufacturing_operation",
+  "gross_wt",
+  "is_finding_mwo",
+  "column_break_uz0qw",
+  "received_gross_wt",
+  "gold_loss",
+  "qc",
+  "section_break_iyhv",
+  "net_wt",
+  "finding_wt",
+  "other_wt",
+  "diamond_wt",
+  "no_of_moulds",
+  "mould_wtin_gram",
+  "column_break_j4xg",
+  "gemstone_wt",
+  "gemstone_pcs",
+  "diamond_pcs",
+  "rpt_wt_issue",
+  "rpt_wt_receive",
+  "rpt_wt_loss"
+ ],
+ "fields": [
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Operation",
+   "options": "Manufacturing Operation"
+  },
+  {
+   "fetch_from": "manufacturing_operation.gross_wt",
+   "fieldname": "gross_wt",
+   "fieldtype": "Float",
+   "label": "Gross Wt",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "received_gross_wt",
+   "fieldtype": "Float",
+   "label": "Received Gross Wt"
+  },
+  {
+   "fieldname": "gold_loss",
+   "fieldtype": "Float",
+   "label": "Gold Loss",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "manufacturing_operation.manufacturing_work_order",
+   "fetch_if_empty": 1,
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order"
+  },
+  {
+   "fieldname": "column_break_uz0qw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "qc",
+   "fieldtype": "Link",
+   "label": "QC",
+   "options": "QC",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_iyhv",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fetch_from": "manufacturing_operation.net_wt",
+   "fieldname": "net_wt",
+   "fieldtype": "Float",
+   "label": "Net Wt"
+  },
+  {
+   "fetch_from": "manufacturing_operation.finding_wt",
+   "fieldname": "finding_wt",
+   "fieldtype": "Float",
+   "label": "Finding Wt"
+  },
+  {
+   "fetch_from": "manufacturing_operation.other_wt",
+   "fieldname": "other_wt",
+   "fieldtype": "Float",
+   "label": "Other Wt"
+  },
+  {
+   "fetch_from": "manufacturing_operation.diamond_wt",
+   "fieldname": "diamond_wt",
+   "fieldtype": "Float",
+   "label": "Diamond Wt"
+  },
+  {
+   "fetch_from": "manufacturing_operation.gemstone_wt",
+   "fieldname": "gemstone_wt",
+   "fieldtype": "Float",
+   "label": "Gemstone Wt"
+  },
+  {
+   "fetch_from": "manufacturing_operation.gemstone_pcs",
+   "fieldname": "gemstone_pcs",
+   "fieldtype": "Data",
+   "label": "Gemstone Pcs"
+  },
+  {
+   "fetch_from": "manufacturing_operation.diamond_pcs",
+   "fieldname": "diamond_pcs",
+   "fieldtype": "Data",
+   "label": "Diamond Pcs"
+  },
+  {
+   "fieldname": "column_break_j4xg",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "rpt_wt_issue",
+   "fieldtype": "Float",
+   "label": "RPT WT Issue"
+  },
+  {
+   "fieldname": "rpt_wt_receive",
+   "fieldtype": "Float",
+   "label": "RPT WT Receive "
+  },
+  {
+   "fieldname": "rpt_wt_loss",
+   "fieldtype": "Float",
+   "label": "RPT WT loss",
+   "read_only": 1
+  },
+  {
+   "fieldname": "no_of_moulds",
+   "fieldtype": "Int",
+   "label": "No of Moulds"
+  },
+  {
+   "fieldname": "mould_wtin_gram",
+   "fieldtype": "Float",
+   "label": "Mould WT(in Gram)"
+  },
+  {
+   "default": "0",
+   "fetch_from": "manufacturing_work_order.is_finding_mwo",
+   "fieldname": "is_finding_mwo",
+   "fieldtype": "Check",
+   "label": "Is Finding MWO"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2024-12-30 18:31:23.868358",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Employee IR Operation",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

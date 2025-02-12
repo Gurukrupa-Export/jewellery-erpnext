@@ -1,0 +1,342 @@
+{
+ "Material Request": [
+  {
+   "dt": "Material Request",
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "insert_after": "connections_tab",
+   "label": "Inventory Type",
+   "module": "Jewellery Erpnext",
+   "options": "Inventory Type"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.ref_customer",
+   "fieldname": "custom_ref_customer",
+   "fieldtype": "Link",
+   "insert_after": "custom_parent_mp",
+   "is_system_generated": 1,
+   "label": "Ref Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.parent_mp",
+   "fieldname": "custom_parent_mp",
+   "fieldtype": "Link",
+   "insert_after": "custom_parent_sales_order",
+   "is_system_generated": 1,
+   "label": "Parent MP",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturing Plan"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.parent_sales_order",
+   "fieldname": "custom_parent_sales_order",
+   "fieldtype": "Link",
+   "insert_after": "custom_parent_quotation",
+   "is_system_generated": 1,
+   "label": "Parent Sales Order",
+   "module": "Jewellery Erpnext",
+   "options": "Sales Order"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.parent_quotation",
+   "fieldname": "custom_parent_quotation",
+   "fieldtype": "Link",
+   "insert_after": "custom_parent_details",
+   "is_system_generated": 1,
+   "label": "Parent Quotation",
+   "module": "Jewellery Erpnext",
+   "options": "Quotation"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "custom_parent_details",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_jewelex_order_no",
+   "is_system_generated": 1,
+   "label": "Parent Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.sales_order",
+   "fieldname": "custom_sales_order_id",
+   "fieldtype": "Link",
+   "insert_after": "custom_quotation_id",
+   "is_system_generated": 1,
+   "label": "Sales Order ID",
+   "module": "Jewellery Erpnext",
+   "options": "Sales Order"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.quotation",
+   "fieldname": "custom_quotation_id",
+   "fieldtype": "Link",
+   "insert_after": "custom_order_details",
+   "is_system_generated": 1,
+   "label": "Quotation Id",
+   "module": "Jewellery Erpnext",
+   "options": "Quotation"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "custom_order_details",
+   "fieldtype": "Tab Break",
+   "insert_after": "custom_total_quantity",
+   "is_system_generated": 1,
+   "label": "Order Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.jewelex_order_no",
+   "fieldname": "custom_jewelex_order_no",
+   "fieldtype": "Data",
+   "insert_after": "custom_service_type",
+   "is_system_generated": 1,
+   "label": "Jewelex Order No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "custom_service_type",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "custom_sales_person",
+   "is_system_generated": 1,
+   "label": "Service Type",
+   "module": "Jewellery Erpnext",
+   "options": "Service Type 2"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.salesman_name",
+   "fieldname": "custom_sales_person",
+   "fieldtype": "Link",
+   "insert_after": "custom_column_break_wyl2w",
+   "is_system_generated": 1,
+   "label": "Sales Person",
+   "module": "Jewellery Erpnext",
+   "options": "Sales Person"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "custom_column_break_wyl2w",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_order_form_date",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.order_form_date",
+   "fieldname": "custom_order_form_date",
+   "fieldtype": "Date",
+   "insert_after": "custom_customer_po_no",
+   "is_system_generated": 1,
+   "label": "Order form date",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.po_no",
+   "fieldname": "custom_customer_po_no",
+   "fieldtype": "Data",
+   "insert_after": "custom_order_type",
+   "is_system_generated": 1,
+   "label": "Customer PO No",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.order_type",
+   "fieldname": "custom_order_type",
+   "fieldtype": "Data",
+   "insert_after": "custom_order_form_type",
+   "is_system_generated": 1,
+   "label": "Order Type",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.order_form_type",
+   "fieldname": "custom_order_form_type",
+   "fieldtype": "Link",
+   "insert_after": "custom_column_break_exqe9",
+   "is_system_generated": 1,
+   "label": "Order Form Type",
+   "module": "Jewellery Erpnext",
+   "options": "DocType"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "custom_column_break_exqe9",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_manufacturing_plan_id",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.manufacturing_plan",
+   "fieldname": "custom_manufacturing_plan_id",
+   "fieldtype": "Link",
+   "insert_after": "custom_sales_order_id",
+   "is_system_generated": 1,
+   "label": "Manufacturing Plan ID",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturing Plan"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "custom_transfer_type",
+   "fieldtype": "Link",
+   "insert_after": "amended_from",
+   "is_system_generated": 1,
+   "label": "Transfer Type",
+   "module": "Jewellery Erpnext",
+   "options": "Transfer Type"
+  },
+  {
+   "dt": "Material Request",
+   "fetch_from": "manufacturing_order.manufacturer",
+   "fieldname": "custom_manufacturer",
+   "fieldtype": "Link",
+   "insert_after": "manufacturing_order",
+   "label": "Manufacturer",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturer"
+  },
+  {
+   "default": "Draft",
+   "dt": "Material Request",
+   "fieldname": "custom_column_break_hntwu",
+   "fieldtype": "Column Break",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Material Request",
+   "fieldname": "workflow_state",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "insert_after": "custom_column_break_hntwu",
+   "label": "Workflow State",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Workflow State"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "custom_reserve_se",
+   "fieldtype": "Link",
+   "insert_after": "to_job_card",
+   "label": "Reserve SE",
+   "module": "Jewellery Erpnext",
+   "options": "Stock Entry"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "custom_total_quantity",
+   "fieldtype": "Float",
+   "insert_after": "items",
+   "label": "Total Quantity",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "to_main_slip",
+   "fieldtype": "Link",
+   "insert_after": "job_card",
+   "label": "To Main Slip",
+   "module": "Jewellery Erpnext",
+   "options": "Main Slip",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "manufacturing_order",
+   "fieldtype": "Link",
+   "insert_after": "to_main_slip",
+   "label": "Manufacturing Order",
+   "module": "Jewellery Erpnext",
+   "options": "Parent Manufacturing Order",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "pcs",
+   "fieldtype": "Data",
+   "insert_after": "reference_docname",
+   "label": "Pcs",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "reference_docname",
+   "fieldtype": "Data",
+   "insert_after": "reference_doctype",
+   "label": "Reference Docname",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "reference_doctype",
+   "fieldtype": "Data",
+   "insert_after": "custom_manufacturer",
+   "label": "Reference Doctype",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "to_job_card",
+   "fieldtype": "Link",
+   "insert_after": "pcs",
+   "label": "To Job Card",
+   "module": "Jewellery Erpnext",
+   "options": "Job Card"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Material Request",
+   "fieldname": "custom_mop_se",
+   "fieldtype": "Data",
+   "insert_after": "custom_reserve_se",
+   "label": "MOP SE",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.workflow_state == \"Material Transferred\" || doc.workflow_state ==\"Material Transferred to MOP\";",
+   "dt": "Material Request",
+   "fieldname": "custom_manufacturing_operation",
+   "fieldtype": "Link",
+   "insert_after": "custom_manufacturing_plan_id",
+   "label": "Manufacturing Operation",
+   "mandatory_depends_on": "eval:doc.workflow_state == \"Material Transferred\";",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturing Operation",
+   "read_only_depends_on": "eval:doc.workflow_state ==\"Material Transferred to MOP\";"
+  },
+  {
+   "dt": "Material Request",
+   "fieldname": "custom_item_type",
+   "fieldtype": "Select",
+   "insert_after": "custom_transfer_type",
+   "label": "Item Type",
+   "module": "Jewellery Erpnext",
+   "options": "\nGemstone\nDiamond"
+  }
+ ]
+}
