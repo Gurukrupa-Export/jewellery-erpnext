@@ -49,6 +49,7 @@ frappe.ui.form.on("Material Request", {
 						filters: {
 							name: ["in", mop_list],
 							department_ir_status: ["not in", "In-Transit"],
+							"is_finding":0,
 						},
 					};
 				});

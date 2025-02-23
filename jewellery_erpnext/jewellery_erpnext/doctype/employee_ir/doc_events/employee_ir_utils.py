@@ -74,6 +74,9 @@ def create_chain_stock_entry(self, row):
 	department_wh = frappe.get_value(
 		"Warehouse", {"department": self.department, "warehouse_type": "Manufacturing", "disabled": 0}
 	)
+	emp_wh = frappe.get_value(
+		"Warehouse", {"employee": self.employee, "warehouse_type": "Manufacturing", "disabled": 0}
+	)
 
 	bom_items = frappe.db.get_all(
 		"BOM Item", {"parent": metal_data.master_bom}, "item_code"
@@ -210,14 +213,17 @@ def create_chain_stock_entry(self, row):
 				row,
 				manual_loss_items,
 				proprtionate_loss_items,
+				emp_wh,
 				mfg_warehouse,
 				department_wh,
 				mop_data,
 			)
-
-		temp_diff, mop_batch_list = create_repack(
-			self, row, item, mop_data, warehouse, row.received_gross_wt
-		)
+		temp_diff = 0
+		mop_batch_list = []
+		if self.main_slip:
+			temp_diff, mop_batch_list = create_repack(
+				self, row, item, mop_data, warehouse, row.received_gross_wt
+			)
 		for batch in mop_batch_list:
 			se_doc.append(
 				"items",
@@ -346,8 +352,9 @@ def create_chain_stock_entry(self, row):
 
 	se_doc.set_posting_date = 1
 	se_doc.posting_time = frappe.utils.nowtime()
-	se_doc.save()
-	se_doc.submit()
+	if self.main_slip:
+		se_doc.save()
+		se_doc.submit()
 
 	mop_se_doc = frappe.new_doc("Stock Entry")
 	mop_se_doc.stock_entry_type = "Material Transfer"
@@ -373,11 +380,96 @@ def create_chain_stock_entry(self, row):
 		copy_row.t_warehouse = department_wh
 		copy_row.serial_and_batch_bundle = None
 		mop_se_doc.append("items", copy_row)
+	if self.main_slip:
+		mop_se_doc.save()
+		mop_se_doc.submit()
 
-	mop_se_doc.save()
-	mop_se_doc.submit()
-
+	if not self.main_slip:
+		create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
 	# create_loss_entry(self, row, employee_wh, warehouse)
+
+
+
+def create_department_transfer_se_entry(doc, mop_data):
+	rows_to_append = []
+	department_wh = frappe.get_value(
+		"Warehouse", {"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"}
+	)
+	
+	employee_wh = frappe.get_value(
+		"Warehouse", {"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"}
+	)
+	if not department_wh:
+		frappe.throw(_("Please set warhouse for department {0}").format(doc.department))
+	if not employee_wh:
+		subcontractor = "subcontractor" if doc.subcontracting == "Yes" else "employee"
+		subcontractor_doc = doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
+		frappe.throw(_("Please set warhouse for {0} {1}").format(subcontractor, subcontractor_doc))
+
+	mop_balance_details = frappe.db.get_all(
+		"MOP Balance Table", {"parent": ["in", mop_data.values()]}, ["*"]
+	)
+
+	mop_balance_data = frappe._dict()
+
+	for row in mop_balance_details:
+		mop_balance_data.setdefault(row.parent, [])
+		mop_balance_data[row.parent].append(row)
+
+	for row in mop_data:
+		rows_to_append += transfer_rows_to_append(
+			doc, row, mop_data[row], mop_balance_data.get(mop_data[row]), department_wh, employee_wh
+		)
+
+	if rows_to_append:
+		se_doc = frappe.new_doc("Stock Entry")
+		se_doc.inventory_type = None
+		se_doc.department = doc.department
+		se_doc.to_department = doc.department
+		se_doc.auto_created = True
+		se_doc.employee_ir = doc.name
+
+		stock_entry_type = (
+			"Material Transfer to Department"
+		)
+
+		for row in rows_to_append:
+			se_doc.stock_entry_type = stock_entry_type
+			row.employee = doc.employee
+			row.department_operation = doc.operation
+
+			se_doc.append("items", row)
+
+		se_doc.flags.ignore_permissions = True
+		se_doc.save()
+		se_doc.submit()
+
+
+def transfer_rows_to_append(doc, mwo, mop, mop_data, department_wh, employee_wh):
+	rows_to_append = []
+	import copy
+
+	if not mop_data:
+		mop_data = []
+
+	for row in mop_data:
+		if row.qty > 0:
+			duplicate_row = copy.deepcopy(row)
+			duplicate_row["name"] = None
+			duplicate_row["idx"] = None
+			duplicate_row["t_warehouse"] = department_wh
+			duplicate_row["s_warehouse"] = employee_wh
+			duplicate_row["manufacturing_operation"] = mop
+			duplicate_row["use_serial_batch_fields"] = True
+			duplicate_row["serial_and_batch_bundle"] = None
+			duplicate_row["custom_manufacturing_work_order"] = mwo
+			duplicate_row["department"] = doc.department
+			duplicate_row["to_department"] = doc.department
+			duplicate_row["manufacturer"] = doc.manufacturer
+
+			rows_to_append.append(duplicate_row)
+
+	return rows_to_append
 
 
 def create_loss_entry(self, row, employee_wh, warehouse):

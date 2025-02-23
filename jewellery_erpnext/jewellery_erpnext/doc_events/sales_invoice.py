@@ -26,7 +26,7 @@ def before_validate(self, method):
 	for row in self.items:
 		if row.serial_no:
 			row.bom = frappe.db.get_value("BOM", {"tag_no": row.serial_no}, "name")
-
+	
 	update_income_account(self)
 	payment_terms_data = update_si_data(self)
 	update_payment_terms(self, payment_terms_data)
@@ -107,12 +107,11 @@ def update_si_data(self):
 			row.custom_freight_amount = bom_doc.freight_amount * exchange_rate
 			row.custom_hallmarking_amount = bom_doc.hallmarking_amount * exchange_rate
 			row.custom_custom_duty_amount = bom_doc.custom_duty_amount * exchange_rate
-
 			row.rate = flt(
 				row.metal_amount
 				+ row.making_amount
-				+ row.finding_amount
 				+ row.diamond_amount
+				+ row.finding_amount
 				+ row.gemstone_amount
 				+ row.custom_certification_amount
 				+ row.custom_freight_amount
@@ -120,7 +119,7 @@ def update_si_data(self):
 				+ row.custom_custom_duty_amount,
 				3,
 			)
-			# frappe.throw(f"{row.rate}")
+			row.amount = row.qty * row.rate
 	return payment_terms_data
 
 
@@ -185,14 +184,12 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 				{"is_for_metal": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
 				["name", "hsn_code", "uom"],
 			)
-
 		if not gold_making_item:
 			gold_making_item, making_hsn_code, gold_making_uom = frappe.db.get_value(
 				"E Invoice Item",
 				{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
 				["name", "hsn_code", "uom"],
 			)
-
 		if gold_item:
 			if invoice_data.get(gold_item):
 				invoice_data[gold_item]["amount"] += amount
@@ -246,14 +243,14 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 				{"is_for_finding": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
 				["name", "hsn_code", "uom"],
 			)
-
+		
 		if not making_item:
 			making_item, making_hsn_code, making_uom = frappe.db.get_value(
 				"E Invoice Item",
 				{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
 				["name", "hsn_code", "uom"],
 			)
-
+		
 		# if not i.not_finding_rate:
 		# 	if gold_item:
 		# 		if invoice_data.get(gold_item):
@@ -659,9 +656,12 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 
 
 def update_payment_terms(self, payment_terms_data=None):
+	# frappe.throw(str(payment_terms_data))
 	if self.payment_terms_template:
 		return
-
+	
+	if not self.grand_total:
+		return
 	# custom_term = None
 	# if frappe.db.exists("Customer Payment Terms", {"customer": self.customer}):
 	# 	custom_term = frappe.get_doc("Customer Payment Terms", {"customer": self.customer})
@@ -736,7 +736,6 @@ def update_payment_terms(self, payment_terms_data=None):
 				total_finding_amount += row.finding_amount
 				total_diamond_amount += row.diamond_amount
 				total_gemstone_amount += row.gemstone_amount
-
 	self.payment_schedule = []
 	if payment_term_dict:
 		due_date = None
@@ -749,7 +748,9 @@ def update_payment_terms(self, payment_terms_data=None):
 				charge_type = frappe.db.get_value("E Invoice Item", item_type, "charge_type")
 				if charge_type in ["Making Charges", "Labour Charges"] and total_making_amount > 0:
 					if charge_type == "Making Charges" and not self.is_customer_metal:
-						payment_amount += total_making_amount
+						
+						# payment_amount += total_making_amount
+						payment_amount += payment_terms_data.get(item_type)
 						# payment_amount += self.total_taxes_and_charges
 						description.append(item_type)
 					elif charge_type != "Making Charges" and self.is_customer_metal:
@@ -757,11 +758,12 @@ def update_payment_terms(self, payment_terms_data=None):
 						# payment_amount += self.total_taxes_and_charges
 						description.append(item_type)
 				elif charge_type == "Studded Metal" and total_metal_amount > 0:
-					payment_amount += total_metal_amount
+					payment_amount += payment_terms_data.get(item_type)
 					description.append(item_type)
 				elif charge_type in ["Studded Diamond", "Handling Charges"] and total_diamond_amount > 0:
 					if charge_type == "Studded Diamond" and not self.is_customer_diamond:
-						payment_amount += total_diamond_amount
+						payment_amount += payment_terms_data.get(item_type)
+						# payment_amount += total_diamond_amount
 						description.append(item_type)
 					elif self.is_customer_diamond and charge_type != "Studded Diamond":
 						payment_amount += total_diamond_amount
@@ -797,11 +799,9 @@ def update_payment_terms(self, payment_terms_data=None):
 						else 0,
 					}
 				)
-
 		self.payment_schedule = []
 		self.due_date = max(due_date_list)
 		self.extend("payment_schedule", item_to_append)
-
 
 def update_income_account(self):
 	if self.is_opening == "No":

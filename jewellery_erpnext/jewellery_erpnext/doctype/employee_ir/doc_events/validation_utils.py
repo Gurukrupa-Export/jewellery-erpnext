@@ -11,7 +11,11 @@ def validate_duplication_and_gr_wt(self):
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 	existing_mop = []
 	loss_details = {}
+	is_finding = frappe.db.get_value(
+			"Department Operation", self.operation, "allow_finding_mwo"
+		)
 	for row in self.employee_ir_operations:
+		validate_mwo(self,row,is_finding)
 		loss_details = get_loss_details(row)
 		if row.manufacturing_operation in existing_mop:
 			frappe.throw(
@@ -41,6 +45,18 @@ def validate_duplication_and_gr_wt(self):
 	if loss_details:
 		return loss_details
 
+def validate_mwo(self,row,is_finding):
+	if self.type != "Issue":
+		return
+
+	is_finding_mwo = row.is_finding_mwo
+	if is_finding_mwo:
+		if not is_finding:
+			frappe.throw(
+				_("Finding MWO {0} not allowd to transfer in {1} Department Operation.").format(
+					row.manufacturing_work_order, self.operation
+				)
+			)
 
 def validate_gross_wt(row, precision, main_slip=None):
 	row.gross_wt = frappe.db.get_value(

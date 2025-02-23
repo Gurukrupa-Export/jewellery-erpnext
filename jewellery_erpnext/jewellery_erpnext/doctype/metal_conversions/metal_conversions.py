@@ -271,6 +271,7 @@ def make_metal_stock_entry(self):
 	target_wh = self.target_warehouse
 	source_wh = self.source_warehouse
 	inventory_type = self.inventory_type
+	customer = self.customer
 	batch_no = self.batch
 	se = frappe.get_doc(
 		{
@@ -293,6 +294,7 @@ def make_metal_stock_entry(self):
 				"item_code": self.source_item,
 				"qty": flt(i.qty, 3),
 				"inventory_type": inventory_type,
+				"customer": customer,
 				"batch_no": i.batch,
 				"department": self.department,
 				"employee": self.employee,
@@ -305,6 +307,7 @@ def make_metal_stock_entry(self):
 			"item_code": self.target_item,
 			"qty": self.target_qty,
 			"inventory_type": inventory_type,
+			"customer": customer,
 			"department": self.department,
 			"employee": self.employee,
 			"manufacturer": self.manufacturer,
@@ -347,6 +350,7 @@ def make_metal_stock_entry(self):
 				"item_code": row["item_code"],
 				"qty": row["qty"],
 				"inventory_type": row["inventory_type"],
+				"customer": row.get("customer"),
 				"batch_no": row["batch_no"],
 				"department": row["department"],
 				"employee": row["employee"],
@@ -364,6 +368,7 @@ def make_metal_stock_entry(self):
 				"item_code": row["item_code"],
 				"qty": row["qty"],
 				"inventory_type": row["inventory_type"],
+				"customer": row.get("customer"),
 				"department": row["department"],
 				"employee": row["employee"],
 				"manufacturer": row["manufacturer"],

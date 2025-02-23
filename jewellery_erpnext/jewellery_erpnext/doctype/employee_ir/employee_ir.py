@@ -361,7 +361,14 @@ class EmployeeIR(Document):
 			re_se_doc.subcontractor = self.subcontractor
 			re_se_doc.auto_created = 1
 			re_se_doc.employee_ir = self.name
+			finished_item = {}
 			for row in repack_raws:
+				if row.get('is_finished_item'):
+					if not finished_item.get('finish'):
+						finished_item.update({'finish':'Finish Item'})
+					else:
+						row.update({'is_finished_item': 0})
+
 				if not re_se_doc.main_slip:
 					re_se_doc.main_slip = row.get("main_slip") or row.get("to_main_slip")
 				re_se_doc.append("items", row)
@@ -1238,10 +1245,12 @@ def create_stock_entry(
 
 					if flt(remaining_wt, 3) > msl_qty:
 						to_use_wt = existing_qty
+						data.consume_qty += to_use_wt
 						remaining_wt -= msl_qty
 
 					else:
 						to_use_wt = flt((remaining_wt / 100) * purity, 3)
+						data.consume_qty += to_use_wt
 						remaining_wt = 0
 
 					if msl_qty and to_use_wt > 0:
@@ -1298,7 +1307,6 @@ def create_stock_entry(
 
 				batch_doc.flags.ignore_permissions = True
 				batch_doc.save()
-
 				repack_raws.append(
 					{
 						"item_code": metal_item,
@@ -1454,7 +1462,7 @@ def create_stock_entry(
 			if child.manufacturing_operation != row.manufacturing_operation:
 				to_remove.append(child)
 			else:
-				if not rejected_qty.get(child.item_code):
+				if not rejected_qty.get((child.item_code,child.batch_no)):
 					StockEntryDetail = DocType("Stock Entry Detail").as_("sed")
 					StockEntry = DocType("Stock Entry").as_("se")
 					query = (
@@ -1474,7 +1482,7 @@ def create_stock_entry(
 					if trash_qty:
 						trash_qty = trash_qty[0]["qty"] or 0
 
-					rejected_qty[child.item_code] = trash_qty
+					rejected_qty[(child.item_code,child.batch_no)] = trash_qty
 
 				child.s_warehouse = employee_wh
 				child.t_warehouse = department_wh
@@ -1528,14 +1536,14 @@ def create_stock_entry(
 						{"gross_wt": f"gross_wt + {difference_wt}", "net_wt": f"net_wt + {difference_wt}"},
 					)
 
-				if rejected_qty.get(child.item_code) and rejected_qty.get(child.item_code) > 0:
-					if rejected_qty[child.item_code] < child.qty:
-						child.qty -= rejected_qty[child.item_code]
-						rejected_qty[child.item_code] = 0
+				if rejected_qty.get((child.item_code,child.batch_no)) and rejected_qty.get((child.item_code,child.batch_no)) > 0:
+					if flt(rejected_qty[(child.item_code,child.batch_no)],3) < child.qty:
+						child.qty -= rejected_qty[(child.item_code,child.batch_no)]
+						rejected_qty[(child.item_code,child.batch_no)] = 0
 					else:
 						if child not in to_remove:
 							to_remove.append(child)
-						rejected_qty[child.item_code] -= child.qty
+						rejected_qty[(child.item_code,child.batch_no)] -= child.qty
 
 				if child.qty < 0:
 					frappe.throw(_("Qty cannot be negative"))

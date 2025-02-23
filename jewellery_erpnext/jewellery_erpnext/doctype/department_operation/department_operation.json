@@ -15,6 +15,7 @@
   "is_last_operation",
   "is_subcontracted",
   "allow_zero_qty_wo",
+  "allow_finding_mwo",
   "service_item",
   "column_break_otjqr",
   "is_qc_reqd",
@@ -172,11 +173,17 @@
    "fieldname": "is_mould_manufacturer",
    "fieldtype": "Check",
    "label": "Is Mould Manufacturer"
+  },
+  {
+   "default": "0",
+   "fieldname": "allow_finding_mwo",
+   "fieldtype": "Check",
+   "label": "Allow Finding MWO"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-10-21 17:23:05.025304",
+ "modified": "2025-02-06 15:22:42.726821",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department Operation",

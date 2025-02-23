@@ -103,6 +103,7 @@ def get_fifo_batches(self, row):
 		)
 
 	customer_item_data = frappe._dict({})
+	manufacturer_data = frappe._dict({})
 	if row.get("custom_parent_manufacturing_order"):
 		customer_item_data = frappe.db.get_value(
 			"Parent Manufacturing Order",
@@ -113,10 +114,18 @@ def get_fifo_batches(self, row):
 				"is_customer_gemstone",
 				"is_customer_material",
 				"customer",
+				"manufacturer",
 			],
 			as_dict=1,
 		)
+	if not manufacturer_data.get(customer_item_data.get("manufacturer")):
+		manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
+			"Manufacturer",
+			customer_item_data.get("manufacturer"),
+			"custom_allow_regular_goods_instead_of_customer_goods",
+		)
 
+	allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
 	variant_to_customer_key = {
 		"M": "is_customer_gold",
 		"F": "is_customer_gold",
@@ -132,10 +141,9 @@ def get_fifo_batches(self, row):
 	):
 		row.inventory_type = "Customer Goods"
 		row.customer = customer_item_data.customer
-
+	
 	if not row.inventory_type:
 		row.inventory_type = "Regular Stock"
-
 	for batch in batch_data:
 		if (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
@@ -162,6 +170,33 @@ def get_fifo_batches(self, row):
 					temp_row["qty"] = flt(min(total_qty, batch.qty), 4)
 					rows_to_append.append(temp_row)
 					total_qty -= batch.qty
+
+		elif (
+			row.inventory_type in ["Customer Goods", "Customer Stock"]
+			and frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type") != row.inventory_type
+			and allow_customer_goods == 1
+		):
+			if total_qty > 0 and batch.qty > 0:
+				if not existing_updated:
+					row.db_set("qty", min(total_qty, batch.qty))
+					if self.get("date"):
+						row.db_set("batch", batch.batch_no)
+					else:
+						row.db_set("transfer_qty", row.qty)
+						row.db_set("batch_no", batch.batch_no)
+					total_qty -= batch.qty
+					existing_updated = True
+					rows_to_append.append(row.__dict__)
+				else:
+					temp_row = copy.deepcopy(row.__dict__)
+					temp_row["name"] = None
+					temp_row["idx"] = None
+					temp_row["batch_no"] = batch.batch_no
+					temp_row["transfer_qty"] = 0
+					temp_row["qty"] = flt(min(total_qty, batch.qty), 4)
+					rows_to_append.append(temp_row)
+					total_qty -= batch.qty
+		
 		elif row.inventory_type not in ["Customer Goods", "Customer Stock"]:
 			if self.flags.only_regular_stock_allowed and frappe.db.get_value(
 				"Batch", batch.batch_no, "custom_inventory_type"

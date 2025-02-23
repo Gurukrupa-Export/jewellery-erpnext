@@ -699,7 +699,6 @@ class ManufacturingOperation(Document):
 				"manufacturing_order": pmo,
 				"docstatus": ["!=", 2],
 				"department": ["=", self.department],
-				"is_finding_mwo": 0,
 			},
 			pluck="manufacturing_operation",
 		)

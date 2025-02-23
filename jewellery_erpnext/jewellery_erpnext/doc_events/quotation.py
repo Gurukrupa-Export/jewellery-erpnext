@@ -8,7 +8,9 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	set_bom_item_details,
 	set_bom_rate_in_quotation,
 )
-
+from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.utils import (
+	update_si,
+)
 
 @frappe.whitelist()
 def update_status(quotation_id):
@@ -28,6 +30,7 @@ def validate(self, method):
 		calculate_gst_rate(self)
 		if not self.get("__islocal"):
 			set_bom_item_details(self)
+			update_si(self)
 		set_bom_rate_in_quotation(self)
 
 
@@ -193,8 +196,8 @@ def create_new_bom(self):
 def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bom_data, bom_data):
 	row.db_set("copy_bom", bom)
 	doc = frappe.copy_doc(frappe.get_doc("BOM", bom))
-	if not doc.custom_creation_doctype:
-		doc.custom_creation_doctype = self.doctype
+	doc.custom_creation_doctype = self.doctype
+	doc.custom_creation_docname = self.name
 	doc.is_default = 0
 	doc.is_active = 0
 	doc.bom_type = "Quotation"

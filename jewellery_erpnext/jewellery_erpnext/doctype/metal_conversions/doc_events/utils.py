@@ -114,7 +114,7 @@ def update_source_betch(self):
 				"posting_date": self.date,
 				"item_code": self.source_item,
 				"warehouse": self.source_warehouse,
-				"qty": self.source_qty,
+				# "qty": self.source_qty,
 			}
 		)
 	)
@@ -122,22 +122,41 @@ def update_source_betch(self):
 	if not batch_data:
 		frappe.throw(_("No batch available for given warehouse"))
 	self.source_batch_details = []
-	# batch_data = batch_data[0] 
+	inventory_type = "Regular Stock"
+	if self.customer and self.is_customer_metal:
+		inventory_type = "Customer Goods"
 	if batch_data:
 		remaining_qty = 0
 		total_qty = 0
+
 		for i in batch_data:
+			custom_inventory_type, custom_customer = frappe.db.get_value("Batch", i.batch_no, ["custom_inventory_type", "custom_customer"])
+
+			# Proceed only if inventory type matches
+			if custom_inventory_type != inventory_type:
+				continue
+
+			# Determine the quantity to be assigned
 			qty = 0
-			if flt(self.source_qty) > i.qty:
-				qty = i.qty
-				remaining_qty += i.qty
-				total_qty += qty
-			else:
-				qty = flt(self.source_qty) - remaining_qty
-				total_qty += qty
-			self.append("source_batch_details",{
-				'qty':qty,
-				'batch':i.batch_no
-			})
+			if total_qty != flt(self.source_qty):
+				if (custom_inventory_type == "Customer Goods" and custom_customer == self.customer) or custom_inventory_type == "Regular Stock":
+					# If the current batch has more quantity than needed, use the difference
+					if flt(self.source_qty) > remaining_qty + i.qty:
+						qty = i.qty
+						remaining_qty += i.qty
+					else:
+						qty = flt(self.source_qty) - remaining_qty
+						remaining_qty = flt(self.source_qty)  # Ensure remaining_qty equals source_qty
+					total_qty += qty
+
+					# Append details to source_batch_details
+					self.append("source_batch_details", {
+						'qty': qty,
+						'batch': i.batch_no
+					})
+
+			if remaining_qty >= flt(self.source_qty):
+				break  # Stop if we have filled the required quantity
+
 		if total_qty != flt(self.source_qty):
 			frappe.throw(_("The source quantity is not available for the given warehouse. The available quantity is {}.".format(total_qty)))

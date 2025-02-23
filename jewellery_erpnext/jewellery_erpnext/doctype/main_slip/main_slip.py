@@ -156,7 +156,7 @@ class MainSlip(Document):
 				row.mop_consume_qty = batch_entry["mop_consume_qty"]
 
 			loss_details[key[0]] = loss_details.get(key[0], 0) + (
-				(batch_entry["qty"] - batch_entry["consume_qty"])
+				(batch_entry["qty"] - (batch_entry["consume_qty"] + batch_entry["employee_qty"]))
 				+ batch_entry["mop_qty"]
 				- batch_entry["mop_consume_qty"]
 			)

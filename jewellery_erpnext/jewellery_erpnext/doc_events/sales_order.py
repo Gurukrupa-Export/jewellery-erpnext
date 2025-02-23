@@ -36,23 +36,47 @@ def create_new_bom(self):
 	for row in self.items:
 		if not row.quotation_bom:
 			create_serial_no_bom(self, row)
+			if row.bom:
+				doc = frappe.get_doc("BOM",row.bom)
+				row.gold_bom_rate = doc.gold_bom_amount
+				row.diamond_bom_rate = doc.diamond_bom_amount
+				row.gemstone_bom_rate = doc.gemstone_bom_amount
+				row.other_bom_rate = doc.other_bom_amount
+				row.making_charge = doc.making_charge
+				row.bom_rate = doc.total_bom_amount
+				row.rate = doc.total_bom_amount
 		elif not row.bom and frappe.db.exists("BOM", row.quotation_bom):
 			row.bom = row.quotation_bom
+			
 			data_to_be_updated = {
 				"bom_type": "Sales Order",
 				"custom_creation_doctype": "Sales Order",
 				"custom_creation_docname": self.name,
+				"gold_rate_with_gst": self.gold_rate_with_gst,
 			}
 			frappe.db.set_value("BOM", row.quotation_bom, data_to_be_updated)
+			doc = frappe.get_doc("BOM",row.quotation_bom)
+			row.gold_bom_rate = doc.gold_bom_amount
+			row.diamond_bom_rate = doc.diamond_bom_amount
+			row.gemstone_bom_rate = doc.gemstone_bom_amount
+			row.other_bom_rate = doc.other_bom_amount
+			row.making_charge = doc.making_charge
+			row.bom_rate = doc.total_bom_amount
+			row.rate = doc.total_bom_amount
 			# create_sales_order_bom(self, row, diamond_grade_data)
 
 
 def create_serial_no_bom(self, row):
+	if row.bom:
+		return
 	serial_no_bom = frappe.db.get_value("Serial No", row.serial_no, "custom_bom_no")
+	if not serial_no_bom:
+		return
 	bom_doc = frappe.get_doc("BOM", serial_no_bom)
 	if self.customer != bom_doc.customer:
 		doc = frappe.copy_doc(bom_doc)
 		doc.customer = self.customer
+		doc.gold_rate_with_gst = self.gold_rate_with_gst
 		doc.save(ignore_permissions=True)
 		row.bom = doc.name
 

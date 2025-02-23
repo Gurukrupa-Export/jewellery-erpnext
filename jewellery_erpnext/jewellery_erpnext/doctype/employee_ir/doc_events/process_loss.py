@@ -3,7 +3,7 @@ from frappe import _
 
 
 def process_loss_entry(
-	doc, row, manual_loss_items, proprtionate_loss_items, employee_wh, department_wh, mop_data=None
+	doc, row, manual_loss_items, proprtionate_loss_items, mfg_warehouse,employee_wh, department_wh, mop_data=None
 ):
 	se_doc = frappe.new_doc("Stock Entry")
 	se_doc.stock_entry_type = "Process Loss"
@@ -33,7 +33,7 @@ def process_loss_entry(
 			if doc.main_slip and loss_item.get("variant_of") in ["M", "F"]:
 				continue
 			else:
-				process_loss_item(doc, row, se_doc, loss_item, employee_wh, department_wh)
+				process_loss_item(doc, row, se_doc, loss_item, mfg_warehouse,employee_wh, department_wh)
 
 	if se_doc.items:
 		se_doc.flags.ignore_permissions = True
@@ -41,7 +41,7 @@ def process_loss_entry(
 		se_doc.submit()
 
 
-def process_loss_item(doc, row, se_doc, loss_item, employee_wh, department_wh):
+def process_loss_item(doc, row, se_doc, loss_item, mfg_warehouse,employee_wh, department_wh):
 	from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import get_item_loss_item
 
 	loss_warehouse = department_wh
@@ -74,7 +74,6 @@ def process_loss_item(doc, row, se_doc, loss_item, employee_wh, department_wh):
 				"warehouse_type": variant_loss_details.get("warehouse_type"),
 			},
 		)
-
 	if not loss_warehouse:
 		frappe.throw(_("Default loss warehouse is not set in Manufacturer loss table"))
 
@@ -82,7 +81,7 @@ def process_loss_item(doc, row, se_doc, loss_item, employee_wh, department_wh):
 		"items",
 		{
 			"item_code": loss_item.get("item_code"),
-			"s_warehouse": employee_wh,
+			"s_warehouse": mfg_warehouse,
 			"t_warehouse": None,
 			"to_employee": None,
 			"employee": doc.employee,
