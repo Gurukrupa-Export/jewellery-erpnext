@@ -93,7 +93,7 @@ function set_missing_value(frm, d) {
 						}
 					});
 					frappe.model.set_value(d.doctype, d.name, "use_serial_batch_fields", 1);
-					frappe.model.set_value(d.doctype, d.name, "inventory_type", "Customer Stock");
+					frappe.model.set_value(d.doctype, d.name, "inventory_type", "Customer Goods");
 					frappe.model.set_value(
 						d.doctype,
 						d.name,
