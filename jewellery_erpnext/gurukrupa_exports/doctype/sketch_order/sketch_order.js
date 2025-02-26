@@ -64,21 +64,21 @@ frappe.ui.form.on("Sketch Order", {
 	},
 });
 
-frappe.ui.form.on("Rough Sketch Approval", {
-	approved(frm, cdt, cdn) {
-		update_approved_qty_in_prev_table(frm, cdt, cdn, "designer_assignment", "rs_count");
-	},
-	reject(frm, cdt, cdn) {
-		update_approved_qty_in_prev_table(frm, cdt, cdn, "designer_assignment", "rs_count");
-	},
-});
+// frappe.ui.form.on("Rough Sketch Approval", {
+// 	approved(frm, cdt, cdn) {
+// 		update_approved_qty_in_prev_table(frm, cdt, cdn, "designer_assignment", "rs_count");
+// 	},
+// 	reject(frm, cdt, cdn) {
+// 		update_approved_qty_in_prev_table(frm, cdt, cdn, "designer_assignment", "rs_count");
+// 	},
+// });
 
 frappe.ui.form.on("Final Sketch Approval HOD", {
 	approved(frm, cdt, cdn) {
-		update_approved_qty_in_prev_table(frm, cdt, cdn, "rough_sketch_approval", "fs_count");
+		update_approved_qty_in_prev_table(frm, cdt, cdn, "designer_assignment", "rs_count");
 	},
 	reject(frm, cdt, cdn) {
-		update_approved_qty_in_prev_table(frm, cdt, cdn, "rough_sketch_approval", "fs_count");
+		update_approved_qty_in_prev_table(frm, cdt, cdn, "designer_assignment", "rs_count");
 	},
 });
 

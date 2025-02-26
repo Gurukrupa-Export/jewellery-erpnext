@@ -22,10 +22,10 @@ class SketchOrder(Document):
 			# 	continue
 			item_template = create_item_template_from_sketch_order(self, row.name)
 			updatet_item_template(self, item_template)
-			item_variant = create_item_from_sketch_order(self, item_template, row.name)
-			update_item_variant(self, item_variant, item_template)
-			frappe.db.set_value(row.doctype, row.name, "item", item_variant)
-			frappe.msgprint(_("New Item Created: {0}").format(get_link_to_form("Item", item_variant)))
+			# item_variant = create_item_from_sketch_order(self, item_template, row.name)
+			# update_item_variant(self, item_variant, item_template)
+			frappe.db.set_value(row.doctype, row.name, "item", item_template)
+			frappe.msgprint(_("New Item Created: {0}").format(get_link_to_form("Item", item_template)))
 
 	# new code end
 
@@ -46,7 +46,7 @@ def update_item_variant(self, item_variant, item_template):
 
 def populate_child_table(self):
 	if self.workflow_state == "Assigned":
-		self.rough_sketch_approval = []
+		# self.rough_sketch_approval = []
 		self.final_sketch_approval = []
 		self.final_sketch_approval_cmo = []
 		rough_sketch_approval = []
@@ -54,14 +54,14 @@ def populate_child_table(self):
 		final_sketch_approval_cmo = []
 		for designer in self.designer_assignment:
 			r_s_row = self.get(
-				"rough_sketch_approval",
+				"final_sketch_approval",
 				{
 					"designer": designer.designer,
 					"designer_name": designer.designer_name,
 				},
 			)
 			if not r_s_row:
-				rough_sketch_approval.append(
+				final_sketch_approval.append(
 					{
 						"designer": designer.designer,
 						"designer_name": designer.designer_name,
@@ -74,12 +74,12 @@ def populate_child_table(self):
 				# 		"designer_name": designer.designer_name,
 				# 	},
 				# )
-			final_sketch_approval.append(
-				{
-					"designer": designer.designer,
-					"designer_name": designer.designer_name,
-				},
-			)
+			# final_sketch_approval.append(
+			# 	{
+			# 		"designer": designer.designer,
+			# 		"designer_name": designer.designer_name,
+				# },
+			# )
 			# self.append(
 			# 	"final_sketch_approval",
 			# 	{
@@ -111,8 +111,8 @@ def populate_child_table(self):
 		# doc.final_sketch_approval_cmo and frappe.db.get_value("Final Sketch Approval HOD",{"parent":doc.name},"cmo_count as cnt", order_by="cnt asc")
 		#  and frappe.db.get_value("Final Sketch Approval CMO",{"parent":doc.name},"sub_category")
 		# and frappe.db.get_value("Final Sketch Approval CMO",{"parent":doc.name},"category") and frappe.db.get_value("Final Sketch Approval CMO",{"parent":doc.name},"setting_type")
-		for row in rough_sketch_approval:
-			self.append("rough_sketch_approval", row)
+		# for row in rough_sketch_approval:
+		# 	self.append("rough_sketch_approval", row)
 		for row in final_sketch_approval:
 			self.append("final_sketch_approval", row)
 		for row in final_sketch_approval_cmo:
