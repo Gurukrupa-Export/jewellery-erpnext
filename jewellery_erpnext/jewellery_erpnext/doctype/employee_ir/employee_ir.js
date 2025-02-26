@@ -21,11 +21,11 @@ frappe.ui.form.on("Employee IR", {
 		frm.fields_dict["employee_ir_operations"].grid.add_new_row = false;
 		$(frm.fields_dict["employee_ir_operations"].grid.wrapper).find(".grid-add-row").hide();
 	},
-	validate: function (frm) {
-		if (frm.doc.employee_ir_operations.length > 50) {
-			frappe.throw(__("Only 50 MOP allowed in one document"));
-		}
-	},
+	// validate: function (frm) {
+	// 	if (frm.doc.employee_ir_operations.length > 50) {
+	// 		frappe.throw(__("Only 50 MOP allowed in one document"));
+	// 	}
+	// },
 	setup(frm) {
 		frm.ignore_doctypes_on_cancel_all = ["Stock Entry", "Serial and Batch Bundle"];
 		frm.set_query("operation", function () {
