@@ -75,9 +75,6 @@ frappe.ui.form.on("Sketch Order Form", {
 		validate_delivery_date_with_order_date(frm);
 	},
 
-	// concept_image: function (frm) {
-	// 	refresh_field("image_preview");
-	// },
 	customer_code: function (frm) {
 		frappe.call({
 			method: "jewellery_erpnext.gurukrupa_exports.doctype.sketch_order_form.sketch_order_form.get_customer_orderType",
@@ -99,6 +96,16 @@ frappe.ui.form.on("Sketch Order Form", {
 			},
 		});
 	},
+
+	order_type(frm){
+		if(frm.doc.order_type=='Purchase'){
+			$.each(frm.doc.order_details || [], function (i, d) {
+				// d.design_by = frm.doc.order_type;
+				d.design_type = 'New Design';
+			});
+			refresh_field("order_details");
+		}
+	}
 });
 
 frappe.ui.form.on("Sketch Order Form Detail", {
@@ -106,6 +113,13 @@ frappe.ui.form.on("Sketch Order Form Detail", {
 		var row = locals[cdt][cdn];
 		row.delivery_date = frm.doc.delivery_date;
 		row.estimated_duedate = frm.doc.estimated_duedate;
+		if (frm.doc.order_type === 'Purchase') {
+			var df = frappe.utils.filter_dict(cur_frm.fields_dict["order_details"].grid.grid_rows_by_docname[cdn].docfields, { "fieldname": "design_type" })[0];
+			if (df) {
+				df.read_only = 1
+				row.design_type = "New Design"
+			}
+        }
 		refresh_field("order_details");
 	},
 
