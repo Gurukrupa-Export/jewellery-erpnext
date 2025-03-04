@@ -379,8 +379,7 @@
     "fieldname": "designer_assignment",
     "fieldtype": "Table",
     "label": "Designer Assignment",
-    "options": "Designer Assignment",
-    "permlevel": 1
+    "options": "Designer Assignment"
     },
     {
     "depends_on": "eval:(!in_list(['Unassigned','On Hold','Assigned','On Hold - Assigned'], doc.workflow_state))",
@@ -390,10 +389,8 @@
     {
     "fieldname": "rough_sketch_approval",
     "fieldtype": "Table",
-    "hidden": 1,
     "label": "Rough Sketch Approval (HOD)",
-    "options": "Rough Sketch Approval",
-    "permlevel": 1
+    "options": "Rough Sketch Approval"
     },
     {
     "depends_on": "eval:(!in_list(['Unassigned','Assigned','On Hold', 'On Hold - Assigned','Rough Sketch Approval (HOD)','On Hold - Rough Sketch Approval'], doc.workflow_state))",
@@ -404,8 +401,7 @@
     "fieldname": "final_sketch_approval",
     "fieldtype": "Table",
     "label": "Final Sketch Approval (HOD)",
-    "options": "Final Sketch Approval HOD",
-    "permlevel": 1
+    "options": "Final Sketch Approval HOD"
     },
     {
     "depends_on": "eval:(!in_list(['Unassigned','Assigned','On Hold', 'On Hold - Assigned','Rough Sketch Approval (HOD)','On Hold - Rough Sketch Approval','Final Sketch Approval (HOD)','ON Hold - Final Sketch Approved (HOD)','Customer Approval'], doc.workflow_state))",
@@ -416,8 +412,7 @@
     "fieldname": "final_sketch_approval_cmo",
     "fieldtype": "Table",
     "label": "Final Sketch Approval (CMO / CPO)",
-    "options": "Final Sketch Approval CMO",
-    "permlevel": 1
+    "options": "Final Sketch Approval CMO"
     },
     {
     "fieldname": "project",
