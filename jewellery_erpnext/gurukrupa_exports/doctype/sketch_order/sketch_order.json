@@ -40,7 +40,6 @@
     "amended_from",
     "section_break_8",
     "tag__design_id",
-    "item_code",
     "tag_id",
     "column_break_qtgl",
     "master_bom_no",
@@ -91,6 +90,8 @@
     "remark",
     "section_break_47",
     "remarks",
+    "section_break_brdy",
+    "item_code",
     "section_break_26",
     "designer_assignment",
     "section_break_28",
@@ -153,7 +154,6 @@
     "fetch_from": "sketch_order_form.order_type",
     "fieldname": "order_type",
     "fieldtype": "Select",
-    "hidden": 1,
     "label": "Order Type",
     "options": "Sales\nStock Order\nRepair\nPurchase",
     "read_only": 1
@@ -238,7 +238,7 @@
     "read_only": 1
     },
     {
-    "depends_on": "eval:((doc.design_type==\"Mod\"))",
+    "depends_on": "eval:doc.design_type==\"Mod\"",
     "fetch_from": "sketch_order_form_detail.tag__design_id",
     "fieldname": "tag__design_id",
     "fieldtype": "Link",
@@ -247,12 +247,10 @@
     "read_only": 1
     },
     {
-    "depends_on": "eval:(doc.design_type==\"Mod\")",
-    "fetch_from": "sketch_order_form_detail.item_code",
     "fieldname": "item_code",
-    "fieldtype": "Data",
-    "hidden": 1,
+    "fieldtype": "Link",
     "label": "Item Code",
+    "options": "Item",
     "read_only": 1
     },
     {
@@ -372,6 +370,7 @@
     "label": "Order Remarks"
     },
     {
+    "depends_on": "eval:doc.order_type != 'Purchase'",
     "fieldname": "section_break_26",
     "fieldtype": "Section Break"
     },
@@ -379,10 +378,11 @@
     "fieldname": "designer_assignment",
     "fieldtype": "Table",
     "label": "Designer Assignment",
-    "options": "Designer Assignment"
+    "options": "Designer Assignment",
+    "permlevel": 1
     },
     {
-    "depends_on": "eval:(!in_list(['Unassigned','On Hold','Assigned','On Hold - Assigned'], doc.workflow_state))",
+    "depends_on": "eval:(!in_list(['Draft','On Hold','Assigned','On Hold - Assigned'], doc.workflow_state)) && doc.order_type != 'Purchase'",
     "fieldname": "section_break_28",
     "fieldtype": "Section Break"
     },
@@ -393,7 +393,7 @@
     "options": "Rough Sketch Approval"
     },
     {
-    "depends_on": "eval:(!in_list(['Unassigned','Assigned','On Hold', 'On Hold - Assigned','Rough Sketch Approval (HOD)','On Hold - Rough Sketch Approval'], doc.workflow_state))",
+    "depends_on": "eval:(!in_list(['Draft','Assigned','On Hold', 'On Hold - Assigned','Rough Sketch Approval (HOD)','On Hold - Rough Sketch Approval'], doc.workflow_state)) && doc.order_type != 'Purchase'",
     "fieldname": "section_break_30",
     "fieldtype": "Section Break"
     },
@@ -401,10 +401,11 @@
     "fieldname": "final_sketch_approval",
     "fieldtype": "Table",
     "label": "Final Sketch Approval (HOD)",
-    "options": "Final Sketch Approval HOD"
+    "options": "Final Sketch Approval HOD",
+    "permlevel": 1
     },
     {
-    "depends_on": "eval:(!in_list(['Unassigned','Assigned','On Hold', 'On Hold - Assigned','Rough Sketch Approval (HOD)','On Hold - Rough Sketch Approval','Final Sketch Approval (HOD)','ON Hold - Final Sketch Approved (HOD)','Customer Approval'], doc.workflow_state))",
+    "depends_on": "eval:(!in_list(['Draft','Assigned','On Hold', 'On Hold - Assigned','Rough Sketch Approval (HOD)','On Hold - Rough Sketch Approval','Final Sketch Approval (HOD)','ON Hold - Final Sketch Approved (HOD)','Customer Approval'], doc.workflow_state)) && doc.order_type != 'Purchase'",
     "fieldname": "section_break_43",
     "fieldtype": "Section Break"
     },
@@ -412,7 +413,8 @@
     "fieldname": "final_sketch_approval_cmo",
     "fieldtype": "Table",
     "label": "Final Sketch Approval (CMO / CPO)",
-    "options": "Final Sketch Approval CMO"
+    "options": "Final Sketch Approval CMO",
+    "permlevel": 1
     },
     {
     "fieldname": "project",
@@ -816,6 +818,7 @@
     },
     {
     "depends_on": "eval:doc.order_type == 'Purchase'",
+    "fetch_from": "sketch_order_form.supplier",
     "fieldname": "supplier",
     "fieldtype": "Link",
     "label": "Supplier",
@@ -840,6 +843,10 @@
     "label": "Gemstone Type1",
     "options": "Attribute Value",
     "read_only": 1
+    },
+    {
+    "fieldname": "section_break_brdy",
+    "fieldtype": "Section Break"
     }
 ],
 "index_web_pages_for_search": 1,
@@ -850,7 +857,7 @@
     "link_fieldname": "custom_sketch_order_id"
     }
 ],
-"modified": "2025-02-26 17:00:21.102459",
+"modified": "2025-03-08 11:45:00.074908",
 "modified_by": "Administrator",
 "module": "Gurukrupa Exports",
 "name": "Sketch Order",
