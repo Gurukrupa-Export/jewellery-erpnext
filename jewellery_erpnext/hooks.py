@@ -10,6 +10,7 @@ app_email = "nirali@ascratech.com"
 app_license = "MIT"
 
 app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
+app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
 after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
 doctype_js = {
