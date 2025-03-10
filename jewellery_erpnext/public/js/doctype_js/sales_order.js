@@ -306,6 +306,14 @@ frappe.ui.form.on("Sales Order Item", {
 				read_only: 1,
 				in_list_view: 1,
 			},
+			{
+				fieldtype: "Check",
+				fieldname: "is_customer_item",
+				label: __("Is Customer Item"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
 		];
 
 		const diamond_fields = [
@@ -469,6 +477,14 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Amount"),
 				in_list_view: 1,
 			},
+			{
+				fieldtype: "Check",
+				fieldname: "is_customer_item",
+				label: __("Is Customer Item"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
 		];
 
 		const gemstone_fields = [
@@ -601,6 +617,14 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "gemstone_rate_for_specified_quantity",
 				columns: 1,
 				label: __("Amount"),
+				read_only: 1,
+				in_list_view: 1,
+			},
+			{
+				fieldtype: "Check",
+				fieldname: "is_customer_item",
+				label: __("Is Customer Item"),
+				columns: 1,
 				read_only: 1,
 				in_list_view: 1,
 			},
@@ -783,6 +807,14 @@ frappe.ui.form.on("Sales Order Item", {
 				read_only: 1,
 				in_list_view: 1,
 			},
+			{
+				fieldtype: "Check",
+				fieldname: "is_customer_item",
+				label: __("Is Customer Item"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
 		];
 
 		const other_fields = [
@@ -820,6 +852,14 @@ frappe.ui.form.on("Sales Order Item", {
 				reqd: 2,
 				in_list_view: 1,
 				options: "UOM",
+			},
+			{
+				fieldtype: "Check",
+				fieldname: "is_customer_item",
+				label: __("Is Customer Item"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
 			},
 		];
 
