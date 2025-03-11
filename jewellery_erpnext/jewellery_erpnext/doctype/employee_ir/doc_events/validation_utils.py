@@ -7,6 +7,7 @@ def validate_duplication_and_gr_wt(self):
 	if self.main_slip and frappe.db.get_value("Main Slip", self.main_slip, "workflow_state") != "In Use":
 		self.main_slip = None
 
+
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 	loss_details = {}
 	existing_mop = set()
