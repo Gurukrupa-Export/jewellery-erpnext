@@ -7,6 +7,7 @@ def validate_duplication_and_gr_wt(self):
 	if self.main_slip and frappe.db.get_value("Main Slip", self.main_slip, "workflow_state") != "In Use":
 		self.main_slip = None
 
+
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 	loss_details = {}
 	existing_mop = set()
@@ -29,7 +30,7 @@ def validate_duplication_and_gr_wt(self):
 		)
 	).run(pluck="manufacturing_operation")
 	if duplicates:
-		frappe.throw(_("Employee IR exists for MOP {0}").format(", ".join(duplicates)))
+		frappe.throw(title=_("Employee IR exists for MOP"), msg="{0}".format(", ".join(duplicates)))
 
 	# Process child table
 	for row in self.employee_ir_operations:
