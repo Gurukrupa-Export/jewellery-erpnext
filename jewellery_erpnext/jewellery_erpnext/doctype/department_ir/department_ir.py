@@ -558,15 +558,82 @@ def update_stock_entry_dimensions(doc, row, manufacturing_operation, for_employe
 			"to_department": next_dep,
 		}
 	)
-	stock_entries = frappe.get_all("Stock Entry", filters=filters, pluck="name")
+	stock_entries = frappe.db.get_all("Stock Entry", filters=filters, pluck="name")
 	values = {"manufacturing_operation": manufacturing_operation}
 	for stock_entry in stock_entries:
-		rows = frappe.get_all("Stock Entry Detail", {"parent": stock_entry}, pluck="name")
+		rows = frappe.db.get_all("Stock Entry Detail", {"parent": stock_entry}, pluck="name")
 		set_values_in_bulk("Stock Entry Detail", rows, values)
 		values[scrub(doc.doctype)] = doc.name
 		frappe.db.set_value("Stock Entry", stock_entry, values)
 		update_manufacturing_operation(stock_entry)
 		del values[scrub(doc.doctype)]
+
+
+def batch_update_stock_entry_dimensions(doc, stock_entry_data, employee, for_employee=False):
+	"""
+	Batch update Stock Entry and Stock Entry Detail with manufacturing_operation using ORM.
+	stock_entry_data: List of (manufacturing_work_order, manufacturing_operation) tuples.
+	"""
+	# Prepare filters
+	if for_employee:
+		emp_field = "employee" if doc.type == "Receive" else "to_employee"
+		filters = {emp_field: employee}
+		current_dep = doc.department
+		next_dep = doc.department
+	else:
+		filters = {}
+		current_dep = doc.current_department
+		next_dep = doc.next_department
+
+	# Batch fetch all matching Stock Entries
+	mwo_list = [d[0] for d in stock_entry_data]
+	filters.update({
+		"manufacturing_work_order": ["in", mwo_list],
+		"docstatus": 1,
+		"manufacturing_operation": ["is", "not set"],
+		"department": current_dep,
+		"to_department": next_dep
+	})
+	stock_entries = frappe.db.get_all("Stock Entry", filters=filters, pluck="name")
+
+	if not stock_entries:
+		return
+
+	# Map manufacturing_operation to Stock Entry names
+	mwo_to_mop = dict(stock_entry_data)
+	se_updates = {}
+	sed_updates = {}
+
+	# Fetch all Stock Entry Detail rows in one query
+	sed_rows = frappe.db.get_all(
+		"Stock Entry Detail",
+		filters={"parent": ["in", stock_entries]},
+		fields=["name", "parent"]
+	)
+
+	# Prepare batch updates
+	for se in stock_entries:
+		mop = mwo_to_mop.get(frappe.db.get_value("Stock Entry", se, "manufacturing_work_order"))
+		if mop:
+			se_updates[se] = {
+				"manufacturing_operation": mop,
+				scrub(doc.doctype): doc.name
+			}
+
+	for sed in sed_rows:
+		mop = se_updates.get(sed.parent, {}).get("manufacturing_operation")
+		if mop:
+			sed_updates[sed.name] = {"manufacturing_operation": mop}
+
+	# Batch update Stock Entry
+	if se_updates:
+		frappe.db.bulk_update("Stock Entry", se_updates, chunk_size=150, update_modified=True)
+		for se_name in se_updates:
+			update_manufacturing_operation(se_name)
+
+	# Batch update Stock Entry Detail
+	if sed_updates:
+		frappe.db.bulk_update("Stock Entry Detail", sed_updates, chunk_size=150, update_modified=True)
 
 
 # def create_stock_entry_for_issue(doc, row, manufacturing_operation):
