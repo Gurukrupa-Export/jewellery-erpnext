@@ -22,7 +22,7 @@ from frappe.utils import (
 )
 
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
-	update_stock_entry_dimensions,
+	update_stock_entry_dimensions, batch_update_stock_entry_dimensions
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.emp_ir_receive import (
 	get_stock_data,
@@ -59,14 +59,15 @@ class EmployeeIR(Document):
 		if not self.main_slip or self.type == "Issue":
 			return
 
-		existing_mwo = frappe.db.get_all(
+		existing_mwo = set(frappe.db.get_all(
 			"Main Slip Operation", {"parent": self.main_slip}, pluck="manufacturing_work_order"
-		)
+		))
 
 		for row in self.employee_ir_operations:
 			if row.manufacturing_work_order not in existing_mwo:
 				frappe.throw(
-					_("Manufacturing Work Order {0} not available in Main Slip").format(
+					title=_("Invalid Manufacturing Work Order"),
+					msg=_("Manufacturing Work Order {0} not available in Main Slip").format(
 						row.manufacturing_work_order
 					)
 				)
@@ -169,6 +170,58 @@ class EmployeeIR(Document):
 		create_single_se_entry(self, mop_data)
 
 		# for row in self.employee_ir_operations:
+
+
+	def on_submit_issue_new(self, cancel=False):
+		# Set initial values based on cancel flag
+		employee = None if cancel else self.employee
+		operation = None if cancel else self.operation
+		status = "Not Started" if cancel else "WIP"
+		values = {"operation": operation, "status": status}
+		if self.subcontracting == "Yes":
+			values["for_subcontracting"] = 1
+			values["subcontractor"] = None if cancel else self.subcontractor
+		else:
+			values["employee"] = employee
+
+		# Initialize data structures
+		mop_data = {}
+		mops_to_update = {}
+		time_log_args = []
+		stock_entry_data = []
+		start_time = frappe.utils.now() if not cancel else None
+
+		# Single pass over child table
+		for row in self.employee_ir_operations:
+			mop_values = {
+				"operation": operation,
+				"rpt_wt_issue": row.rpt_wt_issue,
+				"start_time": start_time
+			}
+			mops_to_update[row.manufacturing_operation] = mop_values
+			if not cancel:
+				stock_entry_data.append((row.manufacturing_work_order, row.manufacturing_operation))
+				mop_data[row.manufacturing_work_order] = row.manufacturing_operation
+				time_log_args.append((row.manufacturing_operation, values.copy()))
+
+		# Batch update Manufacturing Operation records
+		if mops_to_update:
+			frappe.db.bulk_update(
+				"Manufacturing Operation",
+				mops_to_update,
+				chunk_size=100,
+				update_modified=True
+			)
+
+		# Batch update stock entries
+		if stock_entry_data and not cancel:
+			batch_update_stock_entry_dimensions(self, stock_entry_data, employee, True)
+
+		# Batch add time logs
+		if time_log_args and not cancel:
+			batch_add_time_logs(time_log_args)
+
+		create_single_se_entry(self, mop_data)
 
 	# for receive
 	def on_submit_receive(self, cancel=False):
@@ -1707,6 +1760,92 @@ def add_time_log(doc, args):
 	doc.save()
 
 
+def batch_add_time_logs(mop_args_list):
+	"""
+	Batch update time logs and Manufacturing Operation fields.
+	mop_args_list: List of (mop_name, args) tuples.
+	"""
+	# Batch fetch all necessary fields to avoid individual get_doc calls
+	mop_names = [mop[0] for mop in mop_args_list]
+	mop_docs = frappe.get_all(
+		"Manufacturing Operation",
+		filters={"name": ["in", mop_names]},
+		fields=["name", "status"]  # Add fields as needed
+	)
+	# Convert to dict for quick lookup; load full docs only if modifying time_logs directly
+	mop_dict = {d.name: d for d in mop_docs}
+	full_docs = {}  # Cache full docs if needed
+
+	# Prepare updates
+	time_log_entries = []  # For new time logs
+	mop_updates = {}      # For status/current_time updates
+
+	for mop_name, args in mop_args_list:
+		doc_data = mop_dict[mop_name]
+		new_status = args.get("status")
+
+		# Check if status needs updating
+		if doc_data.status != new_status:
+			mop_updates[mop_name] = {"status": new_status}
+
+		# Load full doc only if modifying time_logs directly
+		if args.get("complete_time"):
+			doc = full_docs.get(mop_name) or frappe.get_doc("Manufacturing Operation", mop_name)
+			full_docs[mop_name] = doc
+			last_row = doc.time_logs[-1] if doc.time_logs else None
+			doc.reset_timer_value(args)
+
+			if last_row:
+				for row in doc.time_logs:
+					if not row.to_time:
+						row.to_time = get_datetime(args.get("complete_time"))
+						if mop_name not in mop_updates:
+							mop_updates[mop_name] = {}
+
+		elif args.get("start_time"):
+			# New time log via bulk insert
+			time_log = {
+				"doctype": "Manufacturing Operation Time Log",
+				"parent": mop_name,
+				"parenttype": "Manufacturing Operation",
+				"parentfield": "time_logs",
+				"from_time": get_datetime(args.get("start_time")),
+				"employee": args.get("employee")
+			}
+			time_log_entries.append(time_log)
+
+		# Update current_time if needed
+		if doc_data.status in ["QC Pending", "On Hold"] and "last_row" in locals():
+			current_time = time_diff_in_seconds(last_row.to_time, last_row.from_time)
+
+			if mop_name not in mop_updates:
+				mop_updates[mop_name] = {}
+
+			mop_updates[mop_name]["current_time"] = current_time
+
+	# Bulk insert new time logs
+	if time_log_entries:
+		frappe.db.bulk_insert(
+			"Manufacturing Operation Time Log",
+			fields=["parent", "parenttype", "parentfield", "from_time", "employee"],
+			values=[[tl[k] for k in ["parent", "parenttype", "parentfield", "from_time", "employee"]] for tl in time_log_entries]
+		)
+
+	# Batch update status/current_time
+	if mop_updates:
+		frappe.db.bulk_update(
+			"Manufacturing Operation",
+			mop_updates,
+			chunk_size=150,
+			update_modified=True
+		)
+
+	for doc in full_docs.values():
+		doc.flags.ignore_validation = True
+		doc.flags.ignore_permissions = True
+		doc.save()
+
+
 def process_loss_entry(
 	doc, manufacturing_operation, loss_details, manual_loss_items, employee_wh, department_wh
 ):
@@ -1867,6 +2006,7 @@ def create_single_se_entry(doc, mop_data):
 
 	if rows_to_append:
 		se_doc = frappe.new_doc("Stock Entry")
+		se_doc.company = doc.company
 		se_doc.inventory_type = None
 		se_doc.department = doc.department
 		se_doc.to_department = doc.department

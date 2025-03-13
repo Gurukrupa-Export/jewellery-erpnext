@@ -29,6 +29,7 @@ def validate_duplication_and_gr_wt(self):
 			& (EIR.docstatus != 2)
 		)
 	).run(pluck="manufacturing_operation")
+
 	if duplicates:
 		frappe.throw(title=_("Employee IR exists for MOP"), msg="{0}".format(", ".join(duplicates)))
 
