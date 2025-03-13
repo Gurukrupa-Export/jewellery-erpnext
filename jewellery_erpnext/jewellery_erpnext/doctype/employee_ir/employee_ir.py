@@ -88,7 +88,7 @@ class EmployeeIR(Document):
 		validate_qc(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
-			self.on_submit_issue()
+			self.on_submit_issue_new()
 			if self.subcontracting == "Yes":
 				self.create_subcontracting_order()
 		else:
@@ -160,11 +160,11 @@ class EmployeeIR(Document):
 				"Manufacturing Operation", row.manufacturing_operation, "operation", operation
 			)
 			if not cancel:
-				update_stock_entry_dimensions(self, row, row.manufacturing_operation, True)
+				batch_update_stock_entry_dimensions(self, row, row.manufacturing_operation, True)
 				mop_data.update({row.manufacturing_work_order: row.manufacturing_operation})
+
 			values["start_time"] = frappe.utils.now()
-			# doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
-			add_time_log(row.manufacturing_operation, values)
+			batch_add_time_logs(row.manufacturing_operation, values)
 			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
 
 		create_single_se_entry(self, mop_data)
@@ -1774,11 +1774,11 @@ def batch_add_time_logs(mop_args_list):
 	)
 	# Convert to dict for quick lookup; load full docs only if modifying time_logs directly
 	mop_dict = {d.name: d for d in mop_docs}
-	full_docs = {}  # Cache full docs if needed
+	full_docs = {}
 
 	# Prepare updates
-	time_log_entries = []  # For new time logs
-	mop_updates = {}      # For status/current_time updates
+	time_log_entries = []
+	mop_updates = {}
 
 	for mop_name, args in mop_args_list:
 		doc_data = mop_dict[mop_name]
@@ -2024,7 +2024,7 @@ def create_single_se_entry(doc, mop_data):
 			else "Material Transfer to Employee"
 		)
 
-		for row in rows_to_append:
+		for idx, row in enumerate(rows_to_append):
 			se_doc.stock_entry_type = stock_entry_type
 			if doc.subcontracting == "Yes":
 				row.to_subcontractor = doc.subcontractor
