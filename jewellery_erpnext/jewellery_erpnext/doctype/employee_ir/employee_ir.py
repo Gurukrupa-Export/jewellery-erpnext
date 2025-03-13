@@ -1774,7 +1774,7 @@ def batch_add_time_logs(mop_args_list):
 	)
 	# Convert to dict for quick lookup; load full docs only if modifying time_logs directly
 	mop_dict = {d.name: d for d in mop_docs}
-	full_docs = {}  # Cache full docs if needed
+	full_docs = {}
 
 	# Prepare updates
 	time_log_entries = []
