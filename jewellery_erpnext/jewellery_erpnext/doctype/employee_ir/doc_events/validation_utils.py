@@ -7,7 +7,6 @@ def validate_duplication_and_gr_wt(self):
 	if self.main_slip and frappe.db.get_value("Main Slip", self.main_slip, "workflow_state") != "In Use":
 		self.main_slip = None
 
-
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 	loss_details = {}
 	existing_mop = set()
@@ -47,7 +46,7 @@ def validate_duplication_and_gr_wt(self):
 	if loss_details:
 		return loss_details
 
-def validate_mwo(self,row,is_finding):
+def validate_mwo(self, row, is_finding):
 	if self.type != "Issue":
 		return
 
@@ -55,7 +54,7 @@ def validate_mwo(self,row,is_finding):
 	if is_finding_mwo:
 		if not is_finding:
 			frappe.throw(
-				_("Finding MWO {0} not allowd to transfer in {1} Department Operation.").format(
+				_("Finding MWO <b>{0}</b> not allowed to transfer in <b>{1}</b> Department Operation.").format(
 					row.manufacturing_work_order, self.operation
 				)
 			)

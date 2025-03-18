@@ -160,11 +160,11 @@ class EmployeeIR(Document):
 				"Manufacturing Operation", row.manufacturing_operation, "operation", operation
 			)
 			if not cancel:
-				batch_update_stock_entry_dimensions(self, row, row.manufacturing_operation, True)
+				update_stock_entry_dimensions(self, row, row.manufacturing_operation, True)
 				mop_data.update({row.manufacturing_work_order: row.manufacturing_operation})
 
 			values["start_time"] = frappe.utils.now()
-			batch_add_time_logs(row.manufacturing_operation, values)
+			add_time_log(row.manufacturing_operation, values)
 			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
 
 		create_single_se_entry(self, mop_data)
@@ -184,27 +184,24 @@ class EmployeeIR(Document):
 		else:
 			values["employee"] = employee
 
-		# Initialize data structures
 		mop_data = {}
 		mops_to_update = {}
 		time_log_args = []
 		stock_entry_data = []
 		start_time = frappe.utils.now() if not cancel else None
 
-		# Single pass over child table
 		for row in self.employee_ir_operations:
-			mop_values = {
+			values.update({
 				"operation": operation,
 				"rpt_wt_issue": row.rpt_wt_issue,
 				"start_time": start_time
-			}
-			mops_to_update[row.manufacturing_operation] = mop_values
+			})
+			mops_to_update[row.manufacturing_operation] = values
 			if not cancel:
 				stock_entry_data.append((row.manufacturing_work_order, row.manufacturing_operation))
 				mop_data[row.manufacturing_work_order] = row.manufacturing_operation
-				time_log_args.append((row.manufacturing_operation, values.copy()))
+				time_log_args.append((row.manufacturing_operation, values))
 
-		# Batch update Manufacturing Operation records
 		if mops_to_update:
 			frappe.db.bulk_update(
 				"Manufacturing Operation",
@@ -1762,83 +1759,51 @@ def add_time_log(doc, args):
 
 def batch_add_time_logs(mop_args_list):
 	"""
-	Batch update time logs and Manufacturing Operation fields.
+	Batch update time logs and Manufacturing Operation fields via doc objects.
 	mop_args_list: List of (mop_name, args) tuples.
 	"""
-	# Batch fetch all necessary fields to avoid individual get_doc calls
+	# Batch fetch minimal data for status check
 	mop_names = [mop[0] for mop in mop_args_list]
 	mop_docs = frappe.get_all(
 		"Manufacturing Operation",
 		filters={"name": ["in", mop_names]},
-		fields=["name", "status"]  # Add fields as needed
+		fields=["name", "status"]
 	)
-	# Convert to dict for quick lookup; load full docs only if modifying time_logs directly
 	mop_dict = {d.name: d for d in mop_docs}
 	full_docs = {}
 
-	# Prepare updates
-	time_log_entries = []
-	mop_updates = {}
-
 	for mop_name, args in mop_args_list:
-		doc_data = mop_dict[mop_name]
+		doc_data = mop_dict.get(mop_name)
+		if not doc_data:
+			continue
+
+		doc = full_docs.get(mop_name) or frappe.get_doc("Manufacturing Operation", mop_name)
+		full_docs[mop_name] = doc
+
 		new_status = args.get("status")
+		if new_status and doc.status != new_status:
+			doc.status = new_status
 
-		# Check if status needs updating
-		if doc_data.status != new_status:
-			mop_updates[mop_name] = {"status": new_status}
+		last_row = doc.time_logs[-1] if doc.time_logs else None
+		doc.reset_timer_value(args)
 
-		# Load full doc only if modifying time_logs directly
-		if args.get("complete_time"):
-			doc = full_docs.get(mop_name) or frappe.get_doc("Manufacturing Operation", mop_name)
-			full_docs[mop_name] = doc
-			last_row = doc.time_logs[-1] if doc.time_logs else None
-			doc.reset_timer_value(args)
-
-			if last_row:
-				for row in doc.time_logs:
-					if not row.to_time:
-						row.to_time = get_datetime(args.get("complete_time"))
-						if mop_name not in mop_updates:
-							mop_updates[mop_name] = {}
+		if args.get("complete_time") and last_row:
+			for row in doc.time_logs:
+				if not row.to_time:
+					row.to_time = get_datetime(args.get("complete_time"))
+					break
 
 		elif args.get("start_time"):
-			# New time log via bulk insert
-			time_log = {
-				"doctype": "Manufacturing Operation Time Log",
-				"parent": mop_name,
-				"parenttype": "Manufacturing Operation",
-				"parentfield": "time_logs",
+			employee = args.get("employee")
+
+			new_time_log = frappe._dict({
 				"from_time": get_datetime(args.get("start_time")),
-				"employee": args.get("employee")
-			}
-			time_log_entries.append(time_log)
+				"employee": employee
+			})
+			doc.add_start_time_log(new_time_log)
 
-		# Update current_time if needed
-		if doc_data.status in ["QC Pending", "On Hold"] and "last_row" in locals():
-			current_time = time_diff_in_seconds(last_row.to_time, last_row.from_time)
-
-			if mop_name not in mop_updates:
-				mop_updates[mop_name] = {}
-
-			mop_updates[mop_name]["current_time"] = current_time
-
-	# Bulk insert new time logs
-	if time_log_entries:
-		frappe.db.bulk_insert(
-			"Manufacturing Operation Time Log",
-			fields=["parent", "parenttype", "parentfield", "from_time", "employee"],
-			values=[[tl[k] for k in ["parent", "parenttype", "parentfield", "from_time", "employee"]] for tl in time_log_entries]
-		)
-
-	# Batch update status/current_time
-	if mop_updates:
-		frappe.db.bulk_update(
-			"Manufacturing Operation",
-			mop_updates,
-			chunk_size=150,
-			update_modified=True
-		)
+		if doc.status in ["QC Pending", "On Hold"] and last_row and last_row.to_time and last_row.from_time:
+			doc.current_time = time_diff_in_seconds(last_row.to_time, last_row.from_time)
 
 	for doc in full_docs.values():
 		doc.flags.ignore_validation = True
