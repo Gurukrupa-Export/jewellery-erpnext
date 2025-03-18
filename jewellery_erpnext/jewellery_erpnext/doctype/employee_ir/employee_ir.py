@@ -387,6 +387,7 @@ class EmployeeIR(Document):
 		# Process Loss
 		if loss_rows:
 			pl_se_doc = frappe.new_doc("Stock Entry")
+			pl_se_doc.company = self.company
 			pl_se_doc.stock_entry_type = "Process Loss"
 			pl_se_doc.purpose = "Repack"
 			pl_se_doc.department = self.department
@@ -403,6 +404,7 @@ class EmployeeIR(Document):
 
 		if repack_raws:
 			re_se_doc = frappe.new_doc("Stock Entry")
+			re_se_doc.company = self.company
 			re_se_doc.stock_entry_type = "Manufacture"
 			re_se_doc.purpose = "Manufacture"
 			re_se_doc.department = self.department
@@ -429,6 +431,7 @@ class EmployeeIR(Document):
 
 		if main_slip_rows:
 			mse_doc = frappe.new_doc("Stock Entry")
+			mse_doc.company = self.company
 			mse_doc.stock_entry_type = "Material Transfer (Main Slip)"
 			mse_doc.purpose = "Material Transfer"
 			mse_doc.department = self.department
@@ -464,6 +467,7 @@ class EmployeeIR(Document):
 				hour_rate_labour = get_hourly_rate(self.employee)
 
 			se_doc = frappe.new_doc("Stock Entry")
+			se_doc.company = self.company
 			se_doc.stock_entry_type = "Material Transfer to Department"
 			se_doc.outgoing_stock_entry = None
 			se_doc.set_posting_time = 1
