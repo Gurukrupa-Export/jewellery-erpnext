@@ -656,11 +656,11 @@ def set_bom_item_details(self):
 	"""
 	doctype = get_doctype_name(self)
 	for item in self.items:
-		remark = ""
-		if item.diamond_quality:
-			remark += f"Diamond Quality: {item.diamond_quality} \n"
-		if item.metal_colour:
-			remark += f"Colour: {item.metal_colour}"
+		# remark = ""
+		# if item.diamond_quality:
+		# 	remark += f"Diamond Quality: {item.diamond_quality} \n"
+		# if item.metal_colour:
+		# 	remark += f"Colour: {item.metal_colour}"
 		if item.quotation_bom:
 			bom_doc = (
 				frappe.get_doc("BOM", item.quotation_bom)
@@ -681,7 +681,7 @@ def set_bom_item_details(self):
 			# for stone in self.gemstone_detail:
 			# 	set_gemstone_fields(stone, item)
 
-		item.remarks = remark
+		# item.remarks = remark
 
 
 def set_diamond_fields(diamond, item):
