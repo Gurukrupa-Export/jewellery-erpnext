@@ -209,6 +209,7 @@
    "insert_after": "subcontractor",
    "label": "Manufacturing Operation",
    "module": "Jewellery Erpnext",
+   "search_index": 1,
    "options": "Manufacturing Operation"
   },
   {

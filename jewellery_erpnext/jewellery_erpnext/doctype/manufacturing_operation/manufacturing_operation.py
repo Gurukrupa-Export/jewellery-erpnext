@@ -2,7 +2,6 @@
 # For license information, please see license.txt
 
 import json
-
 import frappe
 from frappe import _
 from frappe.model.document import Document
