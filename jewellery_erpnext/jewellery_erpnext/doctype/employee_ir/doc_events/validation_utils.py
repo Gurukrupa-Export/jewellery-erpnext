@@ -41,7 +41,7 @@ def validate_duplication_and_gr_wt(self):
 			frappe.throw(_("{0} appeared multiple times in Employee IR").format(row.manufacturing_operation))
 
 		existing_mop.add(row.manufacturing_operation)
-		save_mop(row.manufacturing_operation)
+		update_mop_balance(row.manufacturing_operation)
 		validate_gross_wt(row, precision, self.main_slip)
 
 	if loss_details:
@@ -73,9 +73,11 @@ def validate_gross_wt(row, precision, main_slip=None):
 			)
 
 
-def save_mop(mop_name):
+def update_mop_balance(mop_name):
 	doc = frappe.get_doc("Manufacturing Operation", mop_name)
-	doc.save()
+	doc.run_method("validate")
+	doc.run_method("on_update")
+	doc.db_update_all()
 
 
 def validate_manually_book_loss_details(self):
