@@ -107,6 +107,7 @@ class EmployeeIR(Document):
 			{"set_warehouse": warehouse, "workflow_state": ["in", ["In Progress", "Send for Approval"]]},
 		):
 			frappe.throw(_("Stock Reconciliation is under process"))
+
 		validate_duplication_and_gr_wt(self)
 
 	def validate(self):
