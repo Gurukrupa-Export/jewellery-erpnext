@@ -41,7 +41,16 @@ def validate_duplication_and_gr_wt(self):
 			frappe.throw(_("{0} appeared multiple times in Employee IR").format(row.manufacturing_operation))
 
 		existing_mop.add(row.manufacturing_operation)
-		update_mop_balance(row.manufacturing_operation)
+		mop_doc = update_mop_balance(row.manufacturing_operation)
+		row.update({
+			"gross_wt": mop_doc.gross_wt,
+			"net_wt": mop_doc.net_wt,
+			"finding_wt": mop_doc.finding_wt,
+			"diamond_wt": mop_doc.diamond_wt,
+			"gemstone_wt": mop_doc.gemstone_wt,
+			"diamond_pcs": mop_doc.diamond_pcs,
+			"gemstone_pcs": mop_doc.gemstone_pcs
+		})
 		validate_gross_wt(row, precision, self.main_slip)
 
 	if loss_details:
@@ -79,6 +88,8 @@ def update_mop_balance(mop_name):
 	doc.on_update()
 	doc.update_children()
 	doc.db_update_all()
+
+	return doc
 
 
 def validate_manually_book_loss_details(self):
