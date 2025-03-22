@@ -125,7 +125,13 @@ def populate_child_table(self):
 				count = check_count(self, j["designer"])
 				if count == j["qty"]:
 					continue
-				self.append("final_sketch_approval_cmo", {"designer": j["designer"]})
+				self.append("final_sketch_approval_cmo", 
+								{
+									"designer": j["designer"],
+									"designer_name":frappe.db.get_value("Employee",j["designer"],"employee_name"),
+									"category":self.category
+								}
+							)
 			designer.append(j["designer"])
 
 def check_count(self, designer):
