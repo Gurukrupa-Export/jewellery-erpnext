@@ -140,7 +140,7 @@
    "options": "Department"
   },
   {
-   "fetch_from":"previous_mop.operation",
+   "fetch_from": "previous_mop.operation",
    "fieldname": "previous_operation",
    "fieldtype": "Link",
    "label": "Previous Operation",
@@ -342,7 +342,8 @@
    "fieldtype": "Link",
    "label": "Manufacturing Work Order",
    "options": "Manufacturing Work Order",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "manufacturer",
@@ -593,7 +594,8 @@
    "fetch_from": "manufacturing_work_order.manufacturing_order",
    "fieldname": "manufacturing_order",
    "fieldtype": "Data",
-   "label": "Parent Manufacturing Order"
+   "label": "Parent Manufacturing Order",
+   "search_index": 1
   },
   {
    "fieldname": "finish_good_serial_number",
@@ -832,7 +834,7 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2024-12-18 15:35:14.981692",
+ "modified": "2025-03-24 16:49:50.086812",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",
