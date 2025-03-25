@@ -44,6 +44,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontr
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
+	update_mop_balance,
 	validate_loss_qty,
 	validate_manually_book_loss_details,
 )
@@ -533,6 +534,8 @@ class EmployeeIR(Document):
 			se_doc.flags.ignore_permissions = True
 			se_doc.save()
 			se_doc.submit()
+
+			update_mop_balance(new_operation)
 
 			for pmo, details in pmo_data.items():
 				pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)

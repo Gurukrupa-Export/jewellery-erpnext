@@ -175,7 +175,7 @@ def get_receive_work_order_batch(self):
 				"batch_no",
 			)
 
-		if entry.batch_no not in batch_data[key]:
+		if entry.batch_no not in batch_data.get(key, []):
 			entry.batch_no = batch_data[key]
 
 

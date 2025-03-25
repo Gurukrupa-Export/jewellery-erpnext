@@ -166,6 +166,7 @@ class ManufacturingOperation(Document):
 
 		if self.is_new():
 			return
+
 		self.set_start_finish_time()
 		self.validate_time_logs()
 		self.validate_loss()
