@@ -215,3 +215,12 @@ def get_parcel_place(doctype, txt, searchfield, start, page_len, filters):
 
 	parcel_places = query.run()
 	return parcel_places
+
+@frappe.whitelist()
+def get_customer_mtel_purity(customer,metal_type,metal_touch):
+	metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{customer}' and metal_type = '{metal_type}' and metal_touch = '{metal_touch}'""",as_dict=1)
+	if not metal_purity:
+		frappe.throw(f"Customer {customer} has no metal purity according to metal type {metal_type} and metal touch {metal_touch}")
+	return metal_purity[0]['metal_purity']
+
+

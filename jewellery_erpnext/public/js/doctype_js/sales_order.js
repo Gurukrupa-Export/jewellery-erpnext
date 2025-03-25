@@ -233,6 +233,16 @@ frappe.ui.form.on("Sales Order Item", {
 			},
 			{
 				fieldtype: "Link",
+				fieldname: "customer_metal_purity",
+				label: __("Customer Metal Purity"),
+				reqd: 1,
+				read_only: 1,
+				columns: 1,
+				in_list_view: 1,
+				options: "Attribute Value",
+			},
+			{
+				fieldtype: "Link",
 				fieldname: "metal_colour",
 				label: __("Metal Colour"),
 				reqd: 1,
@@ -450,6 +460,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldtype: "Float",
 				fieldname: "quantity",
 				label: __("Weight In Cts"),
+				precision : 0,
 				reqd: 1,
 				columns: 1,
 				read_only: 1,
@@ -600,6 +611,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldtype: "Float",
 				fieldname: "quantity",
 				label: __("Weight In Cts"),
+				precision : 0,
 				columns: 1,
 				reqd: 1,
 				read_only: 1,
@@ -1415,70 +1427,142 @@ let set_edit_bom_details = (
 		metal_amount += d.amount;
 		making_amount += d.making_amount;
 		wastage_amount += d.wastage_amount;
-
-		dialog.fields_dict.metal_detail.df.data.push({
-			docname: d.name,
-			metal_type: d.metal_type,
-			metal_touch: d.metal_touch,
-			metal_purity: d.metal_purity,
-			metal_colour: d.metal_colour,
-			amount: d.amount,
-			rate: d.rate,
-			quantity: d.quantity,
-			wastage_rate: d.wastage_rate,
-			wastage_amount: d.wastage_amount,
-			making_rate: d.making_rate,
-			making_amount: d.making_amount,
+	
+		frappe.call({
+			method: "jewellery_erpnext.query.get_customer_mtel_purity",
+			args: {
+				customer: cur_frm.doc.customer,
+				metal_type: d.metal_type, 
+				metal_touch: d.metal_touch, 
+			},
+			callback: function (response) {
+				let metal_purity_value = "N/A";
+				if (response.message) {
+					metal_purity_value = response.message;
+				}
+	
+				dialog.fields_dict.metal_detail.df.data.push({
+					docname: d.name,
+					metal_type: d.metal_type,
+					metal_touch: d.metal_touch,
+					metal_purity: d.metal_purity,
+					is_customer_item: d.is_customer_item,
+					metal_colour: d.metal_colour,
+					amount: d.amount,
+					rate: d.rate,
+					quantity: d.quantity,
+					wastage_rate: d.wastage_rate,
+					wastage_amount: d.wastage_amount,
+					making_rate: d.making_rate,
+					making_amount: d.making_amount,
+					customer_metal_purity: metal_purity_value
+				});
+	
+				metal_data = dialog.fields_dict.metal_detail.df.data;
+				dialog.fields_dict.metal_detail.grid.refresh();
+			}
 		});
-		metal_data = dialog.fields_dict.metal_detail.df.data;
-		dialog.fields_dict.metal_detail.grid.refresh();
 	});
 
 	// diamond details table append
 	$.each(doc.diamond_detail, function (index, d) {
 		diamond_amount += d.diamond_rate_for_specified_quantity;
-
-		dialog.fields_dict.diamond_detail.df.data.push({
-			docname: d.name,
-			diamond_type: d.diamond_type,
-			stone_shape: d.stone_shape,
-			quality: d.quality,
-			pcs: d.pcs,
-			diamond_cut: d.diamond_cut,
-			sub_setting_type: d.sub_setting_type,
-			diamond_grade: d.diamond_grade,
-			diamond_sieve_size: d.diamond_sieve_size,
-			sieve_size_range: d.sieve_size_range,
-			size_in_mm: d.size_in_mm,
-			quantity: d.quantity,
-			weight_per_pcs: d.weight_per_pcs,
-			total_diamond_rate: d.total_diamond_rate,
-			diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+	
+		// Fetch the custom checkbox value from the customer
+		frappe.call({
+			method: "frappe.client.get_value",
+			args: {
+				doctype: "Customer",
+				filters: { name: cur_frm.doc.customer },
+				fieldname: "custom_consider_2_digit_for_diamond"
+			},
+			callback: function (response) {
+				let precision = 0;
+	
+				if (response.message && response.message.custom_consider_2_digit_for_diamond) {
+					precision = 2;  // Set precision to 2 if checkbox is true
+				}
+	
+				// Append data with dynamic precision
+				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+	
+				dialog.fields_dict.diamond_detail.df.data.push({
+					docname: d.name,
+					diamond_type: d.diamond_type,
+					stone_shape: d.stone_shape,
+					quality: d.quality,
+					pcs: d.pcs,
+					diamond_cut: d.diamond_cut,
+					sub_setting_type: d.sub_setting_type,
+					diamond_grade: d.diamond_grade,
+					diamond_sieve_size: d.diamond_sieve_size,
+					sieve_size_range: d.sieve_size_range,
+					size_in_mm: d.size_in_mm,
+					quantity: quantity_value,   //  Set formatted value
+					weight_per_pcs: d.weight_per_pcs,
+					total_diamond_rate: d.total_diamond_rate,
+					diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+					is_customer_item: d.is_customer_item,
+				});
+	
+				//  Dynamically set precision for the "quantity" field
+				let grid = dialog.fields_dict.diamond_detail.grid;
+				grid.update_docfield_property("quantity", "precision", precision);
+	
+				// Refresh the grid
+				diamond_data = dialog.fields_dict.diamond_detail.df.data;
+				grid.refresh();
+			}
 		});
-		diamond_data = dialog.fields_dict.diamond_detail.df.data;
-		dialog.fields_dict.diamond_detail.grid.refresh();
 	});
 
 	// gemstone details table append
 	$.each(doc.gemstone_detail, function (index, d) {
 		gemstone_amount += d.gemstone_rate_for_specified_quantity;
-
-		dialog.fields_dict.gemstone_detail.df.data.push({
-			docname: d.name,
-			gemstone_type: d.gemstone_type,
-			stone_shape: d.stone_shape,
-			sub_setting_type: d.sub_setting_type,
-			cut_or_cab: d.cut_or_cab,
-			pcs: d.pcs,
-			gemstone_quality: d.gemstone_quality,
-			gemstone_grade: d.gemstone_grade,
-			gemstone_size: d.gemstone_size,
-			quantity: d.quantity,
-			total_gemstone_rate: d.total_gemstone_rate,
-			gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
+	
+		// Fetch the custom checkbox value from the customer
+		frappe.call({
+			method: "frappe.client.get_value",
+			args: {
+				doctype: "Customer",
+				filters: { name: cur_frm.doc.customer },
+				fieldname: "custom_consider_2_digit_for_gemstone"
+			},
+			callback: function (response) {
+				let precision = 0;
+	
+				if (response.message && response.message.custom_consider_2_digit_for_gemstone) {
+					precision = 2;  
+				}
+	
+				// Append data with dynamic precision
+				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+	
+				dialog.fields_dict.gemstone_detail.df.data.push({
+					docname: d.name,
+					gemstone_type: d.gemstone_type,
+					stone_shape: d.stone_shape,
+					sub_setting_type: d.sub_setting_type,
+					cut_or_cab: d.cut_or_cab,
+					pcs: d.pcs,
+					gemstone_quality: d.gemstone_quality,
+					gemstone_grade: d.gemstone_grade,
+					gemstone_size: d.gemstone_size,
+					quantity: quantity_value,  
+					total_gemstone_rate: d.total_gemstone_rate,
+					gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
+					is_customer_item: d.is_customer_item,
+				});
+	
+				//  Dynamically set precision for the "quantity" field
+				let grid = dialog.fields_dict.gemstone_detail.grid;
+				grid.update_docfield_property("quantity", "precision", precision);
+	
+				// Refresh the grid
+				gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
+				grid.refresh();
+			}
 		});
-		gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
-		dialog.fields_dict.gemstone_detail.grid.refresh();
 	});
 
 	// finding details table append
