@@ -1422,47 +1422,55 @@ let set_edit_bom_details = (
 	var gemstone_amount = 0;
 	var other_material_amount = 0;
 
-	// metal details table append
-	$.each(doc.metal_detail, function (index, d) {
-		metal_amount += d.amount;
-		making_amount += d.making_amount;
-		wastage_amount += d.wastage_amount;
+	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
+    
+		// Iterate through metal_detail
+		$.each(doc.metal_detail, function (index, d) {
+			metal_amount += d.amount;
+			making_amount += d.making_amount;
+			wastage_amount += d.wastage_amount;
 	
-		frappe.call({
-			method: "jewellery_erpnext.query.get_customer_mtel_purity",
-			args: {
-				customer: cur_frm.doc.customer,
-				metal_type: d.metal_type, 
-				metal_touch: d.metal_touch, 
-			},
-			callback: function (response) {
-				let metal_purity_value = "N/A";
-				if (response.message) {
-					metal_purity_value = response.message;
-				}
-	
-				dialog.fields_dict.metal_detail.df.data.push({
-					docname: d.name,
+			frappe.call({
+				method: "jewellery_erpnext.query.get_customer_mtel_purity",
+				args: {
+					customer: cur_frm.doc.customer,
 					metal_type: d.metal_type,
 					metal_touch: d.metal_touch,
-					metal_purity: d.metal_purity,
-					is_customer_item: d.is_customer_item,
-					metal_colour: d.metal_colour,
-					amount: d.amount,
-					rate: d.rate,
-					quantity: d.quantity,
-					wastage_rate: d.wastage_rate,
-					wastage_amount: d.wastage_amount,
-					making_rate: d.making_rate,
-					making_amount: d.making_amount,
-					customer_metal_purity: metal_purity_value
-				});
+				},
+				callback: function (response) {
+					let metal_purity_value = response.message || "N/A";
 	
-				metal_data = dialog.fields_dict.metal_detail.df.data;
-				dialog.fields_dict.metal_detail.grid.refresh();
-			}
+					// ✅ New rate calculation
+					let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
+					let metal_purity = flt(metal_purity_value || 0);
+					let rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+	
+					// Append data to dialog
+					dialog.fields_dict.metal_detail.df.data.push({
+						docname: d.name,
+						metal_type: d.metal_type,
+						metal_touch: d.metal_touch,
+						metal_purity: d.metal_purity,
+						is_customer_item: d.is_customer_item,
+						metal_colour: d.metal_colour,
+						amount: d.amount,
+						rate: rate,  // ✅ Updated rate calculation
+						quantity: d.quantity,
+						wastage_rate: d.wastage_rate,
+						wastage_amount: d.wastage_amount,
+						making_rate: d.making_rate,
+						making_amount: d.making_amount,
+						customer_metal_purity: metal_purity_value
+					});
+	
+					metal_data = dialog.fields_dict.metal_detail.df.data;
+					dialog.fields_dict.metal_detail.grid.refresh();
+	
+				}
+			});
 		});
 	});
+	
 
 	// diamond details table append
 	$.each(doc.diamond_detail, function (index, d) {
