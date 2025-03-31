@@ -16,7 +16,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
 	get_summary_data,
-	update_gross_wt_from_mop,
+	validate_and_update_gross_wt_from_mop,
 	valid_reparing_or_next_operation,
 	validate_mwo,
 	validate_tolerance,
@@ -49,7 +49,7 @@ class DepartmentIR(Document):
 				{"set_warehouse": warehouse, "workflow_state": ["in", ["In Progress", "Send for Approval"]]},
 			):
 				frappe.throw(_("Stock Reconciliation is under process"))
-			mwo_list = update_gross_wt_from_mop(self)
+			mwo_list = validate_and_update_gross_wt_from_mop(self)
 			valid_reparing_or_next_operation(self, mwo_list)
 
 		validate_mwo(self)

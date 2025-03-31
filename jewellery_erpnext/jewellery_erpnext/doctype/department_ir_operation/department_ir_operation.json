@@ -44,7 +44,8 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Manufacturing Work Order",
-   "options": "Manufacturing Work Order"
+   "options": "Manufacturing Work Order",
+   "search_index": 1
   },
   {
    "fetch_from": "manufacturing_work_order.manufacturing_order",
@@ -103,7 +104,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-07-23 16:50:04.199511",
+ "modified": "2025-03-28 15:09:04.009977",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department IR Operation",
