@@ -1473,10 +1473,11 @@ let set_edit_bom_details = (
 	
 
 	// diamond details table append
+	let total_sum_diamond = 0; 
+	let count = 0;  // To track the number of completed calls
+	let total_calls = doc.diamond_detail.length;  // Total number of iterations
+
 	$.each(doc.diamond_detail, function (index, d) {
-		diamond_amount += d.diamond_rate_for_specified_quantity;
-	
-		// Fetch the custom checkbox value from the customer
 		frappe.call({
 			method: "frappe.client.get_value",
 			args: {
@@ -1486,14 +1487,16 @@ let set_edit_bom_details = (
 			},
 			callback: function (response) {
 				let precision = 0;
-	
+
 				if (response.message && response.message.custom_consider_2_digit_for_diamond) {
-					precision = 2;  // Set precision to 2 if checkbox is true
+					precision = 2;  
 				}
-	
-				// Append data with dynamic precision
+
 				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
-	
+				let total_diamond_rate_qty = (parseFloat(quantity_value) * parseFloat(d.total_diamond_rate)).toFixed(2);
+
+				total_sum_diamond += parseFloat(total_diamond_rate_qty);
+				
 				dialog.fields_dict.diamond_detail.df.data.push({
 					docname: d.name,
 					diamond_type: d.diamond_type,
@@ -1506,29 +1509,34 @@ let set_edit_bom_details = (
 					diamond_sieve_size: d.diamond_sieve_size,
 					sieve_size_range: d.sieve_size_range,
 					size_in_mm: d.size_in_mm,
-					quantity: quantity_value,   //  Set formatted value
+					quantity: quantity_value,   // Set formatted quantity
 					weight_per_pcs: d.weight_per_pcs,
 					total_diamond_rate: d.total_diamond_rate,
 					diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
 					is_customer_item: d.is_customer_item,
+					total_diamond_rate_qty: total_diamond_rate_qty  
 				});
-	
-				//  Dynamically set precision for the "quantity" field
-				let grid = dialog.fields_dict.diamond_detail.grid;
-				grid.update_docfield_property("quantity", "precision", precision);
-	
-				// Refresh the grid
-				diamond_data = dialog.fields_dict.diamond_detail.df.data;
-				grid.refresh();
+
+				count++;
+
+				// Set diamond amount only after all calls are done
+				if (count === total_calls) {
+					dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
+					let grid = dialog.fields_dict.diamond_detail.grid;
+					grid.update_docfield_property("quantity", "precision", 2);
+					grid.update_docfield_property("total_diamond_rate_qty", "precision", 2);  
+					grid.refresh();
+					console.log("Final Diamond Amount:", total_sum_diamond.toFixed(2));
+				}
 			}
 		});
 	});
+
 
 	// gemstone details table append
 	$.each(doc.gemstone_detail, function (index, d) {
 		gemstone_amount += d.gemstone_rate_for_specified_quantity;
 	
-		// Fetch the custom checkbox value from the customer
 		frappe.call({
 			method: "frappe.client.get_value",
 			args: {
@@ -1562,7 +1570,6 @@ let set_edit_bom_details = (
 					is_customer_item: d.is_customer_item,
 				});
 	
-				//  Dynamically set precision for the "quantity" field
 				let grid = dialog.fields_dict.gemstone_detail.grid;
 				grid.update_docfield_property("quantity", "precision", precision);
 	
@@ -1619,21 +1626,49 @@ let set_edit_bom_details = (
 	// dialog.set_value("freight_amount", doc.freight_amount)
 	// dialog.set_value("sale_amount", doc.sale_amount)
 
-	dialog.set_value("metal_amount", metal_amount);
-	dialog.set_value("making_amount", making_amount);
-	dialog.set_value("wastage_amount", wastage_amount);
-	dialog.set_value("gemstone_amount", gemstone_amount);
-	dialog.set_value("diamond_amount", diamond_amount);
-	dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
-	dialog.set_value("finding_weight", doc.finding_weight_ || 0);
-	dialog.set_value("other_weight", doc.other_weight || 0);
-	dialog.set_value("diamond_weight", doc.diamond_weight || 0);
-	dialog.set_value("gemstone_weight", doc.gemstone_weight || 0);
-	if (dialog.get_value("sale_key"))
-		dialog.set_value(
-			"saleAmount",
-			dialog.get_value("sale_amount") / dialog.get_value("sale_key")
-		);
+	frappe.call({
+		method: "frappe.client.get_value",
+		args: {
+			doctype: "Customer",
+			filters: { name: cur_frm.doc.customer },
+			fieldname: "custom_consider_2_digit_for_diamond"
+		},
+		callback: function (response) {
+			let precision = 0;
+	
+			if (response.message && response.message.custom_consider_2_digit_for_diamond) {
+				precision = 2;  
+			}
+	
+			dialog.set_df_property("diamond_weight", "precision", precision);
+			dialog.set_df_property("gemstone_weight", "precision", precision);
+	
+			// Set all fields from BOM
+			dialog.set_value("gross_weight", doc.gross_weight || 0);
+			dialog.set_value("metal_amount", metal_amount || 0);
+			dialog.set_value("making_amount", making_amount || 0);
+			dialog.set_value("wastage_amount", wastage_amount || 0);
+			dialog.set_value("gemstone_amount", gemstone_amount || 0);
+	
+			// Set diamond_weight with dynamic precision
+			let diamond_weight = doc.diamond_weight || 0;
+			dialog.set_value("diamond_weight", parseFloat(diamond_weight).toFixed(precision));
+	
+			// Set remaining fields
+			dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
+			dialog.set_value("finding_weight", doc.finding_weight_ || 0);
+			dialog.set_value("other_weight", doc.other_weight || 0);
+			let gemstone_weight = doc.gemstone_weight || 0;
+			dialog.set_value("gemstone_weight", parseFloat(gemstone_weight).toFixed(precision));
+	
+			// Sale Amount calculation
+			if (dialog.get_value("sale_key")) {
+				let sale_amount = dialog.get_value("sale_amount") || 0;
+				let sale_key = dialog.get_value("sale_key") || 1;
+				dialog.set_value("saleAmount", (sale_amount / sale_key).toFixed(2));
+			}
+		}
+	});
 };
 
 function scan_api_call(input, callback) {
