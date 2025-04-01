@@ -934,7 +934,7 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc.employee_source_table = []
 	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
-	new_mop_doc.save()
+	new_mop_doc.insert()
 	# target.prev_gross_wt = source.received_gross_wt or source.gross_wt or source.prev_gross_wt
 	# target.previous_mop = source.name
 

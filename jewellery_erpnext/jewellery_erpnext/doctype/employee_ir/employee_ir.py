@@ -904,7 +904,7 @@ def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
 	new_mop_doc.employee_source_table = []
 	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
-	new_mop_doc.save()
+	new_mop_doc.insert()
 	# def set_missing_value(source, target):
 	# 	target.previous_operation = source.operation
 	# 	target.prev_gross_wt = (
