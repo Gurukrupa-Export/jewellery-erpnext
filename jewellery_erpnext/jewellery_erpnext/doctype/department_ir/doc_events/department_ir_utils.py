@@ -2,6 +2,9 @@ import frappe
 from frappe import _
 from frappe.query_builder import DocType
 from frappe.utils import flt
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
+	update_mop_balance
+)
 
 
 def valid_reparing_or_next_operation(self, mwo_list):
@@ -83,15 +86,17 @@ def get_summary_data(self):
 	return data
 
 
-def update_gross_wt_from_mop(self):
+def validate_and_update_gross_wt_from_mop(self):
 	if not self.department_ir_operation:
 		return
 
+	validate_duplicate(self)
 	for row in self.department_ir_operation:
 		mwo_list = []
 		validate_allowed_operation(row.manufacturing_work_order, self.next_department)
-		validate_duplicate(self.name, self.type, row.manufacturing_operation, row.idx)
-		save_mop(row.manufacturing_operation)
+		doc = update_mop_balance(row.manufacturing_operation)
+		update_previous_mop_data(doc)
+
 		mop_data = frappe.db.get_value(
 			"Manufacturing Operation",
 			row.manufacturing_operation,
@@ -148,10 +153,7 @@ def update_gross_wt_from_mop(self):
 	return mwo_list
 
 
-def save_mop(mop_name):
-	doc = frappe.get_doc("Manufacturing Operation", mop_name)
-	doc.save()
-
+def update_previous_mop_data(doc):
 	previous_data = frappe.db.get_value(
 		"Manufacturing Operation", doc.previous_mop, ["received_gross_wt", "received_net_wt"], as_dict=1
 	)
@@ -180,26 +182,26 @@ def validate_allowed_operation(manufacturing_work_order, next_department):
 		frappe.throw(_("Customer does not required this operation"))
 
 
-def validate_duplicate(name, d_type, manufacturing_operation, idx):
+def validate_duplicate(self):
+	mop_list = [row.manufacturing_operation for row in self.department_ir_operation]
 	DIP = frappe.qb.DocType("Department IR Operation")
 	DI = frappe.qb.DocType("Department IR")
-	existing = (
+
+	duplicates = (
 		frappe.qb.from_(DIP)
 		.left_join(DI)
 		.on(DIP.parent == DI.name)
-		.select(DI.name)
+		.select(DIP.manufacturing_operation)
 		.where(
 			(DI.docstatus != 2)
-			& (DI.name != name)
-			& (DI.type == d_type)
-			& (DIP.manufacturing_operation == manufacturing_operation)
+			& (DI.name != self.name)
+			& (DI.type == self.type)
+			& (DIP.manufacturing_operation.isin(mop_list))
 		)
-	).run()
+	).run(pluck="manufacturing_operation")
 
-	if existing:
-		frappe.throw(
-			_("Row #{0}: Found duplicate entry in Department IR: {1}").format(idx, existing[0][0])
-		)
+	if duplicates:
+		frappe.throw(title=_("Department IR exists for MOP"), msg="{0}".format(", ".join(duplicates)))
 
 
 def validate_tolerance(doc, mop_data):

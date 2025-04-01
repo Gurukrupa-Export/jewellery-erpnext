@@ -120,7 +120,8 @@ def create_repack_entry(self):
 						{
 							"item_code": row.item_code,
 							"qty": msl_item_gw,
-							"s_warehouse": t_warehouse,
+							# "s_warehouse": t_warehouse,
+							"s_warehouse": s_warehouse,
 							"t_warehouse": None,
 							"Inventory_type": row.inventory_type,
 							"serial_and_batch_bundle": None,

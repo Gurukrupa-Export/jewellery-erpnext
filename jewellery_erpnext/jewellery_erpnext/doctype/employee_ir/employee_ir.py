@@ -22,7 +22,7 @@ from frappe.utils import (
 )
 
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
-	update_stock_entry_dimensions,
+	update_stock_entry_dimensions, batch_update_stock_entry_dimensions
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.emp_ir_receive import (
 	get_stock_data,
@@ -44,6 +44,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontr
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
+	update_mop_balance,
 	validate_loss_qty,
 	validate_manually_book_loss_details,
 )
@@ -59,14 +60,15 @@ class EmployeeIR(Document):
 		if not self.main_slip or self.type == "Issue":
 			return
 
-		existing_mwo = frappe.db.get_all(
+		existing_mwo = set(frappe.db.get_all(
 			"Main Slip Operation", {"parent": self.main_slip}, pluck="manufacturing_work_order"
-		)
+		))
 
 		for row in self.employee_ir_operations:
 			if row.manufacturing_work_order not in existing_mwo:
 				frappe.throw(
-					_("Manufacturing Work Order {0} not available in Main Slip").format(
+					title=_("Invalid Manufacturing Work Order"),
+					msg=_("Manufacturing Work Order {0} not available in Main Slip").format(
 						row.manufacturing_work_order
 					)
 				)
@@ -87,7 +89,7 @@ class EmployeeIR(Document):
 		validate_qc(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
-			self.on_submit_issue()
+			self.on_submit_issue_new()
 			if self.subcontracting == "Yes":
 				self.create_subcontracting_order()
 		else:
@@ -106,6 +108,7 @@ class EmployeeIR(Document):
 			{"set_warehouse": warehouse, "workflow_state": ["in", ["In Progress", "Send for Approval"]]},
 		):
 			frappe.throw(_("Stock Reconciliation is under process"))
+
 		validate_duplication_and_gr_wt(self)
 
 	def validate(self):
@@ -161,14 +164,63 @@ class EmployeeIR(Document):
 			if not cancel:
 				update_stock_entry_dimensions(self, row, row.manufacturing_operation, True)
 				mop_data.update({row.manufacturing_work_order: row.manufacturing_operation})
+
 			values["start_time"] = frappe.utils.now()
-			# doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
 			add_time_log(row.manufacturing_operation, values)
 			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
 
 		create_single_se_entry(self, mop_data)
 
 		# for row in self.employee_ir_operations:
+
+
+	def on_submit_issue_new(self, cancel=False):
+		# Set initial values based on cancel flag
+		employee = None if cancel else self.employee
+		operation = None if cancel else self.operation
+		status = "Not Started" if cancel else "WIP"
+		values = {"operation": operation, "status": status}
+		if self.subcontracting == "Yes":
+			values["for_subcontracting"] = 1
+			values["subcontractor"] = None if cancel else self.subcontractor
+		else:
+			values["employee"] = employee
+
+		mop_data = {}
+		mops_to_update = {}
+		time_log_args = []
+		stock_entry_data = []
+		start_time = frappe.utils.now() if not cancel else None
+
+		for row in self.employee_ir_operations:
+			values.update({
+				"operation": operation,
+				"rpt_wt_issue": row.rpt_wt_issue,
+				"start_time": start_time
+			})
+			mops_to_update[row.manufacturing_operation] = values
+			if not cancel:
+				stock_entry_data.append((row.manufacturing_work_order, row.manufacturing_operation))
+				mop_data[row.manufacturing_work_order] = row.manufacturing_operation
+				time_log_args.append((row.manufacturing_operation, values))
+
+		if mops_to_update:
+			frappe.db.bulk_update(
+				"Manufacturing Operation",
+				mops_to_update,
+				chunk_size=100,
+				update_modified=True
+			)
+
+		# Batch update stock entries
+		if stock_entry_data and not cancel:
+			batch_update_stock_entry_dimensions(self, stock_entry_data, employee, True)
+
+		# Batch add time logs
+		if time_log_args and not cancel:
+			batch_add_time_logs(time_log_args)
+
+		create_single_se_entry(self, mop_data)
 
 	# for receive
 	def on_submit_receive(self, cancel=False):
@@ -337,6 +389,7 @@ class EmployeeIR(Document):
 		# Process Loss
 		if loss_rows:
 			pl_se_doc = frappe.new_doc("Stock Entry")
+			pl_se_doc.company = self.company
 			pl_se_doc.stock_entry_type = "Process Loss"
 			pl_se_doc.purpose = "Repack"
 			pl_se_doc.department = self.department
@@ -353,6 +406,7 @@ class EmployeeIR(Document):
 
 		if repack_raws:
 			re_se_doc = frappe.new_doc("Stock Entry")
+			re_se_doc.company = self.company
 			re_se_doc.stock_entry_type = "Manufacture"
 			re_se_doc.purpose = "Manufacture"
 			re_se_doc.department = self.department
@@ -379,6 +433,7 @@ class EmployeeIR(Document):
 
 		if main_slip_rows:
 			mse_doc = frappe.new_doc("Stock Entry")
+			mse_doc.company = self.company
 			mse_doc.stock_entry_type = "Material Transfer (Main Slip)"
 			mse_doc.purpose = "Material Transfer"
 			mse_doc.department = self.department
@@ -414,6 +469,7 @@ class EmployeeIR(Document):
 				hour_rate_labour = get_hourly_rate(self.employee)
 
 			se_doc = frappe.new_doc("Stock Entry")
+			se_doc.company = self.company
 			se_doc.stock_entry_type = "Material Transfer to Department"
 			se_doc.outgoing_stock_entry = None
 			se_doc.set_posting_time = 1
@@ -478,6 +534,8 @@ class EmployeeIR(Document):
 			se_doc.flags.ignore_permissions = True
 			se_doc.save()
 			se_doc.submit()
+
+			update_mop_balance(new_operation)
 
 			for pmo, details in pmo_data.items():
 				pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
@@ -1707,6 +1765,60 @@ def add_time_log(doc, args):
 	doc.save()
 
 
+def batch_add_time_logs(mop_args_list):
+	"""
+	Batch update time logs and Manufacturing Operation fields via doc objects.
+	mop_args_list: List of (mop_name, args) tuples.
+	"""
+	# Batch fetch minimal data for status check
+	mop_names = [mop[0] for mop in mop_args_list]
+	mop_docs = frappe.get_all(
+		"Manufacturing Operation",
+		filters={"name": ["in", mop_names]},
+		fields=["name", "status"]
+	)
+	mop_dict = {d.name: d for d in mop_docs}
+	full_docs = {}
+
+	for mop_name, args in mop_args_list:
+		doc_data = mop_dict.get(mop_name)
+		if not doc_data:
+			continue
+
+		doc = full_docs.get(mop_name) or frappe.get_doc("Manufacturing Operation", mop_name)
+		full_docs[mop_name] = doc
+
+		new_status = args.get("status")
+		if new_status and doc.status != new_status:
+			doc.status = new_status
+
+		last_row = doc.time_logs[-1] if doc.time_logs else None
+		doc.reset_timer_value(args)
+
+		if args.get("complete_time") and last_row:
+			for row in doc.time_logs:
+				if not row.to_time:
+					row.to_time = get_datetime(args.get("complete_time"))
+					break
+
+		elif args.get("start_time"):
+			employee = args.get("employee")
+
+			new_time_log = frappe._dict({
+				"from_time": get_datetime(args.get("start_time")),
+				"employee": employee
+			})
+			doc.add_start_time_log(new_time_log)
+
+		if doc.status in ["QC Pending", "On Hold"] and last_row and last_row.to_time and last_row.from_time:
+			doc.current_time = time_diff_in_seconds(last_row.to_time, last_row.from_time)
+
+	for doc in full_docs.values():
+		doc.flags.ignore_validation = True
+		doc.flags.ignore_permissions = True
+		doc.save()
+
+
 def process_loss_entry(
 	doc, manufacturing_operation, loss_details, manual_loss_items, employee_wh, department_wh
 ):
@@ -1867,6 +1979,7 @@ def create_single_se_entry(doc, mop_data):
 
 	if rows_to_append:
 		se_doc = frappe.new_doc("Stock Entry")
+		se_doc.company = doc.company
 		se_doc.inventory_type = None
 		se_doc.department = doc.department
 		se_doc.to_department = doc.department
@@ -1884,7 +1997,7 @@ def create_single_se_entry(doc, mop_data):
 			else "Material Transfer to Employee"
 		)
 
-		for row in rows_to_append:
+		for idx, row in enumerate(rows_to_append):
 			se_doc.stock_entry_type = stock_entry_type
 			if doc.subcontracting == "Yes":
 				row.to_subcontractor = doc.subcontractor

@@ -290,7 +290,8 @@
    "fieldname": "manufacturing_order",
    "fieldtype": "Link",
    "label": "Parent Manufacturing Order",
-   "options": "Parent Manufacturing Order"
+   "options": "Parent Manufacturing Order",
+   "search_index": 1
   },
   {
    "fetch_from": "company.abbr",
@@ -626,7 +627,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2024-12-12 15:11:22.074635",
+ "modified": "2025-03-24 17:01:32.586845",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

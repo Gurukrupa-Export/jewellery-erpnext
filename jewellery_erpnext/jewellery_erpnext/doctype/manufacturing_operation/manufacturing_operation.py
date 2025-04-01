@@ -2,7 +2,6 @@
 # For license information, please see license.txt
 
 import json
-
 import frappe
 from frappe import _
 from frappe.model.document import Document
@@ -167,6 +166,7 @@ class ManufacturingOperation(Document):
 
 		if self.is_new():
 			return
+
 		self.set_start_finish_time()
 		self.validate_time_logs()
 		self.validate_loss()
@@ -831,10 +831,10 @@ class ManufacturingOperation(Document):
 			{"data": data, "total_qty": total_qty},
 		)
 
-	def set_wop_weight_details(doc):
+	def set_wop_weight_details(self):
 		get_wop_weight = frappe.db.get_value(
 			"Manufacturing Operation",
-			{"manufacturing_work_order": doc.manufacturing_work_order, "status": ["!=", "Not Started"]},
+			{"manufacturing_work_order": self.manufacturing_work_order, "status": ["!=", "Not Started"]},
 			[
 				"gross_wt",
 				"net_wt",
@@ -857,7 +857,7 @@ class ManufacturingOperation(Document):
 		else:
 			frappe.db.set_value(
 				"Manufacturing Work Order",
-				doc.manufacturing_work_order,
+				self.manufacturing_work_order,
 				{
 					"gross_wt": get_wop_weight.gross_wt,
 					"net_wt": get_wop_weight.net_wt,
@@ -876,7 +876,7 @@ class ManufacturingOperation(Document):
 			)
 			# frappe.throw(str(get_wop_weight))
 
-	def set_pmo_weight_details(doc):
+	def set_pmo_weight_details(self):
 		ManufacturingWorkOrder = frappe.qb.DocType("Manufacturing Work Order")
 
 		get_mwo_weight = (
@@ -896,7 +896,7 @@ class ManufacturingOperation(Document):
 				Sum(ManufacturingWorkOrder.gemstone_pcs).as_("gemstone_pcs"),
 			)
 			.where(
-				(ManufacturingWorkOrder.manufacturing_order == doc.manufacturing_order)
+				(ManufacturingWorkOrder.manufacturing_order == self.manufacturing_order)
 				& (ManufacturingWorkOrder.docstatus == 1)
 			)
 		).run(as_dict=True)
@@ -907,7 +907,7 @@ class ManufacturingOperation(Document):
 			# Have to Check this
 			frappe.db.set_value(
 				"Parent Manufacturing Order",
-				doc.manufacturing_order,
+				self.manufacturing_order,
 				{
 					"gross_weight": get_mwo_weight[0].gross_wt or 0,
 					"net_weight": get_mwo_weight[0].net_wt or 0,
@@ -920,36 +920,33 @@ class ManufacturingOperation(Document):
 			)
 
 			# To Set Product WT on PMO Tolerance METAL/Diamond/Gemstone Table.
-			docname = doc.manufacturing_order
-			for row in frappe.get_all(
-				"Metal Product Tolerance", filters={"parent": docname}, fields=["name"]
-			):
-				if row:
-					row_doc = frappe.get_doc("Metal Product Tolerance", row.name)
-					frappe.db.set_value(
-						"Metal Product Tolerance",
-						row_doc.name,
-						"product_wt",
-						get_mwo_weight[0].gross_wt or get_mwo_weight[0].net_wt or 0,
-					)
+			docname = self.manufacturing_order
+			metal_product_tolerance_list = frappe.db.get_all(
+				"Metal Product Tolerance", {"parent": docname}, pluck="name"
+			)
+			for mpt_name in metal_product_tolerance_list:
+				frappe.db.set_value(
+					"Metal Product Tolerance",
+					mpt_name,
+					"product_wt",
+					get_mwo_weight[0].gross_wt or get_mwo_weight[0].net_wt or 0,
+				)
 
-			for row in frappe.get_all(
-				"Diamond Product Tolerance", filters={"parent": docname}, fields=["name"]
-			):
-				if row:
-					row_doc = frappe.get_doc("Diamond Product Tolerance", row.name)
-					frappe.db.set_value(
-						"Diamond Product Tolerance", row_doc.name, "product_wt", get_mwo_weight[0].diamond_wt or 0
-					)
+			diamond_product_tolerance_list = frappe.db.get_all(
+				"Diamond Product Tolerance", {"parent": docname}, pluck="name"
+			)
+			for dpt_name in diamond_product_tolerance_list:
+				frappe.db.set_value(
+					"Diamond Product Tolerance", dpt_name, "product_wt", get_mwo_weight[0].diamond_wt or 0
+				)
 
-			for row in frappe.get_all(
-				"Gemstone Product Tolerance", filters={"parent": docname}, fields=["name"]
-			):
-				if row:
-					row_doc = frappe.get_doc("Gemstone Product Tolerance", row.name)
-					frappe.db.set_value(
-						"Gemstone Product Tolerance", row_doc.name, "product_wt", get_mwo_weight[0].gemstone_wt or 0
-					)
+			gemstone_product_tolerance_list = frappe.db.get_all(
+				"Gemstone Product Tolerance", {"parent": docname}, pluck="name"
+			)
+			for gpt_name in gemstone_product_tolerance_list:
+				frappe.db.set_value(
+					"Gemstone Product Tolerance", gpt_name, "product_wt", get_mwo_weight[0].gemstone_wt or 0
+				)
 
 	def set_mop_balance_table(self):
 		self.mop_balance_table = []

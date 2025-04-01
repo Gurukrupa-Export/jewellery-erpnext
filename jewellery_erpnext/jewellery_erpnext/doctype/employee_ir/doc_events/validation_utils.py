@@ -4,48 +4,59 @@ from frappe.utils import cint, flt
 
 
 def validate_duplication_and_gr_wt(self):
-	if (
-		self.main_slip and frappe.db.get_value("Main Slip", self.main_slip, "workflow_state") != "In Use"
-	):
+	if self.main_slip and frappe.db.get_value("Main Slip", self.main_slip, "workflow_state") != "In Use":
 		self.main_slip = None
-	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
-	existing_mop = []
-	loss_details = {}
-	is_finding = frappe.db.get_value(
-			"Department Operation", self.operation, "allow_finding_mwo"
-		)
-	for row in self.employee_ir_operations:
-		validate_mwo(self,row,is_finding)
-		loss_details = get_loss_details(row)
-		if row.manufacturing_operation in existing_mop:
-			frappe.throw(
-				_("{0} appeared multiple times in Employee IR").format(row.manufacturing_operation)
-			)
-		existing_mop.append(row.manufacturing_operation)
-		EIR = frappe.qb.DocType("Employee IR")
-		EOP = frappe.qb.DocType("Employee IR Operation")
-		exists = (
-			frappe.qb.from_(EIR)
-			.left_join(EOP)
-			.on(EOP.parent == EIR.name)
-			.select(EIR.name)
-			.where(
-				(EIR.name != self.name)
-				& (EIR.type == self.type)
-				& (EOP.manufacturing_operation == row.manufacturing_operation)
-				& (EIR.docstatus != 2)
-			)
-		).run(as_dict=1)
-		if exists:
-			frappe.throw(_("Employee IR exists for MOP {0}").format(row.manufacturing_operation))
 
-		save_mop(row.manufacturing_operation)
+	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
+	loss_details = {}
+	existing_mop = set()
+	is_finding = frappe.db.get_value("Department Operation", self.operation, "allow_finding_mwo")
+
+	# Batch database check
+	mop_list = [row.manufacturing_operation for row in self.employee_ir_operations]
+	EIR = frappe.qb.DocType("Employee IR")
+	EOP = frappe.qb.DocType("Employee IR Operation")
+	duplicates = (
+		frappe.qb.from_(EIR)
+		.left_join(EOP)
+		.on(EOP.parent == EIR.name)
+		.select(EOP.manufacturing_operation)
+		.where(
+			(EIR.name != self.name)
+			& (EIR.type == self.type)
+			& (EOP.manufacturing_operation.isin(mop_list))
+			& (EIR.docstatus != 2)
+		)
+	).run(pluck="manufacturing_operation")
+
+	if duplicates:
+		frappe.throw(title=_("Employee IR exists for MOP"), msg="{0}".format(", ".join(duplicates)))
+
+	# Process child table
+	for row in self.employee_ir_operations:
+		validate_mwo(self, row, is_finding)
+		loss_details = get_loss_details(row)
+
+		if row.manufacturing_operation in existing_mop:
+			frappe.throw(_("{0} appeared multiple times in Employee IR").format(row.manufacturing_operation))
+
+		existing_mop.add(row.manufacturing_operation)
+		mop_doc = update_mop_balance(row.manufacturing_operation)
+		row.update({
+			"gross_wt": mop_doc.gross_wt,
+			"net_wt": mop_doc.net_wt,
+			"finding_wt": mop_doc.finding_wt,
+			"diamond_wt": mop_doc.diamond_wt,
+			"gemstone_wt": mop_doc.gemstone_wt,
+			"diamond_pcs": mop_doc.diamond_pcs,
+			"gemstone_pcs": mop_doc.gemstone_pcs
+		})
 		validate_gross_wt(row, precision, self.main_slip)
 
 	if loss_details:
 		return loss_details
 
-def validate_mwo(self,row,is_finding):
+def validate_mwo(self, row, is_finding):
 	if self.type != "Issue":
 		return
 
@@ -53,7 +64,7 @@ def validate_mwo(self,row,is_finding):
 	if is_finding_mwo:
 		if not is_finding:
 			frappe.throw(
-				_("Finding MWO {0} not allowd to transfer in {1} Department Operation.").format(
+				_("Finding MWO <b>{0}</b> not allowed to transfer in <b>{1}</b> Department Operation.").format(
 					row.manufacturing_work_order, self.operation
 				)
 			)
@@ -71,9 +82,14 @@ def validate_gross_wt(row, precision, main_slip=None):
 			)
 
 
-def save_mop(mop_name):
+def update_mop_balance(mop_name):
 	doc = frappe.get_doc("Manufacturing Operation", mop_name)
-	doc.save()
+	doc.validate()
+	doc.on_update()
+	doc.update_children()
+	doc.db_update_all()
+
+	return doc
 
 
 def validate_manually_book_loss_details(self):

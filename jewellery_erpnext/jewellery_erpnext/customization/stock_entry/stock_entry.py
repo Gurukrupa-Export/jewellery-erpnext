@@ -16,6 +16,8 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	set_gross_wt,
 	validate_inventory_dimention,
 	validate_warehouse,
+	get_incoming_rate,
+	clear_batch_ledger_cache
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
@@ -34,6 +36,7 @@ def before_validate(self, method):
 
 def on_submit(self, method):
 	validate_inventory_dimention(self)
+	# clear_batch_ledger_cache(self)
 
 
 class CustomStockEntry(StockEntry):
@@ -155,3 +158,35 @@ class CustomStockEntry(StockEntry):
 
 	def get_bom_scrap_material(self, qty):
 		custom_get_bom_scrap_material(self, qty)
+
+	def set_rate_for_outgoing_items(self, reset_outgoing_rate=True, raise_error_if_no_rate=True):
+		outgoing_items_cost = 0.0
+		outgoing_items = [d for d in self.get("items") if d.s_warehouse]
+		if not outgoing_items:
+			return outgoing_items_cost
+
+		args_with_key = []
+		for d in outgoing_items:
+			args = self.get_args_for_incoming_rate(d)
+			key = (
+				args.get("item_code"),
+				args.get("warehouse"),
+				args.get("batch_no", ""),
+				args.get("voucher_detail_no") or args.get("voucher_no")
+			)
+			args_with_key.append((key, args, d))
+
+		if reset_outgoing_rate:
+			rates = get_incoming_rate([args for _, args, _ in args_with_key], raise_error_if_no_rate)
+
+		for key, _, d in args_with_key:
+			if reset_outgoing_rate:
+				rate = rates.get(key, 0.0)
+				if rate >= 0:
+					d.basic_rate = rate
+
+			d.basic_amount = flt(flt(d.transfer_qty) * flt(d.basic_rate), d.precision("basic_amount"))
+			if not d.t_warehouse:
+				outgoing_items_cost += flt(d.basic_amount)
+
+		return outgoing_items_cost
