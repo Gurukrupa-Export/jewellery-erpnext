@@ -921,6 +921,7 @@ def fetch_and_update(doc, row, manufacturing_operation):
 def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 
 	new_mop_doc = frappe.copy_doc(frappe.get_doc("Manufacturing Operation", mop))
+	new_mop_doc.name = None
 	new_mop_doc.department_issue_id = ir_name
 	new_mop_doc.department_ir_status = "In-Transit"
 	new_mop_doc.department_receive_id = None
@@ -933,7 +934,7 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc.employee_source_table = []
 	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
-	new_mop_doc.save()
+	new_mop_doc.insert()
 	# target.prev_gross_wt = source.received_gross_wt or source.gross_wt or source.prev_gross_wt
 	# target.previous_mop = source.name
 
