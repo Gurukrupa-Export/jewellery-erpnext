@@ -69,7 +69,7 @@ class DepartmentIR(Document):
 
 	def on_submit(self):
 		if self.type == "Issue":
-			self.on_submit_issue()
+			self.on_submit_issue_new()
 		else:
 			self.on_submit_receive()
 
@@ -158,7 +158,7 @@ class DepartmentIR(Document):
 			for row in se_item_list:
 				stock_doc.append("items", row)
 			stock_doc.flags.ignore_permissions = True
-			stock_doc.save()
+			# stock_doc.save()
 			stock_doc.submit()
 
 		if cancel:
@@ -282,6 +282,151 @@ class DepartmentIR(Document):
 
 				for row in add_to_transit:
 					stock_doc.append("items", row)
+
+				stock_doc.flags.ignore_permissions = True
+				# stock_doc.save()
+				stock_doc.submit()
+
+				stock_doc = frappe.new_doc("Stock Entry")
+				stock_doc.stock_entry_type = "Material Transfer to Department"
+				stock_doc.company = self.company
+				stock_doc.department_ir = self.name
+				stock_doc.auto_created = True
+				stock_doc.inventory_type = None
+
+				for row in add_to_transit:
+					if row["qty"] > 0:
+						row["t_warehouse"] = department_wh
+						row["s_warehouse"] = in_transit_wh
+						stock_doc.append("items", row)
+
+				stock_doc.flags.ignore_permissions = True
+				# stock_doc.save()
+				stock_doc.submit()
+
+			if strat_transit:
+				stock_doc = frappe.new_doc("Stock Entry")
+				stock_doc.stock_entry_type = "Material Transfer to Department"
+				stock_doc.company = self.company
+				stock_doc.department_ir = self.name
+				stock_doc.auto_created = True
+				for row in strat_transit:
+					if row["qty"] > 0:
+						stock_doc.append("items", row)
+				stock_doc.flags.ignore_permissions = True
+				# stock_doc.save()
+				stock_doc.submit()
+
+	def on_submit_issue_new(self, cancel=False):
+		dt_string = get_datetime()
+		status = "Not Started" if cancel else "Finished"
+		values = {"status": status}
+
+		mop_data = frappe._dict({})
+		stock_entry_data = []  # Accumulate data for batch update
+
+		for row in self.department_ir_operation:
+			if cancel:
+				new_operation = frappe.db.get_value(
+					"Manufacturing Operation",
+					{"department_issue_id": self.name, "manufacturing_work_order": row.manufacturing_work_order},
+				)
+				se_list = frappe.db.get_list("Stock Entry", {"department_ir": self.name})
+				for se in se_list:
+					se_doc = frappe.get_doc("Stock Entry", se.name)
+					if se_doc.docstatus == 1:
+						se_doc.cancel()
+
+					frappe.db.set_value(
+						"Stock Entry Detail", {"parent": se.name}, "manufacturing_operation", None
+					)
+
+				frappe.db.set_value(
+					"Manufacturing Work Order",
+					row.manufacturing_work_order,
+					"manufacturing_operation",
+					row.manufacturing_operation,
+				)
+				if new_operation:
+					frappe.db.set_value(
+						"Department IR Operation",
+						{"docstatus": 2, "manufacturing_operation": new_operation},
+						"manufacturing_operation",
+						None,
+					)
+					frappe.db.set_value(
+						"Stock Entry Detail",
+						{"docstatus": 2, "manufacturing_operation": new_operation},
+						"manufacturing_operation",
+						None,
+					)
+					frappe.delete_doc("Manufacturing Operation", new_operation, ignore_permissions=1)
+				frappe.db.set_value(
+					"Manufacturing Operation", row.manufacturing_operation, "status", "In Transit"
+				)
+
+			else:
+				values["complete_time"] = dt_string
+				new_operation = create_operation_for_next_dept(
+					self.name, row.manufacturing_work_order, row.manufacturing_operation, self.next_department
+				)
+				# Accumulate data for batch update instead of calling the function here
+				stock_entry_data.append((row.manufacturing_work_order, new_operation))
+
+				frappe.db.set_value(
+					"Manufacturing Operation", row.manufacturing_operation, "status", "Finished"
+				)
+				doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+				mop_data.update(
+					{
+						row.manufacturing_work_order: {
+							"cur_mop": row.manufacturing_operation,
+							"new_mop": new_operation,
+						}
+					}
+				)
+				add_time_log(doc, values)
+
+		# Batch update the stock entry dimensions
+		if stock_entry_data and not cancel:
+			batch_update_stock_entry_dimensions(self, stock_entry_data, employee=None, for_employee=False)
+
+		add_to_transit = []
+		strat_transit = []
+		if mop_data and not cancel:
+			in_transit_wh = frappe.get_value(
+				"Warehouse",
+				{"department": self.next_department, "warehouse_type": "Manufacturing"},
+				"default_in_transit_warehouse",
+			)
+
+			department_wh, send_in_transit_wh = frappe.get_value(
+				"Warehouse",
+				{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
+				["name", "default_in_transit_warehouse"],
+			)
+			if not department_wh:
+				frappe.throw(_("Please set warehouse for department {0}").format(self.current_department))
+
+			for row in mop_data:
+				lst1, lst2 = get_se_items(
+					self, row, mop_data[row], in_transit_wh, send_in_transit_wh, department_wh
+				)
+				add_to_transit += lst1
+				strat_transit += lst2
+
+			if add_to_transit:
+				stock_doc = frappe.new_doc("Stock Entry")
+				stock_doc.stock_entry_type = "Material Transfer to Department"
+				stock_doc.company = self.company
+				stock_doc.department_ir = self.name
+				stock_doc.auto_created = True
+				stock_doc.add_to_transit = 1
+				stock_doc.inventory_type = None
+
+				for row in add_to_transit:
+					stock_doc.append("items", row)
+
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
@@ -298,6 +443,7 @@ class DepartmentIR(Document):
 						row["t_warehouse"] = department_wh
 						row["s_warehouse"] = in_transit_wh
 						stock_doc.append("items", row)
+
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
@@ -1114,4 +1260,5 @@ def add_time_log(doc, args):
 		)
 		doc.add_start_time_log(new_args)
 
-	doc.save()
+	doc.update_children()
+	doc.db_update_all()

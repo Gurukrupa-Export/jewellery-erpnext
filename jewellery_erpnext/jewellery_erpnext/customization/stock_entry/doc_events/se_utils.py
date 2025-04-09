@@ -18,6 +18,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.su
 	create_subcontracting_doc,
 )
 from jewellery_erpnext.utils import get_item_from_attribute
+from frappe.query_builder.functions import CombineDatetime, Sum
 
 
 def validate_inventory_dimention(self):
@@ -374,7 +375,7 @@ def get_incoming_rate(args, raise_error_if_no_rate=True):
 		a for a in args_list
 		if a.get("batch_no") and not a.get("serial_and_batch_bundle") and not use_moving_avg_for_batch
 	]
-	ledger_args = [a for a in batch_args if flt(a.get("qty", 0)) <= 0]
+	ledger_args = [a for a in batch_args if flt(a.get("actual_qty", 0)) <= 0]
 	if ledger_args:
 		ledger_data = get_batch_ledger_data(ledger_args)
 		ledger_map = {(a.item_code, a.warehouse, a.batch_no): a for a in ledger_data}
@@ -475,6 +476,7 @@ def get_incoming_rate(args, raise_error_if_no_rate=True):
 
 def get_batch_ledger_data(items, cache_ttl=3600):
 	"""Fetch ledger data for items with actual_qty <= 0, with caching."""
+
 	item_groups = {}
 	for item in items:
 		key = (item.get("warehouse"), item.get("item_code"))
@@ -483,12 +485,15 @@ def get_batch_ledger_data(items, cache_ttl=3600):
 		item_groups[key].append(item)
 
 	ledger_data = []
+	parent = frappe.qb.DocType("Serial and Batch Bundle")
+	child = frappe.qb.DocType("Serial and Batch Entry")
+
 	for (warehouse, item_code), group_items in item_groups.items():
-		batches = list(set(item.get("batch_no") for item in group_items))
+		batches = list(set(item.get("batch_no") for item in group_items if item.get("batch_no")))
 		if not batches:
 			continue
 
-		# Filter for batchwise valuation batches (like prepare_batches)
+		# Filter for batchwise valuation batches
 		batchwise_valuation_batches = [
 			b.name for b in frappe.get_all(
 				"Batch",
@@ -499,8 +504,21 @@ def get_batch_ledger_data(items, cache_ttl=3600):
 		if not batchwise_valuation_batches:
 			continue
 
-		posting_timestamp = f"{group_items[0].get('posting_date')} {group_items[0].get('posting_time') or nowtime()}"
-		voucher_detail_nos = [item.get("voucher_detail_no") for item in group_items if item.get("voucher_detail_no")]
+		# Prepare timestamp condition
+		posting_date = group_items[0].get("posting_date")
+		posting_time = group_items[0].get("posting_time") or nowtime()
+		creation = group_items[0].get("creation")
+
+		timestamp_condition = None
+		if posting_date:
+			timestamp_condition = CombineDatetime(parent.posting_date, parent.posting_time) < CombineDatetime(
+				posting_date, posting_time
+			)
+			if creation:
+				timestamp_condition |= (
+					(CombineDatetime(parent.posting_date, parent.posting_time) == CombineDatetime(posting_date, posting_time))
+					& (parent.creation < creation)
+				)
 
 		# Check cache for each batch
 		uncached_batches = []
@@ -515,47 +533,48 @@ def get_batch_ledger_data(items, cache_ttl=3600):
 		if not uncached_batches:
 			continue
 
-		sql = """
-			SELECT
-				%s AS item_code,
-				%s AS warehouse,
+		# Build QB query
+		query = (
+			frappe.qb.from_(parent)
+			.inner_join(child)
+			.on(parent.name == child.parent)
+			.select(
 				child.batch_no,
-				SUM(child.stock_value_difference) AS incoming_rate,
-				SUM(child.qty) AS qty
-			FROM
-				`tabSerial and Batch Bundle` AS parent
-			INNER JOIN
-				`tabSerial and Batch Entry` AS child
-			ON
-				parent.name = child.parent
-			WHERE
-				child.batch_no IN ({batch_placeholders})
-				AND parent.warehouse = %s
-				AND parent.item_code = %s
-				AND parent.docstatus = 1
-				AND parent.is_cancelled = 0
-				AND parent.type_of_transaction IN ('Inward', 'Outward')
-				AND parent.voucher_type != 'Pick List'
-				AND CONCAT(parent.posting_date, ' ', parent.posting_time) < %s
-				{voucher_filter}
-			GROUP BY
-				child.batch_no
-		"""
-		batch_placeholders = ",".join(["%s"] * len(uncached_batches))
-		voucher_filter = (
-			"AND parent.voucher_detail_no NOT IN ({})".format(",".join(["%s"] * len(voucher_detail_nos)))
-			if voucher_detail_nos else ""
+				Sum(child.stock_value_difference).as_("incoming_rate"),
+				Sum(child.qty).as_("qty"),
+			)
+			.where(
+				(child.batch_no.isin(uncached_batches))
+				& (parent.warehouse == warehouse)
+				& (parent.item_code == item_code)
+				& (parent.docstatus == 1)
+				& (parent.is_cancelled == 0)
+				& (parent.type_of_transaction.isin(["Inward", "Outward"]))
+				& (parent.voucher_type != "Pick List")
+			)
+			.groupby(child.batch_no)
 		)
-		sql = sql.format(batch_placeholders=batch_placeholders, voucher_filter=voucher_filter)
 
-		params = (item_code, warehouse) + tuple(uncached_batches) + (warehouse, item_code, posting_timestamp) + tuple(voucher_detail_nos if voucher_detail_nos else [])
-		result = frappe.db.sql(sql, params, as_dict=True)
+		# Apply voucher filters
+		voucher_detail_nos = [item.get("voucher_detail_no") for item in group_items if item.get("voucher_detail_no")]
+		voucher_nos = [item.get("voucher_no") for item in group_items if item.get("voucher_no")]
+		if voucher_detail_nos:
+			query = query.where(parent.voucher_detail_no.notin(voucher_detail_nos))
+		elif voucher_nos:
+			query = query.where(parent.voucher_no.notin(voucher_nos))
 
-		# Cache each batch result
+		# Apply timestamp condition
+		if timestamp_condition:
+			query = query.where(timestamp_condition)
+
+		# Execute query and cache results
+		result = query.run(as_dict=True)
 		for entry in result:
 			cache_key = f"batch_ledger:{warehouse}:{item_code}:{entry['batch_no']}"
 			frappe.cache().set_value(cache_key, entry, expires_in_sec=cache_ttl)
-			ledger_data.append(entry)
+
+			entry.update({"item_code": item_code, "warehouse": warehouse})
+			ledger_data.append(frappe._dict(entry))
 
 	return ledger_data
 
