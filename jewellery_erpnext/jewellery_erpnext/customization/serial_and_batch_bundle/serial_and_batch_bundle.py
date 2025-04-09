@@ -14,8 +14,7 @@ class CustomBatchNoValuation(BatchNoValuation):
 	def __init__(self, **kwargs):
 		for key, value in kwargs.items():
 			setattr(self, key, value)
-		# print("sle args", self.sle, self.warehouse, self.item_code)
-		# print("ledger_map=======", self.ledger_map)
+
 		self.batch_nos = self.get_batch_nos()
 		self.prepare_batches()
 		self.calculate_avg_rate()
@@ -28,7 +27,6 @@ class CustomBatchNoValuation(BatchNoValuation):
 			)
 		else:
 			entries = self.get_batch_no_ledgers()
-			# print("entries=========", len(entries), entries)
 			self.stock_value_change = 0.0
 			self.batch_avg_rate = defaultdict(float)
 			self.available_qty = defaultdict(float)
@@ -49,8 +47,9 @@ class CustomBatchNoValuation(BatchNoValuation):
 
 		if self.ledger_map:
 			key = (self.item_code, self.warehouse, self.sle.batch_no)
-			entry = self.ledger_map.get(key, {"batch_no": self.sle.batch_no, "incoming_rate": 0.0, "qty": 0.0})
-			return [entry]
+			entry = self.ledger_map.get(key, {})
+			if entry:
+				return [frappe._dict(entry)]
 
 		# Core query logic (unchanged)
 		parent = frappe.qb.DocType("Serial and Batch Bundle")
