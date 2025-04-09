@@ -68,6 +68,7 @@
     "section_break_uyuw",
     "product_size",
     "sizer_type",
+    "diamond_part_length",
     "column_break_zkkp",
     "length",
     "width",
@@ -77,11 +78,13 @@
     "column_break_7dbz",
     "gemstone_size",
     "section_break_q9yyc",
+    "sketch_image",
+    "column_break_kabu",
+    "final_sketch_image",
+    "column_break_32",
     "design_image",
     "column_break_lq6z",
     "design_image1",
-    "column_break_32",
-    "sketch_image",
     "column_break_li2a",
     "design_image3",
     "column_break_mekd",
@@ -299,9 +302,11 @@
     "read_only": 1
     },
     {
+    "allow_on_submit": 1,
     "fieldname": "sketch_image",
     "fieldtype": "Attach Image",
-    "label": "Design Image2"
+    "label": "Sketch Image",
+    "mandatory_depends_on": "eval:doc.order_type == 'Purchase'"
     },
     {
     "fetch_from": "sketch_order_form_detail.setting_type",
@@ -750,7 +755,7 @@
     {
     "fieldname": "design_image3",
     "fieldtype": "Attach Image",
-    "label": "Design Image3"
+    "label": "Design Image 2"
     },
     {
     "fieldname": "column_break_mekd",
@@ -759,7 +764,7 @@
     {
     "fieldname": "design_image4",
     "fieldtype": "Attach Image",
-    "label": "Design Image4"
+    "label": "Design Image 3"
     },
     {
     "fieldname": "column_break_lq6z",
@@ -768,7 +773,7 @@
     {
     "fieldname": "design_image1",
     "fieldtype": "Attach",
-    "label": "Design Image1"
+    "label": "Design Image 1"
     },
     {
     "fieldname": "column_break_qtgl",
@@ -840,13 +845,31 @@
     "fetch_from": "sketch_order_form_detail.gemstone_type",
     "fieldname": "gemstone_type",
     "fieldtype": "Link",
-    "label": "Gemstone Type1",
+    "label": "Gemstone Type",
     "options": "Attribute Value",
     "read_only": 1
     },
     {
     "fieldname": "section_break_brdy",
     "fieldtype": "Section Break"
+    },
+    {
+    "fetch_from": "sketch_order_form_detail.diamond_target",
+    "fetch_if_empty": 1,
+    "fieldname": "diamond_part_length",
+    "fieldtype": "Float",
+    "label": "Diamond Part Length"
+    },
+    {
+    "fieldname": "column_break_kabu",
+    "fieldtype": "Column Break"
+    },
+    {
+    "allow_on_submit": 1,
+    "fieldname": "final_sketch_image",
+    "fieldtype": "Attach Image",
+    "label": "Final Sketch Image",
+    "mandatory_depends_on": "eval:doc.order_type == 'Purchase' && in_list(['Items Updated','Attach Image', 'Image QC', 'Approved'], doc.workflow_state)"
     }
 ],
 "index_web_pages_for_search": 1,
@@ -857,7 +880,7 @@
     "link_fieldname": "custom_sketch_order_id"
     }
 ],
-"modified": "2025-03-08 11:45:00.074908",
+"modified": "2025-04-09 17:28:17.939117",
 "modified_by": "Administrator",
 "module": "Gurukrupa Exports",
 "name": "Sketch Order",
