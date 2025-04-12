@@ -363,223 +363,88 @@ def get_incoming_rate(args, raise_error_if_no_rate=True):
 	"""Get Incoming Rate based on valuation method"""
 	from erpnext.stock.stock_ledger import get_previous_sle, get_valuation_rate
 
-	# Handle bulk or single args
-	is_bulk = isinstance(args, (list, tuple))
-	args_list = args if is_bulk else [args]
-	args_list = [frappe._dict(json.loads(a) if isinstance(a, str) else a) for a in args_list]
+	if isinstance(args, str):
+		args = json.loads(args)
+
+	in_rate = None
+
+	item_details = frappe.get_cached_value(
+		"Item", args.get("item_code"), ["has_serial_no", "has_batch_no"], as_dict=1
+	)
 
 	use_moving_avg_for_batch = frappe.db.get_single_value("Stock Settings", "do_not_use_batchwise_valuation")
 
-	# Batch fetch ledger data for batch items with actual_qty <= 0
-	batch_args = [
-		a for a in args_list
-		if a.get("batch_no") and not a.get("serial_and_batch_bundle") and not use_moving_avg_for_batch
-	]
-	ledger_args = [a for a in batch_args if flt(a.get("actual_qty", 0)) <= 0]
-	if ledger_args:
-		ledger_data = get_batch_ledger_data(ledger_args)
-		ledger_map = {(a.item_code, a.warehouse, a.batch_no): a for a in ledger_data}
-	else:
-		ledger_map = {}
+	if isinstance(args, dict):
+		args = frappe._dict(args)
 
-	rates = {}
-	for original_args in args_list:
-		args = original_args.copy()
-		in_rate = None
-		item_details = frappe.get_cached_value(
-			"Item", args.get("item_code"), ["has_serial_no", "has_batch_no"], as_dict=1
+	if item_details and item_details.has_serial_no and args.get("serial_and_batch_bundle"):
+		args.actual_qty = args.qty
+		sn_obj = SerialNoValuation(
+			sle=args,
+			warehouse=args.get("warehouse"),
+			item_code=args.get("item_code"),
 		)
 
-		key = (
+		return sn_obj.get_incoming_rate()
+
+	elif (
+		item_details
+		and item_details.has_batch_no
+		and args.get("serial_and_batch_bundle")
+		and not use_moving_avg_for_batch
+	):
+		args.actual_qty = args.qty
+		batch_obj = CustomBatchNoValuation(
+			sle=args,
+			warehouse=args.get("warehouse"),
+			item_code=args.get("item_code"),
+		)
+
+		return batch_obj.get_incoming_rate()
+
+	elif (args.get("serial_no") or "").strip() and not args.get("serial_and_batch_bundle"):
+		args.actual_qty = args.qty
+		args.serial_nos = get_serial_nos_data(args.get("serial_no"))
+
+		sn_obj = SerialNoValuation(sle=args, warehouse=args.get("warehouse"), item_code=args.get("item_code"))
+
+		return sn_obj.get_incoming_rate()
+	elif args.get("batch_no") and not args.get("serial_and_batch_bundle") and not use_moving_avg_for_batch:
+		args.actual_qty = args.qty
+		args.batch_nos = frappe._dict({args.batch_no: args})
+
+		batch_obj = CustomBatchNoValuation(
+			sle=args,
+			warehouse=args.get("warehouse"),
+			item_code=args.get("item_code"),
+		)
+
+		return batch_obj.get_incoming_rate()
+	else:
+		valuation_method = get_valuation_method(args.get("item_code"))
+		previous_sle = get_previous_sle(args)
+		if valuation_method in ("FIFO", "LIFO"):
+			if previous_sle:
+				previous_stock_queue = json.loads(previous_sle.get("stock_queue", "[]") or "[]")
+				in_rate = (
+					_get_fifo_lifo_rate(previous_stock_queue, args.get("qty") or 0, valuation_method)
+					if previous_stock_queue
+					else None
+				)
+		elif valuation_method == "Moving Average":
+			in_rate = previous_sle.get("valuation_rate")
+
+	if in_rate is None:
+		voucher_no = args.get("voucher_no") or args.get("name")
+		in_rate = get_valuation_rate(
 			args.get("item_code"),
 			args.get("warehouse"),
-			args.get("batch_no", ""),
-			args.get("voucher_detail_no") or args.get("voucher_no")
+			args.get("voucher_type"),
+			voucher_no,
+			args.get("allow_zero_valuation"),
+			currency=erpnext.get_company_currency(args.get("company")),
+			company=args.get("company"),
+			raise_error_if_no_rate=raise_error_if_no_rate,
 		)
 
-		if item_details["has_serial_no"] and args.get("serial_and_batch_bundle"):
-			args.actual_qty = args.qty
-			sn_obj = SerialNoValuation(
-				sle=args,
-				warehouse=args.get("warehouse"),
-				item_code=args.get("item_code"),
-			)
-			in_rate = sn_obj.get_incoming_rate()
-
-		elif (
-			item_details["has_batch_no"]
-			and args.get("serial_and_batch_bundle")
-			and not use_moving_avg_for_batch
-		):
-			args.actual_qty = args.qty
-			batch_obj = CustomBatchNoValuation(
-				sle=args,
-				warehouse=args.get("warehouse"),
-				item_code=args.get("item_code"),
-				ledger_map=ledger_map
-			)
-			in_rate = batch_obj.get_incoming_rate()
-
-		elif (args.get("serial_no") or "").strip() and not args.get("serial_and_batch_bundle"):
-			args.actual_qty = args.qty
-			args.serial_nos = get_serial_nos_data(args.get("serial_no"))
-			sn_obj = SerialNoValuation(sle=args, warehouse=args.get("warehouse"), item_code=args.get("item_code"))
-			in_rate = sn_obj.get_incoming_rate()
-
-		elif args.get("batch_no") and not args.get("serial_and_batch_bundle") and not use_moving_avg_for_batch:
-			args.actual_qty = args.qty
-			args.batch_nos = frappe._dict({args.batch_no: args})
-			batch_obj = CustomBatchNoValuation(
-				sle=args,
-				warehouse=args.get("warehouse"),
-				item_code=args.get("item_code"),
-				ledger_map=ledger_map
-			)
-			in_rate = batch_obj.get_incoming_rate()
-
-		else:
-			valuation_method = get_valuation_method(args.get("item_code"))
-			previous_sle = get_previous_sle(args)
-			if valuation_method in ("FIFO", "LIFO"):
-				if previous_sle:
-					previous_stock_queue = json.loads(previous_sle.get("stock_queue", "[]") or "[]")
-					in_rate = (
-						_get_fifo_lifo_rate(previous_stock_queue, args.get("qty") or 0, valuation_method)
-						if previous_stock_queue
-						else None
-					)
-			elif valuation_method == "Moving Average":
-				in_rate = previous_sle.get("valuation_rate")
-
-			if in_rate is None:
-				voucher_no = args.get("voucher_no") or args.get("name")
-				in_rate = get_valuation_rate(
-					args.get("item_code"),
-					args.get("warehouse"),
-					args.get("voucher_type"),
-					voucher_no,
-					args.get("allow_zero_valuation"),
-					currency=erpnext.get_company_currency(args.get("company")),
-					company=args.get("company"),
-					raise_error_if_no_rate=raise_error_if_no_rate,
-				)
-
-		rates[key] = flt(in_rate)
-
-	return rates if is_bulk else flt(rates.get((
-		args_list[0].get("item_code"),
-		args_list[0].get("warehouse"),
-		args_list[0].get("batch_no", ""),
-		args_list[0].get("voucher_detail_no") or args_list[0].get("voucher_no")
-	), 0.0))
-
-
-def get_batch_ledger_data(items, cache_ttl=3600):
-	"""Fetch ledger data for items with actual_qty <= 0, with caching."""
-
-	item_groups = {}
-	for item in items:
-		key = (item.get("warehouse"), item.get("item_code"))
-		if key not in item_groups:
-			item_groups[key] = []
-		item_groups[key].append(item)
-
-	ledger_data = []
-	parent = frappe.qb.DocType("Serial and Batch Bundle")
-	child = frappe.qb.DocType("Serial and Batch Entry")
-
-	for (warehouse, item_code), group_items in item_groups.items():
-		batches = list(set(item.get("batch_no") for item in group_items if item.get("batch_no")))
-		if not batches:
-			continue
-
-		# Filter for batchwise valuation batches
-		batchwise_valuation_batches = [
-			b.name for b in frappe.get_all(
-				"Batch",
-				filters={"name": ("in", batches), "use_batchwise_valuation": 1},
-				fields=["name"]
-			)
-		]
-		if not batchwise_valuation_batches:
-			continue
-
-		# Prepare timestamp condition
-		posting_date = group_items[0].get("posting_date")
-		posting_time = group_items[0].get("posting_time") or nowtime()
-		creation = group_items[0].get("creation")
-
-		timestamp_condition = None
-		if posting_date:
-			timestamp_condition = CombineDatetime(parent.posting_date, parent.posting_time) < CombineDatetime(
-				posting_date, posting_time
-			)
-			if creation:
-				timestamp_condition |= (
-					(CombineDatetime(parent.posting_date, parent.posting_time) == CombineDatetime(posting_date, posting_time))
-					& (parent.creation < creation)
-				)
-
-		# Check cache for each batch
-		uncached_batches = []
-		for batch_no in batchwise_valuation_batches:
-			cache_key = f"batch_ledger:{warehouse}:{item_code}:{batch_no}"
-			cached_entry = frappe.cache().get_value(cache_key)
-			if cached_entry:
-				ledger_data.append(cached_entry)
-			else:
-				uncached_batches.append(batch_no)
-
-		if not uncached_batches:
-			continue
-
-		# Build QB query
-		query = (
-			frappe.qb.from_(parent)
-			.inner_join(child)
-			.on(parent.name == child.parent)
-			.select(
-				child.batch_no,
-				Sum(child.stock_value_difference).as_("incoming_rate"),
-				Sum(child.qty).as_("qty"),
-			)
-			.where(
-				(child.batch_no.isin(uncached_batches))
-				& (parent.warehouse == warehouse)
-				& (parent.item_code == item_code)
-				& (parent.docstatus == 1)
-				& (parent.is_cancelled == 0)
-				& (parent.type_of_transaction.isin(["Inward", "Outward"]))
-				& (parent.voucher_type != "Pick List")
-			)
-			.groupby(child.batch_no)
-		)
-
-		# Apply voucher filters
-		voucher_detail_nos = [item.get("voucher_detail_no") for item in group_items if item.get("voucher_detail_no")]
-		voucher_nos = [item.get("voucher_no") for item in group_items if item.get("voucher_no")]
-		if voucher_detail_nos:
-			query = query.where(parent.voucher_detail_no.notin(voucher_detail_nos))
-		elif voucher_nos:
-			query = query.where(parent.voucher_no.notin(voucher_nos))
-
-		# Apply timestamp condition
-		if timestamp_condition:
-			query = query.where(timestamp_condition)
-
-		# Execute query and cache results
-		result = query.run(as_dict=True)
-		for entry in result:
-			cache_key = f"batch_ledger:{warehouse}:{item_code}:{entry['batch_no']}"
-			frappe.cache().set_value(cache_key, entry, expires_in_sec=cache_ttl)
-
-			entry.update({"item_code": item_code, "warehouse": warehouse})
-			ledger_data.append(frappe._dict(entry))
-
-	return ledger_data
-
-def clear_batch_ledger_cache(doc):
-	"""Clear cache for affected warehouse and item_code."""
-	cache_key_pattern = f"batch_ledger:{doc.warehouse}:{doc.item_code}:*"
-	for key in frappe.cache().keys(cache_key_pattern):
-		frappe.cache().delete_value(key)
+	return flt(in_rate)
