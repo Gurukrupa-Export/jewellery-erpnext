@@ -1547,7 +1547,7 @@ let get_items = (frm) => {
 				filters: {
 					docstatus: ["!=", 2],
 					sales_type:
-						frm.doc.purchase_type === "FG Purchase" ? "FG Sales" : "Branch Sales",
+						frm.doc.purchase_type === "FG Purchase" ? "Finished Goods" : "Branch Sales",
 				},
 			};
 
