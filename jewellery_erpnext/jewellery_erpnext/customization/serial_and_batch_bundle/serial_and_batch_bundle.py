@@ -101,8 +101,6 @@ class CustomBatchNoValuation(BatchNoValuation):
 						"qty": ledger_data["qty"]
 					}))
 				else:
-					print(f"No ledger data for batch {batch_no} in {self.warehouse}, {self.item_code}")
-					print(f"Old function: {self.old_get_batch_no_ledgers()}")
 					return self.old_get_batch_no_ledgers()
 
 			return result
