@@ -51,8 +51,9 @@ frappe.ui.form.on("Sketch Order Form", {
 			["metal_touch", "Metal Touch"],
 			["metal_colour", "Metal Colour"],
 			["sizer_type", "Sizer Type"],
-			["gemstone_type1", "Gemstone Type1"],
+			["gemstone_type", "Gemstone Type"],
 			["gemstone_size", "Gemstone Size"],
+			["stone_changeable","Stone Changeable"]
 		];
 		set_filters_on_child_table_fields(frm, fields);
 	},

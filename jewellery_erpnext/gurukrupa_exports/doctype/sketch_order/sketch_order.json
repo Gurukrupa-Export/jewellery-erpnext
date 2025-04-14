@@ -75,6 +75,7 @@
     "height",
     "section_break_y4y2c",
     "gemstone_type",
+    "stone_changeable",
     "column_break_7dbz",
     "gemstone_size",
     "section_break_q9yyc",
@@ -870,6 +871,13 @@
     "fieldtype": "Attach Image",
     "label": "Final Sketch Image",
     "mandatory_depends_on": "eval:doc.order_type == 'Purchase' && in_list(['Items Updated','Attach Image', 'Image QC', 'Approved'], doc.workflow_state)"
+    },
+    {
+    "fetch_from": "sketch_order_form_detail.stone_changeable",
+    "fieldname": "stone_changeable",
+    "fieldtype": "Link",
+    "label": "Stone Changeable",
+    "options": "Attribute Value"
     }
 ],
 "index_web_pages_for_search": 1,
@@ -880,7 +888,7 @@
     "link_fieldname": "custom_sketch_order_id"
     }
 ],
-"modified": "2025-04-09 17:28:17.939117",
+"modified": "2025-04-14 15:31:44.728114",
 "modified_by": "Administrator",
 "module": "Gurukrupa Exports",
 "name": "Sketch Order",
