@@ -185,7 +185,9 @@ class CustomStockEntry(StockEntry):
 					if not d.t_warehouse:
 						outgoing_items_cost += flt(d.basic_amount)
 		finally:
-			frappe.local.batch_valuation_ledger.clear()
+			pass
+			# print('frappe.local.batch_valuation_ledge')
+			# frappe.local.batch_valuation_ledger.clear()
 
 		return outgoing_items_cost
 
@@ -206,8 +208,8 @@ class CustomStockEntry(StockEntry):
 		# Initialize BatchValuationLedger for the transaction
 		if not hasattr(frappe.local, "batch_valuation_ledger"):
 			frappe.local.batch_valuation_ledger = BatchValuationLedger()
+			frappe.local.batch_valuation_ledger.initialize(sl_entries, self.name)
 
-		frappe.local.batch_valuation_ledger.initialize(sl_entries, self.name)
 		try:
 			self.make_sl_entries(sl_entries)
 		finally:
