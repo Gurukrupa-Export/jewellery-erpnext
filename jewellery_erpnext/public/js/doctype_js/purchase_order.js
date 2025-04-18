@@ -1542,7 +1542,7 @@ let get_items = (frm) => {
 	/* Function to add custom button for sales invoice in get items and appending table with selected invoice items */
 	frm.add_custom_button(
 		__("Sales Invoice"),
-		function (frm) {
+		function () {
 			let query_args = {
 				filters: {
 					docstatus: ["!=", 2],
