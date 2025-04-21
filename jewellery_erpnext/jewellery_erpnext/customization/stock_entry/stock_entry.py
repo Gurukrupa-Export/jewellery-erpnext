@@ -169,7 +169,7 @@ class CustomStockEntry(StockEntry):
 			args.actual_qty = args.qty
 			args_for_batch_valuation_ledger.append(args)
 
-		if not hasattr(frappe.local, "batch_valuation_ledger"):
+		if len(args_for_batch_valuation_ledger) > 30 and not hasattr(frappe.local, "batch_valuation_ledger"):
 			frappe.local.batch_valuation_ledger = BatchValuationLedger()
 			frappe.local.batch_valuation_ledger.initialize(args_for_batch_valuation_ledger, self.name)
 		try:
@@ -206,7 +206,7 @@ class CustomStockEntry(StockEntry):
 			sl_entries.reverse()
 
 		# Initialize BatchValuationLedger for the transaction
-		if not hasattr(frappe.local, "batch_valuation_ledger"):
+		if len(sl_entries) > 30 and not hasattr(frappe.local, "batch_valuation_ledger"):
 			frappe.local.batch_valuation_ledger = BatchValuationLedger()
 			frappe.local.batch_valuation_ledger.initialize(sl_entries, self.name)
 

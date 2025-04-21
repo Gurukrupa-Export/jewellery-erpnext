@@ -75,7 +75,7 @@ class DepartmentIR(Document):
 
 	def on_cancel(self):
 		if self.type == "Issue":
-			self.on_submit_issue(cancel=True)
+			self.on_submit_issue_new(cancel=True)
 		else:
 			self.on_submit_receive(cancel=True)
 		# self.on_submit_receive(cancel=True)
