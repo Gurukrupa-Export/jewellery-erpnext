@@ -2,14 +2,14 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 from erpnext.stock.stock_ledger import (
-    validate_cancellation,
-    set_as_cancel,
-    validate_serial_no,
-    get_args_for_future_sle,
-    make_entry,
-    get_incoming_outgoing_rate_for_cancel,
-    repost_current_voucher,
-    update_bin_qty
+	validate_cancellation,
+	set_as_cancel,
+	validate_serial_no,
+	get_args_for_future_sle,
+	make_entry,
+	get_incoming_outgoing_rate_for_cancel,
+	repost_current_voucher,
+	update_bin_qty
 )
 
 from erpnext.stock.utils import (
