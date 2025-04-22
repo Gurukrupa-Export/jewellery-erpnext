@@ -61,7 +61,7 @@ def update_si(self):
 
 
 def update_einvoice_items(self, invoice_data):
-	self.custom_invoice_item = []
+	# self.custom_invoice_item = []
 	for row in invoice_data:
 		if invoice_data[row]["amount"] > 0:
 			self.append(
