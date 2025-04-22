@@ -169,7 +169,7 @@ class CustomStockEntry(StockEntry):
 			args.actual_qty = args.qty
 			args_for_batch_valuation_ledger.append(args)
 
-		if not hasattr(frappe.local, "batch_valuation_ledger"):
+		if len(args_for_batch_valuation_ledger) > 30 and not hasattr(frappe.local, "batch_valuation_ledger"):
 			frappe.local.batch_valuation_ledger = BatchValuationLedger()
 			frappe.local.batch_valuation_ledger.initialize(args_for_batch_valuation_ledger, self.name)
 		try:
@@ -185,7 +185,7 @@ class CustomStockEntry(StockEntry):
 					if not d.t_warehouse:
 						outgoing_items_cost += flt(d.basic_amount)
 		finally:
-			frappe.local.batch_valuation_ledger.clear()
+			pass
 
 		return outgoing_items_cost
 
@@ -204,15 +204,17 @@ class CustomStockEntry(StockEntry):
 			sl_entries.reverse()
 
 		# Initialize BatchValuationLedger for the transaction
-		if not hasattr(frappe.local, "batch_valuation_ledger"):
+		if len(sl_entries) > 30 and not hasattr(frappe.local, "batch_valuation_ledger"):
 			frappe.local.batch_valuation_ledger = BatchValuationLedger()
+			frappe.local.batch_valuation_ledger.initialize(sl_entries, self.name)
 
-		frappe.local.batch_valuation_ledger.initialize(sl_entries, self.name)
 		try:
 			self.make_sl_entries(sl_entries)
 		finally:
-			frappe.local.batch_valuation_ledger.clear()
-			del frappe.local.batch_valuation_ledger
+			if hasattr(frappe.local, "batch_valuation_ledger"):
+				# Clear the batch valuation ledger after processing
+				frappe.local.batch_valuation_ledger.clear()
+				del frappe.local.batch_valuation_ledger
 
 	def make_sl_entries(self, sl_entries, allow_negative_stock=False, via_landed_cost_voucher=False):
 		from erpnext.stock.serial_batch_bundle import update_batch_qty

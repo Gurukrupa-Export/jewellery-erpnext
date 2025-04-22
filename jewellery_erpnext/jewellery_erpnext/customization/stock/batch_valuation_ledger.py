@@ -1,140 +1,248 @@
 import frappe
 from frappe.utils import flt, nowtime
-from frappe import qb
-from frappe.query_builder.functions import CombineDatetime, Sum
-from frappe.query_builder import Criterion
+from collections import defaultdict
+from frappe.utils.caching import redis_cache
 
 class BatchValuationLedger:
-    """
-    Repository for batch valuation data in Serial and Batch Bundles.
-    - Fetches and stores historical batch data for efficient reuse.
-    - Supports in-flight updates during stock transactions.
-    """
-    def __init__(self):
-        self._ledger_data = None
+	"""
+	Repository for batch valuation data in Serial and Batch Bundles.
+	- Fetches and stores historical batch data for efficient reuse.
+	- Supports in-flight updates during stock transactions.
+	"""
+	def __init__(self):
+		self._ledger_data = None
 
-    def initialize(self, sles: list, exclude_voucher_no: str):
-        """Initialize ledger with historical batch data for given SLEs."""
-        self._ledger_data = self.get_historical_batch_ledger_data(sles, exclude_voucher_no)
+	def initialize(self, sles: list, exclude_voucher_no: str):
+		"""Initialize ledger with historical batch data for given SLEs."""
+		self._ledger_data = self.get_historical_batch_ledger_data(sles, exclude_voucher_no)
 
-    def get_historical_batch_ledger_data(self, sles: list, exclude_voucher_no: str):
-        """Fetch historical batch data for outward SLEs."""
-        outward_sles = [sle for sle in sles if flt(sle.get("actual_qty", 0)) < 0]
-        if not outward_sles:
-            return {}
+	# def initialize(self, sles: list, exclude_voucher_no: str):
+	# 	"""Initialize ledger with historical batch data for given SLEs."""
+	# 	# Convert SLEs to a tuple of sorted tuples for caching
+	# 	cache_safe_sles = tuple(tuple(sorted(sle.items())) for sle in sles)
+	# 	self._ledger_data = self._get_cached_batch_data(cache_safe_sles, exclude_voucher_no)
+	# 	print("BatchValuationLedger initialized with data:", len(self._ledger_data))
 
-        # Collect batch numbers from SLE bundles or direct batch_no
-        batch_nos = set()
-        for sle in outward_sles:
-            if sle.get("serial_and_batch_bundle"):
-                bundles = frappe.get_all(
-                    "Serial and Batch Entry",
-                    filters={"parent": sle.get("serial_and_batch_bundle")},
-                    fields=["batch_no"]
-                )
-                batch_nos.update(b.batch_no for b in bundles if b.batch_no)
-            elif sle.get("batch_no"):
-                batch_nos.add(sle.get("batch_no"))
+	# @redis_cache(ttl=300)
+	# def _get_cached_batch_data(self, sles: tuple, exclude_voucher_no: str):
+	# 	# Convert the tuple of tuples back into a list of dicts
+	# 	sles = [dict(sle) for sle in sles]
+	# 	return self.get_historical_batch_ledger_data(sles, exclude_voucher_no)
 
-        if not batch_nos:
-            return {}
+	def get_historical_batch_ledger_data(self, sles: list, exclude_voucher_no: str):
+		"""Fetch historical batch data for outward SLEs."""
+		outward_sles = [sle for sle in sles if flt(sle.get("actual_qty", 0)) < 0]
+		if not outward_sles:
+			return {}
 
-        # Filter batches with batchwise valuation enabled
-        batchwise_valuation_batches = set(
-            b.name for b in frappe.get_all(
-                "Batch",
-                filters={"name": ("in", list(batch_nos)), "use_batchwise_valuation": 1},
-                fields=["name"]
-            )
-        )
-        if not batchwise_valuation_batches:
-            return {}
+		serial_bundle_ids = set()
+		batch_nos = set()
+		for sle in outward_sles:
+			if sle.get("serial_and_batch_bundle"):
+				serial_bundle_ids.add(sle["serial_and_batch_bundle"])
+			elif sle.get("batch_no"):
+				batch_nos.add(sle["batch_no"])
 
-        # Build query for historical data
-        parent = qb.DocType("Serial and Batch Bundle")
-        child = qb.DocType("Serial and Batch Entry")
-        query = (
-            qb.from_(parent)
-            .inner_join(child)
-            .on(parent.name == child.parent)
-            .select(
-                parent.warehouse,
-                parent.item_code,
-                child.batch_no,
-                Sum(child.stock_value_difference).as_("incoming_rate"),
-                Sum(child.qty).as_("qty"),
-            )
-            .where(
-                (child.batch_no.isin(list(batchwise_valuation_batches)))
-                & (parent.docstatus == 1)
-                & (parent.is_cancelled == 0)
-                & (parent.type_of_transaction.isin(["Inward", "Outward"]))
-                & (parent.voucher_type != "Pick List")
-                & (parent.voucher_no != exclude_voucher_no)
-            )
-            .groupby(child.batch_no)
-        )
+		if serial_bundle_ids:
+			bundle_batches = frappe.get_all(
+				"Serial and Batch Entry",
+				filters={"parent": ["in", list(serial_bundle_ids)]},
+				fields=["batch_no"]
+			)
+			batch_nos.update(b.batch_no for b in bundle_batches if b.batch_no)
 
-        # Add per-SLE filters (warehouse, item, timestamp)
-        conditions = []
-        for sle in outward_sles:
-            posting_date = sle.get("posting_date")
-            posting_time = sle.get("posting_time") or nowtime()
-            creation = sle.get("creation")
+		if not batch_nos:
+			return {}
 
-            timestamp_condition = None
-            if posting_date:
-                timestamp_condition = CombineDatetime(parent.posting_date, parent.posting_time) < CombineDatetime(
-                    posting_date, posting_time
-                )
-                if creation:
-                    timestamp_condition |= (
-                        (CombineDatetime(parent.posting_date, parent.posting_time) == CombineDatetime(posting_date, posting_time))
-                        & (parent.creation < creation)
-                    )
+		# Pre-filter batchwise valuation batch numbers
+		batchwise_batches = frappe.get_all(
+			"Batch",
+			filters={"name": ["in", list(batch_nos)], "use_batchwise_valuation": 1},
+			fields=["name"]
+		)
+		batchwise_batch_nos = [b.name for b in batchwise_batches]
 
-            condition = (
-                (parent.warehouse == sle.get("warehouse"))
-                & (parent.item_code == sle.get("item_code"))
-            )
-            if timestamp_condition:
-                condition &= timestamp_condition
-            if sle.get("voucher_detail_no"):
-                condition &= (parent.voucher_detail_no != sle.get("voucher_detail_no"))
-            elif sle.get("voucher_no"):
-                condition &= (parent.voucher_no != sle.get("voucher_no"))
-            conditions.append(condition)
+		if not batchwise_batch_nos:
+			return {}
 
-        if conditions:
-            query = query.where(Criterion.any(conditions))
+		# Execute raw SQL with JOIN for valid filtered batches
+		sql = """
+			SELECT
+				sb.warehouse,
+				sb.item_code,
+				sbe.batch_no,
+				SUM(sbe.stock_value_difference) as incoming_rate,
+				SUM(sbe.qty) as qty
+			FROM `tabSerial and Batch Bundle` sb
+			INNER JOIN `tabSerial and Batch Entry` sbe ON sb.name = sbe.parent
+			INNER JOIN `tabBatch` b ON sbe.batch_no = b.name
+			WHERE
+				b.use_batchwise_valuation = 1
+				AND sb.docstatus = 1
+				AND sb.is_cancelled = 0
+				AND sb.type_of_transaction IN ('Inward', 'Outward')
+				AND sb.voucher_type <> 'Pick List'
+				AND sb.voucher_no <> %(exclude_voucher_no)s
+				AND sbe.batch_no IN %(batch_nos)s
+			GROUP BY sb.warehouse, sb.item_code, sbe.batch_no
+		"""
+		results = frappe.db.sql(sql, {
+			"exclude_voucher_no": exclude_voucher_no,
+			"batch_nos": tuple(batchwise_batch_nos)
+		}, as_dict=True)
 
-        # Execute and format results
-        results = query.run(as_dict=True)
-        return {
-            (row.warehouse, row.item_code, row.batch_no): {
-                "incoming_rate": flt(row.incoming_rate),
-                "qty": flt(row.qty)
-            }
-            for row in results
-        }
+		return {
+			(row.warehouse, row.item_code, row.batch_no): {
+				"incoming_rate": flt(row.incoming_rate),
+				"qty": flt(row.qty)
+			}
+			for row in results
+		}
 
-    def update(self, sle, bundle_entries):
-        """Update ledger with in-flight bundle data from current SLE."""
-        if not self._ledger_data or not bundle_entries:
-            return
-        for entry in bundle_entries:
-            key = (sle.warehouse, sle.item_code, entry.batch_no)
-            self._ledger_data[key] = {
-                "incoming_rate": flt(self._ledger_data.get(key, {}).get("incoming_rate", 0.0)) + flt(entry.stock_value_difference),
-                "qty": flt(self._ledger_data.get(key, {}).get("qty", 0.0)) + flt(entry.qty)
-            }
+	def update(self, sle, bundle_entries):
+		"""Update ledger with in-flight bundle data from current SLE."""
+		if not self._ledger_data or not bundle_entries:
+			return
+		for entry in bundle_entries:
+			key = (sle.warehouse, sle.item_code, entry.batch_no)
+			self._ledger_data[key] = {
+				"incoming_rate": flt(self._ledger_data.get(key, {}).get("incoming_rate", 0.0)) + flt(entry.stock_value_difference),
+				"qty": flt(self._ledger_data.get(key, {}).get("qty", 0.0)) + flt(entry.qty)
+			}
 
-    def get_batch_data(self, warehouse, item_code, batch_no):
-        """Retrieve batch data for a specific warehouse, item, and batch."""
-        if not self._ledger_data:
-            return None
-        return self._ledger_data.get((warehouse, item_code, batch_no))
+	def get_batch_data(self, warehouse, item_code, batch_no):
+		"""Retrieve batch data for a specific warehouse, item, and batch."""
+		if not self._ledger_data:
+			return None
+		return self._ledger_data.get((warehouse, item_code, batch_no))
 
-    def clear(self):
-        """Reset ledger data."""
-        self._ledger_data = None
+	def clear(self):
+		"""Reset ledger data."""
+		self._ledger_data = None
+
+
+
+
+# import frappe
+# from frappe.utils import flt, nowtime
+# from collections import defaultdict
+
+# class BatchValuationLedger:
+# 	"""
+# 	Efficient in-memory index of historical batch valuation data.
+# 	"""
+
+# 	def __init__(self):
+# 		self._ledger_data = defaultdict(list)
+
+# 	def initialize(self, sles: list, exclude_voucher_no: str):
+# 		# Prefetch all relevant batch ledger entries into memory
+# 		entries = self._preload_ledger_data(sles, exclude_voucher_no)
+# 		for row in entries:
+# 			key = (row.warehouse, row.item_code, row.batch_no)
+# 			self._ledger_data[key].append(row)
+
+# 	def _preload_ledger_data(self, sles, exclude_voucher_no):
+# 		serial_bundle_ids = {sle["serial_and_batch_bundle"] for sle in sles if sle.get("serial_and_batch_bundle")}
+# 		batch_nos = {sle["batch_no"] for sle in sles if sle.get("batch_no")}
+
+# 		# Bulk fetch all batch_nos from serial_and_batch_bundles
+# 		if serial_bundle_ids:
+# 			batch_nos.update(
+# 				r["batch_no"] for r in frappe.get_all(
+# 					"Serial and Batch Entry",
+# 					filters={"parent": ["in", list(serial_bundle_ids)]},
+# 					fields=["batch_no"]
+# 				) if r["batch_no"]
+# 			)
+
+# 		if not batch_nos:
+# 			return []
+
+# 		# Run SQL join against `Batch` for only batchwise_valuation = 1 entries
+# 		sql = """
+# 			SELECT
+# 				sb.warehouse,
+# 				sb.item_code,
+# 				sbe.batch_no,
+# 				sb.posting_date,
+# 				sb.posting_time,
+# 				sb.creation,
+# 				sb.voucher_no,
+# 				sb.voucher_detail_no,
+# 				sbe.stock_value_difference,
+# 				sbe.qty
+# 			FROM `tabSerial and Batch Bundle` sb
+# 			INNER JOIN `tabSerial and Batch Entry` sbe ON sb.name = sbe.parent
+# 			INNER JOIN `tabBatch` b ON sbe.batch_no = b.name
+# 			WHERE
+# 				b.use_batchwise_valuation = 1
+# 				AND sbe.batch_no IN %(batch_nos)s
+# 				AND sb.docstatus = 1
+# 				AND sb.is_cancelled = 0
+# 				AND sb.type_of_transaction IN ('Inward', 'Outward')
+# 				AND sb.voucher_type <> 'Pick List'
+# 				AND sb.voucher_no <> %(exclude_voucher_no)s
+# 		"""
+# 		return frappe.db.sql(
+# 			sql,
+# 			{
+# 				"batch_nos": tuple(batch_nos),
+# 				"exclude_voucher_no": exclude_voucher_no
+# 			},
+# 			as_dict=True
+# 		)
+
+# 	def get_batch_data(self, warehouse, item_code, batch_no, posting_dt=None, creation=None, exclude_voucher_no=None, exclude_voucher_detail_no=None):
+# 		key = (warehouse, item_code, batch_no)
+# 		entries = self._ledger_data.get(key)
+# 		if not entries:
+# 			return None
+
+# 		filtered = [
+# 			row for row in entries
+# 			if (
+# 				# Timestamp condition
+# 				not posting_dt or
+# 				f"{row.posting_date} {row.posting_time}" < posting_dt or
+# 				(
+# 					f"{row.posting_date} {row.posting_time}" == posting_dt and
+# 					creation and row.creation and row.creation < creation
+# 				)
+# 			)
+# 			and not (
+# 				exclude_voucher_detail_no and row.voucher_detail_no == exclude_voucher_detail_no or
+# 				not exclude_voucher_detail_no and row.voucher_no == exclude_voucher_no
+# 			)
+# 		]
+
+# 		if not filtered:
+# 			return None
+
+# 		return {
+# 			"incoming_rate": sum(flt(r.stock_value_difference) for r in filtered),
+# 			"qty": sum(flt(r.qty) for r in filtered)
+# 		}
+
+# 	def update(self, sle, bundle_entries):
+# 		if not bundle_entries:
+# 			return
+# 		key_template = (sle.warehouse, sle.item_code)
+# 		now_time = sle.posting_time or nowtime()
+# 		for entry in bundle_entries:
+# 			key = (*key_template, entry.batch_no)
+# 			self._ledger_data[key].append(frappe._dict({
+# 				"warehouse": sle.warehouse,
+# 				"item_code": sle.item_code,
+# 				"batch_no": entry.batch_no,
+# 				"posting_date": sle.posting_date,
+# 				"posting_time": now_time,
+# 				"creation": sle.creation,
+# 				"voucher_no": sle.voucher_no,
+# 				"voucher_detail_no": sle.voucher_detail_no,
+# 				"stock_value_difference": entry.stock_value_difference,
+# 				"qty": entry.qty
+# 			}))
+
+# 	def clear(self):
+# 		self._ledger_data.clear()
