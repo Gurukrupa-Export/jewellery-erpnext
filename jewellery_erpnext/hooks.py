@@ -55,8 +55,12 @@ doc_events = {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.quotation.quotation.before_validate",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.validate",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.on_submit",
+        "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.before_submit",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.on_cancel",
 		"onload": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.onload",
+	},
+    "Delivery Note": {
+        "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.delivery_note.validate",
 	},
 	"Sales Order": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",

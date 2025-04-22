@@ -130,17 +130,27 @@ frappe.ui.form.on("Sales Order Item Child", {
 						"custom_gross_wt",
 					])
 					.then((r) => {
-						frappe.model.set_value(cdt, cdn, "item_code", r.message.item_code);
-						frappe.model.set_value(cdt, cdn, "bom_number", r.message.custom_bom_no);
-						frappe.model.set_value(
-							cdt,
-							cdn,
-							"gross_weight",
-							r.message.custom_gross_wt
-						);
+						if (r.message) {
+							const item_code = r.message.item_code;
+	
+							frappe.model.set_value(cdt, cdn, "item_code", item_code);
+							frappe.model.set_value(cdt, cdn, "bom_number", r.message.custom_bom_no);
+							frappe.model.set_value(cdt, cdn, "gross_weight", r.message.custom_gross_wt);
+	
+							frappe.db
+								.get_value("Item", item_code, ["item_name", "stock_uom","description"])
+								.then((res) => {
+									if (res.message) {
+										frappe.model.set_value(cdt, cdn, "item_name", res.message.item_name);
+										frappe.model.set_value(cdt, cdn, "uom", res.message.stock_uom);
+										frappe.model.set_value(cdt, cdn, "description", res.message.description);
+									}
+								});
+						}
 					});
 			}
 		}
+		
 		let serial_item = [];
 		if (row.serial_no && typeof row.serial_no === "string" && row.serial_no != "") {
 			serial_item.push(...row.serial_no.split("\n"));
