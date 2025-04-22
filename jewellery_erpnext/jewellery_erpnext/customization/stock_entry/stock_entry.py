@@ -186,8 +186,6 @@ class CustomStockEntry(StockEntry):
 						outgoing_items_cost += flt(d.basic_amount)
 		finally:
 			pass
-			# print('frappe.local.batch_valuation_ledge')
-			# frappe.local.batch_valuation_ledger.clear()
 
 		return outgoing_items_cost
 
@@ -213,8 +211,10 @@ class CustomStockEntry(StockEntry):
 		try:
 			self.make_sl_entries(sl_entries)
 		finally:
-			frappe.local.batch_valuation_ledger.clear()
-			del frappe.local.batch_valuation_ledger
+			if hasattr(frappe.local, "batch_valuation_ledger"):
+				# Clear the batch valuation ledger after processing
+				frappe.local.batch_valuation_ledger.clear()
+				del frappe.local.batch_valuation_ledger
 
 	def make_sl_entries(self, sl_entries, allow_negative_stock=False, via_landed_cost_voucher=False):
 		from erpnext.stock.serial_batch_bundle import update_batch_qty
