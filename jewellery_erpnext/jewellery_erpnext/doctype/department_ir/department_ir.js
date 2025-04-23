@@ -282,8 +282,10 @@ function set_html(frm) {
 			</tbody>
 		</table>`;
 	frappe.call({
-		doc: frm.doc,
-		method: "get_summary_data",
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils.get_summary_data",
+		args: {
+			doc: frm.doc,
+		},
 		callback: function (r) {
 			if (r.message) {
 				frm.get_field("summary").$wrapper.html(

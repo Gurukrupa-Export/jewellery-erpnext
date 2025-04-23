@@ -67,6 +67,13 @@ class DepartmentIR(Document):
 			for row in records:
 				self.append("department_ir_operation", {"manufacturing_operation": row.name})
 
+	def before_submit(self):
+		if not self.department_ir_operation:
+			frappe.throw("Add row in <b>Department IR Operations Table</b>")
+
+		if self.type == 'Receive' and not self.receive_against:
+			frappe.throw("<b>Receive Against</b> is not set for this Receive entry")
+
 	def on_submit(self):
 		if self.type == "Issue":
 			self.on_submit_issue_new()
@@ -78,7 +85,6 @@ class DepartmentIR(Document):
 			self.on_submit_issue_new(cancel=True)
 		else:
 			self.on_submit_receive(cancel=True)
-		# self.on_submit_receive(cancel=True)
 
 	# for Receive
 	def on_submit_receive(self, cancel=False):
@@ -158,7 +164,7 @@ class DepartmentIR(Document):
 			for row in se_item_list:
 				stock_doc.append("items", row)
 			stock_doc.flags.ignore_permissions = True
-			# stock_doc.save()
+			stock_doc.save()
 			stock_doc.submit()
 
 		if cancel:
@@ -367,7 +373,7 @@ class DepartmentIR(Document):
 
 			else:
 				values["complete_time"] = dt_string
-				new_operation = create_operation_for_next_dept(
+				new_operation = create_operation_for_next_dept_new(
 					self.name, row.manufacturing_work_order, row.manufacturing_operation, self.next_department
 				)
 				# Accumulate data for batch update instead of calling the function here
@@ -376,7 +382,7 @@ class DepartmentIR(Document):
 				frappe.db.set_value(
 					"Manufacturing Operation", row.manufacturing_operation, "status", "Finished"
 				)
-				doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+				doc = frappe.get_cached_doc("Manufacturing Operation", row.manufacturing_operation)
 				mop_data.update(
 					{
 						row.manufacturing_work_order: {
@@ -1066,7 +1072,7 @@ def fetch_and_update(doc, row, manufacturing_operation):
 
 def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 
-	new_mop_doc = frappe.copy_doc(frappe.get_doc("Manufacturing Operation", mop))
+	new_mop_doc = frappe.copy_doc(frappe.get_cached_doc("Manufacturing Operation", mop))
 	new_mop_doc.name = None
 	new_mop_doc.department_issue_id = ir_name
 	new_mop_doc.department_ir_status = "In-Transit"
@@ -1130,6 +1136,25 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	# target_doc.time_taken = None
 	# target_doc.save()
 	# target_doc.db_set("employee", None)
+	frappe.db.set_value("Manufacturing Work Order", mwo, "manufacturing_operation", new_mop_doc.name)
+	return new_mop_doc.name
+
+def create_operation_for_next_dept_new(ir_name, mwo, mop, next_department):
+	operation = frappe.db.get_value("Manufacturing Operation", mop, "operation")
+	new_mop_doc = frappe.new_doc("Manufacturing Operation")
+	new_mop_doc.department_issue_id = ir_name
+	new_mop_doc.department_ir_status = "In-Transit"
+	new_mop_doc.department_receive_id = None
+	new_mop_doc.previous_operation = operation
+	new_mop_doc.department = next_department
+	new_mop_doc.previous_mop = mop
+	new_mop_doc.operation = None
+	new_mop_doc.department_source_table = []
+	new_mop_doc.department_target_table = []
+	new_mop_doc.employee_source_table = []
+	new_mop_doc.employee_target_table = []
+	new_mop_doc.previous_se_data_updated = 0
+	new_mop_doc.insert()
 	frappe.db.set_value("Manufacturing Work Order", mwo, "manufacturing_operation", new_mop_doc.name)
 	return new_mop_doc.name
 
@@ -1262,3 +1287,63 @@ def add_time_log(doc, args):
 
 	doc.update_children()
 	doc.db_update_all()
+
+def add_time_log_optimize(mop_name, args):
+	status = args.get("status")
+
+	# Normalize status
+	if status == "Resume Job":
+		status = "WIP"
+
+	# Reset timer values (status, current_time, started_time)
+	update_fields = {}
+	if status:
+		update_fields["status"] = status
+	if status in ["WIP", "Finished"]:
+		update_fields["current_time"] = 0.0
+	if status == "WIP" and args.get("start_time"):
+		update_fields["started_time"] = get_datetime(args["start_time"])
+
+	if update_fields:
+		frappe.db.set_value("Manufacturing Operation", mop_name, update_fields)
+
+	# 1. If complete_time exists → update all open department_time_logs
+	if args.get("complete_time"):
+		complete_time = get_datetime(args["complete_time"])
+		frappe.db.sql(
+			"""
+			UPDATE `tabManufacturing Operation Department Time Log`
+			SET department_to_time = %s
+			WHERE parent = %s
+				AND parenttype = 'Manufacturing Operation'
+				AND department_to_time IS NULL
+			""",
+			(complete_time, mop_name)
+		)
+
+	# 2. Else if department_start_time exists → insert a department_time_log row
+	elif args.get("department_start_time"):
+		dept_from_time = get_datetime(args["department_start_time"])
+		frappe.db.sql(
+			"""
+			INSERT INTO `tabManufacturing Operation Department Time Log`
+			(name, parent, parenttype, parentfield, creation, modified,
+			department_from_time)
+			VALUES (%s, %s, 'Manufacturing Operation', 'department_time_logs', NOW(), NOW(), %s)
+			""",
+			(frappe.generate_hash(), mop_name, dept_from_time)
+		)
+
+	# 3. Else if start_time exists → insert into time_logs with optional employee
+	elif args.get("start_time"):
+		from_time = get_datetime(args["start_time"])
+		employee = args.get("employee")
+		frappe.db.sql(
+			"""
+			INSERT INTO `tabManufacturing Operation Time Log`
+			(name, parent, parenttype, parentfield, creation, modified,
+			from_time, employee)
+			VALUES (%s, %s, 'Manufacturing Operation', 'time_logs', NOW(), NOW(), %s, %s)
+			""",
+			(frappe.generate_hash(), mop_name, from_time, employee)
+		)
