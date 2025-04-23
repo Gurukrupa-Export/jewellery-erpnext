@@ -1,4 +1,5 @@
 import frappe
+import json
 from frappe import _
 from frappe.query_builder import DocType
 from frappe.utils import flt
@@ -61,7 +62,11 @@ def validate_mwo(self):
 				)
 
 
-def get_summary_data(self):
+@frappe.whitelist()
+def get_summary_data(doc):
+	if isinstance(doc, str):
+		doc = json.loads(doc)
+
 	data = [
 		{
 			"gross_wt": 0,
@@ -74,7 +79,8 @@ def get_summary_data(self):
 			"gemstone_pcs": 0,
 		}
 	]
-	for row in self.department_ir_operation:
+
+	for row in doc.get("department_ir_operation"):
 		for i in data[0]:
 			if row.get(i):
 				value = row.get(i)
