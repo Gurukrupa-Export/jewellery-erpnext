@@ -31,27 +31,6 @@ class OverlapError(frappe.ValidationError):
 
 class ManufacturingOperation(Document):
 	# timer code
-	@frappe.whitelist()
-	def get_bom_summary(self):
-		if self.design_id_bom:
-			# use get_all with parent filter
-
-			bom_data = frappe.db.get_all(
-				"BOM Item", filters={"parent": self.design_id_bom}, fields=["item_code", "qty", "uom"]
-			)
-
-			# bom_data = frappe.get_doc("BOM", self.design_id_bom)
-			item_records = [
-				{"item_code": row.item_code, "qty": row.qty, "uom": row.uom} for row in bom_data
-			]
-			# for bom_row in bom_data.items:
-			# 	item_record = {"item_code": bom_row.item_code, "qty": bom_row.qty, "uom": bom_row.uom}
-			# 	item_records.append(item_record)
-			return frappe.render_template(
-				"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_operation/bom_summery.html",
-				{"data": item_records},
-			)
-
 	def reset_timer_value(self, args):
 		self.started_time = None
 
@@ -2901,3 +2880,25 @@ def update_new_mop(self, old_mop):
 				temp_row["name"] = None
 				temp_row["idx"] = None
 				self.append("employee_target_table", row)
+
+
+@frappe.whitelist()
+def get_bom_summary(design_id_bom):
+	if design_id_bom:
+		# use get_all with parent filter
+
+		bom_data = frappe.db.get_all(
+			"BOM Item", filters={"parent": design_id_bom}, fields=["item_code", "qty", "uom"]
+		)
+
+		# bom_data = frappe.get_doc("BOM", self.design_id_bom)
+		item_records = [
+			{"item_code": row.item_code, "qty": row.qty, "uom": row.uom} for row in bom_data
+		]
+		# for bom_row in bom_data.items:
+		# 	item_record = {"item_code": bom_row.item_code, "qty": bom_row.qty, "uom": bom_row.uom}
+		# 	item_records.append(item_record)
+		return frappe.render_template(
+			"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_operation/bom_summery.html",
+			{"data": item_records},
+		)
