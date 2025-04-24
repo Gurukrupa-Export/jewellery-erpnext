@@ -340,31 +340,30 @@ function set_html(frm) {
 	} else {
 		frm.get_field("stock_entry_details").$wrapper.html("");
 	}
+	// frappe.call({
+	// 	method: "get_stock_summary",
+	// 	doc: frm.doc,
+	// 	args: {
+	// 		docname: frm.doc.name,
+	// 	},
+	// 	callback: function (r) {
+	// 		frm.get_field("stock_summery").$wrapper.html(r.message);
+	// 	},
+	// });
+	// frappe.call({
+	// 	method: "get_stock_entry",
+	// 	doc: frm.doc,
+	// 	args: {
+	// 		docname: frm.doc.name,
+	// 	},
+	// 	callback: function (r) {
+	// 		frm.get_field("stock_entry").$wrapper.html(r.message);
+	// 	},
+	// });
 	frappe.call({
-		method: "get_stock_summary",
-		doc: frm.doc,
+		method: "jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_bom_summary",
 		args: {
-			docname: frm.doc.name,
-		},
-		callback: function (r) {
-			frm.get_field("stock_summery").$wrapper.html(r.message);
-		},
-	});
-	frappe.call({
-		method: "get_stock_entry",
-		doc: frm.doc,
-		args: {
-			docname: frm.doc.name,
-		},
-		callback: function (r) {
-			frm.get_field("stock_entry").$wrapper.html(r.message);
-		},
-	});
-	frappe.call({
-		method: "get_bom_summary",
-		doc: frm.doc,
-		args: {
-			docname: frm.doc.name,
+			design_id_bom: frm.doc.design_id_bom,
 		},
 		callback: function (r) {
 			frm.get_field("bom_summery").$wrapper.html(r.message);
