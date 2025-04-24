@@ -55,12 +55,12 @@ doc_events = {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.quotation.quotation.before_validate",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.validate",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.on_submit",
-        "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.before_submit",
+		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.before_submit",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.on_cancel",
 		"onload": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.onload",
 	},
-    "Delivery Note": {
-        "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.delivery_note.validate",
+	"Delivery Note": {
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.delivery_note.validate",
 	},
 	"Sales Order": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
@@ -164,11 +164,11 @@ override_doctype_class = {
 }
 
 
-# scheduler_events = {
-#     "all": [
-#         "jewellery_erpnext.jewellery_erpnext.doctype.stock_reconciliation_template.stock_reconciliation_template_utils.CustomStockReconciliation"
-#     ],
-# }
+scheduler_events = {
+	"hourly": [
+		"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.rename_stock_entry_docs"
+	],
+}
 
 # from erpnext.stock import get_item_details
 # from jewellery_erpnext.erpnext_override import get_price_list_rate_for

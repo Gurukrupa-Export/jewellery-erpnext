@@ -971,6 +971,17 @@
    "is_system_generated": 1,
    "label": "Customer Details",
    "module": "Jewellery Erpnext"
-  }
+  },
+  {
+    "dt": "Stock Entry",
+    "fieldname": "to_rename",
+    "fieldtype": "Check",
+    "insert_after": "custom_item_type",
+    "is_system_generated": 1,
+    "label": "To Rename",
+    "hidden": 1,
+    "search_index": 1,
+    "module": "Jewellery Erpnext"
+   }
  ]
 }
