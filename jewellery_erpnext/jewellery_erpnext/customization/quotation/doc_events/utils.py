@@ -57,7 +57,7 @@ def update_si(self):
 			bom_doc = frappe.get_doc("BOM", row.quotation_bom)
 	
 			update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data)
-			update_einvoice_items(self, invoice_data)
+			# update_einvoice_items(self, invoice_data)
 
 
 def update_einvoice_items(self, invoice_data):
