@@ -1,8 +1,11 @@
 import frappe
+import json
 from frappe.utils import flt
 
-
-def get_summary_data(self):
+@frappe.whitelist()
+def get_summary_data(doc):
+	if isinstance(doc, str):
+		doc = json.loads(doc)
 	data = [
 		{
 			"gross_wt": 0,
@@ -15,7 +18,7 @@ def get_summary_data(self):
 			"gemstone_pcs": 0,
 		}
 	]
-	for row in self.employee_ir_operations:
+	for row in doc.get("employee_ir_operations"):
 		for i in data[0]:
 			if row.get(i):
 				value = row.get(i)
@@ -23,4 +26,5 @@ def get_summary_data(self):
 					value = int(row.get(i))
 				data[0][i] += flt(value, 3)
 			data[0][i] = flt(data[0][i], 3)
+
 	return data
