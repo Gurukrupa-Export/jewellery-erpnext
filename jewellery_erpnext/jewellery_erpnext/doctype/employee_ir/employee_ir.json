@@ -365,7 +365,6 @@
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR",
- "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {
