@@ -667,16 +667,25 @@ def set_bom_item_details(self):
 				if doctype == "Quotation"
 				else frappe.get_doc("BOM", item.bom)
 			)
+
+			bom_modified = False
+
 			# Set Metal Details Fields
-			for metal in bom_doc.metal_detail + bom_doc.finding_detail:
-				if item.metal_colour:
-					metal.metal_colour = item.metal_colour
+			if item.metal_colour:
+				for metal in bom_doc.metal_detail + bom_doc.finding_detail:
+					if metal.metal_colour != item.metal_colour:
+						metal.metal_colour = item.metal_colour
+						bom_modified = True
 
 			# Set Diamond Detail Fields
 			for diamond in bom_doc.diamond_detail:
-				set_diamond_fields(diamond, item)
+				changed = set_diamond_fields(diamond, item)
+				if changed:
+					bom_modified = True
 
-			bom_doc.save()
+			# Save only if modifications were made
+			if bom_modified:
+				bom_doc.save()
 			# Set Gemstone Fields
 			# for stone in self.gemstone_detail:
 			# 	set_gemstone_fields(stone, item)
@@ -685,10 +694,10 @@ def set_bom_item_details(self):
 
 
 def set_diamond_fields(diamond, item):
-	if item.get("diamond_quality"):
+	if item.get("diamond_quality") and diamond.quality != item.diamond_quality:
 		diamond.quality = item.diamond_quality
-	return
-
+		return True
+	return False
 
 def set_gemstone_fields(stone, item):
 	if item.gemstone_type:

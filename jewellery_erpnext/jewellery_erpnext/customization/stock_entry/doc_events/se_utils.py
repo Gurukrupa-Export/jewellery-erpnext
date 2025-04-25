@@ -8,7 +8,7 @@ from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle impor
 from frappe import _
 from frappe.query_builder import Case
 from frappe.query_builder.functions import Locate
-from frappe.utils import flt, nowtime
+from frappe.utils import flt, nowtime, now
 
 from erpnext.stock.serial_batch_bundle import SerialNoValuation
 from jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.serial_and_batch_bundle import CustomBatchNoValuation
@@ -448,3 +448,21 @@ def get_incoming_rate(args, raise_error_if_no_rate=True):
 		)
 
 	return flt(in_rate)
+
+
+def rename_stock_entry_docs():
+	"""Rename temporarily named docs using autoname options"""
+	from frappe.model.naming import set_name_from_naming_options
+
+	doctype = "Stock Entry"
+	docs_to_rename = frappe.get_all(doctype, {"to_rename": "1"}, order_by="creation", limit=50000)
+
+	for doc in docs_to_rename:
+		oldname = doc.name
+		set_name_from_naming_options(frappe.get_meta(doctype).autoname, doc)
+		newname = doc.name
+		frappe.db.sql(
+			f"UPDATE `tab{doctype}` SET name = %s, to_rename = 0, modified = %s where name = %s",
+			(newname, now(), oldname),
+			auto_commit=True,
+		)
