@@ -216,9 +216,9 @@ class CustomStockEntry(StockEntry):
 				frappe.local.batch_valuation_ledger.clear()
 				del frappe.local.batch_valuation_ledger
 
-	def make_sl_entries(self, sl_entries, allow_negative_stock=False, via_landed_cost_voucher=False):
-		from erpnext.stock.serial_batch_bundle import update_batch_qty
-		from jewellery_erpnext.jewellery_erpnext.customization.stock.stock_ledger import make_sl_entries
+	# def make_sl_entries(self, sl_entries, allow_negative_stock=False, via_landed_cost_voucher=False):
+	# 	from erpnext.stock.serial_batch_bundle import update_batch_qty
+	# 	from erpnext.stock.stock_ledger import make_sl_entries
 
-		make_sl_entries(sl_entries, allow_negative_stock, via_landed_cost_voucher)
-		update_batch_qty(self.doctype, self.name, via_landed_cost_voucher=via_landed_cost_voucher)
+	# 	make_sl_entries(sl_entries, allow_negative_stock, via_landed_cost_voucher)
+	# 	update_batch_qty(self.doctype, self.name, via_landed_cost_voucher=via_landed_cost_voucher)

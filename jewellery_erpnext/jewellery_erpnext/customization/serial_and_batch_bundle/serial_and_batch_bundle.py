@@ -118,16 +118,6 @@ class CustomBatchNoValuation(BatchNoValuation):
 
 			for batch_no in self.batchwise_valuation_batches:
 				ledger_data = self.batch_valuation_ledger.get_batch_data(self.warehouse, self.item_code, batch_no)
-
-				# ledger_data = self.batch_valuation_ledger.get_batch_data(
-				# 	warehouse=self.warehouse,
-				# 	item_code=self.item_code,
-				# 	batch_no=batch_no,
-				# 	posting_dt=posting_dt,
-				# 	creation=self.sle.creation,
-				# 	exclude_voucher_no=self.sle.voucher_no,
-				# 	exclude_voucher_detail_no=self.sle.voucher_detail_no
-				# )
 				if ledger_data:
 					result.append(frappe._dict({
 						"batch_no": batch_no,
