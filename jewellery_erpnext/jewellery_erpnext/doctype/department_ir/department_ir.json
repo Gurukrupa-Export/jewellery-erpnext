@@ -210,7 +210,6 @@
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department IR",
- "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {
