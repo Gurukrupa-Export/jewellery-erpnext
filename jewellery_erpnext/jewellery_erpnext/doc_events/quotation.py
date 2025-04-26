@@ -257,7 +257,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 						ORDER BY creation DESC
 						LIMIT 1 
 						""",
-						(doc.customer, diamond_price_list_customer, diamond.sieve_size_mm),
+						(doc.customer, diamond_price_list_customer, diamond.size_in_mm),
 						as_dict=True
 					)
 					if size_in_mm_diamond_price_list_entry:
@@ -667,7 +667,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							ORDER BY creation DESC
 							LIMIT 1 
 							""",
-							(doc.customer, diamond_price_list_customer, diamond.sieve_size_mm),
+							(doc.customer, diamond_price_list_customer, diamond.size_in_mm),
 							as_dict=True
 						)
 						if size_in_mm_diamond_price_list_entry:
