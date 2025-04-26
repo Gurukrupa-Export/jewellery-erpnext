@@ -458,6 +458,7 @@ def rename_stock_entry_docs():
 	docs_to_rename = frappe.get_all(doctype, {"to_rename": "1"}, order_by="creation", limit=50000)
 
 	for doc in docs_to_rename:
+		doc.doctype = doctype
 		oldname = doc.name
 		set_name_from_naming_options(frappe.get_meta(doctype).autoname, doc)
 		newname = doc.name
