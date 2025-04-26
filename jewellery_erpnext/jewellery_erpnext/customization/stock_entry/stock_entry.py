@@ -46,7 +46,9 @@ class CustomStockEntry(StockEntry):
 		Temporarily name doc for fast insertion
 		name will be changed using autoname options (in a scheduled job)
 		"""
+		print("before self.name ---------------- >", self.name)
 		self.name = frappe.generate_hash(txt="", length=10)
+		print("self.name ---------------- >", self.name)
 		if self.meta.autoname == "hash":
 			self.to_rename = 0
 
