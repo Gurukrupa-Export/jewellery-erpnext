@@ -373,7 +373,7 @@ class DepartmentIR(Document):
 
 			else:
 				values["complete_time"] = dt_string
-				new_operation = create_operation_for_next_dept_new(
+				new_operation = create_operation_for_next_dept(
 					self.name, row.manufacturing_work_order, row.manufacturing_operation, self.next_department
 				)
 				# Accumulate data for batch update instead of calling the function here
