@@ -1071,7 +1071,7 @@ def fetch_and_update(doc, row, manufacturing_operation):
 
 
 def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
-
+	print("create_operation_for_next_dept_new", ir_name, mwo, mop, next_department)
 	new_mop_doc = frappe.copy_doc(frappe.get_cached_doc("Manufacturing Operation", mop))
 	new_mop_doc.name = None
 	new_mop_doc.department_issue_id = ir_name
@@ -1086,6 +1086,7 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc.employee_source_table = []
 	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
+	print("new_mop_doc", new_mop_doc.as_dict())
 	new_mop_doc.insert()
 	# target.prev_gross_wt = source.received_gross_wt or source.gross_wt or source.prev_gross_wt
 	# target.previous_mop = source.name
@@ -1140,6 +1141,7 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	return new_mop_doc.name
 
 def create_operation_for_next_dept_new(ir_name, mwo, mop, next_department):
+	print("create_operation_for_next_dept_new", ir_name, mwo, mop, next_department)
 	operation = frappe.db.get_value("Manufacturing Operation", mop, "operation")
 	new_mop_doc = frappe.new_doc("Manufacturing Operation")
 	new_mop_doc.department_issue_id = ir_name
@@ -1154,6 +1156,7 @@ def create_operation_for_next_dept_new(ir_name, mwo, mop, next_department):
 	new_mop_doc.employee_source_table = []
 	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
+	print("new_mop_doc", new_mop_doc.as_dict())
 	new_mop_doc.insert()
 	frappe.db.set_value("Manufacturing Work Order", mwo, "manufacturing_operation", new_mop_doc.name)
 	return new_mop_doc.name
