@@ -369,9 +369,6 @@ function set_html(frm) {
 			frm.get_field("bom_summery").$wrapper.html(r.message);
 		},
 	});
-	// if (frm.doc.is_last_operation) {
-
-	// }
 }
 
 //# timer code
