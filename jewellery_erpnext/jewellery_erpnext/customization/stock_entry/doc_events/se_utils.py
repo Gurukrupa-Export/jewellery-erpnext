@@ -461,9 +461,9 @@ def rename_stock_entry_docs():
 		doc.doctype = doctype
 		oldname = doc.name
 		set_name_from_naming_options(frappe.get_meta(doctype).autoname, doc)
-		newname = doc.name
-		frappe.db.sql(
-			f"UPDATE `tab{doctype}` SET name = %s, to_rename = 0, modified = %s where name = %s",
-			(newname, now(), oldname),
-			auto_commit=True,
+		new_name = frappe.rename_doc(
+			doctype,
+			oldname,
+			doc.name,
+			force=True,
 		)
