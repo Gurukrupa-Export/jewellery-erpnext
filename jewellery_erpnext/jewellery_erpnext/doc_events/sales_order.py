@@ -16,6 +16,7 @@ def validate(self, method):
 	validate_quotation_item(self)
 	validate_items(self)
 	create_new_bom(self)
+	validate_serial_number(self)
 	# calculate_gst_rate(self)
 	if not self.get("__islocal") and self.docstatus == 0:
 		set_bom_item_details(self)
@@ -24,10 +25,12 @@ def validate(self, method):
 def on_submit(self, method):
 	# submit_bom(self)
 	create_branch_so(self)
+	validate_snc(self)
 
 
 def on_cancel(self, method):
 	cancel_bom(self)
+	validate_snc(self)
 
 
 def create_new_bom(self):
@@ -141,6 +144,13 @@ def create_sales_order_bom(self, row, diamond_grade_data):
 		)
 		frappe.throw(_("Row {0} {1}").format(row.idx, e))
 
+def validate_snc(self):
+	for row in self.items:
+		if row.serial_no:
+			if self.docstatus == 2:  
+				frappe.db.set_value("Serial No", row.serial_no, "status", "Active")
+			else:
+				frappe.db.set_value("Serial No", row.serial_no, "status", "Reserved")
 
 def submit_bom(self):
 	for row in self.items:
@@ -164,6 +174,27 @@ def cancel_bom(self):
 			bom.is_active = 0
 			row.bom = ""
 
+def validate_serial_number(self):
+	if getattr(self, 'skip_serial_validation', False):
+		return
+	
+	for row in self.items:
+		if row.serial_no:
+			# serial_nos = [s.strip() for s in row.serial_no.split('\n') if s.strip()]
+
+			# for serial in serial_nos:
+			existing = frappe.db.sql("""
+				SELECT soi.name, soi.parent
+				FROM `tabSales Order Item` soi
+				JOIN `tabSales Order` so ON soi.parent = so.name
+				WHERE so.docstatus = 1
+					AND soi.serial_no = %s
+				
+			""", (row.serial_no), as_dict=True)
+			# frappe.throw(f"{existing}")
+			if existing:
+				so_name = existing[0].parent
+				frappe.throw(f"Serial No {row.serial_no} is already used in submitted Sales Order {so_name}.")
 
 @frappe.whitelist()
 def get_customer_approval_data(customer_approval_data):
