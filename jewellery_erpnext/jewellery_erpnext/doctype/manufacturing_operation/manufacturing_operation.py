@@ -2883,7 +2883,7 @@ def update_new_mop(self, old_mop):
 
 
 @frappe.whitelist()
-def get_bom_summary(design_id_bom):
+def get_bom_summary(design_id_bom:str=None):
 	if design_id_bom:
 		# use get_all with parent filter
 

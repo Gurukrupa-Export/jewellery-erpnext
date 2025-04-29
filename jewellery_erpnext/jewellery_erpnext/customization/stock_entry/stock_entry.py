@@ -41,6 +41,17 @@ def on_submit(self, method):
 
 
 class CustomStockEntry(StockEntry):
+	def autoname(self):
+		"""
+		Temporarily name doc for fast insertion
+		name will be changed using autoname options (in a scheduled job)
+		"""
+		print("before self.name ---------------- >", self.name)
+		self.name = frappe.generate_hash(txt="", length=10)
+		print("self.name ---------------- >", self.name)
+		if self.meta.autoname == "hash":
+			self.to_rename = 0
+
 	@frappe.whitelist()
 	def update_batches(self):
 		if not self.auto_created:
@@ -171,7 +182,7 @@ class CustomStockEntry(StockEntry):
 
 		if len(args_for_batch_valuation_ledger) > 30 and not hasattr(frappe.local, "batch_valuation_ledger"):
 			frappe.local.batch_valuation_ledger = BatchValuationLedger()
-			frappe.local.batch_valuation_ledger.initialize(args_for_batch_valuation_ledger, self.name)
+			frappe.local.batch_valuation_ledger.initialize(args_for_batch_valuation_ledger, self.name, self.creation)
 		try:
 			for d in self.get("items"):
 				if d.s_warehouse:
@@ -206,7 +217,7 @@ class CustomStockEntry(StockEntry):
 		# Initialize BatchValuationLedger for the transaction
 		if len(sl_entries) > 30 and not hasattr(frappe.local, "batch_valuation_ledger"):
 			frappe.local.batch_valuation_ledger = BatchValuationLedger()
-			frappe.local.batch_valuation_ledger.initialize(sl_entries, self.name)
+			frappe.local.batch_valuation_ledger.initialize(sl_entries, self.name, self.creation)
 
 		try:
 			self.make_sl_entries(sl_entries)

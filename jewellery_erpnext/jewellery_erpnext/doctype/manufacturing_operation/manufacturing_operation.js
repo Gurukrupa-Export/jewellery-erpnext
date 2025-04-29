@@ -361,7 +361,7 @@ function set_html(frm) {
 	// 	},
 	// });
 	frappe.call({
-		method: "jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_bom_summary",
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_bom_summary",
 		args: {
 			design_id_bom: frm.doc.design_id_bom,
 		},
@@ -369,9 +369,6 @@ function set_html(frm) {
 			frm.get_field("bom_summery").$wrapper.html(r.message);
 		},
 	});
-	// if (frm.doc.is_last_operation) {
-
-	// }
 }
 
 //# timer code

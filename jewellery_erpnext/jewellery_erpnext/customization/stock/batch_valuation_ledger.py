@@ -10,11 +10,11 @@ class BatchValuationLedger:
 	def __init__(self):
 		self._ledger_data = None
 
-	def initialize(self, sles: list, exclude_voucher_no: str = "", exclude_voucher_detail_nos: set = None):
+	def initialize(self, sles: list, creation=None, exclude_voucher_no: str = "", exclude_voucher_detail_nos: set = None):
 		"""Initialize ledger with historical batch data for given SLEs."""
-		self._ledger_data = self.get_historical_batch_ledger_data(sles, exclude_voucher_no, exclude_voucher_detail_nos)
+		self._ledger_data = self.get_historical_batch_ledger_data(sles, creation, exclude_voucher_no, exclude_voucher_detail_nos)
 
-	def get_historical_batch_ledger_data(self, sles: list, exclude_voucher_no: str = "", exclude_voucher_detail_nos: set = None):
+	def get_historical_batch_ledger_data(self, sles: list, creation: str=None, exclude_voucher_no: str = "", exclude_voucher_detail_nos: set = None):
 		"""Fetch historical batch data for outward SLEs with precise exclusion and temporal logic."""
 		outward_sles = [sle for sle in sles if flt(sle.get("actual_qty", 0)) < 0]
 		if not outward_sles:
@@ -55,8 +55,6 @@ class BatchValuationLedger:
 		if not batchwise_batch_nos:
 			return {}
 
-		# Build timestamp conditions for all SLEs
-		timestamp_conditions = []
 		params = {
 			"batch_nos": tuple(batchwise_batch_nos),
 			"warehouses": tuple(warehouses),
@@ -70,30 +68,20 @@ class BatchValuationLedger:
 		else:
 			voucher_exclusion_clause = "AND sb.voucher_no <> %(exclude_voucher_no)s"
 
-		for i, sle in enumerate(outward_sles):
-			conditions = []
-			pd = sle.get("posting_date")
-			pt = sle.get("posting_time")
-			cr = sle.get("creation")
+		timestamp_conditions = []
+		if outward_sles[0].get("posting_date"):
+			params["posting_date"] = outward_sles[0]["posting_date"]
+			posting_time = outward_sles[0].get("posting_time") or nowtime()
+			params["posting_time"] = posting_time
 
-			if pd:
-				params[f"pd_{i}"] = pd
-				conditions.append(f"sb.posting_date < %(pd_{i})s")
+			timestamp_conditions.append("sb.posting_date < %(posting_date)s")
+			timestamp_conditions.append("(sb.posting_date = %(posting_date)s AND sb.posting_time < %(posting_time)s)")
 
-				if pt:
-					params[f"pt_{i}"] = pt
-					conditions.append(f"(sb.posting_date = %(pd_{i})s AND sb.posting_time < %(pt_{i})s)")
+			if creation:
+				params["creation"] = creation
+				timestamp_conditions.append("(sb.posting_date = %(posting_date)s AND sb.posting_time = %(posting_time)s AND sb.creation < %(creation)s)")
 
-					if cr:
-						params[f"cr_{i}"] = cr
-						conditions.append(f"(sb.posting_date = %(pd_{i})s AND sb.posting_time = %(pt_{i})s AND sb.creation < %(cr_{i})s)")
-
-			if conditions:
-				timestamp_conditions.append(" OR ".join(conditions))
-
-		final_timestamp_filter = f"AND ({' OR '.join(timestamp_conditions)})"
-
-		params.update({"final_timestamp_filter": final_timestamp_filter})
+		final_timestamp_filter = f"AND ({' OR '.join(timestamp_conditions)})" if timestamp_conditions else ""
 
 		sql = f"""
 			SELECT
@@ -148,4 +136,3 @@ class BatchValuationLedger:
 	def clear(self):
 		"""Reset ledger data."""
 		self._ledger_data = None
-
