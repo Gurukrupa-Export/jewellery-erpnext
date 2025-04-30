@@ -118,39 +118,53 @@ frappe.ui.form.on("Sales Order Item Child", {
 			frappe.throw(__("Error there are more items in serial no please remove Items"));
 		}
 	},
-
 	serial_no: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
 		if (row.serial_no) {
-			if (!row.item_code) {
-				frappe.db
-					.get_value("Serial No", row.serial_no, [
-						"item_code",
-						"custom_bom_no",
-						"custom_gross_wt",
-					])
-					.then((r) => {
-						if (r.message) {
-							const item_code = r.message.item_code;
+			frappe.db
+				.get_value("Serial No", row.serial_no, [
+					"item_code",
+					"custom_bom_no",
+					"custom_gross_wt",
+				])
+				.then((r) => {
+					if (r.message) {
+						const item_code = r.message.item_code;
+						const bom_no = r.message.custom_bom_no;
 	
-							frappe.model.set_value(cdt, cdn, "item_code", item_code);
-							frappe.model.set_value(cdt, cdn, "bom_number", r.message.custom_bom_no);
-							frappe.model.set_value(cdt, cdn, "gross_weight", r.message.custom_gross_wt);
+						frappe.model.set_value(cdt, cdn, "item_code", item_code);
+						frappe.model.set_value(cdt, cdn, "bom_number", bom_no);
+						frappe.model.set_value(cdt, cdn, "gross_weight", r.message.custom_gross_wt);
 	
-							frappe.db
-								.get_value("Item", item_code, ["item_name", "stock_uom","description"])
-								.then((res) => {
-									if (res.message) {
-										frappe.model.set_value(cdt, cdn, "item_name", res.message.item_name);
-										frappe.model.set_value(cdt, cdn, "uom", res.message.stock_uom);
-										frappe.model.set_value(cdt, cdn, "description", res.message.description);
-									}
-								});
-						}
-					});
-			}
-		}
+						// Get Item details
+						frappe.db
+							.get_value("Item", item_code, ["item_name", "stock_uom", "description"])
+							.then((res) => {
+								if (res.message) {
+									frappe.model.set_value(cdt, cdn, "item_name", res.message.item_name);
+									frappe.model.set_value(cdt, cdn, "uom", res.message.stock_uom);
+									frappe.model.set_value(cdt, cdn, "description", res.message.description);
+								}
+							});
+	
+							if (bom_no) {
+								frappe.db
+									.get_value("BOM", bom_no, ["total_bom_amount"])
+									.then((bom_res) => {
+										if (bom_res.message) {
+											let rate = bom_res.message.total_bom_amount || 0;
+											let qty = row.qty || 1;
+											let amount = rate * qty;
 		
+											frappe.model.set_value(cdt, cdn, "rate", rate);
+											frappe.model.set_value(cdt, cdn, "amount", amount);
+										}
+									});
+						}
+					}
+				});
+		}
+	
 		let serial_item = [];
 		if (row.serial_no && typeof row.serial_no === "string" && row.serial_no != "") {
 			serial_item.push(...row.serial_no.split("\n"));
