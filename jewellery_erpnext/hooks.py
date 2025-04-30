@@ -154,6 +154,7 @@ override_whitelisted_methods = {
 	"erpnext.manufacturing.doctype.job_card.job_card.make_stock_entry": "jewellery_erpnext.jewellery_erpnext.doc_events.job_card.make_stock_entry",
 	"erpnext.stock.doctype.material_request.material_request.make_stock_entry": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.make_stock_entry",
 	"erpnext.stock.doctype.stock_entry.stock_entry.make_stock_in_entry": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
+	"frappe.desk.doctype.bulk_update.bulk_update.submit_cancel_or_update_docs": "jewellery_erpnext.jewellery_erpnext.doc_events.bulk_update.custom_submit_cancel_or_update_docs",
 }
 
 override_doctype_class = {
