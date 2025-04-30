@@ -298,20 +298,28 @@ def customer_query(doctype, txt, searchfield, start, page_len, filters):
 
 @frappe.whitelist()
 def get_sales_invoice_items(sales_invoices):
-	"""
-	method to get sales invoice item code, qty, rate and serial no
-	args:
-	                sales_invoices: list of names of sales invoices
-	return:
-	                List of item details
-	"""
-	if isinstance(sales_invoices, str):
-		sales_invoices = json.loads(sales_invoices)
-	return frappe.get_all(
-		"Sales Invoice Item",
-		{"parent": ["in", sales_invoices]},
-		["item_code", "qty", "rate", "serial_no", "bom"],
-	)
+    if isinstance(sales_invoices, str):
+        sales_invoices = json.loads(sales_invoices)
+
+    items = frappe.get_all(
+        "Sales Invoice Item",
+        {"parent": ["in", sales_invoices]},
+        ["item_code", "qty", "rate", "serial_no", "bom", "parent", "warehouse"]
+    )
+
+    # Fetch gold_rate_with_gst from each parent Sales Invoice
+    sales_invoice_gold_rates = frappe.get_all(
+        "Sales Invoice",
+        {"name": ["in", sales_invoices]},
+        ["name", "gold_rate_with_gst"]
+    )
+
+    gold_rate_map = {s.name: s.gold_rate_with_gst for s in sales_invoice_gold_rates}
+
+    return {
+        "items": items,
+        "gold_rates": gold_rate_map
+    }
 
 
 # searches for suppliers with purchase Type

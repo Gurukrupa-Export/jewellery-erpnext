@@ -386,6 +386,13 @@ frappe.ui.form.on("Quotation Item", {
 			},
 			{
 				fieldtype: "Link",
+				fieldname: "customer_metal_purity",
+				label: __("Customer Metal Purity"),
+				read_only: 1,
+				options: "Attribute Value",
+			},
+			{
+				fieldtype: "Link",
 				fieldname: "metal_colour",
 				label: __("Metal Colour"),
 				reqd: 1,
@@ -452,12 +459,26 @@ frappe.ui.form.on("Quotation Item", {
 				columns: 1,
 			},
 			{
+				fieldtype: "Currency",
+				fieldname: "difference",
+				label: __("Difference(Based on Metal Purity)"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
+			{
 				fieldtype: "Float",
 				fieldname: "wastage_amount",
 				label: __("Wastage Amount"),
 				columns: 1,
 				read_only: 1,
 				in_list_view: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "actual_rate",
+				label: __("Actual Rate"),
+				read_only: 1,
 			},
 		];
 
@@ -622,6 +643,18 @@ frappe.ui.form.on("Quotation Item", {
 				label: __("Amount"),
 				in_list_view: 1,
 			},
+			{
+				fieldtype: "Float",
+				fieldname: "actual_rate",
+				label: __("Actual Rate"),
+				read_only: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "difference_qty",
+				label: __("Difference(Based on Roundoff)"),
+				read_only: 1,
+			},
 		];
 
 		const gemstone_fields = [
@@ -750,6 +783,14 @@ frappe.ui.form.on("Quotation Item", {
 				in_list_view: 1,
 			},
 			{
+				fieldtype: "Flaot",
+				fieldname: "difference_qty",
+				label: __("Difference(Based on Roundoff)"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
+			{
 				fieldtype: "Float",
 				fieldname: "gemstone_rate_for_specified_quantity",
 				columns: 1,
@@ -841,6 +882,13 @@ frappe.ui.form.on("Quotation Item", {
 					};
 				},
 			},
+			{
+				fieldtype: "Link",
+				fieldname: "customer_metal_purity",
+				label: __("Customer Metal Purity"),
+				read_only: 1,
+				options: "Attribute Value",
+			},
 			{ fieldtype: "Column Break", fieldname: "clb1" },
 			{
 				fieldtype: "Link",
@@ -886,6 +934,20 @@ frappe.ui.form.on("Quotation Item", {
 			},
 			{
 				fieldtype: "Float",
+				fieldname: "actual_rate",
+				label: __("Actual Rate"),
+				read_only: 1,
+			},
+			{
+				fieldtype: "Currency",
+				fieldname: "difference",
+				label: __("Difference(Based on Metal Purity)"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
+			{
+				fieldtype: "Float",
 				fieldname: "rate",
 				columns: 1,
 				label: __("Rate"),
@@ -912,6 +974,7 @@ frappe.ui.form.on("Quotation Item", {
 				columns: 1,
 				in_list_view: 1,
 			},
+			
 			{
 				fieldtype: "Float",
 				fieldname: "making_amount",
@@ -1512,99 +1575,208 @@ let set_edit_bom_details = (
 	var other_material_amount = 0;
 
 	// metal details table append
-	$.each(doc.metal_detail, function (index, d) {
-		metal_amount += d.amount;
-		making_amount += d.making_amount;
-		wastage_amount += d.wastage_amount;
-
-		dialog.fields_dict.metal_detail.df.data.push({
-			docname: d.name,
-			metal_type: d.metal_type,
-			metal_touch: d.metal_touch,
-			metal_purity: d.metal_purity,
-			metal_colour: d.metal_colour,
-			amount: d.amount,
-			rate: d.rate,
-			quantity: d.quantity,
-			wastage_rate: d.wastage_rate,
-			wastage_amount: d.wastage_amount,
-			making_rate: d.making_rate,
-			making_amount: d.making_amount,
+	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
+		$.each(doc.metal_detail, function (index, d) {
+			metal_amount += d.amount;
+			making_amount += d.making_amount;
+			wastage_amount += d.wastage_amount;
+			frappe.call({
+				method: "jewellery_erpnext.query.get_customer_mtel_purity",
+				args: {
+					customer: cur_frm.doc.party_name,
+					metal_type: d.metal_type,
+					metal_touch: d.metal_touch,
+				},
+				callback: function (response) {
+					let metal_purity_value = response.message || "N/A";
+					let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
+					
+					let metal_purity = flt(metal_purity_value || 0);
+					let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					console.log("gold_rate",calculated_actual_rate)
+					let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
+					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
+					difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity
+					// console.log("Customer calculated_actual_rate_quantity", index, ":", difference_actual_gold_rate);
+				// console.log("Customer Name: ", cur_frm.doc.customer_name || cur_frm.doc.customer);
+				dialog.fields_dict.metal_detail.df.data.push({
+					docname: d.name,
+					metal_type: d.metal_type,
+					metal_touch: d.metal_touch,
+					metal_purity: d.metal_purity,
+					customer_metal_purity: metal_purity_value,
+					metal_colour: d.metal_colour,
+					amount: d.amount,
+					// rate: d.rate,
+					rate: calculated_gold_rate,
+					actual_rate: calculated_actual_rate,
+					quantity: d.quantity,
+					wastage_rate: d.wastage_rate,
+					wastage_amount: d.wastage_amount,
+					making_rate: d.making_rate,
+					making_amount: d.making_amount,
+					// difference: difference_actual_gold_rate,
+				});
+				metal_data = dialog.fields_dict.metal_detail.df.data;
+				dialog.fields_dict.metal_detail.grid.refresh();
+			
+			}
 		});
-		metal_data = dialog.fields_dict.metal_detail.df.data;
-		dialog.fields_dict.metal_detail.grid.refresh();
 	});
-
+	});
+	
 	// diamond details table append
 	$.each(doc.diamond_detail, function (index, d) {
-		diamond_amount += d.diamond_rate_for_specified_quantity;
-
-		dialog.fields_dict.diamond_detail.df.data.push({
-			docname: d.name,
-			diamond_type: d.diamond_type,
-			stone_shape: d.stone_shape,
-			quality: d.quality,
-			pcs: d.pcs,
-			diamond_cut: d.diamond_cut,
-			sub_setting_type: d.sub_setting_type,
-			diamond_grade: d.diamond_grade,
-			diamond_sieve_size: d.diamond_sieve_size,
-			sieve_size_range: d.sieve_size_range,
-			size_in_mm: d.size_in_mm,
-			quantity: d.quantity,
-			weight_per_pcs: d.weight_per_pcs,
-			total_diamond_rate: d.total_diamond_rate,
-			diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+			diamond_amount += d.diamond_rate_for_specified_quantity;
+	
+			let witout_precision = d.quantity;
+			// console.log(witout_precision);
+			let without_precision_rate = witout_precision * d.total_diamond_rate;
+		
+			frappe.call({
+				method: "frappe.client.get_value",
+				args: {
+					doctype: "Customer",
+					filters: { name: cur_frm.doc.customer },
+					fieldname: "custom_consider_2_digit_for_diamond"
+				},
+				callback: function (response) {
+					let precision = 0;
+		
+					// Check if the custom_consider_2_digit_for_diamond field is checked
+					if (response.message && response.message.custom_consider_2_digit_for_diamond) {
+						precision = 2;  // Set precision to 2 if the checkbox is checked
+					}
+		
+					let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+					let with_precision_rate = quantity_value * d.total_diamond_rate;
+		
+					// Calculate the difference
+					let difference_qty = without_precision_rate - with_precision_rate;
+					dialog.fields_dict.diamond_detail.df.data.push({
+						docname: d.name,
+						diamond_type: d.diamond_type,
+						stone_shape: d.stone_shape,
+						quality: d.quality,
+						pcs: d.pcs,
+						diamond_cut: d.diamond_cut,
+						sub_setting_type: d.sub_setting_type,
+						diamond_grade: d.diamond_grade,
+						diamond_sieve_size: d.diamond_sieve_size,
+						sieve_size_range: d.sieve_size_range,
+						size_in_mm: d.size_in_mm,
+						quantity: d.quantity,
+						weight_per_pcs: d.weight_per_pcs,
+						total_diamond_rate: d.total_diamond_rate,
+						diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+						difference_qty: difference_qty,  // Store the difference here
+					});
+	
+				let grid = dialog.fields_dict.diamond_detail.grid;
+				grid.update_docfield_property("quantity", "precision", 2);
+				grid.refresh();
+			}
 		});
-		diamond_data = dialog.fields_dict.diamond_detail.df.data;
-		dialog.fields_dict.diamond_detail.grid.refresh();
 	});
-
+	
 	// gemstone details table append
 	$.each(doc.gemstone_detail, function (index, d) {
 		gemstone_amount += d.gemstone_rate_for_specified_quantity;
-
-		dialog.fields_dict.gemstone_detail.df.data.push({
-			docname: d.name,
-			gemstone_type: d.gemstone_type,
-			stone_shape: d.stone_shape,
-			sub_setting_type: d.sub_setting_type,
-			cut_or_cab: d.cut_or_cab,
-			pcs: d.pcs,
-			gemstone_quality: d.gemstone_quality,
-			gemstone_grade: d.gemstone_grade,
-			gemstone_size: d.gemstone_size,
-			quantity: d.quantity,
-			total_gemstone_rate: d.total_gemstone_rate,
-			gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
-		});
-		gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
-		dialog.fields_dict.gemstone_detail.grid.refresh();
+		let witout_precision = d.quantity;
+		let without_precision_rate = witout_precision * d.total_gemstone_rate;
+		
+		frappe.call({
+			method: "frappe.client.get_value",
+			args: {
+				doctype: "Customer",
+				filters: { name: cur_frm.doc.customer },
+				fieldname: "custom_consider_2_digit_for_gemstone"
+			},
+			callback: function (response) {
+				let precision = 0;
+	
+				// Check if the custom_consider_2_digit_for_diamond field is checked
+				if (response.message && response.message.custom_consider_2_digit_for_gemstone) {
+					precision = 2;  // Set precision to 2 if the checkbox is checked
+				}
+	
+				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+				let with_precision_rate = quantity_value * d.total_gemstone_rate;
+	
+				// Calculate the difference
+				let difference_qty = without_precision_rate - with_precision_rate;
+			dialog.fields_dict.gemstone_detail.df.data.push({
+				docname: d.name,
+				gemstone_type: d.gemstone_type,
+				stone_shape: d.stone_shape,
+				sub_setting_type: d.sub_setting_type,
+				cut_or_cab: d.cut_or_cab,
+				pcs: d.pcs,
+				gemstone_quality: d.gemstone_quality,
+				gemstone_grade: d.gemstone_grade,
+				gemstone_size: d.gemstone_size,
+				quantity: d.quantity,
+				total_gemstone_rate: d.total_gemstone_rate,
+				gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
+				difference_qty: difference_qty,
+			});
+			// gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
+			// dialog.fields_dict.gemstone_detail.grid.refresh();
+		
+			let grid = dialog.fields_dict.gemstone_detail.grid;
+			grid.update_docfield_property("quantity", "precision", 2);
+			grid.refresh();
+	}
 	});
-
+	});
+	
 	// finding details table append
-	$.each(doc.finding_detail, function (index, d) {
-		finding_amount += d.amount;
-
-		dialog.fields_dict.finding_detail.df.data.push({
-			docname: d.name,
-			metal_type: d.metal_type,
-			finding_category: d.finding_category,
-			finding_type: d.finding_type,
-			finding_size: d.finding_size,
-			metal_touch: d.metal_touch,
-			metal_purity: d.metal_purity,
-			amount: d.amount,
-			rate: d.rate,
-			metal_colour: d.metal_colour,
-			quantity: d.quantity,
-			wastage_rate: d.wastage_rate,
-			wastage_amount: d.wastage_amount,
-			making_rate: d.making_rate,
-			making_amount: d.making_amount,
-		});
-		finding_data = dialog.fields_dict.finding_detail.df.data;
-		dialog.fields_dict.finding_detail.grid.refresh();
+	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
+		$.each(doc.finding_detail, function (index, d) {
+			finding_amount += d.amount;
+			frappe.call({
+				method: "jewellery_erpnext.query.get_customer_mtel_purity",
+				args: {
+					customer: cur_frm.doc.party_name,
+					metal_type: d.metal_type,
+					metal_touch: d.metal_touch,
+				},
+				callback: function (response) {
+					let metal_purity_value = response.message || "N/A";
+					let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
+					let metal_purity = flt(metal_purity_value || 0);
+					let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
+					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
+					let difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity
+			dialog.fields_dict.finding_detail.df.data.push({
+				docname: d.name,
+				metal_type: d.metal_type,
+				finding_category: d.finding_category,
+				finding_type: d.finding_type,
+				finding_size: d.finding_size,
+				metal_touch: d.metal_touch,
+				metal_purity: d.metal_purity,
+				customer_metal_purity: metal_purity_value,
+				amount: d.amount,
+				// rate: d.rate,
+				rate: calculated_gold_rate,
+				actual_rate:calculated_actual_rate,
+				metal_colour: d.metal_colour,
+				quantity: d.quantity,
+				wastage_rate: d.wastage_rate,
+				wastage_amount: d.wastage_amount,
+				making_rate: d.making_rate,
+				making_amount: d.making_amount,
+				difference:difference_actual_gold_rate,
+			});
+			finding_data = dialog.fields_dict.finding_detail.df.data;
+			dialog.fields_dict.finding_detail.grid.refresh();
+		}
+	});
+	});
 	});
 
 	// other details table append

@@ -318,6 +318,27 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 			},
 			{
+				fieldtype: "Float",
+				fieldname: "actual_rate",
+				columns: 1,
+				label: __("Actual Rate"),
+				read_only: 1,
+			},
+			{
+				fieldtype: "Currency",
+				fieldname: "difference",
+				label: __("Difference(Based on Metal Purity)"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "difference_qty",
+				label: __("Difference(Based on Roundoff)"),
+				read_only: 1,
+			},
+			{
 				fieldtype: "Check",
 				fieldname: "is_customer_item",
 				label: __("Is Customer Item"),
@@ -490,6 +511,12 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 			},
 			{
+				fieldtype: "Float",
+				fieldname: "difference_qty",
+				label: __("Difference(Based on Roundoff)"),
+				read_only: 1,
+			},
+			{
 				fieldtype: "Check",
 				fieldname: "is_customer_item",
 				label: __("Is Customer Item"),
@@ -634,6 +661,12 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 			},
 			{
+				fieldtype: "Float",
+				fieldname: "difference_qty",
+				label: __("Difference(Based on Roundoff)"),
+				read_only: 1,
+			},
+			{
 				fieldtype: "Check",
 				fieldname: "is_customer_item",
 				label: __("Is Customer Item"),
@@ -725,6 +758,13 @@ frappe.ui.form.on("Sales Order Item", {
 					};
 				},
 			},
+			{
+				fieldtype: "Link",
+				fieldname: "customer_metal_purity",
+				label: __("Customer Metal Purity"),
+				read_only: 1,
+				options: "Attribute Value",
+			},
 			{ fieldtype: "Column Break", fieldname: "clb1" },
 			{
 				fieldtype: "Link",
@@ -777,6 +817,13 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 				default: 1,
 			},
+			{
+				fieldtype: "Float",
+				fieldname: "actual_rate",
+				columns: 1,
+				label: __("Actual Rate"),
+				read_only: 1,
+			},
 			{ fieldtype: "Column Break", fieldname: "clb2" },
 			{
 				fieldtype: "Float",
@@ -788,6 +835,7 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 				default: 1,
 			},
+
 			{
 				fieldtype: "Float",
 				fieldname: "making_rate",
@@ -819,6 +867,20 @@ frappe.ui.form.on("Sales Order Item", {
 				columns: 1,
 				read_only: 1,
 				in_list_view: 1,
+			},
+			{
+				fieldtype: "Currency",
+				fieldname: "difference",
+				label: __("Difference(Based on Metal Purity)"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "difference_qty",
+				label: __("Difference(Based on Roundoff)"),
+				read_only: 1,
 			},
 			{
 				fieldtype: "Check",

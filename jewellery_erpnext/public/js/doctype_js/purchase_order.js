@@ -1539,66 +1539,98 @@ let set_si_reference_field_filter = (frm) => {
 };
 
 let get_items = (frm) => {
-	/* Function to add custom button for sales invoice in get items and appending table with selected invoice items */
-	frm.add_custom_button(
-		__("Sales Invoice"),
-		function () {
-			let query_args = {
-				filters: {
-					docstatus: ["!=", 2],
-					sales_type:
-						frm.doc.purchase_type === "FG Purchase" ? "Finished Goods" : "Branch Sales",
-				},
-			};
+    frm.add_custom_button(
+        __("Sales Invoice"),
+        function () {
+            console.log(frm.doc.purchase_type);
+            let query_args = {
+                filters: {
+                    docstatus: ["!=", 2],
+                    sales_type: frm.doc.purchase_type === "FG Purchase" ? "Finished Goods" : "Branch Sales",
+                },
+            };
 
-			let d = new frappe.ui.form.MultiSelectDialog({
-				doctype: "Sales Invoice",
-				target: frm,
-				setters: {
-					posting_date: null,
-					status: "",
-				},
-				add_filters_group: 1,
-				date_field: "posting_date",
-				get_query() {
-					return query_args;
-				},
-				action(selections) {
-					if (selections && selections.length) {
-						frappe.call({
-							method: "jewellery_erpnext.utils.get_sales_invoice_items",
-							freeze: true,
-							args: {
-								sales_invoices: selections,
-							},
-							callback: function (r) {
-								if (r && r.message && r.message.length) {
-									r.message.forEach((element) => {
-										let new_row = frm.add_child("items", {
-											item_code: element.item_code,
-											qty: element.qty,
-											from_sales_invoice: 1,
-										});
-										frm.refresh_fields("items");
-										frm.trigger("item_code", new_row.doctype, new_row.name);
-										frm.script_manager.trigger(
-											"item_code",
-											new_row.doctype,
-											new_row.name
-										);
-									});
-									frm.set_value("from_sales_invoice", 1);
-								}
-							},
-						});
-						d.dialog.hide();
-						hide_table_button(frm);
-					}
-				},
-			});
-		},
-		__("Get Items From")
-	);
+            if (frm.doc.supplier === "GJSU0383" && frm.doc.company === "Gurukrupa Export Private Limited") {
+                query_args.filters.company = "Gurukrupa Export Private Limited";
+                query_args.filters.customer = "GJCU0010";
+            }
+            if (frm.doc.supplier === "GJSU0569" && frm.doc.company === "Gurukrupa Export Private Limited") {
+                query_args.filters.company = "Gurukrupa Export Private Limited";
+                query_args.filters.customer = "TNCU0002";
+            }
+
+            let d = new frappe.ui.form.MultiSelectDialog({
+                doctype: "Sales Invoice",
+                target: frm,
+                setters: {
+                    posting_date: null,
+                    status: "",
+                },
+                add_filters_group: 1,
+                date_field: "posting_date",
+                get_query() {
+                    return query_args;
+                },
+                action(selections) {
+                    if (selections && selections.length) {
+                        frappe.call({
+                            method: "jewellery_erpnext.utils.get_sales_invoice_items",
+                            freeze: true,
+                            args: {
+                                sales_invoices: selections,
+                            },
+                            callback: function (r) {
+                                if (r && r.message && r.message.items && r.message.items.length) {
+                                    let firstWarehouse = r.message.items[0].warehouse;
+                                    let goldRates = r.message.gold_rates;
+
+                                    r.message.items.forEach((element) => {
+                                        let target_row;
+                                        const empty_row = frm.doc.items.find(row => !row.item_code);
+
+                                        if (empty_row) {
+                                            target_row = empty_row;
+                                            frappe.model.set_value(target_row.doctype, target_row.name, "item_code", element.item_code);
+                                            frappe.model.set_value(target_row.doctype, target_row.name, "qty", element.qty);
+                                            frappe.model.set_value(target_row.doctype, target_row.name, "from_sales_invoice", 1);
+                                            frappe.model.set_value(target_row.doctype, target_row.name, "custom_sales_invoice", element.parent);
+                                        } else {
+                                            target_row = frm.add_child("items", {
+                                                item_code: element.item_code,
+                                                qty: element.qty,
+                                                from_sales_invoice: 1,
+                                                custom_sales_invoice: element.parent,
+                                            });
+                                        }
+
+                                        frm.trigger("item_code", target_row.doctype, target_row.name);
+                                        frm.script_manager.trigger("item_code", target_row.doctype, target_row.name);
+                                    });
+
+                                    // Set set_from_warehouse field using first item's warehouse
+                                    if (firstWarehouse) {
+                                        frm.set_value("set_from_warehouse", firstWarehouse);
+                                    }
+
+                                    // Set gold_rate_with_gst from the first Sales Invoice
+                                    let first_invoice = r.message.items[0].parent;
+                                    if (goldRates && goldRates[first_invoice]) {
+                                        frm.set_value("gold_rate_with_gst", goldRates[first_invoice]);
+                                    }
+
+                                    frm.refresh_field("items");
+                                    frm.set_value("from_sales_invoice", 1);
+                                }
+                            },
+                        });
+                        d.dialog.hide();
+                        hide_table_button(frm);
+                    }
+                },
+            });
+        },
+        __("Get Items From")
+    );
 };
 
 let filter_supplier = (frm) => {
