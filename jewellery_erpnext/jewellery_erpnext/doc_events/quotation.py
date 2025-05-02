@@ -22,6 +22,7 @@ def update_status(quotation_id):
 
 
 def validate(self, method):
+	validate_gold_rate_with_gst(self)
 	self.calculate_taxes_and_totals()
 	# create_new_bom(self)
 	if self.workflow_state == "Creating BOM":
@@ -900,208 +901,340 @@ def get_gold_rate(party_name=None, currency=None):
 	return gold_rate_with_gst
 
 def validate_invoice_item(self):
+	self.set("custom_invoice_item", [])
 	if not self.custom_invoice_item:
-		if self.custom_sales_type == "Finished Goods":
-			customer_payment_term_doc = frappe.get_doc(
-				"Customer Payment Terms",
-				{"customer": self.customer}
-			)
-			
-			e_invoice_items = []
-			for item_detail in customer_payment_term_doc.customer_payment_details:
-				item_type = item_detail.item_type
-				if item_type:
-					e_invoice_item_doc = frappe.get_doc("E Invoice Item", item_type)
-					e_invoice_items.append({
-						"item_type": item_type,
-						"metal_purity": e_invoice_item_doc.metal_purity or "N/A",
-						"is_for_metal": e_invoice_item_doc.is_for_metal,
-						"metal_type": e_invoice_item_doc.metal_type or "N/A",
-						"is_for_diamond": e_invoice_item_doc.is_for_diamond,
-						"is_for_finding": e_invoice_item_doc.is_for_finding,
-						"diamond_type": e_invoice_item_doc.diamond_type or "N/A",
-						"is_for_gemstone": e_invoice_item_doc.is_for_gemstone,
-						"is_for_making": e_invoice_item_doc.is_for_making,
-						"is_for_finding_making": e_invoice_item_doc.is_for_finding_making,
-						"uom": e_invoice_item_doc.uom or "N/A"
-					})
+		
+		customer_payment_term_doc = frappe.get_doc(
+			"Customer Payment Terms",
+			{"customer": self.customer}
+		)
+		
+		e_invoice_items = []
+		for item_detail in customer_payment_term_doc.customer_payment_details:
+			item_type = item_detail.item_type
+			if item_type:
+				e_invoice_item_doc = frappe.get_doc("E Invoice Item", item_type)
+					# Match specific sales_type
+				matched_sales_type_row = None
+				for row in e_invoice_item_doc.sales_type_table:
+					if row.sales_type == self.custom_sales_type:
+						matched_sales_type_row = row
+						break
 
-			self.set("custom_invoice_item", [])
+				# Skip item if no matching sales_type and custom_sales_type is set
+				if self.custom_sales_type and not matched_sales_type_row:
+					continue
+				e_invoice_items.append({
+					"item_type": item_type,
+					"metal_purity": e_invoice_item_doc.metal_purity or "N/A",
+					"is_for_metal": e_invoice_item_doc.is_for_metal,
+					"metal_type": e_invoice_item_doc.metal_type or "N/A",
+					"is_for_diamond": e_invoice_item_doc.is_for_diamond,
+					"is_for_finding": e_invoice_item_doc.is_for_finding,
+					"diamond_type": e_invoice_item_doc.diamond_type or "N/A",
+					"is_for_gemstone": e_invoice_item_doc.is_for_gemstone,
+					"is_for_making": e_invoice_item_doc.is_for_making,
+					"is_for_finding_making": e_invoice_item_doc.is_for_finding_making,
+					"uom": e_invoice_item_doc.uom or "N/A",
+					"tax_rate": matched_sales_type_row.tax_rate if matched_sales_type_row else 0
+				})
 
-			aggregated_diamond_items = {}
-			aggregated_metal_making_items = {}
-			aggregated_metal_amount_items = {}
-			aggregated_finding_items = {}
-			aggregated_finding_making_items = {}
-			aggregated_gemstone_items = {}
+		self.set("custom_invoice_item", [])
 
-			for item in self.items:
-				if item.quotation_bom:
-					bom_doc = frappe.get_doc("BOM", item.quotation_bom)
-					for diamond in bom_doc.diamond_detail:
-						for e_item in e_invoice_items:
-							if (
-								e_item["is_for_diamond"]
-								and e_item["diamond_type"] == diamond.diamond_type
-								and e_item["uom"] == diamond.stock_uom
-							):
-								key = (e_item["item_type"], e_item["uom"])
-								if key not in aggregated_diamond_items:
-									aggregated_diamond_items[key] = {
-										"item_code": e_item["item_type"],
-										"item_name": e_item["item_type"],
-										"uom": e_item["uom"],
-										"qty": 0,
-										"rate": diamond.total_diamond_rate,
-										"amount": 0
-									}
-								multiplied_qty = diamond.quantity * item.qty
-								
-								aggregated_diamond_items[key]["qty"] += multiplied_qty
-								diamond_amount = diamond.total_diamond_rate * multiplied_qty
-								aggregated_diamond_items[key]["amount"] += diamond_amount
+		aggregated_diamond_items = {}
+		aggregated_metal_making_items = {}
+		aggregated_metal_amount_items = {}
+		aggregated_finding_items = {}
+		aggregated_finding_making_items = {}
+		aggregated_gemstone_items = {}
 
-					# Metal making aggregation
-					for metal in bom_doc.metal_detail:
-						for e_item in e_invoice_items:
-							
-							if (
-								e_item["is_for_making"]
-								and e_item["metal_type"] == metal.metal_type
-								and e_item["metal_purity"] == metal.metal_touch
-								and e_item["uom"] == metal.stock_uom
-							):
-								key = (e_item["item_type"], e_item["uom"])
-								if key not in aggregated_metal_making_items:
-									aggregated_metal_making_items[key] = {
-										"item_code": e_item["item_type"],
-										"item_name": e_item["item_type"],
-										"uom": e_item["uom"],
-										"qty": 0,
-										"rate": metal.making_rate,
-										"amount": 0
-									}
-								multiplied_qty = metal.quantity * item.qty
-								aggregated_metal_making_items[key]["qty"] += multiplied_qty
-								metal_making_amount = metal.making_rate * multiplied_qty
-								
-								aggregated_metal_making_items[key]["amount"] += metal_making_amount
+		for item in self.items:
+			if item.quotation_bom:
+				bom_doc = frappe.get_doc("BOM", item.quotation_bom)
+				for diamond in bom_doc.diamond_detail:
+					for e_item in e_invoice_items:
+						if (
+							e_item["is_for_diamond"]
+							and e_item["diamond_type"] == diamond.diamond_type
+							and e_item["uom"] == diamond.stock_uom
+						):
+							key = (e_item["item_type"], e_item["uom"])
+							if key not in aggregated_diamond_items:
+								aggregated_diamond_items[key] = {
+									"item_code": e_item["item_type"],
+									"item_name": e_item["item_type"],
+									"uom": e_item["uom"],
+									"qty": 0,
+									"rate": diamond.total_diamond_rate,
+									"amount": 0,
+									"tax_rate": e_item["tax_rate"],
+                                    "tax_amount": 0,
+                                    "amount_with_tax": 0
+									
+								}
+							# multiplied_qty = diamond.quantity * item.qty
 
-					# Metal amount aggregation
-					for metal in bom_doc.metal_detail:
-						for e_item in e_invoice_items:
-							
-							if (
-								e_item["is_for_metal"]
-								and e_item["metal_type"] == metal.metal_type
-								and e_item["metal_purity"] == metal.metal_touch
-								and e_item["uom"] == metal.stock_uom
-							):
-								key = (e_item["item_type"], e_item["uom"])
-								if key not in aggregated_metal_amount_items:
-									aggregated_metal_amount_items[key] = {
-										"item_code": e_item["item_type"],
-										"item_name": e_item["item_type"],
-										"uom": e_item["uom"],
-										"qty": 0,
-										"rate": metal.rate,
-										"amount": 0
-									}
-								multiplied_qty = metal.quantity * item.qty
-								aggregated_metal_amount_items[key]["qty"] += multiplied_qty
-								metal_amount = metal.rate * multiplied_qty
-								aggregated_metal_amount_items[key]["amount"] += metal_amount
+							# aggregated_diamond_items[key]["qty"] += multiplied_qty
+							# diamond_amount = diamond.total_diamond_rate * multiplied_qty
+							# aggregated_diamond_items[key]["amount"] += diamond_amount
+							multiplied_qty = diamond.quantity * item.qty
+							diamond_amount = diamond.total_diamond_rate * multiplied_qty
 
-					# Finding aggregation
-					for finding in bom_doc.finding_detail:
-						for e_item in e_invoice_items:
-							if (
-								e_item["is_for_finding"]
-								and e_item["metal_type"] == finding.metal_type
-								and e_item["metal_purity"] == finding.metal_touch
-								and e_item["uom"] == finding.stock_uom
-							):
-								key = (e_item["item_type"], e_item["uom"])
-								if key not in aggregated_finding_items:
-									aggregated_finding_items[key] = {
-										"item_code": e_item["item_type"],
-										"item_name": e_item["item_type"],
-										"uom": e_item["uom"],
-										"qty": 0,
-										"rate": finding.rate,
-										"amount": 0
-									}
-								multiplied_qty = finding.quantity * item.qty
-								aggregated_finding_items[key]["qty"] += multiplied_qty
-								finding_amount = finding.rate * multiplied_qty
-								aggregated_finding_items[key]["amount"] += finding_amount
+							# Update quantity and amount
+							aggregated_diamond_items[key]["qty"] += multiplied_qty
+							aggregated_diamond_items[key]["amount"] += diamond_amount
 
-					# Finding making aggregation
-					for finding_making in bom_doc.finding_detail:
-						for e_item in e_invoice_items:
-							if (
-								e_item["is_for_finding_making"]
-								and e_item["metal_type"] == finding_making.metal_type
-								and e_item["metal_purity"] == finding_making.metal_touch
-								and e_item["uom"] == finding_making.stock_uom
-							):
-								key = (e_item["item_type"], e_item["uom"])
-								if key not in aggregated_finding_making_items:
-									aggregated_finding_making_items[key] = {
-										"item_code": e_item["item_type"],
-										"item_name": e_item["item_type"],
-										"uom": e_item["uom"],
-										"qty": 0,
-										"rate": finding_making.making_rate,
-										"amount": 0
-									}
-								multiplied_qty = finding.quantity * item.qty
-								finding_making_amount = finding_making.making_rate * multiplied_qty
-								aggregated_finding_making_items[key]["qty"] += multiplied_qty
-								aggregated_finding_making_items[key]["amount"] += finding_making_amount
+							# Calculate tax amount
+							tax_rate_decimal = aggregated_diamond_items[key]["tax_rate"] / 100
+							aggregated_diamond_items[key]["tax_amount"] += diamond_amount * tax_rate_decimal
 
-					# Gemstone aggregation
-					for gemstone in bom_doc.gemstone_detail:
+							# Update amount with tax
+							aggregated_diamond_items[key]["amount_with_tax"] = (
+								aggregated_diamond_items[key]["amount"] +
+								aggregated_diamond_items[key]["tax_amount"]
+							)
+
+				# Metal making aggregation
+				for metal in bom_doc.metal_detail:
+					for e_item in e_invoice_items:
 						
-						for e_item in e_invoice_items:
-							# frappe.throw(f"{gemstone.uom}")
-							if (
-								e_item["is_for_gemstone"]
-								and e_item["uom"] == gemstone.stock_uom
-							):
-								key = (e_item["item_type"], e_item["uom"])
-								if key not in aggregated_gemstone_items:
-									aggregated_gemstone_items[key] = {
-										"item_code": e_item["item_type"],
-										"item_name": e_item["item_type"],
-										"uom": e_item["uom"],
-										"qty": 0,
-										"rate": gemstone.total_gemstone_rate,
-										"amount": 0
-									}
-								multiplied_qty = gemstone.quantity * item.qty
-								gemstone_amount = gemstone.total_gemstone_rate * multiplied_qty
-								aggregated_gemstone_items[key]["qty"] += multiplied_qty
-								aggregated_gemstone_items[key]["amount"] += gemstone_amount
+						if (
+							e_item["is_for_making"]
+							and e_item["metal_type"] == metal.metal_type
+							and e_item["metal_purity"] == metal.metal_touch
+							and e_item["uom"] == metal.stock_uom
+						):
+							key = (e_item["item_type"], e_item["uom"])
+							if key not in aggregated_metal_making_items:
+								aggregated_metal_making_items[key] = {
+									"item_code": e_item["item_type"],
+									"item_name": e_item["item_type"],
+									"uom": e_item["uom"],
+									"qty": 0,
+									"rate": metal.making_rate,
+									"amount": 0,
+									"tax_rate": e_item["tax_rate"],
+                                    "tax_amount": 0,
+                                    "amount_with_tax": 0
+								}
+							# multiplied_qty = metal.quantity * item.qty
+							# aggregated_metal_making_items[key]["qty"] += multiplied_qty
+							# metal_making_amount = metal.making_rate * multiplied_qty
+							
+							# aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
-			for item in aggregated_diamond_items.values():
-				self.append("custom_invoice_item", item)
+							multiplied_qty = metal.quantity * item.qty
+							metal_making_amount = metal.making_rate * multiplied_qty
 
-			for item in aggregated_metal_making_items.values():
-				self.append("custom_invoice_item", item)
+							# Update quantity and amount
+							aggregated_metal_making_items[key]["qty"] += multiplied_qty
+							aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
-			for item in aggregated_metal_amount_items.values():
-				self.append("custom_invoice_item", item)
+							# Calculate tax amount
+							tax_rate_decimal = aggregated_metal_making_items[key]["tax_rate"] / 100
+							aggregated_metal_making_items[key]["tax_amount"] += metal_making_amount * tax_rate_decimal
 
-			for item in aggregated_finding_items.values():
-				self.append("custom_invoice_item", item)
+							# Update amount with tax
+							aggregated_metal_making_items[key]["amount_with_tax"] = (
+								aggregated_metal_making_items[key]["amount"] +
+								aggregated_metal_making_items[key]["tax_amount"]
+							)
 
-			for item in aggregated_finding_making_items.values():
-				self.append("custom_invoice_item", item)
+				# Metal amount aggregation
+				for metal in bom_doc.metal_detail:
+					for e_item in e_invoice_items:
+						
+						if (
+							e_item["is_for_metal"]
+							and e_item["metal_type"] == metal.metal_type
+							and e_item["metal_purity"] == metal.metal_touch
+							and e_item["uom"] == metal.stock_uom
+						):
+							key = (e_item["item_type"], e_item["uom"])
+							if key not in aggregated_metal_amount_items:
+								aggregated_metal_amount_items[key] = {
+									"item_code": e_item["item_type"],
+									"item_name": e_item["item_type"],
+									"uom": e_item["uom"],
+									"qty": 0,
+									"rate": metal.rate,
+									"amount": 0,
+									"tax_rate": e_item["tax_rate"],
+                                    "tax_amount": 0,
+                                    "amount_with_tax": 0
+								}
+							# multiplied_qty = metal.quantity * item.qty
+							# aggregated_metal_amount_items[key]["qty"] += multiplied_qty
+							# metal_amount = metal.rate * multiplied_qty
+							# aggregated_metal_amount_items[key]["amount"] += metal_amount
 
-			for item in aggregated_gemstone_items.values():
-				self.append("custom_invoice_item", item)
+							multiplied_qty = metal.quantity * item.qty
+							metal_amount = metal.rate * multiplied_qty
 
-			# self.save()
-	
+							# Update quantity and amount
+							aggregated_metal_amount_items[key]["qty"] += multiplied_qty
+							aggregated_metal_amount_items[key]["amount"] += metal_amount
+
+							# Calculate tax amount
+							tax_rate_decimal = aggregated_metal_amount_items[key]["tax_rate"] / 100
+							aggregated_metal_amount_items[key]["tax_amount"] += metal_amount * tax_rate_decimal
+
+							# Update amount with tax
+							aggregated_metal_amount_items[key]["amount_with_tax"] = (
+								aggregated_metal_amount_items[key]["amount"] +
+								aggregated_metal_amount_items[key]["tax_amount"]
+							)
+
+				# Finding aggregation
+				for finding in bom_doc.finding_detail:
+					for e_item in e_invoice_items:
+						if (
+							e_item["is_for_finding"]
+							and e_item["metal_type"] == finding.metal_type
+							and e_item["metal_purity"] == finding.metal_touch
+							and e_item["uom"] == finding.stock_uom
+						):
+							key = (e_item["item_type"], e_item["uom"])
+							if key not in aggregated_finding_items:
+								aggregated_finding_items[key] = {
+									"item_code": e_item["item_type"],
+									"item_name": e_item["item_type"],
+									"uom": e_item["uom"],
+									"qty": 0,
+									"rate": finding.rate,
+									"amount": 0,
+									"tax_rate": e_item["tax_rate"],
+                                    "tax_amount": 0,
+                                    "amount_with_tax": 0
+								}
+							
+							multiplied_qty = finding.quantity * item.qty
+							finding_amount = finding.rate * multiplied_qty
+
+							# Update quantity and amount
+							aggregated_finding_items[key]["qty"] += multiplied_qty
+							aggregated_finding_items[key]["amount"] += finding_amount
+
+
+							# Calculate tax amount
+							tax_rate_decimal = aggregated_finding_items[key]["tax_rate"] / 100
+							aggregated_finding_items[key]["tax_amount"] += finding_amount * tax_rate_decimal
+
+							# Update amount with tax
+							aggregated_finding_items[key]["amount_with_tax"] = (
+								aggregated_finding_items[key]["amount"] +
+								aggregated_finding_items[key]["tax_amount"]
+							)
+
+
+				# Finding making aggregation
+				for finding_making in bom_doc.finding_detail:
+					for e_item in e_invoice_items:
+						if (
+							e_item["is_for_finding_making"]
+							and e_item["metal_type"] == finding_making.metal_type
+							and e_item["metal_purity"] == finding_making.metal_touch
+							and e_item["uom"] == finding_making.stock_uom
+						):
+							key = (e_item["item_type"], e_item["uom"])
+							if key not in aggregated_finding_making_items:
+								aggregated_finding_making_items[key] = {
+									"item_code": e_item["item_type"],
+									"item_name": e_item["item_type"],
+									"uom": e_item["uom"],
+									"qty": 0,
+									"rate": finding_making.making_rate,
+									"amount": 0,
+									"tax_rate": e_item["tax_rate"],
+                                    "tax_amount": 0,
+                                    "amount_with_tax": 0
+								}
+							# multiplied_qty = finding.quantity * item.qty
+							# finding_making_amount = finding_making.making_rate * multiplied_qty
+							# aggregated_finding_making_items[key]["qty"] += multiplied_qty
+							# aggregated_finding_making_items[key]["amount"] += finding_making_amount
+
+							multiplied_qty = finding.quantity * item.qty
+							finding_making_amount = finding_making.making_rate * multiplied_qty
+
+							# Update quantity and amount
+							aggregated_finding_making_items[key]["qty"] += multiplied_qty
+							aggregated_finding_making_items[key]["amount"] += finding_making_amount
+
+							# Calculate tax amount
+							tax_rate_decimal = aggregated_finding_making_items[key]["tax_rate"] / 100
+							aggregated_finding_making_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
+
+							# Update amount with tax
+							aggregated_finding_making_items[key]["amount_with_tax"] = (
+								aggregated_finding_making_items[key]["amount"] +
+								aggregated_finding_making_items[key]["tax_amount"]
+							)
+				# Gemstone aggregation
+				for gemstone in bom_doc.gemstone_detail:
+					
+					for e_item in e_invoice_items:
+						# frappe.throw(f"{gemstone.uom}")
+						if (
+							e_item["is_for_gemstone"]
+							and e_item["uom"] == gemstone.stock_uom
+						):
+							key = (e_item["item_type"], e_item["uom"])
+							if key not in aggregated_gemstone_items:
+								aggregated_gemstone_items[key] = {
+									"item_code": e_item["item_type"],
+									"item_name": e_item["item_type"],
+									"uom": e_item["uom"],
+									"qty": 0,
+									"rate": gemstone.total_gemstone_rate,
+									"amount": 0,
+									"tax_rate": e_item["tax_rate"],
+                                    "tax_amount": 0,
+                                    "amount_with_tax": 0
+								}
+							# multiplied_qty = gemstone.quantity * item.qty
+							# gemstone_amount = gemstone.total_gemstone_rate * multiplied_qty
+							# aggregated_gemstone_items[key]["qty"] += multiplied_qty
+							# aggregated_gemstone_items[key]["amount"] += gemstone_amount
+
+							multiplied_qty = gemstone.quantity * item.qty
+							gemstone_amount = gemstone.total_gemstone_rate * multiplied_qty
+
+							# Update quantity and amount
+							aggregated_gemstone_items[key]["qty"] += multiplied_qty
+							aggregated_gemstone_items[key]["amount"] += gemstone_amount
+							# Calculate tax amount
+							tax_rate_decimal = aggregated_gemstone_items[key]["tax_rate"] / 100
+							aggregated_gemstone_items[key]["tax_amount"] += gemstone_amount * tax_rate_decimal
+
+							# Update amount with tax
+							aggregated_gemstone_items[key]["amount_with_tax"] = (
+								aggregated_gemstone_items[key]["amount"] +
+								aggregated_gemstone_items[key]["tax_amount"]
+							)
+		for item in aggregated_diamond_items.values():
+			self.append("custom_invoice_item", item)
+
+		for item in aggregated_metal_making_items.values():
+			self.append("custom_invoice_item", item)
+
+		for item in aggregated_metal_amount_items.values():
+			self.append("custom_invoice_item", item)
+
+		for item in aggregated_finding_items.values():
+			self.append("custom_invoice_item", item)
+
+		for item in aggregated_finding_making_items.values():
+			self.append("custom_invoice_item", item)
+
+		for item in aggregated_gemstone_items.values():
+			self.append("custom_invoice_item", item)
+
+def validate_gold_rate_with_gst(self):
+	if not self.gold_rate_with_gst:
+		frappe.throw("Gold Rate with GST is mandatory.")
+
+
+
+
 
