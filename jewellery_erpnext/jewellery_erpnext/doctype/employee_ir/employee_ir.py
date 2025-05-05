@@ -1533,7 +1533,7 @@ def create_stock_entry(
 							(StockEntry.docstatus == 1)
 							& (StockEntry.auto_created == 0)
 							& (StockEntryDetail.s_warehouse == child.t_warehouse)
-							& (StockEntryDetail.manufacturing_operation == child.manufacturing_operation)
+							& (StockEntryDetail.manufacturing_operation.like(f"%{child.manufacturing_operation}%"))
 							& (StockEntryDetail.batch_no == child.batch_no)
 						)
 					)

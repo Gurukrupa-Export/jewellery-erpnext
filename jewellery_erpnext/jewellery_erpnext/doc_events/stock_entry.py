@@ -827,88 +827,90 @@ def update_mop_details(se_doc, is_cancelled=False):
 	for entry in se_doc.items:
 		if not entry.manufacturing_operation:
 			continue
-		mop_data.setdefault(
-			entry.manufacturing_operation,
-			{
-				"department_source_table": [],
-				"department_target_table": [],
-				"employee_source_table": [],
-				"employee_target_table": [],
-			},
-		)
-		if not mop_basic_details.get(entry.manufacturing_operation):
-			mop_basic_details[entry.manufacturing_operation] = frappe.db.get_value(
-				"Manufacturing Operation",
-				entry.manufacturing_operation,
-				["company", "department", "employee", "subcontractor"],
-				as_dict=1,
+
+		for mop_name in entry.manufacturing_operation.split(","):
+			mop_data.setdefault(
+				mop_name,
+				{
+					"department_source_table": [],
+					"department_target_table": [],
+					"employee_source_table": [],
+					"employee_target_table": [],
+				},
 			)
-		# mop_doc = frappe.get_doc("Manufacturing Operation", entry.manufacturing_operation)
-		if is_cancelled:
-			to_remove = []
-			for doctype in [
-				"Department Source Table",
-				"Department Target Table",
-				"Employee Source Table",
-				"Employee Target Table",
-			]:
-				if sed_name := frappe.db.exists(doctype, {"sed_item": entry.name}):
-					to_remove.append(sed_name)
+			if not mop_basic_details.get(mop_name):
+				mop_basic_details[mop_name] = frappe.db.get_value(
+					"Manufacturing Operation",
+					mop_name,
+					["company", "department", "employee", "subcontractor"],
+					as_dict=1,
+				)
+			# mop_doc = frappe.get_doc("Manufacturing Operation", mop_name)
+			if is_cancelled:
+				to_remove = []
+				for doctype in [
+					"Department Source Table",
+					"Department Target Table",
+					"Employee Source Table",
+					"Employee Target Table",
+				]:
+					if sed_name := frappe.db.exists(doctype, {"sed_item": entry.name}):
+						to_remove.append(sed_name)
 
-				for docname in to_remove:
-					frappe.delete_doc(doctype, docname)
-		else:
-			d_warehouse, e_warehouse = get_warehouse_details(
-				mop_basic_details[entry.manufacturing_operation], warehouse_data, se_employee, se_subcontractor
-			)
-			validated_batches = False
-			temp_raw = copy.deepcopy(entry.__dict__)
-			if entry.s_warehouse == d_warehouse:
-				if validate_batches and entry.batch_no:
-					validated_batches = True
-					validate_duplicate_batches(entry, batch_data)
-					# if not batch_data.get((entry.manufacturing_operation, entry.item_code)):
-					# 	batch_data[(entry.manufacturing_operation, entry.item_code)] = frappe.db.get_all(
-					# 		"MOP Balance Table",
-					# 		{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
-					# 		pluck="batch_no",
-					# 	)
+					for docname in to_remove:
+						frappe.delete_doc(doctype, docname)
+			else:
+				d_warehouse, e_warehouse = get_warehouse_details(
+					mop_basic_details[mop_name], warehouse_data, se_employee, se_subcontractor
+				)
+				validated_batches = False
+				temp_raw = copy.deepcopy(entry.__dict__)
+				if entry.s_warehouse == d_warehouse:
+					if validate_batches and entry.batch_no:
+						validated_batches = True
+						validate_duplicate_batches(entry, batch_data)
+						# if not batch_data.get((mop_name, entry.item_code)):
+						# 	batch_data[(mop_name, entry.item_code)] = frappe.db.get_all(
+						# 		"MOP Balance Table",
+						# 		{"parent": mop_name, "item_code": entry.item_code},
+						# 		pluck="batch_no",
+						# 	)
 
-					# if entry.batch_no not in batch_data[(entry.manufacturing_operation, entry.item_code)]:
-					# 	frappe.throw(
-					# 		_("Row {0}: Selected Batch does not belongs to {1}.<br>Allowed Batches : {2}").format(
-					# 			entry.idx,
-					# 			entry.manufacturing_operation,
-					# 			", ".join(batch_data[(entry.manufacturing_operation, entry.item_code)]),
-					# 		)
-					# 	)
-				mop_data[entry.manufacturing_operation]["department_source_table"].append(temp_raw)
+						# if entry.batch_no not in batch_data[(mop_name, entry.item_code)]:
+						# 	frappe.throw(
+						# 		_("Row {0}: Selected Batch does not belongs to {1}.<br>Allowed Batches : {2}").format(
+						# 			entry.idx,
+						# 			mop_name,
+						# 			", ".join(batch_data[(mop_name, entry.item_code)]),
+						# 		)
+						# 	)
+					mop_data[mop_name]["department_source_table"].append(temp_raw)
 
-			elif entry.t_warehouse == d_warehouse:
-				mop_data[entry.manufacturing_operation]["department_target_table"].append(temp_raw)
+				elif entry.t_warehouse == d_warehouse:
+					mop_data[mop_name]["department_target_table"].append(temp_raw)
 
-			emp_temp_raw = copy.deepcopy(entry.__dict__)
-			if entry.s_warehouse == e_warehouse:
-				if validate_batches and entry.batch_no and not validated_batches:
-					validate_duplicate_batches(entry, batch_data)
-					# if not batch_data.get((entry.manufacturing_operation, entry.item_code)):
-					# 	batch_data[(entry.manufacturing_operation, entry.item_code)] = frappe.db.get_all(
-					# 		"MOP Balance Table",
-					# 		{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
-					# 		pluck="batch_no",
-					# 	)
+				emp_temp_raw = copy.deepcopy(entry.__dict__)
+				if entry.s_warehouse == e_warehouse:
+					if validate_batches and entry.batch_no and not validated_batches:
+						validate_duplicate_batches(entry, batch_data)
+						# if not batch_data.get((mop_name, entry.item_code)):
+						# 	batch_data[(mop_name, entry.item_code)] = frappe.db.get_all(
+						# 		"MOP Balance Table",
+						# 		{"parent": mop_name, "item_code": entry.item_code},
+						# 		pluck="batch_no",
+						# 	)
 
-					# if entry.batch_no not in batch_data[(entry.manufacturing_operation, entry.item_code)]:
-					# 	frappe.throw(
-					# 		_("Row {0}: Selected Batch does not belongs to {1}<br>Allwoed Batches : {2}").format(
-					# 			entry.idx,
-					# 			entry.manufacturing_operation,
-					# 			", ".join(batch_data[(entry.manufacturing_operation, entry.item_code)]),
-					# 		)
-					# 	)
-				mop_data[entry.manufacturing_operation]["employee_source_table"].append(emp_temp_raw)
-			elif entry.t_warehouse == e_warehouse:
-				mop_data[entry.manufacturing_operation]["employee_target_table"].append(emp_temp_raw)
+						# if entry.batch_no not in batch_data[(mop_name, entry.item_code)]:
+						# 	frappe.throw(
+						# 		_("Row {0}: Selected Batch does not belongs to {1}<br>Allwoed Batches : {2}").format(
+						# 			entry.idx,
+						# 			mop_name,
+						# 			", ".join(batch_data[(mop_name, entry.item_code)]),
+						# 		)
+						# 	)
+					mop_data[mop_name]["employee_source_table"].append(emp_temp_raw)
+				elif entry.t_warehouse == e_warehouse:
+					mop_data[mop_name]["employee_target_table"].append(emp_temp_raw)
 
 	update_balance_table(mop_data)
 
