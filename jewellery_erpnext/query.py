@@ -123,6 +123,7 @@ def set_metal_purity(sales_order):
 
 @frappe.whitelist()
 def get_scrap_items(doctype, txt, searchfield, start, page_len, filters):
+	from pypika import functions as fn
 	manufacturing_operation = filters.get("manufacturing_operation")
 
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
@@ -134,7 +135,7 @@ def get_scrap_items(doctype, txt, searchfield, start, page_len, filters):
 		.on(Item.name == StockEntryDetail.item_code)
 		.select(StockEntryDetail.item_code)
 		.distinct()
-		.where(StockEntryDetail.manufacturing_operation == manufacturing_operation)
+		.where(StockEntryDetail.manufacturing_operation.like(f"%{manufacturing_operation}%"))
 	)
 
 	data = query.run()
