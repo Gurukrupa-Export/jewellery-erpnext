@@ -53,7 +53,7 @@ def get_stock_data(manufacturing_operation, employee_wh, department):
 		.distinct()
 		.where(
 			(StockEntry.docstatus == 1)
-			& (StockEntryDetail.manufacturing_operation == manufacturing_operation)
+			& (StockEntryDetail.manufacturing_operation.like(f"%{manufacturing_operation}%"))
 			& (StockEntryDetail.t_warehouse == employee_wh)
 			& (StockEntryDetail.to_department == department)
 		)
