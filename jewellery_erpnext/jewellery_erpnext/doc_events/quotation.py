@@ -850,7 +850,7 @@ def validate_invoice_item(self):
 				e_invoice_item_doc = frappe.get_doc("E Invoice Item", item_type)
 					# Match specific sales_type
 				matched_sales_type_row = None
-				for row in e_invoice_item_doc.sales_type_table:
+				for row in e_invoice_item_doc.sales_type:
 					if row.sales_type == self.custom_sales_type:
 						matched_sales_type_row = row
 						break
