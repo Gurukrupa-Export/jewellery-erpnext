@@ -6,8 +6,6 @@ from frappe.desk.reportview import get_filters_cond, get_match_cond
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
 from frappe.utils import now
-from collections import defaultdict
-from frappe.utils import flt
 
 
 @frappe.whitelist()
@@ -300,20 +298,28 @@ def customer_query(doctype, txt, searchfield, start, page_len, filters):
 
 @frappe.whitelist()
 def get_sales_invoice_items(sales_invoices):
-	"""
-	method to get sales invoice item code, qty, rate and serial no
-	args:
-					sales_invoices: list of names of sales invoices
-	return:
-					List of item details
-	"""
-	if isinstance(sales_invoices, str):
-		sales_invoices = json.loads(sales_invoices)
-	return frappe.get_all(
-		"Sales Invoice Item",
-		{"parent": ["in", sales_invoices]},
-		["item_code", "qty", "rate", "serial_no", "bom"],
-	)
+    if isinstance(sales_invoices, str):
+        sales_invoices = json.loads(sales_invoices)
+
+    items = frappe.get_all(
+        "Sales Invoice Item",
+        {"parent": ["in", sales_invoices]},
+        ["item_code", "qty", "rate", "serial_no", "bom", "parent", "warehouse"]
+    )
+
+    # Fetch gold_rate_with_gst from each parent Sales Invoice
+    sales_invoice_gold_rates = frappe.get_all(
+        "Sales Invoice",
+        {"name": ["in", sales_invoices]},
+        ["name", "gold_rate_with_gst"]
+    )
+
+    gold_rate_map = {s.name: s.gold_rate_with_gst for s in sales_invoice_gold_rates}
+
+    return {
+        "items": items,
+        "gold_rates": gold_rate_map
+    }
 
 
 # searches for suppliers with purchase Type
@@ -377,45 +383,3 @@ def supplier_query(doctype, txt, searchfield, start, page_len, filters):
 @frappe.whitelist()
 def get_type_of_party(doc, parent, field):
 	return frappe.db.get_value(doc, {"parent": parent}, field)
-
-
-def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys):
-	from collections import defaultdict
-
-	grouped = {}
-
-	for item in items:
-		# Build a group key tuple
-		key = tuple(item[k] for k in group_keys)
-
-		if key not in grouped:
-			# Initialize with all fields from item
-			grouped[key] = item.copy()
-
-			# For sum keys, set to zero initially
-			for sk in sum_keys:
-				grouped[key][sk] = 0
-
-			# For concat keys, start with empty set
-			for ck in concat_keys:
-				grouped[key][ck] = set()
-
-		# Sum up numeric fields
-		for sk in sum_keys:
-			grouped[key][sk] += flt(item.get(sk, 0))
-
-		# Concat fields (as set to avoid duplicates)
-		for ck in concat_keys:
-			val = item.get(ck)
-			if val:
-				grouped[key][ck].add(val)
-
-	# Final touch: format output properly
-	final_grouped = []
-	for g in grouped.values():
-		# Convert sets to comma-joined strings
-		for ck in concat_keys:
-			g[ck] = ",".join(g[ck])
-		final_grouped.append(g)
-
-	return final_grouped

@@ -10,7 +10,6 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import flt, get_datetime
-from jewellery_erpnext.utils import group_aggregate_with_concat
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	update_manufacturing_operation,
@@ -113,7 +112,7 @@ class DepartmentIR(Document):
 			for se_item in frappe.db.get_all(
 				"Stock Entry Detail",
 				{
-					"manufacturing_operation": ["like", f"%{row.manufacturing_operation}%"],
+					"manufacturing_operation": row.manufacturing_operation,
 					"t_warehouse": in_transit_wh,
 					"department": self.previous_department,
 					"to_department": self.current_department,
@@ -456,25 +455,17 @@ class DepartmentIR(Document):
 				stock_doc.submit()
 
 			if strat_transit:
-				group_keys = ["item_code", "batch_no"]
-				sum_keys = ["qty", "transfer_qty", "pcs"]
-				concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
-				grouped_items = group_aggregate_with_concat(strat_transit, group_keys, sum_keys, concat_keys)
-
 				stock_doc = frappe.new_doc("Stock Entry")
 				stock_doc.stock_entry_type = "Material Transfer to Department"
 				stock_doc.company = self.company
 				stock_doc.department_ir = self.name
 				stock_doc.auto_created = True
-				for row in grouped_items:
+				for row in strat_transit:
 					if row["qty"] > 0:
 						stock_doc.append("items", row)
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
-
-	def group_se_items(self, se_items:list):
-		pass
 
 	@frappe.whitelist()
 	def get_summary_data(self):
@@ -769,7 +760,7 @@ def batch_update_stock_entry_dimensions(doc, stock_entry_data, employee, for_emp
 	sed_rows = frappe.db.get_all(
 		"Stock Entry Detail",
 		filters={"parent": ["in", stock_entries]},
-		fields=["name", "parent", "manufacturing_operation"]
+		fields=["name", "parent"]
 	)
 
 	# Prepare batch updates
@@ -784,8 +775,7 @@ def batch_update_stock_entry_dimensions(doc, stock_entry_data, employee, for_emp
 	for sed in sed_rows:
 		mop = se_updates.get(sed.parent, {}).get("manufacturing_operation")
 		if mop:
-			mop_list = sed.manufacturing_operation.split(",") if sed.manufacturing_operation else mop + ","
-			sed_updates[sed.name] = {"manufacturing_operation": mop_list}
+			sed_updates[sed.name] = {"manufacturing_operation": mop}
 
 	# Batch update Stock Entry
 	if se_updates:
