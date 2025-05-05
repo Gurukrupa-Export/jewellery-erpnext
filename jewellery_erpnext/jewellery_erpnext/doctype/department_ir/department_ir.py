@@ -161,8 +161,12 @@ class DepartmentIR(Document):
 					"inventory_type": None,
 				}
 			)
+			group_keys = ["item_code", "batch_no"]
+			sum_keys = ["qty", "pcs"]
+			concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
+			se_grouped_items = group_aggregate_with_concat(se_item_list, group_keys, sum_keys, concat_keys)
 
-			for row in se_item_list:
+			for row in se_grouped_items:
 				stock_doc.append("items", row)
 			stock_doc.flags.ignore_permissions = True
 			stock_doc.save()
@@ -423,6 +427,11 @@ class DepartmentIR(Document):
 				strat_transit += lst2
 
 			if add_to_transit:
+				group_keys = ["item_code", "batch_no"]
+				sum_keys = ["qty", "transfer_qty", "pcs"]
+				concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
+				grouped_items = group_aggregate_with_concat(strat_transit, group_keys, sum_keys, concat_keys)
+
 				stock_doc = frappe.new_doc("Stock Entry")
 				stock_doc.stock_entry_type = "Material Transfer to Department"
 				stock_doc.company = self.company
