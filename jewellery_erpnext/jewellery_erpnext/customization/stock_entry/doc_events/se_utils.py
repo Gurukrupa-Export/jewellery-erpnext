@@ -25,7 +25,10 @@ def validate_inventory_dimention(self):
 	pmo_customer_data = frappe._dict()
 	manufacturer_data = frappe._dict()
 	for row in self.items:
-		if pmo := row.custom_parent_manufacturing_order or self.manufacturing_order:
+		pmo_list = row.custom_parent_manufacturing_order or self.manufacturing_order
+		if not pmo_list:
+			continue
+		for pmo in pmo_list.split(","):
 			if not pmo_customer_data.get(pmo):
 				pmo_customer_data[pmo] = frappe.db.get_value(
 					"Parent Manufacturing Order",
