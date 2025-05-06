@@ -794,8 +794,8 @@ def custom_get_bom_scrap_material(self, qty):
 
 
 def update_manufacturing_operation(doc, is_cancelled=False):
-	if isinstance(doc, str):
-		doc = frappe.get_doc("Stock Entry", doc)
+	# if isinstance(doc, str):
+	# 	doc = json.loads(doc)
 	update_mop_details(doc, is_cancelled)
 
 
@@ -865,7 +865,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 				)
 				validated_batches = False
 				temp_raw = copy.deepcopy(entry.__dict__)
-				temp_raw.manufacturing_operation = mop_name
+				temp_raw["manufacturing_operation"] = mop_name
 				if entry.s_warehouse == d_warehouse:
 					if validate_batches and entry.batch_no:
 						validated_batches = True
@@ -891,7 +891,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 					mop_data[mop_name]["department_target_table"].append(temp_raw)
 
 				emp_temp_raw = copy.deepcopy(entry.__dict__)
-				emp_temp_raw.manufacturing_operation = mop_name
+				emp_temp_raw["manufacturing_operation"] = mop_name
 				if entry.s_warehouse == e_warehouse:
 					if validate_batches and entry.batch_no and not validated_batches:
 						validate_duplicate_batches(entry, batch_data)
