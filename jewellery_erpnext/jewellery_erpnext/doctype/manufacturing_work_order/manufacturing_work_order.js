@@ -136,10 +136,9 @@ function set_html(frm) {
 		frm.get_field("stock_entry_details").$wrapper.html("");
 	}
 	frappe.call({
-		method: "get_linked_stock_entries",
-		doc: frm.doc,
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_linked_stock_entries",
 		args: {
-			docname: frm.doc.name,
+			mwo_name: frm.doc.name,
 		},
 		callback: function (r) {
 			frm.get_field("stock_entry_details").$wrapper.html(r.message);
