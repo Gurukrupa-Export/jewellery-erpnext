@@ -794,8 +794,8 @@ def custom_get_bom_scrap_material(self, qty):
 
 
 def update_manufacturing_operation(doc, is_cancelled=False):
-	# if isinstance(doc, str):
-	# 	doc = json.loads(doc)
+	if isinstance(doc, str):
+		doc = frappe.get_doc("Stock Entry", doc)
 	update_mop_details(doc, is_cancelled)
 
 
