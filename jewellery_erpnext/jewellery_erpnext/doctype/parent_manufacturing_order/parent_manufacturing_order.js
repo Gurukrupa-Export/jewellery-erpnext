@@ -87,10 +87,9 @@ function set_filters_on_parent_table_fields(frm, fields) {
 }
 function set_html(frm) {
 	frappe.call({
-		method: "get_stock_summary",
-		doc: frm.doc,
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.get_stock_summary",
 		args: {
-			docname: frm.doc.name,
+			pmo_name: frm.doc.name,
 		},
 		callback: function (r) {
 			frm.get_field("stock_summery").$wrapper.html(r.message);
@@ -98,10 +97,10 @@ function set_html(frm) {
 	});
 
 	frappe.call({
-		method: "get_linked_stock_entries",
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.get_linked_stock_entries",
 		doc: frm.doc,
 		args: {
-			docname: frm.doc.name,
+			pmo_name: frm.doc.name,
 		},
 		callback: function (r) {
 			frm.get_field("stock_entry_details").$wrapper.html(r.message);

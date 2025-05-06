@@ -70,37 +70,6 @@ class ManufacturingWorkOrder(Document):
 		self.db_set("status", "Cancelled")
 
 	@frappe.whitelist()
-	def get_linked_stock_entries(self):  # MWO Details Tab code
-		mwo = frappe.get_all("Manufacturing Work Order", {"name": self.name}, pluck="name")
-		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
-		StockEntry = frappe.qb.DocType("Stock Entry")
-
-		query = (
-			frappe.qb.from_(StockEntryDetail)
-			.left_join(StockEntry)
-			.on(StockEntryDetail.parent == StockEntry.name)
-			.select(
-				StockEntry.manufacturing_operation,
-				StockEntry.name,
-				StockEntryDetail.item_code,
-				StockEntryDetail.item_name,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
-			)
-			.where((StockEntry.docstatus == 1))
-			.orderby(StockEntry.modified, order=frappe.qb.asc)
-		)
-		if len(mwo) > 0:
-			query = query.where((StockEntry.manufacturing_work_order.isin(mwo)))
-		data = query.run(as_dict=True)
-
-		total_qty = len([item["name"] for item in data])
-		return frappe.render_template(
-			"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_work_order/stock_entry_details.html",
-			{"data": data, "total_qty": total_qty},
-		)
-
-	@frappe.whitelist()
 	def transfer_to_mwo(self):
 		create_stock_transfer_entry(self)
 
@@ -327,3 +296,34 @@ def create_split_work_order(docname, company, count=1):
 		set_values_in_bulk("Manufacturing Operation", pending_operations, {"status": "Finished"})
 	frappe.db.set_value("Manufacturing Work Order", docname, {"has_split_mwo": 1, "status": "Closed"})
 	# frappe.db.set_value("Manufacturing Work Order", docname, "status", "Closed")
+
+
+@frappe.whitelist()
+def get_linked_stock_entries(mwo_name):  # MWO Details Tab code
+	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+	StockEntry = frappe.qb.DocType("Stock Entry")
+
+	query = (
+		frappe.qb.from_(StockEntryDetail)
+		.left_join(StockEntry)
+		.on(StockEntryDetail.parent == StockEntry.name)
+		.select(
+			StockEntry.manufacturing_operation,
+			StockEntry.name,
+			StockEntryDetail.item_code,
+			StockEntryDetail.item_name,
+			StockEntryDetail.qty,
+			StockEntryDetail.uom,
+		)
+		.where((StockEntry.docstatus == 1) &
+		(StockEntry.manufacturing_work_order == mwo_name))
+		.orderby(StockEntry.modified, order=frappe.qb.asc)
+	)
+
+	data = query.run(as_dict=True)
+
+	total_qty = len([item["name"] for item in data])
+	return frappe.render_template(
+		"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_work_order/stock_entry_details.html",
+		{"data": data, "total_qty": total_qty},
+	)
