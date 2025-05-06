@@ -865,6 +865,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 				)
 				validated_batches = False
 				temp_raw = copy.deepcopy(entry.__dict__)
+				temp_raw["manufacturing_operation"] = mop_name
 				if entry.s_warehouse == d_warehouse:
 					if validate_batches and entry.batch_no:
 						validated_batches = True
@@ -890,6 +891,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 					mop_data[mop_name]["department_target_table"].append(temp_raw)
 
 				emp_temp_raw = copy.deepcopy(entry.__dict__)
+				emp_temp_raw["manufacturing_operation"] = mop_name
 				if entry.s_warehouse == e_warehouse:
 					if validate_batches and entry.batch_no and not validated_batches:
 						validate_duplicate_batches(entry, batch_data)
@@ -918,12 +920,14 @@ def update_mop_details(se_doc, is_cancelled=False):
 def update_balance_table(mop_data):
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
+
 		for table, details in tables.items():
 			if not details:
 				continue
 			for row in details:
 				row.update({"sed_item": row["name"], "idx": None, "name": None})
 				mop_doc.append(table, row)
+
 		mop_doc.save()
 
 
