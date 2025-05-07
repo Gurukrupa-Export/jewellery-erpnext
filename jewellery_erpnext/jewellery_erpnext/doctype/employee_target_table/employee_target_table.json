@@ -813,7 +813,7 @@
    "fieldname": "sed_item",
    "fieldtype": "Link",
    "label": "SED Item",
-   "options": "Stock Entry Detail",
+   "options": "Stock Entry MOP Item",
    "read_only": 1
   },
   {
@@ -823,16 +823,18 @@
    "label": "employee_consumption"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-12-23 19:35:31.107870",
+ "modified": "2025-05-07 13:28:34.052021",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee Target Table",
  "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "ASC",
  "states": []

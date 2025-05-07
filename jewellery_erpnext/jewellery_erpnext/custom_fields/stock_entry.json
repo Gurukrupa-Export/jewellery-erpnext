@@ -947,6 +947,15 @@
    "read_only": 1
   },
   {
+    "dt": "Stock Entry",
+    "fieldname": "custom_mop_items",
+    "fieldtype": "Table",
+    "options": "Stock Entry MOP Item",
+    "insert_after": "custom_item_wise_data",
+    "label": "MOP Items",
+    "module": "Jewellery Erpnext"
+  },
+  {
    "dt": "Stock Entry",
    "fieldname": "inventory_dimension_",
    "fieldtype": "Section Break",
