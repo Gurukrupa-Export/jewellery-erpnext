@@ -811,9 +811,8 @@
   },
   {
    "fieldname": "sed_item",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "label": "SED Item",
-   "options": "Stock Entry MOP Item",
    "read_only": 1
   },
   {
@@ -827,7 +826,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2025-05-07 13:28:34.052021",
+ "modified": "2025-05-07 19:07:38.960283",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee Target Table",

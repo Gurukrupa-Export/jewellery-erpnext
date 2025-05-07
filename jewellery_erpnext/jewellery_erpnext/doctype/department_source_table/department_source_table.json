@@ -811,9 +811,8 @@
   },
   {
    "fieldname": "sed_item",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "label": "SED Item",
-   "options": "Stock Entry MOP Item",
    "read_only": 1
   },
   {
@@ -827,7 +826,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2025-05-07 13:27:40.765789",
+ "modified": "2025-05-07 19:08:45.842932",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department Source Table",
