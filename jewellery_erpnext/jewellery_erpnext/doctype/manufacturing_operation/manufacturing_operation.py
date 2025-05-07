@@ -170,20 +170,44 @@ class ManufacturingOperation(Document):
 		if self.operation in ignored_department:
 			frappe.throw(_("Customer not requireed this operation"))
 
+	# def remove_duplicate(self):
+	# 	existing_data = {
+	# 		"department_source_table": [],
+	# 		"department_target_table": [],
+	# 		"employee_source_table": [],
+	# 		"employee_target_table": [],
+	# 	}
+	# 	to_remove = []
+	# 	for row in existing_data:
+	# 		for entry in self.get(row):
+	# 			if entry.get("sed_item") and entry.get("sed_item") not in existing_data[row]:
+	# 				existing_data[row].append(entry.get("sed_item"))
+	# 			elif entry.get("sed_item") in existing_data[row]:
+	# 				to_remove.append(entry)
+
+	# 	for row in to_remove:
+	# 		self.remove(row)
+
 	def remove_duplicate(self):
+		# Use sets for fast lookups
 		existing_data = {
-			"department_source_table": [],
-			"department_target_table": [],
-			"employee_source_table": [],
-			"employee_target_table": [],
+			"department_source_table": set(),
+			"department_target_table": set(),
+			"employee_source_table": set(),
+			"employee_target_table": set(),
 		}
 		to_remove = []
-		for row in existing_data:
+
+		# Collect unique items and mark duplicates
+		for row in existing_data.keys():
 			for entry in self.get(row):
-				if entry.get("sed_item") and entry.get("sed_item") not in existing_data[row]:
-					existing_data[row].append(entry.get("sed_item"))
-				elif entry.get("sed_item") in existing_data[row]:
-					to_remove.append(entry)
+				sed_item = entry.get("sed_item")
+				if sed_item:
+					# Check and add to set directly
+					if sed_item in existing_data[row]:
+						to_remove.append(entry)
+					else:
+						existing_data[row].add(sed_item)
 
 		for row in to_remove:
 			self.remove(row)
@@ -210,10 +234,10 @@ class ManufacturingOperation(Document):
 
 		if self.previous_mop:
 			existing_data = {
-				"department_source_table": [],
-				"department_target_table": [],
-				"employee_source_table": [],
-				"employee_target_table": [],
+				"department_source_table": set(),
+				"department_target_table": set(),
+				"employee_source_table": set(),
+				"employee_target_table": set(),
 			}
 
 			for row in existing_data:
@@ -257,6 +281,7 @@ class ManufacturingOperation(Document):
 					row["name"] = None
 					row["idx"] = None
 					self.append("employee_target_table", row)
+
 		self.db_set("previous_se_data_updated", 1)
 
 	# timer code
@@ -603,12 +628,13 @@ class ManufacturingOperation(Document):
 	@frappe.whitelist()
 	def get_stock_entry(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
-		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+		# StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+		StockEntryMopItem = frappe.qb.DocType("Stock Entry MOP Item")
 
 		data = (
-			frappe.qb.from_(StockEntryDetail)
+			frappe.qb.from_(StockEntryMopItem)
 			.left_join(StockEntry)
-			.on(StockEntryDetail.parent == StockEntry.name)
+			.on(StockEntryMopItem.parent == StockEntry.name)
 			.select(
 				StockEntry.manufacturing_work_order,
 				StockEntry.manufacturing_operation,
@@ -616,13 +642,13 @@ class ManufacturingOperation(Document):
 				StockEntry.to_department,
 				StockEntry.employee,
 				StockEntry.stock_entry_type,
-				StockEntryDetail.parent,
-				StockEntryDetail.item_code,
-				StockEntryDetail.item_name,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
+				StockEntryMopItem.parent,
+				StockEntryMopItem.item_code,
+				StockEntryMopItem.item_name,
+				StockEntryMopItem.qty,
+				StockEntryMopItem.uom,
 			)
-			.where((StockEntry.docstatus == 1) & (StockEntryDetail.manufacturing_operation == self.name))
+			.where((StockEntry.docstatus == 1) & (StockEntryMopItem.manufacturing_operation == self.name))
 			.orderby(StockEntry.modified, order=frappe.qb.desc)
 		).run(as_dict=True)
 
@@ -635,7 +661,8 @@ class ManufacturingOperation(Document):
 	@frappe.whitelist()
 	def get_stock_summary(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
-		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+		# StockEntryDetail = frappeqb.DocType("Stock Entry Detail")
+		StockEntryMopItem = frappe.qb.DocType("Stock Entry MOP Item")
 
 		# Subquery for max modified stock entry per manufacturing operation
 		max_se_subquery = (
@@ -647,28 +674,28 @@ class ManufacturingOperation(Document):
 
 		# Main query
 		data = (
-			frappe.qb.from_(StockEntryDetail)
+			frappe.qb.from_(StockEntryMopItem)
 			.left_join(max_se_subquery)
-			.on(StockEntryDetail.manufacturing_operation == max_se_subquery.manufacturing_operation)
+			.on(StockEntryMopItem.manufacturing_operation == max_se_subquery.manufacturing_operation)
 			.left_join(StockEntry)
 			.on(
-				(StockEntryDetail.parent == StockEntry.name)
+				(StockEntryMopItem.parent == StockEntry.name)
 				& (StockEntry.modified == max_se_subquery.max_modified)
 			)
 			.select(
 				StockEntry.manufacturing_work_order,
 				StockEntry.manufacturing_operation,
-				StockEntryDetail.parent,
-				StockEntryDetail.item_code,
-				StockEntryDetail.item_name,
-				StockEntryDetail.inventory_type,
-				StockEntryDetail.pcs,
-				StockEntryDetail.batch_no,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
+				StockEntryMopItem.parent,
+				StockEntryMopItem.item_code,
+				StockEntryMopItem.item_name,
+				StockEntryMopItem.inventory_type,
+				StockEntryMopItem.pcs,
+				StockEntryMopItem.batch_no,
+				StockEntryMopItem.qty,
+				StockEntryMopItem.uom,
 			)
 			.where(
-				(StockEntry.docstatus == 1) & (StockEntryDetail.manufacturing_operation.isin([self.name]))
+				(StockEntry.docstatus == 1) & (StockEntryMopItem.manufacturing_operation == self.name)
 			)
 		).run(as_dict=True)
 
