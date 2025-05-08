@@ -5,9 +5,8 @@ from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe.desk.reportview import get_filters_cond, get_match_cond
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
-from frappe.utils import now
 from collections import defaultdict
-from frappe.utils import flt
+from collections import defaultdict
 
 
 @frappe.whitelist()
@@ -379,43 +378,157 @@ def get_type_of_party(doc, parent, field):
 	return frappe.db.get_value(doc, {"parent": parent}, field)
 
 
-def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys):
-	from collections import defaultdict
+# def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys):
+# 	from collections import defaultdict
 
-	grouped = {}
+# 	grouped = {}
 
-	for item in items:
-		# Build a group key tuple
-		key = tuple(item[k] for k in group_keys)
+# 	for item in items:
+# 		# Build a group key tuple
+# 		key = tuple(item[k] for k in group_keys)
 
-		if key not in grouped:
-			# Initialize with all fields from item
-			grouped[key] = item.copy()
+# 		if key not in grouped:
+# 			# Initialize with all fields from item
+# 			grouped[key] = item.copy()
 
-			# For sum keys, set to zero initially
-			for sk in sum_keys:
-				grouped[key][sk] = 0
+# 			# For sum keys, set to zero initially
+# 			for sk in sum_keys:
+# 				grouped[key][sk] = 0
 
-			# For concat keys, start with empty set
-			for ck in concat_keys:
-				grouped[key][ck] = set()
+# 			# For concat keys, start with empty set
+# 			for ck in concat_keys:
+# 				grouped[key][ck] = set()
 
-		# Sum up numeric fields
-		for sk in sum_keys:
-			grouped[key][sk] += flt(item.get(sk, 0))
+# 		# Sum up numeric fields
+# 		for sk in sum_keys:
+# 			grouped[key][sk] += flt(item.get(sk, 0))
 
-		# Concat fields (as set to avoid duplicates)
-		for ck in concat_keys:
-			val = item.get(ck)
-			if val:
-				grouped[key][ck].add(val)
+# 		# Concat fields (as set to avoid duplicates)
+# 		for ck in concat_keys:
+# 			val = item.get(ck)
+# 			if val:
+# 				grouped[key][ck].add(val)
 
-	# Final touch: format output properly
+# 	# Final touch: format output properly
+# 	final_grouped = []
+# 	for g in grouped.values():
+# 		# Convert sets to comma-joined strings
+# 		for ck in concat_keys:
+# 			g[ck] = ",".join(g[ck])
+# 		final_grouped.append(g)
+
+# 	return final_grouped
+
+
+def is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys):
+	"""
+	Check if an item's non-group keys are consistent within an existing group.
+
+	Args:
+		grouped (dict): The current grouped items.
+		key (tuple): Group key generated from the item.
+		item (dict): The item to check consistency.
+		group_keys (list[str]): Keys used for grouping.
+		sum_keys (list[str]): Keys whose values are summed.
+		concat_keys (list[str]): Keys whose values are concatenated.
+
+	Returns:
+		bool: True if the item is consistent within the group, False otherwise.
+	"""
+	for gk in item.keys():
+		if gk not in group_keys + sum_keys + concat_keys:
+			if key in grouped and gk in grouped[key]:
+				if grouped[key][gk] != item.get(gk):
+					return False
+	return True
+
+
+def initialize_group(grouped, key, item, group_keys, sum_keys, concat_keys):
+	"""
+	Initialize a new group in the grouped dictionary.
+
+	Args:
+		grouped (dict): The current grouped items.
+		key (tuple): Group key generated from the item.
+		item (dict): The item to initialize the group with.
+		group_keys (list[str]): Keys used for grouping.
+		sum_keys (list[str]): Keys whose values are summed.
+		concat_keys (list[str]): Keys whose values are concatenated.
+	"""
+	grouped[key].update({sk: 0 for sk in sum_keys})
+	for ck in concat_keys:
+		grouped[key][ck] = []
+	for k in group_keys:
+		grouped[key][k] = item.get(k)
+	for gk in item.keys():
+		if gk not in group_keys + sum_keys + concat_keys:
+			grouped[key][gk] = item.get(gk)
+
+
+def aggregate_item(grouped, key, item, sum_keys, concat_keys):
+	"""
+	Aggregate item values into an existing group.
+
+	Args:
+		grouped (dict): The current grouped items.
+		key (tuple): Group key generated from the item.
+		item (dict): The item to aggregate.
+		sum_keys (list[str]): Keys whose values are summed.
+		concat_keys (list[str]): Keys whose values are concatenated.
+	"""
+	for sk in sum_keys:
+		grouped[key][sk] += float(item.get(sk, 0) or 0)
+	for ck in concat_keys:
+		val = item.get(ck)
+		if val:
+			grouped[key][ck].append(str(val))
+
+
+def finalize_grouped(grouped, concat_keys):
+	"""
+	Finalize the grouped items by concatenating list fields.
+
+	Args:
+		grouped (dict): The current grouped items.
+		concat_keys (list[str]): Keys whose values are concatenated.
+
+	Returns:
+		list[dict]: Final list of grouped items with concatenated values.
+	"""
 	final_grouped = []
 	for g in grouped.values():
-		# Convert sets to comma-joined strings
 		for ck in concat_keys:
 			g[ck] = ",".join(g[ck])
 		final_grouped.append(g)
-
 	return final_grouped
+
+
+def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys):
+	"""
+	Group items based on specified keys, sum numerical fields, and concatenate values.
+	If an item is inconsistent (i.e., non-group keys do not match), it is kept separately.
+
+	Args:
+		items (list[dict]): List of items to group and aggregate.
+		group_keys (list[str]): Keys used for grouping items.
+		sum_keys (list[str]): Keys whose values are summed within groups.
+		concat_keys (list[str]): Keys whose values are concatenated within groups.
+
+	Returns:
+		list[dict]: Aggregated and grouped items, with inconsistent items separated.
+	"""
+	grouped = defaultdict(lambda: {sk: 0 for sk in sum_keys})
+	non_grouped = []
+
+	for item in items:
+		key = tuple(item.get(k) for k in group_keys)
+		if not is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys):
+			non_grouped.append(item)
+			continue
+
+		if key not in grouped:
+			initialize_group(grouped, key, item, group_keys, sum_keys, concat_keys)
+		aggregate_item(grouped, key, item, sum_keys, concat_keys)
+
+	final_grouped = finalize_grouped(grouped, concat_keys)
+	return final_grouped + non_grouped

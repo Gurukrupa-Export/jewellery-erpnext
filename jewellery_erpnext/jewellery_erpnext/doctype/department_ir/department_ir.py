@@ -109,8 +109,7 @@ class DepartmentIR(Document):
 			{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
 		)
 		for row in self.department_ir_operation:
-
-			for se_item in frappe.db.get_all(
+			sed_items = frappe.db.get_all(
 				"Stock Entry MOP Item",
 				{
 					"manufacturing_operation": row.manufacturing_operation,
@@ -120,7 +119,20 @@ class DepartmentIR(Document):
 					"docstatus": 1,
 				},
 				["*"],
-			):
+			)
+			# if not sed_items:
+			# 	sed_items =  frappe.db.get_all(
+			# 	"Stock Entry Detail",
+			# 	{
+			# 		"manufacturing_operation": ["like", f"%{row.manufacturing_operation}%"],
+			# 		"t_warehouse": in_transit_wh,
+			# 		"department": self.previous_department,
+			# 		"to_department": self.current_department,
+			# 		"docstatus": 1,
+			# 	},
+			# 	["*"],
+			# )
+			for se_item in sed_items:
 				temp_row = copy.deepcopy(se_item)
 				temp_row["name"] = None
 				temp_row["idx"] = None
@@ -146,9 +158,11 @@ class DepartmentIR(Document):
 			time_values = copy.deepcopy(values)
 			time_values["department_start_time"] = dt_string
 			add_time_log(doc, time_values)
+
 		if not se_item_list:
 			frappe.msgprint(_("No Stock Entries were generated during this Department IR"))
 			return
+
 		if not cancel:
 			stock_doc = frappe.new_doc("Stock Entry")
 			stock_doc.update(
@@ -455,6 +469,13 @@ class DepartmentIR(Document):
 				stock_doc.inventory_type = None
 
 				for row in add_to_transit:
+					if row["qty"] > 0:
+						row["t_warehouse"] = department_wh
+						row["s_warehouse"] = in_transit_wh
+						stock_doc.append("custom_mop_items", row)
+
+				grouped_items = self.group_se_items(add_to_transit)
+				for row in grouped_items:
 					if row["qty"] > 0:
 						row["t_warehouse"] = department_wh
 						row["s_warehouse"] = in_transit_wh
