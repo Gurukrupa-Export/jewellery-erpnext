@@ -317,12 +317,11 @@ function book_loss_details(frm, mwo, opt, gwt, r_gwt) {
 		frm.refresh_field("employee_loss_details");
 		frm.save();
 	}
-	frm.call({
-		method: "book_metal_loss", //jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.
-		doc: frm.doc,
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.book_metal_loss",
 		freeze: true,
 		args: {
-			// doc_name: frm.doc.name,
+			doc: frm.doc,
 			mwo: mwo,
 			opt: opt,
 			gwt: gwt,
@@ -330,6 +329,7 @@ function book_loss_details(frm, mwo, opt, gwt, r_gwt) {
 		},
 		callback: function (r) {
 			if (r.message) {
+				console.log(r.message);
 				frm.clear_table("employee_loss_details");
 				var r_data = r.message[0];
 				for (var i = 0; i < r_data.length; i++) {
@@ -347,8 +347,10 @@ function book_loss_details(frm, mwo, opt, gwt, r_gwt) {
 						child.inventory_type = r_data[i].inventory_type;
 					}
 				}
+
 				frm.set_value("mop_loss_details_total", r.message[1]);
-				frm.refresh_field("employee_loss_details", "mop_loss_details_total");
+				frm.refresh_field("employee_loss_details");
+				frm.refresh_field("mop_loss_details_total");
 			}
 		},
 	});

@@ -53,7 +53,6 @@ frappe.ui.form.on("BOM Diamond Detail", {
 				filters: filter_value,
 			},
 			callback: function (r) {
-				console.log(r.message);
 				if (r.message.length == 0 && d.stone_shape == "Round") {
 					frappe.msgprint(
 						__("Please Insert Diamond Sieve Size Tolerance at Attribute Value")

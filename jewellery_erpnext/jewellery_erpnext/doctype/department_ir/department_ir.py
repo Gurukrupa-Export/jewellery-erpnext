@@ -176,12 +176,12 @@ class DepartmentIR(Document):
 				}
 			)
 			for row in se_item_list:
-				stock_doc.append("custom_mop_items", row)
-
-			se_grouped_items = self.group_se_items(se_item_list)
-
-			for row in se_grouped_items:
 				stock_doc.append("items", row)
+
+			# se_grouped_items = self.group_se_items(se_item_list)
+
+			# for row in se_grouped_items:
+			# 	stock_doc.append("items", row)
 			stock_doc.flags.ignore_permissions = True
 			stock_doc.save()
 			stock_doc.submit()
@@ -450,12 +450,12 @@ class DepartmentIR(Document):
 				stock_doc.inventory_type = None
 
 				for row in add_to_transit:
-					stock_doc.append("custom_mop_items", row)
-
-				grouped_items = self.group_se_items(add_to_transit)
-
-				for row in grouped_items:
 					stock_doc.append("items", row)
+
+				# grouped_items = self.group_se_items(add_to_transit)
+
+				# for row in grouped_items:
+				# 	stock_doc.append("items", row)
 
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
@@ -469,13 +469,6 @@ class DepartmentIR(Document):
 				stock_doc.inventory_type = None
 
 				for row in add_to_transit:
-					if row["qty"] > 0:
-						row["t_warehouse"] = department_wh
-						row["s_warehouse"] = in_transit_wh
-						stock_doc.append("custom_mop_items", row)
-
-				grouped_items = self.group_se_items(add_to_transit)
-				for row in grouped_items:
 					if row["qty"] > 0:
 						row["t_warehouse"] = department_wh
 						row["s_warehouse"] = in_transit_wh
@@ -493,10 +486,6 @@ class DepartmentIR(Document):
 				stock_doc.auto_created = True
 
 				for row in strat_transit:
-					stock_doc.append("custom_mop_items", row)
-
-				grouped_items = self.group_se_items(strat_transit)
-				for row in grouped_items:
 					if row["qty"] > 0:
 						stock_doc.append("items", row)
 

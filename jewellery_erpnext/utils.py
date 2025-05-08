@@ -378,48 +378,6 @@ def get_type_of_party(doc, parent, field):
 	return frappe.db.get_value(doc, {"parent": parent}, field)
 
 
-# def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys):
-# 	from collections import defaultdict
-
-# 	grouped = {}
-
-# 	for item in items:
-# 		# Build a group key tuple
-# 		key = tuple(item[k] for k in group_keys)
-
-# 		if key not in grouped:
-# 			# Initialize with all fields from item
-# 			grouped[key] = item.copy()
-
-# 			# For sum keys, set to zero initially
-# 			for sk in sum_keys:
-# 				grouped[key][sk] = 0
-
-# 			# For concat keys, start with empty set
-# 			for ck in concat_keys:
-# 				grouped[key][ck] = set()
-
-# 		# Sum up numeric fields
-# 		for sk in sum_keys:
-# 			grouped[key][sk] += flt(item.get(sk, 0))
-
-# 		# Concat fields (as set to avoid duplicates)
-# 		for ck in concat_keys:
-# 			val = item.get(ck)
-# 			if val:
-# 				grouped[key][ck].add(val)
-
-# 	# Final touch: format output properly
-# 	final_grouped = []
-# 	for g in grouped.values():
-# 		# Convert sets to comma-joined strings
-# 		for ck in concat_keys:
-# 			g[ck] = ",".join(g[ck])
-# 		final_grouped.append(g)
-
-# 	return final_grouped
-
-
 def is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys):
 	"""
 	Check if an item's non-group keys are consistent within an existing group.

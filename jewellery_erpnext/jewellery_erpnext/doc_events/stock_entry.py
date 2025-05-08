@@ -22,8 +22,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.up
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
-from jewellery_erpnext.utils import get_item_from_attribute, get_variant_of_item, update_existing
+from jewellery_erpnext.utils import get_item_from_attribute, get_variant_of_item, update_existing, group_aggregate_with_concat
 
+import copy
 
 def before_validate(self, method):
 	if (
@@ -452,6 +453,8 @@ def before_submit(self, method):
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
+	group_se_items_and_update_mop_items(self)
+
 
 def onsubmit(self, method):
 	validate_items(self)
@@ -800,6 +803,7 @@ def update_manufacturing_operation(doc, is_cancelled=False):
 
 
 def update_mop_details(se_doc, is_cancelled=False):
+	print("se_doc", se_doc.as_dict())
 	se_employee = se_doc.to_employee or se_doc.employee
 	se_subcontractor = se_doc.to_subcontractor or se_doc.subcontractor
 
@@ -918,6 +922,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 
 def update_balance_table(mop_data):
+	print(mop_data)
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
 
@@ -1390,3 +1395,34 @@ def set_filter_for_main_slip(doctype, txt, searchfield, start, page_len, filters
 	metal_purity = frappe.db.get_value("Manufacturing Work Order", {mnf}, "metal_purity")
 	# frappe.throw(str(metal_purity))
 	return metal_purity
+
+
+def group_se_items_and_update_mop_items(doc):
+	if not doc.items:
+		return
+
+	for row in doc.items:
+		mop_row = copy.deepcopy(row)
+		mop_row.name = None
+		mop_row.doctype = "Stock Entry MOP Item"
+
+		doc.append("custom_mop_items", mop_row)
+
+	doc_dict = doc.as_dict()
+	grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
+	doc.items = []
+
+	for row in grouped_se_items:
+		doc.append("items", row)
+
+
+def group_se_items(se_items:list):
+	if not se_items:
+		return
+
+	group_keys = ["item_code", "batch_no"]
+	sum_keys = ["qty", "pcs"]
+	concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
+	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys)
+
+	return grouped_items
