@@ -170,20 +170,44 @@ class ManufacturingOperation(Document):
 		if self.operation in ignored_department:
 			frappe.throw(_("Customer not requireed this operation"))
 
+	# def remove_duplicate(self):
+	# 	existing_data = {
+	# 		"department_source_table": [],
+	# 		"department_target_table": [],
+	# 		"employee_source_table": [],
+	# 		"employee_target_table": [],
+	# 	}
+	# 	to_remove = []
+	# 	for row in existing_data:
+	# 		for entry in self.get(row):
+	# 			if entry.get("sed_item") and entry.get("sed_item") not in existing_data[row]:
+	# 				existing_data[row].append(entry.get("sed_item"))
+	# 			elif entry.get("sed_item") in existing_data[row]:
+	# 				to_remove.append(entry)
+
+	# 	for row in to_remove:
+	# 		self.remove(row)
+
 	def remove_duplicate(self):
+		# Use sets for fast lookups
 		existing_data = {
-			"department_source_table": [],
-			"department_target_table": [],
-			"employee_source_table": [],
-			"employee_target_table": [],
+			"department_source_table": set(),
+			"department_target_table": set(),
+			"employee_source_table": set(),
+			"employee_target_table": set(),
 		}
 		to_remove = []
-		for row in existing_data:
+
+		# Collect unique items and mark duplicates
+		for row in existing_data.keys():
 			for entry in self.get(row):
-				if entry.get("sed_item") and entry.get("sed_item") not in existing_data[row]:
-					existing_data[row].append(entry.get("sed_item"))
-				elif entry.get("sed_item") in existing_data[row]:
-					to_remove.append(entry)
+				sed_item = entry.get("sed_item")
+				if sed_item:
+					# Check and add to set directly
+					if sed_item in existing_data[row]:
+						to_remove.append(entry)
+					else:
+						existing_data[row].add(sed_item)
 
 		for row in to_remove:
 			self.remove(row)
@@ -210,10 +234,10 @@ class ManufacturingOperation(Document):
 
 		if self.previous_mop:
 			existing_data = {
-				"department_source_table": [],
-				"department_target_table": [],
-				"employee_source_table": [],
-				"employee_target_table": [],
+				"department_source_table": set(),
+				"department_target_table": set(),
+				"employee_source_table": set(),
+				"employee_target_table": set(),
 			}
 
 			for row in existing_data:
@@ -257,6 +281,7 @@ class ManufacturingOperation(Document):
 					row["name"] = None
 					row["idx"] = None
 					self.append("employee_target_table", row)
+
 		self.db_set("previous_se_data_updated", 1)
 
 	# timer code
@@ -601,140 +626,15 @@ class ManufacturingOperation(Document):
 		create_finished_goods_bom(self, se_name)
 
 	@frappe.whitelist()
-	def get_linked_stock_entries(self):
-		target_wh = frappe.db.get_value("Warehouse", {"disabled": 0, "department": self.department})
-		pmo = frappe.db.get_value(
-			"Manufacturing Work Order", self.manufacturing_work_order, "manufacturing_order"
-		)
-		se = frappe.new_doc("Stock Entry")
-		se.stock_entry_type = "Manufacture"
-		mwo = frappe.get_all(
-			"Manufacturing Work Order",
-			{
-				"name": ["!=", self.manufacturing_work_order],
-				"manufacturing_order": pmo,
-				"docstatus": ["!=", 2],
-				"department": ["=", self.department],
-			},
-			pluck="name",
-		)
-		StockEntry = frappe.qb.DocType("Stock Entry")
-		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
-		IF = CustomFunction("IF", ["condition", "true_expr", "false_expr"])
-		data = (
-			frappe.qb.from_(StockEntryDetail)
-			.left_join(StockEntry)
-			.on(StockEntryDetail.parent == StockEntry.name)
-			.select(
-				StockEntry.manufacturing_work_order,
-				StockEntry.manufacturing_operation,
-				StockEntryDetail.parent,
-				StockEntryDetail.item_code,
-				StockEntryDetail.item_name,
-				StockEntryDetail.batch_no,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
-				IfNull(
-					Sum(IF(StockEntryDetail.uom == "Carat", StockEntryDetail.qty * 0.2, StockEntryDetail.qty)), 0
-				).as_("gross_wt"),
-			)
-			.where(
-				(StockEntry.docstatus == 1)
-				& (StockEntry.manufacturing_work_order.isin(mwo))
-				& (StockEntryDetail.t_warehouse == target_wh)
-			)
-			.groupby(
-				StockEntryDetail.manufacturing_operation,
-				StockEntryDetail.item_code,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
-			)
-		).run(as_dict=True)
-
-		total_qty = 0
-		for row in data:
-			total_qty += row.get("gross_wt", 0)
-		total_qty = round(total_qty, 4)  # sum(item['qty'] for item in data)
-
-		return frappe.render_template(
-			"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_operation/stock_entry_details.html",
-			{"data": data, "total_qty": total_qty},
-		)
-
-	@frappe.whitelist()
-	def get_linked_stock_entries_for_serial_number_creator(self):
-		target_wh = frappe.db.get_value(
-			"Warehouse", {"disabled": 0, "department": self.department, "warehouse_type": "Manufacturing"}
-		)
-		pmo = frappe.db.get_value(
-			"Manufacturing Work Order", self.manufacturing_work_order, "manufacturing_order"
-		)
-		se = frappe.new_doc("Stock Entry")
-		se.stock_entry_type = "Manufacture"
-		operations = frappe.get_all(
-			"Manufacturing Work Order",
-			{
-				"name": ["!=", self.manufacturing_work_order],
-				"manufacturing_order": pmo,
-				"docstatus": ["!=", 2],
-				"department": ["=", self.department],
-			},
-			pluck="manufacturing_operation",
-		)
-		StockEntry = frappe.qb.DocType("Stock Entry")
-		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
-		IF = CustomFunction("IF", ["condition", "true_expr", "false_expr"])
-		data = (
-			frappe.qb.from_(StockEntryDetail)
-			.left_join(StockEntry)
-			.on(StockEntryDetail.parent == StockEntry.name)
-			.select(
-				StockEntryDetail.custom_manufacturing_work_order,
-				StockEntryDetail.manufacturing_operation,
-				StockEntryDetail.name,
-				StockEntryDetail.parent,
-				StockEntryDetail.item_code,
-				StockEntryDetail.item_name,
-				StockEntryDetail.batch_no,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
-				StockEntryDetail.inventory_type,
-				StockEntryDetail.pcs,
-				StockEntryDetail.custom_sub_setting_type,
-				IfNull(
-					Sum(IF(StockEntryDetail.uom == "Carat", StockEntryDetail.qty * 0.2, StockEntryDetail.qty)), 0
-				).as_("gross_wt"),
-			)
-			.where(
-				(StockEntry.docstatus == 1)
-				& (StockEntryDetail.manufacturing_operation.isin(operations))
-				& (StockEntryDetail.t_warehouse == target_wh)
-			)
-			.groupby(
-				StockEntryDetail.manufacturing_operation,
-				StockEntryDetail.item_code,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
-			)
-		).run(as_dict=True)
-
-		total_qty = 0
-		for row in data:
-			total_qty += row.get("gross_wt", 0)
-		total_qty = round(total_qty, 4)  # sum(item['qty'] for item in data)
-		bom_id = self.design_id_bom  # self.fg_bom
-		mnf_qty = self.qty
-		return data, bom_id, mnf_qty, total_qty
-
-	@frappe.whitelist()
 	def get_stock_entry(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
-		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+		# StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+		StockEntryMopItem = frappe.qb.DocType("Stock Entry MOP Item")
 
 		data = (
-			frappe.qb.from_(StockEntryDetail)
+			frappe.qb.from_(StockEntryMopItem)
 			.left_join(StockEntry)
-			.on(StockEntryDetail.parent == StockEntry.name)
+			.on(StockEntryMopItem.parent == StockEntry.name)
 			.select(
 				StockEntry.manufacturing_work_order,
 				StockEntry.manufacturing_operation,
@@ -742,13 +642,13 @@ class ManufacturingOperation(Document):
 				StockEntry.to_department,
 				StockEntry.employee,
 				StockEntry.stock_entry_type,
-				StockEntryDetail.parent,
-				StockEntryDetail.item_code,
-				StockEntryDetail.item_name,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
+				StockEntryMopItem.parent,
+				StockEntryMopItem.item_code,
+				StockEntryMopItem.item_name,
+				StockEntryMopItem.qty,
+				StockEntryMopItem.uom,
 			)
-			.where((StockEntry.docstatus == 1) & (StockEntryDetail.manufacturing_operation == self.name))
+			.where((StockEntry.docstatus == 1) & (StockEntryMopItem.manufacturing_operation == self.name))
 			.orderby(StockEntry.modified, order=frappe.qb.desc)
 		).run(as_dict=True)
 
@@ -761,7 +661,8 @@ class ManufacturingOperation(Document):
 	@frappe.whitelist()
 	def get_stock_summary(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
-		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+		# StockEntryDetail = frappeqb.DocType("Stock Entry Detail")
+		StockEntryMopItem = frappe.qb.DocType("Stock Entry MOP Item")
 
 		# Subquery for max modified stock entry per manufacturing operation
 		max_se_subquery = (
@@ -773,28 +674,28 @@ class ManufacturingOperation(Document):
 
 		# Main query
 		data = (
-			frappe.qb.from_(StockEntryDetail)
+			frappe.qb.from_(StockEntryMopItem)
 			.left_join(max_se_subquery)
-			.on(StockEntryDetail.manufacturing_operation == max_se_subquery.manufacturing_operation)
+			.on(StockEntryMopItem.manufacturing_operation == max_se_subquery.manufacturing_operation)
 			.left_join(StockEntry)
 			.on(
-				(StockEntryDetail.parent == StockEntry.name)
+				(StockEntryMopItem.parent == StockEntry.name)
 				& (StockEntry.modified == max_se_subquery.max_modified)
 			)
 			.select(
 				StockEntry.manufacturing_work_order,
 				StockEntry.manufacturing_operation,
-				StockEntryDetail.parent,
-				StockEntryDetail.item_code,
-				StockEntryDetail.item_name,
-				StockEntryDetail.inventory_type,
-				StockEntryDetail.pcs,
-				StockEntryDetail.batch_no,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
+				StockEntryMopItem.parent,
+				StockEntryMopItem.item_code,
+				StockEntryMopItem.item_name,
+				StockEntryMopItem.inventory_type,
+				StockEntryMopItem.pcs,
+				StockEntryMopItem.batch_no,
+				StockEntryMopItem.qty,
+				StockEntryMopItem.uom,
 			)
 			.where(
-				(StockEntry.docstatus == 1) & (StockEntryDetail.manufacturing_operation.isin([self.name]))
+				(StockEntry.docstatus == 1) & (StockEntryMopItem.manufacturing_operation == self.name)
 			)
 		).run(as_dict=True)
 
@@ -2902,3 +2803,132 @@ def get_bom_summary(design_id_bom:str=None):
 			"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_operation/bom_summery.html",
 			{"data": item_records},
 		)
+
+
+@frappe.whitelist()
+def get_linked_stock_entries_for_serial_number_creator(mwo, department):
+	target_wh = frappe.db.get_value(
+		"Warehouse", {"disabled": 0, "department": department, "warehouse_type": "Manufacturing"}
+	)
+	pmo = frappe.db.get_value(
+		"Manufacturing Work Order", mwo, "manufacturing_order"
+	)
+	se = frappe.new_doc("Stock Entry")
+	se.stock_entry_type = "Manufacture"
+	operations = frappe.get_all(
+		"Manufacturing Work Order",
+		{
+			"name": ["!=", mwo],
+			"manufacturing_order": pmo,
+			"docstatus": ["!=", 2],
+			"department": ["=", department],
+		},
+		pluck="manufacturing_operation",
+	)
+	StockEntry = frappe.qb.DocType("Stock Entry")
+	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+	IF = CustomFunction("IF", ["condition", "true_expr", "false_expr"])
+	data = (
+		frappe.qb.from_(StockEntryDetail)
+		.left_join(StockEntry)
+		.on(StockEntryDetail.parent == StockEntry.name)
+		.select(
+			StockEntryDetail.custom_manufacturing_work_order,
+			StockEntryDetail.manufacturing_operation,
+			StockEntryDetail.name,
+			StockEntryDetail.parent,
+			StockEntryDetail.item_code,
+			StockEntryDetail.item_name,
+			StockEntryDetail.batch_no,
+			StockEntryDetail.qty,
+			StockEntryDetail.uom,
+			StockEntryDetail.inventory_type,
+			StockEntryDetail.pcs,
+			StockEntryDetail.custom_sub_setting_type,
+			IfNull(
+				Sum(IF(StockEntryDetail.uom == "Carat", StockEntryDetail.qty * 0.2, StockEntryDetail.qty)), 0
+			).as_("gross_wt"),
+		)
+		.where(
+			(StockEntry.docstatus == 1)
+			& (StockEntryDetail.manufacturing_operation.isin(operations))
+			& (StockEntryDetail.t_warehouse == target_wh)
+		)
+		.groupby(
+			StockEntryDetail.manufacturing_operation,
+			StockEntryDetail.item_code,
+			StockEntryDetail.qty,
+			StockEntryDetail.uom,
+		)
+	).run(as_dict=True)
+
+	total_qty = 0
+	for row in data:
+		total_qty += row.get("gross_wt", 0)
+	total_qty = round(total_qty, 4)  # sum(item['qty'] for item in data)
+	bom_id = self.design_id_bom  # self.fg_bom
+	mnf_qty = self.qty
+	return data, bom_id, mnf_qty, total_qty
+
+
+
+@frappe.whitelist()
+def get_linked_stock_entries(mwo, department):
+	target_wh = frappe.db.get_value("Warehouse", {"disabled": 0, "department": department})
+	pmo = frappe.db.get_value(
+		"Manufacturing Work Order", mwo, "manufacturing_order"
+	)
+	se = frappe.new_doc("Stock Entry")
+	se.stock_entry_type = "Manufacture"
+	mwo = frappe.get_all(
+		"Manufacturing Work Order",
+		{
+			"name": ["!=", mwo],
+			"manufacturing_order": pmo,
+			"docstatus": ["!=", 2],
+			"department": ["=", department],
+		},
+		pluck="name",
+	)
+	StockEntry = frappe.qb.DocType("Stock Entry")
+	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+	IF = CustomFunction("IF", ["condition", "true_expr", "false_expr"])
+	data = (
+		frappe.qb.from_(StockEntryDetail)
+		.left_join(StockEntry)
+		.on(StockEntryDetail.parent == StockEntry.name)
+		.select(
+			StockEntry.manufacturing_work_order,
+			StockEntry.manufacturing_operation,
+			StockEntryDetail.parent,
+			StockEntryDetail.item_code,
+			StockEntryDetail.item_name,
+			StockEntryDetail.batch_no,
+			StockEntryDetail.qty,
+			StockEntryDetail.uom,
+			IfNull(
+				Sum(IF(StockEntryDetail.uom == "Carat", StockEntryDetail.qty * 0.2, StockEntryDetail.qty)), 0
+			).as_("gross_wt"),
+		)
+		.where(
+			(StockEntry.docstatus == 1)
+			& (StockEntry.manufacturing_work_order.isin(mwo))
+			& (StockEntryDetail.t_warehouse == target_wh)
+		)
+		.groupby(
+			StockEntryDetail.manufacturing_operation,
+			StockEntryDetail.item_code,
+			StockEntryDetail.qty,
+			StockEntryDetail.uom,
+		)
+	).run(as_dict=True)
+
+	total_qty = 0
+	for row in data:
+		total_qty += row.get("gross_wt", 0)
+	total_qty = round(total_qty, 4)  # sum(item['qty'] for item in data)
+
+	return frappe.render_template(
+		"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_operation/stock_entry_details.html",
+		{"data": data, "total_qty": total_qty},
+	)

@@ -6,6 +6,7 @@ from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder import DocType
 from frappe.query_builder.functions import Sum
+from jewellery_erpnext.utils import group_aggregate_with_concat
 
 # timer code
 from frappe.utils import (
@@ -315,8 +316,7 @@ class EmployeeIR(Document):
 					"manufacturing_operation",
 					new_operation,
 				)
-				doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
-				add_time_log(doc, res)
+				add_time_log(row.manufacturing_operation, res)
 
 			if row.get("is_finding_mwo"):
 				if not cancel:
@@ -383,7 +383,9 @@ class EmployeeIR(Document):
 				)
 				res["rpt_wt_receive"] = row.rpt_wt_receive
 				res["rpt_wt_loss"] = flt(row.rpt_wt_receive - issue_wt, 3)
-			frappe.set_value("Manufacturing Operation", row.manufacturing_operation, res)
+
+			del res["complete_time"]
+			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, res)
 
 		# workstation_data = frappe._dict()
 		# Process Loss
@@ -398,8 +400,15 @@ class EmployeeIR(Document):
 			pl_se_doc.subcontractor = self.subcontractor
 			pl_se_doc.auto_created = 1
 			pl_se_doc.employee_ir = self.name
+
 			for row in loss_rows:
+				pl_se_doc.append("custom_mop_items", row)
+
+			grouped_loss_rows = group_se_items(loss_rows)
+
+			for row in grouped_loss_rows:
 				pl_se_doc.append("items", row)
+
 			pl_se_doc.flags.ignore_permissions = True
 			pl_se_doc.save()
 			pl_se_doc.submit()
@@ -425,6 +434,8 @@ class EmployeeIR(Document):
 
 				if not re_se_doc.main_slip:
 					re_se_doc.main_slip = row.get("main_slip") or row.get("to_main_slip")
+
+				re_se_doc.append("custom_mop_items", row)
 				re_se_doc.append("items", row)
 
 			re_se_doc.flags.ignore_permissions = True
@@ -444,7 +455,13 @@ class EmployeeIR(Document):
 			mse_doc.auto_created = True
 			mse_doc.employee_ir = self.name
 			for row in main_slip_rows:
+				mse_doc.append("custom_mop_items", row)
+
+			grouped_mse_doc = group_se_items(main_slip_rows)
+
+			for row in grouped_mse_doc:
 				mse_doc.append("items", row)
+
 			mse_doc.flags.ignore_permissions = True
 			mse_doc.save()
 			mse_doc.submit()
@@ -488,7 +505,7 @@ class EmployeeIR(Document):
 			pmo_data = frappe._dict()
 
 			for row in row_to_append:
-				se_doc.append("items", row)
+				se_doc.append("custom_mop_items", row)
 				if isinstance(row, dict):
 					row = frappe._dict(row)
 				if row.employee and not operation_data.get(row.manufacturing_operation):
@@ -514,6 +531,10 @@ class EmployeeIR(Document):
 							"mop": row.manufacturing_operation,
 							"pmo": mop_data[row.manufacturing_operation].manufacturing_order,
 						}
+
+			grouped_row_to_append = group_se_items(row_to_append)
+			for row in grouped_row_to_append:
+				se_doc.append("items", row)
 
 			if operation_data:
 				for row in operation_data:
@@ -884,10 +905,22 @@ class EmployeeIR(Document):
 		return get_summary_data(self)
 
 
+def group_se_items(self, se_items:list):
+	if not se_items:
+		return
+
+	group_keys = ["item_code", "batch_no"]
+	sum_keys = ["qty", "pcs"]
+	concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
+	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys)
+
+	return grouped_items
+
+
 def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
 
 	new_mop_doc = frappe.copy_doc(
-		frappe.get_doc("Manufacturing Operation", docname), ignore_no_copy=False
+		frappe.get_cached_doc("Manufacturing Operation", docname), ignore_no_copy=False
 	)
 	new_mop_doc.name = None
 	new_mop_doc.department_issue_id = None
@@ -1533,7 +1566,7 @@ def create_stock_entry(
 							(StockEntry.docstatus == 1)
 							& (StockEntry.auto_created == 0)
 							& (StockEntryDetail.s_warehouse == child.t_warehouse)
-							& (StockEntryDetail.manufacturing_operation == child.manufacturing_operation)
+							& (StockEntryDetail.manufacturing_operation.like(f"%{child.manufacturing_operation}%"))
 							& (StockEntryDetail.batch_no == child.batch_no)
 						)
 					)
@@ -1763,6 +1796,7 @@ def add_time_log(doc, args):
 
 	doc.flags.ignore_validation = True
 	doc.flags.ignore_permissions = True
+	print("doc", doc.as_dict())
 	doc.save()
 
 
@@ -1998,7 +2032,7 @@ def create_single_se_entry(doc, mop_data):
 			else "Material Transfer to Employee"
 		)
 
-		for idx, row in enumerate(rows_to_append):
+		for row in rows_to_append:
 			se_doc.stock_entry_type = stock_entry_type
 			if doc.subcontracting == "Yes":
 				row.to_subcontractor = doc.subcontractor
@@ -2010,6 +2044,11 @@ def create_single_se_entry(doc, mop_data):
 			row.main_slip = None
 			row.to_main_slip = doc.main_slip
 
+			se_doc.append("custom_mop_items", row)
+
+		grouped_rows_to_append = group_se_items(rows_to_append)
+
+		for row in grouped_rows_to_append:
 			se_doc.append("items", row)
 
 		se_doc.flags.ignore_permissions = True

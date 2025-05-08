@@ -17,10 +17,11 @@ frappe.ui.form.on("Manufacturing Operation", {
 		) {
 			frm.add_custom_button(__("Finish"), async () => {
 				await frappe.call({
-					method: "get_linked_stock_entries_for_serial_number_creator",
+					method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_linked_stock_entries_for_serial_number_creator",
 					doc: frm.doc,
 					args: {
-						docname: frm.doc.name,
+						mwo: frm.doc.manufacturing_work_order,
+						department: frm.doc.department
 					},
 					callback: function (r) {
 						frappe.call({
@@ -328,10 +329,10 @@ function set_html(frm) {
 	if (!frm.doc.__islocal && frm.doc.is_last_operation) {
 		//ToDo: add function for stock entry detail for normal manufacturing operations
 		frappe.call({
-			method: "get_linked_stock_entries",
-			doc: frm.doc,
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_linked_stock_entries",
 			args: {
-				docname: frm.doc.name,
+				mwo: frm.doc.manufacturing_work_order,
+				department: frm.doc.department
 			},
 			callback: function (r) {
 				frm.get_field("stock_entry_details").$wrapper.html(r.message);
