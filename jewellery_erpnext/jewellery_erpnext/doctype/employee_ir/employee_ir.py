@@ -905,7 +905,7 @@ class EmployeeIR(Document):
 		return get_summary_data(self)
 
 
-def group_se_items(self, se_items:list):
+def group_se_items(se_items:list):
 	if not se_items:
 		return
 
