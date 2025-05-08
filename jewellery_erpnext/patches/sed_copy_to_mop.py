@@ -22,5 +22,5 @@ def execute():
 
 		se_doc.update_child_table("custom_mop_items")
 		se_doc.db_update_all()
-
+		print(f"Updated {se_doc.name} with {len(se_doc.custom_mop_items)} MOP items")
 		frappe.db.commit()
