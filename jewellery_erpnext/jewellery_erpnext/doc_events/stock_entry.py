@@ -454,7 +454,6 @@ def before_submit(self, method):
 		self.posting_time = frappe.utils.nowtime()
 
 def on_update(self, method):
-	print("-----------")
 	group_se_items_and_update_mop_items(self)
 
 
@@ -805,7 +804,6 @@ def update_manufacturing_operation(doc, is_cancelled=False):
 
 
 def update_mop_details(se_doc, is_cancelled=False):
-	print("se_doc", se_doc.as_dict())
 	se_employee = se_doc.to_employee or se_doc.employee
 	se_subcontractor = se_doc.to_subcontractor or se_doc.subcontractor
 
@@ -924,7 +922,6 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 
 def update_balance_table(mop_data):
-	print(mop_data)
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
 
@@ -1412,7 +1409,6 @@ def group_se_items_and_update_mop_items(doc):
 
 	doc_dict = doc.as_dict()
 	grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
-	print(grouped_se_items)
 	doc.items = []
 
 	for row in grouped_se_items:
