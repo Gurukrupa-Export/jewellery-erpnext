@@ -6,6 +6,7 @@ from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder import DocType
 from frappe.query_builder.functions import Sum
+from jewellery_erpnext.utils import group_aggregate_with_concat
 
 # timer code
 from frappe.utils import (
@@ -17,8 +18,11 @@ from frappe.utils import (
 	get_last_day,
 	now,
 	nowdate,
+	time_diff,
+	time_diff_in_hours,
 	time_diff_in_seconds,
 	today,
+	getdate, add_days,
 )
 
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
@@ -165,8 +169,8 @@ class EmployeeIR(Document):
 				update_stock_entry_dimensions(self, row, row.manufacturing_operation, True)
 				mop_data.update({row.manufacturing_work_order: row.manufacturing_operation})
 
-			values["start_time"] = frappe.utils.now()
-			add_time_log(row.manufacturing_operation, values)
+			# values["start_time"] = frappe.utils.now()
+			# add_time_log(row.manufacturing_operation, values)
 			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
 
 		create_single_se_entry(self, mop_data)
@@ -218,7 +222,7 @@ class EmployeeIR(Document):
 
 		# Batch add time logs
 		if time_log_args and not cancel:
-			batch_add_time_logs(time_log_args)
+			batch_add_time_logs(self,time_log_args)
 
 		create_single_se_entry(self, mop_data)
 
@@ -302,6 +306,7 @@ class EmployeeIR(Document):
 			if row.received_gross_wt == 0 and row.gross_wt != 0:
 				frappe.throw(_("Row {0}: Received Gross Wt Missing").format(row.idx))
 
+			time_log_args = []
 			if not cancel:
 				res["status"] = "Finished"
 				res["employee"] = self.employee
@@ -315,8 +320,8 @@ class EmployeeIR(Document):
 					"manufacturing_operation",
 					new_operation,
 				)
-				doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
-				add_time_log(doc, res)
+				# add_time_log(row.manufacturing_operation, res)
+				time_log_args.append((row.manufacturing_operation, res))
 
 			if row.get("is_finding_mwo"):
 				if not cancel:
@@ -383,11 +388,17 @@ class EmployeeIR(Document):
 				)
 				res["rpt_wt_receive"] = row.rpt_wt_receive
 				res["rpt_wt_loss"] = flt(row.rpt_wt_receive - issue_wt, 3)
-			frappe.set_value("Manufacturing Operation", row.manufacturing_operation, res)
+
+			# del res["complete_time"]
+			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, res)
+		
+		if time_log_args and not cancel:
+			batch_add_time_logs(self, time_log_args)
 
 		# workstation_data = frappe._dict()
 		# Process Loss
 		if loss_rows:
+			print("Process Loss Rows", loss_rows)
 			pl_se_doc = frappe.new_doc("Stock Entry")
 			pl_se_doc.company = self.company
 			pl_se_doc.stock_entry_type = "Process Loss"
@@ -398,8 +409,15 @@ class EmployeeIR(Document):
 			pl_se_doc.subcontractor = self.subcontractor
 			pl_se_doc.auto_created = 1
 			pl_se_doc.employee_ir = self.name
+
+			# for row in loss_rows:
+			# 	pl_se_doc.append("custom_mop_items", row)
+
+			# grouped_loss_rows = group_se_items(loss_rows)
+
 			for row in loss_rows:
 				pl_se_doc.append("items", row)
+
 			pl_se_doc.flags.ignore_permissions = True
 			pl_se_doc.save()
 			pl_se_doc.submit()
@@ -425,6 +443,8 @@ class EmployeeIR(Document):
 
 				if not re_se_doc.main_slip:
 					re_se_doc.main_slip = row.get("main_slip") or row.get("to_main_slip")
+
+				re_se_doc.append("custom_mop_items", row)
 				re_se_doc.append("items", row)
 
 			re_se_doc.flags.ignore_permissions = True
@@ -443,8 +463,14 @@ class EmployeeIR(Document):
 			mse_doc.subcontractor = self.subcontractor
 			mse_doc.auto_created = True
 			mse_doc.employee_ir = self.name
+			# for row in main_slip_rows:
+			# 	mse_doc.append("custom_mop_items", row)
+
+			# grouped_mse_doc = group_se_items(main_slip_rows)
+
 			for row in main_slip_rows:
 				mse_doc.append("items", row)
+
 			mse_doc.flags.ignore_permissions = True
 			mse_doc.save()
 			mse_doc.submit()
@@ -884,10 +910,22 @@ class EmployeeIR(Document):
 		return get_summary_data(self)
 
 
+def group_se_items(se_items:list):
+	if not se_items:
+		return
+
+	group_keys = ["item_code", "batch_no"]
+	sum_keys = ["qty", "pcs"]
+	concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
+	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys)
+
+	return grouped_items
+
+
 def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
 
 	new_mop_doc = frappe.copy_doc(
-		frappe.get_doc("Manufacturing Operation", docname), ignore_no_copy=False
+		frappe.get_cached_doc("Manufacturing Operation", docname), ignore_no_copy=False
 	)
 	new_mop_doc.name = None
 	new_mop_doc.department_issue_id = None
@@ -1766,7 +1804,7 @@ def add_time_log(doc, args):
 	doc.save()
 
 
-def batch_add_time_logs(mop_args_list):
+def batch_add_time_logs(self,mop_args_list):
 	"""
 	Batch update time logs and Manufacturing Operation fields via doc objects.
 	mop_args_list: List of (mop_name, args) tuples.
@@ -1800,6 +1838,7 @@ def batch_add_time_logs(mop_args_list):
 			for row in doc.time_logs:
 				if not row.to_time:
 					row.to_time = get_datetime(args.get("complete_time"))
+					calculation_time_log(doc, row, self)
 					break
 
 		elif args.get("start_time"):
@@ -1871,7 +1910,7 @@ def process_loss_item(
 	if variant_loss_details and variant_loss_details.get("loss_warehouse"):
 		loss_warehouse = variant_loss_details.get("loss_warehouse")
 
-	elif variant_loss_details.get("consider_department_warehouse") and variant_loss_details.get(
+	elif variant_loss_details and variant_loss_details.get("consider_department_warehouse") and variant_loss_details.get(
 		"warehouse_type"
 	):
 		if not loss_details.get(variant_loss_details["warehouse_type"]):
@@ -1998,7 +2037,7 @@ def create_single_se_entry(doc, mop_data):
 			else "Material Transfer to Employee"
 		)
 
-		for idx, row in enumerate(rows_to_append):
+		for row in rows_to_append:
 			se_doc.stock_entry_type = stock_entry_type
 			if doc.subcontracting == "Yes":
 				row.to_subcontractor = doc.subcontractor
@@ -2118,3 +2157,215 @@ def get_holidays_for_employee(employee, start_date, end_date):
 		frappe.cache().hset(HOLIDAYS_BETWEEN_DATES, key, holiday_dates)
 
 	return holiday_dates
+
+
+@frappe.whitelist()
+def book_metal_loss(doc, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
+	# mnf_opt = frappe.get_doc("Manufacturing Operation", opt)
+	if isinstance(doc, str):
+		doc = json.loads(doc)
+
+	print(type(doc), doc)
+	# To Check Tollarance which book a loss down side.
+	if allowed_loss_percentage:
+		cal = round(flt((100 - allowed_loss_percentage) / 100) * flt(gwt), 2)
+		if flt(r_gwt) < cal:
+			frappe.throw(
+				f"Department Operation Standard Process Loss Percentage set by <b>{allowed_loss_percentage}%. </br> Not allowed to book a loss less than {cal}</b>"
+			)
+	data = []  # for final data list
+	# Fetching Stock Entry based on MNF Work Order
+	if gwt != r_gwt:
+		mop_balance_table = []
+		fields = [
+			"item_code",
+			"batch_no",
+			"qty",
+			"uom",
+			"pcs",
+			"customer",
+			"inventory_type",
+			"sub_setting_type",
+		]
+		for row in frappe.db.get_all("MOP Balance Table", {"parent": opt}, fields):
+			mop_balance_table.append(row)
+		# Declaration & fetch required value
+		metal_item = []  # for check metal or not list
+		unique = set()  # for Unique Item_Code
+		sum_qty = {}  # for sum of qty matched item
+
+		# getting Metal property from MNF Work Order
+		mwo_metal_property = frappe.db.get_value(
+			"Manufacturing Work Order",
+			mwo,
+			["metal_type", "metal_touch", "metal_purity", "master_bom", "is_finding_mwo"],
+			as_dict=1,
+		)
+		# To Check and pass thgrow Each ITEM metal or not function
+		metal_item.append(
+			get_item_from_attribute_full(
+				mwo_metal_property.metal_type,
+				mwo_metal_property.metal_touch,
+				mwo_metal_property.metal_purity,
+			)
+		)
+		# To get Final Metal Item
+		if mwo_metal_property.get("is_finding_mwo"):
+			bom_items = frappe.db.get_all(
+				"BOM Item", {"parent": mwo_metal_property.master_bom}, pluck="item_code"
+			)
+			bom_items += frappe.db.get_all(
+				"BOM Explosion Item", {"parent": mwo_metal_property.master_bom}, pluck="item_code"
+			)
+			flat_metal_item = list(set(bom_items))
+		else:
+			flat_metal_item = [
+				item for sublist in metal_item for super_sub in sublist for item in super_sub
+			]
+
+		total_qty = 0
+		# To prepare Final Data with all condition's
+		for child in mop_balance_table:
+			if child["item_code"] not in flat_metal_item:
+				continue
+			key = (child["item_code"], child["batch_no"], child["qty"])
+			if key not in unique:
+				unique.add(key)
+				total_qty += child["qty"]
+				if child["item_code"] in sum_qty:
+					sum_qty[child["item_code"], child["batch_no"]]["qty"] += child["qty"]
+				else:
+					sum_qty[child["item_code"], child["batch_no"]] = {
+						"item_code": child["item_code"],
+						"qty": child["qty"],
+						"stock_uom": child["uom"],
+						"batch_no": child["batch_no"],
+						"manufacturing_work_order": mwo,
+						"manufacturing_operation": opt,
+						"pcs": child["pcs"],
+						"customer": child["customer"],
+						"inventory_type": child["inventory_type"],
+						"sub_setting_type": child["sub_setting_type"],
+						"proportionally_loss": 0.0,
+						"received_gross_weight": 0.0,
+					}
+		data = list(sum_qty.values())
+
+		# -------------------------------------------------------------------------
+		# Prepare data and calculation proportionally devide each row based on each qty.
+		total_mannual_loss = 0
+		if len(doc.get("manually_book_loss_details")) > 0:
+			for row in doc.get("manually_book_loss_details"):
+				row = frappe._dict(row)
+				if row.manufacturing_work_order == mwo:
+					loss_qty = (
+						row.proportionally_loss if row.stock_uom != "Carat" else (row.proportionally_loss * 0.2)
+					)
+					total_mannual_loss += loss_qty
+
+		loss = flt(gwt) - flt(r_gwt) - flt(total_mannual_loss)
+		ms_consum = 0
+		ms_consum_book = 0
+		stock_loss = 0
+		if loss < 0:
+			ms_consum = abs(round(loss, 2))
+
+		# for entry in data:
+		# 	total_qty += entry["qty"]
+		for entry in data:
+			if total_qty != 0 and loss > 0:
+				if mwo_metal_property.get("is_finding_mwo"):
+					stock_loss = flt((entry["qty"] * loss) / total_qty, 3)
+				else:
+					if loss <= entry["qty"]:
+						stock_loss = loss
+						loss = 0
+					else:
+						stock_loss = entry["qty"]
+						loss -= entry["qty"]
+				if stock_loss > 0:
+					entry["received_gross_weight"] = entry["qty"] - stock_loss
+					entry["proportionally_loss"] = stock_loss
+					entry["main_slip_consumption"] = 0
+				else:
+					ms_consum_book = round((ms_consum * entry["qty"]) / total_qty, 4)
+					entry["proportionally_loss"] = 0
+					entry["received_gross_weight"] = 0
+					entry["main_slip_consumption"] = ms_consum_book
+		# -------------------------------------------------------------------------
+	return data
+
+#make changes add this function
+def calculation_time_log(doc, row, self):
+	# calculation of from and to time
+	if row.from_time and row.to_time:
+		if get_datetime(row.from_time) > get_datetime(row.to_time):
+			frappe.throw(_("Row {0}: From time must be less than to time").format(row.idx))
+
+		row_date = getdate(row.from_time)
+		doc_date = getdate(self.date_time)
+		
+		checkin_doc = frappe.db.sql("""
+				SELECT name, log_type ,time
+				FROM `tabEmployee Checkin`
+				WHERE employee = %s
+				AND DATE(time) BETWEEN %s AND %s
+			""", (row.employee, row_date, doc_date), as_dict=1)
+
+		# frappe.throw(f"{checkin_doc}")
+		out_time = ''
+		in_time = ''
+		default_shift = frappe.db.get_value("Employee", row.employee, "default_shift")
+		# frappe.throw(f"{default_shift}")
+		for emp in checkin_doc:
+			if emp.log_type == 'OUT' and get_datetime(emp.time) >= row.from_time:
+				out_time = get_datetime(emp.time)
+			if emp.log_type == 'IN' and get_datetime(emp.time) <= row.to_time:
+				in_time = get_datetime(emp.time)
+
+		if (out_time and in_time):
+			out_time_min = time_diff_in_hours(out_time, row.from_time) * 60 if out_time else 0
+			in_time_min = time_diff_in_hours(row.to_time, in_time) * 60 if in_time else 0
+			
+			# Time in minutes
+			row.time_in_mins = out_time_min + in_time_min
+
+			# Time in HH:MM format
+			out_hours = time_diff(out_time, row.from_time)
+			in_hours = time_diff(row.to_time, in_time)
+			total_duration = out_hours + in_hours
+			row.time_in_hour = str(total_duration)[:-3]
+
+			# Time in days based on shift
+			if default_shift:
+				shift_hours = frappe.db.get_value("Shift Type", default_shift, ["start_time", "end_time"])
+				total_shift_hours = time_diff(shift_hours[1], shift_hours[0])
+
+				if total_duration >= total_shift_hours:
+					row.time_in_days = total_duration / total_shift_hours
+
+				# frappe.throw(f"1 {total_shift_hours} || 2 {total_duration} || 3 {row.time_in_days}")
+		else:
+			# Time in minutes
+			row.time_in_mins = time_diff_in_hours(row.to_time, row.from_time) * 60
+
+			# Time in HH:MM format
+			full_hours = time_diff(row.to_time, row.from_time)
+			row.time_in_hour = str(full_hours)[:-2]
+				
+			# Time in days based on shift		
+			if default_shift:
+				shift_hours = frappe.db.get_value("Shift Type", default_shift, ["start_time", "end_time"])
+				
+				total_shift_hours = time_diff(shift_hours[1], shift_hours[0])
+
+				if full_hours >= total_shift_hours:
+					row.time_in_days = full_hours / total_shift_hours
+
+			# frappe.throw(f"{row.time_in_mins} || {row.time_in_hour} {row.time_in_days}")
+
+		# # Total minutes across all rows
+		# doc.total_minutes = 0
+		# for i in doc.time_logs:
+		# 	doc.total_minutes += i.time_in_mins
+

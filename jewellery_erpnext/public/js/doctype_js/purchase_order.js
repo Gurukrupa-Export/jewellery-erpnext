@@ -1551,8 +1551,8 @@ let get_items = (frm) => {
             };
 
             if (frm.doc.supplier === "GJSU0383" && frm.doc.company === "Gurukrupa Export Private Limited") {
-                query_args.filters.company = "Gurukrupa Export Private Limited";
-                query_args.filters.customer = "GJCU0010";
+                query_args.filters.company = "KG GK Jewellers Private Limited";
+                query_args.filters.customer = "GJCU0009";
             }
             if (frm.doc.supplier === "GJSU0569" && frm.doc.company === "Gurukrupa Export Private Limited") {
                 query_args.filters.company = "Gurukrupa Export Private Limited";

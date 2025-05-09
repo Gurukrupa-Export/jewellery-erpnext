@@ -11,7 +11,7 @@ app_license = "MIT"
 
 app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
 app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
-after_migrate = "jewellery_erpnext.migrate.after_migrate"
+# after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
 doctype_js = {
 	"Quotation": "public/js/doctype_js/quotation.js",
@@ -162,6 +162,7 @@ override_doctype_class = {
 	"Stock Reconciliation": "jewellery_erpnext.jewellery_erpnext.doctype.stock_reconciliation_template.stock_reconciliation_template_utils.CustomStockReconciliation",
 	"Stock Ledger Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_ledger_entry.stock_ledger_entry.CustomStockLedgerEntry",
 	"Serial and Batch Bundle": "jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.serial_and_batch_bundle.CustomSerialandBatchBundle",
+    "Purchase Receipt": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_receipt.CustomPurchaseReceipt"
 }
 
 
