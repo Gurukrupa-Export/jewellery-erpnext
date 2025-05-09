@@ -954,9 +954,12 @@ function set_html(frm) {
 			{% endfor %}
 			</tbody>
 		</table>`;
+
 	frappe.call({
-		doc: frm.doc,
-		method: "get_html_data",
+		method: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.get_html_data",
+		args: {
+			doc: frm.doc
+		},
 		callback: function (r) {
 			if (r.message) {
 				frm.get_field("custom_item_wise_data").$wrapper.html(
