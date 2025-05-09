@@ -18,8 +18,11 @@ from frappe.utils import (
 	get_last_day,
 	now,
 	nowdate,
+	time_diff,
+	time_diff_in_hours,
 	time_diff_in_seconds,
 	today,
+	getdate, add_days,
 )
 
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
@@ -166,8 +169,8 @@ class EmployeeIR(Document):
 				update_stock_entry_dimensions(self, row, row.manufacturing_operation, True)
 				mop_data.update({row.manufacturing_work_order: row.manufacturing_operation})
 
-			values["start_time"] = frappe.utils.now()
-			add_time_log(row.manufacturing_operation, values)
+			# values["start_time"] = frappe.utils.now()
+			# add_time_log(row.manufacturing_operation, values)
 			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
 
 		create_single_se_entry(self, mop_data)
@@ -219,7 +222,7 @@ class EmployeeIR(Document):
 
 		# Batch add time logs
 		if time_log_args and not cancel:
-			batch_add_time_logs(time_log_args)
+			batch_add_time_logs(self,time_log_args)
 
 		create_single_se_entry(self, mop_data)
 
@@ -303,6 +306,7 @@ class EmployeeIR(Document):
 			if row.received_gross_wt == 0 and row.gross_wt != 0:
 				frappe.throw(_("Row {0}: Received Gross Wt Missing").format(row.idx))
 
+			time_log_args = []
 			if not cancel:
 				res["status"] = "Finished"
 				res["employee"] = self.employee
@@ -316,7 +320,8 @@ class EmployeeIR(Document):
 					"manufacturing_operation",
 					new_operation,
 				)
-				add_time_log(row.manufacturing_operation, res)
+				# add_time_log(row.manufacturing_operation, res)
+				time_log_args.append((row.manufacturing_operation, res))
 
 			if row.get("is_finding_mwo"):
 				if not cancel:
@@ -384,8 +389,11 @@ class EmployeeIR(Document):
 				res["rpt_wt_receive"] = row.rpt_wt_receive
 				res["rpt_wt_loss"] = flt(row.rpt_wt_receive - issue_wt, 3)
 
-			del res["complete_time"]
+			# del res["complete_time"]
 			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, res)
+		
+		if time_log_args and not cancel:
+			batch_add_time_logs(self, time_log_args)
 
 		# workstation_data = frappe._dict()
 		# Process Loss
@@ -1796,7 +1804,7 @@ def add_time_log(doc, args):
 	doc.save()
 
 
-def batch_add_time_logs(mop_args_list):
+def batch_add_time_logs(self,mop_args_list):
 	"""
 	Batch update time logs and Manufacturing Operation fields via doc objects.
 	mop_args_list: List of (mop_name, args) tuples.
@@ -1830,6 +1838,7 @@ def batch_add_time_logs(mop_args_list):
 			for row in doc.time_logs:
 				if not row.to_time:
 					row.to_time = get_datetime(args.get("complete_time"))
+					calculation_time_log(doc, row, self)
 					break
 
 		elif args.get("start_time"):
@@ -2285,3 +2294,78 @@ def book_metal_loss(doc, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
 					entry["main_slip_consumption"] = ms_consum_book
 		# -------------------------------------------------------------------------
 	return data
+
+#make changes add this function
+def calculation_time_log(doc, row, self):
+	# calculation of from and to time
+	if row.from_time and row.to_time:
+		if get_datetime(row.from_time) > get_datetime(row.to_time):
+			frappe.throw(_("Row {0}: From time must be less than to time").format(row.idx))
+
+		row_date = getdate(row.from_time)
+		doc_date = getdate(self.date_time)
+		
+		checkin_doc = frappe.db.sql("""
+				SELECT name, log_type ,time
+				FROM `tabEmployee Checkin`
+				WHERE employee = %s
+				AND DATE(time) BETWEEN %s AND %s
+			""", (row.employee, row_date, doc_date), as_dict=1)
+
+		# frappe.throw(f"{checkin_doc}")
+		out_time = ''
+		in_time = ''
+		default_shift = frappe.db.get_value("Employee", row.employee, "default_shift")
+		# frappe.throw(f"{default_shift}")
+		for emp in checkin_doc:
+			if emp.log_type == 'OUT' and get_datetime(emp.time) >= row.from_time:
+				out_time = get_datetime(emp.time)
+			if emp.log_type == 'IN' and get_datetime(emp.time) <= row.to_time:
+				in_time = get_datetime(emp.time)
+
+		if (out_time and in_time):
+			out_time_min = time_diff_in_hours(out_time, row.from_time) * 60 if out_time else 0
+			in_time_min = time_diff_in_hours(row.to_time, in_time) * 60 if in_time else 0
+			
+			# Time in minutes
+			row.time_in_mins = out_time_min + in_time_min
+
+			# Time in HH:MM format
+			out_hours = time_diff(out_time, row.from_time)
+			in_hours = time_diff(row.to_time, in_time)
+			total_duration = out_hours + in_hours
+			row.time_in_hour = str(total_duration)[:-3]
+
+			# Time in days based on shift
+			if default_shift:
+				shift_hours = frappe.db.get_value("Shift Type", default_shift, ["start_time", "end_time"])
+				total_shift_hours = time_diff(shift_hours[1], shift_hours[0])
+
+				if total_duration >= total_shift_hours:
+					row.time_in_days = total_duration / total_shift_hours
+
+				# frappe.throw(f"1 {total_shift_hours} || 2 {total_duration} || 3 {row.time_in_days}")
+		else:
+			# Time in minutes
+			row.time_in_mins = time_diff_in_hours(row.to_time, row.from_time) * 60
+
+			# Time in HH:MM format
+			full_hours = time_diff(row.to_time, row.from_time)
+			row.time_in_hour = str(full_hours)[:-2]
+				
+			# Time in days based on shift		
+			if default_shift:
+				shift_hours = frappe.db.get_value("Shift Type", default_shift, ["start_time", "end_time"])
+				
+				total_shift_hours = time_diff(shift_hours[1], shift_hours[0])
+
+				if full_hours >= total_shift_hours:
+					row.time_in_days = full_hours / total_shift_hours
+
+			# frappe.throw(f"{row.time_in_mins} || {row.time_in_hour} {row.time_in_days}")
+
+		# # Total minutes across all rows
+		# doc.total_minutes = 0
+		# for i in doc.time_logs:
+		# 	doc.total_minutes += i.time_in_mins
+

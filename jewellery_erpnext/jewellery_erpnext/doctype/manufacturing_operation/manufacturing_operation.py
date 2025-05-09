@@ -147,7 +147,7 @@ class ManufacturingOperation(Document):
 			return
 
 		self.set_start_finish_time()
-		self.validate_time_logs()
+		# self.validate_time_logs()
 		self.validate_loss()
 		self.get_previous_se_details()
 		self.remove_duplicate()
