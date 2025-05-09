@@ -13,7 +13,6 @@
   "section_break_2",
   "s_warehouse",
   "from_job_card",
-  "employee_consumption",
   "col_break1",
   "t_warehouse",
   "to_job_card",
@@ -147,12 +146,6 @@
    "fieldtype": "Link",
    "label": "From Job Card",
    "options": "Job Card"
-  },
-  {
-   "default": "0",
-   "fieldname": "employee_consumption",
-   "fieldtype": "Check",
-   "label": "Employee Consumption"
   },
   {
    "fieldname": "col_break1",
@@ -833,7 +826,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2025-05-07 12:27:49.374644",
+ "modified": "2025-05-09 14:14:07.672326",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Stock Entry MOP Item",

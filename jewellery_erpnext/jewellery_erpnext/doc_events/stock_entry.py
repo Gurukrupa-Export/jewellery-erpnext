@@ -453,6 +453,8 @@ def before_submit(self, method):
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
+def on_update(self, method):
+	print("-----------")
 	group_se_items_and_update_mop_items(self)
 
 
@@ -1410,10 +1412,14 @@ def group_se_items_and_update_mop_items(doc):
 
 	doc_dict = doc.as_dict()
 	grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
+	print(grouped_se_items)
 	doc.items = []
 
 	for row in grouped_se_items:
 		doc.append("items", row)
+
+	doc.validate()
+	doc.update_children()
 
 
 def group_se_items(se_items:list):
@@ -1421,8 +1427,9 @@ def group_se_items(se_items:list):
 		return
 
 	group_keys = ["item_code", "batch_no"]
-	sum_keys = ["qty", "pcs"]
+	sum_keys = ["qty", "transfer_qty", "pcs"]
 	concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
-	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys)
+	exclude_keys = ["idx", "valuation_rate", "basic_rate", "amount", "basic_amount"]
+	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys,exclude_keys)
 
 	return grouped_items
