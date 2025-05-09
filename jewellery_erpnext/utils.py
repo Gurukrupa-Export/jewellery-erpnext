@@ -378,7 +378,7 @@ def get_type_of_party(doc, parent, field):
 	return frappe.db.get_value(doc, {"parent": parent}, field)
 
 
-def is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys):
+def is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys, exclude_keys):
 	"""
 	Check if an item's non-group keys are consistent within an existing group.
 
@@ -394,7 +394,7 @@ def is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys):
 		bool: True if the item is consistent within the group, False otherwise.
 	"""
 	for gk in item.keys():
-		if gk not in group_keys + sum_keys + concat_keys:
+		if gk not in group_keys + sum_keys + concat_keys + exclude_keys:
 			if key in grouped and gk in grouped[key]:
 				if grouped[key][gk] != item.get(gk):
 					return False
@@ -461,7 +461,7 @@ def finalize_grouped(grouped, concat_keys):
 	return final_grouped
 
 
-def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys):
+def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys, exclude_keys=[]):
 	"""
 	Group items based on specified keys, sum numerical fields, and concatenate values.
 	If an item is inconsistent (i.e., non-group keys do not match), it is kept separately.
@@ -480,7 +480,7 @@ def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys):
 
 	for item in items:
 		key = tuple(item.get(k) for k in group_keys)
-		if not is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys):
+		if not is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys, exclude_keys):
 			non_grouped.append(item)
 			continue
 
@@ -489,4 +489,5 @@ def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys):
 		aggregate_item(grouped, key, item, sum_keys, concat_keys)
 
 	final_grouped = finalize_grouped(grouped, concat_keys)
+	print("non_grouped", non_grouped)
 	return final_grouped + non_grouped
