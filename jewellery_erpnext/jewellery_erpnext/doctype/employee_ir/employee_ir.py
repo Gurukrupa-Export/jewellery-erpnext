@@ -390,6 +390,7 @@ class EmployeeIR(Document):
 		# workstation_data = frappe._dict()
 		# Process Loss
 		if loss_rows:
+			print("Process Loss Rows", loss_rows)
 			pl_se_doc = frappe.new_doc("Stock Entry")
 			pl_se_doc.company = self.company
 			pl_se_doc.stock_entry_type = "Process Loss"
@@ -401,12 +402,12 @@ class EmployeeIR(Document):
 			pl_se_doc.auto_created = 1
 			pl_se_doc.employee_ir = self.name
 
+			# for row in loss_rows:
+			# 	pl_se_doc.append("custom_mop_items", row)
+
+			# grouped_loss_rows = group_se_items(loss_rows)
+
 			for row in loss_rows:
-				pl_se_doc.append("custom_mop_items", row)
-
-			grouped_loss_rows = group_se_items(loss_rows)
-
-			for row in grouped_loss_rows:
 				pl_se_doc.append("items", row)
 
 			pl_se_doc.flags.ignore_permissions = True
@@ -454,12 +455,12 @@ class EmployeeIR(Document):
 			mse_doc.subcontractor = self.subcontractor
 			mse_doc.auto_created = True
 			mse_doc.employee_ir = self.name
+			# for row in main_slip_rows:
+			# 	mse_doc.append("custom_mop_items", row)
+
+			# grouped_mse_doc = group_se_items(main_slip_rows)
+
 			for row in main_slip_rows:
-				mse_doc.append("custom_mop_items", row)
-
-			grouped_mse_doc = group_se_items(main_slip_rows)
-
-			for row in grouped_mse_doc:
 				mse_doc.append("items", row)
 
 			mse_doc.flags.ignore_permissions = True
@@ -505,7 +506,7 @@ class EmployeeIR(Document):
 			pmo_data = frappe._dict()
 
 			for row in row_to_append:
-				se_doc.append("custom_mop_items", row)
+				se_doc.append("items", row)
 				if isinstance(row, dict):
 					row = frappe._dict(row)
 				if row.employee and not operation_data.get(row.manufacturing_operation):
@@ -531,10 +532,6 @@ class EmployeeIR(Document):
 							"mop": row.manufacturing_operation,
 							"pmo": mop_data[row.manufacturing_operation].manufacturing_order,
 						}
-
-			grouped_row_to_append = group_se_items(row_to_append)
-			for row in grouped_row_to_append:
-				se_doc.append("items", row)
 
 			if operation_data:
 				for row in operation_data:
@@ -905,7 +902,7 @@ class EmployeeIR(Document):
 		return get_summary_data(self)
 
 
-def group_se_items(self, se_items:list):
+def group_se_items(se_items:list):
 	if not se_items:
 		return
 
@@ -1796,7 +1793,6 @@ def add_time_log(doc, args):
 
 	doc.flags.ignore_validation = True
 	doc.flags.ignore_permissions = True
-	print("doc", doc.as_dict())
 	doc.save()
 
 
@@ -1905,7 +1901,7 @@ def process_loss_item(
 	if variant_loss_details and variant_loss_details.get("loss_warehouse"):
 		loss_warehouse = variant_loss_details.get("loss_warehouse")
 
-	elif variant_loss_details.get("consider_department_warehouse") and variant_loss_details.get(
+	elif variant_loss_details and variant_loss_details.get("consider_department_warehouse") and variant_loss_details.get(
 		"warehouse_type"
 	):
 		if not loss_details.get(variant_loss_details["warehouse_type"]):
@@ -2044,11 +2040,6 @@ def create_single_se_entry(doc, mop_data):
 			row.main_slip = None
 			row.to_main_slip = doc.main_slip
 
-			se_doc.append("custom_mop_items", row)
-
-		grouped_rows_to_append = group_se_items(rows_to_append)
-
-		for row in grouped_rows_to_append:
 			se_doc.append("items", row)
 
 		se_doc.flags.ignore_permissions = True
@@ -2157,3 +2148,140 @@ def get_holidays_for_employee(employee, start_date, end_date):
 		frappe.cache().hset(HOLIDAYS_BETWEEN_DATES, key, holiday_dates)
 
 	return holiday_dates
+
+
+@frappe.whitelist()
+def book_metal_loss(doc, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
+	# mnf_opt = frappe.get_doc("Manufacturing Operation", opt)
+	if isinstance(doc, str):
+		doc = json.loads(doc)
+
+	print(type(doc), doc)
+	# To Check Tollarance which book a loss down side.
+	if allowed_loss_percentage:
+		cal = round(flt((100 - allowed_loss_percentage) / 100) * flt(gwt), 2)
+		if flt(r_gwt) < cal:
+			frappe.throw(
+				f"Department Operation Standard Process Loss Percentage set by <b>{allowed_loss_percentage}%. </br> Not allowed to book a loss less than {cal}</b>"
+			)
+	data = []  # for final data list
+	# Fetching Stock Entry based on MNF Work Order
+	if gwt != r_gwt:
+		mop_balance_table = []
+		fields = [
+			"item_code",
+			"batch_no",
+			"qty",
+			"uom",
+			"pcs",
+			"customer",
+			"inventory_type",
+			"sub_setting_type",
+		]
+		for row in frappe.db.get_all("MOP Balance Table", {"parent": opt}, fields):
+			mop_balance_table.append(row)
+		# Declaration & fetch required value
+		metal_item = []  # for check metal or not list
+		unique = set()  # for Unique Item_Code
+		sum_qty = {}  # for sum of qty matched item
+
+		# getting Metal property from MNF Work Order
+		mwo_metal_property = frappe.db.get_value(
+			"Manufacturing Work Order",
+			mwo,
+			["metal_type", "metal_touch", "metal_purity", "master_bom", "is_finding_mwo"],
+			as_dict=1,
+		)
+		# To Check and pass thgrow Each ITEM metal or not function
+		metal_item.append(
+			get_item_from_attribute_full(
+				mwo_metal_property.metal_type,
+				mwo_metal_property.metal_touch,
+				mwo_metal_property.metal_purity,
+			)
+		)
+		# To get Final Metal Item
+		if mwo_metal_property.get("is_finding_mwo"):
+			bom_items = frappe.db.get_all(
+				"BOM Item", {"parent": mwo_metal_property.master_bom}, pluck="item_code"
+			)
+			bom_items += frappe.db.get_all(
+				"BOM Explosion Item", {"parent": mwo_metal_property.master_bom}, pluck="item_code"
+			)
+			flat_metal_item = list(set(bom_items))
+		else:
+			flat_metal_item = [
+				item for sublist in metal_item for super_sub in sublist for item in super_sub
+			]
+
+		total_qty = 0
+		# To prepare Final Data with all condition's
+		for child in mop_balance_table:
+			if child["item_code"] not in flat_metal_item:
+				continue
+			key = (child["item_code"], child["batch_no"], child["qty"])
+			if key not in unique:
+				unique.add(key)
+				total_qty += child["qty"]
+				if child["item_code"] in sum_qty:
+					sum_qty[child["item_code"], child["batch_no"]]["qty"] += child["qty"]
+				else:
+					sum_qty[child["item_code"], child["batch_no"]] = {
+						"item_code": child["item_code"],
+						"qty": child["qty"],
+						"stock_uom": child["uom"],
+						"batch_no": child["batch_no"],
+						"manufacturing_work_order": mwo,
+						"manufacturing_operation": opt,
+						"pcs": child["pcs"],
+						"customer": child["customer"],
+						"inventory_type": child["inventory_type"],
+						"sub_setting_type": child["sub_setting_type"],
+						"proportionally_loss": 0.0,
+						"received_gross_weight": 0.0,
+					}
+		data = list(sum_qty.values())
+
+		# -------------------------------------------------------------------------
+		# Prepare data and calculation proportionally devide each row based on each qty.
+		total_mannual_loss = 0
+		if len(doc.get("manually_book_loss_details")) > 0:
+			for row in doc.get("manually_book_loss_details"):
+				row = frappe._dict(row)
+				if row.manufacturing_work_order == mwo:
+					loss_qty = (
+						row.proportionally_loss if row.stock_uom != "Carat" else (row.proportionally_loss * 0.2)
+					)
+					total_mannual_loss += loss_qty
+
+		loss = flt(gwt) - flt(r_gwt) - flt(total_mannual_loss)
+		ms_consum = 0
+		ms_consum_book = 0
+		stock_loss = 0
+		if loss < 0:
+			ms_consum = abs(round(loss, 2))
+
+		# for entry in data:
+		# 	total_qty += entry["qty"]
+		for entry in data:
+			if total_qty != 0 and loss > 0:
+				if mwo_metal_property.get("is_finding_mwo"):
+					stock_loss = flt((entry["qty"] * loss) / total_qty, 3)
+				else:
+					if loss <= entry["qty"]:
+						stock_loss = loss
+						loss = 0
+					else:
+						stock_loss = entry["qty"]
+						loss -= entry["qty"]
+				if stock_loss > 0:
+					entry["received_gross_weight"] = entry["qty"] - stock_loss
+					entry["proportionally_loss"] = stock_loss
+					entry["main_slip_consumption"] = 0
+				else:
+					ms_consum_book = round((ms_consum * entry["qty"]) / total_qty, 4)
+					entry["proportionally_loss"] = 0
+					entry["received_gross_weight"] = 0
+					entry["main_slip_consumption"] = ms_consum_book
+		# -------------------------------------------------------------------------
+	return data
