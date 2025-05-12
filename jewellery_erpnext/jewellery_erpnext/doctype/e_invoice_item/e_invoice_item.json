@@ -129,7 +129,7 @@
   },
   {
    "fieldname": "sales_type",
-   "fieldtype": "Table MultiSelect",
+   "fieldtype": "Table",
    "label": "Sales Type",
    "options": "Sales Type Multiselect",
    "reqd": 1
