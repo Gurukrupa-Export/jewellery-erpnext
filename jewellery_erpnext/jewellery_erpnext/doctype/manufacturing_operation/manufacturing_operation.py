@@ -1908,7 +1908,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						fg_purchase_amount = fg_purchase_rate * row["quantity"]
 						if row["is_customer_item"]:
 							row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage")
+							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage")/100
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
@@ -2003,7 +2003,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						fg_purchase_amount = fg_purchase_rate * row["quantity"]
 						if row["is_customer_item"]:
 							row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0)
+							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0)/100
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
@@ -2162,7 +2162,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							fg_purchase_amount = fg_purchase_rate * row["quantity"]
 							if row["is_customer_item"]:
 								row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-								wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0)
+								wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0)/100
 								fg_purchase_rate = 0
 								fg_purchase_amount = 0
 								rate_per_gm = 0
@@ -2234,7 +2234,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					fg_purchase_amount = fg_purchase_rate * row["quantity"]
 					if row["is_customer_item"]:
 						row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-						wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0)
+						wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0)/100
 						fg_purchase_rate = 0
 						fg_purchase_amount = 0
 						rate_per_gm = 0
