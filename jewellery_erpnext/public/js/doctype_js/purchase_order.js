@@ -1592,13 +1592,15 @@ let get_items = (frm) => {
                                             target_row = empty_row;
                                             frappe.model.set_value(target_row.doctype, target_row.name, "item_code", element.item_code);
                                             frappe.model.set_value(target_row.doctype, target_row.name, "qty", element.qty);
-                                            frappe.model.set_value(target_row.doctype, target_row.name, "from_sales_invoice", 1);
+                                            frappe.model.set_value(target_row.doctype, target_row.name, "rate", element.rate);
+                                            // frappe.model.set_value(target_row.doctype, target_row.name, "from_sales_invoice", 1);
                                             frappe.model.set_value(target_row.doctype, target_row.name, "custom_sales_invoice", element.parent);
                                         } else {
                                             target_row = frm.add_child("items", {
                                                 item_code: element.item_code,
                                                 qty: element.qty,
-                                                from_sales_invoice: 1,
+                                                rate:element.rate,
+                                                // from_sales_invoice: 1,
                                                 custom_sales_invoice: element.parent,
                                             });
                                         }
@@ -1607,8 +1609,8 @@ let get_items = (frm) => {
                                         frm.script_manager.trigger("item_code", target_row.doctype, target_row.name);
                                     });
 
-                                    // Set set_from_warehouse field using first item's warehouse
-                                    if (firstWarehouse) {
+                                    // Set set_from_warehouse field using first item's warehouse if supplier is not GJSU0383
+                                    if (firstWarehouse && frm.doc.supplier !== "GJSU0383") {
                                         frm.set_value("set_from_warehouse", firstWarehouse);
                                     }
 
