@@ -453,6 +453,7 @@ def before_submit(self, method):
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
+def on_update(self, method):
 	group_se_items_and_update_mop_items(self)
 
 
@@ -803,7 +804,6 @@ def update_manufacturing_operation(doc, is_cancelled=False):
 
 
 def update_mop_details(se_doc, is_cancelled=False):
-	print("se_doc", se_doc.as_dict())
 	se_employee = se_doc.to_employee or se_doc.employee
 	se_subcontractor = se_doc.to_subcontractor or se_doc.subcontractor
 
@@ -922,7 +922,6 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 
 def update_balance_table(mop_data):
-	print(mop_data)
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
 
@@ -1415,14 +1414,18 @@ def group_se_items_and_update_mop_items(doc):
 	for row in grouped_se_items:
 		doc.append("items", row)
 
+	doc.validate()
+	doc.update_children()
+
 
 def group_se_items(se_items:list):
 	if not se_items:
 		return
 
 	group_keys = ["item_code", "batch_no"]
-	sum_keys = ["qty", "pcs"]
+	sum_keys = ["qty", "transfer_qty", "pcs"]
 	concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
-	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys)
+	exclude_keys = ["idx", "valuation_rate", "basic_rate", "amount", "basic_amount"]
+	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys,exclude_keys)
 
 	return grouped_items

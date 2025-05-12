@@ -11,7 +11,7 @@ app_license = "MIT"
 
 app_include_css = "/assets/jewellery_erpnext/css/jewellery.css"
 app_include_js = "/assets/jewellery_erpnext/js/override/custom_multi_select_dialog.js"
-# after_migrate = "jewellery_erpnext.migrate.after_migrate"
+after_migrate = "jewellery_erpnext.migrate.after_migrate"
 
 doctype_js = {
 	"Quotation": "public/js/doctype_js/quotation.js",
@@ -98,6 +98,7 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
 		],
 		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
+		"on_update": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update",
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
