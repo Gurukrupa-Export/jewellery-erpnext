@@ -1,7 +1,7 @@
 # Copyright (c) 2023, Nirali and contributors
 # For license information, please see license.txt
 
-import frappe
+import frappe, json
 from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe import _
 from frappe.model.document import Document
@@ -72,21 +72,6 @@ class ParentManufacturingOrder(Document):
 		update_due_days(self)
 		validate_mfg_date(self)
 
-	def on_submit(self):
-		if not self.order_form_type or self.order_form_type == "Order":
-			set_metal_tolerance_table(self)  # To Set Metal Product Tolerance Table
-			set_diamond_tolerance_table(self)  # To Set Diamond Product Tolerance Table
-			set_gemstone_tolerance_table(self)  # To Set Gemstone Product Tolerance Table
-			# for idx in range(0, int(self.qty)):
-			self.submit_bom()
-			self.create_material_requests()
-
-		create_manufacturing_work_order(self)
-		gemstone_details_set_mandatory_field(self)
-
-		# if self.order_form_type == "Repair Order":
-		# 	create_repair_un_pack_stock_entry(self)
-
 	def on_cancel(self):
 		update_existing(
 			"Manufacturing Plan Table",
@@ -132,213 +117,112 @@ class ParentManufacturingOrder(Document):
 		)
 
 	def create_material_requests(self):
+		from collections import defaultdict
+		bom_data = self._cached_bom_data
+		mnf_data = self._cached_mnf
+
 		bom = self.serial_id_bom or self.master_bom
-		mnf_abb = frappe.get_value("Manufacturer", self.manufacturer, "custom_abbreviation")
-		if not bom:
-			frappe.throw(_("BOM is missing"))
-		check_bom_type = frappe.db.get_value("BOM", bom, "bom_type")
-		if check_bom_type != "Manufacturing Process":
+		if not bom_data or not mnf_data:
+			frappe.throw("Missing cached data for BOM or Manufacturer.")
+
+		if bom_data["type"] != "Manufacturing Process":
 			frappe.throw(_("Master BOM <b>{0}</b> BOM Type must be a Manufacturing Process").format(bom))
 
-		# Initialize separate lists for each item type
-		bom_tables = [
-			"BOM Metal Detail",
-			"BOM Finding Detail",
-			"BOM Diamond Detail",
-			"BOM Gemstone Detail",
-			"BOM Other Detail",
-		]
-		metal_items = []
-		diamond_items = []
-		gemstone_items = []
-		finding_items = []
-		other_items = []
+		bom_tables = bom_data["details"]
+		variant_warehouse = frappe.get_all(
+			"Variant based Warehouse", {"parent": self.manufacturer},
+			["variant", "department", "target_warehouse"]
+		)
+		warehouse_map = {vw.variant: vw for vw in variant_warehouse}
 
-		for bom_table in bom_tables:
-			# Get bom table's
-			if bom_table == "BOM Metal Detail":
-				data = frappe.get_all(
-					bom_table, {"parent": bom}, ["item_variant", "quantity", "is_customer_item"]
-				)
-			if bom_table == "BOM Finding Detail":
-				data = frappe.get_all(
-					bom_table, {"parent": bom}, ["item_variant", "quantity", "qty", "is_customer_item"]
-				)
-			if bom_table == "BOM Diamond Detail" or bom_table == "BOM Gemstone Detail":
-				data = frappe.get_all(
-					bom_table,
-					{"parent": bom},
-					["item_variant", "quantity", "is_customer_item", "sub_setting_type", "pcs"],
-				)
-			if bom_table == "BOM Other Detail":
-				data = frappe.get_all(
-					bom_table,
-					{"parent": bom},
-					["item_code", "quantity", "qty"],
-				)
-			if data:
-				# Loop through the rows of the bom table
-				variant_warehouse = frappe.db.get_all(
-					"Variant based Warehouse",
-					{"parent": self.manufacturer},
-					["variant", "department", "target_warehouse"],
-				)
+		# Cache for from_warehouse lookups
+		from_warehouse_cache = {}
 
-				warehouse_dict = {}
-				for row in variant_warehouse:
-					warehouse_dict.update({row.variant: row})
+		def get_from_warehouse(dept, wh_type):
+			key = (dept, wh_type)
+			if key not in from_warehouse_cache:
+				from_warehouse_cache[key] = frappe.db.get_value(
+					"Warehouse",
+					{"disabled": 0, "department": dept, "warehouse_type": wh_type},
+					"name",
+				)
+			return from_warehouse_cache[key]
 
-				for row in data:
-					item_type = get_item_type(row.item_variant)
-					if item_type == "metal_item":
-						if not warehouse_dict.get("M"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
-						department = warehouse_dict["M"]["department"]
-						to_warehouse = warehouse_dict["M"]["target_warehouse"]
-						metal_items.append(
-							{
-								"item_code": row.item_variant,
-								"qty": row.quantity,
-								"from_warehouse": frappe.db.get_value(
-									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
-									"name",
-								),
-								"warehouse": to_warehouse,
-								"is_customer_item": row.is_customer_item,
-								"sub_setting_type": None,
-								"pcs": None,
-							}
-						)
-					elif item_type == "finding_item":
-						if not warehouse_dict.get("F"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
-						department = warehouse_dict["F"]["department"]
-						to_warehouse = warehouse_dict["F"]["target_warehouse"]
-						finding_items.append(
-							{
-								"item_code": row.item_variant,
-								"qty": row.quantity,
-								"from_warehouse": frappe.db.get_value(
-									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
-									"name",
-								),
-								"warehouse": to_warehouse,
-								"is_customer_item": row.is_customer_item,
-								"sub_setting_type": None,
-								"pcs": row.qty,
-							}
-						)
-					elif item_type == "diamond_item":
-						if not warehouse_dict.get("D"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
-						department = warehouse_dict["D"]["department"]
-						to_warehouse = warehouse_dict["D"]["target_warehouse"]
-						diamond_items.append(
-							{
-								"item_code": row.item_variant,
-								"qty": row.quantity,
-								"from_warehouse": frappe.db.get_value(
-									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
-									"name",
-								),
-								"warehouse": to_warehouse,
-								"is_customer_item": row.is_customer_item,
-								"sub_setting_type": row.sub_setting_type,
-								"pcs": row.pcs,
-							}
-						)
-					elif item_type == "gemstone_item":
-						if not warehouse_dict.get("G"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
-						department = warehouse_dict["G"]["department"]
-						to_warehouse = warehouse_dict["G"]["target_warehouse"]
-						gemstone_items.append(
-							{
-								"item_code": row.item_variant,
-								"qty": row.quantity,
-								"from_warehouse": frappe.db.get_value(
-									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
-									"name",
-								),
-								"warehouse": to_warehouse,
-								"is_customer_item": row.is_customer_item,
-								"sub_setting_type": row.sub_setting_type,
-								"pcs": row.pcs,
-							}
-						)
-					elif item_type == "other_item":
-						if not warehouse_dict.get("O"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
-						department = warehouse_dict["O"]["department"]
-						to_warehouse = warehouse_dict["O"]["target_warehouse"]
-						other_items.append(
-							{
-								"item_code": row.item_code,
-								"qty": row.quantity,
-								"from_warehouse": frappe.db.get_value(
-									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
-									"name",
-								),
-								"warehouse": to_warehouse,
-								"is_customer_item": "0",
-								"sub_setting_type": None,
-								"pcs": row.qty,
-							}
-						)
-		items = {
-			"metal_item": metal_items,
-			"diamond_item": diamond_items,
-			"gemstone_item": gemstone_items,
-			"finding_item": finding_items,
-			"other_item": other_items,
-		}
-		# frappe.throw(f"{items}")
-		counter = 1
-		trimmed_items = {item_type.split("_")[0][:1].lower(): val for item_type, val in items.items()}
-		for item_type, val in trimmed_items.items():
-			if val:
-				mr_doc = frappe.new_doc("Material Request")
-				tital = f"MR{item_type.upper()}-{mnf_abb}-({self.item_code})-{counter}"
-				mr_doc.title = tital
-				mr_doc.company = self.company
-				mr_doc.material_request_type = "Manufacture"
-				mr_doc.schedule_date = frappe.utils.nowdate()
-				mr_doc.manufacturing_order = self.name
-				mr_doc.custom_manufacturer = self.manufacturer
-				if (
-					self.customer_gold == "Yes"
-					and self.customer_diamond == "Yes"
-					and self.customer_stone == "Yes"
-					and self.customer_good == "Yes"
-				):
-					mr_doc._customer = self.customer
-					mr_doc.inventory_type = "Customer Goods"
-				for i in val:
-					if i["qty"] > 0:
-						mr_doc.append(
-							"items",
-							{
-								"item_code": i["item_code"],
-								"qty": i["qty"] * self.qty,
-								"warehouse": i["warehouse"],
-								"from_warehouse": i["from_warehouse"],
-								"custom_is_customer_item": i.get("is_customer_item", 0),
-								"custom_sub_setting_type": i.get("sub_setting_type", None),
-								"pcs": i.get("pcs", None),
-								"custom_inventory_type": "Customer Stock" if i.get("is_customer_item") == 1 else None,
-							},
-						)
-					else:
-						frappe.throw(
-							f"Please Check BOM Table:<b>{item_type.upper()}</b>, <b>{i['item_code']}</b> is {i['qty']} Not Allowed."
-						)
-				counter += 1
-				mr_doc.save()
+		# Collect items grouped by item type code (M/D/F/G/O)
+		grouped_items = defaultdict(list)
+
+		for table_name, data in bom_tables.items():
+			for row in data:
+				item_code = row.get("item_variant") or row.get("item_code")
+				if not item_code:
+					continue
+
+				item_type = get_item_type(item_code)  # returns metal_item, diamond_item, etc.
+				type_code = item_type[0].upper()  # 'M', 'D', etc.
+
+				if type_code not in warehouse_map:
+					continue
+
+				wh_config = warehouse_map[type_code]
+				dept = wh_config["department"]
+				to_warehouse = wh_config["target_warehouse"]
+				from_warehouse = get_from_warehouse(dept, "Raw Material")
+
+				grouped_items[type_code].append({
+					"item_code": item_code,
+					"qty": row.get("quantity", row.get("qty")),
+					"from_warehouse": from_warehouse,
+					"warehouse": to_warehouse,
+					"is_customer_item": row.get("is_customer_item", 0),
+					"sub_setting_type": row.get("sub_setting_type"),
+					"pcs": row.get("pcs", row.get("qty")),
+				})
+
+		# Generate Material Requests per item group
+		mnf_abb = mnf_data["custom_abbreviation"]
+
+		mr_doc = frappe.new_doc("Material Request")
+		mr_doc.update({
+			"title": f"MR-{mnf_abb}-({self.item_code})",
+			"company": self.company,
+			"material_request_type": "Manufacture",
+			"schedule_date": frappe.utils.nowdate(),
+			"manufacturing_order": self.name,
+			"custom_manufacturer": self.manufacturer,
+		})
+
+		for type_code, entries in grouped_items.items():
+			if not entries:
+				continue
+
+			if (
+				self.customer_gold == "Yes"
+				and self.customer_diamond == "Yes"
+				and self.customer_stone == "Yes"
+				and self.customer_good == "Yes"
+			):
+				mr_doc._customer = self.customer
+				mr_doc.inventory_type = "Customer Goods"
+
+			for i in entries:
+				if i["qty"] > 0:
+					mr_doc.append("items", {
+						"item_code": i["item_code"],
+						"qty": i["qty"] * self.qty,
+						"warehouse": i["warehouse"],
+						"from_warehouse": i["from_warehouse"],
+						"custom_is_customer_item": i["is_customer_item"],
+						"custom_sub_setting_type": i.get("sub_setting_type"),
+						"pcs": i.get("pcs"),
+						"custom_inventory_type": "Customer Stock" if i.get("is_customer_item") else None,
+					})
+				else:
+					frappe.throw(
+						f"Invalid quantity in BOM table <b>{type_code}</b> for item <b>{i['item_code']}</b>: {i['qty']}"
+					)
+
+		mr_doc.save()
+
 		frappe.msgprint(_("Material Request Created !!"))
 
 	def set_missing_value(self):
@@ -1259,3 +1143,82 @@ def validate_mfg_date(self):
 
 	if self.manufacturing_end_date and self.manufacturing_end_date >= date:
 		frappe.throw(_("Manufacturing date is not allowed over delivery date"))
+
+@frappe.whitelist()
+def bulk_submit_pmo(pmo_names):
+	pmo_names = frappe.parse_json(pmo_names)
+	if len(pmo_names) <= 20:
+		return bg_bulk_submit_pmo(pmo_names)
+	elif len(pmo_names) <= 2500:
+		frappe.msgprint(_("Bulk operation is enqueued in background."), alert=True)
+		frappe.enqueue(
+			bg_bulk_submit_pmo,
+			pmo_names=pmo_names,
+			queue="long",
+			timeout=4000,
+		)
+	else:
+		frappe.throw(_("Bulk operations only support up to 2500 documents."), title=_("Too Many Documents"))
+
+import time
+
+@frappe.whitelist()
+def bg_bulk_submit_pmo(pmo_names):
+	start_time = time.time()  # Start the timer
+	try:
+		pmo_list = frappe.get_all("Parent Manufacturing Order", filters={"name": ["in", pmo_names]}, fields=["name", "manufacturer", "master_bom", "serial_id_bom", "item_code", "company", "customer", "qty"])
+
+		# Caching common data
+		manufacturer_set = {pmo.manufacturer for pmo in pmo_list}
+		bom_set = {pmo.serial_id_bom or pmo.master_bom for pmo in pmo_list}
+
+		# Pre-fetch required info
+		manufacturers_map = frappe._dict({
+			row.name: row for row in frappe.get_all("Manufacturer", filters={"name": ["in", list(manufacturer_set)]}, fields=["name", "custom_abbreviation"])
+		})
+
+		bom_meta_map = {}
+		for bom in bom_set:
+			bom_meta_map[bom] = {
+				"type": frappe.db.get_value("BOM", bom, "bom_type"),
+				"details": {
+					"BOM Metal Detail": frappe.get_all("BOM Metal Detail", {"parent": bom}, ["item_variant", "quantity", "is_customer_item"]),
+					"BOM Finding Detail": frappe.get_all("BOM Finding Detail", {"parent": bom}, ["item_variant", "quantity", "qty", "is_customer_item"]),
+					"BOM Diamond Detail": frappe.get_all("BOM Diamond Detail", {"parent": bom}, ["item_variant", "quantity", "is_customer_item", "sub_setting_type", "pcs"]),
+					"BOM Gemstone Detail": frappe.get_all("BOM Gemstone Detail", {"parent": bom}, ["item_variant", "quantity", "is_customer_item", "sub_setting_type", "pcs"]),
+					"BOM Other Detail": frappe.get_all("BOM Other Detail", {"parent": bom}, ["item_code", "quantity", "qty"]),
+				}
+			}
+
+		processed_count = 0
+		for pmo in pmo_list:
+			doc = frappe.get_cached_doc("Parent Manufacturing Order", pmo.name)
+			doc.flags.ignore_permissions = True
+
+			# Inject pre-fetched data
+			doc._cached_bom_data = bom_meta_map.get(pmo.serial_id_bom or pmo.master_bom)
+			doc._cached_mnf = manufacturers_map.get(pmo.manufacturer)
+
+			# You can patch create_material_requests to use these
+			if not doc.order_form_type or doc.order_form_type == "Order":
+				set_metal_tolerance_table(doc)
+				set_diamond_tolerance_table(doc)
+				set_gemstone_tolerance_table(doc)
+				doc.submit_bom()
+				doc.create_material_requests()
+
+			create_manufacturing_work_order(doc)
+			gemstone_details_set_mandatory_field(doc)
+
+			doc.submit()
+			processed_count += 1
+	except Exception as e:
+		frappe.db.rollback()
+		frappe.log_error("Bulk Submit PMO", frappe.get_traceback())
+	finally:
+		end_time = time.time()  # End the timer
+		duration = end_time - start_time
+		frappe.log_error(
+			title="Batch Processing Complete",
+			message=f"Processed {processed_count} PMOs in {duration:.2f} seconds."
+		)

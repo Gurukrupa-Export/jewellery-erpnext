@@ -175,7 +175,7 @@ def create_new_bom(self):
 					self, row, bom[0].get("name"), attribute_data, metal_criteria, item_bom_data, bom_data
 				)
 			except Exception as e:
-				frappe.log_error(title="Quotation Error", message=f"{e}")
+				frappe.log_error(title="Quotation Error", message=frappe.get_traceback())
 				error_logs.append(f"Row {row.idx} : {e}")
 
 	if error_logs:
@@ -561,7 +561,8 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				# frappe.throw(f"Amount :  {metal.amount}")
 				
 		for find in doc.finding_detail:
-			matching_subcategory = None 
+			matching_subcategory = None
+			making_charge_price_subcategories = None 
 			making_charge_price_list = frappe.get_all(
 							"Making Charge Price",
 							filters={
@@ -580,12 +581,12 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				},
 				fields=["name"]
 			)
-			matching_subcategory = None
-			making_charge_price_subcategories = frappe.get_all(
-						"Making Charge Price Item Subcategory",
-						filters={"parent": making_charge_price_list[0]["name"]},
-						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage"]
-					)
+			if making_charge_price_list:
+				making_charge_price_subcategories = frappe.get_all(
+							"Making Charge Price Item Subcategory",
+							filters={"parent": making_charge_price_list[0]["name"]},
+							fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage"]
+						)
 			# Match subcategory
 			if making_charge_price_subcategories:
 				matching_subcategory = next(
