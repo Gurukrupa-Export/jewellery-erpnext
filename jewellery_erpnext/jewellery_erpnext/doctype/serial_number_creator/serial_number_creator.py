@@ -200,7 +200,8 @@ def get_operation_details(data, docname, mwo, pmo, company, mnf, dpt, for_fg, de
 	mnf_op_doc = frappe.get_doc("Manufacturing Operation", docname)
 	data_dict = json.loads(data)
 	stock_data = data_dict[0]
-	mnf_qty = data_dict[2]
+	mnf_qty = int(data_dict[2])
+
 	total_qty = data_dict[3]
 
 	existing_se_item = {}
