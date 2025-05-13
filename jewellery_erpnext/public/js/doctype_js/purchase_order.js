@@ -1542,7 +1542,6 @@ let get_items = (frm) => {
     frm.add_custom_button(
         __("Sales Invoice"),
         function () {
-            console.log(frm.doc.purchase_type);
             let query_args = {
                 filters: {
                     docstatus: ["!=", 2],
@@ -1581,40 +1580,38 @@ let get_items = (frm) => {
                             },
                             callback: function (r) {
                                 if (r && r.message && r.message.items && r.message.items.length) {
-                                    let firstWarehouse = r.message.items[0].warehouse;
+                                    let firstWarehouse = r.message.items[0] && r.message.items[0].warehouse;
                                     let goldRates = r.message.gold_rates;
 
                                     r.message.items.forEach((element) => {
                                         let target_row;
                                         const empty_row = frm.doc.items.find(row => !row.item_code);
 
+                                        const set_fields = (rowname) => {
+                                            frappe.model.set_value("Purchase Order Item", rowname, "qty", element.qty);
+                                            frappe.model.set_value("Purchase Order Item", rowname, "rate", element.rate);
+                                            frappe.model.set_value("Purchase Order Item", rowname, "custom_sales_invoice", element.parent);
+                                            frappe.model.set_value("Purchase Order Item", rowname, "item_name", element.item_name || "");
+                                            frappe.model.set_value("Purchase Order Item", rowname, "uom", element.uom || "Nos");
+                                        };
+
                                         if (empty_row) {
                                             target_row = empty_row;
-                                            frappe.model.set_value(target_row.doctype, target_row.name, "item_code", element.item_code);
-                                            frappe.model.set_value(target_row.doctype, target_row.name, "qty", element.qty);
-                                            frappe.model.set_value(target_row.doctype, target_row.name, "rate", element.rate);
-                                            // frappe.model.set_value(target_row.doctype, target_row.name, "from_sales_invoice", 1);
-                                            frappe.model.set_value(target_row.doctype, target_row.name, "custom_sales_invoice", element.parent);
+                                            frappe.model.set_value("Purchase Order Item", target_row.name, "item_code", element.item_code)
+                                                .then(() => set_fields(target_row.name));
                                         } else {
                                             target_row = frm.add_child("items", {
-                                                item_code: element.item_code,
-                                                qty: element.qty,
-                                                rate:element.rate,
-                                                // from_sales_invoice: 1,
-                                                custom_sales_invoice: element.parent,
+                                                item_code: element.item_code
                                             });
+                                            frappe.model.set_value("Purchase Order Item", target_row.name, "item_code", element.item_code)
+                                                .then(() => set_fields(target_row.name));
                                         }
-
-                                        frm.trigger("item_code", target_row.doctype, target_row.name);
-                                        frm.script_manager.trigger("item_code", target_row.doctype, target_row.name);
                                     });
 
-                                    // Set set_from_warehouse field using first item's warehouse if supplier is not GJSU0383
                                     if (firstWarehouse && frm.doc.supplier !== "GJSU0383") {
                                         frm.set_value("set_from_warehouse", firstWarehouse);
                                     }
 
-                                    // Set gold_rate_with_gst from the first Sales Invoice
                                     let first_invoice = r.message.items[0].parent;
                                     if (goldRates && goldRates[first_invoice]) {
                                         frm.set_value("gold_rate_with_gst", goldRates[first_invoice]);
@@ -1622,6 +1619,8 @@ let get_items = (frm) => {
 
                                     frm.refresh_field("items");
                                     frm.set_value("from_sales_invoice", 1);
+                                } else {
+                                    frappe.msgprint(__("No items found in the selected Sales Invoices."));
                                 }
                             },
                         });
