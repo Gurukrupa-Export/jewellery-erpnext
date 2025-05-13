@@ -966,7 +966,7 @@ def validate_sales_type(self):
 				self.sales_type = quotation_sales_type
 	if not self.sales_type :
 		frappe.throw("Sales Type is mandatory.")
-	if not self.gold_rate_with_gst:
+	if not self.gold_rate_with_gst and self.company != 'Sadguru Diamond':
 		frappe.throw("Metal rate  with GST is mandatory.")
 
 def update_same_customer_snc(self):

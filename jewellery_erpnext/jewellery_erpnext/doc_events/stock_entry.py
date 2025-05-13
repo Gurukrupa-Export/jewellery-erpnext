@@ -143,7 +143,6 @@ def before_validate(self, method):
 	# 			row.basic_amount = row.qty * row.basic_rate
 
 
-def validate(self, method):
 	if self.purpose == "Material Transfer" and self.auto_created == 0:
 		validate_metal_properties(self)
 	else:
@@ -453,8 +452,7 @@ def before_submit(self, method):
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
-def on_update(self, method):
-	group_se_items_and_update_mop_items(self)
+	group_se_items_and_update_mop_items(self, method)
 
 
 def onsubmit(self, method):
@@ -1396,7 +1394,7 @@ def set_filter_for_main_slip(doctype, txt, searchfield, start, page_len, filters
 	return metal_purity
 
 
-def group_se_items_and_update_mop_items(doc):
+def group_se_items_and_update_mop_items(doc, method):
 	if not doc.items:
 		return
 
@@ -1409,12 +1407,14 @@ def group_se_items_and_update_mop_items(doc):
 
 	doc_dict = doc.as_dict()
 	grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
-	doc.items = []
 
-	for row in grouped_se_items:
-		doc.append("items", row)
+	if len(grouped_se_items) < len(doc.items):
+		doc.items = []
 
-	doc.validate()
+		for row in grouped_se_items:
+			doc.append("items", row)
+
+	doc.calculate_rate_and_amount()
 	doc.update_children()
 
 
@@ -1425,7 +1425,7 @@ def group_se_items(se_items:list):
 	group_keys = ["item_code", "batch_no"]
 	sum_keys = ["qty", "transfer_qty", "pcs"]
 	concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
-	exclude_keys = ["idx", "valuation_rate", "basic_rate", "amount", "basic_amount"]
-	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys,exclude_keys)
+	exclude_keys = ["idx", "valuation_rate", "basic_rate", "amount", "basic_amount", "taxable_value", "actual_qty"]
+	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys, exclude_keys)
 
 	return grouped_items
