@@ -1,4 +1,10 @@
 import frappe
+from erpnext.accounts.doctype.purchase_invoice.purchase_invoice import PurchaseInvoice as ERPNextPurchaseInvoice
+from frappe.utils import cint
+
+class CustomPurchaseInvoice(ERPNextPurchaseInvoice):
+    def validate(self):
+        pass
 
 
 def before_validate(self):
