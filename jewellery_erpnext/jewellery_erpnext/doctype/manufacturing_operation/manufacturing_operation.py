@@ -1494,7 +1494,7 @@ def get_material_wt(doc):
 
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	data = get_stock_entry_data(self)
-	
+
 	ref_customer = frappe.db.get_value("Parent Manufacturing Order", self.parent_manufacturing_order, "ref_customer")
 	diamond_price_list_ref_customer = frappe.db.get_value("Customer", ref_customer, "diamond_price_list")
 	gemstone_price_list_ref_customer = frappe.db.get_value("Customer", ref_customer, "custom_gemstone_price_list_type")
@@ -1585,7 +1585,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row = {}
 			row["stock_uom"] = item.get("uom")
 			# row["is_customer_item"] = item_row.is_customer_provided_item
-			
+
 			# frappe.throw(f"{row["is_customer_item"]}")
 			row["rate"] = new_bom.gold_rate_with_gst
 			row["se_rate"] = item.get("rate")
@@ -1610,7 +1610,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						row["total_pcs"] = stock_entry_details[0]["total_pcs"] if stock_entry_details else 0
 						row["weight_per_pcs"] = row["total_qty"] / row["total_pcs"] if row["total_pcs"] else 0
 
-						
+
 					elif "MM" in attribute.attribute_value:
 						stock_entry_details = frappe.db.sql("""
 							SELECT SUM(qty) AS total_qty, SUM(pcs) AS total_pcs
@@ -1620,7 +1620,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						row["total_qty"] = stock_entry_details[0]["total_qty"] if stock_entry_details else 0
 						row["total_pcs"] = stock_entry_details[0]["total_pcs"] if stock_entry_details else 0
 						row["weight_per_pcs"] = row["total_qty"] / row["total_pcs"] if row["total_pcs"] else 0
-						
+
 			row["quantity"] = item["qty"] / pmo_data.get("qty")
 			row["sieve_size_range"] = sieve_size_range
 			row["sieve_size_mm"] = sieve_size_mm
@@ -1633,24 +1633,24 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			if pmo_data.get("diamond_quality"):
 				row["quality"] = pmo_data.get("diamond_quality")
 			if self.company == "Gurukrupa Export Private Limited":
-				
+
 				if diamond_price_customer and any(dpl["price_list_type"] == diamond_price_list_customer for dpl in diamond_price_customer):
 					if diamond_price_list_customer == "Size (in mm)":
 						size_in_mm_diamond_price_list_entry = frappe.db.sql(
 							"""
 							SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 							custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-							FROM `tabDiamond Price List` 
-							WHERE customer = %s 
-							AND price_list_type = %s 
+							FROM `tabDiamond Price List`
+							WHERE customer = %s
+							AND price_list_type = %s
 							AND size_in_mm = %s
 							ORDER BY creation DESC
-							LIMIT 1 
+							LIMIT 1
 							""",
 							(new_bom.customer, diamond_price_list_customer, row["sieve_size_mm"]),
 							as_dict=True
 						)
-						
+
 						if size_in_mm_diamond_price_list_entry:
 							latest_entry = size_in_mm_diamond_price_list_entry[0]
 							# row["total_diamond_rate"] = latest_entry.get("rate", 0)
@@ -1662,7 +1662,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
 									percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
 									amount = latest_entry.get("rate", 0) * (percentage / 100)
-									row["total_diamond_rate"] = amount 
+									row["total_diamond_rate"] = amount
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
 							else:
 								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
@@ -1676,13 +1676,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if diamond_price_list_customer == "Sieve Size Range":
 						sieve_size_range_diamond_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate 
-							FROM `tabDiamond Price List` 
-							WHERE customer = %s 
-							AND price_list_type = %s 
+							SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate
+							FROM `tabDiamond Price List`
+							WHERE customer = %s
+							AND price_list_type = %s
 							AND sieve_size_range = %s
 							ORDER BY creation DESC
-							LIMIT 1 
+							LIMIT 1
 							""",
 							(new_bom.customer, diamond_price_list_customer, row["sieve_size_range"]),
 							as_dict=True
@@ -1692,37 +1692,37 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							row["total_diamond_rate"] = latest_entry.get("rate", 0)
 							row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 							row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
-							
+
 					if diamond_price_list_customer == "Weight (in cts)":
 						latest_diamond_price_list_entry  = frappe.db.sql(
 							"""
 							SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 							custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-							FROM `tabDiamond Price List` 
-							WHERE customer = %s 
-							AND price_list_type = %s 
+							FROM `tabDiamond Price List`
+							WHERE customer = %s
+							AND price_list_type = %s
 							AND %s BETWEEN from_weight AND to_weight
 							ORDER BY creation DESC
-							LIMIT 1 
+							LIMIT 1
 							""",
 							(new_bom.customer, diamond_price_list_customer,row["weight_per_pcs"]),
 							as_dict=True
 						)
-						
+
 						if latest_diamond_price_list_entry:
-							latest_entry = latest_diamond_price_list_entry[0]  
+							latest_entry = latest_diamond_price_list_entry[0]
 							row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 							row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
 							if row["is_customer_item"]:
 								row["total_diamond_rate"] = latest_entry.get("custom_outwork_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["weight_per_pcs"]
-								
+
 								if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
 									percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
 									amount = latest_entry.get("rate", 0) * (percentage / 100)
-									row["total_diamond_rate"] = amount 
+									row["total_diamond_rate"] = amount
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["weight_per_pcs"]
-								
+
 							else:
 								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["weight_per_pcs"]
@@ -1731,10 +1731,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									rate = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = rate + latest_entry.get("rate", 0)
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["weight_per_pcs"]
-									
-								
-								
-									
+
+
+
+
 				# row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 
 			else:
@@ -1745,12 +1745,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							"""
 							SELECT name, supplier_fg_purchase_rate,rate,custom_outwork_handling_charges_in_percentage,
 							custom_outright_handling_charges_in_percentage,custom_outright_handling_charges_in_rate,custom_outwork_handling_charges_in_rate
-							FROM `tabDiamond Price List` 
-							WHERE customer = %s 
-							AND price_list_type = %s 
+							FROM `tabDiamond Price List`
+							WHERE customer = %s
+							AND price_list_type = %s
 							AND size_in_mm = %s
 							ORDER BY creation DESC
-							LIMIT 1 
+							LIMIT 1
 							""",
 							(ref_customer, diamond_price_list_ref_customer, row["sieve_size_mm"]),
 							as_dict=True
@@ -1763,11 +1763,11 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							if row["is_customer_item"]:
 								row["total_diamond_rate"] = latest_entry.get("custom_outwork_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
-								
+
 								if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
 									percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
 									amount = latest_entry.get("rate", 0) * (percentage / 100)
-									row["total_diamond_rate"] = amount 
+									row["total_diamond_rate"] = amount
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
 							else:
 								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
@@ -1777,18 +1777,18 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									rate = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = rate + latest_entry.get("rate", 0)
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
-									
+
 
 					if diamond_price_list_ref_customer == "Sieve Size Range":
 						sieve_size_range_diamond_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, supplier_fg_purchase_rate,rate 
-							FROM `tabDiamond Price List` 
-							WHERE customer = %s 
-							AND price_list_type = %s 
+							SELECT name, supplier_fg_purchase_rate,rate
+							FROM `tabDiamond Price List`
+							WHERE customer = %s
+							AND price_list_type = %s
 							AND sieve_size_range = %s
 							ORDER BY creation DESC
-							LIMIT 1 
+							LIMIT 1
 							""",
 							(ref_customer, diamond_price_list_ref_customer, row["sieve_size_range"]),
 							as_dict=True
@@ -1798,36 +1798,36 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							row["total_diamond_rate"] = latest_entry.get("rate", 0)
 							row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 							row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
-							
+
 
 					if diamond_price_list_ref_customer == "Weight (in cts)":
 						latest_diamond_price_list_entry  = frappe.db.sql(
 							"""
-							SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate 
-							FROM `tabDiamond Price List` 
-							WHERE customer = %s 
-							AND price_list_type = %s 
+							SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate
+							FROM `tabDiamond Price List`
+							WHERE customer = %s
+							AND price_list_type = %s
 							AND %s BETWEEN from_weight AND to_weight
 							ORDER BY creation DESC
-							LIMIT 1 
+							LIMIT 1
 							""",
 							(ref_customer, diamond_price_list_ref_customer,row["weight_per_pcs"]),
 							as_dict=True
 						)
 
 						if latest_diamond_price_list_entry:
-							latest_entry = latest_diamond_price_list_entry[0]  
+							latest_entry = latest_diamond_price_list_entry[0]
 							# row["total_diamond_rate"] = latest_entry.get("rate", 0)
 							row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 							row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
 							if row["is_customer_item"]:
 								row["total_diamond_rate"] = latest_entry.get("custom_outwork_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["weight_per_pcs"]
-								
+
 								if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
 									percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
 									amount = latest_entry.get("rate", 0) * (percentage / 100)
-									row["total_diamond_rate"] = amount 
+									row["total_diamond_rate"] = amount
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["weight_per_pcs"]
 							else:
 								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
@@ -1836,14 +1836,14 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									percentage = latest_entry.get("custom_outright_handling_charges_in_percentage", 0)
 									row["total_diamond_rate"] = latest_entry.get("rate", 0) * (percentage / 100)
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["weight_per_pcs"]
-									
 
 
-				
+
+
 				# row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 
 			new_bom.append("diamond_detail", row)
-	
+
 			total_diamond_rate_for_specified_quantity = 0
 			for row in new_bom.get("diamond_detail", []):
 				total_diamond_rate_for_specified_quantity = sum(row.get("diamond_rate_for_specified_quantity", 0) or 0  for row in new_bom.get("diamond_detail", []))
@@ -1862,9 +1862,9 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row = {}
 			rate_per_gm = 0
 			fg_purchase_rate = 0
-			fg_purchase_amount = 0 
-			wastege_rate = 0 
-			row["stock_uom"] = item.get("uom") 
+			fg_purchase_amount = 0
+			wastege_rate = 0
+			row["stock_uom"] = item.get("uom")
 			row["quantity"] = item["qty"] / pmo_data.get("qty")
 			row["is_customer_item"] = 1 if item.get("inventory_type") == "Customer Goods" else 0
 			if self.company == "Gurukrupa Export Private Limited":
@@ -1896,7 +1896,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						filters={"parent": making_charge_price_list[0]["name"]},
 						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
 					)
-					
+
 					matching_subcategory = next(
 						(row for row in making_charge_price_subcategories if row.get("subcategory") == new_bom.item_subcategory),
 						None
@@ -1912,18 +1912,18 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
-							
+
 						else:
 							row["rate"] = new_bom.gold_rate_with_gst
 							wastage_rate = matching_subcategory.get("wastage", 0)/100
-							
-						
+
+
 				row["wastage_rate"] = wastage_rate
 				row["amount"] = row["rate"] * row["quantity"]
-				row["wastage_amount"] = row["wastage_rate"] * row["amount"] 
+				row["wastage_amount"] = row["wastage_rate"] * row["amount"]
 				row["se_rate"] = item.get("rate")
-				
-					
+
+
 				# Add attributes
 				for attribute in item_row.attributes:
 					atrribute_name = format_attrbute_name(attribute.attribute)
@@ -1933,15 +1933,15 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				# if item.get("inventory_type") == "Customer Goods":
 				# 	row["is_customer_item"] = 1
 
-				
-					
+
+
 				# Assign rates and amounts
 				row["fg_purchase_rate"] = fg_purchase_rate
 				row["fg_purchase_amount"] = fg_purchase_amount
 				row["pcs"] = item.get("pcs")
-				row["making_rate"] = rate_per_gm  
+				row["making_rate"] = rate_per_gm
 				row["making_amount"] = row["making_rate"] * row["quantity"]
-				
+
 				new_bom.append("metal_detail", row)
 
 				# Calculate custom metal amount
@@ -2010,13 +2010,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						else:
 							row["rate"] = new_bom.gold_rate_with_gst
 							wastage_rate = matching_subcategory.get("wastage", 0)/100
-						
 
-				row["wastage_rate"] = wastage_rate 
+
+				row["wastage_rate"] = wastage_rate
 				row["se_rate"] = item.get("rate")
 				row["rate"] = new_bom.gold_rate_with_gst
 				row["amount"] = row["rate"] * row["quantity"]
-				row["wastage_amount"] = row.get("wastage_rate", 0) * row["amount"] 
+				row["wastage_amount"] = row.get("wastage_rate", 0) * row["amount"]
 
 				# Add attributes
 				for attribute in item_row.attributes:
@@ -2031,7 +2031,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				row["fg_purchase_rate"] = fg_purchase_rate
 				row["fg_purchase_amount"] = fg_purchase_amount
 				row["pcs"] = item.get("pcs")
-				row["making_rate"] = rate_per_gm  
+				row["making_rate"] = rate_per_gm
 				row["making_amount"] = row["making_rate"] * row["quantity"]
 
 				new_bom.append("metal_detail", row)
@@ -2053,7 +2053,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				if new_bom.get("metal_detail"):
 					total_fg_purchase_amount = sum(
 						flt(row.get("fg_purchase_amount", 0)) for row in new_bom.get("metal_detail", [])
-					)	
+					)
 			new_bom.custom_fg_metal_amount = total_fg_purchase_amount
 
 			# Calculate total metal weight
@@ -2090,26 +2090,26 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row["stock_uom"] = item.get("uom")
 			rate_per_gm = 0
 			fg_purchase_rate = 0
-			fg_purchase_amount = 0  
-			wastage_rate = 0  
+			fg_purchase_amount = 0
+			wastage_rate = 0
 			row["se_rate"] = item.get("rate")
 			# row["rate"] = new_bom.gold_rate_with_gst
 			row["quantity"] = item["qty"] / pmo_data.get("qty")
-			
-			finding_type_value = None 
+
+			finding_type_value = None
 			row["is_customer_item"] = 1 if item.get("inventory_type") == "Customer Goods" else 0
 			for attribute in item_row.attributes:
 				atrribute_name = format_attrbute_name(attribute.attribute)
 
 				if atrribute_name == "finding_sub_category":
 					atrribute_name = "finding_type"
-					finding_type_value = attribute.attribute_value  
+					finding_type_value = attribute.attribute_value
 				row[atrribute_name] = attribute.attribute_value
 
 				# if item.get("inventory_type") and item.get("inventory_type") == "Customer Goods":
 				# 	row["is_customer_item"] = 1
 
-			row["finding_type"] = finding_type_value  
+			row["finding_type"] = finding_type_value
 			if self.company == "Gurukrupa Export Private Limited":
 				making_charge_price_list = frappe.get_all(
 					"Making Charge Price",
@@ -2119,20 +2119,20 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					},
 					fields=["name"]
 				)
-				
+
 				making_charge_price_list_with_gold_rate = frappe.get_all(
 					"Making Charge Price",
 					filters={
 						"customer": new_bom.customer,
 						"setting_type": new_bom.setting_type,
-						"from_gold_rate": ["<=", new_bom.gold_rate_with_gst], 
+						"from_gold_rate": ["<=", new_bom.gold_rate_with_gst],
 						"to_gold_rate": [">=", new_bom.gold_rate_with_gst]
 					},
 					fields=["name"]
 				)
 
-				subcategory_value = None 
-				matching_subcategory = None  
+				subcategory_value = None
+				matching_subcategory = None
 
 				if making_charge_price_list:
 					if finding_type_value:
@@ -2140,7 +2140,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							"Making Charge Price Finding Subcategory",
 							{"subcategory": finding_type_value},
 							["rate_per_gm", "wastage"],
-							order_by="creation DESC"  
+							order_by="creation DESC"
 						)
 
 					making_charge_price_subcategories = frappe.get_all(
@@ -2169,14 +2169,14 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							else:
 								row["rate"] = new_bom.gold_rate_with_gst
 								wastage_rate = matching_subcategory.get("wastage", 0)/100
-								
-							
+
+
 				row["wastage_rate"] = wastage_rate
-				row["making_rate"] = rate_per_gm  
+				row["making_rate"] = rate_per_gm
 				row["amount"] = row["rate"] * row["quantity"]
 				if making_charge_price_list_with_gold_rate:
 					row["making_amount"] = row["making_rate"] * row["quantity"]
-					row.setdefault("wastage_rate", 0) 
+					row.setdefault("wastage_rate", 0)
 
 				row["pcs"] = item.get("pcs")
 				row["fg_purchase_rate"] = fg_purchase_rate
@@ -2197,14 +2197,14 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				filters={
 					"customer": ref_customer,
 					"setting_type": new_bom.setting_type,
-					"from_gold_rate": ["<=", new_bom.gold_rate_with_gst], 
+					"from_gold_rate": ["<=", new_bom.gold_rate_with_gst],
 					"to_gold_rate": [">=", new_bom.gold_rate_with_gst]
 				},
 				fields=["name"]
 			)
 
-			subcategory_value = None 
-			matching_subcategory = None  
+			subcategory_value = None
+			matching_subcategory = None
 
 			if making_charge_price_list:
 				if finding_type_value:
@@ -2212,7 +2212,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						"Making Charge Price Finding Subcategory",
 						{"subcategory": finding_type_value},
 						["rate_per_gm", "wastage"],
-						order_by="creation DESC"  
+						order_by="creation DESC"
 					)
 
 				making_charge_price_subcategories = frappe.get_all(
@@ -2241,18 +2241,18 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					else:
 						row["rate"] = new_bom.gold_rate_with_gst
 						wastage_rate = matching_subcategory.get("wastage", 0)/100
-							
+
 			row["wastage_rate"] = wastage_rate
-			row["making_rate"] = rate_per_gm  
+			row["making_rate"] = rate_per_gm
 
 			if making_charge_price_list_with_gold_rate:
 				row["making_amount"] = row["making_rate"] * row["quantity"]
-				row.setdefault("wastage_rate", 0) 
+				row.setdefault("wastage_rate", 0)
 
 			row["pcs"] = item.get("pcs")
 			row["fg_purchase_rate"] = fg_purchase_rate
 			row["fg_purchase_amount"] = fg_purchase_amount
-			row["wastage_amount"] = row.get("wastage_rate", 0) * row["amount"]  
+			row["wastage_amount"] = row.get("wastage_rate", 0) * row["amount"]
 
 			new_bom.append("finding_detail", row)
 
@@ -2275,7 +2275,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			total_finding_weight = sum(flt(row.get("quantity", 0)) for row in new_bom.get("finding_detail", []))
 			total_wastage_amount = sum(flt(row.get("wastage_amount", 0)) for row in new_bom.get("finding_detail", []))
 			total_gemstone_rate_for_specified_quantity = sum(flt(row.get("gemstone_rate_for_specified_quantity", 0)) for row in new_bom.get("gemstone_detail", []))
-			
+
 			# Set the totals in the BOM document
 			new_bom.custom_finding_amount = total_making_amount
 			new_bom.custom_finding_fg_amount = total_fg_purchase_amount
@@ -2309,7 +2309,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		# 						row["weight_per_pcs"] = round(row["weight_per_pcs"], 2)
 		# 					else:
 		# 						row["weight_per_pcs"] = round(row["weight_per_pcs"], 3)
-						
+
 		# 			elif "MM" in attribute.attribute_value:
 		# 				stock_entry_details = frappe.db.sql("""
 		# 					SELECT SUM(qty) AS total_qty, SUM(pcs) AS total_pcs
@@ -2326,30 +2326,30 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		# 					else:
 		# 						row["weight_per_pcs"] = round(row["weight_per_pcs"], 3)
 
-						
+
 		# 	row["quantity"] = item["qty"] / pmo_data.get("qty")
 		# 	row["sieve_size_range"] = sieve_size_range
 		# 	row["sieve_size_mm"] = sieve_size_mm
 		# 	if item.get("inventory_type") and item.get("inventory_type") == "Customer Goods":
 		# 		row["is_customer_item"] = 1
-			
+
 		# 	row["pcs"] = item.get("pcs")
 		# 	row["total_diamond_rate"] = 0
 		# 	if pmo_data.get("diamond_quality"):
 		# 		row["quality"] = pmo_data.get("diamond_quality")
 		# 	if self.company == "Gurukrupa Export Private Limited":
-				
+
 		# 		if diamond_price_customer and any(dpl["price_list_type"] == diamond_price_list_customer for dpl in diamond_price_customer):
 		# 			if diamond_price_customer == "Size (in mm)":
 		# 				size_in_mm_diamond_price_list_entry = frappe.db.sql(
 		# 					"""
-		# 					SELECT name, supplier_fg_purchase_rate,rate 
-		# 					FROM `tabDiamond Price List` 
-		# 					WHERE customer = %s 
-		# 					AND price_list_type = %s 
+		# 					SELECT name, supplier_fg_purchase_rate,rate
+		# 					FROM `tabDiamond Price List`
+		# 					WHERE customer = %s
+		# 					AND price_list_type = %s
 		# 					AND size_in_mm = %s
 		# 					ORDER BY creation DESC
-		# 					LIMIT 1 
+		# 					LIMIT 1
 		# 					""",
 		# 					(new_bom.customer, diamond_price_customer, row["sieve_size_mm"]),
 		# 					as_dict=True
@@ -2365,13 +2365,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		# 			if diamond_price_customer == "Sieve Size Range":
 		# 				sieve_size_range_diamond_price_list_entry = frappe.db.sql(
 		# 					"""
-		# 					SELECT name, supplier_fg_purchase_rate,rate 
-		# 					FROM `tabDiamond Price List` 
-		# 					WHERE customer = %s 
-		# 					AND price_list_type = %s 
+		# 					SELECT name, supplier_fg_purchase_rate,rate
+		# 					FROM `tabDiamond Price List`
+		# 					WHERE customer = %s
+		# 					AND price_list_type = %s
 		# 					AND sieve_size_range = %s
 		# 					ORDER BY creation DESC
-		# 					LIMIT 1 
+		# 					LIMIT 1
 		# 					""",
 		# 					(new_bom.customer, diamond_price_customer, row["sieve_size_range"]),
 		# 					as_dict=True
@@ -2387,20 +2387,20 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		# 			if diamond_price_customer == "Weight (in cts)":
 		# 				latest_diamond_price_list_entry  = frappe.db.sql(
 		# 					"""
-		# 					SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate 
-		# 					FROM `tabDiamond Price List` 
-		# 					WHERE customer = %s 
-		# 					AND price_list_type = %s 
+		# 					SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate
+		# 					FROM `tabDiamond Price List`
+		# 					WHERE customer = %s
+		# 					AND price_list_type = %s
 		# 					AND %s BETWEEN from_weight AND to_weight
 		# 					ORDER BY creation DESC
-		# 					LIMIT 1 
+		# 					LIMIT 1
 		# 					""",
 		# 					(new_bom.customer, diamond_price_customer,row["weight_per_pcs"]),
 		# 					as_dict=True
 		# 				)
 		# 				frappe.throw(f"{latest_diamond_price_list_entry}")
 		# 				if latest_diamond_price_list_entry:
-		# 					latest_entry = latest_diamond_price_list_entry[0]  
+		# 					latest_entry = latest_diamond_price_list_entry[0]
 		# 					row["total_diamond_rate"] = latest_entry.get("rate", 0)
 		# 					row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 		# 					row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
@@ -2412,13 +2412,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		# 			if diamond_price_list_ref_customer == "Size (in mm)":
 		# 				size_in_mm_diamond_price_list_entry = frappe.db.sql(
 		# 					"""
-		# 					SELECT name, supplier_fg_purchase_rate,rate 
-		# 					FROM `tabDiamond Price List` 
-		# 					WHERE customer = %s 
-		# 					AND price_list_type = %s 
+		# 					SELECT name, supplier_fg_purchase_rate,rate
+		# 					FROM `tabDiamond Price List`
+		# 					WHERE customer = %s
+		# 					AND price_list_type = %s
 		# 					AND size_in_mm = %s
 		# 					ORDER BY creation DESC
-		# 					LIMIT 1 
+		# 					LIMIT 1
 		# 					""",
 		# 					(ref_customer, diamond_price_list_ref_customer, row["sieve_size_mm"]),
 		# 					as_dict=True
@@ -2433,13 +2433,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		# 			if diamond_price_list_ref_customer == "Sieve Size Range":
 		# 				sieve_size_range_diamond_price_list_entry = frappe.db.sql(
 		# 					"""
-		# 					SELECT name, supplier_fg_purchase_rate,rate 
-		# 					FROM `tabDiamond Price List` 
-		# 					WHERE customer = %s 
-		# 					AND price_list_type = %s 
+		# 					SELECT name, supplier_fg_purchase_rate,rate
+		# 					FROM `tabDiamond Price List`
+		# 					WHERE customer = %s
+		# 					AND price_list_type = %s
 		# 					AND sieve_size_range = %s
 		# 					ORDER BY creation DESC
-		# 					LIMIT 1 
+		# 					LIMIT 1
 		# 					""",
 		# 					(ref_customer, diamond_price_list_ref_customer, row["sieve_size_range"]),
 		# 					as_dict=True
@@ -2455,25 +2455,25 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		# 			if diamond_price_list_ref_customer == "Weight (in cts)":
 		# 				latest_diamond_price_list_entry  = frappe.db.sql(
 		# 					"""
-		# 					SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate 
-		# 					FROM `tabDiamond Price List` 
-		# 					WHERE customer = %s 
-		# 					AND price_list_type = %s 
+		# 					SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate
+		# 					FROM `tabDiamond Price List`
+		# 					WHERE customer = %s
+		# 					AND price_list_type = %s
 		# 					AND %s BETWEEN from_weight AND to_weight
 		# 					ORDER BY creation DESC
-		# 					LIMIT 1 
+		# 					LIMIT 1
 		# 					""",
 		# 					(ref_customer, diamond_price_list_ref_customer,row["weight_per_pcs"]),
 		# 					as_dict=True
 		# 				)
 
 		# 				if latest_diamond_price_list_entry:
-		# 					latest_entry = latest_diamond_price_list_entry[0]  
+		# 					latest_entry = latest_diamond_price_list_entry[0]
 		# 					row["total_diamond_rate"] = latest_entry.get("rate", 0)
 		# 					row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 		# 					row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
 
-				
+
 		# 		row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 
 		# 	new_bom.append("diamond_detail", row)
@@ -2490,12 +2490,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		# 		new_bom.total_diamond_weight_per_gram = total_diamond_weight_per_gram
 		# 		total_diamond_weight = sum(flt(row.get("quantity", 0) or 0) for row in new_bom.get("diamond_detail", []))
 		# 		new_bom.total_diamond_weight = total_diamond_weight
-			
+
 
 
 		elif item_row.variant_of == "G":
 			row = {}
-			row["stock_uom"] = item.get("uom") 
+			row["stock_uom"] = item.get("uom")
 			# Fetching basic details
 			row["se_rate"] = item.get("rate")
 			row["rate"] = new_bom.gold_rate_with_gst
@@ -2506,23 +2506,23 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			else:
 				row["price_list_type"] = gemstone_price_list_type
 
-				
+
 
 			# Fetching attributes
 			attributes = frappe.db.sql(
 				"""
-				SELECT attribute, attribute_value 
+				SELECT attribute, attribute_value
 				FROM `tabItem Variant Attribute`
-				WHERE parent = %s 
+				WHERE parent = %s
 				AND attribute IN (
-					'Gemstone Type', 'Stone Shape', 'Cut or Cab', 
+					'Gemstone Type', 'Stone Shape', 'Cut or Cab',
 					'Gemstone Grade', 'Gemstone Size', 'Gemstone Quality', 'Gemstone PR'
 				)
 				""",
 				(item_row.item_code),
 				as_dict=True
 			)
-		
+
 			# Mapping attributes to row
 			attribute_map = {
 				"Gemstone Type": "gemstone_type",
@@ -2540,7 +2540,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			if self.company == "Gurukrupa Export Private Limited":
 			# Validate gemstone price list
 				if gemstone_price_list and any(dpl["price_list_type"] == gemstone_price_customer for dpl in gemstone_price_list):
-					
+
 					if gemstone_price_customer == "Multiplier":
 						combined_query = frappe.db.sql(
 							"""
@@ -2548,9 +2548,9 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
 								sfm.precious AS supplier_precious, sfm.semi_precious AS supplier_semi_precious, sfm.synthetic AS supplier_synthetic
 							FROM `tabGemstone Price List` gpl
-							INNER JOIN `tabGemstone Multiplier` gm 
+							INNER JOIN `tabGemstone Multiplier` gm
 								ON gm.parent = gpl.name AND gm.item_category = %s AND gm.parentfield = 'gemstone_multiplier'
-							LEFT JOIN `tabGemstone Multiplier` sfm 
+							LEFT JOIN `tabGemstone Multiplier` sfm
 								ON sfm.parent = gpl.name AND sfm.item_category = %s AND sfm.parentfield = 'supplier_fg_multiplier'
 							WHERE gpl.customer = %s
 							AND gpl.price_list_type = %s
@@ -2562,12 +2562,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							(new_bom.item_category, new_bom.item_category, new_bom.customer, gemstone_price_customer, row.get("cut_or_cab"), row.get("gemstone_grade")),
 							as_dict=True
 						)
-						
+
 						if combined_query:
-							entry = combined_query[0]  
-							gemstone_quality = row.get("gemstone_quality") 
+							entry = combined_query[0]
+							gemstone_quality = row.get("gemstone_quality")
 							gemstone_pr = flt(row.get("gemstone_pr", 0))
-							
+
 							multiplier_selected_value = entry.get("precious") if gemstone_quality == "Precious" else \
 														entry.get("semi_precious") if gemstone_quality == "Semi Precious" else \
 														entry.get("synthetic") if gemstone_quality == "Synthetic" else None
@@ -2600,10 +2600,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						# SQL Query for weight-based price list
 						weight_in_cts_gemstone_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade, 
+							SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade,
 								supplier_fg_purchase_rate, from_weight, to_weight, rate, per_pc_or_per_carat
 							FROM `tabGemstone Price List`
-							WHERE customer = %s 
+							WHERE customer = %s
 							AND price_list_type = %s
 							AND cut_or_cab = %s
 							AND gemstone_grade = %s
@@ -2617,7 +2617,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 						if weight_in_cts_gemstone_price_list_entry:
 							entry = weight_in_cts_gemstone_price_list_entry[0]
-							
+
 							# Add safe access with .get()
 							row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
 							row["total_gemstone_rate"] = flt(entry.get("rate", 0))
@@ -2632,7 +2632,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if gemstone_price_customer == "Fixed":
 						fixed_gemstone_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, stone_shape, gemstone_type, cut_or_cab, gemstone_grade, 
+							SELECT name, stone_shape, gemstone_type, cut_or_cab, gemstone_grade,
 								supplier_fg_purchase_rate, rate, per_pc_or_per_carat
 							FROM `tabGemstone Price List`
 							WHERE customer = %s
@@ -2671,7 +2671,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				row["pcs"] = item.get("pcs", 0)
 			else:
 				if gemstone_price_list and any(dpl["price_list_type"] == gemstone_price_list_ref_customer for dpl in gemstone_price_list):
-				
+
 					if gemstone_price_list_ref_customer == "Multiplier":
 						combined_query = frappe.db.sql(
 							"""
@@ -2679,9 +2679,9 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
 								sfm.precious AS supplier_precious, sfm.semi_precious AS supplier_semi_precious, sfm.synthetic AS supplier_synthetic
 							FROM `tabGemstone Price List` gpl
-							INNER JOIN `tabGemstone Multiplier` gm 
+							INNER JOIN `tabGemstone Multiplier` gm
 								ON gm.parent = gpl.name AND gm.item_category = %s AND gm.parentfield = 'gemstone_multiplier'
-							LEFT JOIN `tabGemstone Multiplier` sfm 
+							LEFT JOIN `tabGemstone Multiplier` sfm
 								ON sfm.parent = gpl.name AND sfm.item_category = %s AND sfm.parentfield = 'supplier_fg_multiplier'
 							WHERE gpl.customer = %s
 							AND gpl.price_list_type = %s
@@ -2693,12 +2693,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							(new_bom.item_category, new_bom.item_category, ref_customer, gemstone_price_list_ref_customer, row.get("cut_or_cab"), row.get("gemstone_grade")),
 							as_dict=True
 						)
-						
+
 						if combined_query:
-							entry = combined_query[0]  
-							gemstone_quality = row.get("gemstone_quality") 
+							entry = combined_query[0]
+							gemstone_quality = row.get("gemstone_quality")
 							gemstone_pr = flt(row.get("gemstone_pr", 0))
-							
+
 							multiplier_selected_value = entry.get("precious") if gemstone_quality == "Precious" else \
 														entry.get("semi_precious") if gemstone_quality == "Semi Precious" else \
 														entry.get("synthetic") if gemstone_quality == "Synthetic" else None
@@ -2719,7 +2719,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if gemstone_price_list_ref_customer == "Fixed":
 						fixed_gemstone_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, stone_shape, gemstone_type, cut_or_cab, gemstone_grade, 
+							SELECT name, stone_shape, gemstone_type, cut_or_cab, gemstone_grade,
 								supplier_fg_purchase_rate, rate, per_pc_or_per_carat
 							FROM `tabGemstone Price List`
 							WHERE customer = %s
@@ -2763,10 +2763,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						# SQL Query for weight-based price list
 						weight_in_cts_gemstone_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade, 
+							SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade,
 								supplier_fg_purchase_rate, from_weight, to_weight, rate, per_pc_or_per_carat
 							FROM `tabGemstone Price List`
-							WHERE customer = %s 
+							WHERE customer = %s
 							AND price_list_type = %s
 							AND cut_or_cab = %s
 							AND gemstone_grade = %s
@@ -2780,7 +2780,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 						if weight_in_cts_gemstone_price_list_entry:
 							entry = weight_in_cts_gemstone_price_list_entry[0]
-							
+
 							# Add safe access with .get()
 							row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
 							row["total_gemstone_rate"] = flt(entry.get("rate", 0))
@@ -2836,17 +2836,17 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.gemstone_weight = new_bom.total_gemstone_weight
 	new_bom.total_gemstone_weight_in_gms = new_bom.total_gemstone_weight_per_gram
 	new_bom.gross_weight = (
-	new_bom.metal_weight 
-	+ new_bom.finding_weight_ 
-	+ new_bom.total_diamond_weight_in_gms 
+	new_bom.metal_weight
+	+ new_bom.finding_weight_
+	+ new_bom.total_diamond_weight_in_gms
 	+ new_bom.total_gemstone_weight_in_gms
 	)
 	new_bom.gold_to_diamond_ratio = (
-	flt(new_bom.metal_weight + new_bom.finding_weight_) / flt(new_bom.total_diamond_weight_in_gms) 
+	flt(new_bom.metal_weight + new_bom.finding_weight_) / flt(new_bom.total_diamond_weight_in_gms)
 	if new_bom.total_diamond_weight_in_gms else 0
 	)
 	new_bom.diamond_ratio = (
-	flt(new_bom.total_diamond_weight_in_gms) / flt(new_bom.total_diamond_pcs) 
+	flt(new_bom.total_diamond_weight_in_gms) / flt(new_bom.total_diamond_pcs)
 	if new_bom.total_diamond_pcs else 0
 	)
 	new_bom.insert(ignore_mandatory=True)
@@ -3065,7 +3065,7 @@ def get_bom_summary(design_id_bom:str=None):
 
 
 @frappe.whitelist()
-def get_linked_stock_entries_for_serial_number_creator(mwo, department):
+def get_linked_stock_entries_for_serial_number_creator(mwo, department, design_id_bom, qty):
 	target_wh = frappe.db.get_value(
 		"Warehouse", {"disabled": 0, "department": department, "warehouse_type": "Manufacturing"}
 	)
@@ -3125,8 +3125,8 @@ def get_linked_stock_entries_for_serial_number_creator(mwo, department):
 	for row in data:
 		total_qty += row.get("gross_wt", 0)
 	total_qty = round(total_qty, 4)  # sum(item['qty'] for item in data)
-	bom_id = self.design_id_bom  # self.fg_bom
-	mnf_qty = self.qty
+	bom_id = design_id_bom  # self.fg_bom
+	mnf_qty = qty
 	return data, bom_id, mnf_qty, total_qty
 
 
