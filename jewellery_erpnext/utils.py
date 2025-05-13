@@ -488,6 +488,7 @@ def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys, exclud
 	for item in items:
 		key = tuple(item.get(k) for k in group_keys)
 		if not is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys, exclude_keys):
+			print("non_group_item", key, item)
 			non_grouped.append(item)
 			continue
 
@@ -496,5 +497,5 @@ def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys, exclud
 		aggregate_item(grouped, key, item, sum_keys, concat_keys)
 
 	final_grouped = finalize_grouped(grouped, concat_keys)
-	print("non_grouped", non_grouped)
+
 	return final_grouped + non_grouped
