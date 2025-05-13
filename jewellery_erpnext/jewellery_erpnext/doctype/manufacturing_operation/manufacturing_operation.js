@@ -18,15 +18,15 @@ frappe.ui.form.on("Manufacturing Operation", {
 			frm.add_custom_button(__("Finish"), async () => {
 				await frappe.call({
 					method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_linked_stock_entries_for_serial_number_creator",
-					doc: frm.doc,
 					args: {
 						mwo: frm.doc.manufacturing_work_order,
-						department: frm.doc.department
+						department: frm.doc.department,
+						design_id_bom: frm.doc.design_id_bom,
+						qty: frm.doc.qty
 					},
 					callback: function (r) {
 						frappe.call({
 							method: "jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator.get_operation_details",
-							// doc:doc.name,
 							args: {
 								data: r.message,
 								docname: frm.doc.name,
@@ -279,7 +279,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 		frappe.call({
 			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.make_time_log",
 			args: {
-				args: args,
+				data: args,
 			},
 			freeze: true,
 			callback: function () {
