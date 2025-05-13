@@ -5,7 +5,8 @@ from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe.desk.reportview import get_filters_cond, get_match_cond
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
-from frappe.utils import now
+from collections import defaultdict
+from collections import defaultdict
 
 
 @frappe.whitelist()
@@ -295,23 +296,30 @@ def customer_query(doctype, txt, searchfield, start, page_len, filters):
 
 	return customers
 
-
 @frappe.whitelist()
 def get_sales_invoice_items(sales_invoices):
-	"""
-	method to get sales invoice item code, qty, rate and serial no
-	args:
-	                sales_invoices: list of names of sales invoices
-	return:
-	                List of item details
-	"""
 	if isinstance(sales_invoices, str):
 		sales_invoices = json.loads(sales_invoices)
-	return frappe.get_all(
+
+	items = frappe.get_all(
 		"Sales Invoice Item",
 		{"parent": ["in", sales_invoices]},
-		["item_code", "qty", "rate", "serial_no", "bom"],
+		["item_code", "qty", "rate", "serial_no", "bom", "parent","warehouse"]
 	)
+	# frappe.throw(f"{items}")
+	# Fetch gold_rate_with_gst from each parent Sales Invoice
+	sales_invoice_gold_rates = frappe.get_all(
+		"Sales Invoice",
+		{"name": ["in", sales_invoices]},
+		["name", "gold_rate_with_gst"]
+	)
+
+	gold_rate_map = {s.name: s.gold_rate_with_gst for s in sales_invoice_gold_rates}
+
+	return {
+		"items": items,
+		"gold_rates": gold_rate_map
+	}
 
 
 # searches for suppliers with purchase Type
@@ -375,3 +383,119 @@ def supplier_query(doctype, txt, searchfield, start, page_len, filters):
 @frappe.whitelist()
 def get_type_of_party(doc, parent, field):
 	return frappe.db.get_value(doc, {"parent": parent}, field)
+
+
+def is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys, exclude_keys):
+	"""
+	Check if an item's non-group keys are consistent within an existing group.
+
+	Args:
+		grouped (dict): The current grouped items.
+		key (tuple): Group key generated from the item.
+		item (dict): The item to check consistency.
+		group_keys (list[str]): Keys used for grouping.
+		sum_keys (list[str]): Keys whose values are summed.
+		concat_keys (list[str]): Keys whose values are concatenated.
+
+	Returns:
+		bool: True if the item is consistent within the group, False otherwise.
+	"""
+	for gk in item.keys():
+		if gk not in group_keys + sum_keys + concat_keys + exclude_keys:
+			if key in grouped and gk in grouped[key]:
+				if grouped[key][gk] != item.get(gk):
+					return False
+	return True
+
+
+def initialize_group(grouped, key, item, group_keys, sum_keys, concat_keys):
+	"""
+	Initialize a new group in the grouped dictionary.
+
+	Args:
+		grouped (dict): The current grouped items.
+		key (tuple): Group key generated from the item.
+		item (dict): The item to initialize the group with.
+		group_keys (list[str]): Keys used for grouping.
+		sum_keys (list[str]): Keys whose values are summed.
+		concat_keys (list[str]): Keys whose values are concatenated.
+	"""
+	grouped[key].update({sk: 0 for sk in sum_keys})
+	for ck in concat_keys:
+		grouped[key][ck] = []
+	for k in group_keys:
+		grouped[key][k] = item.get(k)
+	for gk in item.keys():
+		if gk not in group_keys + sum_keys + concat_keys:
+			grouped[key][gk] = item.get(gk)
+
+
+def aggregate_item(grouped, key, item, sum_keys, concat_keys):
+	"""
+	Aggregate item values into an existing group.
+
+	Args:
+		grouped (dict): The current grouped items.
+		key (tuple): Group key generated from the item.
+		item (dict): The item to aggregate.
+		sum_keys (list[str]): Keys whose values are summed.
+		concat_keys (list[str]): Keys whose values are concatenated.
+	"""
+	for sk in sum_keys:
+		grouped[key][sk] += float(item.get(sk, 0) or 0)
+	for ck in concat_keys:
+		val = item.get(ck)
+		if val:
+			grouped[key][ck].append(str(val))
+
+
+def finalize_grouped(grouped, concat_keys):
+	"""
+	Finalize the grouped items by concatenating list fields.
+
+	Args:
+		grouped (dict): The current grouped items.
+		concat_keys (list[str]): Keys whose values are concatenated.
+
+	Returns:
+		list[dict]: Final list of grouped items with concatenated values.
+	"""
+	final_grouped = []
+	for g in grouped.values():
+		for ck in concat_keys:
+			g[ck] = ",".join(g[ck])
+		final_grouped.append(g)
+	return final_grouped
+
+
+def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys, exclude_keys=[]):
+	"""
+	Group items based on specified keys, sum numerical fields, and concatenate values.
+	If an item is inconsistent (i.e., non-group keys do not match), it is kept separately.
+
+	Args:
+		items (list[dict]): List of items to group and aggregate.
+		group_keys (list[str]): Keys used for grouping items.
+		sum_keys (list[str]): Keys whose values are summed within groups.
+		concat_keys (list[str]): Keys whose values are concatenated within groups.
+
+	Returns:
+		list[dict]: Aggregated and grouped items, with inconsistent items separated.
+	"""
+	grouped = defaultdict(lambda: {sk: 0 for sk in sum_keys})
+	non_grouped = []
+
+	for item in items:
+		key = tuple(item.get(k) for k in group_keys)
+		if not is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys, exclude_keys):
+			print("non_group_item", key, item)
+			non_grouped.append(item)
+			continue
+
+		if key not in grouped:
+			initialize_group(grouped, key, item, group_keys, sum_keys, concat_keys)
+		aggregate_item(grouped, key, item, sum_keys, concat_keys)
+
+	final_grouped = finalize_grouped(grouped, concat_keys)
+
+	return final_grouped + non_grouped

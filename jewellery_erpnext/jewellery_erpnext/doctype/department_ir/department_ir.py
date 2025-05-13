@@ -10,6 +10,7 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import flt, get_datetime
+from jewellery_erpnext.utils import group_aggregate_with_concat
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	update_manufacturing_operation,
@@ -108,9 +109,8 @@ class DepartmentIR(Document):
 			{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
 		)
 		for row in self.department_ir_operation:
-
-			for se_item in frappe.db.get_all(
-				"Stock Entry Detail",
+			sed_items = frappe.db.get_all(
+				"Stock Entry MOP Item",
 				{
 					"manufacturing_operation": row.manufacturing_operation,
 					"t_warehouse": in_transit_wh,
@@ -119,7 +119,20 @@ class DepartmentIR(Document):
 					"docstatus": 1,
 				},
 				["*"],
-			):
+			)
+			# if not sed_items:
+			# 	sed_items =  frappe.db.get_all(
+			# 	"Stock Entry Detail",
+			# 	{
+			# 		"manufacturing_operation": ["like", f"%{row.manufacturing_operation}%"],
+			# 		"t_warehouse": in_transit_wh,
+			# 		"department": self.previous_department,
+			# 		"to_department": self.current_department,
+			# 		"docstatus": 1,
+			# 	},
+			# 	["*"],
+			# )
+			for se_item in sed_items:
 				temp_row = copy.deepcopy(se_item)
 				temp_row["name"] = None
 				temp_row["idx"] = None
@@ -145,9 +158,11 @@ class DepartmentIR(Document):
 			time_values = copy.deepcopy(values)
 			time_values["department_start_time"] = dt_string
 			add_time_log(doc, time_values)
+
 		if not se_item_list:
 			frappe.msgprint(_("No Stock Entries were generated during this Department IR"))
 			return
+
 		if not cancel:
 			stock_doc = frappe.new_doc("Stock Entry")
 			stock_doc.update(
@@ -160,9 +175,13 @@ class DepartmentIR(Document):
 					"inventory_type": None,
 				}
 			)
-
 			for row in se_item_list:
 				stock_doc.append("items", row)
+
+			# se_grouped_items = self.group_se_items(se_item_list)
+
+			# for row in se_grouped_items:
+			# 	stock_doc.append("items", row)
 			stock_doc.flags.ignore_permissions = True
 			stock_doc.save()
 			stock_doc.submit()
@@ -307,7 +326,7 @@ class DepartmentIR(Document):
 						stock_doc.append("items", row)
 
 				stock_doc.flags.ignore_permissions = True
-				# stock_doc.save()
+				stock_doc.save()
 				stock_doc.submit()
 
 			if strat_transit:
@@ -320,7 +339,7 @@ class DepartmentIR(Document):
 					if row["qty"] > 0:
 						stock_doc.append("items", row)
 				stock_doc.flags.ignore_permissions = True
-				# stock_doc.save()
+				stock_doc.save()
 				stock_doc.submit()
 
 	def on_submit_issue_new(self, cancel=False):
@@ -433,6 +452,11 @@ class DepartmentIR(Document):
 				for row in add_to_transit:
 					stock_doc.append("items", row)
 
+				# grouped_items = self.group_se_items(add_to_transit)
+
+				# for row in grouped_items:
+				# 	stock_doc.append("items", row)
+
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
@@ -460,12 +484,25 @@ class DepartmentIR(Document):
 				stock_doc.company = self.company
 				stock_doc.department_ir = self.name
 				stock_doc.auto_created = True
+
 				for row in strat_transit:
 					if row["qty"] > 0:
 						stock_doc.append("items", row)
+
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
+
+	def group_se_items(self, se_items:list):
+		if not se_items:
+			return
+
+		group_keys = ["item_code", "batch_no"]
+		sum_keys = ["qty", "pcs"]
+		concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
+		grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys)
+
+		return grouped_items
 
 	@frappe.whitelist()
 	def get_summary_data(self):
@@ -758,9 +795,9 @@ def batch_update_stock_entry_dimensions(doc, stock_entry_data, employee, for_emp
 
 	# Fetch all Stock Entry Detail rows in one query
 	sed_rows = frappe.db.get_all(
-		"Stock Entry Detail",
+		"Stock Entry MOP Item",
 		filters={"parent": ["in", stock_entries]},
-		fields=["name", "parent"]
+		fields=["name", "parent", "manufacturing_operation"]
 	)
 
 	# Prepare batch updates

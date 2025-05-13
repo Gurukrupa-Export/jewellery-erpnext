@@ -92,7 +92,7 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
 	},
 	"Stock Entry": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate",
+		# "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate",
 		"before_validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
@@ -162,6 +162,7 @@ override_doctype_class = {
 	"Stock Reconciliation": "jewellery_erpnext.jewellery_erpnext.doctype.stock_reconciliation_template.stock_reconciliation_template_utils.CustomStockReconciliation",
 	"Stock Ledger Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_ledger_entry.stock_ledger_entry.CustomStockLedgerEntry",
 	"Serial and Batch Bundle": "jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.serial_and_batch_bundle.CustomSerialandBatchBundle",
+    "Purchase Receipt": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_receipt.CustomPurchaseReceipt"
 }
 
 

@@ -22,8 +22,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.up
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
-from jewellery_erpnext.utils import get_item_from_attribute, get_variant_of_item, update_existing
+from jewellery_erpnext.utils import get_item_from_attribute, get_variant_of_item, update_existing, group_aggregate_with_concat
 
+import copy
 
 def before_validate(self, method):
 	if (
@@ -142,7 +143,6 @@ def before_validate(self, method):
 	# 			row.basic_amount = row.qty * row.basic_rate
 
 
-def validate(self, method):
 	if self.purpose == "Material Transfer" and self.auto_created == 0:
 		validate_metal_properties(self)
 	else:
@@ -451,6 +451,8 @@ def before_submit(self, method):
 		create_repack_for_subcontracting(self, self.subcontractor, main_slip)
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
+
+	group_se_items_and_update_mop_items(self, method)
 
 
 def onsubmit(self, method):
@@ -813,7 +815,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 	validate_batches = True if se_doc.purpose != "Manufacture" else False
 
-	mop_list = [row.manufacturing_operation for row in se_doc.items]
+	mop_list = [row.manufacturing_operation for row in se_doc.custom_mop_items]
 
 	mop_base_data = frappe.db.get_all(
 		"MOP Balance Table", {"parent": ["in", mop_list]}, ["parent", "item_code", "batch_no"]
@@ -824,11 +826,13 @@ def update_mop_details(se_doc, is_cancelled=False):
 		batch_data.setdefault(key, [])
 		batch_data[key].append(row.batch_no)
 
-	for entry in se_doc.items:
+	for entry in se_doc.custom_mop_items:
 		if not entry.manufacturing_operation:
 			continue
+
+		mop_name = entry.manufacturing_operation
 		mop_data.setdefault(
-			entry.manufacturing_operation,
+			mop_name,
 			{
 				"department_source_table": [],
 				"department_target_table": [],
@@ -836,14 +840,14 @@ def update_mop_details(se_doc, is_cancelled=False):
 				"employee_target_table": [],
 			},
 		)
-		if not mop_basic_details.get(entry.manufacturing_operation):
-			mop_basic_details[entry.manufacturing_operation] = frappe.db.get_value(
+		if not mop_basic_details.get(mop_name):
+			mop_basic_details[mop_name] = frappe.db.get_value(
 				"Manufacturing Operation",
-				entry.manufacturing_operation,
+				mop_name,
 				["company", "department", "employee", "subcontractor"],
 				as_dict=1,
 			)
-		# mop_doc = frappe.get_doc("Manufacturing Operation", entry.manufacturing_operation)
+		# mop_doc = frappe.get_doc("Manufacturing Operation", mop_name)
 		if is_cancelled:
 			to_remove = []
 			for doctype in [
@@ -859,56 +863,58 @@ def update_mop_details(se_doc, is_cancelled=False):
 					frappe.delete_doc(doctype, docname)
 		else:
 			d_warehouse, e_warehouse = get_warehouse_details(
-				mop_basic_details[entry.manufacturing_operation], warehouse_data, se_employee, se_subcontractor
+				mop_basic_details[mop_name], warehouse_data, se_employee, se_subcontractor
 			)
 			validated_batches = False
 			temp_raw = copy.deepcopy(entry.__dict__)
+			# temp_raw["manufacturing_operation"] = mop_name
 			if entry.s_warehouse == d_warehouse:
 				if validate_batches and entry.batch_no:
 					validated_batches = True
 					validate_duplicate_batches(entry, batch_data)
-					# if not batch_data.get((entry.manufacturing_operation, entry.item_code)):
-					# 	batch_data[(entry.manufacturing_operation, entry.item_code)] = frappe.db.get_all(
+					# if not batch_data.get((mop_name, entry.item_code)):
+					# 	batch_data[(mop_name, entry.item_code)] = frappe.db.get_all(
 					# 		"MOP Balance Table",
-					# 		{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
+					# 		{"parent": mop_name, "item_code": entry.item_code},
 					# 		pluck="batch_no",
 					# 	)
 
-					# if entry.batch_no not in batch_data[(entry.manufacturing_operation, entry.item_code)]:
+					# if entry.batch_no not in batch_data[(mop_name, entry.item_code)]:
 					# 	frappe.throw(
 					# 		_("Row {0}: Selected Batch does not belongs to {1}.<br>Allowed Batches : {2}").format(
 					# 			entry.idx,
-					# 			entry.manufacturing_operation,
-					# 			", ".join(batch_data[(entry.manufacturing_operation, entry.item_code)]),
+					# 			mop_name,
+					# 			", ".join(batch_data[(mop_name, entry.item_code)]),
 					# 		)
 					# 	)
-				mop_data[entry.manufacturing_operation]["department_source_table"].append(temp_raw)
+				mop_data[mop_name]["department_source_table"].append(temp_raw)
 
 			elif entry.t_warehouse == d_warehouse:
-				mop_data[entry.manufacturing_operation]["department_target_table"].append(temp_raw)
+				mop_data[mop_name]["department_target_table"].append(temp_raw)
 
 			emp_temp_raw = copy.deepcopy(entry.__dict__)
+			# emp_temp_raw["manufacturing_operation"] = mop_name
 			if entry.s_warehouse == e_warehouse:
 				if validate_batches and entry.batch_no and not validated_batches:
 					validate_duplicate_batches(entry, batch_data)
-					# if not batch_data.get((entry.manufacturing_operation, entry.item_code)):
-					# 	batch_data[(entry.manufacturing_operation, entry.item_code)] = frappe.db.get_all(
+					# if not batch_data.get((mop_name, entry.item_code)):
+					# 	batch_data[(mop_name, entry.item_code)] = frappe.db.get_all(
 					# 		"MOP Balance Table",
-					# 		{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
+					# 		{"parent": mop_name, "item_code": entry.item_code},
 					# 		pluck="batch_no",
 					# 	)
 
-					# if entry.batch_no not in batch_data[(entry.manufacturing_operation, entry.item_code)]:
+					# if entry.batch_no not in batch_data[(mop_name, entry.item_code)]:
 					# 	frappe.throw(
 					# 		_("Row {0}: Selected Batch does not belongs to {1}<br>Allwoed Batches : {2}").format(
 					# 			entry.idx,
-					# 			entry.manufacturing_operation,
-					# 			", ".join(batch_data[(entry.manufacturing_operation, entry.item_code)]),
+					# 			mop_name,
+					# 			", ".join(batch_data[(mop_name, entry.item_code)]),
 					# 		)
 					# 	)
-				mop_data[entry.manufacturing_operation]["employee_source_table"].append(emp_temp_raw)
+				mop_data[mop_name]["employee_source_table"].append(emp_temp_raw)
 			elif entry.t_warehouse == e_warehouse:
-				mop_data[entry.manufacturing_operation]["employee_target_table"].append(emp_temp_raw)
+				mop_data[mop_name]["employee_target_table"].append(emp_temp_raw)
 
 	update_balance_table(mop_data)
 
@@ -916,12 +922,14 @@ def update_mop_details(se_doc, is_cancelled=False):
 def update_balance_table(mop_data):
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
+
 		for table, details in tables.items():
 			if not details:
 				continue
 			for row in details:
 				row.update({"sed_item": row["name"], "idx": None, "name": None})
 				mop_doc.append(table, row)
+
 		mop_doc.save()
 
 
@@ -1384,3 +1392,40 @@ def set_filter_for_main_slip(doctype, txt, searchfield, start, page_len, filters
 	metal_purity = frappe.db.get_value("Manufacturing Work Order", {mnf}, "metal_purity")
 	# frappe.throw(str(metal_purity))
 	return metal_purity
+
+
+def group_se_items_and_update_mop_items(doc, method):
+	if not doc.items:
+		return
+
+	for row in doc.items:
+		mop_row = copy.deepcopy(row)
+		mop_row.name = None
+		mop_row.doctype = "Stock Entry MOP Item"
+
+		doc.append("custom_mop_items", mop_row)
+
+	doc_dict = doc.as_dict()
+	grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
+
+	if len(grouped_se_items) < len(doc.items):
+		doc.items = []
+
+		for row in grouped_se_items:
+			doc.append("items", row)
+
+	doc.calculate_rate_and_amount()
+	doc.update_children()
+
+
+def group_se_items(se_items:list):
+	if not se_items:
+		return
+
+	group_keys = ["item_code", "batch_no"]
+	sum_keys = ["qty", "transfer_qty", "pcs"]
+	concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
+	exclude_keys = ["idx", "valuation_rate", "basic_rate", "amount", "basic_amount", "taxable_value", "actual_qty"]
+	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys, exclude_keys)
+
+	return grouped_items

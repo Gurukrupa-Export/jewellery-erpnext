@@ -230,130 +230,6 @@ class ParentManufacturingOrder(Document):
 			pass
 
 	@frappe.whitelist()
-	def get_stock_summary(self):
-		target_wh = frappe.db.get_value("Warehouse", {"disabled": 0, "department": self.department})
-		mwo = frappe.get_all(
-			"Manufacturing Work Order", {"manufacturing_order": self.name}, pluck="name"
-		)
-		mwo_last_operation = []
-		for mwo_id in mwo:
-			operation = frappe.db.get_value(
-				"Manufacturing Work Order",
-				filters={"name": mwo_id},
-				fieldname="manufacturing_operation",
-				order_by="modified desc",
-			)
-			if operation is not None:
-				mwo_last_operation.append(operation)
-		# mwo_operations = "','".join(mwo_last_operation)
-
-		# Define the DocTypes
-		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
-		StockEntry = frappe.qb.DocType("Stock Entry")
-
-		# Subquery for max modified time
-		max_se_subquery = (
-			frappe.qb.from_(StockEntry)
-			.select(StockEntry.manufacturing_operation, Max(StockEntry.modified).as_("max_modified"))
-			.where(StockEntry.docstatus == 1)
-			.groupby(StockEntry.manufacturing_operation)
-		).as_("max_se")
-
-		# Main query
-		query = (
-			frappe.qb.from_(StockEntryDetail)
-			.left_join(max_se_subquery)
-			.on(StockEntryDetail.manufacturing_operation == max_se_subquery.manufacturing_operation)
-			.left_join(StockEntry)
-			.on(
-				(StockEntryDetail.parent == StockEntry.name)
-				& (StockEntry.modified == max_se_subquery.max_modified)
-			)
-			.select(
-				StockEntry.manufacturing_work_order,
-				StockEntry.manufacturing_operation,
-				StockEntryDetail.parent,
-				StockEntryDetail.item_code,
-				StockEntryDetail.item_name,
-				StockEntryDetail.inventory_type,
-				StockEntryDetail.pcs,
-				StockEntryDetail.batch_no,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
-			)
-			.where((StockEntry.docstatus == 1))
-		)
-
-		if mwo_last_operation:
-			query.where(StockEntryDetail.manufacturing_operation.isin(mwo_last_operation))
-
-		data = query.run(as_dict=True)
-
-		# frappe.throw(f"{data}<br>")
-		# data = frappe.db.sql(
-		# 	f"""select se.manufacturing_work_order, se.manufacturing_operation, sed.parent, sed.item_code,sed.item_name, sed.qty, sed.uom
-		# 	   				from `tabStock Entry Detail` sed left join `tabStock Entry` se on sed.parent = se.name where
-		# 					se.docstatus = 1 and
-		# 					sed.manufacturing_operation in ('{"', '".join(mwo_last_operation)}')
-		# 					group by se.manufacturing_operation, sed.item_code, sed.qty, sed.uom
-		# 					order by sed.creation
-		# 					""",
-		# 	as_dict=1,
-		# )
-		total_qty = 0
-		for row in data:
-			if row.uom == "Carat":
-				total_qty += row.get("qty", 0) * 0.2
-			else:
-				total_qty += row.get("qty", 0)
-		total_qty = round(total_qty, 4)
-		return frappe.render_template(
-			"jewellery_erpnext/jewellery_erpnext/doctype/parent_manufacturing_order/stock_summery.html",
-			{"data": data, "total_qty": total_qty},
-		)
-
-	@frappe.whitelist()
-	def get_linked_stock_entries(self):  # MOP Details
-		mwo = frappe.get_all(
-			"Manufacturing Work Order", {"manufacturing_order": self.name}, pluck="name"
-		)
-		# Define the DocTypes
-		StockEntry = frappe.qb.DocType("Stock Entry")
-		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
-
-		# Main query
-		query = (
-			frappe.qb.from_(StockEntryDetail)
-			.left_join(StockEntry)
-			.on(StockEntryDetail.parent == StockEntry.name)
-			.select(
-				StockEntry.manufacturing_work_order,
-				StockEntry.manufacturing_operation,
-				StockEntry.department,
-				StockEntry.to_department,
-				StockEntry.employee,
-				StockEntry.stock_entry_type,
-				StockEntryDetail.parent,
-				StockEntryDetail.item_code,
-				StockEntryDetail.item_name,
-				StockEntryDetail.qty,
-				StockEntryDetail.uom,
-			)
-			.where((StockEntry.docstatus == 1))
-			.orderby(StockEntry.modified, order=frappe.qb.asc)
-		)
-		if mwo:
-			query.where(StockEntry.manufacturing_work_order.isin(mwo))
-		# Run the query
-		data = query.run(as_dict=True)
-
-		total_qty = len([item["qty"] for item in data])
-		return frappe.render_template(
-			"jewellery_erpnext/jewellery_erpnext/doctype/parent_manufacturing_order/stock_entry_details.html",
-			{"data": data, "total_qty": total_qty},
-		)
-
-	@frappe.whitelist()
 	def send_to_customer_for_approval(self):
 		mwo_list = frappe.db.get_all(
 			"Manufacturing Work Order",
@@ -1222,3 +1098,125 @@ def bg_bulk_submit_pmo(pmo_names):
 			title="Batch Processing Complete",
 			message=f"Processed {processed_count} PMOs in {duration:.2f} seconds."
 		)
+
+@frappe.whitelist()
+def get_linked_stock_entries(pmo_name):  # MOP Details
+	# Define the DocTypes
+	StockEntry = frappe.qb.DocType("Stock Entry")
+	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+
+	# Main query
+	query = (
+		frappe.qb.from_(StockEntryDetail)
+		.left_join(StockEntry)
+		.on(StockEntryDetail.parent == StockEntry.name)
+		.select(
+			StockEntry.manufacturing_work_order,
+			StockEntry.manufacturing_operation,
+			StockEntry.department,
+			StockEntry.to_department,
+			StockEntry.employee,
+			StockEntry.stock_entry_type,
+			StockEntryDetail.parent,
+			StockEntryDetail.item_code,
+			StockEntryDetail.item_name,
+			StockEntryDetail.qty,
+			StockEntryDetail.uom,
+		)
+		.where((StockEntry.docstatus == 1) &
+		StockEntry.manufacturing_order == pmo_name)
+		.orderby(StockEntry.modified, order=frappe.qb.asc)
+	)
+
+	# Run the query
+	data = query.run(as_dict=True)
+
+	total_qty = len([item["qty"] for item in data])
+	return frappe.render_template(
+		"jewellery_erpnext/jewellery_erpnext/doctype/parent_manufacturing_order/stock_entry_details.html",
+		{"data": data, "total_qty": total_qty},
+	)
+
+
+@frappe.whitelist()
+def get_stock_summary(pmo_name):
+	# target_wh = frappe.db.get_value("Warehouse", {"disabled": 0, "department": department})
+	mwo = frappe.get_all(
+		"Manufacturing Work Order", {"manufacturing_order": pmo_name}, pluck="name"
+	)
+	mwo_last_operation = []
+	for mwo_id in mwo:
+		operation = frappe.db.get_value(
+			"Manufacturing Work Order",
+			filters={"name": mwo_id},
+			fieldname="manufacturing_operation",
+			order_by="modified desc",
+		)
+		if operation is not None:
+			mwo_last_operation.append(operation)
+	# mwo_operations = "','".join(mwo_last_operation)
+
+	# Define the DocTypes
+	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+	StockEntry = frappe.qb.DocType("Stock Entry")
+
+	# Subquery for max modified time
+	max_se_subquery = (
+		frappe.qb.from_(StockEntry)
+		.select(StockEntry.manufacturing_operation, Max(StockEntry.modified).as_("max_modified"))
+		.where(StockEntry.docstatus == 1)
+		.groupby(StockEntry.manufacturing_operation)
+	).as_("max_se")
+
+	# Main query
+	query = (
+		frappe.qb.from_(StockEntryDetail)
+		.left_join(max_se_subquery)
+		.on(StockEntryDetail.manufacturing_operation == max_se_subquery.manufacturing_operation)
+		.left_join(StockEntry)
+		.on(
+			(StockEntryDetail.parent == StockEntry.name)
+			& (StockEntry.modified == max_se_subquery.max_modified)
+		)
+		.select(
+			StockEntry.manufacturing_work_order,
+			StockEntry.manufacturing_operation,
+			StockEntryDetail.parent,
+			StockEntryDetail.item_code,
+			StockEntryDetail.item_name,
+			StockEntryDetail.inventory_type,
+			StockEntryDetail.pcs,
+			StockEntryDetail.batch_no,
+			StockEntryDetail.qty,
+			StockEntryDetail.uom,
+		)
+		.where((StockEntry.docstatus == 1))
+	)
+
+	if mwo_last_operation:
+		query.where(StockEntryDetail.manufacturing_operation.isin(mwo_last_operation))
+
+	data = query.run(as_dict=True)
+
+	# frappe.throw(f"{data}<br>")
+	# data = frappe.db.sql(
+	# 	f"""select se.manufacturing_work_order, se.manufacturing_operation, sed.parent, sed.item_code,sed.item_name, sed.qty, sed.uom
+	# 	   				from `tabStock Entry Detail` sed left join `tabStock Entry` se on sed.parent = se.name where
+	# 					se.docstatus = 1 and
+	# 					sed.manufacturing_operation in ('{"', '".join(mwo_last_operation)}')
+	# 					group by se.manufacturing_operation, sed.item_code, sed.qty, sed.uom
+	# 					order by sed.creation
+	# 					""",
+	# 	as_dict=1,
+	# )
+	total_qty = 0
+	for row in data:
+		if row.uom == "Carat":
+			total_qty += row.get("qty", 0) * 0.2
+		else:
+			total_qty += row.get("qty", 0)
+	total_qty = round(total_qty, 4)
+	return frappe.render_template(
+		"jewellery_erpnext/jewellery_erpnext/doctype/parent_manufacturing_order/stock_summery.html",
+		{"data": data, "total_qty": total_qty},
+	)

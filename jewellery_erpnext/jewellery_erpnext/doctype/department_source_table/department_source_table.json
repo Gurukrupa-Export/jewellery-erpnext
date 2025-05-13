@@ -811,9 +811,8 @@
   },
   {
    "fieldname": "sed_item",
-   "fieldtype": "Link",
+   "fieldtype": "Data",
    "label": "SED Item",
-   "options": "Stock Entry Detail",
    "read_only": 1
   },
   {
@@ -823,16 +822,18 @@
    "label": "Employee Consumption"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-12-23 19:36:18.825965",
+ "modified": "2025-05-07 19:08:45.842932",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department Source Table",
  "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "ASC",
  "states": []

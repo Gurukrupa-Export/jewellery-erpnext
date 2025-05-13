@@ -1,4 +1,5 @@
 import copy
+import json
 
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
@@ -46,9 +47,7 @@ class CustomStockEntry(StockEntry):
 		Temporarily name doc for fast insertion
 		name will be changed using autoname options (in a scheduled job)
 		"""
-		print("before self.name ---------------- >", self.name)
 		self.name = frappe.generate_hash(txt="", length=10)
-		print("self.name ---------------- >", self.name)
 		if self.meta.autoname == "hash":
 			self.to_rename = 0
 
@@ -140,31 +139,6 @@ class CustomStockEntry(StockEntry):
 				elif self.purpose == "Material Transfer" and self.add_to_transit:
 					continue
 
-	@frappe.whitelist()
-	def get_html_data(self):
-		itemwise_data = {}
-		for row in self.items:
-			if itemwise_data.get(row.item_code):
-				itemwise_data[row.item_code]["qty"] += row.qty
-				itemwise_data[row.item_code]["pcs"] += int(row.get("pcs")) if row.get("pcs") else 0
-			else:
-				itemwise_data[row.item_code] = {
-					"qty": row.qty,
-					"pcs": int(row.get("pcs")) if row.get("pcs") else 0,
-				}
-
-		data = []
-		for row in itemwise_data:
-			data.append(
-				{
-					"item_code": row,
-					"qty": flt(itemwise_data[row].get("qty"), 3),
-					"pcs": itemwise_data[row].get("pcs"),
-				}
-			)
-
-		return data
-
 	def get_scrap_items_from_job_card(self):
 		custom_get_scrap_items_from_job_card(self)
 
@@ -233,3 +207,31 @@ class CustomStockEntry(StockEntry):
 
 	# 	make_sl_entries(sl_entries, allow_negative_stock, via_landed_cost_voucher)
 	# 	update_batch_qty(self.doctype, self.name, via_landed_cost_voucher=via_landed_cost_voucher)
+
+@frappe.whitelist()
+def get_html_data(doc):
+	if isinstance(doc, str):
+		doc = json.loads(doc)
+	itemwise_data = {}
+	for row in doc.get("items"):
+		row = frappe._dict(row)
+		if itemwise_data.get(row.item_code):
+			itemwise_data[row.item_code]["qty"] += row.qty
+			itemwise_data[row.item_code]["pcs"] += int(row.get("pcs")) if row.get("pcs") else 0
+		else:
+			itemwise_data[row.item_code] = {
+				"qty": row.qty,
+				"pcs": int(row.get("pcs")) if row.get("pcs") else 0,
+			}
+
+	data = []
+	for row in itemwise_data:
+		data.append(
+			{
+				"item_code": row,
+				"qty": flt(itemwise_data[row].get("qty"), 3),
+				"pcs": itemwise_data[row].get("pcs"),
+			}
+		)
+
+	return data
