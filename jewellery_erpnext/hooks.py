@@ -92,13 +92,12 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
 	},
 	"Stock Entry": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate",
+		# "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate",
 		"before_validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
 		],
 		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
-		"on_update": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update",
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",

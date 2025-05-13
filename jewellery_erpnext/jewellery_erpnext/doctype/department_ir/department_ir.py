@@ -326,7 +326,7 @@ class DepartmentIR(Document):
 						stock_doc.append("items", row)
 
 				stock_doc.flags.ignore_permissions = True
-				# stock_doc.save()
+				stock_doc.save()
 				stock_doc.submit()
 
 			if strat_transit:
@@ -339,7 +339,7 @@ class DepartmentIR(Document):
 					if row["qty"] > 0:
 						stock_doc.append("items", row)
 				stock_doc.flags.ignore_permissions = True
-				# stock_doc.save()
+				stock_doc.save()
 				stock_doc.submit()
 
 	def on_submit_issue_new(self, cancel=False):
