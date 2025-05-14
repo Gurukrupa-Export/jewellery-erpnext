@@ -33,6 +33,7 @@ def create_finding_mwo(self, finding_data=None):
 			mwo_doc.seq = int(self.name.split("-")[-1])
 			mwo_doc.is_finding_mwo = True
 			mwo_doc.auto_created = 1
+			mwo_doc.department = frappe.db.get_value("Manufacturing Setting", {"manufacturer": mwo_doc.manufacturer}, "default_department")
 			mwo_doc.save()
 
 

@@ -287,7 +287,8 @@ class ProductCertification(Document):
 					)
 
 		elif self.service_type in ["Fire Assy Service", "XRF Services"]:
-			pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
+			# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
+			pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":self.manufacturer}, "pure_gold_item")
 			if not pure_item:
 				frappe.throw(_("Please mention Pure Item in Manufacturing Setting"))
 

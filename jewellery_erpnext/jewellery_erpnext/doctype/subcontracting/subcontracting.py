@@ -29,7 +29,8 @@ class Subcontracting(Document):
 	def on_submit(self):
 		if not self.finish_item:
 			# self.finish_item = frappe.db.get_value("Manufacturing Setting", self.company, "service_item")
-			finish_item_value = frappe.db.get_value("Manufacturing Setting", self.company, "service_item")
+			# finish_item_value = frappe.db.get_value("Manufacturing Setting", self.company, "service_item")
+			finish_item_value = frappe.db.get_value("Manufacturing Setting", {"manufacturer":self.manufacturer}, "service_item")
 			self.db_set("finish_item", finish_item_value)
 		create_repack_entry(self)
 

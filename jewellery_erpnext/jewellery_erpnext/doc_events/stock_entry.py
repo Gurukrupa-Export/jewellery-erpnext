@@ -53,7 +53,16 @@ def before_validate(self, method):
 				)
 		if row.custom_variant_of in ["M", "F"]:
 			if not pure_item_purity:
-				pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
+				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
+
+				if self.stock_entry_type == 'Material Transfer (MAIN SLIP)':
+					manufacturer = frappe.db.get_value("Main Slip",self.to_main_slip,"manufacturer")
+				elif self.manufacturing_order:
+					manufacturer = frappe.db.get_value("Parent Manufacturing Order",self.manufacturing_order,"manufacturer")
+				else:
+					manufacturer = frappe.defaults.get_user_default("manufacturer")
+
+				pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":manufacturer}, "pure_gold_item")
 
 				if not pure_item:
 					frappe.throw(_("Pure Item not mentioned in Manufacturing Setting"))
