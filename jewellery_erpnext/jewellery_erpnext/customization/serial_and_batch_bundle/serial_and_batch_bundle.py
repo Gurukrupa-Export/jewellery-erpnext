@@ -56,7 +56,7 @@ class CustomSerialandBatchBundle(SerialandBatchBundle):
 					{"incoming_rate": d.incoming_rate, "stock_value_difference": d.stock_value_difference}
 				)
 
-	
+
 	def validate_serial_nos_duplicate(self):
 		# Don't inward same serial number multiple times
 		if self.voucher_type in ["POS Invoice", "Pick List"]:
@@ -72,15 +72,15 @@ class CustomSerialandBatchBundle(SerialandBatchBundle):
 			return
 
 		serial_nos = [d.serial_no for d in self.entries if d.serial_no]
-		
+
 		purchase_type = "Branch Purchase"
 		if self.voucher_type == "Purchase Receipt" and self.voucher_no:
-			
+
 			pr_doc = frappe.get_doc("Purchase Receipt", self.voucher_no)
-			
+
 			if pr_doc.purchase_type == "FG Purchase":
 				purchase_type = "FG Purchase"
-		
+
 		kwargs = frappe._dict(
 			{
 				"item_code": self.item_code,
@@ -141,26 +141,6 @@ class CustomBatchNoValuation(BatchNoValuation):
 			self.calculate_avg_rate_from_deprecarated_ledgers()
 			self.calculate_avg_rate_for_non_batchwise_valuation()
 			self.set_stock_value_difference()
-
-	# def get_batch_no_ledgers(self):
-	# 	if not self.batchwise_valuation_batches:
-	# 		return []
-
-	# 	# Use prefetched Batch Valuation Ledger if available
-	# 	if self.batch_valuation_ledger:
-	# 		result = []
-	# 		for batch_no in self.batchwise_valuation_batches:
-	# 			ledger_data = self.batch_valuation_ledger.get_batch_data(self.warehouse, self.item_code, batch_no)
-	# 			if ledger_data:
-	# 				result.append(frappe._dict({
-	# 					"batch_no": batch_no,
-	# 					"incoming_rate": ledger_data["incoming_rate"],
-	# 					"qty": ledger_data["qty"]
-	# 				}))
-	# 			else:
-	# 				return self.old_get_batch_no_ledgers()
-
-	# 		return result
 
 	def get_batch_no_ledgers(self):
 		if not self.batchwise_valuation_batches:
