@@ -86,7 +86,8 @@ def create_chain_stock_entry(self, row):
 	# 	"BOM Explosion Item", {"parent": metal_data.master_bom}, "item_code"
 	# )
 
-	pure_item = frappe.db.get_value("Manufacturing Setting", {"name": self.company}, "pure_gold_item")
+	# pure_item = frappe.db.get_value("Manufacturing Setting", {"name": self.company}, "pure_gold_item")
+	pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer": self.manufacturer}, "pure_gold_item")
 
 	item_list = [row.item_code for row in bom_items]
 

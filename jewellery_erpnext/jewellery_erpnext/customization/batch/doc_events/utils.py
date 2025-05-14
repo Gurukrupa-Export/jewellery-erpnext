@@ -72,9 +72,13 @@ def update_pure_qty(self):
 	if not self.reference_doctype:
 		return
 
-	company = frappe.db.get_value(self.reference_doctype, self.reference_name, "company")
+	# company = frappe.db.get_value(self.reference_doctype, self.reference_name, "company")
 
-	pure_item = frappe.db.get_value("Manufacturing Setting", company, "pure_gold_item")
+	# pure_item = frappe.db.get_value("Manufacturing Setting", company, "pure_gold_item")
+
+	manufacturer = frappe.db.get_value(self.reference_doctype, self.reference_name, "manufacturer")
+
+	pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":manufacturer}, "pure_gold_item")
 
 	if not pure_item:
 		return

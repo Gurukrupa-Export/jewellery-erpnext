@@ -304,10 +304,18 @@ def get_sales_invoice_items(sales_invoices):
 	items = frappe.get_all(
 		"Sales Invoice Item",
 		{"parent": ["in", sales_invoices]},
-		["item_code", "qty", "rate", "serial_no", "bom", "parent","warehouse"]
+		[
+			"item_code",
+			"item_name",    
+			"uom",          
+			"qty",
+			"rate",
+			"serial_no",
+			"bom",
+			"parent",
+			"warehouse"
+		]
 	)
-	# frappe.throw(f"{items}")
-	# Fetch gold_rate_with_gst from each parent Sales Invoice
 	sales_invoice_gold_rates = frappe.get_all(
 		"Sales Invoice",
 		{"name": ["in", sales_invoices]},

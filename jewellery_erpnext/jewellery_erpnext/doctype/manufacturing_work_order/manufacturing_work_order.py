@@ -258,8 +258,9 @@ def create_manufacturing_operation(doc):
 
 
 @frappe.whitelist()
-def create_split_work_order(docname, company, count=1):
-	limit = cint(frappe.db.get_value("Manufacturing Setting", {"company", company}, "wo_split_limit"))
+def create_split_work_order(docname, company,manufacturer, count=1):
+	# limit = cint(frappe.db.get_value("Manufacturing Setting", {"company", company}, "wo_split_limit"))
+	limit = cint(frappe.db.get_value("Manufacturing Setting", {"manufacturer", manufacturer}, "wo_split_limit"))
 	if cint(count) < 1 or (cint(count) > limit and limit > 0):
 		frappe.throw(_("Invalid split count"))
 	open_operations = frappe.get_all(
