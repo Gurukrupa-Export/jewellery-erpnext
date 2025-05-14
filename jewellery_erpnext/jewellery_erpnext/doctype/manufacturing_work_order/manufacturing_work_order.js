@@ -117,6 +117,7 @@ frappe.ui.form.on("Manufacturing Work Order", {
 					args: {
 						docname: frm.doc.name,
 						company: frm.doc.company,
+						manufacturer: frm.doc.manufacturer,
 						count: dialog.get_values()["split_count"],
 					},
 					callback: function (r) {

@@ -1212,7 +1212,8 @@ def genrate_serial_no(doc, diamond_grade_data):
 	errors = []
 	mwo_no = doc.manufacturing_work_order
 	if mwo_no:
-		series_start = frappe.db.get_value("Manufacturing Setting", doc.company, ["series_start"])
+		# series_start = frappe.db.get_value("Manufacturing Setting", doc.company, ["series_start"])
+		series_start = frappe.db.get_value("Manufacturing Setting", {"manufacturer":doc.manufacturer}, ["series_start"])
 		metal_type, manufacturer, posting_date = frappe.db.get_value(
 			"Manufacturing Work Order",
 			mwo_no,

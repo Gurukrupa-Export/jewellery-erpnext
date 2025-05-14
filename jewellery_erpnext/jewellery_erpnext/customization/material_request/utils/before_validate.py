@@ -14,7 +14,9 @@ def update_pure_qty(self):
 		if row.custom_variant_of in ["M", "F"]:
 
 			if not pure_item_purity:
-				pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
+				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
+
+				pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":self.custom_manufacturer}, "pure_gold_item")
 
 				if not pure_item:
 					frappe.throw(_("Pure Item not mentioned in Manufacturing Setting"))

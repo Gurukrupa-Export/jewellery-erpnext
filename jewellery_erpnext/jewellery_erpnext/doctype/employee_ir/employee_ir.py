@@ -263,7 +263,8 @@ class EmployeeIR(Document):
 			],
 		)
 
-		pure_gold_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
+		# pure_gold_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
+		pure_gold_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":self.manufacturer}, "pure_gold_item")
 
 		msl_dict = frappe._dict({"regular_batch": {}, "pure_batch": [], "customer_batch": {}})
 
