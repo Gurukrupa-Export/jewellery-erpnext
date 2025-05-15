@@ -1864,7 +1864,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			rate_per_gm = 0
 			fg_purchase_rate = 0
 			fg_purchase_amount = 0
-			wastege_rate = 0
+			wastage_rate = 0
 			row["stock_uom"] = item.get("uom")
 			row["quantity"] = item["qty"] / pmo_data.get("qty")
 			row["is_customer_item"] = 1 if item.get("inventory_type") == "Customer Goods" else 0
@@ -2253,6 +2253,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row["pcs"] = item.get("pcs")
 			row["fg_purchase_rate"] = fg_purchase_rate
 			row["fg_purchase_amount"] = fg_purchase_amount
+			row["amount"] = row["rate"] * row["quantity"]
 			row["wastage_amount"] = row.get("wastage_rate", 0) * row["amount"]
 
 			new_bom.append("finding_detail", row)
