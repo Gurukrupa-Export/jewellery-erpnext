@@ -36,10 +36,6 @@ class SwapMetal(Document):
 
 	def on_submit(self):
 		self.make_stock_entry()
-		pass
-
-	def on_update(self):
-		pass
 
 	def validate_target_table(self):
 		if not self.target_table:

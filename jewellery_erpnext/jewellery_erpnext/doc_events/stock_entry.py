@@ -7,8 +7,6 @@ import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _, scrub
 from frappe.model.mapper import get_mapped_doc
-from frappe.query_builder import CustomFunction
-from frappe.query_builder.custom import ConstantColumn
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt
 from six import itervalues
@@ -876,7 +874,6 @@ def update_mop_details(se_doc, is_cancelled=False):
 			)
 			validated_batches = False
 			temp_raw = copy.deepcopy(entry.__dict__)
-			# temp_raw["manufacturing_operation"] = mop_name
 			if entry.s_warehouse == d_warehouse:
 				if validate_batches and entry.batch_no:
 					validated_batches = True
@@ -902,7 +899,6 @@ def update_mop_details(se_doc, is_cancelled=False):
 				mop_data[mop_name]["department_target_table"].append(temp_raw)
 
 			emp_temp_raw = copy.deepcopy(entry.__dict__)
-			# emp_temp_raw["manufacturing_operation"] = mop_name
 			if entry.s_warehouse == e_warehouse:
 				if validate_batches and entry.batch_no and not validated_batches:
 					validate_duplicate_batches(entry, batch_data)
@@ -950,6 +946,7 @@ def validate_duplicate_batches(entry, batch_data):
 			{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
 			["item_code", "batch_no"],
 		)
+
 	if entry.batch_no not in batch_data[key]:
 		frappe.throw(
 			_("Row {0}: Selected Batch does not belongs to {1}<br>Allwoed Batches : {2}").format(
@@ -1414,14 +1411,15 @@ def group_se_items_and_update_mop_items(doc, method):
 
 		doc.append("custom_mop_items", mop_row)
 
-	doc_dict = doc.as_dict()
-	grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
+	if doc.auto_created:
+		doc_dict = doc.as_dict()
+		grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
 
-	if len(grouped_se_items) < len(doc.items):
-		doc.items = []
+		if grouped_se_items and len(grouped_se_items) < len(doc.items):
+			doc.items = []
 
-		for row in grouped_se_items:
-			doc.append("items", row)
+			for row in grouped_se_items:
+				doc.append("items", row)
 
 	doc.calculate_rate_and_amount()
 	doc.update_children()

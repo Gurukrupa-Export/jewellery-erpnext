@@ -175,13 +175,10 @@ class DepartmentIR(Document):
 					"inventory_type": None,
 				}
 			)
+
 			for row in se_item_list:
 				stock_doc.append("items", row)
 
-			# se_grouped_items = self.group_se_items(se_item_list)
-
-			# for row in se_grouped_items:
-			# 	stock_doc.append("items", row)
 			stock_doc.flags.ignore_permissions = True
 			stock_doc.save()
 			stock_doc.submit()
@@ -452,11 +449,6 @@ class DepartmentIR(Document):
 				for row in add_to_transit:
 					stock_doc.append("items", row)
 
-				# grouped_items = self.group_se_items(add_to_transit)
-
-				# for row in grouped_items:
-				# 	stock_doc.append("items", row)
-
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
@@ -492,17 +484,6 @@ class DepartmentIR(Document):
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
-
-	def group_se_items(self, se_items:list):
-		if not se_items:
-			return
-
-		group_keys = ["item_code", "batch_no"]
-		sum_keys = ["qty", "pcs"]
-		concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
-		grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys)
-
-		return grouped_items
 
 	@frappe.whitelist()
 	def get_summary_data(self):
@@ -642,6 +623,7 @@ def get_se_items(doc, mwo, mop_data, in_transit_wh, send_in_transit_wh, departme
 		doc.flags.diamond_inculded = False
 		doc.flags.gemstone_inculded = False
 		tolerance_data = validate_tolerance(doc, mop_data)
+
 		for row in balance_data:
 			data = []
 			if tolerance_data.get(row[1]):
