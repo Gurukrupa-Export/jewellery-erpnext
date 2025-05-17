@@ -332,6 +332,7 @@ def validate_metal_properties(doc):
 	# 	["check_purity", "check_colour", "check_touch"],
 	# 	as_dict=True,
 	# )
+	manufacturer = frappe.defaults.get_user_default("manufacturer")
 	company_validations = frappe.db.get_value(
 		"Manufacturing Setting",
 		{"manufacturer":doc.manufacturer},
