@@ -243,7 +243,8 @@ class ManufacturingOperation(Document):
 			for row in existing_data:
 				for entry in self.get(row):
 					if entry.get("sed_item") and entry.get("sed_item") not in existing_data[row]:
-						existing_data[row].append(entry.get("sed_item"))
+						# existing_data[row].append(entry.get("sed_item"))
+						existing_data[row].add(entry.get("sed_item"))
 
 			department_source_table = frappe.db.get_all(
 				"Department Source Table", {"parent": self.previous_mop, "s_warehouse": d_warehouse}, ["*"]
