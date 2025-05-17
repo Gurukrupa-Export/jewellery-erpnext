@@ -160,8 +160,11 @@ class SwapMetal(Document):
 	def make_stock_entry(self):
 		source_item = []
 		target_item = []
+		# swap_inventroy_type = frappe.get_value(
+		# 	"Manufacturing Setting", {"company": self.company}, "inventory_type"
+		# )
 		swap_inventroy_type = frappe.get_value(
-			"Manufacturing Setting", {"company": self.company}, "inventory_type"
+			"Manufacturing Setting", {"manufacturer": self.manufacturer}, "inventory_type"
 		)
 		# frappe.throw(f"{swap_inventroy_type}")
 		if not swap_inventroy_type:

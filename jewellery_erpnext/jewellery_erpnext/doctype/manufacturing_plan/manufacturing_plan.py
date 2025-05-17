@@ -291,9 +291,21 @@ def create_manufacturing_order(doc, row, customer_diamond_data):
 			["service_type1", "'Service Type 2' as doctype"],
 		)
 	]
+	# warehouse_details = frappe.db.get_value(
+	# 	"Manufacturing Setting",
+	# 	{"company": doc.company},
+	# 	[
+	# 		"default_department",
+	# 		"default_diamond_department",
+	# 		"default_gemstone_department",
+	# 		"default_finding_department",
+	# 		"default_other_material_department",
+	# 	],
+	# 	as_dict=1,
+	# )
 	warehouse_details = frappe.db.get_value(
 		"Manufacturing Setting",
-		{"company": doc.company},
+		{"manufacturer": doc.manufacturer},
 		[
 			"default_department",
 			"default_diamond_department",

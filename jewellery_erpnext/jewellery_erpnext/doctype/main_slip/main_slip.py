@@ -74,8 +74,11 @@ class MainSlip(Document):
 			"24KT": "wax_to_gold_24",
 		}
 		if self.is_tree_reqd:
+			# ratio = frappe.db.get_value(
+			# 	"Manufacturing Setting", {"company": self.company}, field_map.get(self.metal_touch)
+			# )
 			ratio = frappe.db.get_value(
-				"Manufacturing Setting", {"company": self.company}, field_map.get(self.metal_touch)
+				"Manufacturing Setting", {"manufacturer": self.manufacturer}, field_map.get(self.metal_touch)
 			)
 			self.computed_gold_wt = flt(self.tree_wax_wt) * flt(ratio)
 		if (

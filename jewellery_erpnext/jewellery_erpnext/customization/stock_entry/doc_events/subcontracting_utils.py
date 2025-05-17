@@ -15,8 +15,11 @@ def create_subcontracting_doc(
 		sub_doc.manufacturing_order = self.manufacturing_order
 		sub_doc.operation = self.manufacturing_operation
 
+		# sub_doc.finish_item = frappe.db.get_value(
+		# 	"Manufacturing Setting", self.company, "pure_gold_item"
+		# )
 		sub_doc.finish_item = frappe.db.get_value(
-			"Manufacturing Setting", self.company, "pure_gold_item"
+			"Manufacturing Setting", {"manufacturer":self.manufacturer}, "pure_gold_item"
 		)
 
 		if self.manufacturing_operation:

@@ -541,12 +541,17 @@ class ManufacturingOperation(Document):
 		# self.ref_name = self.name
 		existing_child = self.get_existing_child("Item", self.item_code, "Cam Weight Detail", self.name)
 
+		# record_filter_from_mnf_setting = frappe.get_all(
+		# 	"CAM Weight Details Mapping",
+		# 	filters={"parent": self.company, "parenttype": "Manufacturing Setting"},
+		# 	fields=["operation"],
+		# )
+		
 		record_filter_from_mnf_setting = frappe.get_all(
 			"CAM Weight Details Mapping",
-			filters={"parent": self.company, "parenttype": "Manufacturing Setting"},
+			filters={"parent": self.manufacturer, "parenttype": "Manufacturing Setting"},
 			fields=["operation"],
 		)
-
 		if existing_child:
 			# Update the existing row
 			existing_child.update(
@@ -1038,8 +1043,11 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	target_wh = frappe.db.get_value(
 		"Warehouse", {"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"}
 	)
+	# to_wh = frappe.db.get_value(
+	# 	"Manufacturing Setting", {"company": doc.company}, "default_fg_warehouse"
+	# )
 	to_wh = frappe.db.get_value(
-		"Manufacturing Setting", {"company": doc.company}, "default_fg_warehouse"
+		"Manufacturing Setting", {"manufacturer": doc.manufacturer}, "default_fg_warehouse"
 	)
 	if not to_wh:
 		frappe.throw(_("<b>Manufacturing Setting</b> Default FG Warehouse Missing...!"))
