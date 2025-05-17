@@ -32,8 +32,11 @@ def get_mwo_details(doctype, txt, searchfield, start, page_len, filters):
 		.where((MWO.docstatus == 1) & (MWO.is_finding_mwo == 1))
 	)
 	if filters.get("company"):
+		# first_department = frappe.db.get_value(
+		# 	"Manufacturing Setting", {"company": filters.get("company")}, "default_department"
+		# )
 		first_department = frappe.db.get_value(
-			"Manufacturing Setting", {"company": filters.get("company")}, "default_department"
+			"Manufacturing Setting", {"manufacturer": filters.get("manufacturer")}, "default_department"
 		)
 		if first_department:
 			query = query.where(MWO.department == first_department)

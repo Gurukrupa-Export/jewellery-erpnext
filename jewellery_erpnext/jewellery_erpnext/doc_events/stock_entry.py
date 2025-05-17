@@ -326,9 +326,15 @@ def validate_metal_properties(doc):
 					as_dict=True,
 				)
 
+	# company_validations = frappe.db.get_value(
+	# 	"Manufacturing Setting",
+	# 	doc.company,
+	# 	["check_purity", "check_colour", "check_touch"],
+	# 	as_dict=True,
+	# )
 	company_validations = frappe.db.get_value(
 		"Manufacturing Setting",
-		doc.company,
+		{"manufacturer":doc.manufacturer},
 		["check_purity", "check_colour", "check_touch"],
 		as_dict=True,
 	)
@@ -502,8 +508,11 @@ def update_main_slip(doc, is_cancelled=False):
 	if not msl:
 		return
 	ms_doc = frappe.get_doc("Main Slip", msl)
+	# days = frappe.db.get_value(
+	# 	"Manufacturing Setting", doc.company, "allowed_days_for_main_slip_issue"
+	# )
 	days = frappe.db.get_value(
-		"Manufacturing Setting", doc.company, "allowed_days_for_main_slip_issue"
+		"Manufacturing Setting", {"manufacturer":doc.manufacturer}, "allowed_days_for_main_slip_issue"
 	)
 	if (
 		doc.auto_created == 0

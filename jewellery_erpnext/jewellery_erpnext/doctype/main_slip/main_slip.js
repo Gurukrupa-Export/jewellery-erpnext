@@ -85,9 +85,38 @@ frappe.ui.form.on("Main Slip", {
 	},
 	calculate_powder_wt(frm) {
 		if (!frm.doc.powder_wt) return;
+		// frappe.db.get_value(
+		// 	"Manufacturing Setting",
+		// 	frm.doc.company,
+		// 	[
+		// 		"powder_value",
+		// 		"water_value",
+		// 		"boric_value",
+		// 		"special_powder_boric_value",
+		// 		"power_value_individual",
+		// 		"water_value_individual",
+		// 	],
+		// 	(r) => {
+		// 		let water_value = r.water_value;
+		// 		let powder_value = r.powder_value;
+		// 		if (frm.doc.is_wax_setting) {
+		// 			water_value = r.water_value_individual;
+		// 			powder_value = r.power_value_individual;
+		// 			frm.set_value(
+		// 				"boric_powder_weight",
+		// 				(frm.doc.powder_wt * r.boric_value) / r.powder_value
+		// 			);
+		// 			frm.set_value(
+		// 				"special_powder_weight",
+		// 				(frm.doc.powder_wt * r.special_powder_boric_value) / r.powder_value
+		// 			);
+		// 		}
+		// 		frm.set_value("water_weight", (frm.doc.powder_wt * water_value) / powder_value);
+		// 	}
+		// );
 		frappe.db.get_value(
 			"Manufacturing Setting",
-			frm.doc.company,
+			frm.doc.manufacturer,
 			[
 				"powder_value",
 				"water_value",
@@ -126,7 +155,7 @@ frappe.ui.form.on("Main Slip", {
 			};
 			frappe.db.get_value(
 				"Manufacturing Setting",
-				frm.doc.company,
+				frm.doc.manufacturer,
 				field_map[frm.doc.metal_touch],
 				(r) => {
 					frm.set_value(

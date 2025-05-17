@@ -232,9 +232,15 @@ def create_manufacturing_operation(doc):
 		},
 	)
 
+	# settings = frappe.db.get_value(
+	# 	"Manufacturing Setting",
+	# 	{"company": doc.company},
+	# 	["default_operation", "default_department"],
+	# 	as_dict=1,
+	# )
 	settings = frappe.db.get_value(
 		"Manufacturing Setting",
-		{"company": doc.company},
+		{"manufacturer": doc.manufacturer},
 		["default_operation", "default_department"],
 		as_dict=1,
 	)

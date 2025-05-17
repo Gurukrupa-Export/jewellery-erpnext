@@ -493,8 +493,11 @@ def make_manufacturing_order(
 	elif row.mwo:
 		doc = frappe.new_doc("Parent Manufacturing Order")
 		doc.company = source_doc.company
+		# doc.department = frappe.db.get_value(
+		# 	"Manufacturing Setting", {"company": source_doc.company}, "default_department"
+		# )
 		doc.department = frappe.db.get_value(
-			"Manufacturing Setting", {"company": source_doc.company}, "default_department"
+			"Manufacturing Setting", {"manufacturer": source_doc.manufacturer}, "default_department"
 		)
 		doc.finding_department = warehouse_details.get("default_finding_department") or None
 		# mwo_details = (
