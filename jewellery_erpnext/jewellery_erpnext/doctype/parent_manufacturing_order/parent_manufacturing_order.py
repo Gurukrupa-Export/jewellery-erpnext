@@ -644,8 +644,11 @@ def create_manufacturing_work_order(self):
 			doc.metal_purity = row.metal_purity
 			doc.metal_colour = row.metal_colour
 			doc.seq = int(self.name.split("-")[-1])
+			# doc.department = frappe.db.get_value(
+			# 	"Manufacturing Setting", {"company": doc.company}, "default_department"
+			# )
 			doc.department = frappe.db.get_value(
-				"Manufacturing Setting", {"company": doc.company}, "default_department"
+				"Manufacturing Setting", {"manufacturer": doc.manufacturer}, "default_department"
 			)
 			doc.metal_touch = row.metal_touch
 			doc.metal_type = row.metal_type
@@ -666,8 +669,11 @@ def create_manufacturing_work_order(self):
 			},
 		)
 		fg_doc.seq = int(self.name.split("-")[-1])
+		# fg_doc.department = frappe.db.get_value(
+		# 	"Manufacturing Setting", {"company": doc.company}, "default_fg_department"
+		# )
 		fg_doc.department = frappe.db.get_value(
-			"Manufacturing Setting", {"company": doc.company}, "default_fg_department"
+			"Manufacturing Setting", {"manufacturer": doc.manufacturer}, "default_fg_department"
 		)
 		fg_doc.metal_touch = row.metal_touch
 		fg_doc.metal_type = row.metal_type
