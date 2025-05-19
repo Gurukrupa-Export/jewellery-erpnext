@@ -450,7 +450,7 @@ def get_item_code(sales_order_item):
 
 @frappe.whitelist()
 def make_manufacturing_order(
-	source_doc, row, warehouse_details, master_bom=None, so_det=None, service_type=None
+	source_doc, row, master_bom=None, so_det=None, service_type=None
 ):
 	if row.sales_order:
 		# so_doc = frappe.get_doc("Sales Order", row.sales_order)
