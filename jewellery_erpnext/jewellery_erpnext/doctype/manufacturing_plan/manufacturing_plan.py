@@ -303,18 +303,18 @@ def create_manufacturing_order(doc, row, customer_diamond_data):
 	# 	],
 	# 	as_dict=1,
 	# )
-	warehouse_details = frappe.db.get_value(
-		"Manufacturing Setting",
-		{"manufacturer": doc.manufacturer},
-		[
-			"default_department",
-			"default_diamond_department",
-			"default_gemstone_department",
-			"default_finding_department",
-			"default_other_material_department",
-		],
-		as_dict=1,
-	)
+	# warehouse_details = frappe.db.get_value(
+	# 	"Manufacturing Setting",
+	# 	{"manufacturer": doc.manufacturer},
+	# 	[
+	# 		"default_department",
+	# 		"default_diamond_department",
+	# 		"default_gemstone_department",
+	# 		"default_finding_department",
+	# 		"default_other_material_department",
+	# 	],
+	# 	as_dict=1,
+	# )
 
 	master_bom = None
 	if doc.select_manufacture_order == "Manufacturing":
@@ -359,7 +359,7 @@ def create_manufacturing_order(doc, row, customer_diamond_data):
 
 	for i in range(0, cnt):
 		make_manufacturing_order(
-			doc, row, warehouse_details, master_bom=master_bom, so_det=so_det, service_type=service_type
+			doc, row, master_bom=master_bom, so_det=so_det, service_type=service_type
 		)
 	frappe.msgprint(_("Parent Manufacturing Order Created"))
 

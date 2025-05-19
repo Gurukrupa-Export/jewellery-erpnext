@@ -332,9 +332,10 @@ def validate_metal_properties(doc):
 	# 	["check_purity", "check_colour", "check_touch"],
 	# 	as_dict=True,
 	# )
+	manufacturer = frappe.defaults.get_user_default("manufacturer")
 	company_validations = frappe.db.get_value(
 		"Manufacturing Setting",
-		{"manufacturer":doc.manufacturer},
+		{"manufacturer":manufacturer},
 		["check_purity", "check_colour", "check_touch"],
 		as_dict=True,
 	)
@@ -511,6 +512,7 @@ def update_main_slip(doc, is_cancelled=False):
 	# days = frappe.db.get_value(
 	# 	"Manufacturing Setting", doc.company, "allowed_days_for_main_slip_issue"
 	# )
+	doc.manufacturer = frappe.defaults.get_user_default("manufacturer")
 	days = frappe.db.get_value(
 		"Manufacturing Setting", {"manufacturer":doc.manufacturer}, "allowed_days_for_main_slip_issue"
 	)

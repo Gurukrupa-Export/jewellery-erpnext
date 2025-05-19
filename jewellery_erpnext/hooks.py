@@ -144,7 +144,10 @@ doc_events = {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.before_validate",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.on_submit",
 	},
-	"Batch": {"validate": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.validate"},
+	"Batch": {
+		"validate": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.validate",
+		"autoname": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.autoname",
+	},
 	"Stock Reconciliation": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department"
 	},
