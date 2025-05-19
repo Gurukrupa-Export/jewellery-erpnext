@@ -67,6 +67,35 @@ class ParentManufacturingOrder(Document):
 		self.metal_details()
 		update_bom_based_on_diamond_quality(self)
 		validate_mfg_date(self)
+		if self.manufacturer:
+			warehouse_details = frappe.db.get_value(
+					"Manufacturing Setting",
+					{"manufacturer": self.manufacturer},
+					[
+						"default_department",
+						"default_diamond_department",
+						"default_gemstone_department",
+						"default_finding_department",
+						"default_other_material_department",
+					],
+					as_dict=1,
+				)
+			# frappe.throw(f"{warehouse_details}")
+			default_department = warehouse_details.get("default_department") or None
+			metal_department = warehouse_details.get("default_department") or None
+			diamond_department = warehouse_details.get("default_diamond_department") or None
+			gemstone_department = warehouse_details.get("default_gemstone_department") or None
+			finding_department = warehouse_details.get("default_finding_department") or None
+			other_material_department = (
+				warehouse_details.get("default_other_material_department") or None
+			)
+			# self.db_set("default_department", default_department)
+			self.db_set("metal_department", metal_department)
+			self.db_set("diamond_department", diamond_department)
+			self.db_set("gemstone_department", gemstone_department)
+			self.db_set("finding_department", finding_department)
+			self.db_set("other_material_department", other_material_department)
+		
 
 	def on_update_after_submit(self):
 		update_due_days(self)
