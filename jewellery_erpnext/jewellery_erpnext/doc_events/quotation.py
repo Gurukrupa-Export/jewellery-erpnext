@@ -176,7 +176,7 @@ def create_new_bom(self):
 					self, row, bom[0].get("name"), attribute_data, metal_criteria, item_bom_data, bom_data
 				)
 			except Exception as e:
-				frappe.log_error(title="Quotation Error", message=f"{e}")
+				frappe.log_error(title="Quotation Error", message=frappe.get_traceback())
 				error_logs.append(f"Row {row.idx} : {e}")
 
 	if error_logs:
