@@ -468,14 +468,14 @@ def make_manufacturing_order(
 		service_type = [] if not service_type else service_type
 
 		doc.company = source_doc.company
-		doc.department = warehouse_details.get("default_department") or None
-		doc.metal_department = warehouse_details.get("default_department") or None
-		doc.diamond_department = warehouse_details.get("default_diamond_department") or None
-		doc.gemstone_department = warehouse_details.get("default_gemstone_department") or None
-		doc.finding_department = warehouse_details.get("default_finding_department") or None
-		doc.other_material_department = (
-			warehouse_details.get("default_other_material_department") or None
-		)
+		# doc.department = warehouse_details.get("default_department") or None
+		# doc.metal_department = warehouse_details.get("default_department") or None
+		# doc.diamond_department = warehouse_details.get("default_diamond_department") or None
+		# doc.gemstone_department = warehouse_details.get("default_gemstone_department") or None
+		# doc.finding_department = warehouse_details.get("default_finding_department") or None
+		# doc.other_material_department = (
+		# 	warehouse_details.get("default_other_material_department") or None
+		# )
 
 		doc.sales_order = row.sales_order
 		doc.sales_order_item = row.docname
@@ -525,8 +525,9 @@ def make_manufacturing_order(
 		# doc.department = frappe.db.get_value(
 		# 	"Manufacturing Setting", {"company": source_doc.company}, "default_department"
 		# )
+		manufacturer = frappe.defaults.get_user_default("manufacturer")
 		doc.department = frappe.db.get_value(
-			"Manufacturing Setting", {"manufacturer": source_doc.manufacturer}, "default_department"
+			"Manufacturing Setting", {"manufacturer": manufacturer}, "default_department"
 		)
 		doc.finding_department = warehouse_details.get("default_finding_department") or None
 		# mwo_details = (
