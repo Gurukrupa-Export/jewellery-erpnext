@@ -359,7 +359,7 @@ def create_manufacturing_order(doc, row, customer_diamond_data):
 
 	for i in range(0, cnt):
 		make_manufacturing_order(
-			doc, row, warehouse_details, master_bom=master_bom, so_det=so_det, service_type=service_type
+			doc, row, master_bom=master_bom, so_det=so_det, service_type=service_type
 		)
 	frappe.msgprint(_("Parent Manufacturing Order Created"))
 
