@@ -1179,19 +1179,64 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if not expense_account:
 		frappe.throw(_("Default Operating Cost account is not mentioned in Company."))
 
+	# for row in mo_data:
+	# 	se.append(
+	# 		"additional_costs",
+	# 		{
+	# 			"expense_account": row.expense_account,
+	# 			"amount": row.amount,
+	# 			"description": row.description,
+	# 			"exchange_rate": row.exchange_rate,
+	# 			"custom_manufacturing_operation": row.manufacturing_operation,
+	# 			"custom_workstation": row.workstation,
+	# 			"custom_time_in_minutes": row.total_minutes,
+	# 		},
+	# 	)
+	# if pi_expense > 0:
+	# 	se.append(
+	# 		"additional_costs",
+	# 		{
+	# 			"expense_account": expense_account,
+	# 			"amount": pi_expense,
+	# 			"description": ", ".join(pi_description),
+	# 		},
+	# 	)
+	total_operating_cost = 0
+	operation_descriptions = []
 	for row in mo_data:
+		mop_doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+		employee = mop_doc.employee
+
+		total_minutes = sum([log.time_in_mins or 0 for log in mop_doc.time_logs])
+
+		matching_workstation = frappe.get_all(
+			"Workstation",
+			filters={"employee": employee},
+			fields=["name", "hour_rate"]
+		)
+
+		if matching_workstation:
+			ws = matching_workstation[0]
+			hour_rate = ws.hour_rate or 0
+		else:
+			hour_rate = 0
+			frappe.msgprint(f"No workstation found for employee: {employee}")
+
+		operating_cost = (hour_rate / 60) * total_minutes
+		total_operating_cost += operating_cost
+		operation_descriptions.append(row.description or row.manufacturing_operation)
+
+	if total_operating_cost > 0:
 		se.append(
 			"additional_costs",
 			{
-				"expense_account": row.expense_account,
-				"amount": row.amount,
-				"description": row.description,
-				"exchange_rate": row.exchange_rate,
-				"custom_manufacturing_operation": row.manufacturing_operation,
-				"custom_workstation": row.workstation,
-				"custom_time_in_minutes": row.total_minutes,
-			},
+				"expense_account": expense_account,
+				"amount": total_operating_cost,
+				"description": ", ".join(operation_descriptions),
+			}
 		)
+	# End of updated operation cost logic
+
 	if pi_expense > 0:
 		se.append(
 			"additional_costs",
@@ -1557,16 +1602,33 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		new_bom.with_operations = 1
 		new_bom.transfer_material_against = None
 		for row in mo_data:
-			new_bom.actual_operation_time += row.total_minutes
-			new_bom.append(
-				"operations",
-				{
-					"manufacturing_operation": row.manufacturing_operation,
-					"workstation": row.workstation,
-					"time_in_mins": row.total_minutes,
-					"hour_rate": row.amount,
-				},
+			mop_doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+			employee = mop_doc.employee
+			total_minutes = 0
+			for time_log in mop_doc.time_logs:
+				total_minutes += time_log.time_in_mins or 0
+			matching_workstation = frappe.get_all(
+				"Workstation",
+				filters={"employee": employee},
+				fields=["name", "hour_rate"]
 			)
+			if matching_workstation:
+				ws = matching_workstation[0]
+				workstation_name = ws.name
+				hour_rate = ws.hour_rate
+			else:
+				frappe.msgprint(f"No workstation found for employee: {employee}")
+
+			operating_cost = (hour_rate / 60) * total_minutes
+			# Set correct hour_rate in BOM Operation
+			operation_data = {
+				"manufacturing_operation": row.manufacturing_operation,
+				"workstation": workstation_name,
+				"hour_rate": hour_rate,
+				"time_in_mins": total_minutes,
+				"operating_cost": operating_cost
+			}
+			new_bom.append("operations", operation_data)
 
 	new_bom.operation_time_diff = new_bom.total_operation_time - new_bom.actual_operation_time
 	diamond_price_list_customer = frappe.db.get_value("Customer", new_bom.customer, "diamond_price_list")
@@ -1874,11 +1936,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			fg_purchase_rate = 0
 			fg_purchase_amount = 0
 			wastage_rate = 0
+
 			row["stock_uom"] = item.get("uom")
 			row["quantity"] = item["qty"] / pmo_data.get("qty")
 			row["is_customer_item"] = 1 if item.get("inventory_type") == "Customer Goods" else 0
+
 			if self.company == "Gurukrupa Export Private Limited":
-				# Fetch Making Charge Price List
 				making_charge_price_list = frappe.get_all(
 					"Making Charge Price",
 					filters={
@@ -1888,7 +1951,6 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					fields=["name"]
 				)
 
-				# Fetch Making Charge Price List with Gold Rate Filter
 				making_charge_price_list_with_gold_rate = frappe.get_all(
 					"Making Charge Price",
 					filters={
@@ -1904,48 +1966,43 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					making_charge_price_subcategories = frappe.get_all(
 						"Making Charge Price Item Subcategory",
 						filters={"parent": making_charge_price_list[0]["name"]},
-						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
+						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage",
+								"custom_subcontracting_rate", "custom_subcontracting_wastage"]
 					)
 
 					matching_subcategory = next(
 						(row for row in making_charge_price_subcategories if row.get("subcategory") == new_bom.item_subcategory),
 						None
 					)
+
 					if matching_subcategory:
-						# frappe.throw(f"{making_charge_price_list}")
 						rate_per_gm = matching_subcategory.get("rate_per_gm", 0)
 						fg_purchase_rate = matching_subcategory.get("supplier_fg_purchase_rate", 0)
 						fg_purchase_amount = fg_purchase_rate * row["quantity"]
+
 						if row["is_customer_item"]:
 							row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage")/100
+							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0) / 100
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
-
 						else:
 							row["rate"] = new_bom.gold_rate_with_gst
-							wastage_rate = matching_subcategory.get("wastage", 0)/100
+							wastage_rate = matching_subcategory.get("wastage", 0) / 100
 
+				# Ensure 'rate' is set to avoid KeyError
+				if "rate" not in row:
+					row["rate"] = 0
 
 				row["wastage_rate"] = wastage_rate
 				row["amount"] = row["rate"] * row["quantity"]
 				row["wastage_amount"] = row["wastage_rate"] * row["amount"]
 				row["se_rate"] = item.get("rate")
 
-
-				# Add attributes
 				for attribute in item_row.attributes:
-					atrribute_name = format_attrbute_name(attribute.attribute)
-					row[atrribute_name] = attribute.attribute_value
+					attribute_name = format_attrbute_name(attribute.attribute)
+					row[attribute_name] = attribute.attribute_value
 
-				# Check for Customer Goods
-				# if item.get("inventory_type") == "Customer Goods":
-				# 	row["is_customer_item"] = 1
-
-
-
-				# Assign rates and amounts
 				row["fg_purchase_rate"] = fg_purchase_rate
 				row["fg_purchase_amount"] = fg_purchase_amount
 				row["pcs"] = item.get("pcs")
@@ -1954,26 +2011,21 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 				new_bom.append("metal_detail", row)
 
-				# Calculate custom metal amount
+				# Custom Metal Amount
 				if not hasattr(new_bom, "custom_metal_amount"):
 					new_bom.custom_metal_amount = 0
-
 				if new_bom.get("metal_detail"):
-					total_making_amount = sum(
-						flt(r.get("making_amount", 0)) for r in new_bom.get("metal_detail", [])
-					)
-				new_bom.custom_metal_amount = total_making_amount
+					total_making_amount = sum(flt(r.get("making_amount", 0)) for r in new_bom.get("metal_detail", []))
+					new_bom.custom_metal_amount = total_making_amount
 
-				# Calculate custom FG metal amount
+				# Custom FG Metal Amount
 				if not hasattr(new_bom, "custom_fg_metal_amount"):
 					new_bom.custom_fg_metal_amount = 0
-
 				if new_bom.get("metal_detail"):
-					total_fg_purchase_amount = sum(
-						flt(row.get("fg_purchase_amount", 0)) for row in new_bom.get("metal_detail", [])
-					)
+					total_fg_purchase_amount = sum(flt(r.get("fg_purchase_amount", 0)) for r in new_bom.get("metal_detail", []))
+					new_bom.custom_fg_metal_amount = total_fg_purchase_amount
+
 			else:
-					# Fetch Making Charge Price List
 				making_charge_price_list = frappe.get_all(
 					"Making Charge Price",
 					filters={
@@ -1982,8 +2034,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					},
 					fields=["name"]
 				)
-				row["is_customer_item"] = 1 if item.get("inventory_type") == "Customer Goods" else 0
-				# Fetch Making Charge Price List with Gold Rate Filter
+
 				making_charge_price_list_with_gold_rate = frappe.get_all(
 					"Making Charge Price",
 					filters={
@@ -1999,7 +2050,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					making_charge_price_subcategories = frappe.get_all(
 						"Making Charge Price Item Subcategory",
 						filters={"parent": making_charge_price_list[0]["name"]},
-						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
+						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage",
+								"custom_subcontracting_rate", "custom_subcontracting_wastage"]
 					)
 
 					matching_subcategory = next(
@@ -2011,33 +2063,30 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						rate_per_gm = matching_subcategory.get("rate_per_gm", 0)
 						fg_purchase_rate = matching_subcategory.get("supplier_fg_purchase_rate", 0)
 						fg_purchase_amount = fg_purchase_rate * row["quantity"]
+
 						if row["is_customer_item"]:
 							row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0)/100
+							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0) / 100
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
 						else:
 							row["rate"] = new_bom.gold_rate_with_gst
-							wastage_rate = matching_subcategory.get("wastage", 0)/100
+							wastage_rate = matching_subcategory.get("wastage", 0) / 100
 
+				# Ensure 'rate' is set to avoid KeyError
+				if "rate" not in row:
+					row["rate"] = 0
 
 				row["wastage_rate"] = wastage_rate
 				row["se_rate"] = item.get("rate")
-				row["rate"] = new_bom.gold_rate_with_gst
 				row["amount"] = row["rate"] * row["quantity"]
-				row["wastage_amount"] = row.get("wastage_rate", 0) * row["amount"]
+				row["wastage_amount"] = row["wastage_rate"] * row["amount"]
 
-				# Add attributes
 				for attribute in item_row.attributes:
-					atrribute_name = format_attrbute_name(attribute.attribute)
-					row[atrribute_name] = attribute.attribute_value
+					attribute_name = format_attrbute_name(attribute.attribute)
+					row[attribute_name] = attribute.attribute_value
 
-				# Check for Customer Goods
-				# if item.get("inventory_type") == "Customer Goods":
-				# 	row["is_customer_item"] = 1
-
-				# Assign rates and amounts
 				row["fg_purchase_rate"] = fg_purchase_rate
 				row["fg_purchase_amount"] = fg_purchase_amount
 				row["pcs"] = item.get("pcs")
@@ -2046,54 +2095,36 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 				new_bom.append("metal_detail", row)
 
-				# Calculate custom metal amount
 				if not hasattr(new_bom, "custom_metal_amount"):
 					new_bom.custom_metal_amount = 0
-
 				if new_bom.get("metal_detail"):
-					total_making_amount = sum(
-						flt(r.get("making_amount", 0)) for r in new_bom.get("metal_detail", [])
-					)
-				new_bom.custom_metal_amount = total_making_amount
+					total_making_amount = sum(flt(r.get("making_amount", 0)) for r in new_bom.get("metal_detail", []))
+					new_bom.custom_metal_amount = total_making_amount
 
-				# Calculate custom FG metal amount
 				if not hasattr(new_bom, "custom_fg_metal_amount"):
 					new_bom.custom_fg_metal_amount = 0
-
 				if new_bom.get("metal_detail"):
-					total_fg_purchase_amount = sum(
-						flt(row.get("fg_purchase_amount", 0)) for row in new_bom.get("metal_detail", [])
-					)
-			new_bom.custom_fg_metal_amount = total_fg_purchase_amount
+					total_fg_purchase_amount = sum(flt(r.get("fg_purchase_amount", 0)) for r in new_bom.get("metal_detail", []))
+					new_bom.custom_fg_metal_amount = total_fg_purchase_amount
 
-			# Calculate total metal weight
 			if not hasattr(new_bom, "total_metal_weight"):
 				new_bom.total_metal_weight = 0
-
 			if new_bom.get("metal_detail"):
-				total_metal_weight = sum(
-					flt(row.get("quantity", 0)) for row in new_bom.get("metal_detail", [])
-				)
-			new_bom.total_metal_weight = total_metal_weight
+				total_metal_weight = sum(flt(r.get("quantity", 0)) for r in new_bom.get("metal_detail", []))
+				new_bom.total_metal_weight = total_metal_weight
 
 			if not hasattr(new_bom, "total_metal_amount"):
 				new_bom.total_metal_amount = 0
-
 			if new_bom.get("metal_detail"):
-				total_metal_amount = sum(
-					flt(row.get("amount", 0)) for row in new_bom.get("metal_detail", [])
-				)
-			new_bom.total_metal_amount = total_metal_amount
+				total_metal_amount = sum(flt(r.get("amount", 0)) for r in new_bom.get("metal_detail", []))
+				new_bom.total_metal_amount = total_metal_amount
 
 			if not hasattr(new_bom, "total_wastage_amount"):
 				new_bom.total_wastage_amount = 0
-
 			if new_bom.get("metal_detail"):
-				total_wastage_amount = sum(
-					flt(row.get("wastage_amount", 0)) for row in new_bom.get("metal_detail", [])
-				)
-			new_bom.total_wastage_amount = total_wastage_amount
-			# frappe.throw(f"{new_bom.total_wastage_amount}")
+				total_wastage_amount = sum(flt(r.get("wastage_amount", 0)) for r in new_bom.get("metal_detail", []))
+				new_bom.total_wastage_amount = total_wastage_amount
+
 
 		elif item_row.variant_of == "F":
 			row = {}
