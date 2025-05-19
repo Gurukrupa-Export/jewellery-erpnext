@@ -80,7 +80,7 @@ class ParentManufacturingOrder(Document):
 					],
 					as_dict=1,
 				)
-			# frappe.throw(f"{warehouse_details}")
+			
 			default_department = warehouse_details.get("default_department") or None
 			metal_department = warehouse_details.get("default_department") or None
 			diamond_department = warehouse_details.get("default_diamond_department") or None
@@ -89,7 +89,7 @@ class ParentManufacturingOrder(Document):
 			other_material_department = (
 				warehouse_details.get("default_other_material_department") or None
 			)
-			# self.db_set("default_department", default_department)
+			
 			self.db_set("metal_department", metal_department)
 			self.db_set("diamond_department", diamond_department)
 			self.db_set("gemstone_department", gemstone_department)
