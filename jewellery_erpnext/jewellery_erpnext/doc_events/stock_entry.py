@@ -1415,12 +1415,17 @@ def group_se_items_and_update_mop_items(doc, method):
 	if not doc.items:
 		return
 
+	doc.custom_mop_items = []
+
 	for row in doc.items:
-		mop_row = copy.deepcopy(row)
-		mop_row.name = None
-		mop_row.doctype = "Stock Entry MOP Item"
+		mop_row = copy.deepcopy(row.__dict__)
+		mop_row["name"] = None
+		mop_row["idx"] = None
+		mop_row["doctype"] = "Stock Entry MOP Item"
 
 		doc.append("custom_mop_items", mop_row)
+
+	doc.update_child_table("custom_mop_items")
 
 	if doc.auto_created:
 		doc_dict = doc.as_dict()
@@ -1433,7 +1438,7 @@ def group_se_items_and_update_mop_items(doc, method):
 				doc.append("items", row)
 
 	doc.calculate_rate_and_amount()
-	doc.update_children()
+	doc.update_child_table("items")
 
 
 def group_se_items(se_items:list):
