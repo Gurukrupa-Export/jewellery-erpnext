@@ -1415,6 +1415,8 @@ def group_se_items_and_update_mop_items(doc, method):
 	if not doc.items:
 		return
 
+	doc.custom_mop_items = []
+
 	for row in doc.items:
 		mop_row = copy.deepcopy(row.__dict__)
 		mop_row["name"] = None
