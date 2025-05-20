@@ -1435,6 +1435,8 @@ def group_se_items_and_update_mop_items(doc, method):
 			doc.set("items", [])
 
 			for row in grouped_se_items:
+				row["name"] = None
+				row["idx"] = None
 				doc.append("items", row)
 
 	doc.calculate_rate_and_amount()
