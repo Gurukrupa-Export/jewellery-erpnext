@@ -67,6 +67,35 @@ class ParentManufacturingOrder(Document):
 		self.metal_details()
 		update_bom_based_on_diamond_quality(self)
 		validate_mfg_date(self)
+		if self.manufacturer:
+			warehouse_details = frappe.db.get_value(
+					"Manufacturing Setting",
+					{"manufacturer": self.manufacturer},
+					[
+						"default_department",
+						"default_diamond_department",
+						"default_gemstone_department",
+						"default_finding_department",
+						"default_other_material_department",
+					],
+					as_dict=1,
+				)
+			
+			default_department = warehouse_details.get("default_department") or None
+			metal_department = warehouse_details.get("default_department") or None
+			diamond_department = warehouse_details.get("default_diamond_department") or None
+			gemstone_department = warehouse_details.get("default_gemstone_department") or None
+			finding_department = warehouse_details.get("default_finding_department") or None
+			other_material_department = (
+				warehouse_details.get("default_other_material_department") or None
+			)
+			
+			self.db_set("metal_department", metal_department)
+			self.db_set("diamond_department", diamond_department)
+			self.db_set("gemstone_department", gemstone_department)
+			self.db_set("finding_department", finding_department)
+			self.db_set("other_material_department", other_material_department)
+		
 
 	def on_update_after_submit(self):
 		update_due_days(self)
@@ -421,7 +450,7 @@ def get_item_code(sales_order_item):
 
 @frappe.whitelist()
 def make_manufacturing_order(
-	source_doc, row, warehouse_details, master_bom=None, so_det=None, service_type=None
+	source_doc, row, master_bom=None, so_det=None, service_type=None
 ):
 	if row.sales_order:
 		# so_doc = frappe.get_doc("Sales Order", row.sales_order)
@@ -439,14 +468,14 @@ def make_manufacturing_order(
 		service_type = [] if not service_type else service_type
 
 		doc.company = source_doc.company
-		doc.department = warehouse_details.get("default_department") or None
-		doc.metal_department = warehouse_details.get("default_department") or None
-		doc.diamond_department = warehouse_details.get("default_diamond_department") or None
-		doc.gemstone_department = warehouse_details.get("default_gemstone_department") or None
-		doc.finding_department = warehouse_details.get("default_finding_department") or None
-		doc.other_material_department = (
-			warehouse_details.get("default_other_material_department") or None
-		)
+		# doc.department = warehouse_details.get("default_department") or None
+		# doc.metal_department = warehouse_details.get("default_department") or None
+		# doc.diamond_department = warehouse_details.get("default_diamond_department") or None
+		# doc.gemstone_department = warehouse_details.get("default_gemstone_department") or None
+		# doc.finding_department = warehouse_details.get("default_finding_department") or None
+		# doc.other_material_department = (
+		# 	warehouse_details.get("default_other_material_department") or None
+		# )
 
 		doc.sales_order = row.sales_order
 		doc.sales_order_item = row.docname
@@ -493,8 +522,12 @@ def make_manufacturing_order(
 	elif row.mwo:
 		doc = frappe.new_doc("Parent Manufacturing Order")
 		doc.company = source_doc.company
+		# doc.department = frappe.db.get_value(
+		# 	"Manufacturing Setting", {"company": source_doc.company}, "default_department"
+		# )
+		manufacturer = frappe.defaults.get_user_default("manufacturer")
 		doc.department = frappe.db.get_value(
-			"Manufacturing Setting", {"company": source_doc.company}, "default_department"
+			"Manufacturing Setting", {"manufacturer": manufacturer}, "default_department"
 		)
 		doc.finding_department = warehouse_details.get("default_finding_department") or None
 		# mwo_details = (
@@ -644,8 +677,11 @@ def create_manufacturing_work_order(self):
 			doc.metal_purity = row.metal_purity
 			doc.metal_colour = row.metal_colour
 			doc.seq = int(self.name.split("-")[-1])
+			# doc.department = frappe.db.get_value(
+			# 	"Manufacturing Setting", {"company": doc.company}, "default_department"
+			# )
 			doc.department = frappe.db.get_value(
-				"Manufacturing Setting", {"company": doc.company}, "default_department"
+				"Manufacturing Setting", {"manufacturer": doc.manufacturer}, "default_department"
 			)
 			doc.metal_touch = row.metal_touch
 			doc.metal_type = row.metal_type
@@ -666,8 +702,11 @@ def create_manufacturing_work_order(self):
 			},
 		)
 		fg_doc.seq = int(self.name.split("-")[-1])
+		# fg_doc.department = frappe.db.get_value(
+		# 	"Manufacturing Setting", {"company": doc.company}, "default_fg_department"
+		# )
 		fg_doc.department = frappe.db.get_value(
-			"Manufacturing Setting", {"company": doc.company}, "default_fg_department"
+			"Manufacturing Setting", {"manufacturer": doc.manufacturer}, "default_fg_department"
 		)
 		fg_doc.metal_touch = row.metal_touch
 		fg_doc.metal_type = row.metal_type

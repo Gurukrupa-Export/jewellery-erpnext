@@ -44,8 +44,11 @@ class ManufacturingWorkOrder(Document):
 		self.db_set("status", "Not Started")
 
 	def validate_other_work_orders(self):
+		# last_department = frappe.db.get_value(
+		# 	"Department Operation", {"is_last_operation": 1, "company": self.company}, "department"
+		# )
 		last_department = frappe.db.get_value(
-			"Department Operation", {"is_last_operation": 1, "company": self.company}, "department"
+			"Department Operation", {"is_last_operation": 1, "manufacturer": self.manufacturer}, "department"
 		)
 		if not last_department:
 			frappe.throw(_("Please set last operation first in Department Operation"))
@@ -229,9 +232,15 @@ def create_manufacturing_operation(doc):
 		},
 	)
 
+	# settings = frappe.db.get_value(
+	# 	"Manufacturing Setting",
+	# 	{"company": doc.company},
+	# 	["default_operation", "default_department"],
+	# 	as_dict=1,
+	# )
 	settings = frappe.db.get_value(
 		"Manufacturing Setting",
-		{"company": doc.company},
+		{"manufacturer": doc.manufacturer},
 		["default_operation", "default_department"],
 		as_dict=1,
 	)
