@@ -1415,7 +1415,7 @@ def group_se_items_and_update_mop_items(doc, method):
 	if not doc.items:
 		return
 
-	doc.custom_mop_items = []
+	doc.set("custom_mop_items", [])
 
 	for row in doc.items:
 		mop_row = copy.deepcopy(row.__dict__)
@@ -1432,7 +1432,7 @@ def group_se_items_and_update_mop_items(doc, method):
 		grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
 
 		if grouped_se_items and len(grouped_se_items) < len(doc.items):
-			doc.items = []
+			doc.set("items", [])
 
 			for row in grouped_se_items:
 				doc.append("items", row)
@@ -1448,7 +1448,7 @@ def group_se_items(se_items:list):
 	group_keys = ["item_code", "batch_no"]
 	sum_keys = ["qty", "transfer_qty", "pcs"]
 	concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
-	exclude_keys = ["idx", "valuation_rate", "basic_rate", "amount", "basic_amount", "taxable_value", "actual_qty"]
+	exclude_keys = ["name", "idx", "valuation_rate", "basic_rate", "amount", "basic_amount", "taxable_value", "actual_qty"]
 	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys, exclude_keys)
 
 	return grouped_items
