@@ -71,13 +71,13 @@ class CustomSerialBatchBundle(SerialBatchBundle):
 
 		self.set_serial_and_batch_bundle(sn_doc)
 
-	def validate_item_and_warehouse(self):	
+	def validate_item_and_warehouse(self):
 		# Skip validation if Purchase Receipt has purchase_type = "Branch Purchase"
 		if self.sle.voucher_type == "Purchase Receipt":
 			purchase_type = frappe.db.get_value("Purchase Receipt", self.sle.voucher_no, "purchase_type")
 			if purchase_type == "Branch Purchase" or purchase_type == "FG Purchase":
 				return  # Skip validation
-		
+
 		if self.sle.serial_and_batch_bundle and not frappe.db.exists(
 			"Serial and Batch Bundle",
 			{
@@ -136,7 +136,7 @@ def custom_create_batch(self):
 				"item": self.get("item_code"),
 				"reference_doctype": self.get("voucher_type"),
 				"reference_name": self.get("voucher_no"),
-				"custom_voucher_detail_no": self.get("voucher_detail_no") or None,
+				"custom_voucher_detail_no": self.get("voucher_detail_no"),
 			}
 		)
 	)
