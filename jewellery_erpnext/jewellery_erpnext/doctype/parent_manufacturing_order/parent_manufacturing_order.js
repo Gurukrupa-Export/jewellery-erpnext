@@ -16,23 +16,58 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		set_filters_on_parent_table_fields(frm, parent_fields);
 	},
 	refresh(frm) {
-		frm.set_query("diamond_grade", function (doc) {
-			return {
-				query: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_diamond_grade",
-				searchfield: "diamond_grade",
-				filters: { customer: frm.doc.customer },
-			};
-		});
-		// if (!frm.doc.__islocal) {
-		// 	frm.set_df_property("diamond_grade", "reqd", 1);
-		// }
-		// set_html(frm);
+		if (frm.doc.customer && frm.doc.diamond_quality) {
+			frm.set_query("diamond_grade", function () {
+				return {
+					query: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_diamond_grade",
+					searchfield: "diamond_grade",
+					filters: {
+						customer: frm.doc.customer,
+						diamond_quality: frm.doc.diamond_quality,
+						use_custom_diamond_grade: frm.doc.use_custom_diamond_grade ? 1 : 0,
+					},
+				};
+			});
+
+			// Only call & set diamond_grade_1 when NOT using custom diamond grade
+			if (!frm.doc.use_custom_diamond_grade) {
+				frappe.call({
+					method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_diamond_grade",
+					args: {
+						doctype: "Diamond Grade",
+						txt: "",
+						searchfield: "diamond_grade",
+						start: 0,
+						page_len: 10,
+						filters: {
+							customer: frm.doc.customer,
+							diamond_quality: frm.doc.diamond_quality,
+							use_custom_diamond_grade: 0,
+						},
+					},
+					callback: function (r) {
+						if (r.message && r.message.length > 0) {
+							frm.set_value("diamond_grade", r.message[0][0]);
+						}
+					},
+				});
+			}
+		}
+
+		// Always control read-only dynamically
+		frm.set_df_property("diamond_grade", "read_only", !frm.doc.use_custom_diamond_grade);
+
 		if (!frm.doc.__islocal) {
 			frm.add_custom_button(__("Send For Customer Approval"), function () {
 				frm.trigger("create_customer_transfer");
 			});
 		}
 	},
+
+	use_custom_diamond_grade(frm) {
+		frm.set_df_property("diamond_grade", "read_only", !frm.doc.use_custom_diamond_grade);
+	},
+	
 	create_customer_transfer: function (frm) {
 		frm.call({
 			doc: frm.doc,
