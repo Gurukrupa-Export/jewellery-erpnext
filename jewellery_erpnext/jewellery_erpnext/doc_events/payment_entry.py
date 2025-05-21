@@ -8,8 +8,8 @@ def on_submit(doc, method):
 		return
 
 	pe_branch = doc.branch
-	paid_to_account = doc.paid_to
 	paid_from_account = doc.paid_from
+	paid_to_account = doc.paid_to
 	if not pe_branch:
 		return
 
@@ -25,6 +25,7 @@ def on_submit(doc, method):
 		if si_branch:
 			jv = create_journal_entry_for_different_branch(
 				doc,
+				paid_from_account,
 				paid_to_account,
 				si_branch,
 				pe_branch,
