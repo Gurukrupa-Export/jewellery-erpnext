@@ -156,38 +156,38 @@ class ManufacturingOperation(Document):
 		self.validate_operation()
 		self.validate_main_slip()
 
-		def validate_main_slip(self):
-			# Find Employee IR where the child table employee_ir_operations has manufacturing_operation = self.name
-			ir_operations = frappe.get_all(
-				"Employee IR Operation",
-				filters={
-					"manufacturing_operation": self.name,
-					"parenttype": "Employee IR"
-				},
-				fields=["parent"]
-			)
-			
-			matched_ir = None
+	def validate_main_slip(self):
+		# Find Employee IR where the child table employee_ir_operations has manufacturing_operation = self.name
+		ir_operations = frappe.get_all(
+			"Employee IR Operation",
+			filters={
+				"manufacturing_operation": self.name,
+				"parenttype": "Employee IR"
+			},
+			fields=["parent"]
+		)
+		
+		matched_ir = None
 
-			if ir_operations:
-				parent_ir_names = [op["parent"] for op in ir_operations]
-				employee_ir = frappe.get_all(
-					"Employee IR",
-					filters={
-						"employee": self.employee,
-						"operation": self.operation,
-						"docstatus": 1,  
-						"type": "Issue",
-						"name": ["in", parent_ir_names]
-					},
-					fields=["name"]
-				)
-				if employee_ir:
-					ir_doc = frappe.get_doc("Employee IR", employee_ir[0].name)
-					if ir_doc.main_slip:
-						self.main_slip_no = ir_doc.main_slip
-					else:
-						frappe.msgprint(f"Main Slip is not set in Employee IR {ir_doc.name}.")
+		if ir_operations:
+			parent_ir_names = [op["parent"] for op in ir_operations]
+			employee_ir = frappe.get_all(
+				"Employee IR",
+				filters={
+					"employee": self.employee,
+					"operation": self.operation,
+					"docstatus": 1,  
+					"type": "Issue",
+					"name": ["in", parent_ir_names]
+				},
+				fields=["name"]
+			)
+			if employee_ir:
+				ir_doc = frappe.get_doc("Employee IR", employee_ir[0].name)
+				if ir_doc.main_slip:
+					self.main_slip_no = ir_doc.main_slip
+				else:
+					frappe.msgprint(f"Main Slip is not set in Employee IR {ir_doc.name}.")
 
 			
 
