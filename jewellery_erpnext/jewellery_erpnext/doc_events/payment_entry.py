@@ -30,7 +30,6 @@ def on_submit(doc, method):
 				row.allocated_amount
 			)
 			row.db_set("ref_journal_entry", jv)
-			print("Created Journal Entry:", row.ref_journal_entry)
 
 
 def on_cancel(doc, method):
