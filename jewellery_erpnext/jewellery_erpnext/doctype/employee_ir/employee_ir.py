@@ -6,7 +6,6 @@ from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder import DocType
 from frappe.query_builder.functions import Sum
-from jewellery_erpnext.utils import group_aggregate_with_concat
 
 # timer code
 from frappe.utils import (
@@ -392,14 +391,13 @@ class EmployeeIR(Document):
 
 			# del res["complete_time"]
 			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, res)
-		
+
 		if time_log_args and not cancel:
 			batch_add_time_logs(self, time_log_args)
 
 		# workstation_data = frappe._dict()
 		# Process Loss
 		if loss_rows:
-			print("Process Loss Rows", loss_rows)
 			pl_se_doc = frappe.new_doc("Stock Entry")
 			pl_se_doc.company = self.company
 			pl_se_doc.stock_entry_type = "Process Loss"
@@ -410,11 +408,6 @@ class EmployeeIR(Document):
 			pl_se_doc.subcontractor = self.subcontractor
 			pl_se_doc.auto_created = 1
 			pl_se_doc.employee_ir = self.name
-
-			# for row in loss_rows:
-			# 	pl_se_doc.append("custom_mop_items", row)
-
-			# grouped_loss_rows = group_se_items(loss_rows)
 
 			for row in loss_rows:
 				pl_se_doc.append("items", row)
@@ -445,7 +438,6 @@ class EmployeeIR(Document):
 				if not re_se_doc.main_slip:
 					re_se_doc.main_slip = row.get("main_slip") or row.get("to_main_slip")
 
-				re_se_doc.append("custom_mop_items", row)
 				re_se_doc.append("items", row)
 
 			re_se_doc.flags.ignore_permissions = True
@@ -464,10 +456,6 @@ class EmployeeIR(Document):
 			mse_doc.subcontractor = self.subcontractor
 			mse_doc.auto_created = True
 			mse_doc.employee_ir = self.name
-			# for row in main_slip_rows:
-			# 	mse_doc.append("custom_mop_items", row)
-
-			# grouped_mse_doc = group_se_items(main_slip_rows)
 
 			for row in main_slip_rows:
 				mse_doc.append("items", row)
@@ -911,22 +899,10 @@ class EmployeeIR(Document):
 		return get_summary_data(self)
 
 
-def group_se_items(se_items:list):
-	if not se_items:
-		return
-
-	group_keys = ["item_code", "batch_no"]
-	sum_keys = ["qty", "pcs"]
-	concat_keys = ["custom_parent_manufacturing_order", "custom_manufacturing_work_order", "manufacturing_operation"]
-	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys)
-
-	return grouped_items
-
-
 def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
 
 	new_mop_doc = frappe.copy_doc(
-		frappe.get_cached_doc("Manufacturing Operation", docname), ignore_no_copy=False
+		frappe.get_doc("Manufacturing Operation", docname), ignore_no_copy=False
 	)
 	new_mop_doc.name = None
 	new_mop_doc.department_issue_id = None
@@ -2305,7 +2281,7 @@ def calculation_time_log(doc, row, self):
 
 		row_date = getdate(row.from_time)
 		doc_date = getdate(self.date_time)
-		
+
 		checkin_doc = frappe.db.sql("""
 				SELECT name, log_type ,time
 				FROM `tabEmployee Checkin`
@@ -2327,7 +2303,7 @@ def calculation_time_log(doc, row, self):
 		if (out_time and in_time):
 			out_time_min = time_diff_in_hours(out_time, row.from_time) * 60 if out_time else 0
 			in_time_min = time_diff_in_hours(row.to_time, in_time) * 60 if in_time else 0
-			
+
 			# Time in minutes
 			row.time_in_mins = out_time_min + in_time_min
 
@@ -2353,11 +2329,11 @@ def calculation_time_log(doc, row, self):
 			# Time in HH:MM format
 			full_hours = time_diff(row.to_time, row.from_time)
 			row.time_in_hour = str(full_hours)[:-2]
-				
-			# Time in days based on shift		
+
+			# Time in days based on shift
 			if default_shift:
 				shift_hours = frappe.db.get_value("Shift Type", default_shift, ["start_time", "end_time"])
-				
+
 				total_shift_hours = time_diff(shift_hours[1], shift_hours[0])
 
 				if full_hours >= total_shift_hours:
