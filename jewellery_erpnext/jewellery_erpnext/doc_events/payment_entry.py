@@ -9,6 +9,7 @@ def on_submit(doc, method):
 
 	pe_branch = doc.branch
 	paid_to_account = doc.paid_to
+	paid_from_account = doc.paid_from
 	if not pe_branch:
 		return
 
@@ -59,7 +60,7 @@ def is_different_branch_ad(si_name, pe_branch):
 	return False
 
 
-def create_journal_entry_for_different_branch(doc, paid_to_account, si_branch, pe_branch, amount):
+def create_journal_entry_for_different_branch(doc, paid_from_account, paid_to_account, si_branch, pe_branch, amount):
 	"""
 	Create a journal entry for the different branch.
 	"""
@@ -78,6 +79,20 @@ def create_journal_entry_for_different_branch(doc, paid_to_account, si_branch, p
 			"account": paid_to_account,
 			"credit_in_account_currency": amount,
 			"branch": pe_branch
+		},
+		{
+			"account": paid_from_account,
+			"debit_in_account_currency": amount,
+			"party_type": doc.party_type,
+			"party": doc.party,
+			"branch": pe_branch,
+		},
+		{
+			"account": paid_from_account,
+			"credit_in_account_currency": amount,
+			"party_type": doc.party_type,
+			"party": doc.party,
+			"branch": si_branch
 		}
 	])
 
