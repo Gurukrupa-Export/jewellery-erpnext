@@ -398,7 +398,7 @@ class DepartmentIR(Document):
 				frappe.db.set_value(
 					"Manufacturing Operation", row.manufacturing_operation, "status", "Finished"
 				)
-				doc = frappe.get_cached_doc("Manufacturing Operation", row.manufacturing_operation)
+				doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
 				mop_data.update(
 					{
 						row.manufacturing_work_order: {
@@ -1090,7 +1090,7 @@ def fetch_and_update(doc, row, manufacturing_operation):
 
 
 def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
-	new_mop_doc = frappe.copy_doc(frappe.get_cached_doc("Manufacturing Operation", mop))
+	new_mop_doc = frappe.copy_doc(frappe.get_doc("Manufacturing Operation", mop))
 	new_mop_doc.name = None
 	new_mop_doc.department_issue_id = ir_name
 	new_mop_doc.department_ir_status = "In-Transit"
