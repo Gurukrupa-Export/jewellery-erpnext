@@ -194,12 +194,13 @@ class EmployeeIR(Document):
 		time_log_args = []
 		stock_entry_data = []
 		start_time = frappe.utils.now() if not cancel else None
-
+		main_slip = self.main_slip
 		for row in self.employee_ir_operations:
 			values.update({
 				"operation": operation,
 				"rpt_wt_issue": row.rpt_wt_issue,
-				"start_time": start_time
+				"start_time": start_time,
+				"main_slip_no":main_slip
 			})
 			mops_to_update[row.manufacturing_operation] = values
 			if not cancel:
@@ -919,6 +920,7 @@ def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
 	new_mop_doc.employee_source_table = []
 	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
+	new_mop_doc.main_slip_no = None
 	new_mop_doc.insert()
 	# def set_missing_value(source, target):
 	# 	target.previous_operation = source.operation
