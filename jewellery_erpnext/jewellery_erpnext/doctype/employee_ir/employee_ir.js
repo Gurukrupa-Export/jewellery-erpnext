@@ -46,16 +46,31 @@ frappe.ui.form.on("Employee IR", {
 				filters: [["Department", "company", "=", frm.doc.company]],
 			};
 		});
-		frm.set_query("main_slip", function (doc) {
-			return {
-				filters: {
-					docstatus: 0,
-					employee: frm.doc.employee,
-					for_subcontracting: frm.doc.subcontracting == "Yes",
-					workflow_state: "In Use",
-				},
-			};
-		});
+		if (frm.doc.subcontracting == 'No'){
+			frm.set_query("main_slip", function (doc) {
+				return {
+					filters: {
+						docstatus: 0,
+						employee: frm.doc.employee,
+						for_subcontracting: 0,
+						workflow_state: "In Use",
+					},
+				};
+			});
+		}
+		else{
+			frm.set_query("main_slip", function (doc) {
+				return {
+					filters: {
+						docstatus: 0,
+						subcontractor: frm.doc.subcontractor,
+						for_subcontracting: 1,
+						operation:frm.doc.operation,
+						workflow_state: "In Use",
+					},
+				};
+			});
+		}
 		frm.set_query("employee", function (doc) {
 			return {
 				filters: {
@@ -261,6 +276,60 @@ frappe.ui.form.on("Employee IR", {
 			frm.refresh_field("mould_reference");
 		}
 	},
+	employee(frm){
+		frm.set_query("main_slip", function (doc) {
+			return {
+				filters: {
+					docstatus: 0,
+					employee: frm.doc.employee,
+					for_subcontracting: 0,
+					workflow_state: "In Use",
+				},
+			};
+		});
+	},
+	subcontractor(frm){
+		frm.set_query("main_slip", function (doc) {
+			return {
+				filters: {
+					docstatus: 0,
+					subcontractor: frm.doc.subcontractor,
+					for_subcontracting: 1,
+					operation:frm.doc.operation,
+					workflow_state: "In Use",
+				},
+			};
+		});
+	},
+	subcontracting(frm){
+		if(frm.doc.subcontracting== 'Yes'){
+			frm.set_value("employee", "");
+			frm.set_query("main_slip", function (doc) {
+				return {
+					filters: {
+						docstatus: 0,
+						subcontractor: frm.doc.subcontractor,
+						for_subcontracting: 1,
+						operation:frm.doc.operation,
+						workflow_state: "In Use",
+					},
+				};
+			});
+		}
+		else{
+			frm.set_value("subcontractor", "");
+			frm.set_query("main_slip", function (doc) {
+				return {
+					filters: {
+						docstatus: 0,
+						employee: frm.doc.employee,
+						for_subcontracting: 0,
+						workflow_state: "In Use",
+					},
+				};
+			});
+		}
+	}
 });
 function set_filters_on_parent_table_fields(frm, fields) {
 	fields.map(function (field) {
