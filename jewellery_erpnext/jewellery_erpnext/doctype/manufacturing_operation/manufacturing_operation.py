@@ -186,8 +186,8 @@ class ManufacturingOperation(Document):
 				ir_doc = frappe.get_doc("Employee IR", employee_ir[0].name)
 				if ir_doc.main_slip:
 					self.main_slip_no = ir_doc.main_slip
-				else:
-					frappe.msgprint(f"Main Slip is not set in Employee IR {ir_doc.name}.")
+				# else:
+				# 	frappe.msgprint(f"Main Slip is not set in Employee IR {ir_doc.name}.")
 
 			
 
