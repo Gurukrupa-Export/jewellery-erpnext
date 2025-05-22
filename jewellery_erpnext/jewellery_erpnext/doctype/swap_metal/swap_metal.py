@@ -32,7 +32,83 @@ class SwapMetal(Document):
 		self.set_source_and_remain_table()
 		self.set_sum()
 		# self.target_qty_calculation()
-		self.validate_target_table()
+		# self.validate_target_table()
+		self.validate_target_source_table()
+
+	def validate_target_source_table(self):
+		if self.manufacturing_order:
+			custommer = frappe.db.get_value('Parent Manufacturing Order', self.manufacturing_order, 'customer')
+
+		if self.source_table:
+			existing_rows = {row.item_code: row for row in self.target_table}
+			appended = False
+
+		
+		m_items = {}
+		for r in self.source_table:
+			if r.item_code.startswith('M'):
+				if r.item_code in m_items:
+					m_items[r.item_code]['qty'] += r.qty
+					m_items[r.item_code]['transfer_qty'] += r.transfer_qty
+				else:
+					m_items[r.item_code] = {
+						"qty": r.qty,
+						"uom": r.uom,
+						"transfer_qty": r.transfer_qty,
+						"s_warehouse": r.s_warehouse
+					}
+
+	
+		for item_code, data in m_items.items():
+			department = frappe.db.get_value('Warehouse', data['s_warehouse'], 'department')
+			department_value = frappe.get_all(
+				'Warehouse',
+				filters={"department": department, "warehouse_type": "Raw Material"},
+				fields=["name", "warehouse_type", "department", "parent_warehouse"],
+				limit=1
+			)
+			parent_whouse = department_value[0].get("name") if department_value else None
+
+			if item_code in existing_rows:
+				row = existing_rows[item_code]
+				row.qty = data['qty']
+				row.uom = data['uom']
+				row.transfer_qty = data['transfer_qty']
+				row.inventory_type = "Customer Goods"
+				row.s_warehouse = parent_whouse
+				row.customer = custommer
+				row.flags.modified = True
+			else:
+				self.append("target_table", {
+					"item_code": item_code,
+					"qty": data['qty'],
+					"uom": data['uom'],
+					"transfer_qty": data['transfer_qty'],
+					"inventory_type": "Customer Goods",
+					"s_warehouse": parent_whouse,
+					"customer": custommer
+				})
+				appended = True
+
+		
+		for row in self.target_table :
+			batch = frappe.get_list("Batch", 
+					filters={
+						"item": row.item_code,
+						"custom_customer": row.customer,
+						"custom_inventory_type": row.inventory_type
+					},
+					fields=["name"],
+					limit=1
+				)
+			if batch:
+				row.batch_no = batch[0].name
+				# frappe.throw(f"{row.customer}")
+			else:
+				frappe.msgprint(f"No matching Batch found for Item: {row.item_code}, Customer: {row.customer}, Inventory Type: {row.inventory_type}")	
+	
+
+
 
 	def on_submit(self):
 		self.make_stock_entry()
