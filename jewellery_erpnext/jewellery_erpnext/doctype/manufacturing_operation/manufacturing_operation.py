@@ -3019,6 +3019,8 @@ def get_linked_stock_entries(mwo, department):
 		},
 		pluck="name",
 	)
+	if mwo == []:
+		return
 	StockEntry = frappe.qb.DocType("Stock Entry")
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
 	IF = CustomFunction("IF", ["condition", "true_expr", "false_expr"])
