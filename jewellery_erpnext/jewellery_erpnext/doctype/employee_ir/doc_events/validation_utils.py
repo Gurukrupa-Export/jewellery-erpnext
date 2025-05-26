@@ -87,7 +87,7 @@ def update_mop_balance(mop_name):
 	doc.validate()
 	doc.on_update()
 	doc.update_children()
-	doc.db_update()
+	doc.db_update_all()
 
 	return doc
 
