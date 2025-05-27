@@ -178,11 +178,11 @@ override_doctype_class = {
 }
 
 
-scheduler_events = {
-	"hourly": [
-		"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.rename_stock_entry_docs"
-	],
-}
+# scheduler_events = {
+# 	"hourly": [
+# 		"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.rename_stock_entry_docs"
+# 	],
+# }
 
 # from erpnext.stock import get_item_details
 # from jewellery_erpnext.erpnext_override import get_price_list_rate_for
