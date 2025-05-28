@@ -2711,6 +2711,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	+ new_bom.total_diamond_weight_in_gms
 	+ new_bom.total_gemstone_weight_in_gms
 	)
+	new_bom.total_bom_amount = (
+	new_bom.diamond_bom_amount
+	+ new_bom.total_metal_amount
+	+ new_bom.making_charge
+	+ new_bom.finding_bom_amount
+	+ new_bom.gemstone_bom_amount
+	)
 	new_bom.gold_to_diamond_ratio = (
 	flt(new_bom.metal_weight + new_bom.finding_weight_) / flt(new_bom.total_diamond_weight_in_gms)
 	if new_bom.total_diamond_weight_in_gms else 0

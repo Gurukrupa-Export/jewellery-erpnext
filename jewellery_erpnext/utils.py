@@ -330,6 +330,20 @@ def get_sales_invoice_items(sales_invoices):
 	}
 
 
+@frappe.whitelist()
+def get_sales_order_items(customer_approval_name):
+	doc = frappe.get_doc("Customer Approval", customer_approval_name)
+	
+	if doc.docstatus != 1:
+		frappe.throw(_("This Customer Approval is not submitted."))
+
+	items = frappe.get_all("Sales Order Item Child", 
+		filters={"parent": customer_approval_name},
+		fields=["item_code", "rate", "item_name", "quantity", "amount", "uom", "serial_no","bom_number","delivery_date"]
+	)
+	return items
+
+
 # searches for suppliers with purchase Type
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
