@@ -150,9 +150,6 @@ class CustomBatchNoValuation(BatchNoValuation):
 
 		# Use prefetched Batch Valuation Ledger if available
 		if self.batch_valuation_ledger:
-			# posting_time = self.sle.posting_time or nowtime()
-			# posting_dt = f"{self.sle.posting_date} {posting_time}"
-
 			for batch_no in self.batchwise_valuation_batches:
 				ledger_data = self.batch_valuation_ledger.get_batch_data(self.warehouse, self.item_code, batch_no)
 				if ledger_data:
