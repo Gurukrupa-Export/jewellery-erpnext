@@ -79,6 +79,40 @@ frappe.ui.form.on("Customer Approval", {
 			},
 			__("Get Items From")
 		);
+
+		frm.add_custom_button(__('Sales Order'), function () {
+				frappe.call({
+					method: "jewellery_erpnext.utils.get_sales_order_items",
+					args: {
+						customer_approval_name: frm.doc.name  
+					},
+					callback: function(r) {
+						if (!r.exc && r.message) {
+							frappe.model.with_doctype('Sales Order', function() {
+								let sales_order = frappe.model.get_new_doc('Sales Order');
+								sales_order.customer = frm.doc.customer;
+								sales_order.transaction_date = frappe.datetime.nowdate();
+								sales_order.company = frm.doc.company;
+								sales_order.delivery_date = frm.doc.delivery_date;
+
+								(r.message || []).forEach(item => {
+									let child = frappe.model.add_child(sales_order, 'items');
+									child.item_code = item.item_code;
+									child.item_name = item.item_name;
+									child.qty = item.quantity;
+									child.rate = item.rate;
+									child.amount = item.amount;
+									child.uom = item.uom;
+									child.serial_no = item.serial_no;
+									child.delivery_date = item.delivery_date;
+								});
+
+								frappe.set_route('Form', 'Sales Order', sales_order.name);
+							});
+						}
+					}
+				});
+			}, __('Create'));
 	},
 });
 
