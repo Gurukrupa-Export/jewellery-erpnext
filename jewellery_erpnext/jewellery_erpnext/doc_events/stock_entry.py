@@ -648,7 +648,7 @@ def create_finished_bom(self):
 	-> It separates the items into manufactured items, raw materials and scrap items
 	-> Subtracts the scrap quantity from the raw materials quantity
 	-> Sets the properties of the BOM document before saving it,
-	                and retrieves properties from the Work Order BOM and assigns them to the newly created BOM
+					and retrieves properties from the Work Order BOM and assigns them to the newly created BOM
 	"""
 	if self.stock_entry_type != "Manufacture":
 		return
