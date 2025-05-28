@@ -341,8 +341,10 @@ def calculate_total(self):
 	self.total_gemstone_pcs = sum(flt(row.pcs) for row in self.gemstone_detail)
 	self.total_other_weight = sum(row.quantity for row in self.other_detail)
 	self.other_weight = self.total_other_weight
-	self.total_diamond_amount  = sum(row.diamond_rate_for_specified_quantity for row in self.diamond_detail)
-	self.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity for row in self.diamond_detail)
+	# self.total_diamond_amount  = sum(row.diamond_rate_for_specified_quantity for row in self.diamond_detail)
+	self.total_diamond_amount = sum(row.diamond_rate_for_specified_quantity or 0.0 for row in self.diamond_detail)
+	# self.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity for row in self.diamond_detail)
+	self.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity or 0.0 for row in self.diamond_detail)
 
 	self.metal_and_finding_weight = flt(self.metal_weight) + flt(self.finding_weight)
 	self.gold_to_diamond_ratio = (

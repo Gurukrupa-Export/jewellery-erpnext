@@ -28,7 +28,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir imp
 	update_stock_entry_dimensions, batch_update_stock_entry_dimensions
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.emp_ir_receive import (
-	get_stock_data,
+	get_stock_data_new,
 	get_warehouses,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
@@ -378,7 +378,14 @@ class EmployeeIR(Document):
 							"manufacturing_operation",
 							None,
 						)
+						frappe.db.set_value(
+							"Stock Entry MOP Item",
+							{"docstatus": 2, "manufacturing_operation": new_operation},
+							"manufacturing_operation",
+							None,
+						)
 						frappe.delete_doc("Manufacturing Operation", new_operation, ignore_permissions=1)
+
 					frappe.db.set_value(
 						"Manufacturing Operation", row.manufacturing_operation, "status", "Not Started"
 					)
@@ -1034,10 +1041,10 @@ def create_stock_entry(
 	department_wh, employee_wh = get_warehouses(doc, warehouse_data)
 
 	# Get All Previous Stock Data (Manual Entry and Automated Entries both)
-	stock_entries = get_stock_data(row.manufacturing_operation, employee_wh, doc.department)
+	stock_entries = get_stock_data_new(row.manufacturing_operation, employee_wh, doc.department)
 
 	existing_items = frappe.get_all(
-		"Stock Entry Detail",
+		"Stock Entry MOP Item",
 		{"parent": ["in", stock_entries]},
 		pluck="item_code",
 	)
@@ -1533,25 +1540,25 @@ def create_stock_entry(
 		to_remove = []
 		existing_doc = frappe.get_doc("Stock Entry", stock_entry)
 
-		for child in existing_doc.items:
+		for child in existing_doc.custom_mop_items:
 			child.name = None
 			if child.manufacturing_operation != row.manufacturing_operation:
 				to_remove.append(child)
 			else:
 				if not rejected_qty.get((child.item_code,child.batch_no)):
-					StockEntryDetail = DocType("Stock Entry Detail").as_("sed")
+					StockEntryMopItem = DocType("Stock Entry MOP Item").as_("sed")
 					StockEntry = DocType("Stock Entry").as_("se")
 					query = (
-						qb.from_(StockEntryDetail)
+						qb.from_(StockEntryMopItem)
 						.join(StockEntry)
-						.on(StockEntry.name == StockEntryDetail.parent)
-						.select(Sum(StockEntryDetail.qty).as_("qty"))
+						.on(StockEntry.name == StockEntryMopItem.parent)
+						.select(Sum(StockEntryMopItem.qty).as_("qty"))
 						.where(
 							(StockEntry.docstatus == 1)
 							& (StockEntry.auto_created == 0)
-							& (StockEntryDetail.s_warehouse == child.t_warehouse)
-							& (StockEntryDetail.manufacturing_operation.like(f"%{child.manufacturing_operation}%"))
-							& (StockEntryDetail.batch_no == child.batch_no)
+							& (StockEntryMopItem.s_warehouse == child.t_warehouse)
+							& (StockEntryMopItem.manufacturing_operation == child.manufacturing_operation)
+							& (StockEntryMopItem.batch_no == child.batch_no)
 						)
 					)
 					trash_qty = query.run(as_dict=True)

@@ -248,8 +248,11 @@ def create_manufacturing_operation(doc):
 	operation = settings.get("default_operation")
 	status = "Not Started"
 	if doc.for_fg:
+		# department, operation = frappe.db.get_value(
+		# 	"Department Operation", {"is_last_operation": 1, "company": doc.company}, ["department", "name"]
+		# ) or ["", ""]
 		department, operation = frappe.db.get_value(
-			"Department Operation", {"is_last_operation": 1, "company": doc.company}, ["department", "name"]
+			"Department Operation", {"is_last_operation": 1, "manufacturer": doc.manufacturer}, ["department", "name"]
 		) or ["", ""]
 	if doc.split_from:
 		department = doc.department
