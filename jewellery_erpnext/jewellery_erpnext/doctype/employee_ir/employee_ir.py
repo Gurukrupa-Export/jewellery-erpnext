@@ -1540,7 +1540,7 @@ def create_stock_entry(
 		to_remove = []
 		existing_doc = frappe.get_doc("Stock Entry", stock_entry)
 
-		for child in existing_doc.items:
+		for child in existing_doc.custom_mop_items:
 			child.name = None
 			if child.manufacturing_operation != row.manufacturing_operation:
 				to_remove.append(child)

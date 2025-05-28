@@ -10,6 +10,7 @@ def on_submit(doc, method):
 	pe_branch = doc.branch
 	paid_from_account = doc.paid_from
 	paid_to_account = doc.paid_to
+
 	if not pe_branch:
 		return
 

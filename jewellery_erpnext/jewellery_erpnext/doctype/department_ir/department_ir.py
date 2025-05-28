@@ -732,8 +732,8 @@ def update_stock_entry_dimensions(doc, row, manufacturing_operation, for_employe
 	stock_entries = frappe.db.get_all("Stock Entry", filters=filters, pluck="name")
 	values = {"manufacturing_operation": manufacturing_operation}
 	for stock_entry in stock_entries:
-		rows = frappe.db.get_all("Stock Entry Detail", {"parent": stock_entry}, pluck="name")
-		set_values_in_bulk("Stock Entry Detail", rows, values)
+		rows = frappe.db.get_all("Stock Entry MOP Item", {"parent": stock_entry}, pluck="name")
+		set_values_in_bulk("Stock Entry MOP Item", rows, values)
 		values[scrub(doc.doctype)] = doc.name
 		frappe.db.set_value("Stock Entry", stock_entry, values)
 		update_manufacturing_operation(stock_entry)
