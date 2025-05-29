@@ -11,6 +11,58 @@ from frappe.utils import get_link_to_form
 class SketchOrder(Document):
 	def validate(self):
 		populate_child_table(self)
+		rows_remove = []
+		for r in self.final_sketch_hold:
+			if r.is_approved:
+				self.append('final_sketch_approval_cmo',{
+					'designer':r.designer,
+					'sketch_image':r.sketch_image,
+					'category':self.category,
+					'designer_name': r.designer_name,
+					'qc_person':r.qc_person,
+					'diamond_wt_approx':r.diamond_wt_approx,
+					'diamond_wt_approx':r.diamond_wt_approx,
+					'setting_type':r.setting_type,
+					'sub_category':r.sub_category,
+                    'category':r.category,
+					'image_rough':r.image_rough,
+					'final_image':r.final_image
+					
+				})
+				rows_remove.append(r)
+				for r in rows_remove:
+					self.final_sketch_hold.remove(r)
+			
+				for s in self.final_sketch_approval:
+					s.approved=len(self.final_sketch_approval_cmo)
+					s.hold=len(self.final_sketch_hold)
+				frappe.msgprint("Hold Image is approved")	
+		rows_to_remove = []
+		for r in self.final_sketch_rejected:
+			if r.is_approved:
+				self.append('final_sketch_approval_cmo',{
+					'designer':r.designer,
+					'sketch_image':r.sketch_image,
+					'category':self.category,
+					'designer_name': r.designer_name,
+					'qc_person':r.qc_person,
+					'diamond_wt_approx':r.diamond_wt_approx,
+					'diamond_wt_approx':r.diamond_wt_approx,
+					'setting_type':r.setting_type,
+					'sub_category':r.sub_category,
+                    'category':r.category,
+					'image_rough':r.image_rough,
+					'final_image':r.final_image
+					
+				})
+				rows_to_remove.append(r)
+				for r in rows_to_remove:
+					self.final_sketch_rejected.remove(r)
+			
+				for s in self.final_sketch_approval:
+					s.approved=len(self.final_sketch_approval_cmo)
+					s.reject=len(self.final_sketch_rejected)
+				frappe.msgprint("Rejected image is approved ")	
 
 	def on_submit(self):
 		self.make_items()
