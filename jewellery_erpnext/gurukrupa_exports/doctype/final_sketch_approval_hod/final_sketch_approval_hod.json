@@ -1,65 +1,71 @@
 {
- "actions": [],
- "autoname": "autoincrement",
- "creation": "2022-10-06 17:38:34.138180",
- "doctype": "DocType",
- "editable_grid": 1,
- "engine": "InnoDB",
- "field_order": [
-  "designer",
-  "designer_name",
-  "approved",
-  "reject",
-  "cmo_count"
- ],
- "fields": [
-  {
-   "fieldname": "designer",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "Designer",
-   "options": "Employee",
-   "read_only": 1
-  },
-  {
-   "fetch_from": "designer.employee_name",
-   "fieldname": "designer_name",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Designer Name",
-   "read_only": 1
-  },
-  {
-   "fieldname": "approved",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Approved"
-  },
-  {
-   "fieldname": "reject",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Reject"
-  },
-  {
-   "fieldname": "cmo_count",
-   "fieldtype": "Int",
-   "hidden": 1,
-   "label": "cmo_count",
-   "no_copy": 1
-  }
- ],
- "index_web_pages_for_search": 1,
- "istable": 1,
- "links": [],
- "modified": "2024-07-03 17:52:33.606702",
- "modified_by": "Administrator",
- "module": "Gurukrupa Exports",
- "name": "Final Sketch Approval HOD",
- "naming_rule": "Autoincrement",
- "owner": "Administrator",
- "permissions": [],
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": []
+"actions": [],
+"autoname": "autoincrement",
+"creation": "2022-10-06 17:38:34.138180",
+"doctype": "DocType",
+"editable_grid": 1,
+"engine": "InnoDB",
+"field_order": [
+"designer",
+"designer_name",
+"approved",
+"reject",
+"hold",
+"cmo_count"
+],
+"fields": [
+{
+"fieldname": "designer",
+"fieldtype": "Link",
+"in_list_view": 1,
+"label": "Designer",
+"options": "Employee",
+"read_only": 1
+},
+{
+"fetch_from": "designer.employee_name",
+"fieldname": "designer_name",
+"fieldtype": "Data",
+"in_list_view": 1,
+"label": "Designer Name",
+"read_only": 1
+},
+{
+"fieldname": "approved",
+"fieldtype": "Int",
+"in_list_view": 1,
+"label": "Approved"
+},
+{
+"fieldname": "reject",
+"fieldtype": "Int",
+"in_list_view": 1,
+"label": "Reject"
+},
+{
+"fieldname": "cmo_count",
+"fieldtype": "Int",
+"hidden": 1,
+"label": "cmo_count",
+"no_copy": 1
+},
+{
+"fieldname": "hold",
+"fieldtype": "Int",
+"label": "Hold"
+}
+],
+"index_web_pages_for_search": 1,
+"istable": 1,
+"links": [],
+"modified": "2025-04-21 12:03:50.306400",
+"modified_by": "Administrator",
+"module": "Gurukrupa Exports",
+"name": "Final Sketch Approval HOD",
+"naming_rule": "Autoincrement",
+"owner": "Administrator",
+"permissions": [],
+"sort_field": "modified",
+"sort_order": "DESC",
+"states": []
 }

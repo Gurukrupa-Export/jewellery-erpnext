@@ -21,6 +21,46 @@ frappe.ui.form.on("Sketch Order", {
 				},
 			};
 		});
+
+		frm.set_query("sub_category", "final_sketch_hold", function (doc, cdt, cdn) {
+			let d = locals[cdt][cdn];
+			return {
+				filters: {
+					parent_attribute_value: d.category,
+				},
+			};
+		});
+	    frm.set_query("setting_type","final_sketch_hold",function (doc, cdt, cdn){
+			let d = locals[cdt][cdn];
+				return {
+					query: "jewellery_erpnext.query.item_attribute_query",
+					filters: { item_attribute: "Setting Type" },
+				};
+			}
+		);
+		frm.set_query("sub_category", "final_sketch_rejected", function (doc, cdt, cdn) {
+			let d = locals[cdt][cdn];
+			return {
+				filters: {
+					parent_attribute_value: d.category,
+				},
+			};
+		});
+		frm.set_query("setting_type","final_sketch_rejected",function (doc, cdt, cdn){
+			let d = locals[cdt][cdn];
+				return {
+					query: "jewellery_erpnext.query.item_attribute_query",
+					filters: { item_attribute: "Setting Type" },
+				};
+			}
+		);
+		// frm.doc.rough_sketch_approval?.forEach((row, index) => {
+        //     if (row.hold > 0) {
+        //         frm.add_custom_button(`Approve Sketch #${index + 1}`, () => {
+        //             show_approval_dialog(frm, row, index);
+        //         }, 'Actions');
+        //     }
+        // });
 	},
 	validate(frm) {
 		// if (frm.doc.__islocal) {
@@ -113,4 +153,39 @@ function validate_dates(frm, doc, dateField) {
 			frappe.datetime.add_days(order_date, 1)
 		);
 	}
+}
+
+function show_approval_dialog(frm, row, row_index) {
+    frappe.prompt([
+        {
+            label: 'Approval Quantity',
+            fieldname: 'approved',
+            fieldtype: 'Int',
+            reqd: true,
+            description: `Max: ${row.hold}`,
+        }
+    ], (values) => {
+        let approved = values.approved;
+
+        if (approved > row.hold) {
+            frappe.msgprint(`You can't approve more than ${row.hold}`);
+            return;
+        }
+
+        // Add to final_sketch_approval
+        frm.add_child('final_sketch_approval', {
+            approved: approved,
+			designer:row.designer,
+			designer_name:row.designer_name
+            // reference_rough_row: row.name // optional if you want to track back
+        });
+
+        // Update on_hold in rough_sketch_approval
+        const child = frm.doc.rough_sketch_approval.find(r => r.name === row.name);
+        if (child) {
+            child.hold -= approved;
+        }
+
+        frm.refresh_fields();
+    }, 'Approve Rough Sketch');
 }

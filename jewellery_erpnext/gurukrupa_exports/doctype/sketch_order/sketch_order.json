@@ -878,6 +878,18 @@
     "fieldtype": "Link",
     "label": "Stone Changeable",
     "options": "Attribute Value"
+    },
+    {
+    "fieldname": "final_sketch_rejected",
+    "fieldtype": "Table",
+    "label": "Final Sketch Rejected",
+    "options": "Final Sketch Approval CMO - Rejected"
+    },
+    {
+    "fieldname": "final_sketch_hold",
+    "fieldtype": "Table",
+    "label": "Final Sketch Hold",
+    "options": "Final Sketch Approval - Hold"
     }
 ],
 "index_web_pages_for_search": 1,
