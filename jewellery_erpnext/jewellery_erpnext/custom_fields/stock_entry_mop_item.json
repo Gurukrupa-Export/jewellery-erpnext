@@ -1,0 +1,565 @@
+{
+ "Stock Entry MOP Item": [
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "custom_employee_consumption",
+   "fieldtype": "Check",
+   "insert_after": "from_job_card",
+   "label": "Employee Consumption",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "custom_is_for_customer_approval",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "insert_after": "to_subcontractor",
+   "is_system_generated": 1,
+   "label": "Is for Customer Approval",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "from_job_card",
+   "fieldtype": "Link",
+   "insert_after": "s_warehouse",
+   "is_system_generated": 1,
+   "label": "From Job Card",
+   "module": "Jewellery Erpnext",
+   "options": "Job Card",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "to_job_card",
+   "fieldtype": "Link",
+   "insert_after": "t_warehouse",
+   "is_system_generated": 1,
+   "label": "To Job Card",
+   "module": "Jewellery Erpnext",
+   "options": "Job Card",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "next_operation",
+   "fieldtype": "Link",
+   "insert_after": "to_job_card",
+   "is_system_generated": 1,
+   "label": "Next Operation",
+   "module": "Jewellery Erpnext",
+   "options": "Operation",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "gross_weight",
+   "fieldtype": "Float",
+   "insert_after": "item_name",
+   "label": "Gross Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "metal_purity",
+   "fieldtype": "Data",
+   "insert_after": "gross_weight",
+   "label": "Metal Purity",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "insert_after": "customer",
+   "is_system_generated": 1,
+   "label": "Inventory Type",
+   "module": "Jewellery Erpnext",
+   "options": "Inventory Type",
+   "reqd": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "insert_after": "accounting_dimensions_section",
+   "is_system_generated": 1,
+   "label": "Branch",
+   "module": "Jewellery Erpnext",
+   "options": "Branch"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "insert_after": "manufacturer",
+   "is_system_generated": 1,
+   "label": "Customer Goods",
+   "module": "Jewellery Erpnext",
+   "options": "Stock Entry"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "reference_doctype",
+   "fieldtype": "Data",
+   "insert_after": "metal_purity",
+   "label": "Reference Doctype",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "reference_docname",
+   "fieldtype": "Data",
+   "insert_after": "reference_doctype",
+   "label": "Reference Docname",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "default": "1",
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "pcs",
+   "fieldtype": "Data",
+   "insert_after": "item_code",
+   "label": "Pcs",
+   "module": "Jewellery Erpnext",
+   "reqd": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "operation_card",
+   "fieldtype": "Link",
+   "insert_after": "reference_docname",
+   "label": "Operation Card",
+   "module": "Jewellery Erpnext",
+   "options": "Operation Card"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "inventory_dimension",
+   "fieldtype": "Section Break",
+   "insert_after": "job_card_item",
+   "is_system_generated": 1,
+   "label": "Inventory Dimension",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "insert_after": "inventory_dimension",
+   "is_system_generated": 1,
+   "label": "Customer",
+   "mandatory_depends_on": "eval: doc.inventory_type == 'Customer Goods'",
+   "module": "Jewellery Erpnext",
+   "options": "Customer"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "insert_after": "department",
+   "is_system_generated": 1,
+   "label": "Manufacturer",
+   "module": "Jewellery Erpnext",
+   "options": "Manufacturer"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "inventory_dimension_col_break",
+   "fieldtype": "Column Break",
+   "insert_after": "stock_entry",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "insert_after": "to_inventory_type",
+   "label": "Employee",
+   "module": "Jewellery Erpnext",
+   "options": "Employee"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "main_slip",
+   "fieldtype": "Link",
+   "insert_after": "employee",
+   "label": "Main Slip",
+   "module": "Jewellery Erpnext",
+   "options": "Main Slip"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "insert_after": "manufacturing_details",
+   "label": "Department",
+   "module": "Jewellery Erpnext",
+   "options": "Department"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Link",
+   "options": "Manufacturing Operation",
+   "insert_after": "subcontractor",
+   "label": "Manufacturing Operation",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "to_employee",
+   "fieldtype": "Link",
+   "insert_after": "to_department",
+   "label": "To Employee",
+   "module": "Jewellery Erpnext",
+   "options": "Employee"
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "to_department",
+   "fieldtype": "Link",
+   "insert_after": "column_break_sb34l",
+   "label": "To Department",
+   "module": "Jewellery Erpnext",
+   "options": "Department"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "to_main_slip",
+   "fieldtype": "Link",
+   "insert_after": "to_employee",
+   "label": "To Main Slip",
+   "module": "Jewellery Erpnext",
+   "options": "Main Slip"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "manufacturing_details",
+   "fieldtype": "Section Break",
+   "insert_after": "job_card_item",
+   "label": "Manufacturing Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "column_break_sb34l",
+   "fieldtype": "Column Break",
+   "insert_after": "manufacturing_operation",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "subcontractor",
+   "fieldtype": "Link",
+   "insert_after": "main_slip",
+   "label": "Subcontractor",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "to_subcontractor",
+   "fieldtype": "Link",
+   "insert_after": "to_main_slip",
+   "label": "To Subcontractor",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "custom_insurance_rate",
+   "fieldtype": "Float",
+   "insert_after": "rates_section",
+   "label": "Insurance Rate",
+   "module": "Jewellery Erpnext",
+   "options": "item_group.custom_insurance_rate"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "custom_insurance_amount",
+   "fieldtype": "Float",
+   "insert_after": "custom_insurance_rate",
+   "label": "Insurance Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "custom_is_customer_item",
+   "fieldtype": "Check",
+   "insert_after": "is_scrap_item",
+   "label": "Is Customer Item",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "custom_sub_setting_type",
+   "fieldtype": "Link",
+   "insert_after": "custom_is_customer_item",
+   "label": "Sub Setting Type",
+   "module": "Jewellery Erpnext",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:parent.purpose != 'Material Issue'",
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "to_inventory_type",
+   "fieldtype": "Link",
+   "insert_after": "inventory_dimension_col_break",
+   "is_system_generated": 1,
+   "label": "Target Inventory Type",
+   "module": "Jewellery Erpnext",
+   "options": "Inventory Type"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "custom_manufacturing_work_order",
+   "fieldtype": "Link",
+   "options": "Manufacturing Work Order",
+   "insert_after": "stock_entry",
+   "label": "Manufacturing Work Order",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "custom_parent_manufacturing_order",
+   "fieldtype": "Link",
+   "options": "Parent Manufacturing Order",
+   "insert_after": "custom_manufacturing_work_order",
+   "label": "Parent Manufacturing Order",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fetch_from": "item_code.variant_of",
+   "fieldname": "custom_variant_of",
+   "fieldtype": "Link",
+   "insert_after": "col_break2",
+   "label": "Variant Of",
+   "module": "Jewellery Erpnext",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fetch_from": "batch_no.custom_metal_rate",
+   "fieldname": "custom_metal_rate",
+   "fieldtype": "Currency",
+   "insert_after": "basic_rate",
+   "is_system_generated": 1,
+   "label": "Metal Rate",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fetch_from": "batch_no.custom_alloy_rate",
+   "fieldname": "custom_alloy_rate",
+   "fieldtype": "Currency",
+   "insert_after": "custom_metal_rate",
+   "is_system_generated": 1,
+   "label": "Alloy Rate",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "custom_pure_qty",
+   "fieldtype": "Float",
+   "insert_after": "qty",
+   "is_system_generated": 1,
+   "label": "Pure Qty",
+   "module": "Jewellery Erpnext",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "cess_non_advol_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cess_amount",
+   "is_system_generated": 1,
+   "label": "CESS Non Advol Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "cess_amount",
+   "fieldtype": "Currency",
+   "insert_after": "sgst_amount",
+   "is_system_generated": 1,
+   "label": "CESS Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "sgst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cgst_amount",
+   "is_system_generated": 1,
+   "label": "SGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "cgst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "igst_amount",
+   "is_system_generated": 1,
+   "label": "CGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "igst_amount",
+   "fieldtype": "Currency",
+   "insert_after": "cb_gst_details",
+   "is_system_generated": 1,
+   "label": "IGST Amount",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "cb_gst_details",
+   "fieldtype": "Column Break",
+   "insert_after": "cess_non_advol_rate",
+   "is_system_generated": 1,
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "cess_non_advol_rate",
+   "fieldtype": "Float",
+   "insert_after": "cess_rate",
+   "is_system_generated": 1,
+   "label": "CESS Non Advol Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "cess_rate",
+   "fieldtype": "Float",
+   "insert_after": "sgst_rate",
+   "is_system_generated": 1,
+   "label": "CESS Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "sgst_rate",
+   "fieldtype": "Float",
+   "insert_after": "cgst_rate",
+   "is_system_generated": 1,
+   "label": "SGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "cgst_rate",
+   "fieldtype": "Float",
+   "insert_after": "igst_rate",
+   "is_system_generated": 1,
+   "label": "CGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "igst_rate",
+   "fieldtype": "Float",
+   "insert_after": "gst_details_section",
+   "is_system_generated": 1,
+   "label": "IGST Rate",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "gst_details_section",
+   "fieldtype": "Section Break",
+   "insert_after": "taxable_value",
+   "is_system_generated": 1,
+   "label": "GST Details",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fetch_from": "item_tax_template.gst_treatment",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_treatment",
+   "fieldtype": "Autocomplete",
+   "insert_after": "item_tax_template",
+   "is_system_generated": 1,
+   "label": "GST Treatment",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Taxable\nZero-Rated\nNil-Rated\nExempted\nNon-GST",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "dt": "Stock Entry MOP Item",
+   "fetch_from": "item_code.gst_hsn_code",
+   "fetch_if_empty": 1,
+   "fieldname": "gst_hsn_code",
+   "fieldtype": "Data",
+   "insert_after": "description",
+   "is_system_generated": 1,
+   "label": "HSN/SAC",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "item_tax_template",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "insert_after": "amount",
+   "is_system_generated": 1,
+   "label": "Item Tax Template",
+   "module": "Jewellery Erpnext",
+   "options": "Item Tax Template"
+  },
+  {
+   "dt": "Stock Entry MOP Item",
+   "fieldname": "taxable_value",
+   "fieldtype": "Currency",
+   "insert_after": "amount",
+   "is_system_generated": 1,
+   "label": "Taxable Value",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Company:company:default_currency",
+   "read_only": 1
+  }
+ ]
+}
