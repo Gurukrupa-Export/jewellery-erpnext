@@ -50,6 +50,10 @@ frappe.ui.form.on("Manufacturing Operation", {
 		// if (in_list(["Not Started", "WIP"], frm.doc.status)) {
 		if (["Not Started", "WIP"].includes(frm.doc.status)) {
 			frm.add_custom_button(__("Swap Metal"), () => {
+			let source_warehouse = "";
+			if (frm.doc.mop_balance_table && frm.doc.mop_balance_table.length > 0) {
+				source_warehouse = frm.doc.mop_balance_table[0].s_warehouse || "";
+			}
 				// const serializedMopBalanceTable = JSON.stringify(frm.doc.mop_balance_table);
 				frappe.route_options = {
 					department: frm.doc.department,
@@ -58,6 +62,9 @@ frappe.ui.form.on("Manufacturing Operation", {
 					work_order: frm.doc.manufacturing_work_order,
 					operation: frm.doc.name,
 					employee: frm.doc.employee,
+					source_warehouse: source_warehouse,
+					target_warehouse:source_warehouse,
+					
 				};
 				frappe.set_route("Form", "Swap Metal", "new-swap-metal");
 			}).addClass("btn-primary");
