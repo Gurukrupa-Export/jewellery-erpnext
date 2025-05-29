@@ -1542,6 +1542,7 @@ def create_stock_entry(
 
 		for child in existing_doc.custom_mop_items:
 			child.name = None
+			child.doctype = "Stock Entry Detail"
 			if child.manufacturing_operation != row.manufacturing_operation:
 				to_remove.append(child)
 			else:
