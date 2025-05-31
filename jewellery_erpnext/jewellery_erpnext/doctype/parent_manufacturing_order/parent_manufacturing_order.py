@@ -1297,3 +1297,20 @@ def get_stock_summary(pmo_name):
 		"jewellery_erpnext/jewellery_erpnext/doctype/parent_manufacturing_order/stock_summery.html",
 		{"data": data, "total_qty": total_qty},
 	)
+
+@frappe.whitelist()
+def add_hold_comment(doctype, docname, reason):
+	frappe.logger().info(f"add_hold_comment called with: {doctype}, {docname}, {reason}")
+	if not reason:
+		return
+	doc = frappe.get_doc(doctype, docname)
+	doc.add_comment("Comment", f"Put on hold due to: {reason}")
+
+def hold_mop(self):
+	if not frappe.db.get_list("Manufacturing Operation",filters={"manufacturing_order":self.name},fields="name"):
+		return
+	for i in frappe.db.get_list("Manufacturing Operation",filters={"manufacturing_order":self.name},fields="name"):
+		if frappe.db.get_value("Manufacturing Operation",i["name"],"status") != "Finished":
+			frappe.db.set_value("Manufacturing Operation",i["name"],"status","Finished")
+
+
