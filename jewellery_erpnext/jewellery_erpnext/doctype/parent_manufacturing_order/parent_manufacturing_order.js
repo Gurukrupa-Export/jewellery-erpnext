@@ -98,6 +98,48 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 			},
 		});
 	},
+	after_workflow_action(frm) {
+		const onHoldStates = [
+			"On Hold",
+		];
+	
+		if (onHoldStates.includes(frm.doc.workflow_state)) {
+			frappe.prompt([
+				{
+					label: 'Reason For Hold',
+					fieldname: 'update_reason',
+					fieldtype: 'Data',
+					reqd: 1
+				},
+			], (values) => {
+				if (!values.update_reason) {
+					frappe.msgprint(__("Please provide a reason for putting the order on hold."));
+					return;
+				}
+
+				frappe.call({
+					method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.add_hold_comment",
+					args: {
+						doctype: frm.doctype,
+						docname: frm.docname,
+						reason: values.update_reason
+					},
+					callback: function(r) {
+						if (!r.exc) {
+							frappe.msgprint(__("Comment added successfully."));
+							frm.refresh();
+						} else {
+							frappe.msgprint(__("Failed to add comment. Please try again."));
+						}
+					},
+					error: function(err) {
+						console.error("Error in frappe.call:", err);
+						frappe.msgprint(__("An error occurred while adding the comment. Please try again."));
+					}
+				});
+			});
+		}
+	},
 });
 
 function filter_departments(frm, field_name) {
