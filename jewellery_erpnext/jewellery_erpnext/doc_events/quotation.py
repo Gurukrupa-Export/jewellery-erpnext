@@ -592,6 +592,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				frappe.msgprint(f"No making charge price list found for customer {doc.customer} and setting type {doc.setting_type}")
 		
 		for find in doc.finding_detail:
+			wastage_rate = 0
 			matching_subcategory = None
 			if self.custom_customer_gold == "Yes":
 				find.is_customer_item = 1
