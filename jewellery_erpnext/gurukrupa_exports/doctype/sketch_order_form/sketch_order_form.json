@@ -387,6 +387,11 @@
     "fieldtype": "Column Break"
     },
     {
+    "fieldname": "total_rows",
+    "fieldtype": "Int",
+    "label": "Total Rows"
+    },
+    {
     "fieldname": "total_no_of_designs",
     "fieldtype": "Int",
     "label": "Total No of Designs"
