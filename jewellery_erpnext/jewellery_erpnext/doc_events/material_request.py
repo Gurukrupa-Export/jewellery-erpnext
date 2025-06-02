@@ -282,7 +282,7 @@ def make_in_transit_stock_entry(source_name, to_warehouse, transfer_type, pmo=No
 	ste_doc.to_warehouse = in_transit_warehouse
 	ste_doc.to_department = to_department
 
-	if mnfr:
+	if mnfr and pmo_doc != None:
 		# if pmo_doc.type != "Finding Manufacturing":
 		# 	ste_doc.stock_entry_type = "Material Transfer to Department"
 		if (

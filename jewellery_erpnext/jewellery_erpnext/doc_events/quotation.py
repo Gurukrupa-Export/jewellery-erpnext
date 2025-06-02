@@ -446,7 +446,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 			rate_per_gm = 0
 			fg_purchase_rate = 0
 			fg_purchase_amount = 0 
-			wastege_rate = 0
+			wastage_rate= 0
 			if self.custom_customer_gold == "Yes":
 				metal.is_customer_item = 1
 			making_charge_price_list = frappe.get_all(
@@ -489,7 +489,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							metal.rate = doc.gold_rate_with_gst
 							wastage_rate = match.get("wastage", 0)/100
 
-						# wastege_rate = match.get("wastage", 0) / 100.0
+						# wastage_rate= match.get("wastage", 0) / 100.0
 					else:
 						frappe.msgprint(f"No matching subcategory found for {doc.item_subcategory}")
 			else:
@@ -525,7 +525,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 			rate_per_gm = 0
 			fg_purchase_rate = 0
 			fg_purchase_amount = 0 
-			wastege_rate = 0  
+			wastage_rate= 0  
 			if self.custom_customer_gold == "Yes":
 				metal.is_customer_item = 1
 			making_charge_price_list = frappe.get_all(
@@ -575,7 +575,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							metal.rate = doc.gold_rate_with_gst
 							wastage_rate = matching_subcategory.get("wastage", 0)/100
 
-						# wastege_rate = matching_subcategory.get("wastage", 0) / 100.0
+						# wastage_rate= matching_subcategory.get("wastage", 0) / 100.0
 
 					metal.wastage_rate = wastage_rate
 					metal.fg_purchase_amount = fg_purchase_amount
@@ -592,6 +592,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				frappe.msgprint(f"No making charge price list found for customer {doc.customer} and setting type {doc.setting_type}")
 		
 		for find in doc.finding_detail:
+			wastage_rate = 0
 			matching_subcategory = None
 			if self.custom_customer_gold == "Yes":
 				find.is_customer_item = 1
