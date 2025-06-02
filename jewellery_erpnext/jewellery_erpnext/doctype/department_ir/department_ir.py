@@ -98,7 +98,8 @@ class DepartmentIR(Document):
 
 	def on_submit(self):
 		if self.type == "Issue":
-			self.on_submit_issue_new()
+			pass
+			# self.on_submit_issue_new()
 		else:
 			self.on_submit_receive()
 
