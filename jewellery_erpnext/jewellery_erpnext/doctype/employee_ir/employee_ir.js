@@ -398,7 +398,6 @@ function book_loss_details(frm, mwo, opt, gwt, r_gwt) {
 		},
 		callback: function (r) {
 			if (r.message) {
-				console.log(r.message);
 				frm.clear_table("employee_loss_details");
 				var r_data = r.message[0];
 				for (var i = 0; i < r_data.length; i++) {
