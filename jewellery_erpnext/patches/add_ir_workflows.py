@@ -41,6 +41,16 @@ def create_ir_workflow(doctype):
 
 
 def make_state(name, doc_status=0, style=""):
+	if not frappe.db.exists("Workflow State", name):
+			workflow_state = frappe.get_doc(
+				{
+					"doctype": "Workflow State",
+					"workflow_state_name": name,
+					"style": style,
+				}
+			)
+			workflow_state.insert()
+
 	return {
 		"state": name,
 		"doc_status": doc_status,
@@ -50,6 +60,15 @@ def make_state(name, doc_status=0, style=""):
 
 
 def make_transition(state, action, next_state):
+	if not frappe.db.exists("Workflow Action Master", action):
+			workflow_state = frappe.get_doc(
+				{
+					"doctype": "Workflow Action Master",
+					"workflow_action_name": action,
+				}
+			)
+			workflow_state.insert()
+
 	return {
 		"state": state,
 		"action": action,
