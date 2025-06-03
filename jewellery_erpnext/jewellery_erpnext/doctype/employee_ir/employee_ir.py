@@ -2152,7 +2152,6 @@ def book_metal_loss(doc, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
 	if isinstance(doc, str):
 		doc = json.loads(doc)
 
-	print(type(doc), doc)
 	# To Check Tollarance which book a loss down side.
 	if allowed_loss_percentage:
 		cal = round(flt((100 - allowed_loss_percentage) / 100) * flt(gwt), 2)

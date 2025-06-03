@@ -6,11 +6,9 @@ import json
 import frappe
 from frappe import _, scrub
 from frappe.model.document import Document
-from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import flt, get_datetime
-from jewellery_erpnext.utils import group_aggregate_with_concat
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	update_manufacturing_operation,
@@ -26,6 +24,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufac
 	get_previous_operation,
 )
 from jewellery_erpnext.utils import set_values_in_bulk
+
+from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.ir_job_manager import IRJobManager
 
 
 class DepartmentIR(Document):
@@ -55,6 +55,27 @@ class DepartmentIR(Document):
 
 		validate_mwo(self)
 
+	def validate(self):
+		if not self.is_new():
+			self.enqueue_mop_and_stock_entry_creation()
+
+	def enqueue_mop_and_stock_entry_creation(self):
+		prev_doc = self.get_doc_before_save()
+
+		if prev_doc.workflow_state == "Pending MOP Creation":
+			if self.type == "Issue":
+				ir_job = IRJobManager(
+					doc=self, create_mop_func=self.create_mop_for_issue
+				)
+				ir_job.enqueue_mop_creation()
+
+		elif prev_doc.workflow_state == "Pending Stock Entry Creation":
+			if self.type == "Issue":
+				ir_job = IRJobManager(
+					doc=self, create_stock_entry_func=self.create_stock_entry_for_issue
+				)
+				ir_job.enqueue_stock_entry_submission()
+
 	@frappe.whitelist()
 	def get_operations(self):
 		dir_status = "In-Transit" if self.type == "Receive" else ["not in", ["In-Transit", "Received"]]
@@ -77,7 +98,8 @@ class DepartmentIR(Document):
 
 	def on_submit(self):
 		if self.type == "Issue":
-			self.on_submit_issue_new()
+			pass
+			# self.on_submit_issue_new()
 		else:
 			self.on_submit_receive()
 
@@ -535,6 +557,123 @@ class DepartmentIR(Document):
 					"other_wt": mop_details.get("other_wt"),
 				},
 			)
+
+	def create_mop_for_issue(self):
+		dt_string = get_datetime()
+		status = "Finished"
+		values = {"status": status}
+
+		mop_data = frappe._dict({})
+		stock_entry_data = []  # Accumulate data for batch update
+
+		for row in self.department_ir_operation:
+			values["complete_time"] = dt_string
+			new_operation = create_operation_for_next_dept(
+				self.name, row.manufacturing_work_order, row.manufacturing_operation, self.next_department
+			)
+			# Accumulate data for batch update instead of calling the function here
+			stock_entry_data.append((row.manufacturing_work_order, new_operation))
+
+			frappe.db.set_value(
+				"Manufacturing Operation", row.manufacturing_operation, "status", "Finished"
+			)
+			doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+			mop_data.update(
+				{
+					row.manufacturing_work_order: {
+						"cur_mop": row.manufacturing_operation,
+						"new_mop": new_operation,
+					}
+				}
+			)
+			add_time_log(doc, values)
+
+		# Batch update the stock entry dimensions
+		if stock_entry_data:
+			batch_update_stock_entry_dimensions(self, stock_entry_data, employee=None, for_employee=False)
+
+		self.db_set("mop_data", json.dumps(mop_data), update_modified=False)
+
+		return self
+
+	def create_stock_entry_for_issue(self):
+		add_to_transit = []
+		strat_transit = []
+
+		if self.mop_data:
+			mop_data = json.loads(self.mop_data)
+			in_transit_wh = frappe.get_value(
+				"Warehouse",
+				{"department": self.next_department, "warehouse_type": "Manufacturing"},
+				"default_in_transit_warehouse",
+			)
+
+			department_wh, send_in_transit_wh = frappe.get_value(
+				"Warehouse",
+				{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
+				["name", "default_in_transit_warehouse"],
+			)
+			if not department_wh:
+				frappe.throw(_("Please set warehouse for department {0}").format(self.current_department))
+
+			for row in mop_data:
+				lst1, lst2 = get_se_items(
+					self, row, mop_data[row], in_transit_wh, send_in_transit_wh, department_wh
+				)
+				add_to_transit += lst1
+				strat_transit += lst2
+
+			if add_to_transit:
+				stock_doc = frappe.new_doc("Stock Entry")
+				stock_doc.stock_entry_type = "Material Transfer to Department"
+				stock_doc.company = self.company
+				stock_doc.department_ir = self.name
+				stock_doc.auto_created = True
+				stock_doc.add_to_transit = 1
+				stock_doc.inventory_type = None
+
+				for row in add_to_transit:
+					stock_doc.append("items", row)
+
+				stock_doc.flags.ignore_permissions = True
+				stock_doc.save()
+				stock_doc.submit()
+
+				stock_doc = frappe.new_doc("Stock Entry")
+				stock_doc.stock_entry_type = "Material Transfer to Department"
+				stock_doc.company = self.company
+				stock_doc.department_ir = self.name
+				stock_doc.auto_created = True
+				stock_doc.inventory_type = None
+
+				for row in add_to_transit:
+					if row["qty"] > 0:
+						row["t_warehouse"] = department_wh
+						row["s_warehouse"] = in_transit_wh
+						stock_doc.append("items", row)
+
+				stock_doc.flags.ignore_permissions = True
+				stock_doc.save()
+				stock_doc.submit()
+
+			if strat_transit:
+				stock_doc = frappe.new_doc("Stock Entry")
+				stock_doc.stock_entry_type = "Material Transfer to Department"
+				stock_doc.company = self.company
+				stock_doc.department_ir = self.name
+				stock_doc.auto_created = True
+
+				for row in strat_transit:
+					if row["qty"] > 0:
+						stock_doc.append("items", row)
+
+				stock_doc.flags.ignore_permissions = True
+				stock_doc.save()
+				stock_doc.submit()
+
+	def update_workflow_state(self):
+		"""Update the workflow state after MOP creation."""
+		self.db_set("workflow_state", "MOP Created", update_modified=False)
 
 
 def get_se_items(doc, mwo, mop_data, in_transit_wh, send_in_transit_wh, department_wh):
