@@ -1,7 +1,7 @@
 import frappe
 
 def execute():
-	for doctype in ["Department IR"]:
+	for doctype in ["Department IR", "Employee IR"]:
 		if not frappe.db.exists("Workflow", f"{doctype} Workflow"):
 			create_ir_workflow(doctype)
 
@@ -62,7 +62,7 @@ def make_state(name, doc_status=0, style="", condition=None):
 	}
 
 
-def make_transition(state, action, next_state, condition):
+def make_transition(state, action, next_state, condition=None):
 	if not frappe.db.exists("Workflow Action Master", action):
 			workflow_state = frappe.get_doc(
 				{

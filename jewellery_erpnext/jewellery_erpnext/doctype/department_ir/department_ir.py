@@ -62,7 +62,9 @@ class DepartmentIR(Document):
 	def enqueue_mop_and_stock_entry_creation(self):
 		prev_doc = self.get_doc_before_save()
 
-		if prev_doc.workflow_state == "Pending MOP Creation" and self.workflow_state == "Queued MOP Creation":
+		if (prev_doc.workflow_state in ["Pending MOP Creation", "MOP Failed"]
+		and self.workflow_state == "Queued MOP Creation"):
+
 			if self.type == "Issue":
 				ir_job = IRJobManager(
 					doc=self, create_mop_func=self.create_mop_for_issue
@@ -74,7 +76,9 @@ class DepartmentIR(Document):
 				)
 				ir_job.enqueue_mop_creation()
 
-		elif prev_doc.workflow_state == "Pending Stock Entry Creation" and self.workflow_state == "Queued Stock Entry Creation":
+		elif (prev_doc.workflow_state in ["Pending Stock Entry Creation", "Stock Entry Failed"]
+		and self.workflow_state == "Queued Stock Entry Creation"):
+
 			if self.type == "Issue":
 				ir_job = IRJobManager(
 					doc=self, create_stock_entry_func=self.create_stock_entry_for_issue
