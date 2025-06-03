@@ -3,6 +3,7 @@ from frappe import _, get_traceback, publish_realtime
 from frappe.utils import now, time_diff_in_seconds, cint
 from urllib.parse import quote
 from frappe.utils.background_jobs import enqueue
+from frappe.utils import get_link_to_form
 
 
 class IRJobManager:
@@ -28,7 +29,8 @@ class IRJobManager:
 			self.background_processing,
 			to_be_queued_doc=self.doc,
 			action_for_queuing=self.create_mop_func.__name__,
-			queue="default",
+			queue="short",
+			at_front=True,
 			job_id=job_id,
 			enqueue_after_commit=True,
 		)
@@ -45,6 +47,7 @@ class IRJobManager:
 			action_for_queuing=self.create_stock_entry_func.__name__,
 			queue="long",
 			timeout=1500,
+			at_front=True,
 			job_id=job_id,
 			enqueue_after_commit=True,
 		)
@@ -53,9 +56,12 @@ class IRJobManager:
 	def background_processing(self, to_be_queued_doc, action_for_queuing: str):
 		status = "Finished"
 		message = ""
+
 		try:
+			exec_start_time = now()
 			getattr(to_be_queued_doc, action_for_queuing)()
-			exec_time = time_diff_in_seconds(now(), self.created_at)
+			job_time = time_diff_in_seconds(now(), self.created_at)
+			exec_time = time_diff_in_seconds(now(), exec_start_time)
 
 			if to_be_queued_doc.workflow_state == "Queued MOP Creation":
 				to_be_queued_doc.db_set("workflow_state", "Pending Stock Entry Creation")
@@ -64,7 +70,7 @@ class IRJobManager:
 				to_be_queued_doc.db_set("workflow_state", "Stock Entry Created")
 				message = "Stock Entry creation completed."
 
-			exec_time_msg = f" (Time: {exec_time}s)"
+			exec_time_msg = f" (Job Time: {job_time}s Exec Time: {exec_time}s)"
 			to_be_queued_doc.add_comment("Comment", text=message + exec_time_msg)
 
 		except Exception:
@@ -73,19 +79,19 @@ class IRJobManager:
 
 			if to_be_queued_doc.workflow_state == "Queued MOP Creation":
 				to_be_queued_doc.db_set("workflow_state", "MOP Failed")
-				message = f"Failed to create Manufacturing Operation. {trace}"
-				frappe.log_error(
+				error_log = frappe.log_error(
 					f"MOP Creation Failed for {to_be_queued_doc.doctype} {to_be_queued_doc.name}",
-					message,
+					trace,
 				)
+				message = f"Failed to create Manufacturing Operation. {get_link_to_form(error_log.doctype, error_log.name)}"
 
 			elif to_be_queued_doc.workflow_state == "Queued Stock Entry Creation":
 				to_be_queued_doc.db_set("workflow_state", "Stock Entry Failed")
-				message = f"Failed to create Stock Entry. {trace}"
-				frappe.log_error(
+				error_log = frappe.log_error(
 					f"Stock Entry Creation Failed for {to_be_queued_doc.doctype} {to_be_queued_doc.name}",
-					message,
+					trace,
 				)
+				message = f"Failed to create Stock Entry. {get_link_to_form(error_log.doctype, error_log.name)}"
 
 			to_be_queued_doc.add_comment("Comment", text=message)
 			frappe.db.rollback()
@@ -93,16 +99,15 @@ class IRJobManager:
 		self.notify_ir_job_status(status, message)
 
 	def notify_ir_job_status(self, status: str, message: str):
-		if cint(time_diff_in_seconds(now(), self.created_at)) <= 60:
-			publish_realtime(
-				"msgprint",
-				{
-					"message": f"{message} View it <a href='/app/{quote(self.ref_doctype.lower().replace(' ', '-'))}/{quote(self.ref_docname)}'><b>here</b></a>",
-					"alert": True,
-					"indicator": "red" if status == "Failed" else "green",
-				},
-				user=self.doc.owner,
-			)
+		publish_realtime(
+			"msgprint",
+			{
+				"message": f"{message} View it <a href='/app/{quote(self.ref_doctype.lower().replace(' ', '-'))}/{quote(self.ref_docname)}'><b>here</b></a>",
+				"alert": True,
+				"indicator": "red" if status == "Failed" else "green",
+			},
+			user=self.doc.owner,
+		)
 
 	def add_job_comment(self, job_id: str, message: str):
-		self.doc.add_comment("Comment", text=f"{message} Job ID: {job_id}")
+		self.doc.add_comment("Comment", text=f"{message}\nJob ID: {job_id}")

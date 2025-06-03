@@ -56,23 +56,34 @@ class DepartmentIR(Document):
 		validate_mwo(self)
 
 	def validate(self):
+		self.validate_ir_operations_and_type()
 		if not self.is_new():
 			self.enqueue_mop_and_stock_entry_creation()
 
 	def enqueue_mop_and_stock_entry_creation(self):
 		prev_doc = self.get_doc_before_save()
 
-		if prev_doc.workflow_state == "Pending MOP Creation":
+		if prev_doc.workflow_state == "Pending MOP Creation" and self.workflow_state == "Queued MOP Creation":
 			if self.type == "Issue":
 				ir_job = IRJobManager(
 					doc=self, create_mop_func=self.create_mop_for_issue
 				)
 				ir_job.enqueue_mop_creation()
+			else:
+				ir_job = IRJobManager(
+					doc=self, create_mop_func=self.update_mop_for_receive
+				)
+				ir_job.enqueue_mop_creation()
 
-		elif prev_doc.workflow_state == "Pending Stock Entry Creation":
+		elif prev_doc.workflow_state == "Pending Stock Entry Creation" and self.workflow_state == "Queued Stock Entry Creation":
 			if self.type == "Issue":
 				ir_job = IRJobManager(
 					doc=self, create_stock_entry_func=self.create_stock_entry_for_issue
+				)
+				ir_job.enqueue_stock_entry_submission()
+			else:
+				ir_job = IRJobManager(
+					doc=self, create_stock_entry_func=self.create_stock_entry_for_receive
 				)
 				ir_job.enqueue_stock_entry_submission()
 
@@ -89,7 +100,7 @@ class DepartmentIR(Document):
 			for row in records:
 				self.append("department_ir_operation", {"manufacturing_operation": row.name})
 
-	def before_submit(self):
+	def validate_ir_operations_and_type(self):
 		if not self.department_ir_operation:
 			frappe.throw("Add row in <b>Department IR Operations Table</b>")
 
@@ -97,11 +108,12 @@ class DepartmentIR(Document):
 			frappe.throw("<b>Receive Against</b> is not set for this Receive entry")
 
 	def on_submit(self):
-		if self.type == "Issue":
-			pass
-			# self.on_submit_issue_new()
-		else:
-			self.on_submit_receive()
+		pass
+		# if self.type == "Issue":
+		# 	pass
+		# 	# self.on_submit_issue_new()
+		# else:
+		# 	self.on_submit_receive()
 
 	def on_cancel(self):
 		if self.type == "Issue":
@@ -670,6 +682,93 @@ class DepartmentIR(Document):
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
+
+	def update_mop_for_receive(self):
+		"""Update MOP for Receive type Department IR."""
+		import copy
+
+		values = {}
+		values["department_receive_id"] = self.name
+		values["department_ir_status"] = "Received"
+
+		se_item_list = []
+		dt_string = get_datetime()
+
+		in_transit_wh = frappe.db.get_value(
+			"Warehouse",
+			{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
+			"default_in_transit_warehouse",
+		)
+
+		department_wh = frappe.get_value(
+			"Warehouse",
+			{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
+		)
+		for row in self.department_ir_operation:
+			sed_items = frappe.db.get_all(
+				"Stock Entry MOP Item",
+				{
+					"manufacturing_operation": row.manufacturing_operation,
+					"t_warehouse": in_transit_wh,
+					"department": self.previous_department,
+					"to_department": self.current_department,
+					"docstatus": 1,
+				},
+				["*"],
+			)
+
+			for se_item in sed_items:
+				temp_row = copy.deepcopy(se_item)
+				temp_row["name"] = None
+				temp_row["idx"] = None
+				temp_row["s_warehouse"] = in_transit_wh
+				temp_row["t_warehouse"] = department_wh
+				temp_row["serial_and_batch_bundle"] = None
+				temp_row["main_slip"] = None
+				temp_row["employee"] = None
+				temp_row["to_main_slip"] = None
+				temp_row["to_employee"] = None
+				se_item_list += [temp_row]
+
+			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
+			frappe.db.set_value(
+				"Manufacturing Work Order", row.manufacturing_work_order, "department", self.current_department
+			)
+
+			doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+			doc.set("department_time_logs", [])
+			doc.save()
+			time_values = copy.deepcopy(values)
+			time_values["department_start_time"] = dt_string
+			add_time_log(doc, time_values)
+
+			self.db_set("se_data", json.dumps(se_item_list), update_modified=False)
+
+	def create_stock_entry_for_receive(self):
+		se_data = json.loads(self.se_data) if self.se_data else []
+		if not se_data:
+			frappe.msgprint(_("No Stock Entries were generated during this Department IR"))
+			return
+
+		stock_doc = frappe.new_doc("Stock Entry")
+		stock_doc.update(
+			{
+				"stock_entry_type": "Material Transfer to Department",
+				"company": self.company,
+				"department_ir": self.name,
+				"auto_created": True,
+				"add_to_transit": 0,
+				"inventory_type": None,
+			}
+		)
+
+		for row in se_data:
+			stock_doc.append("items", row)
+
+		stock_doc.flags.ignore_permissions = True
+		stock_doc.save()
+		stock_doc.submit()
+
 
 	def update_workflow_state(self):
 		"""Update the workflow state after MOP creation."""
