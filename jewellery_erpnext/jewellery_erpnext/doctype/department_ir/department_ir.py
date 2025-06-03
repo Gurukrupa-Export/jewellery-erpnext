@@ -23,10 +23,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.depart
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	get_previous_operation,
 )
-from jewellery_erpnext.utils import set_values_in_bulk
+from jewellery_erpnext.utils import set_values_in_bulk, serialize_for_json
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.ir_job_manager import IRJobManager
-
 
 class DepartmentIR(Document):
 	def before_validate(self):
@@ -742,7 +741,7 @@ class DepartmentIR(Document):
 			time_values["department_start_time"] = dt_string
 			add_time_log(doc, time_values)
 
-			self.db_set("se_data", json.dumps(se_item_list), update_modified=False)
+			self.db_set("se_data", json.dumps(obj=se_item_list, default=serialize_for_json), update_modified=False)
 
 	def create_stock_entry_for_receive(self):
 		se_data = json.loads(self.se_data) if self.se_data else []

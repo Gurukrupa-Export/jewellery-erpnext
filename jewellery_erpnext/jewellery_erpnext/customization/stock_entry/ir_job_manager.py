@@ -94,7 +94,7 @@ class IRJobManager:
 				message = f"Failed to create Stock Entry. {get_link_to_form(error_log.doctype, error_log.name)}"
 
 			to_be_queued_doc.add_comment("Comment", text=message)
-			frappe.db.rollback()
+			# frappe.db.rollback()
 
 		self.notify_ir_job_status(status, message)
 

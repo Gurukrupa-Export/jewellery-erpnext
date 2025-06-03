@@ -7,6 +7,10 @@ from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
 from collections import defaultdict
 from collections import defaultdict
+from datetime import datetime
+
+import frappe.utils
+
 
 
 @frappe.whitelist()
@@ -333,11 +337,11 @@ def get_sales_invoice_items(sales_invoices):
 @frappe.whitelist()
 def get_sales_order_items(customer_approval_name):
 	doc = frappe.get_doc("Customer Approval", customer_approval_name)
-	
+
 	if doc.docstatus != 1:
 		frappe.throw(_("This Customer Approval is not submitted."))
 
-	items = frappe.get_all("Sales Order Item Child", 
+	items = frappe.get_all("Sales Order Item Child",
 		filters={"parent": customer_approval_name},
 		fields=["item_code", "rate", "item_name", "quantity", "amount", "uom", "serial_no","bom_number","delivery_date"]
 	)
@@ -521,3 +525,10 @@ def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys, exclud
 	final_grouped = finalize_grouped(grouped, concat_keys)
 
 	return final_grouped + non_grouped
+
+
+def serialize_for_json(obj):
+	if isinstance(obj, datetime):
+		return frappe.utils.get_datetime_str(obj)
+
+	raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
