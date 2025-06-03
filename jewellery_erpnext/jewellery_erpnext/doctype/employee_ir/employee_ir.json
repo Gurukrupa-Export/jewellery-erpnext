@@ -54,7 +54,9 @@
   "mop_loss_details_total",
   "employee_loss_details",
   "manually_book_loss_details",
-  "amended_from"
+  "amended_from",
+  "mop_data",
+  "se_data"
  ],
  "fields": [
   {
@@ -343,6 +345,22 @@
    "fieldtype": "Table",
    "label": "Mould Reference",
    "options": "Mould Reference"
+  },
+  {
+   "fieldname": "mop_data",
+   "fieldtype": "JSON",
+   "hidden": 1,
+   "label": "MOP Data",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "se_data",
+   "fieldtype": "JSON",
+   "hidden": 1,
+   "label": "SE Data",
+   "no_copy": 1,
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
@@ -361,7 +379,7 @@
    "link_fieldname": "employee_ir"
   }
  ],
- "modified": "2024-07-29 16:26:02.206938",
+ "modified": "2025-06-03 18:28:05.047740",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR",
@@ -380,6 +398,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
