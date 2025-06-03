@@ -32,6 +32,8 @@ def create_ir_workflow(doctype):
 				make_transition("Pending Stock Entry Creation", "Create Stock Entry", "Queued Stock Entry Creation"),
 				make_transition("Queued Stock Entry Creation", "Cancel Stock Entry Queue", "Stock Entry Failed"),
 				make_transition("Stock Entry Failed", "Retry Stock Entry Creation", "Queued Stock Entry Creation"),
+				make_transition("Stock Entry Created", "Issue IR", "IR Issued", "doc.type == 'Issue'"),
+				make_transition("Stock Entry Created", "Receive IR", "IR Received", "doc.type == 'Receive'"),
 				make_transition("IR Issued", "Cancel", "Cancelled", "doc.type == 'Issue'"),
 				make_transition("IR Received", "Cancel", "Cancelled", "doc.type == 'Receive'"),
 			],

@@ -54,14 +54,11 @@ class IRJobManager:
 		self.add_job_comment(job_id, "Stock Entry creation queued.")
 
 	def background_processing(self, to_be_queued_doc, action_for_queuing: str):
-		status = "Finished"
-		message = ""
-
 		try:
 			exec_start_time = now()
 			getattr(to_be_queued_doc, action_for_queuing)()
-			job_time = time_diff_in_seconds(now(), self.created_at)
-			exec_time = time_diff_in_seconds(now(), exec_start_time)
+			job_time = round(time_diff_in_seconds(now(), self.created_at), 2)
+			exec_time = round(time_diff_in_seconds(now(), exec_start_time), 2)
 
 			self.update_workflow_state(to_be_queued_doc, job_time, exec_time)
 
@@ -69,8 +66,6 @@ class IRJobManager:
 			status = "Failed"
 			trace = get_traceback(with_context=True)
 			self.update_workflow_state(to_be_queued_doc, 0, 0, is_failed=True, trace=trace)
-
-		self.notify_ir_job_status(status, message)
 
 	def notify_ir_job_status(self, status: str, message: str):
 		publish_realtime(
@@ -87,9 +82,11 @@ class IRJobManager:
 		self.doc.add_comment("Comment", text=f"{message}\nJob ID: {job_id}")
 
 	def update_workflow_state(self, to_be_queued_doc, job_time, exec_time, is_failed=False, trace=None):
-		if is_failed and trace:
-			message = ""
+		status = "Finished"
+		message = ""
 
+		if is_failed and trace:
+			status = "Failed"
 			if to_be_queued_doc.workflow_state == "Queued MOP Creation":
 				to_be_queued_doc.db_set("workflow_state", "MOP Failed")
 				error_log = frappe.log_error(
@@ -120,3 +117,5 @@ class IRJobManager:
 
 			exec_time_msg = f"(Job Time: {job_time}s Exec Time: {exec_time}s)"
 			to_be_queued_doc.add_comment("Comment", text=message + exec_time_msg)
+
+		self.notify_ir_job_status(status, message)
