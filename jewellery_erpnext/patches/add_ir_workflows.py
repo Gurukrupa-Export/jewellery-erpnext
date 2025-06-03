@@ -23,8 +23,8 @@ def create_ir_workflow(doctype):
 				make_state("Stock Entry Created", 0, "Success"),
 				make_state("Stock Entry Failed", 0, "Danger"),
 				make_state("Cancelled", 2, "Danger"),
-				make_state("IR Issued", 1, "Success", "doc.type == 'Issue'"),
-				make_state("IR Received", 1, "Success", "doc.type == 'Receive'"),
+				make_state("IR Issued", 1, "Success"),
+				make_state("IR Received", 1, "Success"),
 			],
 			"transitions": [
 				make_transition("Pending MOP Creation", "Create MOP", "Queued MOP Creation"),
@@ -43,14 +43,13 @@ def create_ir_workflow(doctype):
 	frappe.msgprint(f"{doctype} Workflow created.")
 
 
-def make_state(name, doc_status=0, style="", condition=None):
+def make_state(name, doc_status=0, style=""):
 	if not frappe.db.exists("Workflow State", name):
 			workflow_state = frappe.get_doc(
 				{
 					"doctype": "Workflow State",
 					"workflow_state_name": name,
 					"style": style,
-					"condition": condition,
 				}
 			)
 			workflow_state.insert()
@@ -60,7 +59,6 @@ def make_state(name, doc_status=0, style="", condition=None):
 		"doc_status": doc_status,
 		"allow_edit": "All",
 		"style": style,
-		"condition": condition
 	}
 
 
