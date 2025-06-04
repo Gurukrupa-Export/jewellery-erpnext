@@ -1129,7 +1129,7 @@ class EmployeeIR(Document):
 		se_data["new_operation"] = new_operation
 		se_data["row_to_append"] = row_to_append
 		se_data["main_slip_rows"] = main_slip_rows
-		se_data["loss_raws"] = loss_rows
+		se_data["loss_rows"] = loss_rows
 		se_data["repack_raws"] = repack_raws
 
 		self.db_set("se_data", json.dumps(obj=se_data, default=serialize_for_json), update_modified=False)

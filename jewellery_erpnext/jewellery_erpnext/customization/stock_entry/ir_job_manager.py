@@ -94,7 +94,7 @@ class IRJobManager:
 					f"MOP Creation Failed for {to_be_queued_doc.doctype} {to_be_queued_doc.name}",
 					trace,
 				)
-				message = f"Failed to create Manufacturing Operation. {get_link_to_form(error_log.doctype, error_log.name)}"
+				message = f"Failed to create Manufacturing Operation. Check error log: {get_link_to_form(error_log.doctype, error_log.name)}"
 
 			elif to_be_queued_doc.workflow_state == "Queued Stock Entry Creation":
 				to_be_queued_doc.db_set("workflow_state", "Stock Entry Failed")
@@ -102,7 +102,7 @@ class IRJobManager:
 					f"Stock Entry Creation Failed for {to_be_queued_doc.doctype} {to_be_queued_doc.name}",
 					trace,
 				)
-				message = f"Failed to create Stock Entry. {get_link_to_form(error_log.doctype, error_log.name)}"
+				message = f"Failed to create Stock Entry. Check error log: {get_link_to_form(error_log.doctype, error_log.name)}"
 
 			to_be_queued_doc.add_comment("Comment", text=message)
 
