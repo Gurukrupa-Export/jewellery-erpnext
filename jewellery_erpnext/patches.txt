@@ -6,3 +6,4 @@ jewellery_erpnext.patches.create_custom_field # stock entry mop item
 jewellery_erpnext.patches.add_ir_workflows # patch for workflow
 jewellery_erpnext.patches.update_employee_ir_status # employee ir
 jewellery_erpnext.patches.update_department_ir_status
+jewellery_erpnext.patches.create_branch_account_field
