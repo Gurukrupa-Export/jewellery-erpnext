@@ -63,8 +63,9 @@ class IRJobManager:
 			self.update_workflow_state(to_be_queued_doc, job_time, exec_time)
 
 		except Exception:
-			status = "Failed"
 			trace = get_traceback(with_context=True)
+			frappe.db.rollback()
+
 			self.update_workflow_state(to_be_queued_doc, 0, 0, is_failed=True, trace=trace)
 
 	def notify_ir_job_status(self, status: str, message: str):
