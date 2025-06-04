@@ -3,6 +3,8 @@ import json
 import frappe
 from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe.desk.reportview import get_filters_cond, get_match_cond
+import frappe.model
+import frappe.model.document
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
 from collections import defaultdict
@@ -530,5 +532,7 @@ def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys, exclud
 def serialize_for_json(obj):
 	if isinstance(obj, datetime):
 		return frappe.utils.get_datetime_str(obj)
+	if isinstance(obj, frappe.Document):
+		return obj.as_dict()
 
 	raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")

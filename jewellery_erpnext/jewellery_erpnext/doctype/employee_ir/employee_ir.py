@@ -1082,6 +1082,7 @@ class EmployeeIR(Document):
 			new_operation = create_operation_for_next_op(
 				row.manufacturing_operation, employee_ir=self.name, received_gr_wt=row.received_gross_wt
 			)
+
 			res["complete_time"] = curr_time
 			frappe.db.set_value(
 				"Manufacturing Work Order",
@@ -2027,7 +2028,7 @@ def create_stock_entry(
 					frappe.throw(_("Qty cannot be negative"))
 
 				if child not in to_remove:
-					se_rows.append(child)
+					se_rows.append(child.as_dict())
 
 	if difference_wt > 0:
 		if not doc.main_slip:
