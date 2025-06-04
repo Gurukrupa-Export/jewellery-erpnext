@@ -65,6 +65,15 @@
    "label": "Branch Address - Shipping",
    "module": "Jewellery Erpnext",
    "options": "Address"
+  },
+  {
+   "dt": "Branch",
+   "fieldname": "branch_account",
+   "fieldtype": "Link",
+   "insert_after": "custom_customer",
+   "label": "Branch Account",
+   "module": "Jewellery Erpnext",
+   "options": "Account"
   }
  ]
 }
