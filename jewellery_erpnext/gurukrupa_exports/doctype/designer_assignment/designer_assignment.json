@@ -30,7 +30,6 @@
    "default": "0",
    "fieldname": "count_1",
    "fieldtype": "Int",
-   "hidden": 1,
    "in_list_view": 1,
    "label": "Assign Qty"
   },
