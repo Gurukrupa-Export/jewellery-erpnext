@@ -206,6 +206,33 @@ class ManufacturingOperation(Document):
 		ignored_department = [row.department for row in ignored_department]
 		if self.operation in ignored_department:
 			frappe.throw(_("Customer not requireed this operation"))
+			
+		if self.manufacturing_work_order:
+			if self.department == 'Computer Aided Designing - GEPL' or self.department =='Computer Aided Manufacturing - GEPL':
+				item=frappe.get_doc('Item',self.item_code)
+				existing_row = item.custom_cam_weight_detail[0] if item.custom_cam_weight_detail else None
+				if existing_row:
+			
+					existing_row.cad_numbering_file = self.cad_numbering_file
+					existing_row.support_cam_file = self.support_cam_file
+					existing_row.platform_wt = self.platform_wt
+					existing_row.rpt_wt_issue = self.rpt_wt_issue
+					existing_row.rpt_wt_receive = self.rpt_wt_receive
+					existing_row.estimated_rpt_wt = self.estimated_rpt_wt
+					existing_row.rpt_wt_loss = self.rpt_wt_loss
+				else:
+
+						item.append('custom_cam_weight_detail', {
+					'cad_numbering_file': self.cad_numbering_file,
+					'support_cam_file': self.support_cam_file,
+					'platform_wt': self.platform_wt ,
+					'rpt_wt_issue':self.rpt_wt_issue,
+					'rpt_wt_receive' : self.rpt_wt_receive,
+					'estimated_rpt_wt':self.estimated_rpt_wt,
+					'rpt_wt_loss':self.rpt_wt_loss
+
+				})
+				item.save()
 
 	# def remove_duplicate(self):
 	# 	existing_data = {
