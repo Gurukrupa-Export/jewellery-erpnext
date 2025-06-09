@@ -388,6 +388,7 @@ def create_material_request(doc):
 	mr.schedule_date = frappe.utils.nowdate()
 	mr.to_main_slip = doc.name
 	mr.department = doc.department
+	mr.custom_manufacturer = doc.manufacturer
 	mr.append(
 		"items",
 		{
