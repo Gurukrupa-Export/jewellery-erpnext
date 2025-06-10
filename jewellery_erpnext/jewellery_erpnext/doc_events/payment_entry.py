@@ -84,10 +84,12 @@ def create_journal_entry_for_different_branch(doc, receivable_account, si_branch
 		},
 		{
 			"account": si_branch_account,
+			"branch": si_branch,
 			"debit_in_account_currency": amount,
 		},
 		{
 			"account": pe_branch_account,
+			"branch": pe_branch,
 			"credit_in_account_currency": amount,
 		},
 		{
