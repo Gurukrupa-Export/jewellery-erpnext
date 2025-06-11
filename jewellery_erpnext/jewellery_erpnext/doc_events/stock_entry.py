@@ -62,7 +62,7 @@ def before_validate(self, method):
 
 				pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":manufacturer}, "pure_gold_item")
 
-				if not pure_item:
+				if not pure_item and self.stock_entry_type not in ['Customer Goods Transfer','Customer Goods Issue','Customer Goods Received']:
 					frappe.throw(_("Pure Item not mentioned in Manufacturing Setting"))
 
 				pure_item_purity = get_purity_percentage(pure_item)
