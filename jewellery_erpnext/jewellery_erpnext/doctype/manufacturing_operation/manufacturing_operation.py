@@ -207,7 +207,7 @@ class ManufacturingOperation(Document):
 		if self.operation in ignored_department:
 			frappe.throw(_("Customer not requireed this operation"))
 
-		if self.manufacturing_work_order:Add commentMore actions
+		if self.manufacturing_work_order:
 			if self.department == 'Computer Aided Designing - GEPL' or self.department =='Computer Aided Manufacturing - GEPL':
 				item=frappe.get_doc('Item',self.item_code)
 				existing_row = item.custom_cam_weight_detail[0] if item.custom_cam_weight_detail else None
