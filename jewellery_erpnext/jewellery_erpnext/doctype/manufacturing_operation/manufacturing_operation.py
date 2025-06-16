@@ -1880,7 +1880,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						size_in_mm_diamond_price_list_entry = frappe.db.sql(
 							"""
 							SELECT name, supplier_fg_purchase_rate,rate,custom_outwork_handling_charges_in_percentage,
-							custom_outright_handling_charges_in_percentage,custom_outright_handling_charges_in_rate,custom_outwork_handling_charges_in_rate
+							custom_outright_handling_charges_in_percentage,custom_outright_handling_charges_rate,custom_outwork_handling_charges_rate
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
