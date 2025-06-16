@@ -134,8 +134,8 @@
   {
    "fieldname": "total_weight",
    "fieldtype": "Float",
-   "hidden": 1,
-   "label": "Total Weight"
+   "label": "Total Weight",
+   "read_only": 1
   },
   {
    "fieldname": "section_break_a8aud",
@@ -194,6 +194,22 @@
    "label": "Fg BOM",
    "options": "BOM",
    "read_only": 1
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.parent_sales_order",
+   "fetch_if_empty": 1,
+   "fieldname": "parent_sales_order",
+   "fieldtype": "Link",
+   "label": "Parent Sales Order",
+   "options": "Sales Order"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.sales_order",
+   "fetch_if_empty": 1,
+   "fieldname": "sales_order_id",
+   "fieldtype": "Link",
+   "label": "Sales Order Id",
+   "options": "Sales Order"
   }
  ],
  "index_web_pages_for_search": 1,
