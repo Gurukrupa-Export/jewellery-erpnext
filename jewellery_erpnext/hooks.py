@@ -150,15 +150,15 @@ doc_events = {
 	},
 	"Stock Reconciliation": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department"
-	},
-	"Payment Entry": {
-		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.on_submit",
-		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.on_submit",
-		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.on_cancel",
-	},
-	"Unreconcile Payment": {
-		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.unreconcile_payment.before_submit",
 	}
+	# "Payment Entry": {
+	# 	"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.on_submit",
+	# 	"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.on_submit",
+	# 	"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.on_cancel",
+	# },
+	# "Unreconcile Payment": {
+	# 	"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.unreconcile_payment.before_submit",
+	# }
 }
 
 override_whitelisted_methods = {
