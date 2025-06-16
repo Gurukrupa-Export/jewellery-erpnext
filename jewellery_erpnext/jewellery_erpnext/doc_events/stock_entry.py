@@ -49,7 +49,7 @@ def before_validate(self, method):
 				frappe.throw(
 					_("Stock Entry not allowed for {0} in between transit").format(row.manufacturing_operation)
 				)
-		if row.custom_variant_of in ["M", "F"]:
+		if row.custom_variant_of in ["M", "F"] and self.stock_entry_type not in ['Customer Goods Transfer','Customer Goods Issue','Customer Goods Received']:
 			if not pure_item_purity:
 				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
 
