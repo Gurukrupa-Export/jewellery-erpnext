@@ -131,7 +131,11 @@ class BatchValuationLedger:
 		"""Retrieve batch data for a specific warehouse, item, and batch."""
 		if not self._ledger_data:
 			return None
-		return self._ledger_data.get((warehouse, item_code, batch_no))
+		res = self._ledger_data.get((warehouse, item_code, batch_no))
+
+		frappe.log_error("BVL Ledger Data", self._ledger_data, defer_insert=True)
+		frappe.log_error("BVL Get Batch Data Res", res, defer_insert=True)
+		return res
 
 	def clear(self):
 		"""Reset ledger data."""
