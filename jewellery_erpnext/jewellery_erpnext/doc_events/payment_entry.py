@@ -69,37 +69,41 @@ def create_journal_entry_for_different_branch(doc, receivable_account, si_branch
 	si_branch_account = get_branch_account(si_branch)
 	pe_branch_account = get_branch_account(pe_branch)
 
+	jv_accounts_details = [
+		{
+			"account": receivable_account,
+			"debit_in_account_currency": amount,
+			"party_type": doc.party_type,
+			"party": doc.party,
+			"branch": pe_branch
+		},
+		{
+			"account": si_branch_account,
+			"credit_in_account_currency": amount,
+			"branch": pe_branch
+
+		},
+		{
+			"account": receivable_account,
+			"credit_in_account_currency": amount,
+			"party_type": doc.party_type,
+			"party": doc.party,
+			"branch": si_branch
+		},
+		{
+			"account": pe_branch_account,
+			"debit_in_account_currency": amount,
+			"branch": si_branch
+
+		}
+	]
+
 	jv = frappe.new_doc("Journal Entry")
 	jv.voucher_type = "Journal Entry"
 	jv.company = doc.company
 	jv.posting_date = doc.posting_date
 
-
-	jv.set("accounts", [
-		{
-			"account": receivable_account,
-			"credit_in_account_currency": amount,
-			"party_type": doc.party_type,
-			"party": doc.party,
-		},
-		{
-			"account": si_branch_account,
-			"branch": si_branch,
-			"debit_in_account_currency": amount,
-		},
-		{
-			"account": pe_branch_account,
-			"branch": pe_branch,
-			"credit_in_account_currency": amount,
-		},
-		{
-			"account": receivable_account,
-			"debit_in_account_currency": amount,
-			"party_type": doc.party_type,
-			"party": doc.party,
-		}
-
-	])
+	jv.set("accounts", jv_accounts_details)
 
 	jv.insert()
 	jv.submit()
