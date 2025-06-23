@@ -1,10 +1,18 @@
 import frappe
 
 
-def get_item_for_certification(company, service_type):
+# def get_item_for_certification(company, service_type):
+# 	return frappe.db.get_value(
+# 		"Product Certification Details",
+# 		{"parent": company, "certification_type": service_type},
+# 		["purchase_item", "rate"],
+# 		as_dict=1,
+# 	)
+def get_item_for_certification(department, service_type):
+	manufacturer = frappe.db.get_value("Department",department,"manufacturer")
 	return frappe.db.get_value(
 		"Product Certification Details",
-		{"parent": company, "certification_type": service_type},
+		{"parent": manufacturer, "certification_type": service_type},
 		["purchase_item", "rate"],
 		as_dict=1,
 	)
@@ -34,7 +42,8 @@ def create_po(self):
 
 	po_doc.company = self.company
 
-	item_data = get_item_for_certification(self.company, self.service_type)
+	# item_data = get_item_for_certification(self.company, self.service_type)
+	item_data = get_item_for_certification(self.department, self.service_type)
 
 	rate = 0
 	if self.service_type == "Diamond Certificate service":
