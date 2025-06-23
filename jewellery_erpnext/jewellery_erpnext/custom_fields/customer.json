@@ -501,6 +501,22 @@
    "insert_after": "custom_ignore_po_creation_for_certification",
    "label": "Separate Hallmarking invoice",
    "module": "Jewellery Erpnext"
-  }
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_require_customer_bulk_numbers",
+   "fieldtype": "Check",
+   "insert_after": "custom_advanced_manual_bagging_available",
+   "label": "Require Customer Bulk Numbers",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_advanced_manual_bagging_available",
+   "fieldtype": "Check",
+   "insert_after": "custom_consider_2_digit_for_gemstone",
+   "label": "Advanced Manual Bagging Available",
+   "module": "Jewellery Erpnext"
+  },
  ]
 }
