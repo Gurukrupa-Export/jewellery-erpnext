@@ -4,7 +4,7 @@ def execute():
 	CUSTOM_FIELDS = {}
 	path = os.path.join(os.path.dirname(__file__), "../jewellery_erpnext/custom_fields")
 	for file in os.listdir(path):
-		if file in ["stock_entry_mop_item.json", "stock_entry.json", "stock_entry_detail.json"]:
+		if file in ["journal_entry.json"]:
 			with open(os.path.join(path, file), "r") as f:
 				CUSTOM_FIELDS.update(json.load(f))
 
