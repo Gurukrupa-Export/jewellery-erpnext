@@ -208,7 +208,7 @@
    "fieldname": "custom_section_break_5ibfo",
    "fieldtype": "Section Break",
    "insert_after": "primary_address",
-   "module": "Jewellery Erpnext",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
