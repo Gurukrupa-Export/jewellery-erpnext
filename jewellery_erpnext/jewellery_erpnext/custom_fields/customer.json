@@ -532,14 +532,14 @@
    "fieldname": "custom_section_break_5dmwj",
    "fieldtype": "Section Break",
    "insert_after": "is_npa",
-   "module": "Jewellery Erpnext",
+   "module": "Jewellery Erpnext"
   },
   {
    "dt": "Customer",
    "fieldname": "custom_section_break_k1sbp",
    "fieldtype": "Section Break",
    "insert_after": "disabled",
-   "module": "Jewellery Erpnext",
+   "module": "Jewellery Erpnext"
   },
   {
    "dt": "Customer",
@@ -547,14 +547,14 @@
    "fieldtype": "Check",
    "insert_after": "custom_separate_hallmarking_invoice",
    "label": "Making Rates based on Custom Code",
-   "module": "Jewellery Erpnext",
+   "module": "Jewellery Erpnext"
   },
   {
    "dt": "Customer",
    "fieldname": "section_break_21",
    "fieldtype": "Section Break",
    "insert_after": "column_break_bak3e",
-   "module": "Jewellery Erpnext",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
