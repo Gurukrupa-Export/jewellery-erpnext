@@ -193,6 +193,22 @@
    "is_system_generated": 1,
    "label": "Is IRS 1099 reporting required for supplier?",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "custom_supplier_representatives",
+   "fieldtype": "Table",
+   "insert_after": "custom_section_break_5ibfo",
+   "label": "Supplier Representatives",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier Representatives"
+  },
+  {
+   "dt": "Supplier",
+   "fieldname": "custom_section_break_5ibfo",
+   "fieldtype": "Section Break",
+   "insert_after": "primary_address",
+   "module": "Jewellery Erpnext",
   }
  ]
 }
