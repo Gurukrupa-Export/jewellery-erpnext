@@ -951,19 +951,24 @@ def update_balance_table(mop_data):
 
 def validate_duplicate_batches(entry, batch_data):
 	key = (entry.manufacturing_operation, entry.item_code)
-	if not batch_data.get(key):
-		batch_data[key] = frappe.db.get_all(
+
+	if key not in batch_data:
+		# Fetch and store only batch_no strings
+		result = frappe.db.get_all(
 			"MOP Balance Table",
 			{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
-			["item_code", "batch_no"],
+			["batch_no"]
 		)
+		batch_data[key] = [row["batch_no"] for row in result]
 
 	if entry.batch_no not in batch_data[key]:
+		allowed = ", ".join(batch_data[key]) or "None"
 		frappe.throw(
-			_("Row {0}: Selected Batch does not belongs to {1}<br>Allwoed Batches : {2}").format(
+			_("Row {0}: Selected Batch <b>{1}</b> does not belong to <b>{2}</b><br><br><b>Allowed Batches:</b> {3}").format(
 				entry.idx,
+				entry.batch_no,
 				entry.manufacturing_operation,
-				", ".join(batch_data[key]),
+				allowed
 			)
 		)
 
