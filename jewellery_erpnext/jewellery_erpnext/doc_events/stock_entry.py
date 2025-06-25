@@ -964,8 +964,9 @@ def validate_duplicate_batches(entry, batch_data):
 	if entry.batch_no not in batch_data[key]:
 		allowed = ", ".join(batch_data[key]) or "None"
 		frappe.throw(
-			_("Row {0}: Selected Batch <b>{1}</b> does not belong to <b>{2}</b><br><br><b>Allowed Batches:</b> {3}").format(
+			_("Row {0}: Selected Item {1} Batch <b>{2}</b> does not belong to <b>{3}</b><br><br><b>Allowed Batches:</b> {4}").format(
 				entry.idx,
+				entry.item_code,
 				entry.batch_no,
 				entry.manufacturing_operation,
 				allowed
