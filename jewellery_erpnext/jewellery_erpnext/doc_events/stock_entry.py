@@ -833,6 +833,10 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 	validate_batches = True if se_doc.purpose != "Manufacture" else False
 
+	# don't validate batch if it's a finding transfer from MWO with same department
+	if frappe.flags.is_finding_transfer:
+		validate_batches = False
+
 	mop_list = [row.manufacturing_operation for row in se_doc.custom_mop_items]
 
 	mop_base_data = frappe.db.get_all(
@@ -887,23 +891,9 @@ def update_mop_details(se_doc, is_cancelled=False):
 			temp_raw = copy.deepcopy(entry.__dict__)
 			if entry.s_warehouse == d_warehouse:
 				if validate_batches and entry.batch_no:
-					validated_batches = True
 					validate_duplicate_batches(entry, batch_data)
-					# if not batch_data.get((mop_name, entry.item_code)):
-					# 	batch_data[(mop_name, entry.item_code)] = frappe.db.get_all(
-					# 		"MOP Balance Table",
-					# 		{"parent": mop_name, "item_code": entry.item_code},
-					# 		pluck="batch_no",
-					# 	)
+					validated_batches = True
 
-					# if entry.batch_no not in batch_data[(mop_name, entry.item_code)]:
-					# 	frappe.throw(
-					# 		_("Row {0}: Selected Batch does not belongs to {1}.<br>Allowed Batches : {2}").format(
-					# 			entry.idx,
-					# 			mop_name,
-					# 			", ".join(batch_data[(mop_name, entry.item_code)]),
-					# 		)
-					# 	)
 				mop_data[mop_name]["department_source_table"].append(temp_raw)
 
 			elif entry.t_warehouse == d_warehouse:
@@ -913,21 +903,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 			if entry.s_warehouse == e_warehouse:
 				if validate_batches and entry.batch_no and not validated_batches:
 					validate_duplicate_batches(entry, batch_data)
-					# if not batch_data.get((mop_name, entry.item_code)):
-					# 	batch_data[(mop_name, entry.item_code)] = frappe.db.get_all(
-					# 		"MOP Balance Table",
-					# 		{"parent": mop_name, "item_code": entry.item_code},
-					# 		pluck="batch_no",
-					# 	)
 
-					# if entry.batch_no not in batch_data[(mop_name, entry.item_code)]:
-					# 	frappe.throw(
-					# 		_("Row {0}: Selected Batch does not belongs to {1}<br>Allwoed Batches : {2}").format(
-					# 			entry.idx,
-					# 			mop_name,
-					# 			", ".join(batch_data[(mop_name, entry.item_code)]),
-					# 		)
-					# 	)
 				mop_data[mop_name]["employee_source_table"].append(emp_temp_raw)
 			elif entry.t_warehouse == e_warehouse:
 				mop_data[mop_name]["employee_target_table"].append(emp_temp_raw)
@@ -960,7 +936,7 @@ def validate_duplicate_batches(entry, batch_data):
 
 	if entry.batch_no not in batch_data[key]:
 		frappe.throw(
-			_("Row {0}: Selected Batch does not belongs to {1}<br>Allwoed Batches : {2}").format(
+			_("Row {0}: Selected Item <b>{1}<b> Batch <b>{2}</b> does not belong to <b>{3}</b><br><br><b>Allowed Batches:</b> {4}").format(
 				entry.idx,
 				entry.manufacturing_operation,
 				", ".join(batch_data[key]),
