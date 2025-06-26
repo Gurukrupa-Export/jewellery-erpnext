@@ -131,6 +131,9 @@ def create_stock_transfer_entry(self):
 	if not target_warehouse:
 		frappe.throw(_("Raw Material type Warehouse is not set for {0}").format(department))
 
+	if department != self.department:
+		frappe.throw(_("Main MWO Department {0} does not match with Finding MWO Department{1}").format(department, self.department))
+
 	frappe.get_doc("Manufacturing Operation", self.manufacturing_operation).save()
 	stock_entry_data = frappe.db.get_all(
 		"MOP Balance Table",
@@ -173,6 +176,7 @@ def create_stock_transfer_entry(self):
 			},
 		)
 
+	frappe.flags.is_finding_transfer = True
 	se_doc.save()
 	se_doc.submit()
 	self.db_set("finding_transfer_entry", se_doc.name)
