@@ -1290,7 +1290,7 @@
    "fieldname": "custom_cad_order_id",
    "fieldtype": "Link",
    "insert_after": "order_form_id",
-   "label": "CAD Order ID",
+   "label": "Order ID",
    "module": "Jewellery Erpnext",
    "options": "Order"
   },
@@ -1299,7 +1299,7 @@
    "fieldname": "custom_cad_order_form_id",
    "fieldtype": "Link",
    "insert_after": "custom_cad_order_id",
-   "label": "CAD Order Form ID",
+   "label": "Order Form ID",
    "module": "Jewellery Erpnext",
    "options": "Order Form"
   },
