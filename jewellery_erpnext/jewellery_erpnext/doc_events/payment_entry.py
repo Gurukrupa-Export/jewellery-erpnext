@@ -1,5 +1,7 @@
 import frappe
+import json
 import frappe.utils
+from pypika import Order
 
 
 def create_inter_branch_journal_entries(args):
@@ -17,14 +19,14 @@ def create_inter_branch_journal_entries(args):
 	jv_pe_branch = [
 		{
 			"account": args.receivable_account,
-			"debit_in_account_currency": args.amount,
+			"debit_in_account_currency": args.allocated_amount,
 			"party_type": args.party_type,
 			"party": args.party,
 			"branch": args.pe_branch
 		},
 		{
 			"account": si_branch_account,
-			"credit_in_account_currency": args.amount,
+			"credit_in_account_currency": args.allocated_amount,
 			"branch": args.pe_branch
 		}
 	]
@@ -32,7 +34,7 @@ def create_inter_branch_journal_entries(args):
 	jv_si_branch = [
 		{
 			"account": args.receivable_account,
-			"credit_in_account_currency": args.amount,
+			"credit_in_account_currency": args.allocated_amount,
 			"party_type": args.party_type,
 			"party": args.party,
 			"reference_type": "Sales Invoice",
@@ -41,7 +43,7 @@ def create_inter_branch_journal_entries(args):
 		},
 		{
 			"account": pe_branch_account,
-			"debit_in_account_currency": args.amount,
+			"debit_in_account_currency": args.allocated_amount,
 			"branch": args.si_branch
 		}
 	]
@@ -149,37 +151,49 @@ def get_branch_account(branch_name):
 	if branch_account := frappe.db.exists("Account", {"account_name": branch_name}):
 		return branch_account
 
-
 	frappe.throw(f"Branch account for {branch_name} does not exist. Please create it first.")
 
 
 @frappe.whitelist()
-def reconcile_inter_branch_payment(**kwargs):
-	kwargs = frappe._dict(kwargs)
+def reconcile_inter_branch_payment(invoice_data):
+	if isinstance(invoice_data, str):
+		invoice_data = json.loads(invoice_data)
 
-	si_name = kwargs.si_name
-	receivable_account = kwargs.receivable_account
-	amount = kwargs.paid_amount
+	jv_list = []
 
-	pe_branch = kwargs.pe_branch
-	si_branch = frappe.db.get_value("Sales Invoice", si_name, "branch")
+	for row in invoice_data:
+		jv_data = frappe._dict(row)
+		print(jv_data)
 
-	if pe_branch == si_branch:
-		frappe.throw("Sales Invoice branch and Payment Entry branch are the same.")
+		if jv_data.pe_branch == jv_data.si_branch:
+			frappe.throw("Sales Invoice branch and Payment Entry branch are the same.")
 
-	jv_data = frappe._dict({
-		"company": kwargs.company,
-		"posting_date": kwargs.posting_date,
-		"doctype": kwargs.doctype,
-		"pe_name": kwargs.pe_name,
-		"party_type": kwargs.party_type,
-		"party": kwargs.party,
-		"receivable_account": receivable_account,
-		"si_branch": si_branch,
-		"si_name": si_name,
-		"pe_branch": pe_branch,
-		"amount": amount
-	})
+		jv = create_inter_branch_journal_entries(jv_data)
 
-	jv = create_inter_branch_journal_entries(jv_data)
-	return jv
+		jv_list.extend(jv)
+
+	return jv_list
+
+
+@frappe.whitelist()
+def get_unreconciled_sales_invoices(company, customer):
+	"""
+	Get unreconciled Sales Invoices for given company and customer.
+	"""
+	SI = frappe.qb.DocType("Sales Invoice")
+
+	query = (
+		frappe.qb.from_(SI)
+		.select(SI.name, SI.posting_date, SI.outstanding_amount, SI.grand_total, SI.branch)
+		.where(
+			(SI.docstatus == 1) &
+			(SI.company == company) &
+			(SI.customer == customer) &
+			(SI.outstanding_amount > 0)
+		)
+		.orderby(SI.posting_date, order=Order.desc)
+	)
+
+	data = query.run(as_dict=True)
+
+	return data
