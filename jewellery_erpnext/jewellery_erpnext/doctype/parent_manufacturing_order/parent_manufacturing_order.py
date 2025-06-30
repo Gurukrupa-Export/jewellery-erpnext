@@ -108,7 +108,8 @@ class ParentManufacturingOrder(Document):
 			set_gemstone_tolerance_table(self)  # To Set Gemstone Product Tolerance Table
 			# for idx in range(0, int(self.qty)):
 			self.submit_bom()
-			self.create_material_requests()
+			if self.type != 'Finding Manufacturing':
+				self.create_material_requests()
 
 		create_manufacturing_work_order(self)
 		gemstone_details_set_mandatory_field(self)

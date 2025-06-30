@@ -206,6 +206,33 @@ class ManufacturingOperation(Document):
 		ignored_department = [row.department for row in ignored_department]
 		if self.operation in ignored_department:
 			frappe.throw(_("Customer not requireed this operation"))
+			
+		if self.manufacturing_work_order:
+			if self.department == 'Computer Aided Designing - GEPL' or self.department =='Computer Aided Manufacturing - GEPL':
+				item=frappe.get_doc('Item',self.item_code)
+				existing_row = item.custom_cam_weight_detail[0] if item.custom_cam_weight_detail else None
+				if existing_row:
+			
+					existing_row.cad_numbering_file = self.cad_numbering_file
+					existing_row.support_cam_file = self.support_cam_file
+					existing_row.platform_wt = self.platform_wt
+					existing_row.rpt_wt_issue = self.rpt_wt_issue
+					existing_row.rpt_wt_receive = self.rpt_wt_receive
+					existing_row.estimated_rpt_wt = self.estimated_rpt_wt
+					existing_row.rpt_wt_loss = self.rpt_wt_loss
+				else:
+
+						item.append('custom_cam_weight_detail', {
+					'cad_numbering_file': self.cad_numbering_file,
+					'support_cam_file': self.support_cam_file,
+					'platform_wt': self.platform_wt ,
+					'rpt_wt_issue':self.rpt_wt_issue,
+					'rpt_wt_receive' : self.rpt_wt_receive,
+					'estimated_rpt_wt':self.estimated_rpt_wt,
+					'rpt_wt_loss':self.rpt_wt_loss
+
+				})
+				item.save()
 
 	# def remove_duplicate(self):
 	# 	existing_data = {
@@ -944,6 +971,7 @@ class ManufacturingOperation(Document):
 		added_item_codes = set()
 		final_balance_row = []
 		bal_qty = {}
+		bal_pcs = {}
 		existing_data = {}
 		row_dict = {}
 		# Calculate sum of quantities for department source table
@@ -990,15 +1018,19 @@ class ManufacturingOperation(Document):
 
 		for row in self.department_source_table:
 			bal_qty[(row.item_code, row.batch_no)] = bal_qty.get((row.item_code, row.batch_no), 0) + row.qty
+			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get((row.item_code, row.batch_no), 0) + (flt(row.pcs) if row.pcs else 0)
 		# Calculate sum of quantities for employee source table
 		for row in self.employee_source_table:
 			bal_qty[(row.item_code, row.batch_no)] = bal_qty.get((row.item_code, row.batch_no), 0) + row.qty
+			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get((row.item_code, row.batch_no), 0) + (flt(row.pcs) if row.pcs else 0)
 		# Subtract sum of quantities for department target table
 		for row in self.department_target_table:
 			bal_qty[(row.item_code, row.batch_no)] = bal_qty.get((row.item_code, row.batch_no), 0) - row.qty
+			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get((row.item_code, row.batch_no), 0) - flt(row.pcs or 0)
 		# Subtract sum of quantities for employee target table
 		for row in self.employee_target_table:
 			bal_qty[(row.item_code, row.batch_no)] = bal_qty.get((row.item_code, row.batch_no), 0) - row.qty
+			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get((row.item_code, row.batch_no), 0) - flt(row.pcs or 0)
 
 		# for key in bal_qty:
 		# 	if bal_qty[key] != 0 and not existing_data.get(key):
@@ -1853,7 +1885,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						size_in_mm_diamond_price_list_entry = frappe.db.sql(
 							"""
 							SELECT name, supplier_fg_purchase_rate,rate,custom_outwork_handling_charges_in_percentage,
-							custom_outright_handling_charges_in_percentage,custom_outright_handling_charges_in_rate,custom_outwork_handling_charges_in_rate
+							custom_outright_handling_charges_in_percentage,custom_outright_handling_charges_rate,custom_outwork_handling_charges_rate
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s

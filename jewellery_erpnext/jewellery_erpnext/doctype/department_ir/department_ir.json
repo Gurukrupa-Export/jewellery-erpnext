@@ -35,7 +35,8 @@
   "section_break_5huxg",
   "department_ir_operation",
   "summary",
-  "mop_data"
+  "mop_data",
+  "se_data"
  ],
  "fields": [
   {
@@ -201,7 +202,18 @@
   {
    "fieldname": "mop_data",
    "fieldtype": "JSON",
-   "label": "MOP Data"
+   "hidden": 1,
+   "label": "MOP Data",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "se_data",
+   "fieldtype": "JSON",
+   "hidden": 1,
+   "label": "SE Data",
+   "no_copy": 1,
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
@@ -212,7 +224,7 @@
    "link_fieldname": "department_ir"
   }
  ],
- "modified": "2025-06-02 15:46:08.916210",
+ "modified": "2025-06-03 13:13:50.119567",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department IR",

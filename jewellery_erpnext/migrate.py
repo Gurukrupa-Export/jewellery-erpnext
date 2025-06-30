@@ -5,9 +5,9 @@ import frappe
 
 
 def after_migrate():
-	pass
-	# create_custom_fields()
-	# create_property_setter()
+	# pass
+	create_custom_fields()
+	create_property_setter()
 	# create_indexes()
 
 

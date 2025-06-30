@@ -501,6 +501,60 @@
    "insert_after": "custom_ignore_po_creation_for_certification",
    "label": "Separate Hallmarking invoice",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_require_customer_bulk_numbers",
+   "fieldtype": "Check",
+   "insert_after": "custom_advanced_manual_bagging_available",
+   "label": "Require Customer Bulk Numbers",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_advanced_manual_bagging_available",
+   "fieldtype": "Check",
+   "insert_after": "custom_consider_2_digit_for_gemstone",
+   "label": "Advanced Manual Bagging Available",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_customer_representatives",
+   "fieldtype": "Table",
+   "insert_after": "email_id",
+   "label": "Customer Representatives",
+   "module": "Jewellery Erpnext",
+   "options":"Customer Representatives"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_section_break_5dmwj",
+   "fieldtype": "Section Break",
+   "insert_after": "is_npa",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_section_break_k1sbp",
+   "fieldtype": "Section Break",
+   "insert_after": "disabled",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_making_rates_based_on_custom_code",
+   "fieldtype": "Check",
+   "insert_after": "custom_separate_hallmarking_invoice",
+   "label": "Making Rates based on Custom Code",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "section_break_21",
+   "fieldtype": "Section Break",
+   "insert_after": "column_break_bak3e",
+   "module": "Jewellery Erpnext"
   }
  ]
 }

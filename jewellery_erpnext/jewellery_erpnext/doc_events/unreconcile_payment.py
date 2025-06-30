@@ -1,5 +1,4 @@
 import frappe
-from frappe import qb
 
 def before_submit(doc, method):
     """
@@ -8,38 +7,17 @@ def before_submit(doc, method):
     if doc.voucher_type != "Payment Entry":
         return
 
-    for alloc in doc.allocations:
-        if not alloc.reference_doctype == "Sales Invoice" and not alloc.reference_name:
-            continue
+    existing_jv_list = get_journal_entry_from_pe(doc.voucher_no)
 
-        if je_name := check_journal_entry_exists(doc, alloc.reference_doctype, alloc.reference_name):
-            try:
-                je = frappe.get_doc("Journal Entry", je_name)
-                if je.docstatus == 1:
-                    je.cancel()
-            except frappe.DoesNotExistError:
-                pass
-
-            alloc.ref_journal_entry = None
+    for je_name in existing_jv_list:
+        je = frappe.get_doc("Journal Entry", je_name)
+        je.cancel()
 
 
-def check_journal_entry_exists(doc, ref_doctype, ref_name):
-    pe = qb.DocType("Payment Entry")
-    per = qb.DocType("Payment Entry Reference")
+def get_journal_entry_from_pe(pe_name):
+    jv_list = frappe.db.get_all("Journal Entry", {
+        "ref_payment_entry":pe_name,
+        "docstatus":1
+    }, pluck="name")
 
-    query = (
-        qb.from_(per)
-        .left_join(pe)
-        .on(per.parent == pe.name)
-        .select(per.ref_journal_entry)
-        .where(
-            (per.reference_doctype == ref_doctype)
-            & (per.reference_name == ref_name)
-            & (per.ref_journal_entry.isnotnull())
-            & (pe.name == doc.voucher_no)
-        )
-    )
-
-    res = query.run(as_dict=True)
-
-    return res[0].ref_journal_entry if res else None
+    return jv_list
