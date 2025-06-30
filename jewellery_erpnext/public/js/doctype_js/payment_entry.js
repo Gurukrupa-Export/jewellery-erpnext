@@ -28,6 +28,13 @@ frappe.ui.form.on("Payment Entry", {
 							label: __("Total Allocated Amount"),
 							fieldtype: "Currency",
 							fieldname: "total_allocated_amount",
+							onchange: () => {
+								let total_allocated_amount = d.get_value("total_allocated_amount")
+								let paid_amount = d.get_value("paid_amount")
+								if (total_allocated_amount > paid_amount) {
+									frappe.throw(__("Total Allocated Amount cannot be greater than Paid Amount"));
+								}
+							},
 							default: 0,
 							read_only: 1,
 						},
@@ -91,7 +98,7 @@ frappe.ui.form.on("Payment Entry", {
 									"fieldtype": "Currency",
 									"fieldname": "allocated_amount",
 									"default": 0,
-									"onchange": function (field) {
+									"onchange": function () {
 										let si_list = d.fields_dict.invoices.grid.get_selected_children();
 										let total_allocated_amount = 0;
 
