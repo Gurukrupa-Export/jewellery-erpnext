@@ -8,7 +8,8 @@ def create_branch_so(self):
 	if self.items[0].get("custom_customer_approval"):
 		return
 
-	central_branch = frappe.db.get_value("Company", self.company, "custom_central_branch")
+	central_branch = frappe.db.get_value("Branch", {"custom_is_central_branch":1}, "name")
+	# central_branch = frappe.db.get_value("Company", self.company, "custom_central_branch")
 
 	if not self.branch or self.branch == central_branch:
 		return
