@@ -3,6 +3,9 @@ from frappe import _
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import get_datetime
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
+	update_mop_balance
+)
 
 
 def create_se_entry(self):
@@ -131,10 +134,14 @@ def create_stock_transfer_entry(self):
 	if not target_warehouse:
 		frappe.throw(_("Raw Material type Warehouse is not set for {0}").format(department))
 
+	# ---------- Kavin Changes ---------- #
 	if department != self.department:
 		frappe.throw(_("Main MWO Department {0} does not match with Finding MWO Department{1}").format(department, self.department))
 
-	frappe.get_doc("Manufacturing Operation", self.manufacturing_operation).save()
+	# frappe.get_doc("Manufacturing Operation", self.manufacturing_operation).save()
+
+	update_mop_balance(self.manufacturing_operation)
+
 	stock_entry_data = frappe.db.get_all(
 		"MOP Balance Table",
 		{
