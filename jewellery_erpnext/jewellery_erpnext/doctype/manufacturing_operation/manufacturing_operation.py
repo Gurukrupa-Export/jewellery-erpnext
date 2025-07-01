@@ -2731,12 +2731,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			new_bom.append("other_detail", row)
 	new_bom.making_charge = new_bom.custom_metal_amount + new_bom.custom_finding_amount
 	new_bom.making_fg_purchase = new_bom.custom_fg_metal_amount + new_bom.custom_finding_fg_amount
-	new_bom.total_diamond_weight_in_gms = new_bom.total_diamond_weight_per_gram
 	new_bom.finding_weight_ = new_bom.finding_weight_
 	new_bom.metal_weight = new_bom.total_metal_weight
+	new_bom.metal_and_finding_weight = new_bom.finding_weight_ + new_bom.metal_weight
 	new_bom.diamond_weight = new_bom.total_diamond_weight
+	new_bom.total_diamond_weight_in_gms = new_bom.diamond_weight / 5
 	new_bom.gemstone_weight = new_bom.total_gemstone_weight
-	new_bom.total_gemstone_weight_in_gms = new_bom.total_gemstone_weight_per_gram
+	new_bom.total_gemstone_weight_in_gms = new_bom.gemstone_weight / 5
 	new_bom.gross_weight = (
 	new_bom.metal_weight
 	+ new_bom.finding_weight_
