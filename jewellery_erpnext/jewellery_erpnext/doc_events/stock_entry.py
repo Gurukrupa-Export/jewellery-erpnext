@@ -814,8 +814,6 @@ def custom_get_bom_scrap_material(self, qty):
 
 
 def update_manufacturing_operation(doc, is_cancelled=False):
-	if isinstance(doc, str):
-		doc = frappe.get_doc("Stock Entry", doc)
 	update_mop_details(doc, is_cancelled)
 
 
@@ -895,6 +893,11 @@ def update_mop_details(se_doc, is_cancelled=False):
 					validated_batches = True
 
 				mop_data[mop_name]["department_source_table"].append(temp_raw)
+
+				# ----------- Kavin Changes ----------- #
+				# Update department target table only if the source warehouse is same as department warehouse
+				if frappe.flags.is_finding_transfer and entry.s_warehouse == d_warehouse:
+					mop_data[mop_name]["department_target_table"].append(temp_raw)
 
 			elif entry.t_warehouse == d_warehouse:
 				mop_data[mop_name]["department_target_table"].append(temp_raw)
@@ -1294,6 +1297,7 @@ def create_material_receipt_for_customer_approval(source_name, cust_name):
 	}
 
 	target_doc = frappe.new_doc("Stock Entry")
+
 	target_doc.update(frappe.get_doc("Stock Entry", source_name).as_dict())
 	target_doc.docstatus = 0
 
