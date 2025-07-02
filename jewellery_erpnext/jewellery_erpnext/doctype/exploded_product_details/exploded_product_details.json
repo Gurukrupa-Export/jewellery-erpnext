@@ -8,6 +8,7 @@
  "engine": "InnoDB",
  "field_order": [
   "serial_no",
+  "jwelex_tag_no",
   "item_code",
   "parent_manufacturing_order",
   "manufacturing_work_order",
@@ -242,6 +243,12 @@
    "fieldtype": "Link",
    "label": "Parent Manufacturing Order",
    "options": "Parent Manufacturing Order"
+  },
+  {
+   "fetch_from": "serial_no.custom_jwelex_tag_no",
+   "fieldname": "jwelex_tag_no",
+   "fieldtype": "Data",
+   "label": "Jwelex Tag No"
   }
  ],
  "index_web_pages_for_search": 1,
