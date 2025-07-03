@@ -8,7 +8,7 @@
  "engine": "InnoDB",
  "field_order": [
   "serial_no",
-  "jwelex_tag_no"
+  "jwelex_tag_no",
   "item_code",
   "parent_manufacturing_order",
   "manufacturing_work_order",
