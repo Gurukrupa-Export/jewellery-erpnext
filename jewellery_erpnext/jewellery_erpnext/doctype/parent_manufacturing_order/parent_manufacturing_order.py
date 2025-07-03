@@ -530,7 +530,7 @@ def make_manufacturing_order(
 		doc.department = frappe.db.get_value(
 			"Manufacturing Setting", {"manufacturer": manufacturer}, "default_department"
 		)
-		doc.finding_department = warehouse_details.get("default_finding_department") or None
+		# doc.finding_department = warehouse_details.get("default_finding_department") or None
 		# mwo_details = (
 		# 	frappe.get_value(
 		# 		"Manufacturing Work Order",
