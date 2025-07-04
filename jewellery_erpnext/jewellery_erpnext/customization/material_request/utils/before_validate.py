@@ -11,7 +11,7 @@ def update_pure_qty(self):
 	self.custom_total_quantity = 0
 	pure_item_purity = None
 	for row in self.items:
-		if row.custom_variant_of in ["M", "F"]:
+		if row.custom_variant_of in ["M", "F"] and self.custom_transfer_type != 'Transfer To Branch':
 
 			if not pure_item_purity:
 				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
