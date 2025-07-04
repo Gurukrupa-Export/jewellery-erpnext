@@ -197,10 +197,16 @@ def create_new_bom(self):
 
 
 def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bom_data, bom_data):
-	
-	row.db_set("copy_bom", bom)
-	doc = frappe.copy_doc(frappe.get_doc("BOM", bom))
+	copy_bom = bom 
 
+	#  If Order Form ID exists, try using its new_bom as copy_bom
+	if row.order_form_id:
+		order_form_bom = frappe.db.get_value("Order", row.order_form_id, "new_bom")
+		if order_form_bom:
+			copy_bom = order_form_bom
+
+	row.db_set("copy_bom", copy_bom)
+	doc = frappe.copy_doc(frappe.get_doc("BOM", copy_bom))
 	doc.custom_creation_doctype = self.doctype
 	doc.custom_creation_docname = self.name
 
@@ -332,9 +338,6 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 								diamond.total_diamond_rate = rate + entry.get("rate", 0)
 								diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
 
-
-			# diamond.diamond_rate_for_specified_quantity = diamond.total_diamond_rate * diamond.quantity
-
 		for find in doc.finding_detail:
 			rate_per_gm = 0
 			fg_purchase_rate = 0
@@ -446,7 +449,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 			rate_per_gm = 0
 			fg_purchase_rate = 0
 			fg_purchase_amount = 0 
-			wastage_rate= 0
+			wastage_rate = 0
 			if self.custom_customer_gold == "Yes":
 				metal.is_customer_item = 1
 			making_charge_price_list = frappe.get_all(
@@ -489,7 +492,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							metal.rate = doc.gold_rate_with_gst
 							wastage_rate = match.get("wastage", 0)/100
 
-						# wastage_rate= match.get("wastage", 0) / 100.0
+						# wastage_rate = match.get("wastage", 0) / 100.0
 					else:
 						frappe.msgprint(f"No matching subcategory found for {doc.item_subcategory}")
 			else:
@@ -525,7 +528,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 			rate_per_gm = 0
 			fg_purchase_rate = 0
 			fg_purchase_amount = 0 
-			wastage_rate= 0  
+			wastage_rate = 0  
 			if self.custom_customer_gold == "Yes":
 				metal.is_customer_item = 1
 			making_charge_price_list = frappe.get_all(
@@ -575,7 +578,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							metal.rate = doc.gold_rate_with_gst
 							wastage_rate = matching_subcategory.get("wastage", 0)/100
 
-						# wastage_rate= matching_subcategory.get("wastage", 0) / 100.0
+						# wastage_rate = matching_subcategory.get("wastage", 0) / 100.0
 
 					metal.wastage_rate = wastage_rate
 					metal.fg_purchase_amount = fg_purchase_amount
@@ -592,7 +595,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				frappe.msgprint(f"No making charge price list found for customer {doc.customer} and setting type {doc.setting_type}")
 		
 		for find in doc.finding_detail:
-			wastage_rate = 0
+			wastage_rate = 0  
 			matching_subcategory = None
 			if self.custom_customer_gold == "Yes":
 				find.is_customer_item = 1
@@ -813,6 +816,21 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 		for other in doc.other_detail:
 			if row.custom_customer_good == "Yes":
 				other.is_customer_item = 1
+	for idx, find in enumerate(doc.finding_detail, start=1):
+		if not find.metal_purity:
+			touch = (find.metal_touch or "").strip()
+			purity = metal_criteria.get(touch)
+
+			if not purity and row.get("metal_purity"):
+				purity = row.metal_purity
+
+			if purity:
+				find.metal_purity = purity
+			else:
+				frappe.throw(f"BOM Finding Detail Row #{idx}: Value missing for: Metal Purity for Metal Touch '{touch}'")
+
+
+# doc.save(ignore_permissions=True)
 
 	# This Save will Call before_save and validate method in BOM and Rates Will be Calculated as diamond_quality is calculated too
 	doc.save(ignore_permissions=True)
