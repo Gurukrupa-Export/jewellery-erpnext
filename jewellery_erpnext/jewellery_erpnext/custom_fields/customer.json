@@ -555,6 +555,14 @@
    "fieldtype": "Section Break",
    "insert_after": "column_break_bak3e",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_order_type_criteria",
+   "fieldtype": "Check",
+   "insert_after": "brand",
+   "label": "Order Type Criteria",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
