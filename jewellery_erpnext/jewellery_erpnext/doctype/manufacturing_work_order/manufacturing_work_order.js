@@ -132,6 +132,7 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		// dialog.$wrapper.find('.modal-dialog').css("max-width", "90%");
 	},
 });
+
 function set_html(frm) {
 	if (frm.doc.__islocal && !frm.doc.is_last_operation) {
 		frm.get_field("stock_entry_details").$wrapper.html("");
@@ -145,4 +146,15 @@ function set_html(frm) {
 			frm.get_field("stock_entry_details").$wrapper.html(r.message);
 		},
 	});
+	if (frm.doc.for_fg && frm.doc.docstatus == 1) {
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_bom_summary",
+			args: {
+				design_id_bom: frm.doc.master_bom,
+			},
+			callback: function (r) {
+				frm.get_field("bom_summary").$wrapper.html(r.message);
+			},
+		});
+	}
 }
