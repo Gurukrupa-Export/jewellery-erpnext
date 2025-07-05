@@ -39,8 +39,9 @@
   "auto_created",
   "setting_type",
   "manufacturing_details_section",
+  "bom_summary",
+  "mwo_mop_balance_table",
   "manufacturer",
-  "column_break_0ddlc",
   "diamond_grade",
   "metal_details_section",
   "metal_type",
@@ -406,10 +407,6 @@
    "label": "Manufacturing Details"
   },
   {
-   "fieldname": "column_break_0ddlc",
-   "fieldtype": "Column Break"
-  },
-  {
    "fieldname": "section_break_ibirs",
    "fieldtype": "Section Break",
    "label": "Order Details"
@@ -601,8 +598,22 @@
    "label": "Finding Transfer Entry",
    "options": "Stock Entry",
    "read_only": 1
+  },
+  {
+   "fieldname": "bom_summary",
+   "fieldtype": "HTML",
+   "label": "BOM Summary",
+   "read_only_depends_on": "doc.for_fg"
+  },
+  {
+   "depends_on": "doc.for_fg",
+   "fieldname": "mwo_mop_balance_table",
+   "fieldtype": "Table",
+   "label": "MWO MOP Balance Table",
+   "options": "MWO MOP Balance Table"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [
@@ -627,7 +638,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2025-03-24 17:01:32.586845",
+ "modified": "2025-07-04 23:26:55.852675",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",
@@ -648,6 +659,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from copy import deepcopy
 from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
@@ -267,6 +268,13 @@ def create_manufacturing_operation(doc):
 	values = {"operation": operation}
 	values["department_start_time"] = dt_string
 	add_time_log(mop, values)
+
+	# ----- Kavin's Code ----- #
+	# update mwo mop balance table for fg
+	if doc.for_fg:
+		for row in mop.mop_balance_table:
+			copy_row = deepcopy(row.__dict__)
+			doc.append("mwo_mop_balance_table", copy_row)
 
 
 @frappe.whitelist()
