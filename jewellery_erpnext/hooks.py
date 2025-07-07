@@ -177,13 +177,13 @@ override_doctype_class = {
 scheduler_events = {
 	"cron": {
 		"* * * * *": [
-			"jewellery_erpnext.jewellery_erpnext.doctype.stock_reconciliation_template.stock_reconciliation_template_utils.create_stock_reconciliation_from_template"
+			"jewellery_erpnext.jobs.stock_reconciliation_template.create_stock_reconciliation",
 		]
 
-	},
-	"hourly": [
-		"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.rename_stock_entry_docs"
-	],
+	}
+	# "hourly": [
+	# 	"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.rename_stock_entry_docs"
+	# ],
 }
 
 # from erpnext.stock import get_item_details
