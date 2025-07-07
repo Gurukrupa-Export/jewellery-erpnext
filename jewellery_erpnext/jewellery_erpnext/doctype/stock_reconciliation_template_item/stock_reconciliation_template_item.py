@@ -5,5 +5,5 @@
 from frappe.model.document import Document
 
 
-class StockReconciliationtemplateItem(Document):
+class StockReconciliationTemplateItem(Document):
 	pass
