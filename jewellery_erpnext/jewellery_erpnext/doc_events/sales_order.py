@@ -27,7 +27,7 @@ def validate(self, method):
 
 def on_submit(self, method):
 	# submit_bom(self)
-	create_branch_so(self)
+	# create_branch_so(self)
 	validate_snc(self)
 
 
