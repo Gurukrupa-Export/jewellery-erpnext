@@ -1609,6 +1609,7 @@ def get_material_wt(doc):
 
 
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
+	# frappe.throw("create_finished_goods_bom")
 	data = get_stock_entry_data(self)
 
 	ref_customer = frappe.db.get_value("Parent Manufacturing Order", self.parent_manufacturing_order, "ref_customer")
@@ -1981,6 +1982,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			for row in new_bom.get("diamond_detail", []):
 				total_diamond_rate_for_specified_quantity = sum(row.get("diamond_rate_for_specified_quantity", 0) or 0  for row in new_bom.get("diamond_detail", []))
 				new_bom.diamond_bom_amount = total_diamond_rate_for_specified_quantity
+				
 				total_diamond_purchase_amount = sum((row.get("fg_purchase_amount", 0) or 0) for row in new_bom.get("diamond_detail", []))
 				new_bom.diamond_fg_purchase = total_diamond_purchase_amount
 				total_diamond_pcs = sum(flt(row.get("pcs", 0) or 0) for row in new_bom.get("diamond_detail", []))
@@ -2179,12 +2181,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			if new_bom.get("metal_detail"):
 				total_metal_amount = sum(flt(r.get("amount", 0)) for r in new_bom.get("metal_detail", []))
 				new_bom.total_metal_amount = total_metal_amount
-
+				
 			if not hasattr(new_bom, "total_wastage_amount"):
 				new_bom.total_wastage_amount = 0
 			if new_bom.get("metal_detail"):
 				total_wastage_amount = sum(flt(r.get("wastage_amount", 0)) for r in new_bom.get("metal_detail", []))
 				new_bom.total_wastage_amount = total_wastage_amount
+
 
 		elif item_row.variant_of == "F":
 			row = {}
@@ -2389,6 +2392,9 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			new_bom.finding_weight_ = total_finding_weight
 			new_bom.total_wastage_amount = total_wastage_amount
 			new_bom.total_gemstone_rate_for_specified_quantity = total_gemstone_rate_for_specified_quantity
+
+
+
 
 		elif item_row.variant_of == "G":
 			row = {}
@@ -2710,6 +2716,9 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			new_bom.total_gemstone_weight_per_gram = sum(flt(row.get("weight_in_gms", 0)) for row in new_bom.get("gemstone_detail", []))
 			new_bom.total_gemstone_amount = sum(flt(row.get("gemstone_rate_for_specified_quantity", 0)) for row in new_bom.get("gemstone_detail", []))
 
+
+
+
 		elif item_row.variant_of == "O":
 			row = {}
 			row["se_rate"] = item.get("rate")
@@ -2723,12 +2732,13 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			new_bom.append("other_detail", row)
 	new_bom.making_charge = new_bom.custom_metal_amount + new_bom.custom_finding_amount
 	new_bom.making_fg_purchase = new_bom.custom_fg_metal_amount + new_bom.custom_finding_fg_amount
-	new_bom.total_diamond_weight_in_gms = new_bom.total_diamond_weight_per_gram
 	new_bom.finding_weight_ = new_bom.finding_weight_
 	new_bom.metal_weight = new_bom.total_metal_weight
+	new_bom.metal_and_finding_weight = new_bom.finding_weight_ + new_bom.metal_weight
 	new_bom.diamond_weight = new_bom.total_diamond_weight
+	new_bom.total_diamond_weight_in_gms = new_bom.diamond_weight / 5
 	new_bom.gemstone_weight = new_bom.total_gemstone_weight
-	new_bom.total_gemstone_weight_in_gms = new_bom.total_gemstone_weight_per_gram
+	new_bom.total_gemstone_weight_in_gms = new_bom.gemstone_weight / 5
 	new_bom.gross_weight = (
 	new_bom.metal_weight
 	+ new_bom.finding_weight_
