@@ -1,7 +1,6 @@
 {
  "Quotation": [
   {
-   "default": "No",
    "dt": "Quotation",
    "fieldname": "custom_customer_finding",
    "fieldtype": "Select",
@@ -246,7 +245,6 @@
    "module": "Jewellery Erpnext"
   },
   {
-   "default": "No",
    "dt": "Quotation",
    "fieldname": "custom_customer_gold",
    "fieldtype": "Select",
@@ -263,7 +261,6 @@
    "module": "Jewellery Erpnext"
   },
   {
-   "default": "No",
    "dt": "Quotation",
    "fieldname": "custom_customer_diamond",
    "fieldtype": "Select",
@@ -280,7 +277,7 @@
    "module": "Jewellery Erpnext"
   },
   {
-   "default": "No",
+
    "dt": "Quotation",
    "fieldname": "custom_customer_stone",
    "fieldtype": "Select",
@@ -297,7 +294,6 @@
    "module": "Jewellery Erpnext"
   },
   {
-   "default": "No",
    "dt": "Quotation",
    "fieldname": "custom_customer_good",
    "fieldtype": "Select",
