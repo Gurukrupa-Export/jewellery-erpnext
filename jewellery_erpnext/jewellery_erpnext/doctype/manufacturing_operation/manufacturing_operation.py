@@ -166,7 +166,7 @@ class ManufacturingOperation(Document):
 	# 		},
 	# 		fields=["parent"]
 	# 	)
-		
+
 	# 	matched_ir = None
 
 	# 	if ir_operations:
@@ -176,7 +176,7 @@ class ManufacturingOperation(Document):
 	# 			filters={
 	# 				"employee": self.employee,
 	# 				"operation": self.operation,
-	# 				"docstatus": 1,  
+	# 				"docstatus": 1,
 	# 				"type": "Issue",
 	# 				"name": ["in", parent_ir_names]
 	# 			},
@@ -189,7 +189,7 @@ class ManufacturingOperation(Document):
 	# 			# else:
 	# 			# 	frappe.msgprint(f"Main Slip is not set in Employee IR {ir_doc.name}.")
 
-			
+
 
 
 	def validate_operation(self):
@@ -206,13 +206,13 @@ class ManufacturingOperation(Document):
 		ignored_department = [row.department for row in ignored_department]
 		if self.operation in ignored_department:
 			frappe.throw(_("Customer not requireed this operation"))
-			
+
 		if self.manufacturing_work_order:
 			if self.department == 'Computer Aided Designing - GEPL' or self.department =='Computer Aided Manufacturing - GEPL':
 				item=frappe.get_doc('Item',self.item_code)
 				existing_row = item.custom_cam_weight_detail[0] if item.custom_cam_weight_detail else None
 				if existing_row:
-			
+
 					existing_row.cad_numbering_file = self.cad_numbering_file
 					existing_row.support_cam_file = self.support_cam_file
 					existing_row.platform_wt = self.platform_wt
@@ -610,7 +610,7 @@ class ManufacturingOperation(Document):
 		# 	filters={"parent": self.company, "parenttype": "Manufacturing Setting"},
 		# 	fields=["operation"],
 		# )
-		
+
 		record_filter_from_mnf_setting = frappe.get_all(
 			"CAM Weight Details Mapping",
 			filters={"parent": self.manufacturer, "parenttype": "Manufacturing Setting"},
