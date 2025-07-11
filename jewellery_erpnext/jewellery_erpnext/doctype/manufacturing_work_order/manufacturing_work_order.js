@@ -146,7 +146,7 @@ function set_html(frm) {
 			frm.get_field("stock_entry_details").$wrapper.html(r.message);
 		},
 	});
-	if (frm.doc.for_fg && frm.doc.docstatus == 1) {
+	if (frm.doc.for_fg) {
 		frappe.call({
 			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_bom_summary",
 			args: {
