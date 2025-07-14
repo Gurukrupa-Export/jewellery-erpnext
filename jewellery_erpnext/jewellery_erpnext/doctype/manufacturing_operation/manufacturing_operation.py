@@ -3103,3 +3103,34 @@ def get_linked_stock_entries(mwo, department):
 		"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_operation/stock_entry_details.html",
 		{"data": data, "total_qty": total_qty},
 	)
+
+@frappe.whitelist()
+def create_mr_wo_stock_entry(se_data):
+	if isinstance(se_data, str):
+		se_data = json.loads(se_data)
+
+	print("-----------", se_data)
+	if not se_data.get("receive_items"):
+		return frappe.msgprint("No Receive Items Found.")
+
+	se_doc = frappe.new_doc("Stock Entry")
+	se_doc.update({
+		"stock_entry_type": "Material Receive (WORK ORDER)",
+		"manufacturing_work_order": se_data.get("manufacturing_work_order"),
+		"manufacturing_order": se_data.get("manufacturing_order"),
+		"manufacturing_operation": se_data.get("manufacturing_operation")
+	})
+
+	for row in se_data.get("receive_items"):
+		se_doc.append("items", {
+			"item_code": row.get("item_code"),
+			"qty": row.get("qty"),
+			"pcs": row.get("pcs"),
+			"batch_no": row.get("batch_no"),
+			"s_warehouse": row.get("s_warehouse")
+		})
+
+	se_doc.save()
+	se_doc.submit()
+
+	return {"doctype": se_doc.doctype, "docname": se_doc.name}
