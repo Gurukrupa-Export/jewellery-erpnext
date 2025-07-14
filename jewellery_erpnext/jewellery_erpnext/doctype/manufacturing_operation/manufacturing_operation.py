@@ -1096,6 +1096,9 @@ class ManufacturingOperation(Document):
 		# Append Final result into Balance Table
 		for row in final_balance_row:
 			if row.get("item_code") not in added_item_codes:
+				if not row.get("qty") > 0:
+					continue
+
 				self.append("mop_balance_table", row)
 
 		# if frappe.db.exists("Manufacturing Operation", {'previous_mop': self.name}):
