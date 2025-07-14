@@ -64,7 +64,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 					employee: frm.doc.employee,
 					source_warehouse: source_warehouse,
 					target_warehouse:source_warehouse,
-					
+
 				};
 				frappe.set_route("Form", "Swap Metal", "new-swap-metal");
 			}).addClass("btn-primary");
@@ -110,6 +110,10 @@ frappe.ui.form.on("Manufacturing Operation", {
 			// } else {
 			// 	frm.trigger("prepare_timer_buttons");
 			// }
+		}
+
+		if (frm.doc.status === "Not Started") {
+			frm.trigger("setup_buttons")
 		}
 	},
 	setup(frm) {
@@ -303,6 +307,143 @@ frappe.ui.form.on("Manufacturing Operation", {
 			}
 		}
 	},
+	setup_buttons: (frm) => {
+		frm.add_custom_button(__("Make Receive Entry"), () => {
+			this.data = frm.doc.mop_balance_table.map((e) => {
+				return {
+					"item_code": e.item_code,
+					"qty": e.qty,
+					"pcs": e.pcs,
+					"s_warehouse": e.s_warehouse,
+					"batch_no": e.batch_no
+
+				}
+			})
+
+			let d = new frappe.ui.Dialog({
+				title: __("Create Material Receive WO"),
+				size: "extra-large",
+				fields: [
+					{
+						fieldname: "receive_entries",
+						label: __("Receive Entry Details"),
+						fieldtype: "Table",
+						data: this.data,
+							get_data: () => {
+								return this.data;
+							},
+							fields: [
+								{
+									"label": __("Item Code"),
+									"fieldtype": "Link",
+									"fieldname": "item_code",
+									"options": "Item",
+									"in_list_view": 1,
+									"read_only": 1,
+								},
+								{
+									"label": __("Source Warehouse"),
+									"fieldtype": "Link",
+									"fieldname": "s_warehouse",
+									"in_list_view": 1,
+									"read_only": 1
+								},
+								{
+									"label": __("Qty"),
+									"fieldtype": "Float",
+									"fieldname": "qty",
+									"in_list_view": 1,
+									"read_only": 1,
+									"columns": 1,
+									"default": flt()
+
+								},
+								{
+									"label": __("Pcs"),
+									"fieldtype": "Float",
+									"fieldname": "pcs",
+									"in_list_view": 1,
+									"read_only": 1,
+									"columns": 1,
+									"default": flt()
+								},
+								{
+									"label": __("Receive Quantity"),
+									"fieldtype": "Float",
+									"fieldname": "receive_qty",
+									"in_list_view": 1,
+									"reqd": 1,
+									"default": flt(),
+								},
+								{
+									"label": __("Receive Pcs"),
+									"fieldtype": "Float",
+									"fieldname": "receive_pcs",
+									"in_list_view": 1,
+									"reqd": 1,
+									"default": flt()
+								},
+								{
+									"label": __("Batch No"),
+									"fieldtype": "Link",
+									"fieldname": "batch_no",
+								}
+							]
+						}
+				],
+				primary_action_label: __("Create Material Receive Entry"),
+				primary_action: (r) => {
+					let receive_items = []
+					r.receive_entries.forEach(e => {
+						if (e.receive_qty > e.qty) {
+							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Qty <b>{2}</b> should not be greater than Balance Qty <b>{3}</b>", [e.idx, e.item_code, e.receive_qty, e.qty]))
+						}
+						if (e.receive_pcs > e.pcs) {
+							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Pcs <b>{2}</b> should not be greater than Balance Pcs <b>{3}</b>", [e.idx, e.item_code, e.receive_pcs, e.pcs]))
+						}
+						if (e.receive_qty || e.receive_pcs) {
+							receive_items.push({
+								item_code: e.item_code,
+								s_warehouse: e.s_warehouse,
+								qty: e.receive_qty,
+								pcs: e.receive_pcs,
+								batch_no: e.batch_no,
+							})
+						}
+					});
+
+					if (receive_items.length === 0) {
+						frappe.msgprint(__("No Receive Items found for Material Receive stock entry creation"))
+					}
+					frappe.call({
+						method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.create_mr_wo_stock_entry",
+						args: {
+							se_data: {
+								manufacturing_work_order: frm.doc.manufacturing_work_order,
+								manufacturing_operation: frm.doc.name,
+								manufacturing_order: frm.doc.manufacturing_order,
+								receive_items: receive_items
+							}
+						},
+						freeze: true,
+						freeze_message: __("Creating Material Receive Entry...."),
+						callback: (r) => {
+							console.log(r.message);
+							if (!r.exec) {
+								frappe.msgprint("Material Receive Entry has been created successfully {0}", [frappe.utils.get_form_link(r.message.doctype, r.message.docname)])
+							}
+						}
+					})
+
+					d.hide()
+
+				}
+			})
+			d.show()
+
+		}).addClass("btn-primary")
+
+	}
 });
 function initialiseTimer(section, currentIncrement) {
 	const interval = setInterval(function () {
