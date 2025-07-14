@@ -536,3 +536,17 @@ def serialize_for_json(obj):
 		return obj.as_dict()
 
 	raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
+def get_warehouse_from_user(user_id, warehouse_type):
+	department = frappe.db.get_value("Employee", {"user_id": user_id}, "department")
+
+	if not department:
+		frappe.throw("Department not specified in Employee record")
+
+	warehouse_name = frappe.db.get_value("Warehouse", {
+		"warehouse_type": warehouse_type,
+		"department": department
+		}, "name")
+
+	return warehouse_name
