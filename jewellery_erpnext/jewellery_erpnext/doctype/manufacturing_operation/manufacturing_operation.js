@@ -315,8 +315,10 @@ frappe.ui.form.on("Manufacturing Operation", {
 					"qty": e.qty,
 					"pcs": e.pcs,
 					"s_warehouse": e.s_warehouse,
-					"batch_no": e.batch_no
-
+					"batch_no": e.batch_no,
+					"inventory_type": e.inventory_type,
+					"department": e.department,
+					"to_department": e.to_department
 				}
 			})
 
@@ -386,7 +388,26 @@ frappe.ui.form.on("Manufacturing Operation", {
 								{
 									"label": __("Batch No"),
 									"fieldtype": "Link",
+									"options": "Batch",
 									"fieldname": "batch_no",
+								},
+								{
+									"label": __("Inventory Type"),
+									"fieldtype": "Link",
+									"options": "Inventory Type",
+									"fieldname": "inventory_type",
+								},
+																{
+									"label": __("Department"),
+									"fieldtype": "Link",
+									"options": "Department",
+									"fieldname": "department",
+								},
+																{
+									"label": __("To Department"),
+									"fieldtype": "Link",
+									"options": "Department",
+									"fieldname": "to_department",
 								}
 							]
 						}
@@ -408,6 +429,9 @@ frappe.ui.form.on("Manufacturing Operation", {
 								qty: e.receive_qty,
 								pcs: e.receive_pcs,
 								batch_no: e.batch_no,
+								inventory_type: e.inventory_type,
+								department: e.department,
+								to_department: e.to_department
 							})
 						}
 					});
@@ -415,6 +439,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 					if (receive_items.length === 0) {
 						frappe.msgprint(__("No Receive Items found for Material Receive stock entry creation"))
 					}
+
 					frappe.call({
 						method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.create_mr_wo_stock_entry",
 						args: {
@@ -422,15 +447,24 @@ frappe.ui.form.on("Manufacturing Operation", {
 								manufacturing_work_order: frm.doc.manufacturing_work_order,
 								manufacturing_operation: frm.doc.name,
 								manufacturing_order: frm.doc.manufacturing_order,
+								department: frm.doc.department,
 								receive_items: receive_items
 							}
 						},
 						freeze: true,
 						freeze_message: __("Creating Material Receive Entry...."),
 						callback: (r) => {
-							console.log(r.message);
 							if (!r.exec) {
-								frappe.msgprint("Material Receive Entry has been created successfully {0}", [frappe.utils.get_form_link(r.message.doctype, r.message.docname)])
+								let se_link = frappe.utils.get_form_link(
+									r.message.doctype,
+									r.message.docname,
+									true
+								)
+								frappe.msgprint({
+									message: __("Material Receive Entry has been created successfully {0}", [se_link]),
+									title: __("Material Receive Stock Entry Created"),
+									indicator: "green"
+								})
 							}
 						}
 					})
