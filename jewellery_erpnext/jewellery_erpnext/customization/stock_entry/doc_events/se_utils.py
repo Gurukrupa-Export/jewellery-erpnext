@@ -86,7 +86,7 @@ def validate_inventory_dimention(self):
 						else:
 							frappe.throw(_("Can not use Customer Goods inventory for non provided customer Item"))
 
-
+# chnages in this function
 def get_fifo_batches(self, row):
 	rows_to_append = []
 	row.batch_no = None
@@ -127,14 +127,26 @@ def get_fifo_batches(self, row):
 			],
 			as_dict=1,
 		)
-	if not manufacturer_data.get(customer_item_data.get("manufacturer")):
-		manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
-			"Manufacturer",
-			customer_item_data.get("manufacturer"),
+	# if not manufacturer_data.get(customer_item_data.get("manufacturer")):
+	# 	manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
+	# 		"Manufacturer",
+	# 		customer_item_data.get("manufacturer"),
+	# 		"custom_allow_regular_goods_instead_of_customer_goods",
+	# 	)
+	
+	# new Chnage Start
+	if not manufacturer_data.get(customer_item_data.get("customer")):
+		manufacturer_data[customer_item_data.get("customer")] = frappe.db.get_value(
+			"Customer",
+			customer_item_data.get("Customer"),
 			"custom_allow_regular_goods_instead_of_customer_goods",
 		)
+	# new Chnage End
 
-	allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
+	# new Chnage Start
+	# allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
+	allow_customer_goods = manufacturer_data.get(customer_item_data.get("customer"))
+	# new Chnage End
 	variant_to_customer_key = {
 		"M": "is_customer_gold",
 		"F": "is_customer_gold",
@@ -245,7 +257,71 @@ def get_fifo_batches(self, row):
 		else:
 			frappe.msgprint(message)
 
-	return rows_to_append
+	# new Chnage Start
+	if self.stock_entry_type == "Material Receive (WORK ORDER)":
+		batch_rows = []
+		key = (row.manufacturing_operation, row.item_code)
+
+		# Fetch all matching batch rows for this operation & item
+		mop_batches = frappe.get_all(
+			"MOP Balance Table",
+			filters={"parent": row.manufacturing_operation, "item_code": row.item_code},
+			fields=["batch_no", "qty"],
+			order_by="creation asc",
+		)
+
+		total_qty = row.qty
+		existing_updated = False
+
+		for batch in mop_batches:
+			if total_qty <= 0:
+				break
+
+			if batch.qty <= 0:
+				continue
+
+			batch_qty = flt(min(total_qty, batch.qty), 4)
+
+			if not existing_updated:
+				# update current row
+				row.batch_no = batch.batch_no
+				row.qty = batch_qty
+				row.transfer_qty = batch_qty
+				row.idx = None
+				row.name = None
+				rows_to_append.append(row.__dict__)
+				existing_updated = True
+			else:
+				temp_row = copy.deepcopy(row.__dict__)
+				temp_row["name"] = None
+				temp_row["idx"] = None
+				temp_row["batch_no"] = batch.batch_no
+				temp_row["qty"] = batch_qty
+				temp_row["transfer_qty"] = batch_qty
+				rows_to_append.append(temp_row)
+			# temp_row = copy.deepcopy(row.__dict__)
+			# temp_row["name"] = None
+			# temp_row["idx"] = None
+			# temp_row["batch_no"] = batch.batch_no
+			# temp_row["qty"] = batch_qty
+			# temp_row["transfer_qty"] = batch_qty
+			
+
+			total_qty -= batch_qty
+
+		if total_qty > 0:
+			frappe.msgprint(
+				_("Not enough quantity in MOP batches for <b>{0}</b>. Missing: {1}").format(
+					row.item_code, flt(total_qty, 2)
+				)
+			)
+
+	# frappe.throw(f"{(rows_to_append[1:])}")
+	if self.stock_entry_type == "Material Receive (WORK ORDER)":
+		return rows_to_append[1:]
+	else:
+		return rows_to_append
+	# new Chnage End
 
 
 def get_batch_data_from_msl(item_code, main_slip, warehouse):
