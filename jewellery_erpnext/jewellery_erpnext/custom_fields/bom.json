@@ -2267,6 +2267,14 @@
    "no_copy": 1,
    "options": "custom_creation_doctype",
    "read_only": 1
+  },
+  {
+   "dt": "BOM",
+   "fieldname": "custom_rating",
+   "fieldtype": "Rating",
+   "insert_after": "diamond_ratio",
+   "label": "Rating",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
