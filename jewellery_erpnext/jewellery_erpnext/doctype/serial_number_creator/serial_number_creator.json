@@ -13,6 +13,7 @@
   "manufacturing_work_order",
   "parent_manufacturing_order",
   "company",
+  "parent_sales_order",
   "column_break_ofkba",
   "manufacturer",
   "department",
@@ -32,7 +33,24 @@
   "source_table",
   "amended_from",
   "serial_no",
-  "new_item"
+  "new_item",
+  "tab_break_snso",
+  "section_break_rx1w",
+  "order_form_id",
+  "quotation",
+  "sales_order_id",
+  "manufacturing_plan",
+  "column_break_iecr",
+  "order_form_type",
+  "order_type",
+  "po_no",
+  "child_po",
+  "project",
+  "column_break_xbjd",
+  "order_form_date",
+  "salesman_name",
+  "service_type",
+  "jewelex_order_no"
  ],
  "fields": [
   {
@@ -134,7 +152,6 @@
   {
    "fieldname": "total_weight",
    "fieldtype": "Float",
-   "hidden": 1,
    "label": "Total Weight"
   },
   {
@@ -194,6 +211,130 @@
    "label": "Fg BOM",
    "options": "BOM",
    "read_only": 1
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.parent_sales_order",
+   "fetch_if_empty": 1,
+   "fieldname": "parent_sales_order",
+   "fieldtype": "Link",
+   "label": "Parent Sales Order",
+   "options": "Sales Order"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.sales_order",
+   "fetch_if_empty": 1,
+   "fieldname": "sales_order_id",
+   "fieldtype": "Link",
+   "label": "Sales Order ID",
+   "options": "Sales Order"
+  },
+  {
+   "fieldname": "tab_break_snso",
+   "fieldtype": "Tab Break",
+   "label": "Order Details"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.quotation",
+   "fetch_if_empty": 1,
+   "fieldname": "quotation",
+   "fieldtype": "Link",
+   "label": "Quotation ID",
+   "options": "Quotation"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.manufacturing_plan",
+   "fetch_if_empty": 1,
+   "fieldname": "manufacturing_plan",
+   "fieldtype": "Link",
+   "label": "Manufacturing Plan ID",
+   "options": "Manufacturing Plan"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.order_type",
+   "fetch_if_empty": 1,
+   "fieldname": "order_type",
+   "fieldtype": "Data",
+   "label": "Order Type"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.po_no",
+   "fetch_if_empty": 1,
+   "fieldname": "po_no",
+   "fieldtype": "Data",
+   "label": "Customer PO No"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.child_po",
+   "fetch_if_empty": 1,
+   "fieldname": "child_po",
+   "fieldtype": "Data",
+   "label": "Child PO"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.project",
+   "fetch_if_empty": 1,
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "label": "Project",
+   "options": "Project"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.order_form_date",
+   "fetch_if_empty": 1,
+   "fieldname": "order_form_date",
+   "fieldtype": "Date",
+   "label": "Order Form Date"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.salesman_name",
+   "fetch_if_empty": 1,
+   "fieldname": "salesman_name",
+   "fieldtype": "Link",
+   "label": "Sales Person",
+   "options": "Sales Person"
+  },
+  {
+   "fieldname": "service_type",
+   "fieldtype": "Table MultiSelect",
+   "label": "Service Type",
+   "options": "Service Type 2"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.jewelex_order_no",
+   "fetch_if_empty": 1,
+   "fieldname": "jewelex_order_no",
+   "fieldtype": "Data",
+   "label": "Jewelex Order No"
+  },
+  {
+   "fieldname": "column_break_iecr",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_xbjd",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.order_form_type",
+   "fetch_if_empty": 1,
+   "fieldname": "order_form_type",
+   "fieldtype": "Link",
+   "label": "Order Form Type",
+   "options": "DocType"
+  },
+  {
+   "fetch_from": "parent_manufacturing_order.order_form_id",
+   "fetch_if_empty": 1,
+   "fieldname": "order_form_id",
+   "fieldtype": "Dynamic Link",
+   "label": "Order Form ID",
+   "options": "order_form_type"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_rx1w",
+   "fieldtype": "Section Break",
+   "label": "Order Details"
   }
  ],
  "index_web_pages_for_search": 1,
@@ -208,7 +349,7 @@
    "link_fieldname": "custom_serial_number_creator"
   }
  ],
- "modified": "2024-08-08 14:49:47.083153",
+ "modified": "2025-07-08 18:21:03.188135",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Serial Number Creator",

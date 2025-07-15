@@ -1,4 +1,4 @@
-frappe.ui.form.on("Stock Reconciliation template", {
+frappe.ui.form.on("Stock Reconciliation Template", {
 	day(frm) {
 		var now = new Date();
 		var currentTime = now.toLocaleTimeString();

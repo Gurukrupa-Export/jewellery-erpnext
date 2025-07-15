@@ -78,9 +78,17 @@ def before_validate(self, method):
 			else:
 				row.custom_pure_qty = flt((item_purity * row.qty) / pure_item_purity, 3)
 
+		# set default inventory type as regular stock for material receipt
+		if (self.stock_entry_type == "Material Receipt"
+		and not row.inventory_type
+		and not row.batch_no):
+			row.inventory_type =  "Regular Stock"
+
 	validate_pcs(self)
 	if self.stock_entry_type == "Material Receive (WORK ORDER)":
 		get_receive_work_order_batch(self)
+
+
 	# changes pending
 
 	# if self.purpose in ["Repack", "Manufacturing"]:

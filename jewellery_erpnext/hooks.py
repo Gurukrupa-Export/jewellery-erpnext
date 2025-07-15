@@ -148,6 +148,7 @@ doc_events = {
 	"Batch": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.validate",
 		"autoname": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.autoname",
+		"before_insert": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.before_insert"
 	},
 	"Stock Reconciliation": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department"
@@ -174,11 +175,17 @@ override_doctype_class = {
 }
 
 
-# scheduler_events = {
-# 	"hourly": [
-# 		"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.rename_stock_entry_docs"
-# 	],
-# }
+scheduler_events = {
+	"cron": {
+		"* * * * *": [
+			"jewellery_erpnext.jobs.stock_reconciliation_template.create_stock_reconciliation",
+		]
+
+	}
+	# "hourly": [
+	# 	"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.rename_stock_entry_docs"
+	# ],
+}
 
 # from erpnext.stock import get_item_details
 # from jewellery_erpnext.erpnext_override import get_price_list_rate_for

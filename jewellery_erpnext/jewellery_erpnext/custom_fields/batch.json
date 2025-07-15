@@ -23,7 +23,7 @@
    "fieldname": "custom_metal_rate",
    "fieldtype": "Currency",
    "insert_after": "supplier",
-   "label": "Metal Rate",
+   "label": "Batch Rate",
    "module": "Jewellery Erpnext",
    "read_only": 1
   },

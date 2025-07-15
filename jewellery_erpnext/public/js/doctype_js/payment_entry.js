@@ -121,6 +121,7 @@ frappe.ui.form.on("Payment Entry", {
 					],
 					primary_action: (values) => {
 						const selected_invoices = d.fields_dict.invoices.grid.get_selected_children();
+
 						const invoice_data = selected_invoices.map((invoice) => {
 							return {
 								company: frm.doc.company,
@@ -135,6 +136,7 @@ frappe.ui.form.on("Payment Entry", {
 								si_name: invoice.sales_invoice,
 								si_branch: invoice.branch,
 								allocated_amount: invoice.allocated_amount,
+								outstanding_amount: invoice.outstanding_amount,
 
 							}
 						})

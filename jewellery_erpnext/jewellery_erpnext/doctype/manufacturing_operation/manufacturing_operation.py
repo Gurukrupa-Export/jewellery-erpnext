@@ -166,7 +166,7 @@ class ManufacturingOperation(Document):
 	# 		},
 	# 		fields=["parent"]
 	# 	)
-		
+
 	# 	matched_ir = None
 
 	# 	if ir_operations:
@@ -176,7 +176,7 @@ class ManufacturingOperation(Document):
 	# 			filters={
 	# 				"employee": self.employee,
 	# 				"operation": self.operation,
-	# 				"docstatus": 1,  
+	# 				"docstatus": 1,
 	# 				"type": "Issue",
 	# 				"name": ["in", parent_ir_names]
 	# 			},
@@ -189,7 +189,7 @@ class ManufacturingOperation(Document):
 	# 			# else:
 	# 			# 	frappe.msgprint(f"Main Slip is not set in Employee IR {ir_doc.name}.")
 
-			
+
 
 
 	def validate_operation(self):
@@ -206,13 +206,13 @@ class ManufacturingOperation(Document):
 		ignored_department = [row.department for row in ignored_department]
 		if self.operation in ignored_department:
 			frappe.throw(_("Customer not requireed this operation"))
-			
+
 		if self.manufacturing_work_order:
 			if self.department == 'Computer Aided Designing - GEPL' or self.department =='Computer Aided Manufacturing - GEPL':
 				item=frappe.get_doc('Item',self.item_code)
 				existing_row = item.custom_cam_weight_detail[0] if item.custom_cam_weight_detail else None
 				if existing_row:
-			
+
 					existing_row.cad_numbering_file = self.cad_numbering_file
 					existing_row.support_cam_file = self.support_cam_file
 					existing_row.platform_wt = self.platform_wt
@@ -610,7 +610,7 @@ class ManufacturingOperation(Document):
 		# 	filters={"parent": self.company, "parenttype": "Manufacturing Setting"},
 		# 	fields=["operation"],
 		# )
-		
+
 		record_filter_from_mnf_setting = frappe.get_all(
 			"CAM Weight Details Mapping",
 			filters={"parent": self.manufacturer, "parenttype": "Manufacturing Setting"},
@@ -1096,6 +1096,9 @@ class ManufacturingOperation(Document):
 		# Append Final result into Balance Table
 		for row in final_balance_row:
 			if row.get("item_code") not in added_item_codes:
+				if not row.get("qty"):
+					continue
+
 				self.append("mop_balance_table", row)
 
 		# if frappe.db.exists("Manufacturing Operation", {'previous_mop': self.name}):
@@ -3103,3 +3106,50 @@ def get_linked_stock_entries(mwo, department):
 		"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_operation/stock_entry_details.html",
 		{"data": data, "total_qty": total_qty},
 	)
+
+@frappe.whitelist()
+def create_mr_wo_stock_entry(se_data):
+	from jewellery_erpnext.utils import get_warehouse_from_user
+
+	if isinstance(se_data, str):
+		se_data = json.loads(se_data)
+
+	if not se_data.get("receive_items"):
+		return frappe.msgprint("No Receive Items Found.")
+
+	t_warehouse = get_warehouse_from_user(frappe.session.user, "Raw Material")
+	if not t_warehouse:
+		frappe.throw("No warehouse found for warehouse type Raw Material")
+
+	s_warehouse = se_data.get("receive_items")[0].get("s_warehouse")
+	department = se_data.get("department")
+	to_department = se_data.get("receive_items")[0].get("to_department")
+
+	se_doc = frappe.new_doc("Stock Entry")
+	se_doc.update({
+		"stock_entry_type": "Material Receive (WORK ORDER)",
+		"manufacturing_work_order": se_data.get("manufacturing_work_order"),
+		"manufacturing_order": se_data.get("manufacturing_order"),
+		"manufacturing_operation": se_data.get("manufacturing_operation"),
+		"department": department,
+		"to_department": to_department,
+		"to_warehouse": t_warehouse,
+		"from_warehouse": s_warehouse
+	})
+
+	for row in se_data.get("receive_items"):
+		se_doc.append("items", {
+			"item_code": row.get("item_code"),
+			"qty": row.get("qty"),
+			"pcs": row.get("pcs"),
+			"batch_no": row.get("batch_no"),
+			"manufacturing_operation": se_data.get("manufacturing_operation"),
+			"s_warehouse": row.get("s_warehouse"),
+			"t_warehouse": t_warehouse,
+			"inventory_type": row.get("inventory_type")
+		})
+
+	se_doc.save()
+	se_doc.submit()
+
+	return {"doctype": se_doc.doctype, "docname": se_doc.name}

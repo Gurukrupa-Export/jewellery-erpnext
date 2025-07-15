@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 
 import frappe
 from erpnext.stock.doctype.stock_reconciliation.stock_reconciliation import (
@@ -81,40 +81,48 @@ class CustomStockReconciliation(StockReconciliation):
 			frappe.msgprint(_("Removed items with no change in quantity or value."))
 
 
-def stock_reconciliation():
-	stock_template = frappe.db.get_all(
-		"Stock Reconciliation template",
+def create_stock_reconciliation_from_template():
+	stock_template_list = frappe.db.get_all(
+		"Stock Reconciliation Template",
 		{"docstatus": 0, "template_status": "Active", "automation_type": "Auto Generate"},
 		["name", "day", "time", "date"],
 	)
-	current_time = datetime.now().time()
-	current_time_timedelta = timedelta(
-		hours=current_time.hour, minutes=current_time.minute, seconds=current_time.second
+
+	if not stock_template_list:
+		return
+
+	now = datetime.now()
+	current_time = timedelta_to_time_no_seconds(
+		timedelta(hours=now.hour, minutes=now.minute, seconds=now.second)
 	)
-	current_date = datetime.now().date()
-	if stock_template:
-		for stock in stock_template:
-			if stock.day == "Every Day : Working" and current_time_timedelta == stock.time:
-				create_stock_reconciliation(stock)
-			elif (
-				stock.day == "End of Month : Working"
-				and current_date == stock.date
-				and current_time_timedelta == stock.time
-			):
-				create_stock_reconciliation(stock)
-				set_next_execution_date(stock, timedelta(days=30))  # Set the next execution date to next month
-			elif (
-				stock.day == "End of the Year : Working"
-				and current_date.month == stock.date
-				and current_date.day == 1
-				and current_time_timedelta == stock.time
-			):
-				create_stock_reconciliation(stock)
-				set_next_execution_date(stock, timedelta(days=365))  # Set the next execution date to next year
+	current_date = now.date()
+
+	for stock in stock_template_list:
+		template_time = timedelta_to_time_no_seconds(stock.time)
+
+		if stock.day == "Every Day : Working" and current_time == template_time:
+			create_stock_reconciliation(stock)
+
+		elif (
+			stock.day == "End of Month : Working"
+			and current_date == stock.date
+			and current_time == template_time
+		):
+			create_stock_reconciliation(stock)
+			set_next_execution_date(stock, timedelta(days=30))
+
+		elif (
+			stock.day == "End of the Year : Working"
+			and current_date.month == stock.date.month
+			and current_date.day == 1
+			and current_time == template_time
+		):
+			create_stock_reconciliation(stock)
+			set_next_execution_date(stock, timedelta(days=365))
 
 
 def create_stock_reconciliation(stock):
-	items = frappe.get_doc("Stock Reconciliation template Item", {"parent": stock.name})
+	items = frappe.get_doc("Stock Reconciliation Template Item", {"parent": stock.name})
 	stock_reconciliation_doc = frappe.get_doc(
 		{
 			"doctype": "Stock Reconciliation",
@@ -130,5 +138,11 @@ def create_stock_reconciliation(stock):
 
 def set_next_execution_date(stock, interval):
 	next_execution_date = stock.date + interval
-	stock_reconciliation_doc = frappe.get_doc("Stock Reconciliation template", stock.name)
-	stock_reconciliation_doc.db_set("date", next_execution_date)
+	frappe.db.set_value("Stock Reconciliation Template", stock.name, "date", next_execution_date)
+
+
+def timedelta_to_time_no_seconds(td: timedelta) -> time:
+	total_seconds = int(td.total_seconds())
+	hours = total_seconds // 3600
+	minutes = (total_seconds % 3600) // 60
+	return time(hour=hours, minute=minutes)

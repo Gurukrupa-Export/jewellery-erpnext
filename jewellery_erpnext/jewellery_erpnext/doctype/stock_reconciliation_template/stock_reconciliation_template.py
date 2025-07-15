@@ -7,7 +7,6 @@ from frappe.model.document import Document
 from jewellery_erpnext.jewellery_erpnext.doctype.stock_reconciliation_template.stock_reconciliation_template_utils import *
 
 
-class StockReconciliationtemplate(Document):
-	# def before_save(self):
-	# 	stock_reconciliation(self)
-	pass
+class StockReconciliationTemplate(Document):
+	def before_save(self):
+		stock_reconciliation()

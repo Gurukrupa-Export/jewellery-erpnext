@@ -163,10 +163,10 @@ def reconcile_inter_branch_payment(invoice_data):
 
 	for row in invoice_data:
 		jv_data = frappe._dict(row)
-		print(jv_data)
+		validate_allocated_amount(jv_data)
 
 		if jv_data.pe_branch == jv_data.si_branch:
-			frappe.throw("Sales Invoice branch and Payment Entry branch are the same.")
+			frappe.throw("Sales Invoice branch and Payment Entry branch are same.")
 
 		jv = create_inter_branch_journal_entries(jv_data)
 
@@ -197,3 +197,14 @@ def get_unreconciled_sales_invoices(company, customer):
 	data = query.run(as_dict=True)
 
 	return data
+
+def validate_allocated_amount(jv_data):
+	"""
+	Validate that allocated amount.
+	"""
+	if not jv_data.allocated_amount:
+		frappe.throw(f"Allocated amount must be greater than zero for invoice <b>{jv_data.si_name}<b>")
+
+	if jv_data.allocated_amount > jv_data.outstanding_amount:
+		frappe.throw(f"Allocated amount {jv_data.allocated_amount} cannot be greater than outstanding amount {jv_data.outstanding_amount}.")
+
