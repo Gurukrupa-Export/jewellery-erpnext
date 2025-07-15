@@ -1096,7 +1096,7 @@ class ManufacturingOperation(Document):
 		# Append Final result into Balance Table
 		for row in final_balance_row:
 			if row.get("item_code") not in added_item_codes:
-				if not row.get("qty") > 0:
+				if not row.get("qty"):
 					continue
 
 				self.append("mop_balance_table", row)
