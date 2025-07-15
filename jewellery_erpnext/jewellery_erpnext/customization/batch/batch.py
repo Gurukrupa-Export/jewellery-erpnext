@@ -44,7 +44,7 @@ def autoname(self,method=None):
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		batch_abbr_code_list = []
-		
+
 		for i in frappe.get_doc("Item",self.item).attributes:
 			if i.attribute == "Finding Category":
 				continue
@@ -57,15 +57,15 @@ def autoname(self,method=None):
 				else:
 					frappe.throw(("Abbrivation is missing for {0}").format(i.attribute_value))
 		batch_code = batch_number + "".join(batch_abbr_code_list)
-		# batch_list = frappe.db.sql(f"""SELECT 
+		# batch_list = frappe.db.sql(f"""SELECT
 		# 								name
-		# 							FROM 
+		# 							FROM
 		# 								`tabBatch`
-		# 							WHERE 
+		# 							WHERE
 		# 								manufacturing_date > '{start_of_week}'
-		# 								AND manufacturing_date < '{end_of_week}' 
+		# 								AND manufacturing_date < '{end_of_week}'
 		# 								AND item = '{self.item}'
-		# 							ORDER BY 
+		# 							ORDER BY
 		# 								CAST(SUBSTRING_INDEX(name, '-', -1) AS UNSIGNED) DESC;
 		# 							""",as_dict=1)
 		# if batch_list:
@@ -131,16 +131,43 @@ def get_month_code():
 # 	return start_formatted, end_formatted
 
 def generate_unique_alphanumeric():
-    while True:
-        # Ensure at least one letter and one number
-        letters = random.choices(string.ascii_uppercase, k=2)  # At least 2 letters
-        digits = random.choices(string.digits, k=3)  # At least 3 numbers
-        random_code = ''.join(random.sample(letters + digits, 5))  # Shuffle & combine
+	while True:
+		# Ensure at least one letter and one number
+		letters = random.choices(string.ascii_uppercase, k=2)  # At least 2 letters
+		digits = random.choices(string.digits, k=3)  # At least 3 numbers
+		random_code = ''.join(random.sample(letters + digits, 5))  # Shuffle & combine
 
-        # Check if it already exists
-        existing_doc = frappe.get_value("Manufacturing Operation", {"name": f"MOP-{random_code}"}, "name")
+		# Check if it already exists
+		existing_doc = frappe.get_value("Manufacturing Operation", {"name": f"MOP-{random_code}"}, "name")
 
-        if not existing_doc:  # If unique, return it
-            return random_code
-		
+		if not existing_doc:  # If unique, return it
+			return random_code
+
+
+REPACK_ITEM_CODES = {"M-G-24KT-99.9-Y", "M-G-24KT-99.5-Y"}
+
+def before_insert(doc, method):
+	if doc.reference_doctype != "Stock Entry" or not doc.custom_voucher_detail_no:
+		return
+
+	se_type = frappe.db.get_value(doc.reference_doctype, doc.reference_name, "stock_entry_type")
+	if se_type != "Repack-Metal Conversion":
+		return
+
+	result = frappe.db.get_values("Stock Entry Detail", filters={
+		"parenttype": doc.reference_doctype,
+		"parent": doc.reference_name,
+		"name": doc.custom_voucher_detail_no
+	}, fieldname=["item_code", "custom_alloy_rate", "custom_metal_rate"],
+	)
+
+	if not result:
+		return
+
+	item_code, alloy_rate, metal_rate = result[0]
+	if item_code in REPACK_ITEM_CODES:
+		doc.update({
+			"custom_alloy_rate": alloy_rate,
+			"custom_metal_rate": metal_rate
+		})
 

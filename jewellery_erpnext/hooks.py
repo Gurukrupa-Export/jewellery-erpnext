@@ -148,6 +148,7 @@ doc_events = {
 	"Batch": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.validate",
 		"autoname": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.autoname",
+		"before_insert": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.before_insert"
 	},
 	"Stock Reconciliation": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department"
