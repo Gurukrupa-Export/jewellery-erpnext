@@ -708,16 +708,6 @@ class DepartmentIR(Document):
 			{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
 		)
 
-		last_operation_department = frappe.db.get_value(
-			"Manufacturing Setting",
-			self.manufacturer,
-			"default_last_operation_department"
-		)
-
-		is_last_operation_dept = False
-		if self.current_department == last_operation_department:
-			is_last_operation_dept = True
-
 		for row in self.department_ir_operation:
 			sed_items = frappe.db.get_all(
 				"Stock Entry MOP Item",
@@ -753,11 +743,6 @@ class DepartmentIR(Document):
 			doc.set("department_time_logs", [])
 			doc.save()
 
-			is_finding_mwo = frappe.db.get_value("Manufacturing Work Order", row.manufacturing_work_order, "is_finding_mwo")
-			# update fg mwo
-			if is_last_operation_dept and not is_finding_mwo:
-				self.update_fg_mwo(row.manufacturing_work_order, doc)
-
 			time_values = copy.deepcopy(values)
 			time_values["department_start_time"] = dt_string
 			add_time_log(doc, time_values)
@@ -789,50 +774,97 @@ class DepartmentIR(Document):
 		stock_doc.save()
 		stock_doc.submit()
 
+		# self.update_fg_mwo()
 
 	def update_workflow_state(self):
 		"""Update the workflow state after MOP creation."""
 		self.db_set("workflow_state", "MOP Created", update_modified=False)
 
-	def update_fg_mwo(self, mwo, mop_doc):
+	def update_fg_mwo(self):
 		"""Update FG MWO MOP Balance Table"""
 
-		result = frappe.db.sql("""
-			SELECT child.name
-			FROM `tabManufacturing Work Order` AS child
-			JOIN `tabManufacturing Work Order` AS parent
-				ON child.manufacturing_order = parent.manufacturing_order
-			WHERE parent.name = %s
-			AND child.for_fg = 1
-			AND child.docstatus = 0
-			LIMIT 1
-		""", (mwo,), as_dict=True)
+		last_operation_department = frappe.db.get_value(
+			"Manufacturing Setting",
+			self.manufacturer,
+			"default_last_operation_department"
+		)
 
-		print("result", result)
-		if not result:
-			return
+		is_last_operation_dept = False
+		if self.current_department == last_operation_department:
+			is_last_operation_dept = True
 
-		fg_mwo = result[0].name
+		for row in self.department_ir_operation:
+			mwo = row.manufacturing_work_order
+			is_finding_mwo = frappe.db.get_value("Manufacturing Work Order", mwo, "is_finding_mwo")
 
-		mwo_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
-		for row in mop_doc.mop_balance_table:
-			mwo_doc.append("mwo_mop_balance_table", {
-				"raw_material": row.item_code,
-				"batch_no": row.batch_no,
-				"serial_no": row.serial_no,
-				"qty": row.qty,
-				"uom": row.uom,
-				"gross_weight": row.gross_weight,
-				"customer": row.customer,
-				"is_customer_item": row.is_customer_item,
-				"inventory_type": row.inventory_type,
-				"sub_setting_type": row.sub_setting_type,
-				"sed_item": row.ste_detail,
-				"pcs": row.pcs,
-			})
+			if not is_last_operation_dept and is_finding_mwo:
+				continue
 
-		mwo_doc.update_child_table("mwo_mop_balance_table")
-		mwo_doc.db_update_all()
+			result = frappe.db.sql("""
+				SELECT child.name
+				FROM `tabManufacturing Work Order` AS child
+				JOIN `tabManufacturing Work Order` AS parent
+					ON child.manufacturing_order = parent.manufacturing_order
+				WHERE parent.name = %s
+				AND child.for_fg = 1
+				AND child.docstatus = 0
+				LIMIT 1
+			""", (mwo,), as_dict=True)
+
+			print("result", result)
+			if not result:
+				return
+
+			mop_balance_data = frappe.db.get_all("MOP Balance Table",
+				{
+					"parent":row.manufacturing_operation
+				},
+				[
+					"item_code",
+					"batch_no",
+					"serial_no",
+					"qty",
+					"uom",
+					"gross_weight",
+					"customer",
+					"is_customer_item",
+					"inventory_type",
+					"sub_setting_type",
+					"ste_detail",
+					"pcs"
+				]
+			)
+
+			fg_mwo = result[0].name
+
+			# print("MOP DOC ------------", mop_doc.as_dict().get("mop_balance_table"))
+			# frappe.log_error("MOP DOC ----------- Before Reload", mop_doc.as_dict())
+			# print("MOP DOC ------------", mop_doc.as_dict().get("mop_balance_table"))
+			# mop_doc.reload()
+			# frappe.log_error("MOP DOC ----------- After Reload", mop_doc.as_dict())
+
+			mwo_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
+			for row in mop_balance_data:
+				mwo_doc.append("mwo_mop_balance_table", {
+					"raw_material": row.item_code,
+					"batch_no": row.batch_no,
+					"serial_no": row.serial_no,
+					"qty": row.qty,
+					"uom": row.uom,
+					"gross_weight": row.gross_weight,
+					"customer": row.customer,
+					"is_customer_item": row.is_customer_item,
+					"inventory_type": row.inventory_type,
+					"sub_setting_type": row.sub_setting_type,
+					"sed_item": row.ste_detail,
+					"pcs": row.pcs,
+				})
+
+			mwo_doc.update_child_table("mwo_mop_balance_table")
+			mwo_doc.db_update_all()
+			frappe.log_error("MWO MOP Balance Table", mwo_doc.as_dict())
+			print("---------------------", mwo_doc.as_dict())
+			# frappe.throw("MOP Created...")
 
 
 def get_se_items(doc, mwo, mop_data, in_transit_wh, send_in_transit_wh, department_wh):
