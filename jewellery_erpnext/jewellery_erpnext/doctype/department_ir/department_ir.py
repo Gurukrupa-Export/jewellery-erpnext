@@ -774,7 +774,7 @@ class DepartmentIR(Document):
 		stock_doc.save()
 		stock_doc.submit()
 
-		# self.update_fg_mwo()
+		self.update_fg_mwo() # need to optimze this flow onverheading stock entry creation 50%
 
 	def update_workflow_state(self):
 		"""Update the workflow state after MOP creation."""
