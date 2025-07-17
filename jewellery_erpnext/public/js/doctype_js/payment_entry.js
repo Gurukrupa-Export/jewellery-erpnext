@@ -141,6 +141,10 @@ frappe.ui.form.on("Payment Entry", {
 							}
 						})
 
+						if (!invoice_data.length) {
+							frappe.msgprint("Please select the invoice you need to reconcile.")
+						}
+
 						frappe.call({
 							method: "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.reconcile_inter_branch_payment",
 							args: {
@@ -151,12 +155,14 @@ frappe.ui.form.on("Payment Entry", {
 							callback: (r) => {
 								if (!r.exec && r.message) {
 									d.hide()
-									let link_html = `\n`
-									r.message.forEach(jv_name => {
-										let jv_link = frappe.utils.get_form_link("Journal Entry", jv_name)
-										link_html += `<a href="${jv_link}" class="text-muted">${jv_name}</a>\n`
-									});
-									frappe.msgprint(`Journal Entry has been Successfully Created ${link_html}`)
+									if (r.message.length) {
+										let link_html = `\n`
+										r.message.forEach(jv_name => {
+											let jv_link = frappe.utils.get_form_link("Journal Entry", jv_name)
+											link_html += `<a href="${jv_link}" class="text-muted">${jv_name}</a>\n`
+										});
+										frappe.msgprint(`Journal Entry has been Successfully Created ${link_html}`)
+									}
 								}
 
 							}
