@@ -835,7 +835,7 @@ class DepartmentIR(Document):
 				]
 			)
 
-			frappe.log_error(f"MOP Balance Data {row.manufacturing_operation}", mop_balance_data, defer_insert=True)
+			frappe.log_error(f"MOP Balance Data {row.manufacturing_operation}", mop_balance_data)
 
 			fg_mwo = result[0].name
 
