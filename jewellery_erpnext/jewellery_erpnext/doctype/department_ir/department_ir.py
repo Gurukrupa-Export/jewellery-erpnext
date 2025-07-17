@@ -811,12 +811,13 @@ class DepartmentIR(Document):
 				LIMIT 1
 			""", (mwo,), as_dict=True)
 
-			print("result", result)
 			if not result:
 				return
 
 			mop_balance_data = frappe.db.get_all("MOP Balance Table",
 				{
+					"manufacturing_work_order": mwo,
+					"parenttype": "Manufacturing Operation",
 					"parent":row.manufacturing_operation
 				},
 				[
@@ -835,15 +836,13 @@ class DepartmentIR(Document):
 				]
 			)
 
+			frappe.log_error(f"MOP Balance Data {row.manufacturing_operation}", mop_balance_data, defer_insert=True)
+
 			fg_mwo = result[0].name
 
-			# print("MOP DOC ------------", mop_doc.as_dict().get("mop_balance_table"))
-			# frappe.log_error("MOP DOC ----------- Before Reload", mop_doc.as_dict())
-			# print("MOP DOC ------------", mop_doc.as_dict().get("mop_balance_table"))
-			# mop_doc.reload()
-			# frappe.log_error("MOP DOC ----------- After Reload", mop_doc.as_dict())
-
 			mwo_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
+			mwo_doc.set("mwo_mop_balance_table", [])
+
 			for row in mop_balance_data:
 				mwo_doc.append("mwo_mop_balance_table", {
 					"raw_material": row.item_code,
@@ -862,9 +861,6 @@ class DepartmentIR(Document):
 
 			mwo_doc.update_child_table("mwo_mop_balance_table")
 			mwo_doc.db_update_all()
-			frappe.log_error("MWO MOP Balance Table", mwo_doc.as_dict())
-			print("---------------------", mwo_doc.as_dict())
-			# frappe.throw("MOP Created...")
 
 
 def get_se_items(doc, mwo, mop_data, in_transit_wh, send_in_transit_wh, department_wh):
