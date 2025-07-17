@@ -343,3 +343,46 @@ def get_linked_stock_entries(mwo_name):  # MWO Details Tab code
 		"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_work_order/stock_entry_details.html",
 		{"data": data, "total_qty": total_qty},
 	)
+
+
+@frappe.whitelist()
+def is_merge_mwo(pmo, mwo, mop, metal_color):
+	diff_mwo = is_different_metal_mwo_in_pmo(pmo, mwo, metal_color)
+	if not diff_mwo:
+		return
+
+	if not is_merge_mwo_operation(mop):
+		return
+
+	return diff_mwo
+
+
+def is_different_metal_mwo_in_pmo(pmo, curr_mwo, metal_color):
+	diff_mwo = []
+	main_mwo_list = frappe.db.get_all(
+		"Manufacturing Work Order", {
+			"for_fg": ["=", 0],
+			"is_finding_mwo": ["=", 0],
+			"name": ["!=", curr_mwo]
+		},
+		[
+			"name",
+			"metal_colour"
+		]
+	)
+
+	for mwo in main_mwo_list:
+		if metal_color == mwo.metal_color:
+			continue
+		diff_mwo.append(mwo.name)
+
+	return diff_mwo
+
+
+def is_merge_mwo_operation(mop):
+	operation = frappe.db.get_value("Manufacturing Operation", mop, "operation")
+
+	if operation and frappe.db.get_value("Department Operation", operation, "is_merge_mwo"):
+		return True
+
+	return False
