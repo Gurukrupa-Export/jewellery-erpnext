@@ -816,7 +816,6 @@ class DepartmentIR(Document):
 
 			mop_balance_data = frappe.db.get_all("MOP Balance Table",
 				{
-					"manufacturing_work_order": mwo,
 					"parenttype": "Manufacturing Operation",
 					"parent":row.manufacturing_operation
 				},
