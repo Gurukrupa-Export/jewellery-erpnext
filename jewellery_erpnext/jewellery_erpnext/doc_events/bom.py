@@ -294,36 +294,40 @@ def _create_new_price_list(self):
 	item_price.save()
 
 def validate_rating(self):
-	if self.gold_to_diamond_ratio:
-		ratio_value = float(self.gold_to_diamond_ratio)
-		# frappe.throw(f"{ratio_value}")
-	gc_ratio_master = frappe.get_single("GC Ratio Master")
-	for row in gc_ratio_master.gc_ratio:
-		range_text = row.metal_to_gold_ratio_group.strip()
-		try:
-			if '-' in range_text:
-				lower, upper = [float(x.strip()) for x in range_text.split('-')]
-				if lower <= ratio_value <= upper:
-					self.custom_rating = row.rating
-					# frappe.throw(f"Found rating: {row.rating} for ratio {ratio_value} in range {lower}-{upper}")
-					break
+    # Exit quietly if ratio not provided
+    if not self.gold_to_diamond_ratio:
+        return
 
-			elif 'Above' in range_text:
-				threshold = float(range_text.replace('Above', '').strip())
-				if ratio_value > threshold:
-					self.custom_rating = row.rating
-					# frappe.throw(f"Found rating: {row.rating} for ratio {ratio_value} above {threshold}")
-					break
+    try:
+        ratio_value = float(self.gold_to_diamond_ratio)
+    except (ValueError, TypeError):
+        # If it's not a valid float, skip logic
+        return
 
-			elif 'Below' in range_text:
-				threshold = float(range_text.replace('Below', '').strip())
-				if ratio_value < threshold:
-					self.custom_rating = row.rating
-					# frappe.throw(f"Found rating: {row.rating} for ratio {ratio_value} below {threshold}")
-					break
+    gc_ratio_master = frappe.get_single("GC Ratio Master")
+    for row in gc_ratio_master.gc_ratio:
+        range_text = row.metal_to_gold_ratio_group.strip()
+        try:
+            if '-' in range_text:
+                lower, upper = [float(x.strip()) for x in range_text.split('-')]
+                if lower <= ratio_value <= upper:
+                    self.custom_rating = row.rating
+                    break
 
-		except ValueError:
-			frappe.msgprint(f"Skipping invalid range value: {range_text}")
+            elif 'Above' in range_text:
+                threshold = float(range_text.replace('Above', '').strip())
+                if ratio_value > threshold:
+                    self.custom_rating = row.rating
+                    break
+
+            elif 'Below' in range_text:
+                threshold = float(range_text.replace('Below', '').strip())
+                if ratio_value < threshold:
+                    self.custom_rating = row.rating
+                    break
+
+        except ValueError:
+            frappe.msgprint(f"Skipping invalid range value: {range_text}")
 
 
 
