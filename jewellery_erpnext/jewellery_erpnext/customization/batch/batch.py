@@ -144,9 +144,12 @@ def generate_unique_alphanumeric():
 			return random_code
 
 
-REPACK_ITEM_CODES = {"M-G-24KT-99.9-Y", "M-G-24KT-99.5-Y"}
+GOLD_ITEMS = {"M-G-24KT-99.9-Y", "M-G-24KT-99.5-Y"}
 
-def before_insert(doc, method):
+def on_update(doc, method):
+	if not doc.flags.is_update_origin_entries or doc.custom_origin_entries:
+		return
+
 	if doc.reference_doctype != "Stock Entry" or not doc.custom_voucher_detail_no:
 		return
 
@@ -154,20 +157,33 @@ def before_insert(doc, method):
 	if se_type != "Repack-Metal Conversion":
 		return
 
-	result = frappe.db.get_values("Stock Entry Detail", filters={
-		"parenttype": doc.reference_doctype,
-		"parent": doc.reference_name,
-		"name": doc.custom_voucher_detail_no
-	}, fieldname=["item_code", "custom_alloy_rate", "custom_metal_rate"],
-	)
+	metal_purity = frappe.db.get_value("Item Variant Attribute", {
+		"parent": doc.item,
+		"attribute": "Metal Purity"
+	}, "attribute_value")
 
-	if not result:
-		return
+	if not metal_purity:
+		metal_purity = doc.item.split('-')[-2]
 
-	item_code, alloy_rate, metal_rate = result[0]
-	if item_code in REPACK_ITEM_CODES:
-		doc.update({
-			"custom_alloy_rate": alloy_rate,
-			"custom_metal_rate": metal_rate
-		})
+	alloy_rate = float()
+	metal_rate = float()
 
+	def _is_alloy(item_code):
+		item = frappe.get_doc("Item", item_code)
+		res = False
+
+		if item.item_group == "Alloy":
+			res = True
+		elif len(item.attributes) == 1:
+			res = True
+
+		return res
+
+	for row in doc.custom_origin_entries:
+		if _is_alloy(row.item_code):
+			alloy_rate = row.rate
+		elif row.item_code in GOLD_ITEMS:
+			metal_rate = ((row.rate * float(metal_purity)) / 100)
+
+	doc.db_set("custom_alloy_rate", alloy_rate)
+	doc.db_set("custom_metal_rate", metal_rate)
