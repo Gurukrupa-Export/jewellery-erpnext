@@ -164,7 +164,6 @@ def on_update(doc, method):
 
 	if not metal_purity:
 		metal_purity = doc.item.split('-')[-2]
-		frappe.throw(str(metal_purity))
 
 	alloy_rate = float()
 	metal_rate = float()
