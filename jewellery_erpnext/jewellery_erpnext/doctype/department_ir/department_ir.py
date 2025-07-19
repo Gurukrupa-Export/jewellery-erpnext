@@ -795,9 +795,8 @@ class DepartmentIR(Document):
 
 		for row in self.department_ir_operation:
 			mwo = row.manufacturing_work_order
-			is_finding_mwo = frappe.db.get_value("Manufacturing Work Order", mwo, "is_finding_mwo")
 
-			if not is_last_operation_dept and is_finding_mwo:
+			if not is_last_operation_dept:
 				continue
 
 			result = frappe.db.sql("""
@@ -816,7 +815,6 @@ class DepartmentIR(Document):
 
 			mop_balance_data = frappe.db.get_all("MOP Balance Table",
 				{
-					"manufacturing_work_order": mwo,
 					"parenttype": "Manufacturing Operation",
 					"parent":row.manufacturing_operation
 				},
@@ -836,12 +834,12 @@ class DepartmentIR(Document):
 				]
 			)
 
-			frappe.log_error(f"MOP Balance Data {row.manufacturing_operation}", mop_balance_data, defer_insert=True)
+			# frappe.log_error(f"MOP Balance Data {row.manufacturing_operation}", mop_balance_data)
 
 			fg_mwo = result[0].name
 
 			mwo_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
-			mwo_doc.set("mwo_mop_balance_table", [])
+			# mwo_doc.set("mwo_mop_balance_table", [])
 
 			for row in mop_balance_data:
 				mwo_doc.append("mwo_mop_balance_table", {

@@ -3142,7 +3142,7 @@ def create_mr_wo_stock_entry(se_data):
 			"item_code": row.get("item_code"),
 			"qty": row.get("qty"),
 			"pcs": row.get("pcs"),
-			"batch_no": row.get("batch_no"),
+			# "batch_no": row.get("batch_no"),
 			"manufacturing_operation": se_data.get("manufacturing_operation"),
 			"s_warehouse": row.get("s_warehouse"),
 			"t_warehouse": t_warehouse,
