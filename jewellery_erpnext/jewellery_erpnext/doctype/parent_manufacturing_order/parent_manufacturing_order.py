@@ -1299,13 +1299,6 @@ def get_stock_summary(pmo_name):
 		{"data": data, "total_qty": total_qty},
 	)
 
-@frappe.whitelist()
-def add_hold_comment(doctype, docname, reason):
-	frappe.logger().info(f"add_hold_comment called with: {doctype}, {docname}, {reason}")
-	if not reason:
-		return
-	doc = frappe.get_doc(doctype, docname)
-	doc.add_comment("Comment", f"Put on hold due to: {reason}")
 
 def hold_mop(self):
 	if not frappe.db.get_list("Manufacturing Operation",filters={"manufacturing_order":self.name},fields="name"):
@@ -1313,5 +1306,21 @@ def hold_mop(self):
 	for i in frappe.db.get_list("Manufacturing Operation",filters={"manufacturing_order":self.name},fields="name"):
 		if frappe.db.get_value("Manufacturing Operation",i["name"],"status") != "Finished":
 			frappe.db.set_value("Manufacturing Operation",i["name"],"status","Finished")
+
+@frappe.whitelist()
+def add_hold_comment(docname,reason):
+	if not reason:
+		return
+	doc = frappe.get_doc("Parent Manufacturing Order", docname)
+	doc.hold_reason = reason
+	doc.workflow_state = "On Hold"
+	doc.add_comment("Comment", f"Put on hold due to: {reason}")
+	doc.save(ignore_version=True)
+	doc.reload()
+	for i in frappe.db.get_list("Manufacturing Operation",filters={"manufacturing_order":docname},fields="name"):
+			if frappe.db.get_value("Manufacturing Operation",i["name"],"status") != "Finished":
+				frappe.db.set_value("Manufacturing Operation",i["name"],"status","Finished")
+
+	return True
 
 
