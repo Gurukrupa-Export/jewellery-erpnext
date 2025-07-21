@@ -86,6 +86,7 @@
   "quotation",
   "sales_order",
   "manufacturing_plan",
+  "hold_reason",
   "column_break_0hg6a",
   "order_form_type",
   "order_type",
@@ -885,6 +886,12 @@
    "fieldname": "use_custom_diamond_grade",
    "fieldtype": "Check",
    "label": "Use Custom Diamond Grade"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "hold_reason",
+   "fieldtype": "Data",
+   "label": "Hold Reason"
   }
  ],
  "index_web_pages_for_search": 1,
