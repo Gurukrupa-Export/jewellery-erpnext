@@ -150,6 +150,9 @@ def on_update(doc, method):
 	if not doc.flags.is_update_origin_entries:
 		return
 
+	if not doc.custom_origin_entries:
+		return
+
 	if doc.reference_doctype != "Stock Entry" or not doc.custom_voucher_detail_no:
 		return
 
