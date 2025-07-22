@@ -44,7 +44,7 @@ def autoname(self,method=None):
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		batch_abbr_code_list = []
-		
+
 		for i in frappe.get_doc("Item",self.item).attributes:
 			if i.attribute == "Finding Category":
 				continue
@@ -57,15 +57,15 @@ def autoname(self,method=None):
 				else:
 					frappe.throw(("Abbrivation is missing for {0}").format(i.attribute_value))
 		batch_code = batch_number + "".join(batch_abbr_code_list)
-		# batch_list = frappe.db.sql(f"""SELECT 
+		# batch_list = frappe.db.sql(f"""SELECT
 		# 								name
-		# 							FROM 
+		# 							FROM
 		# 								`tabBatch`
-		# 							WHERE 
+		# 							WHERE
 		# 								manufacturing_date > '{start_of_week}'
-		# 								AND manufacturing_date < '{end_of_week}' 
+		# 								AND manufacturing_date < '{end_of_week}'
 		# 								AND item = '{self.item}'
-		# 							ORDER BY 
+		# 							ORDER BY
 		# 								CAST(SUBSTRING_INDEX(name, '-', -1) AS UNSIGNED) DESC;
 		# 							""",as_dict=1)
 		# if batch_list:
@@ -142,5 +142,51 @@ def generate_unique_alphanumeric():
 
         if not existing_doc:  # If unique, return it
             return random_code
-		
 
+
+GOLD_ITEMS = {"M-G-24KT-99.9-Y", "M-G-24KT-99.5-Y"}
+
+def on_update(doc, method):
+	if not doc.flags.is_update_origin_entries:
+		return
+
+	if not doc.custom_origin_entries:
+		return
+
+	if doc.reference_doctype != "Stock Entry" or not doc.custom_voucher_detail_no:
+		return
+
+	se_type = frappe.db.get_value(doc.reference_doctype, doc.reference_name, "stock_entry_type")
+	if se_type != "Repack-Metal Conversion":
+		return
+
+	metal_purity = frappe.db.get_value("Item Variant Attribute", {
+		"parent": doc.item,
+		"attribute": "Metal Purity"
+	}, "attribute_value")
+
+	if not metal_purity:
+		metal_purity = doc.item.split('-')[-2]
+
+	alloy_rate = float()
+	metal_rate = float()
+
+	def _is_alloy(item_code):
+		item = frappe.get_doc("Item", item_code)
+		res = False
+
+		if item.item_group == "Alloy":
+			res = True
+		elif len(item.attributes) == 1:
+			res = True
+
+		return res
+
+	for row in doc.custom_origin_entries:
+		if _is_alloy(row.item_code):
+			alloy_rate = row.rate
+		elif row.item_code in GOLD_ITEMS:
+			metal_rate = ((row.rate * float(metal_purity)) / 100)
+
+	doc.db_set("custom_alloy_rate", alloy_rate)
+	doc.db_set("custom_metal_rate", metal_rate)

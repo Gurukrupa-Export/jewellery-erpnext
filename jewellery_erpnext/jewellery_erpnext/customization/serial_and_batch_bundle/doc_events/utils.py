@@ -44,6 +44,7 @@ def update_parent_batch_id(self):
 							batch_doc.append(
 								"custom_origin_entries", {"batch_no": batch.name, "qty": batch.qty, "rate": batch.rate}
 							)
+					batch_doc.flags.is_update_origin_entries = True
 					batch_doc.save()
 
 
