@@ -22,69 +22,70 @@ from frappe.query_builder.functions import CombineDatetime, Sum
 
 
 def validate_inventory_dimention(self):
-	pmo_customer_data = frappe._dict()
-	manufacturer_data = frappe._dict()
-	for row in self.items:
-		pmo_list = row.custom_parent_manufacturing_order or self.manufacturing_order
-		if not pmo_list:
-			continue
-		for pmo in pmo_list.split(","):
-			if not pmo_customer_data.get(pmo):
-				pmo_customer_data[pmo] = frappe.db.get_value(
-					"Parent Manufacturing Order",
-					pmo,
-					[
-						"is_customer_gold",
-						"is_customer_diamond",
-						"is_customer_gemstone",
-						"is_customer_material",
-						"customer",
-						"manufacturer",
-					],
-					as_dict=1,
-				)
-			pmo_data = pmo_customer_data.get(pmo)
-			if not manufacturer_data.get(pmo_data["manufacturer"]):
-				manufacturer_data[pmo_data["manufacturer"]] = frappe.db.get_value(
-					"Manufacturer",
-					pmo_data.get("manufacturer"),
-					"custom_allow_regular_goods_instead_of_customer_goods",
-				)
+	pass
+	# pmo_customer_data = frappe._dict()
+	# manufacturer_data = frappe._dict()
+	# for row in self.items:
+	# 	pmo_list = row.custom_parent_manufacturing_order or self.manufacturing_order
+	# 	if not pmo_list:
+	# 		continue
+	# 	for pmo in pmo_list.split(","):
+	# 		if not pmo_customer_data.get(pmo):
+	# 			pmo_customer_data[pmo] = frappe.db.get_value(
+	# 				"Parent Manufacturing Order",
+	# 				pmo,
+	# 				[
+	# 					"is_customer_gold",
+	# 					"is_customer_diamond",
+	# 					"is_customer_gemstone",
+	# 					"is_customer_material",
+	# 					"customer",
+	# 					"manufacturer",
+	# 				],
+	# 				as_dict=1,
+	# 			)
+	# 		pmo_data = pmo_customer_data.get(pmo)
+	# 		if not manufacturer_data.get(pmo_data["manufacturer"]):
+	# 			manufacturer_data[pmo_data["manufacturer"]] = frappe.db.get_value(
+	# 				"Manufacturer",
+	# 				pmo_data.get("manufacturer"),
+	# 				"custom_allow_regular_goods_instead_of_customer_goods",
+	# 			)
 
-			allow_customer_goods = manufacturer_data.get(pmo_data.get("manufacturer"))
+	# 		allow_customer_goods = manufacturer_data.get(pmo_data.get("manufacturer"))
 
-			if (
-				row.inventory_type in ["Customer Goods", "Customer Stock"]
-				and pmo_data.get("customer") != row.customer
-			):
-				frappe.throw(_("Only {0} allowed in Stock Entry").format(pmo_data.get("customer")))
-			else:
-				variant_mapping = {
-					"M": "is_customer_gold",
-					"F": "is_customer_gold",
-					"D": "is_customer_diamond",
-					"G": "is_customer_gemstone",
-					"O": "is_customer_material",
-				}
+	# 		if (
+	# 			row.inventory_type in ["Customer Goods", "Customer Stock"]
+	# 			and pmo_data.get("customer") != row.customer
+	# 		):
+	# 			frappe.throw(_("Only {0} allowed in Stock Entry").format(pmo_data.get("customer")))
+	# 		else:
+	# 			variant_mapping = {
+	# 				"M": "is_customer_gold",
+	# 				"F": "is_customer_gold",
+	# 				"D": "is_customer_diamond",
+	# 				"G": "is_customer_gemstone",
+	# 				"O": "is_customer_material",
+	# 			}
 
-				if row.custom_variant_of in variant_mapping:
-					customer_key = variant_mapping[row.custom_variant_of]
-					if pmo_data.get(customer_key) and row.inventory_type not in [
-						"Customer Goods",
-						"Customer Stock",
-					]:
-						if allow_customer_goods:
-							frappe.msgprint(_("Can not use regular stock inventory for Customer provided Item"))
-						else:
-							frappe.throw(_("Can not use regular stock inventory for Customer provided Item"))
-					elif not pmo_data.get(customer_key) and row.inventory_type in [
-						"Customer Goods",
-						"Customer Stock",
-					]:
-						if allow_customer_goods:
-							frappe.msgprint(_("Can not use Customer Goods inventory for non provided customer Item"))
-						else:
-							frappe.throw(_("Can not use Customer Goods inventory for non provided customer Item"))
+	# 			if row.custom_variant_of in variant_mapping:
+	# 				customer_key = variant_mapping[row.custom_variant_of]
+	# 				if pmo_data.get(customer_key) and row.inventory_type not in [
+	# 					"Customer Goods",
+	# 					"Customer Stock",
+	# 				]:
+	# 					if allow_customer_goods:
+	# 						frappe.msgprint(_("Can not use regular stock inventory for Customer provided Item"))
+	# 					else:
+	# 						frappe.throw(_("Can not use regular stock inventory for Customer provided Item"))
+	# 				elif not pmo_data.get(customer_key) and row.inventory_type in [
+	# 					"Customer Goods",
+	# 					"Customer Stock",
+	# 				]:
+	# 					if allow_customer_goods:
+	# 						frappe.msgprint(_("Can not use Customer Goods inventory for non provided customer Item"))
+	# 					else:
+	# 						frappe.throw(_("Can not use Customer Goods inventory for non provided customer Item"))
 
 # chnages in this function
 def get_fifo_batches(self, row):
