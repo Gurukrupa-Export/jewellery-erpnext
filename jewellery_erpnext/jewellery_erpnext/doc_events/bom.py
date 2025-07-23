@@ -16,6 +16,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 
 
 def before_validate(self, method):
+	validate_rating(self)
 	if self.bom_type == "Quotation" or self.docstatus == 1:
 		precision_data = frappe.db.get_value(
 			"Customer",
@@ -54,7 +55,7 @@ def before_validate(self, method):
 		set_item_variant(self)
 		set_bom_items(self)
 		update_specifications(self)
-		validate_rating(self)
+		
 
 
 def validate(self, method):
