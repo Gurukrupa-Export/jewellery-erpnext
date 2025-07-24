@@ -608,7 +608,7 @@
    "read_only_depends_on": "doc.for_fg"
   },
   {
-   "depends_on": "doc.for_fg",
+   "depends_on": "for_fg",
    "fieldname": "mwo_mop_balance_table",
    "fieldtype": "Table",
    "label": "MWO MOP Balance Table",
@@ -646,7 +646,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2025-07-10 12:34:02.563886",
+ "modified": "2025-07-24 16:27:30.881315",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

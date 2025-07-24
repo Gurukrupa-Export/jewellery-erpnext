@@ -541,6 +541,14 @@ class DepartmentIR(Document):
 	def update_fg_mwo(self):
 		"""Update FG MWO MOP Balance Table"""
 
+		manufacturer = self.manufacturer
+
+		if not manufacturer:
+			manufacturer = frappe.defaults.get_user_default("manufacturer")
+
+		if not manufacturer:
+			frappe.throw("Select manufacturer for updating FG MWO MOP")
+
 		last_operation_department = frappe.db.get_value(
 			"Manufacturing Setting",
 			self.manufacturer,
@@ -592,12 +600,9 @@ class DepartmentIR(Document):
 				]
 			)
 
-			# frappe.log_error(f"MOP Balance Data {row.manufacturing_operation}", mop_balance_data)
-
 			fg_mwo = result[0].name
 
 			mwo_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
-			# mwo_doc.set("mwo_mop_balance_table", [])
 
 			for row in mop_balance_data:
 				mwo_doc.append("mwo_mop_balance_table", {

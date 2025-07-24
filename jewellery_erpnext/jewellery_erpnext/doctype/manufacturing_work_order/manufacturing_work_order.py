@@ -65,10 +65,10 @@ class ManufacturingWorkOrder(Document):
 			},
 			"name",
 		)
-		if pending_wo:
-			frappe.throw(
-				_("All the pending manufacturing work orders should be in {0}.").format(last_department)
-			)
+		# if pending_wo:
+		# 	frappe.throw(
+		# 		_("All the pending manufacturing work orders should be in {0}.").format(last_department)
+		# 	)
 
 	def on_cancel(self):
 		self.db_set("status", "Cancelled")
@@ -270,25 +270,6 @@ def create_manufacturing_operation(doc):
 	values = {"operation": operation}
 	values["department_start_time"] = dt_string
 	add_time_log(mop, values)
-
-	# ----- Kavin's Code ----- #
-	# update mwo mop balance table for fg
-	if doc.for_fg:
-		for row in mop.mop_balance_table:
-			doc.append("mwo_mop_balance_table", {
-				"raw_material": row.item_code,
-				"batch_no": row.batch_no,
-				"serial_no": row.serial_no,
-				"qty": row.qty,
-				"uom": row.uom,
-				"gross_weight": row.gross_weight,
-				"customer": row.customer,
-				"is_customer_item": row.is_customer_item,
-				"inventory_type": row.inventory_type,
-				"sub_setting_type": row.sub_setting_type,
-				"sed_item": row.ste_detail,
-				"pcs": row.pcs,
-			})
 
 
 @frappe.whitelist()
