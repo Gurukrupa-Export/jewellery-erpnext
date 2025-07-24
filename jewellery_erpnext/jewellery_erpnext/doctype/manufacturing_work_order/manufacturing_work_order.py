@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+from copy import deepcopy
 from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
@@ -64,10 +65,10 @@ class ManufacturingWorkOrder(Document):
 			},
 			"name",
 		)
-		if pending_wo:
-			frappe.throw(
-				_("All the pending manufacturing work orders should be in {0}.").format(last_department)
-			)
+		# if pending_wo:
+		# 	frappe.throw(
+		# 		_("All the pending manufacturing work orders should be in {0}.").format(last_department)
+		# 	)
 
 	def on_cancel(self):
 		self.db_set("status", "Cancelled")
@@ -247,6 +248,7 @@ def create_manufacturing_operation(doc):
 	department = settings.get("default_department")
 	operation = settings.get("default_operation")
 	status = "Not Started"
+
 	if doc.for_fg:
 		# department, operation = frappe.db.get_value(
 		# 	"Department Operation", {"is_last_operation": 1, "company": doc.company}, ["department", "name"]
@@ -254,6 +256,7 @@ def create_manufacturing_operation(doc):
 		department, operation = frappe.db.get_value(
 			"Department Operation", {"is_last_operation": 1, "manufacturer": doc.manufacturer}, ["department", "name"]
 		) or ["", ""]
+
 	if doc.split_from:
 		department = doc.department
 		operation = None

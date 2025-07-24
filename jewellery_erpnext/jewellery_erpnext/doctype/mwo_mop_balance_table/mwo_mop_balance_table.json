@@ -1,0 +1,125 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-07-10 12:04:10.549052",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "raw_material",
+  "qty",
+  "pcs",
+  "gross_weight",
+  "uom",
+  "batch_no",
+  "column_break_xnlw",
+  "inventory_type",
+  "customer",
+  "sub_setting_type",
+  "is_customer_item",
+  "serial_no",
+  "sed_item"
+ ],
+ "fields": [
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Qty"
+  },
+  {
+   "fieldname": "pcs",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Pcs",
+   "read_only": 1
+  },
+  {
+   "fieldname": "uom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "UOM",
+   "options": "UOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "label": "Batch No",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "column_break_xnlw",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "label": "Inventory Type",
+   "options": "Inventory Type"
+  },
+  {
+   "fetch_from": "sed_item.customer",
+   "fetch_if_empty": 1,
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "sub_setting_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Sub Setting Type",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_customer_item",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Customer Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "serial_no",
+   "fieldtype": "Link",
+   "label": "Serial No",
+   "options": "Serial No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "raw_material",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Raw Material",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gross_weight",
+   "fieldtype": "Float",
+   "label": "Gross Weight"
+  },
+  {
+   "fieldname": "sed_item",
+   "fieldtype": "Data",
+   "label": "SED Item"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-07-10 12:31:52.904762",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "MWO MOP Balance Table",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

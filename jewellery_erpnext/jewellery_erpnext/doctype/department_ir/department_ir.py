@@ -183,6 +183,8 @@ class DepartmentIR(Document):
 			stock_doc.save()
 			stock_doc.submit()
 
+			self.update_fg_mwo() # need to optimze this flow onverheading stock entry creation 50%
+
 		if cancel:
 			se_list = frappe.db.get_list("Stock Entry", {"department_ir": self.name})
 			for row in se_list:
@@ -535,6 +537,91 @@ class DepartmentIR(Document):
 					"other_wt": mop_details.get("other_wt"),
 				},
 			)
+
+	def update_fg_mwo(self):
+		"""Update FG MWO MOP Balance Table"""
+
+		manufacturer = self.manufacturer
+
+		if not manufacturer:
+			manufacturer = frappe.defaults.get_user_default("manufacturer")
+
+		if not manufacturer:
+			frappe.throw("Select manufacturer for updating FG MWO MOP")
+
+		last_operation_department = frappe.db.get_value(
+			"Manufacturing Setting",
+			self.manufacturer,
+			"default_last_operation_department"
+		)
+
+		is_last_operation_dept = False
+		if self.current_department == last_operation_department:
+			is_last_operation_dept = True
+
+		for row in self.department_ir_operation:
+			mwo = row.manufacturing_work_order
+
+			if not is_last_operation_dept:
+				continue
+
+			result = frappe.db.sql("""
+				SELECT child.name
+				FROM `tabManufacturing Work Order` AS child
+				JOIN `tabManufacturing Work Order` AS parent
+					ON child.manufacturing_order = parent.manufacturing_order
+				WHERE parent.name = %s
+				AND child.for_fg = 1
+				AND child.docstatus = 0
+				LIMIT 1
+			""", (mwo,), as_dict=True)
+
+			if not result:
+				return
+
+			mop_balance_data = frappe.db.get_all("MOP Balance Table",
+				{
+					"parenttype": "Manufacturing Operation",
+					"parent":row.manufacturing_operation
+				},
+				[
+					"item_code",
+					"batch_no",
+					"serial_no",
+					"qty",
+					"uom",
+					"gross_weight",
+					"customer",
+					"is_customer_item",
+					"inventory_type",
+					"sub_setting_type",
+					"ste_detail",
+					"pcs"
+				]
+			)
+
+			fg_mwo = result[0].name
+
+			mwo_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
+
+			for row in mop_balance_data:
+				mwo_doc.append("mwo_mop_balance_table", {
+					"raw_material": row.item_code,
+					"batch_no": row.batch_no,
+					"serial_no": row.serial_no,
+					"qty": row.qty,
+					"uom": row.uom,
+					"gross_weight": row.gross_weight,
+					"customer": row.customer,
+					"is_customer_item": row.is_customer_item,
+					"inventory_type": row.inventory_type,
+					"sub_setting_type": row.sub_setting_type,
+					"sed_item": row.ste_detail,
+					"pcs": row.pcs,
+				})
+
+			mwo_doc.update_child_table("mwo_mop_balance_table")
+			mwo_doc.db_update_all()
 
 
 def get_se_items(doc, mwo, mop_data, in_transit_wh, send_in_transit_wh, department_wh):

@@ -1,394 +1,402 @@
 {
-"actions": [],
-"allow_rename": 1,
-"autoname": "field:manufacturer",
-"creation": "2023-09-05 16:17:41.860465",
-"default_view": "List",
-"doctype": "DocType",
-"editable_grid": 1,
-"engine": "InnoDB",
-"field_order": [
-"company",
-"manufacturer",
-"serial_number_setting_section",
-"series_start",
-"section_break_pwstz",
-"default_operation",
-"gold_loss_item",
-"service_item",
-"subcontracting_repack_item",
-"pure_gold_item",
-"allowed_days_for_main_slip_issue",
-"expense_account_for_manufacturing_entry",
-"column_break_9vro2",
-"default_diamond_department",
-"default_gemstone_department",
-"default_finding_department",
-"default_other_material_department",
-"default_department",
-"default_fg_department",
-"default_fg_warehouse",
-"in_transit",
-"manufacturing_warehouses_section",
-"powder_value",
-"power_value_individual",
-"water_value",
-"water_value_individual",
-"inventory_type",
-"column_break_eo1lh",
-"boric_value",
-"special_powder_boric_value",
-"others_section",
-"wo_split_limit",
-"refining_details_section",
-"refined_metal",
-"column_break_27",
-"refining_warehouse",
-"item_details_section",
-"cad_to_rpt",
-"rpt_to_wax",
-"cam_weight_details_mapping",
-"column_break_30",
-"wax_to_gold_10",
-"wax_to_gold_14",
-"wax_to_gold_18",
-"wax_to_gold_22",
-"wax_to_gold_24",
-"wax_to_silver",
-"item_validations_section",
-"check_purity",
-"check_colour",
-"check_touch",
-"item_variant_groups",
-"product_certification_section",
-"product_certification_details"
-],
-"fields": [
-{
-"description": "For Manufacturing DocTypes",
-"fieldname": "default_operation",
-"fieldtype": "Link",
-"label": "Default Operation",
-"options": "Department Operation"
-},
-{
-"fieldname": "gold_loss_item",
-"fieldtype": "Link",
-"label": "Gold Loss Item",
-"options": "Item"
-},
-{
-"fieldname": "service_item",
-"fieldtype": "Link",
-"label": "Subcontracting Service Item",
-"options": "Item"
-},
-{
-"fieldname": "column_break_9vro2",
-"fieldtype": "Column Break"
-},
-{
-"description": "For Manufacturing DocTypes",
-"fieldname": "default_department",
-"fieldtype": "Link",
-"label": "Default Metal Department",
-"options": "Department"
-},
-{
-"fieldname": "in_transit",
-"fieldtype": "Link",
-"label": "Default In Transit",
-"options": "Warehouse"
-},
-{
-"fieldname": "manufacturing_warehouses_section",
-"fieldtype": "Section Break",
-"label": "Flask Details"
-},
-{
-"fieldname": "powder_value",
-"fieldtype": "Float",
-"label": "Powder Value"
-},
-{
-"fieldname": "water_value",
-"fieldtype": "Float",
-"label": "Water Value"
-},
-{
-"fieldname": "column_break_eo1lh",
-"fieldtype": "Column Break"
-},
-{
-"fieldname": "boric_value",
-"fieldtype": "Float",
-"label": "Boric Value"
-},
-{
-"fieldname": "special_powder_boric_value",
-"fieldtype": "Float",
-"label": "Special Powder Boric Value"
-},
-{
-"fieldname": "wo_split_limit",
-"fieldtype": "Int",
-"label": "Limit of Work Order Split"
-},
-{
-"fieldname": "refining_details_section",
-"fieldtype": "Section Break",
-"label": "Refining Details"
-},
-{
-"fieldname": "refined_metal",
-"fieldtype": "Link",
-"label": "Refined Metal",
-"options": "Item"
-},
-{
-"fieldname": "column_break_27",
-"fieldtype": "Column Break"
-},
-{
-"fieldname": "refining_warehouse",
-"fieldtype": "Link",
-"label": "Refining Warehouse",
-"options": "Warehouse"
-},
-{
-"fieldname": "item_details_section",
-"fieldtype": "Section Break",
-"label": "Item Details"
-},
-{
-"fieldname": "cad_to_rpt",
-"fieldtype": "Float",
-"label": "Cad to RPT Ratio"
-},
-{
-"fieldname": "rpt_to_wax",
-"fieldtype": "Float",
-"label": "RPT to Wax Ratio"
-},
-{
-"fieldname": "column_break_30",
-"fieldtype": "Column Break"
-},
-{
-"fieldname": "wax_to_gold_10",
-"fieldtype": "Float",
-"label": "Wax TO 10KT Gold Ratio"
-},
-{
-"fieldname": "wax_to_gold_14",
-"fieldtype": "Float",
-"label": "Wax TO 14KT Gold Ratio"
-},
-{
-"fieldname": "wax_to_gold_18",
-"fieldtype": "Float",
-"label": "Wax TO 18KT Gold Ratio"
-},
-{
-"fieldname": "wax_to_gold_22",
-"fieldtype": "Float",
-"label": "Wax TO 22KT Gold Ratio"
-},
-{
-"fieldname": "wax_to_gold_24",
-"fieldtype": "Float",
-"label": "Wax TO 24KT Gold Ratio"
-},
-{
-"fieldname": "wax_to_silver",
-"fieldtype": "Float",
-"label": "Wax to Silver Ratio"
-},
-{
-"fieldname": "company",
-"fieldtype": "Link",
-"label": "Company",
-"options": "Company"
-},
-{
-"fieldname": "section_break_pwstz",
-"fieldtype": "Section Break"
-},
-{
-"fieldname": "others_section",
-"fieldtype": "Section Break",
-"label": "Others"
-},
-{
-"description": "Manufacturing Work Order for Finished Goods will have this Department",
-"fieldname": "default_fg_department",
-"fieldtype": "Link",
-"label": "Default FG Department",
-"options": "Department"
-},
-{
-"description": "It should be A to Z letters only",
-"fieldname": "series_start",
-"fieldtype": "Data",
-"label": "Series Start",
-"length": 1
-},
-{
-"fieldname": "serial_number_setting_section",
-"fieldtype": "Section Break",
-"label": "Serial Number Setting"
-},
-{
-"fieldname": "cam_weight_details_mapping",
-"fieldtype": "Table",
-"label": "CAM Weight Details Mapping",
-"options": "CAM Weight Details Mapping"
-},
-{
-"fieldname": "default_gemstone_department",
-"fieldtype": "Link",
-"in_list_view": 1,
-"label": "Default Gemstone Department",
-"options": "Department",
-"reqd": 1
-},
-{
-"fieldname": "default_diamond_department",
-"fieldtype": "Link",
-"in_list_view": 1,
-"label": "Default Diamond Department",
-"options": "Department",
-"reqd": 1
-},
-{
-"fieldname": "default_finding_department",
-"fieldtype": "Link",
-"label": "Default Finding Department",
-"options": "Department"
-},
-{
-"fieldname": "default_other_material_department",
-"fieldtype": "Link",
-"label": "Default Other Material Department",
-"options": "Department"
-},
-{
-"fieldname": "default_fg_warehouse",
-"fieldtype": "Link",
-"label": "Default FG Warehouse",
-"options": "Warehouse"
-},
-{
-"fieldname": "subcontracting_repack_item",
-"fieldtype": "Link",
-"label": "Subcontracting Repack Item",
-"options": "Item"
-},
-{
-"fieldname": "item_validations_section",
-"fieldtype": "Section Break",
-"label": "Item Validations"
-},
-{
-"fieldname": "check_purity",
-"fieldtype": "Select",
-"label": "Check Purity",
-"options": "\nM\nF\nBoth"
-},
-{
-"fieldname": "check_colour",
-"fieldtype": "Select",
-"label": "Check Colour",
-"options": "\nM\nF\nBoth"
-},
-{
-"fieldname": "check_touch",
-"fieldtype": "Select",
-"label": "Check Touch",
-"options": "\nM\nF\nBoth"
-},
-{
-"fieldname": "pure_gold_item",
-"fieldtype": "Link",
-"label": "Pure Gold Item",
-"options": "Item"
-},
-{
-"fieldname": "product_certification_section",
-"fieldtype": "Section Break",
-"label": "Product Certification"
-},
-{
-"fieldname": "product_certification_details",
-"fieldtype": "Table",
-"label": "Product Certification Details",
-"options": "Product Certification Details"
-},
-{
-"fieldname": "allowed_days_for_main_slip_issue",
-"fieldtype": "Int",
-"label": "Allowed Days for Main Slip Issue"
-},
-{
-"fieldname": "expense_account_for_manufacturing_entry",
-"fieldtype": "Link",
-"label": "Expense Account for Manufacturing Entry",
-"options": "Account"
-},
-{
-"fieldname": "power_value_individual",
-"fieldtype": "Float",
-"label": "Power Value (Individual)"
-},
-{
-"fieldname": "water_value_individual",
-"fieldtype": "Float",
-"label": "Water Value (Individual)"
-},
-{
-"fieldname": "inventory_type",
-"fieldtype": "Link",
-"label": "Inventory Type",
-"options": "Inventory Type"
-},
-{
-"fieldname": "item_variant_groups",
-"fieldtype": "Table",
-"label": "Item Variant Groups",
-"options": "Variant Item Group"
-},
-{
-"fieldname": "manufacturer",
-"fieldtype": "Link",
-"label": "Manufacturer",
-"options": "Manufacturer",
-"unique": 1
-}
-],
-"index_web_pages_for_search": 1,
-"links": [],
-"modified": "2025-05-14 11:30:41.356735",
-"modified_by": "Administrator",
-"module": "Jewellery Erpnext",
-"name": "Manufacturing Setting",
-"naming_rule": "By fieldname",
-"owner": "Administrator",
-"permissions": [
-{
-"create": 1,
-"delete": 1,
-"email": 1,
-"print": 1,
-"read": 1,
-"role": "System Manager",
-"share": 1,
-"write": 1
-}
-],
-"sort_field": "modified",
-"sort_order": "DESC",
-"states": [],
-"track_changes": 1,
-"track_seen": 1,
-"track_views": 1
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:manufacturer",
+ "creation": "2023-09-05 16:17:41.860465",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "manufacturer",
+  "serial_number_setting_section",
+  "series_start",
+  "section_break_pwstz",
+  "default_operation",
+  "gold_loss_item",
+  "service_item",
+  "subcontracting_repack_item",
+  "pure_gold_item",
+  "allowed_days_for_main_slip_issue",
+  "expense_account_for_manufacturing_entry",
+  "default_last_operation_department",
+  "column_break_9vro2",
+  "default_diamond_department",
+  "default_gemstone_department",
+  "default_finding_department",
+  "default_other_material_department",
+  "default_department",
+  "default_fg_department",
+  "default_fg_warehouse",
+  "in_transit",
+  "manufacturing_warehouses_section",
+  "powder_value",
+  "power_value_individual",
+  "water_value",
+  "water_value_individual",
+  "inventory_type",
+  "column_break_eo1lh",
+  "boric_value",
+  "special_powder_boric_value",
+  "others_section",
+  "wo_split_limit",
+  "refining_details_section",
+  "refined_metal",
+  "column_break_27",
+  "refining_warehouse",
+  "item_details_section",
+  "cad_to_rpt",
+  "rpt_to_wax",
+  "cam_weight_details_mapping",
+  "column_break_30",
+  "wax_to_gold_10",
+  "wax_to_gold_14",
+  "wax_to_gold_18",
+  "wax_to_gold_22",
+  "wax_to_gold_24",
+  "wax_to_silver",
+  "item_validations_section",
+  "check_purity",
+  "check_colour",
+  "check_touch",
+  "item_variant_groups",
+  "product_certification_section",
+  "product_certification_details"
+ ],
+ "fields": [
+  {
+   "description": "For Manufacturing DocTypes",
+   "fieldname": "default_operation",
+   "fieldtype": "Link",
+   "label": "Default Operation",
+   "options": "Department Operation"
+  },
+  {
+   "fieldname": "gold_loss_item",
+   "fieldtype": "Link",
+   "label": "Gold Loss Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "service_item",
+   "fieldtype": "Link",
+   "label": "Subcontracting Service Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "column_break_9vro2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "For Manufacturing DocTypes",
+   "fieldname": "default_department",
+   "fieldtype": "Link",
+   "label": "Default Metal Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "in_transit",
+   "fieldtype": "Link",
+   "label": "Default In Transit",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "manufacturing_warehouses_section",
+   "fieldtype": "Section Break",
+   "label": "Flask Details"
+  },
+  {
+   "fieldname": "powder_value",
+   "fieldtype": "Float",
+   "label": "Powder Value"
+  },
+  {
+   "fieldname": "water_value",
+   "fieldtype": "Float",
+   "label": "Water Value"
+  },
+  {
+   "fieldname": "column_break_eo1lh",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "boric_value",
+   "fieldtype": "Float",
+   "label": "Boric Value"
+  },
+  {
+   "fieldname": "special_powder_boric_value",
+   "fieldtype": "Float",
+   "label": "Special Powder Boric Value"
+  },
+  {
+   "fieldname": "wo_split_limit",
+   "fieldtype": "Int",
+   "label": "Limit of Work Order Split"
+  },
+  {
+   "fieldname": "refining_details_section",
+   "fieldtype": "Section Break",
+   "label": "Refining Details"
+  },
+  {
+   "fieldname": "refined_metal",
+   "fieldtype": "Link",
+   "label": "Refined Metal",
+   "options": "Item"
+  },
+  {
+   "fieldname": "column_break_27",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "refining_warehouse",
+   "fieldtype": "Link",
+   "label": "Refining Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "item_details_section",
+   "fieldtype": "Section Break",
+   "label": "Item Details"
+  },
+  {
+   "fieldname": "cad_to_rpt",
+   "fieldtype": "Float",
+   "label": "Cad to RPT Ratio"
+  },
+  {
+   "fieldname": "rpt_to_wax",
+   "fieldtype": "Float",
+   "label": "RPT to Wax Ratio"
+  },
+  {
+   "fieldname": "column_break_30",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "wax_to_gold_10",
+   "fieldtype": "Float",
+   "label": "Wax TO 10KT Gold Ratio"
+  },
+  {
+   "fieldname": "wax_to_gold_14",
+   "fieldtype": "Float",
+   "label": "Wax TO 14KT Gold Ratio"
+  },
+  {
+   "fieldname": "wax_to_gold_18",
+   "fieldtype": "Float",
+   "label": "Wax TO 18KT Gold Ratio"
+  },
+  {
+   "fieldname": "wax_to_gold_22",
+   "fieldtype": "Float",
+   "label": "Wax TO 22KT Gold Ratio"
+  },
+  {
+   "fieldname": "wax_to_gold_24",
+   "fieldtype": "Float",
+   "label": "Wax TO 24KT Gold Ratio"
+  },
+  {
+   "fieldname": "wax_to_silver",
+   "fieldtype": "Float",
+   "label": "Wax to Silver Ratio"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "section_break_pwstz",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "others_section",
+   "fieldtype": "Section Break",
+   "label": "Others"
+  },
+  {
+   "description": "Manufacturing Work Order for Finished Goods will have this Department",
+   "fieldname": "default_fg_department",
+   "fieldtype": "Link",
+   "label": "Default FG Department",
+   "options": "Department"
+  },
+  {
+   "description": "It should be A to Z letters only",
+   "fieldname": "series_start",
+   "fieldtype": "Data",
+   "label": "Series Start",
+   "length": 1
+  },
+  {
+   "fieldname": "serial_number_setting_section",
+   "fieldtype": "Section Break",
+   "label": "Serial Number Setting"
+  },
+  {
+   "fieldname": "cam_weight_details_mapping",
+   "fieldtype": "Table",
+   "label": "CAM Weight Details Mapping",
+   "options": "CAM Weight Details Mapping"
+  },
+  {
+   "fieldname": "default_gemstone_department",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Default Gemstone Department",
+   "options": "Department",
+   "reqd": 1
+  },
+  {
+   "fieldname": "default_diamond_department",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Default Diamond Department",
+   "options": "Department",
+   "reqd": 1
+  },
+  {
+   "fieldname": "default_finding_department",
+   "fieldtype": "Link",
+   "label": "Default Finding Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "default_other_material_department",
+   "fieldtype": "Link",
+   "label": "Default Other Material Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "default_fg_warehouse",
+   "fieldtype": "Link",
+   "label": "Default FG Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "subcontracting_repack_item",
+   "fieldtype": "Link",
+   "label": "Subcontracting Repack Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "item_validations_section",
+   "fieldtype": "Section Break",
+   "label": "Item Validations"
+  },
+  {
+   "fieldname": "check_purity",
+   "fieldtype": "Select",
+   "label": "Check Purity",
+   "options": "\nM\nF\nBoth"
+  },
+  {
+   "fieldname": "check_colour",
+   "fieldtype": "Select",
+   "label": "Check Colour",
+   "options": "\nM\nF\nBoth"
+  },
+  {
+   "fieldname": "check_touch",
+   "fieldtype": "Select",
+   "label": "Check Touch",
+   "options": "\nM\nF\nBoth"
+  },
+  {
+   "fieldname": "pure_gold_item",
+   "fieldtype": "Link",
+   "label": "Pure Gold Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "product_certification_section",
+   "fieldtype": "Section Break",
+   "label": "Product Certification"
+  },
+  {
+   "fieldname": "product_certification_details",
+   "fieldtype": "Table",
+   "label": "Product Certification Details",
+   "options": "Product Certification Details"
+  },
+  {
+   "fieldname": "allowed_days_for_main_slip_issue",
+   "fieldtype": "Int",
+   "label": "Allowed Days for Main Slip Issue"
+  },
+  {
+   "fieldname": "expense_account_for_manufacturing_entry",
+   "fieldtype": "Link",
+   "label": "Expense Account for Manufacturing Entry",
+   "options": "Account"
+  },
+  {
+   "fieldname": "power_value_individual",
+   "fieldtype": "Float",
+   "label": "Power Value (Individual)"
+  },
+  {
+   "fieldname": "water_value_individual",
+   "fieldtype": "Float",
+   "label": "Water Value (Individual)"
+  },
+  {
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "label": "Inventory Type",
+   "options": "Inventory Type"
+  },
+  {
+   "fieldname": "item_variant_groups",
+   "fieldtype": "Table",
+   "label": "Item Variant Groups",
+   "options": "Variant Item Group"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer",
+   "unique": 1
+  },
+  {
+   "fieldname": "default_last_operation_department",
+   "fieldtype": "Link",
+   "label": "Default Last Operation Department",
+   "options": "Department"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-07-11 16:05:50.086317",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Manufacturing Setting",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1,
+ "track_views": 1
 }
