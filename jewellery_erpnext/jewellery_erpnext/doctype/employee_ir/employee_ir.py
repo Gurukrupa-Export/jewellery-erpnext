@@ -431,8 +431,8 @@ class EmployeeIR(Document):
 			# del res["complete_time"]
 			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, res)
 
-		if time_log_args and not cancel:
-			batch_add_time_logs(self, time_log_args)
+			if time_log_args and not cancel:
+				batch_add_time_logs(self, time_log_args)
 
 		# workstation_data = frappe._dict()
 		# Process Loss
