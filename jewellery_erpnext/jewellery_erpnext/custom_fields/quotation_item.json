@@ -565,7 +565,7 @@
    "fieldname": "order_form_id",
    "fieldtype": "Dynamic Link",
    "insert_after": "order_form_type",
-   "label": "Order Form ID",
+   "label": "Order ID",
    "module": "Jewellery Erpnext",
    "options": "order_form_type"
   },
