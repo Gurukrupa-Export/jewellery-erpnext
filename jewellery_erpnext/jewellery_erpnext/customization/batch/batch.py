@@ -140,14 +140,17 @@ def generate_unique_alphanumeric():
 		# Check if it already exists
 		existing_doc = frappe.get_value("Manufacturing Operation", {"name": f"MOP-{random_code}"}, "name")
 
-		if not existing_doc:  # If unique, return it
-			return random_code
+        if not existing_doc:  # If unique, return it
+            return random_code
 
 
 GOLD_ITEMS = {"M-G-24KT-99.9-Y", "M-G-24KT-99.5-Y"}
 
 def on_update(doc, method):
-	if not doc.flags.is_update_origin_entries or doc.custom_origin_entries:
+	if not doc.flags.is_update_origin_entries:
+		return
+
+	if not doc.custom_origin_entries:
 		return
 
 	if doc.reference_doctype != "Stock Entry" or not doc.custom_voucher_detail_no:

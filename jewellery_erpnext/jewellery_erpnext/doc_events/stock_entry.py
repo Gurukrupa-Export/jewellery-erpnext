@@ -49,7 +49,7 @@ def before_validate(self, method):
 				frappe.throw(
 					_("Stock Entry not allowed for {0} in between transit").format(row.manufacturing_operation)
 				)
-		if row.custom_variant_of in ["M", "F"]:
+		if row.custom_variant_of in ["M", "F"] and self.stock_entry_type not in ['Customer Goods Transfer','Customer Goods Issue','Customer Goods Received']:
 			if not pure_item_purity:
 				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
 
@@ -951,7 +951,7 @@ def validate_duplicate_batches(entry, batch_data):
 	if entry.batch_no not in batch_data[key]:
 		allowed = ", ".join(batch_data[key]) or "None"
 		frappe.throw(
-			_("Row {0}: Selected Item <b>{1}<b> Batch <b>{2}</b> does not belong to <b>{3}</b><br><br><b>Allowed Batches:</b> {4}").format(
+			_("Row {0}: Selected Item {1} Batch <b>{2}</b> does not belong to <b>{3}</b><br><br><b>Allowed Batches:</b> {4}").format(
 				entry.idx,
 				entry.item_code,
 				entry.batch_no,

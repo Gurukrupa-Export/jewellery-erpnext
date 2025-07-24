@@ -57,7 +57,7 @@ def on_cancel(self, method):
 
 def before_submit(self, method):
 	validate_invoice_item(self)
-	
+
 def create_new_bom(self):
 	"""
 	Create Quotation Type BOM from Template/ Finished Goods Bom
@@ -197,7 +197,7 @@ def create_new_bom(self):
 
 
 # def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bom_data, bom_data):
-	
+
 # 	row.db_set("copy_bom", bom)
 # 	doc = frappe.copy_doc(frappe.get_doc("BOM", bom))
 
@@ -245,9 +245,9 @@ def create_new_bom(self):
 # 					size_entries = frappe.db.sql("""
 # 						SELECT name, supplier_fg_purchase_rate, rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 # 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-# 						FROM `tabDiamond Price List` 
-# 						WHERE customer = %s 
-# 						AND price_list_type = %s 
+# 						FROM `tabDiamond Price List`
+# 						WHERE customer = %s
+# 						AND price_list_type = %s
 # 						AND size_in_mm = %s
 # 						ORDER BY creation DESC
 # 						LIMIT 1
@@ -255,7 +255,7 @@ def create_new_bom(self):
 
 # 					if size_entries:
 # 						entry = size_entries[0]
-						
+
 # 						# diamond.total_diamond_rate = entry.get("rate", 0)
 # 						diamond.fg_purchase_rate = entry.get("supplier_fg_purchase_rate", 0)
 # 						diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
@@ -265,7 +265,7 @@ def create_new_bom(self):
 # 							if entry.get("custom_outwork_handling_charges_rate") == 0:
 # 								percentage = entry.get("custom_outwork_handling_charges_in_percentage", 0)
 # 								amount = entry.get("rate", 0) * (percentage / 100)
-# 								diamond.total_diamond_rate = amount 
+# 								diamond.total_diamond_rate = amount
 # 								diamond.diamond_rate_for_specified_quantity = diamond.total_diamond_rate * diamond.size_in_mm
 # 						else:
 # 							diamond.total_diamond_rate = entry.get("rate", 0) + entry.get("custom_outright_handling_charges_rate", 0)
@@ -274,15 +274,15 @@ def create_new_bom(self):
 # 								percentage = entry.get("custom_outright_handling_charges_in_percentage", 0)
 # 								rate = entry.get("rate", 0) * (percentage / 100)
 # 								diamond.total_diamond_rate = rate + entry.get("rate", 0)
-						
+
 
 # 				if diamond_price_list_ref_customer == "Sieve Size Range":
 # 					sieve_entries = frappe.db.sql("""
 # 						SELECT name, supplier_fg_purchase_rate, rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
-# 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage 
-# 						FROM `tabDiamond Price List` 
-# 						WHERE customer = %s 
-# 						AND price_list_type = %s 
+# 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
+# 						FROM `tabDiamond Price List`
+# 						WHERE customer = %s
+# 						AND price_list_type = %s
 # 						AND sieve_size_range = %s
 # 						ORDER BY creation DESC
 # 						LIMIT 1
@@ -297,10 +297,10 @@ def create_new_bom(self):
 # 				if diamond_price_list_ref_customer == "Weight (in cts)":
 # 					weight_entries = frappe.db.sql("""
 # 						SELECT name, from_weight, to_weight, supplier_fg_purchase_rate, rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
-# 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage 
-# 						FROM `tabDiamond Price List` 
-# 						WHERE customer = %s 
-# 						AND price_list_type = %s 
+# 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
+# 						FROM `tabDiamond Price List`
+# 						WHERE customer = %s
+# 						AND price_list_type = %s
 # 						AND %s BETWEEN from_weight AND to_weight
 # 						ORDER BY creation DESC
 # 						LIMIT 1
@@ -308,21 +308,21 @@ def create_new_bom(self):
 
 # 					if weight_entries:
 # 						entry = weight_entries[0]
-						
+
 # 						# diamond.total_diamond_rate = entry.get("rate", 0)
 # 						diamond.fg_purchase_rate = entry.get("supplier_fg_purchase_rate", 0)
 # 						diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 # 						if diamond.is_customer_item:
 # 							diamond.total_diamond_rate = entry.get("custom_outwork_handling_charges_rate", 0)
-							
+
 # 							diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
-							
+
 # 							if entry.get("custom_outwork_handling_charges_rate") == 0:
 # 								percentage = entry.get("custom_outwork_handling_charges_in_percentage", 0)
 # 								amount = entry.get("rate", 0) * (percentage / 100)
-# 								diamond.total_diamond_rate = amount 
+# 								diamond.total_diamond_rate = amount
 # 								diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
-								
+
 # 						else:
 # 							diamond.total_diamond_rate = entry.get("rate", 0) + entry.get("custom_outright_handling_charges_rate", 0)
 # 							diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
@@ -338,8 +338,8 @@ def create_new_bom(self):
 # 		for find in doc.finding_detail:
 # 			rate_per_gm = 0
 # 			fg_purchase_rate = 0
-# 			fg_purchase_amount = 0  
-# 			wastage_rate = 0 
+# 			fg_purchase_amount = 0
+# 			wastage_rate = 0
 # 			if self.custom_customer_gold == "Yes":
 # 				find.is_customer_item = 1
 # 			making_charge_price_list = frappe.get_all(
@@ -353,13 +353,13 @@ def create_new_bom(self):
 # 				filters={
 # 					"customer": ref_customer,
 # 					"setting_type": doc.setting_type,
-# 					"from_gold_rate": ["<=", doc.gold_rate_with_gst], 
+# 					"from_gold_rate": ["<=", doc.gold_rate_with_gst],
 # 					"to_gold_rate": [">=", doc.gold_rate_with_gst]
 # 				},
 # 				fields=["name"]
 # 			)
 
-# 			matching_subcategory = None  
+# 			matching_subcategory = None
 # 			if making_charge_price_list:
 # 				price_list_name = making_charge_price_list[0]["name"]
 # 				subcategories = frappe.get_all(
@@ -409,9 +409,9 @@ def create_new_bom(self):
 # 							gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
 # 							sfm.precious AS supplier_precious, sfm.semi_precious AS supplier_semi_precious, sfm.synthetic AS supplier_synthetic
 # 						FROM `tabGemstone Price List` gpl
-# 						INNER JOIN `tabGemstone Multiplier` gm 
+# 						INNER JOIN `tabGemstone Multiplier` gm
 # 							ON gm.parent = gpl.name AND gm.item_category = %s AND gm.parentfield = 'gemstone_multiplier'
-# 						LEFT JOIN `tabGemstone Multiplier` sfm 
+# 						LEFT JOIN `tabGemstone Multiplier` sfm
 # 							ON sfm.parent = gpl.name AND sfm.item_category = %s AND sfm.parentfield = 'supplier_fg_multiplier'
 # 						WHERE gpl.customer = %s
 # 						AND gpl.price_list_type = %s
@@ -423,7 +423,7 @@ def create_new_bom(self):
 
 # 					if query:
 # 						entry = query[0]
-# 						gemstone_quality = row.get("gemstone_quality") 
+# 						gemstone_quality = row.get("gemstone_quality")
 # 						gemstone_pr = gem.gemstone_pr
 
 # 						multiplier_value = entry.get("precious") if gemstone_quality == "Precious" else \
@@ -445,7 +445,7 @@ def create_new_bom(self):
 # 		for metal in doc.metal_detail:
 # 			rate_per_gm = 0
 # 			fg_purchase_rate = 0
-# 			fg_purchase_amount = 0 
+# 			fg_purchase_amount = 0
 # 			wastage_rate= 0
 # 			if self.custom_customer_gold == "Yes":
 # 				metal.is_customer_item = 1
@@ -464,14 +464,14 @@ def create_new_bom(self):
 # 				},
 # 				fields=["name"]
 # 			)
-			
+
 # 			if making_charge_price_list:
 # 				subcategories = frappe.get_all(
 # 					"Making Charge Price Item Subcategory",
 # 					filters={"parent": making_charge_price_list[0]["name"]},
 # 					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
 # 				)
-				
+
 # 				if subcategories:
 # 					match = next((row for row in subcategories if row.get("subcategory") == doc.item_subcategory), None)
 # 					if match:
@@ -484,7 +484,7 @@ def create_new_bom(self):
 # 							fg_purchase_rate = 0
 # 							fg_purchase_amount = 0
 # 							rate_per_gm = 0
-							
+
 # 						else:
 # 							metal.rate = doc.gold_rate_with_gst
 # 							wastage_rate = match.get("wastage", 0)/100
@@ -498,13 +498,13 @@ def create_new_bom(self):
 # 			metal.wastage_rate = wastage_rate
 # 			# metal.rate = doc.gold_rate_with_gst
 # 			metal.amount = metal.rate * metal.quantity
-# 			metal.wastage_amount = metal.wastage_rate * metal.amount 
+# 			metal.wastage_amount = metal.wastage_rate * metal.amount
 # 			metal.fg_purchase_rate = fg_purchase_rate
 # 			metal.fg_purchase_amount = fg_purchase_amount
 # 			metal.making_rate = rate_per_gm
 # 			metal.making_amount = metal.making_rate * metal.quantity
 
-# 	else:    
+# 	else:
 # 		for item in doc.metal_detail + doc.finding_detail:
 # 			if (
 # 				row.custom_customer_finding == "Yes"
@@ -524,8 +524,8 @@ def create_new_bom(self):
 # 		for metal in doc.metal_detail:
 # 			rate_per_gm = 0
 # 			fg_purchase_rate = 0
-# 			fg_purchase_amount = 0 
-# 			wastage_rate= 0  
+# 			fg_purchase_amount = 0
+# 			wastage_rate= 0
 # 			if self.custom_customer_gold == "Yes":
 # 				metal.is_customer_item = 1
 # 			making_charge_price_list = frappe.get_all(
@@ -547,14 +547,14 @@ def create_new_bom(self):
 # 				},
 # 				fields=["name"]
 # 			)
-			
+
 # 			if making_charge_price_list:
 # 				making_charge_price_subcategories = frappe.get_all(
 # 					"Making Charge Price Item Subcategory",
 # 					filters={"parent": making_charge_price_list[0]["name"]},
 # 					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
 # 				)
-				
+
 # 				if making_charge_price_subcategories:
 # 					matching_subcategory = next(
 # 						(row for row in making_charge_price_subcategories if row.get("subcategory") == doc.item_subcategory),
@@ -570,7 +570,7 @@ def create_new_bom(self):
 # 							fg_purchase_rate = 0
 # 							fg_purchase_amount = 0
 # 							rate_per_gm = 0
-							
+
 # 						else:
 # 							metal.rate = doc.gold_rate_with_gst
 # 							wastage_rate = matching_subcategory.get("wastage", 0)/100
@@ -585,12 +585,12 @@ def create_new_bom(self):
 # 					metal.making_rate = rate_per_gm
 # 					metal.making_amount = metal.making_rate * metal.quantity
 # 					# metal.rate = doc.gold_rate_with_gst
-					
+
 # 				else:
 # 					frappe.msgprint(f"No matching subcategory found for {doc.item_subcategory}")
 # 			else:
 # 				frappe.msgprint(f"No making charge price list found for customer {doc.customer} and setting type {doc.setting_type}")
-		
+
 # 		for find in doc.finding_detail:
 # 			wastage_rate = 0
 # 			matching_subcategory = None
@@ -609,7 +609,7 @@ def create_new_bom(self):
 # 				filters={
 # 					"customer": doc.customer,
 # 					"setting_type": doc.setting_type,
-# 					"from_gold_rate": ["<=", doc.gold_rate_with_gst], 
+# 					"from_gold_rate": ["<=", doc.gold_rate_with_gst],
 # 					"to_gold_rate": [">=", doc.gold_rate_with_gst]
 # 				},
 # 				fields=["name"]
@@ -642,7 +642,7 @@ def create_new_bom(self):
 
 
 # 					# wastage_rate = matching_subcategory.get("wastage", 0) / 100.0
-# 				# find.rate = doc.gold_rate_with_gst 
+# 				# find.rate = doc.gold_rate_with_gst
 # 				find.amount = find.rate * find.quantity
 # 				find.wastage_rate = wastage_rate
 # 				find.making_rate = rate_per_gm
@@ -652,7 +652,7 @@ def create_new_bom(self):
 # 				find.wastage_amount = find.wastage_rate * find.amount
 
 # 		for diamond in doc.diamond_detail:
-			
+
 # 			diamond.rate = doc.gold_rate_with_gst
 # 			if self.custom_customer_diamond == "Yes":
 # 				diamond.is_customer_item = 1
@@ -661,19 +661,19 @@ def create_new_bom(self):
 # 						"""
 # 						SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 # 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-# 						FROM `tabDiamond Price List` 
-# 						WHERE customer = %s 
-# 						AND price_list_type = %s 
+# 						FROM `tabDiamond Price List`
+# 						WHERE customer = %s
+# 						AND price_list_type = %s
 # 						AND %s BETWEEN from_weight AND to_weight
 # 						ORDER BY creation DESC
-# 						LIMIT 1 
+# 						LIMIT 1
 # 						""",
 # 						(doc.customer, diamond_price_list_customer,diamond.weight_per_pcs),
 # 						as_dict=True
 # 					)
 # 				if latest_diamond_price_list_entry:
 # 					latest_entry = latest_diamond_price_list_entry[0]
-					
+
 # 					# diamond.total_diamond_rate = latest_entry.get("rate", 0)
 # 					diamond.fg_purchase_rate = latest_entry.get("supplier_fg_purchase_rate", 0)
 # 					diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
@@ -681,13 +681,13 @@ def create_new_bom(self):
 # 					if diamond.is_customer_item:
 # 						diamond.total_diamond_rate = latest_entry.get("custom_outwork_handling_charges_rate", 0)
 # 						diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
-						
+
 # 						if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
 # 							percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
 # 							amount = latest_entry.get("rate", 0) * (percentage / 100)
-# 							diamond.total_diamond_rate = amount 
+# 							diamond.total_diamond_rate = amount
 # 							diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
-							
+
 # 					else:
 # 						diamond.total_diamond_rate = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
 # 						diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
@@ -703,12 +703,12 @@ def create_new_bom(self):
 # 						"""
 # 						SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 # 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-# 						FROM `tabDiamond Price List` 
-# 						WHERE customer = %s 
-# 						AND price_list_type = %s 
+# 						FROM `tabDiamond Price List`
+# 						WHERE customer = %s
+# 						AND price_list_type = %s
 # 						AND sieve_size_range = %s
 # 						ORDER BY creation DESC
-# 						LIMIT 1 
+# 						LIMIT 1
 # 						""",
 # 						(doc.customer, diamond_price_list_customer, diamond.sieve_size_range),
 # 						as_dict=True
@@ -720,17 +720,17 @@ def create_new_bom(self):
 # 						diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 
 # 				if diamond_price_list_customer == "Size (in mm)":
-					
+
 # 					size_in_mm_diamond_price_list_entry = frappe.db.sql(
 # 						"""
 # 						SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 # 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-# 						FROM `tabDiamond Price List` 
-# 						WHERE customer = %s 
-# 						AND price_list_type = %s 
+# 						FROM `tabDiamond Price List`
+# 						WHERE customer = %s
+# 						AND price_list_type = %s
 # 						AND size_in_mm = %s
 # 						ORDER BY creation DESC
-# 						LIMIT 1 
+# 						LIMIT 1
 # 						""",
 # 						(doc.customer, diamond_price_list_customer, diamond.size_in_mm),
 # 						as_dict=True
@@ -746,7 +746,7 @@ def create_new_bom(self):
 # 							if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
 # 								percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
 # 								amount = latest_entry.get("rate", 0) * (percentage / 100)
-# 								diamond.total_diamond_rate = amount 
+# 								diamond.total_diamond_rate = amount
 # 								diamond.diamond_rate_for_specified_quantity = diamond.total_diamond_rate * diamond.size_in_mm
 # 						else:
 # 							diamond.total_diamond_rate = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
@@ -773,9 +773,9 @@ def create_new_bom(self):
 # 								gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
 # 								sfm.precious AS supplier_precious, sfm.semi_precious AS supplier_semi_precious, sfm.synthetic AS supplier_synthetic
 # 							FROM `tabGemstone Price List` gpl
-# 							INNER JOIN `tabGemstone Multiplier` gm 
+# 							INNER JOIN `tabGemstone Multiplier` gm
 # 								ON gm.parent = gpl.name AND gm.item_category = %s AND gm.parentfield = 'gemstone_multiplier'
-# 							LEFT JOIN `tabGemstone Multiplier` sfm 
+# 							LEFT JOIN `tabGemstone Multiplier` sfm
 # 								ON sfm.parent = gpl.name AND sfm.item_category = %s AND sfm.parentfield = 'supplier_fg_multiplier'
 # 							WHERE gpl.customer = %s
 # 							AND gpl.price_list_type = %s
@@ -788,7 +788,7 @@ def create_new_bom(self):
 # 							as_dict=True
 # 						)
 # 					if combined_query:
-# 						entry = combined_query[0] 
+# 						entry = combined_query[0]
 # 						gemstone_quality = gem.gemstone_quality
 # 						gemstone_pr = gem.gemstone_pr
 # 						multiplier_selected_value = entry.get("precious") if gemstone_quality == "Precious" else \
@@ -841,9 +841,9 @@ def create_new_bom(self):
 # 	row.making_charge = doc.making_charge
 # 	row.bom_rate = doc.total_bom_amount
 # 	row.rate = doc.total_bom_amount
-	
+
 def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bom_data, bom_data):
-	copy_bom = bom  # default to passed BOM
+	copy_bom = bom
 
 	#  If Order Form ID exists, try using its new_bom as copy_bom
 	if row.order_form_id:
@@ -897,9 +897,9 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 					size_entries = frappe.db.sql("""
 						SELECT name, supplier_fg_purchase_rate, rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-						FROM `tabDiamond Price List` 
-						WHERE customer = %s 
-						AND price_list_type = %s 
+						FROM `tabDiamond Price List`
+						WHERE customer = %s
+						AND price_list_type = %s
 						AND size_in_mm = %s
 						ORDER BY creation DESC
 						LIMIT 1
@@ -907,7 +907,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 
 					if size_entries:
 						entry = size_entries[0]
-						
+
 						# diamond.total_diamond_rate = entry.get("rate", 0)
 						diamond.fg_purchase_rate = entry.get("supplier_fg_purchase_rate", 0)
 						diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
@@ -917,7 +917,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							if entry.get("custom_outwork_handling_charges_rate") == 0:
 								percentage = entry.get("custom_outwork_handling_charges_in_percentage", 0)
 								amount = entry.get("rate", 0) * (percentage / 100)
-								diamond.total_diamond_rate = amount 
+								diamond.total_diamond_rate = amount
 								diamond.diamond_rate_for_specified_quantity = diamond.total_diamond_rate * diamond.size_in_mm
 						else:
 							diamond.total_diamond_rate = entry.get("rate", 0) + entry.get("custom_outright_handling_charges_rate", 0)
@@ -926,15 +926,15 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 								percentage = entry.get("custom_outright_handling_charges_in_percentage", 0)
 								rate = entry.get("rate", 0) * (percentage / 100)
 								diamond.total_diamond_rate = rate + entry.get("rate", 0)
-						
+
 
 				if diamond_price_list_ref_customer == "Sieve Size Range":
 					sieve_entries = frappe.db.sql("""
 						SELECT name, supplier_fg_purchase_rate, rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
-						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage 
-						FROM `tabDiamond Price List` 
-						WHERE customer = %s 
-						AND price_list_type = %s 
+						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
+						FROM `tabDiamond Price List`
+						WHERE customer = %s
+						AND price_list_type = %s
 						AND sieve_size_range = %s
 						ORDER BY creation DESC
 						LIMIT 1
@@ -949,10 +949,10 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				if diamond_price_list_ref_customer == "Weight (in cts)":
 					weight_entries = frappe.db.sql("""
 						SELECT name, from_weight, to_weight, supplier_fg_purchase_rate, rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
-						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage 
-						FROM `tabDiamond Price List` 
-						WHERE customer = %s 
-						AND price_list_type = %s 
+						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
+						FROM `tabDiamond Price List`
+						WHERE customer = %s
+						AND price_list_type = %s
 						AND %s BETWEEN from_weight AND to_weight
 						ORDER BY creation DESC
 						LIMIT 1
@@ -960,21 +960,21 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 
 					if weight_entries:
 						entry = weight_entries[0]
-						
+
 						# diamond.total_diamond_rate = entry.get("rate", 0)
 						diamond.fg_purchase_rate = entry.get("supplier_fg_purchase_rate", 0)
 						diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 						if diamond.is_customer_item:
 							diamond.total_diamond_rate = entry.get("custom_outwork_handling_charges_rate", 0)
-							
+
 							diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
-							
+
 							if entry.get("custom_outwork_handling_charges_rate") == 0:
 								percentage = entry.get("custom_outwork_handling_charges_in_percentage", 0)
 								amount = entry.get("rate", 0) * (percentage / 100)
-								diamond.total_diamond_rate = amount 
+								diamond.total_diamond_rate = amount
 								diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
-								
+
 						else:
 							diamond.total_diamond_rate = entry.get("rate", 0) + entry.get("custom_outright_handling_charges_rate", 0)
 							diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
@@ -987,8 +987,8 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 		for find in doc.finding_detail:
 			rate_per_gm = 0
 			fg_purchase_rate = 0
-			fg_purchase_amount = 0  
-			wastage_rate = 0 
+			fg_purchase_amount = 0
+			wastage_rate = 0
 			if self.custom_customer_gold == "Yes":
 				find.is_customer_item = 1
 			making_charge_price_list = frappe.get_all(
@@ -1002,13 +1002,13 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				filters={
 					"customer": ref_customer,
 					"setting_type": doc.setting_type,
-					"from_gold_rate": ["<=", doc.gold_rate_with_gst], 
+					"from_gold_rate": ["<=", doc.gold_rate_with_gst],
 					"to_gold_rate": [">=", doc.gold_rate_with_gst]
 				},
 				fields=["name"]
 			)
 
-			matching_subcategory = None  
+			matching_subcategory = None
 			if making_charge_price_list:
 				price_list_name = making_charge_price_list[0]["name"]
 				subcategories = frappe.get_all(
@@ -1058,9 +1058,9 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
 							sfm.precious AS supplier_precious, sfm.semi_precious AS supplier_semi_precious, sfm.synthetic AS supplier_synthetic
 						FROM `tabGemstone Price List` gpl
-						INNER JOIN `tabGemstone Multiplier` gm 
+						INNER JOIN `tabGemstone Multiplier` gm
 							ON gm.parent = gpl.name AND gm.item_category = %s AND gm.parentfield = 'gemstone_multiplier'
-						LEFT JOIN `tabGemstone Multiplier` sfm 
+						LEFT JOIN `tabGemstone Multiplier` sfm
 							ON sfm.parent = gpl.name AND sfm.item_category = %s AND sfm.parentfield = 'supplier_fg_multiplier'
 						WHERE gpl.customer = %s
 						AND gpl.price_list_type = %s
@@ -1072,7 +1072,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 
 					if query:
 						entry = query[0]
-						gemstone_quality = row.get("gemstone_quality") 
+						gemstone_quality = row.get("gemstone_quality")
 						gemstone_pr = gem.gemstone_pr
 
 						multiplier_value = entry.get("precious") if gemstone_quality == "Precious" else \
@@ -1094,7 +1094,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 		for metal in doc.metal_detail:
 			rate_per_gm = 0
 			fg_purchase_rate = 0
-			fg_purchase_amount = 0 
+			fg_purchase_amount = 0
 			wastage_rate = 0
 			if self.custom_customer_gold == "Yes":
 				metal.is_customer_item = 1
@@ -1113,14 +1113,14 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				},
 				fields=["name"]
 			)
-			
+
 			if making_charge_price_list:
 				subcategories = frappe.get_all(
 					"Making Charge Price Item Subcategory",
 					filters={"parent": making_charge_price_list[0]["name"]},
 					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
 				)
-				
+
 				if subcategories:
 					match = next((row for row in subcategories if row.get("subcategory") == doc.item_subcategory), None)
 					if match:
@@ -1133,7 +1133,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
-							
+
 						else:
 							metal.rate = doc.gold_rate_with_gst
 							wastage_rate = match.get("wastage", 0)/100
@@ -1147,13 +1147,13 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 			metal.wastage_rate = wastage_rate
 			# metal.rate = doc.gold_rate_with_gst
 			metal.amount = metal.rate * metal.quantity
-			metal.wastage_amount = metal.wastage_rate * metal.amount 
+			metal.wastage_amount = metal.wastage_rate * metal.amount
 			metal.fg_purchase_rate = fg_purchase_rate
 			metal.fg_purchase_amount = fg_purchase_amount
 			metal.making_rate = rate_per_gm
 			metal.making_amount = metal.making_rate * metal.quantity
 
-	else:    
+	else:
 		for item in doc.metal_detail + doc.finding_detail:
 			if (
 				row.custom_customer_finding == "Yes"
@@ -1173,8 +1173,8 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 		for metal in doc.metal_detail:
 			rate_per_gm = 0
 			fg_purchase_rate = 0
-			fg_purchase_amount = 0 
-			wastage_rate = 0  
+			fg_purchase_amount = 0
+			wastage_rate = 0
 			if self.custom_customer_gold == "Yes":
 				metal.is_customer_item = 1
 			making_charge_price_list = frappe.get_all(
@@ -1196,14 +1196,14 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				},
 				fields=["name"]
 			)
-			
+
 			if making_charge_price_list:
 				making_charge_price_subcategories = frappe.get_all(
 					"Making Charge Price Item Subcategory",
 					filters={"parent": making_charge_price_list[0]["name"]},
 					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
 				)
-				
+
 				if making_charge_price_subcategories:
 					matching_subcategory = next(
 						(row for row in making_charge_price_subcategories if row.get("subcategory") == doc.item_subcategory),
@@ -1219,7 +1219,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
-							
+
 						else:
 							metal.rate = doc.gold_rate_with_gst
 							wastage_rate = matching_subcategory.get("wastage", 0)/100
@@ -1234,14 +1234,14 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 					metal.making_rate = rate_per_gm
 					metal.making_amount = metal.making_rate * metal.quantity
 					# metal.rate = doc.gold_rate_with_gst
-					
+
 				else:
 					frappe.msgprint(f"No matching subcategory found for {doc.item_subcategory}")
 			else:
 				frappe.msgprint(f"No making charge price list found for customer {doc.customer} and setting type {doc.setting_type}")
-		
+
 		for find in doc.finding_detail:
-			wastage_rate = 0  
+			wastage_rate = 0
 			matching_subcategory = None
 			if self.custom_customer_gold == "Yes":
 				find.is_customer_item = 1
@@ -1258,7 +1258,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				filters={
 					"customer": doc.customer,
 					"setting_type": doc.setting_type,
-					"from_gold_rate": ["<=", doc.gold_rate_with_gst], 
+					"from_gold_rate": ["<=", doc.gold_rate_with_gst],
 					"to_gold_rate": [">=", doc.gold_rate_with_gst]
 				},
 				fields=["name"]
@@ -1291,7 +1291,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 
 
 					# wastage_rate = matching_subcategory.get("wastage", 0) / 100.0
-				# find.rate = doc.gold_rate_with_gst 
+				# find.rate = doc.gold_rate_with_gst
 				find.amount = find.rate * find.quantity
 				find.wastage_rate = wastage_rate
 				find.making_rate = rate_per_gm
@@ -1301,7 +1301,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				find.wastage_amount = find.wastage_rate * find.amount
 
 		for diamond in doc.diamond_detail:
-			
+
 			diamond.rate = doc.gold_rate_with_gst
 			if self.custom_customer_diamond == "Yes":
 				diamond.is_customer_item = 1
@@ -1310,19 +1310,19 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 						"""
 						SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-						FROM `tabDiamond Price List` 
-						WHERE customer = %s 
-						AND price_list_type = %s 
+						FROM `tabDiamond Price List`
+						WHERE customer = %s
+						AND price_list_type = %s
 						AND %s BETWEEN from_weight AND to_weight
 						ORDER BY creation DESC
-						LIMIT 1 
+						LIMIT 1
 						""",
 						(doc.customer, diamond_price_list_customer,diamond.weight_per_pcs),
 						as_dict=True
 					)
 				if latest_diamond_price_list_entry:
 					latest_entry = latest_diamond_price_list_entry[0]
-					
+
 					# diamond.total_diamond_rate = latest_entry.get("rate", 0)
 					diamond.fg_purchase_rate = latest_entry.get("supplier_fg_purchase_rate", 0)
 					diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
@@ -1330,13 +1330,13 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 					if diamond.is_customer_item:
 						diamond.total_diamond_rate = latest_entry.get("custom_outwork_handling_charges_rate", 0)
 						diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
-						
+
 						if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
 							percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
 							amount = latest_entry.get("rate", 0) * (percentage / 100)
-							diamond.total_diamond_rate = amount 
+							diamond.total_diamond_rate = amount
 							diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
-							
+
 					else:
 						diamond.total_diamond_rate = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
 						diamond.diamond_rate_for_specified_quantity =  diamond.total_diamond_rate * diamond.weight_per_pcs
@@ -1352,12 +1352,12 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 						"""
 						SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-						FROM `tabDiamond Price List` 
-						WHERE customer = %s 
-						AND price_list_type = %s 
+						FROM `tabDiamond Price List`
+						WHERE customer = %s
+						AND price_list_type = %s
 						AND sieve_size_range = %s
 						ORDER BY creation DESC
-						LIMIT 1 
+						LIMIT 1
 						""",
 						(doc.customer, diamond_price_list_customer, diamond.sieve_size_range),
 						as_dict=True
@@ -1369,17 +1369,17 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 						diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 
 				if diamond_price_list_customer == "Size (in mm)":
-					
+
 					size_in_mm_diamond_price_list_entry = frappe.db.sql(
 						"""
 						SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
 						custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
-						FROM `tabDiamond Price List` 
-						WHERE customer = %s 
-						AND price_list_type = %s 
+						FROM `tabDiamond Price List`
+						WHERE customer = %s
+						AND price_list_type = %s
 						AND size_in_mm = %s
 						ORDER BY creation DESC
-						LIMIT 1 
+						LIMIT 1
 						""",
 						(doc.customer, diamond_price_list_customer, diamond.size_in_mm),
 						as_dict=True
@@ -1395,7 +1395,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
 								percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
 								amount = latest_entry.get("rate", 0) * (percentage / 100)
-								diamond.total_diamond_rate = amount 
+								diamond.total_diamond_rate = amount
 								diamond.diamond_rate_for_specified_quantity = diamond.total_diamond_rate * diamond.size_in_mm
 						else:
 							diamond.total_diamond_rate = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
@@ -1422,9 +1422,9 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 								gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
 								sfm.precious AS supplier_precious, sfm.semi_precious AS supplier_semi_precious, sfm.synthetic AS supplier_synthetic
 							FROM `tabGemstone Price List` gpl
-							INNER JOIN `tabGemstone Multiplier` gm 
+							INNER JOIN `tabGemstone Multiplier` gm
 								ON gm.parent = gpl.name AND gm.item_category = %s AND gm.parentfield = 'gemstone_multiplier'
-							LEFT JOIN `tabGemstone Multiplier` sfm 
+							LEFT JOIN `tabGemstone Multiplier` sfm
 								ON sfm.parent = gpl.name AND sfm.item_category = %s AND sfm.parentfield = 'supplier_fg_multiplier'
 							WHERE gpl.customer = %s
 							AND gpl.price_list_type = %s
@@ -1437,7 +1437,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 							as_dict=True
 						)
 					if combined_query:
-						entry = combined_query[0] 
+						entry = combined_query[0]
 						gemstone_quality = gem.gemstone_quality
 						gemstone_pr = gem.gemstone_pr
 						multiplier_selected_value = entry.get("precious") if gemstone_quality == "Precious" else \
@@ -1505,7 +1505,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 	row.making_charge = doc.making_charge
 	row.bom_rate = doc.total_bom_amount
 	row.rate = doc.total_bom_amount
-	
+
 
 
 def submit_bom(self):
@@ -1656,12 +1656,12 @@ def get_gold_rate(party_name=None, currency=None):
 def validate_invoice_item(self):
 	self.set("custom_invoice_item", [])
 	if not self.custom_invoice_item:
-		
+
 		customer_payment_term_doc = frappe.get_doc(
 			"Customer Payment Terms",
 			{"customer": self.customer}
 		)
-		
+
 		e_invoice_items = []
 		for item_detail in customer_payment_term_doc.customer_payment_details:
 			item_type = item_detail.item_type
@@ -1723,7 +1723,7 @@ def validate_invoice_item(self):
 									"tax_rate": e_item["tax_rate"],
                                     "tax_amount": 0,
                                     "amount_with_tax": 0
-									
+
 								}
 							# multiplied_qty = diamond.quantity * item.qty
 
@@ -1750,7 +1750,7 @@ def validate_invoice_item(self):
 				# Metal making aggregation
 				for metal in bom_doc.metal_detail:
 					for e_item in e_invoice_items:
-						
+
 						if (
 							e_item["is_for_making"]
 							and e_item["metal_type"] == metal.metal_type
@@ -1773,7 +1773,7 @@ def validate_invoice_item(self):
 							# multiplied_qty = metal.quantity * item.qty
 							# aggregated_metal_making_items[key]["qty"] += multiplied_qty
 							# metal_making_amount = metal.making_rate * multiplied_qty
-							
+
 							# aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
 							multiplied_qty = metal.quantity * item.qty
@@ -1796,7 +1796,7 @@ def validate_invoice_item(self):
 				# Metal amount aggregation
 				for metal in bom_doc.metal_detail:
 					for e_item in e_invoice_items:
-						
+
 						if (
 							e_item["is_for_metal"]
 							and e_item["metal_type"] == metal.metal_type
@@ -1860,7 +1860,7 @@ def validate_invoice_item(self):
                                     "tax_amount": 0,
                                     "amount_with_tax": 0
 								}
-							
+
 							multiplied_qty = finding.quantity * item.qty
 							finding_amount = finding.rate * multiplied_qty
 
@@ -1925,7 +1925,7 @@ def validate_invoice_item(self):
 							)
 				# Gemstone aggregation
 				for gemstone in bom_doc.gemstone_detail:
-					
+
 					for e_item in e_invoice_items:
 						# frappe.throw(f"{gemstone.uom}")
 						if (

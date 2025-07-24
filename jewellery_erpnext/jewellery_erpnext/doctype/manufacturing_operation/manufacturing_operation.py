@@ -212,7 +212,6 @@ class ManufacturingOperation(Document):
 				item=frappe.get_doc('Item',self.item_code)
 				existing_row = item.custom_cam_weight_detail[0] if item.custom_cam_weight_detail else None
 				if existing_row:
-
 					existing_row.cad_numbering_file = self.cad_numbering_file
 					existing_row.support_cam_file = self.support_cam_file
 					existing_row.platform_wt = self.platform_wt
@@ -221,17 +220,15 @@ class ManufacturingOperation(Document):
 					existing_row.estimated_rpt_wt = self.estimated_rpt_wt
 					existing_row.rpt_wt_loss = self.rpt_wt_loss
 				else:
-
-						item.append('custom_cam_weight_detail', {
-					'cad_numbering_file': self.cad_numbering_file,
-					'support_cam_file': self.support_cam_file,
-					'platform_wt': self.platform_wt ,
-					'rpt_wt_issue':self.rpt_wt_issue,
-					'rpt_wt_receive' : self.rpt_wt_receive,
-					'estimated_rpt_wt':self.estimated_rpt_wt,
-					'rpt_wt_loss':self.rpt_wt_loss
-
-				})
+					item.append('custom_cam_weight_detail', {
+						'cad_numbering_file': self.cad_numbering_file,
+						'support_cam_file': self.support_cam_file,
+						'platform_wt': self.platform_wt ,
+						'rpt_wt_issue':self.rpt_wt_issue,
+						'rpt_wt_receive' : self.rpt_wt_receive,
+						'estimated_rpt_wt':self.estimated_rpt_wt,
+						'rpt_wt_loss':self.rpt_wt_loss
+					})
 				item.save()
 
 	# def remove_duplicate(self):
@@ -1620,6 +1617,7 @@ def get_material_wt(doc):
 
 
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
+	# frappe.throw("create_finished_goods_bom")
 	data = get_stock_entry_data(self)
 
 	ref_customer = frappe.db.get_value("Parent Manufacturing Order", self.parent_manufacturing_order, "ref_customer")
@@ -1992,6 +1990,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			for row in new_bom.get("diamond_detail", []):
 				total_diamond_rate_for_specified_quantity = sum(row.get("diamond_rate_for_specified_quantity", 0) or 0  for row in new_bom.get("diamond_detail", []))
 				new_bom.diamond_bom_amount = total_diamond_rate_for_specified_quantity
+
 				total_diamond_purchase_amount = sum((row.get("fg_purchase_amount", 0) or 0) for row in new_bom.get("diamond_detail", []))
 				new_bom.diamond_fg_purchase = total_diamond_purchase_amount
 				total_diamond_pcs = sum(flt(row.get("pcs", 0) or 0) for row in new_bom.get("diamond_detail", []))
@@ -2197,6 +2196,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				total_wastage_amount = sum(flt(r.get("wastage_amount", 0)) for r in new_bom.get("metal_detail", []))
 				new_bom.total_wastage_amount = total_wastage_amount
 
+
 		elif item_row.variant_of == "F":
 			row = {}
 			row["stock_uom"] = item.get("uom")
@@ -2400,6 +2400,9 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			new_bom.finding_weight_ = total_finding_weight
 			new_bom.total_wastage_amount = total_wastage_amount
 			new_bom.total_gemstone_rate_for_specified_quantity = total_gemstone_rate_for_specified_quantity
+
+
+
 
 		elif item_row.variant_of == "G":
 			row = {}
@@ -2720,6 +2723,9 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			new_bom.total_gemstone_weight = sum(flt(row.get("quantity", 0)) for row in new_bom.get("gemstone_detail", []))
 			new_bom.total_gemstone_weight_per_gram = sum(flt(row.get("weight_in_gms", 0)) for row in new_bom.get("gemstone_detail", []))
 			new_bom.total_gemstone_amount = sum(flt(row.get("gemstone_rate_for_specified_quantity", 0)) for row in new_bom.get("gemstone_detail", []))
+
+
+
 
 		elif item_row.variant_of == "O":
 			row = {}

@@ -1803,6 +1803,15 @@
    "insert_after": "mould",
    "label": "Created From",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Item",
+   "fieldname": "custom_used_by",
+   "fieldtype": "Select",
+   "insert_after": "valuation_method",
+   "label": "Used By",
+   "module": "Jewellery Erpnext",
+   "options": "\nCad\nCentral\nBoth"
   }
  ]
 }

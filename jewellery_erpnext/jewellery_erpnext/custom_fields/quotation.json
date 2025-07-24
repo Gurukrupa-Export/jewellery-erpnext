@@ -280,7 +280,7 @@
    "module": "Jewellery Erpnext"
   },
   {
-   "default": "No",
+
    "dt": "Quotation",
    "fieldname": "custom_customer_stone",
    "fieldtype": "Select",

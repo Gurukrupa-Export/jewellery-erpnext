@@ -2,9 +2,4 @@
 
 [post_model_sync]
 # jewellery_erpnext.patches.sed_copy_to_mop
-jewellery_erpnext.patches.create_custom_field # create se detail
-jewellery_erpnext.patches.add_ir_workflows # patch for workflow
-jewellery_erpnext.patches.update_employee_ir_status # employee ir
-jewellery_erpnext.patches.update_department_ir_status
-jewellery_erpnext.patches.create_branch_account_field
-jewellery_erpnext.patches.create_custom_field_in_jv
+jewellery_erpnext.patches.create_custom_field 26/07
