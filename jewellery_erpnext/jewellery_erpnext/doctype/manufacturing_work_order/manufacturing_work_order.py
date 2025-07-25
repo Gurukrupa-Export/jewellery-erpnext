@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import frappe
+import json
 from copy import deepcopy
 from frappe import _
 from frappe.model.document import Document
@@ -346,43 +347,98 @@ def get_linked_stock_entries(mwo_name):  # MWO Details Tab code
 
 
 @frappe.whitelist()
-def is_merge_mwo(pmo, mwo, mop, metal_color):
-	diff_mwo = is_different_metal_mwo_in_pmo(pmo, mwo, metal_color)
-	if not diff_mwo:
-		return
+def get_merge_mwo_list(pmo, mwo, mop):
+	merge_mwo_list = []
+	diff_mwo_list = is_different_metal_mwo_in_pmo(pmo, mwo)
 
-	if not is_merge_mwo_operation(mop):
-		return
+	if not diff_mwo_list:
+		return merge_mwo_list
 
-	return diff_mwo
+	cur_mop_operation, cur_mop_status = is_merge_mwo_operation(mop)
+
+	if not cur_mop_operation:
+		return merge_mwo_list
+
+	if not cur_mop_status in ["Not Started", "WIP"]:
+		return merge_mwo_list
+
+	for mwo in diff_mwo_list:
+		mop_operation, mop_status = is_merge_mwo_operation(mwo.manufacturing_operation, cur_mop_status)
+		if (cur_mop_operation != mop_operation) or (cur_mop_status != mop_status):
+			continue
+
+		merge_mwo_list.append(mwo)
+
+	return merge_mwo_list
 
 
-def is_different_metal_mwo_in_pmo(pmo, curr_mwo, metal_color):
-	diff_mwo = []
-	main_mwo_list = frappe.db.get_all(
+def is_different_metal_mwo_in_pmo(pmo, curr_mwo):
+	diff_mwo_list = frappe.db.get_all(
 		"Manufacturing Work Order", {
-			"for_fg": ["=", 0],
-			"is_finding_mwo": ["=", 0],
+			"manufacturing_order": pmo,
+			"multicolour": ["=", 1],
+			"for_fg": ["!=", 1],
+			"is_finding_mwo": ["!=", 1],
 			"name": ["!=", curr_mwo]
 		},
-		[
-			"name",
-			"metal_colour"
-		]
+		["name", "manufacturing_operation"]
 	)
 
-	for mwo in main_mwo_list:
-		if metal_color == mwo.metal_color:
-			continue
-		diff_mwo.append(mwo.name)
-
-	return diff_mwo
+	return diff_mwo_list
 
 
-def is_merge_mwo_operation(mop):
-	operation = frappe.db.get_value("Manufacturing Operation", mop, "operation")
+def is_merge_mwo_operation(mop, cur_mop_status=None):
+	operation, status = frappe.db.get_value("Manufacturing Operation", mop, ["operation", "status"])
 
-	if operation and frappe.db.get_value("Department Operation", operation, "is_merge_mwo"):
-		return True
+	if cur_mop_status and status != cur_mop_status:
+		return None, None
 
-	return False
+	is_merge_mwo = frappe.db.get_value("Department Operation", operation, "merge_multicolor_mwo")
+	if operation and not is_merge_mwo:
+		return None, None
+
+	return operation, status
+
+
+@frappe.whitelist()
+def merge_multicolor_mwo(source_mop, target_mop_list):
+	if isinstance(target_mop_list, str):
+		target_mop_list = json.loads(target_mop_list)
+
+	# Fetch all target MOP rows
+	target_rows = frappe.db.get_all("MOP Balance Table", {
+		"parent": ["in", target_mop_list]
+	}, "*")
+
+	source_mop_doc = frappe.get_doc("Manufacturing Operation", source_mop)
+
+	# Build quick lookup of existing (item_code, batch_no) → row
+	existing_lookup = {
+		(row.item_code, row.batch_no): row
+		for row in source_mop_doc.mop_balance_table
+	}
+
+	# Merge rows
+	for row in target_rows:
+		key = (row.item_code, row.batch_no)
+		if key in existing_lookup:
+			existing_lookup[key].qty += row.qty
+		else:
+			new_row = deepcopy(row)
+			new_row.idx = None
+			new_row.parent = None
+			source_mop_doc.append("mop_balance_table", new_row)
+
+	# Finalize document
+	source_mop_doc.status = "Finished"
+	source_mop_doc.update_child_table("mop_balance_table")
+	source_mop_doc.db_update_all()
+
+	# Mark merged MWO as merged
+	all_mops = target_mop_list + [source_mop]
+	merged_mwos = frappe.db.get_all("Manufacturing Operation", {
+		"name": ["in", all_mops]
+	}, pluck="manufacturing_work_order")
+
+	for mwo in set(merged_mwos):
+		frappe.db.set_value("Manufacturing Work Order", mwo, "merged_mwo", 1)

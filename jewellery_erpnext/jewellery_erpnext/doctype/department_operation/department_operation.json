@@ -27,7 +27,7 @@
   "tree_no_reqd",
   "update_gold_count",
   "is_mould_manufacturer",
-  "is_merge_mwo",
+  "merge_multicolor_mwo",
   "supplier_group",
   "loss_details_section",
   "allowed_loss_percentage",
@@ -190,14 +190,14 @@
   },
   {
    "default": "0",
-   "fieldname": "is_merge_mwo",
+   "fieldname": "merge_multicolor_mwo",
    "fieldtype": "Check",
-   "label": "Is merge MWO"
+   "label": "Merge Multicolor MWO"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-07-17 16:14:29.414403",
+ "modified": "2025-07-25 15:15:49.072199",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Department Operation",
