@@ -22,6 +22,7 @@ from frappe.query_builder.functions import CombineDatetime, Sum
 
 
 def validate_inventory_dimention(self):
+	# pass
 	pmo_customer_data = frappe._dict()
 	manufacturer_data = frappe._dict()
 	for row in self.items:
@@ -34,7 +35,7 @@ def validate_inventory_dimention(self):
 					"Parent Manufacturing Order",
 					pmo,
 					[
-						"is_customer_gold",
+						# "is_customer_gold",
 						"is_customer_diamond",
 						"is_customer_gemstone",
 						"is_customer_material",
@@ -55,12 +56,12 @@ def validate_inventory_dimention(self):
 
 			if (
 				row.inventory_type in ["Customer Goods", "Customer Stock"]
-				and pmo_data.get("customer") != row.customer
+				and pmo_data.get("customer") != row.customer and row.custom_variant_of not in ["M","F"]
 			):
 				frappe.throw(_("Only {0} allowed in Stock Entry").format(pmo_data.get("customer")))
 			else:
 				variant_mapping = {
-					"M": "is_customer_gold",
+					# "M": "is_customer_gold",
 					"F": "is_customer_gold",
 					"D": "is_customer_diamond",
 					"G": "is_customer_gemstone",
