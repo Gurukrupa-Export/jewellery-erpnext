@@ -175,8 +175,8 @@ def reconcile_inter_branch_payment(data, is_adv=False):
 	for row in data:
 		jv_data = frappe._dict(row)
 		validate_allocated_amount(jv_data, is_adv)
-		if is_adv:
-			jv_data.customer_branch = get_customer_branch(jv_data.party)
+		# if is_adv:
+		# 	jv_data.customer_branch = get_customer_branch(jv_data.party)
 
 		validate_inter_branch(jv_data, is_adv)
 
@@ -224,8 +224,10 @@ def validate_allocated_amount(jv_data, is_adv):
 	if jv_data.allocated_amount > jv_data.outstanding_amount:
 		frappe.throw(f"Allocated amount {jv_data.allocated_amount} cannot be greater than outstanding amount {jv_data.outstanding_amount}.")
 
-def get_customer_branch(customer_name):
-	return frappe.db.get_value("Branch", {"custom_customer": customer_name}, "name")
+
+# get customer branch from user
+# def get_customer_branch(customer_name):
+# 	return frappe.db.get_value("Branch", {"custom_customer": customer_name}, "name")
 
 def validate_inter_branch(jv_data, is_adv=False):
 	receivable_branch = ""
