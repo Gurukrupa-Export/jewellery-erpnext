@@ -343,13 +343,13 @@ frappe.ui.form.on("Manufacturing Operation", {
 									"in_list_view": 1,
 									"read_only": 1,
 								},
-								{
-									"label": __("Source Warehouse"),
-									"fieldtype": "Link",
-									"fieldname": "s_warehouse",
-									"in_list_view": 1,
-									"read_only": 1
-								},
+								// {
+								// 	"label": __("Source Warehouse"),
+								// 	"fieldtype": "Link",
+								// 	"fieldname": "s_warehouse",
+								// 	"in_list_view": 1,
+								// 	"read_only": 1
+								// },
 								{
 									"label": __("Qty"),
 									"fieldtype": "Float",
@@ -382,7 +382,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 									"fieldtype": "Float",
 									"fieldname": "receive_pcs",
 									"in_list_view": 1,
-									"reqd": 1,
+									// "reqd": 1,
 									"default": flt()
 								},
 								{
