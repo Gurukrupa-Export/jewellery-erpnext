@@ -3117,7 +3117,10 @@ def create_mr_wo_stock_entry(se_data):
 	if not se_data.get("receive_items"):
 		return frappe.msgprint("No Receive Items Found.")
 
-	t_warehouse = get_warehouse_from_user(frappe.session.user, "Raw Material")
+	department = se_data.get("department")
+	t_warehouse = frappe.db.get_value("Warehouse",{"warehouse_type": "Raw Material", "department": department},"name")
+	
+	# t_warehouse = get_warehouse_from_user(frappe.session.user, "Raw Material")
 	if not t_warehouse:
 		frappe.throw("No warehouse found for warehouse type Raw Material")
 
