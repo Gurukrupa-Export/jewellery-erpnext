@@ -426,25 +426,25 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			"name",
 		)
 		filters = [
-			["Stock Entry Detail", "manufacturing_operation", "is", "set"],
-			["Stock Entry Detail", "t_warehouse", "=", target_wh],
-			["Stock Entry Detail", "employee", "is", "not set"],
+			["Stock Entry MOP Item", "manufacturing_operation", "is", "set"],
+			["Stock Entry MOP Item", "t_warehouse", "=", target_wh],
+			["Stock Entry MOP Item", "employee", "is", "not set"],
 		]
 		if row.manufacturing_work_order:
 			filters += (
-				["Stock Entry Detail", "custom_manufacturing_work_order", "=", row.manufacturing_work_order],
+				["Stock Entry MOP Item", "custom_manufacturing_work_order", "=", row.manufacturing_work_order],
 			)
 			latest_mop = frappe.db.get_value(
 				"Manufacturing Work Order", row.manufacturing_work_order, "manufacturing_operation"
 			)
 			if latest_mop:
 				filters += [
-					["Stock Entry Detail", "manufacturing_operation", "=", latest_mop],
+					["Stock Entry MOP Item", "manufacturing_operation", "=", latest_mop],
 				]
 		elif row.parent_manufacturing_order:
 			filters += (
 				[
-					"Stock Entry Detail",
+					"Stock Entry MOP Item",
 					"custom_parent_manufacturing_order",
 					"=",
 					row.parent_manufacturing_order,
@@ -458,27 +458,27 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				latest_mop = frappe.db.get_value("Manufacturing Work Order", mwo, "manufacturing_operation")
 				if latest_mop:
 					filters += [
-						["Stock Entry Detail", "manufacturing_operation", "=", latest_mop],
+						["Stock Entry MOP Item", "manufacturing_operation", "=", latest_mop],
 					]
 	else:
 		filters = [["Stock Entry", "product_certification", "=", doc.receive_against]]
 		if row.manufacturing_work_order:
 			filters += [
-				["Stock Entry Detail", "reference_docname", "=", row.manufacturing_work_order],
-				["Stock Entry Detail", "reference_doctype", "=", "Manufacturing Work Order"],
+				["Stock Entry MOP Item", "reference_docname", "=", row.manufacturing_work_order],
+				["Stock Entry MOP Item", "reference_doctype", "=", "Manufacturing Work Order"],
 			]
 		elif row.parent_manufacturing_order:
 			filters += [
-				["Stock Entry Detail", "reference_docname", "=", row.parent_manufacturing_order],
-				["Stock Entry Detail", "reference_doctype", "=", "Parent Manufacturing Order"],
+				["Stock Entry MOP Item", "reference_docname", "=", row.parent_manufacturing_order],
+				["Stock Entry MOP Item", "reference_doctype", "=", "Parent Manufacturing Order"],
 			]
 	stock_entries = frappe.get_all(
 		"Stock Entry",
 		filters=filters,
 		fields=[
-			"`tabStock Entry Detail`.item_code",
-			"`tabStock Entry Detail`.qty",
-			"`tabStock Entry Detail`.batch_no",
+			"`tabStock Entry MOP Item`.item_code",
+			"`tabStock Entry MOP Item`.qty",
+			"`tabStock Entry MOP Item`.batch_no",
 		],
 		join="right join",
 	)
