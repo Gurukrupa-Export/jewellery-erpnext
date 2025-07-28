@@ -35,7 +35,7 @@ def validate_inventory_dimention(self):
 					"Parent Manufacturing Order",
 					pmo,
 					[
-						# "is_customer_gold",
+						"is_customer_gold",
 						"is_customer_diamond",
 						"is_customer_gemstone",
 						"is_customer_material",
@@ -56,7 +56,7 @@ def validate_inventory_dimention(self):
 
 			if (
 				row.inventory_type in ["Customer Goods", "Customer Stock"]
-				and pmo_data.get("customer") != row.customer and row.custom_variant_of not in ["M","F"]
+				and pmo_data.get("customer") != row.customer and row.custom_variant_of not in ["M"]
 			):
 				frappe.throw(_("Only {0} allowed in Stock Entry").format(pmo_data.get("customer")))
 			else:
