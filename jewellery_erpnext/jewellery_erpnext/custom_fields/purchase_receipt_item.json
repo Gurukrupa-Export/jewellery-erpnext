@@ -257,6 +257,16 @@
    "mandatory_depends_on": "eval: doc.inventory_type == \"Customer Goods\";",
    "module": "Jewellery Erpnext",
    "options": "Customer"
+  },
+  {
+   "dt": "Purchase Receipt Item",
+   "fieldname": "custom_certificate_image",
+   "fieldtype": "Attach",
+   "insert_after": "brand",
+   "label": "Certificate Image",
+   "depends_on": "eval: doc.item_code == \"M-EG-24KT-99.5-Y\";",
+   "mandatory_depends_on": "eval: doc.item_code == \"M-EG-24KT-99.5-Y\";",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
