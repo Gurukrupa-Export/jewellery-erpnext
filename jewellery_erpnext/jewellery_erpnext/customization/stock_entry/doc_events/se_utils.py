@@ -245,71 +245,9 @@ def get_fifo_batches(self, row):
 		else:
 			frappe.msgprint(message)
 
-	# new Chnage Start
-	if self.stock_entry_type == "Material Receive (WORK ORDER)":
-		batch_rows = []
-		key = (row.manufacturing_operation, row.item_code)
-
-		# Fetch all matching batch rows for this operation & item
-		mop_batches = frappe.get_all(
-			"MOP Balance Table",
-			filters={"parent": row.manufacturing_operation, "item_code": row.item_code},
-			fields=["batch_no", "qty"],
-			order_by="creation asc",
-		)
-
-		total_qty = row.qty
-		existing_updated = False
-
-		for batch in mop_batches:
-			if total_qty <= 0:
-				break
-
-			if batch.qty <= 0:
-				continue
-
-			batch_qty = flt(min(total_qty, batch.qty), 4)
-
-			if not existing_updated:
-				# update current row
-				row.batch_no = batch.batch_no
-				row.qty = batch_qty
-				row.transfer_qty = batch_qty
-				row.idx = None
-				row.name = None
-				rows_to_append.append(row.__dict__)
-				existing_updated = True
-			else:
-				temp_row = copy.deepcopy(row.__dict__)
-				temp_row["name"] = None
-				temp_row["idx"] = None
-				temp_row["batch_no"] = batch.batch_no
-				temp_row["qty"] = batch_qty
-				temp_row["transfer_qty"] = batch_qty
-				rows_to_append.append(temp_row)
-			# temp_row = copy.deepcopy(row.__dict__)
-			# temp_row["name"] = None
-			# temp_row["idx"] = None
-			# temp_row["batch_no"] = batch.batch_no
-			# temp_row["qty"] = batch_qty
-			# temp_row["transfer_qty"] = batch_qty
-			
-
-			total_qty -= batch_qty
-
-		if total_qty > 0:
-			frappe.msgprint(
-				_("Not enough quantity in MOP batches for <b>{0}</b>. Missing: {1}").format(
-					row.item_code, flt(total_qty, 2)
-				)
-			)
-
-	# frappe.throw(f"{(rows_to_append[1:])}")
-	if self.stock_entry_type == "Material Receive (WORK ORDER)":
-		return rows_to_append[1:]
-	else:
-		return rows_to_append
-	# new Chnage End
+	
+	return rows_to_append
+	
 
 
 def get_batch_data_from_msl(item_code, main_slip, warehouse):
