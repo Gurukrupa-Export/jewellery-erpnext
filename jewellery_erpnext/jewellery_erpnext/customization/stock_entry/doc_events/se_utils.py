@@ -128,28 +128,15 @@ def get_fifo_batches(self, row):
 			],
 			as_dict=1,
 		)
-	# if not manufacturer_data.get(customer_item_data.get("manufacturer")):
-	# 	manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
-	# 		"Manufacturer",
-	# 		customer_item_data.get("manufacturer"),
-	# 		"custom_allow_regular_goods_instead_of_customer_goods",
-	# 	)
-	
-	# new Chnage Start
-	if not manufacturer_data.get(customer_item_data.get("customer")):
-		manufacturer_data[customer_item_data.get("customer")] = frappe.db.get_value(
-			"Customer",
-			customer_item_data.get("Customer"),
+	if not manufacturer_data.get(customer_item_data.get("manufacturer")):
+		manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
+			"Manufacturer",
+			customer_item_data.get("manufacturer"),
 			"custom_allow_regular_goods_instead_of_customer_goods",
 		)
-	# new Chnage End
-
-	# new Chnage Start
-	# allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
-	allow_customer_goods = manufacturer_data.get(customer_item_data.get("customer"))
-	# new Chnage End
+	
+	allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
 	variant_to_customer_key = {
-		"M": "is_customer_gold",
 		"F": "is_customer_gold",
 		"D": "is_customer_diamond",
 		"G": "is_customer_gemstone",
