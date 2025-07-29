@@ -418,6 +418,93 @@ def get_stock_entry_type(txn_type, purpose):
 			return "Material Receipt for Certification"
 
 
+# def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
+# 	if doc.type == "Issue":
+# 		target_wh = frappe.get_value(
+# 			"Warehouse",
+# 			{"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"},
+# 			"name",
+# 		)
+# 		filters = [
+# 			["Stock Entry MOP Item", "manufacturing_operation", "is", "set"],
+# 			["Stock Entry MOP Item", "t_warehouse", "=", target_wh],
+# 			["Stock Entry MOP Item", "employee", "is", "not set"],
+# 		]
+# 		if row.manufacturing_work_order:
+# 			filters += (
+# 				["Stock Entry MOP Item", "custom_manufacturing_work_order", "=", row.manufacturing_work_order],
+# 			)
+# 			latest_mop = frappe.db.get_value(
+# 				"Manufacturing Work Order", row.manufacturing_work_order, "manufacturing_operation"
+# 			)
+# 			if latest_mop:
+# 				filters += [
+# 					["Stock Entry MOP Item", "manufacturing_operation", "=", latest_mop],
+# 				]
+# 		elif row.parent_manufacturing_order:
+# 			filters += (
+# 				[
+# 					"Stock Entry MOP Item",
+# 					"custom_parent_manufacturing_order",
+# 					"=",
+# 					row.parent_manufacturing_order,
+# 				],
+# 			)
+# 			mwo = frappe.db.get_value(
+# 				"Manufacturing Work Order",
+# 				{"manufacturing_order": row.parent_manufacturing_order, "is_finding_mwo": 0, "docstatus": 1},
+# 			)
+# 			if mwo:
+# 				latest_mop = frappe.db.get_value("Manufacturing Work Order", mwo, "manufacturing_operation")
+# 				if latest_mop:
+# 					filters += [
+# 						["Stock Entry MOP Item", "manufacturing_operation", "=", latest_mop],
+# 					]
+# 	else:
+# 		filters = [["Stock Entry", "product_certification", "=", doc.receive_against]]
+# 		if row.manufacturing_work_order:
+# 			filters += [
+# 				["Stock Entry MOP Item", "reference_docname", "=", row.manufacturing_work_order],
+# 				["Stock Entry MOP Item", "reference_doctype", "=", "Manufacturing Work Order"],
+# 			]
+# 		elif row.parent_manufacturing_order:
+# 			filters += [
+# 				["Stock Entry MOP Item", "reference_docname", "=", row.parent_manufacturing_order],
+# 				["Stock Entry MOP Item", "reference_doctype", "=", "Parent Manufacturing Order"],
+# 			]
+# 	stock_entries = frappe.get_all(
+# 		"Stock Entry",
+# 		filters=filters,
+# 		fields=[
+# 			"`tabStock Entry MOP Item`.item_code",
+# 			"`tabStock Entry MOP Item`.qty",
+# 			"`tabStock Entry MOP Item`.batch_no",
+# 		],
+# 		join="right join",
+# 	)
+# 	if len(stock_entries) < 1:
+# 		frappe.msgprint(_("Row {0} : No Stock entry Found against the Order").format(row.idx))
+
+# 	for item in stock_entries:
+# 		se_doc.append(
+# 			"items",
+# 			{
+# 				"item_code": item.item_code,
+# 				"qty": item.qty,
+# 				"s_warehouse": s_warehouse if doc.type == "Issue" else t_warehouse,
+# 				"t_warehouse": t_warehouse if doc.type == "Issue" else s_warehouse,
+# 				"Inventory_type": "Regular Stock",
+# 				"reference_doctype": "Manufacturing Work Order"
+# 				if row.manufacturing_work_order
+# 				else "Parent Manufacturing Order",
+# 				"reference_docname": row.manufacturing_work_order
+# 				if row.manufacturing_work_order
+# 				else row.parent_manufacturing_order,
+# 				"use_serial_batch_fields": True,
+# 				"batch_no": item.get("batch_no"),
+# 			},
+# 		)
+
 def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 	if doc.type == "Issue":
 		target_wh = frappe.get_value(
@@ -425,31 +512,33 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			{"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"},
 			"name",
 		)
-		filters = [
-			["Stock Entry MOP Item", "manufacturing_operation", "is", "set"],
-			["Stock Entry MOP Item", "t_warehouse", "=", target_wh],
-			["Stock Entry MOP Item", "employee", "is", "not set"],
+
+		# Prepare dynamic WHERE clauses
+		conditions = [
+			"mop_item.t_warehouse = %s",
+			"mop_item.manufacturing_operation IS NOT NULL",
+			"mop_item.employee IS NULL"
 		]
+		params = [target_wh]
+
+		or_clauses = []
+
+		# Include conditions for either MWO or Parent MWO
 		if row.manufacturing_work_order:
-			filters += (
-				["Stock Entry MOP Item", "custom_manufacturing_work_order", "=", row.manufacturing_work_order],
-			)
+			or_clauses.append("mop_item.custom_manufacturing_work_order = %s")
+			params.append(row.manufacturing_work_order)
+
 			latest_mop = frappe.db.get_value(
 				"Manufacturing Work Order", row.manufacturing_work_order, "manufacturing_operation"
 			)
 			if latest_mop:
-				filters += [
-					["Stock Entry MOP Item", "manufacturing_operation", "=", latest_mop],
-				]
-		elif row.parent_manufacturing_order:
-			filters += (
-				[
-					"Stock Entry MOP Item",
-					"custom_parent_manufacturing_order",
-					"=",
-					row.parent_manufacturing_order,
-				],
-			)
+				or_clauses.append("mop_item.manufacturing_operation = %s")
+				params.append(latest_mop)
+
+		if row.parent_manufacturing_order:
+			or_clauses.append("mop_item.custom_parent_manufacturing_order = %s")
+			params.append(row.parent_manufacturing_order)
+
 			mwo = frappe.db.get_value(
 				"Manufacturing Work Order",
 				{"manufacturing_order": row.parent_manufacturing_order, "is_finding_mwo": 0, "docstatus": 1},
@@ -457,32 +546,41 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			if mwo:
 				latest_mop = frappe.db.get_value("Manufacturing Work Order", mwo, "manufacturing_operation")
 				if latest_mop:
-					filters += [
-						["Stock Entry MOP Item", "manufacturing_operation", "=", latest_mop],
-					]
+					or_clauses.append("mop_item.manufacturing_operation = %s")
+					params.append(latest_mop)
+
+		if or_clauses:
+			conditions.append(f"({' OR '.join(or_clauses)})")
+
 	else:
-		filters = [["Stock Entry", "product_certification", "=", doc.receive_against]]
+		# For "Receive" type
+		conditions = ["se.product_certification = %s"]
+		params = [doc.receive_against]
+
 		if row.manufacturing_work_order:
-			filters += [
-				["Stock Entry MOP Item", "reference_docname", "=", row.manufacturing_work_order],
-				["Stock Entry MOP Item", "reference_doctype", "=", "Manufacturing Work Order"],
-			]
+			conditions.append("mop_item.reference_docname = %s")
+			params.append(row.manufacturing_work_order)
+			conditions.append("mop_item.reference_doctype = 'Manufacturing Work Order'")
+
 		elif row.parent_manufacturing_order:
-			filters += [
-				["Stock Entry MOP Item", "reference_docname", "=", row.parent_manufacturing_order],
-				["Stock Entry MOP Item", "reference_doctype", "=", "Parent Manufacturing Order"],
-			]
-	stock_entries = frappe.get_all(
-		"Stock Entry",
-		filters=filters,
-		fields=[
-			"`tabStock Entry MOP Item`.item_code",
-			"`tabStock Entry MOP Item`.qty",
-			"`tabStock Entry MOP Item`.batch_no",
-		],
-		join="right join",
-	)
-	if len(stock_entries) < 1:
+			conditions.append("mop_item.reference_docname = %s")
+			params.append(row.parent_manufacturing_order)
+			conditions.append("mop_item.reference_doctype = 'Parent Manufacturing Order'")
+
+
+	sql = f"""
+		SELECT
+			mop_item.item_code,
+			mop_item.qty,
+			mop_item.batch_no
+		FROM `tabStock Entry MOP Item` mop_item
+		LEFT JOIN `tabStock Entry` se ON mop_item.parent = se.name
+		WHERE {" AND ".join(conditions)}
+	"""
+
+	stock_entries = frappe.db.sql(sql, tuple(params), as_dict=True)
+
+	if not stock_entries:
 		frappe.msgprint(_("Row {0} : No Stock entry Found against the Order").format(row.idx))
 
 	for item in stock_entries:
