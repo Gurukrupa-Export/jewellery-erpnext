@@ -333,11 +333,11 @@ def get_sales_invoice_items(sales_invoices):
 @frappe.whitelist()
 def get_sales_order_items(customer_approval_name):
 	doc = frappe.get_doc("Customer Approval", customer_approval_name)
-	
+
 	if doc.docstatus != 1:
 		frappe.throw(_("This Customer Approval is not submitted."))
 
-	items = frappe.get_all("Sales Order Item Child", 
+	items = frappe.get_all("Sales Order Item Child",
 		filters={"parent": customer_approval_name},
 		fields=["item_code", "rate", "item_name", "quantity", "amount", "uom", "serial_no","bom_number","delivery_date"]
 	)
@@ -521,3 +521,26 @@ def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys, exclud
 	final_grouped = finalize_grouped(grouped, concat_keys)
 
 	return final_grouped + non_grouped
+
+
+def serialize_for_json(obj):
+	if isinstance(obj, datetime):
+		return frappe.utils.get_datetime_str(obj)
+	if isinstance(obj, frappe.Document):
+		return obj.as_dict()
+
+	raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
+def get_warehouse_from_user(user_id, warehouse_type):
+	department = frappe.db.get_value("Employee", {"user_id": user_id}, "department")
+
+	if not department:
+		frappe.throw("Department not specified in Employee record")
+
+	warehouse_name = frappe.db.get_value("Warehouse", {
+		"warehouse_type": warehouse_type,
+		"department": department
+		}, "name")
+
+	return warehouse_name

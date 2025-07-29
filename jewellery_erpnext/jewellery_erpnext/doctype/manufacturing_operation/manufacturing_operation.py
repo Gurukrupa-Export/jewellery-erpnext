@@ -166,7 +166,7 @@ class ManufacturingOperation(Document):
 	# 		},
 	# 		fields=["parent"]
 	# 	)
-		
+
 	# 	matched_ir = None
 
 	# 	if ir_operations:
@@ -176,7 +176,7 @@ class ManufacturingOperation(Document):
 	# 			filters={
 	# 				"employee": self.employee,
 	# 				"operation": self.operation,
-	# 				"docstatus": 1,  
+	# 				"docstatus": 1,
 	# 				"type": "Issue",
 	# 				"name": ["in", parent_ir_names]
 	# 			},
@@ -189,7 +189,7 @@ class ManufacturingOperation(Document):
 	# 			# else:
 	# 			# 	frappe.msgprint(f"Main Slip is not set in Employee IR {ir_doc.name}.")
 
-			
+
 
 
 	def validate_operation(self):
@@ -607,7 +607,7 @@ class ManufacturingOperation(Document):
 		# 	filters={"parent": self.company, "parenttype": "Manufacturing Setting"},
 		# 	fields=["operation"],
 		# )
-		
+
 		record_filter_from_mnf_setting = frappe.get_all(
 			"CAM Weight Details Mapping",
 			filters={"parent": self.manufacturer, "parenttype": "Manufacturing Setting"},
@@ -1079,6 +1079,10 @@ class ManufacturingOperation(Document):
 					row_data["s_warehouse"] = row_data["t_warehouse"] or row_data["s_warehouse"]
 					row_data["t_warehouse"] = None
 					row_data["batch_no"] = key[1]
+
+					if frappe.flags.update_pcs:
+						row_data["pcs"] = abs(bal_pcs.get(key))
+
 					final_balance_row.append(row_data)
 
 		# To check Item_code already added or not balance table
@@ -1088,6 +1092,9 @@ class ManufacturingOperation(Document):
 		# Append Final result into Balance Table
 		for row in final_balance_row:
 			if row.get("item_code") not in added_item_codes:
+				if not row.get("qty") > 0:
+					continue
+
 				self.append("mop_balance_table", row)
 
 		# if frappe.db.exists("Manufacturing Operation", {'previous_mop': self.name}):
@@ -1982,7 +1989,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			for row in new_bom.get("diamond_detail", []):
 				total_diamond_rate_for_specified_quantity = sum(row.get("diamond_rate_for_specified_quantity", 0) or 0  for row in new_bom.get("diamond_detail", []))
 				new_bom.diamond_bom_amount = total_diamond_rate_for_specified_quantity
-				
+
 				total_diamond_purchase_amount = sum((row.get("fg_purchase_amount", 0) or 0) for row in new_bom.get("diamond_detail", []))
 				new_bom.diamond_fg_purchase = total_diamond_purchase_amount
 				total_diamond_pcs = sum(flt(row.get("pcs", 0) or 0) for row in new_bom.get("diamond_detail", []))
@@ -2181,7 +2188,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			if new_bom.get("metal_detail"):
 				total_metal_amount = sum(flt(r.get("amount", 0)) for r in new_bom.get("metal_detail", []))
 				new_bom.total_metal_amount = total_metal_amount
-				
+
 			if not hasattr(new_bom, "total_wastage_amount"):
 				new_bom.total_wastage_amount = 0
 			if new_bom.get("metal_detail"):
@@ -3104,3 +3111,58 @@ def get_linked_stock_entries(mwo, department):
 		"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_operation/stock_entry_details.html",
 		{"data": data, "total_qty": total_qty},
 	)
+
+@frappe.whitelist()
+def create_mr_wo_stock_entry(se_data):
+	from jewellery_erpnext.utils import get_warehouse_from_user
+
+	if isinstance(se_data, str):
+		se_data = json.loads(se_data)
+
+	if not se_data.get("receive_items"):
+		return frappe.msgprint("No Receive Items Found.")
+
+	department = se_data.get("department")
+	t_warehouse = frappe.db.get_value("Warehouse",{"warehouse_type": "Raw Material", "department": department},"name")
+
+	# t_warehouse = get_warehouse_from_user(frappe.session.user, "Raw Material")
+	if not t_warehouse:
+		frappe.throw("No warehouse found for warehouse type Raw Material")
+
+	s_warehouse = se_data.get("receive_items")[0].get("s_warehouse")
+	department = se_data.get("department")
+	to_department = se_data.get("receive_items")[0].get("to_department")
+
+	se_doc = frappe.new_doc("Stock Entry")
+	se_doc.update({
+		"stock_entry_type": "Material Receive (WORK ORDER)",
+		"manufacturing_work_order": se_data.get("manufacturing_work_order"),
+		"manufacturing_order": se_data.get("manufacturing_order"),
+		"manufacturing_operation": se_data.get("manufacturing_operation"),
+		"department": department,
+		"to_department": to_department,
+		"to_warehouse": t_warehouse,
+		"from_warehouse": s_warehouse
+	})
+
+	for row in se_data.get("receive_items"):
+		se_doc.append("items", {
+			"item_code": row.get("item_code"),
+			"qty": row.get("qty"),
+			"pcs": row.get("pcs"),
+			"use_serial_batch_fields": 1,
+			"batch_no": row.get("batch_no"),
+			"manufacturing_operation": se_data.get("manufacturing_operation"),
+			"s_warehouse": row.get("s_warehouse"),
+			"t_warehouse": t_warehouse,
+			"inventory_type": row.get("inventory_type")
+		})
+
+	# set flag to update pcs
+	frappe.flags.update_pcs = True
+
+	se_doc.save()
+	se_doc.submit()
+
+
+	return {"doctype": se_doc.doctype, "docname": se_doc.name}
