@@ -3119,7 +3119,7 @@ def create_mr_wo_stock_entry(se_data):
 
 	department = se_data.get("department")
 	t_warehouse = frappe.db.get_value("Warehouse",{"warehouse_type": "Raw Material", "department": department},"name")
-	
+
 	# t_warehouse = get_warehouse_from_user(frappe.session.user, "Raw Material")
 	if not t_warehouse:
 		frappe.throw("No warehouse found for warehouse type Raw Material")
@@ -3145,6 +3145,7 @@ def create_mr_wo_stock_entry(se_data):
 			"item_code": row.get("item_code"),
 			"qty": row.get("qty"),
 			"pcs": row.get("pcs"),
+			"use_serial_batch_fields": 1,
 			"batch_no": row.get("batch_no"),
 			"manufacturing_operation": se_data.get("manufacturing_operation"),
 			"s_warehouse": row.get("s_warehouse"),
