@@ -1087,6 +1087,10 @@ class ManufacturingOperation(Document):
 					row_data["s_warehouse"] = row_data["t_warehouse"] or row_data["s_warehouse"]
 					row_data["t_warehouse"] = None
 					row_data["batch_no"] = key[1]
+
+					if frappe.flags.update_pcs:
+						row_data["pcs"] = abs(bal_pcs.get(key))
+
 					final_balance_row.append(row_data)
 
 		# To check Item_code already added or not balance table
@@ -3153,7 +3157,11 @@ def create_mr_wo_stock_entry(se_data):
 			"inventory_type": row.get("inventory_type")
 		})
 
+	# set flag to update pcs
+	frappe.flags.update_pcs = True
+
 	se_doc.save()
 	se_doc.submit()
+
 
 	return {"doctype": se_doc.doctype, "docname": se_doc.name}
