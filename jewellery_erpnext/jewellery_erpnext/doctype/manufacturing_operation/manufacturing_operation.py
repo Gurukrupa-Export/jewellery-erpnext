@@ -166,7 +166,7 @@ class ManufacturingOperation(Document):
 	# 		},
 	# 		fields=["parent"]
 	# 	)
-		
+
 	# 	matched_ir = None
 
 	# 	if ir_operations:
@@ -176,7 +176,7 @@ class ManufacturingOperation(Document):
 	# 			filters={
 	# 				"employee": self.employee,
 	# 				"operation": self.operation,
-	# 				"docstatus": 1,  
+	# 				"docstatus": 1,
 	# 				"type": "Issue",
 	# 				"name": ["in", parent_ir_names]
 	# 			},
@@ -189,7 +189,7 @@ class ManufacturingOperation(Document):
 	# 			# else:
 	# 			# 	frappe.msgprint(f"Main Slip is not set in Employee IR {ir_doc.name}.")
 
-			
+
 
 
 	def validate_operation(self):
@@ -607,7 +607,7 @@ class ManufacturingOperation(Document):
 		# 	filters={"parent": self.company, "parenttype": "Manufacturing Setting"},
 		# 	fields=["operation"],
 		# )
-		
+
 		record_filter_from_mnf_setting = frappe.get_all(
 			"CAM Weight Details Mapping",
 			filters={"parent": self.manufacturer, "parenttype": "Manufacturing Setting"},
@@ -1985,7 +1985,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			for row in new_bom.get("diamond_detail", []):
 				total_diamond_rate_for_specified_quantity = sum(row.get("diamond_rate_for_specified_quantity", 0) or 0  for row in new_bom.get("diamond_detail", []))
 				new_bom.diamond_bom_amount = total_diamond_rate_for_specified_quantity
-				
+
 				total_diamond_purchase_amount = sum((row.get("fg_purchase_amount", 0) or 0) for row in new_bom.get("diamond_detail", []))
 				new_bom.diamond_fg_purchase = total_diamond_purchase_amount
 				total_diamond_pcs = sum(flt(row.get("pcs", 0) or 0) for row in new_bom.get("diamond_detail", []))
@@ -2184,7 +2184,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			if new_bom.get("metal_detail"):
 				total_metal_amount = sum(flt(r.get("amount", 0)) for r in new_bom.get("metal_detail", []))
 				new_bom.total_metal_amount = total_metal_amount
-				
+
 			if not hasattr(new_bom, "total_wastage_amount"):
 				new_bom.total_wastage_amount = 0
 			if new_bom.get("metal_detail"):
@@ -3118,7 +3118,10 @@ def create_mr_wo_stock_entry(se_data):
 	if not se_data.get("receive_items"):
 		return frappe.msgprint("No Receive Items Found.")
 
-	t_warehouse = get_warehouse_from_user(frappe.session.user, "Raw Material")
+	department = se_data.get("department")
+	t_warehouse = frappe.db.get_value("Warehouse",{"warehouse_type": "Raw Material", "department": department},"name")
+
+	# t_warehouse = get_warehouse_from_user(frappe.session.user, "Raw Material")
 	if not t_warehouse:
 		frappe.throw("No warehouse found for warehouse type Raw Material")
 
@@ -3143,6 +3146,7 @@ def create_mr_wo_stock_entry(se_data):
 			"item_code": row.get("item_code"),
 			"qty": row.get("qty"),
 			"pcs": row.get("pcs"),
+			"use_serial_batch_fields": 1,
 			"batch_no": row.get("batch_no"),
 			"manufacturing_operation": se_data.get("manufacturing_operation"),
 			"s_warehouse": row.get("s_warehouse"),
