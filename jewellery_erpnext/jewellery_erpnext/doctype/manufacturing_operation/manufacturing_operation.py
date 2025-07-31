@@ -968,6 +968,7 @@ class ManufacturingOperation(Document):
 		added_item_codes = set()
 		final_balance_row = []
 		bal_qty = {}
+		bal_pcs = {}
 		existing_data = {}
 		row_dict = {}
 		# Calculate sum of quantities for department source table
@@ -1014,15 +1015,19 @@ class ManufacturingOperation(Document):
 
 		for row in self.department_source_table:
 			bal_qty[(row.item_code, row.batch_no)] = bal_qty.get((row.item_code, row.batch_no), 0) + row.qty
+			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get((row.item_code, row.batch_no), 0) + (flt(row.pcs) if row.pcs else 0)
 		# Calculate sum of quantities for employee source table
 		for row in self.employee_source_table:
 			bal_qty[(row.item_code, row.batch_no)] = bal_qty.get((row.item_code, row.batch_no), 0) + row.qty
+			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get((row.item_code, row.batch_no), 0) + (flt(row.pcs) if row.pcs else 0)
 		# Subtract sum of quantities for department target table
 		for row in self.department_target_table:
 			bal_qty[(row.item_code, row.batch_no)] = bal_qty.get((row.item_code, row.batch_no), 0) - row.qty
+			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get((row.item_code, row.batch_no), 0) - flt(row.pcs or 0)
 		# Subtract sum of quantities for employee target table
 		for row in self.employee_target_table:
 			bal_qty[(row.item_code, row.batch_no)] = bal_qty.get((row.item_code, row.batch_no), 0) - row.qty
+			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get((row.item_code, row.batch_no), 0) - flt(row.pcs or 0)
 
 		# for key in bal_qty:
 		# 	if bal_qty[key] != 0 and not existing_data.get(key):
@@ -1080,8 +1085,8 @@ class ManufacturingOperation(Document):
 					row_data["t_warehouse"] = None
 					row_data["batch_no"] = key[1]
 
-					# if frappe.flags.update_pcs:
-					# 	row_data["pcs"] = abs(bal_pcs.get(key))
+					if frappe.flags.update_pcs:
+						row_data["pcs"] = abs(bal_pcs.get(key))
 
 					final_balance_row.append(row_data)
 
