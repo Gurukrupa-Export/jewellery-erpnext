@@ -330,8 +330,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 						fieldname: "receive_entries",
 						label: __("Receive Entry Details"),
 						fieldtype: "Table",
-						cannot_add_rows: true,
-						cannot_delete_rows: true,
+						cannot_add_rows: 1,
+						cannot_delete_rows: 1,
 						data: this.data,
 							get_data: () => {
 								return this.data;
@@ -476,13 +476,10 @@ frappe.ui.form.on("Manufacturing Operation", {
 					})
 
 					d.hide()
-
 				}
 			})
 
-			let dialog_wrapper = d.get_field("receive_entries").grid.wrapper;
-			dialog_wrapper.find(".grid-row-check").hide();
-
+			d.get_field("receive_entries").grid.wrapper.find(".grid-row-check").hide();
 			d.show()
 
 		}).addClass("btn-primary")
