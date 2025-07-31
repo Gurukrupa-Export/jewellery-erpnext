@@ -50,6 +50,7 @@
   "metal_purity",
   "multicolour",
   "allowed_colours",
+  "merged_mwo",
   "remarks_section",
   "order_remarks",
   "order_details_tab",
@@ -608,7 +609,7 @@
    "read_only_depends_on": "doc.for_fg"
   },
   {
-   "depends_on": "eval: doc.for_fg;",
+   "depends_on": "for_fg",
    "fieldname": "mwo_mop_balance_table",
    "fieldtype": "Table",
    "label": "MWO MOP Balance Table",
@@ -619,6 +620,13 @@
    "fieldname": "mop_details_section",
    "fieldtype": "Section Break",
    "label": "MOP Details"
+  },
+  {
+   "default": "0",
+   "fieldname": "merged_mwo",
+   "fieldtype": "Check",
+   "label": "Merged MWO",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
@@ -646,7 +654,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2025-07-11 17:53:10.063035",
+ "modified": "2025-07-25 16:18:24.397874",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

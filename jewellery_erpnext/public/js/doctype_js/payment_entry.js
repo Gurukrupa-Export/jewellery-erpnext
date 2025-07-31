@@ -20,7 +20,7 @@ frappe.ui.form.on("Payment Entry", {
 							default: frm.doc.paid_amount,
 							read_only: 1,
 						},
-												{
+						{
 							fieldtype: "Check",
 							fieldname: "is_advance_payment",
 							label: __("Is New Customer Advance"),
@@ -29,13 +29,24 @@ frappe.ui.form.on("Payment Entry", {
 								if (d.get_value("is_advance_payment")) {
 									d.set_df_property("invoices", "hidden", 1)
 									d.set_df_property("allocated_advance_amount", "hidden", 0)
+									d.set_df_property("customer_branch", "hidden", 0)
+									d.set_df_property("customer_branch", "reqd", 1)
 									d.set_value("total_allocated_amount", frm.doc.paid_amount)
 								} else {
 									d.set_df_property("invoices", "hidden", 0)
 									d.set_df_property("allocated_advance_amount", "hidden", 1)
+									d.set_df_property("customer_branch", "hidden", 1)
+									d.set_df_property("customer_branch", "reqd", 0)
 								}
 							}
 
+						},
+						{
+							fieldtype: "Link",
+							fieldname: "customer_branch",
+							label: "Customer Branch",
+							options: "Branch",
+							hidden: 1
 						},
 						{
 							fieldtype: "Column Break",
@@ -156,6 +167,7 @@ frappe.ui.form.on("Payment Entry", {
 								company: frm.doc.company,
 								posting_date: frm.doc.posting_date,
 								doctype: frm.doc.doctype,
+								customer_branch: values.customer_branch,
 								pe_name: frm.doc.name,
 								pe_branch: frm.doc.branch,
 								paid_amount: frm.doc.paid_amount,
