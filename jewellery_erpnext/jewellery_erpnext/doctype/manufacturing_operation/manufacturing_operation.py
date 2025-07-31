@@ -1087,6 +1087,10 @@ class ManufacturingOperation(Document):
 					row_data["s_warehouse"] = row_data["t_warehouse"] or row_data["s_warehouse"]
 					row_data["t_warehouse"] = None
 					row_data["batch_no"] = key[1]
+
+					if frappe.flags.update_pcs:
+						row_data["pcs"] = abs(bal_pcs.get(key))
+
 					final_balance_row.append(row_data)
 
 		# To check Item_code already added or not balance table
@@ -1096,7 +1100,7 @@ class ManufacturingOperation(Document):
 		# Append Final result into Balance Table
 		for row in final_balance_row:
 			if row.get("item_code") not in added_item_codes:
-				if not row.get("qty") > 0:
+				if not row.get("qty"):
 					continue
 
 				self.append("mop_balance_table", row)
@@ -3117,7 +3121,10 @@ def create_mr_wo_stock_entry(se_data):
 	if not se_data.get("receive_items"):
 		return frappe.msgprint("No Receive Items Found.")
 
-	t_warehouse = get_warehouse_from_user(frappe.session.user, "Raw Material")
+	department = se_data.get("department")
+	t_warehouse = frappe.db.get_value("Warehouse",{"warehouse_type": "Raw Material", "department": department},"name")
+
+	# t_warehouse = get_warehouse_from_user(frappe.session.user, "Raw Material")
 	if not t_warehouse:
 		frappe.throw("No warehouse found for warehouse type Raw Material")
 
@@ -3142,14 +3149,20 @@ def create_mr_wo_stock_entry(se_data):
 			"item_code": row.get("item_code"),
 			"qty": row.get("qty"),
 			"pcs": row.get("pcs"),
+			"use_serial_batch_fields": 1,
 			"batch_no": row.get("batch_no"),
 			"manufacturing_operation": se_data.get("manufacturing_operation"),
 			"s_warehouse": row.get("s_warehouse"),
 			"t_warehouse": t_warehouse,
-			"inventory_type": row.get("inventory_type")
+			"inventory_type": row.get("inventory_type"),
+			"customer": row.get("customer")
 		})
+
+	# set flag to update pcs
+	frappe.flags.update_pcs = True
 
 	se_doc.save()
 	se_doc.submit()
+
 
 	return {"doctype": se_doc.doctype, "docname": se_doc.name}

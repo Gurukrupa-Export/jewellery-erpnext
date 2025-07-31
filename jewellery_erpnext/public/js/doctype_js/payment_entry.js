@@ -21,6 +21,34 @@ frappe.ui.form.on("Payment Entry", {
 							read_only: 1,
 						},
 						{
+							fieldtype: "Check",
+							fieldname: "is_advance_payment",
+							label: __("Is New Customer Advance"),
+							default: 0,
+							onchange: (val) => {
+								if (d.get_value("is_advance_payment")) {
+									d.set_df_property("invoices", "hidden", 1)
+									d.set_df_property("allocated_advance_amount", "hidden", 0)
+									d.set_df_property("customer_branch", "hidden", 0)
+									d.set_df_property("customer_branch", "reqd", 1)
+									d.set_value("total_allocated_amount", frm.doc.paid_amount)
+								} else {
+									d.set_df_property("invoices", "hidden", 0)
+									d.set_df_property("allocated_advance_amount", "hidden", 1)
+									d.set_df_property("customer_branch", "hidden", 1)
+									d.set_df_property("customer_branch", "reqd", 0)
+								}
+							}
+
+						},
+						{
+							fieldtype: "Link",
+							fieldname: "customer_branch",
+							label: "Customer Branch",
+							options: "Branch",
+							hidden: 1
+						},
+						{
 							fieldtype: "Column Break",
 							fieldname: "column_break_1"
 						},
@@ -37,6 +65,17 @@ frappe.ui.form.on("Payment Entry", {
 							},
 							default: 0,
 							read_only: 1,
+						},
+						{
+							fieldtype: "Currency",
+							fieldname: "allocated_advance_amount",
+							label: __("Allocated Advance Amount"),
+							default: frm.doc.paid_amount,
+							hidden:1,
+							onchange: () => {
+								d.set_value("total_allocated_amount", d.get_value("allocated_advance_amount"))
+							}
+
 						},
 						{
 							fieldtype: "Section Break",
@@ -120,43 +159,69 @@ frappe.ui.form.on("Payment Entry", {
 
 					],
 					primary_action: (values) => {
-						const selected_invoices = d.fields_dict.invoices.grid.get_selected_children();
-
-						const invoice_data = selected_invoices.map((invoice) => {
-							return {
+						let args = []
+						let is_adv = "false"
+						if (values.is_advance_payment && values.allocated_advance_amount) {
+							is_adv = "true"
+							args.push({
 								company: frm.doc.company,
 								posting_date: frm.doc.posting_date,
 								doctype: frm.doc.doctype,
+								customer_branch: values.customer_branch,
 								pe_name: frm.doc.name,
 								pe_branch: frm.doc.branch,
 								paid_amount: frm.doc.paid_amount,
 								receivable_account: frm.doc.paid_from,
 								party_type: frm.doc.party_type,
 								party: frm.doc.party,
-								si_name: invoice.sales_invoice,
-								si_branch: invoice.branch,
-								allocated_amount: invoice.allocated_amount,
-								outstanding_amount: invoice.outstanding_amount,
+								allocated_amount: values.allocated_advance_amount,
 
+							})
+						} else {
+							const selected_invoices = d.fields_dict.invoices.grid.get_selected_children();
+
+							args = selected_invoices.map((invoice) => {
+								return {
+									company: frm.doc.company,
+									posting_date: frm.doc.posting_date,
+									doctype: frm.doc.doctype,
+									pe_name: frm.doc.name,
+									pe_branch: frm.doc.branch,
+									paid_amount: frm.doc.paid_amount,
+									receivable_account: frm.doc.paid_from,
+									party_type: frm.doc.party_type,
+									party: frm.doc.party,
+									si_name: invoice.sales_invoice,
+									si_branch: invoice.branch,
+									allocated_amount: invoice.allocated_amount,
+									outstanding_amount: invoice.outstanding_amount,
+
+								}
+							})
+							if (!args.length) {
+								frappe.msgprint("Please select the invoice you need to reconcile.")
 							}
-						})
+						}
 
 						frappe.call({
 							method: "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.reconcile_inter_branch_payment",
 							args: {
-								invoice_data: invoice_data
+								data: args,
+								is_adv: is_adv
 							},
 							freeze: 1,
 							freeze_msg: __("Reconciling Inter Branch Payment.."),
 							callback: (r) => {
 								if (!r.exec && r.message) {
 									d.hide()
-									let link_html = `\n`
-									r.message.forEach(jv_name => {
-										let jv_link = frappe.utils.get_form_link("Journal Entry", jv_name)
-										link_html += `<a href="${jv_link}" class="text-muted">${jv_name}</a>\n`
-									});
-									frappe.msgprint(`Journal Entry has been Successfully Created ${link_html}`)
+									if (r.message.length) {
+										let link_html = `\n`
+										r.message.forEach(jv_name => {
+											let jv_link = frappe.utils.get_form_link("Journal Entry", jv_name)
+											link_html += `<a href="${jv_link}" class="text-muted">${jv_name}</a>\n`
+										});
+										frappe.msgprint(`Journal Entry has been Successfully Created ${link_html}`)
+									}
 								}
 
 							}

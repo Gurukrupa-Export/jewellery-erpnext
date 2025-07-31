@@ -527,7 +527,8 @@ def get_inventory_type(self):
 				supplier = frappe.get_value(reference_doctype, reference_name, "supplier")
 				inventory_type = "Regular Stock"
 			if reference_doctype == "Stock Entry":
-				inventory_type = frappe.get_value(reference_doctype, reference_name, "inventory_type")
+				# inventory_type = frappe.get_value(reference_doctype, reference_name, "inventory_type")
+				inventory_type = frappe.get_value("Batch", table_batch, "custom_inventory_type")
 				if inventory_type == "Customer Goods":
 					customer = frappe.get_value(reference_doctype, reference_name, "_customer")
 		if error:

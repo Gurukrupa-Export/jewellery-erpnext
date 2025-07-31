@@ -29,6 +29,10 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				});
 			}
 		}
+
+		if (frm.doc.multicolour && !frm.doc.merged_mwo) {
+			frm.events.setup_merge_mwo_button(frm)
+		}
 		set_html(frm);
 	},
 	transfer_to_raw: function (frm) {
@@ -131,6 +135,102 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		dialog.show();
 		// dialog.$wrapper.find('.modal-dialog').css("max-width", "90%");
 	},
+	setup_merge_mwo_button: async (frm) => {
+		console.log("asdasdasdsd");
+
+		this.data = await frm.events.get_merge_mwo_list(frm)
+		console.log(this.data)
+		if (this.data.length) {
+
+			frm.add_custom_button("Merge MWO", () => {
+				var d = new frappe.ui.Dialog({
+					title: __("Merge MWO Operation"),
+					size: "extra-large",
+					fields: [
+						{
+							fieldname: "mwo_list",
+							fieldtype: "Table",
+							label: "MWO List",
+							data: this.data,
+							get_data: () => {
+								return this.data
+							},
+							fields: [
+								{
+									fieldname: "mwo",
+									fieldtype: "Link",
+									label: "Manufacturing Work Order",
+									options: "Manufacturing Work Order",
+									reqd: 1,
+									read_only: 1,
+									in_list_view: 1
+								},
+								{
+									fieldname: "mop",
+									fieldtype: "Link",
+									label: "Manufacturing Operation",
+									options: "Manufacturing Operation",
+									reqd: 1,
+									read_only: 1,
+									in_list_view: 1
+								}
+							]
+						}
+					],
+					primary_action: (values) => {
+						const selected_mwo = d.fields_dict.mwo_list.grid.get_selected_children();
+
+						let target_mop_list = selected_mwo.map((e) => {
+							return e.mop
+						})
+
+						frappe.call({
+							method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.merge_multicolor_mwo",
+							args: {
+								source_mop: frm.doc.manufacturing_operation,
+								target_mop_list: target_mop_list
+							},
+							freeze: true,
+							freeze_msg: __("Merging Multicolor MWO MOP Balance Table"),
+							callback: (r) => {
+								if (!r.exec) {
+									d.hide()
+									frappe.msgprint("MWO MOP Merged Successfully")
+								}
+							}
+						})
+					},
+					primary_action_label: __("Merge MOP Operation")
+				})
+				d.show();
+
+			}).addClass("btn-primary")
+		}
+	},
+	get_merge_mwo_list: async (frm) => {
+		let mwo_list = []
+		await frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_merge_mwo_list",
+			args: {
+				pmo: frm.doc.manufacturing_order,
+				mwo: frm.doc.name,
+				mop: frm.doc.manufacturing_operation
+			},
+			freeze: true,
+			callback: (r) => {
+				if (!r.exec && r.message.length) {
+					r.message.map((e) => {
+						mwo_list.push({
+							"mwo": e.name,
+							"mop": e.manufacturing_operation
+						})
+					})
+				}
+			}
+		})
+
+		return mwo_list
+	}
 });
 
 function set_html(frm) {

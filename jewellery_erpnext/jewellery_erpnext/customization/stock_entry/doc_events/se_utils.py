@@ -22,6 +22,7 @@ from frappe.query_builder.functions import CombineDatetime, Sum
 
 
 def validate_inventory_dimention(self):
+	# pass
 	pmo_customer_data = frappe._dict()
 	manufacturer_data = frappe._dict()
 	for row in self.items:
@@ -55,12 +56,12 @@ def validate_inventory_dimention(self):
 
 			if (
 				row.inventory_type in ["Customer Goods", "Customer Stock"]
-				and pmo_data.get("customer") != row.customer
+				and pmo_data.get("customer") != row.customer and row.custom_variant_of not in ["M"]
 			):
 				frappe.throw(_("Only {0} allowed in Stock Entry").format(pmo_data.get("customer")))
 			else:
 				variant_mapping = {
-					"M": "is_customer_gold",
+					# "M": "is_customer_gold",
 					"F": "is_customer_gold",
 					"D": "is_customer_diamond",
 					"G": "is_customer_gemstone",
@@ -86,7 +87,7 @@ def validate_inventory_dimention(self):
 						else:
 							frappe.throw(_("Can not use Customer Goods inventory for non provided customer Item"))
 
-
+# chnages in this function
 def get_fifo_batches(self, row):
 	rows_to_append = []
 	row.batch_no = None
@@ -133,10 +134,9 @@ def get_fifo_batches(self, row):
 			customer_item_data.get("manufacturer"),
 			"custom_allow_regular_goods_instead_of_customer_goods",
 		)
-
+	
 	allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
 	variant_to_customer_key = {
-		"M": "is_customer_gold",
 		"F": "is_customer_gold",
 		"D": "is_customer_diamond",
 		"G": "is_customer_gemstone",
@@ -245,7 +245,9 @@ def get_fifo_batches(self, row):
 		else:
 			frappe.msgprint(message)
 
+	
 	return rows_to_append
+	
 
 
 def get_batch_data_from_msl(item_code, main_slip, warehouse):

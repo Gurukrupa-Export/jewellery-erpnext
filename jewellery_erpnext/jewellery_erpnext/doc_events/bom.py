@@ -16,6 +16,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 
 
 def before_validate(self, method):
+	validate_rating(self)
 	if self.bom_type == "Quotation" or self.docstatus == 1:
 		precision_data = frappe.db.get_value(
 			"Customer",
@@ -54,6 +55,7 @@ def before_validate(self, method):
 		set_item_variant(self)
 		set_bom_items(self)
 		update_specifications(self)
+		
 
 
 def validate(self, method):
@@ -291,6 +293,43 @@ def _create_new_price_list(self):
 	item_price.bom_no = self.name
 	item_price.price_list_rate = self.total_cost
 	item_price.save()
+
+def validate_rating(self):
+    # Exit quietly if ratio not provided
+    if not self.gold_to_diamond_ratio:
+        return
+
+    try:
+        ratio_value = float(self.gold_to_diamond_ratio)
+    except (ValueError, TypeError):
+        # If it's not a valid float, skip logic
+        return
+
+    gc_ratio_master = frappe.get_single("GC Ratio Master")
+    for row in gc_ratio_master.gc_ratio:
+        range_text = row.metal_to_gold_ratio_group.strip()
+        try:
+            if '-' in range_text:
+                lower, upper = [float(x.strip()) for x in range_text.split('-')]
+                if lower <= ratio_value <= upper:
+                    self.custom_rating = row.rating
+                    break
+
+            elif 'Above' in range_text:
+                threshold = float(range_text.replace('Above', '').strip())
+                if ratio_value > threshold:
+                    self.custom_rating = row.rating
+                    break
+
+            elif 'Below' in range_text:
+                threshold = float(range_text.replace('Below', '').strip())
+                if ratio_value < threshold:
+                    self.custom_rating = row.rating
+                    break
+
+        except ValueError:
+            frappe.msgprint(f"Skipping invalid range value: {range_text}")
+
 
 
 def calculate_metal_qty(self):
