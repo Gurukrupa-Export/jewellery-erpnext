@@ -1080,8 +1080,8 @@ class ManufacturingOperation(Document):
 					row_data["t_warehouse"] = None
 					row_data["batch_no"] = key[1]
 
-					if frappe.flags.update_pcs:
-						row_data["pcs"] = abs(bal_pcs.get(key))
+					# if frappe.flags.update_pcs:
+					# 	row_data["pcs"] = abs(bal_pcs.get(key))
 
 					final_balance_row.append(row_data)
 
