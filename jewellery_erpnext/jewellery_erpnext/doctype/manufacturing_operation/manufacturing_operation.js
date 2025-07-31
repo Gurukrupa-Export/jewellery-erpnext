@@ -330,6 +330,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 						fieldname: "receive_entries",
 						label: __("Receive Entry Details"),
 						fieldtype: "Table",
+						cannot_add_rows: 1,
+						cannot_delete_rows: 1,
 						data: this.data,
 							get_data: () => {
 								return this.data;
@@ -390,24 +392,28 @@ frappe.ui.form.on("Manufacturing Operation", {
 									"fieldtype": "Link",
 									"options": "Batch",
 									"fieldname": "batch_no",
+									"read_only": 1,
 								},
 								{
 									"label": __("Inventory Type"),
 									"fieldtype": "Link",
 									"options": "Inventory Type",
 									"fieldname": "inventory_type",
+									"read_only": 1,
 								},
 																{
 									"label": __("Department"),
 									"fieldtype": "Link",
 									"options": "Department",
 									"fieldname": "department",
+									"read_only": 1,
 								},
 																{
 									"label": __("To Department"),
 									"fieldtype": "Link",
 									"options": "Department",
 									"fieldname": "to_department",
+									"read_only": 1,
 								}
 							]
 						}
@@ -470,9 +476,10 @@ frappe.ui.form.on("Manufacturing Operation", {
 					})
 
 					d.hide()
-
 				}
 			})
+
+			d.get_field("receive_entries").grid.wrapper.find(".grid-row-check").hide();
 			d.show()
 
 		}).addClass("btn-primary")
