@@ -340,6 +340,15 @@
    "module": "Jewellery Erpnext",
    "no_copy": 1,
    "options": "Workflow State"
+  },
+  {
+   "dt": "Quotation",
+   "fieldname": "custom_total_rows",
+   "fieldtype": "Int",
+   "insert_after": "items",
+   "label": "Total Rows",
+   "module": "Jewellery Erpnext",
+   "read_only":1
   }
  ]
 }

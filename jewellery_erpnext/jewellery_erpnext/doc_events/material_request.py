@@ -335,7 +335,7 @@ def create_stock_entry(self, method):
 		se_doc.stock_entry_type = stock_entry_type
 		se_doc.purpose = "Material Transfer"
 		se_doc.add_to_transit = True
-
+		se_doc.auto_created = 1
 		for row in self.items:
 			department = frappe.db.get_value("Warehouse", row.from_warehouse, "department")
 			t_warehouse = frappe.db.get_value(
