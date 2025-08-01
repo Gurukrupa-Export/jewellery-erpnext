@@ -318,7 +318,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 					"batch_no": e.batch_no,
 					"inventory_type": e.inventory_type,
 					"department": e.department,
-					"to_department": e.to_department
+					"to_department": e.to_department,
+					"customer":e.customer
 				}
 			})
 
@@ -401,7 +402,14 @@ frappe.ui.form.on("Manufacturing Operation", {
 									"fieldname": "inventory_type",
 									"read_only": 1,
 								},
-																{
+								{
+									"label": __("Customer"),
+									"fieldtype": "Link",
+									"options": "Customer",
+									"fieldname": "customer",
+									"read_only": 1,
+								},
+								{
 									"label": __("Department"),
 									"fieldtype": "Link",
 									"options": "Department",
@@ -437,7 +445,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 								batch_no: e.batch_no,
 								inventory_type: e.inventory_type,
 								department: e.department,
-								to_department: e.to_department
+								to_department: e.to_department,
+								customer: e.customer
 							})
 						}
 					});
