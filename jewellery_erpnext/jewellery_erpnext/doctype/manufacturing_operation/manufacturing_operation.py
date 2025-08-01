@@ -3160,7 +3160,8 @@ def create_mr_wo_stock_entry(se_data):
 			"manufacturing_operation": se_data.get("manufacturing_operation"),
 			"s_warehouse": row.get("s_warehouse"),
 			"t_warehouse": t_warehouse,
-			"inventory_type": row.get("inventory_type")
+			"inventory_type": row.get("inventory_type"),
+			"customer": row.get("customer")
 		})
 
 	# set flag to update pcs
