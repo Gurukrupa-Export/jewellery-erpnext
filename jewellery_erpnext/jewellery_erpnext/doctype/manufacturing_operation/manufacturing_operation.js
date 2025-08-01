@@ -112,7 +112,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 			// }
 		}
 
-		if (frm.doc.status === "Not Started") {
+		if (["Draft", "WIP", "Not Started"].includes(frm.doc.status)) {
 			frm.trigger("setup_buttons")
 		}
 	},
