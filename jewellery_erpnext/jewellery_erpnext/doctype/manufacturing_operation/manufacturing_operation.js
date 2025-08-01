@@ -428,6 +428,9 @@ frappe.ui.form.on("Manufacturing Operation", {
 						if (e.receive_pcs > e.pcs) {
 							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Pcs <b>{2}</b> should not be greater than Balance Pcs <b>{3}</b>", [e.idx, e.item_code, e.receive_pcs, e.pcs]))
 						}
+						if ((e.receive_pcs == e.pcs && e.receive_qty != e.qty) || (e.receive_qty == e.qty && e.receive_pcs != e.pcs)) {
+							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Qty and Pcs should be same if receiving all qty or pcs", [e.idx, e.item_code]))
+						}
 						if (e.receive_qty || e.receive_pcs) {
 							receive_items.push({
 								item_code: e.item_code,
@@ -471,6 +474,9 @@ frappe.ui.form.on("Manufacturing Operation", {
 									title: __("Material Receive Stock Entry Created"),
 									indicator: "green"
 								})
+
+								frm.reload_doc()
+								frm.refresh();
 							}
 						}
 					})
