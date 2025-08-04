@@ -59,7 +59,9 @@ class ParentManufacturingOrder(Document):
 		if self.serial_no:
 			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
 				self.db_set("serial_id_bom", serial_bom)
+			self.update_images_to_items()
 		# get_gemstone_details(self)
+
 
 	def validate(self):
 		if self.is_new() or self.flags.ignore_validations:
@@ -100,8 +102,39 @@ class ParentManufacturingOrder(Document):
 	def on_update_after_submit(self):
 		update_due_days(self)
 		validate_mfg_date(self)
+		if self.finish_good_image:
+			existing_snc = frappe.get_all(
+					"Serial Number Creator",
+					filters={
+						"parent_manufacturing_order": self.name,
+						"docstatus": 1
+					},
+					fields=["name"],
+					limit=1
+			)
+			if existing_snc:
+				snc = existing_snc[0].name
+				stock_entry = frappe.qb.DocType("Stock Entry")
+				serial_no = frappe.qb.DocType("Serial No")
+				bom = frappe.qb.DocType("BOM")
+
+				# Build the query
+				data = (
+					frappe.qb.from_(stock_entry)
+					.inner_join(serial_no)
+					.on(stock_entry.name == serial_no.purchase_document_no)
+					.inner_join(bom)
+					.on(serial_no.name == bom.tag_no)
+					.select(serial_no.purchase_document_no, serial_no.serial_no, bom.name)
+					.where(stock_entry.custom_serial_number_creator == snc)
+				).run(as_dict=True)
+
+				# frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
+				frappe.db.set_value("BOM", data[0].name, "front_view_finish", self.finish_good_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_front_view", self.finish_good_image)
 
 	def on_submit(self):
+		self.update_images_to_items()
 		if not self.order_form_type or self.order_form_type == "Order":
 			set_metal_tolerance_table(self)  # To Set Metal Product Tolerance Table
 			set_diamond_tolerance_table(self)  # To Set Diamond Product Tolerance Table
@@ -113,6 +146,38 @@ class ParentManufacturingOrder(Document):
 
 		create_manufacturing_work_order(self)
 		gemstone_details_set_mandatory_field(self)
+		image = frappe.db.get_value("Parent Manufacturing Order", self.name, "finish_good_image")
+		if image:
+			existing_snc = frappe.get_all(
+				"Serial Number Creator",
+				filters={
+					"parent_manufacturing_order": self.name,
+					"docstatus": 1
+				},
+				fields=["name"],
+				limit=1
+			)
+
+			if existing_snc:
+				snc = existing_snc[0].name
+				stock_entry = frappe.qb.DocType("Stock Entry")
+				serial_no = frappe.qb.DocType("Serial No")
+				bom = frappe.qb.DocType("BOM")
+
+				data = (
+					frappe.qb.from_(stock_entry)
+					.inner_join(serial_no)
+					.on(stock_entry.name == serial_no.purchase_document_no)
+					.inner_join(bom)
+					.on(serial_no.name == bom.tag_no)
+					.select(serial_no.purchase_document_no, serial_no.serial_no, bom.name)
+					.where(stock_entry.custom_serial_number_creator == snc)
+				).run(as_dict=True)
+
+				# frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
+				frappe.db.set_value("BOM", data[0].name, "front_view_finish", self.finish_good_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_front_view", self.finish_good_image)
+				
 
 		# if self.order_form_type == "Repair Order":
 		# 	create_repair_un_pack_stock_entry(self)
@@ -1322,5 +1387,10 @@ def add_hold_comment(docname,reason):
 				frappe.db.set_value("Manufacturing Operation",i["name"],"status","Finished")
 
 	return True
+
+def update_images_to_items(self):
+	if not self.finish_good_image:
+		return
+	frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
 
 
