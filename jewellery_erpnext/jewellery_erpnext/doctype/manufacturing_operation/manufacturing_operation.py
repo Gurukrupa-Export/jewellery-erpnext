@@ -3144,7 +3144,19 @@ def create_mr_wo_stock_entry(se_data):
 		"from_warehouse": s_warehouse
 	})
 
+	def validate_item_material(row):
+		variant_of = frappe.db.get_value("Item", row.get("item_code"), "variant_of")
+
+		if variant_of in ["D", "G"]:
+			item_type = "Diamond" if variant_of == "D" else "Gemstone"
+			frappe.throw(
+				f"<b>Row: {row.get('idx')}</b> {item_type} Item should have pcs value. Please provide pcs for <b>{row.get('item_code')}</b>."
+			)
+
 	for row in se_data.get("receive_items"):
+		if not row.get("pcs"):
+			validate_item_material(row)
+
 		se_doc.append("items", {
 			"item_code": row.get("item_code"),
 			"qty": row.get("qty"),
@@ -3154,7 +3166,8 @@ def create_mr_wo_stock_entry(se_data):
 			"manufacturing_operation": se_data.get("manufacturing_operation"),
 			"s_warehouse": row.get("s_warehouse"),
 			"t_warehouse": t_warehouse,
-			"inventory_type": row.get("inventory_type")
+			"inventory_type": row.get("inventory_type"),
+			"customer": row.get("customer")
 		})
 
 	# set flag to update pcs

@@ -112,7 +112,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 			// }
 		}
 
-		if (frm.doc.status === "Not Started") {
+		if (["Draft", "WIP", "Not Started"].includes(frm.doc.status)) {
 			frm.trigger("setup_buttons")
 		}
 	},
@@ -318,7 +318,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 					"batch_no": e.batch_no,
 					"inventory_type": e.inventory_type,
 					"department": e.department,
-					"to_department": e.to_department
+					"to_department": e.to_department,
+					"customer":e.customer
 				}
 			})
 
@@ -330,6 +331,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 						fieldname: "receive_entries",
 						label: __("Receive Entry Details"),
 						fieldtype: "Table",
+						cannot_add_rows: 1,
+						cannot_delete_rows: 1,
 						data: this.data,
 							get_data: () => {
 								return this.data;
@@ -343,13 +346,13 @@ frappe.ui.form.on("Manufacturing Operation", {
 									"in_list_view": 1,
 									"read_only": 1,
 								},
-								// {
-								// 	"label": __("Source Warehouse"),
-								// 	"fieldtype": "Link",
-								// 	"fieldname": "s_warehouse",
-								// 	"in_list_view": 1,
-								// 	"read_only": 1
-								// },
+								{
+									"label": __("Source Warehouse"),
+									"fieldtype": "Link",
+									"fieldname": "s_warehouse",
+									"in_list_view": 1,
+									"read_only": 1
+								},
 								{
 									"label": __("Qty"),
 									"fieldtype": "Float",
@@ -390,24 +393,35 @@ frappe.ui.form.on("Manufacturing Operation", {
 									"fieldtype": "Link",
 									"options": "Batch",
 									"fieldname": "batch_no",
+									"read_only": 1,
 								},
 								{
 									"label": __("Inventory Type"),
 									"fieldtype": "Link",
 									"options": "Inventory Type",
 									"fieldname": "inventory_type",
+									"read_only": 1,
+								},
+								{
+									"label": __("Customer"),
+									"fieldtype": "Link",
+									"options": "Customer",
+									"fieldname": "customer",
+									"read_only": 1,
 								},
 																{
 									"label": __("Department"),
 									"fieldtype": "Link",
 									"options": "Department",
 									"fieldname": "department",
+									"read_only": 1,
 								},
 																{
 									"label": __("To Department"),
 									"fieldtype": "Link",
 									"options": "Department",
 									"fieldname": "to_department",
+									"read_only": 1,
 								}
 							]
 						}
@@ -422,8 +436,13 @@ frappe.ui.form.on("Manufacturing Operation", {
 						if (e.receive_pcs > e.pcs) {
 							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Pcs <b>{2}</b> should not be greater than Balance Pcs <b>{3}</b>", [e.idx, e.item_code, e.receive_pcs, e.pcs]))
 						}
+						if ((e.receive_pcs == e.pcs && e.receive_qty != e.qty) || (e.receive_qty == e.qty && e.receive_pcs != e.pcs)) {
+							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Qty and Pcs should be same if receiving all qty or pcs", [e.idx, e.item_code]))
+						}
+
 						if (e.receive_qty || e.receive_pcs) {
 							receive_items.push({
+								idx: e.idx,
 								item_code: e.item_code,
 								s_warehouse: e.s_warehouse,
 								qty: e.receive_qty,
@@ -431,7 +450,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 								batch_no: e.batch_no,
 								inventory_type: e.inventory_type,
 								department: e.department,
-								to_department: e.to_department
+								to_department: e.to_department,
+								customer: e.customer
 							})
 						}
 					});
@@ -465,14 +485,18 @@ frappe.ui.form.on("Manufacturing Operation", {
 									title: __("Material Receive Stock Entry Created"),
 									indicator: "green"
 								})
+
+								frm.reload_doc()
+								frm.refresh();
 							}
 						}
 					})
 
 					d.hide()
-
 				}
 			})
+
+			d.get_field("receive_entries").grid.wrapper.find(".grid-row-check").hide();
 			d.show()
 
 		}).addClass("btn-primary")
