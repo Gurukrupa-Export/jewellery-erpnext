@@ -33,16 +33,17 @@ frappe.ui.form.on("Material Request", {
 		// }
 	},
 	manufacturing_operation_query(frm) {
-		frappe.db
-			.get_list("Manufacturing Work Order", {
-				fields: ["manufacturing_operation"],
+		if (frm.doc.custom_manufacturing_work_order){
+			frappe.db
+			.get_list("Manufacturing Operation", {
+				fields: ["name"],
 				filters: {
-					manufacturing_order: frm.doc.manufacturing_order,
-					docstatus: 1,
+					manufacturing_work_order: frm.doc.custom_manufacturing_work_order,
+					status: "Not Started",
 				},
 			})
 			.then((records) => {
-				const mop_list = records.map((item) => item.manufacturing_operation);
+				const mop_list = records.map((item) => item.name);
 
 				frm.set_query("custom_manufacturing_operation", function () {
 					return {
@@ -54,6 +55,32 @@ frappe.ui.form.on("Material Request", {
 					};
 				});
 			});
+
+		}
+		else{
+			frappe.db
+				.get_list("Manufacturing Work Order", {
+					fields: ["manufacturing_operation"],
+					filters: {
+						manufacturing_order: frm.doc.manufacturing_order,
+						docstatus: 1,
+					},
+				})
+				.then((records) => {
+					const mop_list = records.map((item) => item.manufacturing_operation);
+	
+					frm.set_query("custom_manufacturing_operation", function () {
+						return {
+							filters: {
+								name: ["in", mop_list],
+								department_ir_status: ["not in", "In-Transit"],
+								"is_finding":0,
+							},
+						};
+					});
+				});
+		}
+
 	},
 	// before_workflow_action(frm) {
 	// 	if (frm.doc.workflow_state == "Material Transferred") {
