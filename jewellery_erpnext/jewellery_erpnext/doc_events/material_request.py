@@ -8,6 +8,8 @@ from frappe.utils.data import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request import (
 	make_mop_stock_entry,
+	make_department_stock_entry,
+	make_department_mop_stock_entry
 )
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.before_validate import (
 	update_pure_qty,
@@ -46,8 +48,27 @@ def before_update_after_submit(self, method):
 		if not self.custom_manufacturing_operation:
 			frappe.throw(_("Please Select Manufacturing Operation"))
 
-		make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
+		mop_status = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"status")
+		if mop_status == 'Finished':
+			frappe.throw("You can not select Finisshed Opearions")
 
+		if self.custom_manufacturing_operation and self.custom_department:
+			mop_department = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"department")
+			if mop_department != self.custom_department:
+				frappe.throw(_(f"Manufacturing Operation is not in <b>{self.custom_department}</b> Deparment"))
+			make_department_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
+		else:
+			mop_department = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"department")
+			table_warehouse_department = frappe.db.get_value("Warehouse",self.items[0].warehouse,"department")
+			if mop_department != table_warehouse_department:
+				frappe.throw("Manufacturing Operation's Department and selectd Department's is not matched")
+			make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
+
+	if self.workflow_state == "Material Transferred to Department":
+		if not self.custom_department:
+			frappe.throw(_("Please Select Department"))
+		if self.custom_department and not self.custom_manufacturing_operation:
+			make_department_stock_entry(self, mop=self.custom_department)
 
 def validate_target_item(self):
 	for row in self.items:
