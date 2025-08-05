@@ -59,7 +59,7 @@ class ParentManufacturingOrder(Document):
 		if self.serial_no:
 			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
 				self.db_set("serial_id_bom", serial_bom)
-			self.update_images_to_items()
+			update_images_to_items(self)
 		# get_gemstone_details(self)
 
 
@@ -134,7 +134,7 @@ class ParentManufacturingOrder(Document):
 				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_front_view", self.finish_good_image)
 
 	def on_submit(self):
-		self.update_images_to_items()
+		update_images_to_items(self)
 		if not self.order_form_type or self.order_form_type == "Order":
 			set_metal_tolerance_table(self)  # To Set Metal Product Tolerance Table
 			set_diamond_tolerance_table(self)  # To Set Diamond Product Tolerance Table
