@@ -1654,11 +1654,11 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	pmo_data = frappe.db.get_value(
 		"Parent Manufacturing Order",
 		self.parent_manufacturing_order,
-		["diamond_quality", "qty"],
+		["diamond_quality", "qty","finish_good_image"],
 		as_dict=1,
 	)
 
-
+	new_bom.front_view_finish = pmo_data.get("finish_good_image")
 	new_bom = frappe.copy_doc(bom_doc)
 	new_bom.is_active = 1
 	new_bom.custom_creation_doctype = self.doctype
