@@ -17,6 +17,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 
 def before_validate(self, method):
 	validate_rating(self)
+	validate_weight(self)
 	if self.bom_type == "Quotation" or self.docstatus == 1:
 		precision_data = frappe.db.get_value(
 			"Customer",
@@ -329,9 +330,39 @@ def validate_rating(self):
         except ValueError:
             frappe.msgprint(f"Skipping invalid range value: {range_text}")
 
+def validate_weight(self):
+	total_metal_quantity = 0.0
+	total_diamond_weight = 0.0
+	total_finding_weight = 0.0
+	total_gemstone_weight = 0.0
+	# Sum of metal_detail quantities
+	for row in self.metal_detail:
+		if row.quantity:
+			total_metal_quantity += row.quantity
+
+	# Sum of diamond_detail (quantity * pcs)
+	for row in self.diamond_detail:
+		if row.quantity and row.pcs:
+			total_diamond_weight += row.quantity
+
+	for row in self.finding_detail:
+		if row.quantity and row.qty:
+			total_finding_weight += row.qty * row.quantity
 
 
+	for row in self.gemstone_detail:
+		if row.quantity and row.pcs:
+			qty = float(row.quantity)
+			pcs = float(row.pcs)
+			total_gemstone_weight += pcs * qty
 
+	self.metal_weight = total_metal_quantity
+	self.diamond_weight = total_diamond_weight
+	self.finding_weight_ = total_finding_weight
+	self.gemstone_weight  = total_gemstone_weight
+	self.total_diamond_weight_in_gms  = self.diamond_weight / 5
+	self.total_gemstone_weight_in_gms = self.gemstone_weight / 5
+	# frappe.throw(f"{self.finding_weight_}")
 
 def calculate_metal_qty(self):
 	if self.metal_detail:
