@@ -305,8 +305,8 @@ def calulate_id_wise_sum_up(self):
 
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)
-	image = frappe.db.get_value("Parent Manufacturing Order", self.parent_manufacturing_order, "finish_good_image")
-	new_sn_doc.custom_finish_front_view = image
+	# image = frappe.db.get_value("Parent Manufacturing Order", self.parent_manufacturing_order, "finish_good_image")
+	# new_sn_doc.custom_finish_front_view = image
 	existing_huid = []
 	existing_certification = []
 
