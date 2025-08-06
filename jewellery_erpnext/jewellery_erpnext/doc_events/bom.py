@@ -320,9 +320,6 @@ def validate_weight(self):
 	self.total_gemstone_weight_in_gms = self.gemstone_weight / 5
 	# frappe.throw(f"{self.finding_weight_}")
 
-
-
-
 def _create_new_price_list(self):
 	item_price = frappe.new_doc("Item Price")
 	item_price.price_list = self.buying_price_list
