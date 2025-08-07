@@ -25,10 +25,12 @@ from jewellery_erpnext.utils import get_item_from_attribute, get_variant_of_item
 import copy
 
 def before_validate(self, method):
-	if (
-		not self.get("__islocal") and frappe.db.exists("Stock Entry", self.name) and self.docstatus == 0
-	) or self.flags.throw_batch_error:
-		self.update_batches()
+	# if (
+	# 	not self.get("__islocal") and frappe.db.exists("Stock Entry", self.name) and self.docstatus == 0
+	# ) or self.flags.throw_batch_error:
+	# 	self.update_batches()
+
+	self.update_batches()
 
 	pure_item_purity = None
 
