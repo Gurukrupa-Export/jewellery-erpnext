@@ -104,10 +104,11 @@ class CustomStockEntry(StockEntry):
 
 					if weight > 0 and item.qty and int(item.pcs) < 1:
 						item.pcs = int(item.qty / weight)
+
 				self.append("items", item)
 
-		if frappe.db.exists("Stock Entry", self.name):
-			self.db_update()
+		# if frappe.db.exists("Stock Entry", self.name):
+		# 	self.db_update()
 
 	def validate_with_material_request(self):
 		for item in self.get("items"):
