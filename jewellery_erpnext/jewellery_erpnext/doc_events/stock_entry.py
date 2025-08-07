@@ -183,6 +183,11 @@ def get_receive_work_order_batch(self):
 	batch_data = {}
 	for entry in self.items:
 		key = (entry.manufacturing_operation, entry.item_code)
+
+		# add batch_no to batch_data if it exists
+		if entry.batch_no:
+			batch_data[key] = entry.batch_no
+
 		if not batch_data.get(key):
 			batch_data[key] = frappe.db.get_value(
 				"MOP Balance Table",
@@ -923,6 +928,8 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 
 def update_balance_table(mop_data):
+	import pdb; pdb.set_trace()
+	print("mop_data", mop_data)
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
 
