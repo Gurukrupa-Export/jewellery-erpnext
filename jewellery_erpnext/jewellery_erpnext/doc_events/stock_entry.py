@@ -171,7 +171,7 @@ def before_validate(self, method):
 # validate_main_slip_warehouse(self)
 
 
-def validate(self):
+def validate(self, method):
 	validate_inventory_dimention(self)
 
 def validate_pcs(self):
