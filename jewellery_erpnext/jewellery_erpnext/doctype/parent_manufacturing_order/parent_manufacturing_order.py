@@ -129,7 +129,7 @@ class ParentManufacturingOrder(Document):
 					.where(stock_entry.custom_serial_number_creator == snc)
 				).run(as_dict=True)
 
-				# frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
+				frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
 				frappe.db.set_value("BOM", data[0].name, "front_view_finish", self.finish_good_image)
 				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_front_view", self.finish_good_image)
 
@@ -174,7 +174,7 @@ class ParentManufacturingOrder(Document):
 					.where(stock_entry.custom_serial_number_creator == snc)
 				).run(as_dict=True)
 
-				# frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
+				frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
 				frappe.db.set_value("BOM", data[0].name, "front_view_finish", self.finish_good_image)
 				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_front_view", self.finish_good_image)
 				

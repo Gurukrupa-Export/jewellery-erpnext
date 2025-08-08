@@ -1555,7 +1555,9 @@ def get_material_wt(doc):
 				gemstone_pcs += int(str_pcs)
 			else:
 				other_wt += row.qty
-	gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
+	# gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
+	# --->Dhinesh Chnage update the gross weight to include the loss weight as well.
+	gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt+ abs(doc.loss_wt)
 
 	result = {
 		"gross_wt": gross_wt,
@@ -1654,12 +1656,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	pmo_data = frappe.db.get_value(
 		"Parent Manufacturing Order",
 		self.parent_manufacturing_order,
-		["diamond_quality", "qty"],
+		["diamond_quality", "qty","finish_good_image"],
 		as_dict=1,
 	)
 
 	new_bom = frappe.copy_doc(bom_doc)
-	# new_bom.front_view_finish = pmo_data.get("finish_good_image")
+	new_bom.front_view_finish = pmo_data.get("finish_good_image")
 	new_bom.is_active = 1
 	new_bom.custom_creation_doctype = self.doctype
 	new_bom.custom_creation_docname = self.name
