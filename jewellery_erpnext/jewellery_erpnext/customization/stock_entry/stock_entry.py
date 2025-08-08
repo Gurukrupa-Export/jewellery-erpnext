@@ -36,8 +36,8 @@ def before_validate(self, method):
 	validate_warehouse(self)
 
 
-def on_submit(self, method):
-	validate_inventory_dimention(self)
+# def on_submit(self, method):
+# 	validate_inventory_dimention(self)
 	# clear_batch_ledger_cache(self)
 
 
