@@ -1555,7 +1555,9 @@ def get_material_wt(doc):
 				gemstone_pcs += int(str_pcs)
 			else:
 				other_wt += row.qty
-	gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
+	# gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
+	# --->Dhinesh Chnage update the gross weight to include the loss weight as well.
+	gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt+ abs(doc.loss_wt)
 
 	result = {
 		"gross_wt": gross_wt,
