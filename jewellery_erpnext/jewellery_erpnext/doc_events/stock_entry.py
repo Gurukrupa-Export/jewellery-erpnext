@@ -13,6 +13,7 @@ from six import itervalues
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	create_repack_for_subcontracting,
+	validate_inventory_dimention
 )
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.update_utils import (
 	update_main_slip_se_details,
@@ -169,6 +170,9 @@ def before_validate(self, method):
 # main slip have validation error for repack and transfer so it was commented
 # validate_main_slip_warehouse(self)
 
+
+def validate(self):
+	validate_inventory_dimention(self)
 
 def validate_pcs(self):
 	pcs_data = {}

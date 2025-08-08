@@ -111,13 +111,13 @@ def get_fifo_batches(self, row):
 				}
 			)
 		)
-
 	customer_item_data = frappe._dict({})
 	manufacturer_data = frappe._dict({})
-	if row.get("custom_parent_manufacturing_order"):
+	pmo = row.get("custom_parent_manufacturing_order") or self.manufacturing_order
+	if pmo:
 		customer_item_data = frappe.db.get_value(
 			"Parent Manufacturing Order",
-			row.custom_parent_manufacturing_order,
+			pmo,
 			[
 				"is_customer_gold",
 				"is_customer_diamond",
@@ -134,7 +134,7 @@ def get_fifo_batches(self, row):
 			customer_item_data.get("manufacturer"),
 			"custom_allow_regular_goods_instead_of_customer_goods",
 		)
-	
+
 	allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
 	variant_to_customer_key = {
 		"F": "is_customer_gold",
@@ -245,9 +245,9 @@ def get_fifo_batches(self, row):
 		else:
 			frappe.msgprint(message)
 
-	
+
 	return rows_to_append
-	
+
 
 
 def get_batch_data_from_msl(item_code, main_slip, warehouse):
