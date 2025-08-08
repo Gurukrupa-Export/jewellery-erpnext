@@ -240,3 +240,102 @@ def validate_inter_branch(jv_data, is_adv=False):
 	if jv_data.pe_branch == receivable_branch:
 		receivable_branch_label = "Sales Invoice" if not is_adv else "Customer"
 		frappe.throw(f"{receivable_branch_label} branch and Payment Entry branch are same.")
+
+
+@frappe.whitelist()
+def create_inter_branch_contra_entry(**kwargs):
+    """
+    Create inter-branch contra Journal Entries:
+    """
+
+    args = frappe._dict(kwargs)
+
+    # --- Validations ---
+    if not args.source_branch or not args.target_branch:
+        frappe.throw("Both Source Branch and Target Branch are required.")
+
+    if args.source_branch == args.target_branch:
+        frappe.throw("Source and Target Branch cannot be the same.")
+
+    if not args.source_bank or not args.target_bank:
+        frappe.throw("Both Source Bank and Target Bank accounts are required.")
+
+    if not args.amount or float(args.amount) <= 0:
+        frappe.throw("Amount must be greater than zero.")
+
+    # Validate bank accounts
+    for acc in (args.source_bank, args.target_bank):
+        atype = frappe.db.get_value("Account", acc, "account_type")
+        if atype != "Bank":
+            frappe.throw(f"Account {acc} is not a Bank type account.")
+
+    # --- Get division accounts ---
+    source_division_acc = get_branch_account(args.target_branch)
+    target_division_acc = get_branch_account(args.source_branch)
+
+    group_id = frappe.generate_hash(length=10)
+    res = []
+
+    # --- JV 1: Source branch ---
+    jv1 = frappe.new_doc("Journal Entry")
+    jv1.voucher_type = "Contra Entry"
+    jv1.company = args.company or frappe.defaults.get_user_default("Company")
+    jv1.posting_date = args.posting_date or frappe.utils.nowdate()
+    jv1.custom_branch = args.source_branch
+    jv1.ref_interbranch_group_id = group_id  # custom field for linking
+
+    jv1.append("accounts", {
+        "account": source_division_acc,
+        "branch": args.source_branch,
+        "debit_in_account_currency": args.amount,
+        "reference_no": args.reference_no,
+        "reference_date": args.reference_date
+    })
+    jv1.append("accounts", {
+        "account": args.source_bank,
+        "branch": args.source_branch,
+        "credit_in_account_currency": args.amount,
+        "reference_no": args.reference_no,
+        "reference_date": args.reference_date
+    })
+
+    jv1.insert()
+    jv1.submit()
+    res.append(jv1.name)
+
+    # --- JV 2: Target branch ---
+    jv2 = frappe.new_doc("Journal Entry")
+    jv2.voucher_type = "Contra Entry"
+    jv2.company = args.company or frappe.defaults.get_user_default("Company")
+    jv2.posting_date = args.posting_date or frappe.utils.nowdate()
+    jv2.custom_branch = args.target_branch
+    jv2.ref_interbranch_group_id = group_id
+
+    jv2.append("accounts", {
+        "account": args.target_bank,
+        "branch": args.target_branch,
+        "debit_in_account_currency": args.amount,
+        "reference_no": args.reference_no,
+        "reference_date": args.reference_date
+    })
+    jv2.append("accounts", {
+        "account": target_division_acc,
+        "branch": args.target_branch,
+        "credit_in_account_currency": args.amount,
+        "reference_no": args.reference_no,
+        "reference_date": args.reference_date
+    })
+
+    jv2.insert()
+    jv2.submit()
+    res.append(jv2.name)
+
+    frappe.msgprint(
+        f"""
+        ✅ Created Inter-Branch Contra JVs: <b>{', <br>'.join(res)}</b><br>
+        Linked Group ID: <b>{group_id}</b>
+        """
+    )
+
+    return res
+

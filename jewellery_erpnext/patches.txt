@@ -7,4 +7,4 @@ jewellery_erpnext.patches.add_ir_workflows # patch for workflow
 jewellery_erpnext.patches.update_employee_ir_status # employee ir
 jewellery_erpnext.patches.update_department_ir_status
 jewellery_erpnext.patches.create_branch_account_field
-jewellery_erpnext.patches.create_custom_field_in_jv
+jewellery_erpnext.patches.create_custom_field_in_jv # 08/08/2025
