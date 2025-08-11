@@ -31,6 +31,7 @@ def before_validate(self, method):
 	# ) or self.flags.throw_batch_error:
 	# 	self.update_batches()
 
+	self.flags.throw_batch_error = True
 	self.update_batches()
 
 	pure_item_purity = None
