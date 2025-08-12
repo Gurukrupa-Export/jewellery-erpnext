@@ -13,7 +13,6 @@
   "id",
   "batch_no",
   "column_break_xnlw",
-  "inventory_type",
   "customer",
   "default_bom_rm",
   "bom_qty",
@@ -118,12 +117,6 @@
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "inventory_type",
-   "fieldtype": "Link",
-   "label": "Inventory Type",
-   "options": "Inventory Type"
-  },
-  {
    "fieldname": "sed_item",
    "fieldtype": "Link",
    "label": "SED Item",
@@ -142,12 +135,13 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-07-18 12:11:07.968603",
+ "modified": "2025-08-12 13:24:19.243908",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "SNC FG Details",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
