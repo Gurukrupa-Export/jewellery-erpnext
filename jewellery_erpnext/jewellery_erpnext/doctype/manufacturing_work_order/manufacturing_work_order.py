@@ -40,6 +40,8 @@ class ManufacturingWorkOrder(Document):
 		if self.for_fg:
 			self.validate_other_work_orders()
 		create_manufacturing_operation(self)
+		if self.split_from:
+			create_mr_for_split_work_order(self.name,self.company,self.manufacturer)
 		# self.start_datetime = now()
 		self.db_set("start_datetime", now())
 		self.db_set("status", "Not Started")
@@ -312,6 +314,12 @@ def create_split_work_order(docname, company,manufacturer, count=1):
 		set_values_in_bulk("Manufacturing Operation", pending_operations, {"status": "Finished"})
 	frappe.db.set_value("Manufacturing Work Order", docname, {"has_split_mwo": 1, "status": "Closed"})
 	# frappe.db.set_value("Manufacturing Work Order", docname, "status", "Closed")
+	pmo = frappe.db.get_value("Manufacturing Work Order",docname,"manufacturing_order")
+	mr_list = frappe.db.get_list("Material Request",filters={"manufacturing_order":pmo,"title": ["like", "MRD%"],"custom_manufacturing_work_order":["is","not set"]},fields=["name"])
+	if mr_list:
+		for mr in mr_list:
+			frappe.db.set_value("Material Request",mr.name,"docstatus","2")
+			frappe.db.set_value("Material Request",mr.name,"workflow_state","Cancelled")
 
 
 @frappe.whitelist()
@@ -343,3 +351,26 @@ def get_linked_stock_entries(mwo_name):  # MWO Details Tab code
 		"jewellery_erpnext/jewellery_erpnext/doctype/manufacturing_work_order/stock_entry_details.html",
 		{"data": data, "total_qty": total_qty},
 	)
+
+def create_mr_for_split_work_order(docname, company, manufacturer):
+	pmo = frappe.db.get_value("Manufacturing Work Order",docname,"manufacturing_order")
+	mr_list = frappe.db.get_value("Material Request",{"manufacturing_order":pmo,"title": ["like", "MRD%"]},"name")
+	total_mr_count = frappe.db.count("Material Request", filters={"manufacturing_order": pmo})
+	old_mr = frappe.get_doc("Material Request",mr_list)
+	new_mr = frappe.copy_doc(old_mr)
+	new_mr.workflow_state = 'Draft'
+	new_mr.title = new_mr.title[:-1] + str(int(total_mr_count) + 1) 
+	new_mr.custom_manufacturing_work_order = docname
+	new_mr_items = []
+	for i in new_mr.items:
+		i.qty = 0
+		i.pcs = 0
+		new_mr_items.append(i)
+	new_mr.items = []
+	new_mr.items = new_mr_items
+	new_mr.flags.ignore_mandatory = True
+	new_mr.flags.ignore_validate = True
+	new_mr.save()
+	frappe.msgprint(f"Material Request is creted !!")
+
+
