@@ -714,7 +714,9 @@ def create_purity_repack(self, row, item, pure_data, warehouse, temp_diff, purit
 def create_operation_for_next_op(docname, target_doc=None, employee_ir=None):
 	def set_missing_value(source, target):
 		target.previous_operation = source.operation
-		target.prev_gross_wt = source.received_gross_wt or source.gross_wt or source.prev_gross_wt
+		#target.prev_gross_wt = source.received_gross_wt or source.gross_wt or source.prev_gross_wt
+		#Dhinesh Change prev_gross_wt have gross_wt not received_gross_wt
+		target.prev_gross_wt  = source.gross_wt or source.received_gross_wt or source.prev_gross_wt
 		target.previous_mop = source.name
 
 	target_doc = get_mapped_doc(

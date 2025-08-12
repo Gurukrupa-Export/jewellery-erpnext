@@ -68,10 +68,10 @@ class ManufacturingWorkOrder(Document):
 			},
 			"name",
 		)
-		# if pending_wo:
-		# 	frappe.throw(
-		# 		_("All the pending manufacturing work orders should be in {0}.").format(last_department)
-		# 	)
+		if pending_wo:
+			frappe.throw(
+				_("All the pending manufacturing work orders should be in {0}.").format(last_department)
+			)
 
 	def on_cancel(self):
 		self.db_set("status", "Cancelled")

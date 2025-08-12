@@ -204,7 +204,7 @@ frappe.ui.form.on("Payment Entry", {
 						}
 
 						frappe.call({
-							method: "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.reconcile_inter_branch_payment",
+							method: "jewellery_erpnext.interbranch.reconcile_inter_branch_payment",
 							args: {
 								data: args,
 								is_adv: is_adv
@@ -239,7 +239,7 @@ frappe.ui.form.on("Payment Entry", {
 	get_unreconciled_sales_invoices: async (frm, company, customer) => {
 		let si_list = []
 		await frappe.call({
-			method: "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.get_unreconciled_sales_invoices",
+			method: "jewellery_erpnext.interbranch.get_unreconciled_sales_invoices",
 			args: {
 				company: company,
 				customer: customer,

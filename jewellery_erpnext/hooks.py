@@ -36,6 +36,9 @@ doctype_js = {
 	"Payment Entry": "public/js/doctype_js/payment_entry.js"
 }
 
+doctype_list_js = {
+	"Journal Entry": "public/js/doctype_list_js/journal_entry_list.js",
+}
 # from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 
 # from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
@@ -93,7 +96,7 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
 	},
 	"Stock Entry": {
-		# "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate",
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate",
 		"before_validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
@@ -101,7 +104,6 @@ doc_events = {
 		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
-			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",

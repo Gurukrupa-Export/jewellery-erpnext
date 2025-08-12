@@ -11,6 +11,17 @@
                 "allow_on_submit": 1,
                 "module": "Jewellery Erpnext",
                 "is_system_generated": 1
+        },
+        {
+                "dt": "Journal Entry",
+                "fieldname": "ref_interbranch_group_id",
+                "fieldtype": "Data",
+                "label": "Ref Interbranch Group ID",
+                "insert_after": "ref_payment_entry",
+                "read_only": 1,
+                "no_copy": 1,
+                "module": "Jewellery Erpnext",
+                "is_system_generated": 1
         }
 
     ]
