@@ -2,9 +2,7 @@ import copy
 import json
 import frappe
 import erpnext
-from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
-	get_auto_batch_nos,
-)
+
 from frappe import _
 from frappe.query_builder import Case
 from frappe.query_builder.functions import Locate
@@ -19,6 +17,8 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.su
 )
 from jewellery_erpnext.utils import get_item_from_attribute
 from frappe.query_builder.functions import CombineDatetime, Sum
+
+from jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.doc_events.utils import get_auto_batch_nos
 
 
 def validate_inventory_dimention(self):
@@ -52,7 +52,7 @@ def validate_inventory_dimention(self):
 					"custom_allow_regular_goods_instead_of_customer_goods",
 				)
 
-			allow_customer_goods = manufacturer_data.get(pmo_data.get("manufacturer"))
+			allow_rg_instead_of_cg = manufacturer_data.get(pmo_data.get("manufacturer"))
 
 			if (
 				row.inventory_type in ["Customer Goods", "Customer Stock"]
@@ -74,7 +74,7 @@ def validate_inventory_dimention(self):
 						"Customer Goods",
 						"Customer Stock",
 					]:
-						if allow_customer_goods:
+						if allow_rg_instead_of_cg:
 							frappe.msgprint(_("Can not use regular stock inventory for Customer provided Item"))
 						else:
 							frappe.throw(_("Can not use regular stock inventory for Customer provided Item"))
@@ -82,7 +82,7 @@ def validate_inventory_dimention(self):
 						"Customer Goods",
 						"Customer Stock",
 					]:
-						if allow_customer_goods:
+						if allow_rg_instead_of_cg:
 							frappe.msgprint(_("Can not use Customer Goods inventory for non provided customer Item"))
 						else:
 							frappe.throw(_("Can not use Customer Goods inventory for non provided customer Item"))
@@ -96,6 +96,8 @@ def get_fifo_batches(self, row):
 
 	msl = self.get("main_slip") or self.get("to_main_slip")
 	warehouse = row.get("s_warehouse") or self.get("source_warehouse")
+	customer_goods_data =  check_customer_goods(row, self)
+
 	if msl and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse") == row.s_warehouse:
 		main_slip = self.main_slip or self.to_main_slip
 		batch_data = get_batch_data_from_msl(row.item_code, main_slip, row.s_warehouse)
@@ -108,51 +110,21 @@ def get_fifo_batches(self, row):
 					"item_code": row.item_code,
 					"warehouse": warehouse,
 					"qty": row.qty,
+					"is_customer_goods": customer_goods_data.get("is_customer_goods"),
 				}
 			)
 		)
-	customer_item_data = frappe._dict({})
-	manufacturer_data = frappe._dict({})
-	pmo = row.get("custom_parent_manufacturing_order") or self.manufacturing_order
-	if pmo:
-		customer_item_data = frappe.db.get_value(
-			"Parent Manufacturing Order",
-			pmo,
-			[
-				"is_customer_gold",
-				"is_customer_diamond",
-				"is_customer_gemstone",
-				"is_customer_material",
-				"customer",
-				"manufacturer",
-			],
-			as_dict=1,
-		)
-	if not manufacturer_data.get(customer_item_data.get("manufacturer")):
-		manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
-			"Manufacturer",
-			customer_item_data.get("manufacturer"),
-			"custom_allow_regular_goods_instead_of_customer_goods",
-		)
 
-	allow_customer_goods = manufacturer_data.get(customer_item_data.get("manufacturer"))
-	variant_to_customer_key = {
-		"F": "is_customer_gold",
-		"D": "is_customer_diamond",
-		"G": "is_customer_gemstone",
-		"O": "is_customer_material",
-	}
+	allow_rg_instead_of_cg = customer_goods_data.get("allow_rg_instead_of_cg")
 
-	if (
-		row.get("custom_variant_of")
-		and row.custom_variant_of in variant_to_customer_key
-		and customer_item_data.get(variant_to_customer_key[row.custom_variant_of])
-	):
+	if customer_goods_data.get("is_customer_goods"):
 		row.inventory_type = "Customer Goods"
-		row.customer = customer_item_data.customer
+		row.customer = customer_goods_data.get("customer")
+		row.allow_rg_instead_of_cg = allow_rg_instead_of_cg
 
 	if not row.inventory_type:
 		row.inventory_type = "Regular Stock"
+
 	for batch in batch_data:
 		if (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
@@ -183,7 +155,7 @@ def get_fifo_batches(self, row):
 		elif (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
 			and frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type") != row.inventory_type
-			and allow_customer_goods == 1
+			and allow_rg_instead_of_cg == 1
 		):
 			if total_qty > 0 and batch.qty > 0:
 				if not existing_updated:
@@ -472,3 +444,54 @@ def rename_stock_entry_docs():
 			doc.name,
 			force=True,
 		)
+
+def check_customer_goods(row, se_doc):
+	"""Check if the stock entry is for customer goods"""
+
+	res = {}
+
+	customer_item_data = frappe._dict({})
+	manufacturer_data = frappe._dict({})
+	pmo = row.get("custom_parent_manufacturing_order") or se_doc.manufacturing_order
+
+	if pmo:
+		customer_item_data = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			pmo,
+			[
+				"is_customer_gold",
+				"is_customer_diamond",
+				"is_customer_gemstone",
+				"is_customer_material",
+				"customer",
+				"manufacturer",
+			],
+			as_dict=1,
+		)
+
+	if customer_item_data.get("manufacturer"):
+		manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
+			"Manufacturer",
+			customer_item_data.get("manufacturer"),
+			"custom_allow_regular_goods_instead_of_customer_goods",
+		)
+
+	res["allow_rg_instead_of_cg"] = manufacturer_data.get(customer_item_data.get("manufacturer"))
+	variant_to_customer_key = {
+		"F": "is_customer_gold",
+		"D": "is_customer_diamond",
+		"G": "is_customer_gemstone",
+		"O": "is_customer_material",
+	}
+
+	res["is_customer_goods"] = False
+
+	if (
+		row.get("custom_variant_of")
+		and row.custom_variant_of in variant_to_customer_key
+		and customer_item_data.get(variant_to_customer_key[row.custom_variant_of])
+	):
+		res["customer"] = customer_item_data.get("customer")
+		res.update({"is_customer_goods": True})
+
+	return res
