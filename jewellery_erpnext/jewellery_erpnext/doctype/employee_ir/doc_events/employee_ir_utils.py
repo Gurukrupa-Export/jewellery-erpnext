@@ -349,11 +349,91 @@ def create_chain_stock_entry(self, row):
 				)
 
 		if temp_diff > 0:
+			mop_data = frappe.db.get_all(
+				"MOP Balance Table",
+				{"parent": row.manufacturing_operation},
+				["item_code", "batch_no", "qty", "parent", "inventory_type", "s_warehouse"],
+			)
+			manual_loss_items = [
+				{
+					"item_code": loss_item.item_code,
+					"loss_qty": loss_item.proportionally_loss,
+					"batch_no": loss_item.batch_no,
+					"inventory_type": loss_item.inventory_type,
+					"customer": loss_item.customer,
+					"pcs": loss_item.pcs,
+					"manufacturing_work_order": loss_item.manufacturing_work_order,
+					"manufacturing_operation": loss_item.manufacturing_operation,
+					"variant_of": loss_item.variant_of,
+					"sub_setting_type": loss_item.sub_setting_type,
+					"loss_type": loss_item.loss_type,
+				}
+				for loss_item in self.manually_book_loss_details
+				if loss_item.manufacturing_work_order == row.manufacturing_work_order
+			]
+			proprtionate_loss_items = [
+				{
+					"item_code": loss_item.item_code,
+					"loss_qty": loss_item.proportionally_loss,
+					"batch_no": loss_item.batch_no,
+					"inventory_type": loss_item.inventory_type,
+					"customer": loss_item.customer,
+					"pcs": loss_item.pcs,
+					"manufacturing_work_order": loss_item.manufacturing_work_order,
+					"manufacturing_operation": loss_item.manufacturing_operation,
+					"loss_type": loss_item.loss_type,
+				}
+				for loss_item in self.employee_loss_details
+				if loss_item.manufacturing_work_order == row.manufacturing_work_order
+			]
+			if manual_loss_items or proprtionate_loss_items:
+				process_loss_entry(
+					self,
+					row,
+					manual_loss_items,
+					proprtionate_loss_items,
+					emp_wh,
+					mfg_warehouse,
+					department_wh,
+					mop_data,
+				)
+			temp_diff = 0
+			mop_batch_list = []
+			if self.main_slip:
+					create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
+			for batch in mop_batch_list:
+				se_doc.append(
+					"items",
+					{
+						"item_code": item,
+						"s_warehouse": warehouse,
+						"t_warehouse": mfg_warehouse,
+						"to_employee": None,
+						"employee": self.employee,
+						"to_subcontractor": None,
+						"use_serial_batch_fields": True,
+						"serial_and_batch_bundle": None,
+						"subcontractor": self.subcontractor,
+						"to_main_slip": None,
+						"main_slip": self.main_slip,
+						"qty": mop_batch_list.get(batch) or 0,
+						"manufacturing_operation": row.manufacturing_operation,
+						"custom_manufacturing_work_order": row.manufacturing_work_order,
+						"department": self.department,
+						"to_department": self.department,
+						"manufacturer": self.manufacturer,
+						"material_request": None,
+						"material_request_item": None,
+						"batch_no": batch,
+						"inventory_type": "Regular Stock",
+					},
+				)
+		if temp_diff > 0:
 			frappe.throw(_("Qty not available"))
 
 	se_doc.set_posting_date = 1
 	se_doc.posting_time = frappe.utils.nowtime()
-	if self.main_slip:
+	if self.main_slip and se_doc.get("items"):
 		se_doc.save()
 		se_doc.submit()
 
@@ -381,7 +461,7 @@ def create_chain_stock_entry(self, row):
 		copy_row.t_warehouse = department_wh
 		copy_row.serial_and_batch_bundle = None
 		mop_se_doc.append("items", copy_row)
-	if self.main_slip:
+	if self.main_slip and mop_se_doc.get("items"):
 		mop_se_doc.save()
 		mop_se_doc.submit()
 
