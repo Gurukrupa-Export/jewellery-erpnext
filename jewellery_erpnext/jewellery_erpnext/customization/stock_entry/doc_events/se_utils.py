@@ -22,70 +22,38 @@ from jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.d
 
 
 def validate_inventory_dimention(self):
-	# pass
-	pmo_customer_data = frappe._dict()
-	manufacturer_data = frappe._dict()
 	for row in self.items:
 		pmo_list = row.custom_parent_manufacturing_order or self.manufacturing_order
 		if not pmo_list:
 			continue
 		for pmo in pmo_list.split(","):
-			if not pmo_customer_data.get(pmo):
-				pmo_customer_data[pmo] = frappe.db.get_value(
-					"Parent Manufacturing Order",
-					pmo,
-					[
-						"is_customer_gold",
-						"is_customer_diamond",
-						"is_customer_gemstone",
-						"is_customer_material",
-						"customer",
-						"manufacturer",
-					],
-					as_dict=1,
-				)
-			pmo_data = pmo_customer_data.get(pmo)
-			if not manufacturer_data.get(pmo_data["manufacturer"]):
-				manufacturer_data[pmo_data["manufacturer"]] = frappe.db.get_value(
-					"Manufacturer",
-					pmo_data.get("manufacturer"),
-					"custom_allow_regular_goods_instead_of_customer_goods",
-				)
-
-			allow_rg_instead_of_cg = manufacturer_data.get(pmo_data.get("manufacturer"))
+			customer_goods_data = check_customer_goods(row, pmo)
+			allow_rg_instead_of_cg = customer_goods_data.get("allow_rg_instead_of_cg")
+			customer = customer_goods_data.get("customer")
 
 			if (
 				row.inventory_type in ["Customer Goods", "Customer Stock"]
-				and pmo_data.get("customer") != row.customer and row.custom_variant_of not in ["M"]
+				and customer != row.customer and row.custom_variant_of not in ["M"]
 			):
-				frappe.throw(_("Only {0} allowed in Stock Entry").format(pmo_data.get("customer")))
+				frappe.throw(_("Only {0} allowed in Stock Entry").format(customer))
 			else:
-				variant_mapping = {
-					# "M": "is_customer_gold",
-					"F": "is_customer_gold",
-					"D": "is_customer_diamond",
-					"G": "is_customer_gemstone",
-					"O": "is_customer_material",
-				}
+				if customer_goods_data.get("is_customer_goods") and row.inventory_type not in [
+					"Customer Goods",
+					"Customer Stock",
+				]:
+					if allow_rg_instead_of_cg:
+						frappe.msgprint(_("Can not use regular stock inventory for Customer provided Item"))
+					else:
+						frappe.throw(_("Can not use regular stock inventory for Customer provided Item"))
 
-				if row.custom_variant_of in variant_mapping:
-					customer_key = variant_mapping[row.custom_variant_of]
-					if pmo_data.get(customer_key) and row.inventory_type not in [
-						"Customer Goods",
-						"Customer Stock",
-					]:
-						if allow_rg_instead_of_cg:
-							frappe.msgprint(_("Can not use regular stock inventory for Customer provided Item"))
-						else:
-							frappe.throw(_("Can not use regular stock inventory for Customer provided Item"))
-					elif not pmo_data.get(customer_key) and row.inventory_type in [
-						"Customer Goods",
-						"Customer Stock",
-					]:
-						if allow_rg_instead_of_cg:
-							frappe.msgprint(_("Can not use Customer Goods inventory for non provided customer Item"))
-						else:
-							frappe.throw(_("Can not use Customer Goods inventory for non provided customer Item"))
+				elif not customer_goods_data.get("is_customer_goods") and row.inventory_type in [
+					"Customer Goods",
+					"Customer Stock",
+				]:
+					if allow_rg_instead_of_cg:
+						frappe.msgprint(_("Can not use Customer Goods inventory for non provided customer Item"))
+					else:
+						frappe.throw(_("Can not use Customer Goods inventory for non provided customer Item"))
 
 # chnages in this function
 def get_fifo_batches(self, row):
@@ -96,7 +64,8 @@ def get_fifo_batches(self, row):
 
 	msl = self.get("main_slip") or self.get("to_main_slip")
 	warehouse = row.get("s_warehouse") or self.get("source_warehouse")
-	customer_goods_data =  check_customer_goods(row, self)
+	pmo = row.get("custom_parent_manufacturing_order") or self.manufacturing_order
+	customer_goods_data =  check_customer_goods(row, pmo)
 
 	if msl and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse") == row.s_warehouse:
 		main_slip = self.main_slip or self.to_main_slip
@@ -441,17 +410,24 @@ def rename_stock_entry_docs():
 			force=True,
 		)
 
-def check_customer_goods(row, se_doc):
-	"""Check if the stock entry is for customer goods"""
+def check_customer_goods(row, pmo):
+	"""
+		Check if the PMO is for customer goods
+		results in a dictionary with the following keys
+		{
+			allow_rg_instead_of_cg: bool
+			is_customer_goods: bool
+			customer: str (if is_customer_goods is True)
+		}
+	"""
 
 	res = {}
 
-	customer_item_data = frappe._dict({})
-	manufacturer_data = frappe._dict({})
-	pmo = row.get("custom_parent_manufacturing_order") or se_doc.manufacturing_order
+	pmo_customer_data = frappe._dict({})
+	customer_data = frappe._dict({})
 
 	if pmo:
-		customer_item_data = frappe.db.get_value(
+		pmo_customer_data = frappe.db.get_value(
 			"Parent Manufacturing Order",
 			pmo,
 			[
@@ -460,19 +436,21 @@ def check_customer_goods(row, se_doc):
 				"is_customer_gemstone",
 				"is_customer_material",
 				"customer",
-				"manufacturer",
+				"ref_customer",
+				"company",
 			],
 			as_dict=1,
 		)
 
-	if customer_item_data.get("manufacturer"):
-		manufacturer_data[customer_item_data.get("manufacturer")] = frappe.db.get_value(
-			"Manufacturer",
-			customer_item_data.get("manufacturer"),
+	customer_field = "ref_customer" if pmo_customer_data.get("company") == "KG GK Jewellers Private Limited" else "customer"
+	if pmo_customer_data.get(customer_field):
+		customer_data[pmo_customer_data.get(customer_field)] = frappe.db.get_value(
+			"Customer",
+			pmo_customer_data.get(customer_field),
 			"custom_allow_regular_goods_instead_of_customer_goods",
 		)
 
-	res["allow_rg_instead_of_cg"] = manufacturer_data.get(customer_item_data.get("manufacturer"))
+	res["allow_rg_instead_of_cg"] = customer_data.get(pmo_customer_data.get(customer_field))
 	variant_to_customer_key = {
 		"F": "is_customer_gold",
 		"D": "is_customer_diamond",
@@ -485,9 +463,9 @@ def check_customer_goods(row, se_doc):
 	if (
 		row.get("custom_variant_of")
 		and row.custom_variant_of in variant_to_customer_key
-		and customer_item_data.get(variant_to_customer_key[row.custom_variant_of])
+		and pmo_customer_data.get(variant_to_customer_key[row.custom_variant_of])
 	):
-		res["customer"] = customer_item_data.get("customer")
+		res["customer"] = pmo_customer_data.get(customer_field)
 		res.update({"is_customer_goods": True})
 
 	return res
