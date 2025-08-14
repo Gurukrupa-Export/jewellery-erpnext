@@ -20,17 +20,19 @@ def validate_duplication_and_gr_wt(self):
 		frappe.qb.from_(EIR)
 		.left_join(EOP)
 		.on(EOP.parent == EIR.name)
-		.select(EOP.manufacturing_operation)
+		.select(EIR.name,EOP.manufacturing_operation)
 		.where(
 			(EIR.name != self.name)
 			& (EIR.type == self.type)
 			& (EOP.manufacturing_operation.isin(mop_list))
 			& (EIR.docstatus != 2)
 		)
-	).run(pluck="manufacturing_operation")
+	).run(as_dict=True)
 
 	if duplicates:
-		frappe.throw(title=_("Employee IR exists for MOP"), msg="{0}".format(", ".join(duplicates)))
+		for row in duplicates:
+			msg = f"Following Manufacturing Operation already exist in Employee IR in <b>{row.name}</b>"
+			frappe.throw(msg)
 
 	# Process child table
 	for row in self.employee_ir_operations:
