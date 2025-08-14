@@ -213,10 +213,6 @@ def get_fifo_batches(self, row):
 			message += _("<br><b>Ref : {0}</b>").format(row.manufacturing_operation)
 		if self.flags.throw_batch_error:
 			frappe.throw(message)
-			self.flags.throw_batch_error = False
-		else:
-			frappe.msgprint(message)
-
 
 	return rows_to_append
 
