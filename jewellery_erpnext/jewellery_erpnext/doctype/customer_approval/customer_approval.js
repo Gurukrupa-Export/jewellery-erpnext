@@ -105,6 +105,7 @@ frappe.ui.form.on("Customer Approval", {
 									child.uom = item.uom;
 									child.serial_no = item.serial_no;
 									child.delivery_date = item.delivery_date;
+									child.custom_customer_approval = frm.doc.name;
 								});
 
 								frappe.set_route('Form', 'Sales Order', sales_order.name);
