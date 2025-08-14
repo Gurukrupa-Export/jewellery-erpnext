@@ -38,6 +38,7 @@
   "color",
   "auto_created",
   "setting_type",
+  "sub_setting_type",
   "manufacturing_details_section",
   "manufacturer",
   "diamond_grade",
@@ -64,6 +65,7 @@
   "department",
   "manufacturing_operation",
   "project",
+  "jewelex_batch_no",
   "delivery_date_tab",
   "section_break_3oxbv",
   "delivery_date",
@@ -627,6 +629,18 @@
    "fieldtype": "Check",
    "label": "Merged MWO",
    "read_only": 1
+  },
+  {
+   "fetch_from": "item_code.sub_setting_type",
+   "fieldname": "sub_setting_type",
+   "fieldtype": "Link",
+   "label": "Sub Setting Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "jewelex_batch_no",
+   "fieldtype": "Data",
+   "label": "Jewelex Batch No"
   }
  ],
  "grid_page_length": 50,
