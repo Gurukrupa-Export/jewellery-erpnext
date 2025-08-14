@@ -13,7 +13,6 @@
   "id",
   "batch_no",
   "column_break_xnlw",
-  "inventory_type",
   "customer",
   "default_bom_rm",
   "bom_qty",
@@ -116,12 +115,6 @@
   {
    "fieldname": "column_break_xnlw",
    "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "inventory_type",
-   "fieldtype": "Link",
-   "label": "Inventory Type",
-   "options": "Inventory Type"
   },
   {
    "fieldname": "sed_item",
