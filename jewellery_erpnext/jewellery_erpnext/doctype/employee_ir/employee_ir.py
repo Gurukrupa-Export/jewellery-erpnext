@@ -912,15 +912,15 @@ class EmployeeIR(Document):
 			# 	total_qty += entry["qty"]
 			for entry in data:
 				if total_qty != 0 and loss > 0:
-					if mwo_metal_property.get("is_finding_mwo"):
-						stock_loss = flt((entry["qty"] * loss) / total_qty, 3)
-					else:
-						if loss <= entry["qty"]:
-							stock_loss = loss
-							loss = 0
-						else:
-							stock_loss = entry["qty"]
-							loss -= entry["qty"]
+					# if mwo_metal_property.get("is_finding_mwo"):
+					stock_loss = flt((entry["qty"] * loss) / total_qty, 3)
+					# else:
+					# 	if loss <= entry["qty"]:
+					# 		stock_loss = loss
+					# 		loss = 0
+					# 	else:
+					# 		stock_loss = entry["qty"]
+					# 		loss -= entry["qty"]
 					if stock_loss > 0:
 						entry["received_gross_weight"] = entry["qty"] - stock_loss
 						entry["proportionally_loss"] = stock_loss
