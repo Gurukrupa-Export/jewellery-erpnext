@@ -400,9 +400,7 @@ def create_chain_stock_entry(self, row):
 			temp_diff = 0
 			mop_batch_list = []
 			if self.main_slip:
-				temp_diff, mop_batch_list = create_repack(
-					self, row, item, mop_data, warehouse, row.received_gross_wt
-				)
+					create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
 			for batch in mop_batch_list:
 				se_doc.append(
 					"items",
@@ -435,7 +433,7 @@ def create_chain_stock_entry(self, row):
 
 	se_doc.set_posting_date = 1
 	se_doc.posting_time = frappe.utils.nowtime()
-	if self.main_slip:
+	if self.main_slip and se_doc.get("items"):
 		se_doc.save()
 		se_doc.submit()
 
@@ -463,7 +461,7 @@ def create_chain_stock_entry(self, row):
 		copy_row.t_warehouse = department_wh
 		copy_row.serial_and_batch_bundle = None
 		mop_se_doc.append("items", copy_row)
-	if self.main_slip:
+	if self.main_slip and mop_se_doc.get("items"):
 		mop_se_doc.save()
 		mop_se_doc.submit()
 
