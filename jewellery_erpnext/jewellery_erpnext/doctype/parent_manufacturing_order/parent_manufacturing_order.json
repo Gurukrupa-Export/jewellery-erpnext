@@ -33,6 +33,7 @@
   "serial_id_bom",
   "item_sub_category",
   "setting_type",
+  "sub_setting_type",
   "customer_details_section",
   "is_customer_gold",
   "is_customer_diamond",
@@ -885,6 +886,13 @@
    "fieldname": "use_custom_diamond_grade",
    "fieldtype": "Check",
    "label": "Use Custom Diamond Grade"
+  },
+  {
+   "fetch_from": "new_item.sub_setting_type",
+   "fieldname": "sub_setting_type",
+   "fieldtype": "Link",
+   "label": "Sub Setting Type",
+   "options": "Attribute Value"
   }
  ],
  "index_web_pages_for_search": 1,

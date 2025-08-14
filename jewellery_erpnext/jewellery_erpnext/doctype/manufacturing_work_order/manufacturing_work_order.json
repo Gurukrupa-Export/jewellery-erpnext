@@ -38,6 +38,7 @@
   "color",
   "auto_created",
   "setting_type",
+  "sub_setting_type",
   "manufacturing_details_section",
   "manufacturer",
   "diamond_grade",
@@ -63,6 +64,7 @@
   "department",
   "manufacturing_operation",
   "project",
+  "jewelex_batch_no",
   "delivery_date_tab",
   "section_break_3oxbv",
   "delivery_date",
@@ -619,6 +621,19 @@
    "fieldname": "mop_details_section",
    "fieldtype": "Section Break",
    "label": "MOP Details"
+  },
+  {
+   "fetch_from": "item_code.sub_setting_type",
+   "fieldname": "sub_setting_type",
+   "fieldtype": "Link",
+   "label": "Sub Setting Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fetch_from":"manufacturing_order.custom_jewelex_batch_no",
+   "fieldname": "jewelex_batch_no",
+   "fieldtype": "Data",
+   "label": "Jewelex Batch No"
   }
  ],
  "grid_page_length": 50,
