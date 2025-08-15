@@ -111,6 +111,80 @@ frappe.ui.form.on("Employee IR", {
 		frm.clear_table("department_ir_operation");
 		frm.refresh_field("department_ir_operation");
 	},
+	// scan_mwo(frm) {
+	// 	if (frm.doc.scan_mwo) {
+	// 		frm.doc.employee_ir_operations.forEach(function (item) {
+	// 			if (item.manufacturing_work_order == frm.doc.scan_mwo)
+	// 				frappe.throw(
+	// 					__("{0} Manufacturing Work Order already exists", [frm.doc.scan_mwo])
+	// 				);
+	// 		});
+	// 		// if (frm.doc.employee_ir_operations.length > 30) {
+	// 		// 	frappe.throw(__("Only 30 MOP allowed in one document"));
+	// 		// }
+	// 		var query_filters = {
+	// 			department: frm.doc.department,
+	// 			manufacturing_work_order: frm.doc.scan_mwo,
+	// 		};
+	// 		if (frm.doc.type == "Issue") {
+	// 			query_filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]];
+	// 			query_filters["status"] = ["in", ["Not Started"]];
+	// 			query_filters["operation"] = ["is", "not set"];
+	// 			// query_filters["department_ir_status"] = ["=", "Received"]
+
+	// 			if (frm.doc.subcontracting == "Yes") {
+	// 				query_filters["employee"] = ["is", "not set"];
+	// 			} else {
+	// 				query_filters["subcontractor"] = ["is", "not set"];
+	// 			}
+	// 		} else {
+	// 			query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
+	// 			query_filters["operation"] = frm.doc.operation;
+	// 			if (frm.doc.employee) query_filters["employee"] = frm.doc.employee;
+	// 			if (frm.doc.subcontractor && frm.doc.subcontracting == "Yes")
+	// 				query_filters["subcontractor"] = frm.doc.subcontractor;
+	// 		}
+
+	// 		frappe.db
+	// 			.get_value("Manufacturing Operation", query_filters, [
+	// 				"name",
+	// 				"manufacturing_work_order",
+	// 				"status",
+	// 			])
+	// 			.then((r) => {
+	// 				let values = r.message;
+
+	// 				if (values.manufacturing_work_order) {
+	// 					frappe.db.get_value(
+	// 						"QC",
+	// 						{
+	// 							manufacturing_work_order: values.manufacturing_work_order,
+	// 							manufacturing_operation: values.name,
+	// 							status: ["!=", "Rejected"],
+	// 							docstatus: 1,
+	// 						},
+	// 						["name", "received_gross_wt"],
+	// 						function (a) {
+	// 							let row = frm.add_child("employee_ir_operations", {
+	// 								manufacturing_work_order: values.manufacturing_work_order,
+	// 								manufacturing_operation: values.name,
+	// 								qc: a.name,
+	// 								received_gross_wt: a.received_gross_wt,
+	// 							});
+	// 							frm.refresh_field("employee_ir_operations");
+	// 						}
+	// 					);
+	// 				} else {
+	// 					// frappe.throw("No Manufacturing Operation Found");
+	// 					frappe.throw({
+	// 						title: __("Message"),
+	// 						message: __("No Manufacturing Operation Found"),
+	// 					});
+	// 				}
+	// 				frm.set_value("scan_mwo", "");
+	// 			});
+	// 	}
+	// },
 	scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
 			frm.doc.employee_ir_operations.forEach(function (item) {
@@ -122,69 +196,90 @@ frappe.ui.form.on("Employee IR", {
 			// if (frm.doc.employee_ir_operations.length > 30) {
 			// 	frappe.throw(__("Only 30 MOP allowed in one document"));
 			// }
-			var query_filters = {
-				department: frm.doc.department,
-				manufacturing_work_order: frm.doc.scan_mwo,
-			};
-			if (frm.doc.type == "Issue") {
-				query_filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]];
-				query_filters["status"] = ["in", ["Not Started"]];
-				query_filters["operation"] = ["is", "not set"];
-				// query_filters["department_ir_status"] = ["=", "Received"]
 
-				if (frm.doc.subcontracting == "Yes") {
-					query_filters["employee"] = ["is", "not set"];
-				} else {
-					query_filters["subcontractor"] = ["is", "not set"];
-				}
-			} else {
-				query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
-				query_filters["operation"] = frm.doc.operation;
-				if (frm.doc.employee) query_filters["employee"] = frm.doc.employee;
-				if (frm.doc.subcontractor && frm.doc.subcontracting == "Yes")
-					query_filters["subcontractor"] = frm.doc.subcontractor;
-			}
-
-			frappe.db
-				.get_value("Manufacturing Operation", query_filters, [
-					"name",
-					"manufacturing_work_order",
-					"status",
-				])
-				.then((r) => {
-					let values = r.message;
-
-					if (values.manufacturing_work_order) {
-						frappe.db.get_value(
-							"QC",
-							{
-								manufacturing_work_order: values.manufacturing_work_order,
-								manufacturing_operation: values.name,
-								status: ["!=", "Rejected"],
-								docstatus: 1,
-							},
-							["name", "received_gross_wt"],
-							function (a) {
-								let row = frm.add_child("employee_ir_operations", {
-									manufacturing_work_order: values.manufacturing_work_order,
-									manufacturing_operation: values.name,
-									qc: a.name,
-									received_gross_wt: a.received_gross_wt,
-								});
-								frm.refresh_field("employee_ir_operations");
-							}
-						);
-					} else {
-						// frappe.throw("No Manufacturing Operation Found");
-						frappe.throw({
-							title: __("Message"),
-							message: __("No Manufacturing Operation Found"),
-						});
+			frappe.call({
+				method: 'jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.check_duplicate_employee_ir',
+				args: {
+					scan_mwo: frm.doc.scan_mwo,
+					operation: frm.doc.operation,
+					employee: frm.doc.employee,
+					type:frm.doc.type
+				},
+				callback: function(r) {
+					if (!r.exc) {
+					if (r.message) {						
+						frappe.throw(r.message);
 					}
-					frm.set_value("scan_mwo", "");
+					else{
+							var query_filters = {
+								department: frm.doc.department,
+								manufacturing_work_order: frm.doc.scan_mwo,
+							};
+							if (frm.doc.type == "Issue") {
+								query_filters["department_ir_status"] = ["not in", ["In-Transit", "Revert"]];
+								query_filters["status"] = ["in", ["Not Started"]];
+								query_filters["operation"] = ["is", "not set"];
+								// query_filters["department_ir_status"] = ["=", "Received"]
+				
+								if (frm.doc.subcontracting == "Yes") {
+									query_filters["employee"] = ["is", "not set"];
+								} else {
+									query_filters["subcontractor"] = ["is", "not set"];
+								}
+							} else {
+								query_filters["status"] = ["in", ["On Hold", "WIP", "QC Completed"]];
+								query_filters["operation"] = frm.doc.operation;
+								if (frm.doc.employee) query_filters["employee"] = frm.doc.employee;
+								if (frm.doc.subcontractor && frm.doc.subcontracting == "Yes")
+									query_filters["subcontractor"] = frm.doc.subcontractor;
+							}
+				
+							frappe.db
+								.get_value("Manufacturing Operation", query_filters, [
+									"name",
+									"manufacturing_work_order",
+									"status",
+								])
+								.then((r) => {
+									let values = r.message;
+				
+									if (values.manufacturing_work_order) {
+										frappe.db.get_value(
+											"QC",
+											{
+												manufacturing_work_order: values.manufacturing_work_order,
+												manufacturing_operation: values.name,
+												status: ["!=", "Rejected"],
+												docstatus: 1,
+											},
+											["name", "received_gross_wt"],
+											function (a) {
+												let row = frm.add_child("employee_ir_operations", {
+													manufacturing_work_order: values.manufacturing_work_order,
+													manufacturing_operation: values.name,
+													qc: a.name,
+													received_gross_wt: a.received_gross_wt,
+												});
+												frm.refresh_field("employee_ir_operations");
+											}
+										);
+									} 
+									else {
+										// frappe.throw("No Manufacturing Operation Found");
+										frappe.throw({
+											title: __("Message"),
+											message: __("No Manufacturing Operation Found"),
+										});
+									}
+									frm.set_value("scan_mwo", "");
+								});
+							}
+						}
+					}
 				});
 		}
 	},
+
 	get_operations(frm) {
 		var query_filters = {
 			department: frm.doc.department,

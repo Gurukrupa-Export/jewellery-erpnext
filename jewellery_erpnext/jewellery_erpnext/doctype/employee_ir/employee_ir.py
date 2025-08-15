@@ -2752,3 +2752,46 @@ def calculation_time_log(doc, row, self):
 		# for i in doc.time_logs:
 		# 	doc.total_minutes += i.time_in_mins
 
+@frappe.whitelist()
+def check_duplicate_employee_ir(scan_mwo, operation, employee, type):
+	MO = frappe.qb.DocType("Manufacturing Operation")
+	EOP = frappe.qb.DocType("Employee IR Operation")
+	EIR = frappe.qb.DocType("Employee IR")
+
+	# Find Manufacturing Operation matching criteria
+	manufacturing_operation = (
+		frappe.qb.from_(MO)
+		.select(MO.name)
+		.where(
+			(MO.manufacturing_work_order == scan_mwo) &
+			(MO.operation == operation) &
+			(MO.employee == employee) &
+			(MO.status == "WIP")
+		)
+	).run(as_dict=True)
+
+	if not manufacturing_operation:
+		return None  # No Manufacturing Operation found matching criteria
+
+	mo_name = manufacturing_operation[0].name
+
+	# Find Employee IR parent containing this manufacturing operation AND with matching type
+	employee_ir = (
+		frappe.qb.from_(EOP)
+		.join(EIR).on(EOP.parent == EIR.name)
+		.select(EOP.parent)
+		.where(
+			(EOP.manufacturing_operation == mo_name) &
+			(EIR.type == type)
+		)
+		.limit(1)
+	).run(as_dict=True)
+
+	if employee_ir:
+		# Raise error indicating duplicate
+		frappe.throw(
+			_("Duplicate Employee IR Found: <b>{0}</b> with type <b>{1}</b>").format(employee_ir[0].parent, type)
+		)
+	return None
+
+
