@@ -377,7 +377,7 @@ def get_gemstone_rate(self):
 				)
 
 		if not gemstone_price_list:
-			frappe.throw(
+			frappe.msgprint(
 				f"Gemstone Amount for {stone.gemstone_type} is 0\n Please Check if Gemstone Price Exists For {filters}"
 			)
 			return 0
