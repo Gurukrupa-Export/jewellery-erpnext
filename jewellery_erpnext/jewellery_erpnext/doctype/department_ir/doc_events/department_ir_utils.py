@@ -197,17 +197,18 @@ def validate_duplicate(self):
 		frappe.qb.from_(DIP)
 		.left_join(DI)
 		.on(DIP.parent == DI.name)
-		.select(DIP.manufacturing_operation)
+		.select(DI.name,DIP.manufacturing_operation)
 		.where(
 			(DI.docstatus != 2)
 			& (DI.name != self.name)
 			& (DI.type == self.type)
 			& (DIP.manufacturing_operation.isin(mop_list))
 		)
-	).run(pluck="manufacturing_operation")
-
+	).run(as_dict=True)
 	if duplicates:
-		frappe.throw(title=_("Department IR exists for MOP"), msg="{0}".format(", ".join(duplicates)))
+		for row in duplicates:
+			msg = f"Following Manufacturing Operation already exist in Employee IR in <b>{row.name}</b>"
+			frappe.throw(msg)
 
 
 def validate_tolerance(doc, mop_data):

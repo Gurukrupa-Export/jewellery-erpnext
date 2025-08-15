@@ -14,6 +14,10 @@ def update_table(self, method):
 
 	else:
 		# frappe.throw(f"{existing_serial_record}")
+		if self.get("purchase_document_no"):
+			serial_number_creator = frappe.db.get_value("Stock Entry",self.get("purchase_document_no"),"custom_serial_number_creator")
+			pmo = frappe.db.get_value("Serial Number Creator",serial_number_creator,"parent_manufacturing_order")
+			mwo = frappe.db.get_value("Serial Number Creator",serial_number_creator,"manufacturing_work_order")
 		self.append(
 			"custom_serial_no_table",
 			{

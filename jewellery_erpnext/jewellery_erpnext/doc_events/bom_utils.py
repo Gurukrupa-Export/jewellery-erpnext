@@ -221,7 +221,7 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 			if diamond.diamond_size_in_mm:
 				filters["diamond_size_in_mm"] = diamond.diamond_size_in_mm
 		else:
-			frappe.msgprint(_("Price List Type Not Specified"))
+			frappe.msgprint(_("Diamond Price List Type Not Specified in Customer"))
 		diamond_price_list_data[key] = frappe.get_list(
 			"Diamond Price List",
 			filters=filters,
@@ -238,7 +238,7 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 			limit=1,
 		)
 		if not diamond_price_list_data.get(key):
-			frappe.msgprint(
+			frappe.throw(
 				f"Diamond Amount for Sieve Size - {diamond.diamond_sieve_size} is 0\n Please Check if Diamond Price Exists For {filters}"
 			)
 

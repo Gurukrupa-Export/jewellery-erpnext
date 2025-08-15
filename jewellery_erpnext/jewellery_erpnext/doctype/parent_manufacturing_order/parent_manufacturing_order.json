@@ -896,7 +896,7 @@
    "label": "Hold Reason"
   },
   {
-   "fetch_from": "new_item.sub_setting_type",
+   "fetch_from": "item_code.sub_setting_type",
    "fieldname": "sub_setting_type",
    "fieldtype": "Link",
    "label": "Sub Setting Type",
