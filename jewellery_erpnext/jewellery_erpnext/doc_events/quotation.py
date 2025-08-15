@@ -1238,7 +1238,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				else:
 					frappe.msgprint(f"No matching subcategory found for {doc.item_subcategory}")
 			else:
-				frappe.msgprint(f"No making charge price list found for customer {doc.customer} and setting type {doc.setting_type}")
+				frappe.throw(f"No making charge price list found for customer {doc.customer} and setting type {doc.setting_type}")
 		
 		for find in doc.finding_detail:
 			wastage_rate = 0  
