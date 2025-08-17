@@ -159,11 +159,6 @@
    "fieldtype": "Section Break"
   },
   {
-   "fieldname": "manufacturing_operation",
-   "fieldtype": "Data",
-   "label": "Manufacturing Operation"
-  },
-  {
    "collapsible": 1,
    "fieldname": "details_section",
    "fieldtype": "Section Break",
