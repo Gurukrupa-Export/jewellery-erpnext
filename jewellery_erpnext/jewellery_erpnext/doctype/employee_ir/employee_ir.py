@@ -1070,6 +1070,7 @@ class EmployeeIR(Document):
 					"loss_wt": difference_wt,
 					"received_net_wt": flt(net_wt - net_loss_wt, precision),
 					"status": "WIP",
+					"is_received_gross_greater_than":True if row.received_gross_wt > row.gross_wt else False
 				}
 			)
 

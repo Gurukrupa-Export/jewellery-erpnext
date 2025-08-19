@@ -348,7 +348,7 @@ def create_chain_stock_entry(self, row):
 					},
 				)
 
-		if temp_diff > 0:
+		if temp_diff > 0 or (row.received_gross_wt > row.gross_wt):
 			mop_data = frappe.db.get_all(
 				"MOP Balance Table",
 				{"parent": row.manufacturing_operation},
@@ -400,7 +400,7 @@ def create_chain_stock_entry(self, row):
 			temp_diff = 0
 			mop_batch_list = []
 			if self.main_slip:
-					create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
+				create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
 			for batch in mop_batch_list:
 				se_doc.append(
 					"items",
@@ -430,12 +430,15 @@ def create_chain_stock_entry(self, row):
 				)
 		if temp_diff > 0:
 			frappe.throw(_("Qty not available"))
-
 	se_doc.set_posting_date = 1
 	se_doc.posting_time = frappe.utils.nowtime()
 	if self.main_slip and se_doc.get("items"):
 		se_doc.save()
 		se_doc.submit()
+		for item_row in se_doc.items:
+			if row.get("batch_no"):
+				frappe.db.set_value("Batch",item_row.get("batch_no"),"custom_inventory_type","Regular Stock")
+			
 
 	mop_se_doc = frappe.new_doc("Stock Entry")
 	mop_se_doc.stock_entry_type = "Material Transfer"
