@@ -1561,7 +1561,7 @@ def get_material_wt(doc):
 	if not frappe.db.get_value("Manufacturing Operation", doc.name,"is_received_gross_greater_than"):
 		gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt+ abs(doc.loss_wt)
 	else:
-		gross_wt = (net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt)
+		gross_wt = (net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt) - abs(doc.loss_wt)
 
 	result = {
 		"gross_wt": gross_wt,
