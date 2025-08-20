@@ -45,7 +45,8 @@ def update_batch_details(self):
 			item.batch = item.batch_no
 		batch = item.batch_no or item.batch
 		if batch:
-			item.inventory_type = frappe.db.get_value("Batch", batch, "custom_inventory_type")
+			if not item.inventory_type:
+				item.inventory_type = frappe.db.get_value("Batch", batch, "custom_inventory_type") 
 			item.customer = frappe.db.get_value("Batch", batch, "custom_customer")
 		if self.doctype == "Diamond Conversion":
 			self.append("sc_source_table", item)

@@ -80,7 +80,8 @@ class CustomStockEntry(StockEntry):
 				if isinstance(item, dict):
 					item = frappe._dict(item)
 				if item.batch_no:
-					item.inventory_type = frappe.db.get_value("Batch", item.batch_no, "custom_inventory_type")
+					if not item.inventory_type:
+						item.inventory_type = frappe.db.get_value("Batch", item.batch_no, "custom_inventory_type")
 					item.customer = frappe.db.get_value("Batch", item.batch_no, "custom_customer")
 				if frappe.db.get_value("Item", item.item_code, "variant_of") == "D":
 					attribute = frappe.db.get_value(

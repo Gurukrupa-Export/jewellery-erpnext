@@ -20,7 +20,8 @@ from frappe.query_builder.functions import CombineDatetime, Sum
 
 from jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.doc_events.utils import get_auto_batch_nos
 
-
+from erpnext.stock.doctype.batch.batch import get_batch_qty
+ 
 def validate_inventory_dimention(self):
 	for row in self.items:
 		pmo_list = row.custom_parent_manufacturing_order or self.manufacturing_order
@@ -70,6 +71,7 @@ def get_fifo_batches(self, row):
 	if msl and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse") == row.s_warehouse:
 		main_slip = self.main_slip or self.to_main_slip
 		batch_data = get_batch_data_from_msl(row.item_code, main_slip, row.s_warehouse)
+		frappe.log_error(title ="get_fifo_batches" ,message =f"{batch_data}")
 	else:
 		posting_date = self.get("posting_date") or self.get("date")
 		batch_data = get_auto_batch_nos(
@@ -173,8 +175,8 @@ def get_fifo_batches(self, row):
 					temp_row["qty"] = flt(min(total_qty, batch.qty), 4)
 					rows_to_append.append(temp_row)
 					total_qty -= batch.qty
-
-	if total_qty > 0:
+	frappe.log_error(title ="total_qty",message =total_qty)
+	if round(total_qty,3) > 0:
 		message = _("For <b>{0}</b> {1} is missing in <b>{2}</b>").format(
 			row.item_code, flt(total_qty, 2), warehouse
 		)
@@ -188,18 +190,22 @@ def get_fifo_batches(self, row):
 
 
 def get_batch_data_from_msl(item_code, main_slip, warehouse):
+	frappe.log_error(title = "get_batch_data_from_msl",message =f"{item_code}, {main_slip},{warehouse} ")
 	batch_data = []
 	msl_doc = frappe.get_doc("Main Slip", main_slip)
-
+	avl_batch =  get_batch_qty(warehouse= warehouse,item_code=item_code)
+	avl_batch = [system_batch.get("batch_no") for system_batch in avl_batch]
 	if warehouse != msl_doc.raw_material_warehouse:
 		frappe.msgprint(_("Please select batch manually for receving goods in Main Slip"))
 		return batch_data
 
 	for row in msl_doc.batch_details:
+		
 		if row.qty != row.consume_qty and row.item_code == item_code:
-			batch_row = frappe._dict()
-			batch_row.update({"batch_no": row.batch_no, "qty": row.qty - row.consume_qty})
-			batch_data.append(batch_row)
+			if avl_batch and row.batch_no  in avl_batch:
+				batch_row = frappe._dict()
+				batch_row.update({"batch_no": row.batch_no, "qty": row.qty - row.consume_qty})
+				batch_data.append(batch_row)
 
 	return batch_data
 

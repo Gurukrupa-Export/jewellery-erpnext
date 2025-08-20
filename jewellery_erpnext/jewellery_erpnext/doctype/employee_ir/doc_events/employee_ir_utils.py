@@ -93,7 +93,7 @@ def create_chain_stock_entry(self, row):
 
 	mop_data = frappe.db.get_all(
 		"MOP Balance Table",
-		{"parent": row.manufacturing_operation, "item_code": ["in", item_list]},
+		{"parent": row.manufacturing_operation},
 		["item_code", "batch_no", "qty", "parent", "inventory_type", "s_warehouse"],
 	)
 
@@ -173,7 +173,7 @@ def create_chain_stock_entry(self, row):
 	se_doc.employee_ir = self.name
 	warehouse = frappe.db.get_value("Main Slip", self.main_slip, "raw_material_warehouse")
 	mfg_warehouse = frappe.db.get_value("Main Slip", self.main_slip, "warehouse")
-
+	frappe.log_error(title = "mop_data" , message = f" {mop_data} ")
 	if row.received_gross_wt > 0 and mop_data:
 
 		manual_loss_items = [
@@ -222,42 +222,43 @@ def create_chain_stock_entry(self, row):
 		temp_diff = 0
 		mop_batch_list = []
 		if self.main_slip:
-			temp_diff, mop_batch_list = create_repack(
-				self, row, item, mop_data, warehouse, row.received_gross_wt
-			)
-		for batch in mop_batch_list:
-			se_doc.append(
-				"items",
-				{
-					"item_code": item,
-					"s_warehouse": warehouse,
-					"t_warehouse": mfg_warehouse,
-					"to_employee": None,
-					"employee": self.employee,
-					"to_subcontractor": None,
-					"use_serial_batch_fields": True,
-					"serial_and_batch_bundle": None,
-					"subcontractor": self.subcontractor,
-					"to_main_slip": None,
-					"main_slip": self.main_slip,
-					"qty": mop_batch_list.get(batch) or 0,
-					"manufacturing_operation": row.manufacturing_operation,
-					"custom_manufacturing_work_order": row.manufacturing_work_order,
-					"department": self.department,
-					"to_department": self.department,
-					"manufacturer": self.manufacturer,
-					"material_request": None,
-					"material_request_item": None,
-					"batch_no": batch,
-					"inventory_type": "Regular Stock",
-				},
-			)
+			temp_diff = 0
+			create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
+			for batch in mop_batch_list:
+				se_doc.append(
+					"items",
+					{
+						"item_code": item,
+						"s_warehouse": warehouse,
+						"t_warehouse": mfg_warehouse,
+						"to_employee": None,
+						"employee": self.employee,
+						"to_subcontractor": None,
+						"use_serial_batch_fields": True,
+						"serial_and_batch_bundle": None,
+						"subcontractor": self.subcontractor,
+						"to_main_slip": None,
+						"main_slip": self.main_slip,
+						"qty": mop_batch_list.get(batch) or 0,
+						"manufacturing_operation": row.manufacturing_operation,
+						"custom_manufacturing_work_order": row.manufacturing_work_order,
+						"department": self.department,
+						"to_department": self.department,
+						"manufacturer": self.manufacturer,
+						"material_request": None,
+						"material_request_item": None,
+						"batch_no": batch,
+						"inventory_type": "Regular Stock",
+					},
+				)
+				frappe.log_error(title = f"mop_data_mop_batch_list_qty_{batch}" , message = f" {mop_batch_list.get(batch) } ")
 
 	if not mop_data or diff > 0:
 		temp_diff = abs(diff)
-
+		frappe.log_error(title = "main_slip_data" , message = f"main_slip_data:{main_slip_data},  temp_diff :{temp_diff} ")
 		if temp_diff > 0 and main_slip_data:
 			temp_diff, reg_batch_list = create_repack(self, row, item, main_slip_data, warehouse, temp_diff)
+			frappe.log_error(title= "batch_list",message = f"{reg_batch_list}")
 			for batch in reg_batch_list:
 				se_doc.append(
 					"items",
@@ -285,7 +286,6 @@ def create_chain_stock_entry(self, row):
 						"inventory_type": "Regular Stock",
 					},
 				)
-
 		if temp_diff > 0 and metal_item_data:
 			temp_diff, batch_list = create_repack(self, row, item, metal_item_data, warehouse, temp_diff)
 			for batch in batch_list:
@@ -347,95 +347,19 @@ def create_chain_stock_entry(self, row):
 						"inventory_type": "Regular Stock",
 					},
 				)
-
-		if temp_diff > 0:
-			mop_data = frappe.db.get_all(
-				"MOP Balance Table",
-				{"parent": row.manufacturing_operation},
-				["item_code", "batch_no", "qty", "parent", "inventory_type", "s_warehouse"],
-			)
-			manual_loss_items = [
-				{
-					"item_code": loss_item.item_code,
-					"loss_qty": loss_item.proportionally_loss,
-					"batch_no": loss_item.batch_no,
-					"inventory_type": loss_item.inventory_type,
-					"customer": loss_item.customer,
-					"pcs": loss_item.pcs,
-					"manufacturing_work_order": loss_item.manufacturing_work_order,
-					"manufacturing_operation": loss_item.manufacturing_operation,
-					"variant_of": loss_item.variant_of,
-					"sub_setting_type": loss_item.sub_setting_type,
-					"loss_type": loss_item.loss_type,
-				}
-				for loss_item in self.manually_book_loss_details
-				if loss_item.manufacturing_work_order == row.manufacturing_work_order
-			]
-			proprtionate_loss_items = [
-				{
-					"item_code": loss_item.item_code,
-					"loss_qty": loss_item.proportionally_loss,
-					"batch_no": loss_item.batch_no,
-					"inventory_type": loss_item.inventory_type,
-					"customer": loss_item.customer,
-					"pcs": loss_item.pcs,
-					"manufacturing_work_order": loss_item.manufacturing_work_order,
-					"manufacturing_operation": loss_item.manufacturing_operation,
-					"loss_type": loss_item.loss_type,
-				}
-				for loss_item in self.employee_loss_details
-				if loss_item.manufacturing_work_order == row.manufacturing_work_order
-			]
-			if manual_loss_items or proprtionate_loss_items:
-				process_loss_entry(
-					self,
-					row,
-					manual_loss_items,
-					proprtionate_loss_items,
-					emp_wh,
-					mfg_warehouse,
-					department_wh,
-					mop_data,
-				)
-			temp_diff = 0
-			mop_batch_list = []
-			if self.main_slip:
-					create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
-			for batch in mop_batch_list:
-				se_doc.append(
-					"items",
-					{
-						"item_code": item,
-						"s_warehouse": warehouse,
-						"t_warehouse": mfg_warehouse,
-						"to_employee": None,
-						"employee": self.employee,
-						"to_subcontractor": None,
-						"use_serial_batch_fields": True,
-						"serial_and_batch_bundle": None,
-						"subcontractor": self.subcontractor,
-						"to_main_slip": None,
-						"main_slip": self.main_slip,
-						"qty": mop_batch_list.get(batch) or 0,
-						"manufacturing_operation": row.manufacturing_operation,
-						"custom_manufacturing_work_order": row.manufacturing_work_order,
-						"department": self.department,
-						"to_department": self.department,
-						"manufacturer": self.manufacturer,
-						"material_request": None,
-						"material_request_item": None,
-						"batch_no": batch,
-						"inventory_type": "Regular Stock",
-					},
-				)
 		if temp_diff > 0:
 			frappe.throw(_("Qty not available"))
-
 	se_doc.set_posting_date = 1
 	se_doc.posting_time = frappe.utils.nowtime()
 	if self.main_slip and se_doc.get("items"):
+		frappe.log_error(title = "se_doc" ,message = f"{se_doc.as_dict()}")
 		se_doc.save()
+		frappe.log_error(title = "se_doc after_save" ,message = f"{se_doc.as_dict()}")
 		se_doc.submit()
+		for item_row in se_doc.items:
+			if row.get("batch_no"):
+				frappe.db.set_value("Batch",item_row.get("batch_no"),"custom_inventory_type","Regular Stock")
+			
 
 	mop_se_doc = frappe.new_doc("Stock Entry")
 	mop_se_doc.stock_entry_type = "Material Transfer"
@@ -468,6 +392,7 @@ def create_chain_stock_entry(self, row):
 	if not self.main_slip:
 		create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
 	# create_loss_entry(self, row, employee_wh, warehouse)
+	# frappe.throw("Test")
 
 
 
@@ -547,7 +472,7 @@ def transfer_rows_to_append(doc, mwo, mop, mop_data, department_wh, employee_wh)
 			duplicate_row["department"] = doc.department
 			duplicate_row["to_department"] = doc.department
 			duplicate_row["manufacturer"] = doc.manufacturer
-
+			frappe.log_error(title ="transfer_rows_to_append", message = f"{duplicate_row}")
 			rows_to_append.append(duplicate_row)
 
 	return rows_to_append
@@ -695,6 +620,7 @@ def create_repack(self, row, item, metal_data, warehouse, temp_diff):
 					},
 				)
 				batch_dict.update({batch_doc.name: abs(se_qty)})
+	frappe.log_error(title = "Stock Entry_main_slip", message = f"{se_doc.as_dict()}" )
 	se_doc.save()
 	se_doc.submit()
 	return temp_diff, batch_dict
