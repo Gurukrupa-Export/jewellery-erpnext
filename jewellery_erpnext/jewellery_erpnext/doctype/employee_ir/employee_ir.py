@@ -590,7 +590,7 @@ class EmployeeIR(Document):
 			se_doc.submit()
 
 			update_mop_balance(new_operation.name)
-
+			new_operation.save()
 			for pmo, details in pmo_data.items():
 				pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
 				for row in details:

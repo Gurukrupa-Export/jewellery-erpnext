@@ -294,7 +294,7 @@ class DepartmentIR(Document):
 					{
 						row.manufacturing_work_order: {
 							"cur_mop": row.manufacturing_operation,
-							"new_mop": new_operation,
+							"new_mop": new_operation.name,
 						}
 					}
 				)
@@ -375,6 +375,7 @@ class DepartmentIR(Document):
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
+				new_operation.save()
 
 	def on_submit_issue_new(self, cancel=False):
 		dt_string = get_datetime()
@@ -440,7 +441,7 @@ class DepartmentIR(Document):
 					{
 						row.manufacturing_work_order: {
 							"cur_mop": row.manufacturing_operation,
-							"new_mop": new_operation,
+							"new_mop": new_operation.name,
 						}
 					}
 				)
@@ -521,6 +522,7 @@ class DepartmentIR(Document):
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
+				new_operation.save()
 
 	@frappe.whitelist()
 	def get_summary_data(self):
@@ -597,7 +599,7 @@ class DepartmentIR(Document):
 				{
 					row.manufacturing_work_order: {
 						"cur_mop": row.manufacturing_operation,
-						"new_mop": new_operation,
+						"new_mop": new_operation.name,
 					}
 				}
 			)
@@ -608,7 +610,7 @@ class DepartmentIR(Document):
 			batch_update_stock_entry_dimensions(self, stock_entry_data, employee=None, for_employee=False)
 
 		self.db_set("mop_data", json.dumps(mop_data), update_modified=False)
-
+		new_operation.save()
 		return self
 
 	def create_stock_entry_for_issue(self):
@@ -685,6 +687,7 @@ class DepartmentIR(Document):
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
+				
 
 	def update_mop_for_receive(self):
 		"""Update MOP for Receive type Department IR."""
@@ -1479,7 +1482,7 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	# target_doc.save()
 	# target_doc.db_set("employee", None)
 	frappe.db.set_value("Manufacturing Work Order", mwo, "manufacturing_operation", new_mop_doc.name)
-	return new_mop_doc.name
+	return new_mop_doc
 
 def create_operation_for_next_dept_new(ir_name, mwo, mop, next_department):
 	operation = frappe.db.get_value("Manufacturing Operation", mop, "operation")
