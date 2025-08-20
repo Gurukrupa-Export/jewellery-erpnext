@@ -127,10 +127,11 @@ class MetalConversions(Document):
 	@frappe.whitelist()
 	def get_detail_tab_value(self):
 		errors = []
+		company = frappe.get_value("Employee", self.employee, "company")
 		dpt, branch = frappe.get_value("Employee", self.employee, ["department", "branch"])
 		if not dpt:
 			errors.append(f"Department Messing against <b>{self.employee} Employee Master</b>")
-		if not branch:
+		if company == 'Gurukrupa Export Private Limited' and not branch:
 			errors.append(f"Branch Messing against <b>{self.employee} Employee Master</b>")
 		mnf = frappe.get_value("Department", dpt, "manufacturer")
 		if not mnf:
