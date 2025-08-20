@@ -258,6 +258,7 @@ def create_chain_stock_entry(self, row):
 		frappe.log_error(title = "main_slip_data" , message = f"main_slip_data:{main_slip_data},  temp_diff :{temp_diff} ")
 		if temp_diff > 0 and main_slip_data:
 			temp_diff, reg_batch_list = create_repack(self, row, item, main_slip_data, warehouse, temp_diff)
+			frappe.log_error(title= "batch_list",message = f"{reg_batch_list}")
 			for batch in reg_batch_list:
 				se_doc.append(
 					"items",
@@ -351,7 +352,9 @@ def create_chain_stock_entry(self, row):
 	se_doc.set_posting_date = 1
 	se_doc.posting_time = frappe.utils.nowtime()
 	if self.main_slip and se_doc.get("items"):
+		frappe.log_error(title = "se_doc" ,message = f"{se_doc.as_dict()}")
 		se_doc.save()
+		frappe.log_error(title = "se_doc after_save" ,message = f"{se_doc.as_dict()}")
 		se_doc.submit()
 		for item_row in se_doc.items:
 			if row.get("batch_no"):
@@ -617,6 +620,7 @@ def create_repack(self, row, item, metal_data, warehouse, temp_diff):
 					},
 				)
 				batch_dict.update({batch_doc.name: abs(se_qty)})
+	frappe.log_error(title = "Stock Entry_main_slip", message = f"{se_doc.as_dict()}" )
 	se_doc.save()
 	se_doc.submit()
 	return temp_diff, batch_dict
