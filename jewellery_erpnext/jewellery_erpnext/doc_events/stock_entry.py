@@ -924,10 +924,14 @@ def update_mop_details(se_doc, is_cancelled=False):
 			elif entry.t_warehouse == e_warehouse:
 				mop_data[mop_name]["employee_target_table"].append(emp_temp_raw)
 
+	if se_doc.stock_entry_type == "Material Transfer (WORK ORDER)" and not se_doc.auto_created:
+		frappe.flags.update_pcs = 1
+
 	update_balance_table(mop_data)
 
 
 def update_balance_table(mop_data):
+	frappe.log_error("Update MOP Balance Table", f"MOP Data: {mop_data}", defer_insert=True)
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
 
