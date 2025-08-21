@@ -316,6 +316,7 @@ class ManufacturingOperation(Document):
 			department_target_table = frappe.db.get_all(
 				"Department Target Table", {"parent": self.previous_mop, "t_warehouse": d_warehouse}, ["*"]
 			)
+			frappe.log_error(message =f"{department_target_table},{len(department_target_table)}",title ="department_target_table")
 			employee_source_table = frappe.db.get_all(
 				"Employee Source Table", {"parent": self.previous_mop, "s_warehouse": e_warehouse}, ["*"]
 			)
@@ -348,6 +349,7 @@ class ManufacturingOperation(Document):
 					self.append("employee_target_table", row)
 
 		self.db_set("previous_se_data_updated", 1)
+
 
 	# timer code
 	def validate_time_logs(self):

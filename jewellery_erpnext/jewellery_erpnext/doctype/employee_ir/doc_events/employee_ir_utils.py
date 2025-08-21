@@ -421,7 +421,7 @@ def create_department_transfer_se_entry(doc, mop_data):
 	for row in mop_balance_details:
 		mop_balance_data.setdefault(row.parent, [])
 		mop_balance_data[row.parent].append(row)
-
+	frappe.log_error(title = "create_department_transfer_se_entry_mop_data", message =f"{mop_data}")
 	for row in mop_data:
 		rows_to_append += transfer_rows_to_append(
 			doc, row, mop_data[row], mop_balance_data.get(mop_data[row]), department_wh, employee_wh

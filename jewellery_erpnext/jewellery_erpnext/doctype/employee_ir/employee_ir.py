@@ -396,7 +396,7 @@ class EmployeeIR(Document):
 						"manufacturing_operation",
 						row.manufacturing_operation,
 					)
-					if new_operation:
+					if new_operation.name:
 						frappe.db.set_value(
 							"Department IR Operation",
 							{"docstatus": 2, "manufacturing_operation": new_operation.name},
@@ -996,6 +996,7 @@ class EmployeeIR(Document):
 			create_single_se_entry(self, mop_data)
 
 	def update_mop_for_receive(self):
+		frappe.log_error(title ="update_mop_for_receive",message = f"{self.as_dict()}")
 		se_data = {}
 		row_to_append = []
 		main_slip_rows = []
@@ -1137,9 +1138,10 @@ class EmployeeIR(Document):
 		new_operation.save()
 
 	def create_stock_entry_for_receive(self):
+		frappe.log_error(title ="create_stock_entry_for_receive",message = f"{self.as_dict()}")
 		if self.se_data:
 			se_data = json.loads(self.se_data)
-
+			frappe.log_error(title ="se_data",message = f"{se_data}")
 			if se_data.get("loss_rows"):
 				pl_se_doc = frappe.new_doc("Stock Entry")
 				pl_se_doc.company = self.company
@@ -1425,6 +1427,7 @@ def get_manufacturing_operations(source_name, target_doc=None):
 def create_stock_entry(
 	doc, row, warehouse_data, metal_item_data, loss_details, difference_wt=0, msl_dict=None
 ):
+	frappe.log_error(title ="create_stock_entry" ,message ="in create_stock_entry")
 	metal_item = None
 
 	if not msl_dict:
