@@ -93,7 +93,7 @@ def create_chain_stock_entry(self, row):
 
 	mop_data = frappe.db.get_all(
 		"MOP Balance Table",
-		{"parent": row.manufacturing_operation, "item_code": ["in", item_list]},
+		{"parent": row.manufacturing_operation},
 		["item_code", "batch_no", "qty", "parent", "inventory_type", "s_warehouse"],
 	)
 
@@ -222,9 +222,8 @@ def create_chain_stock_entry(self, row):
 		temp_diff = 0
 		mop_batch_list = []
 		if self.main_slip:
-			temp_diff, mop_batch_list = create_repack(
-				self, row, item, mop_data, warehouse, row.received_gross_wt
-			)
+			temp_diff = 0
+			create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
 		for batch in mop_batch_list:
 			se_doc.append(
 				"items",
