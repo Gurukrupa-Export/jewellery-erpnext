@@ -396,7 +396,7 @@ class EmployeeIR(Document):
 						"manufacturing_operation",
 						row.manufacturing_operation,
 					)
-					if new_operation:
+					if new_operation.name:
 						frappe.db.set_value(
 							"Department IR Operation",
 							{"docstatus": 2, "manufacturing_operation": new_operation.name},
@@ -1063,7 +1063,6 @@ class EmployeeIR(Document):
 			net_wt = frappe.db.get_value("Manufacturing Operation", row.manufacturing_operation, "net_wt")
 
 			difference_wt = flt(row.received_gross_wt, precision) - flt(row.gross_wt, precision)
-
 			res = frappe._dict(
 				{
 					"received_gross_wt": row.received_gross_wt,
@@ -1096,6 +1095,7 @@ class EmployeeIR(Document):
 
 			if row.get("is_finding_mwo"):
 				create_chain_stock_entry(self, row)
+				new_operation.save()
 			else:
 				se_rows, msl_rows, product_loss, mfg_rows = create_stock_entry(
 					self,
@@ -1134,12 +1134,10 @@ class EmployeeIR(Document):
 		se_data["repack_raws"] = repack_raws
 
 		self.db_set("se_data", json.dumps(obj=se_data, default=serialize_for_json), update_modified=False)
-		new_operation.save()
 
 	def create_stock_entry_for_receive(self):
 		if self.se_data:
 			se_data = json.loads(self.se_data)
-
 			if se_data.get("loss_rows"):
 				pl_se_doc = frappe.new_doc("Stock Entry")
 				pl_se_doc.company = self.company

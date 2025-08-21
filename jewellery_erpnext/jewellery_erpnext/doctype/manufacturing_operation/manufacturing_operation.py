@@ -349,6 +349,7 @@ class ManufacturingOperation(Document):
 
 		self.db_set("previous_se_data_updated", 1)
 
+
 	# timer code
 	def validate_time_logs(self):
 		self.total_minutes = 0.0
@@ -1557,11 +1558,13 @@ def get_material_wt(doc):
 				other_wt += row.qty
 	# gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
 	# --->Dhinesh Chnage update the gross weight to include the loss weight as well.
-	
-	if not frappe.db.get_value("Manufacturing Operation", doc.name,"is_received_gross_greater_than"):
-		gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt+ abs(doc.loss_wt)
+	if  doc.main_slip_no or doc.is_finding:
+		if not frappe.db.get_value("Manufacturing Operation", doc.name,"is_received_gross_greater_than"):
+			gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt+ abs(doc.loss_wt)
+		else:
+			gross_wt = (net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt) - abs(doc.loss_wt)
 	else:
-		gross_wt = (net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt) - abs(doc.loss_wt)
+		gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
 	#frappe.throw(str(gross_wt))
 	result = {
 		"gross_wt": gross_wt,
