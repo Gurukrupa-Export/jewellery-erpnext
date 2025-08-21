@@ -816,6 +816,13 @@
    "fieldtype": "Check",
    "label": "Is Finding",
    "read_only": 1
+   },
+  {
+   "default": "0",
+   "fieldname": "is_received_gross_greater_than",
+   "fieldtype": "Check",
+   "read_only": 1,
+   "label": "Is received gross greater than gross "
   }
  ],
  "index_web_pages_for_search": 1,
