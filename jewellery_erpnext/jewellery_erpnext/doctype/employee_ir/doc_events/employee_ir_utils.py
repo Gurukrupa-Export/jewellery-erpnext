@@ -355,7 +355,9 @@ def create_chain_stock_entry(self, row):
 	if self.main_slip and se_doc.get("items"):
 		se_doc.save()
 		se_doc.submit()
-
+		for item_row in se_doc.items:
+			if item_row.get("batch_no"):
+				frappe.db.set_value("Batch",item_row.get("batch_no"),"custom_inventory_type","Regular Stock")
 	mop_se_doc = frappe.new_doc("Stock Entry")
 	mop_se_doc.stock_entry_type = "Material Transfer"
 	mop_se_doc.purpose = "Material Transfer"
