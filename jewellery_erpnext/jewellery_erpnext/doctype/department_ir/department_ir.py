@@ -209,6 +209,7 @@ class DepartmentIR(Document):
 					"Manufacturing Operation",
 					{"department_issue_id": self.name, "manufacturing_work_order": row.manufacturing_work_order},
 				)
+				new_operation = frappe.get_doc("Manufacturing Operation",new_operation)
 				se_list = frappe.db.get_list("Stock Entry", {"department_ir": self.name})
 				for se in se_list:
 					se_doc = frappe.get_doc("Stock Entry", se.name)
@@ -225,16 +226,16 @@ class DepartmentIR(Document):
 					"manufacturing_operation",
 					row.manufacturing_operation,
 				)
-				if new_operation:
+				if new_operation.name:
 					frappe.db.set_value(
 						"Department IR Operation",
-						{"docstatus": 2, "manufacturing_operation": new_operation},
+						{"docstatus": 2, "manufacturing_operation": new_operation.name},
 						"manufacturing_operation",
 						None,
 					)
 					frappe.db.set_value(
 						"Stock Entry Detail",
-						{"docstatus": 2, "manufacturing_operation": new_operation},
+						{"docstatus": 2, "manufacturing_operation": new_operation.name},
 						"manufacturing_operation",
 						None,
 					)
@@ -259,7 +260,7 @@ class DepartmentIR(Document):
 					{
 						row.manufacturing_work_order: {
 							"cur_mop": row.manufacturing_operation,
-							"new_mop": new_operation,
+							"new_mop": new_operation.name,
 						}
 					}
 				)
@@ -355,6 +356,7 @@ class DepartmentIR(Document):
 					"Manufacturing Operation",
 					{"department_issue_id": self.name, "manufacturing_work_order": row.manufacturing_work_order},
 				)
+				new_operation = frappe.get_doc("Manufacturing Operation",new_operation)
 				se_list = frappe.db.get_list("Stock Entry", {"department_ir": self.name})
 				for se in se_list:
 					se_doc = frappe.get_doc("Stock Entry", se.name)
@@ -371,20 +373,20 @@ class DepartmentIR(Document):
 					"manufacturing_operation",
 					row.manufacturing_operation,
 				)
-				if new_operation:
+				if new_operation.name:
 					frappe.db.set_value(
 						"Department IR Operation",
-						{"docstatus": 2, "manufacturing_operation": new_operation},
+						{"docstatus": 2, "manufacturing_operation": new_operation.name},
 						"manufacturing_operation",
 						None,
 					)
 					frappe.db.set_value(
 						"Stock Entry Detail",
-						{"docstatus": 2, "manufacturing_operation": new_operation},
+						{"docstatus": 2, "manufacturing_operation": new_operation.name},
 						"manufacturing_operation",
 						None,
 					)
-					frappe.delete_doc("Manufacturing Operation", new_operation, ignore_permissions=1)
+					frappe.delete_doc("Manufacturing Operation", new_operation.name, ignore_permissions=1)
 				frappe.db.set_value(
 					"Manufacturing Operation", row.manufacturing_operation, "status", "In Transit"
 				)
@@ -395,7 +397,7 @@ class DepartmentIR(Document):
 					self.name, row.manufacturing_work_order, row.manufacturing_operation, self.next_department
 				)
 				# Accumulate data for batch update instead of calling the function here
-				stock_entry_data.append((row.manufacturing_work_order, new_operation))
+				stock_entry_data.append((row.manufacturing_work_order, new_operation.name))
 
 				frappe.db.set_value(
 					"Manufacturing Operation", row.manufacturing_operation, "status", "Finished"
@@ -405,7 +407,7 @@ class DepartmentIR(Document):
 					{
 						row.manufacturing_work_order: {
 							"cur_mop": row.manufacturing_operation,
-							"new_mop": new_operation,
+							"new_mop": new_operation.name,
 						}
 					}
 				)
@@ -486,6 +488,7 @@ class DepartmentIR(Document):
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
+				new_operation.save()
 
 	@frappe.whitelist()
 	def get_summary_data(self):
