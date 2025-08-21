@@ -312,7 +312,7 @@ class EmployeeIR(Document):
 				res["status"] = "Finished"
 				res["employee"] = self.employee
 				new_operation = create_operation_for_next_op(
-					row.manufacturing_operation, employee_ir=self.name, received_gr_wt=row.received_gross_wt
+					row.manufacturing_operation, employee_ir=self.name, gross_wt=row.gross_wt
 				)
 				res["complete_time"] = curr_time
 				frappe.db.set_value(
@@ -907,7 +907,7 @@ class EmployeeIR(Document):
 		return get_summary_data(self)
 
 
-def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
+def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 
 	new_mop_doc = frappe.copy_doc(
 		frappe.get_doc("Manufacturing Operation", docname), ignore_no_copy=False
@@ -917,7 +917,7 @@ def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
 	new_mop_doc.status = "Not Started"
 	new_mop_doc.department_ir_status = None
 	new_mop_doc.department_receive_id = None
-	new_mop_doc.prev_gross_wt = received_gr_wt
+	new_mop_doc.prev_gross_wt = gross_wt
 	new_mop_doc.employee_ir = employee_ir
 	new_mop_doc.employee = None
 	new_mop_doc.previous_mop = docname
