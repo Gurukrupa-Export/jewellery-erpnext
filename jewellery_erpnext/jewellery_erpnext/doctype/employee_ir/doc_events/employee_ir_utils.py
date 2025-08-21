@@ -93,7 +93,7 @@ def create_chain_stock_entry(self, row):
 
 	mop_data = frappe.db.get_all(
 		"MOP Balance Table",
-		{"parent": row.manufacturing_operation, "item_code": ["in", item_list]},
+		{"parent": row.manufacturing_operation},
 		["item_code", "batch_no", "qty", "parent", "inventory_type", "s_warehouse"],
 	)
 
@@ -222,9 +222,8 @@ def create_chain_stock_entry(self, row):
 		temp_diff = 0
 		mop_batch_list = []
 		if self.main_slip:
-			temp_diff, mop_batch_list = create_repack(
-				self, row, item, mop_data, warehouse, row.received_gross_wt
-			)
+			temp_diff = 0
+			create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
 		for batch in mop_batch_list:
 			se_doc.append(
 				"items",
@@ -353,10 +352,12 @@ def create_chain_stock_entry(self, row):
 
 	se_doc.set_posting_date = 1
 	se_doc.posting_time = frappe.utils.nowtime()
-	if self.main_slip:
+	if self.main_slip and se_doc.get("items"):
 		se_doc.save()
 		se_doc.submit()
-
+		for item_row in se_doc.items:
+			if item_row.get("batch_no"):
+				frappe.db.set_value("Batch",item_row.get("batch_no"),"custom_inventory_type","Regular Stock")
 	mop_se_doc = frappe.new_doc("Stock Entry")
 	mop_se_doc.stock_entry_type = "Material Transfer"
 	mop_se_doc.purpose = "Material Transfer"
@@ -381,7 +382,7 @@ def create_chain_stock_entry(self, row):
 		copy_row.t_warehouse = department_wh
 		copy_row.serial_and_batch_bundle = None
 		mop_se_doc.append("items", copy_row)
-	if self.main_slip:
+	if self.main_slip and mop_se_doc.get("items"):
 		mop_se_doc.save()
 		mop_se_doc.submit()
 
@@ -714,7 +715,7 @@ def create_purity_repack(self, row, item, pure_data, warehouse, temp_diff, purit
 def create_operation_for_next_op(docname, target_doc=None, employee_ir=None):
 	def set_missing_value(source, target):
 		target.previous_operation = source.operation
-		target.prev_gross_wt = source.received_gross_wt or source.gross_wt or source.prev_gross_wt
+		target.prev_gross_wt  = source.gross_wt or source.received_gross_wt or source.prev_gross_wt
 		target.previous_mop = source.name
 
 	target_doc = get_mapped_doc(

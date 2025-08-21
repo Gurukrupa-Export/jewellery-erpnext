@@ -312,14 +312,14 @@ class EmployeeIR(Document):
 				res["status"] = "Finished"
 				res["employee"] = self.employee
 				new_operation = create_operation_for_next_op(
-					row.manufacturing_operation, employee_ir=self.name, received_gr_wt=row.received_gross_wt
+					row.manufacturing_operation, employee_ir=self.name, gross_wt=row.gross_wt
 				)
 				res["complete_time"] = curr_time
 				frappe.db.set_value(
 					"Manufacturing Work Order",
 					row.manufacturing_work_order,
 					"manufacturing_operation",
-					new_operation,
+					new_operation.name,
 				)
 				# add_time_log(row.manufacturing_operation, res)
 				time_log_args.append((row.manufacturing_operation, res))
@@ -327,6 +327,7 @@ class EmployeeIR(Document):
 			if row.get("is_finding_mwo"):
 				if not cancel:
 					create_chain_stock_entry(self, row)
+					new_operation.save()
 			else:
 				if not cancel:
 					se_rows, msl_rows, product_loss, mfg_rows = create_stock_entry(
@@ -365,26 +366,26 @@ class EmployeeIR(Document):
 						"manufacturing_operation",
 						row.manufacturing_operation,
 					)
-					if new_operation:
+					if new_operation.name:
 						frappe.db.set_value(
 							"Department IR Operation",
-							{"docstatus": 2, "manufacturing_operation": new_operation},
+							{"docstatus": 2, "manufacturing_operation": new_operation.name},
 							"manufacturing_operation",
 							None,
 						)
 						frappe.db.set_value(
 							"Stock Entry Detail",
-							{"docstatus": 2, "manufacturing_operation": new_operation},
+							{"docstatus": 2, "manufacturing_operation": new_operation.name},
 							"manufacturing_operation",
 							None,
 						)
 						frappe.db.set_value(
 							"Stock Entry MOP Item",
-							{"docstatus": 2, "manufacturing_operation": new_operation},
+							{"docstatus": 2, "manufacturing_operation": new_operation.name},
 							"manufacturing_operation",
 							None,
 						)
-						frappe.delete_doc("Manufacturing Operation", new_operation, ignore_permissions=1)
+						frappe.delete_doc("Manufacturing Operation", new_operation.name, ignore_permissions=1)
 
 					frappe.db.set_value(
 						"Manufacturing Operation", row.manufacturing_operation, "status", "Not Started"
@@ -558,7 +559,7 @@ class EmployeeIR(Document):
 			se_doc.save()
 			se_doc.submit()
 
-			update_mop_balance(new_operation)
+			update_mop_balance(new_operation.name)
 
 			for pmo, details in pmo_data.items():
 				pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
@@ -834,7 +835,7 @@ class EmployeeIR(Document):
 			total_qty = 0
 			# To prepare Final Data with all condition's
 			for child in mop_balance_table:
-				if child["item_code"] not in flat_metal_item:
+				if child["item_code"][0]  not in ["M", "F"]:
 					continue
 				key = (child["item_code"], child["batch_no"], child["qty"])
 				if key not in unique:
@@ -881,15 +882,7 @@ class EmployeeIR(Document):
 			# 	total_qty += entry["qty"]
 			for entry in data:
 				if total_qty != 0 and loss > 0:
-					if mwo_metal_property.get("is_finding_mwo"):
-						stock_loss = flt((entry["qty"] * loss) / total_qty, 3)
-					else:
-						if loss <= entry["qty"]:
-							stock_loss = loss
-							loss = 0
-						else:
-							stock_loss = entry["qty"]
-							loss -= entry["qty"]
+					stock_loss = flt((entry["qty"] * loss) / total_qty, 3)
 					if stock_loss > 0:
 						entry["received_gross_weight"] = entry["qty"] - stock_loss
 						entry["proportionally_loss"] = stock_loss
@@ -907,7 +900,7 @@ class EmployeeIR(Document):
 		return get_summary_data(self)
 
 
-def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
+def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 
 	new_mop_doc = frappe.copy_doc(
 		frappe.get_doc("Manufacturing Operation", docname), ignore_no_copy=False
@@ -917,7 +910,7 @@ def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
 	new_mop_doc.status = "Not Started"
 	new_mop_doc.department_ir_status = None
 	new_mop_doc.department_receive_id = None
-	new_mop_doc.prev_gross_wt = received_gr_wt
+	new_mop_doc.prev_gross_wt = gross_wt
 	new_mop_doc.employee_ir = employee_ir
 	new_mop_doc.employee = None
 	new_mop_doc.previous_mop = docname
@@ -1000,7 +993,7 @@ def create_operation_for_next_op(docname, employee_ir=None, received_gr_wt=0):
 	# target_doc.time_logs = []
 	# target_doc.total_time_in_mins = ""
 	# target_doc.save()
-	return new_mop_doc.name
+	return new_mop_doc
 
 
 @frappe.whitelist()

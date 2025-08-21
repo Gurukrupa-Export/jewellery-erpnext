@@ -19,7 +19,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.su
 )
 from jewellery_erpnext.utils import get_item_from_attribute
 from frappe.query_builder.functions import CombineDatetime, Sum
-
+from erpnext.stock.doctype.batch.batch import get_batch_qty
 
 def validate_inventory_dimention(self):
 	pmo_customer_data = frappe._dict()
@@ -233,7 +233,7 @@ def get_fifo_batches(self, row):
 					rows_to_append.append(temp_row)
 					total_qty -= batch.qty
 
-	if total_qty > 0:
+	if round(total_qty,3) > 0:
 		message = _("For <b>{0}</b> {1} is missing in <b>{2}</b>").format(
 			row.item_code, flt(total_qty, 2), warehouse
 		)
@@ -251,13 +251,15 @@ def get_fifo_batches(self, row):
 def get_batch_data_from_msl(item_code, main_slip, warehouse):
 	batch_data = []
 	msl_doc = frappe.get_doc("Main Slip", main_slip)
-
+ 
+	avl_batch =  get_batch_qty(warehouse= warehouse,item_code=item_code)
+	avl_batch = [system_batch.get("batch_no") for system_batch in avl_batch]
 	if warehouse != msl_doc.raw_material_warehouse:
 		frappe.msgprint(_("Please select batch manually for receving goods in Main Slip"))
 		return batch_data
 
 	for row in msl_doc.batch_details:
-		if row.qty != row.consume_qty and row.item_code == item_code:
+		if avl_batch and row.batch_no  in avl_batch:
 			batch_row = frappe._dict()
 			batch_row.update({"batch_no": row.batch_no, "qty": row.qty - row.consume_qty})
 			batch_data.append(batch_row)
