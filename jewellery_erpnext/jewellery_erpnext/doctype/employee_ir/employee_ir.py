@@ -996,7 +996,6 @@ class EmployeeIR(Document):
 			create_single_se_entry(self, mop_data)
 
 	def update_mop_for_receive(self):
-		frappe.log_error(title ="update_mop_for_receive",message = f"{self.as_dict()}")
 		se_data = {}
 		row_to_append = []
 		main_slip_rows = []
@@ -1064,15 +1063,6 @@ class EmployeeIR(Document):
 			net_wt = frappe.db.get_value("Manufacturing Operation", row.manufacturing_operation, "net_wt")
 
 			difference_wt = flt(row.received_gross_wt, precision) - flt(row.gross_wt, precision)
-			frappe.log_error(title = "difference_wt" , message = f"""
-                   row.received_gross_wt {row.received_gross_wt} ,
-                   flt(row.received_gross_wt, precision) {flt(row.received_gross_wt, precision)} ,
-                   row.gross_wt {row.gross_wt},
-                   flt(row.gross_wt, precision {flt(row.gross_wt, precision)} ,
-                   difference_wt {(row.received_gross_wt - row.gross_wt )}
-                   difference_wt {difference_wt},
-                   difference_wt_round {flt(difference_wt, precision)}
-                   """ )
 			res = frappe._dict(
 				{
 					"received_gross_wt": row.received_gross_wt,
@@ -1146,10 +1136,8 @@ class EmployeeIR(Document):
 		self.db_set("se_data", json.dumps(obj=se_data, default=serialize_for_json), update_modified=False)
 
 	def create_stock_entry_for_receive(self):
-		frappe.log_error(title ="create_stock_entry_for_receive",message = f"{self.as_dict()}")
 		if self.se_data:
 			se_data = json.loads(self.se_data)
-			frappe.log_error(title ="se_data",message = f"{se_data}")
 			if se_data.get("loss_rows"):
 				pl_se_doc = frappe.new_doc("Stock Entry")
 				pl_se_doc.company = self.company

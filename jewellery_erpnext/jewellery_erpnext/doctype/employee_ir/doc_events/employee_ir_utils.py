@@ -173,7 +173,6 @@ def create_chain_stock_entry(self, row):
 	se_doc.employee_ir = self.name
 	warehouse = frappe.db.get_value("Main Slip", self.main_slip, "raw_material_warehouse")
 	mfg_warehouse = frappe.db.get_value("Main Slip", self.main_slip, "warehouse")
-	frappe.log_error(title = "mop_data" , message = f" {mop_data} ")
 	if row.received_gross_wt > 0 and mop_data:
 
 		manual_loss_items = [
@@ -251,14 +250,11 @@ def create_chain_stock_entry(self, row):
 						"inventory_type": "Regular Stock",
 					},
 				)
-				frappe.log_error(title = f"mop_data_mop_batch_list_qty_{batch}" , message = f" {mop_batch_list.get(batch) } ")
 
 	if not mop_data or diff > 0:
 		temp_diff = abs(diff)
-		frappe.log_error(title = "main_slip_data" , message = f"main_slip_data:{main_slip_data},  temp_diff :{temp_diff} ")
 		if temp_diff > 0 and main_slip_data:
 			temp_diff, reg_batch_list = create_repack(self, row, item, main_slip_data, warehouse, temp_diff)
-			frappe.log_error(title= "batch_list",message = f"{reg_batch_list}")
 			for batch in reg_batch_list:
 				se_doc.append(
 					"items",
@@ -352,9 +348,7 @@ def create_chain_stock_entry(self, row):
 	se_doc.set_posting_date = 1
 	se_doc.posting_time = frappe.utils.nowtime()
 	if self.main_slip and se_doc.get("items"):
-		frappe.log_error(title = "se_doc" ,message = f"{se_doc.as_dict()}")
 		se_doc.save()
-		frappe.log_error(title = "se_doc after_save" ,message = f"{se_doc.as_dict()}")
 		se_doc.submit()
 		for item_row in se_doc.items:
 			if row.get("batch_no"):
@@ -421,7 +415,6 @@ def create_department_transfer_se_entry(doc, mop_data):
 	for row in mop_balance_details:
 		mop_balance_data.setdefault(row.parent, [])
 		mop_balance_data[row.parent].append(row)
-	frappe.log_error(title = "create_department_transfer_se_entry_mop_data", message =f"{mop_data}")
 	for row in mop_data:
 		rows_to_append += transfer_rows_to_append(
 			doc, row, mop_data[row], mop_balance_data.get(mop_data[row]), department_wh, employee_wh
@@ -472,7 +465,6 @@ def transfer_rows_to_append(doc, mwo, mop, mop_data, department_wh, employee_wh)
 			duplicate_row["department"] = doc.department
 			duplicate_row["to_department"] = doc.department
 			duplicate_row["manufacturer"] = doc.manufacturer
-			frappe.log_error(title ="transfer_rows_to_append", message = f"{duplicate_row}")
 			rows_to_append.append(duplicate_row)
 
 	return rows_to_append
@@ -620,7 +612,6 @@ def create_repack(self, row, item, metal_data, warehouse, temp_diff):
 					},
 				)
 				batch_dict.update({batch_doc.name: abs(se_qty)})
-	frappe.log_error(title = "Stock Entry_main_slip", message = f"{se_doc.as_dict()}" )
 	se_doc.save()
 	se_doc.submit()
 	return temp_diff, batch_dict
