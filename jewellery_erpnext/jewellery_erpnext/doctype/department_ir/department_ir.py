@@ -249,7 +249,7 @@ class DepartmentIR(Document):
 				new_operation = create_operation_for_next_dept(
 					self.name, row.manufacturing_work_order, row.manufacturing_operation, self.next_department
 				)
-				update_stock_entry_dimensions(self, row, new_operation)
+				update_stock_entry_dimensions(self, row, new_operation.name)
 				# create_stock_entry_for_issue(self, row, new_operation)
 				frappe.db.set_value(
 					"Manufacturing Operation", row.manufacturing_operation, "status", "Finished"
@@ -1245,7 +1245,7 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	# target_doc.save()
 	# target_doc.db_set("employee", None)
 	frappe.db.set_value("Manufacturing Work Order", mwo, "manufacturing_operation", new_mop_doc.name)
-	return new_mop_doc.name
+	return new_mop_doc
 
 def create_operation_for_next_dept_new(ir_name, mwo, mop, next_department):
 	operation = frappe.db.get_value("Manufacturing Operation", mop, "operation")
