@@ -52,6 +52,7 @@ class CustomStockEntry(StockEntry):
 
 	@frappe.whitelist()
 	def update_batches(self):
+		# if not self.auto_created:
 		rows_to_append = []
 		for row in self.items:
 			if (
@@ -105,6 +106,9 @@ class CustomStockEntry(StockEntry):
 						item.pcs = int(item.qty / weight)
 
 				self.append("items", item)
+
+		# if frappe.db.exists("Stock Entry", self.name):
+		# 	self.db_update()
 
 	def validate_with_material_request(self):
 		for item in self.get("items"):
@@ -199,12 +203,6 @@ class CustomStockEntry(StockEntry):
 			# 	frappe.local.batch_valuation_ledger.clear()
 			# 	del frappe.local.batch_valuation_ledger
 
-	# def make_sl_entries(self, sl_entries, allow_negative_stock=False, via_landed_cost_voucher=False):
-	# 	from erpnext.stock.serial_batch_bundle import update_batch_qty
-	# 	from erpnext.stock.stock_ledger import make_sl_entries
-
-	# 	make_sl_entries(sl_entries, allow_negative_stock, via_landed_cost_voucher)
-	# 	update_batch_qty(self.doctype, self.name, via_landed_cost_voucher=via_landed_cost_voucher)
 
 @frappe.whitelist()
 def get_html_data(doc):

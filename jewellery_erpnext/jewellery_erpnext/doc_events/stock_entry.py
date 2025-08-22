@@ -53,12 +53,15 @@ def before_validate(self, method):
 				frappe.throw(
 					_("Stock Entry not allowed for {0} in between transit").format(row.manufacturing_operation)
 				)
-		if row.custom_variant_of in ["M", "F"] and self.stock_entry_type not in ['Customer Goods Transfer','Customer Goods Issue','Customer Goods Received']:
+		if row.custom_variant_of in ["M", "F"] and self.stock_entry_type not in ["Customer Goods Received","Customer Goods Issue","Customer Goods Transfer"]:
 			if not pure_item_purity:
 				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
 
 				if self.stock_entry_type == 'Material Transfer (MAIN SLIP)':
-					manufacturer = frappe.db.get_value("Main Slip",self.to_main_slip,"manufacturer")
+					if self.to_main_slip:
+						manufacturer = frappe.db.get_value("Main Slip",self.to_main_slip,"manufacturer")
+					if self.main_slip:
+						manufacturer = frappe.db.get_value("Main Slip",self.main_slip,"manufacturer")
 				elif self.manufacturing_order:
 					manufacturer = frappe.db.get_value("Parent Manufacturing Order",self.manufacturing_order,"manufacturer")
 				else:
@@ -171,9 +174,9 @@ def before_validate(self, method):
 # main slip have validation error for repack and transfer so it was commented
 # validate_main_slip_warehouse(self)
 
+
 def validate(self, method):
 	validate_inventory_dimention(self)
-
 
 def validate_pcs(self):
 	pcs_data = {}
@@ -971,7 +974,6 @@ def validate_duplicate_batches(entry, batch_data):
 				", ".join(batch_data[key]),
 			)
 		)
-
 
 def get_previous_se_details(mop_doc, d_warehouse, e_warehouse):
 	additional_rows = []

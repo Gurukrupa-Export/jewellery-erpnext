@@ -2,9 +2,7 @@ import copy
 import json
 import frappe
 import erpnext
-from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
-	get_auto_batch_nos,
-)
+
 from frappe import _
 from frappe.query_builder import Case
 from frappe.query_builder.functions import Locate
@@ -19,6 +17,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.su
 )
 from jewellery_erpnext.utils import get_item_from_attribute
 from frappe.query_builder.functions import CombineDatetime, Sum
+
+from jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.doc_events.utils import get_auto_batch_nos
+
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 
 def validate_inventory_dimention(self):
@@ -55,7 +56,7 @@ def validate_inventory_dimention(self):
 					else:
 						frappe.throw(_("Can not use Customer Goods inventory for non provided customer Item"))
 
-
+# chnages in this function
 def get_fifo_batches(self, row):
 	rows_to_append = []
 	row.batch_no = None
@@ -410,7 +411,6 @@ def rename_stock_entry_docs():
 			doc.name,
 			force=True,
 		)
-
 
 def check_customer_goods(row, pmo):
 	"""
