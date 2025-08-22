@@ -399,6 +399,10 @@ def create_department_transfer_se_entry(doc, mop_data):
 	employee_wh = frappe.get_value(
 		"Warehouse", {"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"}
 	)
+	if doc.subcontracting == "Yes":
+		employee_wh = frappe.get_value(
+		"Warehouse", {"disabled": 0, "subcontractor": doc.subcontractor, "company": doc.company,"warehouse_type": "Manufacturing"}
+	)
 	if not department_wh:
 		frappe.throw(_("Please set warhouse for department {0}").format(doc.department))
 	if not employee_wh:
