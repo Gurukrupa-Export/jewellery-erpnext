@@ -17,7 +17,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	get_fifo_batches,
 	set_employee,
 	set_gross_wt,
-	validate_inventory_dimention,
 	validate_warehouse,
 	get_incoming_rate
 )
@@ -36,8 +35,8 @@ def before_validate(self, method):
 	validate_warehouse(self)
 
 
-def on_submit(self, method):
-	validate_inventory_dimention(self)
+# def on_submit(self, method):
+# 	validate_inventory_dimention(self)
 	# clear_batch_ledger_cache(self)
 
 
@@ -53,62 +52,63 @@ class CustomStockEntry(StockEntry):
 
 	@frappe.whitelist()
 	def update_batches(self):
-		if not self.auto_created:
-			rows_to_append = []
-			for row in self.items:
-				if (
-					row.get("department")
-					and frappe.db.get_value("Department", row.department, "custom_can_not_make_dg_entry") == 1
-				):
-					if frappe.db.get_value("Item", row.item_code, "variant_of") in ["D", "G"]:
-						frappe.throw(_("{0} not allowed in Operation {1}").format(row.item_code, row.department))
-				if frappe.db.get_value("Item", row.item_code, "has_batch_no"):
-					if row.s_warehouse:
-						if row.get("batch_no") and get_batch_qty(row.batch_no, row.s_warehouse) >= row.qty:
-							temp_row = copy.deepcopy(row)
-							rows_to_append += [temp_row]
-						else:
-							rows_to_append += get_fifo_batches(self, row)
-					elif row.t_warehouse:
-						rows_to_append += [row.__dict__]
-				else:
+		# if not self.auto_created:
+		rows_to_append = []
+		for row in self.items:
+			if (
+				row.get("department")
+				and frappe.db.get_value("Department", row.department, "custom_can_not_make_dg_entry") == 1
+			):
+				if frappe.db.get_value("Item", row.item_code, "variant_of") in ["D", "G"]:
+					frappe.throw(_("{0} not allowed in Operation {1}").format(row.item_code, row.department))
+			if frappe.db.get_value("Item", row.item_code, "has_batch_no"):
+				if row.s_warehouse:
+					if row.get("batch_no") and get_batch_qty(row.batch_no, row.s_warehouse) >= row.qty:
+						temp_row = copy.deepcopy(row)
+						rows_to_append += [temp_row]
+					else:
+						rows_to_append += get_fifo_batches(self, row)
+				elif row.t_warehouse:
 					rows_to_append += [row.__dict__]
+			else:
+				rows_to_append += [row.__dict__]
 
-			if rows_to_append:
-				self.items = []
-				for item in rows_to_append:
-					if isinstance(item, dict):
-						item = frappe._dict(item)
-					if item.batch_no:
-						if not item.inventory_type:
-							item.inventory_type = frappe.db.get_value("Batch", item.batch_no, "custom_inventory_type")
-						item.customer = frappe.db.get_value("Batch", item.batch_no, "custom_customer")
-					if frappe.db.get_value("Item", item.item_code, "variant_of") == "D":
-						attribute = frappe.db.get_value(
-							"Item Variant Attribute",
-							{"parent": item.item_code, "attribute": "Diamond Grade"},
-							"attribute_value",
+		if rows_to_append:
+			self.items = []
+			for item in rows_to_append:
+				if isinstance(item, dict):
+					item = frappe._dict(item)
+				if item.batch_no:
+					if not item.inventory_type:
+						item.inventory_type = frappe.db.get_value("Batch", item.batch_no, "custom_inventory_type")
+					item.customer = frappe.db.get_value("Batch", item.batch_no, "custom_customer")
+				if frappe.db.get_value("Item", item.item_code, "variant_of") == "D":
+					attribute = frappe.db.get_value(
+						"Item Variant Attribute",
+						{"parent": item.item_code, "attribute": "Diamond Grade"},
+						"attribute_value",
+					)
+					diamond_sieve_size = frappe.db.get_value(
+						"Item Variant Attribute",
+						{"parent": item.item_code, "attribute": "Diamond Sieve Size"},
+						"attribute_value",
+					)
+					weight = (
+						frappe.db.get_value(
+							"Attribute Value Diamond Sieve Size",
+							{"parent": attribute, "diamond_sieve_size": diamond_sieve_size},
+							"per_pcs_average_weight",
 						)
-						diamond_sieve_size = frappe.db.get_value(
-							"Item Variant Attribute",
-							{"parent": item.item_code, "attribute": "Diamond Sieve Size"},
-							"attribute_value",
-						)
-						weight = (
-							frappe.db.get_value(
-								"Attribute Value Diamond Sieve Size",
-								{"parent": attribute, "diamond_sieve_size": diamond_sieve_size},
-								"per_pcs_average_weight",
-							)
-							or 0
-						)
+						or 0
+					)
 
-						if weight > 0 and item.qty and int(item.pcs) < 1:
-							item.pcs = int(item.qty / weight)
-					self.append("items", item)
+					if weight > 0 and item.qty and int(item.pcs) < 1:
+						item.pcs = int(item.qty / weight)
 
-			if frappe.db.exists("Stock Entry", self.name):
-				self.db_update()
+				self.append("items", item)
+
+		# if frappe.db.exists("Stock Entry", self.name):
+		# 	self.db_update()
 
 	def validate_with_material_request(self):
 		for item in self.get("items"):
@@ -203,12 +203,6 @@ class CustomStockEntry(StockEntry):
 			# 	frappe.local.batch_valuation_ledger.clear()
 			# 	del frappe.local.batch_valuation_ledger
 
-	# def make_sl_entries(self, sl_entries, allow_negative_stock=False, via_landed_cost_voucher=False):
-	# 	from erpnext.stock.serial_batch_bundle import update_batch_qty
-	# 	from erpnext.stock.stock_ledger import make_sl_entries
-
-	# 	make_sl_entries(sl_entries, allow_negative_stock, via_landed_cost_voucher)
-	# 	update_batch_qty(self.doctype, self.name, via_landed_cost_voucher=via_landed_cost_voucher)
 
 @frappe.whitelist()
 def get_html_data(doc):
