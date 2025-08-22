@@ -13,6 +13,7 @@ from six import itervalues
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	create_repack_for_subcontracting,
+	validate_inventory_dimention
 )
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.update_utils import (
 	update_main_slip_se_details,
@@ -25,10 +26,13 @@ from jewellery_erpnext.utils import get_item_from_attribute, get_variant_of_item
 import copy
 
 def before_validate(self, method):
-	if (
-		not self.get("__islocal") and frappe.db.exists("Stock Entry", self.name) and self.docstatus == 0
-	) or self.flags.throw_batch_error:
-		self.update_batches()
+	# if (
+	# 	not self.get("__islocal") and frappe.db.exists("Stock Entry", self.name) and self.docstatus == 0
+	# ) or self.flags.throw_batch_error:
+	# 	self.update_batches()
+
+	self.flags.throw_batch_error = True
+	self.update_batches()
 
 	pure_item_purity = None
 
@@ -166,6 +170,9 @@ def before_validate(self, method):
 
 # main slip have validation error for repack and transfer so it was commented
 # validate_main_slip_warehouse(self)
+
+def validate(self, method):
+	validate_inventory_dimention(self)
 
 
 def validate_pcs(self):
