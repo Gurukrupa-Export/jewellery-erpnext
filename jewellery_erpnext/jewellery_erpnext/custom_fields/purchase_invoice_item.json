@@ -250,15 +250,6 @@
   },
   {
    "dt": "Purchase Invoice Item",
-   "fieldname": "customer",
-   "fieldtype": "Link",
-   "insert_after": "stock_entry",
-   "label": "customer",
-   "module": "Jewellery Erpnext",
-   "options": "Customer"
-  },
-  {
-   "dt": "Purchase Invoice Item",
    "fieldname": "custom_pmo",
    "fieldtype": "Link",
    "insert_after": "material_request_item",
