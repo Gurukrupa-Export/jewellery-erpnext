@@ -37,9 +37,7 @@ def process_loss_entry(
 
 	if se_doc.items:
 		se_doc.flags.ignore_permissions = True
-		frappe.log_error(title = "se_doc", message = se_doc.as_dict())
 		se_doc.save()
-
 		se_doc.submit()
 
 
