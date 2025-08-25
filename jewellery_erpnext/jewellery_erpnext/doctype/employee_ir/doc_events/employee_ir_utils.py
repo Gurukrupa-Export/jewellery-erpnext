@@ -77,6 +77,10 @@ def create_chain_stock_entry(self, row):
 	emp_wh = frappe.get_value(
 		"Warehouse", {"employee": self.employee, "warehouse_type": "Manufacturing", "disabled": 0}
 	)
+	if self.subcontracting == "Yes":
+		emp_wh = frappe.get_value(
+		"Warehouse", {"disabled": 0, "subcontractor": self.subcontractor, "company": self.company,"warehouse_type": "Manufacturing"}
+	)
 
 	bom_items = frappe.db.get_all(
 		"BOM Item", {"parent": metal_data.master_bom}, "item_code"
