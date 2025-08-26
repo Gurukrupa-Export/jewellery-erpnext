@@ -488,7 +488,6 @@ class DepartmentIR(Document):
 				stock_doc.flags.ignore_permissions = True
 				stock_doc.save()
 				stock_doc.submit()
-				new_operation.save()
 
 	@frappe.whitelist()
 	def get_summary_data(self):
