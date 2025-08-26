@@ -181,11 +181,23 @@ class Refining(Document):
 			data = query.run(as_dict=True)
 
 			all_stock_entry += data
+		if all_stock_entry:
+			return frappe.render_template(
+				"jewellery_erpnext/jewellery_erpnext/doctype/refining/refining.html", {"data": all_stock_entry}
+			)
 
-		return frappe.render_template(
-			"jewellery_erpnext/jewellery_erpnext/doctype/refining/refining.html", {"data": all_stock_entry}
-		)
+@frappe.whitelist()
+def get_balance_table(manufacturing_work_order):
+		manufacturing_work_order = json.loads(manufacturing_work_order)
+		mop_balance_table = []
+  
+		for work_order in manufacturing_work_order:
+			manufacturing_operation = frappe.db.get_value("Manufacturing Operation",{"manufacturing_work_order":work_order["manufacturing_work_order"],"status":"Not Started"})
 
+			if manufacturing_operation:
+				mop_balance_table += frappe.get_all("MOP Balance Table",{"parent":manufacturing_operation},["item_code","qty","batch_no","pcs","inventory_type","customer"])
+    
+		return mop_balance_table
 
 @frappe.whitelist()
 def get_manufacturing_operations(source_name, target_doc=None):
