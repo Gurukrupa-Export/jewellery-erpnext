@@ -4,7 +4,7 @@ frappe.ui.form.on("Payment Entry", {
 		frm.trigger("setup");
 	},
 	setup: (frm) => {
-		if ((frm.doc.docstatus == 1) && (frm.doc.unallocated_amount > 0) && (frm.doc.party_type == "Customer")){
+		if ((frm.doc.docstatus == 1) && (frm.doc.unallocated_amount > 0)){
 
 			frm.add_custom_button("Reconcile Inter Branch", async () => {
 				this.data = await frm.events.get_unreconciled_sales_invoices(frm, frm.doc.company, frm.doc.party);
@@ -21,22 +21,44 @@ frappe.ui.form.on("Payment Entry", {
 							read_only: 1,
 						},
 						{
-							fieldtype: "Check",
-							fieldname: "is_advance_payment",
-							label: __("Is New Customer Advance"),
-							default: 0,
-							onchange: (val) => {
-								if (d.get_value("is_advance_payment")) {
+							fieldtype: "Select",
+							fieldname: "reconcile_type",
+							label: __("Reconcile Type"),
+							default: "Against Sales Invoices",
+							options: [
+								"Against Sales Invoices",
+								"Customer Advance",
+								"Supplier Payment"
+							],
+							onchange: () => {
+								if (d.get_value("reconcile_type") == "Customer Advance") {
 									d.set_df_property("invoices", "hidden", 1)
+									d.set_df_property("allocated_supplier_amount", "hidden", 1)
+									d.set_df_property("supplier_branch", "hidden", 1)
+									d.set_df_property("supplier_branch", "reqd", 0)
 									d.set_df_property("allocated_advance_amount", "hidden", 0)
 									d.set_df_property("customer_branch", "hidden", 0)
 									d.set_df_property("customer_branch", "reqd", 1)
 									d.set_value("total_allocated_amount", frm.doc.paid_amount)
+
+								} else if (d.get_value("reconcile_type") == "Supplier Payment") {
+									d.set_df_property("invoices", "hidden", 1)
+									d.set_df_property("allocated_advance_amount", "hidden", 1)
+									d.set_df_property("customer_branch", "hidden", 1)
+									d.set_df_property("customer_branch", "reqd", 0)
+									d.set_df_property("allocated_supplier_amount", "hidden", 0)
+									d.set_df_property("supplier_branch", "hidden", 0)
+									d.set_df_property("supplier_branch", "reqd", 1)
+									d.set_value("total_allocated_amount", frm.doc.paid_amount)
+
 								} else {
 									d.set_df_property("invoices", "hidden", 0)
 									d.set_df_property("allocated_advance_amount", "hidden", 1)
 									d.set_df_property("customer_branch", "hidden", 1)
 									d.set_df_property("customer_branch", "reqd", 0)
+									d.set_df_property("allocated_supplier_amount", "hidden", 1)
+									d.set_df_property("supplier_branch", "hidden", 1)
+									d.set_df_property("supplier_branch", "reqd", 0)
 								}
 							}
 
@@ -45,6 +67,13 @@ frappe.ui.form.on("Payment Entry", {
 							fieldtype: "Link",
 							fieldname: "customer_branch",
 							label: "Customer Branch",
+							options: "Branch",
+							hidden: 1
+						},
+						{
+							fieldtype: "Link",
+							fieldname: "supplier_branch",
+							label: "Supplier Branch",
 							options: "Branch",
 							hidden: 1
 						},
@@ -74,6 +103,17 @@ frappe.ui.form.on("Payment Entry", {
 							hidden:1,
 							onchange: () => {
 								d.set_value("total_allocated_amount", d.get_value("allocated_advance_amount"))
+							}
+
+						},
+						{
+							fieldtype: "Currency",
+							fieldname: "allocated_supplier_amount",
+							label: __("Allocated Supplier Amount"),
+							default: frm.doc.paid_amount,
+							hidden:1,
+							onchange: () => {
+								d.set_value("total_allocated_amount", d.get_value("allocated_supplier_amount"))
 							}
 
 						},
@@ -160,9 +200,7 @@ frappe.ui.form.on("Payment Entry", {
 					],
 					primary_action: (values) => {
 						let args = []
-						let is_adv = "false"
-						if (values.is_advance_payment && values.allocated_advance_amount) {
-							is_adv = "true"
+						if (values.reconcile_type === "Customer Advance" && values.allocated_advance_amount) {
 							args.push({
 								company: frm.doc.company,
 								posting_date: frm.doc.posting_date,
@@ -171,11 +209,26 @@ frappe.ui.form.on("Payment Entry", {
 								pe_name: frm.doc.name,
 								pe_branch: frm.doc.branch,
 								paid_amount: frm.doc.paid_amount,
-								receivable_account: frm.doc.paid_from,
+								paid_from: frm.doc.paid_from,
 								party_type: frm.doc.party_type,
 								party: frm.doc.party,
 								allocated_amount: values.allocated_advance_amount,
 
+							})
+						} else if (values.reconcile_type === "Supplier Payment" && values.allocated_supplier_amount) {
+							args.push({
+								company: frm.doc.company,
+								posting_date: frm.doc.posting_date,
+								doctype: frm.doc.doctype,
+								supplier_branch: values.supplier_branch,
+								pe_name: frm.doc.name,
+								pe_branch: frm.doc.branch,
+								paid_amount: frm.doc.paid_amount,
+								paid_from: frm.doc.paid_from,
+								paid_to: frm.doc.paid_to,
+								party_type: frm.doc.party_type,
+								party: frm.doc.party,
+								allocated_amount: values.allocated_supplier_amount,
 							})
 						} else {
 							const selected_invoices = d.fields_dict.invoices.grid.get_selected_children();
@@ -188,7 +241,7 @@ frappe.ui.form.on("Payment Entry", {
 									pe_name: frm.doc.name,
 									pe_branch: frm.doc.branch,
 									paid_amount: frm.doc.paid_amount,
-									receivable_account: frm.doc.paid_from,
+									paid_from: frm.doc.paid_from,
 									party_type: frm.doc.party_type,
 									party: frm.doc.party,
 									si_name: invoice.sales_invoice,
@@ -207,7 +260,7 @@ frappe.ui.form.on("Payment Entry", {
 							method: "jewellery_erpnext.interbranch.reconcile_inter_branch_payment",
 							args: {
 								data: args,
-								is_adv: is_adv
+								reconcile_type: values.reconcile_type,
 							},
 							freeze: 1,
 							freeze_msg: __("Reconciling Inter Branch Payment.."),

@@ -4,62 +4,30 @@ import frappe.utils
 from pypika import Order
 
 
-def create_inter_branch_journal_entries(args, is_adv=False):
+def create_inter_branch_journal_entries(args, reconcile_type):
 	"""
 	Create two Journal Entries: one for PE branch, one for SI branch.
 	Enqueue reconciliation job after commit.
 	"""
 	pe_branch_account = get_branch_account(args.pe_branch)
-	receivable_branch = args.customer_branch if is_adv else args.si_branch
+	args.pe_branch_account = pe_branch_account
+	receivable_branch = args.si_branch
+
+	if reconcile_type == "Supplier Payment":
+		receivable_branch = args.supplier_branch
+	elif reconcile_type == "Customer Advance":
+		receivable_branch = args.customer_branch
+
 	receivable_branch_acc = get_branch_account(receivable_branch)
+
+	args.receivable_branch = receivable_branch
+	args.receivable_branch_acc = receivable_branch_acc
 
 	res = []
 	args.pe_jv_name = None
 	args.si_jv_name = None
 
-	jv_pe_branch = [
-		{
-			"account": args.receivable_account,
-			"debit_in_account_currency": args.allocated_amount,
-			"party_type": args.party_type,
-			"party": args.party,
-			"branch": args.pe_branch
-		},
-		{
-			"account": receivable_branch_acc,
-			"credit_in_account_currency": args.allocated_amount,
-			"branch": args.pe_branch
-		}
-	]
-
-	receivabe_account_details = {
-		"account": args.receivable_account,
-		"credit_in_account_currency": args.allocated_amount,
-		"party_type": args.party_type,
-		"party": args.party,
-		"branch": receivable_branch
-	}
-
-	if not is_adv:
-		receivabe_account_details.update({
-			"reference_type": "Sales Invoice",
-			"reference_name": args.si_name,
-			"branch": args.si_branch,
-		})
-
-	jv_receivable_branch = [
-		receivabe_account_details,
-		{
-			"account": pe_branch_account,
-			"debit_in_account_currency": args.allocated_amount,
-			"branch": receivable_branch
-		}
-	]
-
-	jv_accounts_details = {
-		args.pe_branch: jv_pe_branch,
-		receivable_branch: jv_receivable_branch
-	}
+	jv_accounts_details = construct_jv_args(args,reconcile_type)
 
 	for branch, accounts in jv_accounts_details.items():
 		jv = frappe.new_doc("Journal Entry")
@@ -82,6 +50,10 @@ def create_inter_branch_journal_entries(args, is_adv=False):
 
 		res.append(jv.name)
 
+	if reconcile_type == "Supplier Payment":
+		frappe.msgprint(f"Supplier Payment Inter Branch JVs created: {', '.join(res)}")
+		return res
+
 	# Enqueue reconciliation
 	job_name = f"reconcile_{args.pe_jv_name}_invoice_with_payment_{args.pe_name}"
 	frappe.enqueue(
@@ -101,8 +73,115 @@ def create_inter_branch_journal_entries(args, is_adv=False):
 
 	return res
 
+def construct_jv_args(args, reconcile_type):
+	jv_pe_branch = []
+	jv_receivable_branch = []
 
-def reconcile_pe_with_inter_branch_jv(args=None):
+	if reconcile_type == "Supplier Payment":
+		jv_pe_branch.extend([
+			{
+				"account": args.receivable_branch_acc,
+				"debit_in_account_currency": args.allocated_amount,
+				"branch": args.pe_branch,
+			},
+			{
+				"account": args.paid_to,
+				"credit_in_account_currency": args.allocated_amount,
+				"branch": args.pe_branch,
+				"party_type": args.party_type,
+				"party": args.party
+			}
+		])
+
+		jv_receivable_branch.extend([
+			{
+				"account": args.paid_to,
+				"debit_in_account_currency": args.allocated_amount,
+				"branch": args.receivable_branch,
+				"party_type": args.party_type,
+				"party": args.party
+			},
+			{
+				"account": args.pe_branch_account,
+				"credit_in_account_currency": args.allocated_amount,
+				"branch": args.receivable_branch,
+			}
+
+		])
+
+	elif reconcile_type == "Customer Advance":
+		jv_pe_branch = [
+			{
+				"account": args.paid_from,
+				"debit_in_account_currency": args.allocated_amount,
+				"party_type": args.party_type,
+				"party": args.party,
+				"branch": args.pe_branch
+			},
+			{
+				"account": args.receivable_branch_acc,
+				"credit_in_account_currency": args.allocated_amount,
+				"branch": args.pe_branch
+			}
+		]
+
+		jv_receivable_branch = [
+			{
+				"account": args.paid_from,
+				"credit_in_account_currency": args.allocated_amount,
+				"party_type": args.party_type,
+				"party": args.party,
+				"branch": args.receivable_branch
+			},
+			{
+				"account": args.pe_branch_account,
+				"debit_in_account_currency": args.allocated_amount,
+				"branch": args.receivable_branch
+			}
+		]
+	else:
+		jv_pe_branch = [
+			{
+				"account": args.paid_from,
+				"debit_in_account_currency": args.allocated_amount,
+				"party_type": args.party_type,
+				"party": args.party,
+				"branch": args.pe_branch
+			},
+			{
+				"account": args.receivable_branch_acc,
+				"credit_in_account_currency": args.allocated_amount,
+				"branch": args.pe_branch
+			}
+		]
+
+		receivabe_account_details = {
+			"account": args.paid_from,
+			"credit_in_account_currency": args.allocated_amount,
+			"party_type": args.party_type,
+			"party": args.party,
+			"reference_type": "Sales Invoice",
+			"reference_name": args.si_name,
+			"branch": args.si_branch,
+
+		}
+
+		jv_receivable_branch = [
+			{
+				"account": args.pe_branch_account,
+				"debit_in_account_currency": args.allocated_amount,
+				"branch": args.receivable_branch
+			},
+			receivabe_account_details
+		]
+
+	return {
+		args.pe_branch: jv_pe_branch,
+		args.receivable_branch: jv_receivable_branch
+	}
+
+
+def reconcile_pe_with_inter_branch_jv(args=None, reconcile_type=None):
 	args = frappe._dict(args or {})
 	pe_doc = frappe.get_doc("Payment Entry", args.pe_name)
 	try:
@@ -111,7 +190,7 @@ def reconcile_pe_with_inter_branch_jv(args=None):
 			"company": args.company,
 			"party_type": args.party_type,
 			"party": args.party,
-			"receivable_payable_account": args.receivable_account,
+			"receivable_payable_account": args.paid_from,
 			"invoice_name": args.pe_jv_name,
 			"payment_name": args.pe_name
 		})
@@ -163,24 +242,19 @@ def get_branch_account(branch_name):
 
 
 @frappe.whitelist()
-def reconcile_inter_branch_payment(data, is_adv=False):
+def reconcile_inter_branch_payment(data, reconcile_type):
 	if isinstance(data, str):
 		data = json.loads(data)
-
-	if isinstance(is_adv, str):
-		is_adv = json.loads(is_adv)
 
 	jv_list = []
 
 	for row in data:
 		jv_data = frappe._dict(row)
-		validate_allocated_amount(jv_data, is_adv)
-		# if is_adv:
-		# 	jv_data.customer_branch = get_customer_branch(jv_data.party)
 
-		validate_inter_branch(jv_data, is_adv)
+		validate_allocated_amount(jv_data, reconcile_type)
+		validate_inter_branch(jv_data, reconcile_type)
 
-		jv = create_inter_branch_journal_entries(jv_data, is_adv)
+		jv = create_inter_branch_journal_entries(jv_data, reconcile_type)
 
 		jv_list.extend(jv)
 
@@ -210,15 +284,15 @@ def get_unreconciled_sales_invoices(company, customer):
 
 	return data
 
-def validate_allocated_amount(jv_data, is_adv):
+def validate_allocated_amount(jv_data, reconcile_type):
 	"""
 	Validate that allocated amount.
 	"""
-	msg_value = jv_data.si_name if not is_adv else jv_data.party
+	msg_value = jv_data.si_name if reconcile_type not in ["Customer Advance", "Supplier Payment"] else jv_data.party
 	if not jv_data.allocated_amount:
 		frappe.throw(f"Allocated amount must be greater than zero for <b>{msg_value}<b>")
 
-	if is_adv: # for advance amount don't want outstanding amount validation
+	if reconcile_type in ["Customer Advance", "Supplier Payment"]: # for advance amount don't want outstanding amount validation
 		return
 
 	if jv_data.allocated_amount > jv_data.outstanding_amount:
@@ -229,16 +303,18 @@ def validate_allocated_amount(jv_data, is_adv):
 # def get_customer_branch(customer_name):
 # 	return frappe.db.get_value("Branch", {"custom_customer": customer_name}, "name")
 
-def validate_inter_branch(jv_data, is_adv=False):
+def validate_inter_branch(jv_data, reconcile_type):
 	receivable_branch = ""
 
-	if is_adv:
+	if reconcile_type == "Customer Advance":
 		receivable_branch = jv_data.customer_branch
+	elif reconcile_type == "Supplier Payment":
+		receivable_branch = jv_data.supplier_branch
 	else:
 		receivable_branch = jv_data.si_branch
 
 	if jv_data.pe_branch == receivable_branch:
-		receivable_branch_label = "Sales Invoice" if not is_adv else "Customer"
+		receivable_branch_label = "Sales Invoice" if reconcile_type == "Against Sales Invoices" else reconcile_type.split()[0]
 		frappe.throw(f"{receivable_branch_label} branch and Payment Entry branch are same.")
 
 
