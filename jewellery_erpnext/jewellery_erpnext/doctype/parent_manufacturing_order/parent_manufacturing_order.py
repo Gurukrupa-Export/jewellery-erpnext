@@ -706,8 +706,9 @@ def create_manufacturing_work_order(self):
 		# fg_doc.department = frappe.db.get_value(
 		# 	"Manufacturing Setting", {"company": doc.company}, "default_fg_department"
 		# )
+		# Chnage doc to self
 		fg_doc.department = frappe.db.get_value(
-			"Manufacturing Setting", {"manufacturer": doc.manufacturer}, "default_fg_department"
+			"Manufacturing Setting", {"manufacturer": self.manufacturer}, "default_fg_department"
 		)
 		fg_doc.metal_touch = row.metal_touch
 		fg_doc.metal_type = row.metal_type
