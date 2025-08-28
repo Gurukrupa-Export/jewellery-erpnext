@@ -489,7 +489,8 @@
    "insert_after": "custom_get_pmo",
    "label": "Get FIFO Batches",
    "module": "Jewellery Erpnext",
-   "options": "update_batches"
+   "options": "update_batches",
+    "hidden": 1
   },
   {
    "dt": "Stock Entry",
