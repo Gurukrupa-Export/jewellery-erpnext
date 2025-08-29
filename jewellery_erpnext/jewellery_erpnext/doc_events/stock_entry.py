@@ -489,7 +489,7 @@ def before_submit(self, method):
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
-	group_se_items_and_update_mop_items(self, method)
+	# group_se_items_and_update_mop_items(self, method)
 
 
 def onsubmit(self, method):
