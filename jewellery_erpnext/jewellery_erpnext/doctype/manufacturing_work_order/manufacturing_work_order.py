@@ -43,7 +43,7 @@ class ManufacturingWorkOrder(Document):
 			mop_list = frappe.db.get_list("Manufacturing Operation",filters={"department": last_department},pluck="name")
 			if mop_list:
 				for mop in mop_list:
-					frappe.db.set_value("Manufacturing Operation",mop,"status":"Finished")
+					frappe.db.set_value("Manufacturing Operation",mop,"status","Finished")
 		create_manufacturing_operation(self)
 		if self.split_from:
 			create_mr_for_split_work_order(self.name,self.company,self.manufacturer)
