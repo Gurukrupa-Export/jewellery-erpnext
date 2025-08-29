@@ -385,7 +385,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 									"fieldtype": "Float",
 									"fieldname": "receive_pcs",
 									"in_list_view": 1,
-									"reqd": 1,
+									// "reqd": 1,
 									"default": flt()
 								},
 								{
