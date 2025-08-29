@@ -410,7 +410,7 @@ class EmployeeIR(Document):
 							None,
 						)
 						frappe.db.set_value(
-							"Stock Entry MOP Item",
+							"Stock Entry Detail",
 							{"docstatus": 2, "manufacturing_operation": new_operation.name},
 							"manufacturing_operation",
 							None,
@@ -1440,7 +1440,7 @@ def create_stock_entry(
 	stock_entries = get_stock_data_new(row.manufacturing_operation, employee_wh, doc.department)
 
 	existing_items = frappe.get_all(
-		"Stock Entry MOP Item",
+		"Stock Entry Detail",
 		{"parent": ["in", stock_entries]},
 		pluck="item_code",
 	)
@@ -1943,7 +1943,7 @@ def create_stock_entry(
 				to_remove.append(child)
 			else:
 				if not rejected_qty.get((child.item_code,child.batch_no)):
-					StockEntryMopItem = DocType("Stock Entry MOP Item").as_("sed")
+					StockEntryMopItem = DocType("Stock Entry Detail").as_("sed")
 					StockEntry = DocType("Stock Entry").as_("se")
 					query = (
 						qb.from_(StockEntryMopItem)
