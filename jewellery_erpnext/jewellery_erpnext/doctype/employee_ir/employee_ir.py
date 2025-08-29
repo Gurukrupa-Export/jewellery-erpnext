@@ -381,7 +381,7 @@ class EmployeeIR(Document):
 							None,
 						)
 						frappe.db.set_value(
-							"Stock Entry MOP Item",
+							"Stock Entry Detail",
 							{"docstatus": 2, "manufacturing_operation": new_operation.name},
 							"manufacturing_operation",
 							None,
@@ -1038,7 +1038,7 @@ def create_stock_entry(
 	stock_entries = get_stock_data_new(row.manufacturing_operation, employee_wh, doc.department)
 
 	existing_items = frappe.get_all(
-		"Stock Entry MOP Item",
+		"Stock Entry Detail",
 		{"parent": ["in", stock_entries]},
 		pluck="item_code",
 	)
@@ -1541,7 +1541,7 @@ def create_stock_entry(
 				to_remove.append(child)
 			else:
 				if not rejected_qty.get((child.item_code,child.batch_no)):
-					StockEntryMopItem = DocType("Stock Entry MOP Item").as_("sed")
+					StockEntryMopItem = DocType("Stock Entry Detail").as_("sed")
 					StockEntry = DocType("Stock Entry").as_("se")
 					query = (
 						qb.from_(StockEntryMopItem)
@@ -2186,7 +2186,7 @@ def create_timesheet(self):
                     for log in ts.time_logs:
                         log.to_time = now_datetime()
                         log.hours = time_diff_in_hours(log.to_time, log.from_time)
-                    
+
                     ts.workflow_state = "Completed"  # <-- Set workflow_state to Completed
                     ts.save(ignore_permissions=True)
                     ts.submit()
@@ -2214,7 +2214,7 @@ def create_timesheet(self):
                     "custom_manufacturing_operation": row.manufacturing_operation
                 })
 
-        if self.docstatus == 1:  
+        if self.docstatus == 1:
             timesheet.insert(ignore_permissions=True)
             for log in timesheet.time_logs:
                 log.to_time = now_datetime()
@@ -2235,7 +2235,7 @@ def create_timesheet(self):
                     "custom_employee_ir": self.name,
                     "custom_manufacturing_operation": row.manufacturing_operation
                 })
-        
+
         timesheet.insert(ignore_permissions=True)
         timesheet.workflow_state = "In Process"
         timesheet.save(ignore_permissions=True)
