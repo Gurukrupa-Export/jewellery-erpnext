@@ -1320,7 +1320,7 @@ def hold_mop(self):
 def create_mwo(pmo,doc):
 	if frappe.db.get_value("Manufacturing Work Order",{"manufacturing_order":pmo,"for_cad_cam":1}):
 		cad_mwo = frappe.db.get_value("Manufacturing Work Order",{"manufacturing_order":pmo,"for_cad_cam":1})
-		return frappe.msgprint(f"Manufacturing Work Order for CAD/CAM Department is <b>already</b> created. <b>{get_link_to_form("Manufacturing Work Order", cad_mwo)}</b>")
+		return frappe.msgprint(f"Manufacturing Work Order for CAD/CAM Department is <b>already</b> created. <b>{get_link_to_form('Manufacturing Work Order', cad_mwo)}</b>")
 
 	doc = frappe.get_doc("Parent Manufacturing Order",pmo)
 	fg_doc = get_mapped_doc(
