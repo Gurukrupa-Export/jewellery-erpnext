@@ -64,7 +64,7 @@ def get_stock_data(manufacturing_operation, employee_wh, department):
 
 def get_stock_data_new(manufacturing_operation, employee_wh, department):
 	StockEntry = DocType("Stock Entry").as_("se")
-	StockEntryMopItem = DocType("Stock Entry MOP Item").as_("sed")
+	StockEntryMopItem = DocType("Stock Entry Detail").as_("sed")
 	query = (
 		frappe.qb.from_(StockEntry)
 		.inner_join(StockEntryMopItem)
