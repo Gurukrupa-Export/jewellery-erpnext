@@ -55,7 +55,10 @@ from jewellery_erpnext.utils import (
 	get_item_from_attribute,
 	get_item_from_attribute_full,
 	update_existing,
+	serialize_for_json
 )
+
+from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.ir_job_manager import IRJobManager
 
 
 class EmployeeIR(Document):
@@ -89,15 +92,8 @@ class EmployeeIR(Document):
 				self.append("employee_ir_operations", {"manufacturing_operation": row.name})
 
 	def on_submit(self):
-		create_timesheet(self)
-		validate_qc(self)
-		if self.type == "Issue":
-			self.validate_qc("Warn")
-			self.on_submit_issue_new()
-			if self.subcontracting == "Yes":
-				self.create_subcontracting_order()
-		else:
-			self.on_submit_receive()
+		if self.type == "Issue" and self.subcontracting == "Yes":
+			self.create_subcontracting_order()
 
 	def before_validate(self):
 		if self.docstatus != 0:
@@ -124,8 +120,42 @@ class EmployeeIR(Document):
 		valid_reparing_or_next_operation(self)
 		validate_loss_qty(self)
 
-	# def after_insert(self):
-	# 	self.validate_qc("Warn")
+		if not self.is_new():
+			if self.type == "Issue":
+				self.validate_qc("Warn")
+
+			self.enqueue_mop_and_stock_entry_creation()
+
+	def enqueue_mop_and_stock_entry_creation(self):
+		prev_doc = self.get_doc_before_save()
+
+		if (prev_doc.workflow_state in ["Pending MOP Creation", "MOP Failed"]
+		and self.workflow_state == "Queued MOP Creation"):
+
+			if self.type == "Issue":
+				ir_job = IRJobManager(
+					doc=self, create_mop_func=self.update_mop_for_issue
+				)
+				ir_job.enqueue_mop_creation()
+			else:
+				ir_job = IRJobManager(
+					doc=self, create_mop_func=self.update_mop_for_receive
+				)
+				ir_job.enqueue_mop_creation()
+
+		elif (prev_doc.workflow_state in ["Pending Stock Entry Creation", "Stock Entry Failed"]
+		and self.workflow_state == "Queued Stock Entry Creation"):
+
+			if self.type == "Issue":
+				ir_job = IRJobManager(
+					doc=self, create_stock_entry_func=self.create_stock_entry_for_issue
+				)
+				ir_job.enqueue_stock_entry_submission()
+			else:
+				ir_job = IRJobManager(
+					doc=self, create_stock_entry_func=self.create_stock_entry_for_receive
+				)
+				ir_job.enqueue_stock_entry_submission()
 
 	def on_cancel(self):
 		if self.type == "Issue":
@@ -328,7 +358,6 @@ class EmployeeIR(Document):
 			if row.get("is_finding_mwo"):
 				if not cancel:
 					create_chain_stock_entry(self, row)
-					new_operation.save()
 			else:
 				if not cancel:
 					se_rows, msl_rows, product_loss, mfg_rows = create_stock_entry(
@@ -561,7 +590,7 @@ class EmployeeIR(Document):
 			se_doc.submit()
 
 			update_mop_balance(new_operation.name)
-
+			new_operation.save()
 			for pmo, details in pmo_data.items():
 				pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
 				for row in details:
@@ -883,7 +912,15 @@ class EmployeeIR(Document):
 			# 	total_qty += entry["qty"]
 			for entry in data:
 				if total_qty != 0 and loss > 0:
+					# if mwo_metal_property.get("is_finding_mwo"):
 					stock_loss = flt((entry["qty"] * loss) / total_qty, 3)
+					# else:
+					# 	if loss <= entry["qty"]:
+					# 		stock_loss = loss
+					# 		loss = 0
+					# 	else:
+					# 		stock_loss = entry["qty"]
+					# 		loss -= entry["qty"]
 					if stock_loss > 0:
 						entry["received_gross_weight"] = entry["qty"] - stock_loss
 						entry["proportionally_loss"] = stock_loss
@@ -900,8 +937,372 @@ class EmployeeIR(Document):
 	def get_summary_data(self):
 		return get_summary_data(self)
 
+	def update_mop_for_issue(self):
+		"""
+		Update Manufacturing Operation for Issue
+		"""
+		# Set initial values based on cancel flag
+		employee = self.employee
+		operation = self.operation
+		status = "WIP"
+		values = {"operation": operation, "status": status}
+		if self.subcontracting == "Yes":
+			values["for_subcontracting"] = 1
+			values["subcontractor"] = self.subcontractor
+		else:
+			values["employee"] = employee
 
-def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
+		mop_data = {}
+		mops_to_update = {}
+		time_log_args = []
+		stock_entry_data = []
+		start_time = frappe.utils.now()
+		main_slip = self.main_slip
+		for row in self.employee_ir_operations:
+			values.update({
+				"operation": operation,
+				"rpt_wt_issue": row.rpt_wt_issue,
+				"start_time": start_time,
+				"main_slip_no":main_slip
+			})
+			mops_to_update[row.manufacturing_operation] = values
+
+			stock_entry_data.append((row.manufacturing_work_order, row.manufacturing_operation))
+			mop_data[row.manufacturing_work_order] = row.manufacturing_operation
+			time_log_args.append((row.manufacturing_operation, values))
+
+		if mops_to_update:
+			frappe.db.bulk_update(
+				"Manufacturing Operation",
+				mops_to_update,
+				chunk_size=100,
+				update_modified=True
+			)
+
+		# Batch update stock entries
+		if stock_entry_data:
+			batch_update_stock_entry_dimensions(self, stock_entry_data, employee, True)
+
+		# Batch add time logs
+		if time_log_args:
+			batch_add_time_logs(self,time_log_args)
+
+		self.db_set("mop_data", json.dumps(mop_data), update_modified=False)
+
+	def create_stock_entry_for_issue(self):
+		if self.mop_data:
+			mop_data = json.loads(self.mop_data)
+
+			create_single_se_entry(self, mop_data)
+
+	def update_mop_for_receive(self):
+		se_data = {}
+		row_to_append = []
+		main_slip_rows = []
+		loss_rows = []
+		repack_raws = []
+		precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
+
+		mwo_loss_dict = {}
+		for row in self.manually_book_loss_details + self.employee_loss_details:
+			if row.variant_of in ["M", "F"]:
+				mwo_loss_dict.setdefault(row.manufacturing_work_order, 0)
+				mwo_loss_dict[row.manufacturing_work_order] += row.proportionally_loss
+
+		is_mould_operation = frappe.db.get_value(
+			"Department Operation", self.operation, "is_mould_manufacturer"
+		)
+
+		filters = {
+			"parentfield": "batch_details",
+			"parent": self.main_slip,
+			"qty": [">", 0],
+		}
+
+		main_slip_data = frappe.db.get_all(
+			"Main Slip SE Details",
+			filters,
+			[
+				"item_code",
+				"batch_no",
+				"qty",
+				"(consume_qty + employee_qty) as consume_qty",
+				"inventory_type",
+				"customer",
+			],
+		)
+
+		# pure_gold_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
+		pure_gold_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":self.manufacturer}, "pure_gold_item")
+
+		msl_dict = frappe._dict({"regular_batch": {}, "pure_batch": [], "customer_batch": {}})
+
+		warehouse_data = frappe._dict()
+
+		metal_item_data = frappe._dict()
+
+		loss_details = frappe._dict()
+
+		for msl in main_slip_data:
+			if pure_gold_item == msl.item_code:
+				msl_dict.pure_batch.append(msl)
+			elif msl.inventory_type in ["Customer Goods", "Customer Stock"]:
+				msl_dict.customer_batch.setdefault(msl.item_code, [])
+				msl_dict.customer_batch[msl.item_code].append(msl)
+			else:
+				msl_dict.regular_batch.setdefault(msl.item_code, [])
+				msl_dict.regular_batch[msl.item_code].append(msl)
+
+		curr_time = frappe.utils.now()
+
+		for row in self.employee_ir_operations:
+			if is_mould_operation:
+				create_mould(self, row)
+			net_loss_wt = mwo_loss_dict.get(row.manufacturing_work_order) or 0
+
+			net_wt = frappe.db.get_value("Manufacturing Operation", row.manufacturing_operation, "net_wt")
+
+			difference_wt = flt(row.received_gross_wt, precision) - flt(row.gross_wt, precision)
+			res = frappe._dict(
+				{
+					"received_gross_wt": row.received_gross_wt,
+					"loss_wt": difference_wt,
+					"received_net_wt": flt(net_wt - net_loss_wt, precision),
+					"status": "WIP",
+					"is_received_gross_greater_than":True if row.received_gross_wt > row.gross_wt else False
+				}
+			)
+
+			if row.received_gross_wt == 0 and row.gross_wt != 0:
+				frappe.throw(_("Row {0}: Received Gross Wt Missing").format(row.idx))
+
+			time_log_args = []
+			res["status"] = "Finished"
+			res["employee"] = self.employee
+			new_operation = create_operation_for_next_op(
+				row.manufacturing_operation, employee_ir=self.name, gross_wt=row.gross_wt
+			)
+
+			res["complete_time"] = curr_time
+			frappe.db.set_value(
+				"Manufacturing Work Order",
+				row.manufacturing_work_order,
+				"manufacturing_operation",
+				new_operation.name,
+			)
+			# add_time_log(row.manufacturing_operation, res)
+			time_log_args.append((row.manufacturing_operation, res))
+
+			if row.get("is_finding_mwo"):
+				create_chain_stock_entry(self, row)
+				new_operation.save()
+			else:
+				se_rows, msl_rows, product_loss, mfg_rows = create_stock_entry(
+					self,
+					row,
+					warehouse_data,
+					metal_item_data,
+					loss_details,
+					flt(difference_wt, precision),
+					msl_dict,
+				)
+
+				row_to_append += se_rows
+				main_slip_rows += msl_rows
+				loss_rows += product_loss
+				repack_raws += mfg_rows
+				# res = get_material_wt(self, row.manufacturing_operation)
+
+
+			if row.rpt_wt_receive:
+				issue_wt = frappe.db.get_value(
+					"Manufacturing Operation", row.manufacturing_operation, "rpt_wt_issue"
+				)
+				res["rpt_wt_receive"] = row.rpt_wt_receive
+				res["rpt_wt_loss"] = flt(row.rpt_wt_receive - issue_wt, 3)
+
+			# del res["complete_time"]
+			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, res)
+
+		if time_log_args:
+			batch_add_time_logs(self, time_log_args)
+
+		se_data["new_operation"] = new_operation.name
+		se_data["row_to_append"] = row_to_append
+		se_data["main_slip_rows"] = main_slip_rows
+		se_data["loss_rows"] = loss_rows
+		se_data["repack_raws"] = repack_raws
+
+		self.db_set("se_data", json.dumps(obj=se_data, default=serialize_for_json), update_modified=False)
+
+	def create_stock_entry_for_receive(self):
+		if self.se_data:
+			se_data = json.loads(self.se_data)
+			if se_data.get("loss_rows"):
+				pl_se_doc = frappe.new_doc("Stock Entry")
+				pl_se_doc.company = self.company
+				pl_se_doc.stock_entry_type = "Process Loss"
+				pl_se_doc.purpose = "Repack"
+				pl_se_doc.department = self.department
+				pl_se_doc.to_department = self.department
+				pl_se_doc.employee = self.employee
+				pl_se_doc.subcontractor = self.subcontractor
+				pl_se_doc.auto_created = 1
+				pl_se_doc.employee_ir = self.name
+
+				for row in se_data.get("loss_rows"):
+					pl_se_doc.append("items", row)
+
+				pl_se_doc.flags.ignore_permissions = True
+				pl_se_doc.save()
+				pl_se_doc.submit()
+
+			if se_data.get("repack_raws"):
+				re_se_doc = frappe.new_doc("Stock Entry")
+				re_se_doc.company = self.company
+				re_se_doc.stock_entry_type = "Manufacture"
+				re_se_doc.purpose = "Manufacture"
+				re_se_doc.department = self.department
+				re_se_doc.to_department = self.department
+				re_se_doc.employee = self.employee
+				re_se_doc.subcontractor = self.subcontractor
+				re_se_doc.auto_created = 1
+				re_se_doc.employee_ir = self.name
+				finished_item = {}
+				for row in se_data.get("repack_raws"):
+					if row.get('is_finished_item'):
+						if not finished_item.get('finish'):
+							finished_item.update({'finish':'Finish Item'})
+						else:
+							row.update({'is_finished_item': 0})
+
+					if not re_se_doc.main_slip:
+						re_se_doc.main_slip = row.get("main_slip") or row.get("to_main_slip")
+
+					re_se_doc.append("items", row)
+
+				re_se_doc.flags.ignore_permissions = True
+				re_se_doc.save()
+				re_se_doc.submit()
+
+			if se_data.get("main_slip_rows"):
+				mse_doc = frappe.new_doc("Stock Entry")
+				mse_doc.company = self.company
+				mse_doc.stock_entry_type = "Material Transfer (Main Slip)"
+				mse_doc.purpose = "Material Transfer"
+				mse_doc.department = self.department
+				mse_doc.to_department = self.department
+				mse_doc.main_slip = self.main_slip
+				mse_doc.employee = self.employee
+				mse_doc.subcontractor = self.subcontractor
+				mse_doc.auto_created = True
+				mse_doc.employee_ir = self.name
+
+				for row in se_data.get("main_slip_rows"):
+					mse_doc.append("items", row)
+
+				mse_doc.flags.ignore_permissions = True
+				mse_doc.save()
+				mse_doc.submit()
+
+			operation_data = {}
+
+			if se_data.get("row_to_append"):
+				expense_account = frappe.db.get_value("Company", self.company, "default_operating_cost_account")
+
+				workstations = frappe.db.get_all(
+					"Workstation",
+					{"employee": self.employee},
+					["name", "hour_rate_electricity", "hour_rate_rent", "hour_rate_consumable"],
+					limit=1,
+				)
+				workstation = workstations[0] if workstations else None
+
+				if not workstation and not self.subcontractor:
+					frappe.throw(_("Please define Workstation for {0}").format(self.employee))
+
+				if not self.subcontractor:
+					hour_rate_labour = get_hourly_rate(self.employee)
+
+				se_doc = frappe.new_doc("Stock Entry")
+				se_doc.company = self.company
+				se_doc.stock_entry_type = "Material Transfer to Department"
+				se_doc.outgoing_stock_entry = None
+				se_doc.set_posting_time = 1
+				se_doc.inventory_type = None
+				se_doc.from_warehouse = None
+				se_doc.to_warehouse = None
+				se_doc.auto_created = 1
+				if self.main_slip:
+					se_doc.main_slip = self.main_slip
+					se_doc.to_main_slip = None
+				else:
+					se_doc.main_slip = None
+					se_doc.to_main_slip = None
+
+				mop_data = frappe._dict()
+				pmo_data = frappe._dict()
+
+				for row in se_data.get("row_to_append"):
+					se_doc.append("items", row)
+					if isinstance(row, dict):
+						row = frappe._dict(row)
+					if row.employee and not operation_data.get(row.manufacturing_operation):
+						if not mop_data.get(row.manufacturing_operation):
+							mop_data[row.manufacturing_operation] = frappe.db.get_value(
+								"Manufacturing Operation",
+								row.manufacturing_operation,
+								["total_minutes", "manufacturing_order"],
+								as_dict=1,
+							)
+
+						if not self.subcontractor:
+							total_expense = (
+								workstation.hour_rate_electricity
+								+ workstation.hour_rate_rent
+								+ workstation.hour_rate_consumable
+								+ hour_rate_labour
+							)
+							operation_data[row.manufacturing_operation] = {
+								"workstation": workstation.name,
+								"total_expense": total_expense,
+								"operation_time": mop_data[row.manufacturing_operation].time_in_mins or 0,
+								"mop": row.manufacturing_operation,
+								"pmo": mop_data[row.manufacturing_operation].manufacturing_order,
+							}
+
+				if operation_data:
+					for row in operation_data:
+						additional_cost = {
+							"expense_account": expense_account,
+							"amount": operation_data[row]["total_expense"],
+							"description": "Workstation Cost",
+							"manufacturing_operation": operation_data[row]["mop"],
+							"workstation": operation_data[row]["workstation"],
+							"total_minutes": operation_data[row]["operation_time"],
+						}
+						# se_doc.append("additional_costs", additional_cost)
+
+						pmo_data.setdefault(operation_data[row]["pmo"], [])
+						pmo_data[operation_data[row]["pmo"]].append(additional_cost)
+
+				se_doc.employee_ir = self.name
+				se_doc.flags.ignore_permissions = True
+				se_doc.save()
+				se_doc.submit()
+
+				update_mop_balance(se_data.get("new_operation"))
+
+				for pmo, details in pmo_data.items():
+					pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
+					for row in details:
+						pmo_doc.append("pmo_operation_cost", row)
+					pmo_doc.flags.ignore_validations = True
+					pmo_doc.flags.ignore_permissions = True
+					pmo_doc.save()
+
+
+def create_operation_for_next_op(docname, employee_ir=None,gross_wt =0):
 
 	new_mop_doc = frappe.copy_doc(
 		frappe.get_doc("Manufacturing Operation", docname), ignore_no_copy=False
@@ -911,6 +1312,7 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 	new_mop_doc.status = "Not Started"
 	new_mop_doc.department_ir_status = None
 	new_mop_doc.department_receive_id = None
+	#new_mop_doc.prev_gross_wt = received_gr_wt
 	new_mop_doc.prev_gross_wt = gross_wt
 	new_mop_doc.employee_ir = employee_ir
 	new_mop_doc.employee = None
@@ -1627,7 +2029,7 @@ def create_stock_entry(
 					frappe.throw(_("Qty cannot be negative"))
 
 				if child not in to_remove:
-					se_rows.append(child)
+					se_rows.append(child.as_dict())
 
 	if difference_wt > 0:
 		if not doc.main_slip:
@@ -1957,175 +2359,85 @@ def process_loss_item(
 
 
 # Function to create Single Entry For Employee IR Issue
-# def create_single_se_entry(doc, mop_data):
-# 	rows_to_append = []
-# 	department_wh = frappe.get_value(
-# 		"Warehouse", {"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"}
-# 	)
-# 	if doc.subcontracting == "Yes":
-# 		employee_wh = frappe.get_value(
-# 			"Warehouse",
-# 			{
-# 				"disabled": 0,
-# 				"company": doc.company,
-# 				"subcontractor": doc.subcontractor,
-# 				"warehouse_type": "Manufacturing",
-# 			},
-# 		)
-# 	else:
-# 		employee_wh = frappe.get_value(
-# 			"Warehouse", {"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"}
-# 		)
-# 	if not department_wh:
-# 		frappe.throw(_("Please set warhouse for department {0}").format(doc.department))
-# 	if not employee_wh:
-# 		subcontractor = "subcontractor" if doc.subcontracting == "Yes" else "employee"
-# 		subcontractor_doc = doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
-# 		frappe.throw(_("Please set warhouse for {0} {1}").format(subcontractor, subcontractor_doc))
-
-# 	mop_balance_details = frappe.db.get_all(
-# 		"MOP Balance Table", {"parent": ["in", mop_data.values()]}, ["*"]
-# 	)
-
-# 	mop_balance_data = frappe._dict()
-
-# 	for row in mop_balance_details:
-# 		mop_balance_data.setdefault(row.parent, [])
-# 		mop_balance_data[row.parent].append(row)
-
-# 	for row in mop_data:
-# 		rows_to_append += get_rows_to_append(
-# 			doc, row, mop_data[row], mop_balance_data.get(mop_data[row]), department_wh, employee_wh
-# 		)
-
-# 	if rows_to_append:
-# 		se_doc = frappe.new_doc("Stock Entry")
-# 		se_doc.company = doc.company
-# 		se_doc.inventory_type = None
-# 		se_doc.department = doc.department
-# 		se_doc.to_department = doc.department
-# 		se_doc.to_employee = doc.employee if doc.type == "Issue" else None
-# 		se_doc.to_subcontractor = doc.subcontractor if doc.type == "Issue" else None
-# 		se_doc.auto_created = True
-# 		se_doc.employee_ir = doc.name
-
-# 		if doc.main_slip:
-# 			se_doc.to_main_slip = doc.main_slip
-
-# 		stock_entry_type = (
-# 			"Material Transfer to Subcontractor"
-# 			if doc.subcontracting == "Yes"
-# 			else "Material Transfer to Employee"
-# 		)
-
-# 		for row in rows_to_append:
-# 			se_doc.stock_entry_type = stock_entry_type
-# 			if doc.subcontracting == "Yes":
-# 				row.to_subcontractor = doc.subcontractor
-# 				row.subcontractor = None
-# 			else:
-# 				row.to_employee = doc.employee
-# 				row.employee = None
-# 			row.department_operation = doc.operation
-# 			row.main_slip = None
-# 			row.to_main_slip = doc.main_slip
-
-# 			se_doc.append("items", row)
-
-# 		se_doc.flags.ignore_permissions = True
-# 		se_doc.save()
-# 		se_doc.submit()
-
-
 def create_single_se_entry(doc, mop_data):
-    rows_to_append = []
+	rows_to_append = []
+	department_wh = frappe.get_value(
+		"Warehouse", {"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"}
+	)
+	if doc.subcontracting == "Yes":
+		employee_wh = frappe.get_value(
+			"Warehouse",
+			{
+				"disabled": 0,
+				"company": doc.company,
+				"subcontractor": doc.subcontractor,
+				"warehouse_type": "Manufacturing",
+			},
+		)
+	else:
+		employee_wh = frappe.get_value(
+			"Warehouse", {"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"}
+		)
+	if not department_wh:
+		frappe.throw(_("Please set warhouse for department {0}").format(doc.department))
+	if not employee_wh:
+		subcontractor = "subcontractor" if doc.subcontracting == "Yes" else "employee"
+		subcontractor_doc = doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
+		frappe.throw(_("Please set warhouse for {0} {1}").format(subcontractor, subcontractor_doc))
 
-    department_wh = frappe.get_value(
-        "Warehouse",
-        {"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"},
-    )
+	mop_balance_details = frappe.db.get_all(
+		"MOP Balance Table", {"parent": ["in", mop_data.values()]}, ["*"]
+	)
 
-    if doc.subcontracting == "Yes":
-        employee_wh = frappe.get_value(
-            "Warehouse",
-            {
-                "disabled": 0,
-                "company": doc.company,
-                "subcontractor": doc.subcontractor,
-                "warehouse_type": "Manufacturing",
-            },
-        )
-    else:
-        employee_wh = frappe.get_value(
-            "Warehouse",
-            {"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"},
-        )
+	mop_balance_data = frappe._dict()
 
-    if not department_wh:
-        frappe.throw(_("Please set warehouse for department {0}").format(doc.department))
+	for row in mop_balance_details:
+		mop_balance_data.setdefault(row.parent, [])
+		mop_balance_data[row.parent].append(row)
 
-    # Only throw if not RPT Digital File Generation
-    if not employee_wh and doc.operation != "RPT Digital File Generation":
-        subcontractor = "subcontractor" if doc.subcontracting == "Yes" else "employee"
-        subcontractor_doc = doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
-        frappe.throw(_("Please set warehouse for {0} {1}").format(subcontractor, subcontractor_doc))
+	for row in mop_data:
+		rows_to_append += get_rows_to_append(
+			doc, row, mop_data[row], mop_balance_data.get(mop_data[row]), department_wh, employee_wh
+		)
 
-    mop_balance_details = frappe.db.get_all(
-        "MOP Balance Table", {"parent": ["in", mop_data.values()]}, ["*"]
-    )
-    mop_balance_data = frappe._dict()
-    for row in mop_balance_details:
-        mop_balance_data.setdefault(row.parent, [])
-        mop_balance_data[row.parent].append(row)
+	if rows_to_append:
+		se_doc = frappe.new_doc("Stock Entry")
+		se_doc.company = doc.company
+		se_doc.inventory_type = None
+		se_doc.department = doc.department
+		se_doc.to_department = doc.department
+		se_doc.to_employee = doc.employee if doc.type == "Issue" else None
+		se_doc.to_subcontractor = doc.subcontractor if doc.type == "Issue" else None
+		se_doc.auto_created = True
+		se_doc.employee_ir = doc.name
 
-    for row in mop_data:
-        rows_to_append += get_rows_to_append(
-            doc,
-            row,
-            mop_data[row],
-            mop_balance_data.get(mop_data[row]),
-            department_wh,
-            employee_wh,
-        )
+		if doc.main_slip:
+			se_doc.to_main_slip = doc.main_slip
 
-    if rows_to_append:
-        se_doc = frappe.new_doc("Stock Entry")
-        se_doc.company = doc.company
-        se_doc.inventory_type = None
-        se_doc.department = doc.department
-        se_doc.to_department = doc.department
-        se_doc.to_employee = doc.employee if doc.type == "Issue" else None
-        se_doc.to_subcontractor = doc.subcontractor if doc.type == "Issue" else None
-        se_doc.auto_created = True
-        se_doc.employee_ir = doc.name
+		stock_entry_type = (
+			"Material Transfer to Subcontractor"
+			if doc.subcontracting == "Yes"
+			else "Material Transfer to Employee"
+		)
 
-        if doc.main_slip:
-            se_doc.to_main_slip = doc.main_slip
+		for row in rows_to_append:
+			se_doc.stock_entry_type = stock_entry_type
+			if doc.subcontracting == "Yes":
+				row.to_subcontractor = doc.subcontractor
+				row.subcontractor = None
+			else:
+				row.to_employee = doc.employee
+				row.employee = None
+			row.department_operation = doc.operation
+			row.main_slip = None
+			row.to_main_slip = doc.main_slip
 
-        stock_entry_type = (
-            "Material Transfer to Subcontractor"
-            if doc.subcontracting == "Yes"
-            else "Material Transfer to Employee"
-        )
+			se_doc.append("items", row)
 
-        for idx, row in enumerate(rows_to_append):
-            se_doc.stock_entry_type = stock_entry_type
-            if doc.subcontracting == "Yes":
-                row.to_subcontractor = doc.subcontractor
-                row.subcontractor = None
-            else:
-                row.to_employee = doc.employee
-                row.employee = None
+		se_doc.flags.ignore_permissions = True
+		se_doc.save()
+		se_doc.submit()
 
-            row.department_operation = doc.operation
-            row.main_slip = None
-            row.to_main_slip = doc.main_slip
-
-            se_doc.append("items", row)
-
-        se_doc.flags.ignore_permissions = True
-        se_doc.save()
-        se_doc.submit()
 
 def get_rows_to_append(doc, mwo, mop, mop_data, department_wh, employee_wh):
 	rows_to_append = []
@@ -2152,111 +2464,6 @@ def get_rows_to_append(doc, mwo, mop, mop_data, department_wh, employee_wh):
 			rows_to_append.append(duplicate_row)
 
 	return rows_to_append
-
-
-import frappe
-from frappe.utils import now_datetime, time_diff_in_hours
-
-def create_timesheet(self):
-    # Only create Timesheet for CAD department
-    if self.department != "Computer Aided Designing - GEPL":
-        frappe.msgprint(f"Timesheet creation skipped for department {self.department}")
-        return
-
-    if not self.employee:
-        frappe.throw("Please set Employee before creating Timesheet")
-
-    # Check for existing Draft Timesheets
-    draft_timesheets = frappe.get_all(
-        "Timesheet",
-        filters={"employee": self.employee, "docstatus": 0},
-        pluck="name"
-    )
-
-    if draft_timesheets:
-        for ts_name in draft_timesheets:
-            ts = frappe.get_doc("Timesheet", ts_name)
-
-            for row in self.employee_ir_operations:
-                existing_log = next(
-                    (log for log in ts.time_logs if log.custom_manufacturing_operation == row.manufacturing_operation),
-                    None
-                )
-                if existing_log and self.type == "Receive" and self.docstatus == 1:
-                    for log in ts.time_logs:
-                        log.to_time = now_datetime()
-                        log.hours = time_diff_in_hours(log.to_time, log.from_time)
-                    
-                    ts.workflow_state = "Completed"  # <-- Set workflow_state to Completed
-                    ts.save(ignore_permissions=True)
-                    ts.submit()
-                    frappe.msgprint(f"Updated & Submitted existing Timesheet {ts.name} for Employee IR {self.name}")
-                    return ts.name
-
-        draft_list = ", ".join(draft_timesheets)
-        frappe.throw(
-            f"Employee {self.employee} already has draft Timesheet(s): {draft_list}. "
-            "Please approve/submit them before creating a new one."
-        )
-
-    # Create new Timesheet
-    timesheet = frappe.new_doc("Timesheet")
-    timesheet.employee = self.employee
-    timesheet.company = self.company if hasattr(self, "company") else frappe.defaults.get_user_default("Company")
-
-    if self.type == "Receive":
-        if self.employee_ir_operations:
-            for row in self.employee_ir_operations:
-                timesheet.append("time_logs", {
-                    "activity_type": "Cad Update",
-                    "from_time": now_datetime(),
-                    "custom_employee_ir": self.name,
-                    "custom_manufacturing_operation": row.manufacturing_operation
-                })
-
-        if self.docstatus == 1:  
-            timesheet.insert(ignore_permissions=True)
-            for log in timesheet.time_logs:
-                log.to_time = now_datetime()
-                log.hours = time_diff_in_hours(log.to_time, log.from_time)
-
-            timesheet.workflow_state = "Completed"  # <-- Change workflow_state to Completed here
-            timesheet.save(ignore_permissions=True)
-            timesheet.submit()
-            frappe.msgprint(f"Submitted Timesheet {timesheet.name} created for Employee IR {self.name}")
-            return timesheet.name
-
-    elif self.type == "Issue":
-        if self.employee_ir_operations:
-            for row in self.employee_ir_operations:
-                timesheet.append("time_logs", {
-                    "activity_type": "Cad Update",
-                    "from_time": now_datetime(),
-                    "custom_employee_ir": self.name,
-                    "custom_manufacturing_operation": row.manufacturing_operation
-                })
-        
-        timesheet.insert(ignore_permissions=True)
-        timesheet.workflow_state = "In Process"
-        timesheet.save(ignore_permissions=True)
-
-        frappe.msgprint(f"Draft Timesheet {timesheet.name} created (In Process) for Employee IR {self.name}")
-        return timesheet.name
-
-    else:
-        if self.employee_ir_operations:
-            for row in self.employee_ir_operations:
-                timesheet.append("time_logs", {
-                    "activity_type": "Cad Update",
-                    "from_time": now_datetime(),
-                    "custom_employee_ir": self.name,
-                    "custom_manufacturing_operation": row.manufacturing_operation
-                })
-
-        timesheet.insert(ignore_permissions=True)
-        frappe.msgprint(f"Draft Timesheet {timesheet.name} created for Employee IR {self.name}")
-        return timesheet.name
-
 
 
 def validate_qc(self):
@@ -2341,7 +2548,6 @@ def book_metal_loss(doc, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
 	if isinstance(doc, str):
 		doc = json.loads(doc)
 
-	print(type(doc), doc)
 	# To Check Tollarance which book a loss down side.
 	if allowed_loss_percentage:
 		cal = round(flt((100 - allowed_loss_percentage) / 100) * flt(gwt), 2)
@@ -2545,3 +2751,44 @@ def calculation_time_log(doc, row, self):
 		# for i in doc.time_logs:
 		# 	doc.total_minutes += i.time_in_mins
 
+@frappe.whitelist()
+def check_duplicate_employee_ir(scan_mwo, operation, employee, type):
+	MO = frappe.qb.DocType("Manufacturing Operation")
+	EOP = frappe.qb.DocType("Employee IR Operation")
+	EIR = frappe.qb.DocType("Employee IR")
+
+	# Find Manufacturing Operation matching criteria
+	manufacturing_operation = (
+		frappe.qb.from_(MO)
+		.select(MO.name)
+		.where(
+			(MO.manufacturing_work_order == scan_mwo) &
+			(MO.operation == operation) &
+			(MO.employee == employee) &
+			(MO.status == "WIP")
+		)
+	).run(as_dict=True)
+
+	if not manufacturing_operation:
+		return None  # No Manufacturing Operation found matching criteria
+
+	mo_name = manufacturing_operation[0].name
+
+	# Find Employee IR parent containing this manufacturing operation AND with matching type
+	employee_ir = (
+		frappe.qb.from_(EOP)
+		.join(EIR).on(EOP.parent == EIR.name)
+		.select(EOP.parent)
+		.where(
+			(EOP.manufacturing_operation == mo_name) &
+			(EIR.type == type)
+		)
+		.limit(1)
+	).run(as_dict=True)
+
+	if employee_ir:
+		# Raise error indicating duplicate
+		frappe.throw(
+			_("Duplicate Employee IR Found: <b>{0}</b> with type <b>{1}</b>").format(employee_ir[0].parent, type)
+		)
+	return None
