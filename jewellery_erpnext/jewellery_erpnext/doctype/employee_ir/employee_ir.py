@@ -92,6 +92,7 @@ class EmployeeIR(Document):
 				self.append("employee_ir_operations", {"manufacturing_operation": row.name})
 
 	def on_submit(self):
+		create_timesheet(self)
 		if self.type == "Issue" and self.subcontracting == "Yes":
 			self.create_subcontracting_order()
 
@@ -358,6 +359,7 @@ class EmployeeIR(Document):
 			if row.get("is_finding_mwo"):
 				if not cancel:
 					create_chain_stock_entry(self, row)
+					new_operation.save()
 			else:
 				if not cancel:
 					se_rows, msl_rows, product_loss, mfg_rows = create_stock_entry(
@@ -2361,8 +2363,10 @@ def process_loss_item(
 # Function to create Single Entry For Employee IR Issue
 def create_single_se_entry(doc, mop_data):
 	rows_to_append = []
+
 	department_wh = frappe.get_value(
-		"Warehouse", {"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"}
+		"Warehouse",
+		{"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"},
 	)
 	
 	if doc.subcontracting == "Yes":
@@ -2377,8 +2381,10 @@ def create_single_se_entry(doc, mop_data):
 		)
 	else:
 		employee_wh = frappe.get_value(
-			"Warehouse", {"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"}
+			"Warehouse",
+			{"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"},
 		)
+
 
 	# Check for department warehouse (always required)
 	if not department_wh:
@@ -2394,16 +2400,19 @@ def create_single_se_entry(doc, mop_data):
 	mop_balance_details = frappe.db.get_all(
 		"MOP Balance Table", {"parent": ["in", mop_data.values()]}, ["*"]
 	)
-
 	mop_balance_data = frappe._dict()
-
 	for row in mop_balance_details:
 		mop_balance_data.setdefault(row.parent, [])
 		mop_balance_data[row.parent].append(row)
 
 	for row in mop_data:
 		rows_to_append += get_rows_to_append(
-			doc, row, mop_data[row], mop_balance_data.get(mop_data[row]), department_wh, employee_wh
+			doc,
+			row,
+			mop_data[row],
+			mop_balance_data.get(mop_data[row]),
+			department_wh,
+			employee_wh,
 		)
 
 	if rows_to_append:
@@ -2434,6 +2443,7 @@ def create_single_se_entry(doc, mop_data):
 			else:
 				row.to_employee = doc.employee
 				row.employee = None
+
 			row.department_operation = doc.operation
 			row.main_slip = None
 			row.to_main_slip = doc.main_slip
@@ -2470,6 +2480,110 @@ def get_rows_to_append(doc, mwo, mop, mop_data, department_wh, employee_wh):
 			rows_to_append.append(duplicate_row)
 
 	return rows_to_append
+
+
+import frappe
+from frappe.utils import now_datetime, time_diff_in_hours
+
+def create_timesheet(self):
+	# Only create Timesheet for CAD department
+	if self.department != "Computer Aided Designing - GEPL":
+		frappe.msgprint(f"Timesheet creation skipped for department {self.department}")
+		return
+
+	if not self.employee:
+		frappe.throw("Please set Employee before creating Timesheet")
+
+	# Check for existing Draft Timesheets
+	draft_timesheets = frappe.get_all(
+		"Timesheet",
+		filters={"employee": self.employee, "docstatus": 0},
+		pluck="name"
+	)
+
+	if draft_timesheets:
+		for ts_name in draft_timesheets:
+			ts = frappe.get_doc("Timesheet", ts_name)
+
+			for row in self.employee_ir_operations:
+				existing_log = next(
+					(log for log in ts.time_logs if log.custom_manufacturing_operation == row.manufacturing_operation),
+					None
+				)
+				if existing_log and self.type == "Receive" and self.docstatus == 1:
+					for log in ts.time_logs:
+						log.to_time = now_datetime()
+						log.hours = time_diff_in_hours(log.to_time, log.from_time)
+
+					ts.workflow_state = "Completed"  # <-- Set workflow_state to Completed
+					ts.save(ignore_permissions=True)
+					ts.submit()
+					frappe.msgprint(f"Updated & Submitted existing Timesheet {ts.name} for Employee IR {self.name}")
+					return ts.name
+
+		draft_list = ", ".join(draft_timesheets)
+		frappe.throw(
+			f"Employee {self.employee} already has draft Timesheet(s): {draft_list}. "
+			"Please approve/submit them before creating a new one."
+		)
+
+	# Create new Timesheet
+	timesheet = frappe.new_doc("Timesheet")
+	timesheet.employee = self.employee
+	timesheet.company = self.company if hasattr(self, "company") else frappe.defaults.get_user_default("Company")
+
+	if self.type == "Receive":
+		if self.employee_ir_operations:
+			for row in self.employee_ir_operations:
+				timesheet.append("time_logs", {
+					"activity_type": "Cad Update",
+					"from_time": now_datetime(),
+					"custom_employee_ir": self.name,
+					"custom_manufacturing_operation": row.manufacturing_operation
+				})
+
+		if self.docstatus == 1:
+			timesheet.insert(ignore_permissions=True)
+			for log in timesheet.time_logs:
+				log.to_time = now_datetime()
+				log.hours = time_diff_in_hours(log.to_time, log.from_time)
+
+			timesheet.workflow_state = "Completed"  # <-- Change workflow_state to Completed here
+			timesheet.save(ignore_permissions=True)
+			timesheet.submit()
+			frappe.msgprint(f"Submitted Timesheet {timesheet.name} created for Employee IR {self.name}")
+			return timesheet.name
+
+	elif self.type == "Issue":
+		if self.employee_ir_operations:
+			for row in self.employee_ir_operations:
+				timesheet.append("time_logs", {
+					"activity_type": "Cad Update",
+					"from_time": now_datetime(),
+					"custom_employee_ir": self.name,
+					"custom_manufacturing_operation": row.manufacturing_operation
+				})
+
+		timesheet.insert(ignore_permissions=True)
+		timesheet.workflow_state = "In Process"
+		timesheet.save(ignore_permissions=True)
+
+		frappe.msgprint(f"Draft Timesheet {timesheet.name} created (In Process) for Employee IR {self.name}")
+		return timesheet.name
+
+	else:
+		if self.employee_ir_operations:
+			for row in self.employee_ir_operations:
+				timesheet.append("time_logs", {
+					"activity_type": "Cad Update",
+					"from_time": now_datetime(),
+					"custom_employee_ir": self.name,
+					"custom_manufacturing_operation": row.manufacturing_operation
+				})
+
+		timesheet.insert(ignore_permissions=True)
+		frappe.msgprint(f"Draft Timesheet {timesheet.name} created for Employee IR {self.name}")
+		return timesheet.name
 
 
 def validate_qc(self):
