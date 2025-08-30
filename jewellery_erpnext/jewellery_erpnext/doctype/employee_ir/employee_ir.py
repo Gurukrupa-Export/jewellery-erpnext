@@ -2364,6 +2364,7 @@ def create_single_se_entry(doc, mop_data):
 	department_wh = frappe.get_value(
 		"Warehouse", {"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"}
 	)
+	
 	if doc.subcontracting == "Yes":
 		employee_wh = frappe.get_value(
 			"Warehouse",
@@ -2378,12 +2379,17 @@ def create_single_se_entry(doc, mop_data):
 		employee_wh = frappe.get_value(
 			"Warehouse", {"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"}
 		)
+
+	# Check for department warehouse (always required)
 	if not department_wh:
 		frappe.throw(_("Please set warhouse for department {0}").format(doc.department))
+
+	#Check for employee/subcontractor warehouse, except CAD - GEPL Issue case
 	if not employee_wh:
-		subcontractor = "subcontractor" if doc.subcontracting == "Yes" else "employee"
-		subcontractor_doc = doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
-		frappe.throw(_("Please set warhouse for {0} {1}").format(subcontractor, subcontractor_doc))
+		if not (doc.department == "Computer Aided Designing - GEPL" and doc.type == "Issue"):
+			subcontractor = "subcontractor" if doc.subcontracting == "Yes" else "employee"
+			subcontractor_doc = doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
+			frappe.throw(_("Please set warhouse for {0} {1}").format(subcontractor, subcontractor_doc))
 
 	mop_balance_details = frappe.db.get_all(
 		"MOP Balance Table", {"parent": ["in", mop_data.values()]}, ["*"]
@@ -2420,7 +2426,7 @@ def create_single_se_entry(doc, mop_data):
 			else "Material Transfer to Employee"
 		)
 
-		for row in rows_to_append:
+		for idx, row in enumerate(rows_to_append):
 			se_doc.stock_entry_type = stock_entry_type
 			if doc.subcontracting == "Yes":
 				row.to_subcontractor = doc.subcontractor
