@@ -964,10 +964,13 @@ def validate_sales_type(self):
 			quotation_sales_type = frappe.db.get_value('Quotation', r.prevdoc_docname, 'custom_sales_type')
 			if quotation_sales_type:  
 				self.sales_type = quotation_sales_type
+		if self.company == "Gurukrupa Export Private Limited":
+			if not r.prevdoc_docname or r.custom_customer_approval:
+				frappe.throw(
+					_("Row {0} : Sales Order can be created from Quotation or Customer Approval for this Company").format(r.idx)
+				)
 	if not self.sales_type :
 		frappe.throw("Sales Type is mandatory.")
-	# if not self.gold_rate_with_gst and self.company != 'Sadguru Diamond':
-	# 	frappe.throw("Metal rate  with GST is mandatory.")
 
 def update_same_customer_snc(self):
 	diamond_price_list_customer = frappe.db.get_value("Customer", self.customer, "diamond_price_list")
