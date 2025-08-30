@@ -264,6 +264,10 @@ def create_manufacturing_operation(doc):
 			"Department Operation", {"is_last_operation": 1, "manufacturer": doc.manufacturer}, ["department", "name"]
 		) or ["", ""]
 
+	if doc.for_cad_cam:
+		department = frappe.db.get_value("Manufacturing Setting",{"manufacturer":doc.manufacturer},"default_cad_department")
+		operation = frappe.db.get_value("Department Operation",{"department":department},"name")
+		
 	if doc.split_from:
 		department = doc.department
 		operation = None
