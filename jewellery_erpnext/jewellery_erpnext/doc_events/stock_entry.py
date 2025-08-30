@@ -26,6 +26,7 @@ from jewellery_erpnext.utils import get_item_from_attribute, get_variant_of_item
 import copy
 
 def before_validate(self, method):
+	validate_ir(self)
 	# if (
 	# 	not self.get("__islocal") and frappe.db.exists("Stock Entry", self.name) and self.docstatus == 0
 	# ) or self.flags.throw_batch_error:
@@ -1468,3 +1469,39 @@ def group_se_items(se_items:list):
 	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys, exclude_keys)
 
 	return grouped_items
+
+def validate_ir(self):
+# 	validate_inventory_dimention(self)
+
+	if self.auto_created == 0:
+		if self.stock_entry_type in ['Material Receive (WORK ORDER)', 'Material Transfer (WORK ORDER)']:
+			if self.manufacturing_work_order:
+		
+				if self.manufacturing_work_order:
+					dept_ir_mwo = frappe.get_all(
+						"Department IR Operation",
+						filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
+						fields=["parent"]
+					)
+    
+					if dept_ir_mwo:
+						ir_names = ", ".join(f"'{row['parent']}'" for row in dept_ir_mwo)
+						frappe.throw(
+							f"{self.manufacturing_work_order} is already present in Draft :{ir_names} . Please submit or cancel them first."
+						)
+
+					emp_ir_mwo = frappe.get_all(
+								"Employee IR Operation",
+								filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
+								fields=["parent"]
+							)
+			
+					if emp_ir_mwo:
+						ir_names = ", ".join(f"'{row['parent']}'" for row in emp_ir_mwo)
+						frappe.throw(
+							f"{self.manufacturing_work_order} is already present in Draft :{ir_names} . Please submit or cancel them first."
+						)
+
+
+
+
