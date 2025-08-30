@@ -696,7 +696,7 @@ class ManufacturingOperation(Document):
 	def get_stock_entry(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
 		# StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
-		StockEntryMopItem = frappe.qb.DocType("Stock Entry MOP Item")
+		StockEntryMopItem = frappe.qb.DocType("Stock Entry Detail")
 
 		data = (
 			frappe.qb.from_(StockEntryMopItem)
@@ -729,7 +729,7 @@ class ManufacturingOperation(Document):
 	def get_stock_summary(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
 		# StockEntryDetail = frappeqb.DocType("Stock Entry Detail")
-		StockEntryMopItem = frappe.qb.DocType("Stock Entry MOP Item")
+		StockEntryMopItem = frappe.qb.DocType("Stock Entry Detail")
 
 		# Subquery for max modified stock entry per manufacturing operation
 		max_se_subquery = (

@@ -7,6 +7,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
+from frappe.utils import get_link_to_form
 
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
@@ -80,7 +81,7 @@ class ParentManufacturingOrder(Document):
 					],
 					as_dict=1,
 				)
-			
+
 			default_department = warehouse_details.get("default_department") or None
 			metal_department = warehouse_details.get("default_department") or None
 			diamond_department = warehouse_details.get("default_diamond_department") or None
@@ -89,13 +90,13 @@ class ParentManufacturingOrder(Document):
 			other_material_department = (
 				warehouse_details.get("default_other_material_department") or None
 			)
-			
+
 			self.db_set("metal_department", metal_department)
 			self.db_set("diamond_department", diamond_department)
 			self.db_set("gemstone_department", gemstone_department)
 			self.db_set("finding_department", finding_department)
 			self.db_set("other_material_department", other_material_department)
-		
+
 
 	def on_update_after_submit(self):
 		update_due_days(self)
@@ -1319,8 +1320,8 @@ def hold_mop(self):
 def create_mwo(pmo,doc):
 	if frappe.db.get_value("Manufacturing Work Order",{"manufacturing_order":pmo,"for_cad_cam":1}):
 		cad_mwo = frappe.db.get_value("Manufacturing Work Order",{"manufacturing_order":pmo,"for_cad_cam":1})
-		return frappe.msgprint(f"Manufacturing Work Order for CAD/CAM Department is <b>already</b> created. <b>{get_link_to_form("Manufacturing Work Order", cad_mwo)}</b>")
-	
+		return frappe.msgprint(f"Manufacturing Work Order for CAD/CAM Department is <b>already</b> created. <b>{get_link_to_form('Manufacturing Work Order', cad_mwo)}</b>")
+
 	doc = frappe.get_doc("Parent Manufacturing Order",pmo)
 	fg_doc = get_mapped_doc(
 			"Parent Manufacturing Order",
