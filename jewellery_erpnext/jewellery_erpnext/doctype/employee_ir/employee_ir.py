@@ -2368,7 +2368,7 @@ def create_single_se_entry(doc, mop_data):
 		"Warehouse",
 		{"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"},
 	)
-
+	
 	if doc.subcontracting == "Yes":
 		employee_wh = frappe.get_value(
 			"Warehouse",
@@ -2385,14 +2385,17 @@ def create_single_se_entry(doc, mop_data):
 			{"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"},
 		)
 
-	if not department_wh:
-		frappe.throw(_("Please set warehouse for department {0}").format(doc.department))
 
-	# Only throw if not RPT Digital File Generation
-	if not employee_wh and doc.operation != "RPT Digital File Generation":
-		subcontractor = "subcontractor" if doc.subcontracting == "Yes" else "employee"
-		subcontractor_doc = doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
-		frappe.throw(_("Please set warehouse for {0} {1}").format(subcontractor, subcontractor_doc))
+	# Check for department warehouse (always required)
+	if not department_wh:
+		frappe.throw(_("Please set warhouse for department {0}").format(doc.department))
+
+	#Check for employee/subcontractor warehouse, except CAD - GEPL Issue case
+	if not employee_wh:
+		if not (doc.department == "Computer Aided Designing - GEPL" and doc.type == "Issue"):
+			subcontractor = "subcontractor" if doc.subcontracting == "Yes" else "employee"
+			subcontractor_doc = doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
+			frappe.throw(_("Please set warhouse for {0} {1}").format(subcontractor, subcontractor_doc))
 
 	mop_balance_details = frappe.db.get_all(
 		"MOP Balance Table", {"parent": ["in", mop_data.values()]}, ["*"]
