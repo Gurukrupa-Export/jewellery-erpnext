@@ -859,7 +859,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 	if frappe.flags.is_finding_transfer:
 		validate_batches = False
 
-	mop_list = [row.manufacturing_operation for row in se_doc.custom_mop_items]
+	mop_list = [row.manufacturing_operation for row in se_doc.items]
 
 	mop_base_data = frappe.db.get_all(
 		"MOP Balance Table", {"parent": ["in", mop_list]}, ["parent", "item_code", "batch_no"]
@@ -870,7 +870,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 		batch_data.setdefault(key, [])
 		batch_data[key].append(row.batch_no)
 
-	for entry in se_doc.custom_mop_items:
+	for entry in se_doc.items:
 		if not entry.manufacturing_operation:
 			continue
 
@@ -1424,7 +1424,7 @@ def group_se_items_and_update_mop_items(doc, method):
 	if not doc.items:
 		return
 
-	doc.set("custom_mop_items", [])
+	doc.set("items", [])
 
 	for row in doc.items:
 		mop_row = copy.deepcopy(row.__dict__)
@@ -1436,14 +1436,14 @@ def group_se_items_and_update_mop_items(doc, method):
 		else:
 			mop_row["doctype"] = "Stock Entry MOP Item"
 
-		doc.append("custom_mop_items", mop_row)
+		doc.append("items", mop_row)
 
 	doc.update_child_table("items")
-	doc.update_child_table("custom_mop_items")
+	doc.update_child_table("items")
 
 	if doc.auto_created:
 		doc_dict = doc.as_dict()
-		grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
+		grouped_se_items = group_se_items(doc_dict.get("items"))
 
 		if grouped_se_items and len(grouped_se_items) < len(doc.items):
 			doc.set("items", [])
@@ -1476,14 +1476,14 @@ def validate_ir(self):
 	if self.auto_created == 0:
 		if self.stock_entry_type in ['Material Receive (WORK ORDER)', 'Material Transfer (WORK ORDER)']:
 			if self.manufacturing_work_order:
-		
+
 				if self.manufacturing_work_order:
 					dept_ir_mwo = frappe.get_all(
 						"Department IR Operation",
 						filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
 						fields=["parent"]
 					)
-    
+
 					if dept_ir_mwo:
 						ir_names = ", ".join(f"'{row['parent']}'" for row in dept_ir_mwo)
 						frappe.throw(
@@ -1495,7 +1495,7 @@ def validate_ir(self):
 								filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
 								fields=["parent"]
 							)
-			
+
 					if emp_ir_mwo:
 						ir_names = ", ".join(f"'{row['parent']}'" for row in emp_ir_mwo)
 						frappe.throw(

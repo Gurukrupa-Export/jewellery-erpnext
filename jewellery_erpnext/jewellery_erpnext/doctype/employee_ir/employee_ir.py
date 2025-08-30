@@ -1938,7 +1938,7 @@ def create_stock_entry(
 		to_remove = []
 		existing_doc = frappe.get_doc("Stock Entry", stock_entry)
 
-		for child in existing_doc.custom_mop_items:
+		for child in existing_doc.items:
 			child.name = None
 			child.doctype = "Stock Entry Detail"
 			if child.manufacturing_operation != row.manufacturing_operation:
@@ -2368,7 +2368,7 @@ def create_single_se_entry(doc, mop_data):
 		"Warehouse",
 		{"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"},
 	)
-	
+
 	if doc.subcontracting == "Yes":
 		employee_wh = frappe.get_value(
 			"Warehouse",
