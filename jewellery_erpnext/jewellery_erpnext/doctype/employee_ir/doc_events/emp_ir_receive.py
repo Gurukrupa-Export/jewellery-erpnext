@@ -70,12 +70,12 @@ def get_stock_data_new(manufacturing_operation, employee_wh, department):
 		.inner_join(StockEntryMopItem)
 		.on(StockEntryMopItem.parent == StockEntry.name)
 		.select(StockEntry.name)
-		.distinct()
+		.distinct() # is this really needed?
 		.where(
 			(StockEntry.docstatus == 1)
-			& (StockEntryMopItem.manufacturing_operation == manufacturing_operation)
-			& (StockEntryMopItem.t_warehouse == employee_wh)
+			& (StockEntryMopItem.t_warehouse == employee_wh) # Add a composite index for (parent, t_warehouse, to_department)
 			& (StockEntryMopItem.to_department == department)
+			& (StockEntryMopItem.manufacturing_operation == manufacturing_operation) # Add a index for manufacturing_operation. I see its being updated in other files.
 		)
 		.orderby(StockEntry.creation)
 	)

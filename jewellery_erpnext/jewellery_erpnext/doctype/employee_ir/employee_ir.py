@@ -380,15 +380,15 @@ class EmployeeIR(Document):
 					# 	"Manufacturing Operation",
 					# 	{"employee_ir": self.name, "manufacturing_work_order": row.manufacturing_work_order},
 					# )
-					se_list = frappe.db.get_list("Stock Entry", {"employee_ir": self.name})
+					se_list = frappe.db.get_list("Stock Entry", {"employee_ir": self.name, "docstatus": 1})
 					for se in se_list:
 						se_doc = frappe.get_doc("Stock Entry", se.name)
-						if se_doc.docstatus == 1:
-							se_doc.cancel()
+						se_doc.cancel()
 
-						frappe.db.set_value(
-							"Stock Entry Detail", {"parent": se.name}, "manufacturing_operation", None
-						)
+					# Change to qb and add docstatus in the below query if required.
+					# Adding index for employee_ir.
+					frappe.db.sql(""" update from `tabStock Entry` as se inner join `tabStock Entry Detail as sed
+					on se.name = sed.parent set sed.manufacturing_operation = null where se.employee_ir = %s """, (self.name,))
 
 					frappe.db.set_value(
 						"Manufacturing Work Order",
@@ -1437,6 +1437,7 @@ def create_stock_entry(
 	department_wh, employee_wh = get_warehouses(doc, warehouse_data)
 
 	# Get All Previous Stock Data (Manual Entry and Automated Entries both)
+	#-
 	stock_entries = get_stock_data_new(row.manufacturing_operation, employee_wh, doc.department)
 
 	existing_items = frappe.get_all(
@@ -1444,6 +1445,8 @@ def create_stock_entry(
 		{"parent": ["in", stock_entries]},
 		pluck="item_code",
 	)
+	#- You can club these two instead of making two DB calls.
+
 
 	loss_items = []
 	if difference_wt != 0:
