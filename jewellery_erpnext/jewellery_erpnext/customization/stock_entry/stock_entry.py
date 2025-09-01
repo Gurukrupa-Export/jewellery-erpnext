@@ -17,6 +17,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	get_fifo_batches,
 	set_employee,
 	set_gross_wt,
+	validate_inventory_dimention,
 	validate_warehouse,
 	get_incoming_rate
 )

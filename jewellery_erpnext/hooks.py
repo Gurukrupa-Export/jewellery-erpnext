@@ -105,7 +105,7 @@ doc_events = {
 		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
-			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
+			# "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
