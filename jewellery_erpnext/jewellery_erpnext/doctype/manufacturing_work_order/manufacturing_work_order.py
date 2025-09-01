@@ -240,44 +240,56 @@ def create_manufacturing_operation(doc):
 		},
 	)
 
-	# settings = frappe.db.get_value(
-	# 	"Manufacturing Setting",
-	# 	{"company": doc.company},
-	# 	["default_operation", "default_department"],
-	# 	as_dict=1,
-	# )
 	settings = frappe.db.get_value(
 		"Manufacturing Setting",
 		{"manufacturer": doc.manufacturer},
 		["default_operation", "default_department"],
 		as_dict=1,
 	)
+
 	department = settings.get("default_department")
 	operation = settings.get("default_operation")
 	status = "Not Started"
 
+	# Last operation for FG
 	if doc.for_fg:
-		# department, operation = frappe.db.get_value(
-		# 	"Department Operation", {"is_last_operation": 1, "company": doc.company}, ["department", "name"]
-		# ) or ["", ""]
 		department, operation = frappe.db.get_value(
-			"Department Operation", {"is_last_operation": 1, "manufacturer": doc.manufacturer}, ["department", "name"]
+			"Department Operation",
+			{"is_last_operation": 1, "manufacturer": doc.manufacturer},
+			["department", "name"],
 		) or ["", ""]
 
+	# CAD / CAM operation handling
 	if doc.for_cad_cam:
-		department = frappe.db.get_value("Manufacturing Setting",{"manufacturer":doc.manufacturer},"default_cad_department")
-		operation = frappe.db.get_value("Department Operation",{"department":department},"name")
-		
+		department = frappe.db.get_value(
+			"Manufacturing Setting",
+			{"manufacturer": doc.manufacturer},
+			"default_cad_department",
+		)
+
+		# Only set operation if department is NOT "Computer Aided Designing - GEPL"
+		if department != "Computer Aided Designing - GEPL":
+			operation = frappe.db.get_value("Department Operation", {"department": department}, "name")
+		else:
+			operation = None  # skip operation only
+
+	# Split handling
 	if doc.split_from:
 		department = doc.department
 		operation = None
+
 	mop.status = status
 	mop.type = "Manufacturing Work Order"
-	mop.operation = operation
+	mop.operation = operation  
 	mop.department = department
 	mop.save()
+
+	# Employee remains untouched (always reset to None)
 	mop.db_set("employee", None)
+
 	doc.db_set("manufacturing_operation", mop.name)
+
+	# add time log
 	values = {"operation": operation}
 	values["department_start_time"] = dt_string
 	add_time_log(mop, values)
