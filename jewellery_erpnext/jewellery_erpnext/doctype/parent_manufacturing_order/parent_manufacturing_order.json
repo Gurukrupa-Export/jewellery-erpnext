@@ -993,7 +993,7 @@
    "fieldtype": "Image",
    "label": "Preview Bottom",
    "options": "finish_bottom_image"
-  },
+  }
  ],
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
