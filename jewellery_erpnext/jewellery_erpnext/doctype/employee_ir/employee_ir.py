@@ -1936,7 +1936,7 @@ def create_stock_entry(
 	rejected_qty = {}
 	for row in stock_entries:
 		to_remove = []
-		existing_doc = frappe.get_doc("Stock Entry", row.stock_entry)
+		existing_doc = frappe.get_doc("Stock Entry", row.se_name)
 
 		for child in existing_doc.items:
 			child.name = None
