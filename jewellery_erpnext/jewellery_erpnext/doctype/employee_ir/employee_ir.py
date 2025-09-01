@@ -324,15 +324,15 @@ class EmployeeIR(Document):
 			net_loss_wt = mwo_loss_dict.get(row.manufacturing_work_order) or 0
 
 			net_wt = frappe.db.get_value("Manufacturing Operation", row.manufacturing_operation, "net_wt")
-
+			is_received_gross_greater_than = True if row.received_gross_wt > row.gross_wt else False
 			difference_wt = flt(row.received_gross_wt, precision) - flt(row.gross_wt, precision)
-
 			res = frappe._dict(
 				{
 					"received_gross_wt": row.received_gross_wt,
-					"loss_wt": difference_wt,
+					"loss_wt":difference_wt,
 					"received_net_wt": flt(net_wt - net_loss_wt, precision),
 					"status": "WIP",
+					"is_received_gross_greater_than":is_received_gross_greater_than
 				}
 			)
 
@@ -382,11 +382,10 @@ class EmployeeIR(Document):
 					# 	"Manufacturing Operation",
 					# 	{"employee_ir": self.name, "manufacturing_work_order": row.manufacturing_work_order},
 					# )
-					se_list = frappe.db.get_list("Stock Entry", {"employee_ir": self.name})
+					se_list = frappe.db.get_list("Stock Entry", {"employee_ir": self.name, "docstatus": 1})
 					for se in se_list:
 						se_doc = frappe.get_doc("Stock Entry", se.name)
-						if se_doc.docstatus == 1:
-							se_doc.cancel()
+						se_doc.cancel()
 
 						frappe.db.set_value(
 							"Stock Entry Detail", {"parent": se.name}, "manufacturing_operation", None
@@ -1061,9 +1060,8 @@ class EmployeeIR(Document):
 			if is_mould_operation:
 				create_mould(self, row)
 			net_loss_wt = mwo_loss_dict.get(row.manufacturing_work_order) or 0
-
+			is_received_gross_greater_than = True if row.received_gross_wt > row.gross_wt else False
 			net_wt = frappe.db.get_value("Manufacturing Operation", row.manufacturing_operation, "net_wt")
-
 			difference_wt = flt(row.received_gross_wt, precision) - flt(row.gross_wt, precision)
 			res = frappe._dict(
 				{
@@ -1071,7 +1069,7 @@ class EmployeeIR(Document):
 					"loss_wt": difference_wt,
 					"received_net_wt": flt(net_wt - net_loss_wt, precision),
 					"status": "WIP",
-					"is_received_gross_greater_than":True if row.received_gross_wt > row.gross_wt else False
+					"is_received_gross_greater_than":is_received_gross_greater_than
 				}
 			)
 
@@ -1441,11 +1439,12 @@ def create_stock_entry(
 	# Get All Previous Stock Data (Manual Entry and Automated Entries both)
 	stock_entries = get_stock_data_new(row.manufacturing_operation, employee_wh, doc.department)
 
-	existing_items = frappe.get_all(
-		"Stock Entry Detail",
-		{"parent": ["in", stock_entries]},
-		pluck="item_code",
-	)
+	# existing_items = frappe.get_all(
+	# 	"Stock Entry Detail",
+	# 	{"parent": ["in", stock_entries]},
+	# 	pluck="item_code",
+	# )
+	existing_items = set(row.item_code for row in stock_entries)
 
 	loss_items = []
 	if difference_wt != 0:
@@ -1934,9 +1933,9 @@ def create_stock_entry(
 			)
 
 	rejected_qty = {}
-	for stock_entry in stock_entries:
+	for row in stock_entries:
 		to_remove = []
-		existing_doc = frappe.get_doc("Stock Entry", stock_entry)
+		existing_doc = frappe.get_doc("Stock Entry", row.stock_entry)
 
 		for child in existing_doc.items:
 			child.name = None
