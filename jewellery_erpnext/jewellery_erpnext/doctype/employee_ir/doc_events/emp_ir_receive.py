@@ -64,19 +64,18 @@ def get_stock_data(manufacturing_operation, employee_wh, department):
 
 def get_stock_data_new(manufacturing_operation, employee_wh, department):
 	StockEntry = DocType("Stock Entry").as_("se")
-	StockEntryMopItem = DocType("Stock Entry Detail").as_("sed")
+	StockEntryDetail = DocType("Stock Entry Detail").as_("sed")
 	query = (
 		frappe.qb.from_(StockEntry)
-		.inner_join(StockEntryMopItem)
-		.on(StockEntryMopItem.parent == StockEntry.name)
-		.select(StockEntry.name)
-		.distinct()
+		.inner_join(StockEntryDetail)
+		.on(StockEntryDetail.parent == StockEntry.name)
+		.select((StockEntry.name).as_("se_name"), (StockEntryDetail.item_code).as_("item_code"))
 		.where(
 			(StockEntry.docstatus == 1)
-			& (StockEntryMopItem.manufacturing_operation == manufacturing_operation)
-			& (StockEntryMopItem.t_warehouse == employee_wh)
-			& (StockEntryMopItem.to_department == department)
+			& (StockEntryDetail.manufacturing_operation == manufacturing_operation)
+			& (StockEntryDetail.t_warehouse == employee_wh)
+			& (StockEntryDetail.to_department == department)
 		)
 		.orderby(StockEntry.creation)
 	)
-	return query.run(as_dict=True, pluck=True)
+	return query.run(as_dict=True)
