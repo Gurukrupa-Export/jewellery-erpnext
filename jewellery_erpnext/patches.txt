@@ -4,3 +4,4 @@
 # jewellery_erpnext.patches.sed_copy_to_mop
 jewellery_erpnext.patches.create_custom_field 26/07
 jewellery_erpnext.patches.add_ir_workflows # patch for workflow
+jewellery_erpnext.patches.index_sed_columns
