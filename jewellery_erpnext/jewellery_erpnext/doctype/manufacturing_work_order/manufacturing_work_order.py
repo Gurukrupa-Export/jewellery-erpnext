@@ -30,7 +30,7 @@ class ManufacturingWorkOrder(Document):
 
 		self.metal_purity = mfg_purity
 
-		if self.for_fg or self.for_cad_cam:
+		if self.for_fg or self.get("for_cad_cam"):
 			self.name = make_autoname("MWO-.abbr.-.item_code.-.seq.-.##", doc=self)
 		else:
 			color = self.metal_colour.split("+")
