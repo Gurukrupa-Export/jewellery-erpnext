@@ -22,6 +22,7 @@
   "finding_transfer_entry",
   "section_break_fsrwq",
   "for_fg",
+  "for_cad_cam",
   "seq",
   "customer",
   "item_code",
@@ -659,6 +660,13 @@
    "group": "Reference",
    "link_doctype": "QC",
    "link_fieldname": "manufacturing_work_order"
+  },
+  {
+   "default": "0",
+   "fieldname": "for_cad_cam",
+   "fieldtype": "Check",
+   "label": "For CAD/CAM",
+   "read_only": 1
   }
  ],
  "modified": "2025-07-24 16:27:30.881315",
