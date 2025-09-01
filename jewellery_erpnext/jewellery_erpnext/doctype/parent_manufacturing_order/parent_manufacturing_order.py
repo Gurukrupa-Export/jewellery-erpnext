@@ -21,6 +21,7 @@ from jewellery_erpnext.utils import update_existing
 
 class ParentManufacturingOrder(Document):
 	def before_save(self):
+		update_images_to_items(self)
 		if self.is_new() or self.flags.ignore_validations:
 			return
 		update_parent_details(self)
@@ -60,6 +61,7 @@ class ParentManufacturingOrder(Document):
 		if self.serial_no:
 			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
 				self.db_set("serial_id_bom", serial_bom)
+			update_images_to_items(self)
 		# get_gemstone_details(self)
 
 	def validate(self):
@@ -99,10 +101,70 @@ class ParentManufacturingOrder(Document):
 
 
 	def on_update_after_submit(self):
+		update_images_to_items(self)
 		update_due_days(self)
 		validate_mfg_date(self)
+		if self.finish_good_image:
+			existing_snc = frappe.get_all(
+					"Serial Number Creator",
+					filters={
+						"parent_manufacturing_order": self.name,
+						"docstatus": 1
+					},
+					fields=["name"],
+					limit=1
+			)
+			if existing_snc:
+				snc = existing_snc[0].name
+				stock_entry = frappe.qb.DocType("Stock Entry")
+				serial_no = frappe.qb.DocType("Serial No")
+				bom = frappe.qb.DocType("BOM")
+
+				# Build the query
+				data = (
+					frappe.qb.from_(stock_entry)
+					.inner_join(serial_no)
+					.on(stock_entry.name == serial_no.purchase_document_no)
+					.inner_join(bom)
+					.on(serial_no.name == bom.tag_no)
+					.select(serial_no.purchase_document_no, serial_no.serial_no, bom.name)
+					.where(stock_entry.custom_serial_number_creator == snc)
+				).run(as_dict=True)
+
+				# frappe.throw(f"{data}")
+
+				frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
+				frappe.db.set_value("Item", self.item_code, "finish_left_view", self.finish_left_image)
+				frappe.db.set_value("Item", self.item_code, "finish_top_view", self.finish_top_image)
+				frappe.db.set_value("Item", self.item_code, "finish__back_view", self.finish_back_image)
+				frappe.db.set_value("Item", self.item_code, "finish_right_view", self.finish_right_image)
+				frappe.db.set_value("Item", self.item_code, "finish_bottom_view", self.finish_bottom_image)
+
+
+				frappe.db.set_value("BOM", data[0].name, "front_view_finish", self.finish_good_image)
+				frappe.db.set_value("BOM", data[0].name, "left_view_finish", self.finish_left_image)
+				frappe.db.set_value("BOM", data[0].name, "top_view_finish", self.finish_top_image)
+				frappe.db.set_value("BOM", data[0].name, "back_view_finish", self.finish_back_image)
+				frappe.db.set_value("BOM", data[0].name, "right_view_finish", self.finish_right_image)
+				frappe.db.set_value("BOM", data[0].name, "bottom_view_finish", self.finish_bottom_image)
+
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "front_view_finish", self.finish_good_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "left_view_finish", self.finish_left_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "top_view_finish", self.finish_top_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "back_view_finish", self.finish_back_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "right_view_finish", self.finish_right_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "bottom_view_finish", self.finish_bottom_image)
+
+
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_front_view", self.finish_good_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_left_view", self.finish_left_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_top_view", self.finish_top_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_back_view", self.finish_back_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_right_view", self.finish_right_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_bottom_view", self.finish_bottom_image)
 
 	def on_submit(self):
+		update_images_to_items(self)
 		if not self.order_form_type or self.order_form_type == "Order":
 			set_metal_tolerance_table(self)  # To Set Metal Product Tolerance Table
 			set_diamond_tolerance_table(self)  # To Set Diamond Product Tolerance Table
@@ -114,6 +176,69 @@ class ParentManufacturingOrder(Document):
 
 		create_manufacturing_work_order(self)
 		gemstone_details_set_mandatory_field(self)
+		images = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			self.name,
+			["finish_good_image", "finish_left_image", "finish_top_image", 
+			"finish_back_image", "finish_right_image", "finish_bottom_image"],
+			as_dict=True
+		)
+		if images and any(images.values()):
+			existing_snc = frappe.get_all(
+				"Serial Number Creator",
+				filters={
+					"parent_manufacturing_order": self.name,
+					"docstatus": 1
+				},
+				fields=["name"],
+				limit=1
+			)
+
+			if existing_snc:
+				snc = existing_snc[0].name
+				stock_entry = frappe.qb.DocType("Stock Entry")
+				serial_no = frappe.qb.DocType("Serial No")
+				bom = frappe.qb.DocType("BOM")
+
+				data = (
+					frappe.qb.from_(stock_entry)
+					.inner_join(serial_no)
+					.on(stock_entry.name == serial_no.purchase_document_no)
+					.inner_join(bom)
+					.on(serial_no.name == bom.tag_no)
+					.select(serial_no.purchase_document_no, serial_no.serial_no, bom.name)
+					.where(stock_entry.custom_serial_number_creator == snc)
+				).run(as_dict=True)
+
+				frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
+				frappe.db.set_value("Item", self.item_code, "finish_left_view", self.finish_left_image)
+				frappe.db.set_value("Item", self.item_code, "finish_top_view", self.finish_top_image)
+				frappe.db.set_value("Item", self.item_code, "finish__back_view", self.finish_back_image)
+				frappe.db.set_value("Item", self.item_code, "finish_right_view", self.finish_right_image)
+				frappe.db.set_value("Item", self.item_code, "finish_bottom_view", self.finish_bottom_image)
+
+
+				frappe.db.set_value("BOM", data[0].name, "front_view_finish", self.finish_good_image)
+				frappe.db.set_value("BOM", data[0].name, "left_view_finish", self.finish_left_image)
+				frappe.db.set_value("BOM", data[0].name, "top_view_finish", self.finish_top_image)
+				frappe.db.set_value("BOM", data[0].name, "back_view_finish", self.finish_back_image)
+				frappe.db.set_value("BOM", data[0].name, "right_view_finish", self.finish_right_image)
+				frappe.db.set_value("BOM", data[0].name, "bottom_view_finish", self.finish_bottom_image)
+
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "front_view_finish", self.finish_good_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "left_view_finish", self.finish_left_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "top_view_finish", self.finish_top_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "back_view_finish", self.finish_back_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "right_view_finish", self.finish_right_image)
+				frappe.db.set_value("BOM", {"name": data[0].name, "bom_type": "Finish Goods"}, "bottom_view_finish", self.finish_bottom_image)
+
+
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_front_view", self.finish_good_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_left_view", self.finish_left_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_top_view", self.finish_top_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_back_view", self.finish_back_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_right_view", self.finish_right_image)
+				frappe.db.set_value("Serial No", data[0].serial_no, "custom_finish_bottom_view", self.finish_bottom_image)
 
 		# if self.order_form_type == "Repair Order":
 		# 	create_repair_un_pack_stock_entry(self)
@@ -1347,5 +1472,8 @@ def create_mwo(pmo,doc):
 	fg_doc.save()
 	frappe.msgprint("Manufacturing Work Order for CAD/CAM Department is created.")
 
-
+def update_images_to_items(self):
+	if not self.finish_good_image or self.finish_left_image or self.finish_top_image or self.finish_back_image or self.finish_right_image or self.finish_bottom_image:
+		return
+	frappe.db.set_value("Item", self.item_code, "finish_front_view", self.finish_good_image)
 
