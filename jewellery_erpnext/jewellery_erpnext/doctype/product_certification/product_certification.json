@@ -17,6 +17,7 @@
   "section_break_6xngr",
   "naming_series",
   "type",
+  "scan",
   "customer",
   "brand_type",
   "type_of_certification",
@@ -214,6 +215,12 @@
    "fieldtype": "Link",
    "label": "Receive Against",
    "options": "Product Certification"
+  },
+  {
+   "fieldname": "scan",
+   "fieldtype": "Data",
+   "label": "Scan",
+   "options": "Barcode"
   }
  ],
  "index_web_pages_for_search": 1,
