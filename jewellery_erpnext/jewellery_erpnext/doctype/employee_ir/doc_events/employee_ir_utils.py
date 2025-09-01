@@ -624,7 +624,6 @@ def create_repack(self, row, item, metal_data, warehouse, temp_diff):
 					},
 				)
 				batch_dict.update({batch_doc.name: abs(se_qty)})
-	frappe.log_error(title = "se_doc", message = f"{se_doc.as_dict()}")
 	if se_doc.get("items"):
 		se_doc.save()
 		se_doc.submit()

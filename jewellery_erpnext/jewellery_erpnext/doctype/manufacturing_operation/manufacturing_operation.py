@@ -1553,12 +1553,13 @@ def get_material_wt(doc):
 			else:
 				other_wt += row.qty
 	gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
-	if  doc.main_slip_no or doc.is_finding:
-		if not frappe.db.get_value("Manufacturing Operation", doc.name,"is_received_gross_greater_than"):
-			gross_wt = gross_wt + abs(doc.loss_wt or 0)
-		else:
-			if gross_wt !=0:
-				gross_wt = gross_wt - abs(doc.loss_wt or 0)
+	loss_wt = abs(doc.loss_wt or 0)
+	is_received_gross_greater_than = frappe.db.get_value("Manufacturing Operation", doc.name,"is_received_gross_greater_than")
+	if not is_received_gross_greater_than:
+		gross_wt = gross_wt + loss_wt
+	elif doc.is_finding:  
+		if gross_wt !=0 and gross_wt > loss_wt:
+			gross_wt = gross_wt - loss_wt
 		
 	result = {
 		"gross_wt": gross_wt,
