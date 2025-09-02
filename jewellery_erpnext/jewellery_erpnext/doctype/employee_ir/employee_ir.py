@@ -779,6 +779,7 @@ class EmployeeIR(Document):
 				rows_to_append += self.book_metal_loss(mwo, opt, gwt, r_gwt, allowed_loss_percentage)
 
 		self.employee_loss_details = []
+		proportionally_loss_sum = 0
 		for row in rows_to_append:
 			proportionally_loss = flt(row["proportionally_loss"], 3)
 			if proportionally_loss > 0:
@@ -800,6 +801,8 @@ class EmployeeIR(Document):
 						"customer": row.get("customer"),
 					},
 				)
+				proportionally_loss_sum+=proportionally_loss
+		self.mop_loss_details_total = proportionally_loss_sum
 
 	@frappe.whitelist()
 	def book_metal_loss(self, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
