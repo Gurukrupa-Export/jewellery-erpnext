@@ -524,7 +524,7 @@ def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys, exclud
 
 
 def serialize_for_json(obj):
-	if isinstance(obj, datetime):
+	if isinstance(obj, datetime.datetime):
 		return frappe.utils.get_datetime_str(obj)
 	if isinstance(obj, frappe.Document):
 		return obj.as_dict()

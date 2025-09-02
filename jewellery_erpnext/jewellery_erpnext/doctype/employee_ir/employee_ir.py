@@ -1242,7 +1242,6 @@ class EmployeeIR(Document):
 
 				mop_data = frappe._dict()
 				pmo_data = frappe._dict()
-
 				for row in se_data.get("row_to_append"):
 					se_doc.append("items", row)
 					if isinstance(row, dict):
@@ -1933,11 +1932,16 @@ def create_stock_entry(
 			)
 
 	rejected_qty = {}
+	stock_entries_list = []
 	for row in stock_entries:
+		if row.se_name not in stock_entries_list:
+			stock_entries_list.append(row.se_name)
+		else:
+			continue
 		to_remove = []
-		existing_doc = frappe.get_doc("Stock Entry", row.stock_entry)
-
+		existing_doc = frappe.get_doc("Stock Entry", row.get("se_name"))
 		for child in existing_doc.items:
+			frappe.log_error(title = "child" ,message =f"{child.as_dict()}" )
 			child.name = None
 			child.doctype = "Stock Entry Detail"
 			if child.manufacturing_operation != row.manufacturing_operation:
@@ -2065,7 +2069,6 @@ def create_stock_entry(
 		# 	)
 
 	return se_rows, msl_rows, process_loss_rows, repack_raws
-
 
 def update_stock_details(docname):
 	doc = frappe.get_doc("Main Slip", docname)

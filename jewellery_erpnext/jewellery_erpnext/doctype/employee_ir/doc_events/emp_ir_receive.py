@@ -69,7 +69,7 @@ def get_stock_data_new(manufacturing_operation, employee_wh, department):
 		frappe.qb.from_(StockEntry)
 		.inner_join(StockEntryDetail)
 		.on(StockEntryDetail.parent == StockEntry.name)
-		.select((StockEntry.name).as_("se_name"), (StockEntryDetail.item_code).as_("item_code"))
+		.select((StockEntry.name).as_("se_name"), (StockEntryDetail.item_code).as_("item_code"),(StockEntryDetail.manufacturing_operation).as_("manufacturing_operation"))
 		.where(
 			(StockEntry.docstatus == 1)
 			& (StockEntryDetail.manufacturing_operation == manufacturing_operation)
