@@ -1942,7 +1942,7 @@ def create_stock_entry(
 		else:
 			continue
 		to_remove = []
-		existing_doc = frappe.get_doc("Stock Entry", row.get("se_name"))
+		existing_doc = frappe.get_doc("Stock Entry", row.se_name)
 		for child in existing_doc.items:
 			frappe.log_error(title = "child" ,message =f"{child.as_dict()}" )
 			child.name = None
