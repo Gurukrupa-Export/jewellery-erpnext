@@ -45,7 +45,7 @@ class ManufacturingWorkOrder(Document):
 				for mop in mop_list:
 					frappe.db.set_value("Manufacturing Operation", mop, "status", "Finished")
 		create_manufacturing_operation(self)
-		if self.split_from:
+		if self.split_from and not self.is_finding_mwo:
 			create_mr_for_split_work_order(self.name,self.company,self.manufacturer)
 		# self.start_datetime = now()
 		self.db_set("start_datetime", now())
