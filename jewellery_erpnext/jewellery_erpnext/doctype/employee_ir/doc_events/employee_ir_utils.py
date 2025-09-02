@@ -624,8 +624,9 @@ def create_repack(self, row, item, metal_data, warehouse, temp_diff):
 					},
 				)
 				batch_dict.update({batch_doc.name: abs(se_qty)})
-	se_doc.save()
-	se_doc.submit()
+	if se_doc.get("items"):
+		se_doc.save()
+		se_doc.submit()
 	return temp_diff, batch_dict
 
 
@@ -645,7 +646,7 @@ def create_purity_repack(self, row, item, pure_data, warehouse, temp_diff, purit
 		if purity > 0:
 			reqd_qty = (purity * temp_diff) / 100
 
-		reqd_qty = flt(reqd_qty, 3)
+		
 		if reqd_qty > 0 and row.consume_qty < row.qty:
 			if (row.consume_qty + reqd_qty) <= row.qty:
 				se_qty = reqd_qty

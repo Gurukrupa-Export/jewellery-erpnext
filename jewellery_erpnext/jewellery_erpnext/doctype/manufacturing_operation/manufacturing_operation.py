@@ -696,7 +696,7 @@ class ManufacturingOperation(Document):
 	def get_stock_entry(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
 		# StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
-		StockEntryMopItem = frappe.qb.DocType("Stock Entry MOP Item")
+		StockEntryMopItem = frappe.qb.DocType("Stock Entry Detail")
 
 		data = (
 			frappe.qb.from_(StockEntryMopItem)
@@ -729,7 +729,7 @@ class ManufacturingOperation(Document):
 	def get_stock_summary(self):
 		StockEntry = frappe.qb.DocType("Stock Entry")
 		# StockEntryDetail = frappeqb.DocType("Stock Entry Detail")
-		StockEntryMopItem = frappe.qb.DocType("Stock Entry MOP Item")
+		StockEntryMopItem = frappe.qb.DocType("Stock Entry Detail")
 
 		# Subquery for max modified stock entry per manufacturing operation
 		max_se_subquery = (
@@ -1552,13 +1552,13 @@ def get_material_wt(doc):
 				gemstone_pcs += int(str_pcs)
 			else:
 				other_wt += row.qty
+	gross_wt = (net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt)
 	if  doc.main_slip_no or doc.is_finding:
-		if not frappe.db.get_value("Manufacturing Operation", doc.name,"is_received_gross_greater_than"):
-			gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt+ abs(doc.loss_wt or 0)
+		if not frappe.db.get_value("Manufacturing Operation", doc.name,"is_received_gross_greater_than") and  doc.is_finding:
+			gross_wt = (net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt)+ abs(doc.loss_wt or 0)
 		else:
-			gross_wt = (net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt) - abs(doc.loss_wt or 0)
-	else:
-		gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
+			if doc.is_finding:
+				gross_wt = (net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt) - abs(doc.loss_wt or 0)
 	result = {
 		"gross_wt": gross_wt,
 		"net_wt": net_wt,

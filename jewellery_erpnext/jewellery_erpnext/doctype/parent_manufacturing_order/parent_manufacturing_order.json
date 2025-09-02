@@ -114,7 +114,23 @@
   "images_tab",
   "section_break_1xrgj",
   "finish_good_image",
-  "preview",
+  "preview_front",
+  "column_break_vzwf",
+  "finish_left_image",
+  "preview_left",
+  "column_break_aab6",
+  "finish_top_image",
+  "preview_top",
+  "column_break_meno",
+  "section_break_mln1",
+  "finish_back_image",
+  "preview_back",
+  "column_break_tomg",
+  "finish_right_image",
+  "preview_right",
+  "column_break_ldzq",
+  "finish_bottom_image",
+  "preview_bottom",
   "mop_details_tab",
   "item_weight_detail_section",
   "gross_weight",
@@ -472,7 +488,7 @@
    "label": "Finish Good Image"
   },
   {
-   "fieldname": "preview",
+   "fieldname": "preview_front",
    "fieldtype": "Image",
    "label": "Preview",
    "options": "finish_good_image"
@@ -893,6 +909,90 @@
    "fieldtype": "Link",
    "label": "Sub Setting Type",
    "options": "Attribute Value"
+  },
+  {
+   "fieldname": "column_break_vzwf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "preview_left",
+   "fieldtype": "Image",
+   "label": "Preview Left",
+   "options": "finish_left_image"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "finish_left_image",
+   "fieldtype": "Attach Image",
+   "label": "Finish Left Image"
+  },
+  {
+   "fieldname": "column_break_aab6",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "finish_top_image",
+   "fieldtype": "Attach Image",
+   "label": "Finish Top Image"
+  },
+  {
+   "fieldname": "preview_top",
+   "fieldtype": "Image",
+   "label": "Preview Top",
+   "options": "finish_top_image"
+  },
+  {
+   "fieldname": "column_break_meno",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_mln1",
+   "fieldtype": "Section Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "finish_back_image",
+   "fieldtype": "Attach Image",
+   "label": "Finish Back Image"
+  },
+  {
+   "fieldname": "preview_back",
+   "fieldtype": "Image",
+   "label": "Preview Back",
+   "options": "finish_back_image"
+  },
+  {
+   "fieldname": "column_break_tomg",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "finish_right_image",
+   "fieldtype": "Attach Image",
+   "label": "Finish Right Image"
+  },
+  {
+   "fieldname": "preview_right",
+   "fieldtype": "Image",
+   "label": "Preview Right",
+   "options": "finish_right_image"
+  },
+  {
+   "fieldname": "column_break_ldzq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "finish_bottom_image",
+   "fieldtype": "Attach Image",
+   "label": "Finish Bottom Image"
+  },
+  {
+   "fieldname": "preview_bottom",
+   "fieldtype": "Image",
+   "label": "Preview Bottom",
+   "options": "finish_bottom_image"
   }
  ],
  "index_web_pages_for_search": 1,

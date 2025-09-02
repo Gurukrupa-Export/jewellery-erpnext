@@ -12,9 +12,9 @@ def validate(self, method):
 	update_inventory_dimentions(self)
 
 def autoname(self,method=None):
-	# year_code = get_year_code()
-	# month_code = get_month_code()
-	# week_code = get_week_code()
+	year_code = get_year_code()
+	month_code = get_month_code()
+	week_code = get_week_code()
 	item_group = frappe.db.get_value("Item",{self.item},"item_group")
 
 	if item_group in ["Metal - V", "Diamond - V", "Gemstone - V", "Finding - V", "Other - V"]:

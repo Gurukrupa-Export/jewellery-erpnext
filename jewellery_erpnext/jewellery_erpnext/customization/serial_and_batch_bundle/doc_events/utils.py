@@ -2,7 +2,18 @@ import frappe
 from erpnext.stock.serial_batch_bundle import SerialBatchBundle, SerialBatchCreation
 from frappe.utils import flt
 from frappe import _, _dict, bold
-from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, now, nowtime, today
+from frappe.utils import flt, get_link_to_form, getdate
+
+from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
+	get_available_batches,
+	get_stock_ledgers_batches,
+	get_reserved_batches_for_pos,
+	get_reserved_batches_for_sre,
+	get_picked_batches,
+	update_available_batches,
+	filter_zero_near_batches,
+	get_qty_based_available_batches,
+)
 
 def update_parent_batch_id(self):
 	if self.type_of_transaction == "Inward" and self.voucher_type in [
@@ -141,3 +152,60 @@ def custom_create_batch(self):
 			}
 		)
 	)
+
+
+def get_auto_batch_nos(kwargs):
+	available_batches = get_available_batches(kwargs)
+	qty = flt(kwargs.qty)
+
+	stock_ledgers_batches = get_stock_ledgers_batches(kwargs)
+	pos_invoice_batches = get_reserved_batches_for_pos(kwargs)
+	sre_reserved_batches = get_reserved_batches_for_sre(kwargs)
+	picked_batches = frappe._dict()
+	if kwargs.get("is_pick_list"):
+		picked_batches = get_picked_batches(kwargs)
+
+	if stock_ledgers_batches or pos_invoice_batches or sre_reserved_batches or picked_batches:
+		update_available_batches(
+			available_batches,
+			stock_ledgers_batches,
+			pos_invoice_batches,
+			sre_reserved_batches,
+			picked_batches,
+		)
+
+	if kwargs.based_on == "Expiry":
+		available_batches = sorted(available_batches, key=lambda x: (x.expiry_date or getdate("9999-12-31")))
+
+	if not kwargs.get("do_not_check_future_batches") and available_batches and kwargs.get("posting_date"):
+		filter_zero_near_batches(available_batches, kwargs)
+
+	if not kwargs.consider_negative_batches:
+		precision = frappe.get_precision("Stock Ledger Entry", "actual_qty")
+		available_batches = [d for d in available_batches if flt(d.qty, precision) > 0]
+
+	if not qty:
+		return available_batches
+
+	is_customer_goods = kwargs.get("is_customer_goods")
+	filter_inventory_based_batches(available_batches, is_customer_goods)
+
+	return get_qty_based_available_batches(available_batches, qty)
+
+
+def filter_inventory_based_batches(available_batches, is_customer_goods):
+	"""
+	Filter out batches that are only for customer goods.
+	"""
+	if not available_batches:
+		return []
+
+	customer_inventories = ["Customer Goods", "Customer Stock"]
+
+	for batch in available_batches:
+		inventory_type = frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type")
+
+		if is_customer_goods and inventory_type not in customer_inventories:
+			available_batches.remove(batch)
+		elif not is_customer_goods and inventory_type in customer_inventories:
+			available_batches.remove(batch)

@@ -30,7 +30,7 @@ class ManufacturingWorkOrder(Document):
 
 		self.metal_purity = mfg_purity
 
-		if self.for_fg:
+		if self.for_fg or self.get("for_cad_cam"):
 			self.name = make_autoname("MWO-.abbr.-.item_code.-.seq.-.##", doc=self)
 		else:
 			color = self.metal_colour.split("+")
@@ -43,9 +43,9 @@ class ManufacturingWorkOrder(Document):
 			mop_list = frappe.db.get_list("Manufacturing Operation",filters={"department": last_department},pluck="name")
 			if mop_list:
 				for mop in mop_list:
-					frappe.db.set_value("Manufacturing Operation",mop,"status","Finished")
+					frappe.db.set_value("Manufacturing Operation", mop, "status", "Finished")
 		create_manufacturing_operation(self)
-		if self.split_from:
+		if self.split_from and not self.is_finding_mwo:
 			create_mr_for_split_work_order(self.name,self.company,self.manufacturer)
 		# self.start_datetime = now()
 		self.db_set("start_datetime", now())
@@ -240,40 +240,56 @@ def create_manufacturing_operation(doc):
 		},
 	)
 
-	# settings = frappe.db.get_value(
-	# 	"Manufacturing Setting",
-	# 	{"company": doc.company},
-	# 	["default_operation", "default_department"],
-	# 	as_dict=1,
-	# )
 	settings = frappe.db.get_value(
 		"Manufacturing Setting",
 		{"manufacturer": doc.manufacturer},
 		["default_operation", "default_department"],
 		as_dict=1,
 	)
+
 	department = settings.get("default_department")
 	operation = settings.get("default_operation")
 	status = "Not Started"
 
+	# Last operation for FG
 	if doc.for_fg:
-		# department, operation = frappe.db.get_value(
-		# 	"Department Operation", {"is_last_operation": 1, "company": doc.company}, ["department", "name"]
-		# ) or ["", ""]
 		department, operation = frappe.db.get_value(
-			"Department Operation", {"is_last_operation": 1, "manufacturer": doc.manufacturer}, ["department", "name"]
+			"Department Operation",
+			{"is_last_operation": 1, "manufacturer": doc.manufacturer},
+			["department", "name"],
 		) or ["", ""]
 
+	# CAD / CAM operation handling
+	if doc.for_cad_cam:
+		department = frappe.db.get_value(
+			"Manufacturing Setting",
+			{"manufacturer": doc.manufacturer},
+			"default_cad_department",
+		)
+
+		# Only set operation if department is NOT "Computer Aided Designing - GEPL"
+		if department != "Computer Aided Designing - GEPL":
+			operation = frappe.db.get_value("Department Operation", {"department": department}, "name")
+		else:
+			operation = None  # skip operation only
+
+	# Split handling
 	if doc.split_from:
 		department = doc.department
 		operation = None
+
 	mop.status = status
 	mop.type = "Manufacturing Work Order"
-	mop.operation = operation
+	mop.operation = operation  
 	mop.department = department
 	mop.save()
+
+	# Employee remains untouched (always reset to None)
 	mop.db_set("employee", None)
+
 	doc.db_set("manufacturing_operation", mop.name)
+
+	# add time log
 	values = {"operation": operation}
 	values["department_start_time"] = dt_string
 	add_time_log(mop, values)
@@ -364,7 +380,7 @@ def create_mr_for_split_work_order(docname, company, manufacturer):
 	old_mr = frappe.get_doc("Material Request",mr_list)
 	new_mr = frappe.copy_doc(old_mr)
 	new_mr.workflow_state = 'Draft'
-	new_mr.title = new_mr.title[:-1] + str(int(total_mr_count) + 1) 
+	new_mr.title = new_mr.title[:-1] + str(int(total_mr_count) + 1)
 	new_mr.custom_manufacturing_work_order = docname
 	new_mr_items = []
 	for i in new_mr.items:

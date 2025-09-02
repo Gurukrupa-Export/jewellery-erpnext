@@ -13,6 +13,7 @@ from six import itervalues
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	create_repack_for_subcontracting,
+	validate_inventory_dimention
 )
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.update_utils import (
 	update_main_slip_se_details,
@@ -26,10 +27,13 @@ import copy
 
 def before_validate(self, method):
 	validate_ir(self)
-	if (
-		not self.get("__islocal") and frappe.db.exists("Stock Entry", self.name) and self.docstatus == 0
-	) or self.flags.throw_batch_error:
-		self.update_batches()
+	# if (
+	# 	not self.get("__islocal") and frappe.db.exists("Stock Entry", self.name) and self.docstatus == 0
+	# ) or self.flags.throw_batch_error:
+	# 	self.update_batches()
+
+	self.flags.throw_batch_error = True
+	self.update_batches()
 
 	pure_item_purity = None
 
@@ -50,12 +54,15 @@ def before_validate(self, method):
 				frappe.throw(
 					_("Stock Entry not allowed for {0} in between transit").format(row.manufacturing_operation)
 				)
-		if row.custom_variant_of in ["M", "F"] and self.stock_entry_type not in ['Customer Goods Transfer','Customer Goods Issue','Customer Goods Received']:
+		if row.custom_variant_of in ["M", "F"] and self.stock_entry_type not in ["Customer Goods Received","Customer Goods Issue","Customer Goods Transfer"]:
 			if not pure_item_purity:
 				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
 
 				if self.stock_entry_type == 'Material Transfer (MAIN SLIP)':
-					manufacturer = frappe.db.get_value("Main Slip",self.to_main_slip,"manufacturer")
+					if self.to_main_slip:
+						manufacturer = frappe.db.get_value("Main Slip",self.to_main_slip,"manufacturer")
+					if self.main_slip:
+						manufacturer = frappe.db.get_value("Main Slip",self.main_slip,"manufacturer")
 				elif self.manufacturing_order:
 					manufacturer = frappe.db.get_value("Parent Manufacturing Order",self.manufacturing_order,"manufacturer")
 				else:
@@ -203,6 +210,9 @@ def validate_ir(self):
 
 
 
+
+def validate(self, method):
+	validate_inventory_dimention(self)
 
 def validate_pcs(self):
 	pcs_data = {}
@@ -515,7 +525,7 @@ def before_submit(self, method):
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
-	group_se_items_and_update_mop_items(self, method)
+	# group_se_items_and_update_mop_items(self, method)
 
 
 def onsubmit(self, method):
@@ -884,7 +894,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 	if frappe.flags.is_finding_transfer:
 		validate_batches = False
 
-	mop_list = [row.manufacturing_operation for row in se_doc.custom_mop_items]
+	mop_list = [row.manufacturing_operation for row in se_doc.items]
 
 	mop_base_data = frappe.db.get_all(
 		"MOP Balance Table", {"parent": ["in", mop_list]}, ["parent", "item_code", "batch_no"]
@@ -895,7 +905,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 		batch_data.setdefault(key, [])
 		batch_data[key].append(row.batch_no)
 
-	for entry in se_doc.custom_mop_items:
+	for entry in se_doc.items:
 		if not entry.manufacturing_operation:
 			continue
 
@@ -967,7 +977,6 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 
 def update_balance_table(mop_data):
-	frappe.log_error("Update MOP Balance Table", f"MOP Data: {mop_data}", defer_insert=True)
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
 
@@ -1000,7 +1009,6 @@ def validate_duplicate_batches(entry, batch_data):
 				", ".join(batch_data[key]),
 			)
 		)
-
 
 def get_previous_se_details(mop_doc, d_warehouse, e_warehouse):
 	additional_rows = []
@@ -1450,7 +1458,7 @@ def group_se_items_and_update_mop_items(doc, method):
 	if not doc.items:
 		return
 
-	doc.set("custom_mop_items", [])
+	doc.set("items", [])
 
 	for row in doc.items:
 		mop_row = copy.deepcopy(row.__dict__)
@@ -1462,14 +1470,14 @@ def group_se_items_and_update_mop_items(doc, method):
 		else:
 			mop_row["doctype"] = "Stock Entry MOP Item"
 
-		doc.append("custom_mop_items", mop_row)
+		doc.append("items", mop_row)
 
 	doc.update_child_table("items")
-	doc.update_child_table("custom_mop_items")
+	doc.update_child_table("items")
 
 	if doc.auto_created:
 		doc_dict = doc.as_dict()
-		grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
+		grouped_se_items = group_se_items(doc_dict.get("items"))
 
 		if grouped_se_items and len(grouped_se_items) < len(doc.items):
 			doc.set("items", [])
@@ -1495,3 +1503,39 @@ def group_se_items(se_items:list):
 	grouped_items = group_aggregate_with_concat(se_items, group_keys, sum_keys, concat_keys, exclude_keys)
 
 	return grouped_items
+
+def validate_ir(self):
+# 	validate_inventory_dimention(self)
+
+	if self.auto_created == 0:
+		if self.stock_entry_type in ['Material Receive (WORK ORDER)', 'Material Transfer (WORK ORDER)']:
+			if self.manufacturing_work_order:
+
+				if self.manufacturing_work_order:
+					dept_ir_mwo = frappe.get_all(
+						"Department IR Operation",
+						filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
+						fields=["parent"]
+					)
+
+					if dept_ir_mwo:
+						ir_names = ", ".join(f"'{row['parent']}'" for row in dept_ir_mwo)
+						frappe.throw(
+							f"{self.manufacturing_work_order} is already present in Draft :{ir_names} . Please submit or cancel them first."
+						)
+
+					emp_ir_mwo = frappe.get_all(
+								"Employee IR Operation",
+								filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
+								fields=["parent"]
+							)
+
+					if emp_ir_mwo:
+						ir_names = ", ".join(f"'{row['parent']}'" for row in emp_ir_mwo)
+						frappe.throw(
+							f"{self.manufacturing_work_order} is already present in Draft :{ir_names} . Please submit or cancel them first."
+						)
+
+
+
+

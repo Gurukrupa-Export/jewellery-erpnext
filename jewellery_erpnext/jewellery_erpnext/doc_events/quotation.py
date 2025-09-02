@@ -1337,7 +1337,24 @@ def validate_invoice_item(self):
 		for item in aggregated_gemstone_items.values():
 			self.append("custom_invoice_item", item)
 
+
+
 def validate_gold_rate_with_gst(self):
+	if self.company == "Gurukrupa Export Private Limited":
+		for i in self.items:
+			missing_fields = []
+			
+			if not i.order_form_id:
+				missing_fields.append("Order or Repair Order")
+			if not i.po_no:
+				missing_fields.append("Purchase Order")
+			
+			if missing_fields:
+				frappe.throw(
+					_("Row {0} : Quotation can be created from {1} for this Company").format(
+						i.idx, " or ".join(missing_fields)
+					)
+				)
 	if not self.gold_rate_with_gst:
 		frappe.throw("Gold Rate with GST is mandatory.")
 

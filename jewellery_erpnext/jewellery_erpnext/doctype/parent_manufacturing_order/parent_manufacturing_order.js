@@ -62,6 +62,23 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 				frm.trigger("create_customer_transfer");
 			});
 		}
+
+		if(frm.doc.docstatus == 1){
+			frm.add_custom_button(__("Create MWO"), function(){
+					frappe.call({
+						method: 'jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.create_mwo',
+						args: {
+							pmo: frm.doc.name,
+							doc: frm.doc
+						},
+						// callback: function(response) {
+						// 	// if (response.message) {
+						// 	// }
+						// }
+					});
+			})
+		}
+		
 	},
 
 	use_custom_diamond_grade(frm) {

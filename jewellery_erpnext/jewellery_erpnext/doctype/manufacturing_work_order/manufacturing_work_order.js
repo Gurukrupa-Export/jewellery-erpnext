@@ -4,9 +4,11 @@
 frappe.ui.form.on("Manufacturing Work Order", {
 	refresh: function (frm) {
 		if (
-			frm.doc.docstatus == 1 &&
+			(frm.doc.docstatus == 1 &&
 			frm.doc.qty < 2 &&
-			["In Process", "Not Started"].includes(frm.doc.status)
+			["In Process", "Not Started"].includes(frm.doc.status)) || ((frm.doc.docstatus == 1 &&
+			frm.doc.is_finding_mwo &&
+			["In Process", "Not Started"].includes(frm.doc.status)))
 		) {
 			frm.add_custom_button(__("Split Work Order"), function () {
 				frm.trigger("split_work_order");

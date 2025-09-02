@@ -33,6 +33,11 @@ doctype_js = {
 	"Purchase Receipt": "public/js/doctype_js/purchase_receipt.js",
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
 	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
+	"Payment Entry": "public/js/doctype_js/payment_entry.js"
+}
+
+doctype_list_js = {
+	"Journal Entry": "public/js/doctype_list_js/journal_entry_list.js",
 }
 
 # from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
@@ -100,7 +105,7 @@ doc_events = {
 		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
-			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
+			# "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
