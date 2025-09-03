@@ -529,7 +529,6 @@ def before_submit(self, method):
 
 
 def onsubmit(self, method):
-	frappe.log_error("on custom submit", self.as_dict())
 	validate_items(self)
 	update_manufacturing_operation(self)
 	update_main_slip(self)

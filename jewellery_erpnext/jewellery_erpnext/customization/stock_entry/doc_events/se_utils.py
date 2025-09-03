@@ -67,7 +67,7 @@ def get_fifo_batches(self, row):
 	pmo = row.get("custom_parent_manufacturing_order") or self.manufacturing_order
 	customer_goods_data =  check_customer_goods(row, pmo)
 
-	if row.batch_no and total_qty and is_batch_with_sufficient_qty(row, customer_goods_data):
+	if row.batch_no and total_qty and is_batch_with_sufficient_qty(row, customer_goods_data, self.flags.only_regular_stock_allowed):
 		return rows_to_append.append(row.__dict__)
 
 	row.batch_no = None
@@ -480,22 +480,31 @@ def check_customer_goods(row, pmo):
 def is_batch_with_sufficient_qty(row, customer_goods_data, only_allow_regular_stock=False):
 	batch_qty = get_batch_qty(item_code=row.item_code, warehouse=row.s_warehouse, batch_no=row.batch_no)
 
-	if batch_qty and customer_goods_data.get("is_customer_goods"):
+	if batch_qty and customer_goods_data:
 		batch_inventory_type = frappe.db.get_value("Batch", row.batch_no, "custom_inventory_type")
+		inventory_type = "Regular Stock"
+		customer = customer_goods_data.get("customer")
+
+		if customer_goods_data.get("is_customer_goods"):
+			inventory_type = "Customer Goods"
+
 		if (
 			batch_inventory_type in ["Customer Goods", "Customer Stock"]
-			and frappe.db.get_value("Batch", row.batch_no, "custom_customer") == customer_goods_data.get("customer")
+			and batch_inventory_type == inventory_type
+			and frappe.db.get_value("Batch", row.batch_no, "custom_customer") == customer
 			and batch_qty >= flt(row.qty)
 		):
 			return True
 		elif (
-			batch_inventory_type not in ["Customer Goods", "Customer Stock"]
+			batch_inventory_type in ["Customer Goods", "Customer Stock"]
+			and batch_inventory_type != inventory_type
 			and customer_goods_data.get("allow_rg_instead_of_cg") == 1
 			and batch_qty >= flt(row.qty)
 		):
 			return True
 		elif (
 			batch_inventory_type not in ["Customer Goods", "Customer Stock"]
+			and batch_inventory_type == inventory_type
 			and batch_qty >= flt(row.qty)
 		):
 			return True
@@ -505,7 +514,7 @@ def is_batch_with_sufficient_qty(row, customer_goods_data, only_allow_regular_st
 			and batch_inventory_type in ["Customer Goods", "Customer Stock"]
 		):
 				return False
-		else:
-			return False
+
+	return False
 
 
