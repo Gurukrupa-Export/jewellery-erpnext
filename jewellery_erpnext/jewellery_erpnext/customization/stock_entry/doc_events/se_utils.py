@@ -59,6 +59,7 @@ def validate_inventory_dimention(self):
 # chnages in this function
 def get_fifo_batches(self, row):
 	rows_to_append = []
+	row.batch_no = None
 	total_qty = row.qty
 	existing_updated = False
 
@@ -66,11 +67,6 @@ def get_fifo_batches(self, row):
 	warehouse = row.get("s_warehouse") or self.get("source_warehouse")
 	pmo = row.get("custom_parent_manufacturing_order") or self.manufacturing_order
 	customer_goods_data =  check_customer_goods(row, pmo)
-
-	if row.batch_no and total_qty and is_batch_with_sufficient_qty(row, customer_goods_data, self.flags.only_regular_stock_allowed):
-		return rows_to_append.append(row.__dict__)
-
-	row.batch_no = None
 
 	if msl and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse") == row.s_warehouse:
 		main_slip = self.main_slip or self.to_main_slip
@@ -475,46 +471,3 @@ def check_customer_goods(row, pmo):
 		res.update({"is_customer_goods": True})
 
 	return res
-
-
-def is_batch_with_sufficient_qty(row, customer_goods_data, only_allow_regular_stock=False):
-	batch_qty = get_batch_qty(item_code=row.item_code, warehouse=row.s_warehouse, batch_no=row.batch_no)
-
-	if batch_qty and customer_goods_data:
-		batch_inventory_type = frappe.db.get_value("Batch", row.batch_no, "custom_inventory_type")
-		inventory_type = "Regular Stock"
-		customer = customer_goods_data.get("customer")
-
-		if customer_goods_data.get("is_customer_goods"):
-			inventory_type = "Customer Goods"
-
-		if (
-			batch_inventory_type in ["Customer Goods", "Customer Stock"]
-			and batch_inventory_type == inventory_type
-			and frappe.db.get_value("Batch", row.batch_no, "custom_customer") == customer
-			and batch_qty >= flt(row.qty)
-		):
-			return True
-		elif (
-			batch_inventory_type in ["Customer Goods", "Customer Stock"]
-			and batch_inventory_type != inventory_type
-			and customer_goods_data.get("allow_rg_instead_of_cg") == 1
-			and batch_qty >= flt(row.qty)
-		):
-			return True
-		elif (
-			batch_inventory_type not in ["Customer Goods", "Customer Stock"]
-			and batch_inventory_type == inventory_type
-			and batch_qty >= flt(row.qty)
-		):
-			return True
-
-		elif (
-			only_allow_regular_stock
-			and batch_inventory_type in ["Customer Goods", "Customer Stock"]
-		):
-				return False
-
-	return False
-
-
