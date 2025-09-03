@@ -64,7 +64,7 @@ class CustomStockEntry(StockEntry):
 					frappe.throw(_("{0} not allowed in Operation {1}").format(row.item_code, row.department))
 			if frappe.db.get_value("Item", row.item_code, "has_batch_no"):
 				if row.s_warehouse:
-					if row.get("batch_no") and get_batch_qty(row.batch_no, row.s_warehouse) >= row.qty:
+					if row.get("batch_no") and get_batch_qty(row.batch_no, row.s_warehouse) >= flt(row.qty,3):
 						temp_row = copy.deepcopy(row)
 						rows_to_append += [temp_row]
 					else:
