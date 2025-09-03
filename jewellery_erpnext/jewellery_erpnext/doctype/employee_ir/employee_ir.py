@@ -1944,7 +1944,6 @@ def create_stock_entry(
 		to_remove = []
 		existing_doc = frappe.get_doc("Stock Entry", row.se_name)
 		for child in existing_doc.items:
-			frappe.log_error(title = "child" ,message =f"{child.as_dict()}" )
 			child.name = None
 			child.doctype = "Stock Entry Detail"
 			if child.manufacturing_operation != row.manufacturing_operation:
