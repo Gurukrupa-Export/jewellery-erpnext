@@ -94,8 +94,7 @@
   "mwo_mop_balance_table",
   "bom_summary",
   "show_detail_section",
-  "stock_entry_details",
-  "for_cad_cam"
+  "stock_entry_details"
  ],
  "fields": [
   {
@@ -636,12 +635,6 @@
    "fieldname": "jewelex_batch_no",
    "fieldtype": "Data",
    "label": "Jewelex Batch No"
-  },
-  {
-   "default": "0",
-   "fieldname": "for_cad_cam",
-   "fieldtype": "Check",
-   "label": "for cad cam"
   }
  ],
  "grid_page_length": 50,
@@ -667,9 +660,16 @@
    "group": "Reference",
    "link_doctype": "QC",
    "link_fieldname": "manufacturing_work_order"
+  },
+  {
+   "default": "0",
+   "fieldname": "for_cad_cam",
+   "fieldtype": "Check",
+   "label": "For CAD/CAM",
+   "read_only": 1
   }
  ],
- "modified": "2025-09-02 19:16:21.533229",
+ "modified": "2025-07-24 16:27:30.881315",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

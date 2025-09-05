@@ -646,7 +646,7 @@ def create_purity_repack(self, row, item, pure_data, warehouse, temp_diff, purit
 		if purity > 0:
 			reqd_qty = (purity * temp_diff) / 100
 
-		
+		reqd_qty = flt(reqd_qty, 3)
 		if reqd_qty > 0 and row.consume_qty < row.qty:
 			if (row.consume_qty + reqd_qty) <= row.qty:
 				se_qty = reqd_qty

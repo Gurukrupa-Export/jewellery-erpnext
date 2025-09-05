@@ -779,7 +779,6 @@ class EmployeeIR(Document):
 				rows_to_append += self.book_metal_loss(mwo, opt, gwt, r_gwt, allowed_loss_percentage)
 
 		self.employee_loss_details = []
-		proportionally_loss_sum = 0
 		for row in rows_to_append:
 			proportionally_loss = flt(row["proportionally_loss"], 3)
 			if proportionally_loss > 0:
@@ -801,8 +800,6 @@ class EmployeeIR(Document):
 						"customer": row.get("customer"),
 					},
 				)
-				proportionally_loss_sum+=proportionally_loss
-		self.mop_loss_details_total = proportionally_loss_sum
 
 	@frappe.whitelist()
 	def book_metal_loss(self, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
@@ -1245,6 +1242,7 @@ class EmployeeIR(Document):
 
 				mop_data = frappe._dict()
 				pmo_data = frappe._dict()
+
 				for row in se_data.get("row_to_append"):
 					se_doc.append("items", row)
 					if isinstance(row, dict):
@@ -1935,16 +1933,11 @@ def create_stock_entry(
 			)
 
 	rejected_qty = {}
-	stock_entries_list = []
 	for row in stock_entries:
-		if row.se_name not in stock_entries_list:
-			stock_entries_list.append(row.se_name)
-		else:
-			continue
 		to_remove = []
 		existing_doc = frappe.get_doc("Stock Entry", row.se_name)
+
 		for child in existing_doc.items:
-			frappe.log_error(title = "child" ,message =f"{child.as_dict()}" )
 			child.name = None
 			child.doctype = "Stock Entry Detail"
 			if child.manufacturing_operation != row.manufacturing_operation:
@@ -2072,6 +2065,7 @@ def create_stock_entry(
 		# 	)
 
 	return se_rows, msl_rows, process_loss_rows, repack_raws
+
 
 def update_stock_details(docname):
 	doc = frappe.get_doc("Main Slip", docname)
