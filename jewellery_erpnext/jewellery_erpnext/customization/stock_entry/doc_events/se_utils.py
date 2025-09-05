@@ -65,7 +65,7 @@ def get_fifo_batches(self, row):
 
 	msl = self.get("main_slip") or self.get("to_main_slip")
 	warehouse = row.get("s_warehouse") or self.get("source_warehouse")
-	pmo = row.get("custom_parent_manufacturing_order") or self.get("manufacturing_order")
+	pmo = row.get("custom_parent_manufacturing_order") or self.manufacturing_order
 	customer_goods_data =  check_customer_goods(row, pmo)
 
 	if msl and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse") == row.s_warehouse:
