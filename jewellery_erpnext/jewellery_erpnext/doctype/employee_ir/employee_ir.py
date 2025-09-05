@@ -760,6 +760,7 @@ class EmployeeIR(Document):
 				rows_to_append += self.book_metal_loss(mwo, opt, gwt, r_gwt, allowed_loss_percentage)
 
 		self.employee_loss_details = []
+		proportionally_loss_sum = 0
 		for row in rows_to_append:
 			proportionally_loss = flt(row["proportionally_loss"], 3)
 			if proportionally_loss > 0:
@@ -781,6 +782,8 @@ class EmployeeIR(Document):
 						"customer": row.get("customer"),
 					},
 				)
+				proportionally_loss_sum+=proportionally_loss
+		self.mop_loss_details_total = proportionally_loss_sum
 
 	@frappe.whitelist()
 	def book_metal_loss(self, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
@@ -1541,7 +1544,12 @@ def create_stock_entry(
 			)
 
 	rejected_qty = {}
-	for stock_entry in stock_entries:
+	stock_entries_list = []
+	for row in stock_entries:
+		if row.se_name not in stock_entries_list:
+			stock_entries_list.append(row.se_name)
+		else:
+			continue
 		to_remove = []
 		existing_doc = frappe.get_doc("Stock Entry", stock_entry)
 
