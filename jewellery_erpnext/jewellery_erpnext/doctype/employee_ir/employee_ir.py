@@ -364,32 +364,32 @@ class EmployeeIR(Document):
 								"Stock Entry Detail", {"parent": se.name}, "manufacturing_operation", None
 							)
 
+					frappe.db.set_value(
+						"Manufacturing Work Order",
+						row.manufacturing_work_order,
+						"manufacturing_operation",
+						row.manufacturing_operation,
+					)
+					if new_operation.name:
 						frappe.db.set_value(
-							"Manufacturing Work Order",
-							row.manufacturing_work_order,
+							"Department IR Operation",
+							{"docstatus": 2, "manufacturing_operation": new_operation.name},
 							"manufacturing_operation",
-							row.manufacturing_operation,
+							None,
 						)
-						if new_operation.name:
-							frappe.db.set_value(
-								"Department IR Operation",
-								{"docstatus": 2, "manufacturing_operation": new_operation.name},
-								"manufacturing_operation",
-								None,
-							)
-							frappe.db.set_value(
-								"Stock Entry Detail",
-								{"docstatus": 2, "manufacturing_operation": new_operation.name},
-								"manufacturing_operation",
-								None,
-							)
-							frappe.db.set_value(
-								"Stock Entry MOP Item",
-								{"docstatus": 2, "manufacturing_operation": new_operation.name},
-								"manufacturing_operation",
-								None,
-							)
-							frappe.delete_doc("Manufacturing Operation", new_operation.name, ignore_permissions=1)
+						frappe.db.set_value(
+							"Stock Entry Detail",
+							{"docstatus": 2, "manufacturing_operation": new_operation.name},
+							"manufacturing_operation",
+							None,
+						)
+						frappe.db.set_value(
+							"Stock Entry Detail",
+							{"docstatus": 2, "manufacturing_operation": new_operation.name},
+							"manufacturing_operation",
+							None,
+						)
+						frappe.delete_doc("Manufacturing Operation", new_operation.name, ignore_permissions=1)
 
 						frappe.db.set_value(
 							"Manufacturing Operation", row.manufacturing_operation, "status", "Not Started"
@@ -1049,7 +1049,7 @@ def create_stock_entry(
 	stock_entries = get_stock_data_new(row.manufacturing_operation, employee_wh, doc.department)
 
 	existing_items = frappe.get_all(
-		"Stock Entry MOP Item",
+		"Stock Entry Detail",
 		{"parent": ["in", stock_entries]},
 		pluck="item_code",
 	)
@@ -1545,14 +1545,14 @@ def create_stock_entry(
 		to_remove = []
 		existing_doc = frappe.get_doc("Stock Entry", stock_entry)
 
-		for child in existing_doc.custom_mop_items:
+		for child in existing_doc.items:
 			child.name = None
 			child.doctype = "Stock Entry Detail"
 			if child.manufacturing_operation != row.manufacturing_operation:
 				to_remove.append(child)
 			else:
 				if not rejected_qty.get((child.item_code,child.batch_no)):
-					StockEntryMopItem = DocType("Stock Entry MOP Item").as_("sed")
+					StockEntryMopItem = DocType("Stock Entry Detail").as_("sed")
 					StockEntry = DocType("Stock Entry").as_("se")
 					query = (
 						qb.from_(StockEntryMopItem)

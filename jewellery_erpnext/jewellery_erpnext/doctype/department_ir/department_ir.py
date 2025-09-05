@@ -106,46 +106,46 @@ class DepartmentIR(Document):
 				"default_in_transit_warehouse",
 			)
 
-			department_wh = frappe.get_value(
-				"Warehouse",
-				{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
+		department_wh = frappe.get_value(
+			"Warehouse",
+			{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
+		)
+		for row in self.department_ir_operation:
+			sed_items = frappe.db.get_all(
+				"Stock Entry Detail",
+				{
+					"manufacturing_operation": row.manufacturing_operation,
+					"t_warehouse": in_transit_wh,
+					"department": self.previous_department,
+					"to_department": self.current_department,
+					"docstatus": 1,
+				},
+				["*"],
 			)
-			for row in self.department_ir_operation:
-				sed_items = frappe.db.get_all(
-					"Stock Entry MOP Item",
-					{
-						"manufacturing_operation": row.manufacturing_operation,
-						"t_warehouse": in_transit_wh,
-						"department": self.previous_department,
-						"to_department": self.current_department,
-						"docstatus": 1,
-					},
-					["*"],
-				)
-				# if not sed_items:
-				# 	sed_items =  frappe.db.get_all(
-				# 	"Stock Entry Detail",
-				# 	{
-				# 		"manufacturing_operation": ["like", f"%{row.manufacturing_operation}%"],
-				# 		"t_warehouse": in_transit_wh,
-				# 		"department": self.previous_department,
-				# 		"to_department": self.current_department,
-				# 		"docstatus": 1,
-				# 	},
-				# 	["*"],
-				# )
-				for se_item in sed_items:
-					temp_row = copy.deepcopy(se_item)
-					temp_row["name"] = None
-					temp_row["idx"] = None
-					temp_row["s_warehouse"] = in_transit_wh
-					temp_row["t_warehouse"] = department_wh
-					temp_row["serial_and_batch_bundle"] = None
-					temp_row["main_slip"] = None
-					temp_row["employee"] = None
-					temp_row["to_main_slip"] = None
-					temp_row["to_employee"] = None
-					se_item_list += [temp_row]
+			# if not sed_items:
+			# 	sed_items =  frappe.db.get_all(
+			# 	"Stock Entry Detail",
+			# 	{
+			# 		"manufacturing_operation": ["like", f"%{row.manufacturing_operation}%"],
+			# 		"t_warehouse": in_transit_wh,
+			# 		"department": self.previous_department,
+			# 		"to_department": self.current_department,
+			# 		"docstatus": 1,
+			# 	},
+			# 	["*"],
+			# )
+			for se_item in sed_items:
+				temp_row = copy.deepcopy(se_item)
+				temp_row["name"] = None
+				temp_row["idx"] = None
+				temp_row["s_warehouse"] = in_transit_wh
+				temp_row["t_warehouse"] = department_wh
+				temp_row["serial_and_batch_bundle"] = None
+				temp_row["main_slip"] = None
+				temp_row["employee"] = None
+				temp_row["to_main_slip"] = None
+				temp_row["to_employee"] = None
+				se_item_list += [temp_row]
 
 				if cancel:
 					values.update({"department_receive_id": None, "department_ir_status": "In-Transit"})
@@ -828,8 +828,8 @@ def update_stock_entry_dimensions(doc, row, manufacturing_operation, for_employe
 	stock_entries = frappe.db.get_all("Stock Entry", filters=filters, pluck="name")
 	values = {"manufacturing_operation": manufacturing_operation}
 	for stock_entry in stock_entries:
-		rows = frappe.db.get_all("Stock Entry MOP Item", {"parent": stock_entry}, pluck="name")
-		set_values_in_bulk("Stock Entry MOP Item", rows, values)
+		rows = frappe.db.get_all("Stock Entry Detail", {"parent": stock_entry}, pluck="name")
+		set_values_in_bulk("Stock Entry Detail", rows, values)
 		values[scrub(doc.doctype)] = doc.name
 		frappe.db.set_value("Stock Entry", stock_entry, values)
 		update_manufacturing_operation(stock_entry)
@@ -873,7 +873,7 @@ def batch_update_stock_entry_dimensions(doc, stock_entry_data, employee, for_emp
 
 	# Fetch all Stock Entry Detail rows in one query
 	sed_rows = frappe.db.get_all(
-		"Stock Entry MOP Item",
+		"Stock Entry Detail",
 		filters={"parent": ["in", stock_entries]},
 		fields=["name", "parent", "manufacturing_operation"]
 	)
