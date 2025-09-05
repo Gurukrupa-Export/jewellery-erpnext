@@ -1414,7 +1414,7 @@ def group_se_items_and_update_mop_items(doc, method):
 	if not doc.items:
 		return
 
-	doc.set("items", [])
+	doc.set("custom_mop_items", [])
 
 	for row in doc.items:
 		mop_row = copy.deepcopy(row.__dict__)
@@ -1426,14 +1426,14 @@ def group_se_items_and_update_mop_items(doc, method):
 		else:
 			mop_row["doctype"] = "Stock Entry MOP Item"
 
-		doc.append("items", mop_row)
+		doc.append("custom_mop_items", mop_row)
 
 	doc.update_child_table("items")
-	doc.update_child_table("items")
+	doc.update_child_table("custom_mop_items")
 
 	if doc.auto_created:
 		doc_dict = doc.as_dict()
-		grouped_se_items = group_se_items(doc_dict.get("items"))
+		grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
 
 		if grouped_se_items and len(grouped_se_items) < len(doc.items):
 			doc.set("items", [])
