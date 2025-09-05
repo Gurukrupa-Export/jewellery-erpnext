@@ -89,20 +89,22 @@ class DepartmentIR(Document):
 
 	# for Receive
 	def on_submit_receive(self, cancel=False):
-		import copy
+		se_data = json.loads(self.se_data) if self.se_data else []
+		if not se_data:
+			import copy
 
-		values = {}
-		values["department_receive_id"] = self.name
-		values["department_ir_status"] = "Received"
+			values = {}
+			values["department_receive_id"] = self.name
+			values["department_ir_status"] = "Received"
 
-		se_item_list = []
-		dt_string = get_datetime()
+			se_item_list = []
+			dt_string = get_datetime()
 
-		in_transit_wh = frappe.db.get_value(
-			"Warehouse",
-			{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
-			"default_in_transit_warehouse",
-		)
+			in_transit_wh = frappe.db.get_value(
+				"Warehouse",
+				{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
+				"default_in_transit_warehouse",
+			)
 
 		department_wh = frappe.get_value(
 			"Warehouse",
@@ -145,19 +147,21 @@ class DepartmentIR(Document):
 				temp_row["to_employee"] = None
 				se_item_list += [temp_row]
 
-			if cancel:
-				values.update({"department_receive_id": None, "department_ir_status": "In-Transit"})
-			frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
-			frappe.db.set_value(
-				"Manufacturing Work Order", row.manufacturing_work_order, "department", self.current_department
-			)
+				if cancel:
+					values.update({"department_receive_id": None, "department_ir_status": "In-Transit"})
+				frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
+				frappe.db.set_value(
+					"Manufacturing Work Order", row.manufacturing_work_order, "department", self.current_department
+				)
 
-			doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
-			doc.set("department_time_logs", [])
-			doc.save()
-			time_values = copy.deepcopy(values)
-			time_values["department_start_time"] = dt_string
-			add_time_log(doc, time_values)
+				doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+				doc.set("department_time_logs", [])
+				doc.save()
+				time_values = copy.deepcopy(values)
+				time_values["department_start_time"] = dt_string
+				add_time_log(doc, time_values)
+		else:
+			se_item_list = se_data.get("se_item_list", [])
 
 		if not se_item_list:
 			frappe.msgprint(_("No Stock Entries were generated during this Department IR"))
@@ -343,79 +347,82 @@ class DepartmentIR(Document):
 				stock_doc.submit()
 
 	def on_submit_issue_new(self, cancel=False):
-		dt_string = get_datetime()
-		status = "Not Started" if cancel else "Finished"
-		values = {"status": status}
+		if not self.mop_data:
+			dt_string = get_datetime()
+			status = "Not Started" if cancel else "Finished"
+			values = {"status": status}
 
-		mop_data = frappe._dict({})
-		stock_entry_data = []  # Accumulate data for batch update
+			mop_data = frappe._dict({})
+			stock_entry_data = []  # Accumulate data for batch update
 
-		for row in self.department_ir_operation:
-			if cancel:
-				new_operation = frappe.db.get_value(
-					"Manufacturing Operation",
-					{"department_issue_id": self.name, "manufacturing_work_order": row.manufacturing_work_order},
-				)
-				new_operation = frappe.get_doc("Manufacturing Operation",new_operation)
-				se_list = frappe.db.get_list("Stock Entry", {"department_ir": self.name})
-				for se in se_list:
-					se_doc = frappe.get_doc("Stock Entry", se.name)
-					if se_doc.docstatus == 1:
-						se_doc.cancel()
-
-					frappe.db.set_value(
-						"Stock Entry Detail", {"parent": se.name}, "manufacturing_operation", None
+			for row in self.department_ir_operation:
+				if cancel:
+					new_operation = frappe.db.get_value(
+						"Manufacturing Operation",
+						{"department_issue_id": self.name, "manufacturing_work_order": row.manufacturing_work_order},
 					)
+					new_operation = frappe.get_doc("Manufacturing Operation",new_operation)
+					se_list = frappe.db.get_list("Stock Entry", {"department_ir": self.name})
+					for se in se_list:
+						se_doc = frappe.get_doc("Stock Entry", se.name)
+						if se_doc.docstatus == 1:
+							se_doc.cancel()
 
-				frappe.db.set_value(
-					"Manufacturing Work Order",
-					row.manufacturing_work_order,
-					"manufacturing_operation",
-					row.manufacturing_operation,
-				)
-				if new_operation.name:
+						frappe.db.set_value(
+							"Stock Entry Detail", {"parent": se.name}, "manufacturing_operation", None
+						)
+
 					frappe.db.set_value(
-						"Department IR Operation",
-						{"docstatus": 2, "manufacturing_operation": new_operation.name},
+						"Manufacturing Work Order",
+						row.manufacturing_work_order,
 						"manufacturing_operation",
-						None,
+						row.manufacturing_operation,
 					)
+					if new_operation.name:
+						frappe.db.set_value(
+							"Department IR Operation",
+							{"docstatus": 2, "manufacturing_operation": new_operation.name},
+							"manufacturing_operation",
+							None,
+						)
+						frappe.db.set_value(
+							"Stock Entry Detail",
+							{"docstatus": 2, "manufacturing_operation": new_operation.name},
+							"manufacturing_operation",
+							None,
+						)
+						frappe.delete_doc("Manufacturing Operation", new_operation.name, ignore_permissions=1)
 					frappe.db.set_value(
-						"Stock Entry Detail",
-						{"docstatus": 2, "manufacturing_operation": new_operation.name},
-						"manufacturing_operation",
-						None,
+						"Manufacturing Operation", row.manufacturing_operation, "status", "In Transit"
 					)
-					frappe.delete_doc("Manufacturing Operation", new_operation.name, ignore_permissions=1)
-				frappe.db.set_value(
-					"Manufacturing Operation", row.manufacturing_operation, "status", "In Transit"
-				)
 
-			else:
-				values["complete_time"] = dt_string
-				new_operation = create_operation_for_next_dept(
-					self.name, row.manufacturing_work_order, row.manufacturing_operation, self.next_department
-				)
-				# Accumulate data for batch update instead of calling the function here
-				stock_entry_data.append((row.manufacturing_work_order, new_operation.name))
+				else:
+					values["complete_time"] = dt_string
+					new_operation = create_operation_for_next_dept(
+						self.name, row.manufacturing_work_order, row.manufacturing_operation, self.next_department
+					)
+					# Accumulate data for batch update instead of calling the function here
+					stock_entry_data.append((row.manufacturing_work_order, new_operation.name))
 
-				frappe.db.set_value(
-					"Manufacturing Operation", row.manufacturing_operation, "status", "Finished"
-				)
-				doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
-				mop_data.update(
-					{
-						row.manufacturing_work_order: {
-							"cur_mop": row.manufacturing_operation,
-							"new_mop": new_operation.name,
+					frappe.db.set_value(
+						"Manufacturing Operation", row.manufacturing_operation, "status", "Finished"
+					)
+					doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+					mop_data.update(
+						{
+							row.manufacturing_work_order: {
+								"cur_mop": row.manufacturing_operation,
+								"new_mop": new_operation.name,
+							}
 						}
-					}
-				)
-				add_time_log(doc, values)
+					)
+					add_time_log(doc, values)
 
-		# Batch update the stock entry dimensions
-		if stock_entry_data and not cancel:
-			batch_update_stock_entry_dimensions(self, stock_entry_data, employee=None, for_employee=False)
+			# Batch update the stock entry dimensions
+			if stock_entry_data and not cancel:
+				batch_update_stock_entry_dimensions(self, stock_entry_data, employee=None, for_employee=False)
+		else:
+			mop_data = json.loads(self.mop_data)
 
 		add_to_transit = []
 		strat_transit = []
