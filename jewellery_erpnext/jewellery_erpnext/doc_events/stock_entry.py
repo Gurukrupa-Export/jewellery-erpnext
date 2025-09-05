@@ -479,7 +479,7 @@ def before_submit(self, method):
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
-	group_se_items_and_update_mop_items(self, method)
+	# group_se_items_and_update_mop_items(self, method)
 
 
 def onsubmit(self, method):
@@ -848,7 +848,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 	if frappe.flags.is_finding_transfer:
 		validate_batches = False
 
-	mop_list = [row.manufacturing_operation for row in se_doc.custom_mop_items]
+	mop_list = [row.manufacturing_operation for row in se_doc.items]
 
 	mop_base_data = frappe.db.get_all(
 		"MOP Balance Table", {"parent": ["in", mop_list]}, ["parent", "item_code", "batch_no"]
@@ -859,7 +859,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 		batch_data.setdefault(key, [])
 		batch_data[key].append(row.batch_no)
 
-	for entry in se_doc.custom_mop_items:
+	for entry in se_doc.items:
 		if not entry.manufacturing_operation:
 			continue
 

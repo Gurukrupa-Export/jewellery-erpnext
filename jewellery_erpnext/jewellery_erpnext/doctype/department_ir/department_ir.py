@@ -110,7 +110,7 @@ class DepartmentIR(Document):
 		)
 		for row in self.department_ir_operation:
 			sed_items = frappe.db.get_all(
-				"Stock Entry MOP Item",
+				"Stock Entry Detail",
 				{
 					"manufacturing_operation": row.manufacturing_operation,
 					"t_warehouse": in_transit_wh,
@@ -821,8 +821,8 @@ def update_stock_entry_dimensions(doc, row, manufacturing_operation, for_employe
 	stock_entries = frappe.db.get_all("Stock Entry", filters=filters, pluck="name")
 	values = {"manufacturing_operation": manufacturing_operation}
 	for stock_entry in stock_entries:
-		rows = frappe.db.get_all("Stock Entry MOP Item", {"parent": stock_entry}, pluck="name")
-		set_values_in_bulk("Stock Entry MOP Item", rows, values)
+		rows = frappe.db.get_all("Stock Entry Detail", {"parent": stock_entry}, pluck="name")
+		set_values_in_bulk("Stock Entry Detail", rows, values)
 		values[scrub(doc.doctype)] = doc.name
 		frappe.db.set_value("Stock Entry", stock_entry, values)
 		update_manufacturing_operation(stock_entry)
@@ -866,7 +866,7 @@ def batch_update_stock_entry_dimensions(doc, stock_entry_data, employee, for_emp
 
 	# Fetch all Stock Entry Detail rows in one query
 	sed_rows = frappe.db.get_all(
-		"Stock Entry MOP Item",
+		"Stock Entry Detail",
 		filters={"parent": ["in", stock_entries]},
 		fields=["name", "parent", "manufacturing_operation"]
 	)
