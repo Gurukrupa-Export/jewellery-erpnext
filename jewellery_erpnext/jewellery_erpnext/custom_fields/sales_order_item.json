@@ -311,15 +311,6 @@
   },
   {
    "dt": "Sales Order Item",
-   "fieldname": "project",
-   "fieldtype": "Link",
-   "insert_after": "branch",
-   "label": "Project",
-   "module": "Jewellery Erpnext",
-   "options": "Project"
-  },
-  {
-   "dt": "Sales Order Item",
    "fieldname": "column_break_zla8f",
    "fieldtype": "Column Break",
    "insert_after": "custom_new_bom",
