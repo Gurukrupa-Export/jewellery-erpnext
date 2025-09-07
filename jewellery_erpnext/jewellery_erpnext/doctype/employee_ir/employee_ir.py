@@ -413,7 +413,7 @@ class EmployeeIR(Document):
 			repack_raws = se_data.get("repack_raws")
 			main_slip_rows = se_data.get("main_slip_rows")
 			row_to_append = se_data.get("row_to_append")
-			new_operation = se_data.get("new_operation")
+			new_op_name = se_data.get("new_operation")
 
 		# workstation_data = frappe._dict()
 		# Process Loss
@@ -570,7 +570,7 @@ class EmployeeIR(Document):
 			se_doc.save()
 			se_doc.submit()
 
-			new_op = new_operation if new_operation else new_operation.name
+			new_op = new_op_name if new_op_name else new_operation.name
 			update_mop_balance(new_op)
 
 			for pmo, details in pmo_data.items():
@@ -1051,11 +1051,13 @@ def create_stock_entry(
 	# Get All Previous Stock Data (Manual Entry and Automated Entries both)
 	stock_entries = get_stock_data_new(row.manufacturing_operation, employee_wh, doc.department)
 
-	existing_items = frappe.get_all(
-		"Stock Entry Detail",
-		{"parent": ["in", stock_entries]},
-		pluck="item_code",
-	)
+	# existing_items = frappe.get_all(
+	# 	"Stock Entry Detail",
+	# 	{"parent": ["in", stock_entries]},
+	# 	pluck="item_code",
+	# )
+
+	existing_items = set(row.item_code for row in stock_entries)
 
 	loss_items = []
 	if difference_wt != 0:
@@ -1551,7 +1553,7 @@ def create_stock_entry(
 		else:
 			continue
 		to_remove = []
-		existing_doc = frappe.get_doc("Stock Entry", stock_entry)
+		existing_doc = frappe.get_doc("Stock Entry", row.se_name)
 
 		for child in existing_doc.items:
 			child.name = None
@@ -1560,19 +1562,19 @@ def create_stock_entry(
 				to_remove.append(child)
 			else:
 				if not rejected_qty.get((child.item_code,child.batch_no)):
-					StockEntryMopItem = DocType("Stock Entry Detail").as_("sed")
+					StockEntryDetail = DocType("Stock Entry Detail").as_("sed")
 					StockEntry = DocType("Stock Entry").as_("se")
 					query = (
-						qb.from_(StockEntryMopItem)
+						qb.from_(StockEntryDetail)
 						.join(StockEntry)
-						.on(StockEntry.name == StockEntryMopItem.parent)
-						.select(Sum(StockEntryMopItem.qty).as_("qty"))
+						.on(StockEntry.name == StockEntryDetail.parent)
+						.select(Sum(StockEntryDetail.qty).as_("qty"))
 						.where(
 							(StockEntry.docstatus == 1)
 							& (StockEntry.auto_created == 0)
-							& (StockEntryMopItem.s_warehouse == child.t_warehouse)
-							& (StockEntryMopItem.manufacturing_operation == child.manufacturing_operation)
-							& (StockEntryMopItem.batch_no == child.batch_no)
+							& (StockEntryDetail.s_warehouse == child.t_warehouse)
+							& (StockEntryDetail.manufacturing_operation == child.manufacturing_operation)
+							& (StockEntryDetail.batch_no == child.batch_no)
 						)
 					)
 					trash_qty = query.run(as_dict=True)
