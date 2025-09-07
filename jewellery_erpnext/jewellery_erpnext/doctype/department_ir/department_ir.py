@@ -149,17 +149,19 @@ class DepartmentIR(Document):
 
 					if cancel:
 						values.update({"department_receive_id": None, "department_ir_status": "In-Transit"})
-					frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
-					frappe.db.set_value(
-						"Manufacturing Work Order", row.manufacturing_work_order, "department", self.current_department
-					)
 
-					doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
-					doc.set("department_time_logs", [])
-					doc.save()
-					time_values = copy.deepcopy(values)
-					time_values["department_start_time"] = dt_string
-					add_time_log(doc, time_values)
+				frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
+				frappe.db.set_value(
+					"Manufacturing Work Order", row.manufacturing_work_order, "department", self.current_department
+				)
+
+				doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+				doc.set("department_time_logs", [])
+				doc.save()
+
+				time_values = copy.deepcopy(values)
+				time_values["department_start_time"] = dt_string
+				add_time_log(doc, time_values)
 		else:
 			se_item_list = se_data.get("se_item_list", [])
 
