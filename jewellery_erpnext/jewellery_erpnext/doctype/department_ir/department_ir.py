@@ -163,7 +163,7 @@ class DepartmentIR(Document):
 				time_values["department_start_time"] = dt_string
 				add_time_log(doc, time_values)
 		else:
-			se_item_list = se_data.get("se_item_list", [])
+			se_item_list = se_data
 
 		if not se_item_list:
 			frappe.msgprint(_("No Stock Entries were generated during this Department IR"))
