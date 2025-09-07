@@ -89,7 +89,7 @@ class DepartmentIR(Document):
 
 	# for Receive
 	def on_submit_receive(self, cancel=False):
-		se_data = json.loads(self.se_data) if self.se_data else []
+		se_data = json.loads(self.se_data) if self.se_data else {}
 		if not se_data:
 			import copy
 
