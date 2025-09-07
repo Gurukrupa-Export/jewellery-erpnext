@@ -931,7 +931,7 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 
 def update_balance_table(mop_data):
-	frappe.log_error("Update MOP Balance Table", f"MOP Data: {mop_data}", defer_insert=True)
+	# frappe.log_error("Update MOP Balance Table", f"MOP Data: {mop_data}", defer_insert=True)
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
 
