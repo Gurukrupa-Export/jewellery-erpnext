@@ -366,36 +366,36 @@ class EmployeeIR(Document):
 								"Stock Entry Detail", {"parent": se.name}, "manufacturing_operation", None
 							)
 
-					frappe.db.set_value(
-						"Manufacturing Work Order",
-						row.manufacturing_work_order,
-						"manufacturing_operation",
-						row.manufacturing_operation,
-					)
-					if new_operation.name:
 						frappe.db.set_value(
-							"Department IR Operation",
-							{"docstatus": 2, "manufacturing_operation": new_operation.name},
+							"Manufacturing Work Order",
+							row.manufacturing_work_order,
 							"manufacturing_operation",
-							None,
+							row.manufacturing_operation,
 						)
-						frappe.db.set_value(
-							"Stock Entry Detail",
-							{"docstatus": 2, "manufacturing_operation": new_operation.name},
-							"manufacturing_operation",
-							None,
-						)
-						frappe.db.set_value(
-							"Stock Entry Detail",
-							{"docstatus": 2, "manufacturing_operation": new_operation.name},
-							"manufacturing_operation",
-							None,
-						)
-						frappe.delete_doc("Manufacturing Operation", new_operation.name, ignore_permissions=1)
+						if new_operation.name:
+							frappe.db.set_value(
+								"Department IR Operation",
+								{"docstatus": 2, "manufacturing_operation": new_operation.name},
+								"manufacturing_operation",
+								None,
+							)
+							frappe.db.set_value(
+								"Stock Entry Detail",
+								{"docstatus": 2, "manufacturing_operation": new_operation.name},
+								"manufacturing_operation",
+								None,
+							)
+							frappe.db.set_value(
+								"Stock Entry Detail",
+								{"docstatus": 2, "manufacturing_operation": new_operation.name},
+								"manufacturing_operation",
+								None,
+							)
+							frappe.delete_doc("Manufacturing Operation", new_operation.name, ignore_permissions=1)
 
-						frappe.db.set_value(
-							"Manufacturing Operation", row.manufacturing_operation, "status", "Not Started"
-						)
+							frappe.db.set_value(
+								"Manufacturing Operation", row.manufacturing_operation, "status", "Not Started"
+							)
 
 				if row.rpt_wt_receive:
 					issue_wt = frappe.db.get_value(
