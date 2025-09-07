@@ -296,7 +296,7 @@ class EmployeeIR(Document):
 				net_loss_wt = mwo_loss_dict.get(row.manufacturing_work_order) or 0
 
 				net_wt = frappe.db.get_value("Manufacturing Operation", row.manufacturing_operation, "net_wt")
-
+				is_received_gross_greater_than = True if row.received_gross_wt > row.gross_wt else False
 				difference_wt = flt(row.received_gross_wt, precision) - flt(row.gross_wt, precision)
 
 				res = frappe._dict(
@@ -305,6 +305,7 @@ class EmployeeIR(Document):
 						"loss_wt": difference_wt,
 						"received_net_wt": flt(net_wt - net_loss_wt, precision),
 						"status": "WIP",
+						"is_received_gross_greater_than":is_received_gross_greater_than
 					}
 				)
 
