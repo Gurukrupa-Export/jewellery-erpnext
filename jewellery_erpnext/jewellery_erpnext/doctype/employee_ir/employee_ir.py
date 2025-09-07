@@ -235,6 +235,7 @@ class EmployeeIR(Document):
 		main_slip_rows = []
 		loss_rows = []
 		repack_raws = []
+		new_op_name = None
 		precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 
 		if not self.se_data:
