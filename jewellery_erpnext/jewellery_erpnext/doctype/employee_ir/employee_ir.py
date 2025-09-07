@@ -1562,19 +1562,19 @@ def create_stock_entry(
 				to_remove.append(child)
 			else:
 				if not rejected_qty.get((child.item_code,child.batch_no)):
-					StockEntryMopItem = DocType("Stock Entry Detail").as_("sed")
+					StockEntryDetail = DocType("Stock Entry Detail").as_("sed")
 					StockEntry = DocType("Stock Entry").as_("se")
 					query = (
-						qb.from_(StockEntryMopItem)
+						qb.from_(StockEntryDetail)
 						.join(StockEntry)
-						.on(StockEntry.name == StockEntryMopItem.parent)
-						.select(Sum(StockEntryMopItem.qty).as_("qty"))
+						.on(StockEntry.name == StockEntryDetail.parent)
+						.select(Sum(StockEntryDetail.qty).as_("qty"))
 						.where(
 							(StockEntry.docstatus == 1)
 							& (StockEntry.auto_created == 0)
-							& (StockEntryMopItem.s_warehouse == child.t_warehouse)
-							& (StockEntryMopItem.manufacturing_operation == child.manufacturing_operation)
-							& (StockEntryMopItem.batch_no == child.batch_no)
+							& (StockEntryDetail.s_warehouse == child.t_warehouse)
+							& (StockEntryDetail.manufacturing_operation == child.manufacturing_operation)
+							& (StockEntryDetail.batch_no == child.batch_no)
 						)
 					)
 					trash_qty = query.run(as_dict=True)
