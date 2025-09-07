@@ -106,60 +106,60 @@ class DepartmentIR(Document):
 				"default_in_transit_warehouse",
 			)
 
-		department_wh = frappe.get_value(
-			"Warehouse",
-			{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
-		)
-		for row in self.department_ir_operation:
-			sed_items = frappe.db.get_all(
-				"Stock Entry Detail",
-				{
-					"manufacturing_operation": row.manufacturing_operation,
-					"t_warehouse": in_transit_wh,
-					"department": self.previous_department,
-					"to_department": self.current_department,
-					"docstatus": 1,
-				},
-				["*"],
+			department_wh = frappe.get_value(
+				"Warehouse",
+				{"disabled": 0, "department": self.current_department, "warehouse_type": "Manufacturing"},
 			)
-			# if not sed_items:
-			# 	sed_items =  frappe.db.get_all(
-			# 	"Stock Entry Detail",
-			# 	{
-			# 		"manufacturing_operation": ["like", f"%{row.manufacturing_operation}%"],
-			# 		"t_warehouse": in_transit_wh,
-			# 		"department": self.previous_department,
-			# 		"to_department": self.current_department,
-			# 		"docstatus": 1,
-			# 	},
-			# 	["*"],
-			# )
-			for se_item in sed_items:
-				temp_row = copy.deepcopy(se_item)
-				temp_row["name"] = None
-				temp_row["idx"] = None
-				temp_row["s_warehouse"] = in_transit_wh
-				temp_row["t_warehouse"] = department_wh
-				temp_row["serial_and_batch_bundle"] = None
-				temp_row["main_slip"] = None
-				temp_row["employee"] = None
-				temp_row["to_main_slip"] = None
-				temp_row["to_employee"] = None
-				se_item_list += [temp_row]
-
-				if cancel:
-					values.update({"department_receive_id": None, "department_ir_status": "In-Transit"})
-				frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
-				frappe.db.set_value(
-					"Manufacturing Work Order", row.manufacturing_work_order, "department", self.current_department
+			for row in self.department_ir_operation:
+				sed_items = frappe.db.get_all(
+					"Stock Entry Detail",
+					{
+						"manufacturing_operation": row.manufacturing_operation,
+						"t_warehouse": in_transit_wh,
+						"department": self.previous_department,
+						"to_department": self.current_department,
+						"docstatus": 1,
+					},
+					["*"],
 				)
+				# if not sed_items:
+				# 	sed_items =  frappe.db.get_all(
+				# 	"Stock Entry Detail",
+				# 	{
+				# 		"manufacturing_operation": ["like", f"%{row.manufacturing_operation}%"],
+				# 		"t_warehouse": in_transit_wh,
+				# 		"department": self.previous_department,
+				# 		"to_department": self.current_department,
+				# 		"docstatus": 1,
+				# 	},
+				# 	["*"],
+				# )
+				for se_item in sed_items:
+					temp_row = copy.deepcopy(se_item)
+					temp_row["name"] = None
+					temp_row["idx"] = None
+					temp_row["s_warehouse"] = in_transit_wh
+					temp_row["t_warehouse"] = department_wh
+					temp_row["serial_and_batch_bundle"] = None
+					temp_row["main_slip"] = None
+					temp_row["employee"] = None
+					temp_row["to_main_slip"] = None
+					temp_row["to_employee"] = None
+					se_item_list += [temp_row]
 
-				doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
-				doc.set("department_time_logs", [])
-				doc.save()
-				time_values = copy.deepcopy(values)
-				time_values["department_start_time"] = dt_string
-				add_time_log(doc, time_values)
+					if cancel:
+						values.update({"department_receive_id": None, "department_ir_status": "In-Transit"})
+					frappe.db.set_value("Manufacturing Operation", row.manufacturing_operation, values)
+					frappe.db.set_value(
+						"Manufacturing Work Order", row.manufacturing_work_order, "department", self.current_department
+					)
+
+					doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+					doc.set("department_time_logs", [])
+					doc.save()
+					time_values = copy.deepcopy(values)
+					time_values["department_start_time"] = dt_string
+					add_time_log(doc, time_values)
 		else:
 			se_item_list = se_data.get("se_item_list", [])
 
