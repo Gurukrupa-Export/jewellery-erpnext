@@ -580,7 +580,6 @@ class EmployeeIR(Document):
 			else:
 				new_op = new_op_name if new_op_name else new_operation.name
 				update_mop_balance(new_op)
-				new_op.save()
 
 			for pmo, details in pmo_data.items():
 				pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
