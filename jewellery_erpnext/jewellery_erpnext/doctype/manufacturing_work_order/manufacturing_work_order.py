@@ -273,6 +273,11 @@ def create_manufacturing_operation(doc):
 	values["department_start_time"] = dt_string
 	add_time_log(mop, values)
 
+	if doc.for_fg:
+		for row in mop.mop_balance_table:
+			copy_row = deepcopy(row.__dict__)
+			doc.append("mwo_mop_balance_table", copy_row)
+
 
 @frappe.whitelist()
 def create_split_work_order(docname, company,manufacturer, count=1):
