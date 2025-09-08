@@ -482,7 +482,6 @@ class EmployeeIR(Document):
 
 			for row in main_slip_rows:
 				mse_doc.append("items", row)
-
 			mse_doc.flags.ignore_permissions = True
 			mse_doc.save()
 			mse_doc.submit()
@@ -575,7 +574,6 @@ class EmployeeIR(Document):
 			if new_operation_list:
 				for operation in new_operation_list:
 					update_mop_balance(operation.name)
-					operation.save()
 					
 			else:
 				new_op = new_op_name if new_op_name else new_operation.name
