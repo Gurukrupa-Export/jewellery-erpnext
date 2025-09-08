@@ -237,7 +237,7 @@ class EmployeeIR(Document):
 		repack_raws = []
 		new_op_name = None
 		precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
-
+		new_operation_list =[]
 		if not self.se_data:
 			mwo_loss_dict = {}
 			for row in self.manually_book_loss_details + self.employee_loss_details:
@@ -335,6 +335,7 @@ class EmployeeIR(Document):
 						create_chain_stock_entry(self, row)
 						new_operation.save()
 				else:
+					new_operation_list.append(new_operation)
 					if not cancel:
 						se_rows, msl_rows, product_loss, mfg_rows = create_stock_entry(
 							self,
@@ -571,9 +572,15 @@ class EmployeeIR(Document):
 			se_doc.flags.ignore_permissions = True
 			se_doc.save()
 			se_doc.submit()
-
-			new_op = new_op_name if new_op_name else new_operation.name
-			update_mop_balance(new_op)
+			if new_operation_list:
+				for operation in new_operation_list:
+					update_mop_balance(operation.name)
+					operation.save()
+					
+			else:
+				new_op = new_op_name if new_op_name else new_operation.name
+				update_mop_balance(new_op)
+				new_op.save()
 
 			for pmo, details in pmo_data.items():
 				pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
