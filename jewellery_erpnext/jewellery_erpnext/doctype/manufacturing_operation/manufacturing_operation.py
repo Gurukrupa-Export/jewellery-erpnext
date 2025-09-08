@@ -1532,7 +1532,7 @@ def get_material_wt(doc):
 	diamond_pcs = 0
 	gemstone_pcs = 0
 	for row in doc.mop_balance_table:
-		str_pcs = 0
+		str_pcs = row.pcs
 		if row.pcs and isinstance(row.pcs, str):
 			str_pcs = row.pcs.strip()
 		row.qty = flt(row.qty, 3)
