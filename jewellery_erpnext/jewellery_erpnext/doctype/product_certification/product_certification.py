@@ -573,7 +573,7 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			mop_item.item_code,
 			mop_item.qty,
 			mop_item.batch_no
-		FROM `tabStock Entry MOP Item` mop_item
+		FROM `tabStock Entry Detail` mop_item
 		LEFT JOIN `tabStock Entry` se ON mop_item.parent = se.name
 		WHERE {" AND ".join(conditions)}
 	"""
