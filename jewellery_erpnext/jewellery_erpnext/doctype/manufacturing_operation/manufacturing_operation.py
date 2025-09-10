@@ -1085,8 +1085,8 @@ class ManufacturingOperation(Document):
 					row_data["t_warehouse"] = None
 					row_data["batch_no"] = key[1]
 
-					if frappe.flags.update_pcs:
-						row_data["pcs"] = abs(bal_pcs.get(key))
+					# if frappe.flags.update_pcs:
+					row_data["pcs"] = abs(bal_pcs.get(key))
 
 					final_balance_row.append(row_data)
 
@@ -3009,6 +3009,7 @@ def get_linked_stock_entries_for_serial_number_creator(mwo, department, design_i
 			"manufacturing_order": pmo,
 			"docstatus": ["!=", 2],
 			"department": ["=", department],
+			"finding_transfer_entry":""
 		},
 		pluck="manufacturing_operation",
 	)
