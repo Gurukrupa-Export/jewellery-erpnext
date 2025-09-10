@@ -11,7 +11,31 @@ from frappe.utils import cint, flt, today
 
 from jewellery_erpnext.utils import get_item_from_attribute
 
-
+template = """
+	<table class="table table-bordered table-hover" width="100%" style="border: 1px solid #d1d8dd;">
+		<thead>
+			<tr style = "text-align:center">
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Item Code</th>
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Qty</th>
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Batch No</th>
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Pcs</th>
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Inventory Type</th>
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Customer</th>
+			</tr>
+		</thead>
+		<tbody>
+		{% for item in data %}
+			<tr style = "text-align:center">
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.item_code }}</td>
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.qty }}</td>
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.batch_no }}</td>
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.pcs }}</td>
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.inventory_type }}</td>
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.customer }}</td>
+			</tr>
+		{% endfor %}
+		</tbody>
+	</table>"""
 class Refining(Document):
 	def validate(self):
 		# self.check_overlap()
@@ -32,6 +56,12 @@ class Refining(Document):
 				check_allocation(self, self.refining_department_detail)
 			elif self.multiple_operation:
 				check_allocation(self, self.refining_operation_detail)
+		self.mop_balance_data =""
+		self.metal_wt = 0
+		self.gemstone_wt = 0
+		self.diamond_wt = 0
+		if self.refining_type == "Parent Manufacturing Order" and self.manufacturing_work_order:
+			self.get_balance_table(manufacturing_work_order=[row.get("manufacturing_work_order")for row in self.manufacturing_work_order])
 
 	def on_submit(self):
 		create_refining_entry(self)
@@ -186,18 +216,31 @@ class Refining(Document):
 				"jewellery_erpnext/jewellery_erpnext/doctype/refining/refining.html", {"data": all_stock_entry}
 			)
 
-@frappe.whitelist()
-def get_balance_table(manufacturing_work_order):
-		manufacturing_work_order = json.loads(manufacturing_work_order)
+	def get_balance_table(self,manufacturing_work_order):
 		mop_balance_table = []
-  
-		for work_order in manufacturing_work_order:
-			manufacturing_operation = frappe.db.get_value("Manufacturing Operation",{"manufacturing_work_order":work_order["manufacturing_work_order"],"status":"Not Started"})
-
+		if manufacturing_work_order:
+			manufacturing_operation = frappe.get_all("Manufacturing Operation",{"manufacturing_work_order":["in",manufacturing_work_order],"status":"Not Started"} ,pluck ="name")
 			if manufacturing_operation:
-				mop_balance_table += frappe.get_all("MOP Balance Table",{"parent":manufacturing_operation},["item_code","qty","batch_no","pcs","inventory_type","customer"])
-    
-		return mop_balance_table
+				mop_balance_table = frappe.get_all("MOP Balance Table",{"parent":["in",manufacturing_operation]},["item_code","qty","batch_no","pcs","inventory_type","customer"])
+				filter_wt = ""
+				if len(manufacturing_operation) == 1:
+					filter_wt += f" parent = '{manufacturing_operation[0]}' "
+				else:
+					filter_wt += f" parent in {tuple(manufacturing_operation)}"
+				wt = frappe.db.sql(f"""
+					SELECT sum( if(item_code LIKE 'D%',qty,0)) as diamond_wt,
+					sum( if(item_code LIKE 'G%',qty,0) ) as gemstone_wt,
+					sum( if( (item_code LIKE 'M%')  or (item_code LIKE 'F%') ,qty,0) ) as metal_wt
+					FROM `tabMOP Balance Table`
+					WHERE {filter_wt}
+				""", as_dict=True )
+				self.metal_wt = wt[0].get("metal_wt")
+				self.gemstone_wt = wt[0].get("gemstone_wt")
+				self.diamond_wt = wt[0].get("diamond_wt")
+				html_content = frappe.render_template(
+					template, {"data": mop_balance_table,}
+				)
+				self.mop_balance_data = html_content
 
 @frappe.whitelist()
 def get_manufacturing_operations(source_name, target_doc=None):

@@ -48,7 +48,13 @@
   "fine_weight",
   "section_break_fkogf",
   "raw_material_table",
-  "mop_balance_table",
+  "mop_balance_data",
+  "mop_filter_data",
+  "section_break_dzmr",
+  "metal_wt",
+  "diamond_wt",
+  "column_break_woze",
+  "gemstone_wt",
   "data_15",
   "recovered_diamond",
   "recovered_gemstone",
@@ -434,9 +440,39 @@
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "mop_balance_table",
-   "fieldtype": "HTML",
-   "label": "mop_balance_table"
+   "fieldname": "metal_wt",
+   "fieldtype": "Float",
+   "label": "Metal Wt",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_dzmr",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "diamond_wt",
+   "fieldtype": "Float",
+   "label": "Diamond Wt",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gemstone_wt",
+   "fieldtype": "Float",
+   "label": "Gemstone Wt",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_woze",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "mop_balance_data",
+   "fieldtype": "Long Text",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mop_filter_data",
+   "fieldtype": "JSON"
   }
  ],
  "grid_page_length": 50,
@@ -448,7 +484,7 @@
    "link_fieldname": "custom_refining"
   }
  ],
- "modified": "2025-08-26 16:05:36.486972",
+ "modified": "2025-09-09 16:07:06.452333",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Refining",

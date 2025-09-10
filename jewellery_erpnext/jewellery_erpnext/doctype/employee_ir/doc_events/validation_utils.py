@@ -84,10 +84,11 @@ def validate_gross_wt(row, precision, main_slip=None):
 
 def update_mop_balance(mop_name):
 	doc = frappe.get_doc("Manufacturing Operation", mop_name)
-	doc.validate()
-	doc.on_update()
-	doc.update_children()
-	doc.db_update_all()
+	# doc.validate()
+	# doc.on_update()
+	# doc.update_children()
+	# doc.db_update_all()
+	doc.save()
 
 	return doc
 

@@ -243,45 +243,13 @@ function set_html(frm) {
 	}
 }
 function set_balance_table_html(frm){
-	var template = `
-		<table class="table table-bordered table-hover" width="100%" style="border: 1px solid #d1d8dd;">
-			<thead>
-				<tr style = "text-align:center">
-					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Item Code</th>
-					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Qty</th>
-					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Batch No</th>
-					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Pcs</th>
-					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Inventory Type</th>
-					<th style="border: 1px solid #d1d8dd; font-size: 11px;">Customer</th>
-				</tr>
-			</thead>
-			<tbody>
-			{% for item in data %}
-				<tr style = "text-align:center">
-					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.item_code }}</td>
-					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.qty }}</td>
-					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.batch_no }}</td>
-					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.pcs }}</td>
-					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.inventory_type }}</td>
-					<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.customer }}</td>
-				</tr>
-			{% endfor %}
-			</tbody>
-		</table>`;
-	frappe.call({
-		method: "jewellery_erpnext.jewellery_erpnext.doctype.refining.refining.get_balance_table",
-		args: {
-			manufacturing_work_order: frm.doc.manufacturing_work_order,
-		},
-		callback: function (r) {
-			if (r.message) {
-				debugger
-				frm.get_field("mop_balance_table").$wrapper.html(
-					frappe.render_template(template, { data: r.message })
-				);
-			}
-		},
-	});
+	if (frm.doc.refining_type  ==  "Parent Manufacturing Order" && frm.doc.mop_balance_data){
+		frm.get_field("mop_balance_data").$wrapper.html(frm.doc.mop_balance_data)
+	}
+	else{
+		frm.get_field("mop_balance_data").$wrapper.html("")
+	}
+
 
 }
 

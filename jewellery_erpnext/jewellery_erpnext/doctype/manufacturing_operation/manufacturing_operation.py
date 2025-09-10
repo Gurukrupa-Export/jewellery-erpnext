@@ -1532,7 +1532,7 @@ def get_material_wt(doc):
 	diamond_pcs = 0
 	gemstone_pcs = 0
 	for row in doc.mop_balance_table:
-		str_pcs = 0
+		str_pcs = row.pcs
 		if row.pcs and isinstance(row.pcs, str):
 			str_pcs = row.pcs.strip()
 		row.qty = flt(row.qty, 3)
@@ -3165,8 +3165,8 @@ def create_mr_wo_stock_entry(se_data):
 			)
 
 	for row in se_data.get("receive_items"):
-		if not row.get("pcs"):
-			validate_item_material(row)
+		# if not row.get("pcs"):
+		# 	validate_item_material(row)
 
 		se_doc.append("items", {
 			"item_code": row.get("item_code"),
