@@ -904,8 +904,8 @@ def update_mop_details(se_doc, is_cancelled=False):
 				if validate_batches and entry.batch_no:
 					validate_duplicate_batches(entry, batch_data)
 					validated_batches = True
-
-				mop_data[mop_name]["department_source_table"].append(temp_raw)
+				if entry.t_warehouse != entry.s_warehouse:
+					mop_data[mop_name]["department_source_table"].append(temp_raw)
 
 				# ----------- Kavin Changes ----------- #
 				# Update department target table only if the source warehouse is same as department warehouse
