@@ -1348,8 +1348,13 @@ def genrate_serial_no(doc, diamond_grade_data):
 		)
 		m_abbr = frappe.db.get_value("Attribute Value", metal_type, "abbreviation")
 		mnf_abbr = frappe.db.get_value("Manufacturer", manufacturer, ["custom_abbreviation"])
-		diamond_grade = max(diamond_grade_data, key=diamond_grade_data.get)
-		dg_abbr = frappe.db.get_value("Attribute Value", diamond_grade, ["abbreviation"])
+		if diamond_grade_data:
+			diamond_grade = max(diamond_grade_data, key=diamond_grade_data.get)
+			dg_abbr = frappe.db.get_value("Attribute Value", diamond_grade, ["abbreviation"])
+		else:
+			dg_abbr = '0'
+		#diamond_grade = max(diamond_grade_data, key=diamond_grade_data.get)
+		#dg_abbr = frappe.db.get_value("Attribute Value", diamond_grade, ["abbreviation"])
 		date = f"{posting_date.year %100:02d}"
 		date_to_letter = {0: "J", 1: "A", 2: "B", 3: "C", 4: "D", 5: "E", 6: "F", 7: "G", 8: "H", 9: "I"}
 		final_date = date[0] + date_to_letter[int(date[1])]
