@@ -1612,12 +1612,12 @@ def create_stock_entry(
 						and metal_loss.get((child.item_code, child.batch_no)) > 0
 					):
 						if child.qty > metal_loss.get((child.item_code, child.batch_no)):
-							child.qty = child.qty - metal_loss.get((child.item_code, child.batch_no))
+							child.qty = flt((child.qty - metal_loss.get((child.item_code, child.batch_no))),3)
 							metal_loss[(child.item_code, child.batch_no)] = 0
 						elif child.qty <= metal_loss.get((child.item_code, child.batch_no)):
-							metal_loss[(child.item_code, child.batch_no)] = (
+							metal_loss[(child.item_code, child.batch_no)] = flt((
 								metal_loss.get((child.item_code, child.batch_no)) - child.qty
-							)
+							),3)
 							to_remove.append(child)
 				else:
 					for loss_row in loss_items:
@@ -1626,7 +1626,7 @@ def create_stock_entry(
 								loss_row.get("item_code") == child.item_code and loss_row.get("batch_no") == child.batch_no
 							):
 								if loss_row.get("loss_qty") < child.qty:
-									child.qty = child.qty - loss_row.get("loss_qty")
+									child.qty = flt((child.qty - loss_row.get("loss_qty")),3)
 								elif loss_row.get("loss_qty") == child.qty:
 									to_remove.append(child)
 									continue
@@ -1649,12 +1649,12 @@ def create_stock_entry(
 
 				if rejected_qty.get((child.item_code,child.batch_no)) and rejected_qty.get((child.item_code,child.batch_no)) > 0:
 					if flt(rejected_qty[(child.item_code,child.batch_no)],3) < child.qty:
-						child.qty -= rejected_qty[(child.item_code,child.batch_no)]
+						child.qty = flt((child.qty  - rejected_qty[(child.item_code,child.batch_no)]),3)
 						rejected_qty[(child.item_code,child.batch_no)] = 0
 					else:
 						if child not in to_remove:
 							to_remove.append(child)
-						rejected_qty[(child.item_code,child.batch_no)] -= child.qty
+						rejected_qty[(child.item_code,child.batch_no)] = flt((rejected_qty[(child.item_code,child.batch_no)] - child.qty),3)
 				if rejected_pcs.get((child.item_code,child.batch_no)) and rejected_pcs.get((child.item_code,child.batch_no)) > 0:
 					if float(flt(rejected_pcs[(child.item_code,child.batch_no)],3)) < float(child.pcs):
 						child.pcs  = float(child.pcs) - float(rejected_pcs[(child.item_code,child.batch_no)])
