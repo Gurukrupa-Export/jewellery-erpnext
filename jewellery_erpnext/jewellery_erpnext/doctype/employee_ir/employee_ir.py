@@ -1552,6 +1552,7 @@ def create_stock_entry(
 			)
 
 	rejected_qty = {}
+	rejected_pcs = {}
 	stock_entries_list = []
 	for row in stock_entries:
 		if row.se_name not in stock_entries_list:
@@ -1560,7 +1561,6 @@ def create_stock_entry(
 			continue
 		to_remove = []
 		existing_doc = frappe.get_doc("Stock Entry", row.se_name)
-
 		for child in existing_doc.items:
 			child.name = None
 			child.doctype = "Stock Entry Detail"
@@ -1574,7 +1574,9 @@ def create_stock_entry(
 						qb.from_(StockEntryDetail)
 						.join(StockEntry)
 						.on(StockEntry.name == StockEntryDetail.parent)
-						.select(Sum(StockEntryDetail.qty).as_("qty"))
+						.select(Sum(StockEntryDetail.qty).as_("qty"),
+								Sum(StockEntryDetail.pcs).as_("pcs"))
+
 						.where(
 							(StockEntry.docstatus == 1)
 							& (StockEntry.auto_created == 0)
@@ -1583,11 +1585,15 @@ def create_stock_entry(
 							& (StockEntryDetail.batch_no == child.batch_no)
 						)
 					)
-					trash_qty = query.run(as_dict=True)
-					if trash_qty:
-						trash_qty = trash_qty[0]["qty"] or 0
+					trash_value = query.run(as_dict=True)
+					trash_qty = 0
+					trash_pcs = 0
+					if trash_value:
+						trash_qty = trash_value[0]["qty"] or 0
+						trash_pcs = trash_value[0]["pcs"] or 0
 
 					rejected_qty[(child.item_code,child.batch_no)] = trash_qty
+					rejected_pcs[(child.item_code,child.batch_no)] = trash_pcs
 
 				child.s_warehouse = employee_wh
 				child.t_warehouse = department_wh
@@ -1649,6 +1655,14 @@ def create_stock_entry(
 						if child not in to_remove:
 							to_remove.append(child)
 						rejected_qty[(child.item_code,child.batch_no)] -= child.qty
+				if rejected_pcs.get((child.item_code,child.batch_no)) and rejected_pcs.get((child.item_code,child.batch_no)) > 0:
+					if float(flt(rejected_pcs[(child.item_code,child.batch_no)],3)) < float(child.pcs):
+						child.pcs  = float(child.pcs) - float(rejected_pcs[(child.item_code,child.batch_no)])
+						rejected_pcs[(child.item_code,child.batch_no)] = 0
+					else:
+						if child not in to_remove:
+							to_remove.append(child)
+						rejected_pcs[(child.item_code,child.batch_no)]  = float(rejected_pcs[(child.item_code,child.batch_no)]) - float(child.pcs)
 
 				if child.qty < 0:
 					frappe.throw(_("Qty cannot be negative"))
