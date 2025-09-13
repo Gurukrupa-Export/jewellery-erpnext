@@ -1338,17 +1338,17 @@ def validate_invoice_item(self):
 			self.append("custom_invoice_item", item)
 
 def validate_gold_rate_with_gst(self):
-	if self.company == "Gurukrupa Export Private Limited":
-		for i in self.items:
-			if i.order_form_id:
-				order_qty = frappe.db.get_value("Order",i.order_form_id,"qty")
-				if order_qty is not None:
-					if i.qty > order_qty:
-						frappe.throw(
-							_("Row {0} : Quotation Item Qty ({1}) cannot be greater than Order Form Qty ({2})").format(
-								i.idx, i.qty, order_qty
-							)
+
+	for i in self.items:
+		if i.order_form_id:
+			order_qty = frappe.db.get_value("Order",i.order_form_id,"qty")
+			if order_qty is not None:
+				if i.qty > order_qty:
+					frappe.throw(
+						_("Row {0} : Quotation Item Qty ({1}) cannot be greater than Order Form Qty ({2})").format(
+							i.idx, i.qty, order_qty
 						)
+					)
 	if not self.gold_rate_with_gst:
 		frappe.throw("Gold Rate with GST is mandatory.")
 
