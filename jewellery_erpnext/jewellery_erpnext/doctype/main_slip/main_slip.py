@@ -475,22 +475,30 @@ def create_loss_stock_entries(self, item, variant_of, actual_qty, metal_loss):
 
 	batch_data = []
 	for row in self.batch_details:
-		if (row.qty != row.consume_qty) and row.item_code == item:
+		if (row.qty != row.employee_qty) and row.item_code == item:
 			batch_data.append(
 				{
 					"batch_no": row.batch_no,
-					"qty": flt(row.qty - row.consume_qty, 3),
+					"qty":flt(row.qty - row.employee_qty, 3),
 					"inventory_type": row.inventory_type,
 				}
 			)
-		elif (row.mop_qty != row.mop_consume_qty) and row.item_code == item:
-			batch_data.append(
-				{
-					"batch_no": row.batch_no,
-					"mop_qty": flt(row.mop_qty - row.mop_consume_qty, 3),
-					"inventory_type": row.inventory_type,
-				}
-			)
+		# if (row.qty != row.consume_qty) and row.item_code == item:
+		# 	batch_data.append(
+		# 		{
+		# 			"batch_no": row.batch_no,
+		# 			"qty": flt(row.qty - row.consume_qty, 3),
+		# 			"inventory_type": row.inventory_type,
+		# 		}
+		# 	)
+		# elif (row.mop_qty != row.mop_consume_qty) and row.item_code == item:
+		# 	batch_data.append(
+		# 		{
+		# 			"batch_no": row.batch_no,
+		# 			"mop_qty": flt(row.mop_qty - row.mop_consume_qty, 3),
+		# 			"inventory_type": row.inventory_type,
+		# 		}
+		# 	)
 
 	create_metal_loss(self, item, variant_of, flt(metal_loss, 3), batch_data)
 	if actual_qty > 0:

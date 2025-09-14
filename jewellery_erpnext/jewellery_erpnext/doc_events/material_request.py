@@ -94,7 +94,7 @@ def on_submit(self, method=None):
 			row.s_warehouse = row.t_warehouse
 			row.t_warehouse = t_warehouse
 			row.serial_and_batch_bundle = None
-
+		new_se_doc.auto_created = 1
 		new_se_doc.save()
 		new_se_doc.submit()
 

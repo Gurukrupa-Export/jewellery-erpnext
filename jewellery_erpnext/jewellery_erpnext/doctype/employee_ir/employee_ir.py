@@ -237,7 +237,7 @@ class EmployeeIR(Document):
 		repack_raws = []
 		new_op_name = None
 		precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
-
+		new_operation_list =[]
 		if not self.se_data:
 			mwo_loss_dict = {}
 			for row in self.manually_book_loss_details + self.employee_loss_details:
@@ -335,6 +335,7 @@ class EmployeeIR(Document):
 						create_chain_stock_entry(self, row)
 						new_operation.save()
 				else:
+					new_operation_list.append(new_operation)
 					if not cancel:
 						se_rows, msl_rows, product_loss, mfg_rows = create_stock_entry(
 							self,
@@ -481,7 +482,6 @@ class EmployeeIR(Document):
 
 			for row in main_slip_rows:
 				mse_doc.append("items", row)
-
 			mse_doc.flags.ignore_permissions = True
 			mse_doc.save()
 			mse_doc.submit()
@@ -571,9 +571,13 @@ class EmployeeIR(Document):
 			se_doc.flags.ignore_permissions = True
 			se_doc.save()
 			se_doc.submit()
-
-			new_op = new_op_name if new_op_name else new_operation.name
-			update_mop_balance(new_op)
+			if new_operation_list:
+				for operation in new_operation_list:
+					update_mop_balance(operation.name)
+					
+			else:
+				new_op = new_op_name if new_op_name else new_operation.name
+				update_mop_balance(new_op)
 
 			for pmo, details in pmo_data.items():
 				pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
@@ -1548,6 +1552,7 @@ def create_stock_entry(
 			)
 
 	rejected_qty = {}
+	rejected_pcs = {}
 	stock_entries_list = []
 	for row in stock_entries:
 		if row.se_name not in stock_entries_list:
@@ -1556,7 +1561,6 @@ def create_stock_entry(
 			continue
 		to_remove = []
 		existing_doc = frappe.get_doc("Stock Entry", row.se_name)
-
 		for child in existing_doc.items:
 			child.name = None
 			child.doctype = "Stock Entry Detail"
@@ -1570,7 +1574,9 @@ def create_stock_entry(
 						qb.from_(StockEntryDetail)
 						.join(StockEntry)
 						.on(StockEntry.name == StockEntryDetail.parent)
-						.select(Sum(StockEntryDetail.qty).as_("qty"))
+						.select(Sum(StockEntryDetail.qty).as_("qty"),
+								Sum(StockEntryDetail.pcs).as_("pcs"))
+
 						.where(
 							(StockEntry.docstatus == 1)
 							& (StockEntry.auto_created == 0)
@@ -1579,11 +1585,15 @@ def create_stock_entry(
 							& (StockEntryDetail.batch_no == child.batch_no)
 						)
 					)
-					trash_qty = query.run(as_dict=True)
-					if trash_qty:
-						trash_qty = trash_qty[0]["qty"] or 0
+					trash_value = query.run(as_dict=True)
+					trash_qty = 0
+					trash_pcs = 0
+					if trash_value:
+						trash_qty = trash_value[0]["qty"] or 0
+						trash_pcs = trash_value[0]["pcs"] or 0
 
 					rejected_qty[(child.item_code,child.batch_no)] = trash_qty
+					rejected_pcs[(child.item_code,child.batch_no)] = trash_pcs
 
 				child.s_warehouse = employee_wh
 				child.t_warehouse = department_wh
@@ -1602,12 +1612,12 @@ def create_stock_entry(
 						and metal_loss.get((child.item_code, child.batch_no)) > 0
 					):
 						if child.qty > metal_loss.get((child.item_code, child.batch_no)):
-							child.qty = child.qty - metal_loss.get((child.item_code, child.batch_no))
+							child.qty = flt((child.qty - metal_loss.get((child.item_code, child.batch_no))),3)
 							metal_loss[(child.item_code, child.batch_no)] = 0
 						elif child.qty <= metal_loss.get((child.item_code, child.batch_no)):
-							metal_loss[(child.item_code, child.batch_no)] = (
+							metal_loss[(child.item_code, child.batch_no)] = flt((
 								metal_loss.get((child.item_code, child.batch_no)) - child.qty
-							)
+							),3)
 							to_remove.append(child)
 				else:
 					for loss_row in loss_items:
@@ -1616,7 +1626,7 @@ def create_stock_entry(
 								loss_row.get("item_code") == child.item_code and loss_row.get("batch_no") == child.batch_no
 							):
 								if loss_row.get("loss_qty") < child.qty:
-									child.qty = child.qty - loss_row.get("loss_qty")
+									child.qty = flt((child.qty - loss_row.get("loss_qty")),3)
 								elif loss_row.get("loss_qty") == child.qty:
 									to_remove.append(child)
 									continue
@@ -1639,12 +1649,20 @@ def create_stock_entry(
 
 				if rejected_qty.get((child.item_code,child.batch_no)) and rejected_qty.get((child.item_code,child.batch_no)) > 0:
 					if flt(rejected_qty[(child.item_code,child.batch_no)],3) < child.qty:
-						child.qty -= rejected_qty[(child.item_code,child.batch_no)]
+						child.qty = flt((child.qty  - rejected_qty[(child.item_code,child.batch_no)]),3)
 						rejected_qty[(child.item_code,child.batch_no)] = 0
 					else:
 						if child not in to_remove:
 							to_remove.append(child)
-						rejected_qty[(child.item_code,child.batch_no)] -= child.qty
+						rejected_qty[(child.item_code,child.batch_no)] = flt((rejected_qty[(child.item_code,child.batch_no)] - child.qty),3)
+				if rejected_pcs.get((child.item_code,child.batch_no)) and rejected_pcs.get((child.item_code,child.batch_no)) > 0:
+					if float(flt(rejected_pcs[(child.item_code,child.batch_no)],3)) < float(child.pcs):
+						child.pcs  = float(child.pcs) - float(rejected_pcs[(child.item_code,child.batch_no)])
+						rejected_pcs[(child.item_code,child.batch_no)] = 0
+					else:
+						if child not in to_remove:
+							to_remove.append(child)
+						rejected_pcs[(child.item_code,child.batch_no)]  = float(rejected_pcs[(child.item_code,child.batch_no)]) - float(child.pcs)
 
 				if child.qty < 0:
 					frappe.throw(_("Qty cannot be negative"))

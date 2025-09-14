@@ -904,8 +904,8 @@ def update_mop_details(se_doc, is_cancelled=False):
 				if validate_batches and entry.batch_no:
 					validate_duplicate_batches(entry, batch_data)
 					validated_batches = True
-
-				mop_data[mop_name]["department_source_table"].append(temp_raw)
+				if entry.t_warehouse != entry.s_warehouse:
+					mop_data[mop_name]["department_source_table"].append(temp_raw)
 
 				# ----------- Kavin Changes ----------- #
 				# Update department target table only if the source warehouse is same as department warehouse
@@ -931,7 +931,6 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 
 def update_balance_table(mop_data):
-	frappe.log_error("Update MOP Balance Table", f"MOP Data: {mop_data}")
 	for mop, tables in mop_data.items():
 		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
 
@@ -941,7 +940,6 @@ def update_balance_table(mop_data):
 			for row in details:
 				row.update({"sed_item": row["name"], "idx": None, "name": None})
 				mop_doc.append(table, row)
-		frappe.log_error("Updated MOP Doc", f"MOP Doc: {mop_doc.as_dict()}")
 		mop_doc.save()
 
 
