@@ -706,16 +706,10 @@ def create_metal_loss(doc, item, variant_of, metal_loss, batch_data, mop=None):
 
 	repack_qty = metal_loss
 	for row in batch_data:
-		qty = 0.0
-		warehouse = None
 		if row.get("qty") == 0:
 			continue
-		if row.get("qty"):
-			warehouse = doc.raw_material_warehouse
-			qty = row.get("qty")
-		elif row.get("mop_qty"):
-			warehouse = doc.warehouse
-			qty = row.get("mop_qty")
+		warehouse = doc.raw_material_warehouse
+		qty = row.get("qty")
 		if metal_loss > 0:
 			if metal_loss <= qty:
 				se_qty = metal_loss
@@ -723,10 +717,7 @@ def create_metal_loss(doc, item, variant_of, metal_loss, batch_data, mop=None):
 			else:
 				se_qty = qty
 				metal_loss -= se_qty
-			if row.get("qty"):
-				row["qty"] -= se_qty
-			elif row.get("mop_qty"):
-				row["mop_qty"] -= se_qty
+			row["qty"] -= se_qty
 			se.append(
 				"items",
 				{
