@@ -260,11 +260,18 @@ def make_stock_entry(source_name, target_doc=None):
 @frappe.whitelist()
 def make_in_transit_stock_entry(source_name, to_warehouse, transfer_type, pmo=None, mnfr=None):
 	pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo) if pmo else None
-	to_department = frappe.db.get_value("Warehouse", to_warehouse, "department")
+	# to_department = frappe.db.get_value("Warehouse", to_warehouse, "department")
+	to_department, warehouse_type = frappe.db.get_value(
+		"Warehouse",
+		to_warehouse,
+		fieldname=["department", "warehouse_type"]
+	)
+	from_department, set_warehouse = frappe.db.get_value("Material Request", source_name, fieldname=["set_from_warehouse", "set_warehouse"])
 	in_transit_warehouse = frappe.db.get_value(
 		"Warehouse", to_warehouse, "default_in_transit_warehouse"
 	)
-
+	check_frm_warehus_type = frappe.db.get_value("Warehouse", from_department, "warehouse_type")
+	
 	if not in_transit_warehouse:
 		frappe.throw(_("Transit warehouse is not mentioned in Target Warehouse"))
 
@@ -278,9 +285,18 @@ def make_in_transit_stock_entry(source_name, to_warehouse, transfer_type, pmo=No
 	if ste_doc.items[0].customer:
 		ste_doc.stock_entry_type = "Customer Goods Transfer"
 	else:
-		ste_doc.stock_entry_type = stock_entry_type
-	ste_doc.to_warehouse = in_transit_warehouse
-	ste_doc.to_department = to_department
+		# ste_doc.stock_entry_type = stock_entry_type
+		if check_frm_warehus_type and to_department and check_frm_warehus_type == "Consumables" and warehouse_type == "Consumables":
+			ste_doc.stock_entry_type = "Consumables Issue to  Department"
+			# ste_doc.add_to_transit = 0
+			ste_doc.to_warehouse = set_warehouse
+		else:
+			ste_doc.stock_entry_type = stock_entry_type
+			ste_doc.to_warehouse = in_transit_warehouse
+			ste_doc.to_department = to_department
+
+	# ste_doc.to_warehouse = in_transit_warehouse
+	# ste_doc.to_department = to_department
 
 	if mnfr and pmo_doc != None:
 		# if pmo_doc.type != "Finding Manufacturing":
@@ -300,7 +316,11 @@ def make_in_transit_stock_entry(source_name, to_warehouse, transfer_type, pmo=No
 				row.customer = pmo_doc.customer
 
 	for row in ste_doc.items:
-		row.t_warehouse = in_transit_warehouse
+		# row.t_warehouse = in_transit_warehouse
+		if ste_doc.stock_entry_type == "Consumables Issue to  Department":
+			row.t_warehouse = set_warehouse
+		else:
+			row.t_warehouse = in_transit_warehouse
 	return ste_doc
 
 
