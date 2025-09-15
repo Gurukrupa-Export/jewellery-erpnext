@@ -706,6 +706,10 @@ def create_metal_loss(doc, item, variant_of, metal_loss, batch_data, mop=None):
 
 	repack_qty = metal_loss
 	for row in batch_data:
+		qty = 0.0
+		warehouse = None
+		if row.get("qty") == 0:
+			continue
 		if row.get("qty"):
 			warehouse = doc.raw_material_warehouse
 			qty = row.get("qty")
