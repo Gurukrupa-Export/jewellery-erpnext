@@ -1,4 +1,4 @@
-frappe.listview_settings["Journal Entry"] = {
+frappe.listview_settings["Payment Entry"] = {
 	onload(listview) {
 		listview.page.add_inner_button(
 			"Inter Branch Contra",
