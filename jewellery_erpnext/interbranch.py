@@ -1,6 +1,6 @@
 import frappe
 import json
-import frappe.utils
+from frappe.utils import get_link_to_form, nowdate, flt
 from pypika import Order
 
 
@@ -211,7 +211,7 @@ def reconcile_pe_with_inter_branch_jv(args=None, reconcile_type=None):
 		error_trace = frappe.get_traceback()
 		error_log = frappe.log_error("Reconciliation Failed", error_trace)
 		pe_doc.add_comment("Comment", f"""❌ Reconciliation failed.\n\n Error Log Reference:
-			{frappe.utils.get_link_to_form(error_log.doctype, error_log.name)}""")
+			{get_link_to_form(error_log.doctype, error_log.name)}""")
 
 		# Cancel PE JV
 		try:
@@ -320,97 +320,72 @@ def validate_inter_branch(jv_data, reconcile_type):
 
 @frappe.whitelist()
 def create_inter_branch_contra_entry(**kwargs):
-    """
-    Create inter-branch contra Journal Entries:
-    """
+	"""
+	Create inter-branch Internal Transfer Payment Entries
+	"""
+	args = frappe._dict(kwargs)
 
-    args = frappe._dict(kwargs)
+	# --- Validations ---
+	if not args.source_branch or not args.target_branch:
+		frappe.throw("Both Source Branch and Target Branch are required.")
 
-    # --- Validations ---
-    if not args.source_branch or not args.target_branch:
-        frappe.throw("Both Source Branch and Target Branch are required.")
+	if args.source_branch == args.target_branch:
+		frappe.throw("Source and Target Branch cannot be the same.")
 
-    if args.source_branch == args.target_branch:
-        frappe.throw("Source and Target Branch cannot be the same.")
+	if not args.source_bank or not args.target_bank:
+		frappe.throw("Both Source Bank and Target Bank accounts are required.")
 
-    if not args.source_bank or not args.target_bank:
-        frappe.throw("Both Source Bank and Target Bank accounts are required.")
+	if not args.amount or float(args.amount) <= 0:
+		frappe.throw("Amount must be greater than zero.")
 
-    if not args.amount or float(args.amount) <= 0:
-        frappe.throw("Amount must be greater than zero.")
+	# Validate bank accounts
+	for acc in (args.source_bank, args.target_bank):
+		atype = frappe.db.get_value("Account", acc, "account_type")
+		if atype != "Bank":
+			frappe.throw(f"Account {acc} is not a Bank type account.")
 
-    # Validate bank accounts
-    for acc in (args.source_bank, args.target_bank):
-        atype = frappe.db.get_value("Account", acc, "account_type")
-        if atype != "Bank":
-            frappe.throw(f"Account {acc} is not a Bank type account.")
+	# --- Get division accounts ---
+	source_division_acc = get_branch_account(args.target_branch)
+	target_division_acc = get_branch_account(args.source_branch)
 
-    # --- Get division accounts ---
-    source_division_acc = get_branch_account(args.target_branch)
-    target_division_acc = get_branch_account(args.source_branch)
+	res = []
 
-    group_id = frappe.generate_hash(length=10)
-    res = []
+	company = args.company or frappe.defaults.get_user_default("Company")
+	posting_date = args.posting_date or nowdate()
 
-    # --- JV 1: Source branch ---
-    jv1 = frappe.new_doc("Journal Entry")
-    jv1.voucher_type = "Contra Entry"
-    jv1.company = args.company or frappe.defaults.get_user_default("Company")
-    jv1.posting_date = args.posting_date or frappe.utils.nowdate()
-    jv1.custom_branch = args.source_branch
-    jv1.ref_interbranch_group_id = group_id  # custom field for linking
+	def _create_payment_entry(args, from_acc, to_acc, branch):
+		pe = frappe.new_doc("Payment Entry")
+		pe.payment_type = "Internal Transfer"
+		pe.company = company
+		pe.posting_date = posting_date
+		pe.branch = branch
 
-    jv1.append("accounts", {
-        "account": source_division_acc,
-        "branch": args.source_branch,
-        "debit_in_account_currency": args.amount,
-        "reference_no": args.reference_no,
-        "reference_date": args.reference_date
-    })
-    jv1.append("accounts", {
-        "account": args.source_bank,
-        "branch": args.source_branch,
-        "credit_in_account_currency": args.amount,
-        "reference_no": args.reference_no,
-        "reference_date": args.reference_date
-    })
+		pe.paid_from = from_acc
+		pe.paid_to = to_acc
+		pe.paid_amount = flt(args.amount)
+		pe.received_amount = flt(args.amount)
+		pe.reference_no = args.reference_no
+		pe.reference_date = args.reference_date
 
-    jv1.insert()
-    jv1.submit()
-    res.append(jv1.name)
+		if args.remarks:
+			pe.custom_remarks = 1
+			pe.remarks = args.remarks
 
-    # --- JV 2: Target branch ---
-    jv2 = frappe.new_doc("Journal Entry")
-    jv2.voucher_type = "Contra Entry"
-    jv2.company = args.company or frappe.defaults.get_user_default("Company")
-    jv2.posting_date = args.posting_date or frappe.utils.nowdate()
-    jv2.custom_branch = args.target_branch
-    jv2.ref_interbranch_group_id = group_id
+		pe.insert()
+		pe.submit()
 
-    jv2.append("accounts", {
-        "account": args.target_bank,
-        "branch": args.target_branch,
-        "debit_in_account_currency": args.amount,
-        "reference_no": args.reference_no,
-        "reference_date": args.reference_date
-    })
-    jv2.append("accounts", {
-        "account": target_division_acc,
-        "branch": args.target_branch,
-        "credit_in_account_currency": args.amount,
-        "reference_no": args.reference_no,
-        "reference_date": args.reference_date
-    })
+		return pe.name
 
-    jv2.insert()
-    jv2.submit()
-    res.append(jv2.name)
+	pe1 = _create_payment_entry(args, args.source_bank, target_division_acc, args.source_branch)
+	pe2 = _create_payment_entry(args, source_division_acc, args.target_bank, args.target_branch)
 
-    frappe.msgprint(
-        f"""
-        ✅ Created Inter-Branch Contra JVs: <b>{', <br>'.join(res)}</b><br>
-        Linked Group ID: <b>{group_id}</b>
-        """
-    )
+	res.extend([pe1, pe2])
 
-    return res
+	frappe.msgprint(
+		f"""
+		✅ Created Inter-Branch Contra Entries:
+		<b>{', <br>'.join(res)}</b><br>
+		"""
+	)
+
+	return res

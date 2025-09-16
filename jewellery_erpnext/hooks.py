@@ -37,7 +37,8 @@ doctype_js = {
 }
 
 doctype_list_js = {
-	"Journal Entry": "public/js/doctype_list_js/journal_entry_list.js",
+		"Payment Entry": "public/js/doctype_list.js/payment_entry_list.js",
+
 }
 
 # from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
