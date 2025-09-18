@@ -10,6 +10,61 @@ import string
 def validate(self, method):
 	update_pure_qty(self)
 	update_inventory_dimentions(self)
+	item_group = frappe.db.get_value("Item", self.item, "item_group")
+	year_code = get_year_code()
+	month_code = get_month_code()
+	week_code = get_week_code()
+
+	company = {
+		"Gurukrupa Export Private Limited": "GE",
+		"KG GK Jewellers Private Limited": "KG",
+		"Sadguru Diamond": "SD",
+		"Sadguru Hallmarking Centre": "SHC"
+	}
+	company_abbr = company.get(self.custom_company)
+
+	# --- Initialize batch_number safely ---
+	batch_number = None
+
+	if item_group:
+		if item_group.startswith("D"):
+			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-D"
+		elif item_group.startswith("M"):
+			batch_number = f"{company_abbr}{month_code}{week_code}-M"
+		elif item_group.startswith("G"):
+			batch_number = f"{company_abbr}{month_code}{week_code}-G"
+		elif item_group.startswith("F"):
+			batch_number = f"{company_abbr}{month_code}{week_code}-F"
+		elif item_group.startswith("O"):
+			batch_number = f"{company_abbr}{month_code}{week_code}-O"
+		elif item_group.startswith("R"):
+			batch_number = f"{company_abbr}{month_code}{week_code}-R"
+
+	# --- Safety fallback ---
+	if not batch_number:
+		# Either throw an error OR assign a default
+		frappe.throw(f"Cannot generate batch number for Item Group: {item_group}")
+
+	# --- Collect abbreviations ---
+	batch_abbr_code_list = []
+	for i in frappe.get_doc("Item", self.item).attributes:
+		if i.attribute == "Finding Category":
+			continue
+
+		batch_abbreviation = frappe.db.get_value(
+			"Attribute Value", i.attribute_value, "custom_batch_abbreviation"
+		)
+
+		if i.attribute_value:
+			if batch_abbreviation:
+				batch_abbr_code_list.append(batch_abbreviation)
+			else:
+				frappe.throw(f"Abbreviation is missing for {i.attribute_value}")
+
+	# --- Final Batch Code ---
+	batch_code = batch_number + "".join(batch_abbr_code_list)
+	sequence = generate_unique_alphanumeric()
+	self.name = batch_code + '-' + sequence
 
 def autoname(self,method=None):
 	# year_code = get_year_code()
@@ -22,25 +77,30 @@ def autoname(self,method=None):
 		month_code = get_month_code()
 		week_code = get_week_code()
 		# start_of_week, end_of_week = get_current_week_date_range()
+		company ={"Gurukrupa Export Private Limited":"GE",
+			"KG GK Jewellers Private Limited":"KG",
+			"Sadguru Diamond":"SD",
+			"Sadguru Hallmarking Centre":"SHC"}
+		company_abbr = company.get(self.custom_company)
 
 		if item_group == "Diamond - V":
-			batch_number = "GE{year_code}{month_code}{week_code}-D".format(
+			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-D".format(
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		elif item_group == "Metal - V":
-			batch_number = "GE{year_code}{month_code}{week_code}-M".format(
+			batch_number = f"{company_abbr}{month_code}{week_code}-M".format(
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		elif item_group == "Gemstone - V":
-			batch_number = "GE{year_code}{month_code}{week_code}-G".format(
+			batch_number = f"{company_abbr}{month_code}{week_code}-G".format(
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		elif item_group == "Finding - V":
-			batch_number = "GE{year_code}{month_code}{week_code}-F".format(
+			batch_number = f"{company_abbr}{month_code}{week_code}-F".format(
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		elif item_group == "Other - V":
-			batch_number = "GE{year_code}{month_code}{week_code}-O".format(
+			batch_number = f"{company_abbr}{month_code}{week_code}-O".format(
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		batch_abbr_code_list = []
