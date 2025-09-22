@@ -290,7 +290,8 @@ class ProductCertification(Document):
 			# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
 			pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":self.manufacturer}, "pure_gold_item")
 			if not pure_item:
-				frappe.throw(_("Please mention Pure Item in Manufacturing Setting"))
+				# frappe.throw(_("Please mention Pure Item in Manufacturing Setting"))
+				frappe.throw(_("Select Manufacturer in session defaults or in Filed"))
 
 			existing_data = []
 			for row in self.exploded_product_details:

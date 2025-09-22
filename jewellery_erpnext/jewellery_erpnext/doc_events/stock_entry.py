@@ -25,6 +25,7 @@ from jewellery_erpnext.utils import get_item_from_attribute, get_variant_of_item
 import copy
 
 def before_validate(self, method):
+	validate_ir(self)
 	if (
 		not self.get("__islocal") and frappe.db.exists("Stock Entry", self.name) and self.docstatus == 0
 	) or self.flags.throw_batch_error:
@@ -63,7 +64,8 @@ def before_validate(self, method):
 				pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":manufacturer}, "pure_gold_item")
 
 				if not pure_item:
-					frappe.throw(_("Pure Item not mentioned in Manufacturing Setting"))
+					# frappe.throw(_("Pure Item not mentioned in Manufacturing Setting"))
+					frappe.throw(_("Select Manufacturer in session defaults or in Filed"))
 
 				pure_item_purity = get_purity_percentage(pure_item)
 
@@ -166,6 +168,38 @@ def before_validate(self, method):
 
 # main slip have validation error for repack and transfer so it was commented
 # validate_main_slip_warehouse(self)
+
+def validate_ir(self):
+# 	validate_inventory_dimention(self)
+
+	if self.auto_created == 0:
+		if self.stock_entry_type in ['Material Receive (WORK ORDER)', 'Material Transfer (WORK ORDER)']:
+			if self.manufacturing_work_order:
+		
+				if self.manufacturing_work_order:
+					dept_ir_mwo = frappe.get_all(
+						"Department IR Operation",
+						filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
+						fields=["parent"]
+					)
+    
+					if dept_ir_mwo:
+						ir_names = ", ".join(f"'{row['parent']}'" for row in dept_ir_mwo)
+						frappe.throw(
+							f"{self.manufacturing_work_order} is already present in Draft :{ir_names} . Please submit or cancel them first."
+						)
+
+					emp_ir_mwo = frappe.get_all(
+								"Employee IR Operation",
+								filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
+								fields=["parent"]
+							)
+			
+					if emp_ir_mwo:
+						ir_names = ", ".join(f"'{row['parent']}'" for row in emp_ir_mwo)
+						frappe.throw(
+							f"{self.manufacturing_work_order} is already present in Draft :{ir_names} . Please submit or cancel them first."
+						)
 
 
 def validate_pcs(self):
