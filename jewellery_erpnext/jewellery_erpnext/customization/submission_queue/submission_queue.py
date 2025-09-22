@@ -7,7 +7,7 @@ from frappe.model.document import Document
 class CustomSubmissionQueue(SubmissionQueue):
 	def insert(self, to_be_queued_doc: Document, action: str):
 		queue =frappe.db.get_value("Submission Queue",{"ref_doctype":self.ref_doctype,"ref_docname":self.ref_docname,"status":["in",["Queued","Finished"]]})
-  
+
 		if self.ref_doctype in ["Employee IR","Department IR"] and queue:
 			frappe.msgprint(
 			_("Queued for Submission. You can track the progress over {0}.").format(
@@ -18,7 +18,7 @@ class CustomSubmissionQueue(SubmissionQueue):
 		)
 		else:
 			super().insert(to_be_queued_doc,action)
-   
+
 	def after_insert(self):
 		if self.ref_doctype in ["Employee IR","Department IR"]:
 			self.queue_action(
