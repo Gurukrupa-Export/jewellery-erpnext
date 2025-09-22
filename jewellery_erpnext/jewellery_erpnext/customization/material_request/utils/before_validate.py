@@ -19,7 +19,8 @@ def update_pure_qty(self):
 				pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":self.custom_manufacturer}, "pure_gold_item")
 
 				if not pure_item:
-					frappe.throw(_("Pure Item not mentioned in Manufacturing Setting"))
+					# frappe.throw(_("Pure Item not mentioned in Manufacturing Setting"))
+					frappe.throw(_("Select Manufacturer in session defaults or in Filed"))
 
 				pure_item_purity = get_purity_percentage(pure_item)
 
