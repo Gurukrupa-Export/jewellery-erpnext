@@ -640,12 +640,16 @@ def create_purity_repack(self, row, item, pure_data, warehouse, temp_diff, purit
 	se_doc.employee_ir = self.name
 	batch_dict = {}
 	purity = frappe.db.get_value("Attribute Value", purity_doc, "purity_percentage")
+	reqd_qty = temp_diff
+	if purity > 0:
+		reqd_qty = (purity * temp_diff) / 100
+	reqd_qty = flt(reqd_qty, 3)
 	for row in pure_data:
-		reqd_qty = temp_diff
-		if purity > 0:
-			reqd_qty = (purity * temp_diff) / 100
+		# reqd_qty = temp_diff
+		# if purity > 0:
+		# 	reqd_qty = (purity * temp_diff) / 100
 
-		reqd_qty = flt(reqd_qty, 3)
+		# reqd_qty = flt(reqd_qty, 3)
 		if reqd_qty > 0 and row.consume_qty < row.qty:
 			if (row.consume_qty + reqd_qty) <= row.qty:
 				se_qty = reqd_qty
