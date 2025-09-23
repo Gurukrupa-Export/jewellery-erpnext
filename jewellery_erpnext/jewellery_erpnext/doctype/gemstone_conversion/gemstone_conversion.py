@@ -65,7 +65,8 @@ class GemstoneConversion(Document):
 			errors.append(f"Department Messing against <b>{self.employee} Employee Master</b>")
 		if not branch:
 			errors.append(f"Branch Messing against <b>{self.employee} Employee Master</b>")
-		mnf = frappe.get_value("Department", dpt, "manufacturer")
+		# mnf = frappe.get_value("Department", dpt, "manufacturer")
+		mnf = frappe.get_value("Employee", self.employee, "manufacturer")
 		if not mnf:
 			errors.append("Manufacturer Messing against <b>Department Master</b>")
 		s_wh = frappe.get_value("Warehouse", {"disabled": 0, "department": dpt}, "name")
