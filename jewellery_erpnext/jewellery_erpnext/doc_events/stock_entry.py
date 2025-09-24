@@ -55,11 +55,17 @@ def before_validate(self, method):
 				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
 
 				if self.stock_entry_type == 'Material Transfer (MAIN SLIP)':
-					manufacturer = frappe.db.get_value("Main Slip",self.to_main_slip,"manufacturer")
+					if self.to_main_slip:
+						manufacturer = frappe.db.get_value("Main Slip",self.to_main_slip,"manufacturer")
+					if self.main_slip:
+						manufacturer = frappe.db.get_value("Main Slip",self.main_slip,"manufacturer")
 				elif self.manufacturing_order:
 					manufacturer = frappe.db.get_value("Parent Manufacturing Order",self.manufacturing_order,"manufacturer")
 				else:
-					manufacturer = frappe.defaults.get_user_default("manufacturer")
+					if self.manufacturer:
+						manufacturer = self.manufacturer
+					else:
+						manufacturer = frappe.defaults.get_user_default("manufacturer")
 
 				pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":manufacturer}, "pure_gold_item")
 
