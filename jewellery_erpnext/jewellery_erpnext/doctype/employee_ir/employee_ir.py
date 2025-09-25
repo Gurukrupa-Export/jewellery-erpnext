@@ -574,7 +574,7 @@ class EmployeeIR(Document):
 			if new_operation_list:
 				for operation in new_operation_list:
 					update_mop_balance(operation.name)
-					
+
 			else:
 				new_op = new_op_name if new_op_name else new_operation.name
 				update_mop_balance(new_op)
@@ -903,7 +903,7 @@ class EmployeeIR(Document):
 			# 	total_qty += entry["qty"]
 			for entry in data:
 				if total_qty != 0 and loss > 0:
-					stock_loss = flt((entry["qty"] * loss) / total_qty, 3)
+					stock_loss = (entry["qty"] * loss) / total_qty
 					if stock_loss > 0:
 						entry["received_gross_weight"] = entry["qty"] - stock_loss
 						entry["proportionally_loss"] = stock_loss
