@@ -40,10 +40,10 @@ def validate(self, method):
 		elif item_group.startswith("R"):
 			batch_number = f"{company_abbr}{month_code}{week_code}-R"
 
-	# --- Safety fallback ---
-	if not batch_number:
-		# Either throw an error OR assign a default
-		frappe.throw(f"Cannot generate batch number for Item Group: {item_group}")
+	# # --- Safety fallback ---
+	# if not batch_number:
+	# 	# Either throw an error OR assign a default
+	# 	frappe.throw(f"Cannot generate batch number for Item Group: {item_group}")
 
 	# --- Collect abbreviations ---
 	batch_abbr_code_list = []
