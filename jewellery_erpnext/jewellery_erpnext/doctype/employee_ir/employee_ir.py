@@ -768,7 +768,7 @@ class EmployeeIR(Document):
 		self.employee_loss_details = []
 		proportionally_loss_sum = 0
 		for row in rows_to_append:
-			proportionally_loss = flt(row["proportionally_loss"], 3)
+			proportionally_loss = row["proportionally_loss"]
 			if proportionally_loss > 0:
 				variant_of = frappe.db.get_value("Item", row["item_code"], "variant_of")
 				self.append(
@@ -903,7 +903,7 @@ class EmployeeIR(Document):
 			# 	total_qty += entry["qty"]
 			for entry in data:
 				if total_qty != 0 and loss > 0:
-					stock_loss = flt((entry["qty"] * loss) / total_qty, 3)
+					stock_loss = (entry["qty"] * loss) / total_qty
 					if stock_loss > 0:
 						entry["received_gross_weight"] = entry["qty"] - stock_loss
 						entry["proportionally_loss"] = stock_loss

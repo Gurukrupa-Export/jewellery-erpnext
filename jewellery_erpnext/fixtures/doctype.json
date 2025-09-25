@@ -4429,7 +4429,6 @@
     "in_standard_filter": 0,
     "is_virtual": 0,
     "label": "C.V.D Wt",
-    "length": 2,
     "mandatory_depends_on": null,
     "max_height": null,
     "no_copy": 0,
