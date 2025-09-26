@@ -27,6 +27,7 @@ class CustomSubmissionQueue(SubmissionQueue):
 				action_for_queuing=self.action_for_queuing,
 				timeout=4500,
 				enqueue_after_commit=True,
+				queue="long"
 			)
 		else:
 			super().after_insert()
