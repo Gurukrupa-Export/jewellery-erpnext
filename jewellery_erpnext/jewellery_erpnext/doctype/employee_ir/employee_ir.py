@@ -574,7 +574,7 @@ class EmployeeIR(Document):
 			if new_operation_list:
 				for operation in new_operation_list:
 					update_mop_balance(operation.name)
-					
+
 			else:
 				new_op = new_op_name if new_op_name else new_operation.name
 				update_mop_balance(new_op)
@@ -768,7 +768,7 @@ class EmployeeIR(Document):
 		self.employee_loss_details = []
 		proportionally_loss_sum = 0
 		for row in rows_to_append:
-			proportionally_loss = row["proportionally_loss"]
+			proportionally_loss = flt(row["proportionally_loss"], 3)
 			if proportionally_loss > 0:
 				variant_of = frappe.db.get_value("Item", row["item_code"], "variant_of")
 				self.append(

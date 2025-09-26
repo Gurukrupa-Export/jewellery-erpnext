@@ -9,7 +9,7 @@ from collections import defaultdict
 from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, now, nowtime, today
 from frappe.query_builder.functions import CombineDatetime, Sum
 from frappe import _, _dict, bold
-
+import datetime
 def after_insert(self, method):
 	update_parent_batch_id(self)
 
@@ -137,8 +137,20 @@ class CustomBatchNoValuation(BatchNoValuation):
 			for ledger in entries:
 				self.stock_value_differece[ledger.batch_no] += flt(ledger.incoming_rate)
 				self.available_qty[ledger.batch_no] += flt(ledger.qty)
+			if has_sle_for_batch_nos(self.sle.item_code):
+				frappe.log_error(title =f"has_sle_for_batch_nos for {self.sle.item_code}", 
+                    message = f"""item : {self.sle.item_code},
+                    has_sle_for_batch_nos : {has_sle_for_batch_nos(self.sle.item_code)} ,
+					value : 
+						{frappe.db.get_all(
+						"Stock Ledger Entry",
+						fields=["name"],
+						filters={"batch_no": ("is", "set"), "is_cancelled": 0, "item_code": self.sle.item_code},
+						limit=1,
+					)}
+    			""")
 
-			self.calculate_avg_rate_from_deprecarated_ledgers()
+				self.calculate_avg_rate_from_deprecarated_ledgers()
 			self.calculate_avg_rate_for_non_batchwise_valuation()
 			self.set_stock_value_difference()
 
@@ -214,3 +226,16 @@ class CustomBatchNoValuation(BatchNoValuation):
 			query = query.where(timestamp_condition)
 
 		return query.run(as_dict=True)
+
+@frappe.request_cache
+def has_sle_for_batch_nos(item_code):
+	batch_no = frappe.db.get_all(
+		"Stock Ledger Entry",
+		fields=["name"],
+		filters={"batch_no": ("is", "set"), "is_cancelled": 0, "item_code": item_code},
+		limit=1,
+	)
+	if batch_no:
+		return True
+
+	return False
