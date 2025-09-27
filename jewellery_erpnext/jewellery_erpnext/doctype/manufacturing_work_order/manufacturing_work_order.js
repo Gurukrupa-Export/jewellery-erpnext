@@ -131,6 +131,33 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		dialog.show();
 		// dialog.$wrapper.find('.modal-dialog').css("max-width", "90%");
 	},
+	on_submit: function(frm) {
+        let attempts = 0;
+        function try_fetch_snc() {
+            frappe.call({
+                method: "frappe.client.get_list",
+                args: {
+                    doctype: "Serial Number Creator",
+                    filters: { manufacturing_work_order: frm.doc.name, docstatus: ["!=", 2] },
+                    fields: ["name"],
+                    limit_page_length: 1
+                },
+                callback: function(r) {
+                    if (r.message && r.message.length) {
+                        frappe.set_route('Form', 'Serial Number Creator', r.message[0].name);
+                    } else {
+                        attempts++;
+                        if (attempts < 5) {
+                            setTimeout(try_fetch_snc, 2000);  // retry after 2 seconds
+                        } else {
+                            frappe.msgprint("Serial Number Creator is not ready yet. Please refresh later.");
+                        }
+                    }
+                }
+            });
+        }
+        try_fetch_snc();
+    }
 });
 
 function set_html(frm) {

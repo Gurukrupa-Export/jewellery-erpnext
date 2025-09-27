@@ -8,7 +8,8 @@ from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.model.naming import make_autoname
 from frappe.utils import cint, flt, get_datetime, now
-
+from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import get_linked_stock_entries_for_serial_number_creator
+from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import get_operation_details
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.utils import (
 	add_time_log,
 	create_se_entry,
@@ -39,6 +40,12 @@ class ManufacturingWorkOrder(Document):
 	def on_submit(self):
 		if self.for_fg:
 			self.validate_other_work_orders()
+			last_department = frappe.db.get_value("Department Operation", {"is_last_operation": 1, "manufacturer": self.manufacturer}, "department")
+			mop_list = frappe.db.get_list("Manufacturing Operation",filters={"department": last_department,"manufacturing_order":self.manufacturing_order},pluck="name")
+			if mop_list:
+				for mop in mop_list:
+					frappe.db.set_value("Manufacturing Operation",mop,"status","Finished")
+
 		create_manufacturing_operation(self)
 		if self.split_from:
 			create_mr_for_split_work_order(self.name,self.company,self.manufacturer)
@@ -258,6 +265,7 @@ def create_manufacturing_operation(doc):
 		department, operation = frappe.db.get_value(
 			"Department Operation", {"is_last_operation": 1, "manufacturer": doc.manufacturer}, ["department", "name"]
 		) or ["", ""]
+		status = "Finished"
 
 	if doc.split_from:
 		department = doc.department
@@ -277,6 +285,10 @@ def create_manufacturing_operation(doc):
 		for row in mop.mop_balance_table:
 			copy_row = deepcopy(row.__dict__)
 			doc.append("mwo_mop_balance_table", copy_row)
+		department, operation = frappe.db.get_value("Department Operation", {"is_last_operation": 1, "manufacturer": doc.manufacturer}, ["department", "name"]) or ["", ""]
+		data = get_linked_stock_entries_for_serial_number_creator(doc.name,department,doc.item_code,doc.qty)
+		get_operation_details(data,mop.name,doc.name,doc.manufacturing_order,doc.company,doc.manufacturer,department,doc.for_fg,doc.master_bom)
+
 
 
 @frappe.whitelist()
