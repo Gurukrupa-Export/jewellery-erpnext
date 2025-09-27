@@ -198,7 +198,12 @@ def get_operation_details(data, docname, mwo, pmo, company, mnf, dpt, for_fg, de
 		frappe.throw(f"Document Already Created...! {exist_snc_doc[0]['name']}")
 	snc_doc = frappe.new_doc("Serial Number Creator")
 	mnf_op_doc = frappe.get_doc("Manufacturing Operation", docname)
-	data_dict = json.loads(data)
+	# data_dict = json.loads(data)
+	# New Code
+	try:
+		data_dict = json.loads(data)
+	except:
+		data_dict = data
 	stock_data = data_dict[0]
 	mnf_qty = int(data_dict[2])
 
@@ -253,7 +258,7 @@ def get_operation_details(data, docname, mwo, pmo, company, mnf, dpt, for_fg, de
 				},
 			)
 	snc_doc.type = "Manufacturing"
-	snc_doc.manufacturing_operation = mnf_op_doc.name
+	# snc_doc.manufacturing_operation = mnf_op_doc.name
 	snc_doc.manufacturing_work_order = mwo
 	snc_doc.parent_manufacturing_order = pmo
 	snc_doc.company = company
@@ -263,8 +268,8 @@ def get_operation_details(data, docname, mwo, pmo, company, mnf, dpt, for_fg, de
 	snc_doc.design_id_bom = design_id_bom
 	snc_doc.total_weight = total_qty
 	snc_doc.save()
-	mnf_op_doc.status = "Finished"
-	mnf_op_doc.save()
+	# mnf_op_doc.status = "Finished"
+	# mnf_op_doc.save()
 	frappe.msgprint(
 		f"<b>Serial Number Creator</b> Document Created...! <b>Doc NO:</b> {snc_doc.name}"
 	)
