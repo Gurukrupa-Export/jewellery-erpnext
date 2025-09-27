@@ -62,9 +62,10 @@ def validate(self, method):
 				frappe.throw(f"Abbreviation is missing for {i.attribute_value}")
 
 	# --- Final Batch Code ---
-	batch_code = batch_number + "".join(batch_abbr_code_list)
-	sequence = generate_unique_alphanumeric()
-	self.name = batch_code + '-' + sequence
+	if batch_number:
+		batch_code = batch_number + "".join(batch_abbr_code_list)
+		sequence = generate_unique_alphanumeric()
+		self.name = batch_code + '-' + sequence
 
 def autoname(self,method=None):
 	# year_code = get_year_code()
