@@ -42,26 +42,34 @@
   {
    "fieldname": "company",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Company",
-   "options": "Company"
+   "options": "Company",
+   "reqd": 1
   },
   {
    "fieldname": "warehouse",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Warehouse",
-   "options": "Warehouse"
+   "options": "Warehouse",
+   "reqd": 1
   },
   {
    "fieldname": "customer",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Customer",
-   "options": "Customer"
+   "options": "Customer",
+   "reqd": 1
   },
   {
    "fieldname": "batch_no",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Batch No",
-   "options": "Batch"
+   "options": "Batch",
+   "reqd": 1
   },
   {
    "fieldname": "section_break_xsca",
@@ -125,7 +133,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2025-09-29 17:08:04.222935",
+ "modified": "2025-09-29 17:56:26.569925",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Customer Metal Main Slip",
