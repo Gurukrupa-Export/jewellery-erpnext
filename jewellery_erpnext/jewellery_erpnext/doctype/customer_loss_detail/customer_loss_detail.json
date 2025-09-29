@@ -1,0 +1,55 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-09-29 16:21:29.628795",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "msl_qty",
+  "received_qty",
+  "loss_qty"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fieldname": "msl_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "MSL Qty"
+  },
+  {
+   "fieldname": "received_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Received Qty"
+  },
+  {
+   "fieldname": "loss_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Loss Qty"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-09-29 16:29:34.756885",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Customer Loss Detail",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
