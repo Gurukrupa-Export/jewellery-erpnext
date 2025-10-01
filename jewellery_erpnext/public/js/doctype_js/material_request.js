@@ -31,6 +31,57 @@ frappe.ui.form.on("Material Request", {
 		// if (!frm.doc.custom_mop_se && frm.doc.docstatus == 1) {
 		// 	frm.add_custom_button(__("Transfer To MOP"), () => frm.events.make_stock_entry(frm));
 		// }
+		if (['Material Transferred to Department','Material Transferred'].includes(frm.doc.workflow_state) && frm.doc.custom_operation_type == 'Transfer to Department') {
+            if (!frm.custom_buttons['Update Department']) {
+                frm.add_custom_button('Update Department', function() {
+                    let dialog = new frappe.ui.Dialog({
+                        title: 'Update Department',
+                        fields: [
+                            {
+                                label: 'Department',
+                                fieldname: 'department',
+                                fieldtype: 'Link',
+                                options: 'Department',
+                                reqd: 1,
+								get_query: function() {
+                                    return {
+                                        filters: {
+                                            company: frm.doc.company
+                                        }
+                                    };
+                                }
+                            }
+                        ],
+                        primary_action_label: 'Submit',
+                        primary_action: function(values) {
+                            frappe.call({
+                                method: 'jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request.update_department_and_create_stock_entry',
+                                // args: {
+                                //     docname: frm.doc.name,
+                                //     new_department: values.department
+                                // },
+                                args: {
+									material_request_name: frm.doc.name,      // <-- use correct argument name
+									new_department: values.department
+								},
+								callback: function(r) {
+                                    if (!r.exc) {
+                                        frappe.msgprint('Department updated successfully');
+                                        frm.reload_doc();
+                                    }
+                                }
+                            });
+                            dialog.hide();
+                        }
+                    });
+                    dialog.show();
+                });
+            }
+        } else {
+            // Remove the button if workflow state is different
+            frm.custom_buttons = {};
+            frm.refresh();
+        }
 	},
 	manufacturing_operation_query(frm) {
 		frappe.db
