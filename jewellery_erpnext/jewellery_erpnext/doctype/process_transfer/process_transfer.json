@@ -1,0 +1,141 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-10-01 14:50:03.487292",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "company_details_section",
+  "company",
+  "date_time",
+  "column_break_podx",
+  "manufacturer",
+  "department",
+  "section_break_ptd6",
+  "column_break_ys23",
+  "current_process",
+  "column_break_ul7s",
+  "next_process",
+  "section_break_ixjf",
+  "get_operations",
+  "column_break_izyc",
+  "scan_mwo",
+  "section_break_7das",
+  "process_transfer_operation"
+ ],
+ "fields": [
+  {
+   "fieldname": "company_details_section",
+   "fieldtype": "Section Break",
+   "label": "Company Details"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "default": "Now",
+   "fieldname": "date_time",
+   "fieldtype": "Datetime",
+   "label": "Date / Time"
+  },
+  {
+   "fieldname": "column_break_podx",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "section_break_ptd6",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_ys23",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "current_process",
+   "fieldtype": "Link",
+   "label": "Current Process",
+   "options": "Department Process"
+  },
+  {
+   "fieldname": "column_break_ul7s",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "next_process",
+   "fieldtype": "Link",
+   "label": "Next Process",
+   "options": "Department Process"
+  },
+  {
+   "fieldname": "section_break_ixjf",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "get_operations",
+   "fieldtype": "Button",
+   "label": "Get Manufacturing Operations"
+  },
+  {
+   "fieldname": "column_break_izyc",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "scan_mwo",
+   "fieldtype": "Data",
+   "label": "Scan MWO",
+   "options": "Barcode"
+  },
+  {
+   "fieldname": "section_break_7das",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "process_transfer_operation",
+   "fieldtype": "Table",
+   "label": "Process Transfer Operation",
+   "options": "Process Transfer Operation"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2025-10-01 15:05:26.297208",
+ "modified_by": "shubham_si@gkexport.com",
+ "module": "Jewellery Erpnext",
+ "name": "Process Transfer",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
