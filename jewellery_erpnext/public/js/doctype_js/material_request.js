@@ -77,11 +77,7 @@ frappe.ui.form.on("Material Request", {
                     dialog.show();
                 });
             }
-        } else {
-            // Remove the button if workflow state is different
-            frm.custom_buttons = {};
-            frm.refresh();
-        }
+        } 
 	},
 	manufacturing_operation_query(frm) {
 		frappe.db
