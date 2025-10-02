@@ -69,6 +69,136 @@ def make_mop_stock_entry(self, **kwargs):
 		frappe.throw(str(e))
 		return e
 
+@frappe.whitelist()
+def make_department_stock_entry(self, **kwargs):
+	# c = (
+    # self.custom_material_request_department_transfer[-2].department
+    # if len(self.custom_material_request_department_transfer) > 1
+    # else self.custom_department
+	# )
+
+	if isinstance(self, str):
+		self = json.loads(self)
+	if not self.get("custom_reserve_se"):
+		return
+	
+	se_doc = frappe.get_doc("Stock Entry", self.get("custom_reserve_se"))
+
+
+	new_se_doc = frappe.copy_doc(se_doc)
+	new_se_doc.stock_entry_type = "Material Transfered to Department"
+	new_se_doc.auto_created = 1
+	new_se_doc.to_department = self.get("custom_department")
+	new_se_doc.add_to_transit = 0
+	warehouse_data = frappe._dict()
+	t_warehouse = frappe.db.get_value("Warehouse",{"department": self.get("custom_department"), "warehouse_type": "Reserve"},"name")
+	if not t_warehouse:
+		# self.custom_custom_counter -= 1
+		# self.db_set("custom_custom_counter", self.custom_custom_counter)
+		# frappe.db.commit()  # force commit
+		self.custom_material_request_department_transfer.pop(-1)
+		frappe.throw("No warehouse for Selected Department ")
+
+
+	s_warehouse = frappe.db.sql(f"""WITH last_se AS (
+		SELECT sei.parent AS stock_entry_name
+		FROM `tabStock Entry Detail` sei
+		WHERE sei.material_request = '{self.name}'
+		ORDER BY sei.creation DESC
+		LIMIT 1
+		)
+		SELECT sei.t_warehouse
+		FROM `tabStock Entry Detail` sei
+		JOIN last_se ON sei.parent = last_se.stock_entry_name
+		GROUP BY sei.t_warehouse
+		HAVING COUNT(DISTINCT sei.t_warehouse) = 1
+		""",as_dict=1)
+	if s_warehouse:
+		s_warehouse = s_warehouse[0]['t_warehouse']
+	new_se_doc.to_warehouse = t_warehouse
+	for row in new_se_doc.items:
+		# 	 = frappe.db.get_value("Warehouse",{"department": c, "warehouse_type":"Reserve"},"name")
+		# if not warehouse_data.get(row.material_request_item):
+		# 	warehouse_data[row.material_request_item] = frappe.db.get_value(
+		# 		"Material Request Item", row.material_request_item, "warehouse"
+		# 	)
+		# s_warehouse = warehouse_data.get(row.material_request_item)
+		row.to_department = self.get("custom_department")
+		row.s_warehouse = s_warehouse
+		row.t_warehouse = t_warehouse
+		row.serial_and_batch_bundle = None
+
+
+	new_se_doc.save()
+	new_se_doc.submit()
+	frappe.msgprint(_("Stock Entry Created"))
+
+	if self.custom_material_request_department_transfer:
+		last_row = self.custom_material_request_department_transfer[-1]
+		last_row.db_set("stock_entry_created", 1)   # update DB
+		last_row.stock_entry_created = 1            # update in memory (so UI shows it)
+
+	# self.db_set("custom_mop_se", new_se_doc.name)
+	frappe.db.set_value("Material Request", self.get("name"), "custom_reserve_se", new_se_doc.name)
+
+	# frappe.throw(f"{self.custom_material_request_department_transfer[-1].department}")
+	
+	return new_se_doc.name
+
+	# except Exception as e:
+	# 	frappe.log_error("data Error", e)
+	# 	frappe.throw(str(e))
+	# 	return e
+
+@frappe.whitelist()
+def update_department_and_create_stock_entry(material_request_name, new_department):
+	doc = frappe.get_doc("Material Request", material_request_name)
+	current_department = doc.custom_department
+
+	# 1. If department is same, throw
+	if new_department == current_department:
+		frappe.throw("Raw material is already in this department.")
+
+	# 2. Check if last Stock Entry (Material Transfer) for this MR is already from current to target department
+	# Get last Stock Entry for this Material Request
+	last_stock_entry = frappe.db.sql("""
+		SELECT 
+			se.name, sed.s_warehouse, sed.t_warehouse
+		FROM 
+			`tabStock Entry` se 
+			JOIN `tabStock Entry Detail` sed ON se.name = sed.parent
+		WHERE 
+			se.docstatus = 1
+			AND sed.material_request = %s
+		ORDER BY se.creation DESC
+		LIMIT 1
+	""", (material_request_name,), as_dict=1)
+
+	# Set up expected s_warehouse and t_warehouse for new entry
+	s_warehouse = None
+	t_warehouse = frappe.db.get_value("Warehouse",{"department": new_department, "warehouse_type": "Reserve"},"name")
+	if not t_warehouse:
+		frappe.throw("No warehouse for Selected Department")
+
+	if last_stock_entry:
+		s_warehouse_last = last_stock_entry[0].get("s_warehouse")
+		t_warehouse_last = last_stock_entry[0].get("t_warehouse")
+		# Your logic for what the new s_warehouse should be
+		# s_warehouse = ...
+		# Example logic: if equal, throw
+		if t_warehouse_last == t_warehouse:
+			frappe.throw("Raw material is already in this department.")
+
+	# 3. Update department, reset counter
+	doc.db_set("custom_department", new_department)
+	doc.db_set("custom_custom_counter", 1)
+	doc.db_set("workflow_state", "Material Transferred to Department")
+	doc.db_set("custom_operation_type", "Transfer to Department")
+
+    # 4. Call to create Stock Entry
+	new_se_name = make_department_stock_entry(doc.as_dict())  # Pass document as dict or as needed
+	return new_se_name
+
 
 @frappe.whitelist()
 def get_pmo_data(source_name, target_doc=None):
