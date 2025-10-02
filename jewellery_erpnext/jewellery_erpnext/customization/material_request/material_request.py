@@ -104,7 +104,7 @@ def make_department_stock_entry(self, **kwargs):
 	new_se_doc.submit()
 	frappe.msgprint(_("Stock Entry Created"))
 	self.db_set("custom_mop_se", new_se_doc.name)
-	# frappe.db.set_value("Material Request", self.get("name"), "custom_mop_se", new_se_doc.name)
+	frappe.db.set_value("Material Request", self.get("name"), "custom_mop_se", new_se_doc.name)
 
 	return new_se_doc.name
 
