@@ -1,0 +1,118 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-10-01 14:52:11.736048",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "manufacturing_work_order",
+  "manufacturing_operation",
+  "status",
+  "parent_manufacturing_order",
+  "gross_wt",
+  "diamond_wt",
+  "section_break_tvkr",
+  "net_wt",
+  "finding_wt",
+  "other_wt",
+  "gemstone_wt",
+  "diamond_pcs",
+  "gemstone_pcs",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order"
+  },
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Link",
+   "label": "Manufacturing Operation",
+   "options": "Manufacturing Operation"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "label": "Status"
+  },
+  {
+   "fieldname": "parent_manufacturing_order",
+   "fieldtype": "Link",
+   "label": "Parent Manufacturing Order",
+   "options": "Parent Manufacturing Order"
+  },
+  {
+   "fieldname": "gross_wt",
+   "fieldtype": "Float",
+   "label": " Gross Wt"
+  },
+  {
+   "fieldname": "diamond_wt",
+   "fieldtype": "Float",
+   "label": "Diamond Wt"
+  },
+  {
+   "fieldname": "section_break_tvkr",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "net_wt",
+   "fieldtype": "Float",
+   "label": "Net Wt"
+  },
+  {
+   "fieldname": "finding_wt",
+   "fieldtype": "Float",
+   "label": " Finding Wt"
+  },
+  {
+   "fieldname": "other_wt",
+   "fieldtype": "Float",
+   "label": "Other Wt"
+  },
+  {
+   "fieldname": "gemstone_wt",
+   "fieldtype": "Float",
+   "label": "Gemstone Wt"
+  },
+  {
+   "fieldname": "diamond_pcs",
+   "fieldtype": "Data",
+   "label": "Diamond Pcs"
+  },
+  {
+   "fieldname": "gemstone_pcs",
+   "fieldtype": "Data",
+   "label": " Gemstone Pcs"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Process Transfer Operation",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-10-01 15:18:37.684471",
+ "modified_by": "shubham_si@gkexport.com",
+ "module": "Jewellery Erpnext",
+ "name": "Process Transfer Operation",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

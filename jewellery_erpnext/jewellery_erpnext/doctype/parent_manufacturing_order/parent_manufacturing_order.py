@@ -348,6 +348,7 @@ class ParentManufacturingOrder(Document):
 				):
 					mr_doc._customer = self.customer
 					mr_doc.inventory_type = "Customer Goods"
+				mr_doc.custom_department = frappe.db.get_value("Warehouse",val[0]["from_warehouse"],"department")
 				for i in val:
 					if i["qty"] > 0:
 						mr_doc.append(

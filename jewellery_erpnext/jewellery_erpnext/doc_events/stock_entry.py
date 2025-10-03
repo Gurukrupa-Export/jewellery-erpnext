@@ -528,6 +528,13 @@ def onsubmit(self, method):
 	validate_items(self)
 	update_manufacturing_operation(self)
 	update_main_slip(self)
+	if self.stock_entry_type == "Customer Goods Transfer" and self.customer_voucher_type == 'Customer Sample Goods':
+		serial_nos = frappe.get_all("Serial No", filters={"purchase_document_no": self.name}, fields=["name"])
+		serial_no_list = [d["name"] for d in serial_nos]
+		if serial_no_list and len(self.items) == len(serial_no_list):
+			for item, serial_no in zip(self.items, serial_no_list):
+				frappe.db.set_value("Serial No", serial_no, "custom_gross_wt", item.gross_weight)
+
 
 	# update_material_request_status(self)
 	# create_finished_bom(self)
