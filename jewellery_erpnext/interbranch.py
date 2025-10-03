@@ -345,8 +345,8 @@ def create_inter_branch_contra_entry(**kwargs):
 			frappe.throw(f"Account {acc} is not a Bank type account.")
 
 	# --- Get division accounts ---
-	source_division_acc = get_branch_account(args.target_branch)
-	target_division_acc = get_branch_account(args.source_branch)
+	source_division_acc = get_branch_account(args.source_branch)
+	target_division_acc = get_branch_account(args.target_branch)
 
 	res = []
 
