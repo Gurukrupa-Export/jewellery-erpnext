@@ -184,7 +184,7 @@ def make_department_stock_entry(self, **kwargs):
 		last_row.db_set("stock_entry_created", 1)
 		last_row.stock_entry_created = 1
 		
-	frappe.db.set_value("Material Request", self.get("name"), "custom_mop_se", new_se_doc.name)
+	frappe.db.set_value("Material Request", self.get("name"), "custom_reserve_se", new_se_doc.name)
 	return new_se_doc.name
 
 @frappe.whitelist()
