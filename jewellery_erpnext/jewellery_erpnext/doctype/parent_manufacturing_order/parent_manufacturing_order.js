@@ -15,7 +15,55 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		];
 		set_filters_on_parent_table_fields(frm, parent_fields);
 	},
-	refresh(frm) {
+	// refresh(frm) {
+	// 	if (frm.doc.customer && frm.doc.diamond_quality) {
+	// 		frm.set_query("diamond_grade", function () {
+	// 			return {
+	// 				query: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_diamond_grade",
+	// 				searchfield: "diamond_grade",
+	// 				filters: {
+	// 					customer: frm.doc.customer,
+	// 					diamond_quality: frm.doc.diamond_quality,
+	// 					use_custom_diamond_grade: frm.doc.use_custom_diamond_grade ? 1 : 0,
+	// 				},
+	// 			};
+	// 		});
+
+	// 		// Only call & set diamond_grade_1 when NOT using custom diamond grade
+	// 		if (!frm.doc.use_custom_diamond_grade) {
+	// 			frappe.call({
+	// 				method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_diamond_grade",
+	// 				args: {
+	// 					doctype: "Diamond Grade",
+	// 					txt: "",
+	// 					searchfield: "diamond_grade",
+	// 					start: 0,
+	// 					page_len: 10,
+	// 					filters: {
+	// 						customer: frm.doc.customer,
+	// 						diamond_quality: frm.doc.diamond_quality,
+	// 						use_custom_diamond_grade: 0,
+	// 					},
+	// 				},
+	// 				callback: function (r) {
+	// 					if (r.message && r.message.length > 0) {
+	// 						frm.set_value("diamond_grade", r.message[0][0]);
+	// 					}
+	// 				},
+	// 			});
+	// 		}
+	// 	}
+
+	// 	// Always control read-only dynamically
+	// 	frm.set_df_property("diamond_grade", "read_only", !frm.doc.use_custom_diamond_grade);
+
+	// 	if (!frm.doc.__islocal) {
+	// 		frm.add_custom_button(__("Send For Customer Approval"), function () {
+	// 			frm.trigger("create_customer_transfer");
+	// 		});
+	// 	}
+	// },
+		refresh(frm) {
 		if (frm.doc.customer && frm.doc.diamond_quality) {
 			frm.set_query("diamond_grade", function () {
 				return {
@@ -30,6 +78,7 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 			});
 
 			// Only call & set diamond_grade_1 when NOT using custom diamond grade
+			
 			if (!frm.doc.use_custom_diamond_grade) {
 				frappe.call({
 					method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_diamond_grade",
@@ -60,6 +109,65 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		if (!frm.doc.__islocal) {
 			frm.add_custom_button(__("Send For Customer Approval"), function () {
 				frm.trigger("create_customer_transfer");
+			});
+		}
+		// if(frm.doc.docstatus == 1){
+		// 	frm.add_custom_button(__("Create MWO"), function(){
+		// 			frappe.call({
+		// 				method: 'jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.create_mwo',
+		// 				args: {
+		// 					pmo: frm.doc.name,
+		// 					doc: frm.doc
+		// 				},
+		// 				// callback: function(response) {
+		// 				// 	// if (response.message) {
+		// 				// 	// }
+		// 				// }
+		// 			});  
+		// 	})
+		// }
+   if (frm.doc.docstatus == 1) {
+            frm.add_custom_button(__("Create MWO"), function () {
+                frappe.prompt(
+                    [
+                        {
+                            fieldname: "reason",
+                            label: "Reason",
+                            fieldtype: "Select",
+                            reqd: 1,
+                            options: [
+                                "Cpx rpt",
+                                "Mould broken & extra need for bulk order",
+                                "Prong thickness & height for wax setting",
+                                "Mumbai CAD, if CAD image show in (ppc wax cad) then we have to transfer for rubber mould work"
+                            ].join("\n")
+                        }
+                    ],
+                    function (data) {
+                        // Run only after selecting reason
+                        frappe.call({
+                            method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.create_mwo",
+                            args: {
+                                pmo: frm.doc.name,
+                                doc: frm.doc,
+                                reason: data.reason  // passing reason also
+                            },
+                            callback: function(r) {
+                                if (!r.exc) {
+                                    frm.reload_doc();
+                                }
+                            }
+                        });
+                    },
+                    __("Select Reason"),   // Dialog Title
+                    __("Submit")           // Submit button label
+                );
+    });
+}
+
+		if (frm.doc.docstatus < 2 && frm.doc.workflow_state !== "On Hold") {
+			frm.add_custom_button(__('On Hold'), () => {
+				show_hold_dialog(frm);
 			});
 		}
 	},
