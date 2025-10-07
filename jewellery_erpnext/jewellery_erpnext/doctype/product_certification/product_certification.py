@@ -287,6 +287,12 @@ class ProductCertification(Document):
 					)
 
 		elif self.service_type in ["Fire Assy Service", "XRF Services"]:
+			if self.manufacturer:
+				manufacturer = self.manufacturer
+			else:
+				manufacturer = frappe.defaults.get_user_default("manufacturer")
+			if not manufacturer:	
+				frappe.throw("Set manufacturer in session defaults")
 			# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
 			pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer":self.manufacturer}, "pure_gold_item")
 			if not pure_item:
