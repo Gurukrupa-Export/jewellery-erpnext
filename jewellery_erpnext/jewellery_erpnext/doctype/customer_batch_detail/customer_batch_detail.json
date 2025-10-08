@@ -1,0 +1,86 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-09-29 16:34:36.897781",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "batch_no",
+  "item_code",
+  "msl_qty",
+  "msl_consume_qty",
+  "consumed_qty",
+  "auto_created",
+  "inventory_type",
+  "balance_qty"
+ ],
+ "fields": [
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Batch No",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fieldname": "msl_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "MSL Qty"
+  },
+  {
+   "fieldname": "msl_consume_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "MSL Consume Qty"
+  },
+  {
+   "fieldname": "consumed_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Consumed Qty"
+  },
+  {
+   "fieldname": "auto_created",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Auto Created",
+   "options": "Yes\nNo"
+  },
+  {
+   "fieldname": "inventory_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Inventory Type",
+   "options": "Inventory Type"
+  },
+  {
+   "fieldname": "balance_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Balance Qty"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-09-29 16:42:31.355188",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Customer Batch Detail",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
