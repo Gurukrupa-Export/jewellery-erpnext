@@ -23,6 +23,23 @@ frappe.ui.form.on("Refining", {
 				filters: { item_attribute: "Metal Purity" },
 			};
 		});
+		if (frm.doc.refining_type == "Parent Manufacturing Order") {
+			frm.set_df_property("refined_gold", "cannot_add_rows", true);
+			frm.set_df_property("refined_gold", "cannot_delete_rows", true);
+			frm.set_query("manufacturing_work_order", "manufacturing_work_order", function (doc, cdt, cdn) {
+				return {
+					filters: {
+						company: frm.doc.company,
+						department : frm.doc.refining_department
+					},
+				};
+			});
+			let field_to_make_read_only =["item_code","refining_gold_weight","metal_purity","pure_weight"]
+			for (let index = 0; index < field_to_make_read_only.length; index++) {
+				frm.fields_dict['refined_gold'].grid.update_docfield_property(field_to_make_read_only[index],"read_only",1)
+			}
+		}
+
 	},
 	validate(frm) {
 		if (!frm.doc.multiple_operation) {
@@ -95,10 +112,24 @@ frappe.ui.form.on("Refining", {
 		set_series(frm);
 		set_html(frm);
 		transfer_dust_btn(frm);
+		if (frm.doc.refining_type == "Parent Manufacturing Order") {
+			frm.set_df_property("refined_gold", "cannot_add_rows", true);
+			frm.set_df_property("refined_gold", "cannot_delete_rows", true);
+			frm.set_query("manufacturing_work_order", "manufacturing_work_order", function (doc, cdt, cdn) {
+				return {
+					filters: {
+						company: frm.doc.company,
+						department : frm.doc.refining_department
+					},
+				};
+			});
+		}
+		
+		
 	},
 	refining_department(frm) {
 		frappe.db
-			.get_value("Warehouse", { department: frm.doc.refining_department }, "name")
+			.get_value("Warehouse", { department: frm.doc.refining_department ,warehouse_type: "Manufacturing"}, "name")
 			.then((r) => {
 				console.log(r.message.name); // Open
 				frm.set_value("refining_warehouse", r.message.name);
@@ -218,6 +249,7 @@ function set_series(frm) {
 }
 
 function set_html(frm) {
+	set_balance_table_html(frm)
 	frm.get_field("raw_material_table").$wrapper.html("");
 	if (!frm.doc.__islocal) {
 		//ToDo: add function for stock entry detail for normal manufacturing operations
@@ -232,11 +264,24 @@ function set_html(frm) {
 				docname: frm.doc.name,
 			},
 			callback: function (r) {
+				if (r){
 				frm.get_field("raw_material_table").$wrapper.html(r.message);
-				frm.doc.set_df_property("raw_material_table", "hidden", 0);
+				frm.set_df_property("raw_material_table", "hidden", 0);
+				}
+
 			},
 		});
 	}
+}
+function set_balance_table_html(frm){
+	if (frm.doc.refining_type  ==  "Parent Manufacturing Order" && frm.doc.mop_balance_data){
+		frm.get_field("mop_balance_data").$wrapper.html(frm.doc.mop_balance_data)
+	}
+	else{
+		frm.get_field("mop_balance_data").$wrapper.html("")
+	}
+
+
 }
 
 function get_item_by_serial_no(frm) {
@@ -313,10 +358,14 @@ function filter_items(frm, table_name, varient) {
 	}
 	frm.set_query(field, table_name, function (doc, cdt, cdn) {
 		let d = locals[cdt][cdn];
+		let filters_ ={variant_of: varient}
+		if (doc.mop_balance_table_items && doc.refining_type  ==  "Parent Manufacturing Order")
+		{
+			filters_["name"] = ["in",JSON.parse(cur_frm.doc.mop_balance_table_items)["item_code"]]
+
+		}
 		return {
-			filters: {
-				variant_of: varient,
-			},
+			filters: filters_
 		};
 	});
 }

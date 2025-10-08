@@ -11,12 +11,32 @@ from frappe.utils import cint, flt, today
 
 from jewellery_erpnext.utils import get_item_from_attribute
 
-
+template = """
+	<table class="table table-bordered table-hover" width="100%" style="border: 1px solid #d1d8dd;">
+		<thead>
+			<tr style = "text-align:center">
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Item Code</th>
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Qty</th>
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Pcs</th>
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Inventory Type</th>
+				<th style="border: 1px solid #d1d8dd; font-size: 11px;">Customer</th>
+			</tr>
+		</thead>
+		<tbody>
+		{% for item in data %}
+			<tr style = "text-align:center">
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.item_code }}</td>
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.qty }}</td>
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.pcs }}</td>
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.inventory_type }}</td>
+				<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ item.customer }}</td>
+			</tr>
+		{% endfor %}
+		</tbody>
+	</table>"""
 class Refining(Document):
 	def validate(self):
 		# self.check_overlap()
-		self.set_fine_weight()
-		self.set_gross_pure_weight()
 
 		self.refining_loss = self.gross_pure_weight - self.refined_fine_weight
 
@@ -32,6 +52,33 @@ class Refining(Document):
 				check_allocation(self, self.refining_department_detail)
 			elif self.multiple_operation:
 				check_allocation(self, self.refining_operation_detail)
+		self.mop_balance_data =""
+		self.metal_wt = 0
+		self.gemstone_wt = 0
+		self.diamond_wt = 0
+		self.mop_balance_table_items = {}
+		if self.refining_type == "Parent Manufacturing Order":
+			if self.manufacturing_work_order:
+				manufacturing_operations =[]
+				throw_message = ""
+				for row in self.manufacturing_work_order:
+					row.manufacturing_operation =  frappe.db.get_value("Manufacturing Operation",{"manufacturing_work_order":row.manufacturing_work_order,"status":"Not Started"})
+					if row.manufacturing_operation:
+						manufacturing_operations.append(row.manufacturing_operation)
+					if row.company != self.company:
+						throw_message +=f"<br> Row {row.idx}  Manufacturing work order : <b>{row.manufacturing_work_order}</b> does not belong to Company: <b>{self.compay}</b> <br>"
+					if self.refining_department != row.department:
+						throw_message +=f"<br> Row {row.idx}  Manufacturing work order : <b>{row.manufacturing_work_order}</b> does not belong to Department: <b>{self.refining_department}</b> <br>"
+				if throw_message:
+					frappe.throw(throw_message)
+
+				self.get_balance_table(manufacturing_operation=manufacturing_operations)
+			else:
+				if self.refined_gold:
+					self.refined_gold =[]
+			self.validate_weight_for_parent_manufacturing_order()
+		self.set_fine_weight()
+		self.set_gross_pure_weight()
 
 	def on_submit(self):
 		create_refining_entry(self)
@@ -181,11 +228,151 @@ class Refining(Document):
 			data = query.run(as_dict=True)
 
 			all_stock_entry += data
+		if all_stock_entry:
+			return frappe.render_template(
+				"jewellery_erpnext/jewellery_erpnext/doctype/refining/refining.html", {"data": all_stock_entry}
+			)
 
-		return frappe.render_template(
-			"jewellery_erpnext/jewellery_erpnext/doctype/refining/refining.html", {"data": all_stock_entry}
-		)
+	def get_balance_table(self,manufacturing_operation):
+		mop_balance_table = []
+		if manufacturing_operation:
+			mop_balance_table = frappe.get_all("MOP Balance Table",{"parent":["in",manufacturing_operation]},["item_code","sum(qty) as qty","sum(pcs) as pcs","inventory_type","customer"],group_by="item_code,inventory_type,customer",order_by ="item_code,inventory_type,customer")
+			mop_balance_table_based_on_qty = frappe.get_all("MOP Balance Table",{"parent":["in",manufacturing_operation]},["item_code","sum(qty) as qty","sum(pcs) as pcs"],group_by="item_code",order_by ="item_code")
+			mop_balance_table_based_on_qty = {value["item_code"]:value["qty"] for value in mop_balance_table_based_on_qty}
+			mop_balance_table_items = frappe.get_all("MOP Balance Table",{"parent":["in",manufacturing_operation]},["distinct item_code"],pluck ="item_code")
+			filter_wt = ""
+			if len(manufacturing_operation) == 1:
+				filter_wt += f"mop.parent = '{manufacturing_operation[0]}' "
+			else:
+				filter_wt += f" mop.parent in {tuple(manufacturing_operation)}"
+			wt = frappe.db.sql(f"""
+				SELECT sum( if(mop.item_code LIKE 'D%',mop.qty,0)) as diamond_wt,
+				sum( if(mop.item_code LIKE 'G%',mop.qty,0) ) as gemstone_wt,
+				sum( if( (mop.item_code LIKE 'M%')  or (mop.item_code LIKE 'F%') ,mop.qty,0) ) as metal_wt
+				FROM `tabMOP Balance Table` as mop
+				WHERE {filter_wt}
+			""", as_dict=True )
+			
+			self.metal_wt = wt[0].get("metal_wt")
+			self.gemstone_wt = wt[0].get("gemstone_wt")
+			self.diamond_wt = wt[0].get("diamond_wt")
+			html_content = frappe.render_template(
+				template, {"data": mop_balance_table,}
+			)
+			self.mop_balance_data = html_content
+			self.mop_balance_table_items = {"item_code":mop_balance_table_items,"qty":mop_balance_table_based_on_qty}
+			mop_balance_table_items_based_on_item_code = frappe.db.sql(f"""
+					SELECT
+						COALESCE(
+							CASE 
+								WHEN mq.item_code LIKE 'M%' THEN mq.item_code
+								WHEN mq.item_code LIKE 'F%' THEN (
+									SELECT i.name 
+									FROM `tabItem` i
+									JOIN (
+										SELECT parent,
+											MAX(CASE WHEN attribute = 'Metal Colour' THEN attribute_value END) AS `Metal Colour`,
+											MAX(CASE WHEN attribute = 'Metal Purity' THEN attribute_value END) AS `Metal Purity`,
+											MAX(CASE WHEN attribute = 'Metal Touch'  THEN attribute_value END) AS `Metal Touch`,
+											MAX(CASE WHEN attribute = 'Metal Type'   THEN attribute_value END) AS `Metal Type`
+										FROM `tabItem Variant Attribute`
+										WHERE attribute IN ('Metal Colour','Metal Purity','Metal Touch','Metal Type')
+										and parent like 'M%'
+										GROUP BY parent
+									) ia0 ON ia0.parent = i.name
+									WHERE i.name LIKE 'M%'
+									AND ia.`Metal Colour` = ia0.`Metal Colour`
+									AND ia.`Metal Purity` = ia0.`Metal Purity`
+									AND ia.`Metal Touch`  = ia0.`Metal Touch`
+									AND ia.`Metal Type`   = ia0.`Metal Type`
+									LIMIT 1
+								)
+							END
+						) AS item_code,
+						SUM(mq.qty) AS qty
+					FROM (
+						SELECT mop.item_code, SUM(mop.qty) AS qty
+						FROM `tabMOP Balance Table` AS mop
+						WHERE {filter_wt}
+						AND (mop.item_code LIKE 'M%' OR mop.item_code LIKE 'F%')
+						GROUP BY mop.item_code
+					) mq
+					 JOIN (
+						SELECT parent,
+							MAX(CASE WHEN attribute = 'Metal Colour' THEN attribute_value END)   AS `Metal Colour`,
+							MAX(CASE WHEN attribute = 'Metal Purity' THEN attribute_value END)   AS `Metal Purity`,
+							MAX(CASE WHEN attribute = 'Metal Touch'  THEN attribute_value END)   AS `Metal Touch`,
+							MAX(CASE WHEN attribute = 'Metal Type'   THEN attribute_value END)   AS `Metal Type`
+						FROM `tabItem Variant Attribute`
+						WHERE attribute IN ('Metal Colour','Metal Purity','Metal Touch','Metal Type')
+						GROUP BY parent
+					) ia ON ia.parent = mq.item_code
+					GROUP BY ia.`Metal Colour`, ia.`Metal Purity`, ia.`Metal Touch`, ia.`Metal Type`
+				""", as_dict=True)
 
+			print("mop_balance_table_items_based_on_item_code",mop_balance_table_items_based_on_item_code)
+			mop_balance_table_items_based_on_item_code_dic ={}
+			for itmes in mop_balance_table_items_based_on_item_code:
+				# if itmes["item_code"][0] == "F":
+				# 	change_item_code_raw = "M-"+itmes['Metal Type'][0]+"-"+itmes['Metal Touch']+"-"+itmes["Metal Purity"]+"-"+itmes["Metal Colour"][0]
+				# 	change_item_code = frappe.db.get_value("Item",change_item_code_raw)
+				# 	if change_item_code:
+				# 		itmes["item_code"] = change_item_code
+				# 	else:
+				# 		frappe.throw(f"Need item {change_item_code_raw}")
+
+				mop_balance_table_items_based_on_item_code_dic[itmes["item_code"]] = itmes["qty"] 
+			append_refined_gold = {row.item_code: row for row in self.refined_gold} 
+			for row_item in mop_balance_table_items_based_on_item_code_dic:
+				if row_item not in append_refined_gold:
+					self.append("refined_gold",{
+						"item_code":row_item,
+						"refining_gold_weight":mop_balance_table_items_based_on_item_code_dic[row_item],
+						"metal_purity" :99.9,
+						"pure_weight":mop_balance_table_items_based_on_item_code_dic[row_item] * ( 99.9/ 100)
+					})
+				elif append_refined_gold[row_item].refining_gold_weight != mop_balance_table_items_based_on_item_code_dic[row_item]:
+					append_refined_gold[row_item].refining_gold_weight = mop_balance_table_items_based_on_item_code_dic[row_item]
+					append_refined_gold[row_item].pure_weight = mop_balance_table_items_based_on_item_code_dic[row_item] * ( 99.9/ 100)
+			remove_items =[]
+			for row_item in append_refined_gold:
+				if row_item not in mop_balance_table_items_based_on_item_code_dic:
+					self.remove(append_refined_gold[row_item])
+					remove_items.append(row_item)
+				if row_item not in remove_items:
+					if append_refined_gold[row_item].metal_purity != 99.9:
+						append_refined_gold[row_item].metal_purity = 99.9
+					if append_refined_gold[row_item].refining_gold_weight != mop_balance_table_items_based_on_item_code_dic[row_item]:
+						append_refined_gold[row_item].refining_gold_weight = mop_balance_table_items_based_on_item_code_dic[row_item]
+						append_refined_gold[row_item].pure_weight = mop_balance_table_items_based_on_item_code_dic[row_item] * ( 99.9/ 100)
+
+						
+
+	def validate_weight_for_parent_manufacturing_order(self):
+		err_msg =""
+		recovered_diamond =0.0
+		for row in self.recovered_diamond:
+			recovered_diamond = recovered_diamond+ (row.get("weight") or 0)
+			if  self.mop_balance_table_items.get("qty") and (row.get("weight") or 0) > self.mop_balance_table_items.get("qty").get(row.get("item")):
+				err_msg += f"<br> Items {row.get("item")} weight {row.get("weight")} Can not be greater MOP's item weight { self.mop_balance_table_items.get("qty")[row.get("item")]} <br>"
+
+		if recovered_diamond > (self.get("diamond_wt") or 0):
+			err_msg += f"<br> Recovered Diamond weight : {recovered_diamond} can not be greater than  MOP's diamond weight : {self.diamond_wt} <br>"
+		recovered_diamond = 0.0
+		for row in self.recovered_gemstone:
+			recovered_diamond = recovered_diamond +(row.get("weight") or 0)
+			if  self.mop_balance_table_items.get("qty") and (row.get("weight") or 0) > self.mop_balance_table_items.get("qty").get(row.get("item")):
+				err_msg += f"<br> Items {row.get("item")} weight {row.get("weight")} Can not be greater MOP' item weight { self.mop_balance_table_items.get("qty")[row.get("item")]} <br>"
+		if recovered_diamond > (self.get("gemstone_wt") or 0):
+			err_msg += f"<br> Recovered Gemstone weight : {recovered_diamond} can not be greater than  MOP's gemstone weight : {self.gemstone_wt} <br>"
+		recovered_diamond = 0.0
+		for row in self.refined_gold:
+			print(row.as_dict())
+			recovered_diamond = recovered_diamond + (row.get("after_burn_weight") or 0)
+		if recovered_diamond > (self.get("metal_wt") or 0):
+			err_msg += f"<br> Recovered Metal weight : {recovered_diamond} can not be greater than  MOP's Metal weight : {self.metal_wt}<br>"
+		if err_msg:
+			frappe.throw(err_msg)
 
 @frappe.whitelist()
 def get_manufacturing_operations(source_name, target_doc=None):
