@@ -42,11 +42,30 @@ def before_validate(self, method):
 
 
 def before_update_after_submit(self, method):
+	# if self.workflow_state == "Material Transferred to MOP":
+	# 	if not self.custom_manufacturing_operation:
+	# 		frappe.throw(_("Please Select Manufacturing Operation"))
+
+	# 	make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
 	if self.workflow_state == "Material Transferred to MOP":
 		if not self.custom_manufacturing_operation:
 			frappe.throw(_("Please Select Manufacturing Operation"))
 
-		make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
+		mop_status = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"status")
+		if mop_status == 'Finished':
+			frappe.throw("You can not select Finished Opearions")
+
+		if self.custom_manufacturing_operation and self.custom_department:
+			mop_department = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"department")
+			if mop_department != self.custom_department:
+				frappe.throw(_(f"Manufacturing Operation is not in <b>{self.custom_department}</b> Deparment"))
+			make_department_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
+		else:
+			mop_department = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"department")
+			table_warehouse_department = frappe.db.get_value("Warehouse",self.items[0].warehouse,"department")
+			if mop_department != table_warehouse_department:
+				frappe.throw("Manufacturing Operation's Department and selectd Department's is not matched")
+			make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
 
 
 def validate_target_item(self):
