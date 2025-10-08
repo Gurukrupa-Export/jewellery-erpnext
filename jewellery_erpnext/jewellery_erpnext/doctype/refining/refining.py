@@ -349,28 +349,52 @@ class Refining(Document):
 						
 
 	def validate_weight_for_parent_manufacturing_order(self):
-		err_msg =""
-		recovered_diamond =0.0
+		err_msg = ""
+		recovered_diamond = 0.0
 		for row in self.recovered_diamond:
-			recovered_diamond = recovered_diamond+ (row.get("weight") or 0)
-			if  self.mop_balance_table_items.get("qty") and (row.get("weight") or 0) > self.mop_balance_table_items.get("qty").get(row.get("item")):
-				err_msg += f"<br> Items {row.get("item")} weight {row.get("weight")} Can not be greater MOP's item weight { self.mop_balance_table_items.get("qty")[row.get("item")]} <br>"
+			recovered_diamond += (row.get("weight") or 0)
+			if self.mop_balance_table_items.get("qty") and (row.get("weight") or 0) > self.mop_balance_table_items.get("qty").get(row.get("item")):
+				err_msg += (
+					f"<br> Items {row.get('item')} weight {row.get('weight')} "
+					f"cannot be greater than MOP's item weight "
+					f"{self.mop_balance_table_items.get('qty').get(row.get('item'))} <br>"
+				)
 
 		if recovered_diamond > (self.get("diamond_wt") or 0):
-			err_msg += f"<br> Recovered Diamond weight : {recovered_diamond} can not be greater than  MOP's diamond weight : {self.diamond_wt} <br>"
+			err_msg += (
+				f"<br> Recovered Diamond weight: {recovered_diamond} cannot be greater than "
+				f"MOP's diamond weight: {self.diamond_wt} <br>"
+			)
+
+		# --- Recovered Gemstone Validation ---
 		recovered_diamond = 0.0
 		for row in self.recovered_gemstone:
-			recovered_diamond = recovered_diamond +(row.get("weight") or 0)
-			if  self.mop_balance_table_items.get("qty") and (row.get("weight") or 0) > self.mop_balance_table_items.get("qty").get(row.get("item")):
-				err_msg += f"<br> Items {row.get("item")} weight {row.get("weight")} Can not be greater MOP' item weight { self.mop_balance_table_items.get("qty")[row.get("item")]} <br>"
+			recovered_diamond += (row.get("weight") or 0)
+			if self.mop_balance_table_items.get("qty") and (row.get("weight") or 0) > self.mop_balance_table_items.get("qty").get(row.get("item")):
+				err_msg += (
+					f"<br> Items {row.get('item')} weight {row.get('weight')} "
+					f"cannot be greater than MOP's item weight "
+					f"{self.mop_balance_table_items.get('qty').get(row.get('item'))} <br>"
+				)
+
 		if recovered_diamond > (self.get("gemstone_wt") or 0):
-			err_msg += f"<br> Recovered Gemstone weight : {recovered_diamond} can not be greater than  MOP's gemstone weight : {self.gemstone_wt} <br>"
+			err_msg += (
+				f"<br> Recovered Gemstone weight: {recovered_diamond} cannot be greater than "
+				f"MOP's gemstone weight: {self.gemstone_wt} <br>"
+			)
+
+		# --- Refined Gold Validation ---
 		recovered_diamond = 0.0
 		for row in self.refined_gold:
 			print(row.as_dict())
-			recovered_diamond = recovered_diamond + (row.get("after_burn_weight") or 0)
+			recovered_diamond += (row.get("after_burn_weight") or 0)
+
 		if recovered_diamond > (self.get("metal_wt") or 0):
-			err_msg += f"<br> Recovered Metal weight : {recovered_diamond} can not be greater than  MOP's Metal weight : {self.metal_wt}<br>"
+			err_msg += (
+				f"<br> Recovered Metal weight: {recovered_diamond} cannot be greater than "
+				f"MOP's Metal weight: {self.metal_wt}<br>"
+			)
+
 		if err_msg:
 			frappe.throw(err_msg)
 
