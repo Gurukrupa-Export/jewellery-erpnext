@@ -505,7 +505,7 @@
    "dt": "Stock Entry",
    "fieldname": "custom_scan_material_request",
    "fieldtype": "Data",
-   "insert_after": "get_fifo_batches",
+   "insert_after": "manufacturer",
    "label": "Scan Manufacturing Work Order",
    "module": "Jewellery Erpnext",
    "options": "Barcode"
