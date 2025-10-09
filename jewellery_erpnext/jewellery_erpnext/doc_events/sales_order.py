@@ -960,10 +960,16 @@ def validate_quotation_item(self):
 
 def validate_sales_type(self):
 	for r in self.items:
-		if r.prevdoc_docname:
-			quotation_sales_type = frappe.db.get_value('Quotation', r.prevdoc_docname, 'custom_sales_type')
-			if quotation_sales_type:  
-				self.sales_type = quotation_sales_type
+	# 	if r.prevdoc_docname:
+	# 		quotation_sales_type = frappe.db.get_value('Quotation', r.prevdoc_docname, 'custom_sales_type')
+	# 		if quotation_sales_type:  
+	# 			self.sales_type = quotation_sales_type
+	# 	if self.company == "Gurukrupa Export Private Limited":
+	# 		# Throw only if BOTH are missing
+		if not r.prevdoc_docname and not r.custom_customer_approval:
+			frappe.msgprint(
+				_("Row {0} : Sales Order can be created only from Quotation or Customer Approval for this Company").format(r.idx)
+			)
 	if not self.sales_type :
 		frappe.throw("Sales Type is mandatory.")
 	# if not self.gold_rate_with_gst and self.company != 'Sadguru Diamond':
