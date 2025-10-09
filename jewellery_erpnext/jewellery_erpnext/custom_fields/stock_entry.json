@@ -97,7 +97,7 @@
    "dt": "Stock Entry",
    "fieldname": "branch",
    "fieldtype": "Link",
-   "insert_after": "column_break_prtgq",
+   "insert_after": "custom_scan_material_request",
    "label": "Branch",
    "module": "Jewellery Erpnext",
    "options": "Branch"
