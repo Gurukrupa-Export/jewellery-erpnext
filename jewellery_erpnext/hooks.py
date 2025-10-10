@@ -33,6 +33,12 @@ doctype_js = {
 	"Purchase Receipt": "public/js/doctype_js/purchase_receipt.js",
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
 	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
+	"Payment Entry": "public/js/doctype_js/payment_entry.js"
+}
+
+doctype_list_js = {
+		"Payment Entry": "public/js/doctype_list/payment_entry_list.js",
+
 }
 
 # from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
