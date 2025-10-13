@@ -26,7 +26,10 @@ def before_validate(self, method):
 	for row in self.items:
 		if row.serial_no:
 			row.bom = frappe.db.get_value("BOM", {"tag_no": row.serial_no}, "name")
-	
+	for r in self.items:
+		if not r.delivery_note:
+			frappe.throw("Invoice can be created only from delivery note")		
+		
 	update_income_account(self)
 	payment_terms_data = update_si_data(self)
 	update_payment_terms(self, payment_terms_data)

@@ -1565,6 +1565,20 @@ def validate_invoice_item(self):
 def validate_gold_rate_with_gst(self):
 
 	for i in self.items:
+		missing_fields = []
+			
+		if not i.order_form_id:
+			missing_fields.append("Order or Repair Order")
+		if not i.po_no:
+			missing_fields.append("Purchase Order")
+		
+		if missing_fields:
+			frappe.throw(
+				_("Row {0} : Quotation can be created from {1} for this Company").format(
+					i.idx, " or ".join(missing_fields)
+				)
+			)
+			
 		if i.order_form_id:
 			order_qty = frappe.db.get_value("Order",i.order_form_id,"qty")
 			if order_qty is not None:
