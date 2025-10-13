@@ -7,7 +7,7 @@ frappe.ui.form.on("Payment Entry", {
 		if ((frm.doc.docstatus == 1) && (frm.doc.unallocated_amount > 0)){
 
 			frm.add_custom_button("Reconcile Inter Branch", async () => {
-				this.data = await frm.events.get_unreconciled_sales_invoices(frm, frm.doc.company, frm.doc.party);
+				this.data = await frm.events.get_unreconciled_invoices(frm, frm.doc.company, frm.doc.party_type, frm.doc.party);
 
 				var d = new frappe.ui.Dialog({
 					title: __("Reconcile Inter Branch Payment"),
@@ -24,9 +24,9 @@ frappe.ui.form.on("Payment Entry", {
 							fieldtype: "Select",
 							fieldname: "reconcile_type",
 							label: __("Reconcile Type"),
-							default: "Against Sales Invoices",
+							default: "Against Invoices",
 							options: [
-								"Against Sales Invoices",
+								"Against Invoices",
 								"Customer Advance",
 								"Supplier Payment"
 							],
@@ -131,21 +131,12 @@ frappe.ui.form.on("Payment Entry", {
 							},
 							fields: [
 								{
-									"label": __("Sales Invoice"),
-									"fieldtype": "Link",
-									"fieldname": "sales_invoice",
-									"options": "Sales Invoice",
+									"label": __("Invoice Name"),
+									"fieldtype": "Data",
+									"fieldname": "invoice_name",
 									"in_list_view": 1,
 									"reqd": 1,
 									"read_only": 1,
-									 get_query: function () {
-										return {
-											filters: {
-												company: frm.doc.company,
-												customer: frm.doc.party,
-											},
-										};
-									}
 								},
 								{
 									"label": __("Posting Date"),
@@ -178,14 +169,14 @@ frappe.ui.form.on("Payment Entry", {
 									"fieldname": "allocated_amount",
 									"default": 0,
 									"onchange": function () {
-										let si_list = d.fields_dict.invoices.grid.get_selected_children();
+										let inv_list = d.fields_dict.invoices.grid.get_selected_children();
 										let total_allocated_amount = 0;
 
-										if (!si_list.length) {
-											si_list = d.get_values()["invoices"];
+										if (!inv_list.length) {
+											inv_list = d.get_values()["invoices"];
 										}
 
-										si_list.forEach((invoice) => {
+										inv_list.forEach((invoice) => {
 											total_allocated_amount += invoice.allocated_amount || 0;
 										})
 
@@ -242,10 +233,11 @@ frappe.ui.form.on("Payment Entry", {
 									pe_branch: frm.doc.branch,
 									paid_amount: frm.doc.paid_amount,
 									paid_from: frm.doc.paid_from,
+									paid_to: frm.doc.paid_to,
 									party_type: frm.doc.party_type,
 									party: frm.doc.party,
-									si_name: invoice.sales_invoice,
-									si_branch: invoice.branch,
+									invoice_name: invoice.invoice_name,
+									branch: invoice.branch,
 									allocated_amount: invoice.allocated_amount,
 									outstanding_amount: invoice.outstanding_amount,
 
@@ -289,19 +281,20 @@ frappe.ui.form.on("Payment Entry", {
 			}).addClass("btn-primary")
 		}
 	},
-	get_unreconciled_sales_invoices: async (frm, company, customer) => {
+	get_unreconciled_invoices: async (frm, company, party_type, party) => {
 		let si_list = []
 		await frappe.call({
-			method: "jewellery_erpnext.interbranch.get_unreconciled_sales_invoices",
+			method: "jewellery_erpnext.interbranch.get_unreconciled_invoices",
 			args: {
 				company: company,
-				customer: customer,
+				party_type: party_type,
+				party: party
 			},
 			callback: (r) => {
 				if (r.message) {
 					si_list = r.message.map(si => {
 						return {
-							"sales_invoice": si.name,
+							"invoice_name": si.name,
 							"posting_date": si.posting_date,
 							"branch": si.branch,
 							"outstanding_amount": si.outstanding_amount,

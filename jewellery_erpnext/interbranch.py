@@ -11,7 +11,7 @@ def create_inter_branch_journal_entries(args, reconcile_type):
 	"""
 	pe_branch_account = get_branch_account(args.pe_branch)
 	args.pe_branch_account = pe_branch_account
-	receivable_branch = args.si_branch
+	receivable_branch = args.branch
 
 	if reconcile_type == "Supplier Payment":
 		receivable_branch = args.supplier_branch
@@ -27,7 +27,7 @@ def create_inter_branch_journal_entries(args, reconcile_type):
 	args.pe_jv_name = None
 	args.si_jv_name = None
 
-	jv_accounts_details = construct_jv_args(args,reconcile_type)
+	jv_accounts_details = construct_jv_args(args, reconcile_type)
 
 	for branch, accounts in jv_accounts_details.items():
 		jv = frappe.new_doc("Journal Entry")
@@ -139,7 +139,8 @@ def construct_jv_args(args, reconcile_type):
 				"branch": args.receivable_branch
 			}
 		]
-	else:
+
+	elif reconcile_type == "Against Invoices" and args.party_type == "Customer":
 		jv_pe_branch = [
 			{
 				"account": args.paid_from,
@@ -161,8 +162,8 @@ def construct_jv_args(args, reconcile_type):
 			"party_type": args.party_type,
 			"party": args.party,
 			"reference_type": "Sales Invoice",
-			"reference_name": args.si_name,
-			"branch": args.si_branch,
+			"reference_name": args.invoice_name,
+			"branch": args.branch,
 
 		}
 
@@ -173,6 +174,42 @@ def construct_jv_args(args, reconcile_type):
 				"branch": args.receivable_branch
 			},
 			receivabe_account_details
+		]
+
+	else:
+		jv_pe_branch = [
+			{
+				"account": args.receivable_branch_acc,
+				"debit_in_account_currency": args.allocated_amount,
+				"branch": args.pe_branch
+			},
+			{
+				"account": args.paid_to,
+				"party_type": args.party_type,
+				"party": args.party,
+				"credit_in_account_currency": args.allocated_amount,
+				"branch": args.pe_branch
+			}
+		]
+
+		receivable_account_details = {
+			"account": args.pe_branch_account,
+			"credit_in_account_currency": args.allocated_amount,
+			"branch": args.branch,
+
+		}
+
+		jv_receivable_branch = [
+			{
+				"account": args.paid_to,
+				"party_type": args.party_type,
+				"party": args.party,
+				"reference_type": "Purchase Invoice",
+				"reference_name": args.invoice_name,
+				"debit_in_account_currency": args.allocated_amount,
+				"branch": args.receivable_branch
+			},
+			receivable_account_details
 		]
 
 	return {
@@ -190,7 +227,7 @@ def reconcile_pe_with_inter_branch_jv(args=None, reconcile_type=None):
 			"company": args.company,
 			"party_type": args.party_type,
 			"party": args.party,
-			"receivable_payable_account": args.paid_from,
+			"receivable_payable_account": args.paid_from if args.part_type == "Customer" else args.paid_to,
 			"invoice_name": args.pe_jv_name,
 			"payment_name": args.pe_name
 		})
@@ -233,8 +270,8 @@ def reconcile_pe_with_inter_branch_jv(args=None, reconcile_type=None):
 
 
 def get_branch_account(branch_name):
-	if branch_account := frappe.db.get_value("Branch", branch_name, "branch_account"):
-		return branch_account
+	# if branch_account := frappe.db.get_value("Branch", branch_name, "branch_account"):
+	# 	return branch_account
 	if branch_account := frappe.db.exists("Account", {"account_name": branch_name}):
 		return branch_account
 
@@ -262,25 +299,35 @@ def reconcile_inter_branch_payment(data, reconcile_type):
 
 
 @frappe.whitelist()
-def get_unreconciled_sales_invoices(company, customer):
+def get_unreconciled_invoices(company, party_type, party):
 	"""
 	Get unreconciled Sales Invoices for given company and customer.
 	"""
-	SI = frappe.qb.DocType("Sales Invoice")
+	doctype = {
+		"Customer": "Sales Invoice",
+		"Supplier": "Purchase Invoice"
+	}.get(party_type)
+	print("party type", party_type)
+	print("doctypeeee ----", doctype)
+	d = frappe.qb.DocType(doctype)
 
 	query = (
-		frappe.qb.from_(SI)
-		.select(SI.name, SI.posting_date, SI.outstanding_amount, SI.grand_total, SI.branch)
+		frappe.qb.from_(d)
+		.select(d.name, d.posting_date, d.outstanding_amount, d.grand_total, d.branch)
 		.where(
-			(SI.docstatus == 1) &
-			(SI.company == company) &
-			(SI.customer == customer) &
-			(SI.outstanding_amount > 0)
+			(d.docstatus == 1) &
+			(d.company == company) &
+			(d.outstanding_amount > 0)
 		)
-		.orderby(SI.posting_date, order=Order.desc)
+		.orderby(d.posting_date, order=Order.desc)
 	)
 
-	data = query.run(as_dict=True)
+	if party_type == "Customer":
+		query.where(d.customer == party)
+	else:
+		query.where(d.supplier == party)
+
+	data = query.run(debug=True,as_dict=True)
 
 	return data
 
@@ -288,7 +335,7 @@ def validate_allocated_amount(jv_data, reconcile_type):
 	"""
 	Validate that allocated amount.
 	"""
-	msg_value = jv_data.si_name if reconcile_type not in ["Customer Advance", "Supplier Payment"] else jv_data.party
+	msg_value = jv_data.invoice_name if reconcile_type not in ["Customer Advance", "Supplier Payment"] else jv_data.party
 	if not jv_data.allocated_amount:
 		frappe.throw(f"Allocated amount must be greater than zero for <b>{msg_value}<b>")
 
@@ -311,10 +358,10 @@ def validate_inter_branch(jv_data, reconcile_type):
 	elif reconcile_type == "Supplier Payment":
 		receivable_branch = jv_data.supplier_branch
 	else:
-		receivable_branch = jv_data.si_branch
+		receivable_branch = jv_data.branch
 
 	if jv_data.pe_branch == receivable_branch:
-		receivable_branch_label = "Sales Invoice" if reconcile_type == "Against Sales Invoices" else reconcile_type.split()[0]
+		receivable_branch_label = "Invoice" if reconcile_type == "Against Invoices" else reconcile_type.split()[0]
 		frappe.throw(f"{receivable_branch_label} branch and Payment Entry branch are same.")
 
 
