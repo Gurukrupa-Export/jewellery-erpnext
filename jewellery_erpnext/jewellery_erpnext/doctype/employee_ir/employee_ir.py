@@ -525,6 +525,8 @@ class EmployeeIR(Document):
 			pmo_data = frappe._dict()
 
 			for row in row_to_append:
+				if flt(row.get("qty"),3) == 0:
+					continue
 				se_doc.append("items", row)
 				if isinstance(row, dict):
 					row = frappe._dict(row)
@@ -569,8 +571,9 @@ class EmployeeIR(Document):
 
 			se_doc.employee_ir = self.name
 			se_doc.flags.ignore_permissions = True
-			se_doc.save()
-			se_doc.submit()
+			if se_doc.get("items"):
+				se_doc.save()
+				se_doc.submit()
 			if new_operation_list:
 				for operation in new_operation_list:
 					update_mop_balance(operation.name)
