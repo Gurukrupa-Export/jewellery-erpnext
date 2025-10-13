@@ -205,7 +205,8 @@
   {
    "dt": "Stock Entry Detail",
    "fieldname": "manufacturing_operation",
-   "fieldtype": "Small Text",
+   "fieldtype": "Link",
+   "options": "Manufacturing Operation",
    "insert_after": "subcontractor",
    "label": "Manufacturing Operation",
    "module": "Jewellery Erpnext"
@@ -321,7 +322,8 @@
   {
    "dt": "Stock Entry Detail",
    "fieldname": "custom_manufacturing_work_order",
-   "fieldtype": "Small Text",
+   "fieldtype": "Link",
+   "options": "Manufacturing Work Order",
    "insert_after": "stock_entry",
    "label": "Manufacturing Work Order",
    "module": "Jewellery Erpnext"
@@ -329,7 +331,8 @@
   {
    "dt": "Stock Entry Detail",
    "fieldname": "custom_parent_manufacturing_order",
-   "fieldtype": "Small Text",
+   "fieldtype": "Link",
+   "options": "Parent Manufacturing Order",
    "insert_after": "custom_manufacturing_work_order",
    "label": "Parent Manufacturing Order",
    "module": "Jewellery Erpnext"

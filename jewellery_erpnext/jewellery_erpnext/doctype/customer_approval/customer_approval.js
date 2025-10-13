@@ -104,6 +104,7 @@ frappe.ui.form.on("Customer Approval", {
 									child.amount = item.amount;
 									child.uom = item.uom;
 									child.serial_no = item.serial_no;
+									child.bom = item.bom_number;
 									child.delivery_date = item.delivery_date;
 									child.custom_customer_approval = frm.doc.name;
 								});
