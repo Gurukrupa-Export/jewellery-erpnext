@@ -117,6 +117,7 @@ class CustomBatchNoValuation(BatchNoValuation):
 			setattr(self, key, value)
 
 		self.batch_nos = self.get_batch_nos()
+		self.batch_valuation_ledger = getattr(frappe.local, "batch_valuation_ledger", None)
 		self.prepare_batches()
 		self.calculate_avg_rate()
 		self.calculate_valuation_rate()
@@ -136,12 +137,11 @@ class CustomBatchNoValuation(BatchNoValuation):
 			for ledger in entries:
 				self.stock_value_differece[ledger.batch_no] += flt(ledger.incoming_rate)
 				self.available_qty[ledger.batch_no] += flt(ledger.qty)
-
 			if has_sle_for_batch_nos(self.sle.item_code):
-				frappe.log_error(title =f"has_sle_for_batch_nos for {self.sle.item_code}",
+				frappe.log_error(title =f"has_sle_for_batch_nos for {self.sle.item_code}", 
                     message = f"""item : {self.sle.item_code},
                     has_sle_for_batch_nos : {has_sle_for_batch_nos(self.sle.item_code)} ,
-					value :
+					value : 
 						{frappe.db.get_all(
 						"Stock Ledger Entry",
 						fields=["name"],
@@ -154,6 +154,78 @@ class CustomBatchNoValuation(BatchNoValuation):
 			self.calculate_avg_rate_for_non_batchwise_valuation()
 			self.set_stock_value_difference()
 
+	def get_batch_no_ledgers(self):
+		if not self.batchwise_valuation_batches:
+			return []
+
+		result = []
+
+		# Use prefetched Batch Valuation Ledger if available
+		if self.batch_valuation_ledger:
+			for batch_no in self.batchwise_valuation_batches:
+				ledger_data = self.batch_valuation_ledger.get_batch_data(self.warehouse, self.item_code, batch_no)
+				if ledger_data:
+					result.append(frappe._dict({
+						"batch_no": batch_no,
+						"incoming_rate": ledger_data["incoming_rate"],
+						"qty": ledger_data["qty"]
+					}))
+				else:
+					# Fallback to original logic if cache misses
+					return self.old_get_batch_no_ledgers()
+
+			return result
+
+		# Fallback if no BVL is initialized
+		return self.old_get_batch_no_ledgers()
+
+
+	def old_get_batch_no_ledgers(self):
+		# Fallback QB query
+		parent = frappe.qb.DocType("Serial and Batch Bundle")
+		child = frappe.qb.DocType("Serial and Batch Entry")
+
+		timestamp_condition = None  # Use None for consistency
+		if self.sle.posting_date:
+			if self.sle.posting_time is None:
+				self.sle.posting_time = nowtime()
+			timestamp_condition = CombineDatetime(parent.posting_date, parent.posting_time) < CombineDatetime(
+				self.sle.posting_date, self.sle.posting_time
+			)
+			if self.sle.creation:
+				timestamp_condition |= (
+					(CombineDatetime(parent.posting_date, parent.posting_time) == CombineDatetime(self.sle.posting_date, self.sle.posting_time))
+					& (parent.creation < self.sle.creation)
+				)
+
+		query = (
+			frappe.qb.from_(parent)
+			.inner_join(child)
+			.on(parent.name == child.parent)
+			.select(
+				child.batch_no,
+				Sum(child.stock_value_difference).as_("incoming_rate"),
+				Sum(child.qty).as_("qty"),
+			)
+			.where(
+				(child.batch_no.isin(self.batchwise_valuation_batches))
+				& (parent.warehouse == self.sle.warehouse)
+				& (parent.item_code == self.sle.item_code)
+				& (parent.docstatus == 1)
+				& (parent.is_cancelled == 0)
+				& (parent.type_of_transaction.isin(["Inward", "Outward"]))
+				& (parent.voucher_type != "Pick List")
+				& (parent.voucher_no != self.sle.voucher_no)  # Always exclude current voucher
+			)
+			.groupby(child.batch_no)
+		)
+
+		if self.sle.voucher_detail_no:
+			query = query.where(parent.voucher_detail_no != self.sle.voucher_detail_no)
+		if timestamp_condition:
+			query = query.where(timestamp_condition)
+
+		return query.run(as_dict=True)
 
 @frappe.request_cache
 def has_sle_for_batch_nos(item_code):

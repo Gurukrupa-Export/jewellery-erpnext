@@ -51,9 +51,6 @@ def update_parent_batch_id(self):
 class CustomSerialBatchBundle(SerialBatchBundle):
 	def make_serial_batch_no_bundle(self):
 		self.validate_item()
-		if self.sle.actual_qty > 0 and self.is_material_transfer():
-			self.make_serial_batch_no_bundle_for_material_transfer()
-			return
 
 		sn_doc = CustomSerialBatchCreation(
 			{
@@ -70,8 +67,6 @@ class CustomSerialBatchBundle(SerialBatchBundle):
 				"type_of_transaction": "Inward" if self.sle.actual_qty > 0 else "Outward",
 				"company": self.company,
 				"is_rejected": self.is_rejected_entry(),
-				"make_bundle_from_sle": 1,
-				"sle": self.sle,
 			}
 		).make_serial_and_batch_bundle()
 
