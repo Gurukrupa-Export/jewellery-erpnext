@@ -22,6 +22,7 @@
   "finding_transfer_entry",
   "section_break_fsrwq",
   "for_fg",
+  "for_cad_cam",
   "seq",
   "customer",
   "item_code",
@@ -634,6 +635,12 @@
    "fieldname": "jewelex_batch_no",
    "fieldtype": "Data",
    "label": "Jewelex Batch No"
+  },
+  {
+   "default": "0",
+   "fieldname": "for_cad_cam",
+   "fieldtype": "Check",
+   "label": "For Cad Cam"
   }
  ],
  "grid_page_length": 50,
