@@ -205,7 +205,7 @@
   {
    "dt": "Stock Entry Detail",
    "fieldname": "manufacturing_operation",
-   "fieldtype": "Link",
+   "fieldtype": "Small Text",
    "options": "Manufacturing Operation",
    "insert_after": "subcontractor",
    "label": "Manufacturing Operation",
@@ -322,7 +322,7 @@
   {
    "dt": "Stock Entry Detail",
    "fieldname": "custom_manufacturing_work_order",
-   "fieldtype": "Link",
+   "fieldtype": "Small Text",
    "options": "Manufacturing Work Order",
    "insert_after": "stock_entry",
    "label": "Manufacturing Work Order",
@@ -331,7 +331,7 @@
   {
    "dt": "Stock Entry Detail",
    "fieldname": "custom_parent_manufacturing_order",
-   "fieldtype": "Link",
+   "fieldtype": "Small Text",
    "options": "Parent Manufacturing Order",
    "insert_after": "custom_manufacturing_work_order",
    "label": "Parent Manufacturing Order",
