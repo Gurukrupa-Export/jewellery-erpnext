@@ -525,7 +525,6 @@ def before_submit(self, method):
 
 
 def onsubmit(self, method):
-	validate_items(self)
 	update_manufacturing_operation(self)
 	update_main_slip(self)
 	if self.stock_entry_type == "Customer Goods Transfer" and self.customer_voucher_type == 'Customer Sample Goods':
@@ -670,14 +669,6 @@ def update_main_slip(doc, is_cancelled=False):
 	# 		"pending_metal"
 	# 	] = "(issue_metal + operation_issue) - (receive_metal + operation_receive)"
 	# 	update_existing("Main Slip", main_slip, _values)
-
-
-def validate_items(self):
-	if self.stock_entry_type != "Broken / Loss":
-		return
-	for i in self.items:
-		if not frappe.db.get_value("BOM Item", {"parent": self.bom_no, "item_code": i.get("item_code")}):
-			return frappe.throw(f"Item {i.get('item_code')} Not Present In BOM {self.bom_no}")
 
 
 def allow_zero_valuation(self):

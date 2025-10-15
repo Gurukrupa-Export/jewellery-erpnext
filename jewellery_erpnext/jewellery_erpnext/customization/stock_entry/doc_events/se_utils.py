@@ -21,10 +21,23 @@ from jewellery_erpnext.utils import get_item_from_attribute
 from frappe.query_builder.functions import CombineDatetime, Sum
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 
+
+from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.cms_utils import (
+	create_customer_main_slip,
+)
+
 def validate_inventory_dimention(self):
 	pmo_customer_data = frappe._dict()
 	manufacturer_data = frappe._dict()
 	for row in self.items:
+		if self.stock_entry_type == "Broken / Loss":
+			if not frappe.db.get_value("BOM Item", {"parent": self.bom_no, "item_code": row.get("item_code")}):
+				return frappe.throw(f"Item {row.get('item_code')} Not Present In BOM {self.bom_no}")
+
+		if self.stock_entry_type == "Material Transfer":
+
+			create_customer_main_slip(row.item_code, row.t_warehouse, row.batch_no,self.company)
+
 		pmo_list = row.custom_parent_manufacturing_order or self.manufacturing_order
 		if not pmo_list:
 			continue
