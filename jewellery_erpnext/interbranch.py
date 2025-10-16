@@ -307,27 +307,21 @@ def get_unreconciled_invoices(company, party_type, party):
 		"Customer": "Sales Invoice",
 		"Supplier": "Purchase Invoice"
 	}.get(party_type)
-	print("party type", party_type)
-	print("doctypeeee ----", doctype)
-	d = frappe.qb.DocType(doctype)
 
+	d = frappe.qb.DocType(doctype)
 	query = (
 		frappe.qb.from_(d)
 		.select(d.name, d.posting_date, d.outstanding_amount, d.grand_total, d.branch)
 		.where(
 			(d.docstatus == 1) &
 			(d.company == company) &
-			(d.outstanding_amount > 0)
+			(d.outstanding_amount > 0) &
+			(d[party_type.lower()] == party)
 		)
 		.orderby(d.posting_date, order=Order.desc)
 	)
 
-	if party_type == "Customer":
-		query.where(d.customer == party)
-	else:
-		query.where(d.supplier == party)
-
-	data = query.run(debug=True,as_dict=True)
+	data = query.run(debug=True, as_dict=True)
 
 	return data
 
