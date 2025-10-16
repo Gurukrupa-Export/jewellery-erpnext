@@ -8,6 +8,7 @@ frappe.ui.form.on("Payment Entry", {
 
 			frm.add_custom_button("Reconcile Inter Branch", async () => {
 				this.data = await frm.events.get_unreconciled_invoices(frm, frm.doc.company, frm.doc.party_type, frm.doc.party);
+				let invoice_doctype = frm.doc.party_type == "Customer" ? "Sales Invoice" : "Purchase Invoice"
 
 				var d = new frappe.ui.Dialog({
 					title: __("Reconcile Inter Branch Payment"),
@@ -132,8 +133,9 @@ frappe.ui.form.on("Payment Entry", {
 							fields: [
 								{
 									"label": __("Invoice Name"),
-									"fieldtype": "Data",
+									"fieldtype": "Link",
 									"fieldname": "invoice_name",
+									"options": invoice_doctype,
 									"in_list_view": 1,
 									"reqd": 1,
 									"read_only": 1,
