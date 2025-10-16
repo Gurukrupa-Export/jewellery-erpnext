@@ -19,6 +19,16 @@ class SketchOrderForm(Document):
 	# 	delete_auto_created_sketch_order(self)
 	# 	frappe.db.set_value("Sketch Order Form", self.name, "workflow_state", "Cancelled")
 
+
+	def on_cancel(self):
+		sketch_orders = frappe.db.get_list("Sketch Order", filters={"sketch_order_form": self.name}, fields="name")
+		if sketch_orders:
+			for order in sketch_orders:
+				frappe.db.set_value("Sketch Order", order["name"], "workflow_state", "Cancelled")
+		
+		frappe.db.set_value("Sketch Order Form", self.name, "workflow_state", "Cancelled")
+		self.reload()
+		
 	def validate(self):
 		self.validate_category_subcaegory()
 
