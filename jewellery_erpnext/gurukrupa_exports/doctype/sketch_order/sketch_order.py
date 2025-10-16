@@ -67,6 +67,16 @@ class SketchOrder(Document):
 	def on_submit(self):
 		self.make_items()
 
+	def on_cancel(self):
+		sketch_orders = frappe.db.get_list("Sketch Order", filters={"sketch_order_form": self.name}, fields="name")
+		if sketch_orders:
+			for order in sketch_orders:
+				frappe.db.set_value("Sketch Order", order["name"], "workflow_state", "Cancelled")
+		
+		frappe.db.set_value("Sketch Order Form", self.name, "workflow_state", "Cancelled")
+		self.reload()
+
+		
 	def make_items(self):
 		# if self.workflow_state == "Items Updated":
 		if self.order_type != 'Purchase':
