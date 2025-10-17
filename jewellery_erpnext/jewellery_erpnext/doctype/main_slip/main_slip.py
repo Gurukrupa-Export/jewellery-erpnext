@@ -316,6 +316,7 @@ class MainSlip(Document):
 					",".join(not_finished_mop)
 				)
 			)
+		frappe.db.MAX_WRITES_PER_TRANSACTION *= 16
 		for row in self.loss_details:
 			create_loss_stock_entries(
 				self, row.item_code, row.variant_of, row.received_qty, (row.msl_qty - row.received_qty)
@@ -776,9 +777,10 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 	)
 
 	if loss_item:
-		loss_item.has_variants = 0
-		loss_item.is_stock_item = 1
-		loss_item.save()
+		#loss_item.has_variants = 0
+		#loss_item.is_stock_item = 1
+		#loss_item.save()
+		frappe.db.set_value("Item",loss_item.name,{"has_variants":0,"is_stock_item":1})
 		return loss_item.name
 	else:
 		return create_loss_item(variant_name, item_attr_dict)

@@ -10,6 +10,7 @@
  "field_order": [
   "company",
   "service_type",
+  "manufacturer",
   "column_break_afv8c",
   "date",
   "department",
@@ -221,6 +222,12 @@
    "fieldtype": "Data",
    "label": "Scan",
    "options": "Barcode"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer"
   }
  ],
  "index_web_pages_for_search": 1,
