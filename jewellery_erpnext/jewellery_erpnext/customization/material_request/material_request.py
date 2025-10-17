@@ -234,7 +234,6 @@ def update_department(docname, new_department):
 
 @frappe.whitelist()
 def make_department_mop_stock_entry(self, **kwargs):
-	frappe.throw("here")
 	try:
 		if isinstance(self, str):
 			self = json.loads(self)
