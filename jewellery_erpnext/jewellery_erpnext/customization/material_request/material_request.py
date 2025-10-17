@@ -1,73 +1,8 @@
 import json
-
 import frappe
 from frappe import _
 from frappe.model.mapper import get_mapped_doc
 
-
-# @frappe.whitelist()
-# def make_mop_stock_entry(self, **kwargs):
-# 	try:
-# 		if isinstance(self, str):
-# 			self = json.loads(self)
-# 		if not self.get("custom_reserve_se"):
-# 			return
-
-# 		se_doc = frappe.get_doc("Stock Entry", self.get("custom_reserve_se"))
-# 		mop_data = frappe.db.get_value(
-# 			"Manufacturing Operation",
-# 			kwargs.get("mop"),
-# 			["department", "status", "employee", "department_ir_status"],
-# 			as_dict=1,
-# 		)
-# 		if mop_data.get("department_ir_status") == "In-Transit":
-# 			frappe.throw(
-# 				_("{0} Manufacturing Operation not allowd becuase it is in-transit status.").format(
-# 					kwargs.get("mop")
-# 				)
-# 			)
-# 		new_se_doc = frappe.copy_doc(se_doc)
-
-# 		new_se_doc.stock_entry_type = "Material Transfer (WORK ORDER)"
-# 		new_se_doc.manufacturing_operation = kwargs.get("mop")
-# 		new_se_doc.auto_created = 1
-# 		new_se_doc.to_department = mop_data.get("department")
-# 		new_se_doc.add_to_transit = 0
-# 		warehouse_data = frappe._dict()
-# 		t_warehouse = frappe.db.get_value(
-# 			"Warehouse",
-# 			{"department": mop_data.get("department"), "warehouse_type": "Manufacturing"},
-# 			"name",
-# 		)
-# 		if mop_data.get("status") == "WIP" and mop_data.get("employee"):
-# 			t_warehouse = frappe.db.get_value(
-# 				"Warehouse", {"employee": mop_data.get("employee"), "warehouse_type": "Manufacturing"}, "name"
-# 			)
-# 		for row in new_se_doc.items:
-# 			if not warehouse_data.get(row.material_request_item):
-# 				warehouse_data[row.material_request_item] = frappe.db.get_value(
-# 					"Material Request Item", row.material_request_item, "warehouse"
-# 				)
-# 			s_warehouse = warehouse_data.get(row.material_request_item)
-
-# 			row.s_warehouse = s_warehouse
-# 			row.t_warehouse = t_warehouse
-# 			row.to_department = mop_data.get("department")
-# 			row.manufacturing_operation = kwargs.get("mop")
-# 			row.serial_and_batch_bundle = None
-
-# 		new_se_doc.save()
-# 		new_se_doc.submit()
-# 		frappe.msgprint(_("Stock Entry Created"))
-# 		self.db_set("custom_mop_se", new_se_doc.name)
-# 		# frappe.db.set_value("Material Request", self.get("name"), "custom_mop_se", new_se_doc.name)
-
-# 		return new_se_doc.name
-
-# 	except Exception as e:
-# 		frappe.log_error("data Error", e)
-# 		frappe.throw(str(e))
-# 		return e
 
 @frappe.whitelist()
 def make_mop_stock_entry(self, **kwargs):
@@ -113,7 +48,22 @@ def make_mop_stock_entry(self, **kwargs):
 					"Material Request Item", row.material_request_item, "warehouse"
 				)
 			s_warehouse = warehouse_data.get(row.material_request_item)
-
+			# frappe.throw(f"{s_warehouse}")
+			# s_warehouse = frappe.db.sql(f"""WITH last_se AS (
+			# 	SELECT sei.parent AS stock_entry_name
+			# 	FROM `tabStock Entry Detail` sei
+			# 	WHERE sei.material_request = '{self.name}'
+			# 	ORDER BY sei.creation DESC
+			# 	LIMIT 1
+			# 	)
+			# 	SELECT sei.t_warehouse
+			# 	FROM `tabStock Entry Detail` sei
+			# 	JOIN last_se ON sei.parent = last_se.stock_entry_name
+			# 	GROUP BY sei.t_warehouse
+			# 	HAVING COUNT(DISTINCT sei.t_warehouse) = 1
+			# 	""",as_dict=1)
+			# if s_warehouse:
+			# 	s_warehouse = s_warehouse[0]['t_warehouse']
 			row.s_warehouse = s_warehouse
 			row.t_warehouse = t_warehouse
 			row.to_department = mop_data.get("department")
@@ -123,7 +73,7 @@ def make_mop_stock_entry(self, **kwargs):
 		new_se_doc.save()
 		new_se_doc.submit()
 		frappe.msgprint(_("Stock Entry Created"))
-		# self.db_set("custom_mop_se", new_se_doc.name)
+		self.db_set("custom_mop_se", new_se_doc.name)
 		# frappe.db.set_value("Material Request", self.get("name"), "custom_mop_se", new_se_doc.name)
 
 		return new_se_doc.name
@@ -132,6 +82,7 @@ def make_mop_stock_entry(self, **kwargs):
 		frappe.log_error("data Error", e)
 		frappe.throw(str(e))
 		return e
+
 
 @frappe.whitelist()
 def make_department_stock_entry(self, **kwargs):
