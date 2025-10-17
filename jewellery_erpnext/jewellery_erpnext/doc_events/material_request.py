@@ -7,7 +7,7 @@ from frappe.utils import nowdate
 from frappe.utils.data import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request import (
-	make_mop_stock_entry,
+	make_mop_stock_entry,make_department_mop_stock_entry
 )
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.before_validate import (
 	update_pure_qty,
