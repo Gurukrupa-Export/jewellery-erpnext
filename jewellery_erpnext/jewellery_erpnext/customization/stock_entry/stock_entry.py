@@ -19,7 +19,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	set_gross_wt,
 	validate_inventory_dimention,
 	validate_warehouse,
-	get_incoming_rate
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
