@@ -6,7 +6,8 @@ def execute():
         "custom_parent_manufacturing_order",
         "manufacturing_operation",
     ]:
-        if frappe.db.exists("Custom Field", {"dt": "Stock Entry Detail", "fieldname": fieldname}):
+        if docname:= frappe.db.exists("Custom Field", {"dt": "Stock Entry Detail", "fieldtype":"Small Text", "fieldname": fieldname}):
             frappe.delete_doc(
-                "Custom Field", {"dt": "Stock Entry Detail", "fieldname": fieldname}, force=True
+                "Custom Field", docname, force=True
             )
+            print(f"Deleted Custom Field: {fieldname}")
