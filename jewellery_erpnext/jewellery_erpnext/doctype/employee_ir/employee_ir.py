@@ -1557,13 +1557,13 @@ def create_stock_entry(
 	rejected_qty = {}
 	rejected_pcs = {}
 	stock_entries_list = []
-	for row in stock_entries:
-		if row.se_name not in stock_entries_list:
-			stock_entries_list.append(row.se_name)
+	for d in stock_entries:
+		if d.se_name not in stock_entries_list:
+			stock_entries_list.append(d.se_name)
 		else:
 			continue
 		to_remove = []
-		existing_doc = frappe.get_doc("Stock Entry", row.se_name)
+		existing_doc = frappe.get_doc("Stock Entry", d.se_name)
 		for child in existing_doc.items:
 			child.name = None
 			child.doctype = "Stock Entry Detail"
@@ -2190,7 +2190,6 @@ def book_metal_loss(doc, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
 	if isinstance(doc, str):
 		doc = json.loads(doc)
 
-	print(type(doc), doc)
 	# To Check Tollarance which book a loss down side.
 	if allowed_loss_percentage:
 		cal = round(flt((100 - allowed_loss_percentage) / 100) * flt(gwt), 2)

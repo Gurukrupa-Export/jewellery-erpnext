@@ -313,7 +313,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 				return {
 					"item_code": e.item_code,
 					"qty": e.qty,
-					"pcs": e.pcs,
+					"pcs": flt(e.pcs),
+					"receive_pcs": 1,
 					"s_warehouse": e.s_warehouse,
 					"batch_no": e.batch_no,
 					"inventory_type": e.inventory_type,
@@ -334,113 +335,111 @@ frappe.ui.form.on("Manufacturing Operation", {
 						cannot_add_rows: 1,
 						cannot_delete_rows: 1,
 						data: this.data,
-							get_data: () => {
-								return this.data;
+						get_data: () => {
+							return this.data;
+						},
+						fields: [
+							{
+								"label": __("Item Code"),
+								"fieldtype": "Link",
+								"fieldname": "item_code",
+								"options": "Item",
+								"in_list_view": 1,
+								"read_only": 1,
 							},
-							fields: [
-								{
-									"label": __("Item Code"),
-									"fieldtype": "Link",
-									"fieldname": "item_code",
-									"options": "Item",
-									"in_list_view": 1,
-									"read_only": 1,
-								},
-								{
-									"label": __("Source Warehouse"),
-									"fieldtype": "Link",
-									"fieldname": "s_warehouse",
-									"in_list_view": 1,
-									"read_only": 1
-								},
-								{
-									"label": __("Qty"),
-									"fieldtype": "Float",
-									"fieldname": "qty",
-									"in_list_view": 1,
-									"read_only": 1,
-									"columns": 1,
-									"default": flt()
+							{
+								"label": __("Source Warehouse"),
+								"fieldtype": "Link",
+								"fieldname": "s_warehouse",
+								"in_list_view": 1,
+								"read_only": 1
+							},
+							{
+								"label": __("Qty"),
+								"fieldtype": "Float",
+								"fieldname": "qty",
+								"in_list_view": 1,
+								"read_only": 1,
+								"columns": 1,
 
-								},
-								{
-									"label": __("Pcs"),
-									"fieldtype": "Float",
-									"fieldname": "pcs",
-									"in_list_view": 1,
-									"read_only": 1,
-									"columns": 1,
-									"default": flt()
-								},
-								{
-									"label": __("Receive Quantity"),
-									"fieldtype": "Float",
-									"fieldname": "receive_qty",
-									"in_list_view": 1,
-									"reqd": 1,
-									"default": flt(),
-								},
-								{
-									"label": __("Receive Pcs"),
-									"fieldtype": "Float",
-									"fieldname": "receive_pcs",
-									"in_list_view": 1,
-									// "reqd": 1,
-									"default": flt()
-								},
-								{
-									"label": __("Batch No"),
-									"fieldtype": "Link",
-									"options": "Batch",
-									"fieldname": "batch_no",
-									"read_only": 1,
-								},
-								{
-									"label": __("Inventory Type"),
-									"fieldtype": "Link",
-									"options": "Inventory Type",
-									"fieldname": "inventory_type",
-									"read_only": 1,
-								},
-								{
-									"label": __("Customer"),
-									"fieldtype": "Link",
-									"options": "Customer",
-									"fieldname": "customer",
-									"read_only": 1,
-								},
-								{
-									"label": __("Department"),
-									"fieldtype": "Link",
-									"options": "Department",
-									"fieldname": "department",
-									"read_only": 1,
-								},
-																{
-									"label": __("To Department"),
-									"fieldtype": "Link",
-									"options": "Department",
-									"fieldname": "to_department",
-									"read_only": 1,
-								}
-							]
-						}
+							},
+							{
+								"label": __("Pcs"),
+								"fieldtype": "Float",
+								"fieldname": "pcs",
+								"in_list_view": 1,
+								"read_only": 1,
+								"columns": 1,
+							},
+							{
+								"label": __("Receive Quantity"),
+								"fieldtype": "Float",
+								"fieldname": "receive_qty",
+								"in_list_view": 1,
+								"reqd": 1,
+							},
+							{
+								"label": __("Receive Pcs"),
+								"fieldtype": "Float",
+								"fieldname": "receive_pcs",
+								"in_list_view": 1,
+								"reqd": 1,
+							},
+							{
+								"label": __("Batch No"),
+								"fieldtype": "Link",
+								"options": "Batch",
+								"fieldname": "batch_no",
+								"read_only": 1,
+							},
+							{
+								"label": __("Inventory Type"),
+								"fieldtype": "Link",
+								"options": "Inventory Type",
+								"fieldname": "inventory_type",
+								"read_only": 1,
+							},
+							{
+								"label": __("Customer"),
+								"fieldtype": "Link",
+								"options": "Customer",
+								"fieldname": "customer",
+								"read_only": 1,
+							},
+							{
+								"label": __("Department"),
+								"fieldtype": "Link",
+								"options": "Department",
+								"fieldname": "department",
+								"read_only": 1,
+							},
+															{
+								"label": __("To Department"),
+								"fieldtype": "Link",
+								"options": "Department",
+								"fieldname": "to_department",
+								"read_only": 1,
+							}
+						]
+					}
 				],
 				primary_action_label: __("Create Material Receive Entry"),
 				primary_action: (r) => {
 					let receive_items = []
+					let is_qty_and_pcs = false
 					r.receive_entries.forEach(e => {
+						is_qty_and_pcs = e.receive_qty && e.receive_pcs
 						if (e.receive_qty > e.qty) {
 							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Qty <b>{2}</b> should not be greater than Balance Qty <b>{3}</b>", [e.idx, e.item_code, e.receive_qty, e.qty]))
 						}
 						if (e.receive_pcs > e.pcs && e.pcs>0) {
 							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Pcs <b>{2}</b> should not be greater than Balance Pcs <b>{3}</b>", [e.idx, e.item_code, e.receive_pcs, e.pcs]))
 						}
-						// if ((e.receive_pcs == e.pcs && e.receive_qty != e.qty) || (e.receive_qty == e.qty && e.receive_pcs != e.pcs)) {
-						// 	frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Qty and Pcs should be same if receiving all qty or pcs", [e.idx, e.item_code]))
-						// }
+						if ((is_qty_and_pcs) && ((e.receive_pcs === e.pcs && e.receive_qty !== e.qty) || (e.receive_qty === e.qty && e.receive_pcs !== e.pcs))) {
+							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Qty and Pcs should be same if receiving all qty or pcs", [e.idx, e.item_code]))
+						}
 
-						if (e.receive_qty || e.receive_pcs) {
+						if (is_qty_and_pcs) {
 							receive_items.push({
 								idx: e.idx,
 								item_code: e.item_code,
