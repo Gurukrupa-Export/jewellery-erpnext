@@ -6,10 +6,11 @@ def execute():
     and avoid schema alteration errors.
     """
     # Count affected rows
-    count = frappe.db.count(
-        'Stock Entry Detail',
-        filters={"manufacturing_operation": ("length", ">", 140)}
-    )
+    count = frappe.db.sql("""
+        SELECT COUNT(*) as count FROM `tabStock Entry Detail`
+        WHERE CHAR_LENGTH(`manufacturing_operation`) > 140
+    """, as_dict=True)[0]["count"]
+
     print(f"Truncating {count} rows in 'manufacturing_operation' field...")
 
     # Truncate all rows > 191 chars
