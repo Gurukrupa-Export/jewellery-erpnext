@@ -2,5 +2,6 @@
 
 [post_model_sync]
 # jewellery_erpnext.patches.sed_copy_to_mop
+jewellery_erpnext.patches.truncate_manufacturing_operation_field
 jewellery_erpnext.patches.remove_se_custom_fields
 jewellery_erpnext.patches.create_custom_field
