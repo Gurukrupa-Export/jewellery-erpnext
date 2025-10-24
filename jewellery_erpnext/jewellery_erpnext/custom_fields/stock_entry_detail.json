@@ -205,7 +205,9 @@
   {
    "dt": "Stock Entry Detail",
    "fieldname": "manufacturing_operation",
-   "fieldtype": "Small Text",
+   "fieldtype": "Link",
+   "options": "Manufacturing Operation",
+   "search_index": 1,
    "insert_after": "subcontractor",
    "label": "Manufacturing Operation",
    "module": "Jewellery Erpnext"
