@@ -1061,7 +1061,6 @@ class ManufacturingOperation(Document):
 		# for row in final_balance_row:
 		# 	# if row.get("item_code") not in added_item_codes:
 		# 	self.append("mop_balance_table", row)
-
 		for key in bal_qty:
 			if bal_qty[key] != 0:
 				row_data = None
@@ -3173,7 +3172,6 @@ def create_mr_wo_stock_entry(se_data):
 	for row in se_data.get("receive_items"):
 		# if not row.get("pcs"):
 		# 	validate_item_material(row)
-
 		se_doc.append("items", {
 			"item_code": row.get("item_code"),
 			"qty": row.get("qty"),

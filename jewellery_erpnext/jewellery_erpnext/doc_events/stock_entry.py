@@ -183,14 +183,14 @@ def validate_ir(self):
 	if self.auto_created == 0:
 		if self.stock_entry_type in ['Material Receive (WORK ORDER)', 'Material Transfer (WORK ORDER)']:
 			if self.manufacturing_work_order:
-		
+
 				if self.manufacturing_work_order:
 					dept_ir_mwo = frappe.get_all(
 						"Department IR Operation",
 						filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
 						fields=["parent"]
 					)
-    
+
 					if dept_ir_mwo:
 						ir_names = ", ".join(f"'{row['parent']}'" for row in dept_ir_mwo)
 						frappe.throw(
@@ -202,7 +202,7 @@ def validate_ir(self):
 								filters={"manufacturing_work_order": self.manufacturing_work_order, "docstatus": 0},
 								fields=["parent"]
 							)
-			
+
 					if emp_ir_mwo:
 						ir_names = ", ".join(f"'{row['parent']}'" for row in emp_ir_mwo)
 						frappe.throw(
@@ -982,6 +982,7 @@ def update_balance_table(mop_data):
 			for row in details:
 				row.update({"sed_item": row["name"], "idx": None, "name": None})
 				mop_doc.append(table, row)
+
 		mop_doc.save()
 
 
