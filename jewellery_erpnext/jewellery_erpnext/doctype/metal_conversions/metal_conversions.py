@@ -20,7 +20,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 class MetalConversions(Document):
 	def on_submit(self):
 		if self.multiple_metal_converter == 0:
-			self.get_alloy_bailance()
+			if self.target_item and self.target_item.startswith("M") and "24KT" in self.target_item:
+				pass
+			else:
+				self.get_alloy_bailance()
 			make_metal_stock_entry(self)
 		if self.multiple_metal_converter == 1:
 			if self.mc_source_table == []:
