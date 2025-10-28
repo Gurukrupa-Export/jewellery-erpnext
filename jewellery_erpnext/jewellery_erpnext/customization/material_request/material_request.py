@@ -48,7 +48,6 @@ def make_mop_stock_entry(self, **kwargs):
 					"Material Request Item", row.material_request_item, "warehouse"
 				)
 			s_warehouse = warehouse_data.get(row.material_request_item)
-			# frappe.throw(f"{s_warehouse}")
 			# s_warehouse = frappe.db.sql(f"""WITH last_se AS (
 			# 	SELECT sei.parent AS stock_entry_name
 			# 	FROM `tabStock Entry Detail` sei
@@ -155,8 +154,6 @@ def make_department_stock_entry(self, **kwargs):
 
 	# self.db_set("custom_mop_se", new_se_doc.name)
 	frappe.db.set_value("Material Request", self.get("name"), "custom_reserve_se", new_se_doc.name)
-
-	# frappe.throw(f"{self.custom_material_request_department_transfer[-1].department}")
 	
 	return new_se_doc.name
 
@@ -216,7 +213,6 @@ def update_department_and_create_stock_entry(material_request_name, new_departme
 
 @frappe.whitelist()
 def make_department_mop_stock_entry(self, **kwargs):
-	frappe.throw("here")
 	try:
 		if isinstance(self, str):
 			self = json.loads(self)
@@ -259,7 +255,6 @@ def make_department_mop_stock_entry(self, **kwargs):
 			row.manufacturing_operation = kwargs.get("mop")
 			row.serial_and_batch_bundle = None
 
-		# frappe.throw(f"{t_warehouse}||{s_warehouse}")
 		new_se_doc.save()
 		new_se_doc.submit()
 		frappe.msgprint(_("Stock Entry Created"))
