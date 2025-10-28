@@ -95,33 +95,61 @@ def to_check_valid_qty_in_table(self):
 
 
 def validate_target_item(self):
-	attribute_data = frappe._dict()
-	sieve_size_range_value = []
-	for row in self.sc_source_table:
-		attr_value = frappe.db.get_value(
-			"Item Variant Attribute",
-			{"attribute": "Diamond Sieve Size Range", "parent": row.item_code},
-			"attribute_value",
-		)
-		if attr_value:
-			if not attribute_data.get(attr_value):
-				attribute_data[attr_value] = frappe.db.get_all(
-					"Attribute Value", {"sieve_size_range": attr_value}, pluck="name"
-				)
-			sieve_size_range_value += attribute_data.get(attr_value)
-	# sieve_size_range_value = []
-	# for row in attr_value_list:
-
-	for row in self.sc_target_table:
-		attr_value = frappe.db.get_value(
-			"Item Variant Attribute",
-			{"attribute": "Diamond Sieve Size", "parent": row.item_code},
-			"attribute_value",
-		)
-		if attr_value not in sieve_size_range_value:
-			frappe.throw(
-				_("{0} attribute value not available in the sieve size range value").format(row.item_code)
+	if self.conversion_type == 'Sieve Size Range to Sieve Size':
+		attribute_data = frappe._dict()
+		sieve_size_range_value = []
+		for row in self.sc_source_table:
+			attr_value = frappe.db.get_value(
+				"Item Variant Attribute",
+				{"attribute": "Diamond Sieve Size Range", "parent": row.item_code},
+				"attribute_value",
 			)
+			if attr_value:
+				if not attribute_data.get(attr_value):
+					attribute_data[attr_value] = frappe.db.get_all(
+						"Attribute Value", {"sieve_size_range": attr_value}, pluck="name"
+					)
+				sieve_size_range_value += attribute_data.get(attr_value)
+		# sieve_size_range_value = []
+		# for row in attr_value_list:
+
+		for row in self.sc_target_table:
+			attr_value = frappe.db.get_value(
+				"Item Variant Attribute",
+				{"attribute": "Diamond Sieve Size", "parent": row.item_code},
+				"attribute_value",
+			)
+			if attr_value not in sieve_size_range_value:
+				frappe.throw(
+					_("{0} attribute value not available in the sieve size range value").format(row.item_code)
+				)
+	if self.conversion_type == 'Sieve Size to Sieve Size Range':
+		attribute_data = frappe._dict()
+		sieve_size_value = []
+		for row in self.sc_source_table:
+			attr_value = frappe.db.get_value(
+				"Item Variant Attribute",
+				{"attribute": "Diamond Sieve Size", "parent": row.item_code},
+				"attribute_value",
+			)
+			if attr_value:
+				if not attribute_data.get(attr_value):
+					attribute_data[attr_value] = frappe.db.get_all(
+						"Attribute Value", {"name": attr_value}, pluck="sieve_size_range"
+					)
+				sieve_size_value += attribute_data.get(attr_value)
+
+		for row in self.sc_target_table:
+			attr_value = frappe.db.get_value(
+				"Item Variant Attribute",
+				{"attribute": "Diamond Sieve Size Range", "parent": row.item_code},
+				"attribute_value",
+			)
+
+			if attr_value not in sieve_size_value:
+				frappe.throw(
+					_("{0} attribute value not available in the sieve size value").format(row.item_code)
+				)
 
 
 def make_diamond_stock_entry(self):

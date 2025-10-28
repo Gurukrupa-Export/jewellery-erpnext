@@ -27,6 +27,7 @@
   "column_break_aw0qk",
   "stock_entry",
   "diamond_converter_tab",
+  "conversion_type",
   "sc_source_table",
   "sum_source_table",
   "sc_target_table",
@@ -176,6 +177,12 @@
   {
    "fieldname": "column_break_jtuj",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "conversion_type",
+   "fieldtype": "Select",
+   "label": "Conversion Type",
+   "options": "\nSieve Size Range to Sieve Size\nSieve Size to Sieve Size Range"
   }
  ],
  "index_web_pages_for_search": 1,
