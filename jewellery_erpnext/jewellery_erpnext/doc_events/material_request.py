@@ -57,8 +57,8 @@ def before_update_after_submit(self, method):
 
 		if self.custom_manufacturing_operation and self.custom_department:
 			mop_department = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"department")
-			if mop_department != self.custom_department:
-				frappe.throw(_(f"Manufacturing Operation is not in <b>{self.custom_department}</b> Deparment"))
+			# if mop_department != self.custom_department:
+			# 	frappe.throw(_(f"Manufacturing Operation is not in <b>{self.custom_department}</b> Deparment"))
 			make_department_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
 		else:
 			mop_department = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"department")
