@@ -19,7 +19,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	set_gross_wt,
 	validate_inventory_dimention,
 	validate_warehouse,
-	get_incoming_rate
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
@@ -38,7 +37,6 @@ def before_validate(self, method):
 
 def on_submit(self, method):
 	validate_inventory_dimention(self)
-	# clear_batch_ledger_cache(self)
 
 
 class CustomStockEntry(StockEntry):
@@ -145,70 +143,6 @@ class CustomStockEntry(StockEntry):
 
 	def get_bom_scrap_material(self, qty):
 		custom_get_bom_scrap_material(self, qty)
-
-	def set_rate_for_outgoing_items(self, reset_outgoing_rate=True, raise_error_if_no_rate=True):
-		outgoing_items_cost = 0.0
-		outgoing_items = [d for d in self.get("items") if d.s_warehouse and reset_outgoing_rate]
-		args_for_batch_valuation_ledger = []
-		for item in outgoing_items:
-			args = self.get_args_for_incoming_rate(item)
-			args.actual_qty = args.qty
-			args_for_batch_valuation_ledger.append(args)
-
-		if len(args_for_batch_valuation_ledger) > 30 and not hasattr(frappe.local, "batch_valuation_ledger"):
-			frappe.local.batch_valuation_ledger = BatchValuationLedger()
-			frappe.local.batch_valuation_ledger.initialize(args_for_batch_valuation_ledger, self.name, self.creation)
-		try:
-			for d in self.get("items"):
-				if d.s_warehouse:
-					if reset_outgoing_rate:
-						args = self.get_args_for_incoming_rate(d)
-						rate = get_incoming_rate(args, raise_error_if_no_rate)
-						if rate >= 0:
-							d.basic_rate = rate
-
-					d.basic_amount = flt(flt(d.transfer_qty) * flt(d.basic_rate), d.precision("basic_amount"))
-					if not d.t_warehouse:
-						outgoing_items_cost += flt(d.basic_amount)
-		finally:
-			pass
-
-		return outgoing_items_cost
-
-	def update_stock_ledger(self):
-		sl_entries = []
-		finished_item_row = self.get_finished_item_row()
-
-		# make sl entries for source warehouse first
-		self.get_sle_for_source_warehouse(sl_entries, finished_item_row)
-
-		# SLE for target warehouse
-		self.get_sle_for_target_warehouse(sl_entries, finished_item_row)
-
-		# reverse sl entries if cancel
-		if self.docstatus == 2:
-			sl_entries.reverse()
-
-		# Initialize BatchValuationLedger for the transaction
-		if len(sl_entries) > 30 and not hasattr(frappe.local, "batch_valuation_ledger"):
-			frappe.local.batch_valuation_ledger = BatchValuationLedger()
-			frappe.local.batch_valuation_ledger.initialize(sl_entries, self.name, self.creation)
-
-		try:
-			self.make_sl_entries(sl_entries)
-		finally:
-			pass
-			# if hasattr(frappe.local, "batch_valuation_ledger"):
-			# 	# Clear the batch valuation ledger after processing
-			# 	frappe.local.batch_valuation_ledger.clear()
-			# 	del frappe.local.batch_valuation_ledger
-
-	# def make_sl_entries(self, sl_entries, allow_negative_stock=False, via_landed_cost_voucher=False):
-	# 	from erpnext.stock.serial_batch_bundle import update_batch_qty
-	# 	from erpnext.stock.stock_ledger import make_sl_entries
-
-	# 	make_sl_entries(sl_entries, allow_negative_stock, via_landed_cost_voucher)
-	# 	update_batch_qty(self.doctype, self.name, via_landed_cost_voucher=via_landed_cost_voucher)
 
 @frappe.whitelist()
 def get_html_data(doc):
