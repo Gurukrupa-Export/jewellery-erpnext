@@ -1316,4 +1316,44 @@ def hold_mop(self):
 		if frappe.db.get_value("Manufacturing Operation",i["name"],"status") != "Finished":
 			frappe.db.set_value("Manufacturing Operation",i["name"],"status","Finished")
 
+@frappe.whitelist()
+def create_mwo(pmo, doc, reason=None):
+    if frappe.db.get_value("Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}):
+        cad_mwo = frappe.db.get_value("Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1})
+        return frappe.msgprint(
+            f"Manufacturing Work Order for CAD/CAM Department is <b>already</b> created. <b>{get_link_to_form('Manufacturing Work Order', cad_mwo)}</b>"
+        )
+
+    doc = frappe.get_doc("Parent Manufacturing Order", pmo)
+    fg_doc = get_mapped_doc(
+        "Parent Manufacturing Order",
+        pmo,
+        {
+            "Parent Manufacturing Order": {
+                "doctype": "Manufacturing Work Order",
+                "field_map": {"name": "manufacturing_order"},
+            }
+        },
+    )
+    fg_doc.seq = int(pmo.split("-")[-1])
+    fg_doc.department = frappe.db.get_value(
+        "Manufacturing Setting", {"manufacturer": doc.manufacturer}, "default_cad_department"
+    )
+    fg_doc.metal_touch = doc.metal_touch
+    fg_doc.metal_type = doc.metal_type
+    fg_doc.metal_purity = doc.metal_purity
+    fg_doc.metal_colour = doc.metal_colour
+    fg_doc.for_cad_cam = 1
+    fg_doc.auto_created = 1
+
+    #Set Reason passed from prompt
+    if reason:
+        fg_doc.reason = reason  
+
+    fg_doc.save()
+    frappe.msgprint("Manufacturing Work Order for CAD/CAM Department is created.")
+
+
+
+
 
