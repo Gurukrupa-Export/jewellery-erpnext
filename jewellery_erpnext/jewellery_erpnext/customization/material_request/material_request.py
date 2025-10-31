@@ -232,6 +232,24 @@ def make_department_mop_stock_entry(self, **kwargs):
 					kwargs.get("mop")
 				)
 			)
+
+		s_warehouse = ''
+		s_warehouse = frappe.db.sql(f"""WITH last_se AS (
+			SELECT sei.parent AS stock_entry_name
+			FROM `tabStock Entry Detail` sei
+			WHERE sei.material_request = '{self.name}'
+			ORDER BY sei.creation DESC
+			LIMIT 1
+			)
+			SELECT sei.t_warehouse
+			FROM `tabStock Entry Detail` sei
+			JOIN last_se ON sei.parent = last_se.stock_entry_name
+			GROUP BY sei.t_warehouse
+			HAVING COUNT(DISTINCT sei.t_warehouse) = 1
+			""",as_dict=1)
+		if s_warehouse:
+			s_warehouse = s_warehouse[0]['t_warehouse']
+		
 		new_se_doc = frappe.copy_doc(se_doc)
 		
 		new_se_doc.stock_entry_type = "Material Transfer (WORK ORDER)"
