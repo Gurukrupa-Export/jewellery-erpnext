@@ -10,6 +10,7 @@ from frappe.utils import get_link_to_form
 
 class SketchOrder(Document):
 	def validate(self):
+		update_sketch_delivery_date(self)
 		populate_child_table(self)
 		rows_remove = []
 		for r in self.final_sketch_hold:
@@ -36,7 +37,7 @@ class SketchOrder(Document):
 				for s in self.final_sketch_approval:
 					s.approved=len(self.final_sketch_approval_cmo)
 					s.hold=len(self.final_sketch_hold)
-				frappe.msgprint("Hold Image is approved")	
+			frappe.msgprint("Hold Image is approved")	
 		rows_to_remove = []
 		for r in self.final_sketch_rejected:
 			if r.is_approved:
@@ -90,6 +91,112 @@ def updatet_item_template(self, item_template):
 
 def update_item_variant(self, item_variant, item_template):
 	frappe.db.set_value("Item", item_variant, {"is_design_code": 1, "variant_of": item_template})
+
+
+from frappe.utils import get_datetime, get_time
+from datetime import datetime, timedelta, time
+import frappe
+
+def update_sketch_delivery_date(self):
+    if not self.sketch_update_delivery_date:
+        return
+
+    order_criteria = frappe.get_single("Order Criteria")
+
+    # Latest active order row
+    valid_order_rows = [row for row in order_criteria.order if not row.disable]
+    if not valid_order_rows:
+        frappe.throw("No active (enabled) rows found in Order Criteria 'order' table.")
+
+    latest_order_row = valid_order_rows[-1]
+
+    sketch_time = latest_order_row.sketch_submission_time
+    sketch_approval_time_ibm = latest_order_row.skecth_approval_timefrom_ibm_team
+
+    if not sketch_time:
+        frappe.throw("Sketch Submission Time not set in the latest active row of Order Criteria 'order' table.")
+
+    if not sketch_approval_time_ibm:
+        frappe.throw("Sketch Approval Time from IBM Team not set in the latest active row.")
+
+    # Combine date and sketch_submission_time
+    selected_datetime = get_datetime(self.sketch_update_delivery_date)
+    sketch_datetime = datetime.combine(selected_datetime.date(), get_time(sketch_time))
+    self.sketch_update_delivery_date = sketch_datetime
+
+    # Convert sketch_approval_time_ibm to hours
+    if isinstance(sketch_approval_time_ibm, timedelta):
+        remaining_hours = sketch_approval_time_ibm.total_seconds() / 3600
+    elif isinstance(sketch_approval_time_ibm, datetime.time):
+        remaining_hours = sketch_approval_time_ibm.hour + sketch_approval_time_ibm.minute / 60 + sketch_approval_time_ibm.second / 3600
+    elif isinstance(sketch_approval_time_ibm, (int, float)):
+        remaining_hours = float(sketch_approval_time_ibm)
+    else:
+        frappe.throw("skecth_approval_timefrom_ibm_team must be a time, timedelta, or numeric value")
+
+    # Latest department shift
+    valid_shift_rows = [row for row in order_criteria.department_shift if not row.disable]
+    if not valid_shift_rows:
+        frappe.throw("No active (enabled) rows found in Order Criteria 'department_shift' table.")
+
+    latest_shift_row = valid_shift_rows[-1]
+
+    # Convert shift_start_time and shift_end_time to datetime.time
+    def to_time(value):
+        if isinstance(value, timedelta):
+            total_seconds = value.total_seconds()
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            seconds = int(total_seconds % 60)
+            return time(hour=hours, minute=minutes, second=seconds)
+        elif isinstance(value, time):
+            return value
+        elif isinstance(value, str):
+            parts = value.split(":")
+            return time(hour=int(parts[0]), minute=int(parts[1]), second=int(parts[2]) if len(parts) > 2 else 0)
+        else:
+            frappe.throw("Shift times must be timedelta, time, or string in HH:MM:SS format")
+
+    shift_start_time = to_time(latest_shift_row.shift_start_time)
+    shift_end_time = to_time(latest_shift_row.shift_end_time)
+
+    # Calculate IBM delivery respecting shift hours
+    current_datetime = sketch_datetime
+
+    while remaining_hours > 0:
+        # Today's shift
+        shift_start_datetime = datetime.combine(current_datetime.date(), shift_start_time)
+        shift_end_datetime = datetime.combine(current_datetime.date(), shift_end_time)
+
+        # If current time is after shift end, jump to next day's shift start
+        if current_datetime >= shift_end_datetime:
+            current_datetime = shift_start_datetime + timedelta(days=1)
+            shift_start_datetime += timedelta(days=1)
+            shift_end_datetime += timedelta(days=1)
+
+        # If current time is before shift start, jump to shift start
+        if current_datetime < shift_start_datetime:
+            current_datetime = shift_start_datetime
+
+        # Available hours in current shift
+        available_hours = (shift_end_datetime - current_datetime).total_seconds() / 3600
+
+        if remaining_hours <= available_hours:
+            # Finish within current shift
+            current_datetime += timedelta(hours=remaining_hours)
+            remaining_hours = 0
+        else:
+            # Use up shift hours, move to next day
+            remaining_hours -= available_hours
+            current_datetime = shift_start_datetime + timedelta(days=1)
+
+    # Save IBM delivery date
+    self.ibm_delivery_date = current_datetime
+
+    
+    
+
+
 
 def populate_child_table(self):
 	if self.workflow_state == "Assigned":
