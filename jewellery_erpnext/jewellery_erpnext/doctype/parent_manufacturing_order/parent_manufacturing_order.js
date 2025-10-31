@@ -62,6 +62,44 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 				frm.trigger("create_customer_transfer");
 			});
 		}
+		if (frm.doc.docstatus == 1) {
+            frm.add_custom_button(__("Create MWO"), function () {
+                frappe.prompt(
+                    [
+                        {
+                            fieldname: "reason",
+                            label: "Reason",
+                            fieldtype: "Select",
+                            reqd: 1,
+                            options: [
+                                "Cpx rpt",
+                                "Mould broken & extra need for bulk order",
+                                "Prong thickness & height for wax setting",
+                                "Mumbai CAD, if CAD image show in (ppc wax cad) then we have to transfer for rubber mould work"
+                            ].join("\n")
+                        }
+                    ],
+                    function (data) {
+                        // Run only after selecting reason
+                        frappe.call({
+                            method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.create_mwo",
+                            args: {
+                                pmo: frm.doc.name,
+                                doc: frm.doc,
+                                reason: data.reason  // passing reason also
+                            },
+                            callback: function(r) {
+                                if (!r.exc) {
+                                    frm.reload_doc();
+                                }
+                            }
+                        });
+                    },
+                    __("Select Reason"),   // Dialog Title
+                    __("Submit")           // Submit button label
+                );
+    });
+}
 	},
 
 	use_custom_diamond_grade(frm) {
