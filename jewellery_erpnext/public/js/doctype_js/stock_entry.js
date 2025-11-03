@@ -146,6 +146,7 @@ frappe.ui.form.on("Stock Entry", {
 					"Material Transfer (Department)",
 					"Material Transfer (Employee)",
 					"Material Transfer (MAIN SLIP)",
+					"Material Transfer",
 				].includes(frm.doc.stock_entry_type) &&
 				row.inventory_type == "Customer Goods" &&
 				!frm.doc.manufacturing_work_order
