@@ -3,7 +3,6 @@ from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils im
 	update_pure_qty,
 )
 
-# from gurukrupa_erpnext.gurukrupa_erpnext.doctype.customer_metal_main_slip.cms_utils import rename_batch_for_cms
 import frappe
 import datetime
 import random
@@ -77,9 +76,9 @@ def autoname(self,method=None):
 	# year_code = get_year_code()
 	# month_code = get_month_code()
 	# week_code = get_week_code()
-	# if self.reference_doctype in ["Stock Entry","Purchase Receipt"] and rename_batch_for_cms(self):
-	# 	frappe.flags.autoname_done = True
-	# 	return 
+
+	if frappe.flags.get('autoname_done'):
+		return
 	
 	item_group = frappe.db.get_value("Item",{self.item},"item_group")
 
