@@ -119,7 +119,7 @@
    "read_only": 1
   },
   {
-   "default": "1",
+   "default": "0",
    "dt": "Stock Entry Detail",
    "fieldname": "pcs",
    "fieldtype": "Data",
