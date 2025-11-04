@@ -314,7 +314,6 @@ frappe.ui.form.on("Manufacturing Operation", {
 					"item_code": e.item_code,
 					"qty": e.qty,
 					"pcs": flt(e.pcs),
-					"receive_pcs": 1,
 					"s_warehouse": e.s_warehouse,
 					"batch_no": e.batch_no,
 					"inventory_type": e.inventory_type,
@@ -376,14 +375,12 @@ frappe.ui.form.on("Manufacturing Operation", {
 								"fieldtype": "Float",
 								"fieldname": "receive_qty",
 								"in_list_view": 1,
-								"reqd": 1,
 							},
 							{
 								"label": __("Receive Pcs"),
 								"fieldtype": "Float",
 								"fieldname": "receive_pcs",
 								"in_list_view": 1,
-								"reqd": 1,
 							},
 							{
 								"label": __("Batch No"),
@@ -427,8 +424,16 @@ frappe.ui.form.on("Manufacturing Operation", {
 				primary_action: (r) => {
 					let receive_items = []
 					let is_qty_and_pcs = false
+
 					r.receive_entries.forEach(e => {
+						let is_metal_or_finding = false
 						is_qty_and_pcs = e.receive_qty && e.receive_pcs
+
+						if (["M", "F"].includes(e.item_code.split('-')[0])) {
+							is_metal_or_finding = true
+							is_qty_and_pcs = false
+						}
+
 						if (e.receive_qty > e.qty) {
 							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Qty <b>{2}</b> should not be greater than Balance Qty <b>{3}</b>", [e.idx, e.item_code, e.receive_qty, e.qty]))
 						}
@@ -439,7 +444,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Qty and Pcs should be same if receiving all qty or pcs", [e.idx, e.item_code]))
 						}
 
-						if (is_qty_and_pcs) {
+						if (is_qty_and_pcs || (is_metal_or_finding && e.receive_qty)) {
 							receive_items.push({
 								idx: e.idx,
 								item_code: e.item_code,
