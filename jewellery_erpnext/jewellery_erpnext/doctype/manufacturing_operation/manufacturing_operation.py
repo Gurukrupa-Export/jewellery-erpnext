@@ -1664,7 +1664,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		["diamond_quality", "qty","finish_good_image"],
 		as_dict=1,
 	)
-
+	quality_value = bom_doc.diamond_detail[0].quality
 	new_bom = frappe.copy_doc(bom_doc)
 	new_bom.front_view_finish = pmo_data.get("finish_good_image")
 	new_bom.is_active = 1
@@ -1781,8 +1781,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			if pmo_data.get("diamond_quality"):
 				row["quality"] = pmo_data.get("diamond_quality")
 			if self.company == "Gurukrupa Export Private Limited":
-
 				if diamond_price_customer and any(dpl["price_list_type"] == diamond_price_list_customer for dpl in diamond_price_customer):
+					row["quality"] = quality_value
 					if diamond_price_list_customer == "Size (in mm)":
 						size_in_mm_diamond_price_list_entry = frappe.db.sql(
 							"""
@@ -1791,11 +1791,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
+							AND diamond_quality = %s
 							AND size_in_mm = %s
 							ORDER BY creation DESC
 							LIMIT 1
 							""",
-							(new_bom.customer, diamond_price_list_customer, row["sieve_size_mm"]),
+							(new_bom.customer, diamond_price_list_customer,row["quality"], row["sieve_size_mm"]),
 							as_dict=True
 						)
 
@@ -1828,11 +1829,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
+							AND diamond_quality = %s
 							AND sieve_size_range = %s
 							ORDER BY creation DESC
 							LIMIT 1
 							""",
-							(new_bom.customer, diamond_price_list_customer, row["sieve_size_range"]),
+							(new_bom.customer, diamond_price_list_customer,row["quality"], row["sieve_size_range"]),
 							as_dict=True
 						)
 						if sieve_size_range_diamond_price_list_entry:
@@ -1849,11 +1851,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
+							AND diamond_quality = %s
 							AND %s BETWEEN from_weight AND to_weight
 							ORDER BY creation DESC
 							LIMIT 1
 							""",
-							(new_bom.customer, diamond_price_list_customer,row["weight_per_pcs"]),
+							(new_bom.customer, diamond_price_list_customer,row["quality"],row["weight_per_pcs"]),
 							as_dict=True
 						)
 						
@@ -1900,11 +1903,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
+							AND diamond_quality = %s
 							AND size_in_mm = %s
 							ORDER BY creation DESC
 							LIMIT 1
 							""",
-							(ref_customer, diamond_price_list_ref_customer, row["sieve_size_mm"]),
+							(ref_customer, diamond_price_list_ref_customer,row["quality"], row["sieve_size_mm"]),
 							as_dict=True
 						)
 						if size_in_mm_diamond_price_list_entry:
@@ -1938,11 +1942,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
+							AND diamond_quality = %s
 							AND sieve_size_range = %s
 							ORDER BY creation DESC
 							LIMIT 1
 							""",
-							(ref_customer, diamond_price_list_ref_customer, row["sieve_size_range"]),
+							(ref_customer, diamond_price_list_ref_customer,row["quality"], row["sieve_size_range"]),
 							as_dict=True
 						)
 						if sieve_size_range_diamond_price_list_entry:
@@ -1959,11 +1964,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
+							AND diamond_quality = %s
 							AND %s BETWEEN from_weight AND to_weight
 							ORDER BY creation DESC
 							LIMIT 1
 							""",
-							(ref_customer, diamond_price_list_ref_customer,row["weight_per_pcs"]),
+							(ref_customer, diamond_price_list_ref_customer,row["quality"],row["weight_per_pcs"]),
 							as_dict=True
 						)
 						if latest_diamond_price_list_entry:
