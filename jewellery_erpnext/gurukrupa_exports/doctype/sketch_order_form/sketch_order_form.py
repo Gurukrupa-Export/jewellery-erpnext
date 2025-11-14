@@ -19,7 +19,18 @@ class SketchOrderForm(Document):
 	# 	delete_auto_created_sketch_order(self)
 	# 	frappe.db.set_value("Sketch Order Form", self.name, "workflow_state", "Cancelled")
 
+	def on_update_after_submit(self):
+		if self.updated_delivery_date:
+			sketch_order_names = frappe.get_all(
+				"Sketch Order",
+				filters={"sketch_order_form": self.name},
+				pluck="name"
+			)
 
+			for sketch_order_names in sketch_order_names:
+				frappe.db.set_value("Sketch Order", sketch_order_names, "update_delivery_date", self.updated_delivery_date)
+
+				
 	def on_cancel(self):
 		sketch_orders = frappe.db.get_list("Sketch Order", filters={"sketch_order_form": self.name}, fields="name")
 		if sketch_orders:
