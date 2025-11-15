@@ -269,11 +269,21 @@ function fetch_item_from_serial(doc, fieldname, itemfield) {
 	}
 }
 
+// function set_due_days_from_delivery_date_and_order_date(frm) {
+// 	frm.set_value(
+// 		"due_days",
+// 		frappe.datetime.get_day_diff(frm.doc.delivery_date, frm.doc.order_date)
+// 	);
+// }
 function set_due_days_from_delivery_date_and_order_date(frm) {
-	frm.set_value(
-		"due_days",
-		frappe.datetime.get_day_diff(frm.doc.delivery_date, frm.doc.order_date)
-	);
+    if (frm.doc.delivery_date && frm.doc.order_date) {
+        let delivery_date = frm.doc.delivery_date.split(" ")[0];
+        let order_date = frm.doc.order_date.split(" ")[0];
+
+        let diff_days = frappe.datetime.get_day_diff(delivery_date, order_date);
+
+        frm.set_value("due_days", diff_days);
+    }
 }
 
 function set_delivery_date_from_order_date_and_due_days(frm) {
