@@ -34,5 +34,41 @@ def execute():
             title="Index Creation Failed",
             message=f"Failed to add index on default_department: {e}"
         )
-        
-    print("Index for department field added sucessfully.")
+
+    employee_doctypes = [
+        "Employee Metal Loss",
+        "Manufacturing Operation",
+    ]
+    for doctype in employee_doctypes:
+        try:
+            frappe.db.add_index(doctype,["employee"])
+        except Exception as e:
+            frappe.log_error(
+                title="Index Creation Failed",
+                message=f"Failed to add index on employee:{e}"
+            )
+
+    customer_doctypes = [
+        "MOP Balance Table",
+        "Main Slip SE Details",
+        "Parent Manufacturing Order",
+        "Customer Payment Terms"
+    ]
+
+    for doctype in customer_doctypes:
+        try:
+            frappe.db.add_index(doctype,["customer"])
+        except Exception as e:
+            frappe.log_error(
+                title="Index Creation Failed",
+                mesaage = f"Failed to add index on customer:{e}"
+            )
+    try:
+        frappe.db.add_index("Customer Product Tolerance Master","customer_name")
+    except Exception as e:
+         frappe.log_error(
+                title="Index Creation Failed",
+                mesaage = f"Failed to add index on customer_name:{e}"
+            )
+
+    print("Index added sucessfully.")
