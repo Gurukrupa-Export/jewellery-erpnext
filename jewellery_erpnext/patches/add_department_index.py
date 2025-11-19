@@ -3,7 +3,6 @@ import frappe
 def execute():
     department_doctypes = [
         "Ignore Department For MOP",
-        "Manufacturing Setting",
         "Variant based Warehouse",
         "Department Operation",
         "Manufacturing Work Order",
@@ -61,14 +60,14 @@ def execute():
         except Exception as e:
             frappe.log_error(
                 title="Index Creation Failed",
-                mesaage = f"Failed to add index on customer:{e}"
+                message = f"Failed to add index on customer:{e}"
             )
     try:
-        frappe.db.add_index("Customer Product Tolerance Master","customer_name")
+        frappe.db.add_index("Customer Product Tolerance Master", ["customer_name"])
     except Exception as e:
          frappe.log_error(
                 title="Index Creation Failed",
-                mesaage = f"Failed to add index on customer_name:{e}"
+                message = f"Failed to add index on customer_name:{e}"
             )
 
     print("Index added sucessfully.")
