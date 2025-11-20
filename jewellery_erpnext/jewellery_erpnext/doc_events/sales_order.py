@@ -46,16 +46,175 @@ def create_new_bom(self):
 			create_serial_no_bom(self, row)
 			if row.bom:
 				doc = frappe.get_doc("BOM",row.bom)
-				row.gold_bom_rate = doc.gold_bom_amount
-				row.diamond_bom_rate = doc.diamond_bom_amount
-				row.gemstone_bom_rate = doc.gemstone_bom_amount
-				row.other_bom_rate = doc.other_bom_amount
-				row.making_charge = doc.making_charge
-				row.bom_rate = doc.total_bom_amount
-				row.rate = doc.total_bom_amount
+				# row.gold_bom_rate = doc.gold_bom_amount
+				# row.diamond_bom_rate = doc.diamond_bom_amount
+				# row.gemstone_bom_rate = doc.gemstone_bom_amount
+				# row.other_bom_rate = doc.other_bom_amount
+				# row.making_charge = doc.making_charge
+				# row.bom_rate = doc.total_bom_amount
+				# row.rate = doc.total_bom_amount
+				mc = frappe.get_all(
+					"Making Charge Price",
+					filters={
+						"customer": self.customer,
+						"metal_type":doc.metal_type,
+						"setting_type":doc.setting_type
+					},
+					fields=["name"],
+					limit=1
+				)
+				if not mc:
+					frappe.throw(f"""Create a valid Making Charge Price for Customer: {self.customer},metal_type:{doc.metal_type},
+						setting_type:{doc.setting_type} """)
+				mc_name = mc[0]["name"]
+				sub = frappe.db.get_all(
+					"Making Charge Price Item Subcategory",
+					filters={"parent": mc_name,"subcategory":doc.item_subcategory},
+					fields=[
+						"rate_per_gm",
+						"supplier_fg_purchase_rate",
+						"wastage",
+						"custom_subcontracting_rate",
+						"custom_subcontracting_wastage"
+					],
+					limit=1		
+    )
+	
+				if hasattr(doc, "gemstone_detail"):
+					for gem in doc.gemstone_detail or []:
+
+						gemstone_price_list_customer = frappe.db.get_value(
+							"Customer",
+							self.customer,
+							"custom_gemstone_price_list_type"
+						)
+
+						if gemstone_price_list_customer == "Fixed":
+
+							gpc = frappe.get_all(
+								"Gemstone Price List",
+								filters={
+									"customer": self.customer,
+									"price_list_type": gemstone_price_list_customer,
+									"gemstone_grade": gem.get("gemstone_grade"),
+									"cut_or_cab": gem.get("cut_or_cab"),
+									"gemstone_type": gem.get("gemstone_type"),
+									"stone_shape": gem.get("stone_shape")
+								},
+								fields=["name", "price_list_type", "rate", "handling_rate"],
+							)
+
+							if not gpc:
+								frappe.throw("No Gemstone Price List found")
+
+							gem.total_gemstone_rate = gpc[0]["rate"]
+
+							gem.gemstone_rate_for_specified_quantity = (
+								float(gem.total_gemstone_rate) / 100 * float(gem.gemstone_pr)
+							)
+
+							doc.total_gemstone_amount = sum(
+								flt(r.gemstone_rate_for_specified_quantity)
+								for r in doc.get("gemstone_detail", [])
+							)
+
+						elif gemstone_price_list_customer == "Multiplier":
+
+							gpc = frappe.get_all(
+								"Gemstone Price List",
+								filters={
+									"customer": self.customer,
+									"price_list_type": gemstone_price_list_customer,
+									"cut_or_cab": gem.get("cut_or_cab")
+								},
+								fields=["name", "price_list_type"],
+							)
+
+							if not gpc:
+								frappe.throw("No Multiplier Price List found")
+
+							gpc_doc = frappe.get_doc("Gemstone Price List", gpc[0].name)
+							multiplier_rows = gpc_doc.get("gemstone_multiplier")
+							rate = 0
+							for row in multiplier_rows:
+								if row.gemstone_type == gem.gemstone_type:
+									if gem.gemstone_quality == 'Precious':
+										rate = row.precious_percentage
+
+									elif gem.gemstone_quality == 'Semi Precious':
+										rate = row.semi_precious_percentage
+
+									elif gem.gemstone_quality == 'Synthetic':
+										rate = row.synthetic_percentage
+
+								gem.total_gemstone_rate = rate
+
+							gem.gemstone_rate_for_specified_quantity = (
+								float(rate) / 100 * float(gem.gemstone_pr)
+							)
+							gem.price_list_type='Multiplier'
+							doc.total_gemstone_amount = sum(
+								flt(r.gemstone_rate_for_specified_quantity)
+								for r in doc.get("gemstone_detail", [])
+							)
+
+				if hasattr(doc, "metal_detail"):
+
+					
+					for s in doc.metal_detail:
+						
+						s.rate=self.gold_rate_with_gst
+						s.amount=s.rate*s.quantity
+						s.wastage_rate=sub[0]['wastage']
+						s.making_rate=sub[0]['rate_per_gm']
+						s.making_amount=s.making_rate*s.quantity
+						s.wastage_rate=sub[0]['wastage']/100
+						s.wastage_amount=s.wastage_rate*s.amount
+					doc.total_metal_amount = sum(flt((r.amount)) for r in doc.get("metal_detail", []))
+					doc.total_wastage_amount = sum(flt((r.wastage_amount)) for r in doc.get("metal_detail", [])) 
+					doc.total_making_amount = sum(flt((r.making_amount)) for r in doc.get("metal_detail", [])) 
+
+				if hasattr(doc, "finding_detail"):
+					for f in doc.finding_detail:
+						finding_type = f.finding_type
+						find = frappe.db.get_all(
+							"Making Charge Price Finding Subcategory",
+							filters={
+								"parent": mc_name,
+								"subcategory": finding_type
+							},
+							fields=[
+								"rate_per_gm",
+								"supplier_fg_purchase_rate",
+								"wastage",
+								"custom_subcontracting_rate",
+								"custom_subcontracting_wastage"
+							],
+							limit=1
+						)
+						if not find:
+							frappe.throw("Crate valid Making Charge Price Finding Subcategory")
+						f.rate=self.gold_rate_with_gst
+						f.amount=f.rate*f.quantity
+						f.making_rate=find[0]['rate_per_gm']
+						f.making_amount=f.making_rate*f.quantity
+						f.wastage_rate=find[0]['wastage']/100
+						f.wastage_amount=f.wastage_rate*f.amount
+					doc.total_finding_amount = sum(flt((r.amount)) for r in doc.get("finding_detail", []))
+				doc.save(ignore_permissions=True)
+				frappe.db.commit()		
 		elif not row.bom and frappe.db.exists("BOM", row.quotation_bom):
-			row.bom = row.quotation_bom
 			
+			row.bom = row.quotation_bom
+			#######################################################################
+			# bom_doc = frappe.get_doc("BOM", row.bom)
+			# if hasattr(bom_doc, "diamond_detail"):
+			# 	for diamond in bom_doc.diamond_detail or []:
+			# 		diamond.quality = self.custom_diamond_quality
+			# 	bom_doc.save(ignore_permissions=True)
+			# 	frappe.db.commit()
+			# 	frappe.msgprint("hii")
+			#####################################################################
 			data_to_be_updated = {
 				"bom_type": "Sales Order",
 				"custom_creation_doctype": "Sales Order",
