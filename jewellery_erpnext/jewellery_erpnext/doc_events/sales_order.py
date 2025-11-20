@@ -303,8 +303,7 @@ def create_new_bom(self):
 				if hasattr(doc, "diamond_detail"):
 					for d in doc.diamond_detail:
 						# Fetch customer's diamond price list for the stone shape
-						customer_diamond_list = frappe.db.sql(
-							f"""
+						customer_diamond_list = frappe.db.sql(f"""
 							SELECT diamond_price_list FROM `tabDiamond Price List Table`
 							WHERE parent = %s AND diamond_shape = %s
 							""", (self.customer, d.stone_shape), as_dict=True)
