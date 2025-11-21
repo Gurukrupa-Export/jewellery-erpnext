@@ -436,18 +436,20 @@ def create_new_bom(self):
 
 
 def create_serial_no_bom(self, row):
-	if row.bom:
-		return
 	serial_no_bom = frappe.db.get_value("Serial No", row.serial_no, "custom_bom_no")
 	if not serial_no_bom:
 		return
 	bom_doc = frappe.get_doc("BOM", serial_no_bom)
-	if self.customer != bom_doc.customer:
-		doc = frappe.copy_doc(bom_doc)
-		doc.customer = self.customer
-		doc.gold_rate_with_gst = self.gold_rate_with_gst
-		doc.save(ignore_permissions=True)
-		row.bom = doc.name
+	# if self.customer != bom_doc.customer:
+	doc = frappe.copy_doc(bom_doc)
+	doc.customer = self.customer
+	doc.gold_rate_with_gst = self.gold_rate_with_gst
+	if hasattr(doc, "diamond_detail"):
+		for diamond in doc.diamond_detail or []:
+			diamond.quality = self.custom_diamond_quality
+		# for diamond in doc.diamond_detail:
+	doc.save(ignore_permissions=True)
+	row.bom = doc.name
 
 
 def create_sales_order_bom(self, row, diamond_grade_data):
