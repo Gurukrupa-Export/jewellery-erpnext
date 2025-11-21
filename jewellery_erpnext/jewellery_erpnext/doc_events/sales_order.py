@@ -17,9 +17,9 @@ def validate(self, method):
 	update_snc(self)
 	update_same_customer_snc(self)
 	validate_quotation_item(self)
-	validate_items(self)
 	create_new_bom(self)
 	validate_serial_number(self)
+	validate_items(self)
 	# calculate_gst_rate(self)
 	if not self.get("__islocal") and self.docstatus == 0:
 		set_bom_item_details(self)
