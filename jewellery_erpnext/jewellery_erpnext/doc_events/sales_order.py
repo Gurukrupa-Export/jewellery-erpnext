@@ -298,18 +298,23 @@ def create_new_bom(self):
 															"custom_outwork_handling_charges_rate",
 															"custom_outwork_handling_charges_in_percentage"], as_dict=True)
 							elif price_list_type == 'Weight (in cts)':
-								rate_result = frappe.db.sql("""
-									SELECT rate, custom_outright_handling_charges_rate, custom_outright_handling_charges_in_percentage,
-										custom_outwork_handling_charges_rate, custom_outwork_handling_charges_in_percentage
-									FROM `tabDiamond Price List`
-									WHERE {field} = %s
-									AND {common_filters}
-									AND %s BETWEEN from_weight AND to_weight
-									LIMIT 1
-								""".format(
-									field="weight_per_pcs",
-									common_filters=" AND ".join([f"{k} = %s" for k in common_filters.keys()])
-								), list(common_filters.values()) + [d.weight_per_pcs], as_dict=True)
+								common_conditions = " AND ".join([f"{k} = %s" for k in common_filters.keys()])
+								rate_result =  frappe.db.sql(
+												f"""
+													SELECT 
+														rate,
+														custom_outright_handling_charges_rate,
+														custom_outright_handling_charges_in_percentage,
+														custom_outwork_handling_charges_rate,
+														custom_outwork_handling_charges_in_percentage
+													FROM `tabDiamond Price List`
+													WHERE {common_conditions}
+													AND %s BETWEEN from_weight AND to_weight
+													LIMIT 1
+												""",
+												list(common_filters.values()) + [d.weight_per_pcs],
+												as_dict=True
+											)
 
 								latest = rate_result[0] if rate_result else None
 							elif price_list_type == 'Size (in mm)':
