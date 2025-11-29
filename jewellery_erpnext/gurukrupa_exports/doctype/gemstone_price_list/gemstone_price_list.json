@@ -26,7 +26,6 @@
   "item",
   "bom",
   "rate",
-  "handling_rate",
   "currency",
   "effective_from",
   "gemstone_grade",
@@ -128,12 +127,6 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Rate"
-  },
-  {
-   "depends_on": "eval:doc.price_list_type != \"Diamond Range\"",
-   "fieldname": "handling_rate",
-   "fieldtype": "Float",
-   "label": "Gemstone Handling Rate"
   },
   {
    "depends_on": "eval: doc.price_list_type != \"Diamond Range\";",

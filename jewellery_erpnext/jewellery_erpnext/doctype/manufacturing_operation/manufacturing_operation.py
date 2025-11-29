@@ -1803,8 +1803,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if diamond_price_list_customer_new == "Size (in mm)":
 						size_in_mm_diamond_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,diamond_quality,
-							custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
+							SELECT name, supplier_fg_purchase_rate,rate,outright_handling_charges_rate,outright_handling_charges_in_percentage,diamond_quality,
+							outwork_handling_charges_rate,outwork_handling_charges_in_percentage
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
@@ -1823,18 +1823,18 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 							row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
 							if row["is_customer_item"]:
-								row["total_diamond_rate"] = latest_entry.get("custom_outwork_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("outwork_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
-								if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
-									percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
+								if latest_entry.get("outwork_handling_charges_rate") == 0:
+									percentage = latest_entry.get("outwork_handling_charges_in_percentage", 0)
 									amount = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = amount
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
 							else:
-								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("outright_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
-								if latest_entry.get("custom_outright_handling_charges_rate") == 0:
-									percentage = latest_entry.get("custom_outright_handling_charges_in_percentage", 0)
+								if latest_entry.get("outright_handling_charges_rate") == 0:
+									percentage = latest_entry.get("outright_handling_charges_in_percentage", 0)
 									rate = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = rate + latest_entry.get("rate", 0)
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
@@ -1842,7 +1842,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if diamond_price_list_customer_new == "Sieve Size Range":
 						sieve_size_range_diamond_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,diamond_quality
+							SELECT name, supplier_fg_purchase_rate,rate,outright_handling_charges_rate,diamond_quality
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
@@ -1863,8 +1863,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if diamond_price_list_customer_new == "Weight (in cts)":
 						latest_diamond_price_list_entry  = frappe.db.sql(
 							"""
-							SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
-							custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage,diamond_quality
+							SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate,outright_handling_charges_rate,outright_handling_charges_in_percentage,
+							outwork_handling_charges_rate,outwork_handling_charges_in_percentage,diamond_quality
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
@@ -1883,23 +1883,23 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 							row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
 							if row["is_customer_item"]:
-								row["total_diamond_rate"] = latest_entry.get("custom_outwork_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("outwork_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 
-								if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
+								if latest_entry.get("outwork_handling_charges_rate") == 0:
 									# frappe.throw("HIIIIIIIII")
-									percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
+									percentage = latest_entry.get("outwork_handling_charges_in_percentage", 0)
 									amount = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = amount
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 
 							else:
 								
-								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("outright_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 								# frappe.throw(f"{row["diamond_rate_for_specified_quantity"]}")
-								if latest_entry.get("custom_outright_handling_charges_rate") == 0:
-									percentage = latest_entry.get("custom_outright_handling_charges_in_percentage", 0)
+								if latest_entry.get("outright_handling_charges_rate") == 0:
+									percentage = latest_entry.get("outright_handling_charges_in_percentage", 0)
 									rate = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = rate + latest_entry.get("rate", 0)
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
@@ -1915,8 +1915,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if diamond_price_list_ref_customer == "Size (in mm)":
 						size_in_mm_diamond_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, supplier_fg_purchase_rate,rate,custom_outwork_handling_charges_in_percentage,diamond_quality,
-							custom_outright_handling_charges_in_percentage,custom_outright_handling_charges_rate,custom_outwork_handling_charges_rate
+							SELECT name, supplier_fg_purchase_rate,rate,outwork_handling_charges_in_percentage,diamond_quality,
+							outright_handling_charges_in_percentage,outright_handling_charges_rate,outwork_handling_charges_rate
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
@@ -1934,19 +1934,19 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 							row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
 							if row["is_customer_item"]:
-								row["total_diamond_rate"] = latest_entry.get("custom_outwork_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("outwork_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
 
-								if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
-									percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
+								if latest_entry.get("outwork_handling_charges_rate") == 0:
+									percentage = latest_entry.get("outwork_handling_charges_in_percentage", 0)
 									amount = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = amount
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
 							else:
-								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("outright_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
-								if latest_entry.get("custom_outright_handling_charges_rate") == 0:
-									percentage = latest_entry.get("custom_outright_handling_charges_in_percentage", 0)
+								if latest_entry.get("outright_handling_charges_rate") == 0:
+									percentage = latest_entry.get("outright_handling_charges_in_percentage", 0)
 									rate = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = rate + latest_entry.get("rate", 0)
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["sieve_size_mm"]
@@ -1973,21 +1973,21 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 							row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
 							if row["is_customer_item"]:
-								row["total_diamond_rate"] = latest_entry.get("custom_outwork_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("outwork_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
-								if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
-									percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
+								if latest_entry.get("outwork_handling_charges_rate") == 0:
+									percentage = latest_entry.get("outwork_handling_charges_in_percentage", 0)
 									amount = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = amount
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 
 							else:
 							
-								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("outright_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
-								# frappe.throw(f"{latest_entry.get("custom_outright_handling_charges_rate")}")
-								if latest_entry.get("custom_outright_handling_charges_rate") == 0:
-									percentage = latest_entry.get("custom_outright_handling_charges_in_percentage", 0)
+								# frappe.throw(f"{latest_entry.get("outright_handling_charges_rate")}")
+								if latest_entry.get("outright_handling_charges_rate") == 0:
+									percentage = latest_entry.get("outright_handling_charges_in_percentage", 0)
 									rate = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = rate + latest_entry.get("rate", 0)
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
@@ -2013,19 +2013,19 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							row["fg_purchase_rate"] = latest_entry.get("supplier_fg_purchase_rate", 0)
 							row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
 							if row["is_customer_item"]:
-								row["total_diamond_rate"] = latest_entry.get("custom_outwork_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("outwork_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 
-								if latest_entry.get("custom_outwork_handling_charges_rate") == 0:
-									percentage = latest_entry.get("custom_outwork_handling_charges_in_percentage", 0)
+								if latest_entry.get("outwork_handling_charges_rate") == 0:
+									percentage = latest_entry.get("outwork_handling_charges_in_percentage", 0)
 									amount = latest_entry.get("rate", 0) * (percentage / 100)
 									row["total_diamond_rate"] = amount
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 							else:
-								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("custom_outright_handling_charges_rate", 0)
+								row["total_diamond_rate"] = latest_entry.get("rate", 0) + latest_entry.get("outright_handling_charges_rate", 0)
 								row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
-								if latest_entry.get("custom_outright_handling_charges_rate") == 0:
-									percentage = latest_entry.get("custom_outright_handling_charges_in_percentage", 0)
+								if latest_entry.get("outright_handling_charges_rate") == 0:
+									percentage = latest_entry.get("outright_handling_charges_in_percentage", 0)
 									row["total_diamond_rate"] = latest_entry.get("rate", 0) * (percentage / 100)
 									row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
 

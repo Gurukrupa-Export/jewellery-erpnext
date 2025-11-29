@@ -100,7 +100,7 @@ def create_new_bom(self):
 									"gemstone_type": gem.get("gemstone_type"),
 									"stone_shape": gem.get("stone_shape")
 								},
-								fields=["name", "price_list_type", "rate", "handling_rate"],
+								fields=["name", "price_list_type", "rate", "handling_charges_rate"],
 							)
 
 							if not gpc:
@@ -293,20 +293,20 @@ def create_new_bom(self):
 								sieve_filter = {**common_filters, "sieve_size_range": d.sieve_size_range}
 								latest = frappe.db.get_value("Diamond Price List", sieve_filter,
 															["rate",
-															"custom_outright_handling_charges_rate",
-															"custom_outright_handling_charges_in_percentage",
-															"custom_outwork_handling_charges_rate",
-															"custom_outwork_handling_charges_in_percentage"], as_dict=True)
+															"outright_handling_charges_rate",
+															"outright_handling_charges_in_percentage",
+															"outwork_handling_charges_rate",
+															"outwork_handling_charges_in_percentage"], as_dict=True)
 							elif price_list_type == 'Weight (in cts)':
 								common_conditions = " AND ".join([f"{k} = %s" for k in common_filters.keys()])
 								rate_result =  frappe.db.sql(
 												f"""
 													SELECT 
 														rate,
-														custom_outright_handling_charges_rate,
-														custom_outright_handling_charges_in_percentage,
-														custom_outwork_handling_charges_rate,
-														custom_outwork_handling_charges_in_percentage
+														outright_handling_charges_rate,
+														outright_handling_charges_in_percentage,
+														outwork_handling_charges_rate,
+														outwork_handling_charges_in_percentage
 													FROM `tabDiamond Price List`
 													WHERE {common_conditions}
 													AND %s BETWEEN from_weight AND to_weight
@@ -320,19 +320,19 @@ def create_new_bom(self):
 							elif price_list_type == 'Size (in mm)':
 								latest = frappe.db.get_value("Diamond Price List", {**common_filters, "diamond_size_in_mm": d.diamond_sieve_size},
 															["rate",
-															"custom_outright_handling_charges_rate",
-															"custom_outright_handling_charges_in_percentage",
-															"custom_outwork_handling_charges_rate",
-															"custom_outwork_handling_charges_in_percentage"], as_dict=True)
+															"outright_handling_charges_rate",
+															"outright_handling_charges_in_percentage",
+															"outwork_handling_charges_rate",
+															"outwork_handling_charges_in_percentage"], as_dict=True)
 							else:
 								latest = None
 
 							if latest:
 								base_rate = latest.get("rate", 0)
-								out_rate = latest.get("custom_outright_handling_charges_rate", 0)
-								out_pct = latest.get("custom_outright_handling_charges_in_percentage", 0)
-								work_rate = latest.get("custom_outwork_handling_charges_rate", 0)
-								work_pct = latest.get("custom_outwork_handling_charges_in_percentage", 0)
+								out_rate = latest.get("outright_handling_charges_rate", 0)
+								out_pct = latest.get("outright_handling_charges_in_percentage", 0)
+								work_rate = latest.get("outwork_handling_charges_rate", 0)
+								work_pct = latest.get("outwork_handling_charges_in_percentage", 0)
 
 								# Retrieve is_customer_item flag from BOM
 								is_cust = getattr(d, "is_customer_item", False)  # Or fetch from appropriate BOM row object if accessible

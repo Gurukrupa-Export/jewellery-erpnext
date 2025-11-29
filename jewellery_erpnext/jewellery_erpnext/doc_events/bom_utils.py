@@ -227,12 +227,12 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 			filters=filters,
 			fields=[
 				"rate",
-				"handling_rate",
+				"handling_charges_rate",
 				"supplier_fg_purchase_rate",
-				"custom_outright_handling_charges_in_",
-				"custom_outright_handling_charges_rate",
-				"custom_outwork_handling_charges_in__",
-				"custom_outwork_handling_charges_rate_",
+				"outright_handling_charges_in_percentage",
+				"outright_handling_charges_rate",
+				"outwork_handling_charges_in_percentage",
+				"outwork_handling_charges_rate",
 			],
 			order_by="effective_from desc",
 			limit=1,
@@ -249,19 +249,19 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 
 	# Get Handling Rate of the Diamond if it is a cutomer provided Diamond
 	rate = (
-		diamond_price_list[0].get("handling_rate")
+		diamond_price_list[0].get("handling_charges_rate")
 		+ (
-			diamond_price_list[0].get("handling_rate")
-			* (diamond_price_list[0].get("custom_outwork_handling_charges_in__") or 0)
+			diamond_price_list[0].get("handling_charges_rate")
+			* (diamond_price_list[0].get("outwork_handling_charges_in_percentage") or 0)
 		)
-		+ (diamond_price_list[0].get("custom_outwork_handling_charges_rate_") or 0)
+		+ (diamond_price_list[0].get("outwork_handling_charges_rate") or 0)
 		if diamond.is_customer_item
 		else diamond_price_list[0].get("rate")
 		+ (
 			diamond_price_list[0].get("rate")
-			* (diamond_price_list[0].get("custom_outright_handling_charges_in_") or 0)
+			* (diamond_price_list[0].get("outright_handling_charges_in_percentage") or 0)
 		)
-		+ (diamond_price_list[0].get("custom_outright_handling_charges_rate") or 0)
+		+ (diamond_price_list[0].get("outright_handling_charges_rate") or 0)
 	)
 
 	# Set the rate and total rate for the diamond
@@ -341,12 +341,12 @@ def get_gemstone_rate(self):
 			fields=[
 				"name",
 				"rate",
-				"handling_rate",
+				"handling_charges_rate",
 				"supplier_fg_purchase_rate",
-				"custom_outright_handling_charges_in_",
-				"custom_outright_handling_charges_rate",
-				"custom_outwork_handling_charges_in__",
-				"custom_outwork_handling_charges_rate_",
+				"outright_handling_charges_in_percentage",
+				"outright_handling_charges_rate",
+				"outwork_handling_charges_in_percentage",
+				"outwork_handling_charges_rate",
 			],
 			order_by="effective_from desc",
 			limit=1,
@@ -388,19 +388,19 @@ def get_gemstone_rate(self):
 			rate = multiplier * pr
 		else:
 			rate = (
-				gemstone_price_list[0].get("handling_rate")
+				gemstone_price_list[0].get("handling_charges_rate")
 				+ (
-					gemstone_price_list[0].get("handling_rate")
-					+ gemstone_price_list[0].get("custom_outwork_handling_charges_in__")
+					gemstone_price_list[0].get("handling_charges_rate")
+					+ gemstone_price_list[0].get("outwork_handling_charges_in_percentage")
 				)
-				+ gemstone_price_list[0].get("custom_outwork_handling_charges_rate_")
+				+ gemstone_price_list[0].get("outwork_handling_charges_rate")
 				if stone.is_customer_item
 				else gemstone_price_list[0].get("rate")
 				+ (
 					gemstone_price_list[0].get("rate")
-					+ gemstone_price_list[0].get("custom_outright_handling_charges_in_")
+					+ gemstone_price_list[0].get("outright_handling_charges_in_percentage")
 				)
-				+ gemstone_price_list[0].get("custom_outright_handling_charges_rate")
+				+ gemstone_price_list[0].get("outright_handling_charges_rate")
 			)
 		stone.total_gemstone_rate = rate
 		stone.gemstone_rate_for_specified_quantity = int(rate) * stone.quantity

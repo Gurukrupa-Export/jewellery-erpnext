@@ -308,7 +308,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 		gemstone_price_list = frappe.get_list(
 			"Gemstone Price List",
 			filters=filters,
-			fields=["name", "rate", "handling_rate", "supplier_fg_purchase_rate"],
+			fields=["name", "rate", "handling_charges_rate", "supplier_fg_purchase_rate"],
 			order_by="effective_from desc",
 			limit=1,
 		)
@@ -350,7 +350,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 			rate = multiplier * pr
 		else:
 			rate = (
-				gemstone_price_list[0].get("handling_rate")
+				gemstone_price_list[0].get("handlihandling_charges_rateng_rate")
 				if i.is_customer_item
 				else gemstone_price_list[0].get("rate")
 			)
