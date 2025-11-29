@@ -15,6 +15,7 @@
   "stone_shape",
   "diamond_quality",
   "supplier_fg_purchase_rate",
+  "stone_code",
   "column_break_8",
   "price_list_type",
   "from_weight",
@@ -24,7 +25,16 @@
   "diamond_size_in_mm",
   "rate",
   "currency",
-  "effective_from"
+  "effective_from",
+  "section_break_r4n2",
+  "handling_charges_in_percentage",
+  "handling_charges_rate",
+  "column_break_sklf",
+  "outright_handling_charges_in_percentage",
+  "outright_handling_charges_rate",
+  "column_break_staj",
+  "outwork_handling_charges_in_percentage",
+  "outwork_handling_charges_rate"
  ],
  "fields": [
   {
@@ -140,11 +150,58 @@
    "fieldtype": "Link",
    "label": "Diamond Size in MM",
    "options": "Attribute Value"
+  },
+  {
+   "fieldname": "stone_code",
+   "fieldtype": "Data",
+   "label": "Stone Code"
+  },
+  {
+   "fieldname": "section_break_r4n2",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "outright_handling_charges_in_percentage",
+   "fieldtype": "Percent",
+   "label": "Outright Handling Charges (In %)"
+  },
+  {
+   "fieldname": "outright_handling_charges_rate",
+   "fieldtype": "Currency",
+   "label": "Outright Handling Charges Rate"
+  },
+  {
+   "fieldname": "handling_charges_rate",
+   "fieldtype": "Currency",
+   "label": "Handling Charges Rate"
+  },
+  {
+   "fieldname": "outwork_handling_charges_in_percentage",
+   "fieldtype": "Percent",
+   "label": "Outwork Handling Charges (In %)"
+  },
+  {
+   "fieldname": "outwork_handling_charges_rate",
+   "fieldtype": "Currency",
+   "label": "Outwork Handling Charges Rate"
+  },
+  {
+   "fieldname": "handling_charges_in_percentage",
+   "fieldtype": "Percent",
+   "label": "Handling Charges %"
+  },
+  {
+   "fieldname": "column_break_sklf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_staj",
+   "fieldtype": "Column Break"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-04-30 21:01:40.276844",
+ "modified": "2025-11-29 15:20:08.212684",
  "modified_by": "Administrator",
  "module": "Gurukrupa Exports",
  "name": "Diamond Price List",
@@ -164,6 +221,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
