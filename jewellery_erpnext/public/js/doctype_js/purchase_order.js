@@ -1545,7 +1545,7 @@ let get_items = (frm) => {
             let query_args = {
                 filters: {
                     docstatus: ["!=", 2],
-                    sales_type: frm.doc.purchase_type === "FG Purchase" ? "Finished Goods" : "Branch Sales",
+					sales_type: frm.doc.purchase_type === "Branch Purchase" ? "Branch Sales" : "",
                 },
             };
 
@@ -1555,7 +1555,14 @@ let get_items = (frm) => {
             }
             if (frm.doc.supplier === "GJSU0569" && frm.doc.company === "Gurukrupa Export Private Limited") {
                 query_args.filters.company = "Gurukrupa Export Private Limited";
-                query_args.filters.customer = "TNCU0002";
+                // query_args.filters.customer = "TNCU0002";
+				if (frm.doc.branch) {
+					frappe.db.get_value("Branch", frm.doc.branch, "custom_customer", (r) => {
+						if (r && r.custom_customer) {
+							query_args.filters.customer = r.custom_customer;
+						}
+					});
+				}
             }
 
             let d = new frappe.ui.form.MultiSelectDialog({
