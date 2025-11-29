@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-
+from frappe.utils import get_link_to_form
 import frappe
 from frappe import _
 
@@ -40,7 +40,7 @@ def validate_item_category_for_customer(self):
 
 
 def create_branch_po(self):
-	if self.sales_type != "Branch":
+	if self.sales_type != "Branch Sales":
 		return
 	branch = frappe.db.get_value("Branch", {"custom_customer": self.customer})
 	if not branch:
@@ -53,7 +53,7 @@ def create_branch_po(self):
 
 	po = create_po(self, branch, branch_supplier)
 
-	frappe.msgprint(_("{0} generated as Branch PO").format(po))
+	frappe.msgprint(_("{0} generated as Branch PO").format(get_link_to_form("Purchase Order", po)))
 
 
 def create_po(self, branch, branch_supplier):
@@ -61,6 +61,7 @@ def create_po(self, branch, branch_supplier):
 	doc.supplier = branch_supplier
 	doc.company = self.company
 	doc.branch = branch
+	doc.custom_branch = branch
 	doc.purchase_type = "Branch Purchase"
 	format = "%Y-%m-%d"
 	doc.schedule_date = (datetime.strptime(self.posting_date, format) + timedelta(days=1)).date()
