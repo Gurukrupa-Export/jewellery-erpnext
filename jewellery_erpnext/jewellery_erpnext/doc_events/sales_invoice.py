@@ -402,17 +402,17 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 			"cut_or_cab": i.cut_or_cab,
 			"gemstone_grade": i.gemstone_grade,
 		}
-		if i.price_list_type == "Weight (in cts)":
-			filters.update(
-				{
-					"gemstone_type": i.gemstone_type,
-					"stone_shape": i.stone_shape,
-					"gemstone_quality": i.gemstone_quality,
-					"from_weight": ["<=", gemstone_weight_per_pcs],
-					"to_weight": [">=", gemstone_weight_per_pcs],
-				}
-			)
-		elif i.price_list_type == "Multiplier" and i.gemstone_size:
+		# if i.price_list_type == "Weight (in cts)":
+		# 	filters.update(
+		# 		{
+		# 			"gemstone_type": i.gemstone_type,
+		# 			"stone_shape": i.stone_shape,
+		# 			"gemstone_quality": i.gemstone_quality,
+		# 			"from_weight": ["<=", gemstone_weight_per_pcs],
+		# 			"to_weight": [">=", gemstone_weight_per_pcs],
+		# 		}
+		# 	)
+		if i.price_list_type == "Diamond Range" and i.gemstone_size:
 			filters.update(
 				{
 					"to_stone_size": [">=", i.gemstone_size],
@@ -437,7 +437,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 
 		multiplier = 0
 		item_category = frappe.db.get_value("Item", bom_doc.item, "item_category")
-		if i.price_list_type == "Multiplier":
+		if i.price_list_type == "Diamond Range":
 			for gr in gemstone_price_list:
 				multiplier = (
 					frappe.db.get_value(
@@ -468,7 +468,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 
 		# Get Handling Rate of the Diamond if it is a cutomer provided Diamond
 		pr = int(i.gemstone_pr)
-		if i.price_list_type == "Multiplier":
+		if i.price_list_type == "Diamond Range":
 			rate = multiplier * pr
 		else:
 			rate = (

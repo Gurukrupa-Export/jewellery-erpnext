@@ -406,7 +406,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 		for gem in doc.gemstone_detail:
 			gem.rate = doc.gold_rate_with_gst
 			if gemstone_price_list and any(dpl["price_list_type"] == gemstone_price_list_ref_customer for dpl in gemstone_price_list):
-				if gemstone_price_list_ref_customer == "Multiplier":
+				if gemstone_price_list_ref_customer == "Diamond Range":
 					query = frappe.db.sql("""
 						SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
 							gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
@@ -769,7 +769,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 		for gem in doc.gemstone_detail:
 			gem.rate = doc.gold_rate_with_gst
 			if gemstone_price_list and any(dpl["price_list_type"] == gemstone_price_list_customer for dpl in gemstone_price_list):
-				if gemstone_price_list_customer == "Multiplier":
+				if gemstone_price_list_customer == "Diamond Range":
 					combined_query = frappe.db.sql(
 							"""
 							SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,

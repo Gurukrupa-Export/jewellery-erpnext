@@ -117,7 +117,7 @@ def create_new_bom(self):
 								for r in doc.get("gemstone_detail", [])
 							)
 
-						elif gemstone_price_list_customer == "Multiplier":
+						elif gemstone_price_list_customer == "Diamond Range":
 
 							gpc = frappe.get_all(
 								"Gemstone Price List",
@@ -154,7 +154,7 @@ def create_new_bom(self):
 							gem.gemstone_rate_for_specified_quantity = (
 								float(rate) / 100 * float(gem.gemstone_pr)
 							)
-							gem.price_list_type='Multiplier'
+							gem.price_list_type='Diamond Range'
 							doc.total_gemstone_amount = sum(
 								flt(r.gemstone_rate_for_specified_quantity)
 								for r in doc.get("gemstone_detail", [])

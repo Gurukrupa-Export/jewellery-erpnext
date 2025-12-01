@@ -2823,7 +2823,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				
 				if gemstone_price_customer and any(dpl["price_list_type"] == gemstone_price_list_customer for dpl in gemstone_price_customer):
 					
-					if gemstone_price_customer and any(dpl["price_list_type"] == "Multiplier" for dpl in gemstone_price_customer):
+					if gemstone_price_customer and any(dpl["price_list_type"] == "Diamond Range" for dpl in gemstone_price_customer):
 						combined_query = frappe.db.sql("""
 							SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
 								gm.gemstone_type, 
@@ -2888,51 +2888,51 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								row["fg_purchase_rate"] = supplier_selected_value
 								row["fg_purchase_amount"] = row["fg_purchase_rate"] * gemstone_pr
 					
-					if gemstone_price_customer and any(dpl["price_list_type"] == "Weight (in cts)" for dpl in gemstone_price_customer):
-					# if gemstone_price_customer == "Weight (in cts)":
-						import re
+					# if gemstone_price_customer and any(dpl["price_list_type"] == "Weight (in cts)" for dpl in gemstone_price_customer):
+					# # if gemstone_price_customer == "Weight (in cts)":
+					# 	import re
 
-						gemstone_size_str = row.get("gemstone_size", "")
-						numbers = re.findall(r"[-+]?\d*\.\d+|\d+", gemstone_size_str)
+					# 	gemstone_size_str = row.get("gemstone_size", "")
+					# 	numbers = re.findall(r"[-+]?\d*\.\d+|\d+", gemstone_size_str)
 
-						if len(numbers) == 2:
-							min_size, max_size = float(min(numbers)), float(max(numbers))
-						elif len(numbers) == 1:
-							min_size = max_size = float(numbers[0])
-						else:
-							frappe.throw(f"Invalid gemstone size format: {gemstone_size_str}")
+					# 	if len(numbers) == 2:
+					# 		min_size, max_size = float(min(numbers)), float(max(numbers))
+					# 	elif len(numbers) == 1:
+					# 		min_size = max_size = float(numbers[0])
+					# 	else:
+					# 		frappe.throw(f"Invalid gemstone size format: {gemstone_size_str}")
 
-						# SQL Query for weight-based price list
-						weight_in_cts_gemstone_price_list_entry = frappe.db.sql(
-							"""
-							SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade,
-								supplier_fg_purchase_rate, from_weight, to_weight, rate, per_pc_or_per_carat
-							FROM `tabGemstone Price List`
-							WHERE customer = %s
-							AND price_list_type = %s
-							AND cut_or_cab = %s
-							AND gemstone_grade = %s
-							AND %s BETWEEN from_weight AND to_weight
-							ORDER BY creation DESC
-							LIMIT 1
-							""",
-							(new_bom.customer, gemstone_price_customer, row.get("cut_or_cab"), row.get("gemstone_grade"), min_size),
-							as_dict=True
-						)
+					# 	# SQL Query for weight-based price list
+					# 	weight_in_cts_gemstone_price_list_entry = frappe.db.sql(
+					# 		"""
+					# 		SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade,
+					# 			supplier_fg_purchase_rate, from_weight, to_weight, rate, per_pc_or_per_carat
+					# 		FROM `tabGemstone Price List`
+					# 		WHERE customer = %s
+					# 		AND price_list_type = %s
+					# 		AND cut_or_cab = %s
+					# 		AND gemstone_grade = %s
+					# 		AND %s BETWEEN from_weight AND to_weight
+					# 		ORDER BY creation DESC
+					# 		LIMIT 1
+					# 		""",
+					# 		(new_bom.customer, gemstone_price_customer, row.get("cut_or_cab"), row.get("gemstone_grade"), min_size),
+					# 		as_dict=True
+					# 	)
 
-						if weight_in_cts_gemstone_price_list_entry:
-							entry = weight_in_cts_gemstone_price_list_entry[0]
+					# 	if weight_in_cts_gemstone_price_list_entry:
+					# 		entry = weight_in_cts_gemstone_price_list_entry[0]
 
-							# Add safe access with .get()
-							row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
-							row["total_gemstone_rate"] = flt(entry.get("rate", 0))
+					# 		# Add safe access with .get()
+					# 		row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
+					# 		row["total_gemstone_rate"] = flt(entry.get("rate", 0))
 
-							# Ensure safe multiplication
-							row["fg_purchase_amount"] = (
-								row.get("fg_purchase_rate", 0) * row.get("quantity", 0)
-								if entry.get("per_pc_or_per_carat") == "Per Carat"
-								else row.get("fg_purchase_rate", 0) * row.get("pcs", 0)
-							)
+					# 		# Ensure safe multiplication
+					# 		row["fg_purchase_amount"] = (
+					# 			row.get("fg_purchase_rate", 0) * row.get("quantity", 0)
+					# 			if entry.get("per_pc_or_per_carat") == "Per Carat"
+					# 			else row.get("fg_purchase_rate", 0) * row.get("pcs", 0)
+					# 		)
 
 					if gemstone_price_customer and any(dpl["price_list_type"] == "Fixed" for dpl in gemstone_price_customer):
 					# if gemstone_price_customer == "Fixed":
@@ -2980,7 +2980,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			else:
 				if gemstone_price_list and any(dpl["price_list_type"] == gemstone_price_list_ref_customer for dpl in gemstone_price_list):
 					# if gemstone_price_list_ref_customer == "Multiplier":
-					if gemstone_price_customer and any(dpl["price_list_type"] == "Multiplier" for dpl in gemstone_price_customer):
+					if gemstone_price_customer and any(dpl["price_list_type"] == "Diamond Range" for dpl in gemstone_price_customer):
 						combined_query = frappe.db.sql(
 							"""
 							SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
@@ -3083,51 +3083,51 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							row["fg_purchase_amount"] = row.get("fg_purchase_rate", 0) * row.get("quantity", 0)
 					
 
-					if gemstone_price_customer and any(dpl["price_list_type"] == "Weight (in cts)" for dpl in gemstone_price_customer):
-					# if gemstone_price_list_ref_customer == "Weight (in cts)":
-						import re
+					# if gemstone_price_customer and any(dpl["price_list_type"] == "Weight (in cts)" for dpl in gemstone_price_customer):
+					# # if gemstone_price_list_ref_customer == "Weight (in cts)":
+					# 	import re
 
-						gemstone_size_str = row.get("gemstone_size", "")
-						numbers = re.findall(r"[-+]?\d*\.\d+|\d+", gemstone_size_str)
+					# 	gemstone_size_str = row.get("gemstone_size", "")
+					# 	numbers = re.findall(r"[-+]?\d*\.\d+|\d+", gemstone_size_str)
 
-						if len(numbers) == 2:
-							min_size, max_size = float(min(numbers)), float(max(numbers))
-						elif len(numbers) == 1:
-							min_size = max_size = float(numbers[0])
-						else:
-							frappe.throw(f"Invalid gemstone size format: {gemstone_size_str}")
+					# 	if len(numbers) == 2:
+					# 		min_size, max_size = float(min(numbers)), float(max(numbers))
+					# 	elif len(numbers) == 1:
+					# 		min_size = max_size = float(numbers[0])
+					# 	else:
+					# 		frappe.throw(f"Invalid gemstone size format: {gemstone_size_str}")
 
-						# SQL Query for weight-based price list
-						weight_in_cts_gemstone_price_list_entry = frappe.db.sql(
-							"""
-							SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade,
-								supplier_fg_purchase_rate, from_weight, to_weight, rate, per_pc_or_per_carat
-							FROM `tabGemstone Price List`
-							WHERE customer = %s
-							AND price_list_type = %s
-							AND cut_or_cab = %s
-							AND gemstone_grade = %s
-							AND %s BETWEEN from_weight AND to_weight
-							ORDER BY creation DESC
-							LIMIT 1
-							""",
-							(ref_customer, gemstone_price_list_ref_customer, row.get("cut_or_cab"), row.get("gemstone_grade"), min_size),
-							as_dict=True
-						)
+					# 	# SQL Query for weight-based price list
+					# 	weight_in_cts_gemstone_price_list_entry = frappe.db.sql(
+					# 		"""
+					# 		SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade,
+					# 			supplier_fg_purchase_rate, from_weight, to_weight, rate, per_pc_or_per_carat
+					# 		FROM `tabGemstone Price List`
+					# 		WHERE customer = %s
+					# 		AND price_list_type = %s
+					# 		AND cut_or_cab = %s
+					# 		AND gemstone_grade = %s
+					# 		AND %s BETWEEN from_weight AND to_weight
+					# 		ORDER BY creation DESC
+					# 		LIMIT 1
+					# 		""",
+					# 		(ref_customer, gemstone_price_list_ref_customer, row.get("cut_or_cab"), row.get("gemstone_grade"), min_size),
+					# 		as_dict=True
+					# 	)
 
-						if weight_in_cts_gemstone_price_list_entry:
-							entry = weight_in_cts_gemstone_price_list_entry[0]
+					# 	if weight_in_cts_gemstone_price_list_entry:
+					# 		entry = weight_in_cts_gemstone_price_list_entry[0]
 
-							# Add safe access with .get()
-							row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
-							row["total_gemstone_rate"] = flt(entry.get("rate", 0))
+					# 		# Add safe access with .get()
+					# 		row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
+					# 		row["total_gemstone_rate"] = flt(entry.get("rate", 0))
 
-							# Ensure safe multiplication
-							row["fg_purchase_amount"] = (
-								row.get("fg_purchase_rate", 0) * row.get("quantity", 0)
-								if entry.get("per_pc_or_per_carat") == "Per Carat"
-								else row.get("fg_purchase_rate", 0) * row.get("pcs", 0)
-							)
+					# 		# Ensure safe multiplication
+					# 		row["fg_purchase_amount"] = (
+					# 			row.get("fg_purchase_rate", 0) * row.get("quantity", 0)
+					# 			if entry.get("per_pc_or_per_carat") == "Per Carat"
+					# 			else row.get("fg_purchase_rate", 0) * row.get("pcs", 0)
+					# 		)
 
 				
 				
