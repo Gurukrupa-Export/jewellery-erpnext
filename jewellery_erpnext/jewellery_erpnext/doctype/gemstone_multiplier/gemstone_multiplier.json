@@ -6,47 +6,58 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "item_category",
-  "precious",
-  "semi_precious",
-  "synthetic"
+  "gemstone_type",
+  "from_weight",
+  "to_weight",
+  "precious_percentage",
+  "semi_precious_percentage",
+  "synthetic_percentage"
  ],
  "fields": [
   {
-   "fieldname": "item_category",
+   "fieldname": "precious_percentage",
+   "fieldtype": "Percent",
+   "label": "Precious Percentage"
+  },
+  {
+   "fieldname": "semi_precious_percentage",
+   "fieldtype": "Percent",
+   "label": "Semi Precious Percentage"
+  },
+  {
+   "fieldname": "synthetic_percentage",
+   "fieldtype": "Percent",
+   "label": "Synthetic Percentage"
+  },
+  {
+   "fieldname": "gemstone_type",
    "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "Item Category",
+   "label": "Gemstone Type",
    "options": "Attribute Value"
   },
   {
-   "fieldname": "precious",
-   "fieldtype": "Float",
-   "in_list_view": 1,
-   "label": "Precious"
+   "fieldname": "from_weight",
+   "fieldtype": "Link",
+   "label": "From Weight",
+   "options": "Attribute Value"
   },
   {
-   "fieldname": "semi_precious",
-   "fieldtype": "Float",
-   "in_list_view": 1,
-   "label": "Semi Precious"
-  },
-  {
-   "fieldname": "synthetic",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Synthetic"
+   "fieldname": "to_weight",
+   "fieldtype": "Link",
+   "label": "To Weight",
+   "options": "Attribute Value"
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-06-07 15:28:37.716032",
+ "modified": "2025-12-01 15:55:39.637183",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Gemstone Multiplier",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
