@@ -2682,7 +2682,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					limit=1
 				)
 				# frappe.throw(f"{retail_price_list}")
-				if retail_price_list and retail_price_list[0]["price_list_type"] == "Multiplier":
+				if retail_price_list and retail_price_list[0]["price_list_type"] == "Diamond Range":
 						# frappe.throw(f"jii")
 						combined_query = frappe.db.sql("""
 								SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
@@ -2756,7 +2756,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						limit=1
 					)
 				
-					if standard_price_list and standard_price_list[0]["price_list_type"] == "Multiplier":
+					if standard_price_list and standard_price_list[0]["price_list_type"] == "Diamond Range":
 						# gemstone_pr = row.get("gemstone_pr")
 						# if gemstone_pr is None :
 						# 		frappe.throw("Gemstone price is missing in the row data.")
