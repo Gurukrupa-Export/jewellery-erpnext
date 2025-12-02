@@ -162,7 +162,7 @@ def create_new_bom(self):
 
 				if hasattr(doc, "metal_detail"):
 					sub_info = sub[0]
-					if doc.metal_and_finding_weight < 2:
+					if doc.metal_and_finding_weight < 1:
 						# Use per piece rate, wastage might apply differently if needed
 						making_rate = sub_info.get("rate_per_pc", 0)
 						wastage_rate_value = 0  # or adjust if wastage applies for rate_per_pc
