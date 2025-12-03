@@ -1795,7 +1795,7 @@ let set_edit_bom_details = (
 	
 				// finding_data = dialog.fields_dict.finding_detail.df.data;
 				// dialog.fields_dict.finding_detail.grid.refresh();
-				// let grid = dialog.fields_dict.finding_detail.grid;
+				let grid = dialog.fields_dict.finding_detail.grid;
 				// grid.update_docfield_property("quantity", "precision", precision);
 	
 				// Refresh the grid
