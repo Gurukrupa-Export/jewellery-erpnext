@@ -78,7 +78,7 @@ def create_new_bom(self):
 					],
 					limit=1
 				)
-				
+				precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 				if hasattr(doc, "gemstone_detail"):
 					for gem in doc.gemstone_detail or []:
 
@@ -107,11 +107,11 @@ def create_new_bom(self):
 								frappe.throw("No Gemstone Price List found")
 
 							gem.total_gemstone_rate = gpc[0]["rate"]
-
+							gem.total_gemstone_rate =round(gem.total_gemstone_rate , precision)
 							gem.gemstone_rate_for_specified_quantity = (
 								float(gem.total_gemstone_rate) / 100 * float(gem.gemstone_pr)
 							)
-
+							gem.gemstone_rate_for_specified_quantity=round(gem.gemstone_rate_for_specified_quantity, precision)
 							doc.total_gemstone_amount = sum(
 								flt(r.gemstone_rate_for_specified_quantity)
 								for r in doc.get("gemstone_detail", [])
@@ -184,10 +184,9 @@ def create_new_bom(self):
 						customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
 						s.customer_metal_purity = customer_metal_purity
 						calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
-						s.rate=calculated_gold_rate
-						# frappe.throw(f"{calculated_gold_rate}")
-						s.amount=s.rate*s.quantity
-						s.making_rate=making_rate
+						s.rate=round(calculated_gold_rate , precision)
+						s.amount=round(s.rate*s.quantity,precision )
+						s.quantity=round(s.quantity, precision)
 						if doc.metal_and_finding_weight < 2:
 							s.making_amount = making_rate
 						else:
@@ -234,9 +233,9 @@ def create_new_bom(self):
 						customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
 						f.customer_metal_purity = customer_metal_purity
 						calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
-						f.rate=calculated_gold_rate
-						# f.rate = self.gold_rate_with_gst
-						f.amount = f.rate * f.quantity
+						f.rate=round(calculated_gold_rate , precision)
+						f.amount = round(f.rate * f.quantity,  precision)
+						f.quantity=round(f.quantity, precision)
 
 						# Determine making rate and wastage similar to metal detail logic
 						# Assuming `doc.finding_weight` or similar to check threshold, else modify accordingly
@@ -359,8 +358,9 @@ def create_new_bom(self):
 
 								# Effective rate after applying handling charges
 								# effective_rate = total_rate
-								d.total_diamond_rate = total_rate
-								d.diamond_rate_for_specified_quantity = d.quantity * total_rate
+								d.total_diamond_rate = round(total_rate, precision)
+								d.diamond_rate_for_specified_quantity = round(d.quantity * total_rate, precision)
+								d.quantity=round(d.quantity,precision )
 							else:
 								frappe.msgprint(f"Diamond Price is not available for row {d.idx}")
 								d.total_diamond_rate = 0
