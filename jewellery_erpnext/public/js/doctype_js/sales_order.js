@@ -1556,7 +1556,7 @@ let set_edit_bom_details = (
 						metal_purity: d.metal_purity,
 						is_customer_item: d.is_customer_item,
 						metal_colour: d.metal_colour,
-						amount: d.amount,
+						amount: gold_amount,
 						rate: rate_to_use,
 						actual_rate: calculated_actual_rate,
 						quantity: d.quantity,
@@ -1614,7 +1614,7 @@ let set_edit_bom_details = (
 				let difference_qty = without_precision_rate - with_precision_rate;
 				let total_diamond_rate_qty = (parseFloat(quantity_value) * parseFloat(d.total_diamond_rate)).toFixed(2);
 				total_sum_diamond += parseFloat(total_diamond_rate_qty);
-							
+				amount = parseFloat(total_diamond_rate_qty);			
 				let rate_to_use = d.total_diamond_rate;
 	
 				
@@ -1641,6 +1641,7 @@ let set_edit_bom_details = (
 					stone_shape: d.stone_shape,
 					quality: d.quality,
 					pcs: d.pcs,
+					diamond_rate_for_specified_quantity:amount,
 					diamond_cut: d.diamond_cut,
 					sub_setting_type: d.sub_setting_type,
 					diamond_grade: d.diamond_grade,
@@ -1650,7 +1651,7 @@ let set_edit_bom_details = (
 					quantity: quantity_value,  
 					weight_per_pcs: d.weight_per_pcs,
 					total_diamond_rate: rate_to_use,
-					diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+					// diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
 					// outright_handling_charges_rate:d.outright_handling_charges_rate,
 					// outright_handling_charges_amount:d.outright_handling_charges_amount,
 					is_customer_item: d.is_customer_item,
@@ -1733,7 +1734,7 @@ let set_edit_bom_details = (
 	// finding details table append
 	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
 	$.each(doc.finding_detail, function (index, d) {
-		finding_amount += d.amount;
+		finding_amount += amount;
 		// let rate_to_use = d.rate;
 		let making_rate_to_use = d.making_rate;
 	
@@ -1752,10 +1753,16 @@ let set_edit_bom_details = (
 				let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 				let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 				let rate_to_use = calculated_gold_rate;
-				console.log("gold  Rate",calculated_gold_rate)
+				let amount = calculated_gold_rate* d.quantity
+				// console.log("gold  Rate",calculated_gold_rate)
 				let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
 				let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
 				difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity
+				d.amount=amount
+				finding_amount += d.amount;
+				finding_weight +=d.quantity;
+				dialog.set_value("finding_amount", finding_amount);
+				dialog.set_value("finding_weight", finding_weight);
 				
 				if (
 					cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
