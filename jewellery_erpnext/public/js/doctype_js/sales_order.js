@@ -1597,14 +1597,14 @@ let set_edit_bom_details = (
 			args: {
 				doctype: "Customer",
 				filters: { name: cur_frm.doc.customer },
-				fieldname: "custom_consider_2_digit_for_diamond"
+				fieldname: "custom_precision_variable"
 			},
 			callback: function (response) {
 				let precision = 0;
 	
 				// Check if the custom_consider_2_digit_for_diamond field is checked
-				if (response.message && response.message.custom_consider_2_digit_for_diamond) {
-					precision = 2;  // Set precision to 2 if the checkbox is checked
+				if (response.message && response.message.custom_precision_variable) {
+					precision = response.message.custom_precision_variable;  // Set precision to 2 if the checkbox is checked
 				}
 	
 				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
@@ -1665,7 +1665,7 @@ let set_edit_bom_details = (
 				if (count === total_calls) {
 					dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
 					let grid = dialog.fields_dict.diamond_detail.grid;
-					grid.update_docfield_property("quantity", "precision", 2);
+					grid.update_docfield_property("quantity", "precision", precision);
 					grid.update_docfield_property("total_diamond_rate_qty", "precision", 2);  
 					grid.refresh();
 					// console.log("Final Diamond Amount:", total_sum_diamond.toFixed(2));
@@ -1688,14 +1688,14 @@ let set_edit_bom_details = (
 			args: {
 				doctype: "Customer",
 				filters: { name: cur_frm.doc.customer },
-				fieldname: "custom_consider_2_digit_for_gemstone"
+				fieldname: "custom_precision_variable"
 			},
 			callback: function (response) {
 				let precision = 0;
 	
 				// Check if the custom_consider_2_digit_for_diamond field is checked
-				if (response.message && response.message.custom_consider_2_digit_for_gemstone) {
-					precision = 2;  // Set precision to 2 if the checkbox is checked
+				if (response.message && response.message.custom_precision_variable) {
+					precision = response.message.custom_precision_variable;  // Set precision to 2 if the checkbox is checked
 				}
 	
 				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
@@ -1840,13 +1840,13 @@ let set_edit_bom_details = (
 		args: {
 			doctype: "Customer",
 			filters: { name: cur_frm.doc.customer },
-			fieldname: "custom_consider_2_digit_for_diamond"
+			fieldname: "custom_precision_variable"
 		},
 		callback: function (response) {
 			let precision = 0;
 	
-			if (response.message && response.message.custom_consider_2_digit_for_diamond) {
-				precision = 2;  
+			if (response.message && response.message.custom_precision_variable) {
+				precision = response.message.custom_precision_variable;  
 			}
 	
 			dialog.set_df_property("diamond_weight", "precision", precision);
