@@ -1572,6 +1572,9 @@ let set_edit_bom_details = (
 					// Check if last call
 					if (metal_data.length === doc.metal_detail.length) {
 						dialog.fields_dict.metal_detail.df.data = metal_data;
+						let grid = dialog.fields_dict.metal_detail.grid;
+						grid.update_docfield_property("rate", "precision", 2);
+						grid.update_docfield_property("amount", "precision", 2);
 						dialog.fields_dict.metal_detail.grid.refresh();
 					}
 				}
@@ -1666,7 +1669,9 @@ let set_edit_bom_details = (
 					dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
 					let grid = dialog.fields_dict.diamond_detail.grid;
 					grid.update_docfield_property("quantity", "precision", precision);
-					grid.update_docfield_property("total_diamond_rate_qty", "precision", 2);  
+					grid.update_docfield_property("total_diamond_rate_qty", "precision", 2);
+					grid.update_docfield_property("rate", "precision", 2);
+					grid.update_docfield_property("amount", "precision", 2);  
 					grid.refresh();
 					// console.log("Final Diamond Amount:", total_sum_diamond.toFixed(2));
 				}
@@ -1803,8 +1808,9 @@ let set_edit_bom_details = (
 				// finding_data = dialog.fields_dict.finding_detail.df.data;
 				// dialog.fields_dict.finding_detail.grid.refresh();
 				let grid = dialog.fields_dict.finding_detail.grid;
-				// grid.update_docfield_property("quantity", "precision", precision);
-	
+				grid.update_docfield_property("quantity", "precision", precision);
+				grid.update_docfield_property("rate", "precision", 2);
+				grid.update_docfield_property("amount", "precision", 2);
 				// Refresh the grid
 				finding_data = dialog.fields_dict.finding_detail.df.data;
 				grid.refresh();
