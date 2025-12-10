@@ -1530,7 +1530,7 @@ let set_edit_bom_details = (
 					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity;
 					let difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity;
 	
-					console.log("gold", difference_actual_gold_rate);
+					// console.log("gold", difference_actual_gold_rate);
 	
 					let making_rate_to_use = d.making_rate;
 					let rate_to_use = calculated_gold_rate;
@@ -1668,7 +1668,7 @@ let set_edit_bom_details = (
 					grid.update_docfield_property("quantity", "precision", 2);
 					grid.update_docfield_property("total_diamond_rate_qty", "precision", 2);  
 					grid.refresh();
-					console.log("Final Diamond Amount:", total_sum_diamond.toFixed(2));
+					// console.log("Final Diamond Amount:", total_sum_diamond.toFixed(2));
 				}
 			}
 		});
