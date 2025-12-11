@@ -1498,6 +1498,7 @@ let set_edit_bom_details = (
 	var metal_amount = 0;
 	var making_amount = 0;
 	var wastage_amount = 0;
+	var finding_weight = 0;
 	var diamond_amount = 0;
 	var finding_amount = 0;
 	var gemstone_amount = 0;
@@ -1534,6 +1535,7 @@ let set_edit_bom_details = (
 	
 					let making_rate_to_use = d.making_rate;
 					let rate_to_use = calculated_gold_rate;
+					let gold_amount = calculated_gold_rate * d.quantity;
 	
 					if (
 						cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
@@ -1808,7 +1810,7 @@ let set_edit_bom_details = (
 				// finding_data = dialog.fields_dict.finding_detail.df.data;
 				// dialog.fields_dict.finding_detail.grid.refresh();
 				let grid = dialog.fields_dict.finding_detail.grid;
-				grid.update_docfield_property("quantity", "precision", precision);
+				grid.update_docfield_property("quantity", "precision", 3);
 				grid.update_docfield_property("rate", "precision", 2);
 				grid.update_docfield_property("amount", "precision", 2);
 				// Refresh the grid
