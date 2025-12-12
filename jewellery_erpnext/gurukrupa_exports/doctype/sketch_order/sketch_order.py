@@ -74,12 +74,17 @@ class SketchOrder(Document):
 			for row in self.final_sketch_approval_cmo:
 				# if row.item or not (row.design_status == "Approved" and row.design_status_cpo == "Approved"):
 				# 	continue
-				item_template = create_item_template_from_sketch_order(self, row.name)
-				updatet_item_template(self, item_template)
-				# item_variant = create_item_from_sketch_order(self, item_template, row.name)
-				# update_item_variant(self, item_variant, item_template)
-				frappe.db.set_value(row.doctype, row.name, "item", item_template)
-				frappe.msgprint(_("New Item Created: {0}").format(get_link_to_form("Item", item_template)))
+				if row.item_remark == "Copy Paste Item":
+					frappe.db.set_value("Item",row.item,"order_form_type","Sketch Order")
+					frappe.db.set_value("Item",row.item,"custom_sketch_order_form_id",self.sketch_order_form)
+					frappe.db.set_value("Item",row.item,"custom_sketch_order_id",self.name)
+				else:
+					item_template = create_item_template_from_sketch_order(self, row.name)
+					updatet_item_template(self, item_template)
+					# item_variant = create_item_from_sketch_order(self, item_template, row.name)
+					# update_item_variant(self, item_variant, item_template)
+					frappe.db.set_value(row.doctype, row.name, "item", item_template)
+					frappe.msgprint(_("New Item Created: {0}").format(get_link_to_form("Item", item_template)))
 		if self.order_type == 'Purchase':
 			item_template = create_item_for_po(self,self.name)
 			updatet_item_template(self, item_template)
