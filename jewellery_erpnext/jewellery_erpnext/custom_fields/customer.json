@@ -440,7 +440,7 @@
    "is_system_generated": 1,
    "label": "Gemstone Price List Type",
    "module": "Jewellery Erpnext",
-   "options": "Weight (in cts)\nFixed\nMultiplier"
+   "options": "\nFixed\nDiamond Range"
   },
   {
    "depends_on": "eval: doc.custom_allowed_item_category_for_invoice == \"Mix\u00a0and\u00a0Unique\";",
