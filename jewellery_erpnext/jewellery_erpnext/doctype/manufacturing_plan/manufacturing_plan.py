@@ -53,8 +53,8 @@ class ManufacturingPlan(Document):
 
 	def validate_qty_with_bom_creation(self):
 		total = 0
-		bom_data = frappe._dict()
-		bom_type_data = frappe._dict()
+		# bom_data = frappe._dict()
+		# bom_type_data = frappe._dict()
 		for row in self.manufacturing_plan_table:
 			# Validate Qty
 			if not row.subcontracting:
@@ -66,30 +66,30 @@ class ManufacturingPlan(Document):
 				)
 				frappe.throw(error_message)
 			total += cint(row.manufacturing_order_qty) + cint(row.subcontracting_qty)
-			if row.qty_per_manufacturing_order == 0:
-				frappe.throw(_("Qty per Manufacturing Order cannot be Zero"))
+			if row.qty_per_manufacturing_order != 1:
+				frappe.throw(_("Qty per Manufacturing Order Should be One"))
 			if row.manufacturing_order_qty % row.qty_per_manufacturing_order != 0:
 				error_message = _(
 					"Row #{0}: `Manufacturing Order Qty` / `Qty per Manufacturing Order` must be a whole number"
 				).format(row.idx)
 				frappe.throw(error_message)
 
-			# Create BOM
-			if not row.manufacturing_bom and frappe.db.exists("BOM", row.bom):
-				if not bom_type_data.get(row.bom):
-					bom_type_data[row.bom] = frappe.get_value("BOM", {"name": row.bom}, "bom_type")
-				bom_type = bom_type_data.get(row.bom)
-				if bom_type == "Sales Order":
-					row.manufacturing_bom = row.bom
-					if not bom_data.get(row.bom):
-						bom_data[row.bom] = create_manufacturing_process_bom(self, row)
-				else:
-					frappe.throw(
-						_("Manufactuing Bom Creation Error: {0} BOM Type Must be a Sales Order.").format(row.bom)
-					)
-		for row in bom_data:
-			frappe.db.set_value("BOM", row, bom_data.get(row))
-		self.total_planned_qty = total
+		# 	# Create BOM
+		# 	if not row.manufacturing_bom and frappe.db.exists("BOM", row.bom):
+		# 		if not bom_type_data.get(row.bom):
+		# 			bom_type_data[row.bom] = frappe.get_value("BOM", {"name": row.bom}, "bom_type")
+		# 		bom_type = bom_type_data.get(row.bom)
+		# 		if bom_type == "Sales Order":
+		# 			row.manufacturing_bom = row.bom
+		# 			if not bom_data.get(row.bom):
+		# 				bom_data[row.bom] = create_manufacturing_process_bom(self, row)
+		# 		else:
+		# 			frappe.throw(
+		# 				_("Manufactuing Bom Creation Error: {0} BOM Type Must be a Sales Order.").format(row.bom)
+		# 			)
+		# for row in bom_data:
+		# 	frappe.db.set_value("BOM", row, bom_data.get(row))
+		# self.total_planned_qty = total
 
 	@frappe.whitelist()
 	def get_sales_orders(self):
@@ -237,12 +237,12 @@ class ManufacturingPlan(Document):
 # 				frappe.throw(f"Manufactuing Bom Creation Error: {row.bom} BOM Type Must be a Sales Order.")
 
 
-def create_manufacturing_process_bom(self, row):
-	return {
-		"bom_type": "Manufacturing Process",
-		"custom_creation_doctype": "Manufacturing Plan",
-		"custom_creation_docname": self.name,
-	}
+# def create_manufacturing_process_bom(self, row):
+# 	return {
+# 		"bom_type": "Manufacturing Process",
+# 		"custom_creation_doctype": "Manufacturing Plan",
+# 		"custom_creation_docname": self.name,
+# 	}
 	# frappe.db.set_value("BOM", row.bom, data_to_be_updated)
 	# doc = frappe.copy_doc(frappe.get_doc("BOM", row.bom))
 	# doc.custom_creation_doctype = self.doctype
