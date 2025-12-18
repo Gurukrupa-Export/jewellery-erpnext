@@ -318,7 +318,7 @@ def create_new_bom(self):
 											)
 
 								latest = rate_result[0] if rate_result else None
-								frappe.throw(f"{latest}")
+								# frappe.throw(f"{latest}")
 							elif price_list_type == 'Size (in mm)':
 								latest = frappe.db.get_value("Diamond Price List", {**common_filters, "diamond_size_in_mm": d.diamond_sieve_size},
 															["rate",
@@ -380,20 +380,17 @@ def create_new_bom(self):
 				doc.finding_bom_amount=doc.total_finding_amount
 				doc.total_bom_amount=(doc.diamond_bom_amount +doc.gold_bom_amount+ doc.gemstone_bom_amount+doc.finding_bom_amount)
 				# frappe.throw(f"{doc.total_bom_amount}")
+				self.total=0
 				for row in self.items:
-					bom_doc = frappe.get_doc("BOM", row.bom)		
-					row.amount=bom_doc.total_bom_amount	
+					# bom_doc = frappe.get_doc("BOM", row.bom)		
+					row.amount=doc.total_bom_amount
 					row.rate=row.amount/row.qty
-					row.gold_bom_rate = bom_doc.gold_bom_amount
-					row.diamond_bom_rate = bom_doc.diamond_bom_amount
-					row.gemstone_bom_rate = bom_doc.gemstone_bom_amount
-					row.other_bom_rate = bom_doc.other_bom_amount
-					row.making_charge = bom_doc.making_charge
-					# frappe.throw(f"{row.rate}")
-				doc.save(ignore_permissions=True)
-				
-				
-				frappe.db.commit()	
+					row.gold_bom_rate =doc.gold_bom_amount
+					row.diamond_bom_rate =doc.diamond_bom_amount
+					row.gemstone_bom_rate = doc.gemstone_bom_amount
+					row.other_bom_rate = doc.other_bom_amount
+					row.making_charge = doc.making_charge
+					self.total=self.total + row.amount
 			
 
 				
