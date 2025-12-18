@@ -318,6 +318,7 @@ def create_new_bom(self):
 											)
 
 								latest = rate_result[0] if rate_result else None
+								frappe.throw(f"{latest}")
 							elif price_list_type == 'Size (in mm)':
 								latest = frappe.db.get_value("Diamond Price List", {**common_filters, "diamond_size_in_mm": d.diamond_sieve_size},
 															["rate",
