@@ -6,11 +6,64 @@ import json
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils import cint
 
 
 class ManufacturingPlan(Document):
+    def on_submit(self):
+        is_subcontracting = False
+        customer_diamond_data = frappe._dict()
+        for row in self.manufacturing_plan_table:
+            if row.docname:
+                frappe.db.sql(
+                    """
+					UPDATE `tabSales Order Item`
+					SET manufacturing_order_qty = COALESCE(manufacturing_order_qty, 0) + %s,
+					modified = NOW(), modified_by = %s
+					WHERE name = %s
+					""",
+                    (
+                        (
+                            cint(row.manufacturing_order_qty)
+                            + cint(row.subcontracting_qty)
+                        ),
+                        frappe.session.user,
+                        row.docname,
+                    ),
+                )
+            create_manufacturing_order(self, row, customer_diamond_data)
+            if row.subcontracting:
+                is_subcontracting = True
+                # create_subcontracting_order(self, row)
+            if row.manufacturing_bom is None:
+                frappe.throw(f"Row:{row.idx} Manufacturing Bom Missing")
+
+        if is_subcontracting:
+            create_subcontracting_order(self)
+
     def validate(self):
-        pass
+        self.validate_qty_with_bom_creation()
+
+    def validate_qty_with_bom_creation(self):
+        total = 0
+        for row in self.manufacturing_plan_table:
+            # Validate Qty
+            if not row.subcontracting:
+                row.subcontracting_qty = 0
+                row.supplier = None
+            if (row.manufacturing_order_qty + row.subcontracting_qty) > row.pending_qty:
+                error_message = _(
+                    "Row #{0}: Total Order qty cannot be greater than {1}"
+                ).format(row.idx, row.pending_qty)
+                frappe.throw(error_message)
+            total += cint(row.manufacturing_order_qty) + cint(row.subcontracting_qty)
+            if row.qty_per_manufacturing_order == 0:
+                frappe.throw(_("Qty per Manufacturing Order Can not  be 0"))
+
+            # Set Manufacturing BOM if not set
+            if not row.manufacturing_bom and frappe.db.exists("BOM", row.bom):
+                row.manufacturing_bom = row.bom
+        self.total_planned_qty = total
 
     @frappe.whitelist()
     def get_items_for_production(self):
@@ -189,6 +242,22 @@ def map_docs(method, source_names, target_doc, args=None):
         if args
         else (source_names, target_doc)
     )
-    print("_args", _args, *_args)
     target_doc = method(*_args)
     return target_doc
+
+
+def create_manufacturing_order(doc, row, customer_diamond_data):
+    cnt = int(row.manufacturing_order_qty / row.qty_per_manufacturing_order)
+
+    if not cnt:
+        return
+
+    frappe.msgprint(_("Parent Manufacturing Order Created"))
+
+
+def create_subcontracting_order(doc):
+    pass
+
+
+# for row in doc.manufacturing_plan_table:
+# make_subcontracting_order(doc)
