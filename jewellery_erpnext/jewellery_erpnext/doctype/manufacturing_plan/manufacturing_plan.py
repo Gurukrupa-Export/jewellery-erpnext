@@ -8,35 +8,45 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint
 
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
+    make_manufacturing_order,
+)
+
 
 class ManufacturingPlan(Document):
     def on_submit(self):
         is_subcontracting = False
         customer_diamond_data = frappe._dict()
+        frappe.db.sql(
+            """
+					UPDATE `tabSales Order Item` soi
+					JOIN `tabManufacturing Plan Table` mpt
+						ON soi.name = mpt.docname
+					JOIN `tabManufacturing Plan` mp
+						ON (mpt.parent = mp.name AND mp.name = %(mp_name)s)
+					JOIN `tabSales Order` so
+						ON (soi.parent = so.name AND so.docstatus = 1)
+					SET
+						soi.manufacturing_order_qty =
+							COALESCE(soi.manufacturing_order_qty, 0)
+							+ COALESCE(mpt.manufacturing_order_qty, 0)
+							+ COALESCE(mpt.subcontracting_qty, 0),
+						so.modified = NOW(),
+						so.modified_by = %(modified_by)s
+				""",
+            {
+                "mp_name": self.name,
+                "modified_by": frappe.session.user,
+            },
+        )
         for row in self.manufacturing_plan_table:
             if row.docname:
-                frappe.db.sql(
-                    """
-					UPDATE `tabSales Order Item`
-					SET manufacturing_order_qty = COALESCE(manufacturing_order_qty, 0) + %s,
-					modified = NOW(), modified_by = %s
-					WHERE name = %s
-					""",
-                    (
-                        (
-                            cint(row.manufacturing_order_qty)
-                            + cint(row.subcontracting_qty)
-                        ),
-                        frappe.session.user,
-                        row.docname,
-                    ),
-                )
-            create_manufacturing_order(self, row, customer_diamond_data)
-            if row.subcontracting:
-                is_subcontracting = True
-                # create_subcontracting_order(self, row)
-            if row.manufacturing_bom is None:
-                frappe.throw(f"Row:{row.idx} Manufacturing Bom Missing")
+                create_manufacturing_order(self, row, customer_diamond_data)
+                if row.subcontracting:
+                    is_subcontracting = True
+                    # create_subcontracting_order(self, row)
+                if row.manufacturing_bom is None:
+                    frappe.throw(f"Row:{row.idx} Manufacturing Bom Missing")
 
         if is_subcontracting:
             create_subcontracting_order(self)
@@ -61,7 +71,7 @@ class ManufacturingPlan(Document):
                 frappe.throw(_("Qty per Manufacturing Order Can not  be 0"))
 
             # Set Manufacturing BOM if not set
-            if not row.manufacturing_bom and frappe.db.exists("BOM", row.bom):
+            if not row.manufacturing_bom:
                 row.manufacturing_bom = row.bom
         self.total_planned_qty = total
 
@@ -252,6 +262,79 @@ def create_manufacturing_order(doc, row, customer_diamond_data):
     if not cnt:
         return
 
+    doc_type, docname = (
+        ("Sales Order Item", row.docname)
+        if row.sales_order
+        else ("Manufacturing Work Order", row.mwo)
+    )
+
+    fields = ["metal_type", "metal_touch", "metal_colour"]
+    if row.mwo:
+        fields.append("master_bom")
+
+    so_det = (
+        frappe.get_value(doc_type, docname, fields, as_dict=1)
+        if (row.sales_order or row.mwo)
+        else {}
+    )
+
+    master_bom = None
+    if doc.select_manufacture_order == "Manufacturing":
+        master_bom = row.manufacturing_bom
+    elif (
+        doc.select_manufacture_order == "Repair"
+        and row.order_form_type == "Repair Order"
+    ):
+        master_bom = row.serial_id_bom
+
+    if master_bom:
+        bom_details = frappe.db.get_value(
+            "BOM", master_bom, ["metal_type_", "metal_colour", "metal_touch"], as_dict=1
+        )
+        if bom_details:
+            so_det.metal_type = bom_details.get("metal_type_") or so_det.metal_type_
+            so_det.metal_colour = bom_details.get("metal_colour") or so_det.metal_colour
+            so_det.metal_touch = bom_details.get("metal_touch") or so_det.metal_touch
+
+    if row.diamond_quality and not frappe.db.get_value(
+        "Customer", row.customer, "is_internal_customer"
+    ):
+        key = (row.customer, row.diamond_quality)
+        if row.customer_diamond == "Yes":
+            if not customer_diamond_data.get(key):
+                diamond_grade_data = frappe.db.get_value(
+                    "Customer Diamond Grade",
+                    {"parent": row.customer, "diamond_quality": row.diamond_quality},
+                    [
+                        "diamond_grade_1",
+                        "diamond_grade_2",
+                        "diamond_grade_3",
+                        "diamond_grade_4",
+                    ],
+                )
+                for grade in diamond_grade_data:
+                    if frappe.db.get_value(
+                        "Attribute Value", grade, "is_customer_diamond_quality"
+                    ):
+                        customer_diamond_data[key] = grade
+                        break
+        else:
+            if not customer_diamond_data.get(key):
+                customer_diamond_data[key] = frappe.db.get_value(
+                    "Customer Diamond Grade",
+                    {"parent": row.customer, "diamond_quality": row.diamond_quality},
+                    "diamond_grade_1",
+                )
+        so_det.diamond_grade = customer_diamond_data.get(key)
+        if not so_det.diamond_grade and not frappe.db.get_value(
+            "Item", row.item_code, "has_batch_no"
+        ):
+            frappe.throw(
+                _("Diamond Grade is not mentioned in customer {0}").format(row.customer)
+            )
+
+    for i in range(0, cnt):
+        make_manufacturing_order(doc, row, master_bom=master_bom, so_det=so_det)
     frappe.msgprint(_("Parent Manufacturing Order Created"))
 
 
