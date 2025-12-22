@@ -167,7 +167,7 @@
    "in_preview": 1,
    "label": "Qty Per Manufacturing Order",
    "non_negative": 1,
-   "read_only": 1
+   "read_only": 0
   },
   {
    "fieldname": "bom",
