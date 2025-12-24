@@ -138,16 +138,16 @@ def create_new_bom(self):
 							gpc_doc = frappe.get_doc("Gemstone Price List", gpc[0].name)
 							multiplier_rows = gpc_doc.get("gemstone_multiplier")
 							rate = 0
-							for row in multiplier_rows:
-								if row.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(row.from_weight) and flt(doc.diamond_weight)<=flt(row.to_weight)):
+							for mul in multiplier_rows:
+								if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
 									if gem.gemstone_quality == 'Precious':
-										rate = row.precious_percentage
+										rate = mul.precious_percentage
 
 									elif gem.gemstone_quality == 'Semi-Precious':
-										rate = row.semi_precious_percentage
+										rate = mul.semi_precious_percentage
 
 									elif gem.gemstone_quality == 'Synthetic':
-										rate = row.synthetic_percentage
+										rate = mul.synthetic_percentage
 
 								gem.total_gemstone_rate = rate
 
@@ -381,16 +381,16 @@ def create_new_bom(self):
 				doc.total_bom_amount=(doc.diamond_bom_amount +doc.gold_bom_amount+ doc.gemstone_bom_amount+doc.finding_bom_amount)
 				# frappe.throw(f"{doc.total_bom_amount}")
 				self.total=0
-				for row in self.items:
+				
 					# bom_doc = frappe.get_doc("BOM", row.bom)		
-					row.amount=doc.total_bom_amount
-					row.rate=row.amount/row.qty
-					row.gold_bom_rate =doc.gold_bom_amount
-					row.diamond_bom_rate =doc.diamond_bom_amount
-					row.gemstone_bom_rate = doc.gemstone_bom_amount
-					row.other_bom_rate = doc.other_bom_amount
-					row.making_charge = doc.making_charge
-					self.total=self.total + row.amount
+				row.amount=doc.total_bom_amount
+				row.rate=row.amount/row.qty
+				row.gold_bom_rate =doc.gold_bom_amount
+				row.diamond_bom_rate =doc.diamond_bom_amount
+				row.gemstone_bom_rate = doc.gemstone_bom_amount
+				row.other_bom_rate = doc.other_bom_amount
+				row.making_charge = doc.making_charge
+				self.total=self.total + row.amount
 			
 
 				doc.save(ignore_permissions=True)		
