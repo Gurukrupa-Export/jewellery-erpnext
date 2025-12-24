@@ -26,7 +26,8 @@
   "diamond_type",
   "hsn_code",
   "sales_type",
-  "charge_type"
+  "charge_type",
+  "finding_category"
  ],
  "fields": [
   {
@@ -155,6 +156,13 @@
    "label": "Diamond Type",
    "link_filters": "[[\"Attribute Value\", \"custom_is_diamond_type\", \"=\", 1]]",
    "mandatory_depends_on": "eval: doc.is_for_diamond == 1;",
+   "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval: doc.is_for_finding || doc.is_for_finding_making ",
+   "fieldname": "finding_category",
+   "fieldtype": "Link",
+   "label": "Finding Category",
    "options": "Attribute Value"
   }
  ],
