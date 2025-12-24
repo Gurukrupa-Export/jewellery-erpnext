@@ -1229,6 +1229,7 @@ def validate_item_dharm(self):
 				"metal_type": e_invoice_item.metal_type,
 				"metal_purity": e_invoice_item.metal_purity,
 				"uom": e_invoice_item.uom,
+				"finding_category":e_invoice_item.finding_category,
 				"tax_rate": matched_sales_type_row.tax_rate if matched_sales_type_row else 0
 			})
 
