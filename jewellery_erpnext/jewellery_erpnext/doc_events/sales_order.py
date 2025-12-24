@@ -47,8 +47,12 @@ def create_new_bom(self):
 	for row in self.items:
 		if not row.quotation_bom:
 			
-			create_serial_no_bom(self, row)
+			# create_serial_no_bom(self, row)
+			if self.sales_type != 'Branch Sales':
+				create_serial_no_bom(self, row)
 			if row.bom:
+				if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
+					frappe.db.set_value("BOM",row.bom,"docstatus","0")
 				doc = frappe.get_doc("BOM",row.bom)
 				mc = frappe.get_all(
 					"Making Charge Price",
@@ -1193,7 +1197,7 @@ def validate_items(self):
 
 
 def validate_item_dharm(self):
-	allowed = ("Finished Goods", "Subcontracting", "Certification")
+	allowed = ("Finished Goods", "Subcontracting", "Certification","Branch Sales")
 	if self.sales_type in allowed:
 		customer_payment_term_doc = frappe.get_doc(
 			"Customer Payment Terms",
