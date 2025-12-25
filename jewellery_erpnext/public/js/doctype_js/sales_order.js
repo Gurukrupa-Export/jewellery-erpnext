@@ -772,6 +772,8 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "customer_metal_purity",
 				label: __("Customer Metal Purity"),
 				read_only: 1,
+				columns: 1,
+				in_list_view: 1,
 				options: "Attribute Value",
 			},
 			{ fieldtype: "Column Break", fieldname: "clb1" },
