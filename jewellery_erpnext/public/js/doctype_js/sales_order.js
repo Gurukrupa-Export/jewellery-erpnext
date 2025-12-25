@@ -1500,18 +1500,20 @@ let set_edit_bom_details = (
 	var metal_amount = 0;
 	var making_amount = 0;
 	var wastage_amount = 0;
-	var finding_weight = 0;
 	var diamond_amount = 0;
 	var finding_amount = 0;
+	var finding_weight = 0;
 	var gemstone_amount = 0;
 	var other_material_amount = 0;
 
 	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
 		let metal_data = [];
-	
 		$.each(doc.metal_detail, function (index, d) {
 			metal_amount += d.amount;
 			making_amount += d.making_amount;
+					
+			dialog.set_value("making_amount", making_amount);
+			dialog.set_value("metal_amount", metal_amount);
 			wastage_amount += d.wastage_amount;
 	
 			frappe.call({
@@ -1525,20 +1527,21 @@ let set_edit_bom_details = (
 					let metal_purity_value = response.message || "N/A";
 					let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
 					let metal_purity = flt(metal_purity_value || 0);
-	
+					
 					let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 					let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-	
+					
 					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity;
 					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity;
+
 					let difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity;
-	
-					// console.log("gold", difference_actual_gold_rate);
-	
+					
 					let making_rate_to_use = d.making_rate;
+					
 					let rate_to_use = calculated_actual_rate;
+					// let rate_to_use = gold_rate_with_gst;
 					let gold_amount = calculated_actual_rate * d.quantity;
-	
+					
 					if (
 						cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
 						cur_frm.doc.customer === "GJCU0009"
@@ -1572,7 +1575,7 @@ let set_edit_bom_details = (
 						customer_metal_purity: metal_purity_value,
 						difference:difference_actual_gold_rate
 					});
-	
+						
 					// Check if last call
 					if (metal_data.length === doc.metal_detail.length) {
 						dialog.fields_dict.metal_detail.df.data = metal_data;
@@ -1594,9 +1597,8 @@ let set_edit_bom_details = (
 	let count = 0;  
 	let total_calls = doc.diamond_detail.length; 
 	
-	$.each(doc.diamond_detail, function (index, d) {
+	$.each(doc.diamond_detail, function (index, d) { 
 		let witout_precision = d.quantity;
-		// console.log(witout_precision);
 		let without_precision_rate = witout_precision * d.total_diamond_rate;
 	
 		frappe.call({
@@ -1608,10 +1610,9 @@ let set_edit_bom_details = (
 			},
 			callback: function (response) {
 				let precision = 0;
-	
 				// Check if the custom_consider_2_digit_for_diamond field is checked
 				if (response.message && response.message.custom_precision_variable) {
-					precision = response.message.custom_precision_variable;  // Set precision to 2 if the checkbox is checked
+					precision =response.message.custom_precision_variable ;  // Set precision to 2 if the checkbox is checked
 				}
 	
 				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
@@ -1621,9 +1622,8 @@ let set_edit_bom_details = (
 				let difference_qty = without_precision_rate - with_precision_rate;
 				let total_diamond_rate_qty = (parseFloat(quantity_value) * parseFloat(d.total_diamond_rate)).toFixed(2);
 				total_sum_diamond += parseFloat(total_diamond_rate_qty);
-				amount = parseFloat(total_diamond_rate_qty);			
+				amount = parseFloat(total_diamond_rate_qty);
 				let rate_to_use = d.total_diamond_rate;
-	
 				
 				if (
 					cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
@@ -1667,19 +1667,18 @@ let set_edit_bom_details = (
 				});
 	
 				count++;
-	
 				// Set diamond amount only after all calls are done
 				if (count === total_calls) {
 					dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
 					let grid = dialog.fields_dict.diamond_detail.grid;
+					
 					grid.update_docfield_property("quantity", "precision", precision);
-					// grid.update_docfield_property("total_diamond_rate_qty", "precision", 2);
-					grid.update_docfield_property("rate", "precision", 2);
-					grid.update_docfield_property("amount", "precision", 2);  
+					// grid.update_docfield_property("total_diamond_rate_qty", "precision", 2); 
+					 
 					grid.refresh();
-					// console.log("Final Diamond Amount:", total_sum_diamond.toFixed(2));
 				}
 			}
+			
 		});
 	});
 	
@@ -1732,6 +1731,7 @@ let set_edit_bom_details = (
 	
 				let grid = dialog.fields_dict.gemstone_detail.grid;
 				grid.update_docfield_property("quantity", "precision", precision);
+				
 	
 				// Refresh the grid
 				gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
@@ -1742,9 +1742,12 @@ let set_edit_bom_details = (
 
 	// finding details table append
 	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
+	let pending = doc.finding_detail.length; 
+    dialog.fields_dict.finding_detail.df.data = [];
 	$.each(doc.finding_detail, function (index, d) {
-		finding_amount += amount;
+		// finding_amount += amount;
 		// let rate_to_use = d.rate;
+		// dialog.set_value("finding_amount", finding_amount);
 		let making_rate_to_use = d.making_rate;
 	
 		frappe.call({
@@ -1763,30 +1766,30 @@ let set_edit_bom_details = (
 				let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 				let rate_to_use = calculated_gold_rate;
 				let amount = calculated_actual_rate* d.quantity
-				// console.log("gold  Rate",calculated_gold_rate)
 				let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
 				let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
 				difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity
 				d.amount=amount
-				finding_amount += d.amount;
-				finding_weight +=d.quantity;
-				dialog.set_value("finding_amount", finding_amount);
-				dialog.set_value("finding_weight", finding_weight);
-				
+				// finding_amount += d.amount;
+				// finding_weight +=d.quantity;
+				// dialog.set_value("finding_amount", finding_amount);
+				// dialog.set_value("finding_weight", finding_weight);
 				if (
 					cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
 					cur_frm.doc.customer === "GJCU0009"
 				) {
 					rate_to_use = flt(d.se_rate || 0);
 					making_rate_to_use = d.making_rate;
-					d.making_amount = making_rate_to_use * d.quantity;
+					
 				} else if (
 					cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
 					cur_frm.doc.customer_name === "Gurukrupa Export Private Limited - Chennai"
 				) {
 					making_rate_to_use = d.fg_purchase_rate;
+					
 				}
-	
+					d.making_amount = making_rate_to_use * d.quantity;
+					
 				dialog.fields_dict.finding_detail.df.data.push({
 					docname: d.name,
 					metal_type: d.metal_type,
@@ -1811,14 +1814,16 @@ let set_edit_bom_details = (
 	
 				// finding_data = dialog.fields_dict.finding_detail.df.data;
 				// dialog.fields_dict.finding_detail.grid.refresh();
+				pending--; 
+                if (pending === 0) {
 				let grid = dialog.fields_dict.finding_detail.grid;
-				grid.update_docfield_property("quantity", "precision", 3);
+				let precision = 3;
 				grid.update_docfield_property("rate", "precision", 2);
 				grid.update_docfield_property("amount", "precision", 2);
 				// Refresh the grid
 				finding_data = dialog.fields_dict.finding_detail.df.data;
 				grid.refresh();
-			}
+			}}
 		});
 	});
 	});
@@ -1850,35 +1855,47 @@ let set_edit_bom_details = (
 		args: {
 			doctype: "Customer",
 			filters: { name: cur_frm.doc.customer },
-			fieldname: "custom_precision_variable"
+			fieldname: "custom_consider_2_digit_for_diamond"
 		},
 		callback: function (response) {
-			let precision = 0;
+			let precision = 3;
 	
-			if (response.message && response.message.custom_precision_variable) {
-				precision = response.message.custom_precision_variable;  
+			if (response.message && response.message.custom_consider_2_digit_for_diamond) {
+				precision = 2;  
 			}
 	
-			dialog.set_df_property("diamond_weight", "precision", precision);
-			dialog.set_df_property("gemstone_weight", "precision", precision);
-	
+			
 			// Set all fields from BOM
-			dialog.set_value("gross_weight", doc.gross_weight || 0);
 			dialog.set_value("metal_amount", metal_amount || 0);
 			dialog.set_value("making_amount", making_amount || 0);
 			dialog.set_value("wastage_amount", wastage_amount || 0);
 			dialog.set_value("gemstone_amount", gemstone_amount || 0);
-	
+			dialog.set_value("finding_amount", doc.finding_amount);
+			
+			
+			// Set remaining fields
+			// dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
+			// dialog.set_value("finding_weight", doc.finding_weight_ || 0);
+			dialog.set_value("gross_weight", doc.gross_weight || 0);
+			dialog.set_value(
+				"net_weight",
+				((doc.total_metal_weight) || 0) +
+				((doc.total_finding_weight_per_gram) || 0) +
+				((doc.total_diamond_weight_in_gms) || 0) +
+				((doc.total_gemstone_weight_in_gms) || 0)
+			);
+			dialog.set_value("finding_weight", doc.total_finding_weight_per_gram || 0);
 			// Set diamond_weight with dynamic precision
 			let diamond_weight = doc.diamond_weight || 0;
+			console.log(precision);
+			
 			dialog.set_value("diamond_weight", parseFloat(diamond_weight).toFixed(precision));
-	
-			// Set remaining fields
-			dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
-			dialog.set_value("finding_weight", doc.finding_weight_ || 0);
-			dialog.set_value("other_weight", doc.other_weight || 0);
+			dialog.set_df_property("diamond_weight", "precision", precision);
+			
 			let gemstone_weight = doc.gemstone_weight || 0;
 			dialog.set_value("gemstone_weight", parseFloat(gemstone_weight).toFixed(precision));
+			dialog.set_df_property("gemstone_weight", "precision", precision);
+			dialog.set_value("other_weight", doc.other_weight || 0);
 	
 			// Sale Amount calculation
 			if (dialog.get_value("sale_key")) {
@@ -1889,6 +1906,7 @@ let set_edit_bom_details = (
 		}
 	});
 };
+
 
 function scan_api_call(input, callback) {
 	frappe
