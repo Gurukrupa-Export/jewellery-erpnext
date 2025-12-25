@@ -1760,7 +1760,7 @@ let set_edit_bom_details = (
 				let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 				let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 				let rate_to_use = calculated_gold_rate;
-				let amount = calculated_gold_rate* d.quantity
+				let amount = calculated_actual_rate* d.quantity
 				// console.log("gold  Rate",calculated_gold_rate)
 				let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
 				let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
@@ -1795,8 +1795,8 @@ let set_edit_bom_details = (
 					metal_purity: d.metal_purity,
 					customer_metal_purity : metal_purity_value,
 					amount: d.amount,
-					rate: calculated_gold_rate,
-					actual_rate : calculated_actual_rate,
+					rate: calculated_actual_rate,
+					actual_rate : calculated_gold_rate,
 					metal_colour: d.metal_colour,
 					quantity: d.quantity,
 					wastage_rate: d.wastage_rate,
