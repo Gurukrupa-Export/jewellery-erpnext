@@ -1534,8 +1534,8 @@ let set_edit_bom_details = (
 					// console.log("gold", difference_actual_gold_rate);
 	
 					let making_rate_to_use = d.making_rate;
-					let rate_to_use = calculated_gold_rate;
-					let gold_amount = calculated_gold_rate * d.quantity;
+					let rate_to_use = calculated_actual_rate;
+					let gold_amount = calculated_actual_rate * d.quantity;
 	
 					if (
 						cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
@@ -1560,7 +1560,7 @@ let set_edit_bom_details = (
 						metal_colour: d.metal_colour,
 						amount: gold_amount,
 						rate: rate_to_use,
-						actual_rate: calculated_actual_rate,
+						actual_rate: calculated_gold_rate,
 						quantity: d.quantity,
 						wastage_rate: d.wastage_rate,
 						wastage_amount: d.wastage_amount,
