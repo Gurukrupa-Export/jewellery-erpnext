@@ -192,10 +192,10 @@ def create_new_bom(self):
 						s.amount=round(s.rate*s.quantity,2 )
 						s.quantity=round(s.quantity, precision)
 						if doc.metal_and_finding_weight < 2:
-							making_rate=sub_info.get("rate_per_pc", 0)
+							s.making_rate=sub_info.get("rate_per_pc", 0)
 							s.making_amount = making_rate
 						else:
-							making_rate = sub_info.get("rate_per_gm", 0)
+							s.making_rate = sub_info.get("rate_per_gm", 0)
 							s.making_amount = making_rate * s.quantity
 						s.wastage_rate=wastage
 						s.wastage_amount=s.wastage_rate*s.amount
