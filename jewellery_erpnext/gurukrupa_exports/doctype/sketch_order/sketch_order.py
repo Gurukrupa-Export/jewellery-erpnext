@@ -67,7 +67,9 @@ class SketchOrder(Document):
 
 	def on_submit(self):
 		self.make_items()
-
+	def on_cancel(self):
+		self.workflow_state = "Cancelled"
+    
 	def make_items(self):
 		# if self.workflow_state == "Items Updated":
 		if self.order_type != 'Purchase':
