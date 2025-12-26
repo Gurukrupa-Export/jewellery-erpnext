@@ -1870,7 +1870,7 @@ let set_edit_bom_details = (
 			dialog.set_value("making_amount", making_amount || 0);
 			dialog.set_value("wastage_amount", wastage_amount || 0);
 			dialog.set_value("gemstone_amount", gemstone_amount || 0);
-			dialog.set_value("finding_amount", doc.finding_amount);
+			dialog.set_value("finding_amount", doc.finding_bom_amount);
 			
 			
 			// Set remaining fields
