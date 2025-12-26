@@ -231,10 +231,24 @@ def create_new_bom(self):
 								limit=1
 							)
 							if not find:
-								frappe.throw(f"Create valid Making Charge Price Finding Subcategory for {finding_type}")
-							finding_cache[finding_type] = find[0]
+								find = frappe.db.get_all(
+									"Making Charge Price Item Subcategory",
+									filters={"parent": mc_name, "subcategory": doc.item_subcategory},
+									fields=[
+										"rate_per_gm",
+										"rate_per_pc",
+										"supplier_fg_purchase_rate",
+										"wastage",
+										"custom_subcontracting_rate",
+										"custom_subcontracting_wastage","name"
+									],
+									limit=1
+								)
+								# frappe.throw(f"Create valid Making Charge Price Finding Subcategory for {finding_type}")
+							# finding_cache[finding_type] = find[0]
 
-						find_data = finding_cache[finding_type]
+						# find_data = finding_cache[finding_type]
+						find_data= find[0]
 						gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
 						# calculated_gold_rate = (float(f.metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
