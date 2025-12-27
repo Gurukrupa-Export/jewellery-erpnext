@@ -59,6 +59,7 @@ def create_new_bom(self):
 					filters={
 						"customer": self.customer,
 						"metal_type":doc.metal_type,
+						"metal_touch":doc.metal_touch,
 						"setting_type":doc.setting_type,
 						"from_gold_rate": ["<=", self.gold_rate_with_gst],
 						"to_gold_rate": [">=", self.gold_rate_with_gst]
