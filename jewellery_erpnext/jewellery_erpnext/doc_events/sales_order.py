@@ -398,7 +398,7 @@ def create_new_bom(self):
 				doc.gold_bom_amount=doc.total_metal_amount
 				doc.gemstone_bom_amount=doc.total_gemstone_amount
 				doc.finding_bom_amount=doc.total_finding_amount
-				doc.total_bom_amount=(doc.diamond_bom_amount +doc.gold_bom_amount+ doc.gemstone_bom_amount+doc.finding_bom_amount)
+				doc.total_bom_amount=(doc.gold_bom_amount + doc.diamond_bom_amount + doc.gemstone_bom_amount + doc.finding_bom_amount + doc.other_bom_amount + doc.making_charge)
 				# frappe.throw(f"{doc.total_bom_amount}")
 				doc.making_charge = sum(row.making_amount for row in doc.metal_detail) + sum(row.making_amount for row in doc.finding_detail)
 				self.total=0
