@@ -399,8 +399,15 @@ def create_new_bom(self):
 				doc.finding_bom_amount=doc.total_finding_amount
 				doc.total_bom_amount=(doc.diamond_bom_amount +doc.gold_bom_amount+ doc.gemstone_bom_amount+doc.finding_bom_amount)
 				# frappe.throw(f"{doc.total_bom_amount}")
+				doc.making_charge = sum(row.making_amount for row in doc.metal_detail) + sum(row.making_amount for row in doc.finding_detail)
 				self.total=0
-				
+
+				doc.gross_weight = (
+					flt(doc.metal_and_finding_weight)
+					+ flt(doc.total_diamond_weight_in_gms)
+					+ flt(doc.total_gemstone_weight_in_gms)
+					+ flt(doc.total_other_weight)
+				)
 					# bom_doc = frappe.get_doc("BOM", row.bom)		
 				row.amount=doc.total_bom_amount
 				row.rate=row.amount/row.qty
