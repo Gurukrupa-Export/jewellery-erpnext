@@ -1843,12 +1843,12 @@ let set_edit_bom_details = (
 	});
 
 	// dialog fields value fetch from BOM
-	dialog.set_value("gross_weight", doc.metal_and_finding_weight);
-	// dialog.set_value("certification_amount", doc.certification_amount)
-	// dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
-	// dialog.set_value("custom_duty_amount", doc.custom_duty_amount)
-	// dialog.set_value("freight_amount", doc.freight_amount)
-	// dialog.set_value("sale_amount", doc.sale_amount)
+	// dialog.set_value("gross_weight", doc.metal_and_finding_weight);
+	dialog.set_value("certification_amount", doc.certification_amount)
+	dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
+	dialog.set_value("custom_duty_amount", doc.custom_duty_amount)
+	dialog.set_value("freight_amount", doc.freight_amount)
+	dialog.set_value("sale_amount", doc.sale_amount)
 
 	frappe.call({
 		method: "frappe.client.get_value",
@@ -1888,8 +1888,6 @@ let set_edit_bom_details = (
 			dialog.set_value("finding_weight", doc.total_finding_weight_per_gram || 0);
 			// Set diamond_weight with dynamic precision
 			let diamond_weight = doc.diamond_weight || 0;
-			console.log(precision);
-			
 			dialog.set_value("diamond_weight", parseFloat(diamond_weight).toFixed(precision));
 			dialog.set_df_property("diamond_weight", "precision", precision);
 			
