@@ -1843,7 +1843,7 @@ let set_edit_bom_details = (
 	});
 
 	// dialog fields value fetch from BOM
-	dialog.set_value("gross_weight", doc.gross_weight);
+	dialog.set_value("gross_weight", doc.metal_and_finding_weight);
 	// dialog.set_value("certification_amount", doc.certification_amount)
 	// dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
 	// dialog.set_value("custom_duty_amount", doc.custom_duty_amount)
