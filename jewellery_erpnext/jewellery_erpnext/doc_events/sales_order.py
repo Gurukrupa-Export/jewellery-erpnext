@@ -308,7 +308,8 @@ def create_new_bom(self):
 								"stone_shape": d.stone_shape,
 								"diamond_quality": d.quality
 							}
-							d.weight_per_pcs = d.quantity/d.pcs
+							weight_per_pcs = d.quantity/d.pcs
+							d.weight_per_pcs = frappe.utils.rounded(weight_per_pcs, 2, "Banker's Rounding")
 							# Fetch the matching diamond price list entry
 							if price_list_type == 'Sieve Size Range':
 								sieve_filter = {**common_filters, "sieve_size_range": d.sieve_size_range}
