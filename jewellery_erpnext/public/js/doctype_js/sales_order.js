@@ -1876,12 +1876,11 @@ let set_edit_bom_details = (
 			// Set remaining fields
 			// dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
 			// dialog.set_value("finding_weight", doc.finding_weight_ || 0);
-			dialog.set_value("gross_weight", doc.metal_and_finding_weight || 0);
+			dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
 			dialog.set_value(
-				"net_weight",
-				// ((doc.total_metal_weight) || 0) +
-				// ((doc.total_finding_weight_per_gram) || 0) +
-				 ((doc.metal_and_finding_weight) || 0) +
+				"gross_weight",
+				((doc.total_metal_weight) || 0) +
+				((doc.total_finding_weight_per_gram) || 0) +
 				((doc.total_diamond_weight_in_gms) || 0) +
 				((doc.total_gemstone_weight_in_gms) || 0)
 			);
