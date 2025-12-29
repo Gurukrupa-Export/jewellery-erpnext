@@ -578,9 +578,9 @@ def validate_serial_number(self):
 					AND soi.serial_no = %s
 				
 			""", (row.serial_no), as_dict=True)
-			# if existing:
-			# 	so_name = existing[0].parent
-			# 	frappe.throw(f"Serial No {row.serial_no} is already used in submitted Sales Order {so_name}.")
+			if existing:
+				so_name = existing[0].parent
+				frappe.throw(f"Serial No {row.serial_no} is already used in submitted Sales Order {so_name}.")
 
 
 
