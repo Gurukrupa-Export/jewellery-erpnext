@@ -403,12 +403,46 @@ def create_new_bom(self):
 				# frappe.throw(f"{doc.total_bom_amount}")
 				doc.making_charge = sum(row.making_amount for row in doc.metal_detail) + sum(row.making_amount for row in doc.finding_detail)
 				self.total=0
-
-				doc.gross_weight = (
+				doc.total_metal_weight = sum(row.quantity for row in doc.metal_detail)
+				doc.metal_weight = doc.total_metal_weight
+				doc.diamond_weight = sum(row.quantity for row in doc.diamond_detail)
+				doc.total_diamond_weight_in_gms = round(sum(row.quantity for row in doc.diamond_detail)/5,2)
+				doc.total_gemstone_weight = sum(row.quantity for row in doc.gemstone_detail)
+				doc.gemstone_weight = doc.total_gemstone_weight
+				doc.total_gemstone_weight_in_gms = round(sum(row.quantity for row in doc.gemstone_detail)/5,2)
+				doc.finding_weight = round(sum(row.quantity for row in doc.finding_detail),2)
+				doc.finding_weight_ = doc.finding_weight
+				doc.total_finding_weight_per_gram = doc.finding_weight
+				doc.total_diamond_pcs = sum(flt(row.pcs) for row in doc.diamond_detail)
+				doc.total_gemstone_pcs = sum(flt(row.pcs) for row in doc.gemstone_detail)
+				doc.total_other_weight = sum(row.quantity for row in doc.other_detail)
+				doc.other_weight = doc.total_other_weight
+				doc.total_diamond_amount = sum(row.diamond_rate_for_specified_quantity or 0.0 for row in doc.diamond_detail)
+				doc.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity or 0.0 for row in doc.diamond_detail)
+				doc.metal_and_finding_weight = round(flt(doc.metal_weight) + flt(doc.finding_weight),2)
+				doc.gold_to_diamond_ratio = (
+					flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+				)
+				doc.diamond_ratio = (
+					flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
+				)
+				doc.gross_weight = round(
 					flt(doc.metal_and_finding_weight)
 					+ flt(doc.total_diamond_weight_in_gms)
 					+ flt(doc.total_gemstone_weight_in_gms)
 					+ flt(doc.total_other_weight)
+				,2)
+				doc.metal_to_diamond_ratio_excl_of_finding=(
+					flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+				)
+				doc.custom_total_pure_weight = sum(
+					row.quantity * (flt(row.metal_purity) / 100) for row in doc.metal_detail
+				)
+				doc.custom_total_pure_finding_weight = sum(
+					row.quantity * (flt(row.metal_purity) / 100) for row in doc.finding_detail
+				)
+				doc.custom_net_pure_weight = (
+					doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
 				)
 					# bom_doc = frappe.get_doc("BOM", row.bom)
 				total_amount = 	doc.total_bom_amount + doc.making_charge + doc.certification_amount + doc.custom_duty_amount + doc.hallmarking_amount+ doc.freight_amount + doc.sale_amount		

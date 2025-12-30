@@ -1510,9 +1510,9 @@ let set_edit_bom_details = (
 		let metal_data = [];
 		$.each(doc.metal_detail, function (index, d) {
 			metal_amount += d.amount;
-			making_amount += d.making_amount;
+			// making_amount += d.making_amount;
 					
-			dialog.set_value("making_amount", making_amount);
+			// dialog.set_value("making_amount", making_amount);
 			dialog.set_value("metal_amount", metal_amount);
 			wastage_amount += d.wastage_amount;
 	
@@ -1844,6 +1844,8 @@ let set_edit_bom_details = (
 
 	// dialog fields value fetch from BOM
 	// dialog.set_value("gross_weight", doc.metal_and_finding_weight);
+	dialog.set_value("gross_weight", doc.gross_weight);
+	dialog.set_value("making_amount", doc.making_charge);
 	dialog.set_value("certification_amount", doc.certification_amount)
 	dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
 	dialog.set_value("custom_duty_amount", doc.custom_duty_amount)
@@ -1867,7 +1869,7 @@ let set_edit_bom_details = (
 			
 			// Set all fields from BOM
 			dialog.set_value("metal_amount", metal_amount || 0);
-			dialog.set_value("making_amount", making_amount || 0);
+			// dialog.set_value("making_amount", making_amount || 0);
 			dialog.set_value("wastage_amount", wastage_amount || 0);
 			dialog.set_value("gemstone_amount", gemstone_amount || 0);
 			dialog.set_value("finding_amount", doc.finding_bom_amount);
@@ -1877,13 +1879,14 @@ let set_edit_bom_details = (
 			// dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
 			// dialog.set_value("finding_weight", doc.finding_weight_ || 0);
 			dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
-			dialog.set_value(
-				"gross_weight",
-				((doc.total_metal_weight) || 0) +
-				((doc.total_finding_weight_per_gram) || 0) +
-				((doc.total_diamond_weight_in_gms) || 0) +
-				((doc.total_gemstone_weight_in_gms) || 0)
-			);
+			// dialog.set_value(
+			// 	"gross_weight",
+			// 	((doc.total_metal_weight) || 0) +
+			// 	((doc.total_finding_weight_per_gram) || 0) +
+			// 	((doc.total_diamond_weight_in_gms) || 0) +
+			// 	((doc.total_gemstone_weight_in_gms) || 0)
+			// );
+			dialog.set_value("gross_weight", doc.gross_weight);
 			dialog.set_value("finding_weight", doc.total_finding_weight_per_gram || 0);
 			// Set diamond_weight with dynamic precision
 			let diamond_weight = doc.diamond_weight || 0;
