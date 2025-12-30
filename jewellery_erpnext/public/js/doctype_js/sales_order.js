@@ -1869,6 +1869,7 @@ let set_edit_bom_details = (
 			
 			// Set all fields from BOM
 			dialog.set_value("metal_amount", metal_amount || 0);
+			dialog.set_value("making_amount", doc.making_charge);
 			// dialog.set_value("making_amount", making_amount || 0);
 			dialog.set_value("wastage_amount", wastage_amount || 0);
 			dialog.set_value("gemstone_amount", gemstone_amount || 0);
