@@ -382,8 +382,9 @@ def create_new_bom(self):
 								# Effective rate after applying handling charges
 								# effective_rate = total_rate
 								d.total_diamond_rate = round(total_rate, 2)
-								d.diamond_rate_for_specified_quantity = round(d.quantity * total_rate, 2)
 								d.quantity=round(d.quantity,precision )
+								d.diamond_rate_for_specified_quantity = round(d.quantity * total_rate, 2)
+								
 							else:
 								frappe.msgprint(f"Diamond Price is not available for row {d.idx}")
 								d.total_diamond_rate = 0
