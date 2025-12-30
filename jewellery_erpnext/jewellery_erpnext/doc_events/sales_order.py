@@ -872,6 +872,7 @@ def validate_items(self):
 			e_invoice_items.append({
 				"item_type": item_type,
 				"is_for_metal": e_invoice_item.is_for_metal,
+				"is_for_hallmarking":e_invoice_item.is_for_hallmarking,
 				"is_for_labour": e_invoice_item.is_for_labour,
 				"is_for_diamond": e_invoice_item.is_for_diamond,
 				"diamond_type" : e_invoice_item.diamond_type,
@@ -887,6 +888,7 @@ def validate_items(self):
 		self.set("custom_invoice_item", [])
 		aggregated_metal_items = {}
 		aggregated_metal_labour_items = {}
+		aggregated_hallmarking_items = {}
 		aggregated_metal_making_items = {}
 		aggregated_diamond_items = {}
 		aggregated_finding_items = {}
@@ -896,8 +898,28 @@ def validate_items(self):
 		for item in self.items:
 			if item.bom:
 				bom_doc = frappe.get_doc("BOM", item.bom)
-				frappe.throw(f"{bom_doc}")
+				if bom_doc.hallmarking_amount:
+					for e_item in e_invoice_items:
+						if (
+							e_item["is_for_hallmarking"]
+						):
+							key = (e_item["item_type"], e_item["uom"])
+							if key not in aggregated_hallmarking_items:
+								aggregated_hallmarking_items[key] = {
+									"item_code": e_item["item_type"],
+									"item_name": e_item["item_type"],
+									"uom": e_item["uom"],
+									"qty": 1,
+									"amount": 0,
+									"tax_rate": e_item["tax_rate"],
+									"tax_amount": 0,
+									"amount_with_tax": 0,
+									"delivery_date": self.delivery_date
+								}
+							aggregated_hallmarking_items[key]["amount"] += bom_doc.hallmarking_amount
+				# frappe.throw(f"{bom_doc}")
 				for metal in bom_doc.metal_detail:
+					
 					
 					for e_item in e_invoice_items:
 						if (
@@ -1219,6 +1241,10 @@ def validate_items(self):
 
 		for item in aggregated_gemstone_items.values():
 				self.append("custom_invoice_item", item)
+
+		for item in aggregated_hallmarking_items.items():
+			self.append("custom_invoice_item", item)
+		
 
 
 # def validate_item_dharm(self):
@@ -1687,6 +1713,7 @@ def validate_item_dharm(self):
 			e_invoice_items.append({
 				"item_type": item_type,
 				"is_for_metal": e_invoice_item.is_for_metal,
+				"is_for_hallmarking":e_invoice_item.is_for_hallmarking,
 				"is_for_labour": e_invoice_item.is_for_labour,
 				"is_for_diamond": e_invoice_item.is_for_diamond,
 				"diamond_type": e_invoice_item.diamond_type,
@@ -1704,6 +1731,7 @@ def validate_item_dharm(self):
 		self.set("custom_invoice_item", [])
 		aggregated_metal_items = {}
 		aggregated_metal_labour_items = {}
+		aggregated_hallmarking_items = {}
 		aggregated_metal_making_items = {}
 		aggregated_diamond_items = {}
 		aggregated_gemstone_items = {}
@@ -1712,7 +1740,25 @@ def validate_item_dharm(self):
 		for item in self.items:
 			if item.bom:
 				bom_doc = frappe.get_doc("BOM", item.bom)
-
+				if bom_doc.hallmarking_amount:
+					for e_item in e_invoice_items:
+						if (
+							e_item["is_for_hallmarking"]
+						):
+							key = (e_item["item_type"], e_item["uom"])
+							if key not in aggregated_hallmarking_items:
+								aggregated_hallmarking_items[key] = {
+									"item_code": e_item["item_type"],
+									"item_name": e_item["item_type"],
+									"uom": e_item["uom"],
+									"qty": 1,
+									"amount": 0,
+									"tax_rate": e_item["tax_rate"],
+									"tax_amount": 0,
+									"amount_with_tax": 0,
+									"delivery_date": self.delivery_date
+								}
+							aggregated_hallmarking_items[key]["amount"] += bom_doc.hallmarking_amount
 				for metal in bom_doc.metal_detail:
 					for e_item in e_invoice_items:
 						if (
@@ -2078,6 +2124,11 @@ def validate_item_dharm(self):
 				average_rate = 0
 			val["rate"] = average_rate
 			self.append("custom_invoice_item", val)
+			
+		for key, val in aggregated_hallmarking_items.items():
+			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			self.append("custom_invoice_item", val)
+		
 		
 		for key, val in aggregated_metal_labour_items.items():
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
