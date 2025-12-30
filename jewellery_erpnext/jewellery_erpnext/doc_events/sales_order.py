@@ -190,8 +190,8 @@ def create_new_bom(self):
 						s.customer_metal_purity = customer_metal_purity
 						calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						s.rate=round(calculated_gold_rate , 2)
-						s.amount=round(s.rate*s.quantity,2 )
 						s.quantity=round(s.quantity, precision)
+						s.amount=round(s.rate*s.quantity,2 )
 						s.making_rate=making_rate
 						if doc.metal_and_finding_weight < 2:
 							# s.making_rate=sub_info.get("rate_per_pc", 0)
@@ -256,8 +256,8 @@ def create_new_bom(self):
 						f.customer_metal_purity = customer_metal_purity
 						calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						f.rate=round(calculated_gold_rate , 2)
-						f.amount = round(f.rate * f.quantity,  2)
 						f.quantity=round(f.quantity, precision)
+						f.amount = round(f.rate * f.quantity,  2)
 
 						# Determine making rate and wastage similar to metal detail logic
 						# Assuming `doc.finding_weight` or similar to check threshold, else modify accordingly
@@ -409,8 +409,9 @@ def create_new_bom(self):
 					+ flt(doc.total_gemstone_weight_in_gms)
 					+ flt(doc.total_other_weight)
 				)
-					# bom_doc = frappe.get_doc("BOM", row.bom)		
-				row.amount=doc.total_bom_amount
+					# bom_doc = frappe.get_doc("BOM", row.bom)
+				total_amount = 	doc.total_bom_amount+ doc.making_charge + doc.certification_amount + doc.custom_duty_amount + doc.hallmarking_amount+ doc.freight_amount + doc.sale_amount		
+				row.amount=total_amount
 				row.rate=row.amount/row.qty
 				row.gold_bom_rate =doc.gold_bom_amount
 				row.diamond_bom_rate =doc.diamond_bom_amount
