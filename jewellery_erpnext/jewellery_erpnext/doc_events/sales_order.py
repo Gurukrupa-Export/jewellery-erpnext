@@ -1820,7 +1820,7 @@ def validate_item_dharm(self):
 							# frappe.throw(f"heelo,{multiplied_qty}")
 							metal_rate = metal.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else metal.rate
 							# making_amount=metal.making_amount
-							frappe.msgprint(f"{metal_rate}")
+							# frappe.msgprint(f"{metal_rate}")
 							metal_amount = (metal_rate * multiplied_qty)
 							
 							# Sum quantities and amounts
