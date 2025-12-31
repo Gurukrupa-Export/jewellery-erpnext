@@ -2023,7 +2023,7 @@ def validate_item_dharm(self):
 								making_amount = finding.making_amount
 								finding_rate = finding.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else finding.rate
 								# frappe.msgprint(f"hii,{finding_rate},{multiplied_qty}")
-								finding_making_amount = (finding_rate * multiplied_qty) + making_amount
+								finding_making_amount = (finding_rate * multiplied_qty) 
 								aggregated_finding_items[key]["qty"] += multiplied_qty
 								aggregated_finding_items[key]["amount"] += finding_making_amount
 								aggregated_finding_items[key]["rate"] = finding_rate
