@@ -2058,7 +2058,7 @@ def validate_item_dharm(self):
 								finding_rate = finding.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else finding.rate
 								multiplied_qty = finding.quantity * item.qty
 								making_amount = finding.making_amount
-								finding_making_amount = (finding.making_rate * multiplied_qty)
+								finding_making_amount = (finding.rate * multiplied_qty)
 								
 								aggregated_metal_items[key]["qty"] += multiplied_qty
 								aggregated_metal_items[key]["amount"] += finding_making_amount
