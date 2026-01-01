@@ -1553,7 +1553,7 @@ let set_edit_bom_details = (
 						cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
 						cur_frm.doc.customer_name === "Gurukrupa Export Private Limited - Chennai"
 					) {
-						making_rate_to_use = d.fg_purchase_rate || 0;
+						making_rate_to_use = d.making_rate || 0;
 					}
 	
 					metal_data.push({
