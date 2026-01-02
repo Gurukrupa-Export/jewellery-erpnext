@@ -2975,7 +2975,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					row["is_customer_item"] = 1
 
 				row["pcs"] = item.get("pcs", 0)
-				row["gemstone_rate_for_specified_quantity"] = row["quantity"] * row["total_gemstone_rate"]
+				# row["gemstone_rate_for_specified_quantity"] = row["quantity"] * row["total_gemstone_rate"]
 
 			else:
 				if gemstone_price_list and any(dpl["price_list_type"] == gemstone_price_list_ref_customer for dpl in gemstone_price_list):
