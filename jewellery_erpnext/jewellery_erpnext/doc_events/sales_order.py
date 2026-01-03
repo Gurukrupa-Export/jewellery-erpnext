@@ -1582,28 +1582,28 @@ def validate_item_dharm(self):
 									"amount_with_tax": 0,
 									"delivery_date": self.delivery_date
 								}
-								multiplied_qty = finding.quantity * item.qty
-								making_amount = finding.making_amount
-								finding_rate = 0 
-								if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
-									finding_rate = finding.se_rate 
-								elif self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
-									finding_rate = finding.se_rate
-								elif self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
-									finding_rate = finding.se_rate 
-								finding_making_amount = (finding.rate * multiplied_qty)
-								aggregated_finding_items[key]["qty"] += multiplied_qty
-								aggregated_finding_items[key]["amount"] += finding_making_amount
-								aggregated_finding_items[key]["rate"] = finding_rate
-								
-								tax_rate_decimal = aggregated_finding_items[key]["tax_rate"] / 100
-								aggregated_finding_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
+							multiplied_qty = finding.quantity * item.qty
+							making_amount = finding.making_amount
+							finding_rate = 0 
+							if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
+								finding_rate = finding.se_rate 
+							elif self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
+								finding_rate = finding.se_rate
+							elif self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
+								finding_rate = finding.se_rate 
+							finding_making_amount = (finding.rate * multiplied_qty)
+							aggregated_finding_items[key]["qty"] += multiplied_qty
+							aggregated_finding_items[key]["amount"] += finding_making_amount
+							aggregated_finding_items[key]["rate"] = finding_rate
+							
+							tax_rate_decimal = aggregated_finding_items[key]["tax_rate"] / 100
+							aggregated_finding_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
 
-								aggregated_finding_items[key]["amount_with_tax"] = (
-									aggregated_finding_items[key]["amount"] +
-									aggregated_finding_items[key]["tax_amount"]
-								)
-								break
+							aggregated_finding_items[key]["amount_with_tax"] = (
+								aggregated_finding_items[key]["amount"] +
+								aggregated_finding_items[key]["tax_amount"]
+							)
+							break
 
 					if not finding_handled:
 						for e_item in e_invoice_items:
