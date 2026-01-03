@@ -44,6 +44,7 @@ def create_new_bom(self):
 	This Function Creates Sales Order Type BOM from Quotation Bom
 	"""
 	# diamond_grade_data = frappe._dict()
+	self.total=0
 	for row in self.items:
 		if not row.quotation_bom:
 			
@@ -403,7 +404,7 @@ def create_new_bom(self):
 				doc.total_bom_amount=(doc.gold_bom_amount + doc.diamond_bom_amount + doc.gemstone_bom_amount + doc.finding_bom_amount + doc.other_bom_amount)
 				# frappe.throw(f"{doc.total_bom_amount}")
 				doc.making_charge = sum(row.making_amount for row in doc.metal_detail) + sum(row.making_amount for row in doc.finding_detail)
-				self.total=0
+				# self.total=0
 				doc.total_metal_weight = sum(row.quantity for row in doc.metal_detail)
 				doc.metal_weight = doc.total_metal_weight
 				doc.diamond_weight = sum(row.quantity for row in doc.diamond_detail)
