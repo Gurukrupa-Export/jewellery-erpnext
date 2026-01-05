@@ -309,7 +309,8 @@ def create_new_bom(self):
 								"diamond_quality": d.quality
 							}
 							# d.weight_per_pcs = round(d.quantity/d.pcs,3)
-							d.weight_per_pcs = round(d.quantity/d.pcs,2)
+							# d.weight_per_pcs = round(d.quantity/d.pcs,2)
+							d.weight_per_pcs = round(d.quantity/d.pcs,precision)
 							# Fetch the matching diamond price list entry
 							if price_list_type == 'Sieve Size Range':
 								sieve_filter = {**common_filters, "sieve_size_range": d.sieve_size_range}
