@@ -139,7 +139,7 @@ def create_new_bom(self):
 							)
 
 							if not gpc:
-								frappe.throw("No Multiplier Price List found")
+								frappe.throw("No Diamond Range Price List found")
 
 							gpc_doc = frappe.get_doc("Gemstone Price List", gpc[0].name)
 							multiplier_rows = gpc_doc.get("gemstone_multiplier")
@@ -246,7 +246,6 @@ def create_new_bom(self):
 									],
 									limit=1
 								)
-								# frappe.throw(f"Create valid Making Charge Price Finding Subcategory for {finding_type}")
 							# finding_cache[finding_type] = find[0]
 
 						# find_data = finding_cache[finding_type]
@@ -340,7 +339,7 @@ def create_new_bom(self):
 											)
 
 								latest = rate_result[0] if rate_result else None
-								# frappe.throw(f"{latest}")
+								
 							elif price_list_type == 'Size (in mm)':
 								latest = frappe.db.get_value("Diamond Price List", {**common_filters, "diamond_size_in_mm": d.diamond_sieve_size},
 															["rate",
@@ -402,7 +401,7 @@ def create_new_bom(self):
 				doc.gemstone_bom_amount=doc.total_gemstone_amount
 				doc.finding_bom_amount=doc.total_finding_amount
 				doc.total_bom_amount=(doc.gold_bom_amount + doc.diamond_bom_amount + doc.gemstone_bom_amount + doc.finding_bom_amount + doc.other_bom_amount)
-				# frappe.throw(f"{doc.total_bom_amount}")
+				
 				doc.making_charge = sum(row.making_amount for row in doc.metal_detail) + sum(row.making_amount for row in doc.finding_detail)
 				# self.total=0
 				doc.total_metal_weight = sum(row.quantity for row in doc.metal_detail)
@@ -461,7 +460,6 @@ def create_new_bom(self):
 				doc.save(ignore_permissions=True)		
 				frappe.db.commit()
 		elif not row.bom and frappe.db.exists("BOM", row.quotation_bom):
-			# frappe.throw("hii")
 			row.bom = row.quotation_bom
 			#######################################################################
 			# bom_doc = frappe.get_doc("BOM", row.bom)
@@ -880,8 +878,7 @@ def customer_approval_filter(doctype, txt, searchfield, start, page_len, filters
 
 from frappe.utils import flt
 def validate_items(self):
-	# for row in self.custom_invoice_item:
-		# frappe.throw(f"{row.rate}")
+	# for row in self.custom_invoice_item
 	allowed = ("Finished Goods", "Subcontracting", "Certification")
 	if self.sales_type in allowed:
 		customer_payment_term_doc = frappe.get_doc(
@@ -953,7 +950,7 @@ def validate_items(self):
 									"delivery_date": self.delivery_date
 								}
 							aggregated_hallmarking_items[key]["amount"] += bom_doc.hallmarking_amount
-				# frappe.throw(f"{bom_doc}")
+				
 				for metal in bom_doc.metal_detail:
 					
 					
@@ -1001,7 +998,6 @@ def validate_items(self):
 
 				for metal in bom_doc.metal_detail:
 					for e_item in e_invoice_items:
-						# frappe.throw(f"Matching E-Invoice Item Found: {e_invoice_items}")
 						# New condition: if metal is a customer item and e_invoice is for labour
 						if (
 							metal.is_customer_item
@@ -1196,7 +1192,6 @@ def validate_items(self):
 
 								multiplied_qty = finding.quantity * item.qty
 								finding_making_amount = finding_making.making_rate * multiplied_qty
-								frappe.throw(f"{multiplied_qty}")
 								# Update quantity and amount
 								aggregated_finding_making_items[key]["qty"] += multiplied_qty
 								aggregated_finding_making_items[key]["amount"] += finding_making_amount
@@ -1383,7 +1378,6 @@ def validate_item_dharm(self):
 								}
 
 							multiplied_qty = metal.quantity * item.qty
-							# frappe.throw(f"heelo,{multiplied_qty}")
 							metal_rate = metal.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else metal.rate
 							# making_amount=metal.making_amount
 							metal_amount = (metal_rate * multiplied_qty)
@@ -1401,7 +1395,7 @@ def validate_item_dharm(self):
 								aggregated_metal_items[key]["tax_amount"]
 							)
 							
-							# frappe.throw(f"{multiplied_qty},{aggregated_metal_items[key]["qty"]}")
+							
 				
 					for e_item in e_invoice_items:
 						
@@ -1725,7 +1719,7 @@ def validate_item_dharm(self):
 				average_rate = val["amount"] / val["qty"]
 			else:
 				average_rate = 0
-			# frappe.throw(f"{val["amount"]}")
+			
 			val["rate"] = average_rate
 			self.append("custom_invoice_item", val)
 
@@ -1743,7 +1737,6 @@ def validate_item_dharm(self):
 			self.append("custom_invoice_item", val)
 		
 		for key, val in aggregated_diamond_items.items():
-			# frappe.throw(f"{val["qty"]}")
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			self.append("custom_invoice_item", val)
 
