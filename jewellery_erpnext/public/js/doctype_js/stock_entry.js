@@ -7,7 +7,8 @@ frappe.ui.form.on("Stock Entry", {
 			["Material Transfer to Department", "Consumables Issue to  Department"].includes(frm.doc.stock_entry_type) &&
 			frm.doc.docstatus == 1
 		) {
-			frm.remove_custom_button("End Transit");
+			// frm.remove_custom_button("End Transit");
+			frm.remove_custom_button("End Transit", "Actions");
 		}
 		frm.trigger("get_items_from_customer_goods");
 
