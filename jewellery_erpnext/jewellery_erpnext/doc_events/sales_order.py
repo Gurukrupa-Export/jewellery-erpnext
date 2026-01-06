@@ -249,51 +249,51 @@ def create_new_bom(self):
 								)
 
 				if hasattr(doc, "metal_detail"):
-					
-					filters={
-						"customer": self.customer,
-						"metal_type":doc.metal_type,
-						"setting_type":doc.setting_type,
-						"from_gold_rate": ["<=", self.gold_rate_with_gst],
-						"to_gold_rate": [">=", self.gold_rate_with_gst],
-						"metal_touch":doc.metal_touch
-					}
-					if self.company=='KG GK Jewellers Private Limited' :
-						filters["customer"] = refrence_customer
-					if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
-						filters["customer"] =refrence_customer_for_company_to_company
-					mc = frappe.get_all(
-					"Making Charge Price",
-					filters=filters,
-					fields=["name"],
-					limit=1
-				)
-					if not mc:
-		
-						frappe.throw(f"""Create a valid Making Charge Price for Customer: {filters["customer"] }, Metal Type:{doc.metal_touch} "Setting Type":{doc.setting_type} """)
-					
-					mc_name = mc[0]["name"]
-					# frappe.throw(f"{mc_name}")
-					sub = frappe.db.get_all(
-						"Making Charge Price Item Subcategory",
-						filters={"parent": mc_name, "subcategory": doc.item_subcategory},
-						fields=[
-							"rate_per_gm",
-							"rate_per_pc",
-							"supplier_fg_purchase_rate",
-							"wastage",
-							"custom_subcontracting_rate",
-							"custom_subcontracting_wastage"
-						],
+					for s in doc.metal_detail:
+						filters={
+							"customer": self.customer,
+							"metal_type":doc.metal_type,
+							"setting_type":doc.setting_type,
+							"from_gold_rate": ["<=", self.gold_rate_with_gst],
+							"to_gold_rate": [">=", self.gold_rate_with_gst],
+							"metal_touch":s.metal_touch
+						}
+						if self.company=='KG GK Jewellers Private Limited' :
+							filters["customer"] = refrence_customer
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+							filters["customer"] =refrence_customer_for_company_to_company
+						mc = frappe.get_all(
+						"Making Charge Price",
+						filters=filters,
+						fields=["name"],
 						limit=1
 					)
-					sub_info = sub[0]
-					gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
-					
-					# frappe.throw(f"{mc_name}")
-					
-					if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
-						for s in doc.metal_detail:
+						if not mc:
+			
+							frappe.throw(f"""Create a valid Making Charge Price for Customer: {filters["customer"] }, Metal Type:{doc.metal_touch} "Setting Type":{doc.setting_type} """)
+						
+						mc_name = mc[0]["name"]
+						# frappe.throw(f"{mc_name}")
+						sub = frappe.db.get_all(
+							"Making Charge Price Item Subcategory",
+							filters={"parent": mc_name, "subcategory": doc.item_subcategory},
+							fields=[
+								"rate_per_gm",
+								"rate_per_pc",
+								"supplier_fg_purchase_rate",
+								"wastage",
+								"custom_subcontracting_rate",
+								"custom_subcontracting_wastage"
+							],
+							limit=1
+						)
+						sub_info = sub[0]
+						gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
+						
+						# frappe.throw(f"{mc_name}")
+						
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+							# for s in doc.metal_detail:
 							if s.is_customer_item:
 								s.rate=0
 								s.quantity=round(s.quantity, precision)
@@ -314,9 +314,9 @@ def create_new_bom(self):
 								s.making_amount=round(s.making_rate*s.quantity,2 )
 								s.customer_metal_purity = customer_metal_purity
 
-							
-					elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
-						for s in doc.metal_detail:
+								
+						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+							# for s in doc.metal_detail:
 							if s.is_customer_item:
 								s.rate=0
 								s.quantity=round(s.quantity, precision)
@@ -336,42 +336,42 @@ def create_new_bom(self):
 								s.wastage_rate = 0 
 								s.wastage_amount =0
 								s.making_amount=round(s.making_rate*s.quantity,2)
-							
-							
-					else:
-						if not mc:
-							frappe.throw(f"""Create a valid Making Charge Price for Customer: {self.customer}, Metal Type:{doc.metal_type} "Setting Type":{doc.setting_type} """)
-						# mc_name = mc[0]["name"]
-						# frappe.throw(f"{mc_name}")
-						# sub = frappe.db.get_all(
-						# 	"Making Charge Price Item Subcategory",
-						# 	filters={"parent": mc_name, "subcategory": doc.item_subcategory},
-						# 	fields=[
-						# 		"rate_per_gm",
-						# 		"rate_per_pc",
-						# 		"supplier_fg_purchase_rate",
-						# 		"wastage",
-						# 		"custom_subcontracting_rate",
-						# 		"custom_subcontracting_wastage"
-						# 	],
-						# 	limit=1
-						# )
-						# sub_info = sub[0]
-
-						if doc.metal_and_finding_weight < 2:
-							# Use per piece rate, wastage might apply differently if needed
-							making_rate = sub_info.get("rate_per_pc", 0)
-							wastage_rate_value = 0  # or adjust if wastage applies for rate_per_pc
-						else:
-							# Use per gram rate along with wastage value
-							making_rate = sub_info.get("rate_per_gm", 0)
-							wastage_rate_value = sub_info.get("wastage", 0) / 100.0
-						
-						is_cust = getattr(doc, "is_customer_item", False)
-						
-						for s in doc.metal_detail:
-							
 								
+								
+						else:
+							if not mc:
+								frappe.throw(f"""Create a valid Making Charge Price for Customer: {self.customer}, Metal Type:{doc.metal_type} "Setting Type":{doc.setting_type} """)
+							# mc_name = mc[0]["name"]
+							# frappe.throw(f"{mc_name}")
+							# sub = frappe.db.get_all(
+							# 	"Making Charge Price Item Subcategory",
+							# 	filters={"parent": mc_name, "subcategory": doc.item_subcategory},
+							# 	fields=[
+							# 		"rate_per_gm",
+							# 		"rate_per_pc",
+							# 		"supplier_fg_purchase_rate",
+							# 		"wastage",
+							# 		"custom_subcontracting_rate",
+							# 		"custom_subcontracting_wastage"
+							# 	],
+							# 	limit=1
+							# )
+							# sub_info = sub[0]
+
+							if doc.metal_and_finding_weight < 2:
+								# Use per piece rate, wastage might apply differently if needed
+								making_rate = sub_info.get("rate_per_pc", 0)
+								wastage_rate_value = 0  # or adjust if wastage applies for rate_per_pc
+							else:
+								# Use per gram rate along with wastage value
+								making_rate = sub_info.get("rate_per_gm", 0)
+								wastage_rate_value = sub_info.get("wastage", 0) / 100.0
+							
+							is_cust = getattr(doc, "is_customer_item", False)
+							
+							# for s in doc.metal_detail:
+								
+									
 							if is_cust:
 								wastage = sub_info.get("custom_subcontracting_wastage", 0) / 100.0
 							else:
@@ -420,6 +420,44 @@ def create_new_bom(self):
 					total_finding_wastage_amount = 0.0
 
 					for f in doc.finding_detail:
+						filters={
+							"customer": self.customer,
+							"metal_type":doc.metal_type,
+							"setting_type":doc.setting_type,
+							"from_gold_rate": ["<=", self.gold_rate_with_gst],
+							"to_gold_rate": [">=", self.gold_rate_with_gst],
+							"metal_touch":f.metal_touch
+						}
+						if self.company=='KG GK Jewellers Private Limited' :
+							filters["customer"] = refrence_customer
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+							filters["customer"] =refrence_customer_for_company_to_company
+						mc = frappe.get_all(
+						"Making Charge Price",
+						filters=filters,
+						fields=["name"],
+						limit=1
+					)
+						if not mc:
+			
+							frappe.throw(f"""Create a valid Making Charge Price for Customer: {filters["customer"] }, Metal Type:{doc.metal_touch} "Setting Type":{doc.setting_type} """)
+						
+						mc_name = mc[0]["name"]
+						# frappe.throw(f"{mc_name}")
+						sub = frappe.db.get_all(
+							"Making Charge Price Item Subcategory",
+							filters={"parent": mc_name, "subcategory": doc.item_subcategory},
+							fields=[
+								"rate_per_gm",
+								"rate_per_pc",
+								"supplier_fg_purchase_rate",
+								"wastage",
+								"custom_subcontracting_rate",
+								"custom_subcontracting_wastage"
+							],
+							limit=1
+						)
+						sub_info = sub[0]
 						finding_type = f.finding_type
 						if finding_type not in finding_cache:
 							find = frappe.db.get_all(
