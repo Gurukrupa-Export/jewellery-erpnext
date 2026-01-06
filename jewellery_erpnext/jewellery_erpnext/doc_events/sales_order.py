@@ -322,7 +322,7 @@ def create_new_bom(self):
 								s.quantity=round(s.quantity, precision)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.making_rate= sub_info.get("custom_subcontracting_rate", 0)
-								s.making_amount =round( making_rate * s.quantity,2)
+								s.making_amount =round( s.making_rate * s.quantity,2)
 							else:
 								if billing_currency == 'USD':
 									s.se_rate=s.se_rate*exchange_rate
