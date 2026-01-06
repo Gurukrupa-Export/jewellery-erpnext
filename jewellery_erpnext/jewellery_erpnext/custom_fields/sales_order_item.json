@@ -25,7 +25,6 @@
    "dt": "Sales Order Item",
    "fieldname": "diamond_grade",
    "fieldtype": "Link",
-   "hidden": 1,
    "insert_after": "item_sub_category",
    "label": "Diamond Grade",
    "module": "Jewellery Erpnext",
