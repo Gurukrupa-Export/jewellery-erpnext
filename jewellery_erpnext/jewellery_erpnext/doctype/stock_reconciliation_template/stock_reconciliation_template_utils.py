@@ -39,6 +39,7 @@ class CustomStockReconciliation(StockReconciliation):
 				self.posting_date,
 				self.posting_time,
 				batch_no=item.batch_no,
+				row = item,
 				inventory_dimensions_dict=inventory_dimensions_dict,
 			)
 
