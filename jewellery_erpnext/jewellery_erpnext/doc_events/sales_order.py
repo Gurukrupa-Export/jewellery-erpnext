@@ -299,7 +299,7 @@ def create_new_bom(self):
 								s.quantity=round(s.quantity, precision)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.making_rate= sub_info.get("custom_subcontracting_rate", 0)
-								s.making_amount = making_rate * s.quantity
+								s.making_amount = s.making_rate * s.quantity
 							# frappe.throw("hii")
 							else:
 								customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
@@ -396,9 +396,9 @@ def create_new_bom(self):
 								
 								s.making_rate=making_rate
 								if doc.metal_and_finding_weight < 2:
-									s.making_amount = making_rate
+									s.making_amount = s.making_rate
 								else:
-									s.making_amount = making_rate * s.quantity
+									s.making_amount = s.making_rate * s.quantity
 								s.wastage_rate=wastage
 								s.wastage_amount=s.wastage_rate*s.amount
 						
