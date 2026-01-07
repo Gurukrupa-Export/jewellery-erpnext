@@ -72,6 +72,7 @@ def create_new_bom(self):
 				
 				customer_group = frappe.db.get_value('Customer', self.customer , 'customer_group')
 				precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
+				doc.metal_and_finding_weight = round(sum(row.quantity for row in doc.metal_detail),precision) + round(sum(row.quantity for row in doc.finding_detail),precision)
 				if hasattr(doc, "gemstone_detail"):
 					for gem in doc.gemstone_detail or []:
 
@@ -267,7 +268,6 @@ def create_new_bom(self):
 							frappe.throw(f"""Create a valid Making Charge Price for Customer: {filters["customer"] }, Metal Type:{doc.metal_touch} "Setting Type":{doc.setting_type} """)
 						
 						mc_name = mc[0]["name"]
-						
 						sub = frappe.db.get_all(
 							"Making Charge Price Item Subcategory",
 							filters={"parent": mc_name, "subcategory": doc.item_subcategory},
