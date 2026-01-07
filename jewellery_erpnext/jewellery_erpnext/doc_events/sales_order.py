@@ -267,6 +267,7 @@ def create_new_bom(self):
 							frappe.throw(f"""Create a valid Making Charge Price for Customer: {filters["customer"] }, Metal Type:{doc.metal_touch} "Setting Type":{doc.setting_type} """)
 						
 						mc_name = mc[0]["name"]
+						
 						sub = frappe.db.get_all(
 							"Making Charge Price Item Subcategory",
 							filters={"parent": mc_name, "subcategory": doc.item_subcategory},
