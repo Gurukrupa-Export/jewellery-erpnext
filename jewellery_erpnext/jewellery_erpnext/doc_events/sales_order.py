@@ -1613,7 +1613,7 @@ def validate_item_dharm(self):
 									"item_code": e_item["item_type"],
 									"item_name": e_item["item_type"],
 									"uom": e_item["uom"],
-									"qty": 1,
+									"qty": 0,
 									"amount": 0,
 									"tax_rate": e_item["tax_rate"],
 									"tax_amount": 0,
@@ -1621,6 +1621,7 @@ def validate_item_dharm(self):
 									"delivery_date": self.delivery_date
 								}
 							aggregated_hallmarking_items[key]["amount"] += bom_doc.hallmarking_amount
+							aggregated_hallmarking_items[key]["qty"] +=1
 
 				for metal in bom_doc.metal_detail:
 					
