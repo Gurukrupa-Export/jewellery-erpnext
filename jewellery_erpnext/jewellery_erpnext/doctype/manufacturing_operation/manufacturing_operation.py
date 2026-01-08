@@ -2401,7 +2401,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						else:
 							row["rate"] = new_bom.gold_rate_with_gst
 							wastage_rate = matching_subcategory.get("wastage", 0) / 100
-
+					else:
+						row["rate"] = new_bom.gold_rate_with_gst
 				row["wastage_rate"] = wastage_rate
 				row["making_rate"] = rate_per_gm
 				# row["rate"] = row.get("rate", 0)  # Ensure rate is always set
