@@ -1810,6 +1810,7 @@ let set_edit_bom_details = (
 					making_rate: making_rate_to_use,
 					making_amount: d.making_amount,
 					difference: difference_actual_gold_rate,
+					is_customer_item: d.is_customer_item,
 				});
 	
 				// finding_data = dialog.fields_dict.finding_detail.df.data;
