@@ -16,7 +16,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 class ManufacturingPlan(Document):
     def on_submit(self):
         is_subcontracting = False
-        customer_diamond_data = frappe._dict()
+        # customer_diamond_data removed for memory efficiency
         frappe.db.sql(
             """
 					UPDATE `tabSales Order Item` soi
@@ -39,14 +39,21 @@ class ManufacturingPlan(Document):
                 "modified_by": frappe.session.user,
             },
         )
+
+        # Bulk Fetching Data
+        cache_data = self.get_manufacturing_plan_data()
+        frappe.flags.is_manufactur_order_created = False
         for row in self.manufacturing_plan_table:
             if row.docname:
-                create_manufacturing_order(self, row, customer_diamond_data)
+                create_manufacturing_order(self, row, cache_data)
+                frappe.flags.is_manufactur_order_created = True
                 if row.subcontracting:
                     is_subcontracting = True
                     # create_subcontracting_order(self, row)
                 if row.manufacturing_bom is None:
                     frappe.throw(f"Row:{row.idx} Manufacturing Bom Missing")
+        if frappe.flags.is_manufactur_order_created:
+            frappe.msgprint(_("Manufacturing Orders Created Successfully"))
 
         if is_subcontracting:
             create_subcontracting_order(self)
@@ -74,6 +81,89 @@ class ManufacturingPlan(Document):
             if not row.manufacturing_bom:
                 row.manufacturing_bom = row.bom
         self.total_planned_qty = total
+
+    def get_manufacturing_plan_data(self):
+        so_items = set()
+        mwo_items = set()
+        bom_names = set()
+        customer_names = set()
+        item_codes = set()
+        customer_diamond_keys = set()
+
+        for row in self.manufacturing_plan_table:
+            if row.docname:
+                so_items.add(row.docname)
+            if row.mwo:
+                mwo_items.add(row.mwo)
+            if row.manufacturing_bom:
+                bom_names.add(row.manufacturing_bom)
+            if row.serial_id_bom:
+                bom_names.add(row.serial_id_bom)
+            if row.customer:
+                customer_names.add(row.customer)
+            if row.item_code:
+                item_codes.add(row.item_code)
+            if row.customer and row.diamond_quality:
+                customer_diamond_keys.add((row.customer, row.diamond_quality))
+
+        so_data_map = fetch_doc_map(
+            "Sales Order Item",
+            so_items,
+            ["name", "metal_type", "metal_touch", "metal_colour", "diamond_grade"],
+        )
+
+        mwo_data_map = fetch_doc_map(
+            "Manufacturing Work Order",
+            mwo_items,
+            ["name", "metal_type", "metal_touch", "metal_colour", "master_bom"],
+        )
+
+        bom_data_map = fetch_doc_map(
+            "BOM", bom_names, ["name", "metal_type_", "metal_colour", "metal_touch"]
+        )
+
+        customer_data_map = fetch_doc_map(
+            "Customer", customer_names, ["name", "is_internal_customer"]
+        )
+
+        # Fetch Customer Diamond Grades
+        customer_diamond_grade_map = {}
+        if customer_diamond_keys:
+            # We filter by 'parent' IN customer_names.
+            cust_grades = frappe.get_all(
+                "Customer Diamond Grade",
+                filters={"parent": ["in", list(customer_names)]},
+                fields=[
+                    "parent",
+                    "diamond_quality",
+                    "diamond_grade_1",
+                    "diamond_grade_2",
+                    "diamond_grade_3",
+                    "diamond_grade_4",
+                ],
+            )
+            for cg in cust_grades:
+                customer_diamond_grade_map[(cg.parent, cg.diamond_quality)] = cg
+
+        item_data_map = fetch_doc_map("Item", item_codes, ["name", "has_batch_no"])
+
+        # We can fetch all attribute values that are customer diamond qualities just in case.
+        attr_values = frappe.get_all(
+            "Attribute Value",
+            filters={"is_customer_diamond_quality": 1},
+            fields=["name"],
+        )
+        attribute_value_set = {d.name for d in attr_values}
+
+        return {
+            "so_data": so_data_map,
+            "mwo_data": mwo_data_map,
+            "bom_data": bom_data_map,
+            "customer_data": customer_data_map,
+            "item_data": item_data_map,
+            "customer_diamond_grade": customer_diamond_grade_map,
+            "attribute_value_set": attribute_value_set,
+        }
 
     @frappe.whitelist()
     def get_items_for_production(self):
@@ -256,27 +346,56 @@ def map_docs(method, source_names, target_doc, args=None):
     return target_doc
 
 
-def create_manufacturing_order(doc, row, customer_diamond_data):
+def fetch_doc_map(doctype, names, fields, key_field="name"):
+    if not names:
+        return {}
+
+    data = frappe.get_all(
+        doctype,
+        filters={"name": ["in", list(names)]},
+        fields=fields,
+    )
+
+    return {d[key_field]: d for d in data}
+
+
+def create_manufacturing_order(doc, row, cache_data=None):
+    if cache_data is None:
+        cache_data = {}
+
     cnt = int(row.manufacturing_order_qty / row.qty_per_manufacturing_order)
 
     if not cnt:
         return
 
-    doc_type, docname = (
-        ("Sales Order Item", row.docname)
-        if row.sales_order
-        else ("Manufacturing Work Order", row.mwo)
-    )
+    so_data_map = cache_data.get("so_data", {})
+    mwo_data_map = cache_data.get("mwo_data", {})
+    bom_data_map = cache_data.get("bom_data", {})
+    customer_data_map = cache_data.get("customer_data", {})
+    item_data_map = cache_data.get("item_data", {})
+    attribute_value_set = cache_data.get("attribute_value_set", set())
+    customer_diamond_grade_map = cache_data.get("customer_diamond_grade", {})
 
-    fields = ["metal_type", "metal_touch", "metal_colour"]
-    if row.mwo:
-        fields.append("master_bom")
+    so_det = {}
+    # Use plain dict copy instead of frappe._dict for memory/speed
+    if row.sales_order and row.docname in so_data_map:
+        so_det = so_data_map[row.docname].copy()
+    elif row.mwo and row.mwo in mwo_data_map:
+        so_det = mwo_data_map[row.mwo].copy()
+    else:
+        # Fallback
+        doc_type, docname = (
+            ("Sales Order Item", row.docname)
+            if row.sales_order
+            else ("Manufacturing Work Order", row.mwo)
+        )
+        fields = ["metal_type", "metal_touch", "metal_colour"]
+        if row.mwo:
+            fields.append("master_bom")
 
-    so_det = (
-        frappe.get_value(doc_type, docname, fields, as_dict=1)
-        if (row.sales_order or row.mwo)
-        else {}
-    )
+        fetched_val = frappe.get_value(doc_type, docname, fields, as_dict=1)
+        if fetched_val:
+            so_det = fetched_val
 
     master_bom = None
     if doc.select_manufacture_order == "Manufacturing":
@@ -288,54 +407,84 @@ def create_manufacturing_order(doc, row, customer_diamond_data):
         master_bom = row.serial_id_bom
 
     if master_bom:
-        bom_details = frappe.db.get_value(
-            "BOM", master_bom, ["metal_type_", "metal_colour", "metal_touch"], as_dict=1
-        )
-        if bom_details:
-            so_det.metal_type = bom_details.get("metal_type_") or so_det.metal_type_
-            so_det.metal_colour = bom_details.get("metal_colour") or so_det.metal_colour
-            so_det.metal_touch = bom_details.get("metal_touch") or so_det.metal_touch
+        # caching check
+        bom_details = bom_data_map.get(master_bom)
+        if not bom_details:
+            bom_details = frappe.db.get_value(
+                "BOM",
+                master_bom,
+                ["metal_type_", "metal_colour", "metal_touch"],
+                as_dict=1,
+            )
 
-    if row.diamond_quality and not frappe.db.get_value(
-        "Customer", row.customer, "is_internal_customer"
-    ):
+        if bom_details:
+            # Update dictionary values using subscript notation
+            so_det["metal_type"] = bom_details.get("metal_type_") or so_det.get(
+                "metal_type_"
+            )
+            so_det["metal_colour"] = bom_details.get("metal_colour") or so_det.get(
+                "metal_colour"
+            )
+            so_det["metal_touch"] = bom_details.get("metal_touch") or so_det.get(
+                "metal_touch"
+            )
+
+    # Check for internal customer
+    customer_info = customer_data_map.get(row.customer)
+    is_internal_customer = (
+        customer_info.get("is_internal_customer")
+        if customer_info
+        else frappe.db.get_value("Customer", row.customer, "is_internal_customer")
+    )
+
+    if row.diamond_quality and not is_internal_customer:
         key = (row.customer, row.diamond_quality)
+        diamond_grade = None
+
         if row.customer_diamond == "Yes":
-            if not customer_diamond_data.get(key):
-                diamond_grade_data = frappe.db.get_value(
-                    "Customer Diamond Grade",
-                    {"parent": row.customer, "diamond_quality": row.diamond_quality},
-                    [
-                        "diamond_grade_1",
-                        "diamond_grade_2",
-                        "diamond_grade_3",
-                        "diamond_grade_4",
-                    ],
-                )
-                for grade in diamond_grade_data:
-                    if frappe.db.get_value(
-                        "Attribute Value", grade, "is_customer_diamond_quality"
-                    ):
-                        customer_diamond_data[key] = grade
+            # Use cached customer_diamond_grade_map
+            diamond_grade_data = customer_diamond_grade_map.get(key)
+            if diamond_grade_data:
+                grades_to_check = [
+                    diamond_grade_data.get("diamond_grade_1"),
+                    diamond_grade_data.get("diamond_grade_2"),
+                    diamond_grade_data.get("diamond_grade_3"),
+                    diamond_grade_data.get("diamond_grade_4"),
+                ]
+                for grade in grades_to_check:
+                    if grade and grade in attribute_value_set:
+                        diamond_grade = grade
                         break
+                    # We trust attribute_value_set contains all relevant values, no fallback needed
+
         else:
-            if not customer_diamond_data.get(key):
-                customer_diamond_data[key] = frappe.db.get_value(
+            diamond_grade_data = customer_diamond_grade_map.get(key)
+            if diamond_grade_data:
+                diamond_grade = diamond_grade_data.get("diamond_grade_1")
+            else:
+                # Minimal fallback
+                diamond_grade = frappe.db.get_value(
                     "Customer Diamond Grade",
                     {"parent": row.customer, "diamond_quality": row.diamond_quality},
                     "diamond_grade_1",
                 )
-        so_det.diamond_grade = customer_diamond_data.get(key)
-        if not so_det.diamond_grade and not frappe.db.get_value(
-            "Item", row.item_code, "has_batch_no"
-        ):
+
+        so_det["diamond_grade"] = diamond_grade
+
+        has_batch_no = False
+        item_info = item_data_map.get(row.item_code)
+        if item_info:
+            has_batch_no = item_info.get("has_batch_no")
+        else:
+            has_batch_no = frappe.db.get_value("Item", row.item_code, "has_batch_no")
+
+        if not so_det.get("diamond_grade") and not has_batch_no:
             frappe.throw(
                 _("Diamond Grade is not mentioned in customer {0}").format(row.customer)
             )
 
     for i in range(0, cnt):
         make_manufacturing_order(doc, row, master_bom=master_bom, so_det=so_det)
-    frappe.msgprint(_("Parent Manufacturing Order Created"))
 
 
 def create_subcontracting_order(doc):

@@ -28,9 +28,9 @@ def get_mwo_details(doctype, txt, searchfield, start, page_len, filters):
 
     query = (
         query.where(
-            (MWO[searchfield].like(f"%{txt}%"))
-            | (MWO.company.like(f"%{txt}%"))
-            | (MWO.customer.like(f"%{txt}%"))
+            (MWO[searchfield].like("%{0}%".format(txt)))
+            | (MWO.company.like("%{0}%".format(txt)))
+            | (MWO.customer.like("%{0}%".format(txt)))
         )
         .orderby(
             Case().when(Locate(txt, MWO.name) > 0, Locate(txt, MWO.name)).else_(99999)
