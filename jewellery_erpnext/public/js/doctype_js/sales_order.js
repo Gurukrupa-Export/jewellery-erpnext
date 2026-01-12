@@ -1876,7 +1876,7 @@ let set_edit_bom_details = (
 			dialog.set_value("gemstone_amount", gemstone_amount || 0);
 			dialog.set_value("finding_amount", doc.finding_bom_amount);
 			
-			
+			dialog.set_value("amount", (doc.total_bom_amount+ doc.hallmarking_amount + doc.diamond_bom_amount))
 			// Set remaining fields
 			// dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
 			// dialog.set_value("finding_weight", doc.finding_weight_ || 0);

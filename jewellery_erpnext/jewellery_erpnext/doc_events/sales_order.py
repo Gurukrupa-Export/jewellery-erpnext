@@ -1337,8 +1337,8 @@ def validate_items(self):
 
 								# Update quantity and amount
 								aggregated_metal_making_items[key]["qty"] += multiplied_qty
-								aggregated_metal_making_items[key]["amount"] += metal_making_amount
-
+								# aggregated_metal_making_items[key]["amount"] += metal_making_amount
+								aggregated_metal_making_items[key]["amount"] += metal.making_amount
 								# Calculate tax amount
 								tax_rate_decimal = aggregated_metal_making_items[key]["tax_rate"] / 100
 								aggregated_metal_making_items[key]["tax_amount"] += metal_making_amount * tax_rate_decimal
