@@ -10,11 +10,11 @@
   "rate_per_gm",
   "rate_per_pc",
   "rate_per_diamond",
-  "from_diamond",
   "column_break_4",
   "wastage",
   "rate_per_gm_threshold",
   "supplier_fg_purchase_rate",
+  "from_diamond",
    "to_diamond"
  ],
  "fields": [
