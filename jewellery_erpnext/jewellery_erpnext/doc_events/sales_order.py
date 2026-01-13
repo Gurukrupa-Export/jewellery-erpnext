@@ -288,7 +288,7 @@ def create_new_bom(self):
 							
 							for row in sub:
 								if row.custom_from_diamond:
-									if int(row.custom_from_diamond) <= int(diamond_pcs) <= int(row.custom_to_diamond):
+									if int(row.from_diamond) <= int(diamond_pcs) <= int(row.to_diamond):
 										
 										sub_info = row
 						gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")

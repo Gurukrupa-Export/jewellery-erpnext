@@ -10,10 +10,12 @@
   "rate_per_gm",
   "rate_per_pc",
   "rate_per_diamond",
+  "from_diamond",
   "column_break_4",
   "wastage",
   "rate_per_gm_threshold",
-  "supplier_fg_purchase_rate"
+  "supplier_fg_purchase_rate",
+   "to_diamond"
  ],
  "fields": [
   {
@@ -69,6 +71,16 @@
    "fieldtype": "Currency",
    "label": "Supplier FG Purchase Rate",
    "options": "currency"
+  },
+  {
+   "fieldname": "from_diamond",
+   "fieldtype": "Int",
+   "label": "From Diamond"
+  },
+  {
+   "fieldname": "to_diamond",
+   "fieldtype": "Int",
+   "label": "To Diamond"
   }
  ],
  "index_web_pages_for_search": 1,
