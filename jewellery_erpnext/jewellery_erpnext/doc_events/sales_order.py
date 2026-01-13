@@ -73,6 +73,7 @@ def create_new_bom(self):
 				customer_group = frappe.db.get_value('Customer', self.customer , 'customer_group')
 				precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 				doc.metal_and_finding_weight = round(sum(row.quantity for row in doc.metal_detail),precision) + round(sum(row.quantity for row in doc.finding_detail),precision)
+				diamond_pcs=doc.total_diamond_pcs
 				if hasattr(doc, "gemstone_detail"):
 					for gem in doc.gemstone_detail or []:
 
@@ -282,6 +283,14 @@ def create_new_bom(self):
 							limit=1
 						)
 						sub_info = sub[0]
+						threshold = 2 if sub_info.get("rate_per_gm_threshold") == 0 else sub_info.get("rate_per_gm_threshold")
+						if doc.metal_and_finding_weight < threshold:
+							
+							for row in sub:
+								if row.custom_from_diamond:
+									if int(row.custom_from_diamond) <= int(diamond_pcs) <= int(row.custom_to_diamond):
+										
+										sub_info = row
 						gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
 						
 						
@@ -349,7 +358,7 @@ def create_new_bom(self):
 							# )
 							# sub_info = sub[0]
 
-							if doc.metal_and_finding_weight < 2:
+							if doc.metal_and_finding_weight < threshold:
 								# Use per piece rate, wastage might apply differently if needed
 								making_rate = sub_info.get("rate_per_pc", 0)
 								wastage_rate_value = 0  # or adjust if wastage applies for rate_per_pc
