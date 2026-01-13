@@ -278,7 +278,8 @@ def create_new_bom(self):
 								"supplier_fg_purchase_rate",
 								"wastage",
 								"custom_subcontracting_rate",
-								"custom_subcontracting_wastage"
+								"custom_subcontracting_wastage",
+								"to_diamond","from_diamond"
 							],
 							limit=1
 						)
@@ -287,7 +288,7 @@ def create_new_bom(self):
 						if doc.metal_and_finding_weight < threshold:
 							
 							for row in sub:
-								if row.custom_from_diamond:
+								if row.from_diamond:
 									if int(row.from_diamond) <= int(diamond_pcs) <= int(row.to_diamond):
 										
 										sub_info = row
