@@ -358,11 +358,11 @@ def create_new_bom(self):
 							# 	limit=1
 							# )
 							# sub_info = sub[0]
-
-							if doc.metal_and_finding_weight < threshold:
-								# Use per piece rate, wastage might apply differently if needed
-								making_rate = sub_info.get("rate_per_pc", 0)
-								wastage_rate_value = 0  # or adjust if wastage applies for rate_per_pc
+							if doc.metal_and_finding_weight is not None and threshold is not None:
+								if doc.metal_and_finding_weight < threshold:
+									# Use per piece rate, wastage might apply differently if needed
+									making_rate = sub_info.get("rate_per_pc", 0)
+									wastage_rate_value = 0  # or adjust if wastage applies for rate_per_pc
 							else:
 								# Use per gram rate along with wastage value
 								making_rate = sub_info.get("rate_per_gm", 0)
