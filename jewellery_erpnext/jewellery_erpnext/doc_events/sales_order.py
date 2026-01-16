@@ -19,6 +19,7 @@ def validate(self, method):
 	# validate_customer_approval_invoice_items(self)
 	# if self.sales_type != 'Branch Sales':
 	create_new_bom(self)
+	self.calculate_taxes_and_totals()
 	validate_serial_number(self)
 	# validate_items(self)
 	validate_item_dharm(self)
