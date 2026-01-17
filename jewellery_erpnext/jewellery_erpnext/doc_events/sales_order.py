@@ -11,6 +11,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 )
 
 
+
 def validate(self, method):
 	validate_sales_type(self)
 	# update_snc(self)
