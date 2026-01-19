@@ -365,10 +365,10 @@ def create_new_bom(self):
 									# Use per piece rate, wastage might apply differently if needed
 									making_rate = sub_info.get("rate_per_pc", 0)
 									wastage_rate_value = 0  # or adjust if wastage applies for rate_per_pc
-							else:
-								# Use per gram rate along with wastage value
-								making_rate = sub_info.get("rate_per_gm", 0)
-								wastage_rate_value = sub_info.get("wastage", 0) / 100.0
+								else:
+									# Use per gram rate along with wastage value
+									making_rate = sub_info.get("rate_per_gm", 0)
+									wastage_rate_value = sub_info.get("wastage", 0) / 100.0
 							
 							is_cust = getattr(doc, "is_customer_item", False)
 							
