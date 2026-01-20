@@ -280,6 +280,7 @@ def create_new_bom(self):
 								"supplier_fg_purchase_rate",
 								"wastage",
 								"custom_subcontracting_rate",
+								"rate_per_gm_threshold",
 								"custom_subcontracting_wastage",
 								"to_diamond","from_diamond"
 							],
