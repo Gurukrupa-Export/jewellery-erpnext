@@ -11,7 +11,11 @@
   "to_weight",
   "precious_percentage",
   "semi_precious_percentage",
-  "synthetic_percentage"
+  "synthetic_percentage",
+  "column_break_2vtq",
+  "outwork_precious_percentage",
+  "outwork_semi_precious_percentage",
+  "outwork_synthetic_percentage"
  ],
  "fields": [
   {
@@ -46,6 +50,25 @@
    "fieldtype": "Link",
    "label": "To Weight",
    "options": "Attribute Value"
+  },
+  {
+   "fieldname": "column_break_2vtq",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "outwork_precious_percentage",
+   "fieldtype": "Percent",
+   "label": "Outwork Precious Percentage"
+  },
+  {
+   "fieldname": "outwork_semi_precious_percentage",
+   "fieldtype": "Percent",
+   "label": "Outwork Semi Precious Percentage"
+  },
+  {
+   "fieldname": "outwork_synthetic_percentage",
+   "fieldtype": "Percent",
+   "label": "Outwork Synthetic Percentage"
   }
  ],
  "index_web_pages_for_search": 1,
