@@ -27,9 +27,6 @@
   "currency",
   "effective_from",
   "section_break_r4n2",
-  "handling_charges_in_percentage",
-  "handling_charges_rate",
-  "column_break_sklf",
   "outright_handling_charges_in_percentage",
   "outright_handling_charges_rate",
   "column_break_staj",
@@ -171,11 +168,6 @@
    "label": "Outright Handling Charges Rate"
   },
   {
-   "fieldname": "handling_charges_rate",
-   "fieldtype": "Currency",
-   "label": "Handling Charges Rate"
-  },
-  {
    "fieldname": "outwork_handling_charges_in_percentage",
    "fieldtype": "Percent",
    "label": "Outwork Handling Charges (In %)"
@@ -184,15 +176,6 @@
    "fieldname": "outwork_handling_charges_rate",
    "fieldtype": "Currency",
    "label": "Outwork Handling Charges Rate"
-  },
-  {
-   "fieldname": "handling_charges_in_percentage",
-   "fieldtype": "Percent",
-   "label": "Handling Charges %"
-  },
-  {
-   "fieldname": "column_break_sklf",
-   "fieldtype": "Column Break"
   },
   {
    "fieldname": "column_break_staj",
