@@ -1769,7 +1769,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					# 	row["total_pcs"] = stock_entry_details[0]["total_pcs"] if stock_entry_details else 0
 					# 	row["weight_per_pcs"] = row["total_qty"] / row["total_pcs"] if row["total_pcs"] else 0
 
-					row["weight_per_pcs"] = round(row["weight_per_pcs"], 3)
+						row["weight_per_pcs"] = round(row["weight_per_pcs"], 3)
 			
 			stone_shape = row["stone_shape"]
 			diamond_price_list_customer_new = frappe.db.get_value(
