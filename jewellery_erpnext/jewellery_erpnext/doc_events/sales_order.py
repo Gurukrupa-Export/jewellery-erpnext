@@ -749,6 +749,7 @@ def create_new_bom(self):
 					# 
 				total_amount = 	doc.total_bom_amount+ doc.making_charge + doc.certification_amount + doc.custom_duty_amount + doc.hallmarking_amount+ doc.freight_amount + doc.sale_amount
 				row.amount=total_amount
+				row.qty = 1 if row.qty is None else row.qty
 				row.rate=row.amount/row.qty
 				row.gold_bom_rate =doc.gold_bom_amount
 				row.diamond_bom_rate =doc.diamond_bom_amount
