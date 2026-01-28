@@ -780,6 +780,7 @@ frappe.ui.form.on("Stock Entry Detail", {
 			disableSaveButton();
 			serial_item.push(...row.serial_no.split("\n"));
 		}
+		if (!frm.is_new()) {
 		frappe.call({
 			method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validation_of_serial_item",
 			args: {
@@ -805,6 +806,7 @@ frappe.ui.form.on("Stock Entry Detail", {
 				}
 			},
 		});
+		}
 	},
 	items_add: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
