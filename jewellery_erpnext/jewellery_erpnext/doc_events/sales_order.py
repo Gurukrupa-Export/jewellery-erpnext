@@ -290,11 +290,11 @@ def create_new_bom(self):
 						threshold = 2 if sub_info.get("rate_per_gm_threshold") == 0 else sub_info.get("rate_per_gm_threshold")
 						if doc.metal_and_finding_weight is not None and threshold is not None:
 							if doc.metal_and_finding_weight < threshold:
-								for row in sub:
-									if row.from_diamond:
-										if int(row.from_diamond) <= int(diamond_pcs) <= int(row.to_diamond):
+								for row_s in sub:
+									if row_s.from_diamond:
+										if int(row_s.from_diamond) <= int(diamond_pcs) <= int(row_s.to_diamond):
 											
-											sub_info = row
+											sub_info = row_s
 						gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
 						
 						
