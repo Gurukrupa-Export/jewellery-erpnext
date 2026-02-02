@@ -236,7 +236,7 @@ class ManufacturingPlan(Document):
                 else:
                     frappe.throw(
                         _(
-                            f"Sales Order BOM Not Found.</br>Please Set Master BOM for <b>{item_row.get("item_code")}</b> into Item Master"
+                            f"Sales Order BOM Not Found.</br>Please Set Master BOM for <b>{item_row["item_code"]}</b> into Item Master"
                         )
                     )
         else:
