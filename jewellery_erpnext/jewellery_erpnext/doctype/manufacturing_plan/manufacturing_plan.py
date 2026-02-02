@@ -275,6 +275,7 @@ class ManufacturingPlan(Document):
 def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filters):
     SalesOrder = frappe.qb.DocType("Sales Order")
     SalesOrderItem = frappe.qb.DocType("Sales Order Item")
+    Item = frappe.qb.DocType("Item")
 
     conditions = (
         (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty)
@@ -301,6 +302,8 @@ def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filt
         frappe.qb.from_(SalesOrder)
         .distinct()
         .from_(SalesOrderItem)
+        .join(Item)
+        .on(SalesOrderItem.item_code == Item.name)
         .select(
             SalesOrder.name,
             SalesOrder.transaction_date,
@@ -311,6 +314,7 @@ def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filt
             (SalesOrder.name == SalesOrderItem.parent)
             & (SalesOrder.docstatus == 1)
             & conditions
+            & (Item.master_bom.isnotnull() | SalesOrderItem.bom.isnotnull())
         )
         .orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
         .limit(page_len)
