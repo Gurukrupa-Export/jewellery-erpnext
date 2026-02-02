@@ -756,6 +756,8 @@ def create_new_bom(self):
 				row.gemstone_bom_rate = doc.gemstone_bom_amount
 				row.other_bom_rate = doc.other_bom_amount
 				row.making_charge = doc.making_charge
+				if self.custom_diamond_quality:
+					row.diamond_quality = self.custom_diamond_quality
 				self.total=self.total + row.amount
 				# frappe.msgprint(f"{self.total},{total_amount}")
 				# self.total = self.total	
