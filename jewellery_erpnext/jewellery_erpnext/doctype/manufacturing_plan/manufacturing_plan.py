@@ -234,9 +234,10 @@ class ManufacturingPlan(Document):
                     item_row["order_form_type"] = item_row.get("order_form_type")
                     self.append("manufacturing_plan_table", item_row)
                 else:
+                    item_code = item_row["item_code"]
                     frappe.throw(
                         _(
-                            f"Sales Order BOM Not Found.</br>Please Set Master BOM for <b>{item_row["item_code"]}</b> into Item Master"
+                            f"Sales Order BOM Not Found.</br>Please Set Master BOM for <b>{item_code}</b> into Item Master"
                         )
                     )
         else:
