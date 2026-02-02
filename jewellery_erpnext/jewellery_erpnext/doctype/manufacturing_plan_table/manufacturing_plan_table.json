@@ -166,7 +166,8 @@
    "in_list_view": 1,
    "in_preview": 1,
    "label": "Qty Per Manufacturing Order",
-   "reqd": 1
+   "non_negative": 1,
+   "read_only": 0
   },
   {
    "fieldname": "bom",
@@ -304,9 +305,9 @@
   {
    "fieldname": "mwo",
    "fieldtype": "Link",
-   "hidden": 1,
    "label": "MWO",
-   "options": "Manufacturing Work Order"
+   "options": "Manufacturing Work Order",
+   "read_only": 1
   },
   {
    "fetch_from": "sales_order.po_no",
@@ -322,15 +323,17 @@
    "read_only": 1
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-08-30 15:17:07.470355",
+ "modified": "2025-12-18 10:46:14.713829",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan Table",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
