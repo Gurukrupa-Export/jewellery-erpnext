@@ -76,6 +76,18 @@ def create_new_bom(self):
 				precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 				doc.metal_and_finding_weight = round(sum(row.quantity for row in doc.metal_detail),precision) + round(sum(row.quantity for row in doc.finding_detail),precision)
 				diamond_pcs=doc.total_diamond_pcs
+				doc.diamond_weight=sum(row.quantity for row in doc.diamond_detail)
+				ccp = frappe.db.get_all(
+					"Customer Certification Price",
+					filters={"customer": self.customer},
+					limit=1
+				)
+				if ccp:
+					ccp = frappe.get_doc("Customer Certification Price", ccp[0].name)
+					if doc.diamond_weight <= ccp.wt_threshold:
+						doc.certification_amount = ccp.per_pc_rate
+					else:
+						doc.certification_amount = ccp.per_carat_rate * doc.diamond_weight
 				if hasattr(doc, "gemstone_detail"):
 					for gem in doc.gemstone_detail or []:
 
@@ -1592,6 +1604,7 @@ def validate_item_dharm(self):
 				"item_type": item_type,
 				"is_for_metal": e_invoice_item.is_for_metal,
 				"is_for_hallmarking":e_invoice_item.is_for_hallmarking,
+				"is_for_certification":e_invoice_item.is_for_certification,
 				"is_for_labour": e_invoice_item.is_for_labour,
 				"is_for_diamond": e_invoice_item.is_for_diamond,
 				"diamond_type": e_invoice_item.diamond_type,
@@ -1611,6 +1624,7 @@ def validate_item_dharm(self):
 		aggregated_metal_labour_items = {}
 		aggregated_metal_making_items = {}
 		aggregated_hallmarking_items = {}
+		aggregated_certification_items = {}
 		aggregated_diamond_items = {}
 		aggregated_gemstone_items = {}
 		aggregated_finding_items = {}
@@ -1638,7 +1652,27 @@ def validate_item_dharm(self):
 								}
 							aggregated_hallmarking_items[key]["amount"] += bom_doc.hallmarking_amount
 							aggregated_hallmarking_items[key]["qty"] +=1
-
+				if bom_doc.certification_amount:
+					# frappe.throw("hii")
+					for e_item in e_invoice_items:
+						if (
+							e_item["is_for_certification"]
+						):
+							key = (e_item["item_type"], e_item["uom"])
+							if key not in aggregated_certification_items:
+								aggregated_certification_items[key] = {
+									"item_code": e_item["item_type"],
+									"item_name": e_item["item_type"],
+									"uom": e_item["uom"],
+									"qty": 0,
+									"amount": 0,
+									"tax_rate": e_item["tax_rate"],
+									"tax_amount": 0,
+									"amount_with_tax": 0,
+									"delivery_date": self.delivery_date
+								}
+							aggregated_certification_items[key]["amount"] += bom_doc.certification_amount
+							aggregated_certification_items[key]["qty"]+=1
 				for metal in bom_doc.metal_detail:
 					
 					if not metal.is_customer_item:
@@ -2133,6 +2167,10 @@ def validate_item_dharm(self):
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			self.append("custom_invoice_item", val)
 		
+		for key, val in aggregated_certification_items.items():
+			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			# frappe.throw("hii")
+			self.append("custom_invoice_item", val)
 
 		for key, val in aggregated_metal_labour_items.items():
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
