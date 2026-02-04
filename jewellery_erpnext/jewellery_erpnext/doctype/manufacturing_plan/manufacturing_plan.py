@@ -14,6 +14,30 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 
 
 class ManufacturingPlan(Document):
+    def on_cancel(self):
+        frappe.db.sql(
+            """
+            UPDATE `tabSales Order Item` soi
+            JOIN `tabManufacturing Plan Table` mpt
+                ON soi.name = mpt.docname
+            JOIN `tabManufacturing Plan` mp
+                ON (mpt.parent = mp.name AND mp.name = %(mp_name)s)
+            JOIN `tabSales Order` so
+				ON (soi.parent = so.name AND so.docstatus = 1)
+            SET
+                soi.manufacturing_order_qty =
+                    COALESCE(soi.manufacturing_order_qty, 0)
+                    - COALESCE(mpt.manufacturing_order_qty, 0)
+                    - COALESCE(mpt.subcontracting_qty, 0),
+                so.modified = NOW(),
+                so.modified_by = %(modified_by)s
+        """,
+            {
+                "mp_name": self.name,
+                "modified_by": frappe.session.user,
+            },
+        )
+
     def on_submit(self):
         is_subcontracting = False
         # customer_diamond_data removed for memory efficiency
