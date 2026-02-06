@@ -11,6 +11,7 @@
   "customer",
   "setting_type",
   "currency",
+  "metal_touch",
   "column_break_3",
   "metal_type",
   "from_gold_rate",
@@ -88,6 +89,12 @@
    "fieldtype": "Link",
    "label": "Currency",
    "options": "Currency"
+  },
+  {
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "label": "Metal Touch",
+   "options": "Attribute Value"
   }
  ],
  "index_web_pages_for_search": 1,
