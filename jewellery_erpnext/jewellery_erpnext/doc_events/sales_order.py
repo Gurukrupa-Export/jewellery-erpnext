@@ -444,7 +444,8 @@ def create_new_bom(self):
 							# for s in doc.metal_detail:
 							if s.is_customer_item:
 								s.rate=0
-								s.quantity=round(s.quantity, precision)
+								s.quantity=round(s.quantity, 3)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.making_rate= sub_info.get("custom_subcontracting_rate", 0)
 								s.making_amount = s.making_rate * s.quantity
@@ -453,7 +454,8 @@ def create_new_bom(self):
 								calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 								s.rate= round(calculated_gold_rate , 2)
 								
-								s.quantity=round(s.quantity, precision)
+								s.quantity=round(s.quantity, 3)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.making_rate=sub_info.get("supplier_fg_purchase_rate", 0)
 								s.wastage_rate = 0 
@@ -466,7 +468,8 @@ def create_new_bom(self):
 							# for s in doc.metal_detail:
 							if s.is_customer_item:
 								s.rate=0
-								s.quantity=round(s.quantity, precision)
+								s.quantity=round(s.quantity, 3)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.making_rate= sub_info.get("custom_subcontracting_rate", 0)
 								s.making_amount =round( s.making_rate * s.quantity,2)
@@ -478,7 +481,8 @@ def create_new_bom(self):
 								else:
 									s.rate= s.se_rate
 									s.making_rate=sub_info.get("supplier_fg_purchase_rate",0)
-								s.quantity=round(s.quantity, precision)
+								s.quantity=round(s.quantity, 3)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.wastage_rate = 0 
 								s.wastage_amount =0
@@ -537,7 +541,8 @@ def create_new_bom(self):
 								
 								calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 								s.rate=round(calculated_gold_rate , 2)
-								s.quantity=round(s.quantity, precision)
+								s.quantity=round(s.quantity, 3)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								
 								s.making_rate=making_rate
@@ -643,7 +648,8 @@ def create_new_bom(self):
 						calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						if f.is_customer_item:
 							f.rate= 0
-							f.quantity=round(f.quantity, precision)
+							f.quantity=round(f.quantity, 3)
+							f.quantity_3=round(f.quantity, 2)
 							f.amount=0
 							f.making_rate = find_data.get("custom_subcontracting_rate")
 							f.wastage_rate = 0
@@ -653,7 +659,8 @@ def create_new_bom(self):
 						else:
 							if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
 								f.rate= round(calculated_gold_rate , 2)
-								f.quantity=round(f.quantity, precision)
+								f.quantity=round(f.quantity, 3)
+								f.quantity_3=round(f.quantity, 2)
 								f.amount=round(f.rate*f.quantity,2 )
 								f.making_rate = find_data.get("supplier_fg_purchase_rate")
 								f.wastage_rate = 0
@@ -668,7 +675,8 @@ def create_new_bom(self):
 								else:
 									f.rate= f.se_rate
 									f.making_rate = find_data.get("supplier_fg_purchase_rate")
-								f.quantity=round(f.quantity, precision)
+								f.quantity=round(f.quantity, 3)
+								f.quantity_3=round(f.quantity, 2)
 								f.amount=round(f.rate*f.quantity,2 )
 								f.wastage_rate = 0
 								f.wastage_amount =0
@@ -678,7 +686,8 @@ def create_new_bom(self):
 								f.metal_purity = customer_metal_purity
 								
 								f.rate=round(calculated_gold_rate , 2)
-								f.quantity=round(f.quantity, precision)
+								f.quantity=round(f.quantity, 3)
+								f.quantity_3=round(f.quantity, 2)
 								f.amount = round(f.rate * f.quantity,  2)
 								finding_weight = getattr(doc, "metal_and_finding_weight", None)
 
@@ -821,13 +830,16 @@ def create_new_bom(self):
 							elif self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
 								d.fg_purchase_rate = latest.get("supplier_fg_purchase_rate") if latest else 0
 								d.total_diamond_rate=d.fg_purchase_rate
-								d.quantity=round(d.quantity,precision )
+								d.quantity=round(d.quantity, 3)
+								d.weight_per_pcs =(d.quantity/d.pcs)
+								d.quantity_3=round(d.quantity, 2)
 								d.diamond_rate_for_specified_quantity = round(d.quantity * d.total_diamond_rate, 2)
 							# Fetch the matching diamond price list entry
 							else:
 								
 									d.total_diamond_rate = round(total_rate, 2)
-									d.quantity=round(d.quantity,precision )
+									d.quantity=round(d.quantity,3)
+									d.quantity_3=round(d.quantity,2)
 									d.diamond_rate_for_specified_quantity = round(d.quantity * total_rate, 2)
 								
 				doc.total_diamond_amount = sum(
@@ -843,14 +855,17 @@ def create_new_bom(self):
 				doc.making_charge = sum(row.making_amount for row in doc.metal_detail) + sum(row.making_amount for row in doc.finding_detail)
 				doc.total_metal_weight = sum(row.quantity for row in doc.metal_detail)
 				doc.metal_weight = doc.total_metal_weight
+				doc.custom_total_metal_weight2_digits = sum(row.quantity_3 for row in doc.metal_detail)
 				doc.diamond_weight = sum(row.quantity for row in doc.diamond_detail)
 				doc.total_diamond_weight_in_gms = round(sum(row.quantity for row in doc.diamond_detail)/5,2)
 				doc.total_gemstone_weight = sum(row.quantity for row in doc.gemstone_detail)
+				doc.custom_total_gemstone_weight2_digits=sum(row.quantity_3 for row in doc.gemstone_detail)
 				doc.gemstone_weight = doc.total_gemstone_weight
 				doc.total_gemstone_weight_in_gms = round(sum(row.quantity for row in doc.gemstone_detail)/5,2)
 				doc.finding_weight = round(sum(row.quantity for row in doc.finding_detail),2)
 				doc.finding_weight_ = doc.finding_weight
 				doc.total_finding_weight_per_gram = doc.finding_weight
+				doc.custom_finding_weight2_digits = (sum(row.quantity_3 for row in doc.finding_detail))
 				doc.total_diamond_pcs = sum(flt(row.pcs) for row in doc.diamond_detail)
 				doc.total_gemstone_pcs = sum(flt(row.pcs) for row in doc.gemstone_detail)
 				doc.total_other_weight = sum(row.quantity for row in doc.other_detail)

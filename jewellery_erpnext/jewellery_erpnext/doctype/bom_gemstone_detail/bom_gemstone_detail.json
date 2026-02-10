@@ -26,6 +26,7 @@
   "se_rate",
   "pcs",
   "quantity",
+  "quantity_3",
   "actual_quantity",
   "weight_in_gms",
   "difference",
@@ -233,6 +234,11 @@
    "fieldtype": "Float",
    "label": "Weight in cts",
    "read_only": 1
+  },
+  {
+   "fieldname": "quantity_3",
+   "fieldtype": "Float",
+   "label": "Weight in cts(2)"
   }
  ],
  "index_web_pages_for_search": 1,

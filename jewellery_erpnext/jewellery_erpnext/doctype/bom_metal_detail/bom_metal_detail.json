@@ -21,6 +21,7 @@
   "cad_finish_ratio",
   "cad_to_finish_ratio",
   "quantity",
+  "quantity_3",
   "actual_quantity",
   "difference_qty",
   "additional_net_weight",
@@ -288,6 +289,11 @@
    "label": "Customer Metal Purity",
    "options": "Attribute Value",
    "read_only": 1
+  },
+  {
+   "fieldname": "quantity_3",
+   "fieldtype": "Data",
+   "label": "Weight (in gms 3)"
   }
  ],
  "index_web_pages_for_search": 1,
