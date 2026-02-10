@@ -71,7 +71,8 @@ def create_new_bom(self):
 				if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
 					frappe.db.set_value("BOM",row.bom,"docstatus","0")
 				doc = frappe.get_doc("BOM",row.bom)
-				
+				if "Earrings" in doc.item_subcategory:
+					doc.hallmarking_amount = doc.hallmarking_amount *2
 				customer_group = frappe.db.get_value('Customer', self.customer , 'customer_group')
 				precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 				doc.metal_and_finding_weight = round(sum(row.quantity for row in doc.metal_detail),precision) + round(sum(row.quantity for row in doc.finding_detail),precision)
