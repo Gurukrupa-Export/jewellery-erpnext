@@ -18,14 +18,14 @@
   "amended_from",
   "section_break_tkb7i",
   "select_manufacture_order",
-  "get_sales_order",
-  "get_repair_order",
-  "get_mwo",
   "setting_type",
   "is_subcontracting",
   "supplier",
   "estimated_date",
   "purchase_type",
+  "get_mwo",
+  "get_sales_order",
+  "get_repair_order",
   "manufacturing_plan_table",
   "section_break_cjenr",
   "total_planned_qty",
@@ -188,11 +188,11 @@
    "link_fieldname": "manufacturing_plan"
   }
  ],
- "modified": "2025-12-17 16:48:20.890757",
+ "modified": "2026-02-11 13:26:47.504529",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

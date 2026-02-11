@@ -32,8 +32,6 @@ repos:
                 cypress/.*|
                 .*node_modules.*|
                 .*boilerplate.*|
-                jewellery_erpnext/public/js/controllers/.*|
-                jewellery_erpnext/templates/pages/order.js|
                 jewellery_erpnext/templates/includes/.*
             )$
 
@@ -72,4 +70,3 @@ ci:
     autoupdate_schedule: weekly
     skip: []
     submodules: false
- 
