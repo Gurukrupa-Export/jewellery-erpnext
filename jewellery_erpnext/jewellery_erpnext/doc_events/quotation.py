@@ -392,16 +392,16 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 
 
 					# wastage_rate = matching_subcategory.get("wastage", 0) / 100.0
-			find.wastage_rate = wastage_rate
-			# find.rate = doc.gold_rate_with_gst
-			find.amount = find.rate * find.quantity
-			find.making_rate = rate_per_gm
-			if making_charge_price_list_with_gold_rate:
-				find.making_amount = find.making_rate * find.quantity
+					find.wastage_rate = wastage_rate
+					# find.rate = doc.gold_rate_with_gst
+					find.amount = find.rate * find.quantity
+					find.making_rate = rate_per_gm
+					if making_charge_price_list_with_gold_rate:
+						find.making_amount = find.making_rate * find.quantity
 
-			find.fg_purchase_rate = fg_purchase_rate
-			find.fg_purchase_amount = fg_purchase_amount
-			find.wastage_amount = find.wastage_rate * find.amount
+					find.fg_purchase_rate = fg_purchase_rate
+					find.fg_purchase_amount = fg_purchase_amount
+					find.wastage_amount = find.wastage_rate * find.amount
 
 		for gem in doc.gemstone_detail:
 			gem.rate = doc.gold_rate_with_gst
