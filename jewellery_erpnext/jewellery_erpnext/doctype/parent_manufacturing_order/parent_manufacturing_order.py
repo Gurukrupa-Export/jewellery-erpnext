@@ -7,6 +7,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
+from frappe.utils import get_link_to_form
 
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
@@ -29,10 +30,17 @@ class ParentManufacturingOrder(Document):
 				diamond_grade_data = frappe.db.get_value(
 					"Customer Diamond Grade",
 					{"parent": customer, "diamond_quality": self.diamond_quality},
-					["diamond_grade_1", "diamond_grade_2", "diamond_grade_3", "diamond_grade_4"],
+					[
+						"diamond_grade_1",
+						"diamond_grade_2",
+						"diamond_grade_3",
+						"diamond_grade_4",
+					],
 				)
 				for row in diamond_grade_data:
-					if frappe.db.get_value("Attribute Value", row, "is_customer_diamond_quality"):
+					if frappe.db.get_value(
+						"Attribute Value", row, "is_customer_diamond_quality"
+					):
 						self.diamond_grade = row
 			else:
 				self.diamond_grade = frappe.db.get_value(
@@ -41,7 +49,9 @@ class ParentManufacturingOrder(Document):
 					"diamond_grade_1",
 				)
 
-		if not self.diamond_grade and not frappe.db.get_value("Item", self.item_code, "has_batch_no"):
+		if not self.diamond_grade and not frappe.db.get_value(
+			"Item", self.item_code, "has_batch_no"
+		):
 			frappe.throw(_("Diamond Grade is not mentioned in customer"))
 		self.metal_details()
 
@@ -69,33 +79,37 @@ class ParentManufacturingOrder(Document):
 		validate_mfg_date(self)
 		if self.manufacturer:
 			warehouse_details = frappe.db.get_value(
-					"Manufacturing Setting",
-					{"manufacturer": self.manufacturer},
-					[
-						"default_department",
-						"default_diamond_department",
-						"default_gemstone_department",
-						"default_finding_department",
-						"default_other_material_department",
-					],
-					as_dict=1,
-				)
-			
-			default_department = warehouse_details.get("default_department") or None
+				"Manufacturing Setting",
+				{"manufacturer": self.manufacturer},
+				[
+					"default_department",
+					"default_diamond_department",
+					"default_gemstone_department",
+					"default_finding_department",
+					"default_other_material_department",
+				],
+				as_dict=1,
+			)
+
 			metal_department = warehouse_details.get("default_department") or None
-			diamond_department = warehouse_details.get("default_diamond_department") or None
-			gemstone_department = warehouse_details.get("default_gemstone_department") or None
-			finding_department = warehouse_details.get("default_finding_department") or None
+			diamond_department = (
+				warehouse_details.get("default_diamond_department") or None
+			)
+			gemstone_department = (
+				warehouse_details.get("default_gemstone_department") or None
+			)
+			finding_department = (
+				warehouse_details.get("default_finding_department") or None
+			)
 			other_material_department = (
 				warehouse_details.get("default_other_material_department") or None
 			)
-			
+
 			self.db_set("metal_department", metal_department)
 			self.db_set("diamond_department", diamond_department)
 			self.db_set("gemstone_department", gemstone_department)
 			self.db_set("finding_department", finding_department)
 			self.db_set("other_material_department", other_material_department)
-		
 
 	def on_update_after_submit(self):
 		update_due_days(self)
@@ -105,10 +119,12 @@ class ParentManufacturingOrder(Document):
 		if not self.order_form_type or self.order_form_type == "Order":
 			set_metal_tolerance_table(self)  # To Set Metal Product Tolerance Table
 			set_diamond_tolerance_table(self)  # To Set Diamond Product Tolerance Table
-			set_gemstone_tolerance_table(self)  # To Set Gemstone Product Tolerance Table
+			set_gemstone_tolerance_table(
+				self
+			)  # To Set Gemstone Product Tolerance Table
 			# for idx in range(0, int(self.qty)):
 			self.submit_bom()
-			if self.type != 'Finding Manufacturing':
+			if self.type != "Finding Manufacturing":
 				self.create_material_requests()
 
 		create_manufacturing_work_order(self)
@@ -138,16 +154,22 @@ class ParentManufacturingOrder(Document):
 
 		# Update purity based on Manufacturer Metal Criteria
 		mfg_data = frappe.db.get_all(
-			"Metal Criteria", {"parent": self.manufacturer}, ["metal_type", "metal_touch", "metal_purity"]
+			"Metal Criteria",
+			{"parent": self.manufacturer},
+			["metal_type", "metal_touch", "metal_purity"],
 		)
 		metal_data = {}
 		for metal in mfg_data:
 			metal_data.setdefault(metal.metal_type, frappe._dict())
-			metal_data[metal.metal_type].setdefault(metal.metal_touch, metal.metal_purity)
+			metal_data[metal.metal_type].setdefault(
+				metal.metal_touch, metal.metal_purity
+			)
 
 		if metal_data:
 			for metal in bom.metal_detail + bom.finding_detail:
-				if metal_data.get(metal.metal_type) and metal_data[metal.metal_type].get(metal.metal_touch):
+				if metal_data.get(metal.metal_type) and metal_data[
+					metal.metal_type
+				].get(metal.metal_touch):
 					metal.metal_purity = metal_data[metal.metal_type][metal.metal_touch]
 
 		bom.save()
@@ -163,12 +185,11 @@ class ParentManufacturingOrder(Document):
 
 	def create_material_requests(self):
 		bom = self.serial_id_bom or self.master_bom
-		mnf_abb = frappe.get_value("Manufacturer", self.manufacturer, "custom_abbreviation")
+		mnf_abb = frappe.get_value(
+			"Manufacturer", self.manufacturer, "custom_abbreviation"
+		)
 		if not bom:
 			frappe.throw(_("BOM is missing"))
-		check_bom_type = frappe.db.get_value("BOM", bom, "bom_type")
-		if check_bom_type != "Manufacturing Process":
-			frappe.throw(_("Master BOM <b>{0}</b> BOM Type must be a Manufacturing Process").format(bom))
 
 		# Initialize separate lists for each item type
 		bom_tables = [
@@ -188,17 +209,27 @@ class ParentManufacturingOrder(Document):
 			# Get bom table's
 			if bom_table == "BOM Metal Detail":
 				data = frappe.get_all(
-					bom_table, {"parent": bom}, ["item_variant", "quantity", "is_customer_item"]
+					bom_table,
+					{"parent": bom},
+					["item_variant", "quantity", "is_customer_item"],
 				)
 			if bom_table == "BOM Finding Detail":
 				data = frappe.get_all(
-					bom_table, {"parent": bom}, ["item_variant", "quantity", "qty", "is_customer_item"]
+					bom_table,
+					{"parent": bom},
+					["item_variant", "quantity", "qty", "is_customer_item"],
 				)
 			if bom_table == "BOM Diamond Detail" or bom_table == "BOM Gemstone Detail":
 				data = frappe.get_all(
 					bom_table,
 					{"parent": bom},
-					["item_variant", "quantity", "is_customer_item", "sub_setting_type", "pcs"],
+					[
+						"item_variant",
+						"quantity",
+						"is_customer_item",
+						"sub_setting_type",
+						"pcs",
+					],
 				)
 			if bom_table == "BOM Other Detail":
 				data = frappe.get_all(
@@ -222,7 +253,9 @@ class ParentManufacturingOrder(Document):
 					item_type = get_item_type(row.item_variant)
 					if item_type == "metal_item":
 						if not warehouse_dict.get("M"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
+							frappe.throw(
+								_("Please mention warehouse details in Manufacturer")
+							)
 						department = warehouse_dict["M"]["department"]
 						to_warehouse = warehouse_dict["M"]["target_warehouse"]
 						metal_items.append(
@@ -231,7 +264,11 @@ class ParentManufacturingOrder(Document):
 								"qty": row.quantity,
 								"from_warehouse": frappe.db.get_value(
 									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
+									{
+										"disabled": 0,
+										"department": department,
+										"warehouse_type": "Raw Material",
+									},
 									"name",
 								),
 								"warehouse": to_warehouse,
@@ -242,7 +279,9 @@ class ParentManufacturingOrder(Document):
 						)
 					elif item_type == "finding_item":
 						if not warehouse_dict.get("F"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
+							frappe.throw(
+								_("Please mention warehouse details in Manufacturer")
+							)
 						department = warehouse_dict["F"]["department"]
 						to_warehouse = warehouse_dict["F"]["target_warehouse"]
 						finding_items.append(
@@ -251,7 +290,11 @@ class ParentManufacturingOrder(Document):
 								"qty": row.quantity,
 								"from_warehouse": frappe.db.get_value(
 									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
+									{
+										"disabled": 0,
+										"department": department,
+										"warehouse_type": "Raw Material",
+									},
 									"name",
 								),
 								"warehouse": to_warehouse,
@@ -262,7 +305,9 @@ class ParentManufacturingOrder(Document):
 						)
 					elif item_type == "diamond_item":
 						if not warehouse_dict.get("D"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
+							frappe.throw(
+								_("Please mention warehouse details in Manufacturer")
+							)
 						department = warehouse_dict["D"]["department"]
 						to_warehouse = warehouse_dict["D"]["target_warehouse"]
 						diamond_items.append(
@@ -271,7 +316,11 @@ class ParentManufacturingOrder(Document):
 								"qty": row.quantity,
 								"from_warehouse": frappe.db.get_value(
 									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
+									{
+										"disabled": 0,
+										"department": department,
+										"warehouse_type": "Raw Material",
+									},
 									"name",
 								),
 								"warehouse": to_warehouse,
@@ -282,7 +331,9 @@ class ParentManufacturingOrder(Document):
 						)
 					elif item_type == "gemstone_item":
 						if not warehouse_dict.get("G"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
+							frappe.throw(
+								_("Please mention warehouse details in Manufacturer")
+							)
 						department = warehouse_dict["G"]["department"]
 						to_warehouse = warehouse_dict["G"]["target_warehouse"]
 						gemstone_items.append(
@@ -291,7 +342,11 @@ class ParentManufacturingOrder(Document):
 								"qty": row.quantity,
 								"from_warehouse": frappe.db.get_value(
 									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
+									{
+										"disabled": 0,
+										"department": department,
+										"warehouse_type": "Raw Material",
+									},
 									"name",
 								),
 								"warehouse": to_warehouse,
@@ -302,7 +357,9 @@ class ParentManufacturingOrder(Document):
 						)
 					elif item_type == "other_item":
 						if not warehouse_dict.get("O"):
-							frappe.throw(_("Please mention warehouse details in Manufacturer"))
+							frappe.throw(
+								_("Please mention warehouse details in Manufacturer")
+							)
 						department = warehouse_dict["O"]["department"]
 						to_warehouse = warehouse_dict["O"]["target_warehouse"]
 						other_items.append(
@@ -311,7 +368,11 @@ class ParentManufacturingOrder(Document):
 								"qty": row.quantity,
 								"from_warehouse": frappe.db.get_value(
 									"Warehouse",
-									{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
+									{
+										"disabled": 0,
+										"department": department,
+										"warehouse_type": "Raw Material",
+									},
 									"name",
 								),
 								"warehouse": to_warehouse,
@@ -329,7 +390,9 @@ class ParentManufacturingOrder(Document):
 		}
 		# frappe.throw(f"{items}")
 		counter = 1
-		trimmed_items = {item_type.split("_")[0][:1].lower(): val for item_type, val in items.items()}
+		trimmed_items = {
+			item_type.split("_")[0][:1].lower(): val for item_type, val in items.items()
+		}
 		for item_type, val in trimmed_items.items():
 			if val:
 				mr_doc = frappe.new_doc("Material Request")
@@ -348,7 +411,9 @@ class ParentManufacturingOrder(Document):
 				):
 					mr_doc._customer = self.customer
 					mr_doc.inventory_type = "Customer Goods"
-				mr_doc.custom_department = frappe.db.get_value("Warehouse",val[0]["from_warehouse"],"department")
+				mr_doc.custom_department = frappe.db.get_value(
+					"Warehouse", val[0]["from_warehouse"], "department"
+				)
 				for i in val:
 					if i["qty"] > 0:
 						mr_doc.append(
@@ -359,9 +424,13 @@ class ParentManufacturingOrder(Document):
 								"warehouse": i["warehouse"],
 								"from_warehouse": i["from_warehouse"],
 								"custom_is_customer_item": i.get("is_customer_item", 0),
-								"custom_sub_setting_type": i.get("sub_setting_type", None),
+								"custom_sub_setting_type": i.get(
+									"sub_setting_type", None
+								),
 								"pcs": i.get("pcs", None),
-								"custom_inventory_type": "Customer Stock" if i.get("is_customer_item") == 1 else None,
+								"custom_inventory_type": "Customer Stock"
+								if i.get("is_customer_item") == 1
+								else None,
 							},
 						)
 					else:
@@ -392,7 +461,9 @@ class ParentManufacturingOrder(Document):
 				department_data[row.department] = [row.manufacturing_operation]
 
 		if len(department_data.keys()) > 1:
-			frappe.throw(_("All Manufacturing Work Orders should be in same Department"))
+			frappe.throw(
+				_("All Manufacturing Work Orders should be in same Department")
+			)
 			return
 
 		create_stock_entry(self, department_data)
@@ -529,7 +600,9 @@ def make_manufacturing_order(
 		# )
 		manufacturer = frappe.defaults.get_user_default("manufacturer")
 		doc.department = frappe.db.get_value(
-			"Manufacturing Setting", {"manufacturer": manufacturer}, "default_department"
+			"Manufacturing Setting",
+			{"manufacturer": manufacturer},
+			"default_department",
 		)
 		# doc.finding_department = warehouse_details.get("default_finding_department") or None
 		# mwo_details = (
@@ -593,7 +666,10 @@ def create_manufacturing_work_order(self):
 			BOMFindingDetail.metal_colour,
 			BOMFindingDetail.parent,
 		)
-		.where((BOMFindingDetail.parent == self.master_bom) & (Item.custom_ignore_work_order == 0))
+		.where(
+			(BOMFindingDetail.parent == self.master_bom)
+			& (Item.custom_ignore_work_order == 0)
+		)
 	)
 
 	finding_base = (
@@ -626,7 +702,9 @@ def create_manufacturing_work_order(self):
 			finding_data.append(row)
 
 	if not_to_include:
-		finding_detail_query = finding_detail_query.where(BOMFindingDetail.name.notin(not_to_include))
+		finding_detail_query = finding_detail_query.where(
+			BOMFindingDetail.name.notin(not_to_include)
+		)
 
 	# Combine both queries using UNION
 	combined_details = metal_detail_query + finding_detail_query
@@ -636,7 +714,6 @@ def create_manufacturing_work_order(self):
 	grouped_data = {}
 	variant_of = frappe.db.get_value("Item", self.item_code, "variant_of")
 	for item in metal_details:
-
 		metal_purity = item["metal_purity"]
 		metal_colour = item["metal_colour"]
 
@@ -646,14 +723,17 @@ def create_manufacturing_work_order(self):
 			grouped_data[metal_purity].add(metal_colour)
 
 	result = [
-		{"metal_purity": key, "metal_colours": list(value)} for key, value in grouped_data.items()
+		{"metal_purity": key, "metal_colours": list(value)}
+		for key, value in grouped_data.items()
 	]
 
 	updated_data = []
 
 	for entry in result:
 		metal_purity = entry["metal_purity"]
-		metal_colours = "".join(sorted([color[0].upper() for color in entry["metal_colours"]]))
+		metal_colours = "".join(
+			sorted([color[0].upper() for color in entry["metal_colours"]])
+		)
 
 		updated_entry = {"metal_purity": metal_purity, "metal_colours": metal_colours}
 
@@ -671,7 +751,10 @@ def create_manufacturing_work_order(self):
 				},
 			)
 			for color in updated_data:
-				if row.metal_purity == color["metal_purity"] and len(color["metal_colours"]) > 1:
+				if (
+					row.metal_purity == color["metal_purity"]
+					and len(color["metal_colours"]) > 1
+				):
 					doc.multicolour = 1
 					doc.allowed_colours = color["metal_colours"]
 			doc.metal_touch = row.metal_touch
@@ -683,7 +766,9 @@ def create_manufacturing_work_order(self):
 			# 	"Manufacturing Setting", {"company": doc.company}, "default_department"
 			# )
 			doc.department = frappe.db.get_value(
-				"Manufacturing Setting", {"manufacturer": doc.manufacturer}, "default_department"
+				"Manufacturing Setting",
+				{"manufacturer": doc.manufacturer},
+				"default_department",
 			)
 			doc.metal_touch = row.metal_touch
 			doc.metal_type = row.metal_type
@@ -709,7 +794,9 @@ def create_manufacturing_work_order(self):
 		# )
 		# Chnage doc to self
 		fg_doc.department = frappe.db.get_value(
-			"Manufacturing Setting", {"manufacturer": self.manufacturer}, "default_fg_department"
+			"Manufacturing Setting",
+			{"manufacturer": self.manufacturer},
+			"default_fg_department",
 		)
 		fg_doc.metal_touch = row.metal_touch
 		fg_doc.metal_type = row.metal_type
@@ -750,14 +837,24 @@ def get_diamond_item_code_by_variant(self, bom, target_warehouse):
 			)  # Get the variant for the current item and attribute values
 
 			if variant:
-				diamond_list.append({"item_code": variant, "qty": self.qty, "warehouse": target_warehouse})
+				diamond_list.append(
+					{
+						"item_code": variant,
+						"qty": self.qty,
+						"warehouse": target_warehouse,
+					}
+				)
 
 			else:
 				# Create a new variant
 				variant = create_variant(row.item, args)
 				variant.save()
 				diamond_list.append(
-					{"item_code": variant.item_code, "qty": self.qty, "warehouse": target_warehouse}
+					{
+						"item_code": variant.item_code,
+						"qty": self.qty,
+						"warehouse": target_warehouse,
+					}
 				)
 
 		return diamond_list
@@ -770,7 +867,9 @@ def get_gemstone_item_code_by_variant(self, bom, target_warehouse):
 		for row in self.gemstone_table:
 			template = frappe.get_doc("Item", "G")
 			if template.name not in attributes:
-				attributes[template.name] = [attr.attribute for attr in template.attributes]
+				attributes[template.name] = [
+					attr.attribute for attr in template.attributes
+				]
 			args = {
 				attr: row.get(attr.replace(" ", "_").lower())
 				for attr in attributes[template.name]
@@ -780,7 +879,11 @@ def get_gemstone_item_code_by_variant(self, bom, target_warehouse):
 
 			if variant:
 				gemstone_list.append(
-					{"item_code": variant, "qty": row.quantity, "warehouse": target_warehouse}
+					{
+						"item_code": variant,
+						"qty": row.quantity,
+						"warehouse": target_warehouse,
+					}
 				)
 			else:
 				# Create a new variant
@@ -870,8 +973,12 @@ def set_metal_tolerance_table(self):  # To Set Metal Product Tolerance Table
 				from_tolerance_wt = round(bom_gross_wt - mtt_tbl.tolerance_range, 4)
 				to_tolerance_wt = round(bom_gross_wt + mtt_tbl.tolerance_range, 4)
 			else:
-				from_tolerance_wt = round(bom_gross_wt * ((100 - mtt_tbl.minus_percent) / 100), 4)
-				to_tolerance_wt = round(bom_gross_wt * ((100 + mtt_tbl.plus_percent) / 100), 4)
+				from_tolerance_wt = round(
+					bom_gross_wt * ((100 - mtt_tbl.minus_percent) / 100), 4
+				)
+				to_tolerance_wt = round(
+					bom_gross_wt * ((100 + mtt_tbl.plus_percent) / 100), 4
+				)
 
 			child_row = {
 				"doctype": "Metal Product Tolerance",
@@ -882,7 +989,9 @@ def set_metal_tolerance_table(self):  # To Set Metal Product Tolerance Table
 				"from_tolerance_wt": from_tolerance_wt,
 				"to_tolerance_wt": to_tolerance_wt,
 				"standard_tolerance_wt": round(bom_gross_wt, 4),
-				"product_wt": self.gross_weight if mtt_tbl.weight_type == "Gross Weight" else self.net_weight,
+				"product_wt": self.gross_weight
+				if mtt_tbl.weight_type == "Gross Weight"
+				else self.net_weight,
 			}
 			try:
 				self.append("metal_product_tolerance", child_row)
@@ -911,10 +1020,13 @@ def set_diamond_tolerance_table(self):  # To Set Diamond Product Tolerance Table
 				for dimond_row in bom_doc.diamond_detail:
 					if dimond_row.diamond_sieve_size == dtt_tbl.sieve_size:
 						sieve_size_range = dimond_row.sieve_size_range
-						pcs = dimond_row.pcs
 						weight_in_cts = dimond_row.quantity
-						from_tolerance_wt = round(weight_in_cts * ((100 - dtt_tbl.minus_percent) / 100), 4)
-						to_tolerance_wt = round(weight_in_cts * ((100 + dtt_tbl.minus_percent) / 100), 4)
+						from_tolerance_wt = round(
+							weight_in_cts * ((100 - dtt_tbl.minus_percent) / 100), 4
+						)
+						to_tolerance_wt = round(
+							weight_in_cts * ((100 + dtt_tbl.minus_percent) / 100), 4
+						)
 						child_row = {
 							"doctype": "Diamond Product Tolerance",
 							"parent": self.name,
@@ -937,8 +1049,12 @@ def set_diamond_tolerance_table(self):  # To Set Diamond Product Tolerance Table
 						quantity_sum += dimond_row.quantity
 						size_in_mm += dimond_row.size_in_mm
 						sieve_size_ranges.add(dimond_row.sieve_size_range)
-				from_tolerance_wt = round(quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4)
-				to_tolerance_wt = round(quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4)
+				from_tolerance_wt = round(
+					quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
+				)
+				to_tolerance_wt = round(
+					quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
+				)
 				for sieve_size_range in sorted(sieve_size_ranges):
 					if dtt_tbl.sieve_size_range == sieve_size_range:
 						child_row = {
@@ -960,8 +1076,12 @@ def set_diamond_tolerance_table(self):  # To Set Diamond Product Tolerance Table
 				diamond_total_wt = 0
 				for dimond_row in bom_doc.diamond_detail:
 					diamond_total_wt += dimond_row.quantity
-					from_tolerance_wt = round(diamond_total_wt * ((100 - dtt_tbl.minus_percent) / 100), 4)
-					to_tolerance_wt = round(diamond_total_wt * ((100 + dtt_tbl.plus_percent) / 100), 4)
+					from_tolerance_wt = round(
+						diamond_total_wt * ((100 - dtt_tbl.minus_percent) / 100), 4
+					)
+					to_tolerance_wt = round(
+						diamond_total_wt * ((100 + dtt_tbl.plus_percent) / 100), 4
+					)
 					child_row = {
 						"doctype": "Diamond Product Tolerance",
 						"parent": self.name,
@@ -984,8 +1104,12 @@ def set_diamond_tolerance_table(self):  # To Set Diamond Product Tolerance Table
 						empty_quantity_sum += dimond_row.quantity
 						empty_size_in_mm += dimond_row.size_in_mm
 						empty_sieve_size_ranges.add(dimond_row.sieve_size_range)
-				empty_from_tolerance_wt = round(empty_quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4)
-				empty_to_tolerance_wt = round(empty_quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4)
+				empty_from_tolerance_wt = round(
+					empty_quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
+				)
+				empty_to_tolerance_wt = round(
+					empty_quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
+				)
 				if empty_sieve_size_ranges:
 					for sieve_size_range in sorted(empty_sieve_size_ranges):
 						child_row = {
@@ -1033,8 +1157,12 @@ def set_gemstone_tolerance_table(self):  # To Set Gemstone Product Tolerance Tab
 					if dtt_tbl.from_diamond <= gem_row.quantity <= dtt_tbl.to_diamond:
 						quantity_sum += gem_row.quantity
 						shapes.add(gem_row.stone_shape)
-				from_tolerance_wt = round(quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4)
-				to_tolerance_wt = round(quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4)
+				from_tolerance_wt = round(
+					quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
+				)
+				to_tolerance_wt = round(
+					quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
+				)
 				for shape in sorted(shapes):
 					if dtt_tbl.gemstone_shape == shape:
 						child_row = {
@@ -1057,8 +1185,12 @@ def set_gemstone_tolerance_table(self):  # To Set Gemstone Product Tolerance Tab
 					if dtt_tbl.gemstone_type == gem_row.gemstone_type:
 						quantity_sum += gem_row.quantity
 						gemstone_types.add(gem_row.gemstone_type)
-				from_tolerance_wt = round(quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4)
-				to_tolerance_wt = round(quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4)
+				from_tolerance_wt = round(
+					quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
+				)
+				to_tolerance_wt = round(
+					quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
+				)
 				for gemstone_type in sorted(gemstone_types):
 					if dtt_tbl.gemstone_type == gemstone_type:
 						child_row = {
@@ -1078,8 +1210,12 @@ def set_gemstone_tolerance_table(self):  # To Set Gemstone Product Tolerance Tab
 				quantity_sum = 0
 				for gem_row in bom_doc.gemstone_detail:
 					quantity_sum += gem_row.quantity
-					from_tolerance_wt = round(quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4)
-					to_tolerance_wt = round(quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4)
+					from_tolerance_wt = round(
+						quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
+					)
+					to_tolerance_wt = round(
+						quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
+					)
 					child_row = {
 						"doctype": "Gemstone Product Tolerance",
 						"parent": self.name,
@@ -1203,8 +1339,7 @@ def get_linked_stock_entries(pmo_name):  # MOP Details
 			StockEntryDetail.qty,
 			StockEntryDetail.uom,
 		)
-		.where((StockEntry.docstatus == 1) &
-		StockEntry.manufacturing_order == pmo_name)
+		.where((StockEntry.docstatus == 1) & StockEntry.manufacturing_order == pmo_name)
 		.orderby(StockEntry.modified, order=frappe.qb.asc)
 	)
 
@@ -1243,7 +1378,10 @@ def get_stock_summary(pmo_name):
 	# Subquery for max modified time
 	max_se_subquery = (
 		frappe.qb.from_(StockEntry)
-		.select(StockEntry.manufacturing_operation, Max(StockEntry.modified).as_("max_modified"))
+		.select(
+			StockEntry.manufacturing_operation,
+			Max(StockEntry.modified).as_("max_modified"),
+		)
 		.where(StockEntry.docstatus == 1)
 		.groupby(StockEntry.manufacturing_operation)
 	).as_("max_se")
@@ -1252,7 +1390,10 @@ def get_stock_summary(pmo_name):
 	query = (
 		frappe.qb.from_(StockEntryDetail)
 		.left_join(max_se_subquery)
-		.on(StockEntryDetail.manufacturing_operation == max_se_subquery.manufacturing_operation)
+		.on(
+			StockEntryDetail.manufacturing_operation
+			== max_se_subquery.manufacturing_operation
+		)
 		.left_join(StockEntry)
 		.on(
 			(StockEntryDetail.parent == StockEntry.name)
@@ -1301,56 +1442,78 @@ def get_stock_summary(pmo_name):
 		{"data": data, "total_qty": total_qty},
 	)
 
+
 @frappe.whitelist()
 def add_hold_comment(doctype, docname, reason):
-	frappe.logger().info(f"add_hold_comment called with: {doctype}, {docname}, {reason}")
+	frappe.logger().info(
+		f"add_hold_comment called with: {doctype}, {docname}, {reason}"
+	)
 	if not reason:
 		return
 	doc = frappe.get_doc(doctype, docname)
 	doc.add_comment("Comment", f"Put on hold due to: {reason}")
 
+
 def hold_mop(self):
-	if not frappe.db.get_list("Manufacturing Operation",filters={"manufacturing_order":self.name},fields="name"):
+	if not frappe.db.get_list(
+		"Manufacturing Operation",
+		filters={"manufacturing_order": self.name},
+		fields="name",
+	):
 		return
-	for i in frappe.db.get_list("Manufacturing Operation",filters={"manufacturing_order":self.name},fields="name"):
-		if frappe.db.get_value("Manufacturing Operation",i["name"],"status") != "Finished":
-			frappe.db.set_value("Manufacturing Operation",i["name"],"status","Finished")
+	for i in frappe.db.get_list(
+		"Manufacturing Operation",
+		filters={"manufacturing_order": self.name},
+		fields="name",
+	):
+		if (
+			frappe.db.get_value("Manufacturing Operation", i["name"], "status")
+			!= "Finished"
+		):
+			frappe.db.set_value(
+				"Manufacturing Operation", i["name"], "status", "Finished"
+			)
+
 
 @frappe.whitelist()
 def create_mwo(pmo, doc, reason=None):
-    if frappe.db.get_value("Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}):
-        cad_mwo = frappe.db.get_value("Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1})
-        return frappe.msgprint(
-            f"Manufacturing Work Order for CAD/CAM Department is <b>already</b> created. <b>{get_link_to_form('Manufacturing Work Order', cad_mwo)}</b>"
-        )
+	if frappe.db.get_value(
+		"Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}
+	):
+		cad_mwo = frappe.db.get_value(
+			"Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}
+		)
+		return frappe.msgprint(
+			f"Manufacturing Work Order for CAD/CAM Department is <b>already</b> created. <b>{get_link_to_form('Manufacturing Work Order', cad_mwo)}</b>"
+		)
 
-    doc = frappe.get_doc("Parent Manufacturing Order", pmo)
-    fg_doc = get_mapped_doc(
-        "Parent Manufacturing Order",
-        pmo,
-        {
-            "Parent Manufacturing Order": {
-                "doctype": "Manufacturing Work Order",
-                "field_map": {"name": "manufacturing_order"},
-            }
-        },
-    )
-    fg_doc.seq = int(pmo.split("-")[-1])
-    fg_doc.department = frappe.db.get_value(
-        "Manufacturing Setting", {"manufacturer": doc.manufacturer}, "default_cad_department"
-    )
-    fg_doc.metal_touch = doc.metal_touch
-    fg_doc.metal_type = doc.metal_type
-    fg_doc.metal_purity = doc.metal_purity
-    fg_doc.metal_colour = doc.metal_colour
-    fg_doc.for_cad_cam = 1
-    fg_doc.auto_created = 1
+	doc = frappe.get_doc("Parent Manufacturing Order", pmo)
+	fg_doc = get_mapped_doc(
+		"Parent Manufacturing Order",
+		pmo,
+		{
+			"Parent Manufacturing Order": {
+				"doctype": "Manufacturing Work Order",
+				"field_map": {"name": "manufacturing_order"},
+			}
+		},
+	)
+	fg_doc.seq = int(pmo.split("-")[-1])
+	fg_doc.department = frappe.db.get_value(
+		"Manufacturing Setting",
+		{"manufacturer": doc.manufacturer},
+		"default_cad_department",
+	)
+	fg_doc.metal_touch = doc.metal_touch
+	fg_doc.metal_type = doc.metal_type
+	fg_doc.metal_purity = doc.metal_purity
+	fg_doc.metal_colour = doc.metal_colour
+	fg_doc.for_cad_cam = 1
+	fg_doc.auto_created = 1
 
-    #Set Reason passed from prompt
-    if reason:
-        fg_doc.reason = reason  
+	# Set Reason passed from prompt
+	if reason:
+		fg_doc.reason = reason
 
-    fg_doc.save()
-    frappe.msgprint("Manufacturing Work Order for CAD/CAM Department is created.")
-
-
+	fg_doc.save()
+	frappe.msgprint("Manufacturing Work Order for CAD/CAM Department is created.")
