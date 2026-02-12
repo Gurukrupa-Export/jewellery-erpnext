@@ -89,6 +89,51 @@ frappe.ui.form.on("Sales Order", {
 			},
 			__("Get Items From")
 		);
+		frm.add_custom_button(__("Sales Order"), function () {
+			let dialog = new frappe.ui.form.MultiSelectDialog({
+				doctype: "Sales Order",
+				target: frm,
+				setters: [
+					{
+						label: "Customer",
+						fieldname: "customer",
+						fieldtype: "Link",
+						options: "Customer",
+						// reqd: 1,
+						// default: frm.doc.customer || undefined
+					}
+				],
+				add_filters_group: 1,
+				get_query() {
+					return {
+						filters: {
+							docstatus: 1,
+							status: ["in", ["To Deliver", "To Deliver and Bill"]]
+						}
+					};
+				},
+				action(selections) {
+					if (!selections || selections.length === 0) return;
+
+					frappe.call({
+						method: "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.make_sales_order_batch",
+						args: {
+							sales_orders: selections,
+							target_doc: frm.doc
+						},
+						
+						callback: function (r) {
+							if (r.message) {
+								frappe.model.sync(r.message);
+								frm.refresh();
+							}
+						}
+					});
+
+					dialog.dialog.hide();
+				}
+			});
+		}, __("Get Sales Order"));
 
 		frm.set_df_property("order_type", "options", [
 			"",
