@@ -76,6 +76,21 @@
    "fieldtype": "Link",
    "label": "Metal Touch",
    "options": "Attribute Value"
+  },
+  {
+   "fieldname": "customer_making_charges_code",
+   "fieldtype": "Data",
+   "label": "Customer Making Charges Code"
+  },
+  {
+   "fieldname": "subcontracting_rate",
+   "fieldtype": "Currency",
+   "label": "subcontracting_rate"
+  },
+  {
+   "fieldname": "subcontracting_wastage",
+   "fieldtype": "Percent",
+   "label": "subcontracting_wastage"
   }
  ],
  "index_web_pages_for_search": 1,

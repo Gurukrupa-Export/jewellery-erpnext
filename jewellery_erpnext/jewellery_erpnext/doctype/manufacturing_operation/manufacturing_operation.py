@@ -2301,7 +2301,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					making_charge_price_subcategories = frappe.get_all(
 						"Making Charge Price Finding Subcategory",
 						filters={"parent": making_charge_price_list[0]["name"]},
-						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage", "custom_subcontracting_rate", "custom_subcontracting_wastage"]
+						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage", "subcontracting_rate", "subcontracting_wastage"]
 					)
 					# frappe.throw(f"{making_charge_price_subcategories}")
 					if making_charge_price_subcategories:
