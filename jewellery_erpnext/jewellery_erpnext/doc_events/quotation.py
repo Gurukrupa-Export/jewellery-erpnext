@@ -368,7 +368,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				subcategories = frappe.get_all(
 					"Making Charge Price Item Subcategory",
 					filters={"parent": price_list_name},
-					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
+					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","subcontracting_rate","subcontracting_wastage"]
 				)
 				if subcategories:
 					matching_subcategory = next(
@@ -380,8 +380,8 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 					fg_purchase_rate = matching_subcategory.get("supplier_fg_purchase_rate", 0)
 					fg_purchase_amount = fg_purchase_rate * find.quantity
 					if find.is_customer_item:
-						find.rate = matching_subcategory.get("custom_subcontracting_rate", 0)
-						wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0)
+						find.rate = matching_subcategory.get("subcontracting_rate", 0)
+						wastage_rate = matching_subcategory.get("subcontracting_wastage", 0)
 						fg_purchase_rate = 0
 						fg_purchase_amount = 0
 						rate_per_gm = 0
@@ -472,7 +472,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				subcategories = frappe.get_all(
 					"Making Charge Price Item Subcategory",
 					filters={"parent": making_charge_price_list[0]["name"]},
-					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
+					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","subcontracting_rate","subcontracting_wastage"]
 				)
 				
 				if subcategories:
@@ -482,8 +482,8 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 						fg_purchase_rate = match.get("supplier_fg_purchase_rate", 0)
 						fg_purchase_amount = fg_purchase_rate * metal.quantity
 						if metal.is_customer_item:
-							metal.rate = match.get("custom_subcontracting_rate", 0)
-							wastage_rate = match.get("custom_subcontracting_wastage")
+							metal.rate = match.get("subcontracting_rate", 0)
+							wastage_rate = match.get("subcontracting_wastage")
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
@@ -555,7 +555,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				making_charge_price_subcategories = frappe.get_all(
 					"Making Charge Price Item Subcategory",
 					filters={"parent": making_charge_price_list[0]["name"]},
-					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
+					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","subcontracting_rate","subcontracting_wastage"]
 				)
 				
 				if making_charge_price_subcategories:
@@ -568,8 +568,8 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 						fg_purchase_rate = matching_subcategory.get("supplier_fg_purchase_rate", 0)
 						fg_purchase_amount = fg_purchase_rate * metal.quantity
 						if metal.is_customer_item:
-							metal.rate = matching_subcategory.get("custom_subcontracting_rate", 0)
-							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage")
+							metal.rate = matching_subcategory.get("subcontracting_rate", 0)
+							wastage_rate = matching_subcategory.get("subcontracting_wastage")
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
@@ -621,7 +621,7 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 				making_charge_price_subcategories = frappe.get_all(
 					"Making Charge Price Item Subcategory",
 					filters={"parent": making_charge_price_list[0]["name"]},
-					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","custom_subcontracting_rate","custom_subcontracting_wastage"]
+					fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage","subcontracting_rate","subcontracting_wastage"]
 				)
 				if making_charge_price_subcategories:
 					matching_subcategory = next(
@@ -633,8 +633,8 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 					fg_purchase_rate = matching_subcategory.get("supplier_fg_purchase_rate", 0)
 					fg_purchase_amount = fg_purchase_rate * find.quantity
 					if find.is_customer_item:
-						find.rate = matching_subcategory.get("custom_subcontracting_rate", 0)
-						wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0)
+						find.rate = matching_subcategory.get("subcontracting_rate", 0)
+						wastage_rate = matching_subcategory.get("subcontracting_wastage", 0)
 						fg_purchase_rate = 0
 						fg_purchase_amount = 0
 						rate_per_gm = 0

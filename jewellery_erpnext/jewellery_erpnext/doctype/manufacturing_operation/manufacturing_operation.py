@@ -2087,7 +2087,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						"Making Charge Price Item Subcategory",
 						filters={"parent": making_charge_price_list[0]["name"]},
 						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage",
-								"custom_subcontracting_rate", "custom_subcontracting_wastage"]
+								"subcontracting_rate", "subcontracting_wastage"]
 					)
 
 					matching_subcategory = next(
@@ -2101,8 +2101,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						fg_purchase_amount = fg_purchase_rate * row["quantity"]
 
 						if row["is_customer_item"]:
-							row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0) / 100
+							row["rate"] = matching_subcategory.get("subcontracting_rate", 0)
+							wastage_rate = matching_subcategory.get("subcontracting_wastage", 0) / 100
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
@@ -2171,7 +2171,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						"Making Charge Price Item Subcategory",
 						filters={"parent": making_charge_price_list[0]["name"]},
 						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage",
-								"custom_subcontracting_rate", "custom_subcontracting_wastage"]
+								"subcontracting_rate", "subcontracting_wastage"]
 					)
 
 					matching_subcategory = next(
@@ -2185,8 +2185,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						fg_purchase_amount = fg_purchase_rate * row["quantity"]
 
 						if row["is_customer_item"]:
-							row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0) / 100
+							row["rate"] = matching_subcategory.get("subcontracting_rate", 0)
+							wastage_rate = matching_subcategory.get("subcontracting_wastage", 0) / 100
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0
@@ -2316,8 +2316,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							fg_purchase_amount = fg_purchase_rate * row["quantity"]
 
 							if row["is_customer_item"]:
-								row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-								wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0) / 100
+								row["rate"] = matching_subcategory.get("subcontracting_rate", 0)
+								wastage_rate = matching_subcategory.get("subcontracting_wastage", 0) / 100
 								fg_purchase_rate = 0
 								fg_purchase_amount = 0
 								rate_per_gm = 0
@@ -2378,7 +2378,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					making_charge_price_subcategories = frappe.get_all(
 						"Making Charge Price Item Subcategory",
 						filters={"parent": making_charge_price_list[0]["name"]},
-						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage", "custom_subcontracting_rate", "custom_subcontracting_wastage"]
+						fields=["subcategory", "rate_per_gm", "supplier_fg_purchase_rate", "wastage", "subcontracting_rate", "subcontracting_wastage"]
 					)
 
 					if making_charge_price_subcategories:
@@ -2393,8 +2393,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						fg_purchase_amount = fg_purchase_rate * row["quantity"]
 
 						if row["is_customer_item"]:
-							row["rate"] = matching_subcategory.get("custom_subcontracting_rate", 0)
-							wastage_rate = matching_subcategory.get("custom_subcontracting_wastage", 0) / 100
+							row["rate"] = matching_subcategory.get("subcontracting_rate", 0)
+							wastage_rate = matching_subcategory.get("subcontracting_wastage", 0) / 100
 							fg_purchase_rate = 0
 							fg_purchase_amount = 0
 							rate_per_gm = 0

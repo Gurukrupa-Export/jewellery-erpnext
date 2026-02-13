@@ -11,6 +11,8 @@
   "rate_per_pc",
   "rate_per_diamond",
   "column_break_4",
+  "subcontracting_rate",
+  "subcontracting_wastage",
   "wastage",
   "rate_per_gm_threshold",
   "supplier_fg_purchase_rate",
@@ -81,6 +83,16 @@
    "fieldname": "to_diamond",
    "fieldtype": "Int",
    "label": "To Diamond"
+  },
+  {
+   "fieldname": "subcontracting_rate",
+   "fieldtype": "Currency",
+   "label": "Subcontracting Rate"
+  },
+  {
+   "fieldname": "subcontracting_wastage",
+   "fieldtype": "Percent",
+   "label": "Subcontracting Wastage"
   }
  ],
  "index_web_pages_for_search": 1,

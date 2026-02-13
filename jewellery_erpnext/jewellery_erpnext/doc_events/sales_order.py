@@ -421,9 +421,9 @@ def create_new_bom(self):
 								"rate_per_pc",
 								"supplier_fg_purchase_rate",
 								"wastage",
-								"custom_subcontracting_rate",
+								"subcontracting_rate",
 								"rate_per_gm_threshold",
-								"custom_subcontracting_wastage",
+								"subcontracting_wastage",
 								"to_diamond","from_diamond"
 							],
 							limit=1
@@ -447,7 +447,7 @@ def create_new_bom(self):
 								s.quantity=round(s.quantity, 3)
 								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
-								s.making_rate= sub_info.get("custom_subcontracting_rate", 0)
+								s.making_rate= sub_info.get("subcontracting_rate", 0)
 								s.making_amount = s.making_rate * s.quantity
 							else:
 								customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
@@ -471,7 +471,7 @@ def create_new_bom(self):
 								s.quantity=round(s.quantity, 3)
 								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
-								s.making_rate= sub_info.get("custom_subcontracting_rate", 0)
+								s.making_rate= sub_info.get("subcontracting_rate", 0)
 								s.making_amount =round( s.making_rate * s.quantity,2)
 							else:
 								if billing_currency == 'USD':
@@ -501,8 +501,8 @@ def create_new_bom(self):
 							# 		"rate_per_pc",
 							# 		"supplier_fg_purchase_rate",
 							# 		"wastage",
-							# 		"custom_subcontracting_rate",
-							# 		"custom_subcontracting_wastage"
+							# 		"subcontracting_rate",
+							# 		"subcontracting_wastage"
 							# 	],
 							# 	limit=1
 							# )
@@ -523,14 +523,14 @@ def create_new_bom(self):
 								
 									
 							if is_cust:
-								wastage = sub_info.get("custom_subcontracting_wastage", 0) / 100.0
+								wastage = sub_info.get("subcontracting_wastage", 0) / 100.0
 							else:
 								# s.rate = self.gold_rate_with_gst
 								wastage = wastage_rate_value
 							if s.is_customer_item:
 								s.rate=0
 								s.amount=round(s.rate*s.quantity,2 )
-								s.making_rate= sub_info.get("custom_subcontracting_rate", 0)
+								s.making_rate= sub_info.get("subcontracting_rate", 0)
 								s.making_amount = s.making_rate * s.quantity
 							# gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
 							# calculated_gold_rate = (float(s.metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
@@ -602,8 +602,8 @@ def create_new_bom(self):
 								"rate_per_pc",
 								"supplier_fg_purchase_rate",
 								"wastage",
-								"custom_subcontracting_rate",
-								"custom_subcontracting_wastage"
+								"subcontracting_rate",
+								"subcontracting_wastage"
 							],
 							limit=1
 						)
@@ -621,8 +621,8 @@ def create_new_bom(self):
 									"rate_per_pc",
 									"wastage",
 									"supplier_fg_purchase_rate",
-									"custom_subcontracting_rate",
-									"custom_subcontracting_wastage"
+									"subcontracting_rate",
+									"subcontracting_wastage"
 								],
 								limit=1
 							)
@@ -635,8 +635,8 @@ def create_new_bom(self):
 										"rate_per_pc",
 										"supplier_fg_purchase_rate",
 										"wastage",
-										"custom_subcontracting_rate",
-										"custom_subcontracting_wastage","name"
+										"subcontracting_rate",
+										"subcontracting_wastage","name"
 									],
 									limit=1
 								)
@@ -651,7 +651,7 @@ def create_new_bom(self):
 							f.quantity=round(f.quantity, 3)
 							f.quantity_3=round(f.quantity, 2)
 							f.amount=0
-							f.making_rate = find_data.get("custom_subcontracting_rate")
+							f.making_rate = find_data.get("subcontracting_rate")
 							f.wastage_rate = 0
 							f.wastage_amount=0
 							f.metal_purity = customer_metal_purity
