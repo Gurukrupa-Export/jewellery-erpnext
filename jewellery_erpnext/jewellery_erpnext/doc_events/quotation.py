@@ -62,6 +62,29 @@ def create_new_bom(self):
 	"""
 	Create Quotation Type BOM from Template/ Finished Goods Bom
 	"""
+	item_codes = tuple([row.item_code for row in self.items if row.item_code])
+	if item_codes:
+		frappe.db.sql("""
+            UPDATE `tabItem` i
+            INNER JOIN `tabQuotation Item` qi
+                ON qi.item_code = i.name
+            LEFT JOIN `tabOrder` o
+                ON o.name = i.custom_cad_order_id
+            LEFT JOIN `tabOrder Form` ofm
+                ON ofm.name = i.custom_cad_order_form_id
+            SET
+                i.custom_cad_order_id = qi.order_form_id,
+                i.custom_cad_order_form_id = NULL
+            WHERE
+                i.name IN %(items)s
+                AND qi.parent = %(quotation)s
+                AND o.docstatus = 2
+                AND ofm.docstatus = 2
+        """, {
+            "items": item_codes,
+            "quotation": self.name
+        })
+
 	metal_criteria = (
 		frappe.get_list(
 			"Metal Criteria",
@@ -77,14 +100,20 @@ def create_new_bom(self):
 	attribute_data = frappe._dict()
 	item_bom_data = frappe._dict()
 	bom_data = frappe._dict()
+
 	for row in self.items:
+
 		if item_bom_data.get(row.item_code):
 			row.db_set("quotation_bom", item_bom_data.get(row.item_code))
+
 		if bom_data.get(row.item_code):
 			row.db_set("copy_bom", bom_data.get(row.item_code))
+
 		if row.quotation_bom:
 			continue
+
 		bom = frappe.qb.DocType("BOM")
+
 		query = (
 			frappe.qb.from_(bom)
 			.select(bom.name)
@@ -106,74 +135,25 @@ def create_new_bom(self):
 			.orderby(bom.creation)
 			.limit(1)
 		)
+
 		bom = query.run(as_dict=True)
+
 		if row.order_form_type == "Order":
 			mod_reason = frappe.db.get_value("Order", row.order_form_id, "mod_reason")
 
 			if "F-G" in row.item_code or mod_reason == "Change in Metal Touch":
 				bom = [{"name": frappe.db.get_value("Order", row.order_form_id, "new_bom")}]
-		# query = """
-		# 	SELECT name
-		# 	FROM BOM
-		# 	WHERE item = %(item_code)s
-		# 	AND (
-		# 		(tag_no = %(serial_no)s AND %(serial_no)s IS NOT NULL) OR
-		# 		(bom_type = 'Finished Goods' AND is_active = 1 AND docstatus = 1) OR
-		# 		(bom_type = 'Template' AND is_active = 1)
-		# 	)
-		# 	ORDER BY
-		# 		CASE
-		# 			WHEN tag_no = %(serial_no)s THEN 1
-		# 			WHEN bom_type = 'Finished Goods' THEN 2
-		# 			WHEN bom_type = 'Template' THEN 3
-		# 		END,
-		# 		creation ASC
-		# 	LIMIT 1
-		# """
 
-		# params = {
-		# 	"item_code": row.item_code,
-		# 	"serial_no": row.get("serial_no")
-		# }
-
-		# bom = frappe.db.sql(query, params, as_dict=True)
-
-		# serial_bom = None
-		# Can use single query
-		# if serial := row.get("serial_no"):
-		# 	serial_bom = frappe.db.get_value("BOM", {"item": row.item_code, "tag_no": serial}, "name")
-		# if serial_bom:
-		# 	bom = serial_bom
-		# # if Finished Goods BOM for an item is already present for item Copy from FINISHED GOODS BOM
-		# elif fg_bom := frappe.db.get_value(
-		# 	"BOM",
-		# 	{"item": row.item_code, "is_active": 1, "docstatus": 1, "bom_type": "Finished Goods"},
-		# 	"name",
-		# 	order_by="creation asc",
-		# ):
-		# 	bom = fg_bom
-		# if row.order_form_type == 'Order':
-		# 		mod_reason = frappe.db.get_value("Order",row.order_form_id,"mod_reason")
-		# 		if "F-G" in row.item_code or mod_reason == 'Change in Metal Touch':
-		# 			bom = frappe.db.get_value("Order",row.order_form_id,"new_bom")
-		# # if Finished Goods BOM for an item not present for item Copy from TEMPLATE BOM
-		# elif temp_bom := frappe.db.get_value(
-		# 	"BOM",
-		# 	{"item": row.item_code, "is_active": 1, "bom_type": "Template"},
-		# 	"name",
-		# 	order_by="creation asc",
-		# ):
-		# 	bom = temp_bom
-		# if row.order_form_type == 'Order':
-		# 	mod_reason = frappe.db.get_value("Order",row.order_form_id,"mod_reason")
-		# 	if "F-G" in row.item_code or mod_reason == 'Change in Metal Touch':
-		# 		bom = frappe.db.get_value("Order",row.order_form_id,"new_bom")
-		# else:
-		# 	bom = None
 		if bom:
 			try:
 				create_quotation_bom(
-					self, row, bom[0].get("name"), attribute_data, metal_criteria, item_bom_data, bom_data
+					self,
+					row,
+					bom[0].get("name"),
+					attribute_data,
+					metal_criteria,
+					item_bom_data,
+					bom_data,
 				)
 			except Exception as e:
 				frappe.log_error(title="Quotation Error", message=f"{e}")
@@ -184,14 +164,21 @@ def create_new_bom(self):
 
 		error_str = "<br>".join(error_logs)
 		error_str = html2text.html2text(error_str)
-		# self.custom_bom_creation_logs = error_str
-		frappe.db.set_value(self.doctype, self.name, "custom_bom_creation_logs", error_str)
+
+		frappe.db.set_value(
+			self.doctype,
+			self.name,
+			"custom_bom_creation_logs",
+			error_str,
+		)
+
 	else:
 		if self.flags.can_be_saved:
 			self.save()
 		else:
 			self.calculate_taxes_and_totals()
 			self.db_update()
+
 		frappe.db.set_value(self.doctype, self.name, "workflow_state", "BOM Created")
 		frappe.db.set_value(self.doctype, self.name, "custom_bom_creation_logs", None)
 
