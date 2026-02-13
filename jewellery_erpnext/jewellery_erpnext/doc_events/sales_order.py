@@ -837,10 +837,11 @@ def create_new_bom(self):
 							# Fetch the matching diamond price list entry
 							else:
 								
-									d.total_diamond_rate = round(total_rate, 2)
-									d.quantity=round(d.quantity,3)
-									d.quantity_3=round(d.quantity,2)
-									d.diamond_rate_for_specified_quantity = round(d.quantity * total_rate, 2)
+								d.total_diamond_rate = round(total_rate, 2)
+								d.quantity=round(d.quantity,3)
+								d.quantity_3=round(d.quantity,2)
+								d.weight_per_pcs =(d.quantity/d.pcs)
+								d.diamond_rate_for_specified_quantity = round(d.quantity * total_rate, 2)
 								
 				doc.total_diamond_amount = sum(
 					flt(r.diamond_rate_for_specified_quantity)
