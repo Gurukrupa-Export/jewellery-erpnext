@@ -218,6 +218,7 @@ def create_new_bom(self):
 						doc.certification_amount = ccp.per_pc_rate
 					else:
 						doc.certification_amount = ccp.per_carat_rate * doc.diamond_weight
+					doc.hallmarking_amount=ccp.hallmarking_amount
 				if hasattr(doc, "gemstone_detail"):
 					for gem in doc.gemstone_detail or []:
 
