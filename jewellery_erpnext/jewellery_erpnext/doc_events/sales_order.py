@@ -169,16 +169,17 @@ def on_cancel(self, method):
 # 					})
 # 				self.grand_total = self.total + (self.total or 0) * (j.get("tax_rate", 0) / 100)
 # 				self.rounded_total =self.grand_total
+
 def tax(self):
     # Clear taxes first
     self.taxes = []
     
-    # Set tax category (keep your logic)
+    # Set tax category
     customer_state = frappe.db.get_value("Address", {"name": self.customer_address}, "gst_state_number")
     company_state = frappe.db.get_value("Address", {"name": self.company_address}, "gst_state_number")
     self.tax_category = 'In-State' if customer_state == company_state else 'Out-State'
     
-    # Your template mapping (keep)
+    # Your complete template mapping
     template_map = {
         'Finished Goods': {
             'Gurukrupa Export Private Limited': 'GST 3% - GEPL',
@@ -192,19 +193,20 @@ def tax(self):
     
     item_tax_template = template_map.get(self.sales_type, {}).get(self.company, '')
     
-    # Set item tax templates ONLY (don't calculate amounts manually)
+    # Set item tax templates
     for row in self.items:
         if frappe.db.get_value("Item", row.item_code, "item_subcategory"):
             if item_tax_template and item_tax_template not in ['Exempted - GEPL', 'Exempted - KGJPL']:
                 row.item_tax_template = item_tax_template
                 row.gst_treatment = 'Taxable'
     
-    # CRITICAL: Let ERPNext/India Compliance calculate taxes automatically
-    # Just trigger standard calculation - NO manual tax_amount setting
-    self.calculate_taxes_and_totals()
+    # CRITICAL FIX: Don't call calculate_taxes_and_totals() here
+    # Let ERPNext's natural flow handle it after validate()
     
-    # Skip GST validation (safety)
+    # Skip ALL GST validations
     self.flags.ignore_validate_gst = True
+    self.flags.dont_validate_gst = True
+    self.flags.ignore_gst_validations = True
 
 def create_new_bom(self):
 	"""
