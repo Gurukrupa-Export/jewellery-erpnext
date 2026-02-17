@@ -427,8 +427,8 @@ def create_new_bom(self):
 								"rate_per_gm_threshold",
 								"subcontracting_wastage",
 								"to_diamond","from_diamond"
-							],
-							limit=1
+							]
+							
 						)
 						sub_info = sub[0]
 						threshold = 2 if sub_info.get("rate_per_gm_threshold") == 0 else sub_info.get("rate_per_gm_threshold")
@@ -436,7 +436,7 @@ def create_new_bom(self):
 							if doc.metal_and_finding_weight < threshold:
 								for row_s in sub:
 									if row_s.from_diamond:
-										frappe.msgprint(f"{row_s.from_diamond},{diamond_pcs},{row_s.to_diamond}")
+										# frappe.msgprint(f"{row_s.from_diamond},{diamond_pcs},{row_s.to_diamond}")
 
 										if int(row_s.from_diamond) <= int(diamond_pcs) <= int(row_s.to_diamond):
 											
