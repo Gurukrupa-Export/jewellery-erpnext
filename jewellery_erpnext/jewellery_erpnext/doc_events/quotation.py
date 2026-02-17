@@ -740,15 +740,15 @@ def create_quotation_bom(self, row, bom, attribute_data, metal_criteria, item_bo
 					)
 					if size_in_mm_diamond_price_list_entry:
 						latest_entry = size_in_mm_diamond_price_list_entry[0]  # Get the first entry
-						diamond.total_diamond_rate = latest_entry.get("rate", 0)
-						diamond.fg_purchase_rate = latest_entry.get("supplier_fg_purchase_rate", 0)
+						diamond.total_diamond_rate = latest_entry.get("rate") or 0
+						diamond.fg_purchase_rate = latest_entry.get("supplier_fg_purchase_rate") or 0
 						diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 						if diamond.is_customer_item:
-							diamond.total_diamond_rate = latest_entry.get("outwork_handling_charges_rate", 0)
+							diamond.total_diamond_rate = latest_entry.get("outwork_handling_charges_rate") or 0
 							diamond.diamond_rate_for_specified_quantity = diamond.total_diamond_rate * diamond.size_in_mm
 							if latest_entry.get("outwork_handling_charges_rate") == 0:
-								percentage = latest_entry.get("outwork_handling_charges_in_percentage", 0)
-								amount = latest_entry.get("rate", 0) * (percentage / 100)
+								percentage = latest_entry.get("outwork_handling_charges_in_percentage") or 0 
+								amount = (latest_entry.get("rate") or 0 )* (percentage / 100)
 								diamond.total_diamond_rate = amount 
 								diamond.diamond_rate_for_specified_quantity = diamond.total_diamond_rate * diamond.size_in_mm
 						else:
