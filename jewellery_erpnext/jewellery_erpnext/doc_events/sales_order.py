@@ -170,6 +170,7 @@ def tax(self):
 				self.grand_total = self.total + (self.total or 0) * (j.get("tax_rate", 0) / 100)
 				self.rounded_total =self.grand_total
 
+
 def create_new_bom(self):
 	"""
 	This Function Creates Sales Order Type BOM from Quotation Bom
