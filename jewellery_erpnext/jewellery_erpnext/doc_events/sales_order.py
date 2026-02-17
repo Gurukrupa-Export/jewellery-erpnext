@@ -436,6 +436,8 @@ def create_new_bom(self):
 							if doc.metal_and_finding_weight < threshold:
 								for row_s in sub:
 									if row_s.from_diamond:
+										frappe.msgprint(f"{row_s.from_diamond},{diamond_pcs},{row_s.to_diamond}")
+
 										if int(row_s.from_diamond) <= int(diamond_pcs) <= int(row_s.to_diamond):
 											
 											sub_info = row_s
