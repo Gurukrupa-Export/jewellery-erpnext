@@ -163,7 +163,7 @@ def get_diamond_rate(self):
 		diamond.custom_sieve_size_range = attribute_dict[diamond.diamond_sieve_size].get(
 			"sieve_size_range"
 		)
-		diamond.size_in_mm = attribute_dict[diamond.diamond_sieve_size].get("size_in_mm")
+		diamond.size_in_mm = attribute_dict[diamond.diamond_sieve_size].get("diameter")
 
 		if not diamond.sieve_size_range:
 			continue
