@@ -630,6 +630,8 @@ def create_new_bom(self):
 								],
 								limit=1
 							)
+							if find:
+								find_data= find[0]
 							if not find:
 								find = frappe.db.get_all(
 									"Making Charge Price Item Subcategory",
@@ -640,11 +642,19 @@ def create_new_bom(self):
 										"supplier_fg_purchase_rate",
 										"wastage",
 										"subcontracting_rate",
-										"subcontracting_wastage","name"
-									],
-									limit=1
+										"subcontracting_wastage","name",
+										"to_diamond","from_diamond","rate_per_gm_threshold"
+									]
 								)
-							find_data= find[0]
+								find_data= find[0]
+								threshold = 2 if find_data.get("rate_per_gm_threshold") == 0 else find_data.get("rate_per_gm_threshold")
+						
+								if doc.metal_and_finding_weight < threshold:
+									
+									for sf_row in find:
+										if sf_row.from_diamond:
+											if int(sf_row.from_diamond) <= int(diamond_pcs) <= int(sf_row.to_diamond):
+												find_data = sf_row
 						gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
 						calculated_gold_rate = (float(f.metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
