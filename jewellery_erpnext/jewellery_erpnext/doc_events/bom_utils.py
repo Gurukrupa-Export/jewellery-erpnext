@@ -248,10 +248,11 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 		return 0
 
 	# Get Handling Rate of the Diamond if it is a cutomer provided Diamond
+	handling_rate = diamond_price_list[0].get("outright_handling_charges_rate") or 0
 	rate = (
-		diamond_price_list[0].get("handling_charges_rate")
+		handling_rate
 		+ (
-			diamond_price_list[0].get("handling_charges_rate")
+			handling_rate
 			* (diamond_price_list[0].get("outwork_handling_charges_in_percentage") or 0)
 		)
 		+ (diamond_price_list[0].get("outwork_handling_charges_rate") or 0)
