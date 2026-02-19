@@ -140,8 +140,8 @@ def system_item_validation(self):
 
 
 def set_item_variant(self):
-	if self.bom_type in ["Template", "Quotation", "Sales Order"]:
-		return
+	# if self.bom_type in ["Template", "Quotation", "Sales Order"]:
+	# 	return
 	bom_tables = ["metal_detail", "diamond_detail", "gemstone_detail", "finding_detail"]
 
 	attributes = {}

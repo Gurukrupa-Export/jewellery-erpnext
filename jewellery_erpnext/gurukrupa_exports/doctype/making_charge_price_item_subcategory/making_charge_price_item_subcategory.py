@@ -10,4 +10,5 @@ class MakingChargePriceItemSubcategory(Document):
 
 
 def on_doctype_update():
-	frappe.db.add_index("Making Charge Price Finding Subcategory", ["subcategory"])
+	if frappe.db.exists	("DocType", "Making Charge Price Finding Subcategory"):
+		frappe.db.add_index("Making Charge Price Finding Subcategory", ["subcategory"])

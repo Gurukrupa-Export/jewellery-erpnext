@@ -178,17 +178,8 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
- "links": [
-  {
-   "link_doctype": "Parent Manufacturing Order",
-   "link_fieldname": "manufacturing_plan"
-  },
-  {
-   "link_doctype": "Purchase Order",
-   "link_fieldname": "manufacturing_plan"
-  }
- ],
- "modified": "2026-02-11 13:26:47.504529",
+ "links": [],
+ "modified": "2026-02-18 16:15:39.243666",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",
