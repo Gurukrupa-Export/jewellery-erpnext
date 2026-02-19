@@ -11,25 +11,101 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_tota
 
 
 def before_validate(self, method):
-	# copying Items Table to Invoice Item table
-	if self.item_same_as_above:
-		self.invoice_item = []
+	if self.sales_type != 'Certification':
+		if self.gold_rate:
+			self.gold_rate_with_gst=round(self.gold_rate * 1.03,3)
+		if self.item_same_as_above:
+			self.invoice_item = []
+			for row in self.items:
+				duplicate_row = {}
+				for key in row.__dict__:
+					duplicate_row[key] = row.get(key)
+				duplicate_row["name"] = None
+
+				if duplicate_row:
+					self.append("invoice_item", duplicate_row)
+
 		for row in self.items:
-			duplicate_row = {}
-			for key in row.__dict__:
-				duplicate_row[key] = row.get(key)
-			duplicate_row["name"] = None
+			if row.serial_no:
+				row.bom = frappe.db.get_value("BOM", {"tag_no": row.serial_no}, "name")
+			
+				if row.bom:
+					gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
+					bom_doc=frappe.get_doc("BOM", row.bom)
+					for row in bom_doc.metal_detail:
+						rate = (float(row.metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
+						row.rate = round(rate,2)
+						row.amount=round(row.rate*row.quantity,2 )
+					for row in bom_doc.finding_detail:
+						rate = (float(row.metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
+						row.rate = round(rate,2)
+						row.amount=round(row.rate*row.quantity,2 )
+		for r in self.items:
+			if not r.delivery_note:
+				frappe.throw("Invoice can be created only from delivery note")		
+		
+		update_income_account(self)
+		payment_terms_data = update_si_data(self)
+		update_payment_terms(self, payment_terms_data)
 
-			if duplicate_row:
-				self.append("invoice_item", duplicate_row)
+def on_submit(self,method):
+	if self.sales_type != 'Certification':
+		separate_hallmarking_invoice = frappe.db.get_value(
+			"Customer", self.customer, "custom_separate_hallmarking_invoice"
+		)
+		certification_items = []
+		certification_invoice = []
+		for row in self.items:
+			bom_doc = frappe.get_doc("BOM", row.bom)
+			if bom_doc.certification_amount and separate_hallmarking_invoice:
+					custom_item, hsn_code, uom = frappe.db.get_value(
+					"E Invoice Item", {"is_for_certification": 1}, ["name", "hsn_code", "uom"]
+				)
+					certification_items.append({
+							"qty": 1,
+							"hsn_code": hsn_code,
+							"uom": uom,
+							"bom":row.bom,
+							"amount":bom_doc.certification_amount,
+							"rate":bom_doc.certification_amount,
+							"income_account": row.income_account,
+							"cost_center": row.cost_center,
+							"delivery_note":row.delivery_note,
+							"item_code":row.item_code
 
-	for row in self.items:
-		if row.serial_no:
-			row.bom = frappe.db.get_value("BOM", {"tag_no": row.serial_no}, "name")
-	
-	update_income_account(self)
-	payment_terms_data = update_si_data(self)
-	update_payment_terms(self, payment_terms_data)
+						})
+					certification_invoice.append({
+						"amount":bom_doc.certification_amount,
+						"base_amount":bom_doc.certification_amount,
+						"base_rate":bom_doc.certification_amount,
+						"rate":bom_doc.certification_amount,
+						"qty": 1,
+						"item_name":custom_item,
+						"conversion_factor":1,
+						"item_code":custom_item,
+						"hsn_code": hsn_code,
+						"income_account": row.income_account,
+						"uom":uom,
+					})
+
+					if certification_items:
+						certification_si = frappe.new_doc("Sales Invoice")
+						certification_si.customer = self.customer
+						certification_si.tax_category=self.tax_category
+						certification_si.sales_type="Certification"
+						certification_si.company = self.company 
+						certification_si.posting_date = self.posting_date
+						for item in certification_items: 
+
+							certification_si.append("items", item)
+						
+							# frappe.throw("hii")
+						for invoice in certification_invoice:
+							certification_si.append("invoice_item",invoice)
+						
+						certification_si.insert(ignore_permissions=True)
+						certification_si.save()
+						
 
 
 def update_si_data(self):
@@ -37,14 +113,18 @@ def update_si_data(self):
 	self.is_customer_diamond = False
 	invoice_data = {}
 	payment_terms_data = {}
+	hallmarking_invoice_items = []
 	is_branch_customer = frappe.db.get_value(
 		"Sales Type Multiselect", {"parent": self.customer, "sales_type": "Branch"}
 	)
 	separate_hallmarking_invoice = frappe.db.get_value(
 		"Customer", self.customer, "custom_separate_hallmarking_invoice"
 	)
+	# frappe.throw(f"hii,{separate_hallmarking_invoice}")
 	for row in self.items:
+		# frappe.throw(str(row.as_dict()))
 		if row.bom and not self.item_same_as_above:
+			
 			exchange_rate = 1
 			bom_doc = frappe.get_doc("BOM", row.bom)
 			if bom_doc.currency != self.currency:
@@ -53,7 +133,74 @@ def update_si_data(self):
 				)
 
 			update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data)
+			if bom_doc.hallmarking_amount :
+				custom_item, hsn_code, uom = frappe.db.get_value(
+				"E Invoice Item", {"is_for_hallmarking": 1}, ["name", "hsn_code", "uom"]
+			)
+				# frappe.throw(f"{custom_item}")
+				if invoice_data.get(custom_item):
+					invoice_data[custom_item]["qty"] += 1
+					invoice_data[custom_item]["amount"] += bom_doc.hallmarking_amount
+				else:
+					invoice_data[custom_item] = {
+						"qty": 1,
+						"hsn_code": hsn_code,
+						"uom": uom,
+						"amount": bom_doc.hallmarking_amount,
+						"income_account": row.income_account,
+						"cost_center": row.cost_center,
+					}
+					
+			if bom_doc.certification_amount and not separate_hallmarking_invoice:
+				custom_item, hsn_code, uom = frappe.db.get_value(
+				"E Invoice Item", {"is_for_certification": 1}, ["name", "hsn_code", "uom"]
+			)
+				# frappe.throw(f"{custom_item}")
+				if invoice_data.get(custom_item):
+					invoice_data[custom_item]["qty"] += 1
+					invoice_data[custom_item]["amount"] += bom_doc.certification_amount
+				else:
+					invoice_data[custom_item] = {
+						"qty": 1,
+						"hsn_code": hsn_code,
+						"uom": uom,
+						"amount": bom_doc.certification_amount,
+						"income_account": row.income_account,
+						"cost_center": row.cost_center,
+					}
+			
+			# for i in invoice_data:
+			# 	invoice_data[i]["amount"] *= exchange_rate
 
+			update_einvoice_items(self, invoice_data, payment_terms_data)
+			# update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data)		
+					# frappe.throw(f"hiii")
+			# if bom_doc.hallmarking_amount and not separate_hallmarking_invoice:
+			# 	custom_item, hsn_code, uom = frappe.db.get_value(
+			# 	"E Invoice Item", {"is_for_hallmarking": 1}, ["name", "hsn_code", "uom"]
+			# )
+			# 	hallmarking_invoice_items.append({
+			# 			"qty": 1,
+			# 			"hsn_code": hsn_code,
+			# 			"uom": uom,
+			# 			"amount": bom_doc.hallmarking_amount,
+			# 			"income_account": row.income_account,
+			# 			"cost_center": row.cost_center,
+			# 			"delivery_note":row.delivery_note
+
+			# 		})
+			# if hallmarking_invoice_items:
+			# 	hallmarking_si = frappe.new_doc("Sales Invoice")
+			# 	hallmarking_si.customer = self.customer 
+			# 	hallmarking_si.company = self.company 
+			# 	hallmarking_si.posting_date = self.posting_date
+			# 	for item in hallmarking_invoice_items: 
+			# 		hallmarking_si.append("items", item)
+			# 		# frappe.throw("hii")
+			# 	hallmarking_si.insert(ignore_permissions=True)
+				# hallmarking_si.save()
+					
+					# frappe.throw(f"{item}")
 			if row.get("custom_freight_amount"):
 				custom_item, hsn_code, uom = frappe.db.get_value(
 					"E Invoice Item", {"is_for_freight": 1}, ["name", "hsn_code", "uom"]
@@ -70,58 +217,65 @@ def update_si_data(self):
 						"income_account": row.income_account,
 						"cost_center": row.cost_center,
 					}
-			if row.get("custom_hallmarking_amount") and not separate_hallmarking_invoice:
-				custom_item, hsn_code, uom = frappe.db.get_value(
-					"E Invoice Item", {"is_for_hallmarking": 1}, ["name", "hsn_code", "uom"]
-				)
-				if invoice_data.get(custom_item):
-					invoice_data[custom_item]["qty"] += 1
-					invoice_data[custom_item]["amount"] += row.custom_hallmarking_amount
+				
+			
+			# if row.get("custom_hallmarking_amount"): 
+			# 	# frappe.throw(f"hii")
+			# # and not separate_hallmarking_invoice:
+			# 	custom_item, hsn_code, uom = frappe.db.get_value(
+			# 		"E Invoice Item", {"is_for_hallmarking": 1}, ["name", "hsn_code", "uom"]
+			# 	)
+			# 	if invoice_data.get(custom_item):
+			# 		invoice_data[custom_item]["qty"] += 1
+			# 		invoice_data[custom_item]["amount"] += row.custom_hallmarking_amount
+			# 	else:
+			# 		invoice_data[custom_item] = {
+			# 			"qty": 1,
+			# 			"hsn_code": hsn_code,
+			# 			"uom": uom,
+			# 			"amount": row.custom_hallmarking_amount,
+			# 			"income_account": row.income_account,
+			# 			"cost_center": row.cost_center,
+			# 		}
+			# # for i in invoice_data:
+			# # 	invoice_data[i]["amount"] *= exchange_rate
+
+			# update_einvoice_items(self, invoice_data, payment_terms_data)
+			if self.sales_type != 'Certification':
+				bom_doc = frappe.get_doc("BOM", row.bom)
+				if self.gold_rate_with_gst > 0 and bom_doc.gold_rate_with_gst > 0:
+					row.metal_amount = (
+						bom_doc.total_metal_amount / bom_doc.gold_rate_with_gst
+					) * self.gold_rate_with_gst
 				else:
-					invoice_data[custom_item] = {
-						"qty": 1,
-						"hsn_code": hsn_code,
-						"uom": uom,
-						"amount": row.custom_hallmarking_amount,
-						"income_account": row.income_account,
-						"cost_center": row.cost_center,
-					}
-			# for i in invoice_data:
-			# 	invoice_data[i]["amount"] *= exchange_rate
-
-			update_einvoice_items(self, invoice_data, payment_terms_data)
-
-			bom_doc = frappe.get_doc("BOM", row.bom)
-			if self.gold_rate_with_gst > 0 and bom_doc.gold_rate_with_gst > 0:
-				row.metal_amount = (
-					bom_doc.gold_bom_amount / bom_doc.gold_rate_with_gst
-				) * self.gold_rate_with_gst
-			else:
-				row.metal_amount = bom_doc.gold_bom_amount
-			row.metal_amount *= exchange_rate
-			row.making_amount = bom_doc.making_charge * exchange_rate
-			row.finding_amount = bom_doc.finding_bom_amount * exchange_rate
-			row.diamond_amount = bom_doc.diamond_bom_amount * exchange_rate
-			row.gemstone_amount = bom_doc.gemstone_bom_amount * exchange_rate
-			row.custom_certification_amount = bom_doc.certification_amount * exchange_rate
-			row.custom_freight_amount = bom_doc.freight_amount * exchange_rate
-			row.custom_hallmarking_amount = bom_doc.hallmarking_amount * exchange_rate
-			row.custom_custom_duty_amount = bom_doc.custom_duty_amount * exchange_rate
-			row.rate = flt(
-				row.metal_amount
-				+ row.making_amount
-				+ row.diamond_amount
-				+ row.finding_amount
-				+ row.gemstone_amount
-				+ row.custom_certification_amount
-				+ row.custom_freight_amount
-				+ row.custom_hallmarking_amount
-				+ row.custom_custom_duty_amount,
-				3,
-			)
-			row.amount = row.qty * row.rate
+					row.metal_amount = bom_doc.gold_bom_amount
+				# frappe.msgprint(f"hiii,{row.metal_amount}")
+				row.metal_amount *= exchange_rate
+				# frappe.msgprint(f"hiii,{row.metal_amount}")
+				row.making_amount = bom_doc.making_charge * exchange_rate
+				row.finding_amount = bom_doc.finding_bom_amount * exchange_rate
+				row.diamond_amount = bom_doc.diamond_bom_amount * exchange_rate
+				row.gemstone_amount = bom_doc.gemstone_bom_amount * exchange_rate
+				row.custom_certification_amount = bom_doc.certification_amount * exchange_rate
+				if bom_doc.certification_amount and separate_hallmarking_invoice:
+					row.custom_certification_amount = 0
+				row.custom_freight_amount = bom_doc.freight_amount * exchange_rate
+				row.custom_hallmarking_amount = bom_doc.hallmarking_amount * exchange_rate
+				row.custom_custom_duty_amount = bom_doc.custom_duty_amount * exchange_rate
+				row.rate = flt(
+					row.metal_amount
+					+ row.making_amount
+					+ row.diamond_amount
+					+ row.finding_amount
+					+ row.gemstone_amount
+					+ row.custom_certification_amount
+					+ row.custom_freight_amount
+					+ row.custom_hallmarking_amount
+					+ row.custom_custom_duty_amount,
+					3,
+				)
+				row.amount = row.qty * row.rate
 	return payment_terms_data
-
 
 def update_einvoice_items(self, invoice_data, payment_terms_data):
 	self.invoice_item = []
