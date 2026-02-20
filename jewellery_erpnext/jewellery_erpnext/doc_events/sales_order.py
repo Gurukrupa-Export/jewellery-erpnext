@@ -762,8 +762,8 @@ def create_new_bom(self):
 
 							# d.weight_per_pcs = round(d.quantity/d.pcs,3)
 							d.weight_per_pcs = round(d.quantity/d.pcs,2)
-							if 0.001 < (d.quantity/d.pcs) > .005:
-								d.weight_per_pcs = round(d.quantity/d.pcs,2)
+							# if 0.001 < (d.quantity/d.pcs) > .005:
+							# 	d.weight_per_pcs = round(d.quantity/d.pcs,2)
 							if price_list_type == 'Sieve Size Range':
 								sieve_filter = {**common_filters, "sieve_size_range": d.sieve_size_range}
 								latest = frappe.db.get_value("Diamond Price List", sieve_filter,
