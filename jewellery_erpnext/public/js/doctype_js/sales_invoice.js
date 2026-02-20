@@ -56,6 +56,25 @@ frappe.ui.form.on("Sales Invoice", {
 			}
 		}
 	},
+	onload_post_render: function(frm) {
+        // or use refresh / after_save depending on your need
+        (frm.doc.items || []).forEach(row => {
+            if (row.so_detail && !row.custom_bom) {
+                frappe.call({
+                    method: "jewellery_erpnext.jewellery_erpnext.doctype.customer_approval.customer_approval.get_serial_no",
+                    args: {
+                        so_detail: row.so_detail
+                    },
+                    callback: function(r) {
+                        if (r.message) {
+                            frappe.model.set_value(row.doctype,row.name,"serial_no",r.message.serial_no);
+		
+                        }
+                    }
+                });
+            }
+        });
+    }
 });
 
 frappe.ui.form.on("Sales Invoice Item", {
