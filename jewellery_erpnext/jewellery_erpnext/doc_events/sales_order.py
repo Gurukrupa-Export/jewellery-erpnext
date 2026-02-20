@@ -760,8 +760,8 @@ def create_new_bom(self):
 								"diamond_quality": d.quality
 							}
 
-							# d.weight_per_pcs = round(d.quantity/d.pcs,3)
-							d.weight_per_pcs = round(d.quantity/d.pcs,2)
+							d.weight_per_pcs = round(d.quantity/d.pcs,3)
+							# d.weight_per_pcs = round(d.quantity/d.pcs,2)
 							# if 0.001 < (d.quantity/d.pcs) > .005:
 							# 	d.weight_per_pcs = round(d.quantity/d.pcs,2)
 							if price_list_type == 'Sieve Size Range':
