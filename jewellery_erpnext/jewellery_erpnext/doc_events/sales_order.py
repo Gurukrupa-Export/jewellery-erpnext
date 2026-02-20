@@ -534,6 +534,8 @@ def create_new_bom(self):
 							if s.is_customer_item:
 								s.rate=0
 								s.amount=round(s.rate*s.quantity,2 )
+								s.quantity=round(s.quantity, 3)
+								s.quantity_3=round(s.quantity, 2)
 								s.making_rate= sub_info.get("subcontracting_rate", 0)
 								s.making_amount = s.making_rate * s.quantity
 							# gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
