@@ -2433,6 +2433,7 @@ def make_sales_order_batch(sales_orders, target_doc=None):
 			continue
 		target_doc.custom_diamond_quality = so.custom_diamond_quality
 		target_doc.order_type = so.order_type
+		target_doc.sales_type = so.sales_type
 		target_doc.custom_parent_sales_order = so.name
 		items = frappe.get_all(
 			"Sales Order Item",
