@@ -213,3 +213,11 @@ def get_bom_no(serial_no):
 	else:
 		name, gross_weight = "", ""
 	return {"name": name, "gross_weight": gross_weight}
+@frappe.whitelist()
+def get_serial_no(so_detail):
+	result = frappe.db.sql(f"""select serial_no from `tabSales Order Item` where name = '{so_detail}'""",as_dict=True)
+	if result:
+		serial_no = result[0]["serial_no"]
+	else:
+		serial_no = ""
+	return {"serial_no": serial_no}
