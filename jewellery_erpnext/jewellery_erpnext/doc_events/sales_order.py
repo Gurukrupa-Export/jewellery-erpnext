@@ -40,135 +40,170 @@ def on_cancel(self, method):
 	cancel_bom(self)
 	validate_snc(self)
 
-def tax(self):
-	for row in self.items:
-		item_tax_template = ''
-		account_list = []
-		customer_state = frappe.db.get_value("Address", {"name": self.customer_address}, "gst_state_number")
-		company_state = frappe.db.get_value("Address", {"name": self.company_address}, "gst_state_number")
-		self.tax_category = 'In-State' if customer_state == company_state else 'Out-State'
-		# Map Sales Type + Company to appropriate Item Tax Template
-		template_map = {
-			'Finished Goods': {
-				'Gurukrupa Export Private Limited': 'GST 3% - GEPL',
-				'KG GK Jewellers Private Limited': 'GST 3% - KGJPL',
-			},
-			'Subcontracting': {
-				'Gurukrupa Export Private Limited': 'GST 5% - GEPL',
-				'KG GK Jewellers Private Limited': 'GST 5% - KGJPL',
-			},
-		}
-		item_tax_template = template_map.get(self.sales_type, {}).get(self.company, '')
-		if frappe.db.get_value("Item", row.item_code, "item_subcategory"):
+# def tax(self):
+# 	for row in self.items:
+# 		item_tax_template = ''
+# 		account_list = []
+# 		customer_state = frappe.db.get_value("Address", {"name": self.customer_address}, "gst_state_number")
+# 		company_state = frappe.db.get_value("Address", {"name": self.company_address}, "gst_state_number")
+# 		self.tax_category = 'In-State' if customer_state == company_state else 'Out-State'
+# 		# Map Sales Type + Company to appropriate Item Tax Template
+# 		template_map = {
+# 			'Finished Goods': {
+# 				'Gurukrupa Export Private Limited': 'GST 3% - GEPL',
+# 				'KG GK Jewellers Private Limited': 'GST 3% - KGJPL',
+# 			},
+# 			'Subcontracting': {
+# 				'Gurukrupa Export Private Limited': 'GST 5% - GEPL',
+# 				'KG GK Jewellers Private Limited': 'GST 5% - KGJPL',
+# 			},
+# 		}
+# 		item_tax_template = template_map.get(self.sales_type, {}).get(self.company, '')
+# 		if frappe.db.get_value("Item", row.item_code, "item_subcategory"):
 
-					if item_tax_template:
-						row.item_tax_template = item_tax_template
+# 					if item_tax_template:
+# 						row.item_tax_template = item_tax_template
                     
                     
-                    # Per-line indicative GST split for UI; actual accounts come from template
-					if self.tax_category == 'Out-State':
-						row.igst = 5.0 if self.sales_type == 'Subcontracting' else 3.0
-						row.igst_amount = round((row.net_rate or 0) * (row.igst / 100), 2)
-						row.cgst_amount = 0
-						row.sgst_amount = 0
+#                     # Per-line indicative GST split for UI; actual accounts come from template
+# 					if self.tax_category == 'Out-State':
+# 						row.igst = 5.0 if self.sales_type == 'Subcontracting' else 3.0
+# 						row.igst_amount = round((row.net_rate or 0) * (row.igst / 100), 2)
+# 						row.cgst_amount = 0
+# 						row.sgst_amount = 0
 					
-					else:
-						rate = 5.0 if self.sales_type == 'Subcontracting' else 3.0
-						row.cgst = rate / 2
-						row.sgst = rate / 2
-						row.cgst_amount = (row.net_rate or 0) * (row.cgst / 100)
-						row.sgst_amount = (row.net_rate or 0) * (row.sgst / 100)
-						row.igst_amount = 0
+# 					else:
+# 						rate = 5.0 if self.sales_type == 'Subcontracting' else 3.0
+# 						row.cgst = rate / 2
+# 						row.sgst = rate / 2
+# 						row.cgst_amount = (row.net_rate or 0) * (row.cgst / 100)
+# 						row.sgst_amount = (row.net_rate or 0) * (row.sgst / 100)
+# 						row.igst_amount = 0
 
 			
-		self.taxes = []
+# 		self.taxes = []
 
 			
-		if item_tax_template:
+# 		if item_tax_template:
 			
-			if item_tax_template not in ['Exempted - GEPL', 'Exempted - KGJPL', 'Exempted - SHC', 'Exempted - SD']:
-				row.item_tax_template = item_tax_template
-				row.gst_treatment = 'Taxable'
+# 			if item_tax_template not in ['Exempted - GEPL', 'Exempted - KGJPL', 'Exempted - SHC', 'Exempted - SD']:
+# 				row.item_tax_template = item_tax_template
+# 				row.gst_treatment = 'Taxable'
 
-				if self.tax_category == 'In-State':
-					if not self.is_reverse_charge:
-						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
-								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and tax_type not like '%IGST%'
-									and tax_type like 'Output%'
-									and tax_type not like '%RCM%'""",
-							as_dict=1,
-						)
-					else:
-						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
-								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and (tax_type like '%RCM%' or (tax_type like 'Output%' and tax_type not like 'Input%'))
-									and tax_type not like '%IGST%'""",
-							as_dict=1,
-						)
+# 				if self.tax_category == 'In-State':
+# 					if not self.is_reverse_charge:
+# 						tax = frappe.db.sql(
+# 							f"""select tax_type,tax_rate
+# 								from `tabItem Tax Template Detail`
+# 								where parent = '{item_tax_template}'
+# 									and tax_type not like '%IGST%'
+# 									and tax_type like 'Output%'
+# 									and tax_type not like '%RCM%'""",
+# 							as_dict=1,
+# 						)
+# 					else:
+# 						tax = frappe.db.sql(
+# 							f"""select tax_type,tax_rate
+# 								from `tabItem Tax Template Detail`
+# 								where parent = '{item_tax_template}'
+# 									and (tax_type like '%RCM%' or (tax_type like 'Output%' and tax_type not like 'Input%'))
+# 									and tax_type not like '%IGST%'""",
+# 							as_dict=1,
+# 						)
 						
-				else:
-					if not self.is_reverse_charge:
-						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
-								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and tax_type like '%IGST%'
-									and tax_type like 'Output%'
-									and tax_type not like '%RCM%'""",
-							as_dict=1,
-						)
-					else:
-						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
-								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and (tax_type like '%RCM%' or tax_type like 'Output%')
-									and tax_type like '%IGST%'""",
-							as_dict=1,
-						)
-					# frappe.throw(f"{tax}")
+# 				else:
+# 					if not self.is_reverse_charge:
+# 						tax = frappe.db.sql(
+# 							f"""select tax_type,tax_rate
+# 								from `tabItem Tax Template Detail`
+# 								where parent = '{item_tax_template}'
+# 									and tax_type like '%IGST%'
+# 									and tax_type like 'Output%'
+# 									and tax_type not like '%RCM%'""",
+# 							as_dict=1,
+# 						)
+# 					else:
+# 						tax = frappe.db.sql(
+# 							f"""select tax_type,tax_rate
+# 								from `tabItem Tax Template Detail`
+# 								where parent = '{item_tax_template}'
+# 									and (tax_type like '%RCM%' or tax_type like 'Output%')
+# 									and tax_type like '%IGST%'""",
+# 							as_dict=1,
+# 						)
+# 					# frappe.throw(f"{tax}")
 
-				account_list = []
-				for j in tax:
-					if j.get("tax_type") in account_list:
-						continue
-					account_list.append(j.get("tax_type"))
+# 				account_list = []
+# 				for j in tax:
+# 					if j.get("tax_type") in account_list:
+# 						continue
+# 					account_list.append(j.get("tax_type"))
 
-					if 'IGST RCM' in j.get("tax_type"):
-						gst_tax_type = 'igst_rcm'
-					elif 'SGST RCM' in j.get("tax_type"):
-						gst_tax_type = 'sgst_rcm'
-					elif 'CGST RCM' in j.get("tax_type"):
-						gst_tax_type = 'cgst_rcm'
-					elif 'IGST' in j.get("tax_type"):
-						gst_tax_type = 'igst'
-					elif 'SGST' in j.get("tax_type"):
-						gst_tax_type = 'sgst'
-					elif 'CGST' in j.get("tax_type"):
-						gst_tax_type = 'cgst'
-					else:
-						gst_tax_type = None
+# 					if 'IGST RCM' in j.get("tax_type"):
+# 						gst_tax_type = 'igst_rcm'
+# 					elif 'SGST RCM' in j.get("tax_type"):
+# 						gst_tax_type = 'sgst_rcm'
+# 					elif 'CGST RCM' in j.get("tax_type"):
+# 						gst_tax_type = 'cgst_rcm'
+# 					elif 'IGST' in j.get("tax_type"):
+# 						gst_tax_type = 'igst'
+# 					elif 'SGST' in j.get("tax_type"):
+# 						gst_tax_type = 'sgst'
+# 					elif 'CGST' in j.get("tax_type"):
+# 						gst_tax_type = 'cgst'
+# 					else:
+# 						gst_tax_type = None
 
-					add_deduct_tax = "Deduct" if 'RCM' in j.get("tax_type") else "Add"
+# 					add_deduct_tax = "Deduct" if 'RCM' in j.get("tax_type") else "Add"
 					
-					self.append("taxes", {
-						"category": "Total",
-						"add_deduct_tax": add_deduct_tax,
-						"charge_type": "On Net Total",
-						"account_head": j.get("tax_type"),
-						"description": j.get("tax_type").replace(" - GE", ""),
-						"rate": j.get("tax_rate"),
-						"tax_amount":(self.total or 0) * (j.get("tax_rate", 0) / 100),
-						"total":self.total + (self.total or 0) * (j.get("tax_rate", 0) / 100) ,
-						"gst_tax_type": gst_tax_type
-					})
-				self.grand_total = self.total + (self.total or 0) * (j.get("tax_rate", 0) / 100)
-				self.rounded_total =self.grand_total
+# 					self.append("taxes", {
+# 						"category": "Total",
+# 						"add_deduct_tax": add_deduct_tax,
+# 						"charge_type": "On Net Total",
+# 						"account_head": j.get("tax_type"),
+# 						"description": j.get("tax_type").replace(" - GE", ""),
+# 						"rate": j.get("tax_rate"),
+# 						"tax_amount":(self.total or 0) * (j.get("tax_rate", 0) / 100),
+# 						"total":self.total + (self.total or 0) * (j.get("tax_rate", 0) / 100) ,
+# 						"gst_tax_type": gst_tax_type
+# 					})
+# 				self.grand_total = self.total + (self.total or 0) * (j.get("tax_rate", 0) / 100)
+# 				self.rounded_total =self.grand_total
+
+def tax(self):
+	customer_state = frappe.db.get_value(
+		"Address", self.customer_address, "gst_state_number"
+	)
+	company_state = frappe.db.get_value(
+		"Address", self.company_address, "gst_state_number"
+	)
+
+	self.tax_category = (
+		"In-State" if customer_state == company_state else "Out-State"
+	)
+
+	template_map = {
+		'Finished Goods': {
+			'Gurukrupa Export Private Limited': 'GST 3% - GEPL',
+			'KG GK Jewellers Private Limited': 'GST 3% - KGJPL',
+		},
+		'Subcontracting': {
+			'Gurukrupa Export Private Limited': 'GST 5% - GEPL',
+			'KG GK Jewellers Private Limited': 'GST 5% - KGJPL',
+		},
+	}
+
+	item_tax_template = template_map.get(
+		self.sales_type, {}
+	).get(self.company)
+
+	for row in self.items:
+		if not frappe.db.get_value("Item", row.item_code, "item_subcategory"):
+			continue
+
+		if item_tax_template:
+			row.item_tax_template = item_tax_template
+			row.gst_treatment = "Taxable"
 
 
 def create_new_bom(self):
