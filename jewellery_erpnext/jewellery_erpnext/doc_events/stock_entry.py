@@ -10,7 +10,7 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 )
 from frappe import _, scrub
 from frappe.model.mapper import get_mapped_doc
-from frappe.query_builder.functions import IfNull, Sum
+from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt
 from six import itervalues
 
@@ -23,8 +23,8 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.up
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
-from jewellery_erpnext.jewellery_erpnext.jewellery_erpnext.doctype.mop_log import (
-	mop_log,
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
 from jewellery_erpnext.utils import (
 	get_item_from_attribute,
@@ -696,124 +696,6 @@ def stock_reservation_entry_for_mwo(self):
 			new_stock_reservation_entries_mwo.insert(ignore_links=1)
 			new_stock_reservation_entries_mwo.submit()
 			create_mop_log(self, row, is_synced=True)
-
-
-def create_mop_log(doc, row, is_synced=False):
-	mop_log = frappe.new_doc("MOP Log")
-	mop_log.item_code = row.item_code
-	mop_log.pcs_change = int(row.pcs)
-	mop_log.pcs_after_transaction = int(row.pcs) + (
-		frappe.db.get_value(
-			"MOP Log",
-			{
-				"manufacturing_work_order": doc.get("manufacturing_work_order"),
-				"is_cancelled": 0,
-				"item_code": ["like", f"{row.item_code[0]}%"],
-			},
-			"sum(pcs_change)",
-		)
-		or 0
-	)
-	mop_log.pcs_after_transaction_item_based = int(row.pcs) + (
-		frappe.db.get_value(
-			"MOP Log",
-			{
-				"manufacturing_work_order": doc.get("manufacturing_work_order"),
-				"is_cancelled": 0,
-				"item_code": row.item_code,
-			},
-			"sum(pcs_change)",
-		)
-		or 0
-	)
-	mop_log.pcs_after_transaction_batch_based = (
-		int(row.pcs)
-		+ frappe.db.get_value(
-			"MOP Log",
-			{
-				"manufacturing_work_order": doc.get("manufacturing_work_order"),
-				"is_cancelled": 0,
-				"item_code": row.item_code,
-				"batch_no": row.batch_no,
-				"is_cancelled": 0,
-			},
-			"sum(pcs_change)",
-		)
-		or 0
-	)
-	mop_log.from_warehouse = row.get("s_warehouse")
-	mop_log.to_warehouse = row.get("t_warehouse")
-	mop_log.voucher_type = "Stock Entry"
-	mop_log.voucher_no = doc.name
-	mop_log.manufacturing_work_order = doc.manufacturing_work_order
-	mop_log.manufacturing_operation = row.get("manufacturing_operation")
-	mop_log.row_name = row.name
-	mop_log.qty_change = row.qty
-	mop_log.qty_after_transaction = row.qty + (
-		frappe.db.get_value(
-			"MOP Log",
-			{
-				"item_code": ["like", f"{row.item_code[0]}%"],
-				"manufacturing_work_order": doc.get("manufacturing_work_order"),
-				"is_cancelled": 0,
-			},
-			"sum(qty_change)",
-		)
-		or 0
-	)
-	mop_log.qty_after_transaction_item_based = row.qty + (
-		frappe.db.get_value(
-			"MOP Log",
-			{
-				"item_code": row.item_code,
-				"manufacturing_work_order": doc.get("manufacturing_work_order"),
-				"is_cancelled": 0,
-			},
-			"sum(qty_change)",
-		)
-		or 0
-	)
-	mop_log.qty_after_transaction_batch_based = row.qty + (
-		frappe.db.get_value(
-			"MOP Log",
-			{
-				"item_code": row.item_code,
-				"batch_no": row.batch_no,
-				"manufacturing_work_order": doc.get("manufacturing_work_order"),
-				"is_cancelled": 0,
-			},
-			"sum(qty_change)",
-		)
-		or 0
-	)
-	if row.item_code[0] in ("D", "G"):
-		mop_log.qty_after_transactionmop = (row.qty * 0.2) + (
-			frappe.db.get_value(
-				"MOP Log",
-				{
-					"manufacturing_work_order": doc.get("manufacturing_work_order"),
-					"is_cancelled": 0,
-				},
-				"qty_after_transactionmop",
-			)
-			or 0
-		)
-	else:
-		mop_log.qty_after_transactionmop = row.qty + (
-			frappe.db.get_value(
-				"MOP Log",
-				{
-					"manufacturing_work_order": doc.get("manufacturing_work_order"),
-					"is_cancelled": 0,
-				},
-				"qty_after_transactionmop",
-			)
-			or 0
-		)
-	mop_log.is_synced = is_synced
-	mop_log.serial_and_batch_bundle = row.get("serial_and_batch_bundle")
-	mop_log.batch_no = row.get("batch_no")
-	mop_log.save()
 
 
 def update_main_slip(doc, is_cancelled=False):
@@ -1583,7 +1465,7 @@ creates a return receipt for items issued. i.e. Stock Enty to Stock Entry.
 @frappe.whitelist()
 def create_material_receipt_for_sales_person(source_name):
 	source_doctype = "Stock Entry"
-	target_doctype = "Stock Entry"
+	# target_doctype = "Stock Entry"
 	source_doc = frappe.get_doc("Stock Entry", source_name)
 	target_doc = frappe.new_doc(source_doctype)
 	target_doc.update(source_doc.as_dict())
@@ -1662,7 +1544,7 @@ def create_material_receipt_for_sales_person(source_name):
 			item.batch_no = serial_and_batch_items[item.item_code][1]
 		item.s_warehouse, item.t_warehouse = item.t_warehouse, item.s_warehouse
 	target_doc.insert()
-	total_return_receipt_for_issue = {}
+	# total_return_receipt_for_issue = {}
 
 	return target_doc
 
