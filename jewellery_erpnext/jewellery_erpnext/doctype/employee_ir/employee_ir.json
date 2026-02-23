@@ -23,7 +23,6 @@
   "section_break_pk7m5",
   "operation",
   "employee",
-  "main_slip",
   "column_break_mooif",
   "show_manufacturing_operation",
   "is_main_slip_required",
@@ -184,14 +183,6 @@
    "fieldname": "is_main_slip_required",
    "fieldtype": "Check",
    "label": "Is Main Slip Required"
-  },
-  {
-   "depends_on": "eval:doc.is_main_slip_required",
-   "fieldname": "main_slip",
-   "fieldtype": "Link",
-   "label": "Main Slip No",
-   "mandatory_depends_on": "eval:doc.is_main_slip_required",
-   "options": "Main Slip"
   },
   {
    "collapsible": 1,
@@ -380,7 +371,7 @@
    "link_fieldname": "employee_ir"
   }
  ],
- "modified": "2025-06-03 18:28:05.047740",
+ "modified": "2026-02-18 09:20:37.634090",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Employee IR",
@@ -399,6 +390,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

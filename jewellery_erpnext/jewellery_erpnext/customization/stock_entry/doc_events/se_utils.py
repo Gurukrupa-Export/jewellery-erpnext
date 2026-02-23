@@ -1,23 +1,30 @@
 import copy
 import json
+
+# import erpnext
 import frappe
-import erpnext
+from erpnext.stock.doctype.batch.batch import get_batch_qty
 from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
 	get_auto_batch_nos,
 )
-from frappe import _
-from frappe.query_builder import Case
-from frappe.query_builder.functions import Locate
-from frappe.utils import flt, nowtime, now
 
-from erpnext.stock.utils import get_valuation_method, _get_fifo_lifo_rate, get_serial_nos_data
+# from erpnext.stock.utils import (
+# 	_get_fifo_lifo_rate,
+# 	get_serial_nos_data,
+# 	get_valuation_method,
+# )
+from frappe import _
+
+# from frappe.query_builder import Case
+# from frappe.query_builder.functions import CombineDatetime, Locate, Sum
+from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.subcontracting_utils import (
 	create_subcontracting_doc,
 )
-from jewellery_erpnext.utils import get_item_from_attribute
-from frappe.query_builder.functions import CombineDatetime, Sum
-from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+# from jewellery_erpnext.utils import get_item_from_attribute
+
 
 def validate_inventory_dimention(self):
 	pmo_customer_data = frappe._dict()
@@ -55,7 +62,11 @@ def validate_inventory_dimention(self):
 				row.inventory_type in ["Customer Goods", "Customer Stock"]
 				and pmo_data.get("customer") != row.customer
 			):
-				frappe.throw(_("Only {0} allowed in Stock Entry").format(pmo_data.get("customer")))
+				frappe.throw(
+					_("Only {0} allowed in Stock Entry").format(
+						pmo_data.get("customer")
+					)
+				)
 			else:
 				variant_mapping = {
 					"M": "is_customer_gold",
@@ -72,17 +83,33 @@ def validate_inventory_dimention(self):
 						"Customer Stock",
 					]:
 						if allow_customer_goods:
-							frappe.msgprint(_("Can not use regular stock inventory for Customer provided Item"))
+							frappe.msgprint(
+								_(
+									"Can not use regular stock inventory for Customer provided Item"
+								)
+							)
 						else:
-							frappe.throw(_("Can not use regular stock inventory for Customer provided Item"))
+							frappe.throw(
+								_(
+									"Can not use regular stock inventory for Customer provided Item"
+								)
+							)
 					elif not pmo_data.get(customer_key) and row.inventory_type in [
 						"Customer Goods",
 						"Customer Stock",
 					]:
 						if allow_customer_goods:
-							frappe.msgprint(_("Can not use Customer Goods inventory for non provided customer Item"))
+							frappe.msgprint(
+								_(
+									"Can not use Customer Goods inventory for non provided customer Item"
+								)
+							)
 						else:
-							frappe.throw(_("Can not use Customer Goods inventory for non provided customer Item"))
+							frappe.throw(
+								_(
+									"Can not use Customer Goods inventory for non provided customer Item"
+								)
+							)
 
 
 def get_fifo_batches(self, row):
@@ -93,15 +120,20 @@ def get_fifo_batches(self, row):
 
 	msl = self.get("main_slip") or self.get("to_main_slip")
 	warehouse = row.get("s_warehouse") or self.get("source_warehouse")
-	if msl and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse") == row.s_warehouse:
+	print("s_warehouse", warehouse)
+	if (
+		msl
+		and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse")
+		== row.s_warehouse
+	):
 		main_slip = self.main_slip or self.to_main_slip
 		batch_data = get_batch_data_from_msl(row.item_code, main_slip, row.s_warehouse)
 	else:
-		posting_date = self.get("posting_date") or self.get("date")
 		batch_data = get_auto_batch_nos(
 			frappe._dict(
 				{
-					"posting_date": posting_date,
+					"posting_time": self.get("posting_time"),
+					"posting_date": self.get("posting_date"),
 					"item_code": row.item_code,
 					"warehouse": warehouse,
 					"qty": row.qty,
@@ -154,8 +186,10 @@ def get_fifo_batches(self, row):
 	for batch in batch_data:
 		if (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
-			and frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type") == row.inventory_type
-			and frappe.db.get_value("Batch", batch.batch_no, "custom_customer") == row.customer
+			and frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type")
+			== row.inventory_type
+			and frappe.db.get_value("Batch", batch.batch_no, "custom_customer")
+			== row.customer
 		):
 			if total_qty > 0 and batch.qty > 0:
 				if not existing_updated:
@@ -180,7 +214,8 @@ def get_fifo_batches(self, row):
 
 		elif (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
-			and frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type") != row.inventory_type
+			and frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type")
+			!= row.inventory_type
 			and allow_customer_goods == 1
 		):
 			if total_qty > 0 and batch.qty > 0:
@@ -220,9 +255,9 @@ def get_fifo_batches(self, row):
 						row.db_set("batch_no", batch.batch_no)
 					total_qty -= batch.qty
 					existing_updated = True
-					rows_to_append.append(row.__dict__)
+					rows_to_append.append(row.as_dict())
 				else:
-					temp_row = copy.deepcopy(row.__dict__)
+					temp_row = copy.deepcopy(row.as_dict())
 					temp_row["name"] = None
 					temp_row["idx"] = None
 					temp_row["batch_no"] = batch.batch_no
@@ -231,7 +266,7 @@ def get_fifo_batches(self, row):
 					rows_to_append.append(temp_row)
 					total_qty -= batch.qty
 
-	if round(total_qty,3) > 0:
+	if round(total_qty, 3) > 0:
 		message = _("For <b>{0}</b> {1} is missing in <b>{2}</b>").format(
 			row.item_code, flt(total_qty, 2), warehouse
 		)
@@ -250,16 +285,20 @@ def get_batch_data_from_msl(item_code, main_slip, warehouse):
 	batch_data = []
 	msl_doc = frappe.get_doc("Main Slip", main_slip)
 
-	avl_batch =  get_batch_qty(warehouse= warehouse,item_code=item_code)
+	avl_batch = get_batch_qty(warehouse=warehouse, item_code=item_code)
 	avl_batch = [system_batch.get("batch_no") for system_batch in avl_batch]
 	if warehouse != msl_doc.raw_material_warehouse:
-		frappe.msgprint(_("Please select batch manually for receving goods in Main Slip"))
+		frappe.msgprint(
+			_("Please select batch manually for receving goods in Main Slip")
+		)
 		return batch_data
 
 	for row in msl_doc.batch_details:
-		if avl_batch and row.batch_no  in avl_batch:
+		if avl_batch and row.batch_no in avl_batch:
 			batch_row = frappe._dict()
-			batch_row.update({"batch_no": row.batch_no, "qty": row.qty - row.consume_qty})
+			batch_row.update(
+				{"batch_no": row.batch_no, "qty": row.qty - row.consume_qty}
+			)
 			batch_data.append(batch_row)
 
 	return batch_data
@@ -302,7 +341,9 @@ def create_repack_for_subcontracting(self, subcontractor, main_slip=None):
 			repack_raws.append(temp_raw)
 
 	if repack_raws:
-		create_subcontracting_doc(self, subcontractor, self.department, repack_raws, main_slip, receive)
+		create_subcontracting_doc(
+			self, subcontractor, self.department, repack_raws, main_slip, receive
+		)
 
 
 def validate_gross_weight_for_unpack(self):
@@ -321,7 +362,9 @@ def validate_gross_weight_for_unpack(self):
 
 def validation_for_stock_entry_submission(self):
 	for item in self.items:
-		stock_reco = frappe.get_doc("Stock Reconciliation", {"set_warehouse": item.s_warehouse})
+		stock_reco = frappe.get_doc(
+			"Stock Reconciliation", {"set_warehouse": item.s_warehouse}
+		)
 		if stock_reco.docstatus != 1:
 			frappe.throw(
 				_(
@@ -337,7 +380,10 @@ def set_employee(self):
 		return
 
 	if mop_details := frappe.db.get_value(
-		"Manufacturing Operation", self.manufacturing_operation, ["status", "employee"], as_dict=1
+		"Manufacturing Operation",
+		self.manufacturing_operation,
+		["status", "employee"],
+		as_dict=1,
 	):
 		if mop_details.status == "WIP":
 			self.to_employee = mop_details.employee
@@ -346,7 +392,9 @@ def set_employee(self):
 def set_gross_wt(self):
 	for row in self.items:
 		if row.serial_no:
-			gross_weight = frappe.db.get_value("Serial No", row.serial_no, "custom_gross_wt")
+			gross_weight = frappe.db.get_value(
+				"Serial No", row.serial_no, "custom_gross_wt"
+			)
 			row.gross_weight = gross_weight
 
 
@@ -355,8 +403,12 @@ def validate_warehouse(self):
 		return
 	if self.from_warehouse and self.to_warehouse:
 		if self.from_warehouse == self.to_warehouse:
-			frappe.throw(_("The source warehouse and the target warehouse cannot be the same."))
+			frappe.throw(
+				_("The source warehouse and the target warehouse cannot be the same.")
+			)
 
 	for row in self.items:
 		if row.s_warehouse == row.t_warehouse:
-			frappe.throw(_("The source warehouse and the target warehouse cannot be the same."))
+			frappe.throw(
+				_("The source warehouse and the target warehouse cannot be the same.")
+			)
