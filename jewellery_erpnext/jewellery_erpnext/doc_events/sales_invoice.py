@@ -71,7 +71,8 @@ def on_submit(self,method):
 							"income_account": row.income_account,
 							"cost_center": row.cost_center,
 							"delivery_note":row.delivery_note,
-							"item_code":row.item_code
+							"item_code":row.item_code,
+							"sales_order":row.sales_order
 
 						})
 					certification_invoice.append({
@@ -103,7 +104,7 @@ def on_submit(self,method):
 						for invoice in certification_invoice:
 							certification_si.append("invoice_item",invoice)
 						
-						certification_si.insert(ignore_permissions=True)
+						certification_si.insert(ignore_permissions=True,ignore_mandatory=True)
 						certification_si.save()
 						
 
