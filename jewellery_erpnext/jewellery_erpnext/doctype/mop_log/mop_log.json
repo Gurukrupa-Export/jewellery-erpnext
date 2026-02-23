@@ -6,40 +6,120 @@
  "engine": "InnoDB",
  "field_order": [
   "item_code",
-  "warehouse",
+  "pcs_change",
+  "pcs_after_transaction",
+  "pcs_after_transaction_item_based",
+  "pcs_after_transaction_batch_based",
   "from_warehouse",
+  "to_warehouse",
   "voucher_type",
   "voucher_no",
+  "row_name",
   "qty_change",
   "qty_after_transaction",
+  "qty_after_transaction_item_based",
+  "qty_after_transaction_batch_based",
   "is_cancelled",
   "sle_ref",
-  "ref_docname"
+  "ref_docname",
+  "is_synced",
+  "manufacturing_operation",
+  "manufacturing_work_order",
+  "qty_after_transactionmop",
+  "serial_and_batch_bundle",
+  "batch_no",
+  "serial_no"
  ],
  "fields": [
   {
    "fieldname": "item_code",
    "fieldtype": "Link",
    "label": "Item Code",
-   "options": "Item"
-  },
-  {
-   "fieldname": "warehouse",
-   "fieldtype": "Link",
-   "label": "Warehouse",
-   "options": "Warehouse"
+   "options": "Item",
+   "read_only": 1
   },
   {
    "fieldname": "voucher_type",
    "fieldtype": "Link",
    "label": "Voucher Type",
-   "options": "DocType"
+   "options": "DocType",
+   "read_only": 1
   },
   {
    "fieldname": "voucher_no",
    "fieldtype": "Dynamic Link",
    "label": "Voucher No",
-   "options": "voucher_type"
+   "options": "voucher_type",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_cancelled",
+   "fieldtype": "Check",
+   "label": "is Cancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sle_ref",
+   "fieldtype": "Data",
+   "label": "sle ref",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ref_docname",
+   "fieldtype": "Data",
+   "label": "ref docname",
+   "read_only": 1
+  },
+  {
+   "fieldname": "from_warehouse",
+   "fieldtype": "Link",
+   "label": "From Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_synced",
+   "fieldtype": "Check",
+   "label": "is synced",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Data",
+   "label": "Manufacturing Operation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Data",
+   "label": "Manufacturing Work Order",
+   "read_only": 1
+  },
+  {
+   "fieldname": "serial_and_batch_bundle",
+   "fieldtype": "Data",
+   "label": "Serial and Batch Bundle",
+   "read_only": 1
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Data",
+   "label": "Batch No",
+   "read_only": 1
+  },
+  {
+   "fieldname": "to_warehouse",
+   "fieldtype": "Link",
+   "label": "To Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "row_name",
+   "fieldtype": "Data",
+   "label": "row name"
   },
   {
    "fieldname": "qty_change",
@@ -52,33 +132,52 @@
    "label": "Qty After Transaction"
   },
   {
-   "default": "0",
-   "fieldname": "is_cancelled",
-   "fieldtype": "Check",
-   "label": "is Cancelled"
-  },
-  {
-   "fieldname": "sle_ref",
-   "fieldtype": "Data",
-   "label": "sle ref",
+   "fieldname": "serial_no",
+   "fieldtype": "Long Text",
+   "label": "Serial No",
    "read_only": 1
   },
   {
-   "fieldname": "ref_docname",
-   "fieldtype": "Data",
-   "label": "ref docname"
+   "fieldname": "pcs_change",
+   "fieldtype": "Int",
+   "label": "Pcs change"
   },
   {
-   "fieldname": "from_warehouse",
-   "fieldtype": "Link",
-   "label": "From Warehouse",
-   "options": "Warehouse"
+   "fieldname": "pcs_after_transaction",
+   "fieldtype": "Int",
+   "label": "Pcs After Transaction"
+  },
+  {
+   "fieldname": "qty_after_transactionmop",
+   "fieldtype": "Float",
+   "label": "Qty After Transaction(MOP)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pcs_after_transaction_item_based",
+   "fieldtype": "Int",
+   "label": "Pcs After Transaction Item Based"
+  },
+  {
+   "fieldname": "qty_after_transaction_item_based",
+   "fieldtype": "Float",
+   "label": "Qty After Transaction Item Based"
+  },
+  {
+   "fieldname": "pcs_after_transaction_batch_based",
+   "fieldtype": "Int",
+   "label": "Pcs After Transaction Batch Based"
+  },
+  {
+   "fieldname": "qty_after_transaction_batch_based",
+   "fieldtype": "Float",
+   "label": "Qty After Transaction Batch Based"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-01-22 16:34:49.085981",
+ "modified": "2026-02-23 12:28:59.315515",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "MOP Log",
