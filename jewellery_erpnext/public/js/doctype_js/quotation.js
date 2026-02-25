@@ -7,6 +7,7 @@ frappe.ui.form.on("Quotation", {
 		}
 	},
 	refresh(frm) {
+		update_total_rows(frm);
 		frm.add_custom_button(
 			__("Purchase Order"),
 			function () {
@@ -304,6 +305,12 @@ frappe.ui.form.on("Quotation Item", {
 
 		// row.quotation_bom = ''
 	},
+	  items_add: function(frm) {
+        update_total_rows(frm);
+    },
+    items_remove: function(frm) {
+        update_total_rows(frm);
+    },
 	serial_no(frm, cdt, cdn) {
 		var d = locals[cdt][cdn];
 		if (d.serial_no) {
@@ -1884,3 +1891,9 @@ let add_row = (serial_no, frm, row) => {
 		});
 	});
 };
+
+//function to update total_rows 
+function update_total_rows(frm) {
+    let total = frm.doc.items ? frm.doc.items.length : 0;
+    frm.set_value('custom_total_rows', total);
+}
