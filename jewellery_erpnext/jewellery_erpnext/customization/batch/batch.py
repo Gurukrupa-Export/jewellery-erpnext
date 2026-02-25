@@ -1,11 +1,14 @@
+import datetime
+import random
+import string
+
+import frappe
+
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
 	update_inventory_dimentions,
 	update_pure_qty,
 )
-import frappe
-import datetime
-import random
-import string
+
 
 def validate(self, method):
 	update_pure_qty(self)
@@ -19,7 +22,7 @@ def validate(self, method):
 		"Gurukrupa Export Private Limited": "GE",
 		"KG GK Jewellers Private Limited": "KG",
 		"Sadguru Diamond": "SD",
-		"Sadguru Hallmarking Centre": "SHC"
+		"Sadguru Hallmarking Centre": "SHC",
 	}
 	company_abbr = company.get(self.custom_company)
 
@@ -65,23 +68,32 @@ def validate(self, method):
 	if batch_number:
 		batch_code = batch_number + "".join(batch_abbr_code_list)
 		sequence = generate_unique_alphanumeric()
-		self.name = batch_code + '-' + sequence
+		self.name = batch_code + "-" + sequence
 
-def autoname(self,method=None):
+
+def autoname(self, method=None):
 	# year_code = get_year_code()
 	# month_code = get_month_code()
 	# week_code = get_week_code()
-	item_group = frappe.db.get_value("Item",{self.item},"item_group")
+	item_group = frappe.db.get_value("Item", self.item, "item_group")
 
-	if item_group in ["Metal - V", "Diamond - V", "Gemstone - V", "Finding - V", "Other - V"]:
+	if item_group in [
+		"Metal - V",
+		"Diamond - V",
+		"Gemstone - V",
+		"Finding - V",
+		"Other - V",
+	]:
 		year_code = get_year_code()
 		month_code = get_month_code()
 		week_code = get_week_code()
 		# start_of_week, end_of_week = get_current_week_date_range()
-		company ={"Gurukrupa Export Private Limited":"GE",
-			"KG GK Jewellers Private Limited":"KG",
-			"Sadguru Diamond":"SD",
-			"Sadguru Hallmarking Centre":"SHC"}
+		company = {
+			"Gurukrupa Export Private Limited": "GE",
+			"KG GK Jewellers Private Limited": "KG",
+			"Sadguru Diamond": "SD",
+			"Sadguru Hallmarking Centre": "SHC",
+		}
 		company_abbr = company.get(self.custom_company)
 
 		if item_group == "Diamond - V":
@@ -106,7 +118,7 @@ def autoname(self,method=None):
 			)
 		batch_abbr_code_list = []
 
-		for i in frappe.get_doc("Item",self.item).attributes:
+		for i in frappe.get_doc("Item", self.item).attributes:
 			if i.attribute == "Finding Category":
 				continue
 			batch_abbreviation = frappe.db.get_value(
@@ -116,7 +128,9 @@ def autoname(self,method=None):
 				if batch_abbreviation:
 					batch_abbr_code_list.append(batch_abbreviation)
 				else:
-					frappe.throw(("Abbrivation is missing for {0}").format(i.attribute_value))
+					frappe.throw(
+						("Abbrivation is missing for {0}").format(i.attribute_value)
+					)
 		batch_code = batch_number + "".join(batch_abbr_code_list)
 		# batch_list = frappe.db.sql(f"""SELECT
 		# 								name
@@ -136,7 +150,7 @@ def autoname(self,method=None):
 		# else:
 		# 	sequence = '0001'
 		sequence = generate_unique_alphanumeric()
-		self.name = batch_code + '-' + sequence
+		self.name = batch_code + "-" + sequence
 
 
 def get_year_code():
@@ -156,15 +170,18 @@ def get_year_code():
 	last_two_digits = current_year % 100
 	return str(last_two_digits)[0] + year_dict[str(last_two_digits)[1]]
 
+
 def get_week_code():
 	current_date = datetime.date.today()
 	week_number = (current_date.day - 1) // 7 + 1
 	return str(week_number)
 
+
 def get_month_code():
 	current_date = datetime.datetime.now()
 	month_two_digit = current_date.strftime("%m")
 	return str(month_two_digit)
+
 
 # def get_current_week_date_range():
 # 	current_date = datetime.date.today()
@@ -191,21 +208,25 @@ def get_month_code():
 
 # 	return start_formatted, end_formatted
 
+
 def generate_unique_alphanumeric():
-    while True:
-        # Ensure at least one letter and one number
-        letters = random.choices(string.ascii_uppercase, k=2)  # At least 2 letters
-        digits = random.choices(string.digits, k=3)  # At least 3 numbers
-        random_code = ''.join(random.sample(letters + digits, 5))  # Shuffle & combine
+	while True:
+		# Ensure at least one letter and one number
+		letters = random.choices(string.ascii_uppercase, k=2)  # At least 2 letters
+		digits = random.choices(string.digits, k=3)  # At least 3 numbers
+		random_code = "".join(random.sample(letters + digits, 5))  # Shuffle & combine
 
-        # Check if it already exists
-        existing_doc = frappe.get_value("Manufacturing Operation", {"name": f"MOP-{random_code}"}, "name")
+		# Check if it already exists
+		existing_doc = frappe.get_value(
+			"Manufacturing Operation", {"name": f"MOP-{random_code}"}, "name"
+		)
 
-        if not existing_doc:  # If unique, return it
-            return random_code
+		if not existing_doc:  # If unique, return it
+			return random_code
 
 
 GOLD_ITEMS = {"M-G-24KT-99.9-Y", "M-G-24KT-99.5-Y"}
+
 
 def on_update(doc, method):
 	if not doc.flags.is_update_origin_entries:
@@ -217,17 +238,20 @@ def on_update(doc, method):
 	if doc.reference_doctype != "Stock Entry" or not doc.custom_voucher_detail_no:
 		return
 
-	se_type = frappe.db.get_value(doc.reference_doctype, doc.reference_name, "stock_entry_type")
+	se_type = frappe.db.get_value(
+		doc.reference_doctype, doc.reference_name, "stock_entry_type"
+	)
 	if se_type != "Repack-Metal Conversion":
 		return
 
-	metal_purity = frappe.db.get_value("Item Variant Attribute", {
-		"parent": doc.item,
-		"attribute": "Metal Purity"
-	}, "attribute_value")
+	metal_purity = frappe.db.get_value(
+		"Item Variant Attribute",
+		{"parent": doc.item, "attribute": "Metal Purity"},
+		"attribute_value",
+	)
 
 	if not metal_purity:
-		metal_purity = doc.item.split('-')[-2]
+		metal_purity = doc.item.split("-")[-2]
 
 	alloy_rate = float()
 	metal_rate = float()
@@ -247,7 +271,7 @@ def on_update(doc, method):
 		if _is_alloy(row.item_code):
 			alloy_rate = row.rate
 		elif row.item_code in GOLD_ITEMS:
-			metal_rate = ((row.rate * float(metal_purity)) / 100)
+			metal_rate = (row.rate * float(metal_purity)) / 100
 
 	doc.db_set("custom_alloy_rate", alloy_rate)
 	doc.db_set("custom_metal_rate", metal_rate)

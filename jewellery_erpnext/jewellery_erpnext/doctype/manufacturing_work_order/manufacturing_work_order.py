@@ -257,7 +257,7 @@ def create_manufacturing_operation(doc):
 		["default_operation", "default_department"],
 		as_dict=1,
 	)
-	department = settings.get("default_department")
+	# department = settings.get("default_department")
 	operation = settings.get("default_operation")
 	status = "Not Started"
 

@@ -7,8 +7,9 @@ from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 from frappe import _
 from frappe.utils import flt
 
-from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import BatchValuationLedger
-
+from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+	BatchValuationLedger,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.inventory_utils import (
 	in_configured_timeslot,
 	validate_customer_voucher,
@@ -40,14 +41,14 @@ def on_submit(self, method):
 
 
 class CustomStockEntry(StockEntry):
-	def autoname(self):
-		"""
-		Temporarily name doc for fast insertion
-		name will be changed using autoname options (in a scheduled job)
-		"""
-		self.name = frappe.generate_hash(txt="", length=10)
-		if self.meta.autoname == "hash":
-			self.to_rename = 0
+	# def autoname(self):
+	# 	"""
+	# 	Temporarily name doc for fast insertion
+	# 	name will be changed using autoname options (in a scheduled job)
+	# 	"""
+	# 	self.name = frappe.generate_hash(txt="", length=10)
+	# 	if self.meta.autoname == "hash":
+	# 		self.to_rename = 0
 
 	@frappe.whitelist()
 	def update_batches(self):
@@ -56,13 +57,26 @@ class CustomStockEntry(StockEntry):
 			for row in self.items:
 				if (
 					row.get("department")
-					and frappe.db.get_value("Department", row.department, "custom_can_not_make_dg_entry") == 1
+					and frappe.db.get_value(
+						"Department", row.department, "custom_can_not_make_dg_entry"
+					)
+					== 1
 				):
-					if frappe.db.get_value("Item", row.item_code, "variant_of") in ["D", "G"]:
-						frappe.throw(_("{0} not allowed in Operation {1}").format(row.item_code, row.department))
+					if frappe.db.get_value("Item", row.item_code, "variant_of") in [
+						"D",
+						"G",
+					]:
+						frappe.throw(
+							_("{0} not allowed in Operation {1}").format(
+								row.item_code, row.department
+							)
+						)
 				if frappe.db.get_value("Item", row.item_code, "has_batch_no"):
 					if row.s_warehouse:
-						if row.get("batch_no") and get_batch_qty(row.batch_no, row.s_warehouse) >= row.qty:
+						if (
+							row.get("batch_no")
+							and get_batch_qty(row.batch_no, row.s_warehouse) >= row.qty
+						):
 							temp_row = copy.deepcopy(row)
 							rows_to_append += [temp_row]
 						else:
@@ -79,8 +93,12 @@ class CustomStockEntry(StockEntry):
 						item = frappe._dict(item)
 					if item.batch_no:
 						if not item.inventory_type:
-							item.inventory_type = frappe.db.get_value("Batch", item.batch_no, "custom_inventory_type")
-						item.customer = frappe.db.get_value("Batch", item.batch_no, "custom_customer")
+							item.inventory_type = frappe.db.get_value(
+								"Batch", item.batch_no, "custom_inventory_type"
+							)
+						item.customer = frappe.db.get_value(
+							"Batch", item.batch_no, "custom_customer"
+						)
 					if frappe.db.get_value("Item", item.item_code, "variant_of") == "D":
 						attribute = frappe.db.get_value(
 							"Item Variant Attribute",
@@ -89,13 +107,19 @@ class CustomStockEntry(StockEntry):
 						)
 						diamond_sieve_size = frappe.db.get_value(
 							"Item Variant Attribute",
-							{"parent": item.item_code, "attribute": "Diamond Sieve Size"},
+							{
+								"parent": item.item_code,
+								"attribute": "Diamond Sieve Size",
+							},
 							"attribute_value",
 						)
 						weight = (
 							frappe.db.get_value(
 								"Attribute Value Diamond Sieve Size",
-								{"parent": attribute, "diamond_sieve_size": diamond_sieve_size},
+								{
+									"parent": attribute,
+									"diamond_sieve_size": diamond_sieve_size,
+								},
 								"per_pcs_average_weight",
 							)
 							or 0
@@ -130,9 +154,14 @@ class CustomStockEntry(StockEntry):
 					["item_code", "custom_alternative_item", "warehouse", "idx"],
 					as_dict=True,
 				)
-				if item.item_code not in [mreq_item.item_code, mreq_item.custom_alternative_item]:
+				if item.item_code not in [
+					mreq_item.item_code,
+					mreq_item.custom_alternative_item,
+				]:
 					frappe.throw(
-						_("Item for row {0} does not match Material Request").format(item.idx),
+						_("Item for row {0} does not match Material Request").format(
+							item.idx
+						),
 						frappe.MappingMismatchError,
 					)
 				elif self.purpose == "Material Transfer" and self.add_to_transit:
@@ -144,6 +173,7 @@ class CustomStockEntry(StockEntry):
 	def get_bom_scrap_material(self, qty):
 		custom_get_bom_scrap_material(self, qty)
 
+
 @frappe.whitelist()
 def get_html_data(doc):
 	if isinstance(doc, str):
@@ -153,7 +183,9 @@ def get_html_data(doc):
 		row = frappe._dict(row)
 		if itemwise_data.get(row.item_code):
 			itemwise_data[row.item_code]["qty"] += row.qty
-			itemwise_data[row.item_code]["pcs"] += int(row.get("pcs")) if row.get("pcs") else 0
+			itemwise_data[row.item_code]["pcs"] += (
+				int(row.get("pcs")) if row.get("pcs") else 0
+			)
 		else:
 			itemwise_data[row.item_code] = {
 				"qty": row.qty,
