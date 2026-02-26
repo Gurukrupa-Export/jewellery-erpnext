@@ -933,6 +933,16 @@ def create_new_bom(self):
 				row.gemstone_bom_rate = doc.gemstone_bom_amount
 				row.other_bom_rate = doc.other_bom_amount
 				row.making_charge = doc.making_charge
+				metal_weight = sum(CU.quantity for CU in doc.metal_detail if CU.is_customer_item ==0)
+				finding_weight = sum(CU.quantity for CU in doc.finding_detail if CU.is_customer_item ==0)
+				diamond_weight = (sum(CU.quantity for CU in doc.diamond_detail if CU.is_customer_item ==0))*0.2
+				gemstone_weight = (sum(CU.quantity for CU in doc.gemstone_detail if CU.is_customer_item ==0))*0.2
+				row.custom_company_rm_weight = (metal_weight+finding_weight+diamond_weight+gemstone_weight)
+				metal_weight_ci = sum(CU.quantity for CU in doc.metal_detail if CU.is_customer_item ==1)
+				finding_weight_ci = sum(CU.quantity for CU in doc.finding_detail if CU.is_customer_item ==1)
+				diamond_weight_ci = (sum(CU.quantity for CU in doc.diamond_detail if CU.is_customer_item ==1))*0.2
+				gemstone_weight_ci = (sum(CU.quantity for CU in doc.gemstone_detail if CU.is_customer_item ==1))*0.2
+				row.custom_customer_weight = (metal_weight_ci+finding_weight_ci+diamond_weight_ci+gemstone_weight_ci)
 				if self.custom_diamond_quality:
 					row.diamond_quality = self.custom_diamond_quality
 				self.total=self.total + row.amount
