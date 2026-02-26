@@ -274,6 +274,14 @@ def create_manufacturing_operation(doc):
 	if doc.split_from:
 		department = doc.department
 		operation = None
+	if doc.custom_tracking_bom:
+		mop.custom_tracking_bom = doc.custom_tracking_bom
+		frappe.db.set_value("Tracking Bom",
+					   mop.custom_tracking_bom,
+					   {
+					   "reference_doctype":mop.doctype,
+					   "reference_docname":mop.name
+					   })
 	mop.status = status
 	mop.type = "Manufacturing Work Order"
 	mop.operation = operation

@@ -53,20 +53,20 @@ frappe.ui.form.on("Manufacturing Plan", {
 		});
 	},
 	get_repair_order(frm) {
-		map_current_doc({
-			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_sales_order",
-			source_doctype: "Sales Order",
-			target: frm,
-			setters: {
-				customer: null,
-				transaction_date: null,
-				company: frm.doc.company,
-				branch: frm.doc.branch,
-			},
-			get_query_method:
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_repair_pending_ppo_sales_order",
-			size: "extra-large",
-		});
+		// map_current_doc({
+		// 	method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_sales_order",
+		// 	source_doctype: "Sales Order",
+		// 	target: frm,
+		// 	setters: {
+		// 		customer: null,
+		// 		transaction_date: null,
+		// 		company: frm.doc.company,
+		// 		branch: frm.doc.branch,
+		// 	},
+		// 	 get_query_method:
+		// 	 	"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_repair_pending_ppo_sales_order",
+		// 	size: "extra-large",
+		// });
 	},
 	show_progress(frm) {
 		var bars = [];

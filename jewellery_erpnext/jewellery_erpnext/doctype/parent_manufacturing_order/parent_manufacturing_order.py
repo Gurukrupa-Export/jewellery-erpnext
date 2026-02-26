@@ -66,6 +66,13 @@ class ParentManufacturingOrder(Document):
 				self.metal_purity = metal_purity
 
 	def after_insert(self):
+		if self.custom_tracking_bom:
+				frappe.db.set_value("Tracking Bom",
+					   self.custom_tracking_bom,
+					   {
+					   "reference_doctype":self.doctype,
+					   "reference_docname":self.name
+					   })
 		if self.serial_no:
 			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
 				self.db_set("serial_id_bom", serial_bom)
@@ -90,26 +97,26 @@ class ParentManufacturingOrder(Document):
 				],
 				as_dict=1,
 			)
+			if warehouse_details:
+				metal_department = warehouse_details.get("default_department")
+				diamond_department = (
+					warehouse_details.get("default_diamond_department") or None
+				)
+				gemstone_department = (
+					warehouse_details.get("default_gemstone_department") or None
+				)
+				finding_department = (
+					warehouse_details.get("default_finding_department") or None
+				)
+				other_material_department = (
+					warehouse_details.get("default_other_material_department") or None
+				)
 
-			metal_department = warehouse_details.get("default_department") or None
-			diamond_department = (
-				warehouse_details.get("default_diamond_department") or None
-			)
-			gemstone_department = (
-				warehouse_details.get("default_gemstone_department") or None
-			)
-			finding_department = (
-				warehouse_details.get("default_finding_department") or None
-			)
-			other_material_department = (
-				warehouse_details.get("default_other_material_department") or None
-			)
-
-			self.db_set("metal_department", metal_department)
-			self.db_set("diamond_department", diamond_department)
-			self.db_set("gemstone_department", gemstone_department)
-			self.db_set("finding_department", finding_department)
-			self.db_set("other_material_department", other_material_department)
+				self.db_set("metal_department", metal_department)
+				self.db_set("diamond_department", diamond_department)
+				self.db_set("gemstone_department", gemstone_department)
+				self.db_set("finding_department", finding_department)
+				self.db_set("other_material_department", other_material_department)
 
 	def on_update_after_submit(self):
 		update_due_days(self)
@@ -551,6 +558,7 @@ def make_manufacturing_order(
 		# )
 
 		doc.sales_order = row.sales_order
+		doc.custom_tracking_bom = row.custom_tracking_bom
 		doc.sales_order_item = row.docname
 		doc.item_code = row.item_code
 		doc.metal_type = so_det.get("metal_type")

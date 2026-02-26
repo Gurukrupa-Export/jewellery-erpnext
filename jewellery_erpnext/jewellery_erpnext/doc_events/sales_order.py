@@ -42,6 +42,13 @@ def create_new_bom(self):
 	"""
 	# diamond_grade_data = frappe._dict()
 	for row in self.items:
+		if row.custom_tracking_bom:
+			frappe.db.set_value("Tracking Bom",
+					   row.custom_tracking_bom,
+					   {
+					   "reference_doctype":self.doctype,
+					   "reference_docname":self.name
+					   })
 		if not row.quotation_bom:
 			create_serial_no_bom(self, row)
 			if row.bom:

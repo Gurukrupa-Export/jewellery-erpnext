@@ -92,6 +92,13 @@ class ManufacturingPlan(Document):
 		total = 0
 		for row in self.manufacturing_plan_table:
 			# Validate Qty
+			if row.custom_tracking_bom:
+				frappe.db.set_value("Tracking Bom",
+					   row.custom_tracking_bom,
+					   {
+					   "reference_doctype":self.doctype,
+					   "reference_docname":self.name
+					   })
 			if not row.subcontracting:
 				row.subcontracting_qty = 0
 				row.supplier = None
@@ -210,6 +217,7 @@ class ManufacturingPlan(Document):
 					SalesOrderItem.parent.as_("sales_order"),
 					SalesOrderItem.item_code,
 					SalesOrderItem.bom,
+					SalesOrderItem.custom_tracking_bom,
 					SalesOrder.customer,
 					Item.mould.as_("mould_no"),
 					Item.master_bom.as_("master_bom"),
