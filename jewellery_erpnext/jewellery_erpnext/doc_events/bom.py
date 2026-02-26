@@ -199,6 +199,9 @@ def set_item_variant(self):
 				temp_variant.setdefault("attributes", variant_attributes)
 
 				make_variant_item_code(row.item, item_name, temp_variant)
+				
+				if self.custom_creation_doctype == "Quotation":
+					return
 
 				if not temp_variant.item_code or not frappe.db.exists(
 					"Item", temp_variant.item_code
