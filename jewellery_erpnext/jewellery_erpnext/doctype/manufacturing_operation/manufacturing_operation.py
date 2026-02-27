@@ -1664,7 +1664,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		["diamond_quality", "qty","finish_good_image"],
 		as_dict=1,
 	)
-	quality_value = bom_doc.diamond_detail[0].quality
+	# quality_value = bom_doc.diamond_detail[0].quality
 	new_bom = frappe.copy_doc(bom_doc)
 	new_bom.front_view_finish = pmo_data.get("finish_good_image")
 	new_bom.is_active = 1
@@ -1799,7 +1799,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				row["quality"] = pmo_data.get("diamond_quality")
 			if self.company == "Gurukrupa Export Private Limited":
 				if diamond_price_customer and any(dpl["price_list_type"] == diamond_price_list_customer_new for dpl in diamond_price_customer):
-					row["quality"] = quality_value
+					# row["quality"] = quality_value
 					if diamond_price_list_customer_new == "Size (in mm)":
 						size_in_mm_diamond_price_list_entry = frappe.db.sql(
 							"""
