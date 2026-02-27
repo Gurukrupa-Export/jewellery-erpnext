@@ -95,11 +95,11 @@ def create_chain_stock_entry(self, row):
 
 	item_list = [row.item_code for row in bom_items]
 
-	mop_data = frappe.db.get_all(
-		"MOP Balance Table",
-		{"parent": row.manufacturing_operation},
-		["item_code", "batch_no", "qty", "parent", "inventory_type", "s_warehouse"],
-	)
+	# mop_data = frappe.db.get_all(
+	# 	"MOP Balance Table",
+	# 	{"parent": row.manufacturing_operation},
+	# 	["item_code", "batch_no", "qty", "parent", "inventory_type", "s_warehouse"],
+	# )
 
 	filters = {
 		"parentfield": "batch_details",

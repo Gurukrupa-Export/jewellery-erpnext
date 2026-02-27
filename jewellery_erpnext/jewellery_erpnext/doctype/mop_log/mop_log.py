@@ -2,10 +2,23 @@
 # For license information, please see license.txt
 
 import frappe
+from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
 
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
+select_fields = [
+	"item_code",
+	"pcs_after_transaction",
+	"pcs_after_transaction_item_based",
+	"pcs_after_transaction_batch_based",
+	"qty_after_transaction",
+	"qty_after_transaction_item_based",
+	"qty_after_transaction_batch_based",
+	"serial_and_batch_bundle",
+	"batch_no",
+	"flow_index",
+]
 
 
 class MOPLog(Document):
@@ -26,16 +39,17 @@ class MOPLog(Document):
 			frappe.db.set_value(
 				"Manufacturing Operation", self.manufacturing_operation, update_value
 			)
-			update_gross_wt(self.manufacturing_operation)
+			update_wt_detail(self.manufacturing_operation)
 
 
-def update_gross_wt(manufacturing_operation):
+def update_wt_detail(manufacturing_operation):
 	(
 		net_wt,
 		finding_wt,
 		diamond_wt_in_gram,
 		gemstone_wt_in_gram,
 		other_wt,
+		previous_mop,
 	) = frappe.db.get_value(
 		"Manufacturing Operation",
 		manufacturing_operation,
@@ -45,20 +59,29 @@ def update_gross_wt(manufacturing_operation):
 			"diamond_wt_in_gram",
 			"gemstone_wt_in_gram",
 			"other_wt",
+			"previous_mop",
 		],
 	)
+	prev_gross_wt = 0
+	if previous_mop:
+		prev_gross_wt = (
+			frappe.db.get_value("Manufacturing Operation", previous_mop, "gross_wt")
+			or 0
+		)
 	frappe.db.set_value(
 		"Manufacturing Operation",
 		manufacturing_operation,
-		"gross_wt",
-		(
-			net_wt
-			or 0 + finding_wt
-			or 0 + diamond_wt_in_gram
-			or 0 + gemstone_wt_in_gram
-			or 0 + other_wt
-			or 0
-		),
+		{
+			"gross_wt": (
+				net_wt
+				or 0 + finding_wt
+				or 0 + diamond_wt_in_gram
+				or 0 + gemstone_wt_in_gram
+				or 0 + other_wt
+				or 0
+			),
+			"prev_gross_wt": prev_gross_wt,
+		},
 	)
 
 
@@ -154,3 +177,90 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	mop_log.batch_no = batch_no
 
 	mop_log.save()
+
+
+def create_mop_log_for_department_ir(
+	self, row, to_warehouse, from_warehouse, operation
+):
+	mop_logs = frappe.db.get_all(
+		"MOP Log",
+		{
+			"manufacturing_operation": row.manufacturing_operation,
+			"is_cancelled": 0,
+		},
+		select_fields,
+		order_by="creation asc",
+	)
+	for log in mop_logs:
+		mop_log = frappe.new_doc("MOP Log")
+		mop_log.item_code = log.item_code
+		mop_log.pcs_after_transaction = log.pcs_after_transaction
+		mop_log.pcs_after_transaction_item_based = log.pcs_after_transaction_item_based
+		mop_log.pcs_after_transaction_batch_based = (
+			log.pcs_after_transaction_batch_based
+		)
+		mop_log.from_warehouse = from_warehouse
+		mop_log.to_warehouse = to_warehouse
+		mop_log.voucher_type = "Department IR"
+		mop_log.voucher_no = self.name
+		mop_log.row_name = row.name
+		mop_log.qty_after_transaction = log.qty_after_transaction
+		mop_log.qty_after_transaction_item_based = log.qty_after_transaction_item_based
+		mop_log.qty_after_transaction_batch_based = (
+			log.qty_after_transaction_batch_based
+		)
+		mop_log.is_synced = 0
+		mop_log.manufacturing_operation = operation
+		mop_log.manufacturing_work_order = row.manufacturing_work_order
+		mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
+		mop_log.batch_no = log.batch_no
+		mop_log.flow_index = log.flow_index + 1
+		mop_log.save()
+
+
+def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
+	manufacturing_operation_manufacturing_operation = frappe.db.get_value(
+		"Manufacturing Operation", row.manufacturing_operation, "department_receive_id"
+	)
+	if not manufacturing_operation_manufacturing_operation:
+		frappe.throw(
+			_("Department Receive ID not set for Manufacturing Operation {0}").format(
+				row.manufacturing_operation
+			)
+		)
+	mop_logs = frappe.db.get_all(
+		"MOP Log",
+		{
+			"manufacturing_operation": row.manufacturing_operation,
+			"is_cancelled": 0,
+			"voucher_type": "Department IR",
+			"voucher_no": manufacturing_operation_manufacturing_operation,
+		},
+		select_fields,
+		order_by="creation asc",
+	)
+	for log in mop_logs:
+		mop_log = frappe.new_doc("MOP Log")
+		mop_log.item_code = log.item_code
+		mop_log.pcs_after_transaction = log.pcs_after_transaction
+		mop_log.pcs_after_transaction_item_based = log.pcs_after_transaction_item_based
+		mop_log.pcs_after_transaction_batch_based = (
+			log.pcs_after_transaction_batch_based
+		)
+		mop_log.from_warehouse = from_warehouse
+		mop_log.to_warehouse = to_warehouse
+		mop_log.voucher_type = self.doctype
+		mop_log.voucher_no = self.name
+		mop_log.row_name = row.name
+		mop_log.qty_after_transaction = log.qty_after_transaction
+		mop_log.qty_after_transaction_item_based = log.qty_after_transaction_item_based
+		mop_log.qty_after_transaction_batch_based = (
+			log.qty_after_transaction_batch_based
+		)
+		mop_log.is_synced = 0
+		mop_log.manufacturing_operation = row.manufacturing_operation
+		mop_log.manufacturing_work_order = row.manufacturing_work_order
+		mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
+		mop_log.batch_no = log.batch_no
+		mop_log.flow_index = log.flow_index + 1
+		mop_log.save()
