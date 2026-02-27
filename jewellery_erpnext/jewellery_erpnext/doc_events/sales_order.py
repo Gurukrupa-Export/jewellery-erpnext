@@ -219,7 +219,7 @@ def create_new_bom(self):
 					else:
 						doc.certification_amount = ccp.per_carat_rate * doc.diamond_weight
 					doc.hallmarking_amount=ccp.hallmarking_amount
-				if "Earrings" in doc.item_subcategory:
+				if "Earrings" in doc.item_category:
 					doc.hallmarking_amount = doc.hallmarking_amount *2
 				if hasattr(doc, "gemstone_detail"):
 					for gem in doc.gemstone_detail or []:
@@ -882,7 +882,7 @@ def create_new_bom(self):
 				doc.custom_total_gemstone_weight2_digits=sum(row.quantity_3 for row in doc.gemstone_detail)
 				doc.gemstone_weight = doc.total_gemstone_weight
 				doc.total_gemstone_weight_in_gms = round(sum(row.quantity for row in doc.gemstone_detail)/5,2)
-				doc.finding_weight = round(sum(row.quantity for row in doc.finding_detail),2)
+				doc.finding_weight = (sum(row.quantity for row in doc.finding_detail))
 				doc.finding_weight_ = doc.finding_weight
 				doc.total_finding_weight_per_gram = doc.finding_weight
 				doc.custom_finding_weight2_digits = (sum(row.quantity_3 for row in doc.finding_detail))
@@ -895,7 +895,7 @@ def create_new_bom(self):
 				# doc.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity for row in doc.diamond_detail)
 				doc.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity or 0.0 for row in doc.diamond_detail)
 
-				doc.metal_and_finding_weight = round(flt(doc.metal_weight) + flt(doc.finding_weight),2)
+				doc.metal_and_finding_weight = (flt(doc.metal_weight) + flt(doc.finding_weight))
 				doc.gold_to_diamond_ratio = (
 					flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
 				)
