@@ -1345,12 +1345,24 @@ frappe.ui.form.on("Sales Order Item", {
 					},
 				},
 				{
+					fieldname: "total_gemstone_pieces",
+					fieldtype: "Int",
+					label: "Total gemstone Pieces",
+					read_only: 1,
+				},
+				{
 					fieldtype: "Column Break",
 				},
 				{
 					fieldname: "sale_amount",
 					fieldtype: "Currency",
 					label: "MRP Sale Amount",
+					read_only: 1,
+				},
+				{
+					fieldname: "total_diamond_pieces",
+					fieldtype: "Int",
+					label: "Total Diamond Pieces",
 					read_only: 1,
 				},
 				{
@@ -1937,6 +1949,8 @@ let set_edit_bom_details = (
 	dialog.set_value("making_amount", doc.making_charge);
 	dialog.set_value("certification_amount", doc.certification_amount)
 	dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
+	dialog.set_value("total_diamond_pieces", doc.total_diamond_pcs)
+	dialog.set_value("total_gemstone_pieces", doc.total_gemstone_pcs)
 	dialog.set_value("custom_duty_amount", doc.custom_duty_amount)
 	dialog.set_value("freight_amount", doc.freight_amount)
 	dialog.set_value("sale_amount", doc.sale_amount)
