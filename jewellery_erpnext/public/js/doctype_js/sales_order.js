@@ -1347,7 +1347,7 @@ frappe.ui.form.on("Sales Order Item", {
 				{
 					fieldname: "total_gemstone_pieces",
 					fieldtype: "Int",
-					label: "Total gemstone Pieces",
+					label: "Total Gemstone Pieces",
 					read_only: 1,
 				},
 				{
