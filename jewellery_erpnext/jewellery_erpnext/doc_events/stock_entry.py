@@ -649,6 +649,13 @@ def stock_reservation_entry_for_mwo(self):
 			self.manufacturing_order,
 			["sales_order", "sales_order_item"],
 		)
+		voucher_qty = frappe.db.get_values(
+			"Material Request",
+			{"manufacturing_order": self.manufacturing_order, "docstatus": ["!=", 2]},
+			["sum(custom_total_quantity)"],
+		)
+		if voucher_qty and voucher_qty[0]:
+			voucher_qty = voucher_qty[0][0]
 		for row in self.items:
 			has_batch_no, has_serial_no = frappe.get_cached_value(
 				"Item", row.item_code, ["has_batch_no", "has_serial_no"]
@@ -667,7 +674,7 @@ def stock_reservation_entry_for_mwo(self):
 			new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
 			new_stock_reservation_entries_mwo.voucher_no = sales_order
 			new_stock_reservation_entries_mwo.item_code = row.item_code
-			new_stock_reservation_entries_mwo.voucher_qty = qty_to_be_reserved
+			new_stock_reservation_entries_mwo.voucher_qty = voucher_qty
 			new_stock_reservation_entries_mwo.reserved_qty = qty_to_be_reserved
 			new_stock_reservation_entries_mwo.company = self.company
 			new_stock_reservation_entries_mwo.stock_uom = row.uom
@@ -681,12 +688,6 @@ def stock_reservation_entry_for_mwo(self):
 			)
 			new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
 			new_stock_reservation_entries_mwo.available_qty = available_qty_to_reserve
-			try:
-				new_stock_reservation_entries_mwo.from_voucher_type = "Stock Entry"
-				new_stock_reservation_entries_mwo.from_voucher_no = self.name
-				new_stock_reservation_entries_mwo.from_voucher_detail_no = row.name
-			except Exception:
-				pass
 			new_stock_reservation_entries_mwo.has_batch_no = has_batch_no
 			new_stock_reservation_entries_mwo.has_serial_no = has_serial_no
 			new_stock_reservation_entries_mwo.reservation_based_on = "Serial and Batch"
