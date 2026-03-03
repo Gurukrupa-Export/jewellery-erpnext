@@ -29,7 +29,9 @@ def valid_reparing_or_next_operation(self):
 		)
 
 		if mwo_list:
-			query = query.where(EmployeeIROperation.manufacturing_work_order.isin(mwo_list))
+			query = query.where(
+				EmployeeIROperation.manufacturing_work_order.isin(mwo_list)
+			)
 
 		test = query.run(as_dict=True)
 		if test:
@@ -38,9 +40,14 @@ def valid_reparing_or_next_operation(self):
 
 def get_po_rates(supplier, operation, purchase_type, row):
 	item_details = frappe.db.get_value(
-		"Manufacturing Operation", row.manufacturing_operation, ["metal_type", "item_code"], as_dict=1
+		"Manufacturing Operation",
+		row.manufacturing_operation,
+		["metal_type", "item_code"],
+		as_dict=1,
 	)
-	sub_category = frappe.db.get_value("Item", item_details.item_code, "item_subcategory")
+	sub_category = frappe.db.get_value(
+		"Item", item_details.item_code, "item_subcategory"
+	)
 
 	sup_ser_pri_item_sub = frappe.qb.DocType("Supplier Services Price Item Subcategory")
 	supplier_serivice_price = frappe.qb.DocType("Supplier Services Price")
@@ -63,43 +70,69 @@ def create_chain_stock_entry(self, row):
 	metal_data = frappe.db.get_value(
 		"Manufacturing Work Order",
 		row.manufacturing_work_order,
-		["metal_type", "metal_touch", "metal_purity", "metal_colour", "master_bom", "item_code"],
+		[
+			"metal_type",
+			"metal_touch",
+			"metal_purity",
+			"metal_colour",
+			"master_bom",
+			"item_code",
+		],
 		as_dict=1,
 	)
 
 	item = metal_data["item_code"]
 	metal_item = get_item_from_attribute(
-		metal_data.metal_type, metal_data.metal_touch, metal_data.metal_purity, metal_data.metal_colour
+		metal_data.metal_type,
+		metal_data.metal_touch,
+		metal_data.metal_purity,
+		metal_data.metal_colour,
 	)
 	department_wh = frappe.get_value(
-		"Warehouse", {"department": self.department, "warehouse_type": "Manufacturing", "disabled": 0}
+		"Warehouse",
+		{
+			"department": self.department,
+			"warehouse_type": "Manufacturing",
+			"disabled": 0,
+		},
 	)
 	emp_wh = frappe.get_value(
-		"Warehouse", {"employee": self.employee, "warehouse_type": "Manufacturing", "disabled": 0}
+		"Warehouse",
+		{"employee": self.employee, "warehouse_type": "Manufacturing", "disabled": 0},
 	)
 	if self.subcontracting == "Yes":
 		emp_wh = frappe.get_value(
-		"Warehouse", {"disabled": 0, "subcontractor": self.subcontractor, "company": self.company,"warehouse_type": "Manufacturing"}
-	)
+			"Warehouse",
+			{
+				"disabled": 0,
+				"subcontractor": self.subcontractor,
+				"company": self.company,
+				"warehouse_type": "Manufacturing",
+			},
+		)
 
 	bom_items = frappe.db.get_all(
 		"BOM Item", {"parent": metal_data.master_bom}, "item_code"
-	) + frappe.db.get_all("BOM Explosion Item", {"parent": metal_data.master_bom}, "item_code")
+	) + frappe.db.get_all(
+		"BOM Explosion Item", {"parent": metal_data.master_bom}, "item_code"
+	)
 
 	# exploded_items = frappe.db.get_all(
 	# 	"BOM Explosion Item", {"parent": metal_data.master_bom}, "item_code"
 	# )
 
 	# pure_item = frappe.db.get_value("Manufacturing Setting", {"name": self.company}, "pure_gold_item")
-	pure_item = frappe.db.get_value("Manufacturing Setting", {"manufacturer": self.manufacturer}, "pure_gold_item")
+	pure_item = frappe.db.get_value(
+		"Manufacturing Setting", {"manufacturer": self.manufacturer}, "pure_gold_item"
+	)
 
 	item_list = [row.item_code for row in bom_items]
 
-	mop_data = frappe.db.get_all(
-		"MOP Balance Table",
-		{"parent": row.manufacturing_operation},
-		["item_code", "batch_no", "qty", "parent", "inventory_type", "s_warehouse"],
-	)
+	# mop_data = frappe.db.get_all(
+	# 	"MOP Balance Table",
+	# 	{"parent": row.manufacturing_operation},
+	# 	["item_code", "batch_no", "qty", "parent", "inventory_type", "s_warehouse"],
+	# )
 
 	filters = {
 		"parentfield": "batch_details",
@@ -175,11 +208,12 @@ def create_chain_stock_entry(self, row):
 	se_doc.subcontractor = self.subcontractor
 	se_doc.auto_created = True
 	se_doc.employee_ir = self.name
-	warehouse = frappe.db.get_value("Main Slip", self.main_slip, "raw_material_warehouse")
+	warehouse = frappe.db.get_value(
+		"Main Slip", self.main_slip, "raw_material_warehouse"
+	)
 	mfg_warehouse = frappe.db.get_value("Main Slip", self.main_slip, "warehouse")
 
 	if row.received_gross_wt > 0 and mop_data:
-
 		manual_loss_items = [
 			{
 				"item_code": loss_item.item_code,
@@ -227,7 +261,10 @@ def create_chain_stock_entry(self, row):
 		mop_batch_list = []
 		if self.main_slip:
 			temp_diff = 0
-			create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
+			create_department_transfer_se_entry(
+				self,
+				mop_data={row.manufacturing_work_order: row.manufacturing_operation},
+			)
 		for batch in mop_batch_list:
 			se_doc.append(
 				"items",
@@ -260,7 +297,9 @@ def create_chain_stock_entry(self, row):
 		temp_diff = abs(diff)
 
 		if temp_diff > 0 and main_slip_data:
-			temp_diff, reg_batch_list = create_repack(self, row, item, main_slip_data, warehouse, temp_diff)
+			temp_diff, reg_batch_list = create_repack(
+				self, row, item, main_slip_data, warehouse, temp_diff
+			)
 			for batch in reg_batch_list:
 				se_doc.append(
 					"items",
@@ -290,7 +329,9 @@ def create_chain_stock_entry(self, row):
 				)
 
 		if temp_diff > 0 and metal_item_data:
-			temp_diff, batch_list = create_repack(self, row, item, metal_item_data, warehouse, temp_diff)
+			temp_diff, batch_list = create_repack(
+				self, row, item, metal_item_data, warehouse, temp_diff
+			)
 			for batch in batch_list:
 				se_doc.append(
 					"items",
@@ -321,7 +362,13 @@ def create_chain_stock_entry(self, row):
 
 		if temp_diff > 0 and pure_data:
 			temp_diff, pure_batches = create_purity_repack(
-				self, row, item, pure_data, warehouse, temp_diff, metal_data.metal_purity
+				self,
+				row,
+				item,
+				pure_data,
+				warehouse,
+				temp_diff,
+				metal_data.metal_purity,
 			)
 			for batch in pure_batches:
 				se_doc.append(
@@ -361,7 +408,12 @@ def create_chain_stock_entry(self, row):
 		se_doc.submit()
 		for item_row in se_doc.items:
 			if item_row.get("batch_no"):
-				frappe.db.set_value("Batch",item_row.get("batch_no"),"custom_inventory_type","Regular Stock")
+				frappe.db.set_value(
+					"Batch",
+					item_row.get("batch_no"),
+					"custom_inventory_type",
+					"Regular Stock",
+				)
 	mop_se_doc = frappe.new_doc("Stock Entry")
 	mop_se_doc.stock_entry_type = "Material Transfer"
 	mop_se_doc.purpose = "Material Transfer"
@@ -391,30 +443,49 @@ def create_chain_stock_entry(self, row):
 		mop_se_doc.submit()
 
 	if not self.main_slip:
-		create_department_transfer_se_entry(self,mop_data = {row.manufacturing_work_order: row.manufacturing_operation})
+		create_department_transfer_se_entry(
+			self, mop_data={row.manufacturing_work_order: row.manufacturing_operation}
+		)
 	# create_loss_entry(self, row, employee_wh, warehouse)
-
 
 
 def create_department_transfer_se_entry(doc, mop_data):
 	rows_to_append = []
 	department_wh = frappe.get_value(
-		"Warehouse", {"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"}
+		"Warehouse",
+		{
+			"disabled": 0,
+			"department": doc.department,
+			"warehouse_type": "Manufacturing",
+		},
 	)
-	
+
 	employee_wh = frappe.get_value(
-		"Warehouse", {"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"}
+		"Warehouse",
+		{"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"},
 	)
 	if doc.subcontracting == "Yes":
 		employee_wh = frappe.get_value(
-		"Warehouse", {"disabled": 0, "subcontractor": doc.subcontractor, "company": doc.company,"warehouse_type": "Manufacturing"}
-	)
+			"Warehouse",
+			{
+				"disabled": 0,
+				"subcontractor": doc.subcontractor,
+				"company": doc.company,
+				"warehouse_type": "Manufacturing",
+			},
+		)
 	if not department_wh:
 		frappe.throw(_("Please set warhouse for department {0}").format(doc.department))
 	if not employee_wh:
 		subcontractor = "subcontractor" if doc.subcontracting == "Yes" else "employee"
-		subcontractor_doc = doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
-		frappe.throw(_("Please set warhouse for {0} {1}").format(subcontractor, subcontractor_doc))
+		subcontractor_doc = (
+			doc.subcontractor if doc.subcontracting == "Yes" else doc.employee
+		)
+		frappe.throw(
+			_("Please set warhouse for {0} {1}").format(
+				subcontractor, subcontractor_doc
+			)
+		)
 
 	mop_balance_details = frappe.db.get_all(
 		"MOP Balance Table", {"parent": ["in", mop_data.values()]}, ["*"]
@@ -428,7 +499,12 @@ def create_department_transfer_se_entry(doc, mop_data):
 
 	for row in mop_data:
 		rows_to_append += transfer_rows_to_append(
-			doc, row, mop_data[row], mop_balance_data.get(mop_data[row]), department_wh, employee_wh
+			doc,
+			row,
+			mop_data[row],
+			mop_balance_data.get(mop_data[row]),
+			department_wh,
+			employee_wh,
 		)
 
 	if rows_to_append:
@@ -439,9 +515,7 @@ def create_department_transfer_se_entry(doc, mop_data):
 		se_doc.auto_created = True
 		se_doc.employee_ir = doc.name
 
-		stock_entry_type = (
-			"Material Transfer to Department"
-		)
+		stock_entry_type = "Material Transfer to Department"
 
 		for row in rows_to_append:
 			se_doc.stock_entry_type = stock_entry_type
@@ -586,19 +660,25 @@ def create_repack(self, row, item, metal_data, warehouse, temp_diff):
 						"material_request_item": None,
 						"batch_no": metal.batch_no,
 						"inventory_type": metal.inventory_type,
-						"manufacturing_operation": row.manufacturing_operation if metal.get("parent") else None,
+						"manufacturing_operation": row.manufacturing_operation
+						if metal.get("parent")
+						else None,
 					},
 				)
 
 				from frappe.model.naming import make_autoname
 
-				batch_number_series = frappe.db.get_value("Item", item, "batch_number_series")
+				batch_number_series = frappe.db.get_value(
+					"Item", item, "batch_number_series"
+				)
 
 				batch_doc = frappe.new_doc("Batch")
 				batch_doc.item = item
 
 				if batch_number_series:
-					batch_doc.batch_id = make_autoname(batch_number_series, doc=batch_doc)
+					batch_doc.batch_id = make_autoname(
+						batch_number_series, doc=batch_doc
+					)
 
 				batch_doc.flags.ignore_permissions = True
 				batch_doc.save()
@@ -683,7 +763,9 @@ def create_purity_repack(self, row, item, pure_data, warehouse, temp_diff, purit
 
 			from frappe.model.naming import make_autoname
 
-			batch_number_series = frappe.db.get_value("Item", item, "batch_number_series")
+			batch_number_series = frappe.db.get_value(
+				"Item", item, "batch_number_series"
+			)
 
 			batch_doc = frappe.new_doc("Batch")
 			batch_doc.item = item
@@ -728,7 +810,9 @@ def create_purity_repack(self, row, item, pure_data, warehouse, temp_diff, purit
 def create_operation_for_next_op(docname, target_doc=None, employee_ir=None):
 	def set_missing_value(source, target):
 		target.previous_operation = source.operation
-		target.prev_gross_wt  = source.gross_wt or source.received_gross_wt or source.prev_gross_wt
+		target.prev_gross_wt = (
+			source.gross_wt or source.received_gross_wt or source.prev_gross_wt
+		)
 		target.previous_mop = source.name
 
 	target_doc = get_mapped_doc(
