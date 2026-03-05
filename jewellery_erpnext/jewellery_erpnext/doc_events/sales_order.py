@@ -2276,15 +2276,16 @@ def validate_item_dharm(self):
 									making_amount = finding.making_amount
 									finding_making_amount = (finding.making_rate * multiplied_qty)
 									aggregated_metal_making_items[key]["qty"] += multiplied_qty
-									aggregated_metal_making_items[key]["amount"] += finding_making_amount
+									aggregated_metal_making_items[key]["amount"] += making_amount
 
-									if aggregated_metal_making_items[key]["qty"] > 0:
-										aggregated_metal_making_items[key]["rate"] = aggregated_metal_making_items[key]["amount"] / aggregated_metal_making_items[key]["qty"]
-									else:
-										aggregated_metal_making_items[key]["rate"] = 0
-									
+									# if aggregated_metal_making_items[key]["qty"] > 0:
+									# 	aggregated_metal_making_items[key]["rate"] = aggregated_metal_making_items[key]["amount"] / aggregated_metal_making_items[key]["qty"]
+									# else:
+									# 	aggregated_metal_making_items[key]["rate"] = 0
+									aggregated_metal_making_items[key]["rate"]=finding.making_rate
+
 									tax_rate_decimal = aggregated_metal_making_items[key]["tax_rate"] / 100
-									aggregated_metal_making_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
+									aggregated_metal_making_items[key]["tax_amount"] += making_amount * tax_rate_decimal
 									aggregated_metal_making_items[key]["amount_with_tax"] = (
 										aggregated_metal_making_items[key]["amount"] +
 										aggregated_metal_making_items[key]["tax_amount"]
@@ -2353,7 +2354,7 @@ def validate_item_dharm(self):
 			self.append("custom_invoice_item", val)
 		
 		for key, val in aggregated_metal_making_items.items():
-			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			# val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			self.append("custom_invoice_item", val)
 		
 		for key, val in aggregated_diamond_items.items():
@@ -2370,7 +2371,7 @@ def validate_item_dharm(self):
 
 	
 		for key, val in aggregated_finding_making_items.items():
-			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			# val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			self.append("custom_invoice_item", val)
 
 
