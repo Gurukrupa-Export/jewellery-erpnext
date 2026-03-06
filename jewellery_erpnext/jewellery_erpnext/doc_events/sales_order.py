@@ -314,39 +314,39 @@ def create_new_bom(self):
 									fields=["name", "price_list_type"],
 								)
 								if not gpc:
-									frappe.throw(f"No Multiplier Price List found ")
+									frappe.msgprint(f"No Multiplier Price List found ")
+								else:
+									gpc_doc = frappe.get_doc("Gemstone Price List", gpc[0].name)
+									multiplier_rows = gpc_doc.get("gemstone_multiplier")
+									rate = 0
+									for mul in multiplier_rows:
+										if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
+											if gem.is_customer_item:
+												if gem.gemstone_quality == 'Precious':
+													rate = mul.outwork_precious_percentage
 
-								gpc_doc = frappe.get_doc("Gemstone Price List", gpc[0].name)
-								multiplier_rows = gpc_doc.get("gemstone_multiplier")
-								rate = 0
-								for mul in multiplier_rows:
-									if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
-										if gem.is_customer_item:
-											if gem.gemstone_quality == 'Precious':
-												rate = mul.outwork_precious_percentage
+												elif gem.gemstone_quality == 'Semi-Precious':
+													rate = mul.outwork_semi_precious_percentage
 
-											elif gem.gemstone_quality == 'Semi-Precious':
-												rate = mul.outwork_semi_precious_percentage
+												elif gem.gemstone_quality == 'Synthetic':
+													rate = mul.outwork_synthetic_percentage
+											else:
+												if gem.gemstone_quality == 'Precious':
+													rate = mul.precious_percentage
 
-											elif gem.gemstone_quality == 'Synthetic':
-												rate = mul.outwork_synthetic_percentage
-										else:
-											if gem.gemstone_quality == 'Precious':
-												rate = mul.precious_percentage
+												elif gem.gemstone_quality == 'Semi-Precious':
+													rate = mul.semi_precious_percentage
 
-											elif gem.gemstone_quality == 'Semi-Precious':
-												rate = mul.semi_precious_percentage
+												elif gem.gemstone_quality == 'Synthetic':
+													rate = mul.synthetic_percentage
 
-											elif gem.gemstone_quality == 'Synthetic':
-												rate = mul.synthetic_percentage
+										gem.total_gemstone_rate = round(rate, 2)
 
-									gem.total_gemstone_rate = round(rate, 2)
-
-								gem.gemstone_rate_for_specified_quantity = (
-									float(rate) / 100 * float(gem.gemstone_pr)
-								)
-								gem.gemstone_rate_for_specified_quantity =round(gem.gemstone_rate_for_specified_quantity , 2)
-								gem.price_list_type='Diamond Range'
+									gem.gemstone_rate_for_specified_quantity = (
+										float(rate) / 100 * float(gem.gemstone_pr)
+									)
+									gem.gemstone_rate_for_specified_quantity =round(gem.gemstone_rate_for_specified_quantity , 2)
+									gem.price_list_type='Diamond Range'
 							##############
 							elif gemstone_price_list_customer == "Diamond Range" and customer_group =="Retail":
 								gpc = frappe.get_all(
