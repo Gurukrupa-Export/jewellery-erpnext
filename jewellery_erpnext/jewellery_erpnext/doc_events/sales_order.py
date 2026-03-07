@@ -300,6 +300,7 @@ def create_new_bom(self):
 									for r in doc.get("gemstone_detail", [])
 								)
 
+
 							elif gemstone_price_list_customer == "Diamond Range"and customer_group !="Retail":
 								gpc = frappe.get_all(
 									"Gemstone Price List",
