@@ -207,18 +207,7 @@ def create_new_bom(self):
 				doc.metal_and_finding_weight = round(sum(row.quantity for row in doc.metal_detail),precision) + round(sum(row.quantity for row in doc.finding_detail),precision)
 				diamond_pcs=doc.total_diamond_pcs
 				doc.diamond_weight=sum(row.quantity for row in doc.diamond_detail)
-				ccp = frappe.db.get_all(
-					"Customer Certification Price",
-					filters={"customer": self.customer},
-					limit=1
-				)
-				if ccp:
-					ccp = frappe.get_doc("Customer Certification Price", ccp[0].name)
-					if doc.diamond_weight <= ccp.wt_threshold:
-						doc.certification_amount = ccp.per_pc_rate
-					else:
-						doc.certification_amount = ccp.per_carat_rate * doc.diamond_weight
-					doc.hallmarking_amount=ccp.hallmarking_amount
+				
 				if "Earrings" in doc.item_category:
 					doc.hallmarking_amount = doc.hallmarking_amount *2
 				if hasattr(doc, "gemstone_detail"):
@@ -763,6 +752,7 @@ def create_new_bom(self):
 							}
 
 							d.weight_per_pcs = round(d.quantity/d.pcs,3)
+							d.weight_per_pcs = int(d.weight_per_pcs * 1000) / 1000
 							# d.weight_per_pcs = round(d.quantity/d.pcs,2)
 							# if 0.001 < (d.quantity/d.pcs) > .005:
 							# 	d.weight_per_pcs = round(d.quantity/d.pcs,2)
@@ -859,10 +849,24 @@ def create_new_bom(self):
 								
 								d.total_diamond_rate = round(total_rate, 2)
 								d.quantity=round(d.quantity,3)
-								d.quantity_3=round(d.quantity,2)
+								if (d.quantity*1000)%10 == 5:
+									d.quantity_3=int(d.quantity * 100) / 100
+								else:		
+									d.quantity_3=round(d.quantity,2)
 								d.weight_per_pcs =round(d.quantity/d.pcs,3)
 								d.diamond_rate_for_specified_quantity = round(d.quantity * total_rate, 2)
-								
+				ccp = frappe.db.get_all(
+					"Customer Certification Price",
+					filters={"customer": self.customer},
+					limit=1
+				)
+				if ccp:
+					ccp = frappe.get_doc("Customer Certification Price", ccp[0].name)
+					if doc.diamond_weight <= ccp.wt_threshold:
+						doc.certification_amount = ccp.per_pc_rate
+					else:
+						doc.certification_amount = ccp.per_carat_rate * (sum(row.quantity_3 for row in doc.diamond_detail))
+					doc.hallmarking_amount=ccp.hallmarking_amount				
 				doc.total_diamond_amount = sum(
 					flt(r.diamond_rate_for_specified_quantity)
 					for r in doc.get("diamond_detail", [])
