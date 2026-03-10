@@ -827,8 +827,6 @@ def create_new_bom(self):
 										total_rate = base_rate + out_rate
 									else:
 										total_rate = base_rate + (base_rate * (out_pct / 100))
-							
-							
 							if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
 								if billing_currency == 'USD':
 									d.se_rate = d.se_rate *exchange_rate
