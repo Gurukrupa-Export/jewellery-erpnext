@@ -44,10 +44,9 @@ def create_bom_sceintifically(self):
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
 	self.flags.can_be_saved = True
-	frappe.enqueue(
-		create_new_bom, self=self, queue="long", timeout=1000, event="creating BOM for Quotation"
-	)
-	create_tracking_bom_from_quotation_bom(self)
+	frappe.enqueue(create_bom_sceintifically, self=self, queue="long", timeout=10000)
+
+
 
 def onload(self, method):
 	return
@@ -1364,7 +1363,7 @@ def create_tracking_bom_from_quotation_bom(self):
         tracking_bom.reference_doctype = "Quotation"
         tracking_bom.reference_docname = self.name
 
-        tracking_bom._process_loss = source_bom.process_loss_percentage   # note: field name has underscore
+        tracking_bom._process_loss = source_bom.process_loss_percentage   
         tracking_bom.process_loss_qty = source_bom.process_loss_qty
 
         # Raw Materials

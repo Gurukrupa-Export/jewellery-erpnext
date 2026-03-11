@@ -1,0 +1,11 @@
+{
+    "Quotation Item": [
+        {
+            "fieldname": "custom_tracking_bom",
+            "label": "Tracking BOM",
+            "fieldtype": "Link",
+            "options": "Tracking BOM",
+            "insert_after": "quotation_bom"
+        }
+    ]
+}

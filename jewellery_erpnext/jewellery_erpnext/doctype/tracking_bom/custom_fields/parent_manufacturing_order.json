@@ -1,0 +1,11 @@
+{
+    "Parent Manufacturing Order": [
+        {
+            "fieldname": "custom_tracking_bom",
+            "label": "Tracking BOM",
+            "fieldtype": "Link",
+            "options": "Tracking BOM",
+            "insert_after": "item_code"
+        }
+    ]
+}
