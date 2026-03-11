@@ -751,7 +751,7 @@ def create_new_bom(self):
 								"diamond_quality": d.quality
 							}
 
-							d.weight_per_pcs = round(d.quantity/d.pcs,3)
+							d.weight_per_pcs = (d.quantity/d.pcs)
 							d.weight_per_pcs = int(d.weight_per_pcs * 1000) / 1000
 							# d.weight_per_pcs = round(d.quantity/d.pcs,2)
 							# if 0.001 < (d.quantity/d.pcs) > .005:
@@ -839,7 +839,7 @@ def create_new_bom(self):
 								d.fg_purchase_rate = latest.get("supplier_fg_purchase_rate") if latest else 0
 								d.total_diamond_rate=d.fg_purchase_rate
 								d.quantity=round(d.quantity, 3)
-								d.weight_per_pcs =round(d.quantity/d.pcs,3)
+								d.weight_per_pcs =d.weight_per_pcs
 								d.quantity_3=round(d.quantity, 2)
 								d.diamond_rate_for_specified_quantity = round(d.quantity * d.total_diamond_rate, 2)
 							# Fetch the matching diamond price list entry
@@ -851,7 +851,7 @@ def create_new_bom(self):
 									d.quantity_3=int(d.quantity * 100) / 100
 								else:		
 									d.quantity_3=round(d.quantity,2)
-								d.weight_per_pcs =round(d.quantity/d.pcs,3)
+								d.weight_per_pcs =d.weight_per_pcs
 								d.diamond_rate_for_specified_quantity = round(d.quantity * total_rate, 2)
 				ccp = frappe.db.get_all(
 					"Customer Certification Price",
