@@ -145,8 +145,33 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
- "links": [],
- "modified": "2026-02-09 17:02:42.925861",
+ "links": [
+  {
+   "link_doctype": "Quotation",
+   "link_fieldname": "custom_tracking_bom"
+  },
+  {
+   "link_doctype": "Sales Order",
+   "link_fieldname": "custom_tracking_bom"
+  },
+  {
+   "link_doctype": "Manufacturing Plan",
+   "link_fieldname": "custom_tracking_bom"
+  },
+  {
+   "link_doctype": "Parent Manufacturing Order",
+   "link_fieldname": "custom_tracking_bom"
+  },
+  {
+   "link_doctype": "Manufacturing Work Order",
+   "link_fieldname": "custom_tracking_bom"
+  },
+  {
+   "link_doctype": "Manufacturing Operation",
+   "link_fieldname": "custom_tracking_bom"
+  }
+ ],
+ "modified": "2026-03-11 13:17:27.444216",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Tracking Bom",
