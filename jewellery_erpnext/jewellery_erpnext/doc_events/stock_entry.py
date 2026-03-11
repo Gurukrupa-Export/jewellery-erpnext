@@ -69,10 +69,7 @@ def before_validate(self, method):
 			"Customer Goods Received",
 		]:
 			if not pure_item_purity:
-				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
-
 				if self.stock_entry_type == "Material Transfer (MAIN SLIP)":
-					# manufacturer = frappe.db.get_value("Main Slip",self.to_main_slip,"manufacturer")
 					if self.to_main_slip:
 						manufacturer = frappe.db.get_value(
 							"Main Slip", self.to_main_slip, "manufacturer"
@@ -88,7 +85,6 @@ def before_validate(self, method):
 						"manufacturer",
 					)
 				else:
-					# manufacturer = frappe.defaults.get_user_default("manufacturer")
 					if self.manufacturer:
 						manufacturer = self.manufacturer
 					else:
@@ -101,7 +97,6 @@ def before_validate(self, method):
 				)
 
 				if not pure_item:
-					# frappe.throw(_("Pure Item not mentioned in Manufacturing Setting"))
 					frappe.throw(
 						_("Select Manufacturer in session defaults or in Filed")
 					)
@@ -131,82 +126,10 @@ def before_validate(self, method):
 	if self.stock_entry_type == "Material Receive (WORK ORDER)":
 		get_receive_work_order_batch(self)
 
-	# changes pending
-
-	# if self.purpose in ["Repack", "Manufacturing"]:
-	# 	amount = 0
-	# 	source_qty = 1
-	# 	metal_data = {}
-	# 	for row in self.items:
-	# 		if row.s_warehouse:
-	# 			if row.custom_variant_of in ["M", "F"]:
-	# 				batch_data = frappe.db.get_value("Batch", row.batch_no, ["custom_metal_rate", "custom_alloy_rate"], as_dict = 1)
-	# 				is_alloy = False
-	# 				if batch_data.get("custom_alloy_rate") and not batch_data.get("custom_metal_rate"):
-	# 					is_alloy = True
-	# 				metal_data.setdefault((row.item_code, row.batch_no), frappe._dict({"metal_rate": batch_data.get("custom_metal_rate"), "alloy_rate": batch_data.get("custom_alloy_rate"), "qty": row.qty, "is_alloy": is_alloy}))
-	# 			else:
-	# 				if row.inventory_type not in ["Customer Goods", "Customer Stock"]:
-	# 					source_qty += row.qty
-	# 					amount += row.amount if row.get("amount") else 0
-
-	# 	avg_amount = 1
-
-	# for row in self.items:
-	# 	if row.t_warehouse:
-	# 		if row.inventory_type in ["Customer Goods", "Customer Stock"]:
-	# 			row.allow_zero_valuation_rate = 1
-	# 			row.basic_rate = 0
-	# 		else:
-	# 			row.set_basic_rate_manually = 1
-	# 			if row.custom_variant_of in ["M", "F"]:
-	# 				finish_purity_attribute = frappe.db.get_value("Item Variant Attribute", {"parent": row.item_code, "attribute": "Metal Purity"}, "attribute_value")
-	# 				finish_purity = 0
-	# 				if finish_purity_attribute:
-	# 					finish_purity = frappe.db.get_value("Attribute Value", finish_purity_attribute, "purity_percentage")
-	# 				rate = 0
-	# 				test = 0
-	# 				alloy_rate = 0
-	# 				test1 = 0
-	# 				lst = []
-	# 				for i in metal_data:
-	# 					purity_attribute = frappe.db.get_value("Item Variant Attribute", {"parent": i[0], "attribute": "Metal Purity"}, "attribute_value")
-
-	# 					if purity_attribute:
-	# 						purity = frappe.db.get_value("Attribute Value", purity_attribute, "purity_percentage")
-	# 						if metal_data[i].get("metal_rate"):
-	# 							rate += flt(metal_data[i].qty * metal_data[i].metal_rate * purity, 3)
-	# 							test += flt(metal_data[i].qty * purity, 3)
-	# 						if metal_data[i].get("alloy_rate") and metal_data[i].get("metal_rate"):
-	# 							alloy_rate += flt((metal_data[i].qty * metal_data[i].alloy_rate * (100 - purity)) / 100, 3)
-	# 							test1 += flt((metal_data[i].qty * (100 - purity)) / 100, 3)
-	# 					if metal_data[i].get("alloy_rate") and not metal_data[i].get("metal_rate"):
-	# 						alloy_rate += flt((metal_data[i].qty * metal_data[i].alloy_rate), 3)
-	# 						test1 += flt((metal_data[i].qty), 3)
-	# 				if finish_purity > 0:
-	# 					row.custom_metal_rate = flt(flt(rate, 3) / test, 3)
-	# 				else:
-	# 					row.custom_metal_rate = 0
-	# 				if test1:
-	# 					row.custom_alloy_rate = flt(alloy_rate / test1, 3)
-	# 				else:
-	# 					row.custom_alloy_rate = 0
-
-	# 				row.basic_rate = flt((flt(row.custom_metal_rate * (finish_purity / 100), 3) + flt(row.custom_alloy_rate * ((flt(100 - finish_purity, 3)) / 100), 3)), 3)
-	# 			else:
-	# 				row.basic_rate = flt(avg_amount, 3)
-
-	# 			row.amount = row.qty * row.basic_rate
-	# 			row.basic_amount = row.qty * row.basic_rate
-
 	if self.purpose == "Material Transfer" and self.auto_created == 0:
 		validate_metal_properties(self)
 	else:
 		allow_zero_valuation(self)
-
-
-# main slip have validation error for repack and transfer so it was commented
-# validate_main_slip_warehouse(self)
 
 
 def validate_ir(self):
@@ -306,7 +229,6 @@ def validate_main_slip_warehouse(doc):
 		if (row.main_slip and row.s_warehouse != warehouse) or (
 			row.to_main_slip and row.t_warehouse != warehouse
 		):
-			# frappe.throw(_(f"Selected warehouse does not belongs to main slip({main_slip})"))
 			frappe.throw(
 				_("Selected warehouse does not belongs to main slip {0}").format(
 					main_slip
@@ -448,12 +370,6 @@ def validate_metal_properties(doc):
 					as_dict=True,
 				)
 
-	# company_validations = frappe.db.get_value(
-	# 	"Manufacturing Setting",
-	# 	doc.company,
-	# 	["check_purity", "check_colour", "check_touch"],
-	# 	as_dict=True,
-	# )
 	manufacturer = frappe.defaults.get_user_default("manufacturer")
 	company_validations = frappe.db.get_value(
 		"Manufacturing Setting",
@@ -656,6 +572,15 @@ def stock_reservation_entry_for_mwo(self):
 		)
 		if voucher_qty and voucher_qty[0]:
 			voucher_qty = voucher_qty[0][0]
+			addition_maximum_item__tolerance_percentage = frappe.db.get_value(
+				"Manufacturing Setting",
+				self.manufacturer,
+				"addition_maximum_item__tolerance_percentage",
+			)
+			voucher_qty = voucher_qty + (
+				voucher_qty * (addition_maximum_item__tolerance_percentage / 100)
+			)
+
 		for row in self.items:
 			has_batch_no, has_serial_no = frappe.get_cached_value(
 				"Item", row.item_code, ["has_batch_no", "has_serial_no"]

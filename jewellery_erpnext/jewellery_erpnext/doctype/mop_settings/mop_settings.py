@@ -7,3 +7,11 @@ from frappe.model.document import Document
 
 class MOPSettings(Document):
 	pass
+	# @frappe.whitelist()
+	# def sync_mop_log(self):
+	# 	"""Handle the Sync MOP Log button click."""
+	# 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+	# 		sync_mop_logs,
+	# 	)
+
+	# 	return sync_mop_logs()

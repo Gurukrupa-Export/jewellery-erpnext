@@ -30,6 +30,7 @@
   "default_fg_department",
   "default_fg_warehouse",
   "in_transit",
+  "addition_maximum_item__tolerance_percentage",
   "manufacturing_warehouses_section",
   "powder_value",
   "power_value_individual",
@@ -370,11 +371,17 @@
    "fieldtype": "Link",
    "label": "Default Last Operation Department",
    "options": "Department"
+  },
+  {
+   "default": "50",
+   "fieldname": "addition_maximum_item__tolerance_percentage",
+   "fieldtype": "Int",
+   "label": "Addition Maximum item  tolerance percentage"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-07-11 16:05:50.086317",
+ "modified": "2026-03-10 12:19:27.170042",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Setting",
