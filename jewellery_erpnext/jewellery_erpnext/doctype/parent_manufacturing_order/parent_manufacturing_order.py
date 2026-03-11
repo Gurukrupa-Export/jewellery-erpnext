@@ -97,26 +97,26 @@ class ParentManufacturingOrder(Document):
 				],
 				as_dict=1,
 			)
-			if warehouse_details:
-				metal_department = warehouse_details.get("default_department")
-				diamond_department = (
+		
+			metal_department = warehouse_details.get("default_department")
+			diamond_department = (
 					warehouse_details.get("default_diamond_department") or None
 				)
-				gemstone_department = (
+			gemstone_department = (
 					warehouse_details.get("default_gemstone_department") or None
 				)
-				finding_department = (
+			finding_department = (
 					warehouse_details.get("default_finding_department") or None
 				)
-				other_material_department = (
+			other_material_department = (
 					warehouse_details.get("default_other_material_department") or None
 				)
 
-				self.db_set("metal_department", metal_department)
-				self.db_set("diamond_department", diamond_department)
-				self.db_set("gemstone_department", gemstone_department)
-				self.db_set("finding_department", finding_department)
-				self.db_set("other_material_department", other_material_department)
+			self.db_set("metal_department", metal_department)
+			self.db_set("diamond_department", diamond_department)
+			self.db_set("gemstone_department", gemstone_department)
+			self.db_set("finding_department", finding_department)
+			self.db_set("other_material_department", other_material_department)
 
 	def on_update_after_submit(self):
 		update_due_days(self)
