@@ -4,5 +4,4 @@
 # jewellery_erpnext.patches.sed_copy_to_mop
 jewellery_erpnext.patches.truncate_manufacturing_operation_field
 jewellery_erpnext.patches.remove_se_custom_fields
-jewellery_erpnext.patches.add_department_index
-jewellery_erpnext.patches.add_item_index
+jewellery_erpnext.patches.tracking_bom_fields

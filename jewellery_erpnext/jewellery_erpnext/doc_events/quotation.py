@@ -26,7 +26,7 @@ def validate(self, method):
 	self.calculate_taxes_and_totals()
 	# create_new_bom(self)
 	if self.workflow_state == "Creating BOM":
-		frappe.enqueue(create_new_bom, self=self, queue="long", timeout=10000)
+		frappe.enqueue(create_bom_sceintifically, self=self, queue="long", timeout=10000)
 	if self.docstatus == 0:
 		calculate_gst_rate(self)
 		if not self.get("__islocal"):
@@ -35,13 +35,17 @@ def validate(self, method):
 		set_bom_rate_in_quotation(self)
 
 
+def create_bom_sceintifically(self):
+	create_new_bom(self)
+	create_tracking_bom_from_quotation_bom(self)
+
+
 @frappe.whitelist()
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
 	self.flags.can_be_saved = True
-	frappe.enqueue(
-		create_new_bom, self=self, queue="long", timeout=1000, event="creating BOM for Quotation"
-	)
+	frappe.enqueue(create_bom_sceintifically, self=self, queue="long", timeout=10000)
+
 
 
 def onload(self, method):
@@ -1343,3 +1347,56 @@ def validate_gold_rate_with_gst(self):
 
 
 
+def create_tracking_bom_from_quotation_bom(self):
+    for row in self.items:
+        if not row.quotation_bom:
+            continue
+
+        source_bom = frappe.get_doc("BOM", row.quotation_bom)
+
+        tracking_bom = frappe.new_doc("Tracking Bom")
+        tracking_bom.item = source_bom.item
+        tracking_bom.company = source_bom.company
+        tracking_bom.item_uom = source_bom.uom
+        tracking_bom.quantity = source_bom.quantity
+
+        tracking_bom.reference_doctype = "Quotation"
+        tracking_bom.reference_docname = self.name
+
+        tracking_bom._process_loss = source_bom.process_loss_percentage   
+        tracking_bom.process_loss_qty = source_bom.process_loss_qty
+
+        # Raw Materials
+        for bom_item in source_bom.items:
+            tracking_bom.append("items", {
+                "item_code": bom_item.item_code,
+                "item_name": bom_item.item_name,
+                "qty": bom_item.qty,
+                "uom": bom_item.uom,
+                "rate": bom_item.rate,
+                "amount": bom_item.amount,
+                "source_warehouse": bom_item.source_warehouse,
+                "operation": bom_item.operation,
+            })
+
+        # Operations
+        for bom_op in source_bom.operations:
+            tracking_bom.append("operations", {
+                "operation": bom_op.operation,
+                "workstation": bom_op.workstation,
+                "time_in_mins": bom_op.time_in_mins,
+                "hour_rate": bom_op.hour_rate,
+                "cost": bom_op.cost,
+            })
+
+        tracking_bom.insert()   
+
+        frappe.db.set_value(
+            "Quotation Item",           
+            row.name,                   
+            "custom_tracking_bom",   
+            tracking_bom.name,
+		    update_modified=False 
+        )
+		
+    frappe.msgprint("Tracking BOM(s) created")

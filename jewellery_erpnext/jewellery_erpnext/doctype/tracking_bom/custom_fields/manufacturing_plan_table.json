@@ -1,0 +1,11 @@
+{
+    "Manufacturing Plan Table": [
+        {
+            "fieldname": "custom_tracking_bom",
+            "label": "Tracking BOM",
+            "fieldtype": "Link",
+            "options": "Tracking Bom",
+            "insert_after": "bom"
+        }
+    ]
+}
