@@ -236,7 +236,6 @@ frappe.ui.form.on("Sales Order Item", {
 				reqd: 1,
 				read_only: 1,
 				columns: 1,
-				in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -360,6 +359,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "wastage_rate",
 				label: __("Wastage Rate"),
 				columns: 1,
+				in_list_view: 1,
 			},
 			{
 				fieldtype: "Float",
@@ -766,7 +766,6 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Metal Type"),
 				read_only: 1,
 				reqd: 1,
-				in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -798,7 +797,6 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Type"),
 				reqd: 1,
 				read_only: 1,
-				in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
