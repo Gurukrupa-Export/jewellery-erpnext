@@ -1868,7 +1868,7 @@ let set_edit_bom_details = (
 				let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
 				let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
 				difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity
-				d.amount=amount
+				// d.amount=amount
 				// finding_amount += d.amount;
 				// finding_weight +=d.quantity;
 				// dialog.set_value("finding_amount", finding_amount);
