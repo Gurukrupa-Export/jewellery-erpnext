@@ -1920,7 +1920,7 @@ let set_edit_bom_details = (
 				let grid = dialog.fields_dict.finding_detail.grid;
 				let precision = 3;
 				grid.update_docfield_property("rate", "precision", 2);
-				grid.update_docfield_property("amount", "precision", 2);
+				// grid.update_docfield_property("amount", "precision", 2);
 				// Refresh the grid
 				finding_data = dialog.fields_dict.finding_detail.df.data;
 				grid.refresh();

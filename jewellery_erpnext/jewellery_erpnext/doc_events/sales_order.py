@@ -208,8 +208,7 @@ def create_new_bom(self):
 				diamond_pcs=doc.total_diamond_pcs
 				doc.diamond_weight=sum(row.quantity for row in doc.diamond_detail)
 				
-				if "Earrings" in doc.item_category:
-					doc.hallmarking_amount = doc.hallmarking_amount *2
+				
 				if hasattr(doc, "gemstone_detail"):
 					for gem in doc.gemstone_detail or []:
 
@@ -864,7 +863,10 @@ def create_new_bom(self):
 						doc.certification_amount = ccp.per_pc_rate
 					else:
 						doc.certification_amount = ccp.per_carat_rate * (sum(row.quantity_3 for row in doc.diamond_detail))
-					doc.hallmarking_amount=ccp.hallmarking_amount				
+					doc.hallmarking_amount=ccp.hallmarking_amount	
+
+				if "Earrings" in doc.item_category:
+					doc.hallmarking_amount = doc.hallmarking_amount *2
 				doc.total_diamond_amount = sum(
 					flt(r.diamond_rate_for_specified_quantity)
 					for r in doc.get("diamond_detail", [])
