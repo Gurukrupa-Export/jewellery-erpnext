@@ -1460,8 +1460,8 @@ def validate_items(self):
 								aggregated_metal_items[key]["rate"] += metal_rate
 								# Update quantity and amount
 								aggregated_metal_items[key]["qty"] = multiplied_qty
-								aggregated_metal_items[key]["amount"] += metal_amount
-
+								# aggregated_metal_items[key]["amount"] += metal_amount
+								aggregated_metal_items[key]["amount"]+= metal.amount
 								# Calculate tax amount
 								tax_rate_decimal = aggregated_metal_items[key]["tax_rate"] / 100
 								aggregated_metal_items[key]["tax_amount"] += metal_amount * tax_rate_decimal
