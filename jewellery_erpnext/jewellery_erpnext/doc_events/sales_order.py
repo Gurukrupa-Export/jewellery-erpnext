@@ -2209,7 +2209,7 @@ def validate_item_dharm(self):
 									finding_making_amount = (finding.rate * multiplied_qty)
 									
 									aggregated_metal_items[key]["qty"] += multiplied_qty
-									aggregated_metal_items[key]["amount"] += finding_making_amount
+									aggregated_metal_items[key]["amount"] += finding.amount
 									aggregated_metal_items[key]["rate"] = finding_rate
 									
 									tax_rate_decimal = aggregated_metal_items[key]["tax_rate"] / 100
