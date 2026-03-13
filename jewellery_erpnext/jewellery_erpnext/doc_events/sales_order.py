@@ -1885,7 +1885,7 @@ def validate_item_dharm(self):
 								
 								# Sum quantities and amounts
 								aggregated_metal_items[key]["qty"] += multiplied_qty
-								aggregated_metal_items[key]["amount"] += metal_amount
+								aggregated_metal_items[key]["amount"] += metal.amount
 
 								# Calculate tax amount
 								tax_rate_decimal = aggregated_metal_items[key]["tax_rate"] / 100
