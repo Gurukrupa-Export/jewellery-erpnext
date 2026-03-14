@@ -996,6 +996,8 @@ def create_serial_no_bom(self, row):
 	bom_doc = frappe.get_doc("BOM", serial_no_bom)
 	# if self.customer != bom_doc.customer:
 	doc = frappe.copy_doc(bom_doc)
+	doc.hallmarking_amount = 0
+	doc.certification_amount = 0
 	doc.customer = self.customer
 	doc.gold_rate_with_gst = self.gold_rate_with_gst
 	if hasattr(doc, "diamond_detail"):
