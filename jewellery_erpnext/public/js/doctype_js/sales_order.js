@@ -212,6 +212,44 @@ let filter_customer = (frm) => {
 };
 
 frappe.ui.form.on("Sales Order Item", {
+	serial_no: function(frm, cdt, cdn) {
+    let row = locals[cdt][cdn];
+
+    if (!row.serial_no) return;
+	// console.log("hii")
+    frappe.db.get_doc('Serial No', row.serial_no)
+        .then(serial_doc => {
+
+            if (serial_doc.huid && serial_doc.huid.length > 0) {
+                frappe.model.set_value(cdt,cdn,'custom_huid',serial_doc.huid[0].huid
+                );
+                console.log("huid", serial_doc.huid[0].huid);
+            }
+
+            return frappe.db.get_doc('BOM', serial_doc.custom_bom_no);
+        })
+        .then(bom_doc => {
+            return frappe.db.get_doc(
+                'Serial Number Creator',
+                bom_doc.custom_creation_docname
+            );
+        })
+        .then(pmo_doc => {
+            return frappe.db.get_doc(
+                'Parent Manufacturing Order',
+                pmo_doc.parent_manufacturing_order
+            );
+        })
+        .then(mo_doc => {
+            console.log('diamond quality', mo_doc.diamond_quality);
+
+            frappe.model.set_value(cdt,cdn,'diamond_quality',mo_doc.diamond_quality
+            );
+        })
+        .catch(err => {
+            console.log(err);
+        });
+},
 	edit_bom: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
 
@@ -472,6 +510,14 @@ frappe.ui.form.on("Sales Order Item", {
 						filters: { item_attribute: "Diamond Quality" },
 					};
 				},
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "diamond_handling_rate",
+				label: __("Diamond Handling Rate"),
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
 			},
 			{ fieldtype: "Column Break", fieldname: "clb1" },
 			{
@@ -1750,6 +1796,7 @@ let set_edit_bom_details = (
 					quantity_3: d.quantity_3,
 					weight_per_pcs: d.weight_per_pcs,
 					total_diamond_rate: rate_to_use,
+					diamond_handling_rate:d.handling_rate,
 					// diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
 					// outright_handling_charges_rate:d.outright_handling_charges_rate,
 					// outright_handling_charges_amount:d.outright_handling_charges_amount,

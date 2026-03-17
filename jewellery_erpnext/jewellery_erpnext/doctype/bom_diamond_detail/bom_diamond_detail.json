@@ -20,6 +20,7 @@
   "total_diamond_rate",
   "fg_purchase_rate",
   "se_rate",
+  "handling_rate",
   "column_break_8",
   "size_type",
   "pcs",
@@ -245,6 +246,11 @@
    "fieldname": "quantity_3",
    "fieldtype": "Float",
    "label": "Weight in cts(2)"
+  },
+  {
+   "fieldname": "handling_rate",
+   "fieldtype": "Currency",
+   "label": "Handling Rate"
   }
  ],
  "index_web_pages_for_search": 1,
