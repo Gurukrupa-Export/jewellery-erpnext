@@ -336,7 +336,7 @@
    "insert_after": "custom_transfer_type",
    "label": "Item Type",
    "module": "Jewellery Erpnext",
-   "options": "\nGemstone\nDiamond"
+   "options": "\nGemstone\nDiamond\nMetal"
   }
  ]
 }
