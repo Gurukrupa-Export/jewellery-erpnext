@@ -12,9 +12,33 @@
   "company",
   "item_uom",
   "quantity",
+  "bom_type",
   "column_break_fgng",
   "reference_doctype",
   "reference_docname",
+  "customer",
+  "selling_price_list",
+  "setting_type",
+  "item_subcategory",
+  "item_category",
+  "pricing_section",
+  "gold_rate_with_gst",
+  "gold_rate",
+  "hallmarking_amount",
+  "column_break_pricing",
+  "doc_pricision",
+  "diamond_pricision",
+  "gemstone_pricision",
+  "metal_detail_section",
+  "metal_detail",
+  "diamond_detail_section",
+  "diamond_detail",
+  "gemstone_detail_section",
+  "gemstone_detail",
+  "finding_detail_section",
+  "finding_detail",
+  "other_detail_section",
+  "other_detail",
   "raw_materials_section",
   "items",
   "finished_goods_bases_operating_cost_section",
@@ -25,6 +49,31 @@
   "_process_loss",
   "column_break_vhby",
   "process_loss_qty",
+  "weight_section",
+  "metal_weight",
+  "diamond_weight",
+  "total_diamond_weight",
+  "total_diamond_weight_per_gram",
+  "column_break_weights",
+  "gemstone_weight",
+  "finding_weight",
+  "metal_and_finding_weight",
+  "gross_weight",
+  "total_metal_weight",
+  "amount_section",
+  "gold_bom_amount",
+  "diamond_bom_amount",
+  "gemstone_bom_amount",
+  "other_bom_amount",
+  "column_break_amounts",
+  "finding_bom_amount",
+  "making_charge",
+  "total_bom_amount",
+  "fg_purchase_section",
+  "making_fg_purchase",
+  "diamond_fg_purchase",
+  "column_break_fg",
+  "gemstone_fg_purchase",
   "connections_tab"
  ],
  "fields": [
@@ -60,6 +109,12 @@
    "label": "Quantity"
   },
   {
+   "fieldname": "bom_type",
+   "fieldtype": "Select",
+   "label": "BOM Type",
+   "options": "\nQuotation\nSales Order"
+  },
+  {
    "fieldname": "column_break_fgng",
    "fieldtype": "Column Break"
   },
@@ -74,6 +129,136 @@
    "fieldtype": "Dynamic Link",
    "label": "Reference Docname",
    "options": "reference_doctype"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "selling_price_list",
+   "fieldtype": "Link",
+   "label": "Selling Price List",
+   "options": "Price List"
+  },
+  {
+   "fieldname": "setting_type",
+   "fieldtype": "Link",
+   "label": "Setting Type",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "item_subcategory",
+   "fieldtype": "Link",
+   "label": "Item Subcategory",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "item_category",
+   "fieldtype": "Link",
+   "label": "Item Category",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "pricing_section",
+   "fieldtype": "Section Break",
+   "label": "Pricing"
+  },
+  {
+   "fieldname": "gold_rate_with_gst",
+   "fieldtype": "Currency",
+   "label": "Gold Rate With GST"
+  },
+  {
+   "fieldname": "gold_rate",
+   "fieldtype": "Currency",
+   "label": "Gold Rate"
+  },
+  {
+   "fieldname": "hallmarking_amount",
+   "fieldtype": "Currency",
+   "label": "Hallmarking Amount"
+  },
+  {
+   "fieldname": "column_break_pricing",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "doc_pricision",
+   "fieldtype": "Int",
+   "label": "Doc Precision",
+   "default": "3",
+   "hidden": 1
+  },
+  {
+   "fieldname": "diamond_pricision",
+   "fieldtype": "Int",
+   "label": "Diamond Precision",
+   "default": "3",
+   "hidden": 1
+  },
+  {
+   "fieldname": "gemstone_pricision",
+   "fieldtype": "Int",
+   "label": "Gemstone Precision",
+   "default": "3",
+   "hidden": 1
+  },
+  {
+   "fieldname": "metal_detail_section",
+   "fieldtype": "Section Break",
+   "label": "Metal Detail"
+  },
+  {
+   "fieldname": "metal_detail",
+   "fieldtype": "Table",
+   "label": "Metal Detail",
+   "options": "BOM Metal Detail"
+  },
+  {
+   "fieldname": "diamond_detail_section",
+   "fieldtype": "Section Break",
+   "label": "Diamond Detail"
+  },
+  {
+   "fieldname": "diamond_detail",
+   "fieldtype": "Table",
+   "label": "Diamond Detail",
+   "options": "BOM Diamond Detail"
+  },
+  {
+   "fieldname": "gemstone_detail_section",
+   "fieldtype": "Section Break",
+   "label": "Gemstone Detail"
+  },
+  {
+   "fieldname": "gemstone_detail",
+   "fieldtype": "Table",
+   "label": "Gemstone Detail",
+   "options": "BOM Gemstone Detail"
+  },
+  {
+   "fieldname": "finding_detail_section",
+   "fieldtype": "Section Break",
+   "label": "Finding Detail"
+  },
+  {
+   "fieldname": "finding_detail",
+   "fieldtype": "Table",
+   "label": "Finding Detail",
+   "options": "BOM Finding Detail"
+  },
+  {
+   "fieldname": "other_detail_section",
+   "fieldtype": "Section Break",
+   "label": "Other Detail"
+  },
+  {
+   "fieldname": "other_detail",
+   "fieldtype": "Table",
+   "label": "Other Detail",
+   "options": "BOM Other Detail"
   },
   {
    "fieldname": "raw_materials_section",
@@ -137,6 +322,147 @@
    "label": "Process Loss Qty"
   },
   {
+   "fieldname": "weight_section",
+   "fieldtype": "Section Break",
+   "label": "Weights"
+  },
+  {
+   "fieldname": "metal_weight",
+   "fieldtype": "Float",
+   "label": "Metal Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "diamond_weight",
+   "fieldtype": "Float",
+   "label": "Diamond Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_diamond_weight",
+   "fieldtype": "Float",
+   "label": "Total Diamond Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_diamond_weight_per_gram",
+   "fieldtype": "Float",
+   "label": "Total Diamond Weight Per Gram",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_weights",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gemstone_weight",
+   "fieldtype": "Float",
+   "label": "Gemstone Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finding_weight",
+   "fieldtype": "Float",
+   "label": "Finding Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "metal_and_finding_weight",
+   "fieldtype": "Float",
+   "label": "Metal And Finding Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gross_weight",
+   "fieldtype": "Float",
+   "label": "Gross Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_metal_weight",
+   "fieldtype": "Float",
+   "label": "Total Metal Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amount_section",
+   "fieldtype": "Section Break",
+   "label": "Amounts"
+  },
+  {
+   "fieldname": "gold_bom_amount",
+   "fieldtype": "Currency",
+   "label": "Gold BOM Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "diamond_bom_amount",
+   "fieldtype": "Currency",
+   "label": "Diamond BOM Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gemstone_bom_amount",
+   "fieldtype": "Currency",
+   "label": "Gemstone BOM Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "other_bom_amount",
+   "fieldtype": "Currency",
+   "label": "Other BOM Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_amounts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "finding_bom_amount",
+   "fieldtype": "Currency",
+   "label": "Finding BOM Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "making_charge",
+   "fieldtype": "Currency",
+   "label": "Making Charge",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_bom_amount",
+   "fieldtype": "Currency",
+   "label": "Total BOM Amount",
+   "read_only": 1
+  },
+  {
+   "fieldname": "fg_purchase_section",
+   "fieldtype": "Section Break",
+   "label": "FG Purchase"
+  },
+  {
+   "fieldname": "making_fg_purchase",
+   "fieldtype": "Currency",
+   "label": "Making FG Purchase",
+   "read_only": 1
+  },
+  {
+   "fieldname": "diamond_fg_purchase",
+   "fieldtype": "Currency",
+   "label": "Diamond FG Purchase",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_fg",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gemstone_fg_purchase",
+   "fieldtype": "Currency",
+   "label": "Gemstone FG Purchase",
+   "read_only": 1
+  },
+  {
    "fieldname": "connections_tab",
    "fieldtype": "Tab Break",
    "label": "Connections"
@@ -171,7 +497,7 @@
    "link_fieldname": "custom_tracking_bom"
   }
  ],
- "modified": "2026-03-11 13:17:27.444216",
+ "modified": "2026-03-16 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Tracking Bom",

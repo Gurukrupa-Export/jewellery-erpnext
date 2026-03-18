@@ -9,7 +9,9 @@ def update_serial_details(self):
 	if not self.tag_no:
 		return
 
-	if not frappe.db.exists("Serial No Table", {"serial_no": self.tag_no, "bom": self.name}):
+	if not frappe.db.exists(
+		"Serial No Table", {"serial_no": self.tag_no, "bom": self.name}
+	):
 		sr_doc = frappe.get_doc("Serial No", self.tag_no)
 		sr_doc.append(
 			"custom_serial_no_table",
@@ -44,7 +46,9 @@ def set_bom_rate(self):
 	}
 	# remove None values
 	fields = {k: v for k, v in fields.items() if v is not None}
-	bom_fields = {k.replace("rate", "amount"): v for k, v in fields.items() if v is not None}
+	bom_fields = {
+		k.replace("rate", "amount"): v for k, v in fields.items() if v is not None
+	}
 	# update the self object
 	self.db_set(bom_fields)
 
@@ -63,15 +67,21 @@ def set_bom_rate(self):
 
 	self.making_fg_purchase = 0
 	for row in self.metal_detail + self.finding_detail:
-		self.making_fg_purchase += row.fg_purchase_amount if row.fg_purchase_amount else 0
+		self.making_fg_purchase += (
+			row.fg_purchase_amount if row.fg_purchase_amount else 0
+		)
 
 	self.diamond_fg_purchase = 0
 	for row in self.diamond_detail:
-		self.diamond_fg_purchase += row.fg_purchase_amount if row.fg_purchase_amount else 0
+		self.diamond_fg_purchase += (
+			row.fg_purchase_amount if row.fg_purchase_amount else 0
+		)
 
 	self.gemstone_fg_purchase = 0
 	for row in self.gemstone_detail:
-		self.gemstone_fg_purchase += row.fg_purchase_amount if row.fg_purchase_amount else 0
+		self.gemstone_fg_purchase += (
+			row.fg_purchase_amount if row.fg_purchase_amount else 0
+		)
 
 
 def get_gold_rate(self):
@@ -92,7 +102,9 @@ def get_gold_rate(self):
 		item.difference_qty = item.actual_quantity - item.quantity
 		if not metal_purity_data.get((self.customer, item.metal_touch)):
 			metal_purity_data[(self.customer, item.metal_touch)] = frappe.db.get_value(
-				"Metal Criteria", {"parent": self.customer, "metal_touch": item.metal_touch}, "metal_purity"
+				"Metal Criteria",
+				{"parent": self.customer, "metal_touch": item.metal_touch},
+				"metal_purity",
 			)
 
 		metal_purity = metal_purity_data[(self.customer, item.metal_touch)]
@@ -108,12 +120,18 @@ def get_gold_rate(self):
 			item.amount = 0
 		else:
 			# Calculate the amount using the gold rate, metal purity and GST rate
-			item.rate = flt(self.gold_rate_with_gst) * flt(metal_purity) / (100 + int(gold_gst_rate))
+			item.rate = (
+				flt(self.gold_rate_with_gst)
+				* flt(metal_purity)
+				/ (100 + int(gold_gst_rate))
+			)
 			item.amount = flt(item.quantity) * item.rate
 
 			if company_metal_purity != metal_purity:
 				company_rate = (
-					flt(self.gold_rate_with_gst) * flt(company_metal_purity) / (100 + int(gold_gst_rate))
+					flt(self.gold_rate_with_gst)
+					* flt(company_metal_purity)
+					/ (100 + int(gold_gst_rate))
 				)
 				company_amount = flt(item.quantity) * company_rate
 				item.difference = item.amount - company_amount
@@ -160,10 +178,12 @@ def get_diamond_rate(self):
 				as_dict=1,
 			)
 
-		diamond.custom_sieve_size_range = attribute_dict[diamond.diamond_sieve_size].get(
-			"sieve_size_range"
+		diamond.custom_sieve_size_range = attribute_dict[
+			diamond.diamond_sieve_size
+		].get("sieve_size_range")
+		diamond.size_in_mm = attribute_dict[diamond.diamond_sieve_size].get(
+			"size_in_mm"
 		)
-		diamond.size_in_mm = attribute_dict[diamond.diamond_sieve_size].get("size_in_mm")
 
 		if not diamond.sieve_size_range:
 			continue
@@ -358,7 +378,11 @@ def get_gemstone_rate(self):
 				multiplier = (
 					frappe.db.get_value(
 						"Gemstone Multiplier",
-						{"parent": row.name, "item_category": item_category, "parentfield": "gemstone_multiplier"},
+						{
+							"parent": row.name,
+							"item_category": item_category,
+							"parentfield": "gemstone_multiplier",
+						},
 						quality_field,
 					)
 					or 0
@@ -407,7 +431,9 @@ def get_gemstone_rate(self):
 		gemstone_amount += int(rate) * stone.quantity
 
 		if stone.price_list_type != "Multiplier":
-			stone.fg_purchase_rate = gemstone_price_list[0].get("supplier_fg_purchase_rate")
+			stone.fg_purchase_rate = gemstone_price_list[0].get(
+				"supplier_fg_purchase_rate"
+			)
 			stone.fg_purchase_amount = stone.quantity * stone.fg_purchase_rate
 		else:
 			stone.fg_purchase_rate = pr * fg_multiplier
@@ -434,8 +460,9 @@ def get_making_charges(self):
 	item_details = frappe.db.get_value(
 		"Item", self.item, ["item_subcategory", "setting_type"], as_dict=True
 	)
-	sub_category, setting_type = item_details.get("item_subcategory"), item_details.get(
-		"setting_type"
+	sub_category, setting_type = (
+		item_details.get("item_subcategory"),
+		item_details.get("setting_type"),
 	)
 	return get_metal_and_finding_making_rate(self, sub_category, setting_type)
 
@@ -473,7 +500,9 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 		else:
 			child_table = MCPFS
 
-		subcat_subcategory = sub_category if not row.get("finding_type") else row.get("finding_type")
+		subcat_subcategory = (
+			sub_category if not row.get("finding_type") else row.get("finding_type")
+		)
 		if (
 			not subcategory_data.get(subcat_subcategory)
 			and subcategory_data.get(subcat_subcategory) != False
@@ -483,10 +512,15 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 				.left_join(MCP)
 				.on(child_table.parent == MCP.name)
 				.select(Count(child_table.name))
-				.where((child_table.subcategory == subcat_subcategory) & (MCP.customer == self.customer))
+				.where(
+					(child_table.subcategory == subcat_subcategory)
+					& (MCP.customer == self.customer)
+				)
 				.run()
 			)
-			subcategory_data[subcat_subcategory] = True if (subquery and subquery[0][0]) else False
+			subcategory_data[subcat_subcategory] = (
+				True if (subquery and subquery[0][0]) else False
+			)
 
 		key = (child_table, row.parentfield, row.metal_type, subcat_subcategory)
 		if not making_charge_data.get(key) and subcategory_data.get(subcat_subcategory):
@@ -533,7 +567,10 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 					.left_join(MCP)
 					.on(MCPIS.parent == MCP.name)
 					.select(Count(MCPIS.name))
-					.where((MCPIS.subcategory == sub_category) & (MCP.customer == self.customer))
+					.where(
+						(MCPIS.subcategory == sub_category)
+						& (MCP.customer == self.customer)
+					)
 					.run()
 				)
 				finding_subcategory_data[sub_category] = True if subquery else False
@@ -563,7 +600,9 @@ def get_metal_and_finding_making_rate(self, sub_category, setting_type):
 			if finding_subcategory_data.get(sub_category):
 				query = query.where(MCPIS.subcategory == sub_category)
 			else:
-				query = query.where((MCPIS.subcategory.isnull()) | (MCPIS.subcategory == ""))
+				query = query.where(
+					(MCPIS.subcategory.isnull()) | (MCPIS.subcategory == "")
+				)
 
 			making_charge_data[key] = query.run(as_dict=True)
 
@@ -589,19 +628,25 @@ def _set_total_making_charges(self, metal, making_charge_details):
 			# set additional_net_weigth
 			additional_net_weight = 0
 			if not self.set_additional_rate and metal.parentfield == "metal_detail":
-				if self.compute_making_charges_on == "Diamond Inclusive" and flt(metal.metal_purity) == flt(
-					self.metal_purity
-				):
+				if self.compute_making_charges_on == "Diamond Inclusive" and flt(
+					metal.metal_purity
+				) == flt(self.metal_purity):
 					if not self.total_diamond_weight_per_gram:
-						self.total_diamond_weight_per_gram = flt(flt(self.total_diamond_weight) / 5, 3)
+						self.total_diamond_weight_per_gram = flt(
+							flt(self.total_diamond_weight) / 5, 3
+						)
 					metal.additional_net_weight = self.total_diamond_weight_per_gram
 					additional_net_weight = metal.additional_net_weight
 					self.set_additional_rate = True
 			# Calculate the making charges
-			if self.metal_and_finding_weight < (making_charges.get("rate_per_gm_threshold") or 0):
+			if self.metal_and_finding_weight < (
+				making_charges.get("rate_per_gm_threshold") or 0
+			):
 				metal_making_charges = making_charges.get("rate_per_pc")
 			else:
-				metal_making_charges = metal.making_rate * (metal.quantity + additional_net_weight)
+				metal_making_charges = metal.making_rate * (
+					metal.quantity + additional_net_weight
+				)
 
 			# For E-Invoicing purpose
 			if making_charges.get("non_finding_rate"):
@@ -618,8 +663,12 @@ def _set_total_making_charges(self, metal, making_charge_details):
 
 			# set FG Purcahse rate and amount
 
-			metal.fg_purchase_rate = flt(making_charges.get("supplier_fg_purchase_rate"))
-			metal.fg_purchase_amount = metal.fg_purchase_rate * (metal.quantity + additional_net_weight)
+			metal.fg_purchase_rate = flt(
+				making_charges.get("supplier_fg_purchase_rate")
+			)
+			metal.fg_purchase_amount = metal.fg_purchase_rate * (
+				metal.quantity + additional_net_weight
+			)
 
 
 def get_doctype_name(self):
@@ -634,10 +683,10 @@ def get_other_rate(self):
 		row.amount = row.rate * row.quantity
 		amount += row.amount
 
-	self.igi_charges = self.igi_charges or 0
-	self.dhc_charges = self.dhc_charges or 0
-	self.sgl_charges = self.sgl_charges or 0
-	self.hallmark_charges = self.hallmark_charges or 0
+	self.igi_charges = getattr(self, "igi_charges", 0) or 0
+	self.dhc_charges = getattr(self, "dhc_charges", 0) or 0
+	self.sgl_charges = getattr(self, "sgl_charges", 0) or 0
+	self.hallmark_charges = getattr(self, "hallmark_charges", 0) or 0
 	# other_details = [
 	# 	self.igi_charges,
 	# 	self.dhc_charges,
@@ -699,6 +748,7 @@ def set_diamond_fields(diamond, item):
 		return True
 	return False
 
+
 def set_gemstone_fields(stone, item):
 	if item.gemstone_type:
 		stone.gemstone_type = item.gemstone_type
@@ -716,7 +766,6 @@ def set_bom_rate_in_quotation(self):
 	"""
 	for row in self.items:
 		if row.quotation_bom:
-
 			field_list = [
 				"gold_rate_with_gst",
 				"gold_bom_amount",
@@ -729,7 +778,9 @@ def set_bom_rate_in_quotation(self):
 				"hallmarking_amount",
 				"custom_duty_amount",
 			]
-			bom_data = frappe.db.get_value("BOM", row.quotation_bom, field_list, as_dict=1)
+			bom_data = frappe.db.get_value(
+				"BOM", row.quotation_bom, field_list, as_dict=1
+			)
 			# bom_data = frappe.get_doc("BOM", row.quotation_bom)
 			if self.gold_rate_with_gst > 0 and bom_data.gold_rate_with_gst > 0:
 				row.metal_amount = (
