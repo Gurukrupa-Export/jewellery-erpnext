@@ -1273,7 +1273,7 @@ def create_new_bom1(self):
 							if s.is_customer_item:
 								s.rate=0
 								s.quantity=round(s.quantity, metal_precision)
-								# s.quantity_3=round(s.quantity, 2)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.making_rate= sub_info.get("subcontracting_rate", 0)
 								s.making_amount = s.making_rate * s.quantity
@@ -1284,7 +1284,7 @@ def create_new_bom1(self):
 								s.rate= round(calculated_gold_rate , 2)
 								
 								s.quantity=round(s.quantity, metal_precision)
-								# s.quantity_3=round(s.quantity, 2)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.making_rate=sub_info.get("supplier_fg_purchase_rate", 0)
 								s.wastage_rate = 0 
@@ -1298,7 +1298,7 @@ def create_new_bom1(self):
 							if s.is_customer_item:
 								s.rate=0
 								s.quantity=round(s.quantity, metal_precision)
-								# s.quantity_3=round(s.quantity, 2)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.making_rate= sub_info.get("subcontracting_rate", 0)
 								s.making_amount =round( s.making_rate * s.quantity,2)
@@ -1311,7 +1311,7 @@ def create_new_bom1(self):
 									s.rate= s.se_rate
 									s.making_rate=sub_info.get("supplier_fg_purchase_rate",0)
 								s.quantity=round(s.quantity, metal_precision)
-								# s.quantity_3=round(s.quantity, 2)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								s.wastage_rate = 0 
 								s.wastage_amount =0
@@ -1357,7 +1357,7 @@ def create_new_bom1(self):
 								calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 								s.rate=round(calculated_gold_rate , 2)
 								s.quantity=round(s.quantity, metal_precision)
-								# s.quantity_3=round(s.quantity, 2)
+								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
 								
 								s.making_rate=making_rate
@@ -1480,7 +1480,7 @@ def create_new_bom1(self):
 						if f.is_customer_item:
 							f.rate= 0
 							f.quantity=round(f.quantity, metal_precision)
-							# f.quantity_3=round(f.quantity, 2)
+							f.quantity_3=round(f.quantity, 2)
 							f.amount=0
 							f.making_rate = find_data.get("subcontracting_rate")
 							f.wastage_rate = 0
@@ -1491,7 +1491,7 @@ def create_new_bom1(self):
 							if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
 								f.rate= round(calculated_gold_rate , 2)
 								f.quantity=round(f.quantity, metal_precision)
-								# f.quantity_3=round(f.quantity, 2)
+								f.quantity_3=round(f.quantity, 2)
 								f.amount=round(f.rate*f.quantity,2 )
 								f.making_rate = find_data.get("supplier_fg_purchase_rate")
 								f.wastage_rate = 0
@@ -1507,7 +1507,7 @@ def create_new_bom1(self):
 									f.rate= f.se_rate
 									f.making_rate = find_data.get("supplier_fg_purchase_rate")
 								f.quantity=round(f.quantity, metal_precision)
-								# f.quantity_3=round(f.quantity, 2)
+								f.quantity_3=round(f.quantity, 2)
 								f.amount=round(f.rate*f.quantity,2 )
 								f.wastage_rate = 0
 								f.wastage_amount =0
@@ -1518,7 +1518,7 @@ def create_new_bom1(self):
 								
 								f.rate=round(calculated_gold_rate , 2)
 								f.quantity=round(f.quantity, metal_precision)
-								# f.quantity_3=round(f.quantity, 2)
+								f.quantity_3=round(f.quantity, 2)
 								f.amount = round(f.rate * f.quantity,  2)
 								finding_weight = getattr(doc, "metal_and_finding_weight", None)
 
@@ -1692,6 +1692,7 @@ def create_new_bom1(self):
 							else:
 								d.total_diamond_rate = round(base_rate, 2)
 								d.quantity=round(d.quantity,stone_precision)
+								d.quantity_3=round(d.quantity, 2)
 								d.handling_rate =handling_rate
 								
 								d.weight_per_pcs =(d.quantity/d.pcs)
