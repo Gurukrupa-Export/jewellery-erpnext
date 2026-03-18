@@ -11,6 +11,8 @@ from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils im
 
 
 def validate(self, method):
+	if frappe.flags.is_batch_autoname:
+		return
 	update_pure_qty(self)
 	update_inventory_dimentions(self)
 	item_group = frappe.db.get_value("Item", self.item, "item_group")
@@ -75,6 +77,9 @@ def autoname(self, method=None):
 	# year_code = get_year_code()
 	# month_code = get_month_code()
 	# week_code = get_week_code()
+	if frappe.flags.is_batch_autoname:
+		return
+		
 	item_group = frappe.db.get_value("Item", self.item, "item_group")
 
 	if item_group in [
