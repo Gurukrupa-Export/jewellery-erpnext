@@ -1690,10 +1690,10 @@ def create_new_bom1(self):
 								d.diamond_rate_for_specified_quantity = round(d.quantity * d.total_diamond_rate, 2)
 							
 							else:
-								d.total_diamond_rate = round(base_rate, 2)
+								d.total_diamond_rate = latest.get("rate") if latest else 0
 								d.quantity=round(d.quantity,stone_precision)
 								d.quantity_3=round(d.quantity, 2)
-								d.handling_rate =handling_rate
+								d.handling_rate =handling_rate if handling_rate else 0
 								
 								d.weight_per_pcs =(d.quantity/d.pcs)
 								if 0.001 < (d.quantity/d.pcs) > 0.005:
