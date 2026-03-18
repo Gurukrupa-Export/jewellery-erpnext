@@ -625,12 +625,21 @@ def _set_total_making_charges(self, metal, making_charge_details):
 			# Set the rate per gram
 			metal.making_rate = flt(making_charges.get("rate_per_gm"))
 
+			doc_metal_purity = getattr(self, "metal_purity", None)
+			if not doc_metal_purity and getattr(self, "metal_detail", None):
+				first_metal = self.metal_detail[0]
+				doc_metal_purity = (
+					getattr(first_metal, "metal_purity", None)
+					or getattr(first_metal, "customer_metal_purity", None)
+					or getattr(first_metal, "purity_percentage", None)
+				)
+
 			# set additional_net_weigth
 			additional_net_weight = 0
 			if not self.set_additional_rate and metal.parentfield == "metal_detail":
 				if self.compute_making_charges_on == "Diamond Inclusive" and flt(
 					metal.metal_purity
-				) == flt(self.metal_purity):
+				) == flt(doc_metal_purity):
 					if not self.total_diamond_weight_per_gram:
 						self.total_diamond_weight_per_gram = flt(
 							flt(self.total_diamond_weight) / 5, 3
