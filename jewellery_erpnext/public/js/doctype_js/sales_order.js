@@ -355,7 +355,7 @@ frappe.ui.form.on("Sales Order Item", {
 				reqd: 1,
 				read_only: 1,
 				columns: 1,
-				in_list_view: 1,
+				
 			},
 			{
 				fieldtype: "Float",
@@ -557,7 +557,6 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Sieve Size Range"),
 				columns: 1,
 				read_only: 1,
-				in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -602,7 +601,6 @@ frappe.ui.form.on("Sales Order Item", {
 				reqd: 1,
 				columns: 1,
 				read_only: 1,
-				in_list_view: 1,
 			},
 			{
 				fieldtype: "Float",
@@ -770,7 +768,7 @@ frappe.ui.form.on("Sales Order Item", {
 				columns: 1,
 				reqd: 1,
 				read_only: 1,
-				in_list_view: 1,
+				
 			},
 			{
 				fieldtype: "Float",
@@ -940,7 +938,6 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Quantity(2 digits)"),
 				reqd: 1,
 				read_only: 1,
-				in_list_view: 1,
 				default: 1,
 			},
 			{
