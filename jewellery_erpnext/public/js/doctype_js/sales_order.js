@@ -397,7 +397,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "wastage_rate",
 				label: __("Wastage Rate"),
 				columns: 1,
-				in_list_view: 1,
+				
 			},
 			{
 				fieldtype: "Float",
@@ -405,7 +405,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Wastage Amount"),
 				columns: 1,
 				read_only: 1,
-				in_list_view: 1,
+			
 			},
 			{
 				fieldtype: "Float",
@@ -420,7 +420,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Difference(Based on Metal Purity)"),
 				columns: 1,
 				read_only: 1,
-				in_list_view: 1,
+				
 			},
 			{
 				fieldtype: "Float",
@@ -434,7 +434,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Labour Charge"),
 				columns: 1,
 				read_only: 1,
-				in_list_view: 1,
+				
 			},
 			{
 				fieldtype: "Check",
@@ -990,7 +990,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "wastage_rate",
 				label: __("Wastage Rate"),
 				columns: 1,
-				in_list_view: 1,
+				
 			},
 			{
 				fieldtype: "Float",
@@ -998,7 +998,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Wastage Amount"),
 				columns: 1,
 				read_only: 1,
-				in_list_view: 1,
+				
 			},
 			{
 				fieldtype: "Currency",
@@ -1006,7 +1006,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Difference(Based on Metal Purity)"),
 				columns: 1,
 				read_only: 1,
-				in_list_view: 1,
+			
 			},
 			{
 				fieldtype: "Float",
@@ -1020,7 +1020,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Labour Charge"),
 				columns: 1,
 				read_only: 1,
-				in_list_view: 1,
+				
 			},
 
 			{
