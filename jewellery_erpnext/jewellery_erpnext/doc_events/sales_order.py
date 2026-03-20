@@ -1252,7 +1252,9 @@ def create_new_bom1(self):
 						# frappe.msgprint(f"hii{sub},{int(diamond_pcs)}")
 						sub_info = sub[0]
 						threshold = 2 if sub_info.get("rate_per_gm_threshold") == 0 else sub_info.get("rate_per_gm_threshold")
-						
+						customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
+						calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
+								
 						if doc.metal_and_finding_weight < threshold:
 							
 							for s_row in sub:
@@ -1279,8 +1281,8 @@ def create_new_bom1(self):
 								s.making_amount = s.making_rate * s.quantity
 							# frappe.throw("hii")
 							else:
-								customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
-								calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
+								# customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
+								# calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 								s.rate= round(calculated_gold_rate , 2)
 								
 								s.quantity=round(s.quantity, metal_precision)
@@ -1305,11 +1307,12 @@ def create_new_bom1(self):
 							else:
 								if billing_currency == 'USD':
 									s.se_rate=s.se_rate*exchange_rate
-									s.rate = s.se_rate
+									# s.rate = s.se_rate
 									s.making_rate=sub_info.get("supplier_fg_purchase_rate",0)*exchange_rate
 								else:
-									s.rate= s.se_rate
+									# s.rate= s.se_rate
 									s.making_rate=sub_info.get("supplier_fg_purchase_rate",0)
+								s.rate= round(calculated_gold_rate , 2)
 								s.quantity=round(s.quantity, metal_precision)
 								s.quantity_3=round(s.quantity, 2)
 								s.amount=round(s.rate*s.quantity,2 )
@@ -1350,11 +1353,11 @@ def create_new_bom1(self):
 							# gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
 							# calculated_gold_rate = (float(s.metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 							else:
-								customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
+								# customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{s.metal_type}' and metal_touch = '{s.metal_touch}'""",as_dict=True)[0]['metal_purity']
 								
 								s.customer_metal_purity = customer_metal_purity
 								
-								calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
+								# calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 								s.rate=round(calculated_gold_rate , 2)
 								s.quantity=round(s.quantity, metal_precision)
 								s.quantity_3=round(s.quantity, 2)
@@ -1501,11 +1504,12 @@ def create_new_bom1(self):
 							elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
 								if billing_currency == 'USD':
 									f.se_rate=f.se_rate*exchange_rate
-									f.rate= f.se_rate
+									# f.rate= f.se_rate
 									f.making_rate = find_data.get("supplier_fg_purchase_rate")*exchange_rate
 								else:
-									f.rate= f.se_rate
+									# f.rate= f.se_rate
 									f.making_rate = find_data.get("supplier_fg_purchase_rate")
+								f.rate= round(calculated_gold_rate , 2)
 								f.quantity=round(f.quantity, metal_precision)
 								f.quantity_3=round(f.quantity, 2)
 								f.amount=round(f.rate*f.quantity,2 )
@@ -2752,8 +2756,9 @@ def validate_item_dharm(self):
 									}
 
 								multiplied_qty = metal.quantity * item.qty
-								metal_rate = metal.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else metal.rate
+								# metal_rate = metal.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else metal.rate
 								# making_amount=metal.making_amount
+								metal_rate=metal.rate
 								metal_amount = (metal_rate * multiplied_qty)
 								
 								# Sum quantities and amounts
@@ -3047,7 +3052,7 @@ def validate_item_dharm(self):
 								finding_making_amount = (finding.rate * multiplied_qty)
 								aggregated_finding_items[key]["qty"] += multiplied_qty
 								aggregated_finding_items[key]["amount"] += finding_making_amount
-								aggregated_finding_items[key]["rate"] = finding_rate
+								aggregated_finding_items[key]["rate"] = finding.rate
 								
 								tax_rate_decimal = aggregated_finding_items[key]["tax_rate"] / 100
 								aggregated_finding_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
@@ -3083,7 +3088,7 @@ def validate_item_dharm(self):
 									
 									aggregated_metal_items[key]["qty"] += multiplied_qty
 									aggregated_metal_items[key]["amount"] += finding.amount
-									aggregated_metal_items[key]["rate"] = finding_rate
+									aggregated_metal_items[key]["rate"] = finding.rate
 									
 									tax_rate_decimal = aggregated_metal_items[key]["tax_rate"] / 100
 									aggregated_metal_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
