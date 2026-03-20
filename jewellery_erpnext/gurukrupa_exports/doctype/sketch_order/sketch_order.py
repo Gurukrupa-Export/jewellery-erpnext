@@ -43,12 +43,13 @@ class SketchOrder(Document):
                 },
             )
 
-        for row in approved_rows:
-            source_table.remove(row)
+        # Remove approved rows from source (use list rebuild instead of .remove() for O(n))
+        approved_set = set(id(row) for row in approved_rows)
+        self.set(source_field, [row for row in source_table if id(row) not in approved_set])
 
         for s in self.final_sketch_approval:
             s.approved = len(self.final_sketch_approval_cmo)
-            setattr(s, count_field, len(source_table))
+            setattr(s, count_field, len(self.get(source_field, [])))
 
         label = "Hold" if count_field == "hold" else "Rejected"
         frappe.msgprint(_(f"{label} Image is approved"))
