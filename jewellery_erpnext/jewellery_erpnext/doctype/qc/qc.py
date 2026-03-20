@@ -119,7 +119,6 @@ class QC(Document):
 		"""Determine whether all readings fall in the acceptable range."""
 		for i in range(1, 11):
 			reading_value = reading.get("reading_" + str(i))
-			frappe.msgprint(reading_value)
 			if reading_value is not None and reading_value.strip():
 				result = flt(reading.get("min_value")) <= flt(reading_value) <= flt(reading.get("max_value"))
 				if not result:
@@ -189,35 +188,52 @@ class QC(Document):
 
 @frappe.whitelist()
 def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
-	try:
-		db.begin()
-		# Set Recieving Weight same operation in QC List
-		get_qc_list = frappe.get_list(
-			"QC",
-			fields=["name"],
-			filters={"manufacturing_work_order": mwo, "manufacturing_operation": mnf_opt},
-		)
-		for qc_list in get_qc_list:
-			frappe.db.set_value("QC", qc_list["name"], "received_gross_wt", r_gwt)
+	"""Update received gross weight from QC and book metal loss if weights differ.
 
-		emp_ir = frappe.get_doc("Employee IR", eir)
-		# if g_wt == r_gwt:
+	Uses a single Employee IR document load for both weight updates and loss booking
+	to ensure changes are consistent.
+	"""
+	# Set received weight on all QCs for this MWO + operation
+	get_qc_list = frappe.get_list(
+		"QC",
+		fields=["name"],
+		filters={"manufacturing_work_order": mwo, "manufacturing_operation": mnf_opt},
+	)
+	for qc_entry in get_qc_list:
+		frappe.db.set_value("QC", qc_entry["name"], "received_gross_wt", r_gwt)
 
-		if g_wt != r_gwt:
-			for (
-				entry
-			) in (
-				emp_ir.employee_ir_operations
-			):  # Set Recieving Weight in Employee IR Operation Table from QC
-				entry.received_gross_wt = r_gwt
-			eir_doc = frappe.get_doc("Employee IR", eir)
-			result = eir_doc.book_metal_loss(mwo=mwo, opt=mnf_opt, gwt=g_wt, r_gwt=r_gwt)
-			# Set Employee Loss Details Table in Employee IR Doctype
-			if result and isinstance(result, tuple):
-				data = result[0]
-				emp_ir.employee_loss_details = []
+	# Load Employee IR once — use the same doc for all operations
+	emp_ir = frappe.get_doc("Employee IR", eir)
+
+	if g_wt != r_gwt:
+		# Update received weight in Employee IR operations
+		for entry in emp_ir.employee_ir_operations:
+			entry.received_gross_wt = r_gwt
+
+		# Book metal loss using the same doc instance
+		result = emp_ir.book_metal_loss(mwo=mwo, opt=mnf_opt, gwt=g_wt, r_gwt=r_gwt)
+
+		if result and isinstance(result, tuple):
+			data = result[0]
+			# Update loss details on Employee IR
+			emp_ir.employee_loss_details = []
+			for r_data in data:
+				row = emp_ir.append("employee_loss_details", {})
+				row.item_code = r_data["item_code"]
+				row.net_weight = r_data["qty"]
+				row.stock_uom = r_data["stock_uom"]
+				row.manufacturing_work_order = r_data["manufacturing_work_order"]
+				row.proportionally_loss = r_data["proportionally_loss"]
+				row.received_gross_weight = r_data["received_gross_weight"]
+				row.main_slip_consumption = r_data["main_slip_consumption"]
+			emp_ir.save()
+
+			# Copy loss details to all related QC docs
+			for qc_entry in get_qc_list:
+				qc_doc = frappe.get_doc("QC", qc_entry["name"])
+				qc_doc.employee_loss_details = []
 				for r_data in data:
-					row = emp_ir.append("employee_loss_details", {})
+					row = qc_doc.append("employee_loss_details", {})
 					row.item_code = r_data["item_code"]
 					row.net_weight = r_data["qty"]
 					row.stock_uom = r_data["stock_uom"]
@@ -225,44 +241,18 @@ def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
 					row.proportionally_loss = r_data["proportionally_loss"]
 					row.received_gross_weight = r_data["received_gross_weight"]
 					row.main_slip_consumption = r_data["main_slip_consumption"]
-				emp_ir.save()
-
-				for qc_list in get_qc_list:
-					# if qc_list["name"] == doc_name:
-					# 	continue
-					qc_doc = frappe.get_doc("QC", qc_list["name"])
-					qc_doc.employee_loss_details = []
-					if r_gwt != g_wt:
-						for r_data in data:
-							row = qc_doc.append("employee_loss_details", {})
-							row.item_code = r_data["item_code"]
-							row.net_weight = r_data["qty"]
-							row.stock_uom = r_data["stock_uom"]
-							row.manufacturing_work_order = r_data["manufacturing_work_order"]
-							row.proportionally_loss = r_data["proportionally_loss"]
-							row.received_gross_weight = r_data["received_gross_weight"]
-							row.main_slip_consumption = r_data["main_slip_consumption"]
-						qc_doc.save()
-				if data:
-					return data
-		else:
-			for qc_list in get_qc_list:
-				# if qc_list["name"] == doc_name:
-				# 	continue
-				qc_doc = frappe.get_doc("QC", qc_list["name"])
-				qc_doc.employee_loss_details = []
 				qc_doc.save()
 
-			for (
-				entry
-			) in (
-				emp_ir.employee_ir_operations
-			):  # Set Recieving Weight in Employee IR Operation Table from QC
-				entry.received_gross_wt = r_gwt
-			emp_ir.employee_loss_details = []
-			emp_ir.save()
+			if data:
+				return data
+	else:
+		# No loss — clear loss details from QC docs and Employee IR
+		for qc_entry in get_qc_list:
+			qc_doc = frappe.get_doc("QC", qc_entry["name"])
+			qc_doc.employee_loss_details = []
+			qc_doc.save()
 
-		db.commit()
-	except Exception as e:
-		db.rollback()
-		frappe.throw(f"Error: {e}")
+		for entry in emp_ir.employee_ir_operations:
+			entry.received_gross_wt = r_gwt
+		emp_ir.employee_loss_details = []
+		emp_ir.save()

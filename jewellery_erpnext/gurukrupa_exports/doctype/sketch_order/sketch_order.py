@@ -11,58 +11,47 @@ from frappe.utils import get_link_to_form
 class SketchOrder(Document):
     def validate(self):
         populate_child_table(self)
-        rows_remove = []
-        for r in self.final_sketch_hold:
-            if r.is_approved:
-                self.append(
-                    "final_sketch_approval_cmo",
-                    {
-                        "designer": r.designer,
-                        "sketch_image": r.sketch_image,
-                        "designer_name": r.designer_name,
-                        "qc_person": r.qc_person,
-                        "diamond_wt_approx": r.diamond_wt_approx,
-                        "setting_type": r.setting_type,
-                        "sub_category": r.sub_category,
-                        "category": r.category,
-                        "image_rough": r.image_rough,
-                        "final_image": r.final_image,
-                    },
-                )
-                rows_remove.append(r)
-                for r in rows_remove:
-                    self.final_sketch_hold.remove(r)
+        self._move_approved_to_cmo("final_sketch_hold", "hold")
+        self._move_approved_to_cmo("final_sketch_rejected", "reject")
 
-                for s in self.final_sketch_approval:
-                    s.approved = len(self.final_sketch_approval_cmo)
-                    s.hold = len(self.final_sketch_hold)
-                frappe.msgprint("Hold Image is approved")
-        rows_to_remove = []
-        for r in self.final_sketch_rejected:
-            if r.is_approved:
-                self.append(
-                    "final_sketch_approval_cmo",
-                    {
-                        "designer": r.designer,
-                        "sketch_image": r.sketch_image,
-                        "designer_name": r.designer_name,
-                        "qc_person": r.qc_person,
-                        "diamond_wt_approx": r.diamond_wt_approx,
-                        "setting_type": r.setting_type,
-                        "sub_category": r.sub_category,
-                        "category": r.category,
-                        "image_rough": r.image_rough,
-                        "final_image": r.final_image,
-                    },
-                )
-                rows_to_remove.append(r)
-                for r in rows_to_remove:
-                    self.final_sketch_rejected.remove(r)
+    def _move_approved_to_cmo(self, source_field, count_field):
+        """Move approved rows from source child table to final_sketch_approval_cmo.
 
-                for s in self.final_sketch_approval:
-                    s.approved = len(self.final_sketch_approval_cmo)
-                    s.reject = len(self.final_sketch_rejected)
-                frappe.msgprint("Rejected image is approved ")
+        Collects approved rows first, then removes them after iteration to avoid
+        modifying the list during iteration.
+        """
+        source_table = self.get(source_field, [])
+        approved_rows = [row for row in source_table if row.is_approved]
+
+        if not approved_rows:
+            return
+
+        for row in approved_rows:
+            self.append(
+                "final_sketch_approval_cmo",
+                {
+                    "designer": row.designer,
+                    "sketch_image": row.sketch_image,
+                    "designer_name": row.designer_name,
+                    "qc_person": row.qc_person,
+                    "diamond_wt_approx": row.diamond_wt_approx,
+                    "setting_type": row.setting_type,
+                    "sub_category": row.sub_category,
+                    "category": row.category,
+                    "image_rough": row.image_rough,
+                    "final_image": row.final_image,
+                },
+            )
+
+        for row in approved_rows:
+            source_table.remove(row)
+
+        for s in self.final_sketch_approval:
+            s.approved = len(self.final_sketch_approval_cmo)
+            setattr(s, count_field, len(source_table))
+
+        label = "Hold" if count_field == "hold" else "Rejected"
+        frappe.msgprint(_(f"{label} Image is approved"))
 
     def on_submit(self):
         self.make_items()

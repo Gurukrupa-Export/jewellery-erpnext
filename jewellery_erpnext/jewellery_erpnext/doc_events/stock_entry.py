@@ -1136,24 +1136,15 @@ def get_previous_se_details(mop_doc, d_warehouse, e_warehouse):
 	additional_rows = []
 	if mop_doc:
 		previous_se = frappe.db.get_all(
-			"Stock Entry", {"manufacturing_operation": mop_doc.name}
+			"Stock Entry", {"manufacturing_operation": mop_doc.name}, pluck="name"
 		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": d_warehouse},
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": e_warehouse},
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": d_warehouse},
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": e_warehouse},
-		)
+		if previous_se:
+			warehouses = [wh for wh in [d_warehouse, e_warehouse] if wh]
+			if warehouses:
+				additional_rows = frappe.db.get_all(
+					"Stock Entry Detail",
+					{"parent": ["in", previous_se], "s_warehouse": ["in", warehouses]},
+				)
 
 	return additional_rows
 

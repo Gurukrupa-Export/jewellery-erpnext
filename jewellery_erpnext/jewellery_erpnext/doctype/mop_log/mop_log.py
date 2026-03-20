@@ -72,14 +72,7 @@ def update_wt_detail(manufacturing_operation):
 		"Manufacturing Operation",
 		manufacturing_operation,
 		{
-			"gross_wt": (
-				net_wt
-				or 0 + finding_wt
-				or 0 + diamond_wt_in_gram
-				or 0 + gemstone_wt_in_gram
-				or 0 + other_wt
-				or 0
-			),
+			"gross_wt": flt(net_wt) + flt(finding_wt) + flt(diamond_wt_in_gram) + flt(gemstone_wt_in_gram) + flt(other_wt),
 			"prev_gross_wt": prev_gross_wt,
 		},
 	)
