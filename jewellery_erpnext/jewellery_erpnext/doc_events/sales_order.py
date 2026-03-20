@@ -1758,19 +1758,19 @@ def create_new_bom1(self):
 				# doc.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity for row in doc.diamond_detail)
 				doc.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity or 0.0 for row in doc.diamond_detail)
 
-				doc.metal_and_finding_weight = round(flt(doc.metal_weight) + flt(doc.finding_weight),2)
+				doc.metal_and_finding_weight = (flt(doc.metal_weight) + flt(doc.finding_weight))
 				doc.gold_to_diamond_ratio = (
 					flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
 				)
 				doc.diamond_ratio = (
 					flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
 				)
-				doc.gross_weight = round(
+				doc.gross_weight = (
 					flt(doc.metal_and_finding_weight)
 					+ flt(doc.total_diamond_weight_in_gms)
 					+ flt(doc.total_gemstone_weight_in_gms)
 					+ flt(doc.total_other_weight)
-				,2)
+				)
 				doc.metal_to_diamond_ratio_excl_of_finding=(
 					flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
 				)
