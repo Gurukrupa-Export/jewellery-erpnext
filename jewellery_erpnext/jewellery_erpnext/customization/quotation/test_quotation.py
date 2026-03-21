@@ -18,8 +18,8 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 
 
 class TestQuotation(FrappeTestCase):
-	@classmethod
 	def setUp(self):
+		self.branch = frappe.get_value("Branch", {"branch_name": "Test_Branch"}, "name")
 		customer_payment_terms()
 		return super().setUp()
 
@@ -36,7 +36,7 @@ class TestQuotation(FrappeTestCase):
 			order_by="creation desc",
 		)
 		quotation = make_quotation_batch([order])
-		quotation.branch = "GEPL-ST-0002"
+		quotation.branch = self.branch
 		quotation.custom_sales_type = "Finished Goods"
 		quotation.gold_rate_with_gst = 15000
 		quotation.custom_customer_gold = "No"
@@ -73,7 +73,7 @@ class TestQuotation(FrappeTestCase):
 			order_by="creation desc",
 		)
 		quotation = make_quotation_batch([order])
-		quotation.branch = "GEPL-ST-0002"
+		quotation.branch = self.branch
 		quotation.custom_sales_type = "Finished Goods"
 		quotation.gold_rate_with_gst = 15000
 		quotation.save()
@@ -160,7 +160,7 @@ class TestQuotation(FrappeTestCase):
 			order_by="creation desc",
 		)
 		quotation = make_quotation_batch([order])
-		quotation.branch = "GEPL-ST-0002"
+		quotation.branch = self.branch
 		quotation.custom_sales_type = "Finished Goods"
 		quotation.gold_rate_with_gst = 15000
 		quotation.items[0].diamond_quality = "EF-VVS"
