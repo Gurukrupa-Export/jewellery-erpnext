@@ -120,6 +120,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		se_name = create_manufacturing_entry(self, row_data, operation_data)
 		self.fg_serial_no = se_name
 		create_finished_goods_bom(self, se_name, operation_data)
+		submit_tracking_bom_for_finished_goods(self)
 
 
 def get_shift(employee, start_date, end_date):
@@ -389,3 +390,41 @@ def update_new_serial_no(self):
 			},
 		)
 		serial_doc.save()
+
+
+def submit_tracking_bom_for_finished_goods(doc):
+	"""Update and submit linked Tracking BOM when SNC creates FG BOM."""
+	if not doc.get("fg_bom"):
+		return
+
+	tracking_bom_name = frappe.db.get_value(
+		"Manufacturing Work Order", doc.manufacturing_work_order, "custom_tracking_bom"
+	)
+	if not tracking_bom_name and doc.get("parent_manufacturing_order"):
+		tracking_bom_name = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			doc.parent_manufacturing_order,
+			"custom_tracking_bom",
+		)
+	if not tracking_bom_name:
+		return
+
+	tracking_bom = frappe.get_doc("Tracking Bom", tracking_bom_name)
+	if tracking_bom.docstatus == 0:
+		tracking_bom.bom_type = "Finished Goods"
+		tracking_bom.reference_doctype = "BOM"
+		tracking_bom.reference_docname = doc.fg_bom
+		tracking_bom.flags.ignore_validate_update_after_submit = True
+		tracking_bom.save(ignore_permissions=True)
+		tracking_bom.submit()
+	else:
+		frappe.db.set_value(
+			"Tracking Bom",
+			tracking_bom_name,
+			{
+				"bom_type": "Finished Goods",
+				"reference_doctype": "BOM",
+				"reference_docname": doc.fg_bom,
+			},
+			update_modified=True,
+		)
