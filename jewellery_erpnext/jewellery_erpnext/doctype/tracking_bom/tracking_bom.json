@@ -112,7 +112,7 @@
    "fieldname": "bom_type",
    "fieldtype": "Select",
    "label": "BOM Type",
-   "options": "\nQuotation\nSales Order"
+   "options": "\nQuotation\nSales Order\nFinished Goods"
   },
   {
    "fieldname": "column_break_fgng",
