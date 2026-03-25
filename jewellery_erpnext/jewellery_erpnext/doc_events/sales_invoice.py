@@ -11,6 +11,8 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_tota
 
 
 def before_validate(self, method):
+	if self.is_return:
+		return
 	if self.sales_type != 'Certification':
 		if self.gold_rate:
 			self.gold_rate_with_gst=round(self.gold_rate * 1.03,3)
