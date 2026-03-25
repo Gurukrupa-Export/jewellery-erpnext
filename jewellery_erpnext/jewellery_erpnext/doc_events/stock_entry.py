@@ -7,6 +7,7 @@ import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	get_available_qty_to_reserve,
+	get_sre_reserved_qty_for_voucher_detail_no,
 )
 from frappe import _, scrub
 from frappe.model.mapper import get_mapped_doc
@@ -377,6 +378,10 @@ def validate_metal_properties(doc):
 		["check_purity", "check_colour", "check_touch"],
 		as_dict=True,
 	)
+	if not company_validations:
+		company_validations = frappe._dict(
+			{"check_purity": 0, "check_colour": 0, "check_touch": 0}
+		)
 
 	mwo_erros = {}
 	msl_erros = {}
@@ -385,6 +390,9 @@ def validate_metal_properties(doc):
 		for mwo in item_data[item]["mwo"]:
 			mwo_data = mwo_wise_data.get(mwo)
 			mwo_erros.setdefault(mwo, [])
+
+			if not mwo_data:
+				continue
 
 			if mwo_data.metal_type != item_data[item].metal_type:
 				frappe.throw(
@@ -436,6 +444,10 @@ def validate_metal_properties(doc):
 				if not msl:
 					continue
 				msl_data = msl_wise_data.get(msl)
+
+			# Avoid AttributeError if config wasn't fetched.
+			if not msl_data:
+				continue
 			if not msl_data.get("for_subcontracting"):
 				msl_erros.setdefault(msl, [])
 
@@ -542,9 +554,31 @@ def onsubmit(self, method):
 	validate_items(self)
 	# update_manufacturing_operation(self)
 	# update_main_slip(self)
-	stock_reservation_entry_for_mwo(self)
+	enqueue_stock_reservation_entry_for_mwo(self.name)
 	# update_material_request_status(self)
 	# create_finished_bom(self)
+
+
+def enqueue_stock_reservation_entry_for_mwo(stock_entry_name: str):
+	# Run reservation creation in background to reduce submit latency.
+	frappe.enqueue(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.process_stock_reservation_entry_for_mwo",
+		stock_entry_name=stock_entry_name,
+		queue="default",
+		timeout=1200,
+		enqueue_after_commit=True,
+	)
+
+
+def process_stock_reservation_entry_for_mwo(stock_entry_name: str):
+	try:
+		doc = frappe.get_doc("Stock Entry", stock_entry_name)
+		stock_reservation_entry_for_mwo(doc)
+	except Exception:
+		frappe.log_error(
+			title="Stock Reservation Entry Background Failure",
+			message=frappe.get_traceback(),
+		)
 
 
 def stock_reservation_entry_for_mwo(self):
@@ -582,17 +616,37 @@ def stock_reservation_entry_for_mwo(self):
 			)
 
 		for row in self.items:
+			if not row.t_warehouse:
+				continue
+
 			has_batch_no, has_serial_no = frappe.get_cached_value(
 				"Item", row.item_code, ["has_batch_no", "has_serial_no"]
 			)
 			available_qty_to_reserve = get_available_qty_to_reserve(
 				row.item_code, row.t_warehouse
 			)
-			qty_to_be_reserved = (
-				row.qty
-				if available_qty_to_reserve >= row.qty
-				else available_qty_to_reserve
+			qty_to_be_reserved = min(flt(row.qty), flt(available_qty_to_reserve))
+
+			# Mirror ERPNext allowed-qty calculation so SRE submit does not fail.
+			total_reserved_qty = get_sre_reserved_qty_for_voucher_detail_no(
+				"Sales Order", sales_order, sales_order_item
 			)
+			delivered_qty, conversion_factor = frappe.db.get_value(
+				"Sales Order Item",
+				sales_order_item,
+				["delivered_qty", "conversion_factor"],
+			) or (0, 1)
+			voucher_delivered_qty = flt(delivered_qty) * flt(conversion_factor)
+			allowed_qty = min(
+				flt(available_qty_to_reserve),
+				flt(voucher_qty) - flt(voucher_delivered_qty) - flt(total_reserved_qty),
+			)
+			allowed_qty = flt(max(0, allowed_qty), 3)
+			qty_to_be_reserved = flt(min(qty_to_be_reserved, allowed_qty), 3)
+
+			if qty_to_be_reserved <= 0:
+				continue
+
 			new_stock_reservation_entries_mwo = frappe.new_doc(
 				"Stock Reservation Entry"
 			)

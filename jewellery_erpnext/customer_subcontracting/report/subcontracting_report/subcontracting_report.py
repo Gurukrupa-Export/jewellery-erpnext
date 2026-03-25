@@ -5,266 +5,208 @@ import frappe
 
 
 def execute(filters=None):
-    columns = get_columns()
-    data = get_data(filters)
+	if not filters:
+		filters = {}
 
-    return columns, data
+	conditions = get_conditions(filters)
+
+	cgr_data = get_cgr_data(filters, conditions)
+	transfer_data = get_transfer_data(filters, conditions)
+	repack_data = get_repack_data(filters, conditions)
+
+	report = {}
+
+	for r in cgr_data:
+		report[r.batch_no] = {
+			"owner": r.customer,
+			"item": r.item_code,
+			"opening": r.qty,
+			"used_same": 0,
+			"used_other": 0,
+			"repack_to_other": 0,
+		}
+
+	for r in transfer_data:
+		if r.batch_no not in report:
+			continue
+
+		owner = report[r.batch_no]["owner"]
+		target = get_customer_from_work_order(r.manufacturing_work_order)
+
+		if owner == target:
+			report[r.batch_no]["used_same"] += r.qty
+		else:
+			report[r.batch_no]["used_other"] += r.qty
+
+	for r in repack_data:
+		parent_batch = get_parent_batch(r.batch_no)
+
+		if parent_batch not in report:
+			continue
+
+		if r.is_finished_item:
+			report[parent_batch]["repack_to_other"] += r.qty
+
+	data = []
+
+	for batch, d in report.items():
+		balance = d["opening"] - d["used_same"] - d["used_other"] + d["repack_to_other"]
+		balance_from_other = d["used_other"] - d["repack_to_other"]
+
+		data.append(
+			[
+				batch,
+				d["owner"],
+				d["item"],
+				d["opening"],
+				d["used_same"],
+				d["used_other"],
+				d["repack_to_other"],
+				balance,
+				balance_from_other,
+			]
+		)
+
+	columns = get_columns()
+
+	item_filter = filters.get("item_code") or filters.get("item")
+	if item_filter and data:
+		total_opening = sum(frappe.utils.flt(r[3]) for r in data)
+		total_used_same = sum(frappe.utils.flt(r[4]) for r in data)
+		total_used_other = sum(frappe.utils.flt(r[5]) for r in data)
+		total_repack_to_other = sum(frappe.utils.flt(r[6]) for r in data)
+
+		total_balance = (
+			total_opening - total_used_same - total_used_other + total_repack_to_other
+		)
+		total_balance_from_other = total_used_other - total_repack_to_other
+
+		data.append(
+			[
+				"Total",
+				"",
+				item_filter,
+				total_opening,
+				total_used_same,
+				total_used_other,
+				total_repack_to_other,
+				total_balance,
+				total_balance_from_other,
+			]
+		)
+
+	return columns, data
+
+
+def get_conditions(filters):
+	conditions = ""
+
+	if filters.get("customer"):
+		conditions += """
+            AND (
+                sed.customer = %(customer)s
+                OR sed.batch_no LIKE %(customer_prefix)s
+            )
+        """
+		filters["customer_prefix"] = filters["customer"] + "%"
+
+	if filters.get("batch"):
+		conditions += " AND sed.batch_no = %(batch)s"
+
+	if filters.get("item_code"):
+		conditions += " AND sed.item_code = %(item_code)s"
+
+	return conditions
+
+
+def get_cgr_data(filters, conditions):
+	return frappe.db.sql(
+		f"""
+        SELECT
+            sed.batch_no,
+            sed.qty,
+            sed.customer,
+            sed.item_code
+        FROM `tabStock Entry Detail` sed
+        JOIN `tabStock Entry` se ON se.name = sed.parent
+        WHERE se.stock_entry_type = 'Customer Goods Received'
+        {conditions}
+    """,
+		filters,
+		as_dict=1,
+	)
+
+
+def get_transfer_data(filters, conditions):
+	return frappe.db.sql(
+		f"""
+        SELECT
+            sed.batch_no,
+            sed.qty,
+            sed.item_code,
+            se.manufacturing_work_order
+        FROM `tabStock Entry Detail` sed
+        JOIN `tabStock Entry` se ON se.name = sed.parent
+        WHERE se.stock_entry_type = 'Material Transfer (WORK ORDER)'
+        {conditions}
+    """,
+		filters,
+		as_dict=1,
+	)
+
+
+def get_repack_data(filters, conditions):
+	return frappe.db.sql(
+		f"""
+        SELECT
+            sed.batch_no,
+            sed.qty,
+            sed.item_code,
+            sed.is_finished_item
+        FROM `tabStock Entry Detail` sed
+        JOIN `tabStock Entry` se ON se.name = sed.parent
+        WHERE se.stock_entry_type = 'Subcontracting Repack'
+        {conditions}
+    """,
+		filters,
+		as_dict=1,
+	)
+
+
+def get_parent_batch(batch):
+	if "-A" in batch:
+		return batch.split("-A")[0]
+	return batch
+
+
+def get_customer_from_work_order(wo):
+	if not wo:
+		return None
+	meta = frappe.get_meta("Work Order")
+
+	if meta.get_field("customer"):
+		return frappe.db.get_value("Work Order", wo, "customer")
+
+	if meta.get_field("sales_order"):
+		sales_order = frappe.db.get_value("Work Order", wo, "sales_order")
+		if sales_order:
+			return frappe.db.get_value("Sales Order", sales_order, "customer")
+
+	if meta.get_field("custom_customer"):
+		return frappe.db.get_value("Work Order", wo, "custom_customer")
+
+	return None
 
 
 def get_columns():
-    return [
-        {
-            "label": "Batch No",
-            "fieldname": "batch_no",
-            "fieldtype": "Link",
-            "options": "Batch",
-            "width": 280,
-        },
-        {
-            "label": "Owner",
-            "fieldname": "owner",
-            "fieldtype": "Link",
-            "options": "Customer",
-            "width": 130,
-        },
-        {
-            "label": "Actual Qty",
-            "fieldname": "actual_qty",
-            "fieldtype": "Float",
-            "precision": "3",
-            "width": 150,
-        },
-        {
-            "label": "Used Same",
-            "fieldname": "used_same",
-            "fieldtype": "Float",
-            "precision": "3",
-            "width": 150,
-        },
-        {
-            "label": "Used Other",
-            "fieldname": "used_other",
-            "fieldtype": "Float",
-            "precision": "3",
-            "width": 140,
-        },
-        {
-            "label": "Batch Balance",
-            "fieldname": "batch_balance",
-            "fieldtype": "Float",
-            "precision": "3",
-            "width": 150,
-        },
-    ]
-
-
-def get_data(filters):
-
-    batch_conditions = ""
-    sle_conditions = ""
-
-    if filters.get("batch_no"):
-        batch_conditions += " AND b.name = %(batch_no)s "
-        sle_conditions += " AND sbe.batch_no = %(batch_no)s "
-
-    if filters.get("customer"):
-        batch_conditions += " AND b.custom_customer = %(customer)s "
-
-    batches = frappe.db.sql(f"""
-        SELECT
-            b.name,
-            b.custom_customer,
-            b.batch_qty
-        FROM `tabBatch` b
-        WHERE
-            b.custom_inventory_type = 'Customer Goods'
-            {batch_conditions}
-		ORDER BY creation DESC
-		LIMIT 200
-    """, filters, as_dict=1)
-
-    if not batches:
-        return []
-
-    batch_owner_map = {b.name: b.custom_customer for b in batches}
-
-    inward_data = frappe.db.sql(f"""
-        SELECT
-            sbe.batch_no,
-            SUM(sle.actual_qty) AS qty
-        FROM `tabStock Ledger Entry` sle
-        JOIN `tabSerial and Batch Entry` sbe
-            ON sle.serial_and_batch_bundle = sbe.parent
-        WHERE
-            sle.inventory_type = 'Customer Goods'
-            AND sle.actual_qty > 0
-            AND sle.is_cancelled = 0
-            AND sbe.batch_no IS NOT NULL
-            {sle_conditions}
-        GROUP BY sbe.batch_no
-    """, filters, as_dict=1)
-
-    actual_map = {d.batch_no: d.qty for d in inward_data}
-
-    usage_data = frappe.db.sql(f"""
-        SELECT
-            sbe.batch_no,
-            sed.customer,
-            SUM(ABS(sle.actual_qty)) AS qty
-        FROM `tabStock Ledger Entry` sle
-        JOIN `tabSerial and Batch Entry` sbe
-            ON sle.serial_and_batch_bundle = sbe.parent
-        JOIN `tabStock Entry Detail` sed
-            ON sle.voucher_detail_no = sed.name
-        WHERE
-            sle.inventory_type = 'Customer Goods'
-            AND sle.actual_qty < 0
-            AND sle.is_cancelled = 0
-            AND sbe.batch_no IS NOT NULL
-            {sle_conditions}
-        GROUP BY
-            sbe.batch_no,
-            sed.customer
-    """, filters, as_dict=1)
-
-    used_same_map = {}
-    used_other_map = {}
-
-    for row in usage_data:
-
-        batch_no = row.batch_no
-        qty = row.qty or 0
-        customer = row.customer
-
-        owner = batch_owner_map.get(batch_no)
-
-        if not owner:
-            continue
-
-        if customer == owner:
-            used_same_map[batch_no] = used_same_map.get(batch_no, 0) + qty
-        else:
-            used_other_map[batch_no] = used_other_map.get(batch_no, 0) + qty
-
-
-    data = []
-
-    for batch in batches:
-
-        batch_no = batch.name
-
-        actual_qty = actual_map.get(batch_no, 0)
-        # actual_qty = batch.batch_qty or 0
-        used_same = used_same_map.get(batch_no, 0)
-        used_other = used_other_map.get(batch_no, 0)
-
-        balance = actual_qty - used_same - used_other
-
-        data.append({
-            "batch_no": batch_no,
-            "owner": batch.custom_customer,
-            "actual_qty": actual_qty,
-            "used_same": used_same,
-            "used_other": used_other,
-            "batch_balance": balance
-        })
-
-    return data
-
-
-# unoptimized code
-
-
-# def get_data(filters):
-
-#     batch_conditions = ""
-
-#     if filters.get("batch_no"):
-#         batch_conditions += " AND b.name = %(batch_no)s "
-
-#     if filters.get("customer"):
-#         batch_conditions += " AND b.custom_customer = %(customer)s "
-
-#     # Fetch batches
-#     batches = frappe.db.sql(f"""
-#         SELECT
-#             b.name,
-#             b.custom_customer,
-#             b.batch_qty
-#         FROM `tabBatch` b
-#         WHERE
-#             b.custom_inventory_type = 'Customer Goods'
-#             {batch_conditions}
-#         ORDER BY b.creation DESC
-#         LIMIT 200
-#     """, filters, as_dict=1)
-
-#     if not batches:
-#         return []
-
-#     batch_owner_map = {b.name: b.custom_customer for b in batches}
-
-#     # Usage data (outward movement)
-#     usage_data = frappe.db.sql(f"""
-#         SELECT
-#             sbe.batch_no,
-#             sed.customer,
-#             SUM(ABS(sle.actual_qty)) AS qty
-#         FROM `tabStock Ledger Entry` sle
-#         JOIN `tabSerial and Batch Entry` sbe
-#             ON sle.serial_and_batch_bundle = sbe.parent
-#         JOIN `tabStock Entry Detail` sed
-#             ON sle.voucher_detail_no = sed.name
-#         WHERE
-#             sle.inventory_type = 'Customer Goods'
-#             AND sle.actual_qty < 0
-#             AND sle.is_cancelled = 0
-#             AND sbe.batch_no IS NOT NULL
-#         GROUP BY
-#             sbe.batch_no,
-#             sed.customer
-#     """, filters, as_dict=1)
-
-#     used_same_map = {}
-#     used_other_map = {}
-
-#     for row in usage_data:
-
-#         batch_no = row.batch_no
-#         qty = row.qty or 0
-#         customer = row.customer
-
-#         owner = batch_owner_map.get(batch_no)
-
-#         if not owner:
-#             continue
-
-#         if customer == owner:
-#             used_same_map[batch_no] = used_same_map.get(batch_no, 0) + qty
-#         else:
-#             used_other_map[batch_no] = used_other_map.get(batch_no, 0) + qty
-
-#     data = []
-
-#     for batch in batches:
-
-#         batch_no = batch.name
-
-#         # Actual Qty from batch record
-#         actual_qty = batch.batch_qty or 0
-
-#         used_same = used_same_map.get(batch_no, 0)
-#         used_other = used_other_map.get(batch_no, 0)
-
-#         balance = actual_qty - used_same - used_other
-
-#         data.append({
-#             "batch_no": batch_no,
-#             "owner": batch.custom_customer,
-#             "actual_qty": actual_qty,
-#             "used_same": used_same,
-#             "used_other": used_other,
-#             "batch_balance": balance
-#         })
-
-#     return data
+	return [
+		"Batch No:Link/Batch:220",
+		"Owner:Link/Customer:150",
+		"Item:Link/Item:180",
+		"Opening Qty:Float:120",
+		"Used Same:Float:120",
+		"Used Other:Float:120",
+		"Repack to Other:Float:150",
+		"Balance:Float:120",
+		"Balance from other:Float:150",
+	]

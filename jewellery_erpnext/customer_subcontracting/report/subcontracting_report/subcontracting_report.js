@@ -8,7 +8,7 @@ frappe.query_reports["Subcontracting Report"] = {
 			label: "Batch",
 			fieldtype: "Link",
 			options: "Batch",
-			width: "120",
+			width: "150",
 		},
 
 		{
@@ -16,6 +16,13 @@ frappe.query_reports["Subcontracting Report"] = {
 			label: "Customer",
 			fieldtype: "Link",
 			options: "Customer",
+			width: "120",
+		},
+		{
+			fieldname: "item_code",
+			label: "Item",
+			fieldtype: "Link",
+			options: "Item",
 			width: "120",
 		},
 	],
