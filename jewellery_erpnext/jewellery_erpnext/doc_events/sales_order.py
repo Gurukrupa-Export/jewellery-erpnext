@@ -1736,7 +1736,7 @@ def create_new_bom1(self):
 				doc.gold_bom_amount=doc.total_metal_amount
 				doc.gemstone_bom_amount=doc.total_gemstone_amount
 				doc.finding_bom_amount=doc.total_finding_amount
-				doc.total_bom_amount=(doc.diamond_bom_amount +doc.gold_bom_amount+ doc.gemstone_bom_amount+doc.finding_bom_amount)
+				doc.total_bom_amount=(doc.diamond_bom_amount +doc.gold_bom_amount+ doc.gemstone_bom_amount+doc.finding_bom_amount+ doc.total_wastage_amount + (sum(flt(r.wastage_amount)for r in doc.get("finding_detail", []))))
 				# frappe.throw(f"{doc.total_bom_amount}")
 				doc.making_charge = sum(row.making_amount for row in doc.metal_detail) + sum(row.making_amount for row in doc.finding_detail)
 				# self.total=0
@@ -2799,7 +2799,7 @@ def validate_item_dharm(self):
 									}
 
 								multiplied_qty = metal.quantity * item.qty
-								metal_making_amount = metal.making_rate * multiplied_qty
+								metal_making_amount = metal.making_rate * multiplied_qty + (metal.wastage_amount * item.qty)
 								aggregated_metal_making_items[key]["qty"] += multiplied_qty
 								aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
@@ -3120,7 +3120,7 @@ def validate_item_dharm(self):
 								
 								multiplied_qty = finding.quantity * item.qty
 								making_amount = finding.making_amount
-								finding_making_amount = (finding.making_rate * multiplied_qty)
+								finding_making_amount = (finding.making_rate * multiplied_qty) + (finding.wastage_amount * item.qty)
 								
 								aggregated_finding_making_items[key]["qty"] += multiplied_qty
 								aggregated_finding_making_items[key]["amount"] += finding_making_amount
@@ -3156,7 +3156,7 @@ def validate_item_dharm(self):
 										}
 									
 									multiplied_qty = finding.quantity * item.qty
-									making_amount = finding.making_amount
+									making_amount = finding.making_amount + (finding.wastage_amount * item.qty)
 									finding_making_amount = (finding.making_rate * multiplied_qty)
 									aggregated_metal_making_items[key]["qty"] += multiplied_qty
 									aggregated_metal_making_items[key]["amount"] += making_amount
