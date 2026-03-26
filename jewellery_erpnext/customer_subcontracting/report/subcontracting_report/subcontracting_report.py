@@ -31,7 +31,7 @@ def execute(filters=None):
 			continue
 
 		owner = report[r.batch_no]["owner"]
-		target = get_customer_from_work_order(r.manufacturing_work_order)
+		target = get_customer_from_maufacturing_work_order(r.manufacturing_work_order)
 
 		if owner == target:
 			report[r.batch_no]["used_same"] += r.qty
@@ -39,12 +39,17 @@ def execute(filters=None):
 			report[r.batch_no]["used_other"] += r.qty
 
 	for r in repack_data:
-		parent_batch = get_parent_batch(r.batch_no)
+		parent_batch = r.get("parent_batch") or get_parent_batch(r.batch_no)
 
 		if parent_batch not in report:
 			continue
 
-		if r.is_finished_item:
+		if not r.is_finished_item:
+			continue
+
+		owner = report[parent_batch]["owner"]
+		target = get_customer_from_maufacturing_work_order(r.manufacturing_work_order)
+		if target and owner != target:
 			report[parent_batch]["repack_to_other"] += r.qty
 
 	data = []
@@ -160,11 +165,19 @@ def get_repack_data(filters, conditions):
 		f"""
         SELECT
             sed.batch_no,
+            COALESCE(b.parent_batch,
+                CASE
+                    WHEN INSTR(sed.batch_no, '-A') > 0 THEN SUBSTRING_INDEX(sed.batch_no, '-A', 1)
+                    ELSE sed.batch_no
+                END
+            ) as parent_batch,
             sed.qty,
             sed.item_code,
-            sed.is_finished_item
+            sed.is_finished_item,
+            se.manufacturing_work_order
         FROM `tabStock Entry Detail` sed
         JOIN `tabStock Entry` se ON se.name = sed.parent
+        LEFT JOIN `tabBatch` b ON b.name = sed.batch_no
         WHERE se.stock_entry_type = 'Subcontracting Repack'
         {conditions}
     """,
@@ -179,22 +192,11 @@ def get_parent_batch(batch):
 	return batch
 
 
-def get_customer_from_work_order(wo):
-	if not wo:
-		return None
-	meta = frappe.get_meta("Work Order")
-
-	if meta.get_field("customer"):
-		return frappe.db.get_value("Work Order", wo, "customer")
-
-	if meta.get_field("sales_order"):
-		sales_order = frappe.db.get_value("Work Order", wo, "sales_order")
-		if sales_order:
-			return frappe.db.get_value("Sales Order", sales_order, "customer")
-
-	if meta.get_field("custom_customer"):
-		return frappe.db.get_value("Work Order", wo, "custom_customer")
-
+def get_customer_from_maufacturing_work_order(mwo):
+	if not mwo:
+		return
+	if frappe.db.exists("Manufacturing Work Order", mwo):
+		return frappe.db.get_value("Manufacturing Work Order", mwo, "customer")
 	return None
 
 

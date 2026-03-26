@@ -6,7 +6,10 @@ import frappe
 
 def create_parent_batches(doc, method=None):
 	if doc.doctype == "Stock Entry":
-		if getattr(doc, "stock_entry_type", None) != "Customer Goods Received":
+		if getattr(doc, "stock_entry_type", None) not in [
+			"Customer Goods Received",
+			"Subcontracting Repack",
+		]:
 			return
 
 	elif doc.doctype == "Purchase Receipt":
