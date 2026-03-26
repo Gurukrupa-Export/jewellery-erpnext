@@ -1,17 +1,21 @@
-import frappe
 import json
+
+import frappe
 from frappe import _
 from frappe.query_builder import DocType
 from frappe.utils import flt
+
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
-	update_mop_balance
+	update_mop_balance,
 )
 
 
 def valid_reparing_or_next_operation(self, mwo_list):
 	if self.type == "Issue":
 		if not mwo_list:
-			mwo_list = [row.manufacturing_work_order for row in self.department_ir_operation]
+			mwo_list = [
+				row.manufacturing_work_order for row in self.department_ir_operation
+			]
 
 		DepartmentIR = DocType("Department IR")
 		DepartmentIROperation = DocType("Department IR Operation")
@@ -38,10 +42,16 @@ def valid_reparing_or_next_operation(self, mwo_list):
 	if self.type == "Receive" and self.receive_against:
 		if existing := frappe.db.exists(
 			"Department IR",
-			{"receive_against": self.receive_against, "name": ["!=", self.name], "docstatus": ["!=", 2]},
+			{
+				"receive_against": self.receive_against,
+				"name": ["!=", self.name],
+				"docstatus": ["!=", 2],
+			},
 		):
 			frappe.throw(
-				_("Department IR: {0} already exists for Issue: {1}").format(existing, self.receive_against)
+				_("Department IR: {0} already exists for Issue: {1}").format(
+					existing, self.receive_against
+				)
 			)
 
 
@@ -56,9 +66,9 @@ def validate_mwo(self):
 		if is_finding_mwo:
 			if not self.is_finding:
 				frappe.throw(
-					_("Finding MWO {0} not allowd to transfer in {1} Department.").format(
-						i.manufacturing_work_order, self.next_department
-					)
+					_(
+						"Finding MWO {0} not allowd to transfer in {1} Department."
+					).format(i.manufacturing_work_order, self.next_department)
 				)
 
 
@@ -148,11 +158,21 @@ def validate_and_update_gross_wt_from_mop(self):
 			or previous_mop_data.get("gross_wt")
 		)
 		row.net_wt = mop_data.get("net_wt") or previous_mop_data.get("net_wt")
-		row.diamond_wt = mop_data.get("diamond_wt") or previous_mop_data.get("diamond_wt")
-		row.finding_wt = mop_data.get("finding_wt") or previous_mop_data.get("finding_wt")
-		row.diamond_pcs = mop_data.get("diamond_pcs") or previous_mop_data.get("diamond_pcs")
-		row.gemstone_pcs = mop_data.get("gemstone_pcs") or previous_mop_data.get("gemstone_pcs")
-		row.gemstone_wt = mop_data.get("gemstone_wt") or previous_mop_data.get("gemstone_wt")
+		row.diamond_wt = mop_data.get("diamond_wt") or previous_mop_data.get(
+			"diamond_wt"
+		)
+		row.finding_wt = mop_data.get("finding_wt") or previous_mop_data.get(
+			"finding_wt"
+		)
+		row.diamond_pcs = mop_data.get("diamond_pcs") or previous_mop_data.get(
+			"diamond_pcs"
+		)
+		row.gemstone_pcs = mop_data.get("gemstone_pcs") or previous_mop_data.get(
+			"gemstone_pcs"
+		)
+		row.gemstone_wt = mop_data.get("gemstone_wt") or previous_mop_data.get(
+			"gemstone_wt"
+		)
 		row.other_wt = mop_data.get("other_wt") or previous_mop_data.get("other_wt")
 		mwo_list.append(row.manufacturing_work_order)
 
@@ -161,21 +181,34 @@ def validate_and_update_gross_wt_from_mop(self):
 
 def update_previous_mop_data(doc):
 	previous_data = frappe.db.get_value(
-		"Manufacturing Operation", doc.previous_mop, ["received_gross_wt", "received_net_wt"], as_dict=1
+		"Manufacturing Operation",
+		doc.previous_mop,
+		["received_gross_wt", "received_net_wt"],
+		as_dict=1,
 	)
 
 	if previous_data:
 		if not previous_data.get("received_net_wt"):
-			frappe.db.set_value("Manufacturing Operation", doc.previous_mop, "received_net_wt", doc.net_wt)
+			frappe.db.set_value(
+				"Manufacturing Operation",
+				doc.previous_mop,
+				"received_net_wt",
+				doc.net_wt,
+			)
 
 		if not previous_data.get("received_gross_wt"):
 			frappe.db.set_value(
-				"Manufacturing Operation", doc.previous_mop, "received_gross_wt", doc.gross_wt
+				"Manufacturing Operation",
+				doc.previous_mop,
+				"received_gross_wt",
+				doc.gross_wt,
 			)
 
 
 def validate_allowed_operation(manufacturing_work_order, next_department):
-	customer = frappe.db.get_value("Manufacturing Work Order", manufacturing_work_order, "customer")
+	customer = frappe.db.get_value(
+		"Manufacturing Work Order", manufacturing_work_order, "customer"
+	)
 
 	ignored_department = []
 	if customer:
@@ -195,19 +228,23 @@ def validate_duplicate(self):
 
 	duplicates = (
 		frappe.qb.from_(DIP)
-		.left_join(DI)
-		.on(DIP.parent == DI.name)
+		.join(DI)
+		.on((DIP.parent == DI.name) and (DIP.name in duplicates_ir_child))
 		.select(DIP.manufacturing_operation)
+		.distinct()
 		.where(
-			(DI.docstatus != 2)
-			& (DI.name != self.name)
+			(DIP.manufacturing_operation.isin(mop_list))
 			& (DI.type == self.type)
-			& (DIP.manufacturing_operation.isin(mop_list))
+			& (DI.docstatus != 2)
+			& (DI.name != self.name)
 		)
 	).run(pluck="manufacturing_operation")
 
 	if duplicates:
-		frappe.throw(title=_("Department IR exists for MOP"), msg="{0}".format(", ".join(duplicates)))
+		frappe.throw(
+			title=_("Department IR exists for MOP"),
+			msg="{0}".format(", ".join(duplicates)),
+		)
 
 
 def validate_tolerance(doc, mop_data):
@@ -233,12 +270,13 @@ def validate_tolerance(doc, mop_data):
 	]
 	gemstone_fields = ["item", "quantity", "gemstone_type", "stone_shape"]
 	tolerance_name = frappe.db.get_value(
-		"Customer Product Tolerance Master", {"customer_name": customer, "product_tolerance": "Yes"}
+		"Customer Product Tolerance Master",
+		{"customer_name": customer, "product_tolerance": "Yes"},
 	) or frappe.db.get_value(
-		"Customer Product Tolerance Master", {"is_standard": 1, "product_tolerance": "Yes"}
+		"Customer Product Tolerance Master",
+		{"is_standard": 1, "product_tolerance": "Yes"},
 	)
 	if tolerance_name:
-
 		for row in frappe.db.get_all(
 			"Metal Tolerance Table",
 			{"parent": tolerance_name},
@@ -312,7 +350,9 @@ def validate_tolerance(doc, mop_data):
 
 	temp_data = []
 	for row in ["BOM Metal Detail", "BOM Finding Detail"]:
-		temp_data += frappe.db.get_all(row, {"parent": mop_details.design_id_bom}, metal_fields)
+		temp_data += frappe.db.get_all(
+			row, {"parent": mop_details.design_id_bom}, metal_fields
+		)
 
 	for row in temp_data:
 		if row.metal_type and tolerance_data.get(row.metal_type):
@@ -326,7 +366,9 @@ def validate_tolerance(doc, mop_data):
 
 	temp_data = []
 	for row in ["BOM Diamond Detail"]:
-		temp_data += frappe.db.get_all(row, {"parent": mop_details.design_id_bom}, diamond_fields)
+		temp_data += frappe.db.get_all(
+			row, {"parent": mop_details.design_id_bom}, diamond_fields
+		)
 
 	for row in temp_data:
 		if (
@@ -350,7 +392,9 @@ def validate_tolerance(doc, mop_data):
 
 	temp_data = []
 	for row in ["BOM Gemstone Detail"]:
-		temp_data += frappe.db.get_all(row, {"parent": mop_details.design_id_bom}, gemstone_fields)
+		temp_data += frappe.db.get_all(
+			row, {"parent": mop_details.design_id_bom}, gemstone_fields
+		)
 
 	for row in temp_data:
 		if tolerance_data.get(row.gemstone_type):
