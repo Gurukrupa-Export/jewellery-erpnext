@@ -8,6 +8,9 @@ from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
 from frappe.utils import get_link_to_form
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom import (
+				set_item_variant,
+			)
 
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
@@ -66,6 +69,13 @@ class ParentManufacturingOrder(Document):
 				self.metal_purity = metal_purity
 
 	def after_insert(self):
+		if self.custom_tracking_bom:
+				frappe.db.set_value("Tracking Bom",
+					   self.custom_tracking_bom,
+					   {
+					   "reference_doctype":self.doctype,
+					   "reference_docname":self.name
+					   })
 		if self.serial_no:
 			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
 				self.db_set("serial_id_bom", serial_bom)
@@ -90,20 +100,20 @@ class ParentManufacturingOrder(Document):
 				],
 				as_dict=1,
 			)
-
-			metal_department = warehouse_details.get("default_department") or None
+		
+			metal_department = warehouse_details.get("default_department")
 			diamond_department = (
-				warehouse_details.get("default_diamond_department") or None
-			)
+					warehouse_details.get("default_diamond_department") or None
+				)
 			gemstone_department = (
-				warehouse_details.get("default_gemstone_department") or None
-			)
+					warehouse_details.get("default_gemstone_department") or None
+				)
 			finding_department = (
-				warehouse_details.get("default_finding_department") or None
-			)
+					warehouse_details.get("default_finding_department") or None
+				)
 			other_material_department = (
-				warehouse_details.get("default_other_material_department") or None
-			)
+					warehouse_details.get("default_other_material_department") or None
+				)
 
 			self.db_set("metal_department", metal_department)
 			self.db_set("diamond_department", diamond_department)
@@ -173,7 +183,7 @@ class ParentManufacturingOrder(Document):
 					metal.metal_purity = metal_data[metal.metal_type][metal.metal_touch]
 
 		bom.save()
-		bom.submit()
+		# bom.submit()
 
 	def update_estimated_delivery_date_in_prev_docs(self):
 		frappe.db.set_value(
@@ -190,6 +200,11 @@ class ParentManufacturingOrder(Document):
 		)
 		if not bom:
 			frappe.throw(_("BOM is missing"))
+	
+		bom_doc = frappe.get_doc("BOM", bom)
+		if bom_doc.get("bom_type") == "Template":
+			set_item_variant(bom_doc)
+			bom_doc.save(ignore_permissions=True)
 
 		# Initialize separate lists for each item type
 		bom_tables = [
@@ -551,6 +566,7 @@ def make_manufacturing_order(
 		# )
 
 		doc.sales_order = row.sales_order
+		doc.custom_tracking_bom = row.custom_tracking_bom
 		doc.sales_order_item = row.docname
 		doc.item_code = row.item_code
 		doc.metal_type = so_det.get("metal_type")

@@ -37,6 +37,15 @@ class ManufacturingWorkOrder(Document):
 		else:
 			color = self.metal_colour.split("+")
 			self.color = "".join([word[0] for word in color if word])
+			
+	def after_insert(self):
+		if self.custom_tracking_bom:
+			frappe.db.set_value("Tracking Bom",
+							   self.custom_tracking_bom,
+							   {
+							   "reference_doctype":self.doctype,
+							   "reference_docname":self.name
+							   })
 
 	def on_submit(self):
 		if self.for_fg:
@@ -274,11 +283,20 @@ def create_manufacturing_operation(doc):
 	if doc.split_from:
 		department = doc.department
 		operation = None
+	
 	mop.status = status
 	mop.type = "Manufacturing Work Order"
 	mop.operation = operation
+	mop.custom_tracking_bom = doc.custom_tracking_bom
 	mop.department = department
 	mop.save()
+	if mop.custom_tracking_bom:
+		frappe.db.set_value("Tracking Bom",
+					   mop.custom_tracking_bom,
+					   {
+					   "reference_doctype":mop.doctype,
+					   "reference_docname":mop.name
+					   })
 	mop.db_set("employee", None)
 	doc.db_set("manufacturing_operation", mop.name)
 	values = {"operation": operation}
