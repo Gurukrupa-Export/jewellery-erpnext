@@ -90,13 +90,6 @@
   "gemstone_wt",
   "diamond_pcs",
   "gemstone_pcs",
-  "section_break_pnns",
-  "mop_balance_table",
-  "section_break_sdty",
-  "department_source_table",
-  "department_target_table",
-  "employee_source_table",
-  "employee_target_table",
   "section_break_vwqj",
   "stock_summery",
   "stock_entry",
@@ -634,60 +627,11 @@
    "hidden": 1
   },
   {
-   "fieldname": "department_source_table",
-   "fieldtype": "Table",
-   "label": "Department Source Table",
-   "no_copy": 1,
-   "options": "Department Source Table",
-   "permlevel": 1,
-   "read_only": 1
-  },
-  {
-   "fieldname": "department_target_table",
-   "fieldtype": "Table",
-   "label": "Department Target Table",
-   "no_copy": 1,
-   "options": "Department Target Table",
-   "permlevel": 1,
-   "read_only": 1
-  },
-  {
-   "fieldname": "employee_source_table",
-   "fieldtype": "Table",
-   "label": "Employee Source Table",
-   "no_copy": 1,
-   "options": "Employee Source Table",
-   "permlevel": 1,
-   "read_only": 1
-  },
-  {
-   "fieldname": "employee_target_table",
-   "fieldtype": "Table",
-   "label": "Employee Target Table",
-   "no_copy": 1,
-   "options": "Employee Target Table",
-   "permlevel": 1,
-   "read_only": 1
-  },
-  {
    "collapsible": 1,
    "fieldname": "section_break_vwqj",
    "fieldtype": "Section Break",
    "hidden": 1,
    "label": "HTML Table's"
-  },
-  {
-   "fieldname": "section_break_sdty",
-   "fieldtype": "Section Break"
-  },
-  {
-   "fieldname": "mop_balance_table",
-   "fieldtype": "Table",
-   "in_filter": 1,
-   "in_standard_filter": 1,
-   "label": "Balance Table",
-   "options": "MOP Balance Table",
-   "read_only": 1
   },
   {
    "fieldname": "time_log_tab",
@@ -744,11 +688,6 @@
    "label": "Previous MOP",
    "options": "Manufacturing Operation",
    "read_only": 1
-  },
-  {
-   "fieldname": "section_break_pnns",
-   "fieldtype": "Section Break",
-   "label": "Department Timer"
   },
   {
    "fieldname": "department_time_logs",
@@ -842,11 +781,11 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2025-09-02 19:56:05.128076",
+ "modified": "2026-03-11 12:04:40.149095",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",
- "naming_rule": "Expression",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {
@@ -862,6 +801,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "show_preview_popup": 1,
  "show_title_field_in_link": 1,
  "sort_field": "modified",

@@ -62,7 +62,7 @@ def validate_duplication_and_gr_wt(self):
 				"gemstone_pcs": mop_doc.gemstone_pcs,
 			}
 		)
-		validate_gross_wt(row, precision)
+		validate_gross_wt(row, precision, main_slip=self.main_slip)
 
 	if loss_details:
 		return loss_details
@@ -112,12 +112,21 @@ def validate_manually_book_loss_details(self):
 	for row in self.manually_book_loss_details:
 		if not row.manufacturing_operation:
 			continue
-		filter = {
-			"parent": row.manufacturing_operation,
-			"item_code": row.item_code,
-			"batch_no": row.batch_no,
-		}
-		balance_qty = frappe.db.get_value("MOP Balance Table", filter, "qty")
+		# Query MOP Log for latest balance instead of MOP Balance Table
+		balance_qty = (
+			frappe.db.get_value(
+				"MOP Log",
+				{
+					"manufacturing_operation": row.manufacturing_operation,
+					"item_code": row.item_code,
+					"batch_no": row.batch_no,
+					"is_cancelled": 0,
+				},
+				"qty_after_transaction_batch_based",
+				order_by="creation desc",
+			)
+			or 0
+		)
 		if row.proportionally_loss > balance_qty:
 			frappe.throw(
 				_(
