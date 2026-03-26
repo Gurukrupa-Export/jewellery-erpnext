@@ -1625,7 +1625,7 @@ let get_items = (frm) => {
                                     }
 
                                     frm.refresh_field("items");
-                                    frm.set_value("from_sales_invoice", 1);
+                                    // frm.set_value("from_sales_invoice", 1);
                                 } else {
                                     frappe.msgprint(__("No items found in the selected Sales Invoices."));
                                 }
