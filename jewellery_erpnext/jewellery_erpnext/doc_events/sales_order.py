@@ -1769,11 +1769,11 @@ def create_new_bom1(self):
 				doc.diamond_ratio = (
 					flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
 				)
-				doc.gross_weight = (
+				doc.gross_weight = round(
 					flt(doc.metal_and_finding_weight)
 					+ flt(doc.total_diamond_weight_in_gms)
 					+ flt(doc.total_gemstone_weight_in_gms)
-					+ flt(doc.total_other_weight)
+					+ flt(doc.total_other_weight),2
 				)
 				doc.metal_to_diamond_ratio_excl_of_finding=(
 					flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
