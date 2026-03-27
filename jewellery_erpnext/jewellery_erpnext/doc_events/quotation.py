@@ -265,7 +265,7 @@ def validate_invoice_item(self):
 		aggregated_gemstone_items = {}
 
 		for item in self.items:
-			if not row.get("item_code") or row.get("copy_bom"):
+			if not item.get("item_code") or item.get("copy_bom"):
 				continue
 
 			bom = frappe.qb.DocType("BOM")
@@ -273,9 +273,9 @@ def validate_invoice_item(self):
 				frappe.qb.from_(bom)
 				.select(bom.name)
 				.where(
-					(bom.item == row.get("item_code"))
+					(bom.item == item.get("item_code"))
 					& (
-						(bom.tag_no == row.get("serial_no"))
+						(bom.tag_no == item.get("serial_no"))
 						| (
 							(bom.bom_type == "Finished Goods")
 							& (bom.is_active == 1)
@@ -286,7 +286,7 @@ def validate_invoice_item(self):
 				)
 				.orderby(
 					frappe.qb.terms.Case()
-					.when(bom.tag_no == row.get("serial_no"), 1)
+					.when(bom.tag_no == item.get("serial_no"), 1)
 					.when(bom.bom_type == "Finished Goods", 2)
 					.when(bom.bom_type == "Template", 3)
 					.else_(0),
@@ -296,15 +296,15 @@ def validate_invoice_item(self):
 			)
 			bom_result = query.run(as_dict=True)
 
-			if row.order_form_type == "Order":
-				mod_reason = frappe.db.get_value("Order", row.order_form_id, "mod_reason")
-				if "F-G" in row.item_code or mod_reason == "Change in Metal Touch":
-					new_bom = frappe.db.get_value("Order", row.order_form_id, "new_bom")
+			if item.order_form_type == "Order":
+				mod_reason = frappe.db.get_value("Order", item.order_form_id, "mod_reason")
+				if "F-G" in item.item_code or mod_reason == "Change in Metal Touch":
+					new_bom = frappe.db.get_value("Order", item.order_form_id, "new_bom")
 					if new_bom:
 						bom_result = [{"name": new_bom}]
 
 			if bom_result:
-				row.db_set("copy_bom", bom_result[0].get("name"))
+				item.db_set("copy_bom", bom_result[0].get("name"))
 
 			if item.custom_tracking_bom:
 				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
