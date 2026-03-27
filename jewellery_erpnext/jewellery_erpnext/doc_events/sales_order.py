@@ -1041,6 +1041,7 @@ def create_new_bom1(self):
 							self.customer,
 							"custom_gemstone_price_list_type"
 						)
+						gem.quantity=round(gem.quantity,stone_precision)
 						# frappe.throw(f"{gemstone_price_list_customer}")
 						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
 							gem.total_gemstone_rate = gem.fg_purchase_rate
@@ -1747,7 +1748,7 @@ def create_new_bom1(self):
 				doc.total_diamond_weight_in_gms = round(sum(row.quantity for row in doc.diamond_detail)/5,2)
 				doc.total_gemstone_weight = sum(row.quantity for row in doc.gemstone_detail)
 				doc.custom_total_gemstone_weight2_digits=sum(row.quantity_3 for row in doc.gemstone_detail)
-				doc.gemstone_weight = doc.custom_total_gemstone_weight2_digits
+				doc.gemstone_weight = doc.total_gemstone_weight
 				doc.total_gemstone_weight_in_gms = round(sum(row.quantity for row in doc.gemstone_detail)/5,2)
 				doc.finding_weight = (sum(row.quantity for row in doc.finding_detail))
 				doc.custom_finding_weight2_digits = (sum(row.quantity_3 for row in doc.finding_detail))
