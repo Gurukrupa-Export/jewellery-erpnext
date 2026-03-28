@@ -1591,6 +1591,9 @@ let get_items = (frm) => {
                                     let goldRates = r.message.gold_rates;
 
                                     r.message.items.forEach((element) => {
+										if (!element.bom) {
+											return; 
+										}
                                         let target_row;
                                         const empty_row = frm.doc.items.find(row => !row.item_code);
 
