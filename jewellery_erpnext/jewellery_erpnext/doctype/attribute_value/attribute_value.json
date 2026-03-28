@@ -63,7 +63,9 @@
   "finding_size_and_weights",
   "subcategory",
   "section_break_15",
-  "diamond_sieve_size"
+  "diamond_sieve_size",
+  "section_break_pofy",
+  "cad_designer_pricing"
  ],
  "fields": [
   {
@@ -394,12 +396,23 @@
    "fieldtype": "Link",
    "label": "Default Sales Type",
    "options": "Sales Type"
+  },
+  {
+   "fieldname": "section_break_pofy",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "cad_designer_pricing",
+   "fieldtype": "Table",
+   "label": "CAD Designer Pricing",
+   "options": "CAD Designer Pricing"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-01-08 13:26:08.532292",
- "modified_by": "Administrator",
+ "modified": "2026-03-13 14:22:07.229980",
+ "modified_by": "shubham_k@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Attribute Value",
  "naming_rule": "By fieldname",
@@ -418,6 +431,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
