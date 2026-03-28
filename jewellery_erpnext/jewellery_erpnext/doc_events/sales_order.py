@@ -3125,10 +3125,10 @@ def validate_item_dharm(self):
 								
 								aggregated_finding_making_items[key]["qty"] += multiplied_qty
 								aggregated_finding_making_items[key]["amount"] += finding_making_amount
-								if aggregated_finding_making_items[key]["qty"] > 0:
-									aggregated_finding_making_items[key]["rate"] = aggregated_finding_making_items[key]["amount"] / aggregated_finding_making_items[key]["qty"]
-								else:
-									aggregated_finding_making_items[key]["rate"] = 0
+								# if aggregated_finding_making_items[key]["qty"] > 0:
+								# 	aggregated_finding_making_items[key]["rate"] = aggregated_finding_making_items[key]["amount"] / aggregated_finding_making_items[key]["qty"]
+								# else:
+								# 	aggregated_finding_making_items[key]["rate"] = 0
 								
 								tax_rate_decimal = aggregated_finding_making_items[key]["tax_rate"] / 100
 								aggregated_finding_making_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
