@@ -1370,7 +1370,8 @@ def create_new_bom1(self):
 								else:
 									s.making_amount = s.making_rate * s.quantity
 								s.wastage_rate=wastage
-								s.wastage_amount=s.wastage_rate*s.amount
+								s.wastage_amount = s.wastage_rate*s.amount  if self.customer != 'TNCU0101' else s.wastage_rate * s.quantity * self.gold_rate
+
 						
 						# frappe.set_value(s.doctype, s.name, "rate", s.rate)
 					doc.total_metal_amount = sum(flt((r.amount)) for r in doc.get("metal_detail", []))
@@ -1538,7 +1539,8 @@ def create_new_bom1(self):
 
 								f.making_rate = making_rate
 								f.wastage_rate = wastage_rate
-								f.wastage_amount = wastage_rate * f.amount
+								f.wastage_amount = f.wastage_rate*f.amount  if self.customer != 'TNCU0101' else f.wastage_rate * f.quantity * self.gold_rate
+
 
 						# total_finding_amount += f.amount
 						# total_finding_making_amount += f.making_amount
@@ -1748,7 +1750,7 @@ def create_new_bom1(self):
 				doc.total_diamond_weight_in_gms = round(sum(row.quantity for row in doc.diamond_detail)/5,2)
 				doc.total_gemstone_weight = sum(row.quantity for row in doc.gemstone_detail)
 				doc.custom_total_gemstone_weight2_digits=sum(row.quantity_3 for row in doc.gemstone_detail)
-				doc.gemstone_weight = doc.total_gemstone_weight
+				doc.gemstone_weight = sum(row.quantity for row in doc.gemstone_detail)
 				doc.total_gemstone_weight_in_gms = round(sum(row.quantity for row in doc.gemstone_detail)/5,2)
 				doc.finding_weight = (sum(row.quantity for row in doc.finding_detail))
 				doc.custom_finding_weight2_digits = (sum(row.quantity_3 for row in doc.finding_detail))
