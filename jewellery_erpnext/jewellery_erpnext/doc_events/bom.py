@@ -354,7 +354,7 @@ def validate_weight(self):
 		if row.quantity and row.pcs:
 			qty = float(row.quantity)
 			pcs = float(row.pcs)
-			total_gemstone_weight += pcs * qty
+			total_gemstone_weight += qty
 
 	self.metal_weight = total_metal_quantity
 	self.diamond_weight = total_diamond_weight
