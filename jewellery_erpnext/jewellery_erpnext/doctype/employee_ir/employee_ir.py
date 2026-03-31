@@ -332,7 +332,6 @@ class EmployeeIR(Document):
 				create_mop_log_for_employee_ir_receive(
 					self, row, actor_wh, department_wh
 				)
-				create_stock_reservation_for_receive(self, row, department_wh)
 				new_operation.save()
 			else:
 				# Cancel: mark MOP Logs as cancelled

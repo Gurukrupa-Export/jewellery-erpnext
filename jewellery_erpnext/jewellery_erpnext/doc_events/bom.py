@@ -22,54 +22,52 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 def before_validate(self, method):
 	validate_rating(self)
 	validate_weight(self)
-	if self.bom_type == "Quotation" or self.docstatus == 1:
-		precision_data = frappe.db.get_value(
-			"Customer",
-			self.customer,
-			[
-				"custom_consider_2_digit_for_bom",
-				"custom_consider_2_digit_for_diamond",
-				"custom_consider_2_digit_for_gemstone",
-				"custom_gemstone_price_list_type",
-			],
-			as_dict=1,
+	# if self.bom_type == "Quotation" or self.docstatus == 1:
+	precision_data = frappe.db.get_value(
+		"Customer",
+		self.customer,
+		[
+			"custom_consider_2_digit_for_bom",
+			"custom_consider_2_digit_for_diamond",
+			"custom_consider_2_digit_for_gemstone",
+			"custom_gemstone_price_list_type",
+		],
+		as_dict=1,
+	)
+
+	gemstone_price_list_type = None
+
+	if self.customer:
+		self.doc_pricision = (
+			2 if precision_data.get("custom_consider_2_digit_for_bom") else 3
+		)
+		self.diamond_pricision = (
+			2 if precision_data.get("custom_consider_2_digit_for_diamond") else 3
+		)
+		self.gemstone_pricision = (
+			2 if precision_data.get("custom_consider_2_digit_for_gemstone") else 3
+		)
+		gemstone_price_list_type = precision_data.get("custom_gemstone_price_list_type")
+	else:
+		self.doc_pricision = 3
+		self.diamond_pricision = 3
+		self.gemstone_pricision = 3
+
+	if self.customer and not gemstone_price_list_type:
+		frappe.throw(
+			_("Gemstone Price list type not mentioned into customer {0}").format(
+				self.customer
+			)
 		)
 
-		gemstone_price_list_type = None
+	if gemstone_price_list_type:
+		for row in self.gemstone_detail:
+			row.price_list_type = gemstone_price_list_type
 
-		if self.customer:
-			self.doc_pricision = (
-				2 if precision_data.get("custom_consider_2_digit_for_bom") else 3
-			)
-			self.diamond_pricision = (
-				2 if precision_data.get("custom_consider_2_digit_for_diamond") else 3
-			)
-			self.gemstone_pricision = (
-				2 if precision_data.get("custom_consider_2_digit_for_gemstone") else 3
-			)
-			gemstone_price_list_type = precision_data.get(
-				"custom_gemstone_price_list_type"
-			)
-		else:
-			self.doc_pricision = 3
-			self.diamond_pricision = 3
-			self.gemstone_pricision = 3
-
-		if self.customer and not gemstone_price_list_type:
-			frappe.throw(
-				_("Gemstone Price list type not mentioned into customer {0}").format(
-					self.customer
-				)
-			)
-
-		if gemstone_price_list_type:
-			for row in self.gemstone_detail:
-				row.price_list_type = gemstone_price_list_type
-
-		system_item_validation(self)
-		set_item_variant(self)
-		set_bom_items(self)
-		update_specifications(self)
+	system_item_validation(self)
+	set_item_variant(self)
+	set_bom_items(self)
+	update_specifications(self)
 
 
 def validate(self, method):
@@ -199,7 +197,7 @@ def set_item_variant(self):
 				temp_variant.setdefault("attributes", variant_attributes)
 
 				make_variant_item_code(row.item, item_name, temp_variant)
-				
+
 				if self.custom_creation_doctype == "Quotation":
 					return
 

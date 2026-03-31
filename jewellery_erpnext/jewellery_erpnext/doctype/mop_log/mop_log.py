@@ -50,6 +50,7 @@ def update_wt_detail(manufacturing_operation):
 		gemstone_wt_in_gram,
 		other_wt,
 		previous_mop,
+		loss_wt,
 	) = frappe.db.get_value(
 		"Manufacturing Operation",
 		manufacturing_operation,
@@ -60,6 +61,7 @@ def update_wt_detail(manufacturing_operation):
 			"gemstone_wt_in_gram",
 			"other_wt",
 			"previous_mop",
+			"loss_wt",
 		],
 	)
 	prev_gross_wt = 0
@@ -68,16 +70,24 @@ def update_wt_detail(manufacturing_operation):
 			frappe.db.get_value("Manufacturing Operation", previous_mop, "gross_wt")
 			or 0
 		)
+	gross_wt = (
+		flt(net_wt)
+		+ flt(finding_wt)
+		+ flt(diamond_wt_in_gram)
+		+ flt(gemstone_wt_in_gram)
+		+ flt(other_wt)
+	)
+	if loss_wt:
+		if loss_wt > 0:
+			gross_wt += flt(loss_wt)
+		elif loss_wt < 0:
+			gross_wt -= abs(flt(loss_wt))
 
 	frappe.db.set_value(
 		"Manufacturing Operation",
 		manufacturing_operation,
 		{
-			"gross_wt": flt(net_wt)
-			+ flt(finding_wt)
-			+ flt(diamond_wt_in_gram)
-			+ flt(gemstone_wt_in_gram)
-			+ flt(other_wt),
+			"gross_wt": gross_wt,
 			"prev_gross_wt": prev_gross_wt,
 		},
 	)
@@ -177,15 +187,35 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	mop_log.save()
 
 
+def get_last_mop_index(manufacturing_operation, voucher_type=None, voucher_no=None):
+	filters = {"manufacturing_operation": manufacturing_operation, "is_cancelled": 0}
+	if voucher_type:
+		filters["voucher_type"] = voucher_type
+	if voucher_no:
+		filters["voucher_no"] = voucher_no
+
+	last_log = frappe.db.get_value("MOP Log", filters, "max(flow_index) as flow_index")
+	return last_log or None
+
+
 def create_mop_log_for_department_ir(
 	self, row, to_warehouse, from_warehouse, operation
 ):
+	flow_index = (
+		get_last_mop_index(row.manufacturing_operation, voucher_type="Department IR")
+		or None
+	)
+	print(flow_index)
+	filters = {
+		"manufacturing_operation": row.manufacturing_operation,
+		"voucher_type": "Department IR",
+		"is_cancelled": 0,
+	}
+	if flow_index:
+		filters["flow_index"] = flow_index
 	mop_logs = frappe.db.get_all(
 		"MOP Log",
-		{
-			"manufacturing_operation": row.manufacturing_operation,
-			"is_cancelled": 0,
-		},
+		filters,
 		select_fields,
 		order_by="creation asc",
 	)
