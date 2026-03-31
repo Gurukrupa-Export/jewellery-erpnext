@@ -34,7 +34,11 @@ def validate(self, method):
 	self.calculate_taxes_and_totals()
 	if self.workflow_state == "Creating BOM":
 		frappe.enqueue(
-			create_bom_sceintifically, self=self, queue="long", timeout=10000
+			create_bom_sceintifically,
+			self=self,
+			queue="long",
+			timeout=10000,
+			enqueue_after_commit=True,
 		)
 	if self.docstatus == 0:
 		calculate_gst_rate(self)
@@ -68,7 +72,8 @@ def on_cancel(self, method):
 
 
 def before_submit(self, method):
-	validate_invoice_item(self)	
+	validate_invoice_item(self)
+
 
 def submit_bom(self):
 	pass
@@ -297,9 +302,13 @@ def validate_invoice_item(self):
 			bom_result = query.run(as_dict=True)
 
 			if item.order_form_type == "Order":
-				mod_reason = frappe.db.get_value("Order", item.order_form_id, "mod_reason")
+				mod_reason = frappe.db.get_value(
+					"Order", item.order_form_id, "mod_reason"
+				)
 				if "F-G" in item.item_code or mod_reason == "Change in Metal Touch":
-					new_bom = frappe.db.get_value("Order", item.order_form_id, "new_bom")
+					new_bom = frappe.db.get_value(
+						"Order", item.order_form_id, "new_bom"
+					)
 					if new_bom:
 						bom_result = [{"name": new_bom}]
 
