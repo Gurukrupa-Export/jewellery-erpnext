@@ -28,8 +28,8 @@ def before_validate(self, method):
 					self.append("invoice_item", duplicate_row)
 
 		for row in self.items:
-			if row.serial_no:
-				row.bom = frappe.db.get_value("BOM", {"tag_no": row.serial_no}, "name")
+			# if row.serial_no:
+			# 	row.bom = frappe.db.get_value("BOM", {"tag_no": row.serial_no}, "name")
 			
 				if row.bom:
 					gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
