@@ -1481,6 +1481,7 @@ def create_new_bom1(self):
 						gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
 						customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{f.metal_type}' and metal_touch = '{f.metal_touch}'""",as_dict=True)[0]['metal_purity']
 						calculated_gold_rate = (float(customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
+						f.customer_metal_purity = customer_metal_purity
 							# frappe.throw(f"{finding_cache[finding_type] }")
 						if f.is_customer_item:
 							f.rate= 0
