@@ -560,10 +560,10 @@ def stock_reservation_entry_for_mwo(self):
 					"Parent Manufacturing Order and Manufacturing Work Order is required to create Stock Reservation Entry"
 				)
 			)
-		sales_order, sales_order_item = frappe.get_cached_value(
+		sales_order, sales_order_item, manufacturer = frappe.get_cached_value(
 			"Parent Manufacturing Order",
 			self.manufacturing_order,
-			["sales_order", "sales_order_item"],
+			["sales_order", "sales_order_item", "manufacturer"],
 		)
 		voucher_qty = frappe.db.get_values(
 			"Material Request",
@@ -574,7 +574,7 @@ def stock_reservation_entry_for_mwo(self):
 			voucher_qty = voucher_qty[0][0]
 			addition_maximum_item__tolerance_percentage = frappe.db.get_value(
 				"Manufacturing Setting",
-				self.manufacturer,
+				self.manufacturer or manufacturer,
 				"addition_maximum_item__tolerance_percentage",
 			)
 			voucher_qty = voucher_qty + (

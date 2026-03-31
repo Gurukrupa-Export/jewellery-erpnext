@@ -228,15 +228,14 @@ def validate_duplicate(self):
 
 	duplicates = (
 		frappe.qb.from_(DIP)
-		.join(DI)
-		.on((DIP.parent == DI.name) and (DIP.name in duplicates_ir_child))
+		.left_join(DI)
+		.on(DIP.parent == DI.name)
 		.select(DIP.manufacturing_operation)
-		.distinct()
 		.where(
-			(DIP.manufacturing_operation.isin(mop_list))
-			& (DI.type == self.type)
-			& (DI.docstatus != 2)
+			(DI.docstatus != 2)
 			& (DI.name != self.name)
+			& (DI.type == self.type)
+			& (DIP.manufacturing_operation.isin(mop_list))
 		)
 	).run(pluck="manufacturing_operation")
 

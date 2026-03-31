@@ -62,7 +62,7 @@ def validate_duplication_and_gr_wt(self):
 				"gemstone_pcs": mop_doc.gemstone_pcs,
 			}
 		)
-		validate_gross_wt(row, precision, main_slip=self.main_slip)
+		# validate_gross_wt(row, precision, main_slip=self.main_slip)
 
 	if loss_details:
 		return loss_details
