@@ -1858,7 +1858,7 @@ let set_edit_bom_details = (
 					gemstone_quality: d.gemstone_quality,
 					gemstone_grade: d.gemstone_grade,
 					gemstone_size: d.gemstone_size,
-					quantity: quantity_value,  
+					quantity: d.quantity,  
 					quantity_3: d.quantity_3,
 					total_gemstone_rate: d.total_gemstone_rate,
 					gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
@@ -1867,7 +1867,7 @@ let set_edit_bom_details = (
 				});
 	
 				let grid = dialog.fields_dict.gemstone_detail.grid;
-				grid.update_docfield_property("quantity", "precision", precision);
+				// grid.update_docfield_property("quantity", "precision", precision);
 				
 	
 				// Refresh the grid
