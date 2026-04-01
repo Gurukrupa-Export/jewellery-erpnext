@@ -27,9 +27,15 @@ def make_mop_stock_entry(self, **kwargs):
 				).format(kwargs.get("mop"))
 			)
 		new_se_doc = frappe.copy_doc(se_doc)
-
+		manufacturing_work_order, manufacturing_order = frappe.get_cached_value(
+			"Manufacturing Operation",
+			kwargs.get("mop"),
+			["manufacturing_work_order", "manufacturing_order"],
+		)
 		new_se_doc.stock_entry_type = "Material Transfer (WORK ORDER)"
 		new_se_doc.manufacturing_operation = kwargs.get("mop")
+		new_se_doc.manufacturing_order = manufacturing_order
+		new_se_doc.manufacturing_work_order = manufacturing_work_order
 		new_se_doc.auto_created = 1
 		new_se_doc.to_department = mop_data.get("department")
 		new_se_doc.add_to_transit = 0
