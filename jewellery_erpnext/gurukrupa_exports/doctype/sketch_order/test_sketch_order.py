@@ -11,13 +11,12 @@ from jewellery_erpnext.gurukrupa_exports.doctype.sketch_order_form.test_sketch_o
 
 
 class TestSketchOrder(FrappeTestCase):
-	@classmethod
-	def setUpClass(cls):
-		super().setUpClass()
-		cls.department = frappe.get_value(
+	def setUp(self):
+		self.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
-		cls.branch = frappe.get_value("Branch", {"branch_name": "Test_Branch"}, "name")
+		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		return super().setUp()
 
 	def test_sketch_order_purchase(self):
 		sketch_order_form = make_sketch_order_form(

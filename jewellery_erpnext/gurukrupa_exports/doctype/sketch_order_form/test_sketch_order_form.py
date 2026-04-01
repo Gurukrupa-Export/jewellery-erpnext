@@ -8,14 +8,13 @@ from frappe.utils import add_days, now
 
 
 class TestSketchOrderForm(FrappeTestCase):
-	@classmethod
-	def setUpClass(cls):
-		super().setUpClass()
+	def setUp(self):
 		create_test_data()
-		cls.department = frappe.get_value(
+		self.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
-		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		return super().setUp()
 
 	def test_sketch_order_created(self):
 		sk_ord_frm = make_sketch_order_form(
@@ -32,7 +31,7 @@ class TestSketchOrderForm(FrappeTestCase):
 		self.assertEqual(len(sketch_order), len(sk_ord_frm.order_details))
 		for i in range(len(sketch_order)):
 			row = sk_ord_frm.order_details[i]
-			sk_order = frappe.get_doc("Sketch Order", sketch_order[i])
+			sk_order = frappe.get_doc("Sketch Order", sketch_order[i].name)
 			(self.assertEqual(sk_ord_frm.name, sk_order.sketch_order_form),)
 			(self.assertEqual(row.category, sk_order.category),)
 			(self.assertEqual(row.setting_type, sk_order.setting_type),)
@@ -65,7 +64,7 @@ class TestSketchOrderForm(FrappeTestCase):
 
 		for i in range(len(sketch_order)):
 			row = sk_ord_frm.order_details[i]
-			sk_order = frappe.get_doc("Sketch Order", sketch_order[i])
+			sk_order = frappe.get_doc("Sketch Order", sketch_order[i].name)
 
 			(self.assertEqual(sk_ord_frm.name, sk_order.sketch_order_form),)
 			(self.assertEqual(row.category, sk_order.category),)
@@ -94,7 +93,7 @@ class TestSketchOrderForm(FrappeTestCase):
 		self.assertEqual(len(sketch_order), len(sk_ord_frm.order_details))
 		for i in range(len(sketch_order)):
 			row = sk_ord_frm.order_details[i]
-			sk_order = frappe.get_doc("Sketch Order", sketch_order[i])
+			sk_order = frappe.get_doc("Sketch Order", sketch_order[i].name)
 
 			(self.assertEqual(sk_ord_frm.name, sk_order.sketch_order_form),)
 			(self.assertEqual(row.category, sk_order.category),)

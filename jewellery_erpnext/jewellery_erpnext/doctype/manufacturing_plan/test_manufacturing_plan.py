@@ -18,16 +18,14 @@ class TestManufacturingPlan(FrappeTestCase):
 		self.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test_Branch"}, "name")
+		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 		return super().setUp()
 
 	def test_manufacturing_plan(self):
 		doc = frappe.new_doc("Manufacturing Plan")
 		doc.select_manufacture_order = "Manufacturing"
 		man_plan = manufacturing_plan_creation(doc)
-		man_plan.branch = frappe.get_value(
-			"Branch", {"branch_name": "Test_Branch"}, "name"
-		)
+		man_plan.branch = self.branch
 		if man_plan.setting_type:
 			man_plan.setting_type = "Close"
 		man_plan.save()
@@ -56,7 +54,7 @@ class TestManufacturingPlan(FrappeTestCase):
 		doc.select_manufacture_order = "Manufacturing"
 		man_plan = manufacturing_plan_creation(doc)
 		man_plan.branch = frappe.get_value(
-			"Branch", {"branch_name": "Test_Branch"}, "name"
+			"Branch", {"branch_name": "Test Branch"}, "name"
 		)
 		if man_plan.setting_type:
 			man_plan.setting_type = "Close"

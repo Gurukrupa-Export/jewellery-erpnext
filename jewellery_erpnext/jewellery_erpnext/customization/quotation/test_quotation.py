@@ -19,7 +19,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 
 class TestQuotation(FrappeTestCase):
 	def setUp(self):
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test_Branch"}, "name")
+		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 		customer_payment_terms()
 		return super().setUp()
 

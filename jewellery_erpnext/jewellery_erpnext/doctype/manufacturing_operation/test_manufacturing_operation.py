@@ -2,6 +2,7 @@
 # See license.txt
 
 import frappe
+from frappe.model.workflow import apply_workflow
 from frappe.tests.utils import FrappeTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
@@ -21,6 +22,14 @@ class TestManufacturingOperation(FrappeTestCase):
 	def test_manufacturing_operations(self):
 		mwo_list = mo_creation()
 		serial_no_mwo = None
+		mr_list = frappe.get_all(
+			"Material Request",
+			filters={
+				"manufacturing_order": mwo_list[0].manufacturing_order,
+				"docstatus": 0,
+			},
+			pluck="name",
+		)
 		for row in mwo_list:
 			if row.department == "Manufacturing Plan & Management - GEPL":
 				mwo = frappe.get_doc("Manufacturing Work Order", row.name)
@@ -30,11 +39,58 @@ class TestManufacturingOperation(FrappeTestCase):
 					filters={"manufacturing_work_order": mwo.name},
 				)
 
+				if mr_list:
+					mop_log_se = mop_log_creation(mr_list[0], mo_man)
+					sed = frappe.get_doc("Stock Entry Detail", mop_log_se.row_name)
+					self.assertEqual(mop_log_se.voucher_no, sed.parent)
+					self.assertEqual(mop_log_se.row_name, sed.name)
+					self.assertEqual(mop_log_se.item_code, sed.item_code)
+					self.assertEqual(mop_log_se.from_warehouse, sed.s_warehouse)
+					self.assertEqual(mop_log_se.to_warehouse, sed.t_warehouse)
+					self.assertEqual(mop_log_se.qty_change, sed.qty)
+					self.assertEqual(
+						mop_log_se.serial_and_batch_bundle, sed.serial_and_batch_bundle
+					)
+					self.assertEqual(mop_log_se.batch_no, sed.batch_no)
+					self.assertEqual(
+						mop_log_se.manufacturing_operation, sed.manufacturing_operation
+					)
+					print(mop_log_se.name)
+
 				dir_issue = dir_for_issue(
 					"Manufacturing Plan & Management - GEPL", "Waxing - GEPL", mo_man
 				)
 				mo_man.reload()
 				self.assertEqual("Finished", mo_man.status)
+				print(frappe.get_last_doc("MOP Log").name)
+
+				mop_log = frappe.get_doc(
+					"MOP Log",
+					frappe.get_value("MOP Log", filters={"voucher_no": dir_issue.name}),
+				)
+				from_warehouse = frappe.get_value(
+					"Warehouse",
+					{
+						"disabled": 0,
+						"department": dir_issue.current_department,
+						"warehouse_type": "Manufacturing",
+					},
+				)
+				to_warehouse = frappe.db.get_value(
+					"Warehouse",
+					{
+						"disabled": 0,
+						"department": dir_issue.next_department,
+						"warehouse_type": "Manufacturing",
+					},
+					"default_in_transit_warehouse",
+				)
+				self.assertEqual(mop_log.voucher_no, dir_issue.name)
+				self.assertEqual(mop_log.from_warehouse, from_warehouse)
+				self.assertEqual(mop_log.to_warehouse, to_warehouse)
+				self.assertEqual(
+					mop_log.row_name, dir_issue.department_ir_operation[0].name
+				)
 
 				mo_wax = frappe.get_last_doc("Manufacturing Operation")
 				self.assertIsNotNone(mo_wax.department_issue_id)
@@ -44,6 +100,37 @@ class TestManufacturingOperation(FrappeTestCase):
 				mo_wax.reload()
 				self.assertIsNotNone(mo_wax.department_receive_id)
 				self.assertEqual(mo_wax.department_receive_id, dir_receive.name)
+
+				mop_log = frappe.get_doc(
+					"MOP Log",
+					frappe.get_value(
+						"MOP Log", filters={"voucher_no": dir_receive.name}
+					),
+				)
+				to_warehouse = frappe.get_value(
+					"Warehouse",
+					{
+						"disabled": 0,
+						"department": dir_receive.current_department,
+						"warehouse_type": "Manufacturing",
+					},
+				)
+				from_warehouse = frappe.db.get_value(
+					"Warehouse",
+					{
+						"disabled": 0,
+						"department": dir_receive.current_department,
+						"warehouse_type": "Manufacturing",
+					},
+					"default_in_transit_warehouse",
+				)
+
+				self.assertEqual(mop_log.voucher_no, dir_receive.name)
+				self.assertEqual(mop_log.from_warehouse, from_warehouse)
+				self.assertEqual(mop_log.to_warehouse, to_warehouse)
+				self.assertEqual(
+					mop_log.row_name, dir_receive.department_ir_operation[0].name
+				)
 
 				eir_issue = frappe.new_doc("Employee IR")
 				eir_issue.department = "Waxing - GEPL"
@@ -58,6 +145,33 @@ class TestManufacturingOperation(FrappeTestCase):
 				self.assertEqual(mo_wax.status, "WIP")
 				self.assertEqual(eir_issue.operation, mo_wax.operation)
 
+				mop_log = frappe.get_doc(
+					"MOP Log",
+					frappe.get_value("MOP Log", filters={"voucher_no": eir_issue.name}),
+				)
+				from_warehouse = frappe.db.get_value(
+					"Warehouse",
+					{
+						"disabled": 0,
+						"department": eir_issue.department,
+						"warehouse_type": "Manufacturing",
+					},
+				)
+				to_warehouse = frappe.db.get_value(
+					"Warehouse",
+					{
+						"warehouse_type": "Manufacturing",
+						"disabled": 0,
+						"employee": eir_issue.employee,
+					},
+				)
+				self.assertEqual(mop_log.voucher_no, eir_issue.name)
+				self.assertEqual(mop_log.from_warehouse, from_warehouse)
+				self.assertEqual(mop_log.to_warehouse, to_warehouse)
+				self.assertEqual(
+					mop_log.row_name, eir_issue.employee_ir_operations[0].name
+				)
+
 				eir_receive = frappe.new_doc("Employee IR")
 				eir_receive.deparment = "Waxing - GEPL"
 				eir_receive.type = "Receive"
@@ -67,6 +181,11 @@ class TestManufacturingOperation(FrappeTestCase):
 				eir_receive.scan_mwo = mo_wax.manufacturing_work_order
 				scan_mwo_eir(eir_receive)
 				eir_receive.save()
+				eir_receive.employee_ir_operations[
+					0
+				].received_gross_wt = frappe.get_value(
+					"BOM", mwo.master_bom, "metal_weight"
+				)
 				eir_receive.submit()
 
 				mo_wax.reload()
@@ -75,6 +194,35 @@ class TestManufacturingOperation(FrappeTestCase):
 				mo_wax1 = frappe.get_last_doc("Manufacturing Operation")
 				self.assertEqual(mo_wax.operation, mo_wax1.previous_operation)
 				dir_issue = dir_for_issue("Waxing - GEPL", "Tagging - GEPL", mo_wax1)
+
+				mop_log = frappe.get_doc(
+					"MOP Log",
+					frappe.get_value(
+						"MOP Log", filters={"voucher_no": eir_receive.name}
+					),
+				)
+				to_warehouse = frappe.db.get_value(
+					"Warehouse",
+					{
+						"disabled": 0,
+						"department": eir_receive.department,
+						"warehouse_type": "Manufacturing",
+					},
+				)
+				from_warehouse = frappe.db.get_value(
+					"Warehouse",
+					{
+						"warehouse_type": "Manufacturing",
+						"disabled": 0,
+						"employee": eir_receive.employee,
+					},
+				)
+				self.assertEqual(mop_log.voucher_no, eir_receive.name)
+				self.assertEqual(mop_log.from_warehouse, from_warehouse)
+				self.assertEqual(mop_log.to_warehouse, to_warehouse)
+				self.assertEqual(
+					mop_log.row_name, eir_receive.employee_ir_operations[0].name
+				)
 
 				mo_tag = frappe.get_last_doc("Manufacturing Operation")
 				self.assertEqual(mo_wax1.operation, mo_tag.previous_operation)
@@ -122,8 +270,6 @@ class TestManufacturingOperation(FrappeTestCase):
 		self.assertAlmostEqual(res.get("gross_wt"), expected_gross)
 
 	def test_get_material_wt_empty(self):
-		"""Should return empty dict when mop_balance_table is empty."""
-
 		mop = frappe.new_doc("Manufacturing Operation")
 		mop.company = "_Test Indian Registered Company"
 		mop.mop_balance_table = []
@@ -233,10 +379,11 @@ def mo_creation():
 	pmo.manufacturer = "Shubh"
 	pmo.save()
 	pmo.submit()
+	print(pmo.name)
 	return frappe.get_all(
 		"Manufacturing Work Order",
 		filters={"manufacturing_order": pmo.name},
-		fields=["name", "department"],
+		fields=["name", "department", "manufacturing_order"],
 	)
 
 
@@ -381,3 +528,15 @@ def dir_for_receive(dir_issue):
 	dir_receive.submit()
 
 	return dir_receive
+
+
+def mop_log_creation(mr_name, mo):
+	mr = frappe.get_doc("Material Request", mr_name)
+	apply_workflow(mr, "Send for Reservation")
+	apply_workflow(mr, "Reserve Material")
+	apply_workflow(mr, "Transfer Material")
+	mr.reload()
+	mr.custom_manufacturing_operation = mo.name
+	mr.save()
+	apply_workflow(mr, "Transfer to MOP")
+	return frappe.get_last_doc("MOP Log")

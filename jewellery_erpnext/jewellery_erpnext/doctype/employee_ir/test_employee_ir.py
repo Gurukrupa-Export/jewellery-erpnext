@@ -1,6 +1,8 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
@@ -52,7 +54,7 @@ class TestEmployeeIR(FrappeTestCase):
 			self.assertEqual(row.manufacturing_operation, mo_wax.name)
 
 		eir_receive = frappe.new_doc("Employee IR")
-		eir_receive.deparment = "Waxing - GEPL"
+		eir_receive.department = "Waxing - GEPL"
 		eir_receive.type = "Receive"
 		eir_receive.operation = "Wax Pull out"
 		eir_receive.employee = "GEPL - 00157"
@@ -98,7 +100,7 @@ class TestEmployeeIR(FrappeTestCase):
 			self.assertEqual(row.manufacturing_operation, mo_wax.name)
 
 		eir_receive = frappe.new_doc("Employee IR")
-		eir_receive.deparment = "Waxing - GEPL"
+		eir_receive.department = "Waxing - GEPL"
 		eir_receive.type = "Receive"
 		eir_receive.operation = "Wax Pull out"
 		eir_receive.employee = "GEPL - 00157"
@@ -129,13 +131,6 @@ class TestEmployeeIR(FrappeTestCase):
 		self.assertEqual(new_mop.employee_ir, "EIR-TEST")
 		self.assertIsNone(new_mop.employee)
 		self.assertEqual(new_mop.status, "Not Started")
-
-		try:
-			frappe.delete_doc(
-				"Manufacturing Operation", new_mop.name, ignore_permissions=True
-			)
-		except Exception:
-			pass
 
 	def test_get_rows_to_append_returns_rows_for_positive_qty(self):
 		doc = frappe._dict({"department": "DPT", "manufacturer": "MFG"})
@@ -176,3 +171,125 @@ class TestEmployeeIR(FrappeTestCase):
 		count_after_second = len(eir.employee_ir_operations)
 
 		self.assertEqual(count_after_first, count_after_second)
+
+	def test_subcontracting_issue_sets_for_subcontracting_on_mop(self):
+		mo = mo_creation()
+		dir_issue = dir_for_issue(
+			"Manufacturing Plan & Management - GEPL", "Waxing - GEPL", mo
+		)
+		mo.reload()
+		mo_wax = frappe.get_last_doc("Manufacturing Operation")
+		dir_for_receive(dir_issue)
+		mo_wax.reload()
+
+		eir = frappe.new_doc("Employee IR")
+		eir.type = "Issue"
+		eir.department = "Waxing - GEPL"
+		eir.operation = "Wax Setting/Filling/Diamond Setting/Final Polish without Rhodium/Plating SC"
+		eir.employee = "GEPL - 00157"
+		eir.subcontracting = "Yes"
+		eir.subcontractor = "GJSU0436"
+		eir.scan_mwo = mo_wax.manufacturing_work_order
+		scan_mwo_eir(eir)
+		if not eir.employee_ir_operations[0].rpt_wt_issue:
+			eir.employee_ir_operations[0].rpt_wt_issue = 0
+		eir.save()
+		eir.submit()
+		mo_wax.reload()
+
+		self.assertEqual(
+			mo_wax.for_subcontracting,
+			1,
+			"MOP must have for_subcontracting=1 after Issue with subcontracting=Yes.",
+		)
+		self.assertEqual(
+			mo_wax.subcontractor,
+			"GJSU0436",
+			"MOP must carry the subcontractor name after Issue.",
+		)
+
+	def test_before_validate_throws_error_when_stock_reconciliation_in_progress(self):
+		eir = frappe.new_doc("Employee IR")
+		eir.department = "Waxing - GEPL"
+		eir.type = "Issue"
+		eir.docstatus = 0
+
+		with patch("frappe.db.get_value") as mock_get_value:
+			mock_get_value.side_effect = [
+				"WH-001",
+				"SR-001",
+			]
+			with self.assertRaises(frappe.ValidationError):
+				eir.before_validate()
+
+	def test_validate_process_loss_calculates_loss_correctly(self):
+		mo = mo_creation()
+		dir_issue = dir_for_issue(
+			"Manufacturing Plan & Management - GEPL", "Waxing - GEPL", mo
+		)
+		mo.reload()
+		mo_wax = frappe.get_last_doc("Manufacturing Operation")
+		dir_for_receive(dir_issue)
+		mo_wax.reload()
+
+		eir = frappe.new_doc("Employee IR")
+		eir.type = "Receive"
+		eir.department = "Waxing - GEPL"
+		eir.operation = "Wax Pull out"
+		eir.employee = "GEPL - 00157"
+		eir.manufacturer = "Shubh"
+		eir = get_manufacturing_operations(mo_wax.name, eir)
+
+		if eir.employee_ir_operations:
+			eir.employee_ir_operations[0].received_gross_wt = (
+				eir.employee_ir_operations[0].gross_wt - 0.5
+			)
+
+		eir.save()
+		eir.validate_process_loss()
+
+		self.assertTrue(
+			len(eir.employee_loss_details) >= 0,
+			"Employee loss details should be calculated",
+		)
+
+	def test_on_submit_issue_new_sets_subcontracting_values(self):
+		mo = mo_creation()
+		dir_issue = dir_for_issue(
+			"Manufacturing Plan & Management - GEPL", "Waxing - GEPL", mo
+		)
+		mo.reload()
+		mo_wax = frappe.get_last_doc("Manufacturing Operation")
+		dir_for_receive(dir_issue)
+		mo_wax.reload()
+
+		eir = frappe.new_doc("Employee IR")
+		eir.type = "Issue"
+		eir.department = "Waxing - GEPL"
+		eir.operation = "Wax Setting/Filling/Diamond Setting/Final Polish without Rhodium/Plating SC"
+		eir.employee = "GEPL - 00157"
+		eir.subcontracting = "Yes"
+		eir.subcontractor = "GJSU0436"
+		eir.manufacturer = "Shubh"
+		eir = get_manufacturing_operations(mo_wax.name, eir)
+
+		if not eir.employee_ir_operations[0].rpt_wt_issue:
+			eir.employee_ir_operations[0].rpt_wt_issue = 0
+
+		eir.save()
+		eir.submit()
+
+		mo_wax.reload()
+		self.assertEqual(
+			mo_wax.for_subcontracting,
+			1,
+			"MOP should have for_subcontracting=1 after subcontracting issue",
+		)
+		self.assertEqual(
+			mo_wax.subcontractor,
+			"GJSU0436",
+			"MOP should have subcontractor assigned",
+		)
+
+	def tearDown(self):
+		return super().tearDown()

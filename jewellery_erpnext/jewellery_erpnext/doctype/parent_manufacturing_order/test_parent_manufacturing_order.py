@@ -142,6 +142,7 @@ class TestParentManufacturingOrder(FrappeTestCase):
 
 	def test_manufacturing_work_order_creation_with_multicolour(self):
 		pmo = create_pmo()
+		print(pmo.manufacturing_plan)
 		bom = frappe.get_doc("BOM", pmo.master_bom)
 		if not bom.metal_detail:
 			bom.append(
@@ -201,7 +202,7 @@ class TestParentManufacturingOrder(FrappeTestCase):
 
 		colours = []
 		for wo in mwo_list:
-			if wo.muliticolour:
+			if wo.multicolour:
 				colours.append(wo.metal_colour[0])
 		colours = "".join(sorted(colours))
 
