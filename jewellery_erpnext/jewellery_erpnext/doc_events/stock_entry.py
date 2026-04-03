@@ -1684,3 +1684,11 @@ def group_se_items(se_items: list):
 	)
 
 	return grouped_items
+
+
+def get_last_mwo_wh_based_on_index(mwo):
+	filters = {"manufacturing_work_order": mwo, "is_cancelled": 0}
+	last_index, last_log_name, to_warehouse = frappe.db.get_value(
+		"MOP Log", filters, ["max(flow_index) as flow_index", "name", "to_warehouse"]
+	)
+	return last_index, last_log_name, to_warehouse

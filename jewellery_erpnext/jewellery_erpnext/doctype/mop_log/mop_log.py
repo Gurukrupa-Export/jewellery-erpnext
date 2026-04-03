@@ -195,9 +195,10 @@ def get_last_mop_index(manufacturing_operation, voucher_type=None, voucher_no=No
 		filters["voucher_no"] = voucher_no
 
 	last_log = frappe.db.get_value(
-		"MOP Log", filters, "max(flow_index) as flow_index", debug=True
+		"MOP Log",
+		filters,
+		"max(flow_index) as flow_index",
 	)
-	print("last_log", last_log)
 	return last_log
 
 
@@ -312,38 +313,31 @@ def create_mop_log_for_employee_ir_receive(doc, row, from_warehouse, to_warehous
 		select_fields,
 		order_by="creation asc",
 	)
-	received_gross_wt = flt(row.received_gross_wt)
-	gross_wt = flt(row.gross_wt)
+	# received_gross_wt = flt(row.received_gross_wt)
+	# gross_wt = flt(row.gross_wt)
 
-	if received_gross_wt == gross_wt:
-		for log in mop_logs:
-			mop_log = frappe.new_doc("MOP Log")
-			mop_log.item_code = log.item_code
-			mop_log.pcs_after_transaction = log.pcs_after_transaction
-			mop_log.pcs_after_transaction_item_based = (
-				log.pcs_after_transaction_item_based
-			)
-			mop_log.pcs_after_transaction_batch_based = (
-				log.pcs_after_transaction_batch_based
-			)
-			mop_log.from_warehouse = from_warehouse
-			mop_log.to_warehouse = to_warehouse
-			mop_log.voucher_type = "Employee IR"
-			mop_log.voucher_no = doc.name
-			mop_log.row_name = row.name
-			mop_log.qty_after_transaction = log.qty_after_transaction
-			mop_log.qty_after_transaction_item_based = (
-				log.qty_after_transaction_item_based
-			)
-			mop_log.qty_after_transaction_batch_based = (
-				log.qty_after_transaction_batch_based
-			)
-			mop_log.is_synced = 0
-			mop_log.manufacturing_operation = row.manufacturing_operation
-			mop_log.manufacturing_work_order = row.manufacturing_work_order
-			mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
-			mop_log.batch_no = log.batch_no
-			mop_log.flow_index = log.flow_index + 1
-			mop_log.save()
-	if received_gross_wt < gross_wt:
-		pass
+	for log in mop_logs:
+		mop_log = frappe.new_doc("MOP Log")
+		mop_log.item_code = log.item_code
+		mop_log.pcs_after_transaction = log.pcs_after_transaction
+		mop_log.pcs_after_transaction_item_based = log.pcs_after_transaction_item_based
+		mop_log.pcs_after_transaction_batch_based = (
+			log.pcs_after_transaction_batch_based
+		)
+		mop_log.from_warehouse = from_warehouse
+		mop_log.to_warehouse = to_warehouse
+		mop_log.voucher_type = "Employee IR"
+		mop_log.voucher_no = doc.name
+		mop_log.row_name = row.name
+		mop_log.qty_after_transaction = log.qty_after_transaction
+		mop_log.qty_after_transaction_item_based = log.qty_after_transaction_item_based
+		mop_log.qty_after_transaction_batch_based = (
+			log.qty_after_transaction_batch_based
+		)
+		mop_log.is_synced = 0
+		mop_log.manufacturing_operation = row.manufacturing_operation
+		mop_log.manufacturing_work_order = row.manufacturing_work_order
+		mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
+		mop_log.batch_no = log.batch_no
+		mop_log.flow_index = log.flow_index + 1
+		mop_log.save()
