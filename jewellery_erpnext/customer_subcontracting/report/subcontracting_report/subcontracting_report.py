@@ -13,6 +13,7 @@ def execute(filters=None):
 	cgr_data = get_cgr_data(filters, conditions)
 	transfer_data = get_transfer_data(filters, conditions)
 	repack_data = get_repack_data(filters)
+	pr_data = get_pr_data(filters, conditions)
 
 	report = {}
 
@@ -26,14 +27,25 @@ def execute(filters=None):
 			"repack_to_other": 0,
 		}
 
+	for r in pr_data:
+		if r.batch_no not in report:
+			report[r.batch_no] = {
+				"owner": r.customer,
+				"item": r.item_code,
+				"opening": r.qty,
+				"used_same": 0,
+				"used_other": 0,
+				"repack_to_other": 0,
+			}
+		else:
+			report[r.batch_no]["opening"] += r.qty
+
 	for r in transfer_data:
 		if r.batch_no not in report:
 			continue
 
 		owner = report[r.batch_no]["owner"]
-		target = get_customer_from_maufacturing_work_order(
-			r.manufacturing_work_order
-		)
+		target = get_customer_from_maufacturing_work_order(r.manufacturing_work_order)
 
 		if owner == target:
 			report[r.batch_no]["used_same"] += r.qty
@@ -64,19 +76,13 @@ def execute(filters=None):
 
 	if filters.get("customer"):
 		report = {
-			k: v for k, v in report.items()
-			if v.get("owner") == filters.get("customer")
+			k: v for k, v in report.items() if v.get("owner") == filters.get("customer")
 		}
 
 	data = []
 
 	for batch, d in report.items():
-		balance = (
-			d["opening"]
-			- d["used_same"]
-			- d["used_other"]
-			+ d["repack_to_other"]
-		)
+		balance = d["opening"] - d["used_same"] - d["used_other"] + d["repack_to_other"]
 		balance_from_other = d["used_other"] - d["repack_to_other"]
 
 		data.append(
@@ -152,6 +158,24 @@ def get_cgr_data(filters, conditions):
 		FROM `tabStock Entry Detail` sed
 		JOIN `tabStock Entry` se ON se.name = sed.parent
 		WHERE se.stock_entry_type = 'Customer Goods Received'
+		{conditions}
+		""",
+		filters,
+		as_dict=1,
+	)
+
+
+def get_pr_data(filters, conditions):
+	return frappe.db.sql(
+		f"""
+		SELECT
+			pr_item.batch_no,
+			pr_item.qty,
+			pr_item.item_code,
+			pr_item.customer
+		FROM `tabPurchase Receipt Item` pr_item
+		JOIN `tabPurchase Receipt` pr ON pr.name = pr_item.parent
+		WHERE pr.purchase_type = 'Subcontracting'
 		{conditions}
 		""",
 		filters,
