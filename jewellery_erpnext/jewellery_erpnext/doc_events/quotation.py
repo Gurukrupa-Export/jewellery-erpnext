@@ -34,7 +34,11 @@ def validate(self, method):
 	self.calculate_taxes_and_totals()
 	if self.workflow_state == "Creating BOM":
 		frappe.enqueue(
-			create_bom_sceintifically, self=self, queue="long", timeout=10000
+			create_bom_sceintifically,
+			self=self,
+			queue="long",
+			timeout=10000,
+			enqueue_after_commit=True,
 		)
 	if self.docstatus == 0:
 		calculate_gst_rate(self)
@@ -266,8 +270,53 @@ def validate_invoice_item(self):
 		aggregated_gemstone_items = {}
 
 		for item in self.items:
-			if item.quotation_bom:
-				bom_doc = frappe.get_doc("BOM", item.quotation_bom)
+			if not item.get("item_code") or item.get("copy_bom"):
+				continue
+
+			bom = frappe.qb.DocType("BOM")
+			query = (
+				frappe.qb.from_(bom)
+				.select(bom.name)
+				.where(
+					(bom.item == item.get("item_code"))
+					& (
+						(bom.tag_no == item.get("serial_no"))
+						| (
+							(bom.bom_type == "Finished Goods")
+							& (bom.is_active == 1)
+							& (bom.docstatus == 1)
+						)
+						| ((bom.bom_type == "Template") & (bom.is_active == 1))
+					)
+				)
+				.orderby(
+					frappe.qb.terms.Case()
+					.when(bom.tag_no == item.get("serial_no"), 1)
+					.when(bom.bom_type == "Finished Goods", 2)
+					.when(bom.bom_type == "Template", 3)
+					.else_(0),
+				)
+				.orderby(bom.creation)
+				.limit(1)
+			)
+			bom_result = query.run(as_dict=True)
+
+			if item.order_form_type == "Order":
+				mod_reason = frappe.db.get_value(
+					"Order", item.order_form_id, "mod_reason"
+				)
+				if "F-G" in item.item_code or mod_reason == "Change in Metal Touch":
+					new_bom = frappe.db.get_value(
+						"Order", item.order_form_id, "new_bom"
+					)
+					if new_bom:
+						bom_result = [{"name": new_bom}]
+
+			if bom_result:
+				item.db_set("copy_bom", bom_result[0].get("name"))
+
+			if item.custom_tracking_bom:
+				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
 				for diamond in bom_doc.diamond_detail:
 					for e_item in e_invoice_items:
 						if (
@@ -651,7 +700,11 @@ def create_tracking_bom_directly(self):
 			row.db_set("copy_bom", bom_data.get(row.item_code))
 
 		if row.custom_tracking_bom:
-			continue
+			if not frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+				row.custom_tracking_bom = None
+				row.db_set("custom_tracking_bom", None)
+			else:
+				continue
 
 		bom = frappe.qb.DocType("BOM")
 		query = (
@@ -996,6 +1049,19 @@ def _apply_customer_pricing(
 		)
 
 	# Apply finding metal purity
+	for idx, metal in enumerate(tracking_bom.metal_detail, start=1):
+		if not metal.metal_purity:
+			touch = (metal.metal_touch or "").strip()
+			purity = metal_criteria.get(touch)
+			if not purity and row.get("metal_purity"):
+				purity = row.metal_purity
+			if purity:
+				metal.metal_purity = purity
+			else:
+				frappe.throw(
+					f"Tracking BOM Metal Detail Row #{idx}: Value missing for: Metal Purity for Metal Touch '{touch}'"
+				)
+
 	for idx, find in enumerate(tracking_bom.finding_detail, start=1):
 		if not find.metal_purity:
 			touch = (find.metal_touch or "").strip()

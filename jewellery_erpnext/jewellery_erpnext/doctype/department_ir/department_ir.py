@@ -110,17 +110,6 @@ class DepartmentIR(Document):
 		else:
 			self.on_submit_receive()
 
-	# def create_mop_log(self):
-	# 	if self.type == "Receive":
-	# 		for row in self.department_ir_operation:
-	# 			if row.gross_wt >0:
-	# 				create_mop_log_for_operation(row, self)
-	# def create_mop_log_for_operation(row, self):
-	# 	mop_log = frappe.new_doc("MOP Log")
-	# 	mop_log.manufacturing_operation = row.manufacturing_operation
-	# 	mop_log.department_ir = self.name
-	# 	mop_log.gross_wt = row.gross_wt
-	# 	mop_log.save()
 	def on_cancel(self):
 		if self.type == "Issue":
 			self.on_submit_issue_new(cancel=True)
@@ -177,42 +166,6 @@ class DepartmentIR(Document):
 				}
 			)
 		for row in self.department_ir_operation:
-			# sed_items = frappe.db.get_all(
-			# 	"Stock Entry Detail",
-			# 	{
-			# 		"manufacturing_operation": row.manufacturing_operation,
-			# 		"t_warehouse": in_transit_wh,
-			# 		"department": self.previous_department,
-			# 		"to_department": self.current_department,
-			# 		"docstatus": 1,
-			# 	},
-			# 	["*"],
-			# )
-			# if not sed_items:
-			# 	sed_items =  frappe.db.get_all(
-			# 	"Stock Entry Detail",
-			# 	{
-			# 		"manufacturing_operation": ["like", f"%{row.manufacturing_operation}%"],
-			# 		"t_warehouse": in_transit_wh,
-			# 		"department": self.previous_department,
-			# 		"to_department": self.current_department,
-			# 		"docstatus": 1,
-			# 	},
-			# 	["*"],
-			# )
-			# for se_item in sed_items:
-			# 	temp_row = copy.deepcopy(se_item)
-			# 	temp_row["name"] = None
-			# 	temp_row["idx"] = None
-			# 	temp_row["s_warehouse"] = in_transit_wh
-			# 	temp_row["t_warehouse"] = department_wh
-			# 	temp_row["serial_and_batch_bundle"] = None
-			# 	temp_row["main_slip"] = None
-			# 	temp_row["employee"] = None
-			# 	temp_row["to_main_slip"] = None
-			# 	temp_row["to_employee"] = None
-			# 	se_item_list += [temp_row]
-
 			if not cancel:
 				create_mop_log_for_department_ir(
 					self, row, department_wh, in_transit_wh, row.manufacturing_operation
@@ -600,77 +553,6 @@ class DepartmentIR(Document):
 				create_mop_log_for_department_ir(
 					self, row, in_transit_wh, department_wh, new_operation.name
 				)
-
-			# Batch update the stock entry dimensions
-			# if stock_entry_data and not cancel:
-			# 	batch_update_stock_entry_dimensions(
-			# 		self, stock_entry_data, employee=None, for_employee=False
-			# 	)
-		# else:
-		# 	mop_data = json.loads(self.mop_data)
-
-		# add_to_transit = []
-		# strat_transit = []
-
-		# for row in mop_data:
-		# 	lst1, lst2 = get_se_items(
-		# 		self,
-		# 		row,
-		# 		mop_data[row],
-		# 		in_transit_wh,
-		# 		send_in_transit_wh,
-		# 		department_wh,
-		# 	)
-		# 	add_to_transit += lst1
-		# 	strat_transit += lst2
-
-		# if add_to_transit:
-		# 	stock_doc = frappe.new_doc("Stock Entry")
-		# 	stock_doc.stock_entry_type = "Material Transfer to Department"
-		# 	stock_doc.company = self.company
-		# 	stock_doc.department_ir = self.name
-		# 	stock_doc.auto_created = True
-		# 	stock_doc.add_to_transit = 1
-		# 	stock_doc.inventory_type = None
-
-		# 	for row in add_to_transit:
-		# 		stock_doc.append("items", row)
-
-		# 	stock_doc.flags.ignore_permissions = True
-		# 	stock_doc.save()
-		# 	stock_doc.submit()
-
-		# 	stock_doc = frappe.new_doc("Stock Entry")
-		# 	stock_doc.stock_entry_type = "Material Transfer to Department"
-		# 	stock_doc.company = self.company
-		# 	stock_doc.department_ir = self.name
-		# 	stock_doc.auto_created = True
-		# 	stock_doc.inventory_type = None
-
-		# 	for row in add_to_transit:
-		# 		if row["qty"] > 0:
-		# 			row["t_warehouse"] = department_wh
-		# 			row["s_warehouse"] = in_transit_wh
-		# 			stock_doc.append("items", row)
-
-		# 	stock_doc.flags.ignore_permissions = True
-		# 	stock_doc.save()
-		# 	stock_doc.submit()
-
-		# if strat_transit:
-		# 	stock_doc = frappe.new_doc("Stock Entry")
-		# 	stock_doc.stock_entry_type = "Material Transfer to Department"
-		# 	stock_doc.company = self.company
-		# 	stock_doc.department_ir = self.name
-		# 	stock_doc.auto_created = True
-
-		# 	for row in strat_transit:
-		# 		if row["qty"] > 0:
-		# 			stock_doc.append("items", row)
-
-		# 	stock_doc.flags.ignore_permissions = True
-		# 	stock_doc.save()
-		# 	stock_doc.submit()
 
 	@frappe.whitelist()
 	def get_summary_data(self):

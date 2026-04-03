@@ -50,6 +50,7 @@ def update_wt_detail(manufacturing_operation):
 		gemstone_wt_in_gram,
 		other_wt,
 		previous_mop,
+		loss_wt,
 	) = frappe.db.get_value(
 		"Manufacturing Operation",
 		manufacturing_operation,
@@ -60,6 +61,7 @@ def update_wt_detail(manufacturing_operation):
 			"gemstone_wt_in_gram",
 			"other_wt",
 			"previous_mop",
+			"loss_wt",
 		],
 	)
 	prev_gross_wt = 0
@@ -68,11 +70,24 @@ def update_wt_detail(manufacturing_operation):
 			frappe.db.get_value("Manufacturing Operation", previous_mop, "gross_wt")
 			or 0
 		)
+	gross_wt = (
+		flt(net_wt)
+		+ flt(finding_wt)
+		+ flt(diamond_wt_in_gram)
+		+ flt(gemstone_wt_in_gram)
+		+ flt(other_wt)
+	)
+	if loss_wt:
+		if loss_wt > 0:
+			gross_wt += flt(loss_wt)
+		elif loss_wt < 0:
+			gross_wt -= abs(flt(loss_wt))
+
 	frappe.db.set_value(
 		"Manufacturing Operation",
 		manufacturing_operation,
 		{
-			"gross_wt": flt(net_wt) + flt(finding_wt) + flt(diamond_wt_in_gram) + flt(gemstone_wt_in_gram) + flt(other_wt),
+			"gross_wt": gross_wt,
 			"prev_gross_wt": prev_gross_wt,
 		},
 	)
@@ -172,15 +187,33 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	mop_log.save()
 
 
+def get_last_mop_index(manufacturing_operation, voucher_type=None, voucher_no=None):
+	filters = {"manufacturing_operation": manufacturing_operation, "is_cancelled": 0}
+	if voucher_type:
+		filters["voucher_type"] = voucher_type
+	if voucher_no:
+		filters["voucher_no"] = voucher_no
+
+	last_log = frappe.db.get_value(
+		"MOP Log", filters, "max(flow_index) as flow_index", debug=True
+	)
+	print("last_log", last_log)
+	return last_log
+
+
 def create_mop_log_for_department_ir(
 	self, row, to_warehouse, from_warehouse, operation
 ):
+	flow_index = get_last_mop_index(row.manufacturing_operation)
+	filters = {
+		"manufacturing_operation": row.manufacturing_operation,
+		"is_cancelled": 0,
+	}
+	if flow_index is not None:
+		filters["flow_index"] = flow_index
 	mop_logs = frappe.db.get_all(
 		"MOP Log",
-		{
-			"manufacturing_operation": row.manufacturing_operation,
-			"is_cancelled": 0,
-		},
+		filters,
 		select_fields,
 		order_by="creation asc",
 	)
@@ -257,3 +290,60 @@ def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
 		mop_log.batch_no = log.batch_no
 		mop_log.flow_index = log.flow_index + 1
 		mop_log.save()
+
+
+def create_mop_log_for_employee_ir_receive(doc, row, from_warehouse, to_warehouse):
+	"""Create MOP Log entries for the Receive side of Employee IR.
+
+	Reads the MOP Logs created during Issue (voucher_type='Employee IR') for this
+	manufacturing_operation, and creates corresponding receive entries with reversed
+	warehouse direction (employee/subcontractor WH → department WH).
+
+	The MOPLog.validate() hook automatically updates Manufacturing Operation weight
+	fields (net_wt, finding_wt, diamond_wt, etc.) based on the logged item data.
+	"""
+	mop_logs = frappe.db.get_all(
+		"MOP Log",
+		{
+			"manufacturing_operation": row.manufacturing_operation,
+			"is_cancelled": 0,
+			"voucher_type": "Employee IR",
+		},
+		select_fields,
+		order_by="creation asc",
+	)
+	received_gross_wt = flt(row.received_gross_wt)
+	gross_wt = flt(row.gross_wt)
+
+	if received_gross_wt == gross_wt:
+		for log in mop_logs:
+			mop_log = frappe.new_doc("MOP Log")
+			mop_log.item_code = log.item_code
+			mop_log.pcs_after_transaction = log.pcs_after_transaction
+			mop_log.pcs_after_transaction_item_based = (
+				log.pcs_after_transaction_item_based
+			)
+			mop_log.pcs_after_transaction_batch_based = (
+				log.pcs_after_transaction_batch_based
+			)
+			mop_log.from_warehouse = from_warehouse
+			mop_log.to_warehouse = to_warehouse
+			mop_log.voucher_type = "Employee IR"
+			mop_log.voucher_no = doc.name
+			mop_log.row_name = row.name
+			mop_log.qty_after_transaction = log.qty_after_transaction
+			mop_log.qty_after_transaction_item_based = (
+				log.qty_after_transaction_item_based
+			)
+			mop_log.qty_after_transaction_batch_based = (
+				log.qty_after_transaction_batch_based
+			)
+			mop_log.is_synced = 0
+			mop_log.manufacturing_operation = row.manufacturing_operation
+			mop_log.manufacturing_work_order = row.manufacturing_work_order
+			mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
+			mop_log.batch_no = log.batch_no
+			mop_log.flow_index = log.flow_index + 1
+			mop_log.save()
+	if received_gross_wt < gross_wt:
+		pass
