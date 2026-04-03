@@ -5,165 +5,171 @@ import frappe
 
 
 def create_parent_batches(doc, method=None):
-    if doc.doctype == "Stock Entry":
-        if getattr(doc, "stock_entry_type", None) != "Customer Goods Received":
-            return
+	if doc.doctype == "Stock Entry":
+		if getattr(doc, "stock_entry_type", None) not in [
+			"Customer Goods Received",
+			"Subcontracting Repack",
+		]:
+			return
 
-    elif doc.doctype == "Purchase Receipt":
-        if getattr(doc, "purchase_type", None) != "Subcontracting":
-            return
+	elif doc.doctype == "Purchase Receipt":
+		if getattr(doc, "purchase_type", None) != "Subcontracting":
+			return
 
-    else:
-        return
+	else:
+		return
 
-    for row in doc.items:
-        if not row.item_code:
-            continue
+	for row in doc.items:
+		if not row.item_code:
+			continue
 
-        if "24KT" not in row.item_code:
-            continue
+		if "24KT" not in row.item_code:
+			continue
 
-        if row.batch_no:
-            continue
+		if row.batch_no:
+			continue
 
-        customer = getattr(doc, "_customer", None) or getattr(row, "customer", None)
+		if row.t_warehouse:
+			continue
 
-        if not customer:
-            continue
+		customer = getattr(doc, "_customer", None) or getattr(row, "customer", None)
 
-        year_code = get_year_code()
-        month = datetime.today().strftime("%m")
+		if not customer:
+			continue
 
-        item_code = row.item_code
+		year_code = get_year_code()
+		month = datetime.today().strftime("%m")
 
-        serial = get_next_serial(customer, year_code, month)
+		item_code = row.item_code
 
-        batch_name = f"{customer}-{year_code}{month}-{item_code}-{serial}"
+		serial = get_next_serial(customer, year_code, month)
 
-        frappe.flags.is_batch_autoname = True
+		batch_name = f"{customer}-{year_code}{month}-{item_code}-{serial}"
 
-        if not frappe.db.exists("Batch", batch_name):
-            
-            batch = frappe.get_doc(
-                {
-                    "doctype": "Batch",
-                    "batch_id": batch_name,
-                    "item": item_code,
-                    "reference_doctype": doc.doctype,
-                    "reference_name": doc.name,
-                }
-            )
+		frappe.flags.is_batch_autoname = True
 
-            # batch.insert(ignore_permissions=True)
-            batch.save()
-            frappe.log_error(f"Created batch {batch_name} for item {item_code}")
-        row.batch_no = batch_name
+		if not frappe.db.exists("Batch", batch_name):
+			batch = frappe.get_doc(
+				{
+					"doctype": "Batch",
+					"batch_id": batch_name,
+					"item": item_code,
+					"reference_doctype": doc.doctype,
+					"reference_name": doc.name,
+				}
+			)
+
+			batch.save()
+		row.batch_no = batch_name
 
 
 def get_year_code():
-    year_dict = {
-        "1": "A",
-        "2": "B",
-        "3": "C",
-        "4": "D",
-        "5": "E",
-        "6": "F",
-        "7": "G",
-        "8": "H",
-        "9": "I",
-        "0": "J",
-    }
+	year_dict = {
+		"1": "A",
+		"2": "B",
+		"3": "C",
+		"4": "D",
+		"5": "E",
+		"6": "F",
+		"7": "G",
+		"8": "H",
+		"9": "I",
+		"0": "J",
+	}
 
-    year = datetime.today().year
-    last_two = str(year)[-2:]
+	year = datetime.today().year
+	last_two = str(year)[-2:]
 
-    return last_two[0] + year_dict[last_two[1]]
+	return last_two[0] + year_dict[last_two[1]]
 
 
 def get_next_serial(customer, year_code, month):
-    prefix = f"{customer}-{year_code}{month}"
+	prefix = f"{customer}-{year_code}{month}"
 
-    batch = frappe.db.sql(
-        """
+	batch = frappe.db.sql(
+		"""
         SELECT name
         FROM `tabBatch`
         WHERE name LIKE %s
         ORDER BY name DESC
         LIMIT 1
         """,
-        (prefix + "%",),
-        as_dict=True,
-    )
+		(prefix + "%",),
+		as_dict=True,
+	)
 
-    if batch:
-        last_serial = batch[0].name.split("-")[-1]
+	if batch:
+		last_serial = batch[0].name.split("-")[-1]
 
-        if last_serial.isdigit():
-            next_serial = int(last_serial) + 1
-            return str(next_serial).zfill(2)
+		if last_serial.isdigit():
+			next_serial = int(last_serial) + 1
+			return str(next_serial).zfill(2)
 
-    return "01"
+	return "01"
 
 
 def create_child_batches(doc, method=None):
-    if doc.doctype != "Stock Entry":
-        return
+	if doc.doctype != "Stock Entry":
+		return
 
-    parent_batch = None
-    for r in doc.items:
-        if r.s_warehouse and r.batch_no:
-            parent_batch = r.batch_no
-            break
+	parent_batch = None
+	for r in doc.items:
+		if r.s_warehouse and r.batch_no:
+			parent_batch = r.batch_no
+			break
 
-    if not parent_batch:
-        return
+	if not parent_batch:
+		return
 
-    parts = parent_batch.split("-")
-    if len(parts) < 4:
-        return
+	parts = parent_batch.split("-")
+	if len(parts) < 4:
+		return
 
-    prefix = f"{parts[0]}-{parts[1]}"
-    parent_serial = parts[-1]
+	prefix = f"{parts[0]}-{parts[1]}"
+	parent_serial = parts[-1]
 
-    for row in doc.items:
-        if not row.t_warehouse:
-            continue
+	for row in doc.items:
+		if row.s_warehouse and row.batch_no:
+			continue
 
-        item_code = row.item_code
-        base_name = f"{prefix}-{item_code}-{parent_serial}"
+		if not row.t_warehouse:
+			continue
 
-        batches = frappe.db.sql(
-            """
+		item_code = row.item_code
+		base_name = f"{prefix}-{item_code}-{parent_serial}"
+
+		batches = frappe.db.sql(
+			"""
             SELECT name
             FROM `tabBatch`
             WHERE name LIKE %s
             ORDER BY name DESC
             """,
-            (base_name + "-%",),
-            as_dict=True,
-        )
+			(base_name + "-%",),
+			as_dict=True,
+		)
 
-        alphabet = "A"
-        if batches:
-            last_alpha = batches[0].name.split("-")[-1]
-            if last_alpha in string.ascii_uppercase:
-                idx = string.ascii_uppercase.index(last_alpha)
-                alphabet = string.ascii_uppercase[idx + 1]
+		alphabet = "A"
+		if batches:
+			last_alpha = batches[0].name.split("-")[-1]
+			if last_alpha in string.ascii_uppercase:
+				idx = string.ascii_uppercase.index(last_alpha)
+				alphabet = string.ascii_uppercase[idx + 1]
 
-        batch_name = f"{base_name}-{alphabet}"
+		batch_name = f"{base_name}-{alphabet}"
 
-        frappe.flags.is_batch_autoname = True
+		frappe.flags.is_batch_autoname = True
 
-        if not frappe.db.exists("Batch", batch_name):
-            batch = frappe.get_doc(
-                {
-                    "doctype": "Batch",
-                    "batch_id": batch_name,
-                    "item": item_code,
-                    "reference_doctype": doc.doctype,
-                    "reference_name": doc.name,
-                }
-            )
-            batch.insert(ignore_permissions=True)
+		if not frappe.db.exists("Batch", batch_name):
+			batch = frappe.get_doc(
+				{
+					"doctype": "Batch",
+					"batch_id": batch_name,
+					"item": item_code,
+					"reference_doctype": doc.doctype,
+					"reference_name": doc.name,
+				}
+			)
+			batch.insert(ignore_permissions=True)
 
-        row.batch_no = batch_name
+		row.batch_no = batch_name

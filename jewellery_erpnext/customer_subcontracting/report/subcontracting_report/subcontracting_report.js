@@ -18,5 +18,13 @@ frappe.query_reports["Subcontracting Report"] = {
 			options: "Customer",
 			width: "120",
 		},
+
+		{
+			fieldname: "item_code",
+			label: "Item Code",
+			fieldtype: "Link",
+			options: "Item",
+			width: "120",
+		},
 	],
 };
