@@ -28,7 +28,7 @@ doctype_js = {
 	"Supplier": "public/js/doctype_js/supplier.js",
 	"Material Request": "public/js/doctype_js/material_request.js",
 	"Sales Invoice": "public/js/doctype_js/sales_invoice.js",
-	"Delivery Note": "public/js/doctype_js/delivery_note.js",
+	# "Delivery Note": "public/js/doctype_js/delivery_note.js",
 	"Purchase Order": "public/js/doctype_js/purchase_order.js",
 	"Purchase Receipt": "public/js/doctype_js/purchase_receipt.js",
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
