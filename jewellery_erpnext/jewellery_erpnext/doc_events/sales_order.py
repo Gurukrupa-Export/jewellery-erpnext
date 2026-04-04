@@ -1043,6 +1043,8 @@ def create_new_bom1(self):
 						)
 						# gem.quantity=round(gem.quantity,stone_precision)
 						# frappe.throw(f"{gemstone_price_list_customer}")
+						gem.gemstone_grade=gem.gemstone_grade
+						
 						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
 							gem.total_gemstone_rate = gem.fg_purchase_rate
 							gem.gemstone_rate_for_specified_quantity = (
