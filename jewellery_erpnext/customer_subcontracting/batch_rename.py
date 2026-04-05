@@ -49,16 +49,11 @@ def create_parent_batches(doc, method=None):
 		frappe.flags.is_batch_autoname = True
 
 		if not frappe.db.exists("Batch", batch_name):
-			batch = frappe.get_doc(
-				{
-					"doctype": "Batch",
-					"batch_id": batch_name,
-					"item": item_code,
-					"reference_doctype": doc.doctype,
-					"reference_name": doc.name,
-				}
-			)
-
+			batch = frappe.new_doc("Batch")
+			batch.batch_id = batch_name
+			batch.item = item_code
+			batch.reference_doctype = doc.doctype
+			batch.reference_name = doc.name
 			batch.save()
 		row.batch_no = batch_name
 
@@ -161,15 +156,11 @@ def create_child_batches(doc, method=None):
 		frappe.flags.is_batch_autoname = True
 
 		if not frappe.db.exists("Batch", batch_name):
-			batch = frappe.get_doc(
-				{
-					"doctype": "Batch",
-					"batch_id": batch_name,
-					"item": item_code,
-					"reference_doctype": doc.doctype,
-					"reference_name": doc.name,
-				}
-			)
+			batch = frappe.new_doc("Batch")
+			batch.batch_id = batch_name
+			batch.item = item_code
+			batch.reference_doctype = doc.doctype
+			batch.reference_name = doc.name
 			batch.insert(ignore_permissions=True)
 
 		row.batch_no = batch_name

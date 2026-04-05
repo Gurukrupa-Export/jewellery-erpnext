@@ -40,7 +40,10 @@ def execute(filters=None):
 			continue
 
 		owner = report[r.batch_no]["owner"]
-		target = get_customer_from_maufacturing_work_order(r.manufacturing_work_order)
+		if r.manufacturing_work_order:
+			target = frappe.db.get_value(
+				"Manufacturing Work Order", r.manufacturing_work_order, "customer"
+			)
 
 		if owner == target:
 			report[r.batch_no]["used_same"] += r.qty
@@ -232,14 +235,6 @@ def get_repack_data(filters):
 		filters,
 		as_dict=1,
 	)
-
-
-def get_customer_from_maufacturing_work_order(mwo):
-	if not mwo:
-		return None
-	if frappe.db.exists("Manufacturing Work Order", mwo):
-		return frappe.db.get_value("Manufacturing Work Order", mwo, "customer")
-	return None
 
 
 def get_columns():
