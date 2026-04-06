@@ -29,9 +29,6 @@ def create_parent_batches(doc, method=None):
 		if row.batch_no:
 			continue
 
-		if row.t_warehouse:
-			continue
-
 		customer = getattr(doc, "_customer", None) or getattr(row, "customer", None)
 
 		if not customer:

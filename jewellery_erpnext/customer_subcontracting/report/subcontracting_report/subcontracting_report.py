@@ -7,24 +7,11 @@ def execute(filters=None):
 
 	conditions = get_conditions(filters)
 
-	cgr_data = get_cgr_data(filters, conditions)
-	transfer_data = get_transfer_data(filters, conditions)
-	repack_data = get_repack_data(filters)
-	pr_data = get_pr_data(filters)
-
 	report = {}
+	data = []
 
-	for r in cgr_data:
-		report[r.batch_no] = {
-			"owner": r.customer,
-			"item": r.item_code,
-			"opening": r.qty,
-			"used_same": 0,
-			"used_other": 0,
-		}
-
-	for r in pr_data:
-		if r.batch_no not in report:
+	with frappe.db.unbuffered_cursor():
+		for r in get_cgr_data(filters, conditions):
 			report[r.batch_no] = {
 				"owner": r.customer,
 				"item": r.item_code,
@@ -32,55 +19,60 @@ def execute(filters=None):
 				"used_same": 0,
 				"used_other": 0,
 			}
-		else:
-			report[r.batch_no]["opening"] += r.qty
 
-	for r in transfer_data:
-		if r.batch_no not in report:
-			continue
+		for r in get_pr_data(filters):
+			if r.batch_no not in report:
+				report[r.batch_no] = {
+					"owner": r.customer,
+					"item": r.item_code,
+					"opening": r.qty,
+					"used_same": 0,
+					"used_other": 0,
+				}
+			else:
+				report[r.batch_no]["opening"] += r.qty
 
-		owner = report[r.batch_no]["owner"]
-		if r.manufacturing_work_order:
-			target = frappe.db.get_value(
-				"Manufacturing Work Order", r.manufacturing_work_order, "customer"
-			)
-
-		if owner == target:
-			report[r.batch_no]["used_same"] += r.qty
-		else:
-			report[r.batch_no]["used_other"] += r.qty
-
-	for r in repack_data:
-		parent_batches = (r.get("parent_batches") or "").split("||")
-		child_batch = r.get("child_batch")
-		qty = r.get("qty")
-		customer = r.get("customer")
-		item = r.get("item_code")
-
-		for parent_batch in parent_batches:
-			if not parent_batch:
+		for r in get_transfer_data(filters, conditions):
+			if r.batch_no not in report:
 				continue
 
-			if parent_batch in report:
-				report[parent_batch]["used_other"] += qty
+			owner = report[r.batch_no]["owner"]
+			target = r.target_customer
 
-		if child_batch not in report:
-			report[child_batch] = {
-				"owner": customer,
-				"item": item,
-				"opening": qty,
-				"used_same": 0,
-				"used_other": 0,
-			}
-		else:
-			report[child_batch]["opening"] += qty
+			if owner == target:
+				report[r.batch_no]["used_same"] += r.qty
+			else:
+				report[r.batch_no]["used_other"] += r.qty
+
+		for r in get_repack_data(filters):
+			parent_batches = (r.get("parent_batches") or "").split("||")
+			child_batch = r.get("child_batch")
+			qty = r.get("qty")
+			customer = r.get("customer")
+			item = r.get("item_code")
+
+			for parent_batch in parent_batches:
+				if not parent_batch:
+					continue
+
+				if parent_batch in report:
+					report[parent_batch]["used_other"] += qty
+
+			if child_batch not in report:
+				report[child_batch] = {
+					"owner": customer,
+					"item": item,
+					"opening": qty,
+					"used_same": 0,
+					"used_other": 0,
+				}
+			else:
+				report[child_batch]["opening"] += qty
 
 	if filters.get("customer"):
 		report = {
 			k: v for k, v in report.items() if v.get("owner") == filters.get("customer")
 		}
-
-	data = []
 
 	for batch, d in report.items():
 		balance = d["opening"] - d["used_same"] - d["used_other"]
@@ -158,6 +150,8 @@ def get_cgr_data(filters, conditions):
 		""",
 		filters,
 		as_dict=1,
+		as_iterator=True,
+		debug=1,
 	)
 
 
@@ -182,6 +176,8 @@ def get_pr_data(filters):
 		""",
 		filters,
 		as_dict=1,
+		as_iterator=True,
+		debug=1,
 	)
 
 
@@ -192,14 +188,19 @@ def get_transfer_data(filters, conditions):
 			sed.batch_no,
 			sed.qty,
 			sed.item_code,
-			se.manufacturing_work_order
+			se.manufacturing_work_order,
+			mwo.customer AS target_customer
 		FROM `tabStock Entry Detail` sed
 		JOIN `tabStock Entry` se ON se.name = sed.parent
+		LEFT JOIN `tabManufacturing Work Order` mwo
+			ON mwo.name = se.manufacturing_work_order
 		WHERE se.stock_entry_type = 'Material Transfer (WORK ORDER)'
 		{conditions}
 		""",
 		filters,
 		as_dict=1,
+		as_iterator=True,
+		debug=1,
 	)
 
 
@@ -234,6 +235,8 @@ def get_repack_data(filters):
 		""",
 		filters,
 		as_dict=1,
+		as_iterator=True,
+		debug=1,
 	)
 
 
