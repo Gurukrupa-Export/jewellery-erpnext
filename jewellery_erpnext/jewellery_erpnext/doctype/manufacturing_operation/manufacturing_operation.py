@@ -19,6 +19,9 @@ from frappe.utils import (
 	time_diff_in_seconds,
 )
 
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	get_last_mop_index,
+)
 from jewellery_erpnext.utils import set_values_in_bulk, update_existing
 
 
@@ -157,6 +160,7 @@ class ManufacturingOperation(Document):
 		# self.set_mop_balance_table()  # To Set MOP Bailance Table on update source & target Table.
 		# self.update_weights()
 		self.validate_operation()
+		# update_new_mop_wtg(self)
 		# self.validate_main_slip()
 
 	# def validate_main_slip(self):
@@ -3914,3 +3918,69 @@ def create_mr_wo_stock_entry(se_data):
 	se_doc.submit()
 
 	return {"doctype": se_doc.doctype, "docname": se_doc.name}
+
+
+def update_new_mop_wtg(self):
+	if self.previous_mop and (not self.gross_wt):
+		index = get_last_mop_index(self.previous_mop)
+		current_doc_index = get_last_mop_index(self.name)
+		if current_doc_index is None:
+			if index is not None:
+				filters = {
+					"manufacturing_operation": self.previous_mop,
+					"is_cancelled": 0,
+					"flow_index": index,
+				}
+				mop_logs = frappe.db.get_all(
+					"MOP Log",
+					filters,
+					[
+						"item_code",
+						"pcs_after_transaction",
+						"pcs_after_transaction_item_based",
+						"pcs_after_transaction_batch_based",
+						"qty_after_transaction",
+						"qty_after_transaction_item_based",
+						"qty_after_transaction_batch_based",
+						"serial_and_batch_bundle",
+						"batch_no",
+						"flow_index",
+						"from_warehouse",
+						"to_warehouse",
+						"row_name",
+						"manufacturing_work_order",
+						"voucher_type",
+						"voucher_no",
+					],
+					order_by="creation asc",
+				)
+				if mop_logs:
+					for log in mop_logs:
+						mop_log = frappe.new_doc("MOP Log")
+						mop_log.item_code = log.item_code
+						mop_log.pcs_after_transaction = log.pcs_after_transaction
+						mop_log.pcs_after_transaction_item_based = (
+							log.pcs_after_transaction_item_based
+						)
+						mop_log.pcs_after_transaction_batch_based = (
+							log.pcs_after_transaction_batch_based
+						)
+						mop_log.from_warehouse = log.from_warehouse
+						mop_log.to_warehouse = log.to_warehouse
+						mop_log.voucher_type = log.voucher_type
+						mop_log.voucher_no = log.voucher_no
+						mop_log.row_name = log.row_name
+						mop_log.qty_after_transaction = log.qty_after_transaction
+						mop_log.qty_after_transaction_item_based = (
+							log.qty_after_transaction_item_based
+						)
+						mop_log.qty_after_transaction_batch_based = (
+							log.qty_after_transaction_batch_based
+						)
+
+						mop_log.manufacturing_operation = self.name
+						mop_log.manufacturing_work_order = log.manufacturing_work_order
+						mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
+						mop_log.batch_no = log.batch_no
+						mop_log.flow_index = 0
+						mop_log.save()

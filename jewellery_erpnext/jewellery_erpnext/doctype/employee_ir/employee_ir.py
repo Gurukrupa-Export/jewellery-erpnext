@@ -50,6 +50,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validati
 	validate_loss_qty,
 	validate_manually_book_loss_details,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+	update_new_mop_wtg,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_employee_ir_receive,
 	creste_mop_log_for_employee_ir,
@@ -196,7 +199,11 @@ class EmployeeIR(Document):
 			{
 				"warehouse_type": "Manufacturing",
 				"disabled": 0,
-				"employee": self.employee,
+				"employee": self.employejewellery_erpnext
+				/ jewellery_erpnext
+				/ doctype
+				/ employee_ir
+				/ employee_ir.pye,
 			},
 		)
 		for row in self.employee_ir_operations:
@@ -327,12 +334,11 @@ class EmployeeIR(Document):
 				)
 				time_log_args.append((row.manufacturing_operation, res))
 
-			# Universal MOP Log and Reservation Path
-			if not cancel:
+				# Universal MOP Log and Reservation Path
 				create_mop_log_for_employee_ir_receive(
 					self, row, actor_wh, department_wh
 				)
-				new_operation.save()
+
 			else:
 				# Cancel: mark MOP Logs as cancelled
 				frappe.db.set_value(
@@ -359,17 +365,6 @@ class EmployeeIR(Document):
 					frappe.get_doc("Stock Reservation Entry", sre).cancel()
 
 				# Cancel any auto-created Stock Entries (legacy cleanup)
-				se_list = frappe.db.get_list("Stock Entry", {"employee_ir": self.name})
-				for se in se_list:
-					se_doc = frappe.get_doc("Stock Entry", se.name)
-					if se_doc.docstatus == 1:
-						se_doc.cancel()
-					frappe.db.set_value(
-						"Stock Entry Detail",
-						{"parent": se.name},
-						"manufacturing_operation",
-						None,
-					)
 
 				frappe.db.set_value(
 					"Manufacturing Work Order",
@@ -380,15 +375,6 @@ class EmployeeIR(Document):
 				if new_operation.name:
 					frappe.db.set_value(
 						"Department IR Operation",
-						{
-							"docstatus": 2,
-							"manufacturing_operation": new_operation.name,
-						},
-						"manufacturing_operation",
-						None,
-					)
-					frappe.db.set_value(
-						"Stock Entry Detail",
 						{
 							"docstatus": 2,
 							"manufacturing_operation": new_operation.name,
@@ -738,7 +724,8 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 	new_mop_doc.employee_target_table = []
 	new_mop_doc.previous_se_data_updated = 0
 	new_mop_doc.main_slip_no = None
-	new_mop_doc.insert()
+	new_mop_doc.save()
+	update_new_mop_wtg(new_mop_doc)
 	# def set_missing_value(source, target):
 	# 	target.previous_operation = source.operation
 	# 	target.prev_gross_wt = (
