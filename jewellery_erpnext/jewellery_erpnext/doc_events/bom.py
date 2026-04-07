@@ -204,14 +204,18 @@ def set_item_variant(self):
 				if not temp_variant.item_code or not frappe.db.exists(
 					"Item", temp_variant.item_code
 				):
-					frappe.throw(
-						_("{0} does not exists for {1}").format(
-							temp_variant.item_code, self.name
-						)
+					variant = create_variant(row.item, args)
+					variant_item_group = frappe.db.get_value(
+						"Variant Item Group",
+						{"parent": self.company, "item_variant": row.item},
+						"item_group",
 					)
-
-				row.item_variant = temp_variant.item_code
-
+					if variant_item_group:
+						variant.item_group = variant_item_group
+					variant.insert()
+					row.item_variant = variant.name
+				else:
+					row.item_variant = temp_variant.item_code
 			else:
 				variant = get_variant(
 					row.item, args
