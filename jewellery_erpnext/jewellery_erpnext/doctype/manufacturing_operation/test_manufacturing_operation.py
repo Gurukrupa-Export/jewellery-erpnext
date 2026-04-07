@@ -173,10 +173,9 @@ class TestManufacturingOperation(FrappeTestCase):
 				)
 
 				eir_receive = frappe.new_doc("Employee IR")
-				eir_receive.deparment = "Waxing - GEPL"
+				eir_receive.department = "Waxing - GEPL"
 				eir_receive.type = "Receive"
 				eir_receive.operation = "Wax Pull out"
-				eir_receive.operation = "Wax Pull Out"
 				eir_receive.employee = "GEPL - 00157"
 				eir_receive.scan_mwo = mo_wax.manufacturing_work_order
 				scan_mwo_eir(eir_receive)
@@ -357,7 +356,7 @@ class TestManufacturingOperation(FrappeTestCase):
 			{"from_time": "2023-01-01 11:00:00", "to_time": "2023-01-01 13:00:00"},
 		]
 
-		res = ManufacturingOperation.has_overlap(mop, 1, time_logs)
+		res = ManufacturingOperation.has_overlap(mop, 2, time_logs)
 		self.assertTrue(res)
 
 		mop = frappe.new_doc("Manufacturing Operation")
@@ -367,8 +366,8 @@ class TestManufacturingOperation(FrappeTestCase):
 			{"from_time": "2023-01-01 12:00:00", "to_time": "2023-01-01 13:00:00"},
 		]
 
-		res = ManufacturingOperation.has_overlap(mop, 1, time_logs)
-		self.assertTrue(res)
+		res = ManufacturingOperation.has_overlap(mop, 2, time_logs)
+		self.assertFalse(res)
 
 	def tearDown(self):
 		return super().tearDown()

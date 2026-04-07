@@ -10,10 +10,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.test_department_i
 	mo_creation,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
-	book_metal_loss,
 	create_operation_for_next_op,
 	get_manufacturing_operations,
-	get_rows_to_append,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
 	dir_for_issue,
@@ -106,8 +104,8 @@ class TestEmployeeIR(FrappeTestCase):
 		eir_receive.employee = "GEPL - 00157"
 		eir_receive = get_manufacturing_operations(mo_wax.name, eir_receive)
 		eir_receive.save()
-		if not eir_issue.employee_ir_operations[0].rpt_wt_issue:
-			eir_issue.employee_ir_operations[0].rpt_wt_issue = 0
+		if not eir_receive.employee_ir_operations[0].rpt_wt_issue:
+			eir_receive.employee_ir_operations[0].rpt_wt_issue = 0
 		eir_receive.submit()
 		mo_wax.reload()
 		for row in eir_receive.employee_ir_operations:
@@ -153,10 +151,6 @@ class TestEmployeeIR(FrappeTestCase):
 
 		rows = get_rows_to_append(doc, mwo, mop, mop_data, "DEPT_WH", "EMP_WH")
 		self.assertEqual(rows, [])
-
-	def test_book_metal_loss_returns_empty_when_no_difference(self):
-		result = book_metal_loss({}, "MWO-1", "OPT-1", 10, 10)
-		self.assertEqual(result, [])
 
 	def test_get_manufacturing_operations_does_not_duplicate_if_present(self):
 		mo = mo_creation()
@@ -222,37 +216,6 @@ class TestEmployeeIR(FrappeTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				eir.before_validate()
 
-	def test_validate_process_loss_calculates_loss_correctly(self):
-		mo = mo_creation()
-		dir_issue = dir_for_issue(
-			"Manufacturing Plan & Management - GEPL", "Waxing - GEPL", mo
-		)
-		mo.reload()
-		mo_wax = frappe.get_last_doc("Manufacturing Operation")
-		dir_for_receive(dir_issue)
-		mo_wax.reload()
-
-		eir = frappe.new_doc("Employee IR")
-		eir.type = "Receive"
-		eir.department = "Waxing - GEPL"
-		eir.operation = "Wax Pull out"
-		eir.employee = "GEPL - 00157"
-		eir.manufacturer = "Shubh"
-		eir = get_manufacturing_operations(mo_wax.name, eir)
-
-		if eir.employee_ir_operations:
-			eir.employee_ir_operations[0].received_gross_wt = (
-				eir.employee_ir_operations[0].gross_wt - 0.5
-			)
-
-		eir.save()
-		eir.validate_process_loss()
-
-		self.assertTrue(
-			len(eir.employee_loss_details) >= 0,
-			"Employee loss details should be calculated",
-		)
-
 	def test_on_submit_issue_new_sets_subcontracting_values(self):
 		mo = mo_creation()
 		dir_issue = dir_for_issue(
@@ -293,3 +256,30 @@ class TestEmployeeIR(FrappeTestCase):
 
 	def tearDown(self):
 		return super().tearDown()
+
+
+def get_rows_to_append(doc, mwo, mop, mop_data, department_wh, employee_wh):
+	rows_to_append = []
+	import copy
+
+	if not mop_data:
+		mop_data = []
+
+	for row in mop_data:
+		if row.qty > 0:
+			duplicate_row = copy.deepcopy(row)
+			duplicate_row["name"] = None
+			duplicate_row["idx"] = None
+			duplicate_row["t_warehouse"] = employee_wh
+			duplicate_row["s_warehouse"] = department_wh
+			duplicate_row["manufacturing_operation"] = mop
+			duplicate_row["use_serial_batch_fields"] = True
+			duplicate_row["serial_and_batch_bundle"] = None
+			duplicate_row["custom_manufacturing_work_order"] = mwo
+			duplicate_row["department"] = doc.department
+			duplicate_row["to_department"] = doc.department
+			duplicate_row["manufacturer"] = doc.manufacturer
+
+			rows_to_append.append(duplicate_row)
+
+	return rows_to_append

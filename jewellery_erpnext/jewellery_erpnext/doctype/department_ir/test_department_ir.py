@@ -103,7 +103,12 @@ class TestDepartmentIR(FrappeTestCase):
 		)
 
 		status = frappe.db.get_value("Manufacturing Operation", mop.name, "status")
-		self.assertIn(status, ["WIP", "WIP"])
+		self.assertEqual(status, "WIP")
+
+		started_time = frappe.db.get_value(
+			"Manufacturing Operation", mop.name, "started_time"
+		)
+		self.assertIsNotNone(started_time, "started_time should be set")
 
 		time_logs = frappe.db.get_all(
 			"Manufacturing Operation Time Log",

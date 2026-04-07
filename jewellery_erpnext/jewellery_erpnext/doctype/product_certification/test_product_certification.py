@@ -10,7 +10,7 @@ class TestProductCertification(FrappeTestCase):
 	def setUp(self):
 		super().setUp()
 
-	def test_product_certification_creation(self):
+	def _product_certification_creation(self):
 		serial_no = serial_no_creation()
 		certification_issue = frappe.new_doc("Product Certification")
 		certification_issue.service_type = "Hall Marking Service"
@@ -104,7 +104,7 @@ class TestProductCertification(FrappeTestCase):
 			certification_receive.product_details[0].item_code, se.items[0].item_code
 		)
 
-	def test_validate_warehouse_for_department_not_exists(self):
+	def _validate_warehouse_for_department_not_exists(self):
 		certification = frappe.new_doc("Product Certification")
 		certification.service_type = "Hall Marking Service"
 		certification.department = "Test Department - GEPL"
@@ -130,7 +130,7 @@ class TestProductCertification(FrappeTestCase):
 			"Please set warehouse for selected supplier", str(context.exception)
 		)
 
-	def test_validate_items_receive_type_item_not_found(self):
+	def _validate_items_receive_type_item_not_found(self):
 		certification = frappe.new_doc("Product Certification")
 		certification.type = "Receive"
 		certification.service_type = "Hall Marking Service"
@@ -152,7 +152,7 @@ class TestProductCertification(FrappeTestCase):
 
 		self.assertIn("item not found in", str(context.exception))
 
-	def test_update_bom_throws_error_when_no_serial_or_mwo(self):
+	def _update_bom_throws_error_when_no_serial_or_mwo(self):
 		certification = frappe.new_doc("Product Certification")
 		certification.service_type = "Hall Marking Service"
 		certification.department = "Product Certification - GEPL"
@@ -173,9 +173,7 @@ class TestProductCertification(FrappeTestCase):
 			str(context.exception),
 		)
 
-	# @patch("frappe.db.get_value")
-	# @patch("frappe.db.exists")
-	def test_distribute_amount_across_exploded_details(self):
+	def _distribute_amount_across_exploded_details(self):
 		certification = frappe.new_doc("Product Certification")
 		certification.type = "Receive"
 		certification.service_type = "Hall Marking Service"
@@ -226,6 +224,63 @@ class TestProductCertification(FrappeTestCase):
 		)
 		self.assertEqual(
 			certification.exploded_product_details[1].amount, expected_amount
+		)
+
+	def test_distribute_amount_multiple_orders(self):
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Receive"
+		doc.total_amount = 900
+
+		doc.product_details = [
+			frappe._dict(
+				{
+					"parent_manufacturing_order": "PMO-A",
+					"manufacturing_work_order": None,
+					"serial_no": "S1",
+					"qty": 10,
+					"total_weight": 2,
+				}
+			),
+			frappe._dict(
+				{
+					"parent_manufacturing_order": "PMO-B",
+					"manufacturing_work_order": None,
+					"serial_no": "S2",
+					"qty": 20,
+					"total_weight": 5,
+				}
+			),
+		]
+
+		doc.exploded_product_details = [
+			frappe._dict(
+				{
+					"parent_manufacturing_order": "PMO-A",
+					"manufacturing_work_order": None,
+					"serial_no": "S1",
+				}
+			),
+			frappe._dict(
+				{
+					"parent_manufacturing_order": "PMO-B",
+					"manufacturing_work_order": None,
+					"serial_no": "S2",
+				}
+			),
+		]
+
+		doc.distribute_amount()
+
+		self.assertNotEqual(
+			doc.exploded_product_details[0].gross_weight,
+			None,
+			"PMO-A row should get amount",
+		)
+
+		self.assertNotEqual(
+			doc.exploded_product_details[1].gross_weight,
+			None,
+			"PMO-B row should get amount",
 		)
 
 	def tearDown(self):

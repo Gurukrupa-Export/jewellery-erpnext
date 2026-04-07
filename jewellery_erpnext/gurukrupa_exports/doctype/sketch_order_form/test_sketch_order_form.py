@@ -32,17 +32,17 @@ class TestSketchOrderForm(FrappeTestCase):
 		for i in range(len(sketch_order)):
 			row = sk_ord_frm.order_details[i]
 			sk_order = frappe.get_doc("Sketch Order", sketch_order[i].name)
-			(self.assertEqual(sk_ord_frm.name, sk_order.sketch_order_form),)
-			(self.assertEqual(row.category, sk_order.category),)
-			(self.assertEqual(row.setting_type, sk_order.setting_type),)
-			(self.assertEqual(row.metal_type, sk_order.metal_type),)
-			(self.assertEqual(row.metal_touch, sk_order.metal_touch),)
-			(self.assertEqual(row.metal_colour, sk_order.metal_colour),)
-			(self.assertEqual(str(row.metal_target), sk_order.metal_target),)
-			(self.assertEqual(str(row.diamond_target), sk_order.diamond_target),)
-			(self.assertEqual(row.sizer_type, sk_order.sizer_type),)
-			(self.assertEqual(row.gemstone_type, sk_order.gemstone_type),)
-			(self.assertEqual(row.stone_changeable, sk_order.stone_changeable),)
+			self.assertEqual(sk_ord_frm.name, sk_order.sketch_order_form)
+			self.assertEqual(row.category, sk_order.category)
+			self.assertEqual(row.setting_type, sk_order.setting_type)
+			self.assertEqual(row.metal_type, sk_order.metal_type)
+			self.assertEqual(row.metal_touch, sk_order.metal_touch)
+			self.assertEqual(row.metal_colour, sk_order.metal_colour)
+			self.assertEqual(str(row.metal_target), sk_order.metal_target)
+			self.assertEqual(str(row.diamond_target), sk_order.diamond_target)
+			self.assertEqual(row.sizer_type, sk_order.sizer_type)
+			self.assertEqual(row.gemstone_type, sk_order.gemstone_type)
+			self.assertEqual(row.stone_changeable, sk_order.stone_changeable)
 
 	def test_sketch_order_created_mod_design(self):
 		item = frappe.db.get_value(
@@ -66,17 +66,17 @@ class TestSketchOrderForm(FrappeTestCase):
 			row = sk_ord_frm.order_details[i]
 			sk_order = frappe.get_doc("Sketch Order", sketch_order[i].name)
 
-			(self.assertEqual(sk_ord_frm.name, sk_order.sketch_order_form),)
-			(self.assertEqual(row.category, sk_order.category),)
-			(self.assertEqual(row.setting_type, sk_order.setting_type),)
-			(self.assertEqual(row.metal_type, sk_order.metal_type),)
-			(self.assertEqual(row.metal_touch, sk_order.metal_touch),)
-			(self.assertEqual(row.metal_colour, sk_order.metal_colour),)
-			(self.assertEqual(str(row.metal_target), sk_order.metal_target),)
-			(self.assertEqual(str(row.diamond_target), sk_order.diamond_target),)
-			(self.assertEqual(row.sizer_type, sk_order.sizer_type),)
-			(self.assertEqual(row.gemstone_type, sk_order.gemstone_type),)
-			(self.assertEqual(row.stone_changeable, sk_order.stone_changeable),)
+			self.assertEqual(sk_ord_frm.name, sk_order.sketch_order_form)
+			self.assertEqual(row.category, sk_order.category)
+			self.assertEqual(row.setting_type, sk_order.setting_type)
+			self.assertEqual(row.metal_type, sk_order.metal_type)
+			self.assertEqual(row.metal_touch, sk_order.metal_touch)
+			self.assertEqual(row.metal_colour, sk_order.metal_colour)
+			self.assertEqual(str(row.metal_target), sk_order.metal_target)
+			self.assertEqual(str(row.diamond_target), sk_order.diamond_target)
+			self.assertEqual(row.sizer_type, sk_order.sizer_type)
+			self.assertEqual(row.gemstone_type, sk_order.gemstone_type)
+			self.assertEqual(row.stone_changeable, sk_order.stone_changeable)
 
 	def test_purchase_order_created(self):
 		sk_ord_frm = make_sketch_order_form(
@@ -95,17 +95,17 @@ class TestSketchOrderForm(FrappeTestCase):
 			row = sk_ord_frm.order_details[i]
 			sk_order = frappe.get_doc("Sketch Order", sketch_order[i].name)
 
-			(self.assertEqual(sk_ord_frm.name, sk_order.sketch_order_form),)
-			(self.assertEqual(row.category, sk_order.category),)
-			(self.assertEqual(row.setting_type, sk_order.setting_type),)
-			(self.assertEqual(row.metal_type, sk_order.metal_type),)
-			(self.assertEqual(row.metal_touch, sk_order.metal_touch),)
-			(self.assertEqual(row.metal_colour, sk_order.metal_colour),)
-			(self.assertEqual(str(row.metal_target), sk_order.metal_target),)
-			(self.assertEqual(str(row.diamond_target), sk_order.diamond_target),)
-			(self.assertEqual(row.sizer_type, sk_order.sizer_type),)
-			(self.assertEqual(row.gemstone_type, sk_order.gemstone_type),)
-			(self.assertEqual(row.stone_changeable, sk_order.stone_changeable),)
+			self.assertEqual(sk_ord_frm.name, sk_order.sketch_order_form)
+			self.assertEqual(row.category, sk_order.category)
+			self.assertEqual(row.setting_type, sk_order.setting_type)
+			self.assertEqual(row.metal_type, sk_order.metal_type)
+			self.assertEqual(row.metal_touch, sk_order.metal_touch)
+			self.assertEqual(row.metal_colour, sk_order.metal_colour)
+			self.assertEqual(str(row.metal_target), sk_order.metal_target)
+			self.assertEqual(str(row.diamond_target), sk_order.diamond_target)
+			self.assertEqual(row.sizer_type, sk_order.sizer_type)
+			self.assertEqual(row.gemstone_type, sk_order.gemstone_type)
+			self.assertEqual(row.stone_changeable, sk_order.stone_changeable)
 
 		po = frappe.get_all(
 			"Purchase Order",

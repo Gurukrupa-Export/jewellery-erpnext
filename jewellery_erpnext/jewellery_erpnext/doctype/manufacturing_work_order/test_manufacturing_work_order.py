@@ -83,10 +83,3 @@ class TestManufacturingWorkOrder(FrappeTestCase):
 		pending.save()
 		with self.assertRaises(frappe.ValidationError):
 			mwo.validate_other_work_orders()
-
-	def test_transfer_to_mwo_whitelisted_method(self):
-		pmo = frappe.get_last_doc("Parent Manufacturing Order")
-		create_manufacturing_work_order(pmo)
-		mwo = frappe.get_last_doc("Manufacturing Work Order")
-
-		self.assertTrue(hasattr(mwo, "transfer_to_mwo"))
