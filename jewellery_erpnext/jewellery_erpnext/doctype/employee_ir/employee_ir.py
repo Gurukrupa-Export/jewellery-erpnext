@@ -199,11 +199,7 @@ class EmployeeIR(Document):
 			{
 				"warehouse_type": "Manufacturing",
 				"disabled": 0,
-				"employee": self.employejewellery_erpnext
-				/ jewellery_erpnext
-				/ doctype
-				/ employee_ir
-				/ employee_ir.pye,
+				"employee": self.employee,
 			},
 		)
 		for row in self.employee_ir_operations:

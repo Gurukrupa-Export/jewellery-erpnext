@@ -1,0 +1,1224 @@
+{
+  "mop_log": [
+    {
+      "fieldname": "item_code",
+      "fieldtype": "Link",
+      "options": "Item"
+    },
+    {
+      "fieldname": "voucher_type",
+      "fieldtype": "Link",
+      "options": "DocType"
+    },
+    {
+      "fieldname": "voucher_no",
+      "fieldtype": "Dynamic Link",
+      "options": "voucher_type"
+    },
+    {
+      "fieldname": "is_cancelled",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "sle_ref",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "ref_docname",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "from_warehouse",
+      "fieldtype": "Link",
+      "options": "Warehouse"
+    },
+    {
+      "fieldname": "is_synced",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturing_operation",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturing_work_order",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "serial_and_batch_bundle",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "batch_no",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "to_warehouse",
+      "fieldtype": "Link",
+      "options": "Warehouse"
+    },
+    {
+      "fieldname": "row_name",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "qty_change",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "qty_after_transaction",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "serial_no",
+      "fieldtype": "Long Text",
+      "options": ""
+    },
+    {
+      "fieldname": "pcs_change",
+      "fieldtype": "Int",
+      "options": ""
+    },
+    {
+      "fieldname": "pcs_after_transaction",
+      "fieldtype": "Int",
+      "options": ""
+    },
+    {
+      "fieldname": "qty_after_transactionmop",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "pcs_after_transaction_item_based",
+      "fieldtype": "Int",
+      "options": ""
+    },
+    {
+      "fieldname": "qty_after_transaction_item_based",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "pcs_after_transaction_batch_based",
+      "fieldtype": "Int",
+      "options": ""
+    },
+    {
+      "fieldname": "qty_after_transaction_batch_based",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "flow_index",
+      "fieldtype": "Int",
+      "options": ""
+    }
+  ],
+  "department_ir": [
+    {
+      "fieldname": "amended_from",
+      "fieldtype": "Link",
+      "options": "Department IR"
+    },
+    {
+      "fieldname": "type",
+      "fieldtype": "Select",
+      "options": "Issue\nReceive"
+    },
+    {
+      "fieldname": "current_department",
+      "fieldtype": "Link",
+      "options": "Department"
+    },
+    {
+      "fieldname": "next_department",
+      "fieldtype": "Link",
+      "options": "Department"
+    },
+    {
+      "fieldname": "show_manufacturing_operation",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "get_operations",
+      "fieldtype": "Button",
+      "options": ""
+    },
+    {
+      "fieldname": "department_ir_operation",
+      "fieldtype": "Table",
+      "options": "Department IR Operation"
+    },
+    {
+      "fieldname": "date_time",
+      "fieldtype": "Datetime",
+      "options": ""
+    },
+    {
+      "fieldname": "receive_against",
+      "fieldtype": "Link",
+      "options": "Department IR"
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "options": "Company"
+    },
+    {
+      "fieldname": "previous_department",
+      "fieldtype": "Link",
+      "options": "Department"
+    },
+    {
+      "fieldname": "manufacturer",
+      "fieldtype": "Link",
+      "options": "Manufacturer"
+    },
+    {
+      "fieldname": "scan_mop",
+      "fieldtype": "Data",
+      "options": "Barcode"
+    },
+    {
+      "fieldname": "scan_mwo",
+      "fieldtype": "Data",
+      "options": "Barcode"
+    },
+    {
+      "fieldname": "transfer_type",
+      "fieldtype": "Select",
+      "options": "Next Department\nRepairing"
+    },
+    {
+      "fieldname": "summary",
+      "fieldtype": "HTML",
+      "options": ""
+    },
+    {
+      "fieldname": "is_finding",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "mop_data",
+      "fieldtype": "JSON",
+      "options": ""
+    },
+    {
+      "fieldname": "se_data",
+      "fieldtype": "JSON",
+      "options": ""
+    }
+  ],
+  "employee_ir": [
+    {
+      "fieldname": "amended_from",
+      "fieldtype": "Link",
+      "options": "Employee IR"
+    },
+    {
+      "fieldname": "type",
+      "fieldtype": "Select",
+      "options": "Issue\nReceive"
+    },
+    {
+      "fieldname": "employee",
+      "fieldtype": "Link",
+      "options": "Employee"
+    },
+    {
+      "fieldname": "next_operation",
+      "fieldtype": "Link",
+      "options": "Department Operation"
+    },
+    {
+      "fieldname": "date_time",
+      "fieldtype": "Datetime",
+      "options": ""
+    },
+    {
+      "fieldname": "operation",
+      "fieldtype": "Link",
+      "options": "Department Operation"
+    },
+    {
+      "fieldname": "subcontracting",
+      "fieldtype": "Select",
+      "options": "No\nYes"
+    },
+    {
+      "fieldname": "wastage",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "making",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "handling",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "show_manufacturing_operation",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "get_operations",
+      "fieldtype": "Button",
+      "options": ""
+    },
+    {
+      "fieldname": "employee_ir_operations",
+      "fieldtype": "Table",
+      "options": "Employee IR Operation"
+    },
+    {
+      "fieldname": "previous_operation",
+      "fieldtype": "Link",
+      "options": "Department Operation"
+    },
+    {
+      "fieldname": "department",
+      "fieldtype": "Link",
+      "options": "Department"
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "options": "Company"
+    },
+    {
+      "fieldname": "manufacturer",
+      "fieldtype": "Link",
+      "options": "Manufacturer"
+    },
+    {
+      "fieldname": "is_main_slip_required",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "is_qc_reqd",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "subcontractor",
+      "fieldtype": "Link",
+      "options": "Supplier"
+    },
+    {
+      "fieldname": "scan_mop",
+      "fieldtype": "Data",
+      "options": "Barcode"
+    },
+    {
+      "fieldname": "scan_mwo",
+      "fieldtype": "Data",
+      "options": "Barcode"
+    },
+    {
+      "fieldname": "employee_loss_details",
+      "fieldtype": "Table",
+      "options": "Employee Loss Details"
+    },
+    {
+      "fieldname": "mop_loss_details_total",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "emp_ir_id",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "manually_book_loss_details",
+      "fieldtype": "Table",
+      "options": "Manually Book Loss Details"
+    },
+    {
+      "fieldname": "calculate_loss",
+      "fieldtype": "Button",
+      "options": ""
+    },
+    {
+      "fieldname": "transfer_type",
+      "fieldtype": "Select",
+      "options": "Next Operation\nRepairing"
+    },
+    {
+      "fieldname": "summary",
+      "fieldtype": "HTML",
+      "options": ""
+    },
+    {
+      "fieldname": "no_of_moulds",
+      "fieldtype": "Int",
+      "options": ""
+    },
+    {
+      "fieldname": "mould_reference",
+      "fieldtype": "Table",
+      "options": "Mould Reference"
+    },
+    {
+      "fieldname": "mop_data",
+      "fieldtype": "JSON",
+      "options": ""
+    },
+    {
+      "fieldname": "se_data",
+      "fieldtype": "JSON",
+      "options": ""
+    }
+  ],
+  "manufacturing_work_order": [
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "options": "Company"
+    },
+    {
+      "fieldname": "seq",
+      "fieldtype": "Int",
+      "options": ""
+    },
+    {
+      "fieldname": "customer",
+      "fieldtype": "Link",
+      "options": "Customer"
+    },
+    {
+      "fieldname": "project",
+      "fieldtype": "Link",
+      "options": "Project"
+    },
+    {
+      "fieldname": "item_code",
+      "fieldtype": "Link",
+      "options": "Item"
+    },
+    {
+      "fieldname": "serial_no",
+      "fieldtype": "Link",
+      "options": "Serial No"
+    },
+    {
+      "fieldname": "item_category",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "setting_type",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "metal_purity",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "start_datetime",
+      "fieldtype": "Datetime",
+      "options": ""
+    },
+    {
+      "fieldname": "qty",
+      "fieldtype": "Int",
+      "options": ""
+    },
+    {
+      "fieldname": "metal_type",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "amended_from",
+      "fieldtype": "Link",
+      "options": "Manufacturing Work Order"
+    },
+    {
+      "fieldname": "branch",
+      "fieldtype": "Link",
+      "options": "Branch"
+    },
+    {
+      "fieldname": "posting_date",
+      "fieldtype": "Date",
+      "options": ""
+    },
+    {
+      "fieldname": "delivery_date",
+      "fieldtype": "Date",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturing_plan",
+      "fieldtype": "Link",
+      "options": "Manufacturing Plan"
+    },
+    {
+      "fieldname": "master_bom",
+      "fieldtype": "Link",
+      "options": "BOM"
+    },
+    {
+      "fieldname": "serial_id_bom",
+      "fieldtype": "Link",
+      "options": "BOM"
+    },
+    {
+      "fieldname": "item_sub_category",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "order_type",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "metal_colour",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "diamond_grade",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "metal_weight",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturer",
+      "fieldtype": "Link",
+      "options": "Manufacturer"
+    },
+    {
+      "fieldname": "auto_created",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "order_remarks",
+      "fieldtype": "Small Text",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturing_order",
+      "fieldtype": "Link",
+      "options": "Parent Manufacturing Order"
+    },
+    {
+      "fieldname": "abbr",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "estimated_delivery_date",
+      "fieldtype": "Date",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturing_end_date",
+      "fieldtype": "Date",
+      "options": ""
+    },
+    {
+      "fieldname": "metal_touch",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "color",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "due_days",
+      "fieldtype": "Int",
+      "options": ""
+    },
+    {
+      "fieldname": "est_delivery_days",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "est_mfg_end_due_days",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "department",
+      "fieldtype": "Link",
+      "options": "Department"
+    },
+    {
+      "fieldname": "for_fg",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "options": "\nDraft\nNot Started\nIn Process\nCompleted\nStopped\nClosed\nCancelled"
+    },
+    {
+      "fieldname": "split_from",
+      "fieldtype": "Link",
+      "options": "Manufacturing Work Order"
+    },
+    {
+      "fieldname": "huid",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "stock_entry_details",
+      "fieldtype": "HTML",
+      "options": ""
+    },
+    {
+      "fieldname": "multicolour",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "allowed_colours",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturing_operation",
+      "fieldtype": "Link",
+      "options": "Manufacturing Operation"
+    },
+    {
+      "fieldname": "gross_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "net_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "finding_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "other_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "loss_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "received_gross_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "received_net_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "diamond_pcs",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "gemstone_pcs",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "diamond_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "gemstone_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "diamond_wt_in_gram",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "is_finding_mwo",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "final_transfer_entry",
+      "fieldtype": "Link",
+      "options": "Stock Entry"
+    },
+    {
+      "fieldname": "has_split_mwo",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "child_po",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "finding_transfer_entry",
+      "fieldtype": "Link",
+      "options": "Stock Entry"
+    },
+    {
+      "fieldname": "bom_summary",
+      "fieldtype": "HTML",
+      "options": ""
+    },
+    {
+      "fieldname": "mwo_mop_balance_table",
+      "fieldtype": "Table",
+      "options": "MWO MOP Balance Table"
+    },
+    {
+      "fieldname": "sub_setting_type",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "jewelex_batch_no",
+      "fieldtype": "Data",
+      "options": ""
+    }
+  ],
+  "manufacturing_operation": [
+    {
+      "fieldname": "type",
+      "fieldtype": "Select",
+      "options": "\nManufacturing Work Order\nMain Slip"
+    },
+    {
+      "fieldname": "main_slip_no",
+      "fieldtype": "Link",
+      "options": "Main Slip"
+    },
+    {
+      "fieldname": "department",
+      "fieldtype": "Link",
+      "options": "Department"
+    },
+    {
+      "fieldname": "previous_operation",
+      "fieldtype": "Link",
+      "options": "Department Operation"
+    },
+    {
+      "fieldname": "operation",
+      "fieldtype": "Link",
+      "options": "Department Operation"
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "options": "Not Started\nOn Hold\nWIP\nQC Pending\nQC Completed\nFinished\nRevert"
+    },
+    {
+      "fieldname": "employee",
+      "fieldtype": "Link",
+      "options": "Employee"
+    },
+    {
+      "fieldname": "department_issue_id",
+      "fieldtype": "Link",
+      "options": "Department IR"
+    },
+    {
+      "fieldname": "department_ir_status",
+      "fieldtype": "Select",
+      "options": "\nIn-Transit\nReceived\nRevert"
+    },
+    {
+      "fieldname": "department_receive_id",
+      "fieldtype": "Link",
+      "options": "Department IR"
+    },
+    {
+      "fieldname": "qty",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "gross_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "serial_no",
+      "fieldtype": "Small Text",
+      "options": ""
+    },
+    {
+      "fieldname": "rodium",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "start_time",
+      "fieldtype": "Datetime",
+      "options": ""
+    },
+    {
+      "fieldname": "finish_time",
+      "fieldtype": "Datetime",
+      "options": ""
+    },
+    {
+      "fieldname": "time_taken",
+      "fieldtype": "Time",
+      "options": ""
+    },
+    {
+      "fieldname": "cad_numbering_file",
+      "fieldtype": "Attach",
+      "options": ""
+    },
+    {
+      "fieldname": "support_cam_file",
+      "fieldtype": "Attach",
+      "options": ""
+    },
+    {
+      "fieldname": "platform_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "rpt_wt_issue",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "rpt_wt_receive",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "rpt_wt_loss",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "estimated_rpt_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "metal_colour",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "options": "Company"
+    },
+    {
+      "fieldname": "abbr",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturing_work_order",
+      "fieldtype": "Link",
+      "options": "Manufacturing Work Order"
+    },
+    {
+      "fieldname": "manufacturer",
+      "fieldtype": "Link",
+      "options": "Manufacturer"
+    },
+    {
+      "fieldname": "item_code",
+      "fieldtype": "Link",
+      "options": "Item"
+    },
+    {
+      "fieldname": "design_id_bom",
+      "fieldtype": "Link",
+      "options": "BOM"
+    },
+    {
+      "fieldname": "metal_touch",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "metal_purity",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "diamond_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "gemstone_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "other_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "net_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "finding_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "received_gross_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "received_net_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "loss_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "diamond_pcs",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "gemstone_pcs",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "diamond_wt_in_gram",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "stock_entry_details",
+      "fieldtype": "HTML",
+      "options": ""
+    },
+    {
+      "fieldname": "metal_type",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "gemstone_wt_in_gram",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "is_last_operation",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "for_fg",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "loss_details",
+      "fieldtype": "Table",
+      "options": "Operation Loss Details"
+    },
+    {
+      "fieldname": "for_subcontracting",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "subcontractor",
+      "fieldtype": "Link",
+      "options": "Supplier"
+    },
+    {
+      "fieldname": "employee_ir",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "prev_gross_wt",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturing_order",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "finish_good_serial_number",
+      "fieldtype": "Link",
+      "options": "Serial No"
+    },
+    {
+      "fieldname": "fg_bom",
+      "fieldtype": "Link",
+      "options": "BOM"
+    },
+    {
+      "fieldname": "ref_name",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "stock_summery",
+      "fieldtype": "HTML",
+      "options": ""
+    },
+    {
+      "fieldname": "stock_entry",
+      "fieldtype": "HTML",
+      "options": ""
+    },
+    {
+      "fieldname": "started_time",
+      "fieldtype": "Datetime",
+      "options": ""
+    },
+    {
+      "fieldname": "current_time",
+      "fieldtype": "Int",
+      "options": ""
+    },
+    {
+      "fieldname": "time_logs",
+      "fieldtype": "Table",
+      "options": "Manufacturing Operation Time Log"
+    },
+    {
+      "fieldname": "total_minutes",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "on_hold",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "previous_mop",
+      "fieldtype": "Link",
+      "options": "Manufacturing Operation"
+    },
+    {
+      "fieldname": "department_time_logs",
+      "fieldtype": "Table",
+      "options": "Manufacturing Operation Department Time Log"
+    },
+    {
+      "fieldname": "department_starttime",
+      "fieldtype": "Datetime",
+      "options": ""
+    },
+    {
+      "fieldname": "department_finishtime",
+      "fieldtype": "Datetime",
+      "options": ""
+    },
+    {
+      "fieldname": "bom_summery",
+      "fieldtype": "HTML",
+      "options": ""
+    },
+    {
+      "fieldname": "manufacturing_plan",
+      "fieldtype": "Link",
+      "options": "Manufacturing Plan"
+    },
+    {
+      "fieldname": "previous_se_data_updated",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "is_finding",
+      "fieldtype": "Check",
+      "options": ""
+    },
+    {
+      "fieldname": "is_received_gross_greater_than",
+      "fieldtype": "Check",
+      "options": ""
+    }
+  ],
+  "product_certification": [
+    {
+      "fieldname": "service_type",
+      "fieldtype": "Select",
+      "options": "\nHall Marking Service\nDiamond Certificate service\nFire Assy Service\nXRF Services"
+    },
+    {
+      "fieldname": "date",
+      "fieldtype": "Date",
+      "options": ""
+    },
+    {
+      "fieldname": "naming_series",
+      "fieldtype": "Select",
+      "options": "CRT-.YYYY.-"
+    },
+    {
+      "fieldname": "type",
+      "fieldtype": "Select",
+      "options": "Issue\nReceive"
+    },
+    {
+      "fieldname": "brand_type",
+      "fieldtype": "Select",
+      "options": "\nCo-Brand\nB2B"
+    },
+    {
+      "fieldname": "type_of_certification",
+      "fieldtype": "Select",
+      "options": "\nIGI\nDHC"
+    },
+    {
+      "fieldname": "invoice_no",
+      "fieldtype": "Link",
+      "options": "Purchase Invoice"
+    },
+    {
+      "fieldname": "biling_type",
+      "fieldtype": "Select",
+      "options": "\nIs Customer\nIs Gurukrupa Exports"
+    },
+    {
+      "fieldname": "diamond_colour",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "diamond_purity",
+      "fieldtype": "Link",
+      "options": "Attribute Value"
+    },
+    {
+      "fieldname": "reciept_no",
+      "fieldtype": "Data",
+      "options": ""
+    },
+    {
+      "fieldname": "cetri_charge",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "extra_charges",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "total_amount",
+      "fieldtype": "Float",
+      "options": ""
+    },
+    {
+      "fieldname": "department",
+      "fieldtype": "Link",
+      "options": "Department"
+    },
+    {
+      "fieldname": "customer",
+      "fieldtype": "Link",
+      "options": "Customer"
+    },
+    {
+      "fieldname": "supplier",
+      "fieldtype": "Link",
+      "options": "Supplier"
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "options": "Company"
+    },
+    {
+      "fieldname": "product_details",
+      "fieldtype": "Table",
+      "options": "Product Details"
+    },
+    {
+      "fieldname": "amended_from",
+      "fieldtype": "Link",
+      "options": "Product Certification"
+    },
+    {
+      "fieldname": "exploded_product_details",
+      "fieldtype": "Table",
+      "options": "Exploded Product Details"
+    },
+    {
+      "fieldname": "landed_cost_voucher",
+      "fieldtype": "Link",
+      "options": "Landed Cost Voucher"
+    },
+    {
+      "fieldname": "receive_against",
+      "fieldtype": "Link",
+      "options": "Product Certification"
+    },
+    {
+      "fieldname": "scan",
+      "fieldtype": "Data",
+      "options": "Barcode"
+    },
+    {
+      "fieldname": "manufacturer",
+      "fieldtype": "Link",
+      "options": "Manufacturer"
+    }
+  ]
+}

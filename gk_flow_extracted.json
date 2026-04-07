@@ -1,0 +1,378 @@
+{
+  "Flow": [
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": "Manufacturing Process\n",
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Change or optimization": "Starting Point: Sales Orders drive the process, with items linked to BOMs \nthat include approximate weights for raw material planning.\nManufacturing Plan: Aggregates items from Sales Orders for planning.\nParent Manufacturing Order (PMO): Created one per unit of quantity (e.g., 221 qty = 221 PMOs)\n to enable granular tracking of each individual item through the process.\nManufacturing Operations: Linked to each PMO, with raw materials transferred to department-specific warehouses.\nTransaction Tracking:\nDepartment IR and Employee IR: Record issues/receives within departments and between employees.\nStock Movement Log: A ledger-style doctype for + (inward) and - (outward) movements,\n tracking custody at operation, department, and employee levels.\n\nStock Handling: Physical stock movements (inbound/outbound) use standard Stock Entries, but internal transactions \nuse the custom log to avoid Stock Entry's validation overhead and slowness.\n",
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": "|",
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": "Sketch Order Form",
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": "Sketch Order",
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": "Create Item Template"
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Order Forms",
+      "Unnamed: 5": NaN,
+      "Change or optimization": "Need Code Optimization and Creation of the Order",
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "|\nV",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Order",
+      "Unnamed: 5": NaN,
+      "Change or optimization": "We will create a New Doctype called Template BOM.\nWhere we just stored the Template Bom Details ",
+      "Current System Behaviors In The Flow": "Create Item Variant  and Template BOM"
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "|\nV",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": "  ",
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Quotation",
+      "Unnamed: 5": NaN,
+      "Change or optimization": "We will create a New Doctype called Tracking BOM.\nWhere we just stored and update Traking Bom Details",
+      "Current System Behaviors In The Flow": "Create Tracking BOM"
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "|\nV",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Sales Order",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "|\nV",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Manufacturing Plan",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": "Will Create Manufaturing Work Order \nBased on per each qty and per \neach row in  Manfacturing Plan"
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "|\nV",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Manufacturing Work Order",
+      "Unnamed: 5": NaN,
+      "Change or optimization": "Need to Reserve stock against that manufacturing work order",
+      "Current System Behaviors In The Flow": "Do Material Request"
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": "https://github.com/",
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "|\nV",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Manufacturing Operations ",
+      "Unnamed: 5": NaN,
+      "Change or optimization": "Just maintain qty in change and status ",
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "|\nV",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Department IR",
+      "Unnamed: 5": NaN,
+      "Change or optimization": "this department IR will uses to transfer internally will create  \nMOP log for transaction not actual actual Stock entry ",
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": "MOP log ",
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Change or optimization": "will track all the transaction in between.theri \ndepartment and employee ",
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Employee IR",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "|\nV",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Finally Operation ",
+      "Unnamed: 5": NaN,
+      "Change or optimization": "after the final operation is completed we will transfer the actual stock to \nfinally department for their serial generation and production certificate \nusing MOP log",
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": "Serail No Generator ",
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": "Product Certification",
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "|\nV",
+      "Unnamed: 5": NaN,
+      "Change or optimization": "Will create the Actual BOM for the product based on \nfull flow info on all types, expect same as per design.",
+      "Current System Behaviors In The Flow": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Sales Flow",
+      "Unnamed: 5": NaN,
+      "Change or optimization": NaN,
+      "Current System Behaviors In The Flow": NaN
+    }
+  ],
+  "Report": [
+    {
+      "Unnamed: 0": "New Custum Report",
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Unnamed: 6": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": "This Custom Report will help in tracking the current status of the Manufacturing and where the current stock is, and how much quantity is used",
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Unnamed: 6": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Unnamed: 6": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Unnamed: 6": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Unnamed: 6": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Unnamed: 6": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": NaN,
+      "Unnamed: 5": NaN,
+      "Unnamed: 6": NaN
+    },
+    {
+      "Unnamed: 0": NaN,
+      "Unnamed: 1": NaN,
+      "Unnamed: 2": NaN,
+      "Unnamed: 3": NaN,
+      "Unnamed: 4": "Manufacturing Work Order ID",
+      "Unnamed: 5": "Manufacturing Operations ID",
+      "Unnamed: 6": "MOP log reference"
+    }
+  ]
+}
