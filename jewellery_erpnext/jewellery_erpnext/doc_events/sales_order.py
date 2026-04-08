@@ -1084,7 +1084,7 @@ def create_new_bom1(self):
 									fields=["name", "price_list_type", "rate", "handling_rate"],
 								)
 								if not gpc:
-									frappe.throw("No Gemstone Price List found")
+									frappe.msgprint("No Gemstone Price List found")
 							
 
 							elif customer_group=="Retail":
