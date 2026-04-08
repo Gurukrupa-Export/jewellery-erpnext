@@ -6,10 +6,10 @@ from frappe import _
 from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.utils import (
 	update_si,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom import update_totals
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	calculate_gst_rate,
 	set_bom_item_details,
-	set_bom_rate_in_quotation,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation_pricing import (
 	_apply_kg_gk_pricing,
@@ -34,7 +34,7 @@ def validate(self, method):
 	self.calculate_taxes_and_totals()
 	if self.workflow_state == "Creating BOM":
 		frappe.enqueue(
-			create_bom_sceintifically,
+			create_bom_scientifically,
 			self=self,
 			queue="long",
 			timeout=10000,
@@ -48,7 +48,7 @@ def validate(self, method):
 		set_tracking_bom_rate_in_quotation(self)
 
 
-def create_bom_sceintifically(self):
+def create_bom_scientifically(self):
 	create_tracking_bom_directly(self)
 
 
@@ -56,7 +56,7 @@ def create_bom_sceintifically(self):
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
 	self.flags.can_be_saved = True
-	frappe.enqueue(create_bom_sceintifically, self=self, queue="long", timeout=10000)
+	frappe.enqueue(create_bom_scientifically, self=self, queue="long", timeout=10000)
 
 
 def onload(self, method):
@@ -86,9 +86,6 @@ def cancel_bom(self):
 			bom.is_active = 0
 			bom.save()
 			row.custom_tracking_bom = None
-
-
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom import update_totals
 
 
 @frappe.whitelist()
@@ -528,7 +525,7 @@ def validate_invoice_item(self):
 									"tax_amount": 0,
 									"amount_with_tax": 0,
 								}
-							# multiplied_qty = finding.quantity * item.qty
+							# multiplied_qty = finding_making.quantity * item.qty
 							# finding_making_amount = finding_making.making_rate * multiplied_qty
 							# aggregated_finding_making_items[key]["qty"] += multiplied_qty
 							# aggregated_finding_making_items[key]["amount"] += finding_making_amount
@@ -642,27 +639,6 @@ def validate_gold_rate_with_gst(self):
 def create_tracking_bom_directly(self):
 	"""Create Tracking BOM directly from Template BOM."""
 	item_codes = tuple([row.item_code for row in self.items if row.item_code])
-	if item_codes:
-		frappe.db.sql(
-			"""
-            UPDATE `tabItem` i
-            INNER JOIN `tabQuotation Item` qi
-                ON qi.item_code = i.name
-            LEFT JOIN `tabOrder` o
-                ON o.name = i.custom_cad_order_id
-            LEFT JOIN `tabOrder Form` ofm
-                ON ofm.name = i.custom_cad_order_form_id
-            SET
-                i.custom_cad_order_id = qi.order_form_id,
-                i.custom_cad_order_form_id = NULL
-            WHERE
-                i.name IN %(items)s
-                AND qi.parent = %(quotation)s
-                AND o.docstatus = 2
-                AND ofm.docstatus = 2
-        """,
-			{"items": item_codes, "quotation": self.name},
-		)
 
 	metal_criteria = (
 		frappe.get_list(
@@ -681,28 +657,17 @@ def create_tracking_bom_directly(self):
 	bom_data = frappe._dict()
 
 	tracking_boms_to_insert = []
-	tb_dicts = []
-	child_tables_map = {
-		"metal_detail": ("BOM Metal Detail", []),
-		"diamond_detail": ("BOM Diamond Detail", []),
-		"gemstone_detail": ("BOM Gemstone Detail", []),
-		"finding_detail": ("BOM Finding Detail", []),
-		"other_detail": ("BOM Other Detail", []),
-		"raw_materials": ("Raw Materials", []),
-		"operations": ("BOM Operation", []),
-	}
 
 	for row in self.items:
 		if item_tracking_data.get(row.item_code):
-			row.db_set("custom_tracking_bom", item_tracking_data.get(row.item_code))
+			row.custom_tracking_bom = item_tracking_data.get(row.item_code)
 
 		if bom_data.get(row.item_code):
-			row.db_set("copy_bom", bom_data.get(row.item_code))
+			row.copy_bom = bom_data.get(row.item_code)
 
 		if row.custom_tracking_bom:
 			if not frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
 				row.custom_tracking_bom = None
-				row.db_set("custom_tracking_bom", None)
 			else:
 				continue
 
@@ -779,9 +744,33 @@ def create_tracking_bom_directly(self):
 			self.save()
 		else:
 			self.calculate_taxes_and_totals()
+			for row in self.items:
+				row.db_update()
 			self.db_update()
 		frappe.db.set_value(self.doctype, self.name, "workflow_state", "BOM Created")
 		frappe.db.set_value(self.doctype, self.name, "custom_bom_creation_logs", None)
+
+	if item_codes:
+		frappe.db.sql(
+			"""
+            UPDATE `tabItem` i
+            INNER JOIN `tabQuotation Item` qi
+                ON qi.item_code = i.name
+            LEFT JOIN `tabOrder` o
+                ON o.name = i.custom_cad_order_id
+            LEFT JOIN `tabOrder Form` ofm
+                ON ofm.name = i.custom_cad_order_form_id
+            SET
+                i.custom_cad_order_id = qi.order_form_id,
+                i.custom_cad_order_form_id = NULL
+            WHERE
+                i.name IN %(items)s
+                AND qi.parent = %(quotation)s
+                AND o.docstatus = 2
+                AND ofm.docstatus = 2
+        """,
+			{"items": item_codes, "quotation": self.name},
+		)
 
 	frappe.msgprint("Tracking BOM(s) created")
 
@@ -802,7 +791,7 @@ def _create_single_tracking_bom(
 		if order_form_bom:
 			copy_bom = order_form_bom
 
-	row.db_set("copy_bom", copy_bom)
+	row.copy_bom = copy_bom
 	source_bom = frappe.get_doc("BOM", copy_bom)
 
 	# Create Tracking BOM
@@ -851,7 +840,7 @@ def _create_single_tracking_bom(
 	# Update quotation item maps
 	item_tracking_data[row.item_code] = tracking_bom.name
 	bom_data[row.item_code] = source_bom_name
-	row.db_set("custom_tracking_bom", tracking_bom.name)
+	row.custom_tracking_bom = tracking_bom.name
 
 	row.gold_bom_rate = tracking_bom.gold_bom_amount
 	row.diamond_bom_rate = tracking_bom.diamond_bom_amount
