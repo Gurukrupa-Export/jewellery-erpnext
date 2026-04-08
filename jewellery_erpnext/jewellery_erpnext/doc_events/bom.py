@@ -2,7 +2,6 @@ import frappe
 from erpnext.controllers.item_variant import (
 	create_variant,
 	get_variant,
-	make_variant_item_code,
 )
 from frappe import _
 from frappe.utils import flt
@@ -171,7 +170,7 @@ def set_item_variant(self):
 					"Item", row.item, "item_name"
 				)
 
-			item_name = item_name_data.get(row.item)
+			# item_name = item_name_data.get(row.item)
 
 			args = {}
 			for attr in attributes[row.item]:
@@ -184,57 +183,28 @@ def set_item_variant(self):
 				if row.get(normalized_attr):
 					args[key] = row.get(normalized_attr)
 
-			if bom_table != "gemstone_detail":
-				temp_variant = frappe._dict()
+			if self.custom_creation_doctype == "Quotation":
+				return
 
-				variant_attributes = []
-
-				for d in item_attribute_data:
-					variant_attributes.append(
-						frappe._dict({"attribute": d, "attribute_value": args.get(d)})
-					)
-
-				temp_variant.setdefault("attributes", variant_attributes)
-
-				make_variant_item_code(row.item, item_name, temp_variant)
-
-				if self.custom_creation_doctype == "Quotation":
-					return
-
-				if not temp_variant.item_code or not frappe.db.exists(
-					"Item", temp_variant.item_code
-				):
-					variant = create_variant(row.item, args)
-					variant_item_group = frappe.db.get_value(
-						"Variant Item Group",
-						{"parent": self.company, "item_variant": row.item},
-						"item_group",
-					)
-					if variant_item_group:
-						variant.item_group = variant_item_group
-					variant.insert()
-					row.item_variant = variant.name
-				else:
-					row.item_variant = temp_variant.item_code
+			variant = get_variant(row.item, args)
+			if variant:
+				row.item_variant = variant
 			else:
-				variant = get_variant(
-					row.item, args
-				)  # Get the variant for the current item and attribute values
-				if variant:
-					row.item_variant = variant
-				else:
-					# Create a new variant
-					variant = create_variant(row.item, args)
-					variant_item_group = frappe.db.get_value(
-						"Variant Item Group",
-						{"parent": self.company, "item_variant": row.item},
-						"item_group",
-					)
-					if variant_item_group:
-						variant.item_group = variant_item_group
-					variant.flags.ignore_permissions = True
-					variant.save()
-					row.item_variant = variant.name
+				variant_doc = create_variant(row.item, args)
+				variant_item_group = frappe.db.get_value(
+					"Variant Item Group",
+					{"parent": self.company, "item_variant": row.item},
+					"item_group",
+				)
+				if variant_item_group:
+					variant_doc.item_group = variant_item_group
+				variant_doc.flags.ignore_permissions = True
+				try:
+					variant_doc.insert()
+					row.item_variant = variant_doc.name
+				except frappe.DuplicateEntryError:
+					frappe.db.rollback()
+					row.item_variant = get_variant(row.item, args)
 
 
 def set_bom_items(self):

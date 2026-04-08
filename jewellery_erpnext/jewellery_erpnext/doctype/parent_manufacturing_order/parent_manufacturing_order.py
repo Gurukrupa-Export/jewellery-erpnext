@@ -131,7 +131,7 @@ class ParentManufacturingOrder(Document):
 		if self.is_new() or self.flags.ignore_validations:
 			return
 		self.metal_details()
-		update_bom_based_on_diamond_quality(self)
+		# update_bom_based_on_diamond_quality(self)
 		validate_mfg_date(self)
 		if not self.manufacturer:
 			return
@@ -424,37 +424,37 @@ class ParentManufacturingOrder(Document):
 		create_stock_entry(self, department_data)
 
 
-def update_bom_based_on_diamond_quality(self):
-	bom = frappe.get_doc("BOM", self.master_bom)
-	if self.diamond_grade:
-		for row in bom.diamond_detail:
-			row.diamond_grade = self.diamond_grade
+# def update_bom_based_on_diamond_quality(self):
+# 	bom = frappe.get_doc("BOM", self.master_bom)
+# 	if self.diamond_grade:
+# 		for row in bom.diamond_detail:
+# 			row.diamond_grade = self.diamond_grade
 
-	if self.metal_purity:
-		for row in bom.metal_detail:
-			row.metal_purity = self.metal_purity
+# 	if self.metal_purity:
+# 		for row in bom.metal_detail:
+# 			row.metal_purity = self.metal_purity
 
-		for row in bom.finding_detail:
-			if row.get("item_variant") and frappe.db.get_value(
-				"Item", row.item_variant, "custom_is_manufacturing_item"
-			):
-				continue
-			row.metal_purity = self.metal_purity
+# 		for row in bom.finding_detail:
+# 			if row.get("item_variant") and frappe.db.get_value(
+# 				"Item", row.item_variant, "custom_is_manufacturing_item"
+# 			):
+# 				continue
+# 			row.metal_purity = self.metal_purity
 
-	for pmo_row in self.gemstone_table:
-		for b_row in bom.gemstone_detail:
-			if (
-				pmo_row.gemstone_type == b_row.gemstone_type
-				and pmo_row.cut_or_cab == b_row.cut_or_cab
-				and pmo_row.stone_shape == b_row.stone_shape
-				and pmo_row.pcs == b_row.pcs
-				and pmo_row.gemstone_size == b_row.gemstone_size
-			):
-				b_row.gemstone_size = pmo_row.gemstone_size
-				b_row.gemstone_code = pmo_row.gemstone_code
-				b_row.gemstone_pr = pmo_row.gemstone_pr
-				b_row.per_pc_or_per_carat = pmo_row.per_pc_or_per_carat
-	bom.save()
+# 	for pmo_row in self.gemstone_table:
+# 		for b_row in bom.gemstone_detail:
+# 			if (
+# 				pmo_row.gemstone_type == b_row.gemstone_type
+# 				and pmo_row.cut_or_cab == b_row.cut_or_cab
+# 				and pmo_row.stone_shape == b_row.stone_shape
+# 				and pmo_row.pcs == b_row.pcs
+# 				and pmo_row.gemstone_size == b_row.gemstone_size
+# 			):
+# 				b_row.gemstone_size = pmo_row.gemstone_size
+# 				b_row.gemstone_code = pmo_row.gemstone_code
+# 				b_row.gemstone_pr = pmo_row.gemstone_pr
+# 				b_row.per_pc_or_per_carat = pmo_row.per_pc_or_per_carat
+# 	bom.save()
 
 
 def get_item_type(item_code):
@@ -600,8 +600,8 @@ def create_manufacturing_work_order(self):
 	grouped_data = {}
 	variant_of = frappe.db.get_value("Item", self.item_code, "variant_of")
 	for item in metal_details:
-		metal_purity = item["metal_purity"]
-		metal_colour = item["metal_colour"]
+		metal_purity = self.metal_purity or item["metal_purity"]
+		metal_colour = self.metal_colour or item["metal_colour"]
 		if metal_purity not in grouped_data:
 			grouped_data[metal_purity] = {metal_colour}
 		else:
@@ -643,10 +643,10 @@ def create_manufacturing_work_order(self):
 					doc.allowed_colours = color["metal_colours"]
 			doc.seq = int(self.name.split("-")[-1])
 			doc.department = mfg_settings.get("default_department")
-			doc.metal_touch = row.metal_touch
-			doc.metal_type = row.metal_type
-			doc.metal_purity = row.metal_purity
-			doc.metal_colour = row.metal_colour
+			doc.metal_touch = self.metal_touch or row.metal_touch
+			doc.metal_type = self.metal_type or row.metal_type
+			doc.metal_purity = self.metal_purity or row.metal_purity
+			doc.metal_colour = self.metal_colour or row.metal_colour
 			doc.auto_created = 1
 			doc.save()
 
@@ -663,10 +663,10 @@ def create_manufacturing_work_order(self):
 		)
 		fg_doc.seq = int(self.name.split("-")[-1])
 		fg_doc.department = mfg_settings.get("default_fg_department")
-		fg_doc.metal_touch = row.metal_touch
-		fg_doc.metal_type = row.metal_type
-		fg_doc.metal_purity = row.metal_purity
-		fg_doc.metal_colour = row.metal_colour
+		fg_doc.metal_touch = self.metal_touch or row.metal_touch
+		fg_doc.metal_type = self.metal_type or row.metal_type
+		fg_doc.metal_purity = self.metal_purity or row.metal_purity
+		fg_doc.metal_colour = self.metal_colour or row.metal_colour
 		fg_doc.for_fg = 1
 		fg_doc.auto_created = 1
 		fg_doc.save()
@@ -702,11 +702,17 @@ def get_diamond_item_code_by_variant(self, bom, target_warehouse):
 					}
 				)
 			else:
-				variant = create_variant(row.item, args)
-				variant.save()
+				variant_doc = create_variant(row.item, args)
+				variant_doc.flags.ignore_permissions = True
+				try:
+					variant_doc.insert()
+					variant_name = variant_doc.name
+				except frappe.DuplicateEntryError:
+					frappe.db.rollback()
+					variant_name = get_variant(row.item, args)
 				diamond_list.append(
 					{
-						"item_code": variant.item_code,
+						"item_code": variant_name,
 						"qty": self.qty,
 						"warehouse": target_warehouse,
 					}
@@ -739,11 +745,17 @@ def get_gemstone_item_code_by_variant(self, bom, target_warehouse):
 					}
 				)
 			else:
-				variant = create_variant(row.item, args)
-				variant.save()
+				variant_doc = create_variant(row.item, args)
+				variant_doc.flags.ignore_permissions = True
+				try:
+					variant_doc.insert()
+					variant_name = variant_doc.name
+				except frappe.DuplicateEntryError:
+					frappe.db.rollback()
+					variant_name = get_variant(row.item, args)
 				gemstone_list.append(
 					{
-						"item_code": variant.item_code,
+						"item_code": variant_name,
 						"qty": row.quantity,
 						"warehouse": target_warehouse,
 					}
