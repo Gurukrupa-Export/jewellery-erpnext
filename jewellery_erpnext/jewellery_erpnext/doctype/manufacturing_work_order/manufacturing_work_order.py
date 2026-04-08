@@ -507,4 +507,4 @@ def create_mr_for_split_work_order(docname, company, manufacturer):
 	new_mr.flags.ignore_mandatory = True
 	new_mr.flags.ignore_validate = True
 	new_mr.save()
-	frappe.msgprint("Material Request is creted !!")
+	frappe.msgprint("Material Request is created !!")
