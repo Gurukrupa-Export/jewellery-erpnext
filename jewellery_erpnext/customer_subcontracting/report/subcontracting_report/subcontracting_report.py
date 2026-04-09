@@ -5,6 +5,10 @@ def execute(filters=None):
 	if not filters:
 		filters = {}
 
+	if filters.get("batch_no"):
+		linked = get_linked_batches(filters.get("batch_no"))
+		filters["linked_batches"] = tuple(linked)
+
 	conditions = get_conditions(filters)
 
 	report = {}
@@ -12,27 +16,40 @@ def execute(filters=None):
 
 	with frappe.db.unbuffered_cursor():
 		for r in get_cgr_data(filters, conditions):
-			report[r.batch_no] = {
-				"owner": r.customer,
-				"item": r.item_code,
-				"opening": r.qty,
-				"used_same": 0,
-				"used_other": 0,
-			}
+			report[r.batch_no] = init_row(r.customer, r.item_code, r.qty)
 
 		for r in get_pr_data(filters):
 			if r.batch_no not in report:
-				report[r.batch_no] = {
-					"owner": r.customer,
-					"item": r.item_code,
-					"opening": r.qty,
-					"used_same": 0,
-					"used_other": 0,
-				}
+				report[r.batch_no] = init_row(r.customer, r.item_code, r.qty)
 			else:
 				report[r.batch_no]["opening"] += r.qty
 
-		for r in get_transfer_data(filters, conditions):
+		processed_children = set()
+
+		for r in get_repack_data(filters):
+			parent_batch = r.parent_batch
+			parent_qty = r.parent_qty or 0
+			child_batch = r.child_batch
+			child_qty = r.child_qty or 0
+			customer = r.customer
+			item = r.item_code
+			repack_type = r.repack_type
+
+			if parent_batch in report:
+				report[parent_batch]["used_other"] += parent_qty
+
+			if child_batch not in processed_children:
+				processed_children.add(child_batch)
+
+				if child_batch not in report:
+					report[child_batch] = init_row(customer, item, child_qty)
+				else:
+					report[child_batch]["opening"] += child_qty
+
+			if repack_type == "Subcontracting Repack" and child_batch in report:
+				report[child_batch]["received_back"] += child_qty
+
+		for r in get_usage_data(filters, conditions):
 			if r.batch_no not in report:
 				continue
 
@@ -44,31 +61,6 @@ def execute(filters=None):
 			else:
 				report[r.batch_no]["used_other"] += r.qty
 
-		for r in get_repack_data(filters):
-			parent_batches = (r.get("parent_batches") or "").split("||")
-			child_batch = r.get("child_batch")
-			qty = r.get("qty")
-			customer = r.get("customer")
-			item = r.get("item_code")
-
-			for parent_batch in parent_batches:
-				if not parent_batch:
-					continue
-
-				if parent_batch in report:
-					report[parent_batch]["used_other"] += qty
-
-			if child_batch not in report:
-				report[child_batch] = {
-					"owner": customer,
-					"item": item,
-					"opening": qty,
-					"used_same": 0,
-					"used_other": 0,
-				}
-			else:
-				report[child_batch]["opening"] += qty
-
 	if filters.get("customer"):
 		report = {
 			k: v for k, v in report.items() if v.get("owner") == filters.get("customer")
@@ -76,7 +68,6 @@ def execute(filters=None):
 
 	for batch, d in report.items():
 		balance = d["opening"] - d["used_same"] - d["used_other"]
-		balance_from_other = d["used_other"]
 
 		data.append(
 			[
@@ -86,25 +77,18 @@ def execute(filters=None):
 				d["opening"],
 				d["used_same"],
 				d["used_other"],
+				d["received_back"],
 				balance,
-				balance_from_other,
 			]
 		)
-
 	item_filter = filters.get("item_code")
-
 	if item_filter and data:
-		total_opening = 0
-		total_used_same = 0
-		total_used_other = 0
-
-		for r in data:
-			total_opening += frappe.utils.flt(r[3])
-			total_used_same += frappe.utils.flt(r[4])
-			total_used_other += frappe.utils.flt(r[5])
+		total_opening = sum(frappe.utils.flt(r[3]) for r in data)
+		total_used_same = sum(frappe.utils.flt(r[4]) for r in data)
+		total_used_other = sum(frappe.utils.flt(r[5]) for r in data)
+		total_received_back = sum(frappe.utils.flt(r[6]) for r in data)
 
 		total_balance = total_opening - total_used_same - total_used_other
-		total_balance_other = total_used_other
 
 		data.append(
 			[
@@ -114,18 +98,55 @@ def execute(filters=None):
 				total_opening,
 				total_used_same,
 				total_used_other,
+				total_received_back,
 				total_balance,
-				total_balance_other,
 			]
 		)
 
 	return get_columns(), data
 
 
+def get_linked_batches(batch_no):
+	visited = set()
+	stack = [batch_no]
+
+	while stack:
+		current = stack.pop()
+
+		if current in visited:
+			continue
+
+		visited.add(current)
+
+		children = frappe.get_all(
+			"Batch MultiSelect", filters={"batch_no": current}, fields=["parent"]
+		)
+
+		for c in children:
+			if c.parent not in visited:
+				stack.append(c.parent)
+
+	return visited
+
+
+def init_row(customer, item, qty):
+	return {
+		"owner": customer,
+		"item": item,
+		"opening": qty,
+		"used_same": 0,
+		"used_other": 0,
+		"received_back": 0,
+	}
+
+
 def get_conditions(filters):
 	conditions = ""
 
-	if filters.get("batch_no"):
+	if filters.get("linked_batches"):
+		conditions += " AND sed.batch_no IN %(linked_batches)s"
+
+	elif filters.get("batch_no"):
 		conditions += " AND sed.batch_no = %(batch_no)s"
 
 	if filters.get("item_code"):
@@ -137,106 +158,108 @@ def get_conditions(filters):
 def get_cgr_data(filters, conditions):
 	return frappe.db.sql(
 		f"""
-		SELECT
-			sed.batch_no,
-			SUM(sed.qty) AS qty,
-			sed.customer,
-			sed.item_code
-		FROM `tabStock Entry Detail` sed
-		JOIN `tabStock Entry` se ON se.name = sed.parent
-		WHERE se.stock_entry_type = 'Customer Goods Received'
-		{conditions}
-		GROUP BY sed.batch_no, sed.customer, sed.item_code
-		""",
+    SELECT
+      sed.batch_no,
+      SUM(sed.qty) AS qty,
+      sed.customer,
+      sed.item_code
+    FROM `tabStock Entry Detail` sed
+    JOIN `tabStock Entry` se ON se.name = sed.parent
+    WHERE se.stock_entry_type = 'Customer Goods Received'
+    {conditions}
+    GROUP BY sed.batch_no, sed.customer, sed.item_code
+    """,
 		filters,
 		as_dict=1,
 		as_iterator=True,
-		debug=1,
 	)
 
 
 def get_pr_data(filters):
 	conditions = ""
-	if filters.get("batch_no"):
+
+	if filters.get("linked_batches"):
+		conditions += " AND pr_item.batch_no IN %(linked_batches)s"
+
+	elif filters.get("batch_no"):
 		conditions += " AND pr_item.batch_no = %(batch_no)s"
+
 	if filters.get("item_code"):
 		conditions += " AND pr_item.item_code = %(item_code)s"
 
 	return frappe.db.sql(
 		f"""
-		SELECT
-			pr_item.batch_no,
-			pr_item.qty,
-			pr_item.item_code,
-			pr_item.customer
-		FROM `tabPurchase Receipt Item` pr_item
-		JOIN `tabPurchase Receipt` pr ON pr.name = pr_item.parent
-		WHERE pr.purchase_type = 'Subcontracting'
-		{conditions}
-		""",
+    SELECT
+      pr_item.batch_no,
+      pr_item.qty,
+      pr_item.item_code,
+      pr_item.customer
+    FROM `tabPurchase Receipt Item` pr_item
+    JOIN `tabPurchase Receipt` pr ON pr.name = pr_item.parent
+    WHERE pr.purchase_type = 'Subcontracting'
+    {conditions}
+    """,
 		filters,
 		as_dict=1,
 		as_iterator=True,
-		debug=1,
 	)
 
 
-def get_transfer_data(filters, conditions):
+def get_usage_data(filters, conditions):
 	return frappe.db.sql(
 		f"""
-		SELECT
-			sed.batch_no,
-			sed.qty,
-			sed.item_code,
-			se.manufacturing_work_order,
-			mwo.customer AS target_customer
-		FROM `tabStock Entry Detail` sed
-		JOIN `tabStock Entry` se ON se.name = sed.parent
-		LEFT JOIN `tabManufacturing Work Order` mwo
-			ON mwo.name = se.manufacturing_work_order
-		WHERE se.stock_entry_type = 'Material Transfer (WORK ORDER)'
-		{conditions}
-		""",
+    SELECT
+      sed.batch_no,
+      sed.qty,
+      mwo.customer AS target_customer
+    FROM `tabStock Entry Detail` sed
+    JOIN `tabStock Entry` se ON se.name = sed.parent
+    LEFT JOIN `tabManufacturing Work Order` mwo
+      ON mwo.name = se.manufacturing_work_order
+    WHERE se.stock_entry_type = 'Material Transfer (WORK ORDER)'
+    {conditions}
+    """,
 		filters,
 		as_dict=1,
 		as_iterator=True,
-		debug=1,
 	)
 
 
 def get_repack_data(filters):
 	conditions = ""
-	if filters.get("batch_no"):
+
+	if filters.get("linked_batches"):
+		conditions += " AND (parent_sed.batch_no IN %(linked_batches)s OR child_sed.batch_no IN %(linked_batches)s)"
+
+	elif filters.get("batch_no"):
 		conditions += " AND (parent_sed.batch_no = %(batch_no)s OR child_sed.batch_no = %(batch_no)s)"
+
 	if filters.get("item_code"):
 		conditions += " AND (parent_sed.item_code = %(item_code)s OR child_sed.item_code = %(item_code)s)"
 
 	return frappe.db.sql(
 		f"""
-		SELECT
-			GROUP_CONCAT(DISTINCT parent_sed.batch_no SEPARATOR '||') AS parent_batches,
-			child_sed.batch_no AS child_batch,
-			SUM(child_sed.qty) AS qty,
-			child_sed.customer,
-			child_sed.item_code
-		FROM `tabStock Entry` se
-
-		JOIN `tabStock Entry Detail` parent_sed
-			ON parent_sed.parent = se.name
-			AND parent_sed.is_finished_item = 0
-
-		JOIN `tabStock Entry Detail` child_sed
-			ON child_sed.parent = se.name
-			AND child_sed.is_finished_item = 1
-
-		WHERE se.stock_entry_type = 'Subcontracting Repack'
-		{conditions}
-		GROUP BY child_sed.parent, child_sed.batch_no, child_sed.customer, child_sed.item_code
-		""",
+    SELECT
+      parent_sed.batch_no AS parent_batch,
+      parent_sed.qty AS parent_qty,
+      child_sed.batch_no AS child_batch,
+      child_sed.qty AS child_qty,
+      child_sed.customer,
+      child_sed.item_code,
+      se.stock_entry_type AS repack_type
+    FROM `tabStock Entry` se
+    JOIN `tabStock Entry Detail` parent_sed
+      ON parent_sed.parent = se.name
+      AND parent_sed.is_finished_item = 0
+    JOIN `tabStock Entry Detail` child_sed
+      ON child_sed.parent = se.name
+      AND child_sed.is_finished_item = 1
+    WHERE se.stock_entry_type IN ('Repack-Metal Conversion', 'Subcontracting Repack')
+    {conditions}
+    """,
 		filters,
 		as_dict=1,
 		as_iterator=True,
-		debug=1,
 	)
 
 
@@ -248,6 +271,6 @@ def get_columns():
 		"Opening Qty:Float:110",
 		"Used Same:Float:100",
 		"Used Other:Float:100",
+		"Received Back:Float:120",
 		"Balance:Float:100",
-		"Balance from other:Float:150",
 	]
