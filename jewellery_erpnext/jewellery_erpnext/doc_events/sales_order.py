@@ -1076,7 +1076,7 @@ def create_new_bom1(self):
 									filters={
 										"customer": self.customer,
 										"price_list_type": gemstone_price_list_customer,
-										"gemstone_grade": gem.get("gemstone_grade"),
+										"per_pc_or_per_carat": gem.get("per_pc_or_per_carat"),
 										"cut_or_cab": gem.get("cut_or_cab"),
 										"gemstone_type": gem.get("gemstone_type"),
 										"stone_shape": gem.get("stone_shape")
@@ -1094,7 +1094,7 @@ def create_new_bom1(self):
 									filters={
 										"is_retail_customer":1,
 										"price_list_type": gemstone_price_list_customer,
-										"gemstone_grade": gem.get("gemstone_grade"),
+										"per_pc_or_per_carat": gem.get("per_pc_or_per_carat"),
 										"cut_or_cab": gem.get("cut_or_cab"),
 										"gemstone_type": gem.get("gemstone_type"),
 										"stone_shape": gem.get("stone_shape")
@@ -1111,8 +1111,7 @@ def create_new_bom1(self):
 									gem.total_gemstone_rate = gpc[0]["rate"]
 								gem.total_gemstone_rate =round(gem.total_gemstone_rate , 2)
 								gem.gemstone_rate_for_specified_quantity = (
-									float(gem.total_gemstone_rate) / 100 * float(gem.gemstone_pr)
-								)
+								float(rate) * float(gem.quantity)) if gem.per_pc_or_per_carat=='Per Carat' else (float(rate) * float(gem.pcs))
 								gem.gemstone_rate_for_specified_quantity=round(gem.gemstone_rate_for_specified_quantity, 2)
 								doc.total_gemstone_amount = sum(
 									flt(r.gemstone_rate_for_specified_quantity)
@@ -1202,8 +1201,7 @@ def create_new_bom1(self):
 									gem.total_gemstone_rate = round(rate, 2)
 
 								gem.gemstone_rate_for_specified_quantity = (
-									float(rate) / 100 * float(gem.gemstone_pr)
-								)
+								float(rate) * float(gem.quantity)) if gem.per_pc_or_per_carat=='Per Carat' else (float(rate) * float(gem.pcs))
 								gem.gemstone_rate_for_specified_quantity =round(gem.gemstone_rate_for_specified_quantity , 2)
 								gem.price_list_type='Diamond Range'
 							doc.total_gemstone_amount = sum(
