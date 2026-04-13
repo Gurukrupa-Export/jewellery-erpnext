@@ -3,11 +3,11 @@ import json
 import frappe
 from frappe import _
 from frappe.model.mapper import get_mapped_doc
-from frappe.utils import nowdate
-from frappe.utils.data import flt
+from frappe.utils import flt, nowdate
 
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request import (
-	make_mop_stock_entry,make_department_mop_stock_entry
+	make_department_mop_stock_entry,
+	make_mop_stock_entry,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.before_validate import (
 	update_pure_qty,
@@ -16,13 +16,13 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.be
 
 
 def before_validate(self, method):
-
 	if self.set_warehouse and self.set_from_warehouse:
-		source_branch = frappe.db.get_value("Warehouse", self.set_from_warehouse, "custom_branch")
-		target_branch = frappe.db.get_value("Warehouse", self.set_warehouse, "custom_branch")
-
-		if not source_branch and not target_branch:
-			pass
+		source_branch = frappe.db.get_value(
+			"Warehouse", self.set_from_warehouse, "custom_branch"
+		)
+		target_branch = frappe.db.get_value(
+			"Warehouse", self.set_warehouse, "custom_branch"
+		)
 
 		if source_branch == target_branch:
 			self.custom_transfer_type = "Transfer To Department"
@@ -35,41 +35,68 @@ def before_validate(self, method):
 	update_pure_qty(self)
 	validate_target_item(self)
 	validate_warehouse(self)
-	if self.custom_manufacturing_operation and self.manufacturing_order != frappe.db.get_value(
-		"Manufacturing Operation", self.custom_manufacturing_operation, "manufacturing_order"
-	):
-		frappe.throw(_("Manufacturing Order and Manufacturing Operation are not linked."))
+
+	if self.custom_manufacturing_operation:
+		linked_mo = frappe.db.get_value(
+			"Manufacturing Operation",
+			self.custom_manufacturing_operation,
+			"manufacturing_order",
+		)
+		if self.manufacturing_order != linked_mo:
+			frappe.throw(
+				_("Manufacturing Order and Manufacturing Operation are not linked.")
+			)
 
 
 def before_update_after_submit(self, method):
-	# if self.workflow_state == "Material Transferred to MOP":
-	# 	if not self.custom_manufacturing_operation:
-	# 		frappe.throw(_("Please Select Manufacturing Operation"))
+	if self.workflow_state != "Material Transferred to MOP":
+		return
 
-	# 	make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
-	if self.workflow_state == "Material Transferred to MOP":
-		if not self.custom_manufacturing_operation:
-			frappe.throw(_("Please Select Manufacturing Operation"))
+	if not self.custom_manufacturing_operation:
+		frappe.throw(_("Please select a Manufacturing Operation."))
 
-		mop_status = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"status")
-		if mop_status == 'Finished':
-			frappe.throw("You can not select Finished Opearions")
+	mop_fields = frappe.db.get_value(
+		"Manufacturing Operation",
+		self.custom_manufacturing_operation,
+		["status", "department"],
+		as_dict=True,
+	)
 
-		if self.custom_manufacturing_operation and self.custom_department:
-			mop_department = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"department")
-			# if mop_department != self.custom_department:
-			# 	frappe.throw(_(f"Manufacturing Operation is not in <b>{self.custom_department}</b> Deparment"))
-			make_department_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
-		else:
-			mop_department = frappe.db.get_value("Manufacturing Operation",{"name": self.custom_manufacturing_operation},"department")
-			table_warehouse_department = frappe.db.get_value("Warehouse",self.items[0].warehouse,"department")
-			if mop_department != table_warehouse_department:
-				frappe.throw("Manufacturing Operation's Department and selectd Department's is not matched")
-			make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
+	if not mop_fields:
+		frappe.throw(
+			_("Manufacturing Operation {0} not found.").format(
+				self.custom_manufacturing_operation
+			)
+		)
+
+	if mop_fields.status == "Finished":
+		frappe.throw(_("Cannot select an operation that is already Finished."))
+
+	if self.custom_department:
+		make_department_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
+	else:
+		if not self.items or not self.items[0].warehouse:
+			frappe.throw(_("Warehouse is missing from Request Items."))
+
+		table_warehouse_department = frappe.db.get_value(
+			"Warehouse", self.items[0].warehouse, "department"
+		)
+
+		if mop_fields.department != table_warehouse_department:
+			frappe.throw(
+				_(
+					"Manufacturing Operation's Department and selected Warehouse Department do not match."
+				)
+			)
+
+		make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
 
 
 def validate_target_item(self):
 	for row in self.items:
+		if not getattr(row, "custom_alternative_item", None):
+			continue
+
 		attr_value = frappe.db.get_value(
 			"Item Variant Attribute",
 			{"attribute": "Diamond Sieve Size", "parent": row.item_code},
@@ -77,7 +104,6 @@ def validate_target_item(self):
 		)
 		if not attr_value:
 			continue
-		height, weight = frappe.db.get_value("Attribute Value", attr_value, ["height", "weight"])
 
 		alternative_item_attr_value = frappe.db.get_value(
 			"Item Variant Attribute",
@@ -88,34 +114,53 @@ def validate_target_item(self):
 		if not alternative_item_attr_value:
 			continue
 
-		alternative_item_height, alternative_item_weight = frappe.db.get_value(
-			"Attribute Value", alternative_item_attr_value, ["height", "weight"]
+		height_weight = frappe.db.get_value(
+			"Attribute Value", attr_value, ["height", "weight"], as_dict=True
+		)
+		alt_height_weight = frappe.db.get_value(
+			"Attribute Value",
+			alternative_item_attr_value,
+			["height", "weight"],
+			as_dict=True,
 		)
 
-		if abs(alternative_item_height - height) > 0.5 or abs(weight - alternative_item_weight) > 0.5:
+		if not height_weight or not alt_height_weight:
+			continue
+
+		height, weight = height_weight.height, height_weight.weight
+		alt_height, alt_weight = alt_height_weight.height, alt_height_weight.weight
+
+		if height is None or weight is None or alt_height is None or alt_weight is None:
+			continue
+
+		if abs(alt_height - height) > 0.5 or abs(weight - alt_weight) > 0.5:
 			frappe.throw(
-				_("The Diamond Sieve Size in <b>{0}</b> is not within the size range of <b>{1}</b>.").format(
-					row.item_code, row.custom_alternative_item
-				)
+				_(
+					"The Diamond Sieve Size in <b>{0}</b> is not within the size range of <b>{1}</b>."
+				).format(row.item_code, row.custom_alternative_item)
 			)
 
 
 def on_submit(self, method=None):
-	if self.custom_reserve_se:
-		se_doc = frappe.get_doc("Stock Entry", self.custom_reserve_se)
-		new_se_doc = frappe.copy_doc(se_doc)
+	if not self.custom_reserve_se:
+		return
 
-		new_se_doc.stock_entry_type = "Material Transfer From Reserve"
-		for row in new_se_doc.items:
-			t_warehouse = frappe.db.get_value(
-				"Material Request Item", row.material_request_item, "warehouse"
-			)
-			row.s_warehouse = row.t_warehouse
-			row.t_warehouse = t_warehouse
-			row.serial_and_batch_bundle = None
-		new_se_doc.auto_created = 1
-		new_se_doc.save()
-		new_se_doc.submit()
+	se_doc = frappe.get_doc("Stock Entry", self.custom_reserve_se)
+	new_se_doc = frappe.copy_doc(se_doc)
+
+	new_se_doc.stock_entry_type = "Material Transfer From Reserve"
+
+	for row in new_se_doc.items:
+		original_t_warehouse = frappe.db.get_value(
+			"Material Request Item", row.material_request_item, "warehouse"
+		)
+		row.s_warehouse = row.t_warehouse
+		row.t_warehouse = original_t_warehouse
+		row.serial_and_batch_bundle = None
+
+	new_se_doc.auto_created = 1
+	new_se_doc.save()
+	new_se_doc.submit()
 
 
 @frappe.whitelist()
@@ -133,13 +178,12 @@ def make_stock_in_entry(source_name, target_doc=None):
 		target_doc.from_warehouse = source_doc.t_warehouse
 		target_doc.qty = source_doc.qty
 
-	doclist = get_mapped_doc(
+	return get_mapped_doc(
 		"Stock Entry",
 		source_name,
 		{
 			"Stock Entry": {
 				"doctype": "Material Request",
-				# "field_map": {"name": "outgoing_stock_entry"},
 				"validation": {"docstatus": ["=", 1]},
 			},
 			"Stock Entry Detail": {
@@ -151,14 +195,11 @@ def make_stock_in_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				# "condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
 			},
 		},
 		target_doc,
 		set_missing_values,
 	)
-
-	return doclist
 
 
 @frappe.whitelist()
@@ -173,10 +214,10 @@ def make_stock_entry(source_name, target_doc=None):
 		target.transfer_qty = qty * obj.conversion_factor
 		target.conversion_factor = obj.conversion_factor
 
-		if (
-			source_parent.material_request_type == "Material Transfer"
-			or source_parent.material_request_type == "Customer Provided"
-		):
+		if source_parent.material_request_type in [
+			"Material Transfer",
+			"Customer Provided",
+		]:
 			target.t_warehouse = obj.warehouse
 		else:
 			target.s_warehouse = obj.warehouse
@@ -189,20 +230,17 @@ def make_stock_entry(source_name, target_doc=None):
 
 	def set_missing_values(source, target):
 		target.purpose = source.material_request_type
-		# target.from_warehouse = source.set_from_warehouse
-		# target.to_warehouse = source.set_warehouse
-		# sending doc_id for reference
 		target.custom_material_request_reference = source.name
 
 		if source.job_card:
 			target.purpose = "Material Transfer for Manufacture"
-
-		if source.material_request_type == "Customer Provided":
+		elif source.material_request_type == "Customer Provided":
 			target.purpose = "Material Receipt"
 
 		target.set_transfer_qty()
 		target.set_actual_qty()
 		target.calculate_rate_and_amount(raise_error_if_no_rate=False)
+
 		if (
 			source.material_request_type == "Material Transfer"
 			and source.inventory_type == "Customer Goods"
@@ -213,33 +251,27 @@ def make_stock_entry(source_name, target_doc=None):
 
 		target.set_job_card_data()
 
-		itm_batch = []
-		for i in source.items:
-			itm_batch.append(
-				{
-					"item": i.item_code,
-					"batch": i.batch_no,
-					"serial": i.serial_no,
-					"idx": i.idx,
-				}
-			)
+		# Map item batches using O(N) lookup instead of O(N^2)
+		batch_map = {
+			(i.item_code, i.idx): {"batch": i.batch_no, "serial": i.serial_no}
+			for i in source.items
+		}
 		for itm in target.items:
-			for b in itm_batch:
-				if itm.item_code == b.get("item") and itm.idx == b.get("idx"):
-					itm.batch_no = b.get("batch")
-					itm.serial_no = b.get("serial")
+			mapped_data = batch_map.get((itm.item_code, itm.idx))
+			if mapped_data:
+				itm.batch_no = mapped_data["batch"]
+				itm.serial_no = mapped_data["serial"]
 
 		if source.job_card:
-			job_card_details = frappe.get_all(
-				"Job Card", filters={"name": source.job_card}, fields=["bom_no", "for_quantity"]
+			job_card_details = frappe.get_value(
+				"Job Card", source.job_card, ["bom_no", "for_quantity"], as_dict=True
 			)
-
-			if job_card_details and job_card_details[0]:
-				target.bom_no = job_card_details[0].bom_no
-				target.fg_completed_qty = job_card_details[0].for_quantity
+			if job_card_details:
+				target.bom_no = job_card_details.bom_no
+				target.fg_completed_qty = job_card_details.for_quantity
 				target.from_bom = 1
 
-	doclist = get_mapped_doc(
+	return get_mapped_doc(
 		"Material Request",
 		source_name,
 		{
@@ -263,70 +295,93 @@ def make_stock_entry(source_name, target_doc=None):
 					"job_card_item": "job_card_item",
 				},
 				"postprocess": update_item,
-				"condition": lambda doc: (
-					flt(doc.ordered_qty, doc.precision("ordered_qty"))
-					< flt(doc.stock_qty, doc.precision("ordered_qty"))
-				),
+				"condition": lambda doc: flt(
+					doc.ordered_qty, doc.precision("ordered_qty")
+				)
+				< flt(doc.stock_qty, doc.precision("ordered_qty")),
 			},
 		},
 		target_doc,
 		set_missing_values,
 	)
 
-	return doclist
-
 
 @frappe.whitelist()
-def make_in_transit_stock_entry(source_name, to_warehouse, transfer_type, pmo=None, mnfr=None):
-	pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo) if pmo else None
-	# to_department = frappe.db.get_value("Warehouse", to_warehouse, "department")
+def make_in_transit_stock_entry(
+	source_name, to_warehouse, transfer_type, pmo=None, mnfr=None
+):
 	to_department, warehouse_type = frappe.db.get_value(
-		"Warehouse",
-		to_warehouse,
-		fieldname=["department", "warehouse_type"]
+		"Warehouse", to_warehouse, ["department", "warehouse_type"]
 	)
-	from_department, set_warehouse = frappe.db.get_value("Material Request", source_name, fieldname=["set_from_warehouse", "set_warehouse"])
+	from_department, set_warehouse = frappe.db.get_value(
+		"Material Request", source_name, ["set_from_warehouse", "set_warehouse"]
+	)
 	in_transit_warehouse = frappe.db.get_value(
 		"Warehouse", to_warehouse, "default_in_transit_warehouse"
 	)
-	check_frm_warehus_type = frappe.db.get_value("Warehouse", from_department, "warehouse_type")
-	
+
+	check_frm_warehus_type = None
+	if from_department:
+		check_frm_warehus_type = frappe.db.get_value(
+			"Warehouse", from_department, "warehouse_type"
+		)
+
 	if not in_transit_warehouse:
 		frappe.throw(_("Transit warehouse is not mentioned in Target Warehouse"))
 
 	ste_doc = make_stock_entry(source_name)
-	if not ste_doc.employee:
+	if not getattr(ste_doc, "employee", None):
 		ste_doc.add_to_transit = 1
 
-	stock_entry_type = frappe.db.get_value("Transfer Type", transfer_type, "stock_entry_type")
+	stock_entry_type = frappe.db.get_value(
+		"Transfer Type", transfer_type, "stock_entry_type"
+	)
 	if not stock_entry_type:
-		frappe.throw(_("Please mention Stock Entry type for selected Transfer type."))
-	if ste_doc.items[0].customer:
+		frappe.throw(
+			_("Please specify a Stock Entry Type for the selected Transfer Type.")
+		)
+
+	if ste_doc.items and ste_doc.items[0].customer:
 		ste_doc.stock_entry_type = "Customer Goods Transfer"
 	else:
-		# ste_doc.stock_entry_type = stock_entry_type
-		if check_frm_warehus_type and to_department and check_frm_warehus_type == "Consumables" and warehouse_type == "Consumables":
+		if (
+			check_frm_warehus_type
+			and to_department
+			and check_frm_warehus_type == "Consumables"
+			and warehouse_type == "Consumables"
+		):
 			ste_doc.stock_entry_type = "Consumables Issue to  Department"
-			# ste_doc.add_to_transit = 0
 			ste_doc.to_warehouse = set_warehouse
 		else:
 			ste_doc.stock_entry_type = stock_entry_type
 			ste_doc.to_warehouse = in_transit_warehouse
 			ste_doc.to_department = to_department
 
-	# ste_doc.to_warehouse = in_transit_warehouse
-	# ste_doc.to_department = to_department
+	if mnfr and pmo:
+		pmo_doc = frappe.get_value(
+			"Parent Manufacturing Order",
+			pmo,
+			[
+				"customer_sample",
+				"customer_voucher_no",
+				"customer_gold",
+				"customer_diamond",
+				"customer_stone",
+				"customer_good",
+				"customer",
+			],
+			as_dict=True,
+		)
 
-	if mnfr and pmo_doc != None:
-		# if pmo_doc.type != "Finding Manufacturing":
-		# 	ste_doc.stock_entry_type = "Material Transfer to Department"
-		if (
-			pmo_doc.customer_sample
-			and pmo_doc.customer_voucher_no
-			and pmo_doc.customer_gold
-			and pmo_doc.customer_diamond
-			and pmo_doc.customer_stone
-			and pmo_doc.customer_good
+		if pmo_doc and all(
+			[
+				pmo_doc.customer_sample,
+				pmo_doc.customer_voucher_no,
+				pmo_doc.customer_gold,
+				pmo_doc.customer_diamond,
+				pmo_doc.customer_stone,
+				pmo_doc.customer_good,
+			]
 		):
 			ste_doc.inventory_type = "Customer Goods"
 			ste_doc.customer = pmo_doc.customer
@@ -335,78 +390,75 @@ def make_in_transit_stock_entry(source_name, to_warehouse, transfer_type, pmo=No
 				row.customer = pmo_doc.customer
 
 	for row in ste_doc.items:
-		# row.t_warehouse = in_transit_warehouse
 		if ste_doc.stock_entry_type == "Consumables Issue to  Department":
 			row.t_warehouse = set_warehouse
 		else:
 			row.t_warehouse = in_transit_warehouse
+
 	return ste_doc
 
 
 @frappe.whitelist()
 def create_stock_entry(self, method):
 	if (
-		self.workflow_state == "Material Reserved"
-		and not self.custom_reserve_se
-		and self.manufacturing_order
+		self.workflow_state != "Material Reserved"
+		or self.custom_reserve_se
+		or not self.manufacturing_order
 	):
-		# variant_based_warehouse = {}
-		# warehouse_data = frappe.db.get_all(
-		# 	"Variant based Warehouse", {"parent": self.custom_manufacturer}, ["variant", "department"]
-		# )
-		# for row in warehouse_data:
-		# 	s_warehouse = frappe.db.get_value(
-		# 		"Warehouse", {"department": row.department, "warehouse_type": "Raw Material"}
-		# 	)
-		# 	t_warehouse = frappe.db.get_value(
-		# 		"Warehouse", {"department": row.department, "warehouse_type": "Reserve"}
-		# 	)
+		return
 
-		# 	variant_based_warehouse[row.variant] = {"s_warehouse": s_warehouse, "t_warehouse": t_warehouse}
+	se_doc = frappe.new_doc("Stock Entry")
+	se_doc.company = self.company
 
-		se_doc = frappe.new_doc("Stock Entry")
-		se_doc.company = self.company
-		stock_entry_type = frappe.db.get_value(
-			"Transfer Type", self.custom_transfer_type, "stock_entry_type"
+	stock_entry_type = frappe.db.get_value(
+		"Transfer Type", self.custom_transfer_type, "stock_entry_type"
+	)
+	if not stock_entry_type:
+		frappe.throw(
+			_("Please specify a Stock Entry type for the selected Transfer type.")
 		)
-		if not stock_entry_type:
-			frappe.throw(_("Please mention Stock Entry type for selected Transfer type."))
-		se_doc.stock_entry_type = stock_entry_type
-		se_doc.purpose = "Material Transfer"
-		se_doc.add_to_transit = True
 
-		for row in self.items:
-			department = frappe.db.get_value("Warehouse", row.from_warehouse, "department")
-			t_warehouse = frappe.db.get_value(
-				"Warehouse", {"disabled": 0, "department": department, "warehouse_type": "Reserve"}, "name"
-			)
-			if not t_warehouse:
-				frappe.throw(_("Transit warehouse not found for {0}").format(department))
-			se_doc.append(
-				"items",
-				{
-					"material_request": self.name,
-					"material_request_item": row.name,
-					"s_warehouse": row.from_warehouse,
-					"t_warehouse": t_warehouse,
-					"item_code": row.custom_alternative_item or row.item_code,
-					"qty": row.qty,
-					"inventory_type": row.inventory_type,
-					"customer": row.customer,
-					"batch_no": row.batch_no,
-					"pcs": row.pcs,
-					"cost_center": row.cost_center,
-					"sub_setting_type": row.custom_sub_setting_type,
-					"use_serial_batch_fields": True,
-					"custom_parent_manufacturing_order": self.manufacturing_order,
-				},
-			)
+	se_doc.stock_entry_type = stock_entry_type
+	se_doc.purpose = "Material Transfer"
+	se_doc.add_to_transit = True
 
-		se_doc.flags.throw_batch_error = True
-		se_doc.save()
-		self.custom_reserve_se = se_doc.name
-		se_doc.submit()
-		frappe.msgprint(_("Reserved Stock Entry {0} has been created").format(se_doc.name))
+	for row in self.items:
+		department = frappe.db.get_value("Warehouse", row.from_warehouse, "department")
+		t_warehouse = frappe.db.get_value(
+			"Warehouse",
+			{"disabled": 0, "department": department, "warehouse_type": "Reserve"},
+			"name",
+		)
+
+		if not t_warehouse:
+			frappe.throw(_("Transit warehouse not found for {0}").format(department))
+
+		se_doc.append(
+			"items",
+			{
+				"material_request": self.name,
+				"material_request_item": row.name,
+				"s_warehouse": row.from_warehouse,
+				"t_warehouse": t_warehouse,
+				"item_code": row.custom_alternative_item or row.item_code,
+				"qty": row.qty,
+				"inventory_type": row.inventory_type,
+				"customer": row.customer,
+				"batch_no": row.batch_no,
+				"pcs": row.pcs,
+				"cost_center": row.cost_center,
+				"sub_setting_type": row.custom_sub_setting_type,
+				"use_serial_batch_fields": True,
+				"custom_parent_manufacturing_order": self.manufacturing_order,
+			},
+		)
+
+	se_doc.flags.throw_batch_error = True
+	se_doc.save()
+	self.custom_reserve_se = se_doc.name
+	se_doc.submit()
+
+	frappe.msgprint(_("Reserved Stock Entry {0} has been created").format(se_doc.name))
 
 
 @frappe.whitelist()
@@ -417,10 +469,13 @@ def get_item_details(args, for_update=False):
 	Item = frappe.qb.DocType("Item")
 	ItemDefault = frappe.qb.DocType("Item Default")
 
-	item = (
+	item_data = (
 		frappe.qb.from_(Item)
 		.left_join(ItemDefault)
-		.on((Item.name == ItemDefault.parent) & (ItemDefault.company == args.get("company")))
+		.on(
+			(Item.name == ItemDefault.parent)
+			& (ItemDefault.company == args.get("company"))
+		)
 		.select(
 			Item.name,
 			Item.stock_uom,
@@ -446,13 +501,16 @@ def get_item_details(args, for_update=False):
 		)
 	).run(as_dict=True)
 
-	if not item:
+	if not item_data:
 		frappe.throw(
-			_("Item {0} is not active or end of life has been reached").format(args.get("item_code"))
+			_("Item {0} is inactive or its end-of-life has been reached.").format(
+				args.get("item_code")
+			)
 		)
-	item = item[0]
 
-	ret = frappe._dict(
+	item = item_data[0]
+
+	return frappe._dict(
 		{
 			"uom": item.stock_uom,
 			"stock_uom": item.stock_uom,
@@ -470,5 +528,3 @@ def get_item_details(args, for_update=False):
 			"expense_account": item.expense_account,
 		}
 	)
-
-	return ret
