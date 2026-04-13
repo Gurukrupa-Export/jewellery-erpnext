@@ -285,7 +285,10 @@ def update_si_data(self):
 	return payment_terms_data
 
 def update_einvoice_items(self, invoice_data, payment_terms_data):
-	self.invoice_item = []
+	if not self.get("invoice_item"):
+		self.invoice_item = []
+	else:
+		self.set("invoice_item", [])
 	for row in invoice_data:
 		if invoice_data[row]["amount"] > 0:
 			if payment_terms_data.get(row):
