@@ -1326,6 +1326,7 @@ def create_new_bom1(self):
 							if not mc:
 								frappe.throw(f"""Create a valid Making Charge Price for Customer: {self.customer}, Metal Type:{doc.metal_type} "Setting Type":{doc.setting_type} """)
 							mc_name = mc[0]["name"]
+							s.customer_metal_purity = customer_metal_purity
 							if doc.metal_and_finding_weight < threshold:
 								# if custom_from_diamond < diamond_pcs >custom_to_diamond
 								# Use per piece rate, wastage might apply differently if needed
