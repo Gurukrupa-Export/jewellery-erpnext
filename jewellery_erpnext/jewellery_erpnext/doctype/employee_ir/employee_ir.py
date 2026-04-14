@@ -928,19 +928,19 @@ def batch_add_time_logs(self, mop_args_list):
 	Batch update time logs and Manufacturing Operation fields via doc objects.
 	mop_args_list: List of (mop_name, args) tuples.
 	"""
-	# Batch fetch minimal data for status check
 	mop_names = [mop[0] for mop in mop_args_list]
-	mop_docs = frappe.get_all(
-		"Manufacturing Operation",
-		filters={"name": ["in", mop_names]},
-		fields=["name", "status"],
+	# Pre-fetch status to skip non-existent MOPs without loading full docs
+	existing_mops = set(
+		frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", mop_names]},
+			pluck="name",
+		)
 	)
-	mop_dict = {d.name: d for d in mop_docs}
 	full_docs = {}
 
 	for mop_name, args in mop_args_list:
-		doc_data = mop_dict.get(mop_name)
-		if not doc_data:
+		if mop_name not in existing_mops:
 			continue
 
 		doc = full_docs.get(mop_name) or frappe.get_doc(
