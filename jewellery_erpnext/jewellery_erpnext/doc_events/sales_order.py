@@ -1828,7 +1828,8 @@ def create_new_bom1(self):
 				
 				self.total=self.total + row.amount
 				# ///////////////////////////////////////////////////////////////////////
-				doc.save(ignore_permissions=True)		
+				doc.save(ignore_permissions=True,ignore_validate = True)
+						
 				frappe.db.commit()
 				# frappe.throw(f"{self.total}")
 				
