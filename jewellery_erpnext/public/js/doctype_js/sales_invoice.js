@@ -1422,7 +1422,15 @@ let set_edit_bom_details = (
 		metal_amount += d.amount;
 		making_amount += d.making_amount;
 		wastage_amount += d.wastage_amount;
-
+		frappe.call({
+				method: "jewellery_erpnext.query.get_customer_mtel_purity",
+				args: {
+					customer: cur_frm.doc.customer,
+					metal_type: d.metal_type,
+					metal_touch: d.metal_touch,
+				},
+				callback: function (response) {
+					let metal_purity_value = response.message || "N/A";
 		dialog.fields_dict.metal_detail.df.data.push({
 			docname: d.name,
 			metal_type: d.metal_type,
@@ -1445,6 +1453,9 @@ let set_edit_bom_details = (
 		});
 		metal_data = dialog.fields_dict.metal_detail.df.data;
 		dialog.fields_dict.metal_detail.grid.refresh();
+		}
+			});
+		
 	});
 
 	// diamond details table append
@@ -1472,7 +1483,9 @@ let set_edit_bom_details = (
 		});
 		diamond_data = dialog.fields_dict.diamond_detail.df.data;
 		dialog.fields_dict.diamond_detail.grid.refresh();
-	});
+		
+			});
+		
 
 	// gemstone details table append
 	$.each(doc.gemstone_detail, function (index, d) {
