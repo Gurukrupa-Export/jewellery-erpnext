@@ -640,3 +640,113 @@ def add_to_serial_no(serial_no, doc, row):
 	if row.huid and row.huid not in existing_data:
 		serial_doc.append("huid", {"huid": row.huid, "date": doc.date})
 	serial_doc.save()
+
+
+from openpyxl import Workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, Alignment
+from io import BytesIO
+
+@frappe.whitelist()
+def xl_preview_product_certification(docname):
+   
+
+    doc = frappe.get_doc("Product Certification", docname)
+    columns = [
+        "IGI Number",
+        "Style Number",
+        "Gross Weight",
+        "Diamond Weight",
+        "No Of Diamonds",
+        "Jewellery Description",
+        "Metal Color",
+        "Metal Type",
+        "Shape",
+        "Color Criteria",
+        "Clarity Criteria","Finish Criteria",
+		"Hallmark",
+		"Center Stone Shape",
+		"Center Diamond Weight",
+		"Center No Of Diamonds",
+		"Center Color Criteria",
+		"Center Clarity Criteria",
+		"Center Finish Criteria",
+		"Prefix",
+		"Suffix",
+		"Colored Stone",
+		"Enameling",
+		"Report Comments",
+		"Color Stone Shape",
+		"Color Stone Weight",
+		"Inscription",
+		"Stamping"
+		]
+    rows=[]
+	
+    for item in doc.exploded_product_details:
+        if not item.bom:
+            continue
+        bom_doc = frappe.get_doc("BOM", item.bom)
+        gross_weight = round(float(item.gross_weight or 0), 2)
+        diamond_weight = round(float(item.diamond_weight or 0), 2)
+        # diamond_pcs = int(item.diamond_pcs or 0)
+        jewellery_description = (item.category or "").upper()
+        metal_colour = ((item.metal_colour or "") + " GOLD").upper()
+        metal_type = (item.metal_touch or "").upper()[:-1]
+        shape = ""
+        color = ""
+        clarity = ""
+        if bom_doc.diamond_detail:
+            d = bom_doc.diamond_detail[0]  # first diamond
+            shape = (d.stone_shape or "").upper()
+            diamond_pcs=bom_doc.total_diamond_pcs
+            # color = (d.metal_color or "").upper()
+            color, clarity = [x.strip() for x in d.quality.split("-", 1)]
+        row=[
+		
+			"",  # IGI Number (blank)
+			item.serial_no or "",   # Style Number ✅
+			gross_weight,
+			diamond_weight,
+			diamond_pcs,
+			jewellery_description,
+			metal_colour,
+			metal_type,
+			shape,
+			color,
+			clarity
+    ]
+        rows.append(row)
+    # --- TOTAL ROW ---
+    if rows:
+        total_row = [""] * len(columns)
+
+        total_row[2] = round(sum(r[2] for r in rows), 2)  # Gross Weight
+        total_row[3] = round(sum(r[3] for r in rows), 2)  # Diamond Weight
+        total_row[4] = int(sum(r[4] for r in rows))       # Total Pcs
+
+        # rows.append(total_row)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "IGI Report"
+
+    for col_num, col_name in enumerate(columns, 1):
+        cell = ws.cell(row=1, column=col_num, value=col_name)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_num, row_data in enumerate(rows, 2):
+        for col_num, value in enumerate(row_data, 1):
+            ws.cell(row=row_num, column=col_num, value=value)
+
+    for i in range(1, len(columns) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 18
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    frappe.local.response.filecontent = output.read()
+    frappe.local.response.filename = f"IGI_Report_{docname}.xlsx"
+    frappe.local.response.type = "download"
