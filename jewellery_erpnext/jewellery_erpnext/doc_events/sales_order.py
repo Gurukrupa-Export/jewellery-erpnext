@@ -1674,8 +1674,10 @@ def create_new_bom1(self):
 								else:
 									if out_rate:
 										handling_rate = out_rate
-									else:
+									elif out_pct:
 										handling_rate = base_rate + (base_rate * (out_pct / 100))
+									else:
+										handling_rate = 0
 							
 							if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
 								if billing_currency == 'USD':
@@ -1712,7 +1714,7 @@ def create_new_bom1(self):
 									else:
 										d.weight_per_pcs = round(d.quantity/d.pcs,3)
 									
-								d.diamond_rate_for_specified_quantity = round(d.quantity * d.total_diamond_rate, 2)
+								d.diamond_rate_for_specified_quantity = round(d.quantity * (d.total_diamond_rate + d.handling_rate),2 )
 				doc.diamond_weight=sum(row.quantity for row in doc.diamond_detail)
 				
 				ccp = frappe.db.get_all(

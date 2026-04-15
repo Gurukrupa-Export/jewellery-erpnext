@@ -700,8 +700,9 @@ def xl_preview_product_certification(docname):
             d = bom_doc.diamond_detail[0]  # first diamond
             shape = (d.stone_shape or "").upper()
             diamond_pcs=bom_doc.total_diamond_pcs
-            # color = (d.metal_color or "").upper()
-            color, clarity = [x.strip() for x in d.quality.split("-", 1)]
+            parts = [x.strip() for x in (d.quality or "").split("-", 1)]
+            color = parts[0] if len(parts) > 0 else ""
+            clarity = parts[1] if len(parts) > 1 else ""
         row=[
 		
 			"",  # IGI Number (blank)
