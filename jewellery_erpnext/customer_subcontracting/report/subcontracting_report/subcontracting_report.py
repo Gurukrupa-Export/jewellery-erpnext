@@ -24,8 +24,6 @@ def execute(filters=None):
 			else:
 				report[r.batch_no]["opening"] += r.qty
 
-		processed_children = set()
-
 		for r in get_repack_data(filters):
 			parent_batch = r.parent_batch
 			parent_qty = r.parent_qty or 0
@@ -36,15 +34,15 @@ def execute(filters=None):
 			repack_type = r.repack_type
 
 			if parent_batch in report:
-				report[parent_batch]["used_other"] += parent_qty
+				parent_owner = report[parent_batch]["owner"]
 
-			if child_batch not in processed_children:
-				processed_children.add(child_batch)
-
-				if child_batch not in report:
-					report[child_batch] = init_row(customer, item, child_qty)
+				if parent_owner == customer:
+					report[parent_batch]["used_same"] += parent_qty
 				else:
-					report[child_batch]["opening"] += child_qty
+					report[parent_batch]["used_other"] += parent_qty
+
+			if child_batch not in report:
+				report[child_batch] = init_row(customer, item, child_qty)
 
 			if repack_type == "Subcontracting Repack" and child_batch in report:
 				report[child_batch]["received_back"] += child_qty
@@ -61,13 +59,13 @@ def execute(filters=None):
 			else:
 				report[r.batch_no]["used_other"] += r.qty
 
-	if filters.get("customer"):
+	if filters.get("customer") and not filters.get("batch_no"):
 		report = {
 			k: v for k, v in report.items() if v.get("owner") == filters.get("customer")
 		}
 
 	for batch, d in report.items():
-		balance = d["opening"] - d["used_same"] - d["used_other"]
+		balance = d["opening"] - d["used_same"] - d["used_other"] + d["received_back"]
 
 		data.append(
 			[
@@ -107,26 +105,43 @@ def execute(filters=None):
 
 
 def get_linked_batches(batch_no):
-	visited = set()
+	ancestors = set()
 	stack = [batch_no]
 
 	while stack:
 		current = stack.pop()
-
-		if current in visited:
+		if current in ancestors:
 			continue
+		ancestors.add(current)
 
-		visited.add(current)
+		sources = frappe.get_all(
+			"Batch MultiSelect",
+			filters={"parent": current},
+			fields=["batch_no"],
+		)
+		for row in sources:
+			if row.batch_no and row.batch_no not in ancestors:
+				stack.append(row.batch_no)
+
+	linked = set()
+	stack = list(ancestors)
+
+	while stack:
+		current = stack.pop()
+		if current in linked:
+			continue
+		linked.add(current)
 
 		children = frappe.get_all(
-			"Batch MultiSelect", filters={"batch_no": current}, fields=["parent"]
+			"Batch MultiSelect",
+			filters={"batch_no": current},
+			fields=["parent"],
 		)
+		for row in children:
+			if row.parent and row.parent not in linked:
+				stack.append(row.parent)
 
-		for c in children:
-			if c.parent not in visited:
-				stack.append(c.parent)
-
-	return visited
+	return linked
 
 
 def init_row(customer, item, qty):
