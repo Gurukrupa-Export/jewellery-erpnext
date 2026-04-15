@@ -103,6 +103,7 @@
   },
   {
    "fieldname": "total_diamond_rate",
+   "allow_on_submit": 1,
    "fieldtype": "Currency",
    "label": "Diamond Rate"
   },
