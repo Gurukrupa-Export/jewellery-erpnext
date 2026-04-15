@@ -913,7 +913,7 @@ def create_new_bom(self):
 					+ flt(doc.total_diamond_weight_in_gms)
 					+ flt(doc.total_gemstone_weight_in_gms)
 					+ flt(doc.total_other_weight)
-				,2)
+				,3)
 				doc.metal_to_diamond_ratio_excl_of_finding=(
 					flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
 				)
