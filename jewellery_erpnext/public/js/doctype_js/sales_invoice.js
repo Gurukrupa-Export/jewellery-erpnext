@@ -1436,7 +1436,7 @@ let set_edit_bom_details = (
 			metal_type: d.metal_type,
 			metal_touch: d.metal_touch,
 			metal_purity: d.metal_purity,
-			customer_metal_purity: d.customer_metal_purity,
+			customer_metal_purity: metal_purity_value,
 			metal_colour: d.metal_colour,
 			amount: d.amount,
 			rate: d.rate,
