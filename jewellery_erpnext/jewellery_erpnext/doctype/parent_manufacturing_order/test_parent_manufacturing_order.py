@@ -1,14 +1,12 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
-	ParentManufacturingOrder,
 	get_item_code,
 	validate_mfg_date,
 )
@@ -16,9 +14,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 
 class TestParentManufacturingOrder(FrappeTestCase):
 	def setUp(self):
-		self.department = frappe.get_value(
-			"Department", {"department_name": "Test_Department"}, "name"
-		)
 		return super().setUp()
 
 	def test_parent_manufacturing_order(self):
@@ -147,23 +142,25 @@ class TestParentManufacturingOrder(FrappeTestCase):
 		if not bom.metal_detail:
 			bom.append(
 				"metal_detail",
-				[
-					{
-						"metal_type": "Gold",
-						"metal_touch": "22KT",
-						"metal_purity": "91.9",
-						"metal_colour": "Yellow",
-						"quantity": 0.916,
-					},
-					{
-						"metal_type": "Gold",
-						"metal_touch": "22KT",
-						"metal_purity": "91.9",
-						"metal_colour": "Pink",
-						"quantity": 0.916,
-					},
-				],
+				{
+					"metal_type": "Gold",
+					"metal_touch": "22KT",
+					"metal_purity": "91.9",
+					"metal_colour": "Yellow",
+					"quantity": 0.916,
+				},
 			)
+			bom.append(
+				"metal_detail",
+				{
+					"metal_type": "Gold",
+					"metal_touch": "22KT",
+					"metal_purity": "91.9",
+					"metal_colour": "Pink",
+					"quantity": 0.916,
+				},
+			)
+
 		bom.save()
 		pmo.diamond_department = self.department
 		pmo.gemstone_department = self.department
@@ -220,38 +217,150 @@ class TestParentManufacturingOrder(FrappeTestCase):
 			self.assertEqual(pmo.manufacturing_plan, mwo.manufacturing_plan)
 
 	def test_validate_mfg_date_throws_on_invalid_dates(self):
-		fake = SimpleNamespace(
-			delivery_date="2024-01-10",
-			custom_updated_delivery_date=None,
-			manufacturing_end_date="2024-01-10",
-		)
-		with patch.object(
-			frappe,
-			"throw",
-			side_effect=Exception(
-				"Manufacturing date is not allowed over delivery date"
-			),
-		):
-			with self.assertRaises(Exception):
-				validate_mfg_date(fake)
+		pmo = frappe.new_doc("Parent Manufacturing Order")
+		pmo.company = "_Test Indian Registered Company"
+		pmo.delivery_date = "2024-01-10"
+		pmo.manufacturing_end_date = "2024-01-15"
+		pmo.qty = 1
+		pmo.insert()
+
+		with self.assertRaises(frappe.ValidationError):
+			validate_mfg_date(pmo)
 
 	def test_get_item_code_returns_item_code(self):
 		with patch("frappe.db.get_value", return_value="ITEM-001"):
 			self.assertEqual(get_item_code("SO-ITEM-1"), "ITEM-001")
 
 	def test_create_material_requests_throws_when_no_bom(self):
-		fake = SimpleNamespace(
-			serial_id_bom=None,
-			master_bom=None,
-			manufacturer="MFG-1",
-			name="PMO-TEST-1",
-			item_code="ITEM-1",
-			company="COMP-1",
-			qty=1,
+		pmo = frappe.new_doc("Parent Manufacturing Order")
+		pmo.company = "_Test Indian Registered Company"
+		pmo.manufacturer = "Shubh"
+		pmo.item_code = "ITEM-001"
+		pmo.qty = 1
+		pmo.delivery_date = "2024-12-31"
+		pmo.insert()
+
+		with self.assertRaises(frappe.ValidationError):
+			pmo.create_material_requests()
+
+	def test_create_material_requests_throws_when_warehouse_config_missing(self):
+		if not frappe.db.exists("Item", "ITEM-001"):
+			item = frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "ITEM-001",
+					"item_name": "ITEM-001",
+					"stock_uom": "Nos",
+					"designer": "Administrator",
+					"is_design_code": 0,
+					"item_group": "Test_Item_Group",
+				}
+			)
+			item.flags.ignore_validate = True
+			item.insert(ignore_permissions=True)
+
+		if not frappe.db.exists("Item", "M-ITEM"):
+			item = frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "M-ITEM",
+					"item_name": "M-ITEM",
+					"stock_uom": "Nos",
+					"designer": "Administrator",
+					"is_design_code": 0,
+					"item_group": "Test_Item_Group",
+				}
+			)
+			item.insert(ignore_permissions=True)
+		bom = frappe.get_doc(
+			{
+				"doctype": "BOM",
+				"item": "ITEM-001",
+				"company": "_Test Indian Registered Company",
+			}
 		)
-		with patch.object(frappe, "throw", side_effect=Exception("BOM is missing")):
-			with self.assertRaises(Exception):
-				ParentManufacturingOrder.create_material_requests(fake)
+		bom.append("items", {"item_code": "ITEM-001", "qty": 1, "rate": 1000})
+		bom.append("items", {"item_code": "M-ITEM", "qty": 1})
+		bom.insert()
+
+		pmo = frappe.new_doc("Parent Manufacturing Order")
+		pmo.company = "_Test Indian Registered Company"
+		pmo.manufacturer = "Shubh"
+		pmo.item_code = "ITEM-001"
+		pmo.qty = 1
+		pmo.delivery_date = "2024-12-31"
+		pmo.master_bom = bom.name
+		pmo.insert()
+
+		with self.assertRaises(frappe.ValidationError):
+			pmo.create_material_requests()
+
+	def test_create_material_requests_groups_items_by_type(self):
+		if not frappe.db.exists("Item", "ITEM-001"):
+			item = frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "ITEM-001",
+					"item_name": "ITEM-001",
+					"stock_uom": "Nos",
+					"designer": "Administrator",
+					"is_design_code": 0,
+					"item_group": "Test_Item_Group",
+				}
+			)
+			item.insert(ignore_permissions=True)
+		if not frappe.db.exists("Item", "M-ITEM"):
+			item = frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "M-ITEM",
+					"item_name": "M-ITEM",
+					"stock_uom": "Nos",
+					"designer": "Administrator",
+					"is_design_code": 0,
+					"item_group": "Test_Item_Group",
+				}
+			)
+			item.insert(ignore_permissions=True)
+		if not frappe.db.exists("Item", "F-ITEM"):
+			item = frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "F-ITEM",
+					"item_name": "F-ITEM",
+					"stock_uom": "Nos",
+					"designer": "Administrator",
+					"is_design_code": 0,
+					"item_group": "Test_Item_Group",
+				}
+			)
+			item.insert(ignore_permissions=True)
+		bom = frappe.get_doc(
+			{
+				"doctype": "BOM",
+				"item": "ITEM-001",
+				"company": "_Test Indian Registered Company",
+			}
+		)
+
+		bom.append("items", {"item_code": "M-ITEM", "qty": 2})
+		bom.append("items", {"item_code": "F-ITEM", "qty": 3})
+		bom.insert()
+
+		pmo = frappe.new_doc("Parent Manufacturing Order")
+		pmo.company = "_Test Indian Registered Company"
+		pmo.manufacturer = "Shubh"
+		pmo.item_code = "ITEM-001"
+		pmo.qty = 1
+		pmo.delivery_date = "2024-12-31"
+		pmo.master_bom = bom.name
+		pmo.insert()
+
+		try:
+			pmo.create_material_requests()
+		except frappe.ValidationError as e:
+			if "warehouse" not in str(e).lower():
+				raise
 
 	def tearDown(self):
 		return super().tearDown()

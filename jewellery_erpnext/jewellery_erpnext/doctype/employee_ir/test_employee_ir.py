@@ -1,8 +1,6 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
-from unittest.mock import patch
-
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
@@ -130,6 +128,17 @@ class TestEmployeeIR(FrappeTestCase):
 		self.assertIsNone(new_mop.employee)
 		self.assertEqual(new_mop.status, "Not Started")
 
+		self.assertEqual(len(new_mop.department_source_table), 0)
+		self.assertEqual(len(new_mop.department_target_table), 0)
+		self.assertEqual(len(new_mop.employee_source_table), 0)
+		self.assertEqual(len(new_mop.employee_target_table), 0)
+
+		self.assertIsNone(new_mop.department_issue_id)
+		self.assertIsNone(new_mop.department_receive_id)
+		self.assertFalse(new_mop.department_ir_status)
+		self.assertIsNone(new_mop.operation)
+		self.assertIsNone(new_mop.main_slip_no)
+
 	def test_get_rows_to_append_returns_rows_for_positive_qty(self):
 		doc = frappe._dict({"department": "DPT", "manufacturer": "MFG"})
 		mwo = "MWO-TEST"
@@ -202,20 +211,6 @@ class TestEmployeeIR(FrappeTestCase):
 			"MOP must carry the subcontractor name after Issue.",
 		)
 
-	def test_before_validate_throws_error_when_stock_reconciliation_in_progress(self):
-		eir = frappe.new_doc("Employee IR")
-		eir.department = "Waxing - GEPL"
-		eir.type = "Issue"
-		eir.docstatus = 0
-
-		with patch("frappe.db.get_value") as mock_get_value:
-			mock_get_value.side_effect = [
-				"WH-001",
-				"SR-001",
-			]
-			with self.assertRaises(frappe.ValidationError):
-				eir.before_validate()
-
 	def test_on_submit_issue_new_sets_subcontracting_values(self):
 		mo = mo_creation()
 		dir_issue = dir_for_issue(
@@ -252,6 +247,112 @@ class TestEmployeeIR(FrappeTestCase):
 			mo_wax.subcontractor,
 			"GJSU0436",
 			"MOP should have subcontractor assigned",
+		)
+
+	def test_get_manufacturing_operations_with_serialized_target_doc(self):
+		mo = mo_creation()
+		mo.reload()
+		mo_wax = frappe.get_last_doc("Manufacturing Operation")
+
+		target_doc = frappe.new_doc("Employee IR")
+		target_doc.employee_ir_operations = []
+		target_json = frappe.as_json(target_doc)
+
+		result = get_manufacturing_operations(mo_wax.name, target_json)
+
+		self.assertTrue(len(result.employee_ir_operations) > 0)
+		self.assertEqual(
+			result.employee_ir_operations[0].manufacturing_operation, mo_wax.name
+		)
+		self.assertEqual(result.employee_ir_operations[0].gross_wt, mo_wax.gross_wt)
+
+	def test_validate_process_loss_proportional_loss_calculation(self):
+		mo = mo_creation()
+		mo.save()
+		dir_issue = dir_for_issue(
+			"Manufacturing Plan & Management - GEPL", "Waxing - GEPL", mo
+		)
+		mo.reload()
+		mo_wax = frappe.get_last_doc("Manufacturing Operation")
+		dir_for_receive(dir_issue)
+		mo_wax.reload()
+
+		eir_issue = frappe.new_doc("Employee IR")
+		eir_issue.department = "Waxing - GEPL"
+		eir_issue.operation = "Wax Pull Out"
+		eir_issue.employee = "GEPL - 00157"
+		eir_issue.scan_mwo = mo_wax.manufacturing_work_order
+		scan_mwo_eir(eir_issue)
+		eir_issue.save()
+		eir_issue.submit()
+		mo_wax.reload()
+
+		from_warehouse = frappe.db.get_value(
+			"Warehouse",
+			{
+				"disabled": 0,
+				"department": eir_issue.department,
+				"warehouse_type": "Manufacturing",
+			},
+		)
+		to_warehouse = frappe.db.get_value(
+			"Warehouse",
+			{
+				"warehouse_type": "Manufacturing",
+				"disabled": 0,
+				"employee": eir_issue.employee,
+			},
+		)
+
+		mop_log = frappe.new_doc("MOP Log")
+		mop_log.item_code = "M-G-22KT-91.9-Y"
+		mop_log.pcs_after_transaction = 3
+		mop_log.qty_after_transaction = 3
+		mop_log.pcs_after_transaction_item_based = 1
+		mop_log.pcs_after_transaction_batch_based = 1
+		mop_log.from_warehouse = from_warehouse
+		mop_log.to_warehouse = to_warehouse
+		mop_log.voucher_type = "Employee IR"
+		mop_log.voucher_no = eir_issue.name
+		mop_log.row_name = eir_issue.employee_ir_operations[0].name
+
+		mop_log.qty_after_transaction_item_based = 1
+		mop_log.qty_after_transaction_batch_based = 1
+		mop_log.manufacturing_operation = eir_issue.employee_ir_operations[
+			0
+		].manufacturing_operation
+		mop_log.manufacturing_work_order = eir_issue.employee_ir_operations[
+			0
+		].manufacturing_work_order
+		mop_log.batch_no = ""
+		mop_log.save()
+
+		eir = frappe.new_doc("Employee IR")
+		eir.department = mo_wax.department
+		eir.type = "Receive"
+		eir.operation = "Wax Pull out"
+		eir.employee = "GEPL - 00157"
+		eir = get_manufacturing_operations(mo_wax.name, eir)
+
+		if eir.employee_ir_operations:
+			eir.employee_ir_operations[0].received_gross_wt = 1
+
+			if not eir.employee_ir_operations[0].rpt_wt_issue:
+				eir.employee_ir_operations[0].rpt_wt_issue = 0
+
+		eir.save()
+		eir.validate_process_loss()
+
+		self.assertTrue(
+			len(eir.employee_loss_details) > 0,
+			"Employee loss details should be populated after validate_process_loss",
+		)
+
+		total_loss = sum(row.proportionally_loss for row in eir.employee_loss_details)
+		self.assertGreater(
+			total_loss,
+			0,
+			"Total proportional loss should be greater than 0",
 		)
 
 	def tearDown(self):

@@ -279,23 +279,49 @@ class TestManufacturingOperation(FrappeTestCase):
 		self.assertEqual(res.get("net_wt"), 0)
 
 	def test_get_stock_entries_against_mfg_operation_aggregation(self):
-		mop = frappe.get_doc({"doctype": "Manufacturing Operation", "name": None})
-		mop.insert()
+		dept = frappe.get_doc(
+			{
+				"doctype": "Department",
+				"department_name": "Test Manufacturing Department",
+				"company": "_Test Indian Registered Company",
+			}
+		)
+		dept.insert()
 
+		# Create a warehouse linked to the department
 		wh = frappe.get_doc(
 			{
 				"doctype": "Warehouse",
-				"warehouse_name": "W1",
+				"warehouse_name": "Test Mfg Warehouse",
 				"company": "_Test Indian Registered Company",
 				"warehouse_type": "Manufacturing",
+				"department": dept.name,
 			}
 		)
 		wh.insert()
 
+		# Create a MOP with the department set
+		mop = frappe.get_doc(
+			{
+				"doctype": "Manufacturing Operation",
+				"department": dept.name,
+				"company": "_Test Indian Registered Company",
+			}
+		)
+		mop.insert()
+
+		# Create a Stock Entry
 		se = frappe.get_doc(
-			{"doctype": "Stock Entry", "purpose": "Material Transfer", "docstatus": 1}
+			{
+				"doctype": "Stock Entry",
+				"purpose": "Material Transfer",
+				"company": "_Test Indian Registered Company",
+				"docstatus": 1,
+			}
 		)
 		se.insert()
+
+		# Create Stock Entry Detail rows with t_warehouse pointing to the same warehouse
 		sed1 = frappe.get_doc(
 			{
 				"doctype": "Stock Entry Detail",
@@ -308,11 +334,12 @@ class TestManufacturingOperation(FrappeTestCase):
 				"t_warehouse": wh.name,
 				"manufacturing_operation": mop.name,
 				"conversion_factor": 1,
-				"transfer_qty": 0,
+				"transfer_qty": 2,
 				"docstatus": 1,
 			}
 		)
 		sed1.insert()
+
 		sed2 = frappe.get_doc(
 			{
 				"doctype": "Stock Entry Detail",
@@ -325,7 +352,7 @@ class TestManufacturingOperation(FrappeTestCase):
 				"t_warehouse": wh.name,
 				"manufacturing_operation": mop.name,
 				"conversion_factor": 1,
-				"transfer_qty": 0,
+				"transfer_qty": 3,
 				"docstatus": 1,
 			}
 		)
@@ -345,7 +372,7 @@ class TestManufacturingOperation(FrappeTestCase):
 			{"item_code": "NON-EXIST", "stock_uom": "Nos", "stock_qty": 1, "idx": 1},
 		)
 
-		with self.assertRaises(Exception):
+		with self.assertRaises(frappe.ValidationError):
 			mop.validate_loss()
 
 	def test_has_overlap_detects_overlap(self):
@@ -368,6 +395,213 @@ class TestManufacturingOperation(FrappeTestCase):
 
 		res = ManufacturingOperation.has_overlap(mop, 2, time_logs)
 		self.assertFalse(res)
+
+	def test_validate_loss_wrong_uom(self):
+		mop = frappe.get_doc(
+			{
+				"doctype": "Manufacturing Operation",
+				"company": "_Test Indian Registered Company",
+			}
+		)
+		mop.insert()
+
+		dept = frappe.get_doc(
+			{
+				"doctype": "Department",
+				"department_name": "Test Dept Loss",
+				"company": "_Test Indian Registered Company",
+			}
+		)
+		dept.insert()
+
+		wh = frappe.get_doc(
+			{
+				"doctype": "Warehouse",
+				"warehouse_name": "Test Wh Loss",
+				"company": "_Test Indian Registered Company",
+				"warehouse_type": "Manufacturing",
+				"department": dept.name,
+			}
+		)
+		wh.insert()
+
+		mop.department = dept.name
+		mop.save()
+
+		se = frappe.get_doc(
+			{
+				"doctype": "Stock Entry",
+				"purpose": "Material Transfer",
+				"company": "_Test Indian Registered Company",
+				"docstatus": 1,
+			}
+		)
+		se.insert()
+
+		frappe.get_doc(
+			{
+				"doctype": "Stock Entry Detail",
+				"parent": se.name,
+				"parenttype": "Stock Entry",
+				"parentfield": "items",
+				"item_code": "_Test Nil Rated Item",
+				"qty": 5,
+				"uom": "Nos",
+				"t_warehouse": wh.name,
+				"manufacturing_operation": mop.name,
+				"docstatus": 1,
+				"transfer_qty": 1,
+				"conversion_factor": 1,
+			}
+		).insert()
+
+		mop.append(
+			"loss_details",
+			{"item_code": "_Test Nil Rated Item", "stock_uom": "Kg", "stock_qty": 1},
+		)
+
+		with self.assertRaises(frappe.ValidationError):
+			mop.validate_loss()
+
+	def test_validate_loss_qty_greater_than_available(self):
+		mop = frappe.get_doc(
+			{
+				"doctype": "Manufacturing Operation",
+				"company": "_Test Indian Registered Company",
+			}
+		)
+		mop.insert()
+
+		dept = frappe.get_doc(
+			{
+				"doctype": "Department",
+				"department_name": "Test Dept Loss Qty",
+				"company": "_Test Indian Registered Company",
+			}
+		)
+		dept.insert()
+
+		wh = frappe.get_doc(
+			{
+				"doctype": "Warehouse",
+				"warehouse_name": "Test Wh Loss Qty",
+				"company": "_Test Indian Registered Company",
+				"warehouse_type": "Manufacturing",
+				"department": dept.name,
+			}
+		)
+		wh.insert()
+
+		mop.department = dept.name
+		mop.save()
+
+		se = frappe.get_doc(
+			{
+				"doctype": "Stock Entry",
+				"purpose": "Material Transfer",
+				"company": "_Test Indian Registered Company",
+				"docstatus": 1,
+			}
+		)
+		se.insert()
+
+		frappe.get_doc(
+			{
+				"doctype": "Stock Entry Detail",
+				"parent": se.name,
+				"parenttype": "Stock Entry",
+				"parentfield": "items",
+				"item_code": "_Test Nil Rated Item",
+				"qty": 5,
+				"uom": "Nos",
+				"t_warehouse": wh.name,
+				"manufacturing_operation": mop.name,
+				"docstatus": 1,
+				"transfer_qty": 1,
+				"conversion_factor": 1,
+			}
+		).insert()
+
+		mop.append(
+			"loss_details",
+			{"item_code": "_Test Nil Rated Item", "stock_uom": "Nos", "stock_qty": 10},
+		)
+
+		with self.assertRaises(frappe.ValidationError):
+			mop.validate_loss()
+
+	def test_set_start_finish_time_on_wip_status(self):
+		mop = frappe.get_doc(
+			{
+				"doctype": "Manufacturing Operation",
+				"company": "_Test Indian Registered Company",
+				"status": "Not Started",
+			}
+		)
+		mop.insert()
+
+		mop.append(
+			"time_logs",
+			{
+				"from_time": "2024-01-01 10:00:00",
+				"to_time": "2024-01-01 12:00:00",
+			},
+		)
+		mop.save()
+
+		mop.status = "WIP"
+		mop.save()
+
+		self.assertEqual(
+			mop.start_time,
+			str(
+				frappe.get_doc("Manufacturing Operation", mop.name)
+				.time_logs[0]
+				.from_time
+			),
+			"start_time should be set from first time log when status changes to WIP",
+		)
+
+	def test_set_start_finish_time_on_finished_status(self):
+		mop = frappe.get_doc(
+			{
+				"doctype": "Manufacturing Operation",
+				"company": "_Test Indian Registered Company",
+				"status": "WIP",
+			}
+		)
+		mop.insert()
+
+		mop.append(
+			"time_logs",
+			{
+				"from_time": "2024-01-01 10:00:00",
+				"to_time": "2024-01-01 11:00:00",
+			},
+		)
+		mop.append(
+			"time_logs",
+			{
+				"from_time": "2024-01-01 11:00:00",
+				"to_time": "2024-01-01 13:00:00",
+			},
+		)
+		mop.save()
+
+		mop.status = "Finished"
+		mop.save()
+
+		reloaded = frappe.get_doc("Manufacturing Operation", mop.name)
+		self.assertEqual(
+			reloaded.start_time,
+			reloaded.time_logs[0].from_time,
+			"start_time should be set from first time log when status changes to Finished",
+		)
+		self.assertEqual(
+			reloaded.finish_time,
+			reloaded.time_logs[-1].to_time,
+			"finish_time should be set from last time log when status changes to Finished",
+		)
 
 	def tearDown(self):
 		return super().tearDown()
