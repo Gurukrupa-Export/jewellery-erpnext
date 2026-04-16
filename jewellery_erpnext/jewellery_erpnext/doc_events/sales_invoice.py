@@ -26,6 +26,7 @@ def before_validate(self, method):
 
 				if duplicate_row:
 					self.append("invoice_item", duplicate_row)
+					
 
 		for row in self.items:
 			# if row.serial_no:
