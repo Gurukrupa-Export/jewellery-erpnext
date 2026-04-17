@@ -1186,7 +1186,7 @@ def create_new_bom1(self):
 
 								gpc_doc = frappe.get_doc("Gemstone Price List", gpc[0].name)
 								multiplier_rows = gpc_doc.get("gemstone_multiplier")
-								rate = 0
+								# rate = 0
 								for mul in multiplier_rows:
 									if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
 										if gem.gemstone_quality == 'Precious':
