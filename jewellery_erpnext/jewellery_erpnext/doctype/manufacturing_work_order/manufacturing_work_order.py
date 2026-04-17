@@ -353,9 +353,36 @@ def create_manufacturing_operation(doc):
 	add_time_log(mop, values)
 
 	if doc.for_fg:
-		for row in mop.mop_balance_table:
-			copy_row = deepcopy(row.__dict__)
-			doc.append("mwo_mop_balance_table", copy_row)
+		mop_logs = frappe.get_all(
+			"MOP Log",
+			filters={"manufacturing_work_order": doc.name, "is_cancelled": 0},
+			fields=["*"],
+			order_by="flow_index asc"
+		)
+		
+		balance_map = {}
+		for log in mop_logs:
+			key = (log.item_code, log.batch_no)
+			balance_map[key] = log
+
+		for key, log in balance_map.items():
+			if log.qty_after_transaction_batch_based > 0 or log.pcs_after_transaction_batch_based > 0:
+				new_log = frappe.new_doc("MOP Log")
+				for field in [
+					"item_code", "pcs_after_transaction", "pcs_after_transaction_item_based", 
+					"pcs_after_transaction_batch_based", "qty_after_transaction", 
+					"qty_after_transaction_item_based", "qty_after_transaction_batch_based",
+					"serial_and_batch_bundle", "batch_no"
+				]:
+					new_log.set(field, log.get(field))
+
+				new_log.manufacturing_operation = mop.name
+				new_log.manufacturing_work_order = doc.name
+				new_log.voucher_type = "Manufacturing Work Order"
+				new_log.voucher_no = doc.name
+				new_log.flow_index = (log.flow_index or 0) + 1
+				new_log.is_synced = 0
+				new_log.save()
 
 		# New Code
 		department, operation = frappe.db.get_value(

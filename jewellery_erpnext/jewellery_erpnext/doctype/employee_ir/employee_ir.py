@@ -202,6 +202,8 @@ class EmployeeIR(Document):
 				"employee": self.employee,
 			},
 		)
+		if not (to_warehouse and from_warehouse):
+			frappe.throw(_("To Warehouse or From Warehouse not available"))
 		for row in self.employee_ir_operations:
 			values.update(
 				{
