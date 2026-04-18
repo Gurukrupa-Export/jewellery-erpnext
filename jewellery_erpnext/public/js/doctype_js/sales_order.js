@@ -1782,7 +1782,7 @@ let set_edit_bom_details = (
 					stone_shape: d.stone_shape,
 					quality: d.quality,
 					pcs: d.pcs,
-					diamond_rate_for_specified_quantity:amount,
+					diamond_rate_for_specified_quantity:d.diamond_rate_for_specified_quantity,
 					diamond_cut: d.diamond_cut,
 					sub_setting_type: d.sub_setting_type,
 					diamond_grade: d.diamond_grade,

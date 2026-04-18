@@ -1514,7 +1514,15 @@ let set_edit_bom_details = (
 	// finding details table append
 	$.each(doc.finding_detail, function (index, d) {
 		finding_amount += d.amount;
-
+		frappe.call({
+				method: "jewellery_erpnext.query.get_customer_mtel_purity",
+				args: {
+					customer: cur_frm.doc.customer,
+					metal_type: d.metal_type,
+					metal_touch: d.metal_touch,
+				},
+				callback: function (response) {
+					let metal_purity_value = response.message || "N/A";
 		dialog.fields_dict.finding_detail.df.data.push({
 			docname: d.name,
 			metal_type: d.metal_type,
@@ -1523,7 +1531,7 @@ let set_edit_bom_details = (
 			finding_size: d.finding_size,
 			metal_touch: d.metal_touch,
 			metal_purity: d.metal_purity,
-			customer_metal_purity: d.metal_purity,
+			customer_metal_purity: metal_purity_value,
 			amount: d.amount,
 			rate: d.rate,
 			actual_rate: d.rate,
@@ -1539,6 +1547,9 @@ let set_edit_bom_details = (
 		});
 		finding_data = dialog.fields_dict.finding_detail.df.data;
 		dialog.fields_dict.finding_detail.grid.refresh();
+		}
+			});
+		
 	});
 
 	// other details table append

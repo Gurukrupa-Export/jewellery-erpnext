@@ -1492,7 +1492,7 @@ def create_new_bom1(self):
 							f.making_rate = find_data.get("subcontracting_rate")
 							f.wastage_rate = 0
 							f.wastage_amount=0
-							f.metal_purity = customer_metal_purity
+							f.metal_purity = f.metal_purity
 							f.making_amount = round(f.making_rate*f.quantity,2 )
 						else:
 							if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
@@ -1503,7 +1503,7 @@ def create_new_bom1(self):
 								f.making_rate = find_data.get("supplier_fg_purchase_rate")
 								f.wastage_rate = 0
 								f.wastage_amount=0
-								f.metal_purity = customer_metal_purity
+								f.metal_purity = f.metal_purity
 								f.making_amount = round(f.making_rate*f.quantity,2 )
 							elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
 								if billing_currency == 'USD':
@@ -1519,10 +1519,10 @@ def create_new_bom1(self):
 								f.amount=round(f.rate*f.quantity,2 )
 								f.wastage_rate = 0
 								f.wastage_amount =0
-								f.metal_purity = customer_metal_purity
+								f.metal_purity = f.metal_purity
 								f.making_amount = round(f.making_rate*f.quantity,2 )
 							else:
-								f.metal_purity = customer_metal_purity
+								f.metal_purity = f.metal_purity
 								
 								f.rate=round(calculated_gold_rate , 2)
 								f.quantity=round(f.quantity, metal_precision)
