@@ -183,8 +183,8 @@ def set_item_variant(self):
 				if row.get(normalized_attr):
 					args[key] = row.get(normalized_attr)
 
-			if self.custom_creation_doctype == "Quotation":
-				return
+			# if self.custom_creation_doctype == "Quotation":
+			# 	return
 
 			variant = get_variant(row.item, args)
 			if variant:
