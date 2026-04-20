@@ -1,0 +1,352 @@
+[
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-04-10 11:56:50.128654",
+  "name": "Review",
+  "workflow_action_name": "Review"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.115610",
+  "name": "Transfer Material",
+  "workflow_action_name": "Transfer Material"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.125486",
+  "name": "Reserve Material",
+  "workflow_action_name": "Reserve Material"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.135565",
+  "name": "Send for Reservation",
+  "workflow_action_name": "Send for Reservation"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.145467",
+  "name": "Start Use",
+  "workflow_action_name": "Start Use"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-12-30 09:45:01.551902",
+  "name": "Create Sketch",
+  "workflow_action_name": "Create Sketch"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-12-31 11:26:13.647141",
+  "name": "Transfer to MOP",
+  "workflow_action_name": "Transfer to MOP"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-03-07 14:00:45.993516",
+  "name": "Send to Order",
+  "workflow_action_name": "Send to Order"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-03-07 14:01:00.986904",
+  "name": "Send to IBM",
+  "workflow_action_name": "Send to IBM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-07-18 09:51:06.267421",
+  "name": "Create Bank Account",
+  "workflow_action_name": "Create Bank Account"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-07-19 17:21:53.289325",
+  "name": "Create OT",
+  "workflow_action_name": "Create OT"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-08-01 16:32:11.790898",
+  "name": "In Process",
+  "workflow_action_name": "In Process"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-08-01 17:42:44.538672",
+  "name": "Create User ID",
+  "workflow_action_name": "Create User ID"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-08-01 17:43:12.183491",
+  "name": "Update Employee",
+  "workflow_action_name": "Update Employee"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-09-03 05:41:59.355549",
+  "name": "Create MOP",
+  "workflow_action_name": "Create MOP"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-09-03 05:41:59.358713",
+  "name": "Retry MOP Creation",
+  "workflow_action_name": "Retry MOP Creation"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-09-03 05:41:59.359693",
+  "name": "Create Stock Entry",
+  "workflow_action_name": "Create Stock Entry"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-09-03 05:41:59.360658",
+  "name": "Cancel Stock Entry Queue",
+  "workflow_action_name": "Cancel Stock Entry Queue"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-09-03 05:41:59.361608",
+  "name": "Retry Stock Entry Creation",
+  "workflow_action_name": "Retry Stock Entry Creation"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-09-03 05:41:59.362537",
+  "name": "Issue IR",
+  "workflow_action_name": "Issue IR"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.155751",
+  "name": "Submit",
+  "workflow_action_name": "Submit"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-03-17 11:23:36.060036",
+  "name": "Create Promotion",
+  "workflow_action_name": "Create Promotion"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-09-03 05:41:59.363485",
+  "name": "Receive IR",
+  "workflow_action_name": "Receive IR"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-12-25 11:19:03.276294",
+  "name": "Update Order BOM",
+  "workflow_action_name": "Update Order BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-04-23 21:55:00.310501",
+  "name": "Create Checkin",
+  "workflow_action_name": "Create Checkin"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-04-23 21:55:51.285207",
+  "name": "Create Attendance",
+  "workflow_action_name": "Create Attendance"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.185803",
+  "name": "Cancel by Sales",
+  "workflow_action_name": "Cancel by Sales"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-07-10 14:24:34.776578",
+  "name": "Send For Approval",
+  "workflow_action_name": "Send For Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-03-26 18:15:35.426398",
+  "name": "Send to Account",
+  "workflow_action_name": "Send to Account"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-02-26 12:43:02.026140",
+  "name": "Create Address",
+  "workflow_action_name": "Create Address"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-02-26 12:43:10.351715",
+  "name": "Create Contact",
+  "workflow_action_name": "Create Contact"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-06-03 13:57:49.550117",
+  "name": "Verify",
+  "workflow_action_name": "Verify"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.195960",
+  "name": "Restart Design",
+  "workflow_action_name": "Restart Design"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-03-26 18:10:19.083620",
+  "name": "Send to HR",
+  "workflow_action_name": "Send to HR"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.084139",
+  "name": "Create BOM",
+  "workflow_action_name": "Create BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.104830",
+  "name": "Create CAD",
+  "workflow_action_name": "Create CAD"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-03-26 18:10:09.469421",
+  "name": "Send to Manager",
+  "workflow_action_name": "Send to Manager"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.165821",
+  "name": "Customer Approval",
+  "workflow_action_name": "Customer Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.094605",
+  "name": "Create",
+  "workflow_action_name": "Create"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.225723",
+  "name": "Start Designing",
+  "workflow_action_name": "Start Designing"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.046433",
+  "name": "Update BOM",
+  "workflow_action_name": "Update BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.175657",
+  "name": "Complete",
+  "workflow_action_name": "Complete"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.205863",
+  "name": "Update Design",
+  "workflow_action_name": "Update Design"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.235484",
+  "name": "Assigned",
+  "workflow_action_name": "Assigned"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-04-10 11:56:50.127496",
+  "name": "Reject",
+  "workflow_action_name": "Reject"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.215912",
+  "name": "Send to QC",
+  "workflow_action_name": "Send to QC"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.245784",
+  "name": "Update",
+  "workflow_action_name": "Update"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-07-10 14:24:19.633862",
+  "name": "On Hold",
+  "workflow_action_name": "On Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-08-01 08:36:46.264472",
+  "name": "Cancel",
+  "workflow_action_name": "Cancel"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-04-10 11:56:50.125748",
+  "name": "Approve",
+  "workflow_action_name": "Approve"
+ }
+]

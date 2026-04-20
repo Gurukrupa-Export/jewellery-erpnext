@@ -2,7 +2,7 @@ import frappe
 from frappe import _
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
-from frappe.utils import get_datetime
+from frappe.utils import flt, get_datetime
 
 
 def create_se_entry(self):
@@ -135,21 +135,27 @@ def create_stock_transfer_entry(self):
 		frappe.throw(_("Main MWO Department {0} does not match with Finding MWO Department{1}").format(department, self.department))
 
 	frappe.get_doc("Manufacturing Operation", self.manufacturing_operation).save()
-	stock_entry_data = frappe.db.get_all(
-		"MOP Balance Table",
-		{
-			"parent": self.manufacturing_operation,
-		},
-		[
-			"item_code",
-			"s_warehouse as warehouse",
-			"qty",
-			"basic_rate",
-			"inventory_type",
-			"customer",
-			"batch_no",
-		],
-	)
+
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import get_last_mop_index
+
+	flow_index = get_last_mop_index(self.manufacturing_operation)
+	stock_entry_data = []
+	if flow_index is not None:
+		stock_entry_data = frappe.db.get_all(
+			"MOP Log",
+			filters={
+				"manufacturing_operation": self.manufacturing_operation,
+				"is_cancelled": 0,
+				"flow_index": flow_index,
+			},
+			fields=[
+				"item_code",
+				"to_warehouse as warehouse",
+				"qty_after_transaction_batch_based as qty",
+				"batch_no",
+			],
+			order_by="creation asc",
+		)
 
 	se_doc = frappe.new_doc("Stock Entry")
 
@@ -159,6 +165,8 @@ def create_stock_transfer_entry(self):
 	se_doc.manufacturing_operation = transfer_mop
 	se_doc.auto_created = 1
 	for row in stock_entry_data:
+		if not row.qty or flt(row.qty) <= 0:
+			continue
 		se_doc.append(
 			"items",
 			{
@@ -166,10 +174,7 @@ def create_stock_transfer_entry(self):
 				"qty": row.qty,
 				"s_warehouse": row.warehouse,
 				"t_warehouse": target_warehouse,
-				"basic_rate": row.basic_rate,
 				"batch_no": row.batch_no,
-				"inventory_type": row.inventory_type,
-				"customer": row.get("customer"),
 				"use_serial_batch_fields": 1,
 				"manufacturing_operation": transfer_mop,
 				"custom_manufacturing_work_order": self.transfer_mwo,

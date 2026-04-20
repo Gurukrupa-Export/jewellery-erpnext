@@ -70,15 +70,31 @@ class ManufacturingPlan(Document):
 		# Bulk Fetching Data
 		cache_data = self.get_manufacturing_plan_data()
 		frappe.flags.is_manufactur_order_created = False
-		for row in self.manufacturing_plan_table:
-			if row.docname:
-				create_manufacturing_order(self, row, cache_data)
-				frappe.flags.is_manufactur_order_created = True
-				if row.subcontracting:
-					is_subcontracting = True
-					# create_subcontracting_order(self, row)
-				if row.manufacturing_bom is None:
-					frappe.throw(f"Row:{row.idx} Manufacturing Bom Missing")
+		frappe.flags.creating_from_manufacturing_plan = True
+		frappe.flags._mp_tracking_bom_queue = []
+		try:
+			for row in self.manufacturing_plan_table:
+				if row.docname or row.mwo:
+					create_manufacturing_order(self, row, cache_data)
+					frappe.flags.is_manufactur_order_created = True
+					if row.subcontracting:
+						is_subcontracting = True
+					if row.manufacturing_bom is None:
+						frappe.throw(f"Row:{row.idx} Manufacturing Bom Missing")
+		finally:
+			queue = getattr(frappe.flags, "_mp_tracking_bom_queue", None) or []
+			for tb_name, ref_docname in queue:
+				frappe.db.set_value(
+					"Tracking Bom",
+					tb_name,
+					{
+						"reference_doctype": "Parent Manufacturing Order",
+						"reference_docname": ref_docname,
+					},
+				)
+			frappe.flags.creating_from_manufacturing_plan = False
+			frappe.flags._mp_tracking_bom_queue = []
+
 		if frappe.flags.is_manufactur_order_created:
 			frappe.msgprint(_("Manufacturing Orders Created Successfully"))
 
@@ -131,6 +147,8 @@ class ManufacturingPlan(Document):
 				mwo_items.add(row.mwo)
 			if row.manufacturing_bom:
 				bom_names.add(row.manufacturing_bom)
+			if getattr(row, "bom", None):
+				bom_names.add(row.bom)
 			if row.serial_id_bom:
 				bom_names.add(row.serial_id_bom)
 			if row.customer:
@@ -189,6 +207,15 @@ class ManufacturingPlan(Document):
 		)
 		attribute_value_set = {d.name for d in attr_values}
 
+		manufacturer = frappe.defaults.get_user_default("manufacturer")
+		finding_default_department = None
+		if manufacturer:
+			finding_default_department = frappe.db.get_value(
+				"Manufacturing Setting",
+				{"manufacturer": manufacturer},
+				"default_department",
+			)
+
 		return {
 			"so_data": so_data_map,
 			"mwo_data": mwo_data_map,
@@ -197,6 +224,10 @@ class ManufacturingPlan(Document):
 			"item_data": item_data_map,
 			"customer_diamond_grade": customer_diamond_grade_map,
 			"attribute_value_set": attribute_value_set,
+			"mp_context": {
+				"manufacturer": manufacturer,
+				"finding_default_department": finding_default_department,
+			},
 		}
 
 	@frappe.whitelist()
@@ -523,8 +554,15 @@ def create_manufacturing_order(doc, row, cache_data=None):
 				_("Diamond Grade is not mentioned in customer {0}").format(row.customer)
 			)
 
+	mp_context = cache_data.get("mp_context") if cache_data else None
 	for i in range(0, cnt):
-		make_manufacturing_order(doc, row, master_bom=master_bom, so_det=so_det)
+		make_manufacturing_order(
+			doc,
+			row,
+			master_bom=master_bom,
+			so_det=so_det,
+			mp_context=mp_context,
+		)
 
 
 def create_subcontracting_order(doc):

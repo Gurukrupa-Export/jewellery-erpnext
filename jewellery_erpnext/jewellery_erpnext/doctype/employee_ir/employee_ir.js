@@ -133,14 +133,19 @@ frappe.ui.form.on("Employee IR", {
 					"name",
 					"manufacturing_work_order",
 					"status",
+					"gross_wt",
+					"diamond_wt",
+					"diamond_pcs",
+					"gemstone_wt",
+					"gemstone_pcs",
 				])
-				.then((r) => {
-					let values = r.message;
+					.then((r) => {
+						let values = r.message;
 
-					if (values.manufacturing_work_order) {
-						frappe.db.get_value(
-							"QC",
-							{
+						if (values.manufacturing_work_order) {
+							frappe.db.get_value(
+								"QC",
+								{
 								manufacturing_work_order: values.manufacturing_work_order,
 								manufacturing_operation: values.name,
 								status: ["!=", "Rejected"],
@@ -153,6 +158,11 @@ frappe.ui.form.on("Employee IR", {
 									manufacturing_operation: values.name,
 									qc: a.name,
 									received_gross_wt: a.received_gross_wt,
+									gross_wt: values.gross_wt,
+									diamond_wt: values.diamond_wt,
+									diamond_pcs: values.diamond_pcs,
+									gemstone_wt: values.gemstone_wt,
+									gemstone_pcs: values.gemstone_pcs,
 								});
 								frm.refresh_field("employee_ir_operations");
 							}

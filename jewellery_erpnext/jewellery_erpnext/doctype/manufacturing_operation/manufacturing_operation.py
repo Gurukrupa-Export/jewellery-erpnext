@@ -20,6 +20,7 @@ from frappe.utils import (
 )
 
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	get_current_mop_balance_rows,
 	get_last_mop_index,
 )
 from jewellery_erpnext.utils import set_values_in_bulk, update_existing
@@ -153,15 +154,31 @@ class ManufacturingOperation(Document):
 			return
 
 		self.set_start_finish_time()
-		# self.validate_time_logs()
+		self.sync_weights_from_mop_log()
 		self.validate_loss()
-		# self.get_previous_se_details()
-		# self.remove_duplicate()
-		# self.set_mop_balance_table()  # To Set MOP Bailance Table on update source & target Table.
-		# self.update_weights()
 		self.validate_operation()
-		# update_new_mop_wtg(self)
-		# self.validate_main_slip()
+
+	def sync_weights_from_mop_log(self):
+		"""Recompute header weights from the current MOP Log snapshot so the header
+		never drifts from the virtual ledger.
+
+		``MOPLog.validate`` updates one prefix family at a time via ``frappe.db.set_value``
+		and does not run through ``ManufacturingOperation.validate``. Without this call
+		the header can carry stale ``diamond_wt`` / ``gemstone_wt`` after a Material
+		Request bridges new D/G items in (or after a cancellation removes them).
+
+		Skip when the caller asks to bypass (e.g. flow that intentionally overrides
+		header weights, or partial-state saves during clone/copy).
+		"""
+		if self.flags.get("skip_weight_sync"):
+			return
+		try:
+			self.update_weights()
+		except Exception:
+			frappe.log_error(
+				title=f"MOP weight resync failed: {self.name}",
+				message=frappe.get_traceback(),
+			)
 
 	# def validate_main_slip(self):
 	# 	# Find Employee IR where the child table employee_ir_operations has manufacturing_operation = self.name
@@ -245,141 +262,10 @@ class ManufacturingOperation(Document):
 					)
 				item.save()
 
-	# def remove_duplicate(self):
-	# 	existing_data = {
-	# 		"department_source_table": [],
-	# 		"department_target_table": [],
-	# 		"employee_source_table": [],
-	# 		"employee_target_table": [],
-	# 	}
-	# 	to_remove = []
-	# 	for row in existing_data:
-	# 		for entry in self.get(row):
-	# 			if entry.get("sed_item") and entry.get("sed_item") not in existing_data[row]:
-	# 				existing_data[row].append(entry.get("sed_item"))
-	# 			elif entry.get("sed_item") in existing_data[row]:
-	# 				to_remove.append(entry)
-
-	# 	for row in to_remove:
-	# 		self.remove(row)
-
-	def remove_duplicate(self):
-		# Use sets for fast lookups
-		existing_data = {
-			"department_source_table": set(),
-			"department_target_table": set(),
-			"employee_source_table": set(),
-			"employee_target_table": set(),
-		}
-		to_remove = []
-
-		# Collect unique items and mark duplicates
-		for row in existing_data.keys():
-			for entry in self.get(row):
-				sed_item = entry.get("sed_item")
-				if sed_item:
-					# Check and add to set directly
-					if sed_item in existing_data[row]:
-						to_remove.append(entry)
-					else:
-						existing_data[row].add(sed_item)
-
-		for row in to_remove:
-			self.remove(row)
-
 	def on_update(self):
 		self.attach_cad_cam_file_into_item_master()  # To set MOP doctype CAD-CAM Attachment's & respective details into Item Master.
 		self.set_wop_weight_details()  # To Set WOP doctype Weight details from MOP Doctype.
 		self.set_pmo_weight_details_in_bulk()  # To Set PMO doctype Weight details from MOP Doctype.
-
-	def get_previous_se_details(self):
-		if self.previous_se_data_updated:
-			return
-
-		d_warehouse = None
-		e_warehouse = None
-		if self.department:
-			d_warehouse = frappe.db.get_value(
-				"Warehouse",
-				{
-					"disabled": 0,
-					"department": self.department,
-					"warehouse_type": "Manufacturing",
-				},
-			)
-		if self.employee:
-			e_warehouse = frappe.db.get_value(
-				"Warehouse",
-				{
-					"disabled": 0,
-					"employee": self.employee,
-					"warehouse_type": "Manufacturing",
-				},
-			)
-
-		if self.previous_mop:
-			existing_data = {
-				"department_source_table": set(),
-				"department_target_table": set(),
-				"employee_source_table": set(),
-				"employee_target_table": set(),
-			}
-
-			for row in existing_data:
-				for entry in self.get(row):
-					if (
-						entry.get("sed_item")
-						and entry.get("sed_item") not in existing_data[row]
-					):
-						# existing_data[row].append(entry.get("sed_item"))
-						existing_data[row].add(entry.get("sed_item"))
-
-			department_source_table = frappe.db.get_all(
-				"Department Source Table",
-				{"parent": self.previous_mop, "s_warehouse": d_warehouse},
-				["*"],
-			)
-			department_target_table = frappe.db.get_all(
-				"Department Target Table",
-				{"parent": self.previous_mop, "t_warehouse": d_warehouse},
-				["*"],
-			)
-			employee_source_table = frappe.db.get_all(
-				"Employee Source Table",
-				{"parent": self.previous_mop, "s_warehouse": e_warehouse},
-				["*"],
-			)
-			employee_target_table = frappe.db.get_all(
-				"Employee Target Table",
-				{"parent": self.previous_mop, "t_warehouse": e_warehouse},
-				["*"],
-			)
-
-			for row in department_source_table:
-				if row["sed_item"] not in existing_data["department_source_table"]:
-					row["name"] = None
-					row["idx"] = None
-					self.append("department_source_table", row)
-
-			for row in department_target_table:
-				if row["sed_item"] not in existing_data["department_target_table"]:
-					row["name"] = None
-					row["idx"] = None
-					self.append("department_target_table", row)
-
-			for row in employee_source_table:
-				if row["sed_item"] not in existing_data["employee_source_table"]:
-					row["name"] = None
-					row["idx"] = None
-					self.append("employee_source_table", row)
-
-			for row in employee_target_table:
-				if row["sed_item"] not in existing_data["employee_target_table"]:
-					row["name"] = None
-					row["idx"] = None
-					self.append("employee_target_table", row)
-
-		self.db_set("previous_se_data_updated", 1)
 
 	# timer code
 	def validate_time_logs(self):
@@ -1056,170 +942,6 @@ class ManufacturingOperation(Document):
 					doctype=doctype, doc_updates=updates, update_modified=False
 				)
 
-	def set_mop_balance_table(self):
-		self.mop_balance_table = []
-		added_item_codes = set()
-		final_balance_row = []
-		bal_qty = {}
-		bal_pcs = {}
-		existing_data = {}
-		row_dict = {}
-		# Calculate sum of quantities for department source table
-		# for row in self.department_source_table + self.employee_source_table:
-		# 	key = (row.item_code, row.batch_no)
-		# 	bal_qty[key] = bal_qty.get(key, 0) + row.qty
-		# 	if not row_dict.get(key):
-		# 		row_dict[key] = row.__dict__.copy()
-		# if not bal_qty[key].get("row_data"):
-		# 	bal_qty[key]["row_data"] = row.__dict__.copy()
-		# Calculate sum of quantities for employee source table
-		# for row in :
-		# 	key = (row.item_code, row.batch_no)
-		# 	bal_qty[key] = bal_qty.get(key, 0) + row.qty
-		# 	if not row_dict.get(key):
-		# 		row_dict[key] = row.__dict__.copy()
-		# if not bal_qty[key].get("row_data"):
-		# 	bal_qty[key]["row_data"] = row.__dict__.copy()
-		# Subtract sum of quantities for department target table
-		# for row in self.department_target_table + self.employee_target_table:
-		# 	key = (row.item_code, row.batch_no)
-		# 	bal_qty[key] = bal_qty.get(key, 0) - row.qty
-		# 	if not row_dict.get(key):
-		# 		row_dict[key] = row.__dict__.copy()
-		# 	# if not bal_qty[key].get("row_data"):
-		# 	# 	bal_qty[key]["row_data"] = row.__dict__.copy()
-		# # Subtract sum of quantities for employee target table
-		# # for row in self.employee_target_table:
-		# # 	key = (row.item_code, row.batch_no)
-		# # 	bal_qty[key] = bal_qty.get(key, 0) - row.qty
-		# # 	if not row_dict.get(key):
-		# # 		row_dict[key] = row.__dict__.copy()
-		# # if not bal_qty[key].get("row_data"):
-		# # 	bal_qty[key]["row_data"] = row.__dict__.copy()
-
-		# for row_balance in self.mop_balance_table:
-		# 	key = (row_balance.item_code, row_balance.batch_no)
-		# 	if not bal_qty.get(key):
-		# 		return
-
-		# 	if row_balance.qty != bal_qty[key]["qty"]:
-		# 		row_balance.qty = bal_qty[key]["qty"]
-		# 		existing_data[key] = True
-
-		for row in self.department_source_table:
-			bal_qty[(row.item_code, row.batch_no)] = (
-				bal_qty.get((row.item_code, row.batch_no), 0) + row.qty
-			)
-			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get(
-				(row.item_code, row.batch_no), 0
-			) + (flt(row.pcs) if row.pcs else 0)
-		# Calculate sum of quantities for employee source table
-		for row in self.employee_source_table:
-			bal_qty[(row.item_code, row.batch_no)] = (
-				bal_qty.get((row.item_code, row.batch_no), 0) + row.qty
-			)
-			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get(
-				(row.item_code, row.batch_no), 0
-			) + (flt(row.pcs) if row.pcs else 0)
-		# Subtract sum of quantities for department target table
-		for row in self.department_target_table:
-			bal_qty[(row.item_code, row.batch_no)] = (
-				bal_qty.get((row.item_code, row.batch_no), 0) - row.qty
-			)
-			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get(
-				(row.item_code, row.batch_no), 0
-			) - flt(row.pcs or 0)
-		# Subtract sum of quantities for employee target table
-		for row in self.employee_target_table:
-			bal_qty[(row.item_code, row.batch_no)] = (
-				bal_qty.get((row.item_code, row.batch_no), 0) - row.qty
-			)
-			bal_pcs[(row.item_code, row.batch_no)] = bal_pcs.get(
-				(row.item_code, row.batch_no), 0
-			) - flt(row.pcs or 0)
-
-		# for key in bal_qty:
-		# 	if bal_qty[key] != 0 and not existing_data.get(key):
-		# 		row_data = row_dict.get(key)
-		# 		# if row_data is None and not self.employee_target_table:
-		# 		# if self.department_target_table:
-		# 		# 	for row_dtt in self.department_target_table:
-		# 		# 		if row_dtt.item_code == key[0] and row_dtt.batch_no == key[1]:
-		# 		# 			row_data = row_dtt.__dict__.copy()
-		# 		# 			break
-		# 		# if self.employee_target_table:
-		# 		# 	for row_ett in self.employee_target_table:
-		# 		# 		if row_ett.item_code == key[0] and row_ett.batch_no == key[1]:
-		# 		# 			row_data = row_ett.__dict__.copy()
-		# 		# 			break
-		# 		if row_data:
-		# 			row_data["qty"] = abs(bal_qty[key])
-		# 			row_data["name"] = None
-		# 			row_data["idx"] = None
-		# 			row_data["parentfield"] = None
-		# 			row_data["s_warehouse"] = row_data["t_warehouse"] or row_data["s_warehouse"]
-		# 			row_data["t_warehouse"] = None
-		# 			row_data["batch_no"] = key[1]
-		# 			final_balance_row.append(row_data)
-
-		# # To check Item_code already added or not balance table
-		# # for row_balance in self.mop_balance_table:
-		# # 	added_item_codes.add(row_balance.item_code)
-		# # frappe.throw(f"{final_balance_row}")
-		# # Append Final result into Balance Table
-		# for row in final_balance_row:
-		# 	# if row.get("item_code") not in added_item_codes:
-		# 	self.append("mop_balance_table", row)
-
-		for key in bal_qty:
-			if bal_qty[key] != 0:
-				row_data = None
-				# if row_data is None and not self.employee_target_table:
-				if self.department_target_table:
-					for row_dtt in self.department_target_table:
-						if row_dtt.item_code == key[0] and row_dtt.batch_no == key[1]:
-							row_data = row_dtt.__dict__.copy()
-							break
-				if self.employee_target_table:
-					for row_ett in self.employee_target_table:
-						if row_ett.item_code == key[0] and row_ett.batch_no == key[1]:
-							row_data = row_ett.__dict__.copy()
-							break
-				if row_data:
-					row_data["qty"] = abs(bal_qty[key])
-					row_data["name"] = None
-					row_data["idx"] = None
-					row_data["parentfield"] = None
-					row_data["s_warehouse"] = (
-						row_data["t_warehouse"] or row_data["s_warehouse"]
-					)
-					row_data["t_warehouse"] = None
-					row_data["batch_no"] = key[1]
-
-					# if frappe.flags.update_pcs:
-					row_data["pcs"] = abs(bal_pcs.get(key))
-
-					final_balance_row.append(row_data)
-
-		# To check Item_code already added or not balance table
-		for row_balance in self.mop_balance_table:
-			added_item_codes.add(row_balance.item_code)
-		# frappe.throw(f"{final_balance_row}")
-		# Append Final result into Balance Table
-		for row in final_balance_row:
-			if row.get("item_code") not in added_item_codes:
-				if not row.get("qty") > 0:
-					continue
-
-				self.append("mop_balance_table", row)
-
-		# if frappe.db.exists("Manufacturing Operation", {'previous_mop': self.name}):
-		# 	new_mop = frappe.db.get_value("Manufacturing Operation", {'previous_mop': self.name}, "name")
-		# 	new_mop_doc = frappe.get_doc("Manufacturing Operation", new_mop)
-		# 	update_new_mop(new_mop_doc, self)
-		# 	new_mop_doc.save()
-
-
 def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if mo_data is None:
 		mo_data = []
@@ -1674,19 +1396,6 @@ def get_previous_operation(manufacturing_operation):
 
 
 def get_material_wt(doc):
-	filters = {"disabled": 0, "company": doc.company}
-	if doc.for_subcontracting:
-		if doc.subcontractor:
-			filters["subcontractor"] = doc.subcontractor
-			filters["warehouse_type"] = "Manufacturing"
-	else:
-		if doc.employee:
-			filters["employee"] = doc.employee
-			filters["warehouse_type"] = "Manufacturing"
-	if not filters:
-		filters["department"] = doc.department
-		filters["warehouse_type"] = "Manufacturing"
-
 	gross_wt = 0
 	net_wt = 0
 	finding_wt = 0
@@ -1697,27 +1406,37 @@ def get_material_wt(doc):
 	other_wt = 0
 	diamond_pcs = 0
 	gemstone_pcs = 0
-	for row in doc.mop_balance_table:
-		str_pcs = row.pcs
-		if row.pcs and isinstance(row.pcs, str):
-			str_pcs = row.pcs.strip()
-		row.qty = flt(row.qty, 3)
-		if row.item_code[0] in ["M", "F", "D", "G", "O"]:
-			variant_of = row.item_code[0]
-			if variant_of == "M":
-				net_wt += row.qty
-			elif variant_of == "F":
-				finding_wt += row.qty
-			elif variant_of == "D":
-				diamond_wt += row.qty
-				diamond_wt_in_gram += row.qty * 0.2
-				diamond_pcs += int(str_pcs)
-			elif variant_of == "G":
-				gemstone_wt += row.qty
-				gemstone_wt_in_gram += row.qty * 0.2
-				gemstone_pcs += int(str_pcs)
-			else:
-				other_wt += row.qty
+
+	mop_logs = get_current_mop_balance_rows(
+		doc.name,
+		include_fields=[
+			"item_code",
+			"qty_after_transaction_batch_based as qty",
+			"pcs_after_transaction_batch_based as pcs",
+			"batch_no",
+		],
+	)
+	for row in mop_logs:
+		qty = flt(row.qty, 3)
+		pcs = row.pcs or 0
+		if not row.item_code:
+			continue
+		variant_of = row.item_code[0]
+		if variant_of == "M":
+			net_wt += qty
+		elif variant_of == "F":
+			finding_wt += qty
+		elif variant_of == "D":
+			diamond_wt += qty
+			diamond_wt_in_gram += qty * 0.2
+			diamond_pcs += int(pcs)
+		elif variant_of == "G":
+			gemstone_wt += qty
+			gemstone_wt_in_gram += qty * 0.2
+			gemstone_pcs += int(pcs)
+		elif variant_of == "O":
+			other_wt += qty
+
 	gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
 	if doc.main_slip_no or doc.is_finding:
 		if (
@@ -3583,95 +3302,6 @@ def make_time_log(data):
 	doc.add_time_log(args)
 
 
-def update_new_mop(self, old_mop):
-	import copy
-
-	d_warehouse = None
-	e_warehouse = None
-	if self.department:
-		d_warehouse = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"department": self.department,
-				"warehouse_type": "Manufacturing",
-			},
-		)
-	if self.employee:
-		e_warehouse = frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"company": self.company,
-				"employee": self.employee,
-				"warehouse_type": "Manufacturing",
-			},
-		)
-
-	if self.previous_mop:
-		existing_data = {
-			"department_source_table": [],
-			"department_target_table": [],
-			"employee_source_table": [],
-			"employee_target_table": [],
-		}
-
-		department_source_table = []
-		department_target_table = []
-		employee_source_table = []
-		employee_target_table = []
-
-		for row in existing_data:
-			for entry in self.get(row):
-				if (
-					entry.get("sed_item")
-					and entry.get("sed_item") not in existing_data[row]
-				):
-					existing_data[row].append(entry.get("sed_item"))
-
-			for entry in old_mop.get(row):
-				if entry.s_warehouse == d_warehouse:
-					entry.name = None
-					department_source_table.append(entry.__dict__)
-				if entry.t_warehouse == d_warehouse:
-					entry.name = None
-					department_target_table.append(entry.__dict__)
-				if entry.s_warehouse == e_warehouse:
-					entry.name = None
-					employee_source_table.append(entry.__dict__)
-				if entry.t_warehouse == e_warehouse:
-					entry.name = None
-					employee_target_table.append(entry.__dict__)
-
-		for row in department_source_table:
-			temp_row = copy.deepcopy(row)
-			if temp_row["sed_item"] not in existing_data["department_source_table"]:
-				temp_row["name"] = None
-				temp_row["idx"] = None
-				self.append("department_source_table", row)
-
-		for row in department_target_table:
-			temp_row = copy.deepcopy(row)
-			if temp_row["sed_item"] not in existing_data["department_target_table"]:
-				temp_row["name"] = None
-				temp_row["idx"] = None
-				self.append("department_target_table", row)
-
-		for row in employee_source_table:
-			temp_row = copy.deepcopy(row)
-			if temp_row["sed_item"] not in existing_data["employee_source_table"]:
-				temp_row["name"] = None
-				temp_row["idx"] = None
-				self.append("employee_source_table", row)
-
-		for row in employee_target_table:
-			temp_row = copy.deepcopy(row)
-			if temp_row["sed_item"] not in existing_data["employee_target_table"]:
-				temp_row["name"] = None
-				temp_row["idx"] = None
-				self.append("employee_target_table", row)
-
-
 @frappe.whitelist()
 def get_bom_summary(design_id_bom: str = None):
 	if design_id_bom:
@@ -3922,65 +3552,54 @@ def create_mr_wo_stock_entry(se_data):
 
 def update_new_mop_wtg(self):
 	if self.previous_mop and (not self.gross_wt):
-		index = get_last_mop_index(self.previous_mop)
 		current_doc_index = get_last_mop_index(self.name)
 		if current_doc_index is None:
-			if index is not None:
-				filters = {
-					"manufacturing_operation": self.previous_mop,
-					"is_cancelled": 0,
-					"flow_index": index,
-				}
-				mop_logs = frappe.db.get_all(
-					"MOP Log",
-					filters,
-					[
-						"item_code",
-						"pcs_after_transaction",
-						"pcs_after_transaction_item_based",
-						"pcs_after_transaction_batch_based",
-						"qty_after_transaction",
-						"qty_after_transaction_item_based",
-						"qty_after_transaction_batch_based",
-						"serial_and_batch_bundle",
-						"batch_no",
-						"flow_index",
-						"from_warehouse",
-						"to_warehouse",
-						"row_name",
-						"manufacturing_work_order",
-						"voucher_type",
-						"voucher_no",
-					],
-					order_by="creation asc",
+			mop_logs = get_current_mop_balance_rows(self.previous_mop)
+			for log in mop_logs:
+				mop_log = frappe.new_doc("MOP Log")
+				mop_log.item_code = log.item_code
+				mop_log.pcs_after_transaction = log.pcs_after_transaction
+				mop_log.pcs_after_transaction_item_based = (
+					log.pcs_after_transaction_item_based
 				)
-				if mop_logs:
-					for log in mop_logs:
-						mop_log = frappe.new_doc("MOP Log")
-						mop_log.item_code = log.item_code
-						mop_log.pcs_after_transaction = log.pcs_after_transaction
-						mop_log.pcs_after_transaction_item_based = (
-							log.pcs_after_transaction_item_based
-						)
-						mop_log.pcs_after_transaction_batch_based = (
-							log.pcs_after_transaction_batch_based
-						)
-						mop_log.from_warehouse = log.from_warehouse
-						mop_log.to_warehouse = log.to_warehouse
-						mop_log.voucher_type = log.voucher_type
-						mop_log.voucher_no = log.voucher_no
-						mop_log.row_name = log.row_name
-						mop_log.qty_after_transaction = log.qty_after_transaction
-						mop_log.qty_after_transaction_item_based = (
-							log.qty_after_transaction_item_based
-						)
-						mop_log.qty_after_transaction_batch_based = (
-							log.qty_after_transaction_batch_based
-						)
+				mop_log.pcs_after_transaction_batch_based = (
+					log.pcs_after_transaction_batch_based
+				)
+				mop_log.from_warehouse = log.from_warehouse
+				mop_log.to_warehouse = log.to_warehouse
+				mop_log.voucher_type = "Manufacturing Operation"
+				mop_log.voucher_no = log.manufacturing_operation
+				mop_log.row_name = log.row_name
+				mop_log.qty_after_transaction = log.qty_after_transaction
+				mop_log.qty_after_transaction_item_based = (
+					log.qty_after_transaction_item_based
+				)
+				mop_log.qty_after_transaction_batch_based = (
+					log.qty_after_transaction_batch_based
+				)
+				mop_log.manufacturing_operation = self.name
+				mop_log.manufacturing_work_order = log.manufacturing_work_order
+				mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
+				mop_log.batch_no = log.batch_no
+				mop_log.flow_index = 0
+				mop_log.save()
 
-						mop_log.manufacturing_operation = self.name
-						mop_log.manufacturing_work_order = log.manufacturing_work_order
-						mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
-						mop_log.batch_no = log.batch_no
-						mop_log.flow_index = 0
-						mop_log.save()
+
+@frappe.whitelist()
+def get_mop_log_balance(manufacturing_operation):
+	"""Return the current balance snapshot from MOP Log for a given Manufacturing Operation.
+
+	Used by client-side code (Swap Metal, Make Receive Entry) as a replacement for
+	the removed mop_balance_table child table.
+	"""
+	return get_current_mop_balance_rows(
+		manufacturing_operation,
+		include_fields=[
+			"item_code",
+			"qty_after_transaction_batch_based as qty",
+			"pcs_after_transaction_batch_based as pcs",
+			"batch_no",
+			"from_warehouse as s_warehouse",
+			"to_warehouse as t_warehouse",
+		],
+	)

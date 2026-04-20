@@ -191,15 +191,19 @@ def get_receive_work_order_batch(self):
 	for entry in self.items:
 		key = (entry.manufacturing_operation, entry.item_code)
 
-		# add batch_no to batch_data if it exists
 		if entry.batch_no:
 			batch_data[key] = entry.batch_no
 
 		if not batch_data.get(key):
 			batch_data[key] = frappe.db.get_value(
-				"MOP Balance Table",
-				{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
+				"MOP Log",
+				{
+					"manufacturing_operation": entry.manufacturing_operation,
+					"item_code": entry.item_code,
+					"is_cancelled": 0,
+				},
 				"batch_no",
+				order_by="flow_index desc, creation desc",
 			)
 
 		if entry.batch_no not in batch_data.get(key, []):
@@ -514,6 +518,7 @@ def validate_metal_properties(doc):
 def on_cancel(self, method=None):
 	update_manufacturing_operation(self, True)
 	update_main_slip(self, True)
+	sync_mop_log_for_stock_entry(self, is_cancelled=True)
 
 
 def before_submit(self, method):
@@ -543,8 +548,49 @@ def onsubmit(self, method):
 	# update_manufacturing_operation(self)
 	# update_main_slip(self)
 	stock_reservation_entry_for_mwo(self)
+	sync_mop_log_for_stock_entry(self)
 	# update_material_request_status(self)
 	# create_finished_bom(self)
+
+
+def sync_mop_log_for_stock_entry(self, is_cancelled=False):
+	"""Bridge Stock Entry lines onto MOP Log so the virtual ledger sees diamond /
+	gemstone / metal items moved by Material Request and other work-order transfers.
+
+	Stock has already moved physically at this point, so rows are written with
+	``is_synced=True`` to keep MOP EOD Sync from materializing a duplicate Stock
+	Entry on top of the existing one. Idempotent on ``(voucher_no, row_name,
+	manufacturing_operation)`` so the reservation path's existing writes and any
+	resubmit / replay do not create duplicates.
+	"""
+	if is_cancelled:
+		frappe.db.sql(
+			"""
+			UPDATE `tabMOP Log`
+			SET is_cancelled = 1
+			WHERE voucher_type = 'Stock Entry'
+			  AND voucher_no = %s
+			  AND is_cancelled = 0
+			""",
+			(self.name,),
+		)
+		return
+
+	for row in self.items:
+		if not (row.get("manufacturing_operation") and row.item_code):
+			continue
+		if frappe.db.exists(
+			"MOP Log",
+			{
+				"voucher_type": "Stock Entry",
+				"voucher_no": self.name,
+				"row_name": row.name,
+				"manufacturing_operation": row.manufacturing_operation,
+				"is_cancelled": 0,
+			},
+		):
+			continue
+		create_mop_log(self, row, is_synced=True)
 
 
 def stock_reservation_entry_for_mwo(self):
@@ -986,6 +1032,20 @@ def update_manufacturing_operation(doc, is_cancelled=False):
 
 
 def update_mop_details(se_doc, is_cancelled=False):
+	"""Reconcile Stock Entry lines with Manufacturing Operation legacy **table** children.
+
+	Called from ``update_manufacturing_operation`` (Stock Entry submit/cancel hooks). Builds
+	``mop_data[mop_name]`` buckets named ``department_source_table``, ``department_target_table``,
+	``employee_source_table``, ``employee_target_table`` from warehouse routing vs department /
+	employee warehouses, then ``update_balance_table`` appends those rows onto the Manufacturing
+	Operation document.
+
+	**Post-migration note:** balances for new virtual flows are primarily on **MOP Log**; these
+	child-table names are legacy shapes still used for some Stock Entry ↔ MOP warehouse trails.
+	If the Manufacturing Operation DocType on a site no longer defines these table fields,
+	``append``/``save`` here can fail unless restored via Custom Fields — see
+	``jewellery_erpnext.mop_lineage_audit.get_stock_entry_legacy_balance_table_trace``.
+	"""
 	se_employee = se_doc.to_employee or se_doc.employee
 	se_subcontractor = se_doc.to_subcontractor or se_doc.subcontractor
 
@@ -1006,15 +1066,20 @@ def update_mop_details(se_doc, is_cancelled=False):
 	mop_list = [row.manufacturing_operation for row in se_doc.items]
 
 	mop_base_data = frappe.db.get_all(
-		"MOP Balance Table",
-		{"parent": ["in", mop_list]},
-		["parent", "item_code", "batch_no"],
+		"MOP Log",
+		filters={
+			"manufacturing_operation": ["in", mop_list],
+			"is_cancelled": 0,
+		},
+		fields=["manufacturing_operation as parent", "item_code", "batch_no"],
+		order_by="flow_index desc, creation desc",
 	)
 
 	for row in mop_base_data:
 		key = (row.parent, row.item_code)
 		batch_data.setdefault(key, [])
-		batch_data[key].append(row.batch_no)
+		if row.batch_no and row.batch_no not in batch_data[key]:
+			batch_data[key].append(row.batch_no)
 
 	for entry in se_doc.items:
 		if not entry.manufacturing_operation:
@@ -1113,9 +1178,14 @@ def validate_duplicate_batches(entry, batch_data):
 	key = (entry.manufacturing_operation, entry.item_code)
 	if not batch_data.get(key):
 		batch_data[key] = frappe.db.get_all(
-			"MOP Balance Table",
-			{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
-			["item_code", "batch_no"],
+			"MOP Log",
+			filters={
+				"manufacturing_operation": entry.manufacturing_operation,
+				"item_code": entry.item_code,
+				"is_cancelled": 0,
+			},
+			pluck="batch_no",
+			order_by="flow_index desc, creation desc",
 		)
 
 	if entry.batch_no not in batch_data[key]:
@@ -1127,35 +1197,9 @@ def validate_duplicate_batches(entry, batch_data):
 				entry.item_code,
 				entry.batch_no,
 				entry.manufacturing_operation,
-				", ".join(batch_data[key]),
+				", ".join(str(b) for b in batch_data[key] if b),
 			)
 		)
-
-
-def get_previous_se_details(mop_doc, d_warehouse, e_warehouse):
-	additional_rows = []
-	if mop_doc:
-		previous_se = frappe.db.get_all(
-			"Stock Entry", {"manufacturing_operation": mop_doc.name}
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": d_warehouse},
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": e_warehouse},
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": d_warehouse},
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": e_warehouse},
-		)
-
-	return additional_rows
 
 
 def get_warehouse_details(

@@ -143,7 +143,28 @@ class SwapMetal(Document):
 		return [emp_wh, dep_wh]
 
 	def set_source_and_remain_table(self):
-		get_balance_table = frappe.get_all("MOP Balance Table", {"parent": self.operation}, ["*"])
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import get_last_mop_index
+
+		flow_index = get_last_mop_index(self.operation)
+		get_balance_table = []
+		if flow_index is not None:
+			get_balance_table = frappe.get_all(
+				"MOP Log",
+				filters={
+					"manufacturing_operation": self.operation,
+					"is_cancelled": 0,
+					"flow_index": flow_index,
+				},
+				fields=[
+					"item_code",
+					"qty_after_transaction_batch_based as qty",
+					"pcs_after_transaction_batch_based as pcs",
+					"batch_no",
+					"from_warehouse as s_warehouse",
+					"to_warehouse as t_warehouse",
+				],
+				order_by="creation asc",
+			)
 		idx_source_table = 1
 		idx_remain_balance = 1
 		self.source_table = []

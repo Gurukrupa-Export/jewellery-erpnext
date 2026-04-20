@@ -1,6 +1,5 @@
 import frappe
 from frappe import _
-from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder import DocType
 from frappe.utils import flt
 
@@ -61,65 +60,3 @@ def get_po_rates(supplier, operation, purchase_type, row):
 			and (sup_ser_pri_item_sub.sub_category == sub_category)
 		)
 	).run(as_dict=True)
-
-
-def create_operation_for_next_op(docname, target_doc=None, employee_ir=None):
-	def set_missing_value(source, target):
-		target.previous_operation = source.operation
-		target.prev_gross_wt = (
-			source.gross_wt or source.received_gross_wt or source.prev_gross_wt
-		)
-		target.previous_mop = source.name
-
-	target_doc = get_mapped_doc(
-		"Manufacturing Operation",
-		docname,
-		{
-			"Manufacturing Operation": {
-				"doctype": "Manufacturing Operation",
-				"field_no_map": [
-					"status",
-					"employee",
-					"start_time",
-					"subcontractor",
-					"for_subcontracting",
-					"finish_time",
-					"time_taken",
-					"department_issue_id",
-					"department_receive_id",
-					"department_ir_status",
-					"operation",
-					"previous_operation",
-					"start_time",
-					"finish_time",
-					"time_taken",
-					"started_time",
-					"current_time",
-					"on_hold",
-					"total_minutes",
-					"time_logs",
-				],
-			}
-		},
-		target_doc,
-		set_missing_value,
-	)
-	target_doc.department_source_table = []
-	target_doc.department_target_table = []
-	target_doc.employee_source_table = []
-	target_doc.employee_target_table = []
-	target_doc.employee_ir = employee_ir
-	target_doc.time_taken = None
-	target_doc.save()
-	target_doc.db_set("employee", None)
-
-	# timer code
-	target_doc.start_time = ""
-	target_doc.finish_time = ""
-	target_doc.time_taken = ""
-	target_doc.started_time = ""
-	target_doc.current_time = ""
-	target_doc.time_logs = []
-	target_doc.total_time_in_mins = ""
-	target_doc.save()
-	return target_doc.name
