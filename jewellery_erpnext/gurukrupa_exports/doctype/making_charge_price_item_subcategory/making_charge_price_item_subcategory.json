@@ -10,6 +10,7 @@
   "rate_per_gm",
   "rate_per_pc",
   "rate_per_diamond",
+  "mfg_complexity_code",
   "column_break_4",
   "subcontracting_rate",
   "subcontracting_wastage",
@@ -93,6 +94,12 @@
    "fieldname": "subcontracting_wastage",
    "fieldtype": "Percent",
    "label": "Subcontracting Wastage"
+  },
+  {
+   "fieldname": "mfg_complexity_code",
+   "fieldtype": "Select",
+   "label": "Mfg Complexity Code",
+   "options": "\nSimple\nMedium\nComplex"
   }
  ],
  "index_web_pages_for_search": 1,
