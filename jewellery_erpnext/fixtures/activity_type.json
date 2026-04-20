@@ -1,0 +1,192 @@
+[
+ {
+  "activity_type": "Planning",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-04-10 13:18:38.607802",
+  "name": "Planning"
+ },
+ {
+  "activity_type": "Research",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-04-10 13:18:38.623215",
+  "name": "Research"
+ },
+ {
+  "activity_type": "Proposal Writing",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-04-10 13:18:38.628769",
+  "name": "Proposal Writing"
+ },
+ {
+  "activity_type": "Execution",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-04-10 13:18:38.634243",
+  "name": "Execution"
+ },
+ {
+  "activity_type": "Communication",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-04-10 13:18:38.639779",
+  "name": "Communication"
+ },
+ {
+  "activity_type": "Update BOM",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-14 16:26:39.611916",
+  "name": "Update BOM"
+ },
+ {
+  "activity_type": "BOM QC - On Hold",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-15 12:30:16.108029",
+  "name": "BOM QC - On Hold"
+ },
+ {
+  "activity_type": "Updating BOM - On Hold",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-15 12:34:43.838528",
+  "name": "Updating BOM - On Hold"
+ },
+ {
+  "activity_type": "Design Rework in Progress",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2026-01-22 16:46:17.000605",
+  "name": "Design Rework in Progress"
+ },
+ {
+  "activity_type": "Customer Approval",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2026-01-22 17:21:25.137414",
+  "name": "Customer Approval"
+ },
+ {
+  "activity_type": "QC Activity - On-Hold",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-15 12:34:30.230379",
+  "name": "QC Activity - On-Hold"
+ },
+ {
+  "activity_type": "Updating BOM",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-14 16:27:04.380996",
+  "name": "Updating BOM"
+ },
+ {
+  "activity_type": "Create BOM - On Hold",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-15 12:30:39.934575",
+  "name": "Create BOM - On Hold"
+ },
+ {
+  "activity_type": "CAD Designing - On-Hold",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-14 16:26:28.164139",
+  "name": "CAD Designing - On-Hold"
+ },
+ {
+  "activity_type": "BOM QC",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-14 16:26:58.247684",
+  "name": "BOM QC"
+ },
+ {
+  "activity_type": "Create BOM",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-14 16:26:52.494558",
+  "name": "Create BOM"
+ },
+ {
+  "activity_type": "Update Item",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-14 16:26:46.285631",
+  "name": "Update Item"
+ },
+ {
+  "activity_type": "QC Activity",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-14 16:26:21.864452",
+  "name": "QC Activity"
+ },
+ {
+  "activity_type": "CAD Designing",
+  "billing_rate": 0.0,
+  "costing_rate": 0.0,
+  "disabled": 0,
+  "docstatus": 0,
+  "doctype": "Activity Type",
+  "modified": "2024-08-14 16:25:49.605389",
+  "name": "CAD Designing"
+ }
+]

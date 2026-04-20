@@ -2,15 +2,65 @@ from unittest.mock import patch
 
 import frappe
 from erpnext.selling.doctype.quotation.quotation import make_sales_order
+from frappe.model.workflow import apply_workflow
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_days
+from gke_customization.gke_order_forms.doctype.order.order import make_quotation_batch
+
+from jewellery_erpnext.create_test_data import create_test_data
+from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
+	create_tracking_bom_directly,
+)
+from jewellery_erpnext.jewellery_erpnext.tests.test_quotation import (
+	create_order,
+	customer_payment_terms,
+)
 
 
 class TestSalesOrder(FrappeTestCase):
 	def setUp(self):
+		create_test_data()
+		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		self.department = frappe.get_value(
+			"Department",
+			{"department_name": "Test_Department", "company": "Test_Company"},
+			"name",
+		)
+		self.warehouse = frappe.get_value(
+			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
+		)
+		customer_payment_terms()
+
+		order_criteria = frappe.get_single("Order Criteria")
+		if not order_criteria.order:
+			order_criteria.append(
+				"order",
+				{
+					"sketch_submission_time": "06:00:00",
+					"cad_appoval_timefrom_ibm_team": "06:00:00",
+					"cad_approval_day": 6,
+					"cad_submission_time": "10:45:00",
+				},
+			)
+
+		if not order_criteria.department_shift:
+			order_criteria.append(
+				"department_shift",
+				{
+					"branch": frappe.get_value(
+						"Branch", {"branch_name": "Test Branch"}
+					),
+					"department": frappe.get_value(
+						"Department", {"department_name": "Test_Department"}
+					),
+				},
+			)
+		order_criteria.save()
+
 		return super().setUp()
 
 	def test_sales_order(self):
+		create_quotation(self)
 		quotation = frappe.get_value(
 			"Quotation", {"workflow_state": "Submitted"}, "name"
 		)
@@ -25,16 +75,20 @@ class TestSalesOrder(FrappeTestCase):
 			row.making_charges = 5000
 			row.rate = 150000
 			if not row.warehouse:
-				row.warehouse = "Product Allocation FG - GEPL"
+				row.warehouse = self.warehouse
 		sales_order.save()
 		for row in sales_order.items:
 			self.assertEqual(
-				frappe.get_value("BOM", row.bom, "custom_creation_doctype"),
+				frappe.get_value(
+					"Tracking Bom", row.custom_tracking_bom, "reference_doctype"
+				),
 				"Sales Order",
 			)
 			self.assertEqual(
 				sales_order.name,
-				frappe.get_value("BOM", row.bom, "custom_creation_docname"),
+				frappe.get_value(
+					"Tracking Bom", row.custom_tracking_bom, "reference_docname"
+				),
 			)
 
 	def test_validate_sales_type_mandatory(self):
@@ -238,3 +292,38 @@ class TestSalesOrder(FrappeTestCase):
 
 	def tearDown(self):
 		return super().tearDown()
+
+
+def create_quotation(self):
+	create_order(self)
+	order = frappe.db.get_value(
+		"Order",
+		{
+			"customer_code": "Test_Customer_External",
+			"item": ["is", "set"],
+			"workflow_state": "Approved",
+			"docstatus": 1,
+		},
+		"name",
+		order_by="creation desc",
+	)
+	quotation = make_quotation_batch([order])
+	quotation.branch = self.branch
+	quotation.custom_sales_type = "Finished Goods"
+	quotation.gold_rate_with_gst = 15000
+	quotation.custom_customer_gold = "No"
+	quotation.custom_customer_diamond = "No"
+	quotation.custom_customer_stone = "No"
+	quotation.custom_customer_good = "No"
+	quotation.custom_customer_finding = "No"
+	quotation.diamond_quality = "EF-VVS"
+	quotation.items[0].diamond_quality = "EF-VVS"
+	quotation.selling_price_list = "Standard Selling"
+	quotation.price_list_currency = "INR"
+	quotation.plc_conversion_rate = 1
+	quotation.save()
+
+	apply_workflow(quotation, "Create BOM")
+	create_tracking_bom_directly(quotation)
+
+	apply_workflow(quotation, "Submit")
