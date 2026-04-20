@@ -2014,7 +2014,10 @@ let set_edit_bom_details = (
 					precision = response.message.custom_precision_variable;  // Set precision to 2 if the checkbox is checked
 				}
 
-				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+				
+			}
+		});
+		let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
 				let with_precision_rate = quantity_value * d.total_gemstone_rate;
 
 				// Calculate the difference
@@ -2045,8 +2048,6 @@ let set_edit_bom_details = (
 				// Refresh the grid
 				gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
 				grid.refresh();
-			}
-		});
 	});
 
 
