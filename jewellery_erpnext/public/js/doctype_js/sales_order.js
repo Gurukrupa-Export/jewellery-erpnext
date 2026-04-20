@@ -1633,6 +1633,7 @@ let set_edit_bom_details = (
 	var metal_amount = 0;
 	var making_amount = 0;
 	var wastage_amount = 0;
+	var total_wastage_amount = 0;
 	var diamond_amount = 0;
 	var finding_amount = 0;
 	var finding_weight = 0;
