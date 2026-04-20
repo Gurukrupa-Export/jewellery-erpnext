@@ -2143,9 +2143,10 @@ let set_edit_bom_details = (
 	// });
 	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
 		let pending = doc.finding_detail.length;
+		finding_data.length = 0;
 		dialog.fields_dict.finding_detail.df.data = [];
-	    finding_data.length = 0;
-		dialog.fields_dict.finding_detail.df.data = [];
+		dialog.fields_dict.finding_detail.grid.df.data = []; // ← ADD THIS
+		dialog.fields_dict.finding_detail.grid.refresh();
 		$.each(doc.finding_detail, function (index, d) {
 			// finding_amount += amount;
 			// let rate_to_use = d.rate;
@@ -2226,6 +2227,8 @@ let set_edit_bom_details = (
 					pending--;
 					if (pending === 0) {
 						dialog.fields_dict.finding_detail.df.data = finding_data;
+					    dialog.fields_dict.finding_detail.grid.df.data = finding_data; 
+						
 						let grid = dialog.fields_dict.finding_detail.grid;
 						// let precision = 3;
 						grid.update_docfield_property("rate", "precision", 2);
