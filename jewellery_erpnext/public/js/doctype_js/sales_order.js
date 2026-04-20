@@ -2142,6 +2142,7 @@ let set_edit_bom_details = (
 	// });
 	// });
 	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
+		let finding_data = [];
 		let pending = doc.finding_detail.length;
 		finding_data.length = 0;
 		dialog.fields_dict.finding_detail.df.data = [];
