@@ -1817,80 +1817,122 @@ let set_edit_bom_details = (
 			
 	// 	});
 	// });
-	
-	// diamond details table append New Code
+
+	// new code
 	let total_sum_diamond = 0;
 	let count = 0;
 	let total_calls = doc.diamond_detail.length;
 
 	$.each(doc.diamond_detail, function (index, d) {
+		console.log("hii");
 		let witout_precision = d.quantity;
 		let without_precision_rate = witout_precision * d.total_diamond_rate;
+		// frappe.call({
+		// 	method: "frappe.client.get_value",
+		// 	args: {
+		// 		doctype: "Customer",
+		// 		filters: { name: cur_frm.doc.customer },
+		// 		fieldname: "custom_precision_variable"
+		// 	},
+		// 	callback: function (response) {
+		// 		let precision = 0;
+		// 		// Check if the custom_consider_2_digit_for_diamond field is checked
+		// 		if (response.message && response.message.custom_precision_variable) {
+		// 			precision =response.message.custom_precision_variable ;  // Set precision to 2 if the checkbox is checked
+		// 		}
 
-		frappe.call({
-			method: "frappe.client.get_value",
-			args: {
-				doctype: "Customer",
-				filters: { name: cur_frm.doc.customer },
-				fieldname: "custom_precision_variable"
-			},
-			callback: function (response) {
-				let precision = 0;
-				if (response.message && response.message.custom_precision_variable) {
-					precision = response.message.custom_precision_variable;
-				}
+		let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+		let with_precision_rate = quantity_value * d.total_diamond_rate;
 
-				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
-				let with_precision_rate = quantity_value * d.total_diamond_rate;
-				let difference_qty = without_precision_rate - with_precision_rate;
-				let total_diamond_rate_qty = (parseFloat(quantity_value) * parseFloat(d.total_diamond_rate)).toFixed(2);
-				total_sum_diamond += parseFloat(total_diamond_rate_qty);
-				amount = parseFloat(total_diamond_rate_qty);
-				let rate_to_use = d.total_diamond_rate;
+		// Calculate the difference
+		let difference_qty = without_precision_rate - with_precision_rate;
+		let total_diamond_rate_qty = (d.quantity * parseFloat(d.total_diamond_rate)).toFixed(2);
+		total_sum_diamond += parseFloat(total_diamond_rate_qty);
+		amount = parseFloat(total_diamond_rate_qty);
+		let rate_to_use = d.total_diamond_rate;
 
-				if (cur_frm.doc.company === "KG GK Jewellers Private Limited" && cur_frm.doc.customer === "GJCU0009") {
-					rate_to_use = flt(d.se_rate || 0);
-				}
-				if (cur_frm.doc.company === "Gurukrupa Export Private Limited" && cur_frm.doc.customer === "TNCU0002" && cur_frm.doc.sales_type === "Branch") {
-					rate_to_use = flt(d.fg_purchase_rate || 0);
-				}
 
-				// FIX: push into outer diamond_data
-				diamond_data.push({
-					docname: d.name,
-					diamond_type: d.diamond_type,
-					stone_shape: d.stone_shape,
-					quality: d.quality,
-					pcs: d.pcs,
-					diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
-					diamond_cut: d.diamond_cut,
-					sub_setting_type: d.sub_setting_type,
-					diamond_grade: d.diamond_grade,
-					diamond_sieve_size: d.diamond_sieve_size,
-					sieve_size_range: d.sieve_size_range,
-					size_in_mm: d.size_in_mm,
-					quantity: d.quantity,
-					quantity_3: d.quantity_3,
-					weight_per_pcs: d.weight_per_pcs,
-					total_diamond_rate: rate_to_use,
-					diamond_handling_rate: d.handling_rate,
-					is_customer_item: d.is_customer_item,
-					total_diamond_rate_qty: total_diamond_rate_qty,
-					difference_qty: difference_qty,
-				});
+		if (
+			cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
+			cur_frm.doc.customer === "GJCU0009"
+		) {
+			rate_to_use = flt(d.se_rate || 0);
+		}
 
-				count++;
-				if (count === total_calls) {
-					// FIX: sync once at end, then refresh
-					dialog.fields_dict.diamond_detail.df.data = diamond_data;
-					dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
-					let grid = dialog.fields_dict.diamond_detail.grid;
-					grid.update_docfield_property("quantity", "precision", precision);
-					grid.refresh();
-				}
-			}
+		if (
+			cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
+			cur_frm.doc.customer === "TNCU0002" &&
+			cur_frm.doc.sales_type === "Branch"
+
+		) {
+
+			rate_to_use = flt(d.fg_purchase_rate || 0);
+		}
+		console.log("hiioo11", d.stone_shape, d.weight_per_pcs, cur_frm.doc.customer);
+		// frappe.db.get_list('Diamond Price List', {
+		// 	filters: {
+		// 		from_weight: ['<=', d.weight_per_pcs],
+		// 		to_weight: ['>=', d.weight_per_pcs],
+		// 		stone_shape: d.stone_shape,
+		// 		quality: d.quality,
+		// 		customer: cur_frm.doc.customer
+		// 	},
+		// 	fields: ['outright_handling_charges_rate'],
+		// 	limit: 1
+		// }).then(records => {
+		// 		console.log("hiioo11");
+		// 	let handling_rate = 0;
+
+		// 	if (records && records.length > 0) {
+		// 		console.log("hiioo11");
+		// 		handling_rate = records[0].outright_handling_charges_rate || 0;
+		// 	}
+		// 	console.log("hiioo",handling_rate);
+
+
+		dialog.fields_dict.diamond_detail.df.data.push({
+			docname: d.name,
+			diamond_type: d.diamond_type,
+			stone_shape: d.stone_shape,
+			quality: d.quality,
+			pcs: d.pcs,
+			diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+			diamond_cut: d.diamond_cut,
+			sub_setting_type: d.sub_setting_type,
+			diamond_grade: d.diamond_grade,
+			diamond_sieve_size: d.diamond_sieve_size,
+			sieve_size_range: d.sieve_size_range,
+			size_in_mm: d.size_in_mm,
+			quantity: d.quantity,
+			quantity_3: d.quantity_3,
+
+			weight_per_pcs: d.weight_per_pcs,
+			total_diamond_rate: rate_to_use,
+			diamond_handling_rate: d.handling_rate,
+			// diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+			// outright_handling_charges_rate:d.outright_handling_charges_rate,
+			// outright_handling_charges_amount:d.outright_handling_charges_amount,
+			is_customer_item: d.is_customer_item,
+			total_diamond_rate_qty: total_diamond_rate_qty,
+			difference_qty: difference_qty,
 		});
+
+		count++;
+		// Set diamond amount only after all calls are done
+		if (count === total_calls) {
+			dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
+			let grid = dialog.fields_dict.diamond_detail.grid;
+
+			// grid.update_docfield_property("total_diamond_rate_qty", "precision", 2); 
+
+			grid.refresh();
+		}
+		//  });
+		// }
+
+		// });
 	});
+	
 
 
 	// gemstone details table append
@@ -1950,7 +1992,7 @@ let set_edit_bom_details = (
 	// 	});
 	// });
 
-	// gemstone details table append New Code
+	// new code
 	$.each(doc.gemstone_detail, function (index, d) {
 		gemstone_amount += d.gemstone_rate_for_specified_quantity;
 
@@ -1966,16 +2008,19 @@ let set_edit_bom_details = (
 			},
 			callback: function (response) {
 				let precision = 0;
+
+				// Check if the custom_consider_2_digit_for_diamond field is checked
 				if (response.message && response.message.custom_precision_variable) {
-					precision = response.message.custom_precision_variable;
+					precision = response.message.custom_precision_variable;  // Set precision to 2 if the checkbox is checked
 				}
 
 				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
 				let with_precision_rate = quantity_value * d.total_gemstone_rate;
+
+				// Calculate the difference
 				let difference_qty = without_precision_rate - with_precision_rate;
 
-				// FIX: push into outer gemstone_data
-				gemstone_data.push({
+				dialog.fields_dict.gemstone_detail.df.data.push({
 					docname: d.name,
 					gemstone_type: d.gemstone_type,
 					stone_shape: d.stone_shape,
@@ -1993,9 +2038,12 @@ let set_edit_bom_details = (
 					difference_qty: difference_qty,
 				});
 
-				// FIX: sync outer gemstone_data into df.data, then refresh
-				dialog.fields_dict.gemstone_detail.df.data = gemstone_data;
 				let grid = dialog.fields_dict.gemstone_detail.grid;
+				// grid.update_docfield_property("quantity", "precision", precision);
+
+
+				// Refresh the grid
+				gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
 				grid.refresh();
 			}
 		});
