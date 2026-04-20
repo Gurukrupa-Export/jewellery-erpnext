@@ -6,17 +6,31 @@ positive delta surfaces as a MOP Log row via the existing Stock Entry bridge.
 
 Gate:  ``eir.is_main_slip_required = 1`` AND ``row.received_gross_wt > row.gross_wt``
 
-Mechanism per row:
-    Emit a single Repack SE per target item that consumes the manufacturer's 
-    pure_gold_item and produces the target alloy, regardless of matching-alloy stock.
+Mechanism per row (with ``eir.main_slip`` set)::
 
-    consume_pure_qty = target_qty * target_purity / pure_purity
+    required_qty_per_colour = (received_gross_wt - gross_wt) / #colours
 
-    Source priorities:
-    1. Main Slip batches (eir.main_slip set): inventory_type='Pure Metal' AND item_code=pure_gold_item
-       (walked in creation asc order).
-    2. Fallback: remainder from employee/subcontractor Manufacturing warehouse with 
-       `se.flags.throw_batch_error = True` to trigger FIFO update_batches.
+    for each colour -> resolved target metal item (via MWO attributes):
+        walk Main Slip ``batch_details`` rows (variant_of = "M") in inventory_type
+        priority order: Regular Stock -> Customer Goods -> Pure Metal
+
+        for each available batch segment:
+            consume_qty = min(batch.available, remaining_required)
+            if inventory_type == "Pure Metal" AND eir.subcontracting == "Yes":
+                -> build a Repack SE (purity conversion 24KT -> target alloy)
+                   produce_qty = consume_qty * source_purity / target_purity
+            else:
+                -> build a Material Transfer (WORK ORDER) SE
+                   produce_qty == consume_qty
+            submit; the existing sync_mop_log_for_stock_entry bridge writes
+            the positive MOP Log row against the MOP
+
+Fallback (no ``eir.main_slip`` on record): a single Repack SE from the
+employee/subcontractor Manufacturing warehouse into the MOP department
+warehouse with the resolved target metal item (pre-extension behaviour).
+
+Insufficient stock: explicit ``frappe.throw`` with available vs required
+numbers; never silent-skip.
 
 Idempotency: keyed on ``(Stock Entry.employee_ir, custom_eir_operation_row)``
 with ``auto_created = 1``; re-submission short-circuits.
@@ -33,10 +47,18 @@ from frappe import _
 from frappe.utils import cint, flt
 
 from jewellery_erpnext.utils import get_item_from_attribute
-from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import get_purity_percentage
 
 
 REPACK_STOCK_ENTRY_TYPE = "Repack"
+MATERIAL_TRANSFER_STOCK_ENTRY_TYPE = "Material Transfer (WORK ORDER)"
+
+# Priority order for consuming Main Slip batch_details when injecting extra
+# metal into MOP. Lower index = higher priority.
+INVENTORY_TYPE_PRIORITY = {
+	"Regular Stock": 0,
+	"Customer Goods": 1,
+	"Pure Metal": 2,
+}
 
 
 def inject_extra_metal_for_eir_receive(eir, row):
@@ -63,80 +85,11 @@ def inject_extra_metal_for_eir_receive(eir, row):
 			)
 		)
 
-	source_wh = _resolve_source_warehouse(eir)
-	if not source_wh:
-		frappe.throw(
-			_("Main Slip injection: source warehouse not configured for {0}").format(
-				eir.subcontractor if eir.subcontracting == "Yes" else eir.employee
-			)
-		)
-
-	pure_item = _resolve_pure_gold_item(eir, row)
-	if not pure_item:
-		frappe.throw(
-			_("Main Slip injection: pure_gold_item not configured in Manufacturing Setting")
-		)
-
-	pure_purity = get_purity_percentage(pure_item)
-	if not pure_purity:
-		frappe.throw(
-			_("Main Slip injection: cannot resolve metal_purity for pure_gold_item {0}").format(pure_item)
-		)
-
 	target_items = _resolve_inject_metal_items(row.manufacturing_work_order, extra)
 
-	se = frappe.new_doc("Stock Entry")
-	se.stock_entry_type = REPACK_STOCK_ENTRY_TYPE
-	_stamp_se_header(se, eir, row)
-
-	for target in target_items:
-		target_item = target["item_code"]
-		target_purity = get_purity_percentage(target_item)
-		if not target_purity:
-			frappe.throw(
-				_("Main Slip injection: cannot resolve metal_purity for target {0}").format(target_item)
-			)
-
-		consume_qty = round(target["qty"] * target_purity / pure_purity, 3)
-		segments = list(_walk_main_slip_pure_batches(eir.main_slip, pure_item, consume_qty)) if getattr(eir, "main_slip", None) else []
-
-		consumed_from_ms = sum(s["qty"] for s in segments)
-		remainder = round(consume_qty - consumed_from_ms, 3)
-
-		for seg in segments:
-			se.append("items", _consume_row(pure_item, seg["qty"], source_wh, seg["batch_no"]))
-
-		if remainder > 0:
-			# Validate fallback stock before delegating to let update_batches
-			actual = flt(
-				frappe.db.get_value(
-					"Bin", {"item_code": pure_item, "warehouse": source_wh}, "actual_qty"
-				)
-			)
-			if actual < remainder:
-				frappe.throw(
-					_(
-						"Insufficient pure stock to Repack {0} gram(s) of {1}. Required {2}g of {3}. "
-						"Produced {4}g from Main Slip {5}, remaining {6}g needed but only {7}g available "
-						"in source warehouse {8}."
-					).format(
-						target["qty"], target_item,
-						consume_qty, pure_item,
-						consumed_from_ms, getattr(eir, "main_slip", "None") or "None",
-						remainder, actual, source_wh
-					)
-				)
-
-			# Let update_batches() FIFO-resolve this remainder row at before_validate time.
-			se.append("items", _consume_row(pure_item, remainder, source_wh, batch_no=None))
-
-		se.append("items", _produce_row(target_item, target["qty"], dept_wh, row.manufacturing_operation))
-
-	se.flags.throw_batch_error = True
-	se.flags.ignore_permissions = True
-	se.save()
-	se.submit()
-	return [se.name]
+	if getattr(eir, "main_slip", None):
+		return _inject_via_main_slip_batches(eir, row, target_items, dept_wh)
+	return _inject_via_source_warehouse_fallback(eir, row, target_items, dept_wh)
 
 
 def cancel_injections_for_eir(eir_name):
@@ -152,7 +105,7 @@ def cancel_injections_for_eir(eir_name):
 			"employee_ir": eir_name,
 			"auto_created": 1,
 			"docstatus": 1,
-			"stock_entry_type": REPACK_STOCK_ENTRY_TYPE,
+			"stock_entry_type": ["in", [REPACK_STOCK_ENTRY_TYPE, MATERIAL_TRANSFER_STOCK_ENTRY_TYPE]],
 		},
 		pluck="name",
 	)
@@ -162,36 +115,121 @@ def cancel_injections_for_eir(eir_name):
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Path 1 - Main Slip batch_details walk (primary)
 # ---------------------------------------------------------------------------
 
 
-def _resolve_pure_gold_item(eir, row):
-	"""Reads manufacturer from eir.manufacturer, falls back to PMO.manufacturer
-	via row.manufacturing_work_order -> PMO; looks up Manufacturing Setting.{manufacturer}.pure_gold_item.
-	Returns None if unresolved."""
-	manufacturer = getattr(eir, "manufacturer", None)
-	if not manufacturer:
-		manufacturer = frappe.db.get_value(
-			"Parent Manufacturing Order", 
-			frappe.db.get_value("Manufacturing Work Order", row.manufacturing_work_order, "manufacturing_order"), 
-			"manufacturer"
+def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
+	"""Walk Main Slip batch_details in inventory-type priority and emit one SE
+	per consumed segment until each target item's required qty is satisfied."""
+	source_wh = _resolve_source_warehouse(eir)
+	if not source_wh:
+		frappe.throw(
+			_("Main Slip injection: source warehouse not configured for {0}").format(
+				eir.subcontractor if eir.subcontracting == "Yes" else eir.employee
+			)
 		)
-	if not manufacturer:
-		manufacturer = frappe.defaults.get_user_default("manufacturer")
-		
-	if manufacturer:
-		return frappe.db.get_value("Manufacturing Setting", {"manufacturer": manufacturer}, "pure_gold_item")
-	return None
+
+	batches = list(_iter_main_slip_batches(eir.main_slip))
+	se_names = []
+
+	for target in target_items:
+		remaining = flt(target["qty"])
+		target_item = target["item_code"]
+		produced = 0.0
+		for batch in batches:
+			if remaining <= 0:
+				break
+			available = flt(batch.get("available_qty"))
+			if available <= 0:
+				continue
+
+			inv_type = batch.get("inventory_type")
+			is_pure_subcontracting = (
+				inv_type == "Pure Metal" and eir.subcontracting == "Yes"
+			)
+
+			if is_pure_subcontracting:
+				# Purity conversion: how much of the pure source do we need to
+				# produce `remaining` grams of the target alloy?
+				source_purity = _get_item_metal_purity(batch["item_code"])
+				target_purity = _get_item_metal_purity(target_item)
+				if not source_purity or not target_purity:
+					frappe.throw(
+						_(
+							"Main Slip injection: cannot resolve metal_purity for "
+							"{0} or {1}."
+						).format(batch["item_code"], target_item)
+					)
+				# We prefer to use up this batch before moving on; compute the
+				# produced yield if we consume all of 'available', capped at
+				# what remaining demand requires.
+				max_produce_from_batch = round(
+					available * source_purity / target_purity, 3
+				)
+				produce_this = min(max_produce_from_batch, remaining)
+				consume_this = round(
+					produce_this * target_purity / source_purity, 3
+				)
+				se = _build_purity_repack_se(
+					eir,
+					row,
+					source_item=batch["item_code"],
+					source_batch=batch.get("batch_no"),
+					consume_qty=consume_this,
+					target_item=target_item,
+					produce_qty=produce_this,
+					source_wh=source_wh,
+					dept_wh=dept_wh,
+				)
+			else:
+				# Direct Material Transfer; the batch item must match the
+				# target alloy item (Main Slip must hold the correct grade).
+				if batch.get("item_code") != target_item:
+					continue  # not the right alloy; skip this batch
+				take = min(available, remaining)
+				se = _build_material_transfer_se(
+					eir,
+					row,
+					item_code=target_item,
+					batch_no=batch.get("batch_no"),
+					qty=take,
+					source_wh=source_wh,
+					dept_wh=dept_wh,
+				)
+				produce_this = take
+				consume_this = take
+
+			se.flags.ignore_permissions = True
+			se.save()
+			se.submit()
+			se_names.append(se.name)
+
+			batch["available_qty"] = available - consume_this
+			remaining = round(remaining - produce_this, 3)
+			produced += produce_this
+
+		if remaining > 0:
+			frappe.throw(
+				_(
+					"Main Slip injection: insufficient stock on Main Slip {0} "
+					"batch_details to repack {1} gram(s) of {2}. Produced {3}, "
+					"short by {4}."
+				).format(
+					eir.main_slip,
+					target["qty"],
+					target_item,
+					round(produced, 3),
+					round(remaining, 3),
+				)
+			)
+
+	return se_names
 
 
-def _walk_main_slip_pure_batches(main_slip, pure_item, required_qty):
-	"""Queries `Main Slip SE Details` filtered on parent=main_slip, parentfield="batch_details",
-	inventory_type="Pure Metal", item_code=pure_item, ordered by creation asc; yields `{batch_no, qty}` segments
-	until `required_qty` satisfied."""
-	if not main_slip:
-		return
-
+def _iter_main_slip_batches(main_slip):
+	"""Yield Main Slip SE Details rows (``variant_of = 'M'``) in inventory_type
+	priority order, only those with positive available qty."""
 	rows = (
 		frappe.db.get_all(
 			"Main Slip SE Details",
@@ -199,14 +237,16 @@ def _walk_main_slip_pure_batches(main_slip, pure_item, required_qty):
 				"parent": main_slip,
 				"parentfield": "batch_details",
 				"variant_of": "M",
-				"inventory_type": "Pure Metal",
-				"item_code": pure_item,
 			},
 			fields=[
 				"name",
 				"batch_no",
+				"item_code",
 				"qty",
 				"consume_qty",
+				"inventory_type",
+				"customer",
+				"variant_of",
 				"creation",
 			],
 			order_by="creation asc",
@@ -214,17 +254,60 @@ def _walk_main_slip_pure_batches(main_slip, pure_item, required_qty):
 		or []
 	)
 
-	remaining = flt(required_qty)
-	for r in rows:
-		if remaining <= 0:
-			break
+	def _sort_key(r):
+		return (
+			INVENTORY_TYPE_PRIORITY.get(r.get("inventory_type"), 99),
+			r.get("creation") or "",
+			r.get("name") or "",
+		)
+
+	for r in sorted(rows, key=_sort_key):
 		available = flt(r.get("qty", 0)) - flt(r.get("consume_qty", 0))
 		if available <= 0:
 			continue
-			
-		take = min(available, remaining)
-		yield {"batch_no": r.get("batch_no"), "qty": take}
-		remaining = round(remaining - take, 3)
+		r["available_qty"] = available
+		yield r
+
+
+def _get_item_metal_purity(item_code):
+	"""Return the numeric metal_purity attribute value for an Item, or None."""
+	value = frappe.db.get_value(
+		"Item Variant Attribute",
+		{"parent": item_code, "attribute": "Metal Purity"},
+		"attribute_value",
+	)
+	try:
+		return flt(value) if value is not None else None
+	except (TypeError, ValueError):
+		return None
+
+
+# ---------------------------------------------------------------------------
+# Path 2 - source-warehouse fallback (no Main Slip batch details configured)
+# ---------------------------------------------------------------------------
+
+
+def _inject_via_source_warehouse_fallback(eir, row, target_items, dept_wh):
+	source_wh = _resolve_source_warehouse(eir)
+	if not source_wh:
+		frappe.throw(
+			_("Main Slip injection: source warehouse not configured for {0}").format(
+				eir.subcontractor if eir.subcontracting == "Yes" else eir.employee
+			)
+		)
+	for t in target_items:
+		_check_source_stock(t["item_code"], source_wh, t["qty"])
+
+	se = _build_repack_se(eir, row, target_items, source_wh, dept_wh)
+	se.flags.ignore_permissions = True
+	se.save()
+	se.submit()
+	return [se.name]
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by both paths
+# ---------------------------------------------------------------------------
 
 
 def _existing_injection_se(eir_name, row_name):
@@ -325,28 +408,19 @@ def _resolve_department_warehouse(department):
 	)
 
 
-def _consume_row(item_code, qty, s_warehouse, batch_no):
-	row = {
-		"item_code": item_code,
-		"qty": qty,
-		"s_warehouse": s_warehouse,
-		"uom": "Gram",
-		"use_serial_batch_fields": 1,
-	}
-	if batch_no:
-		row["batch_no"] = batch_no
-	return row
-
-
-def _produce_row(item_code, qty, t_warehouse, mop):
-	return {
-		"item_code": item_code,
-		"qty": qty,
-		"t_warehouse": t_warehouse,
-		"manufacturing_operation": mop,
-		"uom": "Gram",
-		"use_serial_batch_fields": 1,
-	}
+def _check_source_stock(item_code, source_wh, required_qty):
+	actual = flt(
+		frappe.db.get_value(
+			"Bin", {"item_code": item_code, "warehouse": source_wh}, "actual_qty"
+		)
+	)
+	if actual < required_qty:
+		frappe.throw(
+			_(
+				"Insufficient stock to Repack {0} of {1} from {2} (available {3}). "
+				"Cannot complete Main Slip Receive injection."
+			).format(required_qty, item_code, source_wh, actual)
+		)
 
 
 def _stamp_se_header(se, eir, row):
@@ -364,3 +438,102 @@ def _stamp_se_header(se, eir, row):
 		se.subcontractor = eir.subcontractor
 	else:
 		se.employee = eir.employee
+
+
+def _build_repack_se(eir, row, items, source_wh, dept_wh):
+	"""Fallback path: single Repack SE with consume + produce rows for each
+	target item, all from the employee/subcontractor Manufacturing warehouse."""
+	se = frappe.new_doc("Stock Entry")
+	se.stock_entry_type = REPACK_STOCK_ENTRY_TYPE
+	_stamp_se_header(se, eir, row)
+
+	for it in items:
+		se.append(
+			"items",
+			{
+				"item_code": it["item_code"],
+				"qty": it["qty"],
+				"s_warehouse": source_wh,
+				"uom": "Gram",
+				"batch_no": it.get("batch_no"),
+				"use_serial_batch_fields": 1,
+			},
+		)
+		se.append(
+			"items",
+			{
+				"item_code": it["item_code"],
+				"qty": it["qty"],
+				"t_warehouse": dept_wh,
+				"uom": "Gram",
+				"manufacturing_operation": row.manufacturing_operation,
+				"use_serial_batch_fields": 1,
+			},
+		)
+	return se
+
+
+def _build_material_transfer_se(eir, row, item_code, batch_no, qty, source_wh, dept_wh):
+	"""Main Slip path: Material Transfer (WORK ORDER) - consume + produce the
+	same item, from source warehouse to MOP department warehouse."""
+	se = frappe.new_doc("Stock Entry")
+	se.stock_entry_type = MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
+	_stamp_se_header(se, eir, row)
+	se.append(
+		"items",
+		{
+			"item_code": item_code,
+			"qty": qty,
+			"s_warehouse": source_wh,
+			"t_warehouse": dept_wh,
+			"uom": "Gram",
+			"batch_no": batch_no,
+			"manufacturing_operation": row.manufacturing_operation,
+			"use_serial_batch_fields": 1,
+		},
+	)
+	return se
+
+
+def _build_purity_repack_se(
+	eir,
+	row,
+	source_item,
+	source_batch,
+	consume_qty,
+	target_item,
+	produce_qty,
+	source_wh,
+	dept_wh,
+):
+	"""Main Slip subcontracting Pure-Metal path: Repack SE that consumes the
+	pure metal (typically 24KT) from the source warehouse and produces the
+	target alloy into the MOP department warehouse. Purity conversion applied
+	by the caller: produce_qty = consume_qty * source_purity / target_purity.
+	"""
+	se = frappe.new_doc("Stock Entry")
+	se.stock_entry_type = REPACK_STOCK_ENTRY_TYPE
+	_stamp_se_header(se, eir, row)
+	se.append(
+		"items",
+		{
+			"item_code": source_item,
+			"qty": consume_qty,
+			"s_warehouse": source_wh,
+			"uom": "Gram",
+			"batch_no": source_batch,
+			"use_serial_batch_fields": 1,
+		},
+	)
+	se.append(
+		"items",
+		{
+			"item_code": target_item,
+			"qty": produce_qty,
+			"t_warehouse": dept_wh,
+			"uom": "Gram",
+			"manufacturing_operation": row.manufacturing_operation,
+			"use_serial_batch_fields": 1,
+		},
+	)
+	return se
