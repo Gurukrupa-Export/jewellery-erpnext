@@ -36,24 +36,66 @@ _ITEM_TYPE_PREFIX = {
 
 # Fields to fetch per BOM table
 _BOM_TABLE_FIELDS = {
-	"BOM Metal Detail": ["item_variant", "quantity", "is_customer_item"],
-	"BOM Finding Detail": ["item_variant", "quantity", "qty", "is_customer_item"],
-	"BOM Diamond Detail": [
+	"BOM Metal Detail": [
 		"item_variant",
+		"item",
 		"quantity",
 		"is_customer_item",
-		"sub_setting_type",
+		"metal_type",
+		"metal_touch",
+		"metal_purity",
+		"metal_colour",
+	],
+	"BOM Finding Detail": [
+		"item_variant",
+		"item",
+		"quantity",
+		"qty",
+		"is_customer_item",
+		"metal_type",
+		"metal_touch",
+		"metal_purity",
+		"metal_colour",
+		"finding_type",
+	],
+	"BOM Diamond Detail": [
+		"item_variant",
+		"item",
+		"quantity",
 		"pcs",
+		"is_customer_item",
+		"sub_setting_type",
+		"diamond_grade",
+		"cut",
+		"polish",
+		"symmetry",
+		"fluorescence",
+		"lab",
+		"certificate_no",
+		"diamond_quality",
+		"diamond_size",
+		"diamond_shape",
+		"diamond_sieve_size",
+		"size_in_mm",
+		"sieve_size_range",
 	],
 	"BOM Gemstone Detail": [
 		"item_variant",
+		"item",
 		"quantity",
+		"pcs",
 		"is_customer_item",
 		"sub_setting_type",
-		"pcs",
+		"gemstone_quality",
+		"gemstone_grade",
+		"stone_shape",
+		"gemstone_size",
+		"cut_or_cab",
 	],
 	"BOM Other Detail": ["item_code", "quantity", "qty"],
 }
+
+_ATTRIBUTES_CACHE = {}
 
 
 def _get_raw_material_warehouse(department):
@@ -63,6 +105,89 @@ def _get_raw_material_warehouse(department):
 		{"disabled": 0, "department": department, "warehouse_type": "Raw Material"},
 		"name",
 	)
+
+
+def _get_variant_attribute_value(row, attribute):
+	normalized_attr = frappe.scrub(attribute)
+	if attribute == "Finding Sub-Category":
+		normalized_attr = "finding_type"
+	return row.get(normalized_attr)
+
+
+def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
+	item_code = row.get("item_variant") or row.get("item_code")
+	item_template = row.get("item") or (
+		frappe.db.get_value("Item", item_code, "variant_of") if item_code else None
+	)
+
+	if item_code:
+		item_has_variants = frappe.db.get_value("Item", item_code, "has_variants")
+		if not item_has_variants and not item_template:
+			return item_code
+
+	if not item_template:
+		return item_code
+
+	template_has_variants = frappe.db.get_value("Item", item_template, "has_variants")
+	if not template_has_variants:
+		return item_template
+
+	if item_template not in _ATTRIBUTES_CACHE:
+		_ATTRIBUTES_CACHE[item_template] = frappe.db.get_all(
+			"Item Variant Attribute", {"parent": item_template}, pluck="attribute"
+		)
+	item_attributes = set(_ATTRIBUTES_CACHE[item_template])
+	args = {}
+	missing_attributes = set()
+	for attribute in item_attributes:
+		value = _get_variant_attribute_value(row, attribute)
+		if value:
+			args[attribute] = value
+		else:
+			missing_attributes.add(attribute)
+
+	if "Diamond Grade" in item_attributes:
+		diamond_grade = pmo_diamond_grade or row.get("diamond_grade")
+		if diamond_grade:
+			args["Diamond Grade"] = diamond_grade
+			missing_attributes.discard("Diamond Grade")
+
+	if not args:
+		frappe.throw(
+			_(
+				"Variant attributes are missing in {0} (Row {1}) for template item {2}."
+			).format(bom_table, row.get("idx") or row.get("name") or "?", item_template)
+		)
+
+	if variant := get_variant(item_template, args):
+		return variant
+
+	used_attributes = ", ".join([f"{k}: {v}" for k, v in sorted(args.items())]) or _(
+		"None"
+	)
+	missing_text = ", ".join(sorted(missing_attributes)) or _("None")
+	frappe.throw(
+		_(
+			"Variant not found for template item {0} in {1} (Row {2}). Missing attributes: {3}. Used attributes: {4}."
+		).format(
+			item_template,
+			bom_table,
+			row.get("idx") or row.get("name") or "?",
+			missing_text,
+			used_attributes,
+		)
+	)
+
+
+def _validate_non_template_item(item_code, bom_table):
+	has_variants = frappe.db.get_value("Item", item_code, "has_variants")
+	if has_variants:
+		frappe.throw(
+			_(
+				"Template Item {0} found in {1}. Please select the correct variant item."
+			).format(item_code, bom_table),
+			title=_("Template Item Selected"),
+		)
 
 
 class ParentManufacturingOrder(Document):
@@ -76,6 +201,17 @@ class ParentManufacturingOrder(Document):
 		):
 			frappe.throw(_("Diamond Grade is not mentioned in customer"))
 		self.metal_details()
+
+	def before_submit(self):
+		if self.diamond_grade and self.custom_tracking_bom:
+			frappe.db.sql(
+				"""
+				UPDATE `tabBOM Diamond Detail`
+				SET diamond_grade = %s
+				WHERE parent = %s
+			""",
+				(self.diamond_grade, self.custom_tracking_bom),
+			)
 
 	def _set_diamond_grade(self):
 		customer = self.ref_customer or self.customer
@@ -107,7 +243,7 @@ class ParentManufacturingOrder(Document):
 			)
 
 	def metal_details(self):
-		if self.master_bom:
+		if self.custom_tracking_bom:
 			metal_purity = frappe.db.get_value(
 				"Metal Criteria",
 				{"parent": self.manufacturer, "metal_touch": self.metal_touch},
@@ -199,9 +335,12 @@ class ParentManufacturingOrder(Document):
 		)
 
 	def submit_bom(self):
-		if frappe.db.get_value("BOM", self.master_bom, "docstatus") == 1:
+		if (
+			frappe.db.get_value("Tracking Bom", self.custom_tracking_bom, "docstatus")
+			== 1
+		):
 			return
-		bom = frappe.get_doc("BOM", self.master_bom)
+		bom = frappe.get_doc("Tracking Bom", self.custom_tracking_bom)
 		mfg_data = frappe.db.get_all(
 			"Metal Criteria",
 			{"parent": self.manufacturer},
@@ -230,14 +369,14 @@ class ParentManufacturingOrder(Document):
 		)
 
 	def create_material_requests(self):
-		bom = self.serial_id_bom or self.master_bom
+		bom = self.custom_tracking_bom
 		if not bom:
 			frappe.throw(_("BOM is missing"))
 
 		mnf_abb = frappe.get_value(
 			"Manufacturer", self.manufacturer, "custom_abbreviation"
 		)
-		bom_doc = frappe.get_doc("BOM", bom)
+		bom_doc = frappe.get_doc("Tracking Bom", bom)
 		if bom_doc.get("bom_type") == "Template":
 			set_item_variant(bom_doc)
 			bom_doc.save(ignore_permissions=True)
@@ -269,7 +408,9 @@ class ParentManufacturingOrder(Document):
 			if not data:
 				continue
 			for row in data:
-				item_code = row.get("item_variant") or row.get("item_code")
+				item_code = _resolve_existing_variant_item_code(
+					row, bom_table, self.diamond_grade
+				)
 				if not item_code:
 					field_name = (
 						"item_variant"
@@ -279,6 +420,7 @@ class ParentManufacturingOrder(Document):
 					frappe.throw(
 						_("{0} is missing in {1}").format(field_name, bom_table)
 					)
+				_validate_non_template_item(item_code, bom_table)
 				item_type = get_item_type(item_code)
 				variant_key = _ITEM_TYPE_PREFIX[item_type]
 				if variant_key not in warehouse_dict:
@@ -526,7 +668,7 @@ def make_manufacturing_order(
 
 
 def create_manufacturing_work_order(self):
-	if not self.master_bom:
+	if not self.custom_tracking_bom:
 		return
 
 	BOMMetalDetail = frappe.qb.DocType("BOM Metal Detail")
@@ -542,7 +684,7 @@ def create_manufacturing_work_order(self):
 			BOMMetalDetail.metal_colour,
 			BOMMetalDetail.parent,
 		)
-		.where(BOMMetalDetail.parent == self.master_bom)
+		.where(BOMMetalDetail.parent == self.custom_tracking_bom)
 	)
 
 	finding_detail_query = (
@@ -557,7 +699,7 @@ def create_manufacturing_work_order(self):
 			BOMFindingDetail.parent,
 		)
 		.where(
-			(BOMFindingDetail.parent == self.master_bom)
+			(BOMFindingDetail.parent == self.custom_tracking_bom)
 			& (Item.custom_ignore_work_order == 0)
 		)
 	)
@@ -577,7 +719,7 @@ def create_manufacturing_work_order(self):
 			BOMFindingDetail.item_variant,
 		)
 		.where(
-			(BOMFindingDetail.parent == self.master_bom)
+			(BOMFindingDetail.parent == self.custom_tracking_bom)
 			& (Item.custom_ignore_work_order == 0)
 			& (Item.custom_is_manufacturing_item == 1)
 		)
@@ -676,23 +818,27 @@ def create_manufacturing_work_order(self):
 
 
 def get_diamond_item_code_by_variant(self, bom, target_warehouse):
-	attributes = {}
 	diamond_list = []
-	diamond_bom = frappe.get_doc("BOM", bom)
+	diamond_bom = frappe.get_doc("Tracking Bom", bom)
 	if diamond_bom.diamond_detail:
 		for row in diamond_bom.diamond_detail:
-			template = frappe.get_doc("Item", row.item)
-			if template.name not in attributes:
-				attributes[template.name] = [
-					attr.attribute for attr in template.attributes
-				]
+			item_template = row.item
+			if item_template not in _ATTRIBUTES_CACHE:
+				_ATTRIBUTES_CACHE[item_template] = frappe.db.get_all(
+					"Item Variant Attribute",
+					{"parent": item_template},
+					pluck="attribute",
+				)
+			item_attributes = _ATTRIBUTES_CACHE[item_template]
+
 			args = {
-				attr: row.get(attr.replace(" ", "_").lower())
-				for attr in attributes[template.name]
-				if row.get(attr.replace(" ", "_").lower())
+				attr: row.get(frappe.scrub(attr))
+				for attr in item_attributes
+				if row.get(frappe.scrub(attr))
 			}
 			args["Diamond Grade"] = self.diamond_grade
-			variant = get_variant(row.item, args)
+
+			variant = get_variant(item_template, args)
 			if variant:
 				diamond_list.append(
 					{
@@ -702,14 +848,13 @@ def get_diamond_item_code_by_variant(self, bom, target_warehouse):
 					}
 				)
 			else:
-				variant_doc = create_variant(row.item, args)
+				variant_doc = create_variant(item_template, args)
 				variant_doc.flags.ignore_permissions = True
 				try:
-					variant_doc.insert()
-					variant_name = variant_doc.name
+					variant_name = variant_doc.insert().name
 				except frappe.DuplicateEntryError:
 					frappe.db.rollback()
-					variant_name = get_variant(row.item, args)
+					variant_name = get_variant(item_template, args)
 				diamond_list.append(
 					{
 						"item_code": variant_name,
@@ -721,21 +866,22 @@ def get_diamond_item_code_by_variant(self, bom, target_warehouse):
 
 
 def get_gemstone_item_code_by_variant(self, bom, target_warehouse):
-	attributes = {}
 	gemstone_list = []
 	if self.gemstone_table:
+		item_template = "G"
+		if item_template not in _ATTRIBUTES_CACHE:
+			_ATTRIBUTES_CACHE[item_template] = frappe.db.get_all(
+				"Item Variant Attribute", {"parent": item_template}, pluck="attribute"
+			)
+		item_attributes = _ATTRIBUTES_CACHE[item_template]
+
 		for row in self.gemstone_table:
-			template = frappe.get_doc("Item", "G")
-			if template.name not in attributes:
-				attributes[template.name] = [
-					attr.attribute for attr in template.attributes
-				]
 			args = {
-				attr: row.get(attr.replace(" ", "_").lower())
-				for attr in attributes[template.name]
-				if row.get(attr.replace(" ", "_").lower())
+				attr: row.get(frappe.scrub(attr))
+				for attr in item_attributes
+				if row.get(frappe.scrub(attr))
 			}
-			variant = get_variant(row.item, args)
+			variant = get_variant(item_template, args)
 			if variant:
 				gemstone_list.append(
 					{
@@ -745,14 +891,14 @@ def get_gemstone_item_code_by_variant(self, bom, target_warehouse):
 					}
 				)
 			else:
-				variant_doc = create_variant(row.item, args)
+				variant_doc = create_variant(item_template, args)
 				variant_doc.flags.ignore_permissions = True
 				try:
-					variant_doc.insert()
-					variant_name = variant_doc.name
+					variant_name = variant_doc.insert().name
 				except frappe.DuplicateEntryError:
 					frappe.db.rollback()
-					variant_name = get_variant(row.item, args)
+					variant_name = get_variant(item_template, args)
+
 				gemstone_list.append(
 					{
 						"item_code": variant_name,
@@ -764,10 +910,10 @@ def get_gemstone_item_code_by_variant(self, bom, target_warehouse):
 
 
 def get_gemstone_details(self):
-	bom = self.serial_id_bom or self.master_bom
+	bom = self.custom_tracking_bom
 	if not bom:
 		frappe.throw(_("Sales Order BOM is Missing on Manufacturing Plan Table"))
-	bom_doc = frappe.get_doc("BOM", bom)
+	bom_doc = frappe.get_doc("Tracking Bom", bom)
 	if bom_doc.gemstone_detail:
 		for gem_row in bom_doc.gemstone_detail:
 			self.append(
@@ -817,10 +963,10 @@ def set_metal_tolerance_table(self):
 	if not cpt:
 		return
 	cptm = frappe.get_doc("Customer Product Tolerance Master", cpt)
-	bom = self.serial_id_bom or self.master_bom
+	bom = self.custom_tracking_bom
 	if not bom:
 		frappe.throw(_("BOM is missing"))
-	bom_doc = frappe.get_doc("BOM", bom)
+	bom_doc = frappe.get_doc("Tracking Bom", bom)
 	if cptm.metal_tolerance_table:
 		for mtt_tbl in cptm.metal_tolerance_table:
 			bom_gross_wt = (
@@ -868,10 +1014,10 @@ def set_diamond_tolerance_table(self):
 	if not cpt:
 		return
 	cptm = frappe.get_doc("Customer Product Tolerance Master", cpt)
-	bom = self.serial_id_bom or self.master_bom
+	bom = self.custom_tracking_bom
 	if not bom:
 		frappe.throw(_("BOM is missing"))
-	bom_doc = frappe.get_doc("BOM", bom)
+	bom_doc = frappe.get_doc("Tracking Bom", bom)
 	if cptm.diamond_tolerance_table:
 		for dtt_tbl in cptm.diamond_tolerance_table:
 			child_row = {}
@@ -1004,10 +1150,10 @@ def set_gemstone_tolerance_table(self):
 	if not cpt:
 		return
 	cptm = frappe.get_doc("Customer Product Tolerance Master", cpt)
-	bom = self.serial_id_bom or self.master_bom
+	bom = self.custom_tracking_bom
 	if not bom:
 		frappe.throw(_("BOM is missing"))
-	bom_doc = frappe.get_doc("BOM", bom)
+	bom_doc = frappe.get_doc("Tracking Bom", bom)
 	if cptm.gemstone_tolerance_table:
 		for dtt_tbl in cptm.gemstone_tolerance_table:
 			child_row = {}
@@ -1105,7 +1251,7 @@ def set_gemstone_tolerance_table(self):
 
 def create_repair_un_pack_stock_entry(self):
 	wh = frappe.get_value("Manufacturer", self.manufacturer, "custom_repair_warehouse")
-	bom_item = frappe.get_doc("BOM", self.master_bom)
+	bom_item = frappe.get_doc("Tracking Bom", self.master_bom)
 	se = frappe.get_doc(
 		{
 			"doctype": "Stock Entry",
