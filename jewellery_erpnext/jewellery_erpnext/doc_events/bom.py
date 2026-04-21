@@ -2,7 +2,6 @@ import frappe
 from erpnext.controllers.item_variant import (
 	create_variant,
 	get_variant,
-	make_variant_item_code,
 )
 from frappe import _
 from frappe.utils import flt
@@ -22,54 +21,52 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 def before_validate(self, method):
 	validate_rating(self)
 	validate_weight(self)
-	if self.bom_type == "Quotation" or self.docstatus == 1:
-		precision_data = frappe.db.get_value(
-			"Customer",
-			self.customer,
-			[
-				"custom_consider_2_digit_for_bom",
-				"custom_consider_2_digit_for_diamond",
-				"custom_consider_2_digit_for_gemstone",
-				"custom_gemstone_price_list_type",
-			],
-			as_dict=1,
+	# if self.bom_type == "Quotation" or self.docstatus == 1:
+	precision_data = frappe.db.get_value(
+		"Customer",
+		self.customer,
+		[
+			"custom_consider_2_digit_for_bom",
+			"custom_consider_2_digit_for_diamond",
+			"custom_consider_2_digit_for_gemstone",
+			"custom_gemstone_price_list_type",
+		],
+		as_dict=1,
+	)
+
+	gemstone_price_list_type = None
+
+	if self.customer:
+		self.doc_pricision = (
+			2 if precision_data.get("custom_consider_2_digit_for_bom") else 3
+		)
+		self.diamond_pricision = (
+			2 if precision_data.get("custom_consider_2_digit_for_diamond") else 3
+		)
+		self.gemstone_pricision = (
+			2 if precision_data.get("custom_consider_2_digit_for_gemstone") else 3
+		)
+		gemstone_price_list_type = precision_data.get("custom_gemstone_price_list_type")
+	else:
+		self.doc_pricision = 3
+		self.diamond_pricision = 3
+		self.gemstone_pricision = 3
+
+	if self.customer and not gemstone_price_list_type:
+		frappe.throw(
+			_("Gemstone Price list type not mentioned into customer {0}").format(
+				self.customer
+			)
 		)
 
-		gemstone_price_list_type = None
+	if gemstone_price_list_type:
+		for row in self.gemstone_detail:
+			row.price_list_type = gemstone_price_list_type
 
-		if self.customer:
-			self.doc_pricision = (
-				2 if precision_data.get("custom_consider_2_digit_for_bom") else 3
-			)
-			self.diamond_pricision = (
-				2 if precision_data.get("custom_consider_2_digit_for_diamond") else 3
-			)
-			self.gemstone_pricision = (
-				2 if precision_data.get("custom_consider_2_digit_for_gemstone") else 3
-			)
-			gemstone_price_list_type = precision_data.get(
-				"custom_gemstone_price_list_type"
-			)
-		else:
-			self.doc_pricision = 3
-			self.diamond_pricision = 3
-			self.gemstone_pricision = 3
-
-		if self.customer and not gemstone_price_list_type:
-			frappe.throw(
-				_("Gemstone Price list type not mentioned into customer {0}").format(
-					self.customer
-				)
-			)
-
-		if gemstone_price_list_type:
-			for row in self.gemstone_detail:
-				row.price_list_type = gemstone_price_list_type
-
-		system_item_validation(self)
-		set_item_variant(self)
-		set_bom_items(self)
-		update_specifications(self)
+	system_item_validation(self)
+	set_item_variant(self)
+	set_bom_items(self)
+	update_specifications(self)
 
 
 def validate(self, method):
@@ -173,7 +170,7 @@ def set_item_variant(self):
 					"Item", row.item, "item_name"
 				)
 
-			item_name = item_name_data.get(row.item)
+			# item_name = item_name_data.get(row.item)
 
 			args = {}
 			for attr in attributes[row.item]:
@@ -186,53 +183,28 @@ def set_item_variant(self):
 				if row.get(normalized_attr):
 					args[key] = row.get(normalized_attr)
 
-			if bom_table != "gemstone_detail":
-				temp_variant = frappe._dict()
+			# if self.custom_creation_doctype == "Quotation":
+			# 	return
 
-				variant_attributes = []
-
-				for d in item_attribute_data:
-					variant_attributes.append(
-						frappe._dict({"attribute": d, "attribute_value": args.get(d)})
-					)
-
-				temp_variant.setdefault("attributes", variant_attributes)
-
-				make_variant_item_code(row.item, item_name, temp_variant)
-				
-				if self.custom_creation_doctype == "Quotation":
-					return
-
-				if not temp_variant.item_code or not frappe.db.exists(
-					"Item", temp_variant.item_code
-				):
-					frappe.throw(
-						_("{0} does not exists for {1}").format(
-							temp_variant.item_code, self.name
-						)
-					)
-
-				row.item_variant = temp_variant.item_code
-
+			variant = get_variant(row.item, args)
+			if variant:
+				row.item_variant = variant
 			else:
-				variant = get_variant(
-					row.item, args
-				)  # Get the variant for the current item and attribute values
-				if variant:
-					row.item_variant = variant
-				else:
-					# Create a new variant
-					variant = create_variant(row.item, args)
-					variant_item_group = frappe.db.get_value(
-						"Variant Item Group",
-						{"parent": self.company, "item_variant": row.item},
-						"item_group",
-					)
-					if variant_item_group:
-						variant.item_group = variant_item_group
-					variant.flags.ignore_permissions = True
-					variant.save()
-					row.item_variant = variant.name
+				variant_doc = create_variant(row.item, args)
+				variant_item_group = frappe.db.get_value(
+					"Variant Item Group",
+					{"parent": self.company, "item_variant": row.item},
+					"item_group",
+				)
+				if variant_item_group:
+					variant_doc.item_group = variant_item_group
+				variant_doc.flags.ignore_permissions = True
+				try:
+					variant_doc.insert()
+					row.item_variant = variant_doc.name
+				except frappe.DuplicateEntryError:
+					frappe.db.rollback()
+					row.item_variant = get_variant(row.item, args)
 
 
 def set_bom_items(self):

@@ -133,14 +133,19 @@ frappe.ui.form.on("Employee IR", {
 					"name",
 					"manufacturing_work_order",
 					"status",
+					"gross_wt",
+					"diamond_wt",
+					"diamond_pcs",
+					"gemstone_wt",
+					"gemstone_pcs",
 				])
-				.then((r) => {
-					let values = r.message;
+					.then((r) => {
+						let values = r.message;
 
-					if (values.manufacturing_work_order) {
-						frappe.db.get_value(
-							"QC",
-							{
+						if (values.manufacturing_work_order) {
+							frappe.db.get_value(
+								"QC",
+								{
 								manufacturing_work_order: values.manufacturing_work_order,
 								manufacturing_operation: values.name,
 								status: ["!=", "Rejected"],
@@ -153,6 +158,11 @@ frappe.ui.form.on("Employee IR", {
 									manufacturing_operation: values.name,
 									qc: a.name,
 									received_gross_wt: a.received_gross_wt,
+									gross_wt: values.gross_wt,
+									diamond_wt: values.diamond_wt,
+									diamond_pcs: values.diamond_pcs,
+									gemstone_wt: values.gemstone_wt,
+									gemstone_pcs: values.gemstone_pcs,
 								});
 								frm.refresh_field("employee_ir_operations");
 							}
@@ -362,50 +372,50 @@ frappe.ui.form.on("Manually Book Loss Details", {
 	},
 });
 
-function book_loss_details(frm, mwo, opt, gwt, r_gwt) {
-	if (gwt == r_gwt) {
-		frm.clear_table("employee_loss_details");
-		frm.refresh_field("employee_loss_details");
-		frm.save();
-	}
-	frappe.call({
-		method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.book_metal_loss",
-		freeze: true,
-		args: {
-			doc: frm.doc,
-			mwo: mwo,
-			opt: opt,
-			gwt: gwt,
-			r_gwt: r_gwt,
-		},
-		callback: function (r) {
-			if (r.message) {
-				console.log(r.message);
-				frm.clear_table("employee_loss_details");
-				var r_data = r.message[0];
-				for (var i = 0; i < r_data.length; i++) {
-					if (r_data[i].proportionally_loss > 0) {
-						var child = frm.add_child("employee_loss_details");
-						child.item_code = r_data[i].item_code;
-						child.net_weight = r_data[i].qty;
-						child.stock_uom = r_data[i].stock_uom;
-						child.batch_no = r_data[i].batch_no;
-						child.manufacturing_work_order = r_data[i].manufacturing_work_order;
-						child.manufacturing_operation = r_data[i].manufacturing_operation;
-						child.proportionally_loss = r_data[i].proportionally_loss;
-						child.received_gross_weight = r_data[i].received_gross_weight;
-						child.main_slip_consumption = r_data[i].main_slip_consumption;
-						child.inventory_type = r_data[i].inventory_type;
-					}
-				}
+// function book_loss_details(frm, mwo, opt, gwt, r_gwt) {
+// 	if (gwt == r_gwt) {
+// 		frm.clear_table("employee_loss_details");
+// 		frm.refresh_field("employee_loss_details");
+// 		frm.save();
+// 	}
+// 	frappe.call({
+// 		method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.book_metal_loss",
+// 		freeze: true,
+// 		args: {
+// 			doc: frm.doc,
+// 			mwo: mwo,
+// 			opt: opt,
+// 			gwt: gwt,
+// 			r_gwt: r_gwt,
+// 		},
+// 		callback: function (r) {
+// 			if (r.message) {
+// 				console.log(r.message);
+// 				frm.clear_table("employee_loss_details");
+// 				var r_data = r.message[0];
+// 				for (var i = 0; i < r_data.length; i++) {
+// 					if (r_data[i].proportionally_loss > 0) {
+// 						var child = frm.add_child("employee_loss_details");
+// 						child.item_code = r_data[i].item_code;
+// 						child.net_weight = r_data[i].qty;
+// 						child.stock_uom = r_data[i].stock_uom;
+// 						child.batch_no = r_data[i].batch_no;
+// 						child.manufacturing_work_order = r_data[i].manufacturing_work_order;
+// 						child.manufacturing_operation = r_data[i].manufacturing_operation;
+// 						child.proportionally_loss = r_data[i].proportionally_loss;
+// 						child.received_gross_weight = r_data[i].received_gross_weight;
+// 						child.main_slip_consumption = r_data[i].main_slip_consumption;
+// 						child.inventory_type = r_data[i].inventory_type;
+// 					}
+// 				}
 
-				frm.set_value("mop_loss_details_total", r.message[1]);
-				frm.refresh_field("employee_loss_details");
-				frm.refresh_field("mop_loss_details_total");
-			}
-		},
-	});
-}
+// 				frm.set_value("mop_loss_details_total", r.message[1]);
+// 				frm.refresh_field("employee_loss_details");
+// 				frm.refresh_field("mop_loss_details_total");
+// 			}
+// 		},
+// 	});
+// }
 
 function add_subcon_button(frm) {
 	if (frm.doc.subcontracting == "Yes") {

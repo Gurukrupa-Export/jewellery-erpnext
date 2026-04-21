@@ -1,0 +1,884 @@
+[
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.072268",
+  "name": "Not active",
+  "style": "",
+  "workflow_state_name": "Not active"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-12-30 09:44:47.920555",
+  "name": "Create Sketch",
+  "style": "",
+  "workflow_state_name": "Create Sketch"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-07-18 09:49:42.308617",
+  "name": "Update Payment Term",
+  "style": "",
+  "workflow_state_name": "Update Payment Term"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-07-18 09:50:25.756380",
+  "name": "Create Payment Term",
+  "style": "",
+  "workflow_state_name": "Create Payment Term"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-07-19 17:21:46.485888",
+  "name": "Create OT",
+  "style": "",
+  "workflow_state_name": "Create OT"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-08-01 16:31:19.835898",
+  "name": "In Process",
+  "style": "",
+  "workflow_state_name": "In Process"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-08-01 17:42:01.140007",
+  "name": "Create User ID",
+  "style": "",
+  "workflow_state_name": "Create User ID"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-07-18 09:50:36.165604",
+  "name": "Create Bank Account",
+  "style": "",
+  "workflow_state_name": "Create Bank Account"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-09-03 05:41:59.340316",
+  "name": "Stock Entry Created",
+  "style": "Success",
+  "workflow_state_name": "Stock Entry Created"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "question-sign",
+  "modified": "2025-08-10 12:28:48.998248",
+  "name": "Pending",
+  "style": "Warning",
+  "workflow_state_name": "Pending"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-03-17 11:16:45.164016",
+  "name": "Create Promotion",
+  "style": "",
+  "workflow_state_name": "Create Promotion"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-05-30 16:08:32.548584",
+  "name": "Design Rework in Progress - On Hold",
+  "style": "",
+  "workflow_state_name": "Design Rework in Progress - On Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-08-10 12:28:20.993010",
+  "name": "Open & Approved",
+  "style": "Success",
+  "workflow_state_name": "Open & Approved"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-08-10 12:29:56.738941",
+  "name": "Filled",
+  "style": "Success",
+  "workflow_state_name": "Filled"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-09-03 05:41:59.338160",
+  "name": "Pending Stock Entry Creation",
+  "style": "Warning",
+  "workflow_state_name": "Pending Stock Entry Creation"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-09-03 05:41:59.341382",
+  "name": "Stock Entry Failed",
+  "style": "Danger",
+  "workflow_state_name": "Stock Entry Failed"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-09-03 05:41:59.337038",
+  "name": "MOP Failed",
+  "style": "Danger",
+  "workflow_state_name": "MOP Failed"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-04-23 21:55:35.254534",
+  "name": "Create Attendance",
+  "style": "",
+  "workflow_state_name": "Create Attendance"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-27 09:35:37.445345",
+  "name": "Send For Final Approval - On Hold",
+  "style": "",
+  "workflow_state_name": "Send For Final Approval - On Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-12-25 11:16:51.544104",
+  "name": "Update Order BOM",
+  "style": "",
+  "workflow_state_name": "Update Order BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-03-17 11:15:53.733787",
+  "name": "Create Salary Assignment",
+  "style": "",
+  "workflow_state_name": "Create Salary Assignment"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-04-15 14:03:03.767190",
+  "name": "Create Item",
+  "style": "",
+  "workflow_state_name": "Create Item"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-02-26 12:41:58.098053",
+  "name": "Update Supplier",
+  "style": "",
+  "workflow_state_name": "Update Supplier"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-16 10:18:09.732620",
+  "name": "BOM Created",
+  "style": "",
+  "workflow_state_name": "BOM Created"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.135060",
+  "name": "On Hold - Final Assigned",
+  "style": "",
+  "workflow_state_name": "On Hold - Final Assigned"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.170281",
+  "name": "Final Sketch Approval (CPO)",
+  "style": "",
+  "workflow_state_name": "Final Sketch Approval (CPO)"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.196207",
+  "name": "Final Sketch Approval (CMO)",
+  "style": "",
+  "workflow_state_name": "Final Sketch Approval (CMO)"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-05-23 18:37:58.880602",
+  "name": "Approve - Hold",
+  "style": "",
+  "workflow_state_name": "Approve - Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-27 09:34:39.114669",
+  "name": "Send For Final Approval",
+  "style": "",
+  "workflow_state_name": "Send For Final Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-02-26 12:49:56.834572",
+  "name": "Update Customer",
+  "style": "",
+  "workflow_state_name": "Update Customer"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:26.942214",
+  "name": "Create CAD",
+  "style": "",
+  "workflow_state_name": "Create CAD"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.383450",
+  "name": "Un-assigned",
+  "style": "",
+  "workflow_state_name": "Un-assigned"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.011665",
+  "name": "Create BOM",
+  "style": "",
+  "workflow_state_name": "Create BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.021752",
+  "name": "CAD or BOM",
+  "style": "",
+  "workflow_state_name": "CAD or BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.329978",
+  "name": "Update Requested",
+  "style": "",
+  "workflow_state_name": "Update Requested"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-09-03 05:41:59.342590",
+  "name": "IR Issued",
+  "style": "Success",
+  "workflow_state_name": "IR Issued"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-09-03 05:41:59.343634",
+  "name": "IR Received",
+  "style": "Success",
+  "workflow_state_name": "IR Received"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.239884",
+  "name": "Draft - On Hold",
+  "style": "",
+  "workflow_state_name": "Draft - On Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-02-26 12:50:04.279270",
+  "name": "Create Customer",
+  "style": "",
+  "workflow_state_name": "Create Customer"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-12-03 15:29:56.620035",
+  "name": "Update Employee",
+  "style": "",
+  "workflow_state_name": "Update Employee"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-03 13:56:29.016230",
+  "name": "Verify Detail - On Hold",
+  "style": "",
+  "workflow_state_name": "Verify Detail - On Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-02-26 12:42:34.032477",
+  "name": "Create Contact",
+  "style": "",
+  "workflow_state_name": "Create Contact"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.250391",
+  "name": "Customer Design Rejected",
+  "style": "",
+  "workflow_state_name": "Customer Design Rejected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-04-23 21:54:44.344597",
+  "name": "Create Checkin",
+  "style": "",
+  "workflow_state_name": "Create Checkin"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-17 10:53:40.802252",
+  "name": "Order BOM",
+  "style": "",
+  "workflow_state_name": "Order BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-03 13:55:58.930835",
+  "name": "Verify Detail",
+  "style": "",
+  "workflow_state_name": "Verify Detail"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.102683",
+  "name": "Reupdate BOM",
+  "style": "",
+  "workflow_state_name": "Reupdate BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.261712",
+  "name": "Customer Approved",
+  "style": "",
+  "workflow_state_name": "Customer Approved"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:26.951839",
+  "name": "Updating BOM - On-Hold",
+  "style": "",
+  "workflow_state_name": "Updating BOM - On-Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-02-26 12:42:16.236191",
+  "name": "Create Supplier",
+  "style": "",
+  "workflow_state_name": "Create Supplier"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:26.896892",
+  "name": "Update Designer",
+  "style": "",
+  "workflow_state_name": "Update Designer"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:26.982846",
+  "name": "Updating BOM",
+  "style": "",
+  "workflow_state_name": "Updating BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:26.962159",
+  "name": "Creating BOM - On-Hold",
+  "style": "",
+  "workflow_state_name": "Creating BOM - On-Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.146870",
+  "name": "On Hold - Assigned",
+  "style": "",
+  "workflow_state_name": "On Hold - Assigned"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.124021",
+  "name": "On Hold - Rough Sketch Approval",
+  "style": "",
+  "workflow_state_name": "On Hold - Rough Sketch Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-12-03 15:30:10.662927",
+  "name": "Create Employee",
+  "style": "",
+  "workflow_state_name": "Create Employee"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-05-30 16:08:25.564869",
+  "name": "Design Rework in Progress",
+  "style": "",
+  "workflow_state_name": "Design Rework in Progress"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:26.973264",
+  "name": "BOM QC - On-Hold",
+  "style": "",
+  "workflow_state_name": "BOM QC - On-Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-03-26 18:15:27.130364",
+  "name": "Send to Account",
+  "style": "",
+  "workflow_state_name": "Send to Account"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.113428",
+  "name": "ON Hold - Final Sketch Approved (HOD)",
+  "style": "",
+  "workflow_state_name": "ON Hold - Final Sketch Approved (HOD)"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-02-26 12:42:26.202541",
+  "name": "Create Address",
+  "style": "",
+  "workflow_state_name": "Create Address"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.307561",
+  "name": "Sent to QC - On-Hold",
+  "style": "",
+  "workflow_state_name": "Sent to QC - On-Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-03-26 18:10:00.447015",
+  "name": "Send to HR",
+  "style": "",
+  "workflow_state_name": "Send to HR"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.362416",
+  "name": "Assigned - On-Hold",
+  "style": "",
+  "workflow_state_name": "Assigned - On-Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "remove",
+  "modified": "2024-04-10 11:56:50.106107",
+  "name": "Rejected",
+  "style": "Danger",
+  "workflow_state_name": "Rejected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-08-10 12:29:28.072733",
+  "name": "On Hold",
+  "style": "Info",
+  "workflow_state_name": "On Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-03-04 12:35:15.081155",
+  "name": "Image QC",
+  "style": "",
+  "workflow_state_name": "Image QC"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.229262",
+  "name": "Unassigned",
+  "style": "",
+  "workflow_state_name": "Unassigned"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-05-22 17:48:23.054033",
+  "name": "Completed",
+  "style": "Info",
+  "workflow_state_name": "Completed"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-03-26 18:09:50.477522",
+  "name": "Send to Manager",
+  "style": "",
+  "workflow_state_name": "Send to Manager"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.318343",
+  "name": "Designing - On-Hold",
+  "style": "",
+  "workflow_state_name": "Designing - On-Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-08-10 12:30:12.958620",
+  "name": "Cancelled",
+  "style": "Danger",
+  "workflow_state_name": "Cancelled"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.272734",
+  "name": "Customer Approval",
+  "style": "",
+  "workflow_state_name": "Customer Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-09-03 05:41:59.335786",
+  "name": "Queued MOP Creation",
+  "style": "Primary",
+  "workflow_state_name": "Queued MOP Creation"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.158895",
+  "name": "Items Updated",
+  "style": "",
+  "workflow_state_name": "Items Updated"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-03-04 12:34:59.265843",
+  "name": "Attach Image",
+  "style": "",
+  "workflow_state_name": "Attach Image"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.184654",
+  "name": "Requires Update",
+  "style": "",
+  "workflow_state_name": "Requires Update"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.208119",
+  "name": "Final Sketch Approval (HOD)",
+  "style": "",
+  "workflow_state_name": "Final Sketch Approval (HOD)"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-09-03 05:41:59.339245",
+  "name": "Queued Stock Entry Creation",
+  "style": "Primary",
+  "workflow_state_name": "Queued Stock Entry Creation"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-09-03 05:41:59.311220",
+  "name": "Pending MOP Creation",
+  "style": "Warning",
+  "workflow_state_name": "Pending MOP Creation"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.218699",
+  "name": "Rough Sketch Approval (HOD)",
+  "style": "",
+  "workflow_state_name": "Rough Sketch Approval (HOD)"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-12-31 11:25:49.724279",
+  "name": "Material Transferred to MOP",
+  "style": "",
+  "workflow_state_name": "Material Transferred to MOP"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:26.992826",
+  "name": "BOM QC",
+  "style": "",
+  "workflow_state_name": "BOM QC"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.092635",
+  "name": "In Use",
+  "style": "",
+  "workflow_state_name": "In Use"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.351275",
+  "name": "Designing",
+  "style": "",
+  "workflow_state_name": "Designing"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-05-01 16:20:27.059101",
+  "name": "Submitted",
+  "style": "Primary",
+  "workflow_state_name": "Submitted"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-03-07 14:00:34.233825",
+  "name": "Creating Item & BOM",
+  "style": "",
+  "workflow_state_name": "Creating Item & BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.296914",
+  "name": "Update Item",
+  "style": "",
+  "workflow_state_name": "Update Item"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.340653",
+  "name": "Sent to QC",
+  "style": "",
+  "workflow_state_name": "Sent to QC"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-07-10 14:23:14.784349",
+  "name": "Send For Approval",
+  "style": "",
+  "workflow_state_name": "Send For Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.002085",
+  "name": "Creating BOM",
+  "style": "",
+  "workflow_state_name": "Creating BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.372802",
+  "name": "Assigned",
+  "style": "",
+  "workflow_state_name": "Assigned"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.050979",
+  "name": "Material Reserved",
+  "style": "",
+  "workflow_state_name": "Material Reserved"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.061734",
+  "name": "Reservation Pending",
+  "style": "",
+  "workflow_state_name": "Reservation Pending"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "ok-sign",
+  "modified": "2024-04-10 11:56:50.104736",
+  "name": "Approved",
+  "style": "Success",
+  "workflow_state_name": "Approved"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.284569",
+  "name": "Update BOM",
+  "style": "",
+  "workflow_state_name": "Update BOM"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-08-01 08:35:27.040741",
+  "name": "Material Transferred",
+  "style": "",
+  "workflow_state_name": "Material Transferred"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-07-10 14:22:15.798709",
+  "name": "Draft",
+  "style": "",
+  "workflow_state_name": "Draft"
+ }
+]
