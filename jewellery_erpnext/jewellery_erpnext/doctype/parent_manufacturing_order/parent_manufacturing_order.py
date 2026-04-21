@@ -49,6 +49,7 @@ _BOM_TABLE_FIELDS = {
 	"BOM Finding Detail": [
 		"item_variant",
 		"item",
+		"finding_category",
 		"quantity",
 		"qty",
 		"is_customer_item",
@@ -57,6 +58,7 @@ _BOM_TABLE_FIELDS = {
 		"metal_purity",
 		"metal_colour",
 		"finding_type",
+		"finding_size",
 	],
 	"BOM Diamond Detail": [
 		"item_variant",
@@ -66,18 +68,14 @@ _BOM_TABLE_FIELDS = {
 		"is_customer_item",
 		"sub_setting_type",
 		"diamond_grade",
-		"cut",
-		"polish",
-		"symmetry",
-		"fluorescence",
-		"lab",
-		"certificate_no",
-		"diamond_quality",
-		"diamond_size",
-		"diamond_shape",
 		"diamond_sieve_size",
-		"size_in_mm",
 		"sieve_size_range",
+		"size_in_mm",
+		"diamond_type",
+		"stone_shape",
+		"diamond_cut",
+		"diamond_size_in_mm",
+		"quality",
 	],
 	"BOM Gemstone Detail": [
 		"item_variant",
@@ -408,7 +406,8 @@ class ParentManufacturingOrder(Document):
 		other_items = []
 
 		for bom_table, fields in _BOM_TABLE_FIELDS.items():
-			data = frappe.get_all(bom_table, {"parent": bom}, fields)
+			safe_fields = [f for f in fields if frappe.db.has_column(bom_table, f)]
+			data = frappe.get_all(bom_table, {"parent": bom}, safe_fields)
 			if not data:
 				continue
 			for row in data:
@@ -624,9 +623,9 @@ def make_manufacturing_order(
 	elif row.mwo:
 		doc = frappe.new_doc("Parent Manufacturing Order")
 		doc.company = source_doc.company
-		manufacturer = mp_context.get("manufacturer") or frappe.defaults.get_user_default(
+		manufacturer = mp_context.get(
 			"manufacturer"
-		)
+		) or frappe.defaults.get_user_default("manufacturer")
 		doc.department = mp_context.get("finding_default_department")
 		if doc.department is None and manufacturer:
 			doc.department = frappe.db.get_value(
