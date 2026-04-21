@@ -4,7 +4,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, flt
+from frappe.utils import cint, cstr, flt
 
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
 select_fields = [
@@ -18,6 +18,17 @@ select_fields = [
 	"serial_and_batch_bundle",
 	"batch_no",
 	"flow_index",
+	"voucher_type",
+	"voucher_no",
+]
+current_balance_fields = select_fields + [
+	"name",
+	"creation",
+	"from_warehouse",
+	"to_warehouse",
+	"row_name",
+	"manufacturing_work_order",
+	"manufacturing_operation",
 ]
 
 
@@ -105,6 +116,7 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	qty = flt(row.get("qty") or 0.0)
 	batch_no = row.get("batch_no")
 	mwo = doc.get("manufacturing_work_order")
+	mop_op = row.get("manufacturing_operation")
 
 	# prepare prefix pattern e.g. 'D%' or 'G%'
 	prefix_like = f"{first_char}%"
@@ -120,22 +132,22 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	WHERE manufacturing_work_order = %s
 	  AND is_cancelled = 0
 	"""
+	sql_params = [
+		prefix_like,
+		item_code,
+		item_code,
+		batch_no,
+		prefix_like,
+		item_code,
+		item_code,
+		batch_no,
+		mwo,
+	]
+	if mop_op:
+		sql += " AND manufacturing_operation = %s"
+		sql_params.append(mop_op)
 
-	row_vals = frappe.db.sql(
-		sql,
-		(
-			prefix_like,
-			item_code,
-			item_code,
-			batch_no,
-			prefix_like,
-			item_code,
-			item_code,
-			batch_no,
-			mwo,
-		),
-		as_dict=True,
-	)
+	row_vals = frappe.db.sql(sql, tuple(sql_params), as_dict=True)
 
 	stats = (
 		row_vals[0]
@@ -202,22 +214,122 @@ def get_last_mop_index(manufacturing_operation, voucher_type=None, voucher_no=No
 	return last_log
 
 
+def get_current_mop_balance_rows(manufacturing_operation, include_fields=None):
+	"""Return the latest non-cancelled MOP Log row per item/batch for a MOP."""
+	fields = list(
+		dict.fromkeys((include_fields or current_balance_fields) + ["name", "creation"])
+	)
+	mop_logs = frappe.db.get_all(
+		"MOP Log",
+		filters={
+			"manufacturing_operation": manufacturing_operation,
+			"is_cancelled": 0,
+		},
+		fields=fields,
+		order_by="creation desc, name desc",
+	)
+	if not mop_logs:
+		return []
+
+	latest_by_key = {}
+	for log in mop_logs:
+		key = (log.get("item_code"), log.get("batch_no"))
+		if key not in latest_by_key:
+			latest_by_key[key] = log
+
+	return list(reversed(list(latest_by_key.values())))
+
+
 def create_mop_log_for_department_ir(
 	self, row, to_warehouse, from_warehouse, operation
 ):
-	flow_index = get_last_mop_index(row.manufacturing_operation)
-	filters = {
-		"manufacturing_operation": row.manufacturing_operation,
-		"is_cancelled": 0,
-	}
-	if flow_index is not None:
-		filters["flow_index"] = flow_index
-	mop_logs = frappe.db.get_all(
+	if frappe.db.exists(
 		"MOP Log",
-		filters,
-		select_fields,
-		order_by="creation asc",
-	)
+		{
+			"voucher_type": "Department IR",
+			"voucher_no": self.name,
+			"row_name": row.name,
+			"manufacturing_operation": operation,
+			"is_cancelled": 0,
+		},
+	):
+		return
+
+	mop_logs = []
+	is_receive = getattr(self, "type", None) == "Receive" and getattr(self, "receive_against", None)
+	receive_used_tail_fallback = False
+
+	if is_receive:
+		mop_logs = frappe.db.get_all(
+			"MOP Log",
+			filters={
+				"manufacturing_operation": row.manufacturing_operation,
+				"is_cancelled": 0,
+				"voucher_type": "Department IR",
+				"voucher_no": self.receive_against,
+			},
+			fields=select_fields,
+			order_by="creation asc",
+		)
+		# Only clone the latest Issue snapshot tier (multiple rows share the same max flow_index).
+		# Without this, historical Issue rows at lower flow_index would be replayed as extra Receive rows.
+		if mop_logs:
+			max_issue_flow = max(cint(l.get("flow_index") or 0) for l in mop_logs)
+			mop_logs = [
+				l for l in mop_logs if cint(l.get("flow_index") or 0) == max_issue_flow
+			]
+		if not mop_logs:
+			frappe.log_error(
+				title="MOP Log Fallback",
+				message=f"DIR Receive missing Issue logs for {self.receive_against}, falling back to tail-snapshot."
+			)
+
+	if not mop_logs:
+		if is_receive and frappe.get_site_config().get("department_ir_receive_strict_lineage"):
+			frappe.throw(
+				_(
+					"No MOP Log rows found for Department IR Issue {0} on Manufacturing Operation {1}. "
+					"Fix Issue-side MOP Logs or disable site config department_ir_receive_strict_lineage."
+				).format(self.receive_against, row.manufacturing_operation)
+			)
+		flow_index = get_last_mop_index(row.manufacturing_operation)
+		filters = {
+			"manufacturing_operation": row.manufacturing_operation,
+			"is_cancelled": 0,
+		}
+		if flow_index is not None:
+			filters["flow_index"] = flow_index
+		mop_logs = frappe.db.get_all(
+			"MOP Log",
+			filters,
+			select_fields,
+			order_by="creation asc",
+		)
+		if is_receive and mop_logs:
+			receive_used_tail_fallback = True
+
+	if is_receive and receive_used_tail_fallback and mop_logs:
+		for _log in mop_logs:
+			if (
+				_log.get("voucher_type") == "Department IR"
+				and _log.get("voucher_no")
+				and _log.get("voucher_no") != self.receive_against
+			):
+				frappe.log_error(
+					title="DIR Receive tail fallback: unrelated Department IR voucher in snapshot",
+					message=frappe.as_json(
+						{
+							"receive": self.name,
+							"receive_against": self.receive_against,
+							"manufacturing_operation": row.manufacturing_operation,
+							"unexpected_voucher_no": _log.get("voucher_no"),
+							"unexpected_flow_index": _log.get("flow_index"),
+						},
+						indent=2,
+					),
+				)
+				break
+
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = log.item_code
@@ -245,27 +357,67 @@ def create_mop_log_for_department_ir(
 		mop_log.save()
 
 
-def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
-	manufacturing_operation_manufacturing_operation = frappe.db.get_value(
-		"Manufacturing Operation", row.manufacturing_operation, "department_receive_id"
+def _get_mop_logs_for_employee_ir_issue(row, department_receive_id):
+	"""Source rows for Employee IR Issue MOP Log cloning.
+
+	Uses the canonical current-balance snapshot so bagging/material-request additions
+	already written into MOP Log are issued alongside department-transferred metal.
+	"""
+	return get_current_mop_balance_rows(
+		row.manufacturing_operation,
+		include_fields=select_fields,
 	)
-	if not manufacturing_operation_manufacturing_operation:
-		frappe.throw(
-			_("Department Receive ID not set for Manufacturing Operation {0}").format(
-				row.manufacturing_operation
-			)
-		)
-	mop_logs = frappe.db.get_all(
+
+
+def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
+	# Idempotent per child row: safe if submit logic is re-invoked
+	if frappe.db.exists(
 		"MOP Log",
 		{
+			"voucher_type": self.doctype,
+			"voucher_no": self.name,
+			"row_name": row.name,
 			"manufacturing_operation": row.manufacturing_operation,
 			"is_cancelled": 0,
-			"voucher_type": "Department IR",
-			"voucher_no": manufacturing_operation_manufacturing_operation,
 		},
-		select_fields,
-		order_by="creation asc",
+	):
+		return
+
+	department_receive_id = frappe.db.get_value(
+		"Manufacturing Operation", row.manufacturing_operation, "department_receive_id"
 	)
+	mop_logs = _get_mop_logs_for_employee_ir_issue(row, department_receive_id)
+	if not mop_logs:
+		if cint(getattr(self, "is_main_slip_required", 0)):
+			# Main Slip-required Issue may legitimately start with a zero MOP Log
+			# baseline; the matching Receive auto-injects via main_slip_inject so
+			# downstream chain can still post. Log for audit and return silently.
+			frappe.log_error(
+				title="Employee IR Issue under Main Slip: empty starting balance (allowed)",
+				message=(
+					f"Manufacturing Operation: {row.manufacturing_operation}\n"
+					f"Employee IR: {self.name}\n"
+					"is_main_slip_required=1; Issue accepted with zero MOP Log "
+					"baseline. Receive will inject via main_slip_inject."
+				),
+			)
+			return
+		frappe.log_error(
+			title="Employee IR Issue: no MOP Log source rows",
+			message=(
+				f"Manufacturing Operation: {row.manufacturing_operation}\n"
+				f"Employee IR: {self.name}\n"
+				f"department_receive_id: {department_receive_id!r}\n"
+				"No Department IR MOP Logs for that receive voucher and no non-cancelled "
+				f"MOP Log rows at max flow_index for this MOP."
+			),
+		)
+		frappe.throw(
+			_(
+				"No MOP balance found to issue for Manufacturing Operation {0}. "
+				"Post Department IR receive for this MOP, or post a Stock Entry linked to this MOP."
+			).format(row.manufacturing_operation)
+		)
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = log.item_code
@@ -293,26 +445,119 @@ def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
 		mop_log.save()
 
 
+def resolve_employee_ir_issue_voucher_for_receive(doc, row):
+	"""Employee IR Issue name whose MOP Logs this Receive must clone (voucher_no on Issue logs).
+
+	Uses ``emp_ir_id`` when it points to a submitted Issue that includes this MOP;
+	otherwise the latest submitted Employee IR Issue containing ``row.manufacturing_operation``.
+	"""
+	emp_ir_id = cstr(getattr(doc, "emp_ir_id", None) or "").strip()
+	if emp_ir_id:
+		meta = frappe.db.get_value(
+			"Employee IR",
+			emp_ir_id,
+			["docstatus", "type"],
+			as_dict=True,
+		)
+		if (
+			meta
+			and meta.type == "Issue"
+			and cint(meta.docstatus) == 1
+			and frappe.db.exists(
+				"Employee IR Operation",
+				{
+					"parent": emp_ir_id,
+					"manufacturing_operation": row.manufacturing_operation,
+				},
+			)
+		):
+			return emp_ir_id
+
+	rows = frappe.db.sql(
+		"""
+		SELECT eir.name
+		FROM `tabEmployee IR` eir
+		INNER JOIN `tabEmployee IR Operation` op ON op.parent = eir.name
+		WHERE eir.docstatus = 1
+		  AND eir.type = 'Issue'
+		  AND op.manufacturing_operation = %s
+		ORDER BY eir.modified DESC, eir.name DESC
+		LIMIT 1
+		""",
+		row.manufacturing_operation,
+	)
+	return rows[0][0] if rows else None
+
+
 def create_mop_log_for_employee_ir_receive(doc, row, from_warehouse, to_warehouse):
 	"""Create MOP Log entries for the Receive side of Employee IR.
 
-	Reads the MOP Logs created during Issue (voucher_type='Employee IR') for this
-	manufacturing_operation, and creates corresponding receive entries with reversed
-	warehouse direction (employee/subcontractor WH → department WH).
+	Reads the MOP Logs created during the matching Employee IR **Issue** only
+	(``voucher_no`` = Issue name), not every historical Employee IR log on the MOP.
 
 	The MOPLog.validate() hook automatically updates Manufacturing Operation weight
 	fields (net_wt, finding_wt, diamond_wt, etc.) based on the logged item data.
 	"""
+	is_main_slip_required = cint(getattr(doc, "is_main_slip_required", 0))
+	issue_voucher = resolve_employee_ir_issue_voucher_for_receive(doc, row)
+
 	mop_logs = frappe.db.get_all(
 		"MOP Log",
 		{
 			"manufacturing_operation": row.manufacturing_operation,
 			"is_cancelled": 0,
 			"voucher_type": "Employee IR",
+			"voucher_no": issue_voucher,
 		},
 		select_fields,
 		order_by="creation asc",
 	)
+
+	current_balance_rows = get_current_mop_balance_rows(
+		row.manufacturing_operation,
+		include_fields=["item_code", "batch_no"],
+	)
+	current_balance_keys = {
+		(log.get("item_code"), log.get("batch_no")) for log in current_balance_rows
+	}
+	issue_keys = {(log.get("item_code"), log.get("batch_no")) for log in mop_logs}
+	missing_keys = sorted(current_balance_keys - issue_keys)
+	if missing_keys:
+		if is_main_slip_required:
+			# New items injected by main_slip_inject on the same Receive appear in
+			# current_balance but not in the Issue snapshot. This is expected under
+			# Main Slip; log for audit and continue without throwing.
+			frappe.log_error(
+				title="Employee IR Receive under Main Slip: current balance extends Issue snapshot (allowed)",
+				message=frappe.as_json(
+					{
+						"receive": doc.name,
+						"issue": issue_voucher,
+						"manufacturing_operation": row.manufacturing_operation,
+						"missing_components_explained_by_main_slip_inject": missing_keys,
+					},
+					indent=2,
+				),
+			)
+		else:
+			frappe.log_error(
+				title="Employee IR Receive: Issue snapshot missing current balance components",
+				message=frappe.as_json(
+					{
+						"receive": doc.name,
+						"issue": issue_voucher,
+						"manufacturing_operation": row.manufacturing_operation,
+						"missing_components": missing_keys,
+					},
+					indent=2,
+				),
+			)
+			frappe.throw(
+				_(
+					"Employee IR Issue {0} is missing one or more current MOP balance components for Manufacturing Operation {1}. "
+					"Please recreate the Issue so Receive can mirror the full balance."
+				).format(issue_voucher, row.manufacturing_operation)
+			)
 	# received_gross_wt = flt(row.received_gross_wt)
 	# gross_wt = flt(row.gross_wt)
 

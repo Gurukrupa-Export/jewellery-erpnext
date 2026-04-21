@@ -7,12 +7,12 @@ import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	get_available_qty_to_reserve,
+	get_sre_reserved_qty_for_voucher_detail_no,
 )
 from frappe import _, scrub
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt
-from six import itervalues
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	create_repack_for_subcontracting,
@@ -191,15 +191,19 @@ def get_receive_work_order_batch(self):
 	for entry in self.items:
 		key = (entry.manufacturing_operation, entry.item_code)
 
-		# add batch_no to batch_data if it exists
 		if entry.batch_no:
 			batch_data[key] = entry.batch_no
 
 		if not batch_data.get(key):
 			batch_data[key] = frappe.db.get_value(
-				"MOP Balance Table",
-				{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
+				"MOP Log",
+				{
+					"manufacturing_operation": entry.manufacturing_operation,
+					"item_code": entry.item_code,
+					"is_cancelled": 0,
+				},
 				"batch_no",
+				order_by="flow_index desc, creation desc",
 			)
 
 		if entry.batch_no not in batch_data.get(key, []):
@@ -514,6 +518,7 @@ def validate_metal_properties(doc):
 def on_cancel(self, method=None):
 	update_manufacturing_operation(self, True)
 	update_main_slip(self, True)
+	sync_mop_log_for_stock_entry(self, is_cancelled=True)
 
 
 def before_submit(self, method):
@@ -543,8 +548,49 @@ def onsubmit(self, method):
 	# update_manufacturing_operation(self)
 	# update_main_slip(self)
 	stock_reservation_entry_for_mwo(self)
+	sync_mop_log_for_stock_entry(self)
 	# update_material_request_status(self)
 	# create_finished_bom(self)
+
+
+def sync_mop_log_for_stock_entry(self, is_cancelled=False):
+	"""Bridge Stock Entry lines onto MOP Log so the virtual ledger sees diamond /
+	gemstone / metal items moved by Material Request and other work-order transfers.
+
+	Stock has already moved physically at this point, so rows are written with
+	``is_synced=True`` to keep MOP EOD Sync from materializing a duplicate Stock
+	Entry on top of the existing one. Idempotent on ``(voucher_no, row_name,
+	manufacturing_operation)`` so the reservation path's existing writes and any
+	resubmit / replay do not create duplicates.
+	"""
+	if is_cancelled:
+		frappe.db.sql(
+			"""
+			UPDATE `tabMOP Log`
+			SET is_cancelled = 1
+			WHERE voucher_type = 'Stock Entry'
+			  AND voucher_no = %s
+			  AND is_cancelled = 0
+			""",
+			(self.name,),
+		)
+		return
+
+	for row in self.items:
+		if not (row.get("manufacturing_operation") and row.item_code):
+			continue
+		if frappe.db.exists(
+			"MOP Log",
+			{
+				"voucher_type": "Stock Entry",
+				"voucher_no": self.name,
+				"row_name": row.name,
+				"manufacturing_operation": row.manufacturing_operation,
+				"is_cancelled": 0,
+			},
+		):
+			continue
+		create_mop_log(self, row, is_synced=True)
 
 
 def stock_reservation_entry_for_mwo(self):
@@ -553,75 +599,125 @@ def stock_reservation_entry_for_mwo(self):
 		filters={"parent": "MOP Settings"},
 		pluck="stock_entry_type_to_reservation",
 	)
-	if self.stock_entry_type in types_for_reservation:
-		if not (self.manufacturing_order and self.manufacturing_work_order):
-			frappe.throw(
-				_(
-					"Parent Manufacturing Order and Manufacturing Work Order is required to create Stock Reservation Entry"
-				)
+
+	# EIR injection: main_slip_inject.py stamps employee_ir on every auto-created
+	# SE header.  These SEs MUST always reserve — they are legitimate MWO-linked
+	# movements whose stock must be protected.  Bypassing the config gate here
+	# ensures a missing "Repack" row in MOP Settings cannot silently skip reservation.
+	_eir_ref = getattr(self, "employee_ir", None)
+	is_eir_injection = isinstance(_eir_ref, str) and bool(_eir_ref.strip())
+
+	if not is_eir_injection and self.stock_entry_type not in types_for_reservation:
+		return
+
+	if not (self.manufacturing_order and self.manufacturing_work_order):
+		frappe.throw(
+			_(
+				"Parent Manufacturing Order and Manufacturing Work Order is required to create Stock Reservation Entry"
 			)
-		sales_order, sales_order_item, manufacturer = frappe.get_cached_value(
-			"Parent Manufacturing Order",
-			self.manufacturing_order,
-			["sales_order", "sales_order_item", "manufacturer"],
 		)
-		voucher_qty = frappe.db.get_values(
-			"Material Request",
-			{"manufacturing_order": self.manufacturing_order, "docstatus": ["!=", 2]},
-			["sum(custom_total_quantity)"],
+	sales_order, sales_order_item, manufacturer = frappe.get_cached_value(
+		"Parent Manufacturing Order",
+		self.manufacturing_order,
+		["sales_order", "sales_order_item", "manufacturer"],
+	)
+	voucher_qty_row = frappe.db.get_values(
+		"Material Request",
+		{"manufacturing_order": self.manufacturing_order, "docstatus": ["!=", 2]},
+		["sum(custom_total_quantity)"],
+	)
+	base_mr_voucher_qty = None
+	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
+		base_mr_voucher_qty = flt(voucher_qty_row[0][0])
+		addition_maximum_item__tolerance_percentage = frappe.db.get_value(
+			"Manufacturing Setting",
+			self.manufacturer or manufacturer,
+			"addition_maximum_item__tolerance_percentage",
 		)
-		if voucher_qty and voucher_qty[0]:
-			voucher_qty = voucher_qty[0][0]
-			addition_maximum_item__tolerance_percentage = frappe.db.get_value(
-				"Manufacturing Setting",
-				self.manufacturer or manufacturer,
-				"addition_maximum_item__tolerance_percentage",
-			)
-			voucher_qty = voucher_qty + (
-				voucher_qty * (addition_maximum_item__tolerance_percentage / 100)
+		if addition_maximum_item__tolerance_percentage:
+			base_mr_voucher_qty = base_mr_voucher_qty + (
+				base_mr_voucher_qty * (flt(addition_maximum_item__tolerance_percentage) / 100)
 			)
 
-		for row in self.items:
-			has_batch_no, has_serial_no = frappe.get_cached_value(
-				"Item", row.item_code, ["has_batch_no", "has_serial_no"]
+	for row in self.items:
+		# Repack / issue rows only have s_warehouse; reserve against inbound stock only.
+		if not row.get("t_warehouse"):
+			continue
+		has_batch_no, has_serial_no = frappe.get_cached_value(
+			"Item", row.item_code, ["has_batch_no", "has_serial_no"]
+		)
+		if has_batch_no and row.get("batch_no"):
+			available_qty_to_reserve = get_available_qty_to_reserve(
+				row.item_code, row.t_warehouse, batch_no=row.batch_no
 			)
+		else:
 			available_qty_to_reserve = get_available_qty_to_reserve(
 				row.item_code, row.t_warehouse
 			)
-			qty_to_be_reserved = (
-				row.qty
-				if available_qty_to_reserve >= row.qty
-				else available_qty_to_reserve
-			)
-			new_stock_reservation_entries_mwo = frappe.new_doc(
-				"Stock Reservation Entry"
-			)
-			new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
-			new_stock_reservation_entries_mwo.voucher_no = sales_order
-			new_stock_reservation_entries_mwo.item_code = row.item_code
-			new_stock_reservation_entries_mwo.voucher_qty = voucher_qty
-			new_stock_reservation_entries_mwo.reserved_qty = qty_to_be_reserved
-			new_stock_reservation_entries_mwo.company = self.company
-			new_stock_reservation_entries_mwo.stock_uom = row.uom
+		qty_to_be_reserved = (
+			row.qty
+			if available_qty_to_reserve >= row.qty
+			else available_qty_to_reserve
+		)
+		qty_to_be_reserved = flt(qty_to_be_reserved)
+		# Employee IR extra-metal injection: stock just landed; availability checks can lag
+		# the same transaction. Reserve the inbound line qty when this SE is tied to an EIR.
+		if qty_to_be_reserved <= 0 and is_eir_injection and flt(row.qty) > 0:
+			qty_to_be_reserved = flt(row.qty)
+		if qty_to_be_reserved <= 0:
+			continue
 
-			new_stock_reservation_entries_mwo.warehouse = row.t_warehouse
-			new_stock_reservation_entries_mwo.manufacturing_work_order = (
-				self.manufacturing_work_order
+		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
+			"Sales Order", sales_order, sales_order_item
+		)
+		effective_voucher_qty = flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
+		if is_eir_injection:
+			effective_voucher_qty = max(
+				effective_voucher_qty,
+				flt(total_so_reserved) + qty_to_be_reserved,
 			)
-			new_stock_reservation_entries_mwo.manufacturing_operation = (
-				row.manufacturing_operation
-			)
-			new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
-			new_stock_reservation_entries_mwo.available_qty = available_qty_to_reserve
-			new_stock_reservation_entries_mwo.has_batch_no = has_batch_no
-			new_stock_reservation_entries_mwo.has_serial_no = has_serial_no
+		elif not effective_voucher_qty and base_mr_voucher_qty is None:
+			effective_voucher_qty = flt(total_so_reserved) + qty_to_be_reserved
+
+		new_stock_reservation_entries_mwo = frappe.new_doc(
+			"Stock Reservation Entry"
+		)
+		new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
+		new_stock_reservation_entries_mwo.voucher_no = sales_order
+		new_stock_reservation_entries_mwo.item_code = row.item_code
+		new_stock_reservation_entries_mwo.voucher_qty = effective_voucher_qty
+		new_stock_reservation_entries_mwo.reserved_qty = qty_to_be_reserved
+		new_stock_reservation_entries_mwo.company = self.company
+		new_stock_reservation_entries_mwo.stock_uom = row.uom
+
+		new_stock_reservation_entries_mwo.warehouse = row.t_warehouse
+		new_stock_reservation_entries_mwo.manufacturing_work_order = (
+			self.manufacturing_work_order
+		)
+		new_stock_reservation_entries_mwo.manufacturing_operation = (
+			row.manufacturing_operation
+		)
+		new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
+		new_stock_reservation_entries_mwo.available_qty = max(
+			available_qty_to_reserve, qty_to_be_reserved
+		)
+		new_stock_reservation_entries_mwo.has_batch_no = cint(has_batch_no)
+		new_stock_reservation_entries_mwo.has_serial_no = cint(has_serial_no)
+		if has_batch_no and row.get("batch_no"):
 			new_stock_reservation_entries_mwo.reservation_based_on = "Serial and Batch"
 			new_stock_reservation_entries_mwo.append(
-				"sb_entries", {"batch_no": row.batch_no, "warehouse": row.t_warehouse}
+				"sb_entries",
+				{
+					"batch_no": row.batch_no,
+					"warehouse": row.t_warehouse,
+					"qty": qty_to_be_reserved,
+				},
 			)
-			new_stock_reservation_entries_mwo.insert(ignore_links=1)
-			new_stock_reservation_entries_mwo.submit()
-			create_mop_log(self, row, is_synced=True)
+		else:
+			new_stock_reservation_entries_mwo.reservation_based_on = "Qty"
+		new_stock_reservation_entries_mwo.insert(ignore_links=1)
+		new_stock_reservation_entries_mwo.submit()
+		create_mop_log(self, row, is_synced=True)
 
 
 def update_main_slip(doc, is_cancelled=False):
@@ -986,6 +1082,20 @@ def update_manufacturing_operation(doc, is_cancelled=False):
 
 
 def update_mop_details(se_doc, is_cancelled=False):
+	"""Reconcile Stock Entry lines with Manufacturing Operation legacy **table** children.
+
+	Called from ``update_manufacturing_operation`` (Stock Entry submit/cancel hooks). Builds
+	``mop_data[mop_name]`` buckets named ``department_source_table``, ``department_target_table``,
+	``employee_source_table``, ``employee_target_table`` from warehouse routing vs department /
+	employee warehouses, then ``update_balance_table`` appends those rows onto the Manufacturing
+	Operation document.
+
+	**Post-migration note:** balances for new virtual flows are primarily on **MOP Log**; these
+	child-table names are legacy shapes still used for some Stock Entry ↔ MOP warehouse trails.
+	If the Manufacturing Operation DocType on a site no longer defines these table fields,
+	``append``/``save`` here can fail unless restored via Custom Fields — see
+	``jewellery_erpnext.mop_lineage_audit.get_stock_entry_legacy_balance_table_trace``.
+	"""
 	se_employee = se_doc.to_employee or se_doc.employee
 	se_subcontractor = se_doc.to_subcontractor or se_doc.subcontractor
 
@@ -1006,15 +1116,20 @@ def update_mop_details(se_doc, is_cancelled=False):
 	mop_list = [row.manufacturing_operation for row in se_doc.items]
 
 	mop_base_data = frappe.db.get_all(
-		"MOP Balance Table",
-		{"parent": ["in", mop_list]},
-		["parent", "item_code", "batch_no"],
+		"MOP Log",
+		filters={
+			"manufacturing_operation": ["in", mop_list],
+			"is_cancelled": 0,
+		},
+		fields=["manufacturing_operation as parent", "item_code", "batch_no"],
+		order_by="flow_index desc, creation desc",
 	)
 
 	for row in mop_base_data:
 		key = (row.parent, row.item_code)
 		batch_data.setdefault(key, [])
-		batch_data[key].append(row.batch_no)
+		if row.batch_no and row.batch_no not in batch_data[key]:
+			batch_data[key].append(row.batch_no)
 
 	for entry in se_doc.items:
 		if not entry.manufacturing_operation:
@@ -1113,9 +1228,14 @@ def validate_duplicate_batches(entry, batch_data):
 	key = (entry.manufacturing_operation, entry.item_code)
 	if not batch_data.get(key):
 		batch_data[key] = frappe.db.get_all(
-			"MOP Balance Table",
-			{"parent": entry.manufacturing_operation, "item_code": entry.item_code},
-			["item_code", "batch_no"],
+			"MOP Log",
+			filters={
+				"manufacturing_operation": entry.manufacturing_operation,
+				"item_code": entry.item_code,
+				"is_cancelled": 0,
+			},
+			pluck="batch_no",
+			order_by="flow_index desc, creation desc",
 		)
 
 	if entry.batch_no not in batch_data[key]:
@@ -1127,35 +1247,9 @@ def validate_duplicate_batches(entry, batch_data):
 				entry.item_code,
 				entry.batch_no,
 				entry.manufacturing_operation,
-				", ".join(batch_data[key]),
+				", ".join(str(b) for b in batch_data[key] if b),
 			)
 		)
-
-
-def get_previous_se_details(mop_doc, d_warehouse, e_warehouse):
-	additional_rows = []
-	if mop_doc:
-		previous_se = frappe.db.get_all(
-			"Stock Entry", {"manufacturing_operation": mop_doc.name}
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": d_warehouse},
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": e_warehouse},
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": d_warehouse},
-		)
-		additional_rows += frappe.db.get_all(
-			"Stock Entry Detail",
-			{"parent": ["in", previous_se], "s_warehouse": e_warehouse},
-		)
-
-	return additional_rows
 
 
 def get_warehouse_details(
@@ -1265,6 +1359,16 @@ def make_stock_in_entry(source_name, target_doc=None):
 
 
 def convert_metal_purity(from_item: dict, to_item: dict, s_warehouse, t_warehouse):
+	"""Create and submit a Repack Stock Entry between two attribute-resolved items.
+
+	Not used by Employee IR injection (see ``main_slip_inject``). **Unsafe for
+	batch-tracked metal** as written: ``before_validate`` requires ``batch_no`` on
+	outgoing rows unless serialised; this helper does not run FIFO batch allocation.
+	Parameters are typed as ``dict`` but the implementation uses attribute access
+	(``from_item.metal_type``, …)—pass ``SimpleNamespace`` / ``frappe._dict`` or
+	refactor to subscripting. Prefer EIR/MOP injection builders + shared FIFO helpers
+	for production metal flows.
+	"""
 	f_item = get_item_from_attribute(
 		from_item.metal_type,
 		from_item.metal_touch,

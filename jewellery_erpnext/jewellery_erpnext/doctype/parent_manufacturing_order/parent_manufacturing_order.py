@@ -254,11 +254,16 @@ class ParentManufacturingOrder(Document):
 
 	def after_insert(self):
 		if self.custom_tracking_bom:
-			frappe.db.set_value(
-				"Tracking Bom",
-				self.custom_tracking_bom,
-				{"reference_doctype": self.doctype, "reference_docname": self.name},
-			)
+			if frappe.flags.get("creating_from_manufacturing_plan"):
+				frappe.flags.setdefault("_mp_tracking_bom_queue", []).append(
+					(self.custom_tracking_bom, self.name)
+				)
+			else:
+				frappe.db.set_value(
+					"Tracking Bom",
+					self.custom_tracking_bom,
+					{"reference_doctype": self.doctype, "reference_docname": self.name},
+				)
 		if self.serial_no:
 			if serial_bom := frappe.db.exists("BOM", {"tag_no": self.serial_no}):
 				self.db_set("serial_id_bom", serial_bom)
@@ -267,7 +272,6 @@ class ParentManufacturingOrder(Document):
 		if self.is_new() or self.flags.ignore_validations:
 			return
 		self.metal_details()
-		# update_bom_based_on_diamond_quality(self)
 		validate_mfg_date(self)
 		if not self.manufacturer:
 			return
@@ -566,39 +570,6 @@ class ParentManufacturingOrder(Document):
 		create_stock_entry(self, department_data)
 
 
-# def update_bom_based_on_diamond_quality(self):
-# 	bom = frappe.get_doc("BOM", self.master_bom)
-# 	if self.diamond_grade:
-# 		for row in bom.diamond_detail:
-# 			row.diamond_grade = self.diamond_grade
-
-# 	if self.metal_purity:
-# 		for row in bom.metal_detail:
-# 			row.metal_purity = self.metal_purity
-
-# 		for row in bom.finding_detail:
-# 			if row.get("item_variant") and frappe.db.get_value(
-# 				"Item", row.item_variant, "custom_is_manufacturing_item"
-# 			):
-# 				continue
-# 			row.metal_purity = self.metal_purity
-
-# 	for pmo_row in self.gemstone_table:
-# 		for b_row in bom.gemstone_detail:
-# 			if (
-# 				pmo_row.gemstone_type == b_row.gemstone_type
-# 				and pmo_row.cut_or_cab == b_row.cut_or_cab
-# 				and pmo_row.stone_shape == b_row.stone_shape
-# 				and pmo_row.pcs == b_row.pcs
-# 				and pmo_row.gemstone_size == b_row.gemstone_size
-# 			):
-# 				b_row.gemstone_size = pmo_row.gemstone_size
-# 				b_row.gemstone_code = pmo_row.gemstone_code
-# 				b_row.gemstone_pr = pmo_row.gemstone_pr
-# 				b_row.per_pc_or_per_carat = pmo_row.per_pc_or_per_carat
-# 	bom.save()
-
-
 def get_item_type(item_code):
 	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
 	return _VARIANT_TO_ITEM_TYPE.get(variant_of, "other_item")
@@ -611,10 +582,16 @@ def get_item_code(sales_order_item):
 
 @frappe.whitelist()
 def make_manufacturing_order(
-	source_doc, row, master_bom=None, so_det=None, service_type=None
+	source_doc,
+	row,
+	master_bom=None,
+	so_det=None,
+	service_type=None,
+	mp_context=None,
 ):
 	so_det = so_det or {}
 	service_type = service_type or []
+	mp_context = mp_context or {}
 
 	if row.sales_order:
 		doc = frappe.new_doc("Parent Manufacturing Order")
@@ -647,12 +624,16 @@ def make_manufacturing_order(
 	elif row.mwo:
 		doc = frappe.new_doc("Parent Manufacturing Order")
 		doc.company = source_doc.company
-		manufacturer = frappe.defaults.get_user_default("manufacturer")
-		doc.department = frappe.db.get_value(
-			"Manufacturing Setting",
-			{"manufacturer": manufacturer},
-			"default_department",
+		manufacturer = mp_context.get("manufacturer") or frappe.defaults.get_user_default(
+			"manufacturer"
 		)
+		doc.department = mp_context.get("finding_default_department")
+		if doc.department is None and manufacturer:
+			doc.department = frappe.db.get_value(
+				"Manufacturing Setting",
+				{"manufacturer": manufacturer},
+				"default_department",
+			)
 		doc.type = "Finding Manufacturing"
 		doc.is_finding_mwo = True
 		doc.item_code = row.item_code
@@ -740,7 +721,7 @@ def create_manufacturing_work_order(self):
 	metal_details = (metal_detail_query + finding_detail_query).run(as_dict=True)
 
 	grouped_data = {}
-	variant_of = frappe.db.get_value("Item", self.item_code, "variant_of")
+	variant_of = frappe.get_cached_value("Item", self.item_code, "variant_of")
 	for item in metal_details:
 		metal_purity = self.metal_purity or item["metal_purity"]
 		metal_colour = self.metal_colour or item["metal_colour"]
@@ -765,50 +746,45 @@ def create_manufacturing_work_order(self):
 	)
 
 	if variant_of != "F":
+		map_fields = {
+			"Parent Manufacturing Order": {
+				"doctype": "Manufacturing Work Order",
+				"field_map": {"name": "manufacturing_order"},
+			}
+		}
+		template_mwo = get_mapped_doc(
+			"Parent Manufacturing Order",
+			self.name,
+			map_fields,
+		)
+		last_metal_row = metal_details[-1] if metal_details else None
 		for row in metal_details:
-			doc = get_mapped_doc(
-				"Parent Manufacturing Order",
-				self.name,
-				{
-					"Parent Manufacturing Order": {
-						"doctype": "Manufacturing Work Order",
-						"field_map": {"name": "manufacturing_order"},
-					}
-				},
-			)
+			doc = frappe.copy_doc(template_mwo, ignore_no_copy=True)
 			for color in updated_data:
 				if (
-					row.metal_purity == color["metal_purity"]
+					row.get("metal_purity") == color["metal_purity"]
 					and len(color["metal_colours"]) > 1
 				):
 					doc.multicolour = 1
 					doc.allowed_colours = color["metal_colours"]
 			doc.seq = int(self.name.split("-")[-1])
 			doc.department = mfg_settings.get("default_department")
-			doc.metal_touch = self.metal_touch or row.metal_touch
-			doc.metal_type = self.metal_type or row.metal_type
-			doc.metal_purity = self.metal_purity or row.metal_purity
-			doc.metal_colour = self.metal_colour or row.metal_colour
+			doc.metal_touch = self.metal_touch or row.get("metal_touch")
+			doc.metal_type = self.metal_type or row.get("metal_type")
+			doc.metal_purity = self.metal_purity or row.get("metal_purity")
+			doc.metal_colour = self.metal_colour or row.get("metal_colour")
 			doc.auto_created = 1
 			doc.save()
 
-		# FG item work order
-		fg_doc = get_mapped_doc(
-			"Parent Manufacturing Order",
-			self.name,
-			{
-				"Parent Manufacturing Order": {
-					"doctype": "Manufacturing Work Order",
-					"field_map": {"name": "manufacturing_order"},
-				}
-			},
-		)
+		# FG item work order (metal attrs follow last BOM metal row, matching prior behaviour)
+		fg_doc = frappe.copy_doc(template_mwo, ignore_no_copy=True)
+		row = last_metal_row or {}
 		fg_doc.seq = int(self.name.split("-")[-1])
 		fg_doc.department = mfg_settings.get("default_fg_department")
-		fg_doc.metal_touch = self.metal_touch or row.metal_touch
-		fg_doc.metal_type = self.metal_type or row.metal_type
-		fg_doc.metal_purity = self.metal_purity or row.metal_purity
-		fg_doc.metal_colour = self.metal_colour or row.metal_colour
+		fg_doc.metal_touch = self.metal_touch or row.get("metal_touch")
+		fg_doc.metal_type = self.metal_type or row.get("metal_type")
+		fg_doc.metal_purity = self.metal_purity or row.get("metal_purity")
+		fg_doc.metal_colour = self.metal_colour or row.get("metal_colour")
 		fg_doc.for_fg = 1
 		fg_doc.auto_created = 1
 		fg_doc.save()

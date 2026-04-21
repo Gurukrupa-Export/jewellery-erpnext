@@ -62,7 +62,13 @@ def validate_duplication_and_gr_wt(self):
 				"gemstone_pcs": mop_doc.gemstone_pcs,
 			}
 		)
-		# validate_gross_wt(row, precision, main_slip=self.main_slip)
+		if self.type == "Receive":
+			validate_gross_wt(
+				row,
+				precision,
+				main_slip=getattr(self, "main_slip", None),
+				is_main_slip_required=self.is_main_slip_required,
+			)
 
 	if loss_details:
 		return loss_details
@@ -82,17 +88,18 @@ def validate_mwo(self, row, is_finding):
 			)
 
 
-def validate_gross_wt(row, precision, main_slip=None):
+def validate_gross_wt(row, precision, main_slip=None, is_main_slip_required=False):
 	row.gross_wt = frappe.db.get_value(
 		"Manufacturing Operation", row.manufacturing_operation, "gross_wt"
 	)
-	if not main_slip:
-		if flt(row.gross_wt, precision) < flt(row.received_gross_wt, precision):
-			frappe.throw(
-				_(
-					"Row #{0}: Received gross wt {1} cannot be greater than gross wt {2}"
-				).format(row.idx, row.received_gross_wt, row.gross_wt)
-			)
+	if main_slip or is_main_slip_required:
+		return
+	if flt(row.gross_wt, precision) < flt(row.received_gross_wt, precision):
+		frappe.throw(
+			_(
+				"Row #{0}: Received gross wt {1} cannot be greater than gross wt {2}"
+			).format(row.idx, row.received_gross_wt, row.gross_wt)
+		)
 
 
 def update_mop_balance(mop_name):
@@ -143,7 +150,7 @@ def get_loss_details(row):
 	if not loss_details.get(key):
 		loss_details[key] = flt((row.received_gross_wt - row.gross_wt), 3)
 	else:
-		loss_details.get[key] = loss_details.get(key) + flt(
+		loss_details[key] = loss_details.get(key) + flt(
 			(row.received_gross_wt - row.gross_wt), 3
 		)
 

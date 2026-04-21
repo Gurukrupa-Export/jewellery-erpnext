@@ -120,7 +120,6 @@ def get_fifo_batches(self, row):
 
 	msl = self.get("main_slip") or self.get("to_main_slip")
 	warehouse = row.get("s_warehouse") or self.get("source_warehouse")
-	print("s_warehouse", warehouse)
 	if (
 		msl
 		and frappe.db.get_value("Main Slip", msl, "raw_material_warehouse")
