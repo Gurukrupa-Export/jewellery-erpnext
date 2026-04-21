@@ -59,7 +59,10 @@ def create_parent_batches(doc, method=None):
 			batch.item = item_code
 			batch.reference_doctype = doc.doctype
 			batch.reference_name = doc.name
-			batch.save()
+			batch.custom_customer = doc._customer
+			batch.custom_inventory_type = "Customer Goods"
+			batch.custom_customer_voucher_type = "Customer Subcontracting"
+			batch.insert()
 		row.batch_no = batch_name
 
 
@@ -171,139 +174,165 @@ def create_child_batches(doc, method=None):
 			batch.item = item_code
 			batch.reference_doctype = doc.doctype
 			batch.reference_name = doc.name
-			batch.insert(ignore_permissions=True)
+			batch.custom_customer = doc._customer
+			batch.custom_inventory_type = "Customer Goods"
+			batch.custom_customer_voucher_type = "Customer Subcontracting"
+			batch.insert()
 
 		row.batch_no = batch_name
 
 
+def get_purity(item_code):
+	item = frappe.get_doc("Item", item_code)
+	purity = 100
+	for attr in item.attributes:
+		if attr.attribute == "Metal Purity":
+			purity = flt(attr.attribute_value)
+
+	return purity
+
+
 def create_repack_for_used_other(doc, method=None):
-	if doc.docstatus != 1:
+	if doc.doctype != "Stock Entry":
 		return
 
-	if getattr(doc, "customer_voucher_type", None) != "Customer Subcontracting":
+	if doc.stock_entry_type != "Customer Goods Received":
 		return
 
-	customer_goods_rows = [
-		row
-		for row in doc.items
-		if getattr(row, "inventory_type", None) == "Customer Goods"
-	]
-
-	if not customer_goods_rows:
-		return
-
-	if (
-		not any(getattr(row, "customer", None) for row in doc.items)
-		and not getattr(doc, "customer", None)
-		and not getattr(doc, "_customer", None)
-	):
-		return
-
-	central_rm_rows = [
-		row
-		for row in doc.items
-		if getattr(row, "t_warehouse", None) == "Central RM - GEPL"
-	]
-	if not central_rm_rows:
-		return
-
-	customer = (
-		getattr(doc, "_customer", None)
-		or getattr(doc, "customer", None)
-		or next(
-			(row.customer for row in doc.items if getattr(row, "customer", None)), None
-		)
-	)
-
-	if not customer:
-		return
-
-	try:
-		columns, report_data = get_report_data(filters={"customer": customer})
-
-		if not report_data:
+	for item in doc.items:
+		if item.t_warehouse != "Central RM - GEPL":
 			return
 
-		main_batches = {}
-		for row in doc.items:
-			if row.batch_no:
-				linked = get_linked_batches(row.batch_no)
-				for batch in linked:
-					main_batches[batch] = {
-						"item_code": row.item_code,
-						"customer": customer,
-						"batch_no": row.batch_no,
-					}
+	source_customer = (
+		getattr(doc, "_customer", None)
+		or getattr(doc, "customer", None)
+		or next(row.customer for row in doc.items if getattr(row, "customer", None))
+	)
 
-		repack_created_count = 0
-		for report_row in report_data:
-			batch_no = report_row[0]
-			owner = report_row[1]
-			item_code = report_row[2]
-			used_other = flt(report_row[5])
+	if not source_customer:
+		return []
 
-			if used_other <= 0:
-				continue
+	columns, report_data = get_report_data(filters={"other_customer": source_customer})
 
-			if batch_no not in main_batches:
-				continue
+	if not report_data:
+		return []
 
-			existing = frappe.db.sql(
-				"""
-				SELECT se.name
-				FROM `tabStock Entry` se
-				JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-				WHERE se.stock_entry_type = 'Subcontracting Repack'
-					AND se.docstatus = 1
-					AND sed.batch_no = %s
-				LIMIT 1
-				""",
-				(batch_no,),
-				as_dict=1,
+	matched_rows = []
+
+	for row in report_data:
+		try:
+			bacth_no = row[0]
+			owner = row[1]
+			item = row[2]
+			opening_qty = row[3]
+			used_other = row[5]
+			other_customer = row[6]
+		except Exception:
+			continue
+
+		if not other_customer or used_other <= 0:
+			continue
+
+		if source_customer in (other_customer or ""):
+			matched_rows.append(
+				{
+					"batch_no": bacth_no,
+					"owner": owner,
+					"item": item,
+					"opening_qty": opening_qty,
+					"used_other": used_other,
+					"other_customer": other_customer,
+				}
 			)
-			if existing:
-				continue
 
-			new_se = frappe.new_doc("Stock Entry")
-			new_se.stock_entry_type = "Subcontracting Repack"
-			new_se.purpose = "Repack"
-			new_se.company = doc.company
-			new_se.append(
+	if not matched_rows:
+		return []
+
+	last_row = matched_rows[-1]
+
+	child_batch = last_row["batch_no"]
+	item_code = last_row["item"]
+	used_other = last_row["used_other"]
+	owner = last_row["owner"]
+
+	linked_batches = get_linked_batches(child_batch)
+
+	parent_batch = None
+
+	for b in linked_batches:
+		try:
+			batch_doc = frappe.get_doc("Batch", b)
+			item = batch_doc.item
+
+			if item and "24KT" in item:
+				parent_batch = b
+				break
+		except Exception as e:
+			frappe.log_error(title="Batch Error", message=str(e))
+
+	if not parent_batch:
+		return []
+
+	purity = get_purity(item_code)
+	converted_qty = used_other * (purity / 100)
+
+	parent_item = frappe.get_value("Batch", parent_batch, "item")
+	for doc_row in doc.items:
+		if not doc_row.batch_no:
+			continue
+
+		source_batch = doc_row.batch_no
+		source_qty = flt(doc_row.qty)
+
+		exists = frappe.db.exists(
+			"Stock Entry Detail",
+			{
+				"batch_no": parent_batch,
+				"is_finished_item": 1,
+				"docstatus": 1,
+			},
+		)
+
+		if exists:
+			return
+
+		try:
+			se = frappe.new_doc("Stock Entry")
+			se.stock_entry_type = "Subcontracting Repack"
+			se.purpose = "Repack"
+			se.company = doc.company
+
+			# SOurce
+			se.append(
 				"items",
 				{
-					"item_code": item_code,
-					"batch_no": batch_no,
-					"qty": used_other,
+					"item_code": parent_item,
+					"batch_no": source_batch,
+					"qty": converted_qty,
 					"s_warehouse": "Central RM - GEPL",
-					"customer": owner,
+					"customer": source_customer,
+					"inventory_type": "Regular Stock",
 					"is_finished_item": 0,
+					"use_serial_batch_fields": 1,
 				},
 			)
-			new_se.append(
+
+			se.append(
 				"items",
 				{
-					"item_code": item_code,
-					"batch_no": batch_no,
-					"qty": used_other,
-					"t_warehouse": "Central RM - GEPL",
+					"item_code": parent_item,
+					"batch_no": parent_batch,
+					"qty": converted_qty,
+					"t_warehouse": "RM Procurement - GEPL",
 					"customer": owner,
+					"inventory_type": "Regular Stock",
 					"is_finished_item": 1,
+					"use_serial_batch_fields": 1,
 				},
 			)
 
-			new_se.save()
-			new_se.submit()
-			repack_created_count += 1
-			frappe.log_error(
-				f"Created Subcontracting Repack {new_se.name} for batch {batch_no} with qty {used_other}"
-			)
+			se.insert()
+			se.submit()
 
-		frappe.log_error(
-			f"Repack creation completed: {repack_created_count} repack entries created for customer {customer}"
-		)
-
-	except Exception as e:
-		frappe.log_error(
-			f"Failed to create Subcontracting Repack for used-other customer material: {str(e)}"
-		)
-		raise
+		except Exception as e:
+			frappe.log_error(title="Repack Error", message=str(e))
