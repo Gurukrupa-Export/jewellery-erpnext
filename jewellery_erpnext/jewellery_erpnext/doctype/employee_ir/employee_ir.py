@@ -363,6 +363,7 @@ class EmployeeIR(Document):
 				create_mop_log_for_employee_ir_receive(
 					self, row, actor_wh, department_wh
 				)
+				update_new_mop_wtg(new_operation)
 			else:
 				for sre in frappe.db.get_all(
 					"Stock Reservation Entry",
@@ -738,7 +739,6 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 	new_mop_doc.previous_se_data_updated = 0
 	new_mop_doc.main_slip_no = None
 	new_mop_doc.save()
-	update_new_mop_wtg(new_mop_doc)
 	# def set_missing_value(source, target):
 	# 	target.previous_operation = source.operation
 	# 	target.prev_gross_wt = (

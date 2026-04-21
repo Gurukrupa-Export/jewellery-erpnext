@@ -272,10 +272,7 @@ fixtures = [
             ]
         ]
         
-    },
-    {
-        "doctype": "Portal Settings"
-    },
+    }
     # {
     #     "doctype":"Custom Field", "filters":{"module":["in",["Jewellery Erpnext"]]}
     # }

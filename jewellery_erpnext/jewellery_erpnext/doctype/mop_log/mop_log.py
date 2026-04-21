@@ -500,35 +500,6 @@ def create_mop_log_for_employee_ir_receive(doc, row, from_warehouse, to_warehous
 	"""
 	is_main_slip_required = cint(getattr(doc, "is_main_slip_required", 0))
 	issue_voucher = resolve_employee_ir_issue_voucher_for_receive(doc, row)
-	if not issue_voucher:
-		if is_main_slip_required:
-			# Main Slip-required Receive can legitimately run without a prior Issue
-			# voucher (zero-baseline). main_slip_inject writes positive MOP Log rows
-			# via the Stock Entry bridge; nothing to clone here.
-			frappe.log_error(
-				title="Employee IR Receive under Main Slip: no Issue voucher (allowed)",
-				message=(
-					f"Receive: {doc.name}\n"
-					f"Manufacturing Operation: {row.manufacturing_operation}\n"
-					"is_main_slip_required=1; skipping Issue-snapshot clone."
-				),
-			)
-			return
-		frappe.log_error(
-			title="Employee IR Receive: no Issue voucher for MOP Log source",
-			message=(
-				f"Receive: {doc.name}\n"
-				f"Manufacturing Operation: {row.manufacturing_operation}\n"
-				f"emp_ir_id: {getattr(doc, 'emp_ir_id', None)!r}\n"
-				"No submitted Employee IR Issue found for this MOP."
-			),
-		)
-		frappe.throw(
-			_(
-				"No Employee IR Issue found for Manufacturing Operation {0}. "
-				"Cannot create receive MOP Logs without a matching submitted Issue."
-			).format(row.manufacturing_operation)
-		)
 
 	mop_logs = frappe.db.get_all(
 		"MOP Log",
@@ -541,30 +512,6 @@ def create_mop_log_for_employee_ir_receive(doc, row, from_warehouse, to_warehous
 		select_fields,
 		order_by="creation asc",
 	)
-	if not mop_logs:
-		if is_main_slip_required:
-			frappe.log_error(
-				title="Employee IR Receive under Main Slip: Issue has no MOP Log rows (allowed)",
-				message=(
-					f"Receive: {doc.name}\nIssue: {issue_voucher}\n"
-					f"MOP: {row.manufacturing_operation}\n"
-					"is_main_slip_required=1; Issue zero-baseline tolerated."
-				),
-			)
-			return
-		frappe.log_error(
-			title="Employee IR Receive: Issue has no MOP Log rows",
-			message=(
-				f"Receive: {doc.name}\nIssue: {issue_voucher}\n"
-				f"MOP: {row.manufacturing_operation}\n"
-				"Submitted Issue exists but no non-cancelled MOP Log rows for it."
-			),
-		)
-		frappe.throw(
-			_(
-				"No MOP Log rows found on Employee IR Issue {0} for Manufacturing Operation {1}."
-			).format(issue_voucher, row.manufacturing_operation)
-		)
 
 	current_balance_rows = get_current_mop_balance_rows(
 		row.manufacturing_operation,
