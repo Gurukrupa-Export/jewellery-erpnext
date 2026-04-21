@@ -212,44 +212,44 @@ let filter_customer = (frm) => {
 };
 
 frappe.ui.form.on("Sales Order Item", {
-	serial_no: function(frm, cdt, cdn) {
-    let row = locals[cdt][cdn];
+// 	serial_no: function(frm, cdt, cdn) {
+//     let row = locals[cdt][cdn];
 
-    if (!row.serial_no) return;
-	// console.log("hii")
-    frappe.db.get_doc('Serial No', row.serial_no)
-        .then(serial_doc => {
+//     if (!row.serial_no) return;
+// 	// console.log("hii")
+//     frappe.db.get_doc('Serial No', row.serial_no)
+//         .then(serial_doc => {
 
-            if (serial_doc.huid && serial_doc.huid.length > 0) {
-                frappe.model.set_value(cdt,cdn,'custom_huid',serial_doc.huid[0].huid
-                );
-                console.log("huid", serial_doc.huid[0].huid);
-            }
+//             if (serial_doc.huid && serial_doc.huid.length > 0) {
+//                 frappe.model.set_value(cdt,cdn,'custom_huid',serial_doc.huid[0].huid
+//                 );
+//                 // console.log("huid", serial_doc.huid[0].huid);
+//             }
 
-            return frappe.db.get_doc('BOM', serial_doc.custom_bom_no);
-        })
-        .then(bom_doc => {
-            return frappe.db.get_doc(
-                'Serial Number Creator',
-                bom_doc.custom_creation_docname
-            );
-        })
-        .then(pmo_doc => {
-            return frappe.db.get_doc(
-                'Parent Manufacturing Order',
-                pmo_doc.parent_manufacturing_order
-            );
-        })
-        .then(mo_doc => {
-            console.log('diamond quality', mo_doc.diamond_quality);
+//             return frappe.db.get_doc('BOM', serial_doc.custom_bom_no);
+//         })
+//         .then(bom_doc => {
+//             return frappe.db.get_doc(
+//                 'Serial Number Creator',
+//                 bom_doc.custom_creation_docname
+//             );
+//         })
+//         .then(pmo_doc => {
+//             return frappe.db.get_doc(
+//                 'Parent Manufacturing Order',
+//                 pmo_doc.parent_manufacturing_order
+//             );
+//         })
+//         .then(mo_doc => {
+//             // console.log('diamond quality', mo_doc.diamond_quality);
 
-            frappe.model.set_value(cdt,cdn,'diamond_quality',mo_doc.diamond_quality
-            );
-        })
-        .catch(err => {
-            console.log(err);
-        });
-},
+//             frappe.model.set_value(cdt,cdn,'diamond_quality',mo_doc.diamond_quality
+//             );
+//         })
+//         .catch(err => {
+//             console.log(err);
+//         });
+// },
 	edit_bom: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
 

@@ -1886,7 +1886,7 @@ def create_serial_no_bom(self, row):
 	doc.gold_rate_with_gst = self.gold_rate_with_gst
 	if hasattr(doc, "diamond_detail"):
 		for diamond in doc.diamond_detail or []:
-			diamond.quality = self.custom_diamond_quality
+			diamond.quality = row.diamond_quality
 		# for diamond in doc.diamond_detail:
 	doc.save(ignore_permissions=True)
 	row.bom = doc.name
