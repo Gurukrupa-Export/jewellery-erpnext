@@ -1633,6 +1633,7 @@ let set_edit_bom_details = (
 	var metal_amount = 0;
 	var making_amount = 0;
 	var wastage_amount = 0;
+	var total_wastage_amount = 0;
 	var diamond_amount = 0;
 	var finding_amount = 0;
 	var finding_weight = 0;
@@ -1727,106 +1728,278 @@ let set_edit_bom_details = (
 	
 
 	
-	let total_sum_diamond = 0; 
-	let count = 0;  
-	let total_calls = doc.diamond_detail.length; 
+	// let total_sum_diamond = 0; 
+	// let count = 0;  
+	// let total_calls = doc.diamond_detail.length; 
 	
-	$.each(doc.diamond_detail, function (index, d) { 
+	// $.each(doc.diamond_detail, function (index, d) { 
+	// 	let witout_precision = d.quantity;
+	// 	let without_precision_rate = witout_precision * d.total_diamond_rate;
+	
+	// 	frappe.call({
+	// 		method: "frappe.client.get_value",
+	// 		args: {
+	// 			doctype: "Customer",
+	// 			filters: { name: cur_frm.doc.customer },
+	// 			fieldname: "custom_precision_variable"
+	// 		},
+	// 		callback: function (response) {
+	// 			let precision = 0;
+	// 			// Check if the custom_consider_2_digit_for_diamond field is checked
+	// 			if (response.message && response.message.custom_precision_variable) {
+	// 				precision =response.message.custom_precision_variable ;  // Set precision to 2 if the checkbox is checked
+	// 			}
+	
+	// 			let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+	// 			let with_precision_rate = quantity_value * d.total_diamond_rate;
+	
+	// 			// Calculate the difference
+	// 			let difference_qty = without_precision_rate - with_precision_rate;
+	// 			let total_diamond_rate_qty = (parseFloat(quantity_value) * parseFloat(d.total_diamond_rate)).toFixed(2);
+	// 			total_sum_diamond += parseFloat(total_diamond_rate_qty);
+	// 			amount = parseFloat(total_diamond_rate_qty);
+	// 			let rate_to_use = d.total_diamond_rate;
+				
+	// 			if (
+	// 				cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
+	// 				cur_frm.doc.customer === "GJCU0009"        
+	// 			) {
+	// 				rate_to_use = flt(d.se_rate || 0);
+	// 			}
+	
+	// 			if (
+	// 				cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
+	// 				cur_frm.doc.customer === "TNCU0002" &&
+	// 				cur_frm.doc.sales_type === "Branch"
+					
+	// 			) {
+					
+	// 				rate_to_use = flt(d.fg_purchase_rate || 0);
+	// 			}
+	
+	// 			dialog.fields_dict.diamond_detail.df.data.push({
+	// 				docname: d.name,
+	// 				diamond_type: d.diamond_type,
+	// 				stone_shape: d.stone_shape,
+	// 				quality: d.quality,
+	// 				pcs: d.pcs,
+	// 				diamond_rate_for_specified_quantity:d.diamond_rate_for_specified_quantity,
+	// 				diamond_cut: d.diamond_cut,
+	// 				sub_setting_type: d.sub_setting_type,
+	// 				diamond_grade: d.diamond_grade,
+	// 				diamond_sieve_size: d.diamond_sieve_size,
+	// 				sieve_size_range: d.sieve_size_range,
+	// 				size_in_mm: d.size_in_mm,
+	// 				quantity: d.quantity,  
+	// 				quantity_3: d.quantity_3,
+	// 				weight_per_pcs: d.weight_per_pcs,
+	// 				total_diamond_rate: rate_to_use,
+	// 				diamond_handling_rate:d.handling_rate,
+	// 				// diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+	// 				// outright_handling_charges_rate:d.outright_handling_charges_rate,
+	// 				// outright_handling_charges_amount:d.outright_handling_charges_amount,
+	// 				is_customer_item: d.is_customer_item,
+	// 				total_diamond_rate_qty: total_diamond_rate_qty,
+	// 				difference_qty: difference_qty,   
+	// 			});
+	
+	// 			count++;
+	// 			// Set diamond amount only after all calls are done
+	// 			if (count === total_calls) {
+	// 				dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
+	// 				let grid = dialog.fields_dict.diamond_detail.grid;
+					
+	// 				grid.update_docfield_property("quantity", "precision", precision);
+	// 				// grid.update_docfield_property("total_diamond_rate_qty", "precision", 2); 
+					 
+	// 				grid.refresh();
+	// 			}
+	// 		}
+			
+	// 	});
+	// });
+
+	// new code
+	let total_sum_diamond = 0;
+	let count = 0;
+	let total_calls = doc.diamond_detail.length;
+
+	$.each(doc.diamond_detail, function (index, d) {
+		console.log("hii");
 		let witout_precision = d.quantity;
 		let without_precision_rate = witout_precision * d.total_diamond_rate;
-	
-		frappe.call({
-			method: "frappe.client.get_value",
-			args: {
-				doctype: "Customer",
-				filters: { name: cur_frm.doc.customer },
-				fieldname: "custom_precision_variable"
-			},
-			callback: function (response) {
-				let precision = 0;
-				// Check if the custom_consider_2_digit_for_diamond field is checked
-				if (response.message && response.message.custom_precision_variable) {
-					precision =response.message.custom_precision_variable ;  // Set precision to 2 if the checkbox is checked
-				}
-	
-				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
-				let with_precision_rate = quantity_value * d.total_diamond_rate;
-	
-				// Calculate the difference
-				let difference_qty = without_precision_rate - with_precision_rate;
-				let total_diamond_rate_qty = (parseFloat(quantity_value) * parseFloat(d.total_diamond_rate)).toFixed(2);
-				total_sum_diamond += parseFloat(total_diamond_rate_qty);
-				amount = parseFloat(total_diamond_rate_qty);
-				let rate_to_use = d.total_diamond_rate;
-				
-				if (
-					cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
-					cur_frm.doc.customer === "GJCU0009"        
-				) {
-					rate_to_use = flt(d.se_rate || 0);
-				}
-	
-				if (
-					cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
-					cur_frm.doc.customer === "TNCU0002" &&
-					cur_frm.doc.sales_type === "Branch"
-					
-				) {
-					
-					rate_to_use = flt(d.fg_purchase_rate || 0);
-				}
-	
-				dialog.fields_dict.diamond_detail.df.data.push({
-					docname: d.name,
-					diamond_type: d.diamond_type,
-					stone_shape: d.stone_shape,
-					quality: d.quality,
-					pcs: d.pcs,
-					diamond_rate_for_specified_quantity:d.diamond_rate_for_specified_quantity,
-					diamond_cut: d.diamond_cut,
-					sub_setting_type: d.sub_setting_type,
-					diamond_grade: d.diamond_grade,
-					diamond_sieve_size: d.diamond_sieve_size,
-					sieve_size_range: d.sieve_size_range,
-					size_in_mm: d.size_in_mm,
-					quantity: d.quantity,  
-					quantity_3: d.quantity_3,
-					weight_per_pcs: d.weight_per_pcs,
-					total_diamond_rate: rate_to_use,
-					diamond_handling_rate:d.handling_rate,
-					// diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
-					// outright_handling_charges_rate:d.outright_handling_charges_rate,
-					// outright_handling_charges_amount:d.outright_handling_charges_amount,
-					is_customer_item: d.is_customer_item,
-					total_diamond_rate_qty: total_diamond_rate_qty,
-					difference_qty: difference_qty,   
-				});
-	
-				count++;
-				// Set diamond amount only after all calls are done
-				if (count === total_calls) {
-					dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
-					let grid = dialog.fields_dict.diamond_detail.grid;
-					
-					grid.update_docfield_property("quantity", "precision", precision);
-					// grid.update_docfield_property("total_diamond_rate_qty", "precision", 2); 
-					 
-					grid.refresh();
-				}
-			}
-			
+		// frappe.call({
+		// 	method: "frappe.client.get_value",
+		// 	args: {
+		// 		doctype: "Customer",
+		// 		filters: { name: cur_frm.doc.customer },
+		// 		fieldname: "custom_precision_variable"
+		// 	},
+		// 	callback: function (response) {
+		// 		let precision = 0;
+		// 		// Check if the custom_consider_2_digit_for_diamond field is checked
+		// 		if (response.message && response.message.custom_precision_variable) {
+		// 			precision =response.message.custom_precision_variable ;  // Set precision to 2 if the checkbox is checked
+		// 		}
+
+		let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+		let with_precision_rate = quantity_value * d.total_diamond_rate;
+
+		// Calculate the difference
+		let difference_qty = without_precision_rate - with_precision_rate;
+		let total_diamond_rate_qty = (d.quantity * parseFloat(d.total_diamond_rate)).toFixed(2);
+		total_sum_diamond += parseFloat(total_diamond_rate_qty);
+		amount = parseFloat(total_diamond_rate_qty);
+		let rate_to_use = d.total_diamond_rate;
+
+
+		if (
+			cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
+			cur_frm.doc.customer === "GJCU0009"
+		) {
+			rate_to_use = flt(d.se_rate || 0);
+		}
+
+		if (
+			cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
+			cur_frm.doc.customer === "TNCU0002" &&
+			cur_frm.doc.sales_type === "Branch"
+
+		) {
+
+			rate_to_use = flt(d.fg_purchase_rate || 0);
+		}
+		console.log("hiioo11", d.stone_shape, d.weight_per_pcs, cur_frm.doc.customer);
+		// frappe.db.get_list('Diamond Price List', {
+		// 	filters: {
+		// 		from_weight: ['<=', d.weight_per_pcs],
+		// 		to_weight: ['>=', d.weight_per_pcs],
+		// 		stone_shape: d.stone_shape,
+		// 		quality: d.quality,
+		// 		customer: cur_frm.doc.customer
+		// 	},
+		// 	fields: ['outright_handling_charges_rate'],
+		// 	limit: 1
+		// }).then(records => {
+		// 		console.log("hiioo11");
+		// 	let handling_rate = 0;
+
+		// 	if (records && records.length > 0) {
+		// 		console.log("hiioo11");
+		// 		handling_rate = records[0].outright_handling_charges_rate || 0;
+		// 	}
+		// 	console.log("hiioo",handling_rate);
+
+
+		dialog.fields_dict.diamond_detail.df.data.push({
+			docname: d.name,
+			diamond_type: d.diamond_type,
+			stone_shape: d.stone_shape,
+			quality: d.quality,
+			pcs: d.pcs,
+			diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+			diamond_cut: d.diamond_cut,
+			sub_setting_type: d.sub_setting_type,
+			diamond_grade: d.diamond_grade,
+			diamond_sieve_size: d.diamond_sieve_size,
+			sieve_size_range: d.sieve_size_range,
+			size_in_mm: d.size_in_mm,
+			quantity: d.quantity,
+			quantity_3: d.quantity_3,
+
+			weight_per_pcs: d.weight_per_pcs,
+			total_diamond_rate: rate_to_use,
+			diamond_handling_rate: d.handling_rate,
+			// diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+			// outright_handling_charges_rate:d.outright_handling_charges_rate,
+			// outright_handling_charges_amount:d.outright_handling_charges_amount,
+			is_customer_item: d.is_customer_item,
+			total_diamond_rate_qty: total_diamond_rate_qty,
+			difference_qty: difference_qty,
 		});
+
+		count++;
+		// Set diamond amount only after all calls are done
+		if (count === total_calls) {
+			dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
+			let grid = dialog.fields_dict.diamond_detail.grid;
+
+			// grid.update_docfield_property("total_diamond_rate_qty", "precision", 2); 
+
+			grid.refresh();
+		}
+		//  });
+		// }
+
+		// });
 	});
 	
 
 
 	// gemstone details table append
+	// $.each(doc.gemstone_detail, function (index, d) {
+	// 	gemstone_amount += d.gemstone_rate_for_specified_quantity;
+	
+	// 	let witout_precision = d.quantity;
+	// 	let without_precision_rate = witout_precision * d.total_gemstone_rate;
+		
+	// 	frappe.call({
+	// 		method: "frappe.client.get_value",
+	// 		args: {
+	// 			doctype: "Customer",
+	// 			filters: { name: cur_frm.doc.customer },
+	// 			fieldname: "custom_precision_variable"
+	// 		},
+	// 		callback: function (response) {
+	// 			let precision = 0;
+	
+	// 			// Check if the custom_consider_2_digit_for_diamond field is checked
+	// 			if (response.message && response.message.custom_precision_variable) {
+	// 				precision = response.message.custom_precision_variable;  // Set precision to 2 if the checkbox is checked
+	// 			}
+	
+	// 			let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+	// 			let with_precision_rate = quantity_value * d.total_gemstone_rate;
+	
+	// 			// Calculate the difference
+	// 			let difference_qty = without_precision_rate - with_precision_rate;
+	
+	// 			dialog.fields_dict.gemstone_detail.df.data.push({
+	// 				docname: d.name,
+	// 				gemstone_type: d.gemstone_type,
+	// 				stone_shape: d.stone_shape,
+	// 				sub_setting_type: d.sub_setting_type,
+	// 				cut_or_cab: d.cut_or_cab,
+	// 				pcs: d.pcs,
+	// 				gemstone_quality: d.gemstone_quality,
+	// 				gemstone_grade: d.gemstone_grade,
+	// 				gemstone_size: d.gemstone_size,
+	// 				quantity: d.quantity,  
+	// 				quantity_3: d.quantity_3,
+	// 				total_gemstone_rate: d.total_gemstone_rate,
+	// 				gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
+	// 				is_customer_item: d.is_customer_item,
+	// 				difference_qty: difference_qty,
+	// 			});
+	
+	// 			let grid = dialog.fields_dict.gemstone_detail.grid;
+	// 			// grid.update_docfield_property("quantity", "precision", precision);
+				
+	
+	// 			// Refresh the grid
+	// 			gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
+	// 			grid.refresh();
+	// 		}
+	// 	});
+	// });
+
+	// new code
 	$.each(doc.gemstone_detail, function (index, d) {
 		gemstone_amount += d.gemstone_rate_for_specified_quantity;
-	
+
 		let witout_precision = d.quantity;
 		let without_precision_rate = witout_precision * d.total_gemstone_rate;
-		
+
 		frappe.call({
 			method: "frappe.client.get_value",
 			args: {
@@ -1836,18 +2009,21 @@ let set_edit_bom_details = (
 			},
 			callback: function (response) {
 				let precision = 0;
-	
+
 				// Check if the custom_consider_2_digit_for_diamond field is checked
 				if (response.message && response.message.custom_precision_variable) {
 					precision = response.message.custom_precision_variable;  // Set precision to 2 if the checkbox is checked
 				}
-	
-				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
+
+				
+			}
+		});
+		let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
 				let with_precision_rate = quantity_value * d.total_gemstone_rate;
-	
+
 				// Calculate the difference
 				let difference_qty = without_precision_rate - with_precision_rate;
-	
+
 				dialog.fields_dict.gemstone_detail.df.data.push({
 					docname: d.name,
 					gemstone_type: d.gemstone_type,
@@ -1858,115 +2034,214 @@ let set_edit_bom_details = (
 					gemstone_quality: d.gemstone_quality,
 					gemstone_grade: d.gemstone_grade,
 					gemstone_size: d.gemstone_size,
-					quantity: d.quantity,  
+					quantity: d.quantity,
 					quantity_3: d.quantity_3,
 					total_gemstone_rate: d.total_gemstone_rate,
 					gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
 					is_customer_item: d.is_customer_item,
 					difference_qty: difference_qty,
 				});
-	
+
 				let grid = dialog.fields_dict.gemstone_detail.grid;
 				// grid.update_docfield_property("quantity", "precision", precision);
-				
-	
+
+
 				// Refresh the grid
 				gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
 				grid.refresh();
-			}
-		});
 	});
+
 
 	// finding details table append
-	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
-	let pending = doc.finding_detail.length; 
-    dialog.fields_dict.finding_detail.df.data = [];
-	$.each(doc.finding_detail, function (index, d) {
-		// finding_amount += amount;
-		// let rate_to_use = d.rate;
-		// dialog.set_value("finding_amount", finding_amount);
-		let making_rate_to_use = d.making_rate;
+	// frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
+	// let pending = doc.finding_detail.length; 
+    // dialog.fields_dict.finding_detail.df.data = [];
+	// $.each(doc.finding_detail, function (index, d) {
+	// 	// finding_amount += amount;
+	// 	// let rate_to_use = d.rate;
+	// 	// dialog.set_value("finding_amount", finding_amount);
+	// 	let making_rate_to_use = d.making_rate;
 	
-		frappe.call({
-			method: "jewellery_erpnext.query.get_customer_mtel_purity",
-			args: {
-				customer: cur_frm.doc.customer,
-				metal_type: d.metal_type,
-				metal_touch: d.metal_touch,
-			},
-			callback: function (response) {
-				let metal_purity_value = response.message || "N/A";
-				let metal_purity = flt(metal_purity_value || 0);
-				let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
+	// 	frappe.call({
+	// 		method: "jewellery_erpnext.query.get_customer_mtel_purity",
+	// 		args: {
+	// 			customer: cur_frm.doc.customer,
+	// 			metal_type: d.metal_type,
+	// 			metal_touch: d.metal_touch,
+	// 		},
+	// 		callback: function (response) {
+	// 			let metal_purity_value = response.message || "N/A";
+	// 			let metal_purity = flt(metal_purity_value || 0);
+	// 			let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
 				
-				let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-				let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-				let rate_to_use = calculated_gold_rate;
-				let amount = calculated_actual_rate* d.quantity
-				let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
-				let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
-				difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity
-				// d.amount=amount
-				// finding_amount += d.amount;
-				// finding_weight +=d.quantity;
-				// dialog.set_value("finding_amount", finding_amount);
-				// dialog.set_value("finding_weight", finding_weight);
-				if (
-					cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
-					cur_frm.doc.customer === "GJCU0009"
-				) {
-					rate_to_use = flt(d.se_rate || 0);
-					making_rate_to_use = d.making_rate;
+	// 			let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+	// 			let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+	// 			let rate_to_use = calculated_gold_rate;
+	// 			let amount = calculated_actual_rate* d.quantity
+	// 			let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
+	// 			let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
+	// 			difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity
+	// 			// d.amount=amount
+	// 			// finding_amount += d.amount;
+	// 			// finding_weight +=d.quantity;
+	// 			// dialog.set_value("finding_amount", finding_amount);
+	// 			// dialog.set_value("finding_weight", finding_weight);
+	// 			if (
+	// 				cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
+	// 				cur_frm.doc.customer === "GJCU0009"
+	// 			) {
+	// 				rate_to_use = flt(d.se_rate || 0);
+	// 				making_rate_to_use = d.making_rate;
 					
-				} else if (
-					cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
-					cur_frm.doc.customer_name === "Gurukrupa Export Private Limited - Chennai"
-				) {
-					making_rate_to_use = d.fg_purchase_rate;
+	// 			} else if (
+	// 				cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
+	// 				cur_frm.doc.customer_name === "Gurukrupa Export Private Limited - Chennai"
+	// 			) {
+	// 				making_rate_to_use = d.fg_purchase_rate;
 					
-				}
-					d.making_amount = making_rate_to_use * d.quantity;
+	// 			}
+	// 				d.making_amount = making_rate_to_use * d.quantity;
 					
-				dialog.fields_dict.finding_detail.df.data.push({
-					docname: d.name,
-					metal_type: d.metal_type,
-					finding_category: d.finding_category,
-					finding_type: d.finding_type,
-					finding_size: d.finding_size,
-					metal_touch: d.metal_touch,
-					metal_purity: d.metal_purity,
-					customer_metal_purity : metal_purity_value,
-					amount:d.amount,
-					rate: d.rate,
-					actual_rate : calculated_gold_rate,
-					metal_colour: d.metal_colour,
-					quantity: d.quantity,
-					quantity_3: d.quantity_3,
-					wastage_rate: d.wastage_rate,
-					wastage_amount: d.wastage_amount,
-					labour_charge:d.labour_charge,
-					making_rate: making_rate_to_use,
-					making_amount: d.making_amount,
-					difference: difference_actual_gold_rate,
-					is_customer_item: d.is_customer_item,
-				});
+	// 			dialog.fields_dict.finding_detail.df.data.push({
+	// 				docname: d.name,
+	// 				metal_type: d.metal_type,
+	// 				finding_category: d.finding_category,
+	// 				finding_type: d.finding_type,
+	// 				finding_size: d.finding_size,
+	// 				metal_touch: d.metal_touch,
+	// 				metal_purity: d.metal_purity,
+	// 				customer_metal_purity : metal_purity_value,
+	// 				amount:d.amount,
+	// 				rate: d.rate,
+	// 				actual_rate : calculated_gold_rate,
+	// 				metal_colour: d.metal_colour,
+	// 				quantity: d.quantity,
+	// 				quantity_3: d.quantity_3,
+	// 				wastage_rate: d.wastage_rate,
+	// 				wastage_amount: d.wastage_amount,
+	// 				labour_charge:d.labour_charge,
+	// 				making_rate: making_rate_to_use,
+	// 				making_amount: d.making_amount,
+	// 				difference: difference_actual_gold_rate,
+	// 				is_customer_item: d.is_customer_item,
+	// 			});
 	
-				// finding_data = dialog.fields_dict.finding_detail.df.data;
-				// dialog.fields_dict.finding_detail.grid.refresh();
-				pending--; 
-                if (pending === 0) {
-				let grid = dialog.fields_dict.finding_detail.grid;
-				let precision = 3;
-				grid.update_docfield_property("rate", "precision", 2);
-				grid.update_docfield_property("amount", "precision", 2);
-				// Refresh the grid
-				finding_data = dialog.fields_dict.finding_detail.df.data;
-				grid.refresh();
-			}}
+	// 			// finding_data = dialog.fields_dict.finding_detail.df.data;
+	// 			// dialog.fields_dict.finding_detail.grid.refresh();
+	// 			pending--; 
+    //             if (pending === 0) {
+	// 			let grid = dialog.fields_dict.finding_detail.grid;
+	// 			let precision = 3;
+	// 			grid.update_docfield_property("rate", "precision", 2);
+	// 			grid.update_docfield_property("amount", "precision", 2);
+	// 			// Refresh the grid
+	// 			finding_data = dialog.fields_dict.finding_detail.df.data;
+	// 			grid.refresh();
+	// 		}}
+	// 	});
+	// });
+	// });
+	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
+		let finding_data = [];
+		let pending = doc.finding_detail.length;
+		finding_data.length = 0;
+		dialog.fields_dict.finding_detail.df.data = [];
+		dialog.fields_dict.finding_detail.grid.df.data = []; // ← ADD THIS
+		dialog.fields_dict.finding_detail.grid.refresh();
+		$.each(doc.finding_detail, function (index, d) {
+			// finding_amount += amount;
+			// let rate_to_use = d.rate;
+			
+			total_wastage_amount += wastage_amount +d.wastage_amount;
+			console.log('total_wastage_amount', total_wastage_amount);
+			// dialog.set_value("finding_amount", finding_amount);
+			let making_rate_to_use = d.making_rate;
+			frappe.call({
+				method: "jewellery_erpnext.query.get_customer_mtel_purity",
+				args: {
+					customer: cur_frm.doc.customer,
+					metal_type: d.metal_type,
+					metal_touch: d.metal_touch,
+				},
+				callback: function (response) {
+					let metal_purity_value = response.message || "N/A";
+					let metal_purity = flt(metal_purity_value || 0);
+					let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
+
+					let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_gold_rate = (d.customer_metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let rate_to_use = calculated_gold_rate;
+					// let amount = calculated_actual_rate* d.quantity
+					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
+					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
+					difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity
+					// d.amount=amount
+					// finding_amount += d.amount;
+					// finding_weight +=d.quantity;
+					// dialog.set_value("finding_amount", finding_amount);
+					// dialog.set_value("finding_weight", finding_weight);
+					if (
+						cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
+						cur_frm.doc.customer === "GJCU0009"
+					) {
+						rate_to_use = flt(d.se_rate || 0);
+						calculated_actual_rate = rate_to_use;
+						making_rate_to_use = d.making_rate;
+
+					} else if (
+						cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
+						cur_frm.doc.customer_name === "Gurukrupa Export Private Limited - Chennai"
+					) {
+						making_rate_to_use = d.making_rate;
+						// console.log("hii",making_rate_to_use)
+
+					}
+					d.making_amount = making_rate_to_use * d.quantity;
+					let amount = calculated_actual_rate * d.quantity
+					finding_data.push({
+						docname: d.name,
+						metal_type: d.metal_type,
+						finding_category: d.finding_category,
+						finding_type: d.finding_type,
+						finding_size: d.finding_size,
+						metal_touch: d.metal_touch,
+						metal_purity: d.metal_purity,
+						customer_metal_purity: metal_purity_value,
+						// amount: amount,
+						// rate: calculated_actual_rate,
+						amount: d.amount,
+						rate: d.rate,
+						actual_rate: calculated_gold_rate,
+						metal_colour: d.metal_colour,
+						quantity: d.quantity,
+						quantity_3: d.quantity_3,
+						wastage_rate: d.wastage_rate,
+						wastage_amount: d.wastage_amount,
+						labour_charge: d.labour_charge,
+						making_rate: making_rate_to_use,
+						making_amount: d.making_amount,
+						difference: difference_actual_gold_rate,
+					});
+
+					// finding_data = dialog.fields_dict.finding_detail.df.data;
+					// dialog.fields_dict.finding_detail.grid.refresh();
+					pending--;
+					if (pending === 0) {
+						dialog.fields_dict.finding_detail.df.data = finding_data;
+					    dialog.fields_dict.finding_detail.grid.df.data = finding_data; 
+						
+						let grid = dialog.fields_dict.finding_detail.grid;
+						// let precision = 3;
+						grid.update_docfield_property("rate", "precision", 2);
+						grid.update_docfield_property("amount", "precision", 2);
+						// Refresh the grid
+						// finding_data = dialog.fields_dict.finding_detail.df.data;
+						grid.refresh();
+					}
+				}
+			});
 		});
 	});
-	});
-
 
 	// other details table append
 	$.each(doc.other_detail, function (index, d) {
