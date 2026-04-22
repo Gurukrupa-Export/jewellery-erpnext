@@ -362,6 +362,12 @@ def validate_weight(self):
 	self.gemstone_weight  = total_gemstone_weight
 	self.total_diamond_weight_in_gms  = self.diamond_weight / 5
 	self.total_gemstone_weight_in_gms = self.gemstone_weight / 5
+	self.gross_weight = round(
+					flt(self.metal_and_finding_weight)
+					+ flt(self.total_diamond_weight_in_gms)
+					+ flt(self.total_gemstone_weight_in_gms)
+					+ flt(self.total_other_weight)
+				,3)
 	# frappe.throw(f"{self.finding_weight_}")
 
 def calculate_metal_qty(self):
@@ -402,10 +408,10 @@ def calculate_total(self):
 	self.total_metal_weight = sum(row.quantity for row in self.metal_detail)
 	self.metal_weight = self.total_metal_weight
 	self.diamond_weight = sum(row.quantity for row in self.diamond_detail)
-	self.total_diamond_weight_in_gms = sum(row.weight_in_gms for row in self.diamond_detail)
+	self.total_diamond_weight_in_gms = sum(row.quantity for row in self.diamond_detail)/5
 	self.total_gemstone_weight = sum(row.quantity for row in self.gemstone_detail)
 	self.gemstone_weight = self.total_gemstone_weight
-	self.total_gemstone_weight_in_gms = sum(row.weight_in_gms for row in self.gemstone_detail)
+	self.total_gemstone_weight_in_gms = sum(row.quantity for row in self.gemstone_detail)/5
 	self.finding_weight = sum(row.quantity for row in self.finding_detail)
 	self.finding_weight_ = self.finding_weight
 	self.total_diamond_pcs = sum(flt(row.pcs) for row in self.diamond_detail)
