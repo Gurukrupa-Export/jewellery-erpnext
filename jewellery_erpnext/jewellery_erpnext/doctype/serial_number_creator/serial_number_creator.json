@@ -8,6 +8,7 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
+   "status",
   "details_section",
   "manufacturing_operation",
   "manufacturing_work_order",
@@ -53,6 +54,13 @@
   "jewelex_order_no"
  ],
  "fields": [
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nPending RM Fetch\nReady to Submit\nSubmitted"
+  },
   {
    "default": "Manufacturing",
    "fetch_from": "parent_manufacturing_order.type",
