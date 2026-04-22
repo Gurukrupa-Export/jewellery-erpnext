@@ -4,6 +4,18 @@
 frappe.ui.form.on("Serial Number Creator", {
 	refresh: function (frm) {
 		set_html(frm);
+
+		if (frm.doc.docstatus === 0 && frm.doc.status === "Pending RM Fetch") {
+			frm.add_custom_button(__("Fetch Raw Materials"), () => {
+				frappe.call({
+					method: "fetch_raw_materials",
+					doc: frm.doc,
+					callback: function (r) {
+						frm.reload_doc();
+					},
+				});
+			});
+		}
 	},
 });
 
