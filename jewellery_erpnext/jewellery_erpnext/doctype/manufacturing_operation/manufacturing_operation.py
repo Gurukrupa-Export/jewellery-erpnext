@@ -1051,12 +1051,12 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 					"batch_no": entry.get("batch_no"),
 					"is_cancelled": 0,
 				},
-				["from_warehouse"],
-				order_by="flow_index asc",
+				["to_warehouse"],
+				order_by="flow_index desc",
 				limit=1,
 			)
 			if mop_logs:
-				s_wh = mop_logs[0].from_warehouse
+				s_wh = mop_logs[0].to_warehouse
 
 		se.append(
 			"items",
@@ -3288,7 +3288,13 @@ def get_stock_entry_data(self):
 		)
 		.where(
 			(StockEntry.docstatus == 1)
-			& (StockEntryDetail.manufacturing_operation.isin(mop))
+			& (
+				StockEntryDetail.manufacturing_operation.isin(mop)
+				| (
+					StockEntryDetail.manufacturing_operation
+					== self.manufacturing_operation
+				)
+			)
 			& (StockEntryDetail.t_warehouse == target_wh)
 		)
 		.groupby(
