@@ -58,6 +58,9 @@ class SerialNumberCreator(Document):
 		if mnf_qty <= 0:
 			frappe.throw(_("Invalid Manufacturing Qty on SNC."))
 
+		# physicalize virtual movements from MWO sync if any
+		_make_physical_transfer_for_synced_mop_logs(mop_name, self)
+
 		# read current balance rows (latest per item+batch)
 		balance_rows = get_current_mop_balance_rows(
 			mop_name,
@@ -67,6 +70,9 @@ class SerialNumberCreator(Document):
 				"qty_after_transaction_batch_based",
 				"pcs_after_transaction_batch_based",
 				"serial_and_batch_bundle",
+				"voucher_type",
+				"voucher_no",
+				"row_name",
 			],
 		)
 
@@ -380,29 +386,8 @@ def create_snc_from_mwo_submit(mwo_name: str) -> str:
 	snc.design_id_bom = mwo.master_bom
 	snc.total_weight = 0
 
-	# initial status
-	is_sync = _get_mop_is_sync(mop_name)
-	snc.status = "Ready to Submit" if is_sync else "Pending RM Fetch"
-
-	# auto-fetch when synced
-	if is_sync:
-		mnf_qty = int(flt(_resolve_mwo_qty(mwo)) or 0)
-		if mnf_qty <= 0:
-			frappe.throw(_("Invalid Manufacturing Work Order Qty for SNC creation."))
-		balance_rows = get_current_mop_balance_rows(
-			mop_name,
-			include_fields=[
-				"item_code",
-				"batch_no",
-				"qty_after_transaction_batch_based",
-				"pcs_after_transaction_batch_based",
-				"serial_and_batch_bundle",
-			],
-		)
-		stock_rows = _to_snc_stock_rows_from_mop_balance(balance_rows)
-		if stock_rows:
-			_append_fg_rows_split(snc, stock_rows, mnf_qty)
-			snc.total_weight = sum(flt(r.get("qty") or 0) for r in stock_rows)
+	# always start in Pending RM Fetch so user can manually trigger the consolidation
+	snc.status = "Pending RM Fetch"
 
 	snc.flags.ignore_mandatory = True
 	snc.save(ignore_permissions=True)
@@ -624,7 +609,26 @@ def _to_snc_stock_rows_from_mop_balance(balance_rows):
 		pcs = flt(r.get("pcs_after_transaction_batch_based") or 0)
 		if qty <= 0 and pcs <= 0:
 			continue
+
 		uom = frappe.db.get_value("Item", item_code, "stock_uom") if item_code else None
+
+		# Fetch attributes from source SED if available
+		inventory_type = None
+		sub_setting_type = None
+		if r.get("voucher_type") == "Stock Entry" and r.get("row_name"):
+			sed_data = frappe.db.get_value(
+				"Stock Entry Detail",
+				r.get("row_name"),
+				["inventory_type", "custom_sub_setting_type"],
+				as_dict=1,
+			)
+			if sed_data:
+				inventory_type = sed_data.inventory_type
+				sub_setting_type = sed_data.custom_sub_setting_type
+
+		# Calculate gross_wt (consistent with manufacturing_operation.py)
+		gross_wt = flt(qty * 0.2, 3) if uom == "Carat" else flt(qty, 3)
+
 		out.append(
 			{
 				"item_code": item_code,
@@ -632,7 +636,11 @@ def _to_snc_stock_rows_from_mop_balance(balance_rows):
 				"qty": qty,
 				"uom": uom,
 				"pcs": pcs,
+				"gross_wt": gross_wt,
 				"serial_and_batch_bundle": r.get("serial_and_batch_bundle"),
+				"inventory_type": inventory_type,
+				"sub_setting_type": sub_setting_type,
+				"sed_item": r.get("row_name"),
 			}
 		)
 	return out
@@ -645,17 +653,31 @@ def _append_fg_rows_split(snc_doc, stock_rows, mnf_qty: int):
 	(stock entry + FG BOM) stays consistent.
 	"""
 	item_qty = {}
+	item_pcs = {}
+	item_gross_wt = {}
 	for mnf_id in range(1, int(mnf_qty) + 1):
 		for data_entry in stock_rows:
 			key = (data_entry.get("item_code"), data_entry.get("batch_no"))
 			if key not in item_qty:
 				item_qty[key] = flt(data_entry.get("qty") or 0)
+				item_pcs[key] = flt(data_entry.get("pcs") or 0)
+				item_gross_wt[key] = flt(data_entry.get("gross_wt") or 0)
+
 			_qty = flt((data_entry.get("qty") or 0) / mnf_qty, 3)
+			_pcs = flt((data_entry.get("pcs") or 0) / mnf_qty, 3)
+			_gross_wt = flt((data_entry.get("gross_wt") or 0) / mnf_qty, 3)
+
 			if mnf_id == mnf_qty:
 				_qty = flt(item_qty[key], 3)
+				_pcs = flt(item_pcs[key], 3)
+				_gross_wt = flt(item_gross_wt[key], 3)
 				item_qty[key] = 0
+				item_pcs[key] = 0
+				item_gross_wt[key] = 0
 			else:
 				item_qty[key] = flt(item_qty[key] - _qty, 3)
+				item_pcs[key] = flt(item_pcs[key] - _pcs, 3)
+				item_gross_wt[key] = flt(item_gross_wt[key] - _gross_wt, 3)
 
 			snc_doc.append(
 				"fg_details",
@@ -665,7 +687,11 @@ def _append_fg_rows_split(snc_doc, stock_rows, mnf_qty: int):
 					"batch_no": data_entry.get("batch_no"),
 					"qty": _qty,
 					"uom": data_entry.get("uom"),
-					"pcs": data_entry.get("pcs"),
+					"pcs": _pcs,
+					"gross_wt": _gross_wt,
+					"inventory_type": data_entry.get("inventory_type"),
+					"sub_setting_type": data_entry.get("sub_setting_type"),
+					"sed_item": data_entry.get("sed_item"),
 				},
 			)
 
@@ -680,3 +706,166 @@ def _append_fg_rows_split(snc_doc, stock_rows, mnf_qty: int):
 				"pcs": data_entry.get("pcs"),
 			},
 		)
+
+
+def _make_physical_transfer_for_synced_mop_logs(mop_name, snc_doc):
+	"""Identify MOP Log rows that were virtually synced but lack physical Stock Ledger entries, and move them.
+	Uses the last flow index per item/batch to decide source and target warehouses."""
+	# get_current_mop_balance_rows now orders by flow_index desc, creation desc
+	balance_rows = get_current_mop_balance_rows(
+		mop_name,
+		include_fields=[
+			"item_code",
+			"batch_no",
+			"qty_after_transaction_batch_based",
+			"pcs_after_transaction_batch_based",
+			"from_warehouse",
+			"to_warehouse",
+			"voucher_type",
+			"serial_and_batch_bundle",
+			"flow_index",
+		],
+	)
+
+	# Physical target should be the department's manufacturing warehouse
+	target_wh = frappe.db.get_value(
+		"Warehouse",
+		{
+			"disabled": 0,
+			"department": snc_doc.department,
+			"warehouse_type": "Manufacturing",
+		},
+	)
+
+	# Find all MWOs for the same Parent Manufacturing Order to search for physical movements
+	pmo = snc_doc.parent_manufacturing_order
+	all_mwos = []
+	if pmo:
+		all_mwos = frappe.get_all(
+			"Manufacturing Work Order",
+			{"manufacturing_order": pmo, "docstatus": 1},
+			pluck="name",
+		)
+
+	items_to_transfer = []
+	for row in balance_rows:
+		# Use the latest flow index tier to decide status.
+		# If it's a virtual sync log, we need a physical movement.
+		if row.get("voucher_type") != "Manufacturing Work Order":
+			continue
+
+		qty = flt(row.get("qty_after_transaction_batch_based"))
+		pcs = flt(row.get("pcs_after_transaction_batch_based"))
+		if qty <= 0 and pcs <= 0:
+			continue
+
+		item_code = row.get("item_code")
+		batch_no = row.get("batch_no")
+		bundle_name = row.get("serial_and_batch_bundle")
+
+		# INITIAL GUESS for source warehouse
+		s_wh = row.get("from_warehouse")
+
+		# SEARCH FOR PHYSICAL REALITY: Look for the last Stock Entry log for this batch in this PMO
+		if all_mwos:
+			physical_log = frappe.db.get_value(
+				"MOP Log",
+				{
+					"manufacturing_work_order": ["in", all_mwos],
+					"item_code": item_code,
+					"batch_no": batch_no,
+					"voucher_type": "Stock Entry",
+					"is_cancelled": 0,
+				},
+				"to_warehouse",  # Where it was last physically moved TO
+				order_by="flow_index desc, creation desc",
+			)
+			if physical_log:
+				s_wh = physical_log
+
+		# Fallback: if bundle exists, it MIGHT be right (though user error suggests it was stale)
+		if (
+			not s_wh
+			and bundle_name
+			and frappe.db.exists("Serial and Batch Bundle", bundle_name)
+		):
+			s_wh = frappe.db.get_value(
+				"Serial and Batch Bundle", bundle_name, "warehouse"
+			)
+
+		t_wh = target_wh or row.get("to_warehouse")
+
+		if s_wh and t_wh and s_wh != t_wh:
+			row["s_wh"] = s_wh
+			row["t_wh"] = t_wh
+			items_to_transfer.append(row)
+
+	if not items_to_transfer:
+		return
+
+	se = frappe.new_doc("Stock Entry")
+	se.stock_entry_type = "Material Transfer"
+	se.purpose = "Material Transfer"
+	se.company = snc_doc.company
+	se.custom_serial_number_creator = snc_doc.name
+	se.manufacturing_work_order = snc_doc.manufacturing_work_order
+	se.manufacturing_operation = mop_name
+	se.auto_created = 1
+
+	for row in items_to_transfer:
+		item_code = row.get("item_code")
+		bundle_name = row.get("serial_and_batch_bundle")
+		s_wh = row.get("s_wh")
+		t_wh = row.get("t_wh")
+
+		# Create a fresh bundle document to avoid "already used" validation errors
+		new_bundle_name = None
+		if bundle_name:
+			try:
+				old_bundle = frappe.get_doc("Serial and Batch Bundle", bundle_name)
+				new_bundle = frappe.new_doc("Serial and Batch Bundle")
+				new_bundle.item_code = old_bundle.item_code
+				new_bundle.warehouse = s_wh
+				new_bundle.type = "Outward"
+				new_bundle.type_of_transaction = "Outward"
+				new_bundle.voucher_type = "Stock Entry"
+				new_bundle.company = old_bundle.company
+				for entry in old_bundle.entries:
+					new_bundle.append(
+						"entries",
+						{
+							"batch_no": entry.batch_no,
+							"qty": entry.qty,
+							"serial_no": entry.serial_no,
+						},
+					)
+				new_bundle.save()
+				new_bundle_name = new_bundle.name
+			except Exception as e:
+				frappe.log_error(
+					title="SNC Bundle Clone Error",
+					message=f"MOP: {mop_name}, Item: {item_code}, Error: {e}",
+				)
+				new_bundle_name = None
+
+		se.append(
+			"items",
+			{
+				"item_code": item_code,
+				"qty": flt(row.get("qty_after_transaction_batch_based")),
+				"uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+				"s_warehouse": s_wh,
+				"t_warehouse": t_wh,
+				"batch_no": row.get("batch_no"),
+				"serial_and_batch_bundle": new_bundle_name,
+				"use_serial_batch_fields": 1,
+				"manufacturing_operation": mop_name,
+				"custom_manufacturing_work_order": snc_doc.manufacturing_work_order,
+			},
+		)
+
+	se.flags.ignore_permissions = True
+	se.save()
+	se.submit()
+	frappe.msgprint(_("Physical Stock Transfer created: {0}").format(se.name))
+	return se.name
