@@ -880,5 +880,23 @@
   "name": "Draft",
   "style": "",
   "workflow_state_name": "Draft"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-04-21 00:00:00.000000",
+  "name": "Pending RM Fetch",
+  "style": "Warning",
+  "workflow_state_name": "Pending RM Fetch"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-04-21 00:00:00.000000",
+  "name": "Ready to Submit",
+  "style": "Success",
+  "workflow_state_name": "Ready to Submit"
  }
 ]

@@ -12,7 +12,6 @@ from frappe.query_builder.functions import Avg, IfNull, Max, Sum
 from frappe.utils import (
 	flt,
 	get_datetime,
-	get_timedelta,
 	now,
 	time_diff,
 	time_diff_in_hours,
@@ -942,6 +941,7 @@ class ManufacturingOperation(Document):
 					doctype=doctype, doc_updates=updates, update_modified=False
 				)
 
+
 def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if mo_data is None:
 		mo_data = []
@@ -1027,6 +1027,37 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 		):
 			diamond_grade_data.setdefault(diamond_grade, 0)
 			diamond_grade_data[diamond_grade] += entry["qty"]
+
+		s_wh = target_wh
+		reservation = frappe.db.get_value(
+			"Stock Reservation Entry",
+			{
+				"manufacturing_operation": doc.manufacturing_operation,
+				"item_code": entry["item_code"],
+				"docstatus": 1,
+			},
+			["warehouse"],
+			as_dict=1,
+		)
+
+		if reservation:
+			s_wh = reservation.warehouse
+		else:
+			mop_logs = frappe.db.get_all(
+				"MOP Log",
+				{
+					"manufacturing_operation": doc.manufacturing_operation,
+					"item_code": entry["item_code"],
+					"batch_no": entry.get("batch_no"),
+					"is_cancelled": 0,
+				},
+				["from_warehouse"],
+				order_by="flow_index asc",
+				limit=1,
+			)
+			if mop_logs:
+				s_wh = mop_logs[0].from_warehouse
+
 		se.append(
 			"items",
 			{
@@ -1042,7 +1073,8 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 				"pcs": entry.get("pcs"),
 				"use_serial_batch_fields": 1,
 				"to_department": doc.department,
-				"s_warehouse": target_wh,
+				"s_warehouse": s_wh,
+				"t_warehouse": None,
 			},
 		)
 	sr_no = ""
@@ -1050,12 +1082,29 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	sr_no = make_autoname(compose_series)
 	new_bom_serial_no = sr_no
 	# serial_no_pass_entry(doc,sr_no,to_wh,pmo_det)
+
+	fg_to_wh = to_wh
+	fg_mop_logs = frappe.db.get_all(
+		"MOP Log",
+		{
+			"manufacturing_operation": doc.manufacturing_operation,
+			"item_code": finish_item,
+			"is_cancelled": 0,
+		},
+		["to_warehouse"],
+		order_by="flow_index desc",
+		limit=1,
+	)
+	if fg_mop_logs:
+		fg_to_wh = fg_mop_logs[0].to_warehouse
+
 	se.append(
 		"items",
 		{
 			"item_code": finish_item,
 			"qty": 1,
-			"t_warehouse": to_wh,
+			"t_warehouse": fg_to_wh,
+			"s_warehouse": None,
 			"department": doc.department,
 			"to_department": doc.department,
 			"inventory_type": "Regular Stock",
@@ -2492,12 +2541,11 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					fields=["name"],
 				)
 
-				subcategory_value = None
 				matching_subcategory = None
 
 				if making_charge_price_list:
 					if finding_type_value:
-						subcategory_value = frappe.db.get_value(
+						frappe.db.get_value(
 							"Making Charge Price Finding Subcategory",
 							{"subcategory": finding_type_value},
 							["rate_per_gm", "wastage"],
@@ -2592,12 +2640,11 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					fields=["name"],
 				)
 
-				subcategory_value = None
 				matching_subcategory = None
 
 				if making_charge_price_list:
 					if finding_type_value:
-						subcategory_value = frappe.db.get_value(
+						frappe.db.get_value(
 							"Making Charge Price Finding Subcategory",
 							{"subcategory": finding_type_value},
 							["rate_per_gm", "wastage"],
@@ -2837,12 +2884,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						numbers = re.findall(r"[-+]?\d*\.\d+|\d+", gemstone_size_str)
 
 						if len(numbers) == 2:
-							min_size, max_size = (
+							min_size, _max_size = (
 								float(min(numbers)),
 								float(max(numbers)),
 							)
 						elif len(numbers) == 1:
-							min_size = max_size = float(numbers[0])
+							min_size = float(numbers[0])
 						else:
 							frappe.throw(
 								f"Invalid gemstone size format: {gemstone_size_str}"
@@ -3052,12 +3099,12 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 						numbers = re.findall(r"[-+]?\d*\.\d+|\d+", gemstone_size_str)
 
 						if len(numbers) == 2:
-							min_size, max_size = (
+							min_size, _max_size = (
 								float(min(numbers)),
 								float(max(numbers)),
 							)
 						elif len(numbers) == 1:
-							min_size = max_size = float(numbers[0])
+							min_size = float(numbers[0])
 						else:
 							frappe.throw(
 								f"Invalid gemstone size format: {gemstone_size_str}"
@@ -3213,10 +3260,13 @@ def get_stock_entry_data(self):
 			"name": ["!=", self.manufacturing_work_order],
 			"manufacturing_order": pmo,
 			"docstatus": ["!=", 2],
-			"department": ["=", self.department],
 		},
 		pluck="manufacturing_operation",
 	)
+
+	if not mop:
+		return []
+
 	StockEntry = frappe.qb.DocType("Stock Entry")
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
 
@@ -3475,8 +3525,6 @@ def get_linked_stock_entries(mwo, department):
 
 @frappe.whitelist()
 def create_mr_wo_stock_entry(se_data):
-	from jewellery_erpnext.utils import get_warehouse_from_user
-
 	if isinstance(se_data, str):
 		se_data = json.loads(se_data)
 
