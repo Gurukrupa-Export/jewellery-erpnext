@@ -247,62 +247,77 @@ def create_repack_for_used_other(doc, method=None):
 
 	if not matched_rows:
 		return []
+	total_source_qty = sum(flt(d.qty) for d in doc.items if d.batch_no)
+	remaining_qty = total_source_qty
 
-	last_row = matched_rows[-1]
+	source_batch = next((d.batch_no for d in doc.items if d.batch_no), None)
 
-	child_batch = last_row["batch_no"]
-	item_code = last_row["item"]
-	used_other = last_row["used_other"]
-	owner = last_row["owner"]
+	if not source_batch:
+		return
 
-	linked_batches = get_linked_batches(child_batch)
+	for row in matched_rows:
+		if remaining_qty <= 0:
+			frappe.log_error("No remaining source qty to allocate", "")
+			break
 
-	parent_batch = None
+		child_batch = row["batch_no"]
+		item_code = row["item"]
+		used_other = row["used_other"]
+		owner = row["owner"]
 
-	for b in linked_batches:
-		try:
-			batch_doc = frappe.get_doc("Batch", b)
-			item = batch_doc.item
-
-			if item and "24KT" in item:
-				parent_batch = b
-				break
-		except Exception as e:
-			frappe.log_error(title="Batch Error", message=str(e))
-
-	if not parent_batch:
-		return []
-
-	purity = get_purity(item_code)
-	converted_qty = used_other * (purity / 100)
-
-	parent_item = frappe.get_value("Batch", parent_batch, "item")
-	for doc_row in doc.items:
-		if not doc_row.batch_no:
+		if not owner:
 			continue
 
-		source_batch = doc_row.batch_no
-		source_qty = flt(doc_row.qty)
+		process_qty = min(used_other, remaining_qty)
+
+		try:
+			linked_batches = get_linked_batches(child_batch)
+		except Exception as e:
+			frappe.log_error(title="Error fetching linked batches", message=str(e))
+			continue
+
+		parent_batch = None
+
+		try:
+			for b in linked_batches:
+				item = frappe.get_value("Batch", b, "item")
+				if item and "24KT" in item:
+					parent_batch = b
+					break
+		except Exception as e:
+			frappe.log_error(title="Error identifying parent batch", message=str(e))
+			continue
+
+		if not parent_batch:
+			frappe.log_error("No parent batch found for child batch", child_batch)
+			return []
+
+		purity = get_purity(item_code)
+		converted_qty = process_qty * (purity / 100)
+
+		parent_item = frappe.get_value("Batch", parent_batch, "item")
 
 		exists = frappe.db.exists(
 			"Stock Entry Detail",
 			{
 				"batch_no": parent_batch,
+				"s_warehouse": "Central RM - GEPL",
+				"t_warehouse": "",
 				"is_finished_item": 1,
 				"docstatus": 1,
 			},
 		)
 
 		if exists:
-			return
+			continue
 
 		try:
 			se = frappe.new_doc("Stock Entry")
 			se.stock_entry_type = "Subcontracting Repack"
 			se.purpose = "Repack"
 			se.company = doc.company
+			se.flags.ignore_validate_serial_no = True
 
-			# SOurce
 			se.append(
 				"items",
 				{
@@ -313,7 +328,7 @@ def create_repack_for_used_other(doc, method=None):
 					"customer": source_customer,
 					"inventory_type": "Regular Stock",
 					"is_finished_item": 0,
-					"use_serial_batch_fields": 1,
+					"use_serial_batch_fields": 0,
 				},
 			)
 
@@ -323,16 +338,19 @@ def create_repack_for_used_other(doc, method=None):
 					"item_code": parent_item,
 					"batch_no": parent_batch,
 					"qty": converted_qty,
-					"t_warehouse": "RM Procurement - GEPL",
+					"s_warehouse": "Central RM - GEPL",
 					"customer": owner,
 					"inventory_type": "Regular Stock",
 					"is_finished_item": 1,
-					"use_serial_batch_fields": 1,
+					"use_serial_batch_fields": 0,
 				},
 			)
-
+			se.set("use_serial_batch_fields", 0)
 			se.insert()
 			se.submit()
 
 		except Exception as e:
-			frappe.log_error(title="Repack Error", message=str(e))
+			frappe.log_error(title="Error creating repack entry", message=str(e))
+			continue
+
+		remaining_qty -= process_qty

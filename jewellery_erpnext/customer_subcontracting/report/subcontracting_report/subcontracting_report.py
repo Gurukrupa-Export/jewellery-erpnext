@@ -135,13 +135,33 @@ def process_repack_row(batch_map, parent_usage, child_usage, row):
 			parent_usage.setdefault(parent_batch, {"used_same": 0, "received_back": 0})
 			parent_usage[parent_batch]["used_same"] += parent_qty
 
-			if repack_type == "Subcontracting Repack":
-				parent_usage[parent_batch]["received_back"] += child_qty
 		else:
 			child_usage.setdefault(
-				(parent_batch, customer, item), {"used_other": 0, "return_qty": 0}
+				(parent_batch, customer, item),
+				{"used_other": 0, "return_qty": 0},
 			)
 			child_usage[(parent_batch, customer, item)]["used_other"] += parent_qty
+
+	if repack_type == "Subcontracting Repack":
+		source_customer = batch_map.get(parent_batch, {}).get("owner")
+		if child_batch:
+			if child_batch not in batch_map:
+				add_opening(batch_map, child_batch, customer, item, 0)
+
+			parent_usage.setdefault(child_batch, {"used_same": 0, "received_back": 0})
+			parent_usage[child_batch]["received_back"] += child_qty
+
+			child_usage.setdefault(
+				(child_batch, source_customer, item),
+				{"used_other": 0, "return_qty": 0},
+			)
+
+		if parent_batch:
+			child_usage.setdefault(
+				(parent_batch, customer, item),
+				{"used_other": 0, "return_qty": 0},
+			)
+			child_usage[(parent_batch, customer, item)]["return_qty"] += child_qty
 
 	if child_batch:
 		if child_batch not in batch_map:
