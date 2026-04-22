@@ -1,0 +1,15 @@
+{
+  "Serial Number Creator": [
+    {
+      "dt": "Serial Number Creator",
+      "fieldname": "workflow_state",
+      "fieldtype": "Select",
+      "insert_after": "type",
+      "label": "Workflow State",
+      "module": "Jewellery Erpnext",
+      "options": "\nPending RM Fetch\nReady to Submit",
+      "read_only": 1
+    }
+  ]
+}
+

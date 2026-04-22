@@ -256,7 +256,9 @@ def create_mop_log_for_department_ir(
 		return
 
 	mop_logs = []
-	is_receive = getattr(self, "type", None) == "Receive" and getattr(self, "receive_against", None)
+	is_receive = getattr(self, "type", None) == "Receive" and getattr(
+		self, "receive_against", None
+	)
 	receive_used_tail_fallback = False
 
 	if is_receive:
@@ -281,11 +283,13 @@ def create_mop_log_for_department_ir(
 		if not mop_logs:
 			frappe.log_error(
 				title="MOP Log Fallback",
-				message=f"DIR Receive missing Issue logs for {self.receive_against}, falling back to tail-snapshot."
+				message=f"DIR Receive missing Issue logs for {self.receive_against}, falling back to tail-snapshot.",
 			)
 
 	if not mop_logs:
-		if is_receive and frappe.get_site_config().get("department_ir_receive_strict_lineage"):
+		if is_receive and frappe.get_site_config().get(
+			"department_ir_receive_strict_lineage"
+		):
 			frappe.throw(
 				_(
 					"No MOP Log rows found for Department IR Issue {0} on Manufacturing Operation {1}. "
@@ -387,37 +391,6 @@ def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
 		"Manufacturing Operation", row.manufacturing_operation, "department_receive_id"
 	)
 	mop_logs = _get_mop_logs_for_employee_ir_issue(row, department_receive_id)
-	if not mop_logs:
-		if cint(getattr(self, "is_main_slip_required", 0)):
-			# Main Slip-required Issue may legitimately start with a zero MOP Log
-			# baseline; the matching Receive auto-injects via main_slip_inject so
-			# downstream chain can still post. Log for audit and return silently.
-			frappe.log_error(
-				title="Employee IR Issue under Main Slip: empty starting balance (allowed)",
-				message=(
-					f"Manufacturing Operation: {row.manufacturing_operation}\n"
-					f"Employee IR: {self.name}\n"
-					"is_main_slip_required=1; Issue accepted with zero MOP Log "
-					"baseline. Receive will inject via main_slip_inject."
-				),
-			)
-			return
-		frappe.log_error(
-			title="Employee IR Issue: no MOP Log source rows",
-			message=(
-				f"Manufacturing Operation: {row.manufacturing_operation}\n"
-				f"Employee IR: {self.name}\n"
-				f"department_receive_id: {department_receive_id!r}\n"
-				"No Department IR MOP Logs for that receive voucher and no non-cancelled "
-				f"MOP Log rows at max flow_index for this MOP."
-			),
-		)
-		frappe.throw(
-			_(
-				"No MOP balance found to issue for Manufacturing Operation {0}. "
-				"Post Department IR receive for this MOP, or post a Stock Entry linked to this MOP."
-			).format(row.manufacturing_operation)
-		)
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = log.item_code
@@ -522,42 +495,7 @@ def create_mop_log_for_employee_ir_receive(doc, row, from_warehouse, to_warehous
 	}
 	issue_keys = {(log.get("item_code"), log.get("batch_no")) for log in mop_logs}
 	missing_keys = sorted(current_balance_keys - issue_keys)
-	if missing_keys:
-		if is_main_slip_required:
-			# New items injected by main_slip_inject on the same Receive appear in
-			# current_balance but not in the Issue snapshot. This is expected under
-			# Main Slip; log for audit and continue without throwing.
-			frappe.log_error(
-				title="Employee IR Receive under Main Slip: current balance extends Issue snapshot (allowed)",
-				message=frappe.as_json(
-					{
-						"receive": doc.name,
-						"issue": issue_voucher,
-						"manufacturing_operation": row.manufacturing_operation,
-						"missing_components_explained_by_main_slip_inject": missing_keys,
-					},
-					indent=2,
-				),
-			)
-		else:
-			frappe.log_error(
-				title="Employee IR Receive: Issue snapshot missing current balance components",
-				message=frappe.as_json(
-					{
-						"receive": doc.name,
-						"issue": issue_voucher,
-						"manufacturing_operation": row.manufacturing_operation,
-						"missing_components": missing_keys,
-					},
-					indent=2,
-				),
-			)
-			frappe.throw(
-				_(
-					"Employee IR Issue {0} is missing one or more current MOP balance components for Manufacturing Operation {1}. "
-					"Please recreate the Issue so Receive can mirror the full balance."
-				).format(issue_voucher, row.manufacturing_operation)
-			)
+
 	# received_gross_wt = flt(row.received_gross_wt)
 	# gross_wt = flt(row.gross_wt)
 

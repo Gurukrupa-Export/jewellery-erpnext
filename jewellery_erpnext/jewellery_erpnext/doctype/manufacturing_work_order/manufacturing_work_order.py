@@ -1,7 +1,6 @@
 # Copyright (c) 2023, Nirali and contributors
 # For license information, please see license.txt
 
-from copy import deepcopy
 
 import frappe
 from frappe import _
@@ -10,16 +9,13 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.model.naming import make_autoname
 from frappe.utils import cint, flt, get_datetime, now
 
-from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
-	get_linked_stock_entries_for_serial_number_creator,
-)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.utils import (
 	add_time_log,
 	create_se_entry,
 	create_stock_transfer_entry,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
-	get_operation_details,
+	create_snc_from_mwo_submit,
 )
 from jewellery_erpnext.utils import get_item_from_attribute, set_values_in_bulk
 
@@ -353,57 +349,72 @@ def create_manufacturing_operation(doc):
 	add_time_log(mop, values)
 
 	if doc.for_fg:
-		mop_logs = frappe.get_all(
-			"MOP Log",
-			filters={"manufacturing_work_order": doc.name, "is_cancelled": 0},
-			fields=["*"],
-			order_by="flow_index asc"
+		other_mwos = frappe.get_all(
+			"Manufacturing Work Order",
+			filters={
+				"manufacturing_order": doc.manufacturing_order,
+				"name": ["!=", doc.name],
+				"docstatus": 1,
+			},
+			pluck="name",
 		)
-		
-		balance_map = {}
-		for log in mop_logs:
-			key = (log.item_code, log.batch_no)
-			balance_map[key] = log
 
-		for key, log in balance_map.items():
-			if log.qty_after_transaction_batch_based > 0 or log.pcs_after_transaction_batch_based > 0:
+		mop_logs = []
+		if other_mwos:
+			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				get_current_mop_balance_rows,
+			)
+
+			for wo_name in other_mwos:
+				wo_mop = frappe.db.get_value(
+					"Manufacturing Work Order", wo_name, "manufacturing_operation"
+				)
+				if wo_mop:
+					mop_logs.extend(get_current_mop_balance_rows(wo_mop))
+
+		for log in mop_logs:
+			if (
+				flt(log.get("qty_after_transaction_batch_based")) > 0
+				or flt(log.get("pcs_after_transaction_batch_based")) > 0
+			):
 				new_log = frappe.new_doc("MOP Log")
 				for field in [
-					"item_code", "pcs_after_transaction", "pcs_after_transaction_item_based", 
-					"pcs_after_transaction_batch_based", "qty_after_transaction", 
-					"qty_after_transaction_item_based", "qty_after_transaction_batch_based",
-					"serial_and_batch_bundle", "batch_no"
+					"item_code",
+					"pcs_after_transaction",
+					"pcs_after_transaction_item_based",
+					"pcs_after_transaction_batch_based",
+					"qty_after_transaction",
+					"qty_after_transaction_item_based",
+					"qty_after_transaction_batch_based",
+					"serial_and_batch_bundle",
+					"batch_no",
 				]:
 					new_log.set(field, log.get(field))
+
+				source_wh = frappe.db.get_value(
+					"MOP Log",
+					{
+						"manufacturing_work_order": ["in", other_mwos],
+						"item_code": log.item_code,
+						"batch_no": log.batch_no,
+						"flow_index": 0,
+						"is_cancelled": 0,
+					},
+					"from_warehouse",
+				)
+
+				new_log.from_warehouse = source_wh or log.get("from_warehouse")
+				new_log.to_warehouse = log.get("to_warehouse")
 
 				new_log.manufacturing_operation = mop.name
 				new_log.manufacturing_work_order = doc.name
 				new_log.voucher_type = "Manufacturing Work Order"
 				new_log.voucher_no = doc.name
-				new_log.flow_index = (log.flow_index or 0) + 1
-				new_log.is_synced = 0
+				new_log.flow_index = 0
+				new_log.is_synced = 1
 				new_log.save()
 
-		# New Code
-		department, operation = frappe.db.get_value(
-			"Department Operation",
-			{"is_last_operation": 1, "manufacturer": doc.manufacturer},
-			["department", "name"],
-		) or ["", ""]
-		data = get_linked_stock_entries_for_serial_number_creator(
-			doc.name, department, doc.item_code, doc.qty
-		)
-		get_operation_details(
-			data,
-			mop.name,
-			doc.name,
-			doc.manufacturing_order,
-			doc.company,
-			doc.manufacturer,
-			department,
-			doc.for_fg,
-			doc.master_bom,
-		)
+		create_snc_from_mwo_submit(doc.name)
 
 
 @frappe.whitelist()
