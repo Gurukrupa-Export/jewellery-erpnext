@@ -50,15 +50,13 @@ runs for SE types listed in **MOP Settings → Stock Entry Type To Reservation**
 from __future__ import annotations
 
 import frappe
-from frappe import _
-from frappe.utils import cint, flt, nowtime, today
-
 from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
 	get_auto_batch_nos,
 )
+from frappe import _
+from frappe.utils import cint, flt, nowtime, today
 
 from jewellery_erpnext.utils import get_item_from_attribute
-
 
 REPACK_STOCK_ENTRY_TYPE = "Repack"
 MATERIAL_TRANSFER_STOCK_ENTRY_TYPE = "Material Transfer (WORK ORDER)"
@@ -81,7 +79,11 @@ def _ensure_posting_datetime(se):
 
 def _row_to_append_dict(row):
 	if isinstance(row, dict):
-		d = {k: v for k, v in row.items() if k not in ("name", "idx", "owner", "creation", "modified")}
+		d = {
+			k: v
+			for k, v in row.items()
+			if k not in ("name", "idx", "owner", "creation", "modified")
+		}
 	else:
 		d = row.as_dict()
 		for k in ("name", "idx", "owner", "creation", "modified"):
@@ -180,8 +182,16 @@ def _apply_fifo_to_repack_stock_entry(se):
 		nxt = rows[i + 1] if i + 1 < len(rows) else None
 		cur_s = cur.get("s_warehouse") if isinstance(cur, dict) else cur.s_warehouse
 		cur_t = cur.get("t_warehouse") if isinstance(cur, dict) else cur.t_warehouse
-		nxt_t = nxt.get("t_warehouse") if nxt and isinstance(nxt, dict) else getattr(nxt, "t_warehouse", None)
-		nxt_s = nxt.get("s_warehouse") if nxt and isinstance(nxt, dict) else getattr(nxt, "s_warehouse", None)
+		nxt_t = (
+			nxt.get("t_warehouse")
+			if nxt and isinstance(nxt, dict)
+			else getattr(nxt, "t_warehouse", None)
+		)
+		nxt_s = (
+			nxt.get("s_warehouse")
+			if nxt and isinstance(nxt, dict)
+			else getattr(nxt, "s_warehouse", None)
+		)
 
 		if cur_s and not cur_t and nxt and nxt_t and not nxt_s:
 			c_tot = _row_qty_val(cur)
@@ -210,7 +220,9 @@ def _apply_fifo_to_repack_stock_entry(se):
 
 
 def _pure_metal_item_for_mwo(mwo_name):
-	manufacturer = frappe.db.get_value("Manufacturing Work Order", mwo_name, "manufacturer")
+	manufacturer = frappe.db.get_value(
+		"Manufacturing Work Order", mwo_name, "manufacturer"
+	)
 	if not manufacturer:
 		return None
 	return frappe.db.get_value(
@@ -224,7 +236,9 @@ def _get_bin_qty(item_code, warehouse):
 	if not item_code or not warehouse:
 		return 0.0
 	return flt(
-		frappe.db.get_value("Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty")
+		frappe.db.get_value(
+			"Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty"
+		)
 	)
 
 
@@ -398,9 +412,9 @@ def inject_extra_metal_for_eir_receive(eir, row):
 	dept_wh = _resolve_department_warehouse(eir.department)
 	if not dept_wh:
 		frappe.throw(
-			_("Main Slip injection: MFG Warehouse not configured for department {0}").format(
-				eir.department
-			)
+			_(
+				"Main Slip injection: MFG Warehouse not configured for department {0}"
+			).format(eir.department)
 		)
 
 	if getattr(eir, "main_slip", None):
@@ -409,7 +423,9 @@ def inject_extra_metal_for_eir_receive(eir, row):
 		target_items = _resolve_inject_metal_items(row.manufacturing_work_order, extra)
 		return _inject_via_main_slip_batches(eir, row, target_items, dept_wh)
 
-	segments = _resolve_fallback_inject_segments(eir, row.manufacturing_work_order, extra, dept_wh)
+	segments = _resolve_fallback_inject_segments(
+		eir, row.manufacturing_work_order, extra, dept_wh
+	)
 	if _fallback_injection_fully_submitted(eir.name, row.name, segments):
 		return []
 	return _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh)
@@ -428,7 +444,10 @@ def cancel_injections_for_eir(eir_name):
 			"employee_ir": eir_name,
 			"auto_created": 1,
 			"docstatus": 1,
-			"stock_entry_type": ["in", [REPACK_STOCK_ENTRY_TYPE, MATERIAL_TRANSFER_STOCK_ENTRY_TYPE]],
+			"stock_entry_type": [
+				"in",
+				[REPACK_STOCK_ENTRY_TYPE, MATERIAL_TRANSFER_STOCK_ENTRY_TYPE],
+			],
 		},
 		pluck="name",
 	)
@@ -491,9 +510,7 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 					available * source_purity / target_purity, 3
 				)
 				produce_this = min(max_produce_from_batch, remaining)
-				consume_this = round(
-					produce_this * target_purity / source_purity, 3
-				)
+				consume_this = round(produce_this * target_purity / source_purity, 3)
 				se = _build_purity_repack_se(
 					eir,
 					row,
@@ -621,21 +638,35 @@ def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh):
 		)
 	transfer_segs = [s for s in segments if s.get("mode") == "transfer"]
 	purity_segs = [s for s in segments if s.get("mode") == "purity"]
-	_validate_fallback_segments_against_source_bin(transfer_segs, purity_segs, source_wh)
+	try:
+		_validate_fallback_segments_against_source_bin(
+			transfer_segs, purity_segs, source_wh
+		)
+	except Exception:
+		source_wh = _resolve_source_warehouse_raw_material(eir)
+		_validate_fallback_segments_against_source_bin(
+			transfer_segs, purity_segs, source_wh
+		)
 
 	out = []
 	if transfer_segs and not _injection_se_exists(
 		eir.name, row.name, MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
 	):
-		se_mt = _build_material_transfer_from_segments(eir, row, transfer_segs, source_wh, dept_wh)
+		se_mt = _build_material_transfer_from_segments(
+			eir, row, transfer_segs, source_wh, dept_wh
+		)
 		se_mt.flags.ignore_permissions = True
 		_apply_fifo_batches_to_stock_entry(se_mt)
 		se_mt.save()
 		se_mt.submit()
 		out.append(se_mt.name)
 
-	if purity_segs and not _injection_se_exists(eir.name, row.name, REPACK_STOCK_ENTRY_TYPE):
-		se_rp = _build_repack_from_purity_segments(eir, row, purity_segs, source_wh, dept_wh)
+	if purity_segs and not _injection_se_exists(
+		eir.name, row.name, REPACK_STOCK_ENTRY_TYPE
+	):
+		se_rp = _build_repack_from_purity_segments(
+			eir, row, purity_segs, source_wh, dept_wh
+		)
 		se_rp.flags.ignore_permissions = True
 		_apply_fifo_batches_to_stock_entry(se_rp)
 		se_rp.save()
@@ -678,14 +709,20 @@ def _injection_se_exists(eir_name, row_name, stock_entry_type):
 def _fallback_injection_fully_submitted(eir_name, row_name, segments):
 	transfer_segs = [s for s in segments if s.get("mode") == "transfer"]
 	purity_segs = [s for s in segments if s.get("mode") == "purity"]
-	if transfer_segs and not _injection_se_exists(eir_name, row_name, MATERIAL_TRANSFER_STOCK_ENTRY_TYPE):
+	if transfer_segs and not _injection_se_exists(
+		eir_name, row_name, MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
+	):
 		return False
-	if purity_segs and not _injection_se_exists(eir_name, row_name, REPACK_STOCK_ENTRY_TYPE):
+	if purity_segs and not _injection_se_exists(
+		eir_name, row_name, REPACK_STOCK_ENTRY_TYPE
+	):
 		return False
 	return True
 
 
-def _validate_fallback_segments_against_source_bin(transfer_segs, purity_segs, source_wh):
+def _validate_fallback_segments_against_source_bin(
+	transfer_segs, purity_segs, source_wh
+):
 	need = {}
 	for seg in transfer_segs:
 		ic = seg["item_code"]
@@ -713,7 +750,9 @@ def _resolve_inject_metal_items(mwo_name, total_extra):
 		],
 		as_dict=True,
 	)
-	if not mwo or not (mwo.get("metal_type") and mwo.get("metal_touch") and mwo.get("metal_purity")):
+	if not mwo or not (
+		mwo.get("metal_type") and mwo.get("metal_touch") and mwo.get("metal_purity")
+	):
 		frappe.throw(
 			_(
 				"Main Slip injection: Manufacturing Work Order {0} is missing "
@@ -772,6 +811,27 @@ def _resolve_source_warehouse(eir):
 	)
 
 
+def _resolve_source_warehouse_raw_material(eir):
+	if eir.subcontracting == "Yes":
+		return frappe.db.get_value(
+			"Warehouse",
+			{
+				"disabled": 0,
+				"company": eir.company,
+				"subcontractor": eir.subcontractor,
+				"warehouse_type": "Raw Material",
+			},
+		)
+	return frappe.db.get_value(
+		"Warehouse",
+		{
+			"disabled": 0,
+			"employee": eir.employee,
+			"warehouse_type": "Raw Material",
+		},
+	)
+
+
 def _resolve_department_warehouse(department):
 	return frappe.db.get_value(
 		"Warehouse",
@@ -815,7 +875,9 @@ def _stamp_se_header(se, eir, row):
 		se.employee = eir.employee
 
 
-def _build_material_transfer_from_segments(eir, row, transfer_segments, source_wh, dept_wh):
+def _build_material_transfer_from_segments(
+	eir, row, transfer_segments, source_wh, dept_wh
+):
 	"""Fallback path: one Material Transfer (WORK ORDER) SE from merged transfer segments."""
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
