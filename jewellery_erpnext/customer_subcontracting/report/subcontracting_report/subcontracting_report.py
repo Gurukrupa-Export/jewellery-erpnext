@@ -203,6 +203,7 @@ def get_linked_batches(batch_no):
         JOIN `tabStock Entry Detail` child_sed
             ON child_sed.parent = se.name AND child_sed.is_finished_item = 1
         WHERE se.stock_entry_type IN ('Repack-Metal Conversion', 'Subcontracting Repack')
+		AND se.docstatus = 1
         AND parent_sed.batch_no = %s
         """,
 		(batch_no,),
@@ -235,6 +236,7 @@ def get_cgr_data(filters, conditions):
     FROM `tabStock Entry Detail` sed
     JOIN `tabStock Entry` se ON se.name = sed.parent
     WHERE se.stock_entry_type = 'Customer Goods Received'
+	AND se.docstatus =1
     {conditions}
     GROUP BY sed.batch_no, sed.customer, sed.item_code
     """,
@@ -263,6 +265,7 @@ def get_pr_data(filters):
     FROM `tabPurchase Receipt Item` pr_item
     JOIN `tabPurchase Receipt` pr ON pr.name = pr_item.parent
     WHERE pr.purchase_type = 'Subcontracting'
+	AND pr.docstatus = 1
     {conditions}
     """,
 		filters,
@@ -287,6 +290,7 @@ def get_usage_data(filters, conditions):
     LEFT JOIN `tabManufacturing Work Order` mwo
       ON mwo.name = se.manufacturing_work_order
     WHERE se.stock_entry_type = 'Material Transfer (WORK ORDER)'
+	AND se.docstatus = 1
     {conditions}
     """,
 		filters,
@@ -322,6 +326,7 @@ def get_repack_data(filters):
       ON child_sed.parent = se.name
       AND child_sed.is_finished_item = 1
     WHERE se.stock_entry_type IN ('Repack-Metal Conversion', 'Subcontracting Repack')
+	AND se.docstatus = 1
     {conditions}
     """,
 		filters,
@@ -338,7 +343,7 @@ def get_columns():
 		"Opening Qty:Float:110",
 		"Used Same:Float:100",
 		"Used Other:Float:100",
-		"Other Customer:Link/Customer:140",
+		"Other Customer:Data/Customer:140",
 		"Received Back:Float:120",
 		"Balance:Float:100",
 		"Return Qty:Float:100",

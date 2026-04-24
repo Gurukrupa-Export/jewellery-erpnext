@@ -241,7 +241,10 @@ def create_repack_for_used_other(doc, method=None):
 		if not owner:
 			continue
 
-		if source_customer in (other_customer or ""):
+		other_customers = [
+			c.strip() for c in (other_customer or "").split(",") if c.strip()
+		]
+		if source_customer in other_customers:
 			matched_rows.append(
 				{
 					"batch_no": batch_no,
@@ -330,6 +333,7 @@ def create_repack_for_used_other(doc, method=None):
 					"qty": converted_qty,
 					"s_warehouse": "Central RM - GEPL",
 					"customer": source_customer,
+					"inventory_type": "Regular Stock",
 					"is_finished_item": 0,
 					"use_serial_batch_fields": 1,
 				},
@@ -343,6 +347,7 @@ def create_repack_for_used_other(doc, method=None):
 					"qty": converted_qty,
 					"t_warehouse": "Central RM - GEPL",
 					"customer": owner,
+					"inventory_type": "Regular Stock",
 					"is_finished_item": 1,
 					"use_serial_batch_fields": 1,
 				},
