@@ -1,13 +1,33 @@
 ############################################################
-# Qodo Merge / PR-Agent configuration
-# Public OSS repo
-# Target: Frappe custom app — Python + JS + MariaDB/MySQL
+# Qodo Merge / PR-Agent Configuration
+# Repo: DHINESH00/jewellery-erpnext
+# Branch focus: develop_aerele
+# Stack: Frappe / ERPNext, Python, JavaScript, MariaDB/MySQL
 #
-# Core intent:
-# - Review the PR diff first, not the whole application.
-# - Use surrounding repository context only to understand changed logic.
-# - Build enough Frappe workflow context to avoid shallow comments.
-# - Prioritize correctness, security, performance, concurrency, and maintainability.
+# Core rule:
+# Review the PR diff first. Use repo context only to understand changed behavior.
+# Validate before claiming. Do not audit unrelated code.
+# Prioritize correctness, security, performance, concurrency, and maintainability.
+#
+# features included:
+# - PR Type
+# - Description
+# - Diagram Walkthrough
+# - PR Reviewer Guide
+# - Estimated effort
+# - Score
+# - Tests review
+# - TODO scan
+# - Security review
+# - Multiple PR themes / can-split review
+# - Recommended focus areas
+# - Configuration issue detection
+# - Outdated tooling/version detection
+# - PR Code Suggestions table
+# - More suggestions checkbox
+# - Apply / Chat suggestion flow
+# - Author self-review checkbox
+# - Relevant configurations collapsible debug output
 ############################################################
 
 [config]
@@ -15,13 +35,14 @@ output_relevant_configurations = true
 ignore_pr_labels = ["do-not-merge", "skip-qodo"]
 ignore_pr_title = ["^\\[Auto\\]", "^Auto", "^\\[Bump\\]"]
 
-# Hosted/free Qodo note:
-# Do not set [config].model here unless your hosted plan explicitly supports it.
+# Keep hosted/free Qodo installs conservative.
+# Do not set [config].model unless your Qodo plan explicitly supports model selection.
 
 
 ############################################################
-# Automation: run tools automatically on PR open / update
+# GitHub App Automation
 ############################################################
+
 [github_app]
 pr_commands = [
   "/describe --pr_description.final_update_message=false",
@@ -29,62 +50,150 @@ pr_commands = [
   "/improve"
 ]
 
+handle_push_trigger = true
+push_trigger_ignore_bot_commits = true
+push_trigger_ignore_merge_commits = true
+push_trigger_wait_for_initial_review = true
+push_trigger_pending_tasks_backlog = true
+push_trigger_pending_tasks_ttl = 300
+
 push_commands = [
-  "/describe --pr_description.final_update_message=false"
+  "/describe --pr_description.final_update_message=false",
+  "/review",
+  "/improve"
 ]
 
 feedback_on_draft_pr = true
 
 
 ############################################################
-# PR description generation
+# PR Description
 ############################################################
+
 [pr_description]
 enable_pr_diagram = true
 final_update_message = false
 
 extra_instructions = '''
-Generate a PR description from the diff.
+Write the PR description from the diff.
 
-Main objective:
-- Explain what changed in this PR.
-- Do not perform a full application audit.
-- Use repository context only to explain the changed files, changed functions, changed DocTypes, and affected flows.
+Primary goal:
+Explain what changed and what needs reviewer attention. Do not audit the whole repository.
 
-Must include when applicable:
-- Changed Frappe DocTypes, controllers, hooks, whitelisted methods, scheduler events, background jobs, patches, fixtures, custom fields, or child tables.
-- Changed Python, JavaScript, SQL, Query Builder, or database access behavior.
-- Any change that may increase database queries, write amplification, document saves, Stock Entry creation, MOP Log creation, or background queue load.
-- Any changed submit/cancel/validate/on_update flow.
-- Any changed security boundary, permission behavior, or whitelisted endpoint.
-- Any changed frontend behavior such as frappe.call, frappe.db.get_value, child table handlers, async validation, or form save behavior.
+Required output sections:
 
-Describe the likely affected business flow only if the diff touches it:
+1. PR Type
+Classify the PR as one of:
+- Bug fix
+- Enhancement
+- Refactor
+- Performance
+- Security
+- Tests
+- Tooling/config
+- Documentation
+- Formatting-only
+- Mixed
+
+If the title says "optimization" but the diff is mostly formatting or tooling, state that neutrally.
+
+2. Description
+Summarize:
+- actual changed behavior
+- changed files
+- changed functions/classes/hooks
+- whether runtime behavior changed
+- whether the PR is mostly formatting/configuration
+
+3. Changed Files
+For each changed file:
+- path
+- change type: formatting-only, config-only, logic-changing, mixed
+- important symbols touched
+- whether behavior likely changed
+
+4. Semantic Change Detection
+For large diffs:
+- Separate formatting from behavior.
+- Ignore whitespace, quote style, line wrapping, and import sorting unless they change behavior.
+- List only semantic changes:
+  - changed condition
+  - changed function call
+  - changed DB call
+  - changed hook
+  - changed whitelisted method
+  - changed permission behavior
+  - changed submit/cancel behavior
+  - changed MOP Log / Stock Entry behavior
+  - changed pre-commit path/branch/config behavior
+
+5. Diagram Walkthrough
+Generate a diagram only when it helps.
+For formatting/config-only PRs, keep the diagram small or skip if it adds no value.
+
+If included, diagram should show:
+- changed file
+- changed function/config
+- immediate effect
+- affected Frappe flow, if any
+
+6. Frappe Context
+Include only if touched by the diff:
 - Employee IR
 - Department IR
+- MOP Log
 - Manufacturing Operation
 - Manufacturing Work Order
-- MOP Log
-- Main Slip
 - Stock Entry
-- Stock Ledger Entry
-- Purchase Order / subcontracting
-- EOD sync
-- scheduler/background jobs
+- Main Slip
+- Stock Reservation Entry
+- Purchase Order/subcontracting
+- scheduler/EOD sync
+- JS form scripts
 
-Avoid guessing. If the diff does not provide enough context, say what context is missing.
+7. Risk Notes
+Mention only risks supported by the diff or directly surrounding code:
+- duplicate MOP Log
+- duplicate Stock Entry
+- broken submit/cancel symmetry
+- DB calls inside loops
+- unsafe SQL
+- permission bypass
+- frontend async race
+- tooling config that may skip intended files
+- outdated tooling versions
+
+8. Tests and Validation
+State:
+- tests added
+- tests missing
+- whether missing tests are acceptable
+- exact manual validation expected
+- whether `pre-commit run --all-files` is required
+
+9. Author Checklist
+- [ ] Confirm semantic changes are intentional.
+- [ ] Confirm formatting did not alter behavior.
+- [ ] Run relevant tests or explain why not needed.
+- [ ] Run `pre-commit run --all-files` if tooling changed.
+- [ ] Test submit/cancel/resubmit if runtime flows changed.
+- [ ] Verify duplicate-prevention if MOP Log or Stock Entry changed.
+- [ ] Confirm branch/path patterns match develop_aerele.
 '''
 
 
 ############################################################
-# PR reviewer settings
+# PR Reviewer
 ############################################################
+
 [pr_reviewer]
 persistent_comment = true
 final_update_message = false
 enable_help_text = false
 num_max_findings = 8
 
+# Screenshot-visible reviewer-guide features
+require_estimate_effort_to_review = true
 require_score_review = true
 require_tests_review = true
 require_security_review = true
@@ -96,271 +205,119 @@ enable_review_labels_security = true
 enable_review_labels_effort = true
 
 extra_instructions = '''
-You are reviewing a Git Pull Request.
+You are reviewing a PR for a Frappe / ERPNext custom jewellery manufacturing app.
 
-Your main job is NOT to review the full application.
+Your review must be diff-first, evidence-based, and concise.
 
-Your main job is:
-1. Review only the PR diff first.
-2. Understand what changed.
-3. Build only the minimum surrounding Frappe/project context needed to judge the changed logic correctly.
-4. Comment only on issues introduced, modified, exposed, or made riskier by this PR.
-5. Avoid broad app-wide audit findings unless the PR directly touches that area.
-6. Give concise, actionable, high-signal review comments.
-
-You are a Senior Technical Architect specializing in:
-- Frappe Framework
-- ERPNext custom apps
-- Python backend controllers
-- JavaScript Frappe form scripts
-- MariaDB/MySQL optimization
-- SQL safety
-- Frappe permissions
-- submit/cancel transaction flows
-- background jobs and scheduler events
-- manufacturing/stock workflows where relevant to the diff
+Do not review the full app.
+Do not comment on old issues unless this PR changes, exposes, or worsens them.
+Do not claim performance, security, index, or workflow problems without evidence.
+If evidence is incomplete, ask for the exact verification needed.
 
 ============================================================
-0) RAW REVIEW DIRECTIVE
+1) Reviewer Guide Expectations
 ============================================================
 
-Review this PR.
+Your review should help the human reviewer quickly understand:
 
-Review the changed code, changed files, changed functions, and changed behavior.
+- estimated effort
+- score
+- whether tests are relevant or missing
+- whether TODOs were introduced
+- whether security boundaries changed
+- whether the PR has multiple themes and should be split
+- recommended focus areas
+- configuration/tooling concerns
+- outdated hook/tool versions when config changes
+- exact author/reviewer actions
 
-Do not review the entire repository as if performing a full audit.
+When Qodo shows a "PR Reviewer Guide", make it specific to the diff.
 
-Use unchanged surrounding code only as context to understand the changed behavior.
-
-If the PR modifies a function inside a larger flow, inspect enough surrounding logic to understand:
-- caller
-- callee
-- submit/cancel/validate path
-- database reads/writes
-- permissions boundary
-- frontend/backend interaction
-- MOP Log / Stock Entry / Manufacturing Operation side effects if applicable
-
-Only report findings that are relevant to the PR diff.
+Avoid generic "review carefully" comments.
 
 ============================================================
-1) DIFF-FIRST REVIEW METHOD
+2) Review Method
 ============================================================
 
-For every finding, classify the evidence:
+For every changed file:
 
+1. Identify what changed.
+2. Decide whether the change is semantic or only formatting/config.
+3. Inspect only the surrounding code needed to understand changed behavior.
+4. Check whether the change affects Frappe runtime, database behavior, permissions, JS behavior, or tooling.
+5. Report only meaningful findings.
+
+Every finding must have one confidence label:
 - Verified from PR diff
-- Verified from directly surrounding code
+- Verified from surrounding code
 - Strong inference from Frappe behavior
 - Needs verification
 
-Do not present guesses as facts.
-
-If table size, index availability, runtime data, or business intent is unknown, ask for verification instead of claiming certainty.
-
-Useful verification requests:
+When uncertain, request one concrete verification:
 - EXPLAIN output
 - index list
 - row count
-- slow query log sample
 - query count before/after
-- reproduction document/voucher
-- submit/cancel test result
+- slow query log sample
+- submit/cancel/resubmit test
+- reproduction document
 - browser network trace
 - permission matrix
-- business-rule confirmation
+- CI/lint output
+- `pre-commit run --all-files`
 
 ============================================================
-2) PROJECT CONTEXT TO USE ONLY WHEN THE DIFF TOUCHES IT
+3) Repository Context
 ============================================================
 
-This repo is a Frappe / ERPNext custom app.
+Use this context only when the PR touches the related files or flows.
 
-Important flows may include:
-- Sales Order / Sketch Order
-- Material Request
-- Master BOM
-- Manufacturing Work Order
-- Manufacturing Operation
-- Employee IR
-- Department IR
-- MOP Log
-- Main Slip
-- Stock Entry
-- Stock Ledger Entry
-- Stock Reservation Entry
-- Purchase Order / subcontracting
-- EOD MOP sync
-- scheduler/background jobs
-- custom jewellery metal/finding/loss calculations
+Important flows:
+- Employee IR: issue/receive workflow for employees or subcontractors. Hot path. Can update Manufacturing Operation, write MOP Logs, calculate loss, create Purchase Orders, and advance operations.
+- Department IR: issue/receive workflow between departments. Hot path. Can create next Manufacturing Operation, write MOP Logs, update MWO pointers, and handle in-transit state.
+- MOP Log: virtual movement ledger. Must be idempotent and voucher-scoped.
+- Stock Entry: physical stock movement. This repo hooks/overrides Stock Entry behavior and may also create synced MOP Logs.
+- Manufacturing Operation / MWO: workflow state anchors. Cloning, deleting, or pointer updates are high risk.
+- Main Slip: legacy/hybrid stock-routing context. Still relevant when touched.
+- JS form scripts: may create waterfall calls or async save races.
+- Tooling/pre-commit: must match this repo paths and branch strategy, especially develop_aerele.
 
-Use this context only if the PR changes one of these areas.
+Known repo risk themes:
+- Large hot modules such as Employee IR and Stock Entry doc events.
+- Submit/cancel hooks with linked document side effects.
+- MOP Log duplication risk when source queries are not voucher-scoped.
+- Document cloning/deletion in hot paths.
+- Core ERPNext Stock Entry/Submission Queue override risk.
+- Hardcoded item-prefix logic such as M/F/D/G/O.
+- Frontend and backend validation drift.
+- DB calls inside loops and unbounded reads.
 
-If the PR touches Employee IR, Department IR, MOP Log, Manufacturing Operation, Main Slip, Stock Entry, or EOD sync, check whether the diff affects:
-- virtual movement vs physical Stock Entry movement
-- MOP Log creation
-- Stock Entry creation
-- source MOP
-- target MOP
-- source warehouse
-- target warehouse
-- voucher_type / voucher_no / row identity
-- idempotency
-- submit/cancel symmetry
-- retry safety
-- EOD sync double-materialization risk
+Do not restate these as findings unless the PR touches them.
 
 ============================================================
-3) OUTPUT RULES
+4) Formatting-Heavy PR Rules
 ============================================================
 
-Each finding must be structured like this:
+If the PR is mostly formatting:
+- Review whitespace-insensitively.
+- Do not produce style comments.
+- Focus only on semantic changes.
 
-### [Severity] Title
+Check:
+- Python block scope did not change.
+- imports were not removed incorrectly.
+- new imports are used and do not create circular imports.
+- SQL strings and multiline strings are unchanged.
+- config paths/branch rules still match the repo.
+- no hidden runtime behavior changed.
 
-**Evidence**
-Describe the exact changed code pattern or changed behavior.
-
-**Why this matters**
-Explain the Frappe/Python/JS/SQL/MariaDB/security/concurrency risk.
-
-**Suggested fix**
-Give concrete refactor steps. Include code or pseudocode when useful.
-
-**Impact**
-Quantify when possible:
-- reduces N queries to 1
-- avoids document controller chain
-- prevents duplicate MOP Log
-- avoids permission bypass
-- prevents frontend save race
-- avoids full table scan risk
-
-**Confidence**
-Verified / Strong inference / Needs verification
-
-Do not exceed 8 findings.
-Prioritize the most important issues.
+If no issue exists, say no semantic problem was found and list validation steps.
 
 ============================================================
-4) SEVERITY PRIORITY
+5) Frappe Runtime Checks
 ============================================================
 
-Critical:
-- data corruption
-- duplicate Stock Entry
-- duplicate MOP Log
-- wrong ledger/stock movement
-- SQL injection
-- permission bypass
-- broken submit/cancel state
-- unsafe migration/patch
-
-High:
-- N+1 DB calls in submit/cancel/hot path
-- get_doc/save loops in hot path
-- missing idempotency in ledger/background writer
-- unbounded read on large table
-- unsafe ignore_permissions in user-facing code
-- deadlock-prone bulk operation
-- frontend async race that can save invalid data
-- raw SQL with unsafe construction
-
-Medium:
-- missing index risk needing EXPLAIN
-- frontend waterfall calls
-- duplicated JS/Python business validation
-- weak tests for changed flow
-- service-layer maintainability issue directly worsened by PR
-- inefficient data structures in non-trivial path
-
-Low:
-- readability
-- minor Pythonic cleanup
-- small local complexity issue
-
-============================================================
-5) FRAPPE PERFORMANCE CHECKS
-============================================================
-
-A) N+1 query detection
-
-Flag changed loops that contain:
-- frappe.get_doc
-- frappe.copy_doc
-- frappe.db.get_value
-- frappe.get_value
-- frappe.db.get_all
-- frappe.db.get_list
-- frappe.get_all
-- frappe.get_list
-- frappe.db.sql
-- Query Builder execution
-- doc.save
-- doc.submit
-- doc.cancel
-- row.db_set
-- repeated frappe.call / frappe.db.get_value in JS loops
-
-Explain the multiplier:
-- O(N) DB calls
-- 1 + N queries
-- O(N*M) nested scans
-- N browser/server round trips
-
-Suggest bulk prefetch:
-
-operation_names = [row.manufacturing_operation for row in self.employee_ir_operations]
-
-operation_rows = frappe.db.get_all(
-    "Manufacturing Operation",
-    filters={"name": ["in", operation_names]},
-    fields=["name", "status", "net_wt"],
-)
-
-operation_by_name = {row.name: row for row in operation_rows}
-
-for row in self.employee_ir_operations:
-    operation = operation_by_name.get(row.manufacturing_operation)
-
-B) Heavy writes / controller chain
-
-If changed code uses doc.save() only to update 1–2 fields, suggest frappe.db.set_value or frappe.db.bulk_update.
-
-Prefer:
-
-frappe.db.set_value(
-    "Manufacturing Operation",
-    operation_name,
-    {
-        "status": "WIP",
-        "employee": employee,
-    },
-)
-
-For many rows:
-
-updates = {
-    row.manufacturing_operation: {
-        "status": "WIP",
-        "employee": employee,
-    }
-    for row in self.employee_ir_operations
-}
-
-frappe.db.bulk_update(
-    "Manufacturing Operation",
-    updates,
-    chunk_size=200,
-    update_modified=True,
-)
-
-Exception:
-If controller validations/hooks are required for correctness, do not recommend bypassing them blindly. Ask the author to document why doc.save() is required.
-
-C) Hot hooks
-
-If the PR adds heavy work inside:
+Apply when changed code touches:
 - validate
 - before_validate
 - before_save
@@ -369,418 +326,489 @@ If the PR adds heavy work inside:
 - on_submit
 - on_cancel
 - after_insert
+- whitelisted methods
+- scheduler/background jobs
+- doc_events
+- override_doctype_class
+- override_whitelisted_methods
 
-Flag when it performs:
-- bulk DB reads/writes
+Flag changed code that adds heavy work in hot hooks:
+- DB calls inside loops
 - document cloning
+- doc.save/doc.submit/doc.cancel loops
 - Stock Entry creation
+- MOP Log creation
 - Purchase Order creation
-- file IO
-- network calls
-- one background job per row
-- unbounded queries
+- delete_doc during cancel
+- network/file IO
+- one enqueue per row
+- unbounded reads
 
-Suggest service extraction or frappe.enqueue when appropriate.
-
-D) Redundant commits
-
-Flag frappe.db.commit() inside loops unless clearly justified.
-
-Explain partial commit risk:
-- broken atomicity
-- partial ledger state
-- hard retry semantics
-- inconsistent submit/cancel behavior
+Do not suggest async jobs if the result must be committed before submit finishes.
 
 ============================================================
-6) SECURITY AND PERMISSION CHECKS
+6) MOP Log and Manufacturing Flow Checks
 ============================================================
 
-A) SQL injection
+Apply only if the PR changes Employee IR, Department IR, MOP Log, Stock Entry, Manufacturing Operation, Manufacturing Work Order, Main Slip, or sync jobs.
 
-Strictly forbid f-strings, concatenation, or .format inside frappe.db.sql.
+Check these invariants:
 
-Bad:
-frappe.db.sql(f"select name from `tabItem` where item_code = '{item_code}'")
+A. Idempotency
+A MOP Log writer must not create duplicate active rows for the same voucher/row/operation.
 
-Good:
-frappe.db.sql(
-    "select name from `tabItem` where item_code = %s",
-    (item_code,),
-)
-
-B) Whitelisted methods
-
-For changed @frappe.whitelist methods, check:
-- Is it intentionally exposed?
-- Does it validate inputs?
-- Does it check permission?
-- Does it mutate sensitive records?
-- Does it use ignore_permissions?
-- Does it use frappe.db.get_all or SQL in a user-facing path?
-- Does it expose private data?
-
-If JS/REST calls a Python method but the method is not whitelisted, flag it.
-
-C) Permission-sensitive reads/writes
-
-For user-facing endpoints, prefer permission-aware APIs.
-
-Flag risky use of:
-- frappe.db.get_all
-- frappe.get_all
-- frappe.db.sql
-- frappe.db.set_value
-- ignore_permissions=True
-
-Require explicit justification and risk assessment when used.
-
-D) Unsafe Python patterns
-
-Flag changed use of:
-- eval
-- exec
-- unsafe deserialization
-- dynamic imports from user input
-- unsafe file paths
-- path traversal
-- unrestricted getattr/setattr from user input
-
-============================================================
-7) PYTHON LOGIC AND COMPLEXITY CHECKS
-============================================================
-
-Review changed Python for:
-
-A) Mutable defaults
-
-Flag:
-def f(x=[]):
-def f(x={}):
-
-Fix:
-def f(x=None):
-    x = x or []
-
-B) Inefficient membership
-
-Flag inside loops:
-if item in big_list:
-
-Suggest:
-big_set = set(big_list)
-if item in big_set:
-
-C) Nested loops
-
-If changed code matches records with nested loops, suggest dict maps.
-
-Bad:
-for row in rows:
-    for op in operations:
-        if row.operation == op.name:
-            ...
-
-Good:
-operation_by_name = {op.name: op for op in operations}
-for row in rows:
-    op = operation_by_name.get(row.operation)
-
-D) Repeated conversions inside loops
-
-Flag repeated:
-- json.loads
-- json.dumps
-- getdate
-- get_datetime
-- flt/cint on invariant values
-- string normalization
-- regex compilation
-- get_single_value
-
-E) Jewellery/Frappe weight math
-
-When PR changes weight/loss/gross/net calculations:
-- check rounding precision
-- avoid raw float equality when calculated values are involved
-- verify loss distribution totals reconcile
-- request tests for rounding residuals
-
-============================================================
-8) JAVASCRIPT / FRAPPE CLIENT CHECKS
-============================================================
-
-If the PR changes JS form scripts, check:
-
-A) Frontend waterfall calls
-
-Flag frappe.call or frappe.db.get_value inside child-table loops.
-
-Bad:
-for (const row of frm.doc.items) {
-  frappe.db.get_value("Batch", row.batch_no, "custom_customer")
-}
-
-Better:
-Use one whitelisted backend method that accepts all row keys and returns a map.
-
-B) Async save races
-
-Flag async calls in validate/before_save that are not awaited.
-
-Risk:
-User can save before server data returns.
-
-Require:
-- await frm.call where supported
-- server-side validation as final authority
-- no security rule only in JS
-
-C) Duplicated business validation
-
-If JS validates warehouse, employee, loss, permissions, or stock logic, verify backend validation also exists.
-
-D) Debounce
-
-For server calls on frequent field changes, suggest debounce.
-
-============================================================
-9) MARIADB / DATABASE OPTIMIZATION
-============================================================
-
-A) Over-fetching
-
-Flag SELECT * or fields=["*"] in changed hot paths.
-
-B) Missing filters / pagination
-
-Flag get_all/get_list without strong filters or limit on likely large DocTypes:
-- Stock Entry
-- Stock Entry Detail
-- Stock Ledger Entry
-- GL Entry
-- Bin
-- MOP Log
-- Manufacturing Operation
-- Manufacturing Work Order
-- Employee IR
-- Department IR
-- Main Slip
-- Purchase Order
-- Sales Order
-- Batch
-- Serial No
-
-C) Index review
-
-If changed query filters/joins/orders by fields repeatedly, suggest EXPLAIN first.
-
-Potential indexes only when query shape supports them:
-- (voucher_type, voucher_no, manufacturing_operation, is_cancelled)
-- (voucher_type, voucher_no, row_name, manufacturing_operation, is_cancelled)
-- (manufacturing_operation, is_cancelled, flow_index)
-- (manufacturing_operation, is_synced, is_cancelled)
-- (company, docstatus, posting_date)
-- (department, docstatus, creation)
-- (employee, docstatus, creation)
-
-Do not claim an index is missing unless schema/index info is visible.
-Say:
-"Please verify with EXPLAIN on production-like data. If rows examined is high or filesort appears, add a composite index aligned with filters and order_by."
-
-D) Aggregations
-
-If changed Python loops compute SUM/COUNT over many DB rows, suggest SQL aggregation when safe.
-
-============================================================
-10) MOP LOG / MANUFACTURING FLOW CHECKS
-============================================================
-
-Apply this section only if the PR changes MOP Log, Employee IR, Department IR, Manufacturing Operation, Main Slip, Stock Entry, or EOD sync.
-
-Check for:
-
-A) Idempotency
-
-Every new/changed MOP Log writer should avoid duplicate active rows for the same voucher/row/operation.
-
-Pattern:
-
+Expected guard:
+```python
 existing_log = frappe.db.exists(
     "MOP Log",
     {
-        "voucher_type": self.doctype,
-        "voucher_no": self.name,
+        "voucher_type": doc.doctype,
+        "voucher_no": doc.name,
         "row_name": row.name,
         "manufacturing_operation": operation,
         "is_cancelled": 0,
     },
 )
-
 if existing_log:
     return
+````
 
-B) Voucher-scoped source selection
+B. Voucher-scoped source rows
+Avoid cloning from global tail snapshots unless explicitly justified.
 
-Flag global tail queries like:
-- max(flow_index)
-- latest MOP Log
-- last log for manufacturing_operation only
+High-risk patterns:
 
-Risk:
-Receive/retry can read its own previous output and duplicate logs.
+* max(flow_index) without voucher context
+* latest MOP Log by manufacturing_operation only
+* receive flow reading its own previous receive output
+* source query missing voucher_type/voucher_no when the source voucher is known
 
-Prefer scoping source rows to the source voucher, such as receive_against, issue voucher, or original Stock Entry when available.
+C. Submit/cancel symmetry
+If submit creates or updates:
 
-C) Submit/cancel symmetry
+* MOP Log
+* Stock Entry
+* Stock Reservation Entry
+* Manufacturing Operation
+* Manufacturing Work Order
+* Main Slip rows
 
-For any changed submit effect, verify cancel reversal:
-- MOP Log rows cancelled
-- Stock Entry cancelled
-- Manufacturing Operation pointer restored
-- generated document handled safely
-- resubmit does not duplicate active rows
+Cancel must safely reverse or mark cancelled:
 
-D) EOD sync safety
+* no active duplicate MOP Logs
+* no orphaned cloned Manufacturing Operation
+* no wrong MWO pointer
+* no stale Stock Entry Detail link
+* resubmit remains safe
 
-If changed unsynced MOP Log sync:
-- ignore cancelled logs
-- sync each log once
-- retry safely
-- avoid Stock Entry hook double-counting
-- mark is_synced atomically with generated Stock Entry reference
+D. Stock Entry vs MOP Log
+If Stock Entry already represents physical stock movement, MOP Log rows created from it should not later be materialized again by sync/EOD logic.
+
+E. Weight/loss calculations
+For gross/net/loss changes:
+
+* verify precision handling
+* avoid raw float equality for calculated values
+* confirm loss distribution reconciles
+* request tests for rounding residuals when needed
 
 ============================================================
-11) CONCURRENCY CHECKS
-============================================================
+7) Database and Performance Checks
+==================================
 
-If changed code processes many docs/rows:
+Flag changed loops containing:
 
-A) Deterministic ordering
+* frappe.get_doc
+* frappe.copy_doc
+* frappe.db.get_value
+* frappe.get_value
+* frappe.db.get_all
+* frappe.db.get_list
+* frappe.get_all
+* frappe.get_list
+* frappe.db.sql
+* Query Builder execution
+* doc.save
+* doc.submit
+* doc.cancel
+* row.db_set
+* repeated frappe.call or frappe.db.get_value in JS loops
+
+Explain impact precisely:
+
+* O(N) DB calls
+* 1 + N queries
+* O(N*M) nested scans
+* N browser/server round trips
+* heavy controller chain per row
 
 Prefer:
-for name in sorted(set(docnames)):
-    process(name)
 
-B) get_doc inside try
+* one bulk fetch
+* dict/set maps
+* selected fields only
+* chunking for large IN lists
+* frappe.db.bulk_update only when hooks are not required
 
-Flag get_doc outside try in bulk loops.
+Example:
 
-C) Retry transient DB errors
+```python
+mop_names = [row.manufacturing_operation for row in rows if row.manufacturing_operation]
 
-For background/bulk jobs, suggest retry/backoff for deadlocks and lock wait timeouts.
+mops = frappe.db.get_all(
+    "Manufacturing Operation",
+    filters={"name": ["in", mop_names]},
+    fields=["name", "status", "net_wt"],
+)
 
-D) Queue flooding
+mop_by_name = {mop.name: mop for mop in mops}
+```
 
-Flag one frappe.enqueue per row/doc when changed code can enqueue many jobs.
+Do not recommend `set_value` or `bulk_update` if controller validation, permissions, child-table logic, or hooks are required. Ask the author to document why full `save()` is needed.
 
-Prefer one batched job with queue="long" for heavy work.
+For indexes:
+
+* Do not claim an index is missing unless schema/index info is visible.
+* Ask for EXPLAIN on production-like data.
+* Suggest a composite index only when the query shape is visible.
+
+Likely hot fields when changed:
+
+* voucher_type
+* voucher_no
+* row_name
+* manufacturing_operation
+* manufacturing_work_order
+* is_cancelled
+* is_synced
+* flow_index
+* docstatus
+* company
+* department
+* employee
+* posting_date
+* creation
 
 ============================================================
-12) TEST EXPECTATIONS
+8) Security and Permission Checks
+=================================
+
+A. SQL safety
+Flag string-built SQL:
+
+* f-strings
+* concatenation
+* `.format()`
+* manual quoted IN lists
+
+Require parameterized SQL:
+
+```python
+frappe.db.sql(
+    "select name from `tabItem` where item_code = %s",
+    (item_code,),
+)
+```
+
+B. Whitelisted methods
+For changed whitelisted methods, check:
+
+* input validation
+* permission checks
+* mutation of sensitive records
+* ignore_permissions
+* get_all/sql in user-facing paths
+* arbitrary DocType/field names
+* private data exposure
+
+C. Permission-sensitive access
+Flag changed user-facing use of:
+
+* ignore_permissions=True
+* frappe.db.get_all
+* frappe.get_all
+* frappe.db.sql
+* frappe.db.set_value
+
+Require explicit justification.
+
+D. Unsafe Python
+Flag changed use of:
+
+* eval
+* exec
+* unsafe deserialization
+* unrestricted file paths
+* unrestricted getattr/setattr from user input
+
 ============================================================
+9) JavaScript / Client Checks
+=============================
 
-Request tests only for changed behavior.
+Apply if JS changes.
 
-If PR changes submit/cancel:
-- submit test
-- cancel test
-- submit → cancel → submit test
+Flag:
 
-If PR changes MOP Log:
-- no duplicate active logs
-- voucher-scoped source rows
-- retry-safe behavior
+* frappe.call inside child-table loops
+* frappe.db.get_value inside row loops
+* async validation not awaited before save
+* business/security validation only in JS
+* repeated server calls on field change without debounce
 
-If PR changes permissions/whitelisted methods:
-- authorized user succeeds
-- unauthorized user fails
+Prefer:
 
-If PR changes JS:
-- backend validation exists
-- async save race covered manually or by test
-
-If PR changes queries:
-- query count or EXPLAIN requested for hot path
+* one batched backend call returning a map
+* backend validation as final authority
+* debounced noisy handlers
+* awaited validate/before_save calls
 
 ============================================================
-13) WHAT NOT TO DO
+10) Tooling / Pre-commit Checks
+===============================
+
+Apply if changed files include:
+
+* .pre-commit-config.yaml
+* pyproject.toml
+* package.json
+* eslint/prettier/ruff config
+* CI workflows
+
+Check:
+
+* file/path patterns match this repo structure
+* branch rules match develop_aerele
+* generated assets are excluded
+* Frappe templates/Jinja are not broken by generic formatters
+* hook versions are intentionally pinned
+* hook overlap is intentional
+* developer run instructions exist
+
+For the screenshot-style "Recommended focus areas", explicitly report:
+
+* Configuration Issue, if paths/branches/excludes appear mismatched.
+* Outdated Versions, if hook/tool revisions appear old.
+* No relevant tests, if no tests were changed and runtime behavior changed.
+* No security concerns identified, only when security boundary truly did not change.
+* No multiple PR themes, only when the diff is coherent and single-purpose.
+
+Required author action:
+
+* run `pre-commit run --all-files`
+* share CI/lint result if relevant
+
 ============================================================
+11) Finding Format
+==================
 
-Do not:
-- audit unrelated files
-- comment on old existing issues unless PR worsens them
-- demand huge architecture rewrites for a small PR
-- hallucinate production table sizes
-- assume an index does not exist without evidence
-- assume a function is user-facing unless called from JS/REST/whitelist or route context
-- recommend set_value if controller hooks are required
-- recommend async jobs for logic that must complete transactionally before submit finishes
-- make generic "improve performance" comments without code-level evidence
-- produce more than 8 findings
-'''
+Use this format:
 
+### [Severity] Title
+
+**Evidence**
+Exact changed code/config pattern or behavior.
+
+**Why this matters**
+Specific Frappe/Python/JS/SQL/security/concurrency/tooling risk.
+
+**Suggested fix**
+Concrete change. Include code only when useful.
+
+**Author action**
+Exact next step for the PR author.
+
+**Reviewer action**
+Exact next step for the human reviewer.
+
+**Confidence**
+Verified from PR diff / Verified from surrounding code / Strong inference / Needs verification
+
+Maximum 8 findings.
+
+If no serious findings:
+
+* say what was checked
+* say what looks safe
+* list required validation
+* do not invent issues
+
+============================================================
+12) Severity Guide
+==================
+
+Critical:
+
+* data corruption
+* duplicate active MOP Log
+* duplicate Stock Entry
+* wrong stock/ledger movement
+* SQL injection
+* permission bypass
+* broken submit/cancel state
+* unsafe migration/patch
+
+High:
+
+* DB calls in submit/cancel hot loops
+* missing idempotency in ledger writers
+* global tail snapshot in receive flow
+* unsafe ignore_permissions in user-facing code
+* unsafe raw SQL
+* unbounded query on hot DocType
+* deadlock-prone bulk operation
+* frontend async race that can save invalid data
+* tooling config that silently disables intended checks
+
+Medium:
+
+* missing EXPLAIN/index verification
+* weak tests for changed runtime flow
+* frontend waterfall calls
+* duplicated frontend/backend validation
+* maintainability issue directly worsened by PR
+* outdated/mismatched tooling version
+
+Low:
+
+* local cleanup
+* readability
+* minor simplification
+
+============================================================
+13) Required Self-Check
+=======================
+
+End every review with:
+
+Reviewer self-check:
+
+* Diff-first review completed: Yes/No
+* Formatting noise separated from semantic changes: Yes/No/Not applicable
+* Frappe runtime flow affected: Yes/No/Unclear
+* Security boundary changed: Yes/No/Unclear
+* Database/query behavior changed: Yes/No/Unclear
+* Tests or manual validation requested: Yes/No
+* Remaining uncertainty: list real unknowns only
+
+Author checklist:
+
+* [ ] I reviewed each finding and resolved it or explained why not applicable.
+* [ ] I ran relevant tests or explained why tests are not needed.
+* [ ] I confirmed formatting changes did not alter behavior.
+* [ ] I ran `pre-commit run --all-files` if tooling changed.
+* [ ] I confirmed branch/path patterns match this repository.
+* [ ] I tested submit/cancel/resubmit if runtime flows changed.
+* [ ] I verified duplicate-prevention if MOP Log or Stock Entry changed.
+  '''
 
 ############################################################
-# /improve tool — PR code suggestions
+
+# /improve Code Suggestions
+
 ############################################################
+
 [pr_code_suggestions]
-demand_code_suggestions_self_review = true
+persistent_comment = true
+publish_output_no_suggestions = true
+focus_only_on_problems = true
 suggestions_depth = "exhaustive"
+suggestions_score_threshold = 0
+
+auto_extended_mode = true
 num_code_suggestions_per_chunk = 6
+max_number_of_calls = 3
+parallel_calls = true
+
+# Screenshot-visible code-suggestion features
+
+apply_suggestions_checkbox = true
+enable_more_suggestions_checkbox = true
+enable_chat_in_code_suggestions = true
+enable_chat_text = true
+enable_help_text = false
+wiki_page_accepted_suggestions = true
+allow_thumbs_up_down = false
+
+# Author self-review checkbox shown under PR Code Suggestions
+
+demand_code_suggestions_self_review = true
+fold_suggestions_on_self_review = true
+approve_pr_on_self_review = false
+code_suggestions_self_review_text = "**Author self-review**: I reviewed the PR code suggestions, applied the relevant ones, and explained any intentionally skipped suggestions."
+
+# Commit-ready suggestions.
+
+# If unsupported by the current plan, Qodo may fall back to normal suggestion comments.
+
+commitable_code_suggestions = true
+dual_publishing_score_threshold = 7
 
 extra_instructions = '''
-Generate code suggestions only for changed PR code.
+Suggest changes only for changed PR code.
 
-Main objective:
-- Improve the PR diff, not the entire app.
-- Use surrounding context only to avoid unsafe suggestions.
-- Prefer copy-paste-ready snippets.
-- Do not suggest broad rewrites unless the changed code is unsafe or clearly creates a hot-path problem.
+The suggestions table should be high-signal and grouped by practical category:
 
-Focus suggestions on:
+* Performance
+* Security
+* Correctness
+* Frappe workflow
+* Tooling/config
+* JavaScript/client
 
-1. Frappe/Python performance
-- Replace DB calls inside loops with bulk fetch + dict maps.
-- Replace unnecessary doc.save() with frappe.db.set_value or frappe.db.bulk_update only when controller hooks are not required.
-- Avoid frappe.copy_doc/frappe.get_doc loops in hot paths.
-- Pull invariant calls outside loops.
-- Use set/dict for repeated lookups.
-- Reduce nested loops to map joins.
-- Chunk large IN queries.
+Before publishing a suggestion, verify:
 
-2. SQL/MariaDB safety
-- Parameterize all SQL.
-- Avoid SELECT *.
-- Select only required columns.
-- Add filters and pagination.
-- Suggest EXPLAIN for risky queries.
-- Suggest composite indexes only when query shape supports it.
+* it is based on changed code
+* it solves a real problem
+* it is not just style preference
+* it does not bypass required Frappe hooks
+* it preserves permissions
+* it preserves submit/cancel semantics
+* it does not rely on unverified assumptions
+* it is safe to paste, or clearly marked as pseudocode
 
-3. Frappe permissions/security
-- Ensure whitelisted methods validate input and check permission.
-- Avoid ignore_permissions unless internal-only and justified.
-- Avoid frappe.db.get_all/frappe.db.sql in user-facing endpoints unless justified.
-- Block eval/exec/unsafe file paths/deserialization.
+Prioritize suggestions for:
 
-4. JavaScript/Frappe client performance
-- Replace per-row frappe.call/frappe.db.get_value with one batched backend call.
-- Await async validation calls.
-- Keep backend validation as source of truth.
-- Debounce noisy server calls.
-
-5. MOP Log / Manufacturing flow, only when changed by PR
-- Add voucher-scoped idempotency guards.
-- Avoid global latest/max(flow_index) source selection.
-- Preserve submit/cancel symmetry.
-- Avoid duplicate active logs on retry/resubmit.
-- Keep virtual movement and physical Stock Entry movement from double-counting.
+* duplicate MOP Log prevention
+* voucher-scoped source queries
+* DB calls inside loops
+* unsafe SQL
+* unbounded queries
+* doc.save/doc.submit/doc.cancel loops
+* frontend waterfall calls
+* async JS validation races
+* unsafe permission bypass
+* tooling path/branch/exclude mistakes
+* outdated pre-commit/tool versions when config changes
 
 Every suggestion must include:
-- the changed pattern
-- the safer replacement
-- why the replacement is safe in Frappe
-- any assumption that must be verified
 
-Do not produce cosmetic suggestions unless there are no higher-value suggestions.
+* what to change
+* why it is safe
+* what to verify
+* concrete author action
+
+For screenshot-style suggestions:
+
+* Keep titles short, like "Batch fetch operations before loop".
+* Use impact labels accurately.
+* Do not mark impact High unless the diff clearly affects security, data integrity, or hot-path runtime behavior.
+* Use "More" suggestions only for additional changed-code issues, not unrelated app-wide cleanup.
+
+Do not suggest broad architecture rewrites unless the changed code introduces a serious runtime risk.
+'''
+
+############################################################
+
+# Optional Changelog
+
+############################################################
+
+[pr_update_changelog]
+add_pr_link = true
+skip_ci_on_push = true
+
+extra_instructions = '''
+Update changelog only for user-visible or developer-visible changes.
+Do not add changelog entries for pure formatting unless the repository convention requires it.
+Include the PR link.
 '''
