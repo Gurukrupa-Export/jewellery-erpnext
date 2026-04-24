@@ -73,7 +73,8 @@ def _get_diamond_weights(item_codes: set) -> dict:
 		fields=["parent", "diamond_sieve_size", "per_pcs_average_weight"],
 	)
 	weight_map = {
-		(r.parent, r.diamond_sieve_size): r.per_pcs_average_weight for r in weight_rows
+		(r.parent, r.diamond_sieve_size): (r.per_pcs_average_weight or 0)
+		for r in weight_rows
 	}
 
 	return {
@@ -179,7 +180,7 @@ class CustomStockEntry(StockEntry):
 				item.customer = meta.custom_customer
 
 			if get_item_variant_of(item.item_code) == "D":
-				weight = diamond_weights.get(item.item_code, 0)
+				weight = diamond_weights.get(item.item_code) or 0
 				if weight > 0 and item.qty and int(item.get("pcs") or 0) < 1:
 					item.pcs = int(item.qty / weight)
 
