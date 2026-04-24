@@ -35,7 +35,12 @@ def execute(filters=None):
 	else:
 		batches_to_include = set(batches_to_include)
 
-	ordered_batches = [b for b in sorted(batch_map) if b in batches_to_include]
+	batch_creation_map = get_batch_creation_map(batches_to_include)
+
+	ordered_batches = sorted(
+		[b for b in batch_map if b in batches_to_include],
+		key=lambda x: batch_creation_map.get(x),
+	)
 
 	for batch in ordered_batches:
 		info = batch_map[batch]
@@ -333,6 +338,19 @@ def get_repack_data(filters):
 		as_dict=1,
 		as_iterator=True,
 	)
+
+
+def get_batch_creation_map(batches):
+	if not batches:
+		return
+
+	data = frappe.get_all(
+		"Batch",
+		filters={"name": ["in", list(batches)]},
+		fields=["name", "creation"],
+	)
+
+	return {d.name: d.creation for d in data}
 
 
 def get_columns():
