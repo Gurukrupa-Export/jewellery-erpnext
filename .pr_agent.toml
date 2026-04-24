@@ -1,7 +1,7 @@
 ############################################################
 # Qodo Merge / PR-Agent Configuration
 # Repo: DHINESH00/jewellery-erpnext
-# Branch focus: develop_aerele
+# Branch context: develop_aerele
 # Stack: Frappe / ERPNext, Python, JavaScript, MariaDB/MySQL
 #
 # Core rule:
@@ -35,8 +35,7 @@ output_relevant_configurations = true
 ignore_pr_labels = ["do-not-merge", "skip-qodo"]
 ignore_pr_title = ["^\\[Auto\\]", "^Auto", "^\\[Bump\\]"]
 
-# Keep hosted/free Qodo installs conservative.
-# Do not set [config].model unless your Qodo plan explicitly supports model selection.
+# Do not set [config].model unless the current Qodo plan supports it.
 
 
 ############################################################
@@ -50,6 +49,8 @@ pr_commands = [
   "/improve"
 ]
 
+# Keep push automation light to avoid repeated review/improve comment churn.
+# Full review/improve already runs on PR open/update.
 handle_push_trigger = true
 push_trigger_ignore_bot_commits = true
 push_trigger_ignore_merge_commits = true
@@ -75,15 +76,17 @@ enable_pr_diagram = true
 final_update_message = false
 
 extra_instructions = '''
-Write the PR description from the diff.
+Create a concise PR description from the diff.
 
-Primary goal:
-Explain what changed and what needs reviewer attention. Do not audit the whole repository.
+Do not audit the whole repository.
 
-Required output sections:
+Use this flow:
+Config file / diff -> output format -> diff-first methodology -> Frappe checks -> repository context.
+
+Required sections:
 
 1. PR Type
-Classify the PR as one of:
+Classify as one:
 - Bug fix
 - Enhancement
 - Refactor
@@ -95,7 +98,7 @@ Classify the PR as one of:
 - Formatting-only
 - Mixed
 
-If the title says "optimization" but the diff is mostly formatting or tooling, state that neutrally.
+If the title says "optimization" but the diff is mostly formatting/config, state that neutrally.
 
 2. Description
 Summarize:
@@ -109,36 +112,39 @@ Summarize:
 For each changed file:
 - path
 - change type: formatting-only, config-only, logic-changing, mixed
-- important symbols touched
+- key functions/classes/hooks/configs affected
 - whether behavior likely changed
 
 4. Semantic Change Detection
-For large diffs:
-- Separate formatting from behavior.
-- Ignore whitespace, quote style, line wrapping, and import sorting unless they change behavior.
-- List only semantic changes:
-  - changed condition
-  - changed function call
-  - changed DB call
-  - changed hook
-  - changed whitelisted method
-  - changed permission behavior
+For formatting-heavy diffs:
+- ignore whitespace, line wrapping, quote style, and import sorting unless behavior changes
+- list only real behavior changes:
+  - changed conditions
+  - changed function calls
+  - changed DB calls
+  - changed hooks
+  - changed whitelisted methods
   - changed submit/cancel behavior
-  - changed MOP Log / Stock Entry behavior
-  - changed pre-commit path/branch/config behavior
+  - changed config paths/branch rules
+  - changed MOP Log or Stock Entry behavior
 
 5. Diagram Walkthrough
-Generate a diagram only when it helps.
-For formatting/config-only PRs, keep the diagram small or skip if it adds no value.
+Include a small diagram only when it adds value.
+For formatting/config-only PRs, diagram can be minimal or omitted.
 
-If included, diagram should show:
-- changed file
-- changed function/config
-- immediate effect
-- affected Frappe flow, if any
+6. Review Focus Areas
+Mention only focus areas supported by the diff:
+- Configuration issue
+- Outdated tooling/version
+- Missing final newline/editorconfig mismatch
+- No relevant tests
+- Security boundary changed or unchanged
+- Multiple PR themes or single coherent theme
+- Frappe runtime flow affected
+- Database/query behavior changed
 
-6. Frappe Context
-Include only if touched by the diff:
+7. Frappe Context
+Include only if the diff touches related code:
 - Employee IR
 - Department IR
 - MOP Log
@@ -164,18 +170,20 @@ Mention only risks supported by the diff or directly surrounding code:
 - outdated tooling versions
 
 8. Tests and Validation
-State:
-- tests added
-- tests missing
-- whether missing tests are acceptable
-- exact manual validation expected
-- whether `pre-commit run --all-files` is required
+State what validation is expected:
+- tests added or missing
+- manual submit/cancel/resubmit checks
+- query count or EXPLAIN if relevant
+- `pre-commit run --all-files` for tooling changes
+- final newline check if config/text files changed
 
 9. Author Checklist
 - [ ] Confirm semantic changes are intentional.
 - [ ] Confirm formatting did not alter behavior.
 - [ ] Run relevant tests or explain why not needed.
 - [ ] Run `pre-commit run --all-files` if tooling changed.
+- [ ] Confirm `.editorconfig` rules are satisfied, including final newline.
+- [ ] Confirm branch/path guidance matches the actual repo workflow.
 - [ ] Test submit/cancel/resubmit if runtime flows changed.
 - [ ] Verify duplicate-prevention if MOP Log or Stock Entry changed.
 - [ ] Confirm branch/path patterns match develop_aerele.
@@ -192,7 +200,6 @@ final_update_message = false
 enable_help_text = false
 num_max_findings = 8
 
-# Screenshot-visible reviewer-guide features
 require_estimate_effort_to_review = true
 require_score_review = true
 require_tests_review = true
@@ -207,12 +214,12 @@ enable_review_labels_effort = true
 extra_instructions = '''
 You are reviewing a PR for a Frappe / ERPNext custom jewellery manufacturing app.
 
-Your review must be diff-first, evidence-based, and concise.
+Be diff-first, evidence-based, and concise.
 
 Do not review the full app.
 Do not comment on old issues unless this PR changes, exposes, or worsens them.
 Do not claim performance, security, index, or workflow problems without evidence.
-If evidence is incomplete, ask for the exact verification needed.
+If evidence is incomplete, ask for exact verification.
 
 ============================================================
 1) Reviewer Guide Expectations
@@ -242,12 +249,12 @@ Avoid generic "review carefully" comments.
 For every changed file:
 
 1. Identify what changed.
-2. Decide whether the change is semantic or only formatting/config.
+2. Separate semantic changes from formatting/config noise.
 3. Inspect only the surrounding code needed to understand changed behavior.
 4. Check whether the change affects Frappe runtime, database behavior, permissions, JS behavior, or tooling.
 5. Report only meaningful findings.
 
-Every finding must have one confidence label:
+Every finding must include one confidence label:
 - Verified from PR diff
 - Verified from surrounding code
 - Strong inference from Frappe behavior
@@ -267,35 +274,34 @@ When uncertain, request one concrete verification:
 - `pre-commit run --all-files`
 
 ============================================================
-3) Repository Context
+2) Repository Context
 ============================================================
 
 Use this context only when the PR touches the related files or flows.
 
 Important flows:
-- Employee IR: issue/receive workflow for employees or subcontractors. Hot path. Can update Manufacturing Operation, write MOP Logs, calculate loss, create Purchase Orders, and advance operations.
+- Employee IR: issue/receive workflow for employees/subcontractors. Hot path. Can update Manufacturing Operation, write MOP Logs, calculate loss, create Purchase Orders, and advance operations.
 - Department IR: issue/receive workflow between departments. Hot path. Can create next Manufacturing Operation, write MOP Logs, update MWO pointers, and handle in-transit state.
 - MOP Log: virtual movement ledger. Must be idempotent and voucher-scoped.
 - Stock Entry: physical stock movement. This repo hooks/overrides Stock Entry behavior and may also create synced MOP Logs.
 - Manufacturing Operation / MWO: workflow state anchors. Cloning, deleting, or pointer updates are high risk.
 - Main Slip: legacy/hybrid stock-routing context. Still relevant when touched.
 - JS form scripts: may create waterfall calls or async save races.
-- Tooling/pre-commit: must match this repo paths and branch strategy, especially develop_aerele.
+- Tooling/pre-commit: must match repo paths, editorconfig, and branch strategy.
 
 Known repo risk themes:
-- Large hot modules such as Employee IR and Stock Entry doc events.
 - Submit/cancel hooks with linked document side effects.
 - MOP Log duplication risk when source queries are not voucher-scoped.
 - Document cloning/deletion in hot paths.
-- Core ERPNext Stock Entry/Submission Queue override risk.
+- Stock Entry and Submission Queue override risk.
 - Hardcoded item-prefix logic such as M/F/D/G/O.
-- Frontend and backend validation drift.
+- Frontend/backend validation drift.
 - DB calls inside loops and unbounded reads.
 
 Do not restate these as findings unless the PR touches them.
 
 ============================================================
-4) Formatting-Heavy PR Rules
+3) Formatting and Tooling PR Rules
 ============================================================
 
 If the PR is mostly formatting:
@@ -308,13 +314,22 @@ Check:
 - imports were not removed incorrectly.
 - new imports are used and do not create circular imports.
 - SQL strings and multiline strings are unchanged.
-- config paths/branch rules still match the repo.
-- no hidden runtime behavior changed.
+- config paths match the repo structure.
+- branch guidance is consistent.
+- `.editorconfig` rules are satisfied, including final newline.
+- hook/tool versions are not obviously outdated.
+- generated assets and Frappe/Jinja templates are not accidentally targeted by formatters.
+
+For `.pr_agent.toml` specifically:
+- Ensure the file ends with a trailing newline.
+- Keep push automation light; avoid running `/review` and `/improve` on every push unless explicitly justified.
+- Avoid excessive suggestion generation settings that cause noise or high request concurrency.
+- If branch context says `develop_aerele` but tooling protects `develop`, require a comment or config alignment.
 
 If no issue exists, say no semantic problem was found and list validation steps.
 
 ============================================================
-5) Frappe Runtime Checks
+4) Frappe Runtime Checks
 ============================================================
 
 Apply when changed code touches:
@@ -344,10 +359,10 @@ Flag changed code that adds heavy work in hot hooks:
 - one enqueue per row
 - unbounded reads
 
-Do not suggest async jobs if the result must be committed before submit finishes.
+Do not suggest async jobs if the result must complete transactionally before submit finishes.
 
 ============================================================
-6) MOP Log and Manufacturing Flow Checks
+5) MOP Log and Manufacturing Flow Checks
 ============================================================
 
 Apply only if the PR changes Employee IR, Department IR, MOP Log, Stock Entry, Manufacturing Operation, Manufacturing Work Order, Main Slip, or sync jobs.
@@ -413,7 +428,7 @@ For gross/net/loss changes:
 * request tests for rounding residuals when needed
 
 ============================================================
-7) Database and Performance Checks
+6) Database and Performance Checks
 ==================================
 
 Flag changed loops containing:
@@ -448,7 +463,7 @@ Prefer:
 * dict/set maps
 * selected fields only
 * chunking for large IN lists
-* frappe.db.bulk_update only when hooks are not required
+* `frappe.db.bulk_update` only when hooks are not required
 
 Example:
 
@@ -464,7 +479,7 @@ mops = frappe.db.get_all(
 mop_by_name = {mop.name: mop for mop in mops}
 ```
 
-Do not recommend `set_value` or `bulk_update` if controller validation, permissions, child-table logic, or hooks are required. Ask the author to document why full `save()` is needed.
+Do not recommend `set_value` or `bulk_update` if controller validation, permissions, child-table logic, or hooks are required.
 
 For indexes:
 
@@ -472,25 +487,8 @@ For indexes:
 * Ask for EXPLAIN on production-like data.
 * Suggest a composite index only when the query shape is visible.
 
-Likely hot fields when changed:
-
-* voucher_type
-* voucher_no
-* row_name
-* manufacturing_operation
-* manufacturing_work_order
-* is_cancelled
-* is_synced
-* flow_index
-* docstatus
-* company
-* department
-* employee
-* posting_date
-* creation
-
 ============================================================
-8) Security and Permission Checks
+7) Security and Permission Checks
 =================================
 
 A. SQL safety
@@ -542,7 +540,7 @@ Flag changed use of:
 * unrestricted getattr/setattr from user input
 
 ============================================================
-9) JavaScript / Client Checks
+8) JavaScript / Client Checks
 =============================
 
 Apply if JS changes.
@@ -633,7 +631,7 @@ If no serious findings:
 * do not invent issues
 
 ============================================================
-12) Severity Guide
+10) Severity Guide
 ==================
 
 Critical:
@@ -667,6 +665,9 @@ Medium:
 * duplicated frontend/backend validation
 * maintainability issue directly worsened by PR
 * outdated/mismatched tooling version
+* noisy push/suggestion automation
+* branch guidance inconsistency
+* missing final newline in config/text files
 
 Low:
 
@@ -675,7 +676,7 @@ Low:
 * minor simplification
 
 ============================================================
-13) Required Self-Check
+11) Required Self-Check
 =======================
 
 End every review with:
@@ -683,10 +684,11 @@ End every review with:
 Reviewer self-check:
 
 * Diff-first review completed: Yes/No
-* Formatting noise separated from semantic changes: Yes/No/Not applicable
+* Formatting/config noise separated from semantic changes: Yes/No/Not applicable
 * Frappe runtime flow affected: Yes/No/Unclear
 * Security boundary changed: Yes/No/Unclear
 * Database/query behavior changed: Yes/No/Unclear
+* Tooling/config behavior changed: Yes/No/Unclear
 * Tests or manual validation requested: Yes/No
 * Remaining uncertainty: list real unknowns only
 
@@ -696,7 +698,8 @@ Author checklist:
 * [ ] I ran relevant tests or explained why tests are not needed.
 * [ ] I confirmed formatting changes did not alter behavior.
 * [ ] I ran `pre-commit run --all-files` if tooling changed.
-* [ ] I confirmed branch/path patterns match this repository.
+* [ ] I confirmed `.editorconfig` rules are satisfied, including final newline.
+* [ ] I confirmed branch/path guidance is consistent with the repository workflow.
 * [ ] I tested submit/cancel/resubmit if runtime flows changed.
 * [ ] I verified duplicate-prevention if MOP Log or Stock Entry changed.
   '''
@@ -711,34 +714,23 @@ Author checklist:
 persistent_comment = true
 publish_output_no_suggestions = true
 focus_only_on_problems = true
-suggestions_depth = "exhaustive"
-suggestions_score_threshold = 0
+
+# Balanced defaults: avoid excessive noise and request concurrency.
+
+suggestions_depth = "normal"
+suggestions_score_threshold = 5
 
 auto_extended_mode = true
-num_code_suggestions_per_chunk = 6
-max_number_of_calls = 3
-parallel_calls = true
-
-# Screenshot-visible code-suggestion features
-
-apply_suggestions_checkbox = true
-enable_more_suggestions_checkbox = true
-enable_chat_in_code_suggestions = true
-enable_chat_text = true
-enable_help_text = false
-wiki_page_accepted_suggestions = true
-allow_thumbs_up_down = false
-
-# Author self-review checkbox shown under PR Code Suggestions
+num_code_suggestions_per_chunk = 4
+max_number_of_calls = 2
+parallel_calls = false
 
 demand_code_suggestions_self_review = true
 fold_suggestions_on_self_review = true
 approve_pr_on_self_review = false
 code_suggestions_self_review_text = "**Author self-review**: I reviewed the PR code suggestions, applied the relevant ones, and explained any intentionally skipped suggestions."
 
-# Commit-ready suggestions.
-
-# If unsupported by the current plan, Qodo may fall back to normal suggestion comments.
+# Commit-ready suggestions, if supported by the current Qodo plan.
 
 commitable_code_suggestions = true
 dual_publishing_score_threshold = 7
@@ -746,14 +738,9 @@ dual_publishing_score_threshold = 7
 extra_instructions = '''
 Suggest changes only for changed PR code.
 
-The suggestions table should be high-signal and grouped by practical category:
-
-* Performance
-* Security
-* Correctness
-* Frappe workflow
-* Tooling/config
-* JavaScript/client
+Keep suggestions focused and practical.
+Do not maximize output volume.
+Do not produce cosmetic suggestions unless no meaningful issue exists.
 
 Before publishing a suggestion, verify:
 
@@ -778,7 +765,9 @@ Prioritize suggestions for:
 * async JS validation races
 * unsafe permission bypass
 * tooling path/branch/exclude mistakes
-* outdated pre-commit/tool versions when config changes
+* missing final newline
+* noisy push/review automation
+* excessive suggestion-generation settings
 
 Every suggestion must include:
 
@@ -787,12 +776,11 @@ Every suggestion must include:
 * what to verify
 * concrete author action
 
-For screenshot-style suggestions:
+Impact labels:
 
-* Keep titles short, like "Batch fetch operations before loop".
-* Use impact labels accurately.
-* Do not mark impact High unless the diff clearly affects security, data integrity, or hot-path runtime behavior.
-* Use "More" suggestions only for additional changed-code issues, not unrelated app-wide cleanup.
+* High only for security, data integrity, broken runtime behavior, or hot-path performance.
+* Medium for maintainability, tooling correctness, or likely performance risk.
+* Low for local cleanup.
 
 Do not suggest broad architecture rewrites unless the changed code introduces a serious runtime risk.
 '''
