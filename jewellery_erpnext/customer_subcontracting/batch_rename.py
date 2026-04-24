@@ -28,6 +28,9 @@ def create_parent_batches(doc, method=None):
 		return
 
 	for row in doc.items:
+		if getattr(row, "t_warehouse", None):
+			continue
+
 		if not row.item_code:
 			continue
 
@@ -188,7 +191,6 @@ def get_purity(item_code):
 	for attr in item.attributes:
 		if attr.attribute == "Metal Purity":
 			purity = flt(attr.attribute_value)
-
 	return purity
 
 
@@ -196,7 +198,10 @@ def create_repack_for_used_other(doc, method=None):
 	if doc.doctype != "Stock Entry":
 		return
 
-	if doc.stock_entry_type != "Customer Goods Received":
+	if doc.stock_entry_type not in [
+		"Customer Goods Received",
+		"Customer Goods Transfer",
+	]:
 		return
 
 	for item in doc.items:
@@ -206,14 +211,15 @@ def create_repack_for_used_other(doc, method=None):
 	source_customer = (
 		getattr(doc, "_customer", None)
 		or getattr(doc, "customer", None)
-		or next(row.customer for row in doc.items if getattr(row, "customer", None))
+		or next(
+			(row.customer for row in doc.items if getattr(row, "customer", None)), None
+		)
 	)
 
 	if not source_customer:
 		return []
 
 	columns, report_data = get_report_data(filters={"other_customer": source_customer})
-
 	if not report_data:
 		return []
 
@@ -221,11 +227,10 @@ def create_repack_for_used_other(doc, method=None):
 
 	for row in report_data:
 		try:
-			bacth_no = row[0]
+			batch_no = row[0]
 			owner = row[1]
 			item = row[2]
-			opening_qty = row[3]
-			used_other = row[5]
+			used_other = flt(row[5])
 			other_customer = row[6]
 		except Exception:
 			continue
@@ -233,20 +238,24 @@ def create_repack_for_used_other(doc, method=None):
 		if not other_customer or used_other <= 0:
 			continue
 
+		if not owner:
+			continue
+
 		if source_customer in (other_customer or ""):
 			matched_rows.append(
 				{
-					"batch_no": bacth_no,
+					"batch_no": batch_no,
 					"owner": owner,
 					"item": item,
-					"opening_qty": opening_qty,
 					"used_other": used_other,
-					"other_customer": other_customer,
 				}
 			)
 
 	if not matched_rows:
 		return []
+
+	matched_rows.sort(key=lambda x: x["batch_no"])
+
 	total_source_qty = sum(flt(d.qty) for d in doc.items if d.batch_no)
 	remaining_qty = total_source_qty
 
@@ -257,7 +266,6 @@ def create_repack_for_used_other(doc, method=None):
 
 	for row in matched_rows:
 		if remaining_qty <= 0:
-			frappe.log_error("No remaining source qty to allocate", "")
 			break
 
 		child_batch = row["batch_no"]
@@ -265,58 +273,54 @@ def create_repack_for_used_other(doc, method=None):
 		used_other = row["used_other"]
 		owner = row["owner"]
 
-		if not owner:
-			continue
-
-		process_qty = min(used_other, remaining_qty)
-
-		try:
-			linked_batches = get_linked_batches(child_batch)
-		except Exception as e:
-			frappe.log_error(title="Error fetching linked batches", message=str(e))
-			continue
+		linked_batches = get_linked_batches(child_batch)
 
 		parent_batch = None
-
-		try:
-			for b in linked_batches:
-				item = frappe.get_value("Batch", b, "item")
-				if item and "24KT" in item:
-					parent_batch = b
-					break
-		except Exception as e:
-			frappe.log_error(title="Error identifying parent batch", message=str(e))
-			continue
+		for b in linked_batches:
+			item = frappe.get_value("Batch", b, "item")
+			if item and "24KT" in item:
+				parent_batch = b
+				break
 
 		if not parent_batch:
-			frappe.log_error("No parent batch found for child batch", child_batch)
-			return []
+			continue
+
+		already_repacked = (
+			frappe.db.sql(
+				"""
+			SELECT IFNULL(SUM(sed_source.qty), 0)
+			FROM `tabStock Entry` se
+			JOIN `tabStock Entry Detail` sed_source
+				ON sed_source.parent = se.name AND sed_source.is_finished_item = 0
+			JOIN `tabStock Entry Detail` sed_target
+				ON sed_target.parent = se.name AND sed_target.is_finished_item = 1
+			WHERE se.stock_entry_type = 'Subcontracting Repack'
+			AND sed_target.batch_no = %s
+			AND sed_source.batch_no = %s
+			AND se.docstatus = 1
+		""",
+				(parent_batch, child_batch),
+			)[0][0]
+			or 0
+		)
+
+		pending_qty = used_other - already_repacked
+
+		if pending_qty <= 0:
+			continue
+
+		process_qty = min(pending_qty, remaining_qty)
 
 		purity = get_purity(item_code)
 		converted_qty = process_qty * (purity / 100)
 
 		parent_item = frappe.get_value("Batch", parent_batch, "item")
 
-		exists = frappe.db.exists(
-			"Stock Entry Detail",
-			{
-				"batch_no": parent_batch,
-				"s_warehouse": "Central RM - GEPL",
-				"t_warehouse": "",
-				"is_finished_item": 1,
-				"docstatus": 1,
-			},
-		)
-
-		if exists:
-			continue
-
 		try:
 			se = frappe.new_doc("Stock Entry")
 			se.stock_entry_type = "Subcontracting Repack"
 			se.purpose = "Repack"
 			se.company = doc.company
-			se.flags.ignore_validate_serial_no = True
 
 			se.append(
 				"items",
@@ -326,9 +330,8 @@ def create_repack_for_used_other(doc, method=None):
 					"qty": converted_qty,
 					"s_warehouse": "Central RM - GEPL",
 					"customer": source_customer,
-					"inventory_type": "Regular Stock",
 					"is_finished_item": 0,
-					"use_serial_batch_fields": 0,
+					"use_serial_batch_fields": 1,
 				},
 			)
 
@@ -338,19 +341,18 @@ def create_repack_for_used_other(doc, method=None):
 					"item_code": parent_item,
 					"batch_no": parent_batch,
 					"qty": converted_qty,
-					"s_warehouse": "Central RM - GEPL",
+					"t_warehouse": "Central RM - GEPL",
 					"customer": owner,
-					"inventory_type": "Regular Stock",
 					"is_finished_item": 1,
-					"use_serial_batch_fields": 0,
+					"use_serial_batch_fields": 1,
 				},
 			)
-			se.set("use_serial_batch_fields", 0)
+
 			se.insert()
 			se.submit()
 
 		except Exception as e:
-			frappe.log_error(title="Error creating repack entry", message=str(e))
+			frappe.log_error("Repack Error", str(e))
 			continue
 
 		remaining_qty -= process_qty
