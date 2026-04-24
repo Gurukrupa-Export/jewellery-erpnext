@@ -28,16 +28,6 @@ def execute(filters=None):
 		for r in get_usage_data(filters, get_conditions(filters)):
 			process_usage_row(batch_map, parent_usage, child_usage, r)
 
-	if filters.get("customer"):
-		batch_map = {
-			batch: info
-			for batch, info in batch_map.items()
-			if (
-				info.get("owner") == filters.get("customer")
-				or batch in filters.get("linked_batches", [])
-			)
-		}
-
 	data = []
 
 	if batches_to_include is None:
@@ -77,6 +67,10 @@ def execute(filters=None):
 		other_customer = (
 			", ".join([str(c) for c in other_customers if c]) if other_customers else ""
 		)
+
+		if filters.get("customer"):
+			if filters.get("customer") not in owner:
+				continue
 
 		if filters.get("other_customer"):
 			if filters.get("other_customer") not in other_customers:
