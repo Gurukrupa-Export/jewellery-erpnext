@@ -386,11 +386,20 @@ def create_snc_from_mwo_submit(mwo_name: str) -> str:
 	snc.design_id_bom = mwo.master_bom
 	snc.total_weight = 0
 
-	# always start in Pending RM Fetch so user can manually trigger the consolidation
-	snc.status = "Pending RM Fetch"
-
+	# Create the SNC in draft first
 	snc.flags.ignore_mandatory = True
-	snc.save(ignore_permissions=True)
+	snc.insert(ignore_permissions=True)
+
+	try:
+		# fetch_raw_materials handles internal saving and sets status to "Ready to Submit"
+		snc.fetch_raw_materials()
+	except Exception as e:
+		frappe.log_error(
+			title="SNC Auto Fetch Error", message=f"MWO: {mwo_name}, Error: {e}"
+		)
+		# If auto-fetch fails, at least ensure it's in a known state
+		snc.db_set("status", "Pending RM Fetch")
+
 	return snc.name
 
 
@@ -627,7 +636,9 @@ def _to_snc_stock_rows_from_mop_balance(balance_rows):
 				sub_setting_type = sed_data.custom_sub_setting_type
 
 		# Calculate gross_wt (consistent with manufacturing_operation.py)
-		gross_wt = flt(qty * 0.2, 3) if uom == "Carat" else flt(qty, 3)
+		uom_lower = (uom or "").lower()
+		is_carat = uom_lower in ["carat", "cts", "ct"]
+		gross_wt = flt(qty * 0.2, 3) if is_carat else flt(qty, 3)
 
 		out.append(
 			{
@@ -867,5 +878,24 @@ def _make_physical_transfer_for_synced_mop_logs(mop_name, snc_doc):
 	se.flags.ignore_permissions = True
 	se.save()
 	se.submit()
+
+	# Mark the virtual logs we just physicalized as synced
+	mop_list = frappe.get_all(
+		"Manufacturing Work Order",
+		{"manufacturing_order": snc_doc.parent_manufacturing_order},
+		pluck="manufacturing_operation",
+	)
+	if mop_list:
+		frappe.db.sql(
+			"""
+			UPDATE `tabMOP Log`
+			SET is_synced = 1
+			WHERE manufacturing_operation IN %s
+			  AND is_cancelled = 0
+			  AND is_synced = 0
+		""",
+			(tuple(mop_list),),
+		)
+
 	frappe.msgprint(_("Physical Stock Transfer created: {0}").format(se.name))
 	return se.name

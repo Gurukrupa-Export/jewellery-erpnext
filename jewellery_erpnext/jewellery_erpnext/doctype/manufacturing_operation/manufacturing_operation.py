@@ -1112,6 +1112,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"use_serial_batch_fields": 1,
 			"serial_no": sr_no,
 			"is_finished_item": 1,
+			"custom_gross_wt": doc.total_weight,
 		},
 	)
 
@@ -1218,6 +1219,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	frappe.db.set_value(
 		"Serial No", sr_no, "custom_product_type", pmo_det.get("product_type")
 	)
+	frappe.db.set_value("Serial No", sr_no, "custom_gross_wt", doc.total_weight)
 	frappe.db.set_value(
 		"Serial No", sr_no, "custom_repair_type", pmo_det.get("repair_type")
 	)
@@ -1578,7 +1580,23 @@ def get_material_wt(doc):
 
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	# frappe.throw("create_finished_goods_bom")
-	data = get_stock_entry_data(self)
+	# If called from Serial Number Creator, use its prepared table as source of truth
+	if getattr(self, "doctype", None) == "Serial Number Creator" and self.get(
+		"fg_details"
+	):
+		data = [
+			{
+				"item_code": d.row_material,
+				"qty": d.qty,
+				"pcs": d.pcs,
+				"uom": d.uom,
+				"rate": getattr(d, "rate", 0),
+				"custom_sub_setting_type": getattr(d, "sub_setting_type", None),
+			}
+			for d in self.fg_details
+		]
+	else:
+		data = get_stock_entry_data(self)
 
 	ref_customer = frappe.db.get_value(
 		"Parent Manufacturing Order", self.parent_manufacturing_order, "ref_customer"
@@ -1632,13 +1650,45 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.bom_type = "Finish Goods"
 	new_bom.tag_no = get_serial_no(se_name)
 	new_bom.custom_serial_number_creator = self.name
+	new_bom.total_operation_time = total_time
+	new_bom.actual_operation_time = 0
+
+	# Clear existing child tables to rebuild from Stock Entry data
 	new_bom.metal_detail = []
 	new_bom.finding_detail = []
 	new_bom.diamond_detail = []
 	new_bom.gemstone_detail = []
 	new_bom.other_detail = []
-	new_bom.total_operation_time = total_time
-	new_bom.actual_operation_time = 0
+	new_bom.operations = []
+
+	# Reset header totals to avoid stale data from copied template
+	for field in [
+		"total_metal_weight",
+		"total_metal_amount",
+		"custom_metal_amount",
+		"custom_fg_metal_amount",
+		"total_diamond_weight",
+		"total_diamond_pcs",
+		"total_diamond_amount",
+		"diamond_bom_amount",
+		"diamond_fg_purchase",
+		"total_gemstone_weight",
+		"total_gemstone_pcs",
+		"total_gemstone_amount",
+		"gemstone_bom_amount",
+		"gemstone_fg_purchase",
+		"total_finding_weight",
+		"total_finding_pcs",
+		"total_finding_amount",
+		"finding_bom_amount",
+		"finding_fg_amount",
+		"net_weight",
+		"gross_weight",
+		"making_charge",
+		"total_bom_amount",
+	]:
+		if hasattr(new_bom, field):
+			setattr(new_bom, field, 0)
 	if mo_data:
 		new_bom.with_operations = 1
 		new_bom.transfer_material_against = None
@@ -1711,8 +1761,27 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 	for item in data:
 		item_row = frappe.get_doc("Item", item["item_code"])
+		# Robust category detection consistent with PMO and SNC
+		v_of = getattr(item_row, "custom_variant_of", None) or getattr(
+			item_row, "variant_of", None
+		)
+		if v_of:
+			category = v_of[0].upper()
+		else:
+			# Fallback to item group
+			ig = item_row.item_group or ""
+			if "Metal" in ig:
+				category = "M"
+			elif "Diamond" in ig:
+				category = "D"
+			elif "Gemstone" in ig:
+				category = "G"
+			elif "Finding" in ig:
+				category = "F"
+			else:
+				category = item["item_code"][0].upper()
 
-		if item_row.variant_of == "D":
+		if category == "D":
 			row = {}
 			row["stock_uom"] = item.get("uom")
 			# row["is_customer_item"] = item_row.is_customer_provided_item
@@ -1792,13 +1861,11 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row["quantity"] = item["qty"] / pmo_data.get("qty")
 			row["sieve_size_range"] = sieve_size_range
 			row["sieve_size_mm"] = sieve_size_mm
-			# if item.get("inventory_type") and item.get("inventory_type") == "Customer Goods":
-			# 	row["is_customer_item"] = 1
 			row["is_customer_item"] = (
 				1 if item.get("inventory_type") == "Customer Goods" else 0
 			)
-			# frappe.throw(f"{row["is_customer_item"]}")
 			row["pcs"] = item.get("pcs")
+			row["sub_setting_type"] = item.get("custom_sub_setting_type")
 			row["total_diamond_rate"] = 0
 			if pmo_data.get("diamond_quality"):
 				row["quality"] = pmo_data.get("diamond_quality")
@@ -2213,37 +2280,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 			new_bom.append("diamond_detail", row)
 
-			total_diamond_rate_for_specified_quantity = 0
-			for row in new_bom.get("diamond_detail", []):
-				total_diamond_rate_for_specified_quantity = sum(
-					row.get("diamond_rate_for_specified_quantity", 0) or 0
-					for row in new_bom.get("diamond_detail", [])
-				)
-				new_bom.diamond_bom_amount = total_diamond_rate_for_specified_quantity
-
-				total_diamond_purchase_amount = sum(
-					(row.get("fg_purchase_amount", 0) or 0)
-					for row in new_bom.get("diamond_detail", [])
-				)
-				new_bom.diamond_fg_purchase = total_diamond_purchase_amount
-				total_diamond_pcs = sum(
-					flt(row.get("pcs", 0) or 0)
-					for row in new_bom.get("diamond_detail", [])
-				)
-				new_bom.total_diamond_pcs = total_diamond_pcs
-				new_bom.total_diamond_amount = total_diamond_rate_for_specified_quantity
-				total_diamond_weight_per_gram = sum(
-					flt(row.get("weight_in_gms", 0) or 0)
-					for row in new_bom.get("diamond_detail", [])
-				)
-				new_bom.total_diamond_weight_per_gram = total_diamond_weight_per_gram
-				total_diamond_weight = sum(
-					flt(row.get("quantity", 0) or 0)
-					for row in new_bom.get("diamond_detail", [])
-				)
-				new_bom.total_diamond_weight = total_diamond_weight
-
-		elif item_row.variant_of == "M":
+		elif category == "M":
 			row = {}
 			rate_per_gm = 0
 			fg_purchase_rate = 0
@@ -2457,47 +2494,9 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				if not hasattr(new_bom, "custom_metal_amount"):
 					new_bom.custom_metal_amount = 0
 				if new_bom.get("metal_detail"):
-					total_making_amount = sum(
-						flt(r.get("making_amount", 0))
-						for r in new_bom.get("metal_detail", [])
-					)
 					new_bom.custom_metal_amount = total_making_amount
 
-				if not hasattr(new_bom, "custom_fg_metal_amount"):
-					new_bom.custom_fg_metal_amount = 0
-				if new_bom.get("metal_detail"):
-					total_fg_purchase_amount = sum(
-						flt(r.get("fg_purchase_amount", 0))
-						for r in new_bom.get("metal_detail", [])
-					)
-					new_bom.custom_fg_metal_amount = total_fg_purchase_amount
-
-			if not hasattr(new_bom, "total_metal_weight"):
-				new_bom.total_metal_weight = 0
-			if new_bom.get("metal_detail"):
-				total_metal_weight = sum(
-					flt(r.get("quantity", 0)) for r in new_bom.get("metal_detail", [])
-				)
-				new_bom.total_metal_weight = total_metal_weight
-
-			if not hasattr(new_bom, "total_metal_amount"):
-				new_bom.total_metal_amount = 0
-			if new_bom.get("metal_detail"):
-				total_metal_amount = sum(
-					flt(r.get("amount", 0)) for r in new_bom.get("metal_detail", [])
-				)
-				new_bom.total_metal_amount = total_metal_amount
-
-			if not hasattr(new_bom, "total_wastage_amount"):
-				new_bom.total_wastage_amount = 0
-			if new_bom.get("metal_detail"):
-				total_wastage_amount = sum(
-					flt(r.get("wastage_amount", 0))
-					for r in new_bom.get("metal_detail", [])
-				)
-				new_bom.total_wastage_amount = total_wastage_amount
-
-		elif item_row.variant_of == "F":
+		elif category == "F":
 			row = {}
 			row["stock_uom"] = item.get("uom")
 			rate_per_gm = 0
@@ -2712,58 +2711,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				row["amount"] = row["rate"] * row["quantity"]
 				row["wastage_amount"] = row.get("wastage_rate", 0) * row["amount"]
 
+			# Append row
 			new_bom.append("finding_detail", row)
 
-			if not hasattr(new_bom, "custom_finding_amount"):
-				new_bom.custom_finding_amount = 0
-
-			if not hasattr(new_bom, "custom_finding_fg_amount"):
-				new_bom.custom_finding_fg_amount = 0
-
-			# Calculate totals
-			total_making_amount = sum(
-				flt(row.get("making_rate", 0) * row.get("quantity", 0))
-				for row in new_bom.get("finding_detail", [])
-			)
-			total_fg_purchase_amount = sum(
-				flt(row.get("fg_purchase_amount", 0))
-				for row in new_bom.get("finding_detail", [])
-			)
-			total_finding_amount = sum(
-				flt(row.get("amount", 0)) for row in new_bom.get("finding_detail", [])
-			)
-			total_finding_quantity = sum(
-				flt(row.get("qty", 0)) for row in new_bom.get("finding_detail", [])
-			)
-			total_finding_weight_per_gram = sum(
-				flt(row.get("quantity", 0)) for row in new_bom.get("finding_detail", [])
-			)
-			total_finding_weight = sum(
-				flt(row.get("quantity", 0)) for row in new_bom.get("finding_detail", [])
-			)
-			total_wastage_amount = sum(
-				flt(row.get("wastage_amount", 0))
-				for row in new_bom.get("finding_detail", [])
-			)
-			total_gemstone_rate_for_specified_quantity = sum(
-				flt(row.get("gemstone_rate_for_specified_quantity", 0))
-				for row in new_bom.get("gemstone_detail", [])
-			)
-
-			# Set the totals in the BOM document
-			new_bom.custom_finding_amount = total_making_amount
-			new_bom.custom_finding_fg_amount = total_fg_purchase_amount
-			new_bom.finding_bom_amount = total_finding_amount
-			new_bom.total_finding_amount = total_finding_amount
-			new_bom.finding_pcs = total_finding_quantity
-			new_bom.total_finding_weight_per_gram = total_finding_weight_per_gram
-			new_bom.finding_weight_ = total_finding_weight
-			new_bom.total_wastage_amount = total_wastage_amount
-			new_bom.total_gemstone_rate_for_specified_quantity = (
-				total_gemstone_rate_for_specified_quantity
-			)
-
-		elif item_row.variant_of == "G":
+		elif category == "G":
 			row = {}
 			row["stock_uom"] = item.get("uom")
 			# Fetching basic details
@@ -2771,6 +2722,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row["rate"] = new_bom.gold_rate_with_gst
 			row["quantity"] = flt(item.get("qty", 0)) / flt(pmo_data.get("qty", 1))
 			row["pcs"] = flt(item.get("pcs", 0))
+			row["sub_setting_type"] = item.get("custom_sub_setting_type")
 			if self.company == "KG GK Jewellers Private Limited":
 				row["price_list_type"] = ref_gemstone_price_list_type
 			else:
@@ -2787,7 +2739,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					'Gemstone Grade', 'Gemstone Size', 'Gemstone Quality', 'Gemstone PR'
 				)
 				""",
-				(item_row.item_code),
+				(item_row.name,),
 				as_dict=True,
 			)
 
@@ -3172,33 +3124,83 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				flt(row.get("fg_purchase_rate", 0))
 				for row in new_bom.get("gemstone_detail", [])
 			)
-			new_bom.total_gemstone_pcs = sum(
-				flt(row.get("pcs", 0)) for row in new_bom.get("gemstone_detail", [])
-			)
-			new_bom.total_gemstone_weight = sum(
-				flt(row.get("quantity", 0))
-				for row in new_bom.get("gemstone_detail", [])
-			)
-			new_bom.total_gemstone_weight_per_gram = sum(
-				flt(row.get("weight_in_gms", 0))
-				for row in new_bom.get("gemstone_detail", [])
-			)
-			new_bom.total_gemstone_amount = sum(
-				flt(row.get("gemstone_rate_for_specified_quantity", 0))
-				for row in new_bom.get("gemstone_detail", [])
-			)
 
-		elif item_row.variant_of == "O":
+		elif category == "O":
 			row = {}
 			row["se_rate"] = item.get("rate")
 			for attribute in item_row.attributes:
 				atrribute_name = format_attrbute_name(attribute.attribute)
 				row[atrribute_name] = attribute.attribute_value
-				row["item_code"] = item_row.name
-				row["quantity"] = item["qty"] / pmo_data.get("qty")
-				row["qty"] = item["qty"]
-				row["uom"] = "Gram"
+			row["item_code"] = item_row.name
+			row["quantity"] = item["qty"] / (pmo_data.get("qty") or 1)
+			row["qty"] = item["qty"]
+			row["uom"] = "Gram"
 			new_bom.append("other_detail", row)
+
+	# FINAL RECALCULATION OF ALL HEADER TOTALS
+	# Metals
+	new_bom.total_metal_weight = sum(
+		flt(r.get("quantity", 0)) for r in new_bom.get("metal_detail", [])
+	)
+	new_bom.total_metal_amount = sum(
+		flt(r.get("amount", 0)) for r in new_bom.get("metal_detail", [])
+	)
+	new_bom.custom_metal_amount = sum(
+		flt(r.get("making_rate", 0) * r.get("quantity", 0))
+		for r in new_bom.get("metal_detail", [])
+	)
+	new_bom.custom_fg_metal_amount = sum(
+		flt(r.get("fg_purchase_amount", 0)) for r in new_bom.get("metal_detail", [])
+	)
+	new_bom.total_wastage_amount = sum(
+		flt(r.get("wastage_amount", 0)) for r in new_bom.get("metal_detail", [])
+	)
+
+	# Findings
+	new_bom.finding_weight_ = sum(
+		flt(r.get("quantity", 0)) for r in new_bom.get("finding_detail", [])
+	)
+	new_bom.total_finding_weight_per_gram = new_bom.finding_weight_
+	new_bom.total_finding_amount = sum(
+		flt(r.get("amount", 0)) for r in new_bom.get("finding_detail", [])
+	)
+	new_bom.custom_finding_amount = sum(
+		flt(r.get("making_rate", 0) * r.get("quantity", 0))
+		for r in new_bom.get("finding_detail", [])
+	)
+	new_bom.custom_finding_fg_amount = sum(
+		flt(r.get("fg_purchase_amount", 0)) for r in new_bom.get("finding_detail", [])
+	)
+	new_bom.finding_pcs = sum(
+		flt(r.get("qty", 0)) for r in new_bom.get("finding_detail", [])
+	)
+
+	# Diamonds
+	new_bom.total_diamond_pcs = sum(
+		flt(r.get("pcs", 0)) for r in new_bom.get("diamond_detail", [])
+	)
+	new_bom.total_diamond_weight = sum(
+		flt(r.get("quantity", 0)) for r in new_bom.get("diamond_detail", [])
+	)
+	new_bom.total_diamond_amount = sum(
+		flt(r.get("amount", 0)) for r in new_bom.get("diamond_detail", [])
+	)
+
+	# Gemstones
+	new_bom.total_gemstone_pcs = sum(
+		flt(r.get("pcs", 0)) for r in new_bom.get("gemstone_detail", [])
+	)
+	new_bom.total_gemstone_weight = sum(
+		flt(r.get("quantity", 0)) for r in new_bom.get("gemstone_detail", [])
+	)
+	new_bom.total_gemstone_amount = sum(
+		flt(r.get("amount", 0)) for r in new_bom.get("gemstone_detail", [])
+	)
+	new_bom.total_gemstone_rate_for_specified_quantity = sum(
+		flt(r.get("gemstone_rate_for_specified_quantity", 0))
+		for r in new_bom.get("gemstone_detail", [])
+	)
+
 	new_bom.making_charge = new_bom.custom_metal_amount + new_bom.custom_finding_amount
 	new_bom.making_fg_purchase = (
 		new_bom.custom_fg_metal_amount + new_bom.custom_finding_fg_amount
@@ -3241,14 +3243,6 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 
 def get_stock_entry_data(self):
-	target_wh = frappe.db.get_value(
-		"Warehouse",
-		{
-			"disabled": 0,
-			"department": self.department,
-			"warehouse_type": "Manufacturing",
-		},
-	)
 	pmo = frappe.db.get_value(
 		"Manufacturing Work Order", self.manufacturing_work_order, "manufacturing_order"
 	)
@@ -3264,8 +3258,8 @@ def get_stock_entry_data(self):
 		pluck="manufacturing_operation",
 	)
 
-	if not mop:
-		return []
+	# if not mop:
+	# 	return []
 
 	StockEntry = frappe.qb.DocType("Stock Entry")
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
@@ -3276,32 +3270,34 @@ def get_stock_entry_data(self):
 		.on(StockEntryDetail.parent == StockEntry.name)
 		.select(
 			StockEntryDetail.custom_manufacturing_work_order,
-			StockEntry.manufacturing_operation,
-			StockEntryDetail.parent,
+			StockEntryDetail.manufacturing_operation,
+			Max(StockEntryDetail.parent).as_("parent"),
 			StockEntryDetail.item_code,
-			StockEntryDetail.item_name,
-			StockEntryDetail.qty,
+			Max(StockEntryDetail.item_name).as_("item_name"),
+			StockEntryDetail.custom_sub_setting_type,
+			Sum(StockEntryDetail.qty).as_("qty"),
 			StockEntryDetail.uom,
 			StockEntryDetail.inventory_type,
-			StockEntryDetail.pcs,
+			Sum(StockEntryDetail.pcs).as_("pcs"),
 			Avg(StockEntryDetail.basic_rate).as_("rate"),
 		)
 		.where(
 			(StockEntry.docstatus == 1)
 			& (
-				StockEntryDetail.manufacturing_operation.isin(mop)
+				(StockEntryDetail.manufacturing_operation.isin(mop) if mop else False)
 				| (
 					StockEntryDetail.manufacturing_operation
 					== self.manufacturing_operation
 				)
 			)
-			& (StockEntryDetail.t_warehouse == target_wh)
 		)
 		.groupby(
+			StockEntryDetail.custom_manufacturing_work_order,
 			StockEntryDetail.manufacturing_operation,
 			StockEntryDetail.item_code,
-			StockEntryDetail.qty,
 			StockEntryDetail.uom,
+			StockEntryDetail.inventory_type,
+			StockEntryDetail.custom_sub_setting_type,
 		)
 	).run(as_dict=True)
 
