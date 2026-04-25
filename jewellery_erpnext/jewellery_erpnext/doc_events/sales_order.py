@@ -1062,8 +1062,7 @@ def create_new_bom1(self):
 							else:
 								gem.total_gemstone_rate = gem.se_rate
 							gem.gemstone_rate_for_specified_quantity = (
-								float(gem.total_gemstone_rate) / 100 * float(gem.quantity)
-							)
+								float(gem.total_gemstone_rate) * float(gem.quantity)) if gem.per_pc_or_per_carat=='Per Carat' else (float(gem.total_gemstone_rate) * float(gem.pcs))
 							# gem.fg_purchase_amount=gem.gemstone_rate_for_specified_quantity
 							doc.total_gemstone_amount = sum(
 								flt(r.gemstone_rate_for_specified_quantity)
