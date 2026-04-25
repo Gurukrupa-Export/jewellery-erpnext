@@ -1044,7 +1044,7 @@ def create_new_bom1(self):
 						# gem.quantity=round(gem.quantity,stone_precision)
 						# frappe.throw(f"{gemstone_price_list_customer}")
 						gem.gemstone_grade=gem.gemstone_grade
-						
+						gem.gemstone_pr=gem.gemstone_pr
 						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
 							gem.total_gemstone_rate = gem.fg_purchase_rate
 							gem.gemstone_rate_for_specified_quantity = (
@@ -1183,32 +1183,32 @@ def create_new_bom1(self):
 
 								if not gpc:
 									frappe.throw("No Retail Multiplier Price List found")
-							gem.gemstone_pr=gem.gemstone_pr
-							gpc_doc = frappe.get_doc("Gemstone Price List", gpc[0].name)
-							multiplier_rows = gpc_doc.get("gemstone_multiplier")
-							rate = gpc_doc.rate if gpc_doc else 0
-							# rate = 0
-							for mul in multiplier_rows:
-								if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
-									if gem.gemstone_quality == 'Precious':
-										rate = mul.precious_percentage
+								gem.gemstone_pr=gem.gemstone_pr
+								gpc_doc = frappe.get_doc("Gemstone Price List", gpc[0].name)
+								multiplier_rows = gpc_doc.get("gemstone_multiplier")
+								rate = gpc_doc.rate if gpc_doc else 0
+								# rate = 0
+								for mul in multiplier_rows:
+									if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
+										if gem.gemstone_quality == 'Precious':
+											rate = mul.precious_percentage
 
-									elif gem.gemstone_quality == 'Semi-Precious':
-										rate = mul.semi_precious_percentage
+										elif gem.gemstone_quality == 'Semi-Precious':
+											rate = mul.semi_precious_percentage
 
-									elif gem.gemstone_quality == 'Synthetic':
-										rate = mul.synthetic_percentage
+										elif gem.gemstone_quality == 'Synthetic':
+											rate = mul.synthetic_percentage
 
-							gem.total_gemstone_rate = round(rate, 2)
+								gem.total_gemstone_rate = round(rate, 2)
 
-							gem.gemstone_rate_for_specified_quantity = (
-							float(rate) * float(gem.quantity)) if gem.per_pc_or_per_carat=='Per Carat' else (float(rate) * float(gem.pcs))
-							gem.gemstone_rate_for_specified_quantity =round(gem.gemstone_rate_for_specified_quantity , 2)
-							gem.price_list_type='Diamond Range'
-						doc.total_gemstone_amount = sum(
-								flt(r.gemstone_rate_for_specified_quantity)
-								for r in doc.get("gemstone_detail", [])
-							)
+								gem.gemstone_rate_for_specified_quantity = (
+								float(rate) * float(gem.quantity)) if gem.per_pc_or_per_carat=='Per Carat' else (float(rate) * float(gem.pcs))
+								gem.gemstone_rate_for_specified_quantity =round(gem.gemstone_rate_for_specified_quantity , 2)
+								gem.price_list_type='Diamond Range'
+							doc.total_gemstone_amount = sum(
+									flt(r.gemstone_rate_for_specified_quantity)
+									for r in doc.get("gemstone_detail", [])
+								)
 
 				if hasattr(doc, "metal_detail"):
 					for s in doc.metal_detail:
