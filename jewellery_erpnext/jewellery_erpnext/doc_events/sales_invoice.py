@@ -333,354 +333,636 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 	gold_item = None
 	gold_making_item = None
 	bom_doc.customer = self.customer
+	so_doc = frappe.get_doc("Sales Order", row.sales_order)
+	so_item_map = {}
+	for item in so_doc.custom_invoice_item:
+		so_item_map[item.item_code] = item
+
+	def add_to_invoice(item_code, so_item, fallback_amount=0, fallback_qty=0,fallback_rate=0, hsn=None, uom=None):
+
+		if so_item:
+			amount = so_item.amount
+			qty = so_item.qty
+			rate = so_item.rate
+		else:
+			amount = fallback_amount
+			qty = fallback_qty
+			rate = fallback_rate
+
+		if item_code in invoice_data:
+			if so_item:
+				invoice_data[item_code]["amount"] = amount
+				invoice_data[item_code]["qty"] = qty
+				invoice_data[item_code]["rate"] = rate
+			else:
+				# fallback case → can accumulate
+				invoice_data[item_code]["amount"] += amount
+				invoice_data[item_code]["qty"] += qty
+				invoice_data[item_code]["rate"] = rate
+		else:
+			invoice_data[item_code] = {
+				"amount": amount,
+				"qty": qty,
+				"rate": rate,
+				"hsn_code": hsn,
+				"uom": uom,
+				"income_account": row.income_account,
+				"cost_center": row.cost_center,
+			}
 	for i in bom_doc.metal_detail:
-		amount = i.amount
-		if is_branch_customer:
-			amount = i.se_rate * i.quantity
-		if not i.is_customer_item:
-			update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
 
-		filter_value = "is_for_making"
-		if i.is_customer_item:
-			filter_value = "is_for_labour"
-		if not gold_item:
-			gold_item, hsn_code, gold_uom = frappe.db.get_value(
-				"E Invoice Item",
-				{"is_for_metal": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
-				["name", "hsn_code", "uom"],
+		einvoice_item, hsn_code, uom = frappe.db.get_value(
+			"E Invoice Item",
+			{
+				"is_for_metal": 1,
+				"metal_type": i.metal_type,
+				"metal_purity": i.metal_touch,
+			},
+			["name", "hsn_code", "uom"],
+		) or (None, None, None)
+
+		filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
+
+		making_item, making_hsn, making_uom = frappe.db.get_value(
+			"E Invoice Item",
+			{
+				filter_value: 1,
+				"metal_type": i.metal_type,
+				"metal_purity": i.metal_touch,
+			},
+			["name", "hsn_code", "uom"],
+		) or (None, None, None)
+
+		so_metal = so_item_map.get(einvoice_item)
+		so_making = so_item_map.get(making_item)
+
+		if einvoice_item:
+			add_to_invoice(
+				einvoice_item,
+				so_metal,
+				fallback_amount=i.amount,
+				fallback_qty=i.quantity,
+				fallback_rate=i.rate,
+				hsn=hsn_code,
+				uom=uom,
 			)
-		if not gold_making_item:
-			gold_making_item, making_hsn_code, gold_making_uom = frappe.db.get_value(
-				"E Invoice Item",
-				{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
-				["name", "hsn_code", "uom"],
+
+		if making_item and not is_branch_customer:
+			add_to_invoice(
+				making_item,
+				so_making,
+				fallback_amount=i.making_amount,
+				fallback_qty=i.quantity,
+				fallback_rate=i.making_rate,
+				hsn=making_hsn,
+				uom=making_uom,
 			)
-		if gold_item:
-			if invoice_data.get(gold_item):
-				invoice_data[gold_item]["amount"] += amount
-			else:
-				invoice_data[gold_item] = {
-					"amount": amount,
-					"hsn_code": hsn_code,
-					"qty": 0,
-					"uom": gold_uom,
-					"income_account": row.income_account,
-					"cost_center": row.cost_center,
-				}
-
-			if amount > 0:
-				invoice_data[gold_item]["qty"] += i.quantity
-
-		if gold_making_item and not is_branch_customer:
-			if invoice_data.get(gold_making_item):
-				invoice_data[gold_making_item]["amount"] += i.making_amount
-			else:
-				invoice_data[gold_making_item] = {
-					"amount": i.making_amount,
-					"hsn_code": making_hsn_code,
-					"qty": 0,
-					"uom": gold_making_uom,
-					"income_account": row.income_account,
-					"cost_center": row.cost_center,
-				}
-
-			if i.making_amount > 0:
-				invoice_data[gold_making_item]["qty"] += i.quantity
 
 		if i.is_customer_item:
 			self.is_customer_metal = True
 
-	einvoice_item = None
-	making_item = None
 	for i in bom_doc.finding_detail:
-		amount = i.amount
-		if is_branch_customer:
-			amount = i.se_rate * i.quantity
-		if not i.is_customer_item:
-			update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-		filter_value = "is_for_finding_making"
-		if i.is_customer_item:
-			filter_value = "is_for_labour"
 
-		if not einvoice_item:
-			einvoice_item, hsn_code, uom = frappe.db.get_value(
+		einvoice_item = hsn_code = uom = None
+
+		result = frappe.db.get_value(
+			"E Invoice Item",
+			{
+				"is_for_finding": 1,
+				"metal_type": i.metal_type,
+				"metal_purity": i.metal_touch,
+				"finding_category": i.finding_category,
+			},
+			["name", "hsn_code", "uom"],
+		)
+
+		if result:
+			einvoice_item, hsn_code, uom = result
+		else:
+			result = frappe.db.get_value(
 				"E Invoice Item",
-				{"is_for_finding": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+				{
+					"is_for_metal": 1,
+					"metal_type": i.metal_type,
+					"metal_purity": i.metal_touch,
+				},
 				["name", "hsn_code", "uom"],
 			)
-		
-		if not making_item:
-			making_item, making_hsn_code, making_uom = frappe.db.get_value(
+			if result:
+				einvoice_item, hsn_code, uom = result
+
+		filter_value = "is_for_labour" if i.is_customer_item else "is_for_finding_making"
+
+		making_item = making_hsn = making_uom = None
+
+		result = frappe.db.get_value(
+			"E Invoice Item",
+			{
+				filter_value: 1,
+				"metal_type": i.metal_type,
+				"metal_purity": i.metal_touch,
+				"finding_category": i.finding_category,
+			},
+			["name", "hsn_code", "uom"],
+		)
+
+		if result:
+			making_item, making_hsn, making_uom = result
+		else:
+			result = frappe.db.get_value(
 				"E Invoice Item",
-				{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+				{
+					filter_value: 1,
+					"metal_type": i.metal_type,
+					"metal_purity": i.metal_touch,
+				},
 				["name", "hsn_code", "uom"],
 			)
-		
-		# if not i.not_finding_rate:
-		# 	if gold_item:
-		# 		if invoice_data.get(gold_item):
-		# 			invoice_data[gold_item]["amount"] += amount
-		# 		else:
-		# 			invoice_data[gold_item] = {
-		# 				"amount": amount,
-		# 				"hsn_code": hsn_code,
-		# 				"qty": 0,
-		# 				"uom": gold_uom,
-		# 				"income_account": row.income_account,
-		# 				"cost_center": row.cost_center,
-		# 			}
+			if result:
+				making_item, making_hsn, making_uom = result
 
-		# 		if amount > 0:
-		# 			invoice_data[gold_item]["qty"] += i.quantity
+		so_finding = so_item_map.get(einvoice_item)
+		so_making = so_item_map.get(making_item)
 
-		# 	if gold_making_item and not is_branch_customer:
-		# 		if invoice_data.get(gold_making_item):
-		# 			invoice_data[gold_making_item]["amount"] += i.making_amount
-		# 		else:
-		# 			invoice_data[gold_making_item] = {
-		# 				"amount": i.making_amount,
-		# 				"hsn_code": making_hsn_code,
-		# 				"qty": 0,
-		# 				"uom": gold_making_uom,
-		# 				"income_account": row.income_account,
-		# 				"cost_center": row.cost_center,
-		# 			}
-
-		# 		if i.making_amount > 0:
-		# 			invoice_data[gold_making_item]["qty"] += i.quantity
-
-		# else:
 		if einvoice_item:
-			if invoice_data.get(einvoice_item):
-				invoice_data[einvoice_item]["amount"] += amount
-			else:
-				invoice_data[einvoice_item] = {
-					"amount": amount,
-					"hsn_code": hsn_code,
-					"qty": 0,
-					"uom": uom,
-					"income_account": row.income_account,
-					"cost_center": row.cost_center,
-				}
-
-			if amount > 0:
-				invoice_data[einvoice_item]["qty"] += i.quantity
+			add_to_invoice(
+				einvoice_item,
+				so_finding,
+				fallback_amount=i.amount,
+				fallback_qty=i.quantity,
+				fallback_rate=i.rate,
+				hsn=hsn_code,
+				uom=uom,
+			)
 
 		if making_item:
-			if invoice_data.get(making_item):
-				invoice_data[making_item]["amount"] += i.making_amount
-			else:
-				invoice_data[making_item] = {
-					"amount": i.making_amount,
-					"hsn_code": making_hsn_code,
-					"qty": 0,
-					"uom": making_uom,
-					"income_account": row.income_account,
-					"cost_center": row.cost_center,
-				}
-
-			if i.making_amount > 0:
-				invoice_data[making_item]["qty"] += i.quantity
+			add_to_invoice(
+				making_item,
+				so_making,
+				fallback_amount=i.making_amount,
+				fallback_qty=i.quantity,
+				fallback_rate=i.making_rate,
+				hsn=making_hsn,
+				uom=making_uom,
+			)
 
 		if i.is_customer_item:
 			self.is_customer_metal = True
-
-	if is_branch_customer and bom_doc.get("operation_cost"):
-		invoice_data[gold_making_item] = {"amount": bom_doc.operation_cost, "qty": 1}
-
-	einvoice_item = None
-	ss_range = {}
-	for diamond in bom_doc.diamond_detail:
-		actual_qty = diamond.quantity
-		diamond.quantity = flt(diamond.quantity, bom_doc.diamond_pricision)
-		diamond.difference = actual_qty - diamond.quantity
-		if not diamond.sieve_size_range:
-			continue
-		det = ss_range.get(diamond.sieve_size_range) or {}
-		# det['pcs'] = flt(det.get("pcs")) + diamond.pcs
-		det["pcs"] = (flt(det.get("pcs")) + flt(diamond.get("pcs"))) or 1
-		det["quantity"] = flt(flt(det.get("quantity")) + diamond.quantity, 3)
-		det["std_wt"] = flt(flt(det["quantity"], 2) / det["pcs"], 3)
-		ss_range[diamond.sieve_size_range] = det
-
-	cust_diamond_price_list_type = frappe.db.get_value(
-		"Customer", bom_doc.customer, "diamond_price_list"
-	)
-
-	diamond_price_list_data = frappe._dict()
-
 	for i in bom_doc.diamond_detail:
-		bom_doc.cust_diamond_price_list_type = cust_diamond_price_list_type
-		det = ss_range.get(diamond.sieve_size_range) or {}
 
-		amount = _calculate_diamond_amount(bom_doc, i, det, diamond_price_list_data)
-		# amount = i.diamond_rate_for_specified_quantity
-		if is_branch_customer:
-			amount = i.se_rate * i.quantity
-		if not einvoice_item:
-			einvoice_item, hsn_code, uom = frappe.db.get_value(
-				"E Invoice Item",
-				{"is_for_diamond": 1, "diamond_type": i.diamond_type},
-				["name", "hsn_code", "uom"],
-			)
+		
+		einvoice_item = hsn_code = uom = None
 
-		if einvoice_item:
-			einvoice_item_name = einvoice_item
-			# if i.diamond_type != "Real":
-			# 	einvoice_item_name += f" {i.diamond_type}"
+		result = frappe.db.get_value(
+			"E Invoice Item",
+			{
+				"is_for_diamond": 1,
+				"diamond_type": i.diamond_type
+			},
+			["name", "hsn_code", "uom"],
+		)
 
-			if invoice_data.get(einvoice_item_name):
-				invoice_data[einvoice_item_name]["amount"] += amount
-			else:
-				invoice_data[einvoice_item_name] = {
-					"amount": amount,
-					"hsn_code": hsn_code,
-					"qty": 0,
-					"uom": uom,
-					"income_account": row.income_account,
-					"cost_center": row.cost_center,
-				}
+		if result:
+			einvoice_item, hsn_code, uom = result
+		else:
+			continue  
 
-			if amount > 0:
-				invoice_data[einvoice_item_name]["qty"] += i.quantity
+		so_item = so_item_map.get(einvoice_item)
 
-		if custom_diamond_quality := row.custom_diamond_quality or self.custom_diamond_quality:
-			i.quality = custom_diamond_quality
+		if so_item:
+			amount = so_item.amount
+			qty = so_item.qty
+			rate = so_item.rate
+
+		else:
+			amount = _calculate_diamond_amount(bom_doc, i, {}, {})
+			if is_branch_customer:
+				amount = i.se_rate * i.quantity
+
+			qty = i.quantity
+			rate = 0
+
+		if einvoice_item in invoice_data:
+			invoice_data[einvoice_item]["amount"] = amount  
+			invoice_data[einvoice_item]["qty"] = qty
+		else:
+			invoice_data[einvoice_item] = {
+				"amount": amount,
+				"qty": qty,
+				"rate": rate,
+				"hsn_code": hsn_code,
+				"uom": uom,
+				"income_account": row.income_account,
+				"cost_center": row.cost_center,
+			}
 
 		if i.is_customer_item:
 			self.is_customer_diamond = True
-
-	einvoice_item = None
 	for i in bom_doc.gemstone_detail:
-		actual_qty = i.quantity
-		i.quantity = flt(i.quantity, bom_doc.gemstone_pricision)
-		i.difference = actual_qty - i.quantity
-		# Calculate the weight per piece
-		i.pcs = int(i.pcs) or 1
-		gemstone_weight_per_pcs = i.quantity / i.pcs
 
-		# Create filters for retrieving the Gemstone Price List
-		filters = {
-			"price_list": self.selling_price_list,
-			"price_list_type": i.price_list_type,
-			"customer": self.customer,
-			"cut_or_cab": i.cut_or_cab,
-			"gemstone_grade": i.gemstone_grade,
-		}
-		# if i.price_list_type == "Weight (in cts)":
-		# 	filters.update(
-		# 		{
-		# 			"gemstone_type": i.gemstone_type,
-		# 			"stone_shape": i.stone_shape,
-		# 			"gemstone_quality": i.gemstone_quality,
-		# 			"from_weight": ["<=", gemstone_weight_per_pcs],
-		# 			"to_weight": [">=", gemstone_weight_per_pcs],
-		# 		}
-		# 	)
-		if i.price_list_type == "Diamond Range" and i.gemstone_size:
-			filters.update(
-				{
-					"to_stone_size": [">=", i.gemstone_size],
-					"from_stone_size": ["<=", i.gemstone_size],
-				}
-			)
-		else:
-			filters["gemstone_type"] = i.gemstone_type
-			filters["stone_shape"] = i.stone_shape
-			filters["gemstone_quality"] = i.gemstone_quality
-			filters["gemstone_quality"] = i.gemstone_quality
-			filters["gemstone_size"] = i.gemstone_size
+		einvoice_item, hsn_code, uom = frappe.db.get_value(
+			"E Invoice Item",
+			{"is_for_gemstone": 1},
+			["name", "hsn_code", "uom"],
+		) or (None, None, None)
 
-		# Retrieve the Gemstone Price List and calculate the rate
-		gemstone_price_list = frappe.get_list(
-			"Gemstone Price List",
-			filters=filters,
-			fields=["name", "rate", "handling_charges_rate", "supplier_fg_purchase_rate"],
-			order_by="effective_from desc",
-			limit=1,
-		)
-
-		multiplier = 0
-		item_category = frappe.db.get_value("Item", bom_doc.item, "item_category")
-		if i.price_list_type == "Diamond Range":
-			for gr in gemstone_price_list:
-				multiplier = (
-					frappe.db.get_value(
-						"Gemstone Multiplier",
-						{"parent": gr.name, "item_category": item_category, "parentfield": "gemstone_multiplier"},
-						frappe.scrub(i.gemstone_quality),
-					)
-					or 0
-				)
-				fg_multiplier = (
-					frappe.db.get_value(
-						"Gemstone Multiplier",
-						{
-							"parent": gr.name,
-							"item_category": item_category,
-							"parentfield": "supplier_fg_multiplier",
-						},
-						frappe.scrub(i.gemstone_quality),
-					)
-					or 0
-				)
-
-		if not gemstone_price_list:
-			frappe.msgprint(
-				f"Gemstone Amount for {i.gemstone_type} is 0\n Please Check if Gemstone Price Exists For {filters}"
-			)
-			return 0
-
-		# Get Handling Rate of the Diamond if it is a cutomer provided Diamond
-		pr = int(i.gemstone_pr)
-		if i.price_list_type == "Diamond Range":
-			rate = multiplier * pr
-		else:
-			rate = (
-				gemstone_price_list[0].get("handling_charges_rate")
-				if i.is_customer_item
-				else gemstone_price_list[0].get("rate")
-			)
-		i.total_gemstone_rate = rate
-		i.gemstone_rate_for_specified_quantity = int(rate) * i.quantity
-
-		amount = i.gemstone_rate_for_specified_quantity
-		if is_branch_customer:
-			amount = i.se_rate * i.quantity
 		if not einvoice_item:
-			einvoice_item, hsn_code, uom = frappe.db.get_value(
-				"E Invoice Item", {"is_for_gemstone": 1}, ["name", "hsn_code", "uom"]
-			)
+			continue
 
+		so_item = so_item_map.get(einvoice_item)
+
+		if so_item:
+			amount = so_item.amount
+			qty = so_item.qty
+			rate = so_item.rate
+		else:
+			
+			amount = i.gemstone_rate_for_specified_quantity
+			qty = i.quantity
+			rate = i.total_gemstone_rate
+
+			if is_branch_customer:
+				amount = i.se_rate * i.quantity
+				rate = i.se_rate
+
+		
 		if einvoice_item:
-			if invoice_data.get(f"{einvoice_item}"):
-				invoice_data[f"{einvoice_item}"]["amount"] += amount
+			if so_item_map.get(einvoice_item):
+				
+				invoice_data[f"{einvoice_item}"] = {
+					"amount": so_item_map[einvoice_item].amount,
+					"qty": so_item_map[einvoice_item].qty,
+					"rate": so_item_map[einvoice_item].rate,
+					"hsn_code": hsn_code,
+					"uom": uom,
+					"income_account": row.income_account,
+					"cost_center": row.cost_center,
+				}
 			else:
+				
 				invoice_data[f"{einvoice_item}"] = {
 					"amount": amount,
+					"qty": i.quantity,
+					"rate": i.rate,
 					"hsn_code": hsn_code,
-					"qty": 0,
 					"uom": uom,
 					"income_account": row.income_account,
 					"cost_center": row.cost_center,
 				}
 
-			if amount > 0:
-				invoice_data[f"{einvoice_item}"]["qty"] += i.quantity
+		if i.is_customer_item:
+			self.is_customer_gemstone = True
+	# gold_item = None
+	# gold_making_item = None
+	# bom_doc.customer = self.customer
+	# for i in bom_doc.metal_detail:
+	# 	amount = i.amount
+	# 	if is_branch_customer:
+	# 		amount = i.se_rate * i.quantity
+	# 	if not i.is_customer_item:
+	# 		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
 
-	bom_doc.doc_pricision = (
-		2 if frappe.db.get_value("Customer", bom_doc.customer, "custom_consider_2_digit_for_bom") else 3
-	)
-	bom_doc.diamond_pricision = (
-		2
-		if frappe.db.get_value("Customer", bom_doc.customer, "custom_consider_2_digit_for_diamond")
-		else 3
-	)
-	bom_doc.gemstone_pricision = (
-		2
-		if frappe.db.get_value("Customer", bom_doc.customer, "custom_consider_2_digit_for_gemstone")
-		else 3
-	)
+	# 	filter_value = "is_for_making"
+	# 	if i.is_customer_item:
+	# 		filter_value = "is_for_labour"
+	# 	if not gold_item:
+	# 		gold_item, hsn_code, gold_uom = frappe.db.get_value(
+	# 			"E Invoice Item",
+	# 			{"is_for_metal": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+	# 			["name", "hsn_code", "uom"],
+	# 		)
+	# 	if not gold_making_item:
+	# 		gold_making_item, making_hsn_code, gold_making_uom = frappe.db.get_value(
+	# 			"E Invoice Item",
+	# 			{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+	# 			["name", "hsn_code", "uom"],
+	# 		)
+	# 	if gold_item:
+	# 		if invoice_data.get(gold_item):
+	# 			invoice_data[gold_item]["amount"] += amount
+	# 		else:
+	# 			invoice_data[gold_item] = {
+	# 				"amount": amount,
+	# 				"hsn_code": hsn_code,
+	# 				"qty": 0,
+	# 				"uom": gold_uom,
+	# 				"income_account": row.income_account,
+	# 				"cost_center": row.cost_center,
+	# 			}
+
+	# 		if amount > 0:
+	# 			invoice_data[gold_item]["qty"] += i.quantity
+
+	# 	if gold_making_item and not is_branch_customer:
+	# 		if invoice_data.get(gold_making_item):
+	# 			invoice_data[gold_making_item]["amount"] += i.making_amount
+	# 		else:
+	# 			invoice_data[gold_making_item] = {
+	# 				"amount": i.making_amount,
+	# 				"hsn_code": making_hsn_code,
+	# 				"qty": 0,
+	# 				"uom": gold_making_uom,
+	# 				"income_account": row.income_account,
+	# 				"cost_center": row.cost_center,
+	# 			}
+
+	# 		if i.making_amount > 0:
+	# 			invoice_data[gold_making_item]["qty"] += i.quantity
+
+	# 	if i.is_customer_item:
+	# 		self.is_customer_metal = True
+
+	# einvoice_item = None
+	# making_item = None
+	# for i in bom_doc.finding_detail:
+	# 	amount = i.amount
+	# 	if is_branch_customer:
+	# 		amount = i.se_rate * i.quantity
+	# 	if not i.is_customer_item:
+	# 		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
+	# 	filter_value = "is_for_finding_making"
+	# 	if i.is_customer_item:
+	# 		filter_value = "is_for_labour"
+
+	# 	if not einvoice_item:
+	# 		einvoice_item, hsn_code, uom = frappe.db.get_value(
+	# 			"E Invoice Item",
+	# 			{"is_for_finding": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+	# 			["name", "hsn_code", "uom"],
+	# 		)
+		
+	# 	if not making_item:
+	# 		making_item, making_hsn_code, making_uom = frappe.db.get_value(
+	# 			"E Invoice Item",
+	# 			{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+	# 			["name", "hsn_code", "uom"],
+	# 		)
+		
+	# 	# if not i.not_finding_rate:
+	# 	# 	if gold_item:
+	# 	# 		if invoice_data.get(gold_item):
+	# 	# 			invoice_data[gold_item]["amount"] += amount
+	# 	# 		else:
+	# 	# 			invoice_data[gold_item] = {
+	# 	# 				"amount": amount,
+	# 	# 				"hsn_code": hsn_code,
+	# 	# 				"qty": 0,
+	# 	# 				"uom": gold_uom,
+	# 	# 				"income_account": row.income_account,
+	# 	# 				"cost_center": row.cost_center,
+	# 	# 			}
+
+	# 	# 		if amount > 0:
+	# 	# 			invoice_data[gold_item]["qty"] += i.quantity
+
+	# 	# 	if gold_making_item and not is_branch_customer:
+	# 	# 		if invoice_data.get(gold_making_item):
+	# 	# 			invoice_data[gold_making_item]["amount"] += i.making_amount
+	# 	# 		else:
+	# 	# 			invoice_data[gold_making_item] = {
+	# 	# 				"amount": i.making_amount,
+	# 	# 				"hsn_code": making_hsn_code,
+	# 	# 				"qty": 0,
+	# 	# 				"uom": gold_making_uom,
+	# 	# 				"income_account": row.income_account,
+	# 	# 				"cost_center": row.cost_center,
+	# 	# 			}
+
+	# 	# 		if i.making_amount > 0:
+	# 	# 			invoice_data[gold_making_item]["qty"] += i.quantity
+
+	# 	# else:
+	# 	if einvoice_item:
+	# 		if invoice_data.get(einvoice_item):
+	# 			invoice_data[einvoice_item]["amount"] += amount
+	# 		else:
+	# 			invoice_data[einvoice_item] = {
+	# 				"amount": amount,
+	# 				"hsn_code": hsn_code,
+	# 				"qty": 0,
+	# 				"uom": uom,
+	# 				"income_account": row.income_account,
+	# 				"cost_center": row.cost_center,
+	# 			}
+
+	# 		if amount > 0:
+	# 			invoice_data[einvoice_item]["qty"] += i.quantity
+
+	# 	if making_item:
+	# 		if invoice_data.get(making_item):
+	# 			invoice_data[making_item]["amount"] += i.making_amount
+	# 		else:
+	# 			invoice_data[making_item] = {
+	# 				"amount": i.making_amount,
+	# 				"hsn_code": making_hsn_code,
+	# 				"qty": 0,
+	# 				"uom": making_uom,
+	# 				"income_account": row.income_account,
+	# 				"cost_center": row.cost_center,
+	# 			}
+
+	# 		if i.making_amount > 0:
+	# 			invoice_data[making_item]["qty"] += i.quantity
+
+	# 	if i.is_customer_item:
+	# 		self.is_customer_metal = True
+
+	# if is_branch_customer and bom_doc.get("operation_cost"):
+	# 	invoice_data[gold_making_item] = {"amount": bom_doc.operation_cost, "qty": 1}
+
+	# einvoice_item = None
+	# ss_range = {}
+	# for diamond in bom_doc.diamond_detail:
+	# 	actual_qty = diamond.quantity
+	# 	diamond.quantity = flt(diamond.quantity, bom_doc.diamond_pricision)
+	# 	diamond.difference = actual_qty - diamond.quantity
+	# 	if not diamond.sieve_size_range:
+	# 		continue
+	# 	det = ss_range.get(diamond.sieve_size_range) or {}
+	# 	# det['pcs'] = flt(det.get("pcs")) + diamond.pcs
+	# 	det["pcs"] = (flt(det.get("pcs")) + flt(diamond.get("pcs"))) or 1
+	# 	det["quantity"] = flt(flt(det.get("quantity")) + diamond.quantity, 3)
+	# 	det["std_wt"] = flt(flt(det["quantity"], 2) / det["pcs"], 3)
+	# 	ss_range[diamond.sieve_size_range] = det
+
+	# cust_diamond_price_list_type = frappe.db.get_value(
+	# 	"Customer", bom_doc.customer, "diamond_price_list"
+	# )
+
+	# diamond_price_list_data = frappe._dict()
+
+	# for i in bom_doc.diamond_detail:
+	# 	bom_doc.cust_diamond_price_list_type = cust_diamond_price_list_type
+	# 	det = ss_range.get(diamond.sieve_size_range) or {}
+
+	# 	amount = _calculate_diamond_amount(bom_doc, i, det, diamond_price_list_data)
+	# 	# amount = i.diamond_rate_for_specified_quantity
+	# 	if is_branch_customer:
+	# 		amount = i.se_rate * i.quantity
+	# 	if not einvoice_item:
+	# 		einvoice_item, hsn_code, uom = frappe.db.get_value(
+	# 			"E Invoice Item",
+	# 			{"is_for_diamond": 1, "diamond_type": i.diamond_type},
+	# 			["name", "hsn_code", "uom"],
+	# 		)
+
+	# 	if einvoice_item:
+	# 		einvoice_item_name = einvoice_item
+	# 		# if i.diamond_type != "Real":
+	# 		# 	einvoice_item_name += f" {i.diamond_type}"
+
+	# 		if invoice_data.get(einvoice_item_name):
+	# 			invoice_data[einvoice_item_name]["amount"] += amount
+	# 		else:
+	# 			invoice_data[einvoice_item_name] = {
+	# 				"amount": amount,
+	# 				"hsn_code": hsn_code,
+	# 				"qty": 0,
+	# 				"uom": uom,
+	# 				"income_account": row.income_account,
+	# 				"cost_center": row.cost_center,
+	# 			}
+
+	# 		if amount > 0:
+	# 			invoice_data[einvoice_item_name]["qty"] += i.quantity
+
+	# 	if custom_diamond_quality := row.custom_diamond_quality or self.custom_diamond_quality:
+	# 		i.quality = custom_diamond_quality
+
+	# 	if i.is_customer_item:
+	# 		self.is_customer_diamond = True
+
+	# einvoice_item = None
+	# for i in bom_doc.gemstone_detail:
+	# 	actual_qty = i.quantity
+	# 	i.quantity = flt(i.quantity, bom_doc.gemstone_pricision)
+	# 	i.difference = actual_qty - i.quantity
+	# 	# Calculate the weight per piece
+	# 	i.pcs = int(i.pcs) or 1
+	# 	gemstone_weight_per_pcs = i.quantity / i.pcs
+
+	# 	# Create filters for retrieving the Gemstone Price List
+	# 	filters = {
+	# 		"price_list": self.selling_price_list,
+	# 		"price_list_type": i.price_list_type,
+	# 		"customer": self.customer,
+	# 		"cut_or_cab": i.cut_or_cab,
+	# 		"gemstone_grade": i.gemstone_grade,
+	# 	}
+	# 	# if i.price_list_type == "Weight (in cts)":
+	# 	# 	filters.update(
+	# 	# 		{
+	# 	# 			"gemstone_type": i.gemstone_type,
+	# 	# 			"stone_shape": i.stone_shape,
+	# 	# 			"gemstone_quality": i.gemstone_quality,
+	# 	# 			"from_weight": ["<=", gemstone_weight_per_pcs],
+	# 	# 			"to_weight": [">=", gemstone_weight_per_pcs],
+	# 	# 		}
+	# 	# 	)
+	# 	if i.price_list_type == "Diamond Range" and i.gemstone_size:
+	# 		filters.update(
+	# 			{
+	# 				"to_stone_size": [">=", i.gemstone_size],
+	# 				"from_stone_size": ["<=", i.gemstone_size],
+	# 			}
+	# 		)
+	# 	else:
+	# 		filters["gemstone_type"] = i.gemstone_type
+	# 		filters["stone_shape"] = i.stone_shape
+	# 		filters["gemstone_quality"] = i.gemstone_quality
+	# 		filters["gemstone_quality"] = i.gemstone_quality
+	# 		filters["gemstone_size"] = i.gemstone_size
+
+	# 	# Retrieve the Gemstone Price List and calculate the rate
+	# 	gemstone_price_list = frappe.get_list(
+	# 		"Gemstone Price List",
+	# 		filters=filters,
+	# 		fields=["name", "rate", "handling_charges_rate", "supplier_fg_purchase_rate"],
+	# 		order_by="effective_from desc",
+	# 		limit=1,
+	# 	)
+
+	# 	multiplier = 0
+	# 	item_category = frappe.db.get_value("Item", bom_doc.item, "item_category")
+	# 	if i.price_list_type == "Diamond Range":
+	# 		for gr in gemstone_price_list:
+	# 			multiplier = (
+	# 				frappe.db.get_value(
+	# 					"Gemstone Multiplier",
+	# 					{"parent": gr.name, "item_category": item_category, "parentfield": "gemstone_multiplier"},
+	# 					frappe.scrub(i.gemstone_quality),
+	# 				)
+	# 				or 0
+	# 			)
+	# 			fg_multiplier = (
+	# 				frappe.db.get_value(
+	# 					"Gemstone Multiplier",
+	# 					{
+	# 						"parent": gr.name,
+	# 						"item_category": item_category,
+	# 						"parentfield": "supplier_fg_multiplier",
+	# 					},
+	# 					frappe.scrub(i.gemstone_quality),
+	# 				)
+	# 				or 0
+	# 			)
+
+	# 	if not gemstone_price_list:
+	# 		frappe.msgprint(
+	# 			f"Gemstone Amount for {i.gemstone_type} is 0\n Please Check if Gemstone Price Exists For {filters}"
+	# 		)
+	# 		return 0
+
+	# 	# Get Handling Rate of the Diamond if it is a cutomer provided Diamond
+	# 	pr = int(i.gemstone_pr)
+	# 	if i.price_list_type == "Diamond Range":
+	# 		rate = multiplier * pr
+	# 	else:
+	# 		rate = (
+	# 			gemstone_price_list[0].get("handling_charges_rate")
+	# 			if i.is_customer_item
+	# 			else gemstone_price_list[0].get("rate")
+	# 		)
+	# 	i.total_gemstone_rate = rate
+	# 	i.gemstone_rate_for_specified_quantity = int(rate) * i.quantity
+
+	# 	amount = i.gemstone_rate_for_specified_quantity
+	# 	if is_branch_customer:
+	# 		amount = i.se_rate * i.quantity
+	# 	if not einvoice_item:
+	# 		einvoice_item, hsn_code, uom = frappe.db.get_value(
+	# 			"E Invoice Item", {"is_for_gemstone": 1}, ["name", "hsn_code", "uom"]
+	# 		)
+
+	# 	if einvoice_item:
+	# 		if invoice_data.get(f"{einvoice_item}"):
+	# 			invoice_data[f"{einvoice_item}"]["amount"] += amount
+	# 		else:
+	# 			invoice_data[f"{einvoice_item}"] = {
+	# 				"amount": amount,
+	# 				"hsn_code": hsn_code,
+	# 				"qty": 0,
+	# 				"uom": uom,
+	# 				"income_account": row.income_account,
+	# 				"cost_center": row.cost_center,
+	# 			}
+
+	# 		if amount > 0:
+	# 			invoice_data[f"{einvoice_item}"]["qty"] += i.quantity
+
+	# bom_doc.doc_pricision = (
+	# 	2 if frappe.db.get_value("Customer", bom_doc.customer, "custom_consider_2_digit_for_bom") else 3
+	# )
+	# bom_doc.diamond_pricision = (
+	# 	2
+	# 	if frappe.db.get_value("Customer", bom_doc.customer, "custom_consider_2_digit_for_diamond")
+	# 	else 3
+	# )
+	# bom_doc.gemstone_pricision = (
+	# 	2
+	# 	if frappe.db.get_value("Customer", bom_doc.customer, "custom_consider_2_digit_for_gemstone")
+	# 	else 3
+	# )
 	bom_doc.gold_rate_with_gst = self.gold_rate_with_gst
 	bom_doc.validate()
 	bom_doc.save()
