@@ -243,19 +243,15 @@ def _get_bin_qty(item_code, warehouse):
 
 
 def _merge_transfer_segments(raw_transfer):
-	"""Combine transfer lines for the same item into one row (FIFO runs on merged qty)."""
-	by_item = {}
-	s_wh = None
-	t_wh = None
+	"""Combine transfer lines for the same (item, s_warehouse, t_warehouse) into one row."""
+	by_key = {}
 	for seg in raw_transfer:
 		if seg.get("mode") != "transfer":
 			continue
-		ic = seg["item_code"]
-		by_item[ic] = by_item.get(ic, 0) + flt(seg["qty"])
-		s_wh = seg.get("s_warehouse")
-		t_wh = seg.get("t_warehouse")
+		key = (seg["item_code"], seg.get("s_warehouse"), seg.get("t_warehouse"))
+		by_key[key] = by_key.get(key, 0) + flt(seg["qty"])
 	out = []
-	for ic, qty in by_item.items():
+	for (ic, s_wh, t_wh), qty in by_key.items():
 		if qty <= 0:
 			continue
 		out.append(
@@ -271,7 +267,14 @@ def _merge_transfer_segments(raw_transfer):
 
 
 def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
-	"""Stock-first segments: transfer alloy when Bin has stock; else pure→alloy repack; split partial."""
+	"""Stock-first segments: transfer alloy when Bin has stock; else pure→alloy repack; split partial.
+
+	Source priority per colour:
+	1. Alloy from source_wh  (employee / subcontractor Manufacturing WH)
+	2. Alloy from raw_material_wh (employee / subcontractor Raw-Material / MSL WH)
+	3. Pure-metal repack from source_wh
+	4. frappe.throw with a precise shortage message if still short
+	"""
 	source_wh = _resolve_source_warehouse(eir)
 	if not source_wh:
 		frappe.throw(
@@ -279,6 +282,8 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 				eir.subcontractor if eir.subcontracting == "Yes" else eir.employee
 			)
 		)
+
+	raw_material_wh = _resolve_source_warehouse_raw_material(eir)
 
 	mwo = frappe.db.get_value(
 		"Manufacturing Work Order",
@@ -332,43 +337,52 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 			)
 
 		required = per_colour_qty
-		alloy_stock = _get_bin_qty(alloy_item, source_wh)
 
-		if alloy_stock >= required - 1e-6:
+		# --- Priority 1: alloy from source_wh (employee / subcontractor Manufacturing WH) ---
+		src_alloy = _get_bin_qty(alloy_item, source_wh)
+		if src_alloy > 1e-6:
+			take = round(min(src_alloy, required), 3)
 			raw_transfer.append(
 				{
 					"mode": "transfer",
 					"item_code": alloy_item,
-					"qty": required,
+					"qty": take,
 					"s_warehouse": source_wh,
 					"t_warehouse": dept_wh,
 				}
 			)
+			required = round(required - take, 3)
+
+		if required <= 1e-6:
 			continue
 
-		if alloy_stock > 1e-6:
-			t_take = round(min(alloy_stock, required), 3)
-			remainder = round(required - t_take, 3)
-			raw_transfer.append(
-				{
-					"mode": "transfer",
-					"item_code": alloy_item,
-					"qty": t_take,
-					"s_warehouse": source_wh,
-					"t_warehouse": dept_wh,
-				}
-			)
-			if remainder <= 1e-6:
-				continue
-			required = remainder
+		# --- Priority 2: alloy from raw_material_wh (MSL / Raw-Material WH) ---
+		if raw_material_wh and raw_material_wh != source_wh:
+			rm_alloy = _get_bin_qty(alloy_item, raw_material_wh)
+			if rm_alloy > 1e-6:
+				take = round(min(rm_alloy, required), 3)
+				raw_transfer.append(
+					{
+						"mode": "transfer",
+						"item_code": alloy_item,
+						"qty": take,
+						"s_warehouse": raw_material_wh,
+						"t_warehouse": dept_wh,
+					}
+				)
+				required = round(required - take, 3)
 
+		if required <= 1e-6:
+			continue
+
+		# --- Priority 3: pure-metal repack from source_wh ---
 		if not pure_item:
 			frappe.throw(
 				_(
 					"EIR injection: required metal not available for transfer or repack. "
-					"Alloy {0} is short in {1} and no pure gold item is configured for "
-					"this work order's manufacturer."
-				).format(alloy_item, source_wh)
+					"Alloy {0} is short in {1} and {2}; no pure gold item is configured "
+					"for this work order's manufacturer."
+				).format(alloy_item, source_wh, raw_material_wh or "N/A")
 			)
 		source_p = _get_item_metal_purity(pure_item)
 		target_p = _get_item_metal_purity(alloy_item)
@@ -629,7 +643,13 @@ def _get_item_metal_purity(item_code):
 
 
 def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh):
-	source_wh = _resolve_source_warehouse(eir)
+	"""Submit Stock Entries for the resolved segments.
+
+	Each segment already carries its own ``s_warehouse`` (set by
+	``_resolve_fallback_inject_segments``), so validation checks the correct
+	warehouse per segment — no global source_wh override needed.
+	"""
+	source_wh = _resolve_source_warehouse_raw_material(eir)
 	if not source_wh:
 		frappe.throw(
 			_("Main Slip injection: source warehouse not configured for {0}").format(
@@ -638,15 +658,8 @@ def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh):
 		)
 	transfer_segs = [s for s in segments if s.get("mode") == "transfer"]
 	purity_segs = [s for s in segments if s.get("mode") == "purity"]
-	try:
-		_validate_fallback_segments_against_source_bin(
-			transfer_segs, purity_segs, source_wh
-		)
-	except Exception:
-		source_wh = _resolve_source_warehouse_raw_material(eir)
-		_validate_fallback_segments_against_source_bin(
-			transfer_segs, purity_segs, source_wh
-		)
+
+	_validate_fallback_segments_against_source_bin(transfer_segs, purity_segs, source_wh)
 
 	out = []
 	if transfer_segs and not _injection_se_exists(
@@ -723,15 +736,19 @@ def _fallback_injection_fully_submitted(eir_name, row_name, segments):
 def _validate_fallback_segments_against_source_bin(
 	transfer_segs, purity_segs, source_wh
 ):
-	need = {}
+	"""Validate each segment has sufficient stock in its own source warehouse."""
+	need = {}  # (item_code, warehouse) -> required_qty
 	for seg in transfer_segs:
-		ic = seg["item_code"]
-		need[ic] = need.get(ic, 0) + flt(seg["qty"])
+		wh = seg.get("s_warehouse") or source_wh
+
+		key = (seg["item_code"], wh)
+		need[key] = need.get(key, 0) + flt(seg["qty"])
 	for seg in purity_segs:
-		ic = seg["source_item"]
-		need[ic] = need.get(ic, 0) + flt(seg["consume_qty"])
-	for item_code, qty in need.items():
-		_check_source_stock(item_code, source_wh, qty)
+		wh = seg.get("s_warehouse") or source_wh
+		key = (seg["source_item"], wh)
+		need[key] = need.get(key, 0) + flt(seg["consume_qty"])
+	for (item_code, wh), qty in need.items():
+		_check_source_stock(item_code, wh, qty)
 
 
 def _resolve_inject_metal_items(mwo_name, total_extra):
@@ -883,7 +900,7 @@ def _build_material_transfer_from_segments(
 	se.stock_entry_type = MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
 	_stamp_se_header(se, eir, row)
 	for seg in transfer_segments:
-		s_wh = seg.get("s_warehouse") or source_wh
+		s_wh = source_wh 
 		t_wh = seg.get("t_warehouse") or dept_wh
 		se.append(
 			"items",
@@ -907,7 +924,7 @@ def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dep
 	se.stock_entry_type = REPACK_STOCK_ENTRY_TYPE
 	_stamp_se_header(se, eir, row)
 	for seg in purity_segments:
-		s_wh = seg.get("s_warehouse") or source_wh
+		s_wh = source_wh
 		t_wh = seg.get("t_warehouse") or dept_wh
 		se.append(
 			"items",
