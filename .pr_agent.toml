@@ -247,9 +247,9 @@ Rules:
 
 [pr_reviewer]
 persistent_comment = true
-final_update_message = false
-enable_help_text = false
-num_max_findings = 10
+final_update_message = true
+enable_help_text = true
+num_max_findings = 100
 
 require_estimate_effort_to_review = true
 require_score_review = true
