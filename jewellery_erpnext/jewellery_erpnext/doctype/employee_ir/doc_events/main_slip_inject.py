@@ -395,6 +395,13 @@ def inject_extra_metal_for_eir_receive(eir, row):
 	Returns a list of created Stock Entry names (empty list if skipped).
 	"""
 	if not cint(getattr(eir, "is_main_slip_required", 0)):
+		if flt(row.received_gross_wt) > flt(row.gross_wt):
+			frappe.throw(
+				_(
+					"Main Slip injection: cannot inject extra metal for this "
+					"Employee IR because Main Slip is not required."
+				)
+			)
 		return []
 
 	extra = flt(row.received_gross_wt) - flt(row.gross_wt)
@@ -576,25 +583,28 @@ def _iter_main_slip_batches(main_slip):
 	``(inventory_type_priority, creation, name)``; we skip a redundant SQL
 	``ORDER BY`` because we'd re-sort by priority anyway.
 	"""
-	rows = frappe.db.get_all(
-		"Main Slip SE Details",
-		filters={
-			"parent": main_slip,
-			"parentfield": "batch_details",
-			"variant_of": "M",
-		},
-		fields=[
-			"name",
-			"batch_no",
-			"item_code",
-			"qty",
-			"consume_qty",
-			"inventory_type",
-			"customer",
-			"variant_of",
-			"creation",
-		],
-	) or []
+	rows = (
+		frappe.db.get_all(
+			"Main Slip SE Details",
+			filters={
+				"parent": main_slip,
+				"parentfield": "batch_details",
+				"variant_of": "M",
+			},
+			fields=[
+				"name",
+				"batch_no",
+				"item_code",
+				"qty",
+				"consume_qty",
+				"inventory_type",
+				"customer",
+				"variant_of",
+				"creation",
+			],
+		)
+		or []
+	)
 
 	def _sort_key(r):
 		return (
@@ -656,7 +666,9 @@ def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh, existing_
 	transfer_segs = [s for s in segments if s.get("mode") == "transfer"]
 	purity_segs = [s for s in segments if s.get("mode") == "purity"]
 
-	_validate_fallback_segments_against_source_bin(transfer_segs, purity_segs, source_wh)
+	_validate_fallback_segments_against_source_bin(
+		transfer_segs, purity_segs, source_wh
+	)
 
 	out = []
 	if transfer_segs and MATERIAL_TRANSFER_STOCK_ENTRY_TYPE not in existing_types:
@@ -766,9 +778,9 @@ def _validate_fallback_segments_against_source_bin(
 	]
 	if shortages:
 		lines = [
-			_("Insufficient stock to Repack {0} of {1} from {2} (available {3}).").format(
-				qty, ic, source_wh, actual
-			)
+			_(
+				"Insufficient stock to Repack {0} of {1} from {2} (available {3})."
+			).format(qty, ic, source_wh, actual)
 			for ic, qty, actual in shortages
 		]
 		lines.append(_("Cannot complete Main Slip Receive injection."))
