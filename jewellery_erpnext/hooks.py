@@ -108,6 +108,7 @@ doc_events = {
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
+			"jewellery_erpnext.customer_subcontracting.batch_rename.create_repack_for_used_other",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
@@ -244,7 +245,7 @@ user_data_fields = [
 fixtures = [
 	{
 		"doctype": "Workflow",
-		"fifix: remove redis server startup from install scriptlters": [
+		"filters": [
 			[
 				"name",
 				"in",
@@ -283,28 +284,7 @@ fixtures = [
 			]
 		],
 	},
-	{
-		"dt": "Custom Field",
-		"filters": [
-			[
-				"module",
-				"in",
-				[
-					"Jewellery ERPNext",
-					"Gurukrupa Exports",
-					"GKE SURVEY",
-					"Sadguru",
-					"GKE HRMS",
-					"Gke Price List",
-					"GKE Order Forms",
-					"GKE Custom Export",
-					"GKE Catalog",
-					"Gke Customization",
-				],
-			],
-			["dt", "in", ["Timesheet"]],
-		],
-	},
+	"Custom Field",
 	"Property Setter",
 	{
 		"doctype": "Attribute Value",
