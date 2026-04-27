@@ -146,6 +146,29 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	if mop_op:
 		sql += " AND manufacturing_operation = %s"
 		sql_params.append(mop_op)
+		previous_mop = frappe.get_cached_value(
+			"Manufacturing Operation", mop_op, "previous_mop"
+		)
+		if previous_mop:
+			previous_mop_qty = (
+				frappe.get_cached_value(
+					"Manufacturing Operation",
+					previous_mop,
+					FIELD_MAP.get(first_char) + "_wt",
+				)
+				or 0
+			)
+
+			previous_mop_pcs = (
+				frappe.get_cached_value(
+					"Manufacturing Operation",
+					previous_mop,
+					FIELD_MAP.get(first_char) + "_pcs",
+				)
+				or 0
+			)
+			qty += previous_mop_qty
+			pcs += previous_mop_pcs
 
 	row_vals = frappe.db.sql(sql, tuple(sql_params), as_dict=True)
 
@@ -171,7 +194,24 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	qty_after_prefix = qty + flt(stats["sum_qty_prefix"])
 	qty_after_item = qty + flt(stats["sum_qty_item"])
 	qty_after_batch = qty + flt(stats["sum_qty_batch"])
-
+	print(
+		"qty:",
+		qty,
+		"pcs:",
+		pcs,
+		"qty_after_prefix:",
+		qty_after_prefix,
+		"pcs_after_prefix:",
+		pcs_after_prefix,
+		"qty_after_item:",
+		qty_after_item,
+		"pcs_after_item:",
+		pcs_after_item,
+		"qty_after_batch:",
+		qty_after_batch,
+		"pcs_after_batch:",
+		pcs_after_batch,
+	)
 	# create doc
 	mop_log = frappe.new_doc("MOP Log")
 	mop_log.item_code = item_code
@@ -195,7 +235,6 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	mop_log.is_synced = is_synced
 	mop_log.serial_and_batch_bundle = row.get("serial_and_batch_bundle")
 	mop_log.batch_no = batch_no
-
 	mop_log.save()
 
 
@@ -226,7 +265,7 @@ def get_current_mop_balance_rows(manufacturing_operation, include_fields=None):
 			"is_cancelled": 0,
 		},
 		fields=fields,
-		order_by="flow_index desc, creation desc, name desc",
+		order_by="flow_index desc, creation desc",
 	)
 	if not mop_logs:
 		return []
@@ -243,23 +282,10 @@ def get_current_mop_balance_rows(manufacturing_operation, include_fields=None):
 def create_mop_log_for_department_ir(
 	self, row, to_warehouse, from_warehouse, operation
 ):
-	if frappe.db.exists(
-		"MOP Log",
-		{
-			"voucher_type": "Department IR",
-			"voucher_no": self.name,
-			"row_name": row.name,
-			"manufacturing_operation": operation,
-			"is_cancelled": 0,
-		},
-	):
-		return
-
 	mop_logs = []
 	is_receive = getattr(self, "type", None) == "Receive" and getattr(
 		self, "receive_against", None
 	)
-	receive_used_tail_fallback = False
 
 	if is_receive:
 		mop_logs = frappe.db.get_all(
@@ -276,9 +302,11 @@ def create_mop_log_for_department_ir(
 		# Only clone the latest Issue snapshot tier (multiple rows share the same max flow_index).
 		# Without this, historical Issue rows at lower flow_index would be replayed as extra Receive rows.
 		if mop_logs:
-			max_issue_flow = max(cint(l.get("flow_index") or 0) for l in mop_logs)
+			max_issue_flow = max(cint(log.get("flow_index") or 0) for log in mop_logs)
 			mop_logs = [
-				l for l in mop_logs if cint(l.get("flow_index") or 0) == max_issue_flow
+				log
+				for log in mop_logs
+				if cint(log.get("flow_index") or 0) == max_issue_flow
 			]
 		if not mop_logs:
 			frappe.log_error(
@@ -309,30 +337,6 @@ def create_mop_log_for_department_ir(
 			select_fields,
 			order_by="creation asc",
 		)
-		if is_receive and mop_logs:
-			receive_used_tail_fallback = True
-
-	if is_receive and receive_used_tail_fallback and mop_logs:
-		for _log in mop_logs:
-			if (
-				_log.get("voucher_type") == "Department IR"
-				and _log.get("voucher_no")
-				and _log.get("voucher_no") != self.receive_against
-			):
-				frappe.log_error(
-					title="DIR Receive tail fallback: unrelated Department IR voucher in snapshot",
-					message=frappe.as_json(
-						{
-							"receive": self.name,
-							"receive_against": self.receive_against,
-							"manufacturing_operation": row.manufacturing_operation,
-							"unexpected_voucher_no": _log.get("voucher_no"),
-							"unexpected_flow_index": _log.get("flow_index"),
-						},
-						indent=2,
-					),
-				)
-				break
 
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")
@@ -374,19 +378,6 @@ def _get_mop_logs_for_employee_ir_issue(row, department_receive_id):
 
 
 def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
-	# Idempotent per child row: safe if submit logic is re-invoked
-	if frappe.db.exists(
-		"MOP Log",
-		{
-			"voucher_type": self.doctype,
-			"voucher_no": self.name,
-			"row_name": row.name,
-			"manufacturing_operation": row.manufacturing_operation,
-			"is_cancelled": 0,
-		},
-	):
-		return
-
 	department_receive_id = frappe.db.get_value(
 		"Manufacturing Operation", row.manufacturing_operation, "department_receive_id"
 	)
@@ -462,7 +453,9 @@ def resolve_employee_ir_issue_voucher_for_receive(doc, row):
 	return rows[0][0] if rows else None
 
 
-def create_mop_log_for_employee_ir_receive(doc, row, from_warehouse, to_warehouse):
+def create_mop_log_for_employee_ir_receive(
+	doc, row, from_warehouse, to_warehouse, stock_entry_name=[]
+):
 	"""Create MOP Log entries for the Receive side of Employee IR.
 
 	Reads the MOP Logs created during the matching Employee IR **Issue** only
@@ -471,7 +464,6 @@ def create_mop_log_for_employee_ir_receive(doc, row, from_warehouse, to_warehous
 	The MOPLog.validate() hook automatically updates Manufacturing Operation weight
 	fields (net_wt, finding_wt, diamond_wt, etc.) based on the logged item data.
 	"""
-	is_main_slip_required = cint(getattr(doc, "is_main_slip_required", 0))
 	issue_voucher = resolve_employee_ir_issue_voucher_for_receive(doc, row)
 
 	mop_logs = frappe.db.get_all(
@@ -485,19 +477,18 @@ def create_mop_log_for_employee_ir_receive(doc, row, from_warehouse, to_warehous
 		select_fields,
 		order_by="creation asc",
 	)
-
-	current_balance_rows = get_current_mop_balance_rows(
-		row.manufacturing_operation,
-		include_fields=["item_code", "batch_no"],
-	)
-	current_balance_keys = {
-		(log.get("item_code"), log.get("batch_no")) for log in current_balance_rows
-	}
-	issue_keys = {(log.get("item_code"), log.get("batch_no")) for log in mop_logs}
-	missing_keys = sorted(current_balance_keys - issue_keys)
-
-	# received_gross_wt = flt(row.received_gross_wt)
-	# gross_wt = flt(row.gross_wt)
+	if stock_entry_name:
+		mop_logs += frappe.db.get_all(
+			"MOP Log",
+			{
+				"manufacturing_operation": row.manufacturing_operation,
+				"is_cancelled": 0,
+				"voucher_type": "Stock Entry",
+				"voucher_no": ["in", stock_entry_name],
+			},
+			select_fields,
+			order_by="creation asc",
+		)
 
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")

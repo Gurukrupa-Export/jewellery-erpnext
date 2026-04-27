@@ -26,10 +26,11 @@ Mechanism per row (with ``eir.main_slip`` set)::
             the positive MOP Log row against the MOP
 
 Fallback (no ``eir.main_slip`` on record): resolve target alloy per MWO colour,
-read **Bin** stock in the employee/subcontractor Manufacturing warehouse. If
-enough alloy exists → **Material Transfer (WORK ORDER)** only; otherwise
+read **Bin** stock in the employee/subcontractor **MSL (Raw Material) warehouse**.
+If enough alloy exists → **Material Transfer (WORK ORDER)** only; otherwise
 **Repack** pure→alloy (purity conversion). Partial alloy coverage may emit both
-(one MT SE and one Repack SE).
+(one MT SE and one Repack SE). The MSL warehouse is the single source for all
+injected metal — Manufacturing/WIP warehouses are never consumed here.
 
 Insufficient stock: explicit ``frappe.throw`` with available vs required
 numbers; never silent-skip.
@@ -107,7 +108,7 @@ def _expand_source_rows_for_fifo(se, row):
 	batch_no = row.get("batch_no") if isinstance(row, dict) else row.batch_no
 	if batch_no:
 		return [_row_to_append_dict(row)]
-	if not frappe.db.get_value("Item", item_code, "has_batch_no"):
+	if not frappe.get_cached_value("Item", item_code, "has_batch_no"):
 		return [_row_to_append_dict(row)]
 
 	need = _row_qty_val(row)
@@ -121,34 +122,46 @@ def _expand_source_rows_for_fifo(se, row):
 		consider_negative_batches=False,
 	)
 	batches = get_auto_batch_nos(kwargs) or []
-	got = sum(flt(b.qty) for b in batches)
+	got = 0.0
+	positive = []
+	positive_batches = []
+	for b in batches:
+		if flt(b.qty) > 0:
+			got += b.qty
+			positive.append(b)
+			positive_batches.append(b.batch_no)
 	if round(need - got, 6) > 0:
 		frappe.throw(
 			_(
 				"EIR injection: insufficient FIFO batch stock for {0}: need {1} g in {2} (available {3})."
 			).format(item_code, need, s_wh, got)
 		)
+	if not positive:
+		return []
+
+	# One round-trip for all batches instead of N per-batch get_value calls.
+	batch_meta = {
+		bm["name"]: bm
+		for bm in frappe.db.get_all(
+			"Batch",
+			filters={"name": ["in", positive_batches]},
+			fields=["name", "custom_inventory_type", "custom_customer"],
+		)
+	}
 
 	out = []
 	base = _row_to_append_dict(row)
-	for b in batches:
-		if flt(b.qty) <= 0:
-			continue
+	for b in positive:
 		line = dict(base)
+		qty_val = flt(b.qty)
 		line["batch_no"] = b.batch_no
-		line["qty"] = flt(b.qty)
-		line["transfer_qty"] = flt(b.qty)
-		inv = frappe.db.get_value(
-			"Batch",
-			b.batch_no,
-			["custom_inventory_type", "custom_customer"],
-			as_dict=True,
-		)
-		if inv:
-			if inv.get("custom_inventory_type"):
-				line["inventory_type"] = inv.custom_inventory_type
-			if inv.get("custom_customer"):
-				line["customer"] = inv.custom_customer
+		line["qty"] = qty_val
+		line["transfer_qty"] = qty_val
+		inv = batch_meta.get(b.batch_no) or {}
+		if inv.get("custom_inventory_type"):
+			line["inventory_type"] = inv["custom_inventory_type"]
+		if inv.get("custom_customer"):
+			line["customer"] = inv["custom_customer"]
 		out.append(line)
 	return out
 
@@ -220,12 +233,12 @@ def _apply_fifo_to_repack_stock_entry(se):
 
 
 def _pure_metal_item_for_mwo(mwo_name):
-	manufacturer = frappe.db.get_value(
+	manufacturer = frappe.get_cached_value(
 		"Manufacturing Work Order", mwo_name, "manufacturer"
 	)
 	if not manufacturer:
 		return None
-	return frappe.db.get_value(
+	return frappe.get_cached_value(
 		"Manufacturing Setting",
 		{"manufacturer": manufacturer},
 		"pure_gold_item",
@@ -243,44 +256,40 @@ def _get_bin_qty(item_code, warehouse):
 
 
 def _merge_transfer_segments(raw_transfer):
-	"""Combine transfer lines for the same item into one row (FIFO runs on merged qty)."""
+	"""Combine transfer lines for the same item into one row.
+
+	All transfer segments share a single source (MSL) and target (department)
+	warehouse, so the merge key is item-only.
+	"""
 	by_item = {}
-	s_wh = None
-	t_wh = None
 	for seg in raw_transfer:
 		if seg.get("mode") != "transfer":
 			continue
-		ic = seg["item_code"]
-		by_item[ic] = by_item.get(ic, 0) + flt(seg["qty"])
-		s_wh = seg.get("s_warehouse")
-		t_wh = seg.get("t_warehouse")
-	out = []
-	for ic, qty in by_item.items():
-		if qty <= 0:
-			continue
-		out.append(
-			{
-				"mode": "transfer",
-				"item_code": ic,
-				"qty": round(qty, 3),
-				"s_warehouse": s_wh,
-				"t_warehouse": t_wh,
-			}
-		)
-	return out
+		by_item[seg["item_code"]] = by_item.get(seg["item_code"], 0) + flt(seg["qty"])
+	return [
+		{"mode": "transfer", "item_code": ic, "qty": round(qty, 3)}
+		for ic, qty in by_item.items()
+		if qty > 0
+	]
 
 
 def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
-	"""Stock-first segments: transfer alloy when Bin has stock; else pure→alloy repack; split partial."""
-	source_wh = _resolve_source_warehouse(eir)
-	if not source_wh:
+	"""Stock-first segments sourced exclusively from the MSL (Raw Material) warehouse.
+
+	Per colour, in order:
+	1. Alloy from MSL warehouse (Material Transfer (WORK ORDER)).
+	2. Pure-metal repack from MSL warehouse (purity conversion to target alloy).
+	3. ``frappe.throw`` with a precise shortage message if still short.
+	"""
+	msl_wh = _resolve_source_warehouse_raw_material(eir)
+	if not msl_wh:
 		frappe.throw(
-			_("Main Slip injection: source warehouse not configured for {0}").format(
+			_("Main Slip injection: MSL warehouse not configured for {0}").format(
 				eir.subcontractor if eir.subcontracting == "Yes" else eir.employee
 			)
 		)
 
-	mwo = frappe.db.get_value(
+	mwo = frappe.get_cached_value(
 		"Manufacturing Work Order",
 		mwo_name,
 		[
@@ -313,6 +322,7 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 	raw_transfer = []
 	raw_purity = []
 	pure_item = _pure_metal_item_for_mwo(mwo_name)
+	purity_cache = {}
 
 	for colour in colours:
 		alloy_item = get_item_from_attribute(
@@ -332,46 +342,30 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 			)
 
 		required = per_colour_qty
-		alloy_stock = _get_bin_qty(alloy_item, source_wh)
 
-		if alloy_stock >= required - 1e-6:
+		# --- Priority 1: alloy from MSL warehouse ---
+		msl_alloy = _get_bin_qty(alloy_item, msl_wh)
+		if msl_alloy > 1e-6:
+			take = round(min(msl_alloy, required), 3)
 			raw_transfer.append(
-				{
-					"mode": "transfer",
-					"item_code": alloy_item,
-					"qty": required,
-					"s_warehouse": source_wh,
-					"t_warehouse": dept_wh,
-				}
+				{"mode": "transfer", "item_code": alloy_item, "qty": take}
 			)
+			required = round(required - take, 3)
+
+		if required <= 1e-6:
 			continue
 
-		if alloy_stock > 1e-6:
-			t_take = round(min(alloy_stock, required), 3)
-			remainder = round(required - t_take, 3)
-			raw_transfer.append(
-				{
-					"mode": "transfer",
-					"item_code": alloy_item,
-					"qty": t_take,
-					"s_warehouse": source_wh,
-					"t_warehouse": dept_wh,
-				}
-			)
-			if remainder <= 1e-6:
-				continue
-			required = remainder
-
+		# --- Priority 2: pure-metal repack from MSL warehouse ---
 		if not pure_item:
 			frappe.throw(
 				_(
 					"EIR injection: required metal not available for transfer or repack. "
-					"Alloy {0} is short in {1} and no pure gold item is configured for "
-					"this work order's manufacturer."
-				).format(alloy_item, source_wh)
+					"Alloy {0} is short in MSL warehouse {1}; no pure gold item is "
+					"configured for this work order's manufacturer."
+				).format(alloy_item, msl_wh)
 			)
-		source_p = _get_item_metal_purity(pure_item)
-		target_p = _get_item_metal_purity(alloy_item)
+		source_p = _purity_get(pure_item, purity_cache)
+		target_p = _purity_get(alloy_item, purity_cache)
 		if not source_p or not target_p:
 			frappe.throw(
 				_("EIR injection: cannot resolve metal_purity for {0} or {1}.").format(
@@ -387,8 +381,6 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 				"target_item": alloy_item,
 				"consume_qty": consume_qty,
 				"produce_qty": produce_qty,
-				"s_warehouse": source_wh,
-				"t_warehouse": dept_wh,
 			}
 		)
 
@@ -403,6 +395,13 @@ def inject_extra_metal_for_eir_receive(eir, row):
 	Returns a list of created Stock Entry names (empty list if skipped).
 	"""
 	if not cint(getattr(eir, "is_main_slip_required", 0)):
+		if flt(row.received_gross_wt) > flt(row.gross_wt):
+			frappe.throw(
+				_(
+					"Main Slip injection: cannot inject extra metal for this "
+					"Employee IR because Main Slip is not required."
+				)
+			)
 		return []
 
 	extra = flt(row.received_gross_wt) - flt(row.gross_wt)
@@ -426,9 +425,12 @@ def inject_extra_metal_for_eir_receive(eir, row):
 	segments = _resolve_fallback_inject_segments(
 		eir, row.manufacturing_work_order, extra, dept_wh
 	)
-	if _fallback_injection_fully_submitted(eir.name, row.name, segments):
+	existing_types = _existing_injection_se_types(eir.name, row.name)
+	if _fallback_injection_fully_submitted(segments, existing_types):
 		return []
-	return _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh)
+	return _inject_via_source_warehouse_fallback(
+		eir, row, segments, dept_wh, existing_types
+	)
 
 
 def cancel_injections_for_eir(eir_name):
@@ -463,17 +465,22 @@ def cancel_injections_for_eir(eir_name):
 
 def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 	"""Walk Main Slip batch_details in inventory-type priority and emit one SE
-	per consumed segment until each target item's required qty is satisfied."""
-	source_wh = _resolve_source_warehouse(eir)
+	per consumed segment until each target item's required qty is satisfied.
+
+	The single source warehouse is the employee/subcontractor MSL (Raw Material)
+	warehouse — Manufacturing/WIP warehouses are never consumed here.
+	"""
+	source_wh = _resolve_source_warehouse_raw_material(eir)
 	if not source_wh:
 		frappe.throw(
-			_("Main Slip injection: source warehouse not configured for {0}").format(
+			_("Main Slip injection: MSL warehouse not configured for {0}").format(
 				eir.subcontractor if eir.subcontracting == "Yes" else eir.employee
 			)
 		)
 
 	batches = list(_iter_main_slip_batches(eir.main_slip))
 	se_names = []
+	purity_cache = {}
 
 	for target in target_items:
 		remaining = flt(target["qty"])
@@ -494,8 +501,8 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 			if is_pure_subcontracting:
 				# Purity conversion: how much of the pure source do we need to
 				# produce `remaining` grams of the target alloy?
-				source_purity = _get_item_metal_purity(batch["item_code"])
-				target_purity = _get_item_metal_purity(target_item)
+				source_purity = _purity_get(batch["item_code"], purity_cache)
+				target_purity = _purity_get(target_item, purity_cache)
 				if not source_purity or not target_purity:
 					frappe.throw(
 						_(
@@ -570,7 +577,12 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 
 def _iter_main_slip_batches(main_slip):
 	"""Yield Main Slip SE Details rows (``variant_of = 'M'``) in inventory_type
-	priority order, only those with positive available qty."""
+	priority order, only those with positive available qty.
+
+	Sort happens entirely client-side on the composite key
+	``(inventory_type_priority, creation, name)``; we skip a redundant SQL
+	``ORDER BY`` because we'd re-sort by priority anyway.
+	"""
 	rows = (
 		frappe.db.get_all(
 			"Main Slip SE Details",
@@ -590,7 +602,6 @@ def _iter_main_slip_batches(main_slip):
 				"variant_of",
 				"creation",
 			],
-			order_by="creation asc",
 		)
 		or []
 	)
@@ -612,7 +623,7 @@ def _iter_main_slip_batches(main_slip):
 
 def _get_item_metal_purity(item_code):
 	"""Return the numeric metal_purity attribute value for an Item, or None."""
-	value = frappe.db.get_value(
+	value = frappe.get_cached_value(
 		"Item Variant Attribute",
 		{"parent": item_code, "attribute": "Metal Purity"},
 		"attribute_value",
@@ -623,35 +634,44 @@ def _get_item_metal_purity(item_code):
 		return None
 
 
+def _purity_get(item_code, cache):
+	"""Per-call memoized purity lookup; one DB round-trip per unique item."""
+	if item_code in cache:
+		return cache[item_code]
+	val = _get_item_metal_purity(item_code)
+	cache[item_code] = val
+	return val
+
+
 # ---------------------------------------------------------------------------
 # Path 2 - source-warehouse fallback (no Main Slip batch details configured)
 # ---------------------------------------------------------------------------
 
 
-def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh):
-	source_wh = _resolve_source_warehouse(eir)
+def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh, existing_types):
+	"""Submit Stock Entries for the resolved segments.
+
+	The single source is the employee/subcontractor MSL (Raw Material) warehouse;
+	all transfer and repack rows post against this one warehouse. ``existing_types``
+	is the set of stock_entry_types already auto-created for this (eir, row), so
+	this function never re-queries Stock Entry to check idempotency.
+	"""
+	source_wh = _resolve_source_warehouse_raw_material(eir)
 	if not source_wh:
 		frappe.throw(
-			_("Main Slip injection: source warehouse not configured for {0}").format(
+			_("Main Slip injection: MSL warehouse not configured for {0}").format(
 				eir.subcontractor if eir.subcontracting == "Yes" else eir.employee
 			)
 		)
 	transfer_segs = [s for s in segments if s.get("mode") == "transfer"]
 	purity_segs = [s for s in segments if s.get("mode") == "purity"]
-	try:
-		_validate_fallback_segments_against_source_bin(
-			transfer_segs, purity_segs, source_wh
-		)
-	except Exception:
-		source_wh = _resolve_source_warehouse_raw_material(eir)
-		_validate_fallback_segments_against_source_bin(
-			transfer_segs, purity_segs, source_wh
-		)
+
+	_validate_fallback_segments_against_source_bin(
+		transfer_segs, purity_segs, source_wh
+	)
 
 	out = []
-	if transfer_segs and not _injection_se_exists(
-		eir.name, row.name, MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
-	):
+	if transfer_segs and MATERIAL_TRANSFER_STOCK_ENTRY_TYPE not in existing_types:
 		se_mt = _build_material_transfer_from_segments(
 			eir, row, transfer_segs, source_wh, dept_wh
 		)
@@ -661,9 +681,7 @@ def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh):
 		se_mt.submit()
 		out.append(se_mt.name)
 
-	if purity_segs and not _injection_se_exists(
-		eir.name, row.name, REPACK_STOCK_ENTRY_TYPE
-	):
+	if purity_segs and REPACK_STOCK_ENTRY_TYPE not in existing_types:
 		se_rp = _build_repack_from_purity_segments(
 			eir, row, purity_segs, source_wh, dept_wh
 		)
@@ -693,51 +711,86 @@ def _existing_injection_se(eir_name, row_name):
 	)
 
 
-def _injection_se_exists(eir_name, row_name, stock_entry_type):
-	return frappe.db.exists(
-		"Stock Entry",
-		{
-			"employee_ir": eir_name,
-			"custom_eir_operation_row": row_name,
-			"auto_created": 1,
-			"docstatus": ["!=", 2],
-			"stock_entry_type": stock_entry_type,
-		},
+def _existing_injection_se_types(eir_name, row_name):
+	"""Return the set of auto-created Stock Entry types already present for this
+	(eir, row). One SQL round-trip; consumers do O(1) membership tests."""
+	return set(
+		frappe.db.get_all(
+			"Stock Entry",
+			filters={
+				"employee_ir": eir_name,
+				"custom_eir_operation_row": row_name,
+				"auto_created": 1,
+				"docstatus": ["!=", 2],
+			},
+			pluck="stock_entry_type",
+			distinct=True,
+		)
 	)
 
 
-def _fallback_injection_fully_submitted(eir_name, row_name, segments):
-	transfer_segs = [s for s in segments if s.get("mode") == "transfer"]
-	purity_segs = [s for s in segments if s.get("mode") == "purity"]
-	if transfer_segs and not _injection_se_exists(
-		eir_name, row_name, MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
-	):
-		return False
-	if purity_segs and not _injection_se_exists(
-		eir_name, row_name, REPACK_STOCK_ENTRY_TYPE
-	):
-		return False
-	return True
+def _fallback_injection_fully_submitted(segments, existing_types):
+	"""True when every entry-type implied by ``segments`` already exists in
+	``existing_types``. Pure in-memory check — no DB calls."""
+	needed = set()
+	for s in segments:
+		mode = s.get("mode")
+		if mode == "transfer":
+			needed.add(MATERIAL_TRANSFER_STOCK_ENTRY_TYPE)
+		elif mode == "purity":
+			needed.add(REPACK_STOCK_ENTRY_TYPE)
+	return needed.issubset(existing_types)
 
 
 def _validate_fallback_segments_against_source_bin(
 	transfer_segs, purity_segs, source_wh
 ):
-	need = {}
+	"""Validate every required item has sufficient Bin stock in the MSL warehouse.
+
+	Uses a single ``Bin`` query for all required items, so the cost is O(1) DB
+	round-trips regardless of segment count.
+	"""
+	need = {}  # item_code -> required_qty
 	for seg in transfer_segs:
-		ic = seg["item_code"]
-		need[ic] = need.get(ic, 0) + flt(seg["qty"])
+		need[seg["item_code"]] = need.get(seg["item_code"], 0) + flt(seg["qty"])
 	for seg in purity_segs:
-		ic = seg["source_item"]
-		need[ic] = need.get(ic, 0) + flt(seg["consume_qty"])
-	for item_code, qty in need.items():
-		_check_source_stock(item_code, source_wh, qty)
+		need[seg["source_item"]] = need.get(seg["source_item"], 0) + flt(
+			seg["consume_qty"]
+		)
+	if not need:
+		return
+
+	on_hand = {
+		b["item_code"]: flt(b["actual_qty"])
+		for b in frappe.db.get_all(
+			"Bin",
+			filters={
+				"item_code": ["in", list(need.keys())],
+				"warehouse": source_wh,
+			},
+			fields=["item_code", "actual_qty"],
+		)
+	}
+	shortages = [
+		(ic, qty, on_hand.get(ic, 0.0))
+		for ic, qty in need.items()
+		if on_hand.get(ic, 0.0) < qty
+	]
+	if shortages:
+		lines = [
+			_(
+				"Insufficient stock to Repack {0} of {1} from {2} (available {3})."
+			).format(qty, ic, source_wh, actual)
+			for ic, qty, actual in shortages
+		]
+		lines.append(_("Cannot complete Main Slip Receive injection."))
+		frappe.throw("\n".join(lines))
 
 
 def _resolve_inject_metal_items(mwo_name, total_extra):
 	"""Return [{item_code, qty}] using MWO metal attributes.
 	Multicolour MWO: even-split total_extra across allowed_colours."""
-	mwo = frappe.db.get_value(
+	mwo = frappe.get_cached_value(
 		"Manufacturing Work Order",
 		mwo_name,
 		[
@@ -790,30 +843,9 @@ def _resolve_inject_metal_items(mwo_name, total_extra):
 	return items
 
 
-def _resolve_source_warehouse(eir):
-	if eir.subcontracting == "Yes":
-		return frappe.db.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"company": eir.company,
-				"subcontractor": eir.subcontractor,
-				"warehouse_type": "Manufacturing",
-			},
-		)
-	return frappe.db.get_value(
-		"Warehouse",
-		{
-			"disabled": 0,
-			"employee": eir.employee,
-			"warehouse_type": "Manufacturing",
-		},
-	)
-
-
 def _resolve_source_warehouse_raw_material(eir):
 	if eir.subcontracting == "Yes":
-		return frappe.db.get_value(
+		return frappe.get_cached_value(
 			"Warehouse",
 			{
 				"disabled": 0,
@@ -822,7 +854,7 @@ def _resolve_source_warehouse_raw_material(eir):
 				"warehouse_type": "Raw Material",
 			},
 		)
-	return frappe.db.get_value(
+	return frappe.get_cached_value(
 		"Warehouse",
 		{
 			"disabled": 0,
@@ -833,7 +865,7 @@ def _resolve_source_warehouse_raw_material(eir):
 
 
 def _resolve_department_warehouse(department):
-	return frappe.db.get_value(
+	return frappe.get_cached_value(
 		"Warehouse",
 		{
 			"disabled": 0,
@@ -843,24 +875,9 @@ def _resolve_department_warehouse(department):
 	)
 
 
-def _check_source_stock(item_code, source_wh, required_qty):
-	actual = flt(
-		frappe.db.get_value(
-			"Bin", {"item_code": item_code, "warehouse": source_wh}, "actual_qty"
-		)
-	)
-	if actual < required_qty:
-		frappe.throw(
-			_(
-				"Insufficient stock to Repack {0} of {1} from {2} (available {3}). "
-				"Cannot complete Main Slip Receive injection."
-			).format(required_qty, item_code, source_wh, actual)
-		)
-
-
 def _stamp_se_header(se, eir, row):
 	se.company = eir.company
-	se.manufacturing_order = frappe.db.get_value(
+	se.manufacturing_order = frappe.get_cached_value(
 		"Manufacturing Work Order", row.manufacturing_work_order, "manufacturing_order"
 	)
 	se.manufacturing_work_order = row.manufacturing_work_order
@@ -878,20 +895,21 @@ def _stamp_se_header(se, eir, row):
 def _build_material_transfer_from_segments(
 	eir, row, transfer_segments, source_wh, dept_wh
 ):
-	"""Fallback path: one Material Transfer (WORK ORDER) SE from merged transfer segments."""
+	"""Fallback path: one Material Transfer (WORK ORDER) SE from merged transfer segments.
+
+	All rows post from the single MSL ``source_wh`` to the MOP department warehouse.
+	"""
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
 	_stamp_se_header(se, eir, row)
 	for seg in transfer_segments:
-		s_wh = seg.get("s_warehouse") or source_wh
-		t_wh = seg.get("t_warehouse") or dept_wh
 		se.append(
 			"items",
 			{
 				"item_code": seg["item_code"],
 				"qty": seg["qty"],
-				"s_warehouse": s_wh,
-				"t_warehouse": t_wh,
+				"s_warehouse": source_wh,
+				"t_warehouse": dept_wh,
 				"uom": "Gram",
 				"manufacturing_operation": row.manufacturing_operation,
 				"custom_manufacturing_work_order": row.manufacturing_work_order,
@@ -902,19 +920,21 @@ def _build_material_transfer_from_segments(
 
 
 def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dept_wh):
-	"""Fallback path: one Repack SE from pure→alloy segments (consume / produce pairs)."""
+	"""Fallback path: one Repack SE from pure→alloy segments (consume / produce pairs).
+
+	Pure metal is consumed from the single MSL ``source_wh``; the produced alloy
+	lands in the MOP department warehouse.
+	"""
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = REPACK_STOCK_ENTRY_TYPE
 	_stamp_se_header(se, eir, row)
 	for seg in purity_segments:
-		s_wh = seg.get("s_warehouse") or source_wh
-		t_wh = seg.get("t_warehouse") or dept_wh
 		se.append(
 			"items",
 			{
 				"item_code": seg["source_item"],
 				"qty": seg["consume_qty"],
-				"s_warehouse": s_wh,
+				"s_warehouse": source_wh,
 				"uom": "Gram",
 				"use_serial_batch_fields": 1,
 			},
@@ -924,7 +944,7 @@ def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dep
 			{
 				"item_code": seg["target_item"],
 				"qty": seg["produce_qty"],
-				"t_warehouse": t_wh,
+				"t_warehouse": dept_wh,
 				"uom": "Gram",
 				"manufacturing_operation": row.manufacturing_operation,
 				"custom_manufacturing_work_order": row.manufacturing_work_order,
