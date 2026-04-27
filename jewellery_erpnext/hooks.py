@@ -244,7 +244,7 @@ user_data_fields = [
 fixtures = [
 	{
 		"doctype": "Workflow",
-		"filters": [
+		"fifix: remove redis server startup from install scriptlters": [
 			[
 				"name",
 				"in",
