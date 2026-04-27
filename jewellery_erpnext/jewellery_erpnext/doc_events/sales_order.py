@@ -1693,7 +1693,7 @@ def create_new_bom1(self):
 								d.quantity=d.quantity
 								if d.quantity >.005:
 										d.quantity=round(d.quantity,stone_precision )
-								d.diamond_rate_for_specified_quantity = round(d.quantity * d.se_rate, 2)
+								d.diamond_rate_for_specified_quantity = round(d.quantity * (d.se_rate + d.handling_rate), 2)
 							elif self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
 								# frappe.throw(f"{latest}")
 								d.fg_purchase_rate = latest.get("supplier_fg_purchase_rate") if latest else 0
