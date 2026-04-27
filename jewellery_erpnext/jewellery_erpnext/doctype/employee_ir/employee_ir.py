@@ -1,15 +1,12 @@
 import json
 
 import frappe
-from frappe import _, qb
+from frappe import _
 from frappe.model.document import Document
-from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder import DocType
-from frappe.query_builder.functions import Sum
 
 # timer code
 from frappe.utils import (
-	add_days,
 	cint,
 	date_diff,
 	flt,
@@ -17,7 +14,6 @@ from frappe.utils import (
 	get_first_day,
 	get_last_day,
 	getdate,
-	now,
 	nowdate,
 	time_diff,
 	time_diff_in_hours,
@@ -25,13 +21,8 @@ from frappe.utils import (
 	today,
 )
 
-from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
-	batch_update_stock_entry_dimensions,
-	update_stock_entry_dimensions,
-)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
 	get_po_rates,
-	valid_reparing_or_next_operation,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_utils import (
 	get_summary_data,
@@ -59,30 +50,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	creste_mop_log_for_employee_ir,
 )
 from jewellery_erpnext.utils import (
-	get_item_from_attribute,
 	get_item_from_attribute_full,
-	update_existing,
 )
 
 
 class EmployeeIR(Document):
-	# def before_insert(self):
-	# 	if self.type == "Issue":
-	# 		return
-
-	# existing_mwo = set(frappe.db.get_all(
-	# 	"Main Slip Operation", {"parent": self.main_slip}, pluck="manufacturing_work_order"
-	# ))
-
-	# for row in self.employee_ir_operations:
-	# 	if row.manufacturing_work_order not in existing_mwo:
-	# 		frappe.throw(
-	# 			title=_("Invalid Manufacturing Work Order"),
-	# 			msg=_("Manufacturing Work Order {0} not available in Main Slip").format(
-	# 				row.manufacturing_work_order
-	# 			)
-	# 		)
-
 	@frappe.whitelist()
 	def get_operations(self):
 		records = frappe.get_list(
@@ -235,15 +207,9 @@ class EmployeeIR(Document):
 				update_modified=True,
 			)
 
-		# Batch update stock entries
-		# if stock_entry_data and not cancel:
-		# 	batch_update_stock_entry_dimensions(self, stock_entry_data, employee, True)
-
 		# Batch add time logs
 		if time_log_args and not cancel:
 			batch_add_time_logs(self, time_log_args)
-
-		# create_single_se_entry(self, mop_data)
 
 	# for receive
 	def on_submit_receive(self, cancel=False):
@@ -358,10 +324,10 @@ class EmployeeIR(Document):
 				# employee/subcontractor warehouse into the MOP warehouse.
 				# The SE bridge then writes the positive MOP Log row that
 				# create_mop_log_for_employee_ir_receive will see.
-				inject_extra_metal_for_eir_receive(self, row)
+				stock_entry_name = inject_extra_metal_for_eir_receive(self, row)
 
 				create_mop_log_for_employee_ir_receive(
-					self, row, actor_wh, department_wh
+					self, row, actor_wh, department_wh, stock_entry_name
 				)
 				update_new_mop_wtg(new_operation)
 			else:
@@ -628,25 +594,6 @@ class EmployeeIR(Document):
 				)
 			)
 			# To get Final Metal Item
-			if mwo_metal_property.get("is_finding_mwo"):
-				bom_items = frappe.db.get_all(
-					"BOM Item",
-					{"parent": mwo_metal_property.master_bom},
-					pluck="item_code",
-				)
-				bom_items += frappe.db.get_all(
-					"BOM Explosion Item",
-					{"parent": mwo_metal_property.master_bom},
-					pluck="item_code",
-				)
-				flat_metal_item = list(set(bom_items))
-			else:
-				flat_metal_item = [
-					item
-					for sublist in metal_item
-					for super_sub in sublist
-					for item in super_sub
-				]
 
 			total_qty = 0
 			# To prepare Final Data with all condition's
@@ -670,9 +617,6 @@ class EmployeeIR(Document):
 							"manufacturing_work_order": mwo,
 							"manufacturing_operation": opt,
 							"pcs": child["pcs"],
-							# "customer": child["customer"],
-							# "inventory_type": child["inventory_type"],
-							# "sub_setting_type": child["sub_setting_type"],
 							"proportionally_loss": 0.0,
 							"received_gross_weight": 0.0,
 						}
@@ -739,77 +683,6 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 	new_mop_doc.previous_se_data_updated = 0
 	new_mop_doc.main_slip_no = None
 	new_mop_doc.save()
-	# def set_missing_value(source, target):
-	# 	target.previous_operation = source.operation
-	# 	target.prev_gross_wt = (
-	# 		received_gr_wt or source.received_gross_wt or source.gross_wt or source.prev_gross_wt
-	# 	)
-	# 	target.previous_mop = source.name
-
-	# copy doc
-	# target_doc = frappe.copy_doc(docname)
-	# field_no_map = [
-	# "status", "employee", "start_time", "subcontractor", "for_subcontracting",
-	# "finish_time", "time_taken", "department_issue_id", "department_receive_id",
-	# "department_ir_status", "operation", "previous_operation", "started_time",
-	# "current_time", "on_hold", "total_minutes", "time_logs"
-	# ]
-
-	# for field in field_no_map:
-	# 	setattr(target_doc, field, None)
-	# set_missing_value(source, target_doc)
-	# target_doc = get_mapped_doc(
-	# 	"Manufacturing Operation",
-	# 	docname,
-	# 	{
-	# 		"Manufacturing Operation": {
-	# 			"doctype": "Manufacturing Operation",
-	# 			"field_no_map": [
-	# 				"status",
-	# 				"employee",
-	# 				"start_time",
-	# 				"subcontractor",
-	# 				"for_subcontracting",
-	# 				"finish_time",
-	# 				"time_taken",
-	# 				"department_issue_id",
-	# 				"department_receive_id",
-	# 				"department_ir_status",
-	# 				"operation",
-	# 				"previous_operation",
-	# 				"start_time",
-	# 				"finish_time",
-	# 				"time_taken",
-	# 				"started_time",
-	# 				"current_time",
-	# 				"on_hold",
-	# 				"total_minutes",
-	# 				"time_logs",
-	# 			],
-	# 		}
-	# 	},
-	# 	target_doc,
-	# 	set_missing_value,
-	# )
-	# target_doc.department_source_table = []
-	# target_doc.department_target_table = []
-	# target_doc.employee_source_table = []
-	# target_doc.employee_target_table = []
-	# target_doc.employee_ir = employee_ir
-	# target_doc.time_taken = None
-	# target_doc.employee = None
-	# # target_doc.save()
-	# # target_doc.db_set("employee", None)
-
-	# # timer code
-	# target_doc.start_time = ""
-	# target_doc.finish_time = ""
-	# target_doc.time_taken = ""
-	# target_doc.started_time = ""
-	# target_doc.current_time = ""
-	# target_doc.time_logs = []
-	# target_doc.total_time_in_mins = ""
-	# target_doc.save()
 	return new_mop_doc
 
 
@@ -1159,7 +1032,6 @@ def calculation_time_log(doc, row, self):
 				if total_duration >= total_shift_hours:
 					row.time_in_days = total_duration / total_shift_hours
 
-				# frappe.throw(f"1 {total_shift_hours} || 2 {total_duration} || 3 {row.time_in_days}")
 		else:
 			# Time in minutes
 			row.time_in_mins = time_diff_in_hours(row.to_time, row.from_time) * 60
@@ -1178,10 +1050,3 @@ def calculation_time_log(doc, row, self):
 
 				if full_hours >= total_shift_hours:
 					row.time_in_days = full_hours / total_shift_hours
-
-			# frappe.throw(f"{row.time_in_mins} || {row.time_in_hour} {row.time_in_days}")
-
-		# # Total minutes across all rows
-		# doc.total_minutes = 0
-		# for i in doc.time_logs:
-		# 	doc.total_minutes += i.time_in_mins
