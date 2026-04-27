@@ -1028,7 +1028,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			diamond_grade_data.setdefault(diamond_grade, 0)
 			diamond_grade_data[diamond_grade] += entry["qty"]
 
-		s_wh = target_wh
+		s_wh = entry.get("s_warehouse") or target_wh
 		reservation = frappe.db.get_value(
 			"Stock Reservation Entry",
 			{
@@ -1042,7 +1042,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 
 		if reservation:
 			s_wh = reservation.warehouse
-		else:
+		elif not entry.get("s_warehouse"):
 			mop_logs = frappe.db.get_all(
 				"MOP Log",
 				{
@@ -1051,12 +1051,38 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 					"batch_no": entry.get("batch_no"),
 					"is_cancelled": 0,
 				},
-				["to_warehouse"],
+				["to_warehouse", "voucher_type", "from_warehouse"],
 				order_by="flow_index desc",
 				limit=1,
 			)
 			if mop_logs:
-				s_wh = mop_logs[0].to_warehouse
+				if mop_logs[0].voucher_type == "Stock Entry":
+					s_wh = mop_logs[0].to_warehouse
+				else:
+					# If virtual sync, try to find the last physical movement in the PMO
+					all_mwos = frappe.get_all(
+						"Manufacturing Work Order",
+						{"manufacturing_order": pmo, "docstatus": 1},
+						pluck="name",
+					)
+					physical_log = None
+					if all_mwos:
+						physical_log = frappe.db.get_value(
+							"MOP Log",
+							{
+								"manufacturing_work_order": ["in", all_mwos],
+								"item_code": entry["item_code"],
+								"batch_no": entry.get("batch_no"),
+								"voucher_type": "Stock Entry",
+								"is_cancelled": 0,
+							},
+							"to_warehouse",
+							order_by="flow_index desc, creation desc",
+						)
+					if physical_log:
+						s_wh = physical_log
+					else:
+						s_wh = mop_logs[0].from_warehouse
 
 		se.append(
 			"items",
@@ -1116,32 +1142,51 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 		},
 	)
 
+	if not hasattr(frappe.local, "snc_pmo_cache"):
+		frappe.local.snc_pmo_cache = {}
+
+	if pmo not in frappe.local.snc_pmo_cache:
+		po_data = frappe.db.get_all(
+			"Purchase Order Item",
+			{"custom_pmo": pmo, "docstatus": 1},
+			["name", "parent"],
+		)
+		pi_data = frappe.db.get_all(
+			"Purchase Invoice Item",
+			{"custom_pmo": pmo, "docstatus": 1},
+			["base_rate", "parent"],
+		)
+		missing_pi_parents = []
+		for row in po_data:
+			if not frappe.db.get_value(
+				"Purchase Invoice Item", {"po_detail": row.name}
+			):
+				missing_pi_parents.append(row.parent)
+
+		pi_expense = sum([row.base_rate for row in pi_data])
+		pi_description = list(set([row.parent for row in pi_data]))
+
+		frappe.local.snc_pmo_cache[pmo] = {
+			"missing_pi_parents": missing_pi_parents,
+			"pi_expense": pi_expense,
+			"pi_description": pi_description,
+		}
+
+	pmo_cache = frappe.local.snc_pmo_cache[pmo]
+
+	for parent in pmo_cache["missing_pi_parents"]:
+		msg = _("Purchase Invoice is NOT created for {0}").format(parent)
+		if doc.doctype == "Serial Number Creator":
+			frappe.msgprint(msg)
+		else:
+			frappe.throw(msg)
+
+	pi_expense = pmo_cache["pi_expense"]
+	pi_description = pmo_cache["pi_description"]
+
 	expense_account = frappe.db.get_value(
 		"Company", doc.company, "default_operating_cost_account"
 	)
-
-	po_data = frappe.db.get_all(
-		"Purchase Order Item",
-		{"custom_pmo": doc.parent_manufacturing_order, "docstatus": 1},
-		["name", "parent"],
-	)
-
-	for row in po_data:
-		if not frappe.db.get_value("Purchase Invoice Item", {"po_detail": row.name}):
-			frappe.throw(_("Purchase Invoice is created for {0}").format(row.parent))
-
-	pi_data = frappe.db.get_all(
-		"Purchase Invoice Item",
-		{"custom_pmo": doc.parent_manufacturing_order, "docstatus": 1},
-		["base_rate", "parent"],
-	)
-
-	pi_expense = 0
-	pi_description = []
-	for row in pi_data:
-		pi_expense += row.base_rate
-		if row.parent not in pi_description:
-			pi_description.append(row.parent)
 
 	if not expense_account:
 		frappe.throw(_("Default Operating Cost account is not mentioned in Company."))
@@ -1170,26 +1215,45 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	# 	)
 	total_operating_cost = 0
 	operation_descriptions = []
-	for row in mo_data:
-		mop_doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
-		employee = mop_doc.employee
 
-		total_minutes = sum([log.time_in_mins or 0 for log in mop_doc.time_logs])
-
-		matching_workstation = frappe.get_all(
-			"Workstation", filters={"employee": employee}, fields=["name", "hour_rate"]
+	mop_employees = list(
+		set([row.get("employee") for row in mo_data if row.get("employee")])
+	)
+	workstations = {}
+	if mop_employees:
+		ws_list = frappe.get_all(
+			"Workstation",
+			filters={"employee": ["in", mop_employees]},
+			fields=["name", "hour_rate", "employee"],
 		)
+		for ws in ws_list:
+			workstations[ws.employee] = ws
 
-		if matching_workstation:
-			ws = matching_workstation[0]
-			hour_rate = ws.hour_rate or 0
-		else:
-			hour_rate = 0
+	for row in mo_data:
+		employee = row.get("employee")
+		total_minutes = row.get("total_minutes") or 0
+
+		if total_minutes == 0 and row.get("manufacturing_operation"):
+			total_minutes = (
+				frappe.db.get_value(
+					"Manufacturing Operation",
+					row.manufacturing_operation,
+					"total_minutes",
+				)
+				or 0
+			)
+
+		ws = workstations.get(employee)
+		hour_rate = ws.hour_rate if ws else 0
+
+		if not ws and employee:
 			frappe.msgprint(f"No workstation found for employee: {employee}")
 
-		operating_cost = (hour_rate / 60) * total_minutes
+		operating_cost = (hour_rate / 60) * (total_minutes or 0)
 		total_operating_cost += operating_cost
-		operation_descriptions.append(row.description or row.manufacturing_operation)
+		desc = row.get("description") or row.get("manufacturing_operation")
+		if desc:
+			operation_descriptions.append(desc)
 
 	if total_operating_cost > 0:
 		se.append(
@@ -1197,7 +1261,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			{
 				"expense_account": expense_account,
 				"amount": total_operating_cost,
-				"description": ", ".join(operation_descriptions),
+				"description": (", ".join(operation_descriptions))[:250],
 			},
 		)
 	# End of updated operation cost logic
@@ -1208,7 +1272,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			{
 				"expense_account": expense_account,
 				"amount": pi_expense,
-				"description": ", ".join(pi_description),
+				"description": (", ".join(pi_description))[:250],
 			},
 		)
 
@@ -1692,25 +1756,48 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	if mo_data:
 		new_bom.with_operations = 1
 		new_bom.transfer_material_against = None
-		for row in mo_data:
-			mop_doc = frappe.get_doc(
-				"Manufacturing Operation", row.manufacturing_operation
+
+		mop_names = [row.manufacturing_operation for row in mo_data]
+		mops = {
+			m.name: m
+			for m in frappe.get_all(
+				"Manufacturing Operation",
+				filters={"name": ["in", mop_names]},
+				fields=["name", "employee", "total_minutes"],
 			)
-			employee = mop_doc.employee
-			total_minutes = 0
-			for time_log in mop_doc.time_logs:
-				total_minutes += time_log.time_in_mins or 0
-			matching_workstation = frappe.get_all(
+		}
+
+		employees = list(set(m.employee for m in mops.values() if m.employee))
+		workstations = {}
+		if employees:
+			ws_data = frappe.get_all(
 				"Workstation",
-				filters={"employee": employee},
-				fields=["name", "hour_rate"],
+				filters={"employee": ["in", employees]},
+				fields=["name", "hour_rate", "employee"],
 			)
-			if matching_workstation:
-				ws = matching_workstation[0]
+			for ws in ws_data:
+				workstations[ws.employee] = ws
+
+		for row in mo_data:
+			mop_doc = mops.get(row.manufacturing_operation)
+			if not mop_doc:
+				continue
+
+			employee = mop_doc.employee
+			total_minutes = mop_doc.total_minutes or 0
+
+			ws = workstations.get(employee)
+			if ws:
 				workstation_name = ws.name
 				hour_rate = ws.hour_rate
 			else:
-				frappe.msgprint(f"No workstation found for employee: {employee}")
+				hour_rate = 0
+				workstation_name = ""
+				if employee:
+					frappe.msgprint(f"No workstation found for employee: {employee}")
+
+			if not workstation_name:
+				continue
 
 			operating_cost = (hour_rate / 60) * total_minutes
 			# Set correct hour_rate in BOM Operation
@@ -1722,6 +1809,9 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				"operating_cost": operating_cost,
 			}
 			new_bom.append("operations", operation_data)
+
+	if not new_bom.get("operations"):
+		new_bom.with_operations = 0
 
 	new_bom.operation_time_diff = (
 		new_bom.total_operation_time - new_bom.actual_operation_time
