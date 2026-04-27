@@ -64,17 +64,20 @@ def _get_diamond_weights(item_codes: set) -> dict:
 	if not grade_sieve_pairs:
 		return {}
 
+	grades = [g for g, _ in grade_sieve_pairs]
+
 	weight_rows = frappe.get_all(
 		"Attribute Value Diamond Sieve Size",
 		filters={
-			"parent": ["in", [g for g, _ in grade_sieve_pairs]],
-			"diamond_sieve_size": ["in", [s for _, s in grade_sieve_pairs]],
+			"parent": ["in", grades],
 		},
 		fields=["parent", "diamond_sieve_size", "per_pcs_average_weight"],
 	)
+
 	weight_map = {
 		(r.parent, r.diamond_sieve_size): (r.per_pcs_average_weight or 0)
 		for r in weight_rows
+		if (r.parent, r.diamond_sieve_size) in grade_sieve_pairs
 	}
 
 	return {
@@ -205,7 +208,7 @@ class CustomStockEntry(StockEntry):
 					)
 				}
 
-		mr_item_keys = []
+		mr_item_keys = set()
 		item_mr_map = {}
 
 		for item in self.get("items"):
@@ -219,7 +222,7 @@ class CustomStockEntry(StockEntry):
 
 			if mr and mr_item:
 				item_mr_map[item.idx] = (mr, mr_item)
-				mr_item_keys.append(mr_item)
+				mr_item_keys.add(mr_item)
 
 		if not item_mr_map:
 			return
@@ -228,7 +231,7 @@ class CustomStockEntry(StockEntry):
 			r.name: r
 			for r in frappe.get_all(
 				"Material Request Item",
-				filters={"name": ["in", mr_item_keys]},
+				filters={"name": ["in", list(mr_item_keys)]},
 				fields=[
 					"name",
 					"item_code",
