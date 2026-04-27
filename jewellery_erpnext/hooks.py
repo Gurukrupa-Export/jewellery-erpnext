@@ -129,11 +129,14 @@ doc_events = {
 	},
 	"Sales Invoice": {
 		"before_validate": [
-			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.before_validate",
+			# "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.before_validate",
 		],
 		"on_submit":[ "jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.on_submit",
-					"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.on_submit",]
+					"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.on_submit",],
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate"
+		],
 	},
 	"Serial No": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table"

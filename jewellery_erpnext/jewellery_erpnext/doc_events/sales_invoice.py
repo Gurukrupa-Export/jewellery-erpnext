@@ -10,7 +10,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import _calculate_
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_totals
 
 
-def before_validate(self, method):
+def validate(self, method):
 	if self.is_return:
 		return
 	if self.sales_type != 'Certification':
