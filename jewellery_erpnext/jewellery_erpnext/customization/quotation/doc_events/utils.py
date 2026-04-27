@@ -7,7 +7,10 @@ def validate_po(self):
 		"Company", self.company, "custom_allow_quotation_from_po_only"
 	)
 	hallmarking_charge = (
-		frappe.db.get_value("Customer Certification Price", self.party_name, "hallmarking_amount") or 0
+		frappe.db.get_value(
+			"Customer Certification Price", self.party_name, "hallmarking_amount"
+		)
+		or 0
 	)
 	po_data = frappe._dict()
 	for row in self.items:
@@ -15,13 +18,19 @@ def validate_po(self):
 		update_hallmarking_amount(hallmarking_charge, row)
 		if allow_quotation and not row.po_no:
 			frappe.throw(
-				_("Row {0} : Quotation can be created from Purchase Order for this Company").format(row.idx)
+				_(
+					"Row {0} : Quotation can be created from Purchase Order for this Company"
+				).format(row.idx)
 			)
 		elif row.po_no:
 			if not po_data.get(row.po_no):
-				po_data[row.po_no] = frappe.db.get_value("Purchase Order", row.po_no, "custom_quotation")
+				po_data[row.po_no] = frappe.db.get_value(
+					"Purchase Order", row.po_no, "custom_quotation"
+				)
 			if not po_data.get(row.po_no):
-				frappe.db.set_value("Purchase Order", row.po_no, "custom_quotation", self.name)
+				frappe.db.set_value(
+					"Purchase Order", row.po_no, "custom_quotation", self.name
+				)
 
 
 def update_customer_details(self, row):
@@ -40,22 +49,27 @@ def update_customer_details(self, row):
 def update_hallmarking_amount(hallmarking_charge, row):
 	row.custom_hallmarking_amount = hallmarking_charge * row.qty
 
+
 # from jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice import (
 # 	update_making_charges,
 # )
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import _calculate_diamond_amount
 from frappe.utils import flt
+
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
+	_calculate_diamond_amount,
+)
+
 
 def update_si(self):
 	invoice_data = {}
 	is_branch_customer = frappe.db.get_value(
 		"Sales Type Multiselect", {"parent": self.party_name, "sales_type": "Branch"}
 	)
-	
+
 	for row in self.items:
-		if row.quotation_bom :
+		if row.quotation_bom:
 			bom_doc = frappe.get_doc("BOM", row.quotation_bom)
-	
+
 			update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data)
 			# update_einvoice_items(self, invoice_data)
 
@@ -73,8 +87,12 @@ def update_einvoice_items(self, invoice_data):
 					"gst_hsn_code": invoice_data[row]["hsn_code"],
 					"conversion_factor": 1,
 					"qty": invoice_data[row]["qty"],
-					"rate": flt(invoice_data[row]["amount"] / invoice_data[row]["qty"], 3),
-					"base_rate": flt(invoice_data[row]["amount"] / invoice_data[row]["qty"], 3),
+					"rate": flt(
+						invoice_data[row]["amount"] / invoice_data[row]["qty"], 3
+					),
+					"base_rate": flt(
+						invoice_data[row]["amount"] / invoice_data[row]["qty"], 3
+					),
 					"amount": flt(invoice_data[row]["amount"], 3),
 					"base_amount": invoice_data[row]["amount"],
 					"diamond_quality": self.diamond_quality,
@@ -87,6 +105,12 @@ def update_einvoice_items(self, invoice_data):
 def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 	gold_item = None
 	gold_making_item = None
+	hsn_code = None
+	gold_uom = None
+	making_hsn_code = None
+	gold_making_uom = None
+	uom = None
+	making_uom = None
 	bom_doc.customer = self.party_name
 	for i in bom_doc.metal_detail:
 		amount = i.amount
@@ -99,17 +123,29 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 		if i.is_customer_item:
 			filter_value = "is_for_labour"
 		if not gold_item:
-			gold_item, hsn_code, gold_uom = frappe.db.get_value(
+			result = frappe.db.get_value(
 				"E Invoice Item",
-				{"is_for_metal": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+				{
+					"is_for_metal": 1,
+					"metal_type": i.metal_type,
+					"metal_purity": i.metal_touch,
+				},
 				["name", "hsn_code", "uom"],
 			)
+			if result:
+				gold_item, hsn_code, gold_uom = result
 		if not gold_making_item:
-			gold_making_item, making_hsn_code, gold_making_uom = frappe.db.get_value(
+			result = frappe.db.get_value(
 				"E Invoice Item",
-				{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+				{
+					filter_value: 1,
+					"metal_type": i.metal_type,
+					"metal_purity": i.metal_touch,
+				},
 				["name", "hsn_code", "uom"],
 			)
+			if result:
+				gold_making_item, making_hsn_code, gold_making_uom = result
 		if gold_item:
 			if invoice_data.get(gold_item):
 				invoice_data[gold_item]["amount"] += amount
@@ -155,20 +191,31 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 			filter_value = "is_for_labour"
 
 		if not einvoice_item:
-			einvoice_item, hsn_code, uom = frappe.db.get_value(
+			result = frappe.db.get_value(
 				"E Invoice Item",
-				{"is_for_finding": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+				{
+					"is_for_finding": 1,
+					"metal_type": i.metal_type,
+					"metal_purity": i.metal_touch,
+				},
 				["name", "hsn_code", "uom"],
 			)
-		
+			if result:
+				einvoice_item, hsn_code, uom = result
+
 		if not making_item:
-			making_item, making_hsn_code, making_uom = frappe.db.get_value(
+			result = frappe.db.get_value(
 				"E Invoice Item",
-				{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+				{
+					filter_value: 1,
+					"metal_type": i.metal_type,
+					"metal_purity": i.metal_touch,
+				},
 				["name", "hsn_code", "uom"],
 			)
-		
-	
+			if result:
+				making_item, making_hsn_code, making_uom = result
+
 		if einvoice_item:
 			if invoice_data.get(einvoice_item):
 				invoice_data[einvoice_item]["amount"] += amount
@@ -234,11 +281,13 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 		if is_branch_customer:
 			amount = i.se_rate * i.quantity
 		if not einvoice_item:
-			einvoice_item, hsn_code, uom = frappe.db.get_value(
+			result = frappe.db.get_value(
 				"E Invoice Item",
 				{"is_for_diamond": 1, "diamond_type": i.diamond_type},
 				["name", "hsn_code", "uom"],
 			)
+			if result:
+				einvoice_item, hsn_code, uom = result
 
 		if einvoice_item:
 			einvoice_item_name = einvoice_item
@@ -320,7 +369,11 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 				multiplier = (
 					frappe.db.get_value(
 						"Gemstone Multiplier",
-						{"parent": gr.name, "item_category": item_category, "parentfield": "gemstone_multiplier"},
+						{
+							"parent": gr.name,
+							"item_category": item_category,
+							"parentfield": "gemstone_multiplier",
+						},
 						frappe.scrub(i.gemstone_quality),
 					)
 					or 0
@@ -361,9 +414,11 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 		if is_branch_customer:
 			amount = i.se_rate * i.quantity
 		if not einvoice_item:
-			einvoice_item, hsn_code, uom = frappe.db.get_value(
+			result = frappe.db.get_value(
 				"E Invoice Item", {"is_for_gemstone": 1}, ["name", "hsn_code", "uom"]
 			)
+			if result:
+				einvoice_item, hsn_code, uom = result
 
 		if einvoice_item:
 			if invoice_data.get(f"{einvoice_item}"):
