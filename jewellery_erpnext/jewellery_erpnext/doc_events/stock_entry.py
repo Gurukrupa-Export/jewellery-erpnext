@@ -12,7 +12,7 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 from frappe import _, scrub
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Sum
-from frappe.utils import cint, flt, itervalues
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	create_repack_for_subcontracting,
@@ -1049,10 +1049,6 @@ def custom_get_bom_scrap_material(self, qty):
 		)
 		or {}
 	)
-
-	for item in itervalues(item_dict):
-		item.from_warehouse = ""
-		item.is_scrap_item = 1
 
 	for row in self.get_scrap_items_from_job_card():
 		if row.stock_qty <= 0:
