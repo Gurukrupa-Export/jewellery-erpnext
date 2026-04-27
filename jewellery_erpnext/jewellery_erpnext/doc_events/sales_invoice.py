@@ -42,7 +42,9 @@ def before_validate(self, method):
 						row.amount=round(row.rate*row.quantity,2 )
 					bom_doc.total_metal_amount= sum(row.amount for row in bom_doc.metal_detail)	
 					for row in bom_doc.finding_detail:
-						rate = (float(row.metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
+						customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
+						row.customer_metal_purity=customer_metal_purity
+						rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						row.rate = round(rate,2)
 						row.amount=round(row.rate*row.quantity,2 )
 					bom_doc.total_finding_amount= sum(row.amount for row in bom_doc.finding_detail)	

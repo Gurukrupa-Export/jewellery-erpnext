@@ -1084,7 +1084,29 @@ def create_new_bom1(self):
 								)
 								if not gpc:
 									frappe.msgprint("No Gemstone Price List found")
-							
+								else:
+									gem.gemstone_pr=gem.gemstone_pr
+									gpc_doc = frappe.get_doc("Gemstone Price List", gpc[0].name)
+									multiplier_rows = gpc_doc.get("gemstone_multiplier")
+									rate = gpc_doc.rate if gpc_doc else 0
+									# rate = 0
+									for mul in multiplier_rows:
+										if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
+											if gem.gemstone_quality == 'Precious':
+												rate = mul.precious_percentage
+
+											elif gem.gemstone_quality == 'Semi-Precious':
+												rate = mul.semi_precious_percentage
+
+											elif gem.gemstone_quality == 'Synthetic':
+												rate = mul.synthetic_percentage
+
+									gem.total_gemstone_rate = round(rate, 2)
+
+									gem.gemstone_rate_for_specified_quantity = (
+									float(rate) * float(gem.quantity)) if gem.per_pc_or_per_carat=='Per Carat' else (float(rate) * float(gem.pcs))
+									gem.gemstone_rate_for_specified_quantity =round(gem.gemstone_rate_for_specified_quantity , 2)
+									
 
 							elif customer_group=="Retail":
 								# frappe.throw("jihuygtf")
