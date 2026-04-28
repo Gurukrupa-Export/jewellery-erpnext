@@ -47,7 +47,12 @@ def before_validate(self, method):
 	dir_staus_data = frappe._dict()
 
 	for row in self.items:
-		if not row.batch_no and not row.serial_no and row.s_warehouse:
+		if (
+			not self.auto_created
+			and not row.batch_no
+			and not row.serial_no
+			and row.s_warehouse
+		):
 			frappe.throw(_("Please click Get FIFO Batch Button"))
 
 		if not self.auto_created and row.manufacturing_operation:
@@ -636,7 +641,8 @@ def stock_reservation_entry_for_mwo(self):
 		)
 		if addition_maximum_item__tolerance_percentage:
 			base_mr_voucher_qty = base_mr_voucher_qty + (
-				base_mr_voucher_qty * (flt(addition_maximum_item__tolerance_percentage) / 100)
+				base_mr_voucher_qty
+				* (flt(addition_maximum_item__tolerance_percentage) / 100)
 			)
 
 	for row in self.items:
@@ -655,9 +661,7 @@ def stock_reservation_entry_for_mwo(self):
 				row.item_code, row.t_warehouse
 			)
 		qty_to_be_reserved = (
-			row.qty
-			if available_qty_to_reserve >= row.qty
-			else available_qty_to_reserve
+			row.qty if available_qty_to_reserve >= row.qty else available_qty_to_reserve
 		)
 		qty_to_be_reserved = flt(qty_to_be_reserved)
 		# Employee IR extra-metal injection: stock just landed; availability checks can lag
@@ -670,7 +674,9 @@ def stock_reservation_entry_for_mwo(self):
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
 			"Sales Order", sales_order, sales_order_item
 		)
-		effective_voucher_qty = flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
+		effective_voucher_qty = (
+			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
+		)
 		if is_eir_injection:
 			effective_voucher_qty = max(
 				effective_voucher_qty,
@@ -679,9 +685,7 @@ def stock_reservation_entry_for_mwo(self):
 		elif not effective_voucher_qty and base_mr_voucher_qty is None:
 			effective_voucher_qty = flt(total_so_reserved) + qty_to_be_reserved
 
-		new_stock_reservation_entries_mwo = frappe.new_doc(
-			"Stock Reservation Entry"
-		)
+		new_stock_reservation_entries_mwo = frappe.new_doc("Stock Reservation Entry")
 		new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
 		new_stock_reservation_entries_mwo.voucher_no = sales_order
 		new_stock_reservation_entries_mwo.item_code = row.item_code
@@ -1045,10 +1049,6 @@ def custom_get_bom_scrap_material(self, qty):
 		)
 		or {}
 	)
-
-	for item in itervalues(item_dict):
-		item.from_warehouse = ""
-		item.is_scrap_item = 1
 
 	for row in self.get_scrap_items_from_job_card():
 		if row.stock_qty <= 0:
