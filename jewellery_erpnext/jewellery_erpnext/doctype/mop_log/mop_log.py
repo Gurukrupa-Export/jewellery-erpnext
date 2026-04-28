@@ -265,7 +265,7 @@ def get_current_mop_balance_rows(manufacturing_operation, include_fields=None):
 			"is_cancelled": 0,
 		},
 		fields=fields,
-		order_by="flow_index desc, creation desc",
+		order_by="creation desc",
 	)
 	if not mop_logs:
 		return []
