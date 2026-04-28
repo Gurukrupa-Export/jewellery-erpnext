@@ -340,7 +340,7 @@ def get_metal_purity_percentage(item_code):
 def make_metal_stock_entry(self):
 	target_wh = self.target_warehouse
 	source_wh = self.source_warehouse
-	inventory_type = self.inventory_type
+	inventory_type = self.inventory_type or "Regular Stock"
 	customer = self.customer
 	batch_no = self.batch
 	se = frappe.get_doc(
@@ -414,12 +414,13 @@ def make_metal_stock_entry(self):
 	inventory_types_target = set()
 	inventory_types_final = set()
 	for row in source_item:
+		item_inv_type = row["inventory_type"] or "Regular Stock"
 		se.append(
 			"items",
 			{
 				"item_code": row["item_code"],
 				"qty": row["qty"],
-				"inventory_type": row["inventory_type"],
+				"inventory_type": item_inv_type,
 				"customer": row.get("customer"),
 				"batch_no": row["batch_no"],
 				"department": row["department"],
@@ -430,14 +431,15 @@ def make_metal_stock_entry(self):
 			},
 		)
 		if self.source_alloy != row["item_code"]:
-			inventory_types_source.add(row["inventory_type"])
+			inventory_types_source.add(item_inv_type)
 	for row in target_item:
+		item_inv_type = row["inventory_type"] or "Regular Stock"
 		se.append(
 			"items",
 			{
 				"item_code": row["item_code"],
 				"qty": row["qty"],
-				"inventory_type": row["inventory_type"],
+				"inventory_type": item_inv_type,
 				"customer": row.get("customer"),
 				"department": row["department"],
 				"employee": row["employee"],
@@ -445,7 +447,7 @@ def make_metal_stock_entry(self):
 				"t_warehouse": row["t_warehouse"],
 			},
 		)
-		inventory_types_target.add(row["inventory_type"])
+		inventory_types_target.add(item_inv_type)
 
 	inventory_types_final = inventory_types_source.union(inventory_types_target)
 	if len(inventory_types_final) > 1:
@@ -491,7 +493,7 @@ def make_multiple_metal_stock_entry(self):
 			{
 				"item_code": row.item_code,
 				"qty": row.qty,
-				"inventory_type": row.inventory_type,
+				"inventory_type": row.inventory_type or "Regular Stock",
 				"batch_no": row.batch,
 				"department": self.department,
 				"employee": self.employee,
@@ -499,8 +501,8 @@ def make_multiple_metal_stock_entry(self):
 				"s_warehouse": source_wh,
 			},
 		)
-		se.inventory_type = row.inventory_type
-		inventory_types_source.add(row.inventory_type)
+		se.inventory_type = row.inventory_type or "Regular Stock"
+		inventory_types_source.add(row.inventory_type or "Regular Stock")
 	if len(inventory_types_source) > 1:
 		frappe.throw(
 			_(
@@ -530,7 +532,7 @@ def make_multiple_metal_stock_entry(self):
 				{
 					"item_code": self.alloy,
 					"qty": self.alloy_qty,
-					"inventory_type": se.inventory_type,
+					"inventory_type": se.inventory_type or "Regular Stock",
 					"batch_no": self.alloy_batch,
 					"department": self.department,
 					"employee": self.employee,
@@ -543,7 +545,7 @@ def make_multiple_metal_stock_entry(self):
 				{
 					"item_code": self.alloy,
 					"qty": self.alloy_qty,
-					"inventory_type": se.inventory_type,
+					"inventory_type": se.inventory_type or "Regular Stock",
 					"department": self.department,
 					"employee": self.employee,
 					"manufacturer": self.manufacturer,
@@ -556,7 +558,7 @@ def make_multiple_metal_stock_entry(self):
 			{
 				"item_code": row["item_code"],
 				"qty": row["qty"],
-				"inventory_type": row["inventory_type"],
+				"inventory_type": row["inventory_type"] or "Regular Stock",
 				"batch_no": row["batch_no"],
 				"department": row["department"],
 				"employee": row["employee"],
@@ -571,7 +573,7 @@ def make_multiple_metal_stock_entry(self):
 			{
 				"item_code": row["item_code"],
 				"qty": row["qty"],
-				"inventory_type": row["inventory_type"],
+				"inventory_type": row["inventory_type"] or "Regular Stock",
 				"department": row["department"],
 				"employee": row["employee"],
 				"manufacturer": row["manufacturer"],

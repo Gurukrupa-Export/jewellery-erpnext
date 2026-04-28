@@ -127,6 +127,11 @@ def before_validate(self, method):
 		):
 			row.inventory_type = "Regular Stock"
 
+	# Ensure all items have a valid inventory_type to prevent None in Stock Ledger Entry
+	for row in self.items:
+		if not row.inventory_type:
+			row.inventory_type = "Regular Stock"
+
 	validate_pcs(self)
 	if self.stock_entry_type == "Material Receive (WORK ORDER)":
 		get_receive_work_order_batch(self)
