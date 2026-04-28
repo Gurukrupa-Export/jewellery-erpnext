@@ -1,5 +1,3 @@
-from . import __version__ as app_version
-
 app_name = "jewellery_erpnext"
 app_title = "Jewellery Erpnext"
 app_publisher = "Nirali"
@@ -251,7 +249,15 @@ fixtures = [
 			[
 				"name",
 				"in",
-				["Sketch Order Form Approval", "Sketch Order Approval with Purchase 1"],
+				[
+					"Sketch Order Form Approval",
+					"Sketch Order Approval with Purchase 1",
+					"Order Without Customer Apporval",
+					"Order Form Approval",
+					"Quotation",
+					"Timesheet",
+					"Material Request",
+				],
 			]
 		],
 	},
@@ -259,29 +265,85 @@ fixtures = [
 	"Workflow Action Master",
 	{
 		"doctype": "Role",
-		"filters": [["name", "in", ["GK sales user", "Sketch QC", "All"]]],
-	},
-	{
-		"doctype": "Custom Field",
 		"filters": [
 			[
 				"name",
 				"in",
 				[
-					"Sketch Order Form-workflow_state",
-					"Sketch Order-inventory_dimension",
-					"Sketch Order-inventory_type",
-					"Sketch Order-workflow_state",
-					"Sketch Order-custom_sketch_workflow_state",
-					"Sketch Order-custom_sketch_order_customer_approval_flow",
-					"Sketch Order-manufacturer",
-					"Sketch Order-custom_nakshi_from",
-					"Sketch Order-custom_item",
+					"GK sales user",
+					"Sketch QC",
+					"All",
+					"BOM",
+					"MPM-MPM",
+					"CAD Hod",
+					"Designer",
+					"CAD QC",
+					"Order Form Approver",
+					"Order QC",
 				],
 			]
 		],
 	},
-	# {
-	#     "doctype":"Custom Field", "filters":{"module":["in",["Jewellery Erpnext"]]}
-	# }
+	"Custom Field",
+	"Property Setter",
+	{
+		"doctype": "Attribute Value",
+		"filters": [
+			[
+				"name",
+				"in",
+				[
+					"Mod - Old Stylebio & Tag No",
+					"Mugappu",
+					"Casual Mugappu",
+					"Gold",
+					"Silver",
+					"White",
+					"Pink",
+					"Yellow",
+					"22KT",
+					"18KT",
+					"Scale",
+					"Rod",
+					"Rose Quartz",
+					"Ruby",
+					"Yes",
+					"No",
+					"1.60*1.00 MM",
+					"Age Group",
+					"25-44",
+					"Gender",
+					"Men",
+					"Women",
+					"Occasion",
+					"Diwali",
+					"Wedding",
+					"Rhodium",
+					"None",
+					"Black",
+					"Natural",
+					"New Design",
+					"Sketch Design",
+					"As Per Serial No",
+					"Synthetic",
+					"Lever Back",
+					"Hollow Pipes",
+					"Customer",
+					"Metal Cap",
+					"EF-VVS",
+					"6B",
+					"4",
+					"91.9",
+					"Kodi Chain",
+					"Chains",
+					"2.50 MM",
+					"91.6",
+				],
+			]
+		],
+	},
+	{"doctype": "Item", "filters": [["name", "in", ["Design Expness"]]]},
+	{"doctype": "Server Script", "filters": [["disabled", "=", 0]]},
+	{"doctype": "Client Script", "filters": [["enabled", "=", 1]]},
+	"Activity Type",
 ]
