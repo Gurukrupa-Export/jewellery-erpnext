@@ -187,7 +187,7 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 			"sum_qty_mop_total": 0.0,
 		}
 	)
-
+	last_mop_index = get_last_mop_index(row.manufacturing_operation)
 	# compute fields
 	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"]) + previous_mop_pcs
 	pcs_after_item = pcs + cint(stats["sum_pcs_item"]) + previous_mop_pcs
@@ -219,7 +219,7 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	mop_log.is_synced = is_synced
 	mop_log.serial_and_batch_bundle = row.get("serial_and_batch_bundle")
 	mop_log.batch_no = batch_no
-	mop_log.flow_index = get_last_mop_index(row.manufacturing_operation) + 1
+	mop_log.flow_index = last_mop_index + 1 if last_mop_index == 0 else 0
 	mop_log.save()
 
 
