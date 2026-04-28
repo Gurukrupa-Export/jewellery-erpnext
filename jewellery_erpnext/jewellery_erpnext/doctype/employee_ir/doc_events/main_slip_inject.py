@@ -395,13 +395,6 @@ def inject_extra_metal_for_eir_receive(eir, row):
 	Returns a list of created Stock Entry names (empty list if skipped).
 	"""
 	if not cint(getattr(eir, "is_main_slip_required", 0)):
-		if flt(row.received_gross_wt) > flt(row.gross_wt):
-			frappe.throw(
-				_(
-					"Main Slip injection: cannot inject extra metal for this "
-					"Employee IR because Main Slip is not required."
-				)
-			)
 		return []
 
 	extra = flt(row.received_gross_wt) - flt(row.gross_wt)

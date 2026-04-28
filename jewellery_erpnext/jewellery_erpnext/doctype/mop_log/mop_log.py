@@ -143,6 +143,10 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 		batch_no,
 		mwo,
 	]
+
+	previous_mop_qty = 0
+	previous_mop_pcs = 0
+
 	if mop_op:
 		sql += " AND manufacturing_operation = %s"
 		sql_params.append(mop_op)
@@ -167,8 +171,6 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 				)
 				or 0
 			)
-			qty += previous_mop_qty
-			pcs += previous_mop_pcs
 
 	row_vals = frappe.db.sql(sql, tuple(sql_params), as_dict=True)
 
@@ -187,31 +189,13 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	)
 
 	# compute fields
-	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"])
-	pcs_after_item = pcs + cint(stats["sum_pcs_item"])
-	pcs_after_batch = pcs + cint(stats["sum_pcs_batch"])
+	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"]) + previous_mop_pcs
+	pcs_after_item = pcs + cint(stats["sum_pcs_item"]) + previous_mop_pcs
+	pcs_after_batch = pcs + cint(stats["sum_pcs_batch"]) + previous_mop_pcs
 
-	qty_after_prefix = qty + flt(stats["sum_qty_prefix"])
-	qty_after_item = qty + flt(stats["sum_qty_item"])
-	qty_after_batch = qty + flt(stats["sum_qty_batch"])
-	print(
-		"qty:",
-		qty,
-		"pcs:",
-		pcs,
-		"qty_after_prefix:",
-		qty_after_prefix,
-		"pcs_after_prefix:",
-		pcs_after_prefix,
-		"qty_after_item:",
-		qty_after_item,
-		"pcs_after_item:",
-		pcs_after_item,
-		"qty_after_batch:",
-		qty_after_batch,
-		"pcs_after_batch:",
-		pcs_after_batch,
-	)
+	qty_after_prefix = qty + flt(stats["sum_qty_prefix"]) + previous_mop_qty
+	qty_after_item = qty + flt(stats["sum_qty_item"]) + previous_mop_qty
+	qty_after_batch = qty + flt(stats["sum_qty_batch"]) + previous_mop_qty
 	# create doc
 	mop_log = frappe.new_doc("MOP Log")
 	mop_log.item_code = item_code
@@ -235,6 +219,7 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	mop_log.is_synced = is_synced
 	mop_log.serial_and_batch_bundle = row.get("serial_and_batch_bundle")
 	mop_log.batch_no = batch_no
+	mop_log.flow_index = get_last_mop_index(row.manufacturing_operation) + 1
 	mop_log.save()
 
 
