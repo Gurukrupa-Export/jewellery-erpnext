@@ -1,5 +1,3 @@
-import copy
-import itertools
 import json
 from datetime import datetime
 
@@ -44,7 +42,21 @@ def before_validate(self, method):
 
 	pure_item_purity = None
 
-	dir_staus_data = frappe._dict()
+	dir_staus_cache = {}
+	purity_cache = {}
+
+	manufacturer = self.manufacturer or frappe.defaults.get_user_default("manufacturer")
+
+	pure_item = frappe.db.get_value(
+		"Manufacturing Setting",
+		{"manufacturer": manufacturer},
+		"pure_gold_item",
+	)
+
+	if not pure_item:
+		frappe.throw(_("Select Manufacturer in session defaults or in Field"))
+
+	pure_item_purity = get_purity_percentage(pure_item)
 
 	for row in self.items:
 		if (
@@ -56,13 +68,13 @@ def before_validate(self, method):
 			frappe.throw(_("Please click Get FIFO Batch Button"))
 
 		if not self.auto_created and row.manufacturing_operation:
-			if not dir_staus_data.get(row.manufacturing_operation):
-				dir_staus_data[row.manufacturing_operation] = frappe.db.get_value(
+			if row.manufacturing_operation not in dir_staus_cache:
+				dir_staus_cache[row.manufacturing_operation] = frappe.db.get_value(
 					"Manufacturing Operation",
 					row.manufacturing_operation,
 					"department_ir_status",
 				)
-			if dir_staus_data[row.manufacturing_operation] == "In-Transit":
+			if dir_staus_cache[row.manufacturing_operation] == "In-Transit":
 				frappe.throw(
 					_("Stock Entry not allowed for {0} in between transit").format(
 						row.manufacturing_operation
@@ -73,53 +85,23 @@ def before_validate(self, method):
 			"Customer Goods Issue",
 			"Customer Goods Received",
 		]:
-			if not pure_item_purity:
-				if self.stock_entry_type == "Material Transfer (MAIN SLIP)":
-					if self.to_main_slip:
-						manufacturer = frappe.db.get_value(
-							"Main Slip", self.to_main_slip, "manufacturer"
-						)
-					if self.main_slip:
-						manufacturer = frappe.db.get_value(
-							"Main Slip", self.main_slip, "manufacturer"
-						)
-				elif self.manufacturing_order:
-					manufacturer = frappe.db.get_value(
-						"Parent Manufacturing Order",
-						self.manufacturing_order,
-						"manufacturer",
-					)
-				else:
-					if self.manufacturer:
-						manufacturer = self.manufacturer
-					else:
-						manufacturer = frappe.defaults.get_user_default("manufacturer")
+			if row.item_code not in purity_cache:
+				purity_cache[row.item_code] = get_purity_percentage(row.item_code)
 
-				pure_item = frappe.db.get_value(
-					"Manufacturing Setting",
-					{"manufacturer": manufacturer},
-					"pure_gold_item",
-				)
-
-				if not pure_item:
-					frappe.throw(
-						_("Select Manufacturer in session defaults or in Filed")
-					)
-
-				pure_item_purity = get_purity_percentage(pure_item)
-
-			item_purity = get_purity_percentage(row.item_code)
+			item_purity = purity_cache[row.item_code]
 
 			if not item_purity:
 				continue
 
 			if pure_item_purity == item_purity:
 				row.custom_pure_qty = row.qty
-
+				frappe.log_error(
+					f"Item: {row.item_code}, Purity: {item_purity}, Pure Qty: {row.custom_pure_qty}",
+					"Pure Qty Calculation",
+				)
 			else:
 				row.custom_pure_qty = flt((item_purity * row.qty) / pure_item_purity, 3)
 
-		# set default inventory type as regular stock for material receipt
 		if (
 			self.stock_entry_type == "Material Receipt"
 			and not row.inventory_type
@@ -127,7 +109,6 @@ def before_validate(self, method):
 		):
 			row.inventory_type = "Regular Stock"
 
-	# Ensure all items have a valid inventory_type to prevent None in Stock Ledger Entry
 	for row in self.items:
 		if not row.inventory_type:
 			row.inventory_type = "Regular Stock"
@@ -143,80 +124,102 @@ def before_validate(self, method):
 
 
 def validate_ir(self):
-	# 	validate_inventory_dimention(self)
-
 	if self.auto_created == 0:
-		if self.stock_entry_type in [
-			"Material Receive (WORK ORDER)",
-			"Material Transfer (WORK ORDER)",
-		]:
-			if self.manufacturing_work_order:
-				if self.manufacturing_work_order:
-					dept_ir_mwo = frappe.get_all(
-						"Department IR Operation",
-						filters={
-							"manufacturing_work_order": self.manufacturing_work_order,
-							"docstatus": 0,
-						},
-						fields=["parent"],
-					)
+		return
 
-					if dept_ir_mwo:
-						ir_names = ", ".join(
-							f"'{row['parent']}'" for row in dept_ir_mwo
-						)
-						frappe.throw(
-							f"{self.manufacturing_work_order} is already present in Draft :{ir_names} . Please submit or cancel them first."
-						)
+	if self.stock_entry_type not in [
+		"Material Receive (WORK ORDER)",
+		"Material Transfer (WORK ORDER)",
+	]:
+		return
 
-					emp_ir_mwo = frappe.get_all(
-						"Employee IR Operation",
-						filters={
-							"manufacturing_work_order": self.manufacturing_work_order,
-							"docstatus": 0,
-						},
-						fields=["parent"],
-					)
+	if not self.manufacturing_work_order:
+		return
 
-					if emp_ir_mwo:
-						ir_names = ", ".join(f"'{row['parent']}'" for row in emp_ir_mwo)
-						frappe.throw(
-							f"{self.manufacturing_work_order} is already present in Draft :{ir_names} . Please submit or cancel them first."
-						)
+	mwo = self.manufacturing_work_order
+
+	dept_ir = frappe.get_all(
+		"Department IR Operation",
+		filters={
+			"manufacturing_work_order": mwo,
+			"docstatus": 0,
+		},
+		pluck="parent",
+	)
+
+	if dept_ir:
+		ir_names = ", ".join(f"'{row}'" for row in dept_ir)
+		frappe.throw(
+			f"{mwo} is already present in Draft :{ir_names} . Please submit or cancel them first."
+		)
+
+	emp_ir = frappe.get_all(
+		"Employee IR Operation",
+		filters={
+			"manufacturing_work_order": mwo,
+			"docstatus": 0,
+		},
+		pluck="parent",
+	)
+
+	if emp_ir:
+		ir_names = ", ".join(f"'{row}'" for row in emp_ir)
+		frappe.throw(
+			f"{mwo} is already present in Draft :{ir_names} . Please submit or cancel them first."
+		)
 
 
 def validate_pcs(self):
-	pcs_data = {}
+	seen_mr_items = set()
+
 	for row in self.items:
-		if row.material_request_item:
-			if pcs_data.get(row.material_request_item):
-				row.pcs = 0
-			else:
-				pcs_data[row.material_request_item] = row.pcs
+		mr_item = row.material_request_item
+		if not mr_item:
+			continue
+		if mr_item in seen_mr_items:
+			row.pcs = 0
+		else:
+			seen_mr_items.add(mr_item)
+
 	self.flags.ignore_mandatory = True
 
 
 def get_receive_work_order_batch(self):
+	if not self.items:
+		return
+
+	keys = {
+		(row.manufacturing_operation, row.item_code)
+		for row in self.items
+		if row.manufacturing_operation and row.item_code
+	}
+
+	mop_logs = frappe.get_all(
+		"MOP Log",
+		filters={
+			"manufacturing_operation": ["in", [k[0] for k in keys]],
+			"item_code": ["in", [k[1] for k in keys]],
+			"is_cancelled": 0,
+		},
+		fields=[
+			"manufacturing_operation",
+			"item_code",
+			"batch_no",
+		],
+		order_by="flow_index desc, creation desc",
+	)
+
 	batch_data = {}
+	for row in mop_logs:
+		key = (row.manufacturing_operation, row.item_code)
+		if key not in batch_data and row.batch_no:
+			batch_data[key] = row.batch_no
+
 	for entry in self.items:
 		key = (entry.manufacturing_operation, entry.item_code)
-
 		if entry.batch_no:
 			batch_data[key] = entry.batch_no
-
-		if not batch_data.get(key):
-			batch_data[key] = frappe.db.get_value(
-				"MOP Log",
-				{
-					"manufacturing_operation": entry.manufacturing_operation,
-					"item_code": entry.item_code,
-					"is_cancelled": 0,
-				},
-				"batch_no",
-				order_by="flow_index desc, creation desc",
-			)
-
-		if entry.batch_no not in batch_data.get(key, []):
+		if not entry.batch_no and key in batch_data:
 			entry.batch_no = batch_data[key]
 
 
@@ -228,39 +231,48 @@ def on_update_after_submit(self, method):
 		frappe.get_doc("Subcontracting", self.subcontracting).submit()
 
 
-def validate_main_slip_warehouse(doc):
-	for row in doc.items:
-		main_slip = row.main_slip or row.to_main_slip
-		if not main_slip:
-			return
-		warehouse = frappe.db.get_value("Main Slip", main_slip, "warehouse")
-
-		if doc.auto_created == 0:
-			warehouse = frappe.db.get_value(
-				"Main Slip", main_slip, "raw_material_warehouse"
-			)
-
-		if (row.main_slip and row.s_warehouse != warehouse) or (
-			row.to_main_slip and row.t_warehouse != warehouse
-		):
-			frappe.throw(
-				_("Selected warehouse does not belongs to main slip {0}").format(
-					main_slip
-				)
-			)
-
-
 def validate_metal_properties(doc):
-	mwo_wise_data = frappe._dict()
-	msl_wise_data = frappe._dict()
-	item_data = frappe._dict()
-	operation_data = frappe._dict()
-	msl_mop_dict = frappe._dict()
-	if doc.manufacturing_work_order:
-		mwo_wise_data[doc.manufacturing_work_order] = frappe.db.get_value(
+	if not doc.items:
+		return
+
+	mwo_set = set()
+	msl_set = set()
+	item_codes = set()
+	operations = set()
+	msl_mop_dict = {}
+
+	for row in doc.items:
+		if row.inventory_type == "Customer Goods":
+			row.allow_zero_valuation_rate = 1
+
+		if row.custom_variant_of not in ["M", "F"]:
+			continue
+
+		main_slip = row.main_slip or row.to_main_slip
+
+		if not (row.custom_manufacturing_work_order or main_slip):
+			continue
+
+		if row.custom_manufacturing_work_order:
+			mwo_set.add(row.custom_manufacturing_work_order)
+
+		if main_slip:
+			msl_set.add(main_slip)
+
+		if row.item_code:
+			item_codes.add(row.item_code)
+
+		if row.manufacturing_operation:
+			operations.add(row.manufacturing_operation)
+			msl_mop_dict[row.manufacturing_operation] = main_slip
+
+	mwo_wise_data = {
+		d.name: d
+		for d in frappe.get_all(
 			"Manufacturing Work Order",
-			doc.manufacturing_work_order,
-			[
+			filters={"name": ["in", list(mwo_set)]},
+			fields=[
+				"name",
 				"metal_type",
 				"metal_touch",
 				"metal_purity",
@@ -268,139 +280,136 @@ def validate_metal_properties(doc):
 				"multicolour",
 				"allowed_colours",
 			],
-			as_dict=1,
+		)
+	}
+
+	msl_wise_data = {
+		d.name: d
+		for d in frappe.get_all(
+			"Main Slip",
+			filters={"name": ["in", list(msl_set)]},
+			fields=[
+				"name",
+				"metal_type",
+				"metal_touch",
+				"metal_purity",
+				"metal_colour",
+				"check_color",
+				"for_subcontracting",
+				"multicolour",
+				"allowed_colours",
+				"raw_material_warehouse",
+			],
+		)
+	}
+
+	attr_rows = frappe.get_all(
+		"Item Variant Attribute",
+		filters={
+			"parent": ["in", list(item_codes)],
+			"attribute": [
+				"in",
+				["Metal Type", "Metal Touch", "Metal Purity", "Metal Colour"],
+			],
+		},
+		fields=["parent", "attribute", "attribute_value"],
+	)
+
+	item_attr_map = {}
+	for r in attr_rows:
+		item_attr_map.setdefault(r.parent, {})[scrub(r.attribute)] = r.attribute_value
+
+	item_flags = {
+		d.name: d.custom_is_manufacturing_item
+		for d in frappe.get_all(
+			"Item",
+			filters={"name": ["in", list(item_codes)]},
+			fields=["name", "custom_is_manufacturing_item"],
+		)
+	}
+
+	operation_map = {}
+	if operations:
+		mop_rows = frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", list(operations)]},
+			fields=["name", "operation"],
 		)
 
+		dept_ops = frappe.get_all(
+			"Department Operation",
+			filters={"name": ["in", [r.operation for r in mop_rows if r.operation]]},
+			fields=[
+				"name",
+				"check_purity_in_main_slip as check_purity",
+				"check_touch_in_main_slip as check_touch",
+				"check_colour_in_main_slip as check_colour",
+			],
+		)
+
+		dept_map = {d.name: d for d in dept_ops}
+
+		for r in mop_rows:
+			if r.operation in dept_map:
+				operation_map[r.name] = dept_map[r.operation]
+
+	manufacturer = frappe.defaults.get_user_default("manufacturer")
+	company_validations = (
+		frappe.db.get_value(
+			"Manufacturing Setting",
+			{"manufacturer": manufacturer},
+			["check_purity", "check_colour", "check_touch"],
+			as_dict=True,
+		)
+		or {}
+	)
+
+	item_data = {}
+
 	for row in doc.items:
-		# allow_zero_valuation Start
-		if row.inventory_type == "Customer Goods":
-			row.allow_zero_valuation_rate = 1
-		# allow_zero_valuation End
-
-		main_slip = row.main_slip or row.to_main_slip
-
-		if not (
-			row.custom_manufacturing_work_order or main_slip
-		) or row.custom_variant_of not in [
-			"M",
-			"F",
-		]:
+		if row.custom_variant_of not in ["M", "F"]:
 			continue
 
-		if row.custom_manufacturing_work_order and not mwo_wise_data.get(
-			row.custom_manufacturing_work_order
-		):
-			mwo_wise_data[row.custom_manufacturing_work_order] = frappe.db.get_value(
-				"Manufacturing Work Order",
-				row.custom_manufacturing_work_order,
-				[
-					"metal_type",
-					"metal_touch",
-					"metal_purity",
-					"metal_colour",
-					"multicolour",
-					"allowed_colours",
-				],
-				as_dict=1,
-			)
+		main_slip = row.main_slip or row.to_main_slip
+		if not (row.custom_manufacturing_work_order or main_slip):
+			continue
 
-		if main_slip and not msl_wise_data.get(main_slip):
-			msl_wise_data[main_slip] = frappe.db.get_value(
-				"Main Slip",
-				main_slip,
-				[
-					"metal_type",
-					"metal_touch",
-					"metal_purity",
-					"metal_colour",
-					"check_color",
-					"for_subcontracting",
-					"multicolour",
-					"allowed_colours",
-					"raw_material_warehouse",
-				],
-				as_dict=1,
-			)
+		if row.item_code not in item_data:
+			attrs = item_attr_map.get(row.item_code, {})
 
-		if not item_data.get(row.item_code):
-			attribute_det = frappe.db.get_values(
-				"Item Variant Attribute",
-				{
-					"parent": row.item_code,
-					"attribute": [
-						"in",
-						["Metal Type", "Metal Touch", "Metal Purity", "Metal Colour"],
-					],
-				},
-				["attribute", "attribute_value"],
-				as_dict=1,
-			)
-
-			item_data[row.item_code] = frappe._dict(
-				{scrub(row.attribute): row.attribute_value for row in attribute_det}
-			)
-			item_data[row.item_code]["mwo"] = (
-				[row.custom_manufacturing_work_order]
-				if row.custom_manufacturing_work_order
-				else []
-			)
-			key = row.manufacturing_operation or main_slip
-			item_data[row.item_code]["mop"] = [key] if key else []
+			item_data[row.item_code] = frappe._dict(attrs)
+			item_data[row.item_code]["mwo"] = []
+			item_data[row.item_code]["mop"] = []
 			item_data[row.item_code]["variant"] = row.custom_variant_of
-			item_data[row.item_code]["ignore_touch_and_purity"] = frappe.db.get_value(
-				"Item", row.item_code, "custom_is_manufacturing_item"
+			item_data[row.item_code]["ignore_touch_and_purity"] = item_flags.get(
+				row.item_code
 			)
-		else:
+
+		if row.custom_manufacturing_work_order:
 			if (
 				row.custom_manufacturing_work_order
-				and row.custom_manufacturing_work_order
 				not in item_data[row.item_code]["mwo"]
 			):
 				item_data[row.item_code]["mwo"].append(
 					row.custom_manufacturing_work_order
 				)
 
-			key = row.manufacturing_operation or main_slip
-			if key and key not in item_data[row.item_code]["mop"]:
-				item_data[row.item_code]["mop"].append(key)
+		key = row.manufacturing_operation or main_slip
+		if key and key not in item_data[row.item_code]["mop"]:
+			item_data[row.item_code]["mop"].append(key)
 
-		msl_mop_dict.update({row.manufacturing_operation: main_slip})
+	mwo_errors = {}
+	msl_errors = {}
 
-		if row.manufacturing_operation and not operation_data.get(
-			row.manufacturing_operation
-		):
-			operation = frappe.db.get_value(
-				"Manufacturing Operation", row.manufacturing_operation, "operation"
-			)
-			if operation:
-				operation_data[row.manufacturing_operation] = frappe.db.get_value(
-					"Department Operation",
-					operation,
-					[
-						"check_purity_in_main_slip as check_purity",
-						"check_touch_in_main_slip as check_touch",
-						"check_colour_in_main_slip as check_colour",
-					],
-					as_dict=True,
-				)
-
-	manufacturer = frappe.defaults.get_user_default("manufacturer")
-	company_validations = frappe.db.get_value(
-		"Manufacturing Setting",
-		{"manufacturer": manufacturer},
-		["check_purity", "check_colour", "check_touch"],
-		as_dict=True,
-	)
-
-	mwo_erros = {}
-	msl_erros = {}
-
-	for item in item_data:
-		for mwo in item_data[item]["mwo"]:
+	for item, data in item_data.items():
+		for mwo in data["mwo"]:
 			mwo_data = mwo_wise_data.get(mwo)
-			mwo_erros.setdefault(mwo, [])
+			if not mwo_data:
+				continue
 
-			if mwo_data.metal_type != item_data[item].metal_type:
+			mwo_errors.setdefault(mwo, [])
+
+			if mwo_data.metal_type != data.get("metal_type"):
 				frappe.throw(
 					_(
 						"Only {0} Metal type allowed in Manufacturing Work Order {1}"
@@ -409,120 +418,79 @@ def validate_metal_properties(doc):
 
 			if (
 				company_validations.get("check_touch")
-				and not item_data[item].ignore_touch_and_purity
-				and (
-					company_validations.get("check_touch")
-					in ["Both", item_data[item].variant]
-				)
-				and mwo_data.metal_touch != item_data[item].metal_touch
+				and not data.get("ignore_touch_and_purity")
+				and company_validations.get("check_touch")
+				in ["Both", data.get("variant")]
+				and mwo_data.metal_touch != data.get("metal_touch")
 			):
-				mwo_erros[mwo].append("Metal Touch")
+				mwo_errors[mwo].append("Metal Touch")
 
 			if (
 				company_validations.get("check_purity")
-				and not item_data[item].ignore_touch_and_purity
-				and (
-					company_validations.get("check_purity")
-					in ["Both", item_data[item].variant]
-				)
-				and mwo_data.metal_purity != item_data[item].metal_purity
+				and not data.get("ignore_touch_and_purity")
+				and company_validations.get("check_purity")
+				in ["Both", data.get("variant")]
+				and mwo_data.metal_purity != data.get("metal_purity")
 			):
-				mwo_erros[mwo].append("Metal Purity")
+				mwo_errors[mwo].append("Metal Purity")
 
 			if (
 				company_validations.get("check_colour")
-				and (
-					company_validations.get("check_colour")
-					in ["Both", item_data[item].variant]
-				)
-				and mwo_data.metal_colour.lower()
-				!= item_data[item].metal_colour.lower()
-				and frappe.db.get_value("Item", item, "custom_ignore_work_order") == 0
+				and company_validations.get("check_colour")
+				in ["Both", data.get("variant")]
+				and (mwo_data.metal_colour or "").lower()
+				!= (data.get("metal_colour") or "").lower()
+				and not item_flags.get(item)
 			):
-				mwo_erros[mwo].append("Metal Colour")
+				mwo_errors[mwo].append("Metal Colour")
 
-		for mop in item_data[item]["mop"]:
-			if msl_wise_data.get(mop):
-				msl = mop
-				msl_data = msl_wise_data.get(mop)
-			else:
-				msl = msl_mop_dict.get(mop)
-				if not msl:
-					continue
-				msl_data = msl_wise_data.get(msl)
+		for mop in data["mop"]:
+			msl = mop if mop in msl_wise_data else msl_mop_dict.get(mop)
+			if not msl:
+				continue
+
+			msl_data = msl_wise_data.get(msl)
+			if not msl_data:
+				continue
+
 			if not msl_data.get("for_subcontracting"):
-				msl_erros.setdefault(msl, [])
+				msl_errors.setdefault(msl, [])
 
 				if msl_data.metal_colour:
-					if (
-						company_validations.get("check_touch")
-						and not item_data[item].ignore_touch_and_purity
+					if company_validations.get("check_touch") and not data.get(
+						"ignore_touch_and_purity"
 					):
-						if msl_data.metal_touch != item_data[item].metal_touch:
-							msl_erros[msl].append("Metal Touch")
-					if (
-						company_validations.get("check_purity")
-						and not item_data[item].ignore_touch_and_purity
+						if msl_data.metal_touch != data.get("metal_touch"):
+							msl_errors[msl].append("Metal Touch")
+
+					if company_validations.get("check_purity") and not data.get(
+						"ignore_touch_and_purity"
 					):
-						if msl_data.metal_purity != item_data[item].metal_purity:
-							msl_erros[msl].append("Metal Purity")
+						if msl_data.metal_purity != data.get("metal_purity"):
+							msl_errors[msl].append("Metal Purity")
+
 					if company_validations.get("check_colour"):
-						if (
-							msl_data.metal_colour.lower()
-							!= item_data[item].metal_colour.lower()
-							and msl_data.check_color
-						):
-							msl_erros[msl].append("Metal Colour")
-
-			if msl_data.allowed_colours:
-				if msl_data.multicolour == 1:
-					allowed_colors = "".join(
-						sorted([color.upper() for color in msl_data.allowed_colours])
-					)
-					colour_code = {"P": "Pink", "Y": "Yellow", "W": "White"}
-					color_matched = False
-					for char in allowed_colors:
-						if char not in colour_code:
-							frappe.throw(
-								_(
-									"Invalid color code <b>{0}</b> in MSL: <b>{1}</b>"
-								).format(char, msl)
-							)
-						if (
-							msl_data.check_color
-							and colour_code[char] == item_data[item].metal_colour
-						):
-							color_matched = True
-							break
-
-					if msl_data.check_color and not color_matched:
-						frappe.throw(
-							f"Metal properties in MSL: <b>{msl}</b> do not match the Item. </br><b>Metal Properties are: (MT:{msl_data.metal_type}, MTC:{msl_data.metal_touch}, MP:{msl_data.metal_purity}, MC:{allowed_colors})</b>"
-						)
+						if (msl_data.metal_colour or "").lower() != (
+							data.get("metal_colour") or ""
+						).lower() and msl_data.check_color:
+							msl_errors[msl].append("Metal Colour")
 
 	all_error_msg = []
 
-	for row in mwo_erros:
-		combine_components = ", ".join(set(mwo_erros[row]))
-		if combine_components:
+	for k, v in mwo_errors.items():
+		if v:
 			all_error_msg.append(
-				"{0} do not match with the selected Manufacturing Work Order : {1}".format(
-					combine_components, row
-				)
+				f"{', '.join(set(v))} do not match with Manufacturing Work Order: {k}"
 			)
 
-	for row in msl_erros:
-		combine_components = ", ".join(set(msl_erros[row]))
-		if combine_components:
+	for k, v in msl_errors.items():
+		if v:
 			all_error_msg.append(
-				"{0} do not match with the selected Main Slip : {1}".format(
-					combine_components, row
-				)
+				f"{', '.join(set(v))} do not match with Main Slip: {k}"
 			)
 
-	combined_error_msg = "<br>".join(all_error_msg)
-	if combined_error_msg:
-		frappe.throw(_("{0}").format(combined_error_msg))
+	if all_error_msg:
+		frappe.throw("<br>".join(all_error_msg))
 
 
 def on_cancel(self, method=None):
@@ -532,7 +500,6 @@ def on_cancel(self, method=None):
 
 
 def before_submit(self, method):
-	# validation_for_stock_entry_submission(self)
 	main_slip = self.to_main_slip or self.main_slip
 	subcontractor = self.subcontractor or self.to_subcontractor
 	if (
@@ -550,29 +517,14 @@ def before_submit(self, method):
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
-	# group_se_items_and_update_mop_items(self, method)
-
 
 def onsubmit(self, method):
 	validate_items(self)
-	# update_manufacturing_operation(self)
-	# update_main_slip(self)
 	stock_reservation_entry_for_mwo(self)
 	sync_mop_log_for_stock_entry(self)
-	# update_material_request_status(self)
-	# create_finished_bom(self)
 
 
 def sync_mop_log_for_stock_entry(self, is_cancelled=False):
-	"""Bridge Stock Entry lines onto MOP Log so the virtual ledger sees diamond /
-	gemstone / metal items moved by Material Request and other work-order transfers.
-
-	Stock has already moved physically at this point, so rows are written with
-	``is_synced=True`` to keep MOP EOD Sync from materializing a duplicate Stock
-	Entry on top of the existing one. Idempotent on ``(voucher_no, row_name,
-	manufacturing_operation)`` so the reservation path's existing writes and any
-	resubmit / replay do not create duplicates.
-	"""
 	if is_cancelled:
 		frappe.db.sql(
 			"""
@@ -604,16 +556,12 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 
 
 def stock_reservation_entry_for_mwo(self):
-	types_for_reservation = frappe.db.get_all(
+	types_for_reservation = frappe.get_all(
 		"Stock Entry Type To Reservation",
 		filters={"parent": "MOP Settings"},
 		pluck="stock_entry_type_to_reservation",
 	)
 
-	# EIR injection: main_slip_inject.py stamps employee_ir on every auto-created
-	# SE header.  These SEs MUST always reserve — they are legitimate MWO-linked
-	# movements whose stock must be protected.  Bypassing the config gate here
-	# ensures a missing "Repack" row in MOP Settings cannot silently skip reservation.
 	_eir_ref = getattr(self, "employee_ir", None)
 	is_eir_injection = isinstance(_eir_ref, str) and bool(_eir_ref.strip())
 
@@ -622,261 +570,205 @@ def stock_reservation_entry_for_mwo(self):
 
 	if not (self.manufacturing_order and self.manufacturing_work_order):
 		frappe.throw(
-			_(
-				"Parent Manufacturing Order and Manufacturing Work Order is required to create Stock Reservation Entry"
-			)
+			_("Parent Manufacturing Order and Manufacturing Work Order is required")
 		)
+
 	sales_order, sales_order_item, manufacturer = frappe.get_cached_value(
 		"Parent Manufacturing Order",
 		self.manufacturing_order,
 		["sales_order", "sales_order_item", "manufacturer"],
 	)
-	voucher_qty_row = frappe.db.get_values(
-		"Material Request",
-		{"manufacturing_order": self.manufacturing_order, "docstatus": ["!=", 2]},
-		["sum(custom_total_quantity)"],
-	)
-	base_mr_voucher_qty = None
-	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
-		base_mr_voucher_qty = flt(voucher_qty_row[0][0])
-		addition_maximum_item__tolerance_percentage = frappe.db.get_value(
+
+	base_mr_voucher_qty = frappe.db.sql(
+		"""
+        SELECT SUM(custom_total_quantity)
+        FROM `tabMaterial Request`
+        WHERE manufacturing_order=%s AND docstatus != 2
+        """,
+		(self.manufacturing_order,),
+	)[0][0]
+
+	if base_mr_voucher_qty:
+		base_mr_voucher_qty = flt(base_mr_voucher_qty)
+
+		tolerance = frappe.db.get_value(
 			"Manufacturing Setting",
 			self.manufacturer or manufacturer,
 			"addition_maximum_item__tolerance_percentage",
 		)
-		if addition_maximum_item__tolerance_percentage:
-			base_mr_voucher_qty = base_mr_voucher_qty + (
-				base_mr_voucher_qty
-				* (flt(addition_maximum_item__tolerance_percentage) / 100)
-			)
+
+		if tolerance:
+			base_mr_voucher_qty += base_mr_voucher_qty * (flt(tolerance) / 100)
+
+	item_codes = {row.item_code for row in self.items if row.item_code}
+
+	item_meta = {
+		d.name: d
+		for d in frappe.get_all(
+			"Item",
+			filters={"name": ["in", list(item_codes)]},
+			fields=["name", "has_batch_no", "has_serial_no"],
+		)
+	}
+
+	total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
+		"Sales Order", sales_order, sales_order_item
+	)
 
 	for row in self.items:
-		# Repack / issue rows only have s_warehouse; reserve against inbound stock only.
-		if not row.get("t_warehouse"):
+		if not row.t_warehouse:
 			continue
-		has_batch_no, has_serial_no = frappe.get_cached_value(
-			"Item", row.item_code, ["has_batch_no", "has_serial_no"]
-		)
+
+		item_info = item_meta.get(row.item_code)
+		if not item_info:
+			continue
+
+		has_batch_no = item_info.has_batch_no
+		has_serial_no = item_info.has_serial_no
+
 		if has_batch_no and row.get("batch_no"):
-			available_qty_to_reserve = get_available_qty_to_reserve(
+			available_qty = get_available_qty_to_reserve(
 				row.item_code, row.t_warehouse, batch_no=row.batch_no
 			)
 		else:
-			available_qty_to_reserve = get_available_qty_to_reserve(
-				row.item_code, row.t_warehouse
-			)
-		qty_to_be_reserved = (
-			row.qty if available_qty_to_reserve >= row.qty else available_qty_to_reserve
-		)
-		qty_to_be_reserved = flt(qty_to_be_reserved)
-		# Employee IR extra-metal injection: stock just landed; availability checks can lag
-		# the same transaction. Reserve the inbound line qty when this SE is tied to an EIR.
-		if qty_to_be_reserved <= 0 and is_eir_injection and flt(row.qty) > 0:
-			qty_to_be_reserved = flt(row.qty)
-		if qty_to_be_reserved <= 0:
+			available_qty = get_available_qty_to_reserve(row.item_code, row.t_warehouse)
+
+		qty_to_reserve = min(row.qty, available_qty)
+		qty_to_reserve = flt(qty_to_reserve)
+
+		if qty_to_reserve <= 0 and is_eir_injection and flt(row.qty) > 0:
+			qty_to_reserve = flt(row.qty)
+
+		if qty_to_reserve <= 0:
 			continue
 
-		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			"Sales Order", sales_order, sales_order_item
-		)
-		effective_voucher_qty = (
-			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
-		)
+		effective_voucher_qty = flt(base_mr_voucher_qty) if base_mr_voucher_qty else 0
+
 		if is_eir_injection:
 			effective_voucher_qty = max(
 				effective_voucher_qty,
-				flt(total_so_reserved) + qty_to_be_reserved,
+				flt(total_so_reserved) + qty_to_reserve,
 			)
-		elif not effective_voucher_qty and base_mr_voucher_qty is None:
-			effective_voucher_qty = flt(total_so_reserved) + qty_to_be_reserved
+		elif not effective_voucher_qty:
+			effective_voucher_qty = flt(total_so_reserved) + qty_to_reserve
 
-		new_stock_reservation_entries_mwo = frappe.new_doc("Stock Reservation Entry")
-		new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
-		new_stock_reservation_entries_mwo.voucher_no = sales_order
-		new_stock_reservation_entries_mwo.item_code = row.item_code
-		new_stock_reservation_entries_mwo.voucher_qty = effective_voucher_qty
-		new_stock_reservation_entries_mwo.reserved_qty = qty_to_be_reserved
-		new_stock_reservation_entries_mwo.company = self.company
-		new_stock_reservation_entries_mwo.stock_uom = row.uom
+		doc_sre = frappe.new_doc("Stock Reservation Entry")
 
-		new_stock_reservation_entries_mwo.warehouse = row.t_warehouse
-		new_stock_reservation_entries_mwo.manufacturing_work_order = (
-			self.manufacturing_work_order
+		doc_sre.update(
+			{
+				"voucher_type": "Sales Order",
+				"voucher_no": sales_order,
+				"item_code": row.item_code,
+				"voucher_qty": effective_voucher_qty,
+				"reserved_qty": qty_to_reserve,
+				"company": self.company,
+				"stock_uom": row.uom,
+				"warehouse": row.t_warehouse,
+				"manufacturing_work_order": self.manufacturing_work_order,
+				"manufacturing_operation": row.manufacturing_operation,
+				"voucher_detail_no": sales_order_item,
+				"available_qty": max(available_qty, qty_to_reserve),
+				"has_batch_no": cint(has_batch_no),
+				"has_serial_no": cint(has_serial_no),
+			}
 		)
-		new_stock_reservation_entries_mwo.manufacturing_operation = (
-			row.manufacturing_operation
-		)
-		new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
-		new_stock_reservation_entries_mwo.available_qty = max(
-			available_qty_to_reserve, qty_to_be_reserved
-		)
-		new_stock_reservation_entries_mwo.has_batch_no = cint(has_batch_no)
-		new_stock_reservation_entries_mwo.has_serial_no = cint(has_serial_no)
+
 		if has_batch_no and row.get("batch_no"):
-			new_stock_reservation_entries_mwo.reservation_based_on = "Serial and Batch"
-			new_stock_reservation_entries_mwo.append(
+			doc_sre.reservation_based_on = "Serial and Batch"
+			doc_sre.append(
 				"sb_entries",
 				{
 					"batch_no": row.batch_no,
 					"warehouse": row.t_warehouse,
-					"qty": qty_to_be_reserved,
+					"qty": qty_to_reserve,
 				},
 			)
 		else:
-			new_stock_reservation_entries_mwo.reservation_based_on = "Qty"
-		new_stock_reservation_entries_mwo.insert(ignore_links=1)
-		new_stock_reservation_entries_mwo.submit()
+			doc_sre.reservation_based_on = "Qty"
+
+		doc_sre.insert(ignore_links=True)
+		doc_sre.submit()
+
 		create_mop_log(self, row, is_synced=True)
 
 
 def update_main_slip(doc, is_cancelled=False):
-	# if doc.purpose != "Material Transfer":
-	# 	if doc.to_main_slip or doc.main_slip:
-	# 		msl = doc.to_main_slip or doc.main_slip
-	# 		ms_doc = frappe.get_doc("Main Slip", msl)
-	# 		days = frappe.db.get_value(
-	# 			"Manufacturing Setting", doc.company, "allowed_days_for_main_slip_issue"
-	# 		)
-	# 		if (
-	# 			doc.auto_created == 0
-	# 			and doc.to_main_slip
-	# 			and frappe.utils.date_diff(ms_doc.creation, frappe.utils.today()) > days
-	# 		):
-	# 			frappe.throw(_("Not allowed to transfer raw material in Main Slip"))
-	# 		for entry in doc.items:
-	# 			if is_cancelled:
-	# 				if mss_name := frappe.db.get_value("Main Slip SE Details", {"se_item": entry.name}):
-	# 					frappe.delete_doc("Main Slip SE Details", mss_name)
-	# 			else:
-	# 				update_main_slip_se_details(
-	# 					ms_doc, doc.stock_entry_type, entry, doc.auto_created, is_cancelled
-	# 				)
-	# 		ms_doc.save()
-	# 	return
-
-	# main_slip_map = frappe._dict()
-
 	msl = doc.to_main_slip or doc.main_slip
 	if not msl:
 		return
+
 	ms_doc = frappe.get_doc("Main Slip", msl)
-	# days = frappe.db.get_value(
-	# 	"Manufacturing Setting", doc.company, "allowed_days_for_main_slip_issue"
-	# )
-	doc.manufacturer = frappe.defaults.get_user_default("manufacturer")
+
+	manufacturer = doc.manufacturer or frappe.defaults.get_user_default("manufacturer")
+
 	days = frappe.db.get_value(
 		"Manufacturing Setting",
-		{"manufacturer": doc.manufacturer},
+		{"manufacturer": manufacturer},
 		"allowed_days_for_main_slip_issue",
 	)
+
 	if (
-		doc.auto_created == 0
+		not doc.auto_created
 		and doc.to_main_slip
+		and days is not None
 		and abs(frappe.utils.date_diff(ms_doc.creation, frappe.utils.today())) > days
 	):
 		frappe.throw(_("Not allowed to transfer raw material in Main Slip"))
 
-	# msl_wise_metal_type = frappe._dict()
-	# excluded_item_data = frappe._dict()
-
 	warehouse_data = frappe._dict()
+
+	if is_cancelled:
+		se_item_names = [d.name for d in doc.items if d.name]
+
+		existing_records = frappe.get_all(
+			"Main Slip SE Details",
+			filters={"se_item": ["in", se_item_names]},
+			fields=["name", "se_item"],
+		)
+
+		se_map = {d.se_item: d.name for d in existing_records}
 
 	for entry in doc.items:
 		if is_cancelled:
-			if mss_name := frappe.db.get_value(
-				"Main Slip SE Details", {"se_item": entry.name}
-			):
-				frappe.delete_doc("Main Slip SE Details", mss_name)
-		else:
-			if entry.main_slip and entry.to_main_slip:
-				frappe.throw(_("Select either source or target main slip."))
+			if entry.name in se_map:
+				frappe.delete_doc("Main Slip SE Details", se_map[entry.name])
 
-			if entry.main_slip or entry.to_main_slip:
-				entry.auto_created = doc.auto_created
-				update_main_slip_se_details(
-					ms_doc, doc.stock_entry_type, entry, warehouse_data, is_cancelled
-				)
-			# if entry.main_slip:
-			# 	if not msl_wise_metal_type.get(entry.main_slip):
-			# 		msl_wise_metal_type[entry.main_slip] = frappe.db.get_value("Main Slip", entry.main_slip, "metal_type")
+			continue
 
-			# 	metal_type = msl_wise_metal_type.get(entry.main_slip)
+		if entry.main_slip and entry.to_main_slip:
+			frappe.throw(_("Select either source or target main slip."))
 
-			# 	if not excluded_item_data.get((entry.item_code, metal_type)):
-			# 		excluded_item_data[(entry.item_code, metal_type)] = frappe.db.get_value(
-			# 			"Item Variant Attribute",
-			# 			{"parent": entry.item_code, "attribute": "Metal Type", "attribute_value": metal_type},
-			# 		)
+		if not (entry.main_slip or entry.to_main_slip):
+			continue
 
-			# 	excluded_metal = excluded_item_data.get((entry.item_code, metal_type))
+		entry.auto_created = doc.auto_created
 
-			# 	update_main_slip_se_details(
-			# 		ms_doc, doc.stock_entry_type, entry, doc.auto_created, is_cancelled
-			# 	)
+		update_main_slip_se_details(
+			ms_doc,
+			doc.stock_entry_type,
+			entry,
+			warehouse_data,
+			is_cancelled,
+		)
 
-			# 	if not excluded_metal:
-			# 		continue
-
-			# 	# temp = main_slip_map.get(entry.main_slip, frappe._dict())
-			# 	# if entry.manufacturing_operation:
-			# 	# 	temp["operation_receive"] = flt(temp.get("operation_receive")) + (
-			# 	# 		entry.qty if not is_cancelled else -entry.qty
-			# 	# 	)
-			# 	# else:
-			# 	# 	temp["receive_metal"] = flt(temp.get("receive_metal")) + (
-			# 	# 		entry.qty if not is_cancelled else -entry.qty
-			# 	# 	)
-			# 	# main_slip_map[entry.main_slip] = temp
-
-			# elif entry.to_main_slip:
-			# 	if not msl_wise_metal_type.get(entry.to_main_slip):
-			# 		msl_wise_metal_type[entry.to_main_slip] = frappe.db.get_value("Main Slip", entry.to_main_slip, "metal_type")
-			# 	metal_type = msl_wise_metal_type.get(entry.to_main_slip)
-
-			# 	if not excluded_item_data.get((entry.item_code, metal_type)):
-			# 		excluded_item_data[(entry.item_code, metal_type)] = frappe.db.get_value(
-			# 			"Item Variant Attribute",
-			# 			{"parent": entry.item_code, "attribute": "Metal Type", "attribute_value": metal_type},
-			# 		)
-
-			# 	excluded_metal = excluded_item_data.get((entry.item_code, metal_type))
-
-			# 	update_main_slip_se_details(
-			# 		ms_doc, doc.stock_entry_type, entry, doc.auto_created, is_cancelled
-			# 	)
-
-			# 	if not excluded_metal:
-			# 		continue
-
-			# temp = main_slip_map.get(entry.to_main_slip, frappe._dict())
-			# if entry.manufacturing_operation:
-			# 	temp["operation_issue"] = flt(temp.get("operation_issue")) + (
-			# 		entry.qty if not is_cancelled else -entry.qty
-			# 	)
-			# else:
-			# 	temp["issue_metal"] = flt(temp.get("issue_metal")) + (
-			# 		entry.qty if not is_cancelled else -entry.qty
-			# 	)
-			# main_slip_map[entry.to_main_slip] = temp
 	ms_doc.save()
-	# for main_slip, values in main_slip_map.items():
-	# 	_values = {key: f"{key} + {value}" for key, value in values.items()}
-	# 	_values[
-	# 		"pending_metal"
-	# 	] = "(issue_metal + operation_issue) - (receive_metal + operation_receive)"
-	# 	update_existing("Main Slip", main_slip, _values)
 
 
 def validate_items(self):
 	if self.stock_entry_type != "Broken / Loss":
 		return
-	for i in self.items:
-		if not frappe.db.get_value(
-			"BOM Item", {"parent": self.bom_no, "item_code": i.get("item_code")}
-		):
-			return frappe.throw(
-				f"Item {i.get('item_code')} Not Present In BOM {self.bom_no}"
-			)
+
+	bom_items = set(
+		frappe.get_all(
+			"BOM Item",
+			filters={"bom": self.bom_no},
+			pluck="item_code",
+		)
+	)
+
+	for row in self.items:
+		if row.item_code not in bom_items:
+			frappe.throw(f"Item {row.item_code} Not Present In BOM {self.bom_no}")
 
 
 def allow_zero_valuation(self):
@@ -906,63 +798,78 @@ def update_material_request_status(self):
 
 
 def create_finished_bom(self):
-	"""
-	-> This function creates a Finieshed Goods BOM based on the items in a stock entry
-	-> It separates the items into manufactured items, raw materials and scrap items
-	-> Subtracts the scrap quantity from the raw materials quantity
-	-> Sets the properties of the BOM document before saving it,
-	                                and retrieves properties from the Work Order BOM and assigns them to the newly created BOM
-	"""
 	if self.stock_entry_type != "Manufacture":
 		return
+
 	bom_doc = frappe.new_doc("BOM")
+
 	items_to_manufacture = []
 	raw_materials = []
-	scrap_item = []
-	# Seperate Items Into Items To Manufacture, Raw Materials and Scrap Items
+	scrap_map = {}
+
+	item_codes = [item.item_code for item in self.items]
+	item_variants = {
+		d.name: d.variant_of
+		for d in frappe.get_all(
+			"Item",
+			filters={"name": ["in", item_codes]},
+			fields=["name", "variant_of"],
+		)
+	}
+
 	for item in self.items:
+		variant_of = item_variants.get(item.item_code)
+
 		if not item.s_warehouse and item.t_warehouse:
-			variant_of = frappe.db.get_value("Item", item.item_code, "variant_of")
 			if not variant_of and item.item_code not in ["METAL LOSS", "FINDING LOSS"]:
 				items_to_manufacture.append(item.item_code)
 			else:
-				scrap_item.append({"item_code": item.item_code, "qty": item.qty})
+				scrap_map[item.item_code] = scrap_map.get(item.item_code, 0) + item.qty
 		else:
 			raw_materials.append({"item_code": item.item_code, "qty": item.qty})
 
-	# Subtract Scrap Quantity from actual quantity
-	for scrap, rm in itertools.product(scrap_item, raw_materials):
-		variant_of = get_variant_of_item(rm.get("item_code"))
-		if scrap.get("item_code") == rm.get("item_code"):
-			rm["qty"] = rm["qty"] - scrap["qty"]
+	for rm in raw_materials:
+		if rm["item_code"] in scrap_map:
+			rm["qty"] -= scrap_map[rm["item_code"]]
+
+	if not items_to_manufacture:
+		frappe.throw("No valid item to manufacture")
 
 	bom_doc.item = items_to_manufacture[0]
+
+	diamond_quality = frappe.db.get_value(
+		"BOM Diamond Detail", {"parent": self.bom_no}, "quality"
+	)
+
+	bom_meta = frappe.db.get_value(
+		"BOM",
+		self.bom_no,
+		["customer", "gold_rate_with_gst", "tag_no"],
+		as_dict=True,
+	)
+
 	for raw_item in raw_materials:
 		qty = raw_item.get("qty") or 1
-		diamond_quality = frappe.db.get_value(
-			"BOM Diamond Detail", {"parent": self.bom_no}, "quality"
+
+		set_item_details(
+			raw_item["item_code"],
+			bom_doc,
+			qty,
+			diamond_quality,
 		)
-		# Set all the items into respective Child Tables For BOM rate Calculation
-		updated_bom = set_item_details(
-			raw_item.get("item_code"), bom_doc, qty, diamond_quality
-		)
-	updated_bom.customer = frappe.db.get_value("BOM", self.bom_no, "customer")
-	updated_bom.gold_rate_with_gst = frappe.db.get_value(
-		"BOM", self.bom_no, "gold_rate_with_gst"
-	)
-	updated_bom.is_default = 0
-	updated_bom.tag_no = frappe.db.get_value("BOM", self.bom_no, "tag_no")
-	updated_bom.bom_type = "Finished Goods"
-	updated_bom.reference_doctype = "Work Order"
-	updated_bom.save(ignore_permissions=True)
+
+	bom_doc.customer = bom_meta.get("customer")
+	bom_doc.gold_rate_with_gst = bom_meta.get("gold_rate_with_gst")
+	bom_doc.tag_no = bom_meta.get("tag_no")
+
+	bom_doc.is_default = 0
+	bom_doc.bom_type = "Finished Goods"
+	bom_doc.reference_doctype = "Work Order"
+
+	bom_doc.save(ignore_permissions=True)
 
 
 def set_item_details(item_code, bom_doc, qty, diamond_quality):
-	"""
-	-> This function takes in an item_code, a bom_doc, a quantity and diamond_quality as its inputs,
-	-> It then adds the item attributes and details in the corresponding child table of BOM document.
-	-> It returns the updated BOM document.
-	"""
 	variant_of = get_variant_of_item(item_code)
 	item_doc = frappe.get_doc("Item", item_code)
 	attr_dict = {"item_variant": item_code, "quantity": qty}
@@ -974,7 +881,6 @@ def set_item_details(item_code, bom_doc, qty, diamond_quality):
 				attr_dict[attr_doc[key].replace(" ", "_").lower()] = attr_doc[
 					"attribute_value"
 				]
-	# Determine child table name based on variant
 	child_table_name = ""
 	if variant_of == "M":
 		child_table_name = "metal_detail"
@@ -1024,7 +930,6 @@ def custom_get_scrap_items_from_job_card(self):
 	)
 
 	scrap_items = query.run(as_dict=1)
-	# custom change in query JC.wip_warehouse
 
 	pending_qty = flt(self.pro_doc.qty) - flt(self.pro_doc.produced_qty)
 	if pending_qty <= 0:
@@ -1047,7 +952,6 @@ def custom_get_scrap_items_from_job_card(self):
 def custom_get_bom_scrap_material(self, qty):
 	from erpnext.manufacturing.doctype.bom.bom import get_bom_items_as_dict
 
-	# item dict = { item_code: {qty, description, stock_uom} }
 	item_dict = (
 		get_bom_items_as_dict(
 			self.bom_no, self.company, qty=qty, fetch_exploded=0, fetch_scrap_items=1
@@ -1087,60 +991,77 @@ def update_manufacturing_operation(doc, is_cancelled=False):
 
 
 def update_mop_details(se_doc, is_cancelled=False):
-	"""Reconcile Stock Entry lines with Manufacturing Operation legacy **table** children.
-
-	Called from ``update_manufacturing_operation`` (Stock Entry submit/cancel hooks). Builds
-	``mop_data[mop_name]`` buckets named ``department_source_table``, ``department_target_table``,
-	``employee_source_table``, ``employee_target_table`` from warehouse routing vs department /
-	employee warehouses, then ``update_balance_table`` appends those rows onto the Manufacturing
-	Operation document.
-
-	**Post-migration note:** balances for new virtual flows are primarily on **MOP Log**; these
-	child-table names are legacy shapes still used for some Stock Entry ↔ MOP warehouse trails.
-	If the Manufacturing Operation DocType on a site no longer defines these table fields,
-	``append``/``save`` here can fail unless restored via Custom Fields — see
-	``jewellery_erpnext.mop_lineage_audit.get_stock_entry_legacy_balance_table_trace``.
-	"""
 	se_employee = se_doc.to_employee or se_doc.employee
 	se_subcontractor = se_doc.to_subcontractor or se_doc.subcontractor
 
 	mop_data = frappe._dict()
-
-	mop_basic_details = frappe._dict()
-
 	warehouse_data = frappe._dict()
-
 	batch_data = frappe._dict()
 
-	validate_batches = True if se_doc.purpose != "Manufacture" else False
+	validate_batches = se_doc.purpose != "Manufacture"
 
-	# don't validate batch if it's a finding transfer from MWO with same department
 	if frappe.flags.is_finding_transfer:
 		validate_batches = False
 
-	mop_list = [row.manufacturing_operation for row in se_doc.items]
+	mop_list = list(
+		{
+			row.manufacturing_operation
+			for row in se_doc.items
+			if row.manufacturing_operation
+		}
+	)
 
-	mop_base_data = frappe.db.get_all(
+	if not mop_list:
+		return
+
+	mop_base_data = frappe.get_all(
 		"MOP Log",
 		filters={
 			"manufacturing_operation": ["in", mop_list],
 			"is_cancelled": 0,
 		},
-		fields=["manufacturing_operation as parent", "item_code", "batch_no"],
+		fields=["manufacturing_operation", "item_code", "batch_no"],
 		order_by="flow_index desc, creation desc",
 	)
 
 	for row in mop_base_data:
-		key = (row.parent, row.item_code)
+		key = (row.manufacturing_operation, row.item_code)
 		batch_data.setdefault(key, [])
 		if row.batch_no and row.batch_no not in batch_data[key]:
 			batch_data[key].append(row.batch_no)
 
+	mop_basic_details = {
+		d.name: d
+		for d in frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", mop_list]},
+			fields=["name", "company", "department", "employee", "subcontractor"],
+		)
+	}
+
+	if is_cancelled:
+		se_names = [d.name for d in se_doc.items if d.name]
+
+		delete_map = {}
+		for doctype in [
+			"Department Source Table",
+			"Department Target Table",
+			"Employee Source Table",
+			"Employee Target Table",
+		]:
+			records = frappe.get_all(
+				doctype,
+				filters={"sed_item": ["in", se_names]},
+				fields=["name", "sed_item"],
+			)
+			for r in records:
+				delete_map.setdefault(r.sed_item, []).append((doctype, r.name))
+
 	for entry in se_doc.items:
-		if not entry.manufacturing_operation:
+		mop_name = entry.manufacturing_operation
+		if not mop_name:
 			continue
 
-		mop_name = entry.manufacturing_operation
 		mop_data.setdefault(
 			mop_name,
 			{
@@ -1150,62 +1071,48 @@ def update_mop_details(se_doc, is_cancelled=False):
 				"employee_target_table": [],
 			},
 		)
-		if not mop_basic_details.get(mop_name):
-			mop_basic_details[mop_name] = frappe.db.get_value(
-				"Manufacturing Operation",
-				mop_name,
-				["company", "department", "employee", "subcontractor"],
-				as_dict=1,
-			)
-		# mop_doc = frappe.get_doc("Manufacturing Operation", mop_name)
+
 		if is_cancelled:
-			to_remove = []
-			for doctype in [
-				"Department Source Table",
-				"Department Target Table",
-				"Employee Source Table",
-				"Employee Target Table",
-			]:
-				if sed_name := frappe.db.exists(doctype, {"sed_item": entry.name}):
-					to_remove.append(sed_name)
+			for doctype, docname in delete_map.get(entry.name, []):
+				frappe.delete_doc(doctype, docname)
+			continue
 
-				for docname in to_remove:
-					frappe.delete_doc(doctype, docname)
-		else:
-			d_warehouse, e_warehouse = get_warehouse_details(
-				mop_basic_details[mop_name],
-				warehouse_data,
-				se_employee,
-				se_subcontractor,
-			)
-			validated_batches = False
-			temp_raw = copy.deepcopy(entry.__dict__)
-			if entry.s_warehouse == d_warehouse:
-				if validate_batches and entry.batch_no:
-					validate_duplicate_batches(entry, batch_data)
-					validated_batches = True
-				if entry.t_warehouse != entry.s_warehouse:
-					mop_data[mop_name]["department_source_table"].append(temp_raw)
+		mop_info = mop_basic_details.get(mop_name)
+		if not mop_info:
+			continue
 
-				# ----------- Kavin Changes ----------- #
-				# Update department target table only if the source warehouse is same as department warehouse
-				if (
-					frappe.flags.is_finding_transfer
-					and entry.s_warehouse == d_warehouse
-				):
-					mop_data[mop_name]["department_target_table"].append(temp_raw)
+		d_wh, e_wh = get_warehouse_details(
+			mop_info, warehouse_data, se_employee, se_subcontractor
+		)
 
-			elif entry.t_warehouse == d_warehouse:
+		validated_batches = False
+
+		temp_raw = entry.as_dict(no_nulls=True)
+
+		if entry.s_warehouse == d_wh:
+			if validate_batches and entry.batch_no:
+				validate_duplicate_batches(entry, batch_data)
+				validated_batches = True
+
+			if entry.t_warehouse != entry.s_warehouse:
+				mop_data[mop_name]["department_source_table"].append(temp_raw)
+
+			if frappe.flags.is_finding_transfer:
 				mop_data[mop_name]["department_target_table"].append(temp_raw)
 
-			emp_temp_raw = copy.deepcopy(entry.__dict__)
-			if entry.s_warehouse == e_warehouse:
-				if validate_batches and entry.batch_no and not validated_batches:
-					validate_duplicate_batches(entry, batch_data)
+		elif entry.t_warehouse == d_wh:
+			mop_data[mop_name]["department_target_table"].append(temp_raw)
 
-				mop_data[mop_name]["employee_source_table"].append(emp_temp_raw)
-			elif entry.t_warehouse == e_warehouse:
-				mop_data[mop_name]["employee_target_table"].append(emp_temp_raw)
+		emp_raw = temp_raw
+
+		if entry.s_warehouse == e_wh:
+			if validate_batches and entry.batch_no and not validated_batches:
+				validate_duplicate_batches(entry, batch_data)
+
+			mop_data[mop_name]["employee_source_table"].append(emp_raw)
+
+		elif entry.t_warehouse == e_wh:
+			mop_data[mop_name]["employee_target_table"].append(emp_raw)
 
 	if (
 		se_doc.stock_entry_type == "Material Transfer (WORK ORDER)"
@@ -1217,16 +1124,50 @@ def update_mop_details(se_doc, is_cancelled=False):
 
 
 def update_balance_table(mop_data):
+	if not mop_data:
+		return
+
+	mop_names = list(mop_data.keys())
+
+	mop_docs = {
+		doc.name: doc
+		for doc in frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", mop_names]},
+			fields=["name"],
+		)
+	}
+
+	mop_docs = {
+		name: frappe.get_doc("Manufacturing Operation", name) for name in mop_docs
+	}
+
 	for mop, tables in mop_data.items():
-		mop_doc = frappe.get_doc("Manufacturing Operation", mop)
+		mop_doc = mop_docs.get(mop)
+		if not mop_doc:
+			continue
+
+		has_updates = False
 
 		for table, details in tables.items():
 			if not details:
 				continue
+
 			for row in details:
-				row.update({"sed_item": row["name"], "idx": None, "name": None})
-				mop_doc.append(table, row)
-		mop_doc.save()
+				new_row = row.copy()
+				new_row.update(
+					{
+						"sed_item": row.get("name"),
+						"idx": None,
+						"name": None,
+					}
+				)
+
+				mop_doc.append(table, new_row)
+				has_updates = True
+
+		if has_updates:
+			mop_doc.save()
 
 
 def validate_duplicate_batches(entry, batch_data):
@@ -1321,7 +1262,6 @@ def make_stock_in_entry(source_name, target_doc=None):
 
 	def update_item(source_doc, target_doc, source_parent):
 		target_doc.t_warehouse = ""
-		# getting target warehouse on end transit
 		target_wh = ""
 		if source_parent.custom_material_request_reference:
 			ref_mr = frappe.get_doc(
@@ -1353,7 +1293,6 @@ def make_stock_in_entry(source_name, target_doc=None):
 					"batch_no": "batch_no",
 				},
 				"postprocess": update_item,
-				# "condition": lambda doc: flt(doc.qty) - flt(doc.transferred_qty) > 0.01,
 			},
 		},
 		target_doc,
@@ -1364,16 +1303,6 @@ def make_stock_in_entry(source_name, target_doc=None):
 
 
 def convert_metal_purity(from_item: dict, to_item: dict, s_warehouse, t_warehouse):
-	"""Create and submit a Repack Stock Entry between two attribute-resolved items.
-
-	Not used by Employee IR injection (see ``main_slip_inject``). **Unsafe for
-	batch-tracked metal** as written: ``before_validate`` requires ``batch_no`` on
-	outgoing rows unless serialised; this helper does not run FIFO batch allocation.
-	Parameters are typed as ``dict`` but the implementation uses attribute access
-	(``from_item.metal_type``, …)—pass ``SimpleNamespace`` / ``frappe._dict`` or
-	refactor to subscripting. Prefer EIR/MOP injection builders + shared FIFO helpers
-	for production metal flows.
-	"""
 	f_item = get_item_from_attribute(
 		from_item.metal_type,
 		from_item.metal_touch,
@@ -1491,16 +1420,9 @@ def make_mr_on_return(source_name, target_doc=None):
 	return doclist
 
 
-"""
-create_material_receipt_for_sales_person function
-creates a return receipt for items issued. i.e. Stock Enty to Stock Entry.
-"""
-
-
 @frappe.whitelist()
 def create_material_receipt_for_sales_person(source_name):
 	source_doctype = "Stock Entry"
-	# target_doctype = "Stock Entry"
 	source_doc = frappe.get_doc("Stock Entry", source_name)
 	target_doc = frappe.new_doc(source_doctype)
 	target_doc.update(source_doc.as_dict())
@@ -1579,15 +1501,8 @@ def create_material_receipt_for_sales_person(source_name):
 			item.batch_no = serial_and_batch_items[item.item_code][1]
 		item.s_warehouse, item.t_warehouse = item.t_warehouse, item.s_warehouse
 	target_doc.insert()
-	# total_return_receipt_for_issue = {}
 
 	return target_doc
-
-
-"""
-create_material_receipt_for_customer_approval function
-creates a return receipt for items issued. i.e. Customer Approval to Stock Entry.
-"""
 
 
 @frappe.whitelist()
@@ -1647,13 +1562,6 @@ def create_material_receipt_for_customer_approval(source_name, cust_name):
 	return target_doc.name
 
 
-"""
-create_material_receipt_for_customer_approval
-validates serial items entered are equal to quantity or not if not appropriate errors received
-
-"""
-
-
 @frappe.whitelist()
 def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 	def set_missing_values(source, target):
@@ -1709,13 +1617,32 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 @frappe.whitelist()
 def validation_of_serial_item(issue_doc):
 	doc = frappe.get_doc("Stock Entry", issue_doc)
-	serial_item = {}
-	for item in doc.items:
-		check_serial_no = frappe.db.get_list(
-			"Item", filters={"item_code": item.item_code}, fields=["has_serial_no"]
+
+	item_codes = {item.item_code for item in doc.items if item.item_code}
+
+	item_map = {
+		d.name: d.has_serial_no
+		for d in frappe.get_all(
+			"Item",
+			filters={"name": ["in", list(item_codes)]},
+			fields=["name", "has_serial_no"],
 		)
-		if check_serial_no[0]["has_serial_no"] == 1:
-			serial_item[item.item_code] = item.serial_no.split("\n")
+	}
+
+	serial_item = {}
+
+	for item in doc.items:
+		if not item_map.get(item.item_code):
+			continue
+
+		if not item.serial_no:
+			continue
+
+		serials = [s.strip() for s in item.serial_no.split("\n") if s.strip()]
+
+		if serials:
+			serial_item[item.item_code] = serials
+
 	return serial_item
 
 
@@ -1725,7 +1652,6 @@ def set_filter_for_main_slip(doctype, txt, searchfield, start, page_len, filters
 	metal_purity = frappe.db.get_value(
 		"Manufacturing Work Order", {mnf}, "metal_purity"
 	)
-	# frappe.throw(str(metal_purity))
 	return metal_purity
 
 
@@ -1733,35 +1659,42 @@ def group_se_items_and_update_mop_items(doc, method):
 	if not doc.items:
 		return
 
-	doc.set("custom_mop_items", [])
+	mop_items = []
 
 	for row in doc.items:
-		mop_row = copy.deepcopy(row.__dict__)
-		mop_row["name"] = None
-		mop_row["idx"] = None
+		mop_row = row.as_dict(no_nulls=True)
 
-		if row.get("doctype") == "Stock Entry MOP Item":
-			row.doctype = "Stock Entry Detail"
-		else:
-			mop_row["doctype"] = "Stock Entry MOP Item"
+		mop_row.update(
+			{
+				"name": None,
+				"idx": None,
+				"doctype": "Stock Entry MOP Item",
+			}
+		)
 
-		doc.append("custom_mop_items", mop_row)
+		mop_items.append(mop_row)
 
-	doc.update_child_table("items")
+	doc.set("custom_mop_items", mop_items)
+
 	doc.update_child_table("custom_mop_items")
 
 	if doc.auto_created:
-		doc_dict = doc.as_dict()
-		grouped_se_items = group_se_items(doc_dict.get("custom_mop_items"))
+		grouped_se_items = group_se_items(mop_items)
 
 		if grouped_se_items and len(grouped_se_items) < len(doc.items):
-			doc.set("items", [])
+			new_items = []
 
 			for row in grouped_se_items:
-				row["name"] = None
-				row["idx"] = None
-				row["doctype"] = "Stock Entry Detail"
-				doc.append("items", row)
+				new_items.append(
+					{
+						**row,
+						"name": None,
+						"idx": None,
+						"doctype": "Stock Entry Detail",
+					}
+				)
+
+			doc.set("items", new_items)
 
 	doc.calculate_rate_and_amount()
 	doc.update_child_table("items")

@@ -1,5 +1,3 @@
-from . import __version__ as app_version
-
 app_name = "jewellery_erpnext"
 app_title = "Jewellery Erpnext"
 app_publisher = "Nirali"
@@ -39,21 +37,6 @@ doctype_js = {
 doctype_list_js = {
 	"Payment Entry": "public/js/doctype_list/payment_entry_list.js",
 }
-
-# from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
-
-# from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-# 	get_bom_scrap_material,
-# 	get_scrap_items_from_job_card,
-# )
-
-# StockEntry.get_scrap_items_from_job_card = get_scrap_items_from_job_card
-# StockEntry.get_bom_scrap_material = get_bom_scrap_material
-# from erpnext.manufacturing.doctype.work_order.work_order import WorkOrder
-
-# from jewellery_erpnext.jewellery_erpnext.doc_events.work_order import get_work_orders
-
-# WorkOrder.get_work_orders = get_work_orders
 
 doc_events = {
 	"Quotation": {
@@ -97,7 +80,6 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
 	},
 	"Stock Entry": {
-		# "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate",
 		"before_validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
@@ -188,8 +170,6 @@ override_doctype_class = {
 	"Stock Ledger Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_ledger_entry.stock_ledger_entry.CustomStockLedgerEntry",
 	"Serial and Batch Bundle": "jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.serial_and_batch_bundle.CustomSerialandBatchBundle",
 	"Submission Queue": "jewellery_erpnext.jewellery_erpnext.customization.submission_queue.submission_queue.CustomSubmissionQueue",
-	# "Purchase Receipt": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_receipt.CustomPurchaseReceipt",
-	# "Purchase Invoice": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.CustomPurchaseInvoice"
 }
 
 
@@ -198,22 +178,6 @@ scheduler_events = {
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.sync_mop_logs"
 	],
 }
-
-# from erpnext.stock import get_item_details
-# from jewellery_erpnext.erpnext_override import get_price_list_rate_for
-# get_item_details.get_price_list_rate_for = get_price_list_rate_for
-
-# from erpnext.stock.doctype.item_price.item_price import ItemPrice
-# from jewellery_erpnext.jewellery_erpnext.doc_events.item_price import check_duplicates
-# ItemPrice.check_duplicates = check_duplicates
-
-# from gst_india.gst_india.utils.transaction_data import GSTTransactionData
-
-# from jewellery_erpnext.gurukrupa_exports.overrides.einvoice_override import (
-# 	custom_get_all_item_details,
-# )
-
-# GSTTransactionData.get_all_item_details = custom_get_all_item_details
 
 # User Data Protection
 # --------------------
@@ -236,13 +200,6 @@ user_data_fields = [
 	},
 	{"doctype": "{doctype_4}"},
 ]
-
-# Authentication and authorization
-# --------------------------------
-
-# auth_hooks = [
-# 	"jewellery_erpnext.auth.validate"
-# ]
 
 fixtures = [
 	{
@@ -281,7 +238,4 @@ fixtures = [
 			]
 		],
 	},
-	# {
-	#     "doctype":"Custom Field", "filters":{"module":["in",["Jewellery Erpnext"]]}
-	# }
 ]
