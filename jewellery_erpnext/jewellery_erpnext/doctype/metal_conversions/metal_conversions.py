@@ -1,8 +1,6 @@
 # Copyright (c) 2024, Nirali and contributors
 # For license information, please see license.txt
 
-import copy
-
 import frappe
 from erpnext.controllers.queries import get_batch_no
 from erpnext.stock.doctype.batch.batch import get_batch_qty
@@ -52,7 +50,17 @@ class MetalConversions(Document):
 		# if not self.batch and self.multiple_metal_converter == 0:
 		# 	frappe.throw(_("Batch Missing"))
 		update_alloy_betch(self)
-		# update_source_betch(self)
+		if self.multiple_metal_converter == 0:
+			if self.is_customer_metal:
+				if not self.source_batch_details:
+					frappe.throw(
+						_(
+							"For customer metal, please enter source batch details manually."
+						)
+					)
+			else:
+				if not self.source_batch_details:
+					update_source_betch(self)
 		get_inventory_type(self)
 
 	@frappe.whitelist()
@@ -589,7 +597,17 @@ def get_batch_details(batch):
 
 
 def get_inventory_type(self):
-	table_batch = self.source_batch_details[0].batch
+	inventory_type = None
+	customer = None
+	table_batch = self.batch or None
+	if not table_batch:
+		for row in self.source_batch_details:
+			batch_value = getattr(row, "batch", None)
+			if not batch_value and hasattr(row, "get"):
+				batch_value = row.get("batch")
+			if batch_value:
+				table_batch = batch_value
+				break
 	error = []
 	if table_batch:
 		bal_qty = get_batch_qty(batch_no=table_batch, warehouse=self.source_warehouse)
@@ -605,7 +623,6 @@ def get_inventory_type(self):
 				)
 				inventory_type = "Regular Stock"
 			if reference_doctype == "Stock Entry":
-				# inventory_type = frappe.get_value(reference_doctype, reference_name, "inventory_type")
 				inventory_type = frappe.get_value(
 					"Batch", table_batch, "custom_inventory_type"
 				)
