@@ -1,141 +1,6 @@
-frappe.ui.form.on("Sales Order", {
-	gold_rate_with_gst: function (frm) {
-		if (frm.doc.gold_rate_with_gst) {
-			let gold_rate = flt(frm.doc.gold_rate_with_gst / 1.03, 3);
-			if (gold_rate != flt(frm.doc.gold_rate, 3)) {
-				frappe.model.set_value(frm.doc.doctype, frm.doc.name, "gold_rate", gold_rate);
-			}
-		}
-	},
-	gold_rate: function (frm) {
-		if (frm.doc.gold_rate) {
-			let gold_rate_with_gst = flt(frm.doc.gold_rate * 1.03, 3);
-			if (gold_rate_with_gst != flt(frm.doc.gold_rate_with_gst, 3)) {
-				frappe.model.set_value(
-					frm.doc.doctype,
-					frm.doc.name,
-					"gold_rate_with_gst",
-					gold_rate_with_gst
-				);
-			}
-		}
-	},
-	refresh: function (frm) {
-		frm.add_custom_button(
-			__("Customer Approval"),
-			function () {
-				var customer_approval_dialoge = new frappe.ui.form.MultiSelectDialog({
-					doctype: "Customer Approval",
-					target: frm,
-					setters: [
-						{
-							label: "date",
-							fieldname: "date",
-							fieldtype: "Date",
-						},
-					],
-					add_filters_group: 1,
-					get_query() {
-						return {
-							query: "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.customer_approval_filter",
-						};
-					},
+frappe.provide("erpnext.item");
 
-					action(selections) {
-						if (selections.length !== 1) {
-							frappe.throw(__("Please select exactly one option."));
-							return;
-						}
-						frappe.call({
-							method: "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.get_customer_approval_data",
-							args: {
-								customer_approval_data: selections[0],
-							},
-
-							callback: (response) => {
-								frm.set_value("company", response.message["company"]);
-								frm.set_value("order_type", response.message["order_type"]);
-								frm.set_value("customer", response.message["customer"]);
-								frm.set_value("set_warehouse", response.message["set_warehouse"]);
-
-								frm.clear_table("items");
-
-								for (let items_row of response.message.items) {
-									var child_row = frm.add_child("items");
-									child_row.item_code = items_row["item_code"];
-									child_row.item_name = items_row["item_name"];
-									child_row.delivery_date = items_row["delivery_date"];
-									child_row.description = items_row["description"];
-									child_row.uom = items_row["uom"];
-									child_row.conversion_factor =
-										items_row["uom_conversion_factor"];
-									child_row.qty = items_row["quantity"];
-									child_row.amount = items_row["amount"];
-									child_row.serial_no = items_row["serial_no"];
-									child_row.bom = items_row["bom_number"];
-									child_row.custom_customer_approval = items_row["parent"];
-									child_row.custom_customer_approval_item = items_row["name"];
-								}
-								for (let sales_person_row of response.message.sales_person_child) {
-									child_row = frm.add_child("custom_sales_teams");
-									child_row.sales_person = sales_person_row["sales_person"];
-								}
-
-								customer_approval_dialoge.dialog.hide();
-							},
-						});
-					},
-				});
-			},
-			__("Get Items From")
-		);
-
-		frm.set_df_property("order_type", "options", [
-			"",
-			"Sales",
-			"Maintenance",
-			"Shopping Cart",
-			"Stock Order",
-			"Repair",
-		]);
-
-		if (frm.doc.docstatus == 1) {
-			frm.add_custom_button(__("Create Production Order"), () => {
-				frappe.call({
-					method: "jewellery_erpnext.jewellery_erpnext.doctype.production_order.production_order._make_production_order",
-					args: {
-						sales_order: frm.doc.name,
-					},
-					callback: function (r) {
-						if (r.message) {
-							console.log("Message");
-						}
-					},
-				});
-			});
-		}
-	},
-	validate: function (frm) {
-		frm.doc.items.forEach(function (d) {
-			if (d.bom) {
-				frappe.db.get_value(
-					"Item Price",
-					{
-						item_code: d.item_code,
-						price_list: frm.doc.selling_price_list,
-						bom_no: d.bom,
-					},
-					"price_list_rate",
-					function (r) {
-						if (r.price_list_rate) {
-							frappe.model.set_value(d.doctype, d.name, "rate", r.price_list_rate);
-						}
-					}
-				);
-			}
-		});
-	},
-
+frappe.ui.form.on("Sales Invoice", {
 	onload_post_render(frm) {
 		filter_customer(frm);
 	},
@@ -145,29 +10,98 @@ frappe.ui.form.on("Sales Order", {
 	customer(frm) {
 		get_sales_type(frm);
 	},
-});
+	refresh(frm) {
+		if (frm.doc.docstatus === 1) edit_bom_after_submit(frm);
 
-let filter_customer = (frm) => {
-	if (frm.doc.sales_type) {
-		//filtering customer with sales type
-		frm.set_query("customer", function (doc) {
+		frm.fields_dict["invoice_item"].grid.update_docfield_property(
+			"item_code",
+			"label",
+			"E Invoice Item"
+		);
+	},
+	setup(frm) {
+		frm.set_query("custom_diamond_quality", function () {
 			return {
-				query: "jewellery_erpnext.utils.customer_query",
 				filters: {
-					sales_type: frm.doc.sales_type,
+					is_diamond_quality: 1,
 				},
 			};
 		});
-	} else {
-		// removing filters
-		frm.set_query("customer", function (doc) {
-			return {};
+		frm.set_query("custom_diamond_quality", "items", function () {
+			return {
+				filters: {
+					is_diamond_quality: 1,
+				},
+			};
 		});
-	}
-};
+	},
+	gold_rate_with_gst: function (frm) {
+		if (frm.doc.gold_rate_with_gst) {
+			let gold_rate = flt(frm.doc.gold_rate_with_gst / 1.03, 3);
+			if (gold_rate != frm.doc.gold_rate) {
+				frappe.model.set_value(frm.doc.doctype, frm.doc.name, "gold_rate", gold_rate);
+			}
+		}
+	},
+	gold_rate: function (frm) {
+		if (frm.doc.gold_rate) {
+			let gold_rate_with_gst = flt(frm.doc.gold_rate * 1.03, 3);
+			if (gold_rate_with_gst != frm.doc.gold_rate_with_gst) {
+				frappe.model.set_value(
+					frm.doc.doctype,
+					frm.doc.name,
+					"gold_rate_with_gst",
+					gold_rate_with_gst
+				);
+			}
+		}
+	},
+	// onload_post_render: function(frm) {
+    //     // or use refresh / after_save depending on your need
+    //     (frm.doc.items || []).forEach(row => {
+    //         if (row.so_detail && !row.custom_bom) {
+    //             frappe.call({
+    //                 method: "jewellery_erpnext.jewellery_erpnext.doctype.customer_approval.customer_approval.get_serial_no",
+    //                 args: {
+    //                     so_detail: row.so_detail
+    //                 },
+    //                 callback: function(r) {
+    //                     if (r.message) {
+    //                         frappe.model.set_value(row.doctype,row.name,"serial_no",r.message.serial_no);
+	// 						// frappe.model.set_value(row.doctype,row.name,"weight_per_unit",r.message.gross_weight);
+    //                     }
+    //                 }
+    //             });
+    //         }
+    //     });
+    // }
+});
 
-frappe.ui.form.on("Sales Order Item", {
-	edit_bom: function (frm, cdt, cdn) {
+frappe.ui.form.on("Sales Invoice Item", {
+	serial_no(frm, cdt, cdn) {
+		var child = locals[cdt][cdn];
+		if (child.serial_no) {
+			if (!child.item_code) {
+				frappe.db.get_value("Serial No", child.serial_no, ["item_code"]).then((r) => {
+					frappe.model.set_value(cdt, cdn, "item_code", r.message.item_code);
+				});
+			}
+			frappe.db
+				.get_value("BOM", { tag_no: child.serial_no, is_active: 1 }, "name")
+				.then((r) => {
+					if (r.message.name) {
+						// console.log("hiii",r.message.name);
+						frappe.model.set_value(cdt, cdn, "bom", r.message.name);
+						frappe.model.set_value(cdt, cdn, "bom_no", r.message.name);
+						if (!child.item_code) {
+							frappe.model.set_value(cdt, cdn, "item_code", r.message.item_code);
+						}
+					}
+				});
+		}
+	},
+	
+	custom_edit_bom: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
 
 		if (frm.doc.__islocal) {
@@ -236,9 +170,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldtype: "Link",
 				fieldname: "customer_metal_purity",
 				label: __("Customer Metal Purity"),
-				reqd: 1,
 				read_only: 1,
-				columns: 1,
 				in_list_view: 1,
 				options: "Attribute Value",
 			},
@@ -267,6 +199,19 @@ frappe.ui.form.on("Sales Order Item", {
 				read_only: 1,
 				columns: 1,
 				in_list_view: 1,
+				description: __("Weight show Based on precision"),
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "actual_quantity",
+				label: __("Weight In Gms"),
+				read_only: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "difference_qty",
+				label: __("Difference(Based on Roundoff)"),
+				read_only: 1,
 			},
 			{
 				fieldtype: "Float",
@@ -275,6 +220,12 @@ frappe.ui.form.on("Sales Order Item", {
 				reqd: 1,
 				columns: 1,
 				in_list_view: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "actual_rate",
+				label: __("Actual Rate"),
+				read_only: 1,
 			},
 			{
 				fieldtype: "Float",
@@ -294,6 +245,12 @@ frappe.ui.form.on("Sales Order Item", {
 				columns: 1,
 				in_list_view: 1,
 			},
+			// {
+			// 	fieldtype: "Float",
+			// 	fieldname: "making_rate_copy",
+			// 	read_only: 1,
+			// 	label: __("Making Rate"),
+			// },
 			{
 				fieldtype: "Float",
 				fieldname: "making_amount",
@@ -318,38 +275,9 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 			},
 			{
-				fieldtype: "Float",
-				fieldname: "actual_rate",
-				columns: 1,
-				label: __("Actual Rate"),
-				read_only: 1,
-			},
-			{
 				fieldtype: "Currency",
 				fieldname: "difference",
 				label: __("Difference(Based on Metal Purity)"),
-				columns: 1,
-				read_only: 1,
-				in_list_view: 1,
-			},
-			{
-				fieldtype: "Float",
-				fieldname: "difference_qty",
-				label: __("Difference(Based on Roundoff)"),
-				read_only: 1,
-			},
-			{
-				fieldtype: "Currency",
-				fieldname: "labour_charge",
-				label: __("Labour Charge"),
-				columns: 1,
-				read_only: 1,
-				in_list_view: 1,
-			},
-			{
-				fieldtype: "Check",
-				fieldname: "is_customer_item",
-				label: __("Is Customer Item"),
 				columns: 1,
 				read_only: 1,
 				in_list_view: 1,
@@ -490,7 +418,6 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldtype: "Float",
 				fieldname: "quantity",
 				label: __("Weight In Cts"),
-				precision : 0,
 				reqd: 1,
 				columns: 1,
 				read_only: 1,
@@ -503,13 +430,18 @@ frappe.ui.form.on("Sales Order Item", {
 				read_only: 1,
 				columns: 1,
 			},
-
 			{
 				fieldtype: "Float",
 				fieldname: "total_diamond_rate",
 				label: __("Rate"),
 				columns: 1,
 				in_list_view: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "actual_total_diamond_rate",
+				label: __("Actual Rate"),
+				read_only: 1,
 			},
 			{
 				fieldtype: "Float",
@@ -521,14 +453,8 @@ frappe.ui.form.on("Sales Order Item", {
 			},
 			{
 				fieldtype: "Float",
-				fieldname: "difference_qty",
+				fieldname: "difference",
 				label: __("Difference(Based on Roundoff)"),
-				read_only: 1,
-			},
-			{
-				fieldtype: "Check",
-				fieldname: "is_customer_item",
-				label: __("Is Customer Item"),
 				columns: 1,
 				read_only: 1,
 				in_list_view: 1,
@@ -648,7 +574,6 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldtype: "Float",
 				fieldname: "quantity",
 				label: __("Weight In Cts"),
-				precision : 0,
 				columns: 1,
 				reqd: 1,
 				read_only: 1,
@@ -663,6 +588,12 @@ frappe.ui.form.on("Sales Order Item", {
 			},
 			{
 				fieldtype: "Float",
+				fieldname: "actual_total_gemstone_rate",
+				read_only: 1,
+				label: __("Actual Gemstone Rate"),
+			},
+			{
+				fieldtype: "Float",
 				fieldname: "gemstone_rate_for_specified_quantity",
 				columns: 1,
 				label: __("Amount"),
@@ -670,15 +601,9 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 			},
 			{
-				fieldtype: "Float",
-				fieldname: "difference_qty",
+				fieldtype: "Flaot",
+				fieldname: "difference",
 				label: __("Difference(Based on Roundoff)"),
-				read_only: 1,
-			},
-			{
-				fieldtype: "Check",
-				fieldname: "is_customer_item",
-				label: __("Is Customer Item"),
 				columns: 1,
 				read_only: 1,
 				in_list_view: 1,
@@ -772,6 +697,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "customer_metal_purity",
 				label: __("Customer Metal Purity"),
 				read_only: 1,
+				in_list_view: 1,
 				options: "Attribute Value",
 			},
 			{ fieldtype: "Column Break", fieldname: "clb1" },
@@ -816,6 +742,19 @@ frappe.ui.form.on("Sales Order Item", {
 				read_only: 1,
 				in_list_view: 1,
 				default: 1,
+				description: __("Weight show Based on precision"),
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "actual_quantity",
+				label: __("Quantity"),
+				read_only: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "difference_qty",
+				label: __("Difference(Based on Roundoff)"),
+				read_only: 1,
 			},
 			{
 				fieldtype: "Float",
@@ -844,7 +783,6 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 				default: 1,
 			},
-
 			{
 				fieldtype: "Float",
 				fieldname: "making_rate",
@@ -881,29 +819,6 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldtype: "Currency",
 				fieldname: "difference",
 				label: __("Difference(Based on Metal Purity)"),
-				columns: 1,
-				read_only: 1,
-				in_list_view: 1,
-			},
-			{
-				fieldtype: "Float",
-				fieldname: "difference_qty",
-				label: __("Difference(Based on Roundoff)"),
-				read_only: 1,
-			},
-			{
-				fieldtype: "Currency",
-				fieldname: "labour_charge",
-				label: __("Labour Charge"),
-				columns: 1,
-				read_only: 1,
-				in_list_view: 1,
-			},
-
-			{
-				fieldtype: "Check",
-				fieldname: "is_customer_item",
-				label: __("Is Customer Item"),
 				columns: 1,
 				read_only: 1,
 				in_list_view: 1,
@@ -946,14 +861,6 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 				options: "UOM",
 			},
-			{
-				fieldtype: "Check",
-				fieldname: "is_customer_item",
-				label: __("Is Customer Item"),
-				columns: 1,
-				read_only: 1,
-				in_list_view: 1,
-			},
 		];
 
 		const dialog = new frappe.ui.Dialog({
@@ -977,6 +884,13 @@ frappe.ui.form.on("Sales Order Item", {
 							});
 						}
 					},
+				},
+				{
+					fieldname: "gold_rate",
+					fieldtype: "Float",
+					label: "Gold Rate",
+					default: frm.doc.gold_rate,
+					read_only: 1,
 				},
 				{
 					fieldtype: "Column Break",
@@ -1043,8 +957,8 @@ frappe.ui.form.on("Sales Order Item", {
 					fieldname: "finding_detail",
 					fieldtype: "Table",
 					label: "Finding Detail",
-					cannot_add_rows: true,
 					cannot_delete_rows: true,
+					cannot_add_rows: true,
 					data: finding_data,
 					get_data: () => {
 						return finding_data;
@@ -1274,7 +1188,7 @@ frappe.ui.form.on("Sales Order Item", {
 					fieldname: "rate",
 					fieldtype: "Currency",
 					label: "Rate",
-					// read_only: 1,
+					read_only: 1,
 					default: row.rate,
 				},
 				{
@@ -1286,6 +1200,28 @@ frappe.ui.form.on("Sales Order Item", {
 					label: "Amount",
 					read_only: 1,
 					default: row.amount,
+				},
+				{
+					fieldtype: "Section Break",
+				},
+				{
+					fieldname: "diamond_inclusive",
+					fieldtype: "Currency",
+					label: "Diamond Inclusive WT",
+					description:
+						"Diamond Inclusive = Gross Wt - Stone Wt(in gram) - Finding Wt - Other Wt",
+					precision: 3,
+				},
+				{
+					fieldtype: "Column Break",
+				},
+				{
+					fieldname: "net_wt",
+					fieldtype: "Currency",
+					label: "Net WT WT",
+					description:
+						"Net Wt = Gross Wt - Diamond Wt(in gram) - Stone Wt(in gram) - Finding Wt - Other Wt",
+					precision: 3,
 				},
 				{
 					fieldtype: "Section Break",
@@ -1311,6 +1247,7 @@ frappe.ui.form.on("Sales Order Item", {
 				const diamond_detail = dialog.get_values()["diamond_detail"] || [];
 				const gemstone_detail = dialog.get_values()["gemstone_detail"] || [];
 				const finding_detail = dialog.get_values()["finding_detail"] || [];
+				const other_detail = dialog.get_values()["other_detail"] || [];
 
 				frappe.call({
 					method: "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.update_bom_detail",
@@ -1322,6 +1259,7 @@ frappe.ui.form.on("Sales Order Item", {
 						diamond_detail: diamond_detail,
 						gemstone_detail: gemstone_detail,
 						finding_detail: finding_detail,
+						other_detail: other_detail,
 					},
 					callback: function (r) {
 						frm.is_dirty() ? frm.save() : frm.reload_doc();
@@ -1344,9 +1282,6 @@ frappe.ui.form.on("Sales Order Item", {
 				other_data
 			);
 		}
-		// displaying scan icon
-		let scan_btn = dialog.$wrapper.find(".link-btn");
-		scan_btn.css("display", "inline");
 
 		// setting bom no if missing from child
 		if (!dialog.get_value("bom_no") && dialog.get_value("serial_no")) {
@@ -1362,38 +1297,22 @@ frappe.ui.form.on("Sales Order Item", {
 					"name"
 				)
 				.then((r) => {
-					console.log(r);
 					if (r.message && r.message.name) {
 						dialog.set_value("bom_no", r.message.name);
 					}
 				});
 		}
 
+		// displaying scan icon
+		let scan_btn = dialog.$wrapper.find(".link-btn");
+		scan_btn.css("display", "inline");
+
 		dialog.show();
+
 		dialog.$wrapper.find(".modal-dialog").css("max-width", "90%");
-	},
-	serial_no: function (frm, cdt, cdn) {
-		let child = locals[cdt][cdn];
-		if (child.serial_no) {
-			if (!child.item_code) {
-				frappe.db
-					.get_value("Serial No", child.serial_no, [
-						"item_code",
-						"custom_bom_no",
-						"custom_gross_wt",
-					])
-					.then((r) => {
-						frappe.model.set_value(cdt, cdn, "item_code", r.message.item_code);
-						frappe.model.set_value(cdt, cdn, "bom", r.message.custom_bom_no);
-						frappe.model.set_value(
-							cdt,
-							cdn,
-							"custom_gross_weight",
-							r.message.custom_gross_wt
-						);
-					});
-			}
-		}
+
+		// hide update button
+		if (frm.doc.docstatus == 1) dialog.$wrapper.find(".btn-modal-primary").remove();
 	},
 });
 
@@ -1407,10 +1326,10 @@ let edit_bom_documents = (
 	other_data
 ) => {
 	/*
-      function to get BOM doc from model or client
-      args using:
-          bom_no: Link of BOM
-  */
+        function to get BOM doc from model or client
+        args using:
+            bom_no: Link of BOM
+    */
 	var doc = frappe.model.get_doc("BOM", bom_no);
 	if (!doc) {
 		frappe.call({
@@ -1457,11 +1376,11 @@ let set_edit_bom_details = (
 	other_data
 ) => {
 	/*
-      function to set fields and child tables values of dialog ui
-      args:
-          dialog: dialog form
-          metal_data, diamond_data, gemstone_data, finding_data, other_data => variables used to append table data
-  */
+        function to set fields and child tables values of dialog ui
+        args:
+            dialog: dialog form
+            metal_data, diamond_data, gemstone_data, finding_data, other_data => variables used to append table data
+    */
 
 	// clearing all tables
 	dialog.fields_dict.metal_detail.df.data = [];
@@ -1482,7 +1401,7 @@ let set_edit_bom_details = (
 	// clearing all field values
 	dialog.set_value("gross_weight", 0);
 	// dialog.set_value("certification_amount", 0)
-	// dialog.set_value("hallmarking_amount", 0)
+	dialog.set_value("hallmarking_amount", 0)
 	// dialog.set_value("custom_duty_amount", 0)
 	// dialog.set_value("freight_amount", 0)
 	// dialog.set_value("sale_amount", 0)
@@ -1493,6 +1412,8 @@ let set_edit_bom_details = (
 	dialog.set_value("gemstone_amount", 0);
 	dialog.set_value("diamond_amount", 0);
 	dialog.set_value("saleAmount", 0);
+	dialog.set_value("amount", 0);
+	dialog.set_value("rate", 0);
 
 	// total amount calculation
 	var metal_amount = 0;
@@ -1502,16 +1423,14 @@ let set_edit_bom_details = (
 	var finding_amount = 0;
 	var gemstone_amount = 0;
 	var other_material_amount = 0;
-
-	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
-		let metal_data = [];
-	
-		$.each(doc.metal_detail, function (index, d) {
-			metal_amount += d.amount;
-			making_amount += d.making_amount;
-			wastage_amount += d.wastage_amount;
-	
-			frappe.call({
+	var hall_amount = 0;
+	var customer_metal_purity =0;
+	// metal details table append
+	$.each(doc.metal_detail, function (index, d) {
+		metal_amount += d.amount;
+		making_amount += d.making_amount;
+		wastage_amount += d.wastage_amount;
+		frappe.call({
 				method: "jewellery_erpnext.query.get_customer_mtel_purity",
 				args: {
 					customer: cur_frm.doc.customer,
@@ -1520,292 +1439,128 @@ let set_edit_bom_details = (
 				},
 				callback: function (response) {
 					let metal_purity_value = response.message || "N/A";
-					let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
-					let metal_purity = flt(metal_purity_value || 0);
-	
-					let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-					let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-	
-					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity;
-					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity;
-					let difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity;
-	
-					console.log("gold", difference_actual_gold_rate);
-	
-					let making_rate_to_use = d.making_rate;
-					let rate_to_use = calculated_gold_rate;
-	
-					if (
-						cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
-						cur_frm.doc.customer === "GJCU0009"
-					) {
-						rate_to_use = d.se_rate;
-						making_rate_to_use = d.making_rate;
-						d.making_amount = making_rate_to_use * d.quantity;
-					} else if (
-						cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
-						cur_frm.doc.customer_name === "Gurukrupa Export Private Limited - Chennai"
-					) {
-						making_rate_to_use = d.fg_purchase_rate || 0;
-					}
-	
-					metal_data.push({
-						docname: d.name,
-						metal_type: d.metal_type,
-						metal_touch: d.metal_touch,
-						metal_purity: d.metal_purity,
-						is_customer_item: d.is_customer_item,
-						metal_colour: d.metal_colour,
-						amount: d.amount,
-						rate: rate_to_use,
-						actual_rate: calculated_actual_rate,
-						quantity: d.quantity,
-						wastage_rate: d.wastage_rate,
-						wastage_amount: d.wastage_amount,
-						making_rate: making_rate_to_use,
-						making_amount: d.making_amount,
-						labour_charge:d.labour_charge,
-						customer_metal_purity: metal_purity_value,
-						difference:difference_actual_gold_rate
-					});
-	
-					// Check if last call
-					if (metal_data.length === doc.metal_detail.length) {
-						dialog.fields_dict.metal_detail.df.data = metal_data;
-						dialog.fields_dict.metal_detail.grid.refresh();
-					}
-				}
+					// console.log('hii',metal_purity_value);
+		// customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{d.metal_type}' and metal_touch = '{d.metal_touch}'""",as_dict=True)[0]['metal_purity']
+		dialog.fields_dict.metal_detail.df.data.push({
+			docname: d.name,
+			metal_type: d.metal_type,
+			metal_touch: d.metal_touch,
+			metal_purity: d.metal_purity,
+			customer_metal_purity: metal_purity_value,
+			metal_colour: d.metal_colour,
+			amount: d.amount,
+			rate: d.rate,
+			actual_rate: d.rate,
+			quantity: d.quantity,
+			actual_quantity: d.actual_quantity,
+			difference_qty: d.difference_qty,
+			wastage_rate: d.wastage_rate,
+			wastage_amount: d.wastage_amount,
+			making_rate: d.making_rate,
+			// making_rate_copy: d.making_rate,
+			making_amount: d.making_amount,
+			difference: d.difference,
+		});
+		metal_data = dialog.fields_dict.metal_detail.df.data;
+		dialog.fields_dict.metal_detail.grid.refresh();
+		}
 			});
-		});
+		
+		
 	});
-	
-	
-	
 
-	
-	let total_sum_diamond = 0; 
-	let count = 0;  
-	let total_calls = doc.diamond_detail.length; 
-	
+	// diamond details table append
 	$.each(doc.diamond_detail, function (index, d) {
-		let witout_precision = d.quantity;
-		// console.log(witout_precision);
-		let without_precision_rate = witout_precision * d.total_diamond_rate;
-	
-		frappe.call({
-			method: "frappe.client.get_value",
-			args: {
-				doctype: "Customer",
-				filters: { name: cur_frm.doc.customer },
-				fieldname: "custom_consider_2_digit_for_diamond"
-			},
-			callback: function (response) {
-				let precision = 0;
-	
-				// Check if the custom_consider_2_digit_for_diamond field is checked
-				if (response.message && response.message.custom_consider_2_digit_for_diamond) {
-					precision = 2;  // Set precision to 2 if the checkbox is checked
-				}
-	
-				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
-				let with_precision_rate = quantity_value * d.total_diamond_rate;
-	
-				// Calculate the difference
-				let difference_qty = without_precision_rate - with_precision_rate;
-				let total_diamond_rate_qty = (parseFloat(quantity_value) * parseFloat(d.total_diamond_rate)).toFixed(2);
-				total_sum_diamond += parseFloat(total_diamond_rate_qty);
-							
-				let rate_to_use = d.total_diamond_rate;
-	
-				
-				if (
-					cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
-					cur_frm.doc.customer === "GJCU0009"        
-				) {
-					rate_to_use = flt(d.se_rate || 0);
-				}
-	
-				if (
-					cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
-					cur_frm.doc.customer === "TNCU0002" &&
-					cur_frm.doc.sales_type === "Branch"
-					
-				) {
-					
-					rate_to_use = flt(d.fg_purchase_rate || 0);
-				}
-	
-				dialog.fields_dict.diamond_detail.df.data.push({
-					docname: d.name,
-					diamond_type: d.diamond_type,
-					stone_shape: d.stone_shape,
-					quality: d.quality,
-					pcs: d.pcs,
-					diamond_cut: d.diamond_cut,
-					sub_setting_type: d.sub_setting_type,
-					diamond_grade: d.diamond_grade,
-					diamond_sieve_size: d.diamond_sieve_size,
-					sieve_size_range: d.sieve_size_range,
-					size_in_mm: d.size_in_mm,
-					quantity: quantity_value,  
-					weight_per_pcs: d.weight_per_pcs,
-					total_diamond_rate: rate_to_use,
-					diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
-					// outright_handling_charges_rate:d.outright_handling_charges_rate,
-					// outright_handling_charges_amount:d.outright_handling_charges_amount,
-					is_customer_item: d.is_customer_item,
-					total_diamond_rate_qty: total_diamond_rate_qty,
-					difference_qty: difference_qty,   
-				});
-	
-				count++;
-	
-				// Set diamond amount only after all calls are done
-				if (count === total_calls) {
-					dialog.set_value("diamond_amount", total_sum_diamond.toFixed(2));
-					let grid = dialog.fields_dict.diamond_detail.grid;
-					grid.update_docfield_property("quantity", "precision", 2);
-					grid.update_docfield_property("total_diamond_rate_qty", "precision", 2);  
-					grid.refresh();
-					console.log("Final Diamond Amount:", total_sum_diamond.toFixed(2));
-				}
-			}
-		});
-	});
-	
+		diamond_amount += d.diamond_rate_for_specified_quantity;
 
+		dialog.fields_dict.diamond_detail.df.data.push({
+			docname: d.name,
+			diamond_type: d.diamond_type,
+			stone_shape: d.stone_shape,
+			quality: d.quality,
+			pcs: d.pcs,
+			diamond_cut: d.diamond_cut,
+			sub_setting_type: d.sub_setting_type,
+			diamond_grade: d.diamond_grade,
+			diamond_sieve_size: d.diamond_sieve_size,
+			sieve_size_range: d.sieve_size_range,
+			size_in_mm: d.size_in_mm,
+			quantity: d.quantity,
+			weight_per_pcs: d.weight_per_pcs,
+			total_diamond_rate: d.total_diamond_rate,
+			actual_total_diamond_rate: d.total_diamond_rate,
+			diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+			difference: d.difference,
+		});
+		diamond_data = dialog.fields_dict.diamond_detail.df.data;
+		dialog.fields_dict.diamond_detail.grid.refresh();
+	});
 
 	// gemstone details table append
 	$.each(doc.gemstone_detail, function (index, d) {
 		gemstone_amount += d.gemstone_rate_for_specified_quantity;
-	
-		let witout_precision = d.quantity;
-		let without_precision_rate = witout_precision * d.total_gemstone_rate;
-		
-		frappe.call({
-			method: "frappe.client.get_value",
-			args: {
-				doctype: "Customer",
-				filters: { name: cur_frm.doc.customer },
-				fieldname: "custom_consider_2_digit_for_gemstone"
-			},
-			callback: function (response) {
-				let precision = 0;
-	
-				// Check if the custom_consider_2_digit_for_diamond field is checked
-				if (response.message && response.message.custom_consider_2_digit_for_gemstone) {
-					precision = 2;  // Set precision to 2 if the checkbox is checked
-				}
-	
-				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
-				let with_precision_rate = quantity_value * d.total_gemstone_rate;
-	
-				// Calculate the difference
-				let difference_qty = without_precision_rate - with_precision_rate;
-	
-				dialog.fields_dict.gemstone_detail.df.data.push({
-					docname: d.name,
-					gemstone_type: d.gemstone_type,
-					stone_shape: d.stone_shape,
-					sub_setting_type: d.sub_setting_type,
-					cut_or_cab: d.cut_or_cab,
-					pcs: d.pcs,
-					gemstone_quality: d.gemstone_quality,
-					gemstone_grade: d.gemstone_grade,
-					gemstone_size: d.gemstone_size,
-					quantity: quantity_value,  
-					total_gemstone_rate: d.total_gemstone_rate,
-					gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
-					is_customer_item: d.is_customer_item,
-					difference_qty: difference_qty,
-				});
-	
-				let grid = dialog.fields_dict.gemstone_detail.grid;
-				grid.update_docfield_property("quantity", "precision", precision);
-	
-				// Refresh the grid
-				gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
-				grid.refresh();
-			}
+
+		dialog.fields_dict.gemstone_detail.df.data.push({
+			docname: d.name,
+			gemstone_type: d.gemstone_type,
+			stone_shape: d.stone_shape,
+			sub_setting_type: d.sub_setting_type,
+			cut_or_cab: d.cut_or_cab,
+			pcs: d.pcs,
+			gemstone_quality: d.gemstone_quality,
+			gemstone_grade: d.gemstone_grade,
+			gemstone_size: d.gemstone_size,
+			quantity: d.quantity,
+			total_gemstone_rate: d.total_gemstone_rate,
+			actual_total_gemstone_rate: d.total_gemstone_rate,
+			gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
+			difference: d.differences,
 		});
+		gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
+		dialog.fields_dict.gemstone_detail.grid.refresh();
 	});
 
 	// finding details table append
-	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
 	$.each(doc.finding_detail, function (index, d) {
 		finding_amount += d.amount;
-		// let rate_to_use = d.rate;
-		let making_rate_to_use = d.making_rate;
-	
+		making_amount += d.making_amount;
 		frappe.call({
-			method: "jewellery_erpnext.query.get_customer_mtel_purity",
-			args: {
-				customer: cur_frm.doc.customer,
-				metal_type: d.metal_type,
-				metal_touch: d.metal_touch,
-			},
-			callback: function (response) {
-				let metal_purity_value = response.message || "N/A";
-				let metal_purity = flt(metal_purity_value || 0);
-				let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
-				
-				let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-				let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-				let rate_to_use = calculated_gold_rate;
-				console.log("gold  Rate",calculated_gold_rate)
-				let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
-				let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
-				difference_actual_gold_rate = calculated_actual_rate_quantity - calculated_gold_rate_quantity
-				
-				if (
-					cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
-					cur_frm.doc.customer === "GJCU0009"
-				) {
-					rate_to_use = flt(d.se_rate || 0);
-					making_rate_to_use = d.making_rate;
-					d.making_amount = making_rate_to_use * d.quantity;
-				} else if (
-					cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
-					cur_frm.doc.customer_name === "Gurukrupa Export Private Limited - Chennai"
-				) {
-					making_rate_to_use = d.fg_purchase_rate;
-				}
-	
-				dialog.fields_dict.finding_detail.df.data.push({
-					docname: d.name,
+				method: "jewellery_erpnext.query.get_customer_mtel_purity",
+				args: {
+					customer: cur_frm.doc.customer,
 					metal_type: d.metal_type,
-					finding_category: d.finding_category,
-					finding_type: d.finding_type,
-					finding_size: d.finding_size,
 					metal_touch: d.metal_touch,
-					metal_purity: d.metal_purity,
-					customer_metal_purity : metal_purity_value,
-					amount: d.amount,
-					rate: calculated_gold_rate,
-					actual_rate : calculated_actual_rate,
-					metal_colour: d.metal_colour,
-					quantity: d.quantity,
-					wastage_rate: d.wastage_rate,
-					wastage_amount: d.wastage_amount,
-					labour_charge:d.labour_charge,
-					making_rate: making_rate_to_use,
-					making_amount: d.making_amount,
-					difference: difference_actual_gold_rate,
-				});
-	
-				// finding_data = dialog.fields_dict.finding_detail.df.data;
-				// dialog.fields_dict.finding_detail.grid.refresh();
-				let grid = dialog.fields_dict.finding_detail.grid;
-				grid.update_docfield_property("quantity", "precision", precision);
-	
-				// Refresh the grid
-				finding_data = dialog.fields_dict.finding_detail.df.data;
-				grid.refresh();
-			}
+				},
+				callback: function (response) {
+					let metal_purity_value = response.message || "N/A";
+		dialog.fields_dict.finding_detail.df.data.push({
+			docname: d.name,
+			metal_type: d.metal_type,
+			finding_category: d.finding_category,
+			finding_type: d.finding_type,
+			finding_size: d.finding_size,
+			metal_touch: d.metal_touch,
+			metal_purity: d.metal_purity,
+			customer_metal_purity: metal_purity_value,
+			amount: d.amount,
+			rate: d.rate,
+			actual_rate: d.rate,
+			metal_colour: d.metal_colour,
+			quantity: d.quantity,
+			actual_quantity: d.actual_quantity,
+			difference_qty: d.difference_qty,
+			wastage_rate: d.wastage_rate,
+			wastage_amount: d.wastage_amount,
+			making_rate: d.making_rate,
+			making_amount: d.making_amount,
+			difference: d.difference,
 		});
+		finding_data = dialog.fields_dict.finding_detail.df.data;
+		dialog.fields_dict.finding_detail.grid.refresh();
+		}
+			});
+		
 	});
-	});
-
 
 	// other details table append
 	$.each(doc.other_detail, function (index, d) {
@@ -1823,54 +1578,52 @@ let set_edit_bom_details = (
 	// dialog fields value fetch from BOM
 	dialog.set_value("gross_weight", doc.gross_weight);
 	// dialog.set_value("certification_amount", doc.certification_amount)
-	// dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
+	dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
 	// dialog.set_value("custom_duty_amount", doc.custom_duty_amount)
 	// dialog.set_value("freight_amount", doc.freight_amount)
 	// dialog.set_value("sale_amount", doc.sale_amount)
+	hall_amount =doc.hallmarking_amount;
+	dialog.set_value("diamond_inclusive", doc.diamond_inclusive);
+	dialog.set_value("net_wt", doc.net_wt);
+	dialog.set_value("metal_amount", metal_amount);
+	dialog.set_value("finding_amount", finding_amount);
+	dialog.set_value("making_amount", making_amount);
+	dialog.set_value("wastage_amount", wastage_amount);
+	dialog.set_value("gemstone_amount", gemstone_amount);
+	dialog.set_value("diamond_amount", diamond_amount);
+	dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
+	dialog.set_value("finding_weight", doc.finding_weight_ || 0);
+	dialog.set_value("other_weight", doc.other_weight || 0);
+	dialog.set_value("diamond_weight", doc.diamond_weight || 0);
+	dialog.set_value("gemstone_weight", doc.gemstone_weight || 0);
+	// dialog.set_value("gemstone_weight", doc.gemstone_weight || 0);
+	dialog.set_value("amount", ( making_amount + finding_amount + metal_amount +diamond_amount  + hall_amount ));
+	dialog.set_value("rate", ( making_amount + finding_amount + metal_amount +diamond_amount + hall_amount ));
+	// console.log("hii",amount);
+	if (dialog.get_value("sale_key"))
+		dialog.set_value(
+			"saleAmount",
+			dialog.get_value("sale_amount") / dialog.get_value("sale_key")
+		);
+};
 
-	frappe.call({
-		method: "frappe.client.get_value",
-		args: {
-			doctype: "Customer",
-			filters: { name: cur_frm.doc.customer },
-			fieldname: "custom_consider_2_digit_for_diamond"
-		},
-		callback: function (response) {
-			let precision = 0;
-	
-			if (response.message && response.message.custom_consider_2_digit_for_diamond) {
-				precision = 2;  
-			}
-	
-			dialog.set_df_property("diamond_weight", "precision", precision);
-			dialog.set_df_property("gemstone_weight", "precision", precision);
-	
-			// Set all fields from BOM
-			dialog.set_value("gross_weight", doc.gross_weight || 0);
-			dialog.set_value("metal_amount", metal_amount || 0);
-			dialog.set_value("making_amount", making_amount || 0);
-			dialog.set_value("wastage_amount", wastage_amount || 0);
-			dialog.set_value("gemstone_amount", gemstone_amount || 0);
-	
-			// Set diamond_weight with dynamic precision
-			let diamond_weight = doc.diamond_weight || 0;
-			dialog.set_value("diamond_weight", parseFloat(diamond_weight).toFixed(precision));
-	
-			// Set remaining fields
-			dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
-			dialog.set_value("finding_weight", doc.finding_weight_ || 0);
-			dialog.set_value("other_weight", doc.other_weight || 0);
-			let gemstone_weight = doc.gemstone_weight || 0;
-			dialog.set_value("gemstone_weight", parseFloat(gemstone_weight).toFixed(precision));
-	
-			// Sale Amount calculation
-			if (dialog.get_value("sale_key")) {
-				let sale_amount = dialog.get_value("sale_amount") || 0;
-				let sale_key = dialog.get_value("sale_key") || 1;
-				dialog.set_value("saleAmount", (sale_amount / sale_key).toFixed(2));
-			}
-		}
-	});
+let filter_customer = (frm) => {
+	if (frm.doc.sales_type) {
+		//filtering customer with sales type
+		frm.set_query("customer", function (doc) {
+			return {
+				query: "jewellery_erpnext.utils.customer_query",
+				filters: {
+					sales_type: frm.doc.sales_type,
+				},
+			};
+		});
+	} else {
+		// removing filters
+		frm.set_query("customer", function (doc) {
+			return {};
+		});
+	}
 };
 
 function scan_api_call(input, callback) {
@@ -1900,12 +1653,12 @@ function update_dialog_values(dialog, scanned_item, r, row) {
 
 let add_row = (serial_no, frm, row) => {
 	/*
-      function to add row of Sales Invoice Item table using bom details
-      args:
-          serial_no: link of serail no( to fetch bom using serial)
-          frm: current form
-          row: current row
-  */
+        function to add row of Sales Invoice Item table using bom details
+        args:
+            serial_no: link of serail no( to fetch bom using serial)
+            frm: current form
+            row: current row
+    */
 	return new Promise((resolve, reject) => {
 		let new_row;
 		frappe.call({
@@ -1922,7 +1675,6 @@ let add_row = (serial_no, frm, row) => {
 					new_row.item_code = bom.item;
 					new_row.serial_no = bom.tag_no;
 					new_row.bom = bom.name;
-					frappe.model.set_value(new_row.doctype, new_row.name, "bom", bom.name);
 					refresh_field("items");
 					frm.trigger("item_code", new_row.doctype, new_row.name);
 					frm.script_manager.trigger("item_code", new_row.doctype, new_row.name);
@@ -1953,4 +1705,14 @@ let get_sales_type = (frm) => {
 			},
 		});
 	}
+};
+
+let edit_bom_after_submit = (frm) => {
+	// funtion to enable edit bom button after submit
+
+	frappe.meta.get_docfield("Sales Invoice", "items", frm.doc.name).allow_on_submit = 1;
+
+	// removing add row option
+	frm.get_field("items").grid.cannot_add_rows = true;
+	frm.get_field("items").grid.grid_buttons = "";
 };
