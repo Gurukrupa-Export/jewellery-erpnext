@@ -82,6 +82,7 @@
   "diamond_wt_in_gram",
   "gemstone_wt_in_gram",
   "other_wt",
+  "allowed_loss_percentage",
   "column_break_oyjmw",
   "received_gross_wt",
   "received_net_wt",
@@ -90,6 +91,14 @@
   "gemstone_wt",
   "diamond_pcs",
   "gemstone_pcs",
+  "is_received_gross_greater_than",
+  "section_break_pnns",
+  "mop_balance_table",
+  "section_break_sdty",
+  "department_source_table",
+  "department_target_table",
+  "employee_source_table",
+  "employee_target_table",
   "section_break_vwqj",
   "stock_summery",
   "stock_entry",
@@ -111,7 +120,8 @@
   "department_finishtime",
   "section_break_ce6q",
   "department_time_logs",
-  "is_received_gross_greater_than"
+  "tab_break_tjws",
+  "department_comment"
  ],
  "fields": [
   {
@@ -434,7 +444,7 @@
   {
    "fieldname": "loss_wt",
    "fieldtype": "Float",
-   "label": "Loss / Increase Wt",
+   "label": "Loss Wt",
    "no_copy": 1
   },
   {
@@ -627,11 +637,59 @@
    "hidden": 1
   },
   {
+   "fieldname": "department_source_table",
+   "fieldtype": "Table",
+   "label": "Department Source Table",
+   "no_copy": 1,
+   "options": "Department Source Table",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "department_target_table",
+   "fieldtype": "Table",
+   "label": "Department Target Table",
+   "no_copy": 1,
+   "options": "Department Target Table",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "employee_source_table",
+   "fieldtype": "Table",
+   "label": "Employee Source Table",
+   "no_copy": 1,
+   "options": "Employee Source Table",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "employee_target_table",
+   "fieldtype": "Table",
+   "label": "Employee Target Table",
+   "no_copy": 1,
+   "options": "Employee Target Table",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
    "collapsible": 1,
    "fieldname": "section_break_vwqj",
    "fieldtype": "Section Break",
    "hidden": 1,
    "label": "HTML Table's"
+  },
+  {
+   "fieldname": "section_break_sdty",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "mop_balance_table",
+   "fieldtype": "Table",
+   "in_filter": 1,
+   "in_standard_filter": 1,
+   "label": "Balance Table",
+   "options": "MOP Balance Table"
   },
   {
    "fieldname": "time_log_tab",
@@ -688,6 +746,11 @@
    "label": "Previous MOP",
    "options": "Manufacturing Operation",
    "read_only": 1
+  },
+  {
+   "fieldname": "section_break_pnns",
+   "fieldtype": "Section Break",
+   "label": "Department Timer"
   },
   {
    "fieldname": "department_time_logs",
@@ -761,8 +824,25 @@
    "default": "0",
    "fieldname": "is_received_gross_greater_than",
    "fieldtype": "Check",
-   "label": "Is received gross greater than gross ",
-   "read_only": 1
+   "label": "Is received gross greater than gross "
+  },
+  {
+   "fetch_from": "operation.allowed_loss_percentage",
+   "fetch_if_empty": 1,
+   "fieldname": "allowed_loss_percentage",
+   "fieldtype": "Float",
+   "label": "Standard Process Loss Percentage"
+  },
+  {
+   "fieldname": "tab_break_tjws",
+   "fieldtype": "Tab Break",
+   "label": "Comments"
+  },
+  {
+   "fieldname": "department_comment",
+   "fieldtype": "Table",
+   "label": "Department Comment",
+   "options": "Department Comment"
   }
  ],
  "index_web_pages_for_search": 1,
@@ -781,11 +861,11 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2026-03-11 12:04:40.149095",
+ "modified": "2025-10-10 01:02:23.285168",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

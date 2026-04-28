@@ -8,12 +8,31 @@ frappe.ui.form.on("Delivery Note", {
 	customer(frm) {
 		get_sales_type(frm);
 	},
+	// onload_post_render: function(frm) {
+    //     // or use refresh / after_save depending on your need
+    //     (frm.doc.items || []).forEach(row => {
+    //         if (row.so_detail && !row.custom_bom) {
+    //             frappe.call({
+    //                 method: "jewellery_erpnext.jewellery_erpnext.doctype.customer_approval.customer_approval.get_bom_no",
+    //                 args: {
+    //                     so_detail: row.so_detail
+    //                 },
+    //                 callback: function(r) {
+    //                     if (r.message) {
+    //                         frappe.model.set_value(row.doctype,row.name,"custom_bom",r.message.name);
+	// 						// frappe.model.set_value(row.doctype,row.name,"weight_per_unit",r.message.gross_weight);
+    //                     }
+    //                 }
+    //             });
+    //         }
+    //     });
+    // }
 });
 
 frappe.ui.form.on("Delivery Note Item", {
 	custom_edit_bom: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
-
+		// console.log("hiii",row);
 		if (frm.doc.__islocal) {
 			frappe.throw(__("Please save document to edit the BOM."));
 		}
@@ -1086,7 +1105,12 @@ frappe.ui.form.on("Delivery Note Item", {
 	},
 	
 });
+	
+///////////////////////////////////////////////////
 
+
+
+///////////////////////////////////////////////////////////////////////////////
 let edit_bom_documents = (
 	dialog,
 	bom_no,

@@ -28,6 +28,7 @@
   "metal_colour",
   "qty",
   "quantity",
+  "quantity_3",
   "actual_quantity",
   "difference_qty",
   "stock_uom",
@@ -158,7 +159,8 @@
   {
    "fieldname": "wastage_rate",
    "fieldtype": "Currency",
-   "label": "Wastage Rate"
+   "label": "Wastage Rate",
+   "precision": "3"
   },
   {
    "allow_on_submit": 1,
@@ -240,19 +242,25 @@
    "fieldname": "customer_metal_purity",
    "fieldtype": "Link",
    "label": "Customer Metal Purity",
-   "options": "Attribute Value",
-   "read_only": 1
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "quantity_3",
+   "fieldtype": "Float",
+   "label": "Wt (gms 2)"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2025-01-09 14:15:34.404961",
- "modified_by": "Administrator",
+ "modified": "2026-03-31 15:10:37.902320",
+ "modified_by": "shruti_b@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "BOM Finding Detail",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
