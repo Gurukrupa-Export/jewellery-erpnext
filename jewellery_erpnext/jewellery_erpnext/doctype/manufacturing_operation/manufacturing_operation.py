@@ -1763,7 +1763,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			for m in frappe.get_all(
 				"Manufacturing Operation",
 				filters={"name": ["in", mop_names]},
-				fields=["name", "employee", "total_minutes"],
+				fields=["name", "employee", "total_minutes", "operation"],
 			)
 		}
 
@@ -1800,12 +1800,11 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				continue
 
 			operating_cost = (hour_rate / 60) * total_minutes
-			# Set correct hour_rate in BOM Operation
 			operation_data = {
 				"manufacturing_operation": row.manufacturing_operation,
 				"workstation": workstation_name,
 				"hour_rate": hour_rate,
-				"time_in_mins": total_minutes,
+				"time_in_mins": total_minutes or 0.01,
 				"operating_cost": operating_cost,
 			}
 			new_bom.append("operations", operation_data)
@@ -3326,7 +3325,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		if new_bom.total_diamond_pcs
 		else 0
 	)
-	new_bom.insert(ignore_mandatory=True)
+	new_bom.flags.ignore_links = True
+	new_bom.insert(ignore_mandatory=True, ignore_links=True)
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
 	self.fg_bom = new_bom.name

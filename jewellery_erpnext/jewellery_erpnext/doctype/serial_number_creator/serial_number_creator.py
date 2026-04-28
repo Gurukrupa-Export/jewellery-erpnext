@@ -158,7 +158,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 	operation_data = frappe.get_all(
 		"Manufacturing Operation",
 		{"manufacturing_order": pmo, "docstatus": ["!=", 2]},
-		["name as manufacturing_operation", "employee", "total_minutes"],
+		["name as manufacturing_operation", "employee", "total_minutes", "operation"],
 	)
 
 	for key, row_data in id_wise_data_split.items():
