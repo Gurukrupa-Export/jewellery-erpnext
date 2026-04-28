@@ -427,7 +427,6 @@ class EmployeeIR(Document):
 		)
 		if not service_item:
 			frappe.throw(_("Please set service item for {0}").format(self.operation))
-		skip_operations = []
 		po = frappe.new_doc("Purchase Order")
 		po.supplier = self.subcontractor
 		company = frappe.db.get_value(
@@ -437,13 +436,7 @@ class EmployeeIR(Document):
 		po.employee_ir = self.name
 		po.purchase_type = "FG Purchase"
 
-		allow_zero_qty = frappe.db.get_value(
-			"Department Operation", self.operation, "allow_zero_qty_wo"
-		)
 		for row in self.employee_ir_operations:
-			if not row.gross_wt and not allow_zero_qty:
-				skip_operations.append(row.manufacturing_operation)
-				continue
 			rate = get_po_rates(
 				self.subcontractor, self.operation, po.purchase_type, row
 			)
@@ -465,10 +458,6 @@ class EmployeeIR(Document):
 					"manufacturing_operation": row.manufacturing_operation,
 					"custom_pmo": pmo,
 				},
-			)
-		if skip_operations:
-			frappe.throw(
-				f"PO creation skipped for following Manufacturing Operations due to zero gross weight: {', '.join(skip_operations)}"
 			)
 		if not po.items:
 			return
