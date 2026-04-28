@@ -1050,10 +1050,6 @@ def custom_get_bom_scrap_material(self, qty):
 		or {}
 	)
 
-	for item in itervalues(item_dict):
-		item.from_warehouse = ""
-		item.is_scrap_item = 1
-
 	for row in self.get_scrap_items_from_job_card():
 		if row.stock_qty <= 0:
 			continue
