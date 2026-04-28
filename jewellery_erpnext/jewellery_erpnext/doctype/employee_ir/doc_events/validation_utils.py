@@ -50,16 +50,29 @@ def validate_duplication_and_gr_wt(self):
 			)
 
 		existing_mop.add(row.manufacturing_operation)
-		mop_doc = update_mop_balance(row.manufacturing_operation)
+		mop_doc = frappe.db.get_value(
+			"Manufacturing Operation",
+			row.manufacturing_operation,
+			[
+				"gross_wt",
+				"net_wt",
+				"finding_wt",
+				"diamond_wt",
+				"gemstone_wt",
+				"diamond_pcs",
+				"gemstone_pcs",
+			],
+			as_dict=True,
+		)
 		row.update(
 			{
-				"gross_wt": mop_doc.gross_wt,
-				"net_wt": mop_doc.net_wt,
-				"finding_wt": mop_doc.finding_wt,
-				"diamond_wt": mop_doc.diamond_wt,
-				"gemstone_wt": mop_doc.gemstone_wt,
-				"diamond_pcs": mop_doc.diamond_pcs,
-				"gemstone_pcs": mop_doc.gemstone_pcs,
+				"gross_wt": mop_doc["gross_wt"],
+				"net_wt": mop_doc["net_wt"],
+				"finding_wt": mop_doc["finding_wt"],
+				"diamond_wt": mop_doc["diamond_wt"],
+				"gemstone_wt": mop_doc["gemstone_wt"],
+				"diamond_pcs": mop_doc["diamond_pcs"],
+				"gemstone_pcs": mop_doc["gemstone_pcs"],
 			}
 		)
 		if self.type == "Receive":
@@ -89,9 +102,6 @@ def validate_mwo(self, row, is_finding):
 
 
 def validate_gross_wt(row, precision, main_slip=None, is_main_slip_required=False):
-	row.gross_wt = frappe.db.get_value(
-		"Manufacturing Operation", row.manufacturing_operation, "gross_wt"
-	)
 	if main_slip or is_main_slip_required:
 		return
 	if flt(row.gross_wt, precision) < flt(row.received_gross_wt, precision):
@@ -104,12 +114,6 @@ def validate_gross_wt(row, precision, main_slip=None, is_main_slip_required=Fals
 
 def update_mop_balance(mop_name):
 	doc = frappe.get_doc("Manufacturing Operation", mop_name)
-	# doc.validate()
-	# doc.on_update()
-	# doc.update_children()
-	# doc.db_update_all()
-	doc.save()
-
 	return doc
 
 
