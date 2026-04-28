@@ -1,14 +1,18 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "field:customer",
+ "autoname": "CCP-.###",
  "creation": "2025-01-09 11:47:45.144677",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
   "section_break_ea0b",
+  "is_standard",
   "customer",
-  "hallmarking_amount"
+  "hallmarking_amount",
+  "wt_threshold",
+  "per_pc_rate",
+  "per_carat_rate"
  ],
  "fields": [
   {
@@ -16,6 +20,7 @@
    "fieldtype": "Section Break"
   },
   {
+   "depends_on": "eval:doc.is_standard ==0",
    "fieldname": "customer",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -29,15 +34,37 @@
    "in_list_view": 1,
    "label": "Hallmarking Amount",
    "reqd": 1
+  },
+  {
+   "fieldname": "wt_threshold",
+   "fieldtype": "Float",
+   "label": "Wt Threshold"
+  },
+  {
+   "fieldname": "per_pc_rate",
+   "fieldtype": "Float",
+   "label": "Per Pc Rate"
+  },
+  {
+   "fieldname": "per_carat_rate",
+   "fieldtype": "Float",
+   "label": "Per Carat Rate"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_standard",
+   "fieldtype": "Check",
+   "label": "Is Standard"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-01-09 12:04:08.230660",
- "modified_by": "Administrator",
+ "modified": "2026-02-26 15:58:30.228582",
+ "modified_by": "shruti_b@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Customer Certification Price",
- "naming_rule": "By fieldname",
+ "naming_rule": "By \"Naming Series\" field",
  "owner": "Administrator",
  "permissions": [
   {
@@ -53,6 +80,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
