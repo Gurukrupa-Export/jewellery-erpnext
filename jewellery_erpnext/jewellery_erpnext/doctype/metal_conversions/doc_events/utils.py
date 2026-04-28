@@ -46,7 +46,9 @@ def update_batch_details(self):
 		batch = item.batch_no or item.batch
 		if batch:
 			if not item.inventory_type:
-				item.inventory_type = frappe.db.get_value("Batch", batch, "custom_inventory_type") 
+				item.inventory_type = frappe.db.get_value(
+					"Batch", batch, "custom_inventory_type"
+				)
 			item.customer = frappe.db.get_value("Batch", batch, "custom_customer")
 		if self.doctype == "Diamond Conversion":
 			self.append("sc_source_table", item)
@@ -55,16 +57,19 @@ def update_batch_details(self):
 
 
 def update_alloy_betch(self):
-	if flt(self.source_alloy_qty) <=0:
+	if flt(self.source_alloy_qty) <= 0:
 		return
-	if not self.source_alloy and flt(self.source_alloy_qty)>0:
+	if not self.source_alloy and flt(self.source_alloy_qty) > 0:
 		frappe.throw(_("Please Select The Alloy"))
 	if (
 		self.source_alloy_batch
 		and self.source_alloy_qty
-		and get_batch_qty(self.source_alloy_batch, self.source_warehouse) < flt(self.source_alloy_qty, 3)
+		and get_batch_qty(self.source_alloy_batch, self.source_warehouse)
+		< flt(self.source_alloy_qty, 3)
 	):
-		frappe.msgprint(_("Selected batch does not have sufficient qty for transaction"))
+		frappe.msgprint(
+			_("Selected batch does not have sufficient qty for transaction")
+		)
 	else:
 		batch_data = get_auto_batch_nos(
 			frappe._dict(
@@ -80,7 +85,7 @@ def update_alloy_betch(self):
 		if not batch_data:
 			frappe.throw(_("No batch available for given warehouse"))
 		self.alloy_batch_details = []
-		# batch_data = batch_data[0] 
+		# batch_data = batch_data[0]
 		if batch_data:
 			remaining_qty = 0
 			total_qty = 0
@@ -93,12 +98,15 @@ def update_alloy_betch(self):
 				else:
 					qty = flt(self.source_alloy_qty) - remaining_qty
 					total_qty += qty
-				self.append("alloy_batch_details",{
-					'qty':qty,
-					'batch':i.batch_no
-				})
+				self.append("alloy_batch_details", {"qty": qty, "batch": i.batch_no})
 			if total_qty != flt(self.source_alloy_qty):
-				frappe.throw(_("The source quantity is not available for the given warehouse. The available quantity is {}.".format(total_qty)))
+				frappe.throw(
+					_(
+						"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
+							total_qty
+						)
+					)
+				)
 		# if flt(self.source_alloy_qty) > batch_data.qty:
 		# 	frappe.msgprint(
 		# 		_("{0} missing for transaction in Batch {1}").format(
@@ -108,7 +116,14 @@ def update_alloy_betch(self):
 
 		# self.source_alloy_batch = batch_data.batch_no
 
+
 def update_source_betch(self):
+	if self.is_customer_metal:
+		return
+
+	if not self.source_item or not self.source_qty:
+		return
+
 	batch_data = get_auto_batch_nos(
 		frappe._dict(
 			{
@@ -131,7 +146,9 @@ def update_source_betch(self):
 		total_qty = 0
 
 		for i in batch_data:
-			custom_inventory_type, custom_customer = frappe.db.get_value("Batch", i.batch_no, ["custom_inventory_type", "custom_customer"])
+			custom_inventory_type, custom_customer = frappe.db.get_value(
+				"Batch", i.batch_no, ["custom_inventory_type", "custom_customer"]
+			)
 
 			# Proceed only if inventory type matches
 			if custom_inventory_type != inventory_type:
@@ -140,24 +157,34 @@ def update_source_betch(self):
 			# Determine the quantity to be assigned
 			qty = 0
 			if total_qty != flt(self.source_qty):
-				if (custom_inventory_type == "Customer Goods" and custom_customer == self.customer) or custom_inventory_type == "Regular Stock":
+				if (
+					custom_inventory_type == "Customer Goods"
+					and custom_customer == self.customer
+				) or custom_inventory_type == "Regular Stock":
 					# If the current batch has more quantity than needed, use the difference
 					if flt(self.source_qty) > remaining_qty + i.qty:
 						qty = i.qty
 						remaining_qty += i.qty
 					else:
 						qty = flt(self.source_qty) - remaining_qty
-						remaining_qty = flt(self.source_qty)  # Ensure remaining_qty equals source_qty
+						remaining_qty = flt(
+							self.source_qty
+						)  # Ensure remaining_qty equals source_qty
 					total_qty += qty
 
 					# Append details to source_batch_details
-					self.append("source_batch_details", {
-						'qty': qty,
-						'batch': i.batch_no
-					})
+					self.append(
+						"source_batch_details", {"qty": qty, "batch": i.batch_no}
+					)
 
 			if remaining_qty >= flt(self.source_qty):
 				break  # Stop if we have filled the required quantity
 
 		if total_qty != flt(self.source_qty):
-			frappe.throw(_("The source quantity is not available for the given warehouse. The available quantity is {}.".format(total_qty)))
+			frappe.throw(
+				_(
+					"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
+						total_qty
+					)
+				)
+			)
