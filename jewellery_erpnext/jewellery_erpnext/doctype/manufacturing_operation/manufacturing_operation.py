@@ -2580,10 +2580,25 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 				new_bom.append("metal_detail", row)
 
+				# Custom Metal Amount
 				if not hasattr(new_bom, "custom_metal_amount"):
 					new_bom.custom_metal_amount = 0
 				if new_bom.get("metal_detail"):
+					total_making_amount = sum(
+						flt(r.get("making_amount", 0))
+						for r in new_bom.get("metal_detail", [])
+					)
 					new_bom.custom_metal_amount = total_making_amount
+
+				# Custom FG Metal Amount
+				if not hasattr(new_bom, "custom_fg_metal_amount"):
+					new_bom.custom_fg_metal_amount = 0
+				if new_bom.get("metal_detail"):
+					total_fg_purchase_amount = sum(
+						flt(r.get("fg_purchase_amount", 0))
+						for r in new_bom.get("metal_detail", [])
+					)
+					new_bom.custom_fg_metal_amount = total_fg_purchase_amount
 
 		elif category == "F":
 			row = {}
