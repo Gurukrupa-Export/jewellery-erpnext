@@ -25,7 +25,7 @@ class TestSalesOrder(FrappeTestCase):
 			row.making_charges = 5000
 			row.rate = 150000
 			if not row.warehouse:
-				row.warehouse = "Product Allocation FG - GEPL"
+				row.warehouse = "Product Allocation FG"
 		sales_order.save()
 		for row in sales_order.items:
 			self.assertEqual(
