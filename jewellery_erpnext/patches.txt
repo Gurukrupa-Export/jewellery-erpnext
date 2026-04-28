@@ -6,3 +6,4 @@ jewellery_erpnext.patches.truncate_manufacturing_operation_field
 jewellery_erpnext.patches.remove_se_custom_fields
 jewellery_erpnext.patches.tracking_bom_fields
 jewellery_erpnext.patches.add_manufacturing_plan_indexes
+jewellery_erpnext.patches.add_stock_entry_type_repack
