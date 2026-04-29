@@ -100,50 +100,6 @@ class ManufacturingOperation(Document):
 
 		self.save()
 
-	# def validate_sequence_id(self):
-	# 	# if self.is_corrective_job_card:
-	# 	# 	return
-
-	# 	# if not (self.work_order and self.sequence_id):
-	# 	# 	return
-
-	# 	# current_operation_qty = 0.0
-	# 	# data = self.get_current_operation_data()
-	# 	# if data and len(data) > 0:
-	# 	# 	current_operation_qty = flt(data[0].completed_qty)
-
-	# 	# current_operation_qty += flt(self.total_completed_qty)
-
-	# 	data = frappe.get_all(
-	# 		"Work Order Operation",
-	# 		fields=["operation", "status", "completed_qty", "sequence_id"],
-	# 		filters={"docstatus": 1, "parent": self.work_order, "sequence_id": ("<", self.sequence_id)},
-	# 		order_by="sequence_id, idx",
-	# 	)
-
-	# 	message = "Job Card {0}: As per the sequence of the operations in the work order {1}".format(
-	# 		bold(self.name), bold(get_link_to_form("Work Order", self.work_order))
-	# 	)
-
-	# 	for row in data:
-	# 		if row.status != "Completed" and row.completed_qty < current_operation_qty:
-	# 			frappe.throw(
-	# 				_("{0}, complete the operation {1} before the operation {2}.").format(
-	# 					message, bold(row.operation), bold(self.operation)
-	# 				),
-	# 				OperationSequenceError,
-	# 			)
-
-	# 		if row.completed_qty < current_operation_qty:
-	# 			msg = f"""The completed quantity {bold(current_operation_qty)}
-	# 				of an operation {bold(self.operation)} cannot be greater
-	# 				than the completed quantity {bold(row.completed_qty)}
-	# 				of a previous operation
-	# 				{bold(row.operation)}.
-	# 			"""
-
-	# 			frappe.throw(_(msg))
-
 	def validate(self):
 		if self.flags.ignore_validation:
 			self.set_start_finish_time()
@@ -153,8 +109,8 @@ class ManufacturingOperation(Document):
 			return
 
 		self.set_start_finish_time()
-		self.sync_weights_from_mop_log()
-		self.validate_loss()
+		# self.sync_weights_from_mop_log()
+		# self.validate_loss()
 		self.validate_operation()
 
 	def sync_weights_from_mop_log(self):
@@ -263,7 +219,7 @@ class ManufacturingOperation(Document):
 
 	def on_update(self):
 		self.attach_cad_cam_file_into_item_master()  # To set MOP doctype CAD-CAM Attachment's & respective details into Item Master.
-		self.set_wop_weight_details()  # To Set WOP doctype Weight details from MOP Doctype.
+		# self.set_wop_weight_details()  # To Set WOP doctype Weight details from MOP Doctype.
 		self.set_pmo_weight_details_in_bulk()  # To Set PMO doctype Weight details from MOP Doctype.
 
 	# timer code
@@ -531,16 +487,6 @@ class ManufacturingOperation(Document):
 					self.start_time = self.time_logs[0].from_time
 				if self.time_logs:
 					self.finish_time = self.time_logs[-1].to_time
-					# self.time_taken = time_diff(self.finish_time, self.start_time)
-
-			# elif self.status == "WIP" and not self.department_starttime:
-			# 	if self.department_time_logs:
-			# elif self.status == "Finished":
-			# 	if not self.department_starttime and self.department_time_logs:
-			# 		self.department_starttime = self.department_time_logs[0].department_from_time
-			# 	if self.department_time_logs:
-			# 		self.department_finishtime = self.department_time_logs[-1].department_to_time
-			# 		self.time_taken = time_diff(self.department_finishtime, self.department_starttime)
 
 	def attach_cad_cam_file_into_item_master(self):
 		# self.ref_name = self.name

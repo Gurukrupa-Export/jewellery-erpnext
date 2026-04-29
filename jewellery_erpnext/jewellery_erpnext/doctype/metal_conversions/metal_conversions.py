@@ -50,17 +50,7 @@ class MetalConversions(Document):
 		# if not self.batch and self.multiple_metal_converter == 0:
 		# 	frappe.throw(_("Batch Missing"))
 		update_alloy_betch(self)
-		if self.multiple_metal_converter == 0:
-			if self.is_customer_metal:
-				if not self.source_batch_details:
-					frappe.throw(
-						_(
-							"For customer metal, please enter source batch details manually."
-						)
-					)
-			else:
-				if not self.source_batch_details:
-					update_source_betch(self)
+		update_source_betch(self)
 		get_inventory_type(self)
 
 	@frappe.whitelist()
@@ -342,7 +332,6 @@ def make_metal_stock_entry(self):
 	source_wh = self.source_warehouse
 	inventory_type = self.inventory_type or "Regular Stock"
 	customer = self.customer
-	batch_no = self.batch
 	se = frappe.get_doc(
 		{
 			"doctype": "Stock Entry",

@@ -395,13 +395,6 @@ def inject_extra_metal_for_eir_receive(eir, row):
 	Returns a list of created Stock Entry names (empty list if skipped).
 	"""
 	if not cint(getattr(eir, "is_main_slip_required", 0)):
-		if flt(row.received_gross_wt) > flt(row.gross_wt):
-			frappe.throw(
-				_(
-					"Main Slip injection: cannot inject extra metal for this "
-					"Employee IR because Main Slip is not required."
-				)
-			)
 		return []
 
 	extra = flt(row.received_gross_wt) - flt(row.gross_wt)
@@ -882,7 +875,6 @@ def _stamp_se_header(se, eir, row):
 	)
 	se.manufacturing_work_order = row.manufacturing_work_order
 	se.manufacturing_operation = row.manufacturing_operation
-	se.main_slip = getattr(eir, "main_slip", None)
 	se.employee_ir = eir.name
 	se.custom_eir_operation_row = row.name
 	se.auto_created = 1
