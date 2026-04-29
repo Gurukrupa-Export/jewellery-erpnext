@@ -275,6 +275,9 @@ def create_repack_for_used_other(doc, method=None):
 		used_other = row["used_other"]
 		owner = row["owner"]
 
+		if owner == source_customer:
+			continue
+
 		linked_batches = get_linked_batches(child_batch)
 
 		parent_batch = None
