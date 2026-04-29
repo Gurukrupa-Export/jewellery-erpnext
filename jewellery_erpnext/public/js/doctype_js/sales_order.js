@@ -1142,7 +1142,7 @@ frappe.ui.form.on("Sales Order Item", {
 					label: "BOM-No",
 					options: "BOM",
 					read_only: 1,
-					default: row.bom,
+					default: row.custom_tracking_bom,
 					onchange: () => {
 						if (dialog.get_value("bom")) {
 							edit_bom_documents(

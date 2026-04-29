@@ -46,7 +46,18 @@ def on_submit(self, method):
 
 
 def on_cancel(self, method):
-	cancel_bom(self)
+	for row in self.items:
+		# Cancel tracking BOM if present
+		if row.custom_tracking_bom:
+			tb = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
+			if tb.docstatus == 1:
+				tb.cancel()
+		# Also handle legacy BOM references
+		if row.bom:
+			bom = frappe.get_doc("BOM", row.bom)
+			bom.is_active = 0
+			row.bom = ""
+	# cancel_bom(self)
 	validate_snc(self)
 
 def tax(self):
@@ -1470,11 +1481,21 @@ def create_new_bom1(self):
 		
 		if not row.quotation_bom:
 			# if self.sales_type != 'Branch Sales':
-			create_serial_no_bom(self, row)
-			if row.bom:
-				if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
-					frappe.db.set_value("BOM",row.bom,"docstatus","0")
-				doc = frappe.get_doc("BOM",row.bom)
+			# create_serial_no_bom(self, row)
+			if row.custom_tracking_bom:
+				frappe.db.set_value(
+				"Tracking Bom",
+				row.custom_tracking_bom,
+				{
+					"reference_doctype": self.doctype,
+					"reference_docname": self.name,
+					"bom_type": "Sales Order",
+					"gold_rate_with_gst": self.gold_rate_with_gst,
+				},
+			)
+				# if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
+				# 	frappe.db.set_value("BOM",row.bom,"docstatus","0")
+				doc = frappe.get_doc("Tracking Bom",row.custom_tracking_bom)
 				customer_group = frappe.db.get_value('Customer', self.customer , 'customer_group')
 				precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 				metal_precision = frappe.db.get_value("Customer",self.customer,"custom_precision_for_metal")
@@ -3900,7 +3921,7 @@ def validate_item_dharm(self):
 		e_invoice_items = []
 
 		for row in self.items:
-			gross_weighh = frappe.get_value("BOM", row.bom, "gross_weight")
+			gross_weighh = frappe.get_value("Tracking Bom", row.custom_tracking_bom, "gross_weight")
 			row.custom_gross_weight = gross_weighh
 			
 		# Prepare invoice items as before
@@ -3951,7 +3972,7 @@ def validate_item_dharm(self):
 		aggregated_repairing_items = {}
 		for item in self.items:
 			if item.bom:
-				bom_doc = frappe.get_doc("BOM", item.bom)
+				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
 				if bom_doc.hallmarking_amount:
 					# frappe.throw("hii")
 					for e_item in e_invoice_items:
