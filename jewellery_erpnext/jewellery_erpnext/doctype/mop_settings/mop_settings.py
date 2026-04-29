@@ -12,7 +12,7 @@ from frappe.model.document import Document
 # Both must appear in Stock Entry Type To Reservation or ``stock_reservation_entry_for_mwo``
 # skips that voucher type.
 _RESERVATION_TYPES_FOR_EIR = frozenset(
-	("Repack", "Material Transfer (WORK ORDER)")
+	("Repack", "Material Transfer (WORK ORDER)", "Material Receive (WORK ORDER)")
 )
 
 

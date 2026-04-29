@@ -875,7 +875,6 @@ def _stamp_se_header(se, eir, row):
 	)
 	se.manufacturing_work_order = row.manufacturing_work_order
 	se.manufacturing_operation = row.manufacturing_operation
-	se.main_slip = getattr(eir, "main_slip", None)
 	se.employee_ir = eir.name
 	se.custom_eir_operation_row = row.name
 	se.auto_created = 1

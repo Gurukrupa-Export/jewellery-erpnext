@@ -6,7 +6,9 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "stock_entry_type_to_reservation"
+  "stock_entry_type_to_reservation",
+  "is_increase_weight",
+  "is_decrease_weight"
  ],
  "fields": [
   {
@@ -15,13 +17,27 @@
    "in_list_view": 1,
    "label": "Stock Entry Type To Reservation",
    "options": "Stock Entry Type"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_increase_weight",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is increase weight"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_decrease_weight",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is decrease weight"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-02-17 11:52:31.847002",
+ "modified": "2026-04-29 10:10:35.068623",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Stock Entry Type To Reservation",
