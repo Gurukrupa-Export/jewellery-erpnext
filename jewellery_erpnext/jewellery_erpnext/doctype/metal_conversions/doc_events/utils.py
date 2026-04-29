@@ -118,12 +118,6 @@ def update_alloy_betch(self):
 
 
 def update_source_betch(self):
-	if self.is_customer_metal:
-		return
-
-	if not self.source_item or not self.source_qty:
-		return
-
 	batch_data = get_auto_batch_nos(
 		frappe._dict(
 			{
