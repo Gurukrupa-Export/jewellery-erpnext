@@ -1,3 +1,4 @@
+import copy
 import json
 from datetime import datetime
 
@@ -45,7 +46,10 @@ def before_validate(self, method):
 	dir_staus_cache = {}
 	purity_cache = {}
 
-	manufacturer = self.manufacturer or frappe.defaults.get_user_default("manufacturer")
+	manufacturer = self.manufacturer
+
+	if not manufacturer:
+		frappe.throw(_("Manufacturer must be specified in the Stock Entry"))
 
 	pure_item = frappe.db.get_value(
 		"Manufacturing Setting",
@@ -54,7 +58,11 @@ def before_validate(self, method):
 	)
 
 	if not pure_item:
-		frappe.throw(_("Select Manufacturer in session defaults or in Field"))
+		frappe.throw(
+			_("Manufacturing Setting not configured for manufacturer {0}").format(
+				manufacturer
+			)
+		)
 
 	pure_item_purity = get_purity_percentage(pure_item)
 
@@ -95,10 +103,6 @@ def before_validate(self, method):
 
 			if pure_item_purity == item_purity:
 				row.custom_pure_qty = row.qty
-				frappe.log_error(
-					f"Item: {row.item_code}, Purity: {item_purity}, Pure Qty: {row.custom_pure_qty}",
-					"Pure Qty Calculation",
-				)
 			else:
 				row.custom_pure_qty = flt((item_purity * row.qty) / pure_item_purity, 3)
 
@@ -381,7 +385,7 @@ def validate_metal_properties(doc):
 			item_data[row.item_code]["mwo"] = []
 			item_data[row.item_code]["mop"] = []
 			item_data[row.item_code]["variant"] = row.custom_variant_of
-			item_data[row.item_code]["ignore_touch_and_purity"] = item_flags.get(
+			item_data[row.item_code]["custom_is_manufacturing_item"] = item_flags.get(
 				row.item_code
 			)
 
@@ -418,7 +422,7 @@ def validate_metal_properties(doc):
 
 			if (
 				company_validations.get("check_touch")
-				and not data.get("ignore_touch_and_purity")
+				and not data.get("custom_is_manufacturing_item")
 				and company_validations.get("check_touch")
 				in ["Both", data.get("variant")]
 				and mwo_data.metal_touch != data.get("metal_touch")
@@ -427,7 +431,7 @@ def validate_metal_properties(doc):
 
 			if (
 				company_validations.get("check_purity")
-				and not data.get("ignore_touch_and_purity")
+				and not data.get("custom_is_manufacturing_item")
 				and company_validations.get("check_purity")
 				in ["Both", data.get("variant")]
 				and mwo_data.metal_purity != data.get("metal_purity")
@@ -440,7 +444,7 @@ def validate_metal_properties(doc):
 				in ["Both", data.get("variant")]
 				and (mwo_data.metal_colour or "").lower()
 				!= (data.get("metal_colour") or "").lower()
-				and not item_flags.get(item)
+				and not data.get("custom_is_manufacturing_item")
 			):
 				mwo_errors[mwo].append("Metal Colour")
 
@@ -458,16 +462,16 @@ def validate_metal_properties(doc):
 
 				if msl_data.metal_colour:
 					if company_validations.get("check_touch") and not data.get(
-						"ignore_touch_and_purity"
+						"custom_is_manufacturing_item"
 					):
 						if msl_data.metal_touch != data.get("metal_touch"):
 							msl_errors[msl].append("Metal Touch")
 
-					if company_validations.get("check_purity") and not data.get(
-						"ignore_touch_and_purity"
-					):
-						if msl_data.metal_purity != data.get("metal_purity"):
-							msl_errors[msl].append("Metal Purity")
+				if company_validations.get("check_purity") and not data.get(
+					"custom_is_manufacturing_item"
+				):
+					if msl_data.metal_purity != data.get("metal_purity"):
+						msl_errors[msl].append("Metal Purity")
 
 					if company_validations.get("check_colour"):
 						if (msl_data.metal_colour or "").lower() != (
@@ -611,10 +615,6 @@ def stock_reservation_entry_for_mwo(self):
 		)
 	}
 
-	total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-		"Sales Order", sales_order, sales_order_item
-	)
-
 	for row in self.items:
 		if not row.t_warehouse:
 			continue
@@ -641,6 +641,15 @@ def stock_reservation_entry_for_mwo(self):
 
 		if qty_to_reserve <= 0:
 			continue
+
+		try:
+			total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
+				row.item_code, "Sales Order", sales_order, sales_order_item
+			)
+		except TypeError:
+			total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
+				"Sales Order", sales_order, sales_order_item
+			)
 
 		effective_voucher_qty = flt(base_mr_voucher_qty) if base_mr_voucher_qty else 0
 
@@ -1130,16 +1139,7 @@ def update_balance_table(mop_data):
 	mop_names = list(mop_data.keys())
 
 	mop_docs = {
-		doc.name: doc
-		for doc in frappe.get_all(
-			"Manufacturing Operation",
-			filters={"name": ["in", mop_names]},
-			fields=["name"],
-		)
-	}
-
-	mop_docs = {
-		name: frappe.get_doc("Manufacturing Operation", name) for name in mop_docs
+		name: frappe.get_doc("Manufacturing Operation", name) for name in mop_names
 	}
 
 	for mop, tables in mop_data.items():
@@ -1154,7 +1154,7 @@ def update_balance_table(mop_data):
 				continue
 
 			for row in details:
-				new_row = row.copy()
+				new_row = copy.deepcopy(row)
 				new_row.update(
 					{
 						"sed_item": row.get("name"),
