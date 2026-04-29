@@ -450,30 +450,63 @@ def create_mop_log_for_employee_ir_receive(
 	fields (net_wt, finding_wt, diamond_wt, etc.) based on the logged item data.
 	"""
 	issue_voucher = resolve_employee_ir_issue_voucher_for_receive(doc, row)
-
-	mop_logs = frappe.db.get_all(
-		"MOP Log",
-		{
-			"manufacturing_operation": row.manufacturing_operation,
-			"is_cancelled": 0,
-			"voucher_type": "Employee IR",
-			"voucher_no": issue_voucher,
-		},
-		select_fields,
-		order_by="creation asc",
+	mop_logs = []
+	mop_logs = (
+		frappe.db.get_all(
+			"MOP Log",
+			{
+				"manufacturing_operation": row.manufacturing_operation,
+				"is_cancelled": 0,
+				"voucher_type": "Employee IR",
+				"voucher_no": issue_voucher,
+			},
+			select_fields,
+			order_by="creation asc",
+		)
+		or []
 	)
 	if stock_entry_name:
-		mop_logs += frappe.db.get_all(
+		mop_logs += (
+			frappe.db.get_all(
+				"MOP Log",
+				{
+					"manufacturing_operation": row.manufacturing_operation,
+					"is_cancelled": 0,
+					"voucher_type": "Stock Entry",
+					"voucher_no": ["in", stock_entry_name],
+				},
+				select_fields,
+				order_by="creation asc",
+			)
+			or []
+		)
+
+	mop_logs += (
+		frappe.db.get_all(
 			"MOP Log",
 			{
 				"manufacturing_operation": row.manufacturing_operation,
 				"is_cancelled": 0,
 				"voucher_type": "Stock Entry",
-				"voucher_no": ["in", stock_entry_name],
+				"voucher_no": [
+					"in",
+					frappe.db.get_all(
+						"Stock Entry",
+						filters={
+							"employee_ir": ["is", "not set"],
+							"manufacturing_operation": row.manufacturing_operation,
+							"docstatus": 1,
+							"to_employee": ["is", "set"],
+						},
+						pluck="name",
+					),
+				],
 			},
 			select_fields,
 			order_by="creation asc",
 		)
+		or []
+	)
 
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")
