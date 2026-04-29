@@ -25,8 +25,6 @@ frappe.ui.form.on("Manufacturing Operation", {
 						qty: frm.doc.qty
 					},
 					callback: function (r) {
-						console.log(r.message);
-						
 						frappe.call({
 							method: "jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator.get_operation_details",
 							args: {
@@ -411,7 +409,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 									"fieldname": "customer",
 									"read_only": 1,
 								},
-																{
+								{
 									"label": __("Department"),
 									"fieldtype": "Link",
 									"options": "Department",
@@ -435,7 +433,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 						if (e.receive_qty > e.qty) {
 							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Qty <b>{2}</b> should not be greater than Balance Qty <b>{3}</b>", [e.idx, e.item_code, e.receive_qty, e.qty]))
 						}
-						if (e.receive_pcs > e.pcs) {
+						if (e.receive_pcs > e.pcs && e.pcs>0) {
 							frappe.throw(__("Row <b>{0}</b> Item <b>{1}</b> : Receive Pcs <b>{2}</b> should not be greater than Balance Pcs <b>{3}</b>", [e.idx, e.item_code, e.receive_pcs, e.pcs]))
 						}
 						// if ((e.receive_pcs == e.pcs && e.receive_qty != e.qty) || (e.receive_qty == e.qty && e.receive_pcs != e.pcs)) {
