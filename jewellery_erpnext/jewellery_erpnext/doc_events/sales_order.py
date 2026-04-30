@@ -1456,7 +1456,7 @@ def create_new_bom(self):
 
 def create_new_bom1(self):
 	"""
-	This Function Creates Sales Order Type BOM from Quotation Bom
+	This function updates the Tracking BOM reference from Quotation to Sales Order
 	"""
 	# diamond_grade_data = frappe._dict()
 	self.total=0
@@ -1479,10 +1479,10 @@ def create_new_bom1(self):
 		billing_currency=frappe.get_value("Customer",refrence_customer,"default_currency")
 		# frappe.throw(f"hii{refrence_customer}")
 		
-		if not row.quotation_bom:
+		# if not row.quotation_bom:
 			# if self.sales_type != 'Branch Sales':
 			# create_serial_no_bom(self, row)
-			if row.custom_tracking_bom:
+		if row.custom_tracking_bom:
 				frappe.db.set_value(
 				"Tracking Bom",
 				row.custom_tracking_bom,
@@ -2334,8 +2334,8 @@ def create_new_bom1(self):
 				frappe.db.commit()
 				# frappe.throw(f"{self.total}")
 				
-		elif not row.bom and frappe.db.exists("BOM", row.quotation_bom):
-			row.bom = row.quotation_bom
+		elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+			row.bom = row.custom_tracking_bom
 			#######################################################################
 			# bom_doc = frappe.get_doc("BOM", row.bom)
 			# if hasattr(bom_doc, "diamond_detail"):
@@ -2351,8 +2351,8 @@ def create_new_bom1(self):
 				"custom_creation_docname": self.name,
 				"gold_rate_with_gst": self.gold_rate_with_gst,
 			}
-			frappe.db.set_value("BOM", row.quotation_bom, data_to_be_updated)
-			doc = frappe.get_doc("BOM",row.quotation_bom)
+			frappe.db.set_value("Tracking Bom", row.custom_tracking_bom, data_to_be_updated)
+			doc = frappe.get_doc("Tracking Bom",row.custom_tracking_bom)
 			row.gold_bom_rate = doc.gold_bom_amount
 			row.diamond_bom_rate = doc.diamond_bom_amount
 			row.gemstone_bom_rate = doc.gemstone_bom_amount
@@ -2374,7 +2374,7 @@ def create_new_bom1(self):
 
 
 
-def create_serial_no_bom(self, row):
+# def create_serial_no_bom(self, row):
 	serial_no_bom = frappe.db.get_value("Serial No", row.serial_no, "custom_bom_no")
 	if not serial_no_bom:
 		return
@@ -3288,8 +3288,8 @@ def xl_preview_sales_order(docname):
     for item in doc.items:
         #  New logic for BOM selection
         bom_name = None
-        if item.quotation_bom:
-            bom_name = item.quotation_bom
+        if item.custom_tracking_bom:
+            bom_name = item.custom_tracking_bom
         elif hasattr(item, "bom") and item.bom:   # Check if BOM field exists in Sales Order Item
             bom_name = item.bom
 

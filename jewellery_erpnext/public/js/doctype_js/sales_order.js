@@ -1140,7 +1140,7 @@ frappe.ui.form.on("Sales Order Item", {
 					fieldname: "bom",
 					fieldtype: "Link",
 					label: "BOM-No",
-					options: "BOM",
+					options: "Tracking Bom",
 					read_only: 1,
 					default: row.custom_tracking_bom,
 					onchange: () => {
@@ -1470,7 +1470,7 @@ frappe.ui.form.on("Sales Order Item", {
 					method: "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.update_bom_detail",
 					freeze: true,
 					args: {
-						parent_doctype: "BOM",
+						parent_doctype: "Tracking Bom",
 						parent_doctype_name: dialog.get_value("bom") || row.bom,
 						metal_detail: metal_detail,
 						diamond_detail: diamond_detail,
@@ -1507,7 +1507,7 @@ frappe.ui.form.on("Sales Order Item", {
 
 			frappe.db
 				.get_value(
-					"BOM",
+					"Tracking Bom",
 					{
 						tag_no: dialog.get_value("serial_no"),
 						is_active: 1,
@@ -1565,13 +1565,13 @@ let edit_bom_documents = (
 	  args using:
 		  bom: Link of BOM
   */
-	var doc = frappe.model.get_doc("BOM", bom);
+	var doc = frappe.model.get_doc("Tracking Bom", bom);
 	if (!doc) {
 		frappe.call({
 			method: "frappe.client.get",
 			freeze: true,
 			args: {
-				doctype: "BOM",
+				doctype: "Tracking Bom",
 				name: bom,
 			},
 			callback(r) {
