@@ -3611,7 +3611,7 @@ def validate_items(self):
 								aggregated_metal_items[key]["rate"] += metal_rate
 								# Update quantity and amount
 								aggregated_metal_items[key]["qty"] = multiplied_qty
-								frappe.throw(f"{aggregated_metal_items[key]["qty"]}")
+								# frappe.throw(f"{aggregated_metal_items[key]["qty"]}")
 								aggregated_metal_items[key]["amount"] += metal.amount
 
 								# Calculate tax amount
@@ -3654,7 +3654,7 @@ def validate_items(self):
 							multiplied_qty = metal.quantity * item.qty
 							metal_rate = metal.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else metal.rate
 							metal_amount = metal_rate * multiplied_qty
-							frappe.throw(f"Matching E-Invoice Item Found: {metal_rate}")
+							# frappe.throw(f"Matching E-Invoice Item Found: {metal_rate}")
 
 							aggregated_metal_labour_items[key]["rate"] += metal_rate
 							aggregated_metal_labour_items[key]["qty"] = multiplied_qty
@@ -3825,7 +3825,7 @@ def validate_items(self):
 
 								multiplied_qty = finding.quantity * item.qty
 								finding_making_amount = finding_making.making_rate * multiplied_qty
-								frappe.throw(f"{multiplied_qty}")
+								# frappe.throw(f"{multiplied_qty}")
 								# Update quantity and amount
 								aggregated_finding_making_items[key]["qty"] += multiplied_qty
 								aggregated_finding_making_items[key]["amount"] += finding_making_amount
