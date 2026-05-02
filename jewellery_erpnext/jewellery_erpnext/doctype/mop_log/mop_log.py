@@ -2,7 +2,6 @@
 # For license information, please see license.txt
 
 import frappe
-from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, cstr, flt
 
@@ -284,38 +283,13 @@ def create_mop_log_for_department_ir(
 			fields=select_fields,
 			order_by="creation asc",
 		)
-		# Only clone the latest Issue snapshot tier (multiple rows share the same max flow_index).
-		# Without this, historical Issue rows at lower flow_index would be replayed as extra Receive rows.
-		if mop_logs:
-			max_issue_flow = max(cint(log.get("flow_index") or 0) for log in mop_logs)
-			mop_logs = [
-				log
-				for log in mop_logs
-				if cint(log.get("flow_index") or 0) == max_issue_flow
-			]
-		if not mop_logs:
-			frappe.log_error(
-				title="MOP Log Fallback",
-				message=f"DIR Receive missing Issue logs for {self.receive_against}, falling back to tail-snapshot.",
-			)
 
-	if not mop_logs:
-		if is_receive and frappe.get_site_config().get(
-			"department_ir_receive_strict_lineage"
-		):
-			frappe.throw(
-				_(
-					"No MOP Log rows found for Department IR Issue {0} on Manufacturing Operation {1}. "
-					"Fix Issue-side MOP Logs or disable site config department_ir_receive_strict_lineage."
-				).format(self.receive_against, row.manufacturing_operation)
-			)
-		flow_index = get_last_mop_index(row.manufacturing_operation)
+	else:
 		filters = {
 			"manufacturing_operation": row.manufacturing_operation,
 			"is_cancelled": 0,
 		}
-		if flow_index is not None:
-			filters["flow_index"] = flow_index
+
 		mop_logs = frappe.db.get_all(
 			"MOP Log",
 			filters,
