@@ -33,7 +33,8 @@
 # Review the PR diff first.
 # Use repository and uploaded context only to understand changed behavior.
 # Do not audit unrelated old code unless the PR touches, exposes, or worsens it.
-# features included:
+#
+# Features included:
 # - PR Type
 # - Description
 # - Diagram Walkthrough
@@ -51,11 +52,21 @@
 # - More suggestions checkbox
 # - Apply / Chat suggestion flow
 # - Author self-review checkbox
-# - Relevant configurations collapsible debug output
 ############################################################
 
+
 [config]
-output_relevant_configurations = true
+# Keep this false in production to avoid noisy PR output.
+# Temporarily set true only when debugging Qodo configuration behavior.
+output_relevant_configurations = false
+
+# Do not auto-approve PRs from AI review output.
+enable_auto_approval = false
+auto_approve_for_no_suggestions = false
+auto_approve_for_low_review_effort = -1
+
+# Avoid reviewing bot PRs and intentionally skipped PRs.
+ignore_bot_pr = true
 
 ignore_pr_labels = [
   "do-not-merge",
@@ -74,6 +85,20 @@ ignore_pr_title = [
   "^\\[Bot\\]"
 ]
 
+ignore_pr_authors = [
+  "dependabot[bot]",
+  "renovate[bot]",
+  "github-actions[bot]"
+]
+
+ignore_pr_source_branches = [
+  "^dependabot/",
+  "^renovate/",
+  "^release/",
+  "^auto/",
+  "^bot/"
+]
+
 
 ############################################################
 # GitHub App Automation
@@ -83,16 +108,28 @@ ignore_pr_title = [
 # - /review
 # - /improve
 #
+# Production default below:
+# - Auto-run /describe and /review on PR open/reopen/ready_for_review.
+# - Auto-run only /describe on push to reduce repeated review noise.
+# - Keep /improve manual because committable suggestions can be noisy/risky
+#   for complex ERPNext stock/accounting/manufacturing code.
+#
 # If the repository is fully migrated to Qodo v2 agentic commands,
-# replace these with the equivalent agentic commands supported by
-# the installed Qodo version.
+# pilot this replacement on one test repository/PR first:
+#
+# pr_commands = [
+#   "/agentic_describe",
+#   "/agentic_review"
+# ]
 ############################################################
 
 [github_app]
+handle_pr_actions = ["opened", "reopened", "ready_for_review"]
+handle_push_trigger = true
+
 pr_commands = [
   "/describe --pr_description.final_update_message=false",
-  "/review",
-  "/improve"
+  "/review"
 ]
 
 # Keep push automation light to reduce repeated review noise.
@@ -183,7 +220,8 @@ Jewellery Erpnext module (core):
 - MOP Settings + EOD sync (mop_eod_sync.sync_mop_logs)
 - Stock Entry override (CustomStockEntry), Stock Ledger Entry override,
   Serial and Batch Bundle override, Submission Queue override
-- Stock Reservation Entry creation from MWO submit / EIR Receive
+- Stock Reservation Entry creation from MWO submit / EIR Receive / Stock Entry-derived flows
+- Stock Reservation Entry cancellation, unreservation, return, and duplicate-prevention logic
 - Process loss (loss_wt < 0 -> Repack SE in EOD sync)
 - Weight calculation, operation-wise updates
 - Refining / Metal Conversions / Swap Metal / Gemstone Conversion /
@@ -259,6 +297,7 @@ Include only relevant items:
 - [ ] Run permission tests for changed APIs/reports.
 - [ ] Test save/submit/cancel/amend if lifecycle behavior changed.
 - [ ] Test Stock Entry / MOP Log / weight updates if manufacturing flow changed.
+- [ ] Test Stock Reservation Entry creation, cancellation, and duplicate prevention if reservation logic changed.
 - [ ] Test patch idempotency if patches changed.
 - [ ] Run bench migrate on a copied site if schema/fixtures/patches changed.
 - [ ] Run EXPLAIN for new heavy SQL/report queries if relevant.
@@ -279,8 +318,10 @@ Rules:
 [pr_reviewer]
 persistent_comment = true
 final_update_message = true
-enable_help_text = true
-num_max_findings = 100
+enable_help_text = false
+
+# Keep findings useful and readable. Raise only temporarily for audits.
+num_max_findings = 12
 
 require_estimate_effort_to_review = true
 require_score_review = true
@@ -308,6 +349,8 @@ Prevent:
 - Broken submit/cancel/amend behavior.
 - Duplicate Stock Entries.
 - Duplicate MOP Logs.
+- Duplicate Stock Reservation Entries.
+- Wrong reservation or unreservation behavior.
 - Wrong stock ledger or GL impact.
 - Broken weight or process-loss calculations.
 - Unsafe migrations or patches.
@@ -438,16 +481,28 @@ Use this app context when the PR touches related areas. Modules: Jewellery Erpne
    - Stock Reconciliation -> CustomStockReconciliation
      (doctype/stock_reconciliation_template/stock_reconciliation_template_utils.py).
    - Any Stock Entry change can affect SLE, batch/serial, MOP Log bridge,
-     stock balance, and Stock Reservation Entries.
+     Stock Reservation Entry, stock balance, and Stock Reservation Entries.
 
-8. Whitelisted method overrides (override_whitelisted_methods, 4 entries):
+8. Stock Reservation Entry
+   - Stock Reservation Entry creation may be triggered from Manufacturing Work Order submit,
+     Employee IR Receive, Stock Entry-derived manufacturing flows, Main Slip injection,
+     and reservation helpers such as stock_reservation_entry_for_mwo.
+   - Treat reservation changes as high risk because duplicate reservations,
+     stale reservations, missing cancellation, wrong batch/serial references,
+     or unreserved return leakage can block fulfillment or corrupt available stock.
+   - Review submit/cancel/resubmit, linked voucher references, batch identity,
+     serial/batch bundle references, warehouse consistency, and idempotency guards.
+   - Any auto-created Stock Entry that is meant to be reserved must carry the expected
+     source marker/link so reservation code can find it exactly once.
+
+9. Whitelisted method overrides (override_whitelisted_methods, 4 entries):
    - erpnext Job Card make_stock_entry
    - erpnext Material Request make_stock_entry
    - erpnext Stock Entry make_stock_in_entry
    - frappe Bulk Update submit_cancel_or_update_docs
      (doc_events/bulk_update.py is large and upgrade-sensitive).
 
-9. Accounting / pricing / inter-branch:
+10. Accounting / pricing / inter-branch:
    - Quotation, Sales Order, Sales Invoice, Payment Entry, Delivery Note,
      Purchase Order, Purchase Receipt, Purchase Invoice, and inter-branch
      Journal Entry logic (interbranch.py) exist.
@@ -456,13 +511,13 @@ Use this app context when the PR touches related areas. Modules: Jewellery Erpne
    - Financial posting, JE creation, PE reconciliation, and pricing calculations
      require strong tests.
 
-10. Refining / recovery / metal conversion:
+11. Refining / recovery / metal conversion:
    - Refining, Metal Conversions, Swap Metal, Gemstone Conversion,
      Diamond Conversion, Melting Lot, Parent Melting Lot, Refined Gold,
      Recovered Diamond / Gemstone.
    - Must preserve purity, weight, valuation, batch, and stock correctness.
 
-11. Subcontracting (Customer Subcontracting module):
+12. Subcontracting (Customer Subcontracting module):
    - Subcontracting Order creation from Employee IR Issue.
    - Parent / child batch rename on Stock Entry and Purchase Receipt before_submit
      (customer_subcontracting/batch_rename.py); naming scheme
@@ -471,7 +526,7 @@ Use this app context when the PR touches related areas. Modules: Jewellery Erpne
    - High risk for batch identity, Purchase Receipt parity, and stock
      traceability.
 
-12. Gurukrupa Exports:
+13. Gurukrupa Exports:
    - Sketch / CAD / design-order pipeline: Sketch Order, Sketch Order Form,
      Rough Sketch Approval, Final Sketch Approval (CMO / HOD / Hold / Rejected),
      CAD Order Form, Designer Assignment, Tag and Design ID Order.
@@ -479,7 +534,7 @@ Use this app context when the PR touches related areas. Modules: Jewellery Erpne
      (exported as fixtures alongside Workflow State / Workflow Action Master).
    - Apply workflow, permission, and state-transition review when touched.
 
-13. Audit / migration / scheduler / overrides:
+14. Audit / migration / scheduler / overrides:
    - jewellery_erpnext/mop_lineage_audit.py — operational audit harness with
      proof-pack queries (DIR duplicate logs, SE -> multiple MOPs, SNC empty
      source table, Submission Queue DIR timeline, EIR diamond lineage).
@@ -497,6 +552,8 @@ Use this app context when the PR touches related areas. Modules: Jewellery Erpne
 
 Known repo risk themes (only mention if PR touches them):
 - Duplicate MOP Logs (active rows missing the voucher-scoped idempotency key).
+- Duplicate Stock Reservation Entries.
+- Stock Reservation Entry cancellation/unreservation asymmetry.
 - Source queries not scoped by voucher_type / voucher_no / row_name.
 - Latest-row logic using global tail snapshots instead of voucher-scoped slices.
 - MOP Log current balance vs stale Issue snapshot mismatch.
@@ -613,7 +670,9 @@ Explain the specific issue.
 
 Why it matters:
 Explain the Frappe / ERPNext production risk:
-permissions, document lifecycle, stock, GL, manufacturing state, MOP Log, migration, scheduler, performance, report accuracy, integration, or user-visible behavior.
+permissions, document lifecycle, stock, GL, manufacturing state, MOP Log,
+Stock Reservation Entry, migration, scheduler, performance, report accuracy,
+integration, or user-visible behavior.
 
 Suggested fix:
 Give the smallest safe fix.
@@ -626,6 +685,7 @@ Give one concrete verification:
 - integration test
 - role-based permission test
 - submit/cancel/resubmit scenario
+- Stock Reservation Entry creation/cancel/resubmit scenario
 - bench migrate on copied site
 - patch re-run test
 - EXPLAIN query plan
@@ -651,7 +711,7 @@ Then optionally add up to three non-blocking observations and a short reviewer s
 ============================================================
 
 BLOCKER:
-Use for likely security vulnerability, permission bypass, SQL injection, data corruption, failed migration, production crash, unsafe public API, broken submit/cancel flow, destructive irreversible change, duplicate financial/stock impact, duplicate MOP Log / Stock Entry, or deployment failure.
+Use for likely security vulnerability, permission bypass, SQL injection, data corruption, failed migration, production crash, unsafe public API, broken submit/cancel flow, destructive irreversible change, duplicate financial/stock impact, duplicate MOP Log / Stock Entry / Stock Reservation Entry, or deployment failure.
 
 HIGH:
 Use for serious correctness bugs, missing server-side validation for business-critical rules, major performance risk, unsafe framework bypass, non-idempotent patches/jobs/webhooks, broken integration behavior, missing authorization in whitelisted methods, or missing critical tests for risky changed behavior.
@@ -823,7 +883,7 @@ doc.save vs set_value rule:
 - If uncertain, ask for justification instead of demanding replacement.
 
 ============================================================
-9. JEWELLERY MANUFACTURING / MOP LOG REVIEW
+9. JEWELLERY MANUFACTURING / MOP LOG / RESERVATION REVIEW
 ============================================================
 
 Apply when PR touches:
@@ -878,6 +938,8 @@ If submit creates/updates:
 Cancel must safely reverse, cancel, unlink, or mark inactive:
 - no active duplicate MOP Logs
 - no duplicate Stock Entries
+- no duplicate Stock Reservation Entries
+- no stale reservations
 - no orphan cloned Manufacturing Operation
 - no stale MWO pointer
 - no stale Stock Entry Detail link
@@ -897,7 +959,19 @@ materialized twice and no virtual row should remain unsynced after the EOD
 sync's success path. Cancellation must mark rows is_cancelled=1 rather than
 deleting them, to keep audit lineage.
 
-E. Main Slip injection
+E. Stock Reservation Entry
+Check:
+- Reservation creation is idempotent per intended source voucher/item/batch/warehouse.
+- Reservation cancellation or unreservation runs when the source document is cancelled.
+- Resubmission does not create duplicate active reservations.
+- Return, transfer, or repack flows cannot reserve unavailable or already-returned stock.
+- Auto-created Stock Entries intended for reservation preserve the expected marker/link.
+- Batch, serial, warehouse, item_code, company, and manufacturing_work_order references match the actual stock movement.
+- Reservation logic does not rely only on client-side state.
+- Reservation helper queries are scoped tightly enough to avoid reserving unrelated Stock Entries or batches.
+- Reservation behavior is tested with submit/cancel/resubmit and duplicate execution.
+
+F. Main Slip injection
 Implementation: doctype/employee_ir/doc_events/main_slip_inject.py, called from
 Employee IR Receive when is_main_slip_required=1 and received_gross_wt >
 planned gross_wt.
@@ -918,7 +992,7 @@ Check:
 - no debug print statements remain.
 - tests match production behavior.
 
-F. Weight and loss calculations
+G. Weight and loss calculations
 Check:
 - gross/net/fine/pure/loss calculations reconcile.
 - precision uses Frappe utilities where appropriate.
@@ -927,7 +1001,7 @@ Check:
 - process loss is created exactly once.
 - operation-wise updates do not overwrite later/correct balances with stale snapshots.
 
-G. Manufacturing Operation / MWO pointers
+H. Manufacturing Operation / MWO pointers
 Flag:
 - unsafe cloning/deletion.
 - wrong current/next operation pointer.
@@ -943,6 +1017,7 @@ Apply strict review when changed code touches:
 - Stock Entry
 - Stock Ledger Entry
 - Serial and Batch Bundle
+- Stock Reservation Entry
 - Batch
 - Warehouse
 - Item
@@ -962,6 +1037,8 @@ Flag:
 - Stock movement without correct source/target warehouse.
 - Missing batch/serial handling.
 - Duplicate Stock Entry creation.
+- Duplicate Stock Reservation Entry creation.
+- Incorrect reservation cancellation/unreservation.
 - Incorrect cancel behavior.
 - Direct SLE/GL writes unless framework-approved and safe.
 - Submitted document mutation without safety checks.
@@ -974,6 +1051,7 @@ Flag:
 Verification must include:
 - submit/cancel/resubmit for stock/financial documents.
 - stock ledger / GL impact check.
+- Stock Reservation Entry creation/cancel/resubmit check.
 - batch/serial validation.
 - permission checks if user-facing.
 - tests for duplicate prevention.
@@ -1047,7 +1125,7 @@ Review:
 
 Flag:
 - Non-idempotent jobs.
-- Duplicate invoices, payments, Stock Entries, MOP Logs, files, emails, or external calls on retry.
+- Duplicate invoices, payments, Stock Entries, MOP Logs, Stock Reservation Entries, files, emails, or external calls on retry.
 - Jobs without deduplication.
 - Jobs assuming document state does not change between enqueue and execution.
 - Jobs processing unbounded records.
@@ -1199,6 +1277,7 @@ Require focused tests when PR changes:
 - lifecycle validations
 - save/submit/cancel/amend flows
 - Stock Entry
+- Stock Reservation Entry
 - MOP Log
 - weight/loss calculations
 - manufacturing operation state
@@ -1214,6 +1293,7 @@ Strong test expectations:
 - permission tests include allowed and denied users.
 - whitelisted methods include unauthorized, invalid input, and happy path.
 - lifecycle changes include save/submit/cancel/amend where relevant.
+- Stock Reservation Entry tests include create/cancel/resubmit and duplicate-prevention scenarios.
 - patches include idempotency or safe re-run checks.
 - reports include filter boundary tests.
 - background jobs include retry/duplicate execution tests.
@@ -1239,7 +1319,7 @@ Comment only when at least one is true:
 - PR may fail migration/deployment.
 - PR may cause performance regression.
 - PR misuses Frappe lifecycle behavior.
-- PR creates non-idempotent patch/job/webhook/MOP/Stock behavior.
+- PR creates non-idempotent patch/job/webhook/MOP/Stock/Reservation behavior.
 - PR lacks a focused test for changed risky behavior.
 - PR adds concrete maintainability risk.
 - Suggested fix is specific and actionable.
@@ -1267,6 +1347,7 @@ Before finalizing:
 - Database/query behavior checked.
 - Migration/fixture/patch impact checked.
 - Scheduler/background job impact checked.
+- Stock Reservation Entry impact checked.
 - Tests/manual validation checked.
 - No hallucinated DocTypes/fields/roles/tests/indexes.
 - Findings are concise, actionable, and non-duplicate.
@@ -1281,6 +1362,7 @@ Reviewer self-check:
 - Database/query behavior changed: Yes/No/Unclear
 - Migration/fixture/patch behavior changed: Yes/No/Unclear
 - Stock/MOP/Accounting flow affected: Yes/No/Unclear
+- Stock Reservation Entry flow affected: Yes/No/Unclear
 - Tests or manual validation requested: Yes/No
 - Remaining uncertainty: list only real unknowns
 '''
@@ -1288,6 +1370,9 @@ Reviewer self-check:
 
 ############################################################
 # /improve Tool: Code Suggestions
+#
+# This tool is configured, but not auto-run from [github_app].
+# Run /improve manually when the review shows meaningful changes are needed.
 ############################################################
 
 [pr_code_suggestions]
@@ -1296,11 +1381,11 @@ code_suggestions_self_review_text = "**Author self-review**: I reviewed the PR c
 
 focus_only_on_problems = true
 commitable_code_suggestions = true
-dual_publishing_score_threshold = 7
+dual_publishing_score_threshold = 8
 
 # Keep suggestions useful, not noisy.
 suggestions_depth = "normal"
-num_code_suggestions_per_chunk = 4
+num_code_suggestions_per_chunk = 3
 
 extra_instructions = '''
 Act as a senior Frappe / ERPNext refactoring expert.
@@ -1315,7 +1400,7 @@ Prioritize:
 2. SQL injection fixes.
 3. Unsafe dynamic query fixes.
 4. Frappe lifecycle correctness.
-5. MOP Log / Stock Entry / submit-cancel idempotency.
+5. MOP Log / Stock Entry / Stock Reservation Entry / submit-cancel idempotency.
 6. Migration and patch idempotency.
 7. N+1 query removal.
 8. Unbounded query prevention.
@@ -1367,13 +1452,16 @@ Migration suggestions:
 - Log safe progress.
 - Handle partial previous execution.
 
-MOP / manufacturing suggestions:
+MOP / manufacturing / reservation suggestions:
 - Add voucher-scoped duplicate guards for MOP Log.
+- Add source-scoped duplicate guards for Stock Reservation Entry.
 - Preserve per-segment warehouse in Main Slip injection.
 - Make submit/cancel/resubmit safe.
-- Prevent duplicate Stock Entry or duplicate MOP Log creation.
+- Prevent duplicate Stock Entry, MOP Log, or Stock Reservation Entry creation.
 - Recompute weights from authoritative current MOP balance, not stale snapshots, when the changed code requires it.
 - Add precision-safe loss/weight checks.
+- Ensure auto-created Stock Entries carry the correct marker/link needed by reservation logic.
+- Ensure return/unreservation flows cannot leave stale active reservations.
 
 JS suggestions:
 - Move business-critical validation to Python.
@@ -1385,14 +1473,14 @@ JS suggestions:
 
 Test suggestions:
 - Name the exact behavior, role/user, DocType/method, and expected result.
-- Suggest tests for permission deny/allow, whitelisted methods, submit/cancel/resubmit, patch idempotency, MOP Log duplicate prevention, Stock Entry impact, report filters, and background job retries.
+- Suggest tests for permission deny/allow, whitelisted methods, submit/cancel/resubmit, patch idempotency, MOP Log duplicate prevention, Stock Entry impact, Stock Reservation Entry duplicate prevention, report filters, and background job retries.
 
 Before publishing a suggestion, verify:
 - It is based on changed code.
 - It solves a real problem.
 - It preserves permissions.
 - It preserves document lifecycle behavior.
-- It preserves stock/accounting/MOP semantics.
+- It preserves stock/accounting/MOP/reservation semantics.
 - It does not rely on unverified assumptions.
 - It is small enough to apply safely.
 '''
