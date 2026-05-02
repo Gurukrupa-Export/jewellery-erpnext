@@ -1,15 +1,33 @@
 ############################################################
 # Qodo Merge / PR-Agent Configuration
 # Target: Frappe / ERPNext custom jewellery manufacturing app
+#
+# App: jewellery_erpnext (Frappe v15 / ERPNext custom app)
+# Modules (modules.txt):
+#   - Jewellery Erpnext        (core manufacturing, MOP Log, stock, refining, accounting)
+#   - Gurukrupa Exports        (sketch / CAD / design-order pipeline + workflows)
+#   - Customer Subcontracting  (vendor outsourcing + parent/child batch rename)
+#
 # Stack:
-# - Frappe Framework / ERPNext
-# - Python, JavaScript
-# - MariaDB/MySQL
-# - DocTypes, child tables, hooks.py, fixtures, patches
+# - Frappe Framework / ERPNext, Python, JavaScript, MariaDB / MySQL
+# - DocTypes, child tables, hooks.py, fixtures, patches, custom_fields/, property_setter/
 # - reports, workflows, print formats
-# - background jobs, scheduler events
+# - background jobs, scheduler events, custom Submission Queue
 # - whitelisted methods, REST APIs
 # - Stock, Manufacturing, Accounting, MOP Log, jewellery workflows
+#
+# Verified framework integration in hooks.py:
+# - override_doctype_class: Stock Entry, Stock Reconciliation, Stock Ledger Entry,
+#   Serial and Batch Bundle, Submission Queue (5 overrides)
+# - override_whitelisted_methods: Job Card make_stock_entry,
+#   Material Request make_stock_entry, Stock Entry make_stock_in_entry,
+#   Frappe bulk_update.submit_cancel_or_update_docs (4 overrides)
+# - scheduler_events: single daily_long entry -> mop_settings.mop_eod_sync.sync_mop_logs
+# - after_migrate: jewellery_erpnext.migrate.after_migrate (re-applies custom_fields/
+#   and property_setter/ JSON sets on every bench migrate)
+# - patches.txt: 5 active post_model_sync patches (no destructive data patches)
+# - fixtures: narrow allowlist (sketch workflows, 9 sketch/order custom fields,
+#   3 roles); not a wholesale doctype export
 #
 # Core review rule:
 # Review the PR diff first.
@@ -152,27 +170,40 @@ Call out:
 - Any direct database update that may bypass controller logic.
 
 5. Jewellery App Context
-Include only when the diff touches related code:
-- Employee IR
-- Department IR
-- MOP Log
-- Manufacturing Operation
-- Manufacturing Work Order
-- Parent Manufacturing Order
-- Manufacturing Plan
-- Main Slip
-- Stock Entry
-- Stock Reservation Entry
-- Stock Ledger Entry
-- Process loss
-- Weight calculation
-- Operation-wise updates
-- EOD MOP sync
-- Refining / recovery / metal conversion
-- Subcontracting
-- Sketch / CAD / design order
-- Quotation / Sales Order / Sales Invoice / Payment Entry
-- Inter-branch Journal Entry logic
+Include only when the diff touches related code. Group by module.
+
+Jewellery Erpnext module (core):
+- Employee IR (Issue / Receive, optional subcontracting)
+- Department IR (Issue / Receive, In-Transit state)
+- MOP Log (virtual ledger; fields include flow_index, is_synced, is_cancelled,
+  voucher_type / voucher_no / row_name, qty_after_transaction tiers)
+- Manufacturing Operation (per-prefix weights: net / finding / diamond / gemstone / other / loss)
+- Manufacturing Work Order, Parent Manufacturing Order, Manufacturing Plan
+- Main Slip (and doctype/employee_ir/doc_events/main_slip_inject.py for EIR Receive injection)
+- MOP Settings + EOD sync (mop_eod_sync.sync_mop_logs)
+- Stock Entry override (CustomStockEntry), Stock Ledger Entry override,
+  Serial and Batch Bundle override, Submission Queue override
+- Stock Reservation Entry creation from MWO submit / EIR Receive
+- Process loss (loss_wt < 0 -> Repack SE in EOD sync)
+- Weight calculation, operation-wise updates
+- Refining / Metal Conversions / Swap Metal / Gemstone Conversion /
+  Diamond Conversion / Melting Lot
+- Quotation / Sales Order / Sales Invoice / Delivery Note /
+  Purchase Order / Purchase Receipt / Payment Entry
+- Inter-branch Journal Entry logic (interbranch.py)
+
+Customer Subcontracting module:
+- Subcontracting Order creation from Employee IR
+- Parent / child batch rename on Stock Entry / Purchase Receipt before_submit
+  ({customer}-{YearCode}{Month}-{item_code}-{serial})
+
+Gurukrupa Exports module:
+- Sketch Order, Sketch Order Form, Sketch Order Form Detail
+- Rough Sketch Approval, Final Sketch Approval (CMO / HOD / Hold / Rejected variants)
+- CAD Order Form, Designer Assignment, Designer Assignment CAD
+- Serial No and Design Code Order, Tag and Design ID Order
+- Sketch Order Form Approval / Sketch Order Approval with Purchase 1 workflows
+- Diamond / Gemstone / Making Charge Price lists
 
 6. Database and Migration Impact
 Mention:
@@ -318,9 +349,7 @@ Every finding must be tied to:
 1. REPOSITORY CONTEXT TO LOAD BEFORE REVIEWING
 ============================================================
 
-Use this app context when the PR touches related areas.
-
-The app is a custom Frappe / ERPNext jewellery manufacturing system. Important flows include:
+Use this app context when the PR touches related areas. Modules: Jewellery Erpnext (core), Gurukrupa Exports, Customer Subcontracting.
 
 1. Make-to-order manufacturing flow:
    Sales Order
@@ -329,80 +358,166 @@ The app is a custom Frappe / ERPNext jewellery manufacturing system. Important f
    -> Manufacturing Work Order
    -> Manufacturing Operation
    -> Department IR / Employee IR
-   -> MOP Log
-   -> Stock Entry through EOD sync.
+   -> MOP Log (virtual ledger, is_synced=0)
+   -> Stock Entry via EOD sync (sets is_synced=1)
+   or Stock Entry first -> sync_mop_log_for_stock_entry() writes MOP Log with is_synced=1.
 
-2. MOP Log:
+2. MOP Log
+   (jewellery_erpnext/jewellery_erpnext/doctype/mop_log/):
    - Virtual manufacturing movement ledger.
-   - Source of truth for per-operation / per-MO weight balance.
-   - Must be voucher-scoped, idempotent, and cancel-safe.
-   - Must not create duplicate active rows for the same source voucher, child row, operation, item, and batch.
+   - Source of truth for per-operation / per-MO / per-item / per-batch weight balance.
+   - Key fields: voucher_type, voucher_no, row_name, manufacturing_operation,
+     manufacturing_work_order, item_code, batch_no, serial_no, flow_index,
+     is_cancelled, is_synced, qty_change, qty_after_transaction (+ _item_based,
+     _batch_based tiers), pcs_change, from_warehouse, to_warehouse,
+     serial_and_batch_bundle.
+   - Idempotency key for active rows:
+     (voucher_type, voucher_no, row_name, manufacturing_operation, item_code,
+      batch_no, is_cancelled=0).
+   - is_synced=1 means already materialized into a physical Stock Entry; EOD sync
+     and the Stock Entry bridge must not double-process such rows.
+   - MOP Log writers:
+     create_mop_log_for_stock_transfer_to_mo (Stock Entry bridge, is_synced=True),
+     create_mop_log_for_department_ir (DIR Issue/Receive, is_synced=0),
+     creste_mop_log_for_employee_ir (sic; EIR Issue),
+     create_mop_log_for_employee_ir_receive (EIR Receive),
+     and a Manufacturing Work Order on_submit snapshot.
 
-3. EOD MOP sync:
-   - Scheduler converts virtual MOP Log movements into physical Stock Entries.
-   - Must not materialize the same virtual movement twice.
-   - Must be observable, retry-safe, and batch-safe.
+3. EOD MOP sync
+   (jewellery_erpnext/jewellery_erpnext/doctype/mop_settings/mop_eod_sync.py
+    `sync_mop_logs`, single daily_long scheduler entry):
+   - Converts unsynced MOP Log rows (is_synced=0, is_cancelled=0) into physical
+     Stock Entries.
+   - Groups by (company, manufacturing_work_order, from_warehouse, to_warehouse).
+   - Tries a consolidated Material Transfer SE per group; on failure, falls back
+     to one SE per Manufacturing Operation with savepoint rollback per hop.
+   - Creates a Repack SE booking process loss when loss_wt < 0.
+   - Sets is_synced=1 on processed logs to prevent double materialization.
 
-4. Employee IR:
+4. Employee IR
+   (doctype/employee_ir/):
    - Issues and receives metal/diamond/gemstone from operators or subcontractors.
-   - Can update Manufacturing Operation.
-   - Can write MOP Logs.
-   - Can calculate process loss.
-   - Can create Purchase Orders in subcontracting flows.
-   - Main Slip receive injection is high risk.
+   - On submit, branches Issue vs Receive; Issue may create Subcontracting Order.
+   - Writes MOP Logs, updates Manufacturing Operation, calculates process loss.
+   - Main Slip receive injection
+     (doctype/employee_ir/doc_events/main_slip_inject.py) is high risk:
+     priority order is Regular Stock -> Customer Goods -> Pure Metal;
+     auto-created SEs carry an `employee_ir` header marker;
+     stock_reservation_entry_for_mwo reserves resulting batches.
 
-5. Department IR:
-   - Moves work between departments.
-   - Can create next Manufacturing Operation.
-   - Can write MOP Logs and update MWO/MOP pointers.
-   - Must preserve lineage and in-transit state.
+5. Department IR
+   (doctype/department_ir/):
+   - Moves work between departments; tracks `department_ir_status`
+     (In-Transit / Received).
+   - Issue selects non-In-Transit ops, Receive selects In-Transit ops.
+   - Writes MOP Logs via create_mop_log_for_department_ir; the current branch
+     simplified that helper (commit 712ac8f) so Receive now clones ALL Issue logs
+     in ascending flow_index, not just the max-tier snapshot.
 
-6. Main Slip:
+6. Main Slip
+   (doctype/main_slip/main_slip.py +
+    doctype/employee_ir/doc_events/main_slip_inject.py):
    - Legacy/hybrid stock-routing context.
-   - High risk when changed with Employee IR Receive, injection, repack, warehouses, batch rows, or MOP Log snapshots.
+   - `stock_details` aggregates batch holdings by item/batch with consume/mop_qty
+     and inventory_type.
+   - High risk when changed with Employee IR Receive, injection, repack,
+     warehouses, batch rows, or MOP Log snapshots.
 
-7. Stock Entry / Stock Ledger:
-   - Physical stock movement.
-   - This repository overrides or hooks Stock Entry, Stock Ledger Entry, Serial and Batch Bundle, Submission Queue, and related stock events.
-   - Any Stock Entry change can affect SLE, batch/serial, MOP Log bridge, and stock balance.
+7. Stock Entry / Stock Ledger / Serial & Batch / Submission Queue overrides
+   (override_doctype_class in hooks.py):
+   - Stock Entry -> CustomStockEntry
+     (customization/stock_entry/stock_entry.py): timeslot freeze, customer voucher
+     validation, weight + warehouse + inventory dimension checks.
+   - Stock Ledger Entry -> CustomStockLedgerEntry: custom on_submit hook.
+   - Serial and Batch Bundle -> CustomSerialandBatchBundle:
+     duplicate-serial validation skips POS / Pick List, distinguishes Branch vs
+     FG Purchase; updates parent batch ID after_insert.
+   - Submission Queue -> CustomSubmissionQueue: for Employee IR, Department IR,
+     Product Certification, Stock Entry, Main Slip — enqueues submission to the
+     `long` queue with 4500s timeout (else delegates to parent).
+   - Stock Reconciliation -> CustomStockReconciliation
+     (doctype/stock_reconciliation_template/stock_reconciliation_template_utils.py).
+   - Any Stock Entry change can affect SLE, batch/serial, MOP Log bridge,
+     stock balance, and Stock Reservation Entries.
 
-8. Accounting / pricing / inter-branch:
-   - Quotation, Sales Order, Sales Invoice, Payment Entry, Delivery Note, Purchase documents, and inter-branch Journal Entry logic exist.
-   - Financial posting, JE creation, Payment Entry reconciliation, and pricing calculations require strong tests.
+8. Whitelisted method overrides (override_whitelisted_methods, 4 entries):
+   - erpnext Job Card make_stock_entry
+   - erpnext Material Request make_stock_entry
+   - erpnext Stock Entry make_stock_in_entry
+   - frappe Bulk Update submit_cancel_or_update_docs
+     (doc_events/bulk_update.py is large and upgrade-sensitive).
 
-9. Refining / recovery / metal conversion:
-   - Includes Metal Conversions, Refining, Swap Metal, Gemstone Conversion, Diamond Conversion, Melting Lot.
+9. Accounting / pricing / inter-branch:
+   - Quotation, Sales Order, Sales Invoice, Payment Entry, Delivery Note,
+     Purchase Order, Purchase Receipt, Purchase Invoice, and inter-branch
+     Journal Entry logic (interbranch.py) exist.
+   - Payment Entry reuses the same handler for on_submit and
+     on_update_after_submit — idempotency must be verified.
+   - Financial posting, JE creation, PE reconciliation, and pricing calculations
+     require strong tests.
+
+10. Refining / recovery / metal conversion:
+   - Refining, Metal Conversions, Swap Metal, Gemstone Conversion,
+     Diamond Conversion, Melting Lot, Parent Melting Lot, Refined Gold,
+     Recovered Diamond / Gemstone.
    - Must preserve purity, weight, valuation, batch, and stock correctness.
 
-10. Subcontracting:
-   - Includes Customer Subcontracting and batch rename behavior on Stock Entry / Purchase Receipt before_submit.
-   - High risk for batch identity, purchase receipt, and stock traceability.
+11. Subcontracting (Customer Subcontracting module):
+   - Subcontracting Order creation from Employee IR Issue.
+   - Parent / child batch rename on Stock Entry and Purchase Receipt before_submit
+     (customer_subcontracting/batch_rename.py); naming scheme
+     `{customer}-{YearCode}{Month}-{item_code}-{serial}` with YearCode 0->J,
+     1->A, ..., 9->I; uniqueness loop on collision.
+   - High risk for batch identity, Purchase Receipt parity, and stock
+     traceability.
 
-11. Gurukrupa Exports:
-   - Separate sketch / CAD / design-order pipeline.
-   - Includes workflows and multiple DocTypes.
+12. Gurukrupa Exports:
+   - Sketch / CAD / design-order pipeline: Sketch Order, Sketch Order Form,
+     Rough Sketch Approval, Final Sketch Approval (CMO / HOD / Hold / Rejected),
+     CAD Order Form, Designer Assignment, Tag and Design ID Order.
+   - Workflows: Sketch Order Form Approval, Sketch Order Approval with Purchase 1
+     (exported as fixtures alongside Workflow State / Workflow Action Master).
    - Apply workflow, permission, and state-transition review when touched.
 
-12. Audit / migration / scheduler:
-   - mop_lineage_audit.py is an operational audit harness.
-   - migrate.py loads custom fields and property setters after migrate.
-   - patches and fixtures must be idempotent and production-safe.
-   - Frappe bulk update override is upgrade-sensitive.
+13. Audit / migration / scheduler / overrides:
+   - jewellery_erpnext/mop_lineage_audit.py — operational audit harness with
+     proof-pack queries (DIR duplicate logs, SE -> multiple MOPs, SNC empty
+     source table, Submission Queue DIR timeline, EIR diamond lineage).
+   - jewellery_erpnext/migrate.py after_migrate — re-applies all JSON in
+     custom_fields/ (~41 files) and property_setter/ (~17 files) at every
+     bench migrate; changes there run on every deploy.
+   - scheduler_events: only one entry — daily_long -> sync_mop_logs.
+   - frappe.enqueue is used in interbranch.py, mop_settings.py,
+     doc_events/bulk_update.py, doc_events/quotation.py, and a subcontracting
+     util — all are background-job touch points.
+   - jewellery_erpnext/erpnext_override.py exists; the `import + monkey-patch`
+     blocks in hooks.py are commented out today — flag if a PR re-enables them.
+   - No allow_guest=True methods and no external HTTP / webhook integrations
+     in app code.
 
-Known repo risk themes:
-- Duplicate MOP Logs.
+Known repo risk themes (only mention if PR touches them):
+- Duplicate MOP Logs (active rows missing the voucher-scoped idempotency key).
 - Source queries not scoped by voucher_type / voucher_no / row_name.
-- Latest-row logic using global tail snapshots.
+- Latest-row logic using global tail snapshots instead of voucher-scoped slices.
 - MOP Log current balance vs stale Issue snapshot mismatch.
-- Stock Entry created from MOP Log and MOP Log created from Stock Entry causing double materialization.
-- Submit/cancel asymmetry.
+- Stock Entry created from MOP Log and MOP Log created from Stock Entry causing
+  double materialization (use is_synced correctly).
+- Submit / cancel asymmetry, especially with the Custom Submission Queue's long
+  queue path for EIR / DIR / PC / SE / Main Slip.
+- Department IR Receive flow_index simplification (commit 712ac8f) — Receive now
+  clones all Issue logs (not just max-tier); verify cloning still produces
+  correct per-tier snapshots and does not re-emit already-synced rows.
 - Direct updates to submitted documents.
-- Hardcoded item-prefix logic such as M/F/D/G/O.
-- Incorrect warehouse priority in Main Slip injection.
-- Raw float equality in weight/loss calculations.
+- Hardcoded item-prefix logic (M / F / D / G / O) in MOP Log validate.
+- Incorrect warehouse / inventory-type priority in Main Slip injection.
+- Raw float equality in weight / loss calculations.
 - DB calls inside loops in hot manufacturing paths.
-- Whitelisted link-field query helpers without strict input validation.
-- Framework overrides and monkey patches increasing upgrade risk.
+- Whitelisted link-field / item-attribute query helpers without strict input
+  validation (utils.py).
+- Framework overrides (Stock Entry, SLE, S&B Bundle, Submission Queue, Bulk
+  Update) increasing upgrade risk.
+- Custom Field / Property Setter drift from custom_fields/ and property_setter/
+  JSON re-applied by migrate.py on every deploy.
 - Tests asserting behavior that production code does not implement.
 
 Do not restate these as findings unless the PR touches the related code path.
@@ -717,7 +832,7 @@ Employee IR, Department IR, MOP Log, Manufacturing Operation, Manufacturing Work
 Check these invariants:
 
 A. MOP Log idempotency
-MOP Log writers must not create duplicate active rows for the same source voucher/row/operation/item/batch.
+MOP Log writers must not create duplicate active rows for the same source voucher/row/operation/item/batch. The dedup key must include is_cancelled=0; consider is_synced when the writer is the Stock Entry bridge vs a virtual writer (DIR/EIR submit).
 
 Expected shape:
 existing_log = frappe.db.exists(
@@ -734,6 +849,11 @@ existing_log = frappe.db.exists(
 )
 if existing_log:
     return
+
+Reference implementations to mirror, not replace:
+- sync_mop_log_for_stock_entry() in doc_events/stock_entry.py (writes is_synced=1).
+- create_mop_log_for_department_ir / create_mop_log_for_employee_ir_receive in
+  doctype/mop_log/mop_log.py (writes is_synced=0; EOD sync flips to 1).
 
 B. Voucher-scoped source rows
 Flag:
@@ -765,18 +885,36 @@ Cancel must safely reverse, cancel, unlink, or mark inactive:
 - resubmit remains safe
 
 D. Stock Entry vs MOP Log bridge
-If Stock Entry already represents physical movement, MOP Log rows created from it must not later be materialized again by EOD sync.
-If MOP Log is virtual, EOD sync must not duplicate already-synced rows.
+The is_synced flag on MOP Log is the authoritative dedup mechanism between the two paths:
+- sync_mop_log_for_stock_entry() in doc_events/stock_entry.py creates MOP Log
+  rows with is_synced=True (the Stock Entry already represents physical
+  movement; EOD sync must skip them).
+- DIR / EIR / MWO writers create rows with is_synced=0 (virtual). The EOD sync
+  scheduler picks them up by filtering is_synced=0, is_cancelled=0, materializes
+  them into a consolidated or per-MOP Stock Entry, then sets is_synced=1.
+Any change to either path must preserve this invariant: no row should be
+materialized twice and no virtual row should remain unsynced after the EOD
+sync's success path. Cancellation must mark rows is_cancelled=1 rather than
+deleting them, to keep audit lineage.
 
 E. Main Slip injection
+Implementation: doctype/employee_ir/doc_events/main_slip_inject.py, called from
+Employee IR Receive when is_main_slip_required=1 and received_gross_wt >
+planned gross_wt.
+Walks Main Slip `batch_details` and creates auto Material Transfer (WORK ORDER)
+or Repack Stock Entries that carry an `employee_ir` header marker so they can
+be reserved by stock_reservation_entry_for_mwo.
+
 Check:
-- warehouse priority is correct.
-- per-segment source warehouse is preserved.
+- inventory-type priority order: Regular Stock -> Customer Goods -> Pure Metal.
+- per-segment source warehouse is preserved (batch_details vs MSL/raw-material
+  fallback when no Main Slip exists).
 - validation warehouse equals actual Stock Entry source warehouse.
 - alloy transfer is preferred before pure-metal repack when applicable.
 - fallback repack only happens when alloy is genuinely unavailable.
-- batch and inventory_type handling are correct.
+- batch_no and inventory_type are propagated correctly to the auto-created SE.
 - MSL/raw material vs manufacturing warehouse usage is explicit.
+- the `employee_ir` header marker is set so SRE creation can find the SE.
 - no debug print statements remain.
 - tests match production behavior.
 
@@ -845,18 +983,22 @@ Verification must include:
 ============================================================
 
 Review:
-- patches.txt
-- patches
-- DocType JSON changes
-- Custom Field fixtures
-- Property Setter fixtures
-- Workflow fixtures
-- Role Permission fixtures
-- Report fixtures
-- Print Format fixtures
-- Workspace fixtures
-- after_install / before_migrate / after_migrate / before_uninstall
-- migrate.py
+- patches.txt and patches/ (5 active post_model_sync patches today; sed_copy_to_mop is commented out).
+- DocType JSON changes.
+- Custom Field fixtures.
+- Property Setter fixtures.
+- Workflow fixtures.
+- Role Permission fixtures.
+- Report fixtures.
+- Print Format fixtures.
+- Workspace fixtures.
+- after_install / before_migrate / after_migrate / before_uninstall.
+- migrate.py — `after_migrate` re-applies every JSON file under
+  `jewellery_erpnext/custom_fields/` (~41 files) and
+  `jewellery_erpnext/property_setter/` (~17 files) on every `bench migrate`.
+  Any change to those folders runs on every deploy across all sites — treat
+  edits as production-affecting and check for idempotency, missing field
+  options, and accidental overwrites of site-customized fields.
 
 Flag:
 - Required fields added without defaults/backfill/staged rollout.
@@ -891,13 +1033,17 @@ Patch expectations:
 ============================================================
 
 Review:
-- frappe.enqueue
-- scheduler_events
-- queued jobs
-- recurring jobs
-- retry logic
-- sync_mop_logs
-- jobs triggered from hooks/APIs/document events
+- frappe.enqueue (current touch points: interbranch.py,
+  doctype/mop_settings/mop_settings.py, doc_events/bulk_update.py,
+  doc_events/quotation.py, customization/stock_entry/doc_events/subcontracting_utils.py).
+- scheduler_events (only one entry today: daily_long ->
+  jewellery_erpnext.doctype.mop_settings.mop_eod_sync.sync_mop_logs).
+- Custom Submission Queue (override_doctype_class) — for Employee IR,
+  Department IR, Product Certification, Stock Entry, Main Slip, queues
+  submission to the `long` queue with 4500s timeout. Treat any change here as
+  high-risk: it affects every submit of those doctypes.
+- queued jobs, recurring jobs, retry logic.
+- jobs triggered from hooks / APIs / document events.
 
 Flag:
 - Non-idempotent jobs.
