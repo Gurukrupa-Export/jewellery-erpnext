@@ -149,27 +149,27 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	if mop_op:
 		sql += " AND manufacturing_operation = %s"
 		sql_params.append(mop_op)
-		previous_mop = frappe.get_cached_value(
+		previous_mop = frappe.db.get_value(
 			"Manufacturing Operation", mop_op, "previous_mop"
 		)
 		if previous_mop:
 			previous_mop_qty = (
-				frappe.get_cached_value(
+				frappe.db.get_value(
 					"Manufacturing Operation",
 					previous_mop,
 					FIELD_MAP.get(first_char) + "_wt",
 				)
 				or 0
 			)
-
-			previous_mop_pcs = (
-				frappe.get_cached_value(
-					"Manufacturing Operation",
-					previous_mop,
-					FIELD_MAP.get(first_char) + "_pcs",
+			if first_char in ("D", "G"):
+				previous_mop_pcs = (
+					frappe.db.get_value(
+						"Manufacturing Operation",
+						previous_mop,
+						FIELD_MAP.get(first_char) + "_pcs",
+					)
+					or 0
 				)
-				or 0
-			)
 
 	row_vals = frappe.db.sql(sql, tuple(sql_params), as_dict=True)
 
@@ -190,11 +190,11 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	# compute fields
 	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"]) + previous_mop_pcs
 	pcs_after_item = pcs + cint(stats["sum_pcs_item"]) + previous_mop_pcs
-	pcs_after_batch = pcs + cint(stats["sum_pcs_batch"]) + previous_mop_pcs
+	pcs_after_batch = pcs + cint(stats["sum_pcs_batch"])
 
 	qty_after_prefix = qty + flt(stats["sum_qty_prefix"]) + previous_mop_qty
 	qty_after_item = qty + flt(stats["sum_qty_item"]) + previous_mop_qty
-	qty_after_batch = qty + flt(stats["sum_qty_batch"]) + previous_mop_qty
+	qty_after_batch = qty + flt(stats["sum_qty_batch"])
 	# create doc
 	mop_log = frappe.new_doc("MOP Log")
 	mop_log.item_code = item_code
