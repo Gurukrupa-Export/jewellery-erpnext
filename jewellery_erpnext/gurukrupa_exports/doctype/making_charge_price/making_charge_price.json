@@ -11,6 +11,7 @@
   "customer",
   "setting_type",
   "currency",
+  "metal_touch",
   "column_break_3",
   "metal_type",
   "from_gold_rate",
@@ -88,11 +89,17 @@
    "fieldtype": "Link",
    "label": "Currency",
    "options": "Currency"
+  },
+  {
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "label": "Metal Touch",
+   "options": "Attribute Value"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-11-25 15:01:44.211983",
+ "modified": "2025-11-21 12:51:46.526464",
  "modified_by": "Administrator",
  "module": "Gurukrupa Exports",
  "name": "Making Charge Price",
@@ -112,6 +119,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
