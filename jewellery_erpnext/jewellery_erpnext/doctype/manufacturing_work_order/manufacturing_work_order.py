@@ -336,12 +336,6 @@ def create_manufacturing_operation(doc):
 	mop.custom_tracking_bom = doc.custom_tracking_bom
 	mop.department = department
 	mop.save()
-	if mop.custom_tracking_bom:
-		frappe.db.set_value(
-			"Tracking Bom",
-			mop.custom_tracking_bom,
-			{"reference_doctype": mop.doctype, "reference_docname": mop.name},
-		)
 	mop.db_set("employee", None)
 	doc.db_set("manufacturing_operation", mop.name)
 	values = {"operation": operation}
@@ -349,69 +343,85 @@ def create_manufacturing_operation(doc):
 	add_time_log(mop, values)
 
 	if doc.for_fg:
-		other_mwos = frappe.get_all(
+		all_mwos = frappe.get_all(
 			"Manufacturing Work Order",
 			filters={
 				"manufacturing_order": doc.manufacturing_order,
-				"name": ["!=", doc.name],
 				"docstatus": 1,
+				"name": ["!=", doc.name],
 			},
 			pluck="name",
 		)
 
-		mop_logs = []
-		if other_mwos:
-			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-				get_current_mop_balance_rows,
+		if all_mwos:
+			# Aggregate unique (item, batch) additions across all previous MWOs in the PMO.
+			# SUM(qty_change) avoids double-counting from cumulative qty_after fields.
+			raw_logs = frappe.db.sql(
+				"""
+				SELECT
+					item_code,
+					batch_no,
+					SUM(qty_change) as total_qty,
+					SUM(pcs_change) as total_pcs,
+					MAX(creation) as latest_log
+				FROM `tabMOP Log`
+				WHERE manufacturing_work_order IN %s
+				  AND is_cancelled = 0
+				GROUP BY item_code, batch_no
+				HAVING SUM(qty_change) > 0 OR SUM(pcs_change) > 0
+			""",
+				(tuple(all_mwos),),
+				as_dict=True,
 			)
 
-			for wo_name in other_mwos:
-				wo_mop = frappe.db.get_value(
-					"Manufacturing Work Order", wo_name, "manufacturing_operation"
-				)
-				if wo_mop:
-					mop_logs.extend(get_current_mop_balance_rows(wo_mop))
-
-		for log in mop_logs:
-			if (
-				flt(log.get("qty_after_transaction_batch_based")) > 0
-				or flt(log.get("pcs_after_transaction_batch_based")) > 0
-			):
-				new_log = frappe.new_doc("MOP Log")
-				for field in [
-					"item_code",
-					"pcs_after_transaction",
-					"pcs_after_transaction_item_based",
-					"pcs_after_transaction_batch_based",
-					"qty_after_transaction",
-					"qty_after_transaction_item_based",
-					"qty_after_transaction_batch_based",
-					"serial_and_batch_bundle",
-					"batch_no",
-				]:
-					new_log.set(field, log.get(field))
-
-				source_wh = frappe.db.get_value(
+			for r in raw_logs:
+				# Resolve latest state (warehouse, row_name, etc.) for this item/batch
+				latest_detail = frappe.db.get_value(
 					"MOP Log",
 					{
-						"manufacturing_work_order": ["in", other_mwos],
-						"item_code": log.item_code,
-						"batch_no": log.batch_no,
-						"flow_index": 0,
+						"manufacturing_work_order": ["in", all_mwos],
+						"item_code": r.item_code,
+						"batch_no": r.batch_no,
+						"creation": r.latest_log,
 						"is_cancelled": 0,
 					},
-					"from_warehouse",
+					[
+						"from_warehouse",
+						"to_warehouse",
+						"row_name",
+						"serial_and_batch_bundle",
+					],
+					as_dict=True,
 				)
 
-				new_log.from_warehouse = source_wh or log.get("from_warehouse")
-				new_log.to_warehouse = log.get("to_warehouse")
+				if not latest_detail:
+					continue
+
+				new_log = frappe.new_doc("MOP Log")
+				new_log.item_code = r.item_code
+				new_log.batch_no = r.batch_no
+				new_log.qty_change = 0  # initialization entry
+				new_log.pcs_change = 0
+				new_log.qty_after_transaction_batch_based = r.total_qty
+				new_log.pcs_after_transaction_batch_based = r.total_pcs
+
+				# Inherit other cumulative fields for virtual ledger consistency
+				new_log.qty_after_transaction = r.total_qty
+				new_log.qty_after_transaction_item_based = r.total_qty
+				new_log.pcs_after_transaction = r.total_pcs
+				new_log.pcs_after_transaction_item_based = r.total_pcs
+
+				new_log.from_warehouse = latest_detail.from_warehouse
+				new_log.to_warehouse = latest_detail.to_warehouse
+				new_log.row_name = latest_detail.row_name
+				new_log.serial_and_batch_bundle = latest_detail.serial_and_batch_bundle
 
 				new_log.manufacturing_operation = mop.name
 				new_log.manufacturing_work_order = doc.name
 				new_log.voucher_type = "Manufacturing Work Order"
 				new_log.voucher_no = doc.name
 				new_log.flow_index = 0
-				new_log.is_synced = 1
+				new_log.is_synced = 0
 				new_log.save()
 
 		create_snc_from_mwo_submit(doc.name)

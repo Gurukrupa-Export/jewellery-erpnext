@@ -918,6 +918,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 		pmo,
 		[
 			"name",
+			"sales_order",
 			"sales_order_item",
 			"manufacturing_plan",
 			"item_code",
@@ -1223,6 +1224,9 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 		)
 
 	se.save()
+	if frappe.flags.allow_negative_stock:
+		se.flags.allow_negative_stock = 1
+
 	se.submit()
 	update_produced_qty(pmo_det)
 	frappe.msgprint(_("Finished Good created successfully"))
