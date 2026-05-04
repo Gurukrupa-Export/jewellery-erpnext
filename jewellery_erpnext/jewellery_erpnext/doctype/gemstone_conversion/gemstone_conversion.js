@@ -12,7 +12,7 @@ frappe.ui.form.on("Gemstone Conversion", {
 			};
 		};
 	},
-	g_source_item(frm) {
+	item_loss_update(frm) {
 		clear_gemstone_field(frm);
 		set_batch_filter(frm, "batch");
 		frm.set_value("g_source_qty", null);
@@ -31,6 +31,12 @@ frappe.ui.form.on("Gemstone Conversion", {
 			});
 			frm.refresh_field("g_loss_item");
 		}
+	},
+	g_source_item(frm) {
+		frm.trigger("item_loss_update");
+	},
+	loss_type(frm) {
+		frm.trigger("item_loss_update");
 	},
 	validate(frm) {
 		calculate_Gemstone(frm);

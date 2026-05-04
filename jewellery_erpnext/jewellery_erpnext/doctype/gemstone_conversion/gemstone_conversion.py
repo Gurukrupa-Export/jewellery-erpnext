@@ -9,7 +9,9 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.doc_events.batch_utils import (
 	update_fifo_batch,
 )
-from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import get_item_loss_item
+from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
+	get_item_loss_item,
+)
 
 
 class GemstoneConversion(Document):
@@ -38,7 +40,11 @@ class GemstoneConversion(Document):
 
 		if loss_item and flt(self.g_source_qty - self.g_target_qty, 2) > 0:
 			self.append(
-				"sc_target_table", {"item_code": loss_item, "qty": (self.g_source_qty - self.g_target_qty)}
+				"sc_target_table",
+				{
+					"item_code": loss_item,
+					"qty": (self.g_source_qty - self.g_target_qty),
+				},
 			)
 
 		if self.g_target_qty > self.g_source_qty:
@@ -53,18 +59,26 @@ class GemstoneConversion(Document):
 				f"Conversion failed batch available qty not meet. </br><b>(Batch Qty = {self.batch_avail_qty})</b><br>select another batch."
 			)
 		if self.g_source_qty == 0 or self.g_target_qty == 0:
-			frappe.throw(_("Source Qty or Target Qty not allowed Zero to post transaction"))
+			frappe.throw(
+				_("Source Qty or Target Qty not allowed Zero to post transaction")
+			)
 		if self.g_source_qty < 0:
 			frappe.throw(_("Source Qty invalid"))
 
 	@frappe.whitelist()
 	def get_detail_tab_value(self):
 		errors = []
-		dpt, branch = frappe.get_value("Employee", self.employee, ["department", "branch"])
+		dpt, branch = frappe.get_value(
+			"Employee", self.employee, ["department", "branch"]
+		)
 		if not dpt:
-			errors.append(f"Department Messing against <b>{self.employee} Employee Master</b>")
+			errors.append(
+				f"Department Messing against <b>{self.employee} Employee Master</b>"
+			)
 		if not branch:
-			errors.append(f"Branch Messing against <b>{self.employee} Employee Master</b>")
+			errors.append(
+				f"Branch Messing against <b>{self.employee} Employee Master</b>"
+			)
 		mnf = frappe.get_value("Department", dpt, "manufacturer")
 		if not mnf:
 			errors.append("Manufacturer Messing against <b>Department Master</b>")
@@ -89,7 +103,9 @@ class GemstoneConversion(Document):
 
 		error = []
 		if self.batch:
-			bal_qty = get_batch_qty(batch_no=self.batch, warehouse=self.source_warehouse)
+			bal_qty = get_batch_qty(
+				batch_no=self.batch, warehouse=self.source_warehouse
+			)
 			reference_doctype, reference_name = frappe.get_value(
 				"Batch", self.batch, ["reference_doctype", "reference_name"]
 			)
@@ -97,14 +113,22 @@ class GemstoneConversion(Document):
 				error.append("Batch Qty zero")
 			if reference_doctype:
 				if reference_doctype == "Purchase Receipt":
-					supplier = frappe.get_value(reference_doctype, reference_name, "supplier")
+					supplier = frappe.get_value(
+						reference_doctype, reference_name, "supplier"
+					)
 					inventory_type = "Regular Stock"
 				if reference_doctype == "Stock Entry":
-					inventory_type = frappe.get_value(reference_doctype, reference_name, "inventory_type")
+					inventory_type = frappe.get_value(
+						reference_doctype, reference_name, "inventory_type"
+					)
 					if not inventory_type:
-						inventory_type = frappe.get_value("Batch", self.batch, "custom_inventory_type")
+						inventory_type = frappe.get_value(
+							"Batch", self.batch, "custom_inventory_type"
+						)
 					if inventory_type == "Customer Goods":
-						customer = frappe.get_value(reference_doctype, reference_name, "_customer")
+						customer = frappe.get_value(
+							reference_doctype, reference_name, "_customer"
+						)
 			if error:
 				frappe.throw(", ".join(error))
 
@@ -131,9 +155,9 @@ class GemstoneConversion(Document):
 
 			if t_gemstone_type != gemstone_type:
 				frappe.throw(
-					_("The gemstone type in <b>{0}</b> is different from that in <b>{1}</b>.").format(
-						row.item_code, self.g_source_item
-					)
+					_(
+						"The gemstone type in <b>{0}</b> is different from that in <b>{1}</b>."
+					).format(row.item_code, self.g_source_item)
 				)
 
 	def validate_target_item(self):
@@ -145,12 +169,15 @@ class GemstoneConversion(Document):
 		variant_of = frappe.db.get_value("Item", self.g_source_item, "variant_of")
 		if not attr_value:
 			return
-		height, weight = frappe.db.get_value("Attribute Value", attr_value, ["height", "weight"])
+		height, weight = frappe.db.get_value(
+			"Attribute Value", attr_value, ["height", "weight"]
+		)
 
 		for row in self.sc_target_table:
-
 			t_variant_of, is_customer_gemstone = frappe.db.get_value(
-				"Item", row.item_code, ["variant_of", "custom_inventory_type_can_be_customer_goods"]
+				"Item",
+				row.item_code,
+				["variant_of", "custom_inventory_type_can_be_customer_goods"],
 			)
 
 			if variant_of == t_variant_of:
@@ -162,21 +189,23 @@ class GemstoneConversion(Document):
 				"attribute_value",
 			)
 
-			t_height, t_weight = frappe.db.get_value("Attribute Value", t_attr_value, ["height", "weight"])
+			t_height, t_weight = frappe.db.get_value(
+				"Attribute Value", t_attr_value, ["height", "weight"]
+			)
 
 			if is_customer_gemstone:
 				if t_height != height or weight != t_weight:
 					frappe.throw(
-						_("The gemstone size in <b>{0}</b> is not equal size of <b>{1}</b>.").format(
-							row.item_code, self.g_source_item
-						)
+						_(
+							"The gemstone size in <b>{0}</b> is not equal size of <b>{1}</b>."
+						).format(row.item_code, self.g_source_item)
 					)
 
 			if t_height > height or weight > t_weight:
 				frappe.throw(
-					_("The gemstone size in <b>{0}</b> is not within the size range of <b>{1}</b>.").format(
-						row.item_code, self.g_source_item
-					)
+					_(
+						"The gemstone size in <b>{0}</b> is not within the size range of <b>{1}</b>."
+					).format(row.item_code, self.g_source_item)
 				)
 
 
@@ -224,18 +253,6 @@ def make_gemstone_stock_entry(self):
 				"t_warehouse": target_wh,
 			}
 		)
-	# if self.g_loss_qty > 0:
-	# 	target_item.append(
-	# 		{
-	# 			"item_code": self.g_loss_item,
-	# 			"qty": self.g_loss_qty,
-	# 			"inventory_type": inventory_type,
-	# 			"department": self.department,
-	# 			"employee": self.employee,
-	# 			"manufacturer": self.manufacturer,
-	# 			"t_warehouse": target_wh,
-	# 		}
-	# 	)
 	for row in source_item:
 		se.append(
 			"items",
@@ -263,6 +280,7 @@ def make_gemstone_stock_entry(self):
 				"employee": row["employee"],
 				"manufacturer": row["manufacturer"],
 				"t_warehouse": row["t_warehouse"],
+				"set_basic_rate_manually": 1,
 			},
 		)
 	se.save()
@@ -271,5 +289,5 @@ def make_gemstone_stock_entry(self):
 
 
 @frappe.whitelist()
-def get_loss_item(company, souce_item, loss_type):
+def get_loss_item(company, souce_item, loss_type=None):
 	return get_item_loss_item(company, souce_item, "G", loss_type)
