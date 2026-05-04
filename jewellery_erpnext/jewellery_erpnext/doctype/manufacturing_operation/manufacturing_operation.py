@@ -1652,7 +1652,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	pmo_data = frappe.db.get_value(
 		"Parent Manufacturing Order",
 		self.parent_manufacturing_order,
-		["diamond_quality", "qty"],
+		["diamond_quality", "qty", "sales_order"],
 		as_dict=1,
 	)
 
@@ -1691,11 +1691,15 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		"total_gemstone_amount",
 		"gemstone_bom_amount",
 		"gemstone_fg_purchase",
+		"finding_weight",
+		"finding_weight_",
 		"total_finding_weight",
 		"total_finding_pcs",
 		"total_finding_amount",
 		"finding_bom_amount",
 		"finding_fg_amount",
+		"gold_bom_amount",
+		"other_bom_amount",
 		"net_weight",
 		"gross_weight",
 		"making_charge",
@@ -2598,35 +2602,47 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 				if making_charge_price_list:
 					if finding_type_value:
-						frappe.db.get_value(
+						matching_subcategory = frappe.db.get_value(
 							"Making Charge Price Finding Subcategory",
-							{"subcategory": finding_type_value},
-							["rate_per_gm", "wastage"],
+							{
+								"parent": making_charge_price_list[0]["name"],
+								"subcategory": finding_type_value,
+							},
+							[
+								"rate_per_gm",
+								"wastage",
+								"supplier_fg_purchase_rate",
+								"custom_subcontracting_rate",
+								"custom_subcontracting_wastage",
+							],
 							order_by="creation DESC",
+							as_dict=True,
 						)
 
-					making_charge_price_subcategories = frappe.get_all(
-						"Making Charge Price Item Subcategory",
-						filters={"parent": making_charge_price_list[0]["name"]},
-						fields=[
-							"subcategory",
-							"rate_per_gm",
-							"supplier_fg_purchase_rate",
-							"wastage",
-							"custom_subcontracting_rate",
-							"custom_subcontracting_wastage",
-						],
-					)
-
-					if making_charge_price_subcategories:
-						matching_subcategory = next(
-							(
-								row
-								for row in making_charge_price_subcategories
-								if row.get("subcategory") == new_bom.item_subcategory
-							),
-							None,
+					if not matching_subcategory:
+						making_charge_price_subcategories = frappe.get_all(
+							"Making Charge Price Item Subcategory",
+							filters={"parent": making_charge_price_list[0]["name"]},
+							fields=[
+								"subcategory",
+								"rate_per_gm",
+								"supplier_fg_purchase_rate",
+								"wastage",
+								"custom_subcontracting_rate",
+								"custom_subcontracting_wastage",
+							],
 						)
+
+						if making_charge_price_subcategories:
+							matching_subcategory = next(
+								(
+									row
+									for row in making_charge_price_subcategories
+									if row.get("subcategory")
+									== new_bom.item_subcategory
+								),
+								None,
+							)
 
 						if matching_subcategory:
 							rate_per_gm = matching_subcategory.get("rate_per_gm", 0)
@@ -2697,35 +2713,47 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 				if making_charge_price_list:
 					if finding_type_value:
-						frappe.db.get_value(
+						matching_subcategory = frappe.db.get_value(
 							"Making Charge Price Finding Subcategory",
-							{"subcategory": finding_type_value},
-							["rate_per_gm", "wastage"],
+							{
+								"parent": making_charge_price_list[0]["name"],
+								"subcategory": finding_type_value,
+							},
+							[
+								"rate_per_gm",
+								"wastage",
+								"supplier_fg_purchase_rate",
+								"custom_subcontracting_rate",
+								"custom_subcontracting_wastage",
+							],
 							order_by="creation DESC",
+							as_dict=True,
 						)
 
-					making_charge_price_subcategories = frappe.get_all(
-						"Making Charge Price Item Subcategory",
-						filters={"parent": making_charge_price_list[0]["name"]},
-						fields=[
-							"subcategory",
-							"rate_per_gm",
-							"supplier_fg_purchase_rate",
-							"wastage",
-							"custom_subcontracting_rate",
-							"custom_subcontracting_wastage",
-						],
-					)
-
-					if making_charge_price_subcategories:
-						matching_subcategory = next(
-							(
-								row
-								for row in making_charge_price_subcategories
-								if row.get("subcategory") == new_bom.item_subcategory
-							),
-							None,
+					if not matching_subcategory:
+						making_charge_price_subcategories = frappe.get_all(
+							"Making Charge Price Item Subcategory",
+							filters={"parent": making_charge_price_list[0]["name"]},
+							fields=[
+								"subcategory",
+								"rate_per_gm",
+								"supplier_fg_purchase_rate",
+								"wastage",
+								"custom_subcontracting_rate",
+								"custom_subcontracting_wastage",
+							],
 						)
+
+						if making_charge_price_subcategories:
+							matching_subcategory = next(
+								(
+									row
+									for row in making_charge_price_subcategories
+									if row.get("subcategory")
+									== new_bom.item_subcategory
+								),
+								None,
+							)
 
 					if matching_subcategory:
 						rate_per_gm = matching_subcategory.get("rate_per_gm", 0)
@@ -3228,6 +3256,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.finding_pcs = sum(
 		flt(r.get("qty", 0)) for r in new_bom.get("finding_detail", [])
 	)
+	new_bom.finding_bom_amount = new_bom.total_finding_amount
 
 	# Diamonds
 	new_bom.total_diamond_pcs = sum(
@@ -3238,6 +3267,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	)
 	new_bom.total_diamond_amount = sum(
 		flt(r.get("amount", 0)) for r in new_bom.get("diamond_detail", [])
+	)
+	new_bom.diamond_bom_amount = sum(
+		flt(r.get("diamond_rate_for_specified_quantity", 0))
+		for r in new_bom.get("diamond_detail", [])
 	)
 
 	# Gemstones
@@ -3255,22 +3288,40 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		for r in new_bom.get("gemstone_detail", [])
 	)
 
+	new_bom.gold_bom_amount = new_bom.total_metal_amount
+	new_bom.other_bom_amount = sum(
+		flt(r.get("amount", 0)) for r in new_bom.get("other_detail", [])
+	)
+
+	new_bom.operating_cost = sum(
+		flt(r.get("operating_cost", 0)) for r in new_bom.get("operations", [])
+	)
+
 	new_bom.making_charge = new_bom.custom_metal_amount + new_bom.custom_finding_amount
 	new_bom.making_fg_purchase = (
 		new_bom.custom_fg_metal_amount + new_bom.custom_finding_fg_amount
 	)
-	new_bom.finding_weight_ = new_bom.finding_weight_
+
+	new_bom.finding_weight = new_bom.finding_weight_
 	new_bom.metal_weight = new_bom.total_metal_weight
 	new_bom.metal_and_finding_weight = new_bom.finding_weight_ + new_bom.metal_weight
+	new_bom.net_weight = new_bom.metal_and_finding_weight
+
 	new_bom.diamond_weight = new_bom.total_diamond_weight
 	new_bom.total_diamond_weight_in_gms = new_bom.diamond_weight / 5
 	new_bom.gemstone_weight = new_bom.total_gemstone_weight
 	new_bom.total_gemstone_weight_in_gms = new_bom.gemstone_weight / 5
+
+	new_bom.other_weight = sum(
+		flt(r.get("quantity", 0)) for r in new_bom.get("other_detail", [])
+	)
+
 	new_bom.gross_weight = (
 		new_bom.metal_weight
 		+ new_bom.finding_weight_
 		+ new_bom.total_diamond_weight_in_gms
 		+ new_bom.total_gemstone_weight_in_gms
+		+ new_bom.other_weight
 	)
 	new_bom.total_bom_amount = (
 		new_bom.diamond_bom_amount
@@ -3278,6 +3329,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		+ new_bom.making_charge
 		+ new_bom.finding_bom_amount
 		+ new_bom.gemstone_bom_amount
+		+ new_bom.other_bom_amount
+		+ new_bom.operating_cost
 	)
 	new_bom.gold_to_diamond_ratio = (
 		flt(new_bom.metal_weight + new_bom.finding_weight_)
