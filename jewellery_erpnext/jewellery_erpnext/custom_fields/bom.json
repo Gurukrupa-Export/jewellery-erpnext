@@ -922,15 +922,6 @@
   },
   {
    "dt": "BOM",
-   "fieldname": "bom_scrap_item",
-   "fieldtype": "Table",
-   "insert_after": "scrap",
-   "label": "BOM Scrap Item",
-   "module": "Jewellery Erpnext",
-   "options": "BOM Scrap Item"
-  },
-  {
-   "dt": "BOM",
    "fieldname": "bom_metal_details",
    "fieldtype": "Tab Break",
    "insert_after": "section_break_usbsj",
