@@ -127,7 +127,7 @@ def get_gold_rate(self):
 						# frappe.msgprint(f"{mc}")
 		if not mc:
 
-			frappe.throw(f"""Create a valid Making Charge Price for Customer: {filters["customer"] }, Metal Type:{doc.metal_touch} "Setting Type":{doc.setting_type} """)
+			frappe.throw(f"""Create a valid Making Charge Price for Customer: {filters["customer"] }, Metal Type:{item.metal_touch}  """)
 		# frappe.throw("hii")
 		mc_name = mc[0]["name"]
 		# frappe.throw(f"{mc_name},")
@@ -153,7 +153,7 @@ def get_gold_rate(self):
 
 
 
-
+		company_metal_purity = item.purity_percentage or 0
 
 
 
@@ -655,9 +655,7 @@ def _set_total_making_charges(self, metal, making_charge_details):
 			# set additional_net_weigth
 			additional_net_weight = 0
 			if not self.set_additional_rate and metal.parentfield == "metal_detail":
-				if self.compute_making_charges_on == "Diamond Inclusive" and flt(metal.metal_purity) == flt(
-					self.metal_purity
-				):
+				if self.compute_making_charges_on == "Diamond Inclusive":
 					if not self.total_diamond_weight_per_gram:
 						self.total_diamond_weight_per_gram = flt(flt(self.total_diamond_weight) / 5, 3)
 					metal.additional_net_weight = self.total_diamond_weight_per_gram
@@ -700,10 +698,10 @@ def get_other_rate(self):
 		row.amount = row.rate * row.quantity
 		amount += row.amount
 
-	self.igi_charges = self.igi_charges or 0
-	self.dhc_charges = self.dhc_charges or 0
-	self.sgl_charges = self.sgl_charges or 0
-	self.hallmark_charges = self.hallmark_charges or 0
+	self.igi_charges = getattr(self, "igi_charges", 0) or 0
+	self.dhc_charges = getattr(self, "dhc_charges", 0) or 0
+	self.sgl_charges = getattr(self, "sgl_charges", 0) or 0
+	self.hallmark_charges = getattr(self, "hallmark_charges", 0) or 0
 	# other_details = [
 	# 	self.igi_charges,
 	# 	self.dhc_charges,
