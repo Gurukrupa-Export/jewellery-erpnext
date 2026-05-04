@@ -2,7 +2,6 @@
 # For license information, please see license.txt
 
 import frappe
-from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, cstr, flt
 
@@ -150,27 +149,27 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	if mop_op:
 		sql += " AND manufacturing_operation = %s"
 		sql_params.append(mop_op)
-		previous_mop = frappe.get_cached_value(
+		previous_mop = frappe.db.get_value(
 			"Manufacturing Operation", mop_op, "previous_mop"
 		)
 		if previous_mop:
 			previous_mop_qty = (
-				frappe.get_cached_value(
+				frappe.db.get_value(
 					"Manufacturing Operation",
 					previous_mop,
 					FIELD_MAP.get(first_char) + "_wt",
 				)
 				or 0
 			)
-
-			previous_mop_pcs = (
-				frappe.get_cached_value(
-					"Manufacturing Operation",
-					previous_mop,
-					FIELD_MAP.get(first_char) + "_pcs",
+			if first_char in ("D", "G"):
+				previous_mop_pcs = (
+					frappe.db.get_value(
+						"Manufacturing Operation",
+						previous_mop,
+						FIELD_MAP.get(first_char) + "_pcs",
+					)
+					or 0
 				)
-				or 0
-			)
 
 	row_vals = frappe.db.sql(sql, tuple(sql_params), as_dict=True)
 
@@ -191,11 +190,11 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	# compute fields
 	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"]) + previous_mop_pcs
 	pcs_after_item = pcs + cint(stats["sum_pcs_item"]) + previous_mop_pcs
-	pcs_after_batch = pcs + cint(stats["sum_pcs_batch"]) + previous_mop_pcs
+	pcs_after_batch = pcs + cint(stats["sum_pcs_batch"])
 
 	qty_after_prefix = qty + flt(stats["sum_qty_prefix"]) + previous_mop_qty
 	qty_after_item = qty + flt(stats["sum_qty_item"]) + previous_mop_qty
-	qty_after_batch = qty + flt(stats["sum_qty_batch"]) + previous_mop_qty
+	qty_after_batch = qty + flt(stats["sum_qty_batch"])
 	# create doc
 	mop_log = frappe.new_doc("MOP Log")
 	mop_log.item_code = item_code
@@ -284,38 +283,13 @@ def create_mop_log_for_department_ir(
 			fields=select_fields,
 			order_by="creation asc",
 		)
-		# Only clone the latest Issue snapshot tier (multiple rows share the same max flow_index).
-		# Without this, historical Issue rows at lower flow_index would be replayed as extra Receive rows.
-		if mop_logs:
-			max_issue_flow = max(cint(log.get("flow_index") or 0) for log in mop_logs)
-			mop_logs = [
-				log
-				for log in mop_logs
-				if cint(log.get("flow_index") or 0) == max_issue_flow
-			]
-		if not mop_logs:
-			frappe.log_error(
-				title="MOP Log Fallback",
-				message=f"DIR Receive missing Issue logs for {self.receive_against}, falling back to tail-snapshot.",
-			)
 
-	if not mop_logs:
-		if is_receive and frappe.get_site_config().get(
-			"department_ir_receive_strict_lineage"
-		):
-			frappe.throw(
-				_(
-					"No MOP Log rows found for Department IR Issue {0} on Manufacturing Operation {1}. "
-					"Fix Issue-side MOP Logs or disable site config department_ir_receive_strict_lineage."
-				).format(self.receive_against, row.manufacturing_operation)
-			)
-		flow_index = get_last_mop_index(row.manufacturing_operation)
+	else:
 		filters = {
 			"manufacturing_operation": row.manufacturing_operation,
 			"is_cancelled": 0,
 		}
-		if flow_index is not None:
-			filters["flow_index"] = flow_index
+
 		mop_logs = frappe.db.get_all(
 			"MOP Log",
 			filters,
