@@ -1131,9 +1131,9 @@ frappe.ui.form.on("Quotation Item", {
 					fieldname: "bom_no",
 					fieldtype: "Link",
 					label: "BOM-No",
-					options: "BOM",
+					options: "Tracking Bom",
 					read_only: 1,
-					default: row.quotation_bom,
+					default: row.custom_tracking_bom,
 					onchange: () => {
 						if (dialog.get_value("bom_no")) {
 							edit_bom_documents(
@@ -1459,10 +1459,10 @@ frappe.ui.form.on("Quotation Item", {
 			primary_action_label: __("Update"),
 		});
 
-		if (row.quotation_bom) {
+		if (row.custom_tracking_bom) {
 			edit_bom_documents(
 				dialog,
-				row.quotation_bom,
+				row.custom_tracking_bom,
 				metal_data,
 				diamond_data,
 				gemstone_data,
@@ -1921,7 +1921,7 @@ let add_row = (serial_no, frm, row) => {
 					frappe.model.set_value(
 						new_row.doctype,
 						new_row.name,
-						"quotation_bom",
+						"custom_tracking_bom",
 						bom.name
 					);
 					new_row.bom = bom.name;
