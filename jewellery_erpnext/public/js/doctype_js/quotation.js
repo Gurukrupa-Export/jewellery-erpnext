@@ -1442,7 +1442,7 @@ frappe.ui.form.on("Quotation Item", {
 					method: "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.update_bom_detail",
 					freeze: true,
 					args: {
-						parent_doctype: "BOM",
+						parent_doctype: "Tracking Bom",
 						parent_doctype_name: dialog.get_value("bom_no") || row.bom,
 						metal_detail: metal_detail,
 						diamond_detail: diamond_detail,
@@ -1525,13 +1525,13 @@ let edit_bom_documents = (
 		args using:
 			bom_no: Link of BOM
 	*/
-	var doc = frappe.model.get_doc("BOM", bom_no);
+	var doc = frappe.model.get_doc("Tracking Bom", bom_no);
 	if (!doc) {
 		frappe.call({
 			method: "frappe.client.get",
 			freeze: true,
 			args: {
-				doctype: "BOM",
+				doctype: "tracking Bom",
 				name: bom_no,
 			},
 			callback(r) {
