@@ -1148,6 +1148,7 @@ frappe.ui.form.on("Quotation Item", {
 						}
 					},
 				},
+			
 				{
 					fieldtype: "Section Break",
 				},
@@ -1493,7 +1494,9 @@ frappe.ui.form.on("Quotation Item", {
 					}
 				});
 		}
-
+		if (row.custom_tracking_bom) {
+			dialog.set_value("bom_no", row.custom_tracking_bom);
+}
 		dialog.show();
 		dialog.$wrapper.find(".modal-dialog").css("max-width", "90%");
 	},
