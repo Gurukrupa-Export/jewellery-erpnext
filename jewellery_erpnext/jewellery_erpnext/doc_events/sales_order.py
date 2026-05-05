@@ -1687,7 +1687,7 @@ def create_new_bom1(self):
 					for s in doc.metal_detail:
 						filters={
 							"customer": self.customer,
-							"metal_type":doc.metal_type,
+							"metal_type":s.metal_type,
 							"setting_type":doc.setting_type,
 							"from_gold_rate": ["<=", self.gold_rate_with_gst],
 							"to_gold_rate": [">=", self.gold_rate_with_gst],
@@ -1707,7 +1707,7 @@ def create_new_bom1(self):
 						# frappe.msgprint(f"{mc}")
 						if not mc:
 			
-							frappe.throw(f"""Create a valid Making Charge Price for Customer: {filters["customer"] }, Metal Type:{doc.metal_touch} "Setting Type":{doc.setting_type} """)
+							frappe.throw(f"""Create a valid Making Charge Price for Customer: {filters["customer"] }, Metal Type:{s.metal_touch} "Setting Type":{doc.setting_type} """)
 						
 						mc_name = mc[0]["name"]
 						# frappe.throw(f"{mc_name},{doc.setting_type}")
@@ -1865,7 +1865,7 @@ def create_new_bom1(self):
 					for f in doc.finding_detail:
 						filters={
 							"customer": self.customer,
-							"metal_type":doc.metal_type,
+							"metal_type":f.metal_type,
 							"setting_type":doc.setting_type,
 							"from_gold_rate": ["<=", self.gold_rate_with_gst],
 							"to_gold_rate": [">=", self.gold_rate_with_gst],
