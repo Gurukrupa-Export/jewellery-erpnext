@@ -1,5 +1,3 @@
-from . import __version__ as app_version
-
 app_name = "jewellery_erpnext"
 app_title = "Jewellery Erpnext"
 app_publisher = "Nirali"
@@ -156,6 +154,7 @@ doc_events = {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.before_validate",
 		"before_submit": "jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.on_submit",
+		# "jewellery_erpnext.customer_subcontracting.batch_rename.create_repack_for_used_other",],
 	},
 	"Batch": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.validate",

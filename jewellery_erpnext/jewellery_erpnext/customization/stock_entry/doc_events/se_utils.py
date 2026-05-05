@@ -1,5 +1,4 @@
 import copy
-import json
 
 # import erpnext
 import frappe
@@ -56,60 +55,60 @@ def validate_inventory_dimention(self):
 					"custom_allow_regular_goods_instead_of_customer_goods",
 				)
 
-			allow_customer_goods = manufacturer_data.get(pmo_data.get("manufacturer"))
+			# allow_customer_goods = manufacturer_data.get(pmo_data.get("manufacturer"))
 
-			if (
-				row.inventory_type in ["Customer Goods", "Customer Stock"]
-				and pmo_data.get("customer") != row.customer
-			):
-				frappe.throw(
-					_("Only {0} allowed in Stock Entry").format(
-						pmo_data.get("customer")
-					)
-				)
-			else:
-				variant_mapping = {
-					"M": "is_customer_gold",
-					"F": "is_customer_gold",
-					"D": "is_customer_diamond",
-					"G": "is_customer_gemstone",
-					"O": "is_customer_material",
-				}
+			# if (
+			# 	row.inventory_type in ["Customer Goods", "Customer Stock"]
+			# 	and pmo_data.get("customer") != row.customer
+			# ):
+			# 	frappe.throw(
+			# 		_("Only {0} allowed in Stock Entry").format(
+			# 			pmo_data.get("customer")
+			# 		)
+			# 	)
+			# else:
+			# 	variant_mapping = {
+			# 		"M": "is_customer_gold",
+			# 		"F": "is_customer_gold",
+			# 		"D": "is_customer_diamond",
+			# 		"G": "is_customer_gemstone",
+			# 		"O": "is_customer_material",
+			# 	}
 
-				if row.custom_variant_of in variant_mapping:
-					customer_key = variant_mapping[row.custom_variant_of]
-					if pmo_data.get(customer_key) and row.inventory_type not in [
-						"Customer Goods",
-						"Customer Stock",
-					]:
-						if allow_customer_goods:
-							frappe.msgprint(
-								_(
-									"Can not use regular stock inventory for Customer provided Item"
-								)
-							)
-						else:
-							frappe.throw(
-								_(
-									"Can not use regular stock inventory for Customer provided Item"
-								)
-							)
-					elif not pmo_data.get(customer_key) and row.inventory_type in [
-						"Customer Goods",
-						"Customer Stock",
-					]:
-						if allow_customer_goods:
-							frappe.msgprint(
-								_(
-									"Can not use Customer Goods inventory for non provided customer Item"
-								)
-							)
-						else:
-							frappe.throw(
-								_(
-									"Can not use Customer Goods inventory for non provided customer Item"
-								)
-							)
+			# 	if row.custom_variant_of in variant_mapping:
+			# 		customer_key = variant_mapping[row.custom_variant_of]
+			# 		if pmo_data.get(customer_key) and row.inventory_type not in [
+			# 			"Customer Goods",
+			# 			"Customer Stock",
+			# 		]:
+			# 			if allow_customer_goods:
+			# 				frappe.msgprint(
+			# 					_(
+			# 						"Can not use regular stock inventory for Customer provided Item"
+			# 					)
+			# 				)
+			# 			else:
+			# 				frappe.throw(
+			# 					_(
+			# 						"Can not use regular stock inventory for Customer provided Item"
+			# 					)
+			# 				)
+			# 		elif not pmo_data.get(customer_key) and row.inventory_type in [
+			# 			"Customer Goods",
+			# 			"Customer Stock",
+			# 		]:
+			# 			if allow_customer_goods:
+			# 				frappe.msgprint(
+			# 					_(
+			# 						"Can not use Customer Goods inventory for non provided customer Item"
+			# 					)
+			# 				)
+			# 			else:
+			# 				frappe.throw(
+			# 					_(
+			# 						"Can not use Customer Goods inventory for non provided customer Item"
+			# 					)
+			# 				)
 
 
 def get_fifo_batches(self, row):

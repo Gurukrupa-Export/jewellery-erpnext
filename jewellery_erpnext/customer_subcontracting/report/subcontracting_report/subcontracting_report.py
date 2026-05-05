@@ -294,7 +294,7 @@ def get_usage_data(filters, conditions):
     JOIN `tabStock Entry` se ON se.name = sed.parent
     LEFT JOIN `tabManufacturing Work Order` mwo
       ON mwo.name = se.manufacturing_work_order
-    WHERE se.stock_entry_type = 'Material Transfer (WORK ORDER)'
+    WHERE se.stock_entry_type IN ('Material Transfer (WORK ORDER)', 'Material Transfer to Department')
 	AND se.docstatus = 1
     {conditions}
     """,

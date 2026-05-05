@@ -9,6 +9,12 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.model.naming import make_autoname
 from frappe.utils import cint, flt, get_datetime, now
 
+from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
+	execute as get_report_data,
+)
+from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
+	get_linked_batches,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_events.utils import (
 	add_time_log,
 	create_se_entry,
@@ -106,12 +112,128 @@ class ManufacturingWorkOrder(Document):
 			},
 			"name",
 		)
+		frappe.log_error(
+			f"Last Department: {last_department},Self: {self.department} Pending WO: {pending_wo}",
+			"MWO Validation",
+		)
 		if pending_wo:
 			frappe.throw(
 				_("All the pending manufacturing work orders should be in {0}.").format(
 					last_department
 				)
 			)
+		if last_department and self.department == last_department:
+			self._validate_other_customer_gold_repack(last_department)
+
+	def _validate_other_customer_gold_repack(self, last_department):
+		mwo_customer = getattr(self, "customer", None)
+		if not mwo_customer:
+			return
+
+		print(f"Repack Validation triggered for MWO: {self.name}")
+
+		try:
+			columns, report_data = get_report_data(
+				filters={"other_customer": mwo_customer}
+			)
+		except Exception as e:
+			frappe.logger().warning(
+				f"Error fetching report data for MWO {self.name}: {str(e)}"
+			)
+			return
+
+		if not report_data:
+			return
+
+		pending_repacks = []
+
+		for row in report_data:
+			try:
+				batch_no = row[0]
+				owner = row[1]
+				item = row[2]
+				used_other = flt(row[5])
+				other_customer = row[6] or ""
+			except Exception:
+				continue
+			print(
+				f"Checking batch {batch_no} owned by {owner} with item {item} used_other: {used_other} other_customer: {other_customer}"
+			)
+			if used_other <= 0 or not owner:
+				continue
+
+			if owner == mwo_customer:
+				continue
+
+			other_customers = [
+				c.strip() for c in other_customer.split(",") if c.strip()
+			]
+			print(f"Other customers for batch {batch_no}: {other_customers}")
+			if mwo_customer not in other_customers:
+				print(
+					f"MWO customer {mwo_customer} not in other customers for batch {batch_no}"
+				)
+				continue
+
+			child_batch = batch_no
+			repack_qty = self._get_repack_qty(child_batch)
+			print(f"Repack qty for batch {batch_no}: {repack_qty}")
+			if repack_qty <= 0:
+				pending_repacks.append(
+					{
+						"batch_no": batch_no,
+						"owner": owner,
+						"used_other": used_other,
+					}
+				)
+
+		if pending_repacks:
+			batch_list = ", ".join([r["batch_no"] for r in pending_repacks])
+			frappe.throw(
+				_(
+					"Repack is pending for used other customer gold. Please complete repack for MWO in Tagging Department. Pending batches: {0}"
+				).format(batch_list)
+			)
+
+	def _get_repack_qty(self, child_batch):
+		linked_batches = get_linked_batches(child_batch)
+		print(
+			f"Fetching repack qty for child batch: {child_batch}, Linked batches: {linked_batches}"
+		)
+
+		if not linked_batches:
+			return 0
+
+		parent_batch = None
+		for batch in linked_batches:
+			item = frappe.get_value("Batch", batch, "item")
+			if item and "24KT" in item:
+				parent_batch = batch
+				break
+		print(
+			f"Linked batches for child batch {child_batch}: {linked_batches}, identified parent batch: {parent_batch}"
+		)
+
+		if not parent_batch:
+			return 0
+
+		repack_qty = frappe.db.sql(
+			"""
+			SELECT IFNULL(SUM(sed_target.qty), 0)
+			FROM `tabStock Entry` se
+			JOIN `tabStock Entry Detail` sed_target
+				ON sed_target.parent = se.name AND sed_target.is_finished_item = 1
+			WHERE se.stock_entry_type = 'Subcontracting Repack'
+			AND sed_target.batch_no = %s
+			AND se.docstatus = 1
+			""",
+			(parent_batch,),
+		)[0][0]
+		print(
+			f"Calculated repack qty for child batch {child_batch} with parent batch {parent_batch}: {repack_qty}"
+		)
+
+		return flt(repack_qty)
 
 	def on_cancel(self):
 		self.db_set("status", "Cancelled")
