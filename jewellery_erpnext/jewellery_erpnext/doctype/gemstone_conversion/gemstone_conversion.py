@@ -22,7 +22,7 @@ class GemstoneConversion(Document):
 
 	def on_submit(self):
 		make_gemstone_stock_entry(self)
-		if self.g_source_qty > self.batch_avail_qty:
+		if self.g_source_qty and self.g_source_qty > self.batch_avail_qty:
 			frappe.throw(_("Source Qty greater then batch available qty"))
 
 	def validate(self):
@@ -38,31 +38,31 @@ class GemstoneConversion(Document):
 		for row in remove_list:
 			self.remove(row)
 
-		if loss_item and flt(self.g_source_qty - self.g_target_qty, 2) > 0:
+		if loss_item and flt((self.g_source_qty or 0) - self.g_target_qty, 2) > 0:
 			self.append(
 				"sc_target_table",
 				{
 					"item_code": loss_item,
-					"qty": (self.g_source_qty - self.g_target_qty),
+					"qty": ((self.g_source_qty or 0) - self.g_target_qty),
 				},
 			)
 
-		if self.g_target_qty > self.g_source_qty:
+		if self.g_source_qty is not None and self.g_target_qty > self.g_source_qty:
 			frappe.throw(_("Target Qty does not match with Source Qty"))
 
 		if self.g_loss_qty < 0:
 			frappe.throw(_("Target Qty not allowed greater than Source Qty"))
 		if self.g_target_qty > self.batch_avail_qty:
 			frappe.throw(_("Target Qty not allowed greater than Batch Available Qty"))
-		if self.g_source_qty > self.batch_avail_qty:
+		if self.g_source_qty and self.g_source_qty > self.batch_avail_qty:
 			frappe.throw(
 				f"Conversion failed batch available qty not meet. </br><b>(Batch Qty = {self.batch_avail_qty})</b><br>select another batch."
 			)
-		if self.g_source_qty == 0 or self.g_target_qty == 0:
+		if (self.g_source_qty or 0) == 0 or self.g_target_qty == 0:
 			frappe.throw(
 				_("Source Qty or Target Qty not allowed Zero to post transaction")
 			)
-		if self.g_source_qty < 0:
+		if self.g_source_qty is not None and self.g_source_qty < 0:
 			frappe.throw(_("Source Qty invalid"))
 
 	@frappe.whitelist()
@@ -214,6 +214,8 @@ def make_gemstone_stock_entry(self):
 	source_wh = self.source_warehouse
 	inventory_type = self.inventory_type
 	batch_no = self.batch
+	loss_item = get_loss_item(self.company, self.g_source_item, self.loss_type)
+	scrap_warehouse = get_scrap_warehouse(self.department)
 	se = frappe.get_doc(
 		{
 			"doctype": "Stock Entry",
@@ -232,7 +234,7 @@ def make_gemstone_stock_entry(self):
 	source_item.append(
 		{
 			"item_code": self.g_source_item,
-			"qty": self.g_source_qty,
+			"qty": self.g_source_qty or 0,
 			"inventory_type": inventory_type,
 			"batch_no": batch_no,
 			"department": self.department,
@@ -242,6 +244,10 @@ def make_gemstone_stock_entry(self):
 		}
 	)
 	for row in self.sc_target_table:
+		if row.item_code == loss_item:
+			t_wh = scrap_warehouse
+		else:
+			t_wh = target_wh
 		target_item.append(
 			{
 				"item_code": row.item_code,
@@ -250,7 +256,7 @@ def make_gemstone_stock_entry(self):
 				"department": self.department,
 				"employee": self.employee,
 				"manufacturer": self.manufacturer,
-				"t_warehouse": target_wh,
+				"t_warehouse": t_wh,
 			}
 		)
 	for row in source_item:
@@ -291,3 +297,19 @@ def make_gemstone_stock_entry(self):
 @frappe.whitelist()
 def get_loss_item(company, souce_item, loss_type=None):
 	return get_item_loss_item(company, souce_item, "G", loss_type)
+
+
+def get_scrap_warehouse(department):
+	scrap_wareouse = frappe.db.get_value(
+		"Warehouse",
+		{"department": department, "warehouse_type": "Scrap", "disabled": 0},
+		"name",
+	)
+
+	if not scrap_wareouse:
+		frappe.throw(
+			_(
+				"No Scrap Warehouse found for department {0}, Configure the Scrap Warehouse for this department."
+			).format(department)
+		)
+	return scrap_wareouse
