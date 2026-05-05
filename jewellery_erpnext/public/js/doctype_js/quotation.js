@@ -1131,9 +1131,9 @@ frappe.ui.form.on("Quotation Item", {
 					fieldname: "bom_no",
 					fieldtype: "Link",
 					label: "BOM-No",
-					options: "BOM",
+					options: "Tracking Bom",
 					read_only: 1,
-					default: row.quotation_bom,
+					default: row.custom_tracking_bom,
 					onchange: () => {
 						if (dialog.get_value("bom_no")) {
 							edit_bom_documents(
@@ -1148,6 +1148,7 @@ frappe.ui.form.on("Quotation Item", {
 						}
 					},
 				},
+			
 				{
 					fieldtype: "Section Break",
 				},
@@ -1441,7 +1442,7 @@ frappe.ui.form.on("Quotation Item", {
 					method: "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.update_bom_detail",
 					freeze: true,
 					args: {
-						parent_doctype: "BOM",
+						parent_doctype: "Tracking Bom",
 						parent_doctype_name: dialog.get_value("bom_no") || row.bom,
 						metal_detail: metal_detail,
 						diamond_detail: diamond_detail,
@@ -1459,10 +1460,10 @@ frappe.ui.form.on("Quotation Item", {
 			primary_action_label: __("Update"),
 		});
 
-		if (row.quotation_bom) {
+		if (row.custom_tracking_bom) {
 			edit_bom_documents(
 				dialog,
-				row.quotation_bom,
+				row.custom_tracking_bom,
 				metal_data,
 				diamond_data,
 				gemstone_data,
@@ -1493,7 +1494,9 @@ frappe.ui.form.on("Quotation Item", {
 					}
 				});
 		}
-
+		if (row.custom_tracking_bom) {
+			dialog.set_value("bom_no", row.custom_tracking_bom);
+}
 		dialog.show();
 		dialog.$wrapper.find(".modal-dialog").css("max-width", "90%");
 	},
@@ -1522,13 +1525,13 @@ let edit_bom_documents = (
 		args using:
 			bom_no: Link of BOM
 	*/
-	var doc = frappe.model.get_doc("BOM", bom_no);
+	var doc = frappe.model.get_doc("Tracking Bom", bom_no);
 	if (!doc) {
 		frappe.call({
 			method: "frappe.client.get",
 			freeze: true,
 			args: {
-				doctype: "BOM",
+				doctype: "tracking Bom",
 				name: bom_no,
 			},
 			callback(r) {
@@ -1921,7 +1924,7 @@ let add_row = (serial_no, frm, row) => {
 					frappe.model.set_value(
 						new_row.doctype,
 						new_row.name,
-						"quotation_bom",
+						"custom_tracking_bom",
 						bom.name
 					);
 					new_row.bom = bom.name;
