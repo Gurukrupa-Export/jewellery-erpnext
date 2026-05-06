@@ -661,6 +661,9 @@ def stock_reservation_entry_for_mwo(self):
 			)
 
 	for row in self.items:
+		if self.stock_entry_type == "Material Receive (WORK ORDER)":
+			create_mop_log(self, row, is_synced=True)
+			continue
 		# Repack / issue rows only have s_warehouse; reserve against inbound stock only.
 		if not row.get("t_warehouse"):
 			continue
