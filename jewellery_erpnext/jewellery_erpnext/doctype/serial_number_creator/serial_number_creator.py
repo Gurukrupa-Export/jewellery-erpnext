@@ -742,6 +742,25 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				"warehouse",
 			)
 
+		# Fallback: Check SRE by Sales Order
+		if not s_wh and sales_order:
+			sre_wh = frappe.db.get_value(
+				"Stock Reservation Entry",
+				{
+					"voucher_type": "Sales Order",
+					"voucher_no": sales_order,
+					"item_code": item_code,
+					"docstatus": 1,
+				},
+				"warehouse",
+			)
+			if sre_wh:
+				s_wh = sre_wh
+
+		# Final Fallback: MOP Log's own from_warehouse
+		if not s_wh:
+			s_wh = r.get("from_warehouse")
+
 		out.append(
 			{
 				"item_code": item_code,

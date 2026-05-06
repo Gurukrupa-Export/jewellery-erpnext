@@ -179,7 +179,7 @@
    "fieldname": "design_by",
    "fieldtype": "Select",
    "label": "Design by",
-   "options": "Customer Design\nConcept by Designer",
+   "options": "Customer Design\nConcept by Designer\nOutsource Design",
    "read_only": 1
   },
   {
