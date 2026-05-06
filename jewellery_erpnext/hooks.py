@@ -1,5 +1,3 @@
-from . import __version__ as app_version
-
 app_name = "jewellery_erpnext"
 app_title = "Jewellery Erpnext"
 app_publisher = "Nirali"
