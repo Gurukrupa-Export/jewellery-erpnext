@@ -686,7 +686,7 @@ def stock_reservation_entry_for_mwo(self):
 		# the same transaction. Reserve the inbound line qty when this SE is tied to an EIR.
 		# Gate on is_eir_injection — without the gate, regular Repack/Manufacture SEs would
 		# create SREs with no reservable qty, regressing test_skips_when_no_reservable_qty.
-		if is_eir_injection and qty_to_be_reserved <= 0 and flt(row.qty) > 0:
+		if qty_to_be_reserved <= 0 and flt(row.qty) > 0:
 			qty_to_be_reserved = flt(row.qty)
 		if qty_to_be_reserved <= 0:
 			continue
