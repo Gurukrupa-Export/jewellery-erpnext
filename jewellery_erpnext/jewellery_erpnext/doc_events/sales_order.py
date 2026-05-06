@@ -16,13 +16,12 @@ def validate(self, method):
 	validate_sales_type(self)
 	update_snc(self)
 	update_same_customer_snc(self)
-	validate_quotation_item(self)
-	validate_items(self)
-	create_new_bom(self)
 	validate_serial_number(self)
 	# calculate_gst_rate(self)
 	if not self.get("__islocal") and self.docstatus == 0:
 		set_bom_item_details(self)
+	create_new_bom(self)
+	validate_items(self)
 
 
 def on_submit(self, method):
@@ -32,6 +31,7 @@ def on_submit(self, method):
 
 
 def before_submit(self, method):
+	validate_items(self)
 	if not self.get("custom_invoice_item"):
 		frappe.throw(_("Invoice Item table is mandatory for submission."))
 
@@ -749,45 +749,51 @@ def customer_approval_filter(doctype, txt, searchfield, start, page_len, filters
 
 
 def validate_items(self):
-	# if self.sales_type == "Finished Goods":
 	# Get the Customer Payment Terms document for the given customer
-	customer_payment_term_doc = frappe.get_doc(
-		"Customer Payment Terms", {"customer": self.customer}
-	)
+	customer_payment_term_doc = None
+	try:
+		customer_payment_term_doc = frappe.get_doc(
+			"Customer Payment Terms", {"customer": self.customer}
+		)
+	except frappe.DoesNotExistError:
+		pass
 
 	e_invoice_items = []
 
-	# Loop through all child table rows
-	for row in customer_payment_term_doc.customer_payment_details:
-		item_type = row.item_type
-		e_invoice_item = frappe.get_doc("E Invoice Item", item_type)
-		matched_sales_type_row = None
-		for row in e_invoice_item.sales_type:
-			if row.sales_type == self.sales_type:
-				matched_sales_type_row = row
-				break
+	if customer_payment_term_doc:
+		# Loop through all child table rows
+		for row in customer_payment_term_doc.customer_payment_details:
+			item_type = row.item_type
+			if not frappe.db.exists("E Invoice Item", item_type):
+				continue
+			e_invoice_item = frappe.get_doc("E Invoice Item", item_type)
+			matched_sales_type_row = None
+			for row in e_invoice_item.sales_type:
+				if row.sales_type == self.sales_type:
+					matched_sales_type_row = row
+					break
 
-		# Skip item if no matching sales_type and custom_sales_type is set
-		if self.sales_type and not matched_sales_type_row:
-			continue
-		e_invoice_items.append(
-			{
-				"item_type": item_type,
-				"is_for_metal": e_invoice_item.is_for_metal,
-				"is_for_diamond": e_invoice_item.is_for_diamond,
-				"diamond_type": e_invoice_item.diamond_type,
-				"is_for_making": e_invoice_item.is_for_making,
-				"is_for_finding": e_invoice_item.is_for_finding,
-				"is_for_finding_making": e_invoice_item.is_for_finding_making,
-				"is_for_gemstone": e_invoice_item.is_for_gemstone,
-				"metal_type": e_invoice_item.metal_type,
-				"metal_purity": e_invoice_item.metal_purity,
-				"uom": e_invoice_item.uom,
-				"tax_rate": matched_sales_type_row.tax_rate
-				if matched_sales_type_row
-				else 0,
-			}
-		)
+			# Skip item if no matching sales_type and custom_sales_type is set
+			if self.sales_type and not matched_sales_type_row:
+				continue
+			e_invoice_items.append(
+				{
+					"item_type": item_type,
+					"is_for_metal": e_invoice_item.is_for_metal,
+					"is_for_diamond": e_invoice_item.is_for_diamond,
+					"diamond_type": e_invoice_item.diamond_type,
+					"is_for_making": e_invoice_item.is_for_making,
+					"is_for_finding": e_invoice_item.is_for_finding,
+					"is_for_finding_making": e_invoice_item.is_for_finding_making,
+					"is_for_gemstone": e_invoice_item.is_for_gemstone,
+					"metal_type": e_invoice_item.metal_type,
+					"metal_purity": e_invoice_item.metal_purity,
+					"uom": e_invoice_item.uom,
+					"tax_rate": matched_sales_type_row.tax_rate
+					if matched_sales_type_row
+					else 0,
+				}
+			)
 	self.set("custom_invoice_item", [])
 	aggregated_metal_items = {}
 	aggregated_metal_making_items = {}
@@ -1072,7 +1078,7 @@ def validate_items(self):
 						# aggregated_finding_making_items[key]["qty"] += multiplied_qty
 						# aggregated_finding_making_items[key]["amount"] += finding_making_amount
 
-						multiplied_qty = finding.quantity * item.qty
+						multiplied_qty = finding_making.quantity * item.qty
 						finding_making_amount = (
 							finding_making.making_rate * multiplied_qty
 						)
@@ -1185,6 +1191,26 @@ def validate_items(self):
 		if item["qty"] > 0:
 			item["rate"] = item["amount"] / item["qty"]
 		self.append("custom_invoice_item", item)
+
+	if not self.custom_invoice_item:
+		# Fallback to Quotation Invoice Items
+		for row in self.items:
+			if row.prevdoc_docname:
+				quotation_id = row.prevdoc_docname
+				invoice_items = frappe.get_all(
+					"Quotation E Invoice Item",
+					filters={"parent": quotation_id},
+					fields=["*"],
+				)
+				if invoice_items:
+					for invoice_item in invoice_items:
+						# Remove Frappe internal fields
+						for field in ["name", "owner", "creation", "modified", "modified_by", "parent", "parentfield", "parenttype", "idx"]:
+							if field in invoice_item:
+								invoice_item.pop(field)
+						
+						self.append("custom_invoice_item", invoice_item)
+					break # Only pull from the first quotation found to avoid duplicates
 
 
 def validate_quotation_item(self):
