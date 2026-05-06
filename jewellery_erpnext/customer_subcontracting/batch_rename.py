@@ -51,18 +51,21 @@ def create_parent_batches(doc, method=None):
 
 		batch_name = f"{customer}-{year_code}{month}-{item_code}-{serial}"
 
+		while frappe.db.exists("Batch", batch_name):
+			serial = str(int(serial) + 1).zfill(2)
+			batch_name = f"{customer}-{year_code}{month}-{item_code}-{serial}"
+
 		frappe.flags.is_batch_autoname = True
 
-		if not frappe.db.exists("Batch", batch_name):
-			batch = frappe.new_doc("Batch")
-			batch.batch_id = batch_name
-			batch.item = item_code
-			batch.reference_doctype = doc.doctype
-			batch.reference_name = doc.name
-			batch.custom_customer = doc._customer
-			batch.custom_inventory_type = "Customer Goods"
-			batch.custom_customer_voucher_type = "Customer Subcontracting"
-			batch.insert(ignore_permissions=True)
+		batch = frappe.new_doc("Batch")
+		batch.batch_id = batch_name
+		batch.item = item_code
+		batch.reference_doctype = doc.doctype
+		batch.reference_name = doc.name
+		batch.custom_customer = doc._customer
+		batch.custom_inventory_type = "Customer Goods"
+		batch.custom_customer_voucher_type = "Customer Subcontracting"
+		batch.insert(ignore_permissions=True)
 		row.batch_no = batch_name
 
 
@@ -166,18 +169,24 @@ def create_child_batches(doc, method=None):
 
 		batch_name = f"{base_name}-{alphabet}"
 
+		while frappe.db.exists("Batch", batch_name):
+			if alphabet == "Z":
+				break
+
+			alphabet = chr(ord(alphabet) + 1)
+			batch_name = f"{base_name}-{alphabet}"
+
 		frappe.flags.is_batch_autoname = True
 
-		if not frappe.db.exists("Batch", batch_name):
-			batch = frappe.new_doc("Batch")
-			batch.batch_id = batch_name
-			batch.item = item_code
-			batch.reference_doctype = doc.doctype
-			batch.reference_name = doc.name
-			batch.custom_customer = doc._customer
-			batch.custom_inventory_type = "Customer Goods"
-			batch.custom_customer_voucher_type = "Customer Subcontracting"
-			batch.insert(ignore_permissions=True)
+		batch = frappe.new_doc("Batch")
+		batch.batch_id = batch_name
+		batch.item = item_code
+		batch.reference_doctype = doc.doctype
+		batch.reference_name = doc.name
+		batch.custom_customer = doc._customer
+		batch.custom_inventory_type = "Customer Goods"
+		batch.custom_customer_voucher_type = "Customer Subcontracting"
+		batch.insert(ignore_permissions=True)
 
 		row.batch_no = batch_name
 
@@ -274,6 +283,9 @@ def create_repack_for_used_other(doc, method=None):
 		item_code = row["item"]
 		used_other = row["used_other"]
 		owner = row["owner"]
+
+		if owner == source_customer:
+			continue
 
 		linked_batches = get_linked_batches(child_batch)
 

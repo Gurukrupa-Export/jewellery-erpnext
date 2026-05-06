@@ -7,29 +7,21 @@ import json
 import frappe
 from frappe import _, scrub
 from frappe.model.document import Document
-from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
-from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-	update_manufacturing_operation,
-)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
 	get_summary_data,
 	valid_reparing_or_next_operation,
 	validate_and_update_gross_wt_from_mop,
 	validate_mwo,
-	validate_tolerance,
-)
-from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
-	get_previous_operation,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_department_ir,
 	get_last_mop_index,
 )
-from jewellery_erpnext.utils import group_aggregate_with_concat, set_values_in_bulk
+from jewellery_erpnext.utils import set_values_in_bulk
 
 
 class DepartmentIR(Document):
@@ -118,17 +110,17 @@ class DepartmentIR(Document):
 		)
 		if not issue or issue.type != "Issue" or cint(issue.docstatus) != 1:
 			frappe.throw(
-				_("Receive Against must be a submitted Department IR Issue ({0})").format(
-					self.receive_against
-				)
+				_(
+					"Receive Against must be a submitted Department IR Issue ({0})"
+				).format(self.receive_against)
 			)
 		for row in self.department_ir_operation:
 			mop_name = row.manufacturing_operation
 			if not mop_name:
 				frappe.throw(
-					_("Row {0}: Manufacturing Operation is required for Department IR Receive").format(
-						row.idx
-					)
+					_(
+						"Row {0}: Manufacturing Operation is required for Department IR Receive"
+					).format(row.idx)
 				)
 			meta = frappe.db.get_value(
 				"Manufacturing Operation",
@@ -137,7 +129,9 @@ class DepartmentIR(Document):
 				as_dict=True,
 			)
 			if not meta:
-				frappe.throw(_("Manufacturing Operation {0} does not exist").format(mop_name))
+				frappe.throw(
+					_("Manufacturing Operation {0} does not exist").format(mop_name)
+				)
 			if meta.department_issue_id != self.receive_against:
 				frappe.throw(
 					_(
@@ -195,6 +189,19 @@ class DepartmentIR(Document):
 			},
 		)
 		if cancel:
+			# Bulk db.set_value bypasses MOPLog.validate, so capture the affected
+			# MOPs first and replay the central recompute after the flip.
+			affected_mops_recv = [
+				r[0]
+				for r in frappe.db.sql(
+					"""
+					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
+					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
+					  AND manufacturing_operation IS NOT NULL
+					""",
+					(self.doctype, self.name),
+				)
+			]
 			frappe.db.set_value(
 				"MOP Log",
 				{
@@ -205,6 +212,12 @@ class DepartmentIR(Document):
 				"is_cancelled",
 				1,
 			)
+			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				recalculate_manufacturing_operation_weights,
+			)
+
+			for mop_name in affected_mops_recv:
+				recalculate_manufacturing_operation_weights(mop_name)
 			values.update(
 				{
 					"department_receive_id": None,
@@ -315,6 +328,19 @@ class DepartmentIR(Document):
 					).format(self.next_department)
 				)
 		else:
+			# Bulk db.set_value bypasses MOPLog.validate; replay the recompute
+			# after the flip so prefix buckets shed the just-cancelled rows.
+			affected_mops_iss = [
+				r[0]
+				for r in frappe.db.sql(
+					"""
+					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
+					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
+					  AND manufacturing_operation IS NOT NULL
+					""",
+					(self.doctype, self.name),
+				)
+			]
 			frappe.db.set_value(
 				"MOP Log",
 				{
@@ -325,6 +351,12 @@ class DepartmentIR(Document):
 				"is_cancelled",
 				1,
 			)
+			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				recalculate_manufacturing_operation_weights,
+			)
+
+			for mop_name in affected_mops_iss:
+				recalculate_manufacturing_operation_weights(mop_name)
 		for row in self.department_ir_operation:
 			if cancel:
 				new_operation = frappe.db.get_value(
@@ -590,7 +622,6 @@ def update_stock_entry_dimensions(
 		set_values_in_bulk("Stock Entry Detail", rows, values)
 		values[scrub(doc.doctype)] = doc.name
 		frappe.db.set_value("Stock Entry", stock_entry, values)
-		update_manufacturing_operation(stock_entry)
 		del values[scrub(doc.doctype)]
 
 
@@ -661,204 +692,12 @@ def batch_update_stock_entry_dimensions(
 		frappe.db.bulk_update(
 			"Stock Entry", se_updates, chunk_size=150, update_modified=True
 		)
-		for se_name in se_updates:
-			update_manufacturing_operation(se_name)
 
 	# Batch update Stock Entry Detail
 	if sed_updates:
 		frappe.db.bulk_update(
 			"Stock Entry Detail", sed_updates, chunk_size=150, update_modified=True
 		)
-
-
-# def create_stock_entry_for_issue(doc, row, manufacturing_operation):
-
-# 	in_transit_wh = frappe.get_value(
-# 		"Warehouse",
-# 		{"disabled": 0, "department": doc.next_department, "warehouse_type": "Manufacturing"},
-# 		"default_in_transit_warehouse",
-# 	)
-
-# 	department_wh = frappe.get_value(
-# 		"Warehouse",
-# 		{"disabled": 0, "department": doc.current_department, "warehouse_type": "Manufacturing"},
-# 	)
-# 	if not department_wh:
-# 		# frappe.throw(_(f"Please set warhouse for department {doc.current_department}"))
-# 		frappe.throw(_("Please set warehouse for department {0}").format(doc.current_department))
-
-# 	send_in_transit_wh = frappe.get_value(
-# 		"Warehouse",
-# 		{"disabled": 0, "department": doc.current_department, "warehouse_type": "Manufacturing"},
-# 		"default_in_transit_warehouse",
-# 	)
-
-# 	## make filter to fetch the stock entry created against warehouse and operations
-# 	SE = frappe.qb.DocType("Stock Entry")
-# 	SED = frappe.qb.DocType("Stock Entry Detail")
-
-# 	fetch_manual_stock_entries = (
-# 		frappe.qb.from_(SE)
-# 		.left_join(SED)
-# 		.on(SE.name == SED.parent)
-# 		.select(SE.name)
-# 		.where(
-# 			(SED.t_warehouse == send_in_transit_wh)
-# 			& (SED.manufacturing_operation == row.manufacturing_operation)
-# 			& (SED.to_department == doc.current_department)
-# 			& (SED.docstatus == 1)
-# 			& (SE.auto_created == 0)
-# 		)
-# 		.groupby(SE.name)
-# 	).run(pluck="name")
-
-# 	stock_entries = (
-# 		frappe.qb.from_(SED)
-# 		.left_join(SE)
-# 		.on(SED.parent == SE.name)
-# 		.select(SE.name)
-# 		.where(
-# 			(SE.auto_created == 1)
-# 			& (SE.docstatus == 1)
-# 			& (SED.manufacturing_operation == row.manufacturing_operation)
-# 			& (SED.t_warehouse == department_wh)
-# 			& (SED.to_department == doc.current_department)
-# 		)
-# 		.groupby(SE.name)
-# 		.orderby(SE.posting_date)
-# 	).run(as_dict=1, pluck=1)
-
-# 	non_automated_entries = []
-# 	if not stock_entries:
-# 		non_automated_entries = (
-# 			frappe.qb.from_(SED)
-# 			.left_join(SE)
-# 			.on(SED.parent == SE.name)
-# 			.select(SE.name)
-# 			.where(
-# 				(SE.auto_created == 0)
-# 				& (SE.docstatus == 1)
-# 				& (SED.manufacturing_operation == row.manufacturing_operation)
-# 				& (SED.t_warehouse == department_wh)
-# 				& (SED.to_department == doc.current_department)
-# 			)
-# 			.groupby(SE.name)
-# 			.orderby(SE.posting_date)
-# 		).run(as_dict=1, pluck=1)
-
-# 		prev_mfg_operation = get_previous_operation(row.manufacturing_operation)
-# 		in_transit_wh = frappe.get_value(
-# 			"Warehouse",
-# 			{"disabled": 0, "department": doc.next_department, "warehouse_type": "Manufacturing"},
-# 			"default_in_transit_warehouse",
-# 		)
-# 		stock_entries = frappe.get_all(
-# 			"Stock Entry Detail",
-# 			filters={
-# 				"manufacturing_operation": prev_mfg_operation,
-# 				"t_warehouse": department_wh,
-# 				"to_department": doc.current_department,
-# 				"docstatus": 1,
-# 			},
-# 			or_filters={"employee": ["is", "set"], "subcontractor": ["is", "set"]},
-# 			pluck="parent",
-# 			group_by="parent",
-# 		)
-
-# 	for stock_entry in fetch_manual_stock_entries:
-# 		end_transit(doc, send_in_transit_wh, department_wh, manufacturing_operation, stock_entry)
-# 		start_transit(doc, in_transit_wh, department_wh, manufacturing_operation, stock_entry)
-
-# 	for stock_entry in stock_entries + non_automated_entries:
-# 		start_transit(doc, in_transit_wh, department_wh, manufacturing_operation, stock_entry)
-
-
-# def start_transit(doc, in_transit_wh, department_wh, manufacturing_operation, stock_entry):
-# 	existing_doc = frappe.get_doc("Stock Entry", stock_entry)
-# 	se_doc = frappe.copy_doc(existing_doc)
-# 	se_doc.stock_entry_type = "Material Transfer to Department"
-# 	se_doc.from_warehouse = None
-# 	se_doc.to_warehouse = None
-# 	for child in se_doc.items:
-# 		child.t_warehouse = in_transit_wh
-# 		child.s_warehouse = department_wh
-# 		child.material_request = None
-# 		child.material_request_item = None
-# 		child.manufacturing_operation = manufacturing_operation
-# 		child.department = doc.current_department
-# 		child.to_department = doc.next_department
-# 		child.to_main_slip = None
-# 		child.main_slip = None
-# 		child.employee = None
-# 		child.to_employee = None
-# 		child.subcontractor = None
-# 		child.to_subcontractor = None
-# 		child.use_serial_batch_fields = True
-# 		child.serial_and_batch_bundle = None
-
-# 	se_doc.to_main_slip = None
-# 	se_doc.main_slip = None
-# 	se_doc.employee = None
-# 	se_doc.to_employee = None
-# 	se_doc.subcontractor = None
-# 	se_doc.to_subcontractor = None
-# 	se_doc.department = doc.current_department
-# 	se_doc.to_department = doc.next_department
-# 	se_doc.department_ir = doc.name
-# 	se_doc.manufacturing_operation = manufacturing_operation
-# 	se_doc.auto_created = True
-# 	se_doc.add_to_transit = 1
-# 	se_doc.flags.ignore_permissions = True
-# 	se_doc.save()
-# 	se_doc.submit()
-
-
-# def end_transit(doc, in_transit_wh, department_wh, manufacturing_operation, stock_entry):
-
-# 	existing_doc = frappe.get_doc("Stock Entry", stock_entry)
-# 	se_doc = frappe.copy_doc(existing_doc)
-# 	se_doc.stock_entry_type = "Material Transfer to Department"
-# 	se_doc.from_warehouse = None
-# 	se_doc.to_warehouse = None
-
-# 	# for child in se_doc.items:
-# 	for i, child in enumerate(se_doc.items):
-# 		child.t_warehouse = department_wh
-# 		child.s_warehouse = in_transit_wh
-# 		child.material_request = None
-# 		child.material_request_item = None
-# 		child.manufacturing_operation = manufacturing_operation
-# 		child.department = doc.current_department
-# 		child.to_department = doc.next_department
-# 		child.to_main_slip = None
-# 		child.main_slip = None
-# 		child.employee = None
-# 		child.to_employee = None
-# 		child.subcontractor = None
-# 		child.to_subcontractor = None
-# 		child.against_stock_entry = stock_entry
-# 		child.stock_entry = stock_entry
-# 		child.ste_detail = existing_doc.items[i].name
-# 		child.use_serial_batch_fields = True
-# 		child.serial_and_batch_bundle = None
-
-# 	se_doc.to_main_slip = None
-# 	se_doc.outgoing_stock_entry = stock_entry
-# 	se_doc.main_slip = None
-# 	se_doc.employee = None
-# 	se_doc.to_employee = None
-# 	se_doc.subcontractor = None
-# 	se_doc.to_subcontractor = None
-# 	se_doc.department = existing_doc.department
-# 	se_doc.to_department = doc.current_department
-# 	se_doc.department_ir = doc.name
-# 	se_doc.manufacturing_operation = manufacturing_operation
-# 	se_doc.auto_created = True
-# 	se_doc.add_to_transit = 0
-# 	se_doc.flags.ignore_permissions = True
-# 	se_doc.save()
-# 	se_doc.submit()
-# 	return se_doc
 
 
 def fetch_and_update(doc, row, manufacturing_operation):
@@ -876,8 +715,6 @@ def fetch_and_update(doc, row, manufacturing_operation):
 	stock_entries = frappe.get_all("Stock Entry", filters=filters, pluck="name")
 
 	if not stock_entries:
-		# update_manufacturing_operation(stock_entry)
-		# frappe.msgprint(f"No entries received against MWO : {row.manufacturing_work_order} and Department{doc.current_department}")
 		return False
 	else:
 		values = {"manufacturing_operation": manufacturing_operation}
@@ -889,69 +726,6 @@ def fetch_and_update(doc, row, manufacturing_operation):
 			values[scrub(doc.doctype)] = doc.name
 			frappe.db.set_value("Stock Entry", stock_entry, values)
 			del values[scrub(doc.doctype)]
-			update_manufacturing_operation(stock_entry)
-
-
-# def create_stock_entry(doc, row):
-
-# 	in_transit_wh = frappe.db.get_value(
-# 		"Warehouse",
-# 		{"disabled": 0, "department": doc.current_department, "warehouse_type": "Manufacturing"},
-# 		"default_in_transit_warehouse",
-# 	)
-# 	if not in_transit_wh:
-# 		# frappe.throw(_(f"Please set transit warhouse for Current Department {doc.current_department}"))
-# 		frappe.throw(
-# 			_("Please set transit warhouse for Current Department {0}").format(doc.current_department)
-# 		)
-
-# 	department_wh = frappe.get_value(
-# 		"Warehouse",
-# 		{"disabled": 0, "department": doc.current_department, "warehouse_type": "Manufacturing"},
-# 	)
-# 	if not department_wh:
-# 		# frappe.throw(_(f"Please set warhouse for department {doc.current_department}"))
-# 		frappe.throw(_("Please set warhouse for department {0}").format(doc.current_department))
-
-# 	stock_entries = frappe.get_all(
-# 		"Stock Entry Detail",
-# 		{
-# 			"manufacturing_operation": row.manufacturing_operation,
-# 			"t_warehouse": in_transit_wh,
-# 			"department": doc.previous_department,
-# 			"to_department": doc.current_department,
-# 			"docstatus": 1,
-# 		},
-# 		pluck="parent",
-# 		group_by="parent",
-# 	)
-
-# 	for stock_entry in stock_entries:
-# 		existing_doc = frappe.get_doc("Stock Entry", stock_entry)
-# 		se_doc = frappe.copy_doc(existing_doc)
-# 		se_doc.stock_entry_type = "Material Transfer to Department"
-# 		se_doc.branch = frappe.db.get_value("Employee", {"user_id": frappe.session.user}, "branch")
-# 		# for child in se_doc.items:
-# 		for i, child in enumerate(se_doc.items):
-# 			child.s_warehouse = in_transit_wh
-# 			child.t_warehouse = department_wh
-# 			child.material_request = None
-# 			child.material_request_item = None
-# 			child.department = doc.previous_department
-# 			child.to_department = doc.current_department
-# 			child.against_stock_entry = stock_entry
-# 			child.stock_entry = stock_entry
-# 			child.ste_detail = existing_doc.items[i].name
-# 			child.use_serial_batch_fields = True
-# 			child.serial_and_batch_bundle = None
-# 		se_doc.department = doc.previous_department
-# 		se_doc.to_department = doc.current_department
-# 		se_doc.auto_created = True
-# 		se_doc.add_to_transit = 0
-# 		se_doc.department_ir = doc.name
-# 		se_doc.flags.ignore_permissions = True
-# 		se_doc.save()
-# 		se_doc.submit()
 
 
 def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
@@ -966,55 +740,6 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc.operation = None
 	new_mop_doc.previous_se_data_updated = 0
 	new_mop_doc.insert()
-	# target.prev_gross_wt = source.received_gross_wt or source.gross_wt or source.prev_gross_wt
-	# target.previous_mop = source.name
-
-	# # def set_missing_value(source, target):
-
-	# target_doc = get_mapped_doc(
-	# 	"Manufacturing Operation",
-	# 	docname,
-	# 	{
-	# 		"Manufacturing Operation": {
-	# 			"doctype": "Manufacturing Operation",
-	# 			"field_no_map": [
-	# 				"status",
-	# 				"employee",
-	# 				"department",
-	# 				"start_time",
-	# 				"for_subcontracting",
-	# 				"subcontractor",
-	# 				"finish_time",
-	# 				"department_issue_id",
-	# 				"department_receive_id",
-	# 				"department_ir_status",
-	# 				"operation",
-	# 				"previous_operation",
-	# 				"start_time",
-	# 				"finish_time",
-	# 				"time_taken",
-	# 				"started_time",
-	# 				"current_time",
-	# 				"on_hold",
-	# 				"total_minutes",
-	# 				"time_logs",
-	# 			],
-	# 		}
-	# 	},
-	# 	target_doc,
-	# 	# set_missing_value,
-	# )
-	# target_doc.department_source_table = []
-	# target_doc.department_target_table = []
-	# target_doc.employee_source_table = []
-	# target_doc.employee_target_table = []
-	# # target_doc.time_logs =[]
-	# target_doc.department_issue_id = ir_name
-	# target_doc.department_ir_status = "In-Transit"
-	# target_doc.department = next_department
-	# target_doc.time_taken = None
-	# target_doc.save()
-	# target_doc.db_set("employee", None)
 	frappe.db.set_value(
 		"Manufacturing Work Order", mwo, "manufacturing_operation", new_mop_doc.name
 	)

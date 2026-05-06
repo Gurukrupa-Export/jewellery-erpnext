@@ -32,8 +32,11 @@ class SerialNumberCreator(Document):
 		pass
 
 	def before_insert(self):
-		if not self.fg_details:
-			self.load_raw_materials()
+		self._render_fg_details()
+		self._compute_total_weight()
+
+	# 	if not self.fg_details:
+	# 		self.load_raw_materials()
 
 	def on_submit(self):
 		validate_qty(self)
@@ -41,51 +44,76 @@ class SerialNumberCreator(Document):
 		to_prepare_data_for_make_mnf_stock_entry(self)
 		update_new_serial_no(self)
 
-	@frappe.whitelist()
-	def fetch_raw_materials(self):
-		"""Whitelisted access to re-fetch RM rows into FG table for existing SNC."""
-		if self.docstatus != 0:
-			frappe.throw(_("Only Draft documents can fetch raw materials."))
-		self.load_raw_materials()
-		self.save(ignore_permissions=True)
-		return {"items": len(self.fg_details)}
+	def _render_fg_details(self):
+		"""Build source_table (batch-wise) and fg_details (aggregated) from MOP Log."""
+		mop_name = self.manufacturing_operation
+		mwo_name = self.manufacturing_work_order
 
-	def load_raw_materials(self):
-		"""Internal logic to fill RM rows into FG table from latest MOP Log snapshot."""
-		mop_name = _resolve_snc_mop(self)
 		if not mop_name:
+			if mwo_name:
+				frappe.throw(
+					_(
+						f"Manufacturing Operation is required to render FG Details for MWO: {mwo_name}"
+					)
+				)
 			return
 
-		mnf_qty = int(flt(_resolve_snc_mnf_qty(self)) or 0)
+		# Only auto-populate if both tables are empty (first save / draft)
+		if self.fg_details or self.source_table:
+			return
+
+		# Resolve manufacturing qty (number of IDs to split across)
+		mnf_qty = _resolve_snc_mnf_qty(self)
 		if mnf_qty <= 0:
 			return
 
-		balance_rows = get_current_mop_balance_rows(
-			mop_name,
-			include_fields=[
-				"item_code",
-				"batch_no",
-				"qty_after_transaction_batch_based",
-				"pcs_after_transaction_batch_based",
-				"serial_and_batch_bundle",
-				"voucher_type",
-				"voucher_no",
-				"row_name",
-				"from_warehouse",
-				"to_warehouse",
-				"manufacturing_work_order",
-			],
-		)
-
-		stock_rows = _to_snc_stock_rows_from_mop_balance(balance_rows)
-		if not stock_rows:
+		# Get batch-wise source rows from MOP Log
+		source_rows = _get_source_raw_materials(mop_name, self)
+		if not source_rows:
 			return
 
 		self.set("fg_details", [])
 		self.set("source_table", [])
-		_append_fg_rows_split(self, stock_rows, mnf_qty)
 
-		self.manufacturing_operation = mop_name
+		# -- Source Table: batch-wise rows with full detail --
+		for row in source_rows:
+			self.append(
+				"source_table",
+				{
+					"row_material": row.get("item_code"),
+					"qty": row.get("qty"),
+					"uom": row.get("uom"),
+					"pcs": row.get("pcs"),
+					"batch_no": row.get("batch_no"),
+					"inventory_type": row.get("inventory_type"),
+					"customer": row.get("customer"),
+					"s_warehouse": row.get("s_warehouse"),
+					"sub_setting_type": row.get("sub_setting_type"),
+					"sed_item": row.get("sed_item"),
+				},
+			)
+
+		# -- FG Details: aggregated by item_code, split across mnf_qty IDs --
+		_append_fg_rows_aggregated(self, source_rows, mnf_qty)
+
+	def _compute_total_weight(self):
+		"""Auto-compute total_weight (product weight / gross weight) from fg_details.
+
+		Uses the same logic as get_material_wt in manufacturing_operation.py:
+		- D/G items (Carat): qty * 0.2 to convert to grams
+		- M/F/O items: qty directly in grams
+		"""
+		total = 0
+		for row in self.fg_details or []:
+			if not row.row_material:
+				continue
+			first_char = row.row_material[0] if row.row_material else ""
+			if first_char in ("D", "G"):
+				# Carat items → convert to grams
+				total += flt(row.qty) * 0.2
+			else:
+				total += flt(row.qty)
+		self.total_weight = flt(total, 3)
 
 	@frappe.whitelist()
 	def get_serial_summary(self):
@@ -129,25 +157,30 @@ class SerialNumberCreator(Document):
 
 
 def to_prepare_data_for_make_mnf_stock_entry(self):
-	id_wise_data_split = {}
-	for row in self.fg_details:
-		if row.id:
-			key = row.id
-			if key not in id_wise_data_split:
-				id_wise_data_split[key] = []
-			id_wise_data_split[key].append(
-				{
-					"item_code": row.row_material,
-					"qty": row.qty,
-					"uom": row.uom,
-					"id": row.id,
-					"inventory_type": row.inventory_type,
-					"customer": row.customer,
-					"batch_no": row.batch_no,
-					"pcs": row.pcs,
-					"s_warehouse": getattr(row, "s_warehouse", None),
-				}
-			)
+	"""Use source_table (batch-wise) for stock entry creation.
+
+	source_table has one row per (item_code, batch_no) with all batch detail
+	needed for the manufacturing stock entry (s_warehouse, inventory_type, etc.).
+	fg_details is kept for BOM creation (aggregated item/qty/pcs).
+	"""
+
+	# Build row_data from source_table (batch-wise) for stock entry
+	row_data = []
+	for row in self.source_table:
+		row_data.append(
+			{
+				"item_code": row.row_material,
+				"qty": row.qty,
+				"uom": row.uom,
+				"id": 1,  # single FG item
+				"inventory_type": row.inventory_type,
+				"customer": row.customer,
+				"batch_no": row.batch_no,
+				"pcs": row.pcs,
+				"s_warehouse": row.s_warehouse,
+				"sub_setting_type": row.sub_setting_type,
+			}
+		)
 
 	pmo = frappe.db.get_value(
 		"Manufacturing Work Order",
@@ -161,14 +194,69 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		["name as manufacturing_operation", "employee", "total_minutes", "operation"],
 	)
 
-	for key, row_data in id_wise_data_split.items():
-		# Create Stock Entry once per Manufacturing ID
+	if row_data:
+		for row in row_data:
+			if row.get("s_warehouse"):
+				# Broad SRE cancellation logic for linked reservations
+				pmo = frappe.db.get_value(
+					"Manufacturing Work Order",
+					self.manufacturing_work_order,
+					"manufacturing_order",
+				)
+				sales_order = frappe.db.get_value(
+					"Parent Manufacturing Order", pmo, "sales_order"
+				)
+
+				sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+
+				# Build filters for linked SREs
+				linked_sres = []
+				for link_field, link_val in {
+					"voucher_no": sales_order,
+					"manufacturing_work_order": self.manufacturing_work_order,
+					"manufacturing_operation": self.manufacturing_operation,
+					"production_manufacturing_order": pmo,
+				}.items():
+					if link_field in sre_cols and link_val:
+						found = frappe.get_all(
+							"Stock Reservation Entry",
+							filters={
+								"item_code": row["item_code"],
+								"warehouse": row["s_warehouse"],
+								"docstatus": 1,
+								link_field: link_val,
+							},
+							pluck="name",
+						)
+						linked_sres.extend(found)
+
+				# Deduplicate and cancel
+				for sre_name in set(linked_sres):
+					sre_doc = frappe.get_doc(
+						"Stock Reservation Entry", sre_name
+					).cancel()
+					sre_doc.flags.ignore_permissions = True
+					sre_doc.cancel()
+
+				# Update Bin to reflect the released stock
+				bin_name = frappe.get_value(
+					"Bin",
+					{"item_code": row["item_code"], "warehouse": row["s_warehouse"]},
+				)
+				if bin_name:
+					bin_doc = frappe.get_doc("Bin", bin_name)
+					bin_doc.flags.ignore_permissions = True
+					bin_doc.recalculate_qty()
+					bin_doc.update_reserved_stock()
+
+				frappe.clear_cache()
+
 		se_name = create_manufacturing_entry(self, row_data, operation_data)
-		if se_name:
-			self.fg_serial_no = se_name
-			self.db_set("fg_serial_no", se_name)
-			create_finished_goods_bom(self, se_name, operation_data)
-			submit_tracking_bom_for_finished_goods(self)
+
+		self.fg_serial_no = se_name
+		self.db_set("fg_serial_no", se_name)
+		create_finished_goods_bom(self, se_name, operation_data)
+		submit_tracking_bom_for_finished_goods(self)
 
 	if pmo:
 		wo_list = frappe.get_all(
@@ -340,34 +428,37 @@ def create_snc_from_mwo_submit(mwo_name: str) -> str:
 
 
 def calulate_id_wise_sum_up(self):
-	id_qty_sum = {}  # Dictionary to store the sum of 'qty' for each 'id'
-	for row in self.fg_details:
-		if row.id and row.row_material:
-			key = row.row_material
-			if key not in id_qty_sum:
-				id_qty_sum[key] = float(Decimal("0.000"))  # round(0,3)
+	"""Validate that fg_details totals per item match source_table totals per item.
 
-			# if row.uom == "cts":
-			# 	id_qty_sum[key] += round(row.qty * 0.2,3)
-			# else:
-			# id_qty_sum[key] += round(row.qty,3)
-			id_qty_sum[key] += float(
+	fg_details has aggregated qty per item_code (no batch split).
+	source_table has batch-wise qty per (item_code, batch_no).
+	The sum of qty per item_code in both tables must match.
+	"""
+	# Sum qty per item in fg_details
+	fg_qty_sum = {}
+	for row in self.fg_details:
+		if row.row_material:
+			key = row.row_material
+			if key not in fg_qty_sum:
+				fg_qty_sum[key] = float(Decimal("0.000"))
+			fg_qty_sum[key] += float(
 				Decimal(str(row.qty)).quantize(Decimal("0.000"), rounding=ROUND_HALF_UP)
 			)
-	id_qty_sum = {key: round(float(value), 3) for key, value in id_qty_sum.items()}
+	fg_qty_sum = {key: round(float(value), 3) for key, value in fg_qty_sum.items()}
 
+	# Sum qty per item in source_table (batch-wise rows aggregated by item)
 	source_data = frappe._dict()
-
 	for row in self.source_table:
 		source_data.setdefault(row.get("row_material"), 0)
 		source_data[row.row_material] += row.qty
 
-	for (row_material), qty_sum in id_qty_sum.items():
-		if source_data.get(row_material) and flt(qty_sum, 3) != flt(
-			source_data.get(row_material), 3
-		):
+	for row_material, qty_sum in fg_qty_sum.items():
+		src_qty = flt(source_data.get(row_material), 3)
+		if src_qty and flt(qty_sum, 3) != src_qty:
 			frappe.throw(
-				f"Row Material in FG Details <b>{row_material}</b> does not match </br></br>ID Wise Row Material SUM: <b>{round(qty_sum, 3)}</b></br>Must be equal of row <b>#{row.get('idx')}</b> in source table<b>: {source_data.get(row_material)}</b>"
+				f"Row Material in FG Details <b>{row_material}</b> does not match </br></br>"
+				f"FG Details SUM: <b>{round(qty_sum, 3)}</b></br>"
+				f"Source Table SUM: <b>{src_qty}</b>"
 			)
 
 
@@ -497,37 +588,37 @@ def submit_tracking_bom_for_finished_goods(doc):
 		)
 
 
-def _resolve_mwo_qty(mwo):
-	# MWO.qty is the number of pieces / manufacturing qty used for SNC ID splits.
-	return getattr(mwo, "qty", None)
+# def _resolve_mwo_qty(mwo):
+# 	# MWO.qty is the number of pieces / manufacturing qty used for SNC ID splits.
+# 	return getattr(mwo, "qty", None)
 
 
-def _resolve_snc_mnf_qty(snc_doc):
-	# Prefer MWO qty if possible
-	mwo_name = cstr(getattr(snc_doc, "manufacturing_work_order", None) or "").strip()
-	if mwo_name:
-		qty = frappe.db.get_value("Manufacturing Work Order", mwo_name, "qty")
-		if qty is not None:
-			return qty
-	# fallback: count unique ids already in fg_details, else 1
-	ids = {cstr(r.get("id")) for r in (snc_doc.get("fg_details") or []) if r.get("id")}
-	return len(ids) or 1
+# def _resolve_snc_mnf_qty(snc_doc):
+# 	# Prefer MWO qty if possible
+# 	mwo_name = cstr(getattr(snc_doc, "manufacturing_work_order", None) or "").strip()
+# 	if mwo_name:
+# 		qty = frappe.db.get_value("Manufacturing Work Order", mwo_name, "qty")
+# 		if qty is not None:
+# 			return qty
+
+# 	ids = {cstr(r.get("id")) for r in (snc_doc.get("fg_details") or []) if r.get("id")}
+# 	return len(ids) or 1
 
 
-def _resolve_snc_mop(snc_doc):
-	# Prefer explicit field if present, else derive from MWO
-	mop_name = cstr(getattr(snc_doc, "manufacturing_operation", None) or "").strip()
-	if mop_name:
-		return mop_name
-	mwo_name = cstr(getattr(snc_doc, "manufacturing_work_order", None) or "").strip()
-	if not mwo_name:
-		return ""
-	return cstr(
-		frappe.db.get_value(
-			"Manufacturing Work Order", mwo_name, "manufacturing_operation"
-		)
-		or ""
-	).strip()
+# def _resolve_snc_mop(snc_doc):
+# 	# Prefer explicit field if present, else derive from MWO
+# 	mop_name = cstr(getattr(snc_doc, "manufacturing_operation", None) or "").strip()
+# 	if mop_name:
+# 		return mop_name
+# 	mwo_name = cstr(getattr(snc_doc, "manufacturing_work_order", None) or "").strip()
+# 	if not mwo_name:
+# 		return ""
+# 	return cstr(
+# 		frappe.db.get_value(
+# 			"Manufacturing Work Order", mwo_name, "manufacturing_operation"
+# 		)
+# 		or ""
+# 	).strip()
 
 
 def _get_mop_is_sync(mop_name: str) -> int:
@@ -544,18 +635,53 @@ def _get_mop_is_sync(mop_name: str) -> int:
 	)
 
 
-def _to_snc_stock_rows_from_mop_balance(balance_rows):
-	"""Convert MOP balance snapshot rows into SNC stock rows format."""
-	out = []
-	pmo = (
-		frappe.db.get_value(
-			"Manufacturing Work Order",
-			balance_rows[0].get("manufacturing_work_order"),
-			"manufacturing_order",
-		)
-		if balance_rows and balance_rows[0].get("manufacturing_work_order")
-		else None
+def _get_source_raw_materials(mop_name, snc_doc):
+	"""Get batch-wise source raw materials from MOP Log for a Manufacturing Operation.
+
+	Monitors all MOP Log flow_index entries to capture intermediate Stock Entry
+	additions. Checks Stock Reservation Entry for Sales Order warehouse.
+
+	Returns a list of dicts with: item_code, batch_no, qty, uom, pcs,
+	inventory_type, customer, s_warehouse, sub_setting_type, sed_item.
+	"""
+	if not mop_name:
+		return []
+
+	# Get current balance rows from MOP Log (latest per item/batch)
+	balance_rows = get_current_mop_balance_rows(
+		mop_name,
+		include_fields=[
+			"item_code",
+			"batch_no",
+			"qty_after_transaction_batch_based",
+			"pcs_after_transaction_batch_based",
+			"serial_and_batch_bundle",
+			"voucher_type",
+			"voucher_no",
+			"row_name",
+			"from_warehouse",
+			"to_warehouse",
+			"manufacturing_work_order",
+			"flow_index",
+		],
 	)
+	if not balance_rows:
+		return []
+
+	# Resolve PMO and Sales Order for SRE lookup
+	mwo_name = cstr(getattr(snc_doc, "manufacturing_work_order", None) or "").strip()
+	pmo = None
+	sales_order = None
+	if mwo_name:
+		pmo = frappe.db.get_value(
+			"Manufacturing Work Order", mwo_name, "manufacturing_order"
+		)
+	if pmo:
+		sales_order = frappe.db.get_value(
+			"Parent Manufacturing Order", pmo, "sales_order"
+		)
+
+	# Get all MWOs for the PMO (for physical warehouse fallback)
 	all_mwos = []
 	if pmo:
 		all_mwos = frappe.get_all(
@@ -564,7 +690,8 @@ def _to_snc_stock_rows_from_mop_balance(balance_rows):
 			pluck="name",
 		)
 
-	for r in balance_rows or []:
+	out = []
+	for r in balance_rows:
 		item_code = r.get("item_code")
 		batch_no = r.get("batch_no")
 		qty = flt(r.get("qty_after_transaction_batch_based") or 0)
@@ -574,41 +701,65 @@ def _to_snc_stock_rows_from_mop_balance(balance_rows):
 
 		uom = frappe.db.get_value("Item", item_code, "stock_uom") if item_code else None
 
-		# Fetch attributes from source SED if available
+		# Fetch attributes from source Stock Entry Detail if available
 		sub_setting_type = None
+		inventory_type = None
+		customer = None
 		if r.get("voucher_type") == "Stock Entry" and r.get("row_name"):
 			sed_data = frappe.db.get_value(
 				"Stock Entry Detail",
 				r.get("row_name"),
-				["inventory_type", "custom_sub_setting_type"],
+				["inventory_type", "custom_sub_setting_type", "customer"],
 				as_dict=1,
 			)
-			if sed_data:
+			if sed_data and r.get("voucher_type") == "Stock Entry":
 				sub_setting_type = sed_data.custom_sub_setting_type
+				inventory_type = sed_data.inventory_type
+				customer = sed_data.customer
 
-		# Calculate gross_wt (consistent with manufacturing_operation.py)
-		uom_lower = (uom or "").lower()
-		is_carat = uom_lower in ["carat", "cts", "ct"]
-		gross_wt = flt(qty * 0.2, 3) if is_carat else flt(qty, 3)
+		s_wh = None
 
-		s_wh = r.get("from_warehouse")
-		if r.get("voucher_type") == "Stock Entry":
-			s_wh = r.get("to_warehouse")
-		elif all_mwos:
-			physical_log = frappe.db.get_value(
-				"MOP Log",
+		# Resolve source warehouse: ONLY from Stock Reservation Entry (SRE)
+		s_wh = None
+		sre_filters = {"item_code": item_code, "docstatus": 1}
+
+		# Try linking to the specific Manufacturing Operation first
+		s_wh = frappe.db.get_value(
+			"Stock Reservation Entry",
+			{**sre_filters, "manufacturing_operation": mop_name},
+			"warehouse",
+		)
+
+		# Fallback to Sales Order link
+		if not s_wh and sales_order:
+			s_wh = frappe.db.get_value(
+				"Stock Reservation Entry",
 				{
-					"manufacturing_work_order": ["in", all_mwos],
-					"item_code": item_code,
-					"batch_no": batch_no,
-					"voucher_type": "Stock Entry",
-					"is_cancelled": 0,
+					**sre_filters,
+					"voucher_type": "Sales Order",
+					"voucher_no": sales_order,
 				},
-				"to_warehouse",
-				order_by="flow_index desc, creation desc",
+				"warehouse",
 			)
-			if physical_log:
-				s_wh = physical_log
+
+		# Fallback: Check SRE by Sales Order
+		if not s_wh and sales_order:
+			sre_wh = frappe.db.get_value(
+				"Stock Reservation Entry",
+				{
+					"voucher_type": "Sales Order",
+					"voucher_no": sales_order,
+					"item_code": item_code,
+					"docstatus": 1,
+				},
+				"warehouse",
+			)
+			if sre_wh:
+				s_wh = sre_wh
+
+		# Final Fallback: MOP Log's own from_warehouse
+		if not s_wh:
+			s_wh = r.get("from_warehouse")
 
 		out.append(
 			{
@@ -617,73 +768,76 @@ def _to_snc_stock_rows_from_mop_balance(balance_rows):
 				"qty": qty,
 				"uom": uom,
 				"pcs": pcs,
-				"gross_wt": gross_wt,
-				"serial_and_batch_bundle": r.get("serial_and_batch_bundle"),
+				"inventory_type": inventory_type,
+				"customer": customer,
 				"sub_setting_type": sub_setting_type,
-				"sed_item": r.get("row_name"),
+				"sed_item": r.get("row_name")
+				if r.get("voucher_type") == "Stock Entry"
+				else None,
 				"s_warehouse": s_wh,
+				"serial_and_batch_bundle": r.get("serial_and_batch_bundle"),
 			}
 		)
 	return out
 
 
-def _append_fg_rows_split(snc_doc, stock_rows, mnf_qty: int):
-	"""Append `fg_details` rows by splitting each RM across 1..mnf_qty.
+def _resolve_snc_mnf_qty(snc_doc):
+	"""Resolve the manufacturing quantity for SNC ID splits.
 
-	Mimics existing `get_operation_details()` split behavior so downstream SNC submit
-	(stock entry + FG BOM) stays consistent.
+	Prefers MWO qty if available, otherwise defaults to 1.
 	"""
-	item_qty = {}
-	item_pcs = {}
-	item_gross_wt = {}
-	for mnf_id in range(1, int(mnf_qty) + 1):
-		for data_entry in stock_rows:
-			key = (data_entry.get("item_code"), data_entry.get("batch_no"))
-			if key not in item_qty:
-				item_qty[key] = flt(data_entry.get("qty") or 0)
-				item_pcs[key] = flt(data_entry.get("pcs") or 0)
-				item_gross_wt[key] = flt(data_entry.get("gross_wt") or 0)
+	mwo_name = cstr(getattr(snc_doc, "manufacturing_work_order", None) or "").strip()
+	if mwo_name:
+		qty = frappe.db.get_value("Manufacturing Work Order", mwo_name, "qty")
+		if qty is not None:
+			return int(flt(qty)) or 1
+	return 1
 
-			_qty = flt((data_entry.get("qty") or 0) / mnf_qty, 3)
-			_pcs = flt((data_entry.get("pcs") or 0) / mnf_qty, 3)
-			_gross_wt = flt((data_entry.get("gross_wt") or 0) / mnf_qty, 3)
+
+def _append_fg_rows_aggregated(snc_doc, source_rows, mnf_qty: int):
+	"""Append fg_details rows aggregated by item_code (no batch splitting).
+
+	Each unique item_code gets one row per mnf_id with qty/pcs split evenly.
+	The last ID gets the remainder to avoid rounding errors.
+	"""
+	# Aggregate by item_code
+	item_agg = {}
+	for row in source_rows:
+		key = row.get("item_code")
+		if key not in item_agg:
+			item_agg[key] = {
+				"qty": 0,
+				"pcs": 0,
+				"uom": row.get("uom"),
+				"sub_setting_type": row.get("sub_setting_type"),
+			}
+		item_agg[key]["qty"] += flt(row.get("qty") or 0)
+		item_agg[key]["pcs"] += flt(row.get("pcs") or 0)
+
+	# Split across mnf_qty IDs
+	for mnf_id in range(1, int(mnf_qty) + 1):
+		for item_code, agg in item_agg.items():
+			total_qty = flt(agg["qty"])
+			total_pcs = flt(agg["pcs"])
+
+			_qty = flt(total_qty / mnf_qty, 3)
+			_pcs = flt(total_pcs / mnf_qty, 3)
 
 			if mnf_id == mnf_qty:
-				_qty = flt(item_qty[key], 3)
-				_pcs = flt(item_pcs[key], 3)
-				_gross_wt = flt(item_gross_wt[key], 3)
-				item_qty[key] = 0
-				item_pcs[key] = 0
-				item_gross_wt[key] = 0
-			else:
-				item_qty[key] = flt(item_qty[key] - _qty, 3)
-				item_pcs[key] = flt(item_pcs[key] - _pcs, 3)
-				item_gross_wt[key] = flt(item_gross_wt[key] - _gross_wt, 3)
+				# Last ID gets remainder
+				already_allocated_qty = flt(_qty * (mnf_qty - 1), 3)
+				already_allocated_pcs = flt(_pcs * (mnf_qty - 1), 3)
+				_qty = flt(total_qty - already_allocated_qty, 3)
+				_pcs = flt(total_pcs - already_allocated_pcs, 3)
 
 			snc_doc.append(
 				"fg_details",
 				{
-					"row_material": data_entry.get("item_code"),
+					"row_material": item_code,
 					"id": mnf_id,
-					"batch_no": data_entry.get("batch_no"),
 					"qty": _qty,
-					"uom": data_entry.get("uom"),
+					"uom": agg["uom"],
 					"pcs": _pcs,
-					"gross_wt": _gross_wt,
-					"inventory_type": data_entry.get("inventory_type"),
-					"sub_setting_type": data_entry.get("sub_setting_type"),
-					"sed_item": data_entry.get("sed_item"),
-					"s_warehouse": data_entry.get("s_warehouse"),
+					"sub_setting_type": agg.get("sub_setting_type"),
 				},
 			)
-
-	for data_entry in stock_rows:
-		snc_doc.append(
-			"source_table",
-			{
-				"row_material": data_entry.get("item_code"),
-				"qty": data_entry.get("qty"),
-				"uom": data_entry.get("uom"),
-				"pcs": data_entry.get("pcs"),
-			},
-		)
