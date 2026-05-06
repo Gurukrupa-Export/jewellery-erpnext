@@ -9,7 +9,7 @@ import frappe
 # 		as_dict=1,
 # 	)
 def get_item_for_certification(department, service_type):
-	manufacturer = frappe.db.get_value("Department",department,"manufacturer")
+	manufacturer = frappe.db.get_value("Department", department, "manufacturer")
 	return frappe.db.get_value(
 		"Product Certification Details",
 		{"parent": manufacturer, "certification_type": service_type},
@@ -38,18 +38,48 @@ def create_po(self):
 	supplier = self.supplier
 
 	if not supplier and self.type_of_certification:
-		supplier = frappe.db.get_value("Supplier", {"supplier_name": self.type_of_certification}, "name")
+		supplier = frappe.db.get_value(
+			"Supplier", {"supplier_name": self.type_of_certification}, "name"
+		)
+
+	if not self.department:
+		frappe.throw(
+			frappe._(
+				"Department is mandatory to create Purchase Order for certification."
+			)
+		)
+
+	if not self.service_type:
+		frappe.throw(
+			frappe._(
+				"Service Type is mandatory to create Purchase Order for certification."
+			)
+		)
 
 	po_doc.company = self.company
 
 	# item_data = get_item_for_certification(self.company, self.service_type)
 	item_data = get_item_for_certification(self.department, self.service_type)
 
+	if not item_data:
+		manufacturer = frappe.db.get_value(
+			"Department", self.department, "manufacturer"
+		)
+		frappe.throw(
+			frappe._(
+				"Please configure Product Certification Details for Manufacturer {0} and Service Type {1} in Manufacturing Setting"
+			).format(manufacturer or "associated with department", self.service_type)
+		)
+
 	rate = 0
 	if self.service_type == "Diamond Certificate service":
-		rate = frappe.db.get_value("Customer", self.customer, "custom_certification_charges")
+		rate = frappe.db.get_value(
+			"Customer", self.customer, "custom_certification_charges"
+		)
 	elif self.service_type == "Hall Marking Service":
-		rate = frappe.db.get_value("Supplier", self.supplier, "custom_certification_charges")
+		rate = frappe.db.get_value(
+			"Supplier", self.supplier, "custom_certification_charges"
+		)
 
 	po_doc.supplier = supplier
 	po_doc.transaction_date = self.date
@@ -104,6 +134,11 @@ def create_repack_entry(self):
 			"disabled": 0,
 		},
 	)
+	if not s_warehouse:
+		s_warehouse = frappe.db.exists(
+			"Warehouse", {"department": self.department, "disabled": 0}
+		)
+
 	t_warehouse = frappe.db.exists(
 		"Warehouse",
 		{
@@ -112,6 +147,10 @@ def create_repack_entry(self):
 			"disabled": 0,
 		},
 	)
+	if not t_warehouse:
+		t_warehouse = frappe.db.exists(
+			"Warehouse", {"subcontractor": self.supplier, "disabled": 0}
+		)
 
 	for item in main_slip_dict:
 		se_doc = frappe.new_doc("Stock Entry")
@@ -121,9 +160,9 @@ def create_repack_entry(self):
 		items = []
 		for row in self.product_details:
 			if row.main_slip == item:
-				msl_item_gw = gross_wt_dict.get((row.main_slip, row.pure_item)) + gross_wt_dict.get(
-					(row.main_slip, row.loss_item)
-				)
+				msl_item_gw = gross_wt_dict.get(
+					(row.main_slip, row.pure_item)
+				) + gross_wt_dict.get((row.main_slip, row.loss_item))
 				if msl_item_gw:
 					items.append(
 						{
@@ -148,7 +187,9 @@ def create_repack_entry(self):
 							"Inventory_type": row.inventory_type,
 							"serial_and_batch_bundle": None,
 							"use_serial_batch_fields": True,
-							"gross_weight": gross_wt_dict.get((row.main_slip, row.pure_item)),
+							"gross_weight": gross_wt_dict.get(
+								(row.main_slip, row.pure_item)
+							),
 						}
 					)
 					items.append(
@@ -161,7 +202,9 @@ def create_repack_entry(self):
 							"Inventory_type": row.inventory_type,
 							"serial_and_batch_bundle": None,
 							"use_serial_batch_fields": True,
-							"gross_weight": gross_wt_dict.get((row.main_slip, row.loss_item)),
+							"gross_weight": gross_wt_dict.get(
+								(row.main_slip, row.loss_item)
+							),
 						}
 					)
 

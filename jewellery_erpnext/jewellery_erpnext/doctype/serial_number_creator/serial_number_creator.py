@@ -232,7 +232,9 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 
 				# Deduplicate and cancel
 				for sre_name in set(linked_sres):
-					frappe.get_doc("Stock Reservation Entry", sre_name).cancel()
+					sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
+					sre_doc.flags.ignore_permissions = True
+					sre_doc.cancel()
 
 				# Update Bin to reflect the released stock
 				bin_name = frappe.get_value(
@@ -713,48 +715,35 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				inventory_type = sed_data.inventory_type
 				customer = sed_data.customer
 
-		# Resolve source warehouse with priority:
-		# 1. MOP Log warehouse (physical movement)
-		# 2. Stock Reservation Entry (reserved location)
 		s_wh = None
+		sre_filters = {"item_code": item_code, "docstatus": 1}
+		sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 
-		# Check MOP Log warehouse resolution (flow_index based)
-		if r.get("voucher_type") == "Stock Entry":
-			s_wh = r.get("to_warehouse")
-		elif all_mwos:
-			physical_log = frappe.db.get_value(
-				"MOP Log",
-				{
-					"manufacturing_work_order": ["in", all_mwos],
-					"item_code": item_code,
-					"batch_no": batch_no,
-					"voucher_type": "Stock Entry",
-					"is_cancelled": 0,
-				},
-				"to_warehouse",
-				order_by="flow_index desc, creation desc",
-			)
-			if physical_log:
-				s_wh = physical_log
+		priority_links = [
+			("manufacturing_operation", mop_name),
+			("manufacturing_work_order", mwo_name),
+			("production_manufacturing_order", pmo),
+		]
 
-		# Fallback: Check SRE by Sales Order
+		for link_field, link_val in priority_links:
+			if not s_wh and link_val and link_field in sre_cols:
+				s_wh = frappe.db.get_value(
+					"Stock Reservation Entry",
+					{**sre_filters, link_field: link_val},
+					"warehouse",
+				)
+
+		# Fallback to Sales Order link
 		if not s_wh and sales_order:
-			sre_wh = frappe.db.get_value(
+			s_wh = frappe.db.get_value(
 				"Stock Reservation Entry",
 				{
+					**sre_filters,
 					"voucher_type": "Sales Order",
 					"voucher_no": sales_order,
-					"item_code": item_code,
-					"docstatus": 1,
 				},
 				"warehouse",
 			)
-			if sre_wh:
-				s_wh = sre_wh
-
-		# Final Fallback: MOP Log's own from_warehouse
-		if not s_wh:
-			s_wh = r.get("from_warehouse")
 
 		out.append(
 			{
@@ -769,7 +758,7 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				"sed_item": r.get("row_name")
 				if r.get("voucher_type") == "Stock Entry"
 				else None,
-				"s_warehouse": s_wh,
+				"s_warehouse": s_wh or r.get("to_warehouse"),
 				"serial_and_batch_bundle": r.get("serial_and_batch_bundle"),
 			}
 		)
