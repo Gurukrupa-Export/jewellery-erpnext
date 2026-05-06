@@ -1479,23 +1479,18 @@ def create_new_bom1(self):
 		billing_currency=frappe.get_value("Customer",refrence_customer,"default_currency")
 		# frappe.throw(f"hii{refrence_customer}")
 		
-		# if not row.quotation_bom:
-			# if self.sales_type != 'Branch Sales':
-			# create_serial_no_bom(self, row)
-		if row.custom_tracking_bom:
-				frappe.db.set_value(
-				"Tracking Bom",
-				row.custom_tracking_bom,
-				{
-					"reference_doctype": self.doctype,
-					"reference_docname": self.name,
-					"bom_type": "Sales Order",
-					"gold_rate_with_gst": self.gold_rate_with_gst,
-				},
-			)
+		if not row.custom_tracking_bom:
+			if self.sales_type != 'Branch Sales':
+				if row.serial_no:
+					create_serial_no_bom(self, row)
+		
+					if row.bom:
+						if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
+							frappe.db.set_value("BOM",row.bom,"docstatus","0")
+					doc = frappe.get_doc("BOM",row.bom)
 				# if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
 				# 	frappe.db.set_value("BOM",row.bom,"docstatus","0")
-				doc = frappe.get_doc("Tracking Bom",row.custom_tracking_bom)
+				# doc = frappe.get_doc("Tracking Bom",row.custom_tracking_bom)
 				customer_group = frappe.db.get_value('Customer', self.customer , 'customer_group')
 				precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 				metal_precision = frappe.db.get_value("Customer",self.customer,"custom_precision_for_metal")
@@ -2315,6 +2310,17 @@ def create_new_bom1(self):
 				row.gemstone_bom_rate = doc.gemstone_bom_amount
 				row.other_bom_rate = doc.other_bom_amount
 				row.making_charge = doc.making_charge
+				if row.custom_tracking_bom:
+						frappe.db.set_value(
+						"Tracking Bom",
+						row.custom_tracking_bom,
+						{
+							"reference_doctype": self.doctype,
+							"reference_docname": self.name,
+							"bom_type": "Sales Order",
+							"gold_rate_with_gst": self.gold_rate_with_gst,
+						},
+					)
 				metal_weight = sum(CU.quantity for CU in doc.metal_detail if CU.is_customer_item ==0)
 				finding_weight = sum(CU.quantity for CU in doc.finding_detail if CU.is_customer_item ==0)
 				diamond_weight = (sum(CU.quantity for CU in doc.diamond_detail if CU.is_customer_item ==0))*0.2
@@ -2334,32 +2340,32 @@ def create_new_bom1(self):
 				frappe.db.commit()
 				# frappe.throw(f"{self.total}")
 				
-		elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
-			row.bom = row.custom_tracking_bom
-			#######################################################################
-			# bom_doc = frappe.get_doc("BOM", row.bom)
-			# if hasattr(bom_doc, "diamond_detail"):
-			# 	for diamond in bom_doc.diamond_detail or []:
-			# 		diamond.quality = self.custom_diamond_quality
-			# 	bom_doc.save(ignore_permissions=True)
-			# 	frappe.db.commit()
-			# 	frappe.msgprint("hii")
-			#####################################################################
-			data_to_be_updated = {
-				"bom_type": "Sales Order",
-				"custom_creation_doctype": "Sales Order",
-				"custom_creation_docname": self.name,
-				"gold_rate_with_gst": self.gold_rate_with_gst,
-			}
-			frappe.db.set_value("Tracking Bom", row.custom_tracking_bom, data_to_be_updated)
-			doc = frappe.get_doc("Tracking Bom",row.custom_tracking_bom)
-			row.gold_bom_rate = doc.gold_bom_amount
-			row.diamond_bom_rate = doc.diamond_bom_amount
-			row.gemstone_bom_rate = doc.gemstone_bom_amount
-			row.other_bom_rate = doc.other_bom_amount
-			row.making_charge = doc.making_charge
-			row.bom_rate = doc.total_bom_amount
-			row.rate = doc.total_bom_amount
+		# elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+		# 	row.bom = row.custom_tracking_bom
+		# 	#######################################################################
+		# 	# bom_doc = frappe.get_doc("BOM", row.bom)
+		# 	# if hasattr(bom_doc, "diamond_detail"):
+		# 	# 	for diamond in bom_doc.diamond_detail or []:
+		# 	# 		diamond.quality = self.custom_diamond_quality
+		# 	# 	bom_doc.save(ignore_permissions=True)
+		# 	# 	frappe.db.commit()
+		# 	# 	frappe.msgprint("hii")
+		# 	#####################################################################
+		# 	data_to_be_updated = {
+		# 		"bom_type": "Sales Order",
+		# 		"custom_creation_doctype": "Sales Order",
+		# 		"custom_creation_docname": self.name,
+		# 		"gold_rate_with_gst": self.gold_rate_with_gst,
+		# 	}
+		# 	frappe.db.set_value("Tracking Bom", row.custom_tracking_bom, data_to_be_updated)
+		# 	doc = frappe.get_doc("Tracking Bom",row.custom_tracking_bom)
+		# 	row.gold_bom_rate = doc.gold_bom_amount
+		# 	row.diamond_bom_rate = doc.diamond_bom_amount
+		# 	row.gemstone_bom_rate = doc.gemstone_bom_amount
+		# 	row.other_bom_rate = doc.other_bom_amount
+		# 	row.making_charge = doc.making_charge
+		# 	row.bom_rate = doc.total_bom_amount
+		# 	row.rate = doc.total_bom_amount
 			# frappe.msgprint(f"{row.rate}HERE12")
 
 			# create_sales_order_bom(self, row, diamond_grade_data)
@@ -2374,7 +2380,7 @@ def create_new_bom1(self):
 
 
 
-# def create_serial_no_bom(self, row):
+def create_serial_no_bom(self, row):
 	serial_no_bom = frappe.db.get_value("Serial No", row.serial_no, "custom_bom_no")
 	if not serial_no_bom:
 		return
@@ -3921,7 +3927,7 @@ def validate_item_dharm(self):
 		e_invoice_items = []
 
 		for row in self.items:
-			gross_weighh = frappe.get_value("Tracking Bom", row.custom_tracking_bom, "gross_weight")
+			gross_weighh = frappe.get_value("BOM", row.bom, "gross_weight")
 			row.custom_gross_weight = gross_weighh
 			
 		# Prepare invoice items as before
@@ -3972,7 +3978,7 @@ def validate_item_dharm(self):
 		aggregated_repairing_items = {}
 		for item in self.items:
 			if item.bom:
-				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
+				bom_doc = frappe.get_doc("BOM", item.bom)
 				if bom_doc.hallmarking_amount:
 					# frappe.throw("hii")
 					for e_item in e_invoice_items:

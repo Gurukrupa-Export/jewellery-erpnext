@@ -23,17 +23,20 @@ class TestMOPSettings(FrappeTestCase):
 		kwargs = mock_msgprint.call_args[1]
 		self.assertEqual(kwargs.get("indicator"), "orange")
 
-	def test_validate_silent_when_both_eir_types_configured(self):
+	def test_validate_silent_when_all_eir_types_configured(self):
+		# _RESERVATION_TYPES_FOR_EIR requires three SE types: Repack,
+		# Material Transfer (WORK ORDER), Material Receive (WORK ORDER).
 		doc = frappe.get_doc("MOP Settings")
 		doc.stock_entry_type_to_reservation = []
-		doc.append(
-			"stock_entry_type_to_reservation",
-			{"stock_entry_type_to_reservation": "Material Transfer (WORK ORDER)"},
-		)
-		doc.append(
-			"stock_entry_type_to_reservation",
-			{"stock_entry_type_to_reservation": "Repack"},
-		)
+		for se_type in (
+			"Material Transfer (WORK ORDER)",
+			"Repack",
+			"Material Receive (WORK ORDER)",
+		):
+			doc.append(
+				"stock_entry_type_to_reservation",
+				{"stock_entry_type_to_reservation": se_type},
+			)
 		with patch.object(frappe, "msgprint") as mock_msgprint:
 			doc.validate()
 		mock_msgprint.assert_not_called()

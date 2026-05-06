@@ -14,6 +14,7 @@
   "is_for_making",
   "is_for_finding_making",
   "is_for_freight",
+  "is_for_repair",
   "metal_type",
   "metal_purity",
   "uom",
@@ -26,7 +27,8 @@
   "diamond_type",
   "hsn_code",
   "sales_type",
-  "charge_type"
+  "charge_type",
+  "finding_category"
  ],
  "fields": [
   {
@@ -156,12 +158,25 @@
    "link_filters": "[[\"Attribute Value\", \"custom_is_diamond_type\", \"=\", 1]]",
    "mandatory_depends_on": "eval: doc.is_for_diamond == 1;",
    "options": "Attribute Value"
+  },
+  {
+   "depends_on": "eval: doc.is_for_finding || doc.is_for_finding_making ",
+   "fieldname": "finding_category",
+   "fieldtype": "Link",
+   "label": "Finding Category",
+   "options": "Attribute Value"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_for_repair",
+   "fieldtype": "Check",
+   "label": "Is For Repair"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-01-03 15:27:16.432090",
- "modified_by": "Administrator",
+ "modified": "2026-04-03 16:08:53.787796",
+ "modified_by": "shruti_b@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "E Invoice Item",
  "naming_rule": "By fieldname",
@@ -180,6 +195,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
