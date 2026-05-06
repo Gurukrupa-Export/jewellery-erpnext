@@ -85,7 +85,7 @@ _BOM_TABLE_FIELDS = {
 		"is_customer_item",
 		"sub_setting_type",
 		"gemstone_quality",
-		"gemstone_grade",
+		"gemstone_type",
 		"stone_shape",
 		"gemstone_size",
 		"cut_or_cab",
@@ -925,8 +925,8 @@ def gemstone_details_set_mandatory_field(self):
 		for row in self.gemstone_table:
 			if not row.gemstone_quality:
 				errors.append("Gemstone Details Table <b>Quality</b> is required.")
-			if not row.gemstone_grade:
-				errors.append("Gemstone Details Table <b>Grade</b> is required.")
+			if not row.gemstone_type:
+				errors.append("Gemstone Details Table <b>Type</b> is required.")
 	if errors:
 		frappe.throw("<br>".join(errors))
 

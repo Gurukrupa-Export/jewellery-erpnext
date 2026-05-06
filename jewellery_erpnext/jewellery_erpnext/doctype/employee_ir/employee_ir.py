@@ -127,6 +127,17 @@ class EmployeeIR(Document):
 		# 	mop_data = json.loads(self.mop_data)
 		# 	return create_single_se_entry(self, mop_data)
 		if cancel:
+			affected_mops_issue = [
+				r[0]
+				for r in frappe.db.sql(
+					"""
+					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
+					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
+					  AND manufacturing_operation IS NOT NULL
+					""",
+					(self.doctype, self.name),
+				)
+			]
 			frappe.db.set_value(
 				"MOP Log",
 				{
@@ -137,6 +148,12 @@ class EmployeeIR(Document):
 				"is_cancelled",
 				1,
 			)
+			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				recalculate_manufacturing_operation_weights,
+			)
+
+			for mop_name in affected_mops_issue:
+				recalculate_manufacturing_operation_weights(mop_name)
 		# Set initial values based on cancel flag
 		employee = None if cancel else self.employee
 		operation = None if cancel else self.operation
@@ -259,6 +276,20 @@ class EmployeeIR(Document):
 		curr_time = frappe.utils.now()
 
 		if cancel:
+			# Capture which Manufacturing Operations need bucket recompute BEFORE
+			# the bulk is_cancelled flip — afterwards the rows are filtered out
+			# by the `is_cancelled = 0` clause the recompute uses.
+			affected_mops = [
+				r[0]
+				for r in frappe.db.sql(
+					"""
+					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
+					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
+					  AND manufacturing_operation IS NOT NULL
+					""",
+					(self.doctype, self.name),
+				)
+			]
 			frappe.db.set_value(
 				"MOP Log",
 				{
@@ -272,6 +303,16 @@ class EmployeeIR(Document):
 			# Cancel any auto-created Main Slip Repack SEs; their on_cancel hook
 			# flips the matching MOP Log rows to is_cancelled=1 via the bridge.
 			cancel_injections_for_eir(self.name)
+			# Bulk db.set_value above bypasses MOPLog.validate, so the prefix
+			# buckets stay stale showing pre-cancel balances. Re-run the central
+			# aggregator on each affected MOP so gross_wt restores to the
+			# remaining-active-rows balance.
+			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				recalculate_manufacturing_operation_weights,
+			)
+
+			for mop_name in affected_mops:
+				recalculate_manufacturing_operation_weights(mop_name)
 
 		for row in self.employee_ir_operations:
 			if is_mould_operation and not cancel:
@@ -326,9 +367,17 @@ class EmployeeIR(Document):
 				# create_mop_log_for_employee_ir_receive will see.
 				stock_entry_name = inject_extra_metal_for_eir_receive(self, row)
 
+				# Combined-loss receive: create_mop_log_for_employee_ir_receive
+				# now subtracts employee_loss_details + manually_book_loss_details
+				# directly from each receive MOP Log row. There is no longer a
+				# separate Loss Attribution writer pass — the loss audit
+				# metadata (loss_weight, loss_source_row, loss_type) lives on
+				# the combined receive row itself, and MOPLog.validate updates
+				# Manufacturing Operation buckets exactly once.
 				create_mop_log_for_employee_ir_receive(
 					self, row, actor_wh, department_wh, stock_entry_name
 				)
+
 				update_new_mop_wtg(new_operation)
 			else:
 				for sre in frappe.db.get_all(
@@ -481,7 +530,7 @@ class EmployeeIR(Document):
 	def validate_process_loss(self):
 		if (self.docstatus != 0) or self.type == "Issue":
 			return
-		allowed_loss_percentage = frappe.get_value(
+		allowed_loss_percentage = frappe.get_cached_value(
 			"Department Operation",
 			{"company": self.company, "department": self.department},
 			"allowed_loss_percentage",
@@ -498,7 +547,6 @@ class EmployeeIR(Document):
 				)
 
 		self.employee_loss_details = []
-		proportionally_loss_sum = 0
 		for row in rows_to_append:
 			proportionally_loss = flt(row["proportionally_loss"], 3)
 			if proportionally_loss > 0:
@@ -520,8 +568,17 @@ class EmployeeIR(Document):
 						"customer": row.get("customer"),
 					},
 				)
-				proportionally_loss_sum += proportionally_loss
-		self.mop_loss_details_total = proportionally_loss_sum
+
+		# Pre-deduction MOP baseline: total loss available from the operations
+		# before any manual deduction. Drives downstream caps and serves as the
+		# reference for `remaining_loss = baseline - sum(manually_book_loss)`.
+		mop_baseline = 0.0
+		for child in self.employee_ir_operations:
+			if child.received_gross_wt and flt(child.gross_wt) > flt(
+				child.received_gross_wt
+			):
+				mop_baseline += flt(child.gross_wt) - flt(child.received_gross_wt)
+		self.mop_loss_details_total = flt(mop_baseline, 3)
 
 	@frappe.whitelist()
 	def book_metal_loss(self, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
@@ -538,31 +595,36 @@ class EmployeeIR(Document):
 		data = []  # for final data list
 		# Fetching Stock Entry based on MNF Work Order
 		if gwt != r_gwt:
-			mop_balance_table = []
+			# Forensic C4 fix: previously aliased pcs_after_transaction_batch_based
+			# to BOTH qty and pcs, making the proportional loss formula run on
+			# PCS counts instead of grams. Use the weight column for qty so
+			# downstream `stock_loss = (entry["qty"] * loss) / total_qty` produces
+			# gram-based outputs matching the spec examples.
 			fields = [
 				"item_code",
 				"batch_no",
-				"pcs_after_transaction_batch_based as qty",
+				"qty_after_transaction_batch_based as qty",
 				"pcs_after_transaction_batch_based as pcs",
 			]
-			for row in frappe.db.get_all(
-				"MOP Log",
-				{
-					"manufacturing_work_order": mwo,
-					"manufacturing_operation": opt,
-					"is_cancelled": 0,
-					"voucher_type": "Employee IR",
-				},
-				fields,
-			):
-				mop_balance_table.append(row)
+			mop_balance_table = (
+				frappe.db.get_all(
+					"MOP Log",
+					{
+						"manufacturing_work_order": mwo,
+						"manufacturing_operation": opt,
+						"is_cancelled": 0,
+					},
+					fields,
+				)
+				or []
+			)
 			# Declaration & fetch required value
 			metal_item = []  # for check metal or not list
 			unique = set()  # for Unique Item_Code
 			sum_qty = {}  # for sum of qty matched item
 
 			# getting Metal property from MNF Work Order
-			mwo_metal_property = frappe.db.get_value(
+			mwo_metal_property = frappe.get_cached_value(
 				"Manufacturing Work Order",
 				mwo,
 				[
@@ -647,6 +709,35 @@ class EmployeeIR(Document):
 						entry["proportionally_loss"] = 0
 						entry["received_gross_weight"] = 0
 						entry["main_slip_consumption"] = ms_consum_book
+
+			# Precision-3 reconciliation: independently rounding each row's
+			# proportionally_loss can leave the sum drifting from flt(loss, 3),
+			# which trips validate_loss_qty's per-MWO equality check. Round
+			# each row first, then anchor the residual on the largest-loss
+			# row so the sum matches flt(loss, 3) exactly.
+			if loss > 0 and total_qty != 0:
+				positive = [e for e in data if flt(e["proportionally_loss"]) > 0]
+				if positive:
+					for entry in positive:
+						entry["proportionally_loss"] = flt(
+							entry["proportionally_loss"], 3
+						)
+						entry["received_gross_weight"] = flt(
+							entry["qty"] - entry["proportionally_loss"], 3
+						)
+					target = flt(loss, 3)
+					distributed = flt(
+						sum(e["proportionally_loss"] for e in positive), 3
+					)
+					residual = flt(target - distributed, 3)
+					if residual:
+						anchor = max(positive, key=lambda e: e["proportionally_loss"])
+						anchor["proportionally_loss"] = flt(
+							anchor["proportionally_loss"] + residual, 3
+						)
+						anchor["received_gross_weight"] = flt(
+							anchor["qty"] - anchor["proportionally_loss"], 3
+						)
 			# -------------------------------------------------------------------------
 		return data
 
