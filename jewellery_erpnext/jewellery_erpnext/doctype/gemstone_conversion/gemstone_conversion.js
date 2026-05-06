@@ -12,10 +12,11 @@ frappe.ui.form.on("Gemstone Conversion", {
 			};
 		};
 	},
-	loss_type(frm) {
+	g_source_item(frm) {
 		clear_gemstone_field(frm);
 		set_batch_filter(frm, "batch");
-		// frm.set_value("g_source_qty", null);
+		frm.set_value("g_source_qty", null);
+		// frm.set_value("g_loss_item", frm.doc.g_source_item);
 		if (frm.doc.g_source_item) {
 			frappe.call({
 				method: "jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_loss_item",
