@@ -10,10 +10,16 @@
   "rate_per_gm",
   "rate_per_pc",
   "rate_per_diamond",
+  "mfg_complexity_code",
   "column_break_4",
+  "subcontracting_rate",
+  "subcontracting_wastage",
   "wastage",
   "rate_per_gm_threshold",
-  "supplier_fg_purchase_rate"
+  "supplier_fg_purchase_rate",
+  "customer_making_charges_code",
+  "from_diamond",
+  "to_diamond"
  ],
  "fields": [
   {
@@ -69,17 +75,49 @@
    "fieldtype": "Currency",
    "label": "Supplier FG Purchase Rate",
    "options": "currency"
+  },
+  {
+   "fieldname": "customer_making_charges_code",
+   "fieldtype": "Data",
+   "label": "Customer Making Charges Code"
+  },
+  {
+   "fieldname": "from_diamond",
+   "fieldtype": "Int",
+   "label": "From Diamond"
+  },
+  {
+   "fieldname": "to_diamond",
+   "fieldtype": "Int",
+   "label": "To Diamond"
+  },
+  {
+   "fieldname": "subcontracting_rate",
+   "fieldtype": "Currency",
+   "label": "Subcontracting Rate"
+  },
+  {
+   "fieldname": "subcontracting_wastage",
+   "fieldtype": "Percent",
+   "label": "Subcontracting Wastage"
+  },
+  {
+   "fieldname": "mfg_complexity_code",
+   "fieldtype": "Select",
+   "label": "Mfg Complexity Code",
+   "options": "\nSimple\nMedium\nComplex"
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-12-31 13:29:19.058168",
- "modified_by": "Administrator",
+ "modified": "2026-04-03 16:31:05.054734",
+ "modified_by": "shruti_b@gkexport.com",
  "module": "Gurukrupa Exports",
  "name": "Making Charge Price Item Subcategory",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

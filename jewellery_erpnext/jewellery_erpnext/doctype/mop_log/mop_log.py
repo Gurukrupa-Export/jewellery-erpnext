@@ -745,3 +745,116 @@ def create_mop_log_for_employee_ir_receive(
 			mop_log.loss_source_row = joined[:140] if len(joined) > 140 else joined
 
 		mop_log.save()
+
+
+def create_mop_log_for_employee_ir_loss(
+	eir_doc, loss_row, loss_type, total_loss_for_mwo, from_wh=None, to_wh=None
+):
+	"""Bridge writer for Employee IR Receive loss attribution.
+
+	Posts each loss detail as a real MOP Log movement so the Manufacturing
+	Operation weight bucket is reduced by the loss amount. Concretely:
+
+	  qty_change                       = -loss_weight (gram)
+	  qty_after_transaction*           = previous balance - loss_weight
+
+	When MOPLog.validate() runs it writes ``qty_after_transaction`` into the
+	prefix bucket (net_wt / finding_wt / diamond_wt / gemstone_wt / other_wt)
+	on Manufacturing Operation, so the post-loss weight is reflected without
+	any additional bookkeeping here.
+
+	Carat-denominated rows (typical for D / G items) are converted to grams
+	via x0.2 so the MOP Log balance — which is gram-based — stays consistent.
+
+	Idempotent on (voucher_type, voucher_no, manufacturing_operation,
+	loss_source_row, loss_type, is_cancelled=0). is_synced=1 keeps the EOD
+	sync from re-materializing it.
+	"""
+	raw = flt(loss_row.proportionally_loss)
+	stock_uom = frappe.get_cached_value("Item", loss_row.item_code, "stock_uom")
+	loss_weight = raw * 0.2 if stock_uom == "Carat" else raw
+	if loss_weight <= 0:
+		return None
+
+	if frappe.db.exists(
+		"MOP Log",
+		{
+			"voucher_type": "Employee IR",
+			"voucher_no": eir_doc.name,
+			"manufacturing_operation": loss_row.manufacturing_operation,
+			"loss_source_row": loss_row.name,
+			"loss_type": loss_type,
+			"is_cancelled": 0,
+		},
+	):
+		return None
+
+	pct = (loss_weight / total_loss_for_mwo) if total_loss_for_mwo else 0
+
+	# Latest balance for this (item, batch) on the same MOP. Includes any
+	# prior loss-attribution rows so successive loss postings stack.
+	latest = (
+		frappe.db.get_value(
+			"MOP Log",
+			{
+				"manufacturing_operation": loss_row.manufacturing_operation,
+				"item_code": loss_row.item_code,
+				"batch_no": loss_row.batch_no,
+				"is_cancelled": 0,
+			},
+			[
+				"qty_after_transaction",
+				"qty_after_transaction_item_based",
+				"qty_after_transaction_batch_based",
+				"pcs_after_transaction",
+				"pcs_after_transaction_item_based",
+				"pcs_after_transaction_batch_based",
+				"flow_index",
+			],
+			order_by="creation desc",
+			as_dict=True,
+		)
+		or {}
+	)
+
+	# Loss reduces qty balance by loss_weight; PCS balance is preserved (loss
+	# is recorded by weight, not by piece count).
+	pcs_change = 0
+	if loss_row.item_code[0] in ("D", "G"):
+		pcs_change = -cint(loss_row.pcs or 0)
+	mop_log = frappe.new_doc("MOP Log")
+	mop_log.item_code = loss_row.item_code
+	mop_log.batch_no = loss_row.batch_no
+	mop_log.qty_change = -flt(loss_weight, 3)
+	mop_log.pcs_change = pcs_change
+	for k in (
+		"qty_after_transaction",
+		"qty_after_transaction_item_based",
+		"qty_after_transaction_batch_based",
+	):
+		mop_log.set(k, flt(latest.get(k) or 0) - flt(loss_weight, 3))
+	for k in (
+		"pcs_after_transaction",
+		"pcs_after_transaction_item_based",
+		"pcs_after_transaction_batch_based",
+	):
+		mop_log.set(k, latest.get(k) or 0)
+	# Do not advance flow_index — loss attribution is booked at the same
+	# materialization tier as the receive that triggered it.
+	mop_log.flow_index = latest.get("flow_index") or 0
+	mop_log.from_warehouse = from_wh
+	mop_log.to_warehouse = to_wh
+	mop_log.voucher_type = "Employee IR"
+	mop_log.voucher_no = eir_doc.name
+	mop_log.manufacturing_operation = loss_row.manufacturing_operation
+	mop_log.manufacturing_work_order = loss_row.manufacturing_work_order
+	mop_log.row_name = loss_row.name
+	mop_log.is_synced = 1
+	# Loss attribution fields (custom_fields/mop_log.json)
+	mop_log.log_category = "Loss Attribution"
+	mop_log.loss_type = loss_type
+	mop_log.loss_weight = flt(loss_weight, 3)
+	mop_log.loss_percentage = flt(pct * 100, 4)
+	mop_log.loss_source_row = loss_row.name
+	mop_log.save()
+	return mop_log.name

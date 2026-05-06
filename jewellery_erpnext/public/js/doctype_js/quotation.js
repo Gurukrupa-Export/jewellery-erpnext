@@ -7,7 +7,6 @@ frappe.ui.form.on("Quotation", {
 		}
 	},
 	refresh(frm) {
-		update_total_rows(frm);
 		frm.add_custom_button(
 			__("Purchase Order"),
 			function () {
@@ -88,6 +87,7 @@ frappe.ui.form.on("Quotation", {
 					args: {
 						name: frm.doc.name,
 					},
+
 					callback: function (r) {
 						if (!r.exc) {
 							frm.reload_doc();
@@ -305,12 +305,6 @@ frappe.ui.form.on("Quotation Item", {
 
 		// row.quotation_bom = ''
 	},
-	  items_add: function(frm) {
-        update_total_rows(frm);
-    },
-    items_remove: function(frm) {
-        update_total_rows(frm);
-    },
 	serial_no(frm, cdt, cdn) {
 		var d = locals[cdt][cdn];
 		if (d.serial_no) {
@@ -419,6 +413,15 @@ frappe.ui.form.on("Quotation Item", {
 				fieldtype: "Float",
 				fieldname: "quantity",
 				label: __("Weight In Gms"),
+				reqd: 1,
+				read_only: 1,
+				columns: 1,
+				in_list_view: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "quantity_3",
+				label: __("Weight In Gms(2 digits)"),
 				reqd: 1,
 				read_only: 1,
 				columns: 1,
@@ -630,6 +633,16 @@ frappe.ui.form.on("Quotation Item", {
 			},
 			{
 				fieldtype: "Float",
+				fieldname: "quantity_3",
+				label: __("Weight In Cts(2 digits)"),
+				precision : 0,
+				reqd: 1,
+				columns: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
+			{
+				fieldtype: "Float",
 				fieldname: "weight_per_pcs",
 				label: __("Weight Per Piece"),
 				read_only: 1,
@@ -779,6 +792,16 @@ frappe.ui.form.on("Quotation Item", {
 				label: __("Weight In Cts"),
 				columns: 1,
 				reqd: 1,
+				read_only: 1,
+				in_list_view: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "quantity_3",
+				label: __("Weight In Cts(2 digits)"),
+				precision : 0,
+				reqd: 1,
+				columns: 1,
 				read_only: 1,
 				in_list_view: 1,
 			},
@@ -934,6 +957,16 @@ frappe.ui.form.on("Quotation Item", {
 				fieldname: "quantity",
 				columns: 1,
 				label: __("Quantity"),
+				reqd: 1,
+				read_only: 1,
+				in_list_view: 1,
+				default: 1,
+			},
+			{
+				fieldtype: "Float",
+				fieldname: "quantity_3",
+				columns: 1,
+				label: __("Quantity(2 digits)"),
 				reqd: 1,
 				read_only: 1,
 				in_list_view: 1,
@@ -1098,9 +1131,9 @@ frappe.ui.form.on("Quotation Item", {
 					fieldname: "bom_no",
 					fieldtype: "Link",
 					label: "BOM-No",
-					options: "BOM",
+					options: "Tracking Bom",
 					read_only: 1,
-					default: row.quotation_bom,
+					default: row.custom_tracking_bom,
 					onchange: () => {
 						if (dialog.get_value("bom_no")) {
 							edit_bom_documents(
@@ -1115,6 +1148,7 @@ frappe.ui.form.on("Quotation Item", {
 						}
 					},
 				},
+			
 				{
 					fieldtype: "Section Break",
 				},
@@ -1408,7 +1442,7 @@ frappe.ui.form.on("Quotation Item", {
 					method: "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.update_bom_detail",
 					freeze: true,
 					args: {
-						parent_doctype: "BOM",
+						parent_doctype: "Tracking Bom",
 						parent_doctype_name: dialog.get_value("bom_no") || row.bom,
 						metal_detail: metal_detail,
 						diamond_detail: diamond_detail,
@@ -1426,10 +1460,10 @@ frappe.ui.form.on("Quotation Item", {
 			primary_action_label: __("Update"),
 		});
 
-		if (row.quotation_bom) {
+		if (row.custom_tracking_bom) {
 			edit_bom_documents(
 				dialog,
-				row.quotation_bom,
+				row.custom_tracking_bom,
 				metal_data,
 				diamond_data,
 				gemstone_data,
@@ -1460,7 +1494,9 @@ frappe.ui.form.on("Quotation Item", {
 					}
 				});
 		}
-
+		if (row.custom_tracking_bom) {
+			dialog.set_value("bom_no", row.custom_tracking_bom);
+}
 		dialog.show();
 		dialog.$wrapper.find(".modal-dialog").css("max-width", "90%");
 	},
@@ -1489,13 +1525,13 @@ let edit_bom_documents = (
 		args using:
 			bom_no: Link of BOM
 	*/
-	var doc = frappe.model.get_doc("BOM", bom_no);
+	var doc = frappe.model.get_doc("Tracking Bom", bom_no);
 	if (!doc) {
 		frappe.call({
 			method: "frappe.client.get",
 			freeze: true,
 			args: {
-				doctype: "BOM",
+				doctype: "Tracking Bom",
 				name: bom_no,
 			},
 			callback(r) {
@@ -1600,7 +1636,7 @@ let set_edit_bom_details = (
 					
 					let metal_purity = flt(metal_purity_value || 0);
 					let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-					console.log("gold_rate",calculated_actual_rate)
+					// console.log("gold_rate",calculated_actual_rate)
 					let calculated_gold_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity
 					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity
@@ -1619,6 +1655,7 @@ let set_edit_bom_details = (
 					rate: calculated_gold_rate,
 					actual_rate: calculated_actual_rate,
 					quantity: d.quantity,
+					quantity_3: d.quantity_3,
 					wastage_rate: d.wastage_rate,
 					wastage_amount: d.wastage_amount,
 					making_rate: d.making_rate,
@@ -1627,12 +1664,14 @@ let set_edit_bom_details = (
 				});
 				metal_data = dialog.fields_dict.metal_detail.df.data;
 				dialog.fields_dict.metal_detail.grid.refresh();
+				dialog.set_value("metal_amount", metal_amount);
+				dialog.set_value("making_amount", making_amount);
 			
 			}
 		});
 	});
 	});
-	
+	// console.log('hii',metal_amount);
 	// diamond details table append
 	$.each(doc.diamond_detail, function (index, d) {
 			diamond_amount += d.diamond_rate_for_specified_quantity;
@@ -1674,6 +1713,7 @@ let set_edit_bom_details = (
 						sieve_size_range: d.sieve_size_range,
 						size_in_mm: d.size_in_mm,
 						quantity: d.quantity,
+						quantity_3: d.quantity_3,
 						weight_per_pcs: d.weight_per_pcs,
 						total_diamond_rate: d.total_diamond_rate,
 						diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
@@ -1724,6 +1764,7 @@ let set_edit_bom_details = (
 				gemstone_grade: d.gemstone_grade,
 				gemstone_size: d.gemstone_size,
 				quantity: d.quantity,
+				quantity_3: d.quantity_3,
 				total_gemstone_rate: d.total_gemstone_rate,
 				gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
 				difference_qty: difference_qty,
@@ -1742,6 +1783,7 @@ let set_edit_bom_details = (
 	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
 		$.each(doc.finding_detail, function (index, d) {
 			finding_amount += d.amount;
+			
 			frappe.call({
 				method: "jewellery_erpnext.query.get_customer_mtel_purity",
 				args: {
@@ -1773,6 +1815,7 @@ let set_edit_bom_details = (
 				actual_rate:calculated_actual_rate,
 				metal_colour: d.metal_colour,
 				quantity: d.quantity,
+				quantity_3: d.quantity_3,
 				wastage_rate: d.wastage_rate,
 				wastage_amount: d.wastage_amount,
 				making_rate: d.making_rate,
@@ -1781,10 +1824,12 @@ let set_edit_bom_details = (
 			});
 			finding_data = dialog.fields_dict.finding_detail.df.data;
 			dialog.fields_dict.finding_detail.grid.refresh();
+			dialog.set_value("finding_amount", finding_amount);
 		}
 	});
 	});
 	});
+	
 
 	// other details table append
 	$.each(doc.other_detail, function (index, d) {
@@ -1801,14 +1846,16 @@ let set_edit_bom_details = (
 
 	// dialog fields value fetch from BOM
 	dialog.set_value("gross_weight", doc.gross_weight);
-	// dialog.set_value("certification_amount", doc.certification_amount)
-	// dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
+	dialog.set_value("making_amount", doc.making_charge);
+	dialog.set_value("certification_amount", doc.certification_amount||0)
+	dialog.set_value("hallmarking_amount", doc.hallmarking_amount ||0)
 	// dialog.set_value("custom_duty_amount", doc.custom_duty_amount)
 	// dialog.set_value("freight_amount", doc.freight_amount)
 	// dialog.set_value("sale_amount", doc.sale_amount)
-
+	// console.log('hoooo',metal_amount);
 	dialog.set_value("metal_amount", metal_amount);
 	dialog.set_value("making_amount", making_amount);
+	dialog.set_value("finding_amount", finding_amount);
 	dialog.set_value("wastage_amount", wastage_amount);
 	dialog.set_value("gemstone_amount", gemstone_amount);
 	dialog.set_value("diamond_amount", diamond_amount);
@@ -1817,6 +1864,8 @@ let set_edit_bom_details = (
 	dialog.set_value("other_weight", doc.other_weight || 0);
 	dialog.set_value("diamond_weight", doc.diamond_weight || 0);
 	dialog.set_value("gemstone_weight", doc.gemstone_weight || 0);
+	dialog.set_value("rate", (doc.total_bom_amount+ doc.hallmarking_amount + doc.making_charge))
+	dialog.set_value("amount", (doc.total_bom_amount+ doc.hallmarking_amount + doc.making_charge))
 	if (dialog.get_value("sale_key"))
 		dialog.set_value(
 			"saleAmount",
@@ -1875,7 +1924,7 @@ let add_row = (serial_no, frm, row) => {
 					frappe.model.set_value(
 						new_row.doctype,
 						new_row.name,
-						"quotation_bom",
+						"custom_tracking_bom",
 						bom.name
 					);
 					new_row.bom = bom.name;
@@ -1891,9 +1940,3 @@ let add_row = (serial_no, frm, row) => {
 		});
 	});
 };
-
-//function to update total_rows 
-function update_total_rows(frm) {
-    let total = frm.doc.items ? frm.doc.items.length : 0;
-    frm.set_value('custom_total_rows', total);
-}
