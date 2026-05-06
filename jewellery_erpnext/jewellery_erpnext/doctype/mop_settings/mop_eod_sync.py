@@ -35,7 +35,7 @@ department transfer. Physical batch validation is unchanged; splitting does not 
 
 import frappe
 from frappe import _
-from frappe.utils import flt, cint
+from frappe.utils import cint, flt
 
 
 def sync_mop_logs():
@@ -50,6 +50,17 @@ def sync_mop_logs():
 			se_names, count = _sync_consolidated_group(group_key, mop_data_list)
 			stock_entries.extend(se_names)
 			processed += count
+			# Stamp Manufacturing Operation only on success — never on rollback.
+			# update_modified=False keeps the audit "modified" timestamp clean.
+			now_ts = frappe.utils.now()
+			for d in mop_data_list:
+				frappe.db.set_value(
+					"Manufacturing Operation",
+					d["mop_name"],
+					"last_eod_sync_on",
+					now_ts,
+					update_modified=False,
+				)
 			frappe.db.release_savepoint("mop_eod_sync_hop")
 		except Exception:
 			frappe.db.rollback(save_point="mop_eod_sync_hop")
@@ -59,7 +70,101 @@ def sync_mop_logs():
 				message=f"Failed routing {first_wh} -> {last_wh}\n{frappe.get_traceback()}",
 			)
 
+	# Audit-first SRE reconciliation. Default dry_run=True simply logs what
+	# would be cancelled; pass dry_run=False from a console session to actually
+	# cancel zero-balance reservations.
+	processed_mwos = {key[1] for key in unsynced_groups.keys()}
+	for mwo in processed_mwos:
+		try:
+			_reconcile_reservations_for_mwo(mwo, dry_run=True)
+		except Exception:
+			frappe.log_error(
+				title=f"MOP EOD SRE reconcile failed for MWO {mwo}",
+				message=frappe.get_traceback(),
+			)
+
 	return {"processed": processed, "stock_entries": stock_entries}
+
+
+def _reconcile_reservations_for_mwo(mwo, dry_run=True):
+	"""Audit-first Stock Reservation Entry reconciliation.
+
+	Iterates active SREs for a MWO and finds rows where:
+	  - SRE has remaining qty (reserved - delivered > 0), AND
+	  - the latest non-cancelled MOP movement balance for the same
+	    (item_code, warehouse) is zero.
+
+	When dry_run=True (default), only logs which SREs would be cancelled.
+	When dry_run=False, cancels them under per-SRE savepoints so a single bad
+	reservation does not poison the entire EOD run.
+
+	Never cancels SREs with ambiguous (positive but partial) balances.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_current_mop_balance_rows,
+	)
+
+	sres = frappe.db.get_all(
+		"Stock Reservation Entry",
+		filters={
+			"manufacturing_work_order": mwo,
+			"docstatus": 1,
+		},
+		fields=[
+			"name",
+			"item_code",
+			"warehouse",
+			"reserved_qty",
+			"delivered_qty",
+			"manufacturing_operation",
+		],
+	)
+	for sre in sres:
+		remaining = flt(sre.reserved_qty) - flt(sre.delivered_qty)
+		if remaining <= 0:
+			continue
+		if not sre.manufacturing_operation:
+			continue
+		# Use the existing balance helper (filters out loss-attribution rows).
+		balance_rows = get_current_mop_balance_rows(
+			sre.manufacturing_operation,
+			include_fields=[
+				"item_code",
+				"batch_no",
+				"qty_after_transaction_batch_based as qty",
+				"to_warehouse",
+			],
+		)
+		# Match on item_code and to_warehouse — t_warehouse on the inbound
+		# movement equals SRE.warehouse (verified against
+		# stock_entry.stock_reservation_entry_for_mwo).
+		matched = [
+			b
+			for b in balance_rows
+			if b.get("item_code") == sre.item_code
+			and b.get("to_warehouse") == sre.warehouse
+		]
+		balance_qty = sum(flt(b.get("qty")) for b in matched)
+		if balance_qty <= 0:
+			msg = (
+				f"EOD SRE reconcile: {sre.name} (MWO {mwo}, item "
+				f"{sre.item_code}, wh {sre.warehouse}) has no MOP balance "
+				f"(remaining={remaining}, balance=0)."
+			)
+			if dry_run:
+				frappe.logger().info(f"{msg} DRY-RUN -- would cancel.")
+			else:
+				frappe.db.savepoint("eod_sre_reconcile")
+				try:
+					frappe.get_doc("Stock Reservation Entry", sre.name).cancel()
+					frappe.logger().info(f"{msg} CANCELLED.")
+					frappe.db.release_savepoint("eod_sre_reconcile")
+				except Exception:
+					frappe.db.rollback(save_point="eod_sre_reconcile")
+					frappe.log_error(
+						title=f"EOD SRE reconcile cancel failed: {sre.name}",
+						message=frappe.get_traceback(),
+					)
 
 
 def _get_unsynced_mop_groups():
@@ -67,6 +172,9 @@ def _get_unsynced_mop_groups():
 	Return a dict of {(company, mwo, first_wh, last_wh): [{'mop_name': ..., 'mop_doc': ..., 'logs': ...}]}
 	for all unsynced logs grouped by routing hop.
 	"""
+	# Loss-attribution rows are written with is_synced=1 (Employee IR bridge
+	# writer), so they are excluded here naturally — no extra log_category
+	# filter is needed.
 	logs = frappe.db.get_all(
 		"MOP Log",
 		filters={"is_synced": 0, "is_cancelled": 0},
@@ -111,11 +219,11 @@ def _get_unsynced_mop_groups():
 				as_dict=True,
 			)
 			mop_cache[mop_name] = mop_doc_dict
-			
+
 		mop = mop_cache[mop_name]
 		if not mop:
 			continue
-			
+
 		first_wh, last_wh = _resolve_warehouses(op_logs)
 		if not first_wh or not last_wh:
 			frappe.log_error(
@@ -128,11 +236,9 @@ def _get_unsynced_mop_groups():
 			continue
 
 		group_key = (mop.company, mop.manufacturing_work_order, first_wh, last_wh)
-		groups.setdefault(group_key, []).append({
-			"mop_name": mop_name,
-			"mop_doc": mop,
-			"logs": op_logs
-		})
+		groups.setdefault(group_key, []).append(
+			{"mop_name": mop_name, "mop_doc": mop, "logs": op_logs}
+		)
 
 	return groups
 
@@ -140,8 +246,8 @@ def _get_unsynced_mop_groups():
 def _latest_flow_logs(logs):
 	if not logs:
 		return []
-	max_idx = max(l.flow_index for l in logs)
-	return [l for l in logs if l.flow_index == max_idx]
+	max_idx = max(log.flow_index for log in logs)
+	return [log for log in logs if log.flow_index == max_idx]
 
 
 def _mop_manufacturer_label(mop):
@@ -225,7 +331,9 @@ def _sync_consolidated_group(group_key, mop_data_list):
 		if not manufacturing_order:
 			manufacturing_order = mop.manufacturing_order
 
-		items_to_transfer.extend(_build_transfer_rows_for_mop(mop_data, first_wh, last_wh))
+		items_to_transfer.extend(
+			_build_transfer_rows_for_mop(mop_data, first_wh, last_wh)
+		)
 
 		latest_logs = _latest_flow_logs(logs)
 		loss_wt = flt(mop.loss_wt, 3)
@@ -292,7 +400,9 @@ def _sync_consolidated_group(group_key, mop_data_list):
 				loss_wt = flt(mop.loss_wt, 3)
 				if loss_wt < 0:
 					se_names.extend(
-						_create_loss_entries(mop, mop_name, latest_logs, last_wh, abs(loss_wt))
+						_create_loss_entries(
+							mop, mop_name, latest_logs, last_wh, abs(loss_wt)
+						)
 					)
 
 	if not used_per_mop_fallback:
@@ -304,9 +414,6 @@ def _sync_consolidated_group(group_key, mop_data_list):
 	return se_names, len(all_processed_logs)
 
 
-
-
-
 def _resolve_warehouses(logs):
 	"""Determine the first source warehouse and last target warehouse from the log chain."""
 	if not logs:
@@ -315,8 +422,8 @@ def _resolve_warehouses(logs):
 	first_wh = None
 	last_wh = None
 
-	min_idx = min(l.flow_index for l in logs)
-	max_idx = max(l.flow_index for l in logs)
+	min_idx = min(log.flow_index for log in logs)
+	max_idx = max(log.flow_index for log in logs)
 
 	for log in logs:
 		if log.flow_index == min_idx and log.from_warehouse and not first_wh:
@@ -395,7 +502,9 @@ def _collect_mop_names(mop_data_list):
 	return ", ".join(names)
 
 
-def _list_open_sre_for_batch(item_code, warehouse, batch_no, manufacturing_work_order=None):
+def _list_open_sre_for_batch(
+	item_code, warehouse, batch_no, manufacturing_work_order=None
+):
 	"""Submitted Serial/Batch SRE rows with undelivered qty at ``warehouse`` (diagnostics)."""
 	from frappe.query_builder.functions import Sum
 
@@ -464,7 +573,9 @@ def _format_batch_short_diagnostics(
 	if company:
 		lines.append(_("Company: {0}").format(company))
 	if manufacturing_work_order:
-		lines.append(_("Manufacturing Work Order: {0}").format(manufacturing_work_order))
+		lines.append(
+			_("Manufacturing Work Order: {0}").format(manufacturing_work_order)
+		)
 	mops = _collect_mop_names(mop_data_list)
 	if mops:
 		lines.append(_("Manufacturing Operation(s): {0}").format(mops))
@@ -475,10 +586,15 @@ def _format_batch_short_diagnostics(
 		lines.append(_("Manufacturer: (not set on Operation / Work Order)"))
 
 	sre_here = _list_open_sre_for_batch(
-		item_code, warehouse, batch_no, manufacturing_work_order=manufacturing_work_order
+		item_code,
+		warehouse,
+		batch_no,
+		manufacturing_work_order=manufacturing_work_order,
 	)
 	if not sre_here and manufacturing_work_order:
-		sre_here = _list_open_sre_for_batch(item_code, warehouse, batch_no, manufacturing_work_order=None)
+		sre_here = _list_open_sre_for_batch(
+			item_code, warehouse, batch_no, manufacturing_work_order=None
+		)
 
 	total_open_here = 0.0
 	for row in sre_here:
@@ -516,13 +632,17 @@ def _format_batch_short_diagnostics(
 			]
 			if parts:
 				lines.append(
-					_("Open reservations on other warehouse(s) (sample): {0}").format("; ".join(parts))
+					_("Open reservations on other warehouse(s) (sample): {0}").format(
+						"; ".join(parts)
+					)
 				)
 
 	return "\n".join(lines)
 
 
-def _get_sre_undelivered_batch_qty(item_code, warehouse, batch_no, manufacturing_work_order=None):
+def _get_sre_undelivered_batch_qty(
+	item_code, warehouse, batch_no, manufacturing_work_order=None
+):
 	"""Sum undelivered qty on submitted Serial/Batch Stock Reservation Entry rows (audit helper)."""
 	from frappe.query_builder.functions import Sum
 
@@ -626,7 +746,10 @@ def _validate_eod_source_batch_stock(
 
 		if manufacturing_work_order:
 			sre_open = _get_sre_undelivered_batch_qty(
-				item_code, wh, batch_no, manufacturing_work_order=manufacturing_work_order
+				item_code,
+				wh,
+				batch_no,
+				manufacturing_work_order=manufacturing_work_order,
 			)
 			if sre_open + 1e-6 < req_qty:
 				frappe.log_error(
@@ -650,15 +773,19 @@ def _validate_eod_source_batch_stock(
 def _create_loss_entries(mop, mop_name, latest_logs, warehouse, total_loss):
 	"""Create Repack Stock Entry for process loss."""
 	from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
-		get_item_loss_item,
+		get_loss_item_from_manufacturer_mapping,
 	)
 
 	se_names = []
-	metal_logs = [l for l in latest_logs if l.item_code and l.item_code[0] in ("M", "F")]
+	metal_logs = [
+		log for log in latest_logs if log.item_code and log.item_code[0] in ("M", "F")
+	]
 	if not metal_logs:
 		return se_names
 
-	total_metal_qty = sum(flt(l.qty_after_transaction_batch_based, 3) for l in metal_logs)
+	total_metal_qty = sum(
+		flt(log.qty_after_transaction_batch_based, 3) for log in metal_logs
+	)
 	if total_metal_qty <= 0:
 		return se_names
 
@@ -673,9 +800,9 @@ def _create_loss_entries(mop, mop_name, latest_logs, warehouse, total_loss):
 	if variant_loss_details:
 		if variant_loss_details.get("loss_warehouse"):
 			loss_warehouse = variant_loss_details.get("loss_warehouse")
-		elif variant_loss_details.get("consider_department_warehouse") and variant_loss_details.get(
-			"warehouse_type"
-		):
+		elif variant_loss_details.get(
+			"consider_department_warehouse"
+		) and variant_loss_details.get("warehouse_type"):
 			loss_warehouse = frappe.db.get_value(
 				"Warehouse",
 				{
@@ -721,7 +848,12 @@ def _create_loss_entries(mop, mop_name, latest_logs, warehouse, total_loss):
 		)
 
 	if se.items:
-		loss_item = get_item_loss_item(mop.company, se.items[0].item_code, "M")
+		# Manufacturer-scoped resolution. Throws a clear configuration error
+		# when the Manufacturer's Variant Loss Table mapping is missing — does
+		# not silently fall through.
+		loss_item = get_loss_item_from_manufacturer_mapping(
+			se.items[0].item_code, mop.manufacturer, loss_type="Loss"
+		)
 		if loss_item:
 			se.append(
 				"items",
@@ -743,7 +875,7 @@ def _create_loss_entries(mop, mop_name, latest_logs, warehouse, total_loss):
 
 def _mark_synced(logs):
 	"""Mark all MOP Log entries as synced."""
-	log_names = [l.name for l in logs]
+	log_names = [log.name for log in logs]
 	if log_names:
 		frappe.db.set_value(
 			"MOP Log",

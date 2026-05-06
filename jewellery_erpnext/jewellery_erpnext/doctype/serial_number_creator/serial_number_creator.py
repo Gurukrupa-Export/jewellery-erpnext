@@ -241,6 +241,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 				)
 				if bin_name:
 					bin_doc = frappe.get_doc("Bin", bin_name)
+					bin_doc.flags.ignore_permissions = True
 					bin_doc.recalculate_qty()
 					bin_doc.update_reserved_stock()
 

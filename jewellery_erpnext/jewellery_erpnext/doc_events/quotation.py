@@ -52,6 +52,13 @@ def create_bom_scientifically(self):
 	create_tracking_bom_directly(self)
 
 
+# Backward-compat alias. test_quotation.py imports `create_new_bom` by name;
+# the implementation was renamed to `create_bom_scientifically` in PR #506.
+# Without the alias the full `bench run-tests --app jewellery_erpnext`
+# invocation crashes at module-load time when test_quotation imports.
+create_new_bom = create_bom_scientifically
+
+
 @frappe.whitelist()
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
