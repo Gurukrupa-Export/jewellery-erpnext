@@ -368,6 +368,13 @@ class EmployeeIR(Document):
 				# create_mop_log_for_employee_ir_receive will see.
 				stock_entry_name = inject_extra_metal_for_eir_receive(self, row)
 
+				# Combined-loss receive: create_mop_log_for_employee_ir_receive
+				# now subtracts employee_loss_details + manually_book_loss_details
+				# directly from each receive MOP Log row. There is no longer a
+				# separate Loss Attribution writer pass — the loss audit
+				# metadata (loss_weight, loss_source_row, loss_type) lives on
+				# the combined receive row itself, and MOPLog.validate updates
+				# Manufacturing Operation buckets exactly once.
 				create_mop_log_for_employee_ir_receive(
 					self, row, actor_wh, department_wh, stock_entry_name
 				)
