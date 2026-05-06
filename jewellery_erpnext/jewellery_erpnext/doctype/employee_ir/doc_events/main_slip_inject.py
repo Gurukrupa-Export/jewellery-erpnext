@@ -331,8 +331,7 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 		if not alloy_item:
 			frappe.throw(
 				_(
-					"Main Slip injection: cannot resolve metal Item for "
-					"{0}/{1}/{2}/{3}"
+					"Main Slip injection: cannot resolve metal Item for {0}/{1}/{2}/{3}"
 				).format(
 					mwo["metal_type"],
 					mwo["metal_touch"],
@@ -823,8 +822,7 @@ def _resolve_inject_metal_items(mwo_name, total_extra):
 		if not item_code:
 			frappe.throw(
 				_(
-					"Main Slip injection: cannot resolve metal Item for "
-					"{0}/{1}/{2}/{3}"
+					"Main Slip injection: cannot resolve metal Item for {0}/{1}/{2}/{3}"
 				).format(
 					mwo["metal_type"],
 					mwo["metal_touch"],
@@ -834,6 +832,10 @@ def _resolve_inject_metal_items(mwo_name, total_extra):
 			)
 		items.append({"item_code": item_code, "qty": per_colour_qty, "batch_no": None})
 	return items
+
+
+def _resolve_source_warehouse(eir):
+	return _resolve_source_warehouse_raw_material(eir)
 
 
 def _resolve_source_warehouse_raw_material(eir):

@@ -7,11 +7,25 @@ from unittest.mock import MagicMock, patch
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
-from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-	update_balance_table,
+try:
+	from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+		update_balance_table,
+	)
+except ImportError:
+	# `update_balance_table` was removed when MOP balance moved from the
+	# legacy mop_balance_table child to the MOP Log table. Fall through with
+	# a stub so this module is still importable; the test class below is
+	# skipped at runtime via @unittest.skipIf.
+	update_balance_table = None
+
+
+import unittest
+
+
+@unittest.skipIf(
+	update_balance_table is None,
+	"update_balance_table was removed; MOP Log is now the source of truth.",
 )
-
-
 class TestStockEntryLegacyBalanceTable(FrappeTestCase):
 	def test_update_balance_table_appends_rows_per_legacy_key(self):
 		mop_doc = MagicMock()
@@ -132,9 +146,7 @@ class TestStockEntryMopLogBridge(FrappeTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.exists",
 		return_value=False,
 	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log"
-	)
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
 	def test_bridge_writes_one_log_per_mop_bound_row(self, mock_create, mock_exists):
 		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 			sync_mop_log_for_stock_entry,
@@ -159,10 +171,10 @@ class TestStockEntryMopLogBridge(FrappeTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.exists",
 		return_value=True,
 	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log"
-	)
-	def test_bridge_is_idempotent_when_log_already_exists(self, mock_create, mock_exists):
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
+	def test_bridge_is_idempotent_when_log_already_exists(
+		self, mock_create, mock_exists
+	):
 		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 			sync_mop_log_for_stock_entry,
 		)
@@ -225,11 +237,10 @@ class TestEmployeeIrDiamondLineageAudit(FrappeTestCase):
 	def test_diagnoses_missing_mop_log_when_se_exists(self):
 		from jewellery_erpnext import mop_lineage_audit
 
-		with patch.object(
-			mop_lineage_audit.frappe.db, "get_value", return_value=None
-		), patch.object(
-			mop_lineage_audit.frappe.db, "sql"
-		) as mock_sql:
+		with (
+			patch.object(mop_lineage_audit.frappe.db, "get_value", return_value=None),
+			patch.object(mop_lineage_audit.frappe.db, "sql") as mock_sql,
+		):
 			mock_sql.side_effect = [
 				[("EIR-ISSUE-1",)],
 				[],

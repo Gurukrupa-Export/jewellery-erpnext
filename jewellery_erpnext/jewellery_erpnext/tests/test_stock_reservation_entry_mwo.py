@@ -17,7 +17,9 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_available_qty_to_reserve",
 		return_value=50.0,
 	)
-	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value"
+	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_values",
 		return_value=None,
@@ -106,7 +108,9 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_available_qty_to_reserve",
 		return_value=0.0,
 	)
-	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value"
+	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_values",
 		return_value=None,
@@ -171,7 +175,9 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_available_qty_to_reserve",
 		return_value=0.0,
 	)
-	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value"
+	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_values",
 		return_value=None,
@@ -244,7 +250,9 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_available_qty_to_reserve",
 		return_value=0.0,
 	)
-	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value"
+	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_values",
 		return_value=None,
@@ -333,7 +341,9 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_available_qty_to_reserve",
 		return_value=0.0,
 	)
-	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value"
+	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_values",
 		return_value=None,
@@ -357,6 +367,18 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 			stock_reservation_entry_for_mwo,
 		)
 
+		# get_cached_value is invoked early to unpack 3 values from
+		# Parent Manufacturing Order; supply a 3-tuple so the function
+		# reaches the per-row loop where the gate fires.
+		def _cached(doctype, name, fields):
+			if doctype == "Parent Manufacturing Order":
+				return ("SO-1", "SOI-1", "MNF-1")
+			if doctype == "Item":
+				return (0, 0)
+			return ("X", "Y", "Z")
+
+		mock_cached.side_effect = _cached
+
 		doc = MagicMock()
 		doc.stock_entry_type = "Repack"
 		doc.manufacturing_order = "PMO-1"
@@ -378,5 +400,6 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 
 		stock_reservation_entry_for_mwo(doc)
 
-		# Must NOT create SRE — Repack not in config, no employee_ir
+		# With get_available_qty_to_reserve=0 and is_eir_injection=False,
+		# qty_to_be_reserved is 0 → the loop body continues past new_doc.
 		mock_new_doc.assert_not_called()
