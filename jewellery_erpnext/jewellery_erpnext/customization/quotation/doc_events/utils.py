@@ -325,7 +325,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 		filters = {
 			"price_list": self.selling_price_list,
 			"price_list_type": i.price_list_type,
-			"customer": self.customer,
+			"customer": self.party_name,
 			"cut_or_cab": i.cut_or_cab,
 			"gemstone_grade": i.gemstone_grade,
 		}
