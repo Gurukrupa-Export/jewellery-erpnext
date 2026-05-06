@@ -16,22 +16,18 @@
 # - whitelisted methods, REST APIs
 # - Stock, Manufacturing, Accounting, MOP Log, jewellery workflows
 #
-# Documented framework integration points in hooks.py (verify against current source):
-# - override_doctype_class: standard ERPNext Stock Entry, Stock Reconciliation,
-#   Stock Ledger Entry, Serial and Batch Bundle, and Submission Queue
-#   controllers are overridden. Treat as bench-wide blast radius.
-# - override_whitelisted_methods: standard Frappe / ERPNext core endpoints are
-#   intercepted (Job Card / Material Request / Stock Entry SE creators, and a
-#   bench-wide Bulk Update intercept). Treat as upgrade-sensitive.
-# - scheduler_events: a daily_long entry runs the MOP EOD sync.
-# - after_migrate: jewellery_erpnext.migrate.after_migrate re-applies every
-#   JSON file under custom_fields/ and property_setter/ on every bench migrate.
-# - patches.txt: the active post_model_sync patches are documented as
-#   non-destructive; verify any new patch is idempotent and safe to re-run.
-# - fixtures: a narrowly-filtered allowlist (sketch workflows, a small set of
-#   Sketch Order custom fields, a small role list); not a wholesale doctype
-#   export. Coordinate fixture changes with custom_fields/ and property_setter/
-#   JSON to avoid drift.
+# Verified framework integration in hooks.py:
+# - override_doctype_class: Stock Entry, Stock Reconciliation, Stock Ledger Entry,
+#   Serial and Batch Bundle, Submission Queue (5 overrides)
+# - override_whitelisted_methods: Job Card make_stock_entry,
+#   Material Request make_stock_entry, Stock Entry make_stock_in_entry,
+#   Frappe bulk_update.submit_cancel_or_update_docs (4 overrides)
+# - scheduler_events: single daily_long entry -> mop_settings.mop_eod_sync.sync_mop_logs
+# - after_migrate: jewellery_erpnext.migrate.after_migrate (re-applies custom_fields/
+#   and property_setter/ JSON sets on every bench migrate)
+# - patches.txt: 5 active post_model_sync patches (no destructive data patches)
+# - fixtures: narrow allowlist (sketch workflows, 9 sketch/order custom fields,
+#   3 roles); not a wholesale doctype export
 #
 # Core review rule:
 # Review the PR diff first.
@@ -542,26 +538,17 @@ Use this app context when the PR touches related areas. Modules: Jewellery Erpne
    - jewellery_erpnext/mop_lineage_audit.py — operational audit harness with
      proof-pack queries (DIR duplicate logs, SE -> multiple MOPs, SNC empty
      source table, Submission Queue DIR timeline, EIR diamond lineage).
-   - jewellery_erpnext/migrate.py after_migrate — re-applies every JSON file
-     under custom_fields/ and property_setter/ on every bench migrate; changes
-     there ship on the next deploy.
-   - scheduler_events: documented EOD entry runs the MOP sync. When new
-     scheduler entries or background jobs are added or changed, verify retry
-     safety, deduplication, transaction boundaries, batching, and timeout
-     assumptions.
-   - frappe.enqueue is used at multiple sites today (interbranch.py,
-     mop_settings.py, doc_events/bulk_update.py, doc_events/quotation.py,
-     and a subcontracting util). When a PR adds another, confirm the same
-     background-job safety properties.
+   - jewellery_erpnext/migrate.py after_migrate — re-applies all JSON in
+     custom_fields/ (~41 files) and property_setter/ (~17 files) at every
+     bench migrate; changes there run on every deploy.
+   - scheduler_events: only one entry — daily_long -> sync_mop_logs.
+   - frappe.enqueue is used in interbranch.py, mop_settings.py,
+     doc_events/bulk_update.py, doc_events/quotation.py, and a subcontracting
+     util — all are background-job touch points.
    - jewellery_erpnext/erpnext_override.py exists; the `import + monkey-patch`
-     blocks in hooks.py are commented out — flag if a PR re-enables them.
-   - When a PR adds or changes whitelisted methods, explicitly check whether
-     `allow_guest=True` was introduced, whether permissions are enforced
-     server-side, and whether dynamic doctype / field / method / filter /
-     order_by inputs are allowlisted. If a PR introduces external HTTP
-     integrations, webhooks, website routes, or portal pages, require
-     authentication, error handling, logging, documentation, and operational
-     guidance.
+     blocks in hooks.py are commented out today — flag if a PR re-enables them.
+   - No allow_guest=True methods and no external HTTP / webhook integrations
+     in app code.
 
 Known repo risk themes (only mention if PR touches them):
 - Duplicate MOP Logs (active rows missing the voucher-scoped idempotency key).
@@ -1074,7 +1061,7 @@ Verification must include:
 ============================================================
 
 Review:
-- patches.txt and patches/ (active post_model_sync patches; sed_copy_to_mop is commented out — re-enabling needs review).
+- patches.txt and patches/ (5 active post_model_sync patches today; sed_copy_to_mop is commented out).
 - DocType JSON changes.
 - Custom Field fixtures.
 - Property Setter fixtures.
@@ -1085,11 +1072,11 @@ Review:
 - Workspace fixtures.
 - after_install / before_migrate / after_migrate / before_uninstall.
 - migrate.py — `after_migrate` re-applies every JSON file under
-  `jewellery_erpnext/custom_fields/` and `jewellery_erpnext/property_setter/`
-  on every `bench migrate`. Any change to those folders runs on every deploy
-  across all sites — treat edits as production-affecting and check for
-  idempotency, missing field options, and accidental overwrites of
-  site-customized fields.
+  `jewellery_erpnext/custom_fields/` (~41 files) and
+  `jewellery_erpnext/property_setter/` (~17 files) on every `bench migrate`.
+  Any change to those folders runs on every deploy across all sites — treat
+  edits as production-affecting and check for idempotency, missing field
+  options, and accidental overwrites of site-customized fields.
 
 Flag:
 - Required fields added without defaults/backfill/staged rollout.
@@ -1124,16 +1111,14 @@ Patch expectations:
 ============================================================
 
 Review:
-- frappe.enqueue sites across the app (verify the current set against source
-  before relying on a fixed list; today they include interbranch.py,
+- frappe.enqueue (current touch points: interbranch.py,
   doctype/mop_settings/mop_settings.py, doc_events/bulk_update.py,
-  doc_events/quotation.py, and a customization/stock_entry subcontracting util).
-- scheduler_events: the documented EOD entry runs the MOP sync via
-  jewellery_erpnext.doctype.mop_settings.mop_eod_sync.sync_mop_logs. Verify
-  current source before assuming this is the only entry.
-- Custom Submission Queue (override_doctype_class): routes Employee IR,
-  Department IR, Product Certification, Stock Entry, and Main Slip submissions
-  to the `long` queue with an extended timeout. Treat any change here as
+  doc_events/quotation.py, customization/stock_entry/doc_events/subcontracting_utils.py).
+- scheduler_events (only one entry today: daily_long ->
+  jewellery_erpnext.doctype.mop_settings.mop_eod_sync.sync_mop_logs).
+- Custom Submission Queue (override_doctype_class) — for Employee IR,
+  Department IR, Product Certification, Stock Entry, Main Slip, queues
+  submission to the `long` queue with 4500s timeout. Treat any change here as
   high-risk: it affects every submit of those doctypes.
 - queued jobs, recurring jobs, retry logic.
 - jobs triggered from hooks / APIs / document events.
@@ -1380,57 +1365,6 @@ Reviewer self-check:
 - Stock Reservation Entry flow affected: Yes/No/Unclear
 - Tests or manual validation requested: Yes/No
 - Remaining uncertainty: list only real unknowns
-
-============================================================
-RECENT FEATURE WORK QUICK-REFERENCE (also see [repository_context] section 11)
-============================================================
-
-When a PR touches these areas, apply the rules summarised here. Section 11 of [repository_context].review_context contains the full text.
-
-- Make Receive Entry on Manufacturing Operation: dialog and server validation MUST source from active Stock Reservation Entry rows linked to manufacturing_work_order, NOT from `mop_balance_table`. Server re-fetches every SRE; client values are advisory. Authoritative remaining qty is `(reserved_qty - delivered_qty)` on the active SRE — do NOT also subtract historical Material Receive (WORK ORDER) qty (the partial-receive flow cancels and recreates the SRE so its remaining is already net of past receives). Tolerance = 10**-System Settings.float_precision.
-
-- Replacement SRE after partial receive: ERPNext's `Stock Reservation Entry.validate_mandatory` requires `available_qty` (label "Available Qty to Reserve"). Replacement MUST set:
-  available_qty = max(get_available_qty_to_reserve(item_code, warehouse, batch_no=...), reserved_qty)
-  has_batch_no / has_serial_no copied from Item master.
-  Use `insert(ignore_links=1)` then `submit()` (NOT `save()`).
-  Never submit an SRE with `reserved_qty <= tolerance`, with no positive `sb_entries` for Serial-and-Batch reservations, or with zero-qty batch children. The "Available Qty to Reserve is required" error is the canonical symptom of this contract being violated.
-  Do not work around with fake quantities (e.g. 0.001), `ignore_validate`, `ignore_mandatory`, or `ignore_permissions`.
-
-- Stock Entry idempotency: `custom_request_id` (Data, hidden, no_copy, read_only) on Stock Entry deduplicates Make Receive Entry double-clicks for the same Manufacturing Operation + stock_entry_type. Same request_id MUST return the existing SE without creating another.
-
-- Employee IR loss MOP Log: each Employee Loss Detail / Manually Book Loss Detail row produces a MOP Log row with:
-  qty_change                = -loss_weight (gram; carat * 0.2 first if stock_uom == "Carat")
-  qty_after_transaction*    = previous_balance - loss_weight (across overall, item-based, batch-based)
-  pcs_change / pcs_after_*  = preserved (loss is by weight)
-  is_synced                 = 1 (bridge — EOD must not re-materialize)
-  log_category              = "Loss Attribution"; loss_type / loss_weight / loss_percentage / loss_source_row populated.
-  `MOPLog.validate()` then writes `qty_after_transaction` to the Manufacturing Operation prefix bucket (M->net_wt, F->finding_wt, D->diamond_wt, G->gemstone_wt, O->other_wt). PRs that introduce `qty_change=0` for loss rows that must reduce the bucket should be flagged.
-
-- Balance helpers MUST include loss rows (because they post real qty_change deltas). Do NOT add a `log_category` filter that excludes Loss Attribution rows from `get_current_mop_balance_rows`, the manual-loss validator, or `_get_unsynced_mop_groups`. Existing `is_cancelled=0` (and `is_synced=0` for EOD) filters are sufficient.
-
-- Manual booked loss validation has TWO layers:
-  (a) per-row floor: `row.proportionally_loss <= MOP Log latest qty_after_transaction_batch_based for (item, batch)`.
-  (b) per-MWO total cap: `sum(manual loss for MWO, in grams) <= sum(gross_wt - received_gross_wt for MWO across employee_ir_operations)` — TRUE baseline, NOT `mop_loss_details_total` (which is already net of manual and would be circular).
-  Both layers must remain.
-
-- Loss item resolution comes from Manufacturer `custom_variant_loss_table` via `get_loss_item_from_manufacturer_mapping(item_code, manufacturer, loss_type="Loss")`. The mapping fields are `variant`, `loss_variant`, `loss_type`, parented to Manufacturer with `parentfield="custom_variant_loss_table"`. Expected mappings (read from Manufacturer; do NOT hardcode):
-  M+Loss->ML, F+Loss->FL, D+Loss->DL, D+Missing->DM, D+Burn->DB, D+Broken->DBK, G+Loss->GL, G+Broken->GB, O+Loss->OL.
-  For Diamond / Gemstone the loss_type is read from the `manually_book_loss_details` row.
-  Missing mapping or unresolvable target item must throw a clear configuration error pointing to "Manufacturer {0} -> Variant Loss Table" — error must NOT mention MOP Settings.
-
-- DO NOT add a `dust_item` field to MOP Settings. DO NOT add code that reads `MOP Settings.dust_item`. The current MOP Settings DocType has only `stock_entry_type_to_reservation` and `sync_mop_log` button; verify against the JSON before approving any addition.
-
-- The older helper `get_item_loss_item` is manufacturer-agnostic and falls through to the C3-buggy `create_loss_item` (always-throw debug leftover at `main_slip.py:804`). New code paths must use `get_loss_item_from_manufacturer_mapping`.
-
-- EOD sync `last_eod_sync_on` stamp is written ONLY on successful per-group sync (inside the savepoint release path). Failed/rolled-back groups MUST NOT stamp.
-
-- EOD SRE reconciliation `_reconcile_reservations_for_mwo` defaults to `dry_run=True` (logs only). PRs MUST NOT default-flip it to `dry_run=False`.
-
-- EOD continues to create `Material Transfer to Department` SE type and `Repack` for loss. Do NOT rename to `Material Transfer (WORK ORDER)` casually — custom field `depends_on`, reports, and downstream hooks key on the existing strings.
-
-- `book_metal_loss` reads MOP Log balance via the alias `qty_after_transaction_batch_based as qty` (gram-based). A historical bug aliased `pcs_after_transaction_batch_based as qty`; a PR that reverts to that alias (forensic C4) must be rejected.
-
-- Test infrastructure: authored unit tests live under `jewellery_erpnext/jewellery_erpnext/tests/` (with `__init__.py`). They are mock-heavy unit tests. The full-app `run-tests` may be blocked by an unrelated `india_compliance` `before_tests` fixture; document this and run modules directly via `python -m unittest` with `frappe.init` + `frappe.connect` if needed. Pre-existing failures in `test_mop_log.TestDepartmentIRIdempotency.*`, `test_main_slip_inject`, and `test_employee_ir.TestEmployeeIRReceiveLineageGuard.*` should not block PRs unless the PR touches those modules.
 '''
 
 
@@ -1549,19 +1483,6 @@ Before publishing a suggestion, verify:
 - It preserves stock/accounting/MOP/reservation semantics.
 - It does not rely on unverified assumptions.
 - It is small enough to apply safely.
-
-Highest-priority bug classes for /improve in this app (apply only when the diff touches related code; full rule text is in [repository_context] section 11):
-- Make Receive Entry sourcing rows from `mop_balance_table` instead of active Stock Reservation Entry rows linked to manufacturing_work_order.
-- Replacement Stock Reservation Entry submitted with no `available_qty`, with `reserved_qty` at zero/sub-precision, or with empty positive `sb_entries` for Serial-and-Batch reservations — the canonical symptom is "Available Qty to Reserve is required".
-- Replacement SRE that double-subtracts past Material Receive (WORK ORDER) qty from active SRE remaining (the partial-receive flow already cancels and recreates the SRE so its remaining is net of past receives).
-- Loss MOP Log writers using `qty_change=0` when the row is meant to reduce the Manufacturing Operation weight bucket. Loss must use negative `qty_change` and reduce `qty_after_transaction*` by the loss weight (gram-equivalent for D / G after `carat * 0.2`).
-- Adding a `log_category="Loss Attribution"` filter to balance helpers (`get_current_mop_balance_rows`, manual-loss validator, `_get_unsynced_mop_groups`) — loss rows post a real qty_change and must be included in balance calculations.
-- Any new `dust_item` field on MOP Settings or any `MOP Settings.dust_item` read. Loss/dust item resolution must come from `Manufacturer.custom_variant_loss_table` via `get_loss_item_from_manufacturer_mapping`. The older `get_item_loss_item` is manufacturer-agnostic and falls through to the C3-buggy `create_loss_item`; new code must not use it.
-- Hardcoded warehouse names, item codes, manufacturer names, customer names in loss / Repack / SRE / Make Receive Entry paths — these must resolve from Manufacturer / department / warehouse_type config.
-- Reverting `book_metal_loss` to `pcs_after_transaction_batch_based as qty` (forensic bug C4) — the correct alias is `qty_after_transaction_batch_based as qty`.
-- Default-flipping `_reconcile_reservations_for_mwo` to `dry_run=False`, or renaming EOD `Material Transfer to Department` / `Repack` SE types without coordinated migration.
-- Stock Entry idempotency: `custom_request_id` on Stock Entry must dedupe Make Receive Entry double-clicks; the same request_id must return the existing SE without creating another. Suggestions must not weaken this.
-- Working around ERPNext SRE validation with fake quantities (e.g. `0.001`), `ignore_validate`, `ignore_mandatory`, `ignore_permissions`, or raw SQL inserts — instead, fix the zero-qty source.
 '''
 
 
@@ -1577,337 +1498,4 @@ extra_instructions = '''
 Update changelog only for user-visible or developer-visible changes.
 Do not add changelog entries for pure formatting unless the repository convention requires it.
 Include the PR link when available.
-'''
-
-
-############################################################
-# Repository Context
-#
-# Durable, source-grounded review guidance for PR-Agent, derived from the
-# documentation under docs/ and the current repository files. This block is
-# orientation, not a snapshot. It deliberately avoids exact counts, line
-# numbers, hardcoded local site names, stale negative claims, and frozen bug
-# lists. The PR bot must read the diff and current source for truth; if
-# anything below contradicts the source, the source wins and this context
-# block should be flagged for refresh.
-############################################################
-
-[repository_context]
-
-source = "Generated from @docs/ and the current repository files. Use as PR review guidance, not as a frozen source of truth."
-purpose = "Durable review context for PR-Agent reviews of this Frappe v15 / ERPNext custom jewellery manufacturing app."
-
-review_context = '''
-============================================================
-1. REPOSITORY ORIENTATION
-============================================================
-
-The current source and docs/ indicate this is a Frappe v15 / ERPNext custom app for jewellery manufacturing. It is a thick customization layer on top of standard ERPNext, not a standalone product. modules.txt declares three Frappe modules:
-
-- A core manufacturing module covering planning, work orders, per-step manufacturing operations, a virtual MOP Log ledger that bridges into Stock Entry, refining, QC, metal / diamond / gemstone conversions, and certification flows.
-- A design pipeline module ("Gurukrupa Exports") covering sketch / CAD / design-order workflows that feed manufacturing, with per-customer Diamond / Gemstone / Making Charge price lists.
-- A subcontracting module ("Customer Subcontracting") implemented as doc_events handlers (no DocTypes) that rename parent and child batches at Stock Entry and Purchase Receipt before_submit using a customer-aware naming scheme.
-
-The current source includes hardcoded company, customer, supplier, and warehouse identifiers in several files. Treat the app as currently deployment-specific; multi-tenant rollout would require centralizing these identifiers.
-
-============================================================
-2. DOCUMENTED CORE WORKFLOWS
-============================================================
-
-- Make-to-order manufacturing chain: Sales Order -> Manufacturing Plan -> Parent Manufacturing Order -> Manufacturing Work Order -> Manufacturing Operation -> Department IR / Employee IR -> MOP Log -> Stock Entry (materialized by the daily MOP EOD sync). Treat changes anywhere in this chain as cross-cutting.
-
-- MOP Log dual-writer flow: virtual writers (Department IR / Employee IR submit, certain Manufacturing Operation paths) write rows that the EOD sync materializes; a bridge writer on Stock Entry submit writes rows already backed by the SE. Both paths must coexist without double-processing the same physical movement.
-
-- Stock Reservation Entry flow: reservations originate from MWO submit, EIR Receive, Stock Entry-derived flows, and Main Slip injection. Auto-created Stock Entries that should be reserved must carry the source marker the reservation lookup expects.
-
-- Main Slip Receive injection: a high-risk auto-create flow that walks Main Slip batch_details when a Receive shows extra returned metal and emits Material Transfer or Repack Stock Entries with an `employee_ir` header marker. Inventory-type priority order is documented as Regular Stock -> Customer Goods -> Pure Metal.
-
-- Customer-subcontracting batch rename: runs on Stock Entry and Purchase Receipt before_submit; renames parent and child batches using the documented `{customer}-{YearCode}{Month}-{item_code}-{serial}` scheme (YearCode mapping 0->J, 1->A, ..., 9->I). Touches batch identity and is high-impact for stock traceability.
-
-- Pricing and BOM: standard ERPNext BOM (with custom fields) coexists with a custom Tracking BOM bound to PMO. Customer-aware pricing branches between a customer-specific path and a standard path in multiple files.
-
-- Sketch / design pipeline: Sketch Order Form spawns Sketch Order(s) which walk through rough / final / CMO / HOD / Hold / Rejected stages driven by a fixture-defined workflow, eventually producing Item template(s).
-
-- Daily background processing: a scheduled MOP EOD sync materializes virtual MOP Log rows into Stock Entries. Other background-work sites exist for manual MOP sync, inter-branch JV reconciliation, bulk update, quotation pricing, and a subcontracting helper. When PRs change any of these, verify the current set against `hooks.py` and source `frappe.enqueue` call sites.
-
-- Custom Submission Queue routing: several heavy submittable doctypes (the IR documents, Product Certification, Stock Entry, Main Slip) are routed to the long queue with an extended timeout via an override of Frappe's Submission Queue.
-
-============================================================
-3. LOAD-BEARING INVARIANTS (PROTECT THESE)
-============================================================
-
-- The MOP Log idempotency key for active rows includes voucher_type, voucher_no, row_name, manufacturing_operation, item_code, batch_no, and is_cancelled=0. New writers must respect this key.
-
-- The is_synced flag is the dedup mechanism between virtual writers and the Stock Entry bridge writer. Virtual writers set is_synced=0 and the EOD sync flips it to 1; the SE bridge writer sets is_synced=1 directly because the SE already represents a physical movement. New writers must declare which side they are on.
-
-- Cancellation of MOP Log rows is done by marking is_cancelled=1, not by deletion — to preserve audit lineage.
-
-- Auto-created Stock Entries that should be reserved must carry the expected source marker on the SE header. Without it, reservation lookups silently miss the SE.
-
-- Main Slip Receive injection must preserve per-segment source warehouse, the documented inventory-type priority order, and the source marker on auto-created SEs.
-
-- Department IR Receive clones all Issue MOP Logs in ascending flow_index. Code in the relevant writer should preserve this ordering rather than reading only a max-tier snapshot.
-
-- Standard ERPNext Stock Entry / Stock Reconciliation / Stock Ledger Entry / Serial and Batch Bundle / Submission Queue controllers are overridden. PRs touching those override classes should preserve the parent-method chain where appropriate, and explicitly justify any case where super() is intentionally not called.
-
-- Several Frappe / ERPNext core whitelisted methods are intercepted via override_whitelisted_methods. Treat changes to those interceptors as upgrade-sensitive.
-
-- Payment Entry uses the same handler for on_submit and on_update_after_submit. Logic there must be idempotent.
-
-- The after_migrate hook re-applies every JSON file under custom_fields/ and property_setter/ on every bench migrate. Edits to those folders ship on the next deploy with no separate fixture step. Removed-but-still-applied fields are not auto-deleted; cleanup is manual.
-
-- Patches must be idempotent and safe to re-run on copied sites.
-
-- The Custom Submission Queue's long-queue routing for the listed heavy doctypes carries an extended timeout. Lowering it without checking actual submit times can break large submissions.
-
-============================================================
-4. HIGH-RISK REVIEW AREAS BY RESPONSIBILITY
-============================================================
-
-- Overridden ERPNext core controllers: bench-wide blast radius. Verify super() chaining, behavior on submit / cancel / resubmit, and SLE / batch / serial / SRE consistency.
-
-- Overridden core whitelisted methods: replacing core API endpoints affects every caller including standard ERPNext UI buttons. Verify response shape and behavior parity.
-
-- MOP Log writers and readers: verify the idempotency key, the is_synced direction, voucher-scoped source queries (no bare "latest by manufacturing_operation"), and cancellation behavior. Cross-check against the EOD sync expectations.
-
-- The MOP EOD sync background job: verify per-hop savepoint behavior, the loss-as-Repack-SE branch, and grouping keys.
-
-- Stock Reservation Entry creation, cancellation, and unreservation: verify per-source-voucher idempotency, marker presence on auto-created SEs, and cancel / resubmit symmetry.
-
-- Main Slip Receive injection: verify inventory-type priority, source-warehouse preservation, alloy-before-pure-metal preference, and the marker on auto-created SEs.
-
-- Department IR / Employee IR submit paths: multiple chained MOP Log writers, status transitions, and SE side effects. EIR carries nested helpers across several files; expect cross-file impact.
-
-- Manufacturing Operation controller: includes a very large finished-goods-BOM builder reachable from Serial Number Creator submit. Adding inline work in this path is a likely performance regression.
-
-- Tracking BOM and pricing helpers: customer-aware pricing branches exist; helpers resolve diamond, gemstone, making-charge, and gold rates from per-customer price-list masters. Pricing changes should be reviewed for customer isolation and parity between Quotation, Sales Order, Sales Invoice, and BOM rate computations.
-
-- Customer Subcontracting batch rename: touches batch identity. Verify customer scoping, naming-collision handling, and parent / child relationship integrity.
-
-- Whitelisted methods: when adding or changing a whitelisted method, verify permission enforcement, allowlists for dynamic doctype / field / method / filter / order_by arguments, and a minimal response payload. Explicitly check whether `allow_guest=True` was introduced. Avoid generic database-access patterns.
-
-- Background jobs / scheduler / Custom Submission Queue: verify retry safety, deduplication, timeout assumptions, transaction boundaries, and that enqueue is not happening from validate.
-
-- Migration patches and fixture / schema changes: verify idempotency and safe re-runs on copied sites. Coordinate JSON edits under custom_fields/ and property_setter/ with fixtures/custom_field.json and fixtures/property_setter.json so the two paths do not drift.
-
-- Workflow fixture changes (Sketch Order workflows): verify state names, transitions, and role assignments stay consistent with controller logic that branches on workflow_state.
-
-- Hardcoded company / customer / supplier / warehouse / item names: ask whether new branching should live in a Setting, Company-level flag, or Customer-level configuration.
-
-- Raw SQL / dynamic queries: parameterize values; allowlist dynamic identifiers.
-
-- External integrations: if a PR introduces external HTTP integrations, webhooks, website routes, portal pages, or `allow_guest=True` endpoints, require authentication, permission checks, error handling, logging, documentation, and operational guidance.
-
-- Client scripts (JS): JS must not be the sole enforcement path for any rule that affects stock, GL, manufacturing state, weight, loss, pricing, or permissions.
-
-============================================================
-5. DIRECT PR REVIEW RULES
-============================================================
-
-- When a PR touches MOP Log behavior, verify the idempotency key remains intact, the is_synced direction matches the writer role, and cancellation marks rather than deletes rows.
-
-- When a PR touches the EOD MOP sync, verify grouping keys, per-hop savepoint behavior, and the loss-as-Repack-SE emission branch.
-
-- When a PR touches Department IR or Employee IR, verify both Issue and Receive branches, MOP Log row generation, status transitions, and any auto-created SEs (markers, warehouses, batches). Receive must continue to clone all Issue logs in ascending flow_index.
-
-- When a PR touches Main Slip or its injection helpers, verify inventory-type priority, source-warehouse preservation, alloy-before-pure-metal preference, and SE marker presence.
-
-- When a PR touches an override of a Frappe / ERPNext core controller or whitelisted method, verify super() chaining (where appropriate) and behavior parity for both Desk UI and background flows.
-
-- When a PR touches Stock Reservation Entry creation or cancellation, verify duplicate prevention by source voucher, marker presence on auto-created SEs, and cancel / resubmit symmetry.
-
-- When a PR adds a whitelisted method, verify permission enforcement, allowlists for dynamic arguments, and a minimal response payload. Explicitly check whether `allow_guest=True` was introduced.
-
-- When a PR touches fixtures, workflows, custom_fields/, or property_setter/ JSON, verify they remain consistent with controller logic and with each other. Cross-reference any change to seeded Stock Entry Type names against client-side and server-side checks that filter by SE type name.
-
-- When a PR adds or modifies a patch, verify idempotency and safe re-runs.
-
-- When a PR adds or modifies a background job or `frappe.enqueue` site, verify retry safety, deduplication, timeout assumptions, transaction boundaries, and that enqueue is not happening from validate.
-
-- When a PR adds inline carat-to-gram conversion or M / F / D / G / O variant prefix branching, prefer the existing shared mapping rather than adding a new inline duplicate.
-
-- When a PR adds raw SQL, verify parameterization, identifier allowlisting, explicit SELECT columns, and bounded result sets.
-
-- When a PR touches Payment Entry on_submit or on_update_after_submit, verify the handler stays idempotent — both events use the same handler.
-
-- When a PR touches client-side pricing or weight logic, verify the same rule exists server-side.
-
-- When a PR re-enables any commented-out monkey-patch in hooks.py, call it out explicitly: those changes are bench-wide.
-
-- When a PR adds new hardcoded company / customer / supplier / warehouse identifiers, ask whether the change should instead live in a Setting, Company-level flag, or Customer-level configuration.
-
-- Always read the diff against current source. If this context block contradicts what the diff or source actually shows, trust the source and note that the context may need updating.
-
-============================================================
-6. TESTING EXPECTATIONS (BY CHANGE TYPE)
-============================================================
-
-- Lifecycle changes: request tests for the specific lifecycle event affected (validate, before_save, before_submit, on_submit, before_cancel, on_cancel, on_update_after_submit), and for submit / cancel / resubmit symmetry where stock, GL, MOP Log, or SRE are affected.
-- MOP Log changes: request tests that exercise the idempotency key, the is_synced behavior for the writer role, cancellation-by-marking, and the EOD sync interaction.
-- Stock Reservation Entry changes: request tests for marker presence, duplicate prevention by source voucher, and cancellation / unreservation symmetry on resubmit.
-- Patch changes: request idempotency / safe re-run verification.
-- Background jobs: request duplicate-execution and retry-safety verification.
-- Whitelisted methods: request both allowed-user and denied-user coverage. For methods that take dynamic doctype / field / method arguments, request input-validation tests.
-- Pricing / BOM changes: request affected-pricing-path coverage and parity checks across Quotation, Sales Order, Sales Invoice, and Tracking BOM.
-- Workflow fixture changes: request a path-through test of the affected state transitions.
-- Documentation-only changes: verify the docs match current source and avoid environment-specific commands.
-- Test asks should name the exact behavior, the affected role / user, the doctype / method, and the expected outcome — not generic "add tests" comments.
-- Test commands are bench-driven. Use placeholders such as `bench --site <site_name> run-tests --app <app_name>` and `bench --site <site_name> migrate` rather than hardcoding any specific local site name; any local default site mentioned in docs is environment-specific.
-
-============================================================
-7. DOCUMENTATION UPDATE EXPECTATIONS
-============================================================
-
-PRs should update the relevant docs in these cases:
-- Pipeline shape changes (new stage, new branch, new auto-create flow).
-- MOP Log invariant changes (writers, readers, idempotency key, is_synced semantics).
-- Override-class behavior changes (Stock Entry, SLE, SBB, Submission Queue, Stock Reconciliation).
-- New scheduler entries, new background-job sites, new Custom Submission Queue routings.
-- New whitelisted methods, especially ones that read or mutate sensitive data.
-- New custom_fields/ or property_setter/ JSON bundles, since these auto-deploy on the next bench migrate.
-- New site-specific assumptions (company, customer, supplier, warehouse, item).
-- Renamed or removed fields, especially those backed by patches.
-
-============================================================
-8. CONFIGURATION AND ENVIRONMENT GUIDANCE
-============================================================
-
-- All extension wiring lives in hooks.py. Re-enabling commented-out monkey-patch blocks (e.g. GST e-invoice, ERPNext core method swaps, auth_hooks) is bench-wide.
-- Single DocTypes drive runtime configuration (notably MOP Settings, which lists Stock Entry Types eligible for reservation and exposes a manual-sync entry point).
-- patches.txt controls which patches run on bench migrate. Patches that exist on disk but are not listed there should be assumed dead unless confirmed otherwise.
-- Fixtures cover workflows, workflow states, workflow action masters, a small role list, and a narrowly-filtered Custom Field set; broader Custom Field and Property Setter customization happens via JSON folders applied by after_migrate. Drift between the two paths is a recurring source of bugs.
-- Treat any documented local default site name as environment-specific. PR-Agent output should use `<site_name>` placeholders unless the target environment confirms the actual site.
-- If a PR introduces external secrets, API keys, or third-party integrations, require explicit documentation, secret-management guidance, error handling, and operational notes.
-
-============================================================
-9. DOCS MAP FOR REVIEWERS
-============================================================
-
-The forensic documentation under docs/ groups by purpose. Use the relevant group when a PR's scope is unclear:
-
-- Scope and evidence rules: defines what the docs cover and the rule that every claim is sourced from a file. Treat docs as orientation; if a doc claim conflicts with current source, prefer the source.
-- Architecture overview and final context summary: describe the manufacturing pipeline, the extension mechanisms, and the MOP Log dual-writer rule. Consult these when a PR touches multiple stages of the pipeline.
-- Hooks analysis: walks every entry in hooks.py — identity, asset includes, after_migrate, doctype_js, doctype_list_js, commented-out monkey-patches, doc_events with chained handlers, override_whitelisted_methods, override_doctype_class, scheduler_events, fixtures filter spec.
-- DocType deep dives: per-DocType walkthroughs covering files, fields, controller methods, doc events, relationships, and risks.
-- Python organization (doc-events index, big-file deep dives, root modules, patches): use these when a PR touches Python under doc_events/, customization/, root modules, or patches/.
-- JavaScript surface: maps the JS surface and the most-called backend methods.
-- API and whitelisted methods: describes the API surface, the overridden core whitelisted methods, and the highest-risk whitelisted methods.
-- Database / ER model: describes inferred relationships between custom and standard DocTypes.
-- End-to-end flows: traces concrete server-side paths for the major flows.
-- Dependency graph: cross-cutting tables for hooks, function call graphs, JS-to-backend call map, and scheduler targets.
-- Reports / pages / templates: lists custom reports, inline Jinja templates, and the website / portal surface state. One report is also imported and called from runtime code, so changes to its functions affect runtime behavior beyond the Reports UI.
-- Patches / fixtures / migration: describes how after_migrate re-applies all JSON under custom_fields/ and property_setter/ on every bench migrate, the patches.txt order, and the fixture-export filter.
-- Audits and bug register: describe risk themes, fragile patterns, and a confirmed-issues backlog. Reference these when a PR touches a related responsibility area; do not raise unrelated entries.
-- Generated catalogs: machine-extracted snapshots of source-file inventory, DocType fields, Python functions, JavaScript calls, API whitelists, hook targets, ER relationships, and risk occurrences. Treat them as "shape of the source as last regenerated"; verify against the diff if the source has changed.
-- README and current forensic report: navigation entry points.
-
-============================================================
-10. ANTI-HALLUCINATION RULE FOR THE PR BOT
-============================================================
-
-- The PR bot must read the diff and surrounding source files. This block is orientation, not truth.
-- If source and this context disagree, source wins. Note in the review that the repository context may need refreshing.
-- If docs and source disagree, source wins and the docs may need updating.
-- Do not raise risks from this block unless the PR actually touches the related code path.
-- Do not invent files, fields, DocTypes, hooks, fixtures, patches, commands, or workflows that are not visible in the current source.
-- When recommending commands, use placeholders such as `<site_name>` and `<app_name>` rather than hardcoded local values.
-- Only request tests relevant to the changed behavior; do not append generic "add tests" asks.
-
-============================================================
-11. RECENT FEATURE WORK INVARIANTS (verify against current source)
-============================================================
-
-The following rules reflect the most recent feature work on Make Receive Entry, Employee IR loss posting, EOD sync, and Manufacturer-driven loss item resolution. Apply these only when a PR touches the related areas. If the source has moved on, trust the source.
-
-11.1 Make Receive Entry on Manufacturing Operation
-- Source for the dialog and server-side validation MUST be active Stock Reservation Entry rows linked to the Manufacturing Operation's manufacturing_work_order. Active means docstatus=1 plus positive remaining qty (reserved_qty - delivered_qty for Qty-based; per-batch qty - delivered_qty for Serial-and-Batch). Do NOT hardcode SRE status string allowlists.
-- Authoritative remaining qty for an active SRE is `(reserved_qty - delivered_qty)`. Do NOT also subtract historical Material Receive (WORK ORDER) qty — partial-receive flow cancels and recreates the SRE so its remaining is already net of past receives. Double-subtracting is a regression source.
-- Server method MUST re-fetch every Stock Reservation Entry row from the database. Client-supplied warehouse / item / available_qty are advisory only.
-- Reject `qty <= 0`, `qty > available_qty + tolerance`, wrong-MWO SREs, and cancelled SREs. Tolerance is computed from System Settings `float_precision` (e.g. 10**-3 = 0.001).
-- Idempotency: a `custom_request_id` (Data, hidden, no_copy, read_only) field on Stock Entry deduplicates double-clicks for the same Manufacturing Operation + stock_entry_type. The same request_id must return the existing SE without creating another.
-- Material Receive (WORK ORDER) Stock Entry: source from SRE warehouse, target from `(department, warehouse_type="Raw Material")`. Reuse existing project pattern; do not hardcode warehouse names.
-- MOP Log writes for the SE happen via the existing `sync_mop_log_for_stock_entry` bridge (is_synced=1). The Make Receive Entry server method must NOT write MOP Log directly.
-
-11.2 Stock Reservation Entry replacement (cancel + recreate)
-- Full receive: cancel the original SRE and do NOT create a replacement.
-- Partial receive: cancel original; create replacement only if remaining qty is strictly greater than the float tolerance. For Serial-and-Batch SREs, also require at least one positive sb_entries row — otherwise return None and skip recreation.
-- Replacement SRE must set the ERPNext-mandatory field `available_qty` (label "Available Qty to Reserve"). Validation lives in ERPNext at `stock_reservation_entry.validate_mandatory`. Mirror the existing project convention from `stock_reservation_entry_for_mwo` in `doc_events/stock_entry.py`:
-  available_qty = max(get_available_qty_to_reserve(item_code, warehouse, batch_no=...), reserved_qty)
-  Resolve `has_batch_no` / `has_serial_no` from Item master; copy voucher_type / voucher_no / voucher_detail_no / voucher_qty / company / stock_uom / reservation_based_on / manufacturing_work_order / manufacturing_operation from the original SRE.
-- Persist with `insert(ignore_links=1)` then `submit()` to match the project's existing SRE pattern; do NOT use `save()` here.
-- Never submit an SRE with zero `reserved_qty`, zero per-batch `sb_entries.qty`, or no positive batch rows when `reservation_based_on != "Qty"`. The "Available Qty to Reserve is required" error is the canonical symptom of a missing/zero `available_qty` or empty positive batches.
-- Do not work around with fake quantities (0.001), `ignore_validate`, `ignore_mandatory`, or `ignore_permissions` to silence the validation; fix the zero-qty source.
-
-11.3 Employee IR loss MOP Log (qty_change rule)
-- For each Employee Loss Detail and Manually Book Loss Detail row, the loss is posted as a real MOP Log movement that REDUCES the Manufacturing Operation weight bucket. Concretely:
-  qty_change                       = -loss_weight_in_grams
-  qty_after_transaction            = previous_balance - loss_weight (across overall, item-based, and batch-based views)
-  pcs_change / pcs_after_*         = preserved at the prior values (loss is recorded by weight, not pieces)
-  flow_index                       = same as the latest movement (loss is not a transit hop)
-- `MOPLog.validate()` writes `qty_after_transaction` into the prefix bucket on Manufacturing Operation (M->net_wt, F->finding_wt, D->diamond_wt, G->gemstone_wt, O->other_wt) — so the post-loss weight is reflected automatically. Do not duplicate that update.
-- A previous design used `qty_change=0` and an audit-only `log_category="Loss Attribution"` filter. That convention is INCORRECT for MOP loss deltas: it left the MOP weight unchanged. PRs that introduce `qty_change=0` for loss rows that must reduce the bucket should be flagged.
-- Carat-denominated rows (typical for D / G items) are converted to grams via `carat * 0.2` BEFORE writing `qty_change` and `loss_weight`. The MOP balance is gram-based.
-- is_synced=1 on the loss row: the SE backing the receive already exists, EOD must not re-materialize the loss row.
-- Idempotency on `(voucher_type="Employee IR", voucher_no, manufacturing_operation, loss_source_row, loss_type, is_cancelled=0)`. The existing blanket EIR cancel path (set is_cancelled=1 for all MOP Log rows with that voucher_type/voucher_no) catches loss rows automatically.
-- The balance-helper queries (`get_current_mop_balance_rows`, the manual-loss validator, the EOD `_get_unsynced_mop_groups`) MUST include loss rows in the balance calculation because they post a real qty_change. Do NOT add a `log_category` filter that excludes them; the existing `is_cancelled=0` (and `is_synced=0` for EOD) filters are sufficient.
-
-11.4 Employee IR loss calculation (do not rewrite)
-- The proportional formula is: `loss_calculation = total_loss_weight * (item_weight / total_eligible_weight)`. Only items with prefixes M and F are eligible for auto-loss distribution. Same item across multiple batches stays row-wise (do not merge by item_code).
-- Diamond / Gemstone manual booked loss is converted carat -> gram (`carat * 0.2`) before validation against the available baseline.
-- `book_metal_loss` reads MOP Log balance via the alias `qty_after_transaction_batch_based as qty` (gram-based). A historical bug previously aliased pcs_after_transaction_batch_based as qty (forensic C4); the fix is in. PRs that revert to the pcs alias should be rejected.
-- Manual booked loss validation has TWO layers and both must remain:
-  (a) per-row floor: row.proportionally_loss <= MOP Log latest qty_after_transaction_batch_based for (item, batch).
-  (b) per-MWO total cap: sum(manual loss for MWO, in grams) <= sum(gross_wt - received_gross_wt for MWO across employee_ir_operations).
-  The second cap uses the TRUE baseline `(gwt - r_gwt)` per MWO, NOT `mop_loss_details_total` (which is already net of manual and would be circular).
-- Employee IR `9jbcvj1b85` was used as a debug reference for the loss-MOP-Log fix. It must NOT be hardcoded in code, fixtures, or tests.
-
-11.5 Manufacturer-driven loss item mapping (NO MOP Settings dust_item)
-- Loss / dust target item is resolved from the Manufacturer custom child table `custom_variant_loss_table` (DocType `Variant Loss Table`, fields `variant`, `loss_variant`, `loss_type`, with `parent`/`parenttype="Manufacturer"`/`parentfield="custom_variant_loss_table"`).
-- The new helper `get_loss_item_from_manufacturer_mapping(item_code, manufacturer, loss_type="Loss")` is manufacturer-scoped. The older `get_item_loss_item` is manufacturer-agnostic (queries the standalone Variant Loss Table) and falls through to the C3-buggy `create_loss_item` (always-throw debug leftover at line 804 of `main_slip.py`); use the new helper for any new loss-item resolution.
-- Expected mappings (read from Manufacturer; do not hardcode in code):
-  M + Loss -> ML
-  F + Loss -> FL
-  D + Loss -> DL ; D + Missing -> DM ; D + Burn -> DB ; D + Broken -> DBK
-  G + Loss -> GL ; G + Broken -> GB
-  O + Loss -> OL
-- For Diamond / Gemstone loss, the loss_type is read from the `manually_book_loss_details` row.
-- Missing mapping or unresolvable target loss item must throw a clear configuration error pointing to "Manufacturer {0} -> Variant Loss Table". The error must NOT mention MOP Settings.
-- DO NOT add a `dust_item` field to MOP Settings. DO NOT introduce any MOP-Settings-driven loss-item resolution. The existing MOP Settings DocType has only `stock_entry_type_to_reservation` and `sync_mop_log` button (verify against current JSON before reviewing).
-- EOD `_create_loss_entries` in `mop_eod_sync.py` calls the new helper. The error path propagates as a clear ValidationError; there is no silent skip / no MOP Settings fallback.
-
-11.6 EOD sync gap-fill (single sync; idempotent)
-- There is exactly one EOD sync: `mop_eod_sync.sync_mop_logs`, scheduled `daily_long` in `hooks.py`. Do not introduce a parallel sync.
-- Manufacturing Operation gets a `last_eod_sync_on` Datetime stamp ONLY after a successful per-group sync (inside the savepoint release path). Failed groups (rolled back) MUST NOT stamp.
-- SRE reconciliation is audit-first: `_reconcile_reservations_for_mwo(mwo, dry_run=True)` is called per processed MWO. Default `dry_run=True` only logs would-cancel decisions; destructive cancellation requires explicit operator action via console (`dry_run=False`). PRs MUST NOT default-flip this to destructive.
-- Reconciliation only cancels SREs whose latest MOP Log balance for `(item_code, to_warehouse=SRE.warehouse)` is zero. Ambiguous (positive but partial) balances are skipped.
-- EOD never duplicates main-slip-required behavior. `is_main_slip_required=1` flow is handled at Employee IR Receive submit by `inject_extra_metal_for_eir_receive` in `main_slip_inject.py`; those SEs surface to EOD as is_synced=1 rows.
-- EOD continues to create `Material Transfer to Department` SE type and `Repack` for loss. Do not rename to `Material Transfer (WORK ORDER)` casually — custom field `depends_on` clauses, reports, and downstream hooks key on the existing strings.
-- The audit doc lives at `docs/audits/eod_sync_audit.md`; cross-reference when reviewing EOD changes.
-
-11.7 New custom fields (re-applied on every bench migrate)
-- `Stock Entry.custom_request_id` (Data, len 36, read_only, no_copy, hidden, depends_on Material Receive (WORK ORDER)) — Make Receive Entry idempotency.
-- `MOP Log.log_category` (Select: blank | "Loss Attribution"), `loss_type` (Select: blank | "Auto Employee Loss" | "Manually Booked Loss"), `loss_weight` (Float, precision 3, gram), `loss_percentage` (Float, precision 4), `loss_source_row` (Data) — additive, do not break existing MOP Log validate.
-- `Manufacturing Operation.last_eod_sync_on` (Datetime, read_only, no_copy) — EOD observability stamp.
-- `MOP Settings` has NO `dust_item` field today (and must not gain one — see 11.5).
-- All four JSON files live under `jewellery_erpnext/custom_fields/` and are re-applied by `migrate.py` `after_migrate` on every bench migrate.
-
-11.8 Test infrastructure
-- Authored unit tests live at `jewellery_erpnext/jewellery_erpnext/tests/test_make_receive_entry.py`, `test_employee_ir_loss_mop_log.py`, `test_eod_sync_gap_fill.py` (plus the pre-existing `test_stock_reservation_entry_mwo.py`). They are mock-heavy unit tests; no DB fixtures. The folder has an `__init__.py` so `unittest.discover` picks them up.
-- The full-app `bench --site <site_name> run-tests` may be blocked by an unrelated `india_compliance` `before_tests` fixture. As a workaround, run via `python -m unittest` with `frappe.init` + `frappe.connect` and load by fully-qualified module name.
-- Common pre-existing test failures unrelated to this feature work (do NOT block PRs unless the PR touches them):
-  - `test_mop_log.TestDepartmentIRIdempotency.*` and main-slip-required relaxations — outdated against commit 712ac8f (DIR Receive clones all Issue logs in ascending flow_index).
-  - `test_main_slip_inject` — module-level fixture issue.
-  - `test_employee_ir.TestEmployeeIRReceiveLineageGuard.test_receive_throws_when_issue_logs_miss_current_balance_component` — log_error call-count assertion against unchanged code.
-
-11.9 Anti-patterns to flag in PR review
-- Make Receive Entry sourcing rows from `mop_balance_table` instead of Stock Reservation Entry.
-- `_build_replacement_sre` with no `available_qty` set, or saving/submitting an SRE with `reserved_qty <= tolerance` or empty positive `sb_entries`.
-- A loss MOP Log writer with `qty_change=0` when the row is supposed to reduce the Manufacturing Operation weight bucket.
-- A `log_category="Loss Attribution"` filter added to `get_current_mop_balance_rows`, `validate_manually_book_loss_details` per-row balance check, or `_get_unsynced_mop_groups` — these break the post-loss balance.
-- A new `dust_item` field on MOP Settings or any code path reading `MOP Settings.dust_item`.
-- `get_item_loss_item` used for new code paths (manufacturer-agnostic; falls through to C3-buggy `create_loss_item`). New code should use `get_loss_item_from_manufacturer_mapping`.
-- EOD sync renaming `Material Transfer to Department` to anything else without explicit migration coverage.
-- `_reconcile_reservations_for_mwo` defaulted to `dry_run=False`.
-- Hardcoded warehouse names, item codes, manufacturer names, customer names in code paths that should resolve from Manufacturer / department / warehouse_type config.
-- Reverting `book_metal_loss` to alias `pcs_after_transaction_batch_based as qty` (forensic bug C4).
 '''

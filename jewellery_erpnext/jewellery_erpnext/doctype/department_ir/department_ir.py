@@ -189,19 +189,6 @@ class DepartmentIR(Document):
 			},
 		)
 		if cancel:
-			# Bulk db.set_value bypasses MOPLog.validate, so capture the affected
-			# MOPs first and replay the central recompute after the flip.
-			affected_mops_recv = [
-				r[0]
-				for r in frappe.db.sql(
-					"""
-					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
-					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
-					  AND manufacturing_operation IS NOT NULL
-					""",
-					(self.doctype, self.name),
-				)
-			]
 			frappe.db.set_value(
 				"MOP Log",
 				{
@@ -212,12 +199,6 @@ class DepartmentIR(Document):
 				"is_cancelled",
 				1,
 			)
-			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-				recalculate_manufacturing_operation_weights,
-			)
-
-			for mop_name in affected_mops_recv:
-				recalculate_manufacturing_operation_weights(mop_name)
 			values.update(
 				{
 					"department_receive_id": None,
@@ -328,19 +309,6 @@ class DepartmentIR(Document):
 					).format(self.next_department)
 				)
 		else:
-			# Bulk db.set_value bypasses MOPLog.validate; replay the recompute
-			# after the flip so prefix buckets shed the just-cancelled rows.
-			affected_mops_iss = [
-				r[0]
-				for r in frappe.db.sql(
-					"""
-					SELECT DISTINCT manufacturing_operation FROM `tabMOP Log`
-					WHERE voucher_type = %s AND voucher_no = %s AND is_cancelled = 0
-					  AND manufacturing_operation IS NOT NULL
-					""",
-					(self.doctype, self.name),
-				)
-			]
 			frappe.db.set_value(
 				"MOP Log",
 				{
@@ -351,12 +319,6 @@ class DepartmentIR(Document):
 				"is_cancelled",
 				1,
 			)
-			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-				recalculate_manufacturing_operation_weights,
-			)
-
-			for mop_name in affected_mops_iss:
-				recalculate_manufacturing_operation_weights(mop_name)
 		for row in self.department_ir_operation:
 			if cancel:
 				new_operation = frappe.db.get_value(

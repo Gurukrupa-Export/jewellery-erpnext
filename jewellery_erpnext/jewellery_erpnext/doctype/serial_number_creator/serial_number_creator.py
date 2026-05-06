@@ -232,11 +232,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 
 				# Deduplicate and cancel
 				for sre_name in set(linked_sres):
-					sre_doc = frappe.get_doc(
-						"Stock Reservation Entry", sre_name
-					).cancel()
-					sre_doc.flags.ignore_permissions = True
-					sre_doc.cancel()
+					frappe.get_doc("Stock Reservation Entry", sre_name).cancel()
 
 				# Update Bin to reflect the released stock
 				bin_name = frappe.get_value(
@@ -245,7 +241,6 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 				)
 				if bin_name:
 					bin_doc = frappe.get_doc("Bin", bin_name)
-					bin_doc.flags.ignore_permissions = True
 					bin_doc.recalculate_qty()
 					bin_doc.update_reserved_stock()
 
@@ -717,30 +712,29 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				inventory_type = sed_data.inventory_type
 				customer = sed_data.customer
 
+		# Resolve source warehouse with priority:
+		# 1. MOP Log warehouse (physical movement)
+		# 2. Stock Reservation Entry (reserved location)
 		s_wh = None
 
-		# Resolve source warehouse: ONLY from Stock Reservation Entry (SRE)
-		s_wh = None
-		sre_filters = {"item_code": item_code, "docstatus": 1}
-
-		# Try linking to the specific Manufacturing Operation first
-		s_wh = frappe.db.get_value(
-			"Stock Reservation Entry",
-			{**sre_filters, "manufacturing_operation": mop_name},
-			"warehouse",
-		)
-
-		# Fallback to Sales Order link
-		if not s_wh and sales_order:
-			s_wh = frappe.db.get_value(
-				"Stock Reservation Entry",
+		# Check MOP Log warehouse resolution (flow_index based)
+		if r.get("voucher_type") == "Stock Entry":
+			s_wh = r.get("to_warehouse")
+		elif all_mwos:
+			physical_log = frappe.db.get_value(
+				"MOP Log",
 				{
-					**sre_filters,
-					"voucher_type": "Sales Order",
-					"voucher_no": sales_order,
+					"manufacturing_work_order": ["in", all_mwos],
+					"item_code": item_code,
+					"batch_no": batch_no,
+					"voucher_type": "Stock Entry",
+					"is_cancelled": 0,
 				},
-				"warehouse",
+				"to_warehouse",
+				order_by="flow_index desc, creation desc",
 			)
+			if physical_log:
+				s_wh = physical_log
 
 		# Fallback: Check SRE by Sales Order
 		if not s_wh and sales_order:

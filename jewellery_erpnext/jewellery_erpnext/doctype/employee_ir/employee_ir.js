@@ -139,13 +139,13 @@ frappe.ui.form.on("Employee IR", {
 					"gemstone_wt",
 					"gemstone_pcs",
 				])
-				.then((r) => {
-					let values = r.message;
+					.then((r) => {
+						let values = r.message;
 
-					if (values.manufacturing_work_order) {
-						frappe.db.get_value(
-							"QC",
-							{
+						if (values.manufacturing_work_order) {
+							frappe.db.get_value(
+								"QC",
+								{
 								manufacturing_work_order: values.manufacturing_work_order,
 								manufacturing_operation: values.name,
 								status: ["!=", "Rejected"],
@@ -345,6 +345,7 @@ frappe.ui.form.on("Employee IR Operation", {
 			var gwt = child.gross_wt || 0;
 			var opt = child.manufacturing_operation;
 			var r_gwt = child.received_gross_wt;
+			book_loss_details(frm, mwo, opt, gwt, r_gwt);
 			// frappe.db.get_value("Manufacturing Work Order", mwo, ['multicolour','allowed_colours'])
 			// 	.then(r => {
 			// 		console.log(r.message);
@@ -491,7 +492,6 @@ function set_child_table_batch_filter(frm) {
 			query: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.filters.get_batch_details",
 			filters: {
 				item_code: d.item_code,
-				manufacturing_operation: d.manufacturing_operation,
 				manufacturing_work_order: d.manufacturing_work_order,
 			},
 		};
