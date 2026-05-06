@@ -43,18 +43,21 @@
    "fieldname": "gross_wt",
    "fieldtype": "Float",
    "label": "Gross Wt",
+   "precision": "3",
    "read_only": 1
   },
   {
    "default": "0",
    "fieldname": "received_gross_wt",
    "fieldtype": "Float",
-   "label": "Received Gross Wt"
+   "label": "Received Gross Wt",
+   "precision": "3"
   },
   {
    "fieldname": "gold_loss",
    "fieldtype": "Float",
    "label": "Gold Loss",
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -85,31 +88,36 @@
    "fetch_from": "manufacturing_operation.net_wt",
    "fieldname": "net_wt",
    "fieldtype": "Float",
-   "label": "Net Wt"
+   "label": "Net Wt",
+   "precision": "3"
   },
   {
    "fetch_from": "manufacturing_operation.finding_wt",
    "fieldname": "finding_wt",
    "fieldtype": "Float",
-   "label": "Finding Wt"
+   "label": "Finding Wt",
+   "precision": "3"
   },
   {
    "fetch_from": "manufacturing_operation.other_wt",
    "fieldname": "other_wt",
    "fieldtype": "Float",
-   "label": "Other Wt"
+   "label": "Other Wt",
+   "precision": "3"
   },
   {
    "fetch_from": "manufacturing_operation.diamond_wt",
    "fieldname": "diamond_wt",
    "fieldtype": "Float",
-   "label": "Diamond Wt"
+   "label": "Diamond Wt",
+   "precision": "3"
   },
   {
    "fetch_from": "manufacturing_operation.gemstone_wt",
    "fieldname": "gemstone_wt",
    "fieldtype": "Float",
-   "label": "Gemstone Wt"
+   "label": "Gemstone Wt",
+   "precision": "3"
   },
   {
    "fetch_from": "manufacturing_operation.gemstone_pcs",
@@ -130,17 +138,20 @@
   {
    "fieldname": "rpt_wt_issue",
    "fieldtype": "Float",
-   "label": "RPT WT Issue"
+   "label": "RPT WT Issue",
+   "precision": "3"
   },
   {
    "fieldname": "rpt_wt_receive",
    "fieldtype": "Float",
-   "label": "RPT WT Receive "
+   "label": "RPT WT Receive ",
+   "precision": "3"
   },
   {
    "fieldname": "rpt_wt_loss",
    "fieldtype": "Float",
    "label": "RPT WT loss",
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -151,7 +162,8 @@
   {
    "fieldname": "mould_wtin_gram",
    "fieldtype": "Float",
-   "label": "Mould WT(in Gram)"
+   "label": "Mould WT(in Gram)",
+   "precision": "3"
   },
   {
    "default": "0",

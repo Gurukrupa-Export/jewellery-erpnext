@@ -310,11 +310,41 @@ frappe.ui.form.on("Manufacturing Operation", {
 				freeze: true,
 				freeze_message: __("Loading Stock Reservation Entries..."),
 				callback: (r) => {
-					const rows = (r && r.message) || [];
+					// Server now returns {rows, skipped, active_sre_count}.
+					// Fall back to a bare list for backwards compatibility
+					// during rollout in case any caller was patched in
+					// between releases.
+					const msg = (r && r.message) || {};
+					const rows = Array.isArray(msg) ? msg : msg.rows || [];
+					const skipped = Array.isArray(msg) ? [] : msg.skipped || [];
+					const active_sre_count = Array.isArray(msg) ? rows.length : msg.active_sre_count || 0;
+
 					if (!rows.length) {
-						frappe.msgprint(
-							__("No active Stock Reservation Entries found for this Manufacturing Work Order.")
-						);
+						if (active_sre_count === 0) {
+							frappe.msgprint(
+								__(
+									"No active Stock Reservation Entries found for this Manufacturing Work Order."
+								)
+							);
+						} else {
+							const lines = (skipped || []).map((s) =>
+								__("• SRE {0} — Item {1}{2}: SRE remaining {3}, MOP available {4}", [
+									s.sre,
+									s.item_code,
+									s.batch_no ? ` / Batch ${s.batch_no}` : "",
+									s.sre_remaining,
+									s.mop_available_qty,
+								])
+							);
+							frappe.msgprint({
+								title: __("Make Receive Entry"),
+								indicator: "orange",
+								message:
+									__(
+										"Stock Reservation Entries exist, but no receivable MOP balance was found. Please check MOP Log balance for this Manufacturing Operation."
+									) + (lines.length ? "<br><br>" + lines.join("<br>") : ""),
+							});
+						}
 						return;
 					}
 
@@ -345,6 +375,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 						available_to_receive_pcs: e.available_to_receive_pcs || 0,
 						is_pcs_item: e.is_pcs_item ? 1 : 0,
 						mop_log_reference: e.mop_log_reference || "",
+						warning: e.warning || "",
 						qty_to_receive: 0,
 						pcs_to_receive: 0,
 						stock_uom: e.stock_uom,
@@ -490,6 +521,13 @@ frappe.ui.form.on("Manufacturing Operation", {
 										fieldtype: "Link",
 										fieldname: "mop_log_reference",
 										options: "MOP Log",
+										read_only: 1,
+									},
+									{
+										label: __("Warning"),
+										fieldtype: "Small Text",
+										fieldname: "warning",
+										in_list_view: 1,
 										read_only: 1,
 									},
 									{

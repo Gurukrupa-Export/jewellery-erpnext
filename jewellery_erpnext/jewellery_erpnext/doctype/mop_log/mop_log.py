@@ -243,23 +243,39 @@ def get_last_mop_index(manufacturing_operation, voucher_type=None, voucher_no=No
 	return last_log
 
 
-def get_current_mop_balance_rows(manufacturing_operation, include_fields=None):
+def get_current_mop_balance_rows(
+	manufacturing_operation, include_fields=None, keys=None
+):
 	"""Return the latest non-cancelled MOP Log row per item/batch for a MOP.
 
 	Loss-attribution rows (log_category="Loss Attribution") ARE included —
 	they post a real qty_change reduction so the balance after loss must be
 	reflected to downstream readers (e.g. Make Receive Entry availability,
 	manual loss validation, EOD SRE reconciliation).
+
+	When ``keys`` is provided as a list of ``(item_code, batch_no)`` tuples,
+	the underlying ``frappe.db.get_all`` is narrowed by the distinct
+	``item_code`` set so popups never scan unrelated items. The composite
+	index ``mop_balance_idx`` (added by ``add_make_receive_entry_indexes``)
+	covers ``(manufacturing_operation, is_cancelled, item_code, batch_no,
+	creation)`` so the narrowed filter is index-served. The Python-side
+	dedup picks the latest row per ``(item_code, batch_no)``.
 	"""
 	fields = list(
 		dict.fromkeys((include_fields or current_balance_fields) + ["name", "creation"])
 	)
+	filters = {
+		"manufacturing_operation": manufacturing_operation,
+		"is_cancelled": 0,
+	}
+	if keys:
+		item_codes = sorted({k[0] for k in keys if k and k[0]})
+		if not item_codes:
+			return []
+		filters["item_code"] = ["in", item_codes]
 	mop_logs = frappe.db.get_all(
 		"MOP Log",
-		filters={
-			"manufacturing_operation": manufacturing_operation,
-			"is_cancelled": 0,
-		},
+		filters=filters,
 		fields=fields,
 		order_by="creation desc",
 	)
@@ -358,6 +374,7 @@ def get_available_qty_pcs_for_mop_item(
 		"available_pcs": available_pcs,
 		"is_pcs_item": is_pcs_item,
 		"mop_log_reference": mop_log_reference,
+		"mop_data_present": mop_log_reference is not None,
 	}
 
 
@@ -573,24 +590,25 @@ def get_employee_ir_loss_map(eir_doc):
 def create_mop_log_for_employee_ir_receive(
 	doc, row, from_warehouse, to_warehouse, stock_entry_name=[]
 ):
-	"""Create combined Receive + Loss MOP Log entries for Employee IR Receive.
+	"""Audit-only MOP Log clones on the SOURCE MOP for Employee IR Receive.
 
 	Reads the MOP Logs created during the matching Employee IR **Issue** only
 	(``voucher_no`` = Issue name), not every historical Employee IR log on
 	the MOP.
 
-	**Combined design (replaces the prior two-pass receive + loss writer).**
-	For each issue source row, the loss attributable to the same
-	(item_code, batch_no) is subtracted directly from this MOP Log's qty/pcs
-	balance fields. The result: one MOP Log row per receive flow (no
-	separate Loss Attribution rows), so MOPLog.validate updates Manufacturing
-	Operation buckets exactly once.
+	**Source MOP is left unchanged.** Per the new contract, loss-driven
+	weight reductions land on the NEW Manufacturing Operation only — see
+	``update_new_mop_wtg``, which both clones the source baseline AND
+	subtracts loss in-place per ``(item, batch)``. The rows written here
+	are pure clones (qty_change=0) of the issue-tier balance so audit
+	metadata (loss_weight, loss_type, loss_source_row) stays attached to a
+	real MOP Log row on the source MOP for traceability, but no balance
+	shift happens.
 
-	UOM rule: ``qty_change`` and ``qty_after_transaction*`` stay in the
-	item's stock UOM (carats for D/G, grams for M/F/O). MOPLog.validate
-	applies the carat→gram conversion when it writes
-	``diamond_wt_in_gram`` / ``gemstone_wt_in_gram``. We do **not** convert
-	carat→gram before subtracting loss.
+	UOM rule: ``qty_after_transaction*`` stay in the item's stock UOM
+	(carats for D/G, grams for M/F/O), copied verbatim from the source log.
+	MOPLog.validate's prefix-bucket write is a no-op here because the qty
+	matches what is already on the source MOP.
 	"""
 	issue_voucher = resolve_employee_ir_issue_voucher_for_receive(doc, row)
 	mop_logs = []
@@ -670,50 +688,29 @@ def create_mop_log_for_employee_ir_receive(
 			full_loss_map.get(loss_key) if loss_key not in consumed_loss_keys else None
 		)
 
-		loss_qty = flt(loss.get("loss_qty"), 3) if loss else 0.0
-		loss_pcs = cint(loss.get("loss_pcs") or 0) if loss else 0
-
-		# Subtract loss in the item's stock UOM (no conversion).
-		adj_qty_after = flt(flt(log.qty_after_transaction) - loss_qty, 3)
-		adj_qty_after_item = flt(
-			flt(log.qty_after_transaction_item_based) - loss_qty, 3
-		)
-		adj_qty_after_batch = flt(
-			flt(log.qty_after_transaction_batch_based) - loss_qty, 3
-		)
-
-		first_char = (log.item_code or "")[0] if log.item_code else ""
-		# PCS only meaningful for D/G; loss_pcs is already 0 for non-D/G
-		# (the loss-map builder gates on prefix). Keep the explicit guard
-		# here too so a future loss-map shape change can't leak PCS into
-		# M/F/O rows.
-		if first_char in ("D", "G"):
-			adj_pcs_after = cint(log.pcs_after_transaction) - loss_pcs
-			adj_pcs_after_item = cint(log.pcs_after_transaction_item_based) - loss_pcs
-			adj_pcs_after_batch = cint(log.pcs_after_transaction_batch_based) - loss_pcs
-			pcs_change = -loss_pcs
-		else:
-			adj_pcs_after = cint(log.pcs_after_transaction)
-			adj_pcs_after_item = cint(log.pcs_after_transaction_item_based)
-			adj_pcs_after_batch = cint(log.pcs_after_transaction_batch_based)
-			pcs_change = 0
-
+		# SOURCE MOP audit clone: qty_change=0, balances copied verbatim.
+		# Loss is applied to the NEW MOP inside update_new_mop_wtg's
+		# baseline-clone loop (one row per item/batch, already reduced).
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = log.item_code
-		# qty_change reflects ONLY the loss adjustment for this receive flow.
-		# The receive itself clones the issue balance forward (zero net
-		# delta); loss is the only thing that moves the balance, so
-		# qty_change = -loss_qty captures the net movement of this row.
-		mop_log.qty_change = -loss_qty
-		mop_log.pcs_change = pcs_change
+		mop_log.qty_change = 0
+		mop_log.pcs_change = 0
 
-		mop_log.qty_after_transaction = adj_qty_after
-		mop_log.qty_after_transaction_item_based = adj_qty_after_item
-		mop_log.qty_after_transaction_batch_based = adj_qty_after_batch
+		mop_log.qty_after_transaction = flt(log.qty_after_transaction)
+		mop_log.qty_after_transaction_item_based = flt(
+			log.qty_after_transaction_item_based
+		)
+		mop_log.qty_after_transaction_batch_based = flt(
+			log.qty_after_transaction_batch_based
+		)
 
-		mop_log.pcs_after_transaction = adj_pcs_after
-		mop_log.pcs_after_transaction_item_based = adj_pcs_after_item
-		mop_log.pcs_after_transaction_batch_based = adj_pcs_after_batch
+		mop_log.pcs_after_transaction = cint(log.pcs_after_transaction)
+		mop_log.pcs_after_transaction_item_based = cint(
+			log.pcs_after_transaction_item_based
+		)
+		mop_log.pcs_after_transaction_batch_based = cint(
+			log.pcs_after_transaction_batch_based
+		)
 
 		mop_log.from_warehouse = from_warehouse
 		mop_log.to_warehouse = to_warehouse

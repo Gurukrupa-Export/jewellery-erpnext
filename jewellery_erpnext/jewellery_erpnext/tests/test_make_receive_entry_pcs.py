@@ -56,6 +56,10 @@ class TestGetAvailableQtyPcsForMopItem(FrappeTestCase):
 			"available_pcs",
 			"is_pcs_item",
 			"mop_log_reference",
+			# Added by Part 2: lets the popup distinguish "no MOP Log row"
+			# (mop_data_present=False → fall back to SRE remaining) from
+			# "MOP Log row exists with 0g" (mop_data_present=True → skip).
+			"mop_data_present",
 		}
 		self.assertEqual(set(ctx.keys()), expected_keys)
 		# SRE never stores PCS — reserved_pcs must be None (unknown).

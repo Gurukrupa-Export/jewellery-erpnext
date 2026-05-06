@@ -71,20 +71,23 @@
    "hidden": 1,
    "in_list_view": 1,
    "label": "Net Weight",
+   "precision": "3",
    "read_only": 1
   },
   {
    "fieldname": "proportionally_loss",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Qty"
+   "label": "Qty",
+   "precision": "3"
   },
   {
    "fieldname": "received_gross_weight",
    "fieldtype": "Float",
    "hidden": 1,
    "in_list_view": 1,
-   "label": "Received Gross Weight"
+   "label": "Received Gross Weight",
+   "precision": "3"
   },
   {
    "fieldname": "column_break_6",
@@ -102,7 +105,8 @@
    "fieldname": "main_slip_consumption",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Main Slip Consumption"
+   "label": "Main Slip Consumption",
+   "precision": "3"
   },
   {
    "fieldname": "batch_no",
