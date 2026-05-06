@@ -977,61 +977,32 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			diamond_grade_data.setdefault(diamond_grade, 0)
 			diamond_grade_data[diamond_grade] += entry["qty"]
 
-		s_wh = entry.get("s_warehouse") or target_wh
-		reservation = frappe.db.get_value(
+		# Resolve source warehouse: ONLY from Stock Reservation Entry (SRE)
+		s_wh = None
+		sre_filters = {"item_code": entry["item_code"], "docstatus": 1}
+
+		# Try linking to the specific Manufacturing Operation first
+		s_wh = frappe.db.get_value(
 			"Stock Reservation Entry",
-			{
-				"manufacturing_operation": doc.manufacturing_operation,
-				"item_code": entry["item_code"],
-				"docstatus": 1,
-			},
-			["warehouse"],
-			as_dict=1,
+			{**sre_filters, "manufacturing_operation": doc.manufacturing_operation},
+			"warehouse",
 		)
 
-		if reservation:
-			s_wh = reservation.warehouse
-		elif not entry.get("s_warehouse"):
-			mop_logs = frappe.db.get_all(
-				"MOP Log",
+		# Fallback to Sales Order reservation if not found by operation
+		if not s_wh and pmo_det.get("sales_order"):
+			s_wh = frappe.db.get_value(
+				"Stock Reservation Entry",
 				{
-					"manufacturing_operation": doc.manufacturing_operation,
-					"item_code": entry["item_code"],
-					"batch_no": entry.get("batch_no"),
-					"is_cancelled": 0,
+					**sre_filters,
+					"voucher_type": "Sales Order",
+					"voucher_no": pmo_det.get("sales_order"),
 				},
-				["to_warehouse", "voucher_type", "from_warehouse"],
-				order_by="flow_index desc",
-				limit=1,
+				"warehouse",
 			)
-			if mop_logs:
-				if mop_logs[0].voucher_type == "Stock Entry":
-					s_wh = mop_logs[0].to_warehouse
-				else:
-					# If virtual sync, try to find the last physical movement in the PMO
-					all_mwos = frappe.get_all(
-						"Manufacturing Work Order",
-						{"manufacturing_order": pmo, "docstatus": 1},
-						pluck="name",
-					)
-					physical_log = None
-					if all_mwos:
-						physical_log = frappe.db.get_value(
-							"MOP Log",
-							{
-								"manufacturing_work_order": ["in", all_mwos],
-								"item_code": entry["item_code"],
-								"batch_no": entry.get("batch_no"),
-								"voucher_type": "Stock Entry",
-								"is_cancelled": 0,
-							},
-							"to_warehouse",
-							order_by="flow_index desc, creation desc",
-						)
-					if physical_log:
-						s_wh = physical_log
-					else:
-						s_wh = mop_logs[0].from_warehouse
+
+		# If no reservation exists, fallback to provided warehouse or department default
+		if not s_wh:
+			s_wh = entry.get("s_warehouse") or target_wh
 
 		se.append(
 			"items",
