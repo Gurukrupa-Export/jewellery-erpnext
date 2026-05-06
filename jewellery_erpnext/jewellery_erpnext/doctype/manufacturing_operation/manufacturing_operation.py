@@ -1009,10 +1009,6 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 				"warehouse",
 			)
 
-		# If no reservation exists, fallback to provided warehouse or department default
-		if not s_wh:
-			s_wh = entry.get("s_warehouse") or target_wh
-
 		# Final fallback: Try to resolve from MOP Log if still None
 		if not s_wh:
 			s_wh = frappe.db.get_value(
@@ -1027,6 +1023,47 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 				"to_warehouse",
 				order_by="flow_index desc",
 			)
+
+		# If still no warehouse found, get from warehouse that has actual available stock
+		# This handles cases where SREs are cancelled during certification process
+		if not s_wh and entry.get("batch_no"):
+			s_wh = get_warehouse_from_previous_stock_entry(
+				entry["item_code"],
+				entry.get("batch_no"),
+				pmo,
+				doc.manufacturing_work_order,
+			)
+
+		# Last resort: Use provided warehouse or department default
+		# But validate it actually has stock for this batch
+		if not s_wh:
+			fallback_wh = entry.get("s_warehouse") or target_wh
+			if entry.get("batch_no") and fallback_wh:
+				# Check if batch actually has stock in this warehouse
+				batch_qty_result = frappe.db.sql(
+					"""
+					SELECT SUM(actual_qty) FROM `tabStock Ledger Entry`
+					WHERE item_code = %s AND batch_no = %s AND warehouse = %s AND is_cancelled = 0
+					""",
+					(entry["item_code"], entry.get("batch_no"), fallback_wh),
+					as_dict=True,
+				)
+				batch_qty = (
+					batch_qty_result[0].get("SUM(actual_qty)", 0)
+					if batch_qty_result
+					else 0
+				)
+
+				# If no stock in fallback warehouse, try to find one that has stock
+				if not batch_qty or flt(batch_qty) <= 0:
+					s_wh = get_warehouse_from_previous_stock_entry(
+						entry["item_code"],
+						entry.get("batch_no"),
+						pmo,
+						doc.manufacturing_work_order,
+					)
+			if not s_wh:
+				s_wh = fallback_wh
 
 		se.append(
 			"items",
@@ -1904,7 +1941,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row["is_customer_item"] = (
 				1 if item.get("inventory_type") == "Customer Goods" else 0
 			)
-			row["pcs"] = item.get("pcs")
+			row["pcs"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 			row["sub_setting_type"] = item.get("custom_sub_setting_type")
 			row["total_diamond_rate"] = 0
 			if pmo_data.get("diamond_quality"):
@@ -2676,7 +2713,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					row["making_amount"] = row["making_rate"] * row["quantity"]
 					row.setdefault("wastage_rate", 0)
 
-				row["pcs"] = item.get("pcs")
+				row["qty"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 				row["fg_purchase_rate"] = fg_purchase_rate
 				row["fg_purchase_amount"] = fg_purchase_amount
 				row["wastage_amount"] = row.get("wastage_rate", 0) * row["amount"]
@@ -2784,7 +2821,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					row["making_amount"] = row["making_rate"] * row["quantity"]
 					row.setdefault("wastage_rate", 0)
 
-				row["pcs"] = item.get("pcs")
+				row["qty"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 				row["fg_purchase_rate"] = fg_purchase_rate
 				row["fg_purchase_amount"] = fg_purchase_amount
 				row["amount"] = row["rate"] * row["quantity"]
@@ -2800,7 +2837,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row["se_rate"] = item.get("rate")
 			row["rate"] = new_bom.gold_rate_with_gst
 			row["quantity"] = flt(item.get("qty", 0)) / flt(pmo_data.get("qty", 1))
-			row["pcs"] = flt(item.get("pcs", 0))
+			row["pcs"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 			row["sub_setting_type"] = item.get("custom_sub_setting_type")
 			if self.company == "KG GK Jewellers Private Limited":
 				row["price_list_type"] = ref_gemstone_price_list_type
@@ -3212,7 +3249,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				row[atrribute_name] = attribute.attribute_value
 			row["item_code"] = item_row.name
 			row["quantity"] = item["qty"] / (pmo_data.get("qty") or 1)
-			row["qty"] = item["qty"]
+			row["qty"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 			row["uom"] = "Gram"
 			new_bom.append("other_detail", row)
 
@@ -4436,6 +4473,41 @@ def update_new_mop_wtg(self):
 				mop_log.batch_no = log.batch_no
 				mop_log.flow_index = 0
 				mop_log.save()
+
+
+def get_warehouse_from_previous_stock_entry(
+	item_code, batch_no, pmo, manufacturing_work_order
+):
+	if not batch_no:
+		return None
+
+	# First, get the total available quantity by warehouse from Stock Ledger
+	# This shows us which warehouses actually have positive stock for this batch
+	warehouses_with_stock = frappe.db.get_list(
+		"Stock Ledger Entry",
+		filters={
+			"item_code": item_code,
+			"batch_no": batch_no,
+			"is_cancelled": 0,
+		},
+		fields=["warehouse", "sum(actual_qty) as total_qty"],
+		group_by="warehouse",
+		order_by="total_qty desc",
+	)
+
+	# Filter to only warehouses with positive balance
+	valid_warehouses = [
+		wh["warehouse"]
+		for wh in warehouses_with_stock
+		if flt(wh.get("total_qty", 0)) > 0
+	]
+
+	if valid_warehouses:
+		# Prefer warehouse that's part of this manufacturing flow if available
+		# Otherwise use the one with most stock
+		return valid_warehouses[0]
+
+	return None
 
 
 @frappe.whitelist()
