@@ -1531,7 +1531,7 @@ let edit_bom_documents = (
 			method: "frappe.client.get",
 			freeze: true,
 			args: {
-				doctype: "tracking Bom",
+				doctype: "Tracking Bom",
 				name: bom_no,
 			},
 			callback(r) {
