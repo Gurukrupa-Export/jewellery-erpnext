@@ -19,6 +19,9 @@ class GemstoneConversion(Document):
 		update_fifo_batch(self)
 		self.validate_gemstone_type()
 		self.validate_target_item()
+		loss_type = ["Burn", "Broken", "Loss", "Missing"]
+		for loss in loss_type:
+			get_loss_item(self.company, self.g_source_item, loss)
 
 	def on_submit(self):
 		make_gemstone_stock_entry(self)
@@ -46,6 +49,8 @@ class GemstoneConversion(Document):
 					"qty": ((self.g_source_qty or 0) - self.g_target_qty),
 				},
 			)
+			self.g_loss_item = loss_item
+		self.g_loss_qty = flt((self.g_source_qty or 0) - self.g_target_qty, 2)
 
 		if self.g_source_qty is not None and self.g_target_qty > self.g_source_qty:
 			frappe.throw(_("Target Qty does not match with Source Qty"))

@@ -793,6 +793,8 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 		variant_name = frappe.db.get_value(
 			"Variant Loss Table", {"variant": variant_of}, "loss_variant"
 		)
+	if not variant_name:
+		variant_name = variant_of
 
 	item_attr_dict = {}
 	for row in frappe.db.get_all(
@@ -812,12 +814,9 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 	)
 
 	if loss_item:
-		# loss_item.has_variants = 0
-		# loss_item.is_stock_item = 1
-		# loss_item.save()
-		frappe.db.set_value(
-			"Item", loss_item.name, {"has_variants": 0, "is_stock_item": 1}
-		)
+		loss_item.has_variants = 0
+		loss_item.is_stock_item = 1
+		loss_item.save()
 		return loss_item.name
 	else:
 		return create_loss_item(variant_name, item_attr_dict)
@@ -839,11 +838,19 @@ def get_main_slip_item(main_slip):
 def create_loss_item(item, item_attr_dict):
 	from erpnext.controllers.item_variant import create_variant
 
+	if not item:
+		frappe.throw(
+			_(
+				"Loss Variant Template Item is missing. Please configure Variant Loss Table."
+			)
+		)
+
 	variant = create_variant(item, item_attr_dict)
 	variant.is_stock_item = 1
+	variant.has_batch_no = 1
+	variant.create_new_batch = 1
 	variant.save()
 
-	frappe.throw(f"{variant.is_stock_item} - {variant.is_fixed_asset}")
 	return variant.name
 
 

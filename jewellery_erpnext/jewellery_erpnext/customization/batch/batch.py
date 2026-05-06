@@ -79,7 +79,7 @@ def autoname(self, method=None):
 	# week_code = get_week_code()
 	if frappe.flags.is_batch_autoname:
 		return
-		
+
 	item_group = frappe.db.get_value("Item", self.item, "item_group")
 
 	if item_group in [
@@ -106,19 +106,19 @@ def autoname(self, method=None):
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		elif item_group == "Metal - V":
-			batch_number = f"{company_abbr}{month_code}{week_code}-M".format(
+			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-M".format(
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		elif item_group == "Gemstone - V":
-			batch_number = f"{company_abbr}{month_code}{week_code}-G".format(
+			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-G".format(
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		elif item_group == "Finding - V":
-			batch_number = f"{company_abbr}{month_code}{week_code}-F".format(
+			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-F".format(
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		elif item_group == "Other - V":
-			batch_number = f"{company_abbr}{month_code}{week_code}-O".format(
+			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-O".format(
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		batch_abbr_code_list = []
