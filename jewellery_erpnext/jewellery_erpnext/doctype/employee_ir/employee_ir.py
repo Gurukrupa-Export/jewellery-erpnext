@@ -46,7 +46,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufac
 	update_new_mop_wtg,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-	create_mop_log_for_employee_ir_loss,
 	create_mop_log_for_employee_ir_receive,
 	creste_mop_log_for_employee_ir,
 )
@@ -378,34 +377,6 @@ class EmployeeIR(Document):
 				create_mop_log_for_employee_ir_receive(
 					self, row, actor_wh, department_wh, stock_entry_name
 				)
-
-				# Loss attribution bridge writes (is_synced=1, qty_change=0).
-				# Per-MWO total loss = sum of proportional + manual already
-				# accumulated in mwo_loss_dict above. Helper is idempotent on
-				# (voucher_type, voucher_no, mop, loss_source_row, loss_type).
-				total_loss_for_mwo = (
-					mwo_loss_dict.get(row.manufacturing_work_order) or 0
-				)
-				for lr in self.employee_loss_details:
-					if lr.manufacturing_work_order == row.manufacturing_work_order:
-						create_mop_log_for_employee_ir_loss(
-							self,
-							lr,
-							"Auto Employee Loss",
-							total_loss_for_mwo,
-							from_wh=actor_wh,
-							to_wh=department_wh,
-						)
-				for lr in self.manually_book_loss_details:
-					if lr.manufacturing_work_order == row.manufacturing_work_order:
-						create_mop_log_for_employee_ir_loss(
-							self,
-							lr,
-							"Manually Booked Loss",
-							total_loss_for_mwo,
-							from_wh=actor_wh,
-							to_wh=department_wh,
-						)
 
 				update_new_mop_wtg(new_operation)
 			else:
