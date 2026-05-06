@@ -1005,6 +1005,21 @@
     "hidden": 1,
     "search_index": 1,
     "module": "Jewellery Erpnext"
+   },
+  {
+    "dt": "Stock Entry",
+    "fieldname": "custom_request_id",
+    "fieldtype": "Data",
+    "length": 36,
+    "depends_on": "eval:doc.stock_entry_type==\"Material Receive (WORK ORDER)\"",
+    "insert_after": "to_rename",
+    "is_system_generated": 1,
+    "label": "Make Receive Entry Request ID",
+    "no_copy": 1,
+    "read_only": 1,
+    "hidden": 1,
+    "search_index": 1,
+    "module": "Jewellery Erpnext"
    }
  ]
 }

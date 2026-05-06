@@ -3,6 +3,23 @@ from frappe import _
 from frappe.utils import cint, flt
 
 
+def get_loss_qty_in_grams(item_code: str | None, qty) -> float:
+	# Normalize a loss qty to grams. D/G item codes carry carat-denominated
+	# quantities; the rest of the loss pipeline (MOP Log, MOP weight buckets)
+	# is gram-based, so callers summing across mixed prefixes need conversion
+	# applied uniformly.
+	#
+	# 1 carat = 0.2 g. Item-code prefix is the load-bearing signal here
+	# because variant_of, stock_uom, and prefix all agree in this codebase
+	# today, and prefix is the only one available without a DB lookup.
+	q = flt(qty, 3)
+	if not item_code:
+		return q
+	if item_code[0] in ("D", "G"):
+		return flt(q * 0.2, 3)
+	return q
+
+
 def validate_duplication_and_gr_wt(self):
 	# if self.main_slip and frappe.db.get_value("Main Slip", self.main_slip, "workflow_state") != "In Use":
 	# 	self.main_slip = None
@@ -120,10 +137,17 @@ def update_mop_balance(mop_name):
 def validate_manually_book_loss_details(self):
 	if self.docstatus != 0:
 		return
+	# Stricter floor: per-row balance must cover the manual loss qty. Pre-submit
+	# the latest balance already reflects any prior submitted losses (loss MOP
+	# Log rows post a real negative qty_change), so no log_category filter is
+	# needed here.
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_available_qty_pcs_for_mop_item,
+	)
+
 	for row in self.manually_book_loss_details:
 		if not row.manufacturing_operation:
 			continue
-		# Query MOP Log for latest balance instead of MOP Balance Table
 		balance_qty = (
 			frappe.db.get_value(
 				"MOP Log",
@@ -143,6 +167,74 @@ def validate_manually_book_loss_details(self):
 				_(
 					"Row #{0}: <b>{1}</b> Proportionally Loss {2} cannot be greater than Balance Qty {3}"
 				).format(row.idx, row.item_code, row.proportionally_loss, balance_qty)
+			)
+
+		# D/G PCS reconciliation: manual loss PCS must not drive the MOP
+		# diamond_pcs/gemstone_pcs negative. Only D/G items carry meaningful
+		# PCS in MOP Log; for M/F/O the loss MOP Log emits pcs_change=0 so we
+		# skip this branch entirely. A pcs=0 (or missing/non-numeric) row
+		# never reduces balance, so we also skip the helper query.
+		if row.item_code and row.item_code[0] in ("D", "G"):
+			raw_pcs = getattr(row, "pcs", 0)
+			try:
+				pcs_to_book = int(float(raw_pcs)) if raw_pcs not in (None, "") else 0
+			except (TypeError, ValueError):
+				pcs_to_book = 0
+			if pcs_to_book < 0:
+				frappe.throw(_("Row #{0}: PCS must be >= 0").format(row.idx))
+			if pcs_to_book > 0:
+				ctx = get_available_qty_pcs_for_mop_item(
+					manufacturing_operation=row.manufacturing_operation,
+					item_code=row.item_code,
+					batch_no=row.batch_no,
+				)
+				if ctx["available_pcs"] and pcs_to_book > ctx["available_pcs"]:
+					frappe.throw(
+						_(
+							"Row #{0} <b>{1}</b> batch {2}: PCS to book ({3}) "
+							"exceeds available PCS in MOP balance ({4})"
+						).format(
+							row.idx,
+							row.item_code,
+							row.batch_no,
+							pcs_to_book,
+							ctx["available_pcs"],
+						)
+					)
+
+	# Additional cap: total manual loss for a MWO cannot exceed the true
+	# available baseline (gross_wt - received_gross_wt) for that MWO.
+	# Carat manual loss converted to grams for comparison.
+	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
+
+	baseline_by_mwo = {}
+	for op in self.employee_ir_operations:
+		if not op.received_gross_wt:
+			continue
+		baseline = max(
+			0.0, flt(op.gross_wt, precision) - flt(op.received_gross_wt, precision)
+		)
+		baseline_by_mwo.setdefault(op.manufacturing_work_order, 0.0)
+		baseline_by_mwo[op.manufacturing_work_order] += baseline
+
+	manual_by_mwo = {}
+	for row in self.manually_book_loss_details:
+		qty = flt(row.proportionally_loss)
+		stock_uom = frappe.get_cached_value("Item", row.item_code, "stock_uom")
+		if stock_uom == "Carat":
+			qty = qty * 0.2
+		manual_by_mwo.setdefault(row.manufacturing_work_order, 0.0)
+		manual_by_mwo[row.manufacturing_work_order] += qty
+
+	for mwo, manual_total in manual_by_mwo.items():
+		available = baseline_by_mwo.get(mwo, 0.0)
+		if manual_total > available:
+			frappe.throw(
+				_(
+					"Total Manually Booked Loss for Manufacturing Work Order {0} "
+					"({1} g) cannot exceed available loss baseline ({2} g = "
+					"Gross Wt - Received Gross Wt)."
+				).format(mwo, flt(manual_total, 3), flt(available, 3))
 			)
 
 

@@ -1,5 +1,3 @@
-from . import __version__ as app_version
-
 app_name = "jewellery_erpnext"
 app_title = "Jewellery Erpnext"
 app_publisher = "Nirali"
@@ -186,6 +184,7 @@ override_doctype_class = {
 	"Stock Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.CustomStockEntry",
 	"Stock Reconciliation": "jewellery_erpnext.jewellery_erpnext.doctype.stock_reconciliation_template.stock_reconciliation_template_utils.CustomStockReconciliation",
 	"Stock Ledger Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_ledger_entry.stock_ledger_entry.CustomStockLedgerEntry",
+	"Stock Reservation Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_reservation_entry.stock_reservation_entry.CustomStockReservationEntry",
 	"Serial and Batch Bundle": "jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.serial_and_batch_bundle.CustomSerialandBatchBundle",
 	"Submission Queue": "jewellery_erpnext.jewellery_erpnext.customization.submission_queue.submission_queue.CustomSubmissionQueue",
 	# "Purchase Receipt": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_receipt.CustomPurchaseReceipt",
