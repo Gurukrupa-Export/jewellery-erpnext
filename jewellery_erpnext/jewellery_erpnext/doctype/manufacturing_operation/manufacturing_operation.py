@@ -894,6 +894,8 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if mo_data is None:
 		mo_data = []
 
+	op_name = getattr(doc, "manufacturing_operation", None) or doc.name
+
 	target_wh = frappe.db.get_value(
 		"Warehouse",
 		{
@@ -961,7 +963,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"department": doc.department,
 			"to_department": doc.department,
 			"manufacturing_work_order": doc.manufacturing_work_order,
-			"manufacturing_operation": doc.manufacturing_operation,
+			"manufacturing_operation": op_name,
 			"custom_serial_number_creator": doc.name,
 			# "inventory_type": "Regular Stock",
 			"auto_created": 1,
@@ -977,16 +979,23 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			diamond_grade_data.setdefault(diamond_grade, 0)
 			diamond_grade_data[diamond_grade] += entry["qty"]
 
-		# Resolve source warehouse: ONLY from Stock Reservation Entry (SRE)
 		s_wh = None
 		sre_filters = {"item_code": entry["item_code"], "docstatus": 1}
+		sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 
-		# Try linking to the specific Manufacturing Operation first
-		s_wh = frappe.db.get_value(
-			"Stock Reservation Entry",
-			{**sre_filters, "manufacturing_operation": doc.manufacturing_operation},
-			"warehouse",
-		)
+		priority_links = [
+			("manufacturing_operation", op_name),
+			("manufacturing_work_order", doc.manufacturing_work_order),
+			("production_manufacturing_order", pmo),
+		]
+
+		for link_field, link_val in priority_links:
+			if not s_wh and link_val and link_field in sre_cols:
+				s_wh = frappe.db.get_value(
+					"Stock Reservation Entry",
+					{**sre_filters, link_field: link_val},
+					"warehouse",
+				)
 
 		# Fallback to Sales Order reservation if not found by operation
 		if not s_wh and pmo_det.get("sales_order"):
@@ -1004,6 +1013,21 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 		if not s_wh:
 			s_wh = entry.get("s_warehouse") or target_wh
 
+		# Final fallback: Try to resolve from MOP Log if still None
+		if not s_wh:
+			s_wh = frappe.db.get_value(
+				"MOP Log",
+				{
+					"manufacturing_operation": op_name,
+					"item_code": entry["item_code"],
+					"batch_no": entry.get("batch_no"),
+					"is_cancelled": 0,
+					"is_synced": 0,
+				},
+				"to_warehouse",
+				order_by="flow_index desc",
+			)
+
 		se.append(
 			"items",
 			{
@@ -1014,7 +1038,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 				"inventory_type": entry.get("inventory_type"),
 				"customer": entry.get("customer"),
 				"custom_sub_setting_type": entry.get("sub_setting_type"),
-				"manufacturing_operation": doc.manufacturing_operation,
+				"manufacturing_operation": op_name,
 				"department": doc.department,
 				"pcs": entry.get("pcs"),
 				"use_serial_batch_fields": 1,
@@ -1033,7 +1057,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	fg_mop_logs = frappe.db.get_all(
 		"MOP Log",
 		{
-			"manufacturing_operation": doc.manufacturing_operation,
+			"manufacturing_operation": op_name,
 			"item_code": finish_item,
 			"is_cancelled": 0,
 		},
@@ -1054,7 +1078,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"department": doc.department,
 			"to_department": doc.department,
 			"inventory_type": "Regular Stock",
-			"manufacturing_operation": doc.manufacturing_operation,
+			"manufacturing_operation": op_name,
 			"use_serial_batch_fields": 1,
 			"serial_no": sr_no,
 			"is_finished_item": 1,
@@ -3403,6 +3427,7 @@ def get_serial_no(se_name):
 def finish_other_tagging_operations(doc, pmo):
 	ManufacturingOperation = frappe.qb.DocType("Manufacturing Operation")
 
+	op_name = getattr(doc, "manufacturing_operation", None) or doc.name
 	mop_data = (
 		frappe.qb.from_(ManufacturingOperation)
 		.select(
@@ -3412,7 +3437,7 @@ def finish_other_tagging_operations(doc, pmo):
 		)
 		.where(
 			(ManufacturingOperation.manufacturing_order == pmo)
-			& (ManufacturingOperation.name != doc.manufacturing_operation)
+			& (ManufacturingOperation.name != op_name)
 			& (ManufacturingOperation.status != "Finished")
 			& (ManufacturingOperation.department == doc.department)
 		)

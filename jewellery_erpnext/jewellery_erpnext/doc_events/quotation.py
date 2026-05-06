@@ -52,7 +52,6 @@ def validate(self, method):
 def create_bom_scientifically(self):
 	create_tracking_bom_directly(self)
 
-
 @frappe.whitelist()
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
@@ -220,43 +219,48 @@ def get_gold_rate(party_name=None, currency=None):
 def validate_invoice_item(self):
 	self.set("custom_invoice_item", [])
 	if not self.custom_invoice_item:
-		customer_payment_term_doc = frappe.get_doc(
-			"Customer Payment Terms", {"customer": self.party_name}
-		)
+		customer_payment_term_doc = None
+		try:
+			customer_payment_term_doc = frappe.get_doc(
+				"Customer Payment Terms", {"customer": self.party_name}
+			)
+		except frappe.DoesNotExistError:
+			pass
 
 		e_invoice_items = []
-		for item_detail in customer_payment_term_doc.customer_payment_details:
-			item_type = item_detail.item_type
-			if item_type:
-				e_invoice_item_doc = frappe.get_doc("E Invoice Item", item_type)
-				# Match specific sales_type
-				matched_sales_type_row = None
-				for row in e_invoice_item_doc.sales_type:
-					if row.sales_type == self.custom_sales_type:
-						matched_sales_type_row = row
-						break
+		if customer_payment_term_doc:
+			for item_detail in customer_payment_term_doc.customer_payment_details:
+				item_type = item_detail.item_type
+				if item_type and frappe.db.exists("E Invoice Item", item_type):
+					e_invoice_item_doc = frappe.get_doc("E Invoice Item", item_type)
+					# Match specific sales_type
+					matched_sales_type_row = None
+					for row in e_invoice_item_doc.sales_type:
+						if row.sales_type == self.custom_sales_type:
+							matched_sales_type_row = row
+							break
 
-				# Skip item if no matching sales_type and custom_sales_type is set
-				if self.custom_sales_type and not matched_sales_type_row:
-					continue
-				e_invoice_items.append(
-					{
-						"item_type": item_type,
-						"metal_purity": e_invoice_item_doc.metal_purity or "N/A",
-						"is_for_metal": e_invoice_item_doc.is_for_metal,
-						"metal_type": e_invoice_item_doc.metal_type or "N/A",
-						"is_for_diamond": e_invoice_item_doc.is_for_diamond,
-						"is_for_finding": e_invoice_item_doc.is_for_finding,
-						"diamond_type": e_invoice_item_doc.diamond_type or "N/A",
-						"is_for_gemstone": e_invoice_item_doc.is_for_gemstone,
-						"is_for_making": e_invoice_item_doc.is_for_making,
-						"is_for_finding_making": e_invoice_item_doc.is_for_finding_making,
-						"uom": e_invoice_item_doc.uom or "N/A",
-						"tax_rate": matched_sales_type_row.tax_rate
-						if matched_sales_type_row
-						else 0,
-					}
-				)
+					# Skip item if no matching sales_type and custom_sales_type is set
+					if self.custom_sales_type and not matched_sales_type_row:
+						continue
+					e_invoice_items.append(
+						{
+							"item_type": item_type,
+							"metal_purity": e_invoice_item_doc.metal_purity or "N/A",
+							"is_for_metal": e_invoice_item_doc.is_for_metal,
+							"metal_type": e_invoice_item_doc.metal_type or "N/A",
+							"is_for_diamond": e_invoice_item_doc.is_for_diamond,
+							"is_for_finding": e_invoice_item_doc.is_for_finding,
+							"diamond_type": e_invoice_item_doc.diamond_type or "N/A",
+							"is_for_gemstone": e_invoice_item_doc.is_for_gemstone,
+							"is_for_making": e_invoice_item_doc.is_for_making,
+							"is_for_finding_making": e_invoice_item_doc.is_for_finding_making,
+							"uom": e_invoice_item_doc.uom or "N/A",
+							"tax_rate": matched_sales_type_row.tax_rate
+							if matched_sales_type_row
+							else 0,
+						}
+					)
 
 		self.set("custom_invoice_item", [])
 

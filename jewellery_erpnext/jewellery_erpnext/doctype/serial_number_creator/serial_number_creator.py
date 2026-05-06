@@ -232,9 +232,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 
 				# Deduplicate and cancel
 				for sre_name in set(linked_sres):
-					sre_doc = frappe.get_doc(
-						"Stock Reservation Entry", sre_name
-					).cancel()
+					sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
 					sre_doc.flags.ignore_permissions = True
 					sre_doc.cancel()
 
@@ -718,17 +716,22 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				customer = sed_data.customer
 
 		s_wh = None
-
-		# Resolve source warehouse: ONLY from Stock Reservation Entry (SRE)
-		s_wh = None
 		sre_filters = {"item_code": item_code, "docstatus": 1}
+		sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 
-		# Try linking to the specific Manufacturing Operation first
-		s_wh = frappe.db.get_value(
-			"Stock Reservation Entry",
-			{**sre_filters, "manufacturing_operation": mop_name},
-			"warehouse",
-		)
+		priority_links = [
+			("manufacturing_operation", mop_name),
+			("manufacturing_work_order", mwo_name),
+			("production_manufacturing_order", pmo),
+		]
+
+		for link_field, link_val in priority_links:
+			if not s_wh and link_val and link_field in sre_cols:
+				s_wh = frappe.db.get_value(
+					"Stock Reservation Entry",
+					{**sre_filters, link_field: link_val},
+					"warehouse",
+				)
 
 		# Fallback to Sales Order link
 		if not s_wh and sales_order:
@@ -774,7 +777,7 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				"sed_item": r.get("row_name")
 				if r.get("voucher_type") == "Stock Entry"
 				else None,
-				"s_warehouse": s_wh,
+				"s_warehouse": s_wh or r.get("to_warehouse"),
 				"serial_and_batch_bundle": r.get("serial_and_batch_bundle"),
 			}
 		)
