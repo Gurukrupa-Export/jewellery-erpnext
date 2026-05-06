@@ -22,9 +22,9 @@ def validate(self, method):
 	# if self.sales_type != 'Branch Sales':
 	# create_new_bom(self)
 	create_new_bom1(self)
-	# gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
-	# if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
-	# 	tax(self)
+	gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
+	if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
+		tax(self)
 	
 	# self.calculate_taxes_and_totals()
 	validate_serial_number(self)
@@ -4107,7 +4107,7 @@ def validate_item_dharm(self):
 									}
 
 								multiplied_qty = metal.quantity * item.qty
-								metal_making_amount = metal.making_rate * multiplied_qty  + (metal.wastage_amount * item.qty)
+								metal_making_amount = (metal.making_rate  + metal.wastage_amount)*multiplied_qty
 								aggregated_metal_making_items[key]["qty"] += multiplied_qty
 								aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
