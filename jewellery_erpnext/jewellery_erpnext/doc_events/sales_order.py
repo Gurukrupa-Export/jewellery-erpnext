@@ -3927,7 +3927,7 @@ def validate_item_dharm(self):
 		e_invoice_items = []
 
 		for row in self.items:
-			gross_weighh = frappe.get_value("Tracking Bom", row.custom_tracking_bom, "gross_weight")
+			gross_weighh = frappe.get_value("Bom", row.bom, "gross_weight")
 			row.custom_gross_weight = gross_weighh
 			
 		# Prepare invoice items as before
@@ -3978,7 +3978,7 @@ def validate_item_dharm(self):
 		aggregated_repairing_items = {}
 		for item in self.items:
 			if item.bom:
-				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
+				bom_doc = frappe.get_doc("Bom", item.bom)
 				if bom_doc.hallmarking_amount:
 					# frappe.throw("hii")
 					for e_item in e_invoice_items:
