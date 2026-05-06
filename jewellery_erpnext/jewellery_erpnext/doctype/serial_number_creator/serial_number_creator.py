@@ -745,6 +745,25 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				"warehouse",
 			)
 
+		# Try linking to the specific Manufacturing Operation first
+		s_wh = frappe.db.get_value(
+			"Stock Reservation Entry",
+			{**sre_filters, "manufacturing_operation": mop_name},
+			"warehouse",
+		)
+
+		# Fallback to Sales Order link
+		if not s_wh and sales_order:
+			s_wh = frappe.db.get_value(
+				"Stock Reservation Entry",
+				{
+					**sre_filters,
+					"voucher_type": "Sales Order",
+					"voucher_no": sales_order,
+				},
+				"warehouse",
+			)
+
 		out.append(
 			{
 				"item_code": item_code,

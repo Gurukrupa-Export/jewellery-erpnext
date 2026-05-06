@@ -334,9 +334,8 @@ def validate_invoice_item(self):
 						if (
 							e_item["is_for_diamond"]
 							and e_item["diamond_type"] == diamond.diamond_type
-							and e_item["uom"] == diamond.stock_uom
 						):
-							key = (e_item["item_type"], e_item["uom"])
+							key = e_item["item_type"]
 							if key not in aggregated_diamond_items:
 								aggregated_diamond_items[key] = {
 									"item_code": e_item["item_type"],
@@ -376,9 +375,8 @@ def validate_invoice_item(self):
 							e_item["is_for_making"]
 							and e_item["metal_type"] == metal.metal_type
 							and e_item["metal_purity"] == metal.metal_touch
-							and e_item["uom"] == metal.stock_uom
 						):
-							key = (e_item["item_type"], e_item["uom"])
+							key = e_item["item_type"]
 							if key not in aggregated_metal_making_items:
 								aggregated_metal_making_items[key] = {
 									"item_code": e_item["item_type"],
@@ -420,9 +418,8 @@ def validate_invoice_item(self):
 							e_item["is_for_metal"]
 							and e_item["metal_type"] == metal.metal_type
 							and e_item["metal_purity"] == metal.metal_touch
-							and e_item["uom"] == metal.stock_uom
 						):
-							key = (e_item["item_type"], e_item["uom"])
+							key = e_item["item_type"]
 							if key not in aggregated_metal_amount_items:
 								aggregated_metal_amount_items[key] = {
 									"item_code": e_item["item_type"],
@@ -463,9 +460,8 @@ def validate_invoice_item(self):
 							e_item["is_for_finding"]
 							and e_item["metal_type"] == finding.metal_type
 							and e_item["metal_purity"] == finding.metal_touch
-							and e_item["uom"] == finding.stock_uom
 						):
-							key = (e_item["item_type"], e_item["uom"])
+							key = e_item["item_type"]
 							if key not in aggregated_finding_items:
 								aggregated_finding_items[key] = {
 									"item_code": e_item["item_type"],
@@ -506,9 +502,8 @@ def validate_invoice_item(self):
 							e_item["is_for_finding_making"]
 							and e_item["metal_type"] == finding_making.metal_type
 							and e_item["metal_purity"] == finding_making.metal_touch
-							and e_item["uom"] == finding_making.stock_uom
 						):
-							key = (e_item["item_type"], e_item["uom"])
+							key = e_item["item_type"]
 							if key not in aggregated_finding_making_items:
 								aggregated_finding_making_items[key] = {
 									"item_code": e_item["item_type"],
@@ -551,11 +546,8 @@ def validate_invoice_item(self):
 				for gemstone in bom_doc.gemstone_detail:
 					for e_item in e_invoice_items:
 						# frappe.throw(f"{gemstone.uom}")
-						if (
-							e_item["is_for_gemstone"]
-							and e_item["uom"] == gemstone.stock_uom
-						):
-							key = (e_item["item_type"], e_item["uom"])
+						if e_item["is_for_gemstone"]:
+							key = e_item["item_type"]
 							if key not in aggregated_gemstone_items:
 								aggregated_gemstone_items[key] = {
 									"item_code": e_item["item_type"],

@@ -51,9 +51,7 @@
   "order_form_date",
   "salesman_name",
   "service_type",
-  "jewelex_order_no",
-  "tab_break_zkkj",
-  "department_comment"
+  "jewelex_order_no"
  ],
  "fields": [
   {
@@ -340,19 +338,8 @@
    "fieldname": "section_break_rx1w",
    "fieldtype": "Section Break",
    "label": "Order Details"
-  },
-  {
-   "fieldname": "tab_break_zkkj",
-   "fieldtype": "Tab Break",
-   "label": "Comments"
-  },
-  {
-   "fieldname": "department_comment",
-   "fieldtype": "Table",
-   "label": "Department Comment",
-   "options": "Department Comment"
   }
- ],
+  ],
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [
