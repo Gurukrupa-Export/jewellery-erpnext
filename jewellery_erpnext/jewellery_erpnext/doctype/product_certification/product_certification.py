@@ -156,12 +156,12 @@ class ProductCertification(Document):
 	def get_exploded_table(self):
 		exploded_product_details = []
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
-			cat_det = frappe.get_all(
-				"Certification Settings",
-				{"parent": "Jewellery Settings"},
-				["category", "count"],
-			)
-			custom_cat = {row.category: row.count for row in cat_det}
+			# cat_det = frappe.get_all(
+			# 	"Certification Settings",
+			# 	{"parent": "Jewellery Settings"},
+			# 	["category", "count"],
+			# )
+			# custom_cat = {row.category: row.count for row in cat_det}
 			metal_det = None
 			for row in self.product_details:
 				metal_touch = ""
@@ -499,27 +499,69 @@ def create_stock_entry(doc):
 				"warehouse_type": "Raw Material"
 				if doc.service_type in ["Fire Assy Service", "XRF Services"]
 				else warehouse_type,
+				"is_group": 0,
 				"disabled": 0,
 			},
 		)
 		if not s_warehouse:
 			s_warehouse = frappe.db.exists(
-				"Warehouse", {"department": doc.department, "disabled": 0}
+				"Warehouse",
+				{"department": doc.department, "is_group": 0, "disabled": 0},
 			)
 
-		t_warehouse = frappe.db.exists(
+		company_abbr = frappe.get_cached_value("Company", doc.company, "abbr") or ""
+		t_warehouse_mwo = frappe.db.get_value(
+			"Warehouse",
+			{
+				"company": doc.company,
+				"subcontractor": doc.supplier,
+				"name": ["like", f"%WIP WH - {company_abbr}%"],
+				"is_group": 0,
+				"disabled": 0,
+			},
+			"name",
+		)
+		if not t_warehouse_mwo:
+			t_warehouse_mwo = frappe.db.exists(
+				"Warehouse",
+				{
+					"company": doc.company,
+					"subcontractor": doc.supplier,
+					"name": ["like", "%WIP%"],
+					"is_group": 0,
+					"disabled": 0,
+				},
+			)
+		if not t_warehouse_mwo:
+			t_warehouse_mwo = frappe.db.exists(
+				"Warehouse",
+				{
+					"company": doc.company,
+					"subcontractor": doc.supplier,
+					"is_group": 0,
+					"disabled": 0,
+				},
+			)
+
+		t_warehouse_serial = frappe.db.exists(
 			"Warehouse",
 			{
 				"company": doc.company,
 				"subcontractor": doc.supplier,
 				"warehouse_type": warehouse_type,
+				"is_group": 0,
 				"disabled": 0,
 			},
 		)
-		if not t_warehouse:
-			t_warehouse = frappe.db.exists(
+		if not t_warehouse_serial:
+			t_warehouse_serial = frappe.db.exists(
 				"Warehouse",
-				{"company": doc.company, "subcontractor": doc.supplier, "disabled": 0},
+				{
+					"company": doc.company,
+					"subcontractor": doc.supplier,
+					"is_group": 0,
+					"disabled": 0,
+				},
 			)
 
 		added_mwo = []
@@ -529,7 +571,9 @@ def create_stock_entry(doc):
 				row.parent_manufacturing_order or row.manufacturing_work_order
 			)
 			if row.supply_raw_material and common_order not in added_mwo:
-				get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse)
+				get_stock_item_against_mwo(
+					se_doc, doc, row, s_warehouse, t_warehouse_mwo
+				)
 				added_mwo.append(common_order)
 			else:
 				if (
@@ -538,7 +582,9 @@ def create_stock_entry(doc):
 					continue
 				added_serial.append(row.serial_no)
 				if row.gross_weight > 0:
-					source_wh = s_warehouse if doc.type == "Issue" else t_warehouse
+					source_wh = (
+						s_warehouse if doc.type == "Issue" else t_warehouse_serial
+					)
 					if row.serial_no:
 						serial_wh = frappe.db.get_value(
 							"Serial No", row.serial_no, "warehouse"
@@ -553,7 +599,7 @@ def create_stock_entry(doc):
 							"serial_no": row.serial_no,
 							"qty": 1 if row.serial_no else row.gross_weight,
 							"s_warehouse": source_wh,
-							"t_warehouse": t_warehouse
+							"t_warehouse": t_warehouse_serial
 							if doc.type == "Issue"
 							else s_warehouse,
 							"Inventory_type": "Regular Stock",
@@ -680,49 +726,15 @@ def get_stock_entry_type(txn_type, purpose):
 
 
 def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_current_mop_balance_rows,
+	)
+
 	if doc.type == "Issue":
-		target_wh = frappe.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"department": doc.department,
-				"warehouse_type": "Manufacturing",
-			},
-			"name",
-		)
-		if not target_wh:
-			target_wh = frappe.get_value(
-				"Warehouse", {"disabled": 0, "department": doc.department}, "name"
-			)
-
-		# Prepare dynamic WHERE clauses
-		conditions = [
-			"mop_item.manufacturing_operation IS NOT NULL",
-			"se.docstatus = 1",
-		]
-		params = []
-
-		or_clauses = []
-
-		# Include conditions for either MWO or Parent MWO
-		if row.manufacturing_work_order:
-			or_clauses.append("mop_item.custom_manufacturing_work_order = %s")
-			params.append(row.manufacturing_work_order)
-
-			latest_mop = frappe.db.get_value(
-				"Manufacturing Work Order",
-				row.manufacturing_work_order,
-				"manufacturing_operation",
-			)
-			if latest_mop:
-				or_clauses.append("mop_item.manufacturing_operation = %s")
-				params.append(latest_mop)
-
-		if row.parent_manufacturing_order:
-			or_clauses.append("mop_item.custom_parent_manufacturing_order = %s")
-			params.append(row.parent_manufacturing_order)
-
-			mwo = frappe.db.get_value(
+		# --- Resolve the MWO and its latest MOP ---
+		mwo_name = row.manufacturing_work_order
+		if not mwo_name and row.parent_manufacturing_order:
+			mwo_name = frappe.db.get_value(
 				"Manufacturing Work Order",
 				{
 					"manufacturing_order": row.parent_manufacturing_order,
@@ -730,70 +742,140 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 					"docstatus": 1,
 				},
 			)
-			if mwo:
-				latest_mop = frappe.db.get_value(
-					"Manufacturing Work Order", mwo, "manufacturing_operation"
-				)
-				if latest_mop:
-					or_clauses.append("mop_item.manufacturing_operation = %s")
-					params.append(latest_mop)
 
-		if or_clauses:
-			conditions.append(f"({' OR '.join(or_clauses)})")
-
-	else:
-		# For "Receive" type
-		conditions = ["se.product_certification = %s"]
-		params = [doc.receive_against]
-
-		if row.manufacturing_work_order:
-			conditions.append("mop_item.reference_docname = %s")
-			params.append(row.manufacturing_work_order)
-			conditions.append("mop_item.reference_doctype = 'Manufacturing Work Order'")
-
-		elif row.parent_manufacturing_order:
-			conditions.append("mop_item.reference_docname = %s")
-			params.append(row.parent_manufacturing_order)
-			conditions.append(
-				"mop_item.reference_doctype = 'Parent Manufacturing Order'"
+		latest_mop = None
+		if mwo_name:
+			latest_mop = frappe.db.get_value(
+				"Manufacturing Work Order", mwo_name, "manufacturing_operation"
 			)
 
-	sql = f"""
-		SELECT
-			mop_item.item_code,
-			mop_item.qty,
-			mop_item.batch_no
-		FROM `tabStock Entry Detail` mop_item
-		LEFT JOIN `tabStock Entry` se ON mop_item.parent = se.name
-		WHERE {" AND ".join(conditions)}
-	"""
+		# --- Get items from MOP Log balance (weights/qty from the PC dept MOP) ---
+		mop_balance_rows = []
+		if latest_mop:
+			mop_balance_rows = get_current_mop_balance_rows(latest_mop)
 
-	stock_entries = frappe.db.sql(sql, tuple(params), as_dict=True)
+		if not mop_balance_rows:
+			frappe.msgprint(
+				_(
+					"Row {0}: No MOP balance found for the Manufacturing Work Order"
+				).format(row.idx)
+			)
+			return
 
-	if not stock_entries:
-		frappe.msgprint(
-			_("Row {0} : No Stock entry Found against the Order").format(row.idx)
+		# --- Find and cancel SREs, use SRE warehouse as source ---
+		sre_list = []
+		if mwo_name:
+			sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+			sre_filters = {"docstatus": 1}
+			if "manufacturing_work_order" in sre_cols:
+				sre_filters["manufacturing_work_order"] = mwo_name
+			sre_list = frappe.db.get_all(
+				"Stock Reservation Entry",
+				filters=sre_filters,
+				fields=[
+					"name",
+					"item_code",
+					"warehouse",
+					"reserved_qty",
+					"delivered_qty",
+				],
+			)
+
+		# Build SRE warehouse map: item_code -> warehouse
+		sre_warehouse_map = {}
+		for sre in sre_list:
+			if sre.item_code not in sre_warehouse_map:
+				sre_warehouse_map[sre.item_code] = sre.warehouse
+
+		# --- Create stock entry items from MOP balance rows ---
+		for balance_row in mop_balance_rows:
+			item_code = balance_row.get("item_code")
+			qty = (
+				balance_row.get("qty_after_transaction_batch_based")
+				or balance_row.get("qty_after_transaction")
+				or 0
+			)
+			batch_no = balance_row.get("batch_no")
+
+			if not item_code or qty <= 0:
+				continue
+
+			# Source warehouse: prefer SRE warehouse, fallback to s_warehouse
+			item_s_warehouse = sre_warehouse_map.get(item_code) or s_warehouse
+
+			se_doc.append(
+				"items",
+				{
+					"item_code": item_code,
+					"qty": qty,
+					"s_warehouse": item_s_warehouse,
+					"t_warehouse": t_warehouse,
+					"Inventory_type": "Regular Stock",
+					"reference_doctype": "Manufacturing Work Order"
+					if row.manufacturing_work_order
+					else "Parent Manufacturing Order",
+					"reference_docname": row.manufacturing_work_order
+					if row.manufacturing_work_order
+					else row.parent_manufacturing_order,
+					"use_serial_batch_fields": True,
+					"batch_no": batch_no,
+				},
+			)
+
+		# --- Cancel the SREs ---
+		for sre in sre_list:
+			try:
+				sre_doc = frappe.get_doc("Stock Reservation Entry", sre.name)
+				sre_doc.ignore_permissions = True
+				sre_doc.cancel()
+			except Exception:
+				frappe.log_error(
+					title=f"Failed to cancel SRE {sre.name} during Product Certification",
+					message=frappe.get_traceback(),
+				)
+
+	else:
+		# --- Receive type: get items from the Issue stock entry ---
+		issue_se = frappe.db.get_value(
+			"Stock Entry",
+			{"product_certification": doc.receive_against, "docstatus": 1},
+			"name",
 		)
 
-	for item in stock_entries:
-		se_doc.append(
-			"items",
-			{
-				"item_code": item.item_code,
-				"qty": item.qty,
-				"s_warehouse": s_warehouse if doc.type == "Issue" else t_warehouse,
-				"t_warehouse": t_warehouse if doc.type == "Issue" else s_warehouse,
-				"Inventory_type": "Regular Stock",
-				"reference_doctype": "Manufacturing Work Order"
-				if row.manufacturing_work_order
-				else "Parent Manufacturing Order",
-				"reference_docname": row.manufacturing_work_order
-				if row.manufacturing_work_order
-				else row.parent_manufacturing_order,
-				"use_serial_batch_fields": True,
-				"batch_no": item.get("batch_no"),
-			},
+		if not issue_se:
+			frappe.msgprint(
+				_("Row {0}: No Issue Stock Entry found for {1}").format(
+					row.idx, doc.receive_against
+				)
+			)
+			return
+
+		# Get items from the issue stock entry
+		issue_items = frappe.db.get_all(
+			"Stock Entry Detail",
+			filters={"parent": issue_se},
+			fields=["item_code", "qty", "batch_no", "s_warehouse", "t_warehouse"],
 		)
+
+		for item in issue_items:
+			se_doc.append(
+				"items",
+				{
+					"item_code": item.item_code,
+					"qty": item.qty,
+					"s_warehouse": item.t_warehouse,  # Issue's target becomes Receive's source
+					"t_warehouse": s_warehouse,  # Department warehouse as target for receive
+					"Inventory_type": "Regular Stock",
+					"reference_doctype": "Manufacturing Work Order"
+					if row.manufacturing_work_order
+					else "Parent Manufacturing Order",
+					"reference_docname": row.manufacturing_work_order
+					if row.manufacturing_work_order
+					else row.parent_manufacturing_order,
+					"use_serial_batch_fields": True,
+					"batch_no": item.get("batch_no"),
+				},
+			)
 
 
 @frappe.whitelist()

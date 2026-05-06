@@ -1904,7 +1904,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row["is_customer_item"] = (
 				1 if item.get("inventory_type") == "Customer Goods" else 0
 			)
-			row["pcs"] = item.get("pcs")
+			row["pcs"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 			row["sub_setting_type"] = item.get("custom_sub_setting_type")
 			row["total_diamond_rate"] = 0
 			if pmo_data.get("diamond_quality"):
@@ -2676,7 +2676,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					row["making_amount"] = row["making_rate"] * row["quantity"]
 					row.setdefault("wastage_rate", 0)
 
-				row["pcs"] = item.get("pcs")
+				row["qty"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 				row["fg_purchase_rate"] = fg_purchase_rate
 				row["fg_purchase_amount"] = fg_purchase_amount
 				row["wastage_amount"] = row.get("wastage_rate", 0) * row["amount"]
@@ -2784,7 +2784,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					row["making_amount"] = row["making_rate"] * row["quantity"]
 					row.setdefault("wastage_rate", 0)
 
-				row["pcs"] = item.get("pcs")
+				row["qty"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 				row["fg_purchase_rate"] = fg_purchase_rate
 				row["fg_purchase_amount"] = fg_purchase_amount
 				row["amount"] = row["rate"] * row["quantity"]
@@ -2800,7 +2800,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row["se_rate"] = item.get("rate")
 			row["rate"] = new_bom.gold_rate_with_gst
 			row["quantity"] = flt(item.get("qty", 0)) / flt(pmo_data.get("qty", 1))
-			row["pcs"] = flt(item.get("pcs", 0))
+			row["pcs"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 			row["sub_setting_type"] = item.get("custom_sub_setting_type")
 			if self.company == "KG GK Jewellers Private Limited":
 				row["price_list_type"] = ref_gemstone_price_list_type
@@ -3212,7 +3212,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				row[atrribute_name] = attribute.attribute_value
 			row["item_code"] = item_row.name
 			row["quantity"] = item["qty"] / (pmo_data.get("qty") or 1)
-			row["qty"] = item["qty"]
+			row["qty"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
 			row["uom"] = "Gram"
 			new_bom.append("other_detail", row)
 
