@@ -30,6 +30,7 @@
   "due_days",
   "est_due_days",
   "project",
+  "merchandiser",
   "section_break_2",
   "design_by",
   "sketch_order_form",
@@ -912,6 +913,13 @@
    "fieldname": "sketch_update_delivery_date",
    "fieldtype": "Datetime",
    "label": "Sketch Update Delivery Date"
+  },
+    {
+   "fetch_from": "sketch_order_form.merchandiser",
+   "fieldname": "merchandiser",
+   "fieldtype": "Link",
+   "label": "Merchandiser",
+   "options": "Employee"
   }
  ],
  "index_web_pages_for_search": 1,
