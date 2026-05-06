@@ -138,7 +138,7 @@ class TestPopupReservedVsMopFields(FrappeTestCase):
 			sre_rows=[_sre_dict(reserved_qty=10.0)],
 			mop_rows=[_mop_log_row(qty=7.0)],
 		)
-		rows = get_make_receive_entry_rows("MOP-1")
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
 		self.assertEqual(len(rows), 1)
 		row = rows[0]
 		self.assertAlmostEqual(row["reserved_qty"], 10.0)
@@ -155,7 +155,7 @@ class TestPopupReservedVsMopFields(FrappeTestCase):
 			sre_rows=[_sre_dict(reserved_qty=10.0)],
 			mop_rows=[_mop_log_row(qty=0.0)],
 		)
-		rows = get_make_receive_entry_rows("MOP-1")
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
 		self.assertEqual(rows, [])
 
 	def test_t9_loss_delta_reduces_mop_available(self):
@@ -169,7 +169,7 @@ class TestPopupReservedVsMopFields(FrappeTestCase):
 			sre_rows=[_sre_dict(reserved_qty=10.0)],
 			mop_rows=[_mop_log_row(qty=8.5)],
 		)
-		rows = get_make_receive_entry_rows("MOP-1")
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
 		self.assertEqual(len(rows), 1)
 		self.assertAlmostEqual(rows[0]["mop_available_qty"], 8.5)
 		self.assertAlmostEqual(rows[0]["available_to_receive_qty"], 8.5)
@@ -187,7 +187,7 @@ class TestPopupReservedVsMopFields(FrappeTestCase):
 			sre_rows=[_sre_dict(reserved_qty=2.0, item_code="D-BRI-VS1")],
 			mop_rows=[_mop_log_row(item_code="D-BRI-VS1", qty=2.0, pcs=12)],
 		)
-		rows = get_make_receive_entry_rows("MOP-1")
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
 		self.assertEqual(len(rows), 1)
 		row = rows[0]
 		self.assertTrue(row["is_pcs_item"])

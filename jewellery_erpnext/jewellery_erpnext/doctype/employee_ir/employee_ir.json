@@ -288,6 +288,7 @@
    "fieldtype": "Float",
    "label": "MOP Loss Details Total",
    "no_copy": 1,
+   "precision": "3",
    "read_only": 1
   },
   {
