@@ -81,6 +81,7 @@ def autoname(self, method=None):
 		return
 
 	item_group = frappe.db.get_value("Item", self.item, "item_group")
+	variant = frappe.db.get_value("Item", self.item, "variant_of")
 
 	if item_group in [
 		"Metal - V",
@@ -110,8 +111,10 @@ def autoname(self, method=None):
 				year_code=year_code, month_code=month_code, week_code=week_code
 			)
 		elif item_group == "Gemstone - V":
-			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-G".format(
-				year_code=year_code, month_code=month_code, week_code=week_code
+			batch_number = (
+				f"{company_abbr}{year_code}{month_code}{week_code}-{variant}".format(
+					year_code=year_code, month_code=month_code, week_code=week_code
+				)
 			)
 		elif item_group == "Finding - V":
 			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-F".format(
