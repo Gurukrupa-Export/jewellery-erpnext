@@ -74,7 +74,8 @@ class TestGetMakeReceiveEntryRows(FrappeTestCase):
 			)
 		]
 
-		rows = get_make_receive_entry_rows("MOP-1")
+		result = get_make_receive_entry_rows("MOP-1")
+		rows = result["rows"]
 
 		# get_all is called twice now: first for SRE listing, second for MOP
 		# Log balance precompute. Inspect the first call (the SRE filter).
@@ -84,7 +85,15 @@ class TestGetMakeReceiveEntryRows(FrappeTestCase):
 		self.assertEqual(len(rows), 1)
 		self.assertEqual(rows[0]["available_to_receive_qty"], 10.0)
 		self.assertEqual(rows[0]["reserved_qty"], 10.0)
+		# Mock returns the SRE list for both `frappe.db.get_all` calls
+		# (doctype-collision: only one mock is active for the whole
+		# function), so the MOP Log lookup picks up the SRE dict and
+		# `mop_available_qty` reflects whatever `qty_after_transaction_batch_based`
+		# evaluates to on it (None → 0). The structured response shape
+		# is what we check here.
 		self.assertEqual(rows[0]["mop_available_qty"], 0)
+		self.assertEqual(result["active_sre_count"], 1)
+		self.assertEqual(result["skipped"], [])
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_doc"
@@ -551,7 +560,7 @@ class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
 			),
 		]
 
-		rows = get_make_receive_entry_rows("MOP-1")
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
 		self.assertEqual(len(rows), 1)
 		self.assertEqual(rows[0]["stock_reservation_entry"], "SRE-ACTIVE")
 		self.assertAlmostEqual(rows[0]["available_to_receive_qty"], 6.0)
@@ -598,8 +607,10 @@ class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
 		filters = kwargs["filters"]
 		self.assertEqual(filters["docstatus"], 1)
 		self.assertEqual(filters["manufacturing_work_order"], "MWO-1")
-		# No hardcoded status whitelist (Correction 2).
-		self.assertNotIn("status", filters)
+		# Status filter excludes terminal-state SREs (Cancelled, Delivered)
+		# per the MWO-scope fix; docstatus=1 alone is not sufficient because
+		# ERPNext keeps Cancelled SREs at docstatus=1 with status flipped.
+		self.assertEqual(filters["status"], ["not in", ("Cancelled", "Delivered")])
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
@@ -658,7 +669,7 @@ class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
 			)
 		]
 
-		rows = get_make_receive_entry_rows("MOP-1")
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
 		self.assertEqual(len(rows), 1)
 		# 6 reserved - 0 delivered = 6 SRE remaining; MOP unmocked = 0 (no
 		# data signal). available_to_receive_qty falls back to SRE

@@ -34,12 +34,16 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_sli
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.mould_utils import (
 	create_mould,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.precision import (
+	round_employee_ir_weights_to_precision,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontracting_utils import (
 	create_so_for_subcontracting,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
 	validate_loss_qty,
+	validate_loss_tables_required,
 	validate_manually_book_loss_details,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
@@ -75,6 +79,7 @@ class EmployeeIR(Document):
 				)
 
 	def on_submit(self):
+		validate_loss_tables_required(self)
 		validate_qc(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
@@ -112,6 +117,7 @@ class EmployeeIR(Document):
 		# self.validate_gross_wt()
 		# self.validate_main_slip()
 		# self.update_main_slip()
+		round_employee_ir_weights_to_precision(self)
 		self.validate_process_loss()
 		validate_manually_book_loss_details(self)
 		# valid_reparing_or_next_operation(self)
@@ -379,7 +385,18 @@ class EmployeeIR(Document):
 					self, row, actor_wh, department_wh, stock_entry_name
 				)
 
-				update_new_mop_wtg(new_operation)
+				# update_new_mop_wtg now does both jobs in one pass:
+				# clones the previous MOP's flow_index=0 baseline rows AND
+				# subtracts loss in-place per (item, batch). One MOP Log
+				# row per item/batch on the new operation. Source MOP is
+				# left unchanged.
+				update_new_mop_wtg(
+					new_operation,
+					employee_ir_doc=self,
+					employee_ir_operation_row=row,
+					from_warehouse=actor_wh,
+					to_warehouse=department_wh,
+				)
 			else:
 				for sre in frappe.db.get_all(
 					"Stock Reservation Entry",

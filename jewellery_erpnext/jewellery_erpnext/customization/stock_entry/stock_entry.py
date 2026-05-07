@@ -37,7 +37,8 @@ def before_validate(self, method):
 
 
 def on_submit(self, method):
-	validate_inventory_dimention(self)
+	pass
+	# validate_inventory_dimention(self)
 
 
 class CustomStockEntry(StockEntry):
