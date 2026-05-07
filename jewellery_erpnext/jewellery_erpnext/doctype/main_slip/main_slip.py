@@ -814,8 +814,14 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 	)
 
 	if loss_item:
+		loss_item.include_item_in_manufacturing = 1
 		loss_item.has_variants = 0
 		loss_item.is_stock_item = 1
+		loss_item.has_batch_no = 1
+		loss_item.create_new_batch = 1
+		loss_item.gst_hsn_code = frappe.db.get_value(
+			"Item", loss_item.variant_of, "gst_hsn_code"
+		)
 		loss_item.save()
 		return loss_item.name
 	else:
@@ -846,9 +852,13 @@ def create_loss_item(item, item_attr_dict):
 		)
 
 	variant = create_variant(item, item_attr_dict)
+	variant.include_item_in_manufacturing = 1
 	variant.is_stock_item = 1
 	variant.has_batch_no = 1
 	variant.create_new_batch = 1
+	variant.gst_hsn_code = frappe.db.get_value(
+		"Item", variant.variant_of, "gst_hsn_code"
+	)
 	variant.save()
 
 	return variant.name
