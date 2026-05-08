@@ -513,6 +513,15 @@
    "read_only": 1
   },
   {
+    "dt": "Stock Entry",
+    "fieldname": "manufacturer",
+    "fieldtype": "Link",
+    "insert_after": "posting_time",
+    "label": "Manufacturer",
+    "module": "Jewellery Erpnext",
+    "options": "Manufacturer"
+  },
+  {
    "dt": "Stock Entry",
    "fieldname": "custom_scan_material_request",
    "fieldtype": "Data",
