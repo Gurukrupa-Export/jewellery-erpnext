@@ -108,20 +108,32 @@ def update_wt_detail(manufacturing_operation):
 def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	item_code = row.get("item_code") or ""
 	if not item_code:
-		# nothing to log
 		return
 
 	first_char = item_code[0]
-	# safe numeric conversions (pcs might be None)
-	if doc.stock_entry_type == "Material Receive (WORK ORDER)":
-		pcs = -cint(row.get("pcs") or 0)
-		qty = -flt((row.get("qty") or 0.0), 3)
+	if doc.doctype == "Employee IR":
+		if first_char not in ("D", "G"):
+			pcs = 0
+		else:
+			pcs = row.get("pcs_change") or 0
+		qty = row.get("qty_change") or 0
 	else:
-		pcs = cint(row.get("pcs") or 0)
-		qty = flt((row.get("qty") or 0.0), 3)
+		if doc.stock_entry_type == "Material Receive (WORK ORDER)":
+			if first_char not in ("D", "G"):
+				pcs = 0
+			else:
+				pcs = -cint(row.get("pcs") or 0)
+			qty = -flt((row.get("qty") or 0.0), 3)
+		else:
+			pcs = cint(row.get("pcs") or 0)
+			qty = flt((row.get("qty") or 0.0), 3)
 	batch_no = row.get("batch_no")
-	mwo = doc.get("manufacturing_work_order")
-	mop_op = row.get("manufacturing_operation")
+	mwo = (
+		row.get("manufacturing_work_order")
+		if doc.doctype == "Employee IR"
+		else doc.get("manufacturing_work_order")
+	)
+	# mop_op = row.get("manufacturing_operation")
 
 	# prepare prefix pattern e.g. 'D%' or 'G%'
 	prefix_like = f"{first_char}%"
@@ -149,33 +161,16 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 		mwo,
 	]
 
-	previous_mop_qty = 0
-	previous_mop_pcs = 0
-
-	if mop_op:
-		sql += " AND manufacturing_operation = %s"
-		sql_params.append(mop_op)
-		previous_mop = frappe.db.get_value(
-			"Manufacturing Operation", mop_op, "previous_mop"
-		)
-		if previous_mop:
-			previous_mop_qty = (
-				frappe.db.get_value(
-					"Manufacturing Operation",
-					previous_mop,
-					FIELD_MAP.get(first_char) + "_wt",
-				)
-				or 0
-			)
-			if first_char in ("D", "G"):
-				previous_mop_pcs = (
-					frappe.db.get_value(
-						"Manufacturing Operation",
-						previous_mop,
-						FIELD_MAP.get(first_char) + "_pcs",
-					)
-					or 0
-				)
+	# if mop_op:
+	# 	previous_mop = frappe.db.get_value(
+	# 		"Manufacturing Operation", mop_op, "previous_mop"
+	# 	)
+	# 	if previous_mop:
+	# 		sql += " AND manufacturing_operation IN (%s, %s)"
+	# 		sql_params.extend([mop_op, previous_mop])
+	# 	else:
+	# 		sql += " AND manufacturing_operation = %s"
+	# 		sql_params.append(mop_op)
 
 	row_vals = frappe.db.sql(sql, tuple(sql_params), as_dict=True)
 
@@ -194,12 +189,12 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	)
 	last_mop_index = get_last_mop_index(row.manufacturing_operation)
 	# compute fields
-	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"]) + previous_mop_pcs
-	pcs_after_item = pcs + cint(stats["sum_pcs_item"]) + previous_mop_pcs
+	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"])
+	pcs_after_item = pcs + cint(stats["sum_pcs_item"])
 	pcs_after_batch = pcs + cint(stats["sum_pcs_batch"])
 
-	qty_after_prefix = qty + flt(stats["sum_qty_prefix"]) + previous_mop_qty
-	qty_after_item = qty + flt(stats["sum_qty_item"]) + previous_mop_qty
+	qty_after_prefix = qty + flt(stats["sum_qty_prefix"])
+	qty_after_item = qty + flt(stats["sum_qty_item"])
 	qty_after_batch = qty + flt(stats["sum_qty_batch"])
 	# create doc
 	mop_log = frappe.new_doc("MOP Log")
@@ -211,7 +206,7 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 
 	mop_log.from_warehouse = row.get("s_warehouse")
 	mop_log.to_warehouse = row.get("t_warehouse")
-	mop_log.voucher_type = "Stock Entry"
+	mop_log.voucher_type = doc.doctype
 	mop_log.voucher_no = doc.name
 	mop_log.manufacturing_work_order = mwo
 	mop_log.manufacturing_operation = row.get("manufacturing_operation")
@@ -287,7 +282,6 @@ def get_current_mop_balance_rows(
 		key = (log.get("item_code"), log.get("batch_no"))
 		if key not in latest_by_key:
 			latest_by_key[key] = log
-
 	return list(reversed(list(latest_by_key.values())))
 
 
@@ -329,15 +323,14 @@ def get_available_qty_pcs_for_mop_item(
 
 	if mop_log_balance_map is None:
 		rows = get_current_mop_balance_rows(manufacturing_operation)
+
 		mop_log_balance_map = {
 			(row.get("item_code"), row.get("batch_no")): row for row in rows
 		}
-
 	mop_row = mop_log_balance_map.get((item_code, batch_no))
 	mop_qty_raw = mop_row.get("qty_after_transaction_batch_based") if mop_row else None
 	mop_pcs_raw = mop_row.get("pcs_after_transaction_batch_based") if mop_row else None
 	mop_log_reference = mop_row.get("name") if mop_row else None
-
 	qty_candidates = []
 	if sre_remaining_qty is not None:
 		qty_candidates.append(flt(sre_remaining_qty))

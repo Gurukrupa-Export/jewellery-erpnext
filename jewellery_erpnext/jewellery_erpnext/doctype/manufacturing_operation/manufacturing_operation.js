@@ -310,10 +310,6 @@ frappe.ui.form.on("Manufacturing Operation", {
 				freeze: true,
 				freeze_message: __("Loading Stock Reservation Entries..."),
 				callback: (r) => {
-					// Server now returns {rows, skipped, active_sre_count}.
-					// Fall back to a bare list for backwards compatibility
-					// during rollout in case any caller was patched in
-					// between releases.
 					const msg = (r && r.message) || {};
 					const rows = Array.isArray(msg) ? msg : msg.rows || [];
 					const skipped = Array.isArray(msg) ? [] : msg.skipped || [];
@@ -399,7 +395,6 @@ frappe.ui.form.on("Manufacturing Operation", {
 										fieldtype: "Link",
 										fieldname: "stock_reservation_entry",
 										options: "Stock Reservation Entry",
-										in_list_view: 1,
 										read_only: 1,
 									},
 									{
@@ -415,7 +410,6 @@ frappe.ui.form.on("Manufacturing Operation", {
 										fieldtype: "Link",
 										fieldname: "s_warehouse",
 										options: "Warehouse",
-										in_list_view: 1,
 										read_only: 1,
 									},
 									{
@@ -430,6 +424,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 										fieldtype: "Link",
 										fieldname: "batch_no",
 										options: "Batch",
+										in_list_view: 1,
 										read_only: 1,
 									},
 									{
@@ -461,7 +456,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 										label: __("MOP Available PCS"),
 										fieldtype: "Float",
 										fieldname: "mop_available_pcs",
-										in_list_view: 1,
+										// in_list_view: 1,
 										read_only: 1,
 									},
 									{
@@ -480,14 +475,12 @@ frappe.ui.form.on("Manufacturing Operation", {
 										label: __("Available to Receive Qty"),
 										fieldtype: "Float",
 										fieldname: "available_to_receive_qty",
-										in_list_view: 1,
 										read_only: 1,
 									},
 									{
 										label: __("Available to Receive PCS"),
 										fieldtype: "Float",
 										fieldname: "available_to_receive_pcs",
-										in_list_view: 1,
 										read_only: 1,
 									},
 									{

@@ -422,7 +422,6 @@
    "read_only": 1
   },
   {
-   "collapsible": 1,
    "fieldname": "section_break_nlzla",
    "fieldtype": "Section Break",
    "label": "Weight Details"
@@ -799,8 +798,8 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2026-03-11 12:04:40.149095",
- "modified_by": "Administrator",
+ "modified": "2026-05-07 17:57:37.715363",
+ "modified_by": "mitali_s@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",
  "naming_rule": "Expression (old style)",

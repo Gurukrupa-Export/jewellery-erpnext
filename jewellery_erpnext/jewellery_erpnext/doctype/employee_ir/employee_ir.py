@@ -704,7 +704,7 @@ class EmployeeIR(Document):
 						)
 						total_mannual_loss += loss_qty
 
-			loss = flt(gwt) - flt(r_gwt) - flt(total_mannual_loss)
+			loss = flt(flt(gwt, 3) - flt(r_gwt, 3) - flt(total_mannual_loss, 3), 3)
 			ms_consum = 0
 			ms_consum_book = 0
 			stock_loss = 0

@@ -352,30 +352,6 @@ class MainSlip(Document):
 				],
 				as_dict=1,
 			)
-			# if mwo.multicolour == 1:
-			# 	if self.multicolour == 0:
-			# 		frappe.throw(
-			# 			f"Select Multicolour Main Slip </br><b>Metal Properties are: (MT:{mwo.metal_type}, MTC:{mwo.metal_touch}, MP:{mwo.metal_purity}, MC:{mwo.allowed_colours})</b>"
-			# 		)
-			# 	mwo_allowed_colors = "".join(sorted(map(str.upper, mwo.allowed_colours)))
-			# 	ms_allowed_colors = "".join(sorted(map(str.upper, self.allowed_colours)))
-			# 	if mwo_allowed_colors and not ms_allowed_colors:
-			# 		frappe.throw(
-			# 			f"Metal properties in MWO: <b>{row.manufacturing_work_order}</b> do not match the main slip. </br><b>Metal Properties: (MT:{mwo.metal_type}, MTC:{mwo.metal_touch}, MP:{mwo.metal_purity}, MC:{mwo_allowed_colors})</b>"
-			# 		)
-
-			# colour_code = {"P": "Pink", "Y": "Yellow", "W": "White"}
-			# colour_code = {"P": "P", "Y": "Y", "W": "W"}
-			# color_matched = False	 # Flag to check if at least one color matches
-			# for char in allowed_colors:
-			# 	if char not in colour_code:
-			# 		frappe.throw(f"Invalid color code <b>{char}</b> in MWO: <b>{row.manufacturing_work_order}</b>")
-			# 	if self.check_color and colour_code[char] == self.allowed_colours:
-			# 		color_matched = True	# Set the flag to True if color matches and exit loop
-			# 		break
-			# 	print(f"{char}{colour_code[char]}{color_matched}")				# Throw an error only if no color matches
-			# if self.check_color and not color_matched:
-			# 	frappe.throw(f"Metal properties in MWO: <b>{row.manufacturing_work_order}</b> do not match the main slip. </br><b>Metal Properties: (MT:{mwo.metal_type}, MTC:{mwo.metal_touch}, MP:{mwo.metal_purity}, MC:{allowed_colors})</b>")
 
 			if mwo.multicolour == 0:
 				if (
