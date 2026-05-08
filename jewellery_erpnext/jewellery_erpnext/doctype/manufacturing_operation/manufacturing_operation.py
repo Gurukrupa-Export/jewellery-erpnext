@@ -20,6 +20,9 @@ from frappe.utils import (
 )
 
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_available_qty_pcs_for_mop_item,
 	get_current_mop_balance_rows,
 	get_employee_ir_loss_map,
@@ -231,10 +234,7 @@ class ManufacturingOperation(Document):
 		# self.total_completed_qty = 0.0
 
 		if self.get("time_logs"):
-			# d = self.get("time_logs")[-1]
-			# print(self)
 			for d in self.get("time_logs")[-1:]:
-				# print(d)
 				if (
 					d.to_time
 					and get_datetime(d.from_time) > get_datetime(d.to_time)
@@ -3701,7 +3701,11 @@ def get_make_receive_entry_rows(manufacturing_operation):
 		"name",
 	)
 	if not t_warehouse:
-		frappe.throw(_("No warehouse found for warehouse type Raw Material"))
+		frappe.throw(
+			_("No Raw Material Warehouse found for Department({0})").format(
+				mo.department
+			)
+		)
 
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 	tolerance = _float_tolerance(precision)
@@ -3832,15 +3836,12 @@ def get_make_receive_entry_rows(manufacturing_operation):
 			bucket.add((s.item_code, None))
 
 	mop_log_balance_map: dict[tuple, dict] = {}
-	for op_name, op_keys in keys_by_mop.items():
-		if not op_keys:
-			continue
-		balance_rows = get_current_mop_balance_rows(op_name, keys=list(op_keys))
-		for row in balance_rows:
-			mop_log_balance_map[
-				(op_name, row.get("item_code"), row.get("batch_no"))
-			] = row
 
+	balance_rows = get_current_mop_balance_rows(manufacturing_operation)
+	for row in balance_rows:
+		mop_log_balance_map[
+			(manufacturing_operation, row.get("item_code"), row.get("batch_no"))
+		] = row
 	rows = []
 	skipped = []
 	for sre in sres:
@@ -3852,9 +3853,10 @@ def get_make_receive_entry_rows(manufacturing_operation):
 		# Slice the 3-tuple-keyed global map down to the (item, batch) pairs
 		# for this SRE's MOP, matching the helper's 2-tuple key contract.
 		sre_mop_balance_map = {
-			(k[1], k[2]): v for k, v in mop_log_balance_map.items() if k[0] == sre_mop
+			(k[1], k[2]): v
+			for k, v in mop_log_balance_map.items()
+			if k[0] == manufacturing_operation
 		}
-
 		if batch_based:
 			sb_entries = sb_entries_by_sre.get(sre.name, [])
 			for sb in sb_entries:
@@ -3869,7 +3871,7 @@ def get_make_receive_entry_rows(manufacturing_operation):
 					batch_key, 0
 				)
 				ctx = get_available_qty_pcs_for_mop_item(
-					manufacturing_operation=sre_mop,
+					manufacturing_operation=manufacturing_operation,
 					item_code=sre.item_code,
 					batch_no=sb.batch_no,
 					warehouse=sre.warehouse,
@@ -3906,7 +3908,6 @@ def get_make_receive_entry_rows(manufacturing_operation):
 							"reason": "mop_zero_balance",
 						}
 					)
-					continue
 				rows.append(
 					{
 						"stock_reservation_entry": sre.name,
@@ -4642,82 +4643,89 @@ def update_new_mop_wtg(
 				).format(log.item_code, log.batch_no, loss_pcs, baseline_pcs_batch)
 			)
 
-		mop_log = frappe.new_doc("MOP Log")
-		mop_log.item_code = log.item_code
-		mop_log.batch_no = log.batch_no
+		log["qty_change"] = -loss_qty
+		log["pcs_change"] = -loss_pcs
+		log["from_warehouse"] = from_warehouse if from_warehouse else log.from_warehouse
+		log["to_warehouse"] = to_warehouse if to_warehouse else log.to_warehouse
+		log["manufacturing_operation"] = self.name
+		create_mop_log(doc=employee_ir_doc, row=log)
 
-		# Reduce all three balance tiers by loss_qty. When loss_qty is 0
-		# (no loss matches this row) the baseline is cloned verbatim.
-		mop_log.qty_after_transaction = flt(
-			flt(log.qty_after_transaction) - loss_qty, 3
-		)
-		mop_log.qty_after_transaction_item_based = flt(
-			flt(log.qty_after_transaction_item_based) - loss_qty, 3
-		)
-		mop_log.qty_after_transaction_batch_based = new_qty_batch
+		# mop_log = frappe.new_doc("MOP Log")
+		# mop_log.item_code = log.item_code
+		# mop_log.batch_no = log.batch_no
 
-		mop_log.pcs_after_transaction = cint(log.pcs_after_transaction) - loss_pcs
-		mop_log.pcs_after_transaction_item_based = (
-			cint(log.pcs_after_transaction_item_based) - loss_pcs
-		)
-		mop_log.pcs_after_transaction_batch_based = new_pcs_batch
+		# # Reduce all three balance tiers by loss_qty. When loss_qty is 0
+		# # (no loss matches this row) the baseline is cloned verbatim.
+		# mop_log.qty_after_transaction = flt(
+		# 	flt(log.qty_after_transaction) - loss_qty, 3
+		# )
+		# mop_log.qty_after_transaction_item_based = flt(
+		# 	flt(log.qty_after_transaction_item_based) - loss_qty, 3
+		# )
+		# mop_log.qty_after_transaction_batch_based = new_qty_batch
 
-		mop_log.from_warehouse = from_warehouse if loss_bucket else log.from_warehouse
-		mop_log.to_warehouse = to_warehouse if loss_bucket else log.to_warehouse
-		mop_log.manufacturing_operation = self.name
-		mop_log.manufacturing_work_order = log.manufacturing_work_order
-		mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
-		mop_log.is_synced = 0
-		# flow_index = 0: baseline + loss are part of the new MOP's
-		# initial baseline tier, not a downstream movement.
-		mop_log.flow_index = 0
+		# mop_log.pcs_after_transaction = cint(log.pcs_after_transaction) - loss_pcs
+		# mop_log.pcs_after_transaction_item_based = (
+		# 	cint(log.pcs_after_transaction_item_based) - loss_pcs
+		# )
+		# mop_log.pcs_after_transaction_batch_based = new_pcs_batch
 
-		if loss_bucket:
-			# Tie the row to the EIR voucher so the cancel cascade
-			# (`UPDATE tabMOP Log WHERE voucher_type=… AND voucher_no=…`)
-			# picks it up symmetrically with the other EIR logs.
-			mop_log.voucher_type = "Employee IR"
-			mop_log.voucher_no = employee_ir_doc.name
-			mop_log.row_name = employee_ir_operation_row.name
-			mop_log.qty_change = -loss_qty
-			mop_log.pcs_change = -loss_pcs
+		# mop_log.from_warehouse = from_warehouse if loss_bucket else log.from_warehouse
+		# mop_log.to_warehouse = to_warehouse if loss_bucket else log.to_warehouse
+		# mop_log.manufacturing_operation = self.name
+		# mop_log.manufacturing_work_order = log.manufacturing_work_order
+		# mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
+		# mop_log.is_synced = 0
+		# # flow_index = 0: baseline + loss are part of the new MOP's
+		# # initial baseline tier, not a downstream movement.
+		# mop_log.flow_index = 0
 
-			mop_log.loss_weight = flt(loss_bucket.get("loss_weight_grams"), 3)
-			loss_types = loss_bucket.get("loss_types") or []
-			mop_log.loss_type = ", ".join(loss_types) if loss_types else None
-			source_rows_list = loss_bucket.get("source_rows") or []
-			joined = ",".join(source_rows_list)
-			mop_log.loss_source_row = joined[:140] if len(joined) > 140 else joined
+		# if loss_bucket:
+		# 	# Tie the row to the EIR voucher so the cancel cascade
+		# 	# (`UPDATE tabMOP Log WHERE voucher_type=… AND voucher_no=…`)
+		# 	# picks it up symmetrically with the other EIR logs.
+		# 	mop_log.voucher_type = "Employee IR"
+		# 	mop_log.voucher_no = employee_ir_doc.name
+		# 	mop_log.row_name = employee_ir_operation_row.name
+		# 	mop_log.qty_change = -loss_qty
+		# 	mop_log.pcs_change = -loss_pcs
 
-			processed_loss_keys.add(key)
-		else:
-			# Plain baseline clone — keep the prior voucher tagging so
-			# downstream readers that care about source provenance can
-			# still find the originating Manufacturing Operation.
-			mop_log.voucher_type = "Manufacturing Operation"
-			mop_log.voucher_no = log.manufacturing_operation
-			mop_log.row_name = log.row_name
+		# 	mop_log.loss_weight = flt(loss_bucket.get("loss_weight_grams"), 3)
+		# 	loss_types = loss_bucket.get("loss_types") or []
+		# 	mop_log.loss_type = ", ".join(loss_types) if loss_types else None
+		# 	source_rows_list = loss_bucket.get("source_rows") or []
+		# 	joined = ",".join(source_rows_list)
+		# 	mop_log.loss_source_row = joined[:140] if len(joined) > 140 else joined
 
-		mop_log.save()
+		# 	processed_loss_keys.add(key)
+		# else:
+		# 	# Plain baseline clone — keep the prior voucher tagging so
+		# 	# downstream readers that care about source provenance can
+		# 	# still find the originating Manufacturing Operation.
+		# 	mop_log.voucher_type = "Manufacturing Operation"
+		# 	mop_log.voucher_no = log.manufacturing_operation
+		# 	mop_log.row_name = log.row_name
+
+		# mop_log.save()
 
 	# Loss keys that didn't find a baseline row aren't valid: a loss can
 	# only reduce a balance the new operation actually starts with.
-	unprocessed = set(loss_map.keys()) - processed_loss_keys
-	if unprocessed:
-		details = ", ".join(
-			f"{item}/{batch or 'no-batch'}"
-			for item, batch in sorted(
-				unprocessed, key=lambda k: (k[0] or "", k[1] or "")
-			)
-		)
-		frappe.throw(
-			_(
-				"Employee IR loss is booked against item(s)/batch(es) that "
-				"are not present in the previous Manufacturing Operation's "
-				"baseline: {0}. Loss can only be applied to balances the "
-				"new operation actually inherits."
-			).format(details)
-		)
+	# unprocessed = set(loss_map.keys()) - processed_loss_keys
+	# if unprocessed:
+	# 	details = ", ".join(
+	# 		f"{item}/{batch or 'no-batch'}"
+	# 		for item, batch in sorted(
+	# 			unprocessed, key=lambda k: (k[0] or "", k[1] or "")
+	# 		)
+	# 	)
+	# 	frappe.throw(
+	# 		_(
+	# 			"Employee IR loss is booked against item(s)/batch(es) that "
+	# 			"are not present in the previous Manufacturing Operation's "
+	# 			"baseline: {0}. Loss can only be applied to balances the "
+	# 			"new operation actually inherits."
+	# # 		).format(details)
+	# 	)
 
 
 def get_warehouse_from_previous_stock_entry(

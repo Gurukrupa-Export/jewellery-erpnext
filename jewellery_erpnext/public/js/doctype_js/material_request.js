@@ -106,7 +106,6 @@ frappe.ui.form.on("Material Request", {
 	// 		});
 	// },
 	manufacturing_operation_query(frm) {
-		debugger;
 		if (frm.doc.custom_manufacturing_work_order) {
 			frappe.db
 				.get_list("Manufacturing Operation", {
@@ -139,7 +138,6 @@ frappe.ui.form.on("Material Request", {
 					},
 				})
 				.then((records) => {
-					debugger;
 					const mop_list = records.map((item) => item.manufacturing_operation);
 
 					frm.set_query("custom_manufacturing_operation", function () {
