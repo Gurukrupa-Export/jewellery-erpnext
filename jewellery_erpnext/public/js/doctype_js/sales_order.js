@@ -1739,7 +1739,7 @@ let set_edit_bom_details = (
 					console.log("gold  Rate", calculated_gold_rate);
 					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity;
 					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity;
-					difference_actual_gold_rate =
+					let difference_actual_gold_rate =
 						calculated_actual_rate_quantity - calculated_gold_rate_quantity;
 
 					if (

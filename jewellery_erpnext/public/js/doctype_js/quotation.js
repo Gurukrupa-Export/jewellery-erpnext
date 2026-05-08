@@ -1596,7 +1596,7 @@ let set_edit_bom_details = (
 						(d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity;
 					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity;
-					difference_actual_gold_rate =
+					let difference_actual_gold_rate =
 						calculated_actual_rate_quantity - calculated_gold_rate_quantity;
 					// console.log("Customer calculated_actual_rate_quantity", index, ":", difference_actual_gold_rate);
 					// console.log("Customer Name: ", cur_frm.doc.customer_name || cur_frm.doc.customer);
