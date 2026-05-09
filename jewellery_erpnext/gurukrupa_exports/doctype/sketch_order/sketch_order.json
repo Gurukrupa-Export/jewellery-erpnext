@@ -26,6 +26,7 @@
     "due_days",
     "est_due_days",
     "project",
+    "merchandiser",
     "section_break_2",
     "design_by",
     "sketch_order_form",
@@ -365,6 +366,13 @@
    "fieldtype": "Datetime",
    "label": "Sketch Update Delivery Date"
     },
+     {
+   "fetch_from": "sketch_order_form.merchandiser",
+   "fieldname": "merchandiser",
+   "fieldtype": "Link",
+   "label": "Merchandiser",
+   "options": "Employee"
+  },
     {
     "fieldname": "section_break_53",
     "fieldtype": "Section Break"
