@@ -641,10 +641,12 @@ def stock_reservation_entry_for_mwo(self):
 		self.manufacturing_order,
 		["sales_order", "sales_order_item", "manufacturer"],
 	)
-	voucher_qty_row = frappe.db.get_values(
-		"Material Request",
-		{"manufacturing_order": self.manufacturing_order, "docstatus": ["!=", 2]},
-		["sum(custom_total_quantity)"],
+	voucher_qty_row = frappe.db.sql(
+		"""
+        SELECT sum(custom_total_quantity) FROM `tabMaterial Request`
+        WHERE manufacturing_order=%s AND docstatus!=2
+        """,
+		(self.manufacturing_order,),
 	)
 	base_mr_voucher_qty = None
 	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
