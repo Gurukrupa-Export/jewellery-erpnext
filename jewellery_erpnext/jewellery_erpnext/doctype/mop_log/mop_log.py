@@ -3,6 +3,8 @@
 
 import frappe
 from frappe.model.document import Document
+from frappe.query_builder import DocType
+from frappe.query_builder.functions import Max
 from frappe.utils import cint, cstr, flt
 
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
@@ -224,18 +226,22 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 
 
 def get_last_mop_index(manufacturing_operation, voucher_type=None, voucher_no=None):
-	filters = {"manufacturing_operation": manufacturing_operation, "is_cancelled": 0}
-	if voucher_type:
-		filters["voucher_type"] = voucher_type
-	if voucher_no:
-		filters["voucher_no"] = voucher_no
-
-	last_log = frappe.db.get_value(
-		"MOP Log",
-		filters,
-		"max(flow_index) as flow_index",
+	MOPLog = DocType("MOP Log")
+	query = (
+		frappe.qb.from_(MOPLog)
+		.select(Max(MOPLog.flow_index))
+		.where(
+			(MOPLog.manufacturing_operation == manufacturing_operation)
+			& (MOPLog.is_cancelled == 0)
+		)
 	)
-	return last_log
+	if voucher_type:
+		query = query.where(MOPLog.voucher_type == voucher_type)
+	if voucher_no:
+		query = query.where(MOPLog.voucher_no == voucher_no)
+
+	result = query.run(as_list=True)
+	return result[0][0] if result and result[0] else None
 
 
 def get_current_mop_balance_rows(
