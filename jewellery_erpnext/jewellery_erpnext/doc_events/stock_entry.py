@@ -383,7 +383,7 @@ def validate_metal_properties(doc):
 					as_dict=True,
 				)
 
-	manufacturer = MANUFACTURER
+	manufacturer = MANUFACTURER or doc.manufacturer
 	company_validations = (
 		frappe.db.get_value(
 			"Manufacturing Setting",
