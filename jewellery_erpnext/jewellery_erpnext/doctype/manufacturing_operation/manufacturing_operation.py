@@ -3849,7 +3849,6 @@ def get_make_receive_entry_rows(manufacturing_operation):
 		# Authoritative MOP for this SRE — its own manufacturing_operation,
 		# falling back to the opened MOP only when the custom field is
 		# missing (test fixtures, legacy data).
-		sre_mop = sre.manufacturing_operation or mo.name
 		# Slice the 3-tuple-keyed global map down to the (item, batch) pairs
 		# for this SRE's MOP, matching the helper's 2-tuple key contract.
 		sre_mop_balance_map = {
@@ -3951,7 +3950,7 @@ def get_make_receive_entry_rows(manufacturing_operation):
 			already_received_for_item = already_received_qty_map.get(qty_key, 0)
 			already_received_pcs_for_item = already_received_pcs_map.get(qty_key, 0)
 			ctx = get_available_qty_pcs_for_mop_item(
-				manufacturing_operation=sre_mop,
+				manufacturing_operation=manufacturing_operation,
 				item_code=sre.item_code,
 				batch_no=None,
 				warehouse=sre.warehouse,
@@ -4440,7 +4439,6 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 		frappe.flags.update_pcs = True
 
 		se_doc.save()
-		se_doc.submit()
 
 		# Post-submit SRE mutation. Full receive cancels; partial cancels and
 		# recreates with remaining qty, preserving voucher_*, batch metadata.
@@ -4536,7 +4534,7 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 						"action": "recreated" if new_name else "cancelled",
 					}
 				)
-
+		se_doc.submit()
 		frappe.db.release_savepoint("make_receive_entry")
 	except Exception:
 		frappe.db.rollback(save_point="make_receive_entry")
@@ -4600,7 +4598,6 @@ def update_new_mop_wtg(
 				loss_map[(item_code, batch_no)] = bucket
 
 	tolerance = _float_tolerance()
-	processed_loss_keys: set = set()
 
 	mop_logs = get_current_mop_balance_rows(self.previous_mop)
 	for log in mop_logs:
