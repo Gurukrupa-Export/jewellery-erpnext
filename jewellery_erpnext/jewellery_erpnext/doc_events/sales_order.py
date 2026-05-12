@@ -3749,12 +3749,12 @@ def validate_items(self):
 		for item in aggregated_metal_labour_items.values():
 			self.append("custom_invoice_item", item)
 
-						# Update amount with tax
-						aggregated_diamond_items[key]["amount_with_tax"] = (
+			# Update amount with tax
+			aggregated_diamond_items[key]["amount_with_tax"] = (
 							aggregated_diamond_items[key]["amount"]
 							+ aggregated_diamond_items[key]["tax_amount"]
 						)
-						aggregated_diamond_items[key][
+			aggregated_diamond_items[key][
 							"delivery_date"
 						] = self.delivery_date
 
