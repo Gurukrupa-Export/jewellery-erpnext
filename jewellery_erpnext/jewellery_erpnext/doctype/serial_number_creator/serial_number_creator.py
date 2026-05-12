@@ -785,24 +785,28 @@ def _get_source_raw_materials(mop_name, snc_doc):
 
 			# If no stock in proposed warehouse, find one that has stock
 			if not batch_qty or flt(batch_qty) <= 0:
-				# Query warehouses with positive stock for this batch
-				warehouses_with_stock = frappe.db.get_list(
-					"Stock Ledger Entry",
-					filters={
-						"item_code": item_code,
-						"batch_no": batch_no,
-						"is_cancelled": 0,
-					},
-					fields=["warehouse", "sum(actual_qty) as total_qty"],
-					group_by="warehouse",
-					order_by="total_qty desc",
+				warehouses_with_stock = frappe.db.sql(
+					"""
+						SELECT
+							warehouse,
+							SUM(actual_qty) AS total_qty
+						FROM `tabStock Ledger Entry`
+						WHERE
+							item_code = %s
+							AND batch_no = %s
+							AND is_cancelled = 0
+						GROUP BY warehouse
+						HAVING total_qty > 0
+						ORDER BY total_qty DESC
+						LIMIT 1
+					""",
+					(item_code, batch_no),
+					as_dict=True,
 				)
 
-				# Use first warehouse with positive balance
-				for wh in warehouses_with_stock:
-					if flt(wh.get("total_qty", 0)) > 0:
-						s_wh = wh["warehouse"]
-						break
+				if warehouses_with_stock:
+					s_wh = warehouses_with_stock[0].get("warehouse")
+					batch_qty = warehouses_with_stock[0].get("total_qty") or 0
 
 		out.append(
 			{
