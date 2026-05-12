@@ -11,10 +11,14 @@
   "rate_per_pc",
   "rate_per_diamond",
   "metal_touch",
+  "mfg_complexity_code",
   "column_break_4",
   "wastage",
   "rate_per_gm_threshold",
-  "supplier_fg_purchase_rate"
+  "supplier_fg_purchase_rate",
+  "customer_making_charges_code",
+  "subcontracting_rate",
+  "subcontracting_wastage"
  ],
  "fields": [
   {
@@ -76,17 +80,39 @@
    "fieldtype": "Link",
    "label": "Metal Touch",
    "options": "Attribute Value"
+  },
+  {
+   "fieldname": "customer_making_charges_code",
+   "fieldtype": "Data",
+   "label": "Customer Making Charges Code"
+  },
+  {
+   "fieldname": "subcontracting_rate",
+   "fieldtype": "Currency",
+   "label": "subcontracting_rate"
+  },
+  {
+   "fieldname": "subcontracting_wastage",
+   "fieldtype": "Percent",
+   "label": "subcontracting_wastage"
+  },
+  {
+   "fieldname": "mfg_complexity_code",
+   "fieldtype": "Select",
+   "label": "Mfg Complexity Code",
+   "options": "\nSimple\nMedium\nComplex"
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-12-31 13:29:04.467414",
- "modified_by": "Administrator",
+ "modified": "2026-04-03 16:30:36.550516",
+ "modified_by": "shruti_b@gkexport.com",
  "module": "Gurukrupa Exports",
  "name": "Making Charge Price Finding Subcategory",
  "owner": "Administrator",
  "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

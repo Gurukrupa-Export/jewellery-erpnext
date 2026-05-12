@@ -383,7 +383,7 @@ def validate_metal_properties(doc):
 					as_dict=True,
 				)
 
-	manufacturer = MANUFACTURER
+	manufacturer = MANUFACTURER or doc.manufacturer
 	company_validations = (
 		frappe.db.get_value(
 			"Manufacturing Setting",
@@ -689,7 +689,7 @@ def stock_reservation_entry_for_mwo(self):
 			)
 
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			"Sales Order", sales_order, sales_order_item
+			row.item_code, "Sales Order", sales_order, sales_order_item
 		)
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0

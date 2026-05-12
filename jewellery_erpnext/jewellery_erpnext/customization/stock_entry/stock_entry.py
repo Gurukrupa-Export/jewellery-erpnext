@@ -7,9 +7,9 @@ from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 from frappe import _
 from frappe.utils import flt
 
-from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
-	BatchValuationLedger,
-)
+# from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+# 	BatchValuationLedger,
+# )
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.inventory_utils import (
 	in_configured_timeslot,
 	validate_customer_voucher,
@@ -18,7 +18,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	get_fifo_batches,
 	set_employee,
 	set_gross_wt,
-	validate_inventory_dimention,
+	# validate_inventory_dimention,
 	validate_warehouse,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (

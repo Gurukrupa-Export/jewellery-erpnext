@@ -50,7 +50,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufac
 	update_new_mop_wtg,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-	create_mop_log_for_employee_ir_loss,
+	# create_mop_log_for_employee_ir_loss,
 	create_mop_log_for_employee_ir_receive,
 	creste_mop_log_for_employee_ir,
 )

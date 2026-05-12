@@ -71,6 +71,14 @@
    "label": "Gross Wt",
    "module": "Jewellery Erpnext",
    "read_only": 1
+  },
+  {
+    "dt": "Serial No",
+    "fieldname": "purchase_document_no",
+    "fieldtype": "Data",
+    "label": "Purchase Document No",
+    "module": "Jewellery Erpnext",
+    "insert_after": "custom_serial_no_table"
   }
  ]
 }
