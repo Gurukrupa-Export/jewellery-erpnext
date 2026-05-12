@@ -232,9 +232,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 
 				# Deduplicate and cancel
 				for sre_name in set(linked_sres):
-					sre_doc = frappe.get_doc(
-						"Stock Reservation Entry", sre_name
-					).cancel()
+					sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
 					sre_doc.flags.ignore_permissions = True
 					sre_doc.cancel()
 
@@ -682,13 +680,13 @@ def _get_source_raw_materials(mop_name, snc_doc):
 		)
 
 	# Get all MWOs for the PMO (for physical warehouse fallback)
-	all_mwos = []
-	if pmo:
-		all_mwos = frappe.get_all(
-			"Manufacturing Work Order",
-			{"manufacturing_order": pmo, "docstatus": 1},
-			pluck="name",
-		)
+	# all_mwos = []
+	# if pmo:
+	# 	all_mwos = frappe.get_all(
+	# 		"Manufacturing Work Order",
+	# 		{"manufacturing_order": pmo, "docstatus": 1},
+	# 		pluck="name",
+	# 	)
 
 	out = []
 	for r in balance_rows:
@@ -718,10 +716,34 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				customer = sed_data.customer
 
 		s_wh = None
-
-		# Resolve source warehouse: ONLY from Stock Reservation Entry (SRE)
-		s_wh = None
 		sre_filters = {"item_code": item_code, "docstatus": 1}
+		sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+
+		priority_links = [
+			("manufacturing_operation", mop_name),
+			("manufacturing_work_order", mwo_name),
+			("production_manufacturing_order", pmo),
+		]
+
+		for link_field, link_val in priority_links:
+			if not s_wh and link_val and link_field in sre_cols:
+				s_wh = frappe.db.get_value(
+					"Stock Reservation Entry",
+					{**sre_filters, link_field: link_val},
+					"warehouse",
+				)
+
+		# Fallback to Sales Order link
+		if not s_wh and sales_order:
+			s_wh = frappe.db.get_value(
+				"Stock Reservation Entry",
+				{
+					**sre_filters,
+					"voucher_type": "Sales Order",
+					"voucher_no": sales_order,
+				},
+				"warehouse",
+			)
 
 		# Try linking to the specific Manufacturing Operation first
 		s_wh = frappe.db.get_value(
@@ -742,24 +764,45 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				"warehouse",
 			)
 
-		# Fallback: Check SRE by Sales Order
-		if not s_wh and sales_order:
-			sre_wh = frappe.db.get_value(
-				"Stock Reservation Entry",
-				{
-					"voucher_type": "Sales Order",
-					"voucher_no": sales_order,
-					"item_code": item_code,
-					"docstatus": 1,
-				},
-				"warehouse",
-			)
-			if sre_wh:
-				s_wh = sre_wh
-
-		# Final Fallback: MOP Log's own from_warehouse
+		# If still no warehouse found, use MOP Log warehouse
 		if not s_wh:
-			s_wh = r.get("from_warehouse")
+			s_wh = r.get("to_warehouse")
+
+		# Validate that the warehouse actually has stock for this batch
+		# If batch is empty in this warehouse, find where it actually is
+		if s_wh and batch_no:
+			batch_qty_result = frappe.db.sql(
+				"""
+				SELECT SUM(actual_qty) FROM `tabStock Ledger Entry`
+				WHERE item_code = %s AND batch_no = %s AND warehouse = %s AND is_cancelled = 0
+				""",
+				(item_code, batch_no, s_wh),
+				as_dict=True,
+			)
+			batch_qty = (
+				batch_qty_result[0].get("SUM(actual_qty)", 0) if batch_qty_result else 0
+			)
+
+			# If no stock in proposed warehouse, find one that has stock
+			if not batch_qty or flt(batch_qty) <= 0:
+				# Query warehouses with positive stock for this batch
+				warehouses_with_stock = frappe.db.get_list(
+					"Stock Ledger Entry",
+					filters={
+						"item_code": item_code,
+						"batch_no": batch_no,
+						"is_cancelled": 0,
+					},
+					fields=["warehouse", "sum(actual_qty) as total_qty"],
+					group_by="warehouse",
+					order_by="total_qty desc",
+				)
+
+				# Use first warehouse with positive balance
+				for wh in warehouses_with_stock:
+					if flt(wh.get("total_qty", 0)) > 0:
+						s_wh = wh["warehouse"]
+						break
 
 		out.append(
 			{
@@ -774,7 +817,7 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				"sed_item": r.get("row_name")
 				if r.get("voucher_type") == "Stock Entry"
 				else None,
-				"s_warehouse": s_wh,
+				"s_warehouse": s_wh or r.get("to_warehouse"),
 				"serial_and_batch_bundle": r.get("serial_and_batch_bundle"),
 			}
 		)

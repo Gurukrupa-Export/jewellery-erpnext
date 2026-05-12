@@ -34,19 +34,23 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_sli
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.mould_utils import (
 	create_mould,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.precision import (
+	round_employee_ir_weights_to_precision,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontracting_utils import (
 	create_so_for_subcontracting,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
 	validate_loss_qty,
+	validate_loss_tables_required,
 	validate_manually_book_loss_details,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	update_new_mop_wtg,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-	create_mop_log_for_employee_ir_loss,
+	# create_mop_log_for_employee_ir_loss,
 	create_mop_log_for_employee_ir_receive,
 	creste_mop_log_for_employee_ir,
 )
@@ -75,6 +79,7 @@ class EmployeeIR(Document):
 				)
 
 	def on_submit(self):
+		validate_loss_tables_required(self)
 		validate_qc(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
@@ -112,6 +117,7 @@ class EmployeeIR(Document):
 		# self.validate_gross_wt()
 		# self.validate_main_slip()
 		# self.update_main_slip()
+		round_employee_ir_weights_to_precision(self)
 		self.validate_process_loss()
 		validate_manually_book_loss_details(self)
 		# valid_reparing_or_next_operation(self)
@@ -368,39 +374,29 @@ class EmployeeIR(Document):
 				# create_mop_log_for_employee_ir_receive will see.
 				stock_entry_name = inject_extra_metal_for_eir_receive(self, row)
 
+				# Combined-loss receive: create_mop_log_for_employee_ir_receive
+				# now subtracts employee_loss_details + manually_book_loss_details
+				# directly from each receive MOP Log row. There is no longer a
+				# separate Loss Attribution writer pass — the loss audit
+				# metadata (loss_weight, loss_source_row, loss_type) lives on
+				# the combined receive row itself, and MOPLog.validate updates
+				# Manufacturing Operation buckets exactly once.
 				create_mop_log_for_employee_ir_receive(
 					self, row, actor_wh, department_wh, stock_entry_name
 				)
 
-				# Loss attribution bridge writes (is_synced=1, qty_change=0).
-				# Per-MWO total loss = sum of proportional + manual already
-				# accumulated in mwo_loss_dict above. Helper is idempotent on
-				# (voucher_type, voucher_no, mop, loss_source_row, loss_type).
-				total_loss_for_mwo = (
-					mwo_loss_dict.get(row.manufacturing_work_order) or 0
+				# update_new_mop_wtg now does both jobs in one pass:
+				# clones the previous MOP's flow_index=0 baseline rows AND
+				# subtracts loss in-place per (item, batch). One MOP Log
+				# row per item/batch on the new operation. Source MOP is
+				# left unchanged.
+				update_new_mop_wtg(
+					new_operation,
+					employee_ir_doc=self,
+					employee_ir_operation_row=row,
+					from_warehouse=actor_wh,
+					to_warehouse=department_wh,
 				)
-				for lr in self.employee_loss_details:
-					if lr.manufacturing_work_order == row.manufacturing_work_order:
-						create_mop_log_for_employee_ir_loss(
-							self,
-							lr,
-							"Auto Employee Loss",
-							total_loss_for_mwo,
-							from_wh=actor_wh,
-							to_wh=department_wh,
-						)
-				for lr in self.manually_book_loss_details:
-					if lr.manufacturing_work_order == row.manufacturing_work_order:
-						create_mop_log_for_employee_ir_loss(
-							self,
-							lr,
-							"Manually Booked Loss",
-							total_loss_for_mwo,
-							from_wh=actor_wh,
-							to_wh=department_wh,
-						)
-
-				update_new_mop_wtg(new_operation)
 			else:
 				for sre in frappe.db.get_all(
 					"Stock Reservation Entry",
@@ -708,7 +704,7 @@ class EmployeeIR(Document):
 						)
 						total_mannual_loss += loss_qty
 
-			loss = flt(gwt) - flt(r_gwt) - flt(total_mannual_loss)
+			loss = flt(flt(gwt, 3) - flt(r_gwt, 3) - flt(total_mannual_loss, 3), 3)
 			ms_consum = 0
 			ms_consum_book = 0
 			stock_loss = 0

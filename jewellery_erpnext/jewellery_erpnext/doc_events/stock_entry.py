@@ -14,9 +14,9 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt
 
-from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
-	create_repack_for_subcontracting,
-)
+# from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
+# 	create_repack_for_subcontracting,
+# )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
@@ -544,20 +544,6 @@ def on_cancel(self, method=None):
 
 def before_submit(self, method):
 	# validation_for_stock_entry_submission(self)
-	main_slip = self.to_main_slip or self.main_slip
-	subcontractor = self.subcontractor or self.to_subcontractor
-	if (
-		not self.auto_created
-		and self.stock_entry_type != "Manufacture"
-		and (
-			(
-				main_slip
-				and frappe.db.get_value("Main Slip", main_slip, "for_subcontracting")
-			)
-			or (self.manufacturing_operation and subcontractor)
-		)
-	):
-		create_repack_for_subcontracting(self, self.subcontractor, main_slip)
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
@@ -688,13 +674,22 @@ def stock_reservation_entry_for_mwo(self):
 		# the same transaction. Reserve the inbound line qty when this SE is tied to an EIR.
 		# Gate on is_eir_injection — without the gate, regular Repack/Manufacture SEs would
 		# create SREs with no reservable qty, regressing test_skips_when_no_reservable_qty.
-		if is_eir_injection and qty_to_be_reserved <= 0 and flt(row.qty) > 0:
+		if qty_to_be_reserved <= 0 and flt(row.qty) > 0:
 			qty_to_be_reserved = flt(row.qty)
 		if qty_to_be_reserved <= 0:
-			continue
+			frappe.throw(
+				_(
+					"No available stock to reserve for Item {0} in Warehouse {1} in batch {2} available: {3}"
+				).format(
+					row.item_code,
+					row.t_warehouse,
+					row.batch_no,
+					available_qty_to_reserve,
+				)
+			)
 
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			"Sales Order", sales_order, sales_order_item
+			row.item_code, "Sales Order", sales_order, sales_order_item
 		)
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0

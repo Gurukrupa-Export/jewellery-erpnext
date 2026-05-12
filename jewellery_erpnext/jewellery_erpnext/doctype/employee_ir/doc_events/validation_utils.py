@@ -137,37 +137,38 @@ def update_mop_balance(mop_name):
 def validate_manually_book_loss_details(self):
 	if self.docstatus != 0:
 		return
-	# Stricter floor: per-row balance must cover the manual loss qty. Pre-submit
-	# the latest balance already reflects any prior submitted losses (loss MOP
-	# Log rows post a real negative qty_change), so no log_category filter is
-	# needed here.
+	# Per-key (mop, mwo, item, batch) combined-loss cap: the sum across both
+	# loss tables for a given key must not exceed the latest MOP Log balance
+	# for that key. Pre-submit, the latest balance already reflects any prior
+	# submitted losses (loss MOP Log rows post a real negative qty_change),
+	# so no log_category filter is needed here. Comparison is in the item's
+	# stock UOM (carats for D/G, grams for M/F/O) — both sides match.
 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 		get_available_qty_pcs_for_mop_item,
 	)
 
+	combined_loss_by_key = {}
+	for src_label, table in (
+		("employee", self.employee_loss_details or []),
+		("manual", self.manually_book_loss_details or []),
+	):
+		for row in table:
+			if not row.manufacturing_operation:
+				continue
+			key = (
+				row.manufacturing_operation,
+				row.manufacturing_work_order,
+				row.item_code,
+				row.batch_no,
+			)
+			bucket = combined_loss_by_key.setdefault(
+				key, {"employee": 0.0, "manual": 0.0}
+			)
+			bucket[src_label] += flt(row.proportionally_loss, 3)
+
 	for row in self.manually_book_loss_details:
 		if not row.manufacturing_operation:
 			continue
-		balance_qty = (
-			frappe.db.get_value(
-				"MOP Log",
-				{
-					"manufacturing_operation": row.manufacturing_operation,
-					"item_code": row.item_code,
-					"batch_no": row.batch_no,
-					"is_cancelled": 0,
-				},
-				"qty_after_transaction_batch_based",
-				order_by="creation desc",
-			)
-			or 0
-		)
-		if row.proportionally_loss > balance_qty:
-			frappe.throw(
-				_(
-					"Row #{0}: <b>{1}</b> Proportionally Loss {2} cannot be greater than Balance Qty {3}"
-				).format(row.idx, row.item_code, row.proportionally_loss, balance_qty)
-			)
 
 		# D/G PCS reconciliation: manual loss PCS must not drive the MOP
 		# diamond_pcs/gemstone_pcs negative. Only D/G items carry meaningful
@@ -202,9 +203,9 @@ def validate_manually_book_loss_details(self):
 						)
 					)
 
-	# Additional cap: total manual loss for a MWO cannot exceed the true
+	# Additional cap: total combined loss (employee + manual, normalised to
+	# grams via get_loss_qty_in_grams) for a MWO cannot exceed the true
 	# available baseline (gross_wt - received_gross_wt) for that MWO.
-	# Carat manual loss converted to grams for comparison.
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 
 	baseline_by_mwo = {}
@@ -217,24 +218,24 @@ def validate_manually_book_loss_details(self):
 		baseline_by_mwo.setdefault(op.manufacturing_work_order, 0.0)
 		baseline_by_mwo[op.manufacturing_work_order] += baseline
 
-	manual_by_mwo = {}
-	for row in self.manually_book_loss_details:
-		qty = flt(row.proportionally_loss)
-		stock_uom = frappe.get_cached_value("Item", row.item_code, "stock_uom")
-		if stock_uom == "Carat":
-			qty = qty * 0.2
-		manual_by_mwo.setdefault(row.manufacturing_work_order, 0.0)
-		manual_by_mwo[row.manufacturing_work_order] += qty
+	loss_by_mwo = {}
+	for row in (self.manually_book_loss_details or []) + (
+		self.employee_loss_details or []
+	):
+		qty = get_loss_qty_in_grams(row.item_code, row.proportionally_loss)
+		loss_by_mwo.setdefault(row.manufacturing_work_order, 0.0)
+		loss_by_mwo[row.manufacturing_work_order] += qty
 
-	for mwo, manual_total in manual_by_mwo.items():
+	for mwo, total in loss_by_mwo.items():
 		available = baseline_by_mwo.get(mwo, 0.0)
-		if manual_total > available:
+		if flt(total, 3) > flt(available, 3):
 			frappe.throw(
 				_(
-					"Total Manually Booked Loss for Manufacturing Work Order {0} "
-					"({1} g) cannot exceed available loss baseline ({2} g = "
-					"Gross Wt - Received Gross Wt)."
-				).format(mwo, flt(manual_total, 3), flt(available, 3))
+					"Total Loss for Manufacturing Work Order {0} "
+					"({1} g, employee + manual normalised to grams) cannot "
+					"exceed available loss baseline ({2} g = Gross Wt - "
+					"Received Gross Wt)."
+				).format(mwo, flt(total, 3), flt(available, 3))
 			)
 
 
@@ -251,6 +252,68 @@ def get_loss_details(row):
 		)
 
 	return loss_details
+
+
+def validate_loss_tables_required(self):
+	"""On-submit gate for Employee IR Receive loss tables.
+
+	Two contracts, both gated on baseline > 0 (rounded to 3):
+
+	  1. At least one of ``employee_loss_details`` /
+	     ``manually_book_loss_details`` must be populated.
+	  2. The sum across both tables, normalised to grams via
+	     ``get_loss_qty_in_grams`` (D/G items × 0.2), must equal the
+	     baseline within precision-3 tolerance.
+
+	Baseline = ``sum(gross_wt − received_gross_wt)`` over rows where the
+	receive shrunk the weight, rounded to 3. Caller is ``EmployeeIR.on_submit``;
+	at that point ``docstatus`` is still 0, so we don't gate on it — running
+	this validator post-submit would be a logic bug, not a no-op.
+	"""
+	if getattr(self, "type", None) != "Receive":
+		return
+
+	baseline = 0.0
+	for op in self.employee_ir_operations:
+		if op.received_gross_wt and flt(op.gross_wt, 3) > flt(op.received_gross_wt, 3):
+			baseline += flt(op.gross_wt, 3) - flt(op.received_gross_wt, 3)
+	baseline = flt(baseline, 3)
+
+	if baseline <= 0:
+		return
+
+	has_employee = bool(getattr(self, "employee_loss_details", None))
+	has_manual = bool(getattr(self, "manually_book_loss_details", None))
+	if not (has_employee or has_manual):
+		frappe.throw(
+			_(
+				"Loss exists ({0} g) but no Employee Loss Details or Manually "
+				"Book Loss Details found. Please book the manufacturing loss "
+				"before submit."
+			).format(baseline)
+		)
+
+	# Sum-match: every gram of loss must be allocated across the two
+	# tables. ``get_loss_qty_in_grams`` handles carat→gram for D/G items.
+	total = 0.0
+	for row in (self.employee_loss_details or []) + (
+		self.manually_book_loss_details or []
+	):
+		total += get_loss_qty_in_grams(row.item_code, row.proportionally_loss)
+	total = flt(total, 3)
+
+	# Tolerance = 0.0005 — half the precision-3 floor. After ``flt(_, 3)``
+	# on each side, two values that round to the same display equal each
+	# other within this margin; values that differ by ≥ 0.001 don't.
+	if abs(total - baseline) > 0.0005:
+		diff = flt(total - baseline, 3)
+		frappe.throw(
+			_(
+				"Total Loss Details ({0} g, employee + manual normalised to "
+				"grams) must match available loss baseline ({1} g = sum of "
+				"Gross Wt − Received Gross Wt). Difference: {2} g."
+			).format(total, baseline, diff)
+		)
 
 
 def validate_loss_qty(self):
