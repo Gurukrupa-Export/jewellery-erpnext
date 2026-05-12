@@ -263,7 +263,7 @@ def create_new_bom(self):
 								float(gem.total_gemstone_rate) / 100 * float(gem.quantity)
 							)
 							doc.total_gemstone_amount = sum(
-								flt(r.gemstone_rate_for_specified_quantity)
+								float(r.gemstone_rate_for_specified_quantity)
 								for r in doc.get("gemstone_detail", [])
 							)
 						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
@@ -278,7 +278,7 @@ def create_new_bom(self):
 							)
 							# gem.fg_purchase_amount=gem.gemstone_rate_for_specified_quantity
 							doc.total_gemstone_amount = sum(
-								flt(r.gemstone_rate_for_specified_quantity)
+								float(r.gemstone_rate_for_specified_quantity)
 								for r in doc.get("gemstone_detail", []))
 						else:
 							if gemstone_price_list_customer == "Fixed" and customer_group !="Retail":
@@ -327,7 +327,7 @@ def create_new_bom(self):
 								)
 								gem.gemstone_rate_for_specified_quantity=round(gem.gemstone_rate_for_specified_quantity, 2)
 								doc.total_gemstone_amount = sum(
-									flt(r.gemstone_rate_for_specified_quantity)
+									float(r.gemstone_rate_for_specified_quantity)
 									for r in doc.get("gemstone_detail", [])
 								)
 
@@ -352,7 +352,7 @@ def create_new_bom(self):
 									multiplier_rows = gpc_doc.get("gemstone_multiplier")
 									rate = 0
 									for mul in multiplier_rows:
-										if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
+										if mul.gemstone_type == gem.gemstone_type and (float(doc.diamond_weight)>=float(mul.from_weight) and float(doc.diamond_weight)<=float(mul.to_weight)):
 											if gem.is_customer_item:
 												if gem.gemstone_quality == 'Precious':
 													rate = mul.outwork_precious_percentage
@@ -402,7 +402,7 @@ def create_new_bom(self):
 								multiplier_rows = gpc_doc.get("gemstone_multiplier")
 								rate = 0
 								for mul in multiplier_rows:
-									if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
+									if mul.gemstone_type == gem.gemstone_type and (float(doc.diamond_weight)>=float(mul.from_weight) and float(doc.diamond_weight)<=float(mul.to_weight)):
 										if gem.gemstone_quality == 'Precious':
 											rate = mul.precious_percentage
 
@@ -420,7 +420,7 @@ def create_new_bom(self):
 								gem.gemstone_rate_for_specified_quantity =round(gem.gemstone_rate_for_specified_quantity , 2)
 								gem.price_list_type='Diamond Range'
 							doc.total_gemstone_amount = sum(
-									flt(r.gemstone_rate_for_specified_quantity)
+									float(r.gemstone_rate_for_specified_quantity)
 									for r in doc.get("gemstone_detail", [])
 								)
 
@@ -602,10 +602,10 @@ def create_new_bom(self):
 								s.wastage_amount=s.wastage_rate*s.amount
 						
 						# frappe.set_value(s.doctype, s.name, "rate", s.rate)
-					doc.total_metal_amount = sum(flt((r.amount)) for r in doc.get("metal_detail", []))
+					doc.total_metal_amount = sum(float((r.amount)) for r in doc.get("metal_detail", []))
 					
-					doc.total_wastage_amount = sum(flt((r.wastage_amount)) for r in doc.get("metal_detail", [])) 
-					doc.total_making_amount = sum(flt((r.making_amount)) for r in doc.get("metal_detail", [])) 
+					doc.total_wastage_amount = sum(float((r.wastage_amount)) for r in doc.get("metal_detail", [])) 
+					doc.total_making_amount = sum(float((r.making_amount)) for r in doc.get("metal_detail", [])) 
 					
 				# if hasattr(doc, "metal_detail"):
 				# 	mc = frappe.get_all(
@@ -670,9 +670,9 @@ def create_new_bom(self):
 				# 			s.making_amount = making_rate * s.quantity
 				# 		s.wastage_rate=wastage
 				# 		s.wastage_amount=s.wastage_rate*s.amount
-				# 	doc.total_metal_amount = sum(flt((r.amount)) for r in doc.get("metal_detail", []))
-				# 	doc.total_wastage_amount = sum(flt((r.wastage_amount)) for r in doc.get("metal_detail", [])) 
-				# 	doc.total_making_amount = sum(flt((r.making_amount)) for r in doc.get("metal_detail", [])) 
+				# 	doc.total_metal_amount = sum(float((r.amount)) for r in doc.get("metal_detail", []))
+				# 	doc.total_wastage_amount = sum(float((r.wastage_amount)) for r in doc.get("metal_detail", [])) 
+				# 	doc.total_making_amount = sum(float((r.making_amount)) for r in doc.get("metal_detail", [])) 
 
 
 
@@ -842,9 +842,9 @@ def create_new_bom(self):
 						# total_finding_making_amount += f.making_amount
 						# total_finding_wastage_amount += f.wastage_amount
 					
-					doc.total_finding_amount = sum(flt((r.amount)) for r in doc.get("finding_detail", []))
-					doc.total_finding_making_amount = sum(flt((r.making_amount)) for r in doc.get("finding_detail", [])) 
-					doc.total_finding_wastage_amount = sum(flt((r.wastage_amount)) for r in doc.get("finding_detail", [])) 
+					doc.total_finding_amount = sum(float((r.amount)) for r in doc.get("finding_detail", []))
+					doc.total_finding_making_amount = sum(float((r.making_amount)) for r in doc.get("finding_detail", [])) 
+					doc.total_finding_wastage_amount = sum(float((r.wastage_amount)) for r in doc.get("finding_detail", [])) 
 
 				# if hasattr(doc, "diamond_detail"):
 				# 	for d in doc.diamond_detail:
@@ -900,7 +900,7 @@ def create_new_bom(self):
 				# 		d.diamond_rate_for_specified_quantity = d.quantity * d.total_diamond_rate
 
 				# 	doc.total_diamond_amount = sum(
-				# 				flt(r.diamond_rate_for_specified_quantity)
+				# 				float(r.diamond_rate_for_specified_quantity)
 				# 				for r in doc.get("diamond_detail", [])
 				# 			)
 
@@ -1188,7 +1188,7 @@ def create_new_bom(self):
 						doc.certification_amount = ccp.per_carat_rate * (sum(row.quantity_3 for row in doc.diamond_detail))
 					doc.hallmarking_amount=ccp.hallmarking_amount
 				doc.total_diamond_amount = sum(
-					flt(r.diamond_rate_for_specified_quantity)
+					float(r.diamond_rate_for_specified_quantity)
 					for r in doc.get("diamond_detail", [])
 				)
 				
@@ -1216,8 +1216,8 @@ def create_new_bom(self):
 				doc.custom_finding_weight2_digits = (sum(row.quantity_3 for row in doc.finding_detail))
 				doc.finding_weight_ = doc.custom_finding_weight2_digits
 				doc.total_finding_weight_per_gram = doc.finding_weight
-				doc.total_diamond_pcs = sum(flt(row.pcs) for row in doc.diamond_detail)
-				doc.total_gemstone_pcs = sum(flt(row.pcs) for row in doc.gemstone_detail)
+				doc.total_diamond_pcs = sum(float(row.pcs) for row in doc.diamond_detail)
+				doc.total_gemstone_pcs = sum(float(row.pcs) for row in doc.gemstone_detail)
 				doc.total_other_weight = sum(row.quantity for row in doc.other_detail)
 				doc.other_weight = doc.total_other_weight
 				# doc.total_diamond_amount  = sum(row.diamond_rate_for_specified_quantity for row in doc.diamond_detail)
@@ -1225,32 +1225,32 @@ def create_new_bom(self):
 				# doc.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity for row in doc.diamond_detail)
 				doc.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity or 0.0 for row in doc.diamond_detail)
 
-				# doc.metal_and_finding_weight = round(flt(doc.metal_weight) + flt(doc.finding_weight),2)
+				# doc.metal_and_finding_weight = round(float(doc.metal_weight) + float(doc.finding_weight),2)
 				# dharm 3-3-2026
-				doc.metal_and_finding_weight = round(flt(doc.metal_weight) + flt(doc.finding_weight),3)
+				doc.metal_and_finding_weight = round(float(doc.metal_weight) + float(doc.finding_weight),3)
 				# frappe.throw(f"{doc.metal_weight}||{doc.finding_weight}")
 				doc.gold_to_diamond_ratio = (
-					flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+					float(doc.metal_and_finding_weight) / float(doc.diamond_weight) if doc.diamond_weight else 0
 				)
 				doc.diamond_ratio = (
-					flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
+					float(doc.diamond_weight) / float(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
 				)
 				doc.gross_weight = round(
-					flt(doc.metal_and_finding_weight)
-					+ flt(doc.total_diamond_weight_in_gms)
-					+ flt(doc.total_gemstone_weight_in_gms)
-					+ flt(doc.total_other_weight)
+					float(doc.metal_and_finding_weight)
+					+ float(doc.total_diamond_weight_in_gms)
+					+ float(doc.total_gemstone_weight_in_gms)
+					+ float(doc.total_other_weight)
 				,3)
 				doc.metal_to_diamond_ratio_excl_of_finding=(
-					flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+					float(doc.metal_weight) / float(doc.diamond_weight) if doc.diamond_weight else 0
 				)
 				# frappe.throw(f"{doc.total_finding_weight_per_gram}")
 				# Jay Added
 				doc.custom_total_pure_weight = sum(
-					row.quantity * (flt(row.metal_purity) / 100) for row in doc.metal_detail
+					row.quantity * (float(row.metal_purity) / 100) for row in doc.metal_detail
 				)
 				doc.custom_total_pure_finding_weight = sum(
-					row.quantity * (flt(row.metal_purity) / 100) for row in doc.finding_detail
+					row.quantity * (float(row.metal_purity) / 100) for row in doc.finding_detail
 				)
 				doc.custom_net_pure_weight = (
 					doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
@@ -1522,7 +1522,7 @@ def create_new_bom1(self):
 								float(gem.total_gemstone_rate) / 100 * float(gem.quantity)
 							)
 							doc.total_gemstone_amount = sum(
-								flt(r.gemstone_rate_for_specified_quantity)
+								float(r.gemstone_rate_for_specified_quantity)
 								for r in doc.get("gemstone_detail", [])
 							)
 						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
@@ -1536,7 +1536,7 @@ def create_new_bom1(self):
 								float(gem.total_gemstone_rate) * float(gem.quantity)) if gem.per_pc_or_per_carat=='Per Carat' else (float(gem.total_gemstone_rate) * float(gem.pcs))
 							# gem.fg_purchase_amount=gem.gemstone_rate_for_specified_quantity
 							doc.total_gemstone_amount = sum(
-								flt(r.gemstone_rate_for_specified_quantity)
+								float(r.gemstone_rate_for_specified_quantity)
 								for r in doc.get("gemstone_detail", []))
 						else:
 							if gemstone_price_list_customer == "Fixed" and customer_group !="Retail":
@@ -1584,7 +1584,7 @@ def create_new_bom1(self):
 								float(rate) * float(gem.quantity)) if gem.per_pc_or_per_carat=='Per Carat' else (float(rate) * float(gem.pcs))
 								gem.gemstone_rate_for_specified_quantity=round(gem.gemstone_rate_for_specified_quantity, 2)
 								doc.total_gemstone_amount = sum(
-									flt(r.gemstone_rate_for_specified_quantity)
+									float(r.gemstone_rate_for_specified_quantity)
 									for r in doc.get("gemstone_detail", [])
 								)
 								# frappe.throw(f"{gem.gemstone_rate_for_specified_quantity}")
@@ -1611,7 +1611,7 @@ def create_new_bom1(self):
 									multiplier_rows = gpc_doc.get("gemstone_multiplier")
 									rate = 0
 									for mul in multiplier_rows:
-										if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
+										if mul.gemstone_type == gem.gemstone_type and (float(doc.diamond_weight)>=float(mul.from_weight) and float(doc.diamond_weight)<=float(mul.to_weight)):
 											if gem.is_customer_item:
 												if gem.gemstone_quality == 'Precious':
 													rate = mul.outwork_precious_percentage
@@ -1665,7 +1665,7 @@ def create_new_bom1(self):
 								rate = gpc_doc.rate if gpc_doc else 0
 								# frappe.throw(f"{rate}No Retail Multiplier Price List found")
 								for mul in multiplier_rows:
-									if mul.gemstone_type == gem.gemstone_type and (flt(doc.diamond_weight)>=flt(mul.from_weight) and flt(doc.diamond_weight)<=flt(mul.to_weight)):
+									if mul.gemstone_type == gem.gemstone_type and (float(doc.diamond_weight)>=float(mul.from_weight) and float(doc.diamond_weight)<=float(mul.to_weight)):
 										if gem.gemstone_quality == 'Precious':
 											rate = mul.precious_percentage
 
@@ -1682,7 +1682,7 @@ def create_new_bom1(self):
 								gem.gemstone_rate_for_specified_quantity =round(gem.gemstone_rate_for_specified_quantity , 2)
 								gem.price_list_type='Diamond Range'
 							doc.total_gemstone_amount = sum(
-									flt(r.gemstone_rate_for_specified_quantity)
+									float(r.gemstone_rate_for_specified_quantity)
 									for r in doc.get("gemstone_detail", [])
 								)
 
@@ -1853,10 +1853,10 @@ def create_new_bom1(self):
 								 
 						
 						# frappe.set_value(s.doctype, s.name, "rate", s.rate)
-					doc.total_metal_amount = sum(flt((r.amount)) for r in doc.get("metal_detail", []))
+					doc.total_metal_amount = sum(float((r.amount)) for r in doc.get("metal_detail", []))
 					
-					doc.total_wastage_amount = sum(flt((r.wastage_amount)) for r in doc.get("metal_detail", [])) 
-					doc.total_making_amount = sum(flt((r.making_amount)) for r in doc.get("metal_detail", [])) 
+					doc.total_wastage_amount = sum(float((r.wastage_amount)) for r in doc.get("metal_detail", [])) 
+					doc.total_making_amount = sum(float((r.making_amount)) for r in doc.get("metal_detail", [])) 
 					
 				if hasattr(doc, "finding_detail") and doc.finding_detail:
 					# Cache Finding Subcategory data to avoid repeated DB queries for same finding_type
@@ -2026,9 +2026,9 @@ def create_new_bom1(self):
 						# total_finding_making_amount += f.making_amount
 						# total_finding_wastage_amount += f.wastage_amount
 					
-					doc.total_finding_amount = sum(flt((r.amount)) for r in doc.get("finding_detail", []))
-					doc.total_finding_making_amount = sum(flt((r.making_amount)) for r in doc.get("finding_detail", [])) 
-					doc.total_finding_wastage_amount = sum(flt((r.wastage_amount)) for r in doc.get("finding_detail", [])) 
+					doc.total_finding_amount = sum(float((r.amount)) for r in doc.get("finding_detail", []))
+					doc.total_finding_making_amount = sum(float((r.making_amount)) for r in doc.get("finding_detail", [])) 
+					doc.total_finding_wastage_amount = sum(float((r.wastage_amount)) for r in doc.get("finding_detail", [])) 
 
 				if hasattr(doc, "diamond_detail"):
 					for d in doc.diamond_detail:
@@ -2227,7 +2227,7 @@ def create_new_bom1(self):
 				diamond_pcs=doc.total_diamond_pcs
 				# Sum total diamond amount for document
 				doc.total_diamond_amount = sum(
-					flt(r.diamond_rate_for_specified_quantity)
+					float(r.diamond_rate_for_specified_quantity)
 					for r in doc.get("diamond_detail", [])
 				)
 				
@@ -2235,8 +2235,8 @@ def create_new_bom1(self):
 				doc.gold_bom_amount=doc.total_metal_amount
 				doc.gemstone_bom_amount=doc.total_gemstone_amount
 				doc.finding_bom_amount=doc.total_finding_amount
-				# frappe.throw(f"{doc.total_wastage_amount},{sum(flt(r.wastage_rate)for r in doc.get("finding_detail", []))}")
-				doc.total_bom_amount=(doc.diamond_bom_amount +doc.gold_bom_amount+ doc.gemstone_bom_amount+doc.finding_bom_amount+ doc.total_wastage_amount + (sum(flt(r.wastage_amount)for r in doc.get("finding_detail", []))))
+				# frappe.throw(f"{doc.total_wastage_amount},{sum(float(r.wastage_rate)for r in doc.get("finding_detail", []))}")
+				doc.total_bom_amount=(doc.diamond_bom_amount +doc.gold_bom_amount+ doc.gemstone_bom_amount+doc.finding_bom_amount+ doc.total_wastage_amount + (sum(float(r.wastage_amount)for r in doc.get("finding_detail", []))))
 				# frappe.throw(f"{doc.total_bom_amount}")
 				doc.making_charge = sum(row.making_amount for row in doc.metal_detail) + sum(row.making_amount for row in doc.finding_detail)
 				# self.total=0
@@ -2253,8 +2253,8 @@ def create_new_bom1(self):
 				doc.custom_finding_weight2_digits = (sum(row.quantity_3 for row in doc.finding_detail))
 				doc.finding_weight_ = doc.custom_finding_weight2_digits
 				doc.total_finding_weight_per_gram = doc.finding_weight
-				doc.total_diamond_pcs = sum(flt(row.pcs) for row in doc.diamond_detail)
-				doc.total_gemstone_pcs = sum(flt(row.pcs) for row in doc.gemstone_detail)
+				doc.total_diamond_pcs = sum(float(row.pcs) for row in doc.diamond_detail)
+				doc.total_gemstone_pcs = sum(float(row.pcs) for row in doc.gemstone_detail)
 				doc.total_other_weight = sum(row.quantity for row in doc.other_detail)
 				doc.other_weight = doc.total_other_weight
 				# doc.total_diamond_amount  = sum(row.diamond_rate_for_specified_quantity for row in doc.diamond_detail)
@@ -2262,39 +2262,39 @@ def create_new_bom1(self):
 				# doc.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity for row in doc.diamond_detail)
 				doc.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity or 0.0 for row in doc.diamond_detail)
 
-				doc.metal_and_finding_weight = round(flt(doc.metal_weight) + flt(doc.finding_weight),2)
+				doc.metal_and_finding_weight = round(float(doc.metal_weight) + float(doc.finding_weight),2)
 				doc.gold_to_diamond_ratio = (
-					flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+					float(doc.metal_and_finding_weight) / float(doc.diamond_weight) if doc.diamond_weight else 0
 				)
 				doc.diamond_ratio = (
-					flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
+					float(doc.diamond_weight) / float(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
 				)
 				if self.customer_name=='Gurukrupa Export Private Limited - Factory':
 					doc.gross_weight = round(
-						flt(doc.metal_and_finding_weight)
-						+ flt(doc.total_diamond_weight_in_gms)
-						+ flt(doc.total_gemstone_weight_in_gms)
-						+ flt(doc.total_other_weight)
+						float(doc.metal_and_finding_weight)
+						+ float(doc.total_diamond_weight_in_gms)
+						+ float(doc.total_gemstone_weight_in_gms)
+						+ float(doc.total_other_weight)
 					,3)
 				else:
 					# frappe.throw("hii")
 					doc.gross_weight = round(
-						flt(doc.metal_and_finding_weight)
-						+ flt(doc.total_diamond_weight_in_gms)
-						+ flt(doc.total_gemstone_weight_in_gms)
-						+ flt(doc.total_other_weight)
+						float(doc.metal_and_finding_weight)
+						+ float(doc.total_diamond_weight_in_gms)
+						+ float(doc.total_gemstone_weight_in_gms)
+						+ float(doc.total_other_weight)
 					,2)
 					# frappe.throw(f"hii{doc.gross_weight}")
 				doc.metal_to_diamond_ratio_excl_of_finding=(
-					flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+					float(doc.metal_weight) / float(doc.diamond_weight) if doc.diamond_weight else 0
 				)
 				# frappe.throw(f"{doc.total_finding_weight_per_gram}")
 				# Jay Added
 				doc.custom_total_pure_weight = sum(
-					row.quantity * (flt(row.metal_purity) / 100) for row in doc.metal_detail
+					row.quantity * (float(row.metal_purity) / 100) for row in doc.metal_detail
 				)
 				doc.custom_total_pure_finding_weight = sum(
-					row.quantity * (flt(row.metal_purity) / 100) for row in doc.finding_detail
+					row.quantity * (float(row.metal_purity) / 100) for row in doc.finding_detail
 				)
 				doc.custom_net_pure_weight = (
 					doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
@@ -4120,7 +4120,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = diamond.quantity * item.qty
 								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
-								diamond_amount = flt(diamond.diamond_rate_for_specified_quantity)
+								diamond_amount = float(diamond.diamond_rate_for_specified_quantity)
 
 								aggregated_diamond_items[key]["qty"] += multiplied_qty
 								aggregated_diamond_items[key]["amount"] += diamond_amount
@@ -4164,7 +4164,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = (diamond.quantity * item.qty)/5
 								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
-								diamond_amount = flt(diamond.diamond_rate_for_specified_quantity)
+								diamond_amount = float(diamond.diamond_rate_for_specified_quantity)
 
 								aggregated_repairing_items[key]["qty"] += multiplied_qty
 								aggregated_repairing_items[key]["amount"] += diamond_amount
@@ -4207,7 +4207,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = diamond.quantity * item.qty
 								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
-								diamond_amount = flt(diamond.diamond_rate_for_specified_quantity)
+								diamond_amount = float(diamond.diamond_rate_for_specified_quantity)
 
 								aggregated_metal_labour_items[key]["qty"] += multiplied_qty/5
 								aggregated_metal_labour_items[key]["amount"] += diamond_amount
@@ -4250,7 +4250,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = gemstone.quantity * item.qty
 								gemstone_rate = gemstone.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else gemstone.total_gemstone_rate
-								gemstone_amount = flt(gemstone.gemstone_rate_for_specified_quantity)
+								gemstone_amount = float(gemstone.gemstone_rate_for_specified_quantity)
 
 								aggregated_gemstone_items[key]["qty"] += multiplied_qty
 								aggregated_gemstone_items[key]["amount"] += gemstone_amount
@@ -4291,7 +4291,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = gemstone.quantity * item.qty
 								gemstone_rate = gemstone.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else gemstone.total_gemstone_rate
-								gemstone_amount = flt(gemstone.gemstone_rate_for_specified_quantity)
+								gemstone_amount = float(gemstone.gemstone_rate_for_specified_quantity)
 
 								aggregated_metal_labour_items[key]["qty"] += multiplied_qty/5
 								aggregated_metal_labour_items[key]["amount"] += gemstone_amount
