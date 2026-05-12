@@ -28,6 +28,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_employee_ir_loss_map,
 	get_last_mop_index,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+	resolve_and_validate,
+)
 from jewellery_erpnext.utils import set_values_in_bulk, update_existing
 
 
@@ -980,23 +983,25 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			diamond_grade_data.setdefault(diamond_grade, 0)
 			diamond_grade_data[diamond_grade] += entry["qty"]
 
-		s_wh = None
-		sre_filters = {"item_code": entry["item_code"], "docstatus": 1}
-		sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+		s_wh = entry.get("s_warehouse")
 
-		priority_links = [
-			("manufacturing_operation", op_name),
-			("manufacturing_work_order", doc.manufacturing_work_order),
-			("production_manufacturing_order", pmo),
-		]
+		if not s_wh:
+			sre_filters = {"item_code": entry["item_code"], "docstatus": 1}
+			sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 
-		for link_field, link_val in priority_links:
-			if not s_wh and link_val and link_field in sre_cols:
-				s_wh = frappe.db.get_value(
-					"Stock Reservation Entry",
-					{**sre_filters, link_field: link_val},
-					"warehouse",
-				)
+			priority_links = [
+				("manufacturing_operation", op_name),
+				("manufacturing_work_order", doc.manufacturing_work_order),
+				("production_manufacturing_order", pmo),
+			]
+
+			for link_field, link_val in priority_links:
+				if not s_wh and link_val and link_field in sre_cols:
+					s_wh = frappe.db.get_value(
+						"Stock Reservation Entry",
+						{**sre_filters, link_field: link_val},
+						"warehouse",
+					)
 
 		# Fallback to Sales Order reservation if not found by operation
 		if not s_wh and pmo_det.get("sales_order"):
@@ -1026,7 +1031,6 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			)
 
 		# If still no warehouse found, get from warehouse that has actual available stock
-		# This handles cases where SREs are cancelled during certification process
 		if not s_wh and entry.get("batch_no"):
 			s_wh = get_warehouse_from_previous_stock_entry(
 				entry["item_code"],
@@ -1687,11 +1691,22 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	pmo_data = frappe.db.get_value(
 		"Parent Manufacturing Order",
 		self.parent_manufacturing_order,
-		["diamond_quality", "qty", "sales_order"],
+		["diamond_quality", "qty", "sales_order", "quotation"],
 		as_dict=1,
 	)
 
+	gold_rate_with_gst = 0
+	if pmo_data.get("quotation"):
+		gold_rate_with_gst = frappe.db.get_value(
+			"Quotation", pmo_data.get("quotation"), "gold_rate_with_gst"
+		)
+	elif pmo_data.get("sales_order"):
+		gold_rate_with_gst = frappe.db.get_value(
+			"Sales Order", pmo_data.get("sales_order"), "gold_rate_with_gst"
+		)
+
 	new_bom = frappe.copy_doc(bom_doc)
+	new_bom.gold_rate_with_gst = flt(gold_rate_with_gst)
 	new_bom.is_active = 1
 	new_bom.custom_creation_doctype = self.doctype
 	new_bom.custom_creation_docname = self.name
@@ -2179,10 +2194,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							as_dict=True,
 						)
 						if size_in_mm_diamond_price_list_entry:
-							latest_entry = size_in_mm_diamond_price_list_entry[
-								0
-							]  # Get the first entry
-							# row["total_diamond_rate"] = latest_entry.get("rate", 0)
+							latest_entry = size_in_mm_diamond_price_list_entry[0]
 							row["fg_purchase_rate"] = latest_entry.get(
 								"supplier_fg_purchase_rate", 0
 							)
@@ -2196,7 +2208,6 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["sieve_size_mm"]
 								)
-
 								if (
 									latest_entry.get(
 										"custom_outwork_handling_charges_rate"
@@ -2262,15 +2273,17 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							as_dict=True,
 						)
 						if sieve_size_range_diamond_price_list_entry:
-							latest_entry = sieve_size_range_diamond_price_list_entry[
-								0
-							]  # Get the first entry
+							latest_entry = sieve_size_range_diamond_price_list_entry[0]
 							row["total_diamond_rate"] = latest_entry.get("rate", 0)
 							row["fg_purchase_rate"] = latest_entry.get(
 								"supplier_fg_purchase_rate", 0
 							)
 							row["fg_purchase_amount"] = (
 								row["fg_purchase_rate"] * row["quantity"]
+							)
+							# For sieve range, amount is usually rate * quantity
+							row["diamond_rate_for_specified_quantity"] = (
+								row["total_diamond_rate"] * row["quantity"]
 							)
 
 					if diamond_price_list_ref_customer == "Weight (in cts)":
@@ -2294,7 +2307,6 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 						if latest_diamond_price_list_entry:
 							latest_entry = latest_diamond_price_list_entry[0]
-							# row["total_diamond_rate"] = latest_entry.get("rate", 0)
 							row["fg_purchase_rate"] = latest_entry.get(
 								"supplier_fg_purchase_rate", 0
 							)
@@ -2308,7 +2320,6 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["weight_per_pcs"]
 								)
-
 								if (
 									latest_entry.get(
 										"custom_outwork_handling_charges_rate"
@@ -2354,8 +2365,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 										* row["weight_per_pcs"]
 									)
 
-				# row["diamond_rate_for_specified_quantity"] = row["total_diamond_rate"] * row["quantity"]
-
+			row["amount"] = row.get("diamond_rate_for_specified_quantity", 0)
 			new_bom.append("diamond_detail", row)
 
 		elif category == "M":
@@ -3229,6 +3239,11 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					row["is_customer_item"] = 1
 
 				row["pcs"] = item.get("pcs", 0)
+
+			row["gemstone_rate_for_specified_quantity"] = row.get(
+				"total_gemstone_rate", 0
+			) * row.get("quantity", 0)
+			row["amount"] = row["gemstone_rate_for_specified_quantity"]
 			# Append to BOM
 			new_bom.append("gemstone_detail", row)
 
@@ -3849,7 +3864,6 @@ def get_make_receive_entry_rows(manufacturing_operation):
 		# Authoritative MOP for this SRE — its own manufacturing_operation,
 		# falling back to the opened MOP only when the custom field is
 		# missing (test fixtures, legacy data).
-		sre_mop = sre.manufacturing_operation or mo.name
 		# Slice the 3-tuple-keyed global map down to the (item, batch) pairs
 		# for this SRE's MOP, matching the helper's 2-tuple key contract.
 		sre_mop_balance_map = {
@@ -3913,7 +3927,12 @@ def get_make_receive_entry_rows(manufacturing_operation):
 						"stock_reservation_entry": sre.name,
 						"stock_reservation_entry_detail": sb.name,
 						"item_code": sre.item_code,
-						"s_warehouse": sre.warehouse,
+						"s_warehouse": resolve_and_validate(
+							item_code=sre.item_code,
+							qty=available_to_receive_qty,
+							batch_no=sb.batch_no,
+						)
+						or sre.warehouse,
 						"t_warehouse": t_warehouse,
 						"batch_no": sb.batch_no,
 						# Reserved Qty in the popup is the SRE remaining
@@ -3951,7 +3970,7 @@ def get_make_receive_entry_rows(manufacturing_operation):
 			already_received_for_item = already_received_qty_map.get(qty_key, 0)
 			already_received_pcs_for_item = already_received_pcs_map.get(qty_key, 0)
 			ctx = get_available_qty_pcs_for_mop_item(
-				manufacturing_operation=sre_mop,
+				manufacturing_operation=manufacturing_operation,
 				item_code=sre.item_code,
 				batch_no=None,
 				warehouse=sre.warehouse,
@@ -3986,7 +4005,12 @@ def get_make_receive_entry_rows(manufacturing_operation):
 					"stock_reservation_entry": sre.name,
 					"stock_reservation_entry_detail": None,
 					"item_code": sre.item_code,
-					"s_warehouse": sre.warehouse,
+					"s_warehouse": resolve_and_validate(
+						item_code=sre.item_code,
+						qty=available_to_receive_qty,
+						batch_no=None,
+					)
+					or sre.warehouse,
 					"t_warehouse": t_warehouse,
 					"batch_no": None,
 					"reserved_qty": sre_remaining,
@@ -4370,13 +4394,22 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 					)
 				)
 
+		# Resolve warehouse with robust multi-source fallback + stock validation.
+		# Falls back to original sre.warehouse if validation fails (already active SRE).
+		resolved_warehouse = (
+			resolve_and_validate(
+				item_code=sre.item_code, qty=req_qty, batch_no=batch_no
+			)
+			or sre.warehouse
+		)
+
 		validated_rows.append(
 			{
 				"item_code": sre.item_code,
 				"qty": req_qty,
 				"pcs": req_pcs,
 				"batch_no": batch_no,
-				"s_warehouse": sre.warehouse,
+				"s_warehouse": resolved_warehouse,
 				"inventory_type": row.get("inventory_type"),
 				"customer": row.get("customer"),
 			}
@@ -4440,7 +4473,6 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 		frappe.flags.update_pcs = True
 
 		se_doc.save()
-		se_doc.submit()
 
 		# Post-submit SRE mutation. Full receive cancels; partial cancels and
 		# recreates with remaining qty, preserving voucher_*, batch metadata.
@@ -4536,7 +4568,7 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 						"action": "recreated" if new_name else "cancelled",
 					}
 				)
-
+		se_doc.submit()
 		frappe.db.release_savepoint("make_receive_entry")
 	except Exception:
 		frappe.db.rollback(save_point="make_receive_entry")
@@ -4600,7 +4632,6 @@ def update_new_mop_wtg(
 				loss_map[(item_code, batch_no)] = bucket
 
 	tolerance = _float_tolerance()
-	# processed_loss_keys: set = set()
 
 	mop_logs = get_current_mop_balance_rows(self.previous_mop)
 	for log in mop_logs:

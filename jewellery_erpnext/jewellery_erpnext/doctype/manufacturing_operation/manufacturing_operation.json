@@ -212,13 +212,15 @@
   {
    "fieldname": "qty",
    "fieldtype": "Float",
-   "label": "Qty"
+   "label": "Qty",
+   "precision": "3"
   },
   {
    "fieldname": "gross_wt",
    "fieldtype": "Float",
    "label": "Gross Wt",
    "no_copy": 1,
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -281,34 +283,39 @@
    "fieldname": "platform_wt",
    "fieldtype": "Float",
    "label": "Platform wt",
-   "no_copy": 1
+   "no_copy": 1,
+   "precision": "3"
   },
   {
    "depends_on": "eval: doc.operation == \"Mould Filling\";",
    "fieldname": "rpt_wt_issue",
    "fieldtype": "Float",
    "label": "RPT Wt ISSUE",
-   "no_copy": 1
+   "no_copy": 1,
+   "precision": "3"
   },
   {
    "depends_on": "eval: doc.operation == \"Mould Filling\";",
    "fieldname": "rpt_wt_receive",
    "fieldtype": "Float",
    "label": "RPT Wt RECEIVE",
-   "no_copy": 1
+   "no_copy": 1,
+   "precision": "3"
   },
   {
    "depends_on": "eval: doc.operation == \"Mould Filling\";",
    "fieldname": "rpt_wt_loss",
    "fieldtype": "Float",
    "label": "RPT Wt LOSS",
-   "no_copy": 1
+   "no_copy": 1,
+   "precision": "3"
   },
   {
    "fieldname": "estimated_rpt_wt",
    "fieldtype": "Float",
    "label": "Estimated RPT WT",
-   "no_copy": 1
+   "no_copy": 1,
+   "precision": "3"
   },
   {
    "fetch_from": "manufacturing_work_order.metal_colour",
@@ -379,6 +386,7 @@
    "fieldtype": "Float",
    "label": "Diamond Wt (cts)",
    "no_copy": 1,
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -386,6 +394,7 @@
    "fieldtype": "Float",
    "label": "Gemstone Wt (cts)",
    "no_copy": 1,
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -393,6 +402,7 @@
    "fieldtype": "Float",
    "label": "Other Wt",
    "no_copy": 1,
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -400,6 +410,7 @@
    "fieldtype": "Float",
    "label": "Net wt",
    "no_copy": 1,
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -407,10 +418,10 @@
    "fieldtype": "Float",
    "label": "Finding WT",
    "no_copy": 1,
+   "precision": "3",
    "read_only": 1
   },
   {
-   "collapsible": 1,
    "fieldname": "section_break_nlzla",
    "fieldtype": "Section Break",
    "label": "Weight Details"
@@ -423,19 +434,22 @@
    "fieldname": "received_gross_wt",
    "fieldtype": "Float",
    "label": "Received Gross Wt",
-   "no_copy": 1
+   "no_copy": 1,
+   "precision": "3"
   },
   {
    "fieldname": "received_net_wt",
    "fieldtype": "Float",
    "label": "Received Net Wt",
-   "no_copy": 1
+   "no_copy": 1,
+   "precision": "3"
   },
   {
    "fieldname": "loss_wt",
    "fieldtype": "Float",
    "label": "Loss / Increase Wt",
-   "no_copy": 1
+   "no_copy": 1,
+   "precision": "3"
   },
   {
    "fieldname": "diamond_pcs",
@@ -456,6 +470,7 @@
    "fieldtype": "Float",
    "label": "Diamond Wt (in gram)",
    "no_copy": 1,
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -522,6 +537,7 @@
    "fieldtype": "Float",
    "label": "Gemstone Wt (in gram)",
    "no_copy": 1,
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -582,6 +598,7 @@
    "fieldname": "prev_gross_wt",
    "fieldtype": "Float",
    "label": "Previous gross wt",
+   "precision": "3",
    "read_only": 1
   },
   {
@@ -781,8 +798,8 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2026-03-11 12:04:40.149095",
- "modified_by": "Administrator",
+ "modified": "2026-05-07 17:57:37.715363",
+ "modified_by": "mitali_s@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",
  "naming_rule": "Expression (old style)",

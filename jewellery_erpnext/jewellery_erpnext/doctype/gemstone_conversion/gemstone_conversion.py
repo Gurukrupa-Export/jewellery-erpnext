@@ -1,5 +1,7 @@
 # Copyright (c) 2024, Nirali and contributors
 # For license information, please see license.txt
+import json
+
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
@@ -19,6 +21,9 @@ class GemstoneConversion(Document):
 		update_fifo_batch(self)
 		self.validate_gemstone_type()
 		self.validate_target_item()
+		loss_type = ["Burn", "Broken", "Loss", "Missing"]
+		for loss in loss_type:
+			get_loss_item(self.company, self.g_source_item, loss)
 
 	def on_submit(self):
 		make_gemstone_stock_entry(self)
@@ -46,6 +51,8 @@ class GemstoneConversion(Document):
 					"qty": ((self.g_source_qty or 0) - self.g_target_qty),
 				},
 			)
+			self.g_loss_item = loss_item
+		self.g_loss_qty = flt((self.g_source_qty or 0) - self.g_target_qty, 2)
 
 		if self.g_source_qty is not None and self.g_target_qty > self.g_source_qty:
 			frappe.throw(_("Target Qty does not match with Source Qty"))
@@ -64,6 +71,8 @@ class GemstoneConversion(Document):
 			)
 		if self.g_source_qty is not None and self.g_source_qty < 0:
 			frappe.throw(_("Source Qty invalid"))
+
+		validate_gemstone_item(self)
 
 	@frappe.whitelist()
 	def get_detail_tab_value(self):
@@ -313,3 +322,65 @@ def get_scrap_warehouse(department):
 			).format(department)
 		)
 	return scrap_wareouse
+
+
+def validate_gemstone_item(self):
+	src_item = json.loads(
+		frappe.db.sql(
+			"""
+			SELECT
+				JSON_OBJECTAGG(attribute, attribute_value) AS final_dict
+			FROM `tabItem Variant Attribute`
+			WHERE parent = %s
+			""",
+			(self.g_source_item,),
+			as_dict=True,
+		)[0]["final_dict"]
+	)
+	s_gemstone_size = src_item.get("Gemstone Size")
+	s_gemstone_size = eval("*".join(s_gemstone_size.replace(" MM", "").split("*")))
+
+	for target_row in self.sc_target_table:
+		if target_row.item_code == self.g_source_item:
+			frappe.throw("Same Item should not allow")
+
+		if target_row.item_code == self.g_loss_item:
+			continue
+
+		item = json.loads(
+			frappe.db.sql(
+				"""
+			SELECT
+				JSON_OBJECTAGG(attribute, attribute_value) AS final_dict
+			FROM `tabItem Variant Attribute`
+			WHERE parent = %s
+			""",
+				(target_row.item_code,),
+				as_dict=True,
+			)[0]["final_dict"]
+		)
+
+		if len(src_item) != len(item):
+			frappe.throw(f"Item Missmatch {target_row.item_code}")
+
+		for attribute in src_item:
+			if attribute == "Stone Shape" or attribute == "Gemstone PR":
+				continue
+
+			elif attribute == "Gemstone Size":
+				t_gemstone_size = item.get(attribute)
+				t_gemstone_size = eval(
+					"*".join(t_gemstone_size.replace(" MM", "").split("*"))
+				)
+				if s_gemstone_size < t_gemstone_size:
+					frappe.throw(
+						f"Gemstone Size for this item {target_row.item_code} should not bigger than source item"
+					)
+
+			else:
+				if src_item.get(attribute) == item.get(attribute):
+					continue
+				else:
+					frappe.throw(
+						f"{attribute} Missmatch for this item {target_row.item_code}"
+					)
