@@ -312,7 +312,7 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 			).format(mwo_name)
 		)
 
-	colours = [mwo.get("metal_colour")[0] or None]
+	colours = [mwo.get("metal_colour") or None]
 
 	per_colour_qty = round(float(total_extra) / len(colours), 3)
 	raw_transfer = []
