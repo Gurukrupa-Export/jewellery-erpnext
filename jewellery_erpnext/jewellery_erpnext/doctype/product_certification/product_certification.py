@@ -222,8 +222,11 @@ class ProductCertification(Document):
 					metal_touch = pmo_data.get("metal_touch")
 					metal_colour = pmo_data.get("metal_colour")
 				else:
-					metal_det = frappe.db.get_all(
-						"BOM Metal Detail", {"parent": row.bom}, "DISTINCT metal_touch"
+					metal_det = frappe.get_all(
+						"BOM Metal Detail",
+						filters={"parent": row.bom},
+						fields=["metal_touch"],
+						distinct=True,
 					)
 					count *= cint(len(metal_det))
 
