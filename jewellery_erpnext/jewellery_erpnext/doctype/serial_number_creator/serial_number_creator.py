@@ -667,18 +667,18 @@ def _get_source_raw_materials(mop_name, snc_doc):
 	if not balance_rows:
 		return []
 
-	# # Resolve PMO and Sales Order for SRE lookup
-	# mwo_name = cstr(getattr(snc_doc, "manufacturing_work_order", None) or "").strip()
-	# pmo = None
-	# # sales_order = None
-	# if mwo_name:
-	# 	pmo = frappe.db.get_value(
-	# 		"Manufacturing Work Order", mwo_name, "manufacturing_order"
-	# 	)
-	# if pmo:
-	# 	sales_order = frappe.db.get_value(
-	# 		"Parent Manufacturing Order", pmo, "sales_order"
-	# 	)
+	# Resolve PMO and Sales Order for SRE lookup
+	mwo_name = cstr(getattr(snc_doc, "manufacturing_work_order", None) or "").strip()
+	pmo = None
+	sales_order = None
+	if mwo_name:
+		pmo = frappe.db.get_value(
+			"Manufacturing Work Order", mwo_name, "manufacturing_order"
+		)
+	if pmo:
+		sales_order = frappe.db.get_value(
+			"Parent Manufacturing Order", pmo, "sales_order"
+		)
 
 	# Get all MWOs for the PMO (for physical warehouse fallback)
 	# all_mwos = []
@@ -716,7 +716,9 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				inventory_type = sed_data.inventory_type
 				customer = sed_data.customer
 
-		s_wh = resolve_and_validate(item_code=item_code, qty=qty, batch_no=batch_no)
+		s_wh = resolve_and_validate(
+			item_code=item_code, qty=qty, batch_no=batch_no, sales_order=sales_order
+		)
 
 		if not s_wh:
 			s_wh = r.get("to_warehouse")
@@ -803,20 +805,26 @@ def _append_fg_rows_aggregated(snc_doc, source_rows, mnf_qty: int):
 			)
 
 
-def get_correct_source_warehouse(item_code, batch_no=None):
+def get_correct_source_warehouse(item_code, batch_no=None, sales_order=None):
 	"""Priority-based warehouse resolution with cancelled SRE trace."""
 	sre_filters = {"item_code": item_code, "docstatus": 1}
 	if batch_no:
 		sre_name = frappe.db.sql(
 			"""SELECT sbe.parent FROM `tabSerial and Batch Entry` sbe
 			JOIN `tabStock Reservation Entry` sre ON sre.name=sbe.parent
-			WHERE sbe.parenttype='Stock Reservation Entry' AND sbe.batch_no=%s AND sre.item_code=%s AND sre.docstatus=1 LIMIT 1""",
-			(batch_no, item_code),
+			WHERE sbe.parenttype='Stock Reservation Entry' AND sbe.batch_no=%s AND sre.item_code=%s AND sre.docstatus=1
+			AND (sre.voucher_no=%s OR %s IS NULL)
+			LIMIT 1""",
+			(batch_no, item_code, sales_order, sales_order),
 		)
 		if sre_name:
 			sre_filters["name"] = sre_name[0][0]
+		elif sales_order:
+			sre_filters["voucher_no"] = sales_order
 		else:
 			return None  # No reservation for this specific batch
+	elif sales_order:
+		sre_filters["voucher_no"] = sales_order
 
 	sre = frappe.db.get_value("Stock Reservation Entry", sre_filters, "warehouse")
 	if sre:
@@ -859,18 +867,48 @@ def get_correct_source_warehouse(item_code, batch_no=None):
 	return None
 
 
-def resolve_and_validate(item_code, qty, batch_no=None):
+def resolve_and_validate(item_code, qty, batch_no=None, sales_order=None):
 	"""Combined resolution + stock validation with auto-recovery."""
-	wh = get_correct_source_warehouse(item_code, batch_no)
-	if wh and flt(
-		frappe.db.get_value(
-			"Bin", {"item_code": item_code, "warehouse": wh}, "actual_qty"
+	wh = get_correct_source_warehouse(item_code, batch_no, sales_order)
+
+	def get_available_qty(w):
+		bin_data = frappe.db.get_value(
+			"Bin",
+			{"item_code": item_code, "warehouse": w},
+			["actual_qty", "reserved_stock"],
+			as_dict=1,
 		)
-	) >= flt(qty):
+		if not bin_data:
+			return 0
+
+		our_reserved = 0
+		if sales_order:
+			our_reserved = (
+				frappe.db.get_value(
+					"Stock Reservation Entry",
+					{
+						"item_code": item_code,
+						"warehouse": w,
+						"voucher_no": sales_order,
+						"docstatus": 1,
+					},
+					"reserved_qty",
+				)
+				or 0
+			)
+
+		return (
+			flt(bin_data.actual_qty) - flt(bin_data.reserved_stock) + flt(our_reserved)
+		)
+
+	if wh and get_available_qty(wh) >= flt(qty):
 		return wh
 
+	# Search for any warehouse that has enough AVAILABLE stock
 	alt = frappe.db.sql(
-		"""SELECT warehouse FROM `tabBin` WHERE item_code=%s AND actual_qty>=%s ORDER BY actual_qty DESC LIMIT 1""",
+		"""SELECT warehouse FROM `tabBin`
+		WHERE item_code=%s AND (actual_qty - reserved_stock) >= %s
+		ORDER BY (actual_qty - reserved_stock) DESC LIMIT 1""",
 		(item_code, qty),
 	)
 	if alt:
