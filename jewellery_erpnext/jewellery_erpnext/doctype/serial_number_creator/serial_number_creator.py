@@ -721,6 +721,46 @@ def _get_source_raw_materials(mop_name, snc_doc):
 		if not s_wh:
 			s_wh = r.get("to_warehouse")
 
+		# Validate that the warehouse actually has stock for this batch
+		# If batch is empty in this warehouse, find where it actually is
+		if s_wh and batch_no:
+			batch_qty_result = frappe.db.sql(
+				"""
+				SELECT SUM(actual_qty) FROM `tabStock Ledger Entry`
+				WHERE item_code = %s AND batch_no = %s AND warehouse = %s AND is_cancelled = 0
+				""",
+				(item_code, batch_no, s_wh),
+				as_dict=True,
+			)
+			batch_qty = (
+				batch_qty_result[0].get("SUM(actual_qty)", 0) if batch_qty_result else 0
+			)
+
+			# If no stock in proposed warehouse, find one that has stock
+			if not batch_qty or flt(batch_qty) <= 0:
+				warehouses_with_stock = frappe.db.sql(
+					"""
+						SELECT
+							warehouse,
+							SUM(actual_qty) AS total_qty
+						FROM `tabStock Ledger Entry`
+						WHERE
+							item_code = %s
+							AND batch_no = %s
+							AND is_cancelled = 0
+						GROUP BY warehouse
+						HAVING total_qty > 0
+						ORDER BY total_qty DESC
+						LIMIT 1
+					""",
+					(item_code, batch_no),
+					as_dict=True,
+				)
+
+				if warehouses_with_stock:
+					s_wh = warehouses_with_stock[0].get("warehouse")
+					batch_qty = warehouses_with_stock[0].get("total_qty") or 0
+
 		out.append(
 			{
 				"item_code": item_code,
