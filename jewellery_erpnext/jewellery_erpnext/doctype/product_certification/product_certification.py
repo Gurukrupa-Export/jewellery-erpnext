@@ -15,6 +15,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 	create_repack_entry,
 	update_bom_details,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+	resolve_and_validate,
+)
 
 
 class ProductCertification(Document):
@@ -489,6 +492,7 @@ def create_stock_entry(doc):
 		se_doc.stock_entry_type = get_stock_entry_type(doc.service_type, doc.type)
 		se_doc.company = doc.company
 		se_doc.product_certification = doc.name
+		se_doc.auto_created = 1
 		warehouse_type = "Manufacturing"
 		# if doc.service_type in ["Fire Assy Service", "XRF Services"]:
 		# 	warehouse_type = "Raw Material"
@@ -781,12 +785,6 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				],
 			)
 
-		# Build SRE warehouse map: item_code -> warehouse
-		sre_warehouse_map = {}
-		for sre in sre_list:
-			if sre.item_code not in sre_warehouse_map:
-				sre_warehouse_map[sre.item_code] = sre.warehouse
-
 		# --- Create stock entry items from MOP balance rows ---
 		for balance_row in mop_balance_rows:
 			item_code = balance_row.get("item_code")
@@ -800,8 +798,10 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			if not item_code or qty <= 0:
 				continue
 
-			# Source warehouse: prefer SRE warehouse, fallback to s_warehouse
-			item_s_warehouse = sre_warehouse_map.get(item_code) or s_warehouse
+			item_s_warehouse = (
+				resolve_and_validate(item_code=item_code, qty=qty, batch_no=batch_no)
+				or s_warehouse
+			)
 
 			se_doc.append(
 				"items",
