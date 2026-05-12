@@ -52,7 +52,6 @@ def validate(self, method):
 def create_bom_scientifically(self):
 	create_tracking_bom_directly(self)
 
-
 @frappe.whitelist()
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)

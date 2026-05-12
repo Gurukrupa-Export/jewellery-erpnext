@@ -157,6 +157,7 @@ def create_repack_entry(self):
 		se_doc.stock_entry_type = "Repack"
 		se_doc.company = self.company
 		se_doc.product_certification = self.name
+		se_doc.auto_created = 1
 		items = []
 		for row in self.product_details:
 			if row.main_slip == item:
@@ -222,6 +223,7 @@ def item_conversion_repack(self, row, s_warehouse, t_warehouse):
 	se_doc.stock_entry_type = "Repack"
 	se_doc.company = self.company
 	se_doc.product_certification = self.name
+	se_doc.auto_created = 1
 	items = []
 	items.append(
 		{

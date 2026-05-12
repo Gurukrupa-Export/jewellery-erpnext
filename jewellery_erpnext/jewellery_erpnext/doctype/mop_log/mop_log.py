@@ -653,6 +653,7 @@ def create_mop_log_for_employee_ir_receive(
 					frappe.db.get_all(
 						"Stock Entry",
 						filters={
+							"stock_entry_type": "Material Transfer (WORK ORDER)",
 							"employee_ir": ["is", "not set"],
 							"manufacturing_operation": row.manufacturing_operation,
 							"docstatus": 1,
@@ -667,6 +668,39 @@ def create_mop_log_for_employee_ir_receive(
 		)
 		or []
 	)
+	mop_logs += (
+		frappe.db.get_all(
+			"MOP Log",
+			{
+				"manufacturing_operation": row.manufacturing_operation,
+				"is_cancelled": 0,
+				"voucher_type": "Stock Entry",
+				"voucher_no": [
+					"in",
+					frappe.db.get_all(
+						"Stock Entry",
+						filters={
+							"stock_entry_type": "Material Receive (WORK ORDER)",
+							"manufacturing_operation": row.manufacturing_operation,
+							"docstatus": 1,
+						},
+						pluck="name",
+					),
+				],
+			},
+			select_fields,
+			order_by="creation asc",
+		)
+		or []
+	)
+
+	# Build the EIR-wide loss map once, then narrow to entries that match
+	# THIS receive row's MOP+MWO. Prior loss buckets get consumed exactly
+	# once across the source-log loop; if multiple source logs match the
+	# same (item, batch), only the first one absorbs the loss to prevent
+	# double-subtraction.
+	full_loss_map = get_employee_ir_loss_map(doc)
+	consumed_loss_keys = set()
 
 	# Build the EIR-wide loss map once, then narrow to entries that match
 	# THIS receive row's MOP+MWO. Prior loss buckets get consumed exactly

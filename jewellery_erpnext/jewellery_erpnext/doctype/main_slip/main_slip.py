@@ -352,30 +352,6 @@ class MainSlip(Document):
 				],
 				as_dict=1,
 			)
-			# if mwo.multicolour == 1:
-			# 	if self.multicolour == 0:
-			# 		frappe.throw(
-			# 			f"Select Multicolour Main Slip </br><b>Metal Properties are: (MT:{mwo.metal_type}, MTC:{mwo.metal_touch}, MP:{mwo.metal_purity}, MC:{mwo.allowed_colours})</b>"
-			# 		)
-			# 	mwo_allowed_colors = "".join(sorted(map(str.upper, mwo.allowed_colours)))
-			# 	ms_allowed_colors = "".join(sorted(map(str.upper, self.allowed_colours)))
-			# 	if mwo_allowed_colors and not ms_allowed_colors:
-			# 		frappe.throw(
-			# 			f"Metal properties in MWO: <b>{row.manufacturing_work_order}</b> do not match the main slip. </br><b>Metal Properties: (MT:{mwo.metal_type}, MTC:{mwo.metal_touch}, MP:{mwo.metal_purity}, MC:{mwo_allowed_colors})</b>"
-			# 		)
-
-			# colour_code = {"P": "Pink", "Y": "Yellow", "W": "White"}
-			# colour_code = {"P": "P", "Y": "Y", "W": "W"}
-			# color_matched = False	 # Flag to check if at least one color matches
-			# for char in allowed_colors:
-			# 	if char not in colour_code:
-			# 		frappe.throw(f"Invalid color code <b>{char}</b> in MWO: <b>{row.manufacturing_work_order}</b>")
-			# 	if self.check_color and colour_code[char] == self.allowed_colours:
-			# 		color_matched = True	# Set the flag to True if color matches and exit loop
-			# 		break
-			# 	print(f"{char}{colour_code[char]}{color_matched}")				# Throw an error only if no color matches
-			# if self.check_color and not color_matched:
-			# 	frappe.throw(f"Metal properties in MWO: <b>{row.manufacturing_work_order}</b> do not match the main slip. </br><b>Metal Properties: (MT:{mwo.metal_type}, MTC:{mwo.metal_touch}, MP:{mwo.metal_purity}, MC:{allowed_colors})</b>")
 
 			if mwo.multicolour == 0:
 				if (
@@ -793,6 +769,8 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 		variant_name = frappe.db.get_value(
 			"Variant Loss Table", {"variant": variant_of}, "loss_variant"
 		)
+	if not variant_name:
+		variant_name = variant_of
 
 	item_attr_dict = {}
 	for row in frappe.db.get_all(
@@ -812,12 +790,15 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 	)
 
 	if loss_item:
-		# loss_item.has_variants = 0
-		# loss_item.is_stock_item = 1
-		# loss_item.save()
-		frappe.db.set_value(
-			"Item", loss_item.name, {"has_variants": 0, "is_stock_item": 1}
+		loss_item.include_item_in_manufacturing = 1
+		loss_item.has_variants = 0
+		loss_item.is_stock_item = 1
+		loss_item.has_batch_no = 1
+		loss_item.create_new_batch = 1
+		loss_item.gst_hsn_code = frappe.db.get_value(
+			"Item", loss_item.variant_of, "gst_hsn_code"
 		)
+		loss_item.save()
 		return loss_item.name
 	else:
 		return create_loss_item(variant_name, item_attr_dict)
@@ -839,11 +820,23 @@ def get_main_slip_item(main_slip):
 def create_loss_item(item, item_attr_dict):
 	from erpnext.controllers.item_variant import create_variant
 
+	if not item:
+		frappe.throw(
+			_(
+				"Loss Variant Template Item is missing. Please configure Variant Loss Table."
+			)
+		)
+
 	variant = create_variant(item, item_attr_dict)
+	variant.include_item_in_manufacturing = 1
 	variant.is_stock_item = 1
+	variant.has_batch_no = 1
+	variant.create_new_batch = 1
+	variant.gst_hsn_code = frappe.db.get_value(
+		"Item", variant.variant_of, "gst_hsn_code"
+	)
 	variant.save()
 
-	frappe.throw(f"{variant.is_stock_item} - {variant.is_fixed_asset}")
 	return variant.name
 
 
@@ -883,69 +876,3 @@ def get_any_item_from_attribute(variant_of, attributes):
 	if data:
 		return data[0][0]
 	return None
-
-
-def get_loss_item_from_manufacturer_mapping(item_code, manufacturer, loss_type="Loss"):
-	"""Resolve a loss item from the per-Manufacturer Variant Loss Table.
-
-	The Manufacturer DocType has a custom child table `custom_variant_loss_table`
-	(of type `Variant Loss Table`) with rows keyed by (variant, loss_type) ->
-	loss_variant. This helper is manufacturer-scoped — unlike the older
-	`get_item_loss_item` which queries the standalone Variant Loss Table and
-	returns the first row from any Manufacturer.
-
-	Throws a clear configuration error pointing the user to the Manufacturer
-	form when the mapping is missing. Does NOT call `create_loss_item` because
-	that function carries forensic bug C3 (always-throw debug leftover).
-	"""
-	if not manufacturer:
-		frappe.throw(
-			_("Manufacturer is required to resolve loss item for {0}").format(item_code)
-		)
-
-	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
-	if not variant_of:
-		frappe.throw(
-			_(
-				"Item {0} has no Variant Of template; cannot resolve loss variant"
-			).format(item_code)
-		)
-
-	loss_variant = frappe.db.get_value(
-		"Variant Loss Table",
-		{
-			"parenttype": "Manufacturer",
-			"parent": manufacturer,
-			"parentfield": "custom_variant_loss_table",
-			"variant": variant_of,
-			"loss_type": loss_type,
-		},
-		"loss_variant",
-	)
-	if not loss_variant:
-		frappe.throw(
-			_(
-				"Loss Item could not be resolved for Item {0}. Configure "
-				"Manufacturer {1} -> Variant Loss Table for Variant {2} "
-				"and Loss Type {3}."
-			).format(item_code, manufacturer, variant_of, loss_type)
-		)
-
-	from jewellery_erpnext.utils import set_items_from_attribute
-
-	item_attrs = frappe.db.get_all(
-		"Item Variant Attribute",
-		{"parent": item_code},
-		["attribute as item_attribute", "attribute_value"],
-	)
-	loss_item = set_items_from_attribute(loss_variant, item_attrs)
-	if not loss_item:
-		frappe.throw(
-			_(
-				"Loss Item variant for template {0} (mapped from {1}) does not "
-				"exist. Create the variant manually before running this flow."
-			).format(loss_variant, item_code)
-		)
-
-	frappe.db.set_value("Item", loss_item.name, {"has_variants": 0, "is_stock_item": 1})
-	return loss_item.name
