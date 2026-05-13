@@ -3398,6 +3398,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
 	self.fg_bom = new_bom.name
+	self.db_set("fg_bom", new_bom.name)
 
 
 def get_stock_entry_data(self):
@@ -3467,14 +3468,14 @@ def format_attrbute_name(input_string):
 	formatted_string = input_string.replace(" ", "_").replace("-", "_").lower()
 	return formatted_string
 
-
 def get_serial_no(se_name):
-	# se_doc = frappe.get_doc('Stock Entry',se_name)
-	# for row in se_doc.items:
-	# 	if row.is_finished_item:
-	# 		serial_no = row.serial_no
-	serial_no = se_name
-	return str(serial_no)
+	if not se_name: return ""
+	if frappe.db.exists("Stock Entry", se_name):
+		se_doc = frappe.get_doc("Stock Entry", se_name)
+		for row in se_doc.items:
+			if row.is_finished_item and row.serial_no: return row.serial_no.split("\n")[0].strip()
+	return se_name
+	return se_name
 
 
 def finish_other_tagging_operations(doc, pmo):
@@ -3931,6 +3932,11 @@ def get_make_receive_entry_rows(manufacturing_operation):
 							item_code=sre.item_code,
 							qty=available_to_receive_qty,
 							batch_no=sb.batch_no,
+							mwo=sre.manufacturing_work_order,
+							mop=sre.manufacturing_operation,
+							sales_order=sre.voucher_no
+							if sre.voucher_type == "Sales Order"
+							else None,
 						)
 						or sre.warehouse,
 						"t_warehouse": t_warehouse,
@@ -4009,6 +4015,11 @@ def get_make_receive_entry_rows(manufacturing_operation):
 						item_code=sre.item_code,
 						qty=available_to_receive_qty,
 						batch_no=None,
+						mwo=sre.manufacturing_work_order,
+						mop=sre.manufacturing_operation,
+						sales_order=sre.voucher_no
+						if sre.voucher_type == "Sales Order"
+						else None,
 					)
 					or sre.warehouse,
 					"t_warehouse": t_warehouse,
@@ -4398,7 +4409,14 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 		# Falls back to original sre.warehouse if validation fails (already active SRE).
 		resolved_warehouse = (
 			resolve_and_validate(
-				item_code=sre.item_code, qty=req_qty, batch_no=batch_no
+				item_code=sre.item_code,
+				qty=req_qty,
+				batch_no=batch_no,
+				mwo=sre.manufacturing_work_order,
+				mop=sre.manufacturing_operation,
+				sales_order=sre.voucher_no
+				if sre.voucher_type == "Sales Order"
+				else None,
 			)
 			or sre.warehouse
 		)

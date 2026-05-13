@@ -802,7 +802,7 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				continue
 
 			item_s_warehouse = (
-				resolve_and_validate(item_code=item_code, qty=qty, batch_no=batch_no)
+				resolve_and_validate(item_code=item_code, qty=qty, batch_no=batch_no, mwo=mwo_name, mop=latest_mop)
 				or s_warehouse
 			)
 
