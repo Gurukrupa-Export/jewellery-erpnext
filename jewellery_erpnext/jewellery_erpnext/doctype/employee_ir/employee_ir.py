@@ -358,14 +358,16 @@ class EmployeeIR(Document):
 					employee_ir=self.name,
 					gross_wt=row.gross_wt,
 				)
-				res["complete_time"] = curr_time
+
 				frappe.db.set_value(
 					"Manufacturing Work Order",
 					row.manufacturing_work_order,
 					"manufacturing_operation",
 					new_operation.name,
 				)
-				time_log_args.append((row.manufacturing_operation, res))
+				time_log_args.append(
+					(row.manufacturing_operation, {**res, "complete_time": curr_time})
+				)
 
 				# Main Slip gain injection: when is_main_slip_required and
 				# received_gross_wt > gross_wt, repack the delta from the
