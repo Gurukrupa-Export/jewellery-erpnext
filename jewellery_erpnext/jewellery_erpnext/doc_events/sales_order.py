@@ -1,5 +1,6 @@
 import frappe
 from frappe import _
+from frappe.utils import flt
 from frappe.model.mapper import get_mapped_doc
 from jewellery_erpnext.jewellery_erpnext.customization.sales_order.doc_events.branch_utils import (
 	create_branch_so,
@@ -34,8 +35,8 @@ def validate(self, method):
 	# calculate_gst_rate(self)
 	if not self.get("__islocal") and self.docstatus == 0:
 		set_bom_item_details(self)
-	create_new_bom(self)
-	validate_items(self)
+	# create_new_bom(self)
+	# validate_items(self)
 
 # def after_validate(self,method):
 # 	frappe.throw("hiii")
@@ -48,7 +49,7 @@ def on_submit(self, method):
 
 
 def before_submit(self, method):
-	validate_items(self)
+	# validate_items(self)
 	if not self.get("custom_invoice_item"):
 		frappe.throw(_("Invoice Item table is mandatory for submission."))
 
