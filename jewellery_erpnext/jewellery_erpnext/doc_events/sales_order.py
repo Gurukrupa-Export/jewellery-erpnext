@@ -4066,7 +4066,10 @@ def validate_item_dharm(self):
 		aggregated_finding_making_items = {}
 		aggregated_repairing_items = {}
 		for item in self.items:
-			if item.bom:
+			bom_doc = None
+			if item.custom_tracking_bom:
+				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
+			elif item.bom:
 				bom_doc = frappe.get_doc("BOM", item.bom)
 				if bom_doc.hallmarking_amount:
 					# frappe.throw("hii")
