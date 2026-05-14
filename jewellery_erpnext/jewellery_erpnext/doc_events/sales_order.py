@@ -4071,6 +4071,7 @@ def validate_item_dharm(self):
 				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
 			elif item.bom:
 				bom_doc = frappe.get_doc("BOM", item.bom)
+			if bom_doc:
 				if bom_doc.hallmarking_amount:
 					# frappe.throw("hii")
 					for e_item in e_invoice_items:
