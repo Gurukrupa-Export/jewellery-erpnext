@@ -28,17 +28,17 @@ def validate(self, method):
 				if duplicate_row:
 					self.append("invoice_item", duplicate_row)
 
-		for row in self.items:
+		for row_s in self.items:
 			# if row.serial_no:
 			# 	row.bom = frappe.db.get_value("BOM", {"tag_no": row.serial_no}, "name")
 			
-				if row.bom:
+				if row_s.bom:
 					gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
-					bom_doc=frappe.get_doc("BOM", row.bom)
+					bom_doc=frappe.get_doc("BOM", row_s.bom)
 					for row in bom_doc.metal_detail:
 						customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
 						row.customer_metal_purity=customer_metal_purity
-						frappe.msgprint(f"hii{row.customer_metal_purity}")
+						# frappe.msgprint(f"hii{row.customer_metal_purity}")
 						rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						row.rate = round(rate,2)
 						row.amount=round(row.rate*row.quantity,2 )
@@ -52,6 +52,7 @@ def validate(self, method):
 						row.amount=round(row.rate*row.quantity,2 )
 					bom_doc.total_finding_amount= sum(row.amount for row in bom_doc.finding_detail)	
 					bom_doc.save(ignore_permissions=True)
+				row_s.wastage_amount = bom_doc.total_wastage_amount
 		for r in self.items:
 			if not r.delivery_note:
 				frappe.throw("Invoice can be created only from delivery note")		
