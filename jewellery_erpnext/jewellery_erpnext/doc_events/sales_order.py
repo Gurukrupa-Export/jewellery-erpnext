@@ -1489,14 +1489,14 @@ def create_new_bom1(self):
 		# frappe.throw(f"hii{refrence_customer}")
 		
 		if not row.custom_tracking_bom:
-			if self.sales_type != 'Branch Sales':
-				if row.serial_no:
-					create_serial_no_bom(self, row)
-		
-					if row.bom:
-						if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
-							frappe.db.set_value("BOM",row.bom,"docstatus","0")
-					doc = frappe.get_doc("BOM",row.bom)
+			# if self.sales_type != 'Branch Sales':
+			# if row.serial_no:
+			create_serial_no_bom(self, row)
+
+			if row.bom:
+				if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
+					frappe.db.set_value("BOM",row.bom,"docstatus","0")
+				doc = frappe.get_doc("BOM",row.bom)
 				# if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
 				# 	frappe.db.set_value("BOM",row.bom,"docstatus","0")
 				# doc = frappe.get_doc("Tracking Bom",row.custom_tracking_bom)
