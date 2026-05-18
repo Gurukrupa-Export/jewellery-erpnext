@@ -1,0 +1,304 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-05-11 17:36:14.592242",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "customers_gold_section",
+  "customer",
+  "batch",
+  "item",
+  "quantity",
+  "pure_qty",
+  "source_warehouse",
+  "target_warehouse",
+  "inventory_type",
+  "ownership",
+  "reference_tracking_section",
+  "reference_doctype",
+  "reference_docname",
+  "transaction_type",
+  "work_order_details_section",
+  "sales_order_name",
+  "mwo_type",
+  "parent_manufacturing_order_name",
+  "manufacturing_work_order_name",
+  "manufacturing_operation_name",
+  "usage_details_section",
+  "usage_batch",
+  "batch_item",
+  "usage_type",
+  "used_as_fallback",
+  "repack_section",
+  "settlement_required",
+  "settlement_status",
+  "settlement_type",
+  "pending_pure_qty",
+  "settled_pure_qty",
+  "balance_pure_qty",
+  "settlement_customer",
+  "settlement_batch",
+  "settlement_priority",
+  "matched_log",
+  "repack_tracking_section",
+  "is_repack",
+  "repack_entry",
+  "settled_by_repack"
+ ],
+ "fields": [
+  {
+   "fieldname": "customers_gold_section",
+   "fieldtype": "Section Break",
+   "label": "Customer's Details"
+  },
+  {
+   "fieldname": "batch",
+   "fieldtype": "Link",
+   "label": "Batch",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "item",
+   "fieldtype": "Link",
+   "label": "Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "quantity",
+   "fieldtype": "Float",
+   "label": "Quantity",
+   "precision": "3"
+  },
+  {
+   "fieldname": "sales_order_name",
+   "fieldtype": "Link",
+   "label": "Sales Order Name",
+   "options": "Sales Order"
+  },
+  {
+   "fieldname": "work_order_details_section",
+   "fieldtype": "Section Break",
+   "label": "Sales / Manufacturing Details"
+  },
+  {
+   "fieldname": "parent_manufacturing_order_name",
+   "fieldtype": "Link",
+   "label": "Parent Manufacturing Order Name",
+   "options": "Parent Manufacturing Order"
+  },
+  {
+   "fieldname": "manufacturing_work_order_name",
+   "fieldtype": "Link",
+   "label": "Manufacturing Work Order Name",
+   "options": "Manufacturing Work Order"
+  },
+  {
+   "fieldname": "manufacturing_operation_name",
+   "fieldtype": "Link",
+   "label": "Manufacturing Operation Name",
+   "options": "Manufacturing Operation"
+  },
+  {
+   "fieldname": "usage_batch",
+   "fieldtype": "Link",
+   "label": "Usage Batch",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "batch_item",
+   "fieldtype": "Link",
+   "label": "Batch Item",
+   "options": "Item"
+  },
+  {
+   "fieldname": "repack_section",
+   "fieldtype": "Section Break",
+   "label": "Settlement Tracking"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "label": "Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "inventory_type",
+   "fieldtype": "Data",
+   "label": "Inventory Type"
+  },
+  {
+   "fieldname": "repack_entry",
+   "fieldtype": "Link",
+   "label": "Repack Entry",
+   "options": "Stock Entry"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_repack",
+   "fieldtype": "Check",
+   "label": "Is Repack"
+  },
+  {
+   "fieldname": "source_warehouse",
+   "fieldtype": "Link",
+   "label": "Source Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "target_warehouse",
+   "fieldtype": "Link",
+   "label": "Target Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Reference Doctype",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "reference_docname",
+   "fieldtype": "Dynamic Link",
+   "label": "Reference Docname",
+   "options": "reference_doctype"
+  },
+  {
+   "fieldname": "transaction_type",
+   "fieldtype": "Data",
+   "label": "Transaction Type"
+  },
+  {
+   "fieldname": "ownership",
+   "fieldtype": "Data",
+   "label": "Ownership"
+  },
+  {
+   "fieldname": "settlement_status",
+   "fieldtype": "Select",
+   "label": "Settlement Status",
+   "options": "Pending\nPartially Settled\nSettled"
+  },
+  {
+   "fieldname": "settlement_type",
+   "fieldtype": "Select",
+   "label": "Settlement Type",
+   "options": "Customer Needs Gold\nCompany Needs Gold"
+  },
+  {
+   "fieldname": "pending_pure_qty",
+   "fieldtype": "Float",
+   "label": "Pending Pure Qty"
+  },
+  {
+   "fieldname": "settled_pure_qty",
+   "fieldtype": "Float",
+   "label": "Settled Pure Qty"
+  },
+  {
+   "fieldname": "balance_pure_qty",
+   "fieldtype": "Float",
+   "label": "Balance Pure Qty"
+  },
+  {
+   "fieldname": "settlement_customer",
+   "fieldtype": "Link",
+   "label": "Settlement Customer",
+   "options": "Customer"
+  },
+  {
+   "fieldname": "settlement_batch",
+   "fieldtype": "Link",
+   "label": "Settlement Batch",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "settled_by_repack",
+   "fieldtype": "Link",
+   "label": "Settled By Repack",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "reference_tracking_section",
+   "fieldtype": "Section Break",
+   "label": "Reference Tracking"
+  },
+  {
+   "fieldname": "usage_details_section",
+   "fieldtype": "Section Break",
+   "label": "Usage Details"
+  },
+  {
+   "fieldname": "repack_tracking_section",
+   "fieldtype": "Section Break",
+   "label": "Repack Tracking"
+  },
+  {
+   "fieldname": "pure_qty",
+   "fieldtype": "Float",
+   "label": "Pure Qty"
+  },
+  {
+   "fieldname": "mwo_type",
+   "fieldtype": "Select",
+   "label": "MWO Type",
+   "options": "Subcontracting\nRegular"
+  },
+  {
+   "fieldname": "usage_type",
+   "fieldtype": "Select",
+   "label": "Usage Type",
+   "options": "Same Customer Gold\nDifferent Customer Gold\nCompany Gold\nMixed Gold"
+  },
+  {
+   "default": "0",
+   "fieldname": "used_as_fallback",
+   "fieldtype": "Check",
+   "label": "Used As Fallback"
+  },
+  {
+   "default": "0",
+   "fieldname": "settlement_required",
+   "fieldtype": "Check",
+   "label": "Settlement Required"
+  },
+  {
+   "fieldname": "settlement_priority",
+   "fieldtype": "Int",
+   "label": "Settlement Priority"
+  },
+  {
+   "fieldname": "matched_log",
+   "fieldtype": "Link",
+   "label": "Matched Log",
+   "options": "Subcontracting Log"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-05-13 15:38:59.616743",
+ "modified_by": "Administrator",
+ "module": "Customer Subcontracting",
+ "name": "Subcontracting Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

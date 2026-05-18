@@ -109,7 +109,8 @@ doc_events = {
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
-			"jewellery_erpnext.customer_subcontracting.batch_rename.create_repack_for_used_other",
+			"jewellery_erpnext.customer_subcontracting.repack.create_repack_for_customer_gold",
+			"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.create_subcontracting_log",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
@@ -138,7 +139,7 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.before_validate",
 		],
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.on_submit",
-        "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate",
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate",
 	},
 	"Serial No": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table"
