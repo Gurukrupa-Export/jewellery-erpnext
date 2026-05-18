@@ -971,6 +971,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"custom_serial_number_creator": doc.name,
 			# "inventory_type": "Regular Stock",
 			"auto_created": 1,
+			"company": doc.company,
 		}
 	)
 	diamond_grade_data = frappe._dict()
@@ -3468,12 +3469,15 @@ def format_attrbute_name(input_string):
 	formatted_string = input_string.replace(" ", "_").replace("-", "_").lower()
 	return formatted_string
 
+
 def get_serial_no(se_name):
-	if not se_name: return ""
+	if not se_name:
+		return ""
 	if frappe.db.exists("Stock Entry", se_name):
 		se_doc = frappe.get_doc("Stock Entry", se_name)
 		for row in se_doc.items:
-			if row.is_finished_item and row.serial_no: return row.serial_no.split("\n")[0].strip()
+			if row.is_finished_item and row.serial_no:
+				return row.serial_no.split("\n")[0].strip()
 	return se_name
 	return se_name
 
