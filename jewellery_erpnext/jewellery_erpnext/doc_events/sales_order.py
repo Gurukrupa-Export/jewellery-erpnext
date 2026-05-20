@@ -1838,79 +1838,48 @@ def create_new_bom1(self):
 	This function updates the Tracking BOM reference from Quotation to Sales Order
 	"""
 	# diamond_grade_data = frappe._dict()
-	self.total = 0
-	gold_gst_rate = frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
+	self.total=0
+	gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
+	customer_group, precision, metal_precision, stone_precision = frappe.db.get_value(
+    "Customer",self.customer,
+    ["customer_group", "custom_precision_variable", "custom_precision_for_metal", "custom_precision_for_stone"]
+)
 	for row in self.items:
-		serial_no = row.serial_no
-		item_code = row.item_code
-		creation_no = frappe.get_value(
-			"Serial No", row.serial_no, "purchase_document_no"
-		)
-		serial_no_creator = frappe.get_value(
-			"Stock Entry", creation_no, "custom_serial_number_creator"
-		)
-		snc = frappe.get_value(
-			"Serial Number Creator", serial_no_creator, "parent_manufacturing_order"
-		)
-		refrence_customer = frappe.get_value(
-			"Parent Manufacturing Order", snc, "ref_customer"
-		)
-		if not refrence_customer:
-			sales_order = frappe.get_value(
-				"Parent Manufacturing Order", snc, "sales_order"
-			)
-			refrence_customer = frappe.db.get_value(
-				"Sales Order", sales_order, "ref_customer"
-			)
-
-		refrence_customer_for_company_to_company = frappe.get_value(
-			"Sales Order", self.custom_parent_sales_order, "customer"
-		)
-		exchange_rate = frappe.db.sql(
-			"""SELECT exchange_rate FROM `tabCurrency Exchange` WHERE for_selling = 1
-			ORDER BY modified DESC LIMIT 1""",
-			pluck="exchange_rate",
-		)
-		exchange_rate = exchange_rate[0] if exchange_rate else None
-		billing_currency = frappe.get_value(
-			"Customer", refrence_customer, "default_currency"
-		)
-		# frappe.throw(f"hii{refrence_customer}")
-
+		serial_no=row.serial_no
+		item_code=row.item_code
+		if self.company=='KG GK Jewellers Private Limited' :
+			creation_no = frappe.get_value("Serial No",row.serial_no,"purchase_document_no")
+			serial_no_creator=frappe.get_value("Stock Entry",creation_no,"custom_serial_number_creator")
+			snc=frappe.get_value("Serial Number Creator",serial_no_creator,"parent_manufacturing_order")
+			refrence_customer=frappe.get_value("Parent Manufacturing Order",snc,"ref_customer")
+			if not refrence_customer:
+				sales_order=frappe.get_value("Parent Manufacturing Order",snc,"sales_order")
+				refrence_customer=frappe.db.get_value("Sales Order",sales_order,"ref_customer")	
+			exchange_rate = frappe.db.sql("""SELECT exchange_rate FROM `tabCurrency Exchange` WHERE for_selling = 1 
+				ORDER BY modified DESC LIMIT 1""", pluck="exchange_rate")
+			exchange_rate = exchange_rate[0] if exchange_rate else None 
+			billing_currency=frappe.get_value("Customer",refrence_customer,"default_currency")
+		
+		if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':	
+			refrence_customer_for_company_to_company = frappe.get_value("Sales Order",self.custom_parent_sales_order,"customer")
+		
+		
 		if not row.custom_tracking_bom:
-			if self.sales_type != "Branch Sales":
-				if row.serial_no:
-					create_serial_no_bom(self, row)
+			# if self.sales_type != 'Branch Sales':
+			# if row.serial_no:
+			create_serial_no_bom(self, row)
 
-					if row.bom:
-						if frappe.db.get_value("BOM", row.bom, "docstatus") == 1:
-							frappe.db.set_value("BOM", row.bom, "docstatus", "0")
-					doc = frappe.get_doc("BOM", row.bom)
+			if row.bom:
+				if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
+					frappe.db.set_value("BOM",row.bom,"docstatus","0")
+				doc = frappe.get_doc("BOM",row.bom)
 				# if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
 				# 	frappe.db.set_value("BOM",row.bom,"docstatus","0")
 				# doc = frappe.get_doc("Tracking Bom",row.custom_tracking_bom)
-				# EG-012: ``doc`` is only assigned inside ``if row.serial_no:`` /
-				# ``if row.bom:`` above. Without this guard the next line raises
-				# UnboundLocalError every time a row has no serial_no, which
-				# accounts for the 19 production tracebacks in EG-012.
-				if not row.serial_no or not row.bom:
-					continue
-				customer_group = frappe.db.get_value(
-					"Customer", self.customer, "customer_group"
-				)
-				precision = frappe.db.get_value(
-					"Customer", self.customer, "custom_precision_variable"
-				)
-				metal_precision = frappe.db.get_value(
-					"Customer", self.customer, "custom_precision_for_metal"
-				)
-				stone_precision = frappe.db.get_value(
-					"Customer", self.customer, "custom_precision_for_stone"
-				)
-				doc.metal_and_finding_weight = round(
-					sum(row.quantity for row in doc.metal_detail), precision
-				) + round(sum(row.quantity for row in doc.finding_detail), precision)
-
+				
+				doc.metal_and_finding_weight = round(sum(row.quantity for row in doc.metal_detail),precision) + round(sum(row.quantity for row in doc.finding_detail),precision)
+				
+				
 				if hasattr(doc, "gemstone_detail"):
 					for gem in doc.gemstone_detail or []:
 						gemstone_price_list_customer = frappe.db.get_value(

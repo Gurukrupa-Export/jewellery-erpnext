@@ -105,7 +105,7 @@
    "fieldname": "mfg_complexity_code",
    "fieldtype": "Select",
    "label": "Mfg Complexity Code",
-   "options": "\nSimple\nMedium\nComplex"
+   "options": "\nSimple\nMedium\nComplex\nXXD-R\nXXD-M\nXXD-C\nXXD-H\nXXD-F\nXXD-N"
   }
  ],
  "index_web_pages_for_search": 1,

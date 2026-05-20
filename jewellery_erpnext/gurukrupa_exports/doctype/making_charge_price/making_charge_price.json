@@ -16,6 +16,8 @@
   "metal_type",
   "from_gold_rate",
   "to_gold_rate",
+  "complexity_name",
+  "mfgcode",
   "section_break_7",
   "subcategory",
   "section_break_9",
@@ -95,6 +97,18 @@
    "fieldtype": "Link",
    "label": "Metal Touch",
    "options": "Attribute Value"
+  },
+   {
+   "depends_on": "eval:doc.customer=='MHCU0009'",
+   "fieldname": "complexity_name",
+   "fieldtype": "Data",
+   "label": "Complexity Name"
+  },
+  {
+   "depends_on": "eval:doc.customer=='MHCU0009'",
+   "fieldname": "mfgcode",
+   "fieldtype": "Data",
+   "label": "Mfg.Code"
   }
  ],
  "index_web_pages_for_search": 1,
