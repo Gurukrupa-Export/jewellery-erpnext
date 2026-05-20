@@ -4,6 +4,7 @@ from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle impor
 	get_auto_batch_nos,
 )
 from frappe import _
+from frappe.utils import nowtime
 
 
 def update_fifo_batch(self):
@@ -20,6 +21,7 @@ def update_fifo_batch(self):
 			frappe._dict(
 				{
 					"posting_date": self.date,
+					"posting_time": nowtime(),
 					"item_code": self.g_source_item,
 					"warehouse": self.source_warehouse,
 					"qty": self.g_source_qty,
