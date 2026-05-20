@@ -1470,10 +1470,10 @@ def create_new_bom1(self):
 	# diamond_grade_data = frappe._dict()
 	self.total=0
 	gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
-	customer_group = frappe.db.get_value('Customer', self.customer , 'customer_group')
-	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
-	metal_precision = frappe.db.get_value("Customer",self.customer,"custom_precision_for_metal")
-	stone_precision = frappe.db.get_value("Customer",self.customer,"custom_precision_for_stone")
+	customer_group, precision, metal_precision, stone_precision = frappe.db.get_value(
+    "Customer",self.customer,
+    ["customer_group", "custom_precision_variable", "custom_precision_for_metal", "custom_precision_for_stone"]
+)
 	for row in self.items:
 		serial_no=row.serial_no
 		item_code=row.item_code
