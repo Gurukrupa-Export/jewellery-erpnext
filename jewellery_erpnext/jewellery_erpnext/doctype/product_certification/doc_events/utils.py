@@ -1,5 +1,7 @@
 import frappe
 
+from jewellery_erpnext.jewellery_erpnext.utils.safe_submit import submit_with_retry
+
 
 # def get_item_for_certification(company, service_type):
 # 	return frappe.db.get_value(
@@ -116,6 +118,27 @@ def update_bom_details(self):
 
 
 def create_repack_entry(self):
+	# D-002 idempotency: the Receive path (Fire Assy / XRF) calls this on
+	# every PC submit. Without a guard, a retried submit creates a duplicate
+	# Repack SE per Main Slip. Mirror the Issue-path pattern: short-circuit
+	# if a submitted Repack SE already exists for this Product Certification.
+	existing_repack = frappe.db.get_value(
+		"Stock Entry",
+		{
+			"product_certification": self.name,
+			"stock_entry_type": "Repack",
+			"docstatus": 1,
+		},
+		"name",
+	)
+	if existing_repack:
+		frappe.msgprint(
+			frappe._(
+				"Repack Stock Entry {0} already created for {1}; skipping duplicate."
+			).format(existing_repack, self.name)
+		)
+		return
+
 	main_slip_dict = {}
 	for row in self.product_details:
 		if not main_slip_dict.get(row.main_slip):
@@ -158,6 +181,13 @@ def create_repack_entry(self):
 		se_doc.company = self.company
 		se_doc.product_certification = self.name
 		se_doc.auto_created = 1
+		# EG-014 guard: rows below pass serial_and_batch_bundle=None which
+		# means ERPNext auto-constructs the bundle, calling
+		# combine(posting_date, posting_time). Populate both fields up-front
+		# so the auto-construction never sees None.
+		se_doc.posting_date = se_doc.posting_date or frappe.utils.today()
+		se_doc.posting_time = se_doc.posting_time or frappe.utils.nowtime()
+		se_doc.set_posting_time = 1
 		items = []
 		for row in self.product_details:
 			if row.main_slip == item:
@@ -212,18 +242,47 @@ def create_repack_entry(self):
 		for item in items:
 			se_doc.append("items", item)
 		se_doc.save()
-		se_doc.submit()
+		# D-002: retry on 1205 only (idempotency upstream is the
+		# existing_repack short-circuit at the top of this function).
+		submit_with_retry(se_doc)
 
 		for row in self.exploded_product_details:
 			item_conversion_repack(self, row, s_warehouse, t_warehouse)
 
 
 def item_conversion_repack(self, row, s_warehouse, t_warehouse):
+	# D-002 idempotency: a retried Receive submit must not create a second
+	# per-row Repack SE. We track which exploded-product-detail row has
+	# already been repacked by looking for an existing submitted Repack SE
+	# whose first item matches this row's item_code. Coarser than a row
+	# ID but sufficient: the same row's item_code+gross_weight is the only
+	# input to the SE, so a matching submitted SE means this row is done.
+	existing = frappe.db.sql(
+		"""
+		SELECT se.name FROM `tabStock Entry` se
+		JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+		WHERE se.product_certification = %(pc)s
+		  AND se.stock_entry_type = 'Repack'
+		  AND se.auto_created = 1
+		  AND se.docstatus = 1
+		  AND sed.item_code = %(item)s
+		  AND ABS(sed.qty - %(qty)s) < 0.0001
+		LIMIT 1
+		""",
+		{"pc": self.name, "item": row.item_code, "qty": row.gross_weight},
+	)
+	if existing:
+		return
 	se_doc = frappe.new_doc("Stock Entry")
 	se_doc.stock_entry_type = "Repack"
 	se_doc.company = self.company
 	se_doc.product_certification = self.name
 	se_doc.auto_created = 1
+	# EG-014 guard: ensure posting_date/posting_time so the auto-constructed
+	# Serial and Batch Bundle does not hit combine(None, None).
+	se_doc.posting_date = se_doc.posting_date or frappe.utils.today()
+	se_doc.posting_time = se_doc.posting_time or frappe.utils.nowtime()
+	se_doc.set_posting_time = 1
 	items = []
 	items.append(
 		{
@@ -252,4 +311,6 @@ def item_conversion_repack(self, row, s_warehouse, t_warehouse):
 	for item in items:
 		se_doc.append("items", item)
 	se_doc.save()
-	se_doc.submit()
+	# D-002: retry on 1205 only (idempotency upstream is the existing-row
+	# JOIN check at the top of this function).
+	submit_with_retry(se_doc)

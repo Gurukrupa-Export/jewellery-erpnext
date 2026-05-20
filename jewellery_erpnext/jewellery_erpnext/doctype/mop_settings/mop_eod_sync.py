@@ -43,6 +43,10 @@ def sync_mop_logs():
 	unsynced_groups = _get_unsynced_mop_groups()
 	processed = 0
 	stock_entries = []
+	# EG-011: aggregate hop failures keyed by MWO so a multi-hop failure produces
+	# ONE Error Log row per MWO instead of N — operators previously had to scroll
+	# past identical traceback dumps to find distinct MWOs.
+	failures_by_mwo: dict[str, list[str]] = {}
 
 	for group_key, mop_data_list in unsynced_groups.items():
 		frappe.db.savepoint("mop_eod_sync_hop")
@@ -65,10 +69,17 @@ def sync_mop_logs():
 		except Exception:
 			frappe.db.rollback(save_point="mop_eod_sync_hop")
 			company, mwo, first_wh, last_wh = group_key
-			frappe.log_error(
-				title=f"MOP EOD Sync failed for MWO {mwo}",
-				message=f"Failed routing {first_wh} -> {last_wh}\n{frappe.get_traceback()}",
+			failures_by_mwo.setdefault(mwo, []).append(
+				f"Hop {first_wh} -> {last_wh}:\n{frappe.get_traceback()}"
 			)
+
+	# Emit one consolidated Error Log row per MWO that had any failed hops.
+	for mwo, hop_messages in failures_by_mwo.items():
+		frappe.log_error(
+			title=f"MOP EOD Sync failed for MWO {mwo}",
+			message=f"{len(hop_messages)} hop failure(s) for {mwo}:\n\n"
+			+ "\n\n----\n\n".join(hop_messages),
+		)
 
 	# Audit-first SRE reconciliation. Default dry_run=True simply logs what
 	# would be cancelled; pass dry_run=False from a console session to actually

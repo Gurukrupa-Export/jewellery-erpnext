@@ -76,7 +76,8 @@ def get_deployment_parity_record() -> dict:
 			"has_receive_against_clone": '"voucher_no": self.receive_against' in text,
 			"has_max_issue_flow_slice": "max_issue_flow" in text,
 			"has_dir_receive_idempotency": (
-				'"voucher_type": "Department IR"' in text and '"voucher_no": self.name' in text
+				'"voucher_type": "Department IR"' in text
+				and '"voucher_no": self.name' in text
 			),
 			"has_validate_receive_lineage": "validate_receive_lineage" in text,
 		}
@@ -209,15 +210,18 @@ def _latest_submitted_receive() -> dict | None:
 
 
 def _mops_for_receive(receive_name: str) -> list[str]:
-	return frappe.db.sql(
-		"""
+	return (
+		frappe.db.sql(
+			"""
 		SELECT DISTINCT manufacturing_operation
 		FROM `tabDepartment IR Operation`
 		WHERE parent = %(p)s AND IFNULL(manufacturing_operation,'') != ''
 		""",
-		{"p": receive_name},
-		pluck="manufacturing_operation",
-	) or []
+			{"p": receive_name},
+			pluck="manufacturing_operation",
+		)
+		or []
+	)
 
 
 def get_sql_proof_templates() -> dict[str, str]:
@@ -326,7 +330,9 @@ def run_proof_query_pack(limit: int = 50) -> dict:
 		"stock_entry_multiple_mops_same_voucher": out["templates"][
 			"stock_entry_multiple_mops_same_voucher"
 		],
-		"snc_submitted_empty_source_table": out["templates"]["snc_submitted_empty_source_table"],
+		"snc_submitted_empty_source_table": out["templates"][
+			"snc_submitted_empty_source_table"
+		],
 		"pmo_submitted_recent_slice": out["templates"]["pmo_submitted_recent_slice"],
 		"submission_queue_department_ir_timeline": out["templates"][
 			"submission_queue_department_ir_timeline"
@@ -345,10 +351,12 @@ def run_proof_pack_audits(limit: int = 50) -> dict:
 	"""Bench entry: templates + executed proof queries + parity + DIR fallback errors."""
 	base = run_all_audits()
 	base["proof_pack"] = run_proof_query_pack(limit=limit)
-	base["stock_entry_legacy_balance_trace"] = get_stock_entry_legacy_balance_table_trace()
-	base["proof_pack"]["archive_hint"] = (
-		"Save this JSON from bench output to your ticket / evidence store; re-run after each deploy."
-	)
+	base[
+		"stock_entry_legacy_balance_trace"
+	] = get_stock_entry_legacy_balance_table_trace()
+	base["proof_pack"][
+		"archive_hint"
+	] = "Save this JSON from bench output to your ticket / evidence store; re-run after each deploy."
 	return base
 
 
@@ -527,7 +535,9 @@ def audit_employee_ir_diamond_lineage(
 		l for l in all_logs if l.get("item_code") and l["item_code"][0] in ("D", "G")
 	]
 	issue_logs = (
-		_mop_log_rows("AND voucher_type = 'Employee IR' AND voucher_no = %s", (issue_voucher,))
+		_mop_log_rows(
+			"AND voucher_type = 'Employee IR' AND voucher_no = %s", (issue_voucher,)
+		)
 		if issue_voucher
 		else []
 	)
@@ -600,12 +610,15 @@ def audit_employee_ir_diamond_lineage(
 		"key_set_diff": {
 			"in_stock_entry_only": sorted(se_keys - current_keys),
 			"in_current_balance_only": sorted(current_keys - se_keys),
-			"in_current_but_missing_from_issue_snapshot": sorted(current_keys - issue_keys),
+			"in_current_but_missing_from_issue_snapshot": sorted(
+				current_keys - issue_keys
+			),
 		},
 		"mop_log_diamond_rows": diamond_logs,
 		"issue_voucher_diamond_rows": issue_diamond_logs,
 		"stock_entry_diamond_lines": se_diamond_lines,
-		"diagnosis": diagnosis or [
+		"diagnosis": diagnosis
+		or [
 			"Diamond present uniformly in Stock Entry, MOP Log, Issue snapshot and header — "
 			"investigate UI / Receive form rendering instead of data lineage."
 		],
@@ -661,6 +674,171 @@ def run_all_audits(receive_doc: str | None = None) -> dict:
 			)
 
 	out["server_scripts"] = audit_active_server_scripts()
-	out["submission_queue_duplicates"] = audit_submission_queue_department_ir_duplicates()
+	out[
+		"submission_queue_duplicates"
+	] = audit_submission_queue_department_ir_duplicates()
 	out["error_log_dir_fallback_recent"] = audit_error_log_dir_fallback(20)
+	return out
+
+
+def audit_mop_log_vs_physical(
+	mwo: str | None = None,
+	dry_run: bool = True,
+	stale_days: int = 7,
+) -> dict:
+	"""EG-011: per-(MWO, item, batch, warehouse) audit comparing
+	(a) MOP Log required qty,
+	(b) physical stock from tabStock Ledger Entry,
+	(c) open Stock Reservation Entry remaining qty.
+
+	Yields rows where required > physical + sre_open (the EOD failure
+	signature) and rows where SREs are zero-remaining and stale (older
+	than ``stale_days`` days). In ``dry_run=True`` mode (default), this
+	function ONLY reports — no document is cancelled or modified.
+
+	Operator invocation:
+		bench --site SITE execute \\
+		  jewellery_erpnext.mop_lineage_audit.audit_mop_log_vs_physical \\
+		  --kwargs '{"mwo": "MWO-XXXX", "dry_run": true}'
+
+	The companion physical-stock validator at
+	``mop_eod_sync._validate_eod_source_batch_stock`` (lines 703–745)
+	is the runtime guard; this audit is the offline diagnostic that
+	tells operators WHICH MOP Logs / SREs are inconsistent so they can
+	be reconciled before the next EOD run.
+	"""
+	from frappe.utils import flt
+
+	out: dict = {
+		"mwo_filter": mwo,
+		"dry_run": bool(dry_run),
+		"stale_days": stale_days,
+		"shortage_rows": [],
+		"stale_sre_rows": [],
+		"cancelled_sre_names": [],
+	}
+
+	# Collect unsynced (or filtered) MOP Log rows. The composite indexed
+	# helper get_current_mop_balance_rows exists for "latest-per-(item, batch)"
+	# but here we want the raw required-qty per row so we read directly.
+	mop_log_filters: dict = {"is_cancelled": 0}
+	if mwo:
+		mop_log_filters["manufacturing_work_order"] = mwo
+
+	mop_logs = frappe.get_all(
+		"MOP Log",
+		filters=mop_log_filters,
+		fields=[
+			"name",
+			"manufacturing_work_order",
+			"manufacturing_operation",
+			"item_code",
+			"batch_no",
+			"warehouse",
+			"qty_after_transaction_batch_based",
+			"is_synced",
+		],
+		order_by="manufacturing_work_order asc, item_code asc, batch_no asc",
+	)
+
+	# Aggregate latest required qty per (mwo, item, batch, warehouse).
+	required: dict[tuple, float] = {}
+	for log in mop_logs:
+		key = (
+			log.manufacturing_work_order,
+			log.item_code,
+			log.batch_no,
+			log.warehouse,
+		)
+		# Track the latest non-cancelled balance per key; mop_logs is ordered
+		# by name asc which is creation order — last write wins for "latest".
+		required[key] = flt(log.qty_after_transaction_batch_based, 3)
+
+	for key, req_qty in required.items():
+		mwo_name, item_code, batch_no, warehouse = key
+		if req_qty <= 0:
+			continue
+
+		# Physical stock from Stock Ledger Entry.
+		physical_rows = frappe.db.sql(
+			"""
+			SELECT COALESCE(SUM(actual_qty), 0) AS qty
+			FROM `tabStock Ledger Entry`
+			WHERE item_code = %(item_code)s
+			  AND warehouse = %(warehouse)s
+			  AND batch_no = %(batch_no)s
+			  AND is_cancelled = 0
+			""",
+			{
+				"item_code": item_code,
+				"warehouse": warehouse,
+				"batch_no": batch_no,
+			},
+			as_dict=True,
+		)
+		physical = flt(physical_rows[0]["qty"] if physical_rows else 0, 3)
+
+		# Open Stock Reservation Entry remaining qty for this item/warehouse.
+		sre_rows = frappe.db.sql(
+			"""
+			SELECT name,
+			       COALESCE(reserved_qty, 0) - COALESCE(delivered_qty, 0) AS remaining
+			FROM `tabStock Reservation Entry`
+			WHERE item_code = %(item_code)s
+			  AND warehouse = %(warehouse)s
+			  AND docstatus = 1
+			  AND IFNULL(status, '') NOT IN ('Delivered', 'Cancelled')
+			""",
+			{"item_code": item_code, "warehouse": warehouse},
+			as_dict=True,
+		)
+		sre_open = flt(sum(flt(r["remaining"], 3) for r in sre_rows), 3)
+
+		if flt(req_qty, 3) > flt(physical, 3) + flt(sre_open, 3) + 1e-6:
+			out["shortage_rows"].append(
+				{
+					"manufacturing_work_order": mwo_name,
+					"item_code": item_code,
+					"batch_no": batch_no,
+					"warehouse": warehouse,
+					"required_qty": req_qty,
+					"physical_qty": physical,
+					"sre_open_qty": sre_open,
+					"short_by": flt(req_qty - physical - sre_open, 3),
+				}
+			)
+
+	# Detect zero-remaining stale SREs (candidates for cleanup). We do NOT
+	# cancel anything when dry_run=True.
+	stale_threshold = frappe.utils.add_days(frappe.utils.nowdate(), -int(stale_days))
+	stale_sres = frappe.db.sql(
+		"""
+		SELECT name, item_code, warehouse,
+		       COALESCE(reserved_qty, 0) - COALESCE(delivered_qty, 0) AS remaining,
+		       modified
+		FROM `tabStock Reservation Entry`
+		WHERE docstatus = 1
+		  AND IFNULL(status, '') NOT IN ('Delivered', 'Cancelled')
+		  AND modified < %(threshold)s
+		HAVING remaining <= 0
+		""",
+		{"threshold": stale_threshold},
+		as_dict=True,
+	)
+	out["stale_sre_rows"] = stale_sres
+
+	if not dry_run and stale_sres:
+		# Operator explicitly opted in; cancel the zero-remaining stale SREs.
+		for row in stale_sres:
+			try:
+				sre_doc = frappe.get_doc("Stock Reservation Entry", row["name"])
+				sre_doc.flags.ignore_permissions = True
+				sre_doc.cancel()
+				out["cancelled_sre_names"].append(row["name"])
+			except Exception as exc:
+				frappe.log_error(
+					title=f"audit_mop_log_vs_physical: cancel SRE {row['name']} failed",
+					message=str(exc),
+				)
+
 	return out

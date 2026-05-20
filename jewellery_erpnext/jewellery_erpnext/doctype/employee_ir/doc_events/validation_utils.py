@@ -241,7 +241,10 @@ def validate_manually_book_loss_details(self):
 
 def get_loss_details(row):
 	loss_details = {}
-	if row.received_gross_wt > row.gross_wt:
+	# EG-015: ``received_gross_wt`` can be None on draft rows; bare comparison
+	# raises ``TypeError: '>' not supported between NoneType and float``. The
+	# safe pattern (``flt()``) is already used at line 124 of this module.
+	if flt(row.received_gross_wt) > flt(row.gross_wt):
 		return
 	key = row.manufacturing_work_order
 	if not loss_details.get(key):

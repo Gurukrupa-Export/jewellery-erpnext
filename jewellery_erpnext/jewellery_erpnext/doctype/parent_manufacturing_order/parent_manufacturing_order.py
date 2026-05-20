@@ -112,7 +112,9 @@ def _get_variant_attribute_value(row, attribute):
 	return row.get(normalized_attr)
 
 
-def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
+def _resolve_existing_variant_item_code(
+	row, bom_table, pmo_diamond_grade=None, pmo_name=None, bom_name=None
+):
 	item_code = row.get("item_variant") or row.get("item_code")
 	item_template = row.get("item") or (
 		frappe.db.get_value("Item", item_code, "variant_of") if item_code else None
@@ -150,11 +152,26 @@ def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
 			args["Diamond Grade"] = diamond_grade
 			missing_attributes.discard("Diamond Grade")
 
+	row_idx = row.get("idx") or row.get("name") or "?"
+	context_parts = []
+	if pmo_name:
+		context_parts.append(_("PMO {0}").format(pmo_name))
+	if bom_name:
+		context_parts.append(_("BOM {0}").format(bom_name))
+	context_str = ", ".join(context_parts)
+	context_prefix = f"{context_str}: " if context_str else ""
+
 	if not args:
 		frappe.throw(
 			_(
-				"Variant attributes are missing in {0} (Row {1}) for template item {2}."
-			).format(bom_table, row.get("idx") or row.get("name") or "?", item_template)
+				"{0}Variant attributes are missing in {1} (Row {2}) for template item {3}. Row data: {4}"
+			).format(
+				context_prefix,
+				bom_table,
+				row_idx,
+				item_template,
+				frappe.as_json(dict(row)),
+			)
 		)
 
 	if variant := get_variant(item_template, args):
@@ -166,13 +183,15 @@ def _resolve_existing_variant_item_code(row, bom_table, pmo_diamond_grade=None):
 	missing_text = ", ".join(sorted(missing_attributes)) or _("None")
 	frappe.throw(
 		_(
-			"Variant not found for template item {0} in {1} (Row {2}). Missing attributes: {3}. Used attributes: {4}."
+			"{0}Variant not found for template item {1} in {2} (Row {3}). Missing attributes: {4}. Used attributes: {5}. Row data: {6}"
 		).format(
+			context_prefix,
 			item_template,
 			bom_table,
-			row.get("idx") or row.get("name") or "?",
+			row_idx,
 			missing_text,
 			used_attributes,
+			frappe.as_json(dict(row)),
 		)
 	)
 
@@ -412,7 +431,11 @@ class ParentManufacturingOrder(Document):
 				continue
 			for row in data:
 				item_code = _resolve_existing_variant_item_code(
-					row, bom_table, self.diamond_grade
+					row,
+					bom_table,
+					self.diamond_grade,
+					pmo_name=self.name,
+					bom_name=bom,
 				)
 				if not item_code:
 					field_name = (

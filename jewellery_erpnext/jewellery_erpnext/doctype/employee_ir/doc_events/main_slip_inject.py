@@ -57,6 +57,7 @@ from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle impor
 from frappe import _
 from frappe.utils import cint, flt, nowtime, today
 
+from jewellery_erpnext.jewellery_erpnext.utils.safe_submit import submit_with_retry
 from jewellery_erpnext.utils import get_item_from_attribute
 
 REPACK_STOCK_ENTRY_TYPE = "Repack"
@@ -256,21 +257,54 @@ def _get_bin_qty(item_code, warehouse):
 
 
 def _merge_transfer_segments(raw_transfer):
-	"""Combine transfer lines for the same item into one row.
+	"""Combine transfer lines into deterministic rows.
 
-	All transfer segments share a single source (MSL) and target (department)
-	warehouse, so the merge key is item-only.
+	Default behaviour: rows share a single source (MSL) and target (department)
+	warehouse, so the merge key collapses to item-only and matches the legacy
+	fallback design. EG-004/EG-020: when callers populate per-segment
+	``s_warehouse``/``t_warehouse``/``batch_no``/``inventory_type`` the merge
+	key extends to the full tuple, preventing accidental cross-warehouse
+	collapses, and the output is sorted so concurrent EIR receives acquire
+	Bin locks in the same global order.
 	"""
-	by_item = {}
+	merged = {}
 	for seg in raw_transfer:
 		if seg.get("mode") != "transfer":
 			continue
-		by_item[seg["item_code"]] = by_item.get(seg["item_code"], 0) + flt(seg["qty"])
-	return [
-		{"mode": "transfer", "item_code": ic, "qty": round(qty, 3)}
-		for ic, qty in by_item.items()
-		if qty > 0
+		key = (
+			seg["item_code"],
+			seg.get("s_warehouse"),
+			seg.get("t_warehouse"),
+			seg.get("batch_no"),
+			seg.get("inventory_type"),
+		)
+		if key in merged:
+			merged[key]["qty"] = flt(merged[key]["qty"]) + flt(seg["qty"])
+		else:
+			merged[key] = {
+				"mode": "transfer",
+				"item_code": seg["item_code"],
+				"qty": flt(seg["qty"]),
+				"s_warehouse": seg.get("s_warehouse"),
+				"t_warehouse": seg.get("t_warehouse"),
+				"batch_no": seg.get("batch_no"),
+				"inventory_type": seg.get("inventory_type"),
+			}
+	rows = [
+		{**v, "qty": round(v["qty"], 3)}
+		for v in merged.values()
+		if round(v["qty"], 3) > 0
 	]
+	rows.sort(
+		key=lambda r: (
+			r["item_code"],
+			r.get("s_warehouse") or "",
+			r.get("t_warehouse") or "",
+			r.get("batch_no") or "",
+			r.get("inventory_type") or "",
+		)
+	)
+	return rows
 
 
 def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
@@ -538,7 +572,10 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 			se.flags.ignore_permissions = True
 			_apply_fifo_batches_to_stock_entry(se)
 			se.save()
-			se.submit()
+			# EG-004: retry only on 1205/1213 after savepoint rollback +
+			# document reload. Idempotency upstream is via auto_created=1
+			# on this row's (employee_ir, custom_eir_operation_row).
+			submit_with_retry(se)
 			se_names.append(se.name)
 
 			batch["available_qty"] = available - consume_this
@@ -666,7 +703,9 @@ def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh, existing_
 		se_mt.flags.ignore_permissions = True
 		_apply_fifo_batches_to_stock_entry(se_mt)
 		se_mt.save()
-		se_mt.submit()
+		# EG-004: retry on 1205/1213 only. The existing_types check above
+		# provides idempotency for the fallback path.
+		submit_with_retry(se_mt)
 		out.append(se_mt.name)
 
 	if purity_segs and REPACK_STOCK_ENTRY_TYPE not in existing_types:
@@ -676,7 +715,7 @@ def _inject_via_source_warehouse_fallback(eir, row, segments, dept_wh, existing_
 		se_rp.flags.ignore_permissions = True
 		_apply_fifo_batches_to_stock_entry(se_rp)
 		se_rp.save()
-		se_rp.submit()
+		submit_with_retry(se_rp)
 		out.append(se_rp.name)
 
 	return out
@@ -887,7 +926,12 @@ def _build_material_transfer_from_segments(
 ):
 	"""Fallback path: one Material Transfer (WORK ORDER) SE from merged transfer segments.
 
-	All rows post from the single MSL ``source_wh`` to the MOP department warehouse.
+	By default rows post from the single MSL ``source_wh`` to the MOP department
+	warehouse. EG-004/EG-020: when a segment carries per-row ``s_warehouse`` or
+	``t_warehouse`` they are honoured so multi-warehouse injects no longer
+	collapse onto a single Bin (which produced 1213 deadlocks under contention).
+	The fallback to ``source_wh``/``dept_wh`` preserves backwards compatibility
+	for callers that don't populate per-segment warehouses.
 	"""
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = MATERIAL_TRANSFER_STOCK_ENTRY_TYPE
@@ -898,8 +942,8 @@ def _build_material_transfer_from_segments(
 			{
 				"item_code": seg["item_code"],
 				"qty": seg["qty"],
-				"s_warehouse": source_wh,
-				"t_warehouse": dept_wh,
+				"s_warehouse": seg.get("s_warehouse") or source_wh,
+				"t_warehouse": seg.get("t_warehouse") or dept_wh,
 				"uom": "Gram",
 				"manufacturing_operation": row.manufacturing_operation,
 				"custom_manufacturing_work_order": row.manufacturing_work_order,
@@ -912,8 +956,10 @@ def _build_material_transfer_from_segments(
 def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dept_wh):
 	"""Fallback path: one Repack SE from pure→alloy segments (consume / produce pairs).
 
-	Pure metal is consumed from the single MSL ``source_wh``; the produced alloy
-	lands in the MOP department warehouse.
+	By default pure metal is consumed from the single MSL ``source_wh`` and the
+	produced alloy lands in the MOP department warehouse. EG-004/EG-020:
+	per-segment ``s_warehouse`` / ``t_warehouse`` overrides are honoured so
+	repack across mixed batches doesn't serialize on one Bin.
 	"""
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = REPACK_STOCK_ENTRY_TYPE
@@ -924,7 +970,7 @@ def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dep
 			{
 				"item_code": seg["source_item"],
 				"qty": seg["consume_qty"],
-				"s_warehouse": source_wh,
+				"s_warehouse": seg.get("s_warehouse") or source_wh,
 				"uom": "Gram",
 				"use_serial_batch_fields": 1,
 			},
@@ -934,7 +980,7 @@ def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dep
 			{
 				"item_code": seg["target_item"],
 				"qty": seg["produce_qty"],
-				"t_warehouse": dept_wh,
+				"t_warehouse": seg.get("t_warehouse") or dept_wh,
 				"uom": "Gram",
 				"manufacturing_operation": row.manufacturing_operation,
 				"custom_manufacturing_work_order": row.manufacturing_work_order,

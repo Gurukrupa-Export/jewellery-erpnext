@@ -163,9 +163,42 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 	fg_details is kept for BOM creation (aggregated item/qty/pcs).
 	"""
 
-	# Build row_data from source_table (batch-wise) for stock entry
+	# EG-003 idempotency guard: a concurrent / retried SNC submit must not
+	# create a second Manufacturing Stock Entry. ``Stock Entry.custom_serial_number_creator``
+	# is the existing back-link populated by create_manufacturing_entry().
+	existing_se = frappe.db.get_value(
+		"Stock Entry",
+		{"custom_serial_number_creator": self.name, "docstatus": ["<", 2]},
+		["name", "docstatus"],
+		as_dict=True,
+	)
+	if existing_se and existing_se.docstatus == 1:
+		frappe.msgprint(
+			_(
+				"Manufacturing Stock Entry {0} already created for {1}; skipping duplicate."
+			).format(existing_se.name, self.name)
+		)
+		return existing_se.name
+	if existing_se and existing_se.docstatus == 0:
+		# D-003: a prior failed attempt left a draft SE. Flag so the
+		# downstream create_manufacturing_entry adopts and rebuilds it
+		# instead of inserting a new duplicate draft. The flag is read
+		# in manufacturing_operation.create_manufacturing_entry.
+		self.flags.existing_draft_se = existing_se.name
+
+	# Build row_data from source_table (batch-wise) for stock entry.
+	# EG-003: sort deterministically so two concurrent SNCs touching overlapping
+	# Bin rows acquire row locks in the same global order — avoids 1213 cycles.
+	ordered_source_rows = sorted(
+		self.source_table,
+		key=lambda r: (
+			(r.row_material or ""),
+			(r.s_warehouse or ""),
+			(r.batch_no or ""),
+		),
+	)
 	row_data = []
-	for row in self.source_table:
+	for row in ordered_source_rows:
 		row_data.append(
 			{
 				"item_code": row.row_material,
@@ -194,58 +227,84 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 	)
 
 	if row_data:
-		for row in row_data:
+		for idx, row in enumerate(row_data):
 			if row.get("s_warehouse"):
-				# Broad SRE cancellation logic for linked reservations
-				pmo = frappe.db.get_value(
-					"Manufacturing Work Order",
-					self.manufacturing_work_order,
-					"manufacturing_order",
-				)
-				sales_order = frappe.db.get_value(
-					"Parent Manufacturing Order", pmo, "sales_order"
-				)
+				# EG-003: wrap the SRE-cancel + Bin recalc per-row with a
+				# savepoint so a 1205/1213 on one Bin does not strand the
+				# entire SNC submit. We rollback to the savepoint, then
+				# re-raise so the caller sees the failure (idempotency above
+				# allows a clean retry).
+				bin_sp = f"snc_bin_{idx}"
+				frappe.db.savepoint(bin_sp)
+				try:
+					# Broad SRE cancellation logic for linked reservations
+					pmo = frappe.db.get_value(
+						"Manufacturing Work Order",
+						self.manufacturing_work_order,
+						"manufacturing_order",
+					)
+					sales_order = frappe.db.get_value(
+						"Parent Manufacturing Order", pmo, "sales_order"
+					)
 
-				sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+					sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 
-				# Build filters for linked SREs
-				linked_sres = []
-				for link_field, link_val in {
-					"voucher_no": sales_order,
-					"manufacturing_work_order": self.manufacturing_work_order,
-					"manufacturing_operation": self.manufacturing_operation,
-					"production_manufacturing_order": pmo,
-				}.items():
-					if link_field in sre_cols and link_val:
-						found = frappe.get_all(
-							"Stock Reservation Entry",
-							filters={
-								"item_code": row["item_code"],
-								"docstatus": 1,
-								link_field: link_val,
-							},
-							pluck="name",
-						)
-						linked_sres.extend(found)
+					# Build filters for linked SREs
+					linked_sres = []
+					for link_field, link_val in {
+						"voucher_no": sales_order,
+						"manufacturing_work_order": self.manufacturing_work_order,
+						"manufacturing_operation": self.manufacturing_operation,
+						"production_manufacturing_order": pmo,
+					}.items():
+						if link_field in sre_cols and link_val:
+							found = frappe.get_all(
+								"Stock Reservation Entry",
+								filters={
+									"item_code": row["item_code"],
+									"docstatus": 1,
+									link_field: link_val,
+								},
+								pluck="name",
+							)
+							linked_sres.extend(found)
 
-				# Deduplicate and cancel
-				for sre_name in set(linked_sres):
-					sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
-					sre_doc.flags.ignore_permissions = True
-					sre_doc.cancel()
+					# Deduplicate and cancel
+					for sre_name in set(linked_sres):
+						sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
+						sre_doc.flags.ignore_permissions = True
+						sre_doc.cancel()
 
-				# Update Bin to reflect the released stock
-				bin_name = frappe.get_value(
-					"Bin",
-					{"item_code": row["item_code"], "warehouse": row["s_warehouse"]},
-				)
-				if bin_name:
-					bin_doc = frappe.get_doc("Bin", bin_name)
-					bin_doc.flags.ignore_permissions = True
-					bin_doc.recalculate_qty()
-					bin_doc.update_reserved_stock()
+					# Update Bin to reflect the released stock
+					bin_name = frappe.get_value(
+						"Bin",
+						{
+							"item_code": row["item_code"],
+							"warehouse": row["s_warehouse"],
+						},
+					)
+					if bin_name:
+						bin_doc = frappe.get_doc("Bin", bin_name)
+						bin_doc.flags.ignore_permissions = True
+						bin_doc.recalculate_qty()
+						bin_doc.update_reserved_stock()
 
-				frappe.clear_cache()
+					frappe.clear_cache()
+				except frappe.exceptions.QueryDeadlockError:
+					# 1213: InnoDB rolled back the whole transaction; the
+					# savepoint is gone. Do NOT touch it. Re-raise so the
+					# outer unit-of-work restarts cleanly. The idempotency
+					# guard at the top of this function (using
+					# Stock Entry.custom_serial_number_creator) prevents
+					# duplicate side effects on restart.
+					raise
+				except frappe.exceptions.QueryTimeoutError:
+					# 1205: only the failed statement is rolled back. Release
+					# this row's savepoint to abandon its mutations, then
+					# re-raise to the caller (which is idempotent at the SE
+					# link level).
+					frappe.db.rollback(save_point=bin_sp)
+					raise
 
 		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 			create_finished_goods_bom,
@@ -822,69 +881,99 @@ def _append_fg_rows_aggregated(snc_doc, source_rows, mnf_qty: int):
 			)
 
 
-def get_correct_source_warehouse(item_code, batch_no=None, sales_order=None, mwo=None, mop=None):
+def get_correct_source_warehouse(
+	item_code, batch_no=None, sales_order=None, mwo=None, mop=None
+):
 	"""Priority-based warehouse resolution from SREs."""
 
 	# Priority 1: SRE for Sales Order (Submitted)
 	if sales_order:
 		if batch_no:
-			wh = frappe.db.sql("""
-				SELECT sre.warehouse 
+			wh = frappe.db.sql(
+				"""
+				SELECT sre.warehouse
 				FROM `tabSerial and Batch Entry` sbe
 				JOIN `tabStock Reservation Entry` sre ON sre.name = sbe.parent
-				WHERE sbe.parenttype = 'Stock Reservation Entry' 
-				  AND sbe.batch_no = %s 
-				  AND sre.item_code = %s 
-				  AND sre.voucher_no = %s 
+				WHERE sbe.parenttype = 'Stock Reservation Entry'
+				  AND sbe.batch_no = %s
+				  AND sre.item_code = %s
+				  AND sre.voucher_no = %s
 				  AND sre.docstatus = 1
 				LIMIT 1
-			""", (batch_no, item_code, sales_order))
-			if wh: return wh[0][0], "SRE"
-		
-		wh = frappe.db.get_value("Stock Reservation Entry", 
-			{"item_code": item_code, "voucher_no": sales_order, "docstatus": 1}, "warehouse")
-		if wh: return wh, "SRE"
+			""",
+				(batch_no, item_code, sales_order),
+			)
+			if wh:
+				return wh[0][0], "SRE"
+
+		wh = frappe.db.get_value(
+			"Stock Reservation Entry",
+			{"item_code": item_code, "voucher_no": sales_order, "docstatus": 1},
+			"warehouse",
+		)
+		if wh:
+			return wh, "SRE"
 
 	# Priority 2: Other specific links (MWO, MOP) (Submitted)
-	for field, val in [("manufacturing_work_order", mwo), ("manufacturing_operation", mop)]:
-		if not val: continue
+	for field, val in [
+		("manufacturing_work_order", mwo),
+		("manufacturing_operation", mop),
+	]:
+		if not val:
+			continue
 		if batch_no:
-			wh = frappe.db.sql(f"""
-				SELECT sre.warehouse 
+			wh = frappe.db.sql(
+				f"""
+				SELECT sre.warehouse
 				FROM `tabSerial and Batch Entry` sbe
 				JOIN `tabStock Reservation Entry` sre ON sre.name = sbe.parent
-				WHERE sbe.parenttype = 'Stock Reservation Entry' 
-				  AND sbe.batch_no = %s 
-				  AND sre.item_code = %s 
-				  AND sre.{field} = %s 
+				WHERE sbe.parenttype = 'Stock Reservation Entry'
+				  AND sbe.batch_no = %s
+				  AND sre.item_code = %s
+				  AND sre.{field} = %s
 				  AND sre.docstatus = 1
 				LIMIT 1
-			""", (batch_no, item_code, val))
-			if wh: return wh[0][0], "SRE"
-		
-		wh = frappe.db.get_value("Stock Reservation Entry", 
-			{"item_code": item_code, field: val, "docstatus": 1}, "warehouse")
-		if wh: return wh, "SRE"
+			""",
+				(batch_no, item_code, val),
+			)
+			if wh:
+				return wh[0][0], "SRE"
+
+		wh = frappe.db.get_value(
+			"Stock Reservation Entry",
+			{"item_code": item_code, field: val, "docstatus": 1},
+			"warehouse",
+		)
+		if wh:
+			return wh, "SRE"
 
 	# Priority 3: Cancelled SRE trace (Recently released stock)
 	if sales_order:
 		if batch_no:
-			wh = frappe.db.sql("""
-				SELECT sre.warehouse 
+			wh = frappe.db.sql(
+				"""
+				SELECT sre.warehouse
 				FROM `tabSerial and Batch Entry` sbe
 				JOIN `tabStock Reservation Entry` sre ON sre.name = sbe.parent
-				WHERE sbe.parenttype = 'Stock Reservation Entry' 
-				  AND sbe.batch_no = %s 
-				  AND sre.item_code = %s 
-				  AND sre.voucher_no = %s 
+				WHERE sbe.parenttype = 'Stock Reservation Entry'
+				  AND sbe.batch_no = %s
+				  AND sre.item_code = %s
+				  AND sre.voucher_no = %s
 				  AND sre.docstatus = 2
 				LIMIT 1
-			""", (batch_no, item_code, sales_order))
-			if wh: return wh[0][0], "SRE"
-		
-		wh = frappe.db.get_value("Stock Reservation Entry", 
-			{"item_code": item_code, "voucher_no": sales_order, "docstatus": 2}, "warehouse")
-		if wh: return wh, "SRE"
+			""",
+				(batch_no, item_code, sales_order),
+			)
+			if wh:
+				return wh[0][0], "SRE"
+
+		wh = frappe.db.get_value(
+			"Stock Reservation Entry",
+			{"item_code": item_code, "voucher_no": sales_order, "docstatus": 2},
+			"warehouse",
+		)
+		if wh:
+			return wh, "SRE"
 
 	# Priority 4: Latest Stock Movement (Fallback if no reservation exists)
 	sle_wh = frappe.db.sql(
@@ -899,9 +988,13 @@ def get_correct_source_warehouse(item_code, batch_no=None, sales_order=None, mwo
 	return None, None
 
 
-def resolve_and_validate(item_code, qty, batch_no=None, sales_order=None, mwo=None, mop=None):
+def resolve_and_validate(
+	item_code, qty, batch_no=None, sales_order=None, mwo=None, mop=None
+):
 	"""Combined resolution + stock validation with auto-recovery."""
-	wh, source_type = get_correct_source_warehouse(item_code, batch_no, sales_order, mwo, mop)
+	wh, source_type = get_correct_source_warehouse(
+		item_code, batch_no, sales_order, mwo, mop
+	)
 
 	if not wh:
 		return None
@@ -920,7 +1013,7 @@ def resolve_and_validate(item_code, qty, batch_no=None, sales_order=None, mwo=No
 		if not bin_data:
 			return 0
 
-		return (flt(bin_data.actual_qty) - flt(bin_data.reserved_stock))
+		return flt(bin_data.actual_qty) - flt(bin_data.reserved_stock)
 
 	if get_available_qty(wh) >= flt(qty):
 		return wh

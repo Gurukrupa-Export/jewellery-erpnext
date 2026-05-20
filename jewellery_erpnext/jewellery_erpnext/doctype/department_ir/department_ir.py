@@ -11,6 +11,9 @@ from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import IfNull, Sum
 from frappe.utils import cint, flt, get_datetime
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.department_ir import (
+	create_pc_stock_entry_from_department_ir,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils import (
 	get_summary_data,
 	valid_reparing_or_next_operation,
@@ -150,6 +153,8 @@ class DepartmentIR(Document):
 			self.on_submit_issue_new()
 		else:
 			self.on_submit_receive()
+
+		create_pc_stock_entry_from_department_ir(self)
 
 	def on_cancel(self):
 		if self.type == "Issue":

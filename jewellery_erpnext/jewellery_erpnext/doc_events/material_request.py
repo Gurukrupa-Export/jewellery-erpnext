@@ -13,6 +13,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.be
 	update_pure_qty,
 	validate_warehouse,
 )
+from jewellery_erpnext.jewellery_erpnext.utils.safe_submit import submit_with_retry
 
 
 def before_validate(self, method):
@@ -53,7 +54,16 @@ def before_update_after_submit(self, method):
 		return
 
 	if not self.custom_manufacturing_operation:
-		frappe.throw(_("Please select a Manufacturing Operation."))
+		# EG-009: the prior message offered no remediation hint, which is why
+		# the same error reappears 43 times in production logs even after
+		# operators see it.
+		frappe.throw(
+			_(
+				"Material Request {0}: workflow state 'Material Transferred to MOP' "
+				"requires a Manufacturing Operation. Set the 'Manufacturing Operation' "
+				"field on this Material Request before transitioning."
+			).format(self.name)
+		)
 
 	mop_fields = frappe.db.get_value(
 		"Manufacturing Operation",
@@ -407,7 +417,52 @@ def create_stock_entry(self, method):
 	):
 		return
 
-	se_doc = frappe.new_doc("Stock Entry")
+	# EG-001 idempotency (D-001 fix): bulk Reserve Material workflow re-enters
+	# this hook repeatedly; even with the ``self.custom_reserve_se`` guard
+	# above, a concurrent re-run from the bulk worker can hit it before the
+	# parent's field is committed. Look up any existing Reserved SE for this
+	# MR and adopt it instead of creating a duplicate.
+	#
+	# IMPORTANT: ``material_request`` is a column on ``tabStock Entry Detail``
+	# (the child items row), NOT on ``tabStock Entry``. A direct parent-table
+	# filter would never match. We JOIN through Stock Entry Detail.
+	rows = frappe.db.sql(
+		"""
+		SELECT se.name, se.docstatus
+		FROM `tabStock Entry` se
+		JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+		WHERE sed.material_request = %(mr)s
+		  AND se.purpose = 'Material Transfer'
+		  AND se.add_to_transit = 1
+		  AND se.docstatus < 2
+		ORDER BY se.creation DESC
+		LIMIT 1
+		""",
+		{"mr": self.name},
+		as_dict=True,
+	)
+	existing_se = rows[0] if rows else None
+	if existing_se:
+		if existing_se.docstatus == 1:
+			frappe.db.set_value(
+				"Material Request",
+				self.name,
+				"custom_reserve_se",
+				existing_se.name,
+				update_modified=False,
+			)
+			self.custom_reserve_se = existing_se.name
+			frappe.msgprint(
+				_(
+					"Reserved Stock Entry {0} already linked to {1}; skipping duplicate."
+				).format(existing_se.name, self.name)
+			)
+			return
+		# Adopt the draft and rebuild it from scratch.
+		se_doc = frappe.get_doc("Stock Entry", existing_se.name)
+		se_doc.items = []
+	else:
+		se_doc = frappe.new_doc("Stock Entry")
 	se_doc.company = self.company
 
 	stock_entry_type = frappe.db.get_value(
@@ -455,8 +510,19 @@ def create_stock_entry(self, method):
 
 	se_doc.flags.throw_batch_error = True
 	se_doc.save()
+	# Anchor the link BEFORE submit so a concurrent retry from the bulk
+	# workflow sees the row even if submit blocks/rolls back. ``throw_batch_error``
+	# is preserved on the SE so submit_with_retry will surface row-level
+	# diagnostics (missing stock, zero valuation) verbatim.
+	frappe.db.set_value(
+		"Material Request",
+		self.name,
+		"custom_reserve_se",
+		se_doc.name,
+		update_modified=False,
+	)
 	self.custom_reserve_se = se_doc.name
-	se_doc.submit()
+	submit_with_retry(se_doc)
 
 	frappe.msgprint(_("Reserved Stock Entry {0} has been created").format(se_doc.name))
 

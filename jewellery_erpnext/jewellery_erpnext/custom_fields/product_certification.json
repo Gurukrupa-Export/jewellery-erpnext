@@ -1,0 +1,17 @@
+{
+ "Product Certification": [
+  {
+   "allow_on_submit": 1,
+   "dt": "Product Certification",
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "insert_after": "amended_from",
+   "label": "Stock Entry",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "print_hide": 1,
+   "read_only": 1
+  }
+ ]
+}

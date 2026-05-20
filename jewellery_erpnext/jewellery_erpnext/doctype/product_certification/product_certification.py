@@ -18,6 +18,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
 )
+from jewellery_erpnext.jewellery_erpnext.utils.safe_submit import submit_with_retry
 
 
 class ProductCertification(Document):
@@ -491,7 +492,40 @@ def create_stock_entry(doc):
 		"Hall Marking Service",
 		"Diamond Certificate service",
 	]:
-		se_doc = frappe.new_doc("Stock Entry")
+		# EG-002 idempotency guard: a Product Certification can be submitted
+		# concurrently from the Submission Queue background worker (two users,
+		# stale UI, etc.). The previous code created a fresh Stock Entry on
+		# every call, producing duplicate SE + duplicate SLE inserts that
+		# triggered 1205 lock-wait-timeouts under contention. Re-use any
+		# existing SE linked back to this Product Certification.
+		existing = frappe.db.get_value(
+			"Stock Entry",
+			{"product_certification": doc.name, "docstatus": ["<", 2]},
+			["name", "docstatus"],
+			as_dict=True,
+		)
+		if existing:
+			if existing.docstatus == 1:
+				if getattr(doc, "stock_entry", None) != existing.name:
+					frappe.db.set_value(
+						"Product Certification",
+						doc.name,
+						"stock_entry",
+						existing.name,
+						update_modified=False,
+					)
+				frappe.msgprint(
+					_(
+						"Stock Entry {0} already created for {1}; skipping duplicate."
+					).format(existing.name, doc.name)
+				)
+				return existing.name
+			se_doc = frappe.get_doc("Stock Entry", existing.name)
+		else:
+			se_doc = frappe.new_doc("Stock Entry")
+		# Clear any stale rows on a reused draft so reconstruction below
+		# remains deterministic.
+		se_doc.items = []
 		se_doc.stock_entry_type = get_stock_entry_type(doc.service_type, doc.type)
 		se_doc.company = doc.company
 		se_doc.product_certification = doc.name
@@ -621,8 +655,27 @@ def create_stock_entry(doc):
 			frappe.throw(_("No item found for Repack"))
 		se_doc.flags.throw_batch_error = True
 		se_doc.inventory_type = "Regular Stock"
+		# EG-014 guard: ERPNext's Serial and Batch Bundle auto-construction
+		# calls combine(posting_date, posting_time); if either is None we
+		# surface a TypeError deep in core. Ensure both are populated before
+		# items are processed at save time.
+		if not se_doc.posting_date:
+			se_doc.posting_date = frappe.utils.today()
+		if not se_doc.posting_time:
+			se_doc.posting_time = frappe.utils.nowtime()
+		se_doc.set_posting_time = 1
 		se_doc.save()
-		se_doc.submit()
+		# Anchor the link BEFORE submit so a concurrent retry sees the row
+		# even if submit blocks/rolls back. EG-002 idempotency depends on
+		# this ordering.
+		frappe.db.set_value(
+			"Product Certification",
+			doc.name,
+			"stock_entry",
+			se_doc.name,
+			update_modified=False,
+		)
+		submit_with_retry(se_doc)
 		frappe.msgprint(_("Stock Entry created"))
 	elif doc.type == "Receive" and doc.service_type in [
 		"Fire Assy Service",
@@ -802,7 +855,13 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				continue
 
 			item_s_warehouse = (
-				resolve_and_validate(item_code=item_code, qty=qty, batch_no=batch_no, mwo=mwo_name, mop=latest_mop)
+				resolve_and_validate(
+					item_code=item_code,
+					qty=qty,
+					batch_no=batch_no,
+					mwo=mwo_name,
+					mop=latest_mop,
+				)
 				or s_warehouse
 			)
 

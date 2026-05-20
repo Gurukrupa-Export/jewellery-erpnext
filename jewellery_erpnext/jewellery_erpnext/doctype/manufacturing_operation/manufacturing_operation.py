@@ -958,22 +958,42 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	) != "Refresh & Replace Defective Material" and pmo_det.get("new_item"):
 		finish_item = pmo_det.get("new_item")
 
-	se = frappe.get_doc(
-		{
-			"doctype": "Stock Entry",
-			"purpose": "Manufacture",
-			"manufacturing_order": pmo,
-			"stock_entry_type": "Manufacture",
-			"department": doc.department,
-			"to_department": doc.department,
-			"manufacturing_work_order": doc.manufacturing_work_order,
-			"manufacturing_operation": op_name,
-			"custom_serial_number_creator": doc.name,
-			# "inventory_type": "Regular Stock",
-			"auto_created": 1,
-			"company": doc.company,
-		}
-	)
+	# D-003: if the SNC caller flagged a pre-existing draft Stock Entry
+	# (left by a prior failed attempt), adopt and rebuild it instead of
+	# inserting a fresh duplicate. The flag is set in
+	# serial_number_creator.to_prepare_data_for_make_mnf_stock_entry.
+	existing_draft_se = getattr(getattr(doc, "flags", None), "existing_draft_se", None)
+	if existing_draft_se:
+		se = frappe.get_doc("Stock Entry", existing_draft_se)
+		# Clear stale rows so reconstruction below is deterministic.
+		se.items = []
+		se.purpose = "Manufacture"
+		se.manufacturing_order = pmo
+		se.stock_entry_type = "Manufacture"
+		se.department = doc.department
+		se.to_department = doc.department
+		se.manufacturing_work_order = doc.manufacturing_work_order
+		se.manufacturing_operation = op_name
+		se.custom_serial_number_creator = doc.name
+		se.auto_created = 1
+		se.company = doc.company
+	else:
+		se = frappe.get_doc(
+			{
+				"doctype": "Stock Entry",
+				"purpose": "Manufacture",
+				"manufacturing_order": pmo,
+				"stock_entry_type": "Manufacture",
+				"department": doc.department,
+				"to_department": doc.department,
+				"manufacturing_work_order": doc.manufacturing_work_order,
+				"manufacturing_operation": op_name,
+				"custom_serial_number_creator": doc.name,
+				# "inventory_type": "Regular Stock",
+				"auto_created": 1,
+				"company": doc.company,
+			}
+		)
 	diamond_grade_data = frappe._dict()
 	for entry in row_data:
 		if diamond_grade := frappe.db.get_value(

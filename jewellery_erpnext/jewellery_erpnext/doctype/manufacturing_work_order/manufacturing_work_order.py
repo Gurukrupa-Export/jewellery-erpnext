@@ -104,12 +104,25 @@ class ManufacturingWorkOrder(Document):
 				"has_split_mwo": 0,
 				"is_finding_mwo": 0,
 			},
-			"name",
+			["name", "department"],
 		)
 		if pending_wo:
+			# EG-016: bulk submitters needed to know WHICH sibling MWOs were
+			# blocking the submit, not just that some were blocked. Show
+			# names + current departments so the operator can navigate
+			# straight to the blocking records.
+			blocking = ", ".join(
+				f"{wo.name} ({wo.department or 'no department'})" for wo in pending_wo
+			)
 			frappe.throw(
-				_("All the pending manufacturing work orders should be in {0}.").format(
-					last_department
+				_(
+					"Cannot submit {0}: all pending Manufacturing Work Orders for PMO {1} "
+					"must be in department {2} first. Blocked by: {3}."
+				).format(
+					self.name,
+					self.manufacturing_order,
+					last_department,
+					blocking,
 				)
 			)
 

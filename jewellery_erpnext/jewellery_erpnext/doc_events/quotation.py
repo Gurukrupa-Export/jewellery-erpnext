@@ -33,12 +33,17 @@ def validate(self, method):
 	validate_gold_rate_with_gst(self)
 	self.calculate_taxes_and_totals()
 	if self.workflow_state == "Creating BOM":
+		# EG-008: pass docname (not the stale in-memory doc) and deduplicate
+		# the background job so concurrent saves do not enqueue duplicates
+		# that race on TimestampMismatch.
 		frappe.enqueue(
 			create_bom_scientifically,
-			self=self,
+			quotation_name=self.name,
 			queue="long",
 			timeout=10000,
 			enqueue_after_commit=True,
+			job_id=f"qtn-bom-{self.name}",
+			deduplicate=True,
 		)
 	if self.docstatus == 0:
 		calculate_gst_rate(self)
@@ -49,14 +54,45 @@ def validate(self, method):
 		set_tracking_bom_rate_in_quotation(self)
 
 
-def create_bom_scientifically(self):
-	create_tracking_bom_directly(self)
+def create_bom_scientifically(quotation_name=None, self=None):
+	"""Background BOM creation entrypoint.
+
+	EG-008: re-fetch the Quotation from the database inside the worker so
+	stale snapshots from the enqueue site cannot trigger TimestampMismatch.
+	The legacy ``self=...`` kwarg is kept for backwards compatibility with
+	any caller that still passes a doc; we still re-fetch by name in that
+	case if the doc has one.
+	"""
+	doc = None
+	if quotation_name:
+		doc = frappe.get_doc("Quotation", quotation_name)
+	elif self is not None:
+		# Legacy path: re-fetch a fresh copy by name if we have one.
+		doc_name = getattr(self, "name", None)
+		doc = frappe.get_doc("Quotation", doc_name) if doc_name else self
+	if doc is None:
+		return
+	try:
+		create_tracking_bom_directly(doc)
+	except frappe.TimestampMismatchError:
+		doc.reload()
+		create_tracking_bom_directly(doc)
+
 
 @frappe.whitelist()
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
 	self.flags.can_be_saved = True
-	frappe.enqueue(create_bom_scientifically, self=self, queue="long", timeout=10000)
+	# EG-008: enqueue by docname and dedupe so a manual re-trigger
+	# doesn't pile up TimestampMismatch failures in the worker.
+	frappe.enqueue(
+		create_bom_scientifically,
+		quotation_name=self.name,
+		queue="long",
+		timeout=10000,
+		job_id=f"qtn-bom-{self.name}",
+		deduplicate=True,
+	)
 
 
 def onload(self, method):

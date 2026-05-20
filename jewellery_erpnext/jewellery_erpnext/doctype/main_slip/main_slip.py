@@ -575,6 +575,13 @@ def create_process_loss(
 	se_doc.employee = doc.employee
 	se_doc.subcontractor = doc.subcontractor
 	se_doc.auto_created = 1
+	# EG-014 guard: ERPNext's Serial and Batch Bundle auto-construction calls
+	# combine(posting_date, posting_time). If either is None we surface a
+	# TypeError deep in core (serial_and_batch_bundle.py:2123). Populate both
+	# defaults here before any item rows ride the auto-bundle path below.
+	se_doc.posting_date = se_doc.posting_date or frappe.utils.today()
+	se_doc.posting_time = se_doc.posting_time or frappe.utils.nowtime()
+	se_doc.set_posting_time = 1
 
 	dust_item = get_item_loss_item(
 		doc.company,
@@ -756,6 +763,103 @@ def create_metal_loss(doc, item, variant_of, metal_loss, batch_data, mop=None):
 
 	se.save()
 	se.submit()
+
+
+def get_loss_item_from_manufacturer_mapping(item_code, manufacturer, loss_type="Loss"):
+	"""EG-010: manufacturer-scoped loss-item resolver.
+
+	Reads the Manufacturer's ``custom_variant_loss_table`` (child Variant
+	Loss Table) to find the configured loss variant for a given source
+	variant and loss_type, then resolves the concrete loss Item by
+	carrying over the source item's attributes (purity / touch / colour
+	etc.) onto the loss variant template.
+
+	Why a separate function: the older ``get_item_loss_item`` reads the
+	GLOBAL Variant Loss Table. Per business contract, EOD sync must use
+	a per-manufacturer mapping; otherwise a manufacturer whose loss-grade
+	policy differs from the global default ends up posting against the
+	wrong loss item. Falling through to ``get_item_loss_item`` here would
+	silently mask configuration mistakes, so a missing mapping throws
+	rather than degrades.
+
+	Raises ``frappe.ValidationError`` when:
+	  - source item has no ``variant_of`` template (D-006),
+	  - the per-Manufacturer Variant Loss Table mapping row is missing,
+	  - the mapping resolves but the concrete loss Item variant cannot
+	    be constructed (D-005 — never silently create-on-fall-through).
+	"""
+	if not item_code:
+		frappe.throw(_("Loss item resolution requires a source item code."))
+	if not manufacturer:
+		frappe.throw(_("Loss item resolution requires a Manufacturer."))
+
+	# D-006: a source item without ``variant_of`` has no template to map
+	# from. Throw clearly instead of pretending it's its own template
+	# (which would generate a malformed mapping query).
+	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+	if not variant_of:
+		frappe.throw(
+			_(
+				"Item {0} has no variant template (variant_of is empty); cannot resolve loss item. "
+				"Only variant items can be mapped to a loss item."
+			).format(item_code)
+		)
+
+	loss_variant = frappe.db.get_value(
+		"Variant Loss Table",
+		{
+			"parent": manufacturer,
+			"parenttype": "Manufacturer",
+			"parentfield": "custom_variant_loss_table",
+			"variant": variant_of,
+			"loss_type": loss_type,
+		},
+		"loss_variant",
+	)
+	if not loss_variant:
+		frappe.throw(
+			_(
+				"Manufacturer {0} has no Variant Loss Table mapping for variant {1} and loss_type {2}. "
+				"Configure the row under Manufacturer → Loss Details → Variant Loss Table before running MOP EOD Sync."
+			).format(manufacturer, variant_of, loss_type)
+		)
+
+	from jewellery_erpnext.utils import set_items_from_attribute
+
+	loss_item = set_items_from_attribute(
+		loss_variant,
+		frappe.db.get_all(
+			"Item Variant Attribute",
+			{"parent": item_code},
+			["attribute as item_attribute", "attribute_value"],
+		),
+	)
+
+	if loss_item:
+		loss_item.include_item_in_manufacturing = 1
+		loss_item.has_variants = 0
+		loss_item.is_stock_item = 1
+		loss_item.has_batch_no = 1
+		loss_item.create_new_batch = 1
+		loss_item.gst_hsn_code = frappe.db.get_value(
+			"Item", loss_item.variant_of, "gst_hsn_code"
+		)
+		loss_item.save()
+		return loss_item.name
+
+	# D-005: contract is "do NOT silently fall through to create_loss_item"
+	# when the manufacturer-scoped mapping resolves to a template but no
+	# concrete Item variant can be derived from the source attributes.
+	# Surface a clear actionable error mentioning the unresolved variant
+	# template — operators need to know which template to extend.
+	frappe.throw(
+		_(
+			"Cannot resolve loss Item variant for template {0} from source item {1}. "
+			"No matching Item variant exists for the source attributes. "
+			"Either create the loss-side variant under template {0}, or correct the "
+			"Manufacturer {2} Variant Loss Table mapping for variant {3} and loss_type {4}."
+		).format(loss_variant, item_code, manufacturer, variant_of, loss_type)
+	)
 
 
 def get_item_loss_item(company, item, variant_of="M", loss_type=None):
