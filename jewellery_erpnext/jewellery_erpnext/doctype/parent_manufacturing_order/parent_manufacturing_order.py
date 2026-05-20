@@ -360,6 +360,7 @@ class ParentManufacturingOrder(Document):
 				purity = (metal_data.get(metal.metal_type) or {}).get(metal.metal_touch)
 				if purity:
 					metal.metal_purity = purity
+		bom.flags.ignore_validations = True
 		bom.save()
 
 	def update_estimated_delivery_date_in_prev_docs(self):
