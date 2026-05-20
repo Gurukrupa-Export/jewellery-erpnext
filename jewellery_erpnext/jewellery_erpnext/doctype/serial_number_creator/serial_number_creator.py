@@ -27,6 +27,7 @@ class SerialNumberCreator(Document):
 		pass
 
 	def before_insert(self):
+		validate_not_metal_only(self)
 		self._render_fg_details()
 		self._compute_total_weight()
 
@@ -196,54 +197,207 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 	if row_data:
 		for row in row_data:
 			if row.get("s_warehouse"):
-				# Broad SRE cancellation logic for linked reservations
 				pmo = frappe.db.get_value(
 					"Manufacturing Work Order",
 					self.manufacturing_work_order,
 					"manufacturing_order",
 				)
-				sales_order = frappe.db.get_value(
-					"Parent Manufacturing Order", pmo, "sales_order"
+				# sales_order = frappe.db.get_value(
+				# 	"Parent Manufacturing Order", pmo, "sales_order"
+				# )
+
+				sre_reserved_qty_total = 0.0
+
+				# ── PRIORITY 1: Product Certification Receive ──
+				# If PC happened before SNC, the SREs are already cancelled
+				# and the stock sits at the PC Receive t_warehouse.
+				# Check this FIRST as the authoritative source.
+				pc_receive_data = frappe.db.sql(
+					"""
+					SELECT se_item.t_warehouse, se_item.qty
+					FROM `tabStock Entry` se
+					JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
+					JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
+					WHERE pc.type = 'Receive'
+					  AND se.docstatus = 1
+					  AND EXISTS(
+					      SELECT 1 FROM `tabProduct Details` pd
+					      WHERE pd.parent = pc.name
+					        AND (pd.manufacturing_work_order = %(mwo)s
+					             OR pd.parent_manufacturing_order = %(pmo)s)
+					  )
+					  AND se_item.item_code = %(item_code)s
+					ORDER BY se.creation DESC LIMIT 1
+				""",
+					{
+						"mwo": self.manufacturing_work_order,
+						"pmo": pmo,
+						"item_code": row["item_code"],
+					},
+					as_dict=1,
 				)
 
-				sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+				if pc_receive_data:
+					sre_reserved_qty_total = flt(pc_receive_data[0].qty)
+					row["s_warehouse"] = pc_receive_data[0].t_warehouse
+					# Persist the corrected warehouse back to source_table
+					for st_row in self.source_table:
+						if st_row.row_material == row[
+							"item_code"
+						] and st_row.batch_no == row.get("batch_no"):
+							st_row.s_warehouse = row["s_warehouse"]
+							st_row.db_set(
+								"s_warehouse", row["s_warehouse"], update_modified=False
+							)
+					frappe.logger().info(
+						f"SNC {self.name}: PC Receive — "
+						f"Item: {row['item_code']}, "
+						f"Warehouse: {row['s_warehouse']}, "
+						f"Qty: {sre_reserved_qty_total} "
+						f"(Using Product Certification Receive as primary source)"
+					)
+				else:
+					# ── PRIORITY 2: SRE cancellation ──
+					# No PC exists — resolve via Stock Reservation Entries
+					# First, find all MWOs that consumed this item/batch via MOP Log
+					mwo_prefix = self.manufacturing_work_order.rsplit("-", 1)[0] + "%"
+					consumed_mwos = frappe.db.sql(
+						"""
+						SELECT DISTINCT manufacturing_work_order
+						FROM `tabMOP Log`
+						WHERE item_code = %s AND batch_no = %s
+						  AND (manufacturing_work_order = %s OR manufacturing_work_order LIKE %s)
+						  AND is_cancelled = 0
+					""",
+						(
+							row["item_code"],
+							row.get("batch_no"),
+							self.manufacturing_work_order,
+							mwo_prefix,
+						),
+						as_list=1,
+					)
 
-				# Build filters for linked SREs
-				linked_sres = []
-				for link_field, link_val in {
-					"voucher_no": sales_order,
-					"manufacturing_work_order": self.manufacturing_work_order,
-					"manufacturing_operation": self.manufacturing_operation,
-					"production_manufacturing_order": pmo,
-				}.items():
-					if link_field in sre_cols and link_val:
-						found = frappe.get_all(
-							"Stock Reservation Entry",
-							filters={
-								"item_code": row["item_code"],
-								"docstatus": 1,
-								link_field: link_val,
-							},
-							pluck="name",
+					search_mwos = [self.manufacturing_work_order]
+					for m in consumed_mwos:
+						if m[0] and m[0] not in search_mwos:
+							search_mwos.append(m[0])
+
+					linked_sres = frappe.get_all(
+						"Stock Reservation Entry",
+						filters={
+							"item_code": row["item_code"],
+							"docstatus": 1,
+							"manufacturing_work_order": ["in", search_mwos],
+						},
+						pluck="name",
+					)
+
+					# Deduplicate and cancel SREs while preventing TimestampMismatchError on Bins
+					for sre_name in set(linked_sres):
+						frappe.clear_document_cache("Bin")
+						sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
+						sre_reserved_qty_total += flt(sre_doc.reserved_qty)
+
+						# Capture warehouse from SRE if available
+						if sre_doc.warehouse:
+							row["s_warehouse"] = sre_doc.warehouse
+
+						sre_doc.flags.ignore_permissions = True
+						sre_doc.cancel()
+						frappe.clear_document_cache("Bin")
+
+					# Persist the corrected SRE warehouse back to source_table
+					if linked_sres:
+						for st_row in self.source_table:
+							if st_row.row_material == row[
+								"item_code"
+							] and st_row.batch_no == row.get("batch_no"):
+								st_row.s_warehouse = row["s_warehouse"]
+								st_row.db_set(
+									"s_warehouse",
+									row["s_warehouse"],
+									update_modified=False,
+								)
+
+				loss_qty = sre_reserved_qty_total - flt(row["qty"])
+
+				if loss_qty > 0:
+					variant_of = frappe.db.get_value(
+						"Item", row["item_code"], "variant_of"
+					)
+					loss_warehouse = None
+					variant_loss_details = frappe.db.get_value(
+						"Variant Loss Warehouse",
+						{
+							"parent": self.manufacturer,
+							"variant": variant_of or row["item_code"],
+						},
+						[
+							"loss_warehouse",
+							"consider_department_warehouse",
+							"warehouse_type",
+						],
+						as_dict=1,
+					)
+
+					if variant_loss_details:
+						if variant_loss_details.get("loss_warehouse"):
+							loss_warehouse = variant_loss_details.get("loss_warehouse")
+						elif variant_loss_details.get(
+							"consider_department_warehouse"
+						) and variant_loss_details.get("warehouse_type"):
+							loss_warehouse = frappe.db.get_value(
+								"Warehouse",
+								{
+									"disabled": 0,
+									"department": self.department,
+									"warehouse_type": variant_loss_details.get(
+										"warehouse_type"
+									),
+								},
+							)
+
+					if loss_warehouse:
+						# Duplicate guard: skip if a Repack entry already exists for this SNC + item
+						existing_loss_se = frappe.db.sql(
+							"""
+							SELECT se.name
+							FROM `tabStock Entry` se
+							JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+							WHERE se.custom_serial_number_creator = %s
+							  AND se.stock_entry_type = 'Repack'
+							  AND se.docstatus != 2
+							  AND sed.item_code = %s
+							LIMIT 1
+							""",
+							(self.name, row["item_code"]),
 						)
-						linked_sres.extend(found)
-
-				# Deduplicate and cancel
-				for sre_name in set(linked_sres):
-					sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
-					sre_doc.flags.ignore_permissions = True
-					sre_doc.cancel()
-
-				# Update Bin to reflect the released stock
-				bin_name = frappe.get_value(
-					"Bin",
-					{"item_code": row["item_code"], "warehouse": row["s_warehouse"]},
-				)
-				if bin_name:
-					bin_doc = frappe.get_doc("Bin", bin_name)
-					bin_doc.flags.ignore_permissions = True
-					bin_doc.recalculate_qty()
-					bin_doc.update_reserved_stock()
+						if existing_loss_se:
+							frappe.msgprint(
+								_(
+									"Repack (Loss) Stock Entry already exists for {0}"
+								).format(row["item_code"])
+							)
+						else:
+							se_loss = frappe.new_doc("Stock Entry")
+							se_loss.stock_entry_type = "Repack"
+							se_loss.purpose = "Repack"
+							se_loss.company = self.company
+							se_loss.custom_serial_number_creator = self.name
+							se_loss.append(
+								"items",
+								{
+									"item_code": row["item_code"],
+									"qty": loss_qty,
+									"s_warehouse": row["s_warehouse"],
+									"t_warehouse": loss_warehouse,
+									"batch_no": row.get("batch_no"),
+									"use_serial_batch_fields": 1,
+								},
+							)
+							se_loss.insert(ignore_permissions=True)
+							se_loss.submit()
 
 				frappe.clear_cache()
 
@@ -255,7 +409,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		se_name = create_manufacturing_entry(self, row_data, operation_data)
 
 		self.fg_serial_no = se_name
-		self.db_set("fg_serial_no", se_name)
+		self.db_set("fg_serial_no", se_name, update_modified=False)
 		create_finished_goods_bom(self, se_name, operation_data)
 		submit_tracking_bom_for_finished_goods(self)
 
@@ -349,6 +503,37 @@ def get_holidays_for_employee(employee, start_date, end_date):
 	return holiday_dates
 
 
+def validate_not_metal_only(doc):
+	"""Prevent SNC submission when only metal items exist in source_table.
+
+	A finished jewellery piece must contain additional materials (diamond,
+	gemstone, finding, etc.) beyond just metal. This validation ensures
+	incomplete compositions are caught before stock entries are created.
+	"""
+	has_metal = False
+	has_non_metal = False
+	for row in doc.source_table:
+		if not row.row_material:
+			continue
+		qty = flt(row.qty)
+		if qty <= 0:
+			continue
+		item_group = frappe.db.get_value("Item", row.row_material, "item_group") or ""
+		if "Metal" in item_group:
+			has_metal = True
+		else:
+			has_non_metal = True
+
+	if has_metal and not has_non_metal:
+		frappe.throw(
+			_(
+				"Submission not allowed. Only metal details are available. "
+				"Additional manufacturing details (diamond, gemstone, finding) "
+				"are required before submission."
+			)
+		)
+
+
 def validate_qty(self):
 	for row in self.source_table:
 		if row.qty <= 0:
@@ -413,6 +598,42 @@ def create_snc_from_mwo_submit(mwo_name: str) -> str:
 	)
 	if exist_snc:
 		return exist_snc
+
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_current_mop_balance_rows,
+	)
+
+	balance_rows = get_current_mop_balance_rows(
+		mop_name,
+		include_fields=[
+			"item_code",
+			"qty_after_transaction_batch_based",
+			"pcs_after_transaction_batch_based",
+		],
+	)
+
+	has_metal = False
+	has_non_metal = False
+
+	if balance_rows:
+		for r in balance_rows:
+			item_code = r.get("item_code")
+			qty = flt(r.get("qty_after_transaction_batch_based") or 0)
+			pcs = flt(r.get("pcs_after_transaction_batch_based") or 0)
+			if qty <= 0 and pcs <= 0:
+				continue
+			item_group = frappe.db.get_value("Item", item_code, "item_group") or ""
+			if "Metal" in item_group:
+				has_metal = True
+			else:
+				has_non_metal = True
+
+		if has_metal and not has_non_metal:
+			frappe.throw(
+				_(
+					"Only metal details available. Cannot create SNC because metal definitely combines with any of other items like diamond, gemstone, finding."
+				)
+			)
 
 	pmo = frappe.db.get_value(
 		"Manufacturing Work Order", mwo_name, "manufacturing_order"
@@ -629,18 +850,18 @@ def submit_tracking_bom_for_finished_goods(doc):
 # 	).strip()
 
 
-def _get_mop_is_sync(mop_name: str) -> int:
-	"""Check if there are any non-cancelled logs for this MOP that are marked as 'is_synced'."""
-	if not mop_name:
-		return 0
-	return (
-		1
-		if frappe.db.exists(
-			"MOP Log",
-			{"manufacturing_operation": mop_name, "is_synced": 1, "is_cancelled": 0},
-		)
-		else 0
-	)
+# def _get_mop_is_sync(mop_name: str) -> int:
+# 	"""Check if there are any non-cancelled logs for this MOP that are marked as 'is_synced'."""
+# 	if not mop_name:
+# 		return 0
+# 	return (
+# 		1
+# 		if frappe.db.exists(
+# 			"MOP Log",
+# 			{"manufacturing_operation": mop_name, "is_synced": 1, "is_cancelled": 0},
+# 		)
+# 		else 0
+# 	)
 
 
 def _get_source_raw_materials(mop_name, snc_doc):
@@ -791,7 +1012,16 @@ def _append_fg_rows_aggregated(snc_doc, source_rows, mnf_qty: int):
 				"sub_setting_type": row.get("sub_setting_type"),
 			}
 		item_agg[key]["qty"] += flt(row.get("qty") or 0)
-		item_agg[key]["pcs"] += flt(row.get("pcs") or 0)
+
+		# Diamond/Gemstone items (prefix D or G): each batch is a distinct physical
+		# stone, so pcs should be summed across batches.
+		# Metal and all other items: multiple batches are weight splits of the SAME
+		# physical piece, so use max() to avoid double-counting the pcs.
+		first_char = (key or "")[0].upper() if key else ""
+		if first_char in ("D", "G"):
+			item_agg[key]["pcs"] += flt(row.get("pcs") or 0)
+		else:
+			item_agg[key]["pcs"] = max(item_agg[key]["pcs"], flt(row.get("pcs") or 0))
 
 	# Split across mnf_qty IDs
 	for mnf_id in range(1, int(mnf_qty) + 1):
@@ -822,69 +1052,131 @@ def _append_fg_rows_aggregated(snc_doc, source_rows, mnf_qty: int):
 			)
 
 
-def get_correct_source_warehouse(item_code, batch_no=None, sales_order=None, mwo=None, mop=None):
+def get_correct_source_warehouse(
+	item_code, batch_no=None, sales_order=None, mwo=None, mop=None
+):
 	"""Priority-based warehouse resolution from SREs."""
 
 	# Priority 1: SRE for Sales Order (Submitted)
 	if sales_order:
 		if batch_no:
-			wh = frappe.db.sql("""
-				SELECT sre.warehouse 
+			wh = frappe.db.sql(
+				"""
+				SELECT sre.warehouse
 				FROM `tabSerial and Batch Entry` sbe
 				JOIN `tabStock Reservation Entry` sre ON sre.name = sbe.parent
-				WHERE sbe.parenttype = 'Stock Reservation Entry' 
-				  AND sbe.batch_no = %s 
-				  AND sre.item_code = %s 
-				  AND sre.voucher_no = %s 
+				WHERE sbe.parenttype = 'Stock Reservation Entry'
+				  AND sbe.batch_no = %s
+				  AND sre.item_code = %s
+				  AND sre.voucher_no = %s
 				  AND sre.docstatus = 1
 				LIMIT 1
-			""", (batch_no, item_code, sales_order))
-			if wh: return wh[0][0], "SRE"
-		
-		wh = frappe.db.get_value("Stock Reservation Entry", 
-			{"item_code": item_code, "voucher_no": sales_order, "docstatus": 1}, "warehouse")
-		if wh: return wh, "SRE"
+			""",
+				(batch_no, item_code, sales_order),
+			)
+			if wh:
+				return wh[0][0], "SRE"
+
+		wh = frappe.db.get_value(
+			"Stock Reservation Entry",
+			{"item_code": item_code, "voucher_no": sales_order, "docstatus": 1},
+			"warehouse",
+		)
+		if wh:
+			return wh, "SRE"
 
 	# Priority 2: Other specific links (MWO, MOP) (Submitted)
-	for field, val in [("manufacturing_work_order", mwo), ("manufacturing_operation", mop)]:
-		if not val: continue
+	for field, val in [
+		("manufacturing_work_order", mwo),
+		("manufacturing_operation", mop),
+	]:
+		if not val:
+			continue
 		if batch_no:
-			wh = frappe.db.sql(f"""
-				SELECT sre.warehouse 
+			wh = frappe.db.sql(
+				f"""
+				SELECT sre.warehouse
 				FROM `tabSerial and Batch Entry` sbe
 				JOIN `tabStock Reservation Entry` sre ON sre.name = sbe.parent
-				WHERE sbe.parenttype = 'Stock Reservation Entry' 
-				  AND sbe.batch_no = %s 
-				  AND sre.item_code = %s 
-				  AND sre.{field} = %s 
+				WHERE sbe.parenttype = 'Stock Reservation Entry'
+				  AND sbe.batch_no = %s
+				  AND sre.item_code = %s
+				  AND sre.{field} = %s
 				  AND sre.docstatus = 1
 				LIMIT 1
-			""", (batch_no, item_code, val))
-			if wh: return wh[0][0], "SRE"
-		
-		wh = frappe.db.get_value("Stock Reservation Entry", 
-			{"item_code": item_code, field: val, "docstatus": 1}, "warehouse")
-		if wh: return wh, "SRE"
+			""",
+				(batch_no, item_code, val),
+			)
+			if wh:
+				return wh[0][0], "SRE"
+
+		wh = frappe.db.get_value(
+			"Stock Reservation Entry",
+			{"item_code": item_code, field: val, "docstatus": 1},
+			"warehouse",
+		)
+		if wh:
+			return wh, "SRE"
+
+	# Priority 2.5: Product Certification Receive warehouse
+	# When PC happens before SNC, SREs are cancelled during PC Issue and
+	# stock is moved to a WIP warehouse, then back to the department
+	# warehouse via PC Receive. The PC Receive t_warehouse is the
+	# definitive location of the stock after certification.
+	if mwo:
+		pmo_for_pc = frappe.db.get_value(
+			"Manufacturing Work Order", mwo, "manufacturing_order"
+		)
+		if pmo_for_pc:
+			pc_wh = frappe.db.sql(
+				"""
+				SELECT se_item.t_warehouse
+				FROM `tabStock Entry` se
+				JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
+				JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
+				WHERE pc.type = 'Receive'
+				  AND se.docstatus = 1
+				  AND EXISTS(
+				      SELECT 1 FROM `tabProduct Details` pd
+				      WHERE pd.parent = pc.name
+				        AND (pd.manufacturing_work_order = %s
+				             OR pd.parent_manufacturing_order = %s)
+				  )
+				  AND se_item.item_code = %s
+				ORDER BY se.creation DESC LIMIT 1
+				""",
+				(mwo, pmo_for_pc, item_code),
+			)
+			if pc_wh:
+				return pc_wh[0][0], "PC_RECEIVE"
 
 	# Priority 3: Cancelled SRE trace (Recently released stock)
 	if sales_order:
 		if batch_no:
-			wh = frappe.db.sql("""
-				SELECT sre.warehouse 
+			wh = frappe.db.sql(
+				"""
+				SELECT sre.warehouse
 				FROM `tabSerial and Batch Entry` sbe
 				JOIN `tabStock Reservation Entry` sre ON sre.name = sbe.parent
-				WHERE sbe.parenttype = 'Stock Reservation Entry' 
-				  AND sbe.batch_no = %s 
-				  AND sre.item_code = %s 
-				  AND sre.voucher_no = %s 
+				WHERE sbe.parenttype = 'Stock Reservation Entry'
+				  AND sbe.batch_no = %s
+				  AND sre.item_code = %s
+				  AND sre.voucher_no = %s
 				  AND sre.docstatus = 2
 				LIMIT 1
-			""", (batch_no, item_code, sales_order))
-			if wh: return wh[0][0], "SRE"
-		
-		wh = frappe.db.get_value("Stock Reservation Entry", 
-			{"item_code": item_code, "voucher_no": sales_order, "docstatus": 2}, "warehouse")
-		if wh: return wh, "SRE"
+			""",
+				(batch_no, item_code, sales_order),
+			)
+			if wh:
+				return wh[0][0], "SRE"
+
+		wh = frappe.db.get_value(
+			"Stock Reservation Entry",
+			{"item_code": item_code, "voucher_no": sales_order, "docstatus": 2},
+			"warehouse",
+		)
+		if wh:
+			return wh, "SRE"
 
 	# Priority 4: Latest Stock Movement (Fallback if no reservation exists)
 	sle_wh = frappe.db.sql(
@@ -899,15 +1191,19 @@ def get_correct_source_warehouse(item_code, batch_no=None, sales_order=None, mwo
 	return None, None
 
 
-def resolve_and_validate(item_code, qty, batch_no=None, sales_order=None, mwo=None, mop=None):
+def resolve_and_validate(
+	item_code, qty, batch_no=None, sales_order=None, mwo=None, mop=None
+):
 	"""Combined resolution + stock validation with auto-recovery."""
-	wh, source_type = get_correct_source_warehouse(item_code, batch_no, sales_order, mwo, mop)
+	wh, source_type = get_correct_source_warehouse(
+		item_code, batch_no, sales_order, mwo, mop
+	)
 
 	if not wh:
 		return None
 
-	# If resolved via SRE, we trust it and use it as the source warehouse
-	if source_type == "SRE":
+	# If resolved via SRE or PC Receive, we trust it as the source warehouse
+	if source_type in ("SRE", "PC_RECEIVE"):
 		return wh
 
 	def get_available_qty(w):
@@ -920,7 +1216,7 @@ def resolve_and_validate(item_code, qty, batch_no=None, sales_order=None, mwo=No
 		if not bin_data:
 			return 0
 
-		return (flt(bin_data.actual_qty) - flt(bin_data.reserved_stock))
+		return flt(bin_data.actual_qty) - flt(bin_data.reserved_stock)
 
 	if get_available_qty(wh) >= flt(qty):
 		return wh

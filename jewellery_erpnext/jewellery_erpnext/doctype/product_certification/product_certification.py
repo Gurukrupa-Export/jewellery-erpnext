@@ -364,19 +364,150 @@ class ProductCertification(Document):
 						"gemstone_weight",
 						"finding_weight_",
 						"other_weight",
+						"total_diamond_pcs",
+						"total_gemstone_pcs",
 					],
 					as_dict=1,
 				)
+
+				# Calculate diamond_pcs from Manufacturing Work Order, Parent Manufacturing Order or BOM
+				diamond_pcs = 0
+				if row.manufacturing_work_order:
+					diamond_pcs = (
+						frappe.db.get_value(
+							"Manufacturing Work Order",
+							row.manufacturing_work_order,
+							"diamond_pcs",
+						)
+						or 0
+					)
+				elif row.parent_manufacturing_order:
+					diamond_pcs = (
+						frappe.db.sql(
+							"""
+						SELECT SUM(diamond_pcs)
+						FROM `tabManufacturing Work Order`
+						WHERE manufacturing_order = %s
+						  AND docstatus != 2
+					""",
+							(row.parent_manufacturing_order,),
+						)[0][0]
+						or 0
+					)
+					if (
+						not diamond_pcs
+						and bom_weights
+						and bom_weights.get("total_diamond_pcs")
+					):
+						diamond_pcs = bom_weights.get("total_diamond_pcs")
+				elif bom_weights and bom_weights.get("total_diamond_pcs"):
+					diamond_pcs = bom_weights.get("total_diamond_pcs")
+
+				# Calculate stone_pcs from Manufacturing Work Order, Parent Manufacturing Order or BOM
+				stone_pcs = 0
+				if row.manufacturing_work_order:
+					stone_pcs = (
+						frappe.db.get_value(
+							"Manufacturing Work Order",
+							row.manufacturing_work_order,
+							"gemstone_pcs",
+						)
+						or 0
+					)
+				elif row.parent_manufacturing_order:
+					stone_pcs = (
+						frappe.db.sql(
+							"""
+						SELECT SUM(gemstone_pcs)
+						FROM `tabManufacturing Work Order`
+						WHERE manufacturing_order = %s
+						  AND docstatus != 2
+					""",
+							(row.parent_manufacturing_order,),
+						)[0][0]
+						or 0
+					)
+					if (
+						not stone_pcs
+						and bom_weights
+						and bom_weights.get("total_gemstone_pcs")
+					):
+						stone_pcs = bom_weights.get("total_gemstone_pcs")
+				elif bom_weights and bom_weights.get("total_gemstone_pcs"):
+					stone_pcs = bom_weights.get("total_gemstone_pcs")
+
 				for i in range(0, count):
 					if metal_det:
 						if count == 2 and len(metal_det) < count:
 							metal_touch = metal_det[0].get("metal_touch")
 						else:
 							metal_touch = metal_det[i].get("metal_touch")
-					if existing and metal_touch in [
-						a.get("metal_touch") for a in existing
-					]:
+
+					matching_existing = None
+					if existing:
+						for a in existing:
+							if a.get("metal_touch") == metal_touch:
+								matching_existing = a
+								break
+
+					if matching_existing:
+						matching_existing.gross_weight = (
+							pmo_weights.get("gross_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["gross_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.gold_weight = (
+							pmo_weights.get("net_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["metal_and_finding_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.chain_weight = (
+							pmo_weights.get("finding_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["finding_weight_"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.other_weight = (
+							pmo_weights.get("other_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["other_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.stone_weight = (
+							pmo_weights.get("gemstone_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["gemstone_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.diamond_weight = (
+							pmo_weights.get("diamond_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["diamond_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.diamond_pcs = (
+							cint(diamond_pcs) / count
+							if count > 1
+							else cint(diamond_pcs)
+						)
+						matching_existing.stone_pcs = (
+							cint(stone_pcs) / count if count > 1 else cint(stone_pcs)
+						)
+						matching_existing.bom = row.bom
+						matching_existing.category = row.category
+						matching_existing.sub_category = row.sub_category
+						matching_existing.metal_touch = metal_touch
+						matching_existing.metal_colour = metal_colour
 						continue
+
 					exploded_product_details.append(
 						{
 							"item_code": row.item_code,
@@ -384,22 +515,40 @@ class ProductCertification(Document):
 							"bom": row.bom,
 							"gross_weight": pmo_weights.get("gross_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["gross_weight"] / count,
+							else bom_weights["gross_weight"] / count
+							if bom_weights
+							else 0,
 							"gold_weight": pmo_weights.get("net_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["metal_and_finding_weight"] / count,
+							else bom_weights["metal_and_finding_weight"] / count
+							if bom_weights
+							else 0,
 							"chain_weight": pmo_weights.get("finding_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["finding_weight_"] / count,
+							else bom_weights["finding_weight_"] / count
+							if bom_weights
+							else 0,
 							"other_weight": pmo_weights.get("other_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["other_weight"] / count,
+							else bom_weights["other_weight"] / count
+							if bom_weights
+							else 0,
 							"stone_weight": pmo_weights.get("gemstone_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["gemstone_weight"] / count,
+							else bom_weights["gemstone_weight"] / count
+							if bom_weights
+							else 0,
 							"diamond_weight": pmo_weights.get("diamond_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["diamond_weight"] / count,
+							else bom_weights["diamond_weight"] / count
+							if bom_weights
+							else 0,
+							"diamond_pcs": cint(diamond_pcs) / count
+							if count > 1
+							else cint(diamond_pcs),
+							"stone_pcs": cint(stone_pcs) / count
+							if count > 1
+							else cint(stone_pcs),
 							"parent_manufacturing_order": row.parent_manufacturing_order,
 							"manufacturing_work_order": row.manufacturing_work_order,
 							"supply_raw_material": bool(
@@ -802,7 +951,13 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				continue
 
 			item_s_warehouse = (
-				resolve_and_validate(item_code=item_code, qty=qty, batch_no=batch_no, mwo=mwo_name, mop=latest_mop)
+				resolve_and_validate(
+					item_code=item_code,
+					qty=qty,
+					batch_no=batch_no,
+					mwo=mwo_name,
+					mop=latest_mop,
+				)
 				or s_warehouse
 			)
 

@@ -42,7 +42,7 @@ class ManufacturingWorkOrder(Document):
 			self.name = make_autoname("MWO-.abbr.-.item_code.-.seq.-.##", doc=self)
 		else:
 			color = self.metal_colour.split("+")
-			self.color = "".join([word[0] for word in color if word])
+			self.color = "".join([word[0] for word in color if word])		
 
 	def after_insert(self):
 		if self.custom_tracking_bom:
@@ -53,6 +53,7 @@ class ManufacturingWorkOrder(Document):
 			)
 
 	def on_submit(self):
+		self.sync_mwo_weights()
 		if self.for_fg:
 			self.validate_other_work_orders()
 
@@ -82,6 +83,34 @@ class ManufacturingWorkOrder(Document):
 		# self.start_datetime = now()
 		self.db_set("start_datetime", now())
 		self.db_set("status", "Not Started")
+	
+	def sync_mwo_weights(self):
+		
+		is_fg = frappe.db.get_value("Manufacturing Work Order", self.name, "for_fg")
+		if not is_fg:
+			return
+
+		frappe.db.set_value(
+			"Manufacturing Work Order",
+			self.name,
+			{
+				"gross_wt": self.gross_wt,
+				"net_wt": self.net_wt,
+				"finding_wt": self.finding_wt,
+				"diamond_wt": self.diamond_wt,
+				"gemstone_wt": self.gemstone_wt,
+				"other_wt": self.other_wt,
+				"received_gross_wt": self.received_gross_wt,
+				"received_net_wt": self.received_net_wt,
+				"loss_wt": self.loss_wt,
+				"diamond_wt_in_gram": self.diamond_wt_in_gram,
+				"diamond_pcs": self.diamond_pcs,
+				"gemstone_pcs": self.gemstone_pcs,
+			},
+			update_modified=False,
+		)
+
+
 
 	def validate_other_work_orders(self):
 		# last_department = frappe.db.get_value(
@@ -104,13 +133,14 @@ class ManufacturingWorkOrder(Document):
 				"has_split_mwo": 0,
 				"is_finding_mwo": 0,
 			},
-			"name",
+			pluck="name",
 		)
 		if pending_wo:
+			mwo_list = "<br>".join([f"- <b>{mwo}</b>" for mwo in pending_wo])
 			frappe.throw(
-				_("All the pending manufacturing work orders should be in {0}.").format(
-					last_department
-				)
+				_(
+					"Cannot submit. The following linked MWO(s) are not yet in {0}:<br>{1}"
+				).format(last_department, mwo_list)
 			)
 
 	def on_cancel(self):
