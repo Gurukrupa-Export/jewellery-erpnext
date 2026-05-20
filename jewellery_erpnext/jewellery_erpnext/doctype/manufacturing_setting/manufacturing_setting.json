@@ -21,6 +21,7 @@
   "allowed_days_for_main_slip_issue",
   "expense_account_for_manufacturing_entry",
   "default_last_operation_department",
+  "default_gemstone_item",
   "column_break_9vro2",
   "default_diamond_department",
   "default_gemstone_department",
@@ -377,12 +378,18 @@
    "fieldname": "addition_maximum_item__tolerance_percentage",
    "fieldtype": "Int",
    "label": "Addition Maximum item  tolerance percentage"
+  },
+  {
+   "fieldname": "default_gemstone_item",
+   "fieldtype": "Link",
+   "label": "Default Gemstone item",
+   "options": "Item"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-03-10 12:19:27.170042",
- "modified_by": "Administrator",
+ "modified": "2026-05-20 13:12:04.760292",
+ "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Setting",
  "naming_rule": "By fieldname",

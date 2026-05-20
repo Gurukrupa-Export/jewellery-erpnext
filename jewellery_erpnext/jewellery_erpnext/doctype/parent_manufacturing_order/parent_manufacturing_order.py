@@ -77,19 +77,6 @@ _BOM_TABLE_FIELDS = {
 		"diamond_size_in_mm",
 		"quality",
 	],
-	"BOM Gemstone Detail": [
-		"item_variant",
-		"item",
-		"quantity",
-		"pcs",
-		"is_customer_item",
-		"sub_setting_type",
-		"gemstone_quality",
-		"gemstone_type",
-		"stone_shape",
-		"gemstone_size",
-		"cut_or_cab",
-	],
 	"BOM Other Detail": ["item_code", "quantity", "qty"],
 }
 
@@ -315,12 +302,12 @@ class ParentManufacturingOrder(Document):
 		if not self.order_form_type or self.order_form_type == "Order":
 			set_metal_tolerance_table(self)
 			set_diamond_tolerance_table(self)
-			set_gemstone_tolerance_table(self)
+			# set_gemstone_tolerance_table(self)
 			self.submit_bom()
 			if self.type != "Finding Manufacturing":
 				self.create_material_requests()
 		create_manufacturing_work_order(self)
-		gemstone_details_set_mandatory_field(self)
+		# gemstone_details_set_mandatory_field(self)
 
 	def on_cancel(self):
 		update_existing(
@@ -360,6 +347,7 @@ class ParentManufacturingOrder(Document):
 				purity = (metal_data.get(metal.metal_type) or {}).get(metal.metal_touch)
 				if purity:
 					metal.metal_purity = purity
+		bom.flags.ignore_validation = True
 		bom.save()
 
 	def update_estimated_delivery_date_in_prev_docs(self):
@@ -401,7 +389,6 @@ class ParentManufacturingOrder(Document):
 
 		metal_items = []
 		diamond_items = []
-		gemstone_items = []
 		finding_items = []
 		other_items = []
 
@@ -466,18 +453,6 @@ class ParentManufacturingOrder(Document):
 							"pcs": row.get("pcs"),
 						}
 					)
-				elif item_type == "gemstone_item":
-					gemstone_items.append(
-						{
-							"item_code": item_code,
-							"qty": row.quantity,
-							"from_warehouse": from_wh,
-							"warehouse": dept_info.target_warehouse,
-							"is_customer_item": row.is_customer_item,
-							"sub_setting_type": row.get("sub_setting_type"),
-							"pcs": row.get("pcs"),
-						}
-					)
 				elif item_type == "other_item":
 					other_items.append(
 						{
@@ -494,7 +469,6 @@ class ParentManufacturingOrder(Document):
 		items = {
 			"metal_item": metal_items,
 			"diamond_item": diamond_items,
-			"gemstone_item": gemstone_items,
 			"finding_item": finding_items,
 			"other_item": other_items,
 		}
@@ -503,6 +477,19 @@ class ParentManufacturingOrder(Document):
 		for item_type, val in items.items():
 			if not val:
 				continue
+			if item_type == "gemstone_item":
+				default_gemstone_item = frappe.db.get_value(
+					"Manufacturing Setting",
+					{"manufacturer": self.manufacturer},
+					"default_gemstone_item",
+				)
+				if not default_gemstone_item:
+					frappe.throw(
+						_(
+							"Default Gemstone Item is not set in Manufacturing Setting. Please set this item G-PER-DUM-PRE-CC"
+						)
+					)
+
 			prefix = _ITEM_TYPE_PREFIX[item_type]
 			mr_doc = frappe.new_doc("Material Request")
 			mr_doc.title = f"MR{prefix}-{mnf_abb}-({self.item_code})-{counter}"
@@ -840,83 +827,83 @@ def get_diamond_item_code_by_variant(self, bom, target_warehouse):
 	return diamond_list
 
 
-def get_gemstone_item_code_by_variant(self, bom, target_warehouse):
-	gemstone_list = []
-	if self.gemstone_table:
-		item_template = "G"
-		if item_template not in _ATTRIBUTES_CACHE:
-			_ATTRIBUTES_CACHE[item_template] = frappe.db.get_all(
-				"Item Variant Attribute", {"parent": item_template}, pluck="attribute"
-			)
-		item_attributes = _ATTRIBUTES_CACHE[item_template]
+# def get_gemstone_item_code_by_variant(self, bom, target_warehouse):
+# 	gemstone_list = []
+# 	if self.gemstone_table:
+# 		item_template = "G"
+# 		if item_template not in _ATTRIBUTES_CACHE:
+# 			_ATTRIBUTES_CACHE[item_template] = frappe.db.get_all(
+# 				"Item Variant Attribute", {"parent": item_template}, pluck="attribute"
+# 			)
+# 		item_attributes = _ATTRIBUTES_CACHE[item_template]
 
-		for row in self.gemstone_table:
-			args = {
-				attr: row.get(frappe.scrub(attr))
-				for attr in item_attributes
-				if row.get(frappe.scrub(attr))
-			}
-			variant = get_variant(item_template, args)
-			if variant:
-				gemstone_list.append(
-					{
-						"item_code": variant,
-						"qty": row.quantity,
-						"warehouse": target_warehouse,
-					}
-				)
-			else:
-				variant_doc = create_variant(item_template, args)
-				variant_doc.flags.ignore_permissions = True
-				try:
-					variant_name = variant_doc.insert().name
-				except frappe.DuplicateEntryError:
-					frappe.db.rollback()
-					variant_name = get_variant(item_template, args)
+# 		for row in self.gemstone_table:
+# 			args = {
+# 				attr: row.get(frappe.scrub(attr))
+# 				for attr in item_attributes
+# 				if row.get(frappe.scrub(attr))
+# 			}
+# 			variant = get_variant(item_template, args)
+# 			if variant:
+# 				gemstone_list.append(
+# 					{
+# 						"item_code": variant,
+# 						"qty": row.quantity,
+# 						"warehouse": target_warehouse,
+# 					}
+# 				)
+# 			else:
+# 				variant_doc = create_variant(item_template, args)
+# 				variant_doc.flags.ignore_permissions = True
+# 				try:
+# 					variant_name = variant_doc.insert().name
+# 				except frappe.DuplicateEntryError:
+# 					frappe.db.rollback()
+# 					variant_name = get_variant(item_template, args)
 
-				gemstone_list.append(
-					{
-						"item_code": variant_name,
-						"qty": row.quantity,
-						"warehouse": target_warehouse,
-					}
-				)
-	return gemstone_list
+# 				gemstone_list.append(
+# 					{
+# 						"item_code": variant_name,
+# 						"qty": row.quantity,
+# 						"warehouse": target_warehouse,
+# 					}
+# 				)
+# 	return gemstone_list
 
 
-def get_gemstone_details(self):
-	bom = self.custom_tracking_bom
-	if not bom:
-		frappe.throw(_("Sales Order BOM is Missing on Manufacturing Plan Table"))
-	bom_doc = frappe.get_doc("Tracking Bom", bom)
-	if bom_doc.gemstone_detail:
-		for gem_row in bom_doc.gemstone_detail:
-			self.append(
-				"gemstone_table",
-				{
-					"price_list_type": gem_row.price_list_type,
-					"gemstone_type": gem_row.gemstone_type,
-					"cut_or_cab": gem_row.cut_or_cab,
-					"stone_shape": gem_row.stone_shape,
-					"gemstone_quality": gem_row.gemstone_quality,
-					"gemstone_grade": gem_row.gemstone_grade,
-					"is_customer_item": gem_row.is_customer_item,
-					"total_gemstone_rate": gem_row.total_gemstone_rate,
-					"gemstone_size": gem_row.gemstone_size,
-					"gemstone_code": gem_row.gemstone_code,
-					"sub_setting_type": gem_row.sub_setting_type,
-					"pcs": gem_row.pcs,
-					"quantity": gem_row.quantity,
-					"weight_in_gms": gem_row.weight_in_gms,
-					"stock_uom": gem_row.stock_uom,
-					"item_variant": gem_row.item_variant,
-					"gemstone_rate_for_specified_quantity": gem_row.gemstone_rate_for_specified_quantity,
-					"navratna": gem_row.get("navratna"),
-					"gemstone_pr": gem_row.get("gemstone_pr"),
-					"per_pc_or_per_carat": gem_row.get("per_pc_or_per_carat"),
-				},
-			)
-		self.save()
+# def get_gemstone_details(self):
+# 	bom = self.custom_tracking_bom
+# 	if not bom:
+# 		frappe.throw(_("Sales Order BOM is Missing on Manufacturing Plan Table"))
+# 	bom_doc = frappe.get_doc("Tracking Bom", bom)
+# 	if bom_doc.gemstone_detail:
+# 		for gem_row in bom_doc.gemstone_detail:
+# 			self.append(
+# 				"gemstone_table",
+# 				{
+# 					"price_list_type": gem_row.price_list_type,
+# 					"gemstone_type": gem_row.gemstone_type,
+# 					"cut_or_cab": gem_row.cut_or_cab,
+# 					"stone_shape": gem_row.stone_shape,
+# 					"gemstone_quality": gem_row.gemstone_quality,
+# 					"gemstone_grade": gem_row.gemstone_grade,
+# 					"is_customer_item": gem_row.is_customer_item,
+# 					"total_gemstone_rate": gem_row.total_gemstone_rate,
+# 					"gemstone_size": gem_row.gemstone_size,
+# 					"gemstone_code": gem_row.gemstone_code,
+# 					"sub_setting_type": gem_row.sub_setting_type,
+# 					"pcs": gem_row.pcs,
+# 					"quantity": gem_row.quantity,
+# 					"weight_in_gms": gem_row.weight_in_gms,
+# 					"stock_uom": gem_row.stock_uom,
+# 					"item_variant": gem_row.item_variant,
+# 					"gemstone_rate_for_specified_quantity": gem_row.gemstone_rate_for_specified_quantity,
+# 					"navratna": gem_row.get("navratna"),
+# 					"gemstone_pr": gem_row.get("gemstone_pr"),
+# 					"per_pc_or_per_carat": gem_row.get("per_pc_or_per_carat"),
+# 				},
+# 			)
+# 		self.save()
 
 
 def gemstone_details_set_mandatory_field(self):
