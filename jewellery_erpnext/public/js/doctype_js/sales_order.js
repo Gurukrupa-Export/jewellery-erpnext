@@ -1678,8 +1678,8 @@ let set_edit_bom_details = (
 					let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
 					let metal_purity = flt(metal_purity_value || 0);
 
-					let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-					let calculated_gold_rate = (d.customer_metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_actual_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_gold_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity;
 					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity;
 
