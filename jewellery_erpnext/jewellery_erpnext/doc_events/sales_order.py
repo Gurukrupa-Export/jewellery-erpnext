@@ -1470,6 +1470,10 @@ def create_new_bom1(self):
 	# diamond_grade_data = frappe._dict()
 	self.total=0
 	gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
+	customer_group = frappe.db.get_value('Customer', self.customer , 'customer_group')
+	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
+	metal_precision = frappe.db.get_value("Customer",self.customer,"custom_precision_for_metal")
+	stone_precision = frappe.db.get_value("Customer",self.customer,"custom_precision_for_stone")
 	for row in self.items:
 		serial_no=row.serial_no
 		item_code=row.item_code
@@ -1500,10 +1504,7 @@ def create_new_bom1(self):
 				# if frappe.db.get_value("BOM",row.bom,"docstatus") == 1:
 				# 	frappe.db.set_value("BOM",row.bom,"docstatus","0")
 				# doc = frappe.get_doc("Tracking Bom",row.custom_tracking_bom)
-				customer_group = frappe.db.get_value('Customer', self.customer , 'customer_group')
-				precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
-				metal_precision = frappe.db.get_value("Customer",self.customer,"custom_precision_for_metal")
-				stone_precision = frappe.db.get_value("Customer",self.customer,"custom_precision_for_stone")
+				
 				doc.metal_and_finding_weight = round(sum(row.quantity for row in doc.metal_detail),precision) + round(sum(row.quantity for row in doc.finding_detail),precision)
 				
 				
