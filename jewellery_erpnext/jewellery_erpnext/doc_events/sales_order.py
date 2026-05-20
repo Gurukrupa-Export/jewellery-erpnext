@@ -1477,20 +1477,22 @@ def create_new_bom1(self):
 	for row in self.items:
 		serial_no=row.serial_no
 		item_code=row.item_code
-		creation_no = frappe.get_value("Serial No",row.serial_no,"purchase_document_no")
-		serial_no_creator=frappe.get_value("Stock Entry",creation_no,"custom_serial_number_creator")
-		snc=frappe.get_value("Serial Number Creator",serial_no_creator,"parent_manufacturing_order")
-		refrence_customer=frappe.get_value("Parent Manufacturing Order",snc,"ref_customer")
-		if not refrence_customer:
-			sales_order=frappe.get_value("Parent Manufacturing Order",snc,"sales_order")
-			refrence_customer=frappe.db.get_value("Sales Order",sales_order,"ref_customer")
-			
-		refrence_customer_for_company_to_company = frappe.get_value("Sales Order",self.custom_parent_sales_order,"customer")
-		exchange_rate = frappe.db.sql("""SELECT exchange_rate FROM `tabCurrency Exchange` WHERE for_selling = 1 
-			ORDER BY modified DESC LIMIT 1""", pluck="exchange_rate")
-		exchange_rate = exchange_rate[0] if exchange_rate else None 
-		billing_currency=frappe.get_value("Customer",refrence_customer,"default_currency")
-		# frappe.throw(f"hii{refrence_customer}")
+		if self.company=='KG GK Jewellers Private Limited' :
+			creation_no = frappe.get_value("Serial No",row.serial_no,"purchase_document_no")
+			serial_no_creator=frappe.get_value("Stock Entry",creation_no,"custom_serial_number_creator")
+			snc=frappe.get_value("Serial Number Creator",serial_no_creator,"parent_manufacturing_order")
+			refrence_customer=frappe.get_value("Parent Manufacturing Order",snc,"ref_customer")
+			if not refrence_customer:
+				sales_order=frappe.get_value("Parent Manufacturing Order",snc,"sales_order")
+				refrence_customer=frappe.db.get_value("Sales Order",sales_order,"ref_customer")	
+			exchange_rate = frappe.db.sql("""SELECT exchange_rate FROM `tabCurrency Exchange` WHERE for_selling = 1 
+				ORDER BY modified DESC LIMIT 1""", pluck="exchange_rate")
+			exchange_rate = exchange_rate[0] if exchange_rate else None 
+			billing_currency=frappe.get_value("Customer",refrence_customer,"default_currency")
+		
+		if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':	
+			refrence_customer_for_company_to_company = frappe.get_value("Sales Order",self.custom_parent_sales_order,"customer")
+		
 		
 		if not row.custom_tracking_bom:
 			# if self.sales_type != 'Branch Sales':
