@@ -182,6 +182,7 @@ def create_repack_entry(self):
 						{
 							"item_code": row.pure_item,
 							"is_finished_item": 1,
+							"set_basic_rate_manually": 1,
 							"qty": gross_wt_dict.get((row.main_slip, row.pure_item)),
 							"s_warehouse": None,
 							"t_warehouse": t_warehouse,
@@ -197,6 +198,7 @@ def create_repack_entry(self):
 						{
 							"item_code": row.loss_item,
 							"is_finished_item": 1,
+							"set_basic_rate_manually": 1,
 							"qty": gross_wt_dict.get((row.main_slip, row.loss_item)),
 							"s_warehouse": None,
 							"t_warehouse": t_warehouse,

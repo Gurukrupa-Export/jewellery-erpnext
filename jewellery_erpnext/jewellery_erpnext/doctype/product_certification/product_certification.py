@@ -39,6 +39,24 @@ class ProductCertification(Document):
 		self.distribute_amount()
 
 	def validate_items(self):
+		if self.type == "Receive":
+			for row in self.exploded_product_details:
+				if self.service_type == "Hall Marking Service" and not row.huid:
+					frappe.throw(
+						_(
+							"Row #{0}: HUID is mandatory for Hall Marking Service"
+						).format(row.idx)
+					)
+				if (
+					self.service_type == "Diamond Certificate service"
+					and not row.certification
+				):
+					frappe.throw(
+						_(
+							"Row #{0}: Certification No is mandatory for Diamond Certificate service"
+						).format(row.idx)
+					)
+
 		if self.type == "Issue":
 			return
 		for row in self.product_details:
@@ -372,69 +390,88 @@ class ProductCertification(Document):
 
 				# Calculate diamond_pcs from Manufacturing Work Order, Parent Manufacturing Order or BOM
 				diamond_pcs = 0
+				stone_pcs = 0
 				if row.manufacturing_work_order:
-					diamond_pcs = (
-						frappe.db.get_value(
-							"Manufacturing Work Order",
-							row.manufacturing_work_order,
-							"diamond_pcs",
-						)
-						or 0
+					latest_operation = frappe.get_all(
+						"Manufacturing Operation",
+						filters={
+							"manufacturing_work_order": row.manufacturing_work_order
+						},
+						fields=["diamond_pcs", "gemstone_pcs"],
+						order_by="creation desc",
+						limit=1,
 					)
-				elif row.parent_manufacturing_order:
-					diamond_pcs = (
-						frappe.db.sql(
-							"""
-						SELECT SUM(diamond_pcs)
-						FROM `tabManufacturing Work Order`
-						WHERE manufacturing_order = %s
-						  AND docstatus != 2
-					""",
-							(row.parent_manufacturing_order,),
-						)[0][0]
-						or 0
-					)
+
+					if latest_operation:
+						diamond_pcs = latest_operation[0].diamond_pcs
+						stone_pcs = latest_operation[0].gemstone_pcs
 					if (
 						not diamond_pcs
 						and bom_weights
 						and bom_weights.get("total_diamond_pcs")
 					):
 						diamond_pcs = bom_weights.get("total_diamond_pcs")
-				elif bom_weights and bom_weights.get("total_diamond_pcs"):
-					diamond_pcs = bom_weights.get("total_diamond_pcs")
-
-				# Calculate stone_pcs from Manufacturing Work Order, Parent Manufacturing Order or BOM
-				stone_pcs = 0
-				if row.manufacturing_work_order:
-					stone_pcs = (
-						frappe.db.get_value(
-							"Manufacturing Work Order",
-							row.manufacturing_work_order,
-							"gemstone_pcs",
-						)
-						or 0
-					)
-				elif row.parent_manufacturing_order:
-					stone_pcs = (
-						frappe.db.sql(
-							"""
-						SELECT SUM(gemstone_pcs)
-						FROM `tabManufacturing Work Order`
-						WHERE manufacturing_order = %s
-						  AND docstatus != 2
-					""",
-							(row.parent_manufacturing_order,),
-						)[0][0]
-						or 0
-					)
 					if (
 						not stone_pcs
 						and bom_weights
 						and bom_weights.get("total_gemstone_pcs")
 					):
 						stone_pcs = bom_weights.get("total_gemstone_pcs")
-				elif bom_weights and bom_weights.get("total_gemstone_pcs"):
-					stone_pcs = bom_weights.get("total_gemstone_pcs")
+
+				# elif row.parent_manufacturing_order:
+				# 	diamond_pcs = (
+				# 		frappe.db.sql(
+				# 			"""
+				# 		SELECT SUM(diamond_pcs)
+				# 		FROM `tabManufacturing Work Order`
+				# 		WHERE manufacturing_order = %s
+				# 		  AND docstatus != 2
+				# 	""",
+				# 			(row.parent_manufacturing_order,),
+				# 		)[0][0]
+				# 		or 0
+				# 	)
+				# 	if (
+				# 		not diamond_pcs
+				# 		and bom_weights
+				# 		and bom_weights.get("total_diamond_pcs")
+				# 	):
+				# 		diamond_pcs = bom_weights.get("total_diamond_pcs")
+				# elif bom_weights and bom_weights.get("total_diamond_pcs"):
+				# 	diamond_pcs = bom_weights.get("total_diamond_pcs")
+
+				# Calculate stone_pcs from Manufacturing Work Order, Parent Manufacturing Order or BOM
+				# stone_pcs = 0
+				# if row.manufacturing_work_order:
+				# 	stone_pcs = (
+				# 		frappe.db.get_value(
+				# 			"Manufacturing Work Order",
+				# 			row.manufacturing_work_order,
+				# 			"gemstone_pcs",
+				# 		)
+				# 		or 0
+				# 	)
+				# elif row.parent_manufacturing_order:
+				# 	stone_pcs = (
+				# 		frappe.db.sql(
+				# 			"""
+				# 		SELECT SUM(gemstone_pcs)
+				# 		FROM `tabManufacturing Work Order`
+				# 		WHERE manufacturing_order = %s
+				# 		  AND docstatus != 2
+				# 	""",
+				# 			(row.parent_manufacturing_order,),
+				# 		)[0][0]
+				# 		or 0
+				# # 	)
+				# 	if (
+				# 		not stone_pcs
+				# 		and bom_weights
+				# 		and bom_weights.get("total_gemstone_pcs")
+				# 	):
+				# # 		stone_pcs = bom_weights.get("total_gemstone_pcs")
+				# elif bom_weights and bom_weights.get("total_gemstone_pcs"):
+				# 	stone_pcs = bom_weights.get("total_gemstone_pcs")
 
 				for i in range(0, count):
 					if metal_det:
