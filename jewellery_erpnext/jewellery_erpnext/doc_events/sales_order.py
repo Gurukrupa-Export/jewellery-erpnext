@@ -2126,7 +2126,7 @@ def create_new_bom1(self):
 							else:
 								latest = None
 							if not latest:
-								# frappe.throw(f"{latest},{price_list_type},")
+								frappe.msgprint(f"No Diamond Price list for {d.quality}")
 								total_rate=0
 								d.quantity=round(d.quantity,stone_precision)
 								
