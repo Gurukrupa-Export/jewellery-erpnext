@@ -44,7 +44,9 @@ def autoname(self, method=None):
 			"Sadguru Diamond": "SD",
 			"Sadguru Hallmarking Centre": "SHC",
 		}
-		company_abbr = company.get(self.custom_company)
+		company_abbr = company.get(self.custom_company) or company.get(
+			frappe.defaults.get_user_default("company")
+		)
 
 		if item_group == "Diamond - V":
 			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-D".format(
