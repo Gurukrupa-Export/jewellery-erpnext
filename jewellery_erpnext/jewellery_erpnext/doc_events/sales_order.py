@@ -2036,6 +2036,7 @@ def create_new_bom1(self):
 
 				if hasattr(doc, "diamond_detail"):
 					for d in doc.diamond_detail:
+						d.quality=row.diamond_quality
 						# Fetch customer's diamond price list for the stone shape
 						if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
 							customer_diamond_list = frappe.db.sql(

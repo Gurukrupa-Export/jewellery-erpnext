@@ -77,6 +77,13 @@ _BOM_TABLE_FIELDS = {
 		"diamond_size_in_mm",
 		"quality",
 	],
+	"BOM Gemstone Detail": [
+		"item_variant",
+		"item",
+		"quantity",
+		"pcs",
+		"is_customer_item",
+	],
 	"BOM Other Detail": ["item_code", "quantity", "qty"],
 }
 
@@ -347,7 +354,7 @@ class ParentManufacturingOrder(Document):
 				purity = (metal_data.get(metal.metal_type) or {}).get(metal.metal_touch)
 				if purity:
 					metal.metal_purity = purity
-		bom.flags.ignore_validation = True
+		bom.flags.ignore_validations = True
 		bom.save()
 
 	def update_estimated_delivery_date_in_prev_docs(self):
@@ -390,6 +397,7 @@ class ParentManufacturingOrder(Document):
 		metal_items = []
 		diamond_items = []
 		finding_items = []
+		gemstone_items = []
 		other_items = []
 
 		for bom_table, fields in _BOM_TABLE_FIELDS.items():
@@ -453,6 +461,18 @@ class ParentManufacturingOrder(Document):
 							"pcs": row.get("pcs"),
 						}
 					)
+				elif item_type == "gemstone_item":
+					gemstone_items.append(
+						{
+							"item_code": item_code,
+							"qty": row.quantity,
+							"from_warehouse": from_wh,
+							"warehouse": dept_info.target_warehouse,
+							"is_customer_item": row.is_customer_item,
+							"sub_setting_type": None,
+							"pcs": row.get("pcs"),
+						}
+					)
 				elif item_type == "other_item":
 					other_items.append(
 						{
@@ -470,6 +490,7 @@ class ParentManufacturingOrder(Document):
 			"metal_item": metal_items,
 			"diamond_item": diamond_items,
 			"finding_item": finding_items,
+			"gemstone_item": gemstone_items,
 			"other_item": other_items,
 		}
 
@@ -477,6 +498,8 @@ class ParentManufacturingOrder(Document):
 		for item_type, val in items.items():
 			if not val:
 				continue
+
+			default_gemstone_item = None
 			if item_type == "gemstone_item":
 				default_gemstone_item = frappe.db.get_value(
 					"Manufacturing Setting",
@@ -511,10 +534,15 @@ class ParentManufacturingOrder(Document):
 			)
 			for i in val:
 				if i["qty"] > 0:
+					item_code_to_use = (
+						default_gemstone_item
+						if item_type == "gemstone_item"
+						else i["item_code"]
+					)
 					mr_doc.append(
 						"items",
 						{
-							"item_code": i["item_code"],
+							"item_code": item_code_to_use,
 							"qty": i["qty"] * self.qty,
 							"warehouse": i["warehouse"],
 							"from_warehouse": i["from_warehouse"],
@@ -523,6 +551,9 @@ class ParentManufacturingOrder(Document):
 							"pcs": i.get("pcs"),
 							"custom_inventory_type": "Customer Stock"
 							if i.get("is_customer_item") == 1
+							else None,
+							"description": i["item_code"]
+							if item_type == "gemstone_item"
 							else None,
 						},
 					)

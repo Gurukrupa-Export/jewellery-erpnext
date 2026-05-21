@@ -15,6 +15,63 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.be
 )
 
 
+def _get_default_gemstone_item(manufacturer):
+	"""Get the default dummy gemstone item for a manufacturer."""
+	if not manufacturer:
+		return None
+	return frappe.db.get_value(
+		"Manufacturing Setting",
+		{"manufacturer": manufacturer},
+		"default_gemstone_item",
+	)
+
+
+def _is_dummy_gemstone_item(item_code, manufacturer):
+	"""Check if item is the default dummy gemstone item."""
+	default_gemstone_item = _get_default_gemstone_item(manufacturer)
+	return item_code == default_gemstone_item if default_gemstone_item else False
+
+
+def validate_gemstone_alternative_items(self):
+	"""Validate that gemstone items with dummy item have alternative items selected."""
+	if self.material_request_type != "Manufacture":
+		return
+
+	manufacturer = self.custom_manufacturer or frappe.defaults.get_user_default(
+		"manufacturer"
+	)
+	if not manufacturer:
+		return
+
+	default_gemstone_item = _get_default_gemstone_item(manufacturer)
+	if not default_gemstone_item:
+		return
+
+	errors = []
+	for idx, item_row in enumerate(self.items, 1):
+		if _is_dummy_gemstone_item(item_row.item_code, manufacturer):
+			if not item_row.custom_alternative_item:
+				errors.append(
+					_(
+						"Row {0}: Gemstone dummy item requires an alternative gemstone item to be selected."
+					).format(idx)
+				)
+			elif _is_dummy_gemstone_item(
+				item_row.custom_alternative_item, manufacturer
+			):
+				errors.append(
+					_(
+						"Row {0}: Alternative item cannot be the dummy gemstone item itself."
+					).format(idx)
+				)
+
+	if errors:
+		frappe.throw(
+			_("Please select alternative gemstone items:<br>") + "<br>".join(errors),
+			title=_("Alternative Gemstone Item Required"),
+		)
+
+
 def before_validate(self, method):
 	if self.set_warehouse and self.set_from_warehouse:
 		source_branch = frappe.db.get_value(
@@ -35,6 +92,7 @@ def before_validate(self, method):
 	update_pure_qty(self)
 	validate_target_item(self)
 	validate_warehouse(self)
+	validate_gemstone_alternative_items(self)
 
 	if self.custom_manufacturing_operation:
 		linked_mo = frappe.db.get_value(
@@ -150,7 +208,16 @@ def on_submit(self, method=None):
 
 	new_se_doc.stock_entry_type = "Material Transfer From Reserve"
 
+	mr_item_to_alternative = {}
+	for item_row in self.items:
+		if item_row.custom_alternative_item:
+			mr_item_to_alternative[item_row.name] = item_row.custom_alternative_item
+
 	for row in new_se_doc.items:
+		alternative_item = mr_item_to_alternative.get(row.material_request_item)
+		if alternative_item:
+			row.item_code = alternative_item
+
 		original_t_warehouse = frappe.db.get_value(
 			"Material Request Item", row.material_request_item, "warehouse"
 		)
