@@ -201,6 +201,11 @@ class ParentManufacturingOrder(Document):
 		self.metal_details()
 
 	def before_submit(self):
+		if not self.diamond_grade:
+			self._set_diamond_grade()
+			if self.diamond_grade:
+				self.db_set("diamond_grade", self.diamond_grade)
+
 		if self.diamond_grade and self.custom_tracking_bom:
 			frappe.db.sql(
 				"""
@@ -210,6 +215,7 @@ class ParentManufacturingOrder(Document):
 			""",
 				(self.diamond_grade, self.custom_tracking_bom),
 			)
+			frappe.clear_cache(doctype="Tracking Bom", name=self.custom_tracking_bom)
 
 	def _set_diamond_grade(self):
 		customer = self.ref_customer or self.customer
@@ -228,11 +234,12 @@ class ParentManufacturingOrder(Document):
 					"diamond_grade_4",
 				],
 			)
-			for row in diamond_grade_data:
-				if frappe.db.get_value(
-					"Attribute Value", row, "is_customer_diamond_quality"
-				):
-					self.diamond_grade = row
+			if diamond_grade_data:
+				for row in diamond_grade_data:
+					if row and frappe.db.get_value(
+						"Attribute Value", row, "is_customer_diamond_quality"
+					):
+						self.diamond_grade = row
 		else:
 			self.diamond_grade = frappe.db.get_value(
 				"Customer Diamond Grade",
@@ -343,6 +350,11 @@ class ParentManufacturingOrder(Document):
 		):
 			return
 		bom = frappe.get_doc("Tracking Bom", self.custom_tracking_bom)
+
+		if self.diamond_grade:
+			for diamond in bom.diamond_detail:
+				diamond.diamond_grade = self.diamond_grade
+
 		mfg_data = frappe.db.get_all(
 			"Metal Criteria",
 			{"parent": self.manufacturer},
