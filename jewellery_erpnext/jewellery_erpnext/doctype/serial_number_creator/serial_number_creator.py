@@ -194,22 +194,21 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 	)
 
 	if row_data:
+		# Cancel SREs once per unique item_code (not per row) to avoid
+		# redundant lookups when the same item appears with different batches.
+		sre_item_codes = set()
 		for row in row_data:
-			if row.get("s_warehouse"):
-				# Broad SRE cancellation logic for linked reservations
-				pmo = frappe.db.get_value(
-					"Manufacturing Work Order",
-					self.manufacturing_work_order,
-					"manufacturing_order",
-				)
-				sales_order = frappe.db.get_value(
-					"Parent Manufacturing Order", pmo, "sales_order"
-				)
+			if row.get("s_warehouse") and row.get("item_code"):
+				sre_item_codes.add(row["item_code"])
 
-				sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+		if sre_item_codes:
+			sales_order = frappe.db.get_value(
+				"Parent Manufacturing Order", pmo, "sales_order"
+			)
+			sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 
-				# Build filters for linked SREs
-				linked_sres = []
+			all_linked_sres = set()
+			for item_code in sre_item_codes:
 				for link_field, link_val in {
 					"voucher_no": sales_order,
 					"manufacturing_work_order": self.manufacturing_work_order,
@@ -220,21 +219,27 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 						found = frappe.get_all(
 							"Stock Reservation Entry",
 							filters={
-								"item_code": row["item_code"],
+								"item_code": item_code,
 								"docstatus": 1,
 								link_field: link_val,
 							},
 							pluck="name",
 						)
-						linked_sres.extend(found)
+						all_linked_sres.update(found)
 
-				# Deduplicate and cancel
-				for sre_name in set(linked_sres):
-					sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
-					sre_doc.flags.ignore_permissions = True
-					sre_doc.cancel()
+			for sre_name in all_linked_sres:
+				sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
+				sre_doc.flags.ignore_permissions = True
+				sre_doc.cancel()
 
+			if all_linked_sres:
 				frappe.clear_cache()
+
+			# After cancelling our own SREs, other SREs for the same
+			# item+warehouse may still block consumption.  Update their
+			# consumed_qty so the stock ledger's reserved_stock drops
+			# enough for the manufacturing entry to proceed.
+			_release_blocking_reservations(row_data, all_linked_sres)
 
 		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 			create_finished_goods_bom,
@@ -244,7 +249,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		se_name = create_manufacturing_entry(self, row_data, operation_data)
 
 		self.fg_serial_no = se_name
-		self.db_set("fg_serial_no", se_name)
+		self.db_set("fg_serial_no", se_name, update_modified=False)
 		create_finished_goods_bom(self, se_name, operation_data)
 		submit_tracking_bom_for_finished_goods(self)
 
@@ -916,6 +921,112 @@ def get_correct_source_warehouse(
 		return sle_wh[0][0], "SLE"
 
 	return None, None
+
+
+def _release_blocking_reservations(row_data, cancelled_sre_names):
+	"""Update consumed_qty on OTHER SREs that block manufacturing consumption.
+
+	After cancelling this PMO's SREs, other sales orders may still reserve
+	stock in the same warehouse.  ERPNext's stock ledger computes
+	reserved_stock as:
+	    Sum(reserved_qty) - Sum(delivered_qty + transferred_qty + consumed_qty)
+	for all active SREs on the item+warehouse.
+
+	By increasing consumed_qty on those blocking SREs, the effective
+	reserved_stock drops and the manufacturing Stock Entry can proceed
+	without allow_negative_stock.
+	"""
+	from erpnext.stock.utils import get_stock_balance
+	from frappe.query_builder.functions import Sum
+
+	# 1. Build consumption map: (item_code, warehouse) -> qty_needed
+	consumption_map = {}
+	for row in row_data:
+		if not (row.get("s_warehouse") and row.get("item_code")):
+			continue
+		key = (row["item_code"], row["s_warehouse"])
+		consumption_map[key] = flt(consumption_map.get(key, 0)) + flt(row["qty"])
+
+	if not consumption_map:
+		return
+
+	sre_dt = frappe.qb.DocType("Stock Reservation Entry")
+
+	for (item_code, warehouse), qty_needed in consumption_map.items():
+		# Check if the warehouse has enough unreserved stock after our cancel
+		actual_qty = flt(get_stock_balance(item_code, warehouse))
+
+		# Current reserved stock from remaining active SREs
+		reserved = (
+			frappe.qb.from_(sre_dt)
+			.select(
+				Sum(sre_dt.reserved_qty)
+				- (
+					Sum(sre_dt.delivered_qty)
+					+ Sum(sre_dt.transferred_qty)
+					+ Sum(sre_dt.consumed_qty)
+				)
+			)
+			.where(
+				(sre_dt.item_code == item_code)
+				& (sre_dt.warehouse == warehouse)
+				& (sre_dt.docstatus == 1)
+			)
+		).run()
+		reserved_stock = flt(reserved[0][0]) if reserved and reserved[0][0] else 0.0
+
+		available = actual_qty - reserved_stock
+		shortfall = flt(qty_needed) - available
+
+		if shortfall <= 0:
+			continue  # Enough unreserved stock; no action needed
+
+		# 2. Find OTHER active SREs for this item+warehouse (oldest first)
+		query = (
+			frappe.qb.from_(sre_dt)
+			.select(
+				sre_dt.name,
+				sre_dt.reserved_qty,
+				sre_dt.delivered_qty,
+				sre_dt.transferred_qty,
+				sre_dt.consumed_qty,
+			)
+			.where(
+				(sre_dt.item_code == item_code)
+				& (sre_dt.warehouse == warehouse)
+				& (sre_dt.docstatus == 1)
+			)
+		)
+		if cancelled_sre_names:
+			query = query.where(sre_dt.name.notin(list(cancelled_sre_names)))
+
+		blocking_sres = query.orderby(sre_dt.creation).run(as_dict=True)
+
+		# 3. Update consumed_qty to release just enough reserved stock
+		remaining_shortfall = shortfall
+		for sre in blocking_sres:
+			if remaining_shortfall <= 0:
+				break
+
+			effective = flt(sre.reserved_qty) - (
+				flt(sre.delivered_qty)
+				+ flt(sre.transferred_qty)
+				+ flt(sre.consumed_qty)
+			)
+			if effective <= 0:
+				continue
+
+			consume_amt = min(effective, remaining_shortfall)
+			new_consumed = flt(sre.consumed_qty) + consume_amt
+
+			frappe.db.set_value(
+				"Stock Reservation Entry",
+				sre.name,
+				"consumed_qty",
+				new_consumed,
+				update_modified=False,
+			)
+			remaining_shortfall -= consume_amt
 
 
 def resolve_and_validate(
