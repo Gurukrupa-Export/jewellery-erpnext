@@ -258,7 +258,7 @@ def create_new_bom(self):
 							"custom_gemstone_price_list_type"
 						)
 						# frappe.throw(f"{gemstone_price_list_customer}")
-						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 							gem.total_gemstone_rate = gem.fg_purchase_rate
 							gem.gemstone_rate_for_specified_quantity = (
 								float(gem.total_gemstone_rate) / 100 * float(gem.quantity)
@@ -267,7 +267,7 @@ def create_new_bom(self):
 								float(r.gemstone_rate_for_specified_quantity)
 								for r in doc.get("gemstone_detail", [])
 							)
-						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 							# frappe.throw(f"{billing_currency}")
 							if billing_currency == 'USD':
 								
@@ -437,7 +437,7 @@ def create_new_bom(self):
 						}
 						if self.company=='KG GK Jewellers Private Limited' :
 							filters["customer"] = refrence_customer
-						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 							filters["customer"] =refrence_customer_for_company_to_company
 						mc = frappe.get_all(
 							"Making Charge Price",
@@ -485,7 +485,7 @@ def create_new_bom(self):
 						
 						
 						
-						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 							# for s in doc.metal_detail:
 							if s.is_customer_item:
 								s.rate=0
@@ -510,7 +510,7 @@ def create_new_bom(self):
 								s.customer_metal_purity = customer_metal_purity
 
 							
-						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 							# for s in doc.metal_detail:
 							if s.is_customer_item:
 								s.rate=0
@@ -696,7 +696,7 @@ def create_new_bom(self):
 						}
 						if self.company=='KG GK Jewellers Private Limited' :
 							filters["customer"] = refrence_customer
-						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 							filters["customer"] =refrence_customer_for_company_to_company
 						mc = frappe.get_all(
 						"Making Charge Price",
@@ -792,7 +792,7 @@ def create_new_bom(self):
 							f.metal_purity = customer_metal_purity
 							f.making_amount = round(f.making_rate*f.quantity,2 )
 						else:
-							if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+							if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 								f.rate= round(calculated_gold_rate , 2)
 								f.quantity=round(f.quantity, 3)
 								f.quantity_3=round(f.quantity, 2)
@@ -802,7 +802,7 @@ def create_new_bom(self):
 								f.wastage_amount=0
 								f.metal_purity = customer_metal_purity
 								f.making_amount = round(f.making_rate*f.quantity,2 )
-							elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+							elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 								if billing_currency == 'USD':
 									f.se_rate=f.se_rate*exchange_rate
 									f.rate= f.se_rate
@@ -908,7 +908,7 @@ def create_new_bom(self):
 				if hasattr(doc, "diamond_detail"):
 					for d in doc.diamond_detail:
 						# Fetch customer's diamond price list for the stone shape
-						if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+						if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 							customer_diamond_list = frappe.db.sql(
 							f"""
 							SELECT diamond_price_list FROM `tabDiamond Price List Table`
@@ -1032,14 +1032,14 @@ def create_new_bom(self):
 									else:
 										total_rate = base_rate + (base_rate * (out_pct / 100))
 							
-							# if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+							# if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 							# 	# frappe.throw(f"hiiiii")
 							# 	d.total_diamond_rate=d.fg_purchase_rate
 							# 	d.quantity=round(d.quantity,precision )
 							# 	d.diamond_rate_for_specified_quantity = round(d.quantity * d.fg_purchase_rate, 2)
 								# frappe.throw(f"{total_rate}")
 								
-							if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+							if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 								if billing_currency == 'USD':
 									# frappe.throw(f"{d.se_rate}")
 									d.se_rate = d.se_rate *exchange_rate
@@ -1051,7 +1051,7 @@ def create_new_bom(self):
 								if d.quantity >.005:
 										d.quantity=round(d.quantity,precision )
 								d.diamond_rate_for_specified_quantity = round(d.quantity * d.se_rate, 2)
-							elif self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+							elif self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 								# frappe.throw(f"{latest}")
 								d.fg_purchase_rate = latest.get("supplier_fg_purchase_rate") if latest else 0
 								d.total_diamond_rate=d.fg_purchase_rate
@@ -1165,7 +1165,7 @@ def create_new_bom(self):
 								# 	frappe.msgprint(f"Diamond Price is not available for row {d.idx}")
 								# 	d.total_diamond_rate = 0
 								# 	d.diamond_rate_for_specified_quantity = 0
-								# elif self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+								# elif self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 								# 	# frappe.throw(f"hiiiii")
 								# 	d.fg_purchase_rate = fg_purchase_rate
 								# 	d.total_diamond_rate=d.fg_purchase_rate
@@ -1490,7 +1490,7 @@ def create_new_bom1(self):
 			exchange_rate = exchange_rate[0] if exchange_rate else None 
 			billing_currency=frappe.get_value("Customer",refrence_customer,"default_currency")
 		
-		if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':	
+		if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':	
 			refrence_customer_for_company_to_company = frappe.get_value("Sales Order",self.custom_parent_sales_order,"customer")
 		
 		
@@ -1520,7 +1520,7 @@ def create_new_bom1(self):
 						)
 						gem.gemstone_grade=gem.gemstone_grade
 						# frappe.throw(f"{gem.gemstone_grade}")
-						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 							gem.total_gemstone_rate = gem.fg_purchase_rate
 							gem.gemstone_rate_for_specified_quantity = (
 								float(gem.total_gemstone_rate) / 100 * float(gem.quantity)
@@ -1529,7 +1529,7 @@ def create_new_bom1(self):
 								float(r.gemstone_rate_for_specified_quantity)
 								for r in doc.get("gemstone_detail", [])
 							)
-						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 							# frappe.throw(f"{billing_currency}")
 							if billing_currency == 'USD':
 								
@@ -1694,7 +1694,7 @@ def create_new_bom1(self):
 					for s in doc.metal_detail:
 						filters={
 							"customer": self.customer,
-							"metal_type":s.metal_type,
+							"metal_type":s.metal_type,	
 							"setting_type":doc.setting_type,
 							"from_gold_rate": ["<=", self.gold_rate_with_gst],
 							"to_gold_rate": [">=", self.gold_rate_with_gst],
@@ -1703,7 +1703,7 @@ def create_new_bom1(self):
 
 						if self.company=='KG GK Jewellers Private Limited' :
 							filters["customer"] = refrence_customer
-						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 							filters["customer"] =refrence_customer_for_company_to_company
 						mc = frappe.get_all(
 							"Making Charge Price",
@@ -1752,7 +1752,7 @@ def create_new_bom1(self):
 						
 						
 						
-						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 							# for s in doc.metal_detail:
 							if s.is_customer_item:
 								s.rate=0
@@ -1776,7 +1776,7 @@ def create_new_bom1(self):
 								s.customer_metal_purity = customer_metal_purity
 
 							
-						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+						elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 							# for s in doc.metal_detail:
 							if s.is_customer_item:
 								s.rate= round(calculated_gold_rate , 2)
@@ -1880,7 +1880,7 @@ def create_new_bom1(self):
 						}
 						if self.company=='KG GK Jewellers Private Limited' :
 							filters["customer"] = refrence_customer
-						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+						if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 							filters["customer"] =refrence_customer_for_company_to_company
 						mc = frappe.get_all(
 						"Making Charge Price",
@@ -1977,7 +1977,7 @@ def create_new_bom1(self):
 							f.metal_purity = f.metal_purity
 							f.making_amount = round(f.making_rate*f.quantity,2 )
 						else:
-							if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+							if self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 								f.rate= round(calculated_gold_rate , 2)
 								f.quantity=round(f.quantity, metal_precision)
 								# f.quantity_3=round(f.quantity, 2)
@@ -1987,7 +1987,7 @@ def create_new_bom1(self):
 								f.wastage_amount=0
 								f.metal_purity = f.metal_purity
 								f.making_amount = round(f.making_rate*f.quantity,2 )
-							elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+							elif self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 								if billing_currency == 'USD':
 									f.se_rate=f.se_rate*exchange_rate
 									# f.rate= f.se_rate
@@ -2038,7 +2038,7 @@ def create_new_bom1(self):
 					for d in doc.diamond_detail:
 						d.quality=row.diamond_quality
 						# Fetch customer's diamond price list for the stone shape
-						if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+						if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 							customer_diamond_list = frappe.db.sql(
 							f"""
 							SELECT diamond_price_list FROM `tabDiamond Price List Table`
@@ -2167,7 +2167,7 @@ def create_new_bom1(self):
 										handling_rate = 0
 								
 								d.handling_rate =handling_rate if not is_cust else total_rate
-							if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal':
+							if self.company=='KG GK Jewellers Private Limited' and customer_group == 'Internal Company':
 								if billing_currency == 'USD':
 									# frappe.throw(f"{d.se_rate}")
 									d.se_rate = d.se_rate *exchange_rate
@@ -2179,7 +2179,7 @@ def create_new_bom1(self):
 								if d.quantity >.005:
 										d.quantity=round(d.quantity,stone_precision )
 								d.diamond_rate_for_specified_quantity = round(d.quantity * ( d.handling_rate + d.se_rate), 2)
-							elif self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal':
+							elif self.company=='Gurukrupa Export Private Limited' and customer_group == 'Internal Company':
 								# frappe.throw(f"{latest}")
 								d.fg_purchase_rate = latest.get("supplier_fg_purchase_rate") if latest else 0
 								d.total_diamond_rate=d.fg_purchase_rate
@@ -3999,7 +3999,7 @@ def validate_items(self):
 				)
 				if invoice_items:
 					for invoice_item in invoice_items:
-						# Remove Frappe internal fields
+						# Remove Frappe Internal Company fields
 						for field in ["name", "owner", "creation", "modified", "modified_by", "parent", "parentfield", "parenttype", "idx"]:
 							if field in invoice_item:
 								invoice_item.pop(field)
