@@ -60,6 +60,7 @@ def create_customer_gold_repack_automation(doc):
 				"remaining_qty": flt(d.qty),
 				"inventory_type": d.inventory_type,
 				"item_code": d.item_code,
+				"warehouse": d.t_warehouse,
 			}
 		)
 
@@ -125,6 +126,7 @@ def create_company_gold_repack_automation(doc):
 				"remaining_qty": flt(d.qty),
 				"inventory_type": d.inventory_type,
 				"item_code": d.item_code,
+				"warehouse": d.t_warehouse,
 			}
 		)
 
@@ -211,6 +213,7 @@ def process_repack_settlement(incoming_batches, pending_logs, incoming_customer=
 				qty=consume_qty,
 				source_customer=incoming_customer,
 				reference_log=log.name,
+				source_warehouse=incoming["warehouse"],
 			)
 
 			update_settlement_log(
@@ -522,6 +525,9 @@ def get_customer_available_gold(customer):
 
 
 def validate_category_waiting_days(doc, method=None):
+	if doc.for_fg:
+		return
+
 	item_category = doc.item_category
 
 	if not item_category:
