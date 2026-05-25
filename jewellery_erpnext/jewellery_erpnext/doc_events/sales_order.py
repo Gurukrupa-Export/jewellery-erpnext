@@ -3057,6 +3057,131 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
         row.diamond_quality = self.custom_diamond_quality
 
     self.total += row.amount
+
+def _process_single_row(self, row, ctx):
+    serial_no = row.serial_no
+    item_code = row.item_code
+    cctx      = _get_company_context(self, row, ctx)
+
+    if not row.quotation_bom:
+        create_serial_no_bom(self, row)
+        if not row.bom:
+            return
+
+        if frappe.db.get_value("BOM", row.bom, "docstatus") == 1:
+            frappe.db.set_value("BOM", row.bom, "docstatus", "0")
+
+        doc = frappe.get_doc("BOM", row.bom)
+        doc.metal_and_finding_weight = (
+            round(sum(r.quantity for r in doc.metal_detail),    ctx.precision)
+            + round(sum(r.quantity for r in doc.finding_detail), ctx.precision)
+        )
+
+        _process_gemstone_detail(self, doc, ctx, cctx)
+        _process_metal_detail   (self, doc, ctx, cctx)
+        _process_finding_detail (self, doc, ctx, cctx)
+        _process_diamond_detail (self, doc, ctx, cctx)
+        _update_bom_totals      (self, doc, row, ctx, item_code, serial_no)
+
+        doc.save(ignore_permissions=True)
+
+    elif not row.bom and frappe.db.exists("BOM", row.quotation_bom):
+        row.bom = row.quotation_bom
+        frappe.db.set_value("BOM", row.quotation_bom, {
+            "bom_type":                "Sales Order",
+            "custom_creation_doctype": "Sales Order",
+            "custom_creation_docname": self.name,
+            "gold_rate_with_gst":      self.gold_rate_with_gst,
+        })
+        doc = frappe.get_doc("BOM", row.quotation_bom)
+        row.gold_bom_rate     = doc.gold_bom_amount
+        row.diamond_bom_rate  = doc.diamond_bom_amount
+        row.gemstone_bom_rate = doc.gemstone_bom_amount
+        row.other_bom_rate    = doc.other_bom_amount
+        row.making_charge     = doc.making_charge
+        row.bom_rate          = doc.total_bom_amount
+        row.rate              = doc.total_bom_amount
+
+
+
+def process_bom_chunk(doctype, docname, row_indices, ctx):
+    
+    ctx    = frappe._dict(ctx)
+    parent = frappe.get_doc(doctype, docname)
+
+    for i in row_indices:
+        row = parent.items[i]
+        try:
+            _process_single_row(parent, row, ctx)
+        except Exception:
+            frappe.log_error(
+                frappe.get_traceback(),
+                f"BOM chunk failed — {docname} row {i} serial_no {row.serial_no}"
+            )
+
+    parent.save(ignore_permissions=True)
+    frappe.db.commit()
+
+
+
+
+def create_new_bom1(self):
+    self.total    = 0
+    ctx           = _get_bom_context(self)
+    indexed_items = list(enumerate(self.items))
+
+
+    if len(indexed_items) <= ENQUEUE_THRESHOLD:
+        for i, row in indexed_items:
+            try:
+                _process_single_row(self, row, ctx)
+            except Exception:
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    f"BOM failed — {self.name} row {i} serial_no {row.serial_no}"
+                )
+        
+        frappe.db.set_value(
+            self.doctype, self.name, "total", self.total
+        )
+       
+        for row in self.items:
+            frappe.db.set_value(
+                self.items[0].doctype,   # e.g. "Sales Order Item"
+                row.name,
+                {
+                    "bom":              row.bom,
+                    "bom_no":           getattr(row, "bom_no", row.bom),
+                    "rate":             row.rate,
+                    "amount":           row.amount,
+                    "gold_bom_rate":    row.gold_bom_rate,
+                    "diamond_bom_rate": row.diamond_bom_rate,
+                    "gemstone_bom_rate":row.gemstone_bom_rate,
+                    "other_bom_rate":   row.other_bom_rate,
+                    "making_charge":    row.making_charge,
+                    "custom_company_rm_weight": getattr(row, "custom_company_rm_weight", 0),
+                    "custom_customer_weight":   getattr(row, "custom_customer_weight", 0),
+                }
+            )
+        frappe.db.commit()
+        return
+
+    # ── large order: enqueue one job per chunk ────────────────────────────
+    chunks = [
+        indexed_items[i: i + CHUNK_SIZE]
+        for i in range(0, len(indexed_items), CHUNK_SIZE)
+    ]
+    for chunk in chunks:
+        row_indices = [i for i, _ in chunk]
+        frappe.enqueue(
+            process_bom_chunk,
+            queue="long",
+            timeout=600,
+            doctype=self.doctype,
+            docname=self.name,
+            row_indices=row_indices,
+            ctx=dict(ctx),
+        )
 # /////////////////////////////////////////////////////////////////////////////////////////////
 
 def create_serial_no_bom(self, row):
