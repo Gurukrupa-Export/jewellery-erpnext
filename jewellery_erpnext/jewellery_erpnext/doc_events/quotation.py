@@ -52,6 +52,7 @@ def validate(self, method):
 def create_bom_scientifically(self):
 	create_tracking_bom_directly(self)
 
+
 @frappe.whitelist()
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
@@ -73,6 +74,28 @@ def on_cancel(self, method):
 
 def before_submit(self, method):
 	validate_invoice_item(self)
+
+	if self.custom_bom_creation_logs:
+		frappe.throw(
+			_(
+				"Cannot submit Quotation with BOM creation errors. Please resolve the errors first."
+			)
+		)
+
+	for row in self.items:
+		if row.item_code:
+			if not row.copy_bom:
+				frappe.throw(
+					_(
+						"Row #{0}: Copy BOM is not set for Item {1}. A valid BOM is required."
+					).format(row.idx, row.item_code)
+				)
+			if not row.custom_tracking_bom:
+				frappe.throw(
+					_("Row #{0}: Tracking BOM is not created for Item {1}.").format(
+						row.idx, row.item_code
+					)
+				)
 
 
 def submit_bom(self):
@@ -289,7 +312,7 @@ def validate_invoice_item(self):
 								& (bom.is_active == 1)
 								& (bom.docstatus == 1)
 							)
-							| ((bom.bom_type == "Template") & (bom.is_active == 1))
+							| ((bom.bom_type == "Template") & (bom.docstatus < 2))
 						)
 					)
 					.orderby(
@@ -303,6 +326,42 @@ def validate_invoice_item(self):
 					.limit(1)
 				)
 				bom_result = query.run(as_dict=True)
+
+				# If no BOM found for the item, try to find BOM for the variant parent (template item)
+				if not bom_result:
+					variant_of = frappe.db.get_value(
+						"Item", item.get("item_code"), "variant_of"
+					)
+					if variant_of:
+						query = (
+							frappe.qb.from_(bom)
+							.select(bom.name)
+							.where(
+								(bom.item == variant_of)
+								& (
+									(bom.tag_no == item.get("serial_no"))
+									| (
+										(bom.bom_type == "Finished Goods")
+										& (bom.is_active == 1)
+										& (bom.docstatus == 1)
+									)
+									| (
+										(bom.bom_type == "Template")
+										& (bom.docstatus < 2)
+									)
+								)
+							)
+							.orderby(
+								frappe.qb.terms.Case()
+								.when(bom.tag_no == item.get("serial_no"), 1)
+								.when(bom.bom_type == "Finished Goods", 2)
+								.when(bom.bom_type == "Template", 3)
+								.else_(0),
+							)
+							.orderby(bom.creation)
+							.limit(1)
+						)
+						bom_result = query.run(as_dict=True)
 
 				if item.order_form_type == "Order":
 					mod_reason = frappe.db.get_value(
@@ -651,7 +710,7 @@ def create_tracking_bom_directly(self):
 						& (bom.is_active == 1)
 						& (bom.docstatus == 1)
 					)
-					| ((bom.bom_type == "Template") & (bom.is_active == 1))
+					| ((bom.bom_type == "Template") & (bom.docstatus < 2))
 				)
 			)
 			.orderby(
@@ -665,6 +724,37 @@ def create_tracking_bom_directly(self):
 			.limit(1)
 		)
 		bom_result = query.run(as_dict=True)
+
+		# If no BOM found for the item, try to find BOM for the variant parent (template item)
+		if not bom_result:
+			variant_of = frappe.db.get_value("Item", row.get("item_code"), "variant_of")
+			if variant_of:
+				query = (
+					frappe.qb.from_(bom)
+					.select(bom.name)
+					.where(
+						(bom.item == variant_of)
+						& (
+							(bom.tag_no == row.get("serial_no"))
+							| (
+								(bom.bom_type == "Finished Goods")
+								& (bom.is_active == 1)
+								& (bom.docstatus == 1)
+							)
+							| ((bom.bom_type == "Template") & (bom.docstatus < 2))
+						)
+					)
+					.orderby(
+						frappe.qb.terms.Case()
+						.when(bom.tag_no == row.get("serial_no"), 1)
+						.when(bom.bom_type == "Finished Goods", 2)
+						.when(bom.bom_type == "Template", 3)
+						.else_(0),
+					)
+					.orderby(bom.creation)
+					.limit(1)
+				)
+				bom_result = query.run(as_dict=True)
 
 		if row.order_form_type == "Order":
 			mod_reason = frappe.db.get_value("Order", row.order_form_id, "mod_reason")
@@ -689,6 +779,8 @@ def create_tracking_bom_directly(self):
 			except Exception as e:
 				frappe.log_error(title="Quotation Tracking BOM Error", message=f"{e}")
 				error_logs.append(f"Row {row.idx} : {e}")
+		else:
+			error_logs.append(f"Row {row.idx}: No BOM found for item {row.item_code}")
 
 	if tracking_boms_to_insert:
 		for tb_doc in tracking_boms_to_insert:
@@ -806,8 +898,9 @@ def _create_single_tracking_bom(
 
 	# Update quotation item maps
 	item_tracking_data[row.item_code] = tracking_bom.name
-	bom_data[row.item_code] = source_bom_name
+	bom_data[row.item_code] = copy_bom
 	row.custom_tracking_bom = tracking_bom.name
+	row.copy_bom = copy_bom
 
 	row.gold_bom_rate = tracking_bom.gold_bom_amount
 	row.diamond_bom_rate = tracking_bom.diamond_bom_amount
