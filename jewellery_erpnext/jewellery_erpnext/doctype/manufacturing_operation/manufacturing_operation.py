@@ -1092,7 +1092,11 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 		)
 	sr_no = ""
 	compose_series = genrate_serial_no(doc, diamond_grade_data)
-	sr_no = make_autoname(compose_series)
+	while True:
+		sr_no = make_autoname(compose_series)
+		if not frappe.db.exists("Serial No", sr_no):
+			break
+
 	new_bom_serial_no = sr_no
 	# serial_no_pass_entry(doc,sr_no,to_wh,pmo_det)
 
