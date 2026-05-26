@@ -6,7 +6,7 @@ from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle impor
 	get_auto_batch_nos,
 )
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, nowtime
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	get_fifo_batches,
@@ -74,7 +74,8 @@ def update_alloy_betch(self):
 		batch_data = get_auto_batch_nos(
 			frappe._dict(
 				{
-					"posting_date": self.date,
+					"posting_date": self.get("posting_date") or self.get("date"),
+					"posting_time": self.get("posting_time") or nowtime(),
 					"item_code": self.source_alloy,
 					"warehouse": self.source_warehouse,
 					"qty": self.source_alloy_qty,
@@ -121,7 +122,8 @@ def update_source_betch(self):
 	batch_data = get_auto_batch_nos(
 		frappe._dict(
 			{
-				"posting_date": self.date,
+				"posting_date": self.get("posting_date") or self.get("date"),
+				"posting_time": self.get("posting_time") or nowtime(),
 				"item_code": self.source_item,
 				"warehouse": self.source_warehouse,
 				# "qty": self.source_qty,
