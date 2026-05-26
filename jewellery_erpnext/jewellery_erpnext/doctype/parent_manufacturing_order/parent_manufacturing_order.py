@@ -217,28 +217,32 @@ class ParentManufacturingOrder(Document):
 			self.diamond_quality and customer and not self.use_custom_diamond_grade
 		):
 			return
-		if self.is_customer_diamond:
-			diamond_grade_data = frappe.db.get_value(
-				"Customer Diamond Grade",
-				{"parent": customer, "diamond_quality": self.diamond_quality},
-				[
-					"diamond_grade_1",
-					"diamond_grade_2",
-					"diamond_grade_3",
-					"diamond_grade_4",
-				],
-			)
-			for row in diamond_grade_data:
-				if frappe.db.get_value(
-					"Attribute Value", row, "is_customer_diamond_quality"
-				):
-					self.diamond_grade = row
-		else:
-			self.diamond_grade = frappe.db.get_value(
-				"Customer Diamond Grade",
-				{"parent": customer, "diamond_quality": self.diamond_quality},
+		diamond_grade_data = frappe.db.get_value(
+			"Customer Diamond Grade",
+			{"parent": customer, "diamond_quality": self.diamond_quality},
+			[
 				"diamond_grade_1",
+				"diamond_grade_2",
+				"diamond_grade_3",
+				"diamond_grade_4",
+			],
+		)
+
+		if not diamond_grade_data:
+			return
+
+		for row in diamond_grade_data:
+			if not row:
+				continue
+			is_customer_grade = frappe.db.get_value(
+				"Attribute Value", row, "is_customer_diamond_quality"
 			)
+			if self.is_customer_diamond and is_customer_grade:
+				self.diamond_grade = row
+				break
+			elif not self.is_customer_diamond and not is_customer_grade:
+				self.diamond_grade = row
+				break
 
 	def metal_details(self):
 		if self.custom_tracking_bom:

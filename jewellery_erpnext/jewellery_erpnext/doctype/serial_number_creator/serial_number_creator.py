@@ -244,7 +244,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		se_name = create_manufacturing_entry(self, row_data, operation_data)
 
 		self.fg_serial_no = se_name
-		self.db_set("fg_serial_no", se_name)
+		self.db_set("fg_serial_no", se_name, update_modified=False)
 		create_finished_goods_bom(self, se_name, operation_data)
 		submit_tracking_bom_for_finished_goods(self)
 
