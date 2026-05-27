@@ -804,6 +804,69 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 		return create_loss_item(variant_name, item_attr_dict)
 
 
+def get_loss_item_from_manufacturer_mapping(item_code, manufacturer, loss_type="Loss"):
+	"""Resolve the loss-variant item from Manufacturer's ``custom_variant_loss_table``.
+
+	``Variant Loss Table.variant`` stores ``Item.variant_of`` (the template item code,
+	e.g. ``"M"`` for metal).  ``set_items_from_attribute`` is called with the loss-variant
+	template to find or create the loss item with the same attributes as the source item.
+
+	Raises ``frappe.ValidationError`` when:
+	- ``manufacturer`` is blank
+	- source item has no ``variant_of``
+	- no matching row in the Manufacturer's ``custom_variant_loss_table``
+	- ``set_items_from_attribute`` cannot resolve an item
+	"""
+	if not manufacturer:
+		frappe.throw(frappe._("Manufacturer is required to resolve loss item mapping"))
+	if not item_code:
+		frappe.throw(frappe._("Item Code is required to resolve loss item mapping"))
+
+	source_variant_of = frappe.get_cached_value("Item", item_code, "variant_of")
+	if not source_variant_of:
+		frappe.throw(
+			frappe._("Item {0} has no variant_of — cannot resolve loss mapping").format(
+				item_code
+			)
+		)
+
+	loss_variant = frappe.db.get_value(
+		"Variant Loss Table",
+		{
+			"parenttype": "Manufacturer",
+			"parent": manufacturer,
+			"parentfield": "custom_variant_loss_table",
+			"variant": source_variant_of,
+			"loss_type": loss_type,
+		},
+		"loss_variant",
+	)
+	if not loss_variant:
+		frappe.throw(
+			frappe._(
+				"Missing Manufacturer loss variant mapping for Variant {0}, "
+				"Loss Type {1}, Manufacturer {2}."
+			).format(source_variant_of, loss_type, manufacturer)
+		)
+
+	item_attributes = frappe.db.get_all(
+		"Item Variant Attribute",
+		{"parent": item_code},
+		["attribute as item_attribute", "attribute_value"],
+	)
+	from jewellery_erpnext.utils import set_items_from_attribute
+
+	loss_item_doc = set_items_from_attribute(loss_variant, item_attributes)
+	if not loss_item_doc:
+		frappe.throw(
+			frappe._("Loss item not found for loss variant {0} from item {1}.").format(
+				loss_variant, item_code
+			)
+		)
+
+	return loss_item_doc.name
+
+
 def get_main_slip_item(main_slip):
 	ms = frappe.db.get_value(
 		"Main Slip",

@@ -75,7 +75,7 @@ def update_alloy_betch(self):
 			frappe._dict(
 				{
 					"posting_date": self.get("posting_date") or self.get("date"),
-					"posting_time": self.get("posting_time") or nowtime(),
+					"posting_time": nowtime(),
 					"item_code": self.source_alloy,
 					"warehouse": self.source_warehouse,
 					"qty": self.source_alloy_qty,
