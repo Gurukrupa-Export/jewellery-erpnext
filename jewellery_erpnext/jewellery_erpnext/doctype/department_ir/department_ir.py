@@ -157,6 +157,16 @@ class DepartmentIR(Document):
 		else:
 			self.on_submit_receive(cancel=True)
 
+	# ── PC ↔ Tagging stock sync (called once after the for loop in each method) ──
+
+	def _run_pc_tagging_sync(self, cancel=False):
+		"""Delegate to service layer if scenario is applicable."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tagging_stock_sync import (
+			process_pc_tagging_stock_sync,
+		)
+
+		process_pc_tagging_stock_sync(self, cancel=cancel)
+
 	# for Receive
 	def on_submit_receive(self, cancel=False):
 		# se_data = json.loads(self.se_data) if self.se_data else {}
@@ -293,6 +303,9 @@ class DepartmentIR(Document):
 		# 			"Not Started",
 		# 		)
 
+		# PC ↔ Tagging stock sync — called once after the for loop
+		self._run_pc_tagging_sync(cancel=cancel)
+
 	def on_submit_issue_new(self, cancel=False):
 		# if not self.mop_data:
 		dt_string = get_datetime()
@@ -416,7 +429,7 @@ class DepartmentIR(Document):
 					"Manufacturing Operation",
 					row.manufacturing_operation,
 					"status",
-					"In Transit",
+					"WIP",
 				)
 			else:
 				values["complete_time"] = dt_string
@@ -452,6 +465,9 @@ class DepartmentIR(Document):
 				create_mop_log_for_department_ir(
 					self, row, in_transit_wh, department_wh, new_operation.name
 				)
+
+		# PC ↔ Tagging stock sync — called once after the for loop
+		self._run_pc_tagging_sync(cancel=cancel)
 
 	@frappe.whitelist()
 	def get_summary_data(self):
@@ -731,6 +747,7 @@ def fetch_and_update(doc, row, manufacturing_operation):
 def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc = frappe.copy_doc(frappe.get_doc("Manufacturing Operation", mop))
 	new_mop_doc.name = None
+	new_mop_doc.status = "Not Started"
 	new_mop_doc.department_issue_id = ir_name
 	new_mop_doc.department_ir_status = "In-Transit"
 	new_mop_doc.department_receive_id = None
