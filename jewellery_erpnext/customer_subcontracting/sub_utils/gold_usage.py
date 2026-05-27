@@ -1,15 +1,33 @@
 import frappe
 
 
+def is_gold_item(item_code):
+	return item_code.startswith("M-")
+
+
 def classify_gold_usage(doc, item):
 	order_customer = get_order_customer(doc)
+
 	item_customer = item.customer
+
 	ownership = (
 		"Customer Gold" if item.inventory_type == "Customer Goods" else "Company Gold"
 	)
+
 	mwo_type = get_mwo_type(doc)
 
-	# CASE 1 ==>Subcontracting + Same Customer Gold
+	if not is_gold_item(item.item_code):
+		return {
+			"mwo_type": mwo_type,
+			"usage_type": ownership,
+			"used_as_fallback": 0,
+			"settlement_required": 0,
+			"settlement_status": None,
+			"settlement_type": None,
+			"settlement_customer": None,
+		}
+
+	# CASE 1 ==> Subcontracting + Same Customer Gold
 	if (
 		mwo_type == "Subcontracting"
 		and ownership == "Customer Gold"
@@ -25,7 +43,7 @@ def classify_gold_usage(doc, item):
 			"settlement_customer": None,
 		}
 
-	# CASE 2 ==>Subcontracting + Different Customer Gold
+	# CASE 2 ==> Subcontracting + Different Customer Gold
 	if (
 		mwo_type == "Subcontracting"
 		and ownership == "Customer Gold"
@@ -41,7 +59,7 @@ def classify_gold_usage(doc, item):
 			"settlement_customer": item_customer,
 		}
 
-	# CASE 3 ==>Subcontracting + Company Gold
+	# CASE 3 ==> Subcontracting + Company Gold
 	if mwo_type == "Subcontracting" and ownership == "Company Gold":
 		return {
 			"mwo_type": "Subcontracting",
@@ -53,7 +71,7 @@ def classify_gold_usage(doc, item):
 			"settlement_customer": order_customer,
 		}
 
-	# CASE 4 ==>Regular + Company Gold
+	# CASE 4 ==> Regular + Company Gold
 	if mwo_type == "Regular" and ownership == "Company Gold":
 		return {
 			"mwo_type": "Regular",
@@ -65,11 +83,13 @@ def classify_gold_usage(doc, item):
 			"settlement_customer": None,
 		}
 
-	# CASE 5 ==>Regular + Different Customer Gold
+	# CASE 5 ==> Regular + Different Customer Gold
 	if mwo_type == "Regular" and ownership == "Customer Gold":
 		if order_customer == item_customer:
 			frappe.throw(
-				f"Same customer gold cannot be used in Regular Order. Order Customer: {order_customer} Gold Customer: {item_customer}"
+				f"Same customer gold cannot be used in Regular Order. "
+				f"Order Customer: {order_customer} "
+				f"Gold Customer: {item_customer}"
 			)
 
 		return {
