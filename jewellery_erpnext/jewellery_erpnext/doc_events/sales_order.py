@@ -3063,7 +3063,7 @@ def _process_single_row(self, row, ctx):
     item_code = row.item_code
     cctx      = _get_company_context(self, row, ctx)
 
-    if not row.quotation_bom:
+    if not row.custom_tracking_bom:
         create_serial_no_bom(self, row)
         if not row.bom:
             return
@@ -3085,15 +3085,15 @@ def _process_single_row(self, row, ctx):
 
         doc.save(ignore_permissions=True)
 
-    elif not row.bom and frappe.db.exists("BOM", row.quotation_bom):
-        row.bom = row.quotation_bom
-        frappe.db.set_value("BOM", row.quotation_bom, {
+    elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+        row.bom = row.custom_tracking_bom
+        frappe.db.set_value("Tracking Bom", row.custom_tracking_bom, {
             "bom_type":                "Sales Order",
             "custom_creation_doctype": "Sales Order",
             "custom_creation_docname": self.name,
             "gold_rate_with_gst":      self.gold_rate_with_gst,
         })
-        doc = frappe.get_doc("BOM", row.quotation_bom)
+        doc = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
         row.gold_bom_rate     = doc.gold_bom_amount
         row.diamond_bom_rate  = doc.diamond_bom_amount
         row.gemstone_bom_rate = doc.gemstone_bom_amount
@@ -3177,6 +3177,7 @@ def create_new_bom1(self):
             process_bom_chunk,
             queue="long",
             timeout=600,
+			enqueue_after_commit=True, 
             doctype=self.doctype,
             docname=self.name,
             row_indices=row_indices,
