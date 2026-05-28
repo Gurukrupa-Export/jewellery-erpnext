@@ -51,8 +51,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufac
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	# create_mop_log_for_employee_ir_loss,
+	create_mop_log_for_employee_ir,
 	create_mop_log_for_employee_ir_receive,
-	creste_mop_log_for_employee_ir,
 )
 from jewellery_erpnext.utils import (
 	get_item_from_attribute_full,
@@ -76,6 +76,37 @@ class EmployeeIR(Document):
 			for row in records:
 				self.append(
 					"employee_ir_operations", {"manufacturing_operation": row.name}
+				)
+
+	def before_submit(self):
+		if self.type != "Issue":
+			return
+		for row in self.employee_ir_operations:
+			mwo_docstatus = frappe.db.get_value(
+				"Manufacturing Work Order", row.manufacturing_work_order, "docstatus"
+			)
+			if cint(mwo_docstatus) != 1:
+				frappe.throw(
+					_(
+						"Row {0}: Manufacturing Work Order {1} must be submitted before issuing Employee IR"
+					).format(row.idx, row.manufacturing_work_order)
+				)
+		if self.subcontracting != "Yes":
+			if not self.employee:
+				frappe.throw(_("Employee is mandatory for Issue"))
+			employee_wh = frappe.db.get_value(
+				"Warehouse",
+				{
+					"warehouse_type": "Manufacturing",
+					"disabled": 0,
+					"employee": self.employee,
+				},
+			)
+			if not employee_wh:
+				frappe.throw(
+					_(
+						"No Manufacturing Warehouse found for employee {0}. Cannot submit Issue."
+					).format(self.employee)
 				)
 
 	def on_submit(self):
@@ -221,7 +252,7 @@ class EmployeeIR(Document):
 				# )
 				# mop_data[row.manufacturing_work_order] = row.manufacturing_operation
 				time_log_args.append((row.manufacturing_operation, values))
-				creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse)
+				create_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse)
 
 		if mops_to_update:
 			frappe.db.bulk_update(
@@ -463,6 +494,13 @@ class EmployeeIR(Document):
 
 			if time_log_args and not cancel:
 				batch_add_time_logs(self, time_log_args)
+
+		if not cancel:
+			from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_loss_se import (
+				handle_employee_receive_loss,
+			)
+
+			handle_employee_receive_loss(self)
 
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":

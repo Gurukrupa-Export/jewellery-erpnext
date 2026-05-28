@@ -16,6 +16,85 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 )
 
 
+class MockEIROperation:
+	def __init__(self, mop="MOP-1", mwo="MWO-1", idx=1):
+		self.manufacturing_operation = mop
+		self.manufacturing_work_order = mwo
+		self.idx = idx
+		self.name = "row-1"
+
+
+class TestEmployeeIRBeforeSubmitValidation(FrappeTestCase):
+	"""B1/MF-6 + B2/MF-9: before_submit guards for warehouse and MWO docstatus."""
+
+	def _make_eir(self, emp="EMP-001", subcontracting="No", ops=None):
+		doc = MagicMock()
+		doc.type = "Issue"
+		doc.employee = emp
+		doc.subcontracting = subcontracting
+		doc.employee_ir_operations = ops or [MockEIROperation()]
+		return doc
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.db.get_value",
+		side_effect=[1, None],  # MWO docstatus=1, then employee warehouse=None
+	)
+	def test_issue_blocked_when_employee_warehouse_missing(self, _gv):
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
+			EmployeeIR,
+		)
+
+		doc = self._make_eir(emp="EMP-NO-WH")
+		with self.assertRaises(frappe.ValidationError):
+			EmployeeIR.before_submit(doc)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.db.get_value",
+		return_value=0,  # MWO docstatus = 0 (Draft)
+	)
+	def test_issue_blocked_for_draft_mwo(self, _gv):
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
+			EmployeeIR,
+		)
+
+		doc = self._make_eir()
+		with self.assertRaises(frappe.ValidationError):
+			EmployeeIR.before_submit(doc)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.db.get_value",
+		side_effect=[1, "WH-EMP-001"],  # MWO docstatus=1, employee warehouse found
+	)
+	def test_issue_passes_when_mwo_submitted_and_warehouse_exists(self, _gv):
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
+			EmployeeIR,
+		)
+
+		doc = self._make_eir()
+		EmployeeIR.before_submit(doc)  # must not raise
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.db.get_value",
+		return_value=1,  # MWO docstatus=1
+	)
+	def test_issue_subcontracting_skips_employee_warehouse_check(self, _gv):
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
+			EmployeeIR,
+		)
+
+		doc = self._make_eir(subcontracting="Yes")
+		EmployeeIR.before_submit(doc)  # must not raise
+
+	def test_receive_type_skips_all_issue_guards(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
+			EmployeeIR,
+		)
+
+		doc = MagicMock()
+		doc.type = "Receive"
+		EmployeeIR.before_submit(doc)  # must not raise
+
+
 def _balance_row(item_code, qty, pcs=0, batch_no=None, **overrides):
 	row = {
 		"item_code": item_code,
@@ -63,7 +142,9 @@ class TestEmployeeIRReceiveLineageGuard(FrappeTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
 		return_value=[_balance_row("M-A", 5.0, batch_no="BM1")],
 	)
-	@patch("jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.log_error")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.log_error"
+	)
 	def test_receive_throws_when_issue_logs_miss_current_balance_component(
 		self, _log_error, _get_all, _current_balance, _resolve_issue
 	):
@@ -74,12 +155,16 @@ class TestEmployeeIRReceiveLineageGuard(FrappeTestCase):
 			create_mop_log_for_employee_ir_receive(doc, row, "WH-EMP", "WH-DEPT")
 
 		_log_error.assert_called_once()
+
+
 class TestManufacturingOperationBalance(FrappeTestCase):
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_current_mop_balance_rows",
 		return_value=[
 			FrappeDict({"item_code": "M-A", "qty": 0.23, "pcs": 0, "batch_no": "BM1"}),
-			FrappeDict({"item_code": "D-A", "qty": 1.008, "pcs": 168, "batch_no": "BD1"}),
+			FrappeDict(
+				{"item_code": "D-A", "qty": 1.008, "pcs": 168, "batch_no": "BD1"}
+			),
 		],
 	)
 	def test_get_material_wt_uses_current_balance_rows(self, _current_balance):
@@ -103,8 +188,16 @@ class TestManufacturingOperationBalance(FrappeTestCase):
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_current_mop_balance_rows",
 		return_value=[
-			_balance_row("M-A", 0.23, batch_no="BM1", manufacturing_operation="MOP-PREV"),
-			_balance_row("D-A", 1.008, pcs=168, batch_no="BD1", manufacturing_operation="MOP-PREV"),
+			_balance_row(
+				"M-A", 0.23, batch_no="BM1", manufacturing_operation="MOP-PREV"
+			),
+			_balance_row(
+				"D-A",
+				1.008,
+				pcs=168,
+				batch_no="BD1",
+				manufacturing_operation="MOP-PREV",
+			),
 		],
 	)
 	@patch(
@@ -112,13 +205,11 @@ class TestManufacturingOperationBalance(FrappeTestCase):
 		side_effect=[None],
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.new_doc"
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.create_mop_log"
 	)
 	def test_update_new_mop_wtg_clones_current_balance_rows(
-		self, mock_new_doc, _current_doc_index, _current_balance
+		self, mock_create_mop_log, _current_doc_index, _current_balance
 	):
-		mock_log = MagicMock()
-		mock_new_doc.return_value = mock_log
 		doc = FrappeDict(
 			{
 				"name": "MOP-NEXT",
@@ -129,6 +220,6 @@ class TestManufacturingOperationBalance(FrappeTestCase):
 
 		update_new_mop_wtg(doc)
 
-		self.assertEqual(mock_new_doc.call_count, 2)
-		self.assertEqual(mock_log.flow_index, 0)
-		self.assertEqual(mock_log.manufacturing_operation, "MOP-NEXT")
+		self.assertEqual(mock_create_mop_log.call_count, 2)
+		first_call_row = mock_create_mop_log.call_args_list[0].kwargs.get("row")
+		self.assertEqual(first_call_row.get("manufacturing_operation"), "MOP-NEXT")

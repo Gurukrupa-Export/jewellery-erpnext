@@ -6,7 +6,11 @@
     "engine": "InnoDB",
     "field_order": [
         "stock_entry_type_to_reservation",
-        "sync_mop_log"
+        "sync_mop_log",
+        "sync_section",
+        "sync_time",
+        "sync_running",
+        "sync_started_at"
     ],
     "fields": [
         {
@@ -19,13 +23,37 @@
             "fieldname": "sync_mop_log",
             "fieldtype": "Button",
             "label": "Sync MOP Log"
+        },
+        {
+            "fieldname": "sync_section",
+            "fieldtype": "Section Break",
+            "label": "Sync Configuration"
+        },
+        {
+            "fieldname": "sync_time",
+            "fieldtype": "Time",
+            "label": "Scheduled Sync Time",
+            "description": "Daily time at which MOP Log sync should run automatically. Only System Manager can modify this field."
+        },
+        {
+            "default": "0",
+            "fieldname": "sync_running",
+            "fieldtype": "Check",
+            "label": "Sync Running",
+            "read_only": 1
+        },
+        {
+            "fieldname": "sync_started_at",
+            "fieldtype": "Datetime",
+            "label": "Sync Started At",
+            "read_only": 1
         }
     ],
     "grid_page_length": 50,
     "index_web_pages_for_search": 1,
     "issingle": 1,
     "links": [],
-    "modified": "2026-02-17 12:07:54.737942",
+    "modified": "2026-05-28 00:00:01.000000",
     "modified_by": "Administrator",
     "module": "Jewellery Erpnext",
     "name": "MOP Settings",

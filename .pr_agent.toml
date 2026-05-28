@@ -214,8 +214,8 @@ Call out:
 Include only when the diff touches related code. Group by module.
 
 Jewellery Erpnext module (core):
-- Employee IR (Issue / Receive, optional subcontracting)
-- Department IR (Issue / Receive, In-Transit state)
+- Employee IR (Issue / Receive, optional subcontracting; Receive calls doc_events/employee_loss_se.py for Process Loss SE when loss rows are present)
+- Department IR (Issue / Receive, In-Transit state; Issue/Receive calls doc_events/tagging_transfer.py for SE+SRE management when Product Cert→Tagging pair)
 - MOP Log (virtual ledger; fields include flow_index, is_synced, is_cancelled,
   voucher_type / voucher_no / row_name, qty_after_transaction tiers)
 - Manufacturing Operation (per-prefix weights: net / finding / diamond / gemstone / other / loss)
@@ -424,10 +424,14 @@ Use this app context when the PR touches related areas. Modules: Jewellery Erpne
    - is_synced=1 means already materialized into a physical Stock Entry; EOD sync
      and the Stock Entry bridge must not double-process such rows.
    - MOP Log writers:
-     create_mop_log_for_stock_transfer_to_mo (Stock Entry bridge, is_synced=True),
+     create_mop_log_for_stock_transfer_to_mo (Stock Entry bridge, is_synced=True;
+       also handles doc=None — row-based mwo fallback, voucher_type/voucher_no=None),
      create_mop_log_for_department_ir (DIR Issue/Receive, is_synced=0),
      creste_mop_log_for_employee_ir (sic; EIR Issue),
-     create_mop_log_for_employee_ir_receive (EIR Receive),
+     create_mop_log_for_employee_ir_receive (EIR Receive; lineage guard added: checks
+       every (item_code, batch_no) in current MOP balance is present in the fetched
+       issue logs — fires only when both current_balance and mop_logs are non-empty;
+       throws frappe.ValidationError and calls frappe.log_error on mismatch),
      and a Manufacturing Work Order on_submit snapshot.
 
 3. EOD MOP sync
@@ -446,6 +450,10 @@ Use this app context when the PR touches related areas. Modules: Jewellery Erpne
    - Issues and receives metal/diamond/gemstone from operators or subcontractors.
    - On submit, branches Issue vs Receive; Issue may create Subcontracting Order.
    - Writes MOP Logs, updates Manufacturing Operation, calculates process loss.
+   - On submit Receive, after existing MOP Log logic, calls
+     doc_events/employee_loss_se.py: should_handle_employee_receive_loss guard,
+     then handle_employee_receive_loss which creates a "Process Loss" SE and
+     reduces SRE qty (cancel originals + recreate at same warehouse with reduced qty).
    - Main Slip receive injection
      (doctype/employee_ir/doc_events/main_slip_inject.py) is high risk:
      priority order is Regular Stock -> Customer Goods -> Pure Metal;
@@ -460,6 +468,11 @@ Use this app context when the PR touches related areas. Modules: Jewellery Erpne
    - Writes MOP Logs via create_mop_log_for_department_ir; the current branch
      simplified that helper (commit 712ac8f) so Receive now clones ALL Issue logs
      in ascending flow_index, not just the max-tier snapshot.
+   - On submit Issue and Receive, if the pair is Product Certification → Tagging,
+     calls doc_events/tagging_transfer.py guards (should_handle_tagging_issue /
+     should_handle_tagging_receive) then handle_tagging_issue / handle_tagging_receive,
+     which create a "Material Transfer to Department" SE and manage SREs
+     (cancel originals + recreate at updated warehouse/operation).
 
 6. Main Slip
    (doctype/main_slip/main_slip.py +
@@ -1398,6 +1411,38 @@ When a PR touches these areas, apply the rules summarised here. Section 11 of [r
 
 - Stock Entry idempotency: `custom_request_id` (Data, hidden, no_copy, read_only) on Stock Entry deduplicates Make Receive Entry double-clicks for the same Manufacturing Operation + stock_entry_type. Same request_id MUST return the existing SE without creating another.
 
+- Employee IR Process Loss SE (doc_events/employee_loss_se.py):
+  `handle_employee_receive_loss` fires on Receive after MOP Log writes. Creates a
+  "Process Loss" SE targeting scrap warehouse (resolved via get_scrap_warehouse(doc.department)).
+  Iterates doc.employee_loss_details; finds SRE per row; validates loss_qty <= reserved_qty.
+  3-phase: cancel SRE → create SE (employee_ir=doc.name, auto_created=1) → recreate SRE
+  with remaining_qty at the SAME warehouse (warehouse does NOT change — only qty reduced).
+  Batch subtraction: sb_remaining = qty - delivered_qty - loss_qty; loss consumed once via
+  loss_qty = max(0.0, loss_qty - max(0.0, sb.qty - sb.delivered_qty)).
+  Idempotency: SE by {employee_ir, stock_entry_type="Process Loss", docstatus!=2}.
+  SRE pattern: available_qty = max(get_available_qty_to_reserve(...), remaining_qty);
+  insert(ignore_links=1) then submit(). Does NOT currently process manually_book_loss_details.
+
+- Department IR Tagging Transfer (doc_events/tagging_transfer.py):
+  Constants: PRODUCT_CERT_DEPT = "Product Certification - GEPL", TAGGING_DEPT = "Tagging - GEPL",
+  _TOLERANCE = 1e-9. Guards: should_handle_tagging_issue checks type=="Issue" AND
+  current_department==PRODUCT_CERT_DEPT AND next_department==TAGGING_DEPT.
+  should_handle_tagging_receive is the mirror for Receive.
+  handle_tagging_issue(doc, row, new_operation_name, t_warehouse):
+    - Idempotency by {department_ir, manufacturing_work_order, stock_entry_type=
+      "Material Transfer to Department", docstatus!=2}
+    - MOP balance from get_current_mop_balance_rows(mop_name)
+    - SREs from _get_active_sres (uses frappe.db.get_table_columns for conditional filters)
+    - SE items from _build_se_items_from_mop_balance (s_warehouse from sre_list[0]["warehouse"];
+      qty from qty_after_transaction_batch_based with fallback; pcs for D/G items)
+    - _cancel_sres, _create_and_submit_se (department_ir=doc.name, auto_created=1, add_to_transit=0)
+    - _recreate_sres with new_warehouse=t_warehouse (transit WH) AND new_mop_name=new_operation_name
+  handle_tagging_receive(doc, row, t_warehouse):
+    - Same flow but _recreate_sres with new_warehouse=t_warehouse (dept WO) AND new_mop_name=mop_name
+      (same MOP — Receive does not create a new operation)
+  Key invariant: Issue moves SRE to transit warehouse + new Tagging MOP;
+  Receive moves SRE to Tagging WO warehouse + keeps same MOP.
+
 - Employee IR loss MOP Log: each Employee Loss Detail / Manually Book Loss Detail row produces a MOP Log row with:
   qty_change                = -loss_weight (gram; carat * 0.2 first if stock_uom == "Carat")
   qty_after_transaction*    = previous_balance - loss_weight (across overall, item-based, batch-based)
@@ -1897,7 +1942,9 @@ The following rules reflect the most recent feature work on Make Receive Entry, 
 - Common pre-existing test failures unrelated to this feature work (do NOT block PRs unless the PR touches them):
   - `test_mop_log.TestDepartmentIRIdempotency.*` and main-slip-required relaxations — outdated against commit 712ac8f (DIR Receive clones all Issue logs in ascending flow_index).
   - `test_main_slip_inject` — module-level fixture issue.
-  - `test_employee_ir.TestEmployeeIRReceiveLineageGuard.test_receive_throws_when_issue_logs_miss_current_balance_component` — log_error call-count assertion against unchanged code.
+  - Previously failing, now fixed: TestEmployeeIRReceiveLineageGuard.test_receive_throws_when_issue_logs_miss_current_balance_component — lineage guard implemented in create_mop_log_for_employee_ir_receive.
+  - Previously failing, now fixed: TestManufacturingOperationBalance.test_update_new_mop_wtg_clones_current_balance_rows — test mock changed to target create_mop_log (not frappe.new_doc); doc=None guard added to mop_log.py.
+  - Previously failing, now fixed: all tests in test_quotation.py — customer guard added, append loop fixed, get_gold_rate uncommented, generate_bom event= kwarg added, cancel_bom uses custom_tracking_bom + "Tracking Bom".
 
 11.9 Anti-patterns to flag in PR review
 - Make Receive Entry sourcing rows from `mop_balance_table` instead of Stock Reservation Entry.
@@ -1910,4 +1957,124 @@ The following rules reflect the most recent feature work on Make Receive Entry, 
 - `_reconcile_reservations_for_mwo` defaulted to `dry_run=False`.
 - Hardcoded warehouse names, item codes, manufacturer names, customer names in code paths that should resolve from Manufacturer / department / warehouse_type config.
 - Reverting `book_metal_loss` to alias `pcs_after_transaction_batch_based as qty` (forensic bug C4).
+
+============================================================
+11.10 Department IR Tagging Transfer (doc_events/tagging_transfer.py)
+============================================================
+
+File: jewellery_erpnext/jewellery_erpnext/doctype/department_ir/doc_events/tagging_transfer.py
+Called from department_ir.py on_submit_issue_new and on_submit_receive.
+
+Public API:
+- should_handle_tagging_issue(doc): Returns True when type=="Issue" AND current_department==
+  "Product Certification - GEPL" AND next_department=="Tagging - GEPL".
+- should_handle_tagging_receive(doc): Mirror for Receive (previous_department==PRODUCT_CERT_DEPT
+  AND current_department==TAGGING_DEPT).
+- handle_tagging_issue(doc, row, new_operation_name, t_warehouse): Creates "Material Transfer
+  to Department" SE from Product Cert WH to transit WH; recreates SREs at transit WH + new
+  Tagging MOP. t_warehouse = in_transit_wh already resolved in on_submit_issue_new
+  (= default_in_transit_warehouse of the Tagging Manufacturing WH).
+- handle_tagging_receive(doc, row, t_warehouse): Creates SE from transit WH to Tagging WO;
+  recreates SREs at Tagging WO WH + same MOP (no new operation for Receive).
+  t_warehouse = department_wh already resolved in on_submit_receive.
+
+Private helpers:
+- _get_active_sres(mwo_name, mop_name): Filters docstatus=1; uses
+  frappe.db.get_table_columns() to conditionally add manufacturing_work_order and
+  manufacturing_operation filters. Returns: name, item_code, warehouse, reserved_qty,
+  delivered_qty, reservation_based_on, manufacturing_work_order, manufacturing_operation,
+  voucher_type, voucher_no, voucher_detail_no, voucher_qty, company, stock_uom.
+- _build_se_items_from_mop_balance(mop_balance_rows, sre_list, t_warehouse, mop_name):
+  s_warehouse = sre_list[0]["warehouse"]; qty = qty_after_transaction_batch_based fallback
+  to qty_after_transaction; skips rows with qty <= _TOLERANCE; pcs for D/G items from
+  pcs_after_transaction_batch_based; use_serial_batch_fields=True per item.
+- _cancel_sres(sre_list): ignore_permissions=True, cancel() on each docstatus==1 SRE.
+  Returns list of cancelled SRE docs.
+- _create_and_submit_se(doc, se_items, stock_entry_type, mwo_name, mop_name):
+  Sets department_ir=doc.name, auto_created=1, add_to_transit=0,
+  flags.ignore_permissions=True; save() + submit().
+- _recreate_sres(cancelled_sre_docs, new_warehouse, new_mop_name):
+  reserved_qty = original.reserved_qty - original.delivered_qty; skips if <= _TOLERANCE;
+  rebuilds sb_entries from "Serial and Batch Entry" child table; remaining_sb = qty - delivered_qty;
+  available_qty = max(get_available_qty_to_reserve(item_code, new_warehouse, batch_no=...), reserved_qty);
+  new_sre.warehouse = new_warehouse; new_sre.manufacturing_operation = new_mop_name;
+  insert(ignore_links=1) + submit().
+
+Idempotency check: frappe.db.get_value("Stock Entry",
+  {department_ir: doc.name, manufacturing_work_order: mwo_name,
+   stock_entry_type: "Material Transfer to Department", docstatus: ["!=", 2]}).
+
+Key invariant — Issue vs Receive difference in _recreate_sres call:
+  Issue: new_warehouse=t_warehouse (transit WH), new_mop_name=new_operation_name (new Tagging MOP)
+  Receive: new_warehouse=t_warehouse (Tagging WO WH), new_mop_name=mop_name (SAME MOP — Receive
+    does not create a new operation)
+PRs touching this must preserve this distinction or SREs will point to the wrong warehouse/operation.
+
+Anti-patterns to flag:
+- Adding new hardcoded department name constants; prefer warehouse-config-driven detection.
+- Missing idempotency check (would double-create SE on resubmit).
+- Passing available_qty < reserved_qty to new SRE (would fail ERPNext SRE validation).
+- Using save() instead of insert(ignore_links=1) + submit() for SRE.
+- Changing Receive to create a new operation (it must reuse the existing MOP, unlike Issue).
+
+============================================================
+11.11 Employee IR Process Loss SE (doc_events/employee_loss_se.py)
+============================================================
+
+File: jewellery_erpnext/jewellery_erpnext/doctype/employee_ir/doc_events/employee_loss_se.py
+Called from employee_ir.py on_submit_receive (inside `if not cancel:` block) after MOP Log loops.
+
+Public API:
+- should_handle_employee_receive_loss(doc): Returns True when type=="Receive" AND
+  doc.employee_loss_details is non-empty AND any proportionally_loss > _TOLERANCE (1e-9).
+- handle_employee_receive_loss(doc): Guard check → idempotency check → get_scrap_warehouse(doc.department)
+  [throws if not configured] → _validate_and_prepare_loss_items() upfront (all rows validated
+  BEFORE any SRE is cancelled) → _create_process_loss_se().
+
+Private helpers:
+- _validate_and_prepare_loss_items(doc, scrap_warehouse):
+  Iterates doc.employee_loss_details only (NOTE: does NOT currently process
+  manually_book_loss_details). For each row with proportionally_loss > _TOLERANCE:
+  uses frappe.db.get_table_columns() for conditional SRE filters on manufacturing_work_order /
+  manufacturing_operation; validates loss_qty <= reserved_qty - delivered_qty;
+  is_pcs_item = item_code[0] in ("D","G").
+  Returns list of enriched dicts: {item_code, mwo_name, mop_name, batch_no, loss_qty,
+  loss_pcs, s_warehouse (from SRE.warehouse), t_warehouse (scrap), sre_name, sre_row,
+  reserved_qty, is_pcs_item}.
+
+- _create_process_loss_se(doc, loss_items): 3 phases:
+  Phase 1 — Cancel SREs:
+    For each item: frappe.get_doc("Stock Reservation Entry", sre_name); assert docstatus==1
+    (throws if not); ignore_permissions=True; cancel().
+    Appends {"original": sre_doc, "loss_qty": item["loss_qty"]} to cancelled_sres.
+  Phase 2 — Create Process Loss SE:
+    stock_entry_type="Process Loss", employee_ir=doc.name, auto_created=1;
+    manufacturing_work_order set once from first item that has one;
+    per item: use_serial_batch_fields=True, manufacturing_operation=mop_name;
+    pcs only if is_pcs_item and loss_pcs is not None;
+    flags.ignore_permissions=True; save() + submit().
+  Phase 3 — Recreate SREs with reduced qty:
+    remaining_qty = reserved_qty - loss_qty; skip if remaining_qty <= _TOLERANCE.
+    Batch subtraction — sequential first-covering-batch logic:
+      sb_remaining = flt(sb.qty) - flt(sb.delivered_qty) - loss_qty
+      loss_qty = max(0.0, loss_qty - max(0.0, flt(sb.qty) - flt(sb.delivered_qty)))
+    WAREHOUSE STAYS SAME: new_sre.warehouse = original_sre.warehouse (only qty reduced).
+    available_qty = max(get_available_qty_to_reserve(item_code, original_sre.warehouse, ...), remaining_qty).
+    manufacturing_operation = original_sre.manufacturing_operation (unchanged).
+    insert(ignore_links=1) + submit().
+
+Idempotency: frappe.db.get_value("Stock Entry",
+  {employee_ir: doc.name, stock_entry_type: "Process Loss", docstatus: ["!=", 2]}).
+Scrap warehouse: get_scrap_warehouse(doc.department) from gemstone_conversion.py.
+
+Key invariant: Warehouse stays the same on replacement SRE (only qty is reduced).
+This differs from tagging_transfer.py which moves the SRE to a new warehouse.
+
+Anti-patterns to flag:
+- Setting new_sre.warehouse to anything other than original_sre.warehouse.
+- Adding manually_book_loss_details processing without normalizing both tables via a
+  combined get_all_employee_loss_rows() helper (pending future implementation).
+- Validating rows AFTER cancelling SREs — all validation must run before Phase 1.
+- Batch subtraction that subtracts loss_qty from ALL batches instead of first-covering only.
+- available_qty set to 0, loss_qty, or remaining_qty alone (must be max with get_available_qty_to_reserve).
 '''

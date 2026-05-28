@@ -542,12 +542,45 @@ def on_cancel(self, method=None):
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
 
 
+_SE_ZERO_WT_TOLERANCE = 1e-9
+
+
 def before_submit(self, method):
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_settings import (
+		assert_sync_not_running,
+	)
+
+	assert_sync_not_running()
+
 	# validation_for_stock_entry_submission(self)
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
+	if self.stock_entry_type == "Material Receive (WORK ORDER)":
+		_validate_mop_gross_wt_before_receive(self)
+
 	# group_se_items_and_update_mop_items(self, method)
+
+
+def _validate_mop_gross_wt_before_receive(doc):
+	"""Block Material Receive (WORK ORDER) submission when the linked MOP has zero gross weight."""
+	checked_mops = set()
+	for row in doc.items:
+		mop_name = row.get("manufacturing_operation")
+		if not mop_name or mop_name in checked_mops:
+			continue
+		checked_mops.add(mop_name)
+		gross_wt = flt(
+			frappe.db.get_value("Manufacturing Operation", mop_name, "gross_wt") or 0
+		)
+		if gross_wt <= _SE_ZERO_WT_TOLERANCE:
+			frappe.throw(
+				_(
+					"Cannot receive: Manufacturing Operation {0} has zero gross weight. "
+					"Please verify the operation balance before receiving."
+				).format(frappe.bold(mop_name)),
+				title=_("Zero Gross Weight"),
+			)
 
 
 def onsubmit(self, method):
