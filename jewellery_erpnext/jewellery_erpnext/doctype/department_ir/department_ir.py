@@ -264,6 +264,35 @@ class DepartmentIR(Document):
 				self.current_department,
 			)
 
+			pmo = frappe.db.get_value(
+				"Manufacturing Work Order",
+				row.manufacturing_work_order,
+				"manufacturing_order",
+			)
+			if pmo:
+				if pmo not in getattr(self, "_pmo_processed_for_dept", set()):
+					if not hasattr(self, "_pmo_processed_for_dept"):
+						self._pmo_processed_for_dept = set()
+					self._pmo_processed_for_dept.add(pmo)
+
+					frappe.db.set_value(
+						"Parent Manufacturing Order",
+						pmo,
+						"department",
+						self.current_department,
+						update_modified=False,
+					)
+
+					if "Tagging" in self.current_department:
+						fg_mwo = frappe.db.get_value(
+							"Manufacturing Work Order",
+							{"manufacturing_order": pmo, "for_fg": 1},
+							"name",
+						)
+						if fg_mwo:
+							fg_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
+							fg_doc.sync_mwo_weights()
+
 			doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
 			doc.set("department_time_logs", [])
 			doc.save()

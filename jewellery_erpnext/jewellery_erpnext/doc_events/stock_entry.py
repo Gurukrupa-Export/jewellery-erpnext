@@ -585,6 +585,27 @@ def _validate_mop_gross_wt_before_receive(doc):
 
 def onsubmit(self, method):
 	validate_items(self)
+	# Hard skip reservation logic for Product Certification Receive
+	# (Fire Assy Service / XRF Services), regardless of reservation settings.
+	pc_name = getattr(self, "product_certification", None)
+	if pc_name:
+		pc = frappe.db.get_value(
+			"Product Certification",
+			pc_name,
+			["service_type", "type"],
+			as_dict=True,
+		)
+		if (
+			pc
+			and pc.type == "Receive"
+			and pc.service_type
+			in [
+				"Fire Assy Service",
+				"XRF Services",
+			]
+		):
+			return
+
 	types_for_reservation = frappe.db.get_all(
 		"Stock Entry Type To Reservation",
 		filters={"parent": "MOP Settings"},

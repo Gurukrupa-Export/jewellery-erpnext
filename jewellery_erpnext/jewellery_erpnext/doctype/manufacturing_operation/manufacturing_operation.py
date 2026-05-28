@@ -3403,7 +3403,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
 	self.fg_bom = new_bom.name
-	self.db_set("fg_bom", new_bom.name)
+	self.db_set("fg_bom", new_bom.name, update_modified=False)
 
 
 def get_stock_entry_data(self):

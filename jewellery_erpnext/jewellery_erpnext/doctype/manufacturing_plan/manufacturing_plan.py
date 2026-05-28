@@ -166,7 +166,14 @@ class ManufacturingPlan(Document):
 		mwo_data_map = fetch_doc_map(
 			"Manufacturing Work Order",
 			mwo_items,
-			["name", "metal_type", "metal_touch", "metal_colour", "master_bom"],
+			[
+				"name",
+				"metal_type",
+				"metal_touch",
+				"metal_colour",
+				"master_bom",
+				"custom_tracking_bom",
+			],
 		)
 
 		bom_data_map = fetch_doc_map(

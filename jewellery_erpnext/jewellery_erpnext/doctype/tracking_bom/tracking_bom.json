@@ -497,13 +497,9 @@
   {
    "link_doctype": "Manufacturing Work Order",
    "link_fieldname": "custom_tracking_bom"
-  },
-  {
-   "link_doctype": "Manufacturing Operation",
-   "link_fieldname": "custom_tracking_bom"
   }
  ],
- "modified": "2026-05-14 15:07:04.629947",
+ "modified": "2026-05-18 16:21:03.076484",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Tracking Bom",
