@@ -51,7 +51,7 @@
    "fieldname": "price_list_type",
    "fieldtype": "Select",
    "label": "Price List Type",
-   "options": "Fixed\nDiamond Range\nMultiplier"
+   "options": "\nFixed\nDiamond Range"
   },
   {
    "fieldname": "gemstone_type",
@@ -246,8 +246,8 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-05-28 16:21:28.796676",
- "modified_by": "Administrator",
+ "modified": "2026-04-09 17:59:44.878460",
+ "modified_by": "shruti_b@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "BOM Gemstone Detail",
  "owner": "Administrator",
