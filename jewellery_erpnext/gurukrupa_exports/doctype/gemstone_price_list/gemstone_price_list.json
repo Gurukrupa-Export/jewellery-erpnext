@@ -44,7 +44,11 @@
   "to_gemstone_pr_rate",
   "section_break_et0i",
   "gemstone_multiplier",
-  "supplier_fg_multiplier"
+  "supplier_fg_multiplier",
+  "from_size_weight",
+  "to_size_weight",
+  "from_size_height",
+  "to_size_height"
  ],
  "fields": [
   {
@@ -159,7 +163,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Price List Type",
-   "options": "\nFixed\nDiamond Range"
+   "options": "Fixed\nDiamond Range\nMultiplier"
   },
   {
    "fieldname": "column_break_hf3d",
@@ -266,15 +270,35 @@
   {
    "fieldname": "column_break_jnj7",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "from_size_weight",
+   "fieldtype": "Float",
+   "label": "From Size Weight"
+  },
+  {
+   "fieldname": "to_size_weight",
+   "fieldtype": "Float",
+   "label": "To Size Weight"
+  },
+  {
+   "fieldname": "from_size_height",
+   "fieldtype": "Float",
+   "label": "From Size Height"
+  },
+  {
+   "fieldname": "to_size_height",
+   "fieldtype": "Float",
+   "label": "To Size Height"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-29 15:48:37.763459",
+ "modified": "2026-05-28 16:21:28.157210",
  "modified_by": "Administrator",
  "module": "Gurukrupa Exports",
  "name": "Gemstone Price List",
- "naming_rule": "Expression",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {
