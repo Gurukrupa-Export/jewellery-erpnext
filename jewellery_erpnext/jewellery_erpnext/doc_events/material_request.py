@@ -26,55 +26,50 @@ def _get_default_gemstone_item(manufacturer):
 	)
 
 
-# def _is_dummy_gemstone_item(item_code, manufacturer):
-# 	"""Check if item is the default dummy gemstone item."""
-# 	default_gemstone_item = _get_default_gemstone_item(manufacturer)
-# 	return item_code == default_gemstone_item if default_gemstone_item else False
+def _is_dummy_gemstone_item(item_code, manufacturer):
+	"""Check if item is the default dummy gemstone item."""
+	default_gemstone_item = _get_default_gemstone_item(manufacturer)
+	return item_code == default_gemstone_item if default_gemstone_item else False
 
 
-def validate_gemstone_alternative_items(self, method=None):
-	# Run only when clicking "Send for Reservation"
-	if self.workflow_state != "Material Reserved":
-		return
-
+def validate_gemstone_alternative_items(self):
+	"""Validate that gemstone items with dummy item have alternative items selected."""
 	if self.material_request_type != "Manufacture":
 		return
 
 	manufacturer = self.custom_manufacturer or frappe.defaults.get_user_default(
 		"manufacturer"
 	)
-
 	if not manufacturer:
 		return
 
 	default_gemstone_item = _get_default_gemstone_item(manufacturer)
-
 	if not default_gemstone_item:
 		return
 
 	errors = []
-
-	for idx, row in enumerate(self.items, 1):
-		# Check only dummy gemstone items
-		if row.item_code == default_gemstone_item:
-			# Alternative item mandatory
-			if not row.custom_alternative_item:
+	for idx, item_row in enumerate(self.items, 1):
+		if _is_dummy_gemstone_item(item_row.item_code, manufacturer):
+			if not item_row.custom_alternative_item:
 				errors.append(
 					_(
-						"Row {0}: Please select Alternative Item for dummy gemstone item."
+						"Row {0}: Gemstone dummy item requires an alternative gemstone item to be selected."
 					).format(idx)
 				)
-
-			# Prevent same dummy item again
-			elif row.custom_alternative_item == default_gemstone_item:
+			elif _is_dummy_gemstone_item(
+				item_row.custom_alternative_item, manufacturer
+			):
 				errors.append(
 					_(
-						"Row {0}: Alternative Item cannot be dummy gemstone item."
+						"Row {0}: Alternative item cannot be the dummy gemstone item itself."
 					).format(idx)
 				)
 
 	if errors:
-		frappe.throw("<br>".join(errors))
+		frappe.throw(
+			_("Please select alternative gemstone items:<br>") + "<br>".join(errors),
+			title=_("Alternative Gemstone Item Required"),
+		)
 
 
 def before_validate(self, method):
@@ -97,6 +92,7 @@ def before_validate(self, method):
 	update_pure_qty(self)
 	validate_target_item(self)
 	validate_warehouse(self)
+	validate_gemstone_alternative_items(self)
 
 	if self.custom_manufacturing_operation:
 		linked_mo = frappe.db.get_value(
@@ -471,8 +467,6 @@ def make_in_transit_stock_entry(
 
 @frappe.whitelist()
 def create_stock_entry(self, method):
-	validate_gemstone_alternative_items(self)
-
 	if (
 		self.workflow_state != "Material Reserved"
 		or self.custom_reserve_se

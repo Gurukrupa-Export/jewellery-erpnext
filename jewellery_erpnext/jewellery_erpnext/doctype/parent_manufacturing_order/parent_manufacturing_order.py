@@ -475,16 +475,9 @@ class ParentManufacturingOrder(Document):
 			if not data:
 				continue
 			for row in data:
-				if bom_table == "BOM Gemstone Detail":
-					item_code = (
-						row.get("item_variant")
-						or row.get("item")
-						or row.get("item_code")
-					)
-				else:
-					item_code = _resolve_existing_variant_item_code(
-						row, bom_table, self.diamond_grade
-					)
+				item_code = _resolve_existing_variant_item_code(
+					row, bom_table, self.diamond_grade
+				)
 				if not item_code:
 					field_name = (
 						"item_variant"
@@ -494,8 +487,7 @@ class ParentManufacturingOrder(Document):
 					frappe.throw(
 						_("{0} is missing in {1}").format(field_name, bom_table)
 					)
-				if bom_table != "BOM Gemstone Detail":
-					_validate_non_template_item(item_code, bom_table)
+				_validate_non_template_item(item_code, bom_table)
 				_validate_item_exists(item_code, bom_table, row)
 				if bom_table in (
 					"BOM Metal Detail",
@@ -671,8 +663,6 @@ class ParentManufacturingOrder(Document):
 
 
 def get_item_type(item_code):
-	if item_code in _VARIANT_TO_ITEM_TYPE:
-		return _VARIANT_TO_ITEM_TYPE[item_code]
 	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
 	return _VARIANT_TO_ITEM_TYPE.get(variant_of, "other_item")
 
@@ -757,7 +747,7 @@ def create_manufacturing_work_order(self):
 
 	BOMMetalDetail = frappe.qb.DocType("BOM Metal Detail")
 	BOMFindingDetail = frappe.qb.DocType("BOM Finding Detail")
-	# Item = frappe.qb.DocType("Item")
+	Item = frappe.qb.DocType("Item")
 
 	metal_detail_query = (
 		frappe.qb.from_(BOMMetalDetail)
@@ -771,60 +761,64 @@ def create_manufacturing_work_order(self):
 		.where(BOMMetalDetail.parent == self.custom_tracking_bom)
 	)
 
-	metal_details = metal_detail_query.run(as_dict=True)
-
-	finding_details = (
+	finding_detail_query = (
 		frappe.qb.from_(BOMFindingDetail)
-		.select("*")
-		.where(BOMFindingDetail.parent == self.custom_tracking_bom)
-	).run(as_dict=True)
+		.join(Item)
+		.on(Item.name == BOMFindingDetail.item_variant)
+		.select(
+			BOMFindingDetail.metal_touch,
+			BOMFindingDetail.metal_type,
+			BOMFindingDetail.metal_purity,
+			BOMFindingDetail.metal_colour,
+			BOMFindingDetail.parent,
+		)
+		.where(
+			(BOMFindingDetail.parent == self.custom_tracking_bom)
+			& (Item.custom_ignore_work_order == 0)
+		)
+	)
 
-	# all_metal_colour_rows is used only for multicolour grouping; it
-	# starts with the real metal rows and will also receive non-Chains
-	# finding rows.  metal_details itself stays untouched so that only
-	# actual BOM Metal Detail rows create metal MWOs.
-	all_metal_colour_rows = list(metal_details)
+	finding_base = (
+		frappe.qb.from_(BOMFindingDetail)
+		.join(Item)
+		.on(Item.name == BOMFindingDetail.item_variant)
+		.select(
+			BOMFindingDetail.name,
+			BOMFindingDetail.metal_touch,
+			BOMFindingDetail.metal_type,
+			BOMFindingDetail.metal_purity,
+			BOMFindingDetail.metal_colour,
+			BOMFindingDetail.parent,
+			BOMFindingDetail.parentfield,
+			BOMFindingDetail.item_variant,
+			BOMFindingDetail.finding_category,
+		)
+		.where(
+			(BOMFindingDetail.parent == self.custom_tracking_bom)
+			& (Item.custom_ignore_work_order == 0)
+			& (BOMFindingDetail.finding_category == "Chains")
+		)
+	).run(as_dict=1)
+
+	not_to_include = []
 	finding_data = []
-	for row in finding_details:
-		item_code = row.get("item_variant") or _resolve_existing_variant_item_code(
-			row, "BOM Finding Detail", self.diamond_grade
+	for row in finding_base:
+		not_to_include.append(row.name)
+		if row.get("parentfield") == "finding_detail":
+			finding_data.append(row)
+
+	if not_to_include:
+		finding_detail_query = finding_detail_query.where(
+			BOMFindingDetail.name.notin(not_to_include)
 		)
 
-		template_item = row.get("item") or row.get("item_code")
-		if not template_item:
-			template_item = (
-				frappe.db.get_value("Item", item_code, "variant_of") or item_code
-			)
+	metal_details = (metal_detail_query + finding_detail_query).run(as_dict=True)
 
-		ignore_wo = frappe.db.get_value(
-			"Item", template_item, "custom_ignore_work_order"
-		)
-		if ignore_wo:
-			continue
-
-		if row.get("finding_category") == "Chains":
-			row["item_variant"] = item_code
-			if row.get("parentfield") == "finding_detail":
-				finding_data.append(row)
-		else:
-			# Non-Chains finding rows contribute to multicolour detection
-			# but must NOT create their own metal MWOs.
-			all_metal_colour_rows.append(
-				{
-					"metal_touch": row.get("metal_touch"),
-					"metal_type": row.get("metal_type"),
-					"metal_purity": row.get("metal_purity"),
-					"metal_colour": row.get("metal_colour"),
-					"parent": row.get("parent"),
-				}
-			)
-
-	# Build multicolour grouping from metal rows + non-Chains finding rows.
 	grouped_data = {}
 	variant_of = frappe.get_cached_value("Item", self.item_code, "variant_of")
-	for item in all_metal_colour_rows:
+	for item in metal_details:
 		metal_purity = self.metal_purity or item["metal_purity"]
-		metal_colour = item["metal_colour"] or self.metal_colour
+		metal_colour = self.metal_colour or item["metal_colour"]
 		if metal_purity not in grouped_data:
 			grouped_data[metal_purity] = {metal_colour}
 		else:
@@ -872,7 +866,7 @@ def create_manufacturing_work_order(self):
 			doc.metal_touch = self.metal_touch or row.get("metal_touch")
 			doc.metal_type = self.metal_type or row.get("metal_type")
 			doc.metal_purity = self.metal_purity or row.get("metal_purity")
-			doc.metal_colour = row.get("metal_colour") or self.metal_colour
+			doc.metal_colour = self.metal_colour or row.get("metal_colour")
 			doc.auto_created = 1
 			doc.save()
 
