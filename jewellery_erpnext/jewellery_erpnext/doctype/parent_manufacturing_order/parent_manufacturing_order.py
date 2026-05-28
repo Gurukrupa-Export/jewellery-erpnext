@@ -713,6 +713,7 @@ def make_manufacturing_order(
 		doc.is_finding_mwo = True
 		doc.item_code = row.item_code
 		doc.master_bom = so_det.get("master_bom")
+		doc.custom_tracking_bom = so_det.get("custom_tracking_bom")
 		doc.metal_type = so_det.get("metal_type")
 		doc.metal_touch = so_det.get("metal_touch")
 		doc.metal_colour = so_det.get("metal_colour")
@@ -773,11 +774,12 @@ def create_manufacturing_work_order(self):
 			BOMFindingDetail.parent,
 			BOMFindingDetail.parentfield,
 			BOMFindingDetail.item_variant,
+			BOMFindingDetail.finding_category,
 		)
 		.where(
 			(BOMFindingDetail.parent == self.custom_tracking_bom)
 			& (Item.custom_ignore_work_order == 0)
-			& (Item.custom_is_manufacturing_item == 1)
+			& (BOMFindingDetail.finding_category == "Chains")
 		)
 	).run(as_dict=1)
 

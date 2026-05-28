@@ -42,7 +42,7 @@ class ManufacturingWorkOrder(Document):
 			self.name = make_autoname("MWO-.abbr.-.item_code.-.seq.-.##", doc=self)
 		else:
 			color = self.metal_colour.split("+")
-			self.color = "".join([word[0] for word in color if word])		
+			self.color = "".join([word[0] for word in color if word])
 
 	def after_insert(self):
 		if self.custom_tracking_bom:
@@ -53,7 +53,6 @@ class ManufacturingWorkOrder(Document):
 			)
 
 	def on_submit(self):
-		self.sync_mwo_weights()
 		if self.for_fg:
 			self.validate_other_work_orders()
 
@@ -83,12 +82,85 @@ class ManufacturingWorkOrder(Document):
 		# self.start_datetime = now()
 		self.db_set("start_datetime", now())
 		self.db_set("status", "Not Started")
-	
+
 	def sync_mwo_weights(self):
-		
-		is_fg = frappe.db.get_value("Manufacturing Work Order", self.name, "for_fg")
-		if not is_fg:
-			return
+		sibling_mwos = frappe.db.get_all(
+			"Manufacturing Work Order",
+			{
+				"manufacturing_order": self.manufacturing_order,
+				"name": ["!=", self.name],
+				"for_fg": 0,
+				"is_finding_mwo": 0,
+				"docstatus": 1,
+			},
+			pluck="name",
+		)
+
+		if sibling_mwos:
+			# Pull the last MOP name per sibling MWO
+			mop_names = frappe.db.get_all(
+				"Manufacturing Operation",
+				{"manufacturing_work_order": ["in", sibling_mwos]},
+				["name", "manufacturing_work_order"],
+				order_by="creation desc",
+			)
+			# Get one MOP per sibling MWO (the latest)
+			seen_mwos = set()
+			latest_mop_names = []
+			for mop in mop_names:
+				if mop.manufacturing_work_order not in seen_mwos:
+					latest_mop_names.append(mop.name)
+					seen_mwos.add(mop.manufacturing_work_order)
+
+			if latest_mop_names:
+				agg = frappe.db.sql(
+					"""
+					SELECT
+						SUM(gross_wt) AS gross_wt,
+						SUM(net_wt) AS net_wt,
+						SUM(finding_wt) AS finding_wt,
+						SUM(diamond_wt) AS diamond_wt,
+						SUM(gemstone_wt) AS gemstone_wt,
+						SUM(other_wt) AS other_wt,
+						SUM(received_gross_wt) AS received_gross_wt,
+						SUM(received_net_wt) AS received_net_wt,
+						SUM(loss_wt) AS loss_wt,
+						SUM(diamond_wt_in_gram) AS diamond_wt_in_gram,
+						SUM(diamond_pcs) AS diamond_pcs,
+						SUM(gemstone_pcs) AS gemstone_pcs
+					FROM `tabManufacturing Operation`
+					WHERE name IN %s
+					""",
+					(tuple(latest_mop_names),),
+					as_dict=True,
+				)
+				if agg:
+					agg = agg[0]
+					# Only auto-fill fields that are not already set by the user
+					if not self.gross_wt:
+						self.gross_wt = flt(agg.get("gross_wt"))
+					if not self.net_wt:
+						self.net_wt = flt(agg.get("net_wt"))
+					if not self.finding_wt:
+						self.finding_wt = flt(agg.get("finding_wt"))
+					if not self.diamond_wt:
+						self.diamond_wt = flt(agg.get("diamond_wt"))
+					if not self.gemstone_wt:
+						self.gemstone_wt = flt(agg.get("gemstone_wt"))
+					if not self.other_wt:
+						self.other_wt = flt(agg.get("other_wt"))
+					if not self.received_gross_wt:
+						self.received_gross_wt = flt(agg.get("received_gross_wt"))
+					if not self.received_net_wt:
+						self.received_net_wt = flt(agg.get("received_net_wt"))
+					if not self.loss_wt:
+						self.loss_wt = flt(agg.get("loss_wt"))
+					if not self.diamond_wt_in_gram:
+						self.diamond_wt_in_gram = flt(agg.get("diamond_wt_in_gram"))
+					if not self.diamond_pcs:
+						self.diamond_pcs = flt(agg.get("diamond_pcs"))
+					if not self.gemstone_pcs:
+						self.gemstone_pcs = flt(agg.get("gemstone_pcs"))
 
 		frappe.db.set_value(
 			"Manufacturing Work Order",
@@ -109,8 +181,6 @@ class ManufacturingWorkOrder(Document):
 			},
 			update_modified=False,
 		)
-
-
 
 	def validate_other_work_orders(self):
 		# last_department = frappe.db.get_value(

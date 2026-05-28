@@ -247,7 +247,8 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 						] and st_row.batch_no == row.get("batch_no"):
 							st_row.s_warehouse = row["s_warehouse"]
 							st_row.db_set(
-								"s_warehouse", row["s_warehouse"], update_modified=False
+								"s_warehouse",
+								row["s_warehouse"],
 							)
 					frappe.logger().info(
 						f"SNC {self.name}: PC Receive — "
@@ -260,7 +261,11 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 					# ── PRIORITY 2: SRE cancellation ──
 					# No PC exists — resolve via Stock Reservation Entries
 					# First, find all MWOs that consumed this item/batch via MOP Log
-					mwo_prefix = self.manufacturing_work_order.rsplit("-", 1)[0] + "%"
+					mwo_prefix = (
+						self.manufacturing_work_order.rsplit("-", 1)[0] + "%"
+						if self.manufacturing_work_order
+						else "%"
+					)
 					consumed_mwos = frappe.db.sql(
 						"""
 						SELECT DISTINCT manufacturing_work_order
@@ -317,7 +322,6 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 								st_row.db_set(
 									"s_warehouse",
 									row["s_warehouse"],
-									update_modified=False,
 								)
 
 				loss_qty = sre_reserved_qty_total - flt(row["qty"])
@@ -409,7 +413,13 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		se_name = create_manufacturing_entry(self, row_data, operation_data)
 
 		self.fg_serial_no = se_name
-		self.db_set("fg_serial_no", se_name, update_modified=False)
+		frappe.db.set_value(
+			self.doctype,
+			self.name,
+			"fg_serial_no",
+			se_name,
+			update_modified=False,
+		)
 		create_finished_goods_bom(self, se_name, operation_data)
 		submit_tracking_bom_for_finished_goods(self)
 

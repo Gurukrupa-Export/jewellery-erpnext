@@ -11,8 +11,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 	get_item_loss_item,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
+	create_material_receipt_for_certification,
 	create_po,
-	create_repack_entry,
+	process_fire_assy_xrf_submit,
 	update_bom_details,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
@@ -140,10 +141,13 @@ class ProductCertification(Document):
 			row.amount = amt
 
 	def on_submit(self):
-		create_stock_entry(self)
+		if self.service_type in ["Fire Assy Service", "XRF Services"]:
+			process_fire_assy_xrf_submit(self, create_stock_entry)
+		else:
+			create_stock_entry(self)
+			create_po(self)
+			update_bom_details(self)
 		self.update_huid()
-		create_po(self)
-		update_bom_details(self)
 
 	def update_huid(self):
 		for row in self.exploded_product_details:
@@ -814,7 +818,7 @@ def create_stock_entry(doc):
 		"Fire Assy Service",
 		"XRF Services",
 	]:
-		create_repack_entry(doc)
+		create_material_receipt_for_certification(doc)
 
 
 def get_stock_entry_type(txn_type, purpose):
