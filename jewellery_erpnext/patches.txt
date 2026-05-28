@@ -9,3 +9,4 @@ jewellery_erpnext.patches.add_manufacturing_plan_indexes
 jewellery_erpnext.patches.add_stock_entry_type_repack
 jewellery_erpnext.patches.add_make_receive_entry_indexes
 jewellery_erpnext.patches.add_jewellery_perf_indexes
+jewellery_erpnext.patches.default_gemstone_item
