@@ -10,7 +10,8 @@
   "posting_date",
   "counter",
   "company",
-  "company_abbr"
+  "company_abbr",
+  "manufacturing_work_order"
  ],
  "fields": [
   {
@@ -38,11 +39,18 @@
    "fieldname": "company_abbr",
    "fieldtype": "Data",
    "label": "Company Abbr"
+  },
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-05-23 17:28:21.338051",
+ "modified": "2026-05-28 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Tree Number",
