@@ -9,7 +9,6 @@ from gke_customization.gke_order_forms.doctype.order.order import make_quotation
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import quotation as quotation_module
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
-	create_new_bom,
 	generate_bom,
 	get_gold_rate,
 	update_status,
@@ -18,7 +17,6 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 
 
 class TestQuotation(FrappeTestCase):
-	@classmethod
 	def setUp(self):
 		customer_payment_terms()
 		return super().setUp()
@@ -191,12 +189,12 @@ class TestQuotation(FrappeTestCase):
 			self.assertEqual(enq_kwargs.get("event"), "creating BOM for Quotation")
 
 	def test_cancel_bom_deactivates_and_clears(self):
-		# Build a quotation-like object with one item having a BOM
-		item = SimpleNamespace(quotation_bom="BOM-0001")
+		# Build a quotation-like object with one item having a Tracking BOM
+		item = SimpleNamespace(custom_tracking_bom="TBOM-0001")
 		q = SimpleNamespace(items=[item])
 
-		# Mock get_doc to return a fake BOM doc with save()
-		class FakeBOM:
+		# Mock get_doc to return a fake Tracking BOM doc with save()
+		class FakeTrackingBOM:
 			def __init__(self):
 				self.is_active = 1
 
@@ -205,13 +203,13 @@ class TestQuotation(FrappeTestCase):
 
 		with patch(
 			"jewellery_erpnext.jewellery_erpnext.doc_events.quotation.frappe.get_doc",
-			return_value=FakeBOM(),
+			return_value=FakeTrackingBOM(),
 		) as gd:
 			quotation_module.cancel_bom(q)
-			# BOM should be deactivated and cleared from item
-			self.assertIsNone(item.quotation_bom)
+			# Tracking BOM should be deactivated and cleared from item
+			self.assertIsNone(item.custom_tracking_bom)
 			# Ensure called with correct doctype and name
-			gd.assert_called_with("BOM", "BOM-0001")
+			gd.assert_called_with("Tracking Bom", "TBOM-0001")
 
 	def test_update_bom_detail_calls_update_totals_and_returns_message(self):
 		# Mock all database and document interactions used inside update_bom_detail path
@@ -294,6 +292,8 @@ class TestQuotation(FrappeTestCase):
 
 
 def customer_payment_terms():
+	if not frappe.db.exists("Customer", "Test_Customer_External"):
+		return
 	if not frappe.db.exists("Customer Payment Terms", "Test_Customer_External"):
 		customer_payment_term = frappe.new_doc("Customer Payment Terms")
 		customer_payment_term.customer = "Test_Customer_External"
@@ -309,5 +309,6 @@ def customer_payment_terms():
 			{"item_type": "22KT Gold Jewellery Making Charges", "payment_term": 2},
 			{"item_type": "22KT Gold Chain Making Charges", "payment_term": 2},
 		]
-		customer_payment_term.append("customer_payment_details", row)
+		for r in row:
+			customer_payment_term.append("customer_payment_details", r)
 		customer_payment_term.save()

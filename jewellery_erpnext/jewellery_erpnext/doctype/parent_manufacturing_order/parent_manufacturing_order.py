@@ -188,6 +188,71 @@ def _validate_non_template_item(item_code, bom_table):
 		)
 
 
+def _validate_item_exists(item_code, bom_table, row):
+	"""Raise a clear error when a resolved item code does not exist in Item master."""
+	if not frappe.db.exists("Item", item_code):
+		frappe.throw(
+			_(
+				"Item {0} does not exist in the system. Found in {1} (Row {2}). "
+				"Please verify the BOM configuration."
+			).format(
+				frappe.bold(item_code),
+				bom_table,
+				row.get("idx") or row.get("name") or "?",
+			),
+			title=_("Item Not Found"),
+		)
+
+
+def _validate_metal_item_attributes(item_code, row, bom_table):
+	"""Verify that a directly-specified metal item's touch and purity match the BOM row.
+
+	Only called when item was given directly (no template → variant resolution),
+	i.e. row["item"] is absent. Template-resolved items already match by construction.
+	"""
+	item_attrs = {
+		frappe.scrub(r["attribute"]): r["attribute_value"]
+		for r in frappe.db.get_all(
+			"Item Variant Attribute",
+			{"parent": item_code},
+			["attribute", "attribute_value"],
+		)
+	}
+	row_idx = row.get("idx") or row.get("name") or "?"
+
+	row_touch = row.get("metal_touch")
+	item_touch = item_attrs.get("metal_touch")
+	if row_touch and item_touch and row_touch != item_touch:
+		frappe.throw(
+			_(
+				"Metal Touch mismatch in {0} Row {1}: BOM specifies {2} but item {3} has {4}."
+			).format(
+				bom_table,
+				row_idx,
+				frappe.bold(row_touch),
+				frappe.bold(item_code),
+				frappe.bold(item_touch),
+			),
+			title=_("Metal Touch Mismatch"),
+		)
+
+	row_purity = row.get("metal_purity")
+	item_purity = item_attrs.get("metal_purity")
+	if row_purity and item_purity and row_purity != item_purity:
+		frappe.throw(
+			_(
+				"Metal Purity mismatch in {0} Row {1}: BOM specifies {2} but item {3} has {4}."
+			).format(
+				bom_table,
+				row_idx,
+				frappe.bold(row_purity),
+				frappe.bold(item_code),
+				frappe.bold(item_purity),
+			),
+			title=_("Metal Purity Mismatch"),
+		)
+
+
 class ParentManufacturingOrder(Document):
 	def before_save(self):
 		if self.is_new() or self.flags.ignore_validations:
@@ -429,6 +494,12 @@ class ParentManufacturingOrder(Document):
 						_("{0} is missing in {1}").format(field_name, bom_table)
 					)
 				_validate_non_template_item(item_code, bom_table)
+				_validate_item_exists(item_code, bom_table, row)
+				if bom_table in (
+					"BOM Metal Detail",
+					"BOM Finding Detail",
+				) and not row.get("item"):
+					_validate_metal_item_attributes(item_code, row, bom_table)
 				item_type = get_item_type(item_code)
 				variant_key = _ITEM_TYPE_PREFIX[item_type]
 				if variant_key not in warehouse_dict:

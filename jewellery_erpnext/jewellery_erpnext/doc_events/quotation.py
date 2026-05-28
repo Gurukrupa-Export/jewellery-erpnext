@@ -57,7 +57,13 @@ def create_bom_scientifically(self):
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
 	self.flags.can_be_saved = True
-	frappe.enqueue(create_bom_scientifically, self=self, queue="long", timeout=10000)
+	frappe.enqueue(
+		create_bom_scientifically,
+		self=self,
+		queue="long",
+		timeout=10000,
+		event="creating BOM for Quotation",
+	)
 
 
 def onload(self, method):
@@ -227,16 +233,16 @@ def new_finding_item(parent_doc, child_doctype, child_docname, finding_item):
 def get_gold_rate(party_name=None, currency=None):
 	if not party_name:
 		return
-	# cust_terr = frappe.db.get_value("Customer", party_name, "territory")
-	# gold_rate_with_gst = frappe.db.get_value(
-	# 	"Gold Price List",
-	# 	{"territory": cust_terr, "currency": currency},
-	# 	"rate",
-	# 	order_by="effective_from desc",
-	# )
-	# if not gold_rate_with_gst:
-	# 	frappe.msgprint(f"Gold Price List Not Found For {cust_terr}, {currency}")
-	# return gold_rate_with_gst
+	cust_terr = frappe.db.get_value("Customer", party_name, "territory")
+	gold_rate_with_gst = frappe.db.get_value(
+		"Gold Price List",
+		{"territory": cust_terr, "currency": currency},
+		"rate",
+		order_by="effective_from desc",
+	)
+	if not gold_rate_with_gst:
+		frappe.msgprint(f"Gold Price List Not Found For {cust_terr}, {currency}")
+	return gold_rate_with_gst
 
 
 def validate_invoice_item(self):
