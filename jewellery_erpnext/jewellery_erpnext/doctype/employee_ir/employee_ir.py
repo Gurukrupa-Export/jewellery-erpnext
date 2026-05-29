@@ -411,30 +411,8 @@ class EmployeeIR(Document):
 				# employee/subcontractor warehouse into the MOP warehouse.
 				# The SE bridge then writes the positive MOP Log row that
 				# create_mop_log_for_employee_ir_receive will see.
-				stock_entry_name = inject_extra_metal_for_eir_receive(self, row)
-
-				# Combined-loss receive: create_mop_log_for_employee_ir_receive
-				# now subtracts employee_loss_details + manually_book_loss_details
-				# directly from each receive MOP Log row. There is no longer a
-				# separate Loss Attribution writer pass — the loss audit
-				# metadata (loss_weight, loss_source_row, loss_type) lives on
-				# the combined receive row itself, and MOPLog.validate updates
-				# Manufacturing Operation buckets exactly once.
-				create_mop_log_for_employee_ir_receive(
-					self, row, actor_wh, department_wh, stock_entry_name
-				)
-
-				# update_new_mop_wtg now does both jobs in one pass:
-				# clones the previous MOP's flow_index=0 baseline rows AND
-				# subtracts loss in-place per (item, batch). One MOP Log
-				# row per item/batch on the new operation. Source MOP is
-				# left unchanged.
-				update_new_mop_wtg(
-					new_operation,
-					employee_ir_doc=self,
-					employee_ir_operation_row=row,
-					from_warehouse=actor_wh,
-					to_warehouse=department_wh,
+				inject_extra_metal_for_eir_receive(
+					self, row, actor_wh, department_wh, new_operation
 				)
 			else:
 				for sre in frappe.db.get_all(
