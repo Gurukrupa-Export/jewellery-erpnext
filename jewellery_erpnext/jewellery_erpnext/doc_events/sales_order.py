@@ -2502,6 +2502,7 @@ def _process_metal_detail(self, doc, ctx, cctx):
             {"parent": self.customer, "metal_type": s.metal_type, "metal_touch": s.metal_touch},
             "metal_purity",
         )
+        s.customer_metal_purity=customer_metal_purity
         calculated_gold_rate = (
             float(customer_metal_purity) * self.gold_rate_with_gst
         ) / (100 + int(ctx.gold_gst_rate))
@@ -3179,7 +3180,7 @@ def create_new_bom1(self):
         frappe.enqueue(
             process_bom_chunk,
             queue="long",
-            timeout=600,
+            timeout=60,
 			enqueue_after_commit=True, 
             doctype=self.doctype,
             docname=self.name,
