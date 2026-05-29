@@ -57,6 +57,12 @@ from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle impor
 from frappe import _
 from frappe.utils import cint, flt, nowtime, today
 
+from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+	update_new_mop_wtg,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	create_mop_log_for_employee_ir_receive,
+)
 from jewellery_erpnext.utils import get_item_from_attribute
 
 REPACK_STOCK_ENTRY_TYPE = "Repack"
@@ -383,7 +389,9 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 	return transfer_segments + raw_purity
 
 
-def inject_extra_metal_for_eir_receive(eir, row):
+def inject_extra_metal_for_eir_receive(
+	eir, row, actor_wh, department_wh, new_operation
+):
 	"""Per Employee IR Operation row gain, build + submit Stock Entries that
 	push the extra returned metal into the MOP via the MOP Log bridge.
 
@@ -417,7 +425,9 @@ def inject_extra_metal_for_eir_receive(eir, row):
 					row.manufacturing_work_order
 				)
 			)
-		_schedule_main_slip_injection_after_commit(eir.name, row.name)
+		_schedule_main_slip_injection_after_commit(
+			eir.name, row.name, actor_wh, department_wh, new_operation
+		)
 		return []
 
 	segments = _resolve_fallback_inject_segments(
@@ -444,11 +454,15 @@ def inject_extra_metal_for_eir_receive(eir, row):
 		transfer_segs, purity_segs, source_wh
 	)
 
-	_schedule_extra_metal_injection_after_commit(eir.name, row.name)
+	_schedule_extra_metal_injection_after_commit(
+		eir.name, row.name, actor_wh, department_wh, new_operation
+	)
 	return []
 
 
-def _schedule_extra_metal_injection_after_commit(eir_name, row_name):
+def _schedule_extra_metal_injection_after_commit(
+	eir_name, row_name, actor_wh, department_wh, new_operation
+):
 	"""Enqueue fallback SE creation in a fresh transaction after EIR commits.
 
 	``enqueue_after_commit=True`` — job fires only on successful EIR commit so
@@ -464,10 +478,15 @@ def _schedule_extra_metal_injection_after_commit(eir_name, row_name):
 		job_name=f"eir-extra-metal-injection:{eir_name}:{row_name}",
 		eir_name=eir_name,
 		row_name=row_name,
+		actor_wh=actor_wh,
+		department_wh=department_wh,
+		new_operation=new_operation,
 	)
 
 
-def _schedule_main_slip_injection_after_commit(eir_name, row_name):
+def _schedule_main_slip_injection_after_commit(
+	eir_name, row_name, actor_wh, department_wh, new_operation
+):
 	"""Enqueue main-slip SE creation in a fresh transaction after EIR commits."""
 	frappe.enqueue(
 		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
@@ -478,10 +497,15 @@ def _schedule_main_slip_injection_after_commit(eir_name, row_name):
 		job_name=f"eir-main-slip-injection:{eir_name}:{row_name}",
 		eir_name=eir_name,
 		row_name=row_name,
+		actor_wh=actor_wh,
+		department_wh=department_wh,
+		new_operation=new_operation,
 	)
 
 
-def process_main_slip_injection_job(eir_name, row_name, _retry=0, _sync_retry=0):
+def process_main_slip_injection_job(
+	eir_name, row_name, actor_wh, department_wh, new_operation, _retry=0, _sync_retry=0
+):
 	"""Background job: main-slip path SE creation with idempotency and retry.
 
 	SE ``onsubmit`` hook handles ``sync_mop_log_for_stock_entry`` and
@@ -507,6 +531,9 @@ def process_main_slip_injection_job(eir_name, row_name, _retry=0, _sync_retry=0)
 				job_name=f"eir-main-slip-injection:{eir_name}:{row_name}",
 				eir_name=eir_name,
 				row_name=row_name,
+				actor_wh=actor_wh,
+				department_wh=department_wh,
+				new_operation=new_operation,
 				_retry=_retry,
 				_sync_retry=_sync_retry + 1,
 			)
@@ -556,6 +583,9 @@ def process_main_slip_injection_job(eir_name, row_name, _retry=0, _sync_retry=0)
 				job_name=f"eir-main-slip-injection:{eir_name}:{row_name}",
 				eir_name=eir_name,
 				row_name=row_name,
+				actor_wh=actor_wh,
+				department_wh=department_wh,
+				new_operation=new_operation,
 				_retry=_retry + 1,
 			)
 		else:
@@ -570,7 +600,9 @@ def process_main_slip_injection_job(eir_name, row_name, _retry=0, _sync_retry=0)
 	_verify_injection_outputs(eir, row, created)
 
 
-def process_extra_metal_injection_job(eir_name, row_name, _retry=0, _sync_retry=0):
+def process_extra_metal_injection_job(
+	eir_name, row_name, actor_wh, department_wh, new_operation, _retry=0, _sync_retry=0
+):
 	"""Background job: create and submit fallback injection Stock Entries.
 
 	Runs in its own transaction after EIR commit. Idempotent: checks existing
@@ -598,6 +630,9 @@ def process_extra_metal_injection_job(eir_name, row_name, _retry=0, _sync_retry=
 				job_name=f"eir-extra-metal-injection:{eir_name}:{row_name}",
 				eir_name=eir_name,
 				row_name=row_name,
+				actor_wh=actor_wh,
+				department_wh=department_wh,
+				new_operation=new_operation,
 				_retry=_retry,
 				_sync_retry=_sync_retry + 1,
 			)
@@ -637,7 +672,7 @@ def process_extra_metal_injection_job(eir_name, row_name, _retry=0, _sync_retry=
 	existing_types = _existing_injection_se_types(eir.name, row.name)
 	if _fallback_injection_fully_submitted(segments, existing_types):
 		return
-
+	created = None
 	try:
 		created = _inject_via_source_warehouse_fallback(
 			eir, row, segments, dept_wh, existing_types
@@ -652,6 +687,9 @@ def process_extra_metal_injection_job(eir_name, row_name, _retry=0, _sync_retry=
 				job_name=f"eir-extra-metal-injection:{eir_name}:{row_name}",
 				eir_name=eir_name,
 				row_name=row_name,
+				actor_wh=actor_wh,
+				department_wh=department_wh,
+				new_operation=new_operation,
 				_retry=_retry + 1,
 			)
 		else:
@@ -663,6 +701,34 @@ def process_extra_metal_injection_job(eir_name, row_name, _retry=0, _sync_retry=
 				),
 			)
 		return
+
+	# Resolve source warehouse (employee/subcontractor)
+
+	if not created:
+		frappe.log_error(
+			title=f"EIR fallback injection: no SE created ({eir_name})",
+			message=(
+				f"Employee IR {eir_name} row {row_name}: fallback injection completed "
+				"without creating any Stock Entry. Check source warehouse bin stock, "
+				"segment resolution logic, and FIFO batch availability."
+			),
+		)
+		return
+	create_mop_log_for_employee_ir_receive(eir, row, actor_wh, department_wh, created)
+
+	# update_new_mop_wtg now does both jobs in one pass:
+	# clones the previous MOP's flow_index=0 baseline rows AND
+	# subtracts loss in-place per (item, batch). One MOP Log
+	# row per item/batch on the new operation. Source MOP is
+	# left unchanged.
+	update_new_mop_wtg(
+		new_operation,
+		employee_ir_doc=eir,
+		employee_ir_operation_row=row,
+		from_warehouse=actor_wh,
+		to_warehouse=department_wh,
+	)
+
 	_verify_injection_outputs(eir, row, created)
 
 
