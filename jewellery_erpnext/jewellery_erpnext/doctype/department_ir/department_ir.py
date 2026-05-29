@@ -96,12 +96,6 @@ class DepartmentIR(Document):
 				)
 
 	def before_submit(self):
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_settings import (
-			assert_sync_not_running,
-		)
-
-		assert_sync_not_running()
-
 		if not self.department_ir_operation:
 			frappe.throw("Add row in <b>Department IR Operations Table</b>")
 
@@ -474,7 +468,7 @@ class DepartmentIR(Document):
 					"Manufacturing Operation",
 					row.manufacturing_operation,
 					"status",
-					"WIP",
+					"In Transit",
 				)
 			else:
 				values["complete_time"] = dt_string
@@ -793,7 +787,6 @@ def fetch_and_update(doc, row, manufacturing_operation):
 def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc = frappe.copy_doc(frappe.get_doc("Manufacturing Operation", mop))
 	new_mop_doc.name = None
-	new_mop_doc.status = "Not Started"
 	new_mop_doc.department_issue_id = ir_name
 	new_mop_doc.department_ir_status = "In-Transit"
 	new_mop_doc.department_receive_id = None

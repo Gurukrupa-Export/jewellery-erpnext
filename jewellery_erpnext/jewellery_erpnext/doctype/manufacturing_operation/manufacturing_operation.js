@@ -506,6 +506,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 										label: __("PCS Item"),
 										fieldtype: "Check",
 										fieldname: "is_pcs_item",
+										hidden: 1,
+										read_only: 1,
 									},
 									{
 										label: __("MOP Log Reference"),
