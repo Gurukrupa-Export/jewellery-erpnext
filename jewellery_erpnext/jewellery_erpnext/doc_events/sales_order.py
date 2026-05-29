@@ -2838,7 +2838,7 @@ def _process_diamond_detail(self, doc, ctx,row, cctx):
     for d in doc.diamond_detail:
 		
         d.weight_per_pcs = d.quantity / d.pcs
-        d.quality=row.diammond_quality
+        d.quality=row.diamond_quality
 		
         if 0.001 < d.weight_per_pcs > 0.005:
             wstr = str(d.weight_per_pcs)
