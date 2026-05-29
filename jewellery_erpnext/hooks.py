@@ -138,7 +138,7 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.before_validate",
 		],
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.on_submit",
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate",
+        "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate",
 	},
 	"Serial No": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table"
@@ -195,11 +195,8 @@ override_doctype_class = {
 
 
 scheduler_events = {
-	"hourly": [
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.maybe_sync_mop_logs"
-	],
-	"daily": [
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.delete_cancelled_stock_reservations"
+	"daily_long": [
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.sync_mop_logs"
 	],
 }
 

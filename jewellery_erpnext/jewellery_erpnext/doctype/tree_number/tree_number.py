@@ -2,9 +2,9 @@
 # For license information, please see license.txt
 
 import frappe
-from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint
+from frappe import _
 
 
 class TreeNumber(Document):

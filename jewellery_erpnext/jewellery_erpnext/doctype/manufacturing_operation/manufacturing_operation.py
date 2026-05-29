@@ -4386,7 +4386,7 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 		# PCS is meaningless and is force-zeroed regardless of client value.
 		# For D/G items, the same context above carries the MOP-side PCS cap.
 		first_char = (sre.item_code or "")[0] if sre.item_code else ""
-		is_pcs_item = 1 if first_char in ("D", "G") else 0
+		is_pcs_item = first_char in ("D", "G")
 		if not is_pcs_item:
 			req_pcs = 0
 		else:
