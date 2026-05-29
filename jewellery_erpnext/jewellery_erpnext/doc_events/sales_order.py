@@ -3093,8 +3093,8 @@ def _process_single_row(self, row, ctx):
         # row.bom = row.custom_tracking_bom
         frappe.db.set_value("Tracking Bom", row.custom_tracking_bom, {
             "bom_type":                "Sales Order",
-            "custom_creation_doctype": "Sales Order",
-            "custom_creation_docname": self.name,
+            "reference_doctype": "Sales Order",
+            "reference_docname": self.name,
             "gold_rate_with_gst":      self.gold_rate_with_gst,
         })
         doc = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
