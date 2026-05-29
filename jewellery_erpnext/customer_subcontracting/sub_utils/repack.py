@@ -129,7 +129,6 @@ def create_company_gold_repack_automation(doc):
 				"warehouse": d.t_warehouse,
 			}
 		)
-
 	if not incoming_batches:
 		return
 
@@ -168,7 +167,7 @@ def process_repack_settlement(
 		if not is_gold_item(log.batch_item):
 			continue
 
-		required_pure_qty = flt(log.balance_pure_qty, 6)
+		required_pure_qty = flt(log.balance_pure_qty, 3)
 
 		if required_pure_qty <= 0:
 			continue
@@ -202,16 +201,14 @@ def process_repack_settlement(
 				continue
 
 			available_pure_qty = flt(
-				incoming["remaining_qty"] * (source_purity / 100), 6
+				incoming["remaining_qty"] * (source_purity / 100), 3
 			)
 
 			if available_pure_qty <= 0:
 				continue
 
 			consume_pure_qty = min(required_pure_qty, available_pure_qty)
-
-			consume_qty = flt(consume_pure_qty / (source_purity / 100), 6)
-
+			consume_qty = flt(consume_pure_qty / (source_purity / 100), 3)
 			if consume_qty <= 0:
 				continue
 
@@ -231,9 +228,9 @@ def process_repack_settlement(
 				settlement_batch=source_batch,
 			)
 
-			incoming["remaining_qty"] = flt(incoming["remaining_qty"] - consume_qty, 6)
+			incoming["remaining_qty"] = flt(incoming["remaining_qty"] - consume_qty, 3)
 
-			required_pure_qty = flt(required_pure_qty - consume_pure_qty, 6)
+			required_pure_qty = flt(required_pure_qty - consume_pure_qty, 3)
 
 
 def create_gold_repack_entry(
@@ -242,6 +239,7 @@ def create_gold_repack_entry(
 	source_batch_doc = frappe.get_doc("Batch", source_batch)
 
 	target_batch_doc = frappe.get_doc("Batch", target_batch)
+	target_qty = qty
 
 	se = frappe.new_doc("Stock Entry")
 
@@ -273,7 +271,7 @@ def create_gold_repack_entry(
 			"item_code": target_batch_doc.item,
 			"batch_no": target_batch,
 			"t_warehouse": source_warehouse,
-			"qty": qty,
+			"qty": target_qty,
 			"customer": target_batch_doc.custom_customer,
 			"inventory_type": target_batch_doc.custom_inventory_type,
 			"is_finished_item": 1,
@@ -302,16 +300,13 @@ def update_settlement_log(
 	log.settled_by_repack = repack_entry
 
 	if is_gold:
-		log.settled_pure_qty = flt(log.settled_pure_qty + settled_pure_qty, 6)
-
-		log.balance_pure_qty = flt(log.pending_pure_qty - log.settled_pure_qty, 6)
-
+		log.settled_pure_qty = flt(log.settled_pure_qty + settled_pure_qty, 3)
+		log.balance_pure_qty = flt(log.pending_pure_qty - log.settled_pure_qty, 3)
 		balance_qty = log.balance_pure_qty
 
 	else:
-		log.settled_pure_qty = flt(log.settled_pure_qty + settled_pure_qty, 6)
-
-		balance_qty = flt(log.quantity - log.settled_pure_qty, 6)
+		log.settled_pure_qty = flt(log.settled_pure_qty + settled_pure_qty, 3)
+		balance_qty = flt(log.quantity - log.settled_pure_qty, 3)
 
 	if balance_qty <= 0:
 		log.settlement_status = "Settled"
@@ -325,7 +320,7 @@ def update_settlement_log(
 def get_purity(item_code):
 	item = frappe.get_doc("Item", item_code)
 
-	purity = 100
+	purity = 99.9
 
 	for attr in item.attributes:
 		if attr.attribute == "Metal Purity":
@@ -402,6 +397,7 @@ def process_pending_repack_for_mwo(doc_name):
 			"customer": customer,
 			"settlement_required": 1,
 			"settlement_status": ["!=", "Settled"],
+			"parent_manufacturing_order_name": doc.manufacturing_order,
 		},
 		fields=["*"],
 		order_by="creation asc",
@@ -425,7 +421,7 @@ def process_pending_repack_for_mwo(doc_name):
 	for log in pending_logs:
 		if not is_gold_item(log.batch_item):
 			continue
-		required_pure_qty = flt(log.balance_pure_qty, 6)
+		required_pure_qty = flt(log.balance_pure_qty, 3)
 
 		if required_pure_qty <= 0:
 			continue
@@ -434,26 +430,35 @@ def process_pending_repack_for_mwo(doc_name):
 
 		if not target_batch:
 			continue
+		target_item = frappe.db.get_value("Batch", target_batch, "item")
+		target_purity = get_purity(target_item)
+		gold_sources.sort(
+			key=lambda d: (
+				get_purity(d["item_code"]) != target_purity,
+				-flt(d["purity"]),
+			)
+		)
 
 		for source in gold_sources:
 			if required_pure_qty <= 0:
 				break
 
-			available_qty = flt(source["qty"], 6)
+			available_qty = flt(source["qty"], 3)
 
 			if available_qty <= 0:
 				continue
 
-			purity = flt(source["purity"], 6)
+			purity = flt(source["purity"], 3)
 
-			available_pure_qty = flt(available_qty * (purity / 100), 6)
+			available_pure_qty = flt(available_qty * (purity / 100), 3)
 
 			if available_pure_qty <= 0:
 				continue
 
 			consume_pure_qty = min(required_pure_qty, available_pure_qty)
 
-			consume_qty = flt(consume_pure_qty / (purity / 100), 6)
+			# consume_qty = flt(consume_pure_qty / (purity / 100), 3)
+			consume_qty = consume_pure_qty
 
 			repack_entry = create_gold_repack_entry(
 				source_batch=source["batch_no"],
@@ -471,9 +476,9 @@ def process_pending_repack_for_mwo(doc_name):
 				settlement_batch=source["batch_no"],
 			)
 
-			source["qty"] = flt(source["qty"] - consume_qty, 6)
+			source["qty"] = flt(source["qty"] - consume_qty, 3)
 
-			required_pure_qty = flt(required_pure_qty - consume_pure_qty, 6)
+			required_pure_qty = flt(required_pure_qty - consume_pure_qty, 3)
 
 		if required_pure_qty > 0:
 			pending_message.append(
@@ -677,7 +682,7 @@ def flatten_gold_sources(available_gold):
 			source_purity = get_purity(item_code)
 
 			for batch_data in batches:
-				qty = flt(batch_data["qty"], 6)
+				qty = flt(batch_data["qty"], 3)
 
 				if qty <= 0:
 					continue
