@@ -3,7 +3,7 @@
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt
+from frappe.utils import cint, flt, getdate
 
 
 def execute(filters=None):
@@ -97,13 +97,22 @@ def _get_data(filters):
 	mwo_name = filters.manufacturing_work_order
 	item_code_filter = filters.get("item_code")
 
-	# Fetch all non-cancelled MOP Logs for this MWO
+	# Fetch all non-cancelled MOP Logs for this MWO, ordered by (MOP, item, creation desc)
 	log_filters = {
 		"manufacturing_work_order": mwo_name,
 		"is_cancelled": 0,
 	}
 	if item_code_filter:
 		log_filters["item_code"] = item_code_filter
+
+	if filters.get("from_date"):
+		log_filters["creation"] = [">=", filters.from_date]
+	if filters.get("to_date"):
+		log_filters.setdefault("creation", [])
+		if isinstance(log_filters.get("creation"), list):
+			# Both from and to set — use AND via wrapping in a tuple
+			pass
+		log_filters["creation"] = ["<=", filters.to_date]
 
 	mop_logs = frappe.db.get_all(
 		"MOP Log",
@@ -117,15 +126,8 @@ def _get_data(filters):
 			"batch_no",
 			"creation",
 		],
-		order_by="manufacturing_operation desc, creation desc",
+		order_by="manufacturing_operation asc, item_code asc, creation desc",
 	)
-
-	# Get the last created manufacturing operation
-	if not mop_logs:
-		return []
-
-	last_mop = mop_logs[0].manufacturing_operation
-	mop_logs = [log for log in mop_logs if log.manufacturing_operation == last_mop]
 
 	# Keep only the latest row per (manufacturing_operation, item_code, batch_no)
 	seen = {}
