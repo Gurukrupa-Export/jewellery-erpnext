@@ -29,17 +29,5 @@ frappe.query_reports["Item Wise MWO MOP Log"] = {
 			options: "Item",
 			reqd: 0,
 		},
-		{
-			fieldname: "from_date",
-			label: __("From Date"),
-			fieldtype: "Date",
-			reqd: 0,
-		},
-		{
-			fieldname: "to_date",
-			label: __("To Date"),
-			fieldtype: "Date",
-			reqd: 0,
-		},
 	],
 };
