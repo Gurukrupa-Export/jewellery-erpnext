@@ -34,13 +34,6 @@ current_balance_fields = select_fields + [
 
 
 class MOPLog(Document):
-	def before_insert(self):
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_settings import (
-			assert_sync_not_running,
-		)
-
-		assert_sync_not_running()
-
 	def validate(self):
 		first_char = self.item_code[0] if self.item_code else None
 		qty_after_prefix = self.qty_after_transaction
@@ -120,7 +113,7 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 		return
 
 	first_char = item_code[0]
-	if doc is None or doc.doctype == "Employee IR":
+	if doc.doctype == "Employee IR":
 		if first_char not in ("D", "G"):
 			pcs = 0
 		else:
@@ -139,7 +132,7 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	batch_no = row.get("batch_no")
 	mwo = (
 		row.get("manufacturing_work_order")
-		if (doc is None or doc.doctype == "Employee IR")
+		if doc.doctype == "Employee IR"
 		else doc.get("manufacturing_work_order")
 	)
 	# mop_op = row.get("manufacturing_operation")
@@ -215,8 +208,8 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 
 	mop_log.from_warehouse = row.get("s_warehouse")
 	mop_log.to_warehouse = row.get("t_warehouse")
-	mop_log.voucher_type = doc.doctype if doc else None
-	mop_log.voucher_no = doc.name if doc else None
+	mop_log.voucher_type = doc.doctype
+	mop_log.voucher_no = doc.name
 	mop_log.manufacturing_work_order = mwo
 	mop_log.manufacturing_operation = row.get("manufacturing_operation")
 	mop_log.row_name = row.name
@@ -457,7 +450,7 @@ def _get_mop_logs_for_employee_ir_issue(row, department_receive_id):
 	)
 
 
-def create_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
+def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
 	department_receive_id = frappe.db.get_value(
 		"Manufacturing Operation", row.manufacturing_operation, "department_receive_id"
 	)
@@ -487,10 +480,6 @@ def create_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
 		mop_log.batch_no = log.batch_no
 		mop_log.flow_index = log.flow_index + 1
 		mop_log.save()
-
-
-# Backward-compatibility alias — old name had a typo ("creste" instead of "create")
-creste_mop_log_for_employee_ir = create_mop_log_for_employee_ir
 
 
 def resolve_employee_ir_issue_voucher_for_receive(doc, row):
@@ -705,31 +694,13 @@ def create_mop_log_for_employee_ir_receive(
 		or []
 	)
 
-	# Lineage guard: every (item, batch) in the current MOP balance must
-	# appear in the issue logs we fetched above. A missing component means
-	# the issue was not logged for that item, which would silently drop it.
-	current_balance = get_current_mop_balance_rows(row.manufacturing_operation)
-	if current_balance and mop_logs:
-		logged_keys = {(ml.item_code, ml.batch_no) for ml in mop_logs}
-		missing = [
-			cb
-			for cb in current_balance
-			if (cb.item_code, cb.batch_no) not in logged_keys
-		]
-		if missing:
-			missing_str = ", ".join(f"{cb.item_code}/{cb.batch_no}" for cb in missing)
-			frappe.log_error(
-				title=f"Employee IR Receive {doc.name}: lineage guard failure",
-				message=(
-					f"Current balance items missing from issue logs for MOP "
-					f"{row.manufacturing_operation}: {missing_str}"
-				),
-			)
-			frappe.throw(
-				f"Employee IR Receive {doc.name}: items {missing_str} are in the current MOP balance "
-				f"but have no corresponding issue logs for MOP {row.manufacturing_operation}. "
-				"Cannot create receive logs."
-			)
+	# Build the EIR-wide loss map once, then narrow to entries that match
+	# THIS receive row's MOP+MWO. Prior loss buckets get consumed exactly
+	# once across the source-log loop; if multiple source logs match the
+	# same (item, batch), only the first one absorbs the loss to prevent
+	# double-subtraction.
+	full_loss_map = get_employee_ir_loss_map(doc)
+	consumed_loss_keys = set()
 
 	# Build the EIR-wide loss map once, then narrow to entries that match
 	# THIS receive row's MOP+MWO. Prior loss buckets get consumed exactly

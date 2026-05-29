@@ -17,11 +17,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.depart
 	validate_and_update_gross_wt_from_mop,
 	validate_mwo,
 )
-from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.tagging_transfer import (
-	handle_department_transfer_issue,
-	handle_department_transfer_receive,
-	should_process_department_transfer,
-)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_department_ir,
 	get_last_mop_index,
@@ -98,22 +93,6 @@ class DepartmentIR(Document):
 	def before_submit(self):
 		if not self.department_ir_operation:
 			frappe.throw("Add row in <b>Department IR Operations Table</b>")
-
-		if self.type == "Issue":
-			for row in self.department_ir_operation:
-				if not row.manufacturing_work_order:
-					continue
-				mwo_docstatus = frappe.db.get_value(
-					"Manufacturing Work Order",
-					row.manufacturing_work_order,
-					"docstatus",
-				)
-				if cint(mwo_docstatus) != 1:
-					frappe.throw(
-						_(
-							"Row {0}: Manufacturing Work Order {1} must be submitted before issuing Department IR"
-						).format(row.idx, row.manufacturing_work_order)
-					)
 
 		if self.type == "Receive" and not self.receive_against:
 			frappe.throw("<b>Receive Against</b> is not set for this Receive entry")
@@ -251,8 +230,6 @@ class DepartmentIR(Document):
 				create_mop_log_for_department_ir(
 					self, row, department_wh, in_transit_wh, row.manufacturing_operation
 				)
-				if should_process_department_transfer(self, "Receive", department_wh):
-					handle_department_transfer_receive(self, row, department_wh)
 
 			frappe.db.set_value(
 				"Manufacturing Operation", row.manufacturing_operation, values
@@ -504,10 +481,6 @@ class DepartmentIR(Document):
 				create_mop_log_for_department_ir(
 					self, row, in_transit_wh, department_wh, new_operation.name
 				)
-				if should_process_department_transfer(self, "Issue", in_transit_wh):
-					handle_department_transfer_issue(
-						self, row, new_operation.name, in_transit_wh
-					)
 
 	@frappe.whitelist()
 	def get_summary_data(self):

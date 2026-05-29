@@ -38,36 +38,8 @@ from frappe import _
 from frappe.utils import cint, flt
 
 
-def _set_sync_lock(running):
-	"""Set or clear the sync_running flag in MOP Settings."""
-	frappe.db.set_value(
-		"MOP Settings",
-		"MOP Settings",
-		{
-			"sync_running": 1 if running else 0,
-			"sync_started_at": frappe.utils.now() if running else None,
-		},
-		update_modified=False,
-	)
-	frappe.db.commit()
-
-
 def sync_mop_logs():
 	"""Main entry point. Returns a summary dict for the UI."""
-	_set_sync_lock(True)
-	try:
-		return _run_sync()
-	finally:
-		_set_sync_lock(False)
-
-
-def _run_sync():
-	"""Inner sync loop — called under sync lock.
-
-	Sets frappe.flags.mop_sync_in_progress so MOP Log / SE guards know
-	they are running inside the sync and should not block themselves.
-	"""
-	frappe.flags.mop_sync_in_progress = True
 	unsynced_groups = _get_unsynced_mop_groups()
 	processed = 0
 	stock_entries = []
