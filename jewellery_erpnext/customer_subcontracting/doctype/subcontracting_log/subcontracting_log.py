@@ -8,6 +8,7 @@ from jewellery_erpnext.customer_subcontracting.sub_utils.gold_usage import (
 	classify_gold_usage,
 	find_pending_settlements,
 	get_inventory_data,
+	get_order_customer,
 	get_sales_order,
 	update_pending_settlement,
 )
@@ -72,7 +73,7 @@ def create_subcontracting_log(doc, method=None):
 			"Material Transfer to Department",
 			"Material Transfer (WORK ORDER)",
 		]:
-			customer = item.customer or getattr(doc, "_customer", None)
+			customer = get_order_customer(doc)
 			ownership = (
 				"Customer Gold"
 				if item.inventory_type == "Customer Goods"

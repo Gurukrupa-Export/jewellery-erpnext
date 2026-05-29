@@ -1,6 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
+ "autoname": "SUB-LOG-.#####",
  "creation": "2026-05-11 17:36:14.592242",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -175,13 +176,13 @@
   },
   {
    "fieldname": "settlement_status",
-   "fieldtype": "Select",
+   "fieldtype": "Data",
    "label": "Settlement Status",
    "options": "Pending\nPartially Settled\nSettled"
   },
   {
    "fieldname": "settlement_type",
-   "fieldtype": "Select",
+   "fieldtype": "Data",
    "label": "Settlement Type",
    "options": "Customer Needs Gold\nCompany Needs Gold"
   },
@@ -240,13 +241,13 @@
   },
   {
    "fieldname": "mwo_type",
-   "fieldtype": "Select",
+   "fieldtype": "Data",
    "label": "MWO Type",
    "options": "Subcontracting\nRegular"
   },
   {
    "fieldname": "usage_type",
-   "fieldtype": "Select",
+   "fieldtype": "Data",
    "label": "Usage Type",
    "options": "Same Customer Gold\nDifferent Customer Gold\nCompany Gold\nMixed Gold"
   },
@@ -277,10 +278,11 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-13 15:38:59.616743",
+ "modified": "2026-05-21 08:00:56.335339",
  "modified_by": "Administrator",
  "module": "Customer Subcontracting",
  "name": "Subcontracting Log",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

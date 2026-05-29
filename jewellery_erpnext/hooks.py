@@ -68,7 +68,7 @@ doc_events = {
 	"Sales Order": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.validate",
-		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
+		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_submit",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
@@ -109,11 +109,19 @@ doc_events = {
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
-			"jewellery_erpnext.customer_subcontracting.repack.create_repack_for_customer_gold",
 			"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.create_subcontracting_log",
+			"jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_gold_repack",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
+	},
+	"Manufacturing Work Order": {
+		# "before_submit": [
+		# 	"jewellery_erpnext.customer_subcontracting.sub_utils.repack.validate_category_waiting_days"
+		# ],
+		"on_submit": [
+			"jewellery_erpnext.customer_subcontracting.sub_utils.repack.validate_and_repack_on_mwo_submit"
+		]
 	},
 	"Job Card": {
 		"onload": "jewellery_erpnext.jewellery_erpnext.doc_events.job_card.onload",
