@@ -370,14 +370,15 @@ def create_material_receipt_for_certification(self):
 		main_item = main_item_by_slip.get(row.get("main_slip"))
 		is_loss_row = bool(loss_item and row.item_code == loss_item)
 
-		lookup_item_code = row.item_code
-		if main_item and lookup_item_code != main_item:
-			lookup_item_code = main_item
+		# Batch/serial must always match the exploded row item (never reuse main item batch).
+		item_defaults = issue_item_defaults.get(row.item_code, {})
+		main_defaults = issue_item_defaults.get(main_item, {}) if main_item else {}
 
-		item_defaults = issue_item_defaults.get(lookup_item_code, {})
 		s_wh = (
 			item_defaults.get("s_warehouse")
-			or issue_item_wh_map.get(lookup_item_code)
+			or main_defaults.get("s_warehouse")
+			or issue_item_wh_map.get(row.item_code)
+			or (issue_item_wh_map.get(main_item) if main_item else None)
 			or default_supplier_wh
 		)
 		t_wh = scrap_wh if is_loss_row else rm_wh
@@ -393,7 +394,7 @@ def create_material_receipt_for_certification(self):
 			sle_batch = frappe.db.get_value(
 				"Stock Ledger Entry",
 				{
-					"item_code": lookup_item_code,
+					"item_code": row.item_code,
 					"warehouse": s_wh,
 					"batch_no": ["is", "set"],
 					"is_cancelled": 0,
