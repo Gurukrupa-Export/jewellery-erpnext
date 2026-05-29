@@ -741,6 +741,53 @@ def make_manufacturing_order(
 		row.manufacturing_bom = so_det.get("master_bom")
 
 
+def _get_finding_base_data(pmo_doc):
+	"""Return (not_to_include, finding_data) for finding MWO creation.
+
+	Handles BOM Finding Detail rows with null item_variant by resolving
+	the item from the template + metal/finding attributes (same logic as MR creation).
+	"""
+	rows = frappe.db.get_all(
+		"BOM Finding Detail",
+		filters={"parent": pmo_doc.custom_tracking_bom, "ignore_work_order": 0},
+		fields=[
+			"name",
+			"parentfield",
+			"item_variant",
+			"item",
+			"idx",
+			"metal_touch",
+			"metal_type",
+			"metal_purity",
+			"metal_colour",
+			"finding_category",
+			"finding_type",
+			"finding_size",
+			"parent",
+		],
+	)
+
+	not_to_include = []
+	finding_data = []
+	for row in rows:
+		row = frappe._dict(row)
+		if not row.item_variant:
+			try:
+				row.item_variant = _resolve_existing_variant_item_code(
+					row, "BOM Finding Detail", pmo_doc.diamond_grade
+				)
+			except Exception:
+				continue
+		if row.item_variant and frappe.db.get_value(
+			"Item", row.item_variant, "custom_is_manufacturing_item"
+		):
+			not_to_include.append(row.name)
+			if row.get("parentfield") == "finding_detail":
+				finding_data.append(row)
+
+	return not_to_include, finding_data
+
+
 def create_manufacturing_work_order(self):
 	if not self.custom_tracking_bom:
 		return
@@ -778,34 +825,7 @@ def create_manufacturing_work_order(self):
 		)
 	)
 
-	finding_base = (
-		frappe.qb.from_(BOMFindingDetail)
-		.join(Item)
-		.on(Item.name == BOMFindingDetail.item_variant)
-		.select(
-			BOMFindingDetail.name,
-			BOMFindingDetail.metal_touch,
-			BOMFindingDetail.metal_type,
-			BOMFindingDetail.metal_purity,
-			BOMFindingDetail.metal_colour,
-			BOMFindingDetail.parent,
-			BOMFindingDetail.parentfield,
-			BOMFindingDetail.item_variant,
-			BOMFindingDetail.finding_category,
-		)
-		.where(
-			(BOMFindingDetail.parent == self.custom_tracking_bom)
-			& (Item.custom_ignore_work_order == 0)
-			& (BOMFindingDetail.finding_category == "Chains")
-		)
-	).run(as_dict=1)
-
-	not_to_include = []
-	finding_data = []
-	for row in finding_base:
-		not_to_include.append(row.name)
-		if row.get("parentfield") == "finding_detail":
-			finding_data.append(row)
+	not_to_include, finding_data = _get_finding_base_data(self)
 
 	if not_to_include:
 		finding_detail_query = finding_detail_query.where(
@@ -1565,3 +1585,16 @@ def create_mwo(pmo, doc, reason=None):
 		fg_doc.reason = reason
 	fg_doc.save()
 	frappe.msgprint("Manufacturing Work Order for CAD/CAM Department is created.")
+
+
+@frappe.whitelist()
+def create_finding_work_orders(pmo):
+	doc = frappe.get_doc("Parent Manufacturing Order", pmo)
+	if not doc.custom_tracking_bom:
+		frappe.throw(_("Tracking BOM is missing on this PMO."))
+	_not_to_include, finding_data = _get_finding_base_data(doc)
+	if not finding_data:
+		frappe.msgprint(_("No finding items eligible for work order creation."))
+		return
+	create_finding_mwo(doc, finding_data)
+	frappe.msgprint(_(f"Finding Work Orders created for {pmo}"))

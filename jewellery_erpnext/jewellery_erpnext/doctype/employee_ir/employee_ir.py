@@ -79,6 +79,12 @@ class EmployeeIR(Document):
 				)
 
 	def before_submit(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_settings import (
+			assert_sync_not_running,
+		)
+
+		assert_sync_not_running()
+
 		if self.type != "Issue":
 			return
 		for row in self.employee_ir_operations:

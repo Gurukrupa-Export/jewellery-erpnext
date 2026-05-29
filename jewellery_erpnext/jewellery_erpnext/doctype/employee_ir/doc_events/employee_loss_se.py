@@ -8,8 +8,22 @@ from frappe.utils import cint, flt
 from jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion import (
 	get_scrap_warehouse,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
+	get_item_loss_item,
+)
 
 _TOLERANCE = 1e-9
+PROCESS_LOSS_STOCK_ENTRY_TYPE = "Process Loss"
+
+
+def _ensure_process_loss_stock_entry_type_exists():
+	if not frappe.db.exists("Stock Entry Type", PROCESS_LOSS_STOCK_ENTRY_TYPE):
+		frappe.throw(
+			_(
+				"Stock Entry Type {0} is missing. "
+				"Run bench migrate to create it before processing Employee IR loss."
+			).format(frappe.bold(PROCESS_LOSS_STOCK_ENTRY_TYPE))
+		)
 
 
 def get_all_employee_loss_rows(doc):
@@ -60,19 +74,289 @@ def handle_employee_receive_loss(doc):
 		)
 		return
 
-	scrap_warehouse = get_scrap_warehouse(doc.department)  # throws if not configured
-
 	# Validate all rows upfront — no SRE cancellation happens until all pass
-	validated_items = _validate_and_prepare_loss_items(doc, scrap_warehouse)
+	validated_items = _validate_and_prepare_loss_items(doc)
 	if not validated_items:
 		return
 
 	_create_process_loss_se(doc, validated_items)
 
 
-def _validate_and_prepare_loss_items(doc, scrap_warehouse):
-	"""Validate each loss row and return enriched dicts for SE creation."""
+# ---------------------------------------------------------------------------
+# SRE lookup helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_sre_candidates_for_loss_row(row, sre_cols, require_mop):
+	"""Return a list of active SRE dicts matching item + MWO + optional MOP + batch.
+
+	When batch_no is set, enforces batch matching via a JOIN to Serial and Batch Entry
+	so an SRE for the wrong batch can never be selected. The JOIN result includes
+	matched_batch_no, batch_qty, and batch_delivered_qty for downstream qty validation.
+
+	When batch_no is absent the SRE uses reservation_based_on = "Qty"; a standard
+	frappe.db.get_all without JOIN is sufficient.
+	"""
+	item_code = row.item_code
+	mwo_name = row.manufacturing_work_order
+	mop_name = row.get("manufacturing_operation")
+	batch_no = row.get("batch_no")
+	has_mwo_col = "manufacturing_work_order" in sre_cols
+	has_mop_col = "manufacturing_operation" in sre_cols
+
+	if batch_no:
+		# Employee loss rows carry the new receive-side MOP while the active SRE was
+		# created against the source/issue-side MOP (set from the Stock Entry item row
+		# by stock_reservation_entry_for_mwo). After exact MOP lookup fails we fall back
+		# to item + MWO + batch so the reservation remains batch-safe.
+		sql = """
+			SELECT
+				sre.name,
+				sre.item_code,
+				sre.warehouse,
+				sre.reserved_qty,
+				sre.delivered_qty,
+				sre.reservation_based_on,
+				sre.manufacturing_work_order,
+				sre.manufacturing_operation,
+				sre.voucher_type,
+				sre.voucher_no,
+				sre.voucher_detail_no,
+				sre.voucher_qty,
+				sre.company,
+				sre.stock_uom,
+				sb.batch_no AS matched_batch_no,
+				sb.qty AS batch_qty,
+				sb.delivered_qty AS batch_delivered_qty
+			FROM `tabStock Reservation Entry` sre
+			INNER JOIN `tabSerial and Batch Entry` sb ON sb.parent = sre.name
+			WHERE
+				sre.docstatus = 1
+				AND sre.item_code = %s
+				AND sb.batch_no = %s
+		"""
+		params = [item_code, batch_no]
+		if has_mwo_col:
+			sql += " AND sre.manufacturing_work_order = %s"
+			params.append(mwo_name)
+		if require_mop and mop_name and has_mop_col:
+			sql += " AND sre.manufacturing_operation = %s"
+			params.append(mop_name)
+		return frappe.db.sql(sql, params, as_dict=True)
+
+	# No batch: SRE uses reservation_based_on = "Qty"; no child table JOIN needed
+	sre_filters = {"docstatus": 1, "item_code": item_code}
+	if has_mwo_col:
+		sre_filters["manufacturing_work_order"] = mwo_name
+	if require_mop and mop_name and has_mop_col:
+		sre_filters["manufacturing_operation"] = mop_name
+	return frappe.db.get_all(
+		"Stock Reservation Entry",
+		filters=sre_filters,
+		fields=[
+			"name",
+			"item_code",
+			"warehouse",
+			"reserved_qty",
+			"delivered_qty",
+			"reservation_based_on",
+			"manufacturing_work_order",
+			"manufacturing_operation",
+			"voucher_type",
+			"voucher_no",
+			"voucher_detail_no",
+			"voucher_qty",
+			"company",
+			"stock_uom",
+		],
+	)
+
+
+def _find_active_sre_for_loss_row(row, sre_cols):
+	"""Find exactly one active SRE for a loss row using a two-step lookup.
+
+	Step 1 — exact match: item + MWO + loss-row MOP + batch.
+	Step 2 — fallback:   item + MWO + batch (MOP relaxed).
+
+	The fallback exists because on_submit_receive creates a new receive-side MOP
+	via create_operation_for_next_op and stores it on the loss detail row, while
+	the SRE was created against the source/issue-side MOP. The fallback is safe
+	only when the result is unambiguous; multiple matches raise an error.
+	"""
+	exact = _get_sre_candidates_for_loss_row(row, sre_cols, require_mop=True)
+	if len(exact) == 1:
+		return exact[0]
+	if len(exact) > 1:
+		_throw_ambiguous_sre(row, exact, mode="exact")
+
+	fallback = _get_sre_candidates_for_loss_row(row, sre_cols, require_mop=False)
+	if len(fallback) == 1:
+		return fallback[0]
+	if len(fallback) > 1:
+		_throw_ambiguous_sre(row, fallback, mode="fallback")
+
+	_throw_no_sre_found(row)
+
+
+def _validate_loss_qty_against_sre(row, candidate, loss_qty):
+	"""Raise if loss_qty exceeds parent remaining qty or batch remaining qty."""
+	sre_remaining = flt(candidate.get("reserved_qty")) - flt(
+		candidate.get("delivered_qty")
+	)
+
+	# Batch-path candidates include batch_qty / batch_delivered_qty from the JOIN
+	batch_qty = candidate.get("batch_qty")
+	if batch_qty is not None:
+		batch_remaining = flt(batch_qty) - flt(
+			candidate.get("batch_delivered_qty") or 0
+		)
+		if loss_qty > batch_remaining + _TOLERANCE:
+			frappe.throw(
+				_(
+					"Row {0}: Loss qty {1} exceeds batch remaining qty {2} for Item {3} / MWO {4} / "
+					"Batch {5} / SRE {6}. Cannot create Process Loss entry."
+				).format(
+					row.idx,
+					frappe.bold(loss_qty),
+					frappe.bold(batch_remaining),
+					row.item_code,
+					row.manufacturing_work_order,
+					candidate.get("matched_batch_no") or row.get("batch_no"),
+					candidate.get("name"),
+				)
+			)
+
+	if loss_qty > sre_remaining + _TOLERANCE:
+		frappe.throw(
+			_(
+				"Row {0}: Loss qty {1} exceeds SRE remaining qty {2} for Item {3} / MWO {4} / "
+				"SRE {5}. Cannot create Process Loss entry."
+			).format(
+				row.idx,
+				frappe.bold(loss_qty),
+				frappe.bold(sre_remaining),
+				row.item_code,
+				row.manufacturing_work_order,
+				candidate.get("name"),
+			)
+		)
+
+
+def _throw_no_sre_found(row):
+	"""Throw a diagnostic error when no active SRE is found for a loss row."""
+	frappe.throw(
+		_(
+			"Row {0}: No active Stock Reservation Entry found for Employee IR loss row.\n\n"
+			"Item: {1}\n"
+			"MWO: {2}\n"
+			"Loss row MOP: {3}\n"
+			"Batch: {4}\n\n"
+			"Tried:\n"
+			"1. Active SRE by item + MWO + MOP + batch.\n"
+			"2. Active SRE by item + MWO + batch (MOP relaxed).\n\n"
+			"No matching active SRE was found. "
+			"Verify with: SELECT sre.name, sre.manufacturing_operation, sb.batch_no "
+			"FROM `tabStock Reservation Entry` sre "
+			"LEFT JOIN `tabSerial and Batch Entry` sb ON sb.parent = sre.name "
+			"WHERE sre.docstatus = 1 AND sre.item_code = '{5}' "
+			"AND sre.manufacturing_work_order = '{6}'"
+		).format(
+			row.idx,
+			row.item_code,
+			row.manufacturing_work_order,
+			row.get("manufacturing_operation") or "(none)",
+			row.get("batch_no") or "(none)",
+			row.item_code,
+			row.manufacturing_work_order,
+		)
+	)
+
+
+def _throw_ambiguous_sre(row, candidates, mode):
+	"""Throw a diagnostic error when multiple SREs match a loss row."""
+	lines = []
+	for c in candidates:
+		batch_remaining = ""
+		if c.get("batch_qty") is not None:
+			br = flt(c.get("batch_qty")) - flt(c.get("batch_delivered_qty") or 0)
+			batch_remaining = f", Batch Remaining: {br}"
+		sre_remaining = flt(c.get("reserved_qty")) - flt(c.get("delivered_qty"))
+		lines.append(
+			f"  - {c['name']}: SRE MOP {c.get('manufacturing_operation') or '(none)'}, "
+			f"Warehouse {c.get('warehouse')}, Remaining: {sre_remaining}{batch_remaining}"
+		)
+	candidates_text = "\n".join(lines)
+
+	frappe.throw(
+		_(
+			"Row {0}: Multiple active Stock Reservation Entries match this loss row ({1} match).\n\n"
+			"Item: {2} / MWO: {3} / Batch: {4} / Loss row MOP: {5}\n\n"
+			"Candidates:\n{6}\n\n"
+			"Cannot choose automatically. "
+			"Resolve by cancelling or delivering the duplicate SREs before retrying."
+		).format(
+			row.idx,
+			mode,
+			row.item_code,
+			row.manufacturing_work_order,
+			row.get("batch_no") or "(none)",
+			row.get("manufacturing_operation") or "(none)",
+			candidates_text,
+		)
+	)
+
+
+# ---------------------------------------------------------------------------
+# Loss item and warehouse helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_loss_target_warehouse(doc):
+	"""Return the target warehouse for Process Loss SE output items.
+
+	When is_main_slip_required the loss goes back to the employee's (or
+	subcontractor's) raw material warehouse so it can be reused. Otherwise it
+	goes to the department scrap warehouse.
+	"""
+	if cint(doc.is_main_slip_required):
+		dynamic_filter = (
+			{"subcontractor": doc.subcontractor}
+			if doc.get("subcontractor")
+			else {"employee": doc.employee}
+		)
+		warehouse = frappe.db.get_value(
+			"Warehouse",
+			{
+				"disabled": 0,
+				"company": doc.company,
+				"warehouse_type": "Raw Material",
+				**dynamic_filter,
+			},
+		)
+		if warehouse:
+			return warehouse
+	return get_scrap_warehouse(doc.department)
+
+
+# ---------------------------------------------------------------------------
+# Validation and preparation
+# ---------------------------------------------------------------------------
+
+
+def _validate_and_prepare_loss_items(doc):
+	"""Validate each loss row and return enriched dicts for SE creation.
+
+	Fetches sre_cols once before the loop. Uses two-step SRE lookup (exact MOP
+	then MOP-relaxed fallback) and validates both parent and batch remaining qty.
+	No SRE is cancelled here — cancellation happens in _create_process_loss_se
+	only after all rows pass validation.
+
+	Each returned dict includes loss_item_code (looked up from Variant Loss Table
+	using variant + loss_type) and t_warehouse (main slip raw material warehouse
+	when is_main_slip_required, else department scrap warehouse).
+	"""
 	sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+	t_warehouse = _get_loss_target_warehouse(doc)
 	prepared = []
 
 	for row in get_all_employee_loss_rows(doc):
@@ -82,8 +366,9 @@ def _validate_and_prepare_loss_items(doc, scrap_warehouse):
 
 		item_code = row.item_code
 		mwo_name = row.manufacturing_work_order
-		mop_name = row.manufacturing_operation
-		batch_no = row.batch_no
+		mop_name = row.get("manufacturing_operation")
+		batch_no = row.get("batch_no")
+		loss_type = row.get("loss_type")
 
 		if not mwo_name:
 			frappe.throw(
@@ -98,81 +383,54 @@ def _validate_and_prepare_loss_items(doc, scrap_warehouse):
 				)
 			)
 
-		# Find the active SRE for this item / MWO / MOP
-		sre_filters = {"docstatus": 1, "item_code": item_code}
-		if "manufacturing_work_order" in sre_cols:
-			sre_filters["manufacturing_work_order"] = mwo_name
-		if "manufacturing_operation" in sre_cols and mop_name:
-			sre_filters["manufacturing_operation"] = mop_name
-
-		sre_list = frappe.db.get_all(
-			"Stock Reservation Entry",
-			filters=sre_filters,
-			fields=[
-				"name",
-				"item_code",
-				"warehouse",
-				"reserved_qty",
-				"delivered_qty",
-				"reservation_based_on",
-				"manufacturing_work_order",
-				"manufacturing_operation",
-				"voucher_type",
-				"voucher_no",
-				"voucher_detail_no",
-				"voucher_qty",
-				"company",
-				"stock_uom",
-			],
+		variant_of = item_code[0]
+		loss_item_code = get_item_loss_item(
+			doc.company, item_code, variant_of, loss_type
 		)
-
-		if not sre_list:
+		if not loss_item_code:
 			frappe.throw(
 				_(
-					"Row {0}: No active Stock Reservation Entry found for Item {1} / MWO {2}. Cannot process loss."
-				).format(row.idx, item_code, mwo_name)
+					"Row {0}: Could not find or create loss item for variant {1} / loss type {2}. "
+					"Check Variant Loss Table configuration."
+				).format(row.idx, variant_of, loss_type or "(none)")
 			)
 
-		sre_row = sre_list[0]
-		reserved_qty = flt(sre_row["reserved_qty"]) - flt(sre_row["delivered_qty"])
+		candidate = _find_active_sre_for_loss_row(row, sre_cols)
+		_validate_loss_qty_against_sre(row, candidate, loss_qty)
 
-		if loss_qty > reserved_qty + _TOLERANCE:
-			frappe.throw(
-				_(
-					"Row {0}: Loss qty {1} exceeds reserved qty {2} for Item {3} / MWO {4}. Cannot create Process Loss entry."
-				).format(
-					row.idx,
-					frappe.bold(loss_qty),
-					frappe.bold(reserved_qty),
-					item_code,
-					mwo_name,
-				)
-			)
-
-		is_pcs_item = bool(item_code) and item_code[0] in ("D", "G")
+		sre_remaining = flt(candidate["reserved_qty"]) - flt(candidate["delivered_qty"])
+		is_pcs_item = item_code[0] in ("D", "G")
 
 		prepared.append(
 			{
 				"item_code": item_code,
+				"loss_item_code": loss_item_code,
 				"mwo_name": mwo_name,
 				"mop_name": mop_name,
 				"batch_no": batch_no,
 				"loss_qty": loss_qty,
 				"loss_pcs": row.pcs if is_pcs_item else None,
-				"s_warehouse": sre_row["warehouse"],
-				"t_warehouse": scrap_warehouse,
-				"sre_name": sre_row["name"],
-				"sre_row": sre_row,
-				"reserved_qty": reserved_qty,
+				"s_warehouse": candidate["warehouse"],
+				"t_warehouse": t_warehouse,
+				"sre_name": candidate["name"],
+				"sre_row": candidate,
+				"reserved_qty": sre_remaining,
 				"is_pcs_item": is_pcs_item,
+				"inventory_type": row.get("inventory_type"),
 			}
 		)
 
 	return prepared
 
 
+# ---------------------------------------------------------------------------
+# Process Loss SE creation and SRE recreation
+# ---------------------------------------------------------------------------
+
+
 def _create_process_loss_se(doc, loss_items):
 	"""Cancel relevant SREs, create and submit Process Loss SE, recreate SREs with reduced qty."""
+	_ensure_process_loss_stock_entry_type_exists()
 	from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 		get_available_qty_to_reserve,
 	)
@@ -197,31 +455,53 @@ def _create_process_loss_se(doc, loss_items):
 			}
 		)
 
-	# Phase 2: Build and submit Process Loss Stock Entry
+	# Phase 2: Build and submit Process Loss Stock Entry (Repack)
+	# Each loss row becomes two SE items: source item out (s_warehouse) + loss variant in (t_warehouse)
 	se_doc = frappe.new_doc("Stock Entry")
 	se_doc.stock_entry_type = "Process Loss"
+	se_doc.purpose = "Repack"
 	se_doc.company = doc.company
 	se_doc.employee_ir = doc.name
+	se_doc.department = doc.department
+	se_doc.to_department = doc.department
 	se_doc.auto_created = 1
 
 	for item in loss_items:
-		item_dict = {
-			"item_code": item["item_code"],
-			"qty": item["loss_qty"],
-			"s_warehouse": item["s_warehouse"],
-			"t_warehouse": item["t_warehouse"],
-			"batch_no": item["batch_no"],
-			"use_serial_batch_fields": True,
-			"manufacturing_operation": item["mop_name"],
-		}
-		if item["is_pcs_item"] and item["loss_pcs"] is not None:
-			item_dict["pcs"] = item["loss_pcs"]
-
-		# Set MWO on SE header once (all loss rows share the same MWO in most cases)
 		if not se_doc.manufacturing_work_order and item["mwo_name"]:
 			se_doc.manufacturing_work_order = item["mwo_name"]
 
-		se_doc.append("items", item_dict)
+		source_row = {
+			"item_code": item["item_code"],
+			"qty": item["loss_qty"],
+			"s_warehouse": item["s_warehouse"],
+			"t_warehouse": None,
+			"batch_no": item["batch_no"],
+			"use_serial_batch_fields": True,
+			"manufacturing_operation": item["mop_name"],
+			"department": doc.department,
+			"to_department": doc.department,
+			"manufacturer": doc.manufacturer,
+		}
+		if item["is_pcs_item"] and item["loss_pcs"] is not None:
+			source_row["pcs"] = item["loss_pcs"]
+		if item.get("inventory_type"):
+			source_row["inventory_type"] = item["inventory_type"]
+		se_doc.append("items", source_row)
+
+		target_row = {
+			"item_code": item["loss_item_code"],
+			"qty": item["loss_qty"],
+			"s_warehouse": None,
+			"t_warehouse": item["t_warehouse"],
+			"use_serial_batch_fields": True,
+			"manufacturing_operation": item["mop_name"],
+			"department": doc.department,
+			"to_department": doc.department,
+			"manufacturer": doc.manufacturer,
+		}
+		if item.get("inventory_type"):
+			target_row["inventory_type"] = item["inventory_type"]
+		se_doc.append("items", target_row)
 
 	se_doc.flags.ignore_permissions = True
 	se_doc.save()

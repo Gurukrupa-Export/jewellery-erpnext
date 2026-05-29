@@ -65,6 +65,17 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 			});
 		}
 		if (frm.doc.docstatus == 1) {
+			frm.add_custom_button(__("Create Finding MWO"), function () {
+				frappe.confirm(__("Create Finding Work Orders for this PMO?"), function () {
+					frappe.call({
+						method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.create_finding_work_orders",
+						args: { pmo: frm.doc.name },
+						callback: function (r) {
+							if (!r.exc) frm.reload_doc();
+						},
+					});
+				});
+			});
 			frm.add_custom_button(__("Create MWO"), function () {
 				frappe.prompt(
 					[

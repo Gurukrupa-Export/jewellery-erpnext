@@ -33,6 +33,8 @@ MANUFACTURER = frappe.defaults.get_user_default("manufacturer")
 
 
 def before_validate(self, method):
+	if self.stock_entry_type == "Process Loss":
+		self.purpose = "Repack"
 	validate_ir(self)
 	if (
 		not self.get("__islocal")
@@ -551,6 +553,10 @@ def before_submit(self, method):
 	)
 
 	assert_sync_not_running()
+
+	if self.stock_entry_type == "Process Loss" and self.auto_created:
+		for d in self.items:
+			d.transfer_qty = flt(flt(d.qty) * flt(d.conversion_factor), 3)
 
 	# validation_for_stock_entry_submission(self)
 	if self.stock_entry_type != "Manufacture":

@@ -1,0 +1,702 @@
+# pr_agent.toml — jewellery_erpnext
+# Qodo Merge / PR-Agent configuration for the jewellery_erpnext Frappe/ERPNext custom app.
+# All repository-specific context in this file is grounded in the current source code.
+# If this file contradicts current source, trust the source.
+
+[config]
+git_provider = "github"
+publish_output = true
+publish_output_progress = false
+verbosity_level = 1
+use_extra_instructions = true
+use_repo_settings_file = true
+
+[github_app]
+override_deployment_types = ["pr"]
+
+# ---------------------------------------------------------------------------
+# PR DESCRIPTION
+# ---------------------------------------------------------------------------
+[pr_description]
+publish_labels = true
+add_original_user_description = true
+generate_ai_title = true
+use_bullet_points = true
+extra_instructions = """
+This is a Frappe v15/v16 + ERPNext custom jewellery manufacturing app (jewellery_erpnext).
+When describing a PR, identify which of the three modules is affected: 'Jewellery Erpnext',
+'Gurukrupa Exports', or 'Customer Subcontracting'. Note if the PR touches any
+override_doctype_class, override_whitelisted_methods, scheduler events, fixtures,
+patches, or doc_events hooks, as these have bench-wide or production-wide impact.
+"""
+
+# ---------------------------------------------------------------------------
+# PR REVIEWER
+# ---------------------------------------------------------------------------
+[pr_reviewer]
+require_score_review = false
+require_can_be_merged_review = false
+require_security_review = true
+require_focused_review = true
+num_code_suggestions = 4
+inline_code_comments = true
+ask_and_reflect = false
+automatic_review = true
+remove_previous_review_comment = true
+
+extra_instructions = """
+===========================================================================
+REVIEW APPROACH
+===========================================================================
+
+DIFF-FIRST: Review only the code changed in this PR. Use the repository
+context below to understand impact, not to audit unrelated code.
+
+DO NOT hallucinate DocTypes, fields, functions, hooks, workflows, or business
+rules not present in the diff or in this context. If uncertain, say "verify
+against current source" and explain what to look for.
+
+Every finding must cite a specific file path or diff hunk. Do not issue
+generic findings.
+
+===========================================================================
+FRAPPE/ERPNEXT LIFECYCLE REVIEW RULES
+===========================================================================
+
+When a PR modifies a Frappe document controller, verify:
+
+1. SUBMIT/CANCEL SYMMETRY
+   - Every side effect in on_submit must be reversible in on_cancel.
+   - on_cancel must undo Stock Entries, MOP Logs, Stock Reservation Entries,
+     GL Entries, Journal Entries, and Payment Entries created by on_submit.
+   - Missing cancel symmetry is a HIGH risk finding.
+
+2. ON_UPDATE_AFTER_SUBMIT SAFETY
+   - on_update_after_submit runs on submitted documents.
+   - Must not create duplicate stock/GL/MOP effects.
+   - Must guard against double-execution (use idempotency keys or existence checks).
+
+3. VALIDATE vs BEFORE_SUBMIT ORDER
+   - validate runs on save AND submit. Do not put submit-only logic in validate.
+   - before_submit runs only on submit. Server-side guards belong here.
+
+4. AUTONAME STABILITY
+   - Changing autoname logic after production data exists breaks links.
+   - Flag any autoname change as HIGH risk if the DocType already has submitted records.
+
+5. DOC_EVENTS ORDERING
+   - Stock Entry has 3 handlers on before_validate, 3 on before_submit, and
+     3 on on_submit (see hook map below). Changing any handler must not break
+     ordering dependencies between sibling handlers.
+
+===========================================================================
+OVERRIDE CLASS RULES (BENCH-WIDE IMPACT)
+===========================================================================
+
+This app overrides 6 ERPNext/Frappe classes via override_doctype_class.
+Changes to any of these files affect ALL instances of that DocType on the bench.
+Flag any such PR as HIGH blast radius.
+
+Overrides in effect (verify paths in current source):
+- Stock Entry         → customization/stock_entry/stock_entry.py (CustomStockEntry)
+- Stock Reconciliation → doctype/stock_reconciliation_template/stock_reconciliation_template_utils.py
+- Stock Ledger Entry  → customization/stock_ledger_entry/stock_ledger_entry.py
+- Stock Reservation Entry → customization/stock_reservation_entry/stock_reservation_entry.py
+- Serial and Batch Bundle → customization/serial_and_batch_bundle/serial_and_batch_bundle.py
+- Submission Queue    → customization/submission_queue/submission_queue.py
+
+When these files change:
+- Verify parent ERPNext class method signatures have not changed in the ERPNext version in use.
+- Verify super() calls are present and correct where the override must extend (not replace) behavior.
+- Verify no new side effects are introduced in lifecycle methods that skip super().
+
+CustomStockReservationEntry key behavior: auto_reserve_serial_and_batch() returns
+early (no-op) when manufacturing_work_order + manufacturing_operation + sb_entries
++ reservation_based_on="Serial and Batch" are all set. This preserves MOP-driven
+batch lineage. Do not remove this guard without also updating the EOD sync and
+MOP Log balance logic.
+
+CustomSerialandBatchBundle key behavior: validate_serial_nos_duplicate() skips
+for POS Invoice and Pick List; blocks duplicate inward serials except for
+"FG Purchase" and "Branch Purchase" purchase types. If the purchase type list changes,
+verify the skip conditions are still correct.
+
+CustomSubmissionQueue key behavior: prevents duplicate queuing for Employee IR,
+Department IR, Product Certification, Stock Entry, and Main Slip by checking
+existing queue entries. Uses queue="long", timeout=4500. Changes to this list
+affect which documents can be submitted in background.
+
+===========================================================================
+OVERRIDE WHITELISTED METHODS RULES
+===========================================================================
+
+This app replaces 4 ERPNext/Frappe whitelisted methods globally:
+- Job Card make_stock_entry → doc_events/job_card.make_stock_entry
+- Material Request make_stock_entry → doc_events/material_request.make_stock_entry
+- Stock Entry make_stock_in_entry → doc_events/stock_entry.make_stock_in_entry
+- Bulk Update submit_cancel_or_update_docs → doc_events/bulk_update.custom_submit_cancel_or_update_docs
+
+When these implementations change, verify:
+- The function signature is still compatible with ERPNext's caller.
+- The new behavior does not regress on ERPNext's original intent.
+- Any added ignore_permissions, ignore_links, or ignore_mandatory usage is justified.
+
+===========================================================================
+MOP LOG INVARIANTS (HIGH RISK)
+===========================================================================
+
+MOP Log is the virtual inventory ledger for manufacturing operations.
+It records item movements between departments/employees before EOD physical settlement.
+
+Idempotency keys:
+- is_synced=0 means the log has not yet been converted to a Stock Entry.
+- is_cancelled=1 means the log was reversed.
+- flow_index is the sequential index within a Manufacturing Operation.
+- Source-voucher scoping: each MOP Log references voucher_type + voucher_no.
+  Duplicate logs for the same voucher must be prevented by the caller.
+
+When any MOP Log creation function changes:
+1. Verify the deduplication guard on (voucher_type, voucher_no, manufacturing_operation,
+   loss_source_row, loss_type, is_cancelled=0) for loss-attribution logs.
+2. Verify is_synced=0 on creation (logs must be unsynced when created).
+3. Verify is_cancelled is set (not deleted) when reversing a log.
+4. Verify the EOD sync lock guard (assert_sync_not_running) is not bypassed.
+
+When EOD sync logic changes (mop_eod_sync.py):
+1. Verify savepoint/rollback is maintained per routing hop.
+2. Verify the consolidated → per-operation fallback still exists.
+3. Verify is_synced=1 is only set after successful Stock Entry creation.
+4. Verify the sync_running lock is cleared in a finally-equivalent pattern.
+5. Verify frappe.flags.mop_sync_in_progress is set during sync so SE before_submit
+   does not block sync-created Stock Entries.
+
+===========================================================================
+STOCK RESERVATION ENTRY INVARIANTS (HIGH RISK)
+===========================================================================
+
+Stock Reservation Entries (SRE) for Manufacturing Work Orders hold batch-specific
+reservations created during MOP flow. They must not be auto-FIFO'd.
+
+When SRE or related flow changes:
+1. Verify CustomStockReservationEntry.auto_reserve_serial_and_batch() still
+   returns early when manufacturing_work_order + manufacturing_operation +
+   sb_entries + reservation_based_on="Serial and Batch" are all set.
+2. Verify no code path creates duplicate SREs for the same MWO + MOP + item + batch.
+3. Verify cancel/unreservation on Stock Entry cancel undoes SRE creation.
+4. Verify EOD sync SRE reconciliation (cancel SREs with remaining_qty > 0 but
+   actual balance <= 0) is not broken.
+
+===========================================================================
+STOCK ENTRY HOOK ORDERING (HIGH RISK)
+===========================================================================
+
+Stock Entry has multiple chained hooks. Current order (verify against hooks.py):
+
+before_validate:
+  1. doc_events/stock_entry.before_validate
+  2. customization/stock_entry/stock_entry.before_validate  (CustomStockEntry)
+
+before_submit:
+  1. doc_events/stock_entry.before_submit
+  2. customer_subcontracting/batch_rename.create_parent_batches
+  3. customer_subcontracting/batch_rename.create_child_batches
+
+on_submit:
+  1. doc_events/stock_entry.onsubmit
+  2. customization/stock_entry/stock_entry.on_submit  (CustomStockEntry)
+  3. customer_subcontracting/batch_rename.create_repack_for_used_other
+
+When any of these handlers change:
+- Verify handler 2 or 3 does not depend on state set by handler 1 that could be
+  missing if handler 1 is skipped or reordered.
+- batch_rename handlers run after the main SE before_submit; they read SE items
+  to name batches. If SE item structure changes, verify batch_rename compatibility.
+- create_repack_for_used_other runs after on_submit; if it fails, the SE is
+  already submitted. Verify it handles failures without leaving dangling state.
+
+===========================================================================
+CUSTOMER SUBCONTRACTING BATCH RENAME RULES
+===========================================================================
+
+batch_rename.py is called from Stock Entry hooks and auto-names customer material batches.
+
+When batch_rename.py changes:
+1. Verify parent batch naming pattern is stable: {customer}-{year_code}{month}-{item_code}-{serial}.
+2. Verify child batch naming pattern is stable: {prefix}-{item_code}-{parent_serial}-{alphabet}.
+3. Verify ignore_permissions=True on batch.insert() is still justified (system auto-create).
+4. Verify create_repack_for_used_other does not create duplicate Repack SE for the
+   same source batch (check existence before insert).
+5. Verify frappe.flags.is_batch_autoname=True bypass is still required and limited
+   to autoname context.
+
+===========================================================================
+PERMISSION AND SECURITY REVIEW RULES
+===========================================================================
+
+No allow_guest=True exists anywhere in this repo. If a PR adds one, flag as CRITICAL.
+
+ignore_permissions=True appears in 15+ locations, all for system-internal
+auto-creation (MOP sync, batch creation, patch inserts, BOM auto-save, SRE inserts).
+When a PR adds new ignore_permissions usage:
+- Flag as MEDIUM-HIGH and require a comment explaining why it is safe.
+- Verify the enclosing function is only reachable by authenticated server-side code,
+  not directly by a whitelisted method callable by any user.
+
+ignore_links and ignore_mandatory:
+- Used in tagging_transfer.py, employee_loss_se.py, parent_manufacturing_order.py,
+  manufacturing_work_order.py, employee_ir.py, stock_reconciliation_template_utils.py.
+- New usages require justification. Skipping mandatory checks on submitted documents
+  can leave data in an inconsistent state.
+
+For every @frappe.whitelist decorated function added or changed:
+1. Verify it does not expose data beyond the logged-in user's permissions.
+2. Verify all input used in DB queries is validated or parameterized.
+3. Verify it does not return fields from child tables (metal weights, customer codes,
+   pricing) that should be restricted to specific roles.
+
+===========================================================================
+SQL AND QUERY SAFETY RULES
+===========================================================================
+
+KNOWN UNSAFE SQL (f-string injection) — do not add more of the same pattern:
+- doc_events/sales_invoice.py: customer/metal_type/metal_touch interpolated directly
+  into frappe.db.sql() f-strings. When this file is changed, flag any new f-string
+  SQL as HIGH risk and require conversion to parameterized form (%s or %(key)s).
+- doc_events/sales_order.py: same pattern on Metal Criteria queries.
+
+All new frappe.db.sql() calls must:
+1. Use %s or %(key)s placeholders; never use f-strings or .format() with user-
+   or document-sourced values.
+2. Not use dynamic ORDER BY, table names, or column names from user input.
+   Internal code-constructed identifiers (e.g., patch ALTER TABLE) are acceptable
+   only if the values are hardcoded constants, not user input.
+3. Include a comment if using SELECT * (unbounded column exposure risk).
+
+frappe.db.get_all / frappe.get_all with dynamic filters:
+- Verify order_by, filters, and fields args do not accept raw user input.
+- Verify pagination (limit) is set for any potentially large result set.
+
+For reports (Script Reports and Query Reports):
+- Verify all mandatory filters are enforced server-side before executing queries.
+- BOM Details Against Quotation (891 lines, multi-JOIN) is performance-sensitive:
+  verify new report changes do not add unbounded JOINs.
+- Subcontracting Report traverses batch parent-child relationships recursively:
+  verify recursion depth is bounded.
+- CAD Order Timelogs uses LIKE filter: verify it is a trailing wildcard, not a
+  leading wildcard (leading wildcard prevents index use).
+
+===========================================================================
+FIXTURE, MIGRATION, AND PATCH REVIEW RULES
+===========================================================================
+
+FIXTURES (loaded on every bench migrate — production overwrite risk):
+Fixtures currently managed:
+- Workflow: "Sketch Order Form Approval", "Sketch Order Approval with Purchase 1"
+  → Overwrites workflow state definitions, transitions, roles, email alerts.
+- Workflow State (all): Overwrites all state definitions globally.
+- Workflow Action Master (all): Overwrites all action definitions globally.
+- Role: "GK sales user", "Sketch QC", "All"
+  → "All" is a system-wide role; changes to it affect every user.
+- Custom Field: 9 fields on Sketch Order and Sketch Order Form.
+
+When any fixture file changes:
+1. Flag as HIGH risk — changes deploy to production on next bench migrate.
+2. Verify Workflow State and Workflow Action Master changes do not orphan
+   existing transitions in other workflows not managed by this app.
+3. Verify Role permission changes for "GK sales user" and "Sketch QC" do not
+   inadvertently broaden or narrow Sketch Order Form access.
+4. Verify Custom Field type changes do not break existing data or validation.
+
+AFTER_MIGRATE HOOK (runs on every bench migrate):
+migrate.py::after_migrate() applies all JSON files from custom_fields/ and
+property_setter/ directories. Changes to these JSON files overwrite field
+definitions and form behavior site-wide on next migrate.
+- Verify field type changes are safe for existing data.
+- Verify property setter changes (hidden, read_only, mandatory, options) do not
+  break existing workflows or user access.
+
+PATCHES (patches.txt — run once per site):
+All 8 existing patches are idempotent (use existence checks or index guards).
+New patches must be idempotent:
+1. Guard bulk updates with WHERE conditions that are safe to re-run.
+2. Guard inserts with frappe.db.exists() or insert(ignore_if_duplicate=True).
+3. Guard index creation with _index_exists() equivalent check.
+4. Do not use doc.save() inside loops on large tables without batching and commits.
+5. Verify that patches touching submitted documents (docstatus=1) do not violate
+   Frappe's submit/amend contract for those DocTypes.
+6. The only existing patch that modifies submitted rows is
+   truncate_manufacturing_operation_field (Stock Entry Detail); treat similar
+   patches as requiring explicit sign-off.
+
+===========================================================================
+BACKGROUND JOB AND SCHEDULER REVIEW RULES
+===========================================================================
+
+Scheduler event (daily_long): mop_eod_sync.sync_mop_logs
+- Do not reduce the sync interval without understanding lock contention.
+- The sync lock (MOP Settings.sync_running) has a 4-hour stale-lock auto-clear.
+  Changes to the lock mechanism must preserve the stale-lock recovery path.
+
+frappe.enqueue call sites (7 confirmed):
+- interbranch.py: reconcile PE with inter-branch JV
+- mop_settings.py: manual sync trigger
+- bulk_update.py: bulk submit/cancel (50-2500 docs, queue="long", timeout=4000)
+- quotation.py: BOM creation on workflow state change (queue="long", timeout=10000)
+- sales_order.py: BOM chunk processing (queue="long", timeout=600)
+- subcontracting_utils.py: SE update after subcontracting receive (queue="short")
+
+When an enqueue call is added or modified:
+1. Verify enqueue_after_commit=True when the job depends on data committed in the
+   current transaction (prevents jobs reading uncommitted state).
+2. Verify queue selection: long for multi-minute jobs, short for sub-minute jobs.
+3. Verify timeout is realistic for the expected workload.
+4. Verify the enqueued function is idempotent on retry (background worker retries
+   on crash; running the function twice must not double-create stock/accounting entries).
+5. Verify no frappe.enqueue inside a loop without deduplication (can flood the queue).
+
+===========================================================================
+JAVASCRIPT / DESK UI REVIEW RULES
+===========================================================================
+
+This app injects JS into 19 standard ERPNext DocTypes via doctype_js in hooks.py
+(Quotation, Sales Order, Stock Entry, BOM, Work Order, Item, Job Card, etc.)
+plus a global custom_multi_select_dialog.js override.
+
+When doctype_js files change:
+1. Client-side validation (frm.validate, frm.set_value guards) can be bypassed
+   by the server. Verify every business rule enforced in JS also has a server-side
+   equivalent in the DocType controller or doc_events handler.
+2. frm.call() and frappe.call() invoke whitelisted methods. Verify the server-side
+   handler still exists and has the same parameter contract after any rename.
+3. Dynamic HTML generated in JS (e.g., dialog content, custom buttons) must not
+   use unsanitized user input in innerHTML. Use frappe.render_template or
+   text node APIs.
+4. Button duplication: verify buttons added via frm.add_custom_button() check
+   for existing buttons before adding (use frm.get_inner_toolbar()).
+5. Changes to global custom_multi_select_dialog.js affect every multi-select
+   dialog across the app; treat as HIGH blast radius.
+
+===========================================================================
+REPORT REVIEW RULES
+===========================================================================
+
+6 reports exist (verify for new additions):
+- Work Order Status — exposes per-operation weights; verify WO-scoped filter is mandatory.
+- BOM Details Against Quotation — exposes customer pricing and BOM structure;
+  verify Quotation filter is mandatory and user has access to the quotation.
+- Item Wise MWO MOP Log — exposes batch/customer inventory data; verify MWO filter
+  is mandatory.
+- Manufacturing Operation Balance — exposes per-department MOP balances; verify
+  MOP cross-MWO mismatch check is preserved.
+- CAD Order Timelogs — exposes designer SLA data; verify customer-scope filter
+  prevents cross-customer data leakage.
+- Subcontracting Report — exposes full batch ownership lineage; verify
+  customer/batch filters prevent unauthorized access.
+
+When any report changes:
+1. Verify no mandatory filter was removed (removes guard against unbounded queries).
+2. Verify SQL changes use parameterized queries (not f-strings).
+3. Verify the report does not expose fields from other customers' orders.
+4. Verify LIKE filters use trailing wildcard only.
+5. Workflow condition queries in Sketch Order workflow that call frappe.db.get_value()
+   per transition check are a known performance concern; do not add more such patterns.
+
+===========================================================================
+TEST REVIEW RULES
+===========================================================================
+
+This repo has 109 test files. Tests are Frappe unit tests (FrappeTestCase style).
+Run with: bench --site <site> run-tests --app jewellery_erpnext
+
+Well-covered areas (existing tests must continue passing after any related change):
+- MOP Log balance snapshot and deduplication (test_mop_log.py)
+- EOD sync consolidation (test_mop_eod_sync.py)
+- MOP lineage Stock Entry bridge (test_mop_lineage_stock_entry_bridge.py)
+- Manufacturing Operation weight recalculation (test_mop_weight_recompute.py, test_mop_weight_recalc.py)
+- Employee IR loss attribution: 4 dedicated tests (baseline, required, pcs, full flow)
+- Stock Reservation Entry MWO override (test_stock_reservation_entry_mwo.py, test_stock_reservation_entry_override.py)
+- make_receive_entry availability: 5 tests (baseline, MOP cap, MWO level, PCS, second popup)
+- Department IR and Employee IR submit/receive (test_department_ir.py, test_employee_ir.py)
+- Main Slip injection on Employee IR receive (test_main_slip_inject.py)
+- MWO, PMO, Manufacturing Plan submit/cancel (respective test_ files)
+
+Known test coverage gaps (ask for focused tests when these areas change):
+- Stock Entry before_validate / on_submit / on_cancel hooks
+- Material Request before_validate / on_submit hooks
+- Manufacturing Operation cancel and reversal
+- EOD sync per-operation fallback (consolidated failure → retry per-MOP)
+- Batch valuation ledger (customization/stock/batch_valuation_ledger.py)
+- Batch rename create_repack_for_used_other idempotency
+
+When a PR touches a well-covered area, state: "Existing tests cover this flow.
+Verify they still pass: bench --site <site> run-tests --app jewellery_erpnext
+--module <module_path>."
+
+When a PR touches a gap area, ask for a focused test that:
+- Creates the specific document type(s) affected.
+- Exercises the exact changed code path.
+- Asserts the output state (not just "no exception raised").
+- For submit/cancel, verifies both directions.
+- For MOP Log flows, asserts is_synced, is_cancelled, and flow_index values.
+- For SRE flows, asserts reservation counts and batch lineage.
+
+===========================================================================
+SEVERITY GUIDE FOR THIS REPOSITORY
+===========================================================================
+
+CRITICAL:
+- New allow_guest=True on any endpoint.
+- New f-string SQL with user/document-sourced values.
+- MOP Log deduplication bypass (could create duplicate stock movements).
+- Removing submit/cancel symmetry from on_submit/on_cancel.
+- Fixture change to "All" role (bench-wide permission change).
+
+HIGH:
+- Changes to any of the 6 override_doctype_class files.
+- Changes to any of the 4 override_whitelisted_methods implementations.
+- Adding new ignore_permissions without justification comment.
+- Removing EOD sync lock guard (assert_sync_not_running).
+- Autoname change on a DocType with existing submitted records.
+- Patch that modifies submitted documents without idempotency guard.
+- New frappe.enqueue without enqueue_after_commit when required.
+- Fixture change to managed Workflow, Role, or Custom Field definitions.
+
+MEDIUM:
+- New ignore_links or ignore_mandatory without justification.
+- Unbounded frappe.db.get_all without limit in a loop.
+- Report query with new JOIN that is not indexed.
+- Background job without retry idempotency.
+- JS validation without server-side parity.
+- Stock Entry hook ordering change.
+
+LOW:
+- New @frappe.whitelist function with standard permission checks.
+- New parameterized frappe.db.sql query.
+- Client-side button or dialog change with server-side parity.
+- New idempotent patch.
+"""
+
+# ---------------------------------------------------------------------------
+# CODE SUGGESTIONS
+# ---------------------------------------------------------------------------
+[pr_code_suggestions]
+num_code_suggestions = 4
+extra_instructions = """
+Prioritize suggestions for this repository in this order:
+1. Convert f-string SQL to parameterized queries (%s or %(key)s).
+   Known locations: doc_events/sales_invoice.py, doc_events/sales_order.py (Metal Criteria queries).
+2. Add missing cancel symmetry when on_submit creates stock/MOP/SRE effects without matching on_cancel.
+3. Add enqueue_after_commit=True to frappe.enqueue calls that read data committed in the current transaction.
+4. Add idempotency guards to patches that perform inserts or bulk updates without existence checks.
+Do not suggest generic Python style changes, typing annotations, or refactors unless the
+changed code has a real correctness or security risk. Do not suggest adding comments that
+describe what the code does. Only suggest changes to the lines visible in the diff.
+"""
+
+# ---------------------------------------------------------------------------
+# REPOSITORY CONTEXT
+# ---------------------------------------------------------------------------
+[repository_context]
+
+review_context = """
+===========================================================================
+REPOSITORY OVERVIEW
+===========================================================================
+
+App: jewellery_erpnext
+Platform: Frappe v15/v16 + ERPNext
+Domain: Custom jewellery manufacturing — design-to-delivery operations including
+        metal/diamond/gemstone tracking, manufacturing operations, department and
+        employee material transfers, quality certification, subcontracting, and
+        inter-branch accounting.
+
+Three modules:
+1. Jewellery Erpnext — core manufacturing, IR flows, MOP Logs, stock customizations,
+   pricing, BOM, quotation, sales/purchase flows, reports.
+2. Gurukrupa Exports — sketch order workflows, CAD/design ordering, diamond/gemstone
+   price lists, serial-and-design-code orders.
+3. Customer Subcontracting — customer-owned material tracking via batch renaming,
+   subcontracting repack Stock Entries, subcontracting report.
+
+~214 DocTypes total. ~34 submittable (transactional). ~134 child tables.
+109 test files. 6 reports. 8 patches (all idempotent).
+
+===========================================================================
+MODULE MAP
+===========================================================================
+
+MANUFACTURING FLOW DocTypes:
+  Manufacturing Plan, Parent Manufacturing Order, Manufacturing Work Order,
+  Manufacturing Operation, Main Slip, Melting Lot, Combine Job Card,
+  Operation Card, Operation Card Transfer, Job Card Internal Transfer
+
+IR (ISSUE/RECEIVE) FLOW DocTypes:
+  Department IR, Employee IR, Employee Metal Loss, Workstation Metal Loss,
+  Operation Metal Loss
+
+QUALITY / CERTIFICATION:
+  Product Certification, QC, Customer Approval
+
+CONVERSION DocTypes:
+  Metal Conversions, Diamond Conversion, Gemstone Conversion, Swap Metal,
+  Custom Refining, Refining
+
+DESIGN / ORDER DocTypes (Gurukrupa Exports module):
+  Sketch Order, Sketch Order Form, Design Order, Serial No and Design Code Order,
+  Serial No and Design Code Order Form
+
+TRACKING:
+  Tracking BOM, Slip, Subcontracting (child stock reconciliation)
+
+SETTINGS / MASTERS:
+  Jewellery Settings, Manufacturing Setting, MOP Settings, Certification Settings,
+  Alloy Settings, Loss Type, Item Type, Purity, Tone, Product Category,
+  Default Charges, Customer Payment Terms, Diamond Price List, Gemstone Price List,
+  Making Charge Price, Parcel Place List, Customer Diamond Grade
+
+===========================================================================
+HOOK MAP — doc_events
+===========================================================================
+
+Standard ERPNext DocTypes with custom hooks (implementation files in doc_events/ and customization/):
+
+Quotation:         before_validate, validate, before_submit, on_submit, on_cancel, onload
+Sales Order:       before_validate, validate, before_submit, on_submit, on_cancel, on_update_after_submit
+Delivery Note:     validate
+BOM:               before_validate, validate, on_update, on_cancel, on_submit, on_update_after_submit
+Work Order:        before_save, validate
+Item:              before_validate, validate, before_save, on_trash, before_insert
+Item Attribute:    validate
+Stock Entry:       before_validate(×2), before_submit(×3), on_submit(×3), on_cancel, on_update_after_submit
+Job Card:          onload, validate, on_submit
+Diamond Weight:    validate
+Gemstone Weight:   validate
+Warehouse:         validate
+Purchase Order:    validate, on_cancel
+Sales Invoice:     before_validate, validate, on_submit
+Serial No:         validate
+Material Request:  before_validate, before_update_after_submit, validate, on_submit
+Serial and Batch Bundle: after_insert
+Purchase Receipt:  before_validate, before_submit, on_submit
+Batch:             validate, autoname, on_update
+Stock Reconciliation: validate
+Payment Entry:     on_submit, on_update_after_submit, on_cancel
+Unreconcile Payment: before_submit
+
+===========================================================================
+HOOK MAP — overrides
+===========================================================================
+
+override_doctype_class (bench-wide class replacement):
+  Stock Entry          → CustomStockEntry
+  Stock Reconciliation → CustomStockReconciliation
+  Stock Ledger Entry   → CustomStockLedgerEntry
+  Stock Reservation Entry → CustomStockReservationEntry
+  Serial and Batch Bundle → CustomSerialandBatchBundle
+  Submission Queue     → CustomSubmissionQueue
+
+override_whitelisted_methods (global URL routing replacement):
+  erpnext make_stock_entry (Job Card)      → doc_events/job_card.make_stock_entry
+  erpnext make_stock_entry (Material Request) → doc_events/material_request.make_stock_entry
+  erpnext make_stock_in_entry (Stock Entry) → doc_events/stock_entry.make_stock_in_entry
+  frappe bulk_update submit_cancel_or_update_docs → doc_events/bulk_update.custom_submit_cancel_or_update_docs
+
+scheduler_events:
+  daily_long: mop_settings/mop_eod_sync.sync_mop_logs
+
+after_migrate: migrate.py::after_migrate() — applies custom_fields/*.json and property_setter/*.json
+
+===========================================================================
+CRITICAL INVARIANTS
+===========================================================================
+
+MOP LOG:
+  - is_synced=0 on creation; set to 1 only after successful Stock Entry creation in EOD sync.
+  - is_cancelled=1 for reversed logs; never physically delete logs.
+  - assert_sync_not_running() must block user MOP/SE creation during EOD sync.
+  - frappe.flags.mop_sync_in_progress bypasses the sync lock for sync-created documents only.
+  - Deduplication key for loss-attribution logs:
+    (voucher_type, voucher_no, manufacturing_operation, loss_source_row, loss_type, is_cancelled=0).
+
+STOCK RESERVATION ENTRY:
+  - CustomStockReservationEntry.auto_reserve_serial_and_batch() must return early
+    when manufacturing_work_order + manufacturing_operation + sb_entries +
+    reservation_based_on="Serial and Batch" to preserve MOP batch lineage.
+  - EOD sync cancels SREs where remaining_qty > 0 but MOP balance <= 0.
+
+BATCH AUTONAME (Customer Subcontracting):
+  - Parent batch: {customer}-{year_code}{month}-{item_code}-{serial}
+  - Child batch: {prefix}-{item_code}-{parent_serial}-{alphabet}
+  - frappe.flags.is_batch_autoname=True bypasses batch duplicate validation during auto-naming.
+
+SUBMISSION QUEUE:
+  - Employee IR, Department IR, Product Certification, Stock Entry, Main Slip
+    are queued in background (queue="long", timeout=4500).
+  - Duplicate queue prevention: checks existing queue before inserting new entry.
+
+EOD SYNC LOCK:
+  - MOP Settings.sync_running acts as a mutual exclusion flag.
+  - Stale lock auto-clears after 4 hours.
+  - Lock is cleared in a finally-equivalent pattern at end of sync_mop_logs().
+
+SERIAL AND BATCH BUNDLE:
+  - Duplicate inward serials are blocked except for "FG Purchase" and "Branch Purchase".
+  - Validation is skipped for POS Invoice and Pick List.
+
+===========================================================================
+KNOWN SQL INJECTION RISK (do not add similar patterns)
+===========================================================================
+
+doc_events/sales_invoice.py and doc_events/sales_order.py contain
+frappe.db.sql() calls that interpolate customer, metal_type, and metal_touch
+values directly via f-strings (Metal Criteria queries). These are known
+pre-existing issues. Any PR that adds new f-string SQL in this style must be
+flagged as CRITICAL and the suggestion must be to convert to parameterized form.
+
+===========================================================================
+FIXTURE PRODUCTION IMPACT (bench migrate overwrites)
+===========================================================================
+
+On every bench migrate, after_migrate applies:
+- Workflows: "Sketch Order Form Approval" and "Sketch Order Approval with Purchase 1"
+- All Workflow States (89) and Workflow Action Masters (51)
+- Roles: "GK sales user", "Sketch QC", "All"
+- Custom Fields: 9 fields on Sketch Order and Sketch Order Form
+- All custom_fields/*.json and property_setter/*.json files
+
+Changes to these files deploy instantly to production on the next migration.
+No separate deploy step protects production from fixture changes merged to main.
+
+===========================================================================
+TEST INFRASTRUCTURE
+===========================================================================
+
+Location: jewellery_erpnext/tests/ (cross-DocType tests)
+          jewellery_erpnext/doctype/*/test_*.py (per-DocType tests)
+Style: Frappe FrappeTestCase (bench-integrated, requires site)
+Run command: bench --site <site-name> run-tests --app jewellery_erpnext
+
+Well-tested flows: MOP Log balance, EOD sync consolidation, Employee IR loss
+attribution (4 tests), Stock Reservation Entry override, make_receive_entry
+availability (5 tests), MWO/PMO/Plan, Department IR, main_slip_inject,
+weight recalculation.
+
+Untested flows (ask for tests when these areas change): Stock Entry hooks,
+Material Request hooks, Manufacturing Operation cancel, EOD sync per-operation
+fallback, batch_rename create_repack_for_used_other, batch valuation ledger.
+
+===========================================================================
+REPORTS SUMMARY
+===========================================================================
+
+Work Order Status                  — Script Report, per-WO filter (mandatory)
+BOM Details Against Quotation      — Script Report, per-Quotation filter (mandatory), 891 lines, multi-JOIN
+Item Wise MWO MOP Log              — Script Report, per-MWO filter (mandatory), exposes batch/customer data
+Manufacturing Operation Balance    — Script Report, per-MOP filter (mandatory), calls mop_log balance functions
+CAD Order Timelogs                 — Script Report (Gurukrupa Exports), LIKE filter, designer SLA data
+Subcontracting Report              — Script Report (Customer Subcontracting), 4-stream SQL, batch ownership data
+
+All reports lack explicit role-based permission checks in their execute() functions.
+Access depends on DocType-level permissions. Verify report filter enforcement
+before trusting report output scope.
+"""

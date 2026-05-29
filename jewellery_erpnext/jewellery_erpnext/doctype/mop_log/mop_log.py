@@ -114,6 +114,87 @@ def update_wt_detail(manufacturing_operation):
 	)
 
 
+def recalculate_manufacturing_operation_weights(manufacturing_operation, pending=None):
+	"""Recompute all weight buckets on a Manufacturing Operation from active MOP Log rows.
+
+	Queries active (is_cancelled=0) rows, keeps the latest-creation entry per
+	(item_code, batch_no), then sums qty_after_transaction_batch_based into the
+	appropriate prefix bucket. D/G remain in carats; gross_wt is derived via
+	update_wt_detail which converts D/G at ×0.2.
+
+	pending: the in-flight MOPLog document from validate(). When provided and
+	not being cancelled, its (item_code, batch_no) entry overrides the DB
+	snapshot for that key (covers the not-yet-committed insert/update path).
+	When pending.is_cancelled is truthy, the pending row is ignored entirely.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT
+			item_code,
+			batch_no,
+			qty_after_transaction_batch_based  AS qaf_batch,
+			pcs_after_transaction_batch_based  AS pcs_batch,
+			name,
+			creation
+		FROM `tabMOP Log`
+		WHERE manufacturing_operation = %s AND is_cancelled = 0
+		ORDER BY creation ASC
+		""",
+		(manufacturing_operation,),
+		as_dict=True,
+	)
+
+	# Latest-per-(item, batch): ORDER BY creation ASC → last dict write wins.
+	latest = {}
+	for row in rows:
+		latest[(row["item_code"], row["batch_no"])] = row
+
+	if pending is not None and not pending.is_cancelled:
+		latest[(pending.item_code, pending.batch_no)] = {
+			"item_code": pending.item_code,
+			"batch_no": pending.batch_no,
+			"qaf_batch": pending.qty_after_transaction_batch_based,
+			"pcs_batch": pending.pcs_after_transaction_batch_based,
+		}
+
+	buckets = {
+		"net_wt": 0.0,
+		"finding_wt": 0.0,
+		"diamond_wt": 0.0,
+		"diamond_wt_in_gram": 0.0,
+		"diamond_pcs": 0.0,
+		"gemstone_wt": 0.0,
+		"gemstone_wt_in_gram": 0.0,
+		"gemstone_pcs": 0.0,
+		"other_wt": 0.0,
+	}
+
+	for row in latest.values():
+		item_code = row.get("item_code") or ""
+		first_char = item_code[0] if item_code else None
+		if not FIELD_MAP.get(first_char):
+			continue
+		qaf = flt(row.get("qaf_batch") or 0)
+		pcs = flt(row.get("pcs_batch") or 0)
+		if first_char == "M":
+			buckets["net_wt"] += qaf
+		elif first_char == "F":
+			buckets["finding_wt"] += qaf
+		elif first_char == "D":
+			buckets["diamond_wt"] += qaf
+			buckets["diamond_wt_in_gram"] += qaf * 0.2
+			buckets["diamond_pcs"] += pcs
+		elif first_char == "G":
+			buckets["gemstone_wt"] += qaf
+			buckets["gemstone_wt_in_gram"] += qaf * 0.2
+			buckets["gemstone_pcs"] += pcs
+		elif first_char == "O":
+			buckets["other_wt"] += qaf
+
+	frappe.db.set_value("Manufacturing Operation", manufacturing_operation, buckets)
+	update_wt_detail(manufacturing_operation)
+
+
 def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	item_code = row.get("item_code") or ""
 	if not item_code:
