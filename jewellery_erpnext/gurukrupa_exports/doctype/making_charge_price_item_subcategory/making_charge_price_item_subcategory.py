@@ -6,3 +6,7 @@ from frappe.model.document import Document
 
 class MakingChargePriceItemSubcategory(Document):
 	pass
+
+
+# def on_doctype_update():
+# 	frappe.db.add_index("Making Charge Price Finding Subcategory", ["subcategory"])
