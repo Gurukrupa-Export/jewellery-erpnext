@@ -3084,7 +3084,7 @@ def _process_single_row(self, row, ctx):
         _process_gemstone_detail(self, doc, ctx, cctx)
         _process_metal_detail   (self, doc, ctx, cctx)
         _process_finding_detail (self, doc, ctx, cctx)
-        _process_diamond_detail (self, doc, ctx, cctx)
+        _process_diamond_detail (self, doc, ctx,row, cctx)
         _update_bom_totals      (self, doc, row, ctx, item_code, serial_no)
 
         doc.save(ignore_permissions=True)
