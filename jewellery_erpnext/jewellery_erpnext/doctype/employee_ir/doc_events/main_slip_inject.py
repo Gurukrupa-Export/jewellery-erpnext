@@ -407,8 +407,18 @@ def inject_extra_metal_for_eir_receive(eir, row):
 	if getattr(eir, "main_slip", None):
 		if _existing_injection_se(eir.name, row.name):
 			return []
+		# Validate synchronously so the user gets immediate feedback if data is missing.
+		# SE save/submit is deferred to a fresh background transaction to avoid InnoDB
+		# lock contention from the ~30 writes accumulated in the EIR submit transaction.
 		target_items = _resolve_inject_metal_items(row.manufacturing_work_order, extra)
-		return _inject_via_main_slip_batches(eir, row, target_items, dept_wh)
+		if not target_items:
+			frappe.throw(
+				_("Main Slip injection: no target items resolved for MWO {0}").format(
+					row.manufacturing_work_order
+				)
+			)
+		_schedule_main_slip_injection_after_commit(eir.name, row.name)
+		return []
 
 	segments = _resolve_fallback_inject_segments(
 		eir, row.manufacturing_work_order, extra, dept_wh
@@ -416,9 +426,279 @@ def inject_extra_metal_for_eir_receive(eir, row):
 	existing_types = _existing_injection_se_types(eir.name, row.name)
 	if _fallback_injection_fully_submitted(segments, existing_types):
 		return []
-	return _inject_via_source_warehouse_fallback(
-		eir, row, segments, dept_wh, existing_types
+
+	# Pre-validate synchronously for immediate user feedback before enqueueing.
+	# SE save/submit is deferred to a fresh background transaction to avoid
+	# InnoDB lock contention from ~30 writes accumulated in the EIR submit
+	# transaction (Error 1205 lock wait timeout on SLE INSERT).
+	source_wh = _resolve_source_warehouse_raw_material(eir)
+	if not source_wh:
+		frappe.throw(
+			_("Main Slip injection: MSL warehouse not configured for {0}").format(
+				eir.subcontractor if eir.subcontracting == "Yes" else eir.employee
+			)
+		)
+	transfer_segs = [s for s in segments if s.get("mode") == "transfer"]
+	purity_segs = [s for s in segments if s.get("mode") == "purity"]
+	_validate_fallback_segments_against_source_bin(
+		transfer_segs, purity_segs, source_wh
 	)
+
+	_schedule_extra_metal_injection_after_commit(eir.name, row.name)
+	return []
+
+
+def _schedule_extra_metal_injection_after_commit(eir_name, row_name):
+	"""Enqueue fallback SE creation in a fresh transaction after EIR commits.
+
+	``enqueue_after_commit=True`` — job fires only on successful EIR commit so
+	a rolled-back EIR never triggers injection. Deterministic ``job_name``
+	deduplicates re-enqueues for the same (eir, row) pair.
+	"""
+	frappe.enqueue(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
+		"main_slip_inject.process_extra_metal_injection_job",
+		queue="long",
+		timeout=4500,
+		enqueue_after_commit=True,
+		job_name=f"eir-extra-metal-injection:{eir_name}:{row_name}",
+		eir_name=eir_name,
+		row_name=row_name,
+	)
+
+
+def _schedule_main_slip_injection_after_commit(eir_name, row_name):
+	"""Enqueue main-slip SE creation in a fresh transaction after EIR commits."""
+	frappe.enqueue(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
+		"main_slip_inject.process_main_slip_injection_job",
+		queue="long",
+		timeout=4500,
+		enqueue_after_commit=True,
+		job_name=f"eir-main-slip-injection:{eir_name}:{row_name}",
+		eir_name=eir_name,
+		row_name=row_name,
+	)
+
+
+def process_main_slip_injection_job(eir_name, row_name, _retry=0, _sync_retry=0):
+	"""Background job: main-slip path SE creation with idempotency and retry.
+
+	SE ``onsubmit`` hook handles ``sync_mop_log_for_stock_entry`` and
+	``stock_reservation_entry_for_mwo`` automatically.
+	"""
+	eir = frappe.get_doc("Employee IR", eir_name)
+	if eir.docstatus != 1:
+		return
+
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_settings import (
+		assert_sync_not_running,
+	)
+
+	try:
+		assert_sync_not_running()
+	except frappe.ValidationError:
+		if _sync_retry < 10:
+			frappe.enqueue(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
+				"main_slip_inject.process_main_slip_injection_job",
+				queue="long",
+				timeout=4500,
+				job_name=f"eir-main-slip-injection:{eir_name}:{row_name}",
+				eir_name=eir_name,
+				row_name=row_name,
+				_retry=_retry,
+				_sync_retry=_sync_retry + 1,
+			)
+		else:
+			frappe.log_error(
+				title=f"EIR main-slip injection: blocked by sync after 10 retries ({eir_name})",
+				message=(
+					f"Employee IR {eir_name} row {row_name}: MOP Sync was running for all "
+					"10 re-enqueue attempts. Re-trigger injection manually after sync completes."
+				),
+			)
+		return
+
+	row = next((r for r in eir.employee_ir_operations if r.name == row_name), None)
+	if not row:
+		frappe.log_error(
+			title="EIR main-slip injection: row not found",
+			message=f"Employee IR {eir_name}: operation row {row_name} not found.",
+		)
+		return
+
+	if _existing_injection_se(eir.name, row.name):
+		return
+
+	extra = flt(row.received_gross_wt) - flt(row.gross_wt)
+	if extra <= 0:
+		return
+
+	dept_wh = _resolve_department_warehouse(eir.department)
+	if not dept_wh:
+		frappe.log_error(
+			title="EIR main-slip injection: dept warehouse missing",
+			message=f"Employee IR {eir_name}: no MFG warehouse for department {eir.department}.",
+		)
+		return
+
+	target_items = _resolve_inject_metal_items(row.manufacturing_work_order, extra)
+	try:
+		created = _inject_via_main_slip_batches(eir, row, target_items, dept_wh)
+	except frappe.QueryTimeoutError:
+		if _retry < 3:
+			frappe.enqueue(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
+				"main_slip_inject.process_main_slip_injection_job",
+				queue="long",
+				timeout=4500,
+				job_name=f"eir-main-slip-injection:{eir_name}:{row_name}",
+				eir_name=eir_name,
+				row_name=row_name,
+				_retry=_retry + 1,
+			)
+		else:
+			frappe.log_error(
+				title=f"EIR main-slip injection: lock timeout after 3 retries ({eir_name})",
+				message=(
+					f"Employee IR {eir_name} row {row_name}: "
+					"QueryTimeoutError on SLE INSERT after 3 retries."
+				),
+			)
+		return
+	_verify_injection_outputs(eir, row, created)
+
+
+def process_extra_metal_injection_job(eir_name, row_name, _retry=0, _sync_retry=0):
+	"""Background job: create and submit fallback injection Stock Entries.
+
+	Runs in its own transaction after EIR commit. Idempotent: checks existing
+	SE types before creating so a retry cannot create duplicates.
+	SE ``onsubmit`` hook handles ``sync_mop_log_for_stock_entry`` and
+	``stock_reservation_entry_for_mwo`` automatically — no manual creation needed.
+	"""
+	eir = frappe.get_doc("Employee IR", eir_name)
+	if eir.docstatus != 1:
+		return
+
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_settings import (
+		assert_sync_not_running,
+	)
+
+	try:
+		assert_sync_not_running()
+	except frappe.ValidationError:
+		if _sync_retry < 10:
+			frappe.enqueue(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
+				"main_slip_inject.process_extra_metal_injection_job",
+				queue="long",
+				timeout=4500,
+				job_name=f"eir-extra-metal-injection:{eir_name}:{row_name}",
+				eir_name=eir_name,
+				row_name=row_name,
+				_retry=_retry,
+				_sync_retry=_sync_retry + 1,
+			)
+		else:
+			frappe.log_error(
+				title=f"EIR fallback injection: blocked by sync after 10 retries ({eir_name})",
+				message=(
+					f"Employee IR {eir_name} row {row_name}: MOP Sync was running for all "
+					"10 re-enqueue attempts. Re-trigger injection manually after sync completes."
+				),
+			)
+		return
+
+	row = next((r for r in eir.employee_ir_operations if r.name == row_name), None)
+	if not row:
+		frappe.log_error(
+			title="EIR injection job: row not found",
+			message=f"Employee IR {eir_name}: operation row {row_name} not found.",
+		)
+		return
+
+	extra = flt(row.received_gross_wt) - flt(row.gross_wt)
+	if extra <= 0:
+		return
+
+	dept_wh = _resolve_department_warehouse(eir.department)
+	if not dept_wh:
+		frappe.log_error(
+			title="EIR injection job: dept warehouse missing",
+			message=f"Employee IR {eir_name}: no MFG warehouse for department {eir.department}.",
+		)
+		return
+
+	segments = _resolve_fallback_inject_segments(
+		eir, row.manufacturing_work_order, extra, dept_wh
+	)
+	existing_types = _existing_injection_se_types(eir.name, row.name)
+	if _fallback_injection_fully_submitted(segments, existing_types):
+		return
+
+	try:
+		created = _inject_via_source_warehouse_fallback(
+			eir, row, segments, dept_wh, existing_types
+		)
+	except frappe.QueryTimeoutError:
+		if _retry < 3:
+			frappe.enqueue(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events."
+				"main_slip_inject.process_extra_metal_injection_job",
+				queue="long",
+				timeout=4500,
+				job_name=f"eir-extra-metal-injection:{eir_name}:{row_name}",
+				eir_name=eir_name,
+				row_name=row_name,
+				_retry=_retry + 1,
+			)
+		else:
+			frappe.log_error(
+				title=f"EIR fallback injection: lock timeout after 3 retries ({eir_name})",
+				message=(
+					f"Employee IR {eir_name} row {row_name}: "
+					"QueryTimeoutError on SLE INSERT after 3 retries."
+				),
+			)
+		return
+	_verify_injection_outputs(eir, row, created)
+
+
+def _verify_injection_outputs(eir, row, created_se_names):
+	"""Log diagnostics if MOP Log or SRE are absent after injection SE submit."""
+	for se_name in created_se_names:
+		if not frappe.db.exists(
+			"MOP Log",
+			{"voucher_type": "Stock Entry", "voucher_no": se_name, "is_cancelled": 0},
+		):
+			frappe.log_error(
+				title=f"EIR injection: MOP Log missing for SE {se_name}",
+				message=(
+					f"Employee IR {eir.name} row {row.name}: Stock Entry {se_name} submitted "
+					"but no active MOP Log created. Check sync_mop_log_for_stock_entry, "
+					"stock_entry_type, manufacturing_work_order, manufacturing_operation, "
+					"and batch fields."
+				),
+			)
+		if not frappe.db.exists(
+			"Stock Reservation Entry",
+			{
+				"docstatus": 1,
+				"manufacturing_work_order": row.manufacturing_work_order,
+				"manufacturing_operation": row.manufacturing_operation,
+			},
+		):
+			frappe.log_error(
+				title=f"EIR injection: SRE missing after SE {se_name}",
+				message=(
+					f"Employee IR {eir.name} row {row.name}: Stock Entry {se_name} submitted "
+					"but no Stock Reservation Entry created. Check MOP Settings "
+					"stock_entry_type_to_reservation, SE type, MWO/MOP fields, target "
+					"warehouse, and batch/serial fields."
+				),
+			)
 
 
 def cancel_injections_for_eir(eir_name):
