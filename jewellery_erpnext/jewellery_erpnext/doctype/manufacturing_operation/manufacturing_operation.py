@@ -2416,8 +2416,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							"rate_per_gm",
 							"supplier_fg_purchase_rate",
 							"wastage",
-							"custom_subcontracting_rate",
-							"custom_subcontracting_wastage",
+							"subcontracting_rate",
+							"subcontracting_wastage",
 						],
 					)
 
@@ -2439,12 +2439,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 						if row["is_customer_item"]:
 							row["rate"] = matching_subcategory.get(
-								"custom_subcontracting_rate", 0
+								"subcontracting_rate", 0
 							)
 							wastage_rate = (
-								matching_subcategory.get(
-									"custom_subcontracting_wastage", 0
-								)
+								matching_subcategory.get("subcontracting_wastage", 0)
 								/ 100
 							)
 							fg_purchase_rate = 0
@@ -2525,8 +2523,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							"rate_per_gm",
 							"supplier_fg_purchase_rate",
 							"wastage",
-							"custom_subcontracting_rate",
-							"custom_subcontracting_wastage",
+							"subcontracting_rate",
+							"subcontracting_wastage",
 						],
 					)
 
@@ -2548,12 +2546,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 						if row["is_customer_item"]:
 							row["rate"] = matching_subcategory.get(
-								"custom_subcontracting_rate", 0
+								"subcontracting_rate", 0
 							)
 							wastage_rate = (
-								matching_subcategory.get(
-									"custom_subcontracting_wastage", 0
-								)
+								matching_subcategory.get("subcontracting_wastage", 0)
 								/ 100
 							)
 							fg_purchase_rate = 0
@@ -2662,8 +2658,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								"rate_per_gm",
 								"wastage",
 								"supplier_fg_purchase_rate",
-								"custom_subcontracting_rate",
-								"custom_subcontracting_wastage",
+								"subcontracting_rate",
+								"subcontracting_wastage",
 							],
 							order_by="creation DESC",
 							as_dict=True,
@@ -2678,8 +2674,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								"rate_per_gm",
 								"supplier_fg_purchase_rate",
 								"wastage",
-								"custom_subcontracting_rate",
-								"custom_subcontracting_wastage",
+								"subcontracting_rate",
+								"subcontracting_wastage",
 							],
 						)
 
@@ -2703,11 +2699,11 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 							if row["is_customer_item"]:
 								row["rate"] = matching_subcategory.get(
-									"custom_subcontracting_rate", 0
+									"subcontracting_rate", 0
 								)
 								wastage_rate = (
 									matching_subcategory.get(
-										"custom_subcontracting_wastage", 0
+										"subcontracting_wastage", 0
 									)
 									/ 100
 								)
@@ -2773,8 +2769,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								"rate_per_gm",
 								"wastage",
 								"supplier_fg_purchase_rate",
-								"custom_subcontracting_rate",
-								"custom_subcontracting_wastage",
+								"subcontracting_rate",
+								"subcontracting_wastage",
 							],
 							order_by="creation DESC",
 							as_dict=True,
@@ -2789,8 +2785,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								"rate_per_gm",
 								"supplier_fg_purchase_rate",
 								"wastage",
-								"custom_subcontracting_rate",
-								"custom_subcontracting_wastage",
+								"subcontracting_rate",
+								"subcontracting_wastage",
 							],
 						)
 
@@ -2814,12 +2810,10 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 						if row["is_customer_item"]:
 							row["rate"] = matching_subcategory.get(
-								"custom_subcontracting_rate", 0
+								"subcontracting_rate", 0
 							)
 							wastage_rate = (
-								matching_subcategory.get(
-									"custom_subcontracting_wastage", 0
-								)
+								matching_subcategory.get("subcontracting_wastage", 0)
 								/ 100
 							)
 							fg_purchase_rate = 0
