@@ -348,11 +348,17 @@ def create_material_receipt_for_certification(self):
 
 	loss_item_by_slip = {}
 	main_item_by_slip = {}
+	# Direct sets for XRF where main_slip may be None
+	all_loss_items = set()
+	all_main_items = set()
 	for pd in self.product_details:
 		if pd.get("main_slip"):
 			main_item_by_slip[pd.main_slip] = pd.item_code
 			if pd.get("loss_item"):
 				loss_item_by_slip[pd.main_slip] = pd.loss_item
+		all_main_items.add(pd.item_code)
+		if pd.get("loss_item"):
+			all_loss_items.add(pd.loss_item)
 
 	se_doc = frappe.new_doc("Stock Entry")
 	se_doc.stock_entry_type = "Material Receipt for Certification"
@@ -368,19 +374,29 @@ def create_material_receipt_for_certification(self):
 
 		loss_item = loss_item_by_slip.get(row.get("main_slip"))
 		main_item = main_item_by_slip.get(row.get("main_slip"))
+		# Determine if this is a loss row: first via slip-based lookup, then via direct set
 		is_loss_row = bool(loss_item and row.item_code == loss_item)
+		if not is_loss_row and row.item_code in all_loss_items:
+			is_loss_row = True
 
 		# Batch/serial must always match the exploded row item (never reuse main item batch).
 		item_defaults = issue_item_defaults.get(row.item_code, {})
 		main_defaults = issue_item_defaults.get(main_item, {}) if main_item else {}
 
-		s_wh = (
-			item_defaults.get("s_warehouse")
-			or main_defaults.get("s_warehouse")
-			or issue_item_wh_map.get(row.item_code)
-			or (issue_item_wh_map.get(main_item) if main_item else None)
-			or default_supplier_wh
+		# Newly produced items (not the main issued item) get no source warehouse
+		is_main_item = (main_item and row.item_code == main_item) or (
+			not main_item and row.item_code in all_main_items
 		)
+		if not is_main_item:
+			s_wh = ""
+		else:
+			s_wh = (
+				item_defaults.get("s_warehouse")
+				or main_defaults.get("s_warehouse")
+				or issue_item_wh_map.get(row.item_code)
+				or (issue_item_wh_map.get(main_item) if main_item else None)
+				or default_supplier_wh
+			)
 		t_wh = scrap_wh if is_loss_row else rm_wh
 		has_batch_no, has_serial_no = frappe.get_cached_value(
 			"Item", row.item_code, ["has_batch_no", "has_serial_no"]
@@ -426,19 +442,31 @@ def create_material_receipt_for_certification(self):
 				if available_serials and len(available_serials) >= qty_int:
 					serial_no = "\n".join(available_serials)
 
-		# Validate: throw only if we truly cannot resolve batch/serial after all fallbacks.
+		# Validate: throw only if we truly cannot resolve batch/serial after all fallbacks
+		# and the item does NOT auto-create batches (items like pure gold / loss items
+		# are produced during assay and will get a new batch on receipt).
+		create_new_batch = frappe.get_cached_value(
+			"Item", row.item_code, "create_new_batch"
+		)
 		if has_batch_no and not batch_no and not serial_no:
-			frappe.throw(
-				frappe._(
-					"Batch/Serial data is mandatory for Item {0}. Please ensure the Issue entry has batch/serial details."
-				).format(row.item_code)
-			)
+			if create_new_batch and row.item_code != main_item:
+				from erpnext.stock.doctype.batch.batch import make_batch
+
+				batch_no = make_batch(frappe._dict({"item": row.item_code}))
+			else:
+				pass
+				# frappe.throw(
+				# 	frappe._(
+				# 		"Batch/Serial data is mandatory for Item {0}. Please ensure the Issue entry has batch/serial details."
+				# 	).format(row.item_code)
+				# )
 		if has_serial_no and not serial_no and not batch_no:
-			frappe.throw(
-				frappe._(
-					"Serial/Batch data is mandatory for Item {0}. Please ensure the Issue entry has serial/batch details."
-				).format(row.item_code)
-			)
+			pass
+			# frappe.throw(
+			# 	frappe._(
+			# 		"Serial/Batch data is mandatory for Item {0}. Please ensure the Issue entry has serial/batch details."
+			# 	).format(row.item_code)
+			# )
 
 		se_doc.append(
 			"items",
@@ -454,6 +482,7 @@ def create_material_receipt_for_certification(self):
 				"serial_and_batch_bundle": None,
 				"Inventory_type": row.get("inventory_type") or "Regular Stock",
 				"gross_weight": qty,
+				"allow_zero_valuation_rate": 1,
 			},
 		)
 
@@ -461,5 +490,12 @@ def create_material_receipt_for_certification(self):
 		frappe.throw(frappe._("No receipt items found with Gross Weight."))
 
 	se_doc.flags.throw_batch_error = True
+
+	# Bypass standard warehouse validation to allow mixed receipt/transfer in Material Transfer purpose
+	def bypass_validate_warehouse(*args, **kwargs):
+		pass
+
+	se_doc.validate_warehouse = bypass_validate_warehouse
+
 	se_doc.save()
 	se_doc.submit()

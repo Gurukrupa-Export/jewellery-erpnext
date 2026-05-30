@@ -136,31 +136,21 @@ class ManufacturingWorkOrder(Document):
 				)
 				if agg:
 					agg = agg[0]
-					# Only auto-fill fields that are not already set by the user
-					if not self.gross_wt:
-						self.gross_wt = flt(agg.get("gross_wt"))
-					if not self.net_wt:
-						self.net_wt = flt(agg.get("net_wt"))
-					if not self.finding_wt:
-						self.finding_wt = flt(agg.get("finding_wt"))
-					if not self.diamond_wt:
-						self.diamond_wt = flt(agg.get("diamond_wt"))
-					if not self.gemstone_wt:
-						self.gemstone_wt = flt(agg.get("gemstone_wt"))
-					if not self.other_wt:
-						self.other_wt = flt(agg.get("other_wt"))
-					if not self.received_gross_wt:
-						self.received_gross_wt = flt(agg.get("received_gross_wt"))
-					if not self.received_net_wt:
-						self.received_net_wt = flt(agg.get("received_net_wt"))
-					if not self.loss_wt:
-						self.loss_wt = flt(agg.get("loss_wt"))
-					if not self.diamond_wt_in_gram:
-						self.diamond_wt_in_gram = flt(agg.get("diamond_wt_in_gram"))
-					if not self.diamond_pcs:
-						self.diamond_pcs = flt(agg.get("diamond_pcs"))
-					if not self.gemstone_pcs:
-						self.gemstone_pcs = flt(agg.get("gemstone_pcs"))
+					# Always overwrite with aggregated weights from all
+					# sibling MWOs so that every MWO's contribution is
+					# reflected in the FG MWO.
+					self.gross_wt = flt(agg.get("gross_wt"))
+					self.net_wt = flt(agg.get("net_wt"))
+					self.finding_wt = flt(agg.get("finding_wt"))
+					self.diamond_wt = flt(agg.get("diamond_wt"))
+					self.gemstone_wt = flt(agg.get("gemstone_wt"))
+					self.other_wt = flt(agg.get("other_wt"))
+					self.received_gross_wt = flt(agg.get("received_gross_wt"))
+					self.received_net_wt = flt(agg.get("received_net_wt"))
+					self.loss_wt = flt(agg.get("loss_wt"))
+					self.diamond_wt_in_gram = flt(agg.get("diamond_wt_in_gram"))
+					self.diamond_pcs = flt(agg.get("diamond_pcs"))
+					self.gemstone_pcs = flt(agg.get("gemstone_pcs"))
 
 		frappe.db.set_value(
 			"Manufacturing Work Order",
@@ -181,6 +171,30 @@ class ManufacturingWorkOrder(Document):
 			},
 			update_modified=False,
 		)
+
+		# Also propagate weights to the FG MWO's Manufacturing Operation
+		# (MOP) so that the SNC submission picks up correct weights.
+		fg_mop = getattr(self, "manufacturing_operation", None)
+		if fg_mop:
+			frappe.db.set_value(
+				"Manufacturing Operation",
+				fg_mop,
+				{
+					"gross_wt": self.gross_wt,
+					"net_wt": self.net_wt,
+					"finding_wt": self.finding_wt,
+					"diamond_wt": self.diamond_wt,
+					"gemstone_wt": self.gemstone_wt,
+					"other_wt": self.other_wt,
+					"received_gross_wt": self.received_gross_wt,
+					"received_net_wt": self.received_net_wt,
+					"loss_wt": self.loss_wt,
+					"diamond_wt_in_gram": self.diamond_wt_in_gram,
+					"diamond_pcs": self.diamond_pcs,
+					"gemstone_pcs": self.gemstone_pcs,
+				},
+				update_modified=False,
+			)
 
 	def validate_other_work_orders(self):
 		# last_department = frappe.db.get_value(
@@ -523,6 +537,12 @@ def create_manufacturing_operation(doc):
 				new_log.flow_index = 0
 				new_log.is_synced = 0
 				new_log.save()
+
+		# Sync weights on the FG MWO from all sibling MWOs before
+		# creating the SNC so that the manufacturing operation
+		# carries correct weight values.
+		fg_doc = frappe.get_doc("Manufacturing Work Order", doc.name)
+		fg_doc.sync_mwo_weights()
 
 		create_snc_from_mwo_submit(doc.name)
 

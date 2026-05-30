@@ -763,6 +763,7 @@ def create_stock_entry(doc):
 
 		added_mwo = []
 		added_serial = []
+		is_fire_assy_xrf = doc.service_type in ["Fire Assy Service", "XRF Services"]
 		for row in doc.exploded_product_details:
 			common_order = (
 				row.parent_manufacturing_order or row.manufacturing_work_order
@@ -773,11 +774,21 @@ def create_stock_entry(doc):
 				)
 				added_mwo.append(common_order)
 			else:
-				if (
-					not row.serial_no or row.serial_no in added_serial
-				) and not row.tree_no:
-					continue
-				added_serial.append(row.serial_no)
+				# For Fire Assy / XRF services, exploded rows may lack
+				# serial_no and tree_no but must still be processed when
+				# they carry a positive gross_weight.
+				if not is_fire_assy_xrf:
+					if (
+						not row.serial_no or row.serial_no in added_serial
+					) and not row.tree_no:
+						continue
+				else:
+					# Skip loss rows (gross_weight == 0) for Fire Assy/XRF
+					if row.gross_weight <= 0:
+						continue
+
+				if row.serial_no:
+					added_serial.append(row.serial_no)
 				if row.gross_weight > 0:
 					source_wh = (
 						s_warehouse if doc.type == "Issue" else t_warehouse_serial

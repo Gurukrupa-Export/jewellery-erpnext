@@ -260,15 +260,18 @@ class DepartmentIR(Document):
 						update_modified=False,
 					)
 
-					if "Tagging" in self.current_department:
-						fg_mwo = frappe.db.get_value(
-							"Manufacturing Work Order",
-							{"manufacturing_order": pmo, "for_fg": 1},
-							"name",
-						)
-						if fg_mwo:
-							fg_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
-							fg_doc.sync_mwo_weights()
+				# Re-aggregate weights from ALL sibling MWOs on every
+				# tagging arrival so the FG MWO accumulates weights from
+				# every MWO, not just the first one to arrive.
+				if "Tagging" in self.current_department:
+					fg_mwo = frappe.db.get_value(
+						"Manufacturing Work Order",
+						{"manufacturing_order": pmo, "for_fg": 1},
+						"name",
+					)
+					if fg_mwo:
+						fg_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
+						fg_doc.sync_mwo_weights()
 
 			doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
 			doc.set("department_time_logs", [])
