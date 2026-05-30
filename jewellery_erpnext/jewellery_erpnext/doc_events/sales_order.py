@@ -3947,7 +3947,7 @@ def _process_single_row(self, row, ctx):
     item_code = row.item_code
     cctx      = _get_company_context(self, row, ctx)   # ← now cached
 
-    if not row.quotation_bom:
+    if not row.custom_tracking_bom:
         create_serial_no_bom(self, row)
         if not row.bom:
             return
