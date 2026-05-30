@@ -37,8 +37,33 @@ class SerialNumberCreator(Document):
 	def on_submit(self):
 		validate_qty(self)
 		calulate_id_wise_sum_up(self)
-		to_prepare_data_for_make_mnf_stock_entry(self)
-		update_new_serial_no(self)
+
+		import time
+
+		for attempt in range(3):
+			try:
+				if attempt > 0:
+					frappe.db.begin()
+					self.db_update()
+					for child in self.get_all_children():
+						child.db_update()
+
+				to_prepare_data_for_make_mnf_stock_entry(self)
+				update_new_serial_no(self)
+				break
+			except Exception as e:
+				is_lock_error = (
+					"deadlock" in str(e).lower()
+					or "lock wait timeout" in str(e).lower()
+				)
+				if is_lock_error and attempt < 2:
+					frappe.logger().warning(
+						f"SNC {self.name}: Deadlock during submit, retrying attempt {attempt+2}"
+					)
+					frappe.db.rollback()
+					time.sleep(0.5 * (attempt + 1))
+				else:
+					raise
 
 	def _render_fg_details(self):
 		"""Build source_table (batch-wise) and fg_details (aggregated) from MOP Log."""
@@ -261,24 +286,21 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 					# ── PRIORITY 2: SRE cancellation ──
 					# No PC exists — resolve via Stock Reservation Entries
 					# First, find all MWOs that consumed this item/batch via MOP Log
-					mwo_prefix = (
-						self.manufacturing_work_order.rsplit("-", 1)[0] + "%"
-						if self.manufacturing_work_order
-						else "%"
-					)
 					consumed_mwos = frappe.db.sql(
 						"""
 						SELECT DISTINCT manufacturing_work_order
 						FROM `tabMOP Log`
-						WHERE item_code = %s AND batch_no = %s
-						  AND (manufacturing_work_order = %s OR manufacturing_work_order LIKE %s)
+						WHERE item_code = %s AND IFNULL(batch_no, '') = IFNULL(%s, '')
+						  AND manufacturing_work_order IN (
+						      SELECT name FROM `tabManufacturing Work Order`
+						      WHERE manufacturing_order = %s
+						  )
 						  AND is_cancelled = 0
 					""",
 						(
 							row["item_code"],
 							row.get("batch_no"),
-							self.manufacturing_work_order,
-							mwo_prefix,
+							self.parent_manufacturing_order,
 						),
 						as_list=1,
 					)
@@ -302,12 +324,12 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 					for sre_name in set(linked_sres):
 						frappe.clear_document_cache("Bin")
 						sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
-						sre_reserved_qty_total += flt(sre_doc.reserved_qty)
 
 						# Capture warehouse from SRE if available
 						if sre_doc.warehouse:
 							row["s_warehouse"] = sre_doc.warehouse
 
+						sre_reserved_qty_total += flt(sre_doc.reserved_qty)
 						sre_doc.flags.ignore_permissions = True
 						sre_doc.cancel()
 						frappe.clear_document_cache("Bin")
@@ -323,6 +345,36 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 									"s_warehouse",
 									row["s_warehouse"],
 								)
+					else:
+						# Priority 3: Fallback to Stock Entry linked to PMO if SREs are missing/cancelled
+						se_wh = frappe.db.sql(
+							"""
+							SELECT sed.t_warehouse, sed.s_warehouse
+							FROM `tabStock Entry Detail` sed
+							JOIN `tabStock Entry` se ON se.name = sed.parent
+							WHERE se.manufacturing_order = %s
+							  AND sed.item_code = %s
+							  AND se.docstatus = 1
+							ORDER BY se.creation DESC
+							LIMIT 1
+						""",
+							(self.parent_manufacturing_order, row["item_code"]),
+							as_dict=True,
+						)
+
+						if se_wh:
+							fallback_wh = se_wh[0].t_warehouse or se_wh[0].s_warehouse
+							if fallback_wh:
+								row["s_warehouse"] = fallback_wh
+								for st_row in self.source_table:
+									if st_row.row_material == row[
+										"item_code"
+									] and st_row.batch_no == row.get("batch_no"):
+										st_row.s_warehouse = row["s_warehouse"]
+										st_row.db_set(
+											"s_warehouse",
+											row["s_warehouse"],
+										)
 
 				loss_qty = sre_reserved_qty_total - flt(row["qty"])
 
@@ -956,14 +1008,101 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				inventory_type = sed_data.inventory_type
 				customer = sed_data.customer
 
-		s_wh = resolve_and_validate(
-			item_code=item_code,
-			qty=qty,
-			batch_no=batch_no,
-			sales_order=sales_order,
-			mwo=mwo_name,
-			mop=mop_name,
+		s_wh = None
+		# ── Same resolution logic used during submit (to_prepare_data_for_make_mnf_stock_entry) ──
+		# Priority 1: PC Receive
+		pc_receive_data = frappe.db.sql(
+			"""
+			SELECT se_item.t_warehouse
+			FROM `tabStock Entry` se
+			JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
+			JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
+			WHERE pc.type = 'Receive'
+			  AND se.docstatus = 1
+			  AND EXISTS(
+				  SELECT 1 FROM `tabProduct Details` pd
+				  WHERE pd.parent = pc.name
+					AND (pd.manufacturing_work_order = %(mwo)s
+						 OR pd.parent_manufacturing_order = %(pmo)s)
+			  )
+			  AND se_item.item_code = %(item_code)s
+			ORDER BY se.creation DESC LIMIT 1
+		""",
+			{
+				"mwo": snc_doc.manufacturing_work_order,
+				"pmo": pmo,
+				"item_code": item_code,
+			},
+			as_dict=1,
 		)
+		if pc_receive_data and pc_receive_data[0].t_warehouse:
+			s_wh = pc_receive_data[0].t_warehouse
+
+		if not s_wh:
+			# Priority 2: SRE
+			consumed_mwos = frappe.db.sql(
+				"""
+				SELECT DISTINCT manufacturing_work_order
+				FROM `tabMOP Log`
+				WHERE item_code = %s AND IFNULL(batch_no, '') = IFNULL(%s, '')
+				  AND manufacturing_work_order IN (
+					  SELECT name FROM `tabManufacturing Work Order`
+					  WHERE manufacturing_order = %s
+				  )
+				  AND is_cancelled = 0
+			""",
+				(item_code, batch_no, snc_doc.parent_manufacturing_order),
+				as_list=1,
+			)
+
+			search_mwos = [snc_doc.manufacturing_work_order]
+			for m in consumed_mwos or []:
+				if m[0] and m[0] not in search_mwos:
+					search_mwos.append(m[0])
+
+			linked_sres = frappe.get_all(
+				"Stock Reservation Entry",
+				filters={
+					"item_code": item_code,
+					"docstatus": 1,
+					"manufacturing_work_order": ["in", search_mwos],
+				},
+				fields=["warehouse"],
+			)
+			if linked_sres:
+				for sre in linked_sres:
+					if sre.warehouse:
+						s_wh = sre.warehouse
+						break
+
+		if not s_wh:
+			# Priority 3: Stock Entry linked to PMO
+			se_wh = frappe.db.sql(
+				"""
+				SELECT sed.t_warehouse, sed.s_warehouse
+				FROM `tabStock Entry Detail` sed
+				JOIN `tabStock Entry` se ON se.name = sed.parent
+				WHERE se.manufacturing_order = %s
+				  AND sed.item_code = %s
+				  AND se.docstatus = 1
+				ORDER BY se.creation DESC
+				LIMIT 1
+			""",
+				(snc_doc.parent_manufacturing_order, item_code),
+				as_dict=True,
+			)
+			if se_wh:
+				s_wh = se_wh[0].t_warehouse or se_wh[0].s_warehouse
+
+		if not s_wh:
+			s_wh = resolve_and_validate(
+				item_code=item_code,
+				qty=qty,
+				batch_no=batch_no,
+				sales_order=sales_order,
+				mwo=mwo_name,
+				mop=mop_name,
+			)
 
 		if not s_wh:
 			s_wh = r.get("to_warehouse")

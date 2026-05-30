@@ -21,4 +21,9 @@ def custom_on_submit(self):
 			company=self.company,
 		)
 
+	# Bypass validation for Product Certification flow to avoid batch/serial errors
+	if self.voucher_type == "Stock Entry" and self.voucher_no:
+		if frappe.db.get_value("Stock Entry", self.voucher_no, "product_certification"):
+			return
+
 	self.validate_serial_batch_no_bundle()
