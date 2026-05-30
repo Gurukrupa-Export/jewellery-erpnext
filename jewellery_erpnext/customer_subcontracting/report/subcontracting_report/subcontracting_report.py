@@ -35,7 +35,10 @@ def execute(filters=None):
 	else:
 		batches_to_include = set(batches_to_include)
 
-	batch_creation_map = get_batch_creation_map(batches_to_include)
+	batch_creation_map, inventory_type_map = get_batch_creation_map(batches_to_include)
+
+	for batch in batch_map:
+		batch_map[batch]["inventory_type"] = inventory_type_map.get(batch)
 
 	ordered_batches = sorted(
 		[b for b in batch_map if b in batches_to_include],
@@ -51,6 +54,7 @@ def execute(filters=None):
 
 		owner = info["owner"]
 		item = info["item"]
+		inventory_type = info.get("inventory_type")
 
 		parent = parent_usage.get(batch, {})
 		used_same = parent.get("used_same", 0)
@@ -81,6 +85,10 @@ def execute(filters=None):
 			if filters.get("other_customer") not in other_customers:
 				continue
 
+		if filters.get("inventory_type"):
+			if inventory_type != filters.get("inventory_type"):
+				continue
+
 		balance = opening - used_same - total_used_other + received_back
 
 		data.append(
@@ -88,6 +96,7 @@ def execute(filters=None):
 				batch,
 				owner,
 				item,
+				inventory_type,
 				opening,
 				used_same,
 				total_used_other,
@@ -110,6 +119,7 @@ def add_opening(batch_map, batch_no, customer, item_code, qty):
 			"owner": customer,
 			"item": item_code,
 			"opening": qty,
+			"inventory_type": None,
 		}
 	else:
 		batch_map[batch_no]["opening"] += qty
@@ -294,7 +304,7 @@ def get_usage_data(filters, conditions):
     JOIN `tabStock Entry` se ON se.name = sed.parent
     LEFT JOIN `tabManufacturing Work Order` mwo
       ON mwo.name = se.manufacturing_work_order
-    WHERE se.stock_entry_type = 'Material Transfer (WORK ORDER)'
+    WHERE se.stock_entry_type IN ('Material Transfer (WORK ORDER)', 'Material Transfer to Department')
 	AND se.docstatus = 1
     {conditions}
     """,
@@ -342,15 +352,23 @@ def get_repack_data(filters):
 
 def get_batch_creation_map(batches):
 	if not batches:
-		return
+		return {}, {}
 
 	data = frappe.get_all(
 		"Batch",
 		filters={"name": ["in", list(batches)]},
-		fields=["name", "creation"],
+		fields=[
+			"name",
+			"creation",
+			"custom_inventory_type",
+		],
 	)
 
-	return {d.name: d.creation for d in data}
+	creation_map = {d.name: d.creation for d in data}
+
+	inventory_type_map = {d.name: d.custom_inventory_type for d in data}
+
+	return creation_map, inventory_type_map
 
 
 def get_columns():
@@ -358,6 +376,7 @@ def get_columns():
 		"Batch No:Link/Batch:350",
 		"Owner:Link/Customer:120",
 		"Item:Link/Item:160",
+		"Inventory Type:Data:140",
 		"Opening Qty:Float:110",
 		"Used Same:Float:100",
 		"Used Other:Float:100",
