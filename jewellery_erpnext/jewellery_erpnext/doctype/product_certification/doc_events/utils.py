@@ -379,7 +379,12 @@ def create_material_receipt_for_certification(self):
 			continue
 
 		loss_item = loss_item_by_slip.get(row.get("main_slip"))
+		if not loss_item and len(all_loss_items) == 1:
+			loss_item = list(all_loss_items)[0]
+
 		main_item = main_item_by_slip.get(row.get("main_slip"))
+		if not main_item and len(all_main_items) == 1:
+			main_item = list(all_main_items)[0]
 		is_loss_row = bool(loss_item and row.item_code == loss_item)
 		if not is_loss_row and row.item_code in all_loss_items:
 			is_loss_row = True
@@ -524,7 +529,7 @@ def create_material_receipt_for_certification(self):
 	# ── 2. Repack-Metal Conversion for other items + scrap ──
 	if repack_rows:
 		se_repack = frappe.new_doc("Stock Entry")
-		se_repack.stock_entry_type = "Repack-Metal Conversion"
+		se_repack.stock_entry_type = "Repack"
 		se_repack.company = self.company
 		se_repack.product_certification = self.name
 		se_repack.auto_created = 1

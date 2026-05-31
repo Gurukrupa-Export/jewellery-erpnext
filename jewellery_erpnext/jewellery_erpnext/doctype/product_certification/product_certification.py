@@ -5,7 +5,7 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
-from frappe.utils import cint
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 	get_item_loss_item,
@@ -38,6 +38,9 @@ class ProductCertification(Document):
 		self.update_bom()
 		self.get_exploded_table()
 		self.distribute_amount()
+
+	def before_submit(self):
+		self.validate_exploded_qty()
 
 	def validate_items(self):
 		if self.type == "Receive":
@@ -81,6 +84,52 @@ class ProductCertification(Document):
 					_("Row #{0}: item not found in {1}").format(
 						row.idx, self.receive_against
 					)
+				)
+
+	def validate_exploded_qty(self):
+		if self.type != "Receive":
+			return
+		if self.service_type not in ["Fire Assy Service", "XRF Services"]:
+			return
+		if not self.exploded_product_details or not self.product_details:
+			return
+
+		# Check if main_slip is used at all
+		has_main_slip = any(row.main_slip for row in self.product_details)
+
+		if has_main_slip:
+			for row in self.product_details:
+				main_slip = row.main_slip
+				if not main_slip:
+					continue
+
+				total_weight = flt(row.total_weight)
+
+				exploded_weight = sum(
+					flt(d.gross_weight)
+					for d in self.exploded_product_details
+					if d.main_slip == main_slip
+				)
+
+				if abs(total_weight - exploded_weight) > 0.001:
+					frappe.throw(
+						_(
+							"Row #{0}: Total Gross Weight in Exploded Product Details ({1}) does not match Total Weight in Product Details ({2}) for Main Slip {3}"
+						).format(row.idx, exploded_weight, total_weight, main_slip)
+					)
+		else:
+			# Fallback to grand totals
+			total_product_weight = sum(
+				flt(d.total_weight) for d in self.product_details
+			)
+			total_exploded_weight = sum(
+				flt(d.gross_weight) for d in self.exploded_product_details
+			)
+			if abs(total_product_weight - total_exploded_weight) > 0.001:
+				frappe.throw(
+					_(
+						"Total Gross Weight in Exploded Product Details ({0}) does not match Total Weight in Product Details ({1})"
+					).format(total_exploded_weight, total_product_weight)
 				)
 
 	def update_bom(self):
