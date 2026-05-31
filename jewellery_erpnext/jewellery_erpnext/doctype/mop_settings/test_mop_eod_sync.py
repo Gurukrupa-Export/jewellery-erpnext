@@ -1,7 +1,7 @@
 # Copyright (c) 2026, Nirali and Contributors
 # See license.txt
 
-from unittest.mock import call, patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -10,18 +10,25 @@ from frappe.types.frappedict import _dict as FrappeDict
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
 	_apply_mwo_filter_rows,
 	_build_eod_se_rows,
+	_cancel_sre_snapshots,
 	_find_last_operation,
 	_get_last_logs_per_item_batch,
 	_get_t_warehouse_from_logs,
 	_get_today_range,
 	_get_unsynced_mop_groups,
 	_mark_all_mwo_mop_logs_synced,
+	_mwo_realized_by_artifact,
 	_preload_sre_warehouse_map,
 	_process_mwo_group,
+	_recreate_sres_at,
+	_resolve_department_warehouse,
+	_snapshot_mwo_sres_for_relocation,
 	_validate_eod_source_batch_stock,
 	recalculate_sync_log_totals,
 	sync_mop_logs,
 )
+
+_MOD = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync"
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -198,6 +205,20 @@ class TestGetUnsyncedMopGroupsByMwo(FrappeTestCase):
 
 		self.assertEqual(out, {})
 
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all",
+		return_value=[],
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql",
+		return_value=[{"cnt": 0, "qty": 0}],
+	)
+	def test_empty_logs_returns_empty_dict(self, _mock_sql, _mock_get_all):
+		"""No unsynced logs → empty dict returned immediately without querying MOPs."""
+		out = _get_unsynced_mop_groups()
+
+		self.assertEqual(out, {})
+
 
 # ---------------------------------------------------------------------------
 # TestFindLastOperation (4 cases)
@@ -306,6 +327,15 @@ class TestGetTWarehouseFromLogs(FrappeTestCase):
 			_log(to_warehouse="WH-Y"),
 		]
 		self.assertEqual(_get_t_warehouse_from_logs(logs), "WH-X")
+
+	def test_returns_latest_by_flow_index(self):
+		"""Destination = the chronologically last log's to_warehouse (by flow_index, creation)."""
+		logs = [
+			_log(to_warehouse="WH-EARLY", flow_index=1, creation="2026-01-01 10:00:00"),
+			_log(to_warehouse="WH-LATE", flow_index=3, creation="2026-01-01 12:00:00"),
+			_log(to_warehouse="WH-MID", flow_index=2, creation="2026-01-01 11:00:00"),
+		]
+		self.assertEqual(_get_t_warehouse_from_logs(logs), "WH-LATE")
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +512,14 @@ class TestProcessMwoGroupHappyPath(FrappeTestCase):
 		return_value={("M-1", "B1"): "WH-SRE"},
 	)
 	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._snapshot_mwo_sres_for_relocation",
+		return_value=[],
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mwo_realized_by_artifact",
+		return_value=None,
+	)
+	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.get_doc"
 	)
 	@patch(
@@ -491,6 +529,8 @@ class TestProcessMwoGroupHappyPath(FrappeTestCase):
 		self,
 		mock_new_doc,
 		mock_get_doc,
+		_mock_artifact,
+		_mock_snap,
 		_mock_sre_map,
 		_mock_item_val,
 		_mock_batch_val,
@@ -530,7 +570,7 @@ class TestProcessMwoGroupHappyPath(FrappeTestCase):
 		self.assertEqual(failures, [])
 		self.assertIn("SE-EOD-001", stats["submitted_ses"])
 		self.assertEqual(stats["processed_mwos"], 1)
-		mock_mark_synced.assert_called_once_with(["MWO-1"])
+		mock_mark_synced.assert_called_once_with(["MWO-1"], selective=False)
 		self.assertTrue(submitted_se.submitted)
 
 
@@ -575,7 +615,14 @@ class TestSyncMopLogsEntryPoint(FrappeTestCase):
 			key_b: [{"mop_name": "MOP-B", "mop_doc": _mop_doc(), "logs": []}],
 		}
 
-		def _inject(group_key, mop_data_list, failures, stats, sync_log_name=None):
+		def _inject(
+			group_key,
+			mop_data_list,
+			failures,
+			stats,
+			sync_log_name=None,
+			selective=False,
+		):
 			_, mwo = group_key
 			if mwo == "MWO-A":
 				stats["submitted_ses"].append("SE-A")
@@ -676,13 +723,13 @@ class TestApplyMwoFilterRows(FrappeTestCase):
 		self.assertEqual(len(included), 1)
 		self.assertEqual(excluded, [])
 
-	def test_log_before_sync_from_datetime_is_excluded(self):
+	def test_log_before_sync_from_datetime_now_included(self):
+		"""sync_from_datetime is no longer honored — selective sync covers full history."""
 		log = _log(manufacturing_work_order="MWO-1", creation="2026-01-01 08:00:00")
 		filter_rows = [self._filter_row("MWO-1", sync_from="2026-01-01 10:00:00")]
 		included, excluded = _apply_mwo_filter_rows([log], filter_rows)
-		self.assertEqual(included, [])
-		self.assertEqual(len(excluded), 1)
-		self.assertEqual(excluded[0]._exclude_reason, "Before Sync From Datetime")
+		self.assertEqual(len(included), 1)
+		self.assertEqual(excluded, [])
 
 	def test_operation_filter_excludes_other_operations(self):
 		log = _log(
@@ -903,3 +950,323 @@ class TestSyncMopLogsWithSyncLogName(FrappeTestCase):
 		frappe.flags.in_eod_mop_sync = False
 		sync_mop_logs(sync_log_name="SYNC-LOG-TEST-002")
 		self.assertFalse(getattr(frappe.flags, "in_eod_mop_sync", False))
+
+
+# ---------------------------------------------------------------------------
+# TestSreRelocation (release reservation at source, re-reserve at target)
+# ---------------------------------------------------------------------------
+
+
+class TestSreRelocation(FrappeTestCase):
+	def test_snapshot_empty_when_no_items(self):
+		self.assertEqual(_snapshot_mwo_sres_for_relocation("MWO-1", [], "WH-DEPT"), [])
+
+	def test_snapshot_empty_when_source_equals_target(self):
+		# Items already at the target warehouse → nothing to relocate.
+		items = [
+			{"item_code": "M-1", "batch_no": "B1", "s_warehouse": "WH-DEPT", "qty": 1.0}
+		]
+		self.assertEqual(
+			_snapshot_mwo_sres_for_relocation("MWO-1", items, "WH-DEPT"), []
+		)
+
+	@patch(f"{_MOD}.frappe.get_all", return_value=[])  # no batch entries
+	@patch(f"{_MOD}.frappe.get_cached_value", return_value=(0, 0))  # qty-based item
+	@patch(f"{_MOD}.frappe.db.get_all")
+	def test_snapshot_captures_matching_sre(
+		self, mock_db_get_all, _mock_cached, _mock_get_all
+	):
+		mock_db_get_all.return_value = [
+			FrappeDict(
+				{
+					"name": "SRE-1",
+					"item_code": "M-1",
+					"warehouse": "WH-SRE",
+					"reserved_qty": 5.0,
+					"delivered_qty": 0.0,
+					"voucher_type": "Sales Order",
+					"voucher_no": "SO-1",
+					"voucher_detail_no": "row1",
+					"voucher_qty": 5.0,
+					"company": "Test Co",
+					"stock_uom": "Nos",
+					"reservation_based_on": "Qty",
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-A",
+				}
+			)
+		]
+		items = [
+			{"item_code": "M-1", "batch_no": None, "s_warehouse": "WH-SRE", "qty": 5.0}
+		]
+		snaps = _snapshot_mwo_sres_for_relocation("MWO-1", items, "WH-DEPT")
+		self.assertEqual(len(snaps), 1)
+		self.assertEqual(snaps[0]["remaining"], 5.0)
+		self.assertEqual(snaps[0]["sre"].name, "SRE-1")
+		# Query must restrict to source warehouses excluding the target
+		filters = mock_db_get_all.call_args.kwargs["filters"]
+		self.assertEqual(filters["warehouse"], ["in", ["WH-SRE"]])
+
+	@patch(f"{_MOD}.frappe.get_doc")
+	def test_cancel_snapshots_cancels_submitted_sre(self, mock_get_doc):
+		fake = MagicMock()
+		fake.docstatus = 1
+		mock_get_doc.return_value = fake
+		_cancel_sre_snapshots([{"sre": FrappeDict({"name": "SRE-1"})}])
+		fake.cancel.assert_called_once()
+
+	def test_recreate_noop_on_empty(self):
+		# Must not raise or touch the DB
+		_recreate_sres_at([], "WH-DEPT")
+
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
+		"get_available_qty_to_reserve",
+		return_value=10.0,
+	)
+	@patch(f"{_MOD}.frappe.new_doc")
+	def test_recreate_builds_and_submits_sre_at_target(self, mock_new_doc, _mock_avail):
+		new_sre = MagicMock()
+		mock_new_doc.return_value = new_sre
+		snap = {
+			"sre": FrappeDict(
+				{
+					"item_code": "M-1",
+					"voucher_type": "Sales Order",
+					"voucher_no": "SO-1",
+					"voucher_detail_no": "row1",
+					"voucher_qty": 5.0,
+					"company": "Test Co",
+					"stock_uom": "Nos",
+					"reservation_based_on": "Qty",
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-A",
+				}
+			),
+			"remaining": 5.0,
+			"has_batch_no": 0,
+			"has_serial_no": 0,
+			"sb_entries": [],
+		}
+		_recreate_sres_at([snap], "WH-DEPT")
+		self.assertEqual(new_sre.warehouse, "WH-DEPT")
+		self.assertEqual(new_sre.reserved_qty, 5.0)
+		new_sre.insert.assert_called_once()
+		new_sre.submit.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TestTargetWarehouseFallback (resolve t_warehouse when last op carries none)
+# ---------------------------------------------------------------------------
+
+
+class TestTargetWarehouseFallback(FrappeTestCase):
+	@patch(f"{_MOD}.frappe.db.get_value", return_value="WH-DEPT")
+	def test_resolve_department_warehouse(self, mock_gv):
+		self.assertEqual(
+			_resolve_department_warehouse({"department": "Waxing"}), "WH-DEPT"
+		)
+		filters = mock_gv.call_args[0][1]
+		self.assertEqual(filters["department"], "Waxing")
+		self.assertEqual(filters["warehouse_type"], "Manufacturing")
+
+	def test_resolve_department_warehouse_none_inputs(self):
+		self.assertIsNone(_resolve_department_warehouse(None))
+		self.assertIsNone(_resolve_department_warehouse({"department": None}))
+
+	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
+	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={})
+	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
+	def test_t_warehouse_resolved_from_other_operation(self, _art, _sre, mock_mark):
+		# The last operation (latest creation) is a receive audit with no to_warehouse;
+		# an earlier operation carries it. Resolution must fall back to that one.
+		recv = {
+			"mop_name": "MOP-RECV",
+			"mop_doc": _mop_doc(),
+			"logs": [
+				_log(
+					item_code="M-1",
+					batch_no="B1",
+					to_warehouse=None,
+					qty_after_transaction_batch_based=0.0,
+					flow_index=0,
+					creation="2026-01-01 12:00:00",
+				)
+			],
+		}
+		move = {
+			"mop_name": "MOP-MOVE",
+			"mop_doc": _mop_doc(),
+			"logs": [
+				_log(
+					item_code="M-1",
+					batch_no="B1",
+					to_warehouse="WH-DEPT",
+					qty_after_transaction_batch_based=1.0,
+					flow_index=4,
+					creation="2026-01-01 10:00:00",
+				)
+			],
+		}
+		failures = []
+		stats = {"processed_mwos": 0, "failed_mwos": 0, "submitted_ses": []}
+		_process_mwo_group(("Test Co", "MWO-1"), [recv, move], failures, stats)
+		# Target resolved from the other operation → no "Missing Target Warehouse".
+		self.assertFalse(any(f.get("step") == "no_t_warehouse" for f in failures))
+		mock_mark.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# TestMwoRealizedByArtifact (SNC product-artifact detection)
+# ---------------------------------------------------------------------------
+
+
+class TestMwoRealizedByArtifact(FrappeTestCase):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value",
+		return_value="SE-MFG-1",
+	)
+	def test_returns_se_name_when_manufacture_se_exists(self, mock_get_value):
+		result = _mwo_realized_by_artifact("MWO-1")
+		self.assertEqual(result, "SE-MFG-1")
+		# Query must target a submitted Manufacture SE for this MWO
+		args = mock_get_value.call_args[0]
+		self.assertEqual(args[0], "Stock Entry")
+		filters = args[1]
+		self.assertEqual(filters["manufacturing_work_order"], "MWO-1")
+		self.assertEqual(filters["stock_entry_type"], "Manufacture")
+		self.assertEqual(filters["docstatus"], 1)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value",
+		return_value=None,
+	)
+	def test_returns_none_when_no_manufacture_se(self, _mock_get_value):
+		self.assertIsNone(_mwo_realized_by_artifact("MWO-1"))
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value"
+	)
+	def test_blank_mwo_short_circuits_without_query(self, mock_get_value):
+		self.assertIsNone(_mwo_realized_by_artifact(None))
+		mock_get_value.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestProcessMwoGroupArtifactSkip (skip transfer when SNC artifact exists)
+# ---------------------------------------------------------------------------
+
+
+class TestProcessMwoGroupArtifactSkip(FrappeTestCase):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._stamp_last_eod_sync"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mark_all_mwo_mop_logs_synced"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mwo_realized_by_artifact",
+		return_value="SE-MFG-1",
+	)
+	def test_artifact_skip_marks_synced_and_creates_no_se(
+		self, _mock_artifact, mock_mark, _mock_stamp, mock_new_doc
+	):
+		logs = [_log(item_code="M-1", batch_no="B1")]
+		mop_data_list = [{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": logs}]
+		failures = []
+		stats = {"processed_mwos": 0, "failed_mwos": 0, "submitted_ses": []}
+
+		_process_mwo_group(
+			("Test Co", "MWO-1"),
+			mop_data_list,
+			failures,
+			stats,
+			sync_log_name=None,
+			selective=True,
+		)
+
+		# No Material Transfer SE created
+		mock_new_doc.assert_not_called()
+		# Leftover logs marked synced, honoring the selective scope
+		mock_mark.assert_called_once_with(["MWO-1"], selective=True)
+		self.assertEqual(stats["processed_mwos"], 1)
+		self.assertEqual(stats["artifact_skipped"], ["MWO-1"])
+		self.assertEqual(failures, [])
+
+
+# ---------------------------------------------------------------------------
+# TestMarkAllMwoMopLogsSyncedSelective (full-history marking)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkAllMwoMopLogsSyncedSelective(FrappeTestCase):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
+	)
+	def test_selective_marks_full_history_without_date_window(self, mock_sql):
+		_mark_all_mwo_mop_logs_synced(["MWO-1"], selective=True)
+		mock_sql.assert_called_once()
+		sql_text = mock_sql.call_args[0][0]
+		params = mock_sql.call_args[0][1]
+		self.assertIn("UPDATE", sql_text)
+		self.assertNotIn("creation", sql_text)
+		self.assertNotIn("today_start", params)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
+	)
+	def test_scheduled_marks_only_today(self, mock_sql):
+		_mark_all_mwo_mop_logs_synced(["MWO-1"], selective=False)
+		mock_sql.assert_called_once()
+		sql_text = mock_sql.call_args[0][0]
+		self.assertIn("creation", sql_text)
+
+
+# ---------------------------------------------------------------------------
+# TestGetUnsyncedMopGroupsSelective (full-history collection for filtered MWOs)
+# ---------------------------------------------------------------------------
+
+
+class TestGetUnsyncedMopGroupsSelective(FrappeTestCase):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all"
+	)
+	def test_selective_mode_fetches_full_history_for_listed_mwos(self, mock_get_all):
+		settings = FrappeDict(
+			{
+				"eod_sync_work_order_filter": [
+					FrappeDict(
+						{
+							"enabled": 1,
+							"manufacturing_work_order": "MWO-1",
+							"manufacturing_operation": "",
+							"sync_from_datetime": "2026-05-01 00:00:00",
+						}
+					)
+				]
+			}
+		)
+		logs_result = [
+			_log(
+				name="L1",
+				manufacturing_operation="MOP-A",
+				manufacturing_work_order="MWO-1",
+				creation="2026-01-01 08:00:00",
+			)
+		]
+		mop_meta_result = [
+			FrappeDict({**_mop_doc(manufacturing_work_order="MWO-1"), "name": "MOP-A"})
+		]
+		mock_get_all.side_effect = [logs_result, mop_meta_result]
+
+		out = _get_unsynced_mop_groups(settings=settings)
+
+		# The log-fetch filters restrict by MWO and carry NO today-only window
+		log_filters = mock_get_all.call_args_list[0].kwargs["filters"]
+		self.assertEqual(log_filters["manufacturing_work_order"], ["in", ["MWO-1"]])
+		self.assertNotIn("creation", log_filters)
+		# A pre-today log is still grouped (sync_from_datetime ignored)
+		self.assertIn(("Test Co", "MWO-1"), out)
