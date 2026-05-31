@@ -22,7 +22,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, nowtime, today
 
-PROCESS_LOSS_SE_TYPE = "Repack"
+PROCESS_LOSS_SE_TYPE = "Process Loss"
 CHILD_TABLE_EMPLOYEE = "employee_loss_details"
 CHILD_TABLE_MANUAL = "manually_book_loss_details"
 
@@ -33,13 +33,13 @@ CHILD_TABLE_MANUAL = "manually_book_loss_details"
 
 
 def create_loss_stock_entries(eir):
-	"""Create ONE Repack SE covering ALL loss rows across the entire EIR.
+	"""Create ONE Process Loss SE covering ALL loss rows across the entire EIR.
 
 	Called once after the operations loop in on_submit_receive.
 	All SREs are reduced before the SE is submitted so ERPNext does not
 	block consumption due to reserved stock.
 	"""
-	# Idempotency: skip if a Repack SE already exists for this EIR.
+	# Idempotency: skip if a Process Loss SE already exists for this EIR.
 	if frappe.db.exists(
 		"Stock Entry",
 		{

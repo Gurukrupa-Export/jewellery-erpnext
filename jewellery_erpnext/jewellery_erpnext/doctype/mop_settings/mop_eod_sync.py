@@ -8,82 +8,583 @@ and creates exactly ONE **Material Transfer to Department** Stock Entry per MWO 
 items from the Stock Reservation Entry warehouse (where stock is physically reserved) to
 the last Manufacturing Operation's final ``to_warehouse``.
 
+**Today-only filter**: Only MOP Logs created today (creation >= today 00:00:00 and
+< tomorrow 00:00:00) are processed. Old unsynced logs are counted and reported but
+never marked as synced or used to create Stock Entries.
+
+**MWO filter**: If MOP Settings has enabled rows in ``eod_sync_work_order_filter``,
+only those MWOs (and optional operations, from sync_from_datetime) are processed.
+All other MWOs are excluded and logged in the Sync Log as "Excluded".
+
 **Last operation detection**: uses the MOP Log ``creation`` timestamp to determine which
 operation is last — ``flow_index`` is per-MOP-scoped and unreliable for cross-MOP comparison.
 
 **Loss entries**: Process Loss Stock Entries are NOT created here. Loss handling is owned
 by the Employee IR Process Loss feature (``doc_events/loss_stock_entry.py``).
 
-**Syncing**: after SE submit, ALL unsynced non-cancelled MOP Logs for the MWO are marked
-synced atomically within the same savepoint.
+**Syncing**: after SE submit, ALL unsynced non-cancelled MOP Logs for the MWO (created today)
+are marked synced atomically within the same savepoint.
 
-**Stock Reservation:** ``Material Transfer to Department`` is not in the configured
-``Stock Entry Type To Reservation`` list, so submitting the EOD SE does NOT auto-create
-new SREs. Source warehouse is resolved from the existing SRE for each item/batch/MWO.
+**Transaction phases per MWO**:
+  Phase 1 (savepoint "eod_draft_phase"): validate + save SE as draft.
+  Phase 2 (savepoint "eod_submit_phase"): submit SE + mark MOP Logs synced.
+  On Phase 2 failure: rollback to submit savepoint; draft SE survives for manual recovery.
 
-Before submit, batch lines are checked with ``get_batch_qty(..., ignore_reserved_stock=True)``
-at the **source** warehouse so MOP Log totals cannot exceed **physical** batch stock (SLE).
+**MOP EOD Sync Log**: every run creates/updates a MOP EOD Sync Log document with full
+progress tracking. Every item/batch/MWO decision is recorded in the child table.
+
+**Error reporting**: all failures are collected in-memory; ONE consolidated Error Log is
+created at the end of the full sync — no per-row or per-MWO log_error calls in loops.
 """
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt
+from frappe.utils import (
+	add_days,
+	cint,
+	flt,
+	get_datetime,
+	getdate,
+	now_datetime,
+	nowdate,
+)
+
+from .eod_lock import release_eod_sync_lock, set_eod_sync_running
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 
-def sync_mop_logs():
-	"""Main entry point. Returns a summary dict for the UI."""
-	unsynced_groups = _get_unsynced_mop_groups()
-	processed = 0
-	stock_entries = []
-
-	for group_key, mop_data_list in unsynced_groups.items():
-		frappe.db.savepoint("mop_eod_sync_hop")
+def sync_mop_logs(sync_log_name=None):
+	"""Main entry point called by scheduler or manual trigger. Returns a summary dict."""
+	# If no sync log provided (legacy path), create one now
+	if not sync_log_name:
 		try:
-			se_names, count = _sync_mwo_group(group_key, mop_data_list)
-			stock_entries.extend(se_names)
-			processed += count
-			now_ts = frappe.utils.now()
-			for d in mop_data_list:
+			sync_log = frappe.new_doc("MOP EOD Sync Log")
+			sync_log.status = "Queued"
+			sync_log.trigger_type = "Manual"
+			sync_log.started_by = frappe.session.user or "Administrator"
+			sync_log.posting_date = nowdate()
+			sync_log.mop_settings = "MOP Settings"
+			sync_log.flags.ignore_permissions = True
+			sync_log.insert()
+			sync_log_name = sync_log.name
+			frappe.db.set_value(
+				"MOP Settings", "MOP Settings", "eod_sync_last_sync_log", sync_log_name
+			)
+		except Exception:
+			frappe.logger().exception("MOP EOD Sync: could not create MOP EOD Sync Log")
+			sync_log_name = None
+
+	frappe.flags.in_eod_mop_sync = True
+	set_eod_sync_running(sync_log_name=sync_log_name)
+
+	failures = []
+	stats = {
+		"total_mwos": 0,
+		"processed_mwos": 0,
+		"failed_mwos": 0,
+		"submitted_ses": [],
+		"draft_ses": [],
+		"started_on": now_datetime(),
+	}
+
+	try:
+		settings = frappe.get_doc("MOP Settings")
+		unsynced_groups = _get_unsynced_mop_groups(
+			settings=settings, sync_log_name=sync_log_name
+		)
+		stats["total_mwos"] = len(unsynced_groups)
+
+		if sync_log_name:
+			frappe.db.set_value(
+				"MOP EOD Sync Log",
+				sync_log_name,
+				{
+					"total_mwos": stats["total_mwos"],
+					"progress_message": f"Processing {stats['total_mwos']} Manufacturing Work Orders...",
+				},
+				update_modified=False,
+			)
+			frappe.db.commit()
+
+		for group_key, mop_data_list in unsynced_groups.items():
+			_process_mwo_group(group_key, mop_data_list, failures, stats, sync_log_name)
+			# Update progress after each MWO
+			if sync_log_name:
+				recalculate_sync_log_totals(sync_log_name)
 				frappe.db.set_value(
-					"Manufacturing Operation",
-					d["mop_name"],
-					"last_eod_sync_on",
-					now_ts,
+					"MOP EOD Sync Log",
+					sync_log_name,
+					"progress_message",
+					f"Processed {stats['processed_mwos']} / {stats['total_mwos']} MWOs...",
 					update_modified=False,
 				)
-			frappe.db.release_savepoint("mop_eod_sync_hop")
-		except Exception:
-			frappe.db.rollback(save_point="mop_eod_sync_hop")
-			company, mwo = group_key
-			frappe.log_error(
-				title=f"MOP EOD Sync failed for MWO {mwo}",
-				message=f"Company {company}\n{frappe.get_traceback()}",
+				frappe.db.commit()
+
+		# SRE reconciliation audit
+		for mwo in {k[1] for k in unsynced_groups}:
+			try:
+				_reconcile_reservations_for_mwo(mwo, dry_run=True)
+			except Exception:
+				failures.append(
+					{
+						"step": "sre_reconcile",
+						"mwo": mwo,
+						"error_message": "SRE reconciliation check raised an exception.",
+						"traceback": frappe.get_traceback(),
+						"suggested_fix": (
+							"Investigate the SRE reconcile error for MWO "
+							f"{mwo}. This does not affect SE or MOP Log sync status."
+						),
+					}
+				)
+
+		error_log_name = None
+		if failures:
+			error_log_name = _create_consolidated_error_log(
+				failures, stats, sync_log_name
+			)
+			release_eod_sync_lock(
+				success=False,
+				error_log_name=error_log_name,
+				sync_log_name=sync_log_name,
+			)
+		else:
+			release_eod_sync_lock(success=True, sync_log_name=sync_log_name)
+
+		# Finalize sync log
+		if sync_log_name:
+			recalculate_sync_log_totals(sync_log_name)
+			now = now_datetime()
+			started = stats["started_on"]
+			duration = (now - started).total_seconds() if started else 0
+			final_status = (
+				"Completed"
+				if not failures
+				else "Partially Completed"
+				if stats["processed_mwos"] > 0
+				else "Failed"
+			)
+			frappe.db.set_value(
+				"MOP EOD Sync Log",
+				sync_log_name,
+				{
+					"status": final_status,
+					"completed_on": now,
+					"duration_seconds": flt(duration, 1),
+					"submitted_stock_entries": ", ".join(stats["submitted_ses"]) or "",
+					"draft_stock_entries": ", ".join(stats["draft_ses"]) or "",
+					"error_log": error_log_name or "",
+					"progress_message": f"Sync {final_status}.",
+					"synced_mwos": stats["processed_mwos"],
+					"failed_mwos": stats["failed_mwos"],
+					"processed_mwos": stats["processed_mwos"] + stats["failed_mwos"],
+				},
+				update_modified=False,
+			)
+			frappe.db.commit()
+
+	except Exception:
+		tb = frappe.get_traceback()
+		failures.append(
+			{
+				"step": "top_level",
+				"error_message": "Unexpected top-level exception in sync_mop_logs.",
+				"traceback": tb,
+				"suggested_fix": "Investigate the traceback below and fix the root cause before retrying.",
+			}
+		)
+		error_log_name = _create_consolidated_error_log(failures, stats, sync_log_name)
+		release_eod_sync_lock(
+			success=False, error_log_name=error_log_name, sync_log_name=sync_log_name
+		)
+		if sync_log_name:
+			frappe.db.set_value(
+				"MOP EOD Sync Log",
+				sync_log_name,
+				{
+					"status": "Failed",
+					"completed_on": now_datetime(),
+					"error_log": error_log_name or "",
+					"last_error": tb[:2000] if tb else "",
+					"progress_message": "Sync failed with unexpected error.",
+				},
+				update_modified=False,
+			)
+			frappe.db.commit()
+
+	finally:
+		frappe.flags.in_eod_mop_sync = False
+
+	return {
+		"processed": stats["processed_mwos"],
+		"stock_entries": stats["submitted_ses"],
+	}
+
+
+# ---------------------------------------------------------------------------
+# Per-MWO processing
+# ---------------------------------------------------------------------------
+
+
+def _process_mwo_group(group_key, mop_data_list, failures, stats, sync_log_name=None):
+	"""Process one (company, mwo) group through two savepoint phases."""
+	company, mwo = group_key
+	all_mop_names = [md["mop_name"] for md in mop_data_list]
+
+	last_mop_data = _find_last_operation(mop_data_list)
+	if not last_mop_data:
+		_mark_all_mwo_mop_logs_synced([mwo])
+		stats["processed_mwos"] += 1
+		return
+
+	last_mop_name = last_mop_data["mop_name"]
+	last_logs = _get_last_logs_per_item_batch(last_mop_data["logs"])
+	t_warehouse = _get_t_warehouse_from_logs(last_logs)
+
+	if not t_warehouse:
+		failures.append(
+			{
+				"step": "no_t_warehouse",
+				"mwo": mwo,
+				"company": company,
+				"last_mop": last_mop_name,
+				"affected_mops": all_mop_names,
+				"error_message": (
+					f"Last operation {last_mop_name} logs have no to_warehouse. "
+					"Logs remain unsynced until to_warehouse is available."
+				),
+				"suggested_fix": (
+					"Ensure the last MOP Log row for this MWO has a non-null to_warehouse. "
+					"Check Department IR or Employee IR receive vouchers."
+				),
+			}
+		)
+		stats["failed_mwos"] += 1
+		# Log all items as failed
+		if sync_log_name:
+			for log in last_logs:
+				_insert_sync_log_item(
+					sync_log_name,
+					{
+						"manufacturing_work_order": mwo,
+						"manufacturing_operation": last_mop_name,
+						"company": company,
+						"item_code": log.item_code,
+						"batch_no": log.batch_no,
+						"qty": flt(log.qty_after_transaction_batch_based, 3),
+						"status": "Failed",
+						"sync_stage": "Resolve SRE Warehouse",
+						"error_type": "Missing Target Warehouse",
+						"error_message": f"Last operation {last_mop_name} has no to_warehouse.",
+						"suggested_fix": "Check Department IR or Employee IR receive vouchers.",
+					},
+				)
+		return
+
+	# One query for all (item_code, batch_no) → warehouse for this MWO
+	sre_map = _preload_sre_warehouse_map(mwo)
+
+	items, skipped_rows = _build_eod_se_rows(
+		mwo, last_mop_name, last_logs, t_warehouse, sre_map
+	)
+
+	for skip in skipped_rows:
+		failures.append(
+			{
+				"step": "no_sre_warehouse",
+				"mwo": mwo,
+				"company": company,
+				"last_mop": last_mop_name,
+				"affected_mops": all_mop_names,
+				"item_code": skip.get("item_code"),
+				"batch_no": skip.get("batch_no"),
+				"t_warehouse": t_warehouse,
+				"error_message": (
+					f"No active SRE warehouse found for item {skip.get('item_code')} "
+					f"batch {skip.get('batch_no')} MWO {mwo}. Row skipped."
+				),
+				"suggested_fix": (
+					"A submitted Stock Reservation Entry must exist for this item/batch/MWO "
+					"before EOD can transfer stock. Fix or create the SRE and retry."
+				),
+			}
+		)
+		if sync_log_name:
+			_insert_sync_log_item(
+				sync_log_name,
+				{
+					"manufacturing_work_order": mwo,
+					"manufacturing_operation": last_mop_name,
+					"company": company,
+					"item_code": skip.get("item_code"),
+					"batch_no": skip.get("batch_no"),
+					"target_warehouse": t_warehouse,
+					"status": "Failed",
+					"sync_stage": "Resolve SRE Warehouse",
+					"error_type": "Missing SRE",
+					"error_message": f"No active SRE warehouse for item {skip.get('item_code')} batch {skip.get('batch_no')} MWO {mwo}.",
+					"suggested_fix": "Create or fix submitted Stock Reservation Entry for this item/batch/MWO, then retry EOD sync.",
+				},
 			)
 
-	processed_mwos = {key[1] for key in unsynced_groups.keys()}
-	for mwo in processed_mwos:
-		try:
-			_reconcile_reservations_for_mwo(mwo, dry_run=True)
-		except Exception:
-			frappe.log_error(
-				title=f"MOP EOD SRE reconcile failed for MWO {mwo}",
-				message=frappe.get_traceback(),
-			)
+	if not items:
+		frappe.logger().info(
+			"MOP EOD Sync MWO %s: no SE rows to create (same WH or all SRE missing); "
+			"marking logs synced.",
+			mwo,
+		)
+		_mark_all_mwo_mop_logs_synced([mwo])
+		stats["processed_mwos"] += 1
+		return
 
-	return {"processed": processed, "stock_entries": stock_entries}
+	# Insert child log rows as Pending before we start
+	child_row_names = []
+	if sync_log_name:
+		for item in items:
+			row_name = _insert_sync_log_item(
+				sync_log_name,
+				{
+					"manufacturing_work_order": mwo,
+					"manufacturing_operation": item.get("manufacturing_operation")
+					or last_mop_name,
+					"company": company,
+					"item_code": item.get("item_code"),
+					"batch_no": item.get("batch_no"),
+					"serial_no": item.get("serial_no"),
+					"source_warehouse": item.get("s_warehouse"),
+					"target_warehouse": item.get("t_warehouse") or t_warehouse,
+					"qty": flt(item.get("qty"), 3),
+					"status": "Pending",
+					"sync_stage": "Save Draft Stock Entry",
+				},
+			)
+			child_row_names.append(row_name)
+
+	# Phase 1 — Validate and save draft SE
+	draft_se_name = None
+	try:
+		frappe.db.savepoint("eod_draft_phase")
+		_validate_eod_items_for_mwo_reservation(items)
+		_validate_eod_source_batch_stock(
+			items,
+			manufacturing_work_order=mwo,
+			mop_data_list=mop_data_list,
+			company=company,
+		)
+		manufacturing_order = last_mop_data["mop_doc"].get("manufacturing_order")
+		draft_se_name = _save_draft_eod_se(
+			company,
+			mwo,
+			manufacturing_order,
+			items,
+			header_mop_name=last_mop_name,
+			header_manufacturer=_mop_manufacturer_label(last_mop_data["mop_doc"]),
+			sync_log_name=sync_log_name,
+		)
+		frappe.db.release_savepoint("eod_draft_phase")
+	except Exception as exc:
+		frappe.db.rollback(save_point="eod_draft_phase")
+		failures.append(
+			{
+				"step": "draft_save",
+				"mwo": mwo,
+				"company": company,
+				"last_mop": last_mop_name,
+				"affected_mops": all_mop_names,
+				"t_warehouse": t_warehouse,
+				"error_message": str(exc),
+				"traceback": frappe.get_traceback(),
+				"suggested_fix": (
+					"Check MOP Log data: item codes, batch numbers, warehouses, and "
+					"Stock Reservation Entries. Verify physical batch stock at source warehouse."
+				),
+			}
+		)
+		stats["failed_mwos"] += 1
+		# Update child rows to Failed
+		if sync_log_name and child_row_names:
+			for rn in child_row_names:
+				frappe.db.set_value(
+					"MOP EOD Sync Log Item",
+					rn,
+					{
+						"status": "Failed",
+						"sync_stage": "Save Draft Stock Entry",
+						"error_type": "Stock Entry Save Failed",
+						"error_message": str(exc)[:500],
+						"technical_traceback": frappe.get_traceback()[:3000],
+						"suggested_fix": "Check MOP Log data: item codes, batch numbers, warehouses, SREs, and physical batch stock.",
+						"completed_on": now_datetime(),
+					},
+					update_modified=False,
+				)
+		return
+
+	# Phase 2 — Submit SE and mark logs synced (savepoint starts AFTER draft is saved)
+	try:
+		frappe.db.savepoint("eod_submit_phase")
+		frappe.get_doc("Stock Entry", draft_se_name).submit()
+		_mark_all_mwo_mop_logs_synced([mwo])
+		now_ts = frappe.utils.now()
+		for d in mop_data_list:
+			frappe.db.set_value(
+				"Manufacturing Operation",
+				d["mop_name"],
+				"last_eod_sync_on",
+				now_ts,
+				update_modified=False,
+			)
+		frappe.db.release_savepoint("eod_submit_phase")
+		stats["submitted_ses"].append(draft_se_name)
+		stats["processed_mwos"] += 1
+
+		# Update child rows to Synced
+		if sync_log_name and child_row_names:
+			for rn in child_row_names:
+				frappe.db.set_value(
+					"MOP EOD Sync Log Item",
+					rn,
+					{
+						"status": "Synced",
+						"is_synced": 1,
+						"stock_entry": draft_se_name,
+						"sync_stage": "Completed",
+						"completed_on": now_datetime(),
+					},
+					update_modified=False,
+				)
+
+	except Exception as exc:
+		# Only the submit + mark-synced steps are rolled back.
+		# The draft SE (created in Phase 1, before this savepoint) is preserved.
+		frappe.db.rollback(save_point="eod_submit_phase")
+		failures.append(
+			{
+				"step": "submit",
+				"mwo": mwo,
+				"company": company,
+				"last_mop": last_mop_name,
+				"affected_mops": all_mop_names,
+				"t_warehouse": t_warehouse,
+				"draft_se": draft_se_name,
+				"error_message": str(exc),
+				"traceback": frappe.get_traceback(),
+				"suggested_fix": (
+					f"Stock Entry {draft_se_name} is saved as Draft but failed to submit. "
+					"Review the validation error, fix the underlying issue, and submit manually. "
+					"MOP Logs for this MWO remain unsynced until the SE is submitted."
+				),
+			}
+		)
+		stats["draft_ses"].append(draft_se_name)
+		stats["failed_mwos"] += 1
+		# Update child rows to Draft Created
+		if sync_log_name and child_row_names:
+			for rn in child_row_names:
+				frappe.db.set_value(
+					"MOP EOD Sync Log Item",
+					rn,
+					{
+						"status": "Draft Created",
+						"draft_stock_entry": draft_se_name,
+						"sync_stage": "Submit Stock Entry",
+						"error_type": "Stock Entry Submit Failed",
+						"error_message": str(exc)[:500],
+						"technical_traceback": frappe.get_traceback()[:3000],
+						"suggested_fix": f"Open draft Stock Entry {draft_se_name}, fix the error, and submit manually. MOP Logs remain unsynced.",
+						"completed_on": now_datetime(),
+					},
+					update_modified=False,
+				)
+
+
+# ---------------------------------------------------------------------------
+# Consolidated failure reporting
+# ---------------------------------------------------------------------------
+
+
+def _create_consolidated_error_log(failures, stats, sync_log_name=None):
+	"""Create one Error Log with full context for all EOD sync failures. Returns name."""
+	now = frappe.utils.now()
+	started = stats.get("started_on", "?")
+
+	lines = [
+		"=" * 80,
+		"MOP EOD SYNC — CONSOLIDATED FAILURE REPORT",
+		"=" * 80,
+		"",
+		"SUMMARY",
+		f"  Sync Log          : {sync_log_name or 'N/A'}",
+		f"  Started On        : {started}",
+		f"  Ended On          : {now}",
+		f"  Total MWOs found  : {stats.get('total_mwos', '?')}",
+		f"  Processed (OK)    : {stats.get('processed_mwos', '?')}",
+		f"  Failed            : {stats.get('failed_mwos', '?')} MWO(s)",
+		f"  Submitted SEs     : {', '.join(stats.get('submitted_ses') or []) or 'None'}",
+		f"  Draft SEs (stuck) : {', '.join(stats.get('draft_ses') or []) or 'None'}",
+		"",
+	]
+
+	lines += ["FAILED DETAILS", "-" * 40]
+	for i, f in enumerate(failures, 1):
+		lines += [
+			"",
+			f"[Failure #{i}]",
+			f"  Step          : {f.get('step', '?')}",
+			f"  MWO           : {f.get('mwo', '?')}",
+			f"  Company       : {f.get('company', '?')}",
+			f"  Last MOP      : {f.get('last_mop', '?')}",
+			f"  Affected MOPs : {', '.join(f.get('affected_mops') or [])}",
+			f"  Item Code     : {f.get('item_code', '?')}",
+			f"  Batch No      : {f.get('batch_no', '?')}",
+			f"  S Warehouse   : {f.get('s_warehouse', '?')}",
+			f"  T Warehouse   : {f.get('t_warehouse', '?')}",
+			f"  Draft SE      : {f.get('draft_se') or 'None'}",
+			f"  Error         : {f.get('error_message', '?')}",
+			f"  Suggested Fix : {f.get('suggested_fix', '?')}",
+		]
+
+	lines += ["", "TRACEBACKS", "-" * 40]
+	for i, f in enumerate(failures, 1):
+		tb = f.get("traceback")
+		if tb:
+			lines += [
+				"",
+				f"[Failure #{i} — step={f.get('step')} mwo={f.get('mwo')}]",
+				tb,
+			]
+
+	lines += [
+		"",
+		"GENERAL SUGGESTED FIXES",
+		"  1. Check MOP Log to_warehouse for the last Manufacturing Operation.",
+		"  2. Check Stock Reservation Entry source warehouse — a submitted SRE must exist.",
+		"  3. Check physical batch stock at source warehouse (batch ledger / SLE).",
+		"  4. Check for cancelled or stale SREs with remaining reserved qty.",
+		"  5. Check missing batch_no / serial_no on MOP Log rows for tracked items.",
+		"  6. For Draft SEs listed above: review, correct the issue, and submit manually.",
+		"  7. After fixing root cause: retrigger EOD sync via MOP Settings > EOD Sync.",
+		"=" * 80,
+	]
+
+	msg = "\n".join(lines)
+	error_log = frappe.log_error(
+		title=f"MOP EOD Sync Failed - {now}",
+		message=msg,
+	)
+	return error_log.name if error_log else None
+
+
+# ---------------------------------------------------------------------------
+# SRE reconciliation (audit-first, dry-run default)
+# ---------------------------------------------------------------------------
 
 
 def _reconcile_reservations_for_mwo(mwo, dry_run=True):
-	"""Audit-first Stock Reservation Entry reconciliation.
-
-	Iterates active SREs for a MWO and finds rows where:
-	  - SRE has remaining qty (reserved - delivered > 0), AND
-	  - the latest non-cancelled MOP movement balance for the same
-	    (item_code, warehouse) is zero.
-
-	When dry_run=True (default), only logs which SREs would be cancelled.
-	When dry_run=False, cancels them under per-SRE savepoints.
-	"""
+	"""Audit-first Stock Reservation Entry reconciliation."""
 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 		get_current_mop_balance_rows,
 	)
@@ -129,29 +630,78 @@ def _reconcile_reservations_for_mwo(mwo, dry_run=True):
 				f"(remaining={remaining}, balance=0)."
 			)
 			if dry_run:
-				frappe.logger().info(f"{msg} DRY-RUN -- would cancel.")
+				frappe.logger().info("%s DRY-RUN -- would cancel.", msg)
 			else:
 				frappe.db.savepoint("eod_sre_reconcile")
 				try:
 					frappe.get_doc("Stock Reservation Entry", sre.name).cancel()
-					frappe.logger().info(f"{msg} CANCELLED.")
+					frappe.logger().info("%s CANCELLED.", msg)
 					frappe.db.release_savepoint("eod_sre_reconcile")
 				except Exception:
 					frappe.db.rollback(save_point="eod_sre_reconcile")
-					frappe.log_error(
-						title=f"EOD SRE reconcile cancel failed: {sre.name}",
-						message=frappe.get_traceback(),
+					frappe.logger().exception(
+						"EOD SRE reconcile cancel failed: %s", sre.name
 					)
 
 
-def _get_unsynced_mop_groups():
+# ---------------------------------------------------------------------------
+# Data gathering: unsynced MOP groups (today-only, with MWO filter)
+# ---------------------------------------------------------------------------
+
+
+def _get_today_range():
+	"""Return (today_start_str, tomorrow_start_str) as datetime strings."""
+	today = nowdate()
+	tomorrow = add_days(today, 1)
+	return f"{today} 00:00:00", f"{tomorrow} 00:00:00"
+
+
+def _get_unsynced_mop_groups(settings=None, sync_log_name=None):
+	"""Return a dict of {(company, mwo): [...]} for today's unsynced logs.
+
+	Applies today-only date filter. If MOP Settings has enabled MWO filter rows,
+	restricts to those MWOs/operations from their sync_from_datetime.
+	Old unsynced logs are counted and recorded in the sync log summary.
 	"""
-	Return a dict of {(company, mwo): [{'mop_name': ..., 'mop_doc': ..., 'logs': ...}]}
-	for all unsynced logs grouped by Manufacturing Work Order.
-	"""
+	today_start, tomorrow_start = _get_today_range()
+
+	# Count old unsynced logs for reporting
+	old_logs = frappe.db.sql(
+		"""
+        SELECT COUNT(*) as cnt, COALESCE(SUM(qty_after_transaction_batch_based), 0) as qty
+        FROM `tabMOP Log`
+        WHERE is_synced = 0 AND is_cancelled = 0
+          AND creation < %s
+        """,
+		(today_start,),
+		as_dict=True,
+	)
+	old_count = cint(old_logs[0].get("cnt", 0)) if old_logs else 0
+	old_qty = flt(old_logs[0].get("qty", 0), 3) if old_logs else 0.0
+
+	if sync_log_name and old_count > 0:
+		frappe.db.set_value(
+			"MOP EOD Sync Log",
+			sync_log_name,
+			{
+				"old_unsynced_mop_log_count": old_count,
+				"old_unsynced_mop_log_qty": old_qty,
+				"old_unsynced_mop_log_message": (
+					f"{old_count} older unsynced MOP Log(s) (qty={old_qty}) were found but skipped "
+					"because EOD Sync is configured to process only today-created logs."
+				),
+			},
+			update_modified=False,
+		)
+
+	# Fetch today's eligible logs
 	logs = frappe.db.get_all(
 		"MOP Log",
-		filters={"is_synced": 0, "is_cancelled": 0},
+		filters={
+			"is_synced": 0,
+			"is_cancelled": 0,
+			"creation": ["between", [today_start, tomorrow_start]],
+		},
 		fields=[
 			"name",
 			"manufacturing_operation",
@@ -171,34 +721,72 @@ def _get_unsynced_mop_groups():
 		order_by="manufacturing_operation, flow_index asc, creation asc",
 	)
 
+	if not logs:
+		return {}
+
+	# Load MWO filter rows from settings
+	filter_rows = []
+	if settings:
+		for row in settings.eod_sync_work_order_filter or []:
+			if cint(row.enabled) and row.manufacturing_work_order:
+				filter_rows.append(row)
+
+	# Apply MWO filter if rows exist
+	excluded_logs = []
+	if filter_rows:
+		logs, excluded_logs = _apply_mwo_filter_rows(logs, filter_rows)
+
+	# Insert excluded rows into sync log
+	if sync_log_name and excluded_logs:
+		for exc_log in excluded_logs:
+			_insert_sync_log_item(
+				sync_log_name,
+				{
+					"manufacturing_work_order": exc_log.manufacturing_work_order,
+					"manufacturing_operation": exc_log.manufacturing_operation,
+					"item_code": exc_log.item_code,
+					"batch_no": exc_log.batch_no,
+					"qty": flt(exc_log.qty_after_transaction_batch_based, 3),
+					"status": "Excluded",
+					"sync_stage": "Collect MOP Log",
+					"error_type": exc_log.get("_exclude_reason")
+					or "MWO Not In EOD Filter",
+					"error_message": exc_log.get("_exclude_message")
+					or "MOP Log excluded by MWO filter.",
+					"suggested_fix": "Check the EOD Sync Work Order Filter table in MOP Settings.",
+					"mop_log": exc_log.name,
+				},
+			)
+
+	if not logs:
+		return {}
+
 	mop_logs = {}
 	for log in logs:
 		mop_logs.setdefault(log.manufacturing_operation, []).append(log)
 
-	mop_cache = {}
+	# Bulk fetch all MOP metadata in one query
+	mop_names = list(mop_logs.keys())
+	mop_rows = frappe.db.get_all(
+		"Manufacturing Operation",
+		filters={"name": ["in", mop_names]},
+		fields=[
+			"name",
+			"company",
+			"manufacturer",
+			"manufacturing_work_order",
+			"manufacturing_order",
+			"department",
+			"loss_wt",
+		],
+	)
+	mop_cache = {r.name: r for r in mop_rows}
+
 	groups = {}
-
 	for mop_name, op_logs in mop_logs.items():
-		if mop_name not in mop_cache:
-			mop_doc_dict = frappe.db.get_value(
-				"Manufacturing Operation",
-				mop_name,
-				[
-					"company",
-					"manufacturer",
-					"manufacturing_work_order",
-					"manufacturing_order",
-					"department",
-					"loss_wt",
-				],
-				as_dict=True,
-			)
-			mop_cache[mop_name] = mop_doc_dict
-
-		mop = mop_cache[mop_name]
+		mop = mop_cache.get(mop_name)
 		if not mop:
 			continue
-
 		group_key = (mop.company, mop.manufacturing_work_order)
 		groups.setdefault(group_key, []).append(
 			{"mop_name": mop_name, "mop_doc": mop, "logs": op_logs}
@@ -207,12 +795,68 @@ def _get_unsynced_mop_groups():
 	return groups
 
 
-def _find_last_operation(mop_data_list):
-	"""Return the mop_data entry whose logs have the highest creation timestamp.
+def _apply_mwo_filter_rows(logs, filter_rows):
+	"""Filter logs to those matching the MWO filter table rows.
 
-	flow_index is per-MOP-scoped and unreliable for cross-MOP ordering, so
-	creation timestamp is used to determine which operation came last.
+	Returns (included_logs, excluded_logs) where excluded logs have
+	_exclude_reason and _exclude_message attributes set.
 	"""
+	# Build a lookup: mwo → list of filter_row (may have operation filter and sync_from_datetime)
+	filter_map = {}
+	for row in filter_rows:
+		filter_map.setdefault(row.manufacturing_work_order, []).append(row)
+
+	included = []
+	excluded = []
+
+	for log in logs:
+		mwo = log.manufacturing_work_order
+		mop = log.manufacturing_operation
+
+		if mwo not in filter_map:
+			log._exclude_reason = "MWO Not In EOD Filter"
+			log._exclude_message = f"MOP Log belongs to MWO {mwo} which is not in the enabled EOD Sync Work Order Filter."
+			excluded.append(log)
+			continue
+
+		# Check each matching filter row
+		matched = False
+		for row in filter_map[mwo]:
+			# Operation filter (if set)
+			if row.manufacturing_operation and mop != row.manufacturing_operation:
+				continue
+
+			# sync_from_datetime check
+			if row.sync_from_datetime:
+				log_creation = get_datetime(str(log.creation))
+				row_from = get_datetime(str(row.sync_from_datetime))
+				if log_creation < row_from:
+					log._exclude_reason = "Before Sync From Datetime"
+					log._exclude_message = (
+						f"MOP Log creation {log.creation} is before the configured "
+						f"sync_from_datetime {row.sync_from_datetime} for MWO {mwo}."
+					)
+					excluded.append(log)
+					matched = True  # mark as processed (excluded)
+					break
+
+			matched = True
+			included.append(log)
+			break
+
+		if not matched and "_exclude_reason" not in log:
+			log._exclude_reason = "Manufacturing Operation Not In Filter"
+			log._exclude_message = (
+				f"MOP Log operation {mop} does not match the configured Manufacturing Operation "
+				f"filter for MWO {mwo}."
+			)
+			excluded.append(log)
+
+	return included, excluded
+
+
+def _find_last_operation(mop_data_list):
+	"""Return the mop_data entry whose logs have the highest creation timestamp."""
 	if not mop_data_list:
 		return None
 	best = None
@@ -227,9 +871,7 @@ def _find_last_operation(mop_data_list):
 
 
 def _get_last_logs_per_item_batch(logs):
-	"""Return one log per (item_code, batch_no) — the one with the highest
-	(flow_index, creation) composite key, representing the latest balance snapshot.
-	"""
+	"""Return one log per (item_code, batch_no) — the latest balance snapshot."""
 	latest = {}
 	for log in logs:
 		key = (log.item_code, log.batch_no)
@@ -249,56 +891,63 @@ def _get_t_warehouse_from_logs(logs):
 	return None
 
 
-def _get_sre_source_warehouse(mwo, item_code, batch_no):
-	"""Resolve the source warehouse for an EOD SE row from Stock Reservation Entry.
+# ---------------------------------------------------------------------------
+# SRE warehouse preload (eliminates N+1 per-item queries)
+# ---------------------------------------------------------------------------
 
-	Prefers a batch-level SRE match via Serial and Batch Entry child table.
-	Falls back to a Qty-based SRE (no sb_entries) when no batch SRE exists.
-	Returns None when no active SRE is found — caller logs and skips the row.
-	"""
-	rows = frappe.db.sql(
+
+def _preload_sre_warehouse_map(mwo):
+	"""Return {(item_code, batch_no): warehouse} for all submitted SREs of a MWO."""
+	sre_map = {}
+
+	batch_rows = frappe.db.sql(
 		"""
-		SELECT sre.warehouse
-		FROM `tabStock Reservation Entry` sre
-		INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
-		WHERE sre.manufacturing_work_order = %s
-		  AND sre.item_code = %s
-		  AND sbe.batch_no = %s
-		  AND sre.docstatus = 1
-		LIMIT 1
-		""",
-		(mwo, item_code, batch_no),
+        SELECT sre.item_code, sbe.batch_no, sre.warehouse
+        FROM `tabStock Reservation Entry` sre
+        INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
+        WHERE sre.manufacturing_work_order = %s
+          AND sre.docstatus = 1
+        """,
+		(mwo,),
 		as_dict=True,
 	)
-	if rows:
-		return rows[0]["warehouse"]
-	return frappe.db.get_value(
+	for row in batch_rows:
+		key = (row.item_code, row.batch_no)
+		if key not in sre_map:
+			sre_map[key] = row.warehouse
+
+	qty_rows = frappe.db.get_all(
 		"Stock Reservation Entry",
-		{"manufacturing_work_order": mwo, "item_code": item_code, "docstatus": 1},
-		"warehouse",
+		filters={"manufacturing_work_order": mwo, "docstatus": 1},
+		fields=["item_code", "warehouse"],
 	)
+	for row in qty_rows:
+		key = (row.item_code, None)
+		if key not in sre_map:
+			sre_map[key] = row.warehouse
+
+	return sre_map
 
 
-def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse):
-	"""Build Stock Entry item rows for the EOD material transfer.
+# ---------------------------------------------------------------------------
+# SE row construction
+# ---------------------------------------------------------------------------
 
-	Source warehouse comes from the active SRE for each item/batch/MWO.
-	Rows where s_warehouse == t_warehouse (no movement needed) are silently skipped.
-	Rows with no SRE are skipped with a logged error so one missing reservation
-	does not block the rest of the MWO's items.
-	"""
+
+def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse, sre_map):
+	"""Build Stock Entry item rows for the EOD material transfer."""
 	rows = []
+	skipped = []
 	for log in last_logs:
 		qty = flt(log.qty_after_transaction_batch_based, 3)
 		if qty <= 0:
 			continue
 
-		s_warehouse = _get_sre_source_warehouse(mwo, log.item_code, log.batch_no)
+		s_warehouse = sre_map.get((log.item_code, log.batch_no)) or sre_map.get(
+			(log.item_code, None)
+		)
 		if not s_warehouse:
-			frappe.log_error(
-				title=f"MOP EOD Sync: no SRE warehouse for {log.item_code} batch {log.batch_no}",
-				message=f"MWO {mwo} — skipping row; fix reservation before next EOD.",
-			)
+			skipped.append({"item_code": log.item_code, "batch_no": log.batch_no})
 			continue
 
 		if s_warehouse == t_warehouse:
@@ -318,90 +967,43 @@ def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse):
 		if getattr(log, "serial_no", None):
 			row["serial_no"] = log.serial_no
 		rows.append(row)
-	return rows
+	return rows, skipped
 
 
-def _sync_mwo_group(group_key, mop_data_list):
-	"""Create ONE Material Transfer to Department SE for a complete MWO batch.
-
-	1. Identifies the last Manufacturing Operation by latest MOP Log creation timestamp.
-	2. Builds SE rows using SRE source warehouse and last-op's to_warehouse as target.
-	3. Submits a single SE for all items in the batch.
-	4. Marks ALL unsynced non-cancelled MOP Logs for the MWO as synced.
-
-	Returns (list_of_se_names, log_count).
-	"""
-	company, mwo = group_key
-	se_names = []
-	all_logs = [log for md in mop_data_list for log in md.get("logs") or []]
-
-	last_mop_data = _find_last_operation(mop_data_list)
-	if not last_mop_data:
-		_mark_all_mwo_mop_logs_synced([mwo])
-		return [], len(all_logs)
-
-	last_mop_name = last_mop_data["mop_name"]
-	last_logs = _get_last_logs_per_item_batch(last_mop_data["logs"])
-
-	t_warehouse = _get_t_warehouse_from_logs(last_logs)
-	if not t_warehouse:
-		frappe.log_error(
-			title=f"MOP EOD Sync: no target warehouse for MWO {mwo}",
-			message=(
-				f"Last operation {last_mop_name} logs have no to_warehouse. "
-				"Logs remain unsynced until to_warehouse is available."
-			),
-		)
-		return [], 0
-
-	items = _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse)
-
-	if items:
-		_validate_eod_items_for_mwo_reservation(items)
-		_validate_eod_source_batch_stock(
-			items,
-			manufacturing_work_order=mwo,
-			mop_data_list=mop_data_list,
-			company=company,
-		)
-		manufacturing_order = last_mop_data["mop_doc"].get("manufacturing_order")
-		se_name = _submit_eod_material_transfer_se(
-			company,
-			mwo,
-			manufacturing_order,
-			items,
-			header_mop_name=last_mop_name,
-			header_manufacturer=_mop_manufacturer_label(last_mop_data["mop_doc"]),
-		)
-		se_names.append(se_name)
-
-	_mark_all_mwo_mop_logs_synced([mwo])
-	return se_names, len(all_logs)
+# ---------------------------------------------------------------------------
+# MOP Log sync-marking (today-only safety net)
+# ---------------------------------------------------------------------------
 
 
-def _mark_all_mwo_mop_logs_synced(manufacturing_work_orders, stock_entry_name=None):
-	"""Mark ALL unsynced non-cancelled MOP Logs for the given MWOs as synced.
-
-	Called AFTER SE submit so the savepoint can roll back both the SE and the
-	mark-synced together if anything fails.
-	``stock_entry_name`` is accepted for future audit trail use.
-	"""
+def _mark_all_mwo_mop_logs_synced(manufacturing_work_orders):
+	"""Mark today's unsynced non-cancelled MOP Logs for the given MWOs as synced."""
 	if not manufacturing_work_orders:
 		return
-	frappe.db.set_value(
-		"MOP Log",
+	today_start, tomorrow_start = _get_today_range()
+	frappe.db.sql(
+		"""
+        UPDATE `tabMOP Log`
+        SET is_synced = 1
+        WHERE manufacturing_work_order IN %(mwos)s
+          AND is_synced = 0
+          AND is_cancelled = 0
+          AND creation >= %(today_start)s
+          AND creation < %(tomorrow_start)s
+        """,
 		{
-			"manufacturing_work_order": ["in", manufacturing_work_orders],
-			"is_synced": 0,
-			"is_cancelled": 0,
+			"mwos": manufacturing_work_orders,
+			"today_start": today_start,
+			"tomorrow_start": tomorrow_start,
 		},
-		"is_synced",
-		1,
 	)
 
 
+# ---------------------------------------------------------------------------
+# Stock Entry creation
+# ---------------------------------------------------------------------------
+
+
 def _mop_manufacturer_label(mop):
-	"""Manufacturer from cached Manufacturing Operation row (dict or document-like object)."""
 	if mop is None:
 		return None
 	if isinstance(mop, dict):
@@ -409,15 +1011,16 @@ def _mop_manufacturer_label(mop):
 	return getattr(mop, "manufacturer", None)
 
 
-def _submit_eod_material_transfer_se(
+def _save_draft_eod_se(
 	company,
 	mwo,
 	manufacturing_order,
 	items,
 	header_mop_name=None,
 	header_manufacturer=None,
+	sync_log_name=None,
 ):
-	"""Create, save, and submit one Material Transfer to Department Stock Entry; return name."""
+	"""Create and SAVE (draft only) one Material Transfer to Department Stock Entry."""
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = "Material Transfer to Department"
 	se.company = company
@@ -428,34 +1031,52 @@ def _submit_eod_material_transfer_se(
 		se.manufacturing_operation = header_mop_name
 	if header_manufacturer:
 		se.manufacturer = header_manufacturer
+	# Audit markers (custom fields added by migration patch)
+	se.custom_is_eod_sync_stock_entry = 1
+	if sync_log_name:
+		se.custom_eod_sync_log = sync_log_name
+	se.custom_eod_sync_source = "MOP EOD Sync"
 	for item in items:
 		se.append("items", item)
 	se.flags.ignore_permissions = True
 	se.save()
-	se.submit()
 	return se.name
 
 
+# ---------------------------------------------------------------------------
+# Validations (bulk-optimized)
+# ---------------------------------------------------------------------------
+
+
 def _validate_eod_items_for_mwo_reservation(items_to_transfer):
-	"""
-	Ensure lines carry batch/serial data required by ``stock_reservation_entry_for_mwo``
-	on submit (Serial/Batch SRE needs ``row.batch_no`` on the Stock Entry row when the
-	item is batch-tracked).
-	"""
+	"""Ensure lines carry batch/serial data required by stock_reservation_entry_for_mwo."""
+	if not items_to_transfer:
+		return
+
+	item_codes = list(
+		{item.get("item_code") for item in items_to_transfer if item.get("item_code")}
+	)
+	if not item_codes:
+		return
+
+	item_rows = frappe.db.get_all(
+		"Item",
+		filters={"name": ["in", item_codes]},
+		fields=["name", "has_batch_no", "has_serial_no"],
+	)
+	item_flags = {r.name: r for r in item_rows}
+
 	for item in items_to_transfer:
 		item_code = item.get("item_code")
 		if not item_code or flt(item.get("qty")) <= 0:
 			continue
-		item_flags = frappe.db.get_value(
-			"Item", item_code, ["has_batch_no", "has_serial_no"]
-		)
-		if not item_flags:
+		flags = item_flags.get(item_code)
+		if not flags:
 			frappe.throw(
 				_("MOP EOD Sync: Item {0} not found.").format(frappe.bold(item_code))
 			)
-		has_batch_no, has_serial_no = item_flags
 		mop_label = item.get("manufacturing_operation") or "?"
-		if cint(has_batch_no) and not item.get("batch_no"):
+		if cint(flags.has_batch_no) and not item.get("batch_no"):
 			frappe.throw(
 				_(
 					"MOP EOD Sync: item {0} is batch-tracked but the MOP Log line has no Batch No "
@@ -463,7 +1084,7 @@ def _validate_eod_items_for_mwo_reservation(items_to_transfer):
 					"sb_entries — fix the source MOP Log / vouchers, then retry."
 				).format(frappe.bold(item_code), frappe.bold(mop_label))
 			)
-		if cint(has_serial_no) and not item.get("serial_no"):
+		if cint(flags.has_serial_no) and not item.get("serial_no"):
 			frappe.throw(
 				_(
 					"MOP EOD Sync: item {0} is serialized but the MOP Log line has no Serial No "
@@ -473,7 +1094,6 @@ def _validate_eod_items_for_mwo_reservation(items_to_transfer):
 
 
 def _resolve_eod_manufacturer_label(mop_data_list, manufacturing_work_order):
-	"""Manufacturer from Manufacturing Operation rows; fallback to Manufacturing Work Order."""
 	if not mop_data_list:
 		if manufacturing_work_order:
 			return frappe.db.get_value(
@@ -485,7 +1105,11 @@ def _resolve_eod_manufacturer_label(mop_data_list, manufacturing_work_order):
 		mdoc = md.get("mop_doc")
 		if not mdoc:
 			continue
-		m = mdoc.get("manufacturer")
+		m = (
+			mdoc.get("manufacturer")
+			if isinstance(mdoc, dict)
+			else getattr(mdoc, "manufacturer", None)
+		)
 		if m:
 			mfrs.add(m)
 	if mfrs:
@@ -504,10 +1128,154 @@ def _collect_mop_names(mop_data_list):
 	return ", ".join(names)
 
 
+# ---------------------------------------------------------------------------
+# Sync Log helpers
+# ---------------------------------------------------------------------------
+
+
+def _insert_sync_log_item(sync_log_name, row_dict):
+	"""Direct frappe.db.insert for a child row in MOP EOD Sync Log Item. Returns row name."""
+	if not sync_log_name:
+		return None
+	import uuid
+
+	row_name = frappe.generate_hash(length=10)
+	now = now_datetime()
+	frappe.db.insert(
+		"MOP EOD Sync Log Item",
+		{
+			"name": row_name,
+			"parent": sync_log_name,
+			"parentfield": "items",
+			"parenttype": "MOP EOD Sync Log",
+			"idx": 1,
+			"manufacturing_work_order": row_dict.get("manufacturing_work_order") or "",
+			"manufacturing_operation": row_dict.get("manufacturing_operation") or "",
+			"company": row_dict.get("company") or "",
+			"item_code": row_dict.get("item_code") or "",
+			"batch_no": row_dict.get("batch_no") or "",
+			"serial_no": row_dict.get("serial_no") or "",
+			"source_warehouse": row_dict.get("source_warehouse") or "",
+			"target_warehouse": row_dict.get("target_warehouse") or "",
+			"qty": flt(row_dict.get("qty"), 3),
+			"pcs": flt(row_dict.get("pcs"), 3),
+			"status": row_dict.get("status") or "Pending",
+			"sync_stage": row_dict.get("sync_stage") or "",
+			"is_synced": cint(row_dict.get("is_synced")),
+			"stock_reservation_entry": row_dict.get("stock_reservation_entry") or "",
+			"stock_entry": row_dict.get("stock_entry") or "",
+			"draft_stock_entry": row_dict.get("draft_stock_entry") or "",
+			"mop_log": row_dict.get("mop_log") or "",
+			"error_type": row_dict.get("error_type") or "",
+			"error_message": (row_dict.get("error_message") or "")[:500],
+			"technical_traceback": row_dict.get("technical_traceback") or "",
+			"suggested_fix": row_dict.get("suggested_fix") or "",
+			"created_on": now,
+			"completed_on": row_dict.get("completed_on") or "",
+			"owner": frappe.session.user or "Administrator",
+			"creation": now,
+			"modified": now,
+			"modified_by": frappe.session.user or "Administrator",
+			"docstatus": 0,
+		},
+	)
+	return row_name
+
+
+def recalculate_sync_log_totals(sync_log_name):
+	"""SQL aggregation over child rows to update parent totals and progress_percent."""
+	if not sync_log_name:
+		return
+
+	rows = frappe.db.sql(
+		"""
+        SELECT
+            status,
+            COUNT(name) AS item_count,
+            COALESCE(SUM(qty), 0) AS total_qty
+        FROM `tabMOP EOD Sync Log Item`
+        WHERE parent = %s
+        GROUP BY status
+        """,
+		(sync_log_name,),
+		as_dict=True,
+	)
+
+	totals = {
+		"total_items": 0,
+		"total_qty": 0.0,
+		"synced_items": 0,
+		"synced_qty": 0.0,
+		"failed_items": 0,
+		"failed_qty": 0.0,
+		"unsynced_items": 0,
+		"unsynced_qty": 0.0,
+		"skipped_items": 0,
+		"skipped_qty": 0.0,
+		"excluded_items": 0,
+		"excluded_qty": 0.0,
+	}
+
+	for row in rows:
+		status = row.status or ""
+		cnt = cint(row.item_count)
+		qty = flt(row.total_qty, 3)
+		totals["total_items"] += cnt
+		totals["total_qty"] += qty
+
+		if status == "Synced":
+			totals["synced_items"] += cnt
+			totals["synced_qty"] += qty
+		elif status in ("Failed", "Draft Created"):
+			totals["failed_items"] += cnt
+			totals["failed_qty"] += qty
+		elif status == "Excluded":
+			totals["excluded_items"] += cnt
+			totals["excluded_qty"] += qty
+		elif status == "Skipped":
+			totals["skipped_items"] += cnt
+			totals["skipped_qty"] += qty
+		elif status in ("Pending", "Unsynced"):
+			totals["unsynced_items"] += cnt
+			totals["unsynced_qty"] += qty
+
+	eligible_qty = flt(totals["total_qty"] - totals["excluded_qty"], 3)
+	if eligible_qty > 0:
+		progress_pct = flt((totals["synced_qty"] / eligible_qty) * 100, 1)
+	else:
+		progress_pct = 0.0
+
+	frappe.db.set_value(
+		"MOP EOD Sync Log",
+		sync_log_name,
+		{
+			"total_items": totals["total_items"],
+			"total_qty": flt(totals["total_qty"], 3),
+			"eligible_qty": eligible_qty,
+			"synced_items": totals["synced_items"],
+			"synced_qty": flt(totals["synced_qty"], 3),
+			"failed_items": totals["failed_items"],
+			"failed_qty": flt(totals["failed_qty"], 3),
+			"unsynced_items": totals["unsynced_items"],
+			"unsynced_qty": flt(totals["unsynced_qty"], 3),
+			"skipped_items": totals["skipped_items"],
+			"skipped_qty": flt(totals["skipped_qty"], 3),
+			"excluded_items": totals["excluded_items"],
+			"excluded_qty": flt(totals["excluded_qty"], 3),
+			"progress_percent": progress_pct,
+		},
+		update_modified=False,
+	)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic helpers (SRE audit)
+# ---------------------------------------------------------------------------
+
+
 def _list_open_sre_for_batch(
 	item_code, warehouse, batch_no, manufacturing_work_order=None
 ):
-	"""Submitted Serial/Batch SRE rows with undelivered qty at ``warehouse`` (diagnostics)."""
 	from frappe.query_builder.functions import Sum
 
 	sb = frappe.qb.DocType("Serial and Batch Entry")
@@ -534,7 +1302,6 @@ def _list_open_sre_for_batch(
 def _list_open_sre_other_warehouses(
 	item_code, batch_no, manufacturing_work_order=None, exclude_warehouse=None, limit=5
 ):
-	"""Open SRE lines for same item/batch but different warehouse (wrong-WH hint)."""
 	from frappe.query_builder.functions import Sum
 
 	sb = frappe.qb.DocType("Serial and Batch Entry")
@@ -570,7 +1337,6 @@ def _format_batch_short_diagnostics(
 	mop_data_list,
 	company,
 ):
-	"""Extra lines for ValidationError when physical batch qty is insufficient."""
 	lines = []
 	if company:
 		lines.append(_("Company: {0}").format(company))
@@ -594,9 +1360,7 @@ def _format_batch_short_diagnostics(
 		manufacturing_work_order=manufacturing_work_order,
 	)
 	if not sre_here and manufacturing_work_order:
-		sre_here = _list_open_sre_for_batch(
-			item_code, warehouse, batch_no, manufacturing_work_order=None
-		)
+		sre_here = _list_open_sre_for_batch(item_code, warehouse, batch_no)
 
 	total_open_here = 0.0
 	for row in sre_here:
@@ -645,7 +1409,6 @@ def _format_batch_short_diagnostics(
 def _get_sre_undelivered_batch_qty(
 	item_code, warehouse, batch_no, manufacturing_work_order=None
 ):
-	"""Sum undelivered qty on submitted Serial/Batch Stock Reservation Entry rows (audit helper)."""
 	from frappe.query_builder.functions import Sum
 
 	sb = frappe.qb.DocType("Serial and Batch Entry")
@@ -672,15 +1435,10 @@ def _get_sre_undelivered_batch_qty(
 
 
 def _validate_eod_source_batch_stock(
-	items_to_transfer,
-	manufacturing_work_order=None,
-	mop_data_list=None,
-	company=None,
+	items_to_transfer, manufacturing_work_order=None, mop_data_list=None, company=None
 ):
-	"""
-	Ensure aggregated transfer qty per (source warehouse, item, batch) does not exceed
-	**physical** batch balance (SLE / serial-batch ledger), ignoring ERPNext's net
-	"pickable" qty that subtracts undelivered Stock Reservation Entry rows.
+	"""Ensure aggregated transfer qty per (source warehouse, item, batch) does not exceed
+	physical batch balance (SLE / serial-batch ledger).
 	"""
 	from erpnext.stock.doctype.batch.batch import get_batch_qty
 	from frappe.utils import nowtime, today
@@ -750,19 +1508,16 @@ def _validate_eod_source_batch_stock(
 				manufacturing_work_order=manufacturing_work_order,
 			)
 			if sre_open + 1e-6 < req_qty:
-				frappe.log_error(
-					title=_("MOP EOD Sync — reservation audit"),
-					message=_(
-						"Transfer {0} {1} batch {2} from {3} (MWO {4}): physical qty {5} allows the move, "
-						"but undelivered Stock Reservation Entry qty for this item/batch/warehouse/MWO is only {6}. "
-						"Verify SO reservation vs physical issue rules."
-					).format(
-						req_qty,
-						item_code,
-						batch_no,
-						wh,
-						manufacturing_work_order,
-						physical,
-						sre_open,
-					),
+				frappe.logger().warning(
+					"MOP EOD Sync reservation audit: transferring %s of %s batch %s from %s "
+					"(MWO %s) — physical qty %s allows the move but undelivered SRE qty for "
+					"this item/batch/warehouse/MWO is only %s. "
+					"Verify SO reservation vs physical issue rules.",
+					req_qty,
+					item_code,
+					batch_no,
+					wh,
+					manufacturing_work_order,
+					physical,
+					sre_open,
 				)

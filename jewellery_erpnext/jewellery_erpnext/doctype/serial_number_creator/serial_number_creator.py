@@ -5,6 +5,7 @@ from copy import deepcopy
 from decimal import ROUND_HALF_UP, Decimal
 
 import frappe
+from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import (
@@ -307,17 +308,30 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 					)
 
 					if pc_receive_data:
-						sre_reserved_qty_total = flt(pc_receive_data[0].qty)
-						row["s_warehouse"] = pc_receive_data[0].t_warehouse
-						for st_row in self.source_table:
-							if st_row.row_material == row[
-								"item_code"
-							] and st_row.batch_no == row.get("batch_no"):
-								st_row.s_warehouse = row["s_warehouse"]
-								st_row.db_set(
-									"s_warehouse",
-									row["s_warehouse"],
-								)
+						candidate_wh = pc_receive_data[0].t_warehouse
+						batch_no = row.get("batch_no")
+						# Only use the PC Receive warehouse if the batch actually has stock
+						# there. A later SE (e.g. pc_tagging_stock_sync return) may have
+						# moved it back to Tagging, creating a different batch_no. Using
+						# the stale PC WH in that case causes BatchNegativeStockError.
+						batch_qty_at_candidate = (
+							flt(get_batch_qty(batch_no, candidate_wh, row["item_code"]))
+							if batch_no
+							else flt(pc_receive_data[0].qty)
+						)
+						if batch_qty_at_candidate > 0:
+							sre_reserved_qty_total = flt(pc_receive_data[0].qty)
+							row["s_warehouse"] = candidate_wh
+							for st_row in self.source_table:
+								if (
+									st_row.row_material == row["item_code"]
+									and st_row.batch_no == batch_no
+								):
+									st_row.s_warehouse = candidate_wh
+									st_row.db_set(
+										"s_warehouse",
+										candidate_wh,
+									)
 					else:
 						# ── PRIORITY 3: Stock Entry linked to PMO ──
 						se_wh = frappe.db.sql(
