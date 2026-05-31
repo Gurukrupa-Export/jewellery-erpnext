@@ -208,14 +208,13 @@ def process_repack_settlement(
 				continue
 
 			consume_pure_qty = min(required_pure_qty, available_pure_qty)
-			consume_qty = flt(consume_pure_qty / (source_purity / 100), 3)
-			if consume_qty <= 0:
+			if consume_pure_qty <= 0:
 				continue
 
 			repack_entry = create_gold_repack_entry(
 				source_batch=source_batch,
 				target_batch=target_batch,
-				qty=consume_qty,
+				qty=consume_pure_qty,
 				source_customer=incoming_customer,
 				reference_log=log.name,
 				source_warehouse=incoming["warehouse"],
@@ -228,7 +227,9 @@ def process_repack_settlement(
 				settlement_batch=source_batch,
 			)
 
-			incoming["remaining_qty"] = flt(incoming["remaining_qty"] - consume_qty, 3)
+			incoming["remaining_qty"] = flt(
+				incoming["remaining_qty"] - consume_pure_qty, 3
+			)
 
 			required_pure_qty = flt(required_pure_qty - consume_pure_qty, 3)
 
@@ -457,13 +458,10 @@ def process_pending_repack_for_mwo(doc_name):
 
 			consume_pure_qty = min(required_pure_qty, available_pure_qty)
 
-			# consume_qty = flt(consume_pure_qty / (purity / 100), 3)
-			consume_qty = consume_pure_qty
-
 			repack_entry = create_gold_repack_entry(
 				source_batch=source["batch_no"],
 				target_batch=target_batch,
-				qty=consume_qty,
+				qty=consume_pure_qty,
 				source_customer=customer,
 				reference_log=log.name,
 				source_warehouse=source["warehouse"],
@@ -476,7 +474,7 @@ def process_pending_repack_for_mwo(doc_name):
 				settlement_batch=source["batch_no"],
 			)
 
-			source["qty"] = flt(source["qty"] - consume_qty, 3)
+			source["qty"] = flt(source["qty"] - consume_pure_qty, 3)
 
 			required_pure_qty = flt(required_pure_qty - consume_pure_qty, 3)
 
