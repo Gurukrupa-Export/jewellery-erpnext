@@ -205,6 +205,20 @@ class TestGetUnsyncedMopGroupsByMwo(FrappeTestCase):
 
 		self.assertEqual(out, {})
 
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all",
+		return_value=[],
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql",
+		return_value=[{"cnt": 0, "qty": 0}],
+	)
+	def test_empty_logs_returns_empty_dict(self, _mock_sql, _mock_get_all):
+		"""No unsynced logs → empty dict returned immediately without querying MOPs."""
+		out = _get_unsynced_mop_groups()
+
+		self.assertEqual(out, {})
+
 
 # ---------------------------------------------------------------------------
 # TestFindLastOperation (4 cases)

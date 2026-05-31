@@ -1286,6 +1286,9 @@ def _mark_all_mwo_mop_logs_synced(manufacturing_work_orders, selective=False):
 		},
 	)
 
+# ---------------------------------------------------------------------------
+# MOP Log sync-marking (today-only safety net)
+# ---------------------------------------------------------------------------
 
 def _mwo_realized_by_artifact(mwo):
 	"""Return the submitted Manufacture Stock Entry name for this MWO, else None.
