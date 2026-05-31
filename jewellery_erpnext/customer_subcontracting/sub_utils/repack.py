@@ -392,6 +392,11 @@ def process_pending_repack_for_mwo(doc_name):
 	if not customer:
 		return
 
+	mwo_type = get_mwo_type_from_pmo(doc.manufacturing_order)
+
+	if mwo_type != "Subcontracting":
+		frappe.throw("Create Repack is allowed only for Subcontracting Orders.")
+
 	pending_logs = frappe.get_all(
 		"Subcontracting Log",
 		filters={
@@ -406,13 +411,7 @@ def process_pending_repack_for_mwo(doc_name):
 	if not pending_logs:
 		return
 
-	mwo_type = get_mwo_type_from_pmo(doc.manufacturing_order)
-
-	if mwo_type == "Subcontracting":
-		gold_sources = get_flat_available_gold(customer)
-
-	else:
-		gold_sources = get_company_available_gold()
+	gold_sources = get_flat_available_gold(customer)
 
 	if not gold_sources:
 		frappe.throw(f"Customer Gold Not Available. Customer : {customer}")
