@@ -1019,14 +1019,31 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			)
 			return
 
+		# --- Find all MWOs linked to this PMO ---
+		pmo_name = row.parent_manufacturing_order
+		if not pmo_name and mwo_name:
+			pmo_name = frappe.db.get_value(
+				"Manufacturing Work Order", mwo_name, "manufacturing_order"
+			)
+
+		all_pmo_mwos = []
+		if pmo_name:
+			all_pmo_mwos = frappe.get_all(
+				"Manufacturing Work Order",
+				{"manufacturing_order": pmo_name, "docstatus": 1},
+				pluck="name",
+			)
+		if not all_pmo_mwos and mwo_name:
+			all_pmo_mwos = [mwo_name]
+
 		# --- Find and cancel SREs, use SRE warehouse as source ---
-		sre_list = []
-		if mwo_name:
+		sre_list_1 = []
+		if all_pmo_mwos:
 			sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 			sre_filters = {"docstatus": 1}
 			if "manufacturing_work_order" in sre_cols:
-				sre_filters["manufacturing_work_order"] = mwo_name
-			sre_list = frappe.db.get_all(
+				sre_filters["manufacturing_work_order"] = ["in", all_pmo_mwos]
+			sre_list_1 = frappe.db.get_all(
 				"Stock Reservation Entry",
 				filters=sre_filters,
 				fields=[
@@ -1037,6 +1054,41 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 					"delivered_qty",
 				],
 			)
+
+		sre_list_2 = []
+		item_codes = list(
+			set(r.get("item_code") for r in mop_balance_rows if r.get("item_code"))
+		)
+		sales_order = None
+		if pmo_name:
+			sales_order = frappe.db.get_value(
+				"Parent Manufacturing Order", pmo_name, "sales_order"
+			)
+		if sales_order and item_codes:
+			sre_list_2 = frappe.db.get_all(
+				"Stock Reservation Entry",
+				filters={
+					"docstatus": 1,
+					"voucher_type": "Sales Order",
+					"voucher_no": sales_order,
+					"item_code": ["in", item_codes],
+				},
+				fields=[
+					"name",
+					"item_code",
+					"warehouse",
+					"reserved_qty",
+					"delivered_qty",
+				],
+			)
+
+		# Deduplicate SREs by name
+		seen_sres = set()
+		sre_list = []
+		for sre in sre_list_1 + sre_list_2:
+			if sre.name not in seen_sres:
+				sre_list.append(sre)
+				seen_sres.add(sre.name)
 
 		# --- Create stock entry items from MOP balance rows ---
 		for balance_row in mop_balance_rows:
@@ -1084,14 +1136,18 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 		# --- Cancel the SREs ---
 		for sre in sre_list:
 			try:
+				frappe.clear_document_cache("Bin")
 				sre_doc = frappe.get_doc("Stock Reservation Entry", sre.name)
 				sre_doc.ignore_permissions = True
 				sre_doc.cancel()
+				frappe.clear_document_cache("Bin")
 			except Exception:
 				frappe.log_error(
 					title=f"Failed to cancel SRE {sre.name} during Product Certification",
 					message=frappe.get_traceback(),
 				)
+		if sre_list:
+			frappe.clear_cache()
 
 	else:
 		# --- Receive type: get items from the Issue stock entry ---
