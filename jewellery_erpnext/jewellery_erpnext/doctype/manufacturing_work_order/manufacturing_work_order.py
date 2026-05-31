@@ -90,7 +90,6 @@ class ManufacturingWorkOrder(Document):
 				"manufacturing_order": self.manufacturing_order,
 				"name": ["!=", self.name],
 				"for_fg": 0,
-				"is_finding_mwo": 0,
 				"docstatus": 1,
 			},
 			pluck="name",
