@@ -90,7 +90,6 @@ class ManufacturingWorkOrder(Document):
 				"manufacturing_order": self.manufacturing_order,
 				"name": ["!=", self.name],
 				"for_fg": 0,
-				"is_finding_mwo": 0,
 				"docstatus": 1,
 			},
 			pluck="name",
@@ -172,9 +171,17 @@ class ManufacturingWorkOrder(Document):
 			update_modified=False,
 		)
 
-		# Also propagate weights to the FG MWO's Manufacturing Operation
+		# Also propagate weights to the FG MWO's latest Manufacturing Operation
 		# (MOP) so that the SNC submission picks up correct weights.
 		fg_mop = getattr(self, "manufacturing_operation", None)
+		if not fg_mop:
+			fg_mop = frappe.db.get_value(
+				"Manufacturing Operation",
+				{"manufacturing_work_order": self.name},
+				"name",
+				order_by="creation desc",
+			)
+
 		if fg_mop:
 			frappe.db.set_value(
 				"Manufacturing Operation",
@@ -449,6 +456,21 @@ def create_manufacturing_operation(doc):
 	mop.operation = operation
 	mop.custom_tracking_bom = doc.custom_tracking_bom
 	mop.department = department
+
+	# Explicitly copy weights from MWO to MOP
+	mop.gross_wt = doc.gross_wt
+	mop.net_wt = doc.net_wt
+	mop.finding_wt = doc.finding_wt
+	mop.diamond_wt = doc.diamond_wt
+	mop.gemstone_wt = doc.gemstone_wt
+	mop.other_wt = doc.other_wt
+	mop.received_gross_wt = doc.received_gross_wt
+	mop.received_net_wt = doc.received_net_wt
+	mop.loss_wt = doc.loss_wt
+	mop.diamond_wt_in_gram = doc.diamond_wt_in_gram
+	mop.diamond_pcs = doc.diamond_pcs
+	mop.gemstone_pcs = doc.gemstone_pcs
+
 	mop.save()
 	mop.db_set("employee", None)
 	doc.db_set("manufacturing_operation", mop.name)
