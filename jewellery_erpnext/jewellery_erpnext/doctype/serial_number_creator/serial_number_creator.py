@@ -233,39 +233,42 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 
 				sre_reserved_qty_total = 0.0
 
-				# ── PRIORITY 1: Product Certification Receive ──
-				# If PC happened before SNC, the SREs are already cancelled
-				# and the stock sits at the PC Receive t_warehouse.
-				# Check this FIRST as the authoritative source.
-				pc_receive_data = frappe.db.sql(
-					"""
-					SELECT se_item.t_warehouse, se_item.qty
-					FROM `tabStock Entry` se
-					JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
-					JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
-					WHERE pc.type = 'Receive'
-					  AND se.docstatus = 1
-					  AND EXISTS(
-					      SELECT 1 FROM `tabProduct Details` pd
-					      WHERE pd.parent = pc.name
-					        AND (pd.manufacturing_work_order = %(mwo)s
-					             OR pd.parent_manufacturing_order = %(pmo)s)
-					  )
-					  AND se_item.item_code = %(item_code)s
-					ORDER BY se.creation DESC LIMIT 1
-				""",
-					{
-						"mwo": self.manufacturing_work_order,
-						"pmo": pmo,
+				# ── PRIORITY 1: SRE — Cancel and capture warehouse ──
+				# Find all MWOs linked to this PMO for comprehensive SRE lookup
+				all_pmo_mwos = frappe.get_all(
+					"Manufacturing Work Order",
+					{"manufacturing_order": pmo, "docstatus": 1},
+					pluck="name",
+				)
+				if not all_pmo_mwos:
+					all_pmo_mwos = [self.manufacturing_work_order]
+
+				linked_sres = frappe.get_all(
+					"Stock Reservation Entry",
+					filters={
 						"item_code": row["item_code"],
+						"docstatus": 1,
+						"manufacturing_work_order": ["in", all_pmo_mwos],
 					},
-					as_dict=1,
+					pluck="name",
 				)
 
-				if pc_receive_data:
-					sre_reserved_qty_total = flt(pc_receive_data[0].qty)
-					row["s_warehouse"] = pc_receive_data[0].t_warehouse
-					# Persist the corrected warehouse back to source_table
+				# Deduplicate and cancel SREs
+				for sre_name in set(linked_sres):
+					frappe.clear_document_cache("Bin")
+					sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
+
+					# Capture warehouse from SRE
+					if sre_doc.warehouse:
+						row["s_warehouse"] = sre_doc.warehouse
+
+					sre_reserved_qty_total += flt(sre_doc.reserved_qty)
+					sre_doc.flags.ignore_permissions = True
+					sre_doc.cancel()
+					frappe.clear_document_cache("Bin")
+
+				# Persist the corrected SRE warehouse back to source_table
+				if linked_sres:
 					for st_row in self.source_table:
 						if st_row.row_material == row[
 							"item_code"
@@ -275,67 +278,37 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 								"s_warehouse",
 								row["s_warehouse"],
 							)
-					frappe.logger().info(
-						f"SNC {self.name}: PC Receive — "
-						f"Item: {row['item_code']}, "
-						f"Warehouse: {row['s_warehouse']}, "
-						f"Qty: {sre_reserved_qty_total} "
-						f"(Using Product Certification Receive as primary source)"
-					)
-				else:
-					# ── PRIORITY 2: SRE cancellation ──
-					# No PC exists — resolve via Stock Reservation Entries
-					# First, find all MWOs that consumed this item/batch via MOP Log
-					consumed_mwos = frappe.db.sql(
+
+				if not linked_sres:
+					# ── PRIORITY 2: Product Certification Receive ──
+					pc_receive_data = frappe.db.sql(
 						"""
-						SELECT DISTINCT manufacturing_work_order
-						FROM `tabMOP Log`
-						WHERE item_code = %s AND IFNULL(batch_no, '') = IFNULL(%s, '')
-						  AND manufacturing_work_order IN (
-						      SELECT name FROM `tabManufacturing Work Order`
-						      WHERE manufacturing_order = %s
+						SELECT se_item.t_warehouse, se_item.qty
+						FROM `tabStock Entry` se
+						JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
+						JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
+						WHERE pc.type = 'Receive'
+						  AND se.docstatus = 1
+						  AND EXISTS(
+						      SELECT 1 FROM `tabProduct Details` pd
+						      WHERE pd.parent = pc.name
+						        AND (pd.manufacturing_work_order = %(mwo)s
+						             OR pd.parent_manufacturing_order = %(pmo)s)
 						  )
-						  AND is_cancelled = 0
+						  AND se_item.item_code = %(item_code)s
+						ORDER BY se.creation DESC LIMIT 1
 					""",
-						(
-							row["item_code"],
-							row.get("batch_no"),
-							self.parent_manufacturing_order,
-						),
-						as_list=1,
-					)
-
-					search_mwos = [self.manufacturing_work_order]
-					for m in consumed_mwos:
-						if m[0] and m[0] not in search_mwos:
-							search_mwos.append(m[0])
-
-					linked_sres = frappe.get_all(
-						"Stock Reservation Entry",
-						filters={
+						{
+							"mwo": self.manufacturing_work_order,
+							"pmo": pmo,
 							"item_code": row["item_code"],
-							"docstatus": 1,
-							"manufacturing_work_order": ["in", search_mwos],
 						},
-						pluck="name",
+						as_dict=1,
 					)
 
-					# Deduplicate and cancel SREs while preventing TimestampMismatchError on Bins
-					for sre_name in set(linked_sres):
-						frappe.clear_document_cache("Bin")
-						sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
-
-						# Capture warehouse from SRE if available
-						if sre_doc.warehouse:
-							row["s_warehouse"] = sre_doc.warehouse
-
-						sre_reserved_qty_total += flt(sre_doc.reserved_qty)
-						sre_doc.flags.ignore_permissions = True
-						sre_doc.cancel()
-						frappe.clear_document_cache("Bin")
-
-					# Persist the corrected SRE warehouse back to source_table
-					if linked_sres:
+					if pc_receive_data:
+						sre_reserved_qty_total = flt(pc_receive_data[0].qty)
+						row["s_warehouse"] = pc_receive_data[0].t_warehouse
 						for st_row in self.source_table:
 							if st_row.row_material == row[
 								"item_code"
@@ -346,7 +319,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 									row["s_warehouse"],
 								)
 					else:
-						# Priority 3: Fallback to Stock Entry linked to PMO if SREs are missing/cancelled
+						# ── PRIORITY 3: Stock Entry linked to PMO ──
 						se_wh = frappe.db.sql(
 							"""
 							SELECT sed.t_warehouse, sed.s_warehouse
@@ -1009,71 +982,67 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				customer = sed_data.customer
 
 		s_wh = None
-		# ── Same resolution logic used during submit (to_prepare_data_for_make_mnf_stock_entry) ──
-		# Priority 1: PC Receive
-		pc_receive_data = frappe.db.sql(
-			"""
-			SELECT se_item.t_warehouse
-			FROM `tabStock Entry` se
-			JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
-			JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
-			WHERE pc.type = 'Receive'
-			  AND se.docstatus = 1
-			  AND EXISTS(
-				  SELECT 1 FROM `tabProduct Details` pd
-				  WHERE pd.parent = pc.name
-					AND (pd.manufacturing_work_order = %(mwo)s
-						 OR pd.parent_manufacturing_order = %(pmo)s)
-			  )
-			  AND se_item.item_code = %(item_code)s
-			ORDER BY se.creation DESC LIMIT 1
-		""",
-			{
-				"mwo": snc_doc.manufacturing_work_order,
-				"pmo": pmo,
-				"item_code": item_code,
-			},
-			as_dict=1,
-		)
-		if pc_receive_data and pc_receive_data[0].t_warehouse:
-			s_wh = pc_receive_data[0].t_warehouse
+		# ── Warehouse resolution for SNC fetch (same priorities as submit) ──
+
+		# Priority 1: SRE — fetch from active Stock Reservation Entries
+		# linked to all MWOs under this PMO for the given item
+		if pmo:
+			all_pmo_mwos = frappe.get_all(
+				"Manufacturing Work Order",
+				{"manufacturing_order": pmo, "docstatus": 1},
+				pluck="name",
+			)
+			if not all_pmo_mwos:
+				all_pmo_mwos = (
+					[snc_doc.manufacturing_work_order]
+					if snc_doc.manufacturing_work_order
+					else []
+				)
+
+			if all_pmo_mwos:
+				linked_sres = frappe.get_all(
+					"Stock Reservation Entry",
+					filters={
+						"item_code": item_code,
+						"docstatus": 1,
+						"manufacturing_work_order": ["in", all_pmo_mwos],
+					},
+					fields=["warehouse"],
+				)
+				if linked_sres:
+					for sre in linked_sres:
+						if sre.warehouse:
+							s_wh = sre.warehouse
+							break
 
 		if not s_wh:
-			# Priority 2: SRE
-			consumed_mwos = frappe.db.sql(
+			# Priority 2: PC Receive — check Product Certification receive entries
+			pc_receive_data = frappe.db.sql(
 				"""
-				SELECT DISTINCT manufacturing_work_order
-				FROM `tabMOP Log`
-				WHERE item_code = %s AND IFNULL(batch_no, '') = IFNULL(%s, '')
-				  AND manufacturing_work_order IN (
-					  SELECT name FROM `tabManufacturing Work Order`
-					  WHERE manufacturing_order = %s
+				SELECT se_item.t_warehouse
+				FROM `tabStock Entry` se
+				JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
+				JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
+				WHERE pc.type = 'Receive'
+				  AND se.docstatus = 1
+				  AND EXISTS(
+					  SELECT 1 FROM `tabProduct Details` pd
+					  WHERE pd.parent = pc.name
+						AND (pd.manufacturing_work_order = %(mwo)s
+							 OR pd.parent_manufacturing_order = %(pmo)s)
 				  )
-				  AND is_cancelled = 0
+				  AND se_item.item_code = %(item_code)s
+				ORDER BY se.creation DESC LIMIT 1
 			""",
-				(item_code, batch_no, snc_doc.parent_manufacturing_order),
-				as_list=1,
-			)
-
-			search_mwos = [snc_doc.manufacturing_work_order]
-			for m in consumed_mwos or []:
-				if m[0] and m[0] not in search_mwos:
-					search_mwos.append(m[0])
-
-			linked_sres = frappe.get_all(
-				"Stock Reservation Entry",
-				filters={
+				{
+					"mwo": snc_doc.manufacturing_work_order,
+					"pmo": pmo,
 					"item_code": item_code,
-					"docstatus": 1,
-					"manufacturing_work_order": ["in", search_mwos],
 				},
-				fields=["warehouse"],
+				as_dict=1,
 			)
-			if linked_sres:
-				for sre in linked_sres:
-					if sre.warehouse:
-						s_wh = sre.warehouse
-						break
+			if pc_receive_data and pc_receive_data[0].t_warehouse:
+				s_wh = pc_receive_data[0].t_warehouse
 
 		if not s_wh:
 			# Priority 3: Stock Entry linked to PMO
@@ -1103,9 +1072,6 @@ def _get_source_raw_materials(mop_name, snc_doc):
 				mwo=mwo_name,
 				mop=mop_name,
 			)
-
-		if not s_wh:
-			s_wh = r.get("to_warehouse")
 
 		if not s_wh:
 			s_wh = r.get("to_warehouse")
