@@ -449,7 +449,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 										label: __("MOP Available Qty"),
 										fieldtype: "Float",
 										fieldname: "mop_available_qty",
-										in_list_view: 1,
+										in_list_view: 0,
 										read_only: 1,
 									},
 									{
@@ -475,11 +475,13 @@ frappe.ui.form.on("Manufacturing Operation", {
 										label: __("Available to Receive Qty"),
 										fieldtype: "Float",
 										fieldname: "available_to_receive_qty",
+										in_list_view: 1,
 										read_only: 1,
 									},
 									{
 										label: __("Available to Receive PCS"),
 										fieldtype: "Float",
+										in_list_view: 1,
 										fieldname: "available_to_receive_pcs",
 										read_only: 1,
 									},
@@ -506,8 +508,6 @@ frappe.ui.form.on("Manufacturing Operation", {
 										label: __("PCS Item"),
 										fieldtype: "Check",
 										fieldname: "is_pcs_item",
-										hidden: 1,
-										read_only: 1,
 									},
 									{
 										label: __("MOP Log Reference"),
@@ -520,7 +520,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 										label: __("Warning"),
 										fieldtype: "Small Text",
 										fieldname: "warning",
-										in_list_view: 1,
+										in_list_view: 0,
 										read_only: 1,
 									},
 									{

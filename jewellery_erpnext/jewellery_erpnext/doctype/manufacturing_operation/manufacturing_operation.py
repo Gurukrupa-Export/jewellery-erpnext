@@ -4380,7 +4380,7 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 		# PCS is meaningless and is force-zeroed regardless of client value.
 		# For D/G items, the same context above carries the MOP-side PCS cap.
 		first_char = (sre.item_code or "")[0] if sre.item_code else ""
-		is_pcs_item = first_char in ("D", "G")
+		is_pcs_item = 1 if first_char in ("D", "G") else 0
 		if not is_pcs_item:
 			req_pcs = 0
 		else:
@@ -4653,7 +4653,10 @@ def update_new_mop_wtg(
 
 	tolerance = _float_tolerance()
 
-	mop_logs = get_current_mop_balance_rows(self.previous_mop)
+	mop_logs = get_current_mop_balance_rows(
+		self.previous_mop,
+		exclude_voucher_no=employee_ir_doc.name if employee_ir_doc else None,
+	)
 	for log in mop_logs:
 		key = (log.item_code, log.batch_no)
 		loss_bucket = loss_map.get(key)
