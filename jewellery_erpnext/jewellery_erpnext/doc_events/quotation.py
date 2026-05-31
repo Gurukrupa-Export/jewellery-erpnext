@@ -1123,3 +1123,6 @@ def _apply_customer_pricing(
 				frappe.throw(
 					f"Tracking BOM Finding Detail Row #{idx}: Value missing for: Metal Purity for Metal Touch '{touch}'"
 				)
+
+
+create_new_bom = create_tracking_bom_directly
