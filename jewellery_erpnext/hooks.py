@@ -53,7 +53,27 @@ doctype_list_js = {
 
 # WorkOrder.get_work_orders = get_work_orders
 
+_EOD_LOCK_VALIDATOR = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.validate_not_eod_sync_locked"
+
 doc_events = {
+	# Block stock/manufacturing transactions while EOD sync is running.
+	# The validator bypasses itself when frappe.flags.in_eod_mop_sync is True
+	# so the sync process can create Stock Entries and update MOP Logs unhindered.
+	"Employee IR": {
+		"before_save": _EOD_LOCK_VALIDATOR,
+		"before_submit": _EOD_LOCK_VALIDATOR,
+		"before_cancel": _EOD_LOCK_VALIDATOR,
+	},
+	"Department IR": {
+		"before_save": _EOD_LOCK_VALIDATOR,
+		"before_submit": _EOD_LOCK_VALIDATOR,
+		"before_cancel": _EOD_LOCK_VALIDATOR,
+	},
+	"MOP Log": {
+		"before_save": _EOD_LOCK_VALIDATOR,
+		"before_submit": _EOD_LOCK_VALIDATOR,
+		"before_cancel": _EOD_LOCK_VALIDATOR,
+	},
 	"Quotation": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.quotation.quotation.before_validate",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.validate",
@@ -97,11 +117,13 @@ doc_events = {
 	},
 	"Stock Entry": {
 		# "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate",
+		"before_save": _EOD_LOCK_VALIDATOR,
 		"before_validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
 		],
 		"before_submit": [
+			_EOD_LOCK_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_child_batches",
@@ -112,6 +134,7 @@ doc_events = {
 			"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.create_subcontracting_log",
 			"jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_gold_repack",
 		],
+		"before_cancel": _EOD_LOCK_VALIDATOR,
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
 	},
@@ -172,7 +195,10 @@ doc_events = {
 		"on_update": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.on_update",
 	},
 	"Stock Reconciliation": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department"
+		"validate": "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department",
+		"before_save": _EOD_LOCK_VALIDATOR,
+		"before_submit": _EOD_LOCK_VALIDATOR,
+		"before_cancel": _EOD_LOCK_VALIDATOR,
 	},
 	"Payment Entry": {
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.payment_entry.on_submit",
@@ -204,8 +230,16 @@ override_doctype_class = {
 
 
 scheduler_events = {
-	"daily_long": [
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.sync_mop_logs"
+	# Per-minute check: enqueues EOD sync when configured time window fires.
+	# Lightweight — only reads MOP Settings and enqueues; no MOP Log processing.
+	"cron": {
+		"* * * * *": [
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler.check_and_enqueue_eod_sync"
+		],
+	},
+	# Hourly cleanup: auto-releases any EOD sync lock that outlived its 2-hour window.
+	"hourly": [
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.release_expired_eod_sync_lock"
 	],
 }
 

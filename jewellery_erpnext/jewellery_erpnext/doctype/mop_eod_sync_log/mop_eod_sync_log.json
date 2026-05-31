@@ -1,0 +1,391 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:MOP-EOD-SYNC-{YYYY}-{#####}",
+ "creation": "2026-05-31 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "posting_date",
+  "trigger_type",
+  "status",
+  "started_by",
+  "col_break_1",
+  "started_on",
+  "completed_on",
+  "duration_seconds",
+  "eod_sync_time",
+  "mop_settings",
+  "progress_section",
+  "total_mwos",
+  "processed_mwos",
+  "col_break_2",
+  "synced_mwos",
+  "failed_mwos",
+  "skipped_mwos",
+  "items_section",
+  "total_items",
+  "synced_items",
+  "col_break_3",
+  "unsynced_items",
+  "failed_items",
+  "skipped_items",
+  "excluded_items",
+  "qty_section",
+  "total_qty",
+  "eligible_qty",
+  "synced_qty",
+  "col_break_4",
+  "unsynced_qty",
+  "failed_qty",
+  "skipped_qty",
+  "excluded_qty",
+  "progress_percent",
+  "progress_message",
+  "old_logs_section",
+  "old_unsynced_mop_log_count",
+  "old_unsynced_mop_log_qty",
+  "old_unsynced_mop_log_message",
+  "output_section",
+  "submitted_stock_entries",
+  "draft_stock_entries",
+  "col_break_5",
+  "error_log",
+  "last_error",
+  "summary",
+  "items_table_section",
+  "items"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date"
+  },
+  {
+   "fieldname": "trigger_type",
+   "fieldtype": "Select",
+   "label": "Trigger Type",
+   "options": "Manual\nScheduler\nRetry"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Queued\nRunning\nCompleted\nPartially Completed\nFailed\nTimeout Released"
+  },
+  {
+   "fieldname": "started_by",
+   "fieldtype": "Link",
+   "label": "Started By",
+   "options": "User"
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "started_on",
+   "fieldtype": "Datetime",
+   "label": "Started On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_on",
+   "fieldtype": "Datetime",
+   "label": "Completed On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "duration_seconds",
+   "fieldtype": "Float",
+   "label": "Duration (seconds)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_time",
+   "fieldtype": "Time",
+   "label": "EOD Sync Time",
+   "read_only": 1
+  },
+  {
+   "fieldname": "mop_settings",
+   "fieldtype": "Data",
+   "label": "MOP Settings",
+   "read_only": 1
+  },
+  {
+   "fieldname": "progress_section",
+   "fieldtype": "Section Break",
+   "label": "MWO Progress"
+  },
+  {
+   "fieldname": "total_mwos",
+   "fieldtype": "Int",
+   "label": "Total MWOs",
+   "read_only": 1
+  },
+  {
+   "fieldname": "processed_mwos",
+   "fieldtype": "Int",
+   "label": "Processed MWOs",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "synced_mwos",
+   "fieldtype": "Int",
+   "label": "Synced MWOs",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failed_mwos",
+   "fieldtype": "Int",
+   "label": "Failed MWOs",
+   "read_only": 1
+  },
+  {
+   "fieldname": "skipped_mwos",
+   "fieldtype": "Int",
+   "label": "Skipped MWOs",
+   "read_only": 1
+  },
+  {
+   "fieldname": "items_section",
+   "fieldtype": "Section Break",
+   "label": "Item Progress"
+  },
+  {
+   "fieldname": "total_items",
+   "fieldtype": "Int",
+   "label": "Total Items",
+   "read_only": 1
+  },
+  {
+   "fieldname": "synced_items",
+   "fieldtype": "Int",
+   "label": "Synced Items",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "unsynced_items",
+   "fieldtype": "Int",
+   "label": "Unsynced Items",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failed_items",
+   "fieldtype": "Int",
+   "label": "Failed Items",
+   "read_only": 1
+  },
+  {
+   "fieldname": "skipped_items",
+   "fieldtype": "Int",
+   "label": "Skipped Items",
+   "read_only": 1
+  },
+  {
+   "fieldname": "excluded_items",
+   "fieldtype": "Int",
+   "label": "Excluded Items",
+   "read_only": 1
+  },
+  {
+   "fieldname": "qty_section",
+   "fieldtype": "Section Break",
+   "label": "Quantity Progress"
+  },
+  {
+   "fieldname": "total_qty",
+   "fieldtype": "Float",
+   "label": "Total Qty",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eligible_qty",
+   "fieldtype": "Float",
+   "label": "Eligible Qty",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "synced_qty",
+   "fieldtype": "Float",
+   "label": "Synced Qty",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_4",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "unsynced_qty",
+   "fieldtype": "Float",
+   "label": "Unsynced Qty",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failed_qty",
+   "fieldtype": "Float",
+   "label": "Failed Qty",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "skipped_qty",
+   "fieldtype": "Float",
+   "label": "Skipped Qty",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "excluded_qty",
+   "fieldtype": "Float",
+   "label": "Excluded Qty",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "progress_percent",
+   "fieldtype": "Percent",
+   "label": "Progress %",
+   "read_only": 1
+  },
+  {
+   "fieldname": "progress_message",
+   "fieldtype": "Small Text",
+   "label": "Progress Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "old_logs_section",
+   "fieldtype": "Section Break",
+   "label": "Old Unsynced MOP Logs (Excluded)"
+  },
+  {
+   "fieldname": "old_unsynced_mop_log_count",
+   "fieldtype": "Int",
+   "label": "Old Unsynced MOP Log Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "old_unsynced_mop_log_qty",
+   "fieldtype": "Float",
+   "label": "Old Unsynced MOP Log Qty",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "old_unsynced_mop_log_message",
+   "fieldtype": "Small Text",
+   "label": "Old Unsynced MOP Log Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "output_section",
+   "fieldtype": "Section Break",
+   "label": "Output"
+  },
+  {
+   "fieldname": "submitted_stock_entries",
+   "fieldtype": "Small Text",
+   "label": "Submitted Stock Entries",
+   "read_only": 1
+  },
+  {
+   "fieldname": "draft_stock_entries",
+   "fieldtype": "Small Text",
+   "label": "Draft Stock Entries",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_5",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "error_log",
+   "fieldtype": "Link",
+   "label": "Error Log",
+   "options": "Error Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_error",
+   "fieldtype": "Text",
+   "label": "Last Error",
+   "read_only": 1
+  },
+  {
+   "fieldname": "summary",
+   "fieldtype": "Text Editor",
+   "label": "Summary",
+   "read_only": 1
+  },
+  {
+   "fieldname": "items_table_section",
+   "fieldtype": "Section Break",
+   "label": "Item Details"
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "Items",
+   "options": "MOP EOD Sync Log Item"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-05-31 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "MOP EOD Sync Log",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Manufacturing Manager"
+  },
+  {
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Stock Manager"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
