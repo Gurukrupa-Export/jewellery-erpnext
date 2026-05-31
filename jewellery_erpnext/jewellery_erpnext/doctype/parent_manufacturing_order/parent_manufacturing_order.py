@@ -802,12 +802,18 @@ def create_manufacturing_work_order(self):
 		if ignore_wo:
 			continue
 
-		if row.get("finding_category") == "Chains":
-			row["item_variant"] = item_code
-			if row.get("parentfield") == "finding_detail":
-				finding_data.append(row)
-		else:
-			# Non-Chains finding rows contribute to multicolour detection
+		row["item_variant"] = item_code
+
+		# Any finding that carries a finding_category can have its own Finding
+		# Manufacturing Work Order. The resolved/created item is the same one used
+		# when raising the Material Request, so create_finding_mwo() makes the
+		# final call from the item's custom_is_manufacturing_item flag. This lets
+		# non-chain findings (e.g. Magic Plates) create finding MWOs too.
+		if row.get("finding_category") and row.get("parentfield") == "finding_detail":
+			finding_data.append(row)
+
+		if row.get("finding_category") != "Chains":
+			# Non-Chains finding rows still contribute to multicolour detection
 			# but must NOT create their own metal MWOs.
 			all_metal_colour_rows.append(
 				{

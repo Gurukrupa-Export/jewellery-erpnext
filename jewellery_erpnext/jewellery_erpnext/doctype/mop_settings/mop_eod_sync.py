@@ -38,8 +38,10 @@ are marked synced atomically within the same savepoint.
   Phase 2 (savepoint "eod_submit_phase"): cancel the MWO's source-warehouse SREs
     (releasing the reservation so the transfer can consume the stock), submit the SE,
     re-reserve at the target warehouse where the stock lands, then mark MOP Logs synced.
-  On Phase 2 failure: rollback to submit savepoint; the cancelled SREs are restored and
-    the draft SE survives for manual recovery.
+    All of this is ONE atomic savepoint — the SRE relocation is all-or-nothing.
+  On Phase 2 failure: rollback the whole submit savepoint; the cancelled SREs are
+    restored (never left cancelled without a transfer/re-reservation) and the draft SE
+    survives for manual recovery.
 
 **MOP EOD Sync Log**: every run creates/updates a MOP EOD Sync Log document with full
 progress tracking. Every item/batch/MWO decision is recorded in the child table.
@@ -504,25 +506,23 @@ def _process_mwo_group(
 				)
 		return
 
-	# Phase 2 — Submit SE and mark logs synced (savepoint starts AFTER draft is saved)
+	# Phase 2 — Submit SE, relocate reservations, and mark logs synced — all in ONE
+	# savepoint so the SRE relocation is atomic. The MWO's stock is reserved at the
+	# source warehouse, which blocks the transfer; we cancel those SREs to release it,
+	# transfer, then re-reserve at the target. If ANY step fails, the whole savepoint
+	# rolls back — the cancelled SREs are restored and nothing is left half-done
+	# (never a state with reservations cancelled and no transfer/re-reservation).
 	try:
 		frappe.db.savepoint("eod_submit_phase")
-		# The MWO's stock is reserved at the source warehouse, which would block the
-		# transfer from consuming it. Release the reservation by cancelling those SREs
-		# BEFORE submit. A Phase-2 failure rolls the savepoint back, restoring them.
 		sre_snapshots = _snapshot_mwo_sres_for_relocation(mwo, items, t_warehouse)
 		_cancel_sre_snapshots(sre_snapshots)
 		frappe.get_doc("Stock Entry", draft_se_name).submit()
+		_recreate_sres_at(sre_snapshots, t_warehouse)
 		_mark_all_mwo_mop_logs_synced([mwo], selective=selective)
 		_stamp_last_eod_sync(mop_data_list)
 		frappe.db.release_savepoint("eod_submit_phase")
 		stats["submitted_ses"].append(draft_se_name)
 		stats["processed_mwos"] += 1
-
-		# Re-reserve at the target where the stock now physically sits. Best-effort:
-		# the transfer already succeeded, so a re-reservation hiccup must not undo it —
-		# it only leaves the moved stock unreserved (logged for follow-up).
-		_safe_recreate_sres_at(sre_snapshots, t_warehouse, mwo)
 
 		# Update child rows to Synced
 		if sync_log_name and child_row_names:
@@ -541,8 +541,10 @@ def _process_mwo_group(
 				)
 
 	except Exception as exc:
-		# Only the submit + mark-synced steps are rolled back.
-		# The draft SE (created in Phase 1, before this savepoint) is preserved.
+		# The whole Phase-2 savepoint is rolled back: SE submit, SRE cancellation and
+		# re-reservation are all undone, so the reservations are restored to their
+		# original state. The draft SE (created in Phase 1, before this savepoint)
+		# is preserved for manual recovery.
 		frappe.db.rollback(save_point="eod_submit_phase")
 		failures.append(
 			{
@@ -557,8 +559,9 @@ def _process_mwo_group(
 				"traceback": frappe.get_traceback(),
 				"suggested_fix": (
 					f"Stock Entry {draft_se_name} is saved as Draft but failed to submit. "
-					"Review the validation error, fix the underlying issue, and submit manually. "
-					"MOP Logs for this MWO remain unsynced until the SE is submitted."
+					"Stock Reservation Entries were restored (rolled back), so nothing is "
+					"left half-done. Review the validation error, fix the underlying issue, "
+					"and submit the draft manually. MOP Logs remain unsynced until then."
 				),
 			}
 		)
@@ -1179,26 +1182,6 @@ def _recreate_sres_at(snapshots, new_warehouse):
 		new_sre.flags.ignore_permissions = True
 		new_sre.insert(ignore_links=1)
 		new_sre.submit()
-
-
-def _safe_recreate_sres_at(snapshots, new_warehouse, mwo):
-	"""Re-reserve at the target, best-effort. Isolated in its own savepoint so a
-	failure here cannot roll back the already-submitted transfer; it only leaves
-	the moved stock unreserved and is logged for follow-up."""
-	if not snapshots:
-		return
-	try:
-		frappe.db.savepoint("eod_sre_rereserve")
-		_recreate_sres_at(snapshots, new_warehouse)
-		frappe.db.release_savepoint("eod_sre_rereserve")
-	except Exception:
-		frappe.db.rollback(save_point="eod_sre_rereserve")
-		frappe.logger().exception(
-			"MOP EOD Sync: re-reservation at %s failed for MWO %s; the transfer "
-			"succeeded but the moved stock is left unreserved.",
-			new_warehouse,
-			mwo,
-		)
 
 
 # ---------------------------------------------------------------------------
