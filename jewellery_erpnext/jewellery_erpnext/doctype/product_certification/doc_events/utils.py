@@ -467,12 +467,37 @@ def create_material_receipt_for_certification(self):
 			"serial_and_batch_bundle": None,
 			"Inventory_type": row.get("inventory_type") or "Regular Stock",
 			"gross_weight": qty,
-			"allow_zero_valuation_rate": 1,
 		}
 
 		if is_main_item and not is_loss_row:
 			main_rows.append(row_dict)
 		else:
+			# Source row for repack (consume the main item)
+			if main_item:
+				main_s_wh = (
+					main_defaults.get("s_warehouse")
+					or issue_item_wh_map.get(main_item)
+					or default_supplier_wh
+				)
+				repack_rows.append(
+					{
+						"item_code": main_item,
+						"qty": qty,
+						"s_warehouse": main_s_wh,
+						"t_warehouse": "",
+						"batch_no": main_defaults.get("batch_no"),
+						"serial_no": main_defaults.get("serial_no"),
+						"is_scrap_item": 0,
+						"use_serial_batch_fields": True,
+						"serial_and_batch_bundle": None,
+						"Inventory_type": row.get("inventory_type") or "Regular Stock",
+						"gross_weight": qty,
+					}
+				)
+
+			# Target row for repack
+			row_dict["s_warehouse"] = ""
+			row_dict["is_finished_item"] = 1
 			repack_rows.append(row_dict)
 
 	if not main_rows and not repack_rows:
@@ -481,22 +506,7 @@ def create_material_receipt_for_certification(self):
 	def bypass_validate_warehouse(*args, **kwargs):
 		pass
 
-	# ── 1. Repack-Metal Conversion for other items + scrap ──
-	if repack_rows:
-		se_repack = frappe.new_doc("Stock Entry")
-		se_repack.stock_entry_type = "Repack-Metal Conversion"
-		se_repack.company = self.company
-		se_repack.product_certification = self.name
-		se_repack.auto_created = 1
-		se_repack.inventory_type = "Regular Stock"
-		for rd in repack_rows:
-			se_repack.append("items", rd)
-		se_repack.validate_warehouse = bypass_validate_warehouse
-		se_repack.flags.ignore_permissions = True
-		se_repack.save(ignore_permissions=True)
-		se_repack.submit()
-
-	# ── 2. Material Receipt for Certification — main item only ──
+	# ── 1. Material Receipt for Certification — main item only ──
 	if main_rows:
 		se_receipt = frappe.new_doc("Stock Entry")
 		se_receipt.stock_entry_type = "Material Receipt for Certification"
@@ -510,3 +520,20 @@ def create_material_receipt_for_certification(self):
 		se_receipt.flags.ignore_permissions = True
 		se_receipt.save(ignore_permissions=True)
 		se_receipt.submit()
+
+	# ── 2. Repack-Metal Conversion for other items + scrap ──
+	if repack_rows:
+		se_repack = frappe.new_doc("Stock Entry")
+		se_repack.stock_entry_type = "Repack-Metal Conversion"
+		se_repack.company = self.company
+		se_repack.product_certification = self.name
+		se_repack.auto_created = 1
+		se_repack.inventory_type = "Regular Stock"
+		for rd in repack_rows:
+			se_repack.append("items", rd)
+		se_repack.validate_warehouse = bypass_validate_warehouse
+		se_repack.validate_finished_goods = bypass_validate_warehouse
+		se_repack.validate_repack_entry = bypass_validate_warehouse
+		se_repack.flags.ignore_permissions = True
+		se_repack.save(ignore_permissions=True)
+		se_repack.submit()
