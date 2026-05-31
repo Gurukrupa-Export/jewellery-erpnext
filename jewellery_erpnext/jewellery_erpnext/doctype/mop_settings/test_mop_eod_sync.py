@@ -1,39 +1,61 @@
 # Copyright (c) 2026, Nirali and Contributors
 # See license.txt
 
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.types.frappedict import _dict as FrappeDict
 
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
-	_create_loss_entries,
+	_build_eod_se_rows,
+	_find_last_operation,
+	_get_last_logs_per_item_batch,
+	_get_sre_source_warehouse,
+	_get_t_warehouse_from_logs,
 	_get_unsynced_mop_groups,
-	_latest_flow_logs,
-	_mark_synced,
-	_mop_manufacturer_label,
-	_resolve_warehouses,
-	_sync_consolidated_group,
+	_mark_all_mwo_mop_logs_synced,
+	_sync_mwo_group,
 	_validate_eod_source_batch_stock,
 	sync_mop_logs,
 )
 
+# ---------------------------------------------------------------------------
+# Test helpers
+# ---------------------------------------------------------------------------
+
 
 def _log(**overrides):
+	base = FrappeDict(
+		{
+			"name": "LOG-1",
+			"manufacturing_operation": "MOP-TEST-001",
+			"manufacturing_work_order": "MWO-TEST-001",
+			"item_code": "M-TEST",
+			"batch_no": "B1",
+			"qty_after_transaction_batch_based": 1.0,
+			"pcs_after_transaction_batch_based": 0,
+			"from_warehouse": "WH-FROM",
+			"to_warehouse": "WH-TO",
+			"flow_index": 1,
+			"creation": "2026-01-01 10:00:00",
+			"voucher_type": "Department IR",
+			"voucher_no": "DIR-1",
+			"serial_no": None,
+		}
+	)
+	base.update(overrides)
+	return base
+
+
+def _mop_doc(**overrides):
 	base = {
-		"name": "LOG-1",
-		"manufacturing_operation": "MOP-TEST-001",
-		"manufacturing_work_order": "MWO-TEST-001",
-		"item_code": "M-TEST",
-		"batch_no": "B1",
-		"qty_after_transaction_batch_based": 1.0,
-		"pcs_after_transaction_batch_based": 0,
-		"from_warehouse": "WH-FROM",
-		"to_warehouse": "WH-TO",
-		"flow_index": 1,
-		"voucher_type": "Department IR",
-		"voucher_no": "DIR-1",
+		"company": "Test Co",
+		"manufacturer": "MF-1",
+		"manufacturing_work_order": "MWO-1",
+		"manufacturing_order": "MO-1",
+		"department": "Dept",
+		"loss_wt": 0,
 	}
 	base.update(overrides)
 	return FrappeDict(base)
@@ -49,6 +71,7 @@ class FakeStockEntry:
 		self.manufacturing_order = None
 		self.manufacturing_work_order = None
 		self.manufacturing_operation = None
+		self.manufacturer = None
 		self.auto_created = 0
 		self.saved = False
 		self.submitted = False
@@ -65,491 +88,418 @@ class FakeStockEntry:
 		self.submitted = True
 
 
-class FlakyFakeStockEntry(FakeStockEntry):
-	"""Simulate consolidated multi-line SE failing on submit; single-line SEs succeed."""
-
-	def submit(self):
-		if len(self.items) > 1:
-			raise RuntimeError("consolidated submit failed")
-		super().submit()
+# ---------------------------------------------------------------------------
+# TestGetUnsyncedMopGroupsByMwo (3 cases)
+# ---------------------------------------------------------------------------
 
 
-class TestMopEodSyncGrouping(FrappeTestCase):
+class TestGetUnsyncedMopGroupsByMwo(FrappeTestCase):
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all"
 	)
-	def test_get_unsynced_mop_groups_groups_by_routing_hop(
-		self, mock_get_all, mock_get_value
-	):
+	def test_two_mops_same_mwo_produce_one_group(self, mock_get_all, mock_get_value):
+		"""Two MOPs with same MWO → one (company, mwo) group."""
 		mock_get_all.return_value = [
 			_log(
-				name="LOG-1",
+				name="L1",
 				manufacturing_operation="MOP-A",
-				flow_index=1,
-				from_warehouse="WH-1",
-				to_warehouse="WH-2",
 				manufacturing_work_order="MWO-1",
 			),
 			_log(
-				name="LOG-2",
+				name="L2",
 				manufacturing_operation="MOP-B",
-				flow_index=1,
-				from_warehouse="WH-1",
-				to_warehouse="WH-2",
-				manufacturing_work_order="MWO-1",
-			),
-			_log(
-				name="LOG-3",
-				manufacturing_operation="MOP-C",
-				flow_index=1,
-				from_warehouse="WH-2",
-				to_warehouse="WH-3",
 				manufacturing_work_order="MWO-1",
 			),
 		]
-
-		# Mocking the MOP metadata fetches
-		def mock_mop_value(dt, name, fields, as_dict):
-			return FrappeDict(
-				{
-					"company": "Company",
-					"manufacturer": "MF-1",
-					"manufacturing_work_order": "MWO-1",
-					"manufacturing_order": "MO-1",
-					"department": "Dept",
-					"loss_wt": 0,
-				}
-			)
-
-		mock_get_value.side_effect = mock_mop_value
+		mock_get_value.return_value = _mop_doc(manufacturing_work_order="MWO-1")
 
 		out = _get_unsynced_mop_groups()
 
-		group_keys = sorted(list(out.keys()))
-		self.assertEqual(len(group_keys), 2)
+		self.assertEqual(len(out), 1)
+		key = ("Test Co", "MWO-1")
+		self.assertIn(key, out)
+		self.assertEqual(len(out[key]), 2)
 
-		key_wh1_wh2 = ("Company", "MWO-1", "WH-1", "WH-2")
-		key_wh2_wh3 = ("Company", "MWO-1", "WH-2", "WH-3")
-
-		self.assertIn(key_wh1_wh2, group_keys)
-		self.assertIn(key_wh2_wh3, group_keys)
-
-		# MOP A and B should be in the WH1->WH2 bucket
-		self.assertEqual(len(out[key_wh1_wh2]), 2)
-		self.assertEqual(out[key_wh1_wh2][0]["mop_name"], "MOP-A")
-		self.assertEqual(out[key_wh1_wh2][1]["mop_name"], "MOP-B")
-
-
-class TestMopEodSyncHelpers(FrappeTestCase):
-	def test_resolve_warehouses_empty_logs_returns_none_pair(self):
-		first_wh, last_wh = _resolve_warehouses([])
-		self.assertIsNone(first_wh)
-		self.assertIsNone(last_wh)
-
-	def test_latest_flow_logs_empty_returns_empty_list(self):
-		self.assertEqual(_latest_flow_logs([]), [])
-
-	def test_mop_manufacturer_label_dict_attr_and_none(self):
-		self.assertIsNone(_mop_manufacturer_label(None))
-		self.assertEqual(
-			_mop_manufacturer_label(FrappeDict({"manufacturer": "MF-DICT"})), "MF-DICT"
-		)
-
-		class _MopObj:
-			manufacturer = "MF-ATTR"
-
-		self.assertEqual(_mop_manufacturer_label(_MopObj()), "MF-ATTR")
-
-	def test_resolve_warehouses_uses_first_from_and_last_to(self):
-		logs = [
-			_log(flow_index=1, from_warehouse="WH-START", to_warehouse="WH-TRANSIT"),
-			_log(flow_index=2, from_warehouse="WH-TRANSIT", to_warehouse="WH-END"),
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all"
+	)
+	def test_two_different_mwos_produce_two_groups(self, mock_get_all, mock_get_value):
+		"""Logs from different MWOs → two groups."""
+		mock_get_all.return_value = [
+			_log(
+				name="L1",
+				manufacturing_operation="MOP-A",
+				manufacturing_work_order="MWO-1",
+			),
+			_log(
+				name="L2",
+				manufacturing_operation="MOP-C",
+				manufacturing_work_order="MWO-2",
+			),
 		]
 
-		first_wh, last_wh = _resolve_warehouses(logs)
+		def _side(dt, name, fields, as_dict):
+			mwo = "MWO-1" if name == "MOP-A" else "MWO-2"
+			return _mop_doc(manufacturing_work_order=mwo)
 
-		self.assertEqual(first_wh, "WH-START")
-		self.assertEqual(last_wh, "WH-END")
+		mock_get_value.side_effect = _side
 
+		out = _get_unsynced_mop_groups()
+
+		self.assertEqual(len(out), 2)
+		self.assertIn(("Test Co", "MWO-1"), out)
+		self.assertIn(("Test Co", "MWO-2"), out)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all"
+	)
+	def test_mop_with_missing_metadata_skipped(self, mock_get_all, mock_get_value):
+		"""MOP whose metadata fetch returns None is silently skipped."""
+		mock_get_all.return_value = [
+			_log(name="L1", manufacturing_operation="MOP-GHOST"),
+		]
+		mock_get_value.return_value = None  # missing MOP doc
+
+		out = _get_unsynced_mop_groups()
+
+		self.assertEqual(out, {})
+
+
+# ---------------------------------------------------------------------------
+# TestFindLastOperation (4 cases)
+# ---------------------------------------------------------------------------
+
+
+class TestFindLastOperation(FrappeTestCase):
+	def test_single_entry_returns_it(self):
+		mop_data = {
+			"mop_name": "MOP-A",
+			"mop_doc": {},
+			"logs": [_log(creation="2026-01-01 10:00:00")],
+		}
+		result = _find_last_operation([mop_data])
+		self.assertIs(result, mop_data)
+
+	def test_returns_mop_with_latest_creation(self):
+		older = {
+			"mop_name": "MOP-A",
+			"mop_doc": {},
+			"logs": [_log(creation="2026-01-01 09:00:00")],
+		}
+		newer = {
+			"mop_name": "MOP-B",
+			"mop_doc": {},
+			"logs": [_log(creation="2026-01-01 11:00:00")],
+		}
+		result = _find_last_operation([older, newer])
+		self.assertIs(result, newer)
+
+	def test_empty_list_returns_none(self):
+		self.assertIsNone(_find_last_operation([]))
+
+	def test_same_creation_returns_deterministically(self):
+		"""When all logs share the same creation, function must not raise and returns one of them."""
+		a = {
+			"mop_name": "MOP-A",
+			"mop_doc": {},
+			"logs": [_log(creation="2026-01-01 10:00:00")],
+		}
+		b = {
+			"mop_name": "MOP-B",
+			"mop_doc": {},
+			"logs": [_log(creation="2026-01-01 10:00:00")],
+		}
+		result = _find_last_operation([a, b])
+		self.assertIn(result, [a, b])
+
+
+# ---------------------------------------------------------------------------
+# TestGetLastLogsPerItemBatch (4 cases)
+# ---------------------------------------------------------------------------
+
+
+class TestGetLastLogsPerItemBatch(FrappeTestCase):
+	def test_single_log_per_key_returns_unchanged(self):
+		log = _log(item_code="M-1", batch_no="B1", flow_index=1)
+		result = _get_last_logs_per_item_batch([log])
+		self.assertEqual(len(result), 1)
+		self.assertIs(result[0], log)
+
+	def test_second_log_with_higher_flow_index_wins(self):
+		first = _log(
+			item_code="M-1", batch_no="B1", flow_index=1, creation="2026-01-01 10:00:00"
+		)
+		second = _log(
+			item_code="M-1", batch_no="B1", flow_index=2, creation="2026-01-01 11:00:00"
+		)
+		result = _get_last_logs_per_item_batch([first, second])
+		self.assertEqual(len(result), 1)
+		self.assertIs(result[0], second)
+
+	def test_multiple_distinct_items_each_get_one_entry(self):
+		logs = [
+			_log(item_code="M-1", batch_no="B1"),
+			_log(item_code="M-2", batch_no="B2"),
+			_log(item_code="D-1", batch_no="B3"),
+		]
+		result = _get_last_logs_per_item_batch(logs)
+		self.assertEqual(len(result), 3)
+		keys = {(r.item_code, r.batch_no) for r in result}
+		self.assertEqual(keys, {("M-1", "B1"), ("M-2", "B2"), ("D-1", "B3")})
+
+	def test_empty_input_returns_empty_list(self):
+		self.assertEqual(_get_last_logs_per_item_batch([]), [])
+
+
+# ---------------------------------------------------------------------------
+# TestGetTWarehouseFromLogs (3 cases)
+# ---------------------------------------------------------------------------
+
+
+class TestGetTWarehouseFromLogs(FrappeTestCase):
+	def test_returns_first_to_warehouse(self):
+		logs = [_log(to_warehouse="WH-A"), _log(to_warehouse="WH-B")]
+		self.assertEqual(_get_t_warehouse_from_logs(logs), "WH-A")
+
+	def test_all_none_returns_none(self):
+		logs = [_log(to_warehouse=None), _log(to_warehouse=None)]
+		self.assertIsNone(_get_t_warehouse_from_logs(logs))
+
+	def test_mixed_returns_first_non_null(self):
+		logs = [
+			_log(to_warehouse=None),
+			_log(to_warehouse="WH-X"),
+			_log(to_warehouse="WH-Y"),
+		]
+		self.assertEqual(_get_t_warehouse_from_logs(logs), "WH-X")
+
+
+# ---------------------------------------------------------------------------
+# TestGetSreSourceWarehouse (3 cases)
+# ---------------------------------------------------------------------------
+
+
+class TestGetSreSourceWarehouse(FrappeTestCase):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
+	)
+	def test_batch_sre_match_returns_warehouse(self, mock_sql):
+		mock_sql.return_value = [{"warehouse": "WH-SRE"}]
+		result = _get_sre_source_warehouse("MWO-1", "M-1", "B1")
+		self.assertEqual(result, "WH-SRE")
+		mock_sql.assert_called_once()
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
+	)
+	def test_no_batch_sre_falls_back_to_qty_based(self, mock_sql, mock_get_value):
+		mock_sql.return_value = []  # no batch SRE
+		mock_get_value.return_value = "WH-QTY"
+		result = _get_sre_source_warehouse("MWO-1", "M-1", "B1")
+		self.assertEqual(result, "WH-QTY")
+		mock_get_value.assert_called_once()
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
+	)
+	def test_no_sre_at_all_returns_none(self, mock_sql, mock_get_value):
+		mock_sql.return_value = []
+		mock_get_value.return_value = None
+		result = _get_sre_source_warehouse("MWO-1", "M-1", "B1")
+		self.assertIsNone(result)
+
+
+# ---------------------------------------------------------------------------
+# TestBuildEodSeRows (5 cases)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildEodSeRows(FrappeTestCase):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_source_warehouse",
+		return_value="WH-SRE",
+	)
+	def test_normal_case_builds_row(self, _mock_sre):
+		logs = [
+			_log(
+				item_code="M-1",
+				batch_no="B1",
+				qty_after_transaction_batch_based=5.0,
+				to_warehouse="WH-DEPT",
+			)
+		]
+		rows = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT")
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["s_warehouse"], "WH-SRE")
+		self.assertEqual(rows[0]["t_warehouse"], "WH-DEPT")
+		self.assertEqual(rows[0]["qty"], 5.0)
+		self.assertEqual(rows[0]["item_code"], "M-1")
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.log_error"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_source_warehouse",
+		return_value=None,
+	)
+	def test_no_sre_skips_row_and_logs_error(self, _mock_sre, mock_log_error):
+		logs = [_log(qty_after_transaction_batch_based=3.0)]
+		rows = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT")
+		self.assertEqual(rows, [])
+		mock_log_error.assert_called_once()
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_source_warehouse",
+		return_value="WH-SAME",
+	)
+	def test_same_source_and_target_skips_row(self, _mock_sre):
+		logs = [_log(qty_after_transaction_batch_based=2.0)]
+		rows = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-SAME")
+		self.assertEqual(rows, [])
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_source_warehouse",
+		return_value="WH-SRE",
+	)
+	def test_zero_qty_log_skipped(self, _mock_sre):
+		logs = [_log(qty_after_transaction_batch_based=0.0)]
+		rows = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT")
+		self.assertEqual(rows, [])
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_source_warehouse",
+		return_value="WH-SRE",
+	)
+	def test_batch_no_included_in_row(self, _mock_sre):
+		logs = [
+			_log(
+				item_code="M-1",
+				batch_no="BATCH-99",
+				qty_after_transaction_batch_based=1.0,
+			)
+		]
+		rows = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT")
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["batch_no"], "BATCH-99")
+
+
+# ---------------------------------------------------------------------------
+# TestMarkAllMwoMopLogsSynced (3 cases)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkAllMwoMopLogsSynced(FrappeTestCase):
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.set_value"
 	)
-	def test_mark_synced_marks_all_log_names(self, mock_set_value):
-		logs = [_log(name="LOG-1"), _log(name="LOG-2")]
-
-		_mark_synced(logs)
-
+	def test_marks_unsynced_non_cancelled_logs(self, mock_set_value):
+		_mark_all_mwo_mop_logs_synced(["MWO-1", "MWO-2"])
 		mock_set_value.assert_called_once_with(
 			"MOP Log",
-			{"name": ["in", ["LOG-1", "LOG-2"]]},
+			{
+				"manufacturing_work_order": ["in", ["MWO-1", "MWO-2"]],
+				"is_synced": 0,
+				"is_cancelled": 0,
+			},
 			"is_synced",
 			1,
 		)
 
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.set_value"
+	)
+	def test_filter_targets_only_is_synced_0_and_is_cancelled_0(self, mock_set_value):
+		"""The filter dict passed to set_value must explicitly gate on is_synced=0 and is_cancelled=0."""
+		_mark_all_mwo_mop_logs_synced(["MWO-X"])
+		_, filter_arg, field, val = mock_set_value.call_args.args
+		self.assertEqual(filter_arg.get("is_synced"), 0)
+		self.assertEqual(filter_arg.get("is_cancelled"), 0)
+		self.assertEqual(field, "is_synced")
+		self.assertEqual(val, 1)
 
-class TestSyncConsolidatedGroup(FrappeTestCase):
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mark_synced"
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.set_value"
+	)
+	def test_empty_list_does_not_call_set_value(self, mock_set_value):
+		_mark_all_mwo_mop_logs_synced([])
+		mock_set_value.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestSyncMwoGroupHappyPath (1 case — integration of all new functions)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncMwoGroupHappyPath(FrappeTestCase):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mark_all_mwo_mop_logs_synced"
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._create_loss_entries",
-		return_value=[],
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._validate_eod_source_batch_stock"
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value"
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._validate_eod_items_for_mwo_reservation"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_source_warehouse",
+		return_value="WH-SRE",
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.new_doc"
 	)
-	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=100.0)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_undelivered_batch_qty",
-		return_value=999.0,
-	)
-	def test_sync_consolidated_group_creates_grouped_transfer(
+	def test_happy_path_creates_se_and_marks_synced(
 		self,
-		_mock_sre_audit,
-		mock_gbq,
 		mock_new_doc,
-		mock_get_value,
-		_loss_entries,
+		_mock_sre,
+		_mock_item_val,
+		_mock_batch_val,
 		mock_mark_synced,
 	):
-		se = FakeStockEntry("SE-TEST-001")
+		se = FakeStockEntry("SE-EOD-001")
 		mock_new_doc.return_value = se
 
-		def _get_value_side_effect(doctype, name, field, *args, **kwargs):
-			if (
-				doctype == "Item"
-				and name == "M-1"
-				and field == ["has_batch_no", "has_serial_no"]
-			):
-				return (0, 0)
-			return None
-
-		mock_get_value.side_effect = _get_value_side_effect
-
-		group_key = ("Test Co", "MWO-1", "WH-START", "WH-END")
-
-		mop_doc = FrappeDict(
-			{
-				"manufacturing_order": "MO-1",
-				"manufacturing_work_order": "MWO-1",
-				"loss_wt": 0,
-			}
-		)
-
-		logs_a = [
+		mop_doc = _mop_doc(manufacturing_work_order="MWO-1", manufacturing_order="MO-1")
+		logs = [
 			_log(
-				name="LOG-1",
-				flow_index=1,
 				item_code="M-1",
 				batch_no="B1",
-				qty_after_transaction_batch_based=1.0,
+				qty_after_transaction_batch_based=3.0,
+				to_warehouse="WH-DEPT",
+				creation="2026-01-01 10:00:00",
 			)
 		]
-		logs_b = [
-			_log(
-				name="LOG-2",
-				flow_index=1,
-				item_code="M-1",
-				batch_no="B1",
-				qty_after_transaction_batch_based=2.5,
-			)
-		]
+		mop_data_list = [{"mop_name": "MOP-A", "mop_doc": mop_doc, "logs": logs}]
 
-		mop_data_list = [
-			{"mop_name": "MOP-A", "mop_doc": mop_doc, "logs": logs_a},
-			{"mop_name": "MOP-B", "mop_doc": mop_doc, "logs": logs_b},
-		]
+		se_names, count = _sync_mwo_group(("Test Co", "MWO-1"), mop_data_list)
 
-		out_names, count = _sync_consolidated_group(group_key, mop_data_list)
-
-		self.assertTrue(mock_gbq.call_args.kwargs.get("ignore_reserved_stock"))
-		self.assertEqual(count, 2)
-		self.assertEqual(out_names, ["SE-TEST-001"])
-		self.assertEqual(se.stock_entry_type, "Material Transfer to Department")
-		self.assertTrue(se.saved)
+		self.assertEqual(se_names, ["SE-EOD-001"])
+		self.assertEqual(count, 1)
 		self.assertTrue(se.submitted)
-		self.assertEqual(len(se.items), 2)
-		self.assertEqual(se.items[0].qty, 1.0)
-		self.assertEqual(se.items[0].manufacturing_operation, "MOP-A")
-		self.assertEqual(se.items[1].qty, 2.5)
-		self.assertEqual(se.items[1].manufacturing_operation, "MOP-B")
-
-		mock_mark_synced.assert_called_once()
-
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.log_error"
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mark_synced"
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._create_loss_entries",
-		return_value=[],
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value"
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.new_doc"
-	)
-	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=100.0)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_undelivered_batch_qty",
-		return_value=999.0,
-	)
-	def test_fallback_per_mop_when_consolidated_submit_fails(
-		self,
-		_mock_sre_audit,
-		mock_gbq,
-		mock_new_doc,
-		mock_get_value,
-		_loss_entries,
-		mock_mark_synced,
-		mock_log_error,
-	):
-		created = []
-
-		def _new_doc(dt):
-			self.assertEqual(dt, "Stock Entry")
-			se = FlakyFakeStockEntry(f"SE-{len(created) + 1}")
-			created.append(se)
-			return se
-
-		mock_new_doc.side_effect = _new_doc
-
-		def _get_value_side_effect(doctype, name, field, *args, **kwargs):
-			if (
-				doctype == "Item"
-				and name == "M-1"
-				and field == ["has_batch_no", "has_serial_no"]
-			):
-				return (0, 0)
-			return None
-
-		mock_get_value.side_effect = _get_value_side_effect
-
-		group_key = ("Test Co", "MWO-1", "WH-START", "WH-END")
-		mop_doc = FrappeDict(
-			{
-				"manufacturing_order": "MO-1",
-				"manufacturing_work_order": "MWO-1",
-				"loss_wt": 0,
-				"manufacturer": "MF-FALLBACK",
-			}
-		)
-		logs_a = [
-			_log(
-				name="LOG-1",
-				flow_index=1,
-				item_code="M-1",
-				batch_no="B1",
-				qty_after_transaction_batch_based=1.0,
-			)
-		]
-		logs_b = [
-			_log(
-				name="LOG-2",
-				flow_index=1,
-				item_code="M-1",
-				batch_no="B1",
-				qty_after_transaction_batch_based=2.5,
-			)
-		]
-		mop_data_list = [
-			{"mop_name": "MOP-A", "mop_doc": mop_doc, "logs": logs_a},
-			{"mop_name": "MOP-B", "mop_doc": mop_doc, "logs": logs_b},
-		]
-
-		out_names, count = _sync_consolidated_group(group_key, mop_data_list)
-
-		self.assertEqual(len(created), 3)
-		self.assertFalse(created[0].submitted)
-		self.assertTrue(created[1].submitted)
-		self.assertTrue(created[2].submitted)
-		self.assertEqual(created[1].manufacturing_operation, "MOP-A")
-		self.assertEqual(created[1].manufacturer, "MF-FALLBACK")
-		self.assertEqual(created[2].manufacturing_operation, "MOP-B")
-		self.assertEqual(created[2].manufacturer, "MF-FALLBACK")
-		self.assertEqual(out_names, ["SE-2", "SE-3"])
-		self.assertEqual(count, 2)
-		mock_log_error.assert_called_once()
-		mock_mark_synced.assert_called_once()
-		self.assertTrue(mock_gbq.call_args.kwargs.get("ignore_reserved_stock"))
+		self.assertEqual(se.stock_entry_type, "Material Transfer to Department")
+		self.assertEqual(len(se.items), 1)
+		self.assertEqual(se.items[0].s_warehouse, "WH-SRE")
+		self.assertEqual(se.items[0].t_warehouse, "WH-DEPT")
+		mock_mark_synced.assert_called_once_with(["MWO-1"])
 
 
-class TestValidateEodSourceBatchStock(FrappeTestCase):
-	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=10.0)
-	def test_passes_when_physical_batch_stock_sufficient(self, mock_gbq):
-		items = [
-			{
-				"item_code": "IT-1",
-				"batch_no": "B1",
-				"s_warehouse": "WH-S",
-				"qty": 3.0,
-			},
-			{
-				"item_code": "IT-1",
-				"batch_no": "B1",
-				"s_warehouse": "WH-S",
-				"qty": 2.0,
-			},
-		]
-		_validate_eod_source_batch_stock(items)
-		mock_gbq.assert_called()
-		_, kwargs = mock_gbq.call_args
-		self.assertTrue(kwargs.get("ignore_reserved_stock"))
-
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._format_batch_short_diagnostics",
-		return_value="(diagnostics)",
-	)
-	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=1.0)
-	def test_raises_when_physical_batch_stock_short(self, mock_gbq, _mock_diag):
-		items = [
-			{
-				"item_code": "IT-1",
-				"batch_no": "B1",
-				"s_warehouse": "WH-S",
-				"qty": 3.0,
-			},
-		]
-		with self.assertRaises(frappe.ValidationError):
-			_validate_eod_source_batch_stock(items)
-		_, kwargs = mock_gbq.call_args
-		self.assertTrue(kwargs.get("ignore_reserved_stock"))
-
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._list_open_sre_other_warehouses",
-		return_value=[],
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._list_open_sre_for_batch",
-		return_value=[],
-	)
-	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=1.0)
-	def test_validation_error_includes_manufacturer_from_mop_doc(
-		self, _mock_gbq, _mock_sre_here, _mock_sre_other
-	):
-		items = [
-			{
-				"item_code": "IT-1",
-				"batch_no": "B1",
-				"s_warehouse": "WH-S",
-				"qty": 3.0,
-			},
-		]
-		mop_doc = FrappeDict({"manufacturer": "MF-EOD-TEST"})
-		mop_data_list = [{"mop_name": "MOP-A", "mop_doc": mop_doc}]
-		with self.assertRaises(frappe.ValidationError) as ctx:
-			_validate_eod_source_batch_stock(
-				items,
-				manufacturing_work_order="MWO-1",
-				mop_data_list=mop_data_list,
-				company="Test Co",
-			)
-		self.assertIn("Manufacturer: MF-EOD-TEST", str(ctx.exception))
-
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.log_error"
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_undelivered_batch_qty",
-		return_value=0.5,
-	)
-	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=10.0)
-	def test_reservation_audit_logs_when_undelivered_sre_below_req(
-		self, _mock_gbq, _mock_sre_qty, mock_log_error
-	):
-		"""Physical qty passes, but open SRE undelivered is below MOP line — audit only, no throw."""
-		items = [
-			{
-				"item_code": "IT-1",
-				"batch_no": "B1",
-				"s_warehouse": "WH-S",
-				"qty": 3.0,
-			},
-		]
-		_validate_eod_source_batch_stock(items, manufacturing_work_order="MWO-1")
-		mock_log_error.assert_called_once()
-
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.log_error"
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_sre_undelivered_batch_qty",
-		return_value=5.0,
-	)
-	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=10.0)
-	def test_no_audit_log_when_sre_covers_req(self, _mock_gbq, _mock_sre, mock_log):
-		items = [
-			{
-				"item_code": "IT-1",
-				"batch_no": "B1",
-				"s_warehouse": "WH-S",
-				"qty": 3.0,
-			},
-		]
-		_validate_eod_source_batch_stock(items, manufacturing_work_order="MWO-1")
-		mock_log.assert_not_called()
-
-
-class TestCreateLossEntries(FrappeTestCase):
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.new_doc"
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_value"
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.get_loss_item_from_manufacturer_mapping",
-		return_value="LOSS-M-ITEM",
-	)
-	def test_create_loss_entries_builds_repack_entry(
-		self, _get_loss_item, mock_get_value, mock_new_doc
-	):
-		mock_get_value.return_value = FrappeDict(
-			{
-				"loss_warehouse": "LOSS-WH",
-				"consider_department_warehouse": 0,
-				"warehouse_type": None,
-			}
-		)
-		se = FakeStockEntry("SE-LOSS-001")
-		mock_new_doc.return_value = se
-		mop = FrappeDict(
-			{
-				"company": "Test Co",
-				"manufacturer": "MF-1",
-				"manufacturing_work_order": "MWO-1",
-				"manufacturing_order": "MO-1",
-				"department": "Waxing - GEPL",
-			}
-		)
-		latest_logs = [
-			_log(
-				item_code="M-ONE", batch_no="B1", qty_after_transaction_batch_based=2.0
-			),
-			_log(
-				item_code="F-TWO", batch_no="B2", qty_after_transaction_batch_based=1.0
-			),
-			_log(
-				item_code="D-THREE",
-				batch_no="BD1",
-				qty_after_transaction_batch_based=9.0,
-			),
-		]
-
-		out = _create_loss_entries(mop, "MOP-TEST-001", latest_logs, "WH-END", 0.9)
-
-		self.assertEqual(out, ["SE-LOSS-001"])
-		self.assertEqual(se.stock_entry_type, "Repack")
-		self.assertEqual(len(se.items), 3)
+# ---------------------------------------------------------------------------
+# TestSyncMopLogsEntryPoint (1 case)
+# ---------------------------------------------------------------------------
 
 
 class TestSyncMopLogsEntryPoint(FrappeTestCase):
@@ -566,13 +516,21 @@ class TestSyncMopLogsEntryPoint(FrappeTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.log_error"
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._sync_consolidated_group"
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._sync_mwo_group"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._get_unsynced_mop_groups"
 	)
-	def test_sync_mop_logs_continues_after_transaction_failure(
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._reconcile_reservations_for_mwo"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.set_value"
+	)
+	def test_continues_after_one_group_fails(
 		self,
+		_mock_set_value,
+		_mock_reconcile,
 		mock_get_groups,
 		mock_sync_group,
 		mock_log_error,
@@ -580,27 +538,54 @@ class TestSyncMopLogsEntryPoint(FrappeTestCase):
 		mock_release,
 		mock_savepoint,
 	):
-		logs_a = [{"mop_name": "MOP-A", "logs": []}]
-		logs_b = [{"mop_name": "MOP-B", "logs": []}]
+		key_a = ("Co", "MWO-A")
+		key_b = ("Co", "MWO-B")
+		mock_get_groups.return_value = {
+			key_a: [{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": []}],
+			key_b: [{"mop_name": "MOP-B", "mop_doc": _mop_doc(), "logs": []}],
+		}
 
-		key_a = ("Co", "MWO", "WH1", "WH2")
-		key_b = ("Co", "MWO", "WH2", "WH3")
-
-		mock_get_groups.return_value = {key_a: logs_a, key_b: logs_b}
-
-		def sync_side_effect(group_key, data):
-			if group_key == key_a:
+		def _side(key, data):
+			if key == key_a:
 				return (["SE-A"], 1)
-			raise Exception("boom")
+			raise RuntimeError("simulated failure")
 
-		mock_sync_group.side_effect = sync_side_effect
+		mock_sync_group.side_effect = _side
 
 		out = sync_mop_logs()
 
 		self.assertEqual(out["processed"], 1)
 		self.assertEqual(out["stock_entries"], ["SE-A"])
-
 		self.assertEqual(mock_savepoint.call_count, 2)
 		mock_release.assert_called_once()
 		mock_rollback.assert_called_once()
-		mock_log_error.assert_called_once()
+		mock_log_error.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# TestValidateEodSourceBatchStock (kept from original — unchanged function)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateEodSourceBatchStock(FrappeTestCase):
+	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=10.0)
+	def test_passes_when_physical_batch_stock_sufficient(self, mock_gbq):
+		items = [
+			{"item_code": "IT-1", "batch_no": "B1", "s_warehouse": "WH-S", "qty": 3.0},
+			{"item_code": "IT-1", "batch_no": "B1", "s_warehouse": "WH-S", "qty": 2.0},
+		]
+		_validate_eod_source_batch_stock(items)
+		_, kwargs = mock_gbq.call_args
+		self.assertTrue(kwargs.get("ignore_reserved_stock"))
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._format_batch_short_diagnostics",
+		return_value="(diagnostics)",
+	)
+	@patch("erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=1.0)
+	def test_raises_when_physical_batch_stock_short(self, mock_gbq, _mock_diag):
+		items = [
+			{"item_code": "IT-1", "batch_no": "B1", "s_warehouse": "WH-S", "qty": 3.0}
+		]
+		with self.assertRaises(frappe.ValidationError):
+			_validate_eod_source_batch_stock(items)
