@@ -107,6 +107,82 @@ def update_wt_detail(manufacturing_operation):
 	)
 
 
+def recalculate_manufacturing_operation_weights(mop_name, pending=None):
+	"""Recompute all weight buckets on a Manufacturing Operation from its
+	active MOP Log rows.
+
+	Called after bulk is_cancelled flips so the MOP stays in sync with the
+	remaining-active-rows balance.  ``pending`` is the in-flight MOPLog row
+	(self) when invoked from MOPLog.validate — it overrides the DB entry for
+	the same (item, batch) key, or drops it when is_cancelled=1.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT
+		    item_code,
+		    batch_no,
+		    qty_after_transaction_batch_based  AS qaf_batch,
+		    pcs_after_transaction_batch_based  AS pcs_batch,
+		    name,
+		    creation
+		FROM `tabMOP Log`
+		WHERE manufacturing_operation = %s
+		  AND is_cancelled = 0
+		ORDER BY creation ASC
+		""",
+		(mop_name,),
+		as_dict=True,
+	)
+
+	# Latest by (item, batch): ASC order means later rows overwrite earlier.
+	latest = {}
+	for row in rows:
+		key = (row["item_code"], row["batch_no"])
+		latest[key] = row
+
+	# Apply in-flight pending row (from MOPLog.validate).
+	if pending is not None:
+		key = (pending.item_code, pending.batch_no)
+		if cint(pending.is_cancelled):
+			latest.pop(key, None)
+		else:
+			latest[key] = {
+				"item_code": pending.item_code,
+				"batch_no": pending.batch_no,
+				"qaf_batch": flt(pending.qty_after_transaction_batch_based),
+				"pcs_batch": flt(pending.pcs_after_transaction_batch_based),
+			}
+
+	# Aggregate into weight buckets per item-type prefix.
+	buckets = {
+		"net_wt": 0.0,
+		"finding_wt": 0.0,
+		"diamond_wt": 0.0,
+		"diamond_wt_in_gram": 0.0,
+		"diamond_pcs": 0.0,
+		"gemstone_wt": 0.0,
+		"gemstone_wt_in_gram": 0.0,
+		"gemstone_pcs": 0.0,
+		"other_wt": 0.0,
+	}
+	for entry in latest.values():
+		first_char = (entry.get("item_code") or "")[:1]
+		prefix = FIELD_MAP.get(first_char)
+		if not prefix:
+			continue
+		qty = flt(entry.get("qaf_batch"))
+		pcs = flt(entry.get("pcs_batch"))
+		if prefix in ("diamond", "gemstone"):
+			buckets[f"{prefix}_wt"] += qty
+			buckets[f"{prefix}_wt_in_gram"] += flt(qty * 0.2, 3)
+			buckets[f"{prefix}_pcs"] += pcs
+		else:
+			buckets[f"{prefix}_wt"] += qty
+
+	frappe.db.set_value("Manufacturing Operation", mop_name, buckets)
+	update_wt_detail(mop_name)
+
+
 def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	item_code = row.get("item_code") or ""
 	if not item_code:
@@ -245,7 +321,7 @@ def get_last_mop_index(manufacturing_operation, voucher_type=None, voucher_no=No
 
 
 def get_current_mop_balance_rows(
-	manufacturing_operation, include_fields=None, keys=None
+	manufacturing_operation, include_fields=None, keys=None, exclude_voucher_no=None
 ):
 	"""Return the latest non-cancelled MOP Log row per item/batch for a MOP.
 
@@ -269,6 +345,8 @@ def get_current_mop_balance_rows(
 		"manufacturing_operation": manufacturing_operation,
 		"is_cancelled": 0,
 	}
+	if exclude_voucher_no:
+		filters["voucher_no"] = ["!=", exclude_voucher_no]
 	if keys:
 		item_codes = sorted({k[0] for k in keys if k and k[0]})
 		if not item_codes:

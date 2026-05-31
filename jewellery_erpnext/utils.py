@@ -1,12 +1,12 @@
 import json
-
+from collections import defaultdict
+from frappe import _
+from datetime import datetime
 import frappe
 from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe.desk.reportview import get_filters_cond, get_match_cond
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
-from collections import defaultdict
-from collections import defaultdict
 
 
 @frappe.whitelist()
@@ -25,6 +25,10 @@ def set_items_from_attribute(item_template, item_template_attribute):
 		return frappe.get_doc("Item", variant)
 	else:
 		variant = create_variant(item_template, args)
+		# create_variant copies all template attributes; drop any that have no
+		# value (template attribute not present on the source item) to avoid
+		# ERPNext's "Attribute Value None is not valid" validation error.
+		variant.attributes = [a for a in variant.attributes if a.attribute_value]
 		variant.save()
 		return variant
 
@@ -38,25 +42,37 @@ def get_item_from_attribute(metal_type, metal_touch, metal_purity, metal_colour=
 	# Subqueries for each attribute
 	mtp = (
 		frappe.qb.from_(ItemVariantAttribute)
-		.select(ItemVariantAttribute.parent, ItemVariantAttribute.attribute_value.as_("metal_type"))
+		.select(
+			ItemVariantAttribute.parent,
+			ItemVariantAttribute.attribute_value.as_("metal_type"),
+		)
 		.where(ItemVariantAttribute.attribute == "Metal Type")
 	).as_("mtp")
 
 	mt = (
 		frappe.qb.from_(ItemVariantAttribute)
-		.select(ItemVariantAttribute.parent, ItemVariantAttribute.attribute_value.as_("metal_touch"))
+		.select(
+			ItemVariantAttribute.parent,
+			ItemVariantAttribute.attribute_value.as_("metal_touch"),
+		)
 		.where(ItemVariantAttribute.attribute == "Metal Touch")
 	).as_("mt")
 
 	mp = (
 		frappe.qb.from_(ItemVariantAttribute)
-		.select(ItemVariantAttribute.parent, ItemVariantAttribute.attribute_value.as_("metal_purity"))
+		.select(
+			ItemVariantAttribute.parent,
+			ItemVariantAttribute.attribute_value.as_("metal_purity"),
+		)
 		.where(ItemVariantAttribute.attribute == "Metal Purity")
 	).as_("mp")
 
 	mc = (
 		frappe.qb.from_(ItemVariantAttribute)
-		.select(ItemVariantAttribute.parent, ItemVariantAttribute.attribute_value.as_("metal_colour"))
+		.select(
+			ItemVariantAttribute.parent,
+			ItemVariantAttribute.attribute_value.as_("metal_colour"),
+		)
 		.where(ItemVariantAttribute.attribute == "Metal Colour")
 	).as_("mc")
 
@@ -90,7 +106,9 @@ def get_item_from_attribute(metal_type, metal_touch, metal_purity, metal_colour=
 
 
 @frappe.whitelist()
-def get_item_from_attribute_full(metal_type, metal_touch, metal_purity, metal_colour=None):
+def get_item_from_attribute_full(
+	metal_type, metal_touch, metal_purity, metal_colour=None
+):
 	# items are created without metal_touch as attribute so not considering it in condition for now
 	ItemVariantAttribute = frappe.qb.DocType("Item Variant Attribute")
 	Item = frappe.qb.DocType("Item")
@@ -98,25 +116,37 @@ def get_item_from_attribute_full(metal_type, metal_touch, metal_purity, metal_co
 	# Subqueries for each attribute
 	mtp = (
 		frappe.qb.from_(ItemVariantAttribute)
-		.select(ItemVariantAttribute.parent, ItemVariantAttribute.attribute_value.as_("metal_type"))
+		.select(
+			ItemVariantAttribute.parent,
+			ItemVariantAttribute.attribute_value.as_("metal_type"),
+		)
 		.where(ItemVariantAttribute.attribute == "Metal Type")
 	).as_("mtp")
 
 	mt = (
 		frappe.qb.from_(ItemVariantAttribute)
-		.select(ItemVariantAttribute.parent, ItemVariantAttribute.attribute_value.as_("metal_touch"))
+		.select(
+			ItemVariantAttribute.parent,
+			ItemVariantAttribute.attribute_value.as_("metal_touch"),
+		)
 		.where(ItemVariantAttribute.attribute == "Metal Touch")
 	).as_("mt")
 
 	mp = (
 		frappe.qb.from_(ItemVariantAttribute)
-		.select(ItemVariantAttribute.parent, ItemVariantAttribute.attribute_value.as_("metal_purity"))
+		.select(
+			ItemVariantAttribute.parent,
+			ItemVariantAttribute.attribute_value.as_("metal_purity"),
+		)
 		.where(ItemVariantAttribute.attribute == "Metal Purity")
 	).as_("mp")
 
 	mc = (
 		frappe.qb.from_(ItemVariantAttribute)
-		.select(ItemVariantAttribute.parent, ItemVariantAttribute.attribute_value.as_("metal_colour"))
+		.select(
+			ItemVariantAttribute.parent,
+			ItemVariantAttribute.attribute_value.as_("metal_colour"),
+		)
 		.where(ItemVariantAttribute.attribute == "Metal Colour")
 	).as_("mc")
 
@@ -175,7 +205,9 @@ def update_existing(doctype, name, field, value=None, debug=False):
 					and operation[0] == key
 					and operation[2].lstrip("-").replace(".", "", 1).isdigit()
 				):
-					query = query.set(getattr(Doc, key), getattr(Doc, key) + float(operation[2]))
+					query = query.set(
+						getattr(Doc, key), getattr(Doc, key) + float(operation[2])
+					)
 				else:
 					query = query.set(getattr(Doc, key), _value)
 			else:
@@ -189,7 +221,9 @@ def update_existing(doctype, name, field, value=None, debug=False):
 				and operation[0] == field
 				and operation[2].lstrip("-").replace(".", "", 1).isdigit()
 			):
-				query = query.set(getattr(Doc, field), getattr(Doc, field) + float(operation[2]))
+				query = query.set(
+					getattr(Doc, field), getattr(Doc, field) + float(operation[2])
+				)
 			else:
 				query = query.set(getattr(Doc, field), value)
 		else:
@@ -264,7 +298,12 @@ def customer_query(doctype, txt, searchfield, start, page_len, filters):
 
 	query = (
 		frappe.qb.from_(Customer)
-		.select(Customer.name, Customer.customer_name, Customer.customer_group, Customer.territory)
+		.select(
+			Customer.name,
+			Customer.customer_name,
+			Customer.customer_group,
+			Customer.territory,
+		)
 		.where(
 			(Customer.docstatus < 2)
 			& (Customer.name.isin(sales_type_subquery))
@@ -284,8 +323,16 @@ def customer_query(doctype, txt, searchfield, start, page_len, filters):
 	# Add ordering conditions
 	order_by_conditions = [
 		IF(Locate(_txt, Customer.name), Locate(_txt, Customer.name), 99999),
-		IF(Locate(_txt, Customer.customer_name), Locate(_txt, Customer.customer_name), 99999),
-		IF(Locate(_txt, Customer.customer_group), Locate(_txt, Customer.customer_group), 99999),
+		IF(
+			Locate(_txt, Customer.customer_name),
+			Locate(_txt, Customer.customer_name),
+			99999,
+		),
+		IF(
+			Locate(_txt, Customer.customer_group),
+			Locate(_txt, Customer.customer_group),
+			99999,
+		),
 		IF(Locate(_txt, Customer.territory), Locate(_txt, Customer.territory), 99999),
 		Customer.customer_name,
 		Customer.name,
@@ -295,6 +342,7 @@ def customer_query(doctype, txt, searchfield, start, page_len, filters):
 	customers = query.run()
 
 	return customers
+
 
 @frappe.whitelist()
 def get_sales_invoice_items(sales_invoices):
@@ -313,21 +361,18 @@ def get_sales_invoice_items(sales_invoices):
 			"serial_no",
 			"bom",
 			"parent",
-			"warehouse"
-		]
+			"warehouse",
+		],
 	)
 	sales_invoice_gold_rates = frappe.get_all(
 		"Sales Invoice",
 		{"name": ["in", sales_invoices]},
-		["name", "gold_rate_with_gst"]
+		["name", "gold_rate_with_gst"],
 	)
 
 	gold_rate_map = {s.name: s.gold_rate_with_gst for s in sales_invoice_gold_rates}
 
-	return {
-		"items": items,
-		"gold_rates": gold_rate_map
-	}
+	return {"items": items, "gold_rates": gold_rate_map}
 
 
 @frappe.whitelist()
@@ -337,9 +382,20 @@ def get_sales_order_items(customer_approval_name):
 	if doc.docstatus != 1:
 		frappe.throw(_("This Customer Approval is not submitted."))
 
-	items = frappe.get_all("Sales Order Item Child",
+	items = frappe.get_all(
+		"Sales Order Item Child",
 		filters={"parent": customer_approval_name},
-		fields=["item_code", "rate", "item_name", "quantity", "amount", "uom", "serial_no","bom_number","delivery_date"]
+		fields=[
+			"item_code",
+			"rate",
+			"item_name",
+			"quantity",
+			"amount",
+			"uom",
+			"serial_no",
+			"bom_number",
+			"delivery_date",
+		],
 	)
 	return items
 
@@ -391,8 +447,16 @@ def supplier_query(doctype, txt, searchfield, start, page_len, filters):
 	# Add ordering conditions
 	order_by_conditions = [
 		IF(Locate(_txt, Supplier.name), Locate(_txt, Supplier.name), 99999),
-		IF(Locate(_txt, Supplier.supplier_name), Locate(_txt, Supplier.supplier_name), 99999),
-		IF(Locate(_txt, Supplier.supplier_group), Locate(_txt, Supplier.supplier_group), 99999),
+		IF(
+			Locate(_txt, Supplier.supplier_name),
+			Locate(_txt, Supplier.supplier_name),
+			99999,
+		),
+		IF(
+			Locate(_txt, Supplier.supplier_group),
+			Locate(_txt, Supplier.supplier_group),
+			99999,
+		),
 		Supplier.supplier_name,
 		Supplier.name,
 	]
@@ -407,20 +471,22 @@ def get_type_of_party(doc, parent, field):
 	return frappe.db.get_value(doc, {"parent": parent}, field)
 
 
-def is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys, exclude_keys):
+def is_item_consistent(
+	grouped, key, item, group_keys, sum_keys, concat_keys, exclude_keys
+):
 	"""
 	Check if an item's non-group keys are consistent within an existing group.
 
 	Args:
-		grouped (dict): The current grouped items.
-		key (tuple): Group key generated from the item.
-		item (dict): The item to check consistency.
-		group_keys (list[str]): Keys used for grouping.
-		sum_keys (list[str]): Keys whose values are summed.
-		concat_keys (list[str]): Keys whose values are concatenated.
+	        grouped (dict): The current grouped items.
+	        key (tuple): Group key generated from the item.
+	        item (dict): The item to check consistency.
+	        group_keys (list[str]): Keys used for grouping.
+	        sum_keys (list[str]): Keys whose values are summed.
+	        concat_keys (list[str]): Keys whose values are concatenated.
 
 	Returns:
-		bool: True if the item is consistent within the group, False otherwise.
+	        bool: True if the item is consistent within the group, False otherwise.
 	"""
 	for gk in item.keys():
 		if gk not in group_keys + sum_keys + concat_keys + exclude_keys:
@@ -435,12 +501,12 @@ def initialize_group(grouped, key, item, group_keys, sum_keys, concat_keys):
 	Initialize a new group in the grouped dictionary.
 
 	Args:
-		grouped (dict): The current grouped items.
-		key (tuple): Group key generated from the item.
-		item (dict): The item to initialize the group with.
-		group_keys (list[str]): Keys used for grouping.
-		sum_keys (list[str]): Keys whose values are summed.
-		concat_keys (list[str]): Keys whose values are concatenated.
+	        grouped (dict): The current grouped items.
+	        key (tuple): Group key generated from the item.
+	        item (dict): The item to initialize the group with.
+	        group_keys (list[str]): Keys used for grouping.
+	        sum_keys (list[str]): Keys whose values are summed.
+	        concat_keys (list[str]): Keys whose values are concatenated.
 	"""
 	grouped[key].update({sk: 0 for sk in sum_keys})
 	for ck in concat_keys:
@@ -457,11 +523,11 @@ def aggregate_item(grouped, key, item, sum_keys, concat_keys):
 	Aggregate item values into an existing group.
 
 	Args:
-		grouped (dict): The current grouped items.
-		key (tuple): Group key generated from the item.
-		item (dict): The item to aggregate.
-		sum_keys (list[str]): Keys whose values are summed.
-		concat_keys (list[str]): Keys whose values are concatenated.
+	        grouped (dict): The current grouped items.
+	        key (tuple): Group key generated from the item.
+	        item (dict): The item to aggregate.
+	        sum_keys (list[str]): Keys whose values are summed.
+	        concat_keys (list[str]): Keys whose values are concatenated.
 	"""
 	for sk in sum_keys:
 		grouped[key][sk] += float(item.get(sk, 0) or 0)
@@ -476,11 +542,11 @@ def finalize_grouped(grouped, concat_keys):
 	Finalize the grouped items by concatenating list fields.
 
 	Args:
-		grouped (dict): The current grouped items.
-		concat_keys (list[str]): Keys whose values are concatenated.
+	        grouped (dict): The current grouped items.
+	        concat_keys (list[str]): Keys whose values are concatenated.
 
 	Returns:
-		list[dict]: Final list of grouped items with concatenated values.
+	        list[dict]: Final list of grouped items with concatenated values.
 	"""
 	final_grouped = []
 	for g in grouped.values():
@@ -490,26 +556,30 @@ def finalize_grouped(grouped, concat_keys):
 	return final_grouped
 
 
-def group_aggregate_with_concat(items, group_keys, sum_keys, concat_keys, exclude_keys=[]):
+def group_aggregate_with_concat(
+	items, group_keys, sum_keys, concat_keys, exclude_keys=[]
+):
 	"""
 	Group items based on specified keys, sum numerical fields, and concatenate values.
 	If an item is inconsistent (i.e., non-group keys do not match), it is kept separately.
 
 	Args:
-		items (list[dict]): List of items to group and aggregate.
-		group_keys (list[str]): Keys used for grouping items.
-		sum_keys (list[str]): Keys whose values are summed within groups.
-		concat_keys (list[str]): Keys whose values are concatenated within groups.
+	        items (list[dict]): List of items to group and aggregate.
+	        group_keys (list[str]): Keys used for grouping items.
+	        sum_keys (list[str]): Keys whose values are summed within groups.
+	        concat_keys (list[str]): Keys whose values are concatenated within groups.
 
 	Returns:
-		list[dict]: Aggregated and grouped items, with inconsistent items separated.
+	        list[dict]: Aggregated and grouped items, with inconsistent items separated.
 	"""
 	grouped = defaultdict(lambda: {sk: 0 for sk in sum_keys})
 	non_grouped = []
 
 	for item in items:
 		key = tuple(item.get(k) for k in group_keys)
-		if not is_item_consistent(grouped, key, item, group_keys, sum_keys, concat_keys, exclude_keys):
+		if not is_item_consistent(
+			grouped, key, item, group_keys, sum_keys, concat_keys, exclude_keys
+		):
 			non_grouped.append(item)
 			continue
 
@@ -538,9 +608,10 @@ def get_warehouse_from_user(user_id, warehouse_type):
 	if not department:
 		frappe.throw("Department not specified in Employee record")
 
-	warehouse_name = frappe.db.get_value("Warehouse", {
-		"warehouse_type": warehouse_type,
-		"department": department
-		}, "name")
+	warehouse_name = frappe.db.get_value(
+		"Warehouse",
+		{"warehouse_type": warehouse_type, "department": department},
+		"name",
+	)
 
 	return warehouse_name

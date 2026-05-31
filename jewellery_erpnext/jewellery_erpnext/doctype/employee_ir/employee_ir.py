@@ -27,6 +27,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_utils import (
 	get_summary_data,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
+	cancel_loss_stock_entries,
+	create_loss_stock_entries,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 	cancel_injections_for_eir,
 	inject_extra_metal_for_eir_receive,
@@ -283,6 +287,9 @@ class EmployeeIR(Document):
 		curr_time = frappe.utils.now()
 
 		if cancel:
+			# Cancel Process Loss SEs and restore SREs before MOP Log flip.
+			cancel_loss_stock_entries(self)
+
 			# Capture which Manufacturing Operations need bucket recompute BEFORE
 			# the bulk is_cancelled flip — afterwards the rows are filtered out
 			# by the `is_cancelled = 0` clause the recompute uses.
@@ -464,6 +471,10 @@ class EmployeeIR(Document):
 			if time_log_args and not cancel:
 				batch_add_time_logs(self, time_log_args)
 
+		if not cancel:
+			# ONE Repack SE for all loss rows across the entire EIR.
+			create_loss_stock_entries(self)
+
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":
 			return
@@ -635,12 +646,11 @@ class EmployeeIR(Document):
 						"is_cancelled": 0,
 					},
 					fields,
+					order_by="creation asc",
 				)
 				or []
 			)
 			# Declaration & fetch required value
-			metal_item = []  # for check metal or not list
-			unique = set()  # for Unique Item_Code
 			sum_qty = {}  # for sum of qty matched item
 
 			# getting Metal property from MNF Work Order
@@ -656,41 +666,29 @@ class EmployeeIR(Document):
 				],
 				as_dict=1,
 			)
-			# To Check and pass thgrow Each ITEM metal or not function
-			metal_item.append(
-				get_item_from_attribute_full(
-					mwo_metal_property.metal_type,
-					mwo_metal_property.metal_touch,
-					mwo_metal_property.metal_purity,
-				)
-			)
-			# To get Final Metal Item
 
-			total_qty = 0
-			# To prepare Final Data with all condition's
+			# Keep only the latest qty snapshot per (item_code, batch_no).
+			# qty_after_transaction_batch_based is a running balance so the last
+			# row in creation order is the current stock for that batch.
+			latest_per_batch = {}
 			for child in mop_balance_table:
 				if child["item_code"][0] not in ["M", "F"]:
 					continue
-				key = (child["item_code"], child["batch_no"], child["qty"])
-				if key not in unique:
-					unique.add(key)
-					total_qty += child["qty"]
-					if child["item_code"] in sum_qty:
-						sum_qty[child["item_code"], child["batch_no"]]["qty"] += child[
-							"qty"
-						]
-					else:
-						sum_qty[child["item_code"], child["batch_no"]] = {
-							"item_code": child["item_code"],
-							"qty": child["qty"],
-							# "stock_uom": child["uom"],
-							"batch_no": child["batch_no"],
-							"manufacturing_work_order": mwo,
-							"manufacturing_operation": opt,
-							"pcs": child["pcs"],
-							"proportionally_loss": 0.0,
-							"received_gross_weight": 0.0,
-						}
+				latest_per_batch[(child["item_code"], child["batch_no"])] = child
+
+			total_qty = 0
+			for key, child in latest_per_batch.items():
+				total_qty += child["qty"]
+				sum_qty[key] = {
+					"item_code": child["item_code"],
+					"qty": child["qty"],
+					"batch_no": child["batch_no"],
+					"manufacturing_work_order": mwo,
+					"manufacturing_operation": opt,
+					"pcs": child["pcs"],
+					"proportionally_loss": 0.0,
+					"received_gross_weight": 0.0,
+				}
 			data = list(sum_qty.values())
 
 			# -------------------------------------------------------------------------
