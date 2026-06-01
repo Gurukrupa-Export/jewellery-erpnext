@@ -290,42 +290,18 @@ user_data_fields = [
 
 fixtures = [
 	{
-		"doctype": "Workflow",
-		"filters": [
-			[
-				"name",
-				"in",
-				["Sketch Order Form Approval", "Sketch Order Approval with Purchase 1"],
-			]
-		],
-	},
-	"Workflow State",
-	"Workflow Action Master",
-	{
-		"doctype": "Role",
-		"filters": [["name", "in", ["GK sales user", "Sketch QC", "All"]]],
-	},
-	{
 		"doctype": "Custom Field",
-		"filters": [
-			[
-				"name",
+		"filters": {
+			"module": [
 				"in",
 				[
-					"Sketch Order Form-workflow_state",
-					"Sketch Order-inventory_dimension",
-					"Sketch Order-inventory_type",
-					"Sketch Order-workflow_state",
-					"Sketch Order-custom_sketch_workflow_state",
-					"Sketch Order-custom_sketch_order_customer_approval_flow",
-					"Sketch Order-manufacturer",
-					"Sketch Order-custom_nakshi_from",
-					"Sketch Order-custom_item",
+					"Jewellery Erpnext",
+					"Gurukrupa Exports",
+					"GKE Order Forms",
+					"Gurukrupa Customizations",
+					"GKE Catalog",
 				],
 			]
-		],
-	},
-	# {
-	#     "doctype":"Custom Field", "filters":{"module":["in",["Jewellery Erpnext"]]}
-	# }
+		},
+	}
 ]
