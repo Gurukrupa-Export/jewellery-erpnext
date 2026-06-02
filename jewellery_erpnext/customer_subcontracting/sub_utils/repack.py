@@ -53,6 +53,9 @@ def create_customer_gold_repack_automation(doc):
 		if d.inventory_type != "Customer Goods":
 			continue
 
+		if not is_gold_item(d.item_code):
+			continue
+
 		incoming_batches.append(
 			{
 				"batch_no": d.batch_no,
@@ -117,6 +120,9 @@ def create_company_gold_repack_automation(doc):
 			continue
 
 		if d.inventory_type == "Customer Goods":
+			continue
+
+		if not is_gold_item(d.item_code):
 			continue
 
 		incoming_batches.append(
@@ -194,6 +200,11 @@ def process_repack_settlement(
 				continue
 
 			source_batch = incoming["batch_no"]
+
+			source_item_code = incoming["item_code"]
+
+			if not is_gold_item(source_item_code):
+				continue
 
 			source_purity = get_purity(incoming["item_code"])
 
@@ -440,6 +451,11 @@ def process_pending_repack_for_mwo(doc_name):
 		)
 
 		for source in gold_sources:
+			source_item = source["item_code"]
+
+			if not is_gold_item(source_item):
+				continue
+
 			if required_pure_qty <= 0:
 				break
 
@@ -521,6 +537,8 @@ def get_customer_available_gold(customer):
 	)
 
 	for batch in customer_batches:
+		if not is_gold_item(batch.item):
+			continue
 		stock_rows = get_batch_qty(batch_no=batch.name)
 
 		if not stock_rows:
