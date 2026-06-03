@@ -5781,6 +5781,8 @@ def validate_item_dharm(self):
 								}
 							aggregated_hallmarking_items[key]["amount"] += bom_doc.hallmarking_amount
 							aggregated_hallmarking_items[key]["qty"]+=1
+							if bom_doc.item_category=='Earrings':
+								aggregated_hallmarking_items[key]["qty"]+=1
 							tax_rate_decimal = aggregated_hallmarking_items[key]["tax_rate"] / 100
 							aggregated_hallmarking_items[key]["tax_amount"] += bom_doc.hallmarking_amount * tax_rate_decimal
 

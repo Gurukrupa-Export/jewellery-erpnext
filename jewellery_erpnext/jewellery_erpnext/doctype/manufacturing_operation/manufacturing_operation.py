@@ -1636,7 +1636,7 @@ def get_material_wt(doc):
 	return {}
 
 
-def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
+def create_finished_goods_bom1(self, se_name, mo_data, total_time=0):
 	# frappe.throw("create_finished_goods_bom")
 	# If called from Serial Number Creator, use its prepared table as source of truth
 	if getattr(self, "doctype", None) == "Serial Number Creator" and self.get(
@@ -3399,6 +3399,1038 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	self.fg_bom = new_bom.name
 	self.db_set("fg_bom", new_bom.name, update_modified=False)
 
+def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
+	
+	data = get_stock_entry_data(self)
+
+	ref_customer = frappe.db.get_value("Parent Manufacturing Order", self.parent_manufacturing_order, "ref_customer")
+	diamond_price_list_ref_customer = frappe.db.get_value("Customer", ref_customer, "diamond_price_list")
+	gemstone_price_list_ref_customer = frappe.db.get_value("Customer", ref_customer, "custom_gemstone_price_list_type")
+	diamond_price_list = frappe.get_all(
+								"Diamond Price List",
+								filters={"customer": ref_customer, "price_list_type": diamond_price_list_ref_customer},
+								fields=["name", "price_list_type"],
+							)
+	
+	gemstone_price_list  = frappe.get_all(
+								"Gemstone Price List",
+								filters={"customer": ref_customer, "price_list_type": gemstone_price_list_ref_customer},
+								fields=["name", "price_list_type"],
+							)
+
+	bom_doc = None
+	if self.get("new_item"):
+		if frappe.db.exists("BOM", {"is_default": 1, "item": self.new_item}):
+			bom_doc = frappe.get_doc("BOM", {"is_default": 1, "item": self.new_item})
+		else:
+			frappe.throw(_("Create default BOM for New Item"))
+	if not bom_doc:
+		bom_doc = frappe.get_doc("BOM", self.design_id_bom)
+
+	pmo_data = frappe.db.get_value(
+		"Parent Manufacturing Order",
+		self.parent_manufacturing_order,
+		["diamond_quality", "qty","finish_good_image"],
+		as_dict=1,
+	)
+	
+	quality_value = bom_doc.diamond_detail[0].quality
+
+	new_bom = frappe.copy_doc(bom_doc)
+	new_bom.front_view_finish = pmo_data.get("finish_good_image")
+	new_bom.is_active = 1
+	new_bom.custom_creation_doctype = self.doctype
+	new_bom.custom_creation_docname = self.name
+	new_bom.company = self.company
+	new_bom.bom_type = "Finish Goods"
+	new_bom.tag_no = get_serial_no(se_name)
+	new_bom.custom_serial_number_creator = self.name
+	new_bom.metal_detail = []
+	new_bom.finding_detail = []
+	new_bom.diamond_detail = []
+	new_bom.gemstone_detail = []
+	new_bom.other_detail = []
+	new_bom.total_operation_time = total_time
+	new_bom.actual_operation_time = 0
+	if mo_data:
+		new_bom.with_operations = 1
+		new_bom.transfer_material_against = None
+		for row in mo_data:
+			mop_doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
+			employee = mop_doc.employee
+			total_minutes = 0
+			for time_log in mop_doc.time_logs:
+				total_minutes += time_log.time_in_mins or 0
+			matching_workstation = frappe.get_all(
+				"Workstation",
+				filters={"employee": employee},
+				fields=["name", "hour_rate"]
+			)
+			if matching_workstation:
+				ws = matching_workstation[0]
+				workstation_name = ws.name
+				hour_rate = ws.hour_rate
+			else:
+				frappe.msgprint(f"No workstation found for employee: {employee}")
+
+			operating_cost = (hour_rate / 60) * total_minutes
+			# Set correct hour_rate in BOM Operation
+			operation_data = {
+				"manufacturing_operation": row.manufacturing_operation,
+				"workstation": workstation_name,
+				"hour_rate": hour_rate,
+				"time_in_mins": total_minutes,
+				"operating_cost": operating_cost
+			}
+			new_bom.append("operations", operation_data)
+
+	new_bom.operation_time_diff = new_bom.total_operation_time - new_bom.actual_operation_time
+
+	gemstone_price_list_type = frappe.db.get_value("Customer", new_bom.customer, "custom_gemstone_price_list_type")
+	ref_gemstone_price_list_type = frappe.db.get_value("Customer", ref_customer, "custom_gemstone_price_list_type")
+	if new_bom.customer and not gemstone_price_list_type:
+		frappe.throw(_("Gemstone Price list type not mentioned into customer"))
+
+	for item in data:
+		item_row = frappe.get_doc("Item", item["item_code"])
+
+		if item_row.variant_of == "D":
+			row = {
+				"stock_uom": item.get("uom"),
+				"rate": new_bom.gold_rate_with_gst,
+				"se_rate": item.get("rate"),
+				"is_customer_item": 1 if item.get("inventory_type") == "Customer Goods" else 0,
+				"pcs": item.get("pcs")
+			}
+
+			# -------------------------
+			# Extract attributes
+			# -------------------------
+			for attribute in item_row.attributes:
+				attr_name = format_attrbute_name(attribute.attribute)
+				row[attr_name] = attribute.attribute_value
+
+				if attribute.attribute == "Diamond Sieve Size":
+					val = attribute.attribute_value
+					row["sieve_size_range"] = frappe.db.get_value("Attribute Value", val, "sieve_size_range")
+					row["sieve_size_mm"] = frappe.db.get_value("Attribute Value", val, "diameter")
+					row["weight_per_pcs"] = round(
+						frappe.db.get_value("Attribute Value", val, "weight_in_cts"), 3
+					)
+
+					# If MM-based sieve → compute weight_per_pcs dynamically
+					if "MM" in val:
+						sed = frappe.db.sql("""
+							SELECT SUM(qty) AS total_qty, SUM(pcs) AS total_pcs
+							FROM `tabStock Entry Detail`
+							WHERE parent = %s
+						""", (item.get("parent"),), as_dict=True)[0] or {}
+
+						total_qty = sed.get("total_qty") or 0
+						total_pcs = sed.get("total_pcs") or 0
+						row["weight_per_pcs"] = round(total_qty / total_pcs, 3) if total_pcs else 0
+
+			row["weight_per_pcs"] = round(row.get("weight_per_pcs", 0), 3)
+			row["quantity"] = item["qty"] / pmo_data.get("qty")
+
+			# -------------------------
+			# PRICE LIST RESOLUTION
+			# -------------------------
+			price_list_type = frappe.db.get_value(
+				"Diamond Price List Table",
+				{"parent": new_bom.customer, "diamond_shape": row["stone_shape"]},
+				"diamond_price_list"
+			)
+
+			quality = pmo_data.get("diamond_quality")
+			if quality: row["quality"] = quality
+
+			# Build filter based on the price list type
+			lookup = {
+				"Size (in mm)": {"size_in_mm": row.get("sieve_size_mm")},
+				"Sieve Size Range": {"sieve_size_range": row.get("sieve_size_range")},
+				"Weight (in cts)": {
+					"from_weight": ["<=", row["weight_per_pcs"]],
+					"to_weight": [">=", row["weight_per_pcs"]]
+				}
+			}
+
+			extra_filter = lookup.get(price_list_type, {})
+			latest = get_latest_price(new_bom.customer, price_list_type, row["quality"], extra_filter)
+			latest = latest[0] if latest else {}
+
+			# -------------------------
+			# RATE CALCULATION
+			# -------------------------
+			row["fg_purchase_rate"] = latest.get("supplier_fg_purchase_rate", 0)
+			row["fg_purchase_amount"] = row["fg_purchase_rate"] * row["quantity"]
+
+			base_rate = latest.get("rate", 0)
+			out_rate = latest.get("outright_handling_charges_rate", 0)
+			out_pct = latest.get("outright_handling_charges_in_percentage", 0)
+			work_rate = latest.get("outwork_handling_charges_rate", 0)
+			work_pct = latest.get("outwork_handling_charges_in_percentage", 0)
+
+			is_cust = row["is_customer_item"]
+
+			if price_list_type == "Size (in mm)":
+				multiplier = row["sieve_size_mm"]
+			elif price_list_type == "Sieve Size Range":
+				multiplier = row["quantity"]
+			else:  # Weight in cts
+				multiplier = row["quantity"]
+
+			if is_cust:
+				total_rate = work_rate or (base_rate * (work_pct / 100))
+			else:
+				total_rate = base_rate + (out_rate or (base_rate * (out_pct / 100)))
+
+			row["total_diamond_rate"] = total_rate
+			row["diamond_rate_for_specified_quantity"] = total_rate * multiplier
+
+			# Append row
+			new_bom.append("diamond_detail", row)
+
+		elif item_row.variant_of == "M":
+
+			row = {
+				"stock_uom": item.get("uom"),
+				"quantity": item["qty"] / pmo_data.get("qty"),
+				"is_customer_item": 1 if item.get("inventory_type") == "Customer Goods" else 0,
+				"se_rate": item.get("rate"),
+				"pcs": item.get("pcs")
+			}
+
+			# Determine correct customer reference
+			customer_ref = (
+				new_bom.customer  
+				if self.company == "Gurukrupa Export Private Limited" 
+				else ref_customer
+			)
+
+			# Fetch Metal Making Price line
+			sub = get_making_price(
+				customer=customer_ref,
+				setting_type=new_bom.setting_type,
+				metal_type=new_bom.metal_type,
+				gold_rate=new_bom.gold_rate_with_gst,
+				subcategory=new_bom.item_subcategory
+			)
+
+			rate_per_gm = 0
+			fg_purchase_rate = 0
+			wastage_rate = 0
+
+			if sub:
+				rate_per_gm = sub.get("rate_per_gm", 0)
+				fg_purchase_rate = sub.get("supplier_fg_purchase_rate", 0)
+
+				if row["is_customer_item"]:
+					row["rate"] = sub.get("subcontracting_rate", 0)
+					wastage_rate = (sub.get("subcontracting_wastage", 0) or 0) / 100
+
+					rate_per_gm = 0
+					fg_purchase_rate = 0
+				else:
+					row["rate"] = new_bom.gold_rate_with_gst
+					wastage_rate = (sub.get("wastage", 0) or 0) / 100
+			else:
+				# fallback
+				row["rate"] = new_bom.gold_rate_with_gst
+
+			# Add attributes
+			for attribute in item_row.attributes:
+				attribute_name = format_attrbute_name(attribute.attribute)
+				row[attribute_name] = attribute.attribute_value
+
+			# Computed fields
+			row["wastage_rate"] = wastage_rate
+			row["amount"] = row["rate"] * row["quantity"]
+			row["wastage_amount"] = row["wastage_rate"] * row["amount"]
+
+			row["fg_purchase_rate"] = fg_purchase_rate
+			row["fg_purchase_amount"] = fg_purchase_rate * row["quantity"]
+
+			row["making_rate"] = rate_per_gm
+			row["making_amount"] = row["making_rate"] * row["quantity"]
+
+			# Append to BOM
+			new_bom.append("metal_detail", row)
+
+			# ---------------------------------------------
+			# TOTAL CALCULATIONS — run only once per append
+			# ---------------------------------------------
+			metal_rows = new_bom.get("metal_detail", [])
+
+			new_bom.custom_metal_amount = sum(flt(r.get("making_amount", 0)) for r in metal_rows)
+			new_bom.custom_fg_metal_amount = sum(flt(r.get("fg_purchase_amount", 0)) for r in metal_rows)
+			new_bom.total_wastage_amount = sum(flt(r.get("wastage_amount", 0)) for r in metal_rows)
+
+		elif item_row.variant_of == "F":
+
+			row = {}
+			row["stock_uom"] = item.get("uom")
+			row["se_rate"] = item.get("rate")
+			row["quantity"] = item["qty"] / pmo_data.get("qty")
+			row["is_customer_item"] = 1 if item.get("inventory_type") == "Customer Goods" else 0
+
+			rate_per_gm = 0
+			fg_purchase_rate = 0
+			fg_purchase_amount = 0
+			wastage_rate = 0
+
+			# ---------------------------------------------
+			# Extract attributes
+			# ---------------------------------------------
+			finding_type_value = None
+
+			for attribute in item_row.attributes:
+				attribute_name = format_attrbute_name(attribute.attribute)
+
+				if attribute_name == "finding_sub_category":
+					attribute_name = "finding_type"
+					finding_type_value = attribute.attribute_value
+
+				row[attribute_name] = attribute.attribute_value
+
+			row["finding_type"] = finding_type_value
+
+			# =============================================
+			# GURUKRUPA EXPORT LOGIC
+			# =============================================
+			if self.company == "Gurukrupa Export Private Limited":
+
+				making_price_list = frappe.get_all(
+					"Making Charge Price",
+					filters={
+						"customer": new_bom.customer,
+						"setting_type": new_bom.setting_type,
+					},
+					fields=["name"]
+				)
+
+				making_price_list_with_rate = frappe.get_all(
+					"Making Charge Price",
+					filters={
+						"customer": new_bom.customer,
+						"setting_type": new_bom.setting_type,
+						"from_gold_rate": ["<=", new_bom.gold_rate_with_gst],
+						"to_gold_rate": [">=", new_bom.gold_rate_with_gst],
+					},
+					fields=["name"]
+				)
+
+				matching_subcategory = None
+
+				if making_price_list:
+
+					finding_subcategories = frappe.get_all(
+						"Making Charge Price Finding Subcategory",
+						filters={"parent": making_price_list[0]["name"]},
+						fields=[
+							"subcategory",
+							"rate_per_gm",
+							"supplier_fg_purchase_rate",
+							"wastage",
+							"subcontracting_rate",
+							"subcontracting_wastage"
+						]
+					)
+
+					matching_subcategory = next(
+						(s for s in finding_subcategories if s.get("subcategory") == finding_type_value),
+						None
+					)
+
+				# ---------------------------------------------
+				# Apply subcategory values
+				# ---------------------------------------------
+				if matching_subcategory:
+
+					rate_per_gm = matching_subcategory.get("rate_per_gm", 0)
+					fg_purchase_rate = matching_subcategory.get("supplier_fg_purchase_rate", 0)
+					fg_purchase_amount = fg_purchase_rate * row["quantity"]
+
+					if row["is_customer_item"]:
+						row["rate"] = matching_subcategory.get("subcontracting_rate", 0)
+						wastage_rate = (matching_subcategory.get("subcontracting_wastage", 0) / 100)
+						fg_purchase_rate = 0
+						fg_purchase_amount = 0
+						rate_per_gm = 0
+					else:
+						row["rate"] = new_bom.gold_rate_with_gst
+						wastage_rate = (matching_subcategory.get("wastage", 0) / 100)
+
+				else:
+					row["rate"] = new_bom.gold_rate_with_gst
+
+				# ---------------------------------------------
+				# Final row calculations
+				# ---------------------------------------------
+				row["wastage_rate"] = wastage_rate
+				row["making_rate"] = rate_per_gm
+				row["amount"] = row["rate"] * row["quantity"]
+				row["making_amount"] = row["making_rate"] * row["quantity"]
+				row["wastage_amount"] = row["wastage_rate"] * row["amount"]
+				row["fg_purchase_rate"] = fg_purchase_rate
+				row["fg_purchase_amount"] = fg_purchase_amount
+				row["pcs"] = item.get("pcs")
+
+			# =============================================
+			# NON-GURUKRUPA COMPANY LOGIC
+			# =============================================
+			else:
+
+				making_price_list = frappe.get_all(
+					"Making Charge Price",
+					filters={
+						"customer": ref_customer,
+						"setting_type": new_bom.setting_type,
+					},
+					fields=["name"]
+				)
+
+				matching_subcategory = None
+
+				if making_price_list:
+
+					finding_subcategories = frappe.get_all(
+						"Making Charge Price Finding Subcategory",
+						filters={"parent": making_price_list[0]["name"]},
+						fields=[
+							"subcategory",
+							"rate_per_gm",
+							"supplier_fg_purchase_rate",
+							"wastage",
+							"subcontracting_rate",
+							"subcontracting_wastage"
+						]
+					)
+
+					matching_subcategory = next(
+						(s for s in finding_subcategories if s.get("subcategory") == finding_type_value),
+						None
+					)
+
+				# ---------------------------------------------
+				# Apply subcategory values
+				# ---------------------------------------------
+				if matching_subcategory:
+
+					rate_per_gm = matching_subcategory.get("rate_per_gm", 0)
+					fg_purchase_rate = matching_subcategory.get("supplier_fg_purchase_rate", 0)
+					fg_purchase_amount = fg_purchase_rate * row["quantity"]
+
+					if row["is_customer_item"]:
+						row["rate"] = matching_subcategory.get("subcontracting_rate", 0)
+						wastage_rate = matching_subcategory.get("subcontracting_wastage", 0) / 100
+						fg_purchase_rate = 0
+						fg_purchase_amount = 0
+						rate_per_gm = 0
+					else:
+						row["rate"] = new_bom.gold_rate_with_gst
+						wastage_rate = matching_subcategory.get("wastage", 0) / 100
+				else:
+					row["rate"] = new_bom.gold_rate_with_gst
+
+				# ---------------------------------------------
+				# Final row calculations
+				# ---------------------------------------------
+				row["making_rate"] = rate_per_gm
+				row["wastage_rate"] = wastage_rate
+				row["amount"] = row["rate"] * row["quantity"]
+				row["making_amount"] = row["making_rate"] * row["quantity"]
+				row["wastage_amount"] = row["wastage_rate"] * row["amount"]
+				row["fg_purchase_rate"] = fg_purchase_rate
+				row["fg_purchase_amount"] = fg_purchase_amount
+				row["pcs"] = item.get("pcs")
+
+			# ---------------------------------------------
+			# Append to BOM
+			# ---------------------------------------------
+			new_bom.append("finding_detail", row)
+
+			# ---------------------------------------------
+			# TOTALS (same pattern as Metal)
+			# ---------------------------------------------
+			details = new_bom.get("finding_detail", [])
+
+			new_bom.custom_finding_amount = sum(flt(d.get("making_amount", 0)) for d in details)
+			new_bom.custom_finding_fg_amount = sum(flt(d.get("fg_purchase_amount", 0)) for d in details)
+
+			new_bom.total_finding_amount = sum(flt(d.get("amount", 0)) for d in details)
+			new_bom.finding_bom_amount = new_bom.total_finding_amount
+
+			new_bom.finding_pcs = sum(flt(d.get("pcs", 0)) for d in details)
+			new_bom.total_finding_weight = sum(flt(d.get("quantity", 0)) for d in details)
+			new_bom.total_finding_weight_per_gram = new_bom.total_finding_weight
+
+			new_bom.total_wastage_amount = sum(flt(d.get("wastage_amount", 0)) for d in details)
+
+		elif item_row.variant_of == "G":
+			row = {}
+			row["stock_uom"] = item.get("uom")
+			# Fetching basic details
+			row["se_rate"] = item.get("rate")
+			row["rate"] = new_bom.gold_rate_with_gst
+			row["quantity"] = flt(item.get("qty", 0)) / flt(pmo_data.get("qty", 1))
+			row["pcs"] = flt(item.get("pcs", 0))
+			if self.company == "KG GK Jewellers Private Limited":
+				row["price_list_type"] = ref_gemstone_price_list_type
+			else:
+				row["price_list_type"] = gemstone_price_list_type
+
+
+
+			# Fetching attributes
+			attributes = frappe.db.sql(
+				"""
+				SELECT attribute, attribute_value
+				FROM `tabItem Variant Attribute`
+				WHERE parent = %s
+				AND attribute IN (
+					'Gemstone Type', 'Stone Shape', 'Cut or Cab',
+					'Gemstone Grade', 'Gemstone Size', 'Gemstone Quality', 'Gemstone PR'
+				)
+				""",
+				(item_row.item_code),
+				as_dict=True
+			)
+
+			# Mapping attributes to row
+			attribute_map = {
+				"Gemstone Type": "gemstone_type",
+				"Stone Shape": "stone_shape",
+				"Cut or Cab": "cut_or_cab",
+				"Gemstone Grade": "gemstone_grade",
+				"Gemstone Size": "gemstone_size",
+				"Gemstone Quality": "gemstone_quality",
+				"Gemstone PR": "gemstone_pr"
+			}
+
+			for attr in attributes:
+				if attr.get("attribute") in attribute_map:
+					row[attribute_map[attr["attribute"]]] = attr["attribute_value"]
+					
+			if self.company == "Gurukrupa Export Private Limited":
+				gemstone_price_list_customer = frappe.db.get_value("Customer", new_bom.customer, "custom_gemstone_price_list_type")
+				# frappe.throw(f"hi,{new_bom.customer}")
+				customer_group = frappe.db.get_value("Customer", new_bom.customer, "customer_group")
+				gemstone_price_customer  = frappe.get_all(
+						"Gemstone Price List",
+						filters={"customer": new_bom.customer, "price_list_type": gemstone_price_list_customer,"gemstone_grade":row.get("gemstone_grade"),"cut_or_cab":row.get("cut_or_cab"),"gemstone_type":row.get("gemstone_type"),"stone_shape":row.get("stone_shape")},
+						fields=["name", "price_list_type"],
+					)
+				# frappe.throw(f"hi,{new_bom.customer}")
+				retail_price_list = frappe.get_all(
+					"Gemstone Price List",
+					filters={"is_standard": 0,"is_retail_customer":1},
+					fields=["name", "price_list_type"],
+					order_by="creation desc",
+					limit=1
+				)
+				# frappe.throw(f"{retail_price_list}")
+				if retail_price_list and retail_price_list[0]["price_list_type"] == "Diamond Range":
+						combined_query = frappe.db.sql("""
+								SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
+									gm.gemstone_type, 
+										gm.precious_percentage as precious_percentage, gm.semi_precious_percentage as semi_precious_percentage, gm.synthetic_percentage as synthetic_percentage,
+								sfm.precious_percentage AS supplier_precious_percentage, 
+								sfm.semi_precious_percentage AS supplier_semi_precious_percentage, 
+									sfm.synthetic_percentage AS supplier_synthetic_percentage
+									 FROM `tabGemstone Price List` gpl
+								INNER JOIN `tabGemstone Multiplier` gm
+									ON gm.parent = gpl.name 
+									AND gm.gemstone_type = %s 
+									AND gm.parentfield = 'gemstone_multiplier'
+								LEFT JOIN `tabGemstone Multiplier` sfm
+									ON sfm.parent = gpl.name 
+									AND sfm.gemstone_type = %s 
+									AND sfm.parentfield = 'supplier_fg_multiplier'
+								WHERE 
+								gpl.price_list_type = %s
+								AND gpl.cut_or_cab LIKE %s
+								AND gpl.gemstone_grade LIKE %s
+								AND %s BETWEEN gpl.from_gemstone_pr_rate AND gpl.to_gemstone_pr_rate
+								ORDER BY gpl.creation DESC
+								LIMIT 1
+								""", (
+									row.get('gemstone_type'),
+									row.get('gemstone_type'),
+									gemstone_price_list_customer,
+									f"%{row.get('cut_or_cab')}%",
+									f"%{row.get('gemstone_grade')}%",
+									row.get('gemstone_pr')
+								), as_dict=True)
+						# frappe.throw(f"""
+						# 	gemstone_type: {row.get('gemstone_type')},
+						# 	customer: {new_bom.customer},
+						# 	price_list_type: {gemstone_price_list_customer},
+						# 	cut_or_cab: {row.get('cut_or_cab')},
+						# 	gemstone_grade: {row.get('gemstone_grade')},
+						# 	gemstone_pr: {row.get('gemstone_pr')}
+						# 	""")
+						if combined_query:
+							entry = combined_query[0]
+							# frappe.throw(f"{entry}")
+							gemstone_quality = row.get("gemstone_quality")
+							gemstone_pr = flt(row.get("gemstone_pr", 0))
+							multiplier_selected_value = entry.get("supplier_precious_percentage") if gemstone_quality == "Precious" else \
+														entry.get("supplier_semi_precious_percentage") if gemstone_quality == "Semi Precious" else \
+														entry.get("supplier_synthetic_percentage") if gemstone_quality == "Synthetic" else None
+
+							supplier_selected_value = entry.get("supplier_precious") if gemstone_quality == "Precious" else \
+													entry.get("supplier_semi_precious") if gemstone_quality == "Semi Precious" else \
+													entry.get("supplier_synthetic") if gemstone_quality == "Synthetic" else None
+							# frappe.throw(f"hiiki,{multiplier_selected_value}")
+							if multiplier_selected_value is not None:
+								row["total_gemstone_rate"] = multiplier_selected_value
+								row["gemstone_rate_for_specified_quantity"] =( row["total_gemstone_rate"]/100) * gemstone_pr
+								
+							# frappe.throw(f"hii:{row.get(total_gemstone_rate)}")	
+							if supplier_selected_value is not None:
+								row["fg_purchase_rate"] = supplier_selected_value
+								row["fg_purchase_amount"] = row["fg_purchase_rate"] * gemstone_pr
+								
+				if not gemstone_price_customer and customer_group != "Retail": 
+					standard_price_list = frappe.get_all(
+						"Gemstone Price List",
+						filters={"is_standard": 1},
+						fields=["name", "price_list_type"],
+						order_by="creation desc",
+						limit=1
+					)
+				
+					if standard_price_list and standard_price_list[0]["price_list_type"] == "Diamond Range":
+						combined_query = frappe.db.sql("""
+								SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
+									gm.gemstone_type, 
+										gm.precious_percentage as precious_percentage, gm.semi_precious_percentage as semi_precious_percentage, gm.synthetic_percentage as synthetic_percentage,
+								sfm.precious_percentage AS supplier_precious_percentage, 
+								sfm.semi_precious_percentage AS supplier_semi_precious_percentage, 
+									sfm.synthetic_percentage AS supplier_synthetic_percentage
+									 FROM `tabGemstone Price List` gpl
+								INNER JOIN `tabGemstone Multiplier` gm
+									ON gm.parent = gpl.name 
+									AND gm.gemstone_type = %s 
+									AND gm.parentfield = 'gemstone_multiplier'
+								LEFT JOIN `tabGemstone Multiplier` sfm
+									ON sfm.parent = gpl.name 
+									AND sfm.gemstone_type = %s 
+									AND sfm.parentfield = 'supplier_fg_multiplier'
+								WHERE 
+								gpl.price_list_type = %s
+								AND gpl.cut_or_cab LIKE %s
+								AND gpl.gemstone_grade LIKE %s
+								AND %s BETWEEN gpl.from_gemstone_pr_rate AND gpl.to_gemstone_pr_rate
+								ORDER BY gpl.creation DESC
+								LIMIT 1
+								""", (
+									row.get('gemstone_type'),
+									row.get('gemstone_type'),
+									gemstone_price_list_customer,
+									f"%{row.get('cut_or_cab')}%",
+									f"%{row.get('gemstone_grade')}%",
+									row.get('gemstone_pr')
+								), as_dict=True)
+						
+						if combined_query:
+							entry = combined_query[0]
+							gemstone_quality = row.get("gemstone_quality")
+							gemstone_pr = flt(row.get("gemstone_pr", 0))
+							multiplier_selected_value = entry.get("supplier_precious_percentage") if gemstone_quality == "Precious" else \
+														entry.get("supplier_semi_precious_percentage") if gemstone_quality == "Semi Precious" else \
+														entry.get("supplier_synthetic_percentage") if gemstone_quality == "Synthetic" else None
+
+							supplier_selected_value = entry.get("supplier_precious") if gemstone_quality == "Precious" else \
+													entry.get("supplier_semi_precious") if gemstone_quality == "Semi Precious" else \
+													entry.get("supplier_synthetic") if gemstone_quality == "Synthetic" else None
+							# frappe.throw(f"hiiki,{multiplier_selected_value}")
+							if multiplier_selected_value is not None:
+								row["total_gemstone_rate"] = multiplier_selected_value
+								row["gemstone_rate_for_specified_quantity"] =( row["total_gemstone_rate"]/100) * gemstone_pr
+
+							if supplier_selected_value is not None:
+								row["fg_purchase_rate"] = supplier_selected_value
+								row["fg_purchase_amount"] = row["fg_purchase_rate"] * gemstone_pr
+								# frappe.throw(f"{combined_query}")	
+				
+				if gemstone_price_customer and any(dpl["price_list_type"] == gemstone_price_list_customer for dpl in gemstone_price_customer):
+					if gemstone_price_customer and any(dpl["price_list_type"] == "Diamond Range" for dpl in gemstone_price_customer):
+						combined_query = frappe.db.sql("""
+							SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
+								gm.gemstone_type, 
+								sfm.precious_percentage AS supplier_precious_percentage, 
+							sfm.semi_precious_percentage AS supplier_semi_precious_percentage, 
+								sfm.synthetic_percentage AS supplier_synthetic_percentage,
+									 gm.precious_percentage as precious_percentage, gm.semi_precious_percentage as semi_precious_percentage, gm.synthetic_percentage as synthetic_percentage
+							FROM `tabGemstone Price List` gpl
+							INNER JOIN `tabGemstone Multiplier` gm
+								ON gm.parent = gpl.name 
+								AND gm.gemstone_type = %s 
+								AND gm.parentfield = 'gemstone_multiplier'
+							LEFT JOIN `tabGemstone Multiplier` sfm
+								ON sfm.parent = gpl.name 
+								AND sfm.gemstone_type = %s 
+								AND sfm.parentfield = 'supplier_fg_multiplier'
+							WHERE gpl.customer = %s
+							AND gpl.price_list_type = %s
+							AND gpl.cut_or_cab LIKE %s
+							AND gpl.gemstone_grade LIKE %s
+							AND %s BETWEEN gpl.from_gemstone_pr_rate AND gpl.to_gemstone_pr_rate
+							ORDER BY gpl.creation DESC
+							LIMIT 1
+							""", (
+								row.get('gemstone_type'),
+								row.get('gemstone_type'),
+								new_bom.customer,
+								gemstone_price_list_customer,
+								f"%{row.get('cut_or_cab')}%",
+								f"%{row.get('gemstone_grade')}%",
+								row.get('gemstone_pr')
+							), as_dict=True)
+
+						# frappe.throw(f"{row.get('gemstone_type')}")
+
+						# frappe.throw(f"{combined_query}")
+						# frappe.throw(f"hi,{combined_query[0]}")
+						if combined_query:
+							entry = combined_query[0]
+							gemstone_quality = row.get("gemstone_quality")
+							gemstone_pr = flt(row.get("gemstone_pr", 0))
+							# frappe.throw(f"hi,{gemstone_quality}")
+
+							# multiplier_selected_value = entry.get("precious") if gemstone_quality == "Precious" else \
+							# 							entry.get("semi_precious") if gemstone_quality == "Semi Precious" else \
+							# 							entry.get("synthetic") if gemstone_quality == "Synthetic" else None
+
+							multiplier_selected_value = entry.get("supplier_precious_percentage") if gemstone_quality == "Precious" else \
+														entry.get("supplier_semi_precious_percentage") if gemstone_quality == "Semi Precious" else \
+														entry.get("supplier_synthetic_percentage") if gemstone_quality == "Synthetic" else None
+
+							supplier_selected_value = entry.get("supplier_precious") if gemstone_quality == "Precious" else \
+													entry.get("supplier_semi_precious") if gemstone_quality == "Semi Precious" else \
+													entry.get("supplier_synthetic") if gemstone_quality == "Synthetic" else None
+							# frappe.throw(f"hiii,{multiplier_selected_value}")
+							if multiplier_selected_value is not None:
+								row["total_gemstone_rate"] = multiplier_selected_value
+								row["gemstone_rate_for_specified_quantity"] =( row["total_gemstone_rate"]/100) * gemstone_pr
+
+							if supplier_selected_value is not None:
+								row["fg_purchase_rate"] = supplier_selected_value
+								row["fg_purchase_amount"] = row["fg_purchase_rate"] * gemstone_pr
+					
+					# if gemstone_price_customer and any(dpl["price_list_type"] == "Weight (in cts)" for dpl in gemstone_price_customer):
+					# # if gemstone_price_customer == "Weight (in cts)":
+					# 	import re
+
+					# 	gemstone_size_str = row.get("gemstone_size", "")
+					# 	numbers = re.findall(r"[-+]?\d*\.\d+|\d+", gemstone_size_str)
+
+					# 	if len(numbers) == 2:
+					# 		min_size, max_size = float(min(numbers)), float(max(numbers))
+					# 	elif len(numbers) == 1:
+					# 		min_size = max_size = float(numbers[0])
+					# 	else:
+					# 		frappe.throw(f"Invalid gemstone size format: {gemstone_size_str}")
+
+					# 	# SQL Query for weight-based price list
+					# 	weight_in_cts_gemstone_price_list_entry = frappe.db.sql(
+					# 		"""
+					# 		SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade,
+					# 			supplier_fg_purchase_rate, from_weight, to_weight, rate, per_pc_or_per_carat
+					# 		FROM `tabGemstone Price List`
+					# 		WHERE customer = %s
+					# 		AND price_list_type = %s
+					# 		AND cut_or_cab = %s
+					# 		AND gemstone_grade = %s
+					# 		AND %s BETWEEN from_weight AND to_weight
+					# 		ORDER BY creation DESC
+					# 		LIMIT 1
+					# 		""",
+					# 		(new_bom.customer, gemstone_price_customer, row.get("cut_or_cab"), row.get("gemstone_grade"), min_size),
+					# 		as_dict=True
+					# 	)
+
+					# 	if weight_in_cts_gemstone_price_list_entry:
+					# 		entry = weight_in_cts_gemstone_price_list_entry[0]
+
+					# 		# Add safe access with .get()
+					# 		row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
+					# 		row["total_gemstone_rate"] = flt(entry.get("rate", 0))
+
+					# 		# Ensure safe multiplication
+					# 		row["fg_purchase_amount"] = (
+					# 			row.get("fg_purchase_rate", 0) * row.get("quantity", 0)
+					# 			if entry.get("per_pc_or_per_carat") == "Per Carat"
+					# 			else row.get("fg_purchase_rate", 0) * row.get("pcs", 0)
+					# 		)
+
+					if gemstone_price_customer and any(dpl["price_list_type"] == "Fixed" for dpl in gemstone_price_customer):
+					# if gemstone_price_customer == "Fixed":
+						fixed_gemstone_price_list_entry = frappe.db.sql("""
+							SELECT name, stone_shape, gemstone_type, cut_or_cab, gemstone_grade,
+								supplier_fg_purchase_rate, rate, per_pc_or_per_carat
+							FROM `tabGemstone Price List`
+							WHERE customer = %s
+							AND price_list_type = %s
+							AND stone_shape = %s
+							AND gemstone_type = %s
+							AND cut_or_cab = %s
+							AND gemstone_grade = %s
+							ORDER BY creation DESC
+							LIMIT 1
+							""",
+							(
+								new_bom.customer, gemstone_price_customer[0]["price_list_type"],
+								row.get("stone_shape"), row.get("gemstone_type"),
+								row.get("cut_or_cab"), row.get("gemstone_grade")
+							),
+							as_dict=True
+						)
+						# frappe.throw(f"{gemstone_price_customer}")
+						if fixed_gemstone_price_list_entry:
+							entry = fixed_gemstone_price_list_entry[0]
+							# frappe.throw(f"{entry}")
+							row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
+							row["total_gemstone_rate"] = flt(entry.get("rate", 0))
+
+							row["fg_purchase_amount"] = row.get("fg_purchase_rate", 0) * row.get("quantity", 0)
+				# Add attributes to row
+				for attribute in item_row.attributes:
+					attribute_name = attribute.attribute.lower().replace(" ", "_")
+					row[attribute_name] = attribute.attribute_value
+
+				# Check for Customer Goods
+				if item.get("inventory_type") == "Customer Goods":
+					row["is_customer_item"] = 1
+
+				row["pcs"] = item.get("pcs", 0)
+
+				# new code by dharm
+				# row["gemstone_rate_for_specified_quantity"] = row["quantity"] * row["total_gemstone_rate"]
+
+			else:
+				if gemstone_price_list and any(dpl["price_list_type"] == gemstone_price_list_ref_customer for dpl in gemstone_price_list):
+					# if gemstone_price_list_ref_customer == "Multiplier":
+					if gemstone_price_customer and any(dpl["price_list_type"] == "Diamond Range" for dpl in gemstone_price_customer):
+						combined_query = frappe.db.sql(
+							"""
+							SELECT gpl.name, gpl.cut_or_cab, gpl.gemstone_grade,
+								gm.item_category, gm.precious, gm.semi_precious, gm.synthetic,
+								sfm.precious AS supplier_precious, sfm.semi_precious AS supplier_semi_precious, sfm.synthetic AS supplier_synthetic
+							FROM `tabGemstone Price List` gpl
+							INNER JOIN `tabGemstone Multiplier` gm
+								ON gm.parent = gpl.name AND gm.item_category = %s AND gm.parentfield = 'gemstone_multiplier'
+							LEFT JOIN `tabGemstone Multiplier` sfm
+								ON sfm.parent = gpl.name AND sfm.item_category = %s AND sfm.parentfield = 'supplier_fg_multiplier'
+							WHERE gpl.customer = %s
+							AND gpl.price_list_type = %s
+							AND gpl.cut_or_cab = %s
+							AND gpl.gemstone_grade = %s
+							AND %s BETWEEN gpl.from_gemstone_pr_rate AND gpl.to_gemstone_pr_rate
+							ORDER BY gpl.creation DESC
+							LIMIT 1
+							""",
+							(new_bom.item_category, 
+							 new_bom.item_category, 
+							 ref_customer, 
+							 gemstone_price_list_ref_customer, 
+							 row.get("cut_or_cab"), 
+							 row.get("gemstone_grade")),
+							 row.get('gemstone_pr'),
+							as_dict=True
+						)
+
+						if combined_query:
+							entry = combined_query[0]
+							gemstone_quality = row.get("gemstone_quality")
+							gemstone_pr = flt(row.get("gemstone_pr", 0))
+
+							    # Multiplier value
+							multiplier_value = None
+							# percentage_value = None
+
+							if gemstone_quality == "Precious":
+								multiplier_value = entry.get("precious")
+								percentage_value = entry.get("precious_percentage")
+							elif gemstone_quality == "Semi Precious":
+								multiplier_value = entry.get("semi_precious")
+								percentage_value = entry.get("semi_precious_percentage")
+							elif gemstone_quality == "Synthetic":
+								multiplier_value = entry.get("synthetic")
+								percentage_value = entry.get("synthetic_percentage")
+
+							if multiplier_value not in [None, 0] and multiplier_value > 0:
+								row["total_gemstone_rate"] = multiplier_value
+								row["gemstone_rate_for_specified_quantity"] = row["total_gemstone_rate"] * gemstone_pr
+
+							elif percentage_value not in [None, 0] and percentage_value > 0:
+								# Agar multiplier 0 hai, percentage se calculate karo
+								row["total_gemstone_rate"] = gemstone_pr * (percentage_value / 100)
+								row["gemstone_rate_for_specified_quantity"] = row["total_gemstone_rate"] * gemstone_pr
+
+							supplier_selected_value = entry.get("supplier_precious") if gemstone_quality == "Precious" else \
+													entry.get("supplier_semi_precious") if gemstone_quality == "Semi Precious" else \
+													entry.get("supplier_synthetic") if gemstone_quality == "Synthetic" else None
+
+							# if multiplier_selected_value is not None:
+							# 	row["total_gemstone_rate"] = multiplier_selected_value
+							# 	row["gemstone_rate_for_specified_quantity"] = row["total_gemstone_rate"] * gemstone_pr
+
+							if supplier_selected_value is not None:
+								row["fg_purchase_rate"] = supplier_selected_value
+								row["fg_purchase_amount"] = row["fg_purchase_rate"] * gemstone_pr
+
+							# Handle Fixed price list
+					if gemstone_price_customer and any(dpl["price_list_type"] == "Fixed" for dpl in gemstone_price_customer):
+					# if gemstone_price_list_ref_customer == "Fixed":
+						fixed_gemstone_price_list_entry = frappe.db.sql(
+							"""
+							SELECT name, stone_shape, gemstone_type, cut_or_cab, gemstone_grade,
+								supplier_fg_purchase_rate, rate, per_pc_or_per_carat
+							FROM `tabGemstone Price List`
+							WHERE customer = %s
+							AND price_list_type = %s
+							AND stone_shape = %s
+							AND gemstone_type = %s
+							AND cut_or_cab = %s
+							AND gemstone_grade = %s
+							ORDER BY creation DESC
+							LIMIT 1
+							""",
+							(
+								ref_customer, gemstone_price_list_ref_customer,
+								row.get("stone_shape"), row.get("gemstone_type"),
+								row.get("cut_or_cab"), row.get("gemstone_grade")
+							),
+							as_dict=True
+						)
+
+						if fixed_gemstone_price_list_entry:
+							entry = fixed_gemstone_price_list_entry[0]
+
+							row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
+							row["total_gemstone_rate"] = flt(entry.get("rate", 0))
+
+							row["fg_purchase_amount"] = row.get("fg_purchase_rate", 0) * row.get("quantity", 0)
+					
+
+					# if gemstone_price_customer and any(dpl["price_list_type"] == "Weight (in cts)" for dpl in gemstone_price_customer):
+					# # if gemstone_price_list_ref_customer == "Weight (in cts)":
+					# 	import re
+
+					# 	gemstone_size_str = row.get("gemstone_size", "")
+					# 	numbers = re.findall(r"[-+]?\d*\.\d+|\d+", gemstone_size_str)
+
+					# 	if len(numbers) == 2:
+					# 		min_size, max_size = float(min(numbers)), float(max(numbers))
+					# 	elif len(numbers) == 1:
+					# 		min_size = max_size = float(numbers[0])
+					# 	else:
+					# 		frappe.throw(f"Invalid gemstone size format: {gemstone_size_str}")
+
+					# 	# SQL Query for weight-based price list
+					# 	weight_in_cts_gemstone_price_list_entry = frappe.db.sql(
+					# 		"""
+					# 		SELECT name, cut_or_cab, gemstone_type, stone_shape, gemstone_grade,
+					# 			supplier_fg_purchase_rate, from_weight, to_weight, rate, per_pc_or_per_carat
+					# 		FROM `tabGemstone Price List`
+					# 		WHERE customer = %s
+					# 		AND price_list_type = %s
+					# 		AND cut_or_cab = %s
+					# 		AND gemstone_grade = %s
+					# 		AND %s BETWEEN from_weight AND to_weight
+					# 		ORDER BY creation DESC
+					# 		LIMIT 1
+					# 		""",
+					# 		(ref_customer, gemstone_price_list_ref_customer, row.get("cut_or_cab"), row.get("gemstone_grade"), min_size),
+					# 		as_dict=True
+					# 	)
+
+					# 	if weight_in_cts_gemstone_price_list_entry:
+					# 		entry = weight_in_cts_gemstone_price_list_entry[0]
+
+					# 		# Add safe access with .get()
+					# 		row["fg_purchase_rate"] = flt(entry.get("supplier_fg_purchase_rate", 0))
+					# 		row["total_gemstone_rate"] = flt(entry.get("rate", 0))
+
+					# 		# Ensure safe multiplication
+					# 		row["fg_purchase_amount"] = (
+					# 			row.get("fg_purchase_rate", 0) * row.get("quantity", 0)
+					# 			if entry.get("per_pc_or_per_carat") == "Per Carat"
+					# 			else row.get("fg_purchase_rate", 0) * row.get("pcs", 0)
+					# 		)
+
+				
+				
+				# Add attributes to row
+				for attribute in item_row.attributes:
+					attribute_name = attribute.attribute.lower().replace(" ", "_")
+					row[attribute_name] = attribute.attribute_value
+
+				# Check for Customer Goods
+				if item.get("inventory_type") == "Customer Goods":
+					row["is_customer_item"] = 1
+
+				row["pcs"] = item.get("pcs", 0)
+			# Append to BOM
+			new_bom.append("gemstone_detail", row)
+
+			# Calculate totals safely with flt() to avoid NoneType errors
+			new_bom.gemstone_bom_amount = sum(flt(row.get("gemstone_rate_for_specified_quantity", 0)) for row in new_bom.get("gemstone_detail", []))
+			new_bom.gemstone_fg_purchase = sum(flt(row.get("fg_purchase_rate", 0)) for row in new_bom.get("gemstone_detail", []))
+			new_bom.total_gemstone_pcs = sum(flt(row.get("pcs", 0)) for row in new_bom.get("gemstone_detail", []))
+			new_bom.total_gemstone_weight = sum(flt(row.get("quantity", 0)) for row in new_bom.get("gemstone_detail", []))
+			new_bom.total_gemstone_weight_per_gram = sum(flt(row.get("weight_in_gms", 0)) for row in new_bom.get("gemstone_detail", []))
+			new_bom.total_gemstone_amount = sum(flt(row.get("gemstone_rate_for_specified_quantity", 0)) for row in new_bom.get("gemstone_detail", []))
+
+		elif item_row.variant_of == "O":
+			row = {}
+			row["se_rate"] = item.get("rate")
+			for attribute in item_row.attributes:
+				atrribute_name = format_attrbute_name(attribute.attribute)
+				row[atrribute_name] = attribute.attribute_value
+				row["item_code"] = item_row.name
+				row["quantity"] = item["qty"] / pmo_data.get("qty")
+				row["qty"] = item["qty"]
+				row["uom"] = "Gram"
+			new_bom.append("other_detail", row)
+	
+	new_bom.making_charge = new_bom.custom_metal_amount + new_bom.custom_finding_amount
+	new_bom.making_fg_purchase = new_bom.custom_fg_metal_amount + new_bom.custom_finding_fg_amount
+	new_bom.finding_weight_ = new_bom.finding_weight_
+	new_bom.metal_weight = new_bom.total_metal_weight
+	new_bom.metal_and_finding_weight = new_bom.finding_weight_ + new_bom.metal_weight
+	new_bom.diamond_weight = new_bom.total_diamond_weight
+	new_bom.total_diamond_weight_in_gms = new_bom.diamond_weight / 5
+	new_bom.gemstone_weight = new_bom.total_gemstone_weight
+	new_bom.total_gemstone_weight_in_gms = new_bom.gemstone_weight / 5
+	new_bom.gross_weight = (
+	new_bom.metal_weight
+	+ new_bom.finding_weight_
+	+ new_bom.total_diamond_weight_in_gms
+	+ new_bom.total_gemstone_weight_in_gms
+	)
+	new_bom.total_bom_amount = (
+	new_bom.diamond_bom_amount
+	+ new_bom.total_metal_amount
+	+ new_bom.making_charge
+	+ new_bom.finding_bom_amount
+	+ new_bom.gemstone_bom_amount
+	)
+	new_bom.gold_to_diamond_ratio = (
+	flt(new_bom.metal_weight + new_bom.finding_weight_) / flt(new_bom.total_diamond_weight_in_gms)
+	if new_bom.total_diamond_weight_in_gms else 0
+	)
+	new_bom.diamond_ratio = (
+	flt(new_bom.total_diamond_weight_in_gms) / flt(new_bom.total_diamond_pcs)
+	if new_bom.total_diamond_pcs else 0
+	)
+	new_bom.insert(ignore_mandatory=True)
+	new_bom.submit()
+	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
+	self.fg_bom = new_bom.name
 
 def get_stock_entry_data(self):
 	pmo = frappe.db.get_value(
