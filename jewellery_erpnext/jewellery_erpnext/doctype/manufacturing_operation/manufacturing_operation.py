@@ -3401,7 +3401,22 @@ def create_finished_goods_bom1(self, se_name, mo_data, total_time=0):
 
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	
-	data = get_stock_entry_data(self)
+	if getattr(self, "doctype", None) == "Serial Number Creator" and self.get(
+		"fg_details"
+	):
+		data = [
+			{
+				"item_code": d.row_material,
+				"qty": d.qty,
+				"pcs": d.pcs,
+				"uom": d.uom,
+				"rate": getattr(d, "rate", 0),
+				"custom_sub_setting_type": getattr(d, "sub_setting_type", None),
+			}
+			for d in self.fg_details
+		]
+	else:
+		data = get_stock_entry_data(self)
 
 	ref_customer = frappe.db.get_value("Parent Manufacturing Order", self.parent_manufacturing_order, "ref_customer")
 	diamond_price_list_ref_customer = frappe.db.get_value("Customer", ref_customer, "diamond_price_list")
@@ -3434,7 +3449,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		as_dict=1,
 	)
 	
-	quality_value = bom_doc.diamond_detail[0].quality
+	# quality_value = bom_doc.diamond_detail[0].quality
 
 	new_bom = frappe.copy_doc(bom_doc)
 	new_bom.front_view_finish = pmo_data.get("finish_good_image")
@@ -4237,8 +4252,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							 ref_customer, 
 							 gemstone_price_list_ref_customer, 
 							 row.get("cut_or_cab"), 
-							 row.get("gemstone_grade")),
-							 row.get('gemstone_pr'),
+							 row.get("gemstone_grade"),
+							 row.get('gemstone_pr')),
 							as_dict=True
 						)
 
