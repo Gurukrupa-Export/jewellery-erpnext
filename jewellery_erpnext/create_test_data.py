@@ -2178,6 +2178,8 @@ def create_test_data():
 			)
 			mop_settings.save()
 
+		print("Test Data Created for Tesing")
+
 	create_attribute_value()
 	create_item_attribute()
 	create_users_data()
