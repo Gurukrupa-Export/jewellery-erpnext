@@ -1,0 +1,174 @@
+name: Frappe App Tests
+
+on:
+  pull_request:
+    branches:
+      - v16_develop_aerele
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    services:
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MYSQL_ROOT_PASSWORD: travis
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ptravis"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:6
+        ports:
+          - 6379:6379
+
+    env:
+      DB: mariadb
+      TYPE: server
+
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      - name: Checkout Fixture Branch
+        uses: actions/checkout@v4
+        with:
+          repository: Kanishkar16Vijay/jewellery-erpnext
+          ref: git_action_v16
+          path: fixture_source
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            redis-server \
+            mariadb-client \
+            redis-tools \
+            wkhtmltopdf \
+            build-essential \
+            libffi-dev \
+            libssl-dev
+
+      - name: Make Install Script Executable
+        run: chmod +x install.sh
+
+      - name: Install Bench and Apps
+        run: ./install.sh
+
+      - name: Import Fixtures
+        run: |
+          cd ~/frappe-bench
+          bench --site test_site migrate
+
+      - name: Create Test Data
+        run: |
+          cd ~/frappe-bench
+          bench --site test_site execute \
+            jewellery_erpnext.create_test_data.setup_data
+
+      - name: Run Sketch Order Form Tests
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Sketch Order Form"
+      
+      - name: Run Quotation
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
+      - name: Run Sales Order
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
+
+      - name: Run BOM
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_bom
+
+      - name: Run Manufacturing Plan
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Manufacturing Plan"
+
+      - name: Run Parent Manufacturing Order
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Parent Manufacturing Order"
+
+      - name: Run Manufacturing Work Order
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Manufacturing Work Order"
+
+      - name: Run Manufacturing Operation
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Manufacturing Operation"
+
+      - name: Run Department IR
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Department IR"
+
+      - name: Run Employee IR
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Employee IR"
+
+      - name: Run MOP Log
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "MOP Log"
+
+      - name: Run Serial Number Creator
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Serial Number Creator"
+
+      - name: Run Product Certification
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Product Certification"
