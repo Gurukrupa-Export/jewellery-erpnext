@@ -3,6 +3,97 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-03 01:17:10.844162",
+  "name": "Work Order for Customer Approval Issue",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-03 01:17:32.274424",
+  "name": "Work Order for Customer Approval Receive",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-03 01:20:03.143084",
+  "name": "Repack-Repair Unpack",
+  "purpose": "Repack"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-03 01:20:55.469060",
+  "name": "Repair Unpack",
+  "purpose": "Repack"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 1,
+  "modified": "2024-08-28 14:28:54.481293",
+  "name": "Disassemble",
+  "purpose": "Disassemble"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 1,
+  "modified": "2026-04-27 23:21:15.298753",
+  "name": "Receive from Customer",
+  "purpose": "Receive from Customer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 1,
+  "modified": "2026-04-27 23:21:15.300044",
+  "name": "Return Raw Material to Customer",
+  "purpose": "Return Raw Material to Customer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 1,
+  "modified": "2026-04-27 23:21:15.301284",
+  "name": "Subcontracting Delivery",
+  "purpose": "Subcontracting Delivery"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 1,
+  "modified": "2026-04-27 23:21:15.302570",
+  "name": "Subcontracting Return",
+  "purpose": "Subcontracting Return"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2026-04-30 09:51:44.576093",
+  "name": "Subcontracting Repack",
+  "purpose": "Repack"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-12-20 17:49:40.211656",
   "name": "Repack - Diamond Sieve Size",
   "purpose": "Repack"
@@ -11,6 +102,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2024-01-23 09:46:55.132728",
   "name": "Material Issue  - Consumables",
   "purpose": "Material Issue"
@@ -19,6 +111,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-12-12 11:03:20.415870",
   "name": "Metal Conversion Repack",
   "purpose": "Repack"
@@ -27,6 +120,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2022-05-06 15:07:12.623409",
   "name": "Material Issue",
   "purpose": "Material Issue"
@@ -35,6 +129,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2022-05-06 15:07:12.634812",
   "name": "Material Receipt",
   "purpose": "Material Receipt"
@@ -43,6 +138,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2022-05-06 15:07:12.639211",
   "name": "Material Transfer",
   "purpose": "Material Transfer"
@@ -51,6 +147,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2022-05-06 15:07:12.643858",
   "name": "Manufacture",
   "purpose": "Manufacture"
@@ -59,6 +156,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2022-05-06 15:07:12.648611",
   "name": "Repack",
   "purpose": "Repack"
@@ -67,6 +165,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2022-05-06 15:07:12.655109",
   "name": "Send to Subcontractor",
   "purpose": "Send to Subcontractor"
@@ -75,6 +174,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2022-05-06 15:07:12.665325",
   "name": "Material Consumption for Manufacture",
   "purpose": "Material Consumption for Manufacture"
@@ -83,6 +183,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-03-06 13:20:05.276246",
   "name": "Broken / Loss",
   "purpose": "Material Transfer for Manufacture"
@@ -91,6 +192,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-09-03 04:56:43.084607",
   "name": "Material Issue for Hallmarking",
   "purpose": "Material Transfer"
@@ -99,6 +201,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-09-03 04:56:57.041869",
   "name": "Material Receipt for Certification",
   "purpose": "Material Transfer"
@@ -107,6 +210,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-09-03 04:57:18.064638",
   "name": "Material Receipt for Hallmarking",
   "purpose": "Material Transfer"
@@ -115,6 +219,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-09-03 04:57:28.614127",
   "name": "Material Issue for Certification",
   "purpose": "Material Transfer"
@@ -123,6 +228,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-10-03 11:58:49.446130",
   "name": "Material Transfer to Department",
   "purpose": "Material Transfer"
@@ -131,6 +237,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-10-03 11:59:08.610159",
   "name": "Material Transfer to Employee",
   "purpose": "Material Transfer"
@@ -139,6 +246,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-10-05 23:58:32.797689",
   "name": "Material Transfer to Subcontractor",
   "purpose": "Material Transfer"
@@ -147,6 +255,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-10-11 15:49:36.881849",
   "name": "Customer Goods Received",
   "purpose": "Material Receipt"
@@ -155,6 +264,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-10-11 15:50:00.397795",
   "name": "Customer Goods Issue",
   "purpose": "Material Issue"
@@ -163,6 +273,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-10-11 15:50:31.479825",
   "name": "Material - Lost",
   "purpose": "Material Issue"
@@ -171,6 +282,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-10-11 15:50:55.351848",
   "name": "Material Issue - Sales Person",
   "purpose": "Material Transfer"
@@ -179,6 +291,7 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2022-05-06 15:07:12.660906",
   "name": "Material Transfer for Manufacture",
   "purpose": "Material Transfer for Manufacture"
@@ -187,6 +300,7 @@
   "add_to_transit": 1,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-10-18 12:50:49.887354",
   "name": "Customer Goods Transfer",
   "purpose": "Material Transfer"
@@ -195,8 +309,99 @@
   "add_to_transit": 0,
   "docstatus": 0,
   "doctype": "Stock Entry Type",
+  "is_standard": 0,
   "modified": "2023-11-17 12:32:59.983995",
   "name": "Material Receipt - Sales Person",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-03 01:16:49.368054",
+  "name": "Material Transfer (Subcontracting Work Order)",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-12-31 10:21:00.893415",
+  "name": "Material Receive (WORK ORDER)",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-03 01:19:45.932332",
+  "name": "Material Transfer to Branch",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-03 01:16:18.142254",
+  "name": "Material Transfer (MAIN SLIP)",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-10 12:25:20.803707",
+  "name": "Repack-Metal Conversion",
+  "purpose": "Repack"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-13 09:38:56.959811",
+  "name": "Repack-Diamond Conversion",
+  "purpose": "Repack"
+ },
+ {
+  "add_to_transit": 1,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-12-02 15:13:07.504081",
+  "name": "Material Transfer (DEPARTMENT)",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-03 01:16:35.954899",
+  "name": "Material Transfer (WORK ORDER)",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-03 01:17:52.940959",
+  "name": "Material transfer to Reserve",
+  "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "is_standard": 0,
+  "modified": "2024-08-12 10:26:58.154513",
+  "name": "Material Transfer From Reserve",
   "purpose": "Material Transfer"
  }
 ]

@@ -3,6 +3,24 @@
   "docstatus": 0,
   "doctype": "Workflow State",
   "icon": "",
+  "modified": "2026-01-22 16:23:24.735091",
+  "name": "Designer Assigned",
+  "style": "",
+  "workflow_state_name": "Designer Assigned"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-01-22 16:24:06.834554",
+  "name": "Team Leader Assigned",
+  "style": "",
+  "workflow_state_name": "Team Leader Assigned"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
   "modified": "2024-08-01 08:35:27.072268",
   "name": "Not active",
   "style": "",
@@ -876,16 +894,7 @@
   "docstatus": 0,
   "doctype": "Workflow State",
   "icon": "",
-  "modified": "2024-07-10 14:22:15.798709",
-  "name": "Draft",
-  "style": "",
-  "workflow_state_name": "Draft"
- },
- {
-  "docstatus": 0,
-  "doctype": "Workflow State",
-  "icon": "",
-  "modified": "2026-04-21 00:00:00.000000",
+  "modified": "2026-04-21 00:00:00",
   "name": "Pending RM Fetch",
   "style": "Warning",
   "workflow_state_name": "Pending RM Fetch"
@@ -894,9 +903,63 @@
   "docstatus": 0,
   "doctype": "Workflow State",
   "icon": "",
-  "modified": "2026-04-21 00:00:00.000000",
+  "modified": "2026-04-21 00:00:00",
   "name": "Ready to Submit",
   "style": "Success",
   "workflow_state_name": "Ready to Submit"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-27 14:55:16.695882",
+  "name": "Initiated",
+  "style": "",
+  "workflow_state_name": "Initiated"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-27 16:12:41.379987",
+  "name": "Draft",
+  "style": "",
+  "workflow_state_name": "Draft"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-27 16:18:38.530934",
+  "name": "KYC Pending",
+  "style": "",
+  "workflow_state_name": "KYC Pending"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-27 16:27:34.607514",
+  "name": "KYC Complete",
+  "style": "",
+  "workflow_state_name": "KYC Complete"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-04-30 10:44:16.894724",
+  "name": "On Hold - Requires Update",
+  "style": "",
+  "workflow_state_name": "On Hold - Requires Update"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-05-02 12:18:42.019730",
+  "name": "Update Item - On-Hold",
+  "style": "",
+  "workflow_state_name": "Update Item - On-Hold"
  }
 ]

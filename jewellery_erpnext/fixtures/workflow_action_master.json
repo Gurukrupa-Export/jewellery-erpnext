@@ -348,5 +348,19 @@
   "modified": "2024-04-10 11:56:50.125748",
   "name": "Approve",
   "workflow_action_name": "Approve"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-06-27 16:13:36.773584",
+  "name": "Initiate",
+  "workflow_action_name": "Initiate"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-06-27 16:28:02.106474",
+  "name": "Complete KYC",
+  "workflow_action_name": "Complete KYC"
  }
 ]
