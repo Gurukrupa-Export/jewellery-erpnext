@@ -779,11 +779,6 @@ def create_manufacturing_work_order(self):
 		.where(BOMFindingDetail.parent == self.custom_tracking_bom)
 	).run(as_dict=True)
 
-	# all_metal_colour_rows is used only for multicolour grouping; it
-	# starts with the real metal rows and will also receive non-Chains
-	# finding rows.  metal_details itself stays untouched so that only
-	# actual BOM Metal Detail rows create metal MWOs.
-	all_metal_colour_rows = list(metal_details)
 	finding_data = []
 	for row in finding_details:
 		item_code = row.get("item_variant") or _resolve_existing_variant_item_code(
@@ -804,31 +799,21 @@ def create_manufacturing_work_order(self):
 
 		row["item_variant"] = item_code
 
-		# Any finding that carries a finding_category can have its own Finding
-		# Manufacturing Work Order. The resolved/created item is the same one used
-		# when raising the Material Request, so create_finding_mwo() makes the
-		# final call from the item's custom_is_manufacturing_item flag. This lets
-		# non-chain findings (e.g. Magic Plates) create finding MWOs too.
-		if row.get("finding_category") and row.get("parentfield") == "finding_detail":
+		# Only findings with finding_category == "Chains" should create their
+		# own Finding Manufacturing Work Order. The resolved/created item is
+		# the same one used when raising the Material Request, so
+		# create_finding_mwo() makes the final call from the item's
+		# custom_is_manufacturing_item flag.
+		if (
+			row.get("finding_category") == "Chains"
+			and row.get("parentfield") == "finding_detail"
+		):
 			finding_data.append(row)
 
-		if row.get("finding_category") != "Chains":
-			# Non-Chains finding rows still contribute to multicolour detection
-			# but must NOT create their own metal MWOs.
-			all_metal_colour_rows.append(
-				{
-					"metal_touch": row.get("metal_touch"),
-					"metal_type": row.get("metal_type"),
-					"metal_purity": row.get("metal_purity"),
-					"metal_colour": row.get("metal_colour"),
-					"parent": row.get("parent"),
-				}
-			)
-
-	# Build multicolour grouping from metal rows + non-Chains finding rows.
+	# Build multicolour grouping from BOM Metal Detail rows only.
 	grouped_data = {}
 	variant_of = frappe.get_cached_value("Item", self.item_code, "variant_of")
-	for item in all_metal_colour_rows:
+	for item in metal_details:
 		metal_purity = self.metal_purity or item["metal_purity"]
 		metal_colour = item["metal_colour"] or self.metal_colour
 		if metal_purity not in grouped_data:
