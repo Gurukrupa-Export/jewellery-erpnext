@@ -50,7 +50,13 @@ def create_customer_gold_repack_automation(doc):
 		if not d.batch_no:
 			continue
 
+		if not d.item_code:
+			continue
+
 		if d.inventory_type != "Customer Goods":
+			continue
+
+		if not is_gold_item(d.item_code):
 			continue
 
 		incoming_batches.append(
@@ -116,7 +122,13 @@ def create_company_gold_repack_automation(doc):
 		if not d.batch_no:
 			continue
 
+		if not d.item_code:
+			continue
+
 		if d.inventory_type == "Customer Goods":
+			continue
+
+		if not is_gold_item(d.item_code):
 			continue
 
 		incoming_batches.append(
@@ -155,7 +167,7 @@ def create_company_gold_repack_automation(doc):
 
 
 def is_gold_item(item_code):
-	return item_code.startswith("M-")
+	return isinstance(item_code, str) and item_code.startswith("M-")
 
 
 def process_repack_settlement(
@@ -164,7 +176,7 @@ def process_repack_settlement(
 	incoming_customer=None,
 ):
 	for log in pending_logs:
-		if not is_gold_item(log.batch_item):
+		if not log.batch_item or not is_gold_item(log.batch_item):
 			continue
 
 		required_pure_qty = flt(log.balance_pure_qty, 3)
@@ -194,6 +206,11 @@ def process_repack_settlement(
 				continue
 
 			source_batch = incoming["batch_no"]
+
+			source_item_code = incoming["item_code"]
+
+			if not is_gold_item(source_item_code):
+				continue
 
 			source_purity = get_purity(incoming["item_code"])
 
@@ -419,7 +436,7 @@ def process_pending_repack_for_mwo(doc_name):
 	pending_message = []
 
 	for log in pending_logs:
-		if not is_gold_item(log.batch_item):
+		if not log.batch_item or not is_gold_item(log.batch_item):
 			continue
 		required_pure_qty = flt(log.balance_pure_qty, 3)
 
@@ -440,6 +457,11 @@ def process_pending_repack_for_mwo(doc_name):
 		)
 
 		for source in gold_sources:
+			source_item = source["item_code"]
+
+			if not is_gold_item(source_item):
+				continue
+
 			if required_pure_qty <= 0:
 				break
 
@@ -521,6 +543,8 @@ def get_customer_available_gold(customer):
 	)
 
 	for batch in customer_batches:
+		if not is_gold_item(batch.item):
+			continue
 		stock_rows = get_batch_qty(batch_no=batch.name)
 
 		if not stock_rows:
