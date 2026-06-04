@@ -491,3 +491,298 @@ class TestCreateMrWoStockEntryPcsValidation(FrappeTestCase):
 				request_id="t13",
 			)
 		new_doc_mock.assert_not_called()
+
+
+def _batch_sre(name="SRE-D", item_code="D-NT-RO-7-+5.5-6"):
+	"""Batch-based SRE (one per Material Transfer item) — the popup expands it
+	into one row per Serial and Batch Entry line.
+	"""
+	return frappe._dict(
+		{
+			"name": name,
+			"item_code": item_code,
+			"warehouse": "WH-Src",
+			"reserved_qty": 0.0,
+			"delivered_qty": 0.0,
+			"stock_uom": "Carat",
+			"voucher_type": "Sales Order",
+			"voucher_no": "SO-1",
+			"voucher_detail_no": "SOI-1",
+			"has_serial_no": 0,
+			"has_batch_no": 1,
+			"reservation_based_on": "Serial and Batch",
+			"manufacturing_work_order": "MWO-1",
+			"manufacturing_operation": "MOP-1",
+		}
+	)
+
+
+def _sb_entry(name, parent, batch_no, qty, delivered_qty=0.0):
+	return frappe._dict(
+		{
+			"name": name,
+			"parent": parent,
+			"batch_no": batch_no,
+			"qty": qty,
+			"delivered_qty": delivered_qty,
+		}
+	)
+
+
+def _balance_row(item_code, batch_no, qty_batch, pcs_batch):
+	"""Latest running-balance row (what get_current_mop_balance_rows surfaces)."""
+	return frappe._dict(
+		{
+			"name": f"MOPLOG-BAL-{batch_no}",
+			"item_code": item_code,
+			"batch_no": batch_no,
+			"qty_after_transaction_batch_based": qty_batch,
+			"pcs_after_transaction_batch_based": pcs_batch,
+		}
+	)
+
+
+def _transfer_row(name, item_code, batch_no, qty_change, pcs_change):
+	"""Per-row incoming-transfer row (what get_mop_transfer_pcs_rows surfaces)."""
+	return frappe._dict(
+		{
+			"name": name,
+			"item_code": item_code,
+			"batch_no": batch_no,
+			"qty_after_transaction_batch_based": 0.0,
+			"pcs_after_transaction_batch_based": 0,
+			"qty_change": qty_change,
+			"pcs_change": pcs_change,
+		}
+	)
+
+
+class TestMakeReceiveEntryPerRowPcs(FrappeTestCase):
+	"""Two reserved batch lines sharing the same (item, batch) must each show
+	their OWN transferred PCS, not the batch-wide running total.
+
+	Regression: the popup summed pcs by item+batch and showed the total (31)
+	on every line; qty stayed per-line (0.072 / 0.046). The fix sources each
+	line's pcs from its originating MOP Log transfer row (19 / 12).
+	"""
+
+	ITEM = "D-NT-RO-7-+5.5-6"
+	BATCH = "GE2D075-DNTROX7E05F00-01"
+
+	def _patch_popup(self, sre_rows, mop_rows, sb_rows):
+		def _dispatcher(doctype, *args, **kwargs):
+			if doctype == "Stock Reservation Entry":
+				return list(sre_rows)
+			if doctype == "MOP Log":
+				return list(mop_rows)
+			if doctype == "Serial and Batch Entry":
+				return list(sb_rows)
+			return []
+
+		patches = [
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_doc",
+				return_value=_make_mo(),
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
+				return_value="WH-Raw",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
+				return_value=3,
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
+				return_value=[],
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.resolve_and_validate",
+				return_value="WH-Resolved",
+			),
+			patch("frappe.db.get_all", side_effect=_dispatcher),
+		]
+		for p in patches:
+			p.start()
+			self.addCleanup(p.stop)
+
+	def test_per_row_pcs_split_across_same_item_batch(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			get_make_receive_entry_rows,
+		)
+
+		# One transfer SRE, two batch lines of the SAME (item, batch).
+		self._patch_popup(
+			sre_rows=[_batch_sre()],
+			mop_rows=[
+				# Running balance (batch total) — used for the qty/pcs cap.
+				_balance_row(self.ITEM, self.BATCH, qty_batch=0.118, pcs_batch=31),
+				# Per-row incoming transfers — the authoritative per-line pcs.
+				_transfer_row("T1", self.ITEM, self.BATCH, 0.072, 19),
+				_transfer_row("T2", self.ITEM, self.BATCH, 0.046, 12),
+			],
+			sb_rows=[
+				_sb_entry("SB1", "SRE-D", self.BATCH, 0.072),
+				_sb_entry("SB2", "SRE-D", self.BATCH, 0.046),
+			],
+		)
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
+		by_qty = {round(r["available_to_receive_qty"], 3): r for r in rows}
+		self.assertEqual(len(rows), 2)
+		# Qty stays per-line; pcs is now ALSO per-line (was 31/31 before).
+		self.assertEqual(by_qty[0.072]["available_to_receive_pcs"], 19)
+		self.assertEqual(by_qty[0.046]["available_to_receive_pcs"], 12)
+		# Sum equals the batch balance — never over-states.
+		self.assertEqual(sum(r["available_to_receive_pcs"] for r in rows), 31)
+
+	def test_fallback_to_batch_aggregate_when_no_transfer_rows(self):
+		"""No per-row transfer rows (legacy data) → fall back to the batch
+		aggregate, preserving prior behaviour."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			get_make_receive_entry_rows,
+		)
+
+		self._patch_popup(
+			sre_rows=[_batch_sre()],
+			mop_rows=[_balance_row(self.ITEM, self.BATCH, qty_batch=0.05, pcs_batch=8)],
+			sb_rows=[_sb_entry("SB1", "SRE-D", self.BATCH, 0.05)],
+		)
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["available_to_receive_pcs"], 8)
+
+	def _run_loss_scenario(self, sb_rows):
+		"""Two batch lines of the same (item, batch): one transferred 47 pcs
+		(0.494 ct) then lost 5 pcs (now 0.482 ct remaining), the other 15 pcs
+		(0.158 ct, untouched). Live batch balance after the loss is 57 pcs.
+		Returns ``{remaining_qty: available_to_receive_pcs}``.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			get_make_receive_entry_rows,
+		)
+
+		self._patch_popup(
+			sre_rows=[_batch_sre()],
+			mop_rows=[
+				# Latest running balance for the batch (post-loss cap).
+				_balance_row(self.ITEM, self.BATCH, qty_batch=0.640, pcs_batch=57),
+				# The two incoming Material Transfer rows (authoritative per-line).
+				_transfer_row("T-BIG", self.ITEM, self.BATCH, 0.494, 47),
+				_transfer_row("T-SML", self.ITEM, self.BATCH, 0.158, 15),
+			],
+			sb_rows=sb_rows,
+		)
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
+		self.assertEqual(len(rows), 2)
+		return {round(r["available_to_receive_qty"], 3): r for r in rows}
+
+	def test_loss_attributed_to_shrunken_line(self):
+		"""The line that absorbed the 5-pcs loss (0.494 → 0.482) shows 42; the
+		untouched 0.158 line keeps its full 15. Sum equals the 57 balance.
+		Mirrors GE-MR-MF-26-67704 / Employee IR tvhgsi1gk1.
+		"""
+		by_qty = self._run_loss_scenario(
+			sb_rows=[
+				_sb_entry("SB-BIG", "SRE-D", self.BATCH, 0.482),
+				_sb_entry("SB-SML", "SRE-D", self.BATCH, 0.158),
+			]
+		)
+		self.assertEqual(by_qty[0.482]["available_to_receive_pcs"], 42)
+		self.assertEqual(by_qty[0.158]["available_to_receive_pcs"], 15)
+		self.assertEqual(
+			sum(r["available_to_receive_pcs"] for r in by_qty.values()), 57
+		)
+
+	def test_loss_split_is_order_independent(self):
+		"""Same scenario with the sibling lines iterated in the opposite order
+		must yield the identical 42 / 15 split (regression for the prior
+		order-dependent cursor)."""
+		by_qty = self._run_loss_scenario(
+			sb_rows=[
+				_sb_entry("SB-SML", "SRE-D", self.BATCH, 0.158),
+				_sb_entry("SB-BIG", "SRE-D", self.BATCH, 0.482),
+			]
+		)
+		self.assertEqual(by_qty[0.482]["available_to_receive_pcs"], 42)
+		self.assertEqual(by_qty[0.158]["available_to_receive_pcs"], 15)
+
+	def test_no_loss_clean_lines_keep_own_transfer_pcs(self):
+		"""GE-MR-MF-26-67712: two reserved lines of +00-0 share a batch with no
+		loss (transfers 24 @ 0.720 and 8 @ 0.173, balance 32). Each keeps its OWN
+		transfer pcs — 24 and 8 — never the 32 aggregate. A sibling single-line
+		item (+7.5-8, 24 @ 0.825) is unaffected.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			get_make_receive_entry_rows,
+		)
+
+		item_00 = "D-NT-RO-MH12A-+00-0"
+		item_78 = "D-NT-RO-MH12A-+7.5-8"
+		batch_00 = "GE2D075-DNTROMH12A0000-01"
+		batch_78 = "GE2D075-DNTROMH12A7508-01"
+
+		self._patch_popup(
+			sre_rows=[
+				_batch_sre(name="SRE-00", item_code=item_00),
+				_batch_sre(name="SRE-78", item_code=item_78),
+			],
+			mop_rows=[
+				# Balance rows FIRST per key (dedup keeps the first as latest).
+				_balance_row(item_00, batch_00, qty_batch=0.893, pcs_batch=32),
+				_transfer_row("T00-BIG", item_00, batch_00, 0.720, 24),
+				_transfer_row("T00-SML", item_00, batch_00, 0.173, 8),
+				_balance_row(item_78, batch_78, qty_batch=0.825, pcs_batch=24),
+				_transfer_row("T78", item_78, batch_78, 0.825, 24),
+			],
+			sb_rows=[
+				_sb_entry("SB00-BIG", "SRE-00", batch_00, 0.720),
+				_sb_entry("SB00-SML", "SRE-00", batch_00, 0.173),
+				_sb_entry("SB78", "SRE-78", batch_78, 0.825),
+			],
+		)
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
+		self.assertEqual(len(rows), 3)
+		by_qty = {round(r["available_to_receive_qty"], 3): r for r in rows}
+		self.assertEqual(by_qty[0.720]["available_to_receive_pcs"], 24)
+		self.assertEqual(by_qty[0.173]["available_to_receive_pcs"], 8)
+		self.assertEqual(by_qty[0.825]["available_to_receive_pcs"], 24)
+		# The two +00-0 lines sum to their 32 batch balance — no over-statement.
+		pcs_00 = [
+			r["available_to_receive_pcs"] for r in rows if r["item_code"] == item_00
+		]
+		self.assertEqual(sum(pcs_00), 32)
+
+
+class TestMopTransferPcsRowsScope(FrappeTestCase):
+	"""``get_mop_transfer_pcs_rows`` must scope by Manufacturing Work Order, not
+	a single MOP. The per-row transfer (pcs_change>0) is logged once at the
+	operation that first received the material; a downstream operation carries
+	only balance clones (pcs_change=0). MOP-scoping there finds nothing and the
+	popup falls back to the batch aggregate (the GE-MR-MF-26-67712 / MOP-O692V
+	bug). MWO is constant across operations, so the lookup must use it.
+	"""
+
+	def test_scopes_by_manufacturing_work_order(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+			get_mop_transfer_pcs_rows,
+		)
+
+		captured = {}
+
+		def _fake_get_all(doctype, filters=None, fields=None, order_by=None):
+			captured["doctype"] = doctype
+			captured["filters"] = filters
+			return []
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
+			side_effect=_fake_get_all,
+		):
+			get_mop_transfer_pcs_rows("MWO-XYZ")
+
+		self.assertEqual(captured["doctype"], "MOP Log")
+		self.assertEqual(captured["filters"].get("manufacturing_work_order"), "MWO-XYZ")
+		# Must NOT scope by a single MOP, and must keep only incoming transfers.
+		self.assertNotIn("manufacturing_operation", captured["filters"])
+		self.assertEqual(captured["filters"].get("pcs_change"), [">", 0])
+		self.assertEqual(captured["filters"].get("is_cancelled"), 0)

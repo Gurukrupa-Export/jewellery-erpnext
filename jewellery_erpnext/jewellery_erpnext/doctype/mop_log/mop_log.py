@@ -282,8 +282,11 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	mop_log.pcs_after_transaction_item_based = pcs_after_item
 	mop_log.pcs_after_transaction_batch_based = pcs_after_batch
 
-	mop_log.from_warehouse = row.get("s_warehouse")
-	mop_log.to_warehouse = row.get("t_warehouse")
+	# Stock Entry Detail rows use s_warehouse/t_warehouse; MOP-Log-shaped dicts
+	# (e.g. from update_new_mop_wtg) use from_warehouse/to_warehouse. Accept both
+	# so next-operation baseline rows keep their warehouses.
+	mop_log.from_warehouse = row.get("s_warehouse") or row.get("from_warehouse")
+	mop_log.to_warehouse = row.get("t_warehouse") or row.get("to_warehouse")
 	mop_log.voucher_type = doc.doctype
 	mop_log.voucher_no = doc.name
 	mop_log.manufacturing_work_order = mwo
@@ -367,6 +370,72 @@ def get_current_mop_balance_rows(
 		if key not in latest_by_key:
 			latest_by_key[key] = log
 	return list(reversed(list(latest_by_key.values())))
+
+
+def get_mop_transfer_pcs_rows(manufacturing_work_order, keys=None):
+	"""Return per-row incoming-transfer PCS rows for a MWO, grouped by item/batch.
+
+	Unlike :func:`get_current_mop_balance_rows` (which dedups to the single
+	latest *running balance* per ``(item_code, batch_no)``), this keeps EVERY
+	incoming Material Transfer row so the Make Receive Entry popup can show the
+	PCS that belongs to each individual reserved batch line instead of the
+	batch-wide aggregate. Each Material Transfer (WORK ORDER) row posts one MOP
+	Log row carrying that row's own ``pcs_change``/``qty_change``; receiving and
+	loss rows post ``pcs_change <= 0`` and are excluded here.
+
+	Scoped to the **Manufacturing Work Order**, not a single MOP: the original
+	per-row transfer (with ``pcs_change > 0``) is logged once at the operation
+	that first received the material (e.g. Diamond Bagging). When work hands off
+	to the next operation, MOP Log carries only a balance *clone* with
+	``pcs_change = 0`` (qty/pcs change attributable to a handoff is zero), so a
+	MOP-scoped query at a downstream operation would find no per-row rows and the
+	popup would fall back to the batch aggregate. The MWO is constant across all
+	its operations, so this recovers the original 24/8 style breakdown regardless
+	of which operation opens the popup.
+
+	Returns ``{(item_code, batch_no): [{"qty_change", "pcs_change", "name"}, ...]}``
+	ordered oldest-first within each key. Rows missing ``pcs_change``/``qty_change``
+	(e.g. unit-test fixtures that mock unrelated docs through the same patched
+	``frappe.db.get_all``) are skipped so callers degrade to their own fallback.
+	"""
+	filters = {
+		"manufacturing_work_order": manufacturing_work_order,
+		"is_cancelled": 0,
+		"pcs_change": [">", 0],
+	}
+	if keys:
+		item_codes = sorted({k[0] for k in keys if k and k[0]})
+		if not item_codes:
+			return {}
+		filters["item_code"] = ["in", item_codes]
+	rows = frappe.db.get_all(
+		"MOP Log",
+		filters=filters,
+		fields=[
+			"item_code",
+			"batch_no",
+			"qty_change",
+			"pcs_change",
+			"name",
+			"creation",
+		],
+		order_by="creation asc",
+	)
+	transfer_by_key: dict[tuple, list] = {}
+	for row in rows:
+		# Defensive: the unit tests patch frappe.db.get_all globally and feed
+		# back SRE dicts; those lack pcs_change/qty_change, so skip them.
+		if row.get("pcs_change") is None or row.get("qty_change") is None:
+			continue
+		key = (row.get("item_code"), row.get("batch_no"))
+		transfer_by_key.setdefault(key, []).append(
+			{
+				"qty_change": flt(row.get("qty_change")),
+				"pcs_change": cint(row.get("pcs_change")),
+				"name": row.get("name"),
+			}
+		)
+	return transfer_by_key
 
 
 def get_available_qty_pcs_for_mop_item(

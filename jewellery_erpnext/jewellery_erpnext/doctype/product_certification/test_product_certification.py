@@ -1,11 +1,17 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
+from unittest.mock import patch
+
 import frappe
 from frappe import ValidationError
 from frappe.tests.utils import FrappeTestCase
+from frappe.utils import cint
 
 from jewellery_erpnext.create_test_data import create_test_data
+from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification import (
+	get_stock_item_against_mwo,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.test_serial_number_creator import (
 	create_snc,
 )
@@ -26,6 +32,16 @@ class TestProductCertification(FrappeTestCase):
 		certification_issue.supplier = "Test_Supplier"
 		fetch_sn(certification_issue, serial_no.name)
 		certification_issue.save()
+
+		# Serial-no-only rows (no MWO/PMO) take diamond_pcs from the BOM total.
+		bom_diamond_pcs = frappe.db.get_value(
+			"BOM", certification_issue.product_details[0].bom, "total_diamond_pcs"
+		)
+		self.assertEqual(
+			cint(certification_issue.exploded_product_details[0].diamond_pcs),
+			cint(bom_diamond_pcs),
+		)
+
 		certification_issue.submit()
 
 		se = frappe.get_doc(
@@ -281,6 +297,74 @@ class TestProductCertification(FrappeTestCase):
 
 	def tearDown(self):
 		return super().tearDown()
+
+
+class TestHallmarkingStockEntryPcs(FrappeTestCase):
+	"""Unit coverage for pcs propagation in get_stock_item_against_mwo.
+
+	Kept separate from TestProductCertification so it does not depend on the
+	heavy create_test_data() fixture: the MWO/MOP/warehouse machinery is mocked
+	and only the pcs-assignment logic is exercised.
+	"""
+
+	def test_hallmarking_issue_se_carries_pcs_for_diamond(self):
+		"""Diamond/gemstone rows take their batch-based pcs from the MOP balance;
+		metal rows are left untouched (default 1)."""
+		se_doc = frappe.new_doc("Stock Entry")
+		se_doc.stock_entry_type = "Material Issue for Hallmarking"
+
+		doc = frappe._dict(type="Issue")
+		row = frappe._dict(
+			idx=1,
+			manufacturing_work_order="FAKE-MWO",
+			parent_manufacturing_order="FAKE-PMO",
+		)
+
+		balance_rows = [
+			{
+				"item_code": "D-NT-RO-TEST-01",
+				"qty_after_transaction_batch_based": 0.664,
+				"pcs_after_transaction_batch_based": 395,
+				"batch_no": "BATCH-D-01",
+			},
+			{
+				"item_code": "M-G-18KT-TEST",
+				"qty_after_transaction_batch_based": 5.211,
+				"pcs_after_transaction_batch_based": 0,
+				"batch_no": "BATCH-M-01",
+			},
+		]
+
+		orig_get_value = frappe.db.get_value
+
+		def fake_get_value(doctype, filters=None, fieldname=None, *args, **kwargs):
+			# Make latest_mop resolve so the balance loop runs; delegate every
+			# other lookup (incl. meta loading) to the real implementation.
+			if (
+				doctype == "Manufacturing Work Order"
+				and fieldname == "manufacturing_operation"
+			):
+				return "FAKE-MOP"
+			return orig_get_value(doctype, filters, fieldname, *args, **kwargs)
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.get_current_mop_balance_rows",
+			return_value=balance_rows,
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.product_certification."
+			"product_certification.resolve_and_validate",
+			return_value="Test - WH",
+		), patch.object(frappe.db, "get_value", side_effect=fake_get_value):
+			get_stock_item_against_mwo(se_doc, doc, row, "Source - WH", "Target - WH")
+
+		items_by_code = {it.item_code: it for it in se_doc.items}
+		self.assertIn("D-NT-RO-TEST-01", items_by_code)
+		self.assertIn("M-G-18KT-TEST", items_by_code)
+		# Diamond row carries the real stone count from the MOP balance.
+		self.assertEqual(cint(items_by_code["D-NT-RO-TEST-01"].pcs), 395)
+		# Metal row is left untouched by our code (no stone count attached); the
+		# DB default of "1" is applied later on save, not on append.
+		self.assertFalse(items_by_code["M-G-18KT-TEST"].get("pcs"))
 
 
 def serial_no_creation(self):

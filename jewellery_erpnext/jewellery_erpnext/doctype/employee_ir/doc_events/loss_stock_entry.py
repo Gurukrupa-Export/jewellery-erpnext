@@ -474,6 +474,9 @@ def _build_combined_loss_se(eir, pending):
 		qty = entry["qty"]
 		entry_mwo = entry["mwo"]
 		mop = getattr(row, "manufacturing_operation", None)
+		# Carry the loss row's pcs onto both SE rows; fall back to "1" so a
+		# missing value preserves the field default and stays valid (reqd).
+		pcs = getattr(row, "pcs", None) or "1"
 
 		# Consume row: source item out of SRE warehouse.
 		se.append(
@@ -482,6 +485,7 @@ def _build_combined_loss_se(eir, pending):
 				"item_code": row.item_code,
 				"qty": qty,
 				"transfer_qty": qty,
+				"pcs": pcs,
 				"s_warehouse": entry["s_warehouse"],
 				"t_warehouse": None,
 				"batch_no": row.batch_no,
@@ -502,6 +506,7 @@ def _build_combined_loss_se(eir, pending):
 				"item_code": entry["loss_item"],
 				"qty": qty,
 				"transfer_qty": qty,
+				"pcs": pcs,
 				"s_warehouse": None,
 				"t_warehouse": entry["t_warehouse"],
 				"uom": row.stock_uom or "Gram",
@@ -521,6 +526,36 @@ def _build_combined_loss_se(eir, pending):
 # ---------------------------------------------------------------------------
 # SRE reduction and restoration
 # ---------------------------------------------------------------------------
+
+
+def _reservation_voucher_qty(sre_doc, reserved_qty):
+	"""voucher_qty that lets reserved_qty clear validate_with_allowed_qty.
+
+	SO lines are routinely over-reserved by sibling MWO reservations, so
+	recreating even a reduced reservation trips ERPNext's allowed-qty guard.
+	Mirror stock_reservation_entry_for_mwo (doc_events/stock_entry.py): lift
+	voucher_qty to cover already-reserved qty + this entry's qty.
+	"""
+	base = flt(sre_doc.voucher_qty)
+	if (
+		sre_doc.voucher_type != "Sales Order"
+		or not sre_doc.voucher_no
+		or not sre_doc.voucher_detail_no
+	):
+		return base
+
+	from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+		get_sre_reserved_qty_for_voucher_detail_no,
+	)
+
+	total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
+		sre_doc.item_code,
+		"Sales Order",
+		sre_doc.voucher_no,
+		sre_doc.voucher_detail_no,
+		ignore_sre=sre_doc.name,
+	)
+	return max(base, flt(total_so_reserved) + flt(reserved_qty))
 
 
 def _reduce_sre(eir, row, sre_doc, loss_qty, table_name):
@@ -544,6 +579,7 @@ def _reduce_sre(eir, row, sre_doc, loss_qty, table_name):
 	new_sre.amended_from = None
 	new_sre.status = "Draft"
 	new_sre.reserved_qty = new_qty
+	new_sre.voucher_qty = _reservation_voucher_qty(sre_doc, new_qty)
 	new_sre.available_qty = max(flt(sre_doc.available_qty), new_qty)
 	new_sre.custom_replaced_sre_snapshot = json.dumps(
 		{
@@ -597,6 +633,7 @@ def _restore_reduced_sres(eir):
 		restored.amended_from = None
 		restored.status = "Draft"
 		restored.reserved_qty = orig_qty
+		restored.voucher_qty = _reservation_voucher_qty(sre_doc, orig_qty)
 		restored.available_qty = max(flt(sre_doc.available_qty), orig_qty)
 		restored.custom_replaced_sre_snapshot = None
 

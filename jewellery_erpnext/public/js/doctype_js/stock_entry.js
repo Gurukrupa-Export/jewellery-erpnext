@@ -675,6 +675,18 @@ frappe.ui.form.on("Stock Entry", {
 					if (r.message.status == "Not Started") {
 						frm.set_df_property("to_employee", "hidden", 1);
 						frm.set_df_property("employee", "hidden", 1);
+						frappe.db
+							.get_value(
+								"Warehouse",
+								{
+									department: r.message.department,
+									warehouse_type: "Manufacturing",
+								},
+								"name"
+							)
+							.then((k) => {
+								if (k.message) frm.set_value("to_warehouse", k.message.name);
+							});
 					} else {
 						frm.set_df_property("to_employee", "hidden", 0);
 						frm.set_df_property("employee", "hidden", 0);
