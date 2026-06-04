@@ -23,9 +23,9 @@ def validate(self, method):
 	# if self.sales_type != 'Branch Sales':
 	# create_new_bom(self)
 	create_new_bom1(self)
-	# gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
-	# if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
-	# 	tax(self)
+	gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
+	if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
+		tax(self)
 	
 	# self.calculate_taxes_and_totals()
 	validate_serial_number(self)
