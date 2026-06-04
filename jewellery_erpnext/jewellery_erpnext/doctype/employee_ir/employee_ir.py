@@ -58,6 +58,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_employee_ir_receive,
 	creste_mop_log_for_employee_ir,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+	_get_t_warehouse_from_logs,
+	_resolve_department_warehouse,
+)
 from jewellery_erpnext.utils import (
 	get_item_from_attribute_full,
 )
@@ -390,8 +394,32 @@ class EmployeeIR(Document):
 				# metadata (loss_weight, loss_source_row, loss_type) lives on
 				# the combined receive row itself, and MOPLog.validate updates
 				# Manufacturing Operation buckets exactly once.
+				# The receive audit clones land on the SOURCE MOP, which may
+				# belong to a different department than the EIR header. Resolve
+				# a guaranteed destination so to_warehouse is never blank:
+				# header department WH -> row MOP's department WH -> latest
+				# non-null to_warehouse already on the MWO's logs. Fallback only;
+				# we never block the submit (see _resolve_department_warehouse /
+				# _get_t_warehouse_from_logs in mop_eod_sync).
+				row_to_wh = department_wh
+				if not row_to_wh:
+					row_to_wh = _resolve_department_warehouse(
+						frappe.get_cached_doc(
+							"Manufacturing Operation", row.manufacturing_operation
+						)
+					) or _get_t_warehouse_from_logs(
+						frappe.get_all(
+							"MOP Log",
+							filters={
+								"manufacturing_work_order": row.manufacturing_work_order,
+								"is_cancelled": 0,
+							},
+							fields=["to_warehouse", "flow_index", "creation"],
+						)
+					)
+
 				create_mop_log_for_employee_ir_receive(
-					self, row, actor_wh, department_wh, stock_entry_name
+					self, row, actor_wh, row_to_wh, stock_entry_name
 				)
 
 				# update_new_mop_wtg now does both jobs in one pass:
@@ -404,7 +432,7 @@ class EmployeeIR(Document):
 					employee_ir_doc=self,
 					employee_ir_operation_row=row,
 					from_warehouse=actor_wh,
-					to_warehouse=department_wh,
+					to_warehouse=row_to_wh,
 				)
 			else:
 				for sre in frappe.db.get_all(

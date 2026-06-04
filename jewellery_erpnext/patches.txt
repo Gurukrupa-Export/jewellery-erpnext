@@ -13,3 +13,4 @@ jewellery_erpnext.patches.default_gemstone_item
 jewellery_erpnext.patches.add_mop_eod_sync_fields_and_indexes
 jewellery_erpnext.patches.add_eod_se_custom_fields
 jewellery_erpnext.patches.add_mop_eod_sync_log_indexes
+jewellery_erpnext.patches.backfill_employee_ir_mop_log_to_warehouse

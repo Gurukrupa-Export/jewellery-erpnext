@@ -30,7 +30,17 @@ def set_items_from_attribute(item_template, item_template_attribute):
 		# value (template attribute not present on the source item) to avoid
 		# ERPNext's "Attribute Value None is not valid" validation error.
 		variant.attributes = [a for a in variant.attributes if a.attribute_value]
-		variant.save()
+		# The loss/target template often defines fewer attributes than the source
+		# item, so get_variant()'s exact attribute-count match can miss an item that
+		# was already created (possibly within this same transaction). create_variant
+		# assigns a deterministic item_code, so look it up by name to stay idempotent
+		# and avoid a DuplicateEntryError.
+		if frappe.db.exists("Item", variant.item_code):
+			return frappe.get_doc("Item", variant.item_code)
+		try:
+			variant.save()
+		except frappe.DuplicateEntryError:
+			return frappe.get_doc("Item", variant.item_code)
 		return variant
 
 

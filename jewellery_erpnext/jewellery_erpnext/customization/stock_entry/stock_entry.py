@@ -55,6 +55,9 @@ class CustomStockEntry(StockEntry):
 	def update_batches(self):
 		if not self.auto_created:
 			rows_to_append = []
+			# shared across rows so the same batch is not double-allocated when
+			# multiple rows draw from the same item/warehouse (see get_fifo_batches)
+			consumed = {}
 			for row in self.items:
 				if (
 					row.get("department")
@@ -81,7 +84,7 @@ class CustomStockEntry(StockEntry):
 							temp_row = copy.deepcopy(row)
 							rows_to_append += [temp_row]
 						else:
-							rows_to_append += get_fifo_batches(self, row)
+							rows_to_append += get_fifo_batches(self, row, consumed)
 					elif row.t_warehouse:
 						rows_to_append += [row.__dict__]
 				else:

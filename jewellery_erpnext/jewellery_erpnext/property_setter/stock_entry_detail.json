@@ -1,0 +1,13 @@
+{
+    "Stock Entry Detail": [
+        {
+            "doctype_or_field": "DocField",
+            "doctype": "Stock Entry Detail",
+            "fieldname": "transfer_qty",
+            "row_name": null,
+            "property": "precision",
+            "value": "3",
+            "property_type": "Select"
+        }
+    ]
+}

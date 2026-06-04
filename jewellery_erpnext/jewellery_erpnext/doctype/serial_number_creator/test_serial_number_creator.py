@@ -2,6 +2,7 @@
 # See license.txt
 
 from decimal import ROUND_HALF_UP, Decimal
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -17,9 +18,13 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.test_m
 	create_pmo,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+	_sre_reserves_batch,
+	_warehouse_has_batch_stock,
 	calulate_id_wise_sum_up,
 	validate_qty,
 )
+
+_SNC_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator"
 
 
 class TestSerialNumberCreator(FrappeTestCase):
@@ -284,3 +289,80 @@ def create_snc(self):
 	mwo_serial_no.submit()
 
 	return frappe.get_last_doc("Serial Number Creator")
+
+
+class TestWarehouseHasBatchStockGuard(FrappeTestCase):
+	"""Regression for BatchNegativeStockError on Serial Number Creator submit.
+
+	When an item has several active Stock Reservation Entries in different
+	warehouses (e.g. 0.005 in Model Making WO and 5.203 in Waxing WO), the SRE
+	warehouse-capture loop must NOT adopt a warehouse where the batch has no
+	stock — otherwise the auto-created Manufacture Stock Entry consumes the batch
+	from the wrong warehouse and submit fails with BatchNegativeStockError.
+
+	These tests exercise the guard in isolation (no fixtures required).
+	"""
+
+	@patch(f"{_SNC_MODULE}.get_batch_qty")
+	def test_skips_warehouse_without_batch_stock(self, mock_get_batch_qty):
+		mock_get_batch_qty.return_value = 0.0
+		self.assertFalse(
+			_warehouse_has_batch_stock(
+				"M-G-18KT-75.4-Y", "KG2F054-MGL18754Y0-F874H", "Model Making WO - KGJPL"
+			)
+		)
+		# Must query *physical* stock (ignore_reserved_stock=True): the batch being
+		# consumed is itself reserved, and the negative-stock validator checks
+		# physical qty, so reserved stock must not be subtracted here.
+		mock_get_batch_qty.assert_called_once_with(
+			"KG2F054-MGL18754Y0-F874H",
+			"Model Making WO - KGJPL",
+			"M-G-18KT-75.4-Y",
+			ignore_reserved_stock=True,
+		)
+
+	@patch(f"{_SNC_MODULE}.get_batch_qty")
+	def test_keeps_warehouse_with_batch_stock(self, mock_get_batch_qty):
+		mock_get_batch_qty.return_value = 5.203
+		self.assertTrue(
+			_warehouse_has_batch_stock(
+				"M-G-18KT-75.4-Y", "KG2F054-MGL18754Y0-F874H", "Waxing WO - KGJPL"
+			)
+		)
+
+	@patch(f"{_SNC_MODULE}.get_batch_qty")
+	def test_no_batch_is_allowed_without_querying_stock(self, mock_get_batch_qty):
+		# A row without a batch has nothing to validate; do not query stock.
+		self.assertTrue(
+			_warehouse_has_batch_stock("M-G-18KT-75.4-Y", None, "Waxing WO - KGJPL")
+		)
+		mock_get_batch_qty.assert_not_called()
+
+
+class TestSREReservesBatch(FrappeTestCase):
+	"""Each SRE reserves a specific batch; PRIORITY 1 must only adopt/cancel the
+	SRE that reserves the current row's batch. Without this, the first batch row
+	swallows every SRE for the item and later batch rows fall back to a stale
+	warehouse -> BatchNegativeStockError (the -0.005 KG2F061 case).
+	"""
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_matches_when_batch_in_sre_children(self, mock_get_all):
+		mock_get_all.return_value = ["KG2F061-MGL18754Y0-24H0B"]
+		self.assertTrue(
+			_sre_reserves_batch("MAT-SRE-2026-79547", "KG2F061-MGL18754Y0-24H0B")
+		)
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_does_not_match_other_batch(self, mock_get_all):
+		# SRE 79554 reserves KG2F054, so it must NOT match the KG2F061 row.
+		mock_get_all.return_value = ["KG2F054-MGL18754Y0-F874H"]
+		self.assertFalse(
+			_sre_reserves_batch("MAT-SRE-2026-79554", "KG2F061-MGL18754Y0-24H0B")
+		)
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_qty_based_sre_matches_any_batch(self, mock_get_all):
+		# Qty-based SRE has no Serial and Batch Entry children -> item-level match.
+		mock_get_all.return_value = []
+		self.assertTrue(_sre_reserves_batch("MAT-SRE-QTY", "KG2F061-MGL18754Y0-24H0B"))
