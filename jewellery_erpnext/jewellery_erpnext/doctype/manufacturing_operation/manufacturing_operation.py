@@ -3486,7 +3486,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				workstation_name = ws.name
 				hour_rate = ws.hour_rate
 			else:
-				frappe.msgprint(f"No workstation found for employee: {employee}")
+				continue
+				# frappe.msgprint(f"No workstation found for employee: {employee}")
 
 			operating_cost = (hour_rate / 60) * total_minutes
 			# Set correct hour_rate in BOM Operation

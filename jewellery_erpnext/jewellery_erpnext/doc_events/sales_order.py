@@ -3750,6 +3750,7 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
             latest = None
 
         if not latest:
+            frappe.msgprint('No Diamond Price List')
             d.total_diamond_rate                  = 0
             d.diamond_rate_for_specified_quantity = 0
             continue
