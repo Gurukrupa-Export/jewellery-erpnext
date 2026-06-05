@@ -53,13 +53,16 @@ class SerialNumberCreator(Document):
 				update_new_serial_no(self)
 				break
 			except Exception as e:
-				is_lock_error = (
+				is_retryable_error = (
 					"deadlock" in str(e).lower()
 					or "lock wait timeout" in str(e).lower()
+					or "negative stock" in str(e).lower()
+					or "negativestockerror" in type(e).__name__.lower()
+					or "reserved for other transactions" in str(e).lower()
 				)
-				if is_lock_error and attempt < 2:
+				if is_retryable_error and attempt < 2:
 					frappe.logger().warning(
-						f"SNC {self.name}: Deadlock during submit, retrying attempt {attempt+2}"
+						f"SNC {self.name}: Transient error ({type(e).__name__}) during submit, retrying attempt {attempt+2}"
 					)
 					frappe.db.rollback()
 					time.sleep(0.5 * (attempt + 1))

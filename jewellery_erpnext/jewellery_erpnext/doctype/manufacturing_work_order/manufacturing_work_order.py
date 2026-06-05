@@ -222,7 +222,6 @@ class ManufacturingWorkOrder(Document):
 				"docstatus": ["!=", 2],
 				"department": ["!=", last_department],
 				"has_split_mwo": 0,
-				"is_finding_mwo": 0,
 			},
 			pluck="name",
 		)
