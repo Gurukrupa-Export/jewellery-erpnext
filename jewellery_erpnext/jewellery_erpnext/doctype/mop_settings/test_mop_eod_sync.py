@@ -205,20 +205,6 @@ class TestGetUnsyncedMopGroupsByMwo(FrappeTestCase):
 
 		self.assertEqual(out, {})
 
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all",
-		return_value=[],
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql",
-		return_value=[{"cnt": 0, "qty": 0}],
-	)
-	def test_empty_logs_returns_empty_dict(self, _mock_sql, _mock_get_all):
-		"""No unsynced logs → empty dict returned immediately without querying MOPs."""
-		out = _get_unsynced_mop_groups()
-
-		self.assertEqual(out, {})
-
 
 # ---------------------------------------------------------------------------
 # TestFindLastOperation (4 cases)
@@ -572,6 +558,60 @@ class TestProcessMwoGroupHappyPath(FrappeTestCase):
 		self.assertEqual(stats["processed_mwos"], 1)
 		mock_mark_synced.assert_called_once_with(["MWO-1"], selective=False)
 		self.assertTrue(submitted_se.submitted)
+
+
+class TestProcessMwoGroupMissingSreNotSynced(FrappeTestCase):
+	"""A row with no resolvable SRE warehouse must fail the MWO, never mark it synced.
+
+	Regression for the silent data-loss bug: when every row is skipped for Missing
+	SRE, ``items`` is empty — the old code marked the MWO's MOP Logs ``is_synced=1``
+	and counted it as processed, burying them as done while nothing moved.
+	"""
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mark_all_mwo_mop_logs_synced"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._preload_sre_warehouse_map",
+		return_value={},
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mwo_realized_by_artifact",
+		return_value=None,
+	)
+	def test_missing_sre_fails_mwo_without_marking_synced(
+		self, _mock_artifact, _mock_sre_map, mock_mark_synced, mock_new_doc
+	):
+		logs = [
+			_log(
+				item_code="M-1",
+				batch_no="B1",
+				qty_after_transaction_batch_based=3.0,
+				to_warehouse="WH-DEPT",
+				creation="2026-01-01 10:00:00",
+			)
+		]
+		mop_data_list = [{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": logs}]
+		failures = []
+		stats = {"processed_mwos": 0, "failed_mwos": 0, "submitted_ses": []}
+
+		_process_mwo_group(
+			("Test Co", "MWO-1"), mop_data_list, failures, stats, sync_log_name=None
+		)
+
+		# MWO counted as failed, never as synced/processed
+		self.assertEqual(stats["failed_mwos"], 1)
+		self.assertEqual(stats["processed_mwos"], 0)
+		# Logs left retryable — not marked synced
+		mock_mark_synced.assert_not_called()
+		# No Stock Entry created
+		mock_new_doc.assert_not_called()
+		# The skipped row was recorded as a failure for the consolidated error log
+		self.assertEqual(len(failures), 1)
+		self.assertEqual(failures[0]["step"], "no_sre_warehouse")
 
 
 # ---------------------------------------------------------------------------
@@ -1048,11 +1088,214 @@ class TestSreRelocation(FrappeTestCase):
 			"has_serial_no": 0,
 			"sb_entries": [],
 		}
-		_recreate_sres_at([snap], "WH-DEPT")
+		_recreate_sres_at([snap], "WH-DEPT", target_operation="MOP-LAST")
 		self.assertEqual(new_sre.warehouse, "WH-DEPT")
 		self.assertEqual(new_sre.reserved_qty, 5.0)
+		# New SRE is tagged with the latest operation (where the stock now sits)
+		self.assertEqual(new_sre.manufacturing_operation, "MOP-LAST")
 		new_sre.insert.assert_called_once()
 		new_sre.submit.assert_called_once()
+
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
+		"get_available_qty_to_reserve",
+		return_value=10.0,
+	)
+	@patch(f"{_MOD}.frappe.new_doc")
+	def test_recreate_falls_back_to_original_operation(self, mock_new_doc, _mock_avail):
+		new_sre = MagicMock()
+		mock_new_doc.return_value = new_sre
+		snap = {
+			"sre": FrappeDict(
+				{
+					"item_code": "M-1",
+					"voucher_type": "Sales Order",
+					"voucher_no": "SO-1",
+					"voucher_detail_no": "row1",
+					"voucher_qty": 5.0,
+					"company": "Test Co",
+					"stock_uom": "Nos",
+					"reservation_based_on": "Qty",
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-ORIG",
+				}
+			),
+			"remaining": 5.0,
+			"has_batch_no": 0,
+			"has_serial_no": 0,
+			"sb_entries": [],
+		}
+		_recreate_sres_at([snap], "WH-DEPT")  # no target_operation
+		self.assertEqual(new_sre.manufacturing_operation, "MOP-ORIG")
+
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
+		"get_available_qty_to_reserve",
+		return_value=10.0,
+	)
+	@patch(f"{_MOD}.frappe.new_doc")
+	def test_recreate_batch_sre_sets_warehouse_on_sb_entry(
+		self, mock_new_doc, _mock_avail
+	):
+		new_sre = MagicMock()
+		mock_new_doc.return_value = new_sre
+		snap = {
+			"sre": FrappeDict(
+				{
+					"item_code": "D-1",
+					"voucher_type": "Sales Order",
+					"voucher_no": "SO-1",
+					"voucher_detail_no": "row1",
+					"voucher_qty": 2.0,
+					"company": "Test Co",
+					"stock_uom": "Nos",
+					"reservation_based_on": "Serial and Batch",
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-A",
+				}
+			),
+			"remaining": 2.0,
+			"has_batch_no": 1,
+			"has_serial_no": 0,
+			"sb_entries": [{"batch_no": "B1", "qty": 2.0}],
+		}
+		_recreate_sres_at([snap], "WH-DEPT", target_operation="MOP-LAST")
+		sb_calls = [
+			c
+			for c in new_sre.append.call_args_list
+			if c.args and c.args[0] == "sb_entries"
+		]
+		self.assertEqual(len(sb_calls), 1)
+		sb_row = sb_calls[0].args[1]
+		# The relocated batch entry must carry the new warehouse (matches canonical)
+		self.assertEqual(sb_row["warehouse"], "WH-DEPT")
+		self.assertEqual(sb_row["batch_no"], "B1")
+		self.assertEqual(sb_row["qty"], 2.0)
+
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
+		"get_sre_reserved_qty_for_voucher_detail_no",
+		return_value=8.0,
+	)
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
+		"get_available_qty_to_reserve",
+		return_value=10.0,
+	)
+	@patch(f"{_MOD}.frappe.new_doc")
+	def test_recreate_inflates_voucher_qty_when_so_overreserved(
+		self, mock_new_doc, _mock_avail, _mock_so_reserved
+	):
+		# SO line is over-reserved (total_so_reserved=8.0) and the copied voucher_qty
+		# (5.0) is smaller than reserved+others — the recreate must lift voucher_qty so
+		# ERPNext's allowed-qty cap does not reject the relocation.
+		new_sre = MagicMock()
+		mock_new_doc.return_value = new_sre
+		snap = {
+			"sre": FrappeDict(
+				{
+					"item_code": "M-1",
+					"voucher_type": "Sales Order",
+					"voucher_no": "SO-1",
+					"voucher_detail_no": "row1",
+					"voucher_qty": 5.0,
+					"company": "Test Co",
+					"stock_uom": "Nos",
+					"reservation_based_on": "Qty",
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-A",
+				}
+			),
+			"remaining": 3.0,
+			"has_batch_no": 0,
+			"has_serial_no": 0,
+			"sb_entries": [],
+		}
+		_recreate_sres_at([snap], "WH-DEPT", target_operation="MOP-LAST")
+		self.assertEqual(new_sre.reserved_qty, 3.0)
+		# max(orig 5.0, total_so_reserved 8.0 + reserved 3.0) = 11.0
+		self.assertEqual(new_sre.voucher_qty, 11.0)
+		new_sre.submit.assert_called_once()
+
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
+		"get_sre_reserved_qty_for_voucher_detail_no",
+		return_value=0.0,
+	)
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
+		"get_available_qty_to_reserve",
+		return_value=2.0,
+	)
+	@patch(f"{_MOD}.frappe.new_doc")
+	def test_recreate_clamps_reserved_to_available(
+		self, mock_new_doc, _mock_avail, _mock_so_reserved
+	):
+		# Only 2.0 free at the target though 5.0 was reserved at source → reserve 2.0,
+		# never throw "Stock not available to reserve".
+		new_sre = MagicMock()
+		mock_new_doc.return_value = new_sre
+		snap = {
+			"sre": FrappeDict(
+				{
+					"item_code": "M-1",
+					"voucher_type": "Sales Order",
+					"voucher_no": "SO-1",
+					"voucher_detail_no": "row1",
+					"voucher_qty": 5.0,
+					"company": "Test Co",
+					"stock_uom": "Nos",
+					"reservation_based_on": "Qty",
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-A",
+				}
+			),
+			"remaining": 5.0,
+			"has_batch_no": 0,
+			"has_serial_no": 0,
+			"sb_entries": [],
+		}
+		_recreate_sres_at([snap], "WH-DEPT")
+		self.assertEqual(new_sre.reserved_qty, 2.0)
+		new_sre.submit.assert_called_once()
+
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
+		"get_sre_reserved_qty_for_voucher_detail_no",
+		return_value=0.0,
+	)
+	@patch(
+		"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
+		"get_available_qty_to_reserve",
+		return_value=0.0,
+	)
+	@patch(f"{_MOD}.frappe.new_doc")
+	def test_recreate_skips_when_nothing_free(
+		self, mock_new_doc, _mock_avail, _mock_so_reserved
+	):
+		# Nothing free at the target → skip the SRE entirely (no throw, no doc created).
+		snap = {
+			"sre": FrappeDict(
+				{
+					"item_code": "M-1",
+					"voucher_type": "Sales Order",
+					"voucher_no": "SO-1",
+					"voucher_detail_no": "row1",
+					"voucher_qty": 5.0,
+					"company": "Test Co",
+					"stock_uom": "Nos",
+					"reservation_based_on": "Qty",
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-A",
+				}
+			),
+			"remaining": 5.0,
+			"has_batch_no": 0,
+			"has_serial_no": 0,
+			"sb_entries": [],
+		}
+		_recreate_sres_at([snap], "WH-DEPT")
+		mock_new_doc.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

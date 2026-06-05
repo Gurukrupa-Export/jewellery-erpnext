@@ -185,13 +185,43 @@ def validate_ir(self):
 
 
 def validate_pcs(self):
-	pcs_data = {}
+	# A single Material Request Item's qty can be split across several batch
+	# rows (see get_fifo_batches). The MR Item's PCS is the authoritative total
+	# for that item; it must be carried by exactly one row's worth of count so
+	# the per-item PCS is not multiplied by the number of batches.
+	#
+	# Historically every row after the first was zeroed — but a batch row that
+	# physically holds stock should never read 0 PCS. So each extra batch row
+	# now defaults to 1, and the first row absorbs the deduction. The per-item
+	# total is preserved: e.g. 71 split across two batches → 70 + 1 (not 71 + 0).
+	#
+	# The total is read from the MR Item (not the rows) so this stays idempotent
+	# when re-run on already-split rows — e.g. the MOP Stock Entry is a copy of
+	# the reserve Stock Entry and runs before_validate again.
+	rows_by_mri = {}
 	for row in self.items:
 		if row.material_request_item:
-			if pcs_data.get(row.material_request_item):
-				row.pcs = 0
-			else:
-				pcs_data[row.material_request_item] = row.pcs
+			rows_by_mri.setdefault(row.material_request_item, []).append(row)
+
+	for mri, rows in rows_by_mri.items():
+		if len(rows) <= 1:
+			continue
+		total = cint(frappe.db.get_value("Material Request Item", mri, "pcs"))
+		if total <= 0:
+			# No authoritative total — leave the rows untouched.
+			continue
+		first, extras = rows[0], rows[1:]
+		if total > len(extras):
+			# Enough to keep at least 1 on every row.
+			for r in extras:
+				r.pcs = 1
+			first.pcs = total - len(extras)
+		else:
+			# Not enough PCS to spread one-each; keep the whole count on the
+			# first row (prior behaviour) rather than driving it below 1.
+			for r in extras:
+				r.pcs = 0
+			first.pcs = total
 	self.flags.ignore_mandatory = True
 
 
@@ -1488,7 +1518,7 @@ def group_se_items_and_update_mop_items(doc, method):
 	doc.set("custom_mop_items", [])
 
 	for row in doc.items:
-		mop_row = copy.deepcopy(row.__dict__)
+		mop_row = copy.deepcopy(row.as_dict())
 		mop_row["name"] = None
 		mop_row["idx"] = None
 

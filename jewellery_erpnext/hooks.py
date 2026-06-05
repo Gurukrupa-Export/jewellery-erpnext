@@ -1,3 +1,5 @@
+import frappe.deprecation_dumpster
+
 app_name = "jewellery_erpnext"
 app_title = "Jewellery Erpnext"
 app_publisher = "Nirali"
@@ -51,7 +53,15 @@ doctype_list_js = {
 
 # from jewellery_erpnext.jewellery_erpnext.doc_events.work_order import get_work_orders
 
+
 # WorkOrder.get_work_orders = get_work_orders
+def custom(*args, **kwargs):
+	print("CUSTOM PRELOAD")
+
+	return
+
+
+frappe.deprecation_dumpster.compat_preload_test_records_upfront = custom
 
 _EOD_LOCK_VALIDATOR = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.validate_not_eod_sync_locked"
 

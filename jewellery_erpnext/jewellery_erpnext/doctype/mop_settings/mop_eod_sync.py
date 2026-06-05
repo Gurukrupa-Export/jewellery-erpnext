@@ -413,10 +413,20 @@ def _process_mwo_group(
 				},
 			)
 
+	# Any unresolved (Missing SRE) row means the MWO's stock can't be fully
+	# transferred. Do NOT mark its MOP Logs synced — that buries them as done
+	# (is_synced=1 excludes them from future runs) while nothing moved. Count the
+	# MWO as failed so it stays retryable after the SRE is fixed. Per-row failures
+	# and child "Failed" rows were already recorded in the skipped loop above.
+	if skipped_rows:
+		stats["failed_mwos"] += 1
+		return
+
 	if not items:
+		# Genuine no-op: every row was same-warehouse or non-positive qty — nothing
+		# to move. Safe to mark the MWO's logs synced.
 		frappe.logger().info(
-			"MOP EOD Sync MWO %s: no SE rows to create (same WH or all SRE missing); "
-			"marking logs synced.",
+			"MOP EOD Sync MWO %s: no SE rows to create (same WH); marking logs synced.",
 			mwo,
 		)
 		_mark_all_mwo_mop_logs_synced([mwo], selective=selective)
@@ -517,7 +527,7 @@ def _process_mwo_group(
 		sre_snapshots = _snapshot_mwo_sres_for_relocation(mwo, items, t_warehouse)
 		_cancel_sre_snapshots(sre_snapshots)
 		frappe.get_doc("Stock Entry", draft_se_name).submit()
-		_recreate_sres_at(sre_snapshots, t_warehouse)
+		_recreate_sres_at(sre_snapshots, t_warehouse, target_operation=last_mop_name)
 		_mark_all_mwo_mop_logs_synced([mwo], selective=selective)
 		_stamp_last_eod_sync(mop_data_list)
 		frappe.db.release_savepoint("eod_submit_phase")
@@ -1141,12 +1151,19 @@ def _cancel_sre_snapshots(snapshots):
 			doc.cancel()
 
 
-def _recreate_sres_at(snapshots, new_warehouse):
-	"""Recreate the snapshotted SREs at ``new_warehouse`` (same voucher/qty/batches)."""
+def _recreate_sres_at(snapshots, new_warehouse, target_operation=None):
+	"""Recreate the snapshotted SREs at ``new_warehouse`` (same voucher/qty/batches).
+
+	The new SRE is tagged with ``target_operation`` — the latest operation, whose
+	warehouse the stock was just moved to — so downstream processes (e.g. Make
+	Receive Entry, which reads MWO-scoped active SREs) see the reservation against
+	the current operation. Falls back to the original SRE's operation if not given.
+	"""
 	if not snapshots:
 		return
 	from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 		get_available_qty_to_reserve,
+		get_sre_reserved_qty_for_voucher_detail_no,
 	)
 
 	for snap in snapshots:
@@ -1154,31 +1171,71 @@ def _recreate_sres_at(snapshots, new_warehouse):
 		# Batch-tracked SRE with no remaining batch qty → nothing to re-reserve.
 		if snap["has_batch_no"] and not snap["sb_entries"]:
 			continue
+
+		# Clamp to what is actually free at the target, mirroring
+		# stock_reservation_entry_for_mwo. The stock was just transferred here, but part
+		# of a batch may already be reserved — never reserve more than is free, and skip
+		# entirely when nothing is free (rather than letting ERPNext throw).
 		if snap["sb_entries"]:
-			available = get_available_qty_to_reserve(
-				sre.item_code, new_warehouse, batch_no=snap["sb_entries"][0]["batch_no"]
-			)
+			clamped_sb = []
+			for sb in snap["sb_entries"]:
+				free = get_available_qty_to_reserve(
+					sre.item_code, new_warehouse, batch_no=sb["batch_no"]
+				)
+				qty = min(flt(sb["qty"]), flt(free))
+				if qty > 1e-9:
+					clamped_sb.append({"batch_no": sb["batch_no"], "qty": qty})
+			if not clamped_sb:
+				continue
+			reserved_qty = sum(flt(s["qty"]) for s in clamped_sb)
+			available = reserved_qty
 		else:
+			clamped_sb = None
 			available = get_available_qty_to_reserve(sre.item_code, new_warehouse)
+			reserved_qty = min(flt(snap["remaining"]), flt(available))
+			if reserved_qty <= 1e-9:
+				continue
+
+		# Lift the Sales Order demand cap exactly like the original creator: the SO line
+		# is intentionally over-reserved across components, so size voucher_qty to cover
+		# the current reservation (EIR-injection pattern in stock_reservation_entry_for_mwo).
+		# The source SRE was already cancelled, so it is excluded from this global sum.
+		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
+			sre.item_code, sre.voucher_type, sre.voucher_no, sre.voucher_detail_no
+		)
+		effective_voucher_qty = max(
+			flt(sre.voucher_qty), flt(total_so_reserved) + reserved_qty
+		)
 
 		new_sre = frappe.new_doc("Stock Reservation Entry")
 		new_sre.voucher_type = sre.voucher_type
 		new_sre.voucher_no = sre.voucher_no
 		new_sre.voucher_detail_no = sre.voucher_detail_no
-		new_sre.voucher_qty = sre.voucher_qty
+		new_sre.voucher_qty = effective_voucher_qty
 		new_sre.item_code = sre.item_code
 		new_sre.warehouse = new_warehouse
-		new_sre.reserved_qty = snap["remaining"]
+		new_sre.reserved_qty = reserved_qty
 		new_sre.company = sre.company
 		new_sre.stock_uom = sre.stock_uom
 		new_sre.reservation_based_on = sre.reservation_based_on
 		new_sre.has_batch_no = snap["has_batch_no"]
 		new_sre.has_serial_no = snap["has_serial_no"]
-		new_sre.available_qty = max(flt(available), snap["remaining"])
+		new_sre.available_qty = max(flt(available), reserved_qty)
 		new_sre.manufacturing_work_order = sre.manufacturing_work_order
-		new_sre.manufacturing_operation = sre.manufacturing_operation
-		for sb in snap["sb_entries"]:
-			new_sre.append("sb_entries", {"batch_no": sb["batch_no"], "qty": sb["qty"]})
+		new_sre.manufacturing_operation = (
+			target_operation or sre.manufacturing_operation
+		)
+		for sb in clamped_sb or []:
+			# Mirror stock_reservation_entry_for_mwo: the batch entry must carry the
+			# (new) warehouse so the reservation binds to the relocated stock.
+			new_sre.append(
+				"sb_entries",
+				{
+					"batch_no": sb["batch_no"],
+					"warehouse": new_warehouse,
+					"qty": sb["qty"],
+				},
+			)
 		new_sre.flags.ignore_permissions = True
 		new_sre.insert(ignore_links=1)
 		new_sre.submit()
@@ -1269,9 +1326,11 @@ def _mark_all_mwo_mop_logs_synced(manufacturing_work_orders, selective=False):
 		},
 	)
 
+
 # ---------------------------------------------------------------------------
 # MOP Log sync-marking (today-only safety net)
 # ---------------------------------------------------------------------------
+
 
 def _mwo_realized_by_artifact(mwo):
 	"""Return the submitted Manufacture Stock Entry name for this MWO, else None.

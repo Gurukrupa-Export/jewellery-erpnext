@@ -182,6 +182,44 @@ class SerialNumberCreator(Document):
 			)
 
 
+def _warehouse_has_batch_stock(item_code, batch_no, warehouse):
+	"""Return True if ``batch_no`` of ``item_code`` physically has stock in ``warehouse``.
+
+	Used when adopting a warehouse from a Stock Reservation Entry / Product
+	Certification Receive. Multiple reservations can exist for the same item in
+	different warehouses, and a later Stock Entry may have physically moved the
+	batch elsewhere. Adopting a warehouse where the batch has no stock causes
+	``BatchNegativeStockError`` when the auto-created Manufacture entry is
+	submitted. A row without a batch has nothing to validate, so it is allowed.
+
+	``ignore_reserved_stock=True`` is required: the negative-stock validator
+	checks *physical* batch qty, while ``get_batch_qty`` subtracts reserved stock
+	by default — and the batch we are about to consume is itself reserved by the
+	SRE being processed, so the default would report 0 for the correct warehouse.
+	"""
+	if not batch_no:
+		return True
+	return (
+		flt(get_batch_qty(batch_no, warehouse, item_code, ignore_reserved_stock=True))
+		> 0
+	)
+
+
+def _sre_reserves_batch(sre_name, batch_no):
+	"""Whether the Stock Reservation Entry reserves ``batch_no``.
+
+	SREs reserve specific (item, batch) lots in their Serial and Batch Entry
+	children. A Qty-based SRE has no batch children and matches any batch
+	(item-level reservation, the original behaviour).
+	"""
+	sre_batches = frappe.get_all(
+		"Serial and Batch Entry",
+		filters={"parent": sre_name, "parenttype": "Stock Reservation Entry"},
+		pluck="batch_no",
+	)
+	return (not sre_batches) or (batch_no in sre_batches)
+
+
 def to_prepare_data_for_make_mnf_stock_entry(self):
 	"""Use source_table (batch-wise) for stock entry creation.
 
@@ -254,13 +292,28 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 					pluck="name",
 				)
 
-				# Deduplicate and cancel SREs
+				row_batch = row.get("batch_no")
+				sre_matched = False
+				# SREs are created per (item, batch, warehouse); an item consumed from
+				# several batches has one SRE per batch. Process only the SRE that
+				# reserves THIS row's batch so each batch row adopts its own
+				# reservation warehouse + reserved qty (and cancels only its own SRE).
+				# Previously the first row swallowed/cancelled every SRE for the item,
+				# leaving later batch rows on a stale source warehouse with no stock
+				# -> BatchNegativeStockError. Matching by batch also makes resolution
+				# order-independent.
 				for sre_name in set(linked_sres):
+					if row_batch and not _sre_reserves_batch(sre_name, row_batch):
+						continue
+					sre_matched = True
 					frappe.clear_document_cache("Bin")
 					sre_doc = frappe.get_doc("Stock Reservation Entry", sre_name)
 
-					# Capture warehouse from SRE
-					if sre_doc.warehouse:
+					# Adopt the SRE warehouse only if the batch physically has stock
+					# there (it may have been moved since the reservation).
+					if sre_doc.warehouse and _warehouse_has_batch_stock(
+						row["item_code"], row_batch, sre_doc.warehouse
+					):
 						row["s_warehouse"] = sre_doc.warehouse
 
 					sre_reserved_qty_total += flt(sre_doc.reserved_qty)
@@ -269,7 +322,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 					frappe.clear_document_cache("Bin")
 
 				# Persist the corrected SRE warehouse back to source_table
-				if linked_sres:
+				if sre_matched:
 					for st_row in self.source_table:
 						if st_row.row_material == row[
 							"item_code"
@@ -280,7 +333,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 								row["s_warehouse"],
 							)
 
-				if not linked_sres:
+				if not sre_matched:
 					# ── PRIORITY 2: Product Certification Receive ──
 					pc_receive_data = frappe.db.sql(
 						"""
@@ -974,7 +1027,12 @@ def _get_source_raw_materials(mop_name, snc_doc):
 		batch_no = r.get("batch_no")
 		qty = flt(r.get("qty_after_transaction_batch_based") or 0)
 		pcs = flt(r.get("pcs_after_transaction_batch_based") or 0)
-		if qty <= 0 and pcs <= 0:
+		# Skip rows with no weight. A real consumable raw material always carries a
+		# weight (gold in grams, diamonds in carats). A qty-0 / pcs>0 balance row is
+		# a tracking artifact — e.g. a finished-gold finding piece that flowed
+		# through an operation as 1 pcs with no weight of its own — and must not
+		# become a source/FG line (it would produce a zero-qty Stock Entry item).
+		if qty <= 0:
 			continue
 
 		uom = frappe.db.get_value("Item", item_code, "stock_uom") if item_code else None
