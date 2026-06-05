@@ -23,9 +23,9 @@ def validate(self, method):
 	# if self.sales_type != 'Branch Sales':
 	# create_new_bom(self)
 	create_new_bom1(self)
-	# gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
-	# if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
-	# 	tax(self)
+	gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
+	if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
+		tax(self)
 	
 	# self.calculate_taxes_and_totals()
 	validate_serial_number(self)
@@ -3750,6 +3750,7 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
             latest = None
 
         if not latest:
+            frappe.msgprint(f'No Diamond Pricelist for {d.quality}')
             d.total_diamond_rate                  = 0
             d.diamond_rate_for_specified_quantity = 0
             continue
@@ -5781,6 +5782,8 @@ def validate_item_dharm(self):
 								}
 							aggregated_hallmarking_items[key]["amount"] += bom_doc.hallmarking_amount
 							aggregated_hallmarking_items[key]["qty"]+=1
+							if bom_doc.item_category=='Earrings':
+								aggregated_hallmarking_items[key]["qty"]+=1
 							tax_rate_decimal = aggregated_hallmarking_items[key]["tax_rate"] / 100
 							aggregated_hallmarking_items[key]["tax_amount"] += bom_doc.hallmarking_amount * tax_rate_decimal
 
