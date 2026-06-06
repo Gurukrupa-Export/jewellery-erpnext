@@ -500,25 +500,26 @@ def _build_combined_loss_se(eir, pending):
 			},
 		)
 		# Produce row: loss item into target (scrap) warehouse.
-		se.append(
-			"items",
-			{
-				"item_code": entry["loss_item"],
-				"qty": qty,
-				"transfer_qty": qty,
-				"pcs": pcs,
-				"s_warehouse": None,
-				"t_warehouse": entry["t_warehouse"],
-				"uom": row.stock_uom or "Gram",
-				"stock_uom": row.stock_uom or "Gram",
-				"conversion_factor": 1,
-				"is_finished_item": 1,
-				"set_basic_rate_manually": 1,
-				"manufacturing_operation": mop,
-				"custom_manufacturing_work_order": entry_mwo,
-				"use_serial_batch_fields": 1,
-			},
-		)
+		produce_row = {
+			"item_code": entry["loss_item"],
+			"qty": qty,
+			"transfer_qty": qty,
+			"s_warehouse": None,
+			"t_warehouse": entry["t_warehouse"],
+			"uom": row.stock_uom or "Gram",
+			"stock_uom": row.stock_uom or "Gram",
+			"conversion_factor": 1,
+			"is_finished_item": 1,
+			"set_basic_rate_manually": 1,
+			"manufacturing_operation": mop,
+			"custom_manufacturing_work_order": entry_mwo,
+			"use_serial_batch_fields": 1,
+		}
+		if getattr(row, "inventory_type", None):
+			produce_row["inventory_type"] = row.inventory_type
+		if getattr(row, "customer", None):
+			produce_row["customer"] = row.customer
+		se.append("items", produce_row)
 
 	return se
 

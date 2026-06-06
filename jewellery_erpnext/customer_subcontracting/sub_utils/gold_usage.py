@@ -85,16 +85,13 @@ def classify_gold_usage(doc, item):
 
 	# CASE 5 ==> Regular + Different Customer Gold
 	if mwo_type == "Regular" and ownership == "Customer Gold":
-		if order_customer == item_customer:
-			frappe.throw(
-				f"Same customer gold cannot be used in Regular Order. "
-				f"Order Customer: {order_customer} "
-				f"Gold Customer: {item_customer}"
-			)
-
 		return {
 			"mwo_type": "Regular",
-			"usage_type": "Different Customer Gold",
+			"usage_type": (
+				"Same Customer Gold"
+				if order_customer == item_customer
+				else "Different Customer Gold"
+			),
 			"used_as_fallback": 1,
 			"settlement_required": 1,
 			"settlement_status": "Pending",
