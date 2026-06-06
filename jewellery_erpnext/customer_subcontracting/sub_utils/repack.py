@@ -150,7 +150,7 @@ def create_company_gold_repack_automation(doc):
 			"settlement_required": 1,
 			"settlement_status": ["in", ["Pending", "Partially Settled"]],
 			"mwo_type": "Regular",
-			"usage_type": "Different Customer Gold",
+			"usage_type": ["in", ["Different Customer Gold", "Same Customer Gold"]],
 		},
 		fields=["*"],
 		order_by="creation asc",
@@ -167,7 +167,7 @@ def create_company_gold_repack_automation(doc):
 
 
 def is_gold_item(item_code):
-	return isinstance(item_code, str) and item_code.startswith("M-")
+	return isinstance(item_code, str) and item_code.startswith("M-G-")
 
 
 def process_repack_settlement(
@@ -409,11 +409,6 @@ def process_pending_repack_for_mwo(doc_name):
 	if not customer:
 		return
 
-	mwo_type = get_mwo_type_from_pmo(doc.manufacturing_order)
-
-	if mwo_type != "Subcontracting":
-		frappe.throw("Create Repack is allowed only for Subcontracting Orders.")
-
 	pending_logs = frappe.get_all(
 		"Subcontracting Log",
 		filters={
@@ -428,7 +423,12 @@ def process_pending_repack_for_mwo(doc_name):
 	if not pending_logs:
 		return
 
-	gold_sources = get_flat_available_gold(customer)
+	mwo_type = get_mwo_type_from_pmo(doc.manufacturing_order)
+
+	if mwo_type == "Subcontracting":
+		gold_sources = get_flat_available_gold(customer)
+	else:
+		gold_sources = flatten_gold_sources(get_company_available_gold())
 
 	if not gold_sources:
 		frappe.throw(f"Customer Gold Not Available. Customer : {customer}")
@@ -662,6 +662,7 @@ def get_company_available_gold():
 		filters={
 			"custom_inventory_type": ["!=", "Customer Goods"],
 			"disabled": 0,
+			"item": ["like", "M-G-%"],
 		},
 		fields=["name", "item"],
 	)
