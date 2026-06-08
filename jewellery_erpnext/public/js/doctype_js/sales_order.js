@@ -2086,7 +2086,7 @@ let set_edit_bom_details = (
 			// 	((doc.total_diamond_weight_in_gms) || 0) +
 			// 	((doc.total_gemstone_weight_in_gms) || 0)).toFixed(2)
 			// );
-			dialog.set_value("gross_weight", doc.gross_weight);
+			dialog.set_value("gross_weight", flt(doc.gross_weight, 2));
 			// dialog.set_df_property("gross_weight", "precision", 2);
 			dialog.set_value("finding_weight", doc.total_finding_weight_per_gram || 0);
 			// Set diamond_weight with dynamic precision
