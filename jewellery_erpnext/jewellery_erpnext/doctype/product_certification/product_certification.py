@@ -28,6 +28,21 @@ class ProductCertification(Document):
 		):
 			frappe.throw(_("Please set warehouse for selected Department"))
 
+		if self.department and self.company:
+			dept_company = frappe.db.get_value("Department", self.department, "company")
+			if dept_company and dept_company != self.company:
+				frappe.throw(
+					_(
+						"Department {0} belongs to Company {1}, not {2}. "
+						"Please select a department that belongs to {2}."
+					).format(
+						frappe.bold(self.department),
+						frappe.bold(dept_company),
+						frappe.bold(self.company),
+					),
+					title=_("Company and Department Mismatch"),
+				)
+
 		if self.supplier and not frappe.db.exists(
 			"Warehouse",
 			{"disabled": 0, "company": self.company, "subcontractor": self.supplier},
