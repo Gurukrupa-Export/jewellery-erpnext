@@ -23,9 +23,9 @@ def validate(self, method):
 	# if self.sales_type != 'Branch Sales':
 	# create_new_bom(self)
 	create_new_bom1(self)
-	gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
-	if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
-		tax(self)
+	# gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
+	# if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
+	# 	tax(self)
 	
 	# self.calculate_taxes_and_totals()
 	validate_serial_number(self)
@@ -3256,7 +3256,7 @@ def _get_company_context(self, row, ctx):
         )
 
         if self.company == "KG GK Jewellers Private Limited":
-            creation_no       = frappe.get_value("Serial No",              row.serial_no,        "purchase_document_no")
+            creation_no       = frappe.get_value("Serial No",              row.serial_no,        "reference_name")
             serial_no_creator = frappe.get_value("Stock Entry",            creation_no,           "custom_serial_number_creator")
             snc               = frappe.get_value("Serial Number Creator",  serial_no_creator,     "parent_manufacturing_order")
             ref_customer      = frappe.get_value("Parent Manufacturing Order", snc,               "ref_customer")
