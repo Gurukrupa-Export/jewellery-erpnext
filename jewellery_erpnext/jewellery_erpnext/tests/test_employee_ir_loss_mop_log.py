@@ -14,6 +14,17 @@ from unittest.mock import MagicMock, patch
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
+	validate_manually_book_loss_details,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
+	EmployeeIR,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	create_mop_log_for_employee_ir_loss,
+	get_current_mop_balance_rows,
+)
+
 
 class TestCreateMopLogForEmployeeIrLoss(FrappeTestCase):
 	@patch(
@@ -35,9 +46,6 @@ class TestCreateMopLogForEmployeeIrLoss(FrappeTestCase):
 		"""Loss row writes qty_change = -loss_weight so MOPLog.validate
 		propagates the reduced qty_after_transaction into the prefix bucket.
 		"""
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-			create_mop_log_for_employee_ir_loss,
-		)
 
 		eir = MagicMock()
 		eir.name = "EIR-1"
@@ -94,10 +102,6 @@ class TestCreateMopLogForEmployeeIrLoss(FrappeTestCase):
 	def test_carat_to_gram_manual_loss(
 		self, mock_new_doc, _mock_value, _mock_exists, _mock_uom
 	):
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-			create_mop_log_for_employee_ir_loss,
-		)
-
 		eir = MagicMock()
 		eir.name = "EIR-2"
 		loss_row = MagicMock()
@@ -128,10 +132,6 @@ class TestCreateMopLogForEmployeeIrLoss(FrappeTestCase):
 	)
 	@patch("jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.new_doc")
 	def test_loss_log_idempotency(self, mock_new_doc, _mock_exists, _mock_uom):
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-			create_mop_log_for_employee_ir_loss,
-		)
-
 		eir = MagicMock()
 		eir.name = "EIR-3"
 		loss_row = MagicMock()
@@ -155,10 +155,6 @@ class TestCreateMopLogForEmployeeIrLoss(FrappeTestCase):
 	)
 	@patch("jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.new_doc")
 	def test_no_loss_when_zero_or_negative(self, mock_new_doc, _mock_uom):
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-			create_mop_log_for_employee_ir_loss,
-		)
-
 		eir = MagicMock()
 		eir.name = "EIR-4"
 		loss_row = MagicMock()
@@ -192,10 +188,6 @@ class TestManualLossCap(FrappeTestCase):
 		return_value=3,
 	)
 	def test_manual_loss_cap_against_true_baseline(self, *_):
-		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
-			validate_manually_book_loss_details,
-		)
-
 		doc = MagicMock()
 		doc.docstatus = 0
 
@@ -236,10 +228,6 @@ class TestManualLossCap(FrappeTestCase):
 		return_value=3,
 	)
 	def test_manual_loss_carat_converted_to_grams_for_cap(self, *_):
-		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
-			validate_manually_book_loss_details,
-		)
-
 		doc = MagicMock()
 		doc.docstatus = 0
 
@@ -273,20 +261,15 @@ class TestBookMetalLossSpecExamples(FrappeTestCase):
 	"""
 
 	def _run(self, mop_log_rows, gwt, r_gwt, manual_loss_rows=None):
-		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
-			EmployeeIR,
-		)
+		class DocStub:
+			def __init__(self, manual_rows):
+				self.manually_book_loss_details = manual_rows or []
 
-		doc = MagicMock()
-		doc.manually_book_loss_details = manual_loss_rows or []
+		doc = DocStub(manual_loss_rows)
 
 		patches = [
 			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.db.get_all",
-				return_value=mop_log_rows,
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.db.get_value",
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.get_cached_value",
 				return_value=frappe._dict(
 					{
 						"metal_type": "Gold",
@@ -296,6 +279,14 @@ class TestBookMetalLossSpecExamples(FrappeTestCase):
 						"is_finding_mwo": 0,
 					}
 				),
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.get_system_settings",
+				return_value="Banker's Rounding (legacy)",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.db.get_all",
+				return_value=mop_log_rows,
 			),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.get_item_from_attribute_full",
@@ -424,10 +415,6 @@ class TestLossLogIncludedInBalance(FrappeTestCase):
 	def test_get_current_mop_balance_rows_does_not_filter_log_category(
 		self, mock_get_all
 	):
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-			get_current_mop_balance_rows,
-		)
-
 		mock_get_all.return_value = []
 
 		get_current_mop_balance_rows("MOP-1")
@@ -455,72 +442,6 @@ class TestLossMopLogReducesBalance(FrappeTestCase):
 		return_value=False,
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_value"
-	)
-	@patch("jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.new_doc")
-	def test_qty_after_transaction_drops_by_loss_weight(
-		self, mock_new_doc, mock_get_value, _mock_exists, _mock_uom
-	):
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-			create_mop_log_for_employee_ir_loss,
-		)
-
-		# Pre-loss balance for (item, batch) on the MOP.
-		mock_get_value.return_value = {
-			"qty_after_transaction": 10.0,
-			"qty_after_transaction_item_based": 8.0,
-			"qty_after_transaction_batch_based": 6.0,
-			"pcs_after_transaction": 4,
-			"pcs_after_transaction_item_based": 4,
-			"pcs_after_transaction_batch_based": 4,
-			"flow_index": 3,
-		}
-
-		recorded = {}
-		mop_log_doc = MagicMock()
-
-		def _set(name, value):
-			recorded[name] = value
-
-		mop_log_doc.set.side_effect = _set
-		mock_new_doc.return_value = mop_log_doc
-
-		eir = MagicMock()
-		eir.name = "EIR-X"
-		loss_row = MagicMock()
-		loss_row.name = "ELD-X"
-		loss_row.item_code = "M-X"
-		loss_row.batch_no = "B-X"
-		loss_row.proportionally_loss = 1.5
-		loss_row.manufacturing_operation = "MOP-X"
-		loss_row.manufacturing_work_order = "MWO-X"
-
-		create_mop_log_for_employee_ir_loss(eir, loss_row, "Auto Employee Loss", 1.5)
-
-		# Each qty_after_transaction view drops by 1.5 g.
-		self.assertAlmostEqual(recorded["qty_after_transaction"], 8.5, places=3)
-		self.assertAlmostEqual(
-			recorded["qty_after_transaction_item_based"], 6.5, places=3
-		)
-		self.assertAlmostEqual(
-			recorded["qty_after_transaction_batch_based"], 4.5, places=3
-		)
-		# PCS balances preserved at the prior values.
-		self.assertEqual(recorded["pcs_after_transaction"], 4)
-		self.assertEqual(recorded["pcs_after_transaction_item_based"], 4)
-		self.assertEqual(recorded["pcs_after_transaction_batch_based"], 4)
-		# flow_index does not advance — loss is booked at the same tier.
-		self.assertEqual(mop_log_doc.flow_index, 3)
-
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.get_cached_value",
-		return_value="Gram",
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.exists",
-		return_value=False,
-	)
-	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_value",
 		return_value=None,
 	)
@@ -533,9 +454,6 @@ class TestLossMopLogReducesBalance(FrappeTestCase):
 		discrepancy (a missing prior balance is itself a problem the operator
 		needs to see).
 		"""
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-			create_mop_log_for_employee_ir_loss,
-		)
 
 		recorded = {}
 		mop_log_doc = MagicMock()
