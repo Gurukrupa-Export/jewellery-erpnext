@@ -1003,6 +1003,8 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
 	row.amount            = total_amount
 	row.net_rate   = flt(total_amount) / flt(row.conversion_factor or 1)
 	row.net_amount = row.net_rate * flt(row.qty or 1)
+	row.base_rate = total_amount
+	row.base_amount = total_amount
 	row.gold_bom_rate     = doc.gold_bom_amount
 	row.diamond_bom_rate  = doc.diamond_bom_amount
 	row.gemstone_bom_rate = doc.gemstone_bom_amount
@@ -1260,7 +1262,7 @@ def create_sales_order_bom(self, row, diamond_grade_data):
 		row.making_charge = doc.making_charge
 		row.bom_rate = doc.total_bom_amount
 		row.rate = doc.total_bom_amount
-		frappe.msgprint(f"{row.rate}HERE13")
+		# frappe.msgprint(f"{row.rate}HERE13")
 		self.total = doc.total_bom_amount
 		# frappe.throw(f"{self.total}")
 	except Exception as e:
