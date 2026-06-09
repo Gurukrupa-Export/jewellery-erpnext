@@ -176,36 +176,92 @@ class TestManualLossCap(FrappeTestCase):
 	"""Per-MWO total cap: total manual loss cannot exceed (gwt - r_gwt)."""
 
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.get_cached_value",
-		return_value="Gram",
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
+		return_value=[],
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_value",
-		return_value=100.0,
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.get_cached_value",
+		return_value="Gram",
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_single_value",
 		return_value=3,
 	)
-	def test_manual_loss_cap_against_true_baseline(self, *_):
+	def test_manual_loss_valid_within_baseline_cap(self, *_):
+		"""Manual loss within baseline cap should pass validation."""
 		doc = MagicMock()
 		doc.docstatus = 0
 
-		# Operation: gwt 10 g, received 9 g => baseline 1 g for MWO-1.
+		# Baseline 1.0 g.
 		op = MagicMock()
 		op.gross_wt = 10.0
 		op.received_gross_wt = 9.0
 		op.manufacturing_work_order = "MWO-1"
 		doc.employee_ir_operations = [op]
 
-		# Manual loss row attempting 1.5 g (exceeds 1 g baseline).
+		# 0.5 g manual loss (within 1.0 g baseline).
 		mbl = MagicMock()
 		mbl.idx = 1
-		mbl.item_code = "M-X"
+		mbl.item_code = "M-G-22KT-91.9-Y"
 		mbl.batch_no = "B-1"
 		mbl.manufacturing_operation = "MOP-1"
 		mbl.manufacturing_work_order = "MWO-1"
-		mbl.proportionally_loss = 1.5
+		mbl.proportionally_loss = 0.5
+		mbl.pcs = 0
+		doc.manually_book_loss_details = [mbl]
+		doc.employee_loss_details = []
+
+		try:
+			validate_manually_book_loss_details(doc)
+		except frappe.exceptions.ValidationError:
+			self.fail(
+				"validate_manually_book_loss_details raised ValidationError unexpectedly"
+			)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
+		return_value=[],
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.get_cached_value",
+		return_value="Gram",
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_manual_loss_combined_with_employee_loss(self, *_):
+		"""Employee + manual loss combined cannot exceed baseline."""
+		doc = MagicMock()
+		doc.docstatus = 0
+
+		# Baseline 1.0 g.
+		op = MagicMock()
+		op.gross_wt = 10.0
+		op.received_gross_wt = 9.0
+		op.manufacturing_work_order = "MWO-1"
+		doc.employee_ir_operations = [op]
+
+		# Employee loss 0.7 g.
+		eld = MagicMock()
+		eld.idx = 1
+		eld.item_code = "M-X"
+		eld.batch_no = "B-1"
+		eld.manufacturing_operation = "MOP-1"
+		eld.manufacturing_work_order = "MWO-1"
+		eld.proportionally_loss = 0.7
+		eld.pcs = 0
+		doc.employee_loss_details = [eld]
+
+		# Manual loss 0.5 g (0.7 + 0.5 = 1.2 g, exceeds 1.0 g baseline).
+		mbl = MagicMock()
+		mbl.idx = 1
+		mbl.item_code = "M-Y"
+		mbl.batch_no = "B-2"
+		mbl.manufacturing_operation = "MOP-1"
+		mbl.manufacturing_work_order = "MWO-1"
+		mbl.proportionally_loss = 0.5
+		mbl.pcs = 0
 		doc.manually_book_loss_details = [mbl]
 
 		with self.assertRaises(frappe.exceptions.ValidationError):
@@ -216,43 +272,165 @@ class TestManualLossCap(FrappeTestCase):
 		return_value=[],
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.get_cached_value",
-		return_value="Carat",
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_manual_loss_docstatus_submitted_skips_validation(self, *_):
+		"""When docstatus != 0, validation should return early."""
+		doc = MagicMock()
+		doc.docstatus = 1  # Submitted
+
+		result = validate_manually_book_loss_details(doc)
+
+		self.assertIsNone(result)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
+		return_value={"available_pcs": 10},
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_value",
-		return_value=100.0,
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.get_cached_value",
+		return_value="Carat",
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_single_value",
 		return_value=3,
 	)
-	def test_manual_loss_carat_converted_to_grams_for_cap(self, *_):
+	def test_manual_loss_diamond_pcs_validation_negative_pcs_throws(self, *_):
+		"""Diamond item with negative PCS should throw error."""
 		doc = MagicMock()
 		doc.docstatus = 0
 
-		# Baseline 0.5 g.
 		op = MagicMock()
 		op.gross_wt = 10.0
 		op.received_gross_wt = 9.5
 		op.manufacturing_work_order = "MWO-1"
 		doc.employee_ir_operations = [op]
 
-		# 5 carats == 1 g (after ×0.2). Exceeds 0.5 g cap.
+		# Diamond item with negative PCS.
 		mbl = MagicMock()
 		mbl.idx = 1
 		mbl.item_code = "D-X"
 		mbl.batch_no = "B-D"
 		mbl.manufacturing_operation = "MOP-1"
 		mbl.manufacturing_work_order = "MWO-1"
-		mbl.proportionally_loss = 5.0
-		# Pin pcs to 0 so the new D/G PCS reconciliation skips the helper
-		# (helper is mocked to return [] anyway, but explicit is clearer).
-		mbl.pcs = 0
+		mbl.proportionally_loss = 0.5
+		mbl.pcs = -5
 		doc.manually_book_loss_details = [mbl]
+		doc.employee_loss_details = []
 
 		with self.assertRaises(frappe.exceptions.ValidationError):
 			validate_manually_book_loss_details(doc)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.get_available_qty_pcs_for_mop_item"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
+		return_value=[],
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.get_cached_value",
+		return_value="Carat",
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_manual_loss_diamond_pcs_exceeds_available(
+		self,
+		mock_get_single_value,
+		mock_get_cached_value,
+		mock_get_all,
+		mock_pcs_helper,
+	):
+		"""Diamond item PCS to book exceeds available PCS should throw."""
+		mock_pcs_helper.return_value = {"available_pcs": 5}
+
+		doc = MagicMock()
+		doc.docstatus = 0
+
+		op = MagicMock()
+		op.gross_wt = 10.0
+		op.received_gross_wt = 9.5
+		op.manufacturing_work_order = "MWO-1"
+		doc.employee_ir_operations = [op]
+
+		# Diamond item attempting to book 10 PCS when only 5 available.
+		mbl = MagicMock()
+		mbl.idx = 1
+		mbl.item_code = "D-X"
+		mbl.batch_no = "B-D"
+		mbl.manufacturing_operation = "MOP-1"
+		mbl.manufacturing_work_order = "MWO-1"
+		mbl.proportionally_loss = 0.5
+		mbl.pcs = 10
+		doc.manually_book_loss_details = [mbl]
+		doc.employee_loss_details = []
+
+		with self.assertRaises(frappe.exceptions.ValidationError):
+			validate_manually_book_loss_details(doc)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
+		return_value=[],
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.get_cached_value",
+		return_value="Gram",
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_manual_loss_multiple_mwos_independent_baselines(self, *_):
+		"""Multiple MWOs should have independent baseline caps."""
+		doc = MagicMock()
+		doc.docstatus = 0
+
+		# MWO-1: baseline 0.5 g
+		op1 = MagicMock()
+		op1.gross_wt = 10.0
+		op1.received_gross_wt = 9.5
+		op1.manufacturing_work_order = "MWO-1"
+
+		# MWO-2: baseline 1.0 g
+		op2 = MagicMock()
+		op2.gross_wt = 20.0
+		op2.received_gross_wt = 19.0
+		op2.manufacturing_work_order = "MWO-2"
+
+		doc.employee_ir_operations = [op1, op2]
+
+		# Manual loss for MWO-1: 0.3 g (within 0.5 g baseline).
+		mbl1 = MagicMock()
+		mbl1.idx = 1
+		mbl1.item_code = "M-X"
+		mbl1.batch_no = "B-1"
+		mbl1.manufacturing_operation = "MOP-1"
+		mbl1.manufacturing_work_order = "MWO-1"
+		mbl1.proportionally_loss = 0.3
+		mbl1.pcs = 0
+
+		# Manual loss for MWO-2: 0.8 g (within 1.0 g baseline).
+		mbl2 = MagicMock()
+		mbl2.idx = 2
+		mbl2.item_code = "M-Y"
+		mbl2.batch_no = "B-2"
+		mbl2.manufacturing_operation = "MOP-2"
+		mbl2.manufacturing_work_order = "MWO-2"
+		mbl2.proportionally_loss = 0.8
+		mbl2.pcs = 0
+
+		doc.manually_book_loss_details = [mbl1, mbl2]
+		doc.employee_loss_details = []
+
+		try:
+			validate_manually_book_loss_details(doc)
+		except frappe.exceptions.ValidationError:
+			self.fail(
+				"validate_manually_book_loss_details raised ValidationError unexpectedly"
+			)
 
 
 class TestBookMetalLossSpecExamples(FrappeTestCase):
