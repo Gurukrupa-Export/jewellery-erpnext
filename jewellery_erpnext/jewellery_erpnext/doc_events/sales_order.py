@@ -30,6 +30,7 @@ def validate(self, method):
 	# self.calculate_taxes_and_totals()
 	validate_serial_number(self)
 	# validate_items(self)
+	set_gst_details(self)
 	validate_item_dharm(self)
 	# self.calculate_taxes_and_totals()
 	# calculate_gst_rate(self)
@@ -199,6 +200,101 @@ def tax(self):
 				self.grand_total = self.total + (self.total or 0) * (j.get("tax_rate", 0) / 100)
 				self.rounded_total =self.grand_total
 
+def set_gst_details(self):
+    if self.sales_type not in ("Finished Goods", "Subcontracting"):
+        return
+
+    # Determine In-State or Out-State
+    customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
+    company_state  = frappe.db.get_value("Address", self.company_address,  "gst_state_number")
+
+    if not customer_state or not company_state:
+        return
+
+    self.tax_category = "In-State" if customer_state == company_state else "Out-State"
+
+    # Resolve item tax template
+    item_template_map = {
+        "Finished Goods": {
+            "Gurukrupa Export Private Limited": "GST 3% - GEPL",
+            "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
+        },
+        "Subcontracting": {
+            "Gurukrupa Export Private Limited": "GST 5% - GEPL",
+            "KG GK Jewellers Private Limited":  "GST 5% - KGJPL",
+        },
+    }
+    item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
+    if not item_tax_template:
+        return
+
+    # Read rates from Item Tax Template Detail
+    # Use exact same rates india_compliance will use
+    template_rates = frappe.get_all(
+        "Item Tax Template Detail",
+        filters={"parent": item_tax_template},
+        fields=["tax_type", "tax_rate"]
+    )
+
+    cgst_rate = sgst_rate = igst_rate = 0.0
+    for r in template_rates:
+        tax_type = r.tax_type or ""
+        if "Output" not in tax_type or "RCM" in tax_type:
+            continue
+        if "CGST" in tax_type:
+            cgst_rate = flt(r.tax_rate)
+        elif "SGST" in tax_type:
+            sgst_rate = flt(r.tax_rate)
+        elif "IGST" in tax_type:
+            igst_rate = flt(r.tax_rate)
+
+    # Resolve Sales Taxes and Charges template
+    taxes_and_charges = (
+        "Output GST In-state" if self.tax_category == "In-State"
+        else "Output GST Out-state"
+    )
+    self.taxes_and_charges = taxes_and_charges
+
+    # Rebuild taxes table from template
+    self.taxes = []
+    tax_rows = frappe.get_all(
+        "Sales Taxes and Charges",
+        filters={"parent": self.taxes_and_charges},
+        fields=["charge_type", "account_head", "description", "rate", "cost_center"],
+        order_by="idx asc"
+    )
+    for t in tax_rows:
+        self.append("taxes", {
+            "charge_type":  t.charge_type,
+            "account_head": t.account_head,
+            "description":  t.description,
+            "rate":         t.rate,
+            "cost_center":  t.cost_center,
+        })
+
+    # Apply to each item — after create_new_bom1 has finalized net_amount
+    for item in self.items:
+        if not item.item_code:
+            continue
+
+        item.item_tax_template = item_tax_template
+        item.gst_treatment     = "Taxable"
+        taxable_value          = flt(item.net_amount)
+
+        if self.tax_category == "In-State":
+            item.cgst_rate   = cgst_rate
+            item.sgst_rate   = sgst_rate
+            item.igst_rate   = 0.0
+            item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
+            item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
+            item.igst_amount = 0.0
+        else:
+            item.cgst_rate   = 0.0
+            item.sgst_rate   = 0.0
+            item.igst_rate   = igst_rate
+            item.cgst_amount = 0.0
+            item.sgst_amount = 0.0
+            item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
 
 CHUNK_SIZE         = 10
 ENQUEUE_THRESHOLD  = 10
@@ -817,117 +913,119 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 
 
 def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
-    doc.diamond_weight     = sum(r.quantity for r in doc.diamond_detail)
-    doc.total_metal_weight = sum(r.quantity for r in doc.metal_detail)
+	doc.diamond_weight     = sum(r.quantity for r in doc.diamond_detail)
+	doc.total_metal_weight = sum(r.quantity for r in doc.metal_detail)
 
-    if self.customer not in _ccp_cache:
-        ccp = frappe.db.get_all(
-            "Customer Certification Price",
-            filters={"customer": self.customer},
-            limit=1,
-        )
-        _ccp_cache[self.customer] = frappe.get_doc("Customer Certification Price", ccp[0].name) if ccp else None
+	if self.customer not in _ccp_cache:
+		ccp = frappe.db.get_all(
+			"Customer Certification Price",
+			filters={"customer": self.customer},
+			limit=1,
+		)
+		_ccp_cache[self.customer] = frappe.get_doc("Customer Certification Price", ccp[0].name) if ccp else None
 
-    ccp_doc = _ccp_cache[self.customer]
-    if ccp_doc:
-        doc.certification_amount = (
-            ccp_doc.per_pc_rate
-            if doc.diamond_weight <= ccp_doc.wt_threshold
-            else ccp_doc.per_carat_rate * doc.diamond_weight
-        )
-        doc.hallmarking_amount = ccp_doc.hallmarking_amount
+	ccp_doc = _ccp_cache[self.customer]
+	if ccp_doc:
+		doc.certification_amount = (
+			ccp_doc.per_pc_rate
+			if doc.diamond_weight <= ccp_doc.wt_threshold
+			else ccp_doc.per_carat_rate * doc.diamond_weight
+		)
+		doc.hallmarking_amount = ccp_doc.hallmarking_amount
 
-    if "Earrings" in (doc.item_subcategory or ""):
-        doc.hallmarking_amount = (doc.hallmarking_amount or 0) * 2
+	if "Earrings" in (doc.item_subcategory or ""):
+		doc.hallmarking_amount = (doc.hallmarking_amount or 0) * 2
 
-    doc.diamond_bom_amount  = doc.total_diamond_amount
-    doc.gold_bom_amount     = doc.total_metal_amount
-    doc.gemstone_bom_amount = doc.total_gemstone_amount
-    doc.finding_bom_amount  = doc.total_finding_amount
-    doc.total_bom_amount    = (
-        doc.diamond_bom_amount + doc.gold_bom_amount
-        + doc.gemstone_bom_amount + doc.finding_bom_amount
-        + doc.total_wastage_amount
-        + sum(flt(r.wastage_amount) for r in doc.get("finding_detail", []))
-    )
-    doc.making_charge = (
-        sum(r.making_amount for r in doc.metal_detail)
-        + sum(r.making_amount for r in doc.finding_detail)
-    )
+	doc.diamond_bom_amount  = doc.total_diamond_amount
+	doc.gold_bom_amount     = doc.total_metal_amount
+	doc.gemstone_bom_amount = doc.total_gemstone_amount
+	doc.finding_bom_amount  = doc.total_finding_amount
+	doc.total_bom_amount    = (
+		doc.diamond_bom_amount + doc.gold_bom_amount
+		+ doc.gemstone_bom_amount + doc.finding_bom_amount
+		+ doc.total_wastage_amount
+		+ sum(flt(r.wastage_amount) for r in doc.get("finding_detail", []))
+	)
+	doc.making_charge = (
+		sum(r.making_amount for r in doc.metal_detail)
+		+ sum(r.making_amount for r in doc.finding_detail)
+	)
 
-    doc.total_diamond_weight_in_gms          = round(doc.diamond_weight / 5, 2)
-    doc.total_gemstone_weight                = sum(r.quantity   for r in doc.gemstone_detail)
-    doc.custom_total_gemstone_weight2_digits = sum(r.quantity_3 for r in doc.gemstone_detail)
-    doc.gemstone_weight                      = doc.custom_total_gemstone_weight2_digits
-    doc.total_gemstone_weight_in_gms         = round(doc.total_gemstone_weight / 5, 2)
-    doc.finding_weight                       = sum(r.quantity   for r in doc.finding_detail)
-    doc.custom_finding_weight2_digits        = sum(r.quantity_3 for r in doc.finding_detail)
-    doc.finding_weight_                      = doc.custom_finding_weight2_digits
-    doc.total_finding_weight_per_gram        = doc.finding_weight
-    doc.total_diamond_pcs                    = sum(flt(r.pcs) for r in doc.diamond_detail)
-    doc.total_gemstone_pcs                   = sum(flt(r.pcs) for r in doc.gemstone_detail)
-    doc.total_other_weight                   = sum(r.quantity for r in doc.other_detail)
-    doc.other_weight                         = doc.total_other_weight
-    doc.metal_and_finding_weight             = round(
-        flt(doc.metal_weight) + flt(doc.finding_weight), 2
-    )
-    doc.gross_weight = round(
-        flt(doc.metal_and_finding_weight) + flt(doc.total_diamond_weight_in_gms)
-        + flt(doc.total_gemstone_weight_in_gms) + flt(doc.total_other_weight), 2
-    )
-    doc.gold_to_diamond_ratio = (
-        flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
-    )
-    doc.diamond_ratio = (
-        flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
-    )
-    doc.metal_to_diamond_ratio_excl_of_finding = (
-        flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
-    )
-    doc.custom_total_pure_weight = sum(
-        r.quantity * (flt(r.metal_purity) / 100) for r in doc.metal_detail
-    )
-    doc.custom_total_pure_finding_weight = sum(
-        r.quantity * (flt(r.metal_purity) / 100) for r in doc.finding_detail
-    )
-    doc.custom_net_pure_weight = doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
+	doc.total_diamond_weight_in_gms          = round(doc.diamond_weight / 5, 2)
+	doc.total_gemstone_weight                = sum(r.quantity   for r in doc.gemstone_detail)
+	doc.custom_total_gemstone_weight2_digits = sum(r.quantity_3 for r in doc.gemstone_detail)
+	doc.gemstone_weight                      = doc.custom_total_gemstone_weight2_digits
+	doc.total_gemstone_weight_in_gms         = round(doc.total_gemstone_weight / 5, 2)
+	doc.finding_weight                       = sum(r.quantity   for r in doc.finding_detail)
+	doc.custom_finding_weight2_digits        = sum(r.quantity_3 for r in doc.finding_detail)
+	doc.finding_weight_                      = doc.custom_finding_weight2_digits
+	doc.total_finding_weight_per_gram        = doc.finding_weight
+	doc.total_diamond_pcs                    = sum(flt(r.pcs) for r in doc.diamond_detail)
+	doc.total_gemstone_pcs                   = sum(flt(r.pcs) for r in doc.gemstone_detail)
+	doc.total_other_weight                   = sum(r.quantity for r in doc.other_detail)
+	doc.other_weight                         = doc.total_other_weight
+	doc.metal_and_finding_weight             = round(
+		flt(doc.metal_weight) + flt(doc.finding_weight), 2
+	)
+	doc.gross_weight = round(
+		flt(doc.metal_and_finding_weight) + flt(doc.total_diamond_weight_in_gms)
+		+ flt(doc.total_gemstone_weight_in_gms) + flt(doc.total_other_weight), 2
+	)
+	doc.gold_to_diamond_ratio = (
+		flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+	)
+	doc.diamond_ratio = (
+		flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
+	)
+	doc.metal_to_diamond_ratio_excl_of_finding = (
+		flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+	)
+	doc.custom_total_pure_weight = sum(
+		r.quantity * (flt(r.metal_purity) / 100) for r in doc.metal_detail
+	)
+	doc.custom_total_pure_finding_weight = sum(
+		r.quantity * (flt(r.metal_purity) / 100) for r in doc.finding_detail
+	)
+	doc.custom_net_pure_weight = doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
 
-    total_amount = (
-        doc.total_bom_amount + doc.making_charge + doc.certification_amount
-        + doc.custom_duty_amount + doc.hallmarking_amount
-        + doc.freight_amount + doc.sale_amount
-    )
-    if self.sales_type == "Repairing":
-        total_amount = doc.total_bom_amount
+	total_amount = (
+		doc.total_bom_amount + doc.making_charge + doc.certification_amount
+		+ doc.custom_duty_amount + doc.hallmarking_amount
+		+ doc.freight_amount + doc.sale_amount
+	)
+	if self.sales_type == "Repairing":
+		total_amount = doc.total_bom_amount
 
-    row.item_code         = item_code
-    row.serial_no         = serial_no
-    row.qty               = 1
-    row.rate              = total_amount
-    row.amount            = total_amount
-    row.gold_bom_rate     = doc.gold_bom_amount
-    row.diamond_bom_rate  = doc.diamond_bom_amount
-    row.gemstone_bom_rate = doc.gemstone_bom_amount
-    row.other_bom_rate    = doc.other_bom_amount
-    row.making_charge     = doc.making_charge
+	row.item_code         = item_code
+	row.serial_no         = serial_no
+	row.qty               = 1
+	row.rate              = total_amount
+	row.amount            = total_amount
+	row.net_rate   = flt(total_amount) / flt(row.conversion_factor or 1)
+	row.net_amount = row.net_rate * flt(row.qty or 1)
+	row.gold_bom_rate     = doc.gold_bom_amount
+	row.diamond_bom_rate  = doc.diamond_bom_amount
+	row.gemstone_bom_rate = doc.gemstone_bom_amount
+	row.other_bom_rate    = doc.other_bom_amount
+	row.making_charge     = doc.making_charge
 
-    def _split_weight(detail, factor=1.0):
-        return (
-            sum(r.quantity for r in detail if not r.is_customer_item) * factor,
-            sum(r.quantity for r in detail if r.is_customer_item)     * factor,
-        )
+	def _split_weight(detail, factor=1.0):
+		return (
+			sum(r.quantity for r in detail if not r.is_customer_item) * factor,
+			sum(r.quantity for r in detail if r.is_customer_item)     * factor,
+		)
 
-    m_co, m_ci = _split_weight(doc.metal_detail)
-    f_co, f_ci = _split_weight(doc.finding_detail)
-    d_co, d_ci = _split_weight(doc.diamond_detail,  0.2)
-    g_co, g_ci = _split_weight(doc.gemstone_detail, 0.2)
+	m_co, m_ci = _split_weight(doc.metal_detail)
+	f_co, f_ci = _split_weight(doc.finding_detail)
+	d_co, d_ci = _split_weight(doc.diamond_detail,  0.2)
+	g_co, g_ci = _split_weight(doc.gemstone_detail, 0.2)
 
-    row.custom_company_rm_weight = m_co + f_co + d_co + g_co
-    row.custom_customer_weight   = m_ci + f_ci + d_ci + g_ci
+	row.custom_company_rm_weight = m_co + f_co + d_co + g_co
+	row.custom_customer_weight   = m_ci + f_ci + d_ci + g_ci
 
-    
 
-    self.total += row.amount
+
+	self.total += row.amount
 
 
 def create_serial_no_bom(self, row):
@@ -1056,35 +1154,38 @@ def _bulk_update_child_rows(self):
 # ╚══════════════════════════════════════════════════════════════════╝
 
 def create_new_bom1(self):
-    """
-    Process all BOM rows synchronously with caching.
-    No RQ jobs. No chunking. No queue explosion.
+	"""
+	Process all BOM rows synchronously with caching.
+	No RQ jobs. No chunking. No queue explosion.
 
-    Performance improvements vs original:
-      • _get_company_context  : queried once per serial_no/SO  (was once per row)
-      • _get_making_charge    : queried once per unique combo   (was once per row)
-      • Metal purity lookups  : queried once per (customer, type, touch)
-      • CCP doc               : queried once per customer
-      • Gemstone PL type      : queried once per customer
-      • Child row writes      : 1 bulk UPDATE                  (was N set_value calls)
-    """
-    _clear_caches()          # always start fresh — never use stale data from a prior call
+	Performance improvements vs original:
+		• _get_company_context  : queried once per serial_no/SO  (was once per row)
+		• _get_making_charge    : queried once per unique combo   (was once per row)
+		• Metal purity lookups  : queried once per (customer, type, touch)
+		• CCP doc               : queried once per customer
+		• Gemstone PL type      : queried once per customer
+		• Child row writes      : 1 bulk UPDATE                  (was N set_value calls)
+	"""
+	_clear_caches()          # always start fresh — never use stale data from a prior call
 
-    self.total = 0
-    ctx        = _get_bom_context(self)
+	self.total = 0
+	ctx        = _get_bom_context(self)
 
-    for i, row in enumerate(self.items):
-        try:
-            _process_single_row(self, row, ctx)
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                f"BOM failed — {self.name} row {i} serial_no {row.serial_no}",
-            )
+	for i, row in enumerate(self.items):
+		try:
+			_process_single_row(self, row, ctx)
+		except Exception:
+			frappe.log_error(
+				frappe.get_traceback(),
+				f"BOM failed — {self.name} row {i} serial_no {row.serial_no}",
+			)
 
-    _bulk_update_child_rows(self)
-    frappe.db.set_value(self.doctype, self.name, "total", self.total)
-    frappe.db.commit()
+	_bulk_update_child_rows(self)
+    # frappe.db.set_value(self.doctype, self.name, "total", self.total)
+    # frappe.db.commit()
+	for row in self.items:
+		row.net_amount  = flt(row.amount) / flt(row.conversion_factor or 1)
+		row.base_amount = flt(row.amount)
 
 # ---------------------------------------------------------------------------------------
 def create_serial_no_bom(self, row):
