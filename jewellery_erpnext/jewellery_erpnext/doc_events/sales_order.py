@@ -12,7 +12,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 )
 
 
-def validate(self, method):
+def before_validate(self, method):
 	
 
 	validate_sales_type(self)
@@ -904,8 +904,11 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
     row.serial_no         = serial_no
     row.qty               = 1
     row.rate              = total_amount
+	
     row.amount            = total_amount
     row.gold_bom_rate     = doc.gold_bom_amount
+    row.base_rate         =row.rate
+    row.base_amount       =row.amount
     row.diamond_bom_rate  = doc.diamond_bom_amount
     row.gemstone_bom_rate = doc.gemstone_bom_amount
     row.other_bom_rate    = doc.other_bom_amount
