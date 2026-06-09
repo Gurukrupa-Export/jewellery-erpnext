@@ -12,7 +12,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 )
 
 
-def validate(self, method):
+def before_validate(self, method):
 	
 
 	validate_sales_type(self)
@@ -1149,9 +1149,6 @@ def _bulk_update_child_rows(self):
     """)
 
 
-# ╔══════════════════════════════════════════════════════════════════╗
-# ║                    MAIN ENTRY POINT                             ║
-# ╚══════════════════════════════════════════════════════════════════╝
 
 def create_new_bom1(self):
 	"""
@@ -1786,7 +1783,7 @@ def validate_item_dharm(self):
 									}
 
 								multiplied_qty = metal.quantity * item.qty
-								metal_making_amount = metal.making_rate * multiplied_qty  + (metal.wastage_amount * item.qty)
+								metal_making_amount = metal.making_amount * item.qty  + (metal.wastage_amount * item.qty)
 								aggregated_metal_making_items[key]["qty"] += multiplied_qty
 								aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
@@ -2196,7 +2193,7 @@ def validate_item_dharm(self):
 								multiplied_qty = finding.quantity * item.qty
 								# frappe.throw(f"{finding.quantity},{item.qty}")
 								making_amount = finding.making_amount
-								finding_making_amount = (finding.making_rate * multiplied_qty) + (finding.wastage_amount * item.qty)
+								finding_making_amount = (finding.making_amount * item.qty) + (finding.wastage_amount * item.qty)
 								
 								aggregated_finding_making_items[key]["qty"] += multiplied_qty
 								aggregated_finding_making_items[key]["amount"] += finding_making_amount

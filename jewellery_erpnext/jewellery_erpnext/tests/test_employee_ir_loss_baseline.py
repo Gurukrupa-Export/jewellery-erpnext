@@ -11,10 +11,14 @@ Covers:
   that sum(employee_loss_details.proportionally_loss) == flt(loss, 3) exactly.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
+
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
+	EmployeeIR,
+)
 
 
 class _StubEIR:
@@ -52,10 +56,6 @@ class TestMopLossDetailsTotalBaseline(FrappeTestCase):
 	"""
 
 	def _run(self, ops, book_metal_loss_returns=None):
-		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
-			EmployeeIR,
-		)
-
 		stub = _StubEIR(ops, book_metal_loss_returns=book_metal_loss_returns)
 
 		patches = [
@@ -154,14 +154,30 @@ class TestBookMetalLossPrecisionResidual(FrappeTestCase):
 	"""Independently-rounded rows must reconcile to flt(loss, 3) exactly."""
 
 	def _run(self, mop_log_rows, gwt, r_gwt, manual_loss_rows=None):
-		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
-			EmployeeIR,
-		)
+		# Use a simple dict-like object instead of MagicMock to ensure proper iteration
+		class DocStub:
+			def __init__(self, manual_rows):
+				self.manually_book_loss_details = manual_rows or []
 
-		doc = MagicMock()
-		doc.manually_book_loss_details = manual_loss_rows or []
+		doc = DocStub(manual_loss_rows)
 
 		patches = [
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.get_cached_value",
+				return_value=frappe._dict(
+					{
+						"metal_type": "Gold",
+						"metal_touch": "22KT",
+						"metal_purity": "91.9",
+						"master_bom": "BOM-X",
+						"is_finding_mwo": 0,
+					}
+				),
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.get_system_settings",
+				return_value="Banker's Rounding (legacy)",
+			),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.frappe.db.get_all",
 				return_value=mop_log_rows,
