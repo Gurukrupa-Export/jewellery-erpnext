@@ -1051,9 +1051,6 @@ def _bulk_update_child_rows(self):
     """)
 
 
-# ╔══════════════════════════════════════════════════════════════════╗
-# ║                    MAIN ENTRY POINT                             ║
-# ╚══════════════════════════════════════════════════════════════════╝
 
 def create_new_bom1(self):
     """
@@ -1685,7 +1682,7 @@ def validate_item_dharm(self):
 									}
 
 								multiplied_qty = metal.quantity * item.qty
-								metal_making_amount = metal.making_rate * multiplied_qty  + (metal.wastage_amount * item.qty)
+								metal_making_amount = metal.making_amount * item.qty  + (metal.wastage_amount * item.qty)
 								aggregated_metal_making_items[key]["qty"] += multiplied_qty
 								aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
