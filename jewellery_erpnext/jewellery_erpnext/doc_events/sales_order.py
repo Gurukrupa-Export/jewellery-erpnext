@@ -2092,7 +2092,7 @@ def validate_item_dharm(self):
 								multiplied_qty = finding.quantity * item.qty
 								# frappe.throw(f"{finding.quantity},{item.qty}")
 								making_amount = finding.making_amount
-								finding_making_amount = (finding.making_rate * multiplied_qty) + (finding.wastage_amount * item.qty)
+								finding_making_amount = (finding.making_amount * item.qty) + (finding.wastage_amount * item.qty)
 								
 								aggregated_finding_making_items[key]["qty"] += multiplied_qty
 								aggregated_finding_making_items[key]["amount"] += finding_making_amount
