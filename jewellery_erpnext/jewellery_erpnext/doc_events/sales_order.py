@@ -697,10 +697,10 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 		if self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal"
 		else self.customer
 	)
+	if self.custom_diamond_quality:
+		row.diamond_quality=self.custom_diamond_quality
 	for d in doc.diamond_detail:
-		if self.custom_diamond_quality:
-			row.diamond_quality=self.custom_diamond_quality
-		d.quality        = row.diamond_quality
+		d.quality = row.diamond_quality
 		d.weight_per_pcs = d.quantity / d.pcs
 		if 0.001 < d.weight_per_pcs > 0.005:
 			wstr = str(d.weight_per_pcs)
