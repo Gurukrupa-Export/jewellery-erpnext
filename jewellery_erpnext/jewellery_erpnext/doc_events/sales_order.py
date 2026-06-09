@@ -1087,27 +1087,27 @@ def create_new_bom1(self):
     frappe.db.commit()
 
 # ---------------------------------------------------------------------------------------
-def create_serial_no_bom(self, row):
-	serial_no_bom = frappe.db.get_value("Serial No", row.serial_no, "custom_bom_no")
-	if not serial_no_bom:
-		return
-	bom_doc = frappe.get_doc("BOM", serial_no_bom)
-	# if self.customer != bom_doc.customer:
-	product_certification= frappe.db.get_value("Customer",self.customer,"custom_ignore_po_creation_for_certification")
-	doc = frappe.copy_doc(bom_doc)
-	doc.customer = self.customer
-	if product_certification:
-		doc.hallmarking_amount = 0
-		doc.certification_amount = 0
+# def create_serial_no_bom(self, row):
+# 	serial_no_bom = frappe.db.get_value("Serial No", row.serial_no, "custom_bom_no")
+# 	if not serial_no_bom:
+# 		return
+# 	bom_doc = frappe.get_doc("BOM", serial_no_bom)
+# 	# if self.customer != bom_doc.customer:
+# 	product_certification= frappe.db.get_value("Customer",self.customer,"custom_ignore_po_creation_for_certification")
+# 	doc = frappe.copy_doc(bom_doc)
+# 	doc.customer = self.customer
+# 	if product_certification:
+# 		doc.hallmarking_amount = 0
+# 		doc.certification_amount = 0
   
-	doc.gold_rate_with_gst = self.gold_rate_with_gst
-	if hasattr(doc, "diamond_detail"):
-		for diamond in doc.diamond_detail or []:
-			diamond.quality = row.diamond_quality
-		# for diamond in doc.diamond_detail:
-	doc.save(ignore_permissions=True)
-	row.bom = doc.name
-	row.bom_no = doc.name
+# 	doc.gold_rate_with_gst = self.gold_rate_with_gst
+# 	if hasattr(doc, "diamond_detail"):
+# 		for diamond in doc.diamond_detail or []:
+# 			diamond.quality = row.diamond_quality
+# 		# for diamond in doc.diamond_detail:
+# 	doc.save(ignore_permissions=True)
+# 	row.bom = doc.name
+# 	row.bom_no = doc.name
 
 
 def create_sales_order_bom(self, row, diamond_grade_data):
