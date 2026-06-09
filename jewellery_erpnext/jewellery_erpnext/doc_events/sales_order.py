@@ -708,7 +708,7 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 				float(wstr[:5]) if len(wstr) > 4 and wstr[4] == "9"
 				else round(d.quantity / d.pcs, 3)
 			)
-		# d.quantity = round(d.quantity, ctx.stone_precision)
+		d.quantity = round(d.quantity, ctx.stone_precision)
 		result = frappe.db.sql(
 			"""SELECT diamond_price_list FROM `tabDiamond Price List Table`
 				WHERE parent = %s AND diamond_shape = %s""",
