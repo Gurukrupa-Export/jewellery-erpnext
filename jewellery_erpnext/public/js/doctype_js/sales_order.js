@@ -1140,9 +1140,9 @@ frappe.ui.form.on("Sales Order Item", {
 					fieldname: "bom",
 					fieldtype: "Link",
 					label: "BOM-No",
-					options: "BOM",
+					options: row.serial_no ? "BOM" : "Tracking Bom",
 					read_only: 1,
-					default: row.bom,
+					default: row.serial_no ? row.bom : row.custom_tracking_bom,
 					onchange: () => {
 						if (dialog.get_value("bom")) {
 							edit_bom_documents(
@@ -1678,8 +1678,8 @@ let set_edit_bom_details = (
 					let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
 					let metal_purity = flt(metal_purity_value || 0);
 
-					let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-					let calculated_gold_rate = (d.customer_metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_actual_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_gold_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity;
 					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity;
 
@@ -1927,7 +1927,8 @@ let set_edit_bom_details = (
 	// finding details table append
 	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then(gold_gst_rate => {
 		let pending = doc.finding_detail.length;
-		dialog.fields_dict.finding_detail.df.data = [];
+		let local_finding_data = [];
+		// dialog.fields_dict.finding_detail.df.data = [];
 		$.each(doc.finding_detail, function (index, d) {
 			// finding_amount += amount;
 			// let rate_to_use = d.rate;
@@ -1978,7 +1979,7 @@ let set_edit_bom_details = (
 					}
 					d.making_amount = making_rate_to_use * d.quantity;
 					let amount = calculated_actual_rate * d.quantity
-					dialog.fields_dict.finding_detail.df.data.push({
+					local_finding_data.push({
 						docname: d.name,
 						metal_type: d.metal_type,
 						finding_category: d.finding_category,
@@ -2007,6 +2008,8 @@ let set_edit_bom_details = (
 					// dialog.fields_dict.finding_detail.grid.refresh();
 					pending--;
 					if (pending === 0) {
+						dialog.fields_dict.finding_detail.df.data = local_finding_data;
+                    	finding_data = local_finding_data;
 						let grid = dialog.fields_dict.finding_detail.grid;
 						let precision = 3;
 						grid.update_docfield_property("rate", "precision", 2);
@@ -2083,7 +2086,7 @@ let set_edit_bom_details = (
 			// 	((doc.total_diamond_weight_in_gms) || 0) +
 			// 	((doc.total_gemstone_weight_in_gms) || 0)).toFixed(2)
 			// );
-			dialog.set_value("gross_weight", doc.gross_weight);
+			dialog.set_value("gross_weight", flt(doc.gross_weight, 2));
 			// dialog.set_df_property("gross_weight", "precision", 2);
 			dialog.set_value("finding_weight", doc.total_finding_weight_per_gram || 0);
 			// Set diamond_weight with dynamic precision

@@ -8,19 +8,19 @@
 		</tr>
 	</thead>
 	<tbody>
-	{% for index, item in enumerate(data) %}
+	{% for item in data %}
 		<tr>
-			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{index + 1}}</td>
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ loop.index }}</td>
 			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
-				<a href=>{{ frappe.utils.get_link_to_form('Stock Entry', item.purchase_document_no) }}</a>
+				<a href="/app/stock-entry/{{ item.stock_entry }}">{{ item.stock_entry }}</a>
 			</td>
 			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
-				<a href=>{{ frappe.utils.get_link_to_form('BOM', item.name) }}</a>
+				<a href="/app/bom/{{ item.bom_name }}">{{ item.bom_name }}</a>
 			</td>
 			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
-				<a href=>{{ frappe.utils.get_link_to_form('Serial No', item.serial_no) }}</a>
+				<a href="/app/serial-no/{{ item.serial_no }}">{{ item.serial_no }}</a>
 			</td>
 		</tr>
 	{% endfor %}
 	</tbody>
-	</table>
+</table>

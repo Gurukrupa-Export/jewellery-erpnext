@@ -24,7 +24,7 @@ def create_repack_entry(self):
 	purity_percentage = self.purity_percentage if self.purity_percentage > 0 else 100
 	inventory_type = None
 	for row in self.source_table:
-		temp_row = copy.deepcopy(row.__dict__)
+		temp_row = copy.deepcopy(row.as_dict())
 		temp_row["name"] = None
 		temp_row["idx"] = None
 		temp_row["use_serial_batch_fields"] = True
@@ -36,7 +36,9 @@ def create_repack_entry(self):
 			"attribute_value",
 		)
 		if attribute_value:
-			purity_percentage = frappe.db.get_value("Attribute Value", attribute_value, "purity_percentage")
+			purity_percentage = frappe.db.get_value(
+				"Attribute Value", attribute_value, "purity_percentage"
+			)
 
 		temp_row["pure_qty"] = flt((purity_percentage * temp_row["qty"]) / 100, 3)
 
@@ -61,7 +63,9 @@ def create_repack_entry(self):
 	finish_raw = []
 
 	if self.transaction_type == "Receive":
-		batch_number_series = frappe.db.get_value("Item", self.finish_item, "batch_number_series")
+		batch_number_series = frappe.db.get_value(
+			"Item", self.finish_item, "batch_number_series"
+		)
 
 		batch_doc = frappe.new_doc("Batch")
 		batch_doc.item = self.finish_item
@@ -82,7 +86,12 @@ def create_repack_entry(self):
 				"item_code": item_dict["item_code"],
 				"qty": ["!=", "consume_qty"],
 			},
-			["batch_no", "qty", "(consume_qty + employee_qty) as consume_qty", "inventory_type"],
+			[
+				"batch_no",
+				"qty",
+				"(consume_qty + employee_qty) as consume_qty",
+				"inventory_type",
+			],
 		)
 		total_qty = item_dict["qty"]
 		for row in msl_batch_data:

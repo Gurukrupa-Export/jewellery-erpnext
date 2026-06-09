@@ -158,7 +158,7 @@
    "dt": "Customer",
    "fieldname": "column_break_6v9nw",
    "fieldtype": "Column Break",
-   "hidden": 1,
+   "hidden": 0,
    "insert_after": "sales_type",
    "module": "Jewellery Erpnext"
   },

@@ -70,7 +70,9 @@ class TestMainSlipInjectIdempotency(FrappeTestCase):
 	def test_existing_repack_se_short_circuits(self):
 		eir = _eir()
 		row = _row()
-		with patch.object(msi, "_resolve_department_warehouse", return_value="WH-Dept"), patch.object(
+		with patch.object(
+			msi, "_resolve_department_warehouse", return_value="WH-Dept"
+		), patch.object(
 			msi, "_existing_injection_se", return_value=True
 		) as mock_exists, patch.object(
 			msi, "_resolve_inject_metal_items"
@@ -123,7 +125,9 @@ class TestMainSlipInjectMetalResolution(FrappeTestCase):
 		mock_get_item.side_effect = _item_for
 		items = msi._resolve_inject_metal_items("MWO-1", 3.0)
 		self.assertEqual(len(items), 3)
-		self.assertEqual([i["item_code"] for i in items], ["M-G-18KT-Y", "M-G-18KT-W", "M-G-18KT-R"])
+		self.assertEqual(
+			[i["item_code"] for i in items], ["M-G-18KT-Y", "M-G-18KT-W", "M-G-18KT-R"]
+		)
 		for i in items:
 			self.assertAlmostEqual(i["qty"], 1.0)
 
@@ -203,7 +207,9 @@ class TestFallbackInjectSegments(FrappeTestCase):
 			"multicolour": 0,
 			"allowed_colours": "",
 		}
-		segs = msi._resolve_fallback_inject_segments(_eir(main_slip=None), "MWO-1", 2.0, "WH-Dept")
+		segs = msi._resolve_fallback_inject_segments(
+			_eir(main_slip=None), "MWO-1", 2.0, "WH-Dept"
+		)
 		self.assertEqual(len(segs), 1)
 		self.assertEqual(segs[0]["mode"], "transfer")
 		self.assertEqual(segs[0]["item_code"], "M-G-18KT-Y")
@@ -232,13 +238,17 @@ class TestFallbackInjectSegments(FrappeTestCase):
 
 		mock_purity.side_effect = lambda ic: _purity(ic)
 
-		segs = msi._resolve_fallback_inject_segments(_eir(main_slip=None), "MWO-1", 2.0, "WH-Dept")
+		segs = msi._resolve_fallback_inject_segments(
+			_eir(main_slip=None), "MWO-1", 2.0, "WH-Dept"
+		)
 		self.assertEqual(len(segs), 1)
 		self.assertEqual(segs[0]["mode"], "purity")
 		self.assertEqual(segs[0]["source_item"], "M-G-24KT")
 		self.assertEqual(segs[0]["target_item"], "M-G-18KT-Y")
 		self.assertEqual(segs[0]["produce_qty"], 2.0)
-		self.assertAlmostEqual(segs[0]["consume_qty"], round(2.0 * 75.4 / 99.9, 3), places=3)
+		self.assertAlmostEqual(
+			segs[0]["consume_qty"], round(2.0 * 75.4 / 99.9, 3), places=3
+		)
 
 	@patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Emp")
 	def test_partial_alloy_emits_transfer_plus_purity(self, mock_src_wh):
@@ -266,7 +276,9 @@ class TestFallbackInjectSegments(FrappeTestCase):
 				return {"M-G-24KT": 99.9, "M-G-18KT-Y": 75.4}.get(item)
 
 			mock_purity.side_effect = lambda ic: _purity(ic)
-			segs = msi._resolve_fallback_inject_segments(_eir(main_slip=None), "MWO-1", 2.0, "WH-Dept")
+			segs = msi._resolve_fallback_inject_segments(
+				_eir(main_slip=None), "MWO-1", 2.0, "WH-Dept"
+			)
 
 		self.assertEqual(len(segs), 2)
 		self.assertEqual(segs[0]["mode"], "transfer")
@@ -278,7 +290,9 @@ class TestFallbackInjectSegments(FrappeTestCase):
 class TestBuildStockEntryFromFallbackSegments(FrappeTestCase):
 	@patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1")
 	@patch(f"{_MSI_PATH}.frappe.new_doc")
-	def test_material_transfer_segments_stamped_to_mop(self, mock_new_doc, mock_get_value):
+	def test_material_transfer_segments_stamped_to_mop(
+		self, mock_new_doc, mock_get_value
+	):
 		se = MagicMock()
 		se.items = []
 		se.append.side_effect = lambda _, payload: se.items.append(payload)
@@ -295,7 +309,9 @@ class TestBuildStockEntryFromFallbackSegments(FrappeTestCase):
 				"t_warehouse": "WH-Dept",
 			}
 		]
-		msi._build_material_transfer_from_segments(eir, row, segments, "WH-Emp", "WH-Dept")
+		msi._build_material_transfer_from_segments(
+			eir, row, segments, "WH-Emp", "WH-Dept"
+		)
 
 		self.assertEqual(se.stock_entry_type, "Material Transfer (WORK ORDER)")
 		self.assertEqual(se.employee_ir, "EIR-R-001")
@@ -306,7 +322,9 @@ class TestBuildStockEntryFromFallbackSegments(FrappeTestCase):
 
 	@patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1")
 	@patch(f"{_MSI_PATH}.frappe.new_doc")
-	def test_repack_purity_segments_consume_produce_stamped_to_mop(self, mock_new_doc, mock_get_value):
+	def test_repack_purity_segments_consume_produce_stamped_to_mop(
+		self, mock_new_doc, mock_get_value
+	):
 		se = MagicMock()
 		se.items = []
 		se.append.side_effect = lambda _, payload: se.items.append(payload)
@@ -381,9 +399,21 @@ class TestMainSlipBatchIterator(FrappeTestCase):
 	@patch(f"{_MSI_PATH}.frappe.db.get_all")
 	def test_priority_order_regular_then_customer_then_pure(self, mock_get_all):
 		mock_get_all.return_value = [
-			_batch_row(name="B-PURE", inventory_type="Pure Metal", creation="2026-04-01 00:00:00"),
-			_batch_row(name="B-REG", inventory_type="Regular Stock", creation="2026-04-02 00:00:00"),
-			_batch_row(name="B-CUST", inventory_type="Customer Goods", creation="2026-04-03 00:00:00"),
+			_batch_row(
+				name="B-PURE",
+				inventory_type="Pure Metal",
+				creation="2026-04-01 00:00:00",
+			),
+			_batch_row(
+				name="B-REG",
+				inventory_type="Regular Stock",
+				creation="2026-04-02 00:00:00",
+			),
+			_batch_row(
+				name="B-CUST",
+				inventory_type="Customer Goods",
+				creation="2026-04-03 00:00:00",
+			),
 		]
 		ordered = [r["name"] for r in msi._iter_main_slip_batches("MS-001")]
 		self.assertEqual(ordered, ["B-REG", "B-CUST", "B-PURE"])
@@ -414,30 +444,49 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 
 		# inject_extra_metal_for_eir_receive resolves target items and dept wh
 		stack.append(
-			patch(f"{_MSI_PATH}._resolve_inject_metal_items", return_value=[{"item_code": target_item, "qty": 2.0}])
+			patch(
+				f"{_MSI_PATH}._resolve_inject_metal_items",
+				return_value=[{"item_code": target_item, "qty": 2.0}],
+			)
 		)
-		stack.append(patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"))
-		stack.append(patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"))
+		stack.append(
+			patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept")
+		)
+		stack.append(
+			patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src")
+		)
 		stack.append(patch(f"{_MSI_PATH}._existing_injection_se", return_value=False))
 		return submitted
 
 	@patch(f"{_MSI_PATH}.frappe.new_doc")
 	@patch(f"{_MSI_PATH}._iter_main_slip_batches")
 	def test_regular_stock_emits_material_transfer(self, mock_iter, mock_new_doc):
-		mock_iter.return_value = iter([
-			_batch_row(item_code="M-G-18KT-Y", inventory_type="Regular Stock", qty=3.0, consume_qty=0.0) | {"available_qty": 3.0},
-		])
+		mock_iter.return_value = iter(
+			[
+				_batch_row(
+					item_code="M-G-18KT-Y",
+					inventory_type="Regular Stock",
+					qty=3.0,
+					consume_qty=0.0,
+				)
+				| {"available_qty": 3.0},
+			]
+		)
 		se = MagicMock()
 		se.items = []
 		se.append.side_effect = lambda _, payload: se.items.append(payload)
 		mock_new_doc.return_value = se
 
-		with patch(f"{_MSI_PATH}._resolve_inject_metal_items", return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}]), \
-			 patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"), \
-			 patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"), \
-			 patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), \
-			 patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"), \
-			 patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
+		with patch(
+			f"{_MSI_PATH}._resolve_inject_metal_items",
+			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+		), patch(
+			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
+		), patch(
+			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"
+		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
+			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
+		), patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
 			out = msi.inject_extra_metal_for_eir_receive(_eir(main_slip="MS-1"), _row())
 
 		self.assertEqual(len(out), 1)
@@ -446,15 +495,27 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 		self.assertEqual(len(se.items), 1)
 		self.assertEqual(se.items[0]["qty"], 2.0)
 		self.assertEqual(se.items[0]["t_warehouse"], "WH-Dept")
-		self.assertEqual(se.items[0]["manufacturing_operation"], _row().manufacturing_operation)
+		self.assertEqual(
+			se.items[0]["manufacturing_operation"], _row().manufacturing_operation
+		)
 
 	@patch(f"{_MSI_PATH}.frappe.new_doc")
 	@patch(f"{_MSI_PATH}._iter_main_slip_batches")
-	def test_subcontracting_pure_metal_emits_repack_with_purity_conversion(self, mock_iter, mock_new_doc):
+	def test_subcontracting_pure_metal_emits_repack_with_purity_conversion(
+		self, mock_iter, mock_new_doc
+	):
 		# Source 24KT pure, target 18KT (75%) alloy.
-		mock_iter.return_value = iter([
-			_batch_row(item_code="M-G-24KT", inventory_type="Pure Metal", qty=5.0, consume_qty=0.0) | {"available_qty": 5.0},
-		])
+		mock_iter.return_value = iter(
+			[
+				_batch_row(
+					item_code="M-G-24KT",
+					inventory_type="Pure Metal",
+					qty=5.0,
+					consume_qty=0.0,
+				)
+				| {"available_qty": 5.0},
+			]
+		)
 		se = MagicMock()
 		se.items = []
 		se.append.side_effect = lambda _, payload: se.items.append(payload)
@@ -468,14 +529,23 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 					return "75.4"
 			return "PMO-1"
 
-		with patch(f"{_MSI_PATH}._resolve_inject_metal_items", return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}]), \
-			 patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"), \
-			 patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Sub"), \
-			 patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), \
-			 patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"), \
-			 patch(f"{_MSI_PATH}.frappe.db.get_value", side_effect=_fake_get_value):
+		with patch(
+			f"{_MSI_PATH}._resolve_inject_metal_items",
+			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+		), patch(
+			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
+		), patch(
+			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Sub"
+		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
+			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
+		), patch(f"{_MSI_PATH}.frappe.db.get_value", side_effect=_fake_get_value):
 			out = msi.inject_extra_metal_for_eir_receive(
-				_eir(main_slip="MS-1", subcontracting="Yes", subcontractor="SUB-1", employee=None),
+				_eir(
+					main_slip="MS-1",
+					subcontracting="Yes",
+					subcontractor="SUB-1",
+					employee=None,
+				),
 				_row(),
 			)
 
@@ -488,7 +558,9 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 		self.assertEqual(consume["s_warehouse"], "WH-Sub")
 		self.assertEqual(produce["item_code"], "M-G-18KT-Y")
 		self.assertEqual(produce["t_warehouse"], "WH-Dept")
-		self.assertEqual(produce["manufacturing_operation"], _row().manufacturing_operation)
+		self.assertEqual(
+			produce["manufacturing_operation"], _row().manufacturing_operation
+		)
 		# produce_qty = consume_qty * 75.4 / 99.9 -> we requested 2.0 produced
 		# so consume should be 2.0 * 75.4 / 99.9
 		self.assertAlmostEqual(produce["qty"], 2.0, places=3)
@@ -498,20 +570,32 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 	@patch(f"{_MSI_PATH}._iter_main_slip_batches")
 	def test_insufficient_batches_throws(self, mock_iter, mock_new_doc):
 		# Only 1g available but we need 2g.
-		mock_iter.return_value = iter([
-			_batch_row(item_code="M-G-18KT-Y", inventory_type="Regular Stock", qty=1.0, consume_qty=0.0) | {"available_qty": 1.0},
-		])
+		mock_iter.return_value = iter(
+			[
+				_batch_row(
+					item_code="M-G-18KT-Y",
+					inventory_type="Regular Stock",
+					qty=1.0,
+					consume_qty=0.0,
+				)
+				| {"available_qty": 1.0},
+			]
+		)
 		se = MagicMock()
 		se.items = []
 		se.append.side_effect = lambda _, payload: se.items.append(payload)
 		mock_new_doc.return_value = se
 
-		with patch(f"{_MSI_PATH}._resolve_inject_metal_items", return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}]), \
-			 patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"), \
-			 patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"), \
-			 patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), \
-			 patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"), \
-			 patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
+		with patch(
+			f"{_MSI_PATH}._resolve_inject_metal_items",
+			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+		), patch(
+			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
+		), patch(
+			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"
+		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
+			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
+		), patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
 			with self.assertRaises(frappe.ValidationError):
 				msi.inject_extra_metal_for_eir_receive(_eir(main_slip="MS-1"), _row())
 
@@ -519,40 +603,226 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 	@patch(f"{_MSI_PATH}._iter_main_slip_batches")
 	def test_batch_item_mismatch_skips_non_pure_batches(self, mock_iter, mock_new_doc):
 		# Wrong alloy in Main Slip and nothing matching -> throws short.
-		mock_iter.return_value = iter([
-			_batch_row(item_code="M-G-22KT-Y", inventory_type="Regular Stock", qty=5.0, consume_qty=0.0) | {"available_qty": 5.0},
-		])
+		mock_iter.return_value = iter(
+			[
+				_batch_row(
+					item_code="M-G-22KT-Y",
+					inventory_type="Regular Stock",
+					qty=5.0,
+					consume_qty=0.0,
+				)
+				| {"available_qty": 5.0},
+			]
+		)
 		se = MagicMock()
 		mock_new_doc.return_value = se
-		with patch(f"{_MSI_PATH}._resolve_inject_metal_items", return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}]), \
-			 patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"), \
-			 patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"), \
-			 patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), \
-			 patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"), \
-			 patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
+		with patch(
+			f"{_MSI_PATH}._resolve_inject_metal_items",
+			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+		), patch(
+			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
+		), patch(
+			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"
+		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
+			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
+		), patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
 			with self.assertRaises(frappe.ValidationError):
 				msi.inject_extra_metal_for_eir_receive(_eir(main_slip="MS-1"), _row())
 
 	@patch(f"{_MSI_PATH}.frappe.new_doc")
 	@patch(f"{_MSI_PATH}._iter_main_slip_batches")
-	def test_non_subcontracting_pure_metal_falls_to_material_transfer(self, mock_iter, mock_new_doc):
+	def test_non_subcontracting_pure_metal_falls_to_material_transfer(
+		self, mock_iter, mock_new_doc
+	):
 		# Non-subcontracting: Pure Metal is treated as a direct Material Transfer
 		# (no purity conversion). Pure Metal item MUST match target item; if it
 		# does not, the batch is skipped and the helper throws short.
-		mock_iter.return_value = iter([
-			_batch_row(item_code="M-G-18KT-Y", inventory_type="Pure Metal", qty=3.0, consume_qty=0.0) | {"available_qty": 3.0},
-		])
+		mock_iter.return_value = iter(
+			[
+				_batch_row(
+					item_code="M-G-18KT-Y",
+					inventory_type="Pure Metal",
+					qty=3.0,
+					consume_qty=0.0,
+				)
+				| {"available_qty": 3.0},
+			]
+		)
 		se = MagicMock()
 		se.items = []
 		se.append.side_effect = lambda _, payload: se.items.append(payload)
 		mock_new_doc.return_value = se
 
-		with patch(f"{_MSI_PATH}._resolve_inject_metal_items", return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}]), \
-			 patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"), \
-			 patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Emp"), \
-			 patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), \
-			 patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"), \
-			 patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
-			out = msi.inject_extra_metal_for_eir_receive(_eir(main_slip="MS-1", subcontracting="No"), _row())
+		with patch(
+			f"{_MSI_PATH}._resolve_inject_metal_items",
+			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+		), patch(
+			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
+		), patch(
+			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Emp"
+		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
+			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
+		), patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
+			out = msi.inject_extra_metal_for_eir_receive(
+				_eir(main_slip="MS-1", subcontracting="No"), _row()
+			)
 		self.assertEqual(len(out), 1)
 		self.assertEqual(se.stock_entry_type, "Material Transfer (WORK ORDER)")
+
+
+# ---------------------------------------------------------------------------
+# Destination-reservable FIFO batch selection
+# ---------------------------------------------------------------------------
+
+
+class TestSelectFifoBatchesReservableAtDest(FrappeTestCase):
+	def _se(self):
+		return SimpleNamespace(posting_date="2026-06-04", posting_time="10:00:00")
+
+	@patch(f"{_MSI_PATH}.frappe.db.sql")
+	@patch(f"{_MSI_PATH}.get_batch_qty")
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	def test_skips_over_reserved_batch_and_picks_safe(
+		self, mock_auto, mock_get_all, mock_batch_qty, mock_sql
+	):
+		# FIFO-first batch (oldest) holds the bulk of the source stock but is
+		# over-reserved at the destination; the next batches are reservable.
+		mock_auto.return_value = [
+			frappe._dict(batch_no="B-OLD", qty=37.0),
+			frappe._dict(batch_no="B-SAFE1", qty=0.5),
+			frappe._dict(batch_no="B-SAFE2", qty=0.5),
+		]
+		mock_get_all.return_value = [
+			{"name": "B-OLD", "creation": "2026-01-01 00:00:00"},
+			{"name": "B-SAFE1", "creation": "2026-02-01 00:00:00"},
+			{"name": "B-SAFE2", "creation": "2026-03-01 00:00:00"},
+		]
+		mock_batch_qty.return_value = []  # nothing of this item physically at dest
+		mock_sql.return_value = [{"batch_no": "B-OLD", "qty": 3.8}]  # over-reserved
+
+		out = msi._select_fifo_batches_reservable_at_dest(
+			self._se(), "ITEM-1", "WH-Src", "WH-Dest", 0.035
+		)
+		self.assertIsNotNone(out)
+		self.assertEqual([a.batch_no for a in out], ["B-SAFE1"])
+		self.assertAlmostEqual(out[0].qty, 0.035)
+		# Destination actual was queried ignoring reservations.
+		self.assertEqual(mock_batch_qty.call_args[1]["warehouse"], "WH-Dest")
+		self.assertTrue(mock_batch_qty.call_args[1]["ignore_reserved_stock"])
+
+	@patch(f"{_MSI_PATH}.frappe.db.sql")
+	@patch(f"{_MSI_PATH}.get_batch_qty")
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	def test_spills_across_multiple_safe_batches(
+		self, mock_auto, mock_get_all, mock_batch_qty, mock_sql
+	):
+		mock_auto.return_value = [
+			frappe._dict(batch_no="B-SAFE1", qty=0.02),
+			frappe._dict(batch_no="B-SAFE2", qty=0.05),
+		]
+		mock_get_all.return_value = [
+			{"name": "B-SAFE1", "creation": "2026-02-01 00:00:00"},
+			{"name": "B-SAFE2", "creation": "2026-03-01 00:00:00"},
+		]
+		mock_batch_qty.return_value = []
+		mock_sql.return_value = []
+
+		out = msi._select_fifo_batches_reservable_at_dest(
+			self._se(), "ITEM-1", "WH-Src", "WH-Dest", 0.035
+		)
+		self.assertEqual([a.batch_no for a in out], ["B-SAFE1", "B-SAFE2"])
+		self.assertAlmostEqual(out[0].qty, 0.02)
+		self.assertAlmostEqual(out[1].qty, 0.015)
+
+	@patch(f"{_MSI_PATH}.frappe.db.sql")
+	@patch(f"{_MSI_PATH}.get_batch_qty")
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	def test_returns_none_when_no_safe_batch_covers_need(
+		self, mock_auto, mock_get_all, mock_batch_qty, mock_sql
+	):
+		mock_auto.return_value = [frappe._dict(batch_no="B-OLD", qty=37.0)]
+		mock_get_all.return_value = [
+			{"name": "B-OLD", "creation": "2026-01-01 00:00:00"}
+		]
+		mock_batch_qty.return_value = []
+		mock_sql.return_value = [{"batch_no": "B-OLD", "qty": 3.8}]
+
+		out = msi._select_fifo_batches_reservable_at_dest(
+			self._se(), "ITEM-1", "WH-Src", "WH-Dest", 0.035
+		)
+		self.assertIsNone(out)
+
+	@patch(f"{_MSI_PATH}.get_auto_batch_nos", return_value=[])
+	def test_returns_none_when_no_source_batches(self, _mock_auto):
+		out = msi._select_fifo_batches_reservable_at_dest(
+			self._se(), "ITEM-1", "WH-Src", "WH-Dest", 0.035
+		)
+		self.assertIsNone(out)
+
+
+class TestExpandSourceRowsPrefersReservableBatch(FrappeTestCase):
+	@patch(f"{_MSI_PATH}._select_fifo_batches_reservable_at_dest")
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	@patch(f"{_MSI_PATH}.frappe.get_cached_value", return_value=1)
+	def test_transfer_row_uses_dest_reservable_selection(
+		self, _mock_item, mock_auto, mock_get_all, mock_select
+	):
+		# Plain FIFO would pick the over-reserved batch; the dest-aware selector
+		# overrides it with a reservable one.
+		mock_auto.return_value = [frappe._dict(batch_no="B-OLD", qty=0.035)]
+		mock_select.return_value = [frappe._dict(batch_no="B-SAFE1", qty=0.035)]
+		mock_get_all.return_value = [
+			{
+				"name": "B-SAFE1",
+				"custom_inventory_type": "Regular Stock",
+				"custom_customer": None,
+			}
+		]
+
+		se = SimpleNamespace(posting_date="2026-06-04", posting_time="10:00:00")
+		row = {
+			"item_code": "ITEM-1",
+			"s_warehouse": "WH-Src",
+			"t_warehouse": "WH-Dest",
+			"qty": 0.035,
+			"serial_no": None,
+			"batch_no": None,
+		}
+		out = msi._expand_source_rows_for_fifo(se, row)
+		self.assertEqual([r["batch_no"] for r in out], ["B-SAFE1"])
+		self.assertEqual(out[0]["qty"], 0.035)
+		mock_select.assert_called_once()
+
+	@patch(f"{_MSI_PATH}._select_fifo_batches_reservable_at_dest")
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	@patch(f"{_MSI_PATH}.frappe.get_cached_value", return_value=1)
+	def test_falls_back_to_plain_fifo_when_selector_returns_none(
+		self, _mock_item, mock_auto, mock_get_all, mock_select
+	):
+		mock_auto.return_value = [frappe._dict(batch_no="B-OLD", qty=0.035)]
+		mock_select.return_value = None  # no reservable allocation -> fall back
+		mock_get_all.return_value = [
+			{
+				"name": "B-OLD",
+				"custom_inventory_type": "Regular Stock",
+				"custom_customer": None,
+			}
+		]
+
+		se = SimpleNamespace(posting_date="2026-06-04", posting_time="10:00:00")
+		row = {
+			"item_code": "ITEM-1",
+			"s_warehouse": "WH-Src",
+			"t_warehouse": "WH-Dest",
+			"qty": 0.035,
+			"serial_no": None,
+			"batch_no": None,
+		}
+		out = msi._expand_source_rows_for_fifo(se, row)
+		self.assertEqual([r["batch_no"] for r in out], ["B-OLD"])
+		mock_select.assert_called_once()

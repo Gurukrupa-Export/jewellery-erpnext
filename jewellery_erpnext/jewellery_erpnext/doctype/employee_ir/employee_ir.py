@@ -27,6 +27,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_utils import (
 	get_summary_data,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
+	cancel_loss_stock_entries,
+	create_loss_stock_entries,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 	cancel_injections_for_eir,
 	inject_extra_metal_for_eir_receive,
@@ -34,21 +38,29 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_sli
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.mould_utils import (
 	create_mould,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.precision import (
+	round_employee_ir_weights_to_precision,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontracting_utils import (
 	create_so_for_subcontracting,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
 	validate_loss_qty,
+	validate_loss_tables_required,
 	validate_manually_book_loss_details,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	update_new_mop_wtg,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-	create_mop_log_for_employee_ir_loss,
+	# create_mop_log_for_employee_ir_loss,
 	create_mop_log_for_employee_ir_receive,
 	creste_mop_log_for_employee_ir,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+	_get_t_warehouse_from_logs,
+	_resolve_department_warehouse,
 )
 from jewellery_erpnext.utils import (
 	get_item_from_attribute_full,
@@ -75,6 +87,7 @@ class EmployeeIR(Document):
 				)
 
 	def on_submit(self):
+		validate_loss_tables_required(self)
 		validate_qc(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
@@ -112,6 +125,7 @@ class EmployeeIR(Document):
 		# self.validate_gross_wt()
 		# self.validate_main_slip()
 		# self.update_main_slip()
+		round_employee_ir_weights_to_precision(self)
 		self.validate_process_loss()
 		validate_manually_book_loss_details(self)
 		# valid_reparing_or_next_operation(self)
@@ -277,6 +291,9 @@ class EmployeeIR(Document):
 		curr_time = frappe.utils.now()
 
 		if cancel:
+			# Cancel Process Loss SEs and restore SREs before MOP Log flip.
+			cancel_loss_stock_entries(self)
+
 			# Capture which Manufacturing Operations need bucket recompute BEFORE
 			# the bulk is_cancelled flip — afterwards the rows are filtered out
 			# by the `is_cancelled = 0` clause the recompute uses.
@@ -352,14 +369,16 @@ class EmployeeIR(Document):
 					employee_ir=self.name,
 					gross_wt=row.gross_wt,
 				)
-				res["complete_time"] = curr_time
+
 				frappe.db.set_value(
 					"Manufacturing Work Order",
 					row.manufacturing_work_order,
 					"manufacturing_operation",
 					new_operation.name,
 				)
-				time_log_args.append((row.manufacturing_operation, res))
+				time_log_args.append(
+					(row.manufacturing_operation, {**res, "complete_time": curr_time})
+				)
 
 				# Main Slip gain injection: when is_main_slip_required and
 				# received_gross_wt > gross_wt, repack the delta from the
@@ -368,39 +387,53 @@ class EmployeeIR(Document):
 				# create_mop_log_for_employee_ir_receive will see.
 				stock_entry_name = inject_extra_metal_for_eir_receive(self, row)
 
+				# Combined-loss receive: create_mop_log_for_employee_ir_receive
+				# now subtracts employee_loss_details + manually_book_loss_details
+				# directly from each receive MOP Log row. There is no longer a
+				# separate Loss Attribution writer pass — the loss audit
+				# metadata (loss_weight, loss_source_row, loss_type) lives on
+				# the combined receive row itself, and MOPLog.validate updates
+				# Manufacturing Operation buckets exactly once.
+				# The receive audit clones land on the SOURCE MOP, which may
+				# belong to a different department than the EIR header. Resolve
+				# a guaranteed destination so to_warehouse is never blank:
+				# header department WH -> row MOP's department WH -> latest
+				# non-null to_warehouse already on the MWO's logs. Fallback only;
+				# we never block the submit (see _resolve_department_warehouse /
+				# _get_t_warehouse_from_logs in mop_eod_sync).
+				row_to_wh = department_wh
+				if not row_to_wh:
+					row_to_wh = _resolve_department_warehouse(
+						frappe.get_cached_doc(
+							"Manufacturing Operation", row.manufacturing_operation
+						)
+					) or _get_t_warehouse_from_logs(
+						frappe.get_all(
+							"MOP Log",
+							filters={
+								"manufacturing_work_order": row.manufacturing_work_order,
+								"is_cancelled": 0,
+							},
+							fields=["to_warehouse", "flow_index", "creation"],
+						)
+					)
+
 				create_mop_log_for_employee_ir_receive(
-					self, row, actor_wh, department_wh, stock_entry_name
+					self, row, actor_wh, row_to_wh, stock_entry_name
 				)
 
-				# Loss attribution bridge writes (is_synced=1, qty_change=0).
-				# Per-MWO total loss = sum of proportional + manual already
-				# accumulated in mwo_loss_dict above. Helper is idempotent on
-				# (voucher_type, voucher_no, mop, loss_source_row, loss_type).
-				total_loss_for_mwo = (
-					mwo_loss_dict.get(row.manufacturing_work_order) or 0
+				# update_new_mop_wtg now does both jobs in one pass:
+				# clones the previous MOP's flow_index=0 baseline rows AND
+				# subtracts loss in-place per (item, batch). One MOP Log
+				# row per item/batch on the new operation. Source MOP is
+				# left unchanged.
+				update_new_mop_wtg(
+					new_operation,
+					employee_ir_doc=self,
+					employee_ir_operation_row=row,
+					from_warehouse=actor_wh,
+					to_warehouse=row_to_wh,
 				)
-				for lr in self.employee_loss_details:
-					if lr.manufacturing_work_order == row.manufacturing_work_order:
-						create_mop_log_for_employee_ir_loss(
-							self,
-							lr,
-							"Auto Employee Loss",
-							total_loss_for_mwo,
-							from_wh=actor_wh,
-							to_wh=department_wh,
-						)
-				for lr in self.manually_book_loss_details:
-					if lr.manufacturing_work_order == row.manufacturing_work_order:
-						create_mop_log_for_employee_ir_loss(
-							self,
-							lr,
-							"Manually Booked Loss",
-							total_loss_for_mwo,
-							from_wh=actor_wh,
-							to_wh=department_wh,
-						)
-
-				update_new_mop_wtg(new_operation)
 			else:
 				for sre in frappe.db.get_all(
 					"Stock Reservation Entry",
@@ -465,6 +498,10 @@ class EmployeeIR(Document):
 
 			if time_log_args and not cancel:
 				batch_add_time_logs(self, time_log_args)
+
+		if not cancel:
+			# ONE Repack SE for all loss rows across the entire EIR.
+			create_loss_stock_entries(self)
 
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":
@@ -637,12 +674,11 @@ class EmployeeIR(Document):
 						"is_cancelled": 0,
 					},
 					fields,
+					order_by="creation asc",
 				)
 				or []
 			)
 			# Declaration & fetch required value
-			metal_item = []  # for check metal or not list
-			unique = set()  # for Unique Item_Code
 			sum_qty = {}  # for sum of qty matched item
 
 			# getting Metal property from MNF Work Order
@@ -658,41 +694,29 @@ class EmployeeIR(Document):
 				],
 				as_dict=1,
 			)
-			# To Check and pass thgrow Each ITEM metal or not function
-			metal_item.append(
-				get_item_from_attribute_full(
-					mwo_metal_property.metal_type,
-					mwo_metal_property.metal_touch,
-					mwo_metal_property.metal_purity,
-				)
-			)
-			# To get Final Metal Item
 
-			total_qty = 0
-			# To prepare Final Data with all condition's
+			# Keep only the latest qty snapshot per (item_code, batch_no).
+			# qty_after_transaction_batch_based is a running balance so the last
+			# row in creation order is the current stock for that batch.
+			latest_per_batch = {}
 			for child in mop_balance_table:
 				if child["item_code"][0] not in ["M", "F"]:
 					continue
-				key = (child["item_code"], child["batch_no"], child["qty"])
-				if key not in unique:
-					unique.add(key)
-					total_qty += child["qty"]
-					if child["item_code"] in sum_qty:
-						sum_qty[child["item_code"], child["batch_no"]]["qty"] += child[
-							"qty"
-						]
-					else:
-						sum_qty[child["item_code"], child["batch_no"]] = {
-							"item_code": child["item_code"],
-							"qty": child["qty"],
-							# "stock_uom": child["uom"],
-							"batch_no": child["batch_no"],
-							"manufacturing_work_order": mwo,
-							"manufacturing_operation": opt,
-							"pcs": child["pcs"],
-							"proportionally_loss": 0.0,
-							"received_gross_weight": 0.0,
-						}
+				latest_per_batch[(child["item_code"], child["batch_no"])] = child
+
+			total_qty = 0
+			for key, child in latest_per_batch.items():
+				total_qty += child["qty"]
+				sum_qty[key] = {
+					"item_code": child["item_code"],
+					"qty": child["qty"],
+					"batch_no": child["batch_no"],
+					"manufacturing_work_order": mwo,
+					"manufacturing_operation": opt,
+					"pcs": child["pcs"],
+					"proportionally_loss": 0.0,
+					"received_gross_weight": 0.0,
+				}
 			data = list(sum_qty.values())
 
 			# -------------------------------------------------------------------------
@@ -708,7 +732,7 @@ class EmployeeIR(Document):
 						)
 						total_mannual_loss += loss_qty
 
-			loss = flt(gwt) - flt(r_gwt) - flt(total_mannual_loss)
+			loss = flt(flt(gwt, 3) - flt(r_gwt, 3) - flt(total_mannual_loss, 3), 3)
 			ms_consum = 0
 			ms_consum_book = 0
 			stock_loss = 0

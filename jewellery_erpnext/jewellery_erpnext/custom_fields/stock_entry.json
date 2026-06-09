@@ -266,6 +266,28 @@
    "read_only": 1
   },
   {
+   "dt": "Stock Entry",
+   "fieldname": "custom_eir_loss_row",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "insert_after": "custom_eir_operation_row",
+   "label": "Employee IR Loss Row",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Stock Entry",
+   "fieldname": "custom_eir_loss_table",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "insert_after": "custom_eir_loss_row",
+   "label": "Employee IR Loss Table",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
    "depends_on": "eval:in_list([\"Material Transfer to Department\",\"Material Transfer (Subcontracting Work Order)\"], doc.stock_entry_type)",
    "dt": "Stock Entry",
    "fieldname": "subcontractor",
@@ -511,6 +533,15 @@
    "module": "Jewellery Erpnext",
    "options": "Manufacturing Operation",
    "read_only": 1
+  },
+  {
+    "dt": "Stock Entry",
+    "fieldname": "manufacturer",
+    "fieldtype": "Link",
+    "insert_after": "posting_time",
+    "label": "Manufacturer",
+    "module": "Jewellery Erpnext",
+    "options": "Manufacturer"
   },
   {
    "dt": "Stock Entry",

@@ -5,15 +5,19 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
-from frappe.utils import cint
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 	get_item_loss_item,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
+	create_material_receipt_for_certification,
 	create_po,
-	create_repack_entry,
+	process_fire_assy_xrf_submit,
 	update_bom_details,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+	resolve_and_validate,
 )
 
 
@@ -23,6 +27,21 @@ class ProductCertification(Document):
 			"Warehouse", {"disabled": 0, "department": self.department}
 		):
 			frappe.throw(_("Please set warehouse for selected Department"))
+
+		if self.department and self.company:
+			dept_company = frappe.db.get_value("Department", self.department, "company")
+			if dept_company and dept_company != self.company:
+				frappe.throw(
+					_(
+						"Department {0} belongs to Company {1}, not {2}. "
+						"Please select a department that belongs to {2}."
+					).format(
+						frappe.bold(self.department),
+						frappe.bold(dept_company),
+						frappe.bold(self.company),
+					),
+					title=_("Company and Department Mismatch"),
+				)
 
 		if self.supplier and not frappe.db.exists(
 			"Warehouse",
@@ -35,7 +54,28 @@ class ProductCertification(Document):
 		self.get_exploded_table()
 		self.distribute_amount()
 
+	def before_submit(self):
+		self.validate_exploded_qty()
+
 	def validate_items(self):
+		if self.type == "Receive":
+			for row in self.exploded_product_details:
+				if self.service_type == "Hall Marking Service" and not row.huid:
+					frappe.throw(
+						_(
+							"Row #{0}: HUID is mandatory for Hall Marking Service"
+						).format(row.idx)
+					)
+				if (
+					self.service_type == "Diamond Certificate service"
+					and not row.certification
+				):
+					frappe.throw(
+						_(
+							"Row #{0}: Certification No is mandatory for Diamond Certificate service"
+						).format(row.idx)
+					)
+
 		if self.type == "Issue":
 			return
 		for row in self.product_details:
@@ -59,6 +99,52 @@ class ProductCertification(Document):
 					_("Row #{0}: item not found in {1}").format(
 						row.idx, self.receive_against
 					)
+				)
+
+	def validate_exploded_qty(self):
+		if self.type != "Receive":
+			return
+		if self.service_type not in ["Fire Assy Service", "XRF Services"]:
+			return
+		if not self.exploded_product_details or not self.product_details:
+			return
+
+		# Check if main_slip is used at all
+		has_main_slip = any(row.main_slip for row in self.product_details)
+
+		if has_main_slip:
+			for row in self.product_details:
+				main_slip = row.main_slip
+				if not main_slip:
+					continue
+
+				total_weight = flt(row.total_weight)
+
+				exploded_weight = sum(
+					flt(d.gross_weight)
+					for d in self.exploded_product_details
+					if d.main_slip == main_slip
+				)
+
+				if abs(total_weight - exploded_weight) > 0.001:
+					frappe.throw(
+						_(
+							"Row #{0}: Total Gross Weight in Exploded Product Details ({1}) does not match Total Weight in Product Details ({2}) for Main Slip {3}"
+						).format(row.idx, exploded_weight, total_weight, main_slip)
+					)
+		else:
+			# Fallback to grand totals
+			total_product_weight = sum(
+				flt(d.total_weight) for d in self.product_details
+			)
+			total_exploded_weight = sum(
+				flt(d.gross_weight) for d in self.exploded_product_details
+			)
+			if abs(total_product_weight - total_exploded_weight) > 0.001:
+				frappe.throw(
+					_(
+						"Total Gross Weight in Exploded Product Details ({0}) does not match Total Weight in Product Details ({1})"
+					).format(total_exploded_weight, total_product_weight)
 				)
 
 	def update_bom(self):
@@ -119,10 +205,13 @@ class ProductCertification(Document):
 			row.amount = amt
 
 	def on_submit(self):
-		create_stock_entry(self)
+		if self.service_type in ["Fire Assy Service", "XRF Services"]:
+			process_fire_assy_xrf_submit(self, create_stock_entry)
+		else:
+			create_stock_entry(self)
+			create_po(self)
+			update_bom_details(self)
 		self.update_huid()
-		create_po(self)
-		update_bom_details(self)
 
 	def update_huid(self):
 		for row in self.exploded_product_details:
@@ -156,12 +245,12 @@ class ProductCertification(Document):
 	def get_exploded_table(self):
 		exploded_product_details = []
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
-			cat_det = frappe.get_all(
-				"Certification Settings",
-				{"parent": "Jewellery Settings"},
-				["category", "count"],
-			)
-			custom_cat = {row.category: row.count for row in cat_det}
+			# cat_det = frappe.get_all(
+			# 	"Certification Settings",
+			# 	{"parent": "Jewellery Settings"},
+			# 	["category", "count"],
+			# )
+			# custom_cat = {row.category: row.count for row in cat_det}
 			metal_det = None
 			for row in self.product_details:
 				metal_touch = ""
@@ -219,8 +308,11 @@ class ProductCertification(Document):
 					metal_touch = pmo_data.get("metal_touch")
 					metal_colour = pmo_data.get("metal_colour")
 				else:
-					metal_det = frappe.db.get_all(
-						"BOM Metal Detail", {"parent": row.bom}, "DISTINCT metal_touch"
+					metal_det = frappe.get_all(
+						"BOM Metal Detail",
+						filters={"parent": row.bom},
+						fields=["metal_touch"],
+						distinct=True,
 					)
 					count *= cint(len(metal_det))
 
@@ -358,19 +450,117 @@ class ProductCertification(Document):
 						"gemstone_weight",
 						"finding_weight_",
 						"other_weight",
+						"total_diamond_pcs",
+						"total_gemstone_pcs",
 					],
 					as_dict=1,
 				)
+
+				# Diamond / stone pcs come from the latest Manufacturing Operation when a
+				# Manufacturing Work Order is linked; otherwise (serial-no or PMO rows) fall
+				# back to the BOM totals (total_diamond_pcs / total_gemstone_pcs).
+				diamond_pcs = 0
+				stone_pcs = 0
+				if row.manufacturing_work_order:
+					latest_operation = frappe.get_all(
+						"Manufacturing Operation",
+						filters={
+							"manufacturing_work_order": row.manufacturing_work_order
+						},
+						fields=["diamond_pcs", "gemstone_pcs"],
+						order_by="creation desc",
+						limit=1,
+					)
+
+					if latest_operation:
+						diamond_pcs = latest_operation[0].diamond_pcs
+						stone_pcs = latest_operation[0].gemstone_pcs
+
+				if (
+					not diamond_pcs
+					and bom_weights
+					and bom_weights.get("total_diamond_pcs")
+				):
+					diamond_pcs = bom_weights.get("total_diamond_pcs")
+				if (
+					not stone_pcs
+					and bom_weights
+					and bom_weights.get("total_gemstone_pcs")
+				):
+					stone_pcs = bom_weights.get("total_gemstone_pcs")
+
 				for i in range(0, count):
 					if metal_det:
 						if count == 2 and len(metal_det) < count:
 							metal_touch = metal_det[0].get("metal_touch")
 						else:
 							metal_touch = metal_det[i].get("metal_touch")
-					if existing and metal_touch in [
-						a.get("metal_touch") for a in existing
-					]:
+
+					matching_existing = None
+					if existing:
+						for a in existing:
+							if a.get("metal_touch") == metal_touch:
+								matching_existing = a
+								break
+
+					if matching_existing:
+						matching_existing.gross_weight = (
+							pmo_weights.get("gross_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["gross_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.gold_weight = (
+							pmo_weights.get("net_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["metal_and_finding_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.chain_weight = (
+							pmo_weights.get("finding_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["finding_weight_"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.other_weight = (
+							pmo_weights.get("other_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["other_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.stone_weight = (
+							pmo_weights.get("gemstone_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["gemstone_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.diamond_weight = (
+							pmo_weights.get("diamond_weight") / count
+							if row.parent_manufacturing_order
+							else bom_weights["diamond_weight"] / count
+							if bom_weights
+							else 0
+						)
+						matching_existing.diamond_pcs = (
+							cint(diamond_pcs) / count
+							if count > 1
+							else cint(diamond_pcs)
+						)
+						matching_existing.stone_pcs = (
+							cint(stone_pcs) / count if count > 1 else cint(stone_pcs)
+						)
+						matching_existing.bom = row.bom
+						matching_existing.category = row.category
+						matching_existing.sub_category = row.sub_category
+						matching_existing.metal_touch = metal_touch
+						matching_existing.metal_colour = metal_colour
 						continue
+
 					exploded_product_details.append(
 						{
 							"item_code": row.item_code,
@@ -378,22 +568,40 @@ class ProductCertification(Document):
 							"bom": row.bom,
 							"gross_weight": pmo_weights.get("gross_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["gross_weight"] / count,
+							else bom_weights["gross_weight"] / count
+							if bom_weights
+							else 0,
 							"gold_weight": pmo_weights.get("net_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["metal_and_finding_weight"] / count,
+							else bom_weights["metal_and_finding_weight"] / count
+							if bom_weights
+							else 0,
 							"chain_weight": pmo_weights.get("finding_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["finding_weight_"] / count,
+							else bom_weights["finding_weight_"] / count
+							if bom_weights
+							else 0,
 							"other_weight": pmo_weights.get("other_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["other_weight"] / count,
+							else bom_weights["other_weight"] / count
+							if bom_weights
+							else 0,
 							"stone_weight": pmo_weights.get("gemstone_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["gemstone_weight"] / count,
+							else bom_weights["gemstone_weight"] / count
+							if bom_weights
+							else 0,
 							"diamond_weight": pmo_weights.get("diamond_weight") / count
 							if row.parent_manufacturing_order
-							else bom_weights["diamond_weight"] / count,
+							else bom_weights["diamond_weight"] / count
+							if bom_weights
+							else 0,
+							"diamond_pcs": cint(diamond_pcs) / count
+							if count > 1
+							else cint(diamond_pcs),
+							"stone_pcs": cint(stone_pcs) / count
+							if count > 1
+							else cint(stone_pcs),
 							"parent_manufacturing_order": row.parent_manufacturing_order,
 							"manufacturing_work_order": row.manufacturing_work_order,
 							"supply_raw_material": bool(
@@ -489,6 +697,7 @@ def create_stock_entry(doc):
 		se_doc.stock_entry_type = get_stock_entry_type(doc.service_type, doc.type)
 		se_doc.company = doc.company
 		se_doc.product_certification = doc.name
+		se_doc.auto_created = 1
 		warehouse_type = "Manufacturing"
 		# if doc.service_type in ["Fire Assy Service", "XRF Services"]:
 		# 	warehouse_type = "Raw Material"
@@ -499,46 +708,103 @@ def create_stock_entry(doc):
 				"warehouse_type": "Raw Material"
 				if doc.service_type in ["Fire Assy Service", "XRF Services"]
 				else warehouse_type,
+				"is_group": 0,
 				"disabled": 0,
 			},
 		)
 		if not s_warehouse:
 			s_warehouse = frappe.db.exists(
-				"Warehouse", {"department": doc.department, "disabled": 0}
+				"Warehouse",
+				{"department": doc.department, "is_group": 0, "disabled": 0},
 			)
 
-		t_warehouse = frappe.db.exists(
+		company_abbr = frappe.get_cached_value("Company", doc.company, "abbr") or ""
+		t_warehouse_mwo = frappe.db.get_value(
+			"Warehouse",
+			{
+				"company": doc.company,
+				"subcontractor": doc.supplier,
+				"name": ["like", f"%WIP WH - {company_abbr}%"],
+				"is_group": 0,
+				"disabled": 0,
+			},
+			"name",
+		)
+		if not t_warehouse_mwo:
+			t_warehouse_mwo = frappe.db.exists(
+				"Warehouse",
+				{
+					"company": doc.company,
+					"subcontractor": doc.supplier,
+					"name": ["like", "%WIP%"],
+					"is_group": 0,
+					"disabled": 0,
+				},
+			)
+		if not t_warehouse_mwo:
+			t_warehouse_mwo = frappe.db.exists(
+				"Warehouse",
+				{
+					"company": doc.company,
+					"subcontractor": doc.supplier,
+					"is_group": 0,
+					"disabled": 0,
+				},
+			)
+
+		t_warehouse_serial = frappe.db.exists(
 			"Warehouse",
 			{
 				"company": doc.company,
 				"subcontractor": doc.supplier,
 				"warehouse_type": warehouse_type,
+				"is_group": 0,
 				"disabled": 0,
 			},
 		)
-		if not t_warehouse:
-			t_warehouse = frappe.db.exists(
+		if not t_warehouse_serial:
+			t_warehouse_serial = frappe.db.exists(
 				"Warehouse",
-				{"company": doc.company, "subcontractor": doc.supplier, "disabled": 0},
+				{
+					"company": doc.company,
+					"subcontractor": doc.supplier,
+					"is_group": 0,
+					"disabled": 0,
+				},
 			)
 
 		added_mwo = []
 		added_serial = []
+		is_fire_assy_xrf = doc.service_type in ["Fire Assy Service", "XRF Services"]
 		for row in doc.exploded_product_details:
 			common_order = (
 				row.parent_manufacturing_order or row.manufacturing_work_order
 			)
 			if row.supply_raw_material and common_order not in added_mwo:
-				get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse)
+				get_stock_item_against_mwo(
+					se_doc, doc, row, s_warehouse, t_warehouse_mwo
+				)
 				added_mwo.append(common_order)
 			else:
-				if (
-					not row.serial_no or row.serial_no in added_serial
-				) and not row.tree_no:
-					continue
-				added_serial.append(row.serial_no)
+				# For Fire Assy / XRF services, exploded rows may lack
+				# serial_no and tree_no but must still be processed when
+				# they carry a positive gross_weight.
+				if not is_fire_assy_xrf:
+					if (
+						not row.serial_no or row.serial_no in added_serial
+					) and not row.tree_no:
+						continue
+				else:
+					# Skip loss rows (gross_weight == 0) for Fire Assy/XRF
+					if row.gross_weight <= 0:
+						continue
+
+				if row.serial_no:
+					added_serial.append(row.serial_no)
 				if row.gross_weight > 0:
-					source_wh = s_warehouse if doc.type == "Issue" else t_warehouse
+					source_wh = (
+						s_warehouse if doc.type == "Issue" else t_warehouse_serial
+					)
 					if row.serial_no:
 						serial_wh = frappe.db.get_value(
 							"Serial No", row.serial_no, "warehouse"
@@ -553,7 +819,7 @@ def create_stock_entry(doc):
 							"serial_no": row.serial_no,
 							"qty": 1 if row.serial_no else row.gross_weight,
 							"s_warehouse": source_wh,
-							"t_warehouse": t_warehouse
+							"t_warehouse": t_warehouse_serial
 							if doc.type == "Issue"
 							else s_warehouse,
 							"Inventory_type": "Regular Stock",
@@ -575,7 +841,7 @@ def create_stock_entry(doc):
 		"Fire Assy Service",
 		"XRF Services",
 	]:
-		create_repack_entry(doc)
+		create_material_receipt_for_certification(doc)
 
 
 def get_stock_entry_type(txn_type, purpose):
@@ -680,49 +946,15 @@ def get_stock_entry_type(txn_type, purpose):
 
 
 def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_current_mop_balance_rows,
+	)
+
 	if doc.type == "Issue":
-		target_wh = frappe.get_value(
-			"Warehouse",
-			{
-				"disabled": 0,
-				"department": doc.department,
-				"warehouse_type": "Manufacturing",
-			},
-			"name",
-		)
-		if not target_wh:
-			target_wh = frappe.get_value(
-				"Warehouse", {"disabled": 0, "department": doc.department}, "name"
-			)
-
-		# Prepare dynamic WHERE clauses
-		conditions = [
-			"mop_item.manufacturing_operation IS NOT NULL",
-			"se.docstatus = 1",
-		]
-		params = []
-
-		or_clauses = []
-
-		# Include conditions for either MWO or Parent MWO
-		if row.manufacturing_work_order:
-			or_clauses.append("mop_item.custom_manufacturing_work_order = %s")
-			params.append(row.manufacturing_work_order)
-
-			latest_mop = frappe.db.get_value(
-				"Manufacturing Work Order",
-				row.manufacturing_work_order,
-				"manufacturing_operation",
-			)
-			if latest_mop:
-				or_clauses.append("mop_item.manufacturing_operation = %s")
-				params.append(latest_mop)
-
-		if row.parent_manufacturing_order:
-			or_clauses.append("mop_item.custom_parent_manufacturing_order = %s")
-			params.append(row.parent_manufacturing_order)
-
-			mwo = frappe.db.get_value(
+		# --- Resolve the MWO and its latest MOP ---
+		mwo_name = row.manufacturing_work_order
+		if not mwo_name and row.parent_manufacturing_order:
+			mwo_name = frappe.db.get_value(
 				"Manufacturing Work Order",
 				{
 					"manufacturing_order": row.parent_manufacturing_order,
@@ -730,59 +962,201 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 					"docstatus": 1,
 				},
 			)
-			if mwo:
-				latest_mop = frappe.db.get_value(
-					"Manufacturing Work Order", mwo, "manufacturing_operation"
-				)
-				if latest_mop:
-					or_clauses.append("mop_item.manufacturing_operation = %s")
-					params.append(latest_mop)
 
-		if or_clauses:
-			conditions.append(f"({' OR '.join(or_clauses)})")
-
-	else:
-		# For "Receive" type
-		conditions = ["se.product_certification = %s"]
-		params = [doc.receive_against]
-
-		if row.manufacturing_work_order:
-			conditions.append("mop_item.reference_docname = %s")
-			params.append(row.manufacturing_work_order)
-			conditions.append("mop_item.reference_doctype = 'Manufacturing Work Order'")
-
-		elif row.parent_manufacturing_order:
-			conditions.append("mop_item.reference_docname = %s")
-			params.append(row.parent_manufacturing_order)
-			conditions.append(
-				"mop_item.reference_doctype = 'Parent Manufacturing Order'"
+		latest_mop = None
+		if mwo_name:
+			latest_mop = frappe.db.get_value(
+				"Manufacturing Work Order", mwo_name, "manufacturing_operation"
 			)
 
-	sql = f"""
-		SELECT
-			mop_item.item_code,
-			mop_item.qty,
-			mop_item.batch_no
-		FROM `tabStock Entry Detail` mop_item
-		LEFT JOIN `tabStock Entry` se ON mop_item.parent = se.name
-		WHERE {" AND ".join(conditions)}
-	"""
+		# --- Get items from MOP Log balance (weights/qty from the PC dept MOP) ---
+		mop_balance_rows = []
+		if latest_mop:
+			mop_balance_rows = get_current_mop_balance_rows(latest_mop)
 
-	stock_entries = frappe.db.sql(sql, tuple(params), as_dict=True)
+		if not mop_balance_rows:
+			frappe.msgprint(
+				_(
+					"Row {0}: No MOP balance found for the Manufacturing Work Order"
+				).format(row.idx)
+			)
+			return
 
-	if not stock_entries:
-		frappe.msgprint(
-			_("Row {0} : No Stock entry Found against the Order").format(row.idx)
+		# --- Find all MWOs linked to this PMO ---
+		pmo_name = row.parent_manufacturing_order
+		if not pmo_name and mwo_name:
+			pmo_name = frappe.db.get_value(
+				"Manufacturing Work Order", mwo_name, "manufacturing_order"
+			)
+
+		all_pmo_mwos = []
+		if pmo_name:
+			all_pmo_mwos = frappe.get_all(
+				"Manufacturing Work Order",
+				{"manufacturing_order": pmo_name, "docstatus": 1},
+				pluck="name",
+			)
+		if not all_pmo_mwos and mwo_name:
+			all_pmo_mwos = [mwo_name]
+
+		# --- Find and cancel SREs, use SRE warehouse as source ---
+		sre_list_1 = []
+		if all_pmo_mwos:
+			sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+			sre_filters = {"docstatus": 1}
+			if "manufacturing_work_order" in sre_cols:
+				sre_filters["manufacturing_work_order"] = ["in", all_pmo_mwos]
+			sre_list_1 = frappe.db.get_all(
+				"Stock Reservation Entry",
+				filters=sre_filters,
+				fields=[
+					"name",
+					"item_code",
+					"warehouse",
+					"reserved_qty",
+					"delivered_qty",
+				],
+			)
+
+		sre_list_2 = []
+		item_codes = list(
+			set(r.get("item_code") for r in mop_balance_rows if r.get("item_code"))
+		)
+		sales_order = None
+		if pmo_name:
+			sales_order = frappe.db.get_value(
+				"Parent Manufacturing Order", pmo_name, "sales_order"
+			)
+		if sales_order and item_codes:
+			sre_list_2 = frappe.db.get_all(
+				"Stock Reservation Entry",
+				filters={
+					"docstatus": 1,
+					"voucher_type": "Sales Order",
+					"voucher_no": sales_order,
+					"item_code": ["in", item_codes],
+				},
+				fields=[
+					"name",
+					"item_code",
+					"warehouse",
+					"reserved_qty",
+					"delivered_qty",
+				],
+			)
+
+		# Deduplicate SREs by name
+		seen_sres = set()
+		sre_list = []
+		for sre in sre_list_1 + sre_list_2:
+			if sre.name not in seen_sres:
+				sre_list.append(sre)
+				seen_sres.add(sre.name)
+
+		# --- Create stock entry items from MOP balance rows ---
+		for balance_row in mop_balance_rows:
+			item_code = balance_row.get("item_code")
+			qty = (
+				balance_row.get("qty_after_transaction_batch_based")
+				or balance_row.get("qty_after_transaction")
+				or 0
+			)
+			batch_no = balance_row.get("batch_no")
+
+			if not item_code or qty <= 0:
+				continue
+
+			item_s_warehouse = (
+				resolve_and_validate(
+					item_code=item_code,
+					qty=qty,
+					batch_no=batch_no,
+					mwo=mwo_name,
+					mop=latest_mop,
+				)
+				or s_warehouse
+			)
+
+			# pcs is a stone count: carry the batch-based balance for
+			# diamond/gemstone items only (prefix D/G, per FIELD_MAP in mop_log)
+			# so metal/finding rows keep the meaningful default of 1.
+			pcs = (
+				cint(balance_row.get("pcs_after_transaction_batch_based") or 0)
+				if item_code and item_code[0] in ("D", "G")
+				else 0
+			)
+
+			item_row = {
+				"item_code": item_code,
+				"qty": qty,
+				"s_warehouse": item_s_warehouse,
+				"t_warehouse": t_warehouse,
+				"Inventory_type": "Regular Stock",
+				"reference_doctype": "Manufacturing Work Order"
+				if row.manufacturing_work_order
+				else "Parent Manufacturing Order",
+				"reference_docname": row.manufacturing_work_order
+				if row.manufacturing_work_order
+				else row.parent_manufacturing_order,
+				"use_serial_batch_fields": True,
+				"batch_no": batch_no,
+			}
+			if pcs:
+				item_row["pcs"] = pcs
+			se_doc.append("items", item_row)
+
+		# --- Cancel the SREs ---
+		for sre in sre_list:
+			try:
+				frappe.clear_document_cache("Bin")
+				sre_doc = frappe.get_doc("Stock Reservation Entry", sre.name)
+				sre_doc.ignore_permissions = True
+				sre_doc.cancel()
+				frappe.clear_document_cache("Bin")
+			except Exception:
+				frappe.log_error(
+					title=f"Failed to cancel SRE {sre.name} during Product Certification",
+					message=frappe.get_traceback(),
+				)
+		if sre_list:
+			frappe.clear_cache()
+
+	else:
+		# --- Receive type: get items from the Issue stock entry ---
+		issue_se = frappe.db.get_value(
+			"Stock Entry",
+			{"product_certification": doc.receive_against, "docstatus": 1},
+			"name",
 		)
 
-	for item in stock_entries:
-		se_doc.append(
-			"items",
-			{
+		if not issue_se:
+			frappe.msgprint(
+				_("Row {0}: No Issue Stock Entry found for {1}").format(
+					row.idx, doc.receive_against
+				)
+			)
+			return
+
+		# Get items from the issue stock entry
+		issue_items = frappe.db.get_all(
+			"Stock Entry Detail",
+			filters={"parent": issue_se},
+			fields=[
+				"item_code",
+				"qty",
+				"pcs",
+				"batch_no",
+				"s_warehouse",
+				"t_warehouse",
+			],
+		)
+
+		for item in issue_items:
+			item_row = {
 				"item_code": item.item_code,
 				"qty": item.qty,
-				"s_warehouse": s_warehouse if doc.type == "Issue" else t_warehouse,
-				"t_warehouse": t_warehouse if doc.type == "Issue" else s_warehouse,
+				"s_warehouse": item.t_warehouse,  # Issue's target becomes Receive's source
+				"t_warehouse": s_warehouse,  # Department warehouse as target for receive
 				"Inventory_type": "Regular Stock",
 				"reference_doctype": "Manufacturing Work Order"
 				if row.manufacturing_work_order
@@ -792,8 +1166,11 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				else row.parent_manufacturing_order,
 				"use_serial_batch_fields": True,
 				"batch_no": item.get("batch_no"),
-			},
-		)
+			}
+			# Carry the corrected pcs from the Issue SE (diamond/gemstone rows).
+			if item.get("pcs"):
+				item_row["pcs"] = item.get("pcs")
+			se_doc.append("items", item_row)
 
 
 @frappe.whitelist()

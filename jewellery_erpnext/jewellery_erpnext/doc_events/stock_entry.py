@@ -14,9 +14,9 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt
 
-from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
-	create_repack_for_subcontracting,
-)
+# from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
+# 	create_repack_for_subcontracting,
+# )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
@@ -185,13 +185,43 @@ def validate_ir(self):
 
 
 def validate_pcs(self):
-	pcs_data = {}
+	# A single Material Request Item's qty can be split across several batch
+	# rows (see get_fifo_batches). The MR Item's PCS is the authoritative total
+	# for that item; it must be carried by exactly one row's worth of count so
+	# the per-item PCS is not multiplied by the number of batches.
+	#
+	# Historically every row after the first was zeroed — but a batch row that
+	# physically holds stock should never read 0 PCS. So each extra batch row
+	# now defaults to 1, and the first row absorbs the deduction. The per-item
+	# total is preserved: e.g. 71 split across two batches → 70 + 1 (not 71 + 0).
+	#
+	# The total is read from the MR Item (not the rows) so this stays idempotent
+	# when re-run on already-split rows — e.g. the MOP Stock Entry is a copy of
+	# the reserve Stock Entry and runs before_validate again.
+	rows_by_mri = {}
 	for row in self.items:
 		if row.material_request_item:
-			if pcs_data.get(row.material_request_item):
-				row.pcs = 0
-			else:
-				pcs_data[row.material_request_item] = row.pcs
+			rows_by_mri.setdefault(row.material_request_item, []).append(row)
+
+	for mri, rows in rows_by_mri.items():
+		if len(rows) <= 1:
+			continue
+		total = cint(frappe.db.get_value("Material Request Item", mri, "pcs"))
+		if total <= 0:
+			# No authoritative total — leave the rows untouched.
+			continue
+		first, extras = rows[0], rows[1:]
+		if total > len(extras):
+			# Enough to keep at least 1 on every row.
+			for r in extras:
+				r.pcs = 1
+			first.pcs = total - len(extras)
+		else:
+			# Not enough PCS to spread one-each; keep the whole count on the
+			# first row (prior behaviour) rather than driving it below 1.
+			for r in extras:
+				r.pcs = 0
+			first.pcs = total
 	self.flags.ignore_mandatory = True
 
 
@@ -383,7 +413,7 @@ def validate_metal_properties(doc):
 					as_dict=True,
 				)
 
-	manufacturer = MANUFACTURER
+	manufacturer = MANUFACTURER or doc.manufacturer
 	company_validations = (
 		frappe.db.get_value(
 			"Manufacturing Setting",
@@ -544,20 +574,6 @@ def on_cancel(self, method=None):
 
 def before_submit(self, method):
 	# validation_for_stock_entry_submission(self)
-	main_slip = self.to_main_slip or self.main_slip
-	subcontractor = self.subcontractor or self.to_subcontractor
-	if (
-		not self.auto_created
-		and self.stock_entry_type != "Manufacture"
-		and (
-			(
-				main_slip
-				and frappe.db.get_value("Main Slip", main_slip, "for_subcontracting")
-			)
-			or (self.manufacturing_operation and subcontractor)
-		)
-	):
-		create_repack_for_subcontracting(self, self.subcontractor, main_slip)
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
@@ -566,6 +582,27 @@ def before_submit(self, method):
 
 def onsubmit(self, method):
 	validate_items(self)
+	# Hard skip reservation logic for Product Certification Receive
+	# (Fire Assy Service / XRF Services), regardless of reservation settings.
+	pc_name = getattr(self, "product_certification", None)
+	if pc_name:
+		pc = frappe.db.get_value(
+			"Product Certification",
+			pc_name,
+			["service_type", "type"],
+			as_dict=True,
+		)
+		if (
+			pc
+			and pc.type == "Receive"
+			and pc.service_type
+			in [
+				"Fire Assy Service",
+				"XRF Services",
+			]
+		):
+			return
+
 	types_for_reservation = frappe.db.get_all(
 		"Stock Entry Type To Reservation",
 		filters={"parent": "MOP Settings"},
@@ -641,10 +678,12 @@ def stock_reservation_entry_for_mwo(self):
 		self.manufacturing_order,
 		["sales_order", "sales_order_item", "manufacturer"],
 	)
-	voucher_qty_row = frappe.db.get_values(
-		"Material Request",
-		{"manufacturing_order": self.manufacturing_order, "docstatus": ["!=", 2]},
-		["sum(custom_total_quantity)"],
+	voucher_qty_row = frappe.db.sql(
+		"""
+        SELECT sum(custom_total_quantity) FROM `tabMaterial Request`
+        WHERE manufacturing_order=%s AND docstatus!=2
+        """,
+		(self.manufacturing_order,),
 	)
 	base_mr_voucher_qty = None
 	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
@@ -686,13 +725,22 @@ def stock_reservation_entry_for_mwo(self):
 		# the same transaction. Reserve the inbound line qty when this SE is tied to an EIR.
 		# Gate on is_eir_injection — without the gate, regular Repack/Manufacture SEs would
 		# create SREs with no reservable qty, regressing test_skips_when_no_reservable_qty.
-		if is_eir_injection and qty_to_be_reserved <= 0 and flt(row.qty) > 0:
+		if qty_to_be_reserved <= 0 and flt(row.qty) > 0:
 			qty_to_be_reserved = flt(row.qty)
 		if qty_to_be_reserved <= 0:
-			continue
+			frappe.throw(
+				_(
+					"No available stock to reserve for Item {0} in Warehouse {1} in batch {2} available: {3}"
+				).format(
+					row.item_code,
+					row.t_warehouse,
+					row.batch_no,
+					available_qty_to_reserve,
+				)
+			)
 
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			"Sales Order", sales_order, sales_order_item
+			row.item_code, "Sales Order", sales_order, sales_order_item
 		)
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
@@ -1470,7 +1518,7 @@ def group_se_items_and_update_mop_items(doc, method):
 	doc.set("custom_mop_items", [])
 
 	for row in doc.items:
-		mop_row = copy.deepcopy(row.__dict__)
+		mop_row = copy.deepcopy(row.as_dict())
 		mop_row["name"] = None
 		mop_row["idx"] = None
 

@@ -18,10 +18,14 @@
 		<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
 			<a href=>{{ frappe.utils.get_link_to_form('Manufacturing Operation', item.manufacturing_operation) }}</a>
 		</td>
-		{% set doc = frappe.get_doc('Manufacturing Operation', item.manufacturing_operation) %}
-		<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
-			{{doc.status}}
-		</td>
+		{% if item.manufacturing_operation %}
+			{% set doc = frappe.get_doc('Manufacturing Operation', item.manufacturing_operation) %}
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
+				{{doc.status}}
+			</td>
+		{% else %}
+			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem"></td>
+		{% endif %}
 		<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
 			<a href=>{{ frappe.utils.get_link_to_form('Stock Entry', item.name) }}</a>
 		</td>

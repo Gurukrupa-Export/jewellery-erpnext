@@ -1,0 +1,215 @@
+{
+ "actions": [],
+ "creation": "2026-05-31 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "manufacturing_work_order",
+  "manufacturing_operation",
+  "company",
+  "col_break_1",
+  "item_code",
+  "batch_no",
+  "serial_no",
+  "qty",
+  "pcs",
+  "col_break_2",
+  "source_warehouse",
+  "target_warehouse",
+  "status",
+  "sync_stage",
+  "is_synced",
+  "refs_section",
+  "stock_reservation_entry",
+  "stock_entry",
+  "draft_stock_entry",
+  "mop_log",
+  "error_section",
+  "error_type",
+  "error_message",
+  "suggested_fix",
+  "technical_traceback",
+  "timing_section",
+  "created_on",
+  "completed_on"
+ ],
+ "fields": [
+  {
+   "fieldname": "manufacturing_work_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Work Order",
+   "options": "Manufacturing Work Order"
+  },
+  {
+   "fieldname": "manufacturing_operation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Manufacturing Operation",
+   "options": "Manufacturing Operation"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company"
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Batch No",
+   "options": "Batch"
+  },
+  {
+   "fieldname": "serial_no",
+   "fieldtype": "Small Text",
+   "label": "Serial No"
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Qty",
+   "precision": "3"
+  },
+  {
+   "fieldname": "pcs",
+   "fieldtype": "Float",
+   "label": "Pcs",
+   "precision": "3"
+  },
+  {
+   "fieldname": "col_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "source_warehouse",
+   "fieldtype": "Link",
+   "label": "Source Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "target_warehouse",
+   "fieldtype": "Link",
+   "label": "Target Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Pending\nSynced\nUnsynced\nSkipped\nFailed\nExcluded\nDraft Created\nSubmitted"
+  },
+  {
+   "fieldname": "sync_stage",
+   "fieldtype": "Select",
+   "label": "Sync Stage",
+   "options": "Collect MOP Log\nResolve SRE Warehouse\nBuild Stock Entry Row\nValidate Item\nValidate Batch Stock\nSave Draft Stock Entry\nSubmit Stock Entry\nMark MOP Log Synced\nCompleted"
+  },
+  {
+   "fieldname": "is_synced",
+   "fieldtype": "Check",
+   "label": "Is Synced"
+  },
+  {
+   "fieldname": "refs_section",
+   "fieldtype": "Section Break",
+   "label": "References"
+  },
+  {
+   "fieldname": "stock_reservation_entry",
+   "fieldtype": "Link",
+   "label": "Stock Reservation Entry",
+   "options": "Stock Reservation Entry"
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Stock Entry (Submitted)",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "draft_stock_entry",
+   "fieldtype": "Link",
+   "label": "Draft Stock Entry",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "mop_log",
+   "fieldtype": "Link",
+   "label": "MOP Log",
+   "options": "MOP Log"
+  },
+  {
+   "fieldname": "error_section",
+   "fieldtype": "Section Break",
+   "label": "Error Details"
+  },
+  {
+   "fieldname": "error_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Error Type",
+   "options": "\nNot Created Today\nMWO Not In EOD Filter\nBefore Sync From Datetime\nManufacturing Operation Not In Filter\nMissing SRE\nMissing Target Warehouse\nMissing Batch\nMissing Serial\nInsufficient Batch Stock\nStock Entry Save Failed\nStock Entry Submit Failed\nValidation Failed\nUnknown Error"
+  },
+  {
+   "fieldname": "error_message",
+   "fieldtype": "Small Text",
+   "label": "Error Message"
+  },
+  {
+   "fieldname": "suggested_fix",
+   "fieldtype": "Small Text",
+   "label": "Suggested Fix"
+  },
+  {
+   "fieldname": "technical_traceback",
+   "fieldtype": "Code",
+   "label": "Technical Traceback"
+  },
+  {
+   "fieldname": "timing_section",
+   "fieldtype": "Section Break",
+   "label": "Timing"
+  },
+  {
+   "fieldname": "created_on",
+   "fieldtype": "Datetime",
+   "label": "Created On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_on",
+   "fieldtype": "Datetime",
+   "label": "Completed On",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-05-31 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "MOP EOD Sync Log Item",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "ASC",
+ "states": []
+}

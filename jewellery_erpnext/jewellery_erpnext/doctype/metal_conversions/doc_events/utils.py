@@ -6,7 +6,7 @@ from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle impor
 	get_auto_batch_nos,
 )
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, nowtime
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	get_fifo_batches,
@@ -22,6 +22,9 @@ def update_batch_details(self):
 	else:
 		child_table = self.mc_source_table
 
+	# shared across rows so the same batch is not double-allocated when multiple
+	# rows draw from the same item/warehouse (see get_fifo_batches)
+	consumed = {}
 	for row in child_table:
 		warehouse = row.get("s_warehouse") or self.get("source_warehouse")
 		if row.get("batch") and get_batch_qty(row.batch, warehouse) >= row.qty:
@@ -29,7 +32,7 @@ def update_batch_details(self):
 			temp_row.batch_no = temp_row.batch
 			rows_to_append += [temp_row]
 		else:
-			rows_to_append += get_fifo_batches(self, row)
+			rows_to_append += get_fifo_batches(self, row, consumed)
 
 	if rows_to_append:
 		if self.doctype == "Diamond Conversion":
@@ -74,7 +77,8 @@ def update_alloy_betch(self):
 		batch_data = get_auto_batch_nos(
 			frappe._dict(
 				{
-					"posting_date": self.date,
+					"posting_date": self.get("posting_date") or self.get("date"),
+					"posting_time": self.get("posting_time") or nowtime(),
 					"item_code": self.source_alloy,
 					"warehouse": self.source_warehouse,
 					"qty": self.source_alloy_qty,
@@ -121,7 +125,8 @@ def update_source_betch(self):
 	batch_data = get_auto_batch_nos(
 		frappe._dict(
 			{
-				"posting_date": self.date,
+				"posting_date": self.get("posting_date") or self.get("date"),
+				"posting_time": self.get("posting_time") or nowtime(),
 				"item_code": self.source_item,
 				"warehouse": self.source_warehouse,
 				# "qty": self.source_qty,

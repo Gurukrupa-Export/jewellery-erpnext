@@ -109,12 +109,11 @@ class ManufacturingPlan(Document):
 		for row in self.manufacturing_plan_table:
 			# Validate Qty
 			if row.custom_tracking_bom:
-				frappe.db.set_value("Tracking Bom",
-					   row.custom_tracking_bom,
-					   {
-					   "reference_doctype":self.doctype,
-					   "reference_docname":self.name
-					   })
+				frappe.db.set_value(
+					"Tracking Bom",
+					row.custom_tracking_bom,
+					{"reference_doctype": self.doctype, "reference_docname": self.name},
+				)
 			if not row.subcontracting:
 				row.subcontracting_qty = 0
 				row.supplier = None
@@ -167,7 +166,14 @@ class ManufacturingPlan(Document):
 		mwo_data_map = fetch_doc_map(
 			"Manufacturing Work Order",
 			mwo_items,
-			["name", "metal_type", "metal_touch", "metal_colour", "master_bom"],
+			[
+				"name",
+				"metal_type",
+				"metal_touch",
+				"metal_colour",
+				"master_bom",
+				"custom_tracking_bom",
+			],
 		)
 
 		bom_data_map = fetch_doc_map(
@@ -512,33 +518,37 @@ def create_manufacturing_order(doc, row, cache_data=None):
 		key = (row.customer, row.diamond_quality)
 		diamond_grade = None
 
-		if row.customer_diamond == "Yes":
-			# Use cached customer_diamond_grade_map
-			diamond_grade_data = customer_diamond_grade_map.get(key)
-			if diamond_grade_data:
-				grades_to_check = [
-					diamond_grade_data.get("diamond_grade_1"),
-					diamond_grade_data.get("diamond_grade_2"),
-					diamond_grade_data.get("diamond_grade_3"),
-					diamond_grade_data.get("diamond_grade_4"),
-				]
+		diamond_grade_data = customer_diamond_grade_map.get(key)
+		if diamond_grade_data:
+			grades_to_check = [
+				diamond_grade_data.get("diamond_grade_1"),
+				diamond_grade_data.get("diamond_grade_2"),
+				diamond_grade_data.get("diamond_grade_3"),
+				diamond_grade_data.get("diamond_grade_4"),
+			]
+
+			from frappe import cstr
+
+			customer_diamond = cstr(row.customer_diamond).strip().lower()
+
+			if customer_diamond == "yes":
 				for grade in grades_to_check:
 					if grade and grade in attribute_value_set:
 						diamond_grade = grade
 						break
-					# We trust attribute_value_set contains all relevant values, no fallback needed
-
-		else:
-			diamond_grade_data = customer_diamond_grade_map.get(key)
-			if diamond_grade_data:
-				diamond_grade = diamond_grade_data.get("diamond_grade_1")
 			else:
-				# Minimal fallback
-				diamond_grade = frappe.db.get_value(
-					"Customer Diamond Grade",
-					{"parent": row.customer, "diamond_quality": row.diamond_quality},
-					"diamond_grade_1",
-				)
+				for grade in grades_to_check:
+					if grade and grade not in attribute_value_set:
+						diamond_grade = grade
+						break
+
+		if not diamond_grade and not diamond_grade_data:
+			# Minimal fallback
+			diamond_grade = frappe.db.get_value(
+				"Customer Diamond Grade",
+				{"parent": row.customer, "diamond_quality": row.diamond_quality},
+				"diamond_grade_1",
+			)
 
 		so_det["diamond_grade"] = diamond_grade
 
