@@ -166,6 +166,13 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_mop_log
 
+      - name: Run Employee IR Loss Pcs
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_pcs
+
       - name: Run MOP Log
         run: |
           cd ~/frappe-bench
