@@ -180,6 +180,13 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_required
 
+      - name: Run Employee IR Precision
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_precision
+
       - name: Run MOP Log
         run: |
           cd ~/frappe-bench
