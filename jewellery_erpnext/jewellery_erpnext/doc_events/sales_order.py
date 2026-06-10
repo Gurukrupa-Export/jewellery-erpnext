@@ -2359,12 +2359,12 @@ def validate_item_dharm(self):
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_metal_making_items.items():
-			# val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_finding_making_items.items():
-			# val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			# frappe.throw(f"{val["qty"]}")
 			self.append("custom_invoice_item", val)
    
