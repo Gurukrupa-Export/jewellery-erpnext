@@ -1228,6 +1228,11 @@ frappe.ui.form.on("Sales Order Item", {
 					fieldtype: "Float",
 					label: "Gross Weight (In Gram)",
 					read_only: 1,
+				},{
+					fieldname: "gross_weight_1",
+					fieldtype: "Float",
+					label: "Gross Weight (In 2 digits)",
+					read_only: 1,
 				},
 				{
 					fieldtype: "Column Break",
@@ -1635,6 +1640,7 @@ let set_edit_bom_details = (
 
 	// clearing all field values
 	dialog.set_value("gross_weight", 0);
+	dialog.set_value("gross_weight_1", 0);
 
 
 	dialog.set_value("metal_amount", 0);
@@ -2039,6 +2045,7 @@ let set_edit_bom_details = (
 
 	// dialog fields value fetch from BOM
 	dialog.set_value("gross_weight", doc.gross_weight);
+	dialog.set_value("gross_weight_1", flt(doc.gross_weight,2));
 	dialog.set_value("making_amount", doc.making_charge);
 	dialog.set_value("certification_amount", doc.certification_amount)
 	dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
@@ -2086,7 +2093,7 @@ let set_edit_bom_details = (
 			// 	((doc.total_diamond_weight_in_gms) || 0) +
 			// 	((doc.total_gemstone_weight_in_gms) || 0)).toFixed(2)
 			// );
-			dialog.set_value("gross_weight", flt(doc.gross_weight, 2));
+			dialog.set_value("gross_weight", (doc.gross_weight));
 			// dialog.set_df_property("gross_weight", "precision", 2);
 			dialog.set_value("finding_weight", doc.total_finding_weight_per_gram || 0);
 			// Set diamond_weight with dynamic precision

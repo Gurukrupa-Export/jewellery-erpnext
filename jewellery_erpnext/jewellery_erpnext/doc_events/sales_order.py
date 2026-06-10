@@ -459,6 +459,7 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
 
 def _get_metal_purity(customer, metal_type, metal_touch):
     key = (customer, metal_type, metal_touch)
+
     if key not in _metal_purity_cache:
         _metal_purity_cache[key] = frappe.db.get_value(
             "Metal Criteria",
