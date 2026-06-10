@@ -194,6 +194,13 @@ jobs:
           bench --site test_site run-tests \
             --app jewellery_erpnext --doctype "MOP Log"
 
+      - name: Run EOD Sync
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_eod_sync_gap_fill
+
       - name: Run Serial Number Creator
         run: |
           cd ~/frappe-bench
