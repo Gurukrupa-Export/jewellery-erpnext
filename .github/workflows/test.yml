@@ -138,6 +138,13 @@ jobs:
           bench --site test_site run-tests \
             --app jewellery_erpnext --doctype "Manufacturing Operation"
 
+      - name: Run MOP-balance cap on Make Receive Entry
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
+
       - name: Run Department IR
         run: |
           cd ~/frappe-bench
@@ -166,12 +173,54 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_mop_log
 
+      - name: Run Employee IR Loss Pcs
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_pcs
+
+      - name: Run Employee IR Loss Required
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_required
+
+      - name: Run Employee IR Precision
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_precision
+
+      - name: Run Loss Qty Normalization
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_qty_normalization
+
+      - name: Run Stock Entry Loss Qty Voucher
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_stock_entry_voucher_qty
+
       - name: Run MOP Log
         run: |
           cd ~/frappe-bench
 
           bench --site test_site run-tests \
             --app jewellery_erpnext --doctype "MOP Log"
+
+      - name: Run EOD Sync
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_eod_sync_gap_fill
 
       - name: Run Serial Number Creator
         run: |

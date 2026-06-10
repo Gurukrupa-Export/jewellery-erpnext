@@ -459,6 +459,7 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
 
 def _get_metal_purity(customer, metal_type, metal_touch):
     key = (customer, metal_type, metal_touch)
+
     if key not in _metal_purity_cache:
         _metal_purity_cache[key] = frappe.db.get_value(
             "Metal Criteria",
@@ -2359,12 +2360,12 @@ def validate_item_dharm(self):
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_metal_making_items.items():
-			# val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_finding_making_items.items():
-			# val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			# frappe.throw(f"{val["qty"]}")
 			self.append("custom_invoice_item", val)
    
