@@ -138,6 +138,13 @@ jobs:
           bench --site test_site run-tests \
             --app jewellery_erpnext --doctype "Manufacturing Operation"
 
+      - name: Run MOP-balance cap on Make Receive Entry
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
+
       - name: Run Department IR
         run: |
           cd ~/frappe-bench
