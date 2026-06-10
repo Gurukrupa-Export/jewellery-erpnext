@@ -204,7 +204,6 @@ def set_gst_details(self):
     if self.sales_type not in ("Finished Goods", "Subcontracting"):
         return
 
-    # Determine In-State or Out-State
     customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
     company_state  = frappe.db.get_value("Address", self.company_address,  "gst_state_number")
 
@@ -213,7 +212,6 @@ def set_gst_details(self):
 
     self.tax_category = "In-State" if customer_state == company_state else "Out-State"
 
-    # Resolve item tax template
     item_template_map = {
         "Finished Goods": {
             "Gurukrupa Export Private Limited": "GST 3% - GEPL",
@@ -228,8 +226,26 @@ def set_gst_details(self):
     if not item_tax_template:
         return
 
-    # Read rates from Item Tax Template Detail
-    # Use exact same rates india_compliance will use
+    taxes_and_charges = frappe.db.get_value(
+        "Sales Taxes and Charges Template",
+        {
+            "company":      self.company,
+            "tax_category": self.tax_category,
+            "disabled":     0,
+        },
+        "name"
+    )
+
+    if not taxes_and_charges:
+        frappe.log_error(
+            f"No Sales Taxes and Charges Template found for "
+            f"Company: {self.company}, Tax Category: {self.tax_category}",
+            "set_gst_details"
+        )
+        return
+
+    self.taxes_and_charges = taxes_and_charges
+
     template_rates = frappe.get_all(
         "Item Tax Template Detail",
         filters={"parent": item_tax_template},
@@ -248,14 +264,6 @@ def set_gst_details(self):
         elif "IGST" in tax_type:
             igst_rate = flt(r.tax_rate)
 
-    # Resolve Sales Taxes and Charges template
-    taxes_and_charges = (
-        "Output GST In-state" if self.tax_category == "In-State"
-        else "Output GST Out-state"
-    )
-    self.taxes_and_charges = taxes_and_charges
-
-    # Rebuild taxes table from template
     self.taxes = []
     tax_rows = frappe.get_all(
         "Sales Taxes and Charges",
@@ -272,28 +280,30 @@ def set_gst_details(self):
             "cost_center":  t.cost_center,
         })
 
-    # Apply to each item — after create_new_bom1 has finalized net_amount
     for item in self.items:
         if not item.item_code:
             continue
 
         item.item_tax_template = item_tax_template
         item.gst_treatment     = "Taxable"
-        taxable_value          = flt(item.net_amount)
+
+        # Zero stale amounts first
+        item.cgst_rate   = 0.0
+        item.sgst_rate   = 0.0
+        item.igst_rate   = 0.0
+        item.cgst_amount = 0.0
+        item.sgst_amount = 0.0
+        item.igst_amount = 0.0
+
+        taxable_value = flt(item.taxable_value)
 
         if self.tax_category == "In-State":
             item.cgst_rate   = cgst_rate
             item.sgst_rate   = sgst_rate
-            item.igst_rate   = 0.0
             item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
             item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
-            item.igst_amount = 0.0
         else:
-            item.cgst_rate   = 0.0
-            item.sgst_rate   = 0.0
             item.igst_rate   = igst_rate
-            item.cgst_amount = 0.0
-            item.sgst_amount = 0.0
             item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
 
 CHUNK_SIZE         = 10
@@ -1003,6 +1013,8 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
 	row.amount            = total_amount
 	row.net_rate   = flt(total_amount) / flt(row.conversion_factor or 1)
 	row.net_amount = row.net_rate * flt(row.qty or 1)
+	row.base_rate = total_amount
+	row.base_amount = total_amount
 	row.gold_bom_rate     = doc.gold_bom_amount
 	row.diamond_bom_rate  = doc.diamond_bom_amount
 	row.gemstone_bom_rate = doc.gemstone_bom_amount
@@ -1260,7 +1272,7 @@ def create_sales_order_bom(self, row, diamond_grade_data):
 		row.making_charge = doc.making_charge
 		row.bom_rate = doc.total_bom_amount
 		row.rate = doc.total_bom_amount
-		frappe.msgprint(f"{row.rate}HERE13")
+		# frappe.msgprint(f"{row.rate}HERE13")
 		self.total = doc.total_bom_amount
 		# frappe.throw(f"{self.total}")
 	except Exception as e:
