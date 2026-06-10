@@ -187,6 +187,13 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_precision
 
+      - name: Run Loss Qty Normalization
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_qty_normalization
+
       - name: Run MOP Log
         run: |
           cd ~/frappe-bench
