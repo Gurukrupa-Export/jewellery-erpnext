@@ -550,7 +550,7 @@ def _process_metal_detail(self, doc, ctx, cctx):
                 s.amount                = round(s.rate * s.quantity, 2)
                 s.making_rate           = making_rate
                 s.making_amount         = (
-                    s.making_rate if doc.metal_and_finding_weight < 2
+                    s.making_rate if doc.metal_and_finding_weight < threshold
                     else s.making_rate * s.quantity
                 )
                 s.wastage_rate   = wastage
@@ -651,7 +651,7 @@ def _process_finding_detail(self, doc, ctx, cctx):
             f.rate   = round(calculated_gold_rate, 2)
             f.amount = round(f.rate * f.quantity, 2)
             finding_weight = getattr(doc, "metal_and_finding_weight", None)
-            if finding_weight is not None and finding_weight < 2:
+            if finding_weight is not None and finding_weight < (find_data.get("rate_per_gm_threshold") or 2):
                 making_rate     = find_data.get("rate_per_pc", 0)
                 wastage_rate    = 0
                 f.making_amount = making_rate
