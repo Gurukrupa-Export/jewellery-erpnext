@@ -760,7 +760,7 @@ class TestPartialReceiveReplacement(FrappeTestCase):
 		original_sre.manufacturing_operation = "MOP-1"
 		mock_get_doc.side_effect = [mo, original_sre]
 
-		# 1: idempotency miss; 2: t_warehouse; 3: SRE re-fetch dict.
+		# 1: idempotency miss; 2: t_warehouse; 3: SRE re-fetch dict; 4: source warehouse for resolve_and_validate.
 		mock_get_value.side_effect = [
 			None,
 			"WH-Raw",
@@ -778,6 +778,7 @@ class TestPartialReceiveReplacement(FrappeTestCase):
 					"manufacturing_work_order": "MWO-1",
 				}
 			),
+			"WH-Src",
 		]
 
 		# new_doc is called twice: once for the Stock Entry, once for
@@ -1056,7 +1057,7 @@ class TestPartialReceiveZeroBatchSkipsReplacement(FrappeTestCase):
 			)
 		]
 
-		# get_value sequence: idempotency miss + t_warehouse + SRE re-fetch + sb_row re-fetch.
+		# get_value sequence: idempotency miss + t_warehouse + SRE re-fetch + sb_row re-fetch + source warehouse.
 		mock_get_value.side_effect = [
 			None,
 			"WH-Raw",
@@ -1077,6 +1078,7 @@ class TestPartialReceiveZeroBatchSkipsReplacement(FrappeTestCase):
 			frappe._dict(
 				{"name": "SB-1", "batch_no": "B1", "qty": 5.0, "delivered_qty": 0.0}
 			),
+			"WH-Src",
 		]
 
 		# new_doc called only for the Stock Entry — never for a replacement SRE
