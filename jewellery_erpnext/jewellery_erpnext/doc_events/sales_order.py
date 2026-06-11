@@ -264,6 +264,13 @@ def set_gst_details(self):
         elif "IGST" in tax_type:
             igst_rate = flt(r.tax_rate)
 
+    account_rate_map = {}
+    for r in template_rates:
+        tax_type = r.tax_type or ""
+        if "Output" not in tax_type or "RCM" in tax_type:
+            continue
+        account_rate_map[r.tax_type] = flt(r.tax_rate)
+
     self.taxes = []
     tax_rows = frappe.get_all(
         "Sales Taxes and Charges",
@@ -272,11 +279,12 @@ def set_gst_details(self):
         order_by="idx asc"
     )
     for t in tax_rows:
+        correct_rate = account_rate_map.get(t.account_head, t.rate)
         self.append("taxes", {
             "charge_type":  t.charge_type,
             "account_head": t.account_head,
             "description":  t.description,
-            "rate":         t.rate,
+            "rate":         correct_rate,
             "cost_center":  t.cost_center,
         })
 
@@ -286,14 +294,12 @@ def set_gst_details(self):
 
         item.item_tax_template = item_tax_template
         item.gst_treatment     = "Taxable"
-
-        # Zero stale amounts first
-        item.cgst_rate   = 0.0
-        item.sgst_rate   = 0.0
-        item.igst_rate   = 0.0
-        item.cgst_amount = 0.0
-        item.sgst_amount = 0.0
-        item.igst_amount = 0.0
+        item.cgst_rate         = 0.0
+        item.sgst_rate         = 0.0
+        item.igst_rate         = 0.0
+        item.cgst_amount       = 0.0
+        item.sgst_amount       = 0.0
+        item.igst_amount       = 0.0
 
         taxable_value = flt(item.taxable_value)
 

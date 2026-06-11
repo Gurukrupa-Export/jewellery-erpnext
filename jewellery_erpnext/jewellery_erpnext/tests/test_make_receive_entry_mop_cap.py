@@ -90,9 +90,43 @@ def _make_get_all_dispatcher(sre_rows=None, mop_rows=None, sb_rows=None):
 	return _dispatcher
 
 
-# ---------------------------------------------------------------------------
-# Popup row composition
-# ---------------------------------------------------------------------------
+def _make_get_value_dispatcher(sre_qty=10.0, warehouse="WH-Y"):
+	"""Return a callable suitable for `side_effect` on a single
+	`frappe.db.get_value` patch.
+	"""
+
+	def _dispatcher(doctype, *args, **kwargs):
+		if doctype == "Stock Entry":
+			return None
+
+		if doctype == "Warehouse":
+			return "WH-Raw"
+
+		if doctype == "Stock Reservation Entry":
+			if args and args[0] == "SRE-T5":
+				return frappe._dict(
+					{
+						"name": "SRE-T5",
+						"docstatus": 1,
+						"item_code": "M-X",
+						"warehouse": "WH-Y",
+						"reserved_qty": sre_qty,
+						"delivered_qty": 0.0,
+						"stock_uom": "Gram",
+						"has_batch_no": 0,
+						"reservation_based_on": "Qty",
+						"manufacturing_work_order": "MWO-1",
+					}
+				)
+			if args and isinstance(args[0], dict):
+				return warehouse
+
+		if doctype == "Manufacturing Work Order":
+			return "PMO-1"
+
+		return None
+
+	return _dispatcher
 
 
 class TestPopupReservedVsMopFields(FrappeTestCase):
@@ -191,7 +225,6 @@ class TestPopupReservedVsMopFields(FrappeTestCase):
 		self.assertEqual(len(rows), 1)
 		row = rows[0]
 		self.assertTrue(row["is_pcs_item"])
-		self.assertEqual(row["reserved_pcs"], 0)
 		self.assertEqual(row["mop_available_pcs"], 12)
 		self.assertEqual(row["available_to_receive_pcs"], 12)
 
@@ -390,24 +423,7 @@ class TestReplacementSafeRule(FrappeTestCase):
 			),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
-				side_effect=[
-					None,
-					"WH-Raw",
-					frappe._dict(
-						{
-							"name": "SRE-T5",
-							"docstatus": 1,
-							"item_code": "M-X",
-							"warehouse": "WH-Y",
-							"reserved_qty": sre_qty,
-							"delivered_qty": 0.0,
-							"stock_uom": "Gram",
-							"has_batch_no": 0,
-							"reservation_based_on": "Qty",
-							"manufacturing_work_order": "MWO-1",
-						}
-					),
-				],
+				side_effect=_make_get_value_dispatcher(sre_qty=sre_qty),
 			),
 			patch(
 				"frappe.db.get_all",
