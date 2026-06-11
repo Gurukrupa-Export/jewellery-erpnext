@@ -284,3 +284,17 @@ jobs:
 
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
+
+      - name: Run Stock Reservation Entry for MWO
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_mwo
+
+      - name: Run Stock Reservation Entry
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_override
