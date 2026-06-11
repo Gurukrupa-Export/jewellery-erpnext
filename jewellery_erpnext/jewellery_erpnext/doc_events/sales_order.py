@@ -334,11 +334,11 @@ def _clear_caches():
 
 def _get_bom_context(self):
     gold_gst_rate = frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
-    customer_group, precision, metal_precision, stone_precision = frappe.db.get_value(
+    customer_group, precision, metal_precision, stone_precision,precision_for_net_weight,precision_for_gross_weight = frappe.db.get_value(
         "Customer",
         self.customer,
         ["customer_group", "custom_precision_variable",
-         "custom_precision_for_metal", "custom_precision_for_stone"],
+         "custom_precision_for_metal", "custom_precision_for_stone","custom_precision_for_net_weight","custom_precision_for_gross_weight"],
     )
     return frappe._dict(
         gold_gst_rate=gold_gst_rate,
@@ -346,6 +346,8 @@ def _get_bom_context(self):
         precision=precision,
         metal_precision=metal_precision,
         stone_precision=stone_precision,
+		precision_for_net_weight=precision_for_net_weight,
+		precision_for_gross_weight=precision_for_gross_weight
     )
 
 
@@ -982,12 +984,12 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
 	doc.total_other_weight                   = sum(r.quantity for r in doc.other_detail)
 	doc.other_weight                         = doc.total_other_weight
 	doc.metal_weight = sum(r.quantity for r in doc.metal_detail)
-	doc.metal_and_finding_weight             = (
-		flt(doc.metal_weight) + flt(doc.finding_weight)
+	doc.metal_and_finding_weight             = round(
+		flt(doc.metal_weight) + flt(doc.finding_weight),ctx.precision_for_net_weight
 	)
-	doc.gross_weight = (
+	doc.gross_weight = round(
 		flt(doc.metal_and_finding_weight) + flt(doc.total_diamond_weight_in_gms)
-		+ flt(doc.total_gemstone_weight_in_gms) + flt(doc.total_other_weight)
+		+ flt(doc.total_gemstone_weight_in_gms) + flt(doc.total_other_weight) , ctx.precision_for_gross_weight
 	)
 	doc.gold_to_diamond_ratio = (
 		flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
