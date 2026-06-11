@@ -981,8 +981,9 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
 	doc.total_gemstone_pcs                   = sum(flt(r.pcs) for r in doc.gemstone_detail)
 	doc.total_other_weight                   = sum(r.quantity for r in doc.other_detail)
 	doc.other_weight                         = doc.total_other_weight
-	doc.metal_and_finding_weight             = round(
-		flt(doc.metal_weight) + flt(doc.finding_weight), 2
+	doc.metal_weight = sum(r.quantity for r in doc.metal_detail)
+	doc.metal_and_finding_weight             = (
+		flt(doc.metal_weight) + flt(doc.finding_weight)
 	)
 	doc.gross_weight = (
 		flt(doc.metal_and_finding_weight) + flt(doc.total_diamond_weight_in_gms)
@@ -1084,8 +1085,8 @@ def _process_single_row(self, row, ctx):
 
         doc = frappe.get_doc("BOM", row.bom)
         doc.metal_and_finding_weight = (
-            round(sum(r.quantity for r in doc.metal_detail),    ctx.precision)
-            + round(sum(r.quantity for r in doc.finding_detail), ctx.precision)
+            round(sum(r.quantity for r in doc.metal_detail))
+            + round(sum(r.quantity for r in doc.finding_detail))
         )
 
         _process_gemstone_detail(self, doc, ctx, cctx)
