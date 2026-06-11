@@ -267,7 +267,7 @@ class TestCreateMrWoStockEntryPcsValidation(FrappeTestCase):
 			),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
-				side_effect=[None, "WH-Raw", sre_dict],
+				side_effect=[None, "WH-Raw", sre_dict, "WH-Src"],
 			),
 			# Helper inside create_mr_wo_stock_entry calls
 			# get_current_mop_balance_rows → frappe.db.get_all on MOP Log.
