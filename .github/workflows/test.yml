@@ -159,6 +159,13 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_second_popup
 
+      - name: Run Make Receive Entry
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry
+
       - name: Run Department IR
         run: |
           cd ~/frappe-bench
