@@ -166,6 +166,13 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry
 
+      - name: Run Manufacturing Operation Weight Calculation 
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recompute
+
       - name: Run Department IR
         run: |
           cd ~/frappe-bench

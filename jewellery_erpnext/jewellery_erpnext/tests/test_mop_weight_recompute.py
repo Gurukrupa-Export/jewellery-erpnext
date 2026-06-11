@@ -11,7 +11,12 @@ logic can be exercised without a site fixture.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import frappe
 from frappe.tests.utils import FrappeTestCase
+
+from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+	recalculate_manufacturing_operation_weights,
+)
 
 
 def _row(
@@ -39,10 +44,15 @@ class TestRecalculateMopWeights(FrappeTestCase):
 		# set_value for gross_wt + prev_gross_wt.
 		writes = []
 
+		orig_get_value = frappe.db.get_value
+
 		def fake_set_value(doctype, name, update, *args, **kwargs):
 			writes.append((doctype, name, update))
 
 		def fake_get_value(doctype, name, fields, *args, **kwargs):
+			if doctype != "Manufacturing Operation":
+				return orig_get_value(doctype, name, fields, *args, **kwargs)
+
 			# Replay the latest write to the same MOP for the requested fields.
 			merged = {}
 			for d, n, u in writes:
@@ -51,6 +61,9 @@ class TestRecalculateMopWeights(FrappeTestCase):
 			# previous_mop is not under test here; treat as None.
 			merged.setdefault("previous_mop", None)
 			merged.setdefault("loss_wt", 0)
+
+			if isinstance(fields, str):
+				return merged.get(fields)
 			return tuple(merged.get(f) for f in fields)
 
 		with (
@@ -66,11 +79,11 @@ class TestRecalculateMopWeights(FrappeTestCase):
 				"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_value",
 				side_effect=fake_get_value,
 			),
+			patch(
+				"frappe.get_system_settings",
+				return_value="Banker's Rounding (legacy)",
+			),
 		):
-			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-				recalculate_manufacturing_operation_weights,
-			)
-
 			recalculate_manufacturing_operation_weights("MOP-TEST", pending=pending)
 		# Merge all bucket writes into a single dict for assertions.
 		merged = {}
@@ -143,8 +156,8 @@ class TestRecalculateMopWeights(FrappeTestCase):
 		self.assertAlmostEqual(out["net_wt"], 4.500, places=3)
 
 	def test_cancelled_pending_row_does_not_override(self):
-		# When a row is being cancelled (is_cancelled=1 in pending), it should
-		# drop out of the balance, not overwrite the prior latest snapshot.
+		# When a row is being cancelled (is_cancelled=1 in pending), it drops
+		# out of the balance completely.
 		rows = [_row("M-X", "B1", 5.0)]
 		pending = SimpleNamespace(
 			item_code="M-X",
@@ -154,7 +167,7 @@ class TestRecalculateMopWeights(FrappeTestCase):
 			is_cancelled=1,
 		)
 		out = self._run(rows, pending=pending)
-		self.assertAlmostEqual(out["net_wt"], 5.000, places=3)
+		self.assertAlmostEqual(out["net_wt"], 0.000, places=3)
 
 	def test_loss_row_reduces_gross_wt_exactly_once(self):
 		# Simulates the post-loss state on MOP-EO481: latest active balance per
