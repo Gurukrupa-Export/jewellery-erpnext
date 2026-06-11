@@ -229,6 +229,13 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_eod_sync_gap_fill
 
+      - name: Run Make Receive Entry for pcs
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_pcs
+
       - name: Run Serial Number Creator
         run: |
           cd ~/frappe-bench
