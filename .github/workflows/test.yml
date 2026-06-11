@@ -250,6 +250,13 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_pcs
 
+      - name: Run MOP Weight Calculation
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
+
       - name: Run Serial Number Creator
         run: |
           cd ~/frappe-bench
