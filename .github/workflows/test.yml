@@ -277,3 +277,10 @@ jobs:
 
           bench --site test_site run-tests \
             --app jewellery_erpnext --doctype "Product Certification"
+
+      - name: Run Stock Entry Pcs Validation and Precision
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
