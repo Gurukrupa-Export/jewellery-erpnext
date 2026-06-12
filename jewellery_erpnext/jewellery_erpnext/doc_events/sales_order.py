@@ -524,7 +524,7 @@ def _process_metal_detail(self, doc, ctx, cctx):
             s.amount = round(s.rate * s.quantity, 2)
 
         else:
-            if doc.metal_and_finding_weight < (sub_info.get("rate_per_gm_threshold") or 2):
+            if doc.metal_and_finding_weight < threshold:
                 making_rate        = sub_info.get("rate_per_pc", 0)
                 wastage_rate_value = 0
             else:
@@ -552,7 +552,7 @@ def _process_metal_detail(self, doc, ctx, cctx):
                 s.amount                = round(s.rate * s.quantity, 2)
                 s.making_rate           = making_rate
                 s.making_amount         = (
-                    s.making_rate if doc.metal_and_finding_weight < (sub_info.get("rate_per_gm_threshold") or 2)
+                    s.making_rate if doc.metal_and_finding_weight < threshold
                     else s.making_rate * s.quantity
                 )
                 s.wastage_rate   = wastage
@@ -1087,8 +1087,8 @@ def _process_single_row(self, row, ctx):
 
         doc = frappe.get_doc("BOM", row.bom)
         doc.metal_and_finding_weight = (
-            round(sum(r.quantity for r in doc.metal_detail))
-            + round(sum(r.quantity for r in doc.finding_detail))
+            (sum(r.quantity for r in doc.metal_detail))
+            + (sum(r.quantity for r in doc.finding_detail))
         )
 
         _process_gemstone_detail(self, doc, ctx, cctx)
