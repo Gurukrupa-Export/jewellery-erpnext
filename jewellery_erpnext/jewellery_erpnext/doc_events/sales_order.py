@@ -816,14 +816,13 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 		row.diamond_quality=self.custom_diamond_quality
 	for d in doc.diamond_detail:
 		d.quality = row.diamond_quality
+		# d.weight_per_pcs = d.quantity / d.pcs
+		
+			
+		d.quantity = round(d.quantity, ctx.stone_precision)
 		d.weight_per_pcs = d.quantity / d.pcs
 		if 0.001 < d.weight_per_pcs > 0.005:
-			wstr = str(d.weight_per_pcs)
-			d.weight_per_pcs = (
-				float(wstr[:5]) if len(wstr) > 4 and wstr[4] == "9"
-				else round(d.quantity / d.pcs, 3)
-			)
-		d.quantity = round(d.quantity, ctx.stone_precision)
+			d.weight_per_pcs =round(d.weight_per_pcs , 3)
 		result = frappe.db.sql(
 			"""SELECT diamond_price_list FROM `tabDiamond Price List Table`
 				WHERE parent = %s AND diamond_shape = %s""",

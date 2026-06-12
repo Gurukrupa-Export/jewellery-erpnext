@@ -2042,6 +2042,7 @@ let set_edit_bom_details = (
 	dialog.set_value("gross_weight", doc.gross_weight);
 	dialog.set_value("gross_weight_1", flt(doc.gross_weight,2));
 	dialog.set_value("making_amount", doc.making_charge);
+	dialog.set_value("metal_amount", doc.total_metal_amount);
 	dialog.set_value("certification_amount", doc.certification_amount)
 	dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
 	dialog.set_value("total_diamond_pieces", doc.total_diamond_pcs)
