@@ -564,14 +564,14 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 
 	def add_to_invoice(item_code, so_item, fallback_amount=0, fallback_qty=0,fallback_rate=0, hsn=None, uom=None):
 
-		if so_item:
-			amount = so_item.amount
-			qty = so_item.qty
-			rate = so_item.rate
-		else:
-			amount = fallback_amount
-			qty = fallback_qty
-			rate = fallback_rate
+		# if so_item:
+		# 	amount = so_item.amount
+		# 	qty = so_item.qty
+		# 	rate = so_item.rate
+		# else:
+		amount = fallback_amount
+		qty = fallback_qty
+		rate = fallback_rate
 
 		if item_code in invoice_data:
 			if so_item:
