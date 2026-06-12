@@ -291,6 +291,187 @@ class TestParentManufacturingOrder(FrappeTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			pmo.create_material_requests()
 
+	def test_create_material_requests_throws_missing_default_gemstone(self):
+		create_man_plan(self)
+		pmo = frappe.get_last_doc("Parent Manufacturing Order")
+		bom = frappe.get_doc("Tracking Bom", pmo.custom_tracking_bom)
+
+		if not frappe.db.exists("Item", "G-TEST-GEM"):
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "G-TEST-GEM",
+					"item_name": "G-TEST-GEM",
+					"item_group": "All Item Groups",
+					"stock_uom": "Nos",
+				}
+			).insert(ignore_permissions=True, ignore_mandatory=True)
+
+		bom.append(
+			"gemstone_detail",
+			{
+				"item_variant": "G-TEST-GEM",
+				"quantity": 1,
+			},
+		)
+		bom.flags.ignore_links = True
+		bom.flags.ignore_mandatory = True
+		bom.flags.ignore_validate = True
+		if bom.customer:
+			frappe.db.set_value(
+				"Customer", bom.customer, "custom_gemstone_price_list_type", "Fixed"
+			)
+		bom.save()
+		pmo.diamond_department = self.department
+		pmo.gemstone_department = self.department
+		pmo.manufacturer = "Shubh"
+		pmo.save()
+
+		if frappe.db.exists("Manufacturing Setting", "Shubh"):
+			frappe.db.set_value(
+				"Manufacturing Setting", "Shubh", "default_gemstone_item", ""
+			)
+
+		if not frappe.db.exists(
+			"Variant based Warehouse", {"parent": "Shubh", "variant": "G"}
+		):
+			doc = frappe.get_doc("Manufacturer", "Shubh")
+			doc.append(
+				"custom_reservation_table",
+				{
+					"variant": "G",
+					"department": self.department,
+					"target_warehouse": self.warehouse,
+				},
+			)
+			doc.save(ignore_permissions=True)
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
+			get_item_type as real_get_item_type,
+		)
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.get_item_type"
+		) as mock_get_item_type:
+
+			def side_effect(item_code):
+				if item_code == "G-TEST-GEM":
+					return "gemstone_item"
+				return real_get_item_type(item_code)
+
+			mock_get_item_type.side_effect = side_effect
+
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				pmo.create_material_requests()
+
+			self.assertTrue("Default Gemstone Item is not set" in str(ctx.exception))
+
+	def test_create_material_requests_uses_default_gemstone(self):
+		create_man_plan(self)
+		pmo = frappe.get_last_doc("Parent Manufacturing Order")
+		bom = frappe.get_doc("Tracking Bom", pmo.custom_tracking_bom)
+
+		if not frappe.db.exists("Item", "G-TEST-GEM"):
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "G-TEST-GEM",
+					"item_name": "G-TEST-GEM",
+					"item_group": "All Item Groups",
+					"stock_uom": "Nos",
+				}
+			).insert(ignore_permissions=True, ignore_mandatory=True)
+
+		bom.append(
+			"gemstone_detail",
+			{
+				"item_variant": "G-TEST-GEM",
+				"quantity": 1,
+			},
+		)
+		bom.flags.ignore_links = True
+		bom.flags.ignore_mandatory = True
+		bom.flags.ignore_validate = True
+		if bom.customer:
+			frappe.db.set_value(
+				"Customer", bom.customer, "custom_gemstone_price_list_type", "Fixed"
+			)
+		bom.save()
+		pmo.diamond_department = self.department
+		pmo.gemstone_department = self.department
+		pmo.manufacturer = "Shubh"
+		pmo.save()
+
+		if frappe.db.exists("Manufacturing Setting", "Shubh"):
+			frappe.db.set_value(
+				"Manufacturing Setting",
+				"Shubh",
+				"default_gemstone_item",
+				"G-PER-DUM-PRE-CC",
+			)
+		else:
+			frappe.get_doc(
+				{
+					"doctype": "Manufacturing Setting",
+					"manufacturer": "Shubh",
+					"default_gemstone_item": "G-PER-DUM-PRE-CC",
+				}
+			).insert(ignore_permissions=True, ignore_mandatory=True)
+
+		if not frappe.db.exists(
+			"Variant based Warehouse", {"parent": "Shubh", "variant": "G"}
+		):
+			doc = frappe.get_doc("Manufacturer", "Shubh")
+			doc.append(
+				"custom_reservation_table",
+				{
+					"variant": "G",
+					"department": self.department,
+					"target_warehouse": self.warehouse,
+				},
+			)
+			doc.save(ignore_permissions=True)
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
+			get_item_type as real_get_item_type,
+		)
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order.get_item_type"
+		) as mock_get_item_type:
+
+			def side_effect(item_code):
+				if item_code == "G-TEST-GEM":
+					return "gemstone_item"
+				return real_get_item_type(item_code)
+
+			mock_get_item_type.side_effect = side_effect
+
+			pmo.create_material_requests()
+
+		mr_list = frappe.get_all(
+			"Material Request", filters={"manufacturing_order": pmo.name}
+		)
+		self.assertTrue(len(mr_list) > 0)
+
+		found = False
+		for mr_name in mr_list:
+			mr = frappe.get_doc("Material Request", mr_name.name)
+			for item in mr.items:
+				if (
+					item.item_code == "G-PER-DUM-PRE-CC"
+					and item.description == "G-TEST-GEM"
+				):
+					found = True
+					break
+			if found:
+				break
+
+		self.assertTrue(
+			found,
+			"Material Request item for gemstone should use default item code and original item code as description",
+		)
+
 	def tearDown(self):
 		return super().tearDown()
 
