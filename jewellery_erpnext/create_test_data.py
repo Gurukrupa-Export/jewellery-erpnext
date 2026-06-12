@@ -562,6 +562,46 @@ def create_test_data():
 			}
 		)
 
+		create(
+			{
+				"doctype": "Item Attribute",
+				"attribute_name": "Gemstone Grade",
+				"item_attribute_values": [
+					{"attribute_value": "Real Treated", "abbr": "RT"}
+				],
+			}
+		)
+
+		create(
+			{
+				"doctype": "Item Attribute",
+				"attribute_name": "Gemstone PR",
+				"item_attribute_values": [{"attribute_value": "10", "abbr": "10"}],
+			}
+		)
+
+		create(
+			{
+				"doctype": "Item Attribute",
+				"attribute_name": "Cut or Cab",
+				"item_attribute_values": [
+					{"attribute_value": "Faceted", "abbr": "FC"},
+					{"attribute_value": "Cabochon", "abbr": "CC"},
+				],
+			}
+		)
+
+		create(
+			{
+				"doctype": "Item Attribute",
+				"attribute_name": "Per Pc or Per Carat",
+				"item_attribute_values": [
+					{"attribute_value": "Per Pc", "abbr": "PP"},
+					{"attribute_value": "Per Carat", "abbr": "PC"},
+				],
+			}
+		)
+
 	def create_users_data():
 		frappe.db.set_value(
 			"Company",
@@ -1686,6 +1726,62 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 
+		if not frappe.db.exists("Item", "G"):
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"is_design_code": 0,
+					"item_code": "G",
+					"custom_reason_for_design_code_": "New Design",
+					"item_name": "G",
+					"gst_hsn_code": "010121",
+					"item_group": "Gemstone - T",
+					"stock_uom": "Carat",
+					"has_variants": 1,
+					"manufacturing_type": "Casted",
+					"productivity": "Studded",
+					"description": "G",
+					"end_of_life": "2099-12-31",
+					"default_material_request_type": "Purchase",
+					"variant_based_on": "Item Attribute",
+					"is_purchase_item": 1,
+					"country_of_origin": "India",
+					"grant_commission": 1,
+					"is_sales_item": 1,
+					"uoms": [
+						{
+							"uom": "Carat",
+							"conversion_factor": 1,
+						}
+					],
+					"attributes": [
+						{"attribute": "Gemstone Type"},
+						{"attribute": "Stone Shape"},
+						{"attribute": "Gemstone Quality"},
+						{"attribute": "Gemstone Grade"},
+						{"attribute": "Gemstone Size"},
+						{"attribute": "Cut or Cab"},
+						{"attribute": "Gemstone PR"},
+						{"attribute": "Per Pc or Per Carat"},
+					],
+				}
+			).insert(ignore_permissions=True)
+
+		if not frappe.db.exists("Item", "G-PER-DUM-PRE-CC"):
+			item = frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "G-PER-DUM-PRE-CC",
+					"item_name": "Default Dummy Gemstone",
+					"item_group": "Gemstone DNU",
+					"stock_uom": "Carat",
+					"is_stock_item": 0,
+					"disabled": 0,
+				}
+			)
+
+			item.insert(ignore_permissions=True)
+
 		if not frappe.db.exists("Manufacturing Setting", "Shubh"):
 			frappe.get_doc(
 				{
@@ -2552,6 +2648,16 @@ def setup_data():
 			}
 		).insert(ignore_permissions=True)
 
+	if not frappe.db.exists("Item Group", "Gemstone - T"):
+		frappe.get_doc(
+			{
+				"doctype": "Item Group",
+				"item_group_name": "Gemstone - T",
+				"parent_item_group": "Raw Material Template",
+				"is_group": 1,
+			}
+		).insert(ignore_permissions=True)
+
 	if not frappe.db.exists("Item Group", "DNU"):
 		frappe.get_doc(
 			{
@@ -2585,6 +2691,15 @@ def setup_data():
 			{
 				"doctype": "Item Group",
 				"item_group_name": "Finding DNU",
+				"parent_item_group": "DNU",
+			}
+		).insert(ignore_permissions=True)
+
+	if not frappe.db.exists("Item Group", "Gemstone DNU"):
+		frappe.get_doc(
+			{
+				"doctype": "Item Group",
+				"item_group_name": "Gemstone DNU",
 				"parent_item_group": "DNU",
 			}
 		).insert(ignore_permissions=True)
