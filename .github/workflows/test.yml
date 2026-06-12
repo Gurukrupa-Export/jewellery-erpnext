@@ -39,7 +39,7 @@ jobs:
       - name: Checkout Fixture Branch
         uses: actions/checkout@v4
         with:
-          repository: Kanishkar16Vijay/jewellery-erpnext
+          repository: Gurukrupa-Export/jewellery-erpnext
           ref: git_action_v16
           path: fixture_source
 
