@@ -2346,9 +2346,9 @@ def validate_item_dharm(self):
 		# After aggregation, calculate average rate = total amount / total qty per key
 		for key, val in aggregated_diamond_items.items():
 			# frappe.throw(f"{val["qty"]}")
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["rate"] = round(val["rate"], precision)
-			val["amount"] = round(val["amount"], precision)
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_metal_items.items():
@@ -2364,43 +2364,46 @@ def validate_item_dharm(self):
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_finding_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			# frappe.throw(f"{val["qty"]}")
 			val["rate"] = round(val["rate"], precision)
-			val["amount"] = round(val["amount"], precision)
+			
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_gemstone_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["rate"] = round(val["rate"], precision)
-			val["amount"] = round(val["amount"], precision)
+			
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_metal_making_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["rate"] = round(val["rate"], precision)
-			val["amount"] = round(val["amount"], precision)
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_finding_making_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			# frappe.throw(f"{val["qty"]}")
 			val["rate"] = round(val["rate"], precision)
-			val["amount"] = round(val["amount"], precision)
+			
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_hallmarking_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			# frappe.throw("hii")
 			val["rate"] = round(val["rate"], precision)
-			val["amount"] = round(val["amount"], precision)
 			self.append("custom_invoice_item", val)
 
 		for key, val in aggregated_metal_labour_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["qty"] = round(val["qty"],2)
 			val["rate"] = round(val["rate"], precision)
-			val["amount"] = round(val["amount"], precision)
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_repairing_items.items():
