@@ -1703,6 +1703,7 @@ def create_test_data():
 					"default_fg_warehouse": "Tagging FG - T",
 					"pure_gold_item": "M-G-24KT-99.9-Y",
 					"subcontracting_repack_item": "M-G-24KT-99.9-Y",
+					"default_gemstone_item": "G-PER-DUM-PRE-CC",
 					"addition_maximum_item__tolerance_percentage": 50000,
 					"powder_value": 1000,
 					"power_value_individual": 1000,
