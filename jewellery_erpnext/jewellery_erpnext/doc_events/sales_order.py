@@ -1393,30 +1393,46 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
     doc.total_other_weight = sum(r.quantity for r in doc.other_detail)
     doc.other_weight       = doc.total_other_weight
 
-    # ── 2. Derive net metal weight directly (NO circular dependency) ──
-    # metal_detail quantities are already in grams.
-    # finding_detail quantities are already in grams.
-    # We sum them directly — this IS metal_and_finding_weight.
+    # ── 2. Net metal weight + Gross weight (making_charges_on aware) ──
     raw_metal_weight   = sum(r.quantity for r in doc.metal_detail)
     raw_finding_weight = sum(
         r.quantity for r in doc.finding_detail
-        if r.finding_category != 'Chains'   # chains excluded from net metal
-    )
-    doc.metal_and_finding_weight = round(
-        raw_metal_weight + raw_finding_weight,
-        ctx.precision_for_net_weight
+        if r.finding_category != 'Chains'
     )
 
-    # ── 3. Gross weight — built from net metal + other components ──
-    doc.gross_weight = round(
-        flt(doc.metal_and_finding_weight)
-        + flt(doc.total_diamond_weight_in_gms)
-        + flt(doc.total_gemstone_weight_in_gms)
-        + flt(doc.total_other_weight),
-        ctx.precision_for_gross_weight
-    )
+    if making_charges_on == 'Diamond Inclusive':
+        # Diamonds are part of the metal/net weight pool.
+        # net  = metal + finding(excl chains) + diamond_in_gms
+        # gross = net + gemstone_gms + other
+        doc.metal_and_finding_weight = round(
+            raw_metal_weight
+            + raw_finding_weight
+            + flt(doc.total_diamond_weight_in_gms),
+            ctx.precision_for_net_weight
+        )
+        doc.gross_weight = round(
+            flt(doc.metal_and_finding_weight)
+            + flt(doc.total_gemstone_weight_in_gms)
+            + flt(doc.total_other_weight),
+            ctx.precision_for_gross_weight
+        )
+    else:
+        # Diamond Exclusive (default):
+        # net  = metal + finding(excl chains)
+        # gross = net + diamond_gms + gemstone_gms + other
+        doc.metal_and_finding_weight = round(
+            raw_metal_weight + raw_finding_weight,
+            ctx.precision_for_net_weight
+        )
+        doc.gross_weight = round(
+            flt(doc.metal_and_finding_weight)
+            + flt(doc.total_diamond_weight_in_gms)
+            + flt(doc.total_gemstone_weight_in_gms)
+            + flt(doc.total_other_weight),
+            ctx.precision_for_gross_weight
+        )
 
-    # ── 4. Ratios (now use correctly computed fields) ───────────
+    # ── 3. Ratios ────────────────────────────────────────────────
     doc.gold_to_diamond_ratio = (
         flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight)
         if doc.diamond_weight else 0
@@ -1430,7 +1446,7 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
         if doc.diamond_weight else 0
     )
 
-    # ── 5. Pure weight ──────────────────────────────────────────
+    # ── 4. Pure weight ───────────────────────────────────────────
     doc.custom_total_pure_weight = sum(
         r.quantity * (flt(r.metal_purity) / 100) for r in doc.metal_detail
     )
@@ -1441,7 +1457,7 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
         doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
     )
 
-    # ── 6. Certification / hallmarking (cached per customer) ────
+    # ── 5. Certification / hallmarking (cached per customer) ─────
     if self.customer not in _ccp_cache:
         ccp = frappe.db.get_all(
             "Customer Certification Price",
@@ -1465,14 +1481,12 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
     if "Earrings" in (doc.item_subcategory or ""):
         doc.hallmarking_amount = (doc.hallmarking_amount or 0) * 2
 
-    # ── 7. BOM amounts ──────────────────────────────────────────
+    # ── 6. BOM amounts ───────────────────────────────────────────
     doc.diamond_bom_amount  = round(doc.total_diamond_amount,  ctx.precision)
     doc.gold_bom_amount     = round(doc.total_metal_amount,    ctx.precision)
     doc.gemstone_bom_amount = round(doc.total_gemstone_amount, ctx.precision)
     doc.finding_bom_amount  = round(doc.total_finding_amount,  ctx.precision)
 
-    # NOTE: total_finding_amount must NOT already include finding wastage.
-    # If it does, remove the last sum() below to avoid double-counting.
     doc.total_bom_amount = round(
         doc.diamond_bom_amount
         + doc.gold_bom_amount
@@ -1489,7 +1503,7 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
         ctx.precision
     )
 
-    # ── 8. Total amount ─────────────────────────────────────────
+    # ── 7. Total amount ──────────────────────────────────────────
     total_amount = round(
         doc.total_bom_amount
         + doc.making_charge
@@ -1504,7 +1518,7 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
     if self.sales_type == "Repairing":
         total_amount = doc.total_bom_amount
 
-    # ── 9. Assign row fields ────────────────────────────────────
+    # ── 8. Assign row fields ─────────────────────────────────────
     row.item_code         = item_code
     row.serial_no         = serial_no
     row.qty               = 1
@@ -1533,7 +1547,7 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
     if self.custom_diamond_quality:
         row.diamond_quality = self.custom_diamond_quality
 
-    # ── 10. Accumulate SO total ─────────────────────────────────
+    # ── 9. Accumulate SO total ───────────────────────────────────
     self.total = round(self.total + row.amount, ctx.precision)
 
 def create_serial_no_bom(self, row):
