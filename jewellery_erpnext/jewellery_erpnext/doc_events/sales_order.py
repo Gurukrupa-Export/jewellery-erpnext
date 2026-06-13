@@ -536,17 +536,19 @@ def _process_metal_detail(self, doc, ctx, cctx):
                 s.amount        = 0
                 s.making_rate   = sub_info.get("subcontracting_rate", 0)
                 s.making_amount = round(s.making_rate * s.quantity , 2)
+                s.wastage = sub_info.get("subcontracting_wastage", 0) / 100.0
             else:
                 # re-fetch via cache (same key, no extra DB hit)
                 customer_metal_purity = _get_metal_purity(self.customer, s.metal_type, s.metal_touch)
                 calculated_gold_rate  = (
                     float(customer_metal_purity) * self.gold_rate_with_gst
                 ) / (100 + int(ctx.gold_gst_rate))
-                wastage = (
-                    sub_info.get("subcontracting_wastage", 0) / 100.0
-                    if getattr(doc, "is_customer_item", False)
-                    else wastage_rate_value
-                )
+                # wastage = (
+                #     sub_info.get("subcontracting_wastage", 0) / 100.0
+                #     if getattr(doc, "is_customer_item", False)
+                #     else wastage_rate_value
+                # )
+                wastage = wastage_rate_value
                 s.customer_metal_purity = customer_metal_purity
                 s.rate                  = round(calculated_gold_rate, 2)
                 s.amount                = round(s.rate * s.quantity, 2)
