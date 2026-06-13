@@ -42,6 +42,7 @@ def validate(self, method):
 						rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						row.rate = round(rate,2)
 						row.amount=round(row.rate*row.quantity,2 )
+						row.wastage_amount = row.amount * row.wastage_rate
 					bom_doc.total_metal_amount= sum(row.amount for row in bom_doc.metal_detail)	
 					for row in bom_doc.finding_detail:
 						customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
@@ -50,6 +51,7 @@ def validate(self, method):
 						rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						row.rate = round(rate,2)
 						row.amount=round(row.rate*row.quantity,2 )
+						row.wastage_amount = row.amount * row.wastage_rate
 					bom_doc.total_finding_amount= sum(row.amount for row in bom_doc.finding_detail)	
 					bom_doc.save(ignore_permissions=True)
 				row_s.wastage_amount = bom_doc.total_wastage_amount
