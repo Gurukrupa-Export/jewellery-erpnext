@@ -1768,7 +1768,7 @@ def validate_item_dharm(self):
 								# metal_rate = metal.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else metal.rate
 								# making_amount=metal.making_amount
 								metal_rate=metal.rate
-								metal_amount = (metal_rate * multiplied_qty) 
+								metal_amount = round(metal_rate * multiplied_qty , precision) 
 								# frappe.msgprint(f"heelo,{metal_amount},{metal.wastage_rate }")
 								# Sum quantities and amounts
 								aggregated_metal_items[key]["qty"] += multiplied_qty
@@ -1809,7 +1809,7 @@ def validate_item_dharm(self):
 									}
 
 								multiplied_qty = metal.quantity * item.qty
-								metal_making_amount = metal.making_amount * item.qty  + (metal.wastage_amount * item.qty)
+								metal_making_amount = round(metal.making_amount * item.qty  + (metal.wastage_amount * item.qty) , precision)
 								aggregated_metal_making_items[key]["qty"] += multiplied_qty
 								aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
@@ -1928,7 +1928,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = diamond.quantity * item.qty
 								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
-								diamond_amount = float(diamond.diamond_rate_for_specified_quantity)
+								diamond_amount = round(float(diamond.diamond_rate_for_specified_quantity) , precision)
 
 								aggregated_diamond_items[key]["qty"] += multiplied_qty
 								aggregated_diamond_items[key]["amount"] += diamond_amount
@@ -1972,7 +1972,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = (diamond.quantity * item.qty)/5
 								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
-								diamond_amount = float(diamond.diamond_rate_for_specified_quantity)
+								diamond_amount = round(float(diamond.diamond_rate_for_specified_quantity) , precision)
 
 								aggregated_repairing_items[key]["qty"] += multiplied_qty
 								aggregated_repairing_items[key]["amount"] += diamond_amount
@@ -2058,7 +2058,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = gemstone.quantity * item.qty
 								gemstone_rate = gemstone.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else gemstone.total_gemstone_rate
-								gemstone_amount = float(gemstone.gemstone_rate_for_specified_quantity)
+								gemstone_amount = round(float(gemstone.gemstone_rate_for_specified_quantity) , precision)
 
 								aggregated_gemstone_items[key]["qty"] += multiplied_qty
 								aggregated_gemstone_items[key]["amount"] += gemstone_amount
@@ -2099,7 +2099,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = gemstone.quantity * item.qty
 								gemstone_rate = gemstone.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else gemstone.total_gemstone_rate
-								gemstone_amount = float(gemstone.gemstone_rate_for_specified_quantity)
+								gemstone_amount = round(float(gemstone.gemstone_rate_for_specified_quantity) , precision)
 
 								aggregated_metal_labour_items[key]["qty"] += multiplied_qty/5
 								aggregated_metal_labour_items[key]["amount"] += gemstone_amount
@@ -2138,7 +2138,7 @@ def validate_item_dharm(self):
 										"delivery_date": self.delivery_date
 									}
 								multiplied_qty = finding.quantity * item.qty
-								making_amount = finding.making_amount
+								making_amount = round(finding.making_amount , precision)
 								finding_rate = 0 
 								if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
 									finding_rate = finding.se_rate 
@@ -2181,7 +2181,7 @@ def validate_item_dharm(self):
 									
 									finding_rate = finding.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else finding.rate
 									multiplied_qty = finding.quantity * item.qty
-									making_amount = finding.making_amount
+									making_amount = round(finding.making_amount , precision)
 									finding_making_amount = (finding.rate * multiplied_qty)
 									
 									aggregated_metal_items[key]["qty"] += multiplied_qty
@@ -2218,7 +2218,7 @@ def validate_item_dharm(self):
 								
 								multiplied_qty = finding.quantity * item.qty
 								# frappe.throw(f"{finding.quantity},{item.qty}")
-								making_amount = finding.making_amount
+								making_amount = round(finding.making_amount , precision)
 								finding_making_amount = (finding.making_amount * item.qty) + (finding.wastage_amount * item.qty)
 								
 								aggregated_finding_making_items[key]["qty"] += multiplied_qty
@@ -2255,7 +2255,7 @@ def validate_item_dharm(self):
 										}
 									
 									multiplied_qty = finding.quantity * item.qty
-									making_amount = finding.making_amount
+									making_amount = round(finding.making_amount , precision)
 									finding_making_amount = (finding.making_rate * multiplied_qty) + (finding.wastage_amount * item.qty)
 									aggregated_metal_making_items[key]["qty"] += multiplied_qty
 					
