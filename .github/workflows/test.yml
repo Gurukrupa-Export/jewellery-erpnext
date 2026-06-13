@@ -39,7 +39,7 @@ jobs:
       - name: Checkout Fixture Branch
         uses: actions/checkout@v4
         with:
-          repository: Kanishkar16Vijay/jewellery-erpnext
+          repository: Gurukrupa-Export/jewellery-erpnext
           ref: git_action_v16
           path: fixture_source
 
@@ -145,6 +145,34 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
 
+      - name: Run MWO-level on Receive Entry
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mwo_level
+
+      - name: Run Make Receive Entry Popup
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_second_popup
+
+      - name: Run Make Receive Entry
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry
+
+      - name: Run Manufacturing Operation Weight Calculation 
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recompute
+
       - name: Run Department IR
         run: |
           cd ~/frappe-bench
@@ -222,6 +250,20 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_eod_sync_gap_fill
 
+      - name: Run Make Receive Entry for pcs
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_pcs
+
+      - name: Run MOP Weight Calculation
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
+
       - name: Run Serial Number Creator
         run: |
           cd ~/frappe-bench
@@ -235,3 +277,24 @@ jobs:
 
           bench --site test_site run-tests \
             --app jewellery_erpnext --doctype "Product Certification"
+
+      - name: Run Stock Entry Pcs Validation and Precision
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
+
+      - name: Run Stock Reservation Entry for MWO
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_mwo
+
+      - name: Run Stock Reservation Entry
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_override

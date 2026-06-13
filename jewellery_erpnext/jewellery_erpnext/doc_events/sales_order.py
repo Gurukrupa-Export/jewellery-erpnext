@@ -334,11 +334,11 @@ def _clear_caches():
 
 def _get_bom_context(self):
     gold_gst_rate = frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
-    customer_group, precision, metal_precision, stone_precision = frappe.db.get_value(
+    customer_group, precision, metal_precision, stone_precision,precision_for_net_weight,precision_for_gross_weight = frappe.db.get_value(
         "Customer",
         self.customer,
         ["customer_group", "custom_precision_variable",
-         "custom_precision_for_metal", "custom_precision_for_stone"],
+         "custom_precision_for_metal", "custom_precision_for_stone","custom_precision_for_net_weight","custom_precision_for_gross_weight"],
     )
     return frappe._dict(
         gold_gst_rate=gold_gst_rate,
@@ -346,6 +346,8 @@ def _get_bom_context(self):
         precision=precision,
         metal_precision=metal_precision,
         stone_precision=stone_precision,
+		precision_for_net_weight=precision_for_net_weight,
+		precision_for_gross_weight=precision_for_gross_weight
     )
 
 
@@ -550,7 +552,7 @@ def _process_metal_detail(self, doc, ctx, cctx):
                 s.amount                = round(s.rate * s.quantity, 2)
                 s.making_rate           = making_rate
                 s.making_amount         = (
-                    s.making_rate if doc.metal_and_finding_weight < 2
+                    s.making_rate if doc.metal_and_finding_weight < threshold
                     else s.making_rate * s.quantity
                 )
                 s.wastage_rate   = wastage
@@ -651,7 +653,7 @@ def _process_finding_detail(self, doc, ctx, cctx):
             f.rate   = round(calculated_gold_rate, 2)
             f.amount = round(f.rate * f.quantity, 2)
             finding_weight = getattr(doc, "metal_and_finding_weight", None)
-            if finding_weight is not None and finding_weight < 2:
+            if finding_weight is not None and finding_weight < (find_data.get("rate_per_gm_threshold") or 2):
                 making_rate     = find_data.get("rate_per_pc", 0)
                 wastage_rate    = 0
                 f.making_amount = making_rate
@@ -814,14 +816,13 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 		row.diamond_quality=self.custom_diamond_quality
 	for d in doc.diamond_detail:
 		d.quality = row.diamond_quality
+		# d.weight_per_pcs = d.quantity / d.pcs
+		
+			
+		d.quantity = round(d.quantity, ctx.stone_precision)
 		d.weight_per_pcs = d.quantity / d.pcs
 		if 0.001 < d.weight_per_pcs > 0.005:
-			wstr = str(d.weight_per_pcs)
-			d.weight_per_pcs = (
-				float(wstr[:5]) if len(wstr) > 4 and wstr[4] == "9"
-				else round(d.quantity / d.pcs, 3)
-			)
-		d.quantity = round(d.quantity, ctx.stone_precision)
+			d.weight_per_pcs =round(d.weight_per_pcs , 3)
 		result = frappe.db.sql(
 			"""SELECT diamond_price_list FROM `tabDiamond Price List Table`
 				WHERE parent = %s AND diamond_shape = %s""",
@@ -953,19 +954,19 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
 	if "Earrings" in (doc.item_subcategory or ""):
 		doc.hallmarking_amount = (doc.hallmarking_amount or 0) * 2
 
-	doc.diamond_bom_amount  = doc.total_diamond_amount
-	doc.gold_bom_amount     = doc.total_metal_amount
-	doc.gemstone_bom_amount = doc.total_gemstone_amount
-	doc.finding_bom_amount  = doc.total_finding_amount
+	doc.diamond_bom_amount  = round(doc.total_diamond_amount , ctx.precision)
+	doc.gold_bom_amount     = round(doc.total_metal_amount , ctx.precision)
+	doc.gemstone_bom_amount = round(doc.total_gemstone_amount, ctx.precision)
+	doc.finding_bom_amount  = round(doc.total_finding_amount , ctx.precision)
 	doc.total_bom_amount    = (
 		doc.diamond_bom_amount + doc.gold_bom_amount
 		+ doc.gemstone_bom_amount + doc.finding_bom_amount
 		+ doc.total_wastage_amount
 		+ sum(flt(r.wastage_amount) for r in doc.get("finding_detail", []))
 	)
-	doc.making_charge = (
+	doc.making_charge = round(
 		sum(r.making_amount for r in doc.metal_detail)
-		+ sum(r.making_amount for r in doc.finding_detail)
+		+ sum(r.making_amount for r in doc.finding_detail) , ctx.precision
 	)
 
 	doc.total_diamond_weight_in_gms          = round(doc.diamond_weight / 5, 2)
@@ -981,12 +982,13 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
 	doc.total_gemstone_pcs                   = sum(flt(r.pcs) for r in doc.gemstone_detail)
 	doc.total_other_weight                   = sum(r.quantity for r in doc.other_detail)
 	doc.other_weight                         = doc.total_other_weight
+	doc.metal_weight = sum(r.quantity for r in doc.metal_detail)
 	doc.metal_and_finding_weight             = round(
-		flt(doc.metal_weight) + flt(doc.finding_weight), 2
+		flt(doc.metal_weight) + flt(doc.finding_weight),ctx.precision_for_net_weight
 	)
 	doc.gross_weight = round(
 		flt(doc.metal_and_finding_weight) + flt(doc.total_diamond_weight_in_gms)
-		+ flt(doc.total_gemstone_weight_in_gms) + flt(doc.total_other_weight), 2
+		+ flt(doc.total_gemstone_weight_in_gms) + flt(doc.total_other_weight) , ctx.precision_for_gross_weight
 	)
 	doc.gold_to_diamond_ratio = (
 		flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
@@ -1005,10 +1007,10 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
 	)
 	doc.custom_net_pure_weight = doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
 
-	total_amount = (
+	total_amount = round(
 		doc.total_bom_amount + doc.making_charge + doc.certification_amount
 		+ doc.custom_duty_amount + doc.hallmarking_amount
-		+ doc.freight_amount + doc.sale_amount
+		+ doc.freight_amount + doc.sale_amount , ctx.precision
 	)
 	if self.sales_type == "Repairing":
 		total_amount = doc.total_bom_amount
@@ -1016,8 +1018,8 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
 	row.item_code         = item_code
 	row.serial_no         = serial_no
 	row.qty               = 1
-	row.rate              = total_amount
-	row.amount            = total_amount
+	row.rate              = round(total_amount, ctx.precision)
+	row.amount            = round(total_amount, ctx.precision)
 	row.net_rate   = flt(total_amount) / flt(row.conversion_factor or 1)
 	row.net_amount = row.net_rate * flt(row.qty or 1)
 	row.base_rate = total_amount
@@ -1084,8 +1086,8 @@ def _process_single_row(self, row, ctx):
 
         doc = frappe.get_doc("BOM", row.bom)
         doc.metal_and_finding_weight = (
-            round(sum(r.quantity for r in doc.metal_detail),    ctx.precision)
-            + round(sum(r.quantity for r in doc.finding_detail), ctx.precision)
+            (sum(r.quantity for r in doc.metal_detail))
+            + (sum(r.quantity for r in doc.finding_detail))
         )
 
         _process_gemstone_detail(self, doc, ctx, cctx)
@@ -1605,7 +1607,7 @@ def customer_approval_filter(doctype, txt, searchfield, start, page_len, filters
 
 
 def validate_item_dharm(self):
-
+	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 	allowed = ("Finished Goods", "Subcontracting", "Certification","Branch Sales","Repairing")
 	if self.sales_type in allowed:
 		customer_payment_term_doc = frappe.get_doc(
@@ -2343,7 +2345,9 @@ def validate_item_dharm(self):
 		# After aggregation, calculate average rate = total amount / total qty per key
 		for key, val in aggregated_diamond_items.items():
 			# frappe.throw(f"{val["qty"]}")
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			val["rate"] = round(val["rate"], precision)
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_metal_items.items():
@@ -2354,40 +2358,58 @@ def validate_item_dharm(self):
 				average_rate = 0
 			# frappe.throw(f"{val["amount"]}")
 			val["rate"] = average_rate
+			val["rate"] = round(val["rate"], precision)
+			val["amount"] = round(val["amount"], precision)
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_finding_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			# frappe.throw(f"{val["qty"]}")
-			self.append("custom_invoice_item", val)
-   
-		for key, val in aggregated_gemstone_items.items():
-			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
-			self.append("custom_invoice_item", val)
-   
-		for key, val in aggregated_metal_making_items.items():
-			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			val["rate"] = round(val["rate"], precision)
 			
 			self.append("custom_invoice_item", val)
    
+		for key, val in aggregated_gemstone_items.items():
+			val["amount"] = round(val["amount"], precision)
+			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			val["rate"] = round(val["rate"], precision)
+			
+			self.append("custom_invoice_item", val)
+   
+		for key, val in aggregated_metal_making_items.items():
+			val["amount"] = round(val["amount"], precision)
+			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			val["rate"] = round(val["rate"], precision)
+			self.append("custom_invoice_item", val)
+   
 		for key, val in aggregated_finding_making_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			# frappe.throw(f"{val["qty"]}")
+			val["rate"] = round(val["rate"], precision)
+			
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_hallmarking_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			# frappe.throw("hii")
+			val["rate"] = round(val["rate"], precision)
 			self.append("custom_invoice_item", val)
 
 		for key, val in aggregated_metal_labour_items.items():
+			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["qty"] = round(val["qty"],2)
+			val["rate"] = round(val["rate"], precision)
 			self.append("custom_invoice_item", val)
    
 		for key, val in aggregated_repairing_items.items():
 			# frappe.throw(f"{val["qty"]}")
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
+			val["rate"] = round(val["rate"], precision)
+			val["amount"] = round(val["amount"], precision)
 			self.append("custom_invoice_item", val)
 		
 		for key, val in aggregated_certification_items.items():

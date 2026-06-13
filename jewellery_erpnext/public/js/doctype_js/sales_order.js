@@ -1869,36 +1869,36 @@ let set_edit_bom_details = (
 	});
 
 
-
-
-
-
-	// gemstone details table append
+	let rows = [];
 	$.each(doc.gemstone_detail, function (index, d) {
 		gemstone_amount += d.gemstone_rate_for_specified_quantity;
+		rows.push(d);
+	});
 
-		let witout_precision = d.quantity;
-		let without_precision_rate = witout_precision * d.total_gemstone_rate;
+	frappe.call({
+		method: "frappe.client.get_value",
+		args: {
+			doctype: "Customer",
+			filters: { name: cur_frm.doc.customer },
+			fieldname: "custom_precision_variable"
+		},
+		callback: function (response) {
+			let precision = 0;
 
-		frappe.call({
-			method: "frappe.client.get_value",
-			args: {
-				doctype: "Customer",
-				filters: { name: cur_frm.doc.customer },
-				fieldname: "custom_precision_variable"
-			},
-			callback: function (response) {
-				let precision = 0;
+			if (response.message && response.message.custom_precision_variable) {
+				precision = response.message.custom_precision_variable;
+			}
 
-				// Check if the custom_consider_2_digit_for_diamond field is checked
-				if (response.message && response.message.custom_precision_variable) {
-					precision = response.message.custom_precision_variable;  // Set precision to 2 if the checkbox is checked
-				}
+			// Clear existing data before pushing
+			dialog.fields_dict.gemstone_detail.df.data = [];
+
+			$.each(rows, function (index, d) {
+				let witout_precision = d.quantity;
+				let without_precision_rate = witout_precision * d.total_gemstone_rate;
 
 				let quantity_value = precision === 2 ? parseFloat(d.quantity).toFixed(2) : d.quantity;
 				let with_precision_rate = quantity_value * d.total_gemstone_rate;
 
-				// Calculate the difference
 				let difference_qty = without_precision_rate - with_precision_rate;
 
 				dialog.fields_dict.gemstone_detail.df.data.push({
@@ -1918,16 +1918,11 @@ let set_edit_bom_details = (
 					is_customer_item: d.is_customer_item,
 					difference_qty: difference_qty,
 				});
+			});
 
-				let grid = dialog.fields_dict.gemstone_detail.grid;
-				// grid.update_docfield_property("quantity", "precision", precision);
-
-
-				// Refresh the grid
-				gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
-				grid.refresh();
-			}
-		});
+			gemstone_data = dialog.fields_dict.gemstone_detail.df.data;
+			dialog.fields_dict.gemstone_detail.grid.refresh();
+		}
 	});
 
 	// finding details table append
@@ -2047,6 +2042,7 @@ let set_edit_bom_details = (
 	dialog.set_value("gross_weight", doc.gross_weight);
 	dialog.set_value("gross_weight_1", flt(doc.gross_weight,2));
 	dialog.set_value("making_amount", doc.making_charge);
+	dialog.set_value("metal_amount", doc.total_metal_amount);
 	dialog.set_value("certification_amount", doc.certification_amount)
 	dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
 	dialog.set_value("total_diamond_pieces", doc.total_diamond_pcs)

@@ -798,6 +798,9 @@ def calulate_id_wise_sum_up(self):
 
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)
+	customer = frappe.db.get_value("Parent Manufacturing Order",self.parent_manufacturing_order,'customer')
+	if customer:
+		new_sn_doc.customer = customer
 	existing_huid = []
 	existing_certification = []
 
