@@ -927,131 +927,269 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 		doc.diamond_bom_amount = doc.total_diamond_amount
 
 
-def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
-	making_charges_on = frappe.db.get_value('Customer',self.customer, 'compute_making_charges_on')
-	chain_weight= sum(r.quantity for r in doc.finding_detail if r.finding_category =='Chains')
-	doc.diamond_weight     = sum(r.quantity for r in doc.diamond_detail)
-	doc.total_metal_weight = sum(r.quantity for r in doc.metal_detail)
+# def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
+# 	making_charges_on = frappe.db.get_value('Customer',self.customer, 'compute_making_charges_on')
+# 	chain_weight= sum(r.quantity for r in doc.finding_detail if r.finding_category =='Chains')
+# 	doc.diamond_weight     = sum(r.quantity for r in doc.diamond_detail)
+# 	doc.total_metal_weight = sum(r.quantity for r in doc.metal_detail)
 
-	if self.customer not in _ccp_cache:
-		ccp = frappe.db.get_all(
-			"Customer Certification Price",
-			filters={"customer": self.customer},
-			limit=1,
-		)
-		_ccp_cache[self.customer] = frappe.get_doc("Customer Certification Price", ccp[0].name) if ccp else None
+# 	if self.customer not in _ccp_cache:
+# 		ccp = frappe.db.get_all(
+# 			"Customer Certification Price",
+# 			filters={"customer": self.customer},
+# 			limit=1,
+# 		)
+# 		_ccp_cache[self.customer] = frappe.get_doc("Customer Certification Price", ccp[0].name) if ccp else None
 
-	ccp_doc = _ccp_cache[self.customer]
-	if ccp_doc:
-		doc.certification_amount = (
-			ccp_doc.per_pc_rate
-			if doc.diamond_weight <= ccp_doc.wt_threshold
-			else ccp_doc.per_carat_rate * doc.diamond_weight
-		)
-		doc.hallmarking_amount = ccp_doc.hallmarking_amount
+# 	ccp_doc = _ccp_cache[self.customer]
+# 	if ccp_doc:
+# 		doc.certification_amount = (
+# 			ccp_doc.per_pc_rate
+# 			if doc.diamond_weight <= ccp_doc.wt_threshold
+# 			else ccp_doc.per_carat_rate * doc.diamond_weight
+# 		)
+# 		doc.hallmarking_amount = ccp_doc.hallmarking_amount
 
-	if "Earrings" in (doc.item_subcategory or ""):
-		doc.hallmarking_amount = (doc.hallmarking_amount or 0) * 2
+# 	if "Earrings" in (doc.item_subcategory or ""):
+# 		doc.hallmarking_amount = (doc.hallmarking_amount or 0) * 2
 
-	doc.diamond_bom_amount  = round(doc.total_diamond_amount , ctx.precision)
-	doc.gold_bom_amount     = round(doc.total_metal_amount , ctx.precision)
-	doc.gemstone_bom_amount = round(doc.total_gemstone_amount, ctx.precision)
-	doc.finding_bom_amount  = round(doc.total_finding_amount , ctx.precision)
-	doc.total_bom_amount    = (
-		doc.diamond_bom_amount + doc.gold_bom_amount
-		+ doc.gemstone_bom_amount + doc.finding_bom_amount
-		+ doc.total_wastage_amount
-		+ sum(flt(r.wastage_amount) for r in doc.get("finding_detail", []))
-	)
-	doc.making_charge = round(
-		sum(r.making_amount for r in doc.metal_detail)
-		+ sum(r.making_amount for r in doc.finding_detail) , ctx.precision
-	)
+# 	doc.diamond_bom_amount  = round(doc.total_diamond_amount , ctx.precision)
+# 	doc.gold_bom_amount     = round(doc.total_metal_amount , ctx.precision)
+# 	doc.gemstone_bom_amount = round(doc.total_gemstone_amount, ctx.precision)
+# 	doc.finding_bom_amount  = round(doc.total_finding_amount , ctx.precision)
+# 	doc.total_bom_amount    = (
+# 		doc.diamond_bom_amount + doc.gold_bom_amount
+# 		+ doc.gemstone_bom_amount + doc.finding_bom_amount
+# 		+ doc.total_wastage_amount
+# 		+ sum(flt(r.wastage_amount) for r in doc.get("finding_detail", []))
+# 	)
+# 	doc.making_charge = round(
+# 		sum(r.making_amount for r in doc.metal_detail)
+# 		+ sum(r.making_amount for r in doc.finding_detail) , ctx.precision
+# 	)
 
-	doc.total_diamond_weight_in_gms          = round(doc.diamond_weight / 5, 2)
-	doc.total_gemstone_weight                = sum(r.quantity   for r in doc.gemstone_detail)
-	doc.custom_total_gemstone_weight2_digits = sum(r.quantity_3 for r in doc.gemstone_detail)
-	doc.gemstone_weight                      = doc.custom_total_gemstone_weight2_digits
-	doc.total_gemstone_weight_in_gms         = round(doc.total_gemstone_weight / 5, 2)
-	doc.finding_weight                       = sum(r.quantity   for r in doc.finding_detail)
-	doc.custom_finding_weight2_digits        = sum(r.quantity_3 for r in doc.finding_detail)
-	doc.finding_weight_                      = doc.custom_finding_weight2_digits
-	doc.total_finding_weight_per_gram        = doc.finding_weight
-	doc.total_diamond_pcs                    = sum(flt(r.pcs) for r in doc.diamond_detail)
-	doc.total_gemstone_pcs                   = sum(flt(r.pcs) for r in doc.gemstone_detail)
-	doc.total_other_weight                   = sum(r.quantity for r in doc.other_detail)
-	doc.other_weight                         = doc.total_other_weight
-	doc.metal_weight = sum(r.quantity for r in doc.metal_detail)
+# 	doc.total_diamond_weight_in_gms          = round(doc.diamond_weight / 5, 2)
+# 	doc.total_gemstone_weight                = sum(r.quantity   for r in doc.gemstone_detail)
+# 	doc.custom_total_gemstone_weight2_digits = sum(r.quantity_3 for r in doc.gemstone_detail)
+# 	doc.gemstone_weight                      = doc.custom_total_gemstone_weight2_digits
+# 	doc.total_gemstone_weight_in_gms         = round(doc.total_gemstone_weight / 5, 2)
+# 	doc.finding_weight                       = sum(r.quantity   for r in doc.finding_detail)
+# 	doc.custom_finding_weight2_digits        = sum(r.quantity_3 for r in doc.finding_detail)
+# 	doc.finding_weight_                      = doc.custom_finding_weight2_digits
+# 	doc.total_finding_weight_per_gram        = doc.finding_weight
+# 	doc.total_diamond_pcs                    = sum(flt(r.pcs) for r in doc.diamond_detail)
+# 	doc.total_gemstone_pcs                   = sum(flt(r.pcs) for r in doc.gemstone_detail)
+# 	doc.total_other_weight                   = sum(r.quantity for r in doc.other_detail)
+# 	doc.other_weight                         = doc.total_other_weight
+# 	doc.metal_weight = sum(r.quantity for r in doc.metal_detail)
 	
-	doc.gross_weight = round(
-		flt(doc.metal_and_finding_weight) + flt(doc.total_diamond_weight_in_gms)
-		+ flt(doc.total_gemstone_weight_in_gms) + flt(doc.total_other_weight) , ctx.precision_for_gross_weight
-	)
-	if 	making_charges_on =='Diamond Inclusive':
-		metal = doc.gross_weight - doc.total_gemstone_weight_in_gms - doc.total_other_weight - chain_weight
-	else:
-		metal = doc.gross_weight - doc.total_diamond_weight_in_gms - doc.total_gemstone_weight_in_gms - doc.total_other_weight - chain_weight
-	doc.metal_and_finding_weight =  round(
+# 	doc.gross_weight = round(
+# 		flt(doc.metal_and_finding_weight) + flt(doc.total_diamond_weight_in_gms)
+# 		+ flt(doc.total_gemstone_weight_in_gms) + flt(doc.total_other_weight) , ctx.precision_for_gross_weight
+# 	)
+# 	if 	making_charges_on =='Diamond Inclusive':
+# 		metal = doc.gross_weight - doc.total_gemstone_weight_in_gms - doc.total_other_weight - chain_weight
+# 	else:
+# 		metal = doc.gross_weight - doc.total_diamond_weight_in_gms - doc.total_gemstone_weight_in_gms - doc.total_other_weight - chain_weight
+# 	doc.metal_and_finding_weight =  round(
+#         metal,
+#         ctx.precision_for_net_weight
+#     )
+# 	doc.gold_to_diamond_ratio = (
+# 		flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+# 	)
+# 	doc.diamond_ratio = (
+# 		flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
+# 	)
+# 	doc.metal_to_diamond_ratio_excl_of_finding = (
+# 		flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+# 	)
+# 	doc.custom_total_pure_weight = sum(
+# 		r.quantity * (flt(r.metal_purity) / 100) for r in doc.metal_detail
+# 	)
+# 	doc.custom_total_pure_finding_weight = sum(
+# 		r.quantity * (flt(r.metal_purity) / 100) for r in doc.finding_detail
+# 	)
+# 	doc.custom_net_pure_weight = doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
+
+# 	total_amount = round(
+# 		doc.total_bom_amount + doc.making_charge + doc.certification_amount
+# 		+ doc.custom_duty_amount + doc.hallmarking_amount
+# 		+ doc.freight_amount + doc.sale_amount , ctx.precision
+# 	)
+# 	if self.sales_type == "Repairing":
+# 		total_amount = doc.total_bom_amount
+
+# 	row.item_code         = item_code
+# 	row.serial_no         = serial_no
+# 	row.qty               = 1
+# 	row.rate              = round(total_amount, ctx.precision)
+# 	row.amount            = round(total_amount, ctx.precision)
+# 	row.net_rate   = flt(total_amount) / flt(row.conversion_factor or 1)
+# 	row.net_amount = row.net_rate * flt(row.qty or 1)
+# 	row.base_rate = total_amount
+# 	row.base_amount = total_amount
+# 	row.gold_bom_rate     = doc.gold_bom_amount
+# 	row.diamond_bom_rate  = doc.diamond_bom_amount
+# 	row.gemstone_bom_rate = doc.gemstone_bom_amount
+# 	row.other_bom_rate    = doc.other_bom_amount
+# 	row.making_charge     = doc.making_charge
+
+# 	def _split_weight(detail, factor=1.0):
+# 		return (
+# 			sum(r.quantity for r in detail if not r.is_customer_item) * factor,
+# 			sum(r.quantity for r in detail if r.is_customer_item)     * factor,
+# 		)
+
+# 	m_co, m_ci = _split_weight(doc.metal_detail)
+# 	f_co, f_ci = _split_weight(doc.finding_detail)
+# 	d_co, d_ci = _split_weight(doc.diamond_detail,  0.2)
+# 	g_co, g_ci = _split_weight(doc.gemstone_detail, 0.2)
+
+# 	row.custom_company_rm_weight = m_co + f_co + d_co + g_co
+# 	row.custom_customer_weight   = m_ci + f_ci + d_ci + g_ci
+
+
+
+# 	self.total += row.amount
+
+
+def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
+    making_charges_on = frappe.db.get_value('Customer',self.customer, 'compute_making_charges_on')
+    
+    doc.diamond_weight     = sum(r.quantity for r in doc.diamond_detail)
+    doc.total_metal_weight = sum(r.quantity for r in doc.metal_detail)
+    chain_weight= sum(r.quantity for r in doc.finding_detail if r.finding_category =='Chains')
+    # frappe.throw(f"{chain_weight}")
+    if self.customer not in _ccp_cache:
+        ccp = frappe.db.get_all(
+            "Customer Certification Price",
+            filters={"customer": self.customer},
+            limit=1,
+        )
+        _ccp_cache[self.customer] = (
+            frappe.get_doc("Customer Certification Price", ccp[0].name) if ccp else None
+        )
+
+    ccp_doc = _ccp_cache[self.customer]
+    if ccp_doc:
+        doc.certification_amount = round(
+            ccp_doc.per_pc_rate
+            if doc.diamond_weight <= ccp_doc.wt_threshold
+            else ccp_doc.per_carat_rate * doc.diamond_weight, ctx.precision
+        )
+        doc.hallmarking_amount = ccp_doc.hallmarking_amount
+
+    if "Earrings" in (doc.item_subcategory or ""):
+        doc.hallmarking_amount = (doc.hallmarking_amount or 0) * 2
+
+    doc.diamond_bom_amount  = round(doc.total_diamond_amount, ctx.precision)
+    doc.gold_bom_amount     = round(doc.total_metal_amount, ctx.precision)
+    doc.gemstone_bom_amount = round(doc.total_gemstone_amount, ctx.precision)
+    doc.finding_bom_amount  = round(doc.total_finding_amount, ctx.precision)
+    doc.total_bom_amount    = round(
+        doc.diamond_bom_amount + doc.gold_bom_amount
+        + doc.gemstone_bom_amount + doc.finding_bom_amount
+        + doc.total_wastage_amount
+        + sum(flt(r.wastage_amount) for r in doc.get("finding_detail", [])),
+        ctx.precision
+    )
+    doc.making_charge = round(
+        sum(r.making_amount for r in doc.metal_detail)
+        + sum(r.making_amount for r in doc.finding_detail),
+        ctx.precision
+    )
+
+    doc.total_diamond_weight_in_gms          = round(doc.diamond_weight / 5, 3)
+    doc.total_gemstone_weight                = sum(r.quantity for r in doc.gemstone_detail)
+    doc.custom_total_gemstone_weight2_digits = sum(r.quantity_3 for r in doc.gemstone_detail)
+    doc.gemstone_weight                      = doc.custom_total_gemstone_weight2_digits
+    doc.total_gemstone_weight_in_gms         = round(doc.total_gemstone_weight / 5, 3)
+    doc.finding_weight                       = sum(r.quantity for r in doc.finding_detail)
+    doc.custom_finding_weight2_digits        = sum(r.quantity_3 for r in doc.finding_detail)
+    doc.finding_weight_                      = doc.custom_finding_weight2_digits
+    doc.total_finding_weight_per_gram        = doc.finding_weight
+    doc.total_diamond_pcs                    = sum(flt(r.pcs) for r in doc.diamond_detail)
+    doc.total_gemstone_pcs                   = sum(flt(r.pcs) for r in doc.gemstone_detail)
+    doc.total_other_weight                   = sum(r.quantity for r in doc.other_detail)
+    doc.other_weight                         = doc.total_other_weight
+
+    doc.gross_weight = round(
+        flt(doc.metal_and_finding_weight)
+        + flt(doc.total_diamond_weight_in_gms)
+        + flt(doc.total_gemstone_weight_in_gms)
+        + flt(doc.total_other_weight),
+        ctx.precision_for_gross_weight
+    )
+    if making_charges_on=='Diamond Inclusive':
+        metal=doc.gross_weight - doc.total_gemstone_weight_in_gms - doc.total_other_weight - chain_weight
+    else:
+        metal=doc.gross_weight - doc.total_diamond_weight_in_gms - doc.total_gemstone_weight_in_gms - doc.total_other_weight - chain_weight
+    doc.metal_and_finding_weight = round(
         metal,
         ctx.precision_for_net_weight
     )
-	doc.gold_to_diamond_ratio = (
-		flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
-	)
-	doc.diamond_ratio = (
-		flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
-	)
-	doc.metal_to_diamond_ratio_excl_of_finding = (
-		flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
-	)
-	doc.custom_total_pure_weight = sum(
-		r.quantity * (flt(r.metal_purity) / 100) for r in doc.metal_detail
-	)
-	doc.custom_total_pure_finding_weight = sum(
-		r.quantity * (flt(r.metal_purity) / 100) for r in doc.finding_detail
-	)
-	doc.custom_net_pure_weight = doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
+    doc.gold_to_diamond_ratio = (
+        flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+    )
+    doc.diamond_ratio = (
+        flt(doc.diamond_weight) / flt(doc.total_diamond_pcs) if doc.total_diamond_pcs else 0
+    )
+    doc.metal_to_diamond_ratio_excl_of_finding = (
+        flt(doc.metal_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
+    )
+    doc.custom_total_pure_weight = sum(
+        r.quantity * (flt(r.metal_purity) / 100) for r in doc.metal_detail
+    )
+    doc.custom_total_pure_finding_weight = sum(
+        r.quantity * (flt(r.metal_purity) / 100) for r in doc.finding_detail
+    )
+    doc.custom_net_pure_weight = (
+        doc.custom_total_pure_weight + doc.custom_total_pure_finding_weight
+    )
 
-	total_amount = round(
-		doc.total_bom_amount + doc.making_charge + doc.certification_amount
-		+ doc.custom_duty_amount + doc.hallmarking_amount
-		+ doc.freight_amount + doc.sale_amount , ctx.precision
-	)
-	if self.sales_type == "Repairing":
-		total_amount = doc.total_bom_amount
+    total_amount = round(
+        doc.total_bom_amount + doc.making_charge + doc.certification_amount
+        + doc.custom_duty_amount + doc.hallmarking_amount
+        + doc.freight_amount + doc.sale_amount,
+        ctx.precision
+    )
 
-	row.item_code         = item_code
-	row.serial_no         = serial_no
-	row.qty               = 1
-	row.rate              = round(total_amount, ctx.precision)
-	row.amount            = round(total_amount, ctx.precision)
-	row.net_rate   = flt(total_amount) / flt(row.conversion_factor or 1)
-	row.net_amount = row.net_rate * flt(row.qty or 1)
-	row.base_rate = total_amount
-	row.base_amount = total_amount
-	row.gold_bom_rate     = doc.gold_bom_amount
-	row.diamond_bom_rate  = doc.diamond_bom_amount
-	row.gemstone_bom_rate = doc.gemstone_bom_amount
-	row.other_bom_rate    = doc.other_bom_amount
-	row.making_charge     = doc.making_charge
+    if self.sales_type == "Repairing":
+        total_amount = doc.total_bom_amount
 
-	def _split_weight(detail, factor=1.0):
-		return (
-			sum(r.quantity for r in detail if not r.is_customer_item) * factor,
-			sum(r.quantity for r in detail if r.is_customer_item)     * factor,
-		)
+    # ── Assign row fields ────────────────────────────────────────
+    row.item_code         = item_code
+    row.serial_no         = serial_no
+    row.qty               = 1
+    row.rate              = round(total_amount, ctx.precision)   # ← fixed: = not -
+    row.amount            = round(total_amount, ctx.precision)
+    row.gold_bom_rate     = round(doc.gold_bom_amount, ctx.precision)
+    row.diamond_bom_rate  = round(doc.diamond_bom_amount, ctx.precision)
+    row.gemstone_bom_rate = round(doc.gemstone_bom_amount, ctx.precision)
+    row.other_bom_rate    = round(doc.other_bom_amount, ctx.precision)
+    row.making_charge     = round(doc.making_charge, ctx.precision)
 
-	m_co, m_ci = _split_weight(doc.metal_detail)
-	f_co, f_ci = _split_weight(doc.finding_detail)
-	d_co, d_ci = _split_weight(doc.diamond_detail,  0.2)
-	g_co, g_ci = _split_weight(doc.gemstone_detail, 0.2)
+    def _split_weight(detail, factor=1.0):
+        return (
+            sum(r.quantity for r in detail if not r.is_customer_item) * factor,
+            sum(r.quantity for r in detail if r.is_customer_item)     * factor,
+        )
 
-	row.custom_company_rm_weight = m_co + f_co + d_co + g_co
-	row.custom_customer_weight   = m_ci + f_ci + d_ci + g_ci
+    m_co, m_ci = _split_weight(doc.metal_detail)
+    f_co, f_ci = _split_weight(doc.finding_detail)
+    d_co, d_ci = _split_weight(doc.diamond_detail,  0.2)
+    g_co, g_ci = _split_weight(doc.gemstone_detail, 0.2)
 
+    row.custom_company_rm_weight = m_co + f_co + d_co + g_co
+    row.custom_customer_weight   = m_ci + f_ci + d_ci + g_ci
 
+    if self.custom_diamond_quality:
+        row.diamond_quality = self.custom_diamond_quality
 
-	self.total += row.amount
+    # ── Accumulate SO total ONCE ─────────────────────────────────
+    self.total = round(self.total + row.amount, ctx.precision)
+
 
 
 def create_serial_no_bom(self, row):
