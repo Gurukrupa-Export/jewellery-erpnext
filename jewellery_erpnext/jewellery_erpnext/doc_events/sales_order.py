@@ -407,10 +407,67 @@ def _get_company_context(self, row, ctx):
 
 
 
+# def _get_making_charge(self, doc, touch, ctx, cctx):
+#     """
+#     Cached — same customer+metal+setting+gold_rate+touch combo appears on
+#     almost every row of a typical SO.
+#     """
+#     if self.company == "KG GK Jewellers Private Limited":
+#         effective_customer = cctx.reference_customer
+#     elif self.company == "Gurukrupa Export Private Limited" and ctx.customer_group == "Internal":
+#         effective_customer = cctx.reference_customer_c2c
+#     else:
+#         effective_customer = self.customer
+
+#     cache_key = (effective_customer, doc.metal_type, doc.setting_type,
+#                  self.gold_rate_with_gst, touch)
+
+#     if cache_key not in _making_charge_cache:
+#         filters = {
+#             "customer":       effective_customer,
+#             "metal_type":     doc.metal_type,
+#             "setting_type":   doc.setting_type,
+#             "from_gold_rate": ["<=", self.gold_rate_with_gst],
+#             "to_gold_rate":   [">=", self.gold_rate_with_gst],
+#             "metal_touch":    touch,
+#         }
+#         mc = frappe.get_all("Making Charge Price", filters=filters, fields=["name"], limit=1)
+#         if not mc:
+#             frappe.throw(
+#                 f'Create a valid Making Charge Price for Customer: {effective_customer}, '
+#                 f'Metal Type: {touch}, Setting Type: {doc.setting_type}'
+#             )
+
+#         mc_name  = mc[0]["name"]
+#         sub_rows = frappe.db.get_all(
+#             "Making Charge Price Item Subcategory",
+#             filters={"parent": mc_name, "subcategory": doc.item_subcategory},
+#             fields=[
+#                 "rate_per_gm", "rate_per_pc", "supplier_fg_purchase_rate",
+#                 "wastage","wastage_per_pcs", "subcontracting_rate", "subcontracting_wastage",
+#                 "rate_per_gm_threshold", "to_diamond", "from_diamond",
+#             ],
+#         )
+#         sub_info  = sub_rows[0]
+#         threshold = sub_info.get("rate_per_gm_threshold") or 2
+
+#         diamond_pcs = doc.total_diamond_pcs or 0
+#         if doc.metal_and_finding_weight < threshold:
+#             for s_row in sub_rows:
+#                 if s_row.from_diamond and (
+#                     int(s_row.from_diamond) <= int(diamond_pcs) <= int(s_row.to_diamond)
+#                 ):
+#                     sub_info = s_row
+#                     break
+
+#         _making_charge_cache[cache_key] = (mc_name, sub_info, threshold)
+
+#     return _making_charge_cache[cache_key]
+
 def _get_making_charge(self, doc, touch, ctx, cctx):
     """
-    Cached — same customer+metal+setting+gold_rate+touch combo appears on
-    almost every row of a typical SO.
+    Cached — keyed by subcategory too so different BOM types
+    don't share each other's making charge rows.
     """
     if self.company == "KG GK Jewellers Private Limited":
         effective_customer = cctx.reference_customer
@@ -419,8 +476,15 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
     else:
         effective_customer = self.customer
 
-    cache_key = (effective_customer, doc.metal_type, doc.setting_type,
-                 self.gold_rate_with_gst, touch)
+    # ← FIX: include item_subcategory in cache key
+    cache_key = (
+        effective_customer,
+        doc.metal_type,
+        doc.setting_type,
+        self.gold_rate_with_gst,
+        touch,
+        doc.item_subcategory,   # ← added
+    )
 
     if cache_key not in _making_charge_cache:
         filters = {
@@ -438,16 +502,28 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
                 f'Metal Type: {touch}, Setting Type: {doc.setting_type}'
             )
 
-        mc_name  = mc[0]["name"]
-        sub_rows = frappe.db.get_all(
+        mc_name = mc[0]["name"]
+
+        # Fetch ALL subcategory rows for this mc_name upfront
+        all_sub_rows = frappe.db.get_all(
             "Making Charge Price Item Subcategory",
-            filters={"parent": mc_name, "subcategory": doc.item_subcategory},
+            filters={"parent": mc_name},
             fields=[
-                "rate_per_gm", "rate_per_pc", "supplier_fg_purchase_rate",
-                "wastage","wastage_per_pcs", "subcontracting_rate", "subcontracting_wastage",
+                "subcategory", "rate_per_gm", "rate_per_pc", "supplier_fg_purchase_rate",
+                "wastage", "wastage_per_pcs", "subcontracting_rate", "subcontracting_wastage",
                 "rate_per_gm_threshold", "to_diamond", "from_diamond",
             ],
         )
+
+        # Filter to this BOM's subcategory
+        sub_rows = [r for r in all_sub_rows if r.subcategory == doc.item_subcategory]
+
+        if not sub_rows:
+            frappe.throw(
+                f'No Making Charge Price subcategory row found for subcategory: '
+                f'"{doc.item_subcategory}" in Making Charge Price: {mc_name}'
+            )
+
         sub_info  = sub_rows[0]
         threshold = sub_info.get("rate_per_gm_threshold") or 2
 
@@ -463,7 +539,6 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
         _making_charge_cache[cache_key] = (mc_name, sub_info, threshold)
 
     return _making_charge_cache[cache_key]
-
 
 def _get_metal_purity(customer, metal_type, metal_touch):
     key = (customer, metal_type, metal_touch)
