@@ -444,7 +444,7 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
             filters={"parent": mc_name, "subcategory": doc.item_subcategory},
             fields=[
                 "rate_per_gm", "rate_per_pc", "supplier_fg_purchase_rate",
-                "wastage", "subcontracting_rate", "subcontracting_wastage",
+                "wastage","wastage_per_pcs", "subcontracting_rate", "subcontracting_wastage",
                 "rate_per_gm_threshold", "to_diamond", "from_diamond",
             ],
         )
@@ -526,7 +526,7 @@ def _process_metal_detail(self, doc, ctx, cctx):
         else:
             if doc.metal_and_finding_weight < threshold:
                 making_rate        = sub_info.get("rate_per_pc", 0)
-                wastage_rate_value = 0
+                wastage_rate_value = sub_info.get("wastage_per_pcs", 0) / 100.0
             else:
                 making_rate        = sub_info.get("rate_per_gm", 0)
                 wastage_rate_value = sub_info.get("wastage", 0) / 100.0
@@ -535,7 +535,7 @@ def _process_metal_detail(self, doc, ctx, cctx):
                 s.rate          = 0
                 s.amount        = 0
                 s.making_rate   = sub_info.get("subcontracting_rate", 0)
-                s.making_amount = s.making_rate * s.quantity
+                s.making_amount = round(s.making_rate * s.quantity , 2)
             else:
                 # re-fetch via cache (same key, no extra DB hit)
                 customer_metal_purity = _get_metal_purity(self.customer, s.metal_type, s.metal_touch)
@@ -551,9 +551,9 @@ def _process_metal_detail(self, doc, ctx, cctx):
                 s.rate                  = round(calculated_gold_rate, 2)
                 s.amount                = round(s.rate * s.quantity, 2)
                 s.making_rate           = making_rate
-                s.making_amount         = (
+                s.making_amount         = round(
                     s.making_rate if doc.metal_and_finding_weight < threshold
-                    else s.making_rate * s.quantity
+                    else s.making_rate * s.quantity , 2
                 )
                 s.wastage_rate   = wastage
                 s.wastage_amount = (
@@ -582,7 +582,7 @@ def _process_finding_detail(self, doc, ctx, cctx):
                 "Making Charge Price Finding Subcategory",
                 filters={"parent": mc_name, "subcategory": finding_type},
                 fields=[
-                    "rate_per_gm", "rate_per_pc", "wastage",
+                    "rate_per_gm", "rate_per_pc", "wastage","wastage_per_pcs",
                     "supplier_fg_purchase_rate", "subcontracting_rate", "subcontracting_wastage",
                 ],
                 limit=1,
@@ -595,7 +595,7 @@ def _process_finding_detail(self, doc, ctx, cctx):
                     filters={"parent": mc_name, "subcategory": doc.item_subcategory},
                     fields=[
                         "subcategory", "rate_per_gm", "rate_per_pc", "supplier_fg_purchase_rate",
-                        "wastage", "subcontracting_rate", "subcontracting_wastage",
+                        "wastage", "subcontracting_rate", "subcontracting_wastage","wastage_per_pcs",
                         "name", "to_diamond", "from_diamond", "rate_per_gm_threshold",
                     ],
                 )
@@ -655,12 +655,12 @@ def _process_finding_detail(self, doc, ctx, cctx):
             finding_weight = getattr(doc, "metal_and_finding_weight", None)
             if finding_weight is not None and finding_weight < (find_data.get("rate_per_gm_threshold") or 2):
                 making_rate     = find_data.get("rate_per_pc", 0)
-                wastage_rate    = 0
-                f.making_amount = making_rate
+                wastage_rate    = find_data.get("wastage_per_pcs", 0) / 100.0
+                f.making_amount = round(making_rate , 2)
             else:
                 making_rate     = find_data.get("rate_per_gm", 0)
                 wastage_rate    = find_data.get("wastage", 0) / 100.0
-                f.making_amount = making_rate * f.quantity
+                f.making_amount = round(making_rate * f.quantity , 2)
             f.making_rate    = making_rate
             f.wastage_rate   = wastage_rate
             f.wastage_amount = (
@@ -918,10 +918,7 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 			)
 			d.weight_per_pcs = d.quantity / d.pcs
 			if 0.001 < d.weight_per_pcs > 0.005:
-				wstr = str(d.weight_per_pcs)
-				d.weight_per_pcs = (
-					float(wstr[:5]) if len(wstr) > 4 and wstr[4] == "9"
-					else round(d.quantity / d.pcs, 3)
+				d.weight_per_pcs = (round(d.quantity / d.pcs, 3)
 				)
 
 		doc.total_diamond_amount = sum(
@@ -931,6 +928,8 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 
 
 def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
+	making_charges_on = frappe.db.get_value('Customer',self.customer, 'compute_making_charges_on')
+	chain_weight= sum(r.quantity for r in doc.finding_detail if r.finding_category =='Chains')
 	doc.diamond_weight     = sum(r.quantity for r in doc.diamond_detail)
 	doc.total_metal_weight = sum(r.quantity for r in doc.metal_detail)
 
@@ -983,13 +982,19 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no):
 	doc.total_other_weight                   = sum(r.quantity for r in doc.other_detail)
 	doc.other_weight                         = doc.total_other_weight
 	doc.metal_weight = sum(r.quantity for r in doc.metal_detail)
-	doc.metal_and_finding_weight             = round(
-		flt(doc.metal_weight) + flt(doc.finding_weight),ctx.precision_for_net_weight
-	)
+	
 	doc.gross_weight = round(
 		flt(doc.metal_and_finding_weight) + flt(doc.total_diamond_weight_in_gms)
 		+ flt(doc.total_gemstone_weight_in_gms) + flt(doc.total_other_weight) , ctx.precision_for_gross_weight
 	)
+	if 	making_charges_on =='Diamond Inclusive':
+		metal = doc.gross_weight - doc.total_gemstone_weight_in_gms - doc.total_other_weight - chain_weight
+	else:
+		metal = doc.gross_weight - doc.total_diamond_weight_in_gms - doc.total_gemstone_weight_in_gms - doc.total_other_weight - chain_weight
+	doc.metal_and_finding_weight =  round(
+        metal,
+        ctx.precision_for_net_weight
+    )
 	doc.gold_to_diamond_ratio = (
 		flt(doc.metal_and_finding_weight) / flt(doc.diamond_weight) if doc.diamond_weight else 0
 	)
@@ -1763,7 +1768,7 @@ def validate_item_dharm(self):
 								# metal_rate = metal.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else metal.rate
 								# making_amount=metal.making_amount
 								metal_rate=metal.rate
-								metal_amount = (metal_rate * multiplied_qty) 
+								metal_amount = round(metal_rate * multiplied_qty , precision) 
 								# frappe.msgprint(f"heelo,{metal_amount},{metal.wastage_rate }")
 								# Sum quantities and amounts
 								aggregated_metal_items[key]["qty"] += multiplied_qty
@@ -1804,7 +1809,7 @@ def validate_item_dharm(self):
 									}
 
 								multiplied_qty = metal.quantity * item.qty
-								metal_making_amount = metal.making_amount * item.qty  + (metal.wastage_amount * item.qty)
+								metal_making_amount = round(metal.making_amount * item.qty  + (metal.wastage_amount * item.qty) , precision)
 								aggregated_metal_making_items[key]["qty"] += multiplied_qty
 								aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
@@ -1923,7 +1928,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = diamond.quantity * item.qty
 								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
-								diamond_amount = float(diamond.diamond_rate_for_specified_quantity)
+								diamond_amount = round(float(diamond.diamond_rate_for_specified_quantity) , precision)
 
 								aggregated_diamond_items[key]["qty"] += multiplied_qty
 								aggregated_diamond_items[key]["amount"] += diamond_amount
@@ -1967,7 +1972,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = (diamond.quantity * item.qty)/5
 								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
-								diamond_amount = float(diamond.diamond_rate_for_specified_quantity)
+								diamond_amount = round(float(diamond.diamond_rate_for_specified_quantity) , precision)
 
 								aggregated_repairing_items[key]["qty"] += multiplied_qty
 								aggregated_repairing_items[key]["amount"] += diamond_amount
@@ -2053,7 +2058,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = gemstone.quantity * item.qty
 								gemstone_rate = gemstone.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else gemstone.total_gemstone_rate
-								gemstone_amount = float(gemstone.gemstone_rate_for_specified_quantity)
+								gemstone_amount = round(float(gemstone.gemstone_rate_for_specified_quantity) , precision)
 
 								aggregated_gemstone_items[key]["qty"] += multiplied_qty
 								aggregated_gemstone_items[key]["amount"] += gemstone_amount
@@ -2094,7 +2099,7 @@ def validate_item_dharm(self):
 
 								multiplied_qty = gemstone.quantity * item.qty
 								gemstone_rate = gemstone.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else gemstone.total_gemstone_rate
-								gemstone_amount = float(gemstone.gemstone_rate_for_specified_quantity)
+								gemstone_amount = round(float(gemstone.gemstone_rate_for_specified_quantity) , precision)
 
 								aggregated_metal_labour_items[key]["qty"] += multiplied_qty/5
 								aggregated_metal_labour_items[key]["amount"] += gemstone_amount
@@ -2133,7 +2138,7 @@ def validate_item_dharm(self):
 										"delivery_date": self.delivery_date
 									}
 								multiplied_qty = finding.quantity * item.qty
-								making_amount = finding.making_amount
+								making_amount = round(finding.making_amount , precision)
 								finding_rate = 0 
 								if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
 									finding_rate = finding.se_rate 
@@ -2176,7 +2181,7 @@ def validate_item_dharm(self):
 									
 									finding_rate = finding.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else finding.rate
 									multiplied_qty = finding.quantity * item.qty
-									making_amount = finding.making_amount
+									making_amount = round(finding.making_amount , precision)
 									finding_making_amount = (finding.rate * multiplied_qty)
 									
 									aggregated_metal_items[key]["qty"] += multiplied_qty
@@ -2213,7 +2218,7 @@ def validate_item_dharm(self):
 								
 								multiplied_qty = finding.quantity * item.qty
 								# frappe.throw(f"{finding.quantity},{item.qty}")
-								making_amount = finding.making_amount
+								making_amount = round(finding.making_amount , precision)
 								finding_making_amount = (finding.making_amount * item.qty) + (finding.wastage_amount * item.qty)
 								
 								aggregated_finding_making_items[key]["qty"] += multiplied_qty
@@ -2250,7 +2255,7 @@ def validate_item_dharm(self):
 										}
 									
 									multiplied_qty = finding.quantity * item.qty
-									making_amount = finding.making_amount
+									making_amount = round(finding.making_amount , precision)
 									finding_making_amount = (finding.making_rate * multiplied_qty) + (finding.wastage_amount * item.qty)
 									aggregated_metal_making_items[key]["qty"] += multiplied_qty
 					
