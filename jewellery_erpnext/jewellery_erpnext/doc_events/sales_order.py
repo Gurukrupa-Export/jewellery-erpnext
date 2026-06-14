@@ -10396,7 +10396,7 @@ def _process_single_row(self, row, ctx):
 	cctx      = _get_company_context(self, row, ctx)   # ← now cached
 
 	# ── Step 1: create BOM if it doesn't exist yet ──────────────
-	if not row.bom:
+	if not row.custom_tracking_bom:
 		create_serial_no_bom(self, row)
 		if not row.bom:
 			return
@@ -10423,22 +10423,22 @@ def _process_single_row(self, row, ctx):
 
 	doc.save(ignore_permissions=True)
 
-	# elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
-	# 	# row.bom = row.custom_tracking_bom
-	# 	frappe.db.set_value("Tracking Bom", row.custom_tracking_bom, {
-	# 		"bom_type":                "Sales Order",
-	# 		"reference_doctype": "Sales Order",
-	# 		"reference_docname": self.name,
-	# 		"gold_rate_with_gst":      self.gold_rate_with_gst,
-	# 	})
-	# 	doc = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
-	# 	row.gold_bom_rate     = doc.gold_bom_amount
-	# 	row.diamond_bom_rate  = doc.diamond_bom_amount
-	# 	row.gemstone_bom_rate = doc.gemstone_bom_amount
-	# 	row.other_bom_rate    = doc.other_bom_amount
-	# 	row.making_charge     = doc.making_charge
-	# 	row.bom_rate          = doc.total_bom_amount
-	# 	row.rate              = doc.total_bom_amount
+	elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+		# row.bom = row.custom_tracking_bom
+		frappe.db.set_value("Tracking Bom", row.custom_tracking_bom, {
+			"bom_type":                "Sales Order",
+			"reference_doctype": "Sales Order",
+			"reference_docname": self.name,
+			"gold_rate_with_gst":      self.gold_rate_with_gst,
+		})
+		doc = frappe.get_doc("Tracking Bom", row.custom_tracking_bom)
+		row.gold_bom_rate     = doc.gold_bom_amount
+		row.diamond_bom_rate  = doc.diamond_bom_amount
+		row.gemstone_bom_rate = doc.gemstone_bom_amount
+		row.other_bom_rate    = doc.other_bom_amount
+		row.making_charge     = doc.making_charge
+		row.bom_rate          = doc.total_bom_amount
+		row.rate              = doc.total_bom_amount
 
 
 
@@ -10671,8 +10671,8 @@ def xl_preview_sales_order(docname):
     for item in doc.items:
         #  New logic for BOM selection
         bom_name = None
-        if item.bom:
-            bom_name = item.bom
+        if item.custom_tracking_bom:
+            bom_name = item.custom_tracking_bom
         elif hasattr(item, "bom") and item.bom:   # Check if BOM field exists in Sales Order Item
             bom_name = item.bom
 
@@ -10970,8 +10970,8 @@ def validate_item_dharm(self):
 		aggregated_repairing_items = {}
 		for item in self.items:
 			bom_doc = None
-			if item.bom:
-				bom_doc = frappe.get_doc("BOM", item.bom)
+			if item.custom_tracking_bom:
+				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
 			elif item.bom:
 				bom_doc = frappe.get_doc("BOM", item.bom)
 			if bom_doc:
