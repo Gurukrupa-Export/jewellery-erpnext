@@ -432,33 +432,33 @@ def calculate_total(self):
 	# self.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity for row in self.diamond_detail)
 	self.diamond_bom_amount = sum(row.diamond_rate_for_specified_quantity or 0.0 for row in self.diamond_detail)
 
-	self.metal_and_finding_weight = flt(self.metal_weight) + flt(self.finding_weight)
-	self.gold_to_diamond_ratio = (
-		flt(self.metal_and_finding_weight) / flt(self.diamond_weight) if self.diamond_weight else 0
-	)
-	self.diamond_ratio = (
-		flt(self.diamond_weight) / flt(self.total_diamond_pcs) if self.total_diamond_pcs else 0
-	)
-	self.gross_weight = (
-		flt(self.metal_and_finding_weight)
-		+ flt(self.total_diamond_weight_in_gms)
-		+ flt(self.total_gemstone_weight_in_gms)
-		+ flt(self.total_other_weight)
-	)
-	self.metal_to_diamond_ratio_excl_of_finding=(
-		flt(self.metal_weight) / flt(self.diamond_weight) if self.diamond_weight else 0
-	)
-	# frappe.throw(f"{self.metal_to_diamond_ratio_excl_of_finding}")
-	# Jay Added
-	self.custom_total_pure_weight = sum(
-		row.quantity * (flt(row.metal_purity) / 100) for row in self.metal_detail
-	)
-	self.custom_total_pure_finding_weight = sum(
-		row.quantity * (flt(row.metal_purity) / 100) for row in self.finding_detail
-	)
-	self.custom_net_pure_weight = (
-		self.custom_total_pure_weight + self.custom_total_pure_finding_weight
-	)
+	# self.metal_and_finding_weight = flt(self.metal_weight) + flt(self.finding_weight)
+	# self.gold_to_diamond_ratio = (
+	# 	flt(self.metal_and_finding_weight) / flt(self.diamond_weight) if self.diamond_weight else 0
+	# )
+	# self.diamond_ratio = (
+	# 	flt(self.diamond_weight) / flt(self.total_diamond_pcs) if self.total_diamond_pcs else 0
+	# )
+	# self.gross_weight = (
+	# 	flt(self.metal_and_finding_weight)
+	# 	+ flt(self.total_diamond_weight_in_gms)
+	# 	+ flt(self.total_gemstone_weight_in_gms)
+	# 	+ flt(self.total_other_weight)
+	# )
+	# self.metal_to_diamond_ratio_excl_of_finding=(
+	# 	flt(self.metal_weight) / flt(self.diamond_weight) if self.diamond_weight else 0
+	# )
+	# # frappe.throw(f"{self.metal_to_diamond_ratio_excl_of_finding}")
+	# # Jay Added
+	# self.custom_total_pure_weight = sum(
+	# 	row.quantity * (flt(row.metal_purity) / 100) for row in self.metal_detail
+	# )
+	# self.custom_total_pure_finding_weight = sum(
+	# 	row.quantity * (flt(row.metal_purity) / 100) for row in self.finding_detail
+	# )
+	# self.custom_net_pure_weight = (
+	# 	self.custom_total_pure_weight + self.custom_total_pure_finding_weight
+	# )
 	# -----
 
 
