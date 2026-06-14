@@ -325,13 +325,13 @@ def validate_weight(self):
 	self.total_diamond_weight_in_gms = flt(self.diamond_weight / 5, 3)
 	self.total_gemstone_weight_in_gms = flt(self.gemstone_weight / 5, 3)
 
-	self.metal_and_finding_weight = flt(self.metal_weight) + flt(self.finding_weight)
-	self.gross_weight = (
-		flt(self.metal_and_finding_weight)
-		+ flt(self.total_diamond_weight_in_gms)
-		+ flt(self.total_gemstone_weight_in_gms)
-		+ flt(self.other_weight)
-	)
+	# self.metal_and_finding_weight = flt(self.metal_weight) + flt(self.finding_weight)
+	# self.gross_weight = (
+	# 	flt(self.metal_and_finding_weight)
+	# 	+ flt(self.total_diamond_weight_in_gms)
+	# 	+ flt(self.total_gemstone_weight_in_gms)
+	# 	+ flt(self.other_weight)
+	# )
 
 def _create_new_price_list(self):
 	item_price = frappe.new_doc("Item Price")
