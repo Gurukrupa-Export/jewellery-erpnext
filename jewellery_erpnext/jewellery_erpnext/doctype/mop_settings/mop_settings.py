@@ -7,7 +7,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import now_datetime, nowdate
+from frappe.utils import get_datetime, now_datetime, nowdate
 
 # Employee IR injection submits Material Transfer (WORK ORDER) and/or Repack Stock Entries.
 # Both must appear in Stock Entry Type To Reservation or ``stock_reservation_entry_for_mwo``
@@ -21,6 +21,7 @@ class MOPSettings(Document):
 	def validate(self):
 		self._validate_reservation_types()
 		self._validate_eod_sync_time_permission()
+		self._validate_eod_sync_window()
 
 	def _validate_reservation_types(self):
 		rows = self.get("stock_entry_type_to_reservation") or []
@@ -58,6 +59,17 @@ class MOPSettings(Document):
 			),
 		)
 
+	def _validate_eod_sync_window(self):
+		"""Ensure the manual EOD Sync From/To window is ordered when both are set."""
+		from_dt = self.eod_sync_from_datetime
+		to_dt = self.eod_sync_to_datetime
+		if from_dt and to_dt and get_datetime(from_dt) >= get_datetime(to_dt):
+			frappe.throw(
+				_("EOD Sync From ({0}) must be earlier than EOD Sync To ({1}).").format(
+					frappe.bold(from_dt), frappe.bold(to_dt)
+				)
+			)
+
 	@frappe.whitelist()
 	def sync_mop_log(self):
 		"""Enqueue EOD MOP Log sync as a background job (System Manager only)."""
@@ -74,6 +86,13 @@ class MOPSettings(Document):
 				),
 				title=_("EOD Sync In Progress"),
 			)
+
+		# Resolve the From/To window for this manual run. Blank fields fall back to
+		# today's start/end; the scheduler never sets these, so only manual runs can
+		# scan a custom window.
+		today = nowdate()
+		from_datetime = self.eod_sync_from_datetime or f"{today} 00:00:00"
+		to_datetime = self.eod_sync_to_datetime or f"{today} 23:59:59"
 
 		# Create a MOP EOD Sync Log to track this run
 		sync_log = frappe.new_doc("MOP EOD Sync Log")
@@ -102,6 +121,8 @@ class MOPSettings(Document):
 			timeout=7200,
 			enqueue_after_commit=True,
 			sync_log_name=sync_log_name,
+			from_datetime=from_datetime,
+			to_datetime=to_datetime,
 		)
 		frappe.msgprint(
 			_(
