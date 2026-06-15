@@ -262,6 +262,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 	)
 
 	if row_data:
+		bins_to_update = set()
 		for row in row_data:
 			if row.get("s_warehouse"):
 				pmo = frappe.db.get_value(
@@ -320,8 +321,15 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 						row["s_warehouse"] = sre_doc.warehouse
 
 					sre_reserved_qty_total += flt(sre_doc.reserved_qty)
-					sre_doc.flags.ignore_permissions = True
-					sre_doc.cancel()
+
+					# Consume the SRE (mark as Delivered) instead of cancelling
+					from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+						consume_stock_reservation_entry,
+					)
+
+					consume_stock_reservation_entry(sre_doc, update_bin=False)
+					if sre_doc.item_code and sre_doc.warehouse:
+						bins_to_update.add((sre_doc.item_code, sre_doc.warehouse))
 					frappe.clear_document_cache("Bin")
 
 				# Persist the corrected SRE warehouse back to source_table
@@ -499,6 +507,16 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 							se_loss.submit()
 
 				frappe.clear_cache()
+
+		if bins_to_update:
+			from erpnext.stock.utils import get_or_make_bin
+
+			bin_names = sorted(
+				list(set(get_or_make_bin(item, wh) for item, wh in bins_to_update))
+			)
+			for bin_name in bin_names:
+				bin_doc = frappe.get_cached_doc("Bin", bin_name)
+				bin_doc.update_reserved_stock()
 
 		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 			create_finished_goods_bom,
@@ -798,7 +816,9 @@ def calulate_id_wise_sum_up(self):
 
 def update_new_serial_no(self):
 	new_sn_doc = frappe.get_doc("Serial No", self.fg_serial_no)
-	customer = frappe.db.get_value("Parent Manufacturing Order",self.parent_manufacturing_order,'customer')
+	customer = frappe.db.get_value(
+		"Parent Manufacturing Order", self.parent_manufacturing_order, "customer"
+	)
 	if customer:
 		new_sn_doc.customer = customer
 	existing_huid = []

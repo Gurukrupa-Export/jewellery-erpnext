@@ -413,7 +413,7 @@ def _process_row(dept_ir_doc, row, scenario):
 			_dedup[_key] = _log
 	dept_ir_logs = list(_dedup.values())
 
-	item_batch_keys = {(l["item_code"], l["batch_no"]) for l in dept_ir_logs}
+	item_batch_keys = {(log["item_code"], log["batch_no"]) for log in dept_ir_logs}
 	active_sres = _get_active_sres_for_mwo(mwo)
 	sre_info_by_key = _build_sre_info_by_key(active_sres, item_batch_keys)
 
@@ -451,9 +451,9 @@ def _process_row(dept_ir_doc, row, scenario):
 				# No SRE — check MOP Log from_warehouse to confirm stock was at transit_wh
 				log_match = next(
 					(
-						l
-						for l in dept_ir_logs
-						if l["item_code"] == key[0] and l["batch_no"] == key[1]
+						log
+						for log in dept_ir_logs
+						if log["item_code"] == key[0] and log["batch_no"] == key[1]
 					),
 					None,
 				)
@@ -503,6 +503,28 @@ def _process_row(dept_ir_doc, row, scenario):
 				"PC Tagging Sync Source Warehouse Missing",
 			)
 			continue
+
+		# If s_warehouse is resolved but has no stock (e.g. bypassed PC), find the actual physical warehouse
+		from erpnext.stock.utils import get_batch_qty
+
+		if batch_no and flt(get_batch_qty(batch_no, s_warehouse, item_code)) < flt(
+			qty, 3
+		):
+			# Stock is missing in the expected warehouse. Find where the batch actually is.
+			actual_wh_data = frappe.db.sql(
+				"""
+				SELECT warehouse, SUM(actual_qty) as balance
+				FROM `tabStock Ledger Entry`
+				WHERE batch_no = %s AND item_code = %s AND is_cancelled = 0
+				GROUP BY warehouse
+				HAVING SUM(actual_qty) >= %s
+				LIMIT 1
+			""",
+				(batch_no, item_code, flt(qty, 3)),
+				as_dict=1,
+			)
+			if actual_wh_data:
+				s_warehouse = actual_wh_data[0].warehouse
 
 		t_warehouse = log["to_warehouse"]
 		pcs = (

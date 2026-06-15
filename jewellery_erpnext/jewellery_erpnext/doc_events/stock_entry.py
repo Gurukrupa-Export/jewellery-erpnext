@@ -1583,3 +1583,42 @@ def get_last_mwo_wh_based_on_index(mwo):
 		"MOP Log", filters, ["max(flow_index) as flow_index", "name", "to_warehouse"]
 	)
 	return last_index, last_log_name, to_warehouse
+
+
+def consume_stock_reservation_entry(sre_doc, update_bin=True):
+	"""Mark a Stock Reservation Entry as consumed/delivered instead of cancelling it.
+
+	Sets ``delivered_qty = reserved_qty`` and updates the status to "Delivered".
+	This keeps the SRE record intact for audit / tracking while properly releasing
+	the Bin's reserved-stock counter (ERPNext's formula:
+	``reserved = reserved_qty - delivered_qty - transferred_qty - consumed_qty``).
+
+	If the SRE has Serial and Batch child entries (``sb_entries``), each child row's
+	``delivered_qty`` is also set to match its ``qty`` so the batch-level reservation
+	is released as well.
+
+	Call ``frappe.clear_document_cache("Bin")`` before/after as needed — just like
+	the old cancel flow did.
+	"""
+	from erpnext.stock.utils import get_or_make_bin
+
+	sre_doc.flags.ignore_permissions = True
+
+	# Update batch-level child entries if present
+	if sre_doc.reservation_based_on == "Serial and Batch" and sre_doc.sb_entries:
+		for entry in sre_doc.sb_entries:
+			entry.delivered_qty = flt(entry.qty)
+			entry.db_update()
+
+	# Set delivered_qty = reserved_qty → triggers status "Delivered"
+	sre_doc.db_set("delivered_qty", flt(sre_doc.reserved_qty), update_modified=True)
+	sre_doc.delivered_qty = flt(sre_doc.reserved_qty)
+
+	# Explicitly set status to "Delivered"
+	sre_doc.update_status(status="Delivered")
+
+	# Refresh bin reserved stock so the physical stock becomes available
+	if update_bin:
+		bin_name = get_or_make_bin(sre_doc.item_code, sre_doc.warehouse)
+		bin_doc = frappe.get_cached_doc("Bin", bin_name)
+		bin_doc.update_reserved_stock()

@@ -374,7 +374,7 @@ def create_material_receipt_for_certification(self):
 	repack_rows = []
 
 	for row in self.exploded_product_details:
-		qty = row.get("gross_weight") or 0
+		qty = row.get("conversion_quantity") or row.get("gross_weight") or 0
 		if qty <= 0:
 			continue
 
