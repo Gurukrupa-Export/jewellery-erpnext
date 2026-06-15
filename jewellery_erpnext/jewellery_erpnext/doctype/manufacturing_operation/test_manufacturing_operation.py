@@ -838,5 +838,4 @@ def mop_log_creation(mr_name, mo):
 	mr.custom_manufacturing_operation = mo.name
 	mr.save()
 	apply_workflow(mr, "Transfer to MOP")
-	print(frappe.get_all("MOP Log"))
 	return frappe.get_last_doc("MOP Log")

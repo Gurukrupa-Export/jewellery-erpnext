@@ -1723,6 +1723,43 @@ def create_test_data():
 							"conversion_factor": 1,
 						}
 					],
+					"taxes": [{"item_tax_template": "GST 18% - T"}],
+				}
+			).insert(ignore_permissions=True)
+
+		if not frappe.db.exists("Item", "Diamond Certification Charges"):
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"is_design_code": 0,
+					"item_code": "Diamond Certification Charges",
+					"custom_reason_for_design_code_": "New Design",
+					"item_name": "Diamond Certification Charges",
+					"gst_hsn_code": "71131120",
+					"item_group": "Services",
+					"stock_uom": "Nos",
+					"is_stock_item": 0,
+					"has_variants": 0,
+					"include_item_in_manufacturing": 1,
+					"manufacturing_type": "Casted",
+					"productivity": "Studded",
+					"description": "Diamond Certification Charges",
+					"end_of_life": "2099-12-31",
+					"default_material_request_type": "Purchase",
+					"has_batch_no": 0,
+					"create_new_batch": 0,
+					"variant_based_on": "Item Attribute",
+					"is_purchase_item": 1,
+					"country_of_origin": "India",
+					"grant_commission": 1,
+					"is_sales_item": 1,
+					"uoms": [
+						{
+							"uom": "Nos",
+							"conversion_factor": 1,
+						}
+					],
+					"taxes": [{"item_tax_template": "GST 18% - T"}],
 				}
 			).insert(ignore_permissions=True)
 
@@ -1830,7 +1867,11 @@ def create_test_data():
 						{
 							"certification_type": "Hall Marking Service",
 							"purchase_item": "Hallmarking Charges",
-						}
+						},
+						{
+							"certification_type": "Diamond Certificate service",
+							"purchase_item": "Diamond Certification Charges",
+						},
 					],
 				}
 			).insert(ignore_permissions=True)
@@ -1862,7 +1903,7 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 
-		stock = frappe.get_doc("Stock Settings")
+		stock = frappe.get_single("Stock Settings")
 		stock.stock_uom = "Nos"
 		stock.enable_serial_and_batch_no_for_item = 1
 		stock.do_not_update_serial_batch_on_creation_of_auto_bundle = 0
@@ -1871,12 +1912,9 @@ def create_test_data():
 		stock.enable_stock_reservation = 1
 		stock.auto_indent = 1
 		stock.reorder_email_notify = 1
+		stock.allow_negative_stock = 1
+		stock.allow_negative_stock_for_batch = 1
 		stock.save()
-
-		settings = frappe.get_single("Jewellery Settings")
-		settings.gold_gst_rate = "3"
-		settings.default_item = "ITEM-001"
-		settings.save()
 
 		itm_varient_setting = frappe.get_single("Item Variant Settings")
 		itm_varient_setting.allow_rename_attribute_value = 1
@@ -1912,6 +1950,11 @@ def create_test_data():
 			)
 		order_criteria.save()
 
+		settings = frappe.get_single("Jewellery Settings")
+		settings.gold_gst_rate = "3"
+		settings.default_item = "ITEM-001"
+		settings.save()
+
 		if (
 			frappe.db.get_value(
 				"Bin",
@@ -1934,7 +1977,7 @@ def create_test_data():
 			)
 			stock_entry.append(
 				"items",
-				{"item_code": "M-G-22KT-91.6-Y", "qty": 5, "basic_rate": 5626.24},
+				{"item_code": "M-G-22KT-91.6-Y", "qty": 25, "basic_rate": 5626},
 			)
 			stock_entry.insert(ignore_permissions=True)
 			stock_entry.submit()
@@ -1964,7 +2007,7 @@ def create_test_data():
 			)
 			stock_entry.append(
 				"items",
-				{"item_code": "D-NT-RO-6B-+9-9.5", "qty": 5, "basic_rate": 5626.24},
+				{"item_code": "D-NT-RO-6B-+9-9.5", "qty": 25, "basic_rate": 5626.24},
 			)
 			stock_entry.insert(ignore_permissions=True)
 			stock_entry.submit()
