@@ -78,21 +78,31 @@ def validate_gemstone_alternative_items(self, method=None):
 
 
 def before_validate(self, method):
-	if self.set_warehouse and self.set_from_warehouse:
-		source_branch = frappe.db.get_value(
-			"Warehouse", self.set_from_warehouse, "custom_branch"
-		)
-		target_branch = frappe.db.get_value(
-			"Warehouse", self.set_warehouse, "custom_branch"
-		)
+	# Auto-derive the transfer type ONLY when it has not been set yet. Once a
+	# value exists (chosen manually, or defaulted on a prior save) it is
+	# respected and never overwritten on subsequent saves. ``or None`` normalises
+	# a blank ("") vs NULL custom_branch so two no-branch warehouses are treated
+	# as the same branch (Transfer To Department) instead of "" != None.
+	if not self.custom_transfer_type:
+		if self.set_warehouse and self.set_from_warehouse:
+			source_branch = (
+				frappe.db.get_value(
+					"Warehouse", self.set_from_warehouse, "custom_branch"
+				)
+				or None
+			)
+			target_branch = (
+				frappe.db.get_value("Warehouse", self.set_warehouse, "custom_branch")
+				or None
+			)
 
-		if source_branch == target_branch:
-			self.custom_transfer_type = "Transfer To Department"
-		else:
-			self.custom_transfer_type = "Transfer To Branch"
+			if source_branch == target_branch:
+				self.custom_transfer_type = "Transfer To Department"
+			else:
+				self.custom_transfer_type = "Transfer To Branch"
 
-	elif self.material_request_type == "Manufacture":
-		self.custom_transfer_type = "Transfer to Reserve"
+		elif self.material_request_type == "Manufacture":
+			self.custom_transfer_type = "Transfer to Reserve"
 
 	update_pure_qty(self)
 	validate_target_item(self)

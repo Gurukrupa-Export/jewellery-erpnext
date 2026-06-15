@@ -1,4 +1,5 @@
 import frappe
+from erpnext.stock.doctype.batch.batch import get_batch_qty
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	get_available_qty_to_reserve,
 	get_sre_reserved_qty_for_voucher_detail_no,
@@ -229,6 +230,72 @@ def _find_stock_entry_source_warehouse(
 		limit=1,
 	)
 	return rows[0]["s_warehouse"] if rows else None
+
+
+def _physical_batch_qty(item_code, batch_no, warehouse):
+	"""Physical SBB qty of (item, batch) in warehouse, ignoring reservations.
+
+	Returns None for non-batch lines (batch_no falsy) — the SBB negative-batch
+	validator only fires on batched items. ``ignore_reserved_stock=True`` is
+	required: the batch we are about to consume is itself reserved by the SRE
+	being processed, so the default (reservation-subtracted) qty would understate
+	the correct warehouse. Mirrors ``_warehouse_has_batch_stock`` in
+	serial_number_creator.py.
+	"""
+	if not batch_no or not warehouse:
+		return None
+	try:
+		return flt(
+			get_batch_qty(batch_no, warehouse, item_code, ignore_reserved_stock=True),
+			3,
+		)
+	except Exception:
+		return 0.0
+
+
+def _warehouses_with_physical_batch(item_code, batch_no):
+	"""Return [(warehouse, qty)] for warehouses physically holding the batch.
+
+	Sorted by qty descending. Used only for the fail-fast diagnostic message.
+	``get_batch_qty`` with no warehouse returns a list of {batch_no, warehouse,
+	qty} dicts (negative/zero batches already filtered out by core).
+	"""
+	if not batch_no:
+		return []
+	try:
+		rows = get_batch_qty(
+			batch_no=batch_no, item_code=item_code, ignore_reserved_stock=True
+		)
+	except Exception:
+		rows = None
+	out = []
+	for r in rows or []:
+		if r.get("batch_no") == batch_no:
+			q = flt(r.get("qty"), 3)
+			if q > TOLERANCE:
+				out.append((r.get("warehouse"), q))
+	out.sort(key=lambda t: t[1], reverse=True)
+	return out
+
+
+def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates):
+	"""Return the first candidate warehouse that can physically source the line.
+
+	``candidates`` is an ordered list of warehouse names (highest priority first:
+	MOP Log from_warehouse → submitted SE Detail → active SRE warehouse). For
+	non-batch items there is nothing for the batch validator to check, so the
+	first candidate is returned (legacy behaviour). For batch-tracked items the
+	first candidate whose physical batch qty covers ``requested_qty`` is returned;
+	None if no candidate qualifies (the caller decides how to handle that).
+	"""
+	if not candidates:
+		return None
+	if not batch_no:
+		return candidates[0]
+	for wh in candidates:
+		if flt(_physical_batch_qty(item_code, batch_no, wh) or 0) + TOLERANCE >= requested_qty:
+			return wh
+	return None
 
 
 def _resolve_voucher_fields_from_mwo(mwo):
@@ -478,31 +545,73 @@ def _process_row(dept_ir_doc, row, scenario):
 		if qty <= TOLERANCE:
 			continue
 
-		# Primary: MOP Log from_warehouse (always set by create_mop_log_for_department_ir)
-		s_warehouse = log.get("from_warehouse")
-
-		# Secondary: submitted SE Detail linked to this Department IR
-		if not s_warehouse:
-			s_warehouse = _find_stock_entry_source_warehouse(
-				dept_ir_doc.name, row.name, item_code, batch_no, mwo
-			)
-
-		# Tertiary: active SRE warehouse
+		# Resolve the source warehouse, preferring a candidate that PHYSICALLY
+		# holds the batch. The MOP Log from_warehouse is the *logical* position;
+		# for findings/diamonds it can diverge from where the stock is physically
+		# reserved (the department flow is logical-only, so physical WIP stays
+		# parked in the reserved warehouse). Candidate priority:
+		#   MOP Log from_warehouse → submitted SE Detail → active SRE warehouse.
 		sre_hit = sre_info_by_key.get((item_code, batch_no))
-		if not s_warehouse and sre_hit:
-			s_warehouse = sre_hit[1]
+
+		candidates = []
+		if log.get("from_warehouse"):
+			candidates.append(log["from_warehouse"])
+		se_source_wh = _find_stock_entry_source_warehouse(
+			dept_ir_doc.name, row.name, item_code, batch_no, mwo
+		)
+		if se_source_wh:
+			candidates.append(se_source_wh)
+		if sre_hit:
+			candidates.append(sre_hit[1])
+
+		s_warehouse = _pick_source_warehouse(
+			item_code, batch_no, flt(qty, 3), candidates
+		)
 
 		if not s_warehouse:
-			frappe.log_error(
-				"Unable to resolve source warehouse for item {0}, batch {1}, "
-				"Department IR {2}, row {3}. "
-				"Checked MOP Log from_warehouse, submitted Stock Entry Detail, "
-				"and active Stock Reservation Entry. Skipping line.".format(
-					item_code, batch_no, dept_ir_doc.name, row.name
-				),
-				"PC Tagging Sync Source Warehouse Missing",
+			if not candidates:
+				frappe.log_error(
+					"Unable to resolve source warehouse for item {0}, batch {1}, "
+					"Department IR {2}, row {3}. "
+					"Checked MOP Log from_warehouse, submitted Stock Entry Detail, "
+					"and active Stock Reservation Entry. Skipping line.".format(
+						item_code, batch_no, dept_ir_doc.name, row.name
+					),
+					"PC Tagging Sync Source Warehouse Missing",
+				)
+				continue
+
+			# Batch-tracked line with candidate warehouses but no physical stock:
+			# the MOP Log logical balance has diverged from physical SBB stock.
+			# Fail fast with an actionable diagnostic instead of letting the SE
+			# submit blow up with an opaque BatchNegativeStockError.
+			cand_desc = "; ".join(
+				"{0} (physical {1})".format(
+					wh, flt(_physical_batch_qty(item_code, batch_no, wh) or 0, 3)
+				)
+				for wh in candidates
 			)
-			continue
+			where_stock = _warehouses_with_physical_batch(item_code, batch_no)
+			where_desc = (
+				"; ".join("{0} ({1})".format(wh, q) for wh, q in where_stock)
+				or "no warehouse"
+			)
+			frappe.throw(
+				_(
+					"PC→Tagging transfer (Department IR {0}): cannot source {1} of "
+					"item {2}, batch {3}. None of the candidate warehouses holds "
+					"enough physical stock [{4}]. The batch physically has stock in: "
+					"{5}. Reconcile the MOP Log / Stock Reservation before submitting."
+				).format(
+					dept_ir_doc.name,
+					flt(qty, 3),
+					item_code,
+					batch_no,
+					cand_desc,
+					where_desc,
+				),
+				title=_("Insufficient physical batch stock for PC→Tagging transfer"),
+			)
 
 		t_warehouse = log["to_warehouse"]
 		pcs = (
