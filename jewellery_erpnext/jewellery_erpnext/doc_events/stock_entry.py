@@ -501,8 +501,9 @@ def validate_metal_properties(doc):
 
 
 def on_cancel(self, method=None):
-	update_manufacturing_operation(self, True)
-	update_main_slip(self, True)
+	# update_manufacturing_operation(self, True)
+	# update_main_slip(self, True)
+	pass
 
 
 def before_submit(self, method):
@@ -518,7 +519,7 @@ def before_submit(self, method):
 		)
 	):
 		create_repack_for_subcontracting(self, self.subcontractor, main_slip)
-	if self.stock_entry_type != "Manufacture":
+	if self.stock_entry_type != "Manufacture" and self.company != "Sadguru Diamond":
 		self.posting_time = frappe.utils.nowtime()
 
 	# group_se_items_and_update_mop_items(self, method)

@@ -38,6 +38,18 @@
   "to_stone_size",
   "to_size_weight",
   "to_size_height",
+  "section_break_menw",
+  "handling_charges_in_percentage",
+  "handling_charges_rate",
+  "column_break_ucvl",
+  "outright_handling_charges_in_percentage",
+  "outright_handling_charges_rate",
+  "column_break_jnj7",
+  "outwork_handling_charges_in_percentage",
+  "outwork_handling_charges_rate",
+  "from_gemstone_pr_rate",
+  "column_break_hf3d",
+  "to_gemstone_pr_rate",
   "section_break_et0i",
   "gemstone_multiplier",
   "supplier_fg_multiplier"
@@ -248,6 +260,65 @@
    "fieldtype": "Float",
    "label": "To size Height",
    "read_only": 1
+  },
+  {
+   "fieldname": "handling_charges_in_percentage",
+   "fieldtype": "Percent",
+   "label": "Handling Charges %"
+  },
+  {
+   "fieldname": "handling_charges_rate",
+   "fieldtype": "Currency",
+   "label": "Handling Charges Rate"
+  },
+  {
+   "fieldname": "outright_handling_charges_in_percentage",
+   "fieldtype": "Percent",
+   "label": "Outright Handling Charges (In %)"
+  },
+  {
+   "fieldname": "outright_handling_charges_rate",
+   "fieldtype": "Currency",
+   "label": "Outright Handling Charges Rate"
+  },
+  {
+   "fieldname": "outwork_handling_charges_in_percentage",
+   "fieldtype": "Percent",
+   "label": "Outwork Handling Charges (In %)"
+  },
+  {
+   "fieldname": "outwork_handling_charges_rate",
+   "fieldtype": "Currency",
+   "label": "Outwork Handling Charges Rate"
+  },
+ 
+  {
+   "fieldname": "from_gemstone_pr_rate",
+   "fieldtype": "Link",
+   "label": "From Gemstone PR Rate",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "to_gemstone_pr_rate",
+   "fieldtype": "Link",
+   "label": "To Gemstone PR Rate",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "column_break_hf3d",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_ucvl",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "column_break_jnj7",
+   "fieldtype": "Column Break"
+  },
+   {
+   "fieldname": "section_break_menw",
+   "fieldtype": "Section Break"
   }
  ],
  "index_web_pages_for_search": 1,

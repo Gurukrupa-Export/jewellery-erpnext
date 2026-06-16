@@ -353,7 +353,6 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval:doc.stock_entry_type == 'Material Issue  - Consumables'",
    "dt": "Stock Entry",
    "fetch_from": "custom_employee.department",
    "fieldname": "custom_department",
@@ -364,7 +363,6 @@
    "options": "Department"
   },
   {
-   "depends_on": "eval:doc.stock_entry_type == 'Material Issue  - Consumables'",
    "dt": "Stock Entry",
    "fieldname": "custom_employee",
    "fieldtype": "Link",
@@ -374,7 +372,6 @@
    "options": "Employee"
   },
   {
-   "depends_on": "eval:doc.stock_entry_type == 'Material Issue  - Consumables'",
    "dt": "Stock Entry",
    "fieldname": "custom_operation",
    "fieldtype": "Link",

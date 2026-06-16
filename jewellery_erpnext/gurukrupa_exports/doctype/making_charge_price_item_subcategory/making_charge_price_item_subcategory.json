@@ -13,7 +13,10 @@
   "column_break_4",
   "wastage",
   "rate_per_gm_threshold",
-  "supplier_fg_purchase_rate"
+  "supplier_fg_purchase_rate",
+  "customer_making_charges_code",
+  "from_diamond",
+  "to_diamond"
  ],
  "fields": [
   {
@@ -69,6 +72,21 @@
    "fieldtype": "Currency",
    "label": "Supplier FG Purchase Rate",
    "options": "currency"
+  },
+  {
+   "fieldname": "customer_making_charges_code",
+   "fieldtype": "Data",
+   "label": "Customer Making Charges Code"
+  },
+  {
+   "fieldname": "from_diamond",
+   "fieldtype": "Int",
+   "label": "From Diamond"
+  },
+  {
+   "fieldname": "to_diamond",
+   "fieldtype": "Int",
+   "label": "To Diamond"
   }
  ],
  "index_web_pages_for_search": 1,

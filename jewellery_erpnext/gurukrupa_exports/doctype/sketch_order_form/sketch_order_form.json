@@ -26,6 +26,7 @@
   "order_type",
   "due_days",
   "design_by",
+    "merchandiser",
   "section_break_14",
   "supplier",
   "column_break_f3oz",
@@ -394,6 +395,12 @@
    "fieldname": "updated_delivery_date",
    "fieldtype": "Datetime",
    "label": "Updated Delivery Date"
+  },
+  {
+   "fieldname": "merchandiser",
+   "fieldtype": "Link",
+   "label": "Merchandiser",
+   "options": "Employee"
   }
  ],
  "index_web_pages_for_search": 1,

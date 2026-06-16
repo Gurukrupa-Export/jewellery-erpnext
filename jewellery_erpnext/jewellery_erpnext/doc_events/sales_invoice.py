@@ -11,6 +11,8 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_tota
 
 
 def before_validate(self, method):
+	if self.is_return or self.is_opening == 'Yes':
+		return
 	# copying Items Table to Invoice Item table
 	if self.item_same_as_above:
 		self.invoice_item = []
