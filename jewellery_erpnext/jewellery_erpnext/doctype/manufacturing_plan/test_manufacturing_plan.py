@@ -4,7 +4,7 @@
 import json
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, add_to_date, now, today
 
 from jewellery_erpnext.create_test_data import create_test_data
@@ -18,18 +18,18 @@ from jewellery_erpnext.jewellery_erpnext.tests.test_sales_order import (
 )
 
 
-class TestManufacturingPlan(FrappeTestCase):
-	def setUp(self):
+class TestManufacturingPlan(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		self.department = frappe.get_value(
+		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
-		self.warehouse = frappe.get_value(
+		cls.warehouse = frappe.get_value(
 			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
 		)
-		return super().setUp()
 
 	def test_manufacturing_plan(self):
 		create_sales_order(self)

@@ -11,13 +11,17 @@ Covers:
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
-class TestManualLossDgPcsValidation(FrappeTestCase):
+class TestManualLossDgPcsValidation(IntegrationTestCase):
 	"""validate_manually_book_loss_details adds a D/G PCS cap that consults
 	the same MOP Log balance helper used by Make Receive Entry.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _make_doc(self, manual_rows, op_baseline=None):
 		"""Compose the minimum doc-shape needed for validate_*."""
@@ -211,11 +215,15 @@ class TestManualLossDgPcsValidation(FrappeTestCase):
 		validate_manually_book_loss_details(doc)
 
 
-class TestLossMopLogPcsRegression(FrappeTestCase):
+class TestLossMopLogPcsRegression(IntegrationTestCase):
 	"""Regression guards for the existing D/G negative pcs_change contract
 	in create_mop_log_for_employee_ir_loss. PCS reconciliation must NOT
 	change the loss MOP Log emission rules.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _setup(self, item_code, pcs):
 		eir = MagicMock()

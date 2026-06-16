@@ -1,14 +1,14 @@
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from frappe.utils import flt
 
 from jewellery_erpnext.create_test_data import create_test_data
 
 
-class TestBOMDoctype(FrappeTestCase):
-	def setUp(self):
+class TestBOMDoctype(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		return super().setUp()
 
 	def test_set_bom_items(self):
 		bom_list = frappe.db.get_all("BOM", {"bom_type": "Sales Order"}, "name")

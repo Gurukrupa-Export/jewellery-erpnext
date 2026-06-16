@@ -4,7 +4,7 @@
 from unittest.mock import patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufacturing_plan import (
@@ -17,18 +17,18 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 )
 
 
-class TestParentManufacturingOrder(FrappeTestCase):
-	def setUp(self):
+class TestParentManufacturingOrder(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		self.department = frappe.get_value(
+		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
-		self.warehouse = frappe.get_value(
+		cls.warehouse = frappe.get_value(
 			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
 		)
-		return super().setUp()
 
 	def test_parent_manufacturing_order(self):
 		create_man_plan(self)
@@ -211,7 +211,7 @@ class TestParentManufacturingOrder(FrappeTestCase):
 			self.assertEqual(pmo.name, mwo.manufacturing_order)
 			self.assertEqual(pmo.manufacturing_plan, mwo.manufacturing_plan)
 
-	def _validate_mfg_date_throws_on_invalid_dates(self):
+	def test_validate_mfg_date_throws_on_invalid_dates(self):
 		pmo = frappe.new_doc("Parent Manufacturing Order")
 		pmo.company = "Test_Company"
 		pmo.delivery_date = "2024-01-10"

@@ -3,10 +3,14 @@
 
 from unittest.mock import MagicMock, patch
 
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
-class TestStockReservationEntryForMWO(FrappeTestCase):
+class TestStockReservationEntryForMWO(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.new_doc")
 	@patch(

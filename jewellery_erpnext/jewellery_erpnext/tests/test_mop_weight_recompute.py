@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	recalculate_manufacturing_operation_weights,
@@ -37,7 +37,11 @@ def _row(
 	}
 
 
-class TestRecalculateMopWeights(FrappeTestCase):
+class TestRecalculateMopWeights(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _run(self, rows, pending=None):
 		# Capture writes; the helper calls set_value once for buckets, then
 		# update_wt_detail does a get_value for the bucket fields and a

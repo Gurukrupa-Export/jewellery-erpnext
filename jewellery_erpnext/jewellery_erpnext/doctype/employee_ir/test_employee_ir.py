@@ -4,7 +4,7 @@
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from frappe.types.frappedict import _dict as FrappeDict
 
 from jewellery_erpnext.create_test_data import create_test_data
@@ -62,7 +62,11 @@ class MockRow:
 		self.manufacturing_work_order = "MWO-TEST-001"
 
 
-class TestEmployeeIRReceiveLineageGuard(FrappeTestCase):
+class TestEmployeeIRReceiveLineageGuard(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.resolve_employee_ir_issue_voucher_for_receive",
 		return_value="EMP-IR-ISSUE-1",
@@ -101,7 +105,11 @@ class TestEmployeeIRReceiveLineageGuard(FrappeTestCase):
 		self.assertEqual(mock_mop_log.voucher_no, "EMP-IR-RECV-1")
 
 
-class TestManufacturingOperationBalance(FrappeTestCase):
+class TestManufacturingOperationBalance(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_current_mop_balance_rows",
 		return_value=[
@@ -130,11 +138,11 @@ class TestManufacturingOperationBalance(FrappeTestCase):
 		self.assertAlmostEqual(out["gross_wt"], 0.4316, places=4)
 
 
-class TestEmployeeIR(FrappeTestCase):
-	def setUp(self):
+class TestEmployeeIR(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
-		return super().setUp()
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_employee_ir_scan(self):
 		create_pmo(self)

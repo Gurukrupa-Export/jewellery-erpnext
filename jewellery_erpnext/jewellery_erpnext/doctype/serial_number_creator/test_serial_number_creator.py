@@ -5,7 +5,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from unittest.mock import patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
@@ -27,7 +27,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_nu
 _SNC_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator"
 
 
-class TestSerialNumberCreator(FrappeTestCase):
+class TestSerialNumberCreator(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def setUp(self):
 		self.doc = frappe.new_doc("Serial Number Creator")
 		self.doc.type = "Manufacturing"
@@ -291,7 +295,7 @@ def create_snc(self):
 	return frappe.get_last_doc("Serial Number Creator")
 
 
-class TestWarehouseHasBatchStockGuard(FrappeTestCase):
+class TestWarehouseHasBatchStockGuard(IntegrationTestCase):
 	"""Regression for BatchNegativeStockError on Serial Number Creator submit.
 
 	When an item has several active Stock Reservation Entries in different
@@ -302,6 +306,10 @@ class TestWarehouseHasBatchStockGuard(FrappeTestCase):
 
 	These tests exercise the guard in isolation (no fixtures required).
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(f"{_SNC_MODULE}.get_batch_qty")
 	def test_skips_warehouse_without_batch_stock(self, mock_get_batch_qty):
@@ -339,12 +347,16 @@ class TestWarehouseHasBatchStockGuard(FrappeTestCase):
 		mock_get_batch_qty.assert_not_called()
 
 
-class TestSREReservesBatch(FrappeTestCase):
+class TestSREReservesBatch(IntegrationTestCase):
 	"""Each SRE reserves a specific batch; PRIORITY 1 must only adopt/cancel the
 	SRE that reserves the current row's batch. Without this, the first batch row
 	swallows every SRE for the item and later batch rows fall back to a stale
 	warehouse -> BatchNegativeStockError (the -0.005 KG2F061 case).
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(f"{_SNC_MODULE}.frappe.get_all")
 	def test_matches_when_batch_in_sre_children(self, mock_get_all):

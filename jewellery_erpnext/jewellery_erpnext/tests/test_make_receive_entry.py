@@ -10,7 +10,7 @@ they patch frappe DB / doc APIs to avoid needing a populated bench site.
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _make_mo(name="MOP-1", mwo="MWO-1", department="DEPT-1", status="WIP"):
@@ -24,7 +24,11 @@ def _make_mo(name="MOP-1", mwo="MWO-1", department="DEPT-1", status="WIP"):
 	return mo
 
 
-class TestGetMakeReceiveEntryRows(FrappeTestCase):
+class TestGetMakeReceiveEntryRows(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
 		return_value=[(0,)],
@@ -110,10 +114,14 @@ class TestGetMakeReceiveEntryRows(FrappeTestCase):
 			get_make_receive_entry_rows("MOP-1")
 
 
-class TestCreateMrWoStockEntryValidation(FrappeTestCase):
+class TestCreateMrWoStockEntryValidation(IntegrationTestCase):
 	"""Server-side validation must reject over-receive even if the client
 	bypasses its own checks.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _patch_environment(self, sre_kwargs):
 		"""Common patch stack for create_mr_wo_stock_entry.
@@ -218,7 +226,11 @@ class TestCreateMrWoStockEntryValidation(FrappeTestCase):
 		mock_new_doc.assert_not_called()
 
 
-class TestRequestIdIdempotency(FrappeTestCase):
+class TestRequestIdIdempotency(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value"
 	)
@@ -289,7 +301,11 @@ def _patch_create_mr_environment(test_self, sre_data, get_value_extra=None):
 	return started
 
 
-class TestCreateMrWoStockEntryEdgeCases(FrappeTestCase):
+class TestCreateMrWoStockEntryEdgeCases(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _sre(self, **overrides):
 		base = frappe._dict(
 			{
@@ -485,8 +501,12 @@ class TestCreateMrWoStockEntryEdgeCases(FrappeTestCase):
 		started[-1].assert_not_called()
 
 
-class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
+class TestGetMakeReceiveEntryRowsFilters(IntegrationTestCase):
 	"""Listing must enforce active SRE only, MWO scope, and remaining-qty > 0."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
@@ -679,10 +699,14 @@ class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
 		self.assertAlmostEqual(rows[0]["already_received_qty"], 2.5)
 
 
-class TestPartialReceiveReplacement(FrappeTestCase):
+class TestPartialReceiveReplacement(IntegrationTestCase):
 	"""End-to-end mock-driven test: partial receive cancels original and
 	submits a replacement carrying every voucher_* and metadata field.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
@@ -842,11 +866,15 @@ class TestPartialReceiveReplacement(FrappeTestCase):
 		self.assertEqual(actions[0]["old"], "SRE-ORIG")
 
 
-class TestBuildReplacementSreZeroQty(FrappeTestCase):
+class TestBuildReplacementSreZeroQty(IntegrationTestCase):
 	"""Defensive guards in _build_replacement_sre: zero / sub-precision
 	remaining_qty and empty sb_entries must NOT trigger the
 	'Available Qty to Reserve is required' validation.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _original_sre(self, reservation_based_on="Qty"):
 		mock = MagicMock()
@@ -976,12 +1004,16 @@ class TestBuildReplacementSreZeroQty(FrappeTestCase):
 		new_sre.submit.assert_called_once()
 
 
-class TestPartialReceiveZeroBatchSkipsReplacement(FrappeTestCase):
+class TestPartialReceiveZeroBatchSkipsReplacement(IntegrationTestCase):
 	"""End-to-end zero-qty contract for the Make Receive Entry caller:
 	when a batch receive consumes the only positive batch row in full and
 	all other batch rows were already delivered, no replacement SRE is
 	created and no zero-qty SRE submit happens.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
@@ -1118,7 +1150,7 @@ class TestPartialReceiveZeroBatchSkipsReplacement(FrappeTestCase):
 		self.assertIsNone(actions[0]["new"])
 
 
-class TestAvailableQtyMandatoryContract(FrappeTestCase):
+class TestAvailableQtyMandatoryContract(IntegrationTestCase):
 	"""Regression for the 'Available Qty to Reserve is required' bug.
 
 	ERPNext's Stock Reservation Entry.validate_mandatory requires
@@ -1126,6 +1158,10 @@ class TestAvailableQtyMandatoryContract(FrappeTestCase):
 	must populate this field, mirroring the existing project pattern in
 	doc_events/stock_entry.py:720.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _original_sre(self):
 		mock = MagicMock()

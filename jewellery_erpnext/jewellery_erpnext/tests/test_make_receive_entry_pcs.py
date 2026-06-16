@@ -13,13 +13,17 @@ Covers:
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
-class TestGetAvailableQtyPcsForMopItem(FrappeTestCase):
+class TestGetAvailableQtyPcsForMopItem(IntegrationTestCase):
 	"""The helper is the single source of truth for popup, server validator,
 	and Employee IR manual-loss PCS check. These tests pin its contract.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _ctx(self, **kwargs):
 		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
@@ -249,8 +253,12 @@ def _make_mo(name="MOP-1", mwo="MWO-1", department="DEPT-1", status="WIP"):
 	return mo
 
 
-class TestCreateMrWoStockEntryPcsValidation(FrappeTestCase):
+class TestCreateMrWoStockEntryPcsValidation(IntegrationTestCase):
 	"""Server-side PCS rules: D/G validate against available; M/F/O force 0."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _patches(self, sre_dict, mop_balance_map=None):
 		"""Common patch stack — get_doc, get_value, get_all (MOP Log fetch),
@@ -557,7 +565,7 @@ def _transfer_row(name, item_code, batch_no, qty_change, pcs_change):
 	)
 
 
-class TestMakeReceiveEntryPerRowPcs(FrappeTestCase):
+class TestMakeReceiveEntryPerRowPcs(IntegrationTestCase):
 	"""Two reserved batch lines sharing the same (item, batch) must each show
 	their OWN transferred PCS, not the batch-wide running total.
 
@@ -568,6 +576,10 @@ class TestMakeReceiveEntryPerRowPcs(FrappeTestCase):
 
 	ITEM = "D-NT-RO-7-+5.5-6"
 	BATCH = "GE2D075-DNTROX7E05F00-01"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _patch_popup(self, sre_rows, mop_rows, sb_rows):
 		def _dispatcher(doctype, *args, **kwargs):
@@ -753,7 +765,7 @@ class TestMakeReceiveEntryPerRowPcs(FrappeTestCase):
 		self.assertEqual(sum(pcs_00), 32)
 
 
-class TestMopTransferPcsRowsScope(FrappeTestCase):
+class TestMopTransferPcsRowsScope(IntegrationTestCase):
 	"""``get_mop_transfer_pcs_rows`` must scope by Manufacturing Work Order, not
 	a single MOP. The per-row transfer (pcs_change>0) is logged once at the
 	operation that first received the material; a downstream operation carries
@@ -761,6 +773,10 @@ class TestMopTransferPcsRowsScope(FrappeTestCase):
 	popup falls back to the batch aggregate (the GE-MR-MF-26-67712 / MOP-O692V
 	bug). MWO is constant across operations, so the lookup must use it.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def test_scopes_by_manufacturing_work_order(self):
 		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (

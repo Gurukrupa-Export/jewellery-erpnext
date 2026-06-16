@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe import ValidationError
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from frappe.utils import cint
 
 from jewellery_erpnext.create_test_data import create_test_data
@@ -17,34 +17,33 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.test_seri
 )
 
 
-class TestProductCertification(FrappeTestCase):
-	def setUp(self):
+class TestProductCertification(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
-		self.department = frappe.get_value(
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
 
 		# Set manufacturer on department
-		dept_doc = frappe.get_doc("Department", self.department)
+		dept_doc = frappe.get_doc("Department", cls.department)
 		if dept_doc.manufacturer != "Shubh":
 			dept_doc.manufacturer = "Shubh"
 			dept_doc.save(ignore_permissions=True)
 
-		self.warehouse = frappe.get_value(
+		cls.warehouse = frappe.get_value(
 			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
 		)
 
-		wh_doc = frappe.get_doc("Warehouse", self.warehouse)
-		if wh_doc.department != self.department or wh_doc.warehouse_type not in [
+		wh_doc = frappe.get_doc("Warehouse", cls.warehouse)
+		if wh_doc.department != cls.department or wh_doc.warehouse_type not in [
 			"Manufacturing",
 			"Raw Material",
 		]:
-			wh_doc.department = self.department
+			wh_doc.department = cls.department
 			wh_doc.warehouse_type = "Manufacturing"
 			wh_doc.save(ignore_permissions=True)
-
-		super().setUp()
 
 	def test_product_certification_creation(self):
 		serial_no = serial_no_creation(self)
@@ -514,13 +513,17 @@ class TestProductCertification(FrappeTestCase):
 		return super().tearDown()
 
 
-class TestHallmarkingStockEntryPcs(FrappeTestCase):
+class TestHallmarkingStockEntryPcs(IntegrationTestCase):
 	"""Unit coverage for pcs propagation in get_stock_item_against_mwo.
 
 	Kept separate from TestProductCertification so it does not depend on the
 	heavy create_test_data() fixture: the MWO/MOP/warehouse machinery is mocked
 	and only the pcs-assignment logic is exercised.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def test_hallmarking_issue_se_carries_pcs_for_diamond(self):
 		"""Diamond/gemstone rows take their batch-based pcs from the MOP balance;
