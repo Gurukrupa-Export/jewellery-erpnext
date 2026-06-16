@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from frappe.types.frappedict import _dict as FrappeDict
 
 from jewellery_erpnext.create_test_data import create_test_data
@@ -44,11 +44,11 @@ class FakeDepartmentIR(FrappeDict):
 		DepartmentIR.validate_receive_lineage(self)
 
 
-class TestDepartmentIR(FrappeTestCase):
-	def setUp(self):
+class TestDepartmentIR(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
-		return super().setUp()
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir.get_datetime",

@@ -4,7 +4,7 @@
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from frappe.types.frappedict import _dict as FrappeDict
 
 from jewellery_erpnext.create_test_data import create_test_data
@@ -56,7 +56,11 @@ class MockRow:
 		self.manufacturing_work_order = "MWO-TEST-001"
 
 
-class TestCurrentMOPBalanceRows(FrappeTestCase):
+class TestCurrentMOPBalanceRows(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_get_current_balance_rows_keeps_latest_per_item_batch(self):
 		rows = [
 			_sample_log(
@@ -104,7 +108,11 @@ class TestCurrentMOPBalanceRows(FrappeTestCase):
 		)
 
 
-class TestEmployeeIRIssueMOPLogSource(FrappeTestCase):
+class TestEmployeeIRIssueMOPLogSource(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_get_source_uses_current_balance_rows(self):
 		row = MockRow()
 		current_balance_rows = [_sample_log(flow_index=3)]
@@ -185,7 +193,11 @@ class TestEmployeeIRIssueMOPLogSource(FrappeTestCase):
 		self.assertEqual(mock_log.save.call_count, 2)
 
 
-class TestResolveEmployeeIRIssueVoucher(FrappeTestCase):
+class TestResolveEmployeeIRIssueVoucher(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_resolve_uses_emp_ir_id_when_valid(self):
 		doc = MagicMock()
 		doc.emp_ir_id = "EMP-IR-ISSUE-01"
@@ -233,7 +245,11 @@ class MockDepartmentIR:
 	receive_against = "DIR-ISSUE-001"
 
 
-class TestDepartmentIRIdempotency(FrappeTestCase):
+class TestDepartmentIRIdempotency(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.exists"
 	)
@@ -406,8 +422,12 @@ class MockMainSlipReceiveEIR:
 		return getattr(self, key, default)
 
 
-class TestMainSlipEmployeeIRRelaxations(FrappeTestCase):
+class TestMainSlipEmployeeIRRelaxations(IntegrationTestCase):
 	"""Regressions for the is_main_slip_required gate in mop_log writers."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch("jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.new_doc")
 	@patch(
@@ -442,11 +462,11 @@ class TestMainSlipEmployeeIRRelaxations(FrappeTestCase):
 		self.assertEqual(mock_log.save.call_count, 4)
 
 
-class TestMOPLog(FrappeTestCase):
-	def setUp(self):
+class TestMOPLog(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
-		return super().setUp()
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_mop_log_creation(self):
 		pmo = create_pmo(self)

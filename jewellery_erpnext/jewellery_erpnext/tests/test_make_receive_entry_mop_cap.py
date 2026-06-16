@@ -22,7 +22,7 @@ dispatcher on `frappe.db.get_all` that switches on doctype.
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _make_mo(name="MOP-1", mwo="MWO-1", department="DEPT-1", status="WIP"):
@@ -129,7 +129,11 @@ def _make_get_value_dispatcher(sre_qty=10.0, warehouse="WH-Y"):
 	return _dispatcher
 
 
-class TestPopupReservedVsMopFields(FrappeTestCase):
+class TestPopupReservedVsMopFields(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _patch_popup(self, sre_rows, mop_rows):
 		patches = [
 			patch(
@@ -234,7 +238,11 @@ class TestPopupReservedVsMopFields(FrappeTestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestServerQtyValidation(FrappeTestCase):
+class TestServerQtyValidation(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _patch_validator(self, sre_qty, mop_qty):
 		"""Common patch stack for `create_mr_wo_stock_entry`.
 
@@ -376,9 +384,13 @@ class TestServerQtyValidation(FrappeTestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestReplacementSafeRule(FrappeTestCase):
+class TestReplacementSafeRule(IntegrationTestCase):
 	"""Replacement SRE qty must never exceed remaining MOP balance after
 	the receive."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _run_partial_receive(self, mop_qty, req_qty, sre_qty=10.0):
 		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (

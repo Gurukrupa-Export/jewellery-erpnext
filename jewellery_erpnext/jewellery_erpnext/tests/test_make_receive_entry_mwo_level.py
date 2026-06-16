@@ -24,7 +24,7 @@ its own balance row.
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _make_mo(name="MOP-461KI", mwo="MWO-1", department="DEPT-A", status="WIP"):
@@ -92,10 +92,14 @@ def _make_get_all_side_effect(sre_rows=None, mop_log_rows_by_mop=None, sbe_rows=
 	return _side_effect
 
 
-class TestMwoLevelMakeReceiveEntry(FrappeTestCase):
+class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 	"""SREs from sibling MOPs under the same MWO must appear, with
 	availability computed against each SRE's own MOP Log.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
