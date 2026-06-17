@@ -11,7 +11,7 @@ empty, submit must be rejected.
 from unittest.mock import MagicMock
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_loss_tables_required,
@@ -36,7 +36,11 @@ def _eir(
 	return doc
 
 
-class TestValidateLossTablesRequired(FrappeTestCase):
+class TestValidateLossTablesRequired(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_receive_loss_without_loss_tables_rejected(self):
 		"""gross > received with both tables empty → throw."""
 		doc = _eir(

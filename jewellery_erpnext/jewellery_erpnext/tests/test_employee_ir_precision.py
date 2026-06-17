@@ -18,7 +18,7 @@ import os
 from unittest.mock import MagicMock
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.precision import (
 	EIR_OPERATION_WEIGHT_FIELDS,
@@ -43,10 +43,14 @@ def _float_fields_with_precision(doctype_json: dict) -> dict[str, str | None]:
 	}
 
 
-class TestSchemaPrecision(FrappeTestCase):
+class TestSchemaPrecision(IntegrationTestCase):
 	"""DocType JSON precision attribute is the source of truth at migrate
 	time — every covered Float weight field must declare precision=3.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def test_employee_ir_operation_weight_fields_precision_3(self):
 		j = _load_doctype_json(
@@ -109,11 +113,15 @@ class TestSchemaPrecision(FrappeTestCase):
 			)
 
 
-class TestRuntimePrecisionRounder(FrappeTestCase):
+class TestRuntimePrecisionRounder(IntegrationTestCase):
 	"""``round_employee_ir_weights_to_precision`` rounds in-memory doc
 	values before validate. Any field with sub-3-decimal input loses tail
 	digits.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _doc_with_op(self, **op_overrides):
 		doc = MagicMock()

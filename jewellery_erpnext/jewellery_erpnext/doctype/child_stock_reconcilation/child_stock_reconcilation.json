@@ -16,11 +16,14 @@
   "posting_date",
   "posting_time",
   "set_posting_time",
+  "department",
+  "main_slip",
   "section_break_8",
   "set_warehouse",
   "box_number",
   "section_break_22",
   "scan_barcode",
+  "scan_barcode_manufacturing_work_order",
   "column_break_12",
   "scan_mode",
   "sb9",
@@ -223,13 +226,32 @@
    "print_hide": 1,
    "read_only": 1,
    "search_index": 1
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "default": "0",
+   "fieldname": "main_slip",
+   "fieldtype": "Check",
+   "label": "Main Slip"
+  },
+  {
+   "fieldname": "scan_barcode_manufacturing_work_order",
+   "fieldtype": "Data",
+   "label": "Scan Barcode Manufacturing Work Order",
+   "options": "Barcode"
   }
  ],
+ "grid_page_length": 50,
  "icon": "fa fa-upload-alt",
  "is_submittable": 1,
  "links": [],
- "modified": "2024-04-24 19:01:04.247929",
- "modified_by": "Administrator",
+ "modified": "2026-05-30 11:30:06.638047",
+ "modified_by": "shubham_k@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Child Stock Reconcilation",
  "naming_rule": "By \"Naming Series\" field",
@@ -248,6 +270,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "search_fields": "posting_date",
  "show_name_in_global_search": 1,
  "sort_field": "modified",

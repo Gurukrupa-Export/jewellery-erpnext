@@ -13,7 +13,7 @@ and the pass is idempotent (the MOP Stock Entry re-runs it on already-split rows
 from unittest.mock import patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import validate_pcs
@@ -32,7 +32,11 @@ class _SE:
 		self.flags = frappe._dict()
 
 
-class TestValidatePcsBatchSplit(FrappeTestCase):
+class TestValidatePcsBatchSplit(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _run(self, items, mri_pcs):
 		def _gv(doctype, name, field):
 			return mri_pcs.get(name)
@@ -113,7 +117,11 @@ if that customization is missing or regressed.
 """
 
 
-class TestStockEntryDetailPrecision(FrappeTestCase):
+class TestStockEntryDetailPrecision(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_transfer_qty_precision_is_three(self):
 		# The property setter must be in effect so transfer_qty matches qty (3).
 		self.assertEqual(frappe.get_precision("Stock Entry Detail", "transfer_qty"), 3)
