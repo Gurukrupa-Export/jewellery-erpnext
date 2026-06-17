@@ -1,0 +1,97 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-06-16 06:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "karat",
+  "purity_percentage",
+  "item_code",
+  "input_weight",
+  "pure_gold_weight",
+  "column_break_01",
+  "recovered_weight",
+  "loss_weight",
+  "recovery_pct",
+  "batch_no"
+ ],
+ "fields": [
+  {
+   "fieldname": "karat",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Karat"
+  },
+  {
+   "fieldname": "purity_percentage",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Purity %",
+   "precision": "2"
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item"
+  },
+  {
+   "fieldname": "input_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Input Weight",
+   "precision": "3"
+  },
+  {
+   "fieldname": "pure_gold_weight",
+   "fieldtype": "Float",
+   "label": "Pure Gold Weight",
+   "precision": "3"
+  },
+  {
+   "fieldname": "column_break_01",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "recovered_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Recovered Weight",
+   "precision": "3"
+  },
+  {
+   "fieldname": "loss_weight",
+   "fieldtype": "Float",
+   "label": "Loss Weight",
+   "precision": "3"
+  },
+  {
+   "default": "0",
+   "fieldname": "recovery_pct",
+   "fieldtype": "Float",
+   "label": "Recovery %",
+   "precision": "2"
+  },
+  {
+   "fieldname": "batch_no",
+   "fieldtype": "Link",
+   "label": "Batch",
+   "options": "Batch"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-06-16 06:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Refining",
+ "name": "Refining Gold Recovery Detail",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

@@ -511,5 +511,16 @@
   "translatable": 0,
   "unique": 0,
   "width": null
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Custom Field",
+  "dt": "Stock Entry",
+  "fieldname": "custom_refining_entry",
+  "fieldtype": "Link",
+  "insert_after": "manufacturing_operation",
+  "label": "Refining Entry",
+  "options": "Refining Entry",
+  "name": "Stock Entry-custom_refining_entry"
  }
 ]
