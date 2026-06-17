@@ -2780,7 +2780,7 @@ def setup_data():
 
 	frappe.db.commit()
 	create_warehouse_and_department()
-	print("Setup for the Test Data has been completed")
+	print("Setup for the test data has been completed")
 
 
 def create_warehouse_and_department():
