@@ -3,7 +3,7 @@ from unittest.mock import patch
 import frappe
 from erpnext.selling.doctype.quotation.quotation import make_sales_order
 from frappe.model.workflow import apply_workflow
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days
 from gke_customization.gke_order_forms.doctype.order.order import make_quotation_batch
 
@@ -20,20 +20,19 @@ from jewellery_erpnext.jewellery_erpnext.tests.test_quotation import (
 )
 
 
-class TestSalesOrder(FrappeTestCase):
-	def setUp(self):
+class TestSalesOrder(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
-		self.department = frappe.get_value(
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		cls.department = frappe.get_value(
 			"Department",
 			{"department_name": "Test_Department", "company": "Test_Company"},
 			"name",
 		)
-		self.warehouse = frappe.get_value(
+		cls.warehouse = frappe.get_value(
 			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
 		)
-
-		return super().setUp()
 
 	def test_sales_order(self):
 		create_quotation(self)

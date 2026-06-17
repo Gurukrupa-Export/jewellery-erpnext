@@ -12,7 +12,7 @@ Covers:
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_manually_book_loss_details,
@@ -26,7 +26,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 )
 
 
-class TestCreateMopLogForEmployeeIrLoss(FrappeTestCase):
+class TestCreateMopLogForEmployeeIrLoss(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.get_cached_value",
 		return_value="Gram",
@@ -172,8 +176,12 @@ class TestCreateMopLogForEmployeeIrLoss(FrappeTestCase):
 		mock_new_doc.assert_not_called()
 
 
-class TestManualLossCap(FrappeTestCase):
+class TestManualLossCap(IntegrationTestCase):
 	"""Per-MWO total cap: total manual loss cannot exceed (gwt - r_gwt)."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
@@ -433,10 +441,14 @@ class TestManualLossCap(FrappeTestCase):
 			)
 
 
-class TestBookMetalLossSpecExamples(FrappeTestCase):
+class TestBookMetalLossSpecExamples(IntegrationTestCase):
 	"""Run the spec's worked examples directly through book_metal_loss and
 	assert the proportional loss values. Verifies the C4 fix is correct.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _run(self, mop_log_rows, gwt, r_gwt, manual_loss_rows=None):
 		class DocStub:
@@ -580,12 +592,16 @@ class TestBookMetalLossSpecExamples(FrappeTestCase):
 		self.assertEqual(batches, {"B1"})
 
 
-class TestLossLogIncludedInBalance(FrappeTestCase):
+class TestLossLogIncludedInBalance(IntegrationTestCase):
 	"""Loss attribution rows post a real qty_change reduction, so the balance
 	helper MUST include them so downstream consumers (Make Receive Entry
 	availability, manual loss validation, EOD SRE reconcile) see the
 	post-loss balance.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all"
@@ -605,11 +621,15 @@ class TestLossLogIncludedInBalance(FrappeTestCase):
 		self.assertEqual(filters["manufacturing_operation"], "MOP-1")
 
 
-class TestLossMopLogReducesBalance(FrappeTestCase):
+class TestLossMopLogReducesBalance(IntegrationTestCase):
 	"""Negative qty_change must reduce qty_after_transaction across the three
 	balance views (overall prefix, item-based, batch-based) and PCS balances
 	must be preserved (loss is recorded by weight, not by piece count).
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.get_cached_value",

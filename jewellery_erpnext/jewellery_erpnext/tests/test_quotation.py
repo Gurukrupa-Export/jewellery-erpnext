@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.model.workflow import apply_workflow
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from gke_customization.gke_order_forms.doctype.order.order import make_quotation_batch
 from gke_customization.gke_order_forms.doctype.order_form.test_order_form import (
 	make_order_form,
@@ -20,11 +20,11 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 )
 
 
-class TestQuotation(FrappeTestCase):
-	def setUp(self):
+class TestQuotation(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
-		return super().setUp()
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_quotation(self):
 		order = frappe.db.get_value(

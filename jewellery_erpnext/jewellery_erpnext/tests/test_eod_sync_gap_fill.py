@@ -11,7 +11,7 @@
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _loss_item_doc(name, variant_of="ML"):
@@ -21,7 +21,11 @@ def _loss_item_doc(name, variant_of="ML"):
 	return doc
 
 
-class TestItemLossItemResolution(FrappeTestCase):
+class TestItemLossItemResolution(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.set_value"
 	)
@@ -128,10 +132,14 @@ class TestItemLossItemResolution(FrappeTestCase):
 		mock_create.assert_called_once_with("ML", {"Metal Type": "Gold"})
 
 
-class TestLossMappingMatrix(FrappeTestCase):
+class TestLossMappingMatrix(IntegrationTestCase):
 	"""Variant + loss_type combinations described in the spec must all
 	resolve via Variant Loss Table.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _run_resolution(self, source_item, variant_of, loss_type, expected_template):
 		from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
@@ -225,7 +233,11 @@ class TestLossMappingMatrix(FrappeTestCase):
 		mock_single.assert_not_called()
 
 
-class TestSyncStamp(FrappeTestCase):
+class TestSyncStamp(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._recreate_sres_at"
 	)
@@ -456,7 +468,11 @@ class TestSyncStamp(FrappeTestCase):
 		self.assertEqual(stats["draft_ses"], ["STE-DRAFT"])
 
 
-class TestSreReconciliationDryRun(FrappeTestCase):
+class TestSreReconciliationDryRun(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.logger"
 	)
@@ -593,11 +609,15 @@ class TestSreReconciliationDryRun(FrappeTestCase):
 		mock_get_doc.assert_not_called()
 
 
-class TestEodSyncIdempotentRerun(FrappeTestCase):
+class TestEodSyncIdempotentRerun(IntegrationTestCase):
 	"""When `_get_unsynced_mop_groups` returns an empty dict, EOD must be a
 	no-op — no Stock Entry created, no `last_eod_sync_on` stamps, no
 	reconciliation calls. This is the steady-state second run.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._reconcile_reservations_for_mwo"

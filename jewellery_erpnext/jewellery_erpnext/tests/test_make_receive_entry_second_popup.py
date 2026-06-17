@@ -6,12 +6,12 @@
 Three scenarios the dialog must distinguish:
   1. ``active_sre_count == 0`` → no SREs at all under the MWO.
   2. ``active_sre_count > 0`` AND ``rows`` non-empty AND ``mop_data_present``
-     True on each row → normal popup.
+	 True on each row → normal popup.
   3. ``active_sre_count > 0`` AND ``rows`` empty AND ``skipped`` populated
-     with reason="mop_zero_balance" → SRE alive but loss/consumption ate
-     the MOP balance.
+	 with reason="mop_zero_balance" → SRE alive but loss/consumption ate
+	 the MOP balance.
   4. ``rows`` non-empty AND a row has ``warning`` set → SRE alive but no
-     MOP Log row found; UI shows the warning, server-side cap silenced.
+	 MOP Log row found; UI shows the warning, server-side cap silenced.
 
 NB: ``frappe.db.get_all`` is a global function — patching it via two
 different module paths (``manufacturing_operation.frappe.db.get_all``
@@ -23,7 +23,7 @@ the inner @patch wins. We patch it once and dispatch by doctype using
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _make_mo(name="MOP-1", mwo="MWO-1", department="DEPT-A", status="WIP"):
@@ -81,7 +81,11 @@ def _make_get_all_side_effect(sre_rows=None, mop_log_rows=None, sbe_rows=None):
 	return _side_effect
 
 
-class TestMakeReceiveEntrySecondPopup(FrappeTestCase):
+class TestMakeReceiveEntrySecondPopup(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
 		return_value=[(0,)],

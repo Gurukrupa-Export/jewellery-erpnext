@@ -15,7 +15,7 @@ Covers the central MOP weight bucket recompute:
 
 from unittest.mock import MagicMock, patch
 
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _row(item_code, batch_no, qaf_batch, pcs_batch=0, name=None, creation=None):
@@ -39,7 +39,11 @@ class _RecalcHarness:
 		self.set_value_calls.append((doctype, name, value))
 
 
-class TestRecalcManufacturingOperationWeights(FrappeTestCase):
+class TestRecalcManufacturingOperationWeights(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _run(self, db_rows, pending=None, prev_mop_gross=0.0, mop_state=None):
 		"""Drive the helper with mocked DB queries.
 

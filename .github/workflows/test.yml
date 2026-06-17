@@ -298,3 +298,17 @@ jobs:
 
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_override
+
+      - name: Run Repack
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_repack
+
+      - name: Run Subcontracting Log
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Subcontracting Log"

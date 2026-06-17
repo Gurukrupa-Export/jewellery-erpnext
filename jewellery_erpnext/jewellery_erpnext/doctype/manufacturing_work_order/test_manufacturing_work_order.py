@@ -4,7 +4,7 @@
 from unittest.mock import patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.test_parent_manufacturing_order import (
@@ -12,18 +12,18 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.test
 )
 
 
-class TestManufacturingWorkOrder(FrappeTestCase):
-	def setUp(self):
+class TestManufacturingWorkOrder(IntegrationTestCase):
+	@classmethod
+	def setUpClass(clas):
 		create_test_data()
-		self.department = frappe.get_value(
+		clas.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
+		clas.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
-		self.warehouse = frappe.get_value(
+		clas.warehouse = frappe.get_value(
 			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
 		)
-		return super().setUp()
 
 	def test_submit_creates_manufacturing_operation_and_validates_pending_work_orders(
 		self,

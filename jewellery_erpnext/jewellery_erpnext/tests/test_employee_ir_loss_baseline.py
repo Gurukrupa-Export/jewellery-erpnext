@@ -14,7 +14,7 @@ Covers:
 from unittest.mock import patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
 	EmployeeIR,
@@ -50,10 +50,14 @@ class _StubEIR:
 		return self._bml_returns
 
 
-class TestMopLossDetailsTotalBaseline(FrappeTestCase):
+class TestMopLossDetailsTotalBaseline(IntegrationTestCase):
 	"""mop_loss_details_total reflects the MOP baseline available for loss,
 	independent of how that loss is later split between auto and manual rows.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _run(self, ops, book_metal_loss_returns=None):
 		stub = _StubEIR(ops, book_metal_loss_returns=book_metal_loss_returns)
@@ -150,8 +154,12 @@ class TestMopLossDetailsTotalBaseline(FrappeTestCase):
 		self.assertAlmostEqual(stub.mop_loss_details_total, 3.0, places=3)
 
 
-class TestBookMetalLossPrecisionResidual(FrappeTestCase):
+class TestBookMetalLossPrecisionResidual(IntegrationTestCase):
 	"""Independently-rounded rows must reconcile to flt(loss, 3) exactly."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _run(self, mop_log_rows, gwt, r_gwt, manual_loss_rows=None):
 		# Use a simple dict-like object instead of MagicMock to ensure proper iteration
