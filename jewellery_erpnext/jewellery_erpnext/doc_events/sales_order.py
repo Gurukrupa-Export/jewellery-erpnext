@@ -1553,7 +1553,7 @@ def _process_single_row(self, row, ctx):
 
 	doc.save(ignore_permissions=True)
 
-	if not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+	if frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
 		# row.bom = row.custom_tracking_bom
 		frappe.db.set_value("Tracking Bom", row.custom_tracking_bom, {
 			"bom_type":                "Sales Order",
