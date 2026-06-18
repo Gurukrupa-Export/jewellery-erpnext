@@ -65,6 +65,8 @@ def create_subcontracting_doc(
 			enqueue_after_commit=True,
 			docname=self.name,
 			subcontracting=sub_doc.name,
+			job_id=f"subcon_update::{self.name}",
+			deduplicate=True,
 		)
 	else:
 		sub_doc.submit()

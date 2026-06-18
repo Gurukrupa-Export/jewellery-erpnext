@@ -21,13 +21,18 @@ class CustomSubmissionQueue(SubmissionQueue):
 
 	def after_insert(self):
 		if self.ref_doctype in ["Employee IR","Department IR","Product Certification","Stock Entry","Main Slip"]:
+			# deduplicate by target document: if a background submission for this exact
+			# (doctype, name) is already queued/running, RQ drops the duplicate instead
+			# of running two writers that collide on the same Series/Bin/SRE rows.
 			self.queue_action(
 				"background_submission",
 				to_be_queued_doc=self.queued_doc,
 				action_for_queuing=self.action_for_queuing,
 				timeout=4500,
 				enqueue_after_commit=True,
-				queue="long"
+				queue="long",
+				job_id=f"submit::{self.ref_doctype}::{self.ref_docname}",
+				deduplicate=True,
 			)
 		else:
 			super().after_insert()

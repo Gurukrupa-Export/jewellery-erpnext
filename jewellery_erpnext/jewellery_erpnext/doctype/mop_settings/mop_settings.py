@@ -120,6 +120,8 @@ class MOPSettings(Document):
 			queue="long",
 			timeout=7200,
 			enqueue_after_commit=True,
+			job_id="eod_sync",
+			deduplicate=True,
 			sync_log_name=sync_log_name,
 			from_datetime=from_datetime,
 			to_datetime=to_datetime,
