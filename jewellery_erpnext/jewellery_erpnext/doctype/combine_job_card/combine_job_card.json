@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "C-J-.####",
+ "autoname": "hash",
  "creation": "2022-08-25 12:38:29.116325",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -214,7 +214,7 @@
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Combine Job Card",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

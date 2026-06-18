@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:SL-{####}",
+ "autoname": "SL-.####",
  "creation": "2023-03-04 11:39:42.215892",
  "default_view": "List",
  "doctype": "DocType",

@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:MOP-EOD-SYNC-{YYYY}-{#####}",
+ "autoname": "MOP-EOD-SYNC-.YYYY.-.#####",
  "creation": "2026-05-31 00:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",

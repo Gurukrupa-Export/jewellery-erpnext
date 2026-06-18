@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "QC.#####",
+ "autoname": "hash",
  "creation": "2023-05-17 11:06:06.048366",
  "default_view": "List",
  "doctype": "DocType",
@@ -217,7 +217,7 @@
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "QC",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {
