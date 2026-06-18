@@ -1435,8 +1435,24 @@ def _resolve_department_warehouse(mop_doc):
 
 
 def _preload_sre_warehouse_map(mwo):
-	"""Return {(item_code, batch_no): warehouse} for all submitted SREs of a MWO."""
+	"""Return {(item_code, batch_no): [warehouse, ...]} for all submitted SREs of a MWO.
+
+	Each key maps to an ORDERED, de-duplicated list of candidate source warehouses.
+	Active SREs are listed before stale ones (``Delivered``/``Cancelled``): a delivered
+	SRE's reserved stock has already been consumed/moved out, so its warehouse is only a
+	low-priority candidate — kept (not dropped) so residual physical stock there can still
+	be used iff it physically covers the qty. The caller (``_build_eod_se_rows`` ->
+	``_pick_eod_source_warehouse``) chooses by PHYSICAL batch stock, so this SRE order is a
+	tie-breaker only, never the source of truth.
+	"""
 	sre_map = {}
+
+	def _add(key, warehouse):
+		if not warehouse:
+			return
+		bucket = sre_map.setdefault(key, [])
+		if warehouse not in bucket:
+			bucket.append(warehouse)
 
 	batch_rows = frappe.db.sql(
 		"""
@@ -1445,24 +1461,27 @@ def _preload_sre_warehouse_map(mwo):
         INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
         WHERE sre.manufacturing_work_order = %s
           AND sre.docstatus = 1
+        ORDER BY (sre.status IN ('Delivered', 'Cancelled')) ASC, sre.modified DESC
         """,
 		(mwo,),
 		as_dict=True,
 	)
 	for row in batch_rows:
-		key = (row.item_code, row.batch_no)
-		if key not in sre_map:
-			sre_map[key] = row.warehouse
+		_add((row.item_code, row.batch_no), row.warehouse)
 
-	qty_rows = frappe.db.get_all(
-		"Stock Reservation Entry",
-		filters={"manufacturing_work_order": mwo, "docstatus": 1},
-		fields=["item_code", "warehouse"],
+	qty_rows = frappe.db.sql(
+		"""
+        SELECT item_code, warehouse
+        FROM `tabStock Reservation Entry`
+        WHERE manufacturing_work_order = %s
+          AND docstatus = 1
+        ORDER BY (status IN ('Delivered', 'Cancelled')) ASC, modified DESC
+        """,
+		(mwo,),
+		as_dict=True,
 	)
 	for row in qty_rows:
-		key = (row.item_code, None)
-		if key not in sre_map:
-			sre_map[key] = row.warehouse
+		_add((row.item_code, None), row.warehouse)
 
 	return sre_map
 
@@ -1776,6 +1795,77 @@ def _hard_delete_cancelled_snapshots(snapshots):
 # ---------------------------------------------------------------------------
 
 
+def _eod_physical_batch_qty(item_code, batch_no, warehouse):
+	"""Physical SBB qty of (item, batch) in ``warehouse``, reservations ignored.
+
+	Mirrors ``pc_tagging_stock_sync._physical_batch_qty`` and EOD's own
+	``_check_eod_source_batch_stock``. Returns ``None`` for non-batch lines (the SBB
+	negative-batch validator only fires on batched items). ``ignore_reserved_stock=True``
+	is required: the batch we are about to consume is itself reserved by the SRE being
+	processed, so the default (reservation-subtracted) qty would understate the warehouse.
+	"""
+	if not batch_no or not warehouse:
+		return None
+	from erpnext.stock.doctype.batch.batch import get_batch_qty
+	from frappe.utils import nowtime, today
+
+	try:
+		return flt(
+			get_batch_qty(
+				batch_no=batch_no,
+				warehouse=warehouse,
+				item_code=item_code,
+				posting_date=today(),
+				posting_time=nowtime(),
+				ignore_reserved_stock=True,
+			),
+			3,
+		)
+	except Exception:
+		return 0.0
+
+
+def _pick_eod_source_warehouse(item_code, batch_no, required_qty, candidates, t_warehouse):
+	"""Choose the EOD source warehouse by PHYSICAL batch stock (the SRE is only logical).
+
+	``candidates`` is the ordered list of SRE-derived source warehouses for the (item,
+	batch) — active-SRE warehouses first (see ``_preload_sre_warehouse_map``).
+
+	  * Non-batch line: first candidate (legacy behaviour), else ``None``.
+	  * Batch line, in order:
+	      1. the target physically covers ``required_qty`` -> return the target. The stock
+	         has already moved to the department warehouse, so the caller turns this into a
+	         completed no-op (source == target). This is exactly what an out-of-band
+	         transfer (or a prior run) leaves behind, and the case that previously failed as
+	         a phantom ``batch_short`` against a stale ``Delivered`` SRE warehouse.
+	      2. else the first candidate that physically covers ``required_qty`` -> the real
+	         transfer source (skips stale/delivered warehouses that no longer hold stock).
+	      3. else the first candidate (legacy choice) -> a transfer row is still built so the
+	         downstream ``_check_eod_source_batch_stock`` reports an accurate ``batch_short``
+	         (require X, have Y); when that candidate is the target (the SRE reserves at the
+	         department itself) it stays a clean source == target no-op.
+	      4. else ``None`` (no candidate at all) -> reported as no_sre_warehouse.
+
+	The target is returned as a no-op ONLY when it physically covers the qty (step 1); a
+	batch missing at the target falls through to the candidate path, so a genuinely missing
+	batch is never mistaken for a completed transfer.
+	"""
+	if not batch_no:
+		return candidates[0] if candidates else None
+
+	tol = 1e-6
+	# 1. Physically already at the target department warehouse -> completed no-op.
+	if flt(_eod_physical_batch_qty(item_code, batch_no, t_warehouse) or 0) + tol >= required_qty:
+		return t_warehouse
+	# 2. First candidate warehouse that physically covers the qty.
+	for wh in candidates:
+		if flt(_eod_physical_batch_qty(item_code, batch_no, wh) or 0) + tol >= required_qty:
+			return wh
+	# 3/4. Nothing covers it: keep the first (active-ordered) candidate so batch_short fires
+	# with real numbers; only the genuine "no candidate at all" case is left unresolved.
+	return candidates[0] if candidates else None
+
+
 def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse, sre_map):
 	"""Build Stock Entry item rows for the EOD material transfer."""
 	rows = []
@@ -1785,14 +1875,20 @@ def _build_eod_se_rows(mwo, last_mop_name, last_logs, t_warehouse, sre_map):
 		if qty <= 0:
 			continue
 
-		s_warehouse = sre_map.get((log.item_code, log.batch_no)) or sre_map.get(
-			(log.item_code, None)
+		candidates = list(sre_map.get((log.item_code, log.batch_no)) or [])
+		for c in sre_map.get((log.item_code, None)) or []:
+			if c not in candidates:
+				candidates.append(c)
+
+		s_warehouse = _pick_eod_source_warehouse(
+			log.item_code, log.batch_no, qty, candidates, t_warehouse
 		)
 		if not s_warehouse:
 			skipped.append({"item_code": log.item_code, "batch_no": log.batch_no})
 			continue
 
 		if s_warehouse == t_warehouse:
+			# Stock already sits at the target — nothing to transfer (completed no-op).
 			continue
 
 		row = {

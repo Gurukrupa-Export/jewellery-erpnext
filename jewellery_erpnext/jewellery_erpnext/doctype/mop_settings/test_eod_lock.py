@@ -411,7 +411,7 @@ class TestDraftSePreservedOnSubmitFailure(FrappeTestCase):
 	@patch(f"{_SYNC_MOD}._validate_eod_items_for_mwo_reservation")
 	@patch(
 		f"{_SYNC_MOD}._preload_sre_warehouse_map",
-		return_value={("M-1", "B1"): "WH-SRE"},
+		return_value={("M-1", "B1"): ["WH-SRE"]},
 	)
 	@patch(f"{_SYNC_MOD}.frappe.new_doc")
 	@patch(f"{_SYNC_MOD}.frappe.get_doc")

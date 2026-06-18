@@ -227,7 +227,10 @@ class TestLossMappingMatrix(FrappeTestCase):
 
 class TestSyncStamp(FrappeTestCase):
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._recreate_sres_at"
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._reserve_sres_from_eod_se_rows"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mark_all_mwo_mop_logs_synced"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._cancel_sre_snapshots"
@@ -241,14 +244,15 @@ class TestSyncStamp(FrappeTestCase):
 		return_value="STE-1",
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._validate_eod_source_batch_stock"
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._check_eod_source_batch_stock",
+		return_value={},
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._validate_eod_items_for_mwo_reservation"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._preload_sre_warehouse_map",
-		return_value={("M-X", "B1"): "WH-A"},
+		return_value={("M-X", "B1"): ["WH-A"]},
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mwo_realized_by_artifact",
@@ -284,11 +288,12 @@ class TestSyncStamp(FrappeTestCase):
 		_mock_artifact,
 		_mock_sre_map,
 		_mock_validate_reservation,
-		_mock_validate_stock,
+		_mock_check_stock,
 		_mock_save_draft,
 		_mock_snapshot,
 		_mock_cancel_sres,
-		_mock_recreate_sres,
+		_mock_mark_synced,
+		_mock_reserve_sres,
 	):
 		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
 			_process_mwo_group,
@@ -349,7 +354,10 @@ class TestSyncStamp(FrappeTestCase):
 		stock_entry.submit.assert_called_once()
 
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._recreate_sres_at"
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._reserve_sres_from_eod_se_rows"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mark_all_mwo_mop_logs_synced"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._cancel_sre_snapshots"
@@ -363,14 +371,15 @@ class TestSyncStamp(FrappeTestCase):
 		return_value="STE-DRAFT",
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._validate_eod_source_batch_stock"
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._check_eod_source_batch_stock",
+		return_value={},
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._validate_eod_items_for_mwo_reservation"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._preload_sre_warehouse_map",
-		return_value={("M-X", "B1"): "WH-A"},
+		return_value={("M-X", "B1"): ["WH-A"]},
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._mwo_realized_by_artifact",
@@ -401,11 +410,12 @@ class TestSyncStamp(FrappeTestCase):
 		_mock_artifact,
 		_mock_sre_map,
 		_mock_validate_reservation,
-		_mock_validate_stock,
+		_mock_check_stock,
 		_mock_save_draft,
 		_mock_snapshot,
 		_mock_cancel_sres,
-		_mock_recreate_sres,
+		_mock_mark_synced,
+		_mock_reserve_sres,
 	):
 		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
 			_process_mwo_group,

@@ -346,51 +346,69 @@ class TestGetTWarehouseFromLogs(FrappeTestCase):
 
 
 class TestPreloadSreWarehouseMap(FrappeTestCase):
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all"
-	)
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
-	)
-	def test_batch_sre_rows_populate_map(self, mock_sql, mock_get_all):
-		mock_sql.return_value = [
-			FrappeDict({"item_code": "M-1", "batch_no": "B1", "warehouse": "WH-SRE"})
-		]
-		mock_get_all.return_value = []  # no qty-based rows
-
-		result = _preload_sre_warehouse_map("MWO-1")
-
-		self.assertEqual(result.get(("M-1", "B1")), "WH-SRE")
-
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all"
-	)
+	# The map value is now an ORDERED, de-duplicated LIST of candidate warehouses (active
+	# SREs first); both the batch-keyed and qty-fallback queries run through frappe.db.sql.
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
 	)
-	def test_qty_based_fallback_populates_item_none_key(self, mock_sql, mock_get_all):
-		mock_sql.return_value = []  # no batch-level SRE
-		mock_get_all.return_value = [
-			FrappeDict({"item_code": "M-1", "warehouse": "WH-QTY"})
+	def test_batch_sre_rows_populate_map(self, mock_sql):
+		mock_sql.side_effect = [
+			[FrappeDict({"item_code": "M-1", "batch_no": "B1", "warehouse": "WH-SRE"})],
+			[],  # qty-based fallback
 		]
 
 		result = _preload_sre_warehouse_map("MWO-1")
 
-		self.assertEqual(result.get(("M-1", None)), "WH-QTY")
+		self.assertEqual(result.get(("M-1", "B1")), ["WH-SRE"])
 
-	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.get_all"
-	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
 	)
-	def test_no_sre_returns_empty_map(self, mock_sql, mock_get_all):
-		mock_sql.return_value = []
-		mock_get_all.return_value = []
+	def test_qty_based_fallback_populates_item_none_key(self, mock_sql):
+		mock_sql.side_effect = [
+			[],  # no batch-level SRE
+			[FrappeDict({"item_code": "M-1", "warehouse": "WH-QTY"})],
+		]
+
+		result = _preload_sre_warehouse_map("MWO-1")
+
+		self.assertEqual(result.get(("M-1", None)), ["WH-QTY"])
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
+	)
+	def test_no_sre_returns_empty_map(self, mock_sql):
+		mock_sql.side_effect = [[], []]
 
 		result = _preload_sre_warehouse_map("MWO-1")
 
 		self.assertEqual(result, {})
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.frappe.db.sql"
+	)
+	def test_multiple_sres_for_key_listed_active_first_and_deduped(self, mock_sql):
+		# The SQL ORDER BY lists active SREs ahead of stale (Delivered/Cancelled) ones; the
+		# function preserves that order and de-dups repeats. The stale warehouse is kept as
+		# a low-priority candidate (the physical-stock check, not status, is the decider).
+		mock_sql.side_effect = [
+			[
+				FrappeDict(
+					{"item_code": "M-1", "batch_no": "B1", "warehouse": "WH-ACTIVE"}
+				),
+				FrappeDict(
+					{"item_code": "M-1", "batch_no": "B1", "warehouse": "WH-STALE"}
+				),
+				FrappeDict(
+					{"item_code": "M-1", "batch_no": "B1", "warehouse": "WH-ACTIVE"}
+				),
+			],
+			[],
+		]
+
+		result = _preload_sre_warehouse_map("MWO-1")
+
+		self.assertEqual(result.get(("M-1", "B1")), ["WH-ACTIVE", "WH-STALE"])
 
 
 # ---------------------------------------------------------------------------
@@ -399,8 +417,11 @@ class TestPreloadSreWarehouseMap(FrappeTestCase):
 
 
 class TestBuildEodSeRows(FrappeTestCase):
+	# sre_map values are now candidate LISTS. With no physical stock anywhere (the default
+	# for these fake item/batch names), source resolution falls back to the first candidate
+	# — preserving the legacy row-building behaviour these cases assert.
 	def test_normal_case_builds_row(self):
-		sre_map = {("M-1", "B1"): "WH-SRE"}
+		sre_map = {("M-1", "B1"): ["WH-SRE"]}
 		logs = [
 			_log(
 				item_code="M-1",
@@ -426,21 +447,21 @@ class TestBuildEodSeRows(FrappeTestCase):
 		self.assertEqual(skipped[0]["item_code"], "M-TEST")
 
 	def test_same_source_and_target_skips_row(self):
-		sre_map = {("M-TEST", "B1"): "WH-SAME"}
+		sre_map = {("M-TEST", "B1"): ["WH-SAME"]}
 		logs = [_log(qty_after_transaction_batch_based=2.0)]
 		rows, skipped = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-SAME", sre_map)
 		self.assertEqual(rows, [])
 		self.assertEqual(skipped, [])  # same-WH is a clean skip, not a missing SRE
 
 	def test_zero_qty_log_skipped(self):
-		sre_map = {("M-TEST", "B1"): "WH-SRE"}
+		sre_map = {("M-TEST", "B1"): ["WH-SRE"]}
 		logs = [_log(qty_after_transaction_batch_based=0.0)]
 		rows, skipped = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT", sre_map)
 		self.assertEqual(rows, [])
 		self.assertEqual(skipped, [])
 
 	def test_batch_no_included_in_row(self):
-		sre_map = {("M-1", "BATCH-99"): "WH-SRE"}
+		sre_map = {("M-1", "BATCH-99"): ["WH-SRE"]}
 		logs = [
 			_log(
 				item_code="M-1",
@@ -451,6 +472,62 @@ class TestBuildEodSeRows(FrappeTestCase):
 		rows, skipped = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT", sre_map)
 		self.assertEqual(len(rows), 1)
 		self.assertEqual(rows[0]["batch_no"], "BATCH-99")
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_batch_already_at_target_is_noop(self, mock_phys):
+		# Reproduces MOP-EOD-SYNC-2026-03647: the SRE-mapped source warehouse is stale
+		# (0 physical) because the batch already moved to the target department warehouse.
+		# Source resolves to the target -> clean no-op (no row, no skip; the MWO can sync).
+		mock_phys.side_effect = lambda i, b, w: 5.0 if w == "WH-DEPT" else 0.0
+		sre_map = {("M-1", "B1"): ["WH-STALE"]}
+		logs = [
+			_log(
+				item_code="M-1",
+				batch_no="B1",
+				qty_after_transaction_batch_based=2.065,
+				to_warehouse="WH-DEPT",
+			)
+		]
+		rows, skipped = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT", sre_map)
+		self.assertEqual(rows, [])
+		self.assertEqual(skipped, [])
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	def test_picks_warehouse_with_physical_stock(self, mock_phys):
+		# Two candidate source warehouses; only the second physically holds the batch.
+		mock_phys.side_effect = lambda i, b, w: 5.0 if w == "WH-B" else 0.0
+		sre_map = {("M-1", "B1"): ["WH-A", "WH-B"]}
+		logs = [
+			_log(
+				item_code="M-1",
+				batch_no="B1",
+				qty_after_transaction_batch_based=3.0,
+				to_warehouse="WH-DEPT",
+			)
+		]
+		rows, skipped = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT", sre_map)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["s_warehouse"], "WH-B")
+		self.assertEqual(skipped, [])
+
+	@patch(f"{_MOD}._eod_physical_batch_qty", return_value=0.0)
+	def test_missing_everywhere_builds_row_for_batch_short(self, _mock_phys):
+		# Batch is missing at the target AND every candidate -> NOT a no-op. A row is still
+		# built against the first candidate so the downstream batch-stock check reports a
+		# real batch_short instead of silently burying the MOP Log as synced.
+		sre_map = {("M-1", "B1"): ["WH-A"]}
+		logs = [
+			_log(
+				item_code="M-1",
+				batch_no="B1",
+				qty_after_transaction_batch_based=2.0,
+				to_warehouse="WH-DEPT",
+			)
+		]
+		rows, skipped = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT", sre_map)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["s_warehouse"], "WH-A")
+		self.assertEqual(skipped, [])
 
 
 # ---------------------------------------------------------------------------
@@ -1739,9 +1816,9 @@ class TestEodSeRowPcs(FrappeTestCase):
 			to_warehouse="WH-DEPT",
 		)
 		sre_map = {
-			("D-1", "BD"): "WH-SRE",
-			("G-1", "BG"): "WH-SRE",
-			("M-1", "BM"): "WH-SRE",
+			("D-1", "BD"): ["WH-SRE"],
+			("G-1", "BG"): ["WH-SRE"],
+			("M-1", "BM"): ["WH-SRE"],
 		}
 		rows, skipped = _build_eod_se_rows(
 			"MWO-1", "MOP-A", [d_log, g_log, m_log], "WH-DEPT", sre_map
@@ -1885,7 +1962,7 @@ class TestEodConsolidation(FrappeTestCase):
 
 	@patch(f"{_MOD}._check_eod_source_batch_stock", return_value={})
 	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
-	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): "WH-SRE"})
+	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-SRE"]})
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
 	def test_plan_returns_resolvable_for_clean_mwo(
 		self, _art, _sre, _item_val, _check
@@ -2408,7 +2485,7 @@ class TestPlanMwoGroupBranches(FrappeTestCase):
 
 	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
 	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
-	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): "WH-TO"})
+	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-TO"]})
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
 	def test_same_warehouse_genuine_noop(self, _art, _sre, mock_mark, _val):
 		# SRE warehouse == last op to_warehouse → row dropped → genuine no-op.
@@ -2427,6 +2504,38 @@ class TestPlanMwoGroupBranches(FrappeTestCase):
 		)
 		self.assertIsNone(result)
 		self.assertEqual(stats["processed_mwos"], 1)
+		mock_mark.assert_called_once()
+
+	@patch(f"{_MOD}._eod_physical_batch_qty")
+	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
+	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
+	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-STALE"]})
+	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
+	def test_plan_noop_when_batch_already_at_target(
+		self, _art, _sre, mock_mark, _val, mock_phys
+	):
+		# Regression for MOP-EOD-SYNC-2026-03647: the SRE-mapped source warehouse is stale
+		# (0 physical) but the batch has already physically moved to the target department
+		# warehouse. Every row resolves source == target -> genuine no-op -> MWO marked
+		# synced with no failure (instead of a phantom batch_short holding the whole MWO).
+		mock_phys.side_effect = lambda i, b, w: 5.0 if w == "WH-DEPT" else 0.0
+		logs = [
+			_log(
+				item_code="M-1",
+				batch_no="B1",
+				to_warehouse="WH-DEPT",
+				qty_after_transaction_batch_based=2.065,
+			)
+		]
+		mop_data_list = [{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": logs}]
+		failures, stats = [], {"processed_mwos": 0, "failed_mwos": 0}
+		result = _plan_mwo_group(
+			("Test Co", "MWO-1"), mop_data_list, failures, stats, sync_log_name=None
+		)
+		self.assertIsNone(result)
+		self.assertEqual(stats["processed_mwos"], 1)
+		self.assertEqual(stats["failed_mwos"], 0)
+		self.assertEqual(failures, [])
 		mock_mark.assert_called_once()
 
 	@patch(f"{_MOD}._check_eod_source_batch_stock", return_value={})
@@ -2461,7 +2570,7 @@ class TestPlanMwoGroupBranches(FrappeTestCase):
 	)
 	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
 	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
-	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): "WH-SRE"})
+	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-SRE"]})
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
 	def test_batch_short_fails_with_issues_rows(
 		self, _art, _sre, mock_mark, _val, _check
@@ -2491,7 +2600,7 @@ class TestPlanMwoGroupBranches(FrappeTestCase):
 		side_effect=frappe.ValidationError("bad batch data"),
 	)
 	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
-	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): "WH-SRE"})
+	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-SRE"]})
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
 	def test_validation_failure_fails_mwo(self, _art, _sre, mock_mark, _val, _check):
 		logs = [
@@ -2662,7 +2771,7 @@ class TestBuildEodSeRowsSerial(FrappeTestCase):
 				qty_after_transaction_batch_based=1.0,
 			)
 		]
-		sre_map = {("S-1", None): "WH-SRE"}
+		sre_map = {("S-1", None): ["WH-SRE"]}
 		rows, skipped = _build_eod_se_rows("MWO-1", "MOP-A", logs, "WH-DEPT", sre_map)
 		self.assertEqual(len(rows), 1)
 		self.assertEqual(rows[0]["serial_no"], "SN1")
