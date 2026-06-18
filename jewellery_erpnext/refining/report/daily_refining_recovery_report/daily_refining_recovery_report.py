@@ -3,6 +3,7 @@ from frappe import _
 
 
 def execute(filters=None):
+	filters = frappe._dict(filters or {})
 	columns = get_columns()
 	data = get_data(filters)
 	chart = get_chart(data)
@@ -99,9 +100,10 @@ def get_data(filters):
 
 
 def get_conditions(filters):
+	filters = frappe._dict(filters or {})
 	conditions = ""
 	if filters.get("posting_date"):
-		conditions += " AND DATE(creation) = %(posting_date)s"
+		conditions += " AND posting_date = %(posting_date)s"
 	if filters.get("refining_type"):
 		conditions += " AND refining_type = %(refining_type)s"
 	if filters.get("department"):

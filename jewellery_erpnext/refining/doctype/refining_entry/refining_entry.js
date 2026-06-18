@@ -83,24 +83,21 @@ frappe.ui.form.on("Refining Entry", {
 	scan_mwo(frm) {
 		if (!frm.doc.scan_mwo) return;
 		frm.call("scan_mwo_action", { barcode: frm.doc.scan_mwo }).then(() => {
-			frm.set_value("scan_mwo", "");
-			frm.refresh_fields();
+			frm.reload_doc();
 		});
 	},
 
 	scan_serial_no(frm) {
 		if (!frm.doc.scan_serial_no) return;
 		frm.call("scan_serial_no_action", { barcode: frm.doc.scan_serial_no }).then(() => {
-			frm.set_value("scan_serial_no", "");
-			frm.refresh_fields();
+			frm.reload_doc();
 		});
 	},
 
 	scan_scrap_qr(frm) {
 		if (!frm.doc.scan_scrap_qr) return;
 		frm.call("scan_scrap_qr_action", { barcode: frm.doc.scan_scrap_qr }).then(() => {
-			frm.set_value("scan_scrap_qr", "");
-			frm.refresh_fields();
+			frm.reload_doc();
 		});
 	},
 
@@ -168,6 +165,43 @@ frappe.ui.form.on("Refining Entry", {
 				},
 				__("Actions")
 			).addClass("btn-primary");
+		}
+
+		if (status === "Classified") {
+			frm.add_custom_button(
+				__("Start Refining"),
+				() => {
+					frm.call("start_refining").then(() => frm.reload_doc());
+				},
+				__("Actions")
+			).addClass("btn-primary");
+		}
+
+		if (status === "Refining In Progress" || status === "Classified") {
+			frm.add_custom_button(
+				__("Enter Recovered Gold"),
+				() => {
+					frappe.prompt(
+						[
+							{
+								fieldname: "total_recovered_weight",
+								fieldtype: "Float",
+								label: __("Total Recovered Gold Weight"),
+								reqd: 1,
+								default: frm.doc.actual_recovery || 0,
+							},
+						],
+						(values) => {
+							frm.call("distribute_recovered_gold", {
+								total_recovered_weight: values.total_recovered_weight,
+							}).then(() => frm.reload_doc());
+						},
+						__("Recovered Gold"),
+						__("Distribute")
+					);
+				},
+				__("Actions")
+			);
 		}
 
 		if (status === "Recovery Entered") {

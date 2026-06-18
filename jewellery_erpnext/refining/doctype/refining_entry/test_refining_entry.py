@@ -191,6 +191,60 @@ class TestRefiningEntry(FrappeTestCase):
 		# 90 + 20 = 110 > 100 (input)
 		self.assertRaises(frappe.ValidationError, entry.validate_recovery_distribution)
 
+	def test_proportional_recovery_weight_distribution(self):
+		"""Unit Test: SOP proportional split, 50g + 50g input and 95g recovered."""
+		entry = frappe.get_doc(
+			{
+				"doctype": "Refining Entry",
+				"refining_type": "Scrap Refining",
+				"company": "_Test Company",
+				"warehouse": "Source Dept - _TC",
+				"refining_warehouse": "Refining Dept - _TC",
+				"status": "Draft",
+			}
+		)
+
+		recovered_22kt = entry.get_proportional_recovery_weight(50, 100, 95)
+		recovered_18kt = entry.get_proportional_recovery_weight(50, 100, 95)
+
+		self.assertEqual(recovered_22kt, 47.5)
+		self.assertEqual(recovered_18kt, 47.5)
+
+	def test_dust_item_is_receipt_only(self):
+		"""Unit Test: SOP dust item is not part of material transfer."""
+		entry = frappe.get_doc(
+			{
+				"doctype": "Refining Entry",
+				"refining_type": "Dust Refining",
+				"company": "_Test Company",
+				"warehouse": "Source Dept - _TC",
+				"refining_warehouse": "Refining Dept - _TC",
+				"loss_item": "_Test Item Dust",
+				"dust_item": "_Test Additional Dust",
+				"system_quantity": 100.0,
+				"physical_quantity": 105.0,
+				"difference_quantity": 5.0,
+				"additional_dust_qty": 5.0,
+				"status": "Draft",
+			}
+		)
+		loss_row = entry.append(
+			"material_items", {"item_code": "_Test Item Dust", "qty": 100}
+		)
+		dust_row = entry.append(
+			"material_items", {"item_code": "_Test Additional Dust", "qty": 5}
+		)
+
+		self.assertFalse(entry.is_dust_opening_item(loss_row))
+		self.assertTrue(entry.is_dust_opening_item(dust_row))
+		self.assertEqual(entry.get_dust_opening_qty("_Test Additional Dust"), 5.0)
+
+		entry.set("material_items", [])
+		entry.append("material_items", {"item_code": "_Test Item Dust", "qty": 100})
+		entry.ensure_dust_opening_material_row()
+		self.assertEqual(entry.material_items[-1].item_code, "_Test Additional Dust")
+		self.assertEqual(entry.material_items[-1].qty, 5.0)
+
 	def test_audit_log_creation(self):
 		"""Unit Test: Audit System - Log Creation"""
 		entry = frappe.get_doc(

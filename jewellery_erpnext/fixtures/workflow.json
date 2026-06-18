@@ -1052,6 +1052,48 @@
     "state": "Draft"
    },
    {
+    "action": "Receive Materials",
+    "allowed": "Refining User",
+    "next_state": "Received",
+    "state": "Submitted"
+   },
+   {
+    "action": "Classify Materials",
+    "allowed": "Refining User",
+    "next_state": "Classified",
+    "state": "Received"
+   },
+   {
+    "action": "Start Refining",
+    "allowed": "Refining User",
+    "next_state": "Refining In Progress",
+    "state": "Classified"
+   },
+   {
+    "action": "Enter Recovery",
+    "allowed": "Refining User",
+    "next_state": "Recovery Entered",
+    "state": "Refining In Progress"
+   },
+   {
+    "action": "Verify Recovery",
+    "allowed": "Refining Manager",
+    "next_state": "Recovery Verified",
+    "state": "Recovery Entered"
+   },
+   {
+    "action": "Complete Refining",
+    "allowed": "Refining Manager",
+    "next_state": "Completed",
+    "state": "Recovery Verified"
+   },
+   {
+    "action": "Transfer Recovered Materials",
+    "allowed": "Refining Manager",
+    "next_state": "Transferred",
+    "state": "Completed"
+   },
+   {
     "action": "Cancel",
     "allowed": "Refining Manager",
     "next_state": "Cancelled",

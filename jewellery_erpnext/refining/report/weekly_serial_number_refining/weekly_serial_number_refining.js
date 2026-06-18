@@ -3,11 +3,13 @@
 
 frappe.query_reports["Weekly Serial Number Refining"] = {
 	filters: [
-		// {
-		// 	"fieldname": "my_filter",
-		// 	"label": __("My Filter"),
-		// 	"fieldtype": "Data",
-		// 	"reqd": 1,
-		// },
+		{ fieldname: "from_date", label: __("From Date"), fieldtype: "Date" },
+		{
+			fieldname: "to_date",
+			label: __("To Date"),
+			fieldtype: "Date",
+			default: frappe.datetime.get_today(),
+		},
+		{ fieldname: "department", label: __("Department"), fieldtype: "Link", options: "Department" },
 	],
 };

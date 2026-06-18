@@ -3,11 +3,17 @@
 
 frappe.query_reports["Daily Dust and Loss"] = {
 	filters: [
-		// {
-		// 	"fieldname": "my_filter",
-		// 	"label": __("My Filter"),
-		// 	"fieldtype": "Data",
-		// 	"reqd": 1,
-		// },
+		{
+			fieldname: "posting_date",
+			label: __("Date"),
+			fieldtype: "Date",
+			default: frappe.datetime.get_today(),
+		},
+		{
+			fieldname: "department",
+			label: __("Department"),
+			fieldtype: "Link",
+			options: "Department",
+		},
 	],
 };

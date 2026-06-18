@@ -15,17 +15,18 @@ class RefiningEntry(Document):
 		if self.status == "Recovery Entered":
 			self.validate_recovery_distribution()
 
+	def before_submit(self):
+		if self.refining_type == "Dust Refining":
+			if not self.material_items:
+				self.build_material_table()
+			self.ensure_dust_opening_material_row()
+
 	def on_submit(self):
 		self.log_audit_action("Submitted", "Draft", "Submitted")
 		self.create_material_transfer_se()
 
-		# If Dust Refining and physical qty != system qty, create adjustment SE
-		if (
-			self.refining_type == "Dust Refining"
-			and self.difference_quantity > 0
-			and self.additional_dust_qty > 0
-		):
-			self.create_dust_adjustment_se()
+		if self.refining_type == "Dust Refining":
+			self.create_dust_opening_receipt_se()
 
 	def on_cancel(self):
 		self.log_audit_action("Cancelled", self.status, "Cancelled")
@@ -107,8 +108,9 @@ class RefiningEntry(Document):
 		self.refined_fine_weight = 0.0
 		self.actual_recovery = 0.0
 		for gold in self.refined_gold:
-			self.refined_fine_weight += flt(gold.pure_weight)
-			self.actual_recovery += flt(gold.pure_weight)
+			pure_weight = flt(gold.pure_weight) or flt(gold.refining_gold_weight)
+			self.refined_fine_weight += pure_weight
+			self.actual_recovery += pure_weight
 
 		self.refining_loss = self.gross_pure_weight - self.refined_fine_weight
 
@@ -211,8 +213,9 @@ class RefiningEntry(Document):
 				"pcs": mwo.qty,
 			},
 		)
-		self.save(ignore_permissions=True)
+		self.scan_mwo = ""
 		self.build_material_table()
+		# self.save(ignore_permissions=True)
 		return True
 
 	@frappe.whitelist()
@@ -267,8 +270,9 @@ class RefiningEntry(Document):
 				"pcs": 1,
 			},
 		)
-		self.save(ignore_permissions=True)
+		self.scan_serial_no = ""
 		self.build_material_table()
+		self.save(ignore_permissions=True)
 		return True
 
 	@frappe.whitelist()
@@ -317,6 +321,7 @@ class RefiningEntry(Document):
 				"source_type": "Scrap",
 			},
 		)
+		self.scan_scrap_qr = ""
 		self.save(ignore_permissions=True)
 		return True
 
@@ -425,7 +430,18 @@ class RefiningEntry(Document):
 		for item in self.material_items:
 			key = (item.item_code, item.batch_no, item.serial_no, item.warehouse)
 			if key not in grouped_items:
-				grouped_items[key] = item.as_dict()
+				grouped_items[key] = {
+					"item_code": item.item_code,
+					"batch_no": item.batch_no,
+					"serial_no": item.serial_no,
+					"warehouse": item.warehouse,
+					"qty": item.qty,
+					"uom": item.uom,
+					"source_type": item.source_type,
+					"purity": item.purity,
+					"manufacturing_work_order": item.manufacturing_work_order,
+					"manufacturing_operation": item.manufacturing_operation,
+				}
 			else:
 				grouped_items[key]["qty"] += item.qty
 
@@ -433,10 +449,11 @@ class RefiningEntry(Document):
 		for key, item_dict in grouped_items.items():
 			self.append("material_items", item_dict)
 
-		self.save(ignore_permissions=True)
-
 	@frappe.whitelist()
 	def receive_materials(self):
+		self.require_refining_role(
+			["Refining User", "Refining Manager", "System Manager"], "receive materials"
+		)
 		if self.status != "Submitted":
 			frappe.throw(_("Can only receive materials if status is Submitted."))
 
@@ -458,11 +475,15 @@ class RefiningEntry(Document):
 		)
 
 	@frappe.whitelist()
-	def generate_recovery_table(self):
-		"""Distribute Gold recovery by purity (24KT, 22KT, 18KT, etc.) proportional to input"""
+	def generate_recovery_table(self, total_recovered_weight=None):
+		"""Distribute gold recovery by input purity proportion."""
+		self.require_refining_role(
+			["Refining User", "Refining Manager", "System Manager"],
+			"classify materials",
+		)
 		self.set("gold_recovery_details", [])
+		self.auto_classify_recoverable_non_metal()
 
-		# Group input gold by purity percentage
 		input_purity_map = {}
 		for item in self.material_items:
 			if self.is_gold_item(item.item_code) and item.purity:
@@ -471,39 +492,109 @@ class RefiningEntry(Document):
 				)
 				if pct:
 					pct_flt = flt(pct)
-					if pct_flt not in input_purity_map:
-						input_purity_map[pct_flt] = 0.0
+					input_purity_map.setdefault(pct_flt, 0.0)
 					input_purity_map[pct_flt] += flt(item.qty)
 
-		purity_map = frappe.db.get_all(
-			"Refining Purity Map",
-			fields=[
-				"karat",
-				"purity_percentage",
-				"item_template",
-				"metal_touch",
-				"metal_purity",
-			],
-		)
+		total_input_weight = sum(input_purity_map.values())
+		total_recovered_weight = self.get_recovered_gold_total(total_recovered_weight)
+		purity_maps = self.get_purity_distribution_maps(input_purity_map)
 
-		for pmap in purity_map:
+		for pmap in purity_maps:
 			pmap_pct = flt(pmap.purity_percentage)
-			if pmap_pct in input_purity_map and input_purity_map[pmap_pct] > 0:
-				self.append(
-					"gold_recovery_details",
-					{
-						"karat": pmap.karat,
-						"purity_percentage": pmap.purity_percentage,
-						"item_code": pmap.item_template,
-						"input_weight": input_purity_map[pmap_pct],
-					},
-				)
+			input_weight = input_purity_map.get(pmap_pct, 0)
+			if input_weight <= 0:
+				continue
 
-		self.db_set("status", "Classified")
+			recovered_weight = self.get_proportional_recovery_weight(
+				input_weight, total_input_weight, total_recovered_weight
+			)
+			pure_gold_weight = input_weight * (pmap_pct / 100.0)
+			self.append(
+				"gold_recovery_details",
+				{
+					"karat": pmap.karat,
+					"purity_percentage": pmap.purity_percentage,
+					"item_code": pmap.item_template,
+					"input_weight": input_weight,
+					"pure_gold_weight": pure_gold_weight,
+					"recovered_weight": recovered_weight,
+					"loss_weight": max(input_weight - recovered_weight, 0),
+					"recovery_pct": (
+						(recovered_weight / input_weight) * 100.0
+						if input_weight
+						else 0.0
+					),
+				},
+			)
+
+		if total_recovered_weight:
+			self.populate_refined_gold_from_distribution()
+			self.calculate_totals()
+
+		self.status = "Classified"
 		self.log_audit_action("Classified", "Received", "Classified")
+		self.save(ignore_permissions=True)
+
+	@frappe.whitelist()
+	def start_refining(self):
+		self.require_refining_role(
+			["Refining User", "Refining Manager", "System Manager"], "start refining"
+		)
+		if self.status != "Classified":
+			frappe.throw(_("Materials must be classified before starting refining."))
+		self.db_set("status", "Refining In Progress")
+		self.log_audit_action("Refining Started", "Classified", "Refining In Progress")
+
+	@frappe.whitelist()
+	def distribute_recovered_gold(self, total_recovered_weight=None):
+		"""Apply SOP proportional split after actual recovered gold is known."""
+		self.require_refining_role(
+			["Refining User", "Refining Manager", "System Manager"], "enter recovery"
+		)
+		if not self.gold_recovery_details:
+			self.generate_recovery_table(total_recovered_weight=total_recovered_weight)
+
+		total_input_weight = sum(
+			flt(row.input_weight) for row in self.gold_recovery_details
+		)
+		total_recovered_weight = self.get_recovered_gold_total(total_recovered_weight)
+		if total_input_weight <= 0:
+			frappe.throw(_("Gold input weight is required for proportional recovery."))
+		if total_recovered_weight <= 0:
+			frappe.throw(
+				_("Recovered gold weight is required for proportional recovery.")
+			)
+		if total_recovered_weight > total_input_weight + 0.1:
+			frappe.throw(
+				_(
+					"Recovered gold weight ({0}) cannot exceed input gold weight ({1})."
+				).format(total_recovered_weight, total_input_weight)
+			)
+
+		for row in self.gold_recovery_details:
+			row.recovered_weight = self.get_proportional_recovery_weight(
+				row.input_weight, total_input_weight, total_recovered_weight
+			)
+			row.loss_weight = max(flt(row.input_weight) - flt(row.recovered_weight), 0)
+			row.recovery_pct = (
+				(flt(row.recovered_weight) / flt(row.input_weight)) * 100.0
+				if flt(row.input_weight)
+				else 0.0
+			)
+
+		self.populate_refined_gold_from_distribution()
+		self.calculate_totals()
+		self.status = "Recovery Entered"
+		self.log_audit_action(
+			"Recovery Entered", "Refining In Progress", "Recovery Entered"
+		)
+		self.save(ignore_permissions=True)
 
 	@frappe.whitelist()
 	def verify_recovery(self):
+		self.require_refining_role(
+			["Refining Manager", "System Manager"], "verify recovery"
+		)
 		self.validate_recovery_distribution()
 		self.db_set("status", "Recovery Verified")
 		self.log_audit_action(
@@ -512,6 +603,9 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def complete_refining(self):
+		self.require_refining_role(
+			["Refining Manager", "System Manager"], "complete refining"
+		)
 		if self.status != "Recovery Verified":
 			frappe.throw(_("Recovery must be verified before completing."))
 
@@ -551,6 +645,9 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def transfer_recovered_materials(self):
+		self.require_refining_role(
+			["Refining Manager", "System Manager"], "transfer recovered materials"
+		)
 		if self.status != "Completed":
 			frappe.throw(_("Can only transfer if Completed."))
 
@@ -640,6 +737,9 @@ class RefiningEntry(Document):
 		se.custom_refining_entry = self.name
 
 		for item in self.material_items:
+			if self.is_dust_opening_item(item):
+				continue
+
 			s_wh = item.warehouse or self.warehouse
 			has_batch = frappe.db.get_value("Item", item.item_code, "has_batch_no")
 
@@ -674,12 +774,13 @@ class RefiningEntry(Document):
 					},
 				)
 
-		se.insert()
-		se.submit()
-		self.db_set("material_transfer_se", se.name)
-		self.log_audit_action(
-			"Stock Entry Created", None, None, stock_entry_ref=se.name
-		)
+		if se.items:
+			se.insert()
+			se.submit()
+			self.db_set("material_transfer_se", se.name)
+			self.log_audit_action(
+				"Stock Entry Created", None, None, stock_entry_ref=se.name
+			)
 
 	def create_repack_se(self):
 		se = frappe.new_doc("Stock Entry")
@@ -786,7 +887,13 @@ class RefiningEntry(Document):
 			"Stock Entry Created", None, None, stock_entry_ref=se.name
 		)
 
-	def create_dust_adjustment_se(self):
+	def create_dust_opening_receipt_se(self):
+		dust_item = self.get_dust_item()
+		dust_qty = self.get_dust_opening_qty(dust_item)
+		if not dust_item or dust_qty <= 0:
+			return
+		dust_batch = self.get_dust_opening_batch(dust_item)
+
 		se = frappe.new_doc("Stock Entry")
 		se.stock_entry_type = "Material Receipt"
 		se.purpose = "Material Receipt"
@@ -796,14 +903,16 @@ class RefiningEntry(Document):
 		se.append(
 			"items",
 			{
-				"item_code": self.loss_item,
-				"qty": self.additional_dust_qty,
+				"item_code": dust_item,
+				"qty": dust_qty,
 				"t_warehouse": self.refining_warehouse,
+				"batch_no": dust_batch,
 				"use_serial_batch_fields": 1,
 			},
 		)
 		se.insert()
 		se.submit()
+		self.db_set("receiving_se", se.name)
 		self.log_audit_action(
 			"Stock Entry Created", None, None, stock_entry_ref=se.name
 		)
@@ -871,7 +980,207 @@ class RefiningEntry(Document):
 
 	def is_gold_item(self, item_code):
 		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
-		return variant_of == "M"
+		item_group = frappe.db.get_value("Item", item_code, "item_group")
+		return (
+			variant_of == "M"
+			or item_group in ("Metal", "Gold")
+			or (item_code and item_code.upper().startswith(("M-", "GOLD")))
+		)
+
+	def is_diamond_item(self, item_code):
+		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+		item_group = frappe.db.get_value("Item", item_code, "item_group")
+		return (
+			variant_of in ("D", "DL")
+			or item_group == "Diamond"
+			or (item_code and item_code.upper().startswith(("D-", "DL-")))
+		)
+
+	def is_gemstone_item(self, item_code):
+		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+		item_group = frappe.db.get_value("Item", item_code, "item_group")
+		return (
+			variant_of in ("G", "GL")
+			or item_group in ("Gemstone", "Gem Stone")
+			or (item_code and item_code.upper().startswith(("G-", "GL-")))
+		)
+
+	def auto_classify_recoverable_non_metal(self):
+		diamond_items = {row.item for row in self.recovered_diamond}
+		gemstone_items = {row.item for row in self.recovered_gemstone}
+		for item in self.material_items:
+			if (
+				self.is_diamond_item(item.item_code)
+				and item.item_code not in diamond_items
+			):
+				self.append(
+					"recovered_diamond",
+					{"item": item.item_code, "weight": item.qty, "pcs": 1},
+				)
+				diamond_items.add(item.item_code)
+			elif (
+				self.is_gemstone_item(item.item_code)
+				and item.item_code not in gemstone_items
+			):
+				self.append(
+					"recovered_gemstone",
+					{"item": item.item_code, "weight": item.qty, "pcs": 1},
+				)
+				gemstone_items.add(item.item_code)
+
+	def get_recovered_gold_total(self, total_recovered_weight=None):
+		if total_recovered_weight is not None:
+			return flt(total_recovered_weight)
+		if flt(self.actual_recovery):
+			return flt(self.actual_recovery)
+		refined_total = sum(flt(row.refining_gold_weight) for row in self.refined_gold)
+		return refined_total
+
+	def get_proportional_recovery_weight(
+		self, input_weight, total_input_weight, total_recovered_weight
+	):
+		if total_input_weight <= 0 or total_recovered_weight <= 0:
+			return 0.0
+		return flt(total_recovered_weight) * (
+			flt(input_weight) / flt(total_input_weight)
+		)
+
+	def get_purity_distribution_maps(self, input_purity_map):
+		purity_maps = frappe.db.get_all(
+			"Refining Purity Map",
+			fields=[
+				"karat",
+				"purity_percentage",
+				"item_template",
+				"metal_touch",
+				"metal_purity",
+			],
+		)
+		mapped_percentages = {flt(row.purity_percentage) for row in purity_maps}
+		for purity_percentage in input_purity_map:
+			if purity_percentage in mapped_percentages:
+				continue
+			purity_maps.append(
+				frappe._dict(
+					{
+						"karat": self.get_karat_from_percentage(purity_percentage),
+						"purity_percentage": purity_percentage,
+						"item_template": self.get_default_recovered_gold_item(),
+						"metal_touch": None,
+						"metal_purity": None,
+					}
+				)
+			)
+		return purity_maps
+
+	def get_karat_from_percentage(self, purity_percentage):
+		karat = round(flt(purity_percentage) * 24 / 100, 2)
+		return ("{0:g}KT").format(karat)
+
+	def get_default_recovered_gold_item(self):
+		return (
+			frappe.db.get_single_value(
+				"Refining Configuration", "default_pure_gold_item"
+			)
+			or frappe.db.get_single_value(
+				"Refining Configuration", "default_recovered_item"
+			)
+			or frappe.db.get_value("Item", {"variant_of": "M", "disabled": 0}, "name")
+		)
+
+	def populate_refined_gold_from_distribution(self):
+		self.set("refined_gold", [])
+		for row in self.gold_recovery_details:
+			if flt(row.recovered_weight) <= 0:
+				continue
+			self.append(
+				"refined_gold",
+				{
+					"item_code": row.item_code,
+					"refining_gold_weight": row.recovered_weight,
+					"pure_weight": row.recovered_weight,
+					"metal_purity": row.karat,
+				},
+			)
+
+	def get_dust_item(self):
+		return self.dust_item or frappe.db.get_single_value(
+			"Refining Configuration", "default_dust_item"
+		)
+
+	def is_dust_opening_item(self, item):
+		dust_item = self.get_dust_item()
+		return (
+			self.refining_type == "Dust Refining"
+			and dust_item
+			and item.item_code == dust_item
+		)
+
+	def get_dust_opening_qty(self, dust_item):
+		dust_qty = 0.0
+		for item in self.material_items:
+			if item.item_code == dust_item:
+				dust_qty += flt(item.qty)
+		if not dust_qty and flt(self.difference_quantity) > 0:
+			dust_qty += flt(self.additional_dust_qty) or flt(self.difference_quantity)
+		return dust_qty
+
+	def ensure_dust_opening_material_row(self):
+		dust_item = self.get_dust_item()
+		if not dust_item:
+			return
+		if any(row.item_code == dust_item for row in self.material_items):
+			return
+
+		dust_qty = flt(self.additional_dust_qty) or max(
+			flt(self.difference_quantity), 0
+		)
+		if dust_qty <= 0:
+			return
+
+		self.append(
+			"material_items",
+			{
+				"item_code": dust_item,
+				"warehouse": self.refining_warehouse,
+				"qty": dust_qty,
+				"uom": frappe.db.get_value("Item", dust_item, "stock_uom") or "Gram",
+				"source_type": "Dust",
+				"purity": self.get_item_purity(dust_item),
+				"batch_no": self.get_dust_opening_batch(dust_item),
+			},
+		)
+
+	def get_dust_opening_batch(self, dust_item):
+		if not dust_item:
+			return None
+		if not frappe.db.get_value("Item", dust_item, "has_batch_no"):
+			return None
+		for row in self.material_items:
+			if row.item_code == dust_item and row.batch_no:
+				return row.batch_no
+		batch_no = self.auto_create_batch(dust_item)
+		if not batch_no:
+			batch = frappe.new_doc("Batch")
+			batch.item = dust_item
+			batch.insert()
+			batch_no = batch.name
+			self.log_audit_action("Batch Created", None, None, batch_ref=batch_no)
+		for row in self.material_items:
+			if row.item_code == dust_item and not row.batch_no:
+				row.batch_no = batch_no
+		return batch_no
+
+	def require_refining_role(self, allowed_roles, action):
+		if frappe.session.user == "Administrator":
+			return
+		user_roles = set(frappe.get_roles(frappe.session.user))
+		if user_roles.intersection(set(allowed_roles)):
+			return
+		frappe.throw(
+			_("Only users with {0} can {1}.").format(", ".join(allowed_roles), action),
+			frappe.PermissionError,
+		)
 
 	def convert_diamond_item_code(self, item_code):
 		# Example: DL-NT-RO-4-+00-0 -> D-NT-RO-4-+00-0
