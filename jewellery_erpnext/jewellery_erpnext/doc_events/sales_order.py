@@ -1492,68 +1492,68 @@ def _process_single_row(self, row, ctx):
 		create_serial_no_bom(self, row, ctx)
 		if not row.bom:
 			return
-	# frappe.msgprint(f"{row.bom}")
-	# ── Step 2: always process the BOM (new or existing) ─────────
-	if frappe.db.get_value("BOM", row.bom, "docstatus") == 1:
-		frappe.db.set_value("BOM", row.bom, "docstatus", "0")
-	doc = frappe.get_doc("BOM", row.bom)
-	# frappe.throw(f"{doc.as_dict()}")
-	# ── Reset quantities from original Serial No BOM ─────────────
-	# On every save, restore design quantities from the source BOM
-	# (Serial No → custom_bom_no) with customer precision rounding.
-	# This prevents reconcile drift from accumulating across saves —
-	# each save always starts from the same clean design weights.
-	_snc_bom_name = (
-		frappe.db.get_value("Serial No", serial_no, "custom_bom_no")
-		if serial_no else None
-	)
-	if _snc_bom_name:
-		_snc    = frappe.get_doc("BOM", _snc_bom_name)
-		_m_prec = int(ctx.metal_precision or 3)
-		_s_prec = int(ctx.stone_precision  or 3)
-		for m_d, m_s in zip(doc.metal_detail,    _snc.metal_detail):
-			m_d.quantity = round(flt(m_s.quantity), _m_prec)
-		for f_d, f_s in zip(doc.finding_detail,  _snc.finding_detail):
-			f_d.quantity = round(flt(f_s.quantity), _m_prec)
-		for d_d, d_s in zip(doc.diamond_detail,  _snc.diamond_detail):
-			d_d.quantity = round(flt(d_s.quantity), _s_prec)
-		for g_d, g_s in zip(doc.gemstone_detail, _snc.gemstone_detail):
-			g_d.quantity = round(flt(g_s.quantity), _s_prec)
-		for o_d, o_s in zip(doc.other_detail or [], _snc.other_detail or []):
-			o_d.quantity = round(flt(o_s.quantity), _m_prec)
-
-	# Pre-compute metal_and_finding_weight with Diamond Inclusive/Exclusive
-	# logic so threshold checks in _process_metal_detail1 / _process_finding_detail1
-	# are correct (quantities are already reset from SNC BOM above).
-	_pre_making_charges_on = frappe.db.get_value(
-		'Customer', self.customer, 'compute_making_charges_on'
-	)
-	_pre_chain     = sum(r.quantity for r in doc.finding_detail if r.finding_category == 'Chains')
-	_pre_non_chain = sum(r.quantity for r in doc.finding_detail if r.finding_category != 'Chains')
-	_pre_metal     = sum(r.quantity for r in doc.metal_detail)
-	_pre_dia_gms   = round(sum(r.quantity for r in doc.diamond_detail) / 5, 3)
-	_pre_gem_gms   = round(sum(r.quantity for r in doc.gemstone_detail) / 5, 3)
-	_pre_other     = sum(r.quantity for r in (doc.other_detail or []))
-	_pre_gross     = _pre_metal + _pre_non_chain + _pre_chain + _pre_dia_gms + _pre_gem_gms + _pre_other
-
-	if _pre_making_charges_on == 'Diamond Inclusive':
-		doc.metal_and_finding_weight = round(
-			_pre_gross - _pre_gem_gms - _pre_other - _pre_chain, 3
+		# frappe.msgprint(f"{row.bom}")
+		# ── Step 2: always process the BOM (new or existing) ─────────
+		if frappe.db.get_value("BOM", row.bom, "docstatus") == 1:
+			frappe.db.set_value("BOM", row.bom, "docstatus", "0")
+		doc = frappe.get_doc("BOM", row.bom)
+		# frappe.throw(f"{doc.as_dict()}")
+		# ── Reset quantities from original Serial No BOM ─────────────
+		# On every save, restore design quantities from the source BOM
+		# (Serial No → custom_bom_no) with customer precision rounding.
+		# This prevents reconcile drift from accumulating across saves —
+		# each save always starts from the same clean design weights.
+		_snc_bom_name = (
+			frappe.db.get_value("Serial No", serial_no, "custom_bom_no")
+			if serial_no else None
 		)
-	else:
-		doc.metal_and_finding_weight = round(
-			_pre_gross - _pre_dia_gms - _pre_gem_gms - _pre_other - _pre_chain, 3
+		if _snc_bom_name:
+			_snc    = frappe.get_doc("BOM", _snc_bom_name)
+			_m_prec = int(ctx.metal_precision or 3)
+			_s_prec = int(ctx.stone_precision  or 3)
+			for m_d, m_s in zip(doc.metal_detail,    _snc.metal_detail):
+				m_d.quantity = round(flt(m_s.quantity), _m_prec)
+			for f_d, f_s in zip(doc.finding_detail,  _snc.finding_detail):
+				f_d.quantity = round(flt(f_s.quantity), _m_prec)
+			for d_d, d_s in zip(doc.diamond_detail,  _snc.diamond_detail):
+				d_d.quantity = round(flt(d_s.quantity), _s_prec)
+			for g_d, g_s in zip(doc.gemstone_detail, _snc.gemstone_detail):
+				g_d.quantity = round(flt(g_s.quantity), _s_prec)
+			for o_d, o_s in zip(doc.other_detail or [], _snc.other_detail or []):
+				o_d.quantity = round(flt(o_s.quantity), _m_prec)
+
+		# Pre-compute metal_and_finding_weight with Diamond Inclusive/Exclusive
+		# logic so threshold checks in _process_metal_detail1 / _process_finding_detail1
+		# are correct (quantities are already reset from SNC BOM above).
+		_pre_making_charges_on = frappe.db.get_value(
+			'Customer', self.customer, 'compute_making_charges_on'
 		)
+		_pre_chain     = sum(r.quantity for r in doc.finding_detail if r.finding_category == 'Chains')
+		_pre_non_chain = sum(r.quantity for r in doc.finding_detail if r.finding_category != 'Chains')
+		_pre_metal     = sum(r.quantity for r in doc.metal_detail)
+		_pre_dia_gms   = round(sum(r.quantity for r in doc.diamond_detail) / 5, 3)
+		_pre_gem_gms   = round(sum(r.quantity for r in doc.gemstone_detail) / 5, 3)
+		_pre_other     = sum(r.quantity for r in (doc.other_detail or []))
+		_pre_gross     = _pre_metal + _pre_non_chain + _pre_chain + _pre_dia_gms + _pre_gem_gms + _pre_other
 
-	_process_gemstone_detail(self, doc, ctx, cctx)
-	_process_metal_detail1  (self, doc, ctx, cctx)
-	_process_finding_detail1(self, doc, ctx, cctx)
-	_process_diamond_detail (self, doc, ctx, row, cctx)
-	_update_bom_totals      (self, doc, row, ctx, item_code, serial_no, cctx=cctx)
+		if _pre_making_charges_on == 'Diamond Inclusive':
+			doc.metal_and_finding_weight = round(
+				_pre_gross - _pre_gem_gms - _pre_other - _pre_chain, 3
+			)
+		else:
+			doc.metal_and_finding_weight = round(
+				_pre_gross - _pre_dia_gms - _pre_gem_gms - _pre_other - _pre_chain, 3
+			)
 
-	doc.save(ignore_permissions=True)
+		_process_gemstone_detail(self, doc, ctx, cctx)
+		_process_metal_detail1  (self, doc, ctx, cctx)
+		_process_finding_detail1(self, doc, ctx, cctx)
+		_process_diamond_detail (self, doc, ctx, row, cctx)
+		_update_bom_totals      (self, doc, row, ctx, item_code, serial_no, cctx=cctx)
 
-	if frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
+		doc.save(ignore_permissions=True)
+
+	elif not row.bom and frappe.db.exists("Tracking Bom", row.custom_tracking_bom):
 		# row.bom = row.custom_tracking_bom
 		frappe.db.set_value("Tracking Bom", row.custom_tracking_bom, {
 			"bom_type":                "Sales Order",
