@@ -23,6 +23,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
+from jewellery_erpnext.jewellery_erpnext.lock_order import (
+	lock_bins_for_rows,
+	sorted_stock_rows,
+)
 from jewellery_erpnext.utils import (
 	get_item_from_attribute,
 	get_variant_of_item,
@@ -572,6 +576,17 @@ def on_cancel(self, method=None):
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
 
 
+def prelock_bins(self, method=None):
+	"""RULE B (canonical lock order): before ERPNext posts SLEs / updates Bins, acquire a
+	FOR UPDATE lock on every (item_code, warehouse) Bin this Stock Entry will touch, in
+	sorted order. Concurrent SE submits then acquire shared Bins in the SAME sequence,
+	which removes the reverse-order cycles that cause 1213 deadlocks. Applied to ALL Stock
+	Entries (one place covers MR / repack / metal-conversion / main-slip injection / EOD /
+	loss / SNC etc.). Additive — ERPNext locks these same Bins during posting anyway; this
+	only fixes the acquisition order."""
+	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
+
+
 def before_submit(self, method):
 	# validation_for_stock_entry_submission(self)
 	if self.stock_entry_type != "Manufacture":
@@ -699,7 +714,19 @@ def stock_reservation_entry_for_mwo(self):
 				* (flt(addition_maximum_item__tolerance_percentage) / 100)
 			)
 
-	for row in self.items:
+	# RULE B (canonical lock order): pre-lock every inbound Bin this reservation will
+	# touch, in sorted (item_code, warehouse) order, so concurrent Stock Entry submits
+	# acquire shared Bins in the same sequence — breaks 1213 reverse-order and
+	# Series<->Bin deadlock cycles. Skipped for Material Receive (WORK ORDER), which
+	# only writes MOP Logs and reserves nothing.
+	if self.stock_entry_type != "Material Receive (WORK ORDER)":
+		lock_bins_for_rows(
+			[r for r in self.items if r.get("t_warehouse")], "t_warehouse"
+		)
+	# RULE A: iterate in canonical (item_code, warehouse, batch_no) order. A stable sort
+	# keeps rows competing for the same key in their original relative order, so the
+	# reserved quantity each row receives is unchanged.
+	for row in sorted_stock_rows(self.items, warehouse_attr="t_warehouse"):
 		if self.stock_entry_type == "Material Receive (WORK ORDER)":
 			create_mop_log(self, row, is_synced=True)
 			continue
