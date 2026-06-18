@@ -18,6 +18,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.test_m
 	create_pmo,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+	_physical_batch_qty,
+	_pick_source_warehouse,
 	_sre_reserves_batch,
 	_warehouse_has_batch_stock,
 	calulate_id_wise_sum_up,
@@ -366,3 +368,114 @@ class TestSREReservesBatch(FrappeTestCase):
 		# Qty-based SRE has no Serial and Batch Entry children -> item-level match.
 		mock_get_all.return_value = []
 		self.assertTrue(_sre_reserves_batch("MAT-SRE-QTY", "KG2F061-MGL18754Y0-24H0B"))
+
+
+class TestPhysicalBatchQty(FrappeTestCase):
+	"""``_physical_batch_qty`` must query PHYSICAL stock (ignore_reserved_stock=True),
+	round to 3, and never crash on non-batch lines or backend errors.
+	"""
+
+	@patch(f"{_SNC_MODULE}.get_batch_qty")
+	def test_queries_physical_stock_rounded(self, mock_get_batch_qty):
+		mock_get_batch_qty.return_value = 0.7040004
+		self.assertEqual(
+			_physical_batch_qty(
+				"D-NT-RO-6B-+7-7.5",
+				"GE2D075-DNTROX6G00G05-16",
+				"Diamond Setting WO - GEPL",
+			),
+			0.704,
+		)
+		mock_get_batch_qty.assert_called_once_with(
+			"GE2D075-DNTROX6G00G05-16",
+			"Diamond Setting WO - GEPL",
+			"D-NT-RO-6B-+7-7.5",
+			ignore_reserved_stock=True,
+		)
+
+	@patch(f"{_SNC_MODULE}.get_batch_qty")
+	def test_non_batch_returns_zero_without_query(self, mock_get_batch_qty):
+		self.assertEqual(_physical_batch_qty("D-NT-RO-6B-+7-7.5", None, "WH-A"), 0.0)
+		mock_get_batch_qty.assert_not_called()
+
+	@patch(f"{_SNC_MODULE}.get_batch_qty", side_effect=Exception("boom"))
+	def test_backend_error_returns_zero(self, _mock):
+		self.assertEqual(
+			_physical_batch_qty("D-NT-RO-6B-+7-7.5", "B1", "WH-A"), 0.0
+		)
+
+
+class TestPickSourceWarehouse(FrappeTestCase):
+	"""``_pick_source_warehouse`` returns the first candidate that physically covers
+	the full requested qty. This is the guard that stops Serial Number Creator from
+	adopting a stale reservation warehouse holding only partial stock.
+
+	Live bug reproduced by ``test_falls_through_when_first_warehouse_partial``: batch
+	GE2D075-DNTROX6G00G05-16 had 0.704 in "Diamond Setting WO - GEPL" (a Delivered
+	SRE) but the full 0.72 in "Tagging WO - GEPL" (the live reservation). Picking the
+	0.704 warehouse drove the Manufacture entry to -0.016.
+	"""
+
+	def test_empty_candidates_returns_none(self):
+		self.assertIsNone(
+			_pick_source_warehouse(
+				"D-NT-RO-6B-+7-7.5", "GE2D075-DNTROX6G00G05-16", 0.72, []
+			)
+		)
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty")
+	def test_non_batch_returns_first_candidate(self, mock_phys):
+		wh = _pick_source_warehouse("M-G-22KT-91.9-Y", None, 5.0, ["WH-A", "WH-B"])
+		self.assertEqual(wh, "WH-A")
+		mock_phys.assert_not_called()
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty")
+	def test_first_covering_candidate_chosen(self, mock_phys):
+		# Original source_table warehouse covers the full qty -> healthy path, the
+		# SRE warehouse is never even checked.
+		mock_phys.return_value = 0.72
+		wh = _pick_source_warehouse(
+			"D-NT-RO-6B-+7-7.5",
+			"GE2D075-DNTROX6G00G05-16",
+			0.72,
+			["Tagging WO - GEPL", "Diamond Setting WO - GEPL"],
+		)
+		self.assertEqual(wh, "Tagging WO - GEPL")
+		mock_phys.assert_called_once()
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty")
+	def test_falls_through_when_first_warehouse_partial(self, mock_phys):
+		physical = {
+			"Diamond Setting WO - GEPL": 0.704,
+			"Tagging WO - GEPL": 0.72,
+		}
+		mock_phys.side_effect = lambda item, batch, wh: physical[wh]
+		wh = _pick_source_warehouse(
+			"D-NT-RO-6B-+7-7.5",
+			"GE2D075-DNTROX6G00G05-16",
+			0.72,
+			["Diamond Setting WO - GEPL", "Tagging WO - GEPL"],
+		)
+		self.assertEqual(wh, "Tagging WO - GEPL")
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty", return_value=0.5)
+	def test_none_when_no_candidate_covers(self, _mock):
+		self.assertIsNone(
+			_pick_source_warehouse(
+				"D-NT-RO-6B-+7-7.5",
+				"GE2D075-DNTROX6G00G05-16",
+				0.72,
+				["Diamond Setting WO - GEPL", "Tagging WO - GEPL"],
+			)
+		)
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty", return_value=0.7199)
+	def test_within_tolerance_accepted(self, _mock):
+		# 0.7199 + TOLERANCE (0.0001) >= 0.72 -> accepted.
+		wh = _pick_source_warehouse(
+			"D-NT-RO-6B-+7-7.5",
+			"GE2D075-DNTROX6G00G05-16",
+			0.72,
+			["Tagging WO - GEPL"],
+		)
+		self.assertEqual(wh, "Tagging WO - GEPL")
