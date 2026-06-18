@@ -653,6 +653,18 @@ def create_test_data():
 			"Attribute Value", "Pink", "custom_batch_abbreviation", "P0"
 		)
 
+		# Item Group must exist before any Item that references it is inserted. The full
+		# master setup lives in setup_data(), but many tests call create_test_data() only,
+		# so ensure the group exists here (idempotent) to avoid a LinkValidationError.
+		if not frappe.db.exists("Item Group", "Test_Item_Group"):
+			frappe.get_doc(
+				{
+					"doctype": "Item Group",
+					"item_group_name": "Test_Item_Group",
+					"is_group": 1,
+				}
+			).insert(ignore_permissions=True)
+
 		if not frappe.db.exists("Item", "ITEM-001"):
 			frappe.get_doc(
 				{
@@ -2275,6 +2287,12 @@ def create_test_data():
 			)
 			mop_settings.save()
 
+	# Bootstrap the committed master data (Company, customers/suppliers, warehouses,
+	# departments) that create_users_data() and the integration tests depend on. The 13
+	# test modules call create_test_data() only — never setup_data() — so without this the
+	# masters never exist. setup_data() is idempotent (exists-guarded) and commits, so the
+	# first test pays the cost and the rest skip.
+	setup_data()
 	create_attribute_value()
 	create_item_attribute()
 	create_users_data()
@@ -2327,12 +2345,29 @@ def setup_data():
 			}
 		).insert(ignore_permissions=True)
 
+	# Customers need a NON-group (leaf) Customer Group; the site default may be a group,
+	# which Frappe rejects. Ensure a leaf test group exists and use it explicitly.
+	if not frappe.db.exists("Customer Group", "Test_Customer_Group"):
+		_parent_cg = (
+			frappe.db.get_value("Customer Group", {"is_group": 1}, "name")
+			or "All Customer Groups"
+		)
+		frappe.get_doc(
+			{
+				"doctype": "Customer Group",
+				"customer_group_name": "Test_Customer_Group",
+				"parent_customer_group": _parent_cg,
+				"is_group": 0,
+			}
+		).insert(ignore_permissions=True)
+
 	if not frappe.db.exists("Customer", "Test_Customer_External"):
 		customer = frappe.get_doc(
 			{
 				"doctype": "Customer",
 				"customer_name": "Test_Customer_External",
 				"customer_type": "Individual",
+				"customer_group": "Test_Customer_Group",
 				"custom_sketch_workflow_state": "External",
 			}
 		)
@@ -2356,6 +2391,7 @@ def setup_data():
 				"doctype": "Customer",
 				"customer_name": "Test_Customer_Internal",
 				"customer_type": "Individual",
+				"customer_group": "Test_Customer_Group",
 				"custom_sketch_workflow_state": "Internal",
 			}
 		)
