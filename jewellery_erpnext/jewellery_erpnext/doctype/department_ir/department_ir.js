@@ -28,30 +28,24 @@ frappe.ui.form.on("Department IR", {
 		frm.set_query("current_department", department_filter(frm));
 		frm.set_query("next_department", department_filter(frm));
 		frm.set_query("previous_department", department_filter(frm));
-		frm.set_query(
-			"manufacturing_operation",
-			"department_ir_operation",
-			function (doc, cdt, cdn) {
-				var dir_status =
-					frm.doc.type == "Receive"
-						? "In-Transit"
-						: ["not in", ["In-Transit", "Received"]];
-				var filter_dict = {
-					department_ir_status: dir_status,
-				};
-				if (frm.doc.type == "Issue") {
-					filter_dict["status"] = ["in", ["Finished", "Revert"]];
-					filter_dict["department"] = frm.doc.current_department;
-				} else {
-					if (frm.doc.receive_against) {
-						filter_dict["department_issue_id"] = frm.doc.receive_against;
-					}
+		frm.set_query("manufacturing_operation", "department_ir_operation", function (doc, cdt, cdn) {
+			var dir_status =
+				frm.doc.type == "Receive" ? "In-Transit" : ["not in", ["In-Transit", "Received"]];
+			var filter_dict = {
+				department_ir_status: dir_status,
+			};
+			if (frm.doc.type == "Issue") {
+				filter_dict["status"] = ["in", ["Finished", "Revert"]];
+				filter_dict["department"] = frm.doc.current_department;
+			} else {
+				if (frm.doc.receive_against) {
+					filter_dict["department_issue_id"] = frm.doc.receive_against;
 				}
-				return {
-					filters: filter_dict,
-				};
 			}
-		);
+			return {
+				filters: filter_dict,
+			};
+		});
 		frm.ignore_doctypes_on_cancel_all = ["Stock Entry", "Serial and Batch Bundle"];
 	},
 	// refresh:function(frm){
@@ -106,9 +100,7 @@ frappe.ui.form.on("Department IR", {
 		if (frm.doc.scan_mwo) {
 			frm.doc.department_ir_operation.forEach(function (item) {
 				if (item.manufacturing_work_order == frm.doc.scan_mwo)
-					frappe.throw(
-						__("{0} Manufacturing Work Order already exists", [frm.doc.scan_mwo])
-					);
+					frappe.throw(__("{0} Manufacturing Work Order already exists", [frm.doc.scan_mwo]));
 			});
 			// if (frm.doc.department_ir_operation.length > 30) {
 			// 	frappe.throw(__("Only 30 MOP allowed in one document"));
@@ -146,6 +138,7 @@ frappe.ui.form.on("Department IR", {
 					"gemstone_wt",
 					"other_wt",
 					"previous_mop",
+					"is_finding",
 				])
 				.then((r) => {
 					let values = r.message;
@@ -163,46 +156,62 @@ frappe.ui.form.on("Department IR", {
 						])
 						.then((v) => {
 							if (values.manufacturing_work_order) {
-								let gr_wt = 0;
-								if (values.gross_wt > 0) {
-									gr_wt = values.gross_wt;
-								} else if (v.message.received_gross_wt > 0 || v.message.gross_wt) {
-									if (v.message.received_gross_wt > 0) {
-										gr_wt = v.message.received_gross_wt;
-									} else if (v.message.gross_wt > 0) {
-										gr_wt = v.message.gross_wt;
+								let row;
+								if (values.is_finding) {
+									// Finding: mirror the current operation exactly — no
+									// previous-MOP fallback. A finding's "receive from work
+									// order" legitimately empties the operation balance, so the
+									// previous MOP's weights would be phantom values here.
+									row = frm.add_child("department_ir_operation", {
+										manufacturing_work_order: values.manufacturing_work_order,
+										manufacturing_operation: values.name,
+										status: values.status,
+										gross_wt: values.gross_wt || 0,
+										diamond_wt: values.diamond_wt || 0,
+										net_wt: values.net_wt || 0,
+										finding_wt: values.finding_wt || 0,
+										gemstone_wt: values.gemstone_wt || 0,
+										other_wt: values.other_wt || 0,
+										diamond_pcs: values.diamond_pcs || 0,
+										gemstone_pcs: values.gemstone_pcs || 0,
+									});
+								} else {
+									let gr_wt = 0;
+									if (values.gross_wt > 0) {
+										gr_wt = values.gross_wt;
+									} else if (v.message.received_gross_wt > 0 || v.message.gross_wt) {
+										if (v.message.received_gross_wt > 0) {
+											gr_wt = v.message.received_gross_wt;
+										} else if (v.message.gross_wt > 0) {
+											gr_wt = v.message.gross_wt;
+										}
 									}
-								}
 
-								let row = frm.add_child("department_ir_operation", {
-									manufacturing_work_order: values.manufacturing_work_order,
-									manufacturing_operation: values.name,
-									status: values.status,
-									gross_wt: gr_wt,
-									diamond_wt:
-										values.diamond_wt > 0
-											? values.diamond_wt
-											: v.message.diamond_wt,
-									net_wt: values.net_wt > 0 ? values.net_wt : v.message.net_wt,
-									finding_wt:
-										values.finding_wt > 0
-											? values.finding_wt
-											: v.message.finding_wt,
-									gemstone_wt:
-										values.gemstone_wt > 0
-											? values.gemstone_wt
-											: v.message.gemstone_wt,
-									other_wt:
-										values.other_wt > 0 ? values.other_wt : v.message.other_wt,
-									diamond_pcs:
-										values.diamond_pcs > 0
-											? values.diamond_pcs
-											: v.message.diamond_pcs,
-									gemstone_pcs:
-										values.gemstone_pcs > 0
-											? values.gemstone_pcs
-											: v.message.gemstone_pcs,
-								});
+									row = frm.add_child("department_ir_operation", {
+										manufacturing_work_order: values.manufacturing_work_order,
+										manufacturing_operation: values.name,
+										status: values.status,
+										gross_wt: gr_wt,
+										diamond_wt:
+											values.diamond_wt > 0 ? values.diamond_wt : v.message.diamond_wt,
+										net_wt: values.net_wt > 0 ? values.net_wt : v.message.net_wt,
+										finding_wt:
+											values.finding_wt > 0 ? values.finding_wt : v.message.finding_wt,
+										gemstone_wt:
+											values.gemstone_wt > 0
+												? values.gemstone_wt
+												: v.message.gemstone_wt,
+										other_wt: values.other_wt > 0 ? values.other_wt : v.message.other_wt,
+										diamond_pcs:
+											values.diamond_pcs > 0
+												? values.diamond_pcs
+												: v.message.diamond_pcs,
+										gemstone_pcs:
+											values.gemstone_pcs > 0
+												? values.gemstone_pcs
+												: v.message.gemstone_pcs,
+									});
+								}
 								frm.refresh_field("department_ir_operation");
 							} else {
 								frappe.throw(__("No Manufacturing Operation Found"));
@@ -288,9 +297,7 @@ function set_html(frm) {
 		},
 		callback: function (r) {
 			if (r.message) {
-				frm.get_field("summary").$wrapper.html(
-					frappe.render_template(template, { data: r.message })
-				);
+				frm.get_field("summary").$wrapper.html(frappe.render_template(template, { data: r.message }));
 			}
 		},
 	});
