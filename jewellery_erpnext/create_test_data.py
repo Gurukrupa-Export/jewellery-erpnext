@@ -2299,6 +2299,17 @@ def create_test_data():
 
 
 def setup_data():
+	# Provision MR transfer-SE custom fields on fresh CI sites. They exist ONLY in
+	# patches/add_mr_transfer_se_fields.py, which install-app marks complete WITHOUT
+	# running (set_all_patches_as_completed), so the columns never get created and
+	# MR.on_submit's db_set("custom_transfer_se_state", ...) raises Unknown column 1054.
+	# execute() is just create_custom_fields (idempotent) + a log line — safe to re-run.
+	from jewellery_erpnext.patches.add_mr_transfer_se_fields import (
+		execute as _ensure_mr_transfer_se_fields,
+	)
+
+	_ensure_mr_transfer_se_fields()
+
 	if not frappe.db.exists("Gender", "Other"):
 		frappe.get_doc({"doctype": "Gender", "gender": "Other"}).insert(
 			ignore_permissions=True
