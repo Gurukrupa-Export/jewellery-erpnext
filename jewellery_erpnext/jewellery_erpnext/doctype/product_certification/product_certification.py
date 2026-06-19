@@ -313,8 +313,13 @@ class ProductCertification(Document):
 			process_fire_assy_xrf_submit(self, create_stock_entry)
 		else:
 			create_stock_entry(self)
-			create_po(self)
-			update_bom_details(self)
+			frappe.enqueue(
+				"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.deferred_po_bom",
+				pc_name=self.name,
+				enqueue_after_commit=True,
+				job_id=f"pc_po_bom::{self.name}",
+				deduplicate=True,
+			)
 		self.update_huid()
 
 	def update_huid(self):
@@ -1323,3 +1328,13 @@ def add_to_serial_no(serial_no, doc, row):
 	if row.huid and row.huid not in existing_data:
 		serial_doc.append("huid", {"huid": row.huid, "date": doc.date})
 	serial_doc.save()
+
+
+def deferred_po_bom(pc_name):
+	pc = frappe.get_doc("Product Certification", pc_name)
+	from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
+		create_po,
+		update_bom_details,
+	)
+	create_po(pc)
+	update_bom_details(pc)

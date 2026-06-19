@@ -97,6 +97,8 @@ def check_and_enqueue_eod_sync():
 		queue="long",
 		timeout=7200,
 		enqueue_after_commit=True,
+		job_id="eod_sync",
+		deduplicate=True,
 		sync_log_name=sync_log_name,
 	)
 	frappe.logger().info(

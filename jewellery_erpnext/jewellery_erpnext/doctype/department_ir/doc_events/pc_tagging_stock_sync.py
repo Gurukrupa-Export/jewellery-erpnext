@@ -613,28 +613,6 @@ def _process_row(dept_ir_doc, row, scenario):
 				title=_("Insufficient physical batch stock for PC→Tagging transfer"),
 			)
 
-		# If s_warehouse is resolved but has no stock (e.g. bypassed PC), find the actual physical warehouse
-		from erpnext.stock.utils import get_batch_qty
-
-		if batch_no and flt(get_batch_qty(batch_no, s_warehouse, item_code)) < flt(
-			qty, 3
-		):
-			# Stock is missing in the expected warehouse. Find where the batch actually is.
-			actual_wh_data = frappe.db.sql(
-				"""
-				SELECT warehouse, SUM(actual_qty) as balance
-				FROM `tabStock Ledger Entry`
-				WHERE batch_no = %s AND item_code = %s AND is_cancelled = 0
-				GROUP BY warehouse
-				HAVING SUM(actual_qty) >= %s
-				LIMIT 1
-			""",
-				(batch_no, item_code, flt(qty, 3)),
-				as_dict=1,
-			)
-			if actual_wh_data:
-				s_warehouse = actual_wh_data[0].warehouse
-
 		t_warehouse = log["to_warehouse"]
 		pcs = (
 			cint(log.get("pcs_after_transaction_batch_based") or 0)

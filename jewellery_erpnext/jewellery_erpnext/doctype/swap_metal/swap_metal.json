@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "SWPM.#####",
+ "autoname": "hash",
  "creation": "2024-02-28 12:52:54.247805",
  "default_view": "List",
  "doctype": "DocType",
@@ -246,7 +246,7 @@
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Swap Metal",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

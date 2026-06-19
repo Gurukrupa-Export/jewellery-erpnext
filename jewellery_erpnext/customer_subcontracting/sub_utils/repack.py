@@ -175,6 +175,16 @@ def process_repack_settlement(
 	pending_logs,
 	incoming_customer=None,
 ):
+	# RULE B (canonical lock order): pre-lock the source Bins this settlement run will touch,
+	# in sorted (item_code, warehouse) order, so two concurrent repack-settlement runs acquire
+	# the shared gold batches in the same sequence — breaks 1213 reverse-order deadlock cycles
+	# across the per-log nested SE submits below. Additive: does not change what is created.
+	from jewellery_erpnext.jewellery_erpnext.lock_order import lock_bins
+
+	lock_bins(
+		[(b.get("item_code"), b.get("warehouse")) for b in (incoming_batches or [])]
+	)
+
 	for log in pending_logs:
 		if not log.batch_item or not is_gold_item(log.batch_item):
 			continue
