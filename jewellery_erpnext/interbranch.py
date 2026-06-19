@@ -61,6 +61,8 @@ def create_inter_branch_journal_entries(args, reconcile_type):
 		args=args,
 		enqueue_after_commit=True,
 		job_name=job_name,
+		job_id=job_name,
+		deduplicate=True,
 	)
 
 	frappe.msgprint(

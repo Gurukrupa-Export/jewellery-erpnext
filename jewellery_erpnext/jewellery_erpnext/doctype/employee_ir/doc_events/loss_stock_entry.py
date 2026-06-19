@@ -67,6 +67,21 @@ def create_loss_stock_entries(eir):
 	if not pending:
 		return
 
+	# RULE A (canonical lock order): process losses in (item_code, warehouse, batch_no)
+	# order so both the SRE reductions below and the combined SE's consume/produce rows
+	# lock shared Bins in the same deterministic sequence across concurrent Process-Loss
+	# submits. Each loss row is independent (own SRE + own scrap produce), so reordering
+	# does not change the net stock effect.
+	from jewellery_erpnext.jewellery_erpnext.lock_order import stock_lock_key
+
+	pending.sort(
+		key=lambda e: stock_lock_key(
+			e["row"].item_code,
+			getattr(e["sre_doc"], "warehouse", None),
+			e["row"].batch_no,
+		)
+	)
+
 	# Reduce all SREs first so stock is free for the ledger entry.
 	for entry in pending:
 		_reduce_sre(
@@ -130,11 +145,11 @@ def _prepare_loss_row(eir, row, table_name):
 		)
 
 	mwo = _resolve_mwo(eir, row, table_name)
-	sre_doc = _find_sre(eir, row, mwo, table_name)
+	sre_doc, candidates = _find_sre(eir, row, mwo, table_name, qty)
 	t_warehouse = _resolve_t_warehouse(eir, table_name)
 	loss_item = _resolve_loss_item(eir, row, table_name)
 
-	_validate_sre_qty(eir, row, sre_doc, qty, table_name)
+	_validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name)
 
 	return {
 		"row": row,
@@ -164,12 +179,30 @@ def _resolve_mwo(eir, row, table_name):
 	return mwo
 
 
-def _find_sre(eir, row, mwo, table_name):
-	"""Return the active SRE document for this loss row.
+def _find_sre(eir, row, mwo, table_name, qty):
+	"""Return ``(sre_doc, candidates)`` for this loss row.
 
-	Prefers a batch-level match via the Serial and Batch Entry child table.
-	Falls back to a Qty-based reservation (no sb_entries) if the batch join
-	returns nothing.  Raises clearly if zero or multiple SREs are found.
+	A batch's reservation legitimately spans multiple operation-tagged SREs in
+	the SAME warehouse (SRE = physical truth; the bulk metal arrives via one
+	operation-tagged Stock Entry while small increments arrive via others, and
+	Employee IR logical moves never re-tag reservations). Loss must therefore be
+	deducted against the batch's reservation as a whole, not the SRE that merely
+	carries the current operation's tag.
+
+	Selection:
+	  * Prefer a batch-level match via the Serial and Batch Entry child table;
+	    fall back to a Qty-based reservation (no sb_entries) if the batch join
+	    returns nothing.
+	  * Restrict candidates to a SINGLE warehouse so we never deduct across
+	    physical locations: the warehouse of the operation-matched SRE if one
+	    exists, else the warehouse holding the largest reserved_qty.
+	  * Within that warehouse pick the SRE that can COVER the loss, preferring
+	    the current operation's SRE, then the largest. If none individually
+	    covers the loss, return the largest so ``_validate_sre_qty`` raises with
+	    an accurate aggregate message.
+
+	``candidates`` (the ordered, single-warehouse list) is returned alongside so
+	the validation can report the batch's aggregate reservation on failure.
 	"""
 	rows = frappe.db.sql(
 		"""
@@ -193,7 +226,6 @@ def _find_sre(eir, row, mwo, table_name):
           AND sre.item_code = %s
           AND sbe.batch_no = %s
           AND sre.docstatus = 1
-        LIMIT 2
         """,
 		(mwo, row.item_code, row.batch_no),
 		as_dict=True,
@@ -223,7 +255,6 @@ def _find_sre(eir, row, mwo, table_name):
 				"stock_uom",
 				"manufacturing_operation",
 			],
-			limit=2,
 		)
 
 	if not rows:
@@ -241,19 +272,33 @@ def _find_sre(eir, row, mwo, table_name):
 			)
 		)
 
-	if len(rows) > 1:
-		# Batch spans multiple SREs (e.g. split across operations). Prefer the
-		# SRE whose manufacturing_operation matches the loss row's operation so
-		# we deduct from the correct stock location.
-		row_mop = getattr(row, "manufacturing_operation", None)
-		if row_mop:
-			matched = [r for r in rows if r.get("manufacturing_operation") == row_mop]
-			if len(matched) == 1:
-				return frappe.get_doc("Stock Reservation Entry", matched[0]["name"])
-		# Fall back to the SRE with the largest remaining reserved_qty.
-		rows.sort(key=lambda r: flt(r.get("reserved_qty", 0)), reverse=True)
+	# Confine candidates to a single warehouse so deduction never spans physical
+	# locations: the operation-matched SRE's warehouse, else the warehouse with
+	# the largest reserved_qty.
+	row_mop = getattr(row, "manufacturing_operation", None)
+	op_matched = [r for r in rows if row_mop and r.get("manufacturing_operation") == row_mop]
+	chosen_wh = (
+		op_matched[0]["warehouse"]
+		if op_matched
+		else max(rows, key=lambda r: flt(r.get("reserved_qty"), 3))["warehouse"]
+	)
+	candidates = [r for r in rows if r.get("warehouse") == chosen_wh]
 
-	return frappe.get_doc("Stock Reservation Entry", rows[0]["name"])
+	# Order: current operation's SRE first, then by reserved_qty descending.
+	candidates.sort(
+		key=lambda r: (
+			not (bool(row_mop) and r.get("manufacturing_operation") == row_mop),
+			-flt(r.get("reserved_qty"), 3),
+		)
+	)
+
+	qty = flt(qty, 3)
+	covering = next(
+		(c for c in candidates if flt(c.get("reserved_qty"), 3) >= qty), None
+	)
+	chosen = covering or candidates[0]
+
+	return frappe.get_doc("Stock Reservation Entry", chosen["name"]), candidates
 
 
 def _resolve_t_warehouse(eir, table_name):
@@ -418,20 +463,36 @@ def _resolve_loss_item(eir, row, table_name):
 # ---------------------------------------------------------------------------
 
 
-def _validate_sre_qty(eir, row, sre_doc, qty, table_name):
+def _validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name):
+	"""Guard that the chosen SRE can cover the loss.
+
+	``sre_doc`` is the covering SRE picked by ``_find_sre`` (or the largest when
+	none covers). This fires only when no single SRE in the batch's warehouse
+	can absorb the loss; the message reports the batch's aggregate reservation
+	and per-SRE breakdown so a genuine shortfall is diagnosable.
+	"""
 	reserved = flt(sre_doc.reserved_qty, 3)
 	if qty > reserved:
+		total = flt(sum(flt(c.get("reserved_qty"), 3) for c in candidates), 3)
+		breakdown = ", ".join(
+			f"{c['name']}={flt(c.get('reserved_qty'), 3)}" for c in candidates
+		)
 		frappe.throw(
 			_(
-				"Employee IR {0}, {1} row {2}: loss qty {3} exceeds reserved "
-				"qty {4} in Stock Reservation Entry {5}"
+				"Employee IR {0}, {1} row {2}: loss qty {3} cannot be covered by "
+				"any single Stock Reservation Entry for batch {4} in warehouse {5} "
+				"(largest is {6}={7}; batch totals {8} across [{9}])."
 			).format(
 				eir.name,
 				table_name,
 				row.idx,
 				qty,
-				reserved,
+				row.batch_no,
+				sre_doc.warehouse,
 				sre_doc.name,
+				reserved,
+				total,
+				breakdown,
 			)
 		)
 

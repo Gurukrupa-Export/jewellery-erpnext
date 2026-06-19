@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:OCT-{####}",
+ "autoname": "OCT-.####",
  "creation": "2023-03-04 14:12:55.959101",
  "default_view": "List",
  "doctype": "DocType",

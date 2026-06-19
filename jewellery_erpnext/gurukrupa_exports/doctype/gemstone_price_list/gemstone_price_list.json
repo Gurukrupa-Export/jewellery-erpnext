@@ -2,7 +2,7 @@
  "actions": [],
  "allow_import": 1,
  "allow_rename": 1,
- "autoname": "format:GSP-.######",
+ "autoname": "GSP-.######",
  "creation": "2022-07-25 19:09:11.229961",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -275,7 +275,7 @@
  "modified_by": "Administrator",
  "module": "Gurukrupa Exports",
  "name": "Gemstone Price List",
- "naming_rule": "Expression",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {

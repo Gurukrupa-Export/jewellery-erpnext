@@ -125,6 +125,7 @@ def validate_and_update_gross_wt_from_mop(self):
 				"gemstone_pcs",
 				"gemstone_wt",
 				"other_wt",
+				"is_finding",
 			],
 			as_dict=1,
 		)
@@ -152,28 +153,41 @@ def validate_and_update_gross_wt_from_mop(self):
 				as_dict=1,
 			)
 
-		row.gross_wt = (
-			mop_data.get("gross_wt")
-			or previous_mop_data.get("received_gross_wt")
-			or previous_mop_data.get("gross_wt")
-		)
-		row.net_wt = mop_data.get("net_wt") or previous_mop_data.get("net_wt")
-		row.diamond_wt = mop_data.get("diamond_wt") or previous_mop_data.get(
-			"diamond_wt"
-		)
-		row.finding_wt = mop_data.get("finding_wt") or previous_mop_data.get(
-			"finding_wt"
-		)
-		row.diamond_pcs = mop_data.get("diamond_pcs") or previous_mop_data.get(
-			"diamond_pcs"
-		)
-		row.gemstone_pcs = mop_data.get("gemstone_pcs") or previous_mop_data.get(
-			"gemstone_pcs"
-		)
-		row.gemstone_wt = mop_data.get("gemstone_wt") or previous_mop_data.get(
-			"gemstone_wt"
-		)
-		row.other_wt = mop_data.get("other_wt") or previous_mop_data.get("other_wt")
+		if mop_data.get("is_finding"):
+			# Finding: mirror the current operation exactly — no previous-MOP fallback.
+			# A finding's "receive from work order" legitimately empties the operation
+			# balance, so resurrecting the previous MOP's weights would show phantom values.
+			row.gross_wt = mop_data.get("gross_wt") or 0
+			row.net_wt = mop_data.get("net_wt") or 0
+			row.diamond_wt = mop_data.get("diamond_wt") or 0
+			row.finding_wt = mop_data.get("finding_wt") or 0
+			row.diamond_pcs = mop_data.get("diamond_pcs") or 0
+			row.gemstone_pcs = mop_data.get("gemstone_pcs") or 0
+			row.gemstone_wt = mop_data.get("gemstone_wt") or 0
+			row.other_wt = mop_data.get("other_wt") or 0
+		else:
+			row.gross_wt = (
+				mop_data.get("gross_wt")
+				or previous_mop_data.get("received_gross_wt")
+				or previous_mop_data.get("gross_wt")
+			)
+			row.net_wt = mop_data.get("net_wt") or previous_mop_data.get("net_wt")
+			row.diamond_wt = mop_data.get("diamond_wt") or previous_mop_data.get(
+				"diamond_wt"
+			)
+			row.finding_wt = mop_data.get("finding_wt") or previous_mop_data.get(
+				"finding_wt"
+			)
+			row.diamond_pcs = mop_data.get("diamond_pcs") or previous_mop_data.get(
+				"diamond_pcs"
+			)
+			row.gemstone_pcs = mop_data.get("gemstone_pcs") or previous_mop_data.get(
+				"gemstone_pcs"
+			)
+			row.gemstone_wt = mop_data.get("gemstone_wt") or previous_mop_data.get(
+				"gemstone_wt"
+			)
+			row.other_wt = mop_data.get("other_wt") or previous_mop_data.get("other_wt")
 		mwo_list.append(row.manufacturing_work_order)
 
 	return mwo_list

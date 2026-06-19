@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "ORD/D/.#####",
+ "autoname": "hash",
  "creation": "2022-05-11 22:26:43.199785",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -193,7 +193,7 @@
  "modified_by": "Administrator",
  "module": "Gurukrupa Exports",
  "name": "Serial No and Design Code Order Form",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

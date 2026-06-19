@@ -22,6 +22,8 @@ def custom_submit_cancel_or_update_docs(doctype, docnames, action="submit", data
 			task_id=task_id,
 			queue="long",
 			timeout=4000,
+			job_id=f"bulk_action::{doctype}::{action}::{frappe.generate_hash(str(sorted(docnames)), 10)}",
+			deduplicate=True,
 		)
 	else:
 		frappe.throw(_("Bulk operations only support up to 2500 documents."), title=_("Too Many Documents"))

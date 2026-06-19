@@ -23,6 +23,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
+from jewellery_erpnext.jewellery_erpnext.lock_order import (
+	lock_bins_for_rows,
+	sorted_stock_rows,
+)
 from jewellery_erpnext.utils import (
 	get_item_from_attribute,
 	get_variant_of_item,
@@ -572,6 +576,17 @@ def on_cancel(self, method=None):
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
 
 
+def prelock_bins(self, method=None):
+	"""RULE B (canonical lock order): before ERPNext posts SLEs / updates Bins, acquire a
+	FOR UPDATE lock on every (item_code, warehouse) Bin this Stock Entry will touch, in
+	sorted order. Concurrent SE submits then acquire shared Bins in the SAME sequence,
+	which removes the reverse-order cycles that cause 1213 deadlocks. Applied to ALL Stock
+	Entries (one place covers MR / repack / metal-conversion / main-slip injection / EOD /
+	loss / SNC etc.). Additive — ERPNext locks these same Bins during posting anyway; this
+	only fixes the acquisition order."""
+	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
+
+
 def before_submit(self, method):
 	# validation_for_stock_entry_submission(self)
 	if self.stock_entry_type != "Manufacture":
@@ -699,7 +714,19 @@ def stock_reservation_entry_for_mwo(self):
 				* (flt(addition_maximum_item__tolerance_percentage) / 100)
 			)
 
-	for row in self.items:
+	# RULE B (canonical lock order): pre-lock every inbound Bin this reservation will
+	# touch, in sorted (item_code, warehouse) order, so concurrent Stock Entry submits
+	# acquire shared Bins in the same sequence — breaks 1213 reverse-order and
+	# Series<->Bin deadlock cycles. Skipped for Material Receive (WORK ORDER), which
+	# only writes MOP Logs and reserves nothing.
+	if self.stock_entry_type != "Material Receive (WORK ORDER)":
+		lock_bins_for_rows(
+			[r for r in self.items if r.get("t_warehouse")], "t_warehouse"
+		)
+	# RULE A: iterate in canonical (item_code, warehouse, batch_no) order. A stable sort
+	# keeps rows competing for the same key in their original relative order, so the
+	# reserved quantity each row receives is unchanged.
+	for row in sorted_stock_rows(self.items, warehouse_attr="t_warehouse"):
 		if self.stock_entry_type == "Material Receive (WORK ORDER)":
 			create_mop_log(self, row, is_synced=True)
 			continue
@@ -1583,3 +1610,42 @@ def get_last_mwo_wh_based_on_index(mwo):
 		"MOP Log", filters, ["max(flow_index) as flow_index", "name", "to_warehouse"]
 	)
 	return last_index, last_log_name, to_warehouse
+
+
+def consume_stock_reservation_entry(sre_doc, update_bin=True):
+	"""Mark a Stock Reservation Entry as consumed/delivered instead of cancelling it.
+
+	Sets ``delivered_qty = reserved_qty`` and updates the status to "Delivered".
+	This keeps the SRE record intact for audit / tracking while properly releasing
+	the Bin's reserved-stock counter (ERPNext's formula:
+	``reserved = reserved_qty - delivered_qty - transferred_qty - consumed_qty``).
+
+	If the SRE has Serial and Batch child entries (``sb_entries``), each child row's
+	``delivered_qty`` is also set to match its ``qty`` so the batch-level reservation
+	is released as well.
+
+	Call ``frappe.clear_document_cache("Bin")`` before/after as needed — just like
+	the old cancel flow did.
+	"""
+	from erpnext.stock.utils import get_or_make_bin
+
+	sre_doc.flags.ignore_permissions = True
+
+	# Update batch-level child entries if present
+	if sre_doc.reservation_based_on == "Serial and Batch" and sre_doc.sb_entries:
+		for entry in sre_doc.sb_entries:
+			entry.delivered_qty = flt(entry.qty)
+			entry.db_update()
+
+	# Set delivered_qty = reserved_qty → triggers status "Delivered"
+	sre_doc.db_set("delivered_qty", flt(sre_doc.reserved_qty), update_modified=True)
+	sre_doc.delivered_qty = flt(sre_doc.reserved_qty)
+
+	# Explicitly set status to "Delivered"
+	sre_doc.update_status(status="Delivered")
+
+	# Refresh bin reserved stock so the physical stock becomes available
+	if update_bin:
+		bin_name = get_or_make_bin(sre_doc.item_code, sre_doc.warehouse)
+		bin_doc = frappe.get_cached_doc("Bin", bin_name)
+		bin_doc.update_reserved_stock()

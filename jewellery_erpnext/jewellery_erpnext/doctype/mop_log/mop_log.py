@@ -40,6 +40,18 @@ class MOPLog(Document):
 		pcs_after_prefix = self.pcs_after_transaction
 		prefix = FIELD_MAP.get(first_char)
 		if prefix:
+			if self.manufacturing_operation:
+				# Canonical lock order: take the Manufacturing Operation row lock up front
+				# (it is the terminal sink) so concurrent MOP-Log writers and Department-IR
+				# weight recompute acquire the MO in a consistent position relative to
+				# Bin/SLE — this breaks the MO<->Bin deadlock cycle. The set_value below
+				# would lock the same row a moment later anyway, so this adds no new lock.
+				frappe.db.get_value(
+					"Manufacturing Operation",
+					self.manufacturing_operation,
+					"name",
+					for_update=True,
+				)
 			update_value = {f"{prefix}_wt": qty_after_prefix}
 			if first_char in ("D", "G"):
 				update_value.update(

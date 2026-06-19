@@ -563,6 +563,22 @@
    "insert_after": "custom_require_customer_bulk_numbers",
    "label": "Order Through Data",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_precision_for_net_weight",
+   "fieldtype": "Int",
+   "insert_after": "custom_precision_for_stone",
+   "label": "Precision for Net Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_precision_for_gross_weight",
+   "fieldtype": "Int",
+   "insert_after": "custom_precision_for_net_weight",
+   "label": "Precision for Gross Weight",
+   "module": "Jewellery Erpnext"
   }
  ]
 }

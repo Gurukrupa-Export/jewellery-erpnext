@@ -9,6 +9,9 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import cint
 
 from jewellery_erpnext.create_test_data import create_test_data
+from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
+	create_po,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification import (
 	get_stock_item_against_mwo,
 )
@@ -81,6 +84,8 @@ class TestProductCertification(IntegrationTestCase):
 		self.assertEqual(
 			certification_issue.product_details[0].item_code, se.items[0].item_code
 		)
+
+		create_po(certification_issue)
 
 		po = frappe.get_doc(
 			"Purchase Order",
@@ -156,6 +161,8 @@ class TestProductCertification(IntegrationTestCase):
 		self.assertEqual(
 			certification_issue.product_details[0].item_code, se.items[0].item_code
 		)
+
+		create_po(certification_issue)
 
 		po = frappe.get_doc(
 			"Purchase Order",
@@ -307,6 +314,8 @@ class TestProductCertification(IntegrationTestCase):
 			receive_se.stock_entry_type, "Material Receipt for Hallmarking"
 		)
 		self.assertEqual(receive_se.docstatus, 1)
+
+		create_po(issue)
 
 		po_name = frappe.db.get_value(
 			"Purchase Order", {"product_certification": issue.name}, "name"

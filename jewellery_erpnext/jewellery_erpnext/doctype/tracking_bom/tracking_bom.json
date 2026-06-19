@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "TB-.####",
+ "autoname": "hash",
  "creation": "2026-02-09 11:58:09.987578",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -503,7 +503,7 @@
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Tracking Bom",
- "naming_rule": "Expression",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {
