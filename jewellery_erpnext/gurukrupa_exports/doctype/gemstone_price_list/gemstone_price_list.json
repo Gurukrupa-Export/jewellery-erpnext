@@ -256,6 +256,7 @@
    "label": "Outwork Handling Charges Rate"
   },
   {
+   "depends_on": "eval:doc.price_list_type =='Fixed'",
    "fieldname": "section_break_menw",
    "fieldtype": "Section Break"
   },
