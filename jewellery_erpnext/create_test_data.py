@@ -1946,7 +1946,7 @@ def create_test_data():
 			)
 			stock_entry.append(
 				"items",
-				{"item_code": "M-G-22KT-91.6-Y", "qty": 5, "basic_rate": 5626.24},
+				{"item_code": "M-G-22KT-91.6-Y", "qty": 50, "basic_rate": 5626.24},
 			)
 			stock_entry.insert(ignore_permissions=True)
 			stock_entry.submit()
@@ -1976,7 +1976,7 @@ def create_test_data():
 			)
 			stock_entry.append(
 				"items",
-				{"item_code": "D-NT-RO-6B-+9-9.5", "qty": 5, "basic_rate": 5626.24},
+				{"item_code": "D-NT-RO-6B-+9-9.5", "qty": 50, "basic_rate": 5626.24},
 			)
 			stock_entry.insert(ignore_permissions=True)
 			stock_entry.submit()
