@@ -1,7 +1,7 @@
 """One-off retry for MOP EOD Sync MWOs left stuck after a Phase-2 submit failure.
 
 A partially-completed EOD run (e.g. ``MOP-EOD-SYNC-2026-03606``) left some MWOs with a
-draft Stock Entry because ``_recreate_sres_at`` failed (over-reserved SO line / batch not
+draft Stock Entry because the EOD re-reservation failed (over-reserved SO line / batch not
 free). That re-reservation bug is now fixed, so these MWOs can be re-processed.
 
 Two groups (decided per MWO from the sync log's "Draft Created" child rows):
@@ -89,8 +89,10 @@ def execute(sync_log_name=DEFAULT_SYNC_LOG, dry_run=True):
 		return
 
 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+		_commit_company_issues_se,
+		_commit_company_main_se,
 		_get_unsynced_mop_groups,
-		_process_mwo_group,
+		_plan_mwo_group,
 	)
 
 	# EOD-internal writes (SE submit, SRE relocation) must bypass the transaction lock.
@@ -124,14 +126,31 @@ def execute(sync_log_name=DEFAULT_SYNC_LOG, dry_run=True):
 		"artifact_skipped": [],
 		"started_on": frappe.utils.now_datetime(),
 	}
+	main_buckets = {}
+	issues_buckets = {}
 	for group_key, mop_data_list in groups.items():
-		_process_mwo_group(
+		result = _plan_mwo_group(
 			group_key,
 			mop_data_list,
 			failures,
 			stats,
 			sync_log_name=None,
 			selective=True,
+		)
+		if not result:
+			continue
+		bucket_key = (result["company"], result.get("manufacturer"))
+		if result["kind"] == "resolvable":
+			main_buckets.setdefault(bucket_key, []).append(result)
+		elif result["kind"] == "failed" and result.get("issues_rows"):
+			issues_buckets.setdefault(bucket_key, []).extend(result["issues_rows"])
+	for (company, manufacturer), main_mwos in main_buckets.items():
+		_commit_company_main_se(
+			company, manufacturer, main_mwos, failures, stats, sync_log_name=None, selective=True
+		)
+	for (company, manufacturer), issues_rows in issues_buckets.items():
+		_commit_company_issues_se(
+			company, manufacturer, issues_rows, stats, sync_log_name=None
 		)
 	frappe.db.commit()
 

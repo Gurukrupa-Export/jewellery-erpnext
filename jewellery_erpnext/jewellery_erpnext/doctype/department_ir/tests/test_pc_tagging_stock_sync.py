@@ -12,9 +12,14 @@ from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tag
 	SCENARIO_TAGGING_TO_PC_RECEIVE,
 	_build_sre_info_by_key,
 	_norm,
+	_physical_batch_qty,
+	_pick_source_warehouse,
 	_requires_pcs,
 	_resolve_scenario,
+	_warehouses_with_physical_batch,
 )
+
+MOD = "jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tagging_stock_sync"
 
 
 def _make_doc(type_, current, nxt=None, prev=None):
@@ -349,6 +354,253 @@ class TestProcessPcTaggingStockSync(unittest.TestCase):
 		process_pc_tagging_stock_sync(doc, cancel=True)
 
 		mock_cancel.assert_called_once_with(doc, row1, SCENARIO_PC_TO_TAGGING_ISSUE)
+
+
+class TestPickSourceWarehouse(unittest.TestCase):
+	"""The physical-stock-aware source warehouse picker (the fix's core decision)."""
+
+	def test_empty_candidates_returns_none(self):
+		self.assertIsNone(_pick_source_warehouse("D-1", "B1", 0.5, []))
+
+	def test_non_batch_returns_first_candidate_without_physical_check(self):
+		with patch(f"{MOD}._physical_batch_qty") as mock_phys:
+			wh = _pick_source_warehouse("M-18KT-750", None, 5.0, ["WH-A", "WH-B"])
+		self.assertEqual(wh, "WH-A")
+		mock_phys.assert_not_called()
+
+	def test_first_candidate_with_stock_chosen_no_regression(self):
+		# MOP-Log warehouse (candidate 0) physically covers -> chosen, SRE untouched.
+		with patch(f"{MOD}._physical_batch_qty", return_value=1.0):
+			wh = _pick_source_warehouse(
+				"D-1", "B1", 0.036, ["PC WO - GEPL", "Diamond Setting WO - GEPL"]
+			)
+		self.assertEqual(wh, "PC WO - GEPL")
+
+	def test_falls_through_to_warehouse_with_stock(self):
+		# Core fix: candidate 0 is physically empty, candidate 1 (SRE WH) covers.
+		def physical(item, batch, w):
+			return {"PC WO - GEPL": 0.0, "Diamond Setting WO - GEPL": 0.036}[w]
+
+		with patch(f"{MOD}._physical_batch_qty", side_effect=physical):
+			wh = _pick_source_warehouse(
+				"D-1", "B1", 0.036, ["PC WO - GEPL", "Diamond Setting WO - GEPL"]
+			)
+		self.assertEqual(wh, "Diamond Setting WO - GEPL")
+
+	def test_partial_candidate_rejected_in_favor_of_covering_one(self):
+		def physical(item, batch, w):
+			return {"PC WO - GEPL": 0.02, "Diamond Setting WO - GEPL": 0.036}[w]
+
+		with patch(f"{MOD}._physical_batch_qty", side_effect=physical):
+			wh = _pick_source_warehouse(
+				"D-1", "B1", 0.036, ["PC WO - GEPL", "Diamond Setting WO - GEPL"]
+			)
+		self.assertEqual(wh, "Diamond Setting WO - GEPL")
+
+	def test_none_when_no_candidate_covers(self):
+		with patch(f"{MOD}._physical_batch_qty", return_value=0.0):
+			self.assertIsNone(
+				_pick_source_warehouse(
+					"D-1", "B1", 0.036, ["PC WO - GEPL", "Diamond Setting WO - GEPL"]
+				)
+			)
+
+	def test_within_tolerance_is_accepted(self):
+		# physical 0.0359 + TOLERANCE (0.0001) >= requested 0.036
+		with patch(f"{MOD}._physical_batch_qty", return_value=0.0359):
+			wh = _pick_source_warehouse("D-1", "B1", 0.036, ["PC WO - GEPL"])
+		self.assertEqual(wh, "PC WO - GEPL")
+
+
+class TestPhysicalBatchHelpers(unittest.TestCase):
+	def test_physical_batch_qty_none_for_missing_batch_or_warehouse(self):
+		self.assertIsNone(_physical_batch_qty("D-1", None, "WH-A"))
+		self.assertIsNone(_physical_batch_qty("D-1", "B1", None))
+
+	@patch(f"{MOD}.get_batch_qty")
+	def test_physical_batch_qty_ignores_reserved_stock(self, mock_gbq):
+		mock_gbq.return_value = 0.036
+		result = _physical_batch_qty("D-NT-RO-5-+0-1", "B1", "WH-A")
+		self.assertAlmostEqual(result, 0.036)
+		mock_gbq.assert_called_once_with(
+			"B1", "WH-A", "D-NT-RO-5-+0-1", ignore_reserved_stock=True
+		)
+
+	@patch(f"{MOD}.get_batch_qty")
+	def test_physical_batch_qty_swallows_errors(self, mock_gbq):
+		mock_gbq.side_effect = Exception("boom")
+		self.assertEqual(_physical_batch_qty("D-1", "B1", "WH-A"), 0.0)
+
+	def test_warehouses_with_physical_batch_empty_for_no_batch(self):
+		self.assertEqual(_warehouses_with_physical_batch("D-1", None), [])
+
+	@patch(f"{MOD}.get_batch_qty")
+	def test_warehouses_with_physical_batch_filters_and_sorts(self, mock_gbq):
+		mock_gbq.return_value = [
+			{"batch_no": "B1", "warehouse": "WH-A", "qty": 0.02},
+			{"batch_no": "B1", "warehouse": "WH-B", "qty": 0.0},  # filtered: <= TOLERANCE
+			{"batch_no": "B1", "warehouse": "WH-C", "qty": 0.05},
+			{"batch_no": "OTHER", "warehouse": "WH-D", "qty": 0.5},  # different batch
+		]
+		out = _warehouses_with_physical_batch("D-1", "B1")
+		self.assertEqual(out, [("WH-C", 0.05), ("WH-A", 0.02)])
+
+
+class TestProcessRowPhysicalReconcile(unittest.TestCase):
+	"""Integration of the physical-stock-aware resolution inside _process_row."""
+
+	def _log(self, item_code, batch_no, qty, pcs=0):
+		return {
+			"name": f"MOP-LOG-{item_code}",
+			"item_code": item_code,
+			"batch_no": batch_no,
+			"qty_after_transaction_batch_based": qty,
+			"pcs_after_transaction_batch_based": pcs,
+			"from_warehouse": "Product Certification WO - GEPL",
+			"to_warehouse": "Tagging Transit - GEPL",
+			"manufacturing_operation": "MOP-TAG",
+			"manufacturing_work_order": "MWO-001",
+			"flow_index": 1,
+		}
+
+	def _row(self):
+		row = MagicMock()
+		row.manufacturing_work_order = "MWO-001"
+		row.manufacturing_operation = "MOP-001"
+		row.name = "DIR-ROW-001"
+		return row
+
+	@patch(f"{MOD}._build_sre_from_context")
+	@patch(f"{MOD}.get_batch_qty")
+	@patch(f"{MOD}._find_stock_entry_source_warehouse")
+	@patch(f"{MOD}._build_sre_info_by_key")
+	@patch(f"{MOD}._get_active_sres_for_mwo")
+	@patch(f"{MOD}._get_dept_ir_mop_logs")
+	@patch(f"{MOD}.frappe")
+	def test_core_fix_sources_from_reserved_warehouse(
+		self,
+		mock_frappe,
+		mock_logs,
+		mock_sres,
+		mock_sre_info,
+		mock_find_se,
+		mock_gbq,
+		mock_build_sre,
+	):
+		from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tagging_stock_sync import (
+			_process_row,
+		)
+
+		mock_frappe.db.get_all.return_value = []  # duplicate-SE guard: none exists
+		mock_frappe._ = lambda s: s
+		mock_frappe.get_cached_value.return_value = "Carat"
+		se = MagicMock()
+		mock_frappe.new_doc.return_value = se
+		sre_doc = MagicMock()
+		sre_doc.docstatus = 1
+		mock_frappe.get_doc.return_value = sre_doc
+
+		mock_logs.return_value = [self._log("D-NT-RO-5-+0-1", "BATCH-001", 0.036, pcs=6)]
+		mock_sres.return_value = [{"name": "SRE-001"}]
+		mock_sre_info.return_value = {
+			("D-NT-RO-5-+0-1", "BATCH-001"): (
+				"SRE-001",
+				"Diamond Setting WO - GEPL",
+				0.036,
+			)
+		}
+		mock_find_se.return_value = None
+
+		def gbq(*args, **kwargs):
+			# _physical_batch_qty(batch_no, warehouse, item_code, ignore_reserved_stock=True)
+			if args:
+				return 0.0 if args[1] == "Product Certification WO - GEPL" else 0.036
+			return []  # _warehouses_with_physical_batch (not reached on the happy path)
+
+		mock_gbq.side_effect = gbq
+		mock_build_sre.return_value = MagicMock()
+
+		dept_ir = _make_doc(
+			"Issue", "Product Certification - GEPL", nxt="Tagging - GEPL"
+		)
+		dept_ir.name = "DIR-TEST-CORE"
+
+		_process_row(dept_ir, self._row(), SCENARIO_PC_TO_TAGGING_ISSUE)
+
+		# SE built sourcing from the reserved (physically-stocked) warehouse.
+		item_appends = [c for c in se.append.call_args_list if c.args[0] == "items"]
+		self.assertEqual(len(item_appends), 1)
+		item_row = item_appends[0].args[1]
+		self.assertEqual(item_row["s_warehouse"], "Diamond Setting WO - GEPL")
+		self.assertAlmostEqual(item_row["qty"], 0.036)
+		self.assertEqual(item_row["batch_no"], "BATCH-001")
+		se.submit.assert_called_once()
+		# Old SRE cancelled, replacement created.
+		sre_doc.cancel.assert_called_once()
+		mock_build_sre.return_value.submit.assert_called_once()
+
+	@patch(f"{MOD}._build_sre_from_context")
+	@patch(f"{MOD}.get_batch_qty")
+	@patch(f"{MOD}._find_stock_entry_source_warehouse")
+	@patch(f"{MOD}._build_sre_info_by_key")
+	@patch(f"{MOD}._get_active_sres_for_mwo")
+	@patch(f"{MOD}._get_dept_ir_mop_logs")
+	@patch(f"{MOD}.frappe")
+	def test_fail_fast_when_no_warehouse_has_physical_stock(
+		self,
+		mock_frappe,
+		mock_logs,
+		mock_sres,
+		mock_sre_info,
+		mock_find_se,
+		mock_gbq,
+		mock_build_sre,
+	):
+		from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tagging_stock_sync import (
+			_process_row,
+		)
+
+		mock_frappe.db.get_all.return_value = []
+		mock_frappe._ = lambda s: s
+		mock_frappe.throw.side_effect = frappe.exceptions.ValidationError
+
+		mock_logs.return_value = [self._log("D-NT-RO-5-+0-1", "BATCH-001", 0.036, pcs=6)]
+		mock_sres.return_value = []  # no SRE -> only the MOP-Log warehouse is a candidate
+		mock_sre_info.return_value = {}
+		mock_find_se.return_value = None
+
+		def gbq(*args, **kwargs):
+			if args:  # _physical_batch_qty -> MOP-Log warehouse is empty
+				return 0.0
+			# _warehouses_with_physical_batch (diagnostic): stock is elsewhere
+			return [
+				{
+					"batch_no": "BATCH-001",
+					"warehouse": "Diamond Setting WO - GEPL",
+					"qty": 0.036,
+				}
+			]
+
+		mock_gbq.side_effect = gbq
+
+		dept_ir = _make_doc(
+			"Issue", "Product Certification - GEPL", nxt="Tagging - GEPL"
+		)
+		dept_ir.name = "DIR-TEST-FAIL"
+
+		with self.assertRaises(frappe.exceptions.ValidationError):
+			_process_row(dept_ir, self._row(), SCENARIO_PC_TO_TAGGING_ISSUE)
+
+		# No SE created, no SRE cancelled — reservations left intact for resubmit.
+		mock_frappe.new_doc.assert_not_called()
+		mock_frappe.get_doc.assert_not_called()
+		# Diagnostic names the item, batch, qty, empty source WH and where stock is.
+		msg = mock_frappe.throw.call_args.args[0]
+		self.assertIn("D-NT-RO-5-+0-1", msg)
+		self.assertIn("BATCH-001", msg)
+		self.assertIn("0.036", msg)
+		self.assertIn("Product Certification WO - GEPL", msg)
+		self.assertIn("Diamond Setting WO - GEPL", msg)
 
 
 if __name__ == "__main__":

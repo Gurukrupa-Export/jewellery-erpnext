@@ -1,12 +1,17 @@
 # Copyright (c) 2023, Nirali and contributors
 # For license information, please see license.txt
 
+from collections import defaultdict
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
+	get_purity_percentage,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 	get_item_loss_item,
 )
@@ -52,6 +57,7 @@ class ProductCertification(Document):
 		self.validate_items()
 		self.update_bom()
 		self.get_exploded_table()
+		self.calculate_fire_assy_loss_weight()
 		self.distribute_amount()
 
 	def before_submit(self):
@@ -121,7 +127,7 @@ class ProductCertification(Document):
 				total_weight = flt(row.total_weight)
 
 				exploded_weight = sum(
-					flt(d.gross_weight)
+					flt(d.conversion_quantity or d.gross_weight)
 					for d in self.exploded_product_details
 					if d.main_slip == main_slip
 				)
@@ -138,7 +144,8 @@ class ProductCertification(Document):
 				flt(d.total_weight) for d in self.product_details
 			)
 			total_exploded_weight = sum(
-				flt(d.gross_weight) for d in self.exploded_product_details
+				flt(d.conversion_quantity or d.gross_weight)
+				for d in self.exploded_product_details
 			)
 			if abs(total_product_weight - total_exploded_weight) > 0.001:
 				frappe.throw(
@@ -146,6 +153,103 @@ class ProductCertification(Document):
 						"Total Gross Weight in Exploded Product Details ({0}) does not match Total Weight in Product Details ({1})"
 					).format(total_exploded_weight, total_product_weight)
 				)
+
+	def calculate_fire_assy_loss_weight(self):
+		"""Auto-calculate scrap/loss item weight for Fire Assy Service Receive.
+
+		For each main_slip group in exploded_product_details:
+		  Row 1 = main item   (e.g. 22KT-91.9)  – user enters gross_weight (receive wt)
+		  Row 2 = pure item   (e.g. 24KT-99.9)  – user enters gross_weight
+		  Row 3 = loss/scrap   (e.g. ML-22KT)    – auto-calculated
+
+		Loss formula:
+		  converted_pure_wt = pure_wt × (pure_purity / main_purity)
+		  loss_wt = issue_wt − receive_wt − converted_pure_wt
+		"""
+		if self.type != "Receive" or self.service_type != "Fire Assy Service":
+			return
+		if not self.exploded_product_details or not self.product_details:
+			return
+
+		# Build lookup: main_slip → {item_code, total_weight (issue weight), pure_item, loss_item}
+		slip_data = {}
+		for pd in self.product_details:
+			ms = pd.get("main_slip")
+			if not ms:
+				continue
+			slip_data[ms] = {
+				"main_item": pd.item_code,
+				"issue_weight": flt(pd.total_weight),
+				"pure_item": pd.get("pure_item"),
+				"loss_item": pd.get("loss_item"),
+			}
+
+		if not slip_data:
+			return
+
+		# Cache purity percentages
+		purity_cache = {}
+
+		def _get_purity(item_code):
+			if item_code not in purity_cache:
+				purity_cache[item_code] = flt(get_purity_percentage(item_code))
+			return purity_cache[item_code]
+
+		# Group exploded rows by main_slip
+		slip_rows = defaultdict(list)
+		for row in self.exploded_product_details:
+			ms = row.get("main_slip")
+			if ms and ms in slip_data:
+				slip_rows[ms].append(row)
+
+		for ms, rows in slip_rows.items():
+			sd = slip_data[ms]
+			main_item = sd["main_item"]
+			pure_item = sd["pure_item"]
+			loss_item = sd["loss_item"]
+			issue_weight = sd["issue_weight"]
+
+			if not (main_item and pure_item and loss_item):
+				continue
+
+			main_purity = _get_purity(main_item)
+			pure_purity = _get_purity(pure_item)
+
+			if not main_purity:
+				continue
+
+			# Find the specific rows
+			main_row = None
+			pure_row = None
+			loss_row = None
+
+			for r in rows:
+				if r.item_code == main_item and not main_row:
+					main_row = r
+				elif r.item_code == pure_item and not pure_row:
+					pure_row = r
+				elif r.item_code == loss_item and not loss_row:
+					loss_row = r
+
+			if not (main_row and pure_row and loss_row):
+				continue
+
+			receive_weight = flt(main_row.gross_weight)
+			pure_weight = flt(pure_row.gross_weight)
+
+			if not pure_weight:
+				continue
+
+			# Convert 24KT weight into equivalent weight at the main item's purity
+			converted_pure_wt = flt(pure_weight * (pure_purity / main_purity), 3)
+
+			# Auto-calculate loss weight
+			loss_wt = flt(issue_weight - receive_weight - converted_pure_wt, 3)
+			if loss_wt < 0:
+				loss_wt = 0
+
+			loss_row.gross_weight = loss_wt
+			pure_row.conversion_quantity = converted_pure_wt
 
 	def update_bom(self):
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
@@ -209,8 +313,13 @@ class ProductCertification(Document):
 			process_fire_assy_xrf_submit(self, create_stock_entry)
 		else:
 			create_stock_entry(self)
-			create_po(self)
-			update_bom_details(self)
+			frappe.enqueue(
+				"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.deferred_po_bom",
+				pc_name=self.name,
+				enqueue_after_commit=True,
+				job_id=f"pc_po_bom::{self.name}",
+				deduplicate=True,
+			)
 		self.update_huid()
 
 	def update_huid(self):
@@ -1105,19 +1214,36 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				item_row["pcs"] = pcs
 			se_doc.append("items", item_row)
 
-		# --- Cancel the SREs ---
+		# --- Consume the SREs (mark as Delivered) ---
+		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+			consume_stock_reservation_entry,
+		)
+
+		bins_to_update = set()
 		for sre in sre_list:
 			try:
 				frappe.clear_document_cache("Bin")
 				sre_doc = frappe.get_doc("Stock Reservation Entry", sre.name)
-				sre_doc.ignore_permissions = True
-				sre_doc.cancel()
+				consume_stock_reservation_entry(sre_doc, update_bin=False)
+				if sre_doc.item_code and sre_doc.warehouse:
+					bins_to_update.add((sre_doc.item_code, sre_doc.warehouse))
 				frappe.clear_document_cache("Bin")
 			except Exception:
 				frappe.log_error(
-					title=f"Failed to cancel SRE {sre.name} during Product Certification",
+					title=f"Failed to consume SRE {sre.name} during Product Certification",
 					message=frappe.get_traceback(),
 				)
+
+		if bins_to_update:
+			from erpnext.stock.utils import get_or_make_bin
+
+			bin_names = sorted(
+				list(set(get_or_make_bin(item, wh) for item, wh in bins_to_update))
+			)
+			for bin_name in bin_names:
+				bin_doc = frappe.get_cached_doc("Bin", bin_name)
+				bin_doc.update_reserved_stock()
+
 		if sre_list:
 			frappe.clear_cache()
 
@@ -1202,3 +1328,13 @@ def add_to_serial_no(serial_no, doc, row):
 	if row.huid and row.huid not in existing_data:
 		serial_doc.append("huid", {"huid": row.huid, "date": doc.date})
 	serial_doc.save()
+
+
+def deferred_po_bom(pc_name):
+	pc = frappe.get_doc("Product Certification", pc_name)
+	from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
+		create_po,
+		update_bom_details,
+	)
+	create_po(pc)
+	update_bom_details(pc)

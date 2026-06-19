@@ -406,11 +406,12 @@ class TestDraftSePreservedOnSubmitFailure(FrappeTestCase):
 	@patch(f"{_SYNC_MOD}.frappe.db.release_savepoint")
 	@patch(f"{_SYNC_MOD}.frappe.db.rollback")
 	@patch(f"{_SYNC_MOD}._mark_all_mwo_mop_logs_synced")
+	@patch(f"{_SYNC_MOD}._check_eod_source_batch_stock", return_value={})
 	@patch(f"{_SYNC_MOD}._validate_eod_source_batch_stock")
 	@patch(f"{_SYNC_MOD}._validate_eod_items_for_mwo_reservation")
 	@patch(
 		f"{_SYNC_MOD}._preload_sre_warehouse_map",
-		return_value={("M-1", "B1"): "WH-SRE"},
+		return_value={("M-1", "B1"): ["WH-SRE"]},
 	)
 	@patch(f"{_SYNC_MOD}.frappe.new_doc")
 	@patch(f"{_SYNC_MOD}.frappe.get_doc")
@@ -421,6 +422,7 @@ class TestDraftSePreservedOnSubmitFailure(FrappeTestCase):
 		_mock_sre_map,
 		_mock_item_val,
 		_mock_batch_val,
+		_mock_check_batch,
 		mock_mark_synced,
 		mock_rollback,
 		mock_release,
@@ -520,14 +522,14 @@ class TestConsolidatedErrorLog(FrappeTestCase):
 	@patch(f"{_SYNC_MOD}.release_eod_sync_lock")
 	@patch(f"{_SYNC_MOD}.set_eod_sync_running")
 	@patch(f"{_SYNC_MOD}._reconcile_reservations_for_mwo")
-	@patch(f"{_SYNC_MOD}._process_mwo_group")
+	@patch(f"{_SYNC_MOD}._plan_mwo_group")
 	@patch(f"{_SYNC_MOD}._get_unsynced_mop_groups")
 	@patch(f"{_SYNC_MOD}.frappe.log_error")
 	def test_single_error_log_for_multiple_mwo_failures(
 		self,
 		mock_log_error,
 		mock_get_groups,
-		mock_process,
+		mock_plan,
 		_mock_reconcile,
 		_mock_set_running,
 		_mock_release,
@@ -540,18 +542,20 @@ class TestConsolidatedErrorLog(FrappeTestCase):
 			("Co", "MWO-B"): [],
 		}
 
-		def _inject_failures(group_key, mop_data_list, failures, stats):
+		# Both MWOs fail in planning → no consolidated SE, two failures, one error log.
+		def _inject_failures(group_key, mop_data_list, failures, stats, sync_log_name=None, selective=False):
 			_, mwo = group_key
 			failures.append(
 				{
-					"step": "draft_save",
+					"step": "no_sre_warehouse",
 					"mwo": mwo,
 					"error_message": f"Simulated failure for {mwo}",
 				}
 			)
 			stats["failed_mwos"] += 1
+			return {"kind": "failed", "company": "Co", "manufacturer": "MF-1", "issues_rows": []}
 
-		mock_process.side_effect = _inject_failures
+		mock_plan.side_effect = _inject_failures
 
 		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
 			sync_mop_logs,

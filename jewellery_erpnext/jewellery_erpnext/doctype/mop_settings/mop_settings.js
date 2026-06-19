@@ -3,6 +3,7 @@
 
 frappe.ui.form.on("MOP Settings", {
 	refresh(frm) {
+		_prefill_eod_sync_window(frm);
 		_setup_eod_status_indicator(frm);
 		_setup_eod_sync_button(frm);
 		_apply_permission_restrictions(frm);
@@ -10,6 +11,26 @@ frappe.ui.form.on("MOP Settings", {
 		_setup_open_sync_log_button(frm);
 	},
 });
+
+// Pre-fill the manual EOD Sync window with today's start/end so the user always sees
+// the effective default. A field is reset only when blank or holding a value from a
+// previous day; a same-day custom edit is preserved. Values are set on frm.doc (not via
+// set_value) so the form is not marked dirty.
+function _prefill_eod_sync_window(frm) {
+	const today = frappe.datetime.get_today();
+	const defaults = {
+		eod_sync_from_datetime: today + " 00:00:00",
+		eod_sync_to_datetime: today + " 23:59:59",
+	};
+	Object.entries(defaults).forEach(([field, default_value]) => {
+		const cur = frm.doc[field];
+		const cur_date = cur ? String(cur).slice(0, 10) : null;
+		if (!cur || cur_date < today) {
+			frm.doc[field] = default_value;
+			frm.refresh_field(field);
+		}
+	});
+}
 
 function _is_system_manager() {
 	return frappe.user_roles && frappe.user_roles.includes("System Manager");
@@ -98,12 +119,14 @@ function _apply_permission_restrictions(frm) {
 	const is_sm = _is_system_manager();
 	const is_locked = _is_eod_locked(frm);
 
-	// Non-System Manager cannot change EOD Sync Time or filter table
+	// Non-System Manager cannot change EOD Sync Time, the manual From/To window, or the filter table
 	if (!is_sm) {
-		frm.set_df_property("eod_sync_time", "read_only", 1);
-		frm.refresh_field("eod_sync_time");
-		frm.set_df_property("eod_sync_work_order_filter", "read_only", 1);
-		frm.refresh_field("eod_sync_work_order_filter");
+		["eod_sync_time", "eod_sync_from_datetime", "eod_sync_to_datetime", "eod_sync_work_order_filter"].forEach(
+			(field) => {
+				frm.set_df_property(field, "read_only", 1);
+				frm.refresh_field(field);
+			}
+		);
 	}
 
 	// Disable the EOD Sync button for non-SM or when lock is active

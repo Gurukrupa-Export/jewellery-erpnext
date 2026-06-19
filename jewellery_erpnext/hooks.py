@@ -127,6 +127,7 @@ doc_events = {
 		],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_child_batches",

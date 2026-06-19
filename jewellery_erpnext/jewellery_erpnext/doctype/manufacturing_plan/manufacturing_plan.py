@@ -542,13 +542,19 @@ def create_manufacturing_order(doc, row, cache_data=None):
 						diamond_grade = grade
 						break
 
-		if not diamond_grade and not diamond_grade_data:
-			# Minimal fallback
-			diamond_grade = frappe.db.get_value(
-				"Customer Diamond Grade",
-				{"parent": row.customer, "diamond_quality": row.diamond_quality},
-				"diamond_grade_1",
-			)
+		if not diamond_grade:
+			if diamond_grade_data:
+				for grade in grades_to_check:
+					if grade:
+						diamond_grade = grade
+						break
+			if not diamond_grade:
+				# Minimal fallback
+				diamond_grade = frappe.db.get_value(
+					"Customer Diamond Grade",
+					{"parent": row.customer, "diamond_quality": row.diamond_quality},
+					"diamond_grade_1",
+				)
 
 		so_det["diamond_grade"] = diamond_grade
 
