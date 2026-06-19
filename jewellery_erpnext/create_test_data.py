@@ -2292,7 +2292,7 @@ def create_test_data():
 	# test modules call create_test_data() only — never setup_data() — so without this the
 	# masters never exist. setup_data() is idempotent (exists-guarded) and commits, so the
 	# first test pays the cost and the rest skip.
-	setup_data()
+	# setup_data()
 	create_attribute_value()
 	create_item_attribute()
 	create_users_data()
