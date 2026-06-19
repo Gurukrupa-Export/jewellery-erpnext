@@ -2345,6 +2345,17 @@ def setup_data():
 			}
 		).insert(ignore_permissions=True)
 
+	# CI skips the setup wizard, so the Customer Group nested-set root "All Customer Groups"
+	# does not exist on a fresh site. Create it like the "All Item Groups" root below.
+	if not frappe.db.exists("Customer Group", "All Customer Groups"):
+		frappe.get_doc(
+			{
+				"doctype": "Customer Group",
+				"customer_group_name": "All Customer Groups",
+				"is_group": 1,
+			}
+		).insert(ignore_permissions=True)
+
 	# Customers need a NON-group (leaf) Customer Group; the site default may be a group,
 	# which Frappe rejects. Ensure a leaf test group exists and use it explicitly.
 	if not frappe.db.exists("Customer Group", "Test_Customer_Group"):
@@ -2360,6 +2371,16 @@ def setup_data():
 				"is_group": 0,
 			}
 		).insert(ignore_permissions=True)
+
+	# The test customers' diamond_grades / metal_criteria rows are Link -> Attribute Value.
+	# In the CI path only setup_data() runs, so the values normally created by
+	# create_item_attribute() (via the Item Attribute validate hook) are absent, and "EF-VVS"
+	# is not created anywhere. Bootstrap them bare, exactly as that hook does.
+	for _attr_value in ("Gold", "22KT", "91.6", "EF-VVS", "6B", "4"):
+		if not frappe.db.exists("Attribute Value", _attr_value):
+			frappe.get_doc(
+				{"doctype": "Attribute Value", "attribute_value": _attr_value}
+			).insert(ignore_permissions=True)
 
 	if not frappe.db.exists("Customer", "Test_Customer_External"):
 		customer = frappe.get_doc(
