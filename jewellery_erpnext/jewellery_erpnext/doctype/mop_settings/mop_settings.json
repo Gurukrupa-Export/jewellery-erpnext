@@ -9,6 +9,8 @@
         "sync_mop_log",
         "eod_sync_section",
         "eod_sync_time",
+        "eod_sync_from_datetime",
+        "eod_sync_to_datetime",
         "eod_sync_running",
         "eod_sync_started_on",
         "eod_sync_last_completed_on",
@@ -44,6 +46,18 @@
             "fieldtype": "Time",
             "label": "EOD Sync Time",
             "reqd": 1
+        },
+        {
+            "description": "Start of the window scanned by a manual EOD Sync. Defaults to today 00:00. The automatic nightly sync always uses today and ignores this.",
+            "fieldname": "eod_sync_from_datetime",
+            "fieldtype": "Datetime",
+            "label": "EOD Sync From"
+        },
+        {
+            "description": "End of the window scanned by a manual EOD Sync. Defaults to the end of today. The automatic nightly sync always uses today and ignores this.",
+            "fieldname": "eod_sync_to_datetime",
+            "fieldtype": "Datetime",
+            "label": "EOD Sync To"
         },
         {
             "default": "0",

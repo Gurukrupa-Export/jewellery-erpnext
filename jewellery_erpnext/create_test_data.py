@@ -653,6 +653,18 @@ def create_test_data():
 			"Attribute Value", "Pink", "custom_batch_abbreviation", "P0"
 		)
 
+		# Item Group must exist before any Item that references it is inserted. The full
+		# master setup lives in setup_data(), but many tests call create_test_data() only,
+		# so ensure the group exists here (idempotent) to avoid a LinkValidationError.
+		if not frappe.db.exists("Item Group", "Test_Item_Group"):
+			frappe.get_doc(
+				{
+					"doctype": "Item Group",
+					"item_group_name": "Test_Item_Group",
+					"is_group": 1,
+				}
+			).insert(ignore_permissions=True)
+
 		if not frappe.db.exists("Item", "ITEM-001"):
 			frappe.get_doc(
 				{
@@ -2318,12 +2330,29 @@ def create_test_data():
 			)
 			mop_settings.save()
 
+	# Bootstrap the committed master data (Company, customers/suppliers, warehouses,
+	# departments) that create_users_data() and the integration tests depend on. The 13
+	# test modules call create_test_data() only — never setup_data() — so without this the
+	# masters never exist. setup_data() is idempotent (exists-guarded) and commits, so the
+	# first test pays the cost and the rest skip.
+	# setup_data()
 	create_attribute_value()
 	create_item_attribute()
 	create_users_data()
 
 
 def setup_data():
+	# Provision MR transfer-SE custom fields on fresh CI sites. They exist ONLY in
+	# patches/add_mr_transfer_se_fields.py, which install-app marks complete WITHOUT
+	# running (set_all_patches_as_completed), so the columns never get created and
+	# MR.on_submit's db_set("custom_transfer_se_state", ...) raises Unknown column 1054.
+	# execute() is just create_custom_fields (idempotent) + a log line — safe to re-run.
+	from jewellery_erpnext.patches.add_mr_transfer_se_fields import (
+		execute as _ensure_mr_transfer_se_fields,
+	)
+
+	_ensure_mr_transfer_se_fields()
+
 	if not frappe.db.exists("Gender", "Other"):
 		frappe.get_doc({"doctype": "Gender", "gender": "Other"}).insert(
 			ignore_permissions=True
@@ -2370,12 +2399,50 @@ def setup_data():
 			}
 		).insert(ignore_permissions=True)
 
+	# CI skips the setup wizard, so the Customer Group nested-set root "All Customer Groups"
+	# does not exist on a fresh site. Create it like the "All Item Groups" root below.
+	if not frappe.db.exists("Customer Group", "All Customer Groups"):
+		frappe.get_doc(
+			{
+				"doctype": "Customer Group",
+				"customer_group_name": "All Customer Groups",
+				"is_group": 1,
+			}
+		).insert(ignore_permissions=True)
+
+	# Customers need a NON-group (leaf) Customer Group; the site default may be a group,
+	# which Frappe rejects. Ensure a leaf test group exists and use it explicitly.
+	if not frappe.db.exists("Customer Group", "Test_Customer_Group"):
+		_parent_cg = (
+			frappe.db.get_value("Customer Group", {"is_group": 1}, "name")
+			or "All Customer Groups"
+		)
+		frappe.get_doc(
+			{
+				"doctype": "Customer Group",
+				"customer_group_name": "Test_Customer_Group",
+				"parent_customer_group": _parent_cg,
+				"is_group": 0,
+			}
+		).insert(ignore_permissions=True)
+
+	# The test customers' diamond_grades / metal_criteria rows are Link -> Attribute Value.
+	# In the CI path only setup_data() runs, so the values normally created by
+	# create_item_attribute() (via the Item Attribute validate hook) are absent, and "EF-VVS"
+	# is not created anywhere. Bootstrap them bare, exactly as that hook does.
+	for _attr_value in ("Gold", "22KT", "91.6", "EF-VVS", "6B", "4"):
+		if not frappe.db.exists("Attribute Value", _attr_value):
+			frappe.get_doc(
+				{"doctype": "Attribute Value", "attribute_value": _attr_value}
+			).insert(ignore_permissions=True)
+
 	if not frappe.db.exists("Customer", "Test_Customer_External"):
 		customer = frappe.get_doc(
 			{
 				"doctype": "Customer",
 				"customer_name": "Test_Customer_External",
 				"customer_type": "Individual",
+				"customer_group": "Test_Customer_Group",
 				"custom_sketch_workflow_state": "External",
 			}
 		)
@@ -2399,6 +2466,7 @@ def setup_data():
 				"doctype": "Customer",
 				"customer_name": "Test_Customer_Internal",
 				"customer_type": "Individual",
+				"customer_group": "Test_Customer_Group",
 				"custom_sketch_workflow_state": "Internal",
 			}
 		)

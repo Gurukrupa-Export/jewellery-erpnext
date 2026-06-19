@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:MOP-{######}",
+ "autoname": "MOP-.######",
  "creation": "2023-04-26 01:35:18.614223",
  "default_view": "List",
  "doctype": "DocType",

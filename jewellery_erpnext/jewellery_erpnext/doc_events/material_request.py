@@ -78,21 +78,31 @@ def validate_gemstone_alternative_items(self, method=None):
 
 
 def before_validate(self, method):
-	if self.set_warehouse and self.set_from_warehouse:
-		source_branch = frappe.db.get_value(
-			"Warehouse", self.set_from_warehouse, "custom_branch"
-		)
-		target_branch = frappe.db.get_value(
-			"Warehouse", self.set_warehouse, "custom_branch"
-		)
+	# Auto-derive the transfer type ONLY when it has not been set yet. Once a
+	# value exists (chosen manually, or defaulted on a prior save) it is
+	# respected and never overwritten on subsequent saves. ``or None`` normalises
+	# a blank ("") vs NULL custom_branch so two no-branch warehouses are treated
+	# as the same branch (Transfer To Department) instead of "" != None.
+	if not self.custom_transfer_type:
+		if self.set_warehouse and self.set_from_warehouse:
+			source_branch = (
+				frappe.db.get_value(
+					"Warehouse", self.set_from_warehouse, "custom_branch"
+				)
+				or None
+			)
+			target_branch = (
+				frappe.db.get_value("Warehouse", self.set_warehouse, "custom_branch")
+				or None
+			)
 
-		if source_branch == target_branch:
-			self.custom_transfer_type = "Transfer To Department"
-		else:
-			self.custom_transfer_type = "Transfer To Branch"
+			if source_branch == target_branch:
+				self.custom_transfer_type = "Transfer To Department"
+			else:
+				self.custom_transfer_type = "Transfer To Branch"
 
-	elif self.material_request_type == "Manufacture":
-		self.custom_transfer_type = "Transfer to Reserve"
+		elif self.material_request_type == "Manufacture":
+			self.custom_transfer_type = "Transfer to Reserve"
 
 	update_pure_qty(self)
 	validate_target_item(self)
@@ -207,13 +217,91 @@ def on_submit(self, method=None):
 	if not self.custom_reserve_se:
 		return
 
-	se_doc = frappe.get_doc("Stock Entry", self.custom_reserve_se)
+	# Defer the secondary "Material Transfer From Reserve" SE to a background job.
+	# Previously this copied + submitted a second full Stock Entry INSIDE the Material
+	# Request submit transaction, holding Series/Bin/SLE/SRE row locks for its whole
+	# duration (a top deadlock/lock-wait contributor). That SE has no synchronous
+	# same-request consumer — it is read later by PMO / mapped-SE creation — so it is
+	# safe to materialise it just after the MR commits (eventual consistency, seconds).
+	# Idempotent + reconcilable via custom_transfer_se / custom_transfer_se_state.
+	if getattr(self, "custom_transfer_se", None):
+		return
+
+	self.db_set("custom_transfer_se_state", "Pending", update_modified=False)
+	frappe.enqueue(
+		materialize_transfer_se,
+		queue="long",
+		enqueue_after_commit=True,
+		job_id=f"mr_transfer_se::{self.name}",
+		deduplicate=True,
+		mr_name=self.name,
+	)
+
+
+def materialize_transfer_se(mr_name):
+	"""Idempotently create + submit the 'Material Transfer From Reserve' SE for an MR.
+
+	Deferred from ``MR.on_submit`` so the submit transaction stays short. Safe to
+	re-run: guards on ``custom_transfer_se`` and on an already-existing transfer SE,
+	serialises per-MR, and retries only transient 1205/1213. A genuine failure is
+	recorded on the MR (state=Failed + error) and logged to Error Log for manual
+	re-trigger. If this runs during the EOD sync window, the Stock Entry's EOD-lock
+	validator blocks the submit and it is recorded as Failed (re-submit after EOD).
+	"""
+	from jewellery_erpnext.jewellery_erpnext.bounded_retry import run_with_retry
+	from jewellery_erpnext.jewellery_erpnext.serialize import LockTimeoutError, conflict_lock
+
+	try:
+		with conflict_lock("mr_transfer_se", mr_name, timeout=30):
+			run_with_retry(_create_transfer_se, mr_name)
+	except LockTimeoutError:
+		# deduplicate normally prevents a second concurrent job; if one slips through,
+		# the other holder is already doing the work — just yield.
+		return
+	except Exception as e:
+		frappe.db.rollback()
+		frappe.db.set_value(
+			"Material Request",
+			mr_name,
+			{"custom_transfer_se_state": "Failed", "custom_transfer_se_error": str(e)[:140]},
+			update_modified=False,
+		)
+		frappe.db.commit()
+		frappe.log_error(
+			title=f"MR transfer SE failed: {mr_name}", message=frappe.get_traceback()
+		)
+		raise
+
+
+def _create_transfer_se(mr_name):
+	"""Core copy + submit, factored out so it can be retried as one idempotent unit."""
+	mr = frappe.get_doc("Material Request", mr_name)
+	if not mr.custom_reserve_se or mr.get("custom_transfer_se"):
+		return
+
+	# Belt-and-suspenders idempotency: a submitted transfer SE already linked to this MR.
+	existing = frappe.db.sql(
+		"""
+		SELECT se.name FROM `tabStock Entry` se
+		JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+		WHERE se.stock_entry_type = 'Material Transfer From Reserve'
+		  AND se.docstatus = 1 AND sed.material_request = %s
+		LIMIT 1
+		""",
+		(mr_name,),
+	)
+	if existing:
+		mr.db_set("custom_transfer_se", existing[0][0], update_modified=False)
+		mr.db_set("custom_transfer_se_state", "Done", update_modified=False)
+		return
+
+	se_doc = frappe.get_doc("Stock Entry", mr.custom_reserve_se)
 	new_se_doc = frappe.copy_doc(se_doc)
 
 	new_se_doc.stock_entry_type = "Material Transfer From Reserve"
 
 	mr_item_to_alternative = {}
-	for item_row in self.items:
+	for item_row in mr.items:
 		if item_row.custom_alternative_item:
 			mr_item_to_alternative[item_row.name] = item_row.custom_alternative_item
 
@@ -232,6 +320,9 @@ def on_submit(self, method=None):
 	new_se_doc.auto_created = 1
 	new_se_doc.save()
 	new_se_doc.submit()
+
+	mr.db_set("custom_transfer_se", new_se_doc.name, update_modified=False)
+	mr.db_set("custom_transfer_se_state", "Done", update_modified=False)
 
 
 @frappe.whitelist()

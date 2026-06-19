@@ -1,0 +1,23 @@
+{
+ "aggregate_function_based_on": "recovery_percentage",
+ "creation": "2026-06-16 15:42:27.830809",
+ "currency": "INR",
+ "docstatus": 0,
+ "doctype": "Number Card",
+ "document_type": "Refining Entry",
+ "function": "Average",
+ "idx": 0,
+ "is_public": 0,
+ "is_standard": 1,
+ "label": "Average Recovery Efficiency",
+ "modified": "2026-06-16 15:42:27.830809",
+ "modified_by": "Administrator",
+ "module": "Refining",
+ "name": "Average Recovery Efficiency",
+ "owner": "Administrator",
+ "report_function": "Sum",
+ "show_full_number": 0,
+ "show_percentage_stats": 1,
+ "stats_time_interval": "Daily",
+ "type": "Document Type"
+}

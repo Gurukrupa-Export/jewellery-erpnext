@@ -28,6 +28,7 @@
   "amount",
   "weight_details_section",
   "gross_weight",
+  "conversion_quantity",
   "gold_weight",
   "chain_weight",
   "other_weight",
@@ -139,6 +140,11 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Gross Weight"
+  },
+  {
+   "fieldname": "conversion_quantity",
+   "fieldtype": "Float",
+   "label": "Conversion Quantity"
   },
   {
    "fieldname": "gold_weight",

@@ -1,0 +1,52 @@
+{
+ "cards": [
+  {
+   "card": "Batch Traceability %"
+  },
+  {
+   "card": "Serial Update %"
+  },
+  {
+   "card": "Work Order Closure %"
+  },
+  {
+   "card": "Dust Conversion Accuracy"
+  },
+  {
+   "card": "Refining Transfer Time"
+  },
+  {
+   "card": "Average Recovery Efficiency"
+  },
+  {
+   "card": "Refining Processing Time"
+  },
+  {
+   "card": "Refining Error Rate"
+  },
+  {
+   "card": "Entry Completion Time"
+  },
+  {
+   "card": "Physical vs System Match %"
+  }
+ ],
+ "charts": [
+  {
+   "chart": "Refining Activity",
+   "width": "Half"
+  }
+ ],
+ "creation": "2026-06-16 15:42:27.922397",
+ "dashboard_name": "Refining Management Dashboard",
+ "docstatus": 0,
+ "doctype": "Dashboard",
+ "idx": 0,
+ "is_default": 0,
+ "is_standard": 1,
+ "modified": "2026-06-16 15:42:27.922397",
+ "modified_by": "Administrator",
+ "module": "Refining",
+ "name": "Refining Management Dashboard",
+ "owner": "Administrator"
+}

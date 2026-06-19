@@ -1,0 +1,28 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-06-16 06:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["karat", "purity_percentage", "metal_touch", "metal_purity", "item_template"],
+ "fields": [
+  {"fieldname": "karat", "fieldtype": "Data", "in_list_view": 1, "label": "Karat", "reqd": 1},
+  {"fieldname": "purity_percentage", "fieldtype": "Float", "in_list_view": 1, "label": "Purity %", "precision": "2", "reqd": 1},
+  {"fieldname": "metal_touch", "fieldtype": "Link", "in_list_view": 1, "label": "Metal Touch", "options": "Attribute Value"},
+  {"fieldname": "metal_purity", "fieldtype": "Link", "in_list_view": 1, "label": "Metal Purity", "options": "Attribute Value"},
+  {"fieldname": "item_template", "fieldtype": "Link", "label": "Item Template", "options": "Item"}
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-06-16 06:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Refining",
+ "name": "Refining Purity Map",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
