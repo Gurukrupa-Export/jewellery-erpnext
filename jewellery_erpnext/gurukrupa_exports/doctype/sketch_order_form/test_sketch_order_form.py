@@ -3,20 +3,20 @@
 
 import frappe
 from frappe.model.workflow import apply_workflow
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, now
 
 from jewellery_erpnext.create_test_data import create_test_data
 
 
-class TestSketchOrderForm(FrappeTestCase):
-	def setUp(self):
+class TestSketchOrderForm(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
 		create_test_data()
-		self.department = frappe.get_value(
+		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
-		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
-		return super().setUp()
+		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_sketch_order_created(self):
 		sk_ord_frm = make_sketch_order_form(

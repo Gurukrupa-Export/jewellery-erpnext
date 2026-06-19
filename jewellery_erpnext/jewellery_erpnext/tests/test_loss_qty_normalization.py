@@ -6,10 +6,14 @@
 Pure-function tests; no DB, no Frappe site required.
 """
 
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
-class TestGetLossQtyInGrams(FrappeTestCase):
+class TestGetLossQtyInGrams(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def setUp(self):
 		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 			get_loss_qty_in_grams,

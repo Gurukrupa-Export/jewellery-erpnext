@@ -13,7 +13,7 @@ cover ``total_so_reserved + reserved_qty`` so the guard passes — mirroring
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
 	loss_stock_entry,
@@ -39,7 +39,11 @@ def _sre(**fields):
 	return SimpleNamespace(**defaults)
 
 
-class TestReservationVoucherQty(FrappeTestCase):
+class TestReservationVoucherQty(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_over_reserved_so_lifts_voucher_qty(self):
 		# Other active SREs already hold 22.2 against a 28.2675 SO line; the
 		# reduced reservation of 7.76 would otherwise exceed the 6.068 allowance.
