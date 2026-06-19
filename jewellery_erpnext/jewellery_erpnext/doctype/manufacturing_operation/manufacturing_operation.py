@@ -27,6 +27,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_current_mop_balance_rows,
 	get_employee_ir_loss_map,
 	get_last_mop_index,
+	get_mop_transfer_pcs_rows,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
@@ -3860,6 +3861,128 @@ def get_make_receive_entry_rows(manufacturing_operation):
 		mop_log_balance_map[
 			(manufacturing_operation, row.get("item_code"), row.get("batch_no"))
 		] = row
+
+	# Per-(item, batch) incoming-transfer PCS rows. Each reserved batch line
+	# maps 1:1 to a Material Transfer row, so we surface that row's OWN pcs
+	# instead of the batch-wide running balance (which is identical for every
+	# line sharing an item+batch and made the popup show the summed total).
+	all_keys: set = set()
+	for s in sres:
+		is_batch = cint(s.has_batch_no) and s.reservation_based_on != "Qty"
+		if is_batch:
+			for sb in sb_entries_by_sre.get(s.name, []):
+				all_keys.add((s.item_code, sb["batch_no"]))
+		else:
+			all_keys.add((s.item_code, None))
+	# MWO-scoped (not MOP-scoped): the per-row transfer PCS is logged once at the
+	# operation that first received the material; downstream operations carry only
+	# balance clones (pcs_change=0). The MWO is constant across operations, so this
+	# recovers the per-line breakdown no matter which operation opens the popup.
+	transfer_by_key = get_mop_transfer_pcs_rows(
+		mo.manufacturing_work_order, keys=all_keys
+	)
+
+	# Collect every reserved line that will become a popup row, grouped by
+	# (item, batch). PCS is allocated per group in one deterministic pass below
+	# so each line's displayed pcs never depends on the order the popup happens
+	# to iterate sibling lines sharing the same item+batch.
+	lines_by_key: dict[tuple, list] = {}
+	for s in sres:
+		is_batch = cint(s.has_batch_no) and s.reservation_based_on != "Qty"
+		if is_batch:
+			for sb in sb_entries_by_sre.get(s.name, []):
+				rem = flt(sb["qty"]) - flt(sb["delivered_qty"])
+				if rem <= tolerance:
+					continue
+				lines_by_key.setdefault((s.item_code, sb["batch_no"]), []).append(
+					(("sb", sb["name"]), rem)
+				)
+		else:
+			rem = flt(s.reserved_qty) - flt(s.delivered_qty)
+			if rem <= tolerance:
+				continue
+			lines_by_key.setdefault((s.item_code, None), []).append(
+				(("sre", s.name), rem)
+			)
+
+	def _allocate_key_pcs(lines, transfers, balance_pcs, is_pcs_item):
+		"""Distribute one (item, batch) group's available PCS across its
+		reserved lines, independent of iteration order.
+
+		Each reserved line maps 1:1 to an incoming Material Transfer row. A line
+		whose remaining qty still equals its transfer qty took no loss / partial
+		receive, so it keeps that transfer's full PCS. Lines that shrank (loss
+		booked, or partially received) are "lossy" and share whatever PCS is left
+		in ``balance_pcs`` — the live MOP-Log batch balance — so the per-group
+		sum never exceeds what actually remains. Example: transfers of 47 and 15
+		pcs with a 5-pcs loss on the larger line (balance 57) → the untouched 15
+		line keeps 15 and the lossy line gets 57 - 15 = 42.
+
+		``transfers`` empty (legacy / single-line data with no per-row MOP Log
+		rows) → every line falls back to the batch aggregate, preserving prior
+		behaviour. Non-D/G items carry no PCS.
+		"""
+		if not is_pcs_item:
+			return {tok: 0 for tok, _ in lines}
+		if not transfers:
+			return {tok: cint(balance_pcs) for tok, _ in lines}
+
+		pending = list(transfers)
+		matched: dict = {}
+		# Exact-qty match first: an untouched (no-loss) line claims its own row,
+		# regardless of where it sits in the iteration order.
+		for tok, rem in lines:
+			i = next(
+				(
+					j
+					for j, t in enumerate(pending)
+					if abs(flt(t["qty_change"]) - flt(rem)) <= tolerance
+				),
+				None,
+			)
+			if i is not None:
+				matched[tok] = pending.pop(i)
+		# Lossy / partial lines take the leftover transfers, oldest-first.
+		for tok, rem in lines:
+			if tok not in matched:
+				matched[tok] = pending.pop(0) if pending else None
+
+		out: dict = {}
+		clean_total = 0
+		lossy = []
+		for tok, rem in lines:
+			t = matched.get(tok)
+			if t and abs(flt(t["qty_change"]) - flt(rem)) <= tolerance:
+				out[tok] = cint(t["pcs_change"])
+				clean_total += out[tok]
+			else:
+				lossy.append((tok, t))
+		# Balance left after the untouched lines is shared by the lossy lines,
+		# each still capped by its own originally-transferred pcs.
+		remaining = max(0, cint(balance_pcs) - clean_total)
+		for tok, t in lossy:
+			cap = cint(t["pcs_change"]) if t else remaining
+			give = max(0, min(cap, remaining))
+			out[tok] = give
+			remaining -= give
+		return out
+
+	pcs_by_token: dict = {}
+	for key, lines in lines_by_key.items():
+		item_code, batch_no = key
+		is_pcs_item = bool(item_code) and item_code[0] in ("D", "G")
+		bal_row = mop_log_balance_map.get(
+			(manufacturing_operation, item_code, batch_no)
+		)
+		balance_pcs = (
+			cint(bal_row.get("pcs_after_transaction_batch_based")) if bal_row else 0
+		)
+		pcs_by_token.update(
+			_allocate_key_pcs(
+				lines, transfer_by_key.get(key) or [], balance_pcs, is_pcs_item
+			)
+		)
+
 	rows = []
 	skipped = []
 	for sre in sres:
@@ -3925,6 +4048,9 @@ def get_make_receive_entry_rows(manufacturing_operation):
 							"reason": "mop_zero_balance",
 						}
 					)
+				row_available_pcs = (
+					pcs_by_token.get(("sb", sb.name), 0) if ctx["is_pcs_item"] else 0
+				)
 				rows.append(
 					{
 						"stock_reservation_entry": sre.name,
@@ -3951,9 +4077,11 @@ def get_make_receive_entry_rows(manufacturing_operation):
 						"delivered_qty": flt(sb.delivered_qty),
 						"mop_available_qty": flt(ctx["mop_log_balance_qty"]),
 						"available_to_receive_qty": available_to_receive_qty,
-						"reserved_pcs": cint(ctx["reserved_pcs"] or 0),
+						"reserved_pcs": row_available_pcs
+						if ctx["is_pcs_item"]
+						else cint(ctx["reserved_pcs"] or 0),
 						"mop_available_pcs": cint(ctx["mop_log_balance_pcs"]),
-						"available_to_receive_pcs": cint(ctx["available_pcs"]),
+						"available_to_receive_pcs": row_available_pcs,
 						"already_received_qty": already_received_for_item,
 						"already_received_pcs": ctx["already_received_pcs"],
 						"is_pcs_item": ctx["is_pcs_item"],
@@ -4008,6 +4136,9 @@ def get_make_receive_entry_rows(manufacturing_operation):
 					}
 				)
 				continue
+			row_available_pcs = (
+				pcs_by_token.get(("sre", sre.name), 0) if ctx["is_pcs_item"] else 0
+			)
 			rows.append(
 				{
 					"stock_reservation_entry": sre.name,
@@ -4030,9 +4161,11 @@ def get_make_receive_entry_rows(manufacturing_operation):
 					"delivered_qty": flt(sre.delivered_qty),
 					"mop_available_qty": flt(ctx["mop_log_balance_qty"]),
 					"available_to_receive_qty": available_to_receive_qty,
-					"reserved_pcs": cint(ctx["reserved_pcs"] or 0),
+					"reserved_pcs": row_available_pcs
+					if ctx["is_pcs_item"]
+					else cint(ctx["reserved_pcs"] or 0),
 					"mop_available_pcs": cint(ctx["mop_log_balance_pcs"]),
-					"available_to_receive_pcs": cint(ctx["available_pcs"]),
+					"available_to_receive_pcs": row_available_pcs,
 					"already_received_qty": already_received_for_item,
 					"already_received_pcs": ctx["already_received_pcs"],
 					"is_pcs_item": ctx["is_pcs_item"],

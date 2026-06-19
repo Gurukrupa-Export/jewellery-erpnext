@@ -21,9 +21,6 @@ class GemstoneConversion(Document):
 		update_fifo_batch(self)
 		self.validate_gemstone_type()
 		self.validate_target_item()
-		loss_type = ["Burn", "Broken", "Loss", "Missing"]
-		for loss in loss_type:
-			get_loss_item(self.company, self.g_source_item, loss)
 
 	def on_submit(self):
 		make_gemstone_stock_entry(self)

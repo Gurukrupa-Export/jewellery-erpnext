@@ -765,12 +765,23 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 			{"variant": variant_of, "loss_type": loss_type},
 			"loss_variant",
 		)
+		# Resolve strictly by loss type: when no loss variant is configured for
+		# this variant + loss type, do NOT fall back to the source's own template
+		# (that would resolve to the source item itself). Surface a clear error so
+		# the mapping can be configured in the Variant Loss Table.
+		if not variant_name:
+			frappe.throw(
+				_(
+					"No Loss Variant is configured for variant <b>{0}</b> and Loss Type "
+					"<b>{1}</b>. Please configure it in the Variant Loss Table."
+				).format(variant_of, loss_type)
+			)
 	else:
 		variant_name = frappe.db.get_value(
 			"Variant Loss Table", {"variant": variant_of}, "loss_variant"
 		)
-	if not variant_name:
-		variant_name = variant_of
+		if not variant_name:
+			variant_name = variant_of
 
 	item_attr_dict = {}
 	for row in frappe.db.get_all(

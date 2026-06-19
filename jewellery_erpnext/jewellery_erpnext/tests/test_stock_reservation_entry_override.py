@@ -6,7 +6,7 @@ from unittest.mock import patch
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	StockReservationEntry,
 )
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_reservation_entry.stock_reservation_entry import (
 	CustomStockReservationEntry,
@@ -23,7 +23,11 @@ def _bare_sre(**fields):
 	return sre
 
 
-class TestCustomStockReservationEntry(FrappeTestCase):
+class TestCustomStockReservationEntry(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_skips_auto_reserve_for_mwo_mop_flow(self):
 		# Override only fires for Serial-and-Batch reservations — auto-pick is
 		# a no-op for Qty-based anyway, so the gate matches production code.

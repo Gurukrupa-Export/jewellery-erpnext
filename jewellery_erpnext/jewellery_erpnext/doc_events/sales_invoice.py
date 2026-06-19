@@ -42,6 +42,7 @@ def validate(self, method):
 						rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						row.rate = round(rate,2)
 						row.amount=round(row.rate*row.quantity,2 )
+						row.wastage_amount = row.amount * row.wastage_rate
 					bom_doc.total_metal_amount= sum(row.amount for row in bom_doc.metal_detail)	
 					for row in bom_doc.finding_detail:
 						customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
@@ -50,6 +51,7 @@ def validate(self, method):
 						rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 						row.rate = round(rate,2)
 						row.amount=round(row.rate*row.quantity,2 )
+						row.wastage_amount = row.amount * row.wastage_rate
 					bom_doc.total_finding_amount= sum(row.amount for row in bom_doc.finding_detail)	
 					bom_doc.save(ignore_permissions=True)
 				row_s.wastage_amount = bom_doc.total_wastage_amount
@@ -60,6 +62,7 @@ def validate(self, method):
 		update_income_account(self)
 		payment_terms_data = update_si_data(self)
 		update_payment_terms(self, payment_terms_data)
+		set_gst_details(self)
 
 def on_submit(self,method):
 	if self.company == 'Sadguru Diamond':
@@ -121,6 +124,117 @@ def on_submit(self,method):
 						
 						certification_si.insert(ignore_permissions=True,ignore_mandatory=True)
 						certification_si.save()
+def set_gst_details(self):
+    if self.sales_type not in ("Finished Goods", "Subcontracting"):
+        return
+
+    customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
+    company_state  = frappe.db.get_value("Address", self.company_address,  "gst_state_number")
+
+    if not customer_state or not company_state:
+        return
+
+    self.tax_category = "In-State" if customer_state == company_state else "Out-State"
+
+    item_template_map = {
+        "Finished Goods": {
+            "Gurukrupa Export Private Limited": "GST 3% - GEPL",
+            "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
+        },
+        "Subcontracting": {
+            "Gurukrupa Export Private Limited": "GST 5% - GEPL",
+            "KG GK Jewellers Private Limited":  "GST 5% - KGJPL",
+        },
+    }
+    item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
+    if not item_tax_template:
+        return
+
+    taxes_and_charges = frappe.db.get_value(
+        "Sales Taxes and Charges Template",
+        {
+            "company":      self.company,
+            "tax_category": self.tax_category,
+            "disabled":     0,
+        },
+        "name"
+    )
+
+    if not taxes_and_charges:
+        frappe.log_error(
+            f"No Sales Taxes and Charges Template found for "
+            f"Company: {self.company}, Tax Category: {self.tax_category}",
+            "set_gst_details"
+        )
+        return
+
+    self.taxes_and_charges = taxes_and_charges
+
+    template_rates = frappe.get_all(
+        "Item Tax Template Detail",
+        filters={"parent": item_tax_template},
+        fields=["tax_type", "tax_rate"]
+    )
+
+    cgst_rate = sgst_rate = igst_rate = 0.0
+    for r in template_rates:
+        tax_type = r.tax_type or ""
+        if "Output" not in tax_type or "RCM" in tax_type:
+            continue
+        if "CGST" in tax_type:
+            cgst_rate = flt(r.tax_rate)
+        elif "SGST" in tax_type:
+            sgst_rate = flt(r.tax_rate)
+        elif "IGST" in tax_type:
+            igst_rate = flt(r.tax_rate)
+
+    account_rate_map = {}
+    for r in template_rates:
+        tax_type = r.tax_type or ""
+        if "Output" not in tax_type or "RCM" in tax_type:
+            continue
+        account_rate_map[r.tax_type] = flt(r.tax_rate)
+
+    self.taxes = []
+    tax_rows = frappe.get_all(
+        "Sales Taxes and Charges",
+        filters={"parent": self.taxes_and_charges},
+        fields=["charge_type", "account_head", "description", "rate", "cost_center"],
+        order_by="idx asc"
+    )
+    for t in tax_rows:
+        correct_rate = account_rate_map.get(t.account_head, t.rate)
+        self.append("taxes", {
+            "charge_type":  t.charge_type,
+            "account_head": t.account_head,
+            "description":  t.description,
+            "rate":         correct_rate,
+            "cost_center":  t.cost_center,
+        })
+
+    for item in self.items:
+        if not item.item_code:
+            continue
+
+        item.item_tax_template = item_tax_template
+        item.gst_treatment     = "Taxable"
+        item.cgst_rate         = 0.0
+        item.sgst_rate         = 0.0
+        item.igst_rate         = 0.0
+        item.cgst_amount       = 0.0
+        item.sgst_amount       = 0.0
+        item.igst_amount       = 0.0
+
+        taxable_value = flt(item.taxable_value)
+
+        if self.tax_category == "In-State":
+            item.cgst_rate   = cgst_rate
+            item.sgst_rate   = sgst_rate
+            item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
+            item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
+        else:
+            item.igst_rate   = igst_rate
+            item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
 
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
@@ -564,14 +678,14 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data):
 
 	def add_to_invoice(item_code, so_item, fallback_amount=0, fallback_qty=0,fallback_rate=0, hsn=None, uom=None):
 
-		if so_item:
-			amount = so_item.amount
-			qty = so_item.qty
-			rate = so_item.rate
-		else:
-			amount = fallback_amount
-			qty = fallback_qty
-			rate = fallback_rate
+		# if so_item:
+		# 	amount = so_item.amount
+		# 	qty = so_item.qty
+		# 	rate = so_item.rate
+		# else:
+		amount = fallback_amount
+		qty = fallback_qty
+		rate = fallback_rate
 
 		if item_code in invoice_data:
 			if so_item:

@@ -28,6 +28,21 @@ class ProductCertification(Document):
 		):
 			frappe.throw(_("Please set warehouse for selected Department"))
 
+		if self.department and self.company:
+			dept_company = frappe.db.get_value("Department", self.department, "company")
+			if dept_company and dept_company != self.company:
+				frappe.throw(
+					_(
+						"Department {0} belongs to Company {1}, not {2}. "
+						"Please select a department that belongs to {2}."
+					).format(
+						frappe.bold(self.department),
+						frappe.bold(dept_company),
+						frappe.bold(self.company),
+					),
+					title=_("Company and Department Mismatch"),
+				)
+
 		if self.supplier and not frappe.db.exists(
 			"Warehouse",
 			{"disabled": 0, "company": self.company, "subcontractor": self.supplier},
@@ -441,7 +456,9 @@ class ProductCertification(Document):
 					as_dict=1,
 				)
 
-				# Calculate diamond_pcs from Manufacturing Work Order, Parent Manufacturing Order or BOM
+				# Diamond / stone pcs come from the latest Manufacturing Operation when a
+				# Manufacturing Work Order is linked; otherwise (serial-no or PMO rows) fall
+				# back to the BOM totals (total_diamond_pcs / total_gemstone_pcs).
 				diamond_pcs = 0
 				stone_pcs = 0
 				if row.manufacturing_work_order:
@@ -458,73 +475,19 @@ class ProductCertification(Document):
 					if latest_operation:
 						diamond_pcs = latest_operation[0].diamond_pcs
 						stone_pcs = latest_operation[0].gemstone_pcs
-					if (
-						not diamond_pcs
-						and bom_weights
-						and bom_weights.get("total_diamond_pcs")
-					):
-						diamond_pcs = bom_weights.get("total_diamond_pcs")
-					if (
-						not stone_pcs
-						and bom_weights
-						and bom_weights.get("total_gemstone_pcs")
-					):
-						stone_pcs = bom_weights.get("total_gemstone_pcs")
 
-				# elif row.parent_manufacturing_order:
-				# 	diamond_pcs = (
-				# 		frappe.db.sql(
-				# 			"""
-				# 		SELECT SUM(diamond_pcs)
-				# 		FROM `tabManufacturing Work Order`
-				# 		WHERE manufacturing_order = %s
-				# 		  AND docstatus != 2
-				# 	""",
-				# 			(row.parent_manufacturing_order,),
-				# 		)[0][0]
-				# 		or 0
-				# 	)
-				# 	if (
-				# 		not diamond_pcs
-				# 		and bom_weights
-				# 		and bom_weights.get("total_diamond_pcs")
-				# 	):
-				# 		diamond_pcs = bom_weights.get("total_diamond_pcs")
-				# elif bom_weights and bom_weights.get("total_diamond_pcs"):
-				# 	diamond_pcs = bom_weights.get("total_diamond_pcs")
-
-				# Calculate stone_pcs from Manufacturing Work Order, Parent Manufacturing Order or BOM
-				# stone_pcs = 0
-				# if row.manufacturing_work_order:
-				# 	stone_pcs = (
-				# 		frappe.db.get_value(
-				# 			"Manufacturing Work Order",
-				# 			row.manufacturing_work_order,
-				# 			"gemstone_pcs",
-				# 		)
-				# 		or 0
-				# 	)
-				# elif row.parent_manufacturing_order:
-				# 	stone_pcs = (
-				# 		frappe.db.sql(
-				# 			"""
-				# 		SELECT SUM(gemstone_pcs)
-				# 		FROM `tabManufacturing Work Order`
-				# 		WHERE manufacturing_order = %s
-				# 		  AND docstatus != 2
-				# 	""",
-				# 			(row.parent_manufacturing_order,),
-				# 		)[0][0]
-				# 		or 0
-				# # 	)
-				# 	if (
-				# 		not stone_pcs
-				# 		and bom_weights
-				# 		and bom_weights.get("total_gemstone_pcs")
-				# 	):
-				# # 		stone_pcs = bom_weights.get("total_gemstone_pcs")
-				# elif bom_weights and bom_weights.get("total_gemstone_pcs"):
-				# 	stone_pcs = bom_weights.get("total_gemstone_pcs")
+				if (
+					not diamond_pcs
+					and bom_weights
+					and bom_weights.get("total_diamond_pcs")
+				):
+					diamond_pcs = bom_weights.get("total_diamond_pcs")
+				if (
+					not stone_pcs
+					and bom_weights
+					and bom_weights.get("total_gemstone_pcs")
+				):
+					stone_pcs = bom_weights.get("total_gemstone_pcs")
 
 				for i in range(0, count):
 					if metal_det:
@@ -1114,24 +1077,33 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				or s_warehouse
 			)
 
-			se_doc.append(
-				"items",
-				{
-					"item_code": item_code,
-					"qty": qty,
-					"s_warehouse": item_s_warehouse,
-					"t_warehouse": t_warehouse,
-					"Inventory_type": "Regular Stock",
-					"reference_doctype": "Manufacturing Work Order"
-					if row.manufacturing_work_order
-					else "Parent Manufacturing Order",
-					"reference_docname": row.manufacturing_work_order
-					if row.manufacturing_work_order
-					else row.parent_manufacturing_order,
-					"use_serial_batch_fields": True,
-					"batch_no": batch_no,
-				},
+			# pcs is a stone count: carry the batch-based balance for
+			# diamond/gemstone items only (prefix D/G, per FIELD_MAP in mop_log)
+			# so metal/finding rows keep the meaningful default of 1.
+			pcs = (
+				cint(balance_row.get("pcs_after_transaction_batch_based") or 0)
+				if item_code and item_code[0] in ("D", "G")
+				else 0
 			)
+
+			item_row = {
+				"item_code": item_code,
+				"qty": qty,
+				"s_warehouse": item_s_warehouse,
+				"t_warehouse": t_warehouse,
+				"Inventory_type": "Regular Stock",
+				"reference_doctype": "Manufacturing Work Order"
+				if row.manufacturing_work_order
+				else "Parent Manufacturing Order",
+				"reference_docname": row.manufacturing_work_order
+				if row.manufacturing_work_order
+				else row.parent_manufacturing_order,
+				"use_serial_batch_fields": True,
+				"batch_no": batch_no,
+			}
+			if pcs:
+				item_row["pcs"] = pcs
+			se_doc.append("items", item_row)
 
 		# --- Cancel the SREs ---
 		for sre in sre_list:
@@ -1169,28 +1141,36 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 		issue_items = frappe.db.get_all(
 			"Stock Entry Detail",
 			filters={"parent": issue_se},
-			fields=["item_code", "qty", "batch_no", "s_warehouse", "t_warehouse"],
+			fields=[
+				"item_code",
+				"qty",
+				"pcs",
+				"batch_no",
+				"s_warehouse",
+				"t_warehouse",
+			],
 		)
 
 		for item in issue_items:
-			se_doc.append(
-				"items",
-				{
-					"item_code": item.item_code,
-					"qty": item.qty,
-					"s_warehouse": item.t_warehouse,  # Issue's target becomes Receive's source
-					"t_warehouse": s_warehouse,  # Department warehouse as target for receive
-					"Inventory_type": "Regular Stock",
-					"reference_doctype": "Manufacturing Work Order"
-					if row.manufacturing_work_order
-					else "Parent Manufacturing Order",
-					"reference_docname": row.manufacturing_work_order
-					if row.manufacturing_work_order
-					else row.parent_manufacturing_order,
-					"use_serial_batch_fields": True,
-					"batch_no": item.get("batch_no"),
-				},
-			)
+			item_row = {
+				"item_code": item.item_code,
+				"qty": item.qty,
+				"s_warehouse": item.t_warehouse,  # Issue's target becomes Receive's source
+				"t_warehouse": s_warehouse,  # Department warehouse as target for receive
+				"Inventory_type": "Regular Stock",
+				"reference_doctype": "Manufacturing Work Order"
+				if row.manufacturing_work_order
+				else "Parent Manufacturing Order",
+				"reference_docname": row.manufacturing_work_order
+				if row.manufacturing_work_order
+				else row.parent_manufacturing_order,
+				"use_serial_batch_fields": True,
+				"batch_no": item.get("batch_no"),
+			}
+			# Carry the corrected pcs from the Issue SE (diamond/gemstone rows).
+			if item.get("pcs"):
+				item_row["pcs"] = item.get("pcs")
+			se_doc.append("items", item_row)
 
 
 @frappe.whitelist()

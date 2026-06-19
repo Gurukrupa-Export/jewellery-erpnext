@@ -502,7 +502,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 										// don't support per-row hidden cells, so we use
 										// read_only_depends_on; server still force-zeros
 										// PCS for non-D/G regardless of dialog value.
-										read_only_depends_on: "eval:!doc.is_pcs_item",
+										// read_only_depends_on: "eval:!doc.is_pcs_item",
 									},
 									{
 										label: __("PCS Item"),

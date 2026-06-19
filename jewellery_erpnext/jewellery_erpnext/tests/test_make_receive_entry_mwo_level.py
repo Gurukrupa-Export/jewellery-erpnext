@@ -24,7 +24,7 @@ its own balance row.
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _make_mo(name="MOP-461KI", mwo="MWO-1", department="DEPT-A", status="WIP"):
@@ -92,21 +92,28 @@ def _make_get_all_side_effect(sre_rows=None, mop_log_rows_by_mop=None, sbe_rows=
 	return _side_effect
 
 
-class TestMwoLevelMakeReceiveEntry(FrappeTestCase):
+class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 	"""SREs from sibling MOPs under the same MWO must appear, with
 	availability computed against each SRE's own MOP Log.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
 		return_value=[(0,)],
 	)
 	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_current_mop_balance_rows"
+	)
+	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_all"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
-		return_value="WH-Raw-461",
+		return_value="Casting WO - GEPL",
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
@@ -121,6 +128,7 @@ class TestMwoLevelMakeReceiveEntry(FrappeTestCase):
 		_mock_single,
 		_mock_get_value,
 		mock_get_all,
+		mock_get_current_mop_balance_rows,
 		_mock_sql,
 	):
 		"""SRE-OTHER belongs to MOP-EY179; popup opened on MOP-461KI.
@@ -134,6 +142,18 @@ class TestMwoLevelMakeReceiveEntry(FrappeTestCase):
 		)
 
 		mock_get_doc.return_value = _make_mo()
+		mock_get_current_mop_balance_rows.return_value = [
+			frappe._dict(
+				{
+					"item_code": "M-G-18KT-75.4-Y",
+					"batch_no": None,
+					"qty_after_transaction_batch_based": 8.0,
+					"pcs_after_transaction_batch_based": 0,
+					"name": "MOP-LOG-EY179",
+					"creation": "2026-05-01",
+				}
+			),
+		]
 		mock_get_all.side_effect = _make_get_all_side_effect(
 			sre_rows=[
 				_sre("SRE-OWN", manufacturing_operation="MOP-461KI", reserved_qty=5.0),
@@ -198,11 +218,14 @@ class TestMwoLevelMakeReceiveEntry(FrappeTestCase):
 		return_value=[(0,)],
 	)
 	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_current_mop_balance_rows"
+	)
+	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_all"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
-		return_value="WH-Raw-461",
+		return_value="Casting WO - GEPL",
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
@@ -217,6 +240,7 @@ class TestMwoLevelMakeReceiveEntry(FrappeTestCase):
 		_mock_single,
 		_mock_get_value,
 		mock_get_all,
+		mock_get_current_mop_balance_rows,
 		_mock_sql,
 	):
 		"""SRE filter must drop Cancelled/Delivered statuses (per ERPNext SRE
@@ -227,6 +251,7 @@ class TestMwoLevelMakeReceiveEntry(FrappeTestCase):
 		)
 
 		mock_get_doc.return_value = _make_mo()
+		mock_get_current_mop_balance_rows.return_value = []
 		mock_get_all.side_effect = _make_get_all_side_effect()
 
 		get_make_receive_entry_rows("MOP-461KI")

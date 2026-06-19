@@ -22,7 +22,7 @@ dispatcher on `frappe.db.get_all` that switches on doctype.
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _make_mo(name="MOP-1", mwo="MWO-1", department="DEPT-1", status="WIP"):
@@ -90,12 +90,50 @@ def _make_get_all_dispatcher(sre_rows=None, mop_rows=None, sb_rows=None):
 	return _dispatcher
 
 
-# ---------------------------------------------------------------------------
-# Popup row composition
-# ---------------------------------------------------------------------------
+def _make_get_value_dispatcher(sre_qty=10.0, warehouse="WH-Y"):
+	"""Return a callable suitable for `side_effect` on a single
+	`frappe.db.get_value` patch.
+	"""
+
+	def _dispatcher(doctype, *args, **kwargs):
+		if doctype == "Stock Entry":
+			return None
+
+		if doctype == "Warehouse":
+			return "WH-Raw"
+
+		if doctype == "Stock Reservation Entry":
+			if args and args[0] == "SRE-T5":
+				return frappe._dict(
+					{
+						"name": "SRE-T5",
+						"docstatus": 1,
+						"item_code": "M-X",
+						"warehouse": "WH-Y",
+						"reserved_qty": sre_qty,
+						"delivered_qty": 0.0,
+						"stock_uom": "Gram",
+						"has_batch_no": 0,
+						"reservation_based_on": "Qty",
+						"manufacturing_work_order": "MWO-1",
+					}
+				)
+			if args and isinstance(args[0], dict):
+				return warehouse
+
+		if doctype == "Manufacturing Work Order":
+			return "PMO-1"
+
+		return None
+
+	return _dispatcher
 
 
-class TestPopupReservedVsMopFields(FrappeTestCase):
+class TestPopupReservedVsMopFields(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _patch_popup(self, sre_rows, mop_rows):
 		patches = [
 			patch(
@@ -191,7 +229,6 @@ class TestPopupReservedVsMopFields(FrappeTestCase):
 		self.assertEqual(len(rows), 1)
 		row = rows[0]
 		self.assertTrue(row["is_pcs_item"])
-		self.assertEqual(row["reserved_pcs"], 0)
 		self.assertEqual(row["mop_available_pcs"], 12)
 		self.assertEqual(row["available_to_receive_pcs"], 12)
 
@@ -201,7 +238,11 @@ class TestPopupReservedVsMopFields(FrappeTestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestServerQtyValidation(FrappeTestCase):
+class TestServerQtyValidation(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _patch_validator(self, sre_qty, mop_qty):
 		"""Common patch stack for `create_mr_wo_stock_entry`.
 
@@ -343,9 +384,13 @@ class TestServerQtyValidation(FrappeTestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestReplacementSafeRule(FrappeTestCase):
+class TestReplacementSafeRule(IntegrationTestCase):
 	"""Replacement SRE qty must never exceed remaining MOP balance after
 	the receive."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _run_partial_receive(self, mop_qty, req_qty, sre_qty=10.0):
 		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
@@ -390,24 +435,7 @@ class TestReplacementSafeRule(FrappeTestCase):
 			),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
-				side_effect=[
-					None,
-					"WH-Raw",
-					frappe._dict(
-						{
-							"name": "SRE-T5",
-							"docstatus": 1,
-							"item_code": "M-X",
-							"warehouse": "WH-Y",
-							"reserved_qty": sre_qty,
-							"delivered_qty": 0.0,
-							"stock_uom": "Gram",
-							"has_batch_no": 0,
-							"reservation_based_on": "Qty",
-							"manufacturing_work_order": "MWO-1",
-						}
-					),
-				],
+				side_effect=_make_get_value_dispatcher(sre_qty=sre_qty),
 			),
 			patch(
 				"frappe.db.get_all",

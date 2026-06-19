@@ -51,6 +51,7 @@ doctype_list_js = {
 
 # from jewellery_erpnext.jewellery_erpnext.doc_events.work_order import get_work_orders
 
+
 # WorkOrder.get_work_orders = get_work_orders
 
 _EOD_LOCK_VALIDATOR = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.validate_not_eod_sync_locked"
@@ -87,7 +88,7 @@ doc_events = {
 	},
 	"Sales Order": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.validate",
+		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
 		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_submit",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
