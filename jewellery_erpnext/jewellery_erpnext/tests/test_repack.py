@@ -7,6 +7,9 @@ from unittest.mock import MagicMock, call, patch
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.customer_subcontracting.sub_utils import repack
+from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events import (
+	utils as batch_utils,
+)
 
 
 def _item(**fields):
@@ -256,6 +259,167 @@ class TestRepackAutomation(IntegrationTestCase):
 		log_error.assert_called_once_with(
 			"Purity Not Found : M-G-22KT", "Repack Automation"
 		)
+
+	def test_mwo_repack_plan_uses_24kt_only_when_all_logs_have_enough_stock(self):
+		logs = [
+			_log(name="SCL-18", usage_batch="USED-18", balance_pure_qty=2),
+			_log(
+				name="SCL-22",
+				batch_item="M-G-22KT",
+				usage_batch="USED-22",
+				balance_pure_qty=3,
+			),
+		]
+		sources = [
+			{
+				"batch_no": "CUSTOMER-24",
+				"warehouse": "WH-1",
+				"qty": 5,
+				"item_code": "M-G-24KT",
+				"purity": 99.9,
+			}
+		]
+
+		with patch.object(
+			repack,
+			"get_target_repack_batch",
+			side_effect={"USED-18": "TARGET-24-A", "USED-22": "TARGET-24-B"}.get,
+		), patch.object(repack.frappe.db, "get_value", return_value="M-G-24KT"):
+			plan = repack.build_mwo_repack_plan(logs, sources)
+
+		self.assertEqual(
+			plan,
+			[
+				{
+					"log_name": "SCL-18",
+					"source_batch": "CUSTOMER-24",
+					"source_warehouse": "WH-1",
+					"target_batch": "TARGET-24-A",
+					"qty": 2.0,
+					"settled_pure_qty": 2.0,
+				},
+				{
+					"log_name": "SCL-22",
+					"source_batch": "CUSTOMER-24",
+					"source_warehouse": "WH-1",
+					"target_batch": "TARGET-24-B",
+					"qty": 3.0,
+					"settled_pure_qty": 3.0,
+				},
+			],
+		)
+
+	def test_mwo_repack_plan_falls_back_for_every_log_when_one_lacks_24kt(self):
+		logs = [
+			_log(
+				name="SCL-18",
+				batch_item="M-G-18KT",
+				usage_batch="USED-18",
+				quantity=4,
+				pending_pure_qty=3,
+				balance_pure_qty=3,
+			),
+			_log(
+				name="SCL-22",
+				batch_item="M-G-22KT",
+				usage_batch="USED-22",
+				quantity=5,
+				pending_pure_qty=4,
+				balance_pure_qty=4,
+			),
+		]
+		sources = [
+			{
+				"batch_no": "CUSTOMER-24",
+				"warehouse": "WH-24",
+				"qty": 6,
+				"item_code": "M-G-24KT",
+				"purity": 99.9,
+			},
+			{
+				"batch_no": "CUSTOMER-18",
+				"warehouse": "WH-18",
+				"qty": 4,
+				"item_code": "M-G-18KT",
+				"purity": 75,
+			},
+			{
+				"batch_no": "CUSTOMER-22",
+				"warehouse": "WH-22",
+				"qty": 5,
+				"item_code": "M-G-22KT",
+				"purity": 91.6,
+			},
+		]
+
+		with patch.object(
+			repack,
+			"get_target_repack_batch",
+			side_effect={"USED-18": "TARGET-24-A", "USED-22": "TARGET-24-B"}.get,
+		), patch.object(repack.frappe.db, "get_value", return_value="M-G-24KT"):
+			plan = repack.build_mwo_repack_plan(logs, sources)
+
+		self.assertEqual(
+			plan,
+			[
+				{
+					"log_name": "SCL-18",
+					"source_batch": "CUSTOMER-18",
+					"source_warehouse": "WH-18",
+					"target_batch": "USED-18",
+					"qty": 4.0,
+					"settled_pure_qty": 3.0,
+				},
+				{
+					"log_name": "SCL-22",
+					"source_batch": "CUSTOMER-22",
+					"source_warehouse": "WH-22",
+					"target_batch": "USED-22",
+					"qty": 5.0,
+					"settled_pure_qty": 4.0,
+				},
+			],
+		)
+
+	def test_same_item_repack_uses_remaining_work_order_qty_for_partial_log(self):
+		log = _log(
+			batch_item="M-G-22KT",
+			quantity=10,
+			pending_pure_qty=8,
+			balance_pure_qty=2,
+		)
+
+		self.assertEqual(repack.get_remaining_log_qty(log), 2.5)
+
+	def test_customer_gold_repack_allows_mtwo_item_without_item_master_flag(self):
+		batch = SimpleNamespace(
+			reference_doctype="Stock Entry",
+			reference_name="MAT-STE-REPACK",
+			custom_customer="Customer A",
+			item="M-G-18KT-75.4-Y",
+		)
+
+		with patch.object(
+			batch_utils.frappe.db,
+			"get_value",
+			return_value="Subcontracting Repack",
+		):
+			self.assertTrue(batch_utils.is_subcontracting_gold_repack(batch))
+
+	def test_customer_gold_exception_does_not_apply_to_normal_stock_entries(self):
+		batch = SimpleNamespace(
+			reference_doctype="Stock Entry",
+			reference_name="MAT-STE-TRANSFER",
+			custom_customer="Customer A",
+			item="M-G-18KT-75.4-Y",
+		)
+
+		with patch.object(
+			batch_utils.frappe.db,
+			"get_value",
+			return_value="Customer Goods Transfer",
+		):
+			self.assertFalse(batch_utils.is_subcontracting_gold_repack(batch))
 
 	def test_update_settlement_log_marks_gold_log_partially_settled(self):
 		log = _log(pending_pure_qty=10, settled_pure_qty=2)
