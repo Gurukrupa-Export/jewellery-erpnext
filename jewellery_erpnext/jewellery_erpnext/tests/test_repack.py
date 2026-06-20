@@ -262,7 +262,12 @@ class TestRepackAutomation(IntegrationTestCase):
 
 	def test_mwo_repack_plan_uses_24kt_only_when_all_logs_have_enough_stock(self):
 		logs = [
-			_log(name="SCL-18", usage_batch="USED-18", balance_pure_qty=2),
+			_log(
+				name="SCL-18",
+				batch_item="M-G-22KT",
+				usage_batch="USED-18",
+				balance_pure_qty=2,
+			),
 			_log(
 				name="SCL-22",
 				batch_item="M-G-22KT",
@@ -345,28 +350,36 @@ class TestRepackAutomation(IntegrationTestCase):
 		with patch.object(
 			repack,
 			"get_target_repack_batch",
-			side_effect={"USED-18": "TARGET-24-A", "USED-22": "TARGET-24-B"}.get,
-		), patch.object(repack.frappe.db, "get_value", return_value="M-G-24KT"):
+			side_effect={"USED-18": "TARGET-18", "USED-22": "TARGET-22"}.get,
+		), patch.object(
+			repack.frappe.db,
+			"get_value",
+			side_effect=lambda doctype, name, fieldname: {
+				"TARGET-18": "M-G-18KT",
+				"TARGET-22": "M-G-22KT",
+			}.get(name, "M-G-24KT"),
+		):
 			plan = repack.build_mwo_repack_plan(logs, sources)
 
+		self.assertEqual(len(plan), 2)
 		self.assertEqual(
 			plan,
 			[
 				{
 					"log_name": "SCL-18",
-					"source_batch": "CUSTOMER-24",
-					"source_warehouse": "WH-24",
-					"target_batch": "TARGET-24-A",
-					"qty": 3.0,
+					"source_batch": "CUSTOMER-18",
+					"source_warehouse": "WH-18",
+					"target_batch": "USED-18",
+					"qty": 4.0,
 					"settled_pure_qty": 3.0,
 				},
 				{
 					"log_name": "SCL-22",
-					"source_batch": "CUSTOMER-24",
-					"source_warehouse": "WH-24",
-					"target_batch": "TARGET-24-B",
-					"qty": 3.0,
-					"settled_pure_qty": 3.0,
+					"source_batch": "CUSTOMER-22",
+					"source_warehouse": "WH-22",
+					"target_batch": "USED-22",
+					"qty": 5.0,
+					"settled_pure_qty": 4.0,
 				},
 			],
 		)

@@ -521,7 +521,7 @@ def build_same_item_repack_plan(pending_logs, gold_sources):
 		remaining_qty = get_remaining_log_qty(log)
 
 		if remaining_qty <= 0:
-			return []
+			continue
 
 		requirements.append(
 			{
@@ -605,6 +605,9 @@ def allocate_repack_requirements(requirements, gold_sources):
 		# No stock at all
 		if allocated_qty <= 0:
 			continue
+
+		if allocated_qty < required_qty:
+			return []
 
 		total_settle = flt(
 			requirement["settled_pure_qty"] * allocated_qty / required_qty,
