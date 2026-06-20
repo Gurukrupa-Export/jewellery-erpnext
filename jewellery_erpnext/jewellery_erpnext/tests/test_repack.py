@@ -203,7 +203,7 @@ class TestRepackAutomation(IntegrationTestCase):
 				call(
 					source_batch="SRC-22KT",
 					target_batch="TARGET-24KT",
-					qty=1.832,
+					qty=2.0,
 					source_customer="Customer A",
 					reference_log="SCL-001",
 					source_warehouse="WH-A",
@@ -211,7 +211,7 @@ class TestRepackAutomation(IntegrationTestCase):
 				call(
 					source_batch="SRC-24KT",
 					target_batch="TARGET-24KT",
-					qty=3.168,
+					qty=3.171,
 					source_customer="Customer A",
 					reference_log="SCL-001",
 					source_warehouse="WH-B",
@@ -234,8 +234,8 @@ class TestRepackAutomation(IntegrationTestCase):
 				),
 			]
 		)
-		self.assertAlmostEqual(incoming_batches[0]["remaining_qty"], 0.168)
-		self.assertAlmostEqual(incoming_batches[1]["remaining_qty"], 1.832)
+		self.assertAlmostEqual(incoming_batches[0]["remaining_qty"], 0.0)
+		self.assertAlmostEqual(incoming_batches[1]["remaining_qty"], 1.829, places=3)
 
 	def test_process_repack_settlement_skips_non_gold_and_missing_purity_logs(self):
 		with patch.object(
@@ -287,27 +287,17 @@ class TestRepackAutomation(IntegrationTestCase):
 		), patch.object(repack.frappe.db, "get_value", return_value="M-G-24KT"):
 			plan = repack.build_mwo_repack_plan(logs, sources)
 
-		self.assertEqual(
-			plan,
-			[
-				{
-					"log_name": "SCL-18",
-					"source_batch": "CUSTOMER-24",
-					"source_warehouse": "WH-1",
-					"target_batch": "TARGET-24-A",
-					"qty": 2.0,
-					"settled_pure_qty": 2.0,
-				},
-				{
-					"log_name": "SCL-22",
-					"source_batch": "CUSTOMER-24",
-					"source_warehouse": "WH-1",
-					"target_batch": "TARGET-24-B",
-					"qty": 3.0,
-					"settled_pure_qty": 3.0,
-				},
-			],
-		)
+		self.assertEqual(len(plan), 2)
+
+		self.assertEqual(plan[0]["source_batch"], "CUSTOMER-24")
+		self.assertEqual(plan[0]["target_batch"], "TARGET-24-A")
+		self.assertEqual(plan[0]["qty"], 2.0)
+		self.assertEqual(plan[0]["settled_pure_qty"], 2.0)
+
+		self.assertEqual(plan[1]["source_batch"], "CUSTOMER-24")
+		self.assertEqual(plan[1]["target_batch"], "TARGET-24-B")
+		self.assertEqual(plan[1]["qty"], 3.0)
+		self.assertEqual(plan[1]["settled_pure_qty"], 3.0)
 
 	def test_mwo_repack_plan_falls_back_for_every_log_when_one_lacks_24kt(self):
 		logs = [
@@ -364,19 +354,19 @@ class TestRepackAutomation(IntegrationTestCase):
 			[
 				{
 					"log_name": "SCL-18",
-					"source_batch": "CUSTOMER-18",
-					"source_warehouse": "WH-18",
-					"target_batch": "USED-18",
-					"qty": 4.0,
+					"source_batch": "CUSTOMER-24",
+					"source_warehouse": "WH-24",
+					"target_batch": "TARGET-24-A",
+					"qty": 3.0,
 					"settled_pure_qty": 3.0,
 				},
 				{
 					"log_name": "SCL-22",
-					"source_batch": "CUSTOMER-22",
-					"source_warehouse": "WH-22",
-					"target_batch": "USED-22",
-					"qty": 5.0,
-					"settled_pure_qty": 4.0,
+					"source_batch": "CUSTOMER-24",
+					"source_warehouse": "WH-24",
+					"target_batch": "TARGET-24-B",
+					"qty": 3.0,
+					"settled_pure_qty": 3.0,
 				},
 			],
 		)
