@@ -29,7 +29,7 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				});
 			}
 		}
-		if (frm.doc.docstatus == 0 && frm.doc.department == "Serial Number - GEPL") {
+		if (frm.doc.docstatus == 0 && frm.doc.department && frm.doc.department.startsWith("Serial Number")) {
 			frm.add_custom_button(__("Create Repack"), function () {
 				frappe.call({
 					method: "jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_pending_repack",
