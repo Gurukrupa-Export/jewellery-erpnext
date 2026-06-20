@@ -32,7 +32,7 @@ def create_customer_gold_repack_automation(doc):
 	has_target_wh = False
 
 	for d in doc.items:
-		if d.t_warehouse == "Central RM - GEPL":
+		if d.t_warehouse and d.t_warehouse.startswith("Central RM"):
 			has_target_wh = True
 			break
 
@@ -109,7 +109,7 @@ def create_company_gold_repack_automation(doc):
 	has_target_wh = False
 
 	for d in doc.items:
-		if d.t_warehouse == "Central RM - GEPL":
+		if d.t_warehouse and d.t_warehouse.startswith("Central RM"):
 			has_target_wh = True
 			break
 
@@ -386,7 +386,7 @@ def validate_and_repack_on_mwo_submit(doc, method=None):
 
 
 def validate_pending_repack_before_submit(doc):
-	if doc.department != "Serial Number - GEPL":
+	if not doc.department or not doc.department.startswith("Serial Number"):
 		return
 
 	pending_logs = frappe.get_all(
@@ -413,7 +413,7 @@ def process_pending_repack_for_mwo(doc_name):
 
 	department = doc.department
 
-	if department != "Serial Number - GEPL":
+	if not department or not department.startswith("Serial Number"):
 		return
 
 	if not customer:
@@ -737,7 +737,7 @@ def validate_category_waiting_days(doc, method=None):
 
 	customer = doc.customer
 	department = doc.department
-	if department != "Serial Number - GEPL":
+	if not department or not department.startswith("Serial Number"):
 		return
 
 	if not customer:
