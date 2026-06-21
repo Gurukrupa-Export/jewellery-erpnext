@@ -65,15 +65,44 @@ def update_inventory_dimentions(self):
 						)
 			break
 
-	if not frappe.db.get_value(
+	item_allows_customer_goods = frappe.db.get_value(
 		"Item", self.item, "custom_inventory_type_can_be_customer_goods"
-	) and self.custom_inventory_type in ["Customer Goods", "Customer Stock"]:
-		frappe.throw(_("This item does not allowed as Customer Goods"))
+	)
+	is_customer_inventory = self.custom_inventory_type in [
+		"Customer Goods",
+		"Customer Stock",
+	]
+
+	if (
+		not item_allows_customer_goods
+		and is_customer_inventory
+		and not is_subcontracting_gold_repack(self)
+	):
+		frappe.throw(_("This item is not allowed as Customer Goods"))
 
 	if self.reference_doctype == "Stock Entry" and self.custom_customer:
 		self.custom_customer_voucher_type = frappe.db.get_value(
 			"Stock Entry", self.reference_name, "customer_voucher_type"
 		)
+
+
+def is_subcontracting_gold_repack(batch):
+	if getattr(batch, "reference_doctype", None) != "Stock Entry":
+		return False
+
+	if not getattr(batch, "custom_customer", None):
+		return False
+
+	item_code = getattr(batch, "item", None)
+	if not isinstance(item_code, str) or not item_code.startswith("M-G-"):
+		return False
+
+	return (
+		frappe.db.get_value(
+			"Stock Entry", getattr(batch, "reference_name", None), "stock_entry_type"
+		)
+		== "Subcontracting Repack"
+	)
 
 
 def update_pure_qty(self):
