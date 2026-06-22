@@ -1,0 +1,45 @@
+{
+ "actions": [],
+ "autoname": "naming_series:",
+ "creation": "2026-06-16 06:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series", "refining_entry", "action_type", "action_timestamp", "action_by",
+  "column_break_01", "from_state", "to_state", "stock_entry_ref", "batch_ref", "serial_no_ref",
+  "section_break_01", "details", "ip_address"
+ ],
+ "fields": [
+  {"fieldname": "naming_series", "fieldtype": "Select", "label": "Series", "options": "RFN-AUD-.YY.-.######", "read_only": 1},
+  {"fieldname": "refining_entry", "fieldtype": "Link", "label": "Refining Entry", "options": "Refining Entry", "reqd": 1, "in_standard_filter": 1},
+  {"fieldname": "action_type", "fieldtype": "Select", "label": "Action Type", "reqd": 1, "in_list_view": 1, "in_standard_filter": 1,
+   "options": "\nCreated\nSubmitted\nReceived\nClassified\nRecovery Entered\nRecovery Verified\nCompleted\nTransferred\nCancelled\nStock Entry Created\nBatch Created\nSN Inactivated\nBOM Inactivated"},
+  {"fieldname": "action_timestamp", "fieldtype": "Datetime", "label": "Timestamp", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "action_by", "fieldtype": "Link", "label": "Action By", "options": "User", "reqd": 1, "in_list_view": 1},
+  {"fieldname": "column_break_01", "fieldtype": "Column Break"},
+  {"fieldname": "from_state", "fieldtype": "Data", "label": "From State"},
+  {"fieldname": "to_state", "fieldtype": "Data", "label": "To State"},
+  {"fieldname": "stock_entry_ref", "fieldtype": "Link", "label": "Stock Entry", "options": "Stock Entry"},
+  {"fieldname": "batch_ref", "fieldtype": "Link", "label": "Batch", "options": "Batch"},
+  {"fieldname": "serial_no_ref", "fieldtype": "Link", "label": "Serial No", "options": "Serial No"},
+  {"fieldname": "section_break_01", "fieldtype": "Section Break"},
+  {"fieldname": "details", "fieldtype": "Long Text", "label": "Details"},
+  {"fieldname": "ip_address", "fieldtype": "Data", "label": "IP Address", "read_only": 1}
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-06-16 06:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Refining",
+ "name": "Refining Audit Log",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {"role": "System Manager", "create": 1, "read": 1},
+  {"role": "All", "read": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

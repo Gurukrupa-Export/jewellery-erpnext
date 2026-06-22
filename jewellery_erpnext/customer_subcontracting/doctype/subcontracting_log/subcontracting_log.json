@@ -1,7 +1,6 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "SUB-LOG-.#####",
  "creation": "2026-05-11 17:36:14.592242",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -278,11 +277,10 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-21 08:00:56.335339",
+ "modified": "2026-06-19 18:16:22.508496",
  "modified_by": "Administrator",
  "module": "Customer Subcontracting",
  "name": "Subcontracting Log",
- "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

@@ -332,6 +332,19 @@ def make_metal_stock_entry(self):
 	source_wh = self.source_warehouse
 	inventory_type = self.inventory_type or "Regular Stock"
 	customer = self.customer
+	# RULE B (canonical lock order): pre-lock the source/target Bins in sorted order so
+	# concurrent metal conversions acquire shared item+warehouse Bins in the same sequence
+	# (breaks 1213 reverse-order cycles). Additive — does not change the Stock Entry built.
+	from jewellery_erpnext.jewellery_erpnext.lock_order import lock_bins
+
+	lock_bins(
+		[
+			(self.source_item, source_wh),
+			(self.source_alloy, source_wh),
+			(self.target_item, target_wh),
+			(self.target_alloy, target_wh),
+		]
+	)
 	se = frappe.get_doc(
 		{
 			"doctype": "Stock Entry",
@@ -452,6 +465,13 @@ def make_metal_stock_entry(self):
 
 def make_multiple_metal_stock_entry(self):
 	source_wh = self.source_warehouse
+	# RULE B (canonical lock order): pre-lock source + target Bins in sorted order so
+	# concurrent conversions acquire shared item+warehouse Bins in the same sequence.
+	from jewellery_erpnext.jewellery_erpnext.lock_order import lock_bins
+
+	_prelock = [(r.item_code, source_wh) for r in self.mc_source_table]
+	_prelock.append((self.get("m_target_item"), self.get("target_warehouse")))
+	lock_bins(_prelock)
 	se = frappe.get_doc(
 		{
 			"doctype": "Stock Entry",

@@ -346,8 +346,8 @@ def _get_bom_context(self):
         precision=precision,
         metal_precision=metal_precision,
         stone_precision=stone_precision,
-		precision_for_net_weight=precision_for_net_weight,
-		precision_for_gross_weight=precision_for_gross_weight
+        precision_for_net_weight=precision_for_net_weight or 3,
+        precision_for_gross_weight=precision_for_gross_weight or 3,
     )
 
 

@@ -1226,6 +1226,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 		total_minutes = row.get("total_minutes") or 0
 
 		if total_minutes == 0 and row.get("manufacturing_operation"):
+			# Header total_minutes may be stale/zero; sum actual time from time logs
 			total_minutes = (
 				frappe.db.get_value(
 					"Manufacturing Operation",
@@ -1234,6 +1235,15 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 				)
 				or 0
 			)
+			if total_minutes == 0:
+				# Fallback: sum time_in_mins from the child time log table
+				time_log_sum = frappe.db.sql(
+					"""SELECT IFNULL(SUM(time_in_mins), 0)
+					FROM `tabManufacturing Operation Time Log`
+					WHERE parent = %s""",
+					(row.manufacturing_operation,),
+				)
+				total_minutes = flt(time_log_sum[0][0]) if time_log_sum else 0
 
 		ws = workstations.get(employee)
 		hour_rate = ws.hour_rate if ws else 0
@@ -1643,13 +1653,25 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	if getattr(self, "doctype", None) == "Serial Number Creator" and self.get(
 		"fg_details"
 	):
+		se_rates = frappe.db.sql(
+			"""
+			SELECT item_code, AVG(basic_rate) as rate
+			FROM `tabStock Entry Detail`
+			WHERE parent = %s
+			GROUP BY item_code
+			""",
+			(se_name,),
+			as_dict=True,
+		)
+		se_rate_map = {r.item_code: r.rate for r in se_rates}
+
 		data = [
 			{
 				"item_code": d.row_material,
 				"qty": d.qty,
 				"pcs": d.pcs,
 				"uom": d.uom,
-				"rate": getattr(d, "rate", 0),
+				"rate": getattr(d, "rate", None) or se_rate_map.get(d.row_material, 0),
 				"custom_sub_setting_type": getattr(d, "sub_setting_type", None),
 			}
 			for d in self.fg_details

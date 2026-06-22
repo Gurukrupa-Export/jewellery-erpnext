@@ -51,7 +51,7 @@
    "fieldname": "price_list_type",
    "fieldtype": "Select",
    "label": "Price List Type",
-   "options": "\nFixed\nDiamond Range"
+   "options": "\nWeight (in cts)\nFixed\nMultiplier\nDiamond Range"
   },
   {
    "fieldname": "gemstone_type",

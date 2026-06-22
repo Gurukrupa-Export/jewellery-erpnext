@@ -124,8 +124,13 @@ def process_fire_assy_xrf_submit(doc, create_stock_entry_fn):
 	- Updates BOM amount breakdown on Receive
 	"""
 	create_stock_entry_fn(doc)
-	create_po(doc)
-	update_bom_details(doc)
+	frappe.enqueue(
+		"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.deferred_po_bom",
+		pc_name=doc.name,
+		enqueue_after_commit=True,
+		job_id=f"pc_po_bom::{doc.name}",
+		deduplicate=True,
+	)
 
 
 def _get_department_rm_warehouse(department):
@@ -374,7 +379,7 @@ def create_material_receipt_for_certification(self):
 	repack_rows = []
 
 	for row in self.exploded_product_details:
-		qty = row.get("gross_weight") or 0
+		qty = row.get("conversion_quantity") or row.get("gross_weight") or 0
 		if qty <= 0:
 			continue
 

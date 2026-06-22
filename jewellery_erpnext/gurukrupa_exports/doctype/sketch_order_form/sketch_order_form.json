@@ -2,7 +2,7 @@
  "actions": [],
  "allow_import": 1,
  "allow_rename": 1,
- "autoname": "S/ORD/.#####",
+ "autoname": "hash",
  "creation": "2022-05-06 15:16:43.721055",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -419,7 +419,7 @@
  "modified_by": "prachi_b@gkexport.com",
  "module": "Gurukrupa Exports",
  "name": "Sketch Order Form",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

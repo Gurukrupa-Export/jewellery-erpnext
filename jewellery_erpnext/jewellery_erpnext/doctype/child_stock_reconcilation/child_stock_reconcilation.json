@@ -1,6 +1,6 @@
 {
  "actions": [],
- "autoname": "naming_series:",
+ "autoname": "hash",
  "creation": "2024-04-22 13:29:08.001760",
  "default_view": "List",
  "description": "This tool helps you to update or fix the quantity and valuation of stock in the system. It is typically used to synchronise the system values and what actually exists in your warehouses.",
@@ -254,7 +254,7 @@
  "modified_by": "shubham_k@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Child Stock Reconcilation",
- "naming_rule": "By \"Naming Series\" field",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

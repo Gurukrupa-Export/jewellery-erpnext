@@ -39,6 +39,8 @@ def validate(self, method):
 			queue="long",
 			timeout=10000,
 			enqueue_after_commit=True,
+			job_id=f"quotation_bom::{self.name}",
+			deduplicate=True,
 		)
 	if self.docstatus == 0:
 		calculate_gst_rate(self)
@@ -57,7 +59,14 @@ def create_bom_scientifically(self):
 def generate_bom(name):
 	self = frappe.get_doc("Quotation", name)
 	self.flags.can_be_saved = True
-	frappe.enqueue(create_bom_scientifically, self=self, queue="long", timeout=10000)
+	frappe.enqueue(
+		create_bom_scientifically,
+		self=self,
+		queue="long",
+		timeout=10000,
+		job_id=f"quotation_bom::{name}",
+		deduplicate=True,
+	)
 
 
 def onload(self, method):

@@ -87,8 +87,10 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.delivery_note.validate",
 	},
 	"Sales Order": {
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
-		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
+		"before_validate": [
+			"jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
+		],
 		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_submit",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
@@ -125,6 +127,7 @@ doc_events = {
 		],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_child_batches",
@@ -171,7 +174,7 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.before_validate",
 		],
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.on_submit",
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate",
+		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.before_validate",
 	},
 	"Serial No": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table"
@@ -296,7 +299,11 @@ fixtures = [
 			[
 				"name",
 				"in",
-				["Sketch Order Form Approval", "Sketch Order Approval with Purchase 1"],
+				[
+					"Sketch Order Form Approval",
+					"Sketch Order Approval with Purchase 1",
+					"Refining Entry Workflow",
+				],
 			]
 		],
 	},
@@ -304,7 +311,19 @@ fixtures = [
 	"Workflow Action Master",
 	{
 		"doctype": "Role",
-		"filters": [["name", "in", ["GK sales user", "Sketch QC", "All"]]],
+		"filters": [
+			[
+				"name",
+				"in",
+				[
+					"GK sales user",
+					"Sketch QC",
+					"All",
+					"Refining User",
+					"Refining Manager",
+				],
+			]
+		],
 	},
 	{
 		"doctype": "Custom Field",
@@ -322,6 +341,7 @@ fixtures = [
 					"Sketch Order-manufacturer",
 					"Sketch Order-custom_nakshi_from",
 					"Sketch Order-custom_item",
+					"Stock Entry-custom_refining_entry",
 				],
 			]
 		],
