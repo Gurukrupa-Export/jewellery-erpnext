@@ -185,6 +185,9 @@ def create_repair_sales_order(self):
 		if not row.warehouse:
 			row.warehouse = self.warehouse
 		row.order_form_type = "Repair Order"
+		row.order_form_id = (
+			None  # drop the inherited "Order" link; empty Dynamic Link skips validation
+		)
 		row.serial_id_bom = row.bom or frappe.db.get_value(
 			"Item", row.item_code, "master_bom"
 		)
