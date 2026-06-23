@@ -111,6 +111,14 @@
    "insert_after": "custom_can_not_make_dg_entry",
    "label": "Apply Product Tolerance",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "custom_is_finding",
+   "fieldtype": "Check",
+   "insert_after": "custom_apply_product_tolerance",
+   "label": "Allow Finding MWO",
+   "module": "Jewellery Erpnext"
   }
  ]
 }

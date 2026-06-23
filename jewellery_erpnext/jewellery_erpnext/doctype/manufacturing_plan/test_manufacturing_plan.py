@@ -11,6 +11,7 @@ from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan import (
 	get_details_to_append,
 	get_pending_ppo_sales_order,
+	get_repair_pending_ppo_sales_order,
 )
 from jewellery_erpnext.jewellery_erpnext.tests.test_sales_order import (
 	create_quotation,
@@ -88,6 +89,45 @@ class TestManufacturingPlan(IntegrationTestCase):
 		)
 		man_plan.submit()
 
+	def test_manufacturing_plan_repair(self):
+		repair_so = create_repair_sales_order(self)
+
+		# The re-added picker query must surface the repair sales order...
+		repair_list = get_repair_pending_ppo_sales_order(
+			"Sales Order",
+			None,
+			"name",
+			0,
+			20,
+			{"company": "Test_Company"},
+		)
+		self.assertIn(repair_so, [row.name for row in repair_list])
+
+		# ...and the normal (non-repair) picker must NOT.
+		normal_list = get_pending_ppo_sales_order(
+			"Sales Order",
+			None,
+			"name",
+			0,
+			20,
+			{"company": "Test_Company"},
+		)
+		self.assertNotIn(repair_so, [row.name for row in normal_list])
+
+		# Repair-mode mapping must append the repair rows via the shared mapper.
+		doc = frappe.new_doc("Manufacturing Plan")
+		doc.select_manufacture_order = "Repair"
+		man_plan = get_details_to_append(json.dumps([repair_so]), doc)
+		repair_rows = [
+			row
+			for row in man_plan.manufacturing_plan_table
+			if row.order_form_type == "Repair Order"
+		]
+		self.assertTrue(repair_rows)
+		for row in repair_rows:
+			self.assertTrue(row.serial_id_bom)
+			self.assertTrue(row.bom)
+
 	def tearDown(self):
 		return super().tearDown()
 
@@ -122,3 +162,32 @@ def create_sales_order(self):
 			row.warehouse = self.warehouse
 	sales_order.save()
 	sales_order.submit()
+
+
+def create_repair_sales_order(self):
+	"""Build a Repair-Order sales order so the Get Repair Order picker has data.
+
+	Mirrors create_sales_order but flips every item to ``Repair Order`` and points
+	``serial_id_bom`` at the item's BOM (the BOM repair MOs are built from).
+	"""
+	create_quotation(self)
+	quotation = frappe.get_value("Quotation", {"workflow_state": "Submitted"}, "name")
+	sales_order = make_sales_order(quotation)
+	sales_order.sales_type = "Finished Goods"
+	sales_order.delivery_date = add_days(sales_order.transaction_date, 3)
+	sales_order.custom_diamond_quality = "EF-VVS"
+	for row in sales_order.items:
+		row.bom_rate = 150000
+		row.gold_bom_rate = 120000
+		row.diamond_bom_rate = 25000
+		row.making_charges = 5000
+		row.rate = 150000
+		if not row.warehouse:
+			row.warehouse = self.warehouse
+		row.order_form_type = "Repair Order"
+		row.serial_id_bom = row.bom or frappe.db.get_value(
+			"Item", row.item_code, "master_bom"
+		)
+	sales_order.save()
+	sales_order.submit()
+	return sales_order.name

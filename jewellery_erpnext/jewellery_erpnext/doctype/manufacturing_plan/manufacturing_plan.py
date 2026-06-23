@@ -291,6 +291,8 @@ class ManufacturingPlan(Document):
 			self.manufacturing_plan_table = []
 			for item_row in items:
 				bom = item_row.get("bom") or item_row.get("master_bom")
+				if not bom and item_row.get("order_form_type") == "Repair Order":
+					bom = item_row.get("serial_id_bom")
 				if bom:
 					item_row["manufacturing_order_qty"] = item_row.get("pending_qty")
 					if self.is_subcontracting:
@@ -388,6 +390,57 @@ def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filt
 			& (SalesOrder.docstatus == 1)
 			& conditions
 			& (Item.master_bom.isnotnull() | SalesOrderItem.bom.isnotnull())
+		)
+		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
+		.limit(page_len)
+		.offset(start)
+	)
+	so_data = query.run(as_dict=True)
+
+	return so_data
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_repair_pending_ppo_sales_order(
+	doctype, txt, searchfield, start, page_len, filters
+):
+	SalesOrder = frappe.qb.DocType("Sales Order")
+	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
+
+	conditions = (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty) & (
+		SalesOrderItem.order_form_type == "Repair Order"
+	)
+
+	if txt:
+		conditions &= SalesOrder.name.like(f"%{txt}%")
+
+	if customer := filters.get("customer"):
+		conditions &= SalesOrder.customer == customer
+
+	if company := filters.get("company"):
+		conditions &= SalesOrder.company == company
+
+	if branch := filters.get("branch"):
+		conditions &= SalesOrder.branch == branch
+
+	if txn_date := filters.get("transaction_date"):
+		conditions &= SalesOrder.transaction_date == txn_date
+
+	query = (
+		frappe.qb.from_(SalesOrder)
+		.distinct()
+		.from_(SalesOrderItem)
+		.select(
+			SalesOrder.name,
+			SalesOrder.transaction_date,
+			SalesOrder.company,
+			SalesOrder.customer,
+		)
+		.where(
+			(SalesOrder.name == SalesOrderItem.parent)
+			& (SalesOrder.docstatus == 1)
+			& conditions
 		)
 		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
 		.limit(page_len)

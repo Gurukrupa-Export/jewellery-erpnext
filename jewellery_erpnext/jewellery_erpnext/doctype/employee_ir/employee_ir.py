@@ -332,6 +332,28 @@ class EmployeeIR(Document):
 			for mop_name in affected_mops:
 				recalculate_manufacturing_operation_weights(mop_name)
 
+		if not cancel:
+			# Canonical lock order for the EIR receive cascade: it mints several Stock
+			# Entries (per-operation metal injections + the combined Process Loss SE), each
+			# otherwise locking its Bins independently. Pin the Stock Entry series, then
+			# pre-lock the manufacturing-warehouse Bins this receive draws on, in sorted
+			# order, so concurrent EIR/SNC/PC submits acquire shared Bins in the same
+			# sequence. Loss-SE source Bins resolved later are still locked (in sorted order)
+			# by each SE's prelock_bins hook; create_loss_stock_entries reduces SREs in
+			# stock_lock_key order (RULE A).
+			from jewellery_erpnext.jewellery_erpnext.lock_order import (
+				lock_bins,
+				preallocate_series_for_docs,
+			)
+
+			_eir_pairs = [
+				(getattr(r, "item_code", None), wh)
+				for r in (self.manually_book_loss_details + self.employee_loss_details)
+				for wh in (department_wh, actor_wh)
+			]
+			preallocate_series_for_docs(frappe.new_doc("Stock Entry"))
+			lock_bins(_eir_pairs)
+
 		for row in self.employee_ir_operations:
 			if is_mould_operation and not cancel:
 				create_mould(self, row)
