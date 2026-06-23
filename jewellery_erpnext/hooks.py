@@ -33,7 +33,8 @@ doctype_js = {
 	"Purchase Receipt": "public/js/doctype_js/purchase_receipt.js",
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
 	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
-	"Payment Entry": "public/js/doctype_js/payment_entry.js"
+	"Payment Entry": "public/js/doctype_js/payment_entry.js",
+    "Batch": "public/js/doctype_js/batch.js"
 }
 
 doctype_list_js = {
