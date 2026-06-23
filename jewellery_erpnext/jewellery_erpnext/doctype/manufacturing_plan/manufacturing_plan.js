@@ -54,7 +54,7 @@ frappe.ui.form.on("Manufacturing Plan", {
 	},
 	get_repair_order(frm) {
 		map_current_doc({
-			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_sales_order",
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_details_to_append",
 			source_doctype: "Sales Order",
 			target: frm,
 			setters: {
@@ -63,8 +63,8 @@ frappe.ui.form.on("Manufacturing Plan", {
 				company: frm.doc.company,
 				branch: frm.doc.branch,
 			},
-			 get_query_method:
-			 	"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_repair_pending_ppo_sales_order",
+			get_query_method:
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_repair_pending_ppo_sales_order",
 			size: "extra-large",
 		});
 	},
@@ -148,10 +148,7 @@ var map_current_doc = function (opts) {
 
 					if (already_set) {
 						frappe.msgprint(
-							__("You have already selected items from {0} {1}", [
-								opts.source_doctype,
-								src,
-							])
+							__("You have already selected items from {0} {1}", [opts.source_doctype, src])
 						);
 						return;
 					}

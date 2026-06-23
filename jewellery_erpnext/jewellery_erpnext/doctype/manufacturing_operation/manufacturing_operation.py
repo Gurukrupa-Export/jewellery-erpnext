@@ -8,7 +8,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.model.naming import make_autoname
 from frappe.query_builder import Criterion, CustomFunction
-from frappe.query_builder.functions import Avg, IfNull, Max, Sum
+from frappe.query_builder.functions import IfNull, Max, Sum
 from frappe.utils import (
 	cint,
 	flt,
@@ -592,7 +592,7 @@ class ManufacturingOperation(Document):
 
 	@frappe.whitelist()
 	def create_fg(self):
-		se_name = create_manufacturing_entry(self)
+		se_name, _fg_serial = create_manufacturing_entry(self)
 		pmo = frappe.db.get_value(
 			"Manufacturing Work Order",
 			self.manufacturing_work_order,
@@ -1298,7 +1298,9 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 				if row.id == entry["id"] and row.row_material == entry["item_code"]:
 					row.serial_no = get_serial_no(new_bom_serial_no)
 
-	return new_bom_serial_no
+	# Return both the Stock Entry name (used as the rate-source identifier in
+	# create_finished_goods_bom) and the finished-good serial number.
+	return se.name, new_bom_serial_no
 
 
 def genrate_serial_no(doc, diamond_grade_data):
@@ -1653,9 +1655,15 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	if getattr(self, "doctype", None) == "Serial Number Creator" and self.get(
 		"fg_details"
 	):
+		# se_rate is the per-item Batch Rate, qty-weighted across the consumed
+		# batches. Read the batch's maintained Batch Rate (custom_metal_rate, fetched
+		# onto Stock Entry Detail) and fall back to basic_rate when it is unset — this
+		# covers metal/findings (Batch Rate) and diamond/gemstone (basic_rate) alike.
 		se_rates = frappe.db.sql(
 			"""
-			SELECT item_code, AVG(basic_rate) as rate
+			SELECT item_code,
+				SUM(COALESCE(NULLIF(custom_metal_rate, 0), basic_rate) * qty)
+					/ NULLIF(SUM(qty), 0) AS rate
 			FROM `tabStock Entry Detail`
 			WHERE parent = %s
 			GROUP BY item_code
@@ -1722,6 +1730,14 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		["diamond_quality", "qty", "sales_order", "quotation"],
 		as_dict=1,
 	)
+	# Missing PMO is a real data error, not a transient one: surface it clearly instead of
+	# crashing later with "NoneType has no attribute get" / "/ NoneType" deep in the BOM math.
+	if not pmo_data:
+		frappe.throw(
+			_("Parent Manufacturing Order {0} not found").format(
+				self.parent_manufacturing_order
+			)
+		)
 
 	gold_rate_with_gst = 0
 	if pmo_data.get("quotation"):
@@ -1937,13 +1953,15 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							(item.get("parent")),
 							as_dict=True,
 						)
+						# SQL SUM() returns NULL (-> None) when no detail rows match; flt() keeps
+						# the division operands numeric so None/None can't raise TypeError.
 						row["total_qty"] = (
-							stock_entry_details[0]["total_qty"]
+							flt(stock_entry_details[0]["total_qty"])
 							if stock_entry_details
 							else 0
 						)
 						row["total_pcs"] = (
-							stock_entry_details[0]["total_pcs"]
+							flt(stock_entry_details[0]["total_pcs"])
 							if stock_entry_details
 							else 0
 						)
@@ -1963,13 +1981,15 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							(item.get("parent")),
 							as_dict=True,
 						)
+						# SQL SUM() returns NULL (-> None) when no detail rows match; flt() keeps
+						# the division operands numeric so None/None can't raise TypeError.
 						row["total_qty"] = (
-							stock_entry_details[0]["total_qty"]
+							flt(stock_entry_details[0]["total_qty"])
 							if stock_entry_details
 							else 0
 						)
 						row["total_pcs"] = (
-							stock_entry_details[0]["total_pcs"]
+							flt(stock_entry_details[0]["total_pcs"])
 							if stock_entry_details
 							else 0
 						)
@@ -1979,7 +1999,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							else 0
 						)
 
-			row["quantity"] = item["qty"] / pmo_data.get("qty")
+			row["quantity"] = flt(item["qty"]) / (flt(pmo_data.get("qty")) or 1.0)
 			row["sieve_size_range"] = sieve_size_range
 			row["sieve_size_mm"] = sieve_size_mm
 			row["is_customer_item"] = (
@@ -2404,7 +2424,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			wastage_rate = 0
 
 			row["stock_uom"] = item.get("uom")
-			row["quantity"] = item["qty"] / pmo_data.get("qty")
+			row["quantity"] = flt(item["qty"]) / (flt(pmo_data.get("qty")) or 1.0)
 			row["is_customer_item"] = (
 				1 if item.get("inventory_type") == "Customer Goods" else 0
 			)
@@ -2631,7 +2651,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			fg_purchase_amount = 0
 			wastage_rate = 0
 			row["se_rate"] = item.get("rate")
-			row["quantity"] = item["qty"] / pmo_data.get("qty")
+			row["quantity"] = flt(item["qty"]) / (flt(pmo_data.get("qty")) or 1.0)
 			finding_type_value = None
 			row["is_customer_item"] = (
 				1 if item.get("inventory_type") == "Customer Goods" else 0
@@ -3444,6 +3464,9 @@ def get_stock_entry_data(self):
 
 	StockEntry = frappe.qb.DocType("Stock Entry")
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
+	# IFNULL(NULLIF(custom_metal_rate, 0), basic_rate): prefer the maintained Batch
+	# Rate, fall back to basic_rate when it is unset/zero.
+	NullIf = CustomFunction("NULLIF", ["expr", "value"])
 
 	data = (
 		frappe.qb.from_(StockEntryDetail)
@@ -3460,7 +3483,16 @@ def get_stock_entry_data(self):
 			StockEntryDetail.uom,
 			StockEntryDetail.inventory_type,
 			Sum(StockEntryDetail.pcs).as_("pcs"),
-			Avg(StockEntryDetail.basic_rate).as_("rate"),
+			(
+				Sum(
+					IfNull(
+						NullIf(StockEntryDetail.custom_metal_rate, 0),
+						StockEntryDetail.basic_rate,
+					)
+					* StockEntryDetail.qty
+				)
+				/ NullIf(Sum(StockEntryDetail.qty), 0)
+			).as_("rate"),
 		)
 		.where(
 			(StockEntry.docstatus == 1)
