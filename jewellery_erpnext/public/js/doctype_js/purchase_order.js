@@ -1604,6 +1604,7 @@ let get_items = (frm) => {
                                             frappe.model.set_value("Purchase Order Item", rowname, "custom_sales_invoice", element.parent);
                                             frappe.model.set_value("Purchase Order Item", rowname, "item_name", element.item_name || "");
                                             frappe.model.set_value("Purchase Order Item", rowname, "uom", element.uom || "Nos");
+											frappe.model.set_value("Purchase Order Item", rowname, "serial_no", element.serial_no || "serial_no");
                                         };
 
                                         if (empty_row) {
