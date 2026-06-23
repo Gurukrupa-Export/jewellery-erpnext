@@ -34,5 +34,13 @@ frappe.query_reports["Subcontracting Report"] = {
 			options: "Customer",
 			width: "120",
 		},
+
+		{
+			fieldname: "inventory_type",
+			label: "Inventory Type",
+			fieldtype: "Select",
+			options: ["", "Regular Stock", "Customer Goods"],
+			width: "120",
+		},
 	],
 };

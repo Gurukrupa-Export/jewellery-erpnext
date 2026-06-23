@@ -3,6 +3,8 @@
 
 import frappe
 from frappe.model.document import Document
+from frappe.query_builder import DocType
+from frappe.query_builder.functions import Max
 from frappe.utils import cint, cstr, flt
 
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
@@ -38,6 +40,18 @@ class MOPLog(Document):
 		pcs_after_prefix = self.pcs_after_transaction
 		prefix = FIELD_MAP.get(first_char)
 		if prefix:
+			if self.manufacturing_operation:
+				# Canonical lock order: take the Manufacturing Operation row lock up front
+				# (it is the terminal sink) so concurrent MOP-Log writers and Department-IR
+				# weight recompute acquire the MO in a consistent position relative to
+				# Bin/SLE — this breaks the MO<->Bin deadlock cycle. The set_value below
+				# would lock the same row a moment later anyway, so this adds no new lock.
+				frappe.db.get_value(
+					"Manufacturing Operation",
+					self.manufacturing_operation,
+					"name",
+					for_update=True,
+				)
 			update_value = {f"{prefix}_wt": qty_after_prefix}
 			if first_char in ("D", "G"):
 				update_value.update(
@@ -46,12 +60,11 @@ class MOPLog(Document):
 						f"{prefix}_pcs": pcs_after_prefix,
 					}
 				)
-			if not (self.get("loss_type")):
-				frappe.db.set_value(
-					"Manufacturing Operation",
-					self.manufacturing_operation,
-					update_value,
-				)
+			frappe.db.set_value(
+				"Manufacturing Operation",
+				self.manufacturing_operation,
+				update_value,
+			)
 			update_wt_detail(self.manufacturing_operation)
 
 
@@ -90,11 +103,11 @@ def update_wt_detail(manufacturing_operation):
 		+ flt(gemstone_wt_in_gram)
 		+ flt(other_wt)
 	)
-	if loss_wt:
-		if loss_wt > 0:
-			gross_wt += flt(loss_wt)
-		elif loss_wt < 0:
-			gross_wt -= abs(flt(loss_wt))
+	# if loss_wt:
+	# 	if loss_wt > 0:
+	# 		gross_wt += flt(loss_wt)
+	# 	elif loss_wt < 0:
+	# 		gross_wt -= abs(flt(loss_wt))
 
 	frappe.db.set_value(
 		"Manufacturing Operation",
@@ -106,23 +119,111 @@ def update_wt_detail(manufacturing_operation):
 	)
 
 
+def recalculate_manufacturing_operation_weights(mop_name, pending=None):
+	"""Recompute all weight buckets on a Manufacturing Operation from its
+	active MOP Log rows.
+
+	Called after bulk is_cancelled flips so the MOP stays in sync with the
+	remaining-active-rows balance.  ``pending`` is the in-flight MOPLog row
+	(self) when invoked from MOPLog.validate — it overrides the DB entry for
+	the same (item, batch) key, or drops it when is_cancelled=1.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT
+		    item_code,
+		    batch_no,
+		    qty_after_transaction_batch_based  AS qaf_batch,
+		    pcs_after_transaction_batch_based  AS pcs_batch,
+		    name,
+		    creation
+		FROM `tabMOP Log`
+		WHERE manufacturing_operation = %s
+		  AND is_cancelled = 0
+		ORDER BY creation ASC
+		""",
+		(mop_name,),
+		as_dict=True,
+	)
+
+	# Latest by (item, batch): ASC order means later rows overwrite earlier.
+	latest = {}
+	for row in rows:
+		key = (row["item_code"], row["batch_no"])
+		latest[key] = row
+
+	# Apply in-flight pending row (from MOPLog.validate).
+	if pending is not None:
+		key = (pending.item_code, pending.batch_no)
+		if cint(pending.is_cancelled):
+			latest.pop(key, None)
+		else:
+			latest[key] = {
+				"item_code": pending.item_code,
+				"batch_no": pending.batch_no,
+				"qaf_batch": flt(pending.qty_after_transaction_batch_based),
+				"pcs_batch": flt(pending.pcs_after_transaction_batch_based),
+			}
+
+	# Aggregate into weight buckets per item-type prefix.
+	buckets = {
+		"net_wt": 0.0,
+		"finding_wt": 0.0,
+		"diamond_wt": 0.0,
+		"diamond_wt_in_gram": 0.0,
+		"diamond_pcs": 0.0,
+		"gemstone_wt": 0.0,
+		"gemstone_wt_in_gram": 0.0,
+		"gemstone_pcs": 0.0,
+		"other_wt": 0.0,
+	}
+	for entry in latest.values():
+		first_char = (entry.get("item_code") or "")[:1]
+		prefix = FIELD_MAP.get(first_char)
+		if not prefix:
+			continue
+		qty = flt(entry.get("qaf_batch"))
+		pcs = flt(entry.get("pcs_batch"))
+		if prefix in ("diamond", "gemstone"):
+			buckets[f"{prefix}_wt"] += qty
+			buckets[f"{prefix}_wt_in_gram"] += flt(qty * 0.2, 3)
+			buckets[f"{prefix}_pcs"] += pcs
+		else:
+			buckets[f"{prefix}_wt"] += qty
+
+	frappe.db.set_value("Manufacturing Operation", mop_name, buckets)
+	update_wt_detail(mop_name)
+
+
 def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	item_code = row.get("item_code") or ""
 	if not item_code:
-		# nothing to log
 		return
 
 	first_char = item_code[0]
-	# safe numeric conversions (pcs might be None)
-	if doc.stock_entry_type == "Material Receive (WORK ORDER)":
-		pcs = -cint(row.get("pcs") or 0)
-		qty = -flt((row.get("qty") or 0.0), 3)
+	if doc.doctype == "Employee IR":
+		if first_char not in ("D", "G"):
+			pcs = 0
+		else:
+			pcs = row.get("pcs_change") or 0
+		qty = row.get("qty_change") or 0
 	else:
-		pcs = cint(row.get("pcs") or 0)
-		qty = flt((row.get("qty") or 0.0), 3)
+		if doc.stock_entry_type == "Material Receive (WORK ORDER)":
+			if first_char not in ("D", "G"):
+				pcs = 0
+			else:
+				pcs = -cint(row.get("pcs") or 0)
+			qty = -flt((row.get("qty") or 0.0), 3)
+		else:
+			pcs = cint(row.get("pcs") or 0)
+			qty = flt((row.get("qty") or 0.0), 3)
 	batch_no = row.get("batch_no")
-	mwo = doc.get("manufacturing_work_order")
-	mop_op = row.get("manufacturing_operation")
+	mwo = (
+		row.get("manufacturing_work_order")
+		if doc.doctype == "Employee IR"
+		else doc.get("manufacturing_work_order")
+	)
+	# mop_op = row.get("manufacturing_operation")
 
 	# prepare prefix pattern e.g. 'D%' or 'G%'
 	prefix_like = f"{first_char}%"
@@ -150,33 +251,16 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 		mwo,
 	]
 
-	previous_mop_qty = 0
-	previous_mop_pcs = 0
-
-	if mop_op:
-		sql += " AND manufacturing_operation = %s"
-		sql_params.append(mop_op)
-		previous_mop = frappe.db.get_value(
-			"Manufacturing Operation", mop_op, "previous_mop"
-		)
-		if previous_mop:
-			previous_mop_qty = (
-				frappe.db.get_value(
-					"Manufacturing Operation",
-					previous_mop,
-					FIELD_MAP.get(first_char) + "_wt",
-				)
-				or 0
-			)
-			if first_char in ("D", "G"):
-				previous_mop_pcs = (
-					frappe.db.get_value(
-						"Manufacturing Operation",
-						previous_mop,
-						FIELD_MAP.get(first_char) + "_pcs",
-					)
-					or 0
-				)
+	# if mop_op:
+	# 	previous_mop = frappe.db.get_value(
+	# 		"Manufacturing Operation", mop_op, "previous_mop"
+	# 	)
+	# 	if previous_mop:
+	# 		sql += " AND manufacturing_operation IN (%s, %s)"
+	# 		sql_params.extend([mop_op, previous_mop])
+	# 	else:
+	# 		sql += " AND manufacturing_operation = %s"
+	# 		sql_params.append(mop_op)
 
 	row_vals = frappe.db.sql(sql, tuple(sql_params), as_dict=True)
 
@@ -195,12 +279,12 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	)
 	last_mop_index = get_last_mop_index(row.manufacturing_operation)
 	# compute fields
-	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"]) + previous_mop_pcs
-	pcs_after_item = pcs + cint(stats["sum_pcs_item"]) + previous_mop_pcs
+	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"])
+	pcs_after_item = pcs + cint(stats["sum_pcs_item"])
 	pcs_after_batch = pcs + cint(stats["sum_pcs_batch"])
 
-	qty_after_prefix = qty + flt(stats["sum_qty_prefix"]) + previous_mop_qty
-	qty_after_item = qty + flt(stats["sum_qty_item"]) + previous_mop_qty
+	qty_after_prefix = qty + flt(stats["sum_qty_prefix"])
+	qty_after_item = qty + flt(stats["sum_qty_item"])
 	qty_after_batch = qty + flt(stats["sum_qty_batch"])
 	# create doc
 	mop_log = frappe.new_doc("MOP Log")
@@ -210,9 +294,12 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 	mop_log.pcs_after_transaction_item_based = pcs_after_item
 	mop_log.pcs_after_transaction_batch_based = pcs_after_batch
 
-	mop_log.from_warehouse = row.get("s_warehouse")
-	mop_log.to_warehouse = row.get("t_warehouse")
-	mop_log.voucher_type = "Stock Entry"
+	# Stock Entry Detail rows use s_warehouse/t_warehouse; MOP-Log-shaped dicts
+	# (e.g. from update_new_mop_wtg) use from_warehouse/to_warehouse. Accept both
+	# so next-operation baseline rows keep their warehouses.
+	mop_log.from_warehouse = row.get("s_warehouse") or row.get("from_warehouse")
+	mop_log.to_warehouse = row.get("t_warehouse") or row.get("to_warehouse")
+	mop_log.voucher_type = doc.doctype
 	mop_log.voucher_no = doc.name
 	mop_log.manufacturing_work_order = mwo
 	mop_log.manufacturing_operation = row.get("manufacturing_operation")
@@ -230,37 +317,59 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 
 
 def get_last_mop_index(manufacturing_operation, voucher_type=None, voucher_no=None):
-	filters = {"manufacturing_operation": manufacturing_operation, "is_cancelled": 0}
-	if voucher_type:
-		filters["voucher_type"] = voucher_type
-	if voucher_no:
-		filters["voucher_no"] = voucher_no
-
-	last_log = frappe.db.get_value(
-		"MOP Log",
-		filters,
-		"max(flow_index) as flow_index",
+	MOPLog = DocType("MOP Log")
+	query = (
+		frappe.qb.from_(MOPLog)
+		.select(Max(MOPLog.flow_index))
+		.where(
+			(MOPLog.manufacturing_operation == manufacturing_operation)
+			& (MOPLog.is_cancelled == 0)
+		)
 	)
-	return last_log
+	if voucher_type:
+		query = query.where(MOPLog.voucher_type == voucher_type)
+	if voucher_no:
+		query = query.where(MOPLog.voucher_no == voucher_no)
+
+	result = query.run(as_list=True)
+	return result[0][0] if result and result[0] else None
 
 
-def get_current_mop_balance_rows(manufacturing_operation, include_fields=None):
+def get_current_mop_balance_rows(
+	manufacturing_operation, include_fields=None, keys=None, exclude_voucher_no=None
+):
 	"""Return the latest non-cancelled MOP Log row per item/batch for a MOP.
 
 	Loss-attribution rows (log_category="Loss Attribution") ARE included —
 	they post a real qty_change reduction so the balance after loss must be
 	reflected to downstream readers (e.g. Make Receive Entry availability,
 	manual loss validation, EOD SRE reconciliation).
+
+	When ``keys`` is provided as a list of ``(item_code, batch_no)`` tuples,
+	the underlying ``frappe.db.get_all`` is narrowed by the distinct
+	``item_code`` set so popups never scan unrelated items. The composite
+	index ``mop_balance_idx`` (added by ``add_make_receive_entry_indexes``)
+	covers ``(manufacturing_operation, is_cancelled, item_code, batch_no,
+	creation)`` so the narrowed filter is index-served. The Python-side
+	dedup picks the latest row per ``(item_code, batch_no)``.
 	"""
 	fields = list(
 		dict.fromkeys((include_fields or current_balance_fields) + ["name", "creation"])
 	)
+	filters = {
+		"manufacturing_operation": manufacturing_operation,
+		"is_cancelled": 0,
+	}
+	if exclude_voucher_no:
+		filters["voucher_no"] = ["!=", exclude_voucher_no]
+	if keys:
+		item_codes = sorted({k[0] for k in keys if k and k[0]})
+		if not item_codes:
+			return []
+		filters["item_code"] = ["in", item_codes]
 	mop_logs = frappe.db.get_all(
 		"MOP Log",
-		filters={
-			"manufacturing_operation": manufacturing_operation,
-			"is_cancelled": 0,
-		},
+		filters=filters,
 		fields=fields,
 		order_by="creation desc",
 	)
@@ -272,8 +381,73 @@ def get_current_mop_balance_rows(manufacturing_operation, include_fields=None):
 		key = (log.get("item_code"), log.get("batch_no"))
 		if key not in latest_by_key:
 			latest_by_key[key] = log
-
 	return list(reversed(list(latest_by_key.values())))
+
+
+def get_mop_transfer_pcs_rows(manufacturing_work_order, keys=None):
+	"""Return per-row incoming-transfer PCS rows for a MWO, grouped by item/batch.
+
+	Unlike :func:`get_current_mop_balance_rows` (which dedups to the single
+	latest *running balance* per ``(item_code, batch_no)``), this keeps EVERY
+	incoming Material Transfer row so the Make Receive Entry popup can show the
+	PCS that belongs to each individual reserved batch line instead of the
+	batch-wide aggregate. Each Material Transfer (WORK ORDER) row posts one MOP
+	Log row carrying that row's own ``pcs_change``/``qty_change``; receiving and
+	loss rows post ``pcs_change <= 0`` and are excluded here.
+
+	Scoped to the **Manufacturing Work Order**, not a single MOP: the original
+	per-row transfer (with ``pcs_change > 0``) is logged once at the operation
+	that first received the material (e.g. Diamond Bagging). When work hands off
+	to the next operation, MOP Log carries only a balance *clone* with
+	``pcs_change = 0`` (qty/pcs change attributable to a handoff is zero), so a
+	MOP-scoped query at a downstream operation would find no per-row rows and the
+	popup would fall back to the batch aggregate. The MWO is constant across all
+	its operations, so this recovers the original 24/8 style breakdown regardless
+	of which operation opens the popup.
+
+	Returns ``{(item_code, batch_no): [{"qty_change", "pcs_change", "name"}, ...]}``
+	ordered oldest-first within each key. Rows missing ``pcs_change``/``qty_change``
+	(e.g. unit-test fixtures that mock unrelated docs through the same patched
+	``frappe.db.get_all``) are skipped so callers degrade to their own fallback.
+	"""
+	filters = {
+		"manufacturing_work_order": manufacturing_work_order,
+		"is_cancelled": 0,
+		"pcs_change": [">", 0],
+	}
+	if keys:
+		item_codes = sorted({k[0] for k in keys if k and k[0]})
+		if not item_codes:
+			return {}
+		filters["item_code"] = ["in", item_codes]
+	rows = frappe.db.get_all(
+		"MOP Log",
+		filters=filters,
+		fields=[
+			"item_code",
+			"batch_no",
+			"qty_change",
+			"pcs_change",
+			"name",
+			"creation",
+		],
+		order_by="creation asc",
+	)
+	transfer_by_key: dict[tuple, list] = {}
+	for row in rows:
+		# Defensive: the unit tests patch frappe.db.get_all globally and feed
+		# back SRE dicts; those lack pcs_change/qty_change, so skip them.
+		if row.get("pcs_change") is None or row.get("qty_change") is None:
+			continue
+		key = (row.get("item_code"), row.get("batch_no"))
+		transfer_by_key.setdefault(key, []).append(
+			{
+				"qty_change": flt(row.get("qty_change")),
+				"pcs_change": cint(row.get("pcs_change")),
+				"name": row.get("name"),
+			}
+		)
+	return transfer_by_key
 
 
 def get_available_qty_pcs_for_mop_item(
@@ -314,15 +488,14 @@ def get_available_qty_pcs_for_mop_item(
 
 	if mop_log_balance_map is None:
 		rows = get_current_mop_balance_rows(manufacturing_operation)
+
 		mop_log_balance_map = {
 			(row.get("item_code"), row.get("batch_no")): row for row in rows
 		}
-
 	mop_row = mop_log_balance_map.get((item_code, batch_no))
 	mop_qty_raw = mop_row.get("qty_after_transaction_batch_based") if mop_row else None
 	mop_pcs_raw = mop_row.get("pcs_after_transaction_batch_based") if mop_row else None
 	mop_log_reference = mop_row.get("name") if mop_row else None
-
 	qty_candidates = []
 	if sre_remaining_qty is not None:
 		qty_candidates.append(flt(sre_remaining_qty))
@@ -359,6 +532,7 @@ def get_available_qty_pcs_for_mop_item(
 		"available_pcs": available_pcs,
 		"is_pcs_item": is_pcs_item,
 		"mop_log_reference": mop_log_reference,
+		"mop_data_present": mop_log_reference is not None,
 	}
 
 
@@ -511,16 +685,88 @@ def resolve_employee_ir_issue_voucher_for_receive(doc, row):
 	return rows[0][0] if rows else None
 
 
+def get_employee_ir_loss_map(eir_doc):
+	"""Build the (mop, mwo, item_code, batch_no) → loss bucket map.
+
+	The bucket records loss in the *MOP Log UOM* (carats for D/G, grams for
+	M/F/O) — there is NO carat→gram conversion at this layer. Conversion to
+	grams happens once, downstream, in MOPLog.validate when it writes
+	``diamond_wt_in_gram`` / ``gemstone_wt_in_gram`` as ``qty_after_transaction
+	* 0.2``.
+
+	Both ``employee_loss_details`` (auto, M/F-only) and
+	``manually_book_loss_details`` (any prefix) feed the map. The bucket
+	carries enough audit data to populate ``loss_weight`` (grams, for
+	display), ``loss_source_row``, and ``loss_type`` on the combined receive
+	MOP Log row downstream.
+	"""
+	loss_map = {}
+
+	def _add(row, loss_type):
+		if not (row.manufacturing_operation and row.item_code):
+			return
+		key = (
+			row.manufacturing_operation,
+			row.manufacturing_work_order,
+			row.item_code,
+			row.batch_no,
+		)
+		bucket = loss_map.setdefault(
+			key,
+			{
+				"loss_qty": 0.0,
+				"loss_pcs": 0,
+				"loss_types": set(),
+				"source_rows": [],
+				"loss_weight_grams": 0.0,
+			},
+		)
+		qty = flt(row.proportionally_loss)
+		bucket["loss_qty"] += qty
+		# loss_weight_grams is for AUDIT only; convert D/G carat→gram here.
+		first_char = row.item_code[0] if row.item_code else ""
+		if first_char in ("D", "G"):
+			bucket["loss_weight_grams"] += qty * 0.2
+			bucket["loss_pcs"] += cint(getattr(row, "pcs", 0) or 0)
+		else:
+			bucket["loss_weight_grams"] += qty
+		bucket["loss_types"].add(loss_type)
+		if row.name:
+			bucket["source_rows"].append(row.name)
+
+	for r in eir_doc.get("employee_loss_details") or []:
+		_add(r, "Auto Employee Loss")
+	for r in eir_doc.get("manually_book_loss_details") or []:
+		_add(r, "Manually Booked Loss")
+
+	# Sets aren't JSON-stable; flatten to a sorted list.
+	for v in loss_map.values():
+		v["loss_types"] = sorted(v["loss_types"])
+	return loss_map
+
+
 def create_mop_log_for_employee_ir_receive(
 	doc, row, from_warehouse, to_warehouse, stock_entry_name=[]
 ):
-	"""Create MOP Log entries for the Receive side of Employee IR.
+	"""Audit-only MOP Log clones on the SOURCE MOP for Employee IR Receive.
 
 	Reads the MOP Logs created during the matching Employee IR **Issue** only
-	(``voucher_no`` = Issue name), not every historical Employee IR log on the MOP.
+	(``voucher_no`` = Issue name), not every historical Employee IR log on
+	the MOP.
 
-	The MOPLog.validate() hook automatically updates Manufacturing Operation weight
-	fields (net_wt, finding_wt, diamond_wt, etc.) based on the logged item data.
+	**Source MOP is left unchanged.** Per the new contract, loss-driven
+	weight reductions land on the NEW Manufacturing Operation only — see
+	``update_new_mop_wtg``, which both clones the source baseline AND
+	subtracts loss in-place per ``(item, batch)``. The rows written here
+	are pure clones (qty_change=0) of the issue-tier balance so audit
+	metadata (loss_weight, loss_type, loss_source_row) stays attached to a
+	real MOP Log row on the source MOP for traceability, but no balance
+	shift happens.
+
+	UOM rule: ``qty_after_transaction*`` stay in the item's stock UOM
+	(carats for D/G, grams for M/F/O), copied verbatim from the source log.
+	MOPLog.validate's prefix-bucket write is a no-op here because the qty
+	matches what is already on the source MOP.
 	"""
 	issue_voucher = resolve_employee_ir_issue_voucher_for_receive(doc, row)
 	mop_logs = []
@@ -566,6 +812,7 @@ def create_mop_log_for_employee_ir_receive(
 					frappe.db.get_all(
 						"Stock Entry",
 						filters={
+							"stock_entry_type": "Material Transfer (WORK ORDER)",
 							"employee_ir": ["is", "not set"],
 							"manufacturing_operation": row.manufacturing_operation,
 							"docstatus": 1,
@@ -580,31 +827,112 @@ def create_mop_log_for_employee_ir_receive(
 		)
 		or []
 	)
+	mop_logs += (
+		frappe.db.get_all(
+			"MOP Log",
+			{
+				"manufacturing_operation": row.manufacturing_operation,
+				"is_cancelled": 0,
+				"voucher_type": "Stock Entry",
+				"voucher_no": [
+					"in",
+					frappe.db.get_all(
+						"Stock Entry",
+						filters={
+							"stock_entry_type": "Material Receive (WORK ORDER)",
+							"manufacturing_operation": row.manufacturing_operation,
+							"docstatus": 1,
+						},
+						pluck="name",
+					),
+				],
+			},
+			select_fields,
+			order_by="creation asc",
+		)
+		or []
+	)
+
+	# Build the EIR-wide loss map once, then narrow to entries that match
+	# THIS receive row's MOP+MWO. Prior loss buckets get consumed exactly
+	# once across the source-log loop; if multiple source logs match the
+	# same (item, batch), only the first one absorbs the loss to prevent
+	# double-subtraction.
+	full_loss_map = get_employee_ir_loss_map(doc)
+	consumed_loss_keys = set()
+
+	# Build the EIR-wide loss map once, then narrow to entries that match
+	# THIS receive row's MOP+MWO. Prior loss buckets get consumed exactly
+	# once across the source-log loop; if multiple source logs match the
+	# same (item, batch), only the first one absorbs the loss to prevent
+	# double-subtraction.
+	full_loss_map = get_employee_ir_loss_map(doc)
+	consumed_loss_keys = set()
 
 	for log in mop_logs:
+		loss_key = (
+			row.manufacturing_operation,
+			row.manufacturing_work_order,
+			log.item_code,
+			log.batch_no,
+		)
+		loss = (
+			full_loss_map.get(loss_key) if loss_key not in consumed_loss_keys else None
+		)
+
+		# SOURCE MOP audit clone: qty_change=0, balances copied verbatim.
+		# Loss is applied to the NEW MOP inside update_new_mop_wtg's
+		# baseline-clone loop (one row per item/batch, already reduced).
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = log.item_code
-		mop_log.pcs_after_transaction = log.pcs_after_transaction
-		mop_log.pcs_after_transaction_item_based = log.pcs_after_transaction_item_based
-		mop_log.pcs_after_transaction_batch_based = (
+		mop_log.qty_change = 0
+		mop_log.pcs_change = 0
+
+		mop_log.qty_after_transaction = flt(log.qty_after_transaction)
+		mop_log.qty_after_transaction_item_based = flt(
+			log.qty_after_transaction_item_based
+		)
+		mop_log.qty_after_transaction_batch_based = flt(
+			log.qty_after_transaction_batch_based
+		)
+
+		mop_log.pcs_after_transaction = cint(log.pcs_after_transaction)
+		mop_log.pcs_after_transaction_item_based = cint(
+			log.pcs_after_transaction_item_based
+		)
+		mop_log.pcs_after_transaction_batch_based = cint(
 			log.pcs_after_transaction_batch_based
 		)
+
 		mop_log.from_warehouse = from_warehouse
 		mop_log.to_warehouse = to_warehouse
 		mop_log.voucher_type = "Employee IR"
 		mop_log.voucher_no = doc.name
 		mop_log.row_name = row.name
-		mop_log.qty_after_transaction = log.qty_after_transaction
-		mop_log.qty_after_transaction_item_based = log.qty_after_transaction_item_based
-		mop_log.qty_after_transaction_batch_based = (
-			log.qty_after_transaction_batch_based
-		)
 		mop_log.is_synced = 0
 		mop_log.manufacturing_operation = row.manufacturing_operation
 		mop_log.manufacturing_work_order = row.manufacturing_work_order
 		mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
 		mop_log.batch_no = log.batch_no
 		mop_log.flow_index = log.flow_index + 1
+
+		# Carry loss audit metadata on the combined row (joined when more
+		# than one loss-detail row contributes). We deliberately do NOT set
+		# log_category="Loss Attribution" — that label is reserved for
+		# pre-existing legacy audit rows and would cause downstream
+		# consumers to mis-classify this real movement row.
+		if loss:
+			consumed_loss_keys.add(loss_key)
+			mop_log.loss_weight = flt(loss.get("loss_weight_grams"), 3)
+			loss_types = loss.get("loss_types") or []
+			mop_log.loss_type = ", ".join(loss_types) if loss_types else None
+			source_rows = loss.get("source_rows") or []
+			# loss_source_row is a Data field — guard against length blow-up
+			# by capping at 140 chars (Frappe Data default). Truncated
+			# entries still carry the first N references.
+			joined = ",".join(source_rows)
+			mop_log.loss_source_row = joined[:140] if len(joined) > 140 else joined
+
 		mop_log.save()
 
 

@@ -10,7 +10,7 @@ they patch frappe DB / doc APIs to avoid needing a populated bench site.
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _make_mo(name="MOP-1", mwo="MWO-1", department="DEPT-1", status="WIP"):
@@ -24,7 +24,11 @@ def _make_mo(name="MOP-1", mwo="MWO-1", department="DEPT-1", status="WIP"):
 	return mo
 
 
-class TestGetMakeReceiveEntryRows(FrappeTestCase):
+class TestGetMakeReceiveEntryRows(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
 		return_value=[(0,)],
@@ -74,7 +78,8 @@ class TestGetMakeReceiveEntryRows(FrappeTestCase):
 			)
 		]
 
-		rows = get_make_receive_entry_rows("MOP-1")
+		result = get_make_receive_entry_rows("MOP-1")
+		rows = result["rows"]
 
 		# get_all is called twice now: first for SRE listing, second for MOP
 		# Log balance precompute. Inspect the first call (the SRE filter).
@@ -84,7 +89,15 @@ class TestGetMakeReceiveEntryRows(FrappeTestCase):
 		self.assertEqual(len(rows), 1)
 		self.assertEqual(rows[0]["available_to_receive_qty"], 10.0)
 		self.assertEqual(rows[0]["reserved_qty"], 10.0)
+		# Mock returns the SRE list for both `frappe.db.get_all` calls
+		# (doctype-collision: only one mock is active for the whole
+		# function), so the MOP Log lookup picks up the SRE dict and
+		# `mop_available_qty` reflects whatever `qty_after_transaction_batch_based`
+		# evaluates to on it (None → 0). The structured response shape
+		# is what we check here.
 		self.assertEqual(rows[0]["mop_available_qty"], 0)
+		self.assertEqual(result["active_sre_count"], 1)
+		self.assertEqual(result["skipped"], [])
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_doc"
@@ -101,10 +114,14 @@ class TestGetMakeReceiveEntryRows(FrappeTestCase):
 			get_make_receive_entry_rows("MOP-1")
 
 
-class TestCreateMrWoStockEntryValidation(FrappeTestCase):
+class TestCreateMrWoStockEntryValidation(IntegrationTestCase):
 	"""Server-side validation must reject over-receive even if the client
 	bypasses its own checks.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _patch_environment(self, sre_kwargs):
 		"""Common patch stack for create_mr_wo_stock_entry.
@@ -209,7 +226,11 @@ class TestCreateMrWoStockEntryValidation(FrappeTestCase):
 		mock_new_doc.assert_not_called()
 
 
-class TestRequestIdIdempotency(FrappeTestCase):
+class TestRequestIdIdempotency(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value"
 	)
@@ -280,7 +301,11 @@ def _patch_create_mr_environment(test_self, sre_data, get_value_extra=None):
 	return started
 
 
-class TestCreateMrWoStockEntryEdgeCases(FrappeTestCase):
+class TestCreateMrWoStockEntryEdgeCases(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _sre(self, **overrides):
 		base = frappe._dict(
 			{
@@ -476,8 +501,12 @@ class TestCreateMrWoStockEntryEdgeCases(FrappeTestCase):
 		started[-1].assert_not_called()
 
 
-class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
+class TestGetMakeReceiveEntryRowsFilters(IntegrationTestCase):
 	"""Listing must enforce active SRE only, MWO scope, and remaining-qty > 0."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
@@ -551,7 +580,7 @@ class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
 			),
 		]
 
-		rows = get_make_receive_entry_rows("MOP-1")
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
 		self.assertEqual(len(rows), 1)
 		self.assertEqual(rows[0]["stock_reservation_entry"], "SRE-ACTIVE")
 		self.assertAlmostEqual(rows[0]["available_to_receive_qty"], 6.0)
@@ -598,8 +627,10 @@ class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
 		filters = kwargs["filters"]
 		self.assertEqual(filters["docstatus"], 1)
 		self.assertEqual(filters["manufacturing_work_order"], "MWO-1")
-		# No hardcoded status whitelist (Correction 2).
-		self.assertNotIn("status", filters)
+		# Status filter excludes terminal-state SREs (Cancelled, Delivered)
+		# per the MWO-scope fix; docstatus=1 alone is not sufficient because
+		# ERPNext keeps Cancelled SREs at docstatus=1 with status flipped.
+		self.assertEqual(filters["status"], ["not in", ("Cancelled", "Delivered")])
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
@@ -658,7 +689,7 @@ class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
 			)
 		]
 
-		rows = get_make_receive_entry_rows("MOP-1")
+		rows = get_make_receive_entry_rows("MOP-1")["rows"]
 		self.assertEqual(len(rows), 1)
 		# 6 reserved - 0 delivered = 6 SRE remaining; MOP unmocked = 0 (no
 		# data signal). available_to_receive_qty falls back to SRE
@@ -668,10 +699,14 @@ class TestGetMakeReceiveEntryRowsFilters(FrappeTestCase):
 		self.assertAlmostEqual(rows[0]["already_received_qty"], 2.5)
 
 
-class TestPartialReceiveReplacement(FrappeTestCase):
+class TestPartialReceiveReplacement(IntegrationTestCase):
 	"""End-to-end mock-driven test: partial receive cancels original and
 	submits a replacement carrying every voucher_* and metadata field.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
@@ -749,7 +784,7 @@ class TestPartialReceiveReplacement(FrappeTestCase):
 		original_sre.manufacturing_operation = "MOP-1"
 		mock_get_doc.side_effect = [mo, original_sre]
 
-		# 1: idempotency miss; 2: t_warehouse; 3: SRE re-fetch dict.
+		# 1: idempotency miss; 2: t_warehouse; 3: SRE re-fetch dict; 4: source warehouse for resolve_and_validate.
 		mock_get_value.side_effect = [
 			None,
 			"WH-Raw",
@@ -767,6 +802,7 @@ class TestPartialReceiveReplacement(FrappeTestCase):
 					"manufacturing_work_order": "MWO-1",
 				}
 			),
+			"WH-Src",
 		]
 
 		# new_doc is called twice: once for the Stock Entry, once for
@@ -830,11 +866,15 @@ class TestPartialReceiveReplacement(FrappeTestCase):
 		self.assertEqual(actions[0]["old"], "SRE-ORIG")
 
 
-class TestBuildReplacementSreZeroQty(FrappeTestCase):
+class TestBuildReplacementSreZeroQty(IntegrationTestCase):
 	"""Defensive guards in _build_replacement_sre: zero / sub-precision
 	remaining_qty and empty sb_entries must NOT trigger the
 	'Available Qty to Reserve is required' validation.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _original_sre(self, reservation_based_on="Qty"):
 		mock = MagicMock()
@@ -964,12 +1004,16 @@ class TestBuildReplacementSreZeroQty(FrappeTestCase):
 		new_sre.submit.assert_called_once()
 
 
-class TestPartialReceiveZeroBatchSkipsReplacement(FrappeTestCase):
+class TestPartialReceiveZeroBatchSkipsReplacement(IntegrationTestCase):
 	"""End-to-end zero-qty contract for the Make Receive Entry caller:
 	when a batch receive consumes the only positive batch row in full and
 	all other batch rows were already delivered, no replacement SRE is
 	created and no zero-qty SRE submit happens.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
@@ -1045,7 +1089,7 @@ class TestPartialReceiveZeroBatchSkipsReplacement(FrappeTestCase):
 			)
 		]
 
-		# get_value sequence: idempotency miss + t_warehouse + SRE re-fetch + sb_row re-fetch.
+		# get_value sequence: idempotency miss + t_warehouse + SRE re-fetch + sb_row re-fetch + source warehouse.
 		mock_get_value.side_effect = [
 			None,
 			"WH-Raw",
@@ -1066,6 +1110,7 @@ class TestPartialReceiveZeroBatchSkipsReplacement(FrappeTestCase):
 			frappe._dict(
 				{"name": "SB-1", "batch_no": "B1", "qty": 5.0, "delivered_qty": 0.0}
 			),
+			"WH-Src",
 		]
 
 		# new_doc called only for the Stock Entry — never for a replacement SRE
@@ -1105,7 +1150,7 @@ class TestPartialReceiveZeroBatchSkipsReplacement(FrappeTestCase):
 		self.assertIsNone(actions[0]["new"])
 
 
-class TestAvailableQtyMandatoryContract(FrappeTestCase):
+class TestAvailableQtyMandatoryContract(IntegrationTestCase):
 	"""Regression for the 'Available Qty to Reserve is required' bug.
 
 	ERPNext's Stock Reservation Entry.validate_mandatory requires
@@ -1113,6 +1158,10 @@ class TestAvailableQtyMandatoryContract(FrappeTestCase):
 	must populate this field, mirroring the existing project pattern in
 	doc_events/stock_entry.py:720.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _original_sre(self):
 		mock = MagicMock()

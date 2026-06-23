@@ -24,23 +24,29 @@ frappe.ui.form.on("SNC FG Details", {
 
 function set_html(frm) {
 	frappe.call({
-		method: "get_serial_summary",
-		doc: frm.doc,
+		method: "run_doc_method",
 		args: {
-			docname: frm.doc.name,
+			dt: frm.doc.doctype,
+			dn: frm.doc.name,
+			method: "get_serial_summary",
 		},
 		callback: function (r) {
-			frm.get_field("serial_summery").$wrapper.html(r.message);
+			if (r.message) {
+				frm.get_field("serial_summery").$wrapper.html(r.message);
+			}
 		},
 	});
 	frappe.call({
-		method: "get_bom_summary",
-		doc: frm.doc,
+		method: "run_doc_method",
 		args: {
-			docname: frm.doc.name,
+			dt: frm.doc.doctype,
+			dn: frm.doc.name,
+			method: "get_bom_summary",
 		},
 		callback: function (r) {
-			frm.get_field("bom_summery").$wrapper.html(r.message);
+			if (r.message) {
+				frm.get_field("bom_summery").$wrapper.html(r.message);
+			}
 		},
 	});
 }

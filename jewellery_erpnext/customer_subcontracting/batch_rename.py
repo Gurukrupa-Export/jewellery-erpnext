@@ -211,7 +211,7 @@ def create_repack_for_used_other(doc, method=None):
 		return
 
 	for item in doc.items:
-		if item.t_warehouse != "Central RM - GEPL":
+		if not getattr(item, "t_warehouse", "").startswith("Central RM"):
 			return
 
 	source_customer = (
@@ -263,6 +263,7 @@ def create_repack_for_used_other(doc, method=None):
 	matched_rows.sort(key=lambda x: x["batch_no"])
 
 	source_batch = next((d.batch_no for d in doc.items if d.batch_no), None)
+	source_warehouse = next((d.s_warehouse for d in doc.items if d.batch_no), None)
 
 	if not source_batch:
 		return
@@ -345,7 +346,7 @@ def create_repack_for_used_other(doc, method=None):
 					"item_code": parent_item,
 					"batch_no": source_batch,
 					"qty": converted_qty,
-					"s_warehouse": "Central RM - GEPL",
+					"s_warehouse": source_warehouse,
 					"customer": source_customer,
 					"inventory_type": "Regular Stock",
 					"is_finished_item": 0,
@@ -359,7 +360,7 @@ def create_repack_for_used_other(doc, method=None):
 					"item_code": parent_item,
 					"batch_no": parent_batch,
 					"qty": converted_qty,
-					"t_warehouse": "Central RM - GEPL",
+					"t_warehouse": source_warehouse,
 					"customer": owner,
 					"inventory_type": "Regular Stock",
 					"is_finished_item": 1,

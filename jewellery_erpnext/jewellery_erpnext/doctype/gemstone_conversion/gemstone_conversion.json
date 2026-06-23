@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "GCON.#####",
+ "autoname": "hash",
  "creation": "2024-02-02 21:38:56.883297",
  "default_view": "List",
  "doctype": "DocType",
@@ -283,7 +283,7 @@
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Gemstone Conversion",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

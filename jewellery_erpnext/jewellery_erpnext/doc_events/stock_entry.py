@@ -14,14 +14,18 @@ from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Sum
 from frappe.utils import cint, flt
 
-from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
-	create_repack_for_subcontracting,
-)
+# from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
+# 	create_repack_for_subcontracting,
+# )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
+)
+from jewellery_erpnext.jewellery_erpnext.lock_order import (
+	lock_bins_for_rows,
+	sorted_stock_rows,
 )
 from jewellery_erpnext.utils import (
 	get_item_from_attribute,
@@ -185,13 +189,43 @@ def validate_ir(self):
 
 
 def validate_pcs(self):
-	pcs_data = {}
+	# A single Material Request Item's qty can be split across several batch
+	# rows (see get_fifo_batches). The MR Item's PCS is the authoritative total
+	# for that item; it must be carried by exactly one row's worth of count so
+	# the per-item PCS is not multiplied by the number of batches.
+	#
+	# Historically every row after the first was zeroed — but a batch row that
+	# physically holds stock should never read 0 PCS. So each extra batch row
+	# now defaults to 1, and the first row absorbs the deduction. The per-item
+	# total is preserved: e.g. 71 split across two batches → 70 + 1 (not 71 + 0).
+	#
+	# The total is read from the MR Item (not the rows) so this stays idempotent
+	# when re-run on already-split rows — e.g. the MOP Stock Entry is a copy of
+	# the reserve Stock Entry and runs before_validate again.
+	rows_by_mri = {}
 	for row in self.items:
 		if row.material_request_item:
-			if pcs_data.get(row.material_request_item):
-				row.pcs = 0
-			else:
-				pcs_data[row.material_request_item] = row.pcs
+			rows_by_mri.setdefault(row.material_request_item, []).append(row)
+
+	for mri, rows in rows_by_mri.items():
+		if len(rows) <= 1:
+			continue
+		total = cint(frappe.db.get_value("Material Request Item", mri, "pcs"))
+		if total <= 0:
+			# No authoritative total — leave the rows untouched.
+			continue
+		first, extras = rows[0], rows[1:]
+		if total > len(extras):
+			# Enough to keep at least 1 on every row.
+			for r in extras:
+				r.pcs = 1
+			first.pcs = total - len(extras)
+		else:
+			# Not enough PCS to spread one-each; keep the whole count on the
+			# first row (prior behaviour) rather than driving it below 1.
+			for r in extras:
+				r.pcs = 0
+			first.pcs = total
 	self.flags.ignore_mandatory = True
 
 
@@ -383,7 +417,7 @@ def validate_metal_properties(doc):
 					as_dict=True,
 				)
 
-	manufacturer = MANUFACTURER
+	manufacturer = MANUFACTURER or doc.manufacturer
 	company_validations = (
 		frappe.db.get_value(
 			"Manufacturing Setting",
@@ -542,22 +576,19 @@ def on_cancel(self, method=None):
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
 
 
+def prelock_bins(self, method=None):
+	"""RULE B (canonical lock order): before ERPNext posts SLEs / updates Bins, acquire a
+	FOR UPDATE lock on every (item_code, warehouse) Bin this Stock Entry will touch, in
+	sorted order. Concurrent SE submits then acquire shared Bins in the SAME sequence,
+	which removes the reverse-order cycles that cause 1213 deadlocks. Applied to ALL Stock
+	Entries (one place covers MR / repack / metal-conversion / main-slip injection / EOD /
+	loss / SNC etc.). Additive — ERPNext locks these same Bins during posting anyway; this
+	only fixes the acquisition order."""
+	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
+
+
 def before_submit(self, method):
 	# validation_for_stock_entry_submission(self)
-	main_slip = self.to_main_slip or self.main_slip
-	subcontractor = self.subcontractor or self.to_subcontractor
-	if (
-		not self.auto_created
-		and self.stock_entry_type != "Manufacture"
-		and (
-			(
-				main_slip
-				and frappe.db.get_value("Main Slip", main_slip, "for_subcontracting")
-			)
-			or (self.manufacturing_operation and subcontractor)
-		)
-	):
-		create_repack_for_subcontracting(self, self.subcontractor, main_slip)
 	if self.stock_entry_type != "Manufacture":
 		self.posting_time = frappe.utils.nowtime()
 
@@ -566,6 +597,27 @@ def before_submit(self, method):
 
 def onsubmit(self, method):
 	validate_items(self)
+	# Hard skip reservation logic for Product Certification Receive
+	# (Fire Assy Service / XRF Services), regardless of reservation settings.
+	pc_name = getattr(self, "product_certification", None)
+	if pc_name:
+		pc = frappe.db.get_value(
+			"Product Certification",
+			pc_name,
+			["service_type", "type"],
+			as_dict=True,
+		)
+		if (
+			pc
+			and pc.type == "Receive"
+			and pc.service_type
+			in [
+				"Fire Assy Service",
+				"XRF Services",
+			]
+		):
+			return
+
 	types_for_reservation = frappe.db.get_all(
 		"Stock Entry Type To Reservation",
 		filters={"parent": "MOP Settings"},
@@ -641,10 +693,12 @@ def stock_reservation_entry_for_mwo(self):
 		self.manufacturing_order,
 		["sales_order", "sales_order_item", "manufacturer"],
 	)
-	voucher_qty_row = frappe.db.get_values(
-		"Material Request",
-		{"manufacturing_order": self.manufacturing_order, "docstatus": ["!=", 2]},
-		["sum(custom_total_quantity)"],
+	voucher_qty_row = frappe.db.sql(
+		"""
+        SELECT sum(custom_total_quantity) FROM `tabMaterial Request`
+        WHERE manufacturing_order=%s AND docstatus!=2
+        """,
+		(self.manufacturing_order,),
 	)
 	base_mr_voucher_qty = None
 	if voucher_qty_row and voucher_qty_row[0] and voucher_qty_row[0][0] is not None:
@@ -660,7 +714,19 @@ def stock_reservation_entry_for_mwo(self):
 				* (flt(addition_maximum_item__tolerance_percentage) / 100)
 			)
 
-	for row in self.items:
+	# RULE B (canonical lock order): pre-lock every inbound Bin this reservation will
+	# touch, in sorted (item_code, warehouse) order, so concurrent Stock Entry submits
+	# acquire shared Bins in the same sequence — breaks 1213 reverse-order and
+	# Series<->Bin deadlock cycles. Skipped for Material Receive (WORK ORDER), which
+	# only writes MOP Logs and reserves nothing.
+	if self.stock_entry_type != "Material Receive (WORK ORDER)":
+		lock_bins_for_rows(
+			[r for r in self.items if r.get("t_warehouse")], "t_warehouse"
+		)
+	# RULE A: iterate in canonical (item_code, warehouse, batch_no) order. A stable sort
+	# keeps rows competing for the same key in their original relative order, so the
+	# reserved quantity each row receives is unchanged.
+	for row in sorted_stock_rows(self.items, warehouse_attr="t_warehouse"):
 		if self.stock_entry_type == "Material Receive (WORK ORDER)":
 			create_mop_log(self, row, is_synced=True)
 			continue
@@ -686,13 +752,22 @@ def stock_reservation_entry_for_mwo(self):
 		# the same transaction. Reserve the inbound line qty when this SE is tied to an EIR.
 		# Gate on is_eir_injection — without the gate, regular Repack/Manufacture SEs would
 		# create SREs with no reservable qty, regressing test_skips_when_no_reservable_qty.
-		if is_eir_injection and qty_to_be_reserved <= 0 and flt(row.qty) > 0:
+		if qty_to_be_reserved <= 0 and flt(row.qty) > 0:
 			qty_to_be_reserved = flt(row.qty)
 		if qty_to_be_reserved <= 0:
-			continue
+			frappe.throw(
+				_(
+					"No available stock to reserve for Item {0} in Warehouse {1} in batch {2} available: {3}"
+				).format(
+					row.item_code,
+					row.t_warehouse,
+					row.batch_no,
+					available_qty_to_reserve,
+				)
+			)
 
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			"Sales Order", sales_order, sales_order_item
+			row.item_code, "Sales Order", sales_order, sales_order_item
 		)
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
@@ -1470,7 +1545,7 @@ def group_se_items_and_update_mop_items(doc, method):
 	doc.set("custom_mop_items", [])
 
 	for row in doc.items:
-		mop_row = copy.deepcopy(row.__dict__)
+		mop_row = copy.deepcopy(row.as_dict())
 		mop_row["name"] = None
 		mop_row["idx"] = None
 
@@ -1535,3 +1610,42 @@ def get_last_mwo_wh_based_on_index(mwo):
 		"MOP Log", filters, ["max(flow_index) as flow_index", "name", "to_warehouse"]
 	)
 	return last_index, last_log_name, to_warehouse
+
+
+def consume_stock_reservation_entry(sre_doc, update_bin=True):
+	"""Mark a Stock Reservation Entry as consumed/delivered instead of cancelling it.
+
+	Sets ``delivered_qty = reserved_qty`` and updates the status to "Delivered".
+	This keeps the SRE record intact for audit / tracking while properly releasing
+	the Bin's reserved-stock counter (ERPNext's formula:
+	``reserved = reserved_qty - delivered_qty - transferred_qty - consumed_qty``).
+
+	If the SRE has Serial and Batch child entries (``sb_entries``), each child row's
+	``delivered_qty`` is also set to match its ``qty`` so the batch-level reservation
+	is released as well.
+
+	Call ``frappe.clear_document_cache("Bin")`` before/after as needed — just like
+	the old cancel flow did.
+	"""
+	from erpnext.stock.utils import get_or_make_bin
+
+	sre_doc.flags.ignore_permissions = True
+
+	# Update batch-level child entries if present
+	if sre_doc.reservation_based_on == "Serial and Batch" and sre_doc.sb_entries:
+		for entry in sre_doc.sb_entries:
+			entry.delivered_qty = flt(entry.qty)
+			entry.db_update()
+
+	# Set delivered_qty = reserved_qty → triggers status "Delivered"
+	sre_doc.db_set("delivered_qty", flt(sre_doc.reserved_qty), update_modified=True)
+	sre_doc.delivered_qty = flt(sre_doc.reserved_qty)
+
+	# Explicitly set status to "Delivered"
+	sre_doc.update_status(status="Delivered")
+
+	# Refresh bin reserved stock so the physical stock becomes available
+	if update_bin:
+		bin_name = get_or_make_bin(sre_doc.item_code, sre_doc.warehouse)
+		bin_doc = frappe.get_cached_doc("Bin", bin_name)
+		bin_doc.update_reserved_stock()

@@ -51,6 +51,7 @@ runs for SE types listed in **MOP Settings → Stock Entry Type To Reservation**
 from __future__ import annotations
 
 import frappe
+from erpnext.stock.doctype.batch.batch import get_batch_qty
 from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
 	get_auto_batch_nos,
 )
@@ -122,6 +123,21 @@ def _expand_source_rows_for_fifo(se, row):
 		consider_negative_batches=False,
 	)
 	batches = get_auto_batch_nos(kwargs) or []
+
+	# Transfer rows land in a MOP department warehouse where the EIR injection then
+	# creates a Stock Reservation Entry. ERPNext's SRE before_submit independently
+	# re-checks batch availability, so a plain FIFO pick can choose a batch that is
+	# already over-reserved at the destination and blow up with "Stock not available
+	# to reserve ... against Batch ...". Prefer source batches that are reservable at
+	# the destination; fall back to the plain FIFO result if none can cover `need`.
+	t_wh = row.get("t_warehouse") if isinstance(row, dict) else row.t_warehouse
+	if t_wh:
+		reservable = _select_fifo_batches_reservable_at_dest(
+			se, item_code, s_wh, t_wh, need
+		)
+		if reservable is not None:
+			batches = reservable
+
 	got = 0.0
 	positive = []
 	positive_batches = []
@@ -164,6 +180,97 @@ def _expand_source_rows_for_fifo(se, row):
 			line["customer"] = inv["custom_customer"]
 		out.append(line)
 	return out
+
+
+def _select_fifo_batches_reservable_at_dest(se, item_code, s_wh, t_wh, need):
+	"""Pick FIFO source batches that can also be *reserved* at the destination.
+
+	Walks the source warehouse batches in FIFO order, skips any batch that is
+	already over-reserved at ``t_wh`` (existing Stock Reservation Entries exceed
+	the batch's actual qty there), and allocates ``need`` across the rest. Returns
+	a list of ``frappe._dict(batch_no, qty)`` that covers ``need``, or ``None``
+	when the reservable batches cannot cover it (caller falls back to plain FIFO).
+	"""
+	all_batches = (
+		get_auto_batch_nos(
+			frappe._dict(
+				posting_date=se.posting_date,
+				posting_time=se.posting_time,
+				item_code=item_code,
+				warehouse=s_wh,
+				for_stock_levels=False,
+				consider_negative_batches=False,
+			)
+		)
+		or []
+	)
+	candidates = [b for b in all_batches if flt(b.get("qty")) > 0]
+	if not candidates:
+		return None
+
+	# Deterministic FIFO order by Batch creation, then batch name.
+	creation = {
+		b["name"]: b.get("creation")
+		for b in frappe.db.get_all(
+			"Batch",
+			filters={"name": ["in", [c.batch_no for c in candidates]]},
+			fields=["name", "creation"],
+		)
+	}
+	candidates.sort(key=lambda c: (creation.get(c.batch_no) or "", c.batch_no))
+
+	# Destination actual qty (ignoring reservations) and active reserved qty,
+	# per batch — one round-trip each.
+	dest_actual = {
+		d["batch_no"]: flt(d.get("qty"))
+		for d in (
+			get_batch_qty(
+				item_code=item_code, warehouse=t_wh, ignore_reserved_stock=True
+			)
+			or []
+		)
+	}
+	dest_reserved = {
+		r["batch_no"]: flt(r["qty"])
+		for r in frappe.db.sql(
+			"""
+			SELECT sbe.batch_no AS batch_no,
+			       SUM(sbe.qty - IFNULL(sbe.delivered_qty, 0)) AS qty
+			FROM `tabSerial and Batch Entry` sbe
+			JOIN `tabStock Reservation Entry` sre ON sbe.parent = sre.name
+			WHERE sre.docstatus = 1
+			  AND sre.item_code = %s
+			  AND sbe.warehouse = %s
+			GROUP BY sbe.batch_no
+			""",
+			(item_code, t_wh),
+			as_dict=True,
+		)
+	}
+
+	eps = 1e-6
+	allocation = []
+	remaining = need
+	for b in candidates:
+		if remaining <= eps:
+			break
+		# Over-reserved at the destination: even after the transfer adds qty, the
+		# batch's available-to-reserve would stay <= 0, so ERPNext would reject it.
+		if (
+			flt(dest_actual.get(b.batch_no, 0.0))
+			- flt(dest_reserved.get(b.batch_no, 0.0))
+			< -eps
+		):
+			continue
+		take = min(flt(b.qty), remaining)
+		if take <= eps:
+			continue
+		allocation.append(frappe._dict(batch_no=b.batch_no, qty=round(take, 6)))
+		remaining = round(remaining - take, 6)
+
+	if remaining > eps:
+		return None
+	return allocation
 
 
 def _apply_fifo_batches_to_stock_entry(se):
@@ -312,11 +419,7 @@ def _resolve_fallback_inject_segments(eir, mwo_name, total_extra, dept_wh):
 			).format(mwo_name)
 		)
 
-	colours = []
-	if cint(mwo.get("multicolour")) and mwo.get("allowed_colours"):
-		colours = [c.strip() for c in mwo["allowed_colours"].split(",") if c.strip()]
-	if not colours:
-		colours = [mwo.get("metal_colour") or None]
+	colours = [mwo.get("metal_colour") or None]
 
 	per_colour_qty = round(float(total_extra) / len(colours), 3)
 	raw_transfer = []

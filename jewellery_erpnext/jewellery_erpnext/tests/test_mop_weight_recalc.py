@@ -15,7 +15,7 @@ Covers the central MOP weight bucket recompute:
 
 from unittest.mock import MagicMock, patch
 
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
 def _row(item_code, batch_no, qaf_batch, pcs_batch=0, name=None, creation=None):
@@ -39,7 +39,11 @@ class _RecalcHarness:
 		self.set_value_calls.append((doctype, name, value))
 
 
-class TestRecalcManufacturingOperationWeights(FrappeTestCase):
+class TestRecalcManufacturingOperationWeights(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _run(self, db_rows, pending=None, prev_mop_gross=0.0, mop_state=None):
 		"""Drive the helper with mocked DB queries.
 
@@ -70,18 +74,28 @@ class TestRecalcManufacturingOperationWeights(FrappeTestCase):
 			if isinstance(value, dict):
 				default_state.update(value)
 
-		def fake_get_value(doctype, name, fields):
-			# update_wt_detail reads either the multi-field tuple from MOP
-			# or the previous MOP gross. Distinguish by `fields` shape.
-			if isinstance(fields, list):
-				return tuple(default_state.get(f, 0) for f in fields)
-			# scalar field, e.g. previous_mop's gross_wt
-			return prev_mop_gross
+		real_get_value = mod.frappe.db.get_value
+
+		def fake_get_value(doctype, name, fields, *args, **kwargs):
+			if doctype == "Manufacturing Operation":
+				# update_wt_detail reads either the multi-field tuple from MOP
+				# or the previous MOP gross. Distinguish by `fields` shape.
+				if isinstance(fields, list):
+					return tuple(default_state.get(f, 0) for f in fields)
+				# scalar field, e.g. previous_mop's gross_wt
+				return prev_mop_gross
+			return real_get_value(doctype, name, fields, *args, **kwargs)
 
 		with (
 			patch.object(mod.frappe.db, "sql", return_value=db_rows),
 			patch.object(mod.frappe.db, "set_value", side_effect=fake_set_value),
 			patch.object(mod.frappe.db, "get_value", side_effect=fake_get_value),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.flt",
+				side_effect=lambda x, *args, **kwargs: float(x)
+				if x is not None
+				else 0.0,
+			),
 		):
 			mod.recalculate_manufacturing_operation_weights("MOP-X", pending=pending)
 

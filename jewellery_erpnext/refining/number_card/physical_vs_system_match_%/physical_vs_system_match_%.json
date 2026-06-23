@@ -1,0 +1,23 @@
+{
+ "aggregate_function_based_on": "difference_quantity",
+ "creation": "2026-06-16 15:42:27.798219",
+ "currency": "INR",
+ "docstatus": 0,
+ "doctype": "Number Card",
+ "document_type": "Refining Entry",
+ "function": "Average",
+ "idx": 0,
+ "is_public": 0,
+ "is_standard": 1,
+ "label": "Physical vs System Match %",
+ "modified": "2026-06-16 15:42:27.798219",
+ "modified_by": "Administrator",
+ "module": "Refining",
+ "name": "Physical vs System Match %",
+ "owner": "Administrator",
+ "report_function": "Sum",
+ "show_full_number": 0,
+ "show_percentage_stats": 1,
+ "stats_time_interval": "Daily",
+ "type": "Document Type"
+}

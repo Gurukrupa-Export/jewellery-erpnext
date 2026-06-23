@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "TB-.####",
+ "autoname": "hash",
  "creation": "2026-02-09 11:58:09.987578",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -69,6 +69,7 @@
   "finding_bom_amount",
   "making_charge",
   "total_bom_amount",
+  "certification_amount",
   "fg_purchase_section",
   "making_fg_purchase",
   "diamond_fg_purchase",
@@ -185,25 +186,25 @@
    "fieldtype": "Column Break"
   },
   {
+   "default": "3",
    "fieldname": "doc_pricision",
    "fieldtype": "Int",
-   "label": "Doc Precision",
-   "default": "3",
-   "hidden": 1
+   "hidden": 1,
+   "label": "Doc Precision"
   },
   {
+   "default": "3",
    "fieldname": "diamond_pricision",
    "fieldtype": "Int",
-   "label": "Diamond Precision",
-   "default": "3",
-   "hidden": 1
+   "hidden": 1,
+   "label": "Diamond Precision"
   },
   {
+   "default": "3",
    "fieldname": "gemstone_pricision",
    "fieldtype": "Int",
-   "label": "Gemstone Precision",
-   "default": "3",
-   "hidden": 1
+   "hidden": 1,
+   "label": "Gemstone Precision"
   },
   {
    "fieldname": "metal_detail_section",
@@ -466,6 +467,11 @@
    "fieldname": "connections_tab",
    "fieldtype": "Tab Break",
    "label": "Connections"
+  },
+  {
+   "fieldname": "certification_amount",
+   "fieldtype": "Currency",
+   "label": "Certification Amount"
   }
  ],
  "grid_page_length": 50,
@@ -491,17 +497,13 @@
   {
    "link_doctype": "Manufacturing Work Order",
    "link_fieldname": "custom_tracking_bom"
-  },
-  {
-   "link_doctype": "Manufacturing Operation",
-   "link_fieldname": "custom_tracking_bom"
   }
  ],
- "modified": "2026-03-16 12:00:00.000000",
- "modified_by": "Administrator",
+ "modified": "2026-05-18 16:21:03.076484",
+ "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Tracking Bom",
- "naming_rule": "Expression",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

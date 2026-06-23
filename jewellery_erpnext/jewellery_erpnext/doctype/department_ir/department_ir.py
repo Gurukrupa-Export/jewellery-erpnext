@@ -241,6 +241,38 @@ class DepartmentIR(Document):
 				self.current_department,
 			)
 
+			pmo = frappe.db.get_value(
+				"Manufacturing Work Order",
+				row.manufacturing_work_order,
+				"manufacturing_order",
+			)
+			if pmo:
+				if pmo not in getattr(self, "_pmo_processed_for_dept", set()):
+					if not hasattr(self, "_pmo_processed_for_dept"):
+						self._pmo_processed_for_dept = set()
+					self._pmo_processed_for_dept.add(pmo)
+
+					frappe.db.set_value(
+						"Parent Manufacturing Order",
+						pmo,
+						"department",
+						self.current_department,
+						update_modified=False,
+					)
+
+				# Re-aggregate weights from ALL sibling MWOs on every
+				# tagging arrival so the FG MWO accumulates weights from
+				# every MWO, not just the first one to arrive.
+				if "Tagging" in self.current_department:
+					fg_mwo = frappe.db.get_value(
+						"Manufacturing Work Order",
+						{"manufacturing_order": pmo, "for_fg": 1},
+						"name",
+					)
+					if fg_mwo:
+						fg_doc = frappe.get_doc("Manufacturing Work Order", fg_mwo)
+						fg_doc.sync_mwo_weights()
+
 			doc = frappe.get_doc("Manufacturing Operation", row.manufacturing_operation)
 			doc.set("department_time_logs", [])
 			doc.save()
@@ -248,6 +280,12 @@ class DepartmentIR(Document):
 			time_values = copy.deepcopy(values)
 			time_values["department_start_time"] = dt_string
 			add_time_log(doc, time_values)
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tagging_stock_sync import (
+			process_pc_tagging_stock_sync,
+		)
+
+		process_pc_tagging_stock_sync(self, cancel=cancel)
 		# else:
 		# 	se_item_list = se_data
 
@@ -416,7 +454,7 @@ class DepartmentIR(Document):
 					"Manufacturing Operation",
 					row.manufacturing_operation,
 					"status",
-					"In Transit",
+					"WIP",
 				)
 			else:
 				values["complete_time"] = dt_string
@@ -452,6 +490,12 @@ class DepartmentIR(Document):
 				create_mop_log_for_department_ir(
 					self, row, in_transit_wh, department_wh, new_operation.name
 				)
+
+		from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tagging_stock_sync import (
+			process_pc_tagging_stock_sync,
+		)
+
+		process_pc_tagging_stock_sync(self, cancel=cancel)
 
 	@frappe.whitelist()
 	def get_summary_data(self):
@@ -731,6 +775,7 @@ def fetch_and_update(doc, row, manufacturing_operation):
 def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc = frappe.copy_doc(frappe.get_doc("Manufacturing Operation", mop))
 	new_mop_doc.name = None
+	new_mop_doc.status = "Not Started"
 	new_mop_doc.department_issue_id = ir_name
 	new_mop_doc.department_ir_status = "In-Transit"
 	new_mop_doc.department_receive_id = None

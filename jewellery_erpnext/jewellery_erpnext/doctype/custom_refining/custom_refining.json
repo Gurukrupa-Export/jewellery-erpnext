@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{dustname}-{MM}-{YY}-{#####}",
+ "autoname": ".dustname.-.MM.-.YY.-.#####",
  "creation": "2023-05-18 15:12:56.646288",
  "default_view": "List",
  "doctype": "DocType",
@@ -299,7 +299,7 @@
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Custom Refining",
- "naming_rule": "By \"Naming Series\" field",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {

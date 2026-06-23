@@ -112,8 +112,15 @@ def validate_inventory_dimention(self):
 							)
 
 
-def get_fifo_batches(self, row):
+def get_fifo_batches(self, row, consumed=None):
 	rows_to_append = []
+	# `consumed` tracks how much has already been allocated per (warehouse, batch)
+	# across all rows of the same document. Callers that process multiple rows for
+	# the same item must pass a shared dict so a batch is not double-booked (which
+	# would otherwise push it negative on submit). Defaults to a fresh dict so
+	# single-row callers behave exactly as before.
+	if consumed is None:
+		consumed = {}
 	row.batch_no = None
 	total_qty = row.qty
 	existing_updated = False
@@ -128,6 +135,11 @@ def get_fifo_batches(self, row):
 		main_slip = self.main_slip or self.to_main_slip
 		batch_data = get_batch_data_from_msl(row.item_code, main_slip, row.s_warehouse)
 	else:
+		# NOTE: do not pass "qty" here. get_auto_batch_nos truncates the result to
+		# just enough FIFO batches to cover the requested qty, which can drop the
+		# Customer Goods / customer-specific batches before the inventory-type and
+		# customer filtering below runs. Fetch all available batches and let the
+		# loop pick the matching ones up to total_qty.
 		batch_data = get_auto_batch_nos(
 			frappe._dict(
 				{
@@ -135,7 +147,6 @@ def get_fifo_batches(self, row):
 					"posting_date": self.get("posting_date"),
 					"item_code": row.item_code,
 					"warehouse": warehouse,
-					"qty": row.qty,
 				}
 			)
 		)
@@ -183,6 +194,11 @@ def get_fifo_batches(self, row):
 	if not row.inventory_type:
 		row.inventory_type = "Regular Stock"
 	for batch in batch_data:
+		# reduce this batch's availability by what earlier rows already took
+		batch_key = (warehouse, batch.batch_no)
+		batch.qty = flt(batch.qty - consumed.get(batch_key, 0), 4)
+		if batch.qty <= 0:
+			continue
 		if (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
 			and frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type")
@@ -198,17 +214,23 @@ def get_fifo_batches(self, row):
 					else:
 						row.db_set("transfer_qty", row.qty)
 						row.db_set("batch_no", batch.batch_no)
+					consumed[batch_key] = consumed.get(batch_key, 0) + min(
+						total_qty, batch.qty
+					)
 					total_qty -= batch.qty
 					existing_updated = True
-					rows_to_append.append(row.__dict__)
+					rows_to_append.append(row.as_dict())
 				else:
-					temp_row = copy.deepcopy(row.__dict__)
+					temp_row = copy.deepcopy(row.as_dict())
 					temp_row["name"] = None
 					temp_row["idx"] = None
 					temp_row["batch_no"] = batch.batch_no
 					temp_row["transfer_qty"] = 0
 					temp_row["qty"] = flt(min(total_qty, batch.qty), 4)
 					rows_to_append.append(temp_row)
+					consumed[batch_key] = consumed.get(batch_key, 0) + min(
+						total_qty, batch.qty
+					)
 					total_qty -= batch.qty
 
 		elif (
@@ -225,17 +247,23 @@ def get_fifo_batches(self, row):
 					else:
 						row.db_set("transfer_qty", row.qty)
 						row.db_set("batch_no", batch.batch_no)
+					consumed[batch_key] = consumed.get(batch_key, 0) + min(
+						total_qty, batch.qty
+					)
 					total_qty -= batch.qty
 					existing_updated = True
-					rows_to_append.append(row.__dict__)
+					rows_to_append.append(row.as_dict())
 				else:
-					temp_row = copy.deepcopy(row.__dict__)
+					temp_row = copy.deepcopy(row.as_dict())
 					temp_row["name"] = None
 					temp_row["idx"] = None
 					temp_row["batch_no"] = batch.batch_no
 					temp_row["transfer_qty"] = 0
 					temp_row["qty"] = flt(min(total_qty, batch.qty), 4)
 					rows_to_append.append(temp_row)
+					consumed[batch_key] = consumed.get(batch_key, 0) + min(
+						total_qty, batch.qty
+					)
 					total_qty -= batch.qty
 
 		elif row.inventory_type not in ["Customer Goods", "Customer Stock"]:
@@ -252,6 +280,9 @@ def get_fifo_batches(self, row):
 					else:
 						row.db_set("transfer_qty", row.qty)
 						row.db_set("batch_no", batch.batch_no)
+					consumed[batch_key] = consumed.get(batch_key, 0) + min(
+						total_qty, batch.qty
+					)
 					total_qty -= batch.qty
 					existing_updated = True
 					rows_to_append.append(row.as_dict())
@@ -263,6 +294,9 @@ def get_fifo_batches(self, row):
 					temp_row["transfer_qty"] = 0
 					temp_row["qty"] = flt(min(total_qty, batch.qty), 4)
 					rows_to_append.append(temp_row)
+					consumed[batch_key] = consumed.get(batch_key, 0) + min(
+						total_qty, batch.qty
+					)
 					total_qty -= batch.qty
 
 	if round(total_qty, 3) > 0:
@@ -328,7 +362,7 @@ def create_repack_for_subcontracting(self, subcontractor, main_slip=None):
 	repack_raws = []
 	receive = False
 	for row in self.items:
-		temp_raw = copy.deepcopy(row.__dict__)
+		temp_raw = copy.deepcopy(row.as_dict())
 		if row.t_warehouse == raw_warehouse:
 			receive = True
 			temp_raw["name"] = None

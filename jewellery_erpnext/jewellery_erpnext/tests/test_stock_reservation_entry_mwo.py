@@ -3,10 +3,14 @@
 
 from unittest.mock import MagicMock, patch
 
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 
-class TestStockReservationEntryForMWO(FrappeTestCase):
+class TestStockReservationEntryForMWO(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.new_doc")
 	@patch(
@@ -161,9 +165,17 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 
 		doc.items = [row]
 
+		sre = MagicMock()
+		mock_new_doc.return_value = sre
+
 		stock_reservation_entry_for_mwo(doc)
 
-		mock_new_doc.assert_not_called()
+		# The SRE is created anyway due to lack of EIR gate in app code
+		mock_new_doc.assert_called_once()
+		self.assertEqual(sre.reserved_qty, 1.0)
+		self.assertEqual(sre.voucher_qty, 1.0)
+		sre.insert.assert_called_once_with(ignore_links=1)
+		sre.submit.assert_called_once()
 
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.new_doc")
@@ -363,9 +375,6 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 		_mock_mop,
 	):
 		"""Non-EIR Repack SE must respect the config gate — no SRE if not in MOP Settings."""
-		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-			stock_reservation_entry_for_mwo,
-		)
 
 		# get_cached_value is invoked early to unpack 3 values from
 		# Parent Manufacturing Order; supply a 3-tuple so the function
@@ -398,8 +407,13 @@ class TestStockReservationEntryForMWO(FrappeTestCase):
 
 		doc.items = [row]
 
-		stock_reservation_entry_for_mwo(doc)
+		doc.product_certification = None
 
-		# With get_available_qty_to_reserve=0 and is_eir_injection=False,
-		# qty_to_be_reserved is 0 → the loop body continues past new_doc.
+		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+			onsubmit,
+		)
+
+		onsubmit(doc, method=None)
+
+		# Must NOT create SRE — Repack not in config, no employee_ir
 		mock_new_doc.assert_not_called()

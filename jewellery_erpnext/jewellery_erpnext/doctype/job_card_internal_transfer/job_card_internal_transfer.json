@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "J-Internal-Transfer-.####",
+ "autoname": "hash",
  "creation": "2022-08-26 15:59:24.490550",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -74,7 +74,7 @@
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Job Card Internal Transfer",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Random",
  "owner": "Administrator",
  "permissions": [
   {

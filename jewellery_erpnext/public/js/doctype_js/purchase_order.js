@@ -1545,7 +1545,7 @@ let get_items = (frm) => {
             let query_args = {
                 filters: {
                     docstatus: ["!=", 2],
-                    sales_type: frm.doc.purchase_type === "FG Purchase" ? "Finished Goods" : "Branch Sales",
+					sales_type: frm.doc.purchase_type === "Branch Purchase" ? "Branch Sales" : "",
                 },
             };
 
@@ -1555,7 +1555,14 @@ let get_items = (frm) => {
             }
             if (frm.doc.supplier === "GJSU0569" && frm.doc.company === "Gurukrupa Export Private Limited") {
                 query_args.filters.company = "Gurukrupa Export Private Limited";
-                query_args.filters.customer = "TNCU0002";
+                // query_args.filters.customer = "TNCU0002";
+				if (frm.doc.branch) {
+					frappe.db.get_value("Branch", frm.doc.branch, "custom_customer", (r) => {
+						if (r && r.custom_customer) {
+							query_args.filters.customer = r.custom_customer;
+						}
+					});
+				}
             }
 
             let d = new frappe.ui.form.MultiSelectDialog({
@@ -1580,10 +1587,14 @@ let get_items = (frm) => {
                             },
                             callback: function (r) {
                                 if (r && r.message && r.message.items && r.message.items.length) {
+									// console.log('hii',r.message.items);
                                     let firstWarehouse = r.message.items[0] && r.message.items[0].warehouse;
                                     let goldRates = r.message.gold_rates;
 
                                     r.message.items.forEach((element) => {
+										if (!element.bom) {
+											return; 
+										}
                                         let target_row;
                                         const empty_row = frm.doc.items.find(row => !row.item_code);
 
@@ -1618,7 +1629,7 @@ let get_items = (frm) => {
                                     }
 
                                     frm.refresh_field("items");
-                                    frm.set_value("from_sales_invoice", 1);
+                                    // frm.set_value("from_sales_invoice", 1);
                                 } else {
                                     frappe.msgprint(__("No items found in the selected Sales Invoices."));
                                 }

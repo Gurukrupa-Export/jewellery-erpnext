@@ -29,6 +29,25 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				});
 			}
 		}
+		if (frm.doc.docstatus == 0 && frm.doc.department && frm.doc.department.startsWith("Serial Number")) {
+			frm.add_custom_button(__("Create Repack"), function () {
+				frappe.call({
+					method: "jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_pending_repack",
+					args: {
+						mwo_name: frm.doc.name,
+					},
+					freeze: true,
+					freeze_message: __("Creating Repack..."),
+					callback: function (r) {
+						if (!r.exc) {
+							frappe.msgprint(__("Customer Gold Repack Created"));
+
+							frm.reload_doc();
+						}
+					},
+				});
+			});
+		}
 		set_html(frm);
 	},
 	transfer_to_raw: function (frm) {
@@ -131,33 +150,33 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		dialog.show();
 		// dialog.$wrapper.find('.modal-dialog').css("max-width", "90%");
 	},
-	on_submit: function(frm) {
-        let attempts = 0;
-        function try_fetch_snc() {
-            frappe.call({
-                method: "frappe.client.get_list",
-                args: {
-                    doctype: "Serial Number Creator",
-                    filters: { manufacturing_work_order: frm.doc.name, docstatus: ["!=", 2] },
-                    fields: ["name"],
-                    limit_page_length: 1
-                },
-                callback: function(r) {
-                    if (r.message && r.message.length) {
-                        frappe.set_route('Form', 'Serial Number Creator', r.message[0].name);
-                    } else {
-                        attempts++;
-                        if (attempts < 5) {
-                            setTimeout(try_fetch_snc, 2000);  // retry after 2 seconds
-                        } else {
-                            frappe.msgprint("Serial Number Creator is not ready yet. Please refresh later.");
-                        }
-                    }
-                }
-            });
-        }
-        try_fetch_snc();
-    }
+	on_submit: function (frm) {
+		let attempts = 0;
+		function try_fetch_snc() {
+			frappe.call({
+				method: "frappe.client.get_list",
+				args: {
+					doctype: "Serial Number Creator",
+					filters: { manufacturing_work_order: frm.doc.name, docstatus: ["!=", 2] },
+					fields: ["name"],
+					limit_page_length: 1,
+				},
+				callback: function (r) {
+					if (r.message && r.message.length) {
+						frappe.set_route("Form", "Serial Number Creator", r.message[0].name);
+					} else {
+						attempts++;
+						if (attempts < 5) {
+							setTimeout(try_fetch_snc, 2000); // retry after 2 seconds
+						} else {
+							frappe.msgprint("Serial Number Creator is not ready yet. Please refresh later.");
+						}
+					}
+				},
+			});
+		}
+		try_fetch_snc();
+	},
 });
 
 function set_html(frm) {

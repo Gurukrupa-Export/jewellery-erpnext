@@ -310,11 +310,37 @@ frappe.ui.form.on("Manufacturing Operation", {
 				freeze: true,
 				freeze_message: __("Loading Stock Reservation Entries..."),
 				callback: (r) => {
-					const rows = (r && r.message) || [];
+					const msg = (r && r.message) || {};
+					const rows = Array.isArray(msg) ? msg : msg.rows || [];
+					const skipped = Array.isArray(msg) ? [] : msg.skipped || [];
+					const active_sre_count = Array.isArray(msg) ? rows.length : msg.active_sre_count || 0;
+
 					if (!rows.length) {
-						frappe.msgprint(
-							__("No active Stock Reservation Entries found for this Manufacturing Work Order.")
-						);
+						if (active_sre_count === 0) {
+							frappe.msgprint(
+								__(
+									"No active Stock Reservation Entries found for this Manufacturing Work Order."
+								)
+							);
+						} else {
+							const lines = (skipped || []).map((s) =>
+								__("• SRE {0} — Item {1}{2}: SRE remaining {3}, MOP available {4}", [
+									s.sre,
+									s.item_code,
+									s.batch_no ? ` / Batch ${s.batch_no}` : "",
+									s.sre_remaining,
+									s.mop_available_qty,
+								])
+							);
+							frappe.msgprint({
+								title: __("Make Receive Entry"),
+								indicator: "orange",
+								message:
+									__(
+										"Stock Reservation Entries exist, but no receivable MOP balance was found. Please check MOP Log balance for this Manufacturing Operation."
+									) + (lines.length ? "<br><br>" + lines.join("<br>") : ""),
+							});
+						}
 						return;
 					}
 
@@ -345,6 +371,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 						available_to_receive_pcs: e.available_to_receive_pcs || 0,
 						is_pcs_item: e.is_pcs_item ? 1 : 0,
 						mop_log_reference: e.mop_log_reference || "",
+						warning: e.warning || "",
 						qty_to_receive: 0,
 						pcs_to_receive: 0,
 						stock_uom: e.stock_uom,
@@ -368,7 +395,6 @@ frappe.ui.form.on("Manufacturing Operation", {
 										fieldtype: "Link",
 										fieldname: "stock_reservation_entry",
 										options: "Stock Reservation Entry",
-										in_list_view: 1,
 										read_only: 1,
 									},
 									{
@@ -384,7 +410,6 @@ frappe.ui.form.on("Manufacturing Operation", {
 										fieldtype: "Link",
 										fieldname: "s_warehouse",
 										options: "Warehouse",
-										in_list_view: 1,
 										read_only: 1,
 									},
 									{
@@ -399,6 +424,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 										fieldtype: "Link",
 										fieldname: "batch_no",
 										options: "Batch",
+										in_list_view: 1,
 										read_only: 1,
 									},
 									{
@@ -423,14 +449,14 @@ frappe.ui.form.on("Manufacturing Operation", {
 										label: __("MOP Available Qty"),
 										fieldtype: "Float",
 										fieldname: "mop_available_qty",
-										in_list_view: 1,
+										in_list_view: 0,
 										read_only: 1,
 									},
 									{
 										label: __("MOP Available PCS"),
 										fieldtype: "Float",
 										fieldname: "mop_available_pcs",
-										in_list_view: 1,
+										// in_list_view: 1,
 										read_only: 1,
 									},
 									{
@@ -455,8 +481,8 @@ frappe.ui.form.on("Manufacturing Operation", {
 									{
 										label: __("Available to Receive PCS"),
 										fieldtype: "Float",
-										fieldname: "available_to_receive_pcs",
 										in_list_view: 1,
+										fieldname: "available_to_receive_pcs",
 										read_only: 1,
 									},
 									{
@@ -476,20 +502,25 @@ frappe.ui.form.on("Manufacturing Operation", {
 										// don't support per-row hidden cells, so we use
 										// read_only_depends_on; server still force-zeros
 										// PCS for non-D/G regardless of dialog value.
-										read_only_depends_on: "eval:!doc.is_pcs_item",
+										// read_only_depends_on: "eval:!doc.is_pcs_item",
 									},
 									{
 										label: __("PCS Item"),
 										fieldtype: "Check",
 										fieldname: "is_pcs_item",
-										hidden: 1,
-										read_only: 1,
 									},
 									{
 										label: __("MOP Log Reference"),
 										fieldtype: "Link",
 										fieldname: "mop_log_reference",
 										options: "MOP Log",
+										read_only: 1,
+									},
+									{
+										label: __("Warning"),
+										fieldtype: "Small Text",
+										fieldname: "warning",
+										in_list_view: 0,
 										read_only: 1,
 									},
 									{
