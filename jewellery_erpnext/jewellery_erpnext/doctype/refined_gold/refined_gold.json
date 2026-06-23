@@ -21,18 +21,21 @@
  ],
  "fields": [
   {
+   "allow_on_submit": 1,
    "fieldname": "metal_type",
    "fieldtype": "Link",
    "label": "Metal type",
    "options": "Attribute Value"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "metal_weight",
    "fieldtype": "Link",
    "label": "Metal Weight",
    "options": "Attribute Value"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "metal_purity",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -40,12 +43,14 @@
    "options": "Attribute Value"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "pure_weight",
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Pure Weight"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "item_code",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -53,24 +58,28 @@
    "options": "Item"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "dust_weight",
    "fieldtype": "Float",
    "label": "Dust Weight",
    "precision": "2"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "after_burn_weight",
    "fieldtype": "Float",
    "label": "After Burn Weight",
    "precision": "2"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "powder_weight",
    "fieldtype": "Float",
    "label": "Powder Weight",
    "precision": "2"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "refining_gold_weight",
    "fieldtype": "Float",
    "in_list_view": 1,
@@ -82,12 +91,14 @@
    "fieldtype": "Column Break"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "dustname",
    "fieldtype": "Link",
    "label": "Dust Type",
    "options": "Dust Type"
   },
   {
+   "allow_on_submit": 1,
    "fetch_from": "dustname.item_code",
    "fetch_if_empty": 1,
    "fieldname": "dust_item",
@@ -100,7 +111,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-05-17 13:09:09.303457",
+ "modified": "2026-06-23 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Refined Gold",

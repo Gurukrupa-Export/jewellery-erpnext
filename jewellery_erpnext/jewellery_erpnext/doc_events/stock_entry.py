@@ -624,10 +624,8 @@ def onsubmit(self, method):
 		pluck="stock_entry_type_to_reservation",
 	)
 	if self.stock_entry_type in types_for_reservation:
-		if (
-			self.stock_entry_type == "Repack"
-			and (not (self.manufacturing_order and self.manufacturing_work_order))
-			and self.auto_created == 0
+		if self.stock_entry_type == "Repack" and (
+			not (self.manufacturing_order and self.manufacturing_work_order)
 		):
 			return
 		stock_reservation_entry_for_mwo(self)
