@@ -1545,7 +1545,7 @@ let get_items = (frm) => {
             let query_args = {
                 filters: {
                     docstatus: ["!=", 2],
-					sales_type: frm.doc.purchase_type === "Branch Purchase" ? "Branch" : "",
+					sales_type: frm.doc.purchase_type === "Branch Purchase" ? "Branch Sales" : "",
                 },
             };
 
