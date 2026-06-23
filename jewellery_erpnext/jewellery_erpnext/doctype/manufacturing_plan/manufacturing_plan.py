@@ -583,3 +583,43 @@ def create_manufacturing_order(doc, row, cache_data=None):
 
 def create_subcontracting_order(doc):
 	make_subcontracting_order(doc)
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filters):
+	SalesOrder = frappe.qb.DocType("Sales Order")
+	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
+
+	conditions = (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty) & (
+		SalesOrderItem.order_form_type == "Repair Order"
+	)
+
+	if txt:
+		conditions &= SalesOrder.name.like(f"%{txt}%")
+
+	if customer := filters.get("customer"):
+		conditions &= SalesOrder.customer == customer
+
+	if company := filters.get("company"):
+		conditions &= SalesOrder.company == company
+
+	if branch := filters.get("branch"):
+		conditions &= SalesOrder.branch == branch
+
+	if txn_date := filters.get("transaction_date"):
+		conditions &= SalesOrder.transaction_date == txn_date
+
+	query = (
+		frappe.qb.from_(SalesOrder)
+		.distinct()
+		.from_(SalesOrderItem)
+		.select(SalesOrder.name, SalesOrder.transaction_date, SalesOrder.company, SalesOrder.customer)
+		.where((SalesOrder.name == SalesOrderItem.parent) & conditions)
+		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
+		.limit(page_len)
+		.offset(start)
+	)
+
+	so_data = query.run(as_dict=True)
+	return so_data
+
