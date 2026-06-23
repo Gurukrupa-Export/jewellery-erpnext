@@ -44,6 +44,7 @@ frappe.ui.form.on("Refining Entry", {
 	refining_type(frm) {
 		frm.trigger("set_field_visibility");
 		frm.trigger("set_naming_series");
+		frm.trigger("department");
 	},
 
 	refining_department(frm) {
@@ -51,7 +52,7 @@ frappe.ui.form.on("Refining Entry", {
 			frappe.db
 				.get_value(
 					"Warehouse",
-					{ department: frm.doc.refining_department, warehouse_type: "Manufacturing" },
+					{ department: frm.doc.refining_department, warehouse_type: "Raw Material" },
 					"name"
 				)
 				.then((r) => {
@@ -64,12 +65,16 @@ frappe.ui.form.on("Refining Entry", {
 
 	department(frm) {
 		if (frm.doc.department) {
+			let wh_type = "Manufacturing";
+			if (frm.doc.department.toLowerCase().includes("final polish")) {
+				if (frm.doc.refining_type === "Work Order Refining") {
+					wh_type = "Manufacturing";
+				} else {
+					wh_type = "Scrap";
+				}
+			}
 			frappe.db
-				.get_value(
-					"Warehouse",
-					{ department: frm.doc.department, warehouse_type: "Manufacturing" },
-					"name"
-				)
+				.get_value("Warehouse", { department: frm.doc.department, warehouse_type: wh_type }, "name")
 				.then((r) => {
 					if (r.message && r.message.name) {
 						frm.set_value("warehouse", r.message.name);

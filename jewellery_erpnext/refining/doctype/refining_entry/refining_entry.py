@@ -62,27 +62,34 @@ class RefiningEntry(Document):
 			)
 
 	def validate_warehouse(self):
-		if not self.refining_warehouse:
-			if self.refining_department:
-				self.refining_warehouse = frappe.db.get_value(
-					"Warehouse",
-					{
-						"department": self.refining_department,
-						"warehouse_type": "Manufacturing",
-					},
-					"name",
-				)
-			if not self.refining_warehouse:
-				self.refining_warehouse = frappe.db.get_single_value(
-					"Refining Configuration", "default_refining_warehouse"
-				)
-
-		if not self.warehouse and self.department:
-			self.warehouse = frappe.db.get_value(
+		if self.refining_department:
+			self.refining_warehouse = frappe.db.get_value(
 				"Warehouse",
-				{"department": self.department, "warehouse_type": "Manufacturing"},
+				{
+					"department": self.refining_department,
+					"warehouse_type": "Raw Material",
+				},
 				"name",
 			)
+		if not self.refining_warehouse:
+			self.refining_warehouse = frappe.db.get_single_value(
+				"Refining Configuration", "default_refining_warehouse"
+			)
+
+		if self.department:
+			is_final_polish = "Final Polish" in self.department
+			if not self.warehouse or is_final_polish:
+				wh_type = "Manufacturing"
+				if is_final_polish:
+					if self.refining_type == "Work Order Refining":
+						wh_type = "Manufacturing"
+					else:
+						wh_type = "Scrap"
+				self.warehouse = frappe.db.get_value(
+					"Warehouse",
+					{"department": self.department, "warehouse_type": wh_type},
+					"name",
+				)
 
 	def validate_quantities(self):
 		if self.refining_type == "Dust Refining":
@@ -291,18 +298,12 @@ class RefiningEntry(Document):
 				)
 			)
 
-		qty = (
-			frappe.db.get_value(
-				"Bin",
-				{
-					"item_code": batch.item,
-					"batch_no": batch.name,
-					"warehouse": self.warehouse,
-				},
-				"actual_qty",
-			)
-			or 0.0
+		qty = frappe.db.sql(
+			"""SELECT SUM(qty) FROM `tabSerial and Batch Entry`
+			   WHERE item_code=%s AND batch_no=%s AND warehouse=%s AND is_cancelled=0""",
+			(batch.item, batch.name, self.warehouse),
 		)
+		qty = flt(qty[0][0]) if qty and qty[0][0] else 0.0
 
 		if qty <= 0:
 			frappe.throw(
@@ -735,6 +736,10 @@ class RefiningEntry(Document):
 		se.purpose = "Material Transfer"
 		se.company = self.company
 		se.custom_refining_entry = self.name
+		se.auto_created = 1
+
+		precision = frappe.get_precision("Stock Entry Detail", "qty") or 2
+		min_qty = 1.0 / (10**precision)
 
 		for item in self.material_items:
 			if self.is_dust_opening_item(item):
@@ -746,33 +751,35 @@ class RefiningEntry(Document):
 			if has_batch and not item.batch_no:
 				allocations = self.allocate_fifo_batches(item.item_code, s_wh, item.qty)
 				for alloc in allocations:
+					if flt(alloc["qty"], precision) >= min_qty:
+						se.append(
+							"items",
+							{
+								"item_code": item.item_code,
+								"qty": alloc["qty"],
+								"uom": item.uom,
+								"s_warehouse": s_wh,
+								"t_warehouse": self.refining_warehouse,
+								"batch_no": alloc["batch_no"],
+								"serial_no": item.serial_no,
+								"use_serial_batch_fields": 1,
+							},
+						)
+			else:
+				if flt(item.qty, precision) >= min_qty:
 					se.append(
 						"items",
 						{
 							"item_code": item.item_code,
-							"qty": alloc["qty"],
+							"qty": item.qty,
 							"uom": item.uom,
 							"s_warehouse": s_wh,
 							"t_warehouse": self.refining_warehouse,
-							"batch_no": alloc["batch_no"],
+							"batch_no": item.batch_no,
 							"serial_no": item.serial_no,
 							"use_serial_batch_fields": 1,
 						},
 					)
-			else:
-				se.append(
-					"items",
-					{
-						"item_code": item.item_code,
-						"qty": item.qty,
-						"uom": item.uom,
-						"s_warehouse": s_wh,
-						"t_warehouse": self.refining_warehouse,
-						"batch_no": item.batch_no,
-						"serial_no": item.serial_no,
-						"use_serial_batch_fields": 1,
-					},
-				)
 
 		if se.items:
 			se.insert()
@@ -788,6 +795,7 @@ class RefiningEntry(Document):
 		se.purpose = "Repack"
 		se.company = self.company
 		se.custom_refining_entry = self.name
+		se.auto_created = 1
 
 		# Input items (consumed)
 		for item in self.material_items:
@@ -899,6 +907,7 @@ class RefiningEntry(Document):
 		se.purpose = "Material Receipt"
 		se.company = self.company
 		se.custom_refining_entry = self.name
+		se.auto_created = 1
 
 		se.append(
 			"items",
@@ -1114,12 +1123,13 @@ class RefiningEntry(Document):
 			self.refining_type == "Dust Refining"
 			and dust_item
 			and item.item_code == dust_item
+			and item.warehouse == self.refining_warehouse
 		)
 
 	def get_dust_opening_qty(self, dust_item):
 		dust_qty = 0.0
 		for item in self.material_items:
-			if item.item_code == dust_item:
+			if self.is_dust_opening_item(item):
 				dust_qty += flt(item.qty)
 		if not dust_qty and flt(self.difference_quantity) > 0:
 			dust_qty += flt(self.additional_dust_qty) or flt(self.difference_quantity)
@@ -1129,7 +1139,7 @@ class RefiningEntry(Document):
 		dust_item = self.get_dust_item()
 		if not dust_item:
 			return
-		if any(row.item_code == dust_item for row in self.material_items):
+		if any(self.is_dust_opening_item(row) for row in self.material_items):
 			return
 
 		dust_qty = flt(self.additional_dust_qty) or max(
@@ -1200,27 +1210,36 @@ class RefiningEntry(Document):
 		# Fetch batches with stock in FIFO order
 		batches = frappe.db.sql(
 			"""
-			SELECT batch_no, actual_qty
-			FROM `tabBin`
-			WHERE item_code = %s AND warehouse = %s AND actual_qty > 0
-			ORDER BY creation ASC
+			SELECT batch_no, SUM(qty) as actual_qty
+			FROM `tabSerial and Batch Entry`
+			WHERE item_code = %s AND warehouse = %s AND is_cancelled = 0
+			  AND batch_no IS NOT NULL AND batch_no != ''
+			GROUP BY batch_no
+			HAVING SUM(qty) > 0
+			ORDER BY MIN(creation) ASC
 		""",
 			(item_code, warehouse),
 			as_dict=1,
 		)
 
 		allocations = []
-		remaining_qty = flt(required_qty)
-		for b in batches:
-			if remaining_qty <= 0:
-				break
-			alloc_qty = min(flt(b.actual_qty), remaining_qty)
-			allocations.append({"batch_no": b.batch_no, "qty": alloc_qty})
-			remaining_qty -= alloc_qty
+		precision = frappe.get_precision("Stock Entry Detail", "qty") or 2
+		min_qty = 1.0 / (10**precision)  # dynamically calculate 0.01 if precision is 2
 
-		if remaining_qty > 0:
+		remaining_qty = flt(required_qty, precision)
+		for b in batches:
+			if remaining_qty < min_qty:
+				break
+			alloc_qty = min(flt(b.actual_qty, precision), remaining_qty)
+			if flt(alloc_qty, precision) >= min_qty:
+				allocations.append(
+					{"batch_no": b.batch_no, "qty": flt(alloc_qty, precision)}
+				)
+			remaining_qty = flt(remaining_qty - alloc_qty, precision)
+
+		if remaining_qty >= min_qty:
 			# Even after all batches, some qty is left.
-			allocations.append({"batch_no": None, "qty": remaining_qty})
+			allocations.append({"batch_no": None, "qty": flt(remaining_qty, precision)})
 
 		return allocations
 
