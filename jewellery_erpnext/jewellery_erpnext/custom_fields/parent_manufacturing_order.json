@@ -2,10 +2,10 @@
  "Parent Manufacturing Order": [
   {
    "dt": "Parent Manufacturing Order",
-   "fieldname": "custom_jwelex_batch_no",
+   "fieldname": "custom_jewelex_batch_no",
    "fieldtype": "Data",
    "insert_after": "setting_type",
-   "label": "Jwelex Batch No",
+   "label": "Jewelex Batch No",
    "module": "Jewellery Erpnext"
   },
   {

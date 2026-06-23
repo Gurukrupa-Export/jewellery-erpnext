@@ -2353,6 +2353,27 @@ def setup_data():
 
 	_ensure_mr_transfer_se_fields()
 
+	# Provision every custom_* column targeted by an app fetch_from. These live in
+	# custom_fields/*.json + per-field patches that install-app marks complete WITHOUT
+	# running on fresh sites, so a missing column makes link validation raise 1054 on
+	# save/submit (e.g. MWO.jewelex_batch_no -> manufacturing_order.custom_jewelex_batch_no).
+	# Idempotent: a no-op once the columns exist.
+	from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
+
+	ensure_fetch_from_columns()
+
+	# Provision the Stock Entry Detail.transfer_qty precision = 3 Property Setter. Employee
+	# IR's auto-created Process Loss SE builds rows of 0.001 g; with float_precision = 2 and
+	# no per-field precision, set_transfer_qty rounds flt(0.001, 2) = 0.0 and throws
+	# "Qty in Stock UOM can not be zero." The fix is in property_setter/stock_entry_detail.json
+	# but only applied by the disabled after_migrate hook, so install-app never creates it.
+	# Idempotent.
+	from jewellery_erpnext.property_setter_guard import (
+		ensure_stock_entry_detail_precision,
+	)
+
+	ensure_stock_entry_detail_precision()
+
 	if not frappe.db.exists("Gender", "Other"):
 		frappe.get_doc({"doctype": "Gender", "gender": "Other"}).insert(
 			ignore_permissions=True

@@ -39,40 +39,15 @@ class SerialNumberCreator(Document):
 		validate_qty(self)
 		calulate_id_wise_sum_up(self)
 
-		import time
-
-		for attempt in range(3):
-			try:
-				if attempt > 0:
-					frappe.db.begin()
-					self.db_update()
-					for child in self.get_all_children():
-						child.db_update()
-
-				to_prepare_data_for_make_mnf_stock_entry(self)
-				update_new_serial_no(self)
-				break
-			except Exception as e:
-				from jewellery_erpnext.jewellery_erpnext.bounded_retry import (
-					RETRYABLE_LOCK_ERRORS,
-				)
-
-				# Only InnoDB 1205 (lock-wait timeout) / 1213 (deadlock) are transient.
-				# Negative-stock and "reserved for other transactions" are real business
-				# errors — retrying them only delays a failure that will never succeed, so
-				# they are no longer caught here and now surface to the operator directly.
-				is_retryable_error = isinstance(e, RETRYABLE_LOCK_ERRORS) or (
-					"deadlock" in str(e).lower()
-					or "lock wait timeout" in str(e).lower()
-				)
-				if is_retryable_error and attempt < 2:
-					frappe.logger().warning(
-						f"SNC {self.name}: Transient error ({type(e).__name__}) during submit, retrying attempt {attempt+2}"
-					)
-					frappe.db.rollback()
-					time.sleep(0.5 * (attempt + 1))
-				else:
-					raise
+		# Run straight through — NO synchronous retry. The lock-contention root causes are
+		# fixed at source (canonical series + Bin pre-locking in
+		# to_prepare_data_for_make_mnf_stock_entry / prelock_bins, and SLE/SRE hash naming),
+		# so this cascade no longer self-collides on 1205/1213. The old hand-rolled
+		# 3-attempt loop also re-ran partial work (begin() + db_update re-entry) and masked
+		# genuine NegativeStock / Validation errors by retrying them — both removed. The only
+		# retry kept in the codebase is bounded_retry on idempotent *background* jobs.
+		to_prepare_data_for_make_mnf_stock_entry(self)
+		update_new_serial_no(self)
 
 	def _render_fg_details(self):
 		"""Build source_table (batch-wise) and fg_details (aggregated) from MOP Log."""
@@ -255,7 +230,10 @@ def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates):
 	if not batch_no:
 		return candidates[0]
 	for wh in candidates:
-		if flt(_physical_batch_qty(item_code, batch_no, wh) or 0) + TOLERANCE >= requested_qty:
+		if (
+			flt(_physical_batch_qty(item_code, batch_no, wh) or 0) + TOLERANCE
+			>= requested_qty
+		):
 			return wh
 	return None
 
@@ -337,6 +315,23 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 	)
 
 	if row_data:
+		# Canonical lock order for the WHOLE SNC cascade. This one submit mints several
+		# Stock Entries — a Repack(Loss) SE per loss row plus the main Manufacture SE in
+		# create_manufacturing_entry — each of which would otherwise lock its Bins
+		# independently. Two concurrent SNCs drawing on the same WIP stock then interleaved
+		# their per-SE Bin locks into 1213 deadlock cycles. Pin the Stock Entry series first
+		# (canonical position 2), then pre-lock every source Bin this cascade draws from, in
+		# sorted order, BEFORE the first nested submit, so all concurrent SNCs acquire the
+		# shared Bins in the identical sequence. Over-locking a Bin that ends up unused is
+		# harmless (released on COMMIT); per-SE prelock_bins still locks each SE's own Bins.
+		from jewellery_erpnext.jewellery_erpnext.lock_order import (
+			lock_bins,
+			preallocate_series_for_docs,
+		)
+
+		preallocate_series_for_docs(frappe.new_doc("Stock Entry"))
+		lock_bins([(r["item_code"], r.get("s_warehouse")) for r in row_data])
+
 		bins_to_update = set()
 		for row in row_data:
 			if row.get("s_warehouse"):
@@ -433,8 +428,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 							row["item_code"], row_batch
 						)
 						holders_str = (
-							", ".join(f"{wh}: {qty}" for wh, qty in holders)
-							or "none"
+							", ".join(f"{wh}: {qty}" for wh, qty in holders) or "none"
 						)
 						frappe.throw(
 							_(
@@ -461,9 +455,7 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 
 					for sre, _rem in active_sres:
 						frappe.clear_document_cache("Bin")
-						sre_doc = frappe.get_doc(
-							"Stock Reservation Entry", sre["name"]
-						)
+						sre_doc = frappe.get_doc("Stock Reservation Entry", sre["name"])
 						consume_stock_reservation_entry(sre_doc, update_bin=False)
 						if sre_doc.item_code and sre_doc.warehouse:
 							bins_to_update.add((sre_doc.item_code, sre_doc.warehouse))
@@ -659,14 +651,14 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 			create_manufacturing_entry,
 		)
 
-		se_name = create_manufacturing_entry(self, row_data, operation_data)
+		se_name, fg_serial = create_manufacturing_entry(self, row_data, operation_data)
 
-		self.fg_serial_no = se_name
+		self.fg_serial_no = fg_serial
 		frappe.db.set_value(
 			self.doctype,
 			self.name,
 			"fg_serial_no",
-			se_name,
+			fg_serial,
 			update_modified=False,
 		)
 		create_finished_goods_bom(self, se_name, operation_data)
@@ -992,7 +984,7 @@ def update_new_serial_no(self):
 		)
 	new_sn_doc.save()
 
-	if self.serial_no and self.fg_details:
+	if self.serial_no and self.fg_details and self.fg_details[0].serial_no:
 		serial_doc = frappe.get_doc("Serial No", self.fg_details[0].serial_no)
 		previos_sr = frappe.db.get_value(
 			"Serial No",

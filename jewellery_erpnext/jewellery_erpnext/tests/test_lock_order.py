@@ -4,8 +4,9 @@
 """Unit tests for the canonical lock-ordering helpers (jewellery_erpnext.lock_order)."""
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from jewellery_erpnext.jewellery_erpnext import lock_order
@@ -56,7 +57,9 @@ class TestSortedStockRows(FrappeTestCase):
 	def test_does_not_mutate_input(self):
 		rows = [{"item_code": "B"}, {"item_code": "A"}]
 		sorted_stock_rows(rows)
-		self.assertEqual([r["item_code"] for r in rows], ["B", "A"])  # original order intact
+		self.assertEqual(
+			[r["item_code"] for r in rows], ["B", "A"]
+		)  # original order intact
 
 	def test_is_stable_for_equal_keys(self):
 		# Two rows with identical (item, warehouse, batch) keep their original order so
@@ -143,3 +146,63 @@ class TestPreallocateSeries(FrappeTestCase):
 		locked = [c[0][1][0] for c in mock_sql.call_args_list]
 		self.assertEqual(locked, ["SE-", "SRE-"])
 		self.assertIn("FOR UPDATE", mock_sql.call_args_list[0][0][0])
+
+
+class TestSeriesPrefixForDoc(FrappeTestCase):
+	"""series_prefix_for_doc must resolve the exact tabSeries key getseries() would lock
+	for a naming_series doctype, and return None (no lock) for hash/other naming."""
+
+	def _meta(self, autoname, naming_rule="Expression"):
+		m = Mock()
+		m.autoname = autoname
+		m.get = Mock(return_value=naming_rule)
+		return m
+
+	def test_returns_none_for_hash_naming(self):
+		with patch.object(
+			lock_order.frappe, "get_meta", return_value=self._meta("hash")
+		):
+			doc = frappe._dict(doctype="Stock Ledger Entry")
+			self.assertIsNone(lock_order.series_prefix_for_doc(doc))
+
+	def test_resolves_naming_series_prefix(self):
+		def fake_parse(key, doctype, doc, number_generator=None):
+			# Emulate frappe: the '#####' part hands the accumulated prefix to the counter.
+			number_generator("MAT-STE-2026-", 5)
+			return "MAT-STE-2026-00001"
+
+		with patch.object(
+			lock_order.frappe, "get_meta", return_value=self._meta("naming_series:")
+		), patch(
+			"frappe.model.naming.parse_naming_series", side_effect=fake_parse
+		), patch(
+			"frappe.model.naming.get_default_naming_series",
+			return_value="MAT-STE-.YYYY.-",
+		):
+			doc = frappe._dict(doctype="Stock Entry", naming_series="MAT-STE-.YYYY.-")
+			self.assertEqual(lock_order.series_prefix_for_doc(doc), "MAT-STE-2026-")
+
+	def test_swallows_parse_errors_and_returns_none(self):
+		# Naming resolution must never break a submit — a parse error degrades to "no pin".
+		with patch.object(
+			lock_order.frappe, "get_meta", return_value=self._meta("naming_series:")
+		), patch(
+			"frappe.model.naming.parse_naming_series", side_effect=ValueError("boom")
+		), patch("frappe.model.naming.get_default_naming_series", return_value="X-"):
+			doc = frappe._dict(doctype="Stock Entry", naming_series="X-")
+			self.assertIsNone(lock_order.series_prefix_for_doc(doc))
+
+
+class TestPreallocateSeriesForDocs(FrappeTestCase):
+	@patch.object(lock_order, "preallocate_series")
+	@patch.object(lock_order, "series_prefix_for_doc")
+	def test_skips_none_docs_and_forwards_resolved_prefixes(
+		self, mock_prefix, mock_pre
+	):
+		mock_prefix.side_effect = ["MAT-STE-2026-", None]
+		d1 = frappe._dict(doctype="Stock Entry")
+		d2 = frappe._dict(doctype="Stock Ledger Entry")
+		lock_order.preallocate_series_for_docs(d1, None, d2)
+		# None *docs* are skipped before resolution; None *prefixes* are filtered downstream.
+		self.assertEqual(mock_prefix.call_count, 2)
+		mock_pre.assert_called_once_with(["MAT-STE-2026-", None])
