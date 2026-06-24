@@ -48,17 +48,21 @@ frappe.ui.form.on("Refining Entry", {
 		frm.trigger("add_action_buttons");
 		frm.trigger("render_raw_material_html");
 
-		// Suppress Frappe Workflow's auto-generated action buttons on submitted docs.
+		// Suppress Frappe Workflow's auto-generated action buttons on submitted docs,
+		// AND on child duplicate entries (which rely entirely on custom processing buttons).
 		// The Workflow transitions only change state but don't call the actual Python
 		// methods (which create stock entries, batches, etc). Our custom "Refining Process"
 		// group handles both state transitions AND business logic correctly.
-		if (frm.doc.docstatus === 1) {
-			// Clear the standard Actions menu
-			frm.page.clear_actions_menu();
+		if (frm.doc.docstatus === 1 || frm.doc.parent_refining_entry) {
+			setTimeout(() => {
+				// Clear the standard Actions menu
+				frm.page.clear_actions_menu();
 
-			// Remove Frappe workflow action buttons from the page header
-			frm.page.wrapper.find('.btn-primary-dark[data-action="action_btn"]').hide();
-			frm.page.wrapper.find('.btn-primary-light[data-action="action_btn"]').hide();
+				// Remove Frappe workflow action buttons from the page header
+				frm.page.wrapper.find('.btn-primary-dark[data-action="action_btn"]').hide();
+				frm.page.wrapper.find('.btn-primary-light[data-action="action_btn"]').hide();
+				frm.page.wrapper.find(".actions-btn-group").hide();
+			}, 50);
 
 			// Delayed cleanup for async-rendered workflow buttons
 			setTimeout(() => {
@@ -184,7 +188,13 @@ frappe.ui.form.on("Refining Entry", {
 				frm.add_custom_button(
 					__("Receive Materials"),
 					() => {
-						frm.call("receive_materials").then(() => frm.reload_doc());
+						frm.call("receive_materials").then((r) => {
+							if (r.message) {
+								frappe.set_route("Form", "Refining Entry", r.message);
+							} else {
+								frm.reload_doc();
+							}
+						});
 					},
 					__("Refining Process")
 				).addClass("btn-primary");
@@ -213,7 +223,7 @@ frappe.ui.form.on("Refining Entry", {
 				).addClass("btn-primary");
 			}
 
-			if (status === "Refining In Progress" || status === "Classified") {
+			if (status === "Refining In Progress") {
 				frm.add_custom_button(
 					__("Enter Recovered Gold"),
 					() => {
