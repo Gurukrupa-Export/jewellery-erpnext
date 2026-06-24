@@ -17,7 +17,10 @@ doctype_js = {
 	"BOM": "public/js/doctype_js/bom.js",
 	"Work Order": "public/js/doctype_js/work_order.js",
 	"Item": "public/js/doctype_js/item.js",
-	"Stock Entry": "public/js/doctype_js/stock_entry.js",
+	"Stock Entry": [
+		"public/js/doctype_js/stock_entry.js",
+		"customer_subcontracting/sub_utils/snc.js",
+	],
 	"Operation": "public/js/doctype_js/operation.js",
 	"Job Card": "public/js/doctype_js/job_card.js",
 	"Sales Order": "public/js/doctype_js/sales_order.js",
