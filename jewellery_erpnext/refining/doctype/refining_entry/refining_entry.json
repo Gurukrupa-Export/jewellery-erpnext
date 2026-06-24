@@ -1,582 +1,581 @@
 {
-    "actions": [],
-    "allow_rename": 1,
-    "autoname": "naming_series:",
-    "creation": "2026-06-16 06:00:00.000000",
-    "default_view": "List",
-    "doctype": "DocType",
-    "editable_grid": 1,
-    "engine": "InnoDB",
-    "is_submittable": 1,
-    "field_order": [
-        "naming_series",
-        "refining_type",
-        "company",
-        "posting_date",
-        "column_break_general",
-        "department",
-        "refining_department",
-        "warehouse",
-        "refining_warehouse",
-        "column_break_general2",
-        "status",
-        "created_by",
-        "manufacturer",
-        "section_break_source",
-        "scan_mwo",
-        "scan_serial_no",
-        "scan_scrap_qr",
-        "mwo_details",
-        "serial_no_details",
-        "section_break_dust",
-        "date_from",
-        "date_to",
-        "column_break_dust",
-        "multiple_operation",
-        "multiple_department",
-        "employee",
-        "operation",
-        "loss_item",
-        "scrap_item",
-        "refining_department_detail",
-        "refining_operation_detail",
-        "section_break_verification",
-        "system_quantity",
-        "physical_quantity",
-        "difference_quantity",
-        "column_break_verification",
-        "dust_item",
-        "additional_dust_qty",
-        "dust_received",
-        "section_break_materials",
-        "raw_material_html",
-        "material_items",
-        "section_break_recovery_out",
-        "recovered_diamond",
-        "recovered_gemstone",
-        "refined_gold",
-        "section_break_gold_recovery",
-        "gold_recovery_details",
-        "section_break_totals",
-        "expected_recovery",
-        "actual_recovery",
-        "recovery_percentage",
-        "column_break_totals",
-        "gross_pure_weight",
-        "refined_fine_weight",
-        "refining_loss",
-        "column_break_totals2",
-        "recovery_remarks",
-        "section_break_se",
-        "material_transfer_se",
-        "repack_se",
-        "column_break_se",
-        "transfer_se",
-        "receiving_se",
-        "section_break_batch",
-        "batch_tracking",
-        "amended_from"
-    ],
-    "fields": [
-        {
-            "fieldname": "naming_series",
-            "fieldtype": "Select",
-            "label": "Series",
-            "reqd": 1,
-            "options": "RFN-DST-.YY.-.#####\nRFN-MWO-.YY.-.#####\nRFN-SRN-.YY.-.#####\nRFN-SCP-.YY.-.#####",
-            "read_only": 1
-        },
-        {
-            "fieldname": "parent_refining_entry",
-            "fieldtype": "Link",
-            "label": "Parent Refining Entry",
-            "options": "Refining Entry",
-            "read_only": 1,
-            "in_list_view": 1
-        },
-        {
-            "fieldname": "refining_type",
-            "fieldtype": "Select",
-            "label": "Refining Type",
-            "reqd": 1,
-            "in_list_view": 1,
-            "in_standard_filter": 1,
-            "options": "\nDust Refining\nWork Order Refining\nSerial Number Refining\nScrap Refining"
-        },
-        {
-            "fieldname": "company",
-            "fieldtype": "Link",
-            "label": "Company",
-            "options": "Company",
-            "reqd": 1
-        },
-        {
-            "default": "Today",
-            "fieldname": "posting_date",
-            "fieldtype": "Date",
-            "label": "Posting Date",
-            "reqd": 1
-        },
-        {
-            "fieldname": "column_break_general",
-            "fieldtype": "Column Break"
-        },
-        {
-            "fieldname": "department",
-            "fieldtype": "Link",
-            "label": "Source Department",
-            "options": "Department"
-        },
-        {
-            "fieldname": "refining_department",
-            "fieldtype": "Link",
-            "label": "Refining Department",
-            "options": "Department",
-            "reqd": 1,
-            "in_list_view": 1
-        },
-        {
-            "fieldname": "warehouse",
-            "fieldtype": "Link",
-            "label": "Source Warehouse",
-            "options": "Warehouse",
-            "read_only": 1
-        },
-        {
-            "fieldname": "refining_warehouse",
-            "fieldtype": "Link",
-            "label": "Refining Warehouse",
-            "options": "Warehouse",
-            "read_only": 1
-        },
-        {
-            "fieldname": "scrap_warehouse",
-            "fieldtype": "Link",
-            "label": "Scrap Warehouse",
-            "options": "Warehouse"
-        },
-        {
-            "fieldname": "auto_create_batch",
-            "fieldtype": "Check",
-            "label": "Auto Create Batch",
-            "default": "1"
-        },
-        {
-            "fieldname": "column_break_general2",
-            "fieldtype": "Column Break"
-        },
-        {
-            "fieldname": "status",
-            "fieldtype": "Select",
-            "label": "Status",
-            "default": "Draft",
-            "read_only": 1,
-            "in_list_view": 1,
-            "in_standard_filter": 1,
-            "allow_on_submit": 1,
-            "options": "Draft\nPhysical Verification\nSubmitted\nReceived\nClassified\nRefining In Progress\nRecovery Entered\nRecovery Verified\nCompleted\nTransferred\nCancelled"
-        },
-        {
-            "fieldname": "manufacturer",
-            "fieldtype": "Link",
-            "label": "Manufacturer",
-            "options": "Manufacturer"
-        },
-        {
-            "fieldname": "section_break_source",
-            "fieldtype": "Section Break",
-            "label": "Source References"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Work Order Refining'",
-            "fieldname": "scan_mwo",
-            "fieldtype": "Data",
-            "label": "Scan MWO",
-            "options": "Barcode"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Serial Number Refining'",
-            "fieldname": "scan_serial_no",
-            "fieldtype": "Data",
-            "label": "Scan Serial Number",
-            "options": "Barcode"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Work Order Refining'",
-            "fieldname": "mwo_details",
-            "fieldtype": "Table",
-            "label": "MWO Details",
-            "options": "Manufacturing Work Order Refining Details"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Serial Number Refining'",
-            "fieldname": "serial_no_details",
-            "fieldtype": "Table",
-            "label": "Serial Number Details",
-            "options": "Refining Serial No Detail"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Dust Refining'",
-            "fieldname": "section_break_dust",
-            "fieldtype": "Section Break",
-            "label": "Dust Refining Settings"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Dust Refining'",
-            "fieldname": "date_from",
-            "fieldtype": "Date",
-            "label": "From Date",
-            "mandatory_depends_on": "eval:doc.refining_type=='Dust Refining'"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Dust Refining'",
-            "fieldname": "date_to",
-            "fieldtype": "Date",
-            "label": "To Date",
-            "mandatory_depends_on": "eval:doc.refining_type=='Dust Refining'"
-        },
-        {
-            "fieldname": "column_break_dust",
-            "fieldtype": "Column Break"
-        },
-        {
-            "default": "0",
-            "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_department",
-            "fieldname": "multiple_operation",
-            "fieldtype": "Check",
-            "label": "For Multiple Operations"
-        },
-        {
-            "default": "0",
-            "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation",
-            "fieldname": "multiple_department",
-            "fieldtype": "Check",
-            "label": "For Multiple Department"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department",
-            "fieldname": "employee",
-            "fieldtype": "Link",
-            "label": "Employee",
-            "options": "Employee"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department",
-            "fieldname": "operation",
-            "fieldtype": "Link",
-            "label": "Operation",
-            "options": "Department Operation"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Dust Refining'",
-            "fieldname": "loss_item",
-            "fieldtype": "Link",
-            "label": "Loss Item",
-            "options": "Item"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Dust Refining' && doc.multiple_department==1",
-            "fieldname": "refining_department_detail",
-            "fieldtype": "Table",
-            "label": "Department Allocation",
-            "options": "Refining Department Detail"
-        },
-        {
-            "depends_on": "eval:doc.refining_type=='Dust Refining' && doc.multiple_operation==1",
-            "fieldname": "refining_operation_detail",
-            "fieldtype": "Table",
-            "label": "Operation Allocation",
-            "options": "Refining Operation Details"
-        },
-        {
-            "fieldname": "section_break_verification",
-            "fieldtype": "Section Break",
-            "label": "Physical Verification"
-        },
-        {
-            "fieldname": "system_quantity",
-            "fieldtype": "Float",
-            "label": "System Quantity",
-            "read_only": 1,
-            "precision": "3"
-        },
-        {
-            "fieldname": "physical_quantity",
-            "fieldtype": "Float",
-            "label": "Physical Quantity",
-            "precision": "3"
-        },
-        {
-            "fieldname": "difference_quantity",
-            "fieldtype": "Float",
-            "label": "Difference Quantity",
-            "read_only": 1,
-            "precision": "3"
-        },
-        {
-            "fieldname": "additional_dust_qty",
-            "fieldtype": "Float",
-            "label": "Additional Dust Qty"
-        },
-        {
-            "fieldname": "dust_received",
-            "fieldtype": "Check",
-            "label": "Dust Received"
-        },
-        {
-            "fieldname": "column_break_verification",
-            "fieldtype": "Column Break"
-        },
-        {
-            "fieldname": "section_break_materials",
-            "fieldtype": "Section Break",
-            "label": "Materials"
-        },
-        {
-            "fieldname": "material_items",
-            "fieldtype": "Table",
-            "label": "Material Items",
-            "options": "Refining Material Line"
-        },
-        {
-            "fieldname": "section_break_recovery_out",
-            "fieldtype": "Section Break",
-            "label": "Recovery Output"
-        },
-        {
-            "fieldname": "recovered_diamond",
-            "fieldtype": "Table",
-            "label": "Recovered Diamond",
-            "options": "Recovered Diamond",
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "recovered_gemstone",
-            "fieldtype": "Table",
-            "label": "Recovered Gemstone",
-            "options": "Recovered Gemstone",
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "refined_gold",
-            "fieldtype": "Table",
-            "label": "Recovered Metal",
-            "options": "Refined Gold",
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "section_break_gold_recovery",
-            "fieldtype": "Section Break",
-            "label": "Gold Recovery Distribution"
-        },
-        {
-            "fieldname": "gold_recovery_details",
-            "fieldtype": "Table",
-            "label": "Gold Recovery Details",
-            "options": "Refining Gold Recovery Detail",
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "section_break_totals",
-            "fieldtype": "Section Break",
-            "label": "Recovery Summary"
-        },
-        {
-            "default": "0",
-            "fieldname": "expected_recovery",
-            "fieldtype": "Float",
-            "label": "Expected Recovery",
-            "precision": "3",
-            "allow_on_submit": 1
-        },
-        {
-            "default": "0",
-            "fieldname": "actual_recovery",
-            "fieldtype": "Float",
-            "label": "Actual Recovery",
-            "precision": "3",
-            "allow_on_submit": 1
-        },
-        {
-            "default": "0",
-            "fieldname": "recovery_percentage",
-            "fieldtype": "Float",
-            "label": "Recovery %",
-            "precision": "2",
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "column_break_totals",
-            "fieldtype": "Column Break"
-        },
-        {
-            "default": "0",
-            "fieldname": "gross_pure_weight",
-            "fieldtype": "Float",
-            "label": "Gross Pure Weight",
-            "precision": "3",
-            "allow_on_submit": 1
-        },
-        {
-            "default": "0",
-            "fieldname": "refined_fine_weight",
-            "fieldtype": "Float",
-            "label": "Refined Fine Weight",
-            "precision": "3",
-            "allow_on_submit": 1
-        },
-        {
-            "default": "0",
-            "fieldname": "refining_loss",
-            "fieldtype": "Float",
-            "label": "Refining Loss",
-            "precision": "3",
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "column_break_totals2",
-            "fieldtype": "Column Break"
-        },
-        {
-            "fieldname": "recovery_remarks",
-            "fieldtype": "Small Text",
-            "label": "Recovery Remarks"
-        },
-        {
-            "fieldname": "section_break_se",
-            "fieldtype": "Section Break",
-            "label": "Stock Entry References"
-        },
-        {
-            "fieldname": "material_transfer_se",
-            "fieldtype": "Link",
-            "label": "Material Transfer SE",
-            "options": "Stock Entry",
-            "read_only": 1,
-            "no_copy": 1,
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "repack_se",
-            "fieldtype": "Link",
-            "label": "Repack SE",
-            "options": "Stock Entry",
-            "read_only": 1,
-            "no_copy": 1,
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "column_break_se",
-            "fieldtype": "Column Break"
-        },
-        {
-            "fieldname": "transfer_se",
-            "fieldtype": "Link",
-            "label": "Transfer SE",
-            "options": "Stock Entry",
-            "read_only": 1,
-            "no_copy": 1,
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "receiving_se",
-            "fieldtype": "Link",
-            "label": "Receiving SE",
-            "options": "Stock Entry",
-            "read_only": 1
-        },
-        {
-            "fieldname": "section_break_batch",
-            "fieldtype": "Section Break",
-            "label": "Batch Tracking",
-            "collapsible": 1
-        },
-        {
-            "fieldname": "batch_tracking",
-            "fieldtype": "Table",
-            "label": "Batch Tracking",
-            "options": "Refining Batch Tracking",
-            "allow_on_submit": 1
-        },
-        {
-            "fieldname": "amended_from",
-            "fieldtype": "Link",
-            "label": "Amended From",
-            "no_copy": 1,
-            "options": "Refining Entry",
-            "print_hide": 1,
-            "read_only": 1
-        }
-    ],
-    "index_web_pages_for_search": 1,
-    "links": [
-        {
-            "link_doctype": "Stock Entry",
-            "link_fieldname": "custom_refining_entry"
-        },
-        {
-            "link_doctype": "Refining Audit Log",
-            "link_fieldname": "refining_entry"
-        }
-    ],
-    "modified": "2026-06-16 06:00:00.000000",
-    "modified_by": "Administrator",
-    "module": "Refining",
-    "name": "Refining Entry",
-    "naming_rule": "By \"Naming Series\" field",
-    "owner": "Administrator",
-    "permissions": [
-        {
-            "role": "System Manager",
-            "create": 1,
-            "delete": 1,
-            "email": 1,
-            "export": 1,
-            "print": 1,
-            "read": 1,
-            "report": 1,
-            "share": 1,
-            "submit": 1,
-            "write": 1,
-            "cancel": 1
-        },
-        {
-            "role": "Refining Manager",
-            "create": 1,
-            "delete": 0,
-            "email": 1,
-            "export": 1,
-            "print": 1,
-            "read": 1,
-            "report": 1,
-            "share": 1,
-            "submit": 1,
-            "write": 1,
-            "cancel": 1
-        },
-        {
-            "role": "Refining User",
-            "create": 1,
-            "delete": 0,
-            "email": 0,
-            "export": 0,
-            "print": 1,
-            "read": 1,
-            "report": 1,
-            "share": 0,
-            "submit": 1,
-            "write": 1,
-            "cancel": 0
-        },
-        {
-            "role": "All",
-            "read": 1
-        }
-    ],
-    "sort_field": "modified",
-    "sort_order": "DESC",
-    "states": [],
-    "track_changes": 1,
-    "track_seen": 1,
-    "track_views": 1
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "naming_series:",
+ "creation": "2026-06-23 21:08:18.621455",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "naming_series",
+  "refining_type",
+  "company",
+  "posting_date",
+  "column_break_general",
+  "department",
+  "refining_department",
+  "warehouse",
+  "refining_warehouse",
+  "column_break_general2",
+  "status",
+  "manufacturer",
+  "section_break_source",
+  "scan_mwo",
+  "scan_serial_no",
+   "scan_scrap_qr",
+  "mwo_details",
+  "serial_no_details",
+  "section_break_dust",
+  "date_from",
+  "date_to",
+  "column_break_dust",
+  "multiple_operation",
+  "multiple_department",
+  "employee",
+  "operation",
+  "loss_item",
+  "refining_department_detail",
+  "refining_operation_detail",
+  "section_break_verification",
+  "system_quantity",
+  "physical_quantity",
+  "difference_quantity",
+  "column_break_verification",
+  "additional_dust_qty",
+  "dust_received",
+  "section_break_materials",
+  "material_items",
+  "section_break_recovery_out",
+  "recovered_diamond",
+  "recovered_gemstone",
+  "refined_gold",
+  "section_break_gold_recovery",
+  "gold_recovery_details",
+  "section_break_totals",
+  "expected_recovery",
+  "actual_recovery",
+  "recovery_percentage",
+  "column_break_totals",
+  "gross_pure_weight",
+  "refined_fine_weight",
+  "refining_loss",
+  "column_break_totals2",
+  "recovery_remarks",
+  "section_break_se",
+  "material_transfer_se",
+  "repack_se",
+  "column_break_se",
+  "transfer_se",
+  "receiving_se",
+  "section_break_batch",
+  "batch_tracking",
+  "amended_from",
+  "parent_refining_entry",
+  "scrap_warehouse",
+  "auto_create_batch"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Series",
+   "options": "RFN-DST-.YY.-.#####\nRFN-MWO-.YY.-.#####\nRFN-SRN-.YY.-.#####\nRFN-SCP-.YY.-.#####",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "parent_refining_entry",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Parent Refining Entry",
+   "options": "Refining Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "refining_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Refining Type",
+   "options": "\nDust Refining\nWork Order Refining\nSerial Number Refining\nScrap Refining",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_general",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Source Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "refining_department",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Refining Department",
+   "options": "Department",
+   "reqd": 1
+  },
+  {
+   "fieldname": "warehouse",
+   "fieldtype": "Link",
+   "label": "Source Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "refining_warehouse",
+   "fieldtype": "Link",
+   "label": "Refining Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "fieldname": "scrap_warehouse",
+   "fieldtype": "Link",
+   "label": "Scrap Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "default": "1",
+   "fieldname": "auto_create_batch",
+   "fieldtype": "Check",
+   "label": "Auto Create Batch"
+  },
+  {
+   "fieldname": "column_break_general2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nPhysical Verification\nSubmitted\nReceived\nClassified\nRefining In Progress\nRecovery Entered\nRecovery Verified\nCompleted\nTransferred\nCancelled",
+   "read_only": 1
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer"
+  },
+  {
+   "fieldname": "section_break_source",
+   "fieldtype": "Section Break",
+   "label": "Source References"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Work Order Refining'",
+   "fieldname": "scan_mwo",
+   "fieldtype": "Data",
+   "label": "Scan MWO",
+   "options": "Barcode"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Serial Number Refining'",
+   "fieldname": "scan_serial_no",
+   "fieldtype": "Data",
+   "label": "Scan Serial Number",
+   "options": "Barcode"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
+   "fieldname": "scan_scrap_qr",
+   "fieldtype": "Data",
+   "label": "Scan Scrap QR",
+   "options": "Barcode"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Work Order Refining'",
+   "fieldname": "mwo_details",
+   "fieldtype": "Table",
+   "label": "MWO Details",
+   "options": "Manufacturing Work Order Refining Details"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Serial Number Refining'",
+   "fieldname": "serial_no_details",
+   "fieldtype": "Table",
+   "label": "Serial Number Details",
+   "options": "Refining Serial No Detail"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "fieldname": "section_break_dust",
+   "fieldtype": "Section Break",
+   "label": "Dust Refining Settings"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "fieldname": "date_from",
+   "fieldtype": "Date",
+   "label": "From Date",
+   "mandatory_depends_on": "eval:doc.refining_type=='Dust Refining'"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "fieldname": "date_to",
+   "fieldtype": "Date",
+   "label": "To Date",
+   "mandatory_depends_on": "eval:doc.refining_type=='Dust Refining'"
+  },
+  {
+   "fieldname": "column_break_dust",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_department",
+   "fieldname": "multiple_operation",
+   "fieldtype": "Check",
+   "label": "For Multiple Operations"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation",
+   "fieldname": "multiple_department",
+   "fieldtype": "Check",
+   "label": "For Multiple Department"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department",
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "Employee",
+   "options": "Employee"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department",
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "Operation",
+   "options": "Department Operation"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "fieldname": "loss_item",
+   "fieldtype": "Link",
+   "label": "Loss Item",
+   "options": "Item"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Dust Refining' && doc.multiple_department==1",
+   "fieldname": "refining_department_detail",
+   "fieldtype": "Table",
+   "label": "Department Allocation",
+   "options": "Refining Department Detail"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Dust Refining' && doc.multiple_operation==1",
+   "fieldname": "refining_operation_detail",
+   "fieldtype": "Table",
+   "label": "Operation Allocation",
+   "options": "Refining Operation Details"
+  },
+  {
+   "fieldname": "section_break_verification",
+   "fieldtype": "Section Break",
+   "label": "Physical Verification"
+  },
+  {
+   "fieldname": "system_quantity",
+   "fieldtype": "Float",
+   "label": "System Quantity",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "physical_quantity",
+   "fieldtype": "Float",
+   "label": "Physical Quantity",
+   "precision": "3"
+  },
+  {
+   "fieldname": "difference_quantity",
+   "fieldtype": "Float",
+   "label": "Difference Quantity",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "additional_dust_qty",
+   "fieldtype": "Float",
+   "label": "Additional Dust Qty"
+  },
+  {
+   "default": "0",
+   "fieldname": "dust_received",
+   "fieldtype": "Check",
+   "label": "Dust Received"
+  },
+  {
+   "fieldname": "column_break_verification",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_materials",
+   "fieldtype": "Section Break",
+   "label": "Materials"
+  },
+  {
+   "fieldname": "material_items",
+   "fieldtype": "Table",
+   "label": "Material Items",
+   "options": "Refining Material Line"
+  },
+  {
+   "fieldname": "section_break_recovery_out",
+   "fieldtype": "Section Break",
+   "label": "Recovery Output"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "recovered_diamond",
+   "fieldtype": "Table",
+   "label": "Recovered Diamond",
+   "options": "Recovered Diamond"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "recovered_gemstone",
+   "fieldtype": "Table",
+   "label": "Recovered Gemstone",
+   "options": "Recovered Gemstone"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "refined_gold",
+   "fieldtype": "Table",
+   "label": "Recovered Metal",
+   "options": "Refined Gold"
+  },
+  {
+   "fieldname": "section_break_gold_recovery",
+   "fieldtype": "Section Break",
+   "label": "Gold Recovery Distribution"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "gold_recovery_details",
+   "fieldtype": "Table",
+   "label": "Gold Recovery Details",
+   "options": "Refining Gold Recovery Detail"
+  },
+  {
+   "fieldname": "section_break_totals",
+   "fieldtype": "Section Break",
+   "label": "Recovery Summary"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "expected_recovery",
+   "fieldtype": "Float",
+   "label": "Expected Recovery",
+   "precision": "3"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "actual_recovery",
+   "fieldtype": "Float",
+   "label": "Actual Recovery",
+   "precision": "3"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "recovery_percentage",
+   "fieldtype": "Float",
+   "label": "Recovery %",
+   "precision": "2"
+  },
+  {
+   "fieldname": "column_break_totals",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "gross_pure_weight",
+   "fieldtype": "Float",
+   "label": "Gross Pure Weight",
+   "precision": "3"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "refined_fine_weight",
+   "fieldtype": "Float",
+   "label": "Refined Fine Weight",
+   "precision": "3"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "0",
+   "fieldname": "refining_loss",
+   "fieldtype": "Float",
+   "label": "Refining Loss",
+   "precision": "3"
+  },
+  {
+   "fieldname": "column_break_totals2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "recovery_remarks",
+   "fieldtype": "Small Text",
+   "label": "Recovery Remarks"
+  },
+  {
+   "fieldname": "section_break_se",
+   "fieldtype": "Section Break",
+   "label": "Stock Entry References"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "material_transfer_se",
+   "fieldtype": "Link",
+   "label": "Material Transfer SE",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "repack_se",
+   "fieldtype": "Link",
+   "label": "Repack SE",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_se",
+   "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "transfer_se",
+   "fieldtype": "Link",
+   "label": "Transfer SE",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receiving_se",
+   "fieldtype": "Link",
+   "label": "Receiving SE",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_break_batch",
+   "fieldtype": "Section Break",
+   "label": "Batch Tracking"
+  },
+  {
+   "allow_on_submit": 1,
+   "fieldname": "batch_tracking",
+   "fieldtype": "Table",
+   "label": "Batch Tracking",
+   "options": "Refining Batch Tracking"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Refining Entry",
+   "print_hide": 1,
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [
+  {
+   "link_doctype": "Stock Entry",
+   "link_fieldname": "custom_refining_entry"
+  }
+ ],
+ "modified": "2026-06-24 13:49:50.974259",
+ "modified_by": "Administrator",
+ "module": "Refining",
+ "name": "Refining Entry",
+ "naming_rule": "By \"Naming Series\" field",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "cancel": 1,
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Refining Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Refining User",
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "All"
+  }
+ ],
+ "queue_in_background": 1,
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1,
+ "track_views": 1
 }

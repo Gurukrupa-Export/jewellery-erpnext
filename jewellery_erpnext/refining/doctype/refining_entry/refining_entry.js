@@ -119,16 +119,32 @@ frappe.ui.form.on("Refining Entry", {
 
 	scan_mwo(frm) {
 		if (!frm.doc.scan_mwo) return;
-		frm.call("scan_mwo_action", { barcode: frm.doc.scan_mwo }).then(() => {
-			frm.reload_doc();
-		});
+		frappe.dom.freeze(__("Fetching MWO details..."));
+		frm.call("scan_mwo_action", { barcode: frm.doc.scan_mwo })
+			.then(() => {
+				frm.reload_doc();
+			})
+			.finally(() => frappe.dom.unfreeze());
 	},
 
 	scan_serial_no(frm) {
 		if (!frm.doc.scan_serial_no) return;
-		frm.call("scan_serial_no_action", { barcode: frm.doc.scan_serial_no }).then(() => {
-			frm.reload_doc();
-		});
+		frappe.dom.freeze(__("Fetching Serial No details..."));
+		frm.call("scan_serial_no_action", { barcode: frm.doc.scan_serial_no })
+			.then(() => {
+				frm.reload_doc();
+			})
+			.finally(() => frappe.dom.unfreeze());
+	},
+
+	scan_scrap_qr(frm) {
+		if (!frm.doc.scan_scrap_qr) return;
+		frappe.dom.freeze(__("Fetching Scrap details..."));
+		frm.call("scan_scrap_qr_action", { barcode: frm.doc.scan_scrap_qr })
+			.then(() => {
+				frm.reload_doc();
+			})
+			.finally(() => frappe.dom.unfreeze());
 	},
 
 	// --- Physical verification ---
@@ -178,9 +194,41 @@ frappe.ui.form.on("Refining Entry", {
 	},
 
 	add_action_buttons(frm) {
-		if (frm.is_new()) return;
-
 		const status = frm.doc.status;
+
+		// Dust-specific: fetch balance (only during initial setup, not after processing has started)
+		const show_dust_btn =
+			frm.doc.refining_type === "Dust Refining" &&
+			frm.doc.docstatus === 0 &&
+			(!status || status === "Draft" || status === "Received");
+
+		if (show_dust_btn) {
+			frm.add_custom_button(__("Fetch Dust Balance"), () => {
+				if (!frm.doc.loss_item || !frm.doc.warehouse) {
+					frappe.msgprint(__("Please select a Loss Item and Warehouse first."));
+					return;
+				}
+				frappe.db
+					.get_value(
+						"Bin",
+						{
+							item_code: frm.doc.loss_item,
+							warehouse: frm.doc.warehouse,
+						},
+						"actual_qty"
+					)
+					.then((r) => {
+						let qty = r.message && r.message.actual_qty ? r.message.actual_qty : 0;
+						frm.set_value("system_quantity", qty);
+						frappe.show_alert({
+							message: __("System Qty updated to: {0}", [qty]),
+							indicator: "green",
+						});
+					});
+			});
+		}
+
+		if (frm.is_new()) return;
 
 		// Parent only buttons
 		if (!frm.doc.parent_refining_entry) {
@@ -188,16 +236,35 @@ frappe.ui.form.on("Refining Entry", {
 				frm.add_custom_button(
 					__("Receive Materials"),
 					() => {
-						frm.call("receive_materials").then((r) => {
-							if (r.message) {
-								frappe.set_route("Form", "Refining Entry", r.message);
-							} else {
-								frm.reload_doc();
-							}
-						});
+						frappe.dom.freeze(__("Receiving Materials..."));
+						frm.call("receive_materials")
+							.then((r) => {
+								if (r.message) {
+									frappe.set_route("Form", "Refining Entry", r.message);
+								} else {
+									frm.reload_doc();
+								}
+							})
+							.finally(() => frappe.dom.unfreeze());
 					},
 					__("Refining Process")
 				).addClass("btn-primary");
+			} else if (status === "Received" || status === "Transferred" || status === "Completed") {
+				frm.add_custom_button(
+					__("View Duplicate Processing Entry"),
+					() => {
+						frappe.db
+							.get_value("Refining Entry", { parent_refining_entry: frm.doc.name }, "name")
+							.then((r) => {
+								if (r.message && r.message.name) {
+									frappe.set_route("Form", "Refining Entry", r.message.name);
+								} else {
+									frappe.msgprint(__("Duplicate processing entry not found."));
+								}
+							});
+					},
+					__("Refining Process")
+				);
 			}
 		}
 
@@ -207,7 +274,10 @@ frappe.ui.form.on("Refining Entry", {
 				frm.add_custom_button(
 					__("Classify & Generate Recovery"),
 					() => {
-						frm.call("generate_recovery_table").then(() => frm.reload_doc());
+						frappe.dom.freeze(__("Classifying Materials..."));
+						frm.call("generate_recovery_table")
+							.then(() => frm.reload_doc())
+							.finally(() => frappe.dom.unfreeze());
 					},
 					__("Refining Process")
 				).addClass("btn-primary");
@@ -217,7 +287,10 @@ frappe.ui.form.on("Refining Entry", {
 				frm.add_custom_button(
 					__("Start Refining"),
 					() => {
-						frm.call("start_refining").then(() => frm.reload_doc());
+						frappe.dom.freeze(__("Starting Refining..."));
+						frm.call("start_refining")
+							.then(() => frm.reload_doc())
+							.finally(() => frappe.dom.unfreeze());
 					},
 					__("Refining Process")
 				).addClass("btn-primary");
@@ -238,9 +311,12 @@ frappe.ui.form.on("Refining Entry", {
 								},
 							],
 							(values) => {
+								frappe.dom.freeze(__("Distributing Recovered Gold..."));
 								frm.call("distribute_recovered_gold", {
 									total_recovered_weight: values.total_recovered_weight,
-								}).then(() => frm.reload_doc());
+								})
+									.then(() => frm.reload_doc())
+									.finally(() => frappe.dom.unfreeze());
 							},
 							__("Recovered Gold"),
 							__("Distribute")
@@ -254,7 +330,10 @@ frappe.ui.form.on("Refining Entry", {
 				frm.add_custom_button(
 					__("Verify Recovery"),
 					() => {
-						frm.call("verify_recovery").then(() => frm.reload_doc());
+						frappe.dom.freeze(__("Verifying Recovery..."));
+						frm.call("verify_recovery")
+							.then(() => frm.reload_doc())
+							.finally(() => frappe.dom.unfreeze());
 					},
 					__("Refining Process")
 				).addClass("btn-primary");
@@ -264,7 +343,10 @@ frappe.ui.form.on("Refining Entry", {
 				frm.add_custom_button(
 					__("Complete Refining"),
 					() => {
-						frm.call("complete_refining").then(() => frm.reload_doc());
+						frappe.dom.freeze(__("Completing Refining..."));
+						frm.call("complete_refining")
+							.then(() => frm.reload_doc())
+							.finally(() => frappe.dom.unfreeze());
 					},
 					__("Refining Process")
 				).addClass("btn-primary");
@@ -274,26 +356,14 @@ frappe.ui.form.on("Refining Entry", {
 				frm.add_custom_button(
 					__("Transfer to Department"),
 					() => {
-						frm.call("transfer_recovered_materials").then(() => frm.reload_doc());
+						frappe.dom.freeze(__("Transferring Materials..."));
+						frm.call("transfer_recovered_materials")
+							.then(() => frm.reload_doc())
+							.finally(() => frappe.dom.unfreeze());
 					},
 					__("Refining Process")
 				).addClass("btn-primary");
 			}
-		}
-
-		// Dust-specific: fetch balance
-		if (frm.doc.refining_type === "Dust Refining" && frm.doc.docstatus === 0) {
-			frm.add_custom_button(__("Fetch Dust Balance"), () => {
-				frm.call("fetch_dust_balance").then((r) => {
-					if (r.message !== undefined) {
-						frappe.show_alert({
-							message: __("System Qty: {0}", [r.message]),
-							indicator: "green",
-						});
-						frm.reload_doc();
-					}
-				});
-			});
 		}
 	},
 

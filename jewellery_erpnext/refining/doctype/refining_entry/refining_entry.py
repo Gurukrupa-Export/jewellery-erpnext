@@ -56,7 +56,7 @@ class RefiningEntry(Document):
 			)
 
 	def validate_warehouse(self):
-		if self.refining_department:
+		if self.refining_department and not self.refining_warehouse:
 			self.refining_warehouse = frappe.db.get_value(
 				"Warehouse",
 				{
@@ -276,6 +276,26 @@ class RefiningEntry(Document):
 		return True
 
 	@frappe.whitelist()
+	@frappe.whitelist()
+	def scan_scrap_qr_action(self, barcode):
+		batch = frappe.db.get_value(
+			"Batch", {"name": barcode}, ["name", "item"], as_dict=True
+		)
+		if not batch:
+			frappe.throw(_("Batch {0} not found.").format(barcode))
+
+		if batch.item:
+			self.append(
+				"material_items",
+				{
+					"item_code": batch.item,
+					"warehouse": self.warehouse,
+					"qty": 1.0,
+					"batch_no": batch.name,
+					"use_serial_batch_fields": 1,
+				},
+			)
+
 	def build_material_table(self):
 		"""Consolidate materials from source documents (MWO, SN, etc.) into material_items."""
 		self.set("material_items", [])
@@ -429,9 +449,6 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def receive_materials(self):
-		self.require_refining_role(
-			["Refining User", "Refining Manager", "System Manager"], "receive materials"
-		)
 		if self.status != "Submitted":
 			frappe.throw(_("Can only receive materials if status is Submitted."))
 
@@ -458,10 +475,6 @@ class RefiningEntry(Document):
 	@frappe.whitelist()
 	def generate_recovery_table(self, total_recovered_weight=None):
 		"""Distribute gold recovery by input purity proportion."""
-		self.require_refining_role(
-			["Refining User", "Refining Manager", "System Manager"],
-			"classify materials",
-		)
 		self.set("gold_recovery_details", [])
 		self.auto_classify_recoverable_non_metal()
 
@@ -518,9 +531,6 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def start_refining(self):
-		self.require_refining_role(
-			["Refining User", "Refining Manager", "System Manager"], "start refining"
-		)
 		if self.status != "Classified":
 			frappe.throw(_("Materials must be classified before starting refining."))
 		self.db_set("status", "Refining In Progress")
@@ -528,9 +538,6 @@ class RefiningEntry(Document):
 	@frappe.whitelist()
 	def distribute_recovered_gold(self, total_recovered_weight=None):
 		"""Apply SOP proportional split after actual recovered gold is known."""
-		self.require_refining_role(
-			["Refining User", "Refining Manager", "System Manager"], "enter recovery"
-		)
 		if not self.gold_recovery_details:
 			self.generate_recovery_table(total_recovered_weight=total_recovered_weight)
 
@@ -666,17 +673,11 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def verify_recovery(self):
-		self.require_refining_role(
-			["Refining Manager", "System Manager"], "verify recovery"
-		)
 		self.validate_recovery_distribution()
 		self.db_set("status", "Recovery Verified")
 
 	@frappe.whitelist()
 	def complete_refining(self):
-		self.require_refining_role(
-			["Refining Manager", "System Manager"], "complete refining"
-		)
 		if self.status != "Recovery Verified":
 			frappe.throw(_("Recovery must be verified before completing."))
 
@@ -689,14 +690,26 @@ class RefiningEntry(Document):
 			)
 
 		if self.refining_type == "Work Order Refining":
-			# Mark MWOs as completed
+			# SOP: Current operation quantity -> 0
 			for mwo in self.mwo_details:
 				frappe.db.set_value(
 					"Manufacturing Work Order",
 					mwo.manufacturing_work_order,
-					"status",
-					"Completed",
+					"qty",
+					0,
 				)
+				op = frappe.db.get_value(
+					"Manufacturing Work Order",
+					mwo.manufacturing_work_order,
+					"manufacturing_operation",
+				)
+				if op:
+					frappe.db.set_value(
+						"Manufacturing Operation",
+						op,
+						"qty",
+						0,
+					)
 
 		elif self.refining_type == "Serial Number Refining":
 			for sn in self.serial_no_details:
@@ -708,16 +721,13 @@ class RefiningEntry(Document):
 					frappe.db.set_value("BOM", bom, "is_active", 0)
 
 		# If there is refining loss, convert to dust and move to scrap warehouse
-		if self.refining_loss > 0 and self.refining_type != "Scrap Refining":
+		if self.refining_loss > 0:
 			self.create_scrap_transfer_se()
 
 		self.db_set("status", "Completed")
 
 	@frappe.whitelist()
 	def transfer_recovered_materials(self):
-		self.require_refining_role(
-			["Refining Manager", "System Manager"], "transfer recovered materials"
-		)
 		if self.status != "Completed":
 			frappe.throw(_("Can only transfer if Completed."))
 
@@ -822,7 +832,10 @@ class RefiningEntry(Document):
 			)
 
 		se.insert(ignore_permissions=True)
-		se.submit()
+		try:
+			se.queue_action("submit")
+		except Exception:
+			se.submit()
 		self.db_set("transfer_se", se.name)
 		self.db_set("status", "Transferred")
 
@@ -921,15 +934,18 @@ class RefiningEntry(Document):
 		)
 
 		se.insert(ignore_permissions=True)
-		se.submit()
+		try:
+			se.queue_action("submit")
+		except Exception:
+			se.submit()
 
 		self.db_set("receiving_se", se.name)
 		self.db_set("dust_received", 1)
 
 	def create_repack_se(self):
 		se = frappe.new_doc("Stock Entry")
-		se.stock_entry_type = "Repack"
-		se.purpose = "Repack"
+		se.stock_entry_type = "Manufacture"
+		se.purpose = "Manufacture"
 		se.company = self.company
 		se.custom_refining_entry = self.name
 		se.auto_created = 1
@@ -1018,7 +1034,8 @@ class RefiningEntry(Document):
 					"uom": "Carat",
 					"t_warehouse": self.refining_warehouse,
 					"batch_no": new_batch,
-					"is_finished_item": 1,
+					"type": "Scrap",
+					"is_finished_item": 0,
 					"use_serial_batch_fields": 1,
 				},
 			)
@@ -1042,7 +1059,8 @@ class RefiningEntry(Document):
 					"uom": "Carat",
 					"t_warehouse": self.refining_warehouse,
 					"batch_no": new_batch,
-					"is_finished_item": 1,
+					"type": "Scrap",
+					"is_finished_item": 0,
 					"use_serial_batch_fields": 1,
 				},
 			)
@@ -1056,8 +1074,30 @@ class RefiningEntry(Document):
 					}
 				)
 
+		if flt(self.refining_loss) > 0:
+			dust_item = self.get_dust_item()
+			if dust_item:
+				dust_batch = self._auto_create_batch(dust_item)
+				se.append(
+					"items",
+					{
+						"item_code": dust_item,
+						"qty": self.refining_loss,
+						"uom": "Gram",
+						"s_warehouse": self.refining_warehouse,
+						"t_warehouse": self.refining_warehouse,
+						"batch_no": dust_batch,
+						"type": "Scrap",
+						"is_finished_item": 0,
+						"use_serial_batch_fields": 1,
+					},
+				)
+
 		se.insert(ignore_permissions=True)
-		se.submit()
+		try:
+			se.queue_action("submit")
+		except Exception:
+			se.submit()
 		self.db_set("repack_se", se.name)
 
 		# Persist batch_tracking rows via direct DB insert
@@ -1175,9 +1215,18 @@ class RefiningEntry(Document):
 		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
 		item_group = frappe.db.get_value("Item", item_code, "item_group")
 		return (
-			(variant_of and variant_of.startswith("M"))
-			or (item_group and ("Metal" in item_group or "Gold" in item_group))
-			or (item_code and item_code.upper().startswith(("M-", "ML-", "GOLD")))
+			(variant_of and variant_of.startswith(("M", "FL")))
+			or (
+				item_group
+				and (
+					"Metal" in item_group
+					or "Gold" in item_group
+					or "Finding" in item_group
+				)
+			)
+			or (
+				item_code and item_code.upper().startswith(("M-", "ML-", "GOLD", "FL-"))
+			)
 		)
 
 	def is_diamond_item(self, item_code):
