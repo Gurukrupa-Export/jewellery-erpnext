@@ -127,8 +127,38 @@ def _prepare_loss_row(eir, row, table_name):
 	Returns None when proportionally_loss <= 0.
 	Raises on any missing mandatory field or unresolvable reference.
 	"""
-	qty = flt(row.proportionally_loss, 3)
+	# Gate at the Stock Entry Detail's ACTUAL transfer_qty precision so a loss that survives
+	# here is guaranteed representable when ERPNext's set_transfer_qty() recomputes
+	# flt(qty * conversion_factor, precision("transfer_qty")). The intended precision is 3
+	# (property_setter/stock_entry_detail.json, provisioned by property_setter_guard); we read
+	# it live rather than hardcoding 3 so this stays correct if float_precision / the property
+	# setter ever change. A row below that precision would round to 0 in the SE and hard-crash
+	# the WHOLE Employee IR submit on se.insert() ("Qty in Stock UOM can not be zero.") -- skip
+	# it loudly instead. Once precision == 3, flt(0.001, 3) = 0.001 > 0, so real sub-0.01 g
+	# losses are kept; this only fires for genuinely sub-representable rows.
+	se_precision = frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+	qty = flt(row.proportionally_loss, se_precision)
 	if qty <= 0:
+		if flt(row.proportionally_loss) > 0:
+			# Dropping is consistent: no pending entry -> no SRE reduction, no SE row (each loss
+			# row is independent). Log (operational + Error Log) so it is never silent.
+			msg = (
+				"Employee IR {0} {1} row {2}: proportionally_loss={3} g rounds to 0 at "
+				"Stock Entry Detail transfer_qty precision {4}; row skipped so se.insert() does "
+				"not abort the EIR submit. item={5} batch={6}".format(
+					eir.name,
+					table_name,
+					row.idx,
+					row.proportionally_loss,
+					se_precision,
+					row.item_code,
+					row.batch_no,
+				)
+			)
+			frappe.logger().warning("create_loss_stock_entries: " + msg)
+			frappe.log_error(
+				title="Employee IR sub-precision loss row skipped", message=msg
+			)
 		return None
 
 	if not row.item_code:
@@ -276,7 +306,9 @@ def _find_sre(eir, row, mwo, table_name, qty):
 	# locations: the operation-matched SRE's warehouse, else the warehouse with
 	# the largest reserved_qty.
 	row_mop = getattr(row, "manufacturing_operation", None)
-	op_matched = [r for r in rows if row_mop and r.get("manufacturing_operation") == row_mop]
+	op_matched = [
+		r for r in rows if row_mop and r.get("manufacturing_operation") == row_mop
+	]
 	chosen_wh = (
 		op_matched[0]["warehouse"]
 		if op_matched
@@ -296,7 +328,16 @@ def _find_sre(eir, row, mwo, table_name, qty):
 	covering = next(
 		(c for c in candidates if flt(c.get("reserved_qty"), 3) >= qty), None
 	)
-	chosen = covering or candidates[0]
+	chosen = covering or (candidates[0] if candidates else None)
+	if not chosen:
+		# Defensive: candidates derives from `rows` (already guarded as non-empty above),
+		# so this cannot trigger today — it hardens against future filter changes silencing
+		# the loss into an IndexError instead of an actionable message.
+		frappe.throw(
+			_("No Stock Reservation Entry candidate found for {0} in batch {1}").format(
+				row.item_code, getattr(row, "batch_no", None)
+			)
+		)
 
 	return frappe.get_doc("Stock Reservation Entry", chosen["name"]), candidates
 
