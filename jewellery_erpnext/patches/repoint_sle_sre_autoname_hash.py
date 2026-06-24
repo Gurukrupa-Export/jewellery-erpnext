@@ -60,13 +60,17 @@ def execute():
 				"Property Setter",
 				{"doc_type": doctype, "doctype_or_field": "DocType", "property": prop},
 			)
+			# ``frappe.make_property_setter`` is the dict-based public API; the positional
+			# ``for_doctype=`` form lives on the lower-level
+			# ``frappe.custom...property_setter.make_property_setter`` helper, not here.
 			frappe.make_property_setter(
-				doctype,
-				None,  # fieldname — DocType-level property, no field
-				prop,
-				value,
-				"Data",
-				for_doctype=True,
+				{
+					"doctype_or_field": "DocType",  # DocType-level property, no field
+					"doctype": doctype,
+					"property": prop,
+					"value": value,
+					"property_type": "Data",  # canonical for autoname & naming_rule
+				},
 			)
 
 		frappe.clear_cache(doctype=doctype)
