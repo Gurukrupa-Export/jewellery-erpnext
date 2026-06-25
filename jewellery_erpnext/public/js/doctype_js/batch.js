@@ -1,3 +1,23 @@
+frappe.ui.form.on("Batch", {
+refresh: (frm) => {
+		if (!frm.is_new()) {
+			frm.add_custom_button(__("View Ledger"), () => {
+				frappe.route_options = {
+					batch_no: frm.doc.name,
+				};
+				frappe.set_route("query-report", "Stock Ledger");
+			});
+			frm.trigger("make_dashboard");
+		}
+		if (frm.doc.custom_company !== "Sadguru Diamond") return;
+        // Only on saved (not new) docs
+        if (frm.doc.__islocal) return;
+
+        frm.add_custom_button(__("Repack"), function () {
+            make_repack_dialog(frm);
+        }, __("Actions"));
+	},
+});
 
 
 
