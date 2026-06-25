@@ -25,6 +25,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 )
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
 	lock_bins_for_rows,
+	preallocate_series_for_docs,
 	sorted_stock_rows,
 )
 from jewellery_erpnext.utils import (
@@ -584,6 +585,11 @@ def prelock_bins(self, method=None):
 	Entries (one place covers MR / repack / metal-conversion / main-slip injection / EOD /
 	loss / SNC etc.). Additive — ERPNext locks these same Bins during posting anyway; this
 	only fixes the acquisition order."""
+	# Canonical position 2: pin this SE's naming-series counter (tabSeries) FOR UPDATE
+	# *before* any Bin lock, so a transaction can never hold a Bin while waiting on the
+	# series row another transaction holds while waiting on that Bin. Re-entrant with the
+	# getseries() call already made at insert (same row, same txn) — purely additive.
+	preallocate_series_for_docs(self)
 	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
 
 
@@ -624,10 +630,8 @@ def onsubmit(self, method):
 		pluck="stock_entry_type_to_reservation",
 	)
 	if self.stock_entry_type in types_for_reservation:
-		if (
-			self.stock_entry_type == "Repack"
-			and (not (self.manufacturing_order and self.manufacturing_work_order))
-			and self.auto_created == 0
+		if self.stock_entry_type == "Repack" and (
+			not (self.manufacturing_order and self.manufacturing_work_order)
 		):
 			return
 		stock_reservation_entry_for_mwo(self)
