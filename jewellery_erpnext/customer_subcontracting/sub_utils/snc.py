@@ -353,21 +353,27 @@ def _get_target_batch_from_stock_entry(stock_entry, item_code):
 
 
 def _get_item_purity(item_code):
-	purity = frappe.db.get_value("Item", item_code, "metal_purity")
-	if purity:
-		attr_purity = frappe.db.get_value(
-			"Attribute Value", purity, "custom_purity_percentage"
-		)
-		if attr_purity:
-			return flt(attr_purity)
-		try:
-			return flt(float(purity))
-		except (TypeError, ValueError):
-			pass
-	try:
-		return flt(float((item_code or "").split("-")[-2]))
-	except (TypeError, ValueError, IndexError):
-		return 0
+    item = frappe.get_doc("Item", item_code)
+
+    for row in item.attributes:
+        if row.attribute == "Metal Purity":
+            try:
+                return flt(row.attribute_value)
+            except (TypeError, ValueError):
+                pass
+
+            purity = frappe.db.get_value(
+                "Attribute Value",
+                row.attribute_value,
+                "custom_purity_percentage",
+            )
+            if purity:
+                return flt(purity)
+
+    try:
+        return flt((item_code or "").split("-")[-2])
+    except (TypeError, ValueError, IndexError):
+        return 0
 
 
 def _get_purity_label(item_code):
