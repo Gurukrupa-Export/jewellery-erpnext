@@ -24,6 +24,7 @@
   "box_no",
   "mould_wtin_gram",
   "section_break_zx6w",
+  "mould_design_references",
   "remarks"
  ],
  "fields": [
@@ -82,17 +83,23 @@
    "fetch_from": "mould_warehouse.code",
    "fieldname": "rake",
    "fieldtype": "Data",
-   "label": "Rake"
+   "in_list_view": 1,
+   "label": "Rake",
+   "reqd": 1
   },
   {
    "fieldname": "tray_no",
    "fieldtype": "Data",
-   "label": "Tray No"
+   "in_list_view": 1,
+   "label": "Tray No",
+   "reqd": 1
   },
   {
    "fieldname": "box_no",
    "fieldtype": "Data",
-   "label": "Box No"
+   "in_list_view": 1,
+   "label": "Box No",
+   "reqd": 1
   },
   {
    "fieldname": "warehouse",
@@ -119,12 +126,19 @@
    "fieldname": "mould_wtin_gram",
    "fieldtype": "Float",
    "label": "Mould WT(in Gram)"
+  },
+  {
+   "fieldname": "mould_design_references",
+   "fieldtype": "Table",
+   "label": "Mould Design References",
+   "options": "Mould Design Reference"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-10-21 15:15:29.858416",
- "modified_by": "Administrator",
+ "modified": "2026-06-10 11:39:13.739548",
+ "modified_by": "shubham_k@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Mould",
  "naming_rule": "By \"Naming Series\" field",
@@ -143,6 +157,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
