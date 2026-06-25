@@ -357,16 +357,16 @@ def create_repack_stock_entry(batch_no, item_code, qty, target_rate, company, wa
     value_difference = se.value_difference
 
     # --- Create Journal Entry only if there is a difference ---
-    if value_difference != 0:
-        je = _create_repack_journal_entry(
-            se_name=se.name,
-            company=company,
-            cost_center=cost_center,
-            expense_account=expense_account,
-            value_difference=value_difference,
-            posting_date=se.posting_date
-        )
-        return {"stock_entry": se.name, "journal_entry": je}
+    # if value_difference != 0:
+    #     je = _create_repack_journal_entry(
+    #         se_name=se.name,
+    #         company=company,
+    #         cost_center=cost_center,
+    #         expense_account=expense_account,
+    #         value_difference=value_difference,
+    #         posting_date=se.posting_date
+    #     )
+    #     return {"stock_entry": se.name, "journal_entry": je}
 
     return {"stock_entry": se.name, "journal_entry": None}
 
