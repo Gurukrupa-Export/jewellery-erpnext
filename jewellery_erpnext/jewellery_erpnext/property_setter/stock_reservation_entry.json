@@ -1,0 +1,58 @@
+{
+    "Stock Reservation Entry": [
+        {
+            "doctype_or_field": "DocField",
+            "doctype": "Stock Reservation Entry",
+            "fieldname": "reserved_qty",
+            "row_name": null,
+            "property": "precision",
+            "value": "3",
+            "property_type": "Select"
+        },
+        {
+            "doctype_or_field": "DocField",
+            "doctype": "Stock Reservation Entry",
+            "fieldname": "available_qty",
+            "row_name": null,
+            "property": "precision",
+            "value": "3",
+            "property_type": "Select"
+        },
+        {
+            "doctype_or_field": "DocField",
+            "doctype": "Stock Reservation Entry",
+            "fieldname": "delivered_qty",
+            "row_name": null,
+            "property": "precision",
+            "value": "3",
+            "property_type": "Select"
+        },
+        {
+            "doctype_or_field": "DocField",
+            "doctype": "Stock Reservation Entry",
+            "fieldname": "voucher_qty",
+            "row_name": null,
+            "property": "precision",
+            "value": "3",
+            "property_type": "Select"
+        },
+        {
+            "doctype_or_field": "DocField",
+            "doctype": "Stock Reservation Entry",
+            "fieldname": "consumed_qty",
+            "row_name": null,
+            "property": "precision",
+            "value": "3",
+            "property_type": "Select"
+        },
+        {
+            "doctype_or_field": "DocField",
+            "doctype": "Stock Reservation Entry",
+            "fieldname": "transferred_qty",
+            "row_name": null,
+            "property": "precision",
+            "value": "3",
+            "property_type": "Select"
+        }
+    ]
+}

@@ -2362,17 +2362,18 @@ def setup_data():
 
 	ensure_fetch_from_columns()
 
-	# Provision the Stock Entry Detail.transfer_qty precision = 3 Property Setter. Employee
-	# IR's auto-created Process Loss SE builds rows of 0.001 g; with float_precision = 2 and
-	# no per-field precision, set_transfer_qty rounds flt(0.001, 2) = 0.0 and throws
-	# "Qty in Stock UOM can not be zero." The fix is in property_setter/stock_entry_detail.json
-	# but only applied by the disabled after_migrate hook, so install-app never creates it.
-	# Idempotent.
+	# Provision the field-precision Property Setters (Stock Entry Detail.transfer_qty and
+	# Serial and Batch Entry.qty, both precision = 3). Employee IR's auto-created Process Loss
+	# SE builds rows of 0.001 g; with float_precision = 2 and no per-field precision, ERPNext
+	# rounds flt(0.001, 2) = 0.0 and throws ("Qty in Stock UOM can not be zero." on the SE row,
+	# or "Qty is mandatory for the batch" on the Serial and Batch Bundle). The fixes live in
+	# property_setter/*.json but are only applied by the disabled after_migrate hook, so
+	# install-app never creates them. Idempotent.
 	from jewellery_erpnext.property_setter_guard import (
-		ensure_stock_entry_detail_precision,
+		ensure_field_precision_property_setters,
 	)
 
-	ensure_stock_entry_detail_precision()
+	ensure_field_precision_property_setters()
 
 	if not frappe.db.exists("Gender", "Other"):
 		frappe.get_doc({"doctype": "Gender", "gender": "Other"}).insert(

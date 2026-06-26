@@ -103,15 +103,21 @@ class RefiningEntry(Document):
 	def calculate_totals(self):
 		self.gross_pure_weight = 0.0
 		self.expected_recovery = 0.0
-		for item in self.material_items:
-			if item.purity:
-				purity_pct = frappe.db.get_value(
-					"Attribute Value", item.purity, "purity_percentage"
-				)
-				if purity_pct:
-					pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
-					self.gross_pure_weight += pure_weight
-					self.expected_recovery += pure_weight
+
+		if self.refining_type == "Serial Number Refining":
+			for sn in self.serial_no_details:
+				self.gross_pure_weight += flt(sn.pure_weight)
+				self.expected_recovery += flt(sn.pure_weight)
+		else:
+			for item in self.material_items:
+				if item.purity:
+					purity_pct = frappe.db.get_value(
+						"Attribute Value", item.purity, "purity_percentage"
+					)
+					if purity_pct:
+						pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
+						self.gross_pure_weight += pure_weight
+						self.expected_recovery += pure_weight
 
 		self.refined_fine_weight = 0.0
 		self.actual_recovery = 0.0
@@ -325,7 +331,7 @@ class RefiningEntry(Document):
 		)
 		self.scan_serial_no = ""
 		self.build_material_table()
-		self.save(ignore_permissions=True)
+		# self.save(ignore_permissions=True)
 		return True
 
 	@frappe.whitelist()
@@ -482,15 +488,27 @@ class RefiningEntry(Document):
 		self.auto_classify_recoverable_non_metal()
 
 		input_purity_map = {}
-		for item in self.material_items:
-			if self.is_gold_item(item.item_code) and item.purity:
-				pct = frappe.db.get_value(
-					"Attribute Value", item.purity, "purity_percentage"
-				)
-				if pct:
-					pct_flt = flt(pct)
-					input_purity_map.setdefault(pct_flt, 0.0)
-					input_purity_map[pct_flt] += flt(item.qty)
+		if self.refining_type == "Serial Number Refining":
+			for sn in self.serial_no_details:
+				purity = self.get_item_purity(sn.item_code)
+				if purity:
+					pct = frappe.db.get_value(
+						"Attribute Value", purity, "purity_percentage"
+					)
+					if pct:
+						pct_flt = flt(pct)
+						input_purity_map.setdefault(pct_flt, 0.0)
+						input_purity_map[pct_flt] += flt(sn.net_weight)
+		else:
+			for item in self.material_items:
+				if self.is_gold_item(item.item_code) and item.purity:
+					pct = frappe.db.get_value(
+						"Attribute Value", item.purity, "purity_percentage"
+					)
+					if pct:
+						pct_flt = flt(pct)
+						input_purity_map.setdefault(pct_flt, 0.0)
+						input_purity_map[pct_flt] += flt(item.qty)
 
 		total_input_weight = sum(input_purity_map.values())
 		total_recovered_weight = self.get_recovered_gold_total(total_recovered_weight)
@@ -638,15 +656,20 @@ class RefiningEntry(Document):
 		"""Recalculate summary fields and persist via db_set."""
 		gross_pure_weight = 0.0
 		expected_recovery = 0.0
-		for item in self.material_items:
-			if item.purity:
-				purity_pct = frappe.db.get_value(
-					"Attribute Value", item.purity, "purity_percentage"
-				)
-				if purity_pct:
-					pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
-					gross_pure_weight += pure_weight
-					expected_recovery += pure_weight
+		if self.refining_type == "Serial Number Refining":
+			for sn in self.serial_no_details:
+				gross_pure_weight += flt(sn.pure_weight)
+				expected_recovery += flt(sn.pure_weight)
+		else:
+			for item in self.material_items:
+				if item.purity:
+					purity_pct = frappe.db.get_value(
+						"Attribute Value", item.purity, "purity_percentage"
+					)
+					if purity_pct:
+						pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
+						gross_pure_weight += pure_weight
+						expected_recovery += pure_weight
 
 		refined_fine_weight = 0.0
 		actual_recovery = 0.0
@@ -1050,13 +1073,52 @@ class RefiningEntry(Document):
 					"Item", item.item_code, "has_batch_no"
 				)
 
+		# Get brought in batches pool
+		brought_in_batches = {}
+		se_names = [self.material_transfer_se, getattr(self, "receiving_se", None)]
+		for se_name in filter(None, se_names):
+			for d in frappe.get_all(
+				"Stock Entry Detail",
+				filters={"parent": se_name, "t_warehouse": self.refining_warehouse},
+				fields=["item_code", "batch_no", "qty", "serial_no"],
+			):
+				brought_in_batches.setdefault(d.item_code, []).append(d)
+
 		# Input items (consumed)
 		for item in self.material_items:
 			has_batch = item_batch_map.get(item.item_code)
 
 			if has_batch:
-				use_fifo = True
-				if item.batch_no:
+				qty_remaining = flt(item.qty, precision)
+
+				# 1. Consume from brought in batches pool
+				if item.item_code in brought_in_batches:
+					for b in brought_in_batches[item.item_code]:
+						if qty_remaining <= 0:
+							break
+						if b.qty <= 0:
+							continue
+
+						consume_qty = min(flt(b.qty, precision), qty_remaining)
+						if consume_qty >= min_qty:
+							se.append(
+								"items",
+								{
+									"item_code": item.item_code,
+									"qty": consume_qty,
+									"uom": item.uom,
+									"s_warehouse": self.refining_warehouse,
+									"batch_no": b.batch_no,
+									"serial_no": item.serial_no or b.serial_no,
+									"use_serial_batch_fields": 1,
+								},
+							)
+							qty_remaining -= consume_qty
+							qty_remaining = flt(qty_remaining, precision)
+							b.qty -= consume_qty
+
+				# 2. Consume from original row batch if available and has stock
+				if qty_remaining >= min_qty and item.batch_no:
 					from erpnext.stock.doctype.batch.batch import get_batch_qty
 
 					batch_qty = get_batch_qty(
@@ -1064,14 +1126,14 @@ class RefiningEntry(Document):
 						warehouse=self.refining_warehouse,
 						item_code=item.item_code,
 					)
-					if batch_qty >= item.qty:
-						use_fifo = False
-						if flt(item.qty, precision) >= min_qty:
+					if batch_qty > 0:
+						consume_qty = min(flt(batch_qty, precision), qty_remaining)
+						if consume_qty >= min_qty:
 							se.append(
 								"items",
 								{
 									"item_code": item.item_code,
-									"qty": item.qty,
+									"qty": consume_qty,
 									"uom": item.uom,
 									"s_warehouse": self.refining_warehouse,
 									"batch_no": item.batch_no,
@@ -1079,10 +1141,13 @@ class RefiningEntry(Document):
 									"use_serial_batch_fields": 1,
 								},
 							)
+							qty_remaining -= consume_qty
+							qty_remaining = flt(qty_remaining, precision)
 
-				if use_fifo:
+				# 3. Fallback to FIFO
+				if qty_remaining >= min_qty:
 					allocations = self.allocate_fifo_batches(
-						item.item_code, self.refining_warehouse, item.qty
+						item.item_code, self.refining_warehouse, qty_remaining
 					)
 					for alloc in allocations:
 						if flt(alloc["qty"], precision) >= min_qty:
@@ -1520,25 +1585,57 @@ class RefiningEntry(Document):
 	def auto_classify_recoverable_non_metal(self):
 		diamond_items = {row.item for row in self.recovered_diamond}
 		gemstone_items = {row.item for row in self.recovered_gemstone}
-		for item in self.material_items:
-			if (
-				self.is_diamond_item(item.item_code)
-				and item.item_code not in diamond_items
-			):
-				self.append(
-					"recovered_diamond",
-					{"item": item.item_code, "weight": item.qty, "pcs": 1},
+
+		if self.refining_type == "Serial Number Refining":
+			for sn in self.serial_no_details:
+				bom_name = frappe.db.get_value(
+					"BOM", {"item": sn.item_code, "is_active": 1}, "name"
 				)
-				diamond_items.add(item.item_code)
-			elif (
-				self.is_gemstone_item(item.item_code)
-				and item.item_code not in gemstone_items
-			):
-				self.append(
-					"recovered_gemstone",
-					{"item": item.item_code, "weight": item.qty, "pcs": 1},
-				)
-				gemstone_items.add(item.item_code)
+				if bom_name:
+					bom_items = frappe.get_all(
+						"BOM Item",
+						filters={"parent": bom_name},
+						fields=["item_code", "qty"],
+					)
+					for bi in bom_items:
+						if (
+							self.is_diamond_item(bi.item_code)
+							and bi.item_code not in diamond_items
+						):
+							self.append(
+								"recovered_diamond",
+								{"item": bi.item_code, "weight": bi.qty, "pcs": 1},
+							)
+							diamond_items.add(bi.item_code)
+						elif (
+							self.is_gemstone_item(bi.item_code)
+							and bi.item_code not in gemstone_items
+						):
+							self.append(
+								"recovered_gemstone",
+								{"item": bi.item_code, "weight": bi.qty, "pcs": 1},
+							)
+							gemstone_items.add(bi.item_code)
+		else:
+			for item in self.material_items:
+				if (
+					self.is_diamond_item(item.item_code)
+					and item.item_code not in diamond_items
+				):
+					self.append(
+						"recovered_diamond",
+						{"item": item.item_code, "weight": item.qty, "pcs": 1},
+					)
+					diamond_items.add(item.item_code)
+				elif (
+					self.is_gemstone_item(item.item_code)
+					and item.item_code not in gemstone_items
+				):
+					self.append(
+						"recovered_gemstone",
+						{"item": item.item_code, "weight": item.qty, "pcs": 1},
+					)
+					gemstone_items.add(item.item_code)
 
 	def get_recovered_gold_total(self, total_recovered_weight=None):
 		if total_recovered_weight is not None:
@@ -1749,7 +1846,14 @@ class RefiningEntry(Document):
 		if purity_records:
 			return purity_records[0].attribute_value
 
-		# Fallback: parse from item code (e.g. ML-G-18KT-75.4-P -> 75.4)
+		# Fallback 1: Try BOM
+		bom_purity = frappe.db.get_value(
+			"BOM", {"item": item_code, "is_active": 1}, "metal_purity"
+		)
+		if bom_purity:
+			return bom_purity
+
+		# Fallback 2: parse from item code (e.g. ML-G-18KT-75.4-P -> 75.4)
 		if item_code and "-" in item_code:
 			parts = item_code.split("-")
 			# Check second to last part (touch, e.g., 75.4)
@@ -1822,14 +1926,22 @@ class RefiningEntry(Document):
 		target_qty = min(flt(required_qty, precision), max_available_qty)
 		allocated_qty = 0.0
 
-		for b in batches:
-			needed = target_qty - allocated_qty
-			if needed < min_qty:
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+		for batch in batches:
+			if allocated_qty >= target_qty:
 				break
-			alloc_qty = min(flt(b.actual_qty, precision), needed)
+
+			batch_qty = get_batch_qty(batch.batch_no, warehouse, item_code)
+			available_qty = flt(batch_qty, precision)
+
+			if available_qty < min_qty:
+				continue
+
+			alloc_qty = min(available_qty, target_qty - allocated_qty)
 			if flt(alloc_qty, precision) >= min_qty:
 				allocations.append(
-					{"batch_no": b.batch_no, "qty": flt(alloc_qty, precision)}
+					{"batch_no": batch.batch_no, "qty": flt(alloc_qty, precision)}
 				)
 				allocated_qty += alloc_qty
 

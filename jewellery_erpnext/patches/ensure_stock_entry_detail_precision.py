@@ -10,8 +10,10 @@ small as 0.001 g. With System Settings ``float_precision = 2`` and no per-field 
 Idempotent (``make_property_setter`` delete-then-inserts the same setter).
 """
 
-from jewellery_erpnext.property_setter_guard import ensure_stock_entry_detail_precision
+from jewellery_erpnext.property_setter_guard import (
+	ensure_field_precision_property_setters,
+)
 
 
 def execute():
-	ensure_stock_entry_detail_precision()
+	ensure_field_precision_property_setters()

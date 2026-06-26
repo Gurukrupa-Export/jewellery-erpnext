@@ -121,7 +121,7 @@ frappe.ui.form.on("Refining Entry", {
 		if (!frm.doc.scan_mwo) return;
 		frappe.show_alert(__("Fetching MWO details..."));
 		frm.call("scan_mwo_action", { barcode: frm.doc.scan_mwo }).then(() => {
-			frm.reload_doc();
+			frm.refresh();
 		});
 	},
 
@@ -129,7 +129,7 @@ frappe.ui.form.on("Refining Entry", {
 		if (!frm.doc.scan_serial_no) return;
 		frappe.show_alert(__("Fetching Serial No details..."));
 		frm.call("scan_serial_no_action", { barcode: frm.doc.scan_serial_no }).then(() => {
-			frm.reload_doc();
+			frm.refresh();
 		});
 	},
 
@@ -137,7 +137,7 @@ frappe.ui.form.on("Refining Entry", {
 		if (!frm.doc.scan_scrap_qr) return;
 		frappe.show_alert(__("Fetching Scrap details..."));
 		frm.call("scan_scrap_qr_action", { barcode: frm.doc.scan_scrap_qr }).then(() => {
-			frm.reload_doc();
+			frm.refresh();
 		});
 	},
 
@@ -230,9 +230,8 @@ frappe.ui.form.on("Refining Entry", {
 
 		if (show_scrap_btn) {
 			frm.add_custom_button(__("Fetch Scrap Items"), () => {
-				frappe.call({
-					method: "jewellery_erpnext.refining.doctype.refining_entry.refining_entry.get_scrap_items_balance",
-					doc: frm.doc,
+				frm.call({
+					method: "get_scrap_items_balance",
 					callback: function (r) {
 						if (r.message && r.message.length > 0) {
 							let d = new frappe.ui.Dialog({
