@@ -44,6 +44,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.precisio
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontracting_utils import (
 	create_so_for_subcontracting,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
+	create_tree_on_issue,
+	unlink_tree_on_issue_cancel,
+	update_tree_on_receive,
+	validate_casting_tree,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
 	validate_loss_qty,
@@ -130,6 +136,7 @@ class EmployeeIR(Document):
 		validate_manually_book_loss_details(self)
 		# valid_reparing_or_next_operation(self)
 		validate_loss_qty(self)
+		validate_casting_tree(self)
 
 	def on_cancel(self):
 		if self.type == "Issue":
@@ -242,6 +249,12 @@ class EmployeeIR(Document):
 		# Batch add time logs
 		if time_log_args and not cancel:
 			batch_add_time_logs(self, time_log_args)
+
+		# Casting tree: create on issue, release+remove on issue cancel.
+		if not cancel:
+			create_tree_on_issue(self)
+		else:
+			unlink_tree_on_issue_cancel(self)
 
 	# for receive
 	def on_submit_receive(self, cancel=False):
@@ -524,6 +537,9 @@ class EmployeeIR(Document):
 		if not cancel:
 			# ONE Repack SE for all loss rows across the entire EIR.
 			create_loss_stock_entries(self)
+
+		# Casting tree: roll received / loss metal into the tree ledger + status.
+		update_tree_on_receive(self, cancel=cancel)
 
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":
