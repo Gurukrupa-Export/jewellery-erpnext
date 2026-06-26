@@ -52,10 +52,10 @@ def sorted_stock_rows(rows, warehouse_attr="warehouse", batch_attr="batch_no"):
 	"""
 
 	def _key(row):
-		get = row.get if isinstance(row, dict) else (lambda f, d=None: getattr(row, f, d))
-		return stock_lock_key(
-			get("item_code"), get(warehouse_attr), get(batch_attr)
+		get = (
+			row.get if isinstance(row, dict) else (lambda f, d=None: getattr(row, f, d))
 		)
+		return stock_lock_key(get("item_code"), get(warehouse_attr), get(batch_attr))
 
 	return sorted(rows, key=_key)
 
@@ -114,7 +114,9 @@ def lock_bins_for_rows(rows, *warehouse_attrs):
 
 	pairs = []
 	for row in rows:
-		get = row.get if isinstance(row, dict) else (lambda f, d=None: getattr(row, f, d))
+		get = (
+			row.get if isinstance(row, dict) else (lambda f, d=None: getattr(row, f, d))
+		)
 		item_code = get("item_code")
 		for attr in warehouse_attrs:
 			pairs.append((item_code, get(attr)))
@@ -140,3 +142,60 @@ def preallocate_series(prefixes):
 			"SELECT `current` FROM `tabSeries` WHERE name = %s FOR UPDATE",
 			(prefix,),
 		)
+
+
+def series_prefix_for_doc(doc):
+	"""Resolve the ``tabSeries`` row key that ``getseries()`` will lock for ``doc``'s
+	naming series, WITHOUT incrementing or locking it — or ``None`` when the doctype
+	is named by ``hash`` / a field / Prompt (no shared counter row to lock).
+
+	Only ``naming_series:``-style autonames are resolved here. ``hash`` takes no series
+	lock at all, and ``format:`` doctypes parse each ``{...}`` brace in isolation (a
+	different key derivation handled by their own seeded per-prefix rows), so they are
+	deliberately skipped rather than resolved incorrectly.
+
+	The prefix is derived by replaying frappe's own ``parse_naming_series`` with a
+	capturing number-generator, so ``.YYYY.`` / ``.MM.`` / fieldname / custom-parser
+	parts resolve to exactly the key ``getseries`` would use during insert.
+	"""
+	from frappe.model.naming import get_default_naming_series, parse_naming_series
+
+	meta = frappe.get_meta(doc.doctype)
+	autoname = (meta.autoname or "").strip()
+	if (
+		autoname.startswith("naming_series:")
+		or meta.get("naming_rule") == 'By "Naming Series" field'
+	):
+		key = (
+			doc.get("naming_series") if hasattr(doc, "get") else None
+		) or get_default_naming_series(doc.doctype)
+		if not key:
+			return None
+		key = key + ".#####"
+	else:
+		# hash / field / Prompt / format: — no single shared counter to pre-lock here.
+		return None
+
+	captured = {}
+
+	def _capture(prefix, digits):
+		captured.setdefault("prefix", prefix)
+		return "0" * digits
+
+	try:
+		parse_naming_series(key, doc.doctype, doc, number_generator=_capture)
+	except Exception:
+		# Naming resolution must never break a submit; pre-locking is best-effort.
+		return None
+	return captured.get("prefix")
+
+
+def preallocate_series_for_docs(*docs):
+	"""Pre-acquire the ``tabSeries`` counter-row lock (canonical position 2) for the
+	naming series of each given doc/new_doc, before any Bin lock is taken.
+
+	Convenience wrapper over :func:`series_prefix_for_doc` + :func:`preallocate_series`.
+	Docs named by ``hash`` (e.g. Stock Ledger Entry / Stock Reservation Entry once
+	repointed) contribute no prefix and are silently skipped.
+	"""
+	preallocate_series([series_prefix_for_doc(d) for d in docs if d is not None])

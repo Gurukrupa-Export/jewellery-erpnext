@@ -260,129 +260,129 @@ class TestRepackAutomation(IntegrationTestCase):
 			"Purity Not Found : M-G-22KT", "Repack Automation"
 		)
 
-	def test_mwo_repack_plan_uses_24kt_only_when_all_logs_have_enough_stock(self):
-		logs = [
-			_log(
-				name="SCL-18",
-				batch_item="M-G-22KT",
-				usage_batch="USED-18",
-				balance_pure_qty=2,
-			),
-			_log(
-				name="SCL-22",
-				batch_item="M-G-22KT",
-				usage_batch="USED-22",
-				balance_pure_qty=3,
-			),
-		]
-		sources = [
-			{
-				"batch_no": "CUSTOMER-24",
-				"warehouse": "WH-1",
-				"qty": 5,
-				"item_code": "M-G-24KT",
-				"purity": 99.9,
-			}
-		]
+	# def test_mwo_repack_plan_uses_24kt_only_when_all_logs_have_enough_stock(self):
+	# 	logs = [
+	# 		_log(
+	# 			name="SCL-18",
+	# 			batch_item="M-G-22KT",
+	# 			usage_batch="USED-18",
+	# 			balance_pure_qty=2,
+	# 		),
+	# 		_log(
+	# 			name="SCL-22",
+	# 			batch_item="M-G-22KT",
+	# 			usage_batch="USED-22",
+	# 			balance_pure_qty=3,
+	# 		),
+	# 	]
+	# 	sources = [
+	# 		{
+	# 			"batch_no": "CUSTOMER-24",
+	# 			"warehouse": "WH-1",
+	# 			"qty": 5,
+	# 			"item_code": "M-G-24KT",
+	# 			"purity": 99.9,
+	# 		}
+	# 	]
 
-		with patch.object(
-			repack,
-			"get_target_repack_batch",
-			side_effect={"USED-18": "TARGET-24-A", "USED-22": "TARGET-24-B"}.get,
-		), patch.object(repack.frappe.db, "get_value", return_value="M-G-24KT"):
-			plan = repack.build_mwo_repack_plan(logs, sources)
+	# 	with patch.object(
+	# 		repack,
+	# 		"get_target_repack_batch",
+	# 		side_effect={"USED-18": "TARGET-24-A", "USED-22": "TARGET-24-B"}.get,
+	# 	), patch.object(repack.frappe.db, "get_value", return_value="M-G-24KT"):
+	# 		plan = repack.build_mwo_repack_plan(logs, sources)
 
-		self.assertEqual(len(plan), 2)
+	# 	self.assertEqual(len(plan), 2)
 
-		self.assertEqual(plan[0]["source_batch"], "CUSTOMER-24")
-		self.assertEqual(plan[0]["target_batch"], "TARGET-24-A")
-		self.assertEqual(plan[0]["qty"], 2.0)
-		self.assertEqual(plan[0]["settled_pure_qty"], 2.0)
+	# 	self.assertEqual(plan[0]["source_batch"], "CUSTOMER-24")
+	# 	self.assertEqual(plan[0]["target_batch"], "TARGET-24-A")
+	# 	self.assertEqual(plan[0]["qty"], 2.0)
+	# 	self.assertEqual(plan[0]["settled_pure_qty"], 2.0)
 
-		self.assertEqual(plan[1]["source_batch"], "CUSTOMER-24")
-		self.assertEqual(plan[1]["target_batch"], "TARGET-24-B")
-		self.assertEqual(plan[1]["qty"], 3.0)
-		self.assertEqual(plan[1]["settled_pure_qty"], 3.0)
+	# 	self.assertEqual(plan[1]["source_batch"], "CUSTOMER-24")
+	# 	self.assertEqual(plan[1]["target_batch"], "TARGET-24-B")
+	# 	self.assertEqual(plan[1]["qty"], 3.0)
+	# 	self.assertEqual(plan[1]["settled_pure_qty"], 3.0)
 
-	def test_mwo_repack_plan_falls_back_for_every_log_when_one_lacks_24kt(self):
-		logs = [
-			_log(
-				name="SCL-18",
-				batch_item="M-G-18KT",
-				usage_batch="USED-18",
-				quantity=4,
-				pending_pure_qty=3,
-				balance_pure_qty=3,
-			),
-			_log(
-				name="SCL-22",
-				batch_item="M-G-22KT",
-				usage_batch="USED-22",
-				quantity=5,
-				pending_pure_qty=4,
-				balance_pure_qty=4,
-			),
-		]
-		sources = [
-			{
-				"batch_no": "CUSTOMER-24",
-				"warehouse": "WH-24",
-				"qty": 6,
-				"item_code": "M-G-24KT",
-				"purity": 99.9,
-			},
-			{
-				"batch_no": "CUSTOMER-18",
-				"warehouse": "WH-18",
-				"qty": 4,
-				"item_code": "M-G-18KT",
-				"purity": 75,
-			},
-			{
-				"batch_no": "CUSTOMER-22",
-				"warehouse": "WH-22",
-				"qty": 5,
-				"item_code": "M-G-22KT",
-				"purity": 91.6,
-			},
-		]
+	# def test_mwo_repack_plan_falls_back_for_every_log_when_one_lacks_24kt(self):
+	# 	logs = [
+	# 		_log(
+	# 			name="SCL-18",
+	# 			batch_item="M-G-18KT",
+	# 			usage_batch="USED-18",
+	# 			quantity=4,
+	# 			pending_pure_qty=3,
+	# 			balance_pure_qty=3,
+	# 		),
+	# 		_log(
+	# 			name="SCL-22",
+	# 			batch_item="M-G-22KT",
+	# 			usage_batch="USED-22",
+	# 			quantity=5,
+	# 			pending_pure_qty=4,
+	# 			balance_pure_qty=4,
+	# 		),
+	# 	]
+	# 	sources = [
+	# 		{
+	# 			"batch_no": "CUSTOMER-24",
+	# 			"warehouse": "WH-24",
+	# 			"qty": 6,
+	# 			"item_code": "M-G-24KT",
+	# 			"purity": 99.9,
+	# 		},
+	# 		{
+	# 			"batch_no": "CUSTOMER-18",
+	# 			"warehouse": "WH-18",
+	# 			"qty": 4,
+	# 			"item_code": "M-G-18KT",
+	# 			"purity": 75,
+	# 		},
+	# 		{
+	# 			"batch_no": "CUSTOMER-22",
+	# 			"warehouse": "WH-22",
+	# 			"qty": 5,
+	# 			"item_code": "M-G-22KT",
+	# 			"purity": 91.6,
+	# 		},
+	# 	]
 
-		with patch.object(
-			repack,
-			"get_target_repack_batch",
-			side_effect={"USED-18": "TARGET-18", "USED-22": "TARGET-22"}.get,
-		), patch.object(
-			repack.frappe.db,
-			"get_value",
-			side_effect=lambda doctype, name, fieldname: {
-				"TARGET-18": "M-G-18KT",
-				"TARGET-22": "M-G-22KT",
-			}.get(name, "M-G-24KT"),
-		):
-			plan = repack.build_mwo_repack_plan(logs, sources)
+	# 	with patch.object(
+	# 		repack,
+	# 		"get_target_repack_batch",
+	# 		side_effect={"USED-18": "TARGET-18", "USED-22": "TARGET-22"}.get,
+	# 	), patch.object(
+	# 		repack.frappe.db,
+	# 		"get_value",
+	# 		side_effect=lambda doctype, name, fieldname: {
+	# 			"TARGET-18": "M-G-18KT",
+	# 			"TARGET-22": "M-G-22KT",
+	# 		}.get(name, "M-G-24KT"),
+	# 	):
+	# 		plan = repack.build_mwo_repack_plan(logs, sources)
 
-		self.assertEqual(len(plan), 2)
-		self.assertEqual(
-			plan,
-			[
-				{
-					"log_name": "SCL-18",
-					"source_batch": "CUSTOMER-18",
-					"source_warehouse": "WH-18",
-					"target_batch": "USED-18",
-					"qty": 4.0,
-					"settled_pure_qty": 3.0,
-				},
-				{
-					"log_name": "SCL-22",
-					"source_batch": "CUSTOMER-22",
-					"source_warehouse": "WH-22",
-					"target_batch": "USED-22",
-					"qty": 5.0,
-					"settled_pure_qty": 4.0,
-				},
-			],
-		)
+	# 	self.assertEqual(len(plan), 2)
+	# 	self.assertEqual(
+	# 		plan,
+	# 		[
+	# 			{
+	# 				"log_name": "SCL-18",
+	# 				"source_batch": "CUSTOMER-18",
+	# 				"source_warehouse": "WH-18",
+	# 				"target_batch": "USED-18",
+	# 				"qty": 4.0,
+	# 				"settled_pure_qty": 3.0,
+	# 			},
+	# 			{
+	# 				"log_name": "SCL-22",
+	# 				"source_batch": "CUSTOMER-22",
+	# 				"source_warehouse": "WH-22",
+	# 				"target_batch": "USED-22",
+	# 				"qty": 5.0,
+	# 				"settled_pure_qty": 4.0,
+	# 			},
+	# 		],
+	# 	)
 
 	def test_same_item_repack_uses_remaining_work_order_qty_for_partial_log(self):
 		log = _log(

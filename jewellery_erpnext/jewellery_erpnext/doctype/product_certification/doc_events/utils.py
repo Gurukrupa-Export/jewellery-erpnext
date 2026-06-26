@@ -516,6 +516,25 @@ def create_material_receipt_for_certification(self):
 	def bypass_validate_warehouse(*args, **kwargs):
 		pass
 
+	# Canonical lock order: both Stock Entries below draw from the same supplier-
+	# certification source warehouse for overlapping items. Submitting them sequentially
+	# meant the transaction held SE#1's Bins while SE#2 waited on Bins a concurrent Product
+	# Certification held — a 1213/1205 cross-cycle. Pin the Stock Entry series, then pre-lock
+	# the UNION of every Bin both SEs touch, in sorted order, before either submit, so
+	# concurrent PCs acquire the shared Bins in the identical sequence.
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_bins,
+		preallocate_series_for_docs,
+	)
+
+	_pc_pairs = [
+		(rd.get("item_code"), rd.get(wh))
+		for rd in (main_rows + repack_rows)
+		for wh in ("s_warehouse", "t_warehouse")
+	]
+	preallocate_series_for_docs(frappe.new_doc("Stock Entry"))
+	lock_bins(_pc_pairs)
+
 	# ── 1. Material Receipt for Certification — main item only ──
 	if main_rows:
 		se_receipt = frappe.new_doc("Stock Entry")

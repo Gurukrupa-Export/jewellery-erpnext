@@ -63,6 +63,7 @@
   "manufacturing_plan",
   "department",
   "manufacturing_operation",
+  "tree_number",
   "project",
   "jewelex_batch_no",
   "delivery_date_tab",
@@ -496,6 +497,15 @@
    "fieldtype": "Link",
    "label": "Manufacturing Operation",
    "options": "Manufacturing Operation",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "description": "Casting tree this work order is attached to. Set when a Casting (tree) Employee IR is issued.",
+   "fieldname": "tree_number",
+   "fieldtype": "Link",
+   "label": "Tree Number",
+   "options": "Tree Number",
    "read_only": 1
   },
   {

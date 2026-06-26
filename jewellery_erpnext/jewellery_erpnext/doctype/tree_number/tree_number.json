@@ -8,9 +8,36 @@
  "engine": "InnoDB",
  "field_order": [
   "posting_date",
+  "status",
   "counter",
   "company",
-  "company_abbr"
+  "company_abbr",
+  "identity_section",
+  "manufacturer",
+  "department",
+  "operation",
+  "column_break_idn",
+  "employee",
+  "employee_ir",
+  "metal_details_section",
+  "metal_type",
+  "metal_touch",
+  "column_break_metal",
+  "metal_purity",
+  "metal_colour",
+  "tree_details_section",
+  "tree_wax_wt",
+  "computed_gold_wt",
+  "flask_details_section",
+  "flask_size",
+  "powder_wt",
+  "water_weight",
+  "column_break_flask",
+  "is_wax_setting",
+  "boric_powder_weight",
+  "special_powder_weight",
+  "material_details_section",
+  "material_details"
  ],
  "fields": [
   {
@@ -19,6 +46,16 @@
    "fieldtype": "Date",
    "in_list_view": 1,
    "label": "Posting Date"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Draft\nIssued\nPartially Received\nReceived",
+   "read_only": 1
   },
   {
    "fieldname": "counter",
@@ -38,11 +75,165 @@
    "fieldname": "company_abbr",
    "fieldtype": "Data",
    "label": "Company Abbr"
+  },
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Tree Details"
+  },
+  {
+   "fieldname": "manufacturer",
+   "fieldtype": "Link",
+   "label": "Manufacturer",
+   "options": "Manufacturer"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "Operation",
+   "options": "Department Operation"
+  },
+  {
+   "fieldname": "column_break_idn",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "Employee",
+   "options": "Employee"
+  },
+  {
+   "fieldname": "employee_ir",
+   "fieldtype": "Link",
+   "label": "Issue Employee IR",
+   "options": "Employee IR",
+   "read_only": 1
+  },
+  {
+   "fieldname": "metal_details_section",
+   "fieldtype": "Section Break",
+   "label": "Metal Details"
+  },
+  {
+   "fieldname": "metal_type",
+   "fieldtype": "Link",
+   "label": "Metal Type",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "metal_touch",
+   "fieldtype": "Link",
+   "label": "Metal Touch",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_metal",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "metal_purity",
+   "fieldtype": "Link",
+   "label": "Metal Purity",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "metal_colour",
+   "fieldtype": "Link",
+   "label": "Metal Colour",
+   "options": "Attribute Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tree_details_section",
+   "fieldtype": "Section Break",
+   "label": "Tree / Wax Details"
+  },
+  {
+   "fieldname": "tree_wax_wt",
+   "fieldtype": "Float",
+   "label": "Wax Tree Weight"
+  },
+  {
+   "fieldname": "computed_gold_wt",
+   "fieldtype": "Float",
+   "label": "Computed Gold Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "flask_details_section",
+   "fieldtype": "Section Break",
+   "label": "Flask Details"
+  },
+  {
+   "fieldname": "flask_size",
+   "fieldtype": "Link",
+   "label": "Flask Size",
+   "options": "Flask Size"
+  },
+  {
+   "fetch_from": "flask_size.default_powder_wt",
+   "fieldname": "powder_wt",
+   "fieldtype": "Float",
+   "label": "Powder Wt"
+  },
+  {
+   "description": "Water Wt = ( Powder Wt * Water Value ) / Powder Value",
+   "fieldname": "water_weight",
+   "fieldtype": "Float",
+   "label": "Water Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_flask",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_wax_setting",
+   "fieldtype": "Check",
+   "label": "Is Wax Setting"
+  },
+  {
+   "depends_on": "eval:doc.is_wax_setting == 1;",
+   "description": "Boric Powder Wt = ( Powder Wt * Boric Value ) / Powder Value",
+   "fieldname": "boric_powder_weight",
+   "fieldtype": "Float",
+   "label": "Boric Powder Weight",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.is_wax_setting == 1;",
+   "description": "Special Powder Boric Wt = ( Powder Wt * Special Powder Boric Value ) / Powder Value",
+   "fieldname": "special_powder_weight",
+   "fieldtype": "Float",
+   "label": "Special Powder Weight",
+   "read_only": 1
+  },
+  {
+   "fieldname": "material_details_section",
+   "fieldtype": "Section Break",
+   "label": "Material Details"
+  },
+  {
+   "fieldname": "material_details",
+   "fieldtype": "Table",
+   "label": "Material Details",
+   "options": "Tree Material Detail"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-05-23 17:28:21.338051",
+ "modified": "2024-06-23 17:28:21.338051",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Tree Number",
