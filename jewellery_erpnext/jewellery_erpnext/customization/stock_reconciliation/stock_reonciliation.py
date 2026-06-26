@@ -47,3 +47,50 @@ def validate_department(self, method=None):
 				"Some Manufacturing Operations are in Transit mode, Complete Transit First then perform the action"
 			)
 		)
+
+
+
+ 
+import frappe
+from frappe import _
+from erpnext.stock.doctype.stock_reconciliation.stock_reconciliation import StockReconciliation
+
+
+class CustomStockReconciliation(StockReconciliation):
+    def has_custom_mwo(self):
+        """Return True if any row has custom_manufacturing_work_order checked"""
+        for row in self.items:
+            if row.custom_manufacturing_work_order:
+                return True
+        return False
+
+    def validate(self):
+
+        # If condition is not met, run standard ERPNext validate
+        if not self.has_custom_mwo():
+            return super().validate()
+
+        # If condition is met, allow saving draft without item_code
+        if self.docstatus == 0:
+            return
+
+        # If not draft, run standard validations
+        return super().validate()
+
+
+    def on_submit(self):
+
+        # If condition is not met, run standard ERPNext submit
+        if not self.has_custom_mwo():
+            return super().on_submit()
+
+        # If condition is met, block submit if item_code missing
+        for row in self.items:
+            if not row.item_code:
+                frappe.throw(_("You cannot submit Stock Reconciliation without Item Code."))
+
+        return super().on_submit()
+    
+    def remove_items_with_no_change(self):
+        # disable validation
+        return
