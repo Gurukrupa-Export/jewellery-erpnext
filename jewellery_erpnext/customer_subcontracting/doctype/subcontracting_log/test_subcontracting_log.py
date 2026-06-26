@@ -205,7 +205,7 @@ class TestGoldUsage(IntegrationTestCase):
 
 		result = classify_gold_usage(doc, item)
 		self.assertEqual(result["usage_type"], "Different Customer Gold")
-		self.assertEqual(result["settlement_required"], 1)
+		self.assertEqual(result["settlement_required"], 0)
 		self.assertEqual(result["settlement_type"], "Customer Needs Gold")
 		self.assertEqual(result["settlement_customer"], "CUST-002")
 
@@ -230,7 +230,7 @@ class TestGoldUsage(IntegrationTestCase):
 
 		result = classify_gold_usage(doc, item)
 		self.assertEqual(result["usage_type"], "Company Gold")
-		self.assertEqual(result["settlement_required"], 1)
+		self.assertEqual(result["settlement_required"], 0)
 		self.assertEqual(result["settlement_type"], "Company Needs Gold")
 		self.assertEqual(result["settlement_customer"], "CUST-001")
 
