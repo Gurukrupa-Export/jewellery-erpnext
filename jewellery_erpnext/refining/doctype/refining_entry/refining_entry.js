@@ -119,32 +119,26 @@ frappe.ui.form.on("Refining Entry", {
 
 	scan_mwo(frm) {
 		if (!frm.doc.scan_mwo) return;
-		frappe.dom.freeze(__("Fetching MWO details..."));
-		frm.call("scan_mwo_action", { barcode: frm.doc.scan_mwo })
-			.then(() => {
-				frm.reload_doc();
-			})
-			.finally(() => frappe.dom.unfreeze());
+		frappe.show_alert(__("Fetching MWO details..."));
+		frm.call("scan_mwo_action", { barcode: frm.doc.scan_mwo }).then(() => {
+			frm.reload_doc();
+		});
 	},
 
 	scan_serial_no(frm) {
 		if (!frm.doc.scan_serial_no) return;
-		frappe.dom.freeze(__("Fetching Serial No details..."));
-		frm.call("scan_serial_no_action", { barcode: frm.doc.scan_serial_no })
-			.then(() => {
-				frm.reload_doc();
-			})
-			.finally(() => frappe.dom.unfreeze());
+		frappe.show_alert(__("Fetching Serial No details..."));
+		frm.call("scan_serial_no_action", { barcode: frm.doc.scan_serial_no }).then(() => {
+			frm.reload_doc();
+		});
 	},
 
 	scan_scrap_qr(frm) {
 		if (!frm.doc.scan_scrap_qr) return;
-		frappe.dom.freeze(__("Fetching Scrap details..."));
-		frm.call("scan_scrap_qr_action", { barcode: frm.doc.scan_scrap_qr })
-			.then(() => {
-				frm.reload_doc();
-			})
-			.finally(() => frappe.dom.unfreeze());
+		frappe.show_alert(__("Fetching Scrap details..."));
+		frm.call("scan_scrap_qr_action", { barcode: frm.doc.scan_scrap_qr }).then(() => {
+			frm.reload_doc();
+		});
 	},
 
 	// --- Physical verification ---
@@ -204,8 +198,8 @@ frappe.ui.form.on("Refining Entry", {
 
 		if (show_dust_btn) {
 			frm.add_custom_button(__("Fetch Dust Balance"), () => {
-				if (!frm.doc.loss_item || !frm.doc.warehouse) {
-					frappe.msgprint(__("Please select a Loss Item and Warehouse first."));
+				if (!frm.doc.warehouse) {
+					frappe.msgprint(__("Please select a Source Warehouse first."));
 					return;
 				}
 				frappe.db
@@ -228,15 +222,112 @@ frappe.ui.form.on("Refining Entry", {
 			});
 		}
 
+		// Scrap-specific: fetch all scrap items across all departments
+		const show_scrap_btn =
+			frm.doc.refining_type === "Scrap Refining" &&
+			frm.doc.docstatus === 0 &&
+			(!status || status === "Draft");
+
+		if (show_scrap_btn) {
+			frm.add_custom_button(__("Fetch Scrap Items"), () => {
+				frappe.call({
+					method: "jewellery_erpnext.refining.doctype.refining_entry.refining_entry.get_scrap_items_balance",
+					doc: frm.doc,
+					callback: function (r) {
+						if (r.message && r.message.length > 0) {
+							let d = new frappe.ui.Dialog({
+								title: "Select Scrap Items",
+								fields: [
+									{
+										fieldtype: "HTML",
+										fieldname: "instruction",
+										options:
+											'<div class="text-muted mb-2">Enter the exact Physical Qty you want to refine. Leave 0 to skip.</div>',
+									},
+									{
+										fieldname: "scrap_items",
+										fieldtype: "Table",
+										cannot_add_rows: true,
+										cannot_delete_rows: true,
+										in_place_edit: true,
+										data: r.message,
+										get_data: () => {
+											return r.message;
+										},
+										fields: [
+											{
+												fieldtype: "Data",
+												fieldname: "item_code",
+												label: "Item Code",
+												in_list_view: 1,
+												read_only: 1,
+												columns: 3,
+											},
+											{
+												fieldtype: "Data",
+												fieldname: "warehouse",
+												label: "Warehouse",
+												in_list_view: 1,
+												read_only: 1,
+												columns: 3,
+											},
+											{
+												fieldtype: "Float",
+												fieldname: "actual_qty",
+												label: "Available Qty",
+												in_list_view: 1,
+												read_only: 1,
+												columns: 2,
+											},
+											{
+												fieldtype: "Float",
+												fieldname: "qty",
+												label: "Physical Qty",
+												in_list_view: 1,
+												reqd: 1,
+												columns: 2,
+											},
+										],
+									},
+								],
+								primary_action_label: "Add to Table",
+								primary_action: function (values) {
+									let selected = values.scrap_items.filter((d) => d.qty > 0);
+									if (selected.length > 0) {
+										selected.forEach((row) => {
+											let child = frm.add_child("material_items");
+											child.item_code = row.item_code;
+											child.warehouse = row.warehouse;
+											child.qty = row.qty;
+											child.uom = row.uom;
+											child.purity = row.purity;
+											child.source_type = "Scrap";
+										});
+										frm.refresh_field("material_items");
+										frm.save();
+									}
+									d.hide();
+								},
+							});
+							d.show();
+						} else {
+							frappe.msgprint(__("No available scrap items found."));
+						}
+					},
+				});
+			});
+		}
+
 		if (frm.is_new()) return;
 
 		// Parent only buttons
 		if (!frm.doc.parent_refining_entry) {
 			if (status === "Submitted") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Receive Materials"),
 					() => {
-						frappe.dom.freeze(__("Receiving Materials..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Receiving Materials..."));
 						frm.call("receive_materials")
 							.then((r) => {
 								if (r.message) {
@@ -245,10 +336,11 @@ frappe.ui.form.on("Refining Entry", {
 									frm.reload_doc();
 								}
 							})
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			} else if (status === "Received" || status === "Transferred" || status === "Completed") {
 				frm.add_custom_button(
 					__("View Duplicate Processing Entry"),
@@ -271,29 +363,33 @@ frappe.ui.form.on("Refining Entry", {
 		// Child (Processing Duplicate) only buttons
 		if (frm.doc.parent_refining_entry) {
 			if (status === "Received" || status === "Draft") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Classify & Generate Recovery"),
 					() => {
-						frappe.dom.freeze(__("Classifying Materials..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Classifying Materials..."));
 						frm.call("generate_recovery_table")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 
 			if (status === "Classified") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Start Refining"),
 					() => {
-						frappe.dom.freeze(__("Starting Refining..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Starting Refining..."));
 						frm.call("start_refining")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 
 			if (status === "Refining In Progress") {
@@ -311,12 +407,10 @@ frappe.ui.form.on("Refining Entry", {
 								},
 							],
 							(values) => {
-								frappe.dom.freeze(__("Distributing Recovered Gold..."));
+								frappe.show_alert(__("Distributing Recovered Gold..."));
 								frm.call("distribute_recovered_gold", {
 									total_recovered_weight: values.total_recovered_weight,
-								})
-									.then(() => frm.reload_doc())
-									.finally(() => frappe.dom.unfreeze());
+								}).then(() => frm.reload_doc());
 							},
 							__("Recovered Gold"),
 							__("Distribute")
@@ -327,42 +421,48 @@ frappe.ui.form.on("Refining Entry", {
 			}
 
 			if (status === "Recovery Entered") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Verify Recovery"),
 					() => {
-						frappe.dom.freeze(__("Verifying Recovery..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Verifying Recovery..."));
 						frm.call("verify_recovery")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 
 			if (status === "Recovery Verified") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Complete Refining"),
 					() => {
-						frappe.dom.freeze(__("Completing Refining..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Completing Refining..."));
 						frm.call("complete_refining")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 
 			if (status === "Completed") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Transfer to Department"),
 					() => {
-						frappe.dom.freeze(__("Transferring Materials..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Transferring Materials..."));
 						frm.call("transfer_recovered_materials")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 		}
 	},

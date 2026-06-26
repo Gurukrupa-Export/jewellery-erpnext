@@ -11,6 +11,7 @@ class RefiningEntry(Document):
 		self.validate_warehouse()
 		self.validate_quantities()
 		self.calculate_totals()
+		self.allocate_batches_in_table()
 
 		if self.status == "Recovery Entered":
 			self.validate_recovery_distribution()
@@ -71,12 +72,20 @@ class RefiningEntry(Document):
 		if self.department:
 			is_final_polish = "Final Polish" in self.department
 			if not self.warehouse or is_final_polish:
-				wh_type = "Manufacturing"
-				if is_final_polish:
-					if self.refining_type == "Work Order Refining":
-						wh_type = "Manufacturing"
-					else:
-						wh_type = "Scrap"
+				# Dust and Scrap refining: source is from Scrap warehouse
+				# MWO and Serial Number refining: source is from Manufacturing warehouse
+				if self.refining_type in ("Dust Refining", "Scrap Refining"):
+					wh_type = "Scrap"
+				elif self.refining_type == "Work Order Refining":
+					wh_type = "Manufacturing"
+				elif self.refining_type == "Serial Number Refining":
+					wh_type = "Manufacturing"
+				else:
+					wh_type = "Manufacturing"
+
+				if is_final_polish and self.refining_type != "Work Order Refining":
+					wh_type = "Scrap"
+
 				self.warehouse = frappe.db.get_value(
 					"Warehouse",
 					{"department": self.department, "warehouse_type": wh_type},
@@ -121,6 +130,54 @@ class RefiningEntry(Document):
 		else:
 			self.recovery_percentage = 0.0
 
+	def allocate_batches_in_table(self):
+		if self.docstatus != 0:
+			return
+		if not self.material_items:
+			return
+
+		new_items = []
+		precision = 3
+		min_qty = 0.001
+
+		item_batch_map = {}
+		for item in self.material_items:
+			if item.item_code not in item_batch_map:
+				item_batch_map[item.item_code] = frappe.db.get_value(
+					"Item", item.item_code, "has_batch_no"
+				)
+
+		for item in self.material_items:
+			if self.is_dust_opening_item(item):
+				new_items.append(item)
+				continue
+
+			has_batch = item_batch_map.get(item.item_code)
+			s_wh = (
+				item.warehouse
+				or getattr(self, "source_warehouse", None)
+				or getattr(self, "warehouse", None)
+			)
+
+			if has_batch and not item.batch_no:
+				allocations = self.allocate_fifo_batches(item.item_code, s_wh, item.qty)
+				for alloc in allocations:
+					if flt(alloc["qty"], precision) >= min_qty:
+						new_item = frappe.copy_doc(item)
+						new_item.qty = alloc["qty"]
+						new_item.batch_no = alloc["batch_no"]
+						new_items.append(new_item)
+			else:
+				if flt(item.qty, precision) >= min_qty:
+					new_items.append(item)
+
+		self.set("material_items", [])
+		for ni in new_items:
+			child = self.append("material_items", {})
+			for k, v in ni.as_dict().items():
+				if k not in ["name", "parent", "parenttype", "parentfield"]:
+					child.set(k, v)
+
 	def validate_recovery_distribution(self):
 		total_recovered = 0.0
 		for gold in self.refined_gold:
@@ -150,39 +207,35 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def fetch_dust_balance(self):
-		if not self.loss_item:
-			frappe.throw(_("Loss Item is required."))
-
+		"""Fetch total quantity of all loss/dust items from the department's Scrap warehouse."""
 		if self.multiple_department:
 			total_qty = 0.0
 			for d in self.refining_department_detail:
 				dept_wh = frappe.db.get_value(
 					"Warehouse",
-					{"department": d.department, "warehouse_type": "Manufacturing"},
+					{"department": d.department, "warehouse_type": "Scrap"},
 					"name",
 				)
 				if dept_wh:
-					total_qty += (
-						frappe.db.get_value(
-							"Bin",
-							{"item_code": self.loss_item, "warehouse": dept_wh},
-							"actual_qty",
-						)
-						or 0.0
+					# Sum ALL items in the scrap warehouse (not just loss_item)
+					bins = frappe.db.get_all(
+						"Bin",
+						filters={"warehouse": dept_wh, "actual_qty": [">", 0]},
+						fields=["actual_qty"],
 					)
+					for b in bins:
+						total_qty += flt(b.actual_qty)
 			self.system_quantity = total_qty
 		else:
 			if not self.warehouse:
 				frappe.throw(_("Source Warehouse is required."))
-			balance = (
-				frappe.db.get_value(
-					"Bin",
-					{"item_code": self.loss_item, "warehouse": self.warehouse},
-					"actual_qty",
-				)
-				or 0.0
+			# Sum ALL items in the source warehouse
+			bins = frappe.db.get_all(
+				"Bin",
+				filters={"warehouse": self.warehouse, "actual_qty": [">", 0]},
+				fields=["actual_qty"],
 			)
-			self.system_quantity = balance
+			self.system_quantity = sum(flt(b.actual_qty) for b in bins)
 
 		self.save(ignore_permissions=True)
 		return self.system_quantity
@@ -366,62 +419,12 @@ class RefiningEntry(Document):
 				)
 
 		elif self.refining_type == "Dust Refining":
+			# Fetch ALL loss items from the department's Scrap warehouse
 			if self.multiple_department:
 				for d_row in self.refining_department_detail:
-					dept_wh = frappe.db.get_value(
-						"Warehouse",
-						{
-							"department": d_row.department,
-							"warehouse_type": "Manufacturing",
-						},
-						"name",
-					)
-					if dept_wh:
-						qty = (
-							frappe.db.get_value(
-								"Bin",
-								{"item_code": self.loss_item, "warehouse": dept_wh},
-								"actual_qty",
-							)
-							or 0.0
-						)
-						purity = self.get_item_purity(self.loss_item)
-						if not purity:
-							frappe.throw(
-								_(
-									"Metal Purity is mandatory for Item {0}. Please check Item Variant Attribute details."
-								).format(frappe.bold(self.loss_item))
-							)
-						self.append(
-							"material_items",
-							{
-								"item_code": self.loss_item,
-								"warehouse": dept_wh,
-								"qty": qty,
-								"source_type": "Dust",
-								"purity": purity,
-							},
-						)
+					self._fetch_loss_items_from_dept(d_row.department)
 			else:
-				# Single department dust
-				qty = self.system_quantity
-				purity = self.get_item_purity(self.loss_item)
-				if not purity:
-					frappe.throw(
-						_(
-							"Metal Purity is mandatory for Item {0}. Please check Item Variant Attribute details."
-						).format(frappe.bold(self.loss_item))
-					)
-				self.append(
-					"material_items",
-					{
-						"item_code": self.loss_item,
-						"warehouse": self.warehouse,
-						"qty": qty,
-						"source_type": "Dust",
-						"purity": purity,
-					},
-				)
+				self._fetch_loss_items_from_dept(self.department)
 
 		# Group items item-wise
 		grouped_items = {}
@@ -681,6 +684,13 @@ class RefiningEntry(Document):
 		if self.status != "Recovery Verified":
 			frappe.throw(_("Recovery must be verified before completing."))
 
+		frappe.publish_progress(
+			10,
+			title="Completing Refining",
+			description="Creating Repack Stock Entry...",
+			doctype=self.doctype,
+			docname=self.name,
+		)
 		self.create_repack_se()
 
 		# Verify repack SE was actually created before proceeding
@@ -689,6 +699,13 @@ class RefiningEntry(Document):
 				_("Repack Stock Entry could not be created. Cannot complete refining.")
 			)
 
+		frappe.publish_progress(
+			50,
+			title="Completing Refining",
+			description="Updating source dependencies...",
+			doctype=self.doctype,
+			docname=self.name,
+		)
 		if self.refining_type == "Work Order Refining":
 			# SOP: Current operation quantity -> 0
 			for mwo in self.mwo_details:
@@ -720,31 +737,45 @@ class RefiningEntry(Document):
 				if bom:
 					frappe.db.set_value("BOM", bom, "is_active", 0)
 
+		frappe.publish_progress(
+			80,
+			title="Completing Refining",
+			description="Handling Refining Loss...",
+			doctype=self.doctype,
+			docname=self.name,
+		)
 		# If there is refining loss, convert to dust and move to scrap warehouse
 		if self.refining_loss > 0:
 			self.create_scrap_transfer_se()
 
 		self.db_set("status", "Completed")
+		frappe.publish_progress(
+			100,
+			title="Completing Refining",
+			description="Refining Completed Successfully",
+			doctype=self.doctype,
+			docname=self.name,
+		)
 
 	@frappe.whitelist()
 	def transfer_recovered_materials(self):
 		if self.status != "Completed":
 			frappe.throw(_("Can only transfer if Completed."))
 
-		# Determine target warehouse: original source warehouse where materials came from
-		target_warehouse = self.warehouse
-		if not target_warehouse and self.material_items:
-			target_warehouse = self.material_items[0].warehouse
-		if not target_warehouse and self.department:
-			target_warehouse = frappe.db.get_value(
-				"Warehouse",
-				{"department": self.department, "warehouse_type": "Manufacturing"},
-				"name",
-			)
+		frappe.publish_progress(
+			10,
+			title="Transferring Materials",
+			description="Finding Central RM Warehouse...",
+			doctype=self.doctype,
+			docname=self.name,
+		)
+		# Always transfer recovered materials to Central RM warehouse
+		target_warehouse = self._get_central_rm_warehouse()
 		if not target_warehouse:
 			frappe.throw(
 				_(
-					"Cannot determine target warehouse. Please set Source Department or Source Warehouse."
+					"Cannot determine Central RM Warehouse. Please ensure a warehouse with "
+					"warehouse_type 'Raw Material' exists for the Central department."
 				)
 			)
 
@@ -755,27 +786,36 @@ class RefiningEntry(Document):
 		se.custom_refining_entry = self.name
 		se.auto_created = 1
 
-		# Transfer all recovered items to main department
-		for gold in self.refined_gold:
+		frappe.publish_progress(
+			30,
+			title="Transferring Materials",
+			description="Processing pure gold...",
+			doctype=self.doctype,
+			docname=self.name,
+		)
+		# Transfer all recovered gold as 24KT pure gold (matching repack output)
+		pure_gold_item = self._get_pure_gold_24kt_item()
+		total_gold_weight = sum(flt(g.refining_gold_weight) for g in self.refined_gold)
+		if total_gold_weight > 0 and pure_gold_item:
 			batch_no = None
 			for b in self.batch_tracking:
-				if b.output_item == gold.item_code:
+				if b.output_item == pure_gold_item:
 					batch_no = b.output_batch
 					break
 
 			# Fallback: look up available batch from refining warehouse
 			if not batch_no and frappe.db.get_value(
-				"Item", gold.item_code, "has_batch_no"
+				"Item", pure_gold_item, "has_batch_no"
 			):
 				batch_no = self._get_available_batch(
-					gold.item_code, self.refining_warehouse
+					pure_gold_item, self.refining_warehouse
 				)
 
 			se.append(
 				"items",
 				{
-					"item_code": gold.item_code,
-					"qty": gold.refining_gold_weight,
+					"item_code": pure_gold_item,
+					"qty": flt(total_gold_weight, 3),
 					"uom": "Gram",
 					"s_warehouse": self.refining_warehouse,
 					"t_warehouse": target_warehouse,
@@ -784,6 +824,13 @@ class RefiningEntry(Document):
 				},
 			)
 
+		frappe.publish_progress(
+			50,
+			title="Transferring Materials",
+			description="Processing diamonds...",
+			doctype=self.doctype,
+			docname=self.name,
+		)
 		for dia in self.recovered_diamond:
 			conv_item = self.convert_diamond_item_code(dia.item)
 			batch_no = None
@@ -808,6 +855,13 @@ class RefiningEntry(Document):
 				},
 			)
 
+		frappe.publish_progress(
+			70,
+			title="Transferring Materials",
+			description="Processing gemstones...",
+			doctype=self.doctype,
+			docname=self.name,
+		)
 		for gem in self.recovered_gemstone:
 			batch_no = None
 			for b in self.batch_tracking:
@@ -831,13 +885,24 @@ class RefiningEntry(Document):
 				},
 			)
 
+		frappe.publish_progress(
+			85,
+			title="Transferring Materials",
+			description="Submitting Stock Entry...",
+			doctype=self.doctype,
+			docname=self.name,
+		)
 		se.insert(ignore_permissions=True)
-		try:
-			se.queue_action("submit")
-		except Exception:
-			se.submit()
+		se.submit()
 		self.db_set("transfer_se", se.name)
 		self.db_set("status", "Transferred")
+		frappe.publish_progress(
+			100,
+			title="Transferring Materials",
+			description="Materials Transferred Successfully",
+			doctype=self.doctype,
+			docname=self.name,
+		)
 
 	# --- Stock Entry Automation ---
 
@@ -850,8 +915,8 @@ class RefiningEntry(Document):
 		# If we queue submission, we don't need auto_created=1 since it'll bypass blockages, but we'll keep it for custom validation bypasses
 		se.auto_created = 1
 
-		precision = frappe.get_precision("Stock Entry Detail", "qty") or 2
-		min_qty = 1.0 / (10**precision)
+		precision = 3
+		min_qty = 0.001
 
 		# Cache item attributes to prevent repetitive DB calls and speed up insertion
 		item_batch_map = {}
@@ -868,23 +933,50 @@ class RefiningEntry(Document):
 			s_wh = item.warehouse or self.warehouse
 			has_batch = item_batch_map.get(item.item_code)
 
-			if has_batch and not item.batch_no:
-				allocations = self.allocate_fifo_batches(item.item_code, s_wh, item.qty)
-				for alloc in allocations:
-					if flt(alloc["qty"], precision) >= min_qty:
-						se.append(
-							"items",
-							{
-								"item_code": item.item_code,
-								"qty": alloc["qty"],
-								"uom": item.uom,
-								"s_warehouse": s_wh,
-								"t_warehouse": self.refining_warehouse,
-								"batch_no": alloc["batch_no"],
-								"serial_no": item.serial_no,
-								"use_serial_batch_fields": 1,
-							},
-						)
+			if has_batch:
+				use_fifo = True
+				if item.batch_no:
+					from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+					batch_qty = get_batch_qty(
+						batch_no=item.batch_no, warehouse=s_wh, item_code=item.item_code
+					)
+					if batch_qty >= item.qty:
+						use_fifo = False
+						if flt(item.qty, precision) >= min_qty:
+							se.append(
+								"items",
+								{
+									"item_code": item.item_code,
+									"qty": item.qty,
+									"uom": item.uom,
+									"s_warehouse": s_wh,
+									"t_warehouse": self.refining_warehouse,
+									"batch_no": item.batch_no,
+									"serial_no": item.serial_no,
+									"use_serial_batch_fields": 1,
+								},
+							)
+
+				if use_fifo:
+					allocations = self.allocate_fifo_batches(
+						item.item_code, s_wh, item.qty
+					)
+					for alloc in allocations:
+						if flt(alloc["qty"], precision) >= min_qty:
+							se.append(
+								"items",
+								{
+									"item_code": item.item_code,
+									"qty": alloc["qty"],
+									"uom": item.uom,
+									"s_warehouse": s_wh,
+									"t_warehouse": self.refining_warehouse,
+									"batch_no": alloc["batch_no"],
+									"serial_no": item.serial_no,
+									"use_serial_batch_fields": 1,
+								},
+							)
 			else:
 				if flt(item.qty, precision) >= min_qty:
 					se.append(
@@ -934,10 +1026,7 @@ class RefiningEntry(Document):
 		)
 
 		se.insert(ignore_permissions=True)
-		try:
-			se.queue_action("submit")
-		except Exception:
-			se.submit()
+		se.submit()
 
 		self.db_set("receiving_se", se.name)
 		self.db_set("dust_received", 1)
@@ -950,8 +1039,8 @@ class RefiningEntry(Document):
 		se.custom_refining_entry = self.name
 		se.auto_created = 1
 
-		precision = frappe.get_precision("Stock Entry Detail", "qty") or 2
-		min_qty = 1.0 / (10**precision)
+		precision = 3
+		min_qty = 0.001
 
 		# Cache item attributes
 		item_batch_map = {}
@@ -965,24 +1054,50 @@ class RefiningEntry(Document):
 		for item in self.material_items:
 			has_batch = item_batch_map.get(item.item_code)
 
-			if has_batch and not item.batch_no:
-				allocations = self.allocate_fifo_batches(
-					item.item_code, self.refining_warehouse, item.qty
-				)
-				for alloc in allocations:
-					if flt(alloc["qty"], precision) >= min_qty:
-						se.append(
-							"items",
-							{
-								"item_code": item.item_code,
-								"qty": alloc["qty"],
-								"uom": item.uom,
-								"s_warehouse": self.refining_warehouse,
-								"batch_no": alloc["batch_no"],
-								"serial_no": item.serial_no,
-								"use_serial_batch_fields": 1,
-							},
-						)
+			if has_batch:
+				use_fifo = True
+				if item.batch_no:
+					from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+					batch_qty = get_batch_qty(
+						batch_no=item.batch_no,
+						warehouse=self.refining_warehouse,
+						item_code=item.item_code,
+					)
+					if batch_qty >= item.qty:
+						use_fifo = False
+						if flt(item.qty, precision) >= min_qty:
+							se.append(
+								"items",
+								{
+									"item_code": item.item_code,
+									"qty": item.qty,
+									"uom": item.uom,
+									"s_warehouse": self.refining_warehouse,
+									"batch_no": item.batch_no,
+									"serial_no": item.serial_no,
+									"use_serial_batch_fields": 1,
+								},
+							)
+
+				if use_fifo:
+					allocations = self.allocate_fifo_batches(
+						item.item_code, self.refining_warehouse, item.qty
+					)
+					for alloc in allocations:
+						if flt(alloc["qty"], precision) >= min_qty:
+							se.append(
+								"items",
+								{
+									"item_code": item.item_code,
+									"qty": alloc["qty"],
+									"uom": item.uom,
+									"s_warehouse": self.refining_warehouse,
+									"batch_no": alloc["batch_no"],
+									"serial_no": item.serial_no,
+									"use_serial_batch_fields": 1,
+								},
+							)
 			else:
 				if flt(item.qty, precision) >= min_qty:
 					se.append(
@@ -998,15 +1113,18 @@ class RefiningEntry(Document):
 						},
 					)
 
-		# Output items (produced - Pure Gold, Diamond, Gemstone)
+		# Output items (produced - Pure Gold 24KT only, Diamond, Gemstone)
 		batch_tracking_rows = []
-		for gold in self.refined_gold:
-			new_batch = self._auto_create_batch(gold.item_code)
+		# SOP: All gold is converted to a single Pure Gold 24KT item
+		pure_gold_item = self._get_pure_gold_24kt_item()
+		total_gold_weight = sum(flt(g.refining_gold_weight) for g in self.refined_gold)
+		if total_gold_weight > 0 and pure_gold_item:
+			new_batch = self._auto_create_batch(pure_gold_item)
 			se.append(
 				"items",
 				{
-					"item_code": gold.item_code,
-					"qty": gold.refining_gold_weight,
+					"item_code": pure_gold_item,
+					"qty": flt(total_gold_weight, 3),
 					"uom": "Gram",
 					"t_warehouse": self.refining_warehouse,
 					"batch_no": new_batch,
@@ -1016,10 +1134,10 @@ class RefiningEntry(Document):
 			)
 			batch_tracking_rows.append(
 				{
-					"output_item": gold.item_code,
+					"output_item": pure_gold_item,
 					"output_batch": new_batch,
 					"output_warehouse": self.refining_warehouse,
-					"output_qty": gold.refining_gold_weight,
+					"output_qty": flt(total_gold_weight, 3),
 				}
 			)
 
@@ -1094,10 +1212,7 @@ class RefiningEntry(Document):
 				)
 
 		se.insert(ignore_permissions=True)
-		try:
-			se.queue_action("submit")
-		except Exception:
-			se.submit()
+		se.submit()
 		self.db_set("repack_se", se.name)
 
 		# Persist batch_tracking rows via direct DB insert
@@ -1124,8 +1239,8 @@ class RefiningEntry(Document):
 			se.custom_refining_entry = self.name
 			se.auto_created = 1
 
-			precision = frappe.get_precision("Stock Entry Detail", "qty") or 2
-			min_qty = 1.0 / (10**precision)
+			precision = 3
+			min_qty = 0.001
 			has_batch = frappe.db.get_value("Item", dust_item, "has_batch_no")
 
 			if has_batch:
@@ -1165,6 +1280,67 @@ class RefiningEntry(Document):
 				se.submit()
 
 	# --- Utils ---
+
+	def _get_central_rm_warehouse(self):
+		"""Get the Central RM Warehouse for the company."""
+		company = self.company
+		# Look for Central department's Raw Material warehouse
+		central_dept = frappe.db.get_value(
+			"Department",
+			{"name": ["like", "Central%"], "company": company},
+			"name",
+		)
+		if central_dept:
+			wh = frappe.db.get_value(
+				"Warehouse",
+				{"department": central_dept, "warehouse_type": "Raw Material"},
+				"name",
+			)
+			if wh:
+				return wh
+
+		# Fallback: search by name pattern
+		wh = frappe.db.get_value(
+			"Warehouse",
+			{
+				"name": ["like", "Central RM%"],
+				"company": company,
+				"warehouse_type": "Raw Material",
+			},
+			"name",
+		)
+		return wh
+
+	def _get_pure_gold_24kt_item(self):
+		"""Get the standard 24KT Pure Gold item code for output."""
+		# Prefer 99.9 purity, fallback to 99.5
+		item = frappe.db.get_value(
+			"Item",
+			{
+				"variant_of": "M",
+				"disabled": 0,
+				"name": ["like", "M-G-24KT-99.9%"],
+			},
+			"name",
+		)
+		if not item:
+			item = frappe.db.get_value(
+				"Item",
+				{
+					"variant_of": "M",
+					"disabled": 0,
+					"name": ["like", "M-G-24KT%"],
+				},
+				"name",
+			)
+		if not item:
+			frappe.throw(
+				_(
+					"No active 24KT Pure Gold item (variant of 'M' with 24KT) found. "
+					"Please create one before completing refining."
+				)
+			)
+		return item
 
 	def _auto_create_batch(self, item_code):
 		if not self.auto_create_batch:
@@ -1210,6 +1386,100 @@ class RefiningEntry(Document):
 		if batches:
 			return batches[0].batch_no
 		return None
+
+	def _fetch_loss_items_from_dept(self, department):
+		"""Fetch ALL loss items (dust items) from a department's Scrap warehouse."""
+		if not department:
+			return
+
+		scrap_wh = frappe.db.get_value(
+			"Warehouse",
+			{"department": department, "warehouse_type": "Scrap"},
+			"name",
+		)
+		if not scrap_wh:
+			return
+
+		bins = frappe.db.get_all(
+			"Bin",
+			filters={"warehouse": scrap_wh, "actual_qty": [">", 0]},
+			fields=["item_code", "actual_qty"],
+		)
+
+		for b in bins:
+			actual_qty = flt(b.actual_qty, 3)
+			if frappe.db.get_value("Item", b.item_code, "has_batch_no"):
+				allocs = self.allocate_fifo_batches(
+					b.item_code, scrap_wh, 9999999, throw_if_missing=False
+				)
+				actual_qty = sum([flt(a.get("qty")) for a in allocs])
+
+			if actual_qty <= 0:
+				continue
+
+			purity = self.get_item_purity(b.item_code)
+			uom = frappe.db.get_value("Item", b.item_code, "stock_uom") or "Gram"
+			self.append(
+				"material_items",
+				{
+					"item_code": b.item_code,
+					"warehouse": scrap_wh,
+					"qty": actual_qty,
+					"uom": uom,
+					"source_type": "Dust",
+					"purity": purity,
+				},
+			)
+
+	@frappe.whitelist()
+	def get_scrap_items_balance(self):
+		"""Fetch ALL RM items from Scrap warehouses across all departments to display in Dialog."""
+		if self.refining_type != "Scrap Refining":
+			frappe.throw(_("This action is only available for Scrap Refining."))
+
+		scrap_items = []
+		scrap_warehouses = frappe.db.get_all(
+			"Warehouse",
+			filters={
+				"company": self.company,
+				"warehouse_type": "Scrap",
+			},
+			fields=["name"],
+		)
+
+		for wh in scrap_warehouses:
+			bins = frappe.db.get_all(
+				"Bin",
+				filters={"warehouse": wh.name, "actual_qty": [">", 0]},
+				fields=["item_code", "actual_qty"],
+			)
+			for b in bins:
+				actual_qty = flt(b.actual_qty, 3)
+				if frappe.db.get_value("Item", b.item_code, "has_batch_no"):
+					allocs = self.allocate_fifo_batches(
+						b.item_code, wh.name, 9999999, throw_if_missing=False
+					)
+					actual_qty = sum([flt(a.get("qty")) for a in allocs])
+
+				if actual_qty <= 0:
+					continue
+
+				purity = self.get_item_purity(b.item_code)
+				uom = frappe.db.get_value("Item", b.item_code, "stock_uom") or "Gram"
+				scrap_items.append(
+					{
+						"item_code": b.item_code,
+						"warehouse": wh.name,
+						"actual_qty": actual_qty,
+						"qty": 0.0,
+						"uom": uom,
+						"purity": purity,
+					}
+				)
+
+		return scrap_items
+
+		self.save(ignore_permissions=True)
 
 	def is_gold_item(self, item_code):
 		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
@@ -1494,9 +1764,11 @@ class RefiningEntry(Document):
 					return val
 		return None
 
-	def allocate_fifo_batches(self, item_code, warehouse, required_qty):
-		# Fetch batches with stock in FIFO order
-		batches = frappe.db.sql(
+	def allocate_fifo_batches(
+		self, item_code, warehouse, required_qty, throw_if_missing=True
+	):
+		# Fetch batches from SBE (ERPNext v15+)
+		sbe_batches = frappe.db.sql(
 			"""
 			SELECT batch_no, SUM(qty) as actual_qty
 			FROM `tabSerial and Batch Entry`
@@ -1510,22 +1782,59 @@ class RefiningEntry(Document):
 			as_dict=1,
 		)
 
-		allocations = []
-		precision = frappe.get_precision("Stock Entry Detail", "qty") or 2
-		min_qty = 1.0 / (10**precision)  # dynamically calculate 0.01 if precision is 2
+		# Fetch legacy batches from SLE (pre-v15 or migrated stock)
+		sle_batches = frappe.db.sql(
+			"""
+			SELECT batch_no, SUM(actual_qty) as actual_qty
+			FROM `tabStock Ledger Entry`
+			WHERE item_code = %s AND warehouse = %s AND is_cancelled = 0
+			  AND batch_no IS NOT NULL AND batch_no != ''
+			GROUP BY batch_no
+			HAVING SUM(actual_qty) > 0
+			ORDER BY MIN(posting_datetime) ASC
+		""",
+			(item_code, warehouse),
+			as_dict=1,
+		)
 
-		remaining_qty = flt(required_qty, precision)
+		# Combine them, prioritizing SBE but adding SLE if batch_no not already in SBE
+		sbe_batch_nos = {b.batch_no for b in sbe_batches}
+		batches = list(sbe_batches)
+		for b in sle_batches:
+			if b.batch_no not in sbe_batch_nos:
+				batches.append(b)
+
+		allocations = []
+		precision = 3
+		min_qty = 0.001
+
+		# Cap allocation by actual Bin ledger stock to prevent NegativeStockError
+		# if batches are out of sync with overall warehouse ledger qty.
+		bin_qty = (
+			frappe.db.get_value(
+				"Bin", {"item_code": item_code, "warehouse": warehouse}, "actual_qty"
+			)
+			or 0.0
+		)
+		max_available_qty = max(0.0, flt(bin_qty, precision))
+
+		# We can only allocate up to what we actually have in the ledger
+		target_qty = min(flt(required_qty, precision), max_available_qty)
+		allocated_qty = 0.0
+
 		for b in batches:
-			if remaining_qty < min_qty:
+			needed = target_qty - allocated_qty
+			if needed < min_qty:
 				break
-			alloc_qty = min(flt(b.actual_qty, precision), remaining_qty)
+			alloc_qty = min(flt(b.actual_qty, precision), needed)
 			if flt(alloc_qty, precision) >= min_qty:
 				allocations.append(
 					{"batch_no": b.batch_no, "qty": flt(alloc_qty, precision)}
 				)
-			remaining_qty = flt(remaining_qty - alloc_qty, precision)
+				allocated_qty += alloc_qty
 
-		if remaining_qty >= min_qty:
+		shortfall = flt(required_qty, precision) - allocated_qty
+		if shortfall >= min_qty and throw_if_missing:
 			# Even after all batches, some qty is left.
 			frappe.throw(
 				_(
@@ -1535,7 +1844,7 @@ class RefiningEntry(Document):
 					frappe.bold(item_code),
 					frappe.bold(warehouse),
 					required_qty,
-					remaining_qty,
+					shortfall,
 				)
 			)
 
