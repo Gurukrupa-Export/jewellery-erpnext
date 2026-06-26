@@ -248,8 +248,8 @@ class ManufacturingWorkOrder(Document):
 			"Parent Manufacturing Order", self.manufacturing_order, "customer_weight"
 		)
 
-		if bom_weight != pmo_weight:
-			frappe.throw(_("BOM weight does not match with customer weight"))
+		# if bom_weight != pmo_weight:
+		# 	frappe.throw(_("BOM weight does not match with customer weight"))
 
 		wh = frappe.db.get_value(
 			"Manufacturer", self.manufacturer, "custom_repair_warehouse"
