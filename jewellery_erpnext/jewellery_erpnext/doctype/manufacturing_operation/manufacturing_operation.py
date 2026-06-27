@@ -3743,7 +3743,7 @@ def get_linked_stock_entries(mwo, department):
 
 
 @frappe.whitelist()
-def get_make_receive_entry_rows(manufacturing_operation):
+def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 	"""Return rows for the Make Receive Entry dialog, sourced from active
 	Stock Reservation Entry rows linked to the MOP's Manufacturing Work Order.
 
@@ -3768,11 +3768,14 @@ def get_make_receive_entry_rows(manufacturing_operation):
 	if not mo.manufacturing_work_order:
 		frappe.throw(_("Manufacturing Work Order is required for Make Receive Entry"))
 
-	t_warehouse = frappe.db.get_value(
-		"Warehouse",
-		{"warehouse_type": "Raw Material", "department": mo.department},
-		"name",
-	)
+	if target_warehouse:
+		t_warehouse = target_warehouse
+	else:
+		t_warehouse = frappe.db.get_value(
+			"Warehouse",
+			{"warehouse_type": "Raw Material", "department": mo.department},
+			"name",
+		)
 	if not t_warehouse:
 		frappe.throw(
 			_("No Raw Material Warehouse found for Department({0})").format(
@@ -4362,7 +4365,7 @@ def _build_replacement_sre(original_sre, remaining_qty, sb_remaining=None):
 
 
 @frappe.whitelist()
-def create_mr_wo_stock_entry(se_data, request_id=None):
+def create_mr_wo_stock_entry(se_data, request_id=None, target_warehouse=None):
 	"""Refactored Make Receive Entry creator.
 
 	- Re-fetches every Stock Reservation Entry server-side (client values are
@@ -4415,11 +4418,14 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 				"idempotent": True,
 			}
 
-	t_warehouse = frappe.db.get_value(
-		"Warehouse",
-		{"warehouse_type": "Raw Material", "department": mo.department},
-		"name",
-	)
+	if target_warehouse:
+		t_warehouse = target_warehouse
+	else:
+		t_warehouse = frappe.db.get_value(
+			"Warehouse",
+			{"warehouse_type": "Raw Material", "department": mo.department},
+			"name",
+		)
 	if not t_warehouse:
 		frappe.throw(_("No warehouse found for warehouse type Raw Material"))
 

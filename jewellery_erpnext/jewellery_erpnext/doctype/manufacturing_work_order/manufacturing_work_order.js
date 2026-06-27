@@ -3,6 +3,47 @@
 
 frappe.ui.form.on("Manufacturing Work Order", {
 	refresh: function (frm) {
+		if (frm.doc.docstatus == 1) {
+			frappe.call({
+				method: "jewellery_erpnext.customer_subcontracting.sub_utils.snc.validate_button_visibility",
+				args: {
+					mwo: frm.doc.name,
+				},
+				callback: function (r) {
+					if (!r.message) return;
+					frm.add_custom_button(__("Create SNC"), function () {
+						frappe.call({
+							method: "jewellery_erpnext.customer_subcontracting.sub_utils.snc.create_snc",
+							args: {
+								mwo: frm.doc.name,
+							},
+							freeze: true,
+							freeze_message: __("Creating SNC"),
+							callback: function (response) {
+								if (!response.message) return;
+								const make_receive =
+									response.message.make_receive && response.message.make_receive.docname
+										? response.message.make_receive.docname
+										: __("Not created");
+								frappe.msgprint({
+									title: __("SNC Created"),
+									indicator: "green",
+									message: __(
+										"Material Receive: {0}<br>Metal Conversion: {1}<br>Material Transfer: {2}",
+										[
+											make_receive,
+											(response.message.conversions || []).join(", ") || __("None"),
+											(response.message.transfers || []).join(", ") || __("None"),
+										]
+									),
+								});
+								frm.reload_doc();
+							},
+						});
+					});
+				},
+			});
+		}
 		if (
 			frm.doc.docstatus == 1 &&
 			frm.doc.qty < 2 &&

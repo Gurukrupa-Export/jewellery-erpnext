@@ -2,6 +2,69 @@
  {
   "docstatus": 0,
   "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.585181",
+  "name": "Receive Materials",
+  "workflow_action_name": "Receive Materials"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.587953",
+  "name": "Classify & Generate Recovery",
+  "workflow_action_name": "Classify & Generate Recovery"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.591415",
+  "name": "Enter Yield",
+  "workflow_action_name": "Enter Yield"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.594544",
+  "name": "Verify Recovery",
+  "workflow_action_name": "Verify Recovery"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.601338",
+  "name": "Transfer to Department",
+  "workflow_action_name": "Transfer to Department"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-23 16:02:17.615941",
+  "name": "Classify Materials",
+  "workflow_action_name": "Classify Materials"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-23 16:02:17.686272",
+  "name": "Start Refining",
+  "workflow_action_name": "Start Refining"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-23 16:02:17.688791",
+  "name": "Enter Recovery",
+  "workflow_action_name": "Enter Recovery"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-23 16:02:17.691698",
+  "name": "Transfer Recovered Materials",
+  "workflow_action_name": "Transfer Recovered Materials"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
   "modified": "2024-04-10 11:56:50.128654",
   "name": "Review",
   "workflow_action_name": "Review"
@@ -348,5 +411,61 @@
   "modified": "2024-04-10 11:56:50.125748",
   "name": "Approve",
   "workflow_action_name": "Approve"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-06-27 16:13:36.773584",
+  "name": "Initiate",
+  "workflow_action_name": "Initiate"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-06-27 16:28:02.106474",
+  "name": "Complete KYC",
+  "workflow_action_name": "Complete KYC"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-02-20 09:40:06.848521",
+  "name": "Run Basic Rules",
+  "workflow_action_name": "Run Basic Rules"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-02-20 09:40:06.861739",
+  "name": "Run Pre-Qualification Rules",
+  "workflow_action_name": "Run Pre-Qualification Rules"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-02-20 09:40:06.864394",
+  "name": "Run Knockout Rules",
+  "workflow_action_name": "Run Knockout Rules"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-02-20 09:40:06.867583",
+  "name": "Converted to Application",
+  "workflow_action_name": "Converted to Application"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.527604",
+  "name": "Send for Verification",
+  "workflow_action_name": "Send for Verification"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.597527",
+  "name": "Complete Refining",
+  "workflow_action_name": "Complete Refining"
  }
 ]

@@ -1,0 +1,13 @@
+{
+    "Serial and Batch Entry": [
+        {
+            "doctype_or_field": "DocField",
+            "doctype": "Serial and Batch Entry",
+            "fieldname": "qty",
+            "row_name": null,
+            "property": "precision",
+            "value": "3",
+            "property_type": "Select"
+        }
+    ]
+}

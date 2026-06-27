@@ -10,7 +10,7 @@ echo "::endgroup::"
 
 echo "::group::Init Bench"
 bench init frappe-bench \
-    --frappe-branch v16.22.0 \
+    --frappe-branch version-16 \
     --skip-assets \
     --python "$(which python)"
 
