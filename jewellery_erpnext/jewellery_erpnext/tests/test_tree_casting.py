@@ -7,12 +7,12 @@ These exercise the pure decision logic without standing up a full casting
 scenario (BOM -> Manufacturing Plan -> PMO -> MWO -> MOP -> EIR):
 
   * tree weight / flask arithmetic (tree_utils) — the formulas mirrored from
-    Main Slip, must match it exactly.
+	Main Slip, must match it exactly.
   * Tree Number status machine (_tree_status): Issued -> Partially Received ->
-    Received as the Material Details ledger fills.
+	Received as the Material Details ledger fills.
   * validate_casting_tree guards: all-same-metal on one tree, and the
-    atomic-issue rule (a single MWO cannot be issued onto an existing active
-    tree).
+	atomic-issue rule (a single MWO cannot be issued onto an existing active
+	tree).
 
 DB access inside the functions is mocked by doctype so the tests stay fast and
 independent of master data.
@@ -69,6 +69,10 @@ def _eir(rows, op="Casting WO", typ="Issue"):
 
 
 class TestTreeUtils(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_computed_gold_wt(self):
 		with patch.object(tree_utils.frappe.db, "get_value", return_value=16.0):
 			self.assertEqual(
@@ -100,8 +104,15 @@ class TestTreeUtils(IntegrationTestCase):
 		self.assertEqual(w["boric_powder_weight"], 5.0)  # 100 * 5 / 100
 		self.assertEqual(w["special_powder_weight"], 2.0)  # 100 * 2 / 100
 
+	def tearDown(self):
+		return super().tearDown()
+
 
 class TestTreeStatus(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_issued_when_no_receipts(self):
 		tree = SimpleNamespace(material_details=[_md(10, 0, 0)])
 		self.assertEqual(tree_casting._tree_status(tree), "Issued")
@@ -118,8 +129,15 @@ class TestTreeStatus(IntegrationTestCase):
 		tree = SimpleNamespace(material_details=[_md(10, 10, 0), _md(5, 2, 0)])
 		self.assertEqual(tree_casting._tree_status(tree), "Partially Received")
 
+	def tearDown(self):
+		return super().tearDown()
+
 
 class TestValidateCastingTree(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _run(self, eir, mwos, tree_links=None, tree_status=None):
 		"""Invoke validate_casting_tree with DB calls mocked.
 
@@ -241,3 +259,6 @@ class TestValidateCastingTree(IntegrationTestCase):
 			tree_links={"MWO-A": "2026-01-01-0001"},
 			tree_status={"2026-01-01-0001": "Received"},
 		)
+
+	def tearDown(self):
+		return super().tearDown()

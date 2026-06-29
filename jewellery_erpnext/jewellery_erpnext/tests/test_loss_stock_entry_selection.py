@@ -15,16 +15,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from frappe.exceptions import ValidationError
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
 	loss_stock_entry,
 )
 
 # The bug scenario: the operation-matched (Grinding) SRE holds only 0.010 while
-# the sibling Casting SRE holds 5.395, both in "Waxing WO - KGJPL". A 0.015 loss
+# the sibling Casting SRE holds 5.395, both in "Waxing WO - T". A 0.015 loss
 # exceeds the op-matched SRE alone but fits the 5.405 batch aggregate.
-_WAREHOUSE = "Waxing WO - KGJPL"
+_WAREHOUSE = "Waxing WO - T"
 
 
 def _sre_row(name, reserved_qty, mop, warehouse=_WAREHOUSE):
@@ -62,7 +62,11 @@ def _eir(**fields):
 	return SimpleNamespace(**defaults)
 
 
-class TestLossSreSelection(FrappeTestCase):
+class TestLossSreSelection(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _find_sre(self, rows, row, qty):
 		"""Run _find_sre with frappe.db.sql + frappe.get_doc patched."""
 
@@ -74,11 +78,18 @@ class TestLossSreSelection(FrappeTestCase):
 				reserved_qty=match["reserved_qty"],
 			)
 
-		with patch.object(loss_stock_entry.frappe.db, "sql", return_value=rows):
-			with patch.object(loss_stock_entry.frappe, "get_doc", side_effect=fake_get_doc):
-				return loss_stock_entry._find_sre(
-					_eir(), row, "MWO-KGJPL-NE01084-007-14-75.4-Y-01", "employee_loss_details", qty
-				)
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry.frappe"
+		) as mock_frappe:
+			mock_frappe.db.sql.return_value = rows
+			mock_frappe.get_doc.side_effect = fake_get_doc
+			return loss_stock_entry._find_sre(
+				_eir(),
+				row,
+				"MWO-T-NE01084-007-14-75.4-Y-01",
+				"employee_loss_details",
+				qty,
+			)
 
 	def test_find_sre_picks_covering_sibling_over_tiny_op_match(self):
 		# Op-matched SRE (0.010) cannot cover 0.015; the 5.395 sibling can.
@@ -90,8 +101,10 @@ class TestLossSreSelection(FrappeTestCase):
 
 		self.assertEqual(sre_doc.name, "MAT-SRE-2026-88093")
 		# Candidates confined to one warehouse, op-match ordered first.
-		self.assertEqual([c["name"] for c in candidates],
-						 ["MAT-SRE-2026-88092", "MAT-SRE-2026-88093"])
+		self.assertEqual(
+			[c["name"] for c in candidates],
+			["MAT-SRE-2026-88092", "MAT-SRE-2026-88093"],
+		)
 		self.assertEqual({c["warehouse"] for c in candidates}, {_WAREHOUSE})
 
 	def test_find_sre_keeps_op_match_when_it_covers(self):
@@ -114,7 +127,16 @@ class TestLossSreSelection(FrappeTestCase):
 		self.assertEqual(sre_doc.name, "MAT-SRE-88093")
 		self.assertEqual({c["warehouse"] for c in candidates}, {_WAREHOUSE})
 
-	def test_validate_passes_when_selected_sre_covers(self):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry.frappe"
+	)
+	def test_validate_passes_when_selected_sre_covers(
+		self, mock_frappe, mock_underscore
+	):
+		mock_underscore.side_effect = lambda x: x
 		candidates = [
 			_sre_row("MAT-SRE-2026-88092", 0.010, "MOP-525LX"),
 			_sre_row("MAT-SRE-2026-88093", 5.395, "MOP-UG559"),
@@ -127,7 +149,17 @@ class TestLossSreSelection(FrappeTestCase):
 			_eir(), _row(), sre_doc, candidates, 0.015, "employee_loss_details"
 		)
 
-	def test_validate_throws_when_no_single_sre_covers(self):
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry._"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry.frappe"
+	)
+	def test_validate_throws_when_no_single_sre_covers(
+		self, mock_frappe, mock_underscore
+	):
+		mock_underscore.side_effect = lambda x: x
+		mock_frappe.throw.side_effect = ValidationError
 		# 0.010 + 0.008 = 0.018 >= 0.015 in aggregate, but no single SRE covers
 		# 0.015 -> must throw (single-covering-SRE policy).
 		candidates = [
@@ -139,3 +171,6 @@ class TestLossSreSelection(FrappeTestCase):
 			loss_stock_entry._validate_sre_qty(
 				_eir(), _row(), sre_doc, candidates, 0.015, "employee_loss_details"
 			)
+
+	def tearDown(self):
+		return super().tearDown()
