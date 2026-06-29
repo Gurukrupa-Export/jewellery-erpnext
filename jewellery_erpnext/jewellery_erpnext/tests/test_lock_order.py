@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext import lock_order
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
@@ -19,7 +19,11 @@ from jewellery_erpnext.jewellery_erpnext.lock_order import (
 )
 
 
-class TestStockLockKey(FrappeTestCase):
+class TestStockLockKey(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_none_is_coalesced_to_empty_string(self):
 		self.assertEqual(stock_lock_key("ITEM", None, None), ("ITEM", "", ""))
 
@@ -44,8 +48,15 @@ class TestStockLockKey(FrappeTestCase):
 			],
 		)
 
+	def tearDown(self):
+		return super().tearDown()
 
-class TestSortedStockRows(FrappeTestCase):
+
+class TestSortedStockRows(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_sorts_dicts_by_canonical_key(self):
 		rows = [
 			{"item_code": "B", "warehouse": "WH-2", "batch_no": "b"},
@@ -87,8 +98,15 @@ class TestSortedStockRows(FrappeTestCase):
 		out = sorted_stock_rows(rows)
 		self.assertEqual([r.item_code for r in out], ["A", "B"])
 
+	def tearDown(self):
+		return super().tearDown()
 
-class TestLockBins(FrappeTestCase):
+
+class TestLockBins(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch.object(lock_order.frappe.db, "sql")
 	def test_dedups_and_locks_each_unique_pair_once_in_sorted_order(self, mock_sql):
 		mock_sql.return_value = [("BIN",)]
@@ -120,8 +138,15 @@ class TestLockBins(FrappeTestCase):
 		locked = lock_bins([("A", "W"), ("B", "W")])
 		self.assertEqual(locked, ["BIN-A"])
 
+	def tearDown(self):
+		return super().tearDown()
 
-class TestLockBinsForRows(FrappeTestCase):
+
+class TestLockBinsForRows(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch.object(lock_order, "lock_bins")
 	def test_expands_default_s_and_t_warehouse(self, mock_lock_bins):
 		rows = [{"item_code": "A", "s_warehouse": "S1", "t_warehouse": "T1"}]
@@ -137,8 +162,15 @@ class TestLockBinsForRows(FrappeTestCase):
 		pairs = mock_lock_bins.call_args[0][0]
 		self.assertEqual(pairs, [("A", "T1")])
 
+	def tearDown(self):
+		return super().tearDown()
 
-class TestPreallocateSeries(FrappeTestCase):
+
+class TestPreallocateSeries(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch.object(lock_order.frappe.db, "sql")
 	def test_locks_unique_nonblank_prefixes_in_sorted_order(self, mock_sql):
 		preallocate_series(["SE-", "SRE-", "SE-", "", None])
@@ -147,10 +179,17 @@ class TestPreallocateSeries(FrappeTestCase):
 		self.assertEqual(locked, ["SE-", "SRE-"])
 		self.assertIn("FOR UPDATE", mock_sql.call_args_list[0][0][0])
 
+	def tearDown(self):
+		return super().tearDown()
 
-class TestSeriesPrefixForDoc(FrappeTestCase):
+
+class TestSeriesPrefixForDoc(IntegrationTestCase):
 	"""series_prefix_for_doc must resolve the exact tabSeries key getseries() would lock
 	for a naming_series doctype, and return None (no lock) for hash/other naming."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
 
 	def _meta(self, autoname, naming_rule="Expression"):
 		m = Mock()
@@ -192,8 +231,15 @@ class TestSeriesPrefixForDoc(FrappeTestCase):
 			doc = frappe._dict(doctype="Stock Entry", naming_series="X-")
 			self.assertIsNone(lock_order.series_prefix_for_doc(doc))
 
+	def tearDown(self):
+		return super().tearDown()
 
-class TestPreallocateSeriesForDocs(FrappeTestCase):
+
+class TestPreallocateSeriesForDocs(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch.object(lock_order, "preallocate_series")
 	@patch.object(lock_order, "series_prefix_for_doc")
 	def test_skips_none_docs_and_forwards_resolved_prefixes(
@@ -206,3 +252,6 @@ class TestPreallocateSeriesForDocs(FrappeTestCase):
 		# None *docs* are skipped before resolution; None *prefixes* are filtered downstream.
 		self.assertEqual(mock_prefix.call_count, 2)
 		mock_pre.assert_called_once_with(["MAT-STE-2026-", None])
+
+	def tearDown(self):
+		return super().tearDown()
