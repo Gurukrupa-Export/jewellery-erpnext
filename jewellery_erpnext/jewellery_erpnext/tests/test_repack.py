@@ -75,7 +75,7 @@ class TestRepackAutomation(IntegrationTestCase):
 		get_all.assert_called_once_with(
 			"Subcontracting Log",
 			filters={
-				"settlement_required": 1,
+				"settlement_required": 0,
 				"settlement_status": ["in", ["Pending", "Partially Settled"]],
 				"mwo_type": "Subcontracting",
 				"usage_type": ["in", ["Different Customer Gold", "Company Gold"]],
@@ -137,7 +137,7 @@ class TestRepackAutomation(IntegrationTestCase):
 		get_all.assert_called_once_with(
 			"Subcontracting Log",
 			filters={
-				"settlement_required": 1,
+				"settlement_required": 0,
 				"settlement_status": ["in", ["Pending", "Partially Settled"]],
 				"mwo_type": "Regular",
 				"usage_type": ["in", ["Different Customer Gold", "Same Customer Gold"]],
