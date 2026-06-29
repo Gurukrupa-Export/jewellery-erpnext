@@ -518,6 +518,216 @@ class TestProductCertification(IntegrationTestCase):
 			"PMO-B row should get amount",
 		)
 
+	@patch("frappe.model.document.Document._validate_links")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.get_item_loss_item"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.process_fire_assy_xrf_submit"
+	)
+	def test_fire_assy_service_creation_and_submit(
+		self, mock_process, mock_loss_item, mock_validate_links
+	):
+		mock_loss_item.return_value = "LOSS-ITEM-001"
+
+		orig_get_value = frappe.db.get_value
+
+		def side_effect(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Manufacturing Setting" and fieldname == "pure_gold_item":
+				return "PURE-ITEM-001"
+			if (
+				doctype == "Product Details"
+				and isinstance(filters, dict)
+				and filters.get("parent") == "PC-TEST-001"
+			):
+				return "Existing Row"
+			return orig_get_value(doctype, filters, fieldname, *args, **kwargs)
+
+		with patch.object(frappe.db, "get_value", side_effect=side_effect):
+			certification = frappe.new_doc("Product Certification")
+			certification.company = "Test_Company"
+			certification.type = "Receive"
+			certification.service_type = "Fire Assy Service"
+			certification.department = "Product Certification - T"
+			certification.supplier = "Test_Supplier"
+			certification.receive_against = "PC-TEST-001"
+			certification.manufacturer = "Test_Manufacturer"
+			certification.total_amount = 100.0
+
+			certification.append(
+				"product_details",
+				{
+					"item_code": "TEST-ITEM-001",
+					"main_slip": "SLIP-001",
+					"tree_no": "TREE-001",
+					"total_weight": 100.0,
+				},
+			)
+
+			certification.save()
+
+			exploded_items = [
+				d.item_code for d in certification.exploded_product_details
+			]
+			self.assertIn("TEST-ITEM-001", exploded_items)
+			self.assertIn("PURE-ITEM-001", exploded_items)
+			self.assertIn("LOSS-ITEM-001", exploded_items)
+
+			for d in certification.exploded_product_details:
+				d.gross_weight = 33.3333333333
+			certification.exploded_product_details[0].gross_weight += 0.0000000001
+
+			certification.submit()
+			mock_process.assert_called_once()
+
+	@patch("frappe.model.document.Document._validate_links")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.get_item_loss_item"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.process_fire_assy_xrf_submit"
+	)
+	def test_xrf_service_creation_and_submit(
+		self, mock_process, mock_loss_item, mock_validate_links
+	):
+		mock_loss_item.return_value = "LOSS-ITEM-001"
+
+		orig_get_value = frappe.db.get_value
+
+		def side_effect(doctype, filters=None, fieldname="name", *args, **kwargs):
+			if doctype == "Manufacturing Setting" and fieldname == "pure_gold_item":
+				return "PURE-ITEM-001"
+			if (
+				doctype == "Product Details"
+				and isinstance(filters, dict)
+				and filters.get("parent") == "PC-TEST-001"
+			):
+				return "Existing Row"
+			return orig_get_value(doctype, filters, fieldname, *args, **kwargs)
+
+		with patch.object(frappe.db, "get_value", side_effect=side_effect):
+			certification = frappe.new_doc("Product Certification")
+			certification.company = "Test_Company"
+			certification.type = "Receive"
+			certification.service_type = "XRF Services"
+			certification.department = "Product Certification - T"
+			certification.supplier = "Test_Supplier"
+			certification.receive_against = "PC-TEST-001"
+			certification.manufacturer = "Test_Manufacturer"
+			certification.total_amount = 100.0
+
+			certification.append(
+				"product_details",
+				{
+					"item_code": "TEST-ITEM-001",
+					"main_slip": "SLIP-001",
+					"tree_no": "TREE-001",
+					"total_weight": 100.0,
+				},
+			)
+
+			certification.save()
+
+			exploded_items = [
+				d.item_code for d in certification.exploded_product_details
+			]
+			self.assertIn("TEST-ITEM-001", exploded_items)
+			self.assertNotIn("PURE-ITEM-001", exploded_items)
+			self.assertIn("LOSS-ITEM-001", exploded_items)
+
+			for d in certification.exploded_product_details:
+				d.gross_weight = 50.0
+
+			certification.submit()
+			mock_process.assert_called_once()
+
+	def test_validate_exploded_qty_fire_assy(self):
+		certification = frappe.new_doc("Product Certification")
+		certification.company = "Test_Company"
+		certification.type = "Receive"
+		certification.service_type = "Fire Assy Service"
+
+		certification.append(
+			"product_details",
+			{
+				"item_code": "TEST-ITEM-001",
+				"main_slip": "SLIP-001",
+				"total_weight": 100.0,
+			},
+		)
+
+		certification.append(
+			"exploded_product_details",
+			{
+				"item_code": "TEST-ITEM-001",
+				"main_slip": "SLIP-001",
+				"gross_weight": 50.0,  # Mismatch
+			},
+		)
+
+		with self.assertRaises(ValidationError) as context:
+			certification.validate_exploded_qty()
+
+		self.assertIn(
+			"Total Gross Weight in Exploded Product Details", str(context.exception)
+		)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.frappe.defaults.get_user_default"
+	)
+	def test_missing_manufacturer_or_pure_item(self, mock_default):
+		mock_default.return_value = None  # No manufacturer
+
+		certification = frappe.new_doc("Product Certification")
+		certification.company = "Test_Company"
+		certification.type = "Receive"
+		certification.service_type = "Fire Assy Service"
+
+		with self.assertRaises(Exception) as context:
+			certification.get_exploded_table()
+		self.assertIn("Set manufacturer in session defaults", str(context.exception))
+
+		mock_default.return_value = "Test_Manufacturer"
+		orig_get_value = frappe.db.get_value
+
+		def side_effect(doctype, filters=None, fieldname=None, *args, **kwargs):
+			if doctype == "Manufacturing Setting" and fieldname == "pure_gold_item":
+				return None  # No pure item
+			return orig_get_value(doctype, filters, fieldname, *args, **kwargs)
+
+		with patch.object(frappe.db, "get_value", side_effect=side_effect):
+			with self.assertRaises(Exception) as context:
+				certification.get_exploded_table()
+			self.assertIn(
+				"Select Manufacturer in session defaults or in Filed",
+				str(context.exception),
+			)
+
+	def test_product_certification_permissions(self):
+		# Create a test user with no roles
+		user = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": "test_noperm@example.com",
+				"first_name": "Test No Perm",
+				"roles": [],
+			}
+		)
+		if not frappe.db.exists("User", user.email):
+			user.insert(ignore_permissions=True)
+
+		frappe.set_user("test_noperm@example.com")
+
+		certification = frappe.new_doc("Product Certification")
+		certification.company = "Test_Company"
+		certification.type = "Receive"
+		certification.service_type = "Fire Assy Service"
+
+		with self.assertRaises(frappe.PermissionError):
+			certification.save()
+
+		frappe.set_user("Administrator")
+
 	def tearDown(self):
 		return super().tearDown()
 
