@@ -103,7 +103,7 @@ def get_fifo_batches(self, row):
 			frappe._dict(
 				{
 					"posting_date": posting_date,
-					"posting_name": posting_time,
+					"posting_time": posting_time,
 					"item_code": row.item_code,
 					"warehouse": warehouse,
 					"qty": row.qty,
