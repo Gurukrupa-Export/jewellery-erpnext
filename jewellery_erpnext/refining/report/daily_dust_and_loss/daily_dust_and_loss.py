@@ -74,7 +74,7 @@ def get_data(filters):
 			re.system_quantity AS system_loss_quantity,
 			re.physical_quantity AS physical_dust_quantity,
 			re.difference_quantity,
-			re.dust_item
+			re.loss_item AS dust_item
 		FROM `tabRefining Entry` re
 		LEFT JOIN `tabRefining Material Line` rml ON rml.parent = re.name
 		WHERE {conditions}

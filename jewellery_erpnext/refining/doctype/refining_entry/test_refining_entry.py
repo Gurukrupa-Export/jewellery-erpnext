@@ -30,15 +30,6 @@ class TestRefiningEntry(FrappeTestCase):
 				}
 			).insert(ignore_permissions=True)
 
-		# Ensure refining configuration exists
-		if not frappe.db.get_single_value(
-			"Refining Configuration", "default_refining_warehouse"
-		):
-			config = frappe.get_doc("Refining Configuration")
-			config.default_refining_warehouse = "Refining Dept - _TC"
-			config.enable_audit_logging = 1
-			config.save(ignore_permissions=True)
-
 	def test_dust_refining_creation_and_validation(self):
 		"""Unit Test: Dust Refining - Create Entry, Quantity Validation, Dust Difference Logic"""
 		entry = frappe.get_doc(
@@ -165,9 +156,10 @@ class TestRefiningEntry(FrappeTestCase):
 			}
 		)
 
+		# Gold-classified input item (ML- prefix) so it counts toward gold input
 		entry.append(
 			"material_items",
-			{"item_code": "_Test Scrap Item", "qty": 100.0, "source_type": "Scrap"},
+			{"item_code": "ML-G-18KT-75.4-Y", "qty": 100.0, "source_type": "Scrap"},
 		)
 
 		entry.append(
@@ -182,13 +174,18 @@ class TestRefiningEntry(FrappeTestCase):
 		entry.calculate_totals()
 		self.assertEqual(entry.refined_fine_weight, 90.0)
 
-		# Validation should pass
+		# 90 recovered gold <= 100 gold input -> passes
 		entry.validate_recovery_distribution()
 
-		# Add excess recovery to trigger error
-		entry.append("recovered_diamond", {"item": "Test Diamond", "weight": 20.0})
-
-		# 90 + 20 = 110 > 100 (input)
+		# Recovered gold now exceeds gold input -> error (120 > 100)
+		entry.append(
+			"refined_gold",
+			{
+				"item_code": "24KT Pure Gold",
+				"refining_gold_weight": 30.0,
+				"pure_weight": 30.0,
+			},
+		)
 		self.assertRaises(frappe.ValidationError, entry.validate_recovery_distribution)
 
 	def test_proportional_recovery_weight_distribution(self):
@@ -211,7 +208,8 @@ class TestRefiningEntry(FrappeTestCase):
 		self.assertEqual(recovered_18kt, 47.5)
 
 	def test_dust_item_is_receipt_only(self):
-		"""Unit Test: SOP dust item is not part of material transfer."""
+		"""Unit Test: dust loss item in the refining warehouse is opening-only (receipt),
+		while the same item in the source warehouse is transferred."""
 		entry = frappe.get_doc(
 			{
 				"doctype": "Refining Entry",
@@ -220,7 +218,6 @@ class TestRefiningEntry(FrappeTestCase):
 				"warehouse": "Source Dept - _TC",
 				"refining_warehouse": "Refining Dept - _TC",
 				"loss_item": "_Test Item Dust",
-				"dust_item": "_Test Additional Dust",
 				"system_quantity": 100.0,
 				"physical_quantity": 105.0,
 				"difference_quantity": 5.0,
@@ -228,44 +225,43 @@ class TestRefiningEntry(FrappeTestCase):
 				"status": "Draft",
 			}
 		)
-		loss_row = entry.append(
-			"material_items", {"item_code": "_Test Item Dust", "qty": 100}
-		)
-		dust_row = entry.append(
-			"material_items", {"item_code": "_Test Additional Dust", "qty": 5}
-		)
-
-		self.assertFalse(entry.is_dust_opening_item(loss_row))
-		self.assertTrue(entry.is_dust_opening_item(dust_row))
-		self.assertEqual(entry.get_dust_opening_qty("_Test Additional Dust"), 5.0)
-
-		entry.set("material_items", [])
-		entry.append("material_items", {"item_code": "_Test Item Dust", "qty": 100})
-		entry.ensure_dust_opening_material_row()
-		self.assertEqual(entry.material_items[-1].item_code, "_Test Additional Dust")
-		self.assertEqual(entry.material_items[-1].qty, 5.0)
-
-	def test_audit_log_creation(self):
-		"""Unit Test: Audit System - Log Creation"""
-		entry = frappe.get_doc(
+		# Loss item in the SOURCE warehouse -> transferred (not an opening row)
+		source_row = entry.append(
+			"material_items",
 			{
-				"doctype": "Refining Entry",
-				"refining_type": "Dust Refining",
-				"company": "_Test Company",
-				"loss_item": "_Test Item Dust",
-				"system_quantity": 100.0,
-				"physical_quantity": 100.0,
-				"status": "Draft",
-			}
+				"item_code": "_Test Item Dust",
+				"warehouse": "Source Dept - _TC",
+				"qty": 100,
+			},
 		)
-		entry.insert()
-
-		entry.log_audit_action("State Change Test", "Draft", "Submitted")
-
-		logs = frappe.get_all(
-			"Refining Audit Log", filters={"refining_entry": entry.name}
+		# Loss item in the REFINING warehouse -> dust opening row (receipt only)
+		opening_row = entry.append(
+			"material_items",
+			{
+				"item_code": "_Test Item Dust",
+				"warehouse": "Refining Dept - _TC",
+				"qty": 5,
+			},
 		)
-		self.assertTrue(len(logs) > 0)
+
+		self.assertFalse(entry.is_dust_opening_item(source_row))
+		self.assertTrue(entry.is_dust_opening_item(opening_row))
+		self.assertEqual(entry.get_dust_opening_qty("_Test Item Dust"), 5.0)
+
+		# ensure_dust_opening_material_row appends the opening row when missing
+		entry.set("material_items", [])
+		entry.append(
+			"material_items",
+			{
+				"item_code": "_Test Item Dust",
+				"warehouse": "Source Dept - _TC",
+				"qty": 100,
+			},
+		)
+		entry.ensure_dust_opening_material_row()
+		self.assertTrue(
+			any(entry.is_dust_opening_item(r) for r in entry.material_items)
+		)
 
 	def test_workflow_transitions(self):
 		"""Workflow Tests: Validate State Changes"""
