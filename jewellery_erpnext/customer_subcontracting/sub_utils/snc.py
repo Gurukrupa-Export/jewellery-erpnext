@@ -3,7 +3,7 @@ import hashlib
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
-from frappe.utils import cint, flt
+from frappe.utils import cint, flt, now_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	create_mr_wo_stock_entry,
@@ -240,7 +240,7 @@ def create_repack_metal_conversion(
 		},
 	)
 	se.insert(ignore_permissions=True)
-	se.submit()
+	_submit_consuming_stock_entry(se)
 
 	target_batch = frappe.db.get_value(
 		"Stock Entry Detail",
@@ -308,7 +308,7 @@ def create_material_transfer_work_order(
 		},
 	)
 	se.insert(ignore_permissions=True)
-	se.submit()
+	_submit_consuming_stock_entry(se)
 	return se.name
 
 
@@ -417,30 +417,100 @@ def _find_available_owner_batch(owner_customer, item_code, required_qty):
 			"custom_inventory_type": "Regular Stock",
 			"disabled": 0,
 		}
-	for batch in frappe.get_all(
-		"Batch",
-		filters=batch_filters,
-		fields=["name", "creation"],
-		order_by="creation asc",
-	):
-		for warehouse in _get_raw_material_warehouses():
+	batches = frappe.get_all(
+		"Batch", filters=batch_filters, pluck="name", order_by="creation asc"
+	)
+	warehouses = _get_raw_material_warehouses()
+	if not batches or not warehouses:
+		return None
+
+	required = flt(required_qty, 3)
+	# One grouped query for the batch-wise consumable balance the submit-time
+	# negative-stock check (erpnext BatchNoValuation) enforces. get_batch_qty also
+	# counts the legacy SLE.batch_no ledger and future-dated rows the validator
+	# ignores, so a warehouse can look available here yet go negative on transfer.
+	consumable = _consumable_batch_qty_map(batches, item_code, warehouses)
+
+	for batch_no in batches:
+		for warehouse in warehouses:
+			if consumable.get((batch_no, warehouse), 0) < required:
+				continue
+			# Consumable stock exists here; confirm it is not fully reserved
+			# (get_batch_qty nets Stock Reservation Entries) before committing.
 			available_qty = flt(
 				get_batch_qty(
-					batch_no=batch.name,
-					warehouse=warehouse,
-					item_code=item_code,
+					batch_no=batch_no, warehouse=warehouse, item_code=item_code
 				),
 				3,
 			)
-			if available_qty >= flt(required_qty, 3):
-				return {
-					"batch_no": batch.name,
-					"item_code": item_code,
-					"warehouse": warehouse,
-					"available_qty": available_qty,
-					"qty": flt(required_qty, 3),
-				}
+			if available_qty < required:
+				continue
+			return {
+				"batch_no": batch_no,
+				"item_code": item_code,
+				"warehouse": warehouse,
+				"available_qty": consumable[(batch_no, warehouse)],
+				"qty": required,
+			}
 	return None
+
+
+def _consumable_batch_qty(batch_no, item_code, warehouse):
+	"""Consumable balance for one (batch, warehouse); see _consumable_batch_qty_map."""
+	return _consumable_batch_qty_map([batch_no], item_code, [warehouse]).get(
+		(batch_no, warehouse), 0.0
+	)
+
+
+def _consumable_batch_qty_map(batch_nos, item_code, warehouses):
+	"""Map {(batch_no, warehouse): qty} of the balance the submit-time negative-stock
+	check enforces: submitted Serial and Batch Entry rows up to now only -- no legacy
+	SLE.batch_no ledger, no future-dated rows. Mirrors get_batch_stock_before_date."""
+	result = {}
+	if not batch_nos or not warehouses:
+		return result
+	now_dt = now_datetime()
+	wh_ph = ", ".join(["%s"] * len(warehouses))
+	for start in range(0, len(batch_nos), 500):
+		chunk = batch_nos[start : start + 500]
+		b_ph = ", ".join(["%s"] * len(chunk))
+		rows = frappe.db.sql(
+			f"""
+			select batch_no, warehouse, coalesce(sum(qty), 0) as qty
+			from `tabSerial and Batch Entry`
+			where batch_no in ({b_ph}) and item_code = %s
+				and warehouse in ({wh_ph}) and docstatus = 1
+				and type_of_transaction in ('Inward', 'Outward')
+				and posting_datetime <= %s
+			group by batch_no, warehouse
+			""",
+			(*chunk, item_code, *warehouses, now_dt),
+			as_dict=True,
+		)
+		for row in rows:
+			result[(row.batch_no, row.warehouse)] = flt(row.qty, 3)
+	return result
+
+
+def _submit_consuming_stock_entry(se):
+	"""Submit an SNC Stock Entry after asserting every outward line has the consumable
+	batch balance the submit-time check enforces, so residual edge cases fail with a
+	clear message and full rollback instead of a deep BatchNegativeStockError."""
+	needed = {}
+	for item in se.items:
+		if not item.get("s_warehouse") or not item.get("batch_no"):
+			continue
+		key = (item.item_code, item.batch_no, item.s_warehouse)
+		needed[key] = flt(needed.get(key, 0)) + flt(item.qty, 3)
+	for (item_code, batch_no, warehouse), qty in needed.items():
+		available = _consumable_batch_qty(batch_no, item_code, warehouse)
+		if available < qty:
+			frappe.throw(
+				_(
+					"Not enough stock of batch {0} ({1}) in {2}: need {3}, have {4}."
+				).format(batch_no, item_code, warehouse, qty, available)
+			)
+	se.submit()
 
 
 def _get_raw_material_warehouses():
