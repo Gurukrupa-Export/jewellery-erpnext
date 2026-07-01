@@ -43,10 +43,24 @@ frappe.ui.form.on("Refining Entry", {
 		}));
 	},
 
+	onload(frm) {
+		// Default the Source Department from the logged-in user's Employee record so
+		// refining is scoped to the user's own department (server-side validate is the
+		// authoritative safety net; this is UX only).
+		if (frm.is_new() && !frm.doc.department) {
+			frappe.db.get_value("Employee", { user_id: frappe.session.user }, "department").then((r) => {
+				if (r.message && r.message.department) {
+					frm.set_value("department", r.message.department);
+				}
+			});
+		}
+	},
+
 	refresh(frm) {
 		frm.trigger("set_field_visibility");
 		frm.trigger("add_action_buttons");
 		frm.trigger("render_raw_material_html");
+		frm.trigger("set_recovery_grid_editability");
 
 		// Suppress Frappe Workflow's auto-generated action buttons on submitted docs,
 		// AND on child duplicate entries (which rely entirely on custom processing buttons).
@@ -113,6 +127,22 @@ frappe.ui.form.on("Refining Entry", {
 					}
 				});
 		}
+	},
+
+	set_recovery_grid_editability(frm) {
+		// Only the recovered_pcs / recovered_weight columns are operator-editable, and
+		// only while recovery is being entered (on the child processing entry). The
+		// present pcs/weight columns stay read-only (they are the seeded reference).
+		const editable =
+			!!frm.doc.parent_refining_entry &&
+			["Refining In Progress", "Recovery Entered"].includes(frm.doc.status);
+		["recovered_diamond", "recovered_gemstone"].forEach((table) => {
+			const grid = frm.fields_dict[table] && frm.fields_dict[table].grid;
+			if (!grid) return;
+			grid.update_docfield_property("recovered_pcs", "read_only", editable ? 0 : 1);
+			grid.update_docfield_property("recovered_weight", "read_only", editable ? 0 : 1);
+			grid.refresh();
+		});
 	},
 
 	// --- Barcode scan handlers ---

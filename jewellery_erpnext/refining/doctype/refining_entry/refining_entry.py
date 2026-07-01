@@ -1,7 +1,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 # Roles allowed to drive the refining department processing actions
 REFINING_ROLES = ["Refining User", "Refining Manager", "System Manager"]
@@ -21,13 +21,16 @@ class RefiningEntry(Document):
 	def validate(self):
 		self.set_naming_series()
 		self.validate_configuration()
+		self.set_source_department_from_user()
 		self.validate_warehouse()
+		self.validate_source_department_match()
 		self.validate_quantities()
 		self.calculate_totals()
 		self.allocate_batches_in_table()
 
 		if self.status == "Recovery Entered":
 			self.validate_recovery_distribution()
+			self.validate_recovered_non_metal()
 
 	def before_submit(self):
 		if not self.refining_warehouse:
@@ -78,6 +81,62 @@ class RefiningEntry(Document):
 			frappe.throw(
 				_("Choose either Multiple Operations OR Multiple Department, not both.")
 			)
+
+	def set_source_department_from_user(self):
+		"""Default the Source Department from the logged-in user's Employee record.
+		This scopes refining to the user's own department (it also drives the source
+		warehouse via validate_warehouse). A manually chosen department is preserved,
+		and a missing Employee record is not an error."""
+		if self.department:
+			return
+		dept = frappe.db.get_value(
+			"Employee", {"user_id": frappe.session.user}, "department"
+		)
+		if dept:
+			self.department = dept
+
+	def validate_source_department_match(self):
+		"""Refining is only allowed for material belonging to the Source Department.
+		- Work Order Refining: every scanned MWO's department must match.
+		- Serial Number Refining: each serial's current warehouse department must match.
+		Enforced defensively here so API-created entries (which bypass the scan
+		handlers) are also validated."""
+		if not self.department:
+			return
+
+		if self.refining_type == "Work Order Refining":
+			for row in self.mwo_details:
+				if not row.manufacturing_work_order:
+					continue
+				mwo_dept = frappe.db.get_value(
+					"Manufacturing Work Order",
+					row.manufacturing_work_order,
+					"department",
+				)
+				if mwo_dept and mwo_dept != self.department:
+					frappe.throw(
+						_(
+							"MWO {0} belongs to department {1}, which does not match "
+							"the Source Department {2}. Refining is not allowed."
+						).format(
+							row.manufacturing_work_order, mwo_dept, self.department
+						)
+					)
+		elif self.refining_type == "Serial Number Refining":
+			for row in self.serial_no_details:
+				if not row.serial_number:
+					continue
+				wh = frappe.db.get_value("Serial No", row.serial_number, "warehouse")
+				sn_dept = (
+					frappe.db.get_value("Warehouse", wh, "department") if wh else None
+				)
+				if sn_dept and sn_dept != self.department:
+					frappe.throw(
+						_(
+							"Serial No {0} belongs to department {1}, which does not "
+							"match the Source Department {2}. Refining is not allowed."
+						).format(row.serial_number, sn_dept, self.department)
+					)
 
 	def validate_warehouse(self):
 		if self.refining_department and not self.refining_warehouse:
@@ -180,7 +239,9 @@ class RefiningEntry(Document):
 				gold.refining_gold_weight
 			)
 
-		self.refining_loss = self.gross_pure_weight - self.refined_fine_weight
+		# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
+		# (rounding / assay variance) and must never book a negative loss.
+		self.refining_loss = max(self.gross_pure_weight - self.refined_fine_weight, 0.0)
 
 		if self.expected_recovery > 0:
 			self.recovery_percentage = (
@@ -245,31 +306,58 @@ class RefiningEntry(Document):
 					child.set(k, v)
 
 	def validate_recovery_distribution(self):
-		# Compare like-for-like: recovered GOLD (grams) against GOLD input (grams).
+		# Refining always yields pure 24KT gold, so the recovered gold is compared against
+		# the PURE gold content of the input (gross_pure_weight), not the gross input weight.
 		# Diamonds/gemstones are carried 1:1 from the source/BOM, so they are not part
 		# of this metal ceiling (they are in different units and cannot be "over-recovered").
 		total_recovered_gold = sum(
 			flt(gold.refining_gold_weight) for gold in self.refined_gold
 		)
 
-		if self.refining_type == "Serial Number Refining":
-			# net metal weight is the refinable gold input basis (consistent with
-			# generate_recovery_table / distribute_recovered_gold)
-			gold_input = sum(flt(row.net_weight) for row in self.serial_no_details)
-		else:
-			gold_input = sum(
-				flt(item.qty)
-				for item in self.material_items
-				if self.is_gold_item(item.item_code)
-			)
+		# gross_pure_weight is the pure 24KT-equivalent of the input, set by
+		# calculate_totals / _recalculate_and_persist_totals for both refining types.
+		pure_gold_input = flt(self.gross_pure_weight)
 
-		# Allow a 0.1 margin for precision/rounding differences
-		if total_recovered_gold > gold_input + 0.1:
+		# Allow a 0.1 margin for precision/rounding/assay differences
+		if total_recovered_gold > pure_gold_input + 0.1:
 			frappe.throw(
 				_(
-					"Recovered gold weight ({0}) cannot exceed gold input weight ({1})."
-				).format(flt(total_recovered_gold, 3), flt(gold_input, 3))
+					"Recovered 24KT gold weight ({0}) cannot exceed the pure gold "
+					"input weight ({1})."
+				).format(flt(total_recovered_gold, 3), flt(pure_gold_input, 3))
 			)
+
+	def validate_recovered_non_metal(self):
+		"""At Recovery Entered, the recovered diamond/gemstone amounts entered by the
+		operator cannot exceed the amounts actually present (seeded from the MWO/BOM).
+		Applies to both Work Order and Serial Number refining."""
+		for label, rows in (
+			("Diamond", self.recovered_diamond),
+			("Gemstone", self.recovered_gemstone),
+		):
+			for row in rows:
+				# sub-carat weights use a 0.001 margin (precision 3)
+				if flt(row.recovered_weight) > flt(row.weight) + 0.001:
+					frappe.throw(
+						_(
+							"Recovered {0} weight ({1}) for {2} cannot exceed the "
+							"available weight ({3})."
+						).format(
+							label,
+							flt(row.recovered_weight, 3),
+							row.item,
+							flt(row.weight, 3),
+						)
+					)
+				if cint(row.recovered_pcs) > cint(row.pcs):
+					frappe.throw(
+						_(
+							"Recovered {0} pcs ({1}) for {2} cannot exceed the "
+							"available pcs ({3})."
+						).format(
+							label, cint(row.recovered_pcs), row.item, cint(row.pcs)
+						)
+					)
 
 	# --- Action Handlers (Whitelisted for Client Scripts) ---
 
@@ -346,11 +434,21 @@ class RefiningEntry(Document):
 				"qty",
 				"metal_weight",
 				"manufacturing_operation",
+				"department",
 			],
 			as_dict=True,
 		)
 		if not mwo:
 			frappe.throw(_("Manufacturing Work Order {0} not found.").format(barcode))
+
+		# Refining is only allowed for MWOs of the user's own (Source) department.
+		if self.department and mwo.department and mwo.department != self.department:
+			frappe.throw(
+				_(
+					"MWO {0} belongs to department {1}, which does not match the "
+					"Source Department {2}. Refining is not allowed."
+				).format(mwo.name, mwo.department, self.department)
+			)
 
 		# Check if MWO already added
 		for row in self.mwo_details:
@@ -390,6 +488,19 @@ class RefiningEntry(Document):
 					barcode, self.warehouse
 				)
 			)
+
+		# Refining is only allowed for serials of the user's own (Source) department.
+		if self.department and serial_no.warehouse:
+			sn_dept = frappe.db.get_value(
+				"Warehouse", serial_no.warehouse, "department"
+			)
+			if sn_dept and sn_dept != self.department:
+				frappe.throw(
+					_(
+						"Serial Number {0} belongs to department {1}, which does not "
+						"match the Source Department {2}. Refining is not allowed."
+					).format(barcode, sn_dept, self.department)
+				)
 
 		for row in self.serial_no_details:
 			if row.serial_number == serial_no.name:
@@ -672,6 +783,11 @@ class RefiningEntry(Document):
 		total_input_weight = sum(
 			flt(row.input_weight) for row in self.gold_recovery_details
 		)
+		# Refining yields pure 24KT gold, so the entered recovery is capped by the PURE
+		# gold content of the input, not the gross input weight.
+		total_pure_input_weight = sum(
+			flt(row.pure_gold_weight) for row in self.gold_recovery_details
+		)
 		total_recovered_weight = self.get_recovered_gold_total(total_recovered_weight)
 		if total_input_weight <= 0:
 			frappe.throw(_("Gold input weight is required for proportional recovery."))
@@ -679,11 +795,14 @@ class RefiningEntry(Document):
 			frappe.throw(
 				_("Recovered gold weight is required for proportional recovery.")
 			)
-		if total_recovered_weight > total_input_weight + 0.1:
+		if total_recovered_weight > total_pure_input_weight + 0.1:
 			frappe.throw(
 				_(
-					"Recovered gold weight ({0}) cannot exceed input gold weight ({1})."
-				).format(total_recovered_weight, total_input_weight)
+					"Recovered 24KT gold weight ({0}) cannot exceed the pure gold "
+					"input weight ({1})."
+				).format(
+					flt(total_recovered_weight, 3), flt(total_pure_input_weight, 3)
+				)
 			)
 
 		# Calculate and persist recovery details row by row via db_set
@@ -741,12 +860,9 @@ class RefiningEntry(Document):
 			if metal_purity and not frappe.db.exists("Attribute Value", metal_purity):
 				metal_purity = None
 
-			pure_weight = flt(row.recovered_weight)
-			if row.get("purity_percentage"):
-				pure_weight = flt(row.recovered_weight) * (
-					flt(row.purity_percentage) / 100.0
-				)
-			pure_weight = flt(pure_weight, 3)
+			# The operator-entered recovered gold is already pure 24KT, so the recovered
+			# weight IS the pure fine weight (no input-karat reduction).
+			pure_weight = flt(row.recovered_weight, 3)
 
 			child = self.append(
 				"refined_gold",
@@ -786,7 +902,9 @@ class RefiningEntry(Document):
 				gold.refining_gold_weight
 			)
 
-		refining_loss = gross_pure_weight - refined_fine_weight
+		# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
+		# (rounding / assay variance) and must never book a negative loss.
+		refining_loss = max(gross_pure_weight - refined_fine_weight, 0.0)
 		recovery_percentage = (
 			(refined_fine_weight / expected_recovery) * 100.0
 			if expected_recovery > 0
@@ -808,6 +926,7 @@ class RefiningEntry(Document):
 	def verify_recovery(self):
 		self.require_refining_role(REFINING_MANAGER_ROLES, _("verify recovery"))
 		self.validate_recovery_distribution()
+		self.validate_recovered_non_metal()
 		self.db_set("status", "Recovery Verified")
 
 	@frappe.whitelist()
@@ -980,6 +1099,9 @@ class RefiningEntry(Document):
 			docname=self.name,
 		)
 		for dia in self.recovered_diamond:
+			dia_qty = flt(dia.recovered_weight)
+			if dia_qty <= 0:
+				continue
 			conv_item = self.convert_diamond_item_code(dia.item)
 			batch_no = None
 			for b in self.batch_tracking:
@@ -994,7 +1116,7 @@ class RefiningEntry(Document):
 				"items",
 				{
 					"item_code": conv_item,
-					"qty": dia.weight,
+					"qty": dia_qty,
 					"uom": "Carat",
 					"s_warehouse": self.refining_warehouse,
 					"t_warehouse": target_warehouse,
@@ -1011,6 +1133,9 @@ class RefiningEntry(Document):
 			docname=self.name,
 		)
 		for gem in self.recovered_gemstone:
+			gem_qty = flt(gem.recovered_weight)
+			if gem_qty <= 0:
+				continue
 			batch_no = None
 			for b in self.batch_tracking:
 				if b.output_item == gem.item:
@@ -1024,7 +1149,7 @@ class RefiningEntry(Document):
 				"items",
 				{
 					"item_code": gem.item,
-					"qty": gem.weight,
+					"qty": gem_qty,
 					"uom": "Carat",
 					"s_warehouse": self.refining_warehouse,
 					"t_warehouse": target_warehouse,
@@ -1145,6 +1270,80 @@ class RefiningEntry(Document):
 			se.insert(ignore_permissions=True)
 			se.submit()
 			self.db_set("material_transfer_se", se.name)
+
+		# Once the MWO material is physically transferred into the refinery, release its
+		# stock reservations and zero the source MWO / pending-operation weights.
+		if self.refining_type == "Work Order Refining":
+			# Cancel SREs BEFORE touching MOP / Manufacturing Operation rows to respect
+			# the canonical lock order (... -> SRE -> SLE -> MOP Log -> Manufacturing Operation).
+			self._cancel_source_mwo_sres()
+			self._zero_source_mwo_and_mop_weights()
+
+	# Weight buckets zeroed on transfer to the refinery. MWO and Manufacturing Operation
+	# share the same set (MOP additionally carries gemstone_wt_in_gram).
+	_MWO_WEIGHT_FIELDS = (
+		"gross_wt",
+		"net_wt",
+		"finding_wt",
+		"diamond_wt",
+		"gemstone_wt",
+		"other_wt",
+		"received_gross_wt",
+		"received_net_wt",
+		"loss_wt",
+		"diamond_wt_in_gram",
+		"diamond_pcs",
+		"gemstone_pcs",
+	)
+
+	def _cancel_source_mwo_sres(self):
+		"""Cancel the active Stock Reservation Entries linked to each refined MWO.
+		SREs are linked to the MWO via the custom `manufacturing_work_order` Data field
+		(SRE.voucher_no is the shared Sales Order, so we must filter by MWO and pass
+		sre_list explicitly)."""
+		from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+			cancel_stock_reservation_entries,
+		)
+
+		names = []
+		for row in self.mwo_details:
+			if not row.manufacturing_work_order:
+				continue
+			names += frappe.db.get_all(
+				"Stock Reservation Entry",
+				filters={
+					"manufacturing_work_order": row.manufacturing_work_order,
+					"docstatus": 1,
+					"status": ["not in", ("Cancelled", "Delivered")],
+				},
+				pluck="name",
+			)
+		if names:
+			cancel_stock_reservation_entries(sre_list=names, notify=False)
+
+	def _zero_source_mwo_and_mop_weights(self):
+		"""Zero the weight buckets on each refined MWO and its last not-started
+		Manufacturing Operation, since the material has left for the refinery."""
+		zero_map = {field: 0 for field in self._MWO_WEIGHT_FIELDS}
+		for row in self.mwo_details:
+			mwo = row.manufacturing_work_order
+			if not mwo:
+				continue
+			frappe.db.set_value("Manufacturing Work Order", mwo, zero_map)
+
+			# The last operation that has not started manufacturing yet.
+			last_not_started_mop = frappe.db.get_value(
+				"Manufacturing Operation",
+				{"manufacturing_work_order": mwo, "status": "Not Started"},
+				"name",
+				order_by="creation desc",
+			)
+			if last_not_started_mop:
+				mop_zero_map = dict(zero_map)
+				mop_zero_map["gemstone_wt_in_gram"] = 0
+				frappe.db.set_value(
+					"Manufacturing Operation", last_not_started_mop, mop_zero_map
+				)
 
 	def create_dust_opening_receipt_se(self):
 		dust_item = self.loss_item
@@ -1332,13 +1531,17 @@ class RefiningEntry(Document):
 			)
 
 		for dia in self.recovered_diamond:
+			# Output the amount actually recovered by the operator, not the present amount.
+			dia_qty = flt(dia.recovered_weight)
+			if dia_qty <= 0:
+				continue
 			conv_item = self.convert_diamond_item_code(dia.item)
 			new_batch = self._auto_create_batch(conv_item)
 			se.append(
 				"items",
 				{
 					"item_code": conv_item,
-					"qty": dia.weight,
+					"qty": dia_qty,
 					"uom": "Carat",
 					"t_warehouse": self.refining_warehouse,
 					"batch_no": new_batch,
@@ -1353,17 +1556,21 @@ class RefiningEntry(Document):
 						"output_item": conv_item,
 						"output_batch": new_batch,
 						"output_warehouse": self.refining_warehouse,
-						"output_qty": dia.weight,
+						"output_qty": dia_qty,
 					}
 				)
 
 		for gem in self.recovered_gemstone:
+			# Output the amount actually recovered by the operator, not the present amount.
+			gem_qty = flt(gem.recovered_weight)
+			if gem_qty <= 0:
+				continue
 			new_batch = self._auto_create_batch(gem.item)
 			se.append(
 				"items",
 				{
 					"item_code": gem.item,
-					"qty": gem.weight,
+					"qty": gem_qty,
 					"uom": "Carat",
 					"t_warehouse": self.refining_warehouse,
 					"batch_no": new_batch,
@@ -1378,7 +1585,7 @@ class RefiningEntry(Document):
 						"output_item": gem.item,
 						"output_batch": new_batch,
 						"output_warehouse": self.refining_warehouse,
-						"output_qty": gem.weight,
+						"output_qty": gem_qty,
 					}
 				)
 
@@ -1755,7 +1962,13 @@ class RefiningEntry(Document):
 						):
 							self.append(
 								"recovered_diamond",
-								{"item": bi.item_code, "weight": bi.qty, "pcs": 1},
+								{
+									"item": bi.item_code,
+									"weight": bi.qty,
+									"pcs": 1,
+									"recovered_weight": bi.qty,
+									"recovered_pcs": 1,
+								},
 							)
 							diamond_items.add(bi.item_code)
 						elif (
@@ -1764,7 +1977,13 @@ class RefiningEntry(Document):
 						):
 							self.append(
 								"recovered_gemstone",
-								{"item": bi.item_code, "weight": bi.qty, "pcs": 1},
+								{
+									"item": bi.item_code,
+									"weight": bi.qty,
+									"pcs": 1,
+									"recovered_weight": bi.qty,
+									"recovered_pcs": 1,
+								},
 							)
 							gemstone_items.add(bi.item_code)
 		else:
@@ -1775,7 +1994,13 @@ class RefiningEntry(Document):
 				):
 					self.append(
 						"recovered_diamond",
-						{"item": item.item_code, "weight": item.qty, "pcs": 1},
+						{
+							"item": item.item_code,
+							"weight": item.qty,
+							"pcs": 1,
+							"recovered_weight": item.qty,
+							"recovered_pcs": 1,
+						},
 					)
 					diamond_items.add(item.item_code)
 				elif (
@@ -1784,7 +2009,13 @@ class RefiningEntry(Document):
 				):
 					self.append(
 						"recovered_gemstone",
-						{"item": item.item_code, "weight": item.qty, "pcs": 1},
+						{
+							"item": item.item_code,
+							"weight": item.qty,
+							"pcs": 1,
+							"recovered_weight": item.qty,
+							"recovered_pcs": 1,
+						},
 					)
 					gemstone_items.add(item.item_code)
 
@@ -1874,13 +2105,9 @@ class RefiningEntry(Document):
 			if metal_purity and not frappe.db.exists("Attribute Value", metal_purity):
 				metal_purity = None
 
-			pure_weight = flt(row.recovered_weight)
-			if row.get("purity_percentage"):
-				pure_weight = flt(row.recovered_weight) * (
-					flt(row.purity_percentage) / 100.0
-				)
-
-			pure_weight = flt(pure_weight, 3)
+			# The operator-entered recovered gold is already pure 24KT, so the recovered
+			# weight IS the pure fine weight (no input-karat reduction).
+			pure_weight = flt(row.recovered_weight, 3)
 
 			self.append(
 				"refined_gold",
