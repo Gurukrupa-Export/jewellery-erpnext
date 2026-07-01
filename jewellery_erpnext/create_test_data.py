@@ -2353,6 +2353,18 @@ def setup_data():
 
 	_ensure_mr_transfer_se_fields()
 
+	# Provision the gke_customization "Order Form Detail.pre_order_form_details" custom field.
+	# gke's Order Form submit (create_cad_orders) reads `row.pre_order_form_details` as a direct
+	# attribute, but the field lives ONLY in gke's fixtures, which CI disables (install.sh moves
+	# them aside before install-app gke_customization). Without the docfield the access raises
+	# AttributeError during Order Form submit, breaking test_quotation. Idempotent (keys on
+	# (dt, fieldname); a no-op once the field exists).
+	from jewellery_erpnext.patches.add_order_form_detail_pre_order_field import (
+		execute as _ensure_order_form_detail_pre_order_field,
+	)
+
+	_ensure_order_form_detail_pre_order_field()
+
 	# Provision every custom_* column targeted by an app fetch_from. These live in
 	# custom_fields/*.json + per-field patches that install-app marks complete WITHOUT
 	# running on fresh sites, so a missing column makes link validation raise 1054 on

@@ -93,7 +93,7 @@ def classify_gold_usage(doc, item):
 				else "Different Customer Gold"
 			),
 			"used_as_fallback": 1,
-			"settlement_required": 1,
+			"settlement_required": 0,
 			"settlement_status": "Pending",
 			"settlement_type": "Customer Needs Gold",
 			"settlement_customer": item_customer,

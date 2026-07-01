@@ -16,25 +16,40 @@ PURITY_PRIORITY = ("24KT", "22KT", "20KT", "18KT")
 @frappe.whitelist()
 def validate_button_visibility(mwo):
 	mwo = _get_mwo(mwo)
-	if mwo.docstatus != 1 or not mwo.manufacturing_order or not mwo.customer:
+	if mwo.docstatus != 1 or not mwo.manufacturing_order:
 		return False
 
 	transfer = _get_original_material_transfer(mwo.name)
 	if not transfer:
 		return False
 
-	batch_customer = _get_original_material_transfer_batch_customer(transfer)
-	if not batch_customer:
+	rows = _get_original_gold_rows(transfer)
+	if not rows:
 		return False
 
-	pmo_is_customer_gold = cint(
+	pmo_is_customer_gold = _is_customer_gold(mwo)
+	return any(_row_needs_settlement(mwo, row, pmo_is_customer_gold) for row in rows)
+
+
+def _is_customer_gold(mwo):
+	return cint(
 		frappe.db.get_value(
 			"Parent Manufacturing Order", mwo.manufacturing_order, "is_customer_gold"
 		)
 	)
+
+
+def _row_needs_settlement(mwo, row, pmo_is_customer_gold):
+	"""Decide whether an original transfer gold row must be settled by SNC.
+
+	Subcontracting order: settle whenever the borrowed gold is not the order
+	customer's own gold (covers other-customer gold and regular/company gold).
+	Regular order: settle only when a customer's gold was borrowed.
+	"""
+	batch_customer = row.get("batch_customer")
 	if pmo_is_customer_gold:
-		return mwo.customer != batch_customer
-	return mwo.customer == batch_customer
+		return batch_customer != mwo.customer
+	return bool(batch_customer)
 
 
 @frappe.whitelist()
@@ -46,13 +61,22 @@ def create_snc(mwo):
 		)
 
 	original_transfer = _get_original_material_transfer(mwo.name)
-	original_rows = _get_original_customer_gold_rows(original_transfer)
+	pmo_is_customer_gold = _is_customer_gold(mwo)
+	original_rows = [
+		row
+		for row in _get_original_gold_rows(original_transfer)
+		if _row_needs_settlement(mwo, row, pmo_is_customer_gold)
+	]
 	if not original_rows:
-		frappe.throw(_("No original Material Transfer customer gold rows found."))
+		frappe.throw(_("No original Material Transfer gold rows to settle found."))
+
+	# The order owner whose gold is brought in to replace the borrowed gold.
+	# Subcontracting order -> the order customer; regular order -> Regular Stock.
+	owner_customer = mwo.customer if pmo_is_customer_gold else None
 
 	created = {"make_receive": None, "conversions": [], "transfers": []}
 	for row in original_rows:
-		required_batch = find_customer_batch(mwo.customer, row["item_code"], row["qty"])
+		required_batch = find_owner_batch(owner_customer, row["item_code"], row["qty"])
 		if required_batch:
 			target_warehouse = required_batch["warehouse"]
 			make_receive = trigger_make_receive(mwo, target_warehouse)
@@ -63,18 +87,21 @@ def create_snc(mwo):
 				original_row=row,
 				batch_no=required_batch["batch_no"],
 				source_warehouse=target_warehouse,
+				owner_customer=owner_customer,
 			)
 			created["transfers"].append(transfer)
 			continue
 
-		source_batch = find_customer_rm_warehouse(
-			mwo.customer,
+		source_batch = find_owner_rm_warehouse(
+			owner_customer,
 			row["item_code"],
 			row["custom_pure_qty"],
 			search_different_purity=True,
 		)
 		if not source_batch:
-			frappe.throw(_("No available stock for Customer {0}.").format(mwo.customer))
+			frappe.throw(
+				_("No available stock for {0}.").format(_owner_label(owner_customer))
+			)
 
 		make_receive = trigger_make_receive(mwo, source_batch["warehouse"])
 		created["make_receive"] = created["make_receive"] or make_receive
@@ -85,30 +112,55 @@ def create_snc(mwo):
 			required_item_code=row["item_code"],
 			required_pure_qty=row["custom_pure_qty"],
 			required_qty=row["qty"],
+			owner_customer=owner_customer,
 		)
 		created["conversions"].append(conversion["stock_entry"])
+		# The owner conversion above is systematic only (no physical movement),
+		# so mirror it on the borrowed usage batch in the SAME warehouse: convert
+		# it back from the expected purity to the available/source purity, keeping
+		# each purity physically balanced.
+		usage_conversion = create_repack_metal_conversion(
+			mwo=mwo,
+			original_transfer=original_transfer,
+			source_batch={
+				"item_code": row["item_code"],
+				"batch_no": row["batch_no"],
+				"qty": row["qty"],
+				"warehouse": source_batch["warehouse"],
+			},
+			required_item_code=source_batch["item_code"],
+			required_pure_qty=row["custom_pure_qty"],
+			required_qty=source_batch["qty"],
+			owner_customer=row.get("batch_customer"),
+		)
+		created["conversions"].append(usage_conversion["stock_entry"])
 		transfer = create_material_transfer_work_order(
 			mwo=mwo,
 			original_transfer=original_transfer,
 			original_row=row,
 			batch_no=conversion["target_batch"],
 			source_warehouse=conversion["warehouse"],
+			owner_customer=owner_customer,
 		)
 		created["transfers"].append(transfer)
 
 	return created
 
 
-def find_customer_batch(customer, item_code, required_qty):
-	return find_customer_rm_warehouse(customer, item_code, required_qty)
+def _owner_label(owner_customer):
+	return "Customer {0}".format(owner_customer) if owner_customer else "Regular Stock"
 
 
-def find_customer_rm_warehouse(
-	customer, item_code, required_qty_or_pure_qty, search_different_purity=False
+def find_owner_batch(owner_customer, item_code, required_qty):
+	return find_owner_rm_warehouse(owner_customer, item_code, required_qty)
+
+
+def find_owner_rm_warehouse(
+	owner_customer, item_code, required_qty_or_pure_qty, search_different_purity=False
 ):
 	if not search_different_purity:
-		return _find_available_customer_batch(
-			customer, item_code, required_qty_or_pure_qty
+		return _find_available_owner_batch(
+			owner_customer, item_code, required_qty_or_pure_qty
 		)
 
 	required_purity = _get_purity_label(item_code)
@@ -120,7 +172,9 @@ def find_customer_rm_warehouse(
 			if not source_purity:
 				continue
 			source_qty = flt(flt(required_qty_or_pure_qty) / (source_purity / 100), 3)
-			batch = _find_available_customer_batch(customer, candidate_item, source_qty)
+			batch = _find_available_owner_batch(
+				owner_customer, candidate_item, source_qty
+			)
 			if batch:
 				batch["qty"] = source_qty
 				return batch
@@ -134,6 +188,7 @@ def create_repack_metal_conversion(
 	required_item_code,
 	required_pure_qty,
 	required_qty,
+	owner_customer=None,
 ):
 	required_purity = _get_item_purity(required_item_code)
 	if not required_purity:
@@ -145,6 +200,7 @@ def create_repack_metal_conversion(
 	if target_qty <= 0:
 		target_qty = flt(required_qty, 3)
 
+	inventory_type = _owner_inventory_type(owner_customer)
 	se = frappe.new_doc("Stock Entry")
 	se.update(
 		{
@@ -157,8 +213,8 @@ def create_repack_metal_conversion(
 			"manufacturing_operation": mwo.manufacturing_operation,
 			"from_warehouse": source_batch["warehouse"],
 			"to_warehouse": source_batch["warehouse"],
-			"inventory_type": "Customer Goods",
-			"_customer": mwo.customer,
+			"inventory_type": inventory_type,
+			"_customer": owner_customer,
 			"auto_created": 1,
 		}
 	)
@@ -169,8 +225,8 @@ def create_repack_metal_conversion(
 			"qty": source_batch["qty"],
 			"batch_no": source_batch["batch_no"],
 			"s_warehouse": source_batch["warehouse"],
-			"inventory_type": "Customer Goods",
-			"customer": mwo.customer,
+			"inventory_type": inventory_type,
+			"customer": owner_customer,
 		},
 	)
 	_append_item(
@@ -179,8 +235,8 @@ def create_repack_metal_conversion(
 			"item_code": required_item_code,
 			"qty": target_qty,
 			"t_warehouse": source_batch["warehouse"],
-			"inventory_type": "Customer Goods",
-			"customer": mwo.customer,
+			"inventory_type": inventory_type,
+			"customer": owner_customer,
 		},
 	)
 	se.insert(ignore_permissions=True)
@@ -210,9 +266,15 @@ def create_repack_metal_conversion(
 
 
 def create_material_transfer_work_order(
-	mwo, original_transfer, original_row, batch_no, source_warehouse
+	mwo,
+	original_transfer,
+	original_row,
+	batch_no,
+	source_warehouse,
+	owner_customer=None,
 ):
 	target_warehouse = original_row.get("t_warehouse") or original_transfer.to_warehouse
+	inventory_type = _owner_inventory_type(owner_customer)
 	se = frappe.new_doc("Stock Entry")
 	se.update(
 		{
@@ -225,8 +287,8 @@ def create_material_transfer_work_order(
 			"manufacturing_operation": mwo.manufacturing_operation,
 			"from_warehouse": source_warehouse,
 			"to_warehouse": target_warehouse,
-			"inventory_type": "Customer Goods",
-			"_customer": mwo.customer,
+			"inventory_type": inventory_type,
+			"_customer": owner_customer,
 		}
 	)
 	_append_item(
@@ -238,8 +300,8 @@ def create_material_transfer_work_order(
 			"batch_no": batch_no,
 			"s_warehouse": source_warehouse,
 			"t_warehouse": target_warehouse,
-			"inventory_type": "Customer Goods",
-			"customer": mwo.customer,
+			"inventory_type": inventory_type,
+			"customer": owner_customer,
 			"custom_manufacturing_work_order": mwo.name,
 			"custom_parent_manufacturing_order": mwo.manufacturing_order,
 			"manufacturing_operation": mwo.manufacturing_operation,
@@ -262,6 +324,9 @@ def trigger_make_receive(mwo, target_warehouse):
 	)
 	receive_items = []
 	for row in rows:
+		# SNC only settles gold; receive gold rows only, never diamond/findings.
+		if not (row.get("item_code") or "").startswith("M-G-"):
+			continue
 		qty = flt(row.get("available_to_receive_qty"))
 		if qty <= 0:
 			continue
@@ -314,23 +379,18 @@ def _get_original_material_transfer(mwo_name):
 	return frappe.get_doc("Stock Entry", name) if name else None
 
 
-def _get_original_material_transfer_batch_customer(transfer):
-	for row in _get_original_customer_gold_rows(transfer):
-		if row.get("batch_customer"):
-			return row["batch_customer"]
-	return None
+def _owner_inventory_type(owner_customer):
+	return "Customer Goods" if owner_customer else "Regular Stock"
 
 
-def _get_original_customer_gold_rows(transfer):
+def _get_original_gold_rows(transfer):
+	"""Return all gold (M-G-) rows of the original Material Transfer, tagging each
+	with the borrowed batch's customer (``None`` for regular/company stock)."""
 	rows = []
 	for row in transfer.items:
-		if row.inventory_type != "Customer Goods":
-			continue
 		if not row.batch_no or not (row.item_code or "").startswith("M-G-"):
 			continue
 		batch_customer = frappe.db.get_value("Batch", row.batch_no, "custom_customer")
-		if not batch_customer:
-			continue
 		rows.append(
 			{
 				"item_code": row.item_code,
@@ -344,10 +404,22 @@ def _get_original_customer_gold_rows(transfer):
 	return rows
 
 
-def _find_available_customer_batch(customer, item_code, required_qty):
+def _find_available_owner_batch(owner_customer, item_code, required_qty):
+	if owner_customer:
+		batch_filters = {
+			"item": item_code,
+			"custom_customer": owner_customer,
+			"disabled": 0,
+		}
+	else:
+		batch_filters = {
+			"item": item_code,
+			"custom_inventory_type": "Regular Stock",
+			"disabled": 0,
+		}
 	for batch in frappe.get_all(
 		"Batch",
-		filters={"item": item_code, "custom_customer": customer, "disabled": 0},
+		filters=batch_filters,
 		fields=["name", "creation"],
 		order_by="creation asc",
 	):

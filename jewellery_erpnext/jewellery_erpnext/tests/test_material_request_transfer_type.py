@@ -14,7 +14,7 @@ Transfer To Branch.
 
 from unittest.mock import patch
 
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import material_request as mr_mod
 
@@ -34,7 +34,11 @@ class _MR:
 		self.custom_manufacturing_operation = None
 
 
-class TestMaterialRequestTransferType(FrappeTestCase):
+class TestMaterialRequestTransferType(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def _run(self, mr, branches):
 		"""Call before_validate with branch lookups and the unrelated
 		downstream validators stubbed out."""
@@ -47,9 +51,7 @@ class TestMaterialRequestTransferType(FrappeTestCase):
 			side_effect=_gv,
 		), patch.object(mr_mod, "update_pure_qty"), patch.object(
 			mr_mod, "validate_target_item"
-		), patch.object(
-			mr_mod, "validate_warehouse"
-		):
+		), patch.object(mr_mod, "validate_warehouse"):
 			mr_mod.before_validate(mr, None)
 		return mr.custom_transfer_type
 
@@ -61,9 +63,7 @@ class TestMaterialRequestTransferType(FrappeTestCase):
 			set_warehouse="Waxing RM - KGJPL",
 			custom_transfer_type="Transfer To Department",
 		)
-		result = self._run(
-			mr, {"Central RM - KGJPL": "", "Waxing RM - KGJPL": None}
-		)
+		result = self._run(mr, {"Central RM - KGJPL": "", "Waxing RM - KGJPL": None})
 		self.assertEqual(result, "Transfer To Department")
 
 	def test_blank_same_branch(self):
@@ -87,3 +87,6 @@ class TestMaterialRequestTransferType(FrappeTestCase):
 		mr = _MR(material_request_type="Manufacture")
 		result = self._run(mr, {})
 		self.assertEqual(result, "Transfer to Reserve")
+
+	def tearDown(self):
+		return super().tearDown()

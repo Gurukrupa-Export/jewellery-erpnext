@@ -6,7 +6,7 @@
 from unittest.mock import MagicMock, patch
 
 from frappe.exceptions import QueryDeadlockError, QueryTimeoutError
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext import bounded_retry
 from jewellery_erpnext.jewellery_erpnext.bounded_retry import (
@@ -20,7 +20,11 @@ from jewellery_erpnext.jewellery_erpnext.bounded_retry import (
 # real test transaction.
 @patch.object(bounded_retry.time, "sleep", MagicMock())
 @patch.object(bounded_retry.frappe.db, "rollback", MagicMock())
-class TestRunWithRetry(FrappeTestCase):
+class TestRunWithRetry(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_returns_on_first_success(self):
 		fn = MagicMock(return_value="ok")
 		self.assertEqual(run_with_retry(fn, "a", k=1), "ok")
@@ -32,7 +36,9 @@ class TestRunWithRetry(FrappeTestCase):
 		self.assertEqual(fn.call_count, 2)
 
 	def test_retries_timeout_then_succeeds(self):
-		fn = MagicMock(side_effect=[QueryTimeoutError("x"), QueryTimeoutError("x"), "ok"])
+		fn = MagicMock(
+			side_effect=[QueryTimeoutError("x"), QueryTimeoutError("x"), "ok"]
+		)
 		self.assertEqual(run_with_retry(fn, max_attempts=3), "ok")
 		self.assertEqual(fn.call_count, 3)
 
@@ -56,10 +62,17 @@ class TestRunWithRetry(FrappeTestCase):
 			run_with_retry(fn, max_attempts=2)
 			mock_rb.assert_called_once()
 
+	def tearDown(self):
+		return super().tearDown()
+
 
 @patch.object(bounded_retry.time, "sleep", MagicMock())
 @patch.object(bounded_retry.frappe.db, "rollback", MagicMock())
-class TestRetryOnLockErrorDecorator(FrappeTestCase):
+class TestRetryOnLockErrorDecorator(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_decorator_retries_then_succeeds(self):
 		calls = {"n": 0}
 
@@ -81,9 +94,19 @@ class TestRetryOnLockErrorDecorator(FrappeTestCase):
 		with self.assertRaises(KeyError):
 			f()
 
+	def tearDown(self):
+		return super().tearDown()
 
-class TestRetryableSet(FrappeTestCase):
+
+class TestRetryableSet(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_only_1205_1213_are_retryable(self):
 		self.assertEqual(
 			set(RETRYABLE_LOCK_ERRORS), {QueryDeadlockError, QueryTimeoutError}
 		)
+
+	def tearDown(self):
+		return super().tearDown()

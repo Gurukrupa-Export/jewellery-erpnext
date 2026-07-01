@@ -7,7 +7,7 @@ Stock Entry (material_request.on_submit / materialize_transfer_se / _create_tran
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext import bounded_retry, serialize
 from jewellery_erpnext.jewellery_erpnext.doc_events import material_request as mr_mod
@@ -16,7 +16,11 @@ from jewellery_erpnext.jewellery_erpnext.serialize import LockTimeoutError
 _MR = "jewellery_erpnext.jewellery_erpnext.doc_events.material_request"
 
 
-class TestOnSubmitDefersTransferSE(FrappeTestCase):
+class TestOnSubmitDefersTransferSE(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(f"{_MR}.frappe.enqueue")
 	def test_enqueues_with_dedup_and_job_id(self, mock_enqueue):
 		mr = MagicMock(name="MR")
@@ -52,8 +56,15 @@ class TestOnSubmitDefersTransferSE(FrappeTestCase):
 		mr_mod.on_submit(mr)
 		mock_enqueue.assert_not_called()
 
+	def tearDown(self):
+		return super().tearDown()
 
-class TestMaterializeTransferSE(FrappeTestCase):
+
+class TestMaterializeTransferSE(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	def test_lock_timeout_is_swallowed(self):
 		@contextmanager
 		def _raise_lock(*a, **k):
@@ -86,12 +97,21 @@ class TestMaterializeTransferSE(FrappeTestCase):
 		self.assertEqual(args[2]["custom_transfer_se_state"], "Failed")
 		self.assertIn("boom", args[2]["custom_transfer_se_error"])
 
+	def tearDown(self):
+		return super().tearDown()
 
-class TestCreateTransferSEIdempotency(FrappeTestCase):
+
+class TestCreateTransferSEIdempotency(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(f"{_MR}.frappe.copy_doc")
 	@patch(f"{_MR}.frappe.db.sql")
 	@patch(f"{_MR}.frappe.get_doc")
-	def test_returns_when_transfer_se_already_set(self, mock_get_doc, mock_sql, mock_copy):
+	def test_returns_when_transfer_se_already_set(
+		self, mock_get_doc, mock_sql, mock_copy
+	):
 		mr = MagicMock()
 		mr.custom_reserve_se = "SE-RESERVE"
 		mr.get = MagicMock(return_value="SE-TRANSFER")  # already linked
@@ -105,7 +125,9 @@ class TestCreateTransferSEIdempotency(FrappeTestCase):
 	@patch(f"{_MR}.frappe.copy_doc")
 	@patch(f"{_MR}.frappe.db.sql")
 	@patch(f"{_MR}.frappe.get_doc")
-	def test_links_existing_submitted_transfer_se(self, mock_get_doc, mock_sql, mock_copy):
+	def test_links_existing_submitted_transfer_se(
+		self, mock_get_doc, mock_sql, mock_copy
+	):
 		mr = MagicMock()
 		mr.custom_reserve_se = "SE-RESERVE"
 		mr.get = MagicMock(return_value=None)
@@ -122,3 +144,6 @@ class TestCreateTransferSEIdempotency(FrappeTestCase):
 			"custom_transfer_se_state", "Done", update_modified=False
 		)
 		mock_copy.assert_not_called()
+
+	def tearDown(self):
+		return super().tearDown()
