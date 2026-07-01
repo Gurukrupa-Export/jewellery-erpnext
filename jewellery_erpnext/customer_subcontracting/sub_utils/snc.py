@@ -3,7 +3,7 @@ import hashlib
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
-from frappe.utils import cint, flt
+from frappe.utils import cint, flt, now_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	create_mr_wo_stock_entry,
@@ -432,15 +432,42 @@ def _find_available_owner_batch(owner_customer, item_code, required_qty):
 				),
 				3,
 			)
-			if available_qty >= flt(required_qty, 3):
-				return {
-					"batch_no": batch.name,
-					"item_code": item_code,
-					"warehouse": warehouse,
-					"available_qty": available_qty,
-					"qty": flt(required_qty, 3),
-				}
+			if available_qty < flt(required_qty, 3):
+				continue
+			# get_batch_qty also counts the legacy SLE.batch_no ledger and future-dated
+			# rows that the batch-wise negative-stock check at se.submit() ignores, so a
+			# warehouse can look available here yet go negative on transfer. Require the
+			# same consumable Serial-and-Batch-Entry balance the validator enforces before
+			# committing to this (batch, warehouse); otherwise keep searching.
+			consumable_qty = _consumable_batch_qty(batch.name, item_code, warehouse)
+			if consumable_qty < flt(required_qty, 3):
+				continue
+			return {
+				"batch_no": batch.name,
+				"item_code": item_code,
+				"warehouse": warehouse,
+				"available_qty": consumable_qty,
+				"qty": flt(required_qty, 3),
+			}
 	return None
+
+
+def _consumable_batch_qty(batch_no, item_code, warehouse):
+	"""Batch-wise qty the submit-time negative-stock check (erpnext BatchNoValuation)
+	will see: only submitted Serial and Batch Entry rows, no legacy SLE.batch_no ledger
+	and no future-dated rows. Mirrors get_batch_stock_before_date so the SNC picker never
+	selects a (batch, warehouse) that would go negative when the transfer is submitted."""
+	qty = frappe.db.sql(
+		"""
+		select coalesce(sum(qty), 0)
+		from `tabSerial and Batch Entry`
+		where batch_no = %s and item_code = %s and warehouse = %s
+			and docstatus = 1 and type_of_transaction in ('Inward', 'Outward')
+			and posting_datetime <= %s
+		""",
+		(batch_no, item_code, warehouse, now_datetime()),
+	)
+	return flt(qty[0][0], 3)
 
 
 def _get_raw_material_warehouses():
