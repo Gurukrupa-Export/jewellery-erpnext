@@ -1608,10 +1608,29 @@ let get_items = (frm) => {
                                         };
 
                                         if (empty_row) {
-                                            target_row = empty_row;
-                                            frappe.model.set_value("Purchase Order Item", target_row.name, "item_code", element.item_code)
-                                                .then(() => set_fields(target_row.name));
-                                        } else {
+												target_row = empty_row;
+												console.log("hiirr", element.rate);
+
+												frappe.model.set_value(
+													"Purchase Order Item",
+													target_row.name,
+													"item_code",
+													element.item_code
+												).then(() => {
+													return frappe.model.set_value(
+														"Purchase Order Item",
+														target_row.name,
+														"rate",
+														element.rate
+													);
+												}).then(() => { 
+													console.log(
+														"Rate after set:",
+														locals["Purchase Order Item"][target_row.name].rate
+													);
+													set_fields(target_row.name);
+												});
+											}  else {
                                             target_row = frm.add_child("items", {
                                                 item_code: element.item_code
                                             });
