@@ -643,7 +643,9 @@ def _process_metal_detail1(self, doc, ctx, cctx):
     for s in doc.metal_detail:
 
         s.quantity = round(s.quantity, metal_prec)
-
+        customer_metal_purity = _metal_purity_cache.get(
+                (self.customer, s.metal_type, s.metal_touch)
+            )
         if self.company == "Gurukrupa Export Private Limited" and ctx.customer_group == "Internal":
             if s.is_customer_item:
                 s.rate           = 0
@@ -682,9 +684,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
                 self.customer, s.metal_type, s.metal_touch,
                 self.gold_rate_with_gst, ctx.gold_gst_rate,
             )
-            customer_metal_purity = _metal_purity_cache.get(
-                (self.customer, s.metal_type, s.metal_touch)
-            )
+            
             if doc.metal_and_finding_weight < threshold:
                 making_rate        = sub_info.get("rate_per_pc", 0)
                 wastage_rate_value = sub_info.get("wastage_per_pcs", 0) / 100.0
@@ -1580,13 +1580,12 @@ def _reconcile_metal_weights(doc, ctx, target=None, so_self=None, cctx=None):
 	highest_row.quantity   = new_qty
 	highest_row.quantity_3 = round(flt(highest_row.quantity), 2)
 	highest_row.amount     = round(flt(highest_row.rate) * flt(highest_row.quantity), 2)
-	# Determine whether making rate is per-pc (flat) or per-gram (× qty)
-    # if doc.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal":
+
 	if doc.company == "KG GK Jewellers Private Limited" or ctx.customer_group == "Internal":
 		highest_row.making_amount = round(
-                flt(highest_row.making_rate) * flt(highest_row.quantity), 2
-            )
-    # =================================sb=====================================
+			flt(highest_row.making_rate) * flt(highest_row.quantity), 2
+		)
+
 	if so_self and cctx:
 		_, _, _threshold = _get_making_charge(
 			so_self, doc, highest_row.metal_touch, ctx, cctx

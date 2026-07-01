@@ -47,7 +47,18 @@ def before_validate(self, method):
 						if _so_gold_rate_changed(self.gold_rate, row_s.sales_order):
 							gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
 							for row in bom_doc.metal_detail:
-								customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
+								# customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
+								customer_metal_purity = frappe.db.sql(
+										"""
+										SELECT metal_purity
+										FROM `tabMetal Criteria`
+										WHERE parent = %s
+										AND metal_type = %s
+										AND metal_touch = %s
+										""",
+										(self.customer, row.metal_type, row.metal_touch),
+										as_dict=True,
+									)[0]["metal_purity"]
 								row.customer_metal_purity=customer_metal_purity
 								rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 								row.rate = round(rate,2)
@@ -55,7 +66,18 @@ def before_validate(self, method):
 								row.wastage_amount = row.amount * row.wastage_rate
 							bom_doc.total_metal_amount= sum(row.amount for row in bom_doc.metal_detail)
 							for row in bom_doc.finding_detail:
-								customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
+								# customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
+								customer_metal_purity = frappe.db.sql(
+										"""
+										SELECT metal_purity
+										FROM `tabMetal Criteria`
+										WHERE parent = %s
+										AND metal_type = %s
+										AND metal_touch = %s
+										""",
+										(self.customer, row.metal_type, row.metal_touch),
+										as_dict=True,
+									)[0]["metal_purity"]
 								row.customer_metal_purity=customer_metal_purity
 								rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
 								row.rate = round(rate,2)
