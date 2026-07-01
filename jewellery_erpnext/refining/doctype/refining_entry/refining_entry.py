@@ -476,7 +476,7 @@ class RefiningEntry(Document):
 		serial_no = frappe.db.get_value(
 			"Serial No",
 			{"name": barcode, "status": "Active"},
-			["name", "item_code", "warehouse"],
+			["name", "item_code", "warehouse", "custom_bom_no"],
 			as_dict=True,
 		)
 		if not serial_no:
@@ -508,16 +508,27 @@ class RefiningEntry(Document):
 					_("Serial Number {0} is already added.").format(serial_no.name)
 				)
 
-		# fetch BOM details for pure weight, gross weight etc.
-		bom_details = frappe.db.get_value(
-			"BOM",
-			{"item": serial_no.item_code, "is_active": 1},
-			[
-				"name",
-				"metal_and_finding_weight",
-				"gross_weight",
-			],
-			as_dict=True,
+		# Fetch BOM details for pure/gross/net weight from the serial's OWN as-built
+		# BOM (custom_bom_no). Each serialized piece has its own BOM capturing its
+		# actual weights; falling back to any active BOM for the design item would
+		# pull a different piece's weights and mismatch the serial. Only fall back to
+		# the item's active BOM when the serial has no BOM linked.
+		bom_no = serial_no.custom_bom_no or frappe.db.get_value(
+			"BOM", {"item": serial_no.item_code, "is_active": 1}, "name"
+		)
+		bom_details = (
+			frappe.db.get_value(
+				"BOM",
+				bom_no,
+				[
+					"name",
+					"metal_and_finding_weight",
+					"gross_weight",
+				],
+				as_dict=True,
+			)
+			if bom_no
+			else None
 		)
 
 		gross_weight = bom_details.gross_weight if bom_details else 0.0
@@ -570,24 +581,37 @@ class RefiningEntry(Document):
 				# Fetch materials consumed by this MWO from MOP Log.
 				# Per SOP, only the MWO's CURRENT operation is refined, so scope the
 				# MOP Log to that operation when it is known.
-				mop_filters = {
-					"manufacturing_work_order": mwo_row.manufacturing_work_order,
-					"is_cancelled": 0,
-				}
+				#
+				# Net the movements per (item, batch, warehouse) with SUM(qty_change)
+				# so issues/losses at this operation are subtracted, not ignored, and
+				# keep only groups with a positive net balance (HAVING). A per-row
+				# `qty_change > 0` filter would keep only receipts and double-count
+				# material later issued out, making the fetched quantity exceed the
+				# metal the MWO actually holds. Mirrors the canonical holding query in
+				# manufacturing_work_order.py.
+				conditions = [
+					"manufacturing_work_order = %(mwo)s",
+					"is_cancelled = 0",
+				]
+				params = {"mwo": mwo_row.manufacturing_work_order}
 				if mwo_row.get("manufacturing_operation"):
-					mop_filters[
-						"manufacturing_operation"
-					] = mwo_row.manufacturing_operation
-				mop_logs = frappe.get_all(
-					"MOP Log",
-					filters=mop_filters,
-					fields=[
-						"item_code",
-						"batch_no",
-						"to_warehouse as warehouse",
-						"qty_change as qty",
-						"manufacturing_operation",
-					],
+					conditions.append("manufacturing_operation = %(mop)s")
+					params["mop"] = mwo_row.manufacturing_operation
+				mop_logs = frappe.db.sql(
+					"""
+					SELECT
+						item_code,
+						batch_no,
+						to_warehouse as warehouse,
+						SUM(qty_change) as qty,
+						manufacturing_operation
+					FROM `tabMOP Log`
+					WHERE {where}
+					GROUP BY item_code, batch_no, to_warehouse, manufacturing_operation
+					HAVING SUM(qty_change) > 0
+					""".format(where=" AND ".join(conditions)),
+					params,
+					as_dict=True,
 				)
 				for log in mop_logs:
 					if flt(log.qty) > 0:
