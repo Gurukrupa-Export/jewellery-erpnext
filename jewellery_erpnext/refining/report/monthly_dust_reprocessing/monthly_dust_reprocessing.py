@@ -61,7 +61,7 @@ def get_data(filters):
 		SELECT
 			re.name AS refining_entry,
 			re.department,
-			re.dust_item,
+			re.loss_item AS dust_item,
 			re.actual_recovery AS recovery_quantity,
 			re.refining_loss AS remaining_scrap,
 			re.status

@@ -62,7 +62,8 @@ def get_data(filters):
 			re.expected_recovery,
 			re.actual_recovery
 		FROM `tabRefining Entry` re
-		LEFT JOIN `tabRefining Material Line` rml ON rml.parent = re.name
+		LEFT JOIN `tabRefining Material Line` rml
+			ON rml.parent = re.name AND IFNULL(rml.is_consumable, 0) = 0
 		WHERE {conditions}
 		GROUP BY re.name
 		ORDER BY re.posting_date DESC, re.name DESC

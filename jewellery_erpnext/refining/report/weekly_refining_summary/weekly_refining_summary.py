@@ -57,6 +57,7 @@ def get_data(filters):
 		LEFT JOIN (
 			SELECT parent, SUM(qty) AS material_refined
 			FROM `tabRefining Material Line`
+			WHERE IFNULL(is_consumable, 0) = 0
 			GROUP BY parent
 		) ms ON ms.parent = re.name
 		LEFT JOIN (

@@ -143,14 +143,26 @@ frappe.ui.form.on("Refining Entry", {
 
 	// --- Physical verification ---
 	physical_quantity(frm) {
-		if (frm.doc.refining_type === "Dust Refining") {
+		if (frm.doc.refining_type !== "Dust Refining") return;
+
+		const recompute = () => {
 			let diff = flt(frm.doc.physical_quantity) - flt(frm.doc.system_quantity);
 			frm.set_value("difference_quantity", diff);
-			if (diff > 0) {
-				frm.set_value("additional_dust_qty", diff);
-			} else {
-				frm.set_value("additional_dust_qty", 0);
-			}
+			frm.set_value("additional_dust_qty", diff > 0 ? diff : 0);
+		};
+
+		// Refinery Change Step 2: auto-fetch System Quantity from the Scrap warehouse
+		// for comparison once a physical quantity is entered.
+		if (frm.doc.warehouse || frm.doc.multiple_department) {
+			frm.call("fetch_dust_balance")
+				.then((r) => {
+					if (r && r.message !== undefined && r.message !== null) {
+						frm.set_value("system_quantity", r.message);
+					}
+				})
+				.finally(recompute);
+		} else {
+			recompute();
 		}
 	},
 
@@ -198,27 +210,30 @@ frappe.ui.form.on("Refining Entry", {
 
 		if (show_dust_btn) {
 			frm.add_custom_button(__("Fetch Dust Balance"), () => {
-				if (!frm.doc.warehouse) {
+				if (!frm.doc.warehouse && !frm.doc.multiple_department) {
 					frappe.msgprint(__("Please select a Source Warehouse first."));
 					return;
 				}
-				frappe.db
-					.get_value(
-						"Bin",
-						{
-							item_code: frm.doc.loss_item,
-							warehouse: frm.doc.warehouse,
-						},
-						"actual_qty"
-					)
-					.then((r) => {
-						let qty = r.message && r.message.actual_qty ? r.message.actual_qty : 0;
-						frm.set_value("system_quantity", qty);
+				frm.call("fetch_dust_balance").then((r) => {
+					if (r && r.message !== undefined && r.message !== null) {
+						frm.set_value("system_quantity", r.message);
 						frappe.show_alert({
-							message: __("System Qty updated to: {0}", [qty]),
+							message: __("System Qty updated to: {0}", [r.message]),
 							indicator: "green",
 						});
-					});
+					}
+				});
+			});
+
+			// Refinery Change Step 3: populate the Material Items table with all
+			// available scrap materials (grouped by item group) from the Scrap warehouse.
+			frm.add_custom_button(__("Fetch Scrap Materials"), () => {
+				if (frm.is_new()) {
+					frappe.msgprint(__("Please save the entry first."));
+					return;
+				}
+				frappe.show_alert(__("Fetching scrap materials..."));
+				frm.call("fetch_dust_materials").then(() => frm.reload_doc());
 			});
 		}
 
@@ -260,7 +275,15 @@ frappe.ui.form.on("Refining Entry", {
 												label: "Item Code",
 												in_list_view: 1,
 												read_only: 1,
-												columns: 3,
+												columns: 2,
+											},
+											{
+												fieldtype: "Data",
+												fieldname: "item_group",
+												label: "Item Group",
+												in_list_view: 1,
+												read_only: 1,
+												columns: 2,
 											},
 											{
 												fieldtype: "Data",
@@ -268,7 +291,15 @@ frappe.ui.form.on("Refining Entry", {
 												label: "Warehouse",
 												in_list_view: 1,
 												read_only: 1,
-												columns: 3,
+												columns: 2,
+											},
+											{
+												fieldtype: "Data",
+												fieldname: "batch_no",
+												label: "Batch",
+												in_list_view: 1,
+												read_only: 1,
+												columns: 2,
 											},
 											{
 												fieldtype: "Float",
@@ -296,7 +327,9 @@ frappe.ui.form.on("Refining Entry", {
 										selected.forEach((row) => {
 											let child = frm.add_child("material_items");
 											child.item_code = row.item_code;
+											child.item_group = row.item_group;
 											child.warehouse = row.warehouse;
+											child.batch_no = row.batch_no;
 											child.qty = row.qty;
 											child.uom = row.uom;
 											child.purity = row.purity;
@@ -467,14 +500,15 @@ frappe.ui.form.on("Refining Entry", {
 	},
 
 	render_raw_material_html(frm) {
-		if (frm.doc.refining_type === "Work Order Refining" && !frm.is_new()) {
+		const field = frm.get_field("raw_material_html");
+		if (!field) return;
+		const types = ["Work Order Refining", "Serial Number Refining", "Dust Refining", "Scrap Refining"];
+		if (!frm.is_new() && types.includes(frm.doc.refining_type)) {
 			frm.call("get_linked_stock_entries_html").then((r) => {
-				if (r.message) {
-					frm.get_field("raw_material_html").$wrapper.html(r.message);
-				}
+				field.$wrapper.html(r.message || "");
 			});
 		} else {
-			frm.get_field("raw_material_html").$wrapper.html("");
+			field.$wrapper.html("");
 		}
 	},
 });

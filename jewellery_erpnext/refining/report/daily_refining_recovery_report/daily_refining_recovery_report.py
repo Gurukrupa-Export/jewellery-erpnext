@@ -1,6 +1,8 @@
 import frappe
 from frappe import _
 
+from jewellery_erpnext.refining.report.utils import entry_conditions
+
 
 def execute(filters=None):
 	filters = frappe._dict(filters or {})
@@ -68,23 +70,25 @@ def get_columns():
 
 
 def get_data(filters):
-	conditions = get_conditions(filters)
+	# Use the shared daily date window (default last 1 day) like the other reports,
+	# so this report does not return every submitted entry when no date is given.
+	conditions, values = entry_conditions(filters, default_days=1)
 
 	entries = frappe.db.sql(
 		f"""
 		SELECT
-			name as refining_entry,
-			refining_type,
-			department,
-			status,
-			gross_pure_weight,
-			refined_fine_weight,
-			refining_loss
-		FROM `tabRefining Entry`
-		WHERE docstatus = 1 {conditions}
-		ORDER BY creation DESC
-	""",
-		filters,
+			re.name as refining_entry,
+			re.refining_type,
+			re.department,
+			re.status,
+			re.gross_pure_weight,
+			re.refined_fine_weight,
+			re.refining_loss
+		FROM `tabRefining Entry` re
+		WHERE {conditions}
+		ORDER BY re.creation DESC
+		""",
+		values,
 		as_dict=1,
 	)
 
@@ -97,18 +101,6 @@ def get_data(filters):
 			entry.recovery_efficiency = 0.0
 
 	return entries
-
-
-def get_conditions(filters):
-	filters = frappe._dict(filters or {})
-	conditions = ""
-	if filters.get("posting_date"):
-		conditions += " AND posting_date = %(posting_date)s"
-	if filters.get("refining_type"):
-		conditions += " AND refining_type = %(refining_type)s"
-	if filters.get("department"):
-		conditions += " AND department = %(department)s"
-	return conditions
 
 
 def get_chart(data):
