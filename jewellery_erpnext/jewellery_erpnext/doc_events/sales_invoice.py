@@ -182,7 +182,7 @@ def on_submit(self,method):
 						certification_si.save()
 
 def set_gst_details(self):
-    if self.sales_type not in ("Finished Goods", "Subcontracting"):
+    if self.sales_type not in ("Finished Goods", "Subcontracting","Branch Sales"):
         return
 
     customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
@@ -197,6 +197,9 @@ def set_gst_details(self):
         "Finished Goods": {
             "Gurukrupa Export Private Limited": "GST 3% - GEPL",
             "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
+        },
+		"Branch Sales": {
+        "Gurukrupa Export Private Limited": "GST 3% - GEPL"
         },
         "Subcontracting": {
             "Gurukrupa Export Private Limited": "GST 5% - GEPL",
@@ -690,7 +693,7 @@ def update_einvoice_items(self, invoice_data, payment_terms_data,allowed_item_ty
 	for row in invoice_data:
 		if row not in allowed_item_types:
 			continue
-		if invoice_data[row]["amount"] > 0:
+		if invoice_data[row]["amount"] >= 0:
 			if payment_terms_data.get(row):
 				payment_terms_data[row] += round(invoice_data[row]["amount"], precision)
 			else:
