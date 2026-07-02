@@ -285,7 +285,7 @@ frappe.ui.form.on("Refining Entry", {
 									fieldtype: "HTML",
 									fieldname: "instruction",
 									options:
-										'<div class="text-muted mb-2">Enter the exact Physical Qty you want to refine. Leave 0 to skip.</div>',
+										'<div class="text-muted mb-2">Tick the rows you want to refine. Physical Qty is pre-filled with the full available balance — adjust it to refine less.</div>',
 								},
 								{
 									fieldname: "scrap_items",
@@ -351,7 +351,21 @@ frappe.ui.form.on("Refining Entry", {
 							],
 							primary_action_label: "Add to Table",
 							primary_action: function (values) {
-								let selected = values.scrap_items.filter((d) => d.qty > 0);
+								// Only add the rows the operator actually TICKED. Physical Qty is
+								// pre-filled on every row, so filtering by qty>0 alone (the old
+								// behaviour) added every fetched row regardless of the checkboxes.
+								let checked = d.fields_dict.scrap_items.grid.get_selected_children();
+								if (!checked.length) {
+									frappe.msgprint(__("Please tick the rows you want to add."));
+									return;
+								}
+								let selected = checked.filter((row) => row.qty > 0);
+								if (selected.length === 0) {
+									frappe.msgprint(
+										__("Set a Physical Qty greater than 0 on the ticked rows.")
+									);
+									return;
+								}
 								if (selected.length > 0) {
 									selected.forEach((row) => {
 										let existing = (frm.doc.material_items || []).find(
