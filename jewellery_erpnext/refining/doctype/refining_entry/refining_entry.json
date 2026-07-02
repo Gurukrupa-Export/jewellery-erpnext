@@ -295,7 +295,6 @@
    "options": "Department Operation"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining'",
    "fieldname": "loss_item",
    "fieldtype": "Link",
    "label": "Loss Item",

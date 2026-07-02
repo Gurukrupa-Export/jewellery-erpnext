@@ -4378,8 +4378,7 @@ def create_mr_wo_stock_entry(
 	- Validates available_qty = reserved_qty - delivered_qty (for active SRE)
 	  on each requested row, with float-precision tolerance.
 	- Creates a single Stock Entry of type ``stock_entry_type`` (default
-	  "Material Receive (WORK ORDER)"; the scrap flow passes
-	  "Material Transfer (WORK ORDER)") stamped with custom_request_id for
+	  "Material Receive (WORK ORDER)") stamped with custom_request_id for
 	  double-submit idempotency.
 	- After SE submit, cancels (full) or cancels+recreates (partial) each SRE.
 	- Relies on doc_events/stock_entry.sync_mop_log_for_stock_entry to bridge
@@ -4815,69 +4814,30 @@ def create_mr_wo_stock_entry(
 	}
 
 
-def _get_department_scrap_warehouse(department):
-	"""Resolve the department's Scrap-type warehouse (the scrap sink used across
-	the app — Gemstone Conversion, Employee IR loss, Refining). Throws an
-	actionable error when the department has none, mirroring
-	gemstone_conversion.get_scrap_warehouse.
-	"""
-	scrap_warehouse = frappe.db.get_value(
-		"Warehouse",
-		{"department": department, "warehouse_type": "Scrap", "disabled": 0},
-		"name",
-	)
-	if not scrap_warehouse:
-		frappe.throw(
-			_(
-				"No Scrap Warehouse found for Department({0}). Configure a Scrap "
-				"Warehouse for this department."
-			).format(department)
-		)
-	return scrap_warehouse
-
-
 @frappe.whitelist()
 def get_make_scrap_entry_rows(manufacturing_operation):
 	"""Auto-fill rows for the Create Scrap Item dialog.
 
-	Identical to Make Receive Entry's row builder, but the target warehouse is
-	the department's Scrap warehouse (not Raw Material) so the dialog previews
-	where the scrapped material will land.
+	Create Scrap Item mirrors Make Receive Entry exactly — same source (the SRE
+	reservation warehouse) and same target (the department Raw Material warehouse);
+	the scrapped material is denoted the same way Make Receive Entry denotes its
+	received material. (Previously this targeted the department Scrap warehouse, which
+	diverged from Make Receive Entry.)
 	"""
-	department = frappe.db.get_value(
-		"Manufacturing Operation", manufacturing_operation, "department"
-	)
-	scrap_warehouse = _get_department_scrap_warehouse(department)
-	return get_make_receive_entry_rows(
-		manufacturing_operation, target_warehouse=scrap_warehouse
-	)
+	return get_make_receive_entry_rows(manufacturing_operation)
 
 
 @frappe.whitelist()
 def create_scrap_wo_stock_entry(se_data, request_id=None):
 	"""Create Scrap Item creator.
 
-	Reuses the Make Receive Entry machinery (SRE validation, MOP caps,
-	idempotency, SRE cancel/recreate) but moves the operation's materials into
-	the department Scrap warehouse via a "Material Receive (WORK ORDER)" Stock
-	Entry. Item codes are preserved; segregation into the Scrap warehouse is
-	what keeps the stock out of manufacturing/RM pickers.
+	Mirrors Make Receive Entry: reuses the same machinery (SRE validation, MOP caps,
+	idempotency, SRE cancel/recreate) and lands the operation's materials in the
+	department Raw Material warehouse via a "Material Receive (WORK ORDER)" Stock
+	Entry — identical source/target warehouse allocation to Make Receive Entry.
+	See get_make_scrap_entry_rows.
 	"""
-	if isinstance(se_data, str):
-		se_data = json.loads(se_data)
-
-	mo_name = se_data.get("manufacturing_operation")
-	if not mo_name:
-		frappe.throw(_("Manufacturing Operation is required"))
-
-	department = frappe.db.get_value("Manufacturing Operation", mo_name, "department")
-	scrap_warehouse = _get_department_scrap_warehouse(department)
-	return create_mr_wo_stock_entry(
-		se_data,
-		request_id=request_id,
-		target_warehouse=scrap_warehouse,
-		stock_entry_type="Material Receive (WORK ORDER)",
-	)
+	return create_mr_wo_stock_entry(se_data, request_id=request_id)
 
 
 def update_new_mop_wtg(
