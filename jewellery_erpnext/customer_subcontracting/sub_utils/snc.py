@@ -76,7 +76,9 @@ def create_snc(mwo):
 
 	created = {"make_receive": None, "conversions": [], "transfers": []}
 	for row in original_rows:
-		required_batch = find_owner_batch(owner_customer, row["item_code"], row["qty"])
+		required_batch = find_owner_batch(
+			owner_customer, row["item_code"], row["qty"], company=mwo.company
+		)
 		if required_batch:
 			target_warehouse = required_batch["warehouse"]
 			make_receive = trigger_make_receive(mwo, target_warehouse)
@@ -97,6 +99,7 @@ def create_snc(mwo):
 			row["item_code"],
 			row["custom_pure_qty"],
 			search_different_purity=True,
+			company=mwo.company,
 		)
 		if not source_batch:
 			frappe.throw(
@@ -151,16 +154,22 @@ def _owner_label(owner_customer):
 	return "Customer {0}".format(owner_customer) if owner_customer else "Regular Stock"
 
 
-def find_owner_batch(owner_customer, item_code, required_qty):
-	return find_owner_rm_warehouse(owner_customer, item_code, required_qty)
+def find_owner_batch(owner_customer, item_code, required_qty, company=None):
+	return find_owner_rm_warehouse(
+		owner_customer, item_code, required_qty, company=company
+	)
 
 
 def find_owner_rm_warehouse(
-	owner_customer, item_code, required_qty_or_pure_qty, search_different_purity=False
+	owner_customer,
+	item_code,
+	required_qty_or_pure_qty,
+	search_different_purity=False,
+	company=None,
 ):
 	if not search_different_purity:
 		return _find_available_owner_batch(
-			owner_customer, item_code, required_qty_or_pure_qty
+			owner_customer, item_code, required_qty_or_pure_qty, company
 		)
 
 	required_purity = _get_purity_label(item_code)
@@ -173,7 +182,7 @@ def find_owner_rm_warehouse(
 				continue
 			source_qty = flt(flt(required_qty_or_pure_qty) / (source_purity / 100), 3)
 			batch = _find_available_owner_batch(
-				owner_customer, candidate_item, source_qty
+				owner_customer, candidate_item, source_qty, company
 			)
 			if batch:
 				batch["qty"] = source_qty
@@ -404,7 +413,7 @@ def _get_original_gold_rows(transfer):
 	return rows
 
 
-def _find_available_owner_batch(owner_customer, item_code, required_qty):
+def _find_available_owner_batch(owner_customer, item_code, required_qty, company=None):
 	if owner_customer:
 		batch_filters = {
 			"item": item_code,
@@ -420,7 +429,7 @@ def _find_available_owner_batch(owner_customer, item_code, required_qty):
 	batches = frappe.get_all(
 		"Batch", filters=batch_filters, pluck="name", order_by="creation asc"
 	)
-	warehouses = _get_raw_material_warehouses()
+	warehouses = _get_raw_material_warehouses(company)
 	if not batches or not warehouses:
 		return None
 
@@ -513,10 +522,16 @@ def _submit_consuming_stock_entry(se):
 	se.submit()
 
 
-def _get_raw_material_warehouses():
+def _get_raw_material_warehouses(company=None):
+	filters = {"warehouse_type": "Raw Material", "disabled": 0}
+	if company:
+		# Scope to the SNC's company; otherwise a batch found in another company's
+		# Raw Material warehouse would build a Stock Entry stamped with this company
+		# and fail validate_warehouse_company at submit.
+		filters["company"] = company
 	return frappe.get_all(
 		"Warehouse",
-		filters={"warehouse_type": "Raw Material", "disabled": 0},
+		filters=filters,
 		pluck="name",
 	)
 
