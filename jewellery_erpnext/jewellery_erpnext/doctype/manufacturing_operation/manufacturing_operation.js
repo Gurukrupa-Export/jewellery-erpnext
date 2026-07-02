@@ -10,6 +10,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 			frm.set_df_property("employee_source_table", "hidden", 1);
 		}
 		set_html(frm);
+
 		if (frm.doc.is_last_operation && frm.doc.for_fg && ["Not Started", "WIP"].includes(frm.doc.status)) {
 			frm.add_custom_button(__("Finish"), async () => {
 				await frappe.call({
@@ -304,353 +305,381 @@ frappe.ui.form.on("Manufacturing Operation", {
 	},
 	setup_buttons: (frm) => {
 		frm.add_custom_button(__("Make Receive Entry"), () => {
-			frappe.call({
-				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_make_receive_entry_rows",
-				args: { manufacturing_operation: frm.doc.name },
-				freeze: true,
-				freeze_message: __("Loading Stock Reservation Entries..."),
-				callback: (r) => {
-					const msg = (r && r.message) || {};
-					const rows = Array.isArray(msg) ? msg : msg.rows || [];
-					const skipped = Array.isArray(msg) ? [] : msg.skipped || [];
-					const active_sre_count = Array.isArray(msg) ? rows.length : msg.active_sre_count || 0;
+			open_wo_transfer_dialog(frm, {
+				fetch_method:
+					"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_make_receive_entry_rows",
+				create_method:
+					"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.create_mr_wo_stock_entry",
+				no_sre_title: __("Make Receive Entry"),
+				dialog_title: __("Create Material Receive (WORK ORDER)"),
+				primary_action_label: __("Create Material Receive Entry"),
+				create_freeze_message: __("Creating Material Receive Entry..."),
+				created_title: __("Material Receive Stock Entry Created"),
+				existing_title: __("Existing Material Receive Stock Entry"),
+				result_label: __("Material Receive Entry: {0}"),
+			});
+		}).addClass("btn-primary");
 
-					if (!rows.length) {
-						if (active_sre_count === 0) {
-							frappe.msgprint(
-								__(
-									"No active Stock Reservation Entries found for this Manufacturing Work Order."
-								)
-							);
-						} else {
-							const lines = (skipped || []).map((s) =>
-								__("• SRE {0} — Item {1}{2}: SRE remaining {3}, MOP available {4}", [
-									s.sre,
-									s.item_code,
-									s.batch_no ? ` / Batch ${s.batch_no}` : "",
-									s.sre_remaining,
-									s.mop_available_qty,
-								])
-							);
-							frappe.msgprint({
-								title: __("Make Receive Entry"),
-								indicator: "orange",
-								message:
-									__(
-										"Stock Reservation Entries exist, but no receivable MOP balance was found. Please check MOP Log balance for this Manufacturing Operation."
-									) + (lines.length ? "<br><br>" + lines.join("<br>") : ""),
-							});
-						}
-						return;
-					}
-
-					// Per-dialog request id — stamped on the resulting Stock Entry to
-					// short-circuit double-clicks and resubmits server-side.
-					// Frappe JS exposes `get_random(N)`, not `get_random_string`.
-					const request_id = frappe.utils.get_random(36);
-
-					// Spec field names: reserved_* / mop_available_* / available_to_receive_*.
-					// Server endpoint emits these directly; the JS just forwards them
-					// into the dialog and surfaces `qty_to_receive` / `pcs_to_receive`
-					// as the editable inputs.
-					const dialog_data = rows.map((e) => ({
-						stock_reservation_entry: e.stock_reservation_entry,
-						stock_reservation_entry_detail: e.stock_reservation_entry_detail,
-						item_code: e.item_code,
-						s_warehouse: e.s_warehouse,
-						t_warehouse: e.t_warehouse,
-						batch_no: e.batch_no,
-						reserved_qty: e.reserved_qty,
-						reserved_pcs: e.reserved_pcs || 0,
-						delivered_qty: e.delivered_qty,
-						already_received_qty: e.already_received_qty,
-						already_received_pcs: e.already_received_pcs || 0,
-						mop_available_qty: e.mop_available_qty || 0,
-						mop_available_pcs: e.mop_available_pcs || 0,
-						available_to_receive_qty: e.available_to_receive_qty,
-						available_to_receive_pcs: e.available_to_receive_pcs || 0,
-						is_pcs_item: e.is_pcs_item ? 1 : 0,
-						mop_log_reference: e.mop_log_reference || "",
-						warning: e.warning || "",
-						qty_to_receive: 0,
-						pcs_to_receive: 0,
-						stock_uom: e.stock_uom,
-					}));
-
-					const d = new frappe.ui.Dialog({
-						title: __("Create Material Receive (WORK ORDER)"),
-						size: "extra-large",
-						fields: [
-							{
-								fieldname: "receive_entries",
-								label: __("Receive Entry Details"),
-								fieldtype: "Table",
-								cannot_add_rows: 1,
-								cannot_delete_rows: 1,
-								data: dialog_data,
-								get_data: () => dialog_data,
-								fields: [
-									{
-										label: __("SRE"),
-										fieldtype: "Link",
-										fieldname: "stock_reservation_entry",
-										options: "Stock Reservation Entry",
-										read_only: 1,
-									},
-									{
-										label: __("Item Code"),
-										fieldtype: "Link",
-										fieldname: "item_code",
-										options: "Item",
-										in_list_view: 1,
-										read_only: 1,
-									},
-									{
-										label: __("Source Warehouse"),
-										fieldtype: "Link",
-										fieldname: "s_warehouse",
-										options: "Warehouse",
-										read_only: 1,
-									},
-									{
-										label: __("Target Warehouse"),
-										fieldtype: "Link",
-										fieldname: "t_warehouse",
-										options: "Warehouse",
-										read_only: 1,
-									},
-									{
-										label: __("Batch No"),
-										fieldtype: "Link",
-										fieldname: "batch_no",
-										options: "Batch",
-										in_list_view: 1,
-										read_only: 1,
-									},
-									{
-										label: __("Reserved Qty"),
-										fieldtype: "Float",
-										fieldname: "reserved_qty",
-										read_only: 1,
-									},
-									{
-										label: __("Reserved PCS"),
-										fieldtype: "Float",
-										fieldname: "reserved_pcs",
-										read_only: 1,
-									},
-									{
-										label: __("Delivered Qty"),
-										fieldtype: "Float",
-										fieldname: "delivered_qty",
-										read_only: 1,
-									},
-									{
-										label: __("MOP Available Qty"),
-										fieldtype: "Float",
-										fieldname: "mop_available_qty",
-										in_list_view: 0,
-										read_only: 1,
-									},
-									{
-										label: __("MOP Available PCS"),
-										fieldtype: "Float",
-										fieldname: "mop_available_pcs",
-										// in_list_view: 1,
-										read_only: 1,
-									},
-									{
-										label: __("Already Received"),
-										fieldtype: "Float",
-										fieldname: "already_received_qty",
-										read_only: 1,
-									},
-									{
-										label: __("Already Received PCS"),
-										fieldtype: "Float",
-										fieldname: "already_received_pcs",
-										read_only: 1,
-									},
-									{
-										label: __("Available to Receive Qty"),
-										fieldtype: "Float",
-										fieldname: "available_to_receive_qty",
-										in_list_view: 1,
-										read_only: 1,
-									},
-									{
-										label: __("Available to Receive PCS"),
-										fieldtype: "Float",
-										in_list_view: 1,
-										fieldname: "available_to_receive_pcs",
-										read_only: 1,
-									},
-									{
-										label: __("Qty to Receive"),
-										fieldtype: "Float",
-										fieldname: "qty_to_receive",
-										in_list_view: 1,
-										default: 0,
-									},
-									{
-										label: __("PCS to Receive"),
-										fieldtype: "Float",
-										fieldname: "pcs_to_receive",
-										in_list_view: 1,
-										default: 0,
-										// Read-only for non-D/G rows. Frappe Table fields
-										// don't support per-row hidden cells, so we use
-										// read_only_depends_on; server still force-zeros
-										// PCS for non-D/G regardless of dialog value.
-										// read_only_depends_on: "eval:!doc.is_pcs_item",
-									},
-									{
-										label: __("PCS Item"),
-										fieldtype: "Check",
-										fieldname: "is_pcs_item",
-									},
-									{
-										label: __("MOP Log Reference"),
-										fieldtype: "Link",
-										fieldname: "mop_log_reference",
-										options: "MOP Log",
-										read_only: 1,
-									},
-									{
-										label: __("Warning"),
-										fieldtype: "Small Text",
-										fieldname: "warning",
-										in_list_view: 0,
-										read_only: 1,
-									},
-									{
-										label: __("Stock UOM"),
-										fieldtype: "Link",
-										fieldname: "stock_uom",
-										options: "UOM",
-										read_only: 1,
-									},
-								],
-							},
-						],
-						primary_action_label: __("Create Material Receive Entry"),
-						primary_action: (r_) => {
-							const receive_items = [];
-							r_.receive_entries.forEach((e) => {
-								// Qty must be capped by min(SRE remaining, MOP balance);
-								// the server endpoint surfaces that as available_to_receive_qty.
-								if (e.qty_to_receive > e.available_to_receive_qty) {
-									frappe.throw(
-										__(
-											"Row <b>{0}</b> Item <b>{1}</b>: Qty to Receive <b>{2}</b> exceeds Available to Receive Qty <b>{3}</b>",
-											[e.idx, e.item_code, e.qty_to_receive, e.available_to_receive_qty]
-										)
-									);
-								}
-								// PCS validation: D/G rows must respect Available to
-								// Receive PCS; non-D/G rows are force-zeroed regardless
-								// of dialog value. Server revalidates either way.
-								let pcs_to_receive = 0;
-								if (e.is_pcs_item) {
-									pcs_to_receive = e.pcs_to_receive || 0;
-									if (pcs_to_receive < 0) {
-										frappe.throw(
-											__(
-												"Row <b>{0}</b> Item <b>{1}</b>: PCS to Receive must be >= 0",
-												[e.idx, e.item_code]
-											)
-										);
-									}
-									if (
-										e.available_to_receive_pcs &&
-										pcs_to_receive > e.available_to_receive_pcs
-									) {
-										frappe.throw(
-											__(
-												"Row <b>{0}</b> Item <b>{1}</b>: PCS to Receive <b>{2}</b> exceeds Available to Receive PCS <b>{3}</b>",
-												[
-													e.idx,
-													e.item_code,
-													pcs_to_receive,
-													e.available_to_receive_pcs,
-												]
-											)
-										);
-									}
-								}
-								if (e.qty_to_receive && e.qty_to_receive > 0) {
-									receive_items.push({
-										idx: e.idx,
-										stock_reservation_entry: e.stock_reservation_entry,
-										stock_reservation_entry_detail: e.stock_reservation_entry_detail,
-										item_code: e.item_code,
-										s_warehouse: e.s_warehouse,
-										// Server still consumes `qty` and `pcs` keys for
-										// receive_items — the dialog field rename is
-										// cosmetic only.
-										qty: e.qty_to_receive,
-										pcs: pcs_to_receive,
-										batch_no: e.batch_no,
-									});
-								}
-							});
-
-							if (!receive_items.length) {
-								frappe.msgprint(
-									__("No Receive Items selected for Material Receive Stock Entry")
-								);
-								return;
-							}
-
-							d.disable_primary_action();
-							frappe.call({
-								method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.create_mr_wo_stock_entry",
-								args: {
-									se_data: {
-										manufacturing_work_order: frm.doc.manufacturing_work_order,
-										manufacturing_operation: frm.doc.name,
-										manufacturing_order: frm.doc.manufacturing_order,
-										department: frm.doc.department,
-										receive_items: receive_items,
-									},
-									request_id: request_id,
-								},
-								freeze: true,
-								freeze_message: __("Creating Material Receive Entry..."),
-								callback: (resp) => {
-									if (resp && resp.message) {
-										const se_link = frappe.utils.get_form_link(
-											resp.message.doctype,
-											resp.message.docname,
-											true
-										);
-										const title = resp.message.idempotent
-											? __("Existing Material Receive Stock Entry")
-											: __("Material Receive Stock Entry Created");
-										frappe.msgprint({
-											message: __("Material Receive Entry: {0}", [se_link]),
-											title: title,
-											indicator: "green",
-										});
-										frm.reload_doc();
-									}
-								},
-								error: () => {
-									d.enable_primary_action();
-								},
-							});
-
-							d.hide();
-						},
-					});
-
-					d.get_field("receive_entries").grid.wrapper.find(".grid-row-check").hide();
-					d.show();
-				},
+		// Create Scrap Item: mirrors Make Receive Entry exactly — same auto-fill +
+		// machinery, same source (SRE reservation warehouse) and target (department
+		// Raw Material warehouse), via a "Material Receive (WORK ORDER)" Stock Entry.
+		frm.add_custom_button(__("Create Scrap Item"), () => {
+			open_wo_transfer_dialog(frm, {
+				fetch_method:
+					"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_make_scrap_entry_rows",
+				create_method:
+					"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.create_scrap_wo_stock_entry",
+				no_sre_title: __("Create Scrap Item"),
+				dialog_title: __("Create Scrap Item — Material Receive (WORK ORDER)"),
+				primary_action_label: __("Create Scrap Item"),
+				create_freeze_message: __("Creating Scrap Item Transfer..."),
+				created_title: __("Scrap Item Stock Entry Created"),
+				existing_title: __("Existing Scrap Item Stock Entry"),
+				result_label: __("Scrap Item Entry: {0}"),
 			});
 		}).addClass("btn-primary");
 	},
 });
+
+// Shared dialog body for the "Make Receive Entry" and "Create Scrap Item"
+// buttons. Both fetch auto-filled rows from the MWO's Stock Reservation
+// Entries, render the same editable table, and POST the selected rows to a
+// whitelisted creator. Only the endpoints, warehouse target, and labels differ
+// (passed via `opts`).
+function open_wo_transfer_dialog(frm, opts) {
+	frappe.call({
+		method: opts.fetch_method,
+		args: { manufacturing_operation: frm.doc.name },
+		freeze: true,
+		freeze_message: __("Loading Stock Reservation Entries..."),
+		callback: (r) => {
+			const msg = (r && r.message) || {};
+			const rows = Array.isArray(msg) ? msg : msg.rows || [];
+			const skipped = Array.isArray(msg) ? [] : msg.skipped || [];
+			const active_sre_count = Array.isArray(msg) ? rows.length : msg.active_sre_count || 0;
+
+			if (!rows.length) {
+				if (active_sre_count === 0) {
+					frappe.msgprint(
+						__("No active Stock Reservation Entries found for this Manufacturing Work Order.")
+					);
+				} else {
+					const lines = (skipped || []).map((s) =>
+						__("• SRE {0} — Item {1}{2}: SRE remaining {3}, MOP available {4}", [
+							s.sre,
+							s.item_code,
+							s.batch_no ? ` / Batch ${s.batch_no}` : "",
+							s.sre_remaining,
+							s.mop_available_qty,
+						])
+					);
+					frappe.msgprint({
+						title: opts.no_sre_title,
+						indicator: "orange",
+						message:
+							__(
+								"Stock Reservation Entries exist, but no receivable MOP balance was found. Please check MOP Log balance for this Manufacturing Operation."
+							) + (lines.length ? "<br><br>" + lines.join("<br>") : ""),
+					});
+				}
+				return;
+			}
+
+			// Per-dialog request id — stamped on the resulting Stock Entry to
+			// short-circuit double-clicks and resubmits server-side.
+			// Frappe JS exposes `get_random(N)`, not `get_random_string`.
+			const request_id = frappe.utils.get_random(36);
+
+			// Spec field names: reserved_* / mop_available_* / available_to_receive_*.
+			// Server endpoint emits these directly; the JS just forwards them
+			// into the dialog and surfaces `qty_to_receive` / `pcs_to_receive`
+			// as the editable inputs.
+			const dialog_data = rows.map((e) => ({
+				stock_reservation_entry: e.stock_reservation_entry,
+				stock_reservation_entry_detail: e.stock_reservation_entry_detail,
+				item_code: e.item_code,
+				s_warehouse: e.s_warehouse,
+				t_warehouse: e.t_warehouse,
+				batch_no: e.batch_no,
+				reserved_qty: e.reserved_qty,
+				reserved_pcs: e.reserved_pcs || 0,
+				delivered_qty: e.delivered_qty,
+				already_received_qty: e.already_received_qty,
+				already_received_pcs: e.already_received_pcs || 0,
+				mop_available_qty: e.mop_available_qty || 0,
+				mop_available_pcs: e.mop_available_pcs || 0,
+				available_to_receive_qty: e.available_to_receive_qty,
+				available_to_receive_pcs: e.available_to_receive_pcs || 0,
+				is_pcs_item: e.is_pcs_item ? 1 : 0,
+				mop_log_reference: e.mop_log_reference || "",
+				warning: e.warning || "",
+				qty_to_receive: 0,
+				pcs_to_receive: 0,
+				stock_uom: e.stock_uom,
+			}));
+
+			const d = new frappe.ui.Dialog({
+				title: opts.dialog_title,
+				size: "extra-large",
+				fields: [
+					{
+						fieldname: "receive_entries",
+						label: __("Receive Entry Details"),
+						fieldtype: "Table",
+						cannot_add_rows: 1,
+						cannot_delete_rows: 1,
+						data: dialog_data,
+						get_data: () => dialog_data,
+						fields: [
+							{
+								label: __("SRE"),
+								fieldtype: "Link",
+								fieldname: "stock_reservation_entry",
+								options: "Stock Reservation Entry",
+								read_only: 1,
+							},
+							{
+								label: __("Item Code"),
+								fieldtype: "Link",
+								fieldname: "item_code",
+								options: "Item",
+								in_list_view: 1,
+								read_only: 1,
+							},
+							{
+								label: __("Source Warehouse"),
+								fieldtype: "Link",
+								fieldname: "s_warehouse",
+								options: "Warehouse",
+								read_only: 1,
+							},
+							{
+								label: __("Target Warehouse"),
+								fieldtype: "Link",
+								fieldname: "t_warehouse",
+								options: "Warehouse",
+								read_only: 1,
+							},
+							{
+								label: __("Batch No"),
+								fieldtype: "Link",
+								fieldname: "batch_no",
+								options: "Batch",
+								in_list_view: 1,
+								read_only: 1,
+							},
+							{
+								label: __("Reserved Qty"),
+								fieldtype: "Float",
+								fieldname: "reserved_qty",
+								read_only: 1,
+							},
+							{
+								label: __("Reserved PCS"),
+								fieldtype: "Float",
+								fieldname: "reserved_pcs",
+								read_only: 1,
+							},
+							{
+								label: __("Delivered Qty"),
+								fieldtype: "Float",
+								fieldname: "delivered_qty",
+								read_only: 1,
+							},
+							{
+								label: __("MOP Available Qty"),
+								fieldtype: "Float",
+								fieldname: "mop_available_qty",
+								in_list_view: 0,
+								read_only: 1,
+							},
+							{
+								label: __("MOP Available PCS"),
+								fieldtype: "Float",
+								fieldname: "mop_available_pcs",
+								// in_list_view: 1,
+								read_only: 1,
+							},
+							{
+								label: __("Already Received"),
+								fieldtype: "Float",
+								fieldname: "already_received_qty",
+								read_only: 1,
+							},
+							{
+								label: __("Already Received PCS"),
+								fieldtype: "Float",
+								fieldname: "already_received_pcs",
+								read_only: 1,
+							},
+							{
+								label: __("Available to Receive Qty"),
+								fieldtype: "Float",
+								fieldname: "available_to_receive_qty",
+								in_list_view: 1,
+								read_only: 1,
+							},
+							{
+								label: __("Available to Receive PCS"),
+								fieldtype: "Float",
+								in_list_view: 1,
+								fieldname: "available_to_receive_pcs",
+								read_only: 1,
+							},
+							{
+								label: __("Qty to Receive"),
+								fieldtype: "Float",
+								fieldname: "qty_to_receive",
+								in_list_view: 1,
+								default: 0,
+							},
+							{
+								label: __("PCS to Receive"),
+								fieldtype: "Float",
+								fieldname: "pcs_to_receive",
+								in_list_view: 1,
+								default: 0,
+								// Read-only for non-D/G rows. Frappe Table fields
+								// don't support per-row hidden cells, so we use
+								// read_only_depends_on; server still force-zeros
+								// PCS for non-D/G regardless of dialog value.
+								// read_only_depends_on: "eval:!doc.is_pcs_item",
+							},
+							{
+								label: __("PCS Item"),
+								fieldtype: "Check",
+								fieldname: "is_pcs_item",
+							},
+							{
+								label: __("MOP Log Reference"),
+								fieldtype: "Link",
+								fieldname: "mop_log_reference",
+								options: "MOP Log",
+								read_only: 1,
+							},
+							{
+								label: __("Warning"),
+								fieldtype: "Small Text",
+								fieldname: "warning",
+								in_list_view: 0,
+								read_only: 1,
+							},
+							{
+								label: __("Stock UOM"),
+								fieldtype: "Link",
+								fieldname: "stock_uom",
+								options: "UOM",
+								read_only: 1,
+							},
+						],
+					},
+				],
+				primary_action_label: opts.primary_action_label,
+				primary_action: (r_) => {
+					const receive_items = [];
+					r_.receive_entries.forEach((e) => {
+						// Qty must be capped by min(SRE remaining, MOP balance);
+						// the server endpoint surfaces that as available_to_receive_qty.
+						if (e.qty_to_receive > e.available_to_receive_qty) {
+							frappe.throw(
+								__(
+									"Row <b>{0}</b> Item <b>{1}</b>: Qty to Receive <b>{2}</b> exceeds Available to Receive Qty <b>{3}</b>",
+									[e.idx, e.item_code, e.qty_to_receive, e.available_to_receive_qty]
+								)
+							);
+						}
+						// PCS validation: D/G rows must respect Available to
+						// Receive PCS; non-D/G rows are force-zeroed regardless
+						// of dialog value. Server revalidates either way.
+						let pcs_to_receive = 0;
+						if (e.is_pcs_item) {
+							pcs_to_receive = e.pcs_to_receive || 0;
+							if (pcs_to_receive < 0) {
+								frappe.throw(
+									__("Row <b>{0}</b> Item <b>{1}</b>: PCS to Receive must be >= 0", [
+										e.idx,
+										e.item_code,
+									])
+								);
+							}
+							if (e.available_to_receive_pcs && pcs_to_receive > e.available_to_receive_pcs) {
+								frappe.throw(
+									__(
+										"Row <b>{0}</b> Item <b>{1}</b>: PCS to Receive <b>{2}</b> exceeds Available to Receive PCS <b>{3}</b>",
+										[e.idx, e.item_code, pcs_to_receive, e.available_to_receive_pcs]
+									)
+								);
+							}
+						}
+						if (e.qty_to_receive && e.qty_to_receive > 0) {
+							receive_items.push({
+								idx: e.idx,
+								stock_reservation_entry: e.stock_reservation_entry,
+								stock_reservation_entry_detail: e.stock_reservation_entry_detail,
+								item_code: e.item_code,
+								s_warehouse: e.s_warehouse,
+								// Server still consumes `qty` and `pcs` keys for
+								// receive_items — the dialog field rename is
+								// cosmetic only.
+								qty: e.qty_to_receive,
+								pcs: pcs_to_receive,
+								batch_no: e.batch_no,
+							});
+						}
+					});
+
+					if (!receive_items.length) {
+						frappe.msgprint(__("No Receive Items selected for Material Receive Stock Entry"));
+						return;
+					}
+
+					d.disable_primary_action();
+					frappe.call({
+						method: opts.create_method,
+						args: {
+							se_data: {
+								manufacturing_work_order: frm.doc.manufacturing_work_order,
+								manufacturing_operation: frm.doc.name,
+								manufacturing_order: frm.doc.manufacturing_order,
+								department: frm.doc.department,
+								receive_items: receive_items,
+							},
+							request_id: request_id,
+						},
+						freeze: true,
+						freeze_message: opts.create_freeze_message,
+						callback: (resp) => {
+							if (resp && resp.message) {
+								const se_link = frappe.utils.get_form_link(
+									resp.message.doctype,
+									resp.message.docname,
+									true
+								);
+								const title = resp.message.idempotent
+									? opts.existing_title
+									: opts.created_title;
+								frappe.msgprint({
+									message: __(opts.result_label, [se_link]),
+									title: title,
+									indicator: "green",
+								});
+								frm.reload_doc();
+							}
+						},
+						error: () => {
+							d.enable_primary_action();
+						},
+					});
+
+					d.hide();
+				},
+			});
+
+			d.get_field("receive_entries").grid.wrapper.find(".grid-row-check").hide();
+			d.show();
+		},
+	});
+}
 function initialiseTimer(section, currentIncrement) {
 	const interval = setInterval(function () {
 		var current = setCurrentIncrement(currentIncrement);

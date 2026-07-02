@@ -43,10 +43,24 @@ frappe.ui.form.on("Refining Entry", {
 		}));
 	},
 
+	onload(frm) {
+		// Default the Source Department from the logged-in user's Employee record so
+		// refining is scoped to the user's own department (server-side validate is the
+		// authoritative safety net; this is UX only).
+		if (frm.is_new() && !frm.doc.department) {
+			frappe.db.get_value("Employee", { user_id: frappe.session.user }, "department").then((r) => {
+				if (r.message && r.message.department) {
+					frm.set_value("department", r.message.department);
+				}
+			});
+		}
+	},
+
 	refresh(frm) {
 		frm.trigger("set_field_visibility");
 		frm.trigger("add_action_buttons");
 		frm.trigger("render_raw_material_html");
+		frm.trigger("set_recovery_grid_editability");
 
 		// Suppress Frappe Workflow's auto-generated action buttons on submitted docs,
 		// AND on child duplicate entries (which rely entirely on custom processing buttons).
@@ -115,48 +129,70 @@ frappe.ui.form.on("Refining Entry", {
 		}
 	},
 
+	set_recovery_grid_editability(frm) {
+		// Only the recovered_pcs / recovered_weight columns are operator-editable, and
+		// only while recovery is being entered (on the child processing entry). The
+		// present pcs/weight columns stay read-only (they are the seeded reference).
+		const editable =
+			!!frm.doc.parent_refining_entry &&
+			["Refining In Progress", "Recovery Entered"].includes(frm.doc.status);
+		["recovered_diamond", "recovered_gemstone"].forEach((table) => {
+			const grid = frm.fields_dict[table] && frm.fields_dict[table].grid;
+			if (!grid) return;
+			grid.update_docfield_property("recovered_pcs", "read_only", editable ? 0 : 1);
+			grid.update_docfield_property("recovered_weight", "read_only", editable ? 0 : 1);
+			grid.refresh();
+		});
+	},
+
 	// --- Barcode scan handlers ---
 
 	scan_mwo(frm) {
 		if (!frm.doc.scan_mwo) return;
-		frappe.dom.freeze(__("Fetching MWO details..."));
-		frm.call("scan_mwo_action", { barcode: frm.doc.scan_mwo })
-			.then(() => {
-				frm.reload_doc();
-			})
-			.finally(() => frappe.dom.unfreeze());
+		frappe.show_alert(__("Fetching MWO details..."));
+		frm.call("scan_mwo_action", { barcode: frm.doc.scan_mwo }).then(() => {
+			frm.refresh();
+		});
 	},
 
 	scan_serial_no(frm) {
 		if (!frm.doc.scan_serial_no) return;
-		frappe.dom.freeze(__("Fetching Serial No details..."));
-		frm.call("scan_serial_no_action", { barcode: frm.doc.scan_serial_no })
-			.then(() => {
-				frm.reload_doc();
-			})
-			.finally(() => frappe.dom.unfreeze());
+		frappe.show_alert(__("Fetching Serial No details..."));
+		frm.call("scan_serial_no_action", { barcode: frm.doc.scan_serial_no }).then(() => {
+			frm.refresh();
+		});
 	},
 
 	scan_scrap_qr(frm) {
 		if (!frm.doc.scan_scrap_qr) return;
-		frappe.dom.freeze(__("Fetching Scrap details..."));
-		frm.call("scan_scrap_qr_action", { barcode: frm.doc.scan_scrap_qr })
-			.then(() => {
-				frm.reload_doc();
-			})
-			.finally(() => frappe.dom.unfreeze());
+		frappe.show_alert(__("Fetching Scrap details..."));
+		frm.call("scan_scrap_qr_action", { barcode: frm.doc.scan_scrap_qr }).then(() => {
+			frm.refresh();
+		});
 	},
 
 	// --- Physical verification ---
 	physical_quantity(frm) {
-		if (frm.doc.refining_type === "Dust Refining") {
+		if (frm.doc.refining_type !== "Dust Refining") return;
+
+		const recompute = () => {
 			let diff = flt(frm.doc.physical_quantity) - flt(frm.doc.system_quantity);
 			frm.set_value("difference_quantity", diff);
-			if (diff > 0) {
-				frm.set_value("additional_dust_qty", diff);
-			} else {
-				frm.set_value("additional_dust_qty", 0);
-			}
+			frm.set_value("additional_dust_qty", diff > 0 ? diff : 0);
+		};
+
+		// Refinery Change Step 2: auto-fetch System Quantity from the Scrap warehouse
+		// for comparison once a physical quantity is entered.
+		if (frm.doc.warehouse || frm.doc.multiple_department) {
+			frm.call("fetch_dust_balance")
+				.then((r) => {
+					if (r && r.message !== undefined && r.message !== null) {
+						frm.set_value("system_quantity", r.message);
+					}
+				})
+				.finally(recompute);
+		} else {
+			recompute();
 		}
 	},
 
@@ -204,27 +240,168 @@ frappe.ui.form.on("Refining Entry", {
 
 		if (show_dust_btn) {
 			frm.add_custom_button(__("Fetch Dust Balance"), () => {
-				if (!frm.doc.loss_item || !frm.doc.warehouse) {
-					frappe.msgprint(__("Please select a Loss Item and Warehouse first."));
+				if (!frm.doc.warehouse && !frm.doc.multiple_department) {
+					frappe.msgprint(__("Please select a Source Warehouse first."));
 					return;
 				}
-				frappe.db
-					.get_value(
-						"Bin",
-						{
-							item_code: frm.doc.loss_item,
-							warehouse: frm.doc.warehouse,
-						},
-						"actual_qty"
-					)
-					.then((r) => {
-						let qty = r.message && r.message.actual_qty ? r.message.actual_qty : 0;
-						frm.set_value("system_quantity", qty);
+				frm.call("fetch_dust_balance").then((r) => {
+					if (r && r.message !== undefined && r.message !== null) {
+						frm.set_value("system_quantity", r.message);
 						frappe.show_alert({
-							message: __("System Qty updated to: {0}", [qty]),
+							message: __("System Qty updated to: {0}", [r.message]),
 							indicator: "green",
 						});
-					});
+					}
+				});
+			});
+
+			// Refinery Change Step 3: populate the Material Items table with all
+			// available scrap materials (grouped by item group) from the Scrap warehouse.
+			frm.add_custom_button(__("Fetch Scrap Materials"), () => {
+				if (frm.is_new()) {
+					frappe.msgprint(__("Please save the entry first."));
+					return;
+				}
+				frappe.show_alert(__("Fetching scrap materials..."));
+				frm.call("fetch_dust_materials").then(() => frm.reload_doc());
+			});
+		}
+
+		// Scrap-specific: fetch all scrap items across all departments
+		const show_scrap_btn =
+			frm.doc.refining_type === "Scrap Refining" &&
+			frm.doc.docstatus === 0 &&
+			(!status || status === "Draft");
+
+		if (show_scrap_btn) {
+			frm.add_custom_button(__("Fetch Scrap Items"), () => {
+				frm.call("get_scrap_items_balance").then((r) => {
+					if (r.message && r.message.length > 0) {
+						let d = new frappe.ui.Dialog({
+							title: "Select Scrap Items",
+							size: "extra-large",
+							fields: [
+								{
+									fieldtype: "HTML",
+									fieldname: "instruction",
+									options:
+										'<div class="text-muted mb-2">Tick the rows you want to refine. Physical Qty is pre-filled with the full available balance — adjust it to refine less.</div>',
+								},
+								{
+									fieldname: "scrap_items",
+									fieldtype: "Table",
+									cannot_add_rows: true,
+									cannot_delete_rows: true,
+									in_place_edit: true,
+									data: r.message,
+									get_data: () => {
+										return r.message;
+									},
+									fields: [
+										{
+											fieldtype: "Data",
+											fieldname: "item_code",
+											label: "Item Code",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 2,
+										},
+										{
+											fieldtype: "Data",
+											fieldname: "item_group",
+											label: "Item Group",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 1,
+										},
+										{
+											fieldtype: "Data",
+											fieldname: "warehouse",
+											label: "Warehouse",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 2,
+										},
+										{
+											fieldtype: "Data",
+											fieldname: "batch_no",
+											label: "Batch",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 2,
+										},
+										{
+											fieldtype: "Float",
+											fieldname: "actual_qty",
+											label: "Available Qty",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 1,
+										},
+										{
+											fieldtype: "Float",
+											fieldname: "qty",
+											label: "Physical Qty",
+											in_list_view: 1,
+											reqd: 1,
+											columns: 2,
+										},
+									],
+								},
+							],
+							primary_action_label: "Add to Table",
+							primary_action: function (values) {
+								// Only add the rows the operator actually TICKED. Physical Qty is
+								// pre-filled on every row, so filtering by qty>0 alone (the old
+								// behaviour) added every fetched row regardless of the checkboxes.
+								let checked = d.fields_dict.scrap_items.grid.get_selected_children();
+								if (!checked.length) {
+									frappe.msgprint(__("Please tick the rows you want to add."));
+									return;
+								}
+								let selected = checked.filter((row) => row.qty > 0);
+								if (selected.length === 0) {
+									frappe.msgprint(
+										__("Set a Physical Qty greater than 0 on the ticked rows.")
+									);
+									return;
+								}
+								if (selected.length > 0) {
+									selected.forEach((row) => {
+										let existing = (frm.doc.material_items || []).find(
+											(m) =>
+												m.item_code === row.item_code && m.batch_no === row.batch_no
+										);
+										if (existing) {
+											frappe.model.set_value(
+												existing.doctype,
+												existing.name,
+												"qty",
+												row.qty
+											);
+										} else {
+											let child = frm.add_child("material_items");
+											child.item_code = row.item_code;
+											child.item_group = row.item_group;
+											child.warehouse = row.warehouse;
+											child.batch_no = row.batch_no;
+											child.qty = row.qty;
+											child.uom = row.uom;
+											child.purity = row.purity;
+											child.source_type = "Scrap";
+										}
+									});
+									frm.refresh_field("material_items");
+									frm.save();
+								}
+								d.hide();
+							},
+						});
+						d.show();
+					} else {
+						frappe.msgprint(__("No available scrap items found."));
+					}
+				});
 			});
 		}
 
@@ -233,10 +410,11 @@ frappe.ui.form.on("Refining Entry", {
 		// Parent only buttons
 		if (!frm.doc.parent_refining_entry) {
 			if (status === "Submitted") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Receive Materials"),
 					() => {
-						frappe.dom.freeze(__("Receiving Materials..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Receiving Materials..."));
 						frm.call("receive_materials")
 							.then((r) => {
 								if (r.message) {
@@ -245,10 +423,11 @@ frappe.ui.form.on("Refining Entry", {
 									frm.reload_doc();
 								}
 							})
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			} else if (status === "Received" || status === "Transferred" || status === "Completed") {
 				frm.add_custom_button(
 					__("View Duplicate Processing Entry"),
@@ -271,29 +450,33 @@ frappe.ui.form.on("Refining Entry", {
 		// Child (Processing Duplicate) only buttons
 		if (frm.doc.parent_refining_entry) {
 			if (status === "Received" || status === "Draft") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Classify & Generate Recovery"),
 					() => {
-						frappe.dom.freeze(__("Classifying Materials..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Classifying Materials..."));
 						frm.call("generate_recovery_table")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 
 			if (status === "Classified") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Start Refining"),
 					() => {
-						frappe.dom.freeze(__("Starting Refining..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Starting Refining..."));
 						frm.call("start_refining")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 
 			if (status === "Refining In Progress") {
@@ -311,12 +494,10 @@ frappe.ui.form.on("Refining Entry", {
 								},
 							],
 							(values) => {
-								frappe.dom.freeze(__("Distributing Recovered Gold..."));
+								frappe.show_alert(__("Distributing Recovered Gold..."));
 								frm.call("distribute_recovered_gold", {
 									total_recovered_weight: values.total_recovered_weight,
-								})
-									.then(() => frm.reload_doc())
-									.finally(() => frappe.dom.unfreeze());
+								}).then(() => frm.reload_doc());
 							},
 							__("Recovered Gold"),
 							__("Distribute")
@@ -327,55 +508,62 @@ frappe.ui.form.on("Refining Entry", {
 			}
 
 			if (status === "Recovery Entered") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Verify Recovery"),
 					() => {
-						frappe.dom.freeze(__("Verifying Recovery..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Verifying Recovery..."));
 						frm.call("verify_recovery")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 
 			if (status === "Recovery Verified") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Complete Refining"),
 					() => {
-						frappe.dom.freeze(__("Completing Refining..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Completing Refining..."));
 						frm.call("complete_refining")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 
 			if (status === "Completed") {
-				frm.add_custom_button(
+				let btn = frm.add_custom_button(
 					__("Transfer to Department"),
 					() => {
-						frappe.dom.freeze(__("Transferring Materials..."));
+						btn.prop("disabled", true);
+						frappe.show_alert(__("Transferring Materials..."));
 						frm.call("transfer_recovered_materials")
 							.then(() => frm.reload_doc())
-							.finally(() => frappe.dom.unfreeze());
+							.finally(() => btn.prop("disabled", false));
 					},
 					__("Refining Process")
-				).addClass("btn-primary");
+				);
+				btn.addClass("btn-primary");
 			}
 		}
 	},
 
 	render_raw_material_html(frm) {
-		if (frm.doc.refining_type === "Work Order Refining" && !frm.is_new()) {
+		const field = frm.get_field("raw_material_html");
+		if (!field) return;
+		const types = ["Work Order Refining", "Serial Number Refining", "Dust Refining", "Scrap Refining"];
+		if (!frm.is_new() && types.includes(frm.doc.refining_type)) {
 			frm.call("get_linked_stock_entries_html").then((r) => {
-				if (r.message) {
-					frm.get_field("raw_material_html").$wrapper.html(r.message);
-				}
+				field.$wrapper.html(r.message || "");
 			});
 		} else {
-			frm.get_field("raw_material_html").$wrapper.html("");
+			field.$wrapper.html("");
 		}
 	},
 });
@@ -431,9 +619,12 @@ frappe.ui.form.on("Refining Material Line", {
 function calculate_pure_weight(frm, cdt, cdn) {
 	let d = locals[cdt][cdn];
 	if (d.refining_gold_weight && d.metal_purity) {
-		frappe.db.get_value("Attribute Value", d.metal_purity, "custom_purity_percentage").then((r) => {
-			if (r.message && r.message.custom_purity_percentage) {
-				let pct = flt(r.message.custom_purity_percentage);
+		// Attribute Value stores the purity as `purity_percentage` (e.g. 91.9), NOT
+		// `custom_purity_percentage` (which does not exist on the doctype) — reading the
+		// wrong field left pure_weight silently un-recomputed on manual grid edits.
+		frappe.db.get_value("Attribute Value", d.metal_purity, "purity_percentage").then((r) => {
+			if (r.message && r.message.purity_percentage) {
+				let pct = flt(r.message.purity_percentage);
 				frappe.model.set_value(cdt, cdn, "pure_weight", flt(d.refining_gold_weight) * (pct / 100));
 				frm.refresh_field("refined_gold");
 			}

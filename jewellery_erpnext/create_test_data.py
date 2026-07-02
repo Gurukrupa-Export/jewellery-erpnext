@@ -2353,6 +2353,18 @@ def setup_data():
 
 	_ensure_mr_transfer_se_fields()
 
+	# Provision the gke_customization "Order Form Detail.pre_order_form_details" custom field.
+	# gke's Order Form submit (create_cad_orders) reads `row.pre_order_form_details` as a direct
+	# attribute, but the field lives ONLY in gke's fixtures, which CI disables (install.sh moves
+	# them aside before install-app gke_customization). Without the docfield the access raises
+	# AttributeError during Order Form submit, breaking test_quotation. Idempotent (keys on
+	# (dt, fieldname); a no-op once the field exists).
+	from jewellery_erpnext.patches.add_order_form_detail_pre_order_field import (
+		execute as _ensure_order_form_detail_pre_order_field,
+	)
+
+	_ensure_order_form_detail_pre_order_field()
+
 	# Provision every custom_* column targeted by an app fetch_from. These live in
 	# custom_fields/*.json + per-field patches that install-app marks complete WITHOUT
 	# running on fresh sites, so a missing column makes link validation raise 1054 on
@@ -2362,17 +2374,18 @@ def setup_data():
 
 	ensure_fetch_from_columns()
 
-	# Provision the Stock Entry Detail.transfer_qty precision = 3 Property Setter. Employee
-	# IR's auto-created Process Loss SE builds rows of 0.001 g; with float_precision = 2 and
-	# no per-field precision, set_transfer_qty rounds flt(0.001, 2) = 0.0 and throws
-	# "Qty in Stock UOM can not be zero." The fix is in property_setter/stock_entry_detail.json
-	# but only applied by the disabled after_migrate hook, so install-app never creates it.
-	# Idempotent.
+	# Provision the field-precision Property Setters (Stock Entry Detail.transfer_qty and
+	# Serial and Batch Entry.qty, both precision = 3). Employee IR's auto-created Process Loss
+	# SE builds rows of 0.001 g; with float_precision = 2 and no per-field precision, ERPNext
+	# rounds flt(0.001, 2) = 0.0 and throws ("Qty in Stock UOM can not be zero." on the SE row,
+	# or "Qty is mandatory for the batch" on the Serial and Batch Bundle). The fixes live in
+	# property_setter/*.json but are only applied by the disabled after_migrate hook, so
+	# install-app never creates them. Idempotent.
 	from jewellery_erpnext.property_setter_guard import (
-		ensure_stock_entry_detail_precision,
+		ensure_field_precision_property_setters,
 	)
 
-	ensure_stock_entry_detail_precision()
+	ensure_field_precision_property_setters()
 
 	if not frappe.db.exists("Gender", "Other"):
 		frappe.get_doc({"doctype": "Gender", "gender": "Other"}).insert(

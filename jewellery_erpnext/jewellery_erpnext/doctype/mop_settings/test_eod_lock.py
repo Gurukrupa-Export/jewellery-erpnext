@@ -1,7 +1,7 @@
 # Copyright (c) 2026, Nirali and Contributors
 # See license.txt
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, call, patch
 
 import frappe
@@ -210,6 +210,32 @@ _SCHED_MOD = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler
 
 
 class TestCheckAndEnqueueEodSync(FrappeTestCase):
+	"""Tests for the per-minute scheduler entry point.
+
+	Mocks are started in setUp (keyed dict) to avoid decorator-ordering pitfalls.
+	``new_doc``/``set_value``/``exists`` keep the Sync-Log creation block inert so
+	the time-gate logic is asserted in isolation.
+	"""
+
+	def setUp(self):
+		super().setUp()
+		patchers = {
+			"rel": patch(f"{_SCHED_MOD}.release_expired_eod_sync_lock"),
+			"now": patch(f"{_SCHED_MOD}.now_datetime"),
+			"gv": patch(f"{_SCHED_MOD}.frappe.db.get_value"),
+			"exists": patch(f"{_SCHED_MOD}.frappe.db.exists"),
+			"new_doc": patch(f"{_SCHED_MOD}.frappe.new_doc"),
+			"set_value": patch(f"{_SCHED_MOD}.frappe.db.set_value"),
+			"queued": patch(f"{_SCHED_MOD}.set_eod_sync_queued"),
+			"enq": patch(f"{_SCHED_MOD}.frappe.enqueue"),
+		}
+		self.m = {k: p.start() for k, p in patchers.items()}
+		for p in patchers.values():
+			self.addCleanup(p.stop)
+		# Defaults: configured time 02:00, idle, no prior Scheduler attempt today.
+		self.m["exists"].return_value = False
+		self.m["gv"].return_value = self._make_settings()
+
 	def _make_settings(self, **overrides):
 		base = FrappeDict(
 			{
@@ -223,118 +249,90 @@ class TestCheckAndEnqueueEodSync(FrappeTestCase):
 		base.update(overrides)
 		return base
 
-	@patch(f"{_SCHED_MOD}.frappe.enqueue")
-	@patch(f"{_SCHED_MOD}.set_eod_sync_queued")
-	@patch(f"{_SCHED_MOD}.frappe.db.get_value")
-	@patch(f"{_SCHED_MOD}.now_datetime")
-	@patch(f"{_SCHED_MOD}.release_expired_eod_sync_lock")
-	def test_enqueues_when_time_matches(
-		self, _mock_rel, mock_now, mock_gv, mock_queued, mock_enq
-	):
-		from datetime import datetime
-
-		mock_now.return_value = datetime(2026, 5, 31, 2, 0, 0)
-		mock_gv.return_value = self._make_settings()
-
+	def _run(self):
 		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler import (
 			check_and_enqueue_eod_sync,
 		)
 
 		check_and_enqueue_eod_sync()
 
-		mock_queued.assert_called_once()
-		mock_enq.assert_called_once()
+	def _assert_enqueued(self):
+		self.m["queued"].assert_called_once()
+		self.m["enq"].assert_called_once()
 
-	@patch(f"{_SCHED_MOD}.frappe.enqueue")
-	@patch(f"{_SCHED_MOD}.set_eod_sync_queued")
-	@patch(f"{_SCHED_MOD}.frappe.db.get_value")
-	@patch(f"{_SCHED_MOD}.now_datetime")
-	@patch(f"{_SCHED_MOD}.release_expired_eod_sync_lock")
-	def test_no_enqueue_when_time_does_not_match(
-		self, _mock_rel, mock_now, mock_gv, mock_queued, mock_enq
-	):
-		from datetime import datetime
+	def _assert_not_enqueued(self):
+		self.m["queued"].assert_not_called()
+		self.m["enq"].assert_not_called()
 
-		mock_now.return_value = datetime(2026, 5, 31, 3, 15, 0)  # 03:15 ≠ 02:00
-		mock_gv.return_value = self._make_settings()
+	def test_enqueues_when_time_matches(self):
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 0, 0)
+		self._run()
+		self._assert_enqueued()
 
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler import (
-			check_and_enqueue_eod_sync,
+	def test_enqueues_with_catchup_when_minute_missed(self):
+		# Bug A regression: tick lands 17 minutes AFTER the configured 02:00 minute.
+		# Old exact-equality skipped the whole day; catch-up must still enqueue once.
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 17, 0)
+		self._run()
+		self._assert_enqueued()
+
+	def test_no_enqueue_when_not_yet_due(self):
+		# 01:59 is before the configured 02:00 → not yet due.
+		self.m["now"].return_value = datetime(2026, 5, 31, 1, 59, 0)
+		self._run()
+		self._assert_not_enqueued()
+
+	def test_no_enqueue_when_already_attempted_today(self):
+		# Once-per-day: a Scheduler log already exists for today → skip even though due.
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 17, 0)
+		self.m["exists"].return_value = True
+		self._run()
+		self._assert_not_enqueued()
+
+	def test_failed_run_does_not_refire(self):
+		# A prior run FAILED today (last_completed_on still None, so the completed-today
+		# guard passes), but a Scheduler log exists → the attempt guard stops the re-run.
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 17, 0)
+		self.m["gv"].return_value = self._make_settings(eod_sync_last_completed_on=None)
+		self.m["exists"].return_value = True
+		self._run()
+		self._assert_not_enqueued()
+
+	def test_enqueues_for_hour_below_ten_timedelta(self):
+		# Bug B: Time field reads back as timedelta; hours < 10 must still fire.
+		self.m["now"].return_value = datetime(2026, 5, 31, 9, 5, 0)
+		self.m["gv"].return_value = self._make_settings(
+			eod_sync_time=timedelta(hours=9)
 		)
+		self._run()
+		self._assert_enqueued()
 
-		check_and_enqueue_eod_sync()
+	def test_enqueues_for_hour_below_ten_string(self):
+		# Bug B parity: same time as a string form.
+		self.m["now"].return_value = datetime(2026, 5, 31, 9, 5, 0)
+		self.m["gv"].return_value = self._make_settings(eod_sync_time="09:00:00")
+		self._run()
+		self._assert_enqueued()
 
-		mock_queued.assert_not_called()
-		mock_enq.assert_not_called()
+	def test_no_enqueue_when_already_queued(self):
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 0, 0)
+		self.m["gv"].return_value = self._make_settings(eod_sync_status="Queued")
+		self._run()
+		self._assert_not_enqueued()
 
-	@patch(f"{_SCHED_MOD}.frappe.enqueue")
-	@patch(f"{_SCHED_MOD}.set_eod_sync_queued")
-	@patch(f"{_SCHED_MOD}.frappe.db.get_value")
-	@patch(f"{_SCHED_MOD}.now_datetime")
-	@patch(f"{_SCHED_MOD}.release_expired_eod_sync_lock")
-	def test_no_enqueue_when_already_queued(
-		self, _mock_rel, mock_now, mock_gv, mock_queued, mock_enq
-	):
-		from datetime import datetime
-
-		mock_now.return_value = datetime(2026, 5, 31, 2, 0, 0)
-		mock_gv.return_value = self._make_settings(eod_sync_status="Queued")
-
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler import (
-			check_and_enqueue_eod_sync,
-		)
-
-		check_and_enqueue_eod_sync()
-
-		mock_queued.assert_not_called()
-		mock_enq.assert_not_called()
-
-	@patch(f"{_SCHED_MOD}.frappe.enqueue")
-	@patch(f"{_SCHED_MOD}.set_eod_sync_queued")
-	@patch(f"{_SCHED_MOD}.frappe.db.get_value")
-	@patch(f"{_SCHED_MOD}.now_datetime")
-	@patch(f"{_SCHED_MOD}.release_expired_eod_sync_lock")
-	def test_no_enqueue_when_already_ran_today(
-		self, _mock_rel, mock_now, mock_gv, mock_queued, mock_enq
-	):
-		from datetime import datetime
-
-		today = datetime(2026, 5, 31, 2, 0, 0)
-		mock_now.return_value = today
-		mock_gv.return_value = self._make_settings(
+	def test_no_enqueue_when_already_ran_today(self):
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 0, 0)
+		self.m["gv"].return_value = self._make_settings(
 			eod_sync_last_completed_on=datetime(2026, 5, 31, 0, 0, 0)
 		)
+		self._run()
+		self._assert_not_enqueued()
 
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler import (
-			check_and_enqueue_eod_sync,
-		)
-
-		check_and_enqueue_eod_sync()
-
-		mock_queued.assert_not_called()
-		mock_enq.assert_not_called()
-
-	@patch(f"{_SCHED_MOD}.frappe.enqueue")
-	@patch(f"{_SCHED_MOD}.set_eod_sync_queued")
-	@patch(f"{_SCHED_MOD}.frappe.db.get_value")
-	@patch(f"{_SCHED_MOD}.now_datetime")
-	@patch(f"{_SCHED_MOD}.release_expired_eod_sync_lock")
-	def test_no_enqueue_when_running(
-		self, _mock_rel, mock_now, mock_gv, mock_queued, mock_enq
-	):
-		from datetime import datetime
-
-		mock_now.return_value = datetime(2026, 5, 31, 2, 0, 0)
-		mock_gv.return_value = self._make_settings(eod_sync_running=1)
-
-		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler import (
-			check_and_enqueue_eod_sync,
-		)
-
-		check_and_enqueue_eod_sync()
-
-		mock_queued.assert_not_called()
-		mock_enq.assert_not_called()
+	def test_no_enqueue_when_running(self):
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 0, 0)
+		self.m["gv"].return_value = self._make_settings(eod_sync_running=1)
+		self._run()
+		self._assert_not_enqueued()
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +541,14 @@ class TestConsolidatedErrorLog(FrappeTestCase):
 		}
 
 		# Both MWOs fail in planning → no consolidated SE, two failures, one error log.
-		def _inject_failures(group_key, mop_data_list, failures, stats, sync_log_name=None, selective=False):
+		def _inject_failures(
+			group_key,
+			mop_data_list,
+			failures,
+			stats,
+			sync_log_name=None,
+			selective=False,
+		):
 			_, mwo = group_key
 			failures.append(
 				{
@@ -553,7 +558,12 @@ class TestConsolidatedErrorLog(FrappeTestCase):
 				}
 			)
 			stats["failed_mwos"] += 1
-			return {"kind": "failed", "company": "Co", "manufacturer": "MF-1", "issues_rows": []}
+			return {
+				"kind": "failed",
+				"company": "Co",
+				"manufacturer": "MF-1",
+				"issues_rows": [],
+			}
 
 		mock_plan.side_effect = _inject_failures
 

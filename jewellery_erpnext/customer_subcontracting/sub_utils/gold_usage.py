@@ -52,8 +52,8 @@ def classify_gold_usage(doc, item):
 		return {
 			"mwo_type": "Subcontracting",
 			"usage_type": "Different Customer Gold",
-			"used_as_fallback": 1,
-			"settlement_required": 1,
+			"used_as_fallback": 0,
+			"settlement_required": 0,
 			"settlement_status": "Pending",
 			"settlement_type": "Customer Needs Gold",
 			"settlement_customer": item_customer,
@@ -64,8 +64,8 @@ def classify_gold_usage(doc, item):
 		return {
 			"mwo_type": "Subcontracting",
 			"usage_type": "Company Gold",
-			"used_as_fallback": 1,
-			"settlement_required": 1,
+			"used_as_fallback": 0,
+			"settlement_required": 0,
 			"settlement_status": "Pending",
 			"settlement_type": "Company Needs Gold",
 			"settlement_customer": order_customer,
@@ -93,7 +93,7 @@ def classify_gold_usage(doc, item):
 				else "Different Customer Gold"
 			),
 			"used_as_fallback": 1,
-			"settlement_required": 1,
+			"settlement_required": 0,
 			"settlement_status": "Pending",
 			"settlement_type": "Customer Needs Gold",
 			"settlement_customer": item_customer,

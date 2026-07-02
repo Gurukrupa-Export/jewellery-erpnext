@@ -8,11 +8,13 @@
  "field_order": [
   "item_code",
   "item_name",
+  "item_group",
   "batch_no",
   "warehouse",
   "qty",
   "uom",
   "source_type",
+  "is_consumable",
   "purity",
   "rate",
   "column_break_01",
@@ -34,6 +36,15 @@
    "fieldname": "item_name",
    "fieldtype": "Data",
    "label": "Item Name",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "item_code.item_group",
+   "fieldname": "item_group",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Group",
+   "options": "Item Group",
    "read_only": 1
   },
   {
@@ -69,7 +80,13 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Source Type",
-   "options": "\nMWO\nSerial Number\nDust\nScrap\nLoss Item"
+   "options": "\nMWO\nSerial Number\nDust\nScrap\nLoss Item\nConsumable"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_consumable",
+   "fieldtype": "Check",
+   "label": "Is Consumable"
   },
   {
    "fieldname": "purity",

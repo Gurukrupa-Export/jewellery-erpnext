@@ -3743,7 +3743,7 @@ def get_linked_stock_entries(mwo, department):
 
 
 @frappe.whitelist()
-def get_make_receive_entry_rows(manufacturing_operation):
+def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 	"""Return rows for the Make Receive Entry dialog, sourced from active
 	Stock Reservation Entry rows linked to the MOP's Manufacturing Work Order.
 
@@ -3768,11 +3768,14 @@ def get_make_receive_entry_rows(manufacturing_operation):
 	if not mo.manufacturing_work_order:
 		frappe.throw(_("Manufacturing Work Order is required for Make Receive Entry"))
 
-	t_warehouse = frappe.db.get_value(
-		"Warehouse",
-		{"warehouse_type": "Raw Material", "department": mo.department},
-		"name",
-	)
+	if target_warehouse:
+		t_warehouse = target_warehouse
+	else:
+		t_warehouse = frappe.db.get_value(
+			"Warehouse",
+			{"warehouse_type": "Raw Material", "department": mo.department},
+			"name",
+		)
 	if not t_warehouse:
 		frappe.throw(
 			_("No Raw Material Warehouse found for Department({0})").format(
@@ -4362,15 +4365,21 @@ def _build_replacement_sre(original_sre, remaining_qty, sb_remaining=None):
 
 
 @frappe.whitelist()
-def create_mr_wo_stock_entry(se_data, request_id=None):
+def create_mr_wo_stock_entry(
+	se_data,
+	request_id=None,
+	target_warehouse=None,
+	stock_entry_type="Material Receive (WORK ORDER)",
+):
 	"""Refactored Make Receive Entry creator.
 
 	- Re-fetches every Stock Reservation Entry server-side (client values are
 	  advisory only).
 	- Validates available_qty = reserved_qty - delivered_qty (for active SRE)
 	  on each requested row, with float-precision tolerance.
-	- Creates a single Stock Entry of type Material Receive (WORK ORDER)
-	  stamped with custom_request_id for double-submit idempotency.
+	- Creates a single Stock Entry of type ``stock_entry_type`` (default
+	  "Material Receive (WORK ORDER)") stamped with custom_request_id for
+	  double-submit idempotency.
 	- After SE submit, cancels (full) or cancels+recreates (partial) each SRE.
 	- Relies on doc_events/stock_entry.sync_mop_log_for_stock_entry to bridge
 	  MOP Log rows (is_synced=1).
@@ -4402,7 +4411,7 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 			{
 				"custom_request_id": request_id,
 				"manufacturing_operation": mo.name,
-				"stock_entry_type": "Material Receive (WORK ORDER)",
+				"stock_entry_type": stock_entry_type,
 				"docstatus": ["!=", 2],
 			},
 			"name",
@@ -4415,11 +4424,14 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 				"idempotent": True,
 			}
 
-	t_warehouse = frappe.db.get_value(
-		"Warehouse",
-		{"warehouse_type": "Raw Material", "department": mo.department},
-		"name",
-	)
+	if target_warehouse:
+		t_warehouse = target_warehouse
+	else:
+		t_warehouse = frappe.db.get_value(
+			"Warehouse",
+			{"warehouse_type": "Raw Material", "department": mo.department},
+			"name",
+		)
 	if not t_warehouse:
 		frappe.throw(_("No warehouse found for warehouse type Raw Material"))
 
@@ -4647,7 +4659,7 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 		se_doc = frappe.new_doc("Stock Entry")
 		se_doc.update(
 			{
-				"stock_entry_type": "Material Receive (WORK ORDER)",
+				"stock_entry_type": stock_entry_type,
 				"manufacturing_work_order": mo.manufacturing_work_order,
 				"manufacturing_order": mo.manufacturing_order,
 				"manufacturing_operation": mo.name,
@@ -4656,6 +4668,18 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 				"from_warehouse": validated_rows[0]["s_warehouse"],
 			}
 		)
+
+		if (
+			se_doc.from_warehouse
+			and se_doc.to_warehouse
+			and se_doc.from_warehouse == se_doc.to_warehouse
+		):
+			frappe.throw(
+				_(
+					"Source Warehouse and Target Warehouse cannot be the same ({0}). Please check the department's warehouse configuration."
+				).format(se_doc.from_warehouse)
+			)
+
 		if request_id:
 			se_doc.custom_request_id = request_id
 
@@ -4788,6 +4812,32 @@ def create_mr_wo_stock_entry(se_data, request_id=None):
 		"sre_actions": sre_outcomes,
 		"idempotent": False,
 	}
+
+
+@frappe.whitelist()
+def get_make_scrap_entry_rows(manufacturing_operation):
+	"""Auto-fill rows for the Create Scrap Item dialog.
+
+	Create Scrap Item mirrors Make Receive Entry exactly — same source (the SRE
+	reservation warehouse) and same target (the department Raw Material warehouse);
+	the scrapped material is denoted the same way Make Receive Entry denotes its
+	received material. (Previously this targeted the department Scrap warehouse, which
+	diverged from Make Receive Entry.)
+	"""
+	return get_make_receive_entry_rows(manufacturing_operation)
+
+
+@frappe.whitelist()
+def create_scrap_wo_stock_entry(se_data, request_id=None):
+	"""Create Scrap Item creator.
+
+	Mirrors Make Receive Entry: reuses the same machinery (SRE validation, MOP caps,
+	idempotency, SRE cancel/recreate) and lands the operation's materials in the
+	department Raw Material warehouse via a "Material Receive (WORK ORDER)" Stock
+	Entry — identical source/target warehouse allocation to Make Receive Entry.
+	See get_make_scrap_entry_rows.
+	"""
+	return create_mr_wo_stock_entry(se_data, request_id=request_id)
 
 
 def update_new_mop_wtg(
