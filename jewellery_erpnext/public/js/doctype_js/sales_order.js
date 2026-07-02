@@ -1705,7 +1705,7 @@ let set_edit_bom_details = (
 						rate_to_use = d.se_rate;
 						// rate_to_use=calculated_gold_rate
 						making_rate_to_use = d.making_rate;
-						d.making_amount = making_rate_to_use * d.quantity;
+						// d.making_amount = making_rate_to_use * d.quantity;
 						gold_amount = rate_to_use * d.quantity;
 					} else if (
 						cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
@@ -1978,7 +1978,7 @@ let set_edit_bom_details = (
 						// console.log("hii",making_rate_to_use)
 
 					}
-					d.making_amount = making_rate_to_use * d.quantity;
+					// d.making_amount = making_rate_to_use * d.quantity;
 					let amount = calculated_actual_rate * d.quantity
 					local_finding_data.push({
 						docname: d.name,
