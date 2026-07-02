@@ -4669,6 +4669,18 @@ def create_mr_wo_stock_entry(
 				"from_warehouse": validated_rows[0]["s_warehouse"],
 			}
 		)
+
+		if (
+			se_doc.from_warehouse
+			and se_doc.to_warehouse
+			and se_doc.from_warehouse == se_doc.to_warehouse
+		):
+			frappe.throw(
+				_(
+					"Source Warehouse and Target Warehouse cannot be the same ({0}). Please check the department's warehouse configuration."
+				).format(se_doc.from_warehouse)
+			)
+
 		if request_id:
 			se_doc.custom_request_id = request_id
 
@@ -4847,7 +4859,7 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 
 	Reuses the Make Receive Entry machinery (SRE validation, MOP caps,
 	idempotency, SRE cancel/recreate) but moves the operation's materials into
-	the department Scrap warehouse via a "Material Transfer (WORK ORDER)" Stock
+	the department Scrap warehouse via a "Material Receive (WORK ORDER)" Stock
 	Entry. Item codes are preserved; segregation into the Scrap warehouse is
 	what keeps the stock out of manufacturing/RM pickers.
 	"""
@@ -4864,7 +4876,7 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 		se_data,
 		request_id=request_id,
 		target_warehouse=scrap_warehouse,
-		stock_entry_type="Material Transfer (WORK ORDER)",
+		stock_entry_type="Material Receive (WORK ORDER)",
 	)
 
 

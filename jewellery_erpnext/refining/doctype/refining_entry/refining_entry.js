@@ -275,86 +275,97 @@ frappe.ui.form.on("Refining Entry", {
 
 		if (show_scrap_btn) {
 			frm.add_custom_button(__("Fetch Scrap Items"), () => {
-				frm.call({
-					method: "get_scrap_items_balance",
-					callback: function (r) {
-						if (r.message && r.message.length > 0) {
-							let d = new frappe.ui.Dialog({
-								title: "Select Scrap Items",
-								fields: [
-									{
-										fieldtype: "HTML",
-										fieldname: "instruction",
-										options:
-											'<div class="text-muted mb-2">Enter the exact Physical Qty you want to refine. Leave 0 to skip.</div>',
+				frm.call("get_scrap_items_balance").then((r) => {
+					if (r.message && r.message.length > 0) {
+						let d = new frappe.ui.Dialog({
+							title: "Select Scrap Items",
+							size: "extra-large",
+							fields: [
+								{
+									fieldtype: "HTML",
+									fieldname: "instruction",
+									options:
+										'<div class="text-muted mb-2">Enter the exact Physical Qty you want to refine. Leave 0 to skip.</div>',
+								},
+								{
+									fieldname: "scrap_items",
+									fieldtype: "Table",
+									cannot_add_rows: true,
+									cannot_delete_rows: true,
+									in_place_edit: true,
+									data: r.message,
+									get_data: () => {
+										return r.message;
 									},
-									{
-										fieldname: "scrap_items",
-										fieldtype: "Table",
-										cannot_add_rows: true,
-										cannot_delete_rows: true,
-										in_place_edit: true,
-										data: r.message,
-										get_data: () => {
-											return r.message;
+									fields: [
+										{
+											fieldtype: "Data",
+											fieldname: "item_code",
+											label: "Item Code",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 2,
 										},
-										fields: [
-											{
-												fieldtype: "Data",
-												fieldname: "item_code",
-												label: "Item Code",
-												in_list_view: 1,
-												read_only: 1,
-												columns: 2,
-											},
-											{
-												fieldtype: "Data",
-												fieldname: "item_group",
-												label: "Item Group",
-												in_list_view: 1,
-												read_only: 1,
-												columns: 2,
-											},
-											{
-												fieldtype: "Data",
-												fieldname: "warehouse",
-												label: "Warehouse",
-												in_list_view: 1,
-												read_only: 1,
-												columns: 2,
-											},
-											{
-												fieldtype: "Data",
-												fieldname: "batch_no",
-												label: "Batch",
-												in_list_view: 1,
-												read_only: 1,
-												columns: 2,
-											},
-											{
-												fieldtype: "Float",
-												fieldname: "actual_qty",
-												label: "Available Qty",
-												in_list_view: 1,
-												read_only: 1,
-												columns: 2,
-											},
-											{
-												fieldtype: "Float",
-												fieldname: "qty",
-												label: "Physical Qty",
-												in_list_view: 1,
-												reqd: 1,
-												columns: 2,
-											},
-										],
-									},
-								],
-								primary_action_label: "Add to Table",
-								primary_action: function (values) {
-									let selected = values.scrap_items.filter((d) => d.qty > 0);
-									if (selected.length > 0) {
-										selected.forEach((row) => {
+										{
+											fieldtype: "Data",
+											fieldname: "item_group",
+											label: "Item Group",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 1,
+										},
+										{
+											fieldtype: "Data",
+											fieldname: "warehouse",
+											label: "Warehouse",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 2,
+										},
+										{
+											fieldtype: "Data",
+											fieldname: "batch_no",
+											label: "Batch",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 2,
+										},
+										{
+											fieldtype: "Float",
+											fieldname: "actual_qty",
+											label: "Available Qty",
+											in_list_view: 1,
+											read_only: 1,
+											columns: 1,
+										},
+										{
+											fieldtype: "Float",
+											fieldname: "qty",
+											label: "Physical Qty",
+											in_list_view: 1,
+											reqd: 1,
+											columns: 2,
+										},
+									],
+								},
+							],
+							primary_action_label: "Add to Table",
+							primary_action: function (values) {
+								let selected = values.scrap_items.filter((d) => d.qty > 0);
+								if (selected.length > 0) {
+									selected.forEach((row) => {
+										let existing = (frm.doc.material_items || []).find(
+											(m) =>
+												m.item_code === row.item_code && m.batch_no === row.batch_no
+										);
+										if (existing) {
+											frappe.model.set_value(
+												existing.doctype,
+												existing.name,
+												"qty",
+												row.qty
+											);
+										} else {
 											let child = frm.add_child("material_items");
 											child.item_code = row.item_code;
 											child.item_group = row.item_group;
@@ -364,18 +375,18 @@ frappe.ui.form.on("Refining Entry", {
 											child.uom = row.uom;
 											child.purity = row.purity;
 											child.source_type = "Scrap";
-										});
-										frm.refresh_field("material_items");
-										frm.save();
-									}
-									d.hide();
-								},
-							});
-							d.show();
-						} else {
-							frappe.msgprint(__("No available scrap items found."));
-						}
-					},
+										}
+									});
+									frm.refresh_field("material_items");
+									frm.save();
+								}
+								d.hide();
+							},
+						});
+						d.show();
+					} else {
+						frappe.msgprint(__("No available scrap items found."));
+					}
 				});
 			});
 		}
@@ -594,9 +605,12 @@ frappe.ui.form.on("Refining Material Line", {
 function calculate_pure_weight(frm, cdt, cdn) {
 	let d = locals[cdt][cdn];
 	if (d.refining_gold_weight && d.metal_purity) {
-		frappe.db.get_value("Attribute Value", d.metal_purity, "custom_purity_percentage").then((r) => {
-			if (r.message && r.message.custom_purity_percentage) {
-				let pct = flt(r.message.custom_purity_percentage);
+		// Attribute Value stores the purity as `purity_percentage` (e.g. 91.9), NOT
+		// `custom_purity_percentage` (which does not exist on the doctype) — reading the
+		// wrong field left pure_weight silently un-recomputed on manual grid edits.
+		frappe.db.get_value("Attribute Value", d.metal_purity, "purity_percentage").then((r) => {
+			if (r.message && r.message.purity_percentage) {
+				let pct = flt(r.message.purity_percentage);
 				frappe.model.set_value(cdt, cdn, "pure_weight", flt(d.refining_gold_weight) * (pct / 100));
 				frm.refresh_field("refined_gold");
 			}
