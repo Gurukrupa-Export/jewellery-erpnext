@@ -139,8 +139,8 @@ def set_gst_details(self):
         if self.tax_category == "In-State":
             item.cgst_rate   = cgst_rate
             item.sgst_rate   = sgst_rate
-            item.cgst_amount = float(taxable_value * cgst_rate / 100, 2)
-            item.sgst_amount = float(taxable_value * sgst_rate / 100, 2)
+            item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
+            item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
         else:
             item.igst_rate   = igst_rate
             item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
