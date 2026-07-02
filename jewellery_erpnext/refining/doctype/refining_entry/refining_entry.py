@@ -522,6 +522,7 @@ class RefiningEntry(Document):
 				bom_no,
 				[
 					"name",
+					"metal_weight",
 					"metal_and_finding_weight",
 					"gross_weight",
 				],
@@ -533,18 +534,25 @@ class RefiningEntry(Document):
 
 		gross_weight = bom_details.gross_weight if bom_details else 0.0
 		net_weight = bom_details.metal_and_finding_weight if bom_details else 0.0
+		metal_weight = bom_details.metal_weight if bom_details else 0.0
 		purity = self.get_item_purity(serial_no.item_code)
 		pure_weight = flt(net_weight) * flt(purity) / 100.0 if purity else 0.0
 
+		# Populate metal_weight/metal_purity/quantity too — leaving them blank made the
+		# serial table show 0 metal weight and an empty purity/quantity next to a
+		# populated net/gross weight, which reads as a quantity mismatch.
 		self.append(
 			"serial_no_details",
 			{
 				"serial_number": serial_no.name,
 				"item_code": serial_no.item_code,
+				"metal_weight": metal_weight,
+				"metal_purity": purity,
 				"pure_weight": pure_weight,
 				"gross_weight": gross_weight,
 				"net_weight": net_weight,
 				"pcs": 1,
+				"quantity": 1,
 			},
 		)
 		self.scan_serial_no = ""
@@ -557,20 +565,59 @@ class RefiningEntry(Document):
 		batch = frappe.db.get_value(
 			"Batch", {"name": barcode}, ["name", "item"], as_dict=True
 		)
-		if not batch:
-			frappe.throw(_("Batch {0} not found.").format(barcode))
 
-		if batch.item:
+		if batch and batch.item:
+			qty = 1.0
+			if self.warehouse:
+				allocs = self.allocate_fifo_batches(
+					batch.item, self.warehouse, 9999999, throw_if_missing=False
+				)
+				for a in allocs:
+					if a.get("batch_no") == batch.name:
+						qty = flt(a.get("qty"))
+						break
 			self.append(
 				"material_items",
 				{
 					"item_code": batch.item,
 					"warehouse": self.warehouse,
-					"qty": 1.0,
+					"qty": qty if qty > 0 else 1.0,
 					"batch_no": batch.name,
 					"use_serial_batch_fields": 1,
 				},
 			)
+			return
+
+		item = frappe.db.get_value("Item", {"name": barcode}, "name")
+		if item:
+			qty = 1.0
+			if self.warehouse:
+				bin_qty = frappe.db.get_value(
+					"Bin",
+					{"item_code": item, "warehouse": self.warehouse},
+					"actual_qty",
+				)
+				if bin_qty:
+					qty = flt(bin_qty)
+					if frappe.db.get_value("Item", item, "has_batch_no"):
+						allocs = self.allocate_fifo_batches(
+							item, self.warehouse, 9999999, throw_if_missing=False
+						)
+						if allocs:
+							qty = sum([flt(a.get("qty")) for a in allocs])
+
+			self.append(
+				"material_items",
+				{
+					"item_code": item,
+					"warehouse": self.warehouse,
+					"qty": qty if qty > 0 else 1.0,
+					"use_serial_batch_fields": 1,
+				},
+			)
+			return
+
+		frappe.throw(_("Batch or Item {0} not found.").format(barcode))
 
 	def build_material_table(self):
 		"""Consolidate materials from source documents (MWO, SN, etc.) into material_items."""
@@ -578,65 +625,97 @@ class RefiningEntry(Document):
 
 		if self.refining_type == "Work Order Refining":
 			for mwo_row in self.mwo_details:
-				# Fetch materials consumed by this MWO from MOP Log.
-				# Per SOP, only the MWO's CURRENT operation is refined, so scope the
-				# MOP Log to that operation when it is known.
+				# Use the canonical get_current_mop_balance_rows() to fetch the
+				# material the MWO currently holds. This reads the running balance
+				# (qty_after_transaction_batch_based) — the same source of truth
+				# that get_material_wt() uses to compute the Manufacturing
+				# Operation's weight fields (gross_wt, net_wt, etc.).
 				#
-				# Net the movements per (item, batch, warehouse) with SUM(qty_change)
-				# so issues/losses at this operation are subtracted, not ignored, and
-				# keep only groups with a positive net balance (HAVING). A per-row
-				# `qty_change > 0` filter would keep only receipts and double-count
-				# material later issued out, making the fetched quantity exceed the
-				# metal the MWO actually holds. Mirrors the canonical holding query in
-				# manufacturing_work_order.py.
-				conditions = [
-					"manufacturing_work_order = %(mwo)s",
-					"is_cancelled = 0",
-				]
-				params = {"mwo": mwo_row.manufacturing_work_order}
-				if mwo_row.get("manufacturing_operation"):
-					conditions.append("manufacturing_operation = %(mop)s")
-					params["mop"] = mwo_row.manufacturing_operation
-				mop_logs = frappe.db.sql(
-					"""
-					SELECT
-						item_code,
-						batch_no,
-						to_warehouse as warehouse,
-						SUM(qty_change) as qty,
-						manufacturing_operation
-					FROM `tabMOP Log`
-					WHERE {where}
-					GROUP BY item_code, batch_no, to_warehouse, manufacturing_operation
-					HAVING SUM(qty_change) > 0
-					""".format(where=" AND ".join(conditions)),
-					params,
-					as_dict=True,
+				# The previous SUM(qty_change) approach diverged from the running
+				# balance when MOP Log entries carried baseline clones (qty_change=0
+				# but non-zero running balances) during inter-operation handoffs,
+				# causing the refining material table to mismatch the MOP details.
+				#
+				# We query per the LAST NOT-STARTED Manufacturing Operation on the
+				# MWO — this is where the material physically sits. If none is
+				# found, fall back to the MWO's designated manufacturing_operation.
+				last_mop = (
+					frappe.db.get_value(
+						"Manufacturing Operation",
+						{
+							"manufacturing_work_order": mwo_row.manufacturing_work_order,
+							"status": "Not Started",
+						},
+						"name",
+						order_by="creation desc",
+					)
+					or mwo_row.manufacturing_operation
 				)
-				for log in mop_logs:
-					if flt(log.qty) > 0:
-						purity = self.get_item_purity(log.item_code)
-						if not purity:
-							frappe.throw(
-								_(
-									"Metal Purity is mandatory for Item {0}. Please check Item Variant Attribute details."
-								).format(frappe.bold(log.item_code))
-							)
-						uom = frappe.db.get_value("Item", log.item_code, "stock_uom")
-						self.append(
-							"material_items",
-							{
-								"item_code": log.item_code,
-								"batch_no": log.batch_no,
-								"warehouse": log.warehouse,
-								"qty": log.qty,
-								"uom": uom,
-								"source_type": "MWO",
-								"purity": purity,
-								"manufacturing_work_order": mwo_row.manufacturing_work_order,
-								"manufacturing_operation": log.manufacturing_operation,
-							},
+
+				if not last_mop:
+					continue
+
+				from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+					get_current_mop_balance_rows,
+				)
+
+				balance_rows = get_current_mop_balance_rows(
+					last_mop,
+					include_fields=[
+						"item_code",
+						"qty_after_transaction_batch_based as qty",
+						"batch_no",
+						"to_warehouse",
+						"manufacturing_operation",
+					],
+				)
+
+				# Derive source warehouse from the MOP's department
+				mop_dept = frappe.db.get_value(
+					"Manufacturing Operation", last_mop, "department"
+				)
+				mop_warehouse = (
+					frappe.db.get_value(
+						"Warehouse",
+						{"department": mop_dept, "warehouse_type": "Manufacturing"},
+						"name",
+					)
+					if mop_dept
+					else None
+				)
+
+				for row in balance_rows:
+					qty = flt(row.get("qty"), 3)
+					if qty <= 0:
+						continue
+					item_code = row.get("item_code")
+					purity = self.get_item_purity(item_code)
+					if not purity:
+						frappe.throw(
+							_(
+								"Metal Purity is mandatory for Item {0}. Please check Item Variant Attribute details."
+							).format(frappe.bold(item_code))
 						)
+					uom = frappe.db.get_value("Item", item_code, "stock_uom")
+					self.append(
+						"material_items",
+						{
+							"item_code": item_code,
+							"batch_no": row.get("batch_no"),
+							"warehouse": row.get("to_warehouse")
+							or mop_warehouse
+							or self.warehouse,
+							"qty": qty,
+							"uom": uom,
+							"source_type": "MWO",
+							"purity": purity,
+							"manufacturing_work_order": mwo_row.manufacturing_work_order,
+							"manufacturing_operation": row.get(
+								"manufacturing_operation"
+							)
+							or last_mop,
+						},
+					)
 
 		elif self.refining_type == "Serial Number Refining":
 			for sn_row in self.serial_no_details:
@@ -647,7 +726,8 @@ class RefiningEntry(Document):
 							"Metal Purity is mandatory for Item {0}. Please check Item Variant Attribute details."
 						).format(frappe.bold(sn_row.item_code))
 					)
-				# Add FG item directly, repack will handle decomposition
+				# Add the FG item row (needed for the serial-number Material
+				# Transfer SE — the FG physically moves with its serial).
 				self.append(
 					"material_items",
 					{
@@ -668,6 +748,13 @@ class RefiningEntry(Document):
 					self._fetch_loss_items_from_dept(d_row.department)
 			else:
 				self._fetch_loss_items_from_dept(self.department)
+
+			# Fallback: if department-based lookup fetched nothing (department
+			# not set, or no Scrap warehouse on the department), but
+			# self.warehouse IS set (which fetch_dust_balance uses), fetch
+			# directly from self.warehouse so the two stay in sync.
+			if not self.material_items and self.warehouse:
+				self._fetch_loss_items_from_warehouse(self.warehouse)
 
 		# Group items item-wise
 		grouped_items = {}
@@ -1019,10 +1106,19 @@ class RefiningEntry(Document):
 		elif self.refining_type == "Serial Number Refining":
 			for sn in self.serial_no_details:
 				frappe.db.set_value("Serial No", sn.serial_number, "status", "Inactive")
+				# Deactivate the serial's OWN as-built BOM (custom_bom_no) — the physical
+				# piece has been melted down. Falling back to the design item's generic
+				# active BOM (as before) deactivated the WRONG BOM: an item can have
+				# several active per-serial BOMs and multiple serials, so the generic
+				# lookup both left this piece's BOM active and could disable a BOM other
+				# pieces still depend on. Fall back to the active BOM only when the serial
+				# has no BOM linked.
 				bom = frappe.db.get_value(
+					"Serial No", sn.serial_number, "custom_bom_no"
+				) or frappe.db.get_value(
 					"BOM", {"item": sn.item_code, "is_active": 1}, "name"
 				)
-				if bom:
+				if bom and frappe.db.get_value("BOM", bom, "is_active"):
 					frappe.db.set_value("BOM", bom, "is_active", 0)
 
 		frappe.publish_progress(
@@ -1791,7 +1887,8 @@ class RefiningEntry(Document):
 		"""Get an available batch for an item in a warehouse (SBB-aware, FIFO).
 
 		In v16, batch stock lives in the Serial and Batch Bundle, not in
-		Stock Ledger Entry.batch_no, so reuse allocate_fifo_batches which reads both.
+		Stock Ledger Entry.batch_no, so reuse allocate_fifo_batches which reads
+		the SBB via get_batch_qty.
 		"""
 		allocs = self.allocate_fifo_batches(
 			item_code, warehouse, 9999999, throw_if_missing=False
@@ -1811,9 +1908,16 @@ class RefiningEntry(Document):
 		if not scrap_wh:
 			return
 
+		self._fetch_loss_items_from_warehouse(scrap_wh)
+
+	def _fetch_loss_items_from_warehouse(self, warehouse):
+		"""Fetch ALL loss items (dust items) from a specific warehouse."""
+		if not warehouse:
+			return
+
 		bins = frappe.db.get_all(
 			"Bin",
-			filters={"warehouse": scrap_wh, "actual_qty": [">", 0]},
+			filters={"warehouse": warehouse, "actual_qty": [">", 0]},
 			fields=["item_code", "actual_qty"],
 		)
 
@@ -1821,7 +1925,7 @@ class RefiningEntry(Document):
 			actual_qty = flt(b.actual_qty, 3)
 			if frappe.db.get_value("Item", b.item_code, "has_batch_no"):
 				allocs = self.allocate_fifo_batches(
-					b.item_code, scrap_wh, 9999999, throw_if_missing=False
+					b.item_code, warehouse, 9999999, throw_if_missing=False
 				)
 				actual_qty = sum([flt(a.get("qty")) for a in allocs])
 
@@ -1836,7 +1940,7 @@ class RefiningEntry(Document):
 				{
 					"item_code": b.item_code,
 					"item_group": item_group,
-					"warehouse": scrap_wh,
+					"warehouse": warehouse,
 					"qty": actual_qty,
 					"uom": uom,
 					"source_type": "Dust",
@@ -1970,7 +2074,16 @@ class RefiningEntry(Document):
 
 		if self.refining_type == "Serial Number Refining":
 			for sn in self.serial_no_details:
+				# Use the serial's OWN as-built BOM (custom_bom_no) for the diamond/
+				# gemstone weights, mirroring scan_serial_no_action. Each serialized
+				# piece has its own BOM capturing its actual stone weights; the design
+				# item's generic active BOM belongs to a different piece and yields
+				# mismatched (often empty) stone weights — the reported "diamond weight
+				# is not match" bug. Fall back to the active BOM only when the serial
+				# has no BOM linked.
 				bom_name = frappe.db.get_value(
+					"Serial No", sn.serial_number, "custom_bom_no"
+				) or frappe.db.get_value(
 					"BOM", {"item": sn.item_code, "is_active": 1}, "name"
 				)
 				if bom_name:
@@ -1979,37 +2092,46 @@ class RefiningEntry(Document):
 						filters={"parent": bom_name},
 						fields=["item_code", "qty"],
 					)
+
+					# Aggregate quantities by item_code to prevent dropping rows
+					# if the BOM has multiple rows for the same diamond/gemstone.
+					agg_bom_items = {}
 					for bi in bom_items:
+						agg_bom_items[bi.item_code] = agg_bom_items.get(
+							bi.item_code, 0.0
+						) + flt(bi.qty)
+
+					for bi_item_code, bi_qty in agg_bom_items.items():
 						if (
-							self.is_diamond_item(bi.item_code)
-							and bi.item_code not in diamond_items
+							self.is_diamond_item(bi_item_code)
+							and bi_item_code not in diamond_items
 						):
 							self.append(
 								"recovered_diamond",
 								{
-									"item": bi.item_code,
-									"weight": bi.qty,
+									"item": bi_item_code,
+									"weight": bi_qty,
 									"pcs": 1,
-									"recovered_weight": bi.qty,
+									"recovered_weight": bi_qty,
 									"recovered_pcs": 1,
 								},
 							)
-							diamond_items.add(bi.item_code)
+							diamond_items.add(bi_item_code)
 						elif (
-							self.is_gemstone_item(bi.item_code)
-							and bi.item_code not in gemstone_items
+							self.is_gemstone_item(bi_item_code)
+							and bi_item_code not in gemstone_items
 						):
 							self.append(
 								"recovered_gemstone",
 								{
-									"item": bi.item_code,
-									"weight": bi.qty,
+									"item": bi_item_code,
+									"weight": bi_qty,
 									"pcs": 1,
-									"recovered_weight": bi.qty,
+									"recovered_weight": bi_qty,
 									"recovered_pcs": 1,
 								},
 							)
-							gemstone_items.add(bi.item_code)
+							gemstone_items.add(bi_item_code)
 		else:
 			for item in self.material_items:
 				if (
@@ -2295,42 +2417,21 @@ class RefiningEntry(Document):
 	def allocate_fifo_batches(
 		self, item_code, warehouse, required_qty, throw_if_missing=True
 	):
-		# Fetch batches from SBE (ERPNext v15+)
-		sbe_batches = frappe.db.sql(
-			"""
-			SELECT batch_no, SUM(qty) as actual_qty
-			FROM `tabSerial and Batch Entry`
-			WHERE item_code = %s AND warehouse = %s AND is_cancelled = 0
-			  AND batch_no IS NOT NULL AND batch_no != ''
-			GROUP BY batch_no
-			HAVING SUM(qty) > 0
-			ORDER BY MIN(creation) ASC
-		""",
-			(item_code, warehouse),
-			as_dict=1,
-		)
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
 
-		# Fetch legacy batches from SLE (pre-v15 or migrated stock)
-		sle_batches = frappe.db.sql(
-			"""
-			SELECT batch_no, SUM(actual_qty) as actual_qty
-			FROM `tabStock Ledger Entry`
-			WHERE item_code = %s AND warehouse = %s AND is_cancelled = 0
-			  AND batch_no IS NOT NULL AND batch_no != ''
-			GROUP BY batch_no
-			HAVING SUM(actual_qty) > 0
-			ORDER BY MIN(posting_datetime) ASC
-		""",
-			(item_code, warehouse),
-			as_dict=1,
-		)
-
-		# Combine them, prioritizing SBE but adding SLE if batch_no not already in SBE
-		sbe_batch_nos = {b.batch_no for b in sbe_batches}
-		batches = list(sbe_batches)
-		for b in sle_batches:
-			if b.batch_no not in sbe_batch_nos:
-				batches.append(b)
+		# In v16, per-batch stock lives in the Serial and Batch Bundle, NOT in
+		# `tabStock Ledger Entry.batch_no` (which is NULL) nor in a plain
+		# `Serial and Batch Entry` sum by warehouse. Querying those raw tables
+		# returned zero candidate batches for real SBB stock, which dropped batched
+		# items from the material table (Dust/Scrap fetch) and raised false
+		# "Insufficient batch stock" errors on submit. get_batch_qty() is the
+		# SBB-aware source of truth and already returns available batches in the
+		# configured pick order (FIFO), netting reserved/consumed stock.
+		batches = [
+			b
+			for b in (get_batch_qty(item_code=item_code, warehouse=warehouse) or [])
+			if flt(b.get("qty")) > 0
+		]
 
 		allocations = []
 		precision = 3
@@ -2350,14 +2451,11 @@ class RefiningEntry(Document):
 		target_qty = min(flt(required_qty, precision), max_available_qty)
 		allocated_qty = 0.0
 
-		from erpnext.stock.doctype.batch.batch import get_batch_qty
-
 		for batch in batches:
 			if allocated_qty >= target_qty:
 				break
 
-			batch_qty = get_batch_qty(batch.batch_no, warehouse, item_code)
-			available_qty = flt(batch_qty, precision)
+			available_qty = flt(batch.get("qty"), precision)
 
 			if available_qty < min_qty:
 				continue
@@ -2365,7 +2463,10 @@ class RefiningEntry(Document):
 			alloc_qty = min(available_qty, target_qty - allocated_qty)
 			if flt(alloc_qty, precision) >= min_qty:
 				allocations.append(
-					{"batch_no": batch.batch_no, "qty": flt(alloc_qty, precision)}
+					{
+						"batch_no": batch.get("batch_no"),
+						"qty": flt(alloc_qty, precision),
+					}
 				)
 				allocated_qty += alloc_qty
 
