@@ -182,7 +182,7 @@ def on_submit(self,method):
 						certification_si.save()
 
 def set_gst_details(self):
-    if self.sales_type not in ("Finished Goods", "Subcontracting"):
+    if self.sales_type not in ("Finished Goods", "Subcontracting","Branch Sales"):
         return
 
     customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
