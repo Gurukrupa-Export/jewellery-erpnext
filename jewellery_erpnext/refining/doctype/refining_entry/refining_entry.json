@@ -23,7 +23,7 @@
   "section_break_source",
   "scan_mwo",
   "scan_serial_no",
-   "scan_scrap_qr",
+  "scan_scrap_qr",
   "scrap_item",
   "work_order_action",
   "mwo_details",
@@ -226,6 +226,7 @@
   {
    "fieldname": "raw_material_html",
    "fieldtype": "HTML",
+   "hidden": 1,
    "label": "Raw Materials"
   },
   {
@@ -543,7 +544,7 @@
    "link_fieldname": "custom_refining_entry"
   }
  ],
- "modified": "2026-06-24 13:49:50.974259",
+ "modified": "2026-07-03 20:56:46.250471",
  "modified_by": "Administrator",
  "module": "Refining",
  "name": "Refining Entry",
@@ -591,7 +592,7 @@
    "role": "All"
   }
  ],
- "queue_in_background": 0,
+ "queue_in_background": 1,
  "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
