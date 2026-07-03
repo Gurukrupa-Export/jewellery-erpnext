@@ -4622,6 +4622,26 @@ def create_mr_wo_stock_entry(
 			or sre.warehouse
 		)
 
+		# Inventory type / customer must correspond to the batch actually being
+		# received — not the client payload. The receive dialog sends neither
+		# field, so trusting the row would leave inventory_type empty and let
+		# validate() default it to "Regular Stock", mismatching a Customer Goods
+		# batch in the ledger. The Batch master is authoritative here, mirroring
+		# the batch-selection convention (stock_entry.js) and repack.
+		batch_inventory_type = None
+		batch_customer = None
+		if batch_no:
+			batch_inventory_type, batch_customer = frappe.db.get_value(
+				"Batch", batch_no, ["custom_inventory_type", "custom_customer"]
+			) or (None, None)
+
+		row_inventory_type = batch_inventory_type or row.get("inventory_type")
+		row_customer = (
+			batch_customer
+			if row_inventory_type in ("Customer Goods", "Customer Stock")
+			else row.get("customer")
+		)
+
 		validated_rows.append(
 			{
 				"item_code": sre.item_code,
@@ -4629,8 +4649,8 @@ def create_mr_wo_stock_entry(
 				"pcs": req_pcs,
 				"batch_no": batch_no,
 				"s_warehouse": resolved_warehouse,
-				"inventory_type": row.get("inventory_type"),
-				"customer": row.get("customer"),
+				"inventory_type": row_inventory_type,
+				"customer": row_customer,
 			}
 		)
 

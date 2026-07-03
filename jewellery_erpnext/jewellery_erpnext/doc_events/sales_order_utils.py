@@ -1237,6 +1237,25 @@ def download_cost_sheet(sales_order):
 				},
 				'digit_14code'
 			)
+   
+			making_charge = frappe.db.get_value("Making Charge Price",{
+				"customer": so_doc.customer,
+				"metal_touch":metal_touch,
+				"setting_type":setting_type,
+				"mfg_complexity_code":row.custom_mfg_complexity_code,
+			},['name'])
+
+			making_charge_rate = None
+			making_charge_wastage = None
+			if making_charge:
+				making_charge_rate = frappe.db.get_value("Making Charge Price Item Subcategory",{
+					"parent":making_charge,
+					"subcategory":item_sub_category
+				},['rate_per_gm'])
+				making_charge_wastage = frappe.db.get_value("Making Charge Price Item Subcategory",{
+					"parent":making_charge,
+					"subcategory":item_sub_category
+				},["wastage"])
 
 			diamond_pcs = frappe.db.get_all(
 				"BOM Diamond Detail",
@@ -1304,27 +1323,68 @@ def download_cost_sheet(sales_order):
 			total_stone_cts = 0
 			total_handling = 0
 			total_amount = 0
+			total_gold_rate = 0
+			total_net_weight = 0
 
 
 			for pcs in diamond_pcs:
-				handling_rate = pcs.get('handling_rate') * pcs.get('quantity' or 0) if pcs.get('handling_rate') else 0
+				stone_code = frappe.db.sql("""
+					SELECT rm.customer_code
+					FROM `tabCustomer RM Code Detail` rm
+					LEFT JOIN `tabCustomer RM Code` rmc ON rm.parent = rmc.name
+					WHERE 
+						IFNULL(rm.stone_shape, '') = IFNULL(%s, '')
+						AND rmc.customer = %s
+						AND IFNULL(rm.diamond_type, '') = IFNULL(%s, '')
+						AND IFNULL(rm.diamond_quality, '') = IFNULL(%s, '')
+						AND CAST(IFNULL(rm.size_in_mm, 0) AS DECIMAL(10,3)) = CAST(%s AS DECIMAL(10,3))
+							
+					""",
+					(
+						pcs.get("stone_shape"),
+						so_doc.customer,
+						pcs.get("diamond_type"),
+						row.get('diamond_quality'),
+						pcs.get("size_in_mm"),
+					),
+					as_dict=1)
+				diamond_rate = frappe.db.get_all("Diamond Price List",filters={
+					"diamond_quality":row.get('diamond_quality'),
+					"size_in_mm":pcs.get('size_in_mm' or ''),
+					"stone_code":stone_code[0].get('customer_code') if stone_code else "",
+					"stone_shape":pcs.get('stone_shape' or ''),
+					"customer":so_doc.customer
+				},fields=['outright_handling_charges_rate','rate'])
+    
+				handling_rate = diamond_rate[0].get('outright_handling_charges_rate') * pcs.get('quantity' or 0) if diamond_rate[0].get('outright_handling_charges_rate') else 0
+				diamond_rt = diamond_rate[0].get('rate') * pcs.get('quantity' or 0) if diamond_rate[0].get('rate') else 0
 
 				total_stone_qty += pcs.get('pcs') or 0
 				total_stone_cts += pcs.get('quantity') or 0
-				total_amount += pcs.get('diamond_rate_for_specified_quantity') or 0
+				total_amount += diamond_rt or 0
 				total_handling += handling_rate
     
 			for gems in gemstone:
+				gemstone_rate = frappe.db.get_all("Gemstone Price List",filters={
+					"gemstone_quality":gems.get('gemstone_quality'),
+					"gemstone_size":gems.get('gemstone_size' or ''),
+					"stone_shape":gems.get('stone_shape' or ''),
+					"customer":so_doc.customer,
+					"cut_or_cab": gems.get('cut_or_cab')
+				},fields=['outright_handling_charges_rate','rate'])
+    
 				total_stone_qty += gems.get('pcs' or '') or 0		
 				total_stone_cts += gems.get('quantity') or 0
-				total_amount += pcs.get('gemstone_rate_for_specified_quantity') or 0
-				total_handling += gems.get('gemstone_rate_for_specified_quantity' or 0) * 0.15
+				total_amount += gems.get('pcs') * gemstone_rate[0].get('rate') if gemstone_rate else 0
+				total_handling += gems.get('pcs') * gemstone_rate[0].get('outright_handling_charges_rate') if gemstone_rate else 0
 
 			total = (
-				(net_weight * metal[0].get('wastage_rate') if metal else 0)
-				+ (net_weight * metal[0].get('making_rate') if metal else 0)
+				((net_weight * making_charge_wastage) /100 if making_charge_rate else 0)
+				+ (net_weight * making_charge_rate if making_charge_rate else 0)
 				+ total_handling
 			)
+			total_net_weight +=	net_weight if net_weight else 0
+			total_gold_rate += net_weight * so_doc.gold_rate if net_weight else 0
 			row_data = [
 				"",
 				digit_14code if digit_14code else "",
@@ -1350,12 +1410,12 @@ def download_cost_sheet(sales_order):
 				total_amount,
 				total_handling,
 				"",
-				net_weight * metal[0].get('making_rate') if metal else '',
+				(flt(net_weight) * flt(making_charge_rate) if making_charge_rate else ''),
 				"",
 				"",
 				"",
 				"",
-				net_weight * metal[0].get('wastage_rate') if metal else '',
+				(net_weight * making_charge_wastage) /100 if making_charge_rate else '',
 				total,
 			]
 			sheet.append(row_data)
@@ -1387,6 +1447,13 @@ def download_cost_sheet(sales_order):
 						pcs.get("size_in_mm"),
 					),
 					as_dict=1)
+				diamond_rate = frappe.db.get_all("Diamond Price List",filters={
+					"diamond_quality":row.get('diamond_quality'),
+					"size_in_mm":pcs.get('size_in_mm' or ''),
+					"stone_code":stone_code[0].get('customer_code') if stone_code else "",
+					"stone_shape":pcs.get('stone_shape' or ''),
+					"customer":so_doc.customer
+				},fields=['outright_handling_charges_rate','rate'])
 				row_data =[
 					"",
 					stone_code[0].get('customer_code') if stone_code else "",
@@ -1408,9 +1475,11 @@ def download_cost_sheet(sales_order):
 					pcs.get('stone_shape' or ''),
 					"Cut",
 					setting_type,
-					pcs.get('total_diamond_rate' or ''),
-					pcs.get('diamond_rate_for_specified_quantity' or ''),
-					pcs.get('handling_rate') * pcs.get('quantity' or 0) if pcs.get('handling_rate') else '',
+					diamond_rate[0].get('rate') if diamond_rate else'',
+					# pcs.get('total_diamond_rate' or ''),
+					# pcs.get('diamond_rate_for_specified_quantity' or ''),
+     				diamond_rate[0].get('rate') * pcs.get('quantity' or 0) if diamond_rate[0].get('rate') else '',
+					diamond_rate[0].get('outright_handling_charges_rate') * pcs.get('quantity' or 0) if diamond_rate[0].get('outright_handling_charges_rate') else '',
 				]
 				sheet.append(row_data)
 				last_row = sheet.max_row
@@ -1421,9 +1490,34 @@ def download_cost_sheet(sales_order):
 					if col in orange_columns:
 						cell.fill = orange_fill
 			for gems in gemstone:
+				stone_code = frappe.db.sql("""
+					SELECT rm.customer_code
+					FROM `tabCustomer RM Code Detail` rm
+					LEFT JOIN `tabCustomer RM Code` rmc ON rm.parent = rmc.name
+					WHERE 
+						IFNULL(rm.stone_shape, '') = IFNULL(%s, '')
+						AND rmc.customer = %s
+						AND IFNULL(rm.gemstone_type, '') = IFNULL(%s, '')
+						AND IFNULL(rm.gemstone_size, '') = IFNULL(%s, '')
+							
+					""",
+					(
+						gems.get("stone_shape"),
+						so_doc.customer,
+						gems.get("gemstone_type"),
+						gems.get('gemstone_size'),
+					),
+					as_dict=1)
+				gemstone_rate = frappe.db.get_all("Gemstone Price List",filters={
+					"gemstone_quality":gems.get('gemstone_quality'),
+					"gemstone_size":gems.get('gemstone_size' or ''),
+					"stone_shape":gems.get('stone_shape' or ''),
+					"customer":so_doc.customer,
+					"cut_or_cab": gems.get('cut_or_cab')
+				},fields=['outright_handling_charges_rate','rate'])
 				row_data =[
 					"",
-					"",
+					stone_code[0].get('customer_code') if stone_code else "",
 					"",
 					"",
 					"",
@@ -1442,9 +1536,9 @@ def download_cost_sheet(sales_order):
 					gems.get('stone_shape' or ''),
 					"Cut" if gems.get('cut_or_cab') == "Faceted" else 'Cab',
 					setting_type,
-					gems.get('total_gemstone_rate' or ''),
-					gems.get('gemstone_rate_for_specified_quantity' or ''),
-					gems.get('gemstone_rate_for_specified_quantity' or 0) * 0.15,
+					gemstone_rate[0].get('rate') if gemstone_rate else "",
+					gems.get('pcs' or 0) * gemstone_rate[0].get('rate') if gemstone_rate else "",
+					gems.get('pcs' or 0) * gemstone_rate[0].get('outright_handling_charges_rate') if gemstone_rate else "",
 				]
 				sheet.append(row_data)
 				last_row = sheet.max_row
@@ -1466,9 +1560,9 @@ def download_cost_sheet(sales_order):
 						"",
 						"",
 						"",
+						total_net_weight,
 						"",
-						"",
-						"",
+						total_gold_rate,
 						"",
 						total_stone_qty,
 						total_stone_cts,
