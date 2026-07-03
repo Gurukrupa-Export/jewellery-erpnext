@@ -352,21 +352,33 @@ def create_repack_stock_entry(batch_no, item_code, qty, target_rate, company, wa
     se.insert(ignore_permissions=True)
     se.submit()
 
-    # --- Use SE's actual value_difference after submit ---
-    se.reload()
-    value_difference = se.value_difference
+    gl_totals = frappe.db.get_all(
+        "GL Entry",
+        filters={
+            "voucher_type": "Stock Entry",
+            "voucher_no": se.name,
+            "account": expense_account,
+            "is_cancelled": 0,
+        },
+        fields=["sum(debit) as total_debit", "sum(credit) as total_credit"],
+    )[0]
+
+    total_debit = gl_totals.total_debit or 0
+    total_credit = gl_totals.total_credit or 0
+    net_stock_adjustment = total_debit - total_credit  # net amount currently sitting in Stock Adjustment for this SE
+
 
     # --- Create Journal Entry only if there is a difference ---
-    # if value_difference != 0:
-    #     je = _create_repack_journal_entry(
-    #         se_name=se.name,
-    #         company=company,
-    #         cost_center=cost_center,
-    #         expense_account=expense_account,
-    #         value_difference=value_difference,
-    #         posting_date=se.posting_date
-    #     )
-    #     return {"stock_entry": se.name, "journal_entry": je}
+    if net_stock_adjustment != 0:
+        je = _create_repack_journal_entry(
+            se_name=se.name,
+            company=company,
+            cost_center=cost_center,
+            expense_account=expense_account,
+            value_difference=net_stock_adjustment,
+            posting_date=se.posting_date
+        )
+        return {"stock_entry": se.name, "journal_entry": je}
 
     return {"stock_entry": se.name, "journal_entry": None}
 
