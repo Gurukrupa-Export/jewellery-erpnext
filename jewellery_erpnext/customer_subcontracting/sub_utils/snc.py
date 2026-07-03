@@ -52,6 +52,71 @@ def _row_needs_settlement(mwo, row, pmo_is_customer_gold):
 	return bool(batch_customer)
 
 
+def validate_snc_before_submit(doc, method=None):
+	"""Block submit of the finished-goods (for_fg) MWO while any working MWO of the
+	same PMO still needs its 'Create SNC' gold settlement done.
+
+	The FG MWO carries no borrowed gold of its own -- the settlement (and the Create
+	SNC button) live on the working sibling MWOs. So this fires once, at the FG MWO
+	submit, and verifies the siblings, mirroring the per-PMO repack guard.
+	"""
+	if not cint(getattr(doc, "for_fg", 0)) or not doc.manufacturing_order:
+		return
+
+	siblings = frappe.get_all(
+		"Manufacturing Work Order",
+		filters={
+			"manufacturing_order": doc.manufacturing_order,
+			"docstatus": 1,
+			"for_fg": 0,
+			"has_split_mwo": 0,
+			"name": ["!=", doc.name],
+		},
+		fields=["name", "snc_requirement", "snc_done"],
+	)
+
+	pending = []
+	for mwo in siblings:
+		# Prefer the stamped field; fall back to live computation for MWOs created
+		# before this field started being populated.
+		if mwo.snc_requirement:
+			needs = mwo.snc_requirement == "Need"
+		else:
+			needs = validate_button_visibility(mwo.name)
+		if needs and not cint(mwo.snc_done):
+			pending.append(mwo.name)
+
+	if pending:
+		mwo_list = "<br>".join("- <b>{0}</b>".format(name) for name in pending)
+		frappe.throw(
+			_(
+				"Gold Settlement Pending. Please click 'Create SNC' on the following "
+				"Manufacturing Work Order(s) before submitting:<br>{0}"
+			).format(mwo_list)
+		)
+
+
+def stamp_snc_requirement(doc, method=None):
+	"""Stamp a working MWO's ``snc_requirement`` (Need / Not Need) when its original
+	gold ``Material Transfer (WORK ORDER)`` is submitted, using the same 5-case logic
+	that drives the Create SNC button visibility. Skips SNC's own settlement transfers.
+	"""
+	if doc.stock_entry_type != "Material Transfer (WORK ORDER)" or not doc.get(
+		"manufacturing_work_order"
+	):
+		return
+	if (doc.get("custom_request_id") or "").startswith("SNC-"):
+		return
+
+	needs = validate_button_visibility(doc.manufacturing_work_order)
+	frappe.db.set_value(
+		"Manufacturing Work Order",
+		doc.manufacturing_work_order,
+		"snc_requirement",
+		"Need" if needs else "Not Need",
+	)
+
+
 @frappe.whitelist()
 def create_snc(mwo):
 	mwo = _get_mwo(mwo)
@@ -147,6 +212,7 @@ def create_snc(mwo):
 		)
 		created["transfers"].append(transfer)
 
+	frappe.db.set_value("Manufacturing Work Order", mwo.name, "snc_done", 1)
 	return created
 
 
