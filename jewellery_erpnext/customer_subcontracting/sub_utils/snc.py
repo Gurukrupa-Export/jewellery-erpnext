@@ -70,6 +70,7 @@ def validate_snc_before_submit(doc, method=None):
 			"docstatus": 1,
 			"for_fg": 0,
 			"has_split_mwo": 0,
+			"snc_done": 0,
 			"name": ["!=", doc.name],
 		},
 		fields=["name", "snc_requirement", "snc_done"],
@@ -93,9 +94,6 @@ def validate_snc_before_submit(doc, method=None):
 
 		if needs:
 			pending.append(mwo.name)
-			# Once a pending sibling is found we can stop evaluating the rest;
-			# the submit guard is already blocked.
-			break
 
 	if pending:
 		mwo_list = "<br>".join("- <b>{0}</b>".format(name) for name in pending)
