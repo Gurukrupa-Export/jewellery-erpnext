@@ -108,6 +108,21 @@ class TestSncSubmitGuard(IntegrationTestCase):
 			snc.validate_snc_before_submit(_fg_mwo())
 		throw.assert_not_called()
 
+	def test_button_hidden_when_snc_already_done(self):
+		mwo = _Doc(
+			name="MWO-WORK-1",
+			docstatus=1,
+			manufacturing_order="PMO-0001",
+			snc_done=1,
+			customer="Customer A",
+		)
+		with patch.object(snc, "_get_mwo", return_value=mwo), patch.object(
+			snc, "_get_original_material_transfer"
+		) as get_transfer, patch.object(snc, "_get_original_gold_rows") as get_rows:
+			self.assertFalse(snc.validate_button_visibility("MWO-WORK-1"))
+		get_transfer.assert_not_called()
+		get_rows.assert_not_called()
+
 	def test_mixed_lists_only_unsettled(self):
 		siblings = [
 			_sibling("MWO-A", "Need", 0),  # pending -> listed

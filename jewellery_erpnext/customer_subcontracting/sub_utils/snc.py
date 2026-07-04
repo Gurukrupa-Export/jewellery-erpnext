@@ -18,6 +18,8 @@ def validate_button_visibility(mwo):
 	mwo = _get_mwo(mwo)
 	if mwo.docstatus != 1 or not mwo.manufacturing_order:
 		return False
+	if cint(getattr(mwo, "snc_done", 0)):
+		return False
 
 	transfer = _get_original_material_transfer(mwo.name)
 	if not transfer:
