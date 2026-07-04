@@ -74,6 +74,24 @@ def _mwo_loss_dict(eir):
 	return loss
 
 
+def casting_issue_qty_by_item(rows):
+	"""{metal_item: sum of MWO.metal_weight} — the metal committed to a casting tree.
+
+	The casting metal is NOT on the operation at issue time (gold is cast in later,
+	during Receive, via Main Slip), so the operation/MWO ``gross_wt`` is 0. The work
+	order's planned metal lives in ``MWO.metal_weight`` (fetch_from
+	``master_bom.total_metal_weight``); seed the Issue ledger from that instead. A MWO
+	with no BOM metal weight contributes 0 (graceful fallback).
+	"""
+	out = {}
+	for _row, mwo in rows:
+		item = _metal_item(mwo)
+		if not item:
+			continue
+		out[item] = out.get(item, 0) + flt(mwo.metal_weight)
+	return out
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -149,23 +167,18 @@ def create_tree_on_issue(eir):
 	for attr in METAL_ATTRS:
 		tree.set(attr, ref_mwo.get(attr))
 
-	# Seed the Material Details ledger: issued metal aggregated per metal item.
-	item_qty = {}
-	for row, mwo in rows:
-		item = _metal_item(mwo)
-		if not item:
-			continue
-		item_qty[item] = item_qty.get(item, 0) + flt(row.gross_wt)
-
-	for item, qty in item_qty.items():
+	# List the metal-item rows so the operator sees what to issue; issue_qty starts at 0
+	# and is filled by the Tree Number "Issue Material" button (button-owned ledger for
+	# casting). MWO.metal_weight (via casting_issue_qty_by_item) stays the planned reference.
+	for item in casting_issue_qty_by_item(rows):
 		tree.append(
 			"material_details",
 			{
 				"item_code": item,
-				"issue_qty": qty,
+				"issue_qty": 0,
 				"receive_qty": 0,
 				"loss_qty": 0,
-				"pending_qty": qty,
+				"pending_qty": 0,
 			},
 		)
 
@@ -215,6 +228,13 @@ def unlink_tree_on_issue_cancel(eir):
 			)
 
 	if tree_name:
+		# The Issue Material button may have created physical Dept->MSL Stock Entries stamped
+		# with this tree; cancel them so they aren't orphaned when the tree is deleted.
+		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_stock_entry import (
+			cancel_tree_stock_entries,
+		)
+
+		cancel_tree_stock_entries(tree_name)
 		frappe.delete_doc("Tree Number", tree_name, ignore_permissions=True, force=True)
 
 
