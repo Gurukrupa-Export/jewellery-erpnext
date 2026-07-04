@@ -46,7 +46,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontr
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 	create_tree_on_issue,
-	is_casting_eir,
 	unlink_tree_on_issue_cancel,
 	update_tree_on_receive,
 	validate_casting_tree,
@@ -539,12 +538,8 @@ class EmployeeIR(Document):
 			# ONE Repack SE for all loss rows across the entire EIR.
 			create_loss_stock_entries(self)
 
-		# Casting tree: the Tree Number Receive button now owns the tree's Material Details
-		# ledger (record-only), so skip the EIR-side write for casting to avoid double-counting.
-		# The EIR still performs the physical receive (injection + process loss) + weight ledger.
-		# Non-casting EIRs keep the original behaviour (harmless no-op unless a tree is linked).
-		if not is_casting_eir(self):
-			update_tree_on_receive(self, cancel=cancel)
+		# Casting tree: roll received / loss metal into the tree ledger + status.
+		update_tree_on_receive(self, cancel=cancel)
 
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":

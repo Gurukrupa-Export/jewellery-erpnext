@@ -517,6 +517,15 @@
   },
   {
    "dt": "Stock Entry",
+   "fieldname": "get_fifo_batches",
+   "fieldtype": "Button",
+   "insert_after": "custom_get_pmo",
+   "label": "Get FIFO Batches",
+   "module": "Jewellery Erpnext",
+   "options": "update_batches"
+  },
+  {
+   "dt": "Stock Entry",
    "fieldname": "previous_mop",
    "fieldtype": "Link",
    "insert_after": "posting_time",
