@@ -70,20 +70,29 @@ def validate_snc_before_submit(doc, method=None):
 			"docstatus": 1,
 			"for_fg": 0,
 			"has_split_mwo": 0,
+			"snc_done": 0,
 			"name": ["!=", doc.name],
 		},
 		fields=["name", "snc_requirement", "snc_done"],
 	)
 
 	pending = []
+	visibility_cache = {}
 	for mwo in siblings:
+		if cint(mwo.snc_done):
+			continue
+
 		# Prefer the stamped field; fall back to live computation for MWOs created
 		# before this field started being populated.
 		if mwo.snc_requirement:
 			needs = mwo.snc_requirement == "Need"
 		else:
-			needs = validate_button_visibility(mwo.name)
-		if needs and not cint(mwo.snc_done):
+			needs = visibility_cache.get(mwo.name)
+			if needs is None:
+				needs = validate_button_visibility(mwo.name)
+				visibility_cache[mwo.name] = needs
+
+		if needs:
 			pending.append(mwo.name)
 
 	if pending:
