@@ -2,7 +2,6 @@ import string
 from datetime import datetime
 
 import frappe
-from frappe import _
 from frappe.utils import flt
 
 from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
@@ -119,13 +118,6 @@ def create_child_batches(doc, method=None):
 	if doc.doctype != "Stock Entry":
 		return
 
-	# create_child_batches mints "Customer Goods" child batches and requires
-	# doc._customer (set only by the customer-subcontracting orchestration). SEs
-	# outside that flow (e.g. auto-created "Process Loss") must not mint child
-	# batches -- their batch-tracked produce items auto-create a batch on submit.
-	if not getattr(doc, "_customer", None):
-		return
-
 	parent_batch = None
 	for r in doc.items:
 		if r.s_warehouse and r.batch_no:
@@ -173,25 +165,13 @@ def create_child_batches(doc, method=None):
 			last_alpha = batches[0].name.split("-")[-1]
 			if last_alpha in string.ascii_uppercase:
 				idx = string.ascii_uppercase.index(last_alpha)
-				if idx + 1 >= len(string.ascii_uppercase):
-					frappe.throw(
-						_(
-							"Cannot create child batch for {0}: parent batch {1} "
-							"already uses all 26 child suffixes (A-Z)."
-						).format(base_name, parent_batch)
-					)
 				alphabet = string.ascii_uppercase[idx + 1]
 
 		batch_name = f"{base_name}-{alphabet}"
 
 		while frappe.db.exists("Batch", batch_name):
 			if alphabet == "Z":
-				frappe.throw(
-					_(
-						"Cannot create a unique child batch for {0}: all 26 child "
-						"suffixes (A-Z) are already used."
-					).format(base_name)
-				)
+				break
 
 			alphabet = chr(ord(alphabet) + 1)
 			batch_name = f"{base_name}-{alphabet}"

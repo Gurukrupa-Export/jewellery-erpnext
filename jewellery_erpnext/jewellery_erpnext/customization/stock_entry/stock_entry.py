@@ -2,6 +2,7 @@ import copy
 import json
 
 import frappe
+from erpnext.stock.doctype.batch.batch import get_batch_qty
 from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 from frappe import _
 from frappe.utils import flt
@@ -55,9 +56,7 @@ class CustomStockEntry(StockEntry):
 		if not self.auto_created:
 			rows_to_append = []
 			# shared across rows so the same batch is not double-allocated when
-			# multiple rows draw from the same item/warehouse. Both FIFO-allocated
-			# rows (via get_fifo_batches) and already-filled rows kept below record
-			# their consumption here.
+			# multiple rows draw from the same item/warehouse (see get_fifo_batches)
 			consumed = {}
 			for row in self.items:
 				if (
@@ -78,20 +77,10 @@ class CustomStockEntry(StockEntry):
 						)
 				if frappe.db.get_value("Item", row.item_code, "has_batch_no"):
 					if row.s_warehouse:
-						if row.get("batch_no"):
-							# Batch already filled — keep it as-is and do NOT refetch /
-							# re-split, even if the row qty now exceeds the batch's
-							# available qty (an over-issue is caught at submit). Only
-							# rows with an empty batch trigger FIFO allocation.
-							# Record this row's consumption so a later empty row drawing
-							# from the same item/warehouse can't double-book the batch.
-							batch_key = (
-								row.s_warehouse or self.get("source_warehouse"),
-								row.batch_no,
-							)
-							consumed[batch_key] = consumed.get(batch_key, 0) + flt(
-								row.qty
-							)
+						if (
+							row.get("batch_no")
+							and get_batch_qty(row.batch_no, row.s_warehouse) >= row.qty
+						):
 							temp_row = copy.deepcopy(row)
 							rows_to_append += [temp_row]
 						else:
@@ -101,10 +90,6 @@ class CustomStockEntry(StockEntry):
 				else:
 					rows_to_append += [row.__dict__]
 
-			# The item table is always rebuilt so inventory_type / customer / diamond
-			# pcs are backfilled from the batch every save. The expensive FIFO refetch
-			# (get_fifo_batches) only runs for rows with an empty batch, so a save where
-			# every batch-tracked source row is already filled does zero refetches.
 			if rows_to_append:
 				self.items = []
 				for item in rows_to_append:
