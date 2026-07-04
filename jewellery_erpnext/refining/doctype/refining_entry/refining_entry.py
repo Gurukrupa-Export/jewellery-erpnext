@@ -337,26 +337,55 @@ class RefiningEntry(Document):
 			if phys_qty <= 0:
 				frappe.throw(_("Physical Quantity must be greater than zero."))
 
-	def calculate_totals(self):
-		self.gross_pure_weight = 0.0
-		self.expected_recovery = 0.0
+	def _compute_input_pure_weight(self):
+		"""Compute gross pure weight and expected recovery from material inputs.
+
+		For Serial Number Refining, prefer BOM Component rows (which include both
+		metal AND finding weights), falling back to serial_no_details.pure_weight
+		if no BOM components exist. For all other types, iterate material_items.
+		This keeps the Recovery Summary consistent with the Gold Recovery
+		Distribution table."""
+		gross_pure_weight = 0.0
+		expected_recovery = 0.0
 
 		if self.refining_type == "Serial Number Refining":
-			for sn in self.serial_no_details:
-				self.gross_pure_weight += flt(sn.pure_weight)
-				self.expected_recovery += flt(sn.pure_weight)
+			bom_components = [
+				item
+				for item in self.material_items
+				if item.get("source_type") == "BOM Component"
+			]
+			if bom_components:
+				for item in bom_components:
+					if item.purity:
+						purity_pct = frappe.db.get_value(
+							"Attribute Value", item.purity, "purity_percentage"
+						)
+						if purity_pct:
+							pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
+							gross_pure_weight += pure_weight
+							expected_recovery += pure_weight
+			else:
+				for sn in self.serial_no_details:
+					gross_pure_weight += flt(sn.pure_weight)
+					expected_recovery += flt(sn.pure_weight)
 		else:
 			for item in self.material_items:
-				# Only gold/metal items contribute to expected recovery;
-				# diamonds, gemstones, and non-metal items are excluded.
-				if item.purity and self.is_gold_item(item.item_code):
+				if item.purity:
 					purity_pct = frappe.db.get_value(
 						"Attribute Value", item.purity, "purity_percentage"
 					)
 					if purity_pct:
 						pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
-						self.gross_pure_weight += pure_weight
-						self.expected_recovery += pure_weight
+						gross_pure_weight += pure_weight
+						expected_recovery += pure_weight
+
+		return gross_pure_weight, expected_recovery
+
+	def calculate_totals(self):
+		(
+			self.gross_pure_weight,
+			self.expected_recovery,
+		) = self._compute_input_pure_weight()
 
 		self.refined_fine_weight = 0.0
 		self.actual_recovery = 0.0
@@ -371,9 +400,10 @@ class RefiningEntry(Document):
 		self.refining_loss = max(self.gross_pure_weight - self.refined_fine_weight, 0.0)
 
 		if self.expected_recovery > 0:
-			self.recovery_percentage = (
-				self.refined_fine_weight / self.expected_recovery
-			) * 100.0
+			self.recovery_percentage = min(
+				(self.refined_fine_weight / self.expected_recovery) * 100.0,
+				100.0,
+			)
 		else:
 			self.recovery_percentage = 0.0
 
@@ -1178,24 +1208,7 @@ class RefiningEntry(Document):
 
 	def _recalculate_and_persist_totals(self):
 		"""Recalculate summary fields and persist via db_set."""
-		gross_pure_weight = 0.0
-		expected_recovery = 0.0
-		if self.refining_type == "Serial Number Refining":
-			for sn in self.serial_no_details:
-				gross_pure_weight += flt(sn.pure_weight)
-				expected_recovery += flt(sn.pure_weight)
-		else:
-			for item in self.material_items:
-				# Only gold/metal items contribute to expected recovery;
-				# diamonds, gemstones, and non-metal items are excluded.
-				if item.purity and self.is_gold_item(item.item_code):
-					purity_pct = frappe.db.get_value(
-						"Attribute Value", item.purity, "purity_percentage"
-					)
-					if purity_pct:
-						pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
-						gross_pure_weight += pure_weight
-						expected_recovery += pure_weight
+		gross_pure_weight, expected_recovery = self._compute_input_pure_weight()
 
 		refined_fine_weight = 0.0
 		actual_recovery = 0.0
@@ -1208,10 +1221,11 @@ class RefiningEntry(Document):
 		# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
 		# (rounding / assay variance) and must never book a negative loss.
 		refining_loss = max(gross_pure_weight - refined_fine_weight, 0.0)
-		recovery_percentage = (
+		recovery_percentage = min(
 			(refined_fine_weight / expected_recovery) * 100.0
 			if expected_recovery > 0
-			else 0.0
+			else 0.0,
+			100.0,
 		)
 
 		self.db_set(
