@@ -124,6 +124,19 @@ class TestSncSubmitGuard(IntegrationTestCase):
 		self.assertNotIn("MWO-B", msg)
 		self.assertNotIn("MWO-C", msg)
 
+	def test_stops_early_after_first_pending_sibling(self):
+		siblings = [
+			_sibling("MWO-A", "Need", 0),
+			_sibling("MWO-B", None, 0),
+		]
+		with patch.object(snc.frappe, "get_all", return_value=siblings), patch.object(
+			snc, "validate_button_visibility"
+		) as vbv, patch.object(snc.frappe, "throw", side_effect=RuntimeError) as throw:
+			with self.assertRaises(RuntimeError):
+				snc.validate_snc_before_submit(_fg_mwo())
+		vbv.assert_not_called()
+		self.assertIn("MWO-A", throw.call_args[0][0])
+
 	# ---- stamp_snc_requirement ------------------------------------------
 
 	def test_stamp_sets_need(self):
