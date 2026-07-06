@@ -2683,37 +2683,40 @@ class RefiningEntry(Document):
 							)
 							gemstone_items.add(bi_item_code)
 		else:
+			agg_material_items = {}
 			for item in self.material_items:
-				if (
-					self.is_diamond_item(item.item_code)
-					and item.item_code not in diamond_items
-				):
+				if item.item_code:
+					agg_material_items[item.item_code] = agg_material_items.get(
+						item.item_code, 0.0
+					) + flt(item.qty)
+
+			for item_code, qty in agg_material_items.items():
+				if self.is_diamond_item(item_code) and item_code not in diamond_items:
 					self.append(
 						"recovered_diamond",
 						{
-							"item": item.item_code,
-							"weight": item.qty,
+							"item": item_code,
+							"weight": qty,
 							"pcs": 1,
-							"recovered_weight": item.qty,
+							"recovered_weight": qty,
 							"recovered_pcs": 1,
 						},
 					)
-					diamond_items.add(item.item_code)
+					diamond_items.add(item_code)
 				elif (
-					self.is_gemstone_item(item.item_code)
-					and item.item_code not in gemstone_items
+					self.is_gemstone_item(item_code) and item_code not in gemstone_items
 				):
 					self.append(
 						"recovered_gemstone",
 						{
-							"item": item.item_code,
-							"weight": item.qty,
+							"item": item_code,
+							"weight": qty,
 							"pcs": 1,
-							"recovered_weight": item.qty,
+							"recovered_weight": qty,
 							"recovered_pcs": 1,
 						},
 					)
-					gemstone_items.add(item.item_code)
+					gemstone_items.add(item_code)
 
 	def get_recovered_gold_total(self, total_recovered_weight=None):
 		if total_recovered_weight is not None:

@@ -4868,8 +4868,56 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 	result = create_mr_wo_stock_entry(se_data, request_id=request_id)
 	receive_se = result.get("docname") if isinstance(result, dict) else None
 	if receive_se:
+		# The receive SE (Material Receive WORK ORDER) creates MOP Log entries
+		# as a side effect of the onsubmit hook. Scrap material is leaving the
+		# manufacturing flow — those deductions must NOT reduce the MOP balance.
+		# Cancel them and recalculate the affected MOPs' weights.
+		_undo_scrap_mop_log_entries(receive_se)
 		_convert_received_scrap_to_scrap_batch(receive_se, request_id=request_id)
 	return result
+
+
+def _undo_scrap_mop_log_entries(receive_se_name):
+	"""Cancel MOP Log entries created by the scrap receive SE.
+
+	The scrap flow reuses the Make Receive machinery for SRE validation and
+	warehouse handling, but scrap material is not part of the manufacturing
+	balance. The MOP Log deductions created during submit must be reversed
+	so the MOP's gross_wt/net_wt are unaffected."""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		recalculate_manufacturing_operation_weights,
+	)
+
+	affected_mops = set()
+	mop_logs = frappe.get_all(
+		"MOP Log",
+		filters={
+			"voucher_type": "Stock Entry",
+			"voucher_no": receive_se_name,
+			"is_cancelled": 0,
+		},
+		fields=["name", "manufacturing_operation"],
+	)
+	for log in mop_logs:
+		if log.manufacturing_operation:
+			affected_mops.add(log.manufacturing_operation)
+
+	if mop_logs:
+		frappe.db.sql(
+			"""
+			UPDATE `tabMOP Log`
+			SET is_cancelled = 1
+			WHERE voucher_type = 'Stock Entry'
+			  AND voucher_no = %s
+			  AND is_cancelled = 0
+			""",
+			(receive_se_name,),
+		)
+
+	# Recalculate weights on every affected MOP so they reflect the
+	# pre-scrap balance (as if the receive never happened to MOP tracking).
+	for mop_name in affected_mops:
+		recalculate_manufacturing_operation_weights(mop_name)
 
 
 def _create_scrap_batch(item_code):
@@ -4899,7 +4947,8 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	if cint(se.docstatus) != 1:
 		return
 
-	scrap_request_id = f"{request_id or receive_se_name}-scrap"
+	base_id = (request_id or receive_se_name)[:30]
+	scrap_request_id = f"{base_id}-scrap"
 	# Idempotent: the receive is idempotent by request_id, so its scrap repack must
 	# be too — never double-convert the same received material.
 	if frappe.db.exists(
@@ -4944,6 +4993,10 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 		new_batch = _create_scrap_batch(item.item_code)
 		if not new_batch:
 			continue
+		# Fetch valuation rate so the finished-good row has a valid basic_rate
+		# when set_basic_rate_manually is enabled (required by ERPNext when
+		# multiple finished goods exist in a single Repack entry).
+		val_rate = flt(item.valuation_rate or item.basic_rate or 0)
 		# Consume the received material from its current (ordinary) batch...
 		repack.append(
 			"items",
@@ -4955,6 +5008,8 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 				"batch_no": item.batch_no,
 				"use_serial_batch_fields": 1,
 				"is_finished_item": 0,
+				"set_basic_rate_manually": 1,
+				"basic_rate": val_rate,
 			},
 		)
 		# ...and re-produce the same qty of the same item under the Scrap batch.
@@ -4968,6 +5023,8 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 				"batch_no": new_batch,
 				"use_serial_batch_fields": 1,
 				"is_finished_item": 1,
+				"set_basic_rate_manually": 1,
+				"basic_rate": val_rate,
 			},
 		)
 

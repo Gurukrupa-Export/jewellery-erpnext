@@ -14,7 +14,7 @@ frappe.ui.form.on("Refining Entry", {
 			filters: { is_stock_item: 1 },
 		}));
 		frm.set_query("warehouse", () => {
-			let wh_type = "Scrap";
+			let wh_type = ["in", ["Raw Material", "Scrap"]];
 			if (frm.doc.refining_type === "Work Order Refining") {
 				wh_type = "Manufacturing";
 			} else if (frm.doc.refining_type === "Serial Number Refining") {
@@ -113,7 +113,9 @@ frappe.ui.form.on("Refining Entry", {
 	department(frm) {
 		if (frm.doc.department) {
 			let wh_type = "Scrap";
-			if (frm.doc.refining_type === "Work Order Refining") {
+			if (frm.doc.refining_type === "Scrap Refining") {
+				wh_type = "Raw Material";
+			} else if (frm.doc.refining_type === "Work Order Refining") {
 				wh_type = "Manufacturing";
 			} else if (frm.doc.refining_type === "Serial Number Refining") {
 				wh_type = ["in", ["Finished Goods", "Transit of Tagging", "Product Certification"]];
