@@ -63,7 +63,7 @@
    "options": "Customer"
   },
   {
-   "depends_on": "eval:doc.price_list_type != \"Diamond Range\"",
+   "depends_on": "eval:doc.price_list_type == \"Fixed\"",
    "fieldname": "gemstone_code",
    "fieldtype": "Data",
    "label": "Stone Code"
