@@ -1,0 +1,87 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-07-04 17:14:41.337120",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "technique",
+  "rate_caratgm_from_threshold",
+  "rate_caratgm_to_threshold",
+  "rate_per_gm",
+  "rate_per_pc",
+  "customer_making_charge_code"
+ ],
+ "fields": [
+  {
+   "fieldname": "technique",
+   "fieldtype": "Link",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Technique",
+   "options": "Attribute Value"
+  },
+  {
+   "fieldname": "rate_caratgm_from_threshold",
+   "fieldtype": "Float",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "in_preview": 1,
+   "in_standard_filter": 1,
+   "label": "Rate Carat/gm from Threshold"
+  },
+  {
+   "fieldname": "rate_caratgm_to_threshold",
+   "fieldtype": "Float",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "in_preview": 1,
+   "in_standard_filter": 1,
+   "label": "Rate Carat/gm to Threshold"
+  },
+  {
+   "fieldname": "rate_per_gm",
+   "fieldtype": "Float",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "in_preview": 1,
+   "in_standard_filter": 1,
+   "label": "Rate per gm"
+  },
+  {
+   "fieldname": "rate_per_pc",
+   "fieldtype": "Float",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "in_preview": 1,
+   "in_standard_filter": 1,
+   "label": "Rate per pc"
+  },
+  {
+   "fieldname": "customer_making_charge_code",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "in_list_view": 1,
+   "in_preview": 1,
+   "in_standard_filter": 1,
+   "label": "Customer Making Charge Code"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-06 10:36:06.445585",
+ "modified_by": "Administrator",
+ "module": "Gurukrupa Exports",
+ "name": "Making Components",
+ "owner": "shubham_k@gkexport.com",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

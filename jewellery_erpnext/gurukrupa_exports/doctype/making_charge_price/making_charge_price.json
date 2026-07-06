@@ -18,10 +18,14 @@
   "to_gold_rate",
   "complexity_name",
   "mfgcode",
+  "mfg_complexity_code",
+  "making_components",
   "section_break_7",
   "subcategory",
   "section_break_9",
-  "finding_subcategory"
+  "finding_subcategory",
+  "section_break_po12",
+  "making_component"
  ],
  "fields": [
   {
@@ -98,23 +102,44 @@
    "label": "Metal Touch",
    "options": "Attribute Value"
   },
-   {
-   "depends_on": "eval:doc.customer=='MHCU0009'",
+  {
    "fieldname": "complexity_name",
    "fieldtype": "Data",
    "label": "Complexity Name"
   },
   {
-   "depends_on": "eval:doc.customer=='MHCU0009'",
+   "depends_on": "eval:doc.customer==\"MHCU0009\"",
    "fieldname": "mfgcode",
    "fieldtype": "Data",
    "label": "Mfg.Code"
+  },
+  {
+   "fieldname": "mfg_complexity_code",
+   "fieldtype": "Select",
+   "label": "Mfg Complexity Code",
+   "options": "\nA\nB\nC\nD\nE\nF\nXXD-R\nXXD-M\nXXD-C\nXXD-H\nXXD-F\nXXD-N\n2B-SH-SUR\n2B-SM-SUR\n2B-SS-SUR\n2J-SH-SUR\n2J-SM-SUR\n2J-SS-SUR"
+  },
+  {
+   "fieldname": "making_components",
+   "fieldtype": "Select",
+   "label": "Making Components",
+   "options": "\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10"
+  },
+  {
+   "fieldname": "section_break_po12",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "making_component",
+   "fieldtype": "Table",
+   "label": "Making Component",
+   "options": "Making Components"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-11-21 12:51:46.526464",
- "modified_by": "Administrator",
+ "modified": "2026-07-04 17:24:09.638762",
+ "modified_by": "shubham_k@gkexport.com",
  "module": "Gurukrupa Exports",
  "name": "Making Charge Price",
  "naming_rule": "Expression",

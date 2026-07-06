@@ -12,6 +12,7 @@
   "is_category",
   "is_diamond_grade",
   "is_finding_type",
+  "is_making_component",
   "column_break_7",
   "is_stone_shape",
   "is_collection",
@@ -394,7 +395,13 @@
    "fieldtype": "Link",
    "label": "Default Sales Type",
    "options": "Sales Type"
-  }
+  },
+{
+"default": "0",
+"fieldname": "is_making_component",
+"fieldtype": "Check",
+"label": "is Making Component"
+}
  ],
  "index_web_pages_for_search": 1,
  "links": [],

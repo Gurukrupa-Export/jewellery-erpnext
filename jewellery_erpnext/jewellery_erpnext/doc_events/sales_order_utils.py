@@ -9,102 +9,103 @@ import io
 from frappe.utils.file_manager import save_file
 
 
-# def customer_tolerance(customer, weight):
-# 	"""Get customer tolerance for a given weight"""
-# 	tolerance = frappe.db.exists("Customer Attributes", customer)
-# 	if tolerance:
-# 		customer_tolerance = frappe.get_all(
-# 			"Metal Tolerance Table", 
-# 			{"parent": customer, "parenttype": "Customer Attributes"}, 
-# 			["range_type", "from_weight", "to_weight", "tolerance_range", "minus_percent", "plus_percent"]
-# 		)
-# 		for tolerance_row in customer_tolerance:
-# 			if tolerance_row.get('range_type') and tolerance_row.get('range_type') == 'Prcentage':
-# 				return tolerance_row.tolerance_range
-# 			if weight >= tolerance_row.from_weight and weight <= tolerance_row.to_weight:
-# 				return tolerance_row.tolerance_range
-# 	return 0
+def customer_tolerance(customer, weight):
+	"""Get customer tolerance for a given weight"""
+	tolerance = frappe.db.exists("Customer Attributes", customer)
+	if tolerance:
+		customer_tolerance = frappe.get_all(
+			"Metal Tolerance Table", 
+			{"parent": customer, "parenttype": "Customer Attributes"}, 
+			["range_type", "from_weight", "to_weight", "tolerance_range", "minus_percent", "plus_percent"]
+		)
+		for tolerance_row in customer_tolerance:
+			if tolerance_row.get('range_type') and tolerance_row.get('range_type') == 'Prcentage':
+				return tolerance_row.tolerance_range
+			if weight >= tolerance_row.from_weight and weight <= tolerance_row.to_weight:
+				return tolerance_row.tolerance_range
+	return 0
 
-# def customer_making_details(customer, metal_rate_gst, metal_rate, bom_doc):
-# 	"""
-# 	Get making charge and wastage amount for a customer based on metal rate and BOM details.
+def customer_making_details(customer, metal_rate_gst, metal_rate, bom_doc):
+	"""
+	Get making charge and wastage amount for a customer based on metal rate and BOM details.
 
-# 	Returns:
-# 		tuple: (making_amt, labour_charge, per_pc_labour_charge, wastage_amt)
-# 	"""
-# 	metal = bom_doc.metal_detail[0] if bom_doc.metal_detail else None
+	Returns:
+		tuple: (making_amt, labour_charge, per_pc_labour_charge, wastage_amt)
+	"""
+	metal = bom_doc.metal_detail[0] if bom_doc.metal_detail else None
 
-# 	# ── Early exits ──────────────────────────────────────────────────
-# 	if not metal:
-# 		return 0, 0, 0, 0
+	# ── Early exits ──────────────────────────────────────────────────
+	if not metal:
+		return 0, 0, 0, 0
 
-# 	# ── Fetch matching Making Charge Price record ────────────────────
-# 	mc = frappe.get_all(
-# 		"Making Charge Price",
-# 		filters={
-# 			"customer": customer,
-# 			"metal_type": bom_doc.metal_type,
-# 			"setting_type": bom_doc.setting_type,
-# 			"from_gold_rate": ["<=", metal_rate_gst],
-# 			"to_gold_rate": [">=", metal_rate_gst],
-# 			"metal_touch": bom_doc.metal_touch,
-# 		},
-# 		fields=["name"],
-# 		limit=1,
-# 	)
+	# ── Fetch matching Making Charge Price record ────────────────────
+	mc = frappe.get_all(
+		"Making Charge Price",
+		filters={
+			"customer": customer,
+			"metal_type": bom_doc.metal_type,
+			"setting_type": bom_doc.setting_type,
+			"from_gold_rate": ["<=", metal_rate_gst],
+			"to_gold_rate": [">=", metal_rate_gst],
+			"metal_touch": bom_doc.metal_touch,
+		},
+		fields=["name"],
+		limit=1,
+	)
 
-# 	if not mc:
-# 		return 0, 0, 0, 0
+	if not mc:
+		return 0, 0, 0, 0
 
-# 	# ── Fetch subcategory pricing info ───────────────────────────────
-# 	sub_info = frappe.db.get_value(
-# 		"Making Charge Price Item Subcategory",
-# 		{
-# 			"parent": mc[0]["name"],
-# 			"subcategory": bom_doc.item_subcategory,
-# 		},
-# 		["rate_per_gm", "rate_per_pc", "wastage", "rate_per_gm_threshold"],
-# 		as_dict=True,
-# 	)
+	# ── Fetch subcategory pricing info ───────────────────────────────
+	sub_info = frappe.db.get_value(
+		"Making Charge Price Item Subcategory",
+		{
+			"parent": mc[0]["name"],
+			"subcategory": bom_doc.item_subcategory,
+		},
+		["rate_per_gm", "rate_per_pc", "wastage", "rate_per_gm_threshold"],
+		as_dict=True,
+	)
 
-# 	if not sub_info:
-# 		return 0, 0, 0, 0
+	if not sub_info:
+		return 0, 0, 0, 0
 
-# 	if not (metal.get("quantity") and metal.get("metal_type") and metal.get("metal_touch")):
-# 		return 0, 0, 0, 0
+	if not (metal.get("quantity") and metal.get("metal_type") and metal.get("metal_touch")):
+		return 0, 0, 0, 0
 
-# 	# ── Determine making rate based on weight threshold ──────────────
-# 	threshold = flt(sub_info.rate_per_gm_threshold) or 2
-# 	weight = flt(bom_doc.metal_and_finding_weight)
-# 	is_below_threshold = weight < threshold
+	# ── Determine making rate based on weight threshold ──────────────
+	threshold = flt(sub_info.rate_per_gm_threshold) or 2
+	weight = flt(bom_doc.metal_and_finding_weight)
+	is_below_threshold = weight < threshold
 
-# 	labour_charge = flt(sub_info.rate_per_gm) or 0
-# 	per_pc_labour_charge = flt(sub_info.rate_per_pc) or 0
+	labour_charge = flt(sub_info.rate_per_gm) or 0
+	per_pc_labour_charge = flt(sub_info.rate_per_pc) or 0
 
-# 	making_rate = flt(sub_info.rate_per_pc) if is_below_threshold else flt(sub_info.rate_per_gm)
-# 	wastage_rate = 0 if is_below_threshold else flt(sub_info.wastage) / 100
+	making_rate = flt(sub_info.rate_per_pc) if is_below_threshold else flt(sub_info.rate_per_gm)
+	wastage_rate = 0 if is_below_threshold else flt(sub_info.wastage) / 100
 
-# 	making_amt = making_rate if is_below_threshold else making_rate * metal.quantity
+	making_amt = making_rate if is_below_threshold else making_rate * metal.quantity
 
-# 	# ── Calculate wastage using customer metal purity ────────────────
-# 	customer_metal_purity = frappe.db.get_value(
-# 		"Metal Criteria",
-# 		{
-# 			"parent": customer,
-# 			"metal_type": metal.metal_type,
-# 			"metal_touch": metal.metal_touch,
-# 		},
-# 		"metal_purity",
-# 	)
+	# ── Calculate wastage using customer metal purity ────────────────
+	customer_metal_purity = frappe.db.get_value(
+		"Metal Criteria",
+		{
+			"parent": customer,
+			"metal_type": metal.metal_type,
+			"metal_touch": metal.metal_touch,
+		},
+		"metal_purity",
+	)
 
-# 	if not customer_metal_purity:
-# 		return making_amt, labour_charge, per_pc_labour_charge, 0
+	if not customer_metal_purity:
+		return making_amt, labour_charge, per_pc_labour_charge, 0
 
-# 	calculated_gold_rate = (flt(customer_metal_purity) * metal_rate_gst) / (100 + metal_rate)
-# 	line_gold_amt = round(calculated_gold_rate * metal.quantity, 2)
-# 	wastage_amt = line_gold_amt * wastage_rate
+	calculated_gold_rate = (flt(customer_metal_purity) * metal_rate_gst) / (100 + metal_rate)
+	line_gold_amt = round(calculated_gold_rate * metal.quantity, 2)
+	wastage_amt = line_gold_amt * wastage_rate
 
-# 	return making_amt, labour_charge, per_pc_labour_charge, wastage_amt
+	return making_amt, labour_charge, per_pc_labour_charge, wastage_amt
+
 
 
 @frappe.whitelist()
@@ -113,6 +114,9 @@ def download_cost_sheet(sales_order):
 	customer_name = frappe.db.get_value('Sales Order', sales_order ,'customer_name')
 	so_doc = frappe.get_doc("Sales Order", sales_order)
 	if customer_name == "Caratlane Trading Private Limited":
+		from openpyxl import Workbook
+		from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+		import io
 		wb = Workbook()
 		ws = wb.active
 		ws.title = "COST Sheet"
@@ -465,21 +469,59 @@ def download_cost_sheet(sales_order):
 					row_data[51] = "Yes" if row_data[7] and row_data[7].lower() == "yellow" else "No"
 					row_data[52] = "Yes" if row_data[7] and row_data[7].lower() == "pink" else "No"
 
-
+					mc = frappe.get_all(
+						"Making Charge Price",
+						filters={
+							"customer": customer,
+							"metal_type": bom.metal_type,
+							"setting_type": bom.setting_type,
+							# "from_gold_rate": ["<=", metal_rate_gst],
+							# "to_gold_rate": [">=", metal_rate_gst],
+							"metal_touch": bom.metal_touch,
+							"making_components": frappe.get_value("Serial No",soi.get('serial_no'),'custom_making_component')
+						},
+						fields=["name"],
+						limit=1,
+					)
+					metal_ratio =  bom.get("metal_to_diamond_ratio_excl_of_finding")
+					technique = frappe.get_value(
+						"Serial No",
+						soi.get("serial_no"),
+						"custom_technique"
+					)
+					lbr_amt = None
+					if mc:
+						lbr_amt = frappe.db.get_all(
+							"Making Components",
+							filters={
+								"parent": mc[0].get('name'),
+								"rate_caratgm_from_threshold": ["<=", 7.7],
+								"rate_caratgm_to_threshold": [">=", 7.7],
+								"technique": technique,
+							},
+							fields=["rate_per_pc","rate_per_gm"],
+							limit=1,
+						)
+					
 					# ── Shifted Metal & Labor columns ─────────────────────
 					row_data[COL_METAL_RATE]  = metal_rate
+					row_data[COL_METAL_VAL] = metal.get("amount") if bom.metal_detail else""
+					row_data[COL_LABOR]      = lbr_amt[0].get("rate_per_gm") if lbr_amt else ""
+					row_data[COL_PER_PC_LAB] = lbr_amt[0].get("rate_per_pc") if lbr_amt else ""
 					row_data[COL_TOTAL_DIA]   = flt(bom.diamond_weight)
+					row_data[COL_TOTAL]      = bom.metal_and_finding_weight * lbr_amt[0].get("rate_per_gm") if lbr_amt else 0
+					row_data[COL_TOTAL_PRICE] =  (metal.get("amount") if bom.metal_detail else 0) + (bom.metal_and_finding_weight * lbr_amt[0].get("rate_per_gm") if lbr_amt else 0)
 					row_data[COL_CENT_PER_GM] = (
 						round(row_data[COL_TOTAL_DIA] / row_data[39], 3)
 						if row_data[39] else ""
 					)
+					row_data[COL_TECHNIQUE] =  frappe.get_value("Serial No",soi.get('serial_no'),'custom_technique')
 
 					if metal_rate_gst:
 						customer_price_data = customer_making_details(customer, metal_rate_gst, metal_rate, bom)
-						row_data[COL_LABOR]      = customer_price_data[1]
-						row_data[COL_PER_PC_LAB] = customer_price_data[2]
+						
 						row_data[COL_WASTAGE]    = customer_price_data[3]
-						row_data[COL_TOTAL]      = customer_price_data[0]
+						
 				
 				# ── Dynamic Diamond Quality Columns (Yes/No) ──────────────────────
 				stone_quality_raw = stone.get("quality", "")
@@ -557,7 +599,7 @@ def download_cost_sheet(sales_order):
 			"HSN CODE ( 8 digit)","DESCRIPTION","Qty","Gross Wt","Net Wt","Wt UOM","Rate UOM",
 			"Rate","Value","Labour/ Dia Handling / Other per ct or gm charges","Labour Amt","Loss / CS Handling / Other %",
 			"Loss Amt","Stone Shape","Setting Type","Stone Cut/ Cab","Stone Quality",
-			"Stone Color","Stone Size (mm)","Stone Sieve Size","Addional Charges",
+			"Stone Color","Stone Size (mm)","Stone Sieve Size","Addional Charges","Total Value",
 		]
 
 		sheet.append(headers)
@@ -643,6 +685,7 @@ def download_cost_sheet(sales_order):
 			total_value = 0
 			lbr_amount = 0
 			wastage_amt = 0
+			loss_amt  = 0
 
 			metal_touch = frappe.db.get_value('BOM', row.get('bom'), 'metal_touch')
 			product_size = frappe.db.get_value('BOM', row.get('bom'), 'product_size')
@@ -650,6 +693,7 @@ def download_cost_sheet(sales_order):
 			setting_type = frappe.db.get_value('BOM', row.get('bom'), 'setting_type')
 			category_item = frappe.db.get_value('BOM', row.get('bom'), 'item_category')
 			subcategory = frappe.db.get_value('BOM', row.get('bom'), 'item_subcategory')
+			net_weight = frappe.db.get_value('BOM', row.get('bom'), 'metal_and_finding_weight')
 			diamond_qlty =  row.get('diamond_quality')
 			if diamond_qlty:
 				fg, si = diamond_qlty.split("-")
@@ -695,25 +739,47 @@ def download_cost_sheet(sales_order):
                                 'item_category':category_item,
                                 'product_size_in':product_size
                                 },"product_size")
+
+			mg = frappe.db.get_value("Serial No",{"name":row.get('serial_no')},"custom_mfg_complexity_code")
+			mg_code =frappe.db.get_value("Complexity Category",{"mfg_code":mg,"parent":"MHCU0008"},"complexity_name")
+			
 			making_charge =  frappe.db.get_all('Making Charge Price',filters = {
 				'customer':so_doc.customer,
 				'setting_type':setting_type,
 				'metal_touch':metal_touch,
+				'mfg_complexity_code':mg
 			},fields=['name'])
+   
+			# frappe.throw(str(making_charge))
 			making_charges = None
-			if making_charge:
-				making_charges = frappe.db.get_all("Making Charge Price Item Subcategory",filters={
-							"parent": making_charge[0].name,
-							"subcategory":subcategory
-						},fields=['mfg_complexity_code','wastage'])
-			making_code = None
-			if making_charges:
-				if making_charges[0].get('mfg_complexity_code') == "Simple":
-					making_code = 'A'
-				elif making_charges[0].get('mfg_complexity_code') == "Medium":
-					making_code = 'B'
-				elif making_charges[0].get('mfg_complexity_code') == "Complex":
-					making_code = 'C'
+			rate_per = None
+			rate_per_pc = None
+			if mg in ['E','F']:
+				if making_charge:
+					making_charges = frappe.db.get_all("Making Charge Price Item Subcategory",filters={
+								"parent": making_charge[0].name,
+								"subcategory":subcategory
+							},fields=['mfg_complexity_code','wastage',"rate_per_pc"])
+					rate_per = making_charges[0].get('rate_per_pc')if making_charges else ""
+					rate_per_pc = making_charges[0].get('rate_per_pc')if making_charges else ""
+			else:
+				if making_charge:
+					making_charges = frappe.db.get_all("Making Charge Price Item Subcategory",filters={
+								"parent": making_charge[0].name,
+								"subcategory":subcategory
+							},fields=['mfg_complexity_code','wastage',"rate_per_gm"])
+					rate_per = net_weight * making_charges[0].get('rate_per_gm')if making_charges else ""
+					rate_per_pc = making_charges[0].get('rate_per_gm')if making_charges else ""
+				# frappe.throw(str(making_charge))
+    
+			# making_code = None
+			# if making_charges:
+			# 	if making_charges[0].get('mfg_complexity_code') == "Simple":
+			# 		making_code = 'A'
+			# 	elif making_charges[0].get('mfg_complexity_code') == "Medium":
+			# 		making_code = 'B'
+			# 	elif making_charges[0].get('mfg_complexity_code') == "Complex":
+			# 		making_code = 'C'
 			total_value = total_value + metal_detail[0].get('amount') if metal_detail else 0 
 			lbr_amount = lbr_amount + metal_detail[0].get('making_amount') if metal_detail else 0
 			wastage_amt = wastage_amt + metal_detail[0].get('wastage_amount') if metal_detail else 0
@@ -726,8 +792,9 @@ def download_cost_sheet(sales_order):
 				metal_touch or '',
 				prodct_size or '',
 				metal_colour or '',
-				making_charges[0].get('mfg_complexity_code') if making_charges else "",
-				making_code,
+				# making_charges[0].get('mfg_complexity_code') if making_charges else "",
+				mg_code if mg_code else "",
+				mg if mg else "",
 				", ".join(finding) if finding else '',
 				category[0].get('customer_category') if category else "",
 				category[0].get('customer_subcategory') if category else "",
@@ -738,13 +805,14 @@ def download_cost_sheet(sales_order):
 				frappe.db.get_value('BOM', row.get('bom'), 'item_category'),
 				"",
 				frappe.db.get_value('BOM', row.get('bom'), 'gross_weight'),
-				metal_detail[0].get('quantity') if metal_detail else "",
+				net_weight,
 				"GM",
 				"WT",
 				metal_detail[0].get('rate') if metal_detail else "",
 				metal_detail[0].get('amount') if metal_detail else "",
-				metal_detail[0].get('making_rate') if metal_detail else "",
-				metal_detail[0].get('making_amount') if metal_detail else "",
+				rate_per_pc,
+				rate_per,
+				# metal_detail[0].get('making_amount') if metal_detail else "",
 				making_charges[0].get('wastage') if making_charges else "",
 				metal_detail[0].get('wastage_amount') if metal_detail else "",
 				"",
@@ -755,7 +823,7 @@ def download_cost_sheet(sales_order):
 				"",
 				"",
 				"",
-				metal_detail[0].get('amount') if metal_detail else 0 + metal_detail[0].get('making_amount') if metal_detail else 0,
+				(metal_detail[0].get('amount') if metal_detail else 0) + rate_per + (metal_detail[0].get('wastage_amount') if metal_detail else 0),
 			]
 
 			sheet.append(row_data)
@@ -780,7 +848,6 @@ def download_cost_sheet(sales_order):
    
 			for item in diamond_detail:
 				total_se_rate = total_se_rate + item.get('se_rate')
-				total_value = total_value + item.get('diamond_rate_for_specified_quantity') or 0 
 				stone_code = frappe.db.sql("""
 					SELECT rm.customer_code
 					FROM `tabCustomer RM Code Detail` rm
@@ -801,6 +868,15 @@ def download_cost_sheet(sales_order):
 						item.get("size_in_mm"),
 					),
 					as_dict=1)
+				diamond_rate = frappe.db.get_all("Diamond Price List",filters={
+					"diamond_quality":row.get('diamond_quality'),
+					"size_in_mm":item.get('size_in_mm' or ''),
+					"stone_code":stone_code[0].get('customer_code') if stone_code else "",
+					"stone_shape":item.get('stone_shape' or ''),
+					"customer":so_doc.customer
+				},fields=['outright_handling_charges_rate','rate'])
+				total_value += item.get('quantity',0) * diamond_rate[0].get('rate',0) if diamond_rate else 0
+				lbr_amount += item.get('quantity',0) *  diamond_rate[0].get('outright_handling_charges_rate',0) if diamond_rate else 0
 				row_data = [
 					"", "", "", "", "", "", "", "", "", "", "", "", "", "",
      				"",
@@ -812,10 +888,13 @@ def download_cost_sheet(sales_order):
 					item.get('quantity') or '',
 					"CT",
 					"WT",
-					item.get('total_diamond_rate') or '',
-					item.get('diamond_rate_for_specified_quantity') or 0,
-					item.get('handling_rate') or '',
-					"",
+					# item.get('total_diamond_rate') or '',
+					# item.get('diamond_rate_for_specified_quantity') or 0,
+					# item.get('handling_rate') or '',
+					diamond_rate[0].get('rate') if diamond_rate else '',
+					item.get('quantity') * diamond_rate[0].get('rate') if diamond_rate else 0,
+					diamond_rate[0].get('outright_handling_charges_rate')if diamond_rate else "",
+					item.get('quantity') *  diamond_rate[0].get('outright_handling_charges_rate') if diamond_rate else "",
 					"",
 					"",
 					item.get('stone_shape') or '',
@@ -848,19 +927,49 @@ def download_cost_sheet(sales_order):
 			}, fields=['*'])
 			total_se_rate = 0
 			for item in gemstone_detail:
-				total_se_rate = total_se_rate + item.get('se_rate')
-				total_value = total_value + item.get('se_rate') or 0,
+				stone_code = frappe.db.sql("""
+					SELECT rm.customer_code
+					FROM `tabCustomer RM Code Detail` rm
+					LEFT JOIN `tabCustomer RM Code` rmc ON rm.parent = rmc.name
+					WHERE 
+						IFNULL(rm.stone_shape, '') = IFNULL(%s, '')
+						AND rmc.customer = %s
+						AND IFNULL(rm.gemstone_type, '') = IFNULL(%s, '')
+						AND IFNULL(rm.gemstone_size, '') = IFNULL(%s, '')
+							
+					""",
+					(
+						item.get("stone_shape"),
+						so_doc.customer,
+						item.get("gemstone_type"),
+						item.get('gemstone_size'),
+					),
+					as_dict=1)
+				gemstone_rate = None
+				if stone_code:
+					gemstone_rate = frappe.db.get_all("Gemstone Price List",filters={
+						"gemstone_quality":item.get('gemstone_quality'),
+						"gemstone_size":item.get('gemstone_size' or ''),
+						"stone_shape":item.get('stone_shape' or ''),
+						"customer":so_doc.customer,
+						"cut_or_cab": item.get('cut_or_cab'),
+						"gemstone_code":stone_code[0].get('customer_code') if stone_code else ""
+					},fields=['outright_handling_charges_rate','rate'])
+				total_se_rate = total_se_rate + item.get('se_rate') or 0
+				total_value += item.get('pcs',0) * gemstone_rate[0].get("rate",0) if gemstone_rate else 0
 				row_data = [
-					"", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+					"", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+     				stone_code[0].get('customer_code') if stone_code else "",
+         			"",
 					item.get('gemstone_type') or '',
 					item.get('pcs') or '',
 					"",
 					item.get('quantity') or '',
 					"CT",
 					"WT",
-					item.get('total_gemstone_rate') or '',
-					item.get('se_rate') or '',
-					"",
+					gemstone_rate[0].get("rate") if gemstone_rate else "",
+					item.get('pcs') * gemstone_rate[0].get("rate") if gemstone_rate else 0,
+					gemstone_rate[0].get("outright_handling_charges_rate") if gemstone_rate else "",
 					"",
 					"",
 					"",
@@ -910,7 +1019,7 @@ def download_cost_sheet(sales_order):
 					'',
 					"",
 					"",
-					"",
+					total_value + lbr_amount + wastage_amt,
 
 				]
 
