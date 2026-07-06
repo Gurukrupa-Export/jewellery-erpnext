@@ -2353,6 +2353,29 @@ def setup_data():
 
 	_ensure_mr_transfer_se_fields()
 
+	# Provision the gke_customization "Order Form Detail.pre_order_form_details" custom field.
+	# gke's Order Form submit (create_cad_orders) reads `row.pre_order_form_details` as a direct
+	# attribute, but the field lives ONLY in gke's fixtures, which CI disables (install.sh moves
+	# them aside before install-app gke_customization). Without the docfield the access raises
+	# AttributeError during Order Form submit, breaking test_quotation. Idempotent (keys on
+	# (dt, fieldname); a no-op once the field exists).
+	from jewellery_erpnext.patches.add_order_form_detail_pre_order_field import (
+		execute as _ensure_order_form_detail_pre_order_field,
+	)
+
+	_ensure_order_form_detail_pre_order_field()
+
+	# Provision the Stock Entry.custom_tree_number back-link used by the Tree Number
+	# "Issue Material" / "Receive Material" buttons (tree_stock_entry.py). The column lives
+	# only in custom_fields/stock_entry.json + its patch, which install-app marks complete
+	# WITHOUT running on fresh sites, so se.custom_tree_number = ... would raise 1054.
+	# Idempotent (no-op once the column exists).
+	from jewellery_erpnext.patches.add_stock_entry_tree_number_field import (
+		execute as _ensure_stock_entry_tree_number_field,
+	)
+
+	_ensure_stock_entry_tree_number_field()
+
 	# Provision every custom_* column targeted by an app fetch_from. These live in
 	# custom_fields/*.json + per-field patches that install-app marks complete WITHOUT
 	# running on fresh sites, so a missing column makes link validation raise 1054 on

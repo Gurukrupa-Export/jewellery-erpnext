@@ -23,9 +23,12 @@
   "section_break_source",
   "scan_mwo",
   "scan_serial_no",
-   "scan_scrap_qr",
+  "scan_scrap_qr",
+  "scrap_item",
+  "work_order_action",
   "mwo_details",
   "serial_no_details",
+  "raw_material_html",
   "section_break_dust",
   "date_from",
   "date_to",
@@ -207,6 +210,26 @@
    "options": "Barcode"
   },
   {
+   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
+   "fieldname": "scrap_item",
+   "fieldtype": "Link",
+   "label": "Scrap Item",
+   "options": "Item"
+  },
+  {
+   "depends_on": "eval:doc.refining_type=='Work Order Refining'",
+   "fieldname": "work_order_action",
+   "fieldtype": "Select",
+   "label": "Work Order Action After Refining",
+   "options": "\nCancel Work Order\nTransfer for Recasting"
+  },
+  {
+   "fieldname": "raw_material_html",
+   "fieldtype": "HTML",
+   "hidden": 1,
+   "label": "Raw Materials"
+  },
+  {
    "depends_on": "eval:doc.refining_type=='Work Order Refining'",
    "fieldname": "mwo_details",
    "fieldtype": "Table",
@@ -273,7 +296,6 @@
    "options": "Department Operation"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining'",
    "fieldname": "loss_item",
    "fieldtype": "Link",
    "label": "Loss Item",
@@ -522,7 +544,7 @@
    "link_fieldname": "custom_refining_entry"
   }
  ],
- "modified": "2026-06-24 13:49:50.974259",
+ "modified": "2026-07-03 20:56:46.250471",
  "modified_by": "Administrator",
  "module": "Refining",
  "name": "Refining Entry",

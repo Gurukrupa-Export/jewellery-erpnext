@@ -5,7 +5,7 @@ from datetime import datetime
 import frappe
 from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe import _
-from frappe.desk.reportview import get_filters_cond, get_match_cond
+from frappe.desk.reportview import get_match_cond
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
 
@@ -241,6 +241,33 @@ def update_existing(doctype, name, field, value=None, debug=False):
 			query = query.set(getattr(Doc, field), value)
 
 	query.run(debug=debug)
+
+
+def is_mwo_refined(manufacturing_work_order):
+	"""True when a submitted Work Order Refining Entry has consumed this MWO's metal.
+
+	Once refined, the MWO is dead per SOP (qty and all operation weights are zeroed
+	by the Refining Entry); operations created afterwards must start at 0 weight and
+	must not inherit/clone pre-refining balances. Checked via the Refining Entry's
+	mwo_details child table so a cancelled Refining Entry (docstatus 2) automatically
+	un-marks the MWO — no flag field to keep in sync."""
+	if not manufacturing_work_order:
+		return False
+	return bool(
+		frappe.db.sql(
+			"""
+			SELECT 1
+			FROM `tabManufacturing Work Order Refining Details` d
+			INNER JOIN `tabRefining Entry` re ON re.name = d.parent
+			WHERE d.manufacturing_work_order = %s
+			  AND d.parenttype = 'Refining Entry'
+			  AND re.docstatus = 1
+			  AND re.refining_type = 'Work Order Refining'
+			LIMIT 1
+			""",
+			(manufacturing_work_order,),
+		)
+	)
 
 
 def set_values_in_bulk(doctype, doclist, values):

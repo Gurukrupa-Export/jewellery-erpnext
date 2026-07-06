@@ -37,7 +37,7 @@
    "allow_on_submit": 1,
    "fieldname": "item_code",
    "fieldtype": "Link",
-   "in_list_view": 1,
+   "hidden": 1,
    "label": "Item Code",
    "options": "Item"
   },

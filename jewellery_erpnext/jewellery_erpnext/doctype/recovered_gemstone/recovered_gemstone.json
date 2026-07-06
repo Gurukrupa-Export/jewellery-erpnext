@@ -8,7 +8,9 @@
  "field_order": [
   "item",
   "pcs",
-  "weight"
+  "weight",
+  "recovered_pcs",
+  "recovered_weight"
  ],
  "fields": [
   {
@@ -22,13 +24,28 @@
    "fieldname": "pcs",
    "fieldtype": "Int",
    "in_list_view": 1,
-   "label": "Pcs"
+   "label": "Pcs",
+   "read_only": 1
   },
   {
    "fieldname": "weight",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Weight "
+   "label": "Weight ",
+   "read_only": 1
+  },
+  {
+   "fieldname": "recovered_pcs",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Recovered Pcs"
+  },
+  {
+   "fieldname": "recovered_weight",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Recovered Weight",
+   "precision": "3"
   }
  ],
  "index_web_pages_for_search": 1,

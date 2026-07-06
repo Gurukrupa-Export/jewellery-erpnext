@@ -846,7 +846,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining User",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "0",
     "evaluate_as_expression": 0,
@@ -860,7 +860,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining User",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "1",
     "evaluate_as_expression": 0,
@@ -874,7 +874,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining User",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "1",
     "evaluate_as_expression": 0,
@@ -888,7 +888,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining User",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "1",
     "evaluate_as_expression": 0,
@@ -902,7 +902,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining User",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "1",
     "evaluate_as_expression": 0,
@@ -916,7 +916,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining User",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "1",
     "evaluate_as_expression": 0,
@@ -930,7 +930,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining Manager",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "1",
     "evaluate_as_expression": 0,
@@ -944,7 +944,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining Manager",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "1",
     "evaluate_as_expression": 0,
@@ -958,7 +958,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining Manager",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "1",
     "evaluate_as_expression": 0,
@@ -972,7 +972,7 @@
     "workflow_builder_id": null
    },
    {
-    "allow_edit": "Refining Manager",
+    "allow_edit": "All",
     "avoid_status_override": 0,
     "doc_status": "2",
     "evaluate_as_expression": 0,
@@ -989,7 +989,7 @@
   "transitions": [
    {
     "action": "Send for Verification",
-    "allow_self_approval": 0,
+    "allow_self_approval": 1,
     "allowed": "All",
     "condition": null,
     "next_state": "Physical Verification",
@@ -1000,8 +1000,8 @@
    },
    {
     "action": "Submit",
-    "allow_self_approval": 0,
-    "allowed": "Refining User",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Submitted",
     "send_email_to_creator": 0,
@@ -1011,8 +1011,8 @@
    },
    {
     "action": "Submit",
-    "allow_self_approval": 0,
-    "allowed": "Refining User",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Submitted",
     "send_email_to_creator": 0,
@@ -1022,8 +1022,8 @@
    },
    {
     "action": "Receive Materials",
-    "allow_self_approval": 0,
-    "allowed": "Refining User",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Received",
     "send_email_to_creator": 0,
@@ -1033,8 +1033,8 @@
    },
    {
     "action": "Classify Materials",
-    "allow_self_approval": 0,
-    "allowed": "Refining User",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Classified",
     "send_email_to_creator": 0,
@@ -1044,8 +1044,8 @@
    },
    {
     "action": "Start Refining",
-    "allow_self_approval": 0,
-    "allowed": "Refining User",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Refining In Progress",
     "send_email_to_creator": 0,
@@ -1055,8 +1055,8 @@
    },
    {
     "action": "Enter Recovery",
-    "allow_self_approval": 0,
-    "allowed": "Refining User",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Recovery Entered",
     "send_email_to_creator": 0,
@@ -1066,8 +1066,8 @@
    },
    {
     "action": "Verify Recovery",
-    "allow_self_approval": 0,
-    "allowed": "Refining Manager",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Recovery Verified",
     "send_email_to_creator": 0,
@@ -1077,8 +1077,8 @@
    },
    {
     "action": "Complete Refining",
-    "allow_self_approval": 0,
-    "allowed": "Refining Manager",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Completed",
     "send_email_to_creator": 0,
@@ -1088,8 +1088,8 @@
    },
    {
     "action": "Transfer Recovered Materials",
-    "allow_self_approval": 0,
-    "allowed": "Refining Manager",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Transferred",
     "send_email_to_creator": 0,
@@ -1099,8 +1099,8 @@
    },
    {
     "action": "Cancel",
-    "allow_self_approval": 0,
-    "allowed": "Refining Manager",
+    "allow_self_approval": 1,
+    "allowed": "All",
     "condition": null,
     "next_state": "Cancelled",
     "send_email_to_creator": 0,

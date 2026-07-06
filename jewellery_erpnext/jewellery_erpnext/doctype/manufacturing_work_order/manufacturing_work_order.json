@@ -22,6 +22,8 @@
   "finding_transfer_entry",
   "section_break_fsrwq",
   "for_fg",
+  "snc_requirement",
+  "snc_done",
   "seq",
   "customer",
   "item_code",
@@ -436,6 +438,22 @@
    "read_only": 1
   },
   {
+   "description": "Whether the 'Create SNC' gold-settlement flow is required for this MWO (mirrors the Create SNC button visibility).",
+   "fieldname": "snc_requirement",
+   "fieldtype": "Select",
+   "label": "SNC Requirement",
+   "options": "\nNeed\nNot Need",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Set when the 'Create SNC' gold settlement has been completed for this MWO.",
+   "fieldname": "snc_done",
+   "fieldtype": "Check",
+   "label": "SNC Done",
+   "read_only": 1
+  },
+  {
    "allow_on_submit": 1,
    "default": "Draft",
    "fieldname": "status",
@@ -672,7 +690,7 @@
    "link_fieldname": "manufacturing_work_order"
   }
  ],
- "modified": "2026-05-14 15:50:44.286769",
+ "modified": "2026-07-03 16:00:00.000000",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Work Order",

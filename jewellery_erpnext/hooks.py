@@ -137,18 +137,19 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
 			"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.create_subcontracting_log",
 			"jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_gold_repack",
+			"jewellery_erpnext.customer_subcontracting.sub_utils.snc.stamp_snc_requirement",
 		],
 		"before_cancel": _EOD_LOCK_VALIDATOR,
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
 	},
 	"Manufacturing Work Order": {
-		# "before_submit": [
-		# 	"jewellery_erpnext.customer_subcontracting.sub_utils.repack.validate_category_waiting_days"
-		# ],
+		"before_submit": [
+			"jewellery_erpnext.customer_subcontracting.sub_utils.snc.validate_snc_before_submit"
+		],
 		"on_submit": [
 			"jewellery_erpnext.customer_subcontracting.sub_utils.repack.validate_and_repack_on_mwo_submit"
-		]
+		],
 	},
 	"Job Card": {
 		"onload": "jewellery_erpnext.jewellery_erpnext.doc_events.job_card.onload",
