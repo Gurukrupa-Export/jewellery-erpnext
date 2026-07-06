@@ -395,9 +395,20 @@ class RefiningEntry(Document):
 				gold.refining_gold_weight
 			)
 
+		# Round to display precision (3 decimals) before computing derived values
+		# so the percentage matches what the user sees on screen. Without this,
+		# internal float imprecision (e.g. 0.4380456 displayed as 0.438) causes
+		# the recovery % to show 99.98 instead of 100 when values are equal.
+		self.gross_pure_weight = flt(self.gross_pure_weight, 3)
+		self.expected_recovery = flt(self.expected_recovery, 3)
+		self.refined_fine_weight = flt(self.refined_fine_weight, 3)
+		self.actual_recovery = flt(self.actual_recovery, 3)
+
 		# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
 		# (rounding / assay variance) and must never book a negative loss.
-		self.refining_loss = max(self.gross_pure_weight - self.refined_fine_weight, 0.0)
+		self.refining_loss = flt(
+			max(self.gross_pure_weight - self.refined_fine_weight, 0.0), 3
+		)
 
 		if self.expected_recovery > 0:
 			self.recovery_percentage = min(
@@ -1248,9 +1259,16 @@ class RefiningEntry(Document):
 				gold.refining_gold_weight
 			)
 
+		# Round to display precision (3 decimals) before computing derived values
+		# so the percentage matches what the user sees on screen.
+		gross_pure_weight = flt(gross_pure_weight, 3)
+		expected_recovery = flt(expected_recovery, 3)
+		refined_fine_weight = flt(refined_fine_weight, 3)
+		actual_recovery = flt(actual_recovery, 3)
+
 		# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
 		# (rounding / assay variance) and must never book a negative loss.
-		refining_loss = max(gross_pure_weight - refined_fine_weight, 0.0)
+		refining_loss = flt(max(gross_pure_weight - refined_fine_weight, 0.0), 3)
 		recovery_percentage = min(
 			(refined_fine_weight / expected_recovery) * 100.0
 			if expected_recovery > 0
