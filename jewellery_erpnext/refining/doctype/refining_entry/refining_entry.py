@@ -1091,15 +1091,18 @@ class RefiningEntry(Document):
 					"karat": pmap.karat,
 					"purity_percentage": pmap.purity_percentage,
 					"item_code": pmap.item_template,
-					"input_weight": input_weight,
-					"pure_gold_weight": pure_gold_weight,
-					"recovered_weight": recovered_weight,
+					"input_weight": flt(input_weight, 3),
+					"pure_gold_weight": flt(pure_gold_weight, 3),
+					"recovered_weight": flt(recovered_weight, 3),
 					# Loss is only meaningful when recovered < pure gold content
-					"loss_weight": max(pure_gold_weight - recovered_weight, 0),
-					"recovery_pct": (
-						(recovered_weight / pure_gold_weight) * 100.0
-						if pure_gold_weight
-						else 0.0
+					"loss_weight": flt(
+						max(flt(pure_gold_weight, 3) - flt(recovered_weight, 3), 0), 3
+					),
+					"recovery_pct": flt(
+						(flt(recovered_weight, 3) / flt(pure_gold_weight, 3)) * 100.0
+						if flt(pure_gold_weight, 3)
+						else 0.0,
+						2,
 					),
 				},
 			)
@@ -1182,12 +1185,14 @@ class RefiningEntry(Document):
 		for row in self.gold_recovery_details:
 			recovered_weight = row_weights[id(row)]
 			pure_full = flt(row.pure_gold_weight)
-			share_full = full_share[id(row)]
 			pure_gold_weight = flt(pure_full, 3)
-			# Loss is only meaningful when recovered < pure gold content.
-			loss_weight = flt(max(pure_full - share_full, 0), 3)
+			# Compute loss and recovery % using the rounded display values so the
+			# percentage exactly matches the weights the user sees on screen.
+			loss_weight = flt(max(pure_gold_weight - recovered_weight, 0), 3)
 			recovery_pct = flt(
-				(share_full / pure_full) * 100.0 if pure_full else 0.0,
+				(recovered_weight / pure_gold_weight) * 100.0
+				if pure_gold_weight
+				else 0.0,
 				2,
 			)
 
