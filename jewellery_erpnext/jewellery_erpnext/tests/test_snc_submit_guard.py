@@ -173,3 +173,105 @@ class TestSncSubmitGuard(IntegrationTestCase):
 		with patch.object(snc.frappe.db, "set_value") as set_value:
 			snc.stamp_snc_requirement(_transfer(manufacturing_work_order=None))
 		set_value.assert_not_called()
+
+
+def _receive_row(item_code, qty, s_warehouse, batch_customer, batch_no):
+	"""A normalized receivable-gold row as _get_receivable_gold_rows would return."""
+	return {
+		"item_code": item_code,
+		"batch_no": batch_no,
+		"qty": qty,
+		"custom_pure_qty": round(qty * 0.754, 3),
+		"batch_customer": batch_customer,
+		"customer": batch_customer,
+		"inventory_type": "Customer Goods" if batch_customer else "Regular Stock",
+		"s_warehouse": s_warehouse,
+		"pcs": 1,
+		"stock_reservation_entry": "SRE-1",
+		"stock_reservation_entry_detail": None,
+	}
+
+
+class TestSncCreateSettlement(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run_create_snc(self, mwo, received, is_customer_gold, owner_batch):
+		original_transfer = _Doc(company="GEPL", branch="BR", to_warehouse="Waxing WO")
+		with patch.object(snc, "_get_mwo", return_value=mwo), patch.object(
+			snc, "validate_button_visibility", return_value=True
+		), patch.object(
+			snc, "_is_customer_gold", return_value=is_customer_gold
+		), patch.object(
+			snc, "_get_original_material_transfer", return_value=original_transfer
+		), patch.object(
+			snc, "_get_receivable_gold_rows", return_value=received
+		), patch.object(
+			snc, "find_owner_batch", return_value=owner_batch
+		), patch.object(
+			snc, "trigger_make_receive", return_value={"docname": "MR-1"}
+		) as make_receive, patch.object(
+			snc, "create_material_transfer_work_order", return_value="MT-1"
+		) as make_transfer, patch.object(snc.frappe.db, "set_value") as set_value:
+			snc.create_snc(mwo)
+		return make_receive, make_transfer, set_value
+
+	def test_transfer_mirrors_received_rows(self):
+		# Subcontracting order: the replacement transfer must mirror the Make Receive
+		# row-for-row (1 g + 2.35 g), NOT copy the stale single 2.36 g original row.
+		mwo = _Doc(
+			name="MWO-WORK-1",
+			manufacturing_order="PMO-0001",
+			manufacturing_operation="MOP-1",
+			customer="MHCU0012",
+			company="GEPL",
+		)
+		received = [
+			_receive_row(
+				"M-G-18KT-75.4-P", 1.0, "Diamond Setting WO", "KACU0043", "B-KACU"
+			),
+			_receive_row("M-G-18KT-75.4-P", 2.35, "Waxing WO", None, "B-REG"),
+		]
+		make_receive, make_transfer, set_value = self._run_create_snc(
+			mwo, received, 1, {"batch_no": "MHCU-BATCH", "warehouse": "Model Making RM"}
+		)
+
+		make_transfer.assert_called_once()
+		rows = make_transfer.call_args[0][2]  # (mwo, original_transfer, rows, owner)
+		self.assertEqual([r["qty"] for r in rows], [1.0, 2.35])
+		# each row returns owner gold to the warehouse it was received from
+		self.assertEqual(
+			[r["t_warehouse"] for r in rows], ["Diamond Setting WO", "Waxing WO"]
+		)
+		self.assertTrue(all(r["batch_no"] == "MHCU-BATCH" for r in rows))
+		self.assertTrue(all(r["s_warehouse"] == "Model Making RM" for r in rows))
+		self.assertEqual(make_transfer.call_args[0][3], "MHCU0012")  # owner customer
+		# Receive triggered once, for the full set of settle rows.
+		make_receive.assert_called_once()
+		self.assertEqual(make_receive.call_args.kwargs["receive_items"], received)
+		set_value.assert_called_once_with(
+			"Manufacturing Work Order", "MWO-WORK-1", "snc_done", 1
+		)
+
+	def test_regular_order_settles_only_customer_gold(self):
+		# Regular order (is_customer_gold=0): only borrowed CUSTOMER gold is settled;
+		# regular/company gold stays put.
+		mwo = _Doc(
+			name="MWO-WORK-2",
+			manufacturing_order="PMO-0002",
+			manufacturing_operation="MOP-2",
+			customer="MHCU0012",
+			company="GEPL",
+		)
+		received = [
+			_receive_row("M-G-18KT-75.4-P", 1.0, "Setting WO", "KACU0043", "B-KACU"),
+			_receive_row("M-G-18KT-75.4-P", 2.0, "Waxing WO", None, "B-REG"),
+		]
+		make_receive, make_transfer, _ = self._run_create_snc(
+			mwo, received, 0, {"batch_no": "REG-BATCH", "warehouse": "Regular RM"}
+		)
+
+		rows = make_transfer.call_args[0][2]
+		self.assertEqual([r["qty"] for r in rows], [1.0])  # only the customer-gold row
+		self.assertEqual(len(make_receive.call_args.kwargs["receive_items"]), 1)
