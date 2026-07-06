@@ -1019,7 +1019,11 @@ def custom_get_bom_scrap_material(self, qty):
 	# item dict = { item_code: {qty, description, stock_uom} }
 	item_dict = (
 		get_bom_items_as_dict(
-			self.bom_no, self.company, qty=qty, fetch_exploded=0, fetch_scrap_items=1
+			self.bom_no,
+			self.company,
+			qty=qty,
+			fetch_exploded=0,
+			fetch_secondary_items=1,
 		)
 		or {}
 	)
@@ -1622,10 +1626,17 @@ def group_se_items(se_items: list):
 
 
 def get_last_mwo_wh_based_on_index(mwo):
-	filters = {"manufacturing_work_order": mwo, "is_cancelled": 0}
-	last_index, last_log_name, to_warehouse = frappe.db.get_value(
-		"MOP Log", filters, ["max(flow_index) as flow_index", "name", "to_warehouse"]
+	from frappe.query_builder.functions import Max
+
+	MopLog = frappe.qb.DocType("MOP Log")
+	result = (
+		frappe.qb.from_(MopLog)
+		.select(Max(MopLog.flow_index), MopLog.name, MopLog.to_warehouse)
+		.where(MopLog.manufacturing_work_order == mwo)
+		.where(MopLog.is_cancelled == 0)
+		.run()
 	)
+	last_index, last_log_name, to_warehouse = result[0]
 	return last_index, last_log_name, to_warehouse
 
 

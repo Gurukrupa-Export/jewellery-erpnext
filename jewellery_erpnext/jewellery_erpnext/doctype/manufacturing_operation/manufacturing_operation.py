@@ -332,19 +332,21 @@ class ManufacturingOperation(Document):
 
 	# timer code
 	def get_current_operation_data(self):
-		return frappe.get_all(
-			"Job Card",
-			fields=[
-				"sum(total_time_in_mins) as time_in_mins",
-				"sum(total_completed_qty) as completed_qty",
-				"sum(process_loss_qty) as process_loss_qty",
-			],
-			filters={
-				"docstatus": 1,
-				"work_order": self.work_order,
-				"operation_id": self.operation_id,
-				"is_corrective_job_card": 0,
-			},
+		from frappe.query_builder.functions import Sum
+
+		JobCard = frappe.qb.DocType("Job Card")
+		return (
+			frappe.qb.from_(JobCard)
+			.select(
+				Sum(JobCard.total_time_in_mins).as_("time_in_mins"),
+				Sum(JobCard.total_completed_qty).as_("completed_qty"),
+				Sum(JobCard.process_loss_qty).as_("process_loss_qty"),
+			)
+			.where(JobCard.docstatus == 1)
+			.where(JobCard.work_order == self.work_order)
+			.where(JobCard.operation_id == self.operation_id)
+			.where(JobCard.is_corrective_job_card == 0)
+			.run(as_dict=True)
 		)
 
 	# timer code
@@ -5232,16 +5234,19 @@ def get_warehouse_from_previous_stock_entry(
 
 	# First, get the total available quantity by warehouse from Stock Ledger
 	# This shows us which warehouses actually have positive stock for this batch
-	warehouses_with_stock = frappe.db.get_list(
-		"Stock Ledger Entry",
-		filters={
-			"item_code": item_code,
-			"batch_no": batch_no,
-			"is_cancelled": 0,
-		},
-		fields=["warehouse", "sum(actual_qty) as total_qty"],
-		group_by="warehouse",
-		order_by="total_qty desc",
+	from frappe.query_builder import Order
+	from frappe.query_builder.functions import Sum
+
+	SLE = frappe.qb.DocType("Stock Ledger Entry")
+	warehouses_with_stock = (
+		frappe.qb.from_(SLE)
+		.select(SLE.warehouse, Sum(SLE.actual_qty).as_("total_qty"))
+		.where(SLE.item_code == item_code)
+		.where(SLE.batch_no == batch_no)
+		.where(SLE.is_cancelled == 0)
+		.groupby(SLE.warehouse)
+		.orderby(Sum(SLE.actual_qty), order=Order.desc)
+		.run(as_dict=True)
 	)
 
 	# Filter to only warehouses with positive balance

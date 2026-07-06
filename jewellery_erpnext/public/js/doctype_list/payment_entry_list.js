@@ -1,10 +1,9 @@
 frappe.listview_settings["Payment Entry"] = {
 	onload(listview) {
-		listview.page.add_inner_button(
-			"Inter Branch Contra",
-			() => open_ib_dialog(listview)
-		).addClass("btn-primary");
-	}
+		listview.page
+			.add_inner_button("Inter Branch Contra", () => open_ib_dialog(listview))
+			.addClass("btn-primary");
+	},
 };
 
 function open_ib_dialog(listview) {
@@ -21,11 +20,11 @@ function open_ib_dialog(listview) {
 				reqd: 1,
 				onchange() {
 					_reset_company_dependents(dialog);
-				}
+				},
 			},
 			{
 				fieldtype: "Column Break",
-				fieldname: "column_break_0"
+				fieldname: "column_break_0",
 			},
 			{
 				fieldname: "section_break_0",
@@ -40,7 +39,7 @@ function open_ib_dialog(listview) {
 				reqd: 1,
 				onchange() {
 					_guard_same_branch(dialog);
-				}
+				},
 			},
 			{
 				fieldname: "source_bank",
@@ -49,12 +48,12 @@ function open_ib_dialog(listview) {
 				options: "Account",
 				reqd: 1,
 				get_query: () => {
-					return {filters: {account_type: "Bank", is_group: 0}};
-				}
+					return { filters: { account_type: "Bank", is_group: 0 } };
+				},
 			},
 			{
 				fieldtype: "Column Break",
-				fieldname: "column_break_1"
+				fieldname: "column_break_1",
 			},
 			{
 				fieldname: "target_branch",
@@ -64,7 +63,7 @@ function open_ib_dialog(listview) {
 				reqd: 1,
 				onchange() {
 					_guard_same_branch(dialog);
-				}
+				},
 			},
 			{
 				fieldname: "target_bank",
@@ -73,63 +72,63 @@ function open_ib_dialog(listview) {
 				options: "Account",
 				reqd: 1,
 				get_query: () => {
-					return {filters: {account_type: "Bank", is_group: 0}};
-				}
+					return { filters: { account_type: "Bank", is_group: 0 } };
+				},
 			},
 			{
 				fieldtype: "Section Break",
-				fieldname: "section_break_1"
+				fieldname: "section_break_1",
 			},
 			{
 				fieldname: "amount",
 				label: "Amount",
 				fieldtype: "Currency",
-				reqd: 1
+				reqd: 1,
 			},
 			{
 				fieldname: "posting_date",
 				label: "Posting Date",
 				fieldtype: "Date",
 				reqd: 1,
-				default: frappe.datetime.get_today()
+				default: frappe.datetime.get_today(),
 			},
 			{
 				fieldtype: "Column Break",
-				fieldname: "column_break_2"
+				fieldname: "column_break_2",
 			},
 			{
 				fieldname: "reference_no",
 				label: "Reference No",
-				fieldtype: "Data"
+				fieldtype: "Data",
 			},
 			{
 				fieldname: "reference_date",
 				label: "Reference Date",
-				fieldtype: "Date"
+				fieldtype: "Date",
 			},
 			{
 				fieldtype: "Section Break",
-				fieldname: "section_break_2"
+				fieldname: "section_break_2",
 			},
 			{
 				fieldname: "remarks",
 				label: "Remarks",
-				fieldtype: "Small Text"
-			}
+				fieldtype: "Small Text",
+			},
 		],
 		primary_action_label: "Create",
 		primary_action(values) {
 			if (values.source_branch === values.target_branch) {
 				frappe.msgprint({
 					message: __("Source and Target Branch cannot be the same."),
-					indicator: "red"
+					indicator: "red",
 				});
 				return;
 			}
 			if (!values.amount || Number(values.amount) <= 0) {
 				frappe.msgprint({
 					message: __("Amount must be greater than zero."),
-					indicator: "red"
+					indicator: "red",
 				});
 				return;
 			}
@@ -144,19 +143,31 @@ function open_ib_dialog(listview) {
 					const names = r.message || [];
 					if (Array.isArray(names) && names.length) {
 						const links = names
-							.map(n => `<a href="/app/journal-entry/${frappe.utils.escape_html(n)}">${frappe.utils.escape_html(n)}</a>`)
+							.map(
+								(n) =>
+									`<a href="/desk/journal-entry/${frappe.utils.escape_html(
+										n
+									)}">${frappe.utils.escape_html(n)}</a>`
+							)
 							.join(", ");
 						frappe.msgprint(`Created Journal Entries: ${links}`);
 					} else {
 						frappe.msgprint("No Journal Entries were created.");
 					}
 					listview.refresh();
-				}
+				},
 			});
-		}
+		},
 	});
 
 	dialog.show();
+}
+
+function _reset_company_dependents(dialog) {
+	dialog.set_value("source_branch", "");
+	dialog.set_value("target_branch", "");
+	dialog.set_value("source_bank", "");
+	dialog.set_value("target_bank", "");
 }
 
 function _guard_same_branch(dialog) {
@@ -168,9 +179,12 @@ function _guard_same_branch(dialog) {
 		return;
 	}
 	if (source_branch && target_branch && source_branch === target_branch) {
-		frappe.show_alert({
-			message: __("Source and Target Branch cannot be the same."),
-			indicator: "red"
-		}, 5);
+		frappe.show_alert(
+			{
+				message: __("Source and Target Branch cannot be the same."),
+				indicator: "red",
+			},
+			5
+		);
 	}
 }

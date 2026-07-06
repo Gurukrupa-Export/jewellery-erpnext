@@ -44,9 +44,7 @@ frappe.ui.form.on("Melting Lot", {
 							cur_dialog.wrapper
 								.find('[data-fieldname="search_term"]')
 								.val(frm.doc.deign_order);
-							cur_dialog.wrapper
-								.find('[data-fieldname="search_term"]')
-								.trigger("change");
+							cur_dialog.wrapper.find('[data-fieldname="search_term"]').trigger("change");
 						}
 					}, 1000);
 				},
@@ -55,9 +53,7 @@ frappe.ui.form.on("Melting Lot", {
 		}
 		if (frm.doc.operation_card) {
 			var wrapper = frm.fields_dict["operation_card"].wrapper;
-			$(`<a href= /app/operation-card/${frm.doc.operation_card}> View </a>`).appendTo(
-				wrapper
-			);
+			$(`<a href= /desk/operation-card/${frm.doc.operation_card}> View </a>`).appendTo(wrapper);
 		}
 	},
 	create_operation_card(frm) {
@@ -144,21 +140,15 @@ function calculate_weight(frm) {
 			item.fine_weight = flt(fine_weight);
 			total_fine_weight += item.fine_weight;
 			// alert(fine_weight)
-			item.alloy_weight =
-				flt(item.in_weight === "undefined" ? 0.0 : item.in_weight) - item.fine_weight;
+			item.alloy_weight = flt(item.in_weight === "undefined" ? 0.0 : item.in_weight) - item.fine_weight;
 			total_alloy_weight += item.alloy_weight;
 		});
 		frm.set_value("total_fine_weight", total_fine_weight);
 		frm.set_value("total_alloy_weight", total_alloy_weight);
 		var gross_weight =
-			(total_fine_weight /
-				flt(frm.doc.product_purity === null ? 0.0 : frm.doc.product_purity)) *
-			100;
+			(total_fine_weight / flt(frm.doc.product_purity === null ? 0.0 : frm.doc.product_purity)) * 100;
 		frm.set_value("gross_weight", gross_weight);
-		frm.set_value(
-			"additional_alloy_weight",
-			gross_weight - total_fine_weight - total_alloy_weight
-		);
+		frm.set_value("additional_alloy_weight", gross_weight - total_fine_weight - total_alloy_weight);
 		refresh_field("total_fine_weight");
 		refresh_field("total_alloy_weight");
 		refresh_field("additional_alloy_weight");

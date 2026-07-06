@@ -78,20 +78,22 @@ def create_repack_entry(self):
 		item_dict["batch_no"] = batch_doc.name
 		finish_raw.append(item_dict)
 	else:
-		msl_batch_data = frappe.db.get_all(
-			"Main Slip SE Details",
-			{
-				"parentfield": "batch_details",
-				"parent": self.main_slip,
-				"item_code": item_dict["item_code"],
-				"qty": ["!=", "consume_qty"],
-			},
-			[
-				"batch_no",
-				"qty",
-				"(consume_qty + employee_qty) as consume_qty",
-				"inventory_type",
-			],
+		MSSED = frappe.qb.DocType("Main Slip SE Details")
+		msl_batch_data = (
+			frappe.qb.from_(MSSED)
+			.select(
+				MSSED.batch_no,
+				MSSED.qty,
+				(MSSED.consume_qty + MSSED.employee_qty).as_("consume_qty"),
+				MSSED.inventory_type,
+			)
+			.where(MSSED.parentfield == "batch_details")
+			.where(MSSED.parent == self.main_slip)
+			.where(MSSED.item_code == item_dict["item_code"])
+			# NOTE: preserves original behavior — compares qty to the literal string
+			# "consume_qty" (not the column). Pre-existing quirk, left unchanged.
+			.where(MSSED.qty != "consume_qty")
+			.run(as_dict=True)
 		)
 		total_qty = item_dict["qty"]
 		for row in msl_batch_data:

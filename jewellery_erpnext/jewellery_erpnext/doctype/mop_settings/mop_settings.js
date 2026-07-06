@@ -121,12 +121,15 @@ function _apply_permission_restrictions(frm) {
 
 	// Non-System Manager cannot change EOD Sync Time, the manual From/To window, or the filter table
 	if (!is_sm) {
-		["eod_sync_time", "eod_sync_from_datetime", "eod_sync_to_datetime", "eod_sync_work_order_filter"].forEach(
-			(field) => {
-				frm.set_df_property(field, "read_only", 1);
-				frm.refresh_field(field);
-			}
-		);
+		[
+			"eod_sync_time",
+			"eod_sync_from_datetime",
+			"eod_sync_to_datetime",
+			"eod_sync_work_order_filter",
+		].forEach((field) => {
+			frm.set_df_property(field, "read_only", 1);
+			frm.refresh_field(field);
+		});
 	}
 
 	// Disable the EOD Sync button for non-SM or when lock is active
@@ -192,7 +195,7 @@ function _render_progress_html(frm, d, sync_log_name) {
 			: "secondary";
 
 	const f = (v) => frappe.format(v || 0, { fieldtype: "Float", precision: 3 });
-	const link = `/app/mop-eod-sync-log/${encodeURIComponent(sync_log_name)}`;
+	const link = `/desk/mop-eod-sync-log/${encodeURIComponent(sync_log_name)}`;
 
 	const html = `
 <div style="background:#f9f9f9;border:1px solid #ddd;border-radius:6px;padding:12px 16px;margin:8px 0;">

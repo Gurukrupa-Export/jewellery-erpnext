@@ -12,13 +12,13 @@
 		<tr>
 			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">{{ loop.index }}</td>
 			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
-				<a href="/app/stock-entry/{{ item.stock_entry }}">{{ item.stock_entry }}</a>
+				<a href="/desk/stock-entry/{{ item.stock_entry }}">{{ item.stock_entry }}</a>
 			</td>
 			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
-				<a href="/app/bom/{{ item.bom_name }}">{{ item.bom_name }}</a>
+				<a href="/desk/bom/{{ item.bom_name }}">{{ item.bom_name }}</a>
 			</td>
 			<td style="border: 1px solid #d1d8dd; font-size: 11px;padding:0.25rem">
-				<a href="/app/serial-no/{{ item.serial_no }}">{{ item.serial_no }}</a>
+				<a href="/desk/serial-no/{{ item.serial_no }}">{{ item.serial_no }}</a>
 			</td>
 		</tr>
 	{% endfor %}
