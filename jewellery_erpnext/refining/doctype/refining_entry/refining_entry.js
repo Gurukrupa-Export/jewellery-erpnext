@@ -59,7 +59,6 @@ frappe.ui.form.on("Refining Entry", {
 	refresh(frm) {
 		frm.trigger("set_field_visibility");
 		frm.trigger("add_action_buttons");
-		frm.trigger("render_raw_material_html");
 		frm.trigger("set_recovery_grid_editability");
 
 		// Suppress Frappe Workflow's auto-generated action buttons on submitted docs,
@@ -551,19 +550,6 @@ frappe.ui.form.on("Refining Entry", {
 				);
 				btn.addClass("btn-primary");
 			}
-		}
-	},
-
-	render_raw_material_html(frm) {
-		const field = frm.get_field("raw_material_html");
-		if (!field) return;
-		const types = ["Work Order Refining", "Serial Number Refining", "Dust Refining", "Scrap Refining"];
-		if (!frm.is_new() && types.includes(frm.doc.refining_type)) {
-			frm.call("get_linked_stock_entries_html").then((r) => {
-				field.$wrapper.html(r.message || "");
-			});
-		} else {
-			field.$wrapper.html("");
 		}
 	},
 });

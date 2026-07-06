@@ -4622,6 +4622,26 @@ def create_mr_wo_stock_entry(
 			or sre.warehouse
 		)
 
+		# Inventory type / customer must correspond to the batch actually being
+		# received — not the client payload. The receive dialog sends neither
+		# field, so trusting the row would leave inventory_type empty and let
+		# validate() default it to "Regular Stock", mismatching a Customer Goods
+		# batch in the ledger. The Batch master is authoritative here, mirroring
+		# the batch-selection convention (stock_entry.js) and repack.
+		batch_inventory_type = None
+		batch_customer = None
+		if batch_no:
+			batch_inventory_type, batch_customer = frappe.db.get_value(
+				"Batch", batch_no, ["custom_inventory_type", "custom_customer"]
+			) or (None, None)
+
+		row_inventory_type = batch_inventory_type or row.get("inventory_type")
+		row_customer = (
+			batch_customer
+			if row_inventory_type in ("Customer Goods", "Customer Stock")
+			else row.get("customer")
+		)
+
 		validated_rows.append(
 			{
 				"item_code": sre.item_code,
@@ -4629,8 +4649,8 @@ def create_mr_wo_stock_entry(
 				"pcs": req_pcs,
 				"batch_no": batch_no,
 				"s_warehouse": resolved_warehouse,
-				"inventory_type": row.get("inventory_type"),
-				"customer": row.get("customer"),
+				"inventory_type": row_inventory_type,
+				"customer": row_customer,
 			}
 		)
 
@@ -4829,15 +4849,143 @@ def get_make_scrap_entry_rows(manufacturing_operation):
 
 @frappe.whitelist()
 def create_scrap_wo_stock_entry(se_data, request_id=None):
-	"""Create Scrap Item creator.
+	"""Receive Scrap Item.
 
-	Mirrors Make Receive Entry: reuses the same machinery (SRE validation, MOP caps,
-	idempotency, SRE cancel/recreate) and lands the operation's materials in the
-	department Raw Material warehouse via a "Material Receive (WORK ORDER)" Stock
-	Entry — identical source/target warehouse allocation to Make Receive Entry.
-	See get_make_scrap_entry_rows.
+	There is NO dedicated scrap item code. The operation's scrap is received into
+	the department Raw Material warehouse via the Make Receive machinery (SRE
+	validation, MOP caps, idempotency, SRE cancel/recreate — same source/target
+	allocation as Make Receive Entry, same item code), and then repacked into a NEW
+	batch tagged ``custom_batch_type = "Scrap"``. Scrap Refining fetches only
+	Scrap-typed batches (get_scrap_items_balance), so ordinary department stock in
+	the same warehouse is never pulled into a refining entry.
+
+	The receive + scrap-batch repack run in one transaction: if the repack fails the
+	whole receive rolls back, so scrap is never left un-marked. See
+	get_make_scrap_entry_rows.
 	"""
-	return create_mr_wo_stock_entry(se_data, request_id=request_id)
+	if isinstance(se_data, str):
+		se_data = json.loads(se_data)
+	result = create_mr_wo_stock_entry(se_data, request_id=request_id)
+	receive_se = result.get("docname") if isinstance(result, dict) else None
+	if receive_se:
+		_convert_received_scrap_to_scrap_batch(receive_se, request_id=request_id)
+	return result
+
+
+def _create_scrap_batch(item_code):
+	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Scrap'.
+
+	Returns None for non-batch items (they cannot carry the Scrap marker)."""
+	if not frappe.db.get_value("Item", item_code, "has_batch_no"):
+		return None
+	batch = frappe.new_doc("Batch")
+	batch.item = item_code
+	batch.custom_batch_type = "Scrap"
+	# Set batch_type before insert so it persists whether the item auto-names the
+	# batch (batch_number_series) or we generate an id below.
+	if not frappe.db.get_value("Item", item_code, "batch_number_series"):
+		ts = get_datetime().strftime("%y%m%d%H%M%S")
+		batch.batch_id = f"{item_code}-SCRAP-{ts}-{frappe.generate_hash(length=4)}"
+	batch.insert(ignore_permissions=True)
+	return batch.name
+
+
+def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
+	"""Repack the just-received scrap into fresh custom_batch_type='Scrap' batches.
+
+	Same item code, same warehouse, same qty — only the batch changes, so the scrap
+	is isolated from ordinary manufacturing stock under a Scrap-typed batch."""
+	se = frappe.get_doc("Stock Entry", receive_se_name)
+	if cint(se.docstatus) != 1:
+		return
+
+	scrap_request_id = f"{request_id or receive_se_name}-scrap"
+	# Idempotent: the receive is idempotent by request_id, so its scrap repack must
+	# be too — never double-convert the same received material.
+	if frappe.db.exists(
+		"Stock Entry",
+		{"custom_request_id": scrap_request_id, "docstatus": ["!=", 2]},
+	):
+		return
+
+	rows = []
+	skipped_non_batch = set()
+	for item in se.items:
+		if not flt(item.qty) or not item.t_warehouse:
+			continue
+		if not frappe.db.get_value("Item", item.item_code, "has_batch_no"):
+			skipped_non_batch.add(item.item_code)
+			continue
+		rows.append(item)
+
+	if not rows:
+		if skipped_non_batch:
+			frappe.msgprint(
+				_(
+					"Received scrap for non-batch item(s) {0} could not be tagged as "
+					"Scrap and will not be available for Scrap Refining."
+				).format(", ".join(sorted(skipped_non_batch))),
+				indicator="orange",
+				alert=True,
+			)
+		return
+
+	repack = frappe.new_doc("Stock Entry")
+	repack.stock_entry_type = "Repack"
+	repack.purpose = "Repack"
+	repack.company = se.company
+	repack.auto_created = 1
+	repack.custom_request_id = scrap_request_id
+	if getattr(se, "manufacturing_operation", None):
+		repack.manufacturing_operation = se.manufacturing_operation
+	repack.remarks = _("Scrap batch conversion for {0}").format(receive_se_name)
+
+	for item in rows:
+		new_batch = _create_scrap_batch(item.item_code)
+		if not new_batch:
+			continue
+		# Consume the received material from its current (ordinary) batch...
+		repack.append(
+			"items",
+			{
+				"item_code": item.item_code,
+				"qty": item.qty,
+				"uom": item.uom or "Gram",
+				"s_warehouse": item.t_warehouse,
+				"batch_no": item.batch_no,
+				"use_serial_batch_fields": 1,
+				"is_finished_item": 0,
+			},
+		)
+		# ...and re-produce the same qty of the same item under the Scrap batch.
+		repack.append(
+			"items",
+			{
+				"item_code": item.item_code,
+				"qty": item.qty,
+				"uom": item.uom or "Gram",
+				"t_warehouse": item.t_warehouse,
+				"batch_no": new_batch,
+				"use_serial_batch_fields": 1,
+				"is_finished_item": 1,
+			},
+		)
+
+	if not repack.items:
+		return
+
+	repack.insert(ignore_permissions=True)
+	repack.submit()
+
+	if skipped_non_batch:
+		frappe.msgprint(
+			_(
+				"Received scrap for non-batch item(s) {0} could not be tagged as "
+				"Scrap and will not be available for Scrap Refining."
+			).format(", ".join(sorted(skipped_non_batch))),
+			indicator="orange",
+			alert=True,
+		)
 
 
 def update_new_mop_wtg(

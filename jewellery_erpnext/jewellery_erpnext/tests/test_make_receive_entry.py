@@ -1089,7 +1089,8 @@ class TestPartialReceiveZeroBatchSkipsReplacement(IntegrationTestCase):
 			)
 		]
 
-		# get_value sequence: idempotency miss + t_warehouse + SRE re-fetch + sb_row re-fetch + source warehouse.
+		# get_value sequence: idempotency miss + t_warehouse + SRE re-fetch +
+		# sb_row re-fetch + source warehouse + Batch inventory-type/customer.
 		mock_get_value.side_effect = [
 			None,
 			"WH-Raw",
@@ -1111,6 +1112,7 @@ class TestPartialReceiveZeroBatchSkipsReplacement(IntegrationTestCase):
 				{"name": "SB-1", "batch_no": "B1", "qty": 5.0, "delivered_qty": 0.0}
 			),
 			"WH-Src",
+			("Regular Stock", None),
 		]
 
 		# new_doc called only for the Stock Entry — never for a replacement SRE
@@ -1148,6 +1150,155 @@ class TestPartialReceiveZeroBatchSkipsReplacement(IntegrationTestCase):
 		self.assertEqual(len(actions), 1)
 		self.assertEqual(actions[0]["action"], "cancelled")
 		self.assertIsNone(actions[0]["new"])
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
+		return_value=[],
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.flags",
+		new_callable=MagicMock,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_all"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.savepoint"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.release_savepoint"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.rollback"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
+		return_value=3,
+	)
+	def test_receive_row_inventory_type_follows_customer_goods_batch(
+		self,
+		_mock_single,
+		mock_get_value,
+		_mock_rollback,
+		_mock_release,
+		_mock_savepoint,
+		mock_get_all,
+		mock_get_doc,
+		mock_new_doc,
+		_mock_flags,
+		_mock_mop_get_all,
+	):
+		"""Regression: the receive dialog sends no inventory_type/customer, so
+		the SE row must inherit them from the Batch master. A Customer Goods
+		batch must NOT be stamped "Regular Stock" (ledger mismatch).
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			create_mr_wo_stock_entry,
+		)
+
+		mo = _make_mo()
+		original_sre = MagicMock()
+		original_sre.name = "SRE-CG-ORIG"
+		original_sre.voucher_type = "Sales Order"
+		original_sre.voucher_no = "SO-1"
+		original_sre.voucher_detail_no = "SOI-1"
+		original_sre.item_code = "M-G-22KT-91.9-Y"
+		original_sre.warehouse = "WH-Src"
+		original_sre.voucher_qty = 5.0
+		original_sre.company = "Test Co"
+		original_sre.stock_uom = "Gram"
+		original_sre.reservation_based_on = "Serial and Batch"
+		original_sre.manufacturing_work_order = "MWO-1"
+		original_sre.manufacturing_operation = "MOP-1"
+		mock_get_doc.side_effect = [mo, original_sre]
+
+		mock_get_all.return_value = [
+			frappe._dict(
+				{
+					"name": "SB-1",
+					"batch_no": "CG-BATCH",
+					"qty": 5.0,
+					"delivered_qty": 0.0,
+				}
+			)
+		]
+
+		# get_value sequence: idempotency miss + t_warehouse + SRE re-fetch +
+		# sb_row re-fetch + source warehouse + Batch (Customer Goods + customer).
+		mock_get_value.side_effect = [
+			None,
+			"WH-Raw",
+			frappe._dict(
+				{
+					"name": "SRE-CG-ORIG",
+					"docstatus": 1,
+					"item_code": "M-G-22KT-91.9-Y",
+					"warehouse": "WH-Src",
+					"reserved_qty": 5.0,
+					"delivered_qty": 0.0,
+					"stock_uom": "Gram",
+					"has_batch_no": 1,
+					"reservation_based_on": "Serial and Batch",
+					"manufacturing_work_order": "MWO-1",
+				}
+			),
+			frappe._dict(
+				{
+					"name": "SB-1",
+					"batch_no": "CG-BATCH",
+					"qty": 5.0,
+					"delivered_qty": 0.0,
+				}
+			),
+			"WH-Src",
+			("Customer Goods", "KACU0043"),
+		]
+
+		stock_entry = MagicMock()
+		stock_entry.doctype = "Stock Entry"
+		stock_entry.name = "STE-CG-1"
+
+		def _update_setattr(values):
+			for k, v in values.items():
+				setattr(stock_entry, k, v)
+
+		stock_entry.update.side_effect = _update_setattr
+		mock_new_doc.return_value = stock_entry
+
+		create_mr_wo_stock_entry(
+			{
+				"manufacturing_operation": "MOP-1",
+				"receive_items": [
+					{
+						"stock_reservation_entry": "SRE-CG-ORIG",
+						"stock_reservation_entry_detail": "SB-1",
+						"qty": 5.0,
+						"idx": 1,
+					}
+				],
+			},
+			request_id="req-cg-batch",
+		)
+
+		# The appended SE item row carries the Batch's inventory_type + customer,
+		# not the empty client value that would default to "Regular Stock".
+		item_appends = [
+			c for c in stock_entry.append.call_args_list if c.args[0] == "items"
+		]
+		self.assertEqual(len(item_appends), 1)
+		appended = item_appends[0].args[1]
+		self.assertEqual(appended["inventory_type"], "Customer Goods")
+		self.assertEqual(appended["customer"], "KACU0043")
+		self.assertEqual(appended["batch_no"], "CG-BATCH")
 
 
 class TestAvailableQtyMandatoryContract(IntegrationTestCase):

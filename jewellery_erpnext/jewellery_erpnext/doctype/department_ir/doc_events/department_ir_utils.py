@@ -8,6 +8,7 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	update_mop_balance,
 )
+from jewellery_erpnext.utils import is_mwo_refined
 
 
 def valid_reparing_or_next_operation(self, mwo_list):
@@ -153,10 +154,14 @@ def validate_and_update_gross_wt_from_mop(self):
 				as_dict=1,
 			)
 
-		if mop_data.get("is_finding"):
+		if mop_data.get("is_finding") or is_mwo_refined(row.manufacturing_work_order):
 			# Finding: mirror the current operation exactly — no previous-MOP fallback.
 			# A finding's "receive from work order" legitimately empties the operation
 			# balance, so resurrecting the previous MOP's weights would show phantom values.
+			# Refined MWO: same rule — the Refining Entry zeroed the operation weights
+			# because the metal physically left for the refinery, so a 0 here is real;
+			# the `or`-fallback below would resurrect the pre-refining weight from the
+			# previous MOP (the "gross wt reappears after refining" bug).
 			row.gross_wt = mop_data.get("gross_wt") or 0
 			row.net_wt = mop_data.get("net_wt") or 0
 			row.diamond_wt = mop_data.get("diamond_wt") or 0

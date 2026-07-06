@@ -28,7 +28,6 @@ class RefiningEntry(Document):
 		self.set_dust_system_quantity()
 		self.validate_quantities()
 		self.calculate_totals()
-		self.allocate_batches_in_table()
 
 		if self.status == "Recovery Entered":
 			self.validate_recovery_distribution()
@@ -47,7 +46,7 @@ class RefiningEntry(Document):
 			if not self.material_items:
 				self.build_material_table()
 		if self.refining_type == "Dust Refining":
-			self.ensure_dust_opening_material_row()
+			self.validate_dust_opening_material()
 		if not self.material_items:
 			frappe.throw(
 				_("No materials to refine. Add or fetch materials before submitting.")
@@ -83,39 +82,10 @@ class RefiningEntry(Document):
 		if self.parent_refining_entry:
 			return
 
-		# For Serial Number Refining, save original serial warehouses BEFORE creating
-		# stock entries, so we can verify they don't change after submit.
-		original_serial_warehouses = {}
-		if self.refining_type == "Serial Number Refining":
-			for sn_row in self.serial_no_details:
-				if sn_row.serial_number:
-					original_serial_warehouses[
-						sn_row.serial_number
-					] = frappe.db.get_value(
-						"Serial No", sn_row.serial_number, "warehouse"
-					)
-
 		self.create_material_transfer_se()
 
 		if self.refining_type == "Dust Refining":
 			self.create_dust_opening_receipt_se()
-
-		# Verify serial warehouses haven't changed (defensive check)
-		if self.refining_type == "Serial Number Refining":
-			for sn, original_wh in original_serial_warehouses.items():
-				current_wh = frappe.db.get_value("Serial No", sn, "warehouse")
-				if current_wh != original_wh:
-					frappe.log_error(
-						f"Serial {sn} warehouse changed from {original_wh} to {current_wh} during refining. "
-						f"This should not happen - verify material_transfer_se did not transfer the serial.",
-						"Serial Warehouse Change Detection",
-					)
-					frappe.throw(
-						_(
-							"Serial Number {0} warehouse unexpectedly changed from {1} to {2}. "
-							"Please verify the refining entry configuration and material transfer settings."
-						).format(sn, original_wh, current_wh)
-					)
 
 	def on_cancel(self):
 		self.cancel_linked_stock_entries()
@@ -136,8 +106,12 @@ class RefiningEntry(Document):
 		now handled at submit."""
 		if self.docstatus != 0 or self.material_items:
 			return
-		if self.refining_type == "Dust Refining" and (
-			self.warehouse or self.multiple_department
+		if (
+			self.refining_type == "Dust Refining"
+			and (self.warehouse or self.multiple_department)
+		) or (
+			self.refining_type == "Work Order Refining"
+			and self.manufacturing_work_order_details
 		):
 			self.build_material_table()
 
@@ -363,14 +337,37 @@ class RefiningEntry(Document):
 			if phys_qty <= 0:
 				frappe.throw(_("Physical Quantity must be greater than zero."))
 
-	def calculate_totals(self):
-		self.gross_pure_weight = 0.0
-		self.expected_recovery = 0.0
+	def _compute_input_pure_weight(self):
+		"""Compute gross pure weight and expected recovery from material inputs.
+
+		For Serial Number Refining, prefer BOM Component rows (which include both
+		metal AND finding weights), falling back to serial_no_details.pure_weight
+		if no BOM components exist. For all other types, iterate material_items.
+		This keeps the Recovery Summary consistent with the Gold Recovery
+		Distribution table."""
+		gross_pure_weight = 0.0
+		expected_recovery = 0.0
 
 		if self.refining_type == "Serial Number Refining":
-			for sn in self.serial_no_details:
-				self.gross_pure_weight += flt(sn.pure_weight)
-				self.expected_recovery += flt(sn.pure_weight)
+			bom_components = [
+				item
+				for item in self.material_items
+				if item.get("source_type") == "BOM Component"
+			]
+			if bom_components:
+				for item in bom_components:
+					if item.purity:
+						purity_pct = frappe.db.get_value(
+							"Attribute Value", item.purity, "purity_percentage"
+						)
+						if purity_pct:
+							pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
+							gross_pure_weight += pure_weight
+							expected_recovery += pure_weight
+			else:
+				for sn in self.serial_no_details:
+					gross_pure_weight += flt(sn.pure_weight)
+					expected_recovery += flt(sn.pure_weight)
 		else:
 			for item in self.material_items:
 				if item.purity:
@@ -379,8 +376,16 @@ class RefiningEntry(Document):
 					)
 					if purity_pct:
 						pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
-						self.gross_pure_weight += pure_weight
-						self.expected_recovery += pure_weight
+						gross_pure_weight += pure_weight
+						expected_recovery += pure_weight
+
+		return gross_pure_weight, expected_recovery
+
+	def calculate_totals(self):
+		(
+			self.gross_pure_weight,
+			self.expected_recovery,
+		) = self._compute_input_pure_weight()
 
 		self.refined_fine_weight = 0.0
 		self.actual_recovery = 0.0
@@ -395,66 +400,12 @@ class RefiningEntry(Document):
 		self.refining_loss = max(self.gross_pure_weight - self.refined_fine_weight, 0.0)
 
 		if self.expected_recovery > 0:
-			self.recovery_percentage = (
-				self.refined_fine_weight / self.expected_recovery
-			) * 100.0
+			self.recovery_percentage = min(
+				(self.refined_fine_weight / self.expected_recovery) * 100.0,
+				100.0,
+			)
 		else:
 			self.recovery_percentage = 0.0
-
-	def allocate_batches_in_table(self):
-		if self.docstatus != 0:
-			return
-		if not self.material_items:
-			return
-
-		new_items = []
-		precision = 3
-		min_qty = 0.001
-
-		item_batch_map = {}
-		for item in self.material_items:
-			if item.item_code not in item_batch_map:
-				item_batch_map[item.item_code] = frappe.db.get_value(
-					"Item", item.item_code, "has_batch_no"
-				)
-
-		# Skip the (expensive) rebuild entirely when no batched row needs FIFO
-		# allocation — avoids re-querying batches and reshuffling rows on every save.
-		needs_alloc = any(
-			item_batch_map.get(i.item_code)
-			and not i.batch_no
-			and not self.is_dust_opening_item(i)
-			for i in self.material_items
-		)
-		if not needs_alloc:
-			return
-
-		for item in self.material_items:
-			if self.is_dust_opening_item(item):
-				new_items.append(item)
-				continue
-
-			has_batch = item_batch_map.get(item.item_code)
-			s_wh = item.warehouse or self.warehouse
-
-			if has_batch and not item.batch_no:
-				allocations = self.allocate_fifo_batches(item.item_code, s_wh, item.qty)
-				for alloc in allocations:
-					if flt(alloc["qty"], precision) >= min_qty:
-						new_item = frappe.copy_doc(item)
-						new_item.qty = alloc["qty"]
-						new_item.batch_no = alloc["batch_no"]
-						new_items.append(new_item)
-			else:
-				if flt(item.qty, precision) >= min_qty:
-					new_items.append(item)
-
-		self.set("material_items", [])
-		for ni in new_items:
-			child = self.append("material_items", {})
-			for k, v in ni.as_dict().items():
-				if k not in ["name", "parent", "parenttype", "parentfield"]:
-					child.set(k, v)
 
 	def validate_recovery_distribution(self):
 		# Refining always yields pure 24KT gold, so the recovered gold is compared against
@@ -944,6 +895,34 @@ class RefiningEntry(Document):
 					},
 				)
 
+				# Also add the BOM components for visibility (they will be skipped during transfer/repack)
+				bom_no = frappe.db.get_value(
+					"Serial No", sn_row.serial_number, "custom_bom_no"
+				)
+				if not bom_no:
+					bom_no = frappe.db.get_value(
+						"BOM", {"item": sn_row.item_code, "is_active": 1}, "name"
+					)
+
+				if bom_no:
+					bom_items = frappe.db.get_all(
+						"BOM Item",
+						filters={"parent": bom_no},
+						fields=["item_code", "qty", "stock_qty", "uom", "stock_uom"],
+					)
+					for b_item in bom_items:
+						self.append(
+							"material_items",
+							{
+								"item_code": b_item.item_code,
+								"warehouse": self.warehouse,
+								"qty": flt(b_item.stock_qty) or flt(b_item.qty),
+								"uom": b_item.stock_uom or b_item.uom,
+								"source_type": "BOM Component",
+								"purity": self.get_item_purity(b_item.item_code),
+							},
+						)
+
 		elif self.refining_type == "Dust Refining":
 			# Fetch ALL loss items from the department's Scrap warehouse
 			if self.multiple_department:
@@ -959,21 +938,32 @@ class RefiningEntry(Document):
 			if not self.material_items and self.warehouse:
 				self._fetch_loss_items_from_warehouse(self.warehouse)
 
-		# Group items item-wise
+		# Consolidate the source materials item-wise for display (per the Refining SOP:
+		# "If multiple references are entered, quantities are merged item-wise"). The rows
+		# are keyed by (item_code, serial_no, warehouse) — deliberately NOT by batch_no, so
+		# a single item spread across several FIFO batches shows as ONE consolidated line
+		# instead of one line per batch. Physical batch allocation is not lost: it is
+		# resolved at submit time by create_material_transfer_se / create_repack_se (which
+		# FIFO-allocate any batch-less row), so the visible table stays item-group-wise
+		# while the stock movements remain batch-accurate.
+		item_group_cache = {}
 		grouped_items = {}
 		for item in self.material_items:
-			key = (item.item_code, item.batch_no, item.serial_no, item.warehouse)
+			key = (item.item_code, item.serial_no, item.warehouse)
+			if item.item_code not in item_group_cache:
+				item_group_cache[item.item_code] = item.get(
+					"item_group"
+				) or frappe.db.get_value("Item", item.item_code, "item_group")
 			if key not in grouped_items:
 				grouped_items[key] = {
 					"item_code": item.item_code,
-					"batch_no": item.batch_no,
 					"serial_no": item.serial_no,
 					"warehouse": item.warehouse,
 					"qty": item.qty,
 					"uom": item.uom,
 					"source_type": item.source_type,
 					"is_consumable": item.get("is_consumable"),
-					"item_group": item.get("item_group"),
+					"item_group": item_group_cache[item.item_code],
 					"purity": item.purity,
 					"manufacturing_work_order": item.manufacturing_work_order,
 					"manufacturing_operation": item.manufacturing_operation,
@@ -1013,28 +1003,45 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def generate_recovery_table(self, total_recovered_weight=None):
-		"""Distribute gold recovery by input purity proportion."""
+		"""Distribute gold recovery in proportion to each karat's PURE gold content."""
 		self.require_refining_role(REFINING_ROLES, _("classify materials"))
 		self.set("gold_recovery_details", [])
 		self.auto_classify_recoverable_non_metal()
 
 		input_purity_map = {}
+		input_item_map = {}
 		if self.refining_type == "Serial Number Refining":
-			for sn in self.serial_no_details:
-				purity = self.get_item_purity(sn.item_code)
-				if purity:
-					pct = frappe.db.get_value(
-						"Attribute Value", purity, "purity_percentage"
-					)
-					if pct:
-						pct_flt = flt(pct)
-						input_purity_map.setdefault(pct_flt, 0.0)
-						# Metal (gold alloy) weight, consistent with the metal_weight-based
-						# pure_weight set in scan_serial_no_action (findings excluded).
-						input_purity_map[pct_flt] += flt(sn.metal_weight)
+			bom_components = [
+				item
+				for item in self.material_items
+				if item.get("source_type") == "BOM Component"
+			]
+			if bom_components:
+				for item in bom_components:
+					if item.purity:
+						pct = frappe.db.get_value(
+							"Attribute Value", item.purity, "purity_percentage"
+						)
+						if pct:
+							pct_flt = flt(pct)
+							input_purity_map.setdefault(pct_flt, 0.0)
+							input_purity_map[pct_flt] += flt(item.qty)
+							input_item_map[pct_flt] = item.item_code
+			else:
+				for sn in self.serial_no_details:
+					purity = self.get_item_purity(sn.item_code)
+					if purity:
+						pct = frappe.db.get_value(
+							"Attribute Value", purity, "purity_percentage"
+						)
+						if pct:
+							pct_flt = flt(pct)
+							input_purity_map.setdefault(pct_flt, 0.0)
+							input_purity_map[pct_flt] += flt(sn.metal_weight)
+							input_item_map[pct_flt] = sn.item_code
 		else:
 			for item in self.material_items:
-				if self.is_gold_item(item.item_code) and item.purity:
+				if item.purity:
 					pct = frappe.db.get_value(
 						"Attribute Value", item.purity, "purity_percentage"
 					)
@@ -1042,10 +1049,20 @@ class RefiningEntry(Document):
 						pct_flt = flt(pct)
 						input_purity_map.setdefault(pct_flt, 0.0)
 						input_purity_map[pct_flt] += flt(item.qty)
+						input_item_map[pct_flt] = item.item_code
 
-		total_input_weight = sum(input_purity_map.values())
+		# Recovered gold is pure 24KT, so it is split in proportion to each karat's
+		# PURE gold content, not its gross input weight. A gross-weight split
+		# over-allocates recovery to low-purity rows — an 18KT (75.4%) row could be
+		# assigned more recovered pure gold than it even contained (recovery > 100%)
+		# while the 22KT row showed a matching artificial loss.
+		total_pure_input_weight = sum(
+			weight * (flt(pct) / 100.0) for pct, weight in input_purity_map.items()
+		)
 		total_recovered_weight = self.get_recovered_gold_total(total_recovered_weight)
-		purity_maps = self.get_purity_distribution_maps(input_purity_map)
+		purity_maps = self.get_purity_distribution_maps(
+			input_purity_map, input_item_map
+		)
 
 		for pmap in purity_maps:
 			pmap_pct = flt(pmap.purity_percentage)
@@ -1053,10 +1070,10 @@ class RefiningEntry(Document):
 			if input_weight <= 0:
 				continue
 
-			recovered_weight = self.get_proportional_recovery_weight(
-				input_weight, total_input_weight, total_recovered_weight
-			)
 			pure_gold_weight = input_weight * (pmap_pct / 100.0)
+			recovered_weight = self.get_proportional_recovery_weight(
+				pure_gold_weight, total_pure_input_weight, total_recovered_weight
+			)
 			self.append(
 				"gold_recovery_details",
 				{
@@ -1066,10 +1083,11 @@ class RefiningEntry(Document):
 					"input_weight": input_weight,
 					"pure_gold_weight": pure_gold_weight,
 					"recovered_weight": recovered_weight,
-					"loss_weight": max(input_weight - recovered_weight, 0),
+					# Loss is only meaningful when recovered < pure gold content
+					"loss_weight": max(pure_gold_weight - recovered_weight, 0),
 					"recovery_pct": (
-						(recovered_weight / input_weight) * 100.0
-						if input_weight
+						(recovered_weight / pure_gold_weight) * 100.0
+						if pure_gold_weight
 						else 0.0
 					),
 				},
@@ -1107,6 +1125,10 @@ class RefiningEntry(Document):
 		total_recovered_weight = self.get_recovered_gold_total(total_recovered_weight)
 		if total_input_weight <= 0:
 			frappe.throw(_("Gold input weight is required for proportional recovery."))
+		if total_pure_input_weight <= 0:
+			frappe.throw(
+				_("Pure gold input weight is required for proportional recovery.")
+			)
 		if total_recovered_weight <= 0:
 			frappe.throw(
 				_("Recovered gold weight is required for proportional recovery.")
@@ -1121,22 +1143,42 @@ class RefiningEntry(Document):
 				)
 			)
 
-		# Calculate and persist recovery details row by row via db_set
-		for row in self.gold_recovery_details:
-			recovered_weight = flt(
-				self.get_proportional_recovery_weight(
-					row.input_weight, total_input_weight, total_recovered_weight
-				),
-				3,
+		# Calculate and persist recovery details row by row via db_set.
+		# Split in proportion to each row's PURE gold content (see
+		# generate_recovery_table): a gross-weight split let a low-purity row
+		# "recover" more pure gold than it contained (recovery % above 100).
+		# Pre-compute each row's split at FULL precision, then round. loss_weight and
+		# recovery_pct are derived from the FULL-precision share vs the FULL-precision
+		# pure content so a sub-milligram rounding artifact reads as 0.000 loss / 100%
+		# (previously a pure that rounded up while its recovery rounded down showed a
+		# contradictory 0.001 loss on a 100.00%-recovered row). The rounding remainder
+		# is pushed onto the largest row so the persisted recovered weights still sum
+		# to the entered total.
+		full_share = {
+			id(row): self.get_proportional_recovery_weight(
+				flt(row.pure_gold_weight),
+				total_pure_input_weight,
+				total_recovered_weight,
 			)
-			loss_weight = flt(max(flt(row.input_weight) - recovered_weight, 0), 3)
+			for row in self.gold_recovery_details
+		}
+		row_weights = {rid: flt(v, 3) for rid, v in full_share.items()}
+		remainder = flt(flt(total_recovered_weight, 3) - sum(row_weights.values()), 3)
+		if remainder and row_weights:
+			largest = max(row_weights, key=row_weights.get)
+			row_weights[largest] = flt(row_weights[largest] + remainder, 3)
+
+		for row in self.gold_recovery_details:
+			recovered_weight = row_weights[id(row)]
+			pure_full = flt(row.pure_gold_weight)
+			share_full = full_share[id(row)]
+			pure_gold_weight = flt(pure_full, 3)
+			# Loss is only meaningful when recovered < pure gold content.
+			loss_weight = flt(max(pure_full - share_full, 0), 3)
 			recovery_pct = flt(
-				(recovered_weight / flt(row.input_weight)) * 100.0
-				if flt(row.input_weight)
-				else 0.0,
+				(share_full / pure_full) * 100.0 if pure_full else 0.0,
 				2,
 			)
-			pure_gold_weight = flt(row.pure_gold_weight, 3)
 
 			# Update in-memory for downstream use
 			row.recovered_weight = recovered_weight
@@ -1196,22 +1238,7 @@ class RefiningEntry(Document):
 
 	def _recalculate_and_persist_totals(self):
 		"""Recalculate summary fields and persist via db_set."""
-		gross_pure_weight = 0.0
-		expected_recovery = 0.0
-		if self.refining_type == "Serial Number Refining":
-			for sn in self.serial_no_details:
-				gross_pure_weight += flt(sn.pure_weight)
-				expected_recovery += flt(sn.pure_weight)
-		else:
-			for item in self.material_items:
-				if item.purity:
-					purity_pct = frappe.db.get_value(
-						"Attribute Value", item.purity, "purity_percentage"
-					)
-					if purity_pct:
-						pure_weight = flt(item.qty) * (flt(purity_pct) / 100.0)
-						gross_pure_weight += pure_weight
-						expected_recovery += pure_weight
+		gross_pure_weight, expected_recovery = self._compute_input_pure_weight()
 
 		refined_fine_weight = 0.0
 		actual_recovery = 0.0
@@ -1224,10 +1251,11 @@ class RefiningEntry(Document):
 		# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
 		# (rounding / assay variance) and must never book a negative loss.
 		refining_loss = max(gross_pure_weight - refined_fine_weight, 0.0)
-		recovery_percentage = (
+		recovery_percentage = min(
 			(refined_fine_weight / expected_recovery) * 100.0
 			if expected_recovery > 0
-			else 0.0
+			else 0.0,
+			100.0,
 		)
 
 		self.db_set(
@@ -1277,7 +1305,12 @@ class RefiningEntry(Document):
 			docname=self.name,
 		)
 		if self.refining_type == "Work Order Refining":
-			# SOP: Current operation quantity -> 0 for every refined MWO.
+			# SOP: Current and future operation quantities -> 0 for every refined MWO.
+			from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+				get_current_mop_balance_rows,
+				get_last_mop_index,
+			)
+
 			for mwo in self.mwo_details:
 				frappe.db.set_value(
 					"Manufacturing Work Order",
@@ -1285,18 +1318,63 @@ class RefiningEntry(Document):
 					"qty",
 					0,
 				)
+				# Zero out all operations that are not already Finished
+				# We zero all weight buckets so the UI (gross_wt) and ledger stay at 0.
+				frappe.db.sql(
+					"""
+					UPDATE `tabManufacturing Operation`
+					SET qty = 0, gross_wt = 0, net_wt = 0, finding_wt = 0,
+					    diamond_wt = 0, diamond_wt_in_gram = 0, diamond_pcs = 0,
+					    gemstone_wt = 0, gemstone_wt_in_gram = 0, gemstone_pcs = 0,
+					    other_wt = 0, prev_gross_wt = 0
+					WHERE manufacturing_work_order = %s
+					AND status != 'Finished'
+					""",
+					(mwo.manufacturing_work_order,),
+				)
+
 				op = frappe.db.get_value(
 					"Manufacturing Work Order",
 					mwo.manufacturing_work_order,
 					"manufacturing_operation",
 				)
-				if op:
-					frappe.db.set_value(
-						"Manufacturing Operation",
-						op,
-						"qty",
-						0,
-					)
+				if not op:
+					continue
+
+				# Create a 0-balance MOP Log for every active item in the current operation
+				# so that future operations read a 0 balance from the ledger.
+				balance_rows = get_current_mop_balance_rows(op)
+				if balance_rows:
+					last_idx = get_last_mop_index(op) or 0
+					for bal in balance_rows:
+						qty = flt(bal.get("qty_after_transaction_batch_based"))
+						pcs = cint(bal.get("pcs_after_transaction_batch_based"))
+						if qty <= 0 and pcs <= 0:
+							continue
+
+						ml = frappe.new_doc("MOP Log")
+						ml.item_code = bal.get("item_code")
+						ml.batch_no = bal.get("batch_no")
+						ml.manufacturing_work_order = mwo.manufacturing_work_order
+						ml.manufacturing_operation = op
+						ml.voucher_type = self.doctype
+						ml.voucher_no = self.name
+
+						ml.qty_change = -qty
+						ml.pcs_change = -pcs
+						ml.qty_after_transaction = 0
+						ml.qty_after_transaction_item_based = 0
+						ml.qty_after_transaction_batch_based = 0
+						ml.pcs_after_transaction = 0
+						ml.pcs_after_transaction_item_based = 0
+						ml.pcs_after_transaction_batch_based = 0
+
+						ml.flow_index = last_idx + 1
+						ml.is_cancelled = 0
+
+						# We use ignore_permissions to ensure background processing succeeds
+						ml.flags.ignore_permissions = True
+						ml.insert(ignore_permissions=True)
 
 			# Work Order cancellation / recasting is advisory only: the chosen action is
 			# recorded on the entry, but the actual Work Order cancel or transfer to the
@@ -1537,17 +1615,18 @@ class RefiningEntry(Document):
 					"Item", item.item_code, "has_batch_no"
 				)
 
+		self._dust_shortfalls = []
 		for item in self.material_items:
-			if self.is_dust_opening_item(item):
+			if item.get("source_type") == "BOM Component":
 				continue
 
-			# ⚠️ CRITICAL FIX: For Serial Number Refining, NEVER add items with serial_no to
-			# the transfer SE. These must stay in their source warehouse and be consumed
-			# directly from there during repack. Transferring them changes their warehouse/dept.
-			if self.refining_type == "Serial Number Refining":
-				if item.serial_no:
-					# Skip this entire item - do NOT add it to the material transfer SE
-					continue
+			# We no longer skip dust opening items here; we attempt to transfer everything
+			# and record any shortfalls (missing stock) for the receipt step.
+
+			# Serial Number Refining: the FG serial item IS transferred to the refining
+			# warehouse at submit (like every other refined material), so it is NOT skipped
+			# here. Its warehouse/department legitimately moves to the refinery; repack then
+			# consumes it from the refining warehouse.
 
 			s_wh = item.warehouse or self.warehouse
 			has_batch = item_batch_map.get(item.item_code)
@@ -1579,8 +1658,25 @@ class RefiningEntry(Document):
 
 				if use_fifo:
 					allocations = self.allocate_fifo_batches(
-						item.item_code, s_wh, item.qty
+						item.item_code,
+						s_wh,
+						item.qty,
+						throw_if_missing=(self.refining_type != "Dust Refining"),
 					)
+
+					allocated_qty = sum(flt(a["qty"], precision) for a in allocations)
+					if self.refining_type == "Dust Refining" and allocated_qty < flt(
+						item.qty, precision
+					):
+						self._dust_shortfalls.append(
+							{
+								"item_code": item.item_code,
+								"qty": flt(item.qty, precision) - allocated_qty,
+								"uom": item.uom,
+								"purity": item.purity,
+							}
+						)
+
 					for alloc in allocations:
 						if flt(alloc["qty"], precision) >= min_qty:
 							se.append(
@@ -1597,12 +1693,35 @@ class RefiningEntry(Document):
 								},
 							)
 			else:
-				if flt(item.qty, precision) >= min_qty:
+				# Item has no batch number tracking
+				transfer_qty = flt(item.qty, precision)
+				if self.refining_type == "Dust Refining":
+					bin_qty = flt(
+						frappe.db.get_value(
+							"Bin",
+							{"item_code": item.item_code, "warehouse": s_wh},
+							"actual_qty",
+						)
+						or 0.0,
+						precision,
+					)
+					transfer_qty = min(transfer_qty, max(0.0, bin_qty))
+					if transfer_qty < flt(item.qty, precision):
+						self._dust_shortfalls.append(
+							{
+								"item_code": item.item_code,
+								"qty": flt(item.qty, precision) - transfer_qty,
+								"uom": item.uom,
+								"purity": item.purity,
+							}
+						)
+
+				if transfer_qty >= min_qty:
 					se.append(
 						"items",
 						{
 							"item_code": item.item_code,
-							"qty": item.qty,
+							"qty": transfer_qty,
 							"uom": item.uom,
 							"s_warehouse": s_wh,
 							"t_warehouse": self.refining_warehouse,
@@ -1613,21 +1732,6 @@ class RefiningEntry(Document):
 					)
 
 		if se.items:
-			# ⚠️ HARD BLOCK: For Serial Number Refining, abort if ANY serials are in SE
-			# This is a critical defensive check - serials must NEVER be transferred
-			if self.refining_type == "Serial Number Refining":
-				serial_items = [item for item in se.items if item.serial_no]
-				if serial_items:
-					error_msg = (
-						"CRITICAL ERROR: Serial items found in material transfer SE for "
-						"Serial Number Refining. Serials must NEVER be transferred. "
-						f"Found: {', '.join([f'{item.item_code} (SN: {item.serial_no})' for item in serial_items])}\n\n"
-						"This indicates the skip logic in create_material_transfer_se is not working. "
-						"Aborting submission to prevent warehouse changes."
-					)
-					frappe.log_error(error_msg, "SERIAL TRANSFER BLOCK")
-					frappe.throw(_(error_msg))
-
 			se.insert(ignore_permissions=True)
 			se.submit()
 			self.db_set("material_transfer_se", se.name)
@@ -1720,41 +1824,40 @@ class RefiningEntry(Document):
 			cancel_stock_reservation_entries(sre_list=names, notify=False)
 
 	def _zero_source_mwo_and_mop_weights(self):
-		"""Zero the weight buckets on each refined MWO and its last not-started
-		Manufacturing Operation, since the material has left for the refinery."""
+		"""Zero the weight buckets on each refined MWO and ALL of its not-started
+		Manufacturing Operations, since the material has left for the refinery.
+
+		Not just the single last operation: the current pending operation AND every
+		further (downstream) operation still to run in the work order route are zeroed,
+		so no remaining step keeps a phantom weight for material that is now in the
+		refinery. Already-Finished operations are left untouched (historical record)."""
 		zero_map = {field: 0 for field in self._MWO_WEIGHT_FIELDS}
+		mop_zero_map = dict(zero_map)
+		mop_zero_map["gemstone_wt_in_gram"] = 0
 		for row in self.mwo_details:
 			mwo = row.manufacturing_work_order
 			if not mwo:
 				continue
 			frappe.db.set_value("Manufacturing Work Order", mwo, zero_map)
 
-			# The last operation that has not started manufacturing yet.
-			last_not_started_mop = frappe.db.get_value(
+			# Every operation that has not started manufacturing yet — the current
+			# pending operation plus any further (downstream) operations in the route.
+			pending_mops = frappe.db.get_all(
 				"Manufacturing Operation",
-				{"manufacturing_work_order": mwo, "status": "Not Started"},
-				"name",
-				order_by="creation desc",
+				filters={"manufacturing_work_order": mwo, "status": "Not Started"},
+				pluck="name",
 			)
-			if last_not_started_mop:
-				mop_zero_map = dict(zero_map)
-				mop_zero_map["gemstone_wt_in_gram"] = 0
-				frappe.db.set_value(
-					"Manufacturing Operation", last_not_started_mop, mop_zero_map
-				)
+			for mop in pending_mops:
+				frappe.db.set_value("Manufacturing Operation", mop, mop_zero_map)
 
 	def create_dust_opening_receipt_se(self):
 		# When the physical dust exceeds the system stock, the extra dust must be brought
 		# into the refining warehouse via a Material Receipt so the repack can consume it.
-		# Use get_dust_item() (has fallbacks) instead of only self.loss_item, and the SAME
-		# _opening_dust_qty() the opening material row uses, so the receipt qty always
-		# matches the row it feeds (previously a blank loss_item skipped the receipt).
-		dust_item = self.get_dust_item()
-		dust_qty = self._opening_dust_qty()
-		if not dust_item or dust_qty <= 0:
-			return
 
-		dust_batch = self.get_dust_opening_batch(dust_item)
+		# We now use the exact shortfalls calculated during create_material_transfer_se.
+		shortfalls = getattr(self, "_dust_shortfalls", [])
+		if not shortfalls:
+			return
 
 		se = frappe.new_doc("Stock Entry")
 		se.stock_entry_type = "Material Receipt"
@@ -1763,18 +1866,27 @@ class RefiningEntry(Document):
 		se.custom_refining_entry = self.name
 		se.auto_created = 1
 
-		se.append(
-			"items",
-			{
-				"item_code": dust_item,
-				"qty": dust_qty,
-				"uom": frappe.db.get_value("Item", dust_item, "stock_uom") or "Gram",
-				"t_warehouse": self.refining_warehouse,
-				"purity": self.get_item_purity(dust_item),
-				"batch_no": dust_batch,
-				"use_serial_batch_fields": 1,
-			},
-		)
+		added = False
+		for sf in shortfalls:
+			if sf["qty"] <= 0:
+				continue
+			dust_batch = self.get_dust_opening_batch(sf["item_code"])
+			se.append(
+				"items",
+				{
+					"item_code": sf["item_code"],
+					"qty": sf["qty"],
+					"uom": sf["uom"],
+					"t_warehouse": self.refining_warehouse,
+					"purity": sf["purity"],
+					"batch_no": dust_batch,
+					"use_serial_batch_fields": 1,
+				},
+			)
+			added = True
+
+		if not added:
+			return
 
 		se.insert(ignore_permissions=True)
 		se.submit()
@@ -1865,17 +1977,15 @@ class RefiningEntry(Document):
 
 		# Input items (consumed)
 		for item in self.material_items:
+			if item.get("source_type") == "BOM Component":
+				continue
+
 			has_batch = item_batch_map.get(item.item_code)
 
-			# Serial Number Refining: the FG serial item was NOT transferred to
-			# the refining warehouse (to preserve the serial's department), so
-			# consume it directly from the original source warehouse.
-			is_sn_item = (
-				self.refining_type == "Serial Number Refining" and item.serial_no
-			)
-			consume_warehouse = (
-				self.warehouse if is_sn_item else self.refining_warehouse
-			)
+			# The serial FG item is transferred to the refining warehouse at submit
+			# (create_material_transfer_se), so — like every other refined material — it is
+			# consumed from the refining warehouse during repack.
+			consume_warehouse = self.refining_warehouse
 
 			if has_batch:
 				qty_remaining = flt(item.qty, precision)
@@ -2374,11 +2484,12 @@ class RefiningEntry(Document):
 	def get_scrap_items_balance(self):
 		"""Fetch available scrap stock from the department warehouse(s).
 
-		Per the Refinery Change SOP, scrap generated during manufacturing is transferred
-		into the department as a designated Scrap Item via the Manufacturing Operation
-		"Create Scrap Item" action, landing in either the department Scrap or Raw Material
-		warehouse. This fetches that stock (optionally filtered by the selected Scrap
-		Item) along with batch details so the user does not have to pick stock manually.
+		Manufacturing scrap is received back into the department under the SAME item
+		code (there is no dedicated scrap item) but a batch tagged
+		``custom_batch_type = "Scrap"`` by the Manufacturing Operation "Receive Scrap
+		Item" action. This fetches ONLY Scrap-typed batches (optionally narrowed to the
+		selected Scrap Item), so ordinary department stock sharing a warehouse is never
+		pulled in. Non-batch stock cannot carry the Scrap marker and is excluded.
 		"""
 		if self.refining_type != "Scrap Refining":
 			frappe.throw(_("This action is only available for Scrap Refining."))
@@ -2415,42 +2526,37 @@ class RefiningEntry(Document):
 				uom = frappe.db.get_value("Item", b.item_code, "stock_uom") or "Gram"
 				item_group = frappe.db.get_value("Item", b.item_code, "item_group")
 
-				if frappe.db.get_value("Item", b.item_code, "has_batch_no"):
-					allocs = self.allocate_fifo_batches(
-						b.item_code, wh.name, 9999999, throw_if_missing=False
-					)
-					for a in allocs:
-						aq = flt(a.get("qty"), 3)
-						if aq <= 0:
-							continue
-						scrap_items.append(
-							{
-								"item_code": b.item_code,
-								"item_group": item_group,
-								"warehouse": wh.name,
-								"batch_no": a.get("batch_no"),
-								"actual_qty": aq,
-								# Scrap system qty == physical qty: default the Physical Qty
-								# to the full available balance so the operator can just
-								# select the row and add it (still editable to refine less).
-								"qty": aq,
-								"uom": uom,
-								"purity": purity,
-							}
+				# Scrap is always batch-tracked and marked custom_batch_type="Scrap".
+				# Non-batch stock cannot carry the marker, so it is never scrap.
+				if not frappe.db.get_value("Item", b.item_code, "has_batch_no"):
+					continue
+
+				allocs = self.allocate_fifo_batches(
+					b.item_code, wh.name, 9999999, throw_if_missing=False
+				)
+				for a in allocs:
+					aq = flt(a.get("qty"), 3)
+					if aq <= 0:
+						continue
+					# Only Scrap-tagged batches are eligible for Scrap Refining.
+					if (
+						frappe.db.get_value(
+							"Batch", a.get("batch_no"), "custom_batch_type"
 						)
-				else:
-					actual_qty = flt(b.actual_qty, 3)
-					if actual_qty <= 0:
+						!= "Scrap"
+					):
 						continue
 					scrap_items.append(
 						{
 							"item_code": b.item_code,
 							"item_group": item_group,
 							"warehouse": wh.name,
-							"batch_no": None,
-							"actual_qty": actual_qty,
-							# Default Physical Qty to full available (see batch branch).
-							"qty": actual_qty,
+							"batch_no": a.get("batch_no"),
+							"actual_qty": aq,
+							# Scrap system qty == physical qty: default the Physical Qty
+							# to the full available balance so the operator can just
+							# select the row and add it (still editable to refine less).
+							"qty": aq,
 							"uom": uom,
 							"purity": purity,
 						}
@@ -2608,17 +2714,30 @@ class RefiningEntry(Document):
 			flt(input_weight) / flt(total_input_weight)
 		)
 
-	def get_purity_distribution_maps(self, input_purity_map):
+	def get_purity_distribution_maps(self, input_purity_map, input_item_map=None):
+		if input_item_map is None:
+			input_item_map = {}
 		purity_maps = frappe.db.get_all(
 			"Refining Purity Map",
 			fields=[
 				"karat",
 				"purity_percentage",
 				"item_template",
-				"metal_touch",
 				"metal_purity",
 			],
 		)
+		# Dedupe by purity percentage: duplicate map rows would emit duplicate
+		# gold_recovery_details rows for the same karat and over-distribute the
+		# recovered weight.
+		seen_percentages = set()
+		deduped = []
+		for row in purity_maps:
+			pct = flt(row.purity_percentage)
+			if pct in seen_percentages:
+				continue
+			seen_percentages.add(pct)
+			deduped.append(row)
+		purity_maps = deduped
 		mapped_percentages = {flt(row.purity_percentage) for row in purity_maps}
 		for purity_percentage in input_purity_map:
 			if purity_percentage in mapped_percentages:
@@ -2628,7 +2747,8 @@ class RefiningEntry(Document):
 					{
 						"karat": self.get_karat_from_percentage(purity_percentage),
 						"purity_percentage": purity_percentage,
-						"item_template": self.get_default_recovered_gold_item(),
+						"item_template": input_item_map.get(purity_percentage)
+						or self.get_default_recovered_gold_item(),
 						"metal_touch": None,
 						"metal_purity": None,
 					}
@@ -2693,47 +2813,111 @@ class RefiningEntry(Document):
 			)
 
 	def get_dust_item(self):
-		dust_item = self.loss_item
-		if not dust_item and self.refining_type == "Dust Refining":
-			# Fallback: first material item with source_type Dust
-			for item in self.material_items:
-				if item.get("source_type") == "Dust" and item.item_code:
-					dust_item = item.item_code
-					break
-		if not dust_item and self.refining_type != "Dust Refining":
-			# Scrap / Work Order / Serial refining have no explicit loss item. Book the
-			# remaining quantity (refining loss) against the dedicated process-loss item
-			# ("Metal Process Loss"), NOT an input finding/metal item. Using an input
-			# item made that Finding/Metal re-appear as an output row at the bottom of
-			# the Manufacture entry (the reported "finding added below" bug) even though
-			# all input metal is already converted to the single 24KT output. SOP:
-			# "Remaining quantity -> Dust/Loss in Refining Scrap Warehouse".
-			dust_item = frappe.db.get_value(
-				"Item", {"item_code": "Metal Process Loss", "disabled": 0}, "name"
+		if self.refining_type == "Dust Refining":
+			dust_item = self.loss_item
+			if not dust_item:
+				# Fallback: first material item with source_type Dust
+				for item in self.material_items:
+					if item.get("source_type") == "Dust" and item.item_code:
+						dust_item = item.item_code
+						break
+			return dust_item
+		return self._get_pure_loss_item()
+
+	def _get_pure_loss_item(self):
+		"""Loss item for non-Dust (Scrap / Work Order / Serial) refining.
+
+		The refining loss (``self.refining_loss``) is a PURE (24KT-equivalent) gram
+		quantity — see ``_recalculate_and_persist_totals`` — so the loss row of the
+		repack Manufacture entry must carry the PURE karat. Booking it against an
+		input-karat item (the first ML-G-22KT input row, or a manually picked 22KT
+		loss item) put pure grams on a ~91.6%-purity item: the reported "loss shows
+		the 22KT metal code" bug. Resolution order:
+
+		  1. the operator-picked ``loss_item``, unless it carries a non-pure karat;
+		  2. an existing Metal Loss variant of the pure karat (ML-G-24KT…);
+		  3. derive/create the ML variant of the pure gold item (Variant Loss Table
+		     mapping, same helper Main Slip uses for process loss);
+		  4. the dedicated karat-less "Metal Process Loss" item;
+		  5. the recovered pure gold item itself (last resort — never an input item).
+		"""
+		pure_karat = self._get_pure_gold_karat()
+
+		if self.loss_item:
+			loss_karat = frappe.db.get_value(
+				"Item Variant Attribute",
+				{"parent": self.loss_item, "attribute": "Metal Touch"},
+				"attribute_value",
 			)
-		if not dust_item:
-			# Fallback (loss item missing): book against the first input metal item.
-			for item in self.material_items:
-				if item.item_code and self.is_gold_item(item.item_code):
-					dust_item = item.item_code
-					break
-		if not dust_item:
-			# Serial refining consumes the FG item (not gold-classified), so fall back to
-			# the recovered metal item code so the loss is still booked as dust.
-			for gold in self.refined_gold:
-				if gold.item_code:
-					dust_item = gold.item_code
-					break
-		return dust_item
+			if not loss_karat or not pure_karat or loss_karat == pure_karat:
+				return self.loss_item
+			if not getattr(self, "_pure_loss_override_warned", False):
+				self._pure_loss_override_warned = True
+				frappe.msgprint(
+					_(
+						"Loss Item {0} carries karat {1}, but the refining loss is a "
+						"pure ({2}) quantity — booking the loss to the pure loss item "
+						"instead."
+					).format(self.loss_item, loss_karat, pure_karat),
+					indicator="orange",
+					alert=True,
+				)
+
+		if pure_karat:
+			existing = frappe.db.get_value(
+				"Item",
+				{
+					"variant_of": "ML",
+					"disabled": 0,
+					"name": ["like", f"ML-G-{pure_karat}%"],
+				},
+				"name",
+			)
+			if existing:
+				return existing
+
+		try:
+			from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
+				get_item_loss_item,
+			)
+
+			derived = get_item_loss_item(
+				self.company, self._get_pure_gold_24kt_item(), variant_of="M"
+			)
+			# The Variant Loss Table fallback returns the source template when no
+			# loss variant is mapped; only accept a real ML loss variant here.
+			if (
+				derived
+				and self.is_gold_item(derived)
+				and derived != self._get_pure_gold_24kt_item()
+			):
+				return derived
+		except Exception:
+			# Missing pure item / Variant Loss Table mapping / variant-creation
+			# permission: fall through to the dedicated process-loss item. Drop the
+			# error get_item_loss_item may have queued so the fallback stays silent.
+			if frappe.message_log:
+				frappe.message_log.pop()
+
+		dust_item = frappe.db.get_value(
+			"Item", {"item_code": "Metal Process Loss", "disabled": 0}, "name"
+		)
+		if dust_item:
+			return dust_item
+
+		# Serial refining consumes the FG item (not gold-classified), so fall back to
+		# the recovered metal item code (pure 24KT) so the loss is still booked as dust.
+		for gold in self.refined_gold:
+			if gold.item_code:
+				return gold.item_code
+		return None
 
 	def is_dust_opening_item(self, item):
-		dust_item = self.get_dust_item()
-		return (
-			self.refining_type == "Dust Refining"
-			and dust_item
-			and item.item_code == dust_item
-			and item.warehouse == self.refining_warehouse
-		)
+		if self.refining_type != "Dust Refining":
+			return False
+		if self.loss_item:
+			return item.item_code == self.loss_item
+		return item.get("source_type") != "Dust"
 
 	def get_dust_opening_qty(self, dust_item):
 		dust_qty = 0.0
@@ -2766,6 +2950,26 @@ class RefiningEntry(Document):
 		if override > 0:
 			return override
 		return max(flt(self.difference_quantity), 0.0)
+
+	def validate_dust_opening_material(self):
+		"""Dust Refining: the extra ('opening') dust for a physical-over-system difference
+		is NO LONGER auto-added. The operator must manually add the difference-quantity
+		item to the Material Items table so the table totals the physical quantity. If the
+		rows still fall short of the physical quantity at submit, abort and tell them to add
+		it. The Material Receipt that brings that physical excess into the refining
+		warehouse is still created on submit (create_dust_opening_receipt_se)."""
+		phys = flt(self.physical_quantity, 3)
+		if phys <= 0:
+			return
+		added = flt(sum(flt(row.qty) for row in self.material_items), 3)
+		if added + 0.001 < phys:
+			frappe.throw(
+				_(
+					"Physical Quantity is {0} but the Material Items table only totals {1}. "
+					"Add the difference quantity item ({2}) to the Material Items table "
+					"before submitting."
+				).format(phys, added, flt(phys - added, 3))
+			)
 
 	def ensure_dust_opening_material_row(self):
 		dust_item = self.get_dust_item()
@@ -2943,78 +3147,3 @@ class RefiningEntry(Document):
 			)
 
 		return allocations
-
-	@frappe.whitelist()
-	def get_linked_stock_entries_html(self):
-		"""Render the source materials as an HTML table.
-
-		For Serial Number refining the FG itself is what physically moves and is repacked,
-		but the SOP asks to display the FG BOM components, so those are shown here for
-		reference. All other types show the consolidated Material Items table.
-		"""
-		from frappe.utils import escape_html
-
-		if self.refining_type == "Serial Number Refining":
-			return self._get_serial_bom_html(escape_html)
-
-		html = "<h4>Raw Materials Consolidate</h4>"
-		if not self.material_items:
-			return html + "<p>No materials found.</p>"
-
-		html += (
-			"<table class='table table-bordered'><thead><tr>"
-			"<th>Item Code</th><th>Item Group</th><th>Warehouse</th>"
-			"<th>Qty</th><th>UOM</th><th>Batch</th></tr></thead><tbody>"
-		)
-		for item in self.material_items:
-			html += (
-				f"<tr><td>{escape_html(item.item_code or '')}</td>"
-				f"<td>{escape_html(item.get('item_group') or '')}</td>"
-				f"<td>{escape_html(item.warehouse or '')}</td>"
-				f"<td>{flt(item.qty, 3)}</td>"
-				f"<td>{escape_html(item.uom or '')}</td>"
-				f"<td>{escape_html(item.batch_no or '')}</td></tr>"
-			)
-		html += "</tbody></table>"
-		return html
-
-	def _get_serial_bom_html(self, escape_html):
-		html = "<h4>FG BOM Materials</h4>"
-		if not self.serial_no_details:
-			return html + "<p>No serial numbers added.</p>"
-
-		html += (
-			"<table class='table table-bordered'><thead><tr>"
-			"<th>Serial No</th><th>FG Item</th><th>Component</th>"
-			"<th>Qty</th><th>UOM</th></tr></thead><tbody>"
-		)
-		for sn in self.serial_no_details:
-			bom_name = frappe.db.get_value(
-				"Serial No", sn.serial_number, "custom_bom_no"
-			)
-			if not bom_name:
-				bom_name = frappe.db.get_value(
-					"BOM", {"item": sn.item_code, "is_active": 1}, "name"
-				)
-			if not bom_name:
-				html += (
-					f"<tr><td>{escape_html(sn.serial_number or '')}</td>"
-					f"<td>{escape_html(sn.item_code or '')}</td>"
-					"<td colspan='3'>No BOM found.</td></tr>"
-				)
-				continue
-			bom_items = frappe.get_all(
-				"BOM Item",
-				filters={"parent": bom_name},
-				fields=["item_code", "qty", "uom"],
-			)
-			for bi in bom_items:
-				html += (
-					f"<tr><td>{escape_html(sn.serial_number or '')}</td>"
-					f"<td>{escape_html(sn.item_code or '')}</td>"
-					f"<td>{escape_html(bi.item_code or '')}</td>"
-					f"<td>{flt(bi.qty, 3)}</td>"
-					f"<td>{escape_html(bi.uom or '')}</td></tr>"
-				)
-		html += "</tbody></table>"
-		return html

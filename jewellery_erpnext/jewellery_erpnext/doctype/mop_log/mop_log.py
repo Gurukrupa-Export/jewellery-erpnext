@@ -7,6 +7,8 @@ from frappe.query_builder import DocType
 from frappe.query_builder.functions import Max
 from frappe.utils import cint, cstr, flt
 
+from jewellery_erpnext.utils import is_mwo_refined
+
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
 select_fields = [
 	"item_code",
@@ -539,6 +541,14 @@ def get_available_qty_pcs_for_mop_item(
 def create_mop_log_for_department_ir(
 	self, row, to_warehouse, from_warehouse, operation
 ):
+	# A refined MWO's metal is gone (the Refining Entry zeroed the balance). Cloning
+	# the source operation's log history into the post-refining operation would carry
+	# stale pre-refining qty_after_transaction values forward — the cloned rows'
+	# validate would recompute the new operation's weight buckets back to the
+	# pre-refining figures, and EOD sync would see phantom stock to move.
+	if is_mwo_refined(row.manufacturing_work_order):
+		return
+
 	mop_logs = []
 	is_receive = getattr(self, "type", None) == "Receive" and getattr(
 		self, "receive_against", None
@@ -610,6 +620,13 @@ def _get_mop_logs_for_employee_ir_issue(row, department_receive_id):
 
 
 def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
+	# Same guard as the Department IR clone above: a refined MWO has no metal left,
+	# so no balance may be issued to an employee from it. On healthy data the
+	# balance snapshot is already 0; on pre-fix data it can still hold phantom
+	# pre-refining rows that must not be propagated.
+	if is_mwo_refined(row.manufacturing_work_order):
+		return
+
 	department_receive_id = frappe.db.get_value(
 		"Manufacturing Operation", row.manufacturing_operation, "department_receive_id"
 	)

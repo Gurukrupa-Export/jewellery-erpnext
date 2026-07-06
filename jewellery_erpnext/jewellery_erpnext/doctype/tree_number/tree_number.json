@@ -19,6 +19,8 @@
   "column_break_idn",
   "employee",
   "employee_ir",
+  "source_warehouse",
+  "msl_warehouse",
   "metal_details_section",
   "metal_type",
   "metal_touch",
@@ -114,6 +116,21 @@
    "fieldtype": "Link",
    "label": "Issue Employee IR",
    "options": "Employee IR",
+   "read_only": 1
+  },
+  {
+   "description": "Source warehouse for Issue Material (defaults to the department's Manufacturing warehouse). Standalone trees only.",
+   "fieldname": "source_warehouse",
+   "fieldtype": "Link",
+   "label": "Source Warehouse",
+   "options": "Warehouse"
+  },
+  {
+   "description": "Employee MSL (Raw Material) warehouse the tree holds material in. Resolved from Employee on first Issue.",
+   "fieldname": "msl_warehouse",
+   "fieldtype": "Link",
+   "label": "MSL Warehouse",
+   "options": "Warehouse",
    "read_only": 1
   },
   {
