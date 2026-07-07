@@ -10,6 +10,9 @@ from frappe.query_builder.functions import Max
 from frappe.utils import get_link_to_form
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
+from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
+	get_current_mould_no,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
 	create_stock_entry,
@@ -330,6 +333,7 @@ class ParentManufacturingOrder(Document):
 				self.db_set("serial_id_bom", serial_bom)
 
 	def validate(self):
+		self.mould_no = get_current_mould_no(self.item_code)
 		if self.is_new() or self.flags.ignore_validations:
 			return
 		self.metal_details()
@@ -721,6 +725,7 @@ def make_manufacturing_order(
 		doc.rowname = row.name
 		doc.master_bom = master_bom
 		doc.diamond_grade = so_det.get("diamond_grade")
+		doc.mould_no = get_current_mould_no(doc.item_code)
 		doc.insert(ignore_mandatory=True)
 
 	elif row.mwo:
@@ -747,6 +752,7 @@ def make_manufacturing_order(
 		doc.manufacturing_plan = source_doc.name
 		doc.qty = row.qty_per_manufacturing_order
 		doc.rowname = row.name
+		doc.mould_no = get_current_mould_no(doc.item_code)
 		doc.insert(ignore_mandatory=True)
 		row.manufacturing_bom = so_det.get("master_bom")
 

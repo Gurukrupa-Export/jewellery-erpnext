@@ -32,7 +32,9 @@
 "allowed_loss_percentage",
 "column_break_stayp",
 "allowed_diamond_loss",
-"allowed_gemstone_loss"
+"allowed_gemstone_loss",
+"employee_ir_timing_section",
+"employee_ir_receive_delay"
 ],
 "fields": [
 {
@@ -186,6 +188,19 @@
 "fieldtype": "Link",
 "label": "Manufacturer",
 "options": "Manufacturer"
+},
+{
+"fieldname": "employee_ir_timing_section",
+"fieldtype": "Section Break",
+"label": "Employee IR Receive Timing"
+},
+{
+"default": "0",
+"description": "Minutes that must elapse after the Employee IR Issue is submitted before its Employee IR Receive can be submitted. 0 = no waiting time.",
+"fieldname": "employee_ir_receive_delay",
+"fieldtype": "Int",
+"label": "Employee IR Receive Delay (Minutes)",
+"non_negative": 1
 }
 ],
 "index_web_pages_for_search": 1,
