@@ -67,7 +67,7 @@
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Slip",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

@@ -2,6 +2,9 @@ import copy
 import json
 
 import frappe
+from erpnext.controllers.subcontracting_inward_controller import (
+	SubcontractingInwardController,
+)
 from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 from frappe import _
 from frappe.utils import flt
@@ -40,7 +43,7 @@ def on_submit(self, method):
 	# validate_inventory_dimention(self)
 
 
-class CustomStockEntry(StockEntry):
+class CustomStockEntry(StockEntry, SubcontractingInwardController):
 	# def autoname(self):
 	# 	"""
 	# 	Temporarily name doc for fast insertion

@@ -7,7 +7,6 @@ from erpnext.controllers.item_variant import create_variant, get_variant
 from frappe import _
 from frappe.desk.reportview import get_match_cond
 from frappe.query_builder import CustomFunction
-from frappe.query_builder.functions import Locate
 
 
 @frappe.whitelist()
@@ -327,6 +326,7 @@ def customer_query(doctype, txt, searchfield, start, page_len, filters):
 	_txt = txt.replace("%", "")
 
 	IF = CustomFunction("IF", ["condition", "true_expr", "false_expr"])
+	Locate = CustomFunction("LOCATE", ["substr", "str"])
 
 	sales_type_subquery = (
 		frappe.qb.from_(SalesType)
