@@ -31006,5 +31006,21 @@
   "property_type": "Check",
   "row_name": null,
   "value": "0"
+ },
+ {
+  "default_value": null,
+  "doc_type": "Stock Entry",
+  "docstatus": 0,
+  "doctype": "Property Setter",
+  "doctype_or_field": "DocField",
+  "field_name": "company",
+  "is_system_generated": 0,
+  "modified": "2026-07-07 16:25:55.685039",
+  "module": null,
+  "name": "Stock Entry-company-default",
+  "property": "default",
+  "property_type": "Text",
+  "row_name": null,
+  "value": "Test_Company"
  }
 ]

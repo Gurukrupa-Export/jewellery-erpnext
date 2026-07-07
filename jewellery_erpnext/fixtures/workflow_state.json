@@ -961,5 +961,77 @@
   "name": "Update Item - On-Hold",
   "style": "",
   "workflow_state_name": "Update Item - On-Hold"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-06-17 15:41:27.688552",
+  "name": "Classified",
+  "style": "Warning",
+  "workflow_state_name": "Classified"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-06-17 15:41:27.693166",
+  "name": "Transferred",
+  "style": "Primary",
+  "workflow_state_name": "Transferred"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-08-10 12:30:12.958620",
+  "name": "Cancelled",
+  "style": "Danger",
+  "workflow_state_name": "Cancelled"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-06-17 15:41:27.684001",
+  "name": "Physical Verification",
+  "style": "Warning",
+  "workflow_state_name": "Physical Verification"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-06-17 15:41:27.689665",
+  "name": "Refining In Progress",
+  "style": "Info",
+  "workflow_state_name": "Refining In Progress"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-06-17 15:41:27.690613",
+  "name": "Recovery Entered",
+  "style": "Info",
+  "workflow_state_name": "Recovery Entered"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-06-17 15:41:27.686897",
+  "name": "Received",
+  "style": "Primary",
+  "workflow_state_name": "Received"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-06-17 15:41:27.691524",
+  "name": "Recovery Verified",
+  "style": "Success",
+  "workflow_state_name": "Recovery Verified"
  }
 ]

@@ -362,5 +362,54 @@
   "modified": "2025-06-27 16:28:02.106474",
   "name": "Complete KYC",
   "workflow_action_name": "Complete KYC"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.585181",
+  "name": "Receive Materials",
+  "workflow_action_name": "Receive Materials"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.587953",
+  "name": "Classify & Generate Recovery",
+  "workflow_action_name": "Classify & Generate Recovery"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.591415",
+  "name": "Enter Yield",
+  "workflow_action_name": "Enter Yield"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.594544",
+  "name": "Verify Recovery",
+  "workflow_action_name": "Verify Recovery"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.601338",
+  "name": "Transfer to Department",
+  "workflow_action_name": "Transfer to Department"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.527604",
+  "name": "Send for Verification",
+  "workflow_action_name": "Send for Verification"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-06-17 13:36:31.597527",
+  "name": "Complete Refining",
+  "workflow_action_name": "Complete Refining"
  }
 ]
