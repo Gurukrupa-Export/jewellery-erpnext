@@ -3193,7 +3193,7 @@ def setup_data():
 
 	if not frappe.db.exists("UOM", "Nos"):
 		frappe.get_doc(
-			{"doctype": "UOM", "uom_name": "Nos", "must_be_whole_number": 1}
+			{"doctype": "UOM", "uom_name": "Nos", "must_be_whole_number": 0}
 		).insert(ignore_permissions=True)
 
 	if not frappe.db.exists("UOM", "Gram"):
