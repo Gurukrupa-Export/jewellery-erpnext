@@ -337,6 +337,9 @@ class TestEmployeeIR(IntegrationTestCase):
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_employee_ir_scan(self):
+		frappe.db.set_value(
+			"Department Operation", "Wax Pull Out", "employee_ir_receive_delay", 0
+		)
 		create_pmo(self)
 		mo = mo_creation()
 		dir_issue = dir_for_issue(
@@ -433,6 +436,9 @@ class TestEmployeeIR(IntegrationTestCase):
 		self.assertEqual(eir_receive.docstatus, 1)
 
 	def test_department_ir_by_manufacturing_operation(self):
+		frappe.db.set_value(
+			"Department Operation", "Wax Pull Out", "employee_ir_receive_delay", 0
+		)
 		create_pmo(self)
 		mo = mo_creation()
 		dir_issue = dir_for_issue(
