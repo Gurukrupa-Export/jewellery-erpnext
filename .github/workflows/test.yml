@@ -368,3 +368,9 @@ jobs:
 
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_casting
+      - name: Run Refining Entry
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --app jewellery_erpnext --doctype "Refining Entry"
