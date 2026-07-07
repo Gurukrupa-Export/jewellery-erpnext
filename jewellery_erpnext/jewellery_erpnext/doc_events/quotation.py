@@ -1172,7 +1172,8 @@ def xl_preview(docname):
 	
 	for item in doc.items:
 		if item.quotation_bom:
-			bom_doc = frappe.get_doc("BOM", item.quotation_bom)
+			# bom_doc = frappe.get_doc("BOM", item.quotation_bom)
+			bom_doc = frappe.get_doc("BOM", item.copy_bom)
 
 			# total_qty = sum([float(d.quantity or 0) for d in bom_doc.diamond_detail])
 			total_qty = sum([round(float(d.quantity or 0), 2) for d in bom_doc.diamond_detail])
