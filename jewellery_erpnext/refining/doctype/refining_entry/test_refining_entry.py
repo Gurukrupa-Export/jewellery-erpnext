@@ -543,6 +543,9 @@ class TestRefiningEntry(IntegrationTestCase):
 
 def loss_entry():
 	se = frappe.new_doc("Stock Entry")
+	se.company = "Test_Company"
+	se.manufacturer = "Shubh"
+	se.branch = frappe.db.exists("Branch", {"branch_name": "Test Branch"})
 	se.stock_entry_type = "Material Receipt"
 	se.append(
 		"items",

@@ -2337,6 +2337,8 @@ def create_test_data():
 			)
 			mop_settings.save()
 
+		frappe.db.set_single_value("System Settings", "float_precision", "3")
+
 		if not frappe.db.exists("Item", "ML"):
 			frappe.get_doc(
 				{
@@ -3170,8 +3172,17 @@ def setup_data():
 			}
 		).insert(ignore_permissions=True)
 
+	if not frappe.db.exists("Item Group", "Consumable"):
+		frappe.get_doc(
+			{
+				"doctype": "Item Group",
+				"item_group_name": "Consumable",
+				"parent_item_group": "All Item Groups",
+				"is_group": 1,
+			}
+		).insert(ignore_permissions=True)
+
 	if not frappe.db.exists("Item Group", "Tools & Accessories"):
-		frappe.db.set_value("Item Group", "Consumable", "is_group", 1)
 		frappe.get_doc(
 			{
 				"doctype": "Item Group",
