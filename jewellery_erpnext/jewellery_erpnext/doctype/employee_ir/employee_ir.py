@@ -14,6 +14,7 @@ from frappe.utils import (
 	get_first_day,
 	get_last_day,
 	getdate,
+	now_datetime,
 	nowdate,
 	time_diff,
 	time_diff_in_hours,
@@ -53,6 +54,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_cas
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
+	validate_employee_ir_receive_delay,
 	validate_loss_qty,
 	validate_loss_tables_required,
 	validate_manually_book_loss_details,
@@ -92,6 +94,12 @@ class EmployeeIR(Document):
 				self.append(
 					"employee_ir_operations", {"manufacturing_operation": row.name}
 				)
+
+	def before_submit(self):
+		if self.type == "Issue":
+			self.issue_submitted_on = now_datetime()
+		else:
+			validate_employee_ir_receive_delay(self)
 
 	def on_submit(self):
 		validate_loss_tables_required(self)

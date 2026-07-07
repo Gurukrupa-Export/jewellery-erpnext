@@ -27,6 +27,7 @@
   "seq",
   "customer",
   "item_code",
+  "mould_no",
   "master_bom",
   "item_category",
   "item_sub_category",
@@ -134,6 +135,12 @@
    "fieldtype": "Link",
    "label": "Design Code",
    "options": "Item"
+  },
+  {
+   "fieldname": "mould_no",
+   "fieldtype": "Data",
+   "label": "Mould No",
+   "read_only": 1
   },
   {
    "fetch_from": "manufacturing_order.serial_no",
