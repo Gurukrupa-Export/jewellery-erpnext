@@ -1171,7 +1171,7 @@ def xl_preview(docname):
 
 	
 	for item in doc.items:
-		if item.quotation_bom:
+		if item.copy_bom:
 			# bom_doc = frappe.get_doc("BOM", item.quotation_bom)
 			bom_doc = frappe.get_doc("BOM", item.copy_bom)
 
