@@ -1388,6 +1388,7 @@ def validate_mfg_date(self):
 
 @frappe.whitelist()
 def get_linked_stock_entries(pmo_name):
+	frappe.has_permission("Parent Manufacturing Order", "read", throw=True)
 	StockEntry = frappe.qb.DocType("Stock Entry")
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
 
@@ -1424,6 +1425,7 @@ def get_linked_stock_entries(pmo_name):
 
 @frappe.whitelist()
 def get_stock_summary(pmo_name):
+	frappe.has_permission("Parent Manufacturing Order", "read", throw=True)
 	mwo = frappe.get_all(
 		"Manufacturing Work Order", {"manufacturing_order": pmo_name}, pluck="name"
 	)
@@ -1500,6 +1502,7 @@ def get_stock_summary(pmo_name):
 
 @frappe.whitelist()
 def add_hold_comment(doctype, docname, reason):
+	frappe.has_permission(doctype, "write", doc=docname, throw=True)
 	frappe.logger().info(
 		f"add_hold_comment called with: {doctype}, {docname}, {reason}"
 	)
@@ -1515,14 +1518,16 @@ def hold_mop(self):
 		filters={"manufacturing_order": self.name},
 		fields="name",
 	)
-	for i in operations:
-		if (
-			frappe.db.get_value("Manufacturing Operation", i["name"], "status")
-			!= "Finished"
-		):
-			frappe.db.set_value(
-				"Manufacturing Operation", i["name"], "status", "Finished"
-			)
+	# Flip every not-yet-Finished operation in one UPDATE (the status filter
+	# preserves the original "skip already-Finished rows" behaviour).
+	op_names = [i["name"] for i in operations]
+	if op_names:
+		frappe.db.set_value(
+			"Manufacturing Operation",
+			{"name": ["in", op_names], "status": ["!=", "Finished"]},
+			"status",
+			"Finished",
+		)
 
 
 @frappe.whitelist()

@@ -720,7 +720,7 @@ def _restore_reduced_sres(eir):
 		snapshot = {}
 		try:
 			snapshot = json.loads(sre_row.custom_replaced_sre_snapshot or "{}")
-		except Exception:
+		except (json.JSONDecodeError, TypeError):
 			pass
 
 		orig_qty = flt(snapshot.get("original_reserved_qty", 0), 3)

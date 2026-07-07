@@ -238,6 +238,7 @@ class ManufacturingPlan(Document):
 
 	@frappe.whitelist()
 	def get_items_for_production(self):
+		frappe.has_permission("Manufacturing Plan", "read", throw=True)
 		if self.select_manufacture_order in ["Manufacturing", "Repair"]:
 			SalesOrderItem = frappe.qb.DocType("Sales Order Item")
 			Item = frappe.qb.DocType("Item")
@@ -311,8 +312,8 @@ class ManufacturingPlan(Document):
 					item_code = item_row["item_code"]
 					frappe.throw(
 						_(
-							f"Sales Order BOM Not Found.</br>Please Set Master BOM for <b>{item_code}</b> into Item Master"
-						)
+							"Sales Order BOM Not Found.</br>Please Set Master BOM for <b>{0}</b> into Item Master"
+						).format(item_code)
 					)
 		else:
 			self.manufacturing_plan_table = []
@@ -401,58 +402,8 @@ def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filt
 
 
 @frappe.whitelist()
-@frappe.validate_and_sanitize_search_inputs
-def get_repair_pending_ppo_sales_order(
-	doctype, txt, searchfield, start, page_len, filters
-):
-	SalesOrder = frappe.qb.DocType("Sales Order")
-	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
-
-	conditions = (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty) & (
-		SalesOrderItem.order_form_type == "Repair Order"
-	)
-
-	if txt:
-		conditions &= SalesOrder.name.like(f"%{txt}%")
-
-	if customer := filters.get("customer"):
-		conditions &= SalesOrder.customer == customer
-
-	if company := filters.get("company"):
-		conditions &= SalesOrder.company == company
-
-	if branch := filters.get("branch"):
-		conditions &= SalesOrder.branch == branch
-
-	if txn_date := filters.get("transaction_date"):
-		conditions &= SalesOrder.transaction_date == txn_date
-
-	query = (
-		frappe.qb.from_(SalesOrder)
-		.distinct()
-		.from_(SalesOrderItem)
-		.select(
-			SalesOrder.name,
-			SalesOrder.transaction_date,
-			SalesOrder.company,
-			SalesOrder.customer,
-		)
-		.where(
-			(SalesOrder.name == SalesOrderItem.parent)
-			& (SalesOrder.docstatus == 1)
-			& conditions
-		)
-		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
-		.limit(page_len)
-		.offset(start)
-	)
-	so_data = query.run(as_dict=True)
-
-	return so_data
-
-
-@frappe.whitelist()
 def get_details_to_append(source_names, target_doc=None):
+	frappe.has_permission("Manufacturing Plan", "read", throw=True)
 	if not target_doc:
 		target_doc = frappe.new_doc("Manufacturing Plan")
 	elif isinstance(target_doc, str):
@@ -637,9 +588,12 @@ def create_manufacturing_order(doc, row, cache_data=None):
 def create_subcontracting_order(doc):
 	make_subcontracting_order(doc)
 
+
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filters):
+def get_repair_pending_ppo_sales_order(
+	doctype, txt, searchfield, start, page_len, filters
+):
 	SalesOrder = frappe.qb.DocType("Sales Order")
 	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
 
@@ -666,7 +620,12 @@ def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_le
 		frappe.qb.from_(SalesOrder)
 		.distinct()
 		.from_(SalesOrderItem)
-		.select(SalesOrder.name, SalesOrder.transaction_date, SalesOrder.company, SalesOrder.customer)
+		.select(
+			SalesOrder.name,
+			SalesOrder.transaction_date,
+			SalesOrder.company,
+			SalesOrder.customer,
+		)
 		.where((SalesOrder.name == SalesOrderItem.parent) & conditions)
 		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
 		.limit(page_len)
@@ -675,4 +634,3 @@ def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_le
 
 	so_data = query.run(as_dict=True)
 	return so_data
-

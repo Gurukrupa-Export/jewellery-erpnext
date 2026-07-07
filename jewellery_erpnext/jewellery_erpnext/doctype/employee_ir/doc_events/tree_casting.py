@@ -185,9 +185,14 @@ def create_tree_on_issue(eir):
 	tree.flags.ignore_permissions = True
 	tree.insert()
 
-	for _row, mwo in rows:
+	# Every MWO in this batch gets the same tree_number -> one UPDATE.
+	mwo_names = [mwo.name for _row, mwo in rows]
+	if mwo_names:
 		frappe.db.set_value(
-			"Manufacturing Work Order", mwo.name, "tree_number", tree.name
+			"Manufacturing Work Order",
+			{"name": ["in", mwo_names]},
+			"tree_number",
+			tree.name,
 		)
 
 	return tree.name

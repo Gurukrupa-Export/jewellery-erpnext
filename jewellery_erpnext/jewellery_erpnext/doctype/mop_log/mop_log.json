@@ -90,13 +90,15 @@
    "fieldname": "manufacturing_operation",
    "fieldtype": "Data",
    "label": "Manufacturing Operation",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "manufacturing_work_order",
    "fieldtype": "Data",
    "label": "Manufacturing Work Order",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "serial_and_batch_bundle",
@@ -108,7 +110,8 @@
    "fieldname": "batch_no",
    "fieldtype": "Data",
    "label": "Batch No",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "to_warehouse",
@@ -120,7 +123,8 @@
   {
    "fieldname": "row_name",
    "fieldtype": "Data",
-   "label": "row name"
+   "label": "row name",
+   "search_index": 1
   },
   {
    "fieldname": "qty_change",
@@ -178,13 +182,14 @@
    "fieldname": "flow_index",
    "fieldtype": "Int",
    "label": "Flow Index",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-25 02:48:40.451543",
+ "modified": "2026-07-07 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "MOP Log",

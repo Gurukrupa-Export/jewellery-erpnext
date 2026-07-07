@@ -7,7 +7,7 @@ import json
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, flt, today
+from frappe.utils import flt
 
 from jewellery_erpnext.utils import get_item_from_attribute
 
@@ -24,9 +24,12 @@ class Refining(Document):
 			frappe.throw(_("Please Select Refining Department"))
 
 		if self.refining_type == "Recovery Material":
-
 			if self.multiple_department and self.multiple_operation:
-				frappe.throw(_("Chose any one For Multiple Operations or For Multiple Department"))
+				frappe.throw(
+					_(
+						"Chose any one For Multiple Operations or For Multiple Department"
+					)
+				)
 
 			if self.multiple_department:
 				check_allocation(self, self.refining_department_detail)
@@ -37,7 +40,6 @@ class Refining(Document):
 		create_refining_entry(self)
 
 	def check_overlap(self):
-
 		if not self.multiple_operation:
 			Refining = frappe.qb.DocType("Refining")
 
@@ -49,9 +51,18 @@ class Refining(Document):
 				& (Refining.operation == self.operation)
 				& (Refining.employee == self.employee)
 				& (
-					((self.date_from > Refining.date_from) & (self.date_from < Refining.date_to))
-					| ((self.date_to > Refining.date_from) & (self.date_to < Refining.date_to))
-					| ((self.date_from <= Refining.date_from) & (self.date_to >= Refining.date_to))
+					(
+						(self.date_from > Refining.date_from)
+						& (self.date_from < Refining.date_to)
+					)
+					| (
+						(self.date_to > Refining.date_from)
+						& (self.date_to < Refining.date_to)
+					)
+					| (
+						(self.date_from <= Refining.date_from)
+						& (self.date_to >= Refining.date_to)
+					)
 				)
 			)
 			# query
@@ -72,7 +83,10 @@ class Refining(Document):
 
 			Refining = frappe.qb.DocType("Refining")
 			RefiningOperationDetail = frappe.qb.DocType("Refining Operation Detail")
-			operation_list = [frappe.db.escape(row.operation) for row in self.refining_operation_detail]
+			operation_list = [
+				frappe.db.escape(row.operation)
+				for row in self.refining_operation_detail
+			]
 
 			# Build the conditions
 			conditions = (
@@ -81,9 +95,18 @@ class Refining(Document):
 				& (Refining.multiple_operation == self.multiple_operation)
 				& (RefiningOperationDetail.operation.isin(operation_list))
 				& (
-					((self.date_from >= Refining.date_from) & (self.date_from <= Refining.date_to))
-					| ((self.date_to >= Refining.date_from) & (self.date_to <= Refining.date_to))
-					| ((self.date_from <= Refining.date_from) & (self.date_to >= Refining.date_to))
+					(
+						(self.date_from >= Refining.date_from)
+						& (self.date_from <= Refining.date_to)
+					)
+					| (
+						(self.date_to >= Refining.date_from)
+						& (self.date_to <= Refining.date_to)
+					)
+					| (
+						(self.date_from <= Refining.date_from)
+						& (self.date_to >= Refining.date_to)
+					)
 				)
 			)
 			# query
@@ -103,11 +126,17 @@ class Refining(Document):
 
 	def set_gross_pure_weight(self):
 		gross_pure_weight = 0
-		if self.refining_type == "Parent Manufacturing Order" and len(self.manufacturing_work_order) > 0:
+		if (
+			self.refining_type == "Parent Manufacturing Order"
+			and len(self.manufacturing_work_order) > 0
+		):
 			for row in self.manufacturing_work_order:
 				if row.metal_weight:
 					gross_pure_weight += row.metal_weight
-		elif self.refining_type == "Serial Number" and len(self.refining_serial_no_detail) > 0:
+		elif (
+			self.refining_type == "Serial Number"
+			and len(self.refining_serial_no_detail) > 0
+		):
 			for row in self.refining_serial_no_detail:
 				if row.pure_weight:
 					gross_pure_weight += row.pure_weight
@@ -123,6 +152,7 @@ class Refining(Document):
 
 	@frappe.whitelist()
 	def create_dust_receive_entry(self):
+		frappe.has_permission("Refining", "write", throw=True)
 		if not self.multiple_operation and not self.multiple_department:
 			if self.department:
 				mr_se = dust_receipt_entry(self, "single")
@@ -150,6 +180,7 @@ class Refining(Document):
 
 	@frappe.whitelist()
 	def get_linked_stock_entries(self):
+		frappe.has_permission("Refining", "read", throw=True)
 		target_wh = self.refining_warehouse
 		all_stock_entry = []
 		for row in self.manufacturing_work_order:
@@ -183,12 +214,14 @@ class Refining(Document):
 			all_stock_entry += data
 
 		return frappe.render_template(
-			"jewellery_erpnext/jewellery_erpnext/doctype/refining/refining.html", {"data": all_stock_entry}
+			"jewellery_erpnext/jewellery_erpnext/doctype/refining/refining.html",
+			{"data": all_stock_entry},
 		)
 
 
 @frappe.whitelist()
 def get_manufacturing_operations(source_name, target_doc=None):
+	frappe.has_permission("Refining", "read", throw=True)
 	if not target_doc:
 		target_doc = frappe.new_doc("Refining")
 	elif isinstance(target_doc, str):
@@ -217,13 +250,21 @@ def get_manufacturing_operations(source_name, target_doc=None):
 def get_stock_entries_against_mfg_operation(doc):
 	if isinstance(doc, str):
 		doc = frappe.get_doc("Manufacturing Operation", doc)
-	wh = frappe.db.get_value("Warehouse", {"disabled": 0, "department": doc.department}, "name")
+	wh = frappe.db.get_value(
+		"Warehouse", {"disabled": 0, "department": doc.department}, "name"
+	)
 	if doc.employee:
-		wh = frappe.db.get_value("Warehouse", {"disabled": 0, "employee": doc.employee}, "name")
+		wh = frappe.db.get_value(
+			"Warehouse", {"disabled": 0, "employee": doc.employee}, "name"
+		)
 
 	stock_entry_details = frappe.db.get_all(
 		"Stock Entry Detail",
-		filters={"t_warehouse": wh, "manufacturing_operation": doc.name, "docstatus": 1},
+		filters={
+			"t_warehouse": wh,
+			"manufacturing_operation": doc.name,
+			"docstatus": 1,
+		},
 		fields=["item_code", "qty", "uom", "batch_no", "serial_no"],
 	)
 	return stock_entry_details
@@ -298,7 +339,9 @@ def create_refining_entry(self):
 			)
 
 	if self.refining_type == "Recovery Material":
-		frappe.throw(_("Dust Not Received in Refining Department")) if not self.dust_received else 0
+		frappe.throw(
+			_("Dust Not Received in Refining Department")
+		) if not self.dust_received else 0
 		if not self.multiple_operation and not self.multiple_department:
 			copy_enter_stock_row(self, se, self.stock_entry)
 			# enter_stock_row(self,se)
@@ -340,7 +383,7 @@ def check_allocation(self, allocation_table):
 		frappe.throw(_("Ratio Should be 100%"))
 
 
-def dust_receipt_entry(self, type):
+def dust_receipt_entry(self, entry_type):
 	se = frappe.get_doc(
 		{
 			"doctype": "Stock Entry",
@@ -351,7 +394,7 @@ def dust_receipt_entry(self, type):
 			"auto_created": 1,
 		}
 	)
-	if type == "single":
+	if entry_type == "single":
 		for row in self.refined_gold:
 			se.append(
 				"items",
@@ -364,10 +407,10 @@ def dust_receipt_entry(self, type):
 					# "to_department": self.refining_department,
 				},
 			)
-	elif type == "refining_department_detail":
+	elif entry_type == "refining_department_detail":
 		for row in self.refining_department_detail:
 			allocate_dust_department_wise(self, row, se, "mr")
-	elif type == "refining_operation_detail":
+	elif entry_type == "refining_operation_detail":
 		for row in self.refining_operation_detail:
 			allocate_dust_employee_wise_operations(self, row, se, "mr")
 
@@ -376,27 +419,27 @@ def dust_receipt_entry(self, type):
 	return se
 
 
-def test_create_transfer_entry(self, type, mr_se=None):
+def test_create_transfer_entry(self, entry_type, mr_se=None):
 	mr_se = frappe.copy_doc(mr_se)
 	mr_se.stock_entry_type = "Material Transfer to Department"
 	mr_se.inventory_type = "Regular Stock"
 	mr_se.custom_refining = self.name
 
-	if type == "single":
+	if entry_type == "single":
 		for item in mr_se.items:
 			item.inventory_type = "Regular Stock"
 			item.s_warehouse = item.t_warehouse
 			item.t_warehouse = self.refining_warehouse
 			item.to_department = self.refining_department
 
-	elif type == "refining_department_detail":
+	elif entry_type == "refining_department_detail":
 		for item in mr_se.items:
 			item.inventory_type = "Regular Stock"
 			item.s_warehouse = item.t_warehouse
 			item.t_warehouse = self.refining_warehouse
 			item.to_department = self.refining_department
 
-	elif type == "refining_operation_detail":
+	elif entry_type == "refining_operation_detail":
 		for item in mr_se.items:
 			item.inventory_type = "Regular Stock"
 			item.s_warehouse = item.t_warehouse
@@ -449,10 +492,18 @@ def allocate_dust_employee_wise_operations(self, row, se, se_type):
 		total_net_wt = sum([operation.get("net_wt") for operation in list_of_operation])
 		for operation in list_of_operation:
 			source_warehouse = frappe.db.get_value(
-				"Warehouse", {"disabled": 0, "company": self.company, "employee": operation.employee}, "name"
+				"Warehouse",
+				{
+					"disabled": 0,
+					"company": self.company,
+					"employee": operation.employee,
+				},
+				"name",
 			)
 			if not source_warehouse:
-				frappe.throw(f"Employee Not assigned any WareHouse : {operation.employee}")
+				frappe.throw(
+					f"Employee Not assigned any WareHouse : {operation.employee}"
+				)
 
 			item_row = {
 				"item_code": dust_row.dust_item,
@@ -475,9 +526,13 @@ def get_item_based_on_purity(self):
 	elif self.fine_weight <= 0:
 		frappe.throw(_("Fine Weight Should be Greater Than 0"))
 
-	metal_touch = frappe.db.get_value("Attribute Value", {"name": self.metal_purity}, "metal_touch")
+	metal_touch = frappe.db.get_value(
+		"Attribute Value", {"name": self.metal_purity}, "metal_touch"
+	)
 
-	recovered_item = get_item_from_attribute("Gold", metal_touch, self.metal_purity, "Yellow")
+	recovered_item = get_item_from_attribute(
+		"Gold", metal_touch, self.metal_purity, "Yellow"
+	)
 
 	recovered_item = recovered_item if recovered_item else "Refined Gold - Test"
 
@@ -543,7 +598,6 @@ def enter_stock_row(self, se):
 
 def append_recovered_items(self, se, target_wh):
 	if len(self.recovered_diamond) > 0:
-
 		for diamond_row in self.recovered_diamond:
 			se.append(
 				"items",

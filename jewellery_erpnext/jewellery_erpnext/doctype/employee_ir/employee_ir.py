@@ -69,14 +69,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_get_t_warehouse_from_logs,
 	_resolve_department_warehouse,
 )
-from jewellery_erpnext.utils import (
-	get_item_from_attribute_full,
-)
 
 
 class EmployeeIR(Document):
 	@frappe.whitelist()
 	def get_operations(self):
+		frappe.has_permission("Employee IR", "read", throw=True)
 		records = frappe.get_list(
 			"Manufacturing Operation",
 			{
@@ -630,6 +628,7 @@ class EmployeeIR(Document):
 
 	@frappe.whitelist()
 	def validate_process_loss(self):
+		frappe.has_permission("Employee IR", "write", throw=True)
 		if (self.docstatus != 0) or self.type == "Issue":
 			return
 		allowed_loss_percentage = frappe.get_cached_value(
@@ -725,7 +724,7 @@ class EmployeeIR(Document):
 			sum_qty = {}  # for sum of qty matched item
 
 			# getting Metal property from MNF Work Order
-			mwo_metal_property = frappe.get_cached_value(
+			frappe.get_cached_value(
 				"Manufacturing Work Order",
 				mwo,
 				[
@@ -857,6 +856,7 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 
 @frappe.whitelist()
 def get_manufacturing_operations(source_name, target_doc=None):
+	frappe.has_permission("Employee IR", "create", throw=True)
 	if not target_doc:
 		target_doc = frappe.new_doc("Employee IR")
 	elif isinstance(target_doc, str):
@@ -1142,6 +1142,7 @@ def get_holidays_for_employee(employee, start_date, end_date):
 
 @frappe.whitelist()
 def calculation_time_log(doc, row, self):
+	frappe.has_permission("Employee IR", "write", throw=True)
 	# calculation of from and to time
 	if row.from_time and row.to_time:
 		if get_datetime(row.from_time) > get_datetime(row.to_time):

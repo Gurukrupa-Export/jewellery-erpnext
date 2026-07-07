@@ -763,7 +763,7 @@ def get_employee_ir_loss_map(eir_doc):
 
 
 def create_mop_log_for_employee_ir_receive(
-	doc, row, from_warehouse, to_warehouse, stock_entry_name=[]
+	doc, row, from_warehouse, to_warehouse, stock_entry_name=None
 ):
 	"""Audit-only MOP Log clones on the SOURCE MOP for Employee IR Receive.
 
@@ -785,6 +785,8 @@ def create_mop_log_for_employee_ir_receive(
 	MOPLog.validate's prefix-bucket write is a no-op here because the qty
 	matches what is already on the source MOP.
 	"""
+	if stock_entry_name is None:
+		stock_entry_name = []
 	issue_voucher = resolve_employee_ir_issue_voucher_for_receive(doc, row)
 	mop_logs = []
 	mop_logs = (

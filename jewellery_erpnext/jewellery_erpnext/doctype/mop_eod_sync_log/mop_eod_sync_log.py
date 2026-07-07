@@ -15,6 +15,7 @@ def get_latest_eod_sync_progress(sync_log_name=None):
 
 	Does NOT expose technical tracebacks — those stay inside child rows and Error Log.
 	"""
+	frappe.has_permission("MOP EOD Sync Log", "read", throw=True)
 	if not sync_log_name:
 		sync_log_name = frappe.db.get_value(
 			"MOP EOD Sync Log",

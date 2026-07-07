@@ -1243,11 +1243,13 @@ def convert_metal_purity(from_item: dict, to_item: dict, s_warehouse, t_warehous
 
 @frappe.whitelist()
 def make_mr_on_return(source_name, target_doc=None):
+	frappe.has_permission("Stock Entry", "read", throw=True)
+
 	def set_missing_values(source, target):
 		itm_batch = []
-		dict = {}
+		batch_entry = {}
 		for i in source.items:
-			dict.update(
+			batch_entry.update(
 				{
 					"item": i.item_code,
 					"batch": i.batch_no,
@@ -1255,7 +1257,7 @@ def make_mr_on_return(source_name, target_doc=None):
 					"idx": i.idx,
 				}
 			)
-			itm_batch.append(dict)
+			itm_batch.append(batch_entry)
 
 		for itm in target.items:
 			for b in itm_batch:
@@ -1482,6 +1484,8 @@ validates serial items entered are equal to quantity or not if not appropriate e
 
 @frappe.whitelist()
 def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
+	frappe.has_permission("Stock Entry", "read", throw=True)
+
 	def set_missing_values(source, target):
 		target.stock_entry_type = source.stock_entry_type
 		target.set_missing_values()
@@ -1534,6 +1538,7 @@ def make_stock_in_entry_on_transit_entry(source_name, target_doc=None):
 
 @frappe.whitelist()
 def validation_of_serial_item(issue_doc):
+	frappe.has_permission("Stock Entry", "read", throw=True)
 	doc = frappe.get_doc("Stock Entry", issue_doc)
 	serial_item = {}
 	for item in doc.items:

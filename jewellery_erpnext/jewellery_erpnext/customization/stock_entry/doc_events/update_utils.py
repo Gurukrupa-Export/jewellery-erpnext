@@ -2,7 +2,9 @@ import frappe
 from frappe.model.mapper import get_mapped_doc
 
 
-def update_main_slip_se_details(doc, stock_entry_type, se_row, warehouse_data, is_cancelled=False):
+def update_main_slip_se_details(
+	doc, stock_entry_type, se_row, warehouse_data, is_cancelled=False
+):
 	based_on = "employee"
 	based_on_value = doc.employee
 	if doc.subcontractor:
@@ -10,7 +12,9 @@ def update_main_slip_se_details(doc, stock_entry_type, se_row, warehouse_data, i
 		based_on_value = doc.subcontractor
 
 	if not warehouse_data.get(based_on_value):
-		warehouse_data[based_on_value] = frappe._dict({"r_warehouse": None, "m_warehouse": None})
+		warehouse_data[based_on_value] = frappe._dict(
+			{"r_warehouse": None, "m_warehouse": None}
+		)
 
 		warehouse_data[based_on_value]["m_warehouse"] = frappe.db.get_value(
 			"Warehouse",
@@ -134,8 +138,12 @@ def update_main_slip_se_details(doc, stock_entry_type, se_row, warehouse_data, i
 
 @frappe.whitelist()
 def make_stock_in_entry(source_name, target_doc=None):
+	frappe.has_permission("Stock Entry", "read", throw=True)
+
 	def set_missing_values(source, target):
-		material_request = frappe.db.get_value("Material Request", {"manufacturing_order": source_name})
+		material_request = frappe.db.get_value(
+			"Material Request", {"manufacturing_order": source_name}
+		)
 
 		SE = frappe.qb.DocType("Stock Entry")
 		SEI = frappe.qb.DocType("Stock Entry Detail")
@@ -163,7 +171,8 @@ def make_stock_in_entry(source_name, target_doc=None):
 			variant_of_dict = {"Gemstone": "G", "Diamond": "D"}
 			if variant_of_dict.get(target.custom_item_type):
 				stock_se_data = stock_se_data.where(
-					SEI.custom_variant_of == variant_of_dict.get(target.custom_item_type)
+					SEI.custom_variant_of
+					== variant_of_dict.get(target.custom_item_type)
 				)
 
 		stock_se_data = stock_se_data.run(as_dict=True)

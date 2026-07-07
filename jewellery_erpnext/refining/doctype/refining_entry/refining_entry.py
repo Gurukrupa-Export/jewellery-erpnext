@@ -480,6 +480,7 @@ class RefiningEntry(Document):
 		warehouse(s). Computed SBB-aware (net of reservations/consumption for batched
 		items) so it matches the sum of the fetched Material Items table exactly —
 		summing raw Bin.actual_qty diverged from the material rows and looked wrong."""
+		frappe.has_permission("Refining Entry", "read", throw=True)
 		if not self.multiple_department and not self.warehouse:
 			frappe.throw(_("Source Warehouse is required."))
 		self.system_quantity = flt(self._compute_dust_system_quantity(), 3)
@@ -533,6 +534,7 @@ class RefiningEntry(Document):
 		"""Populate the Material Items table with all available scrap materials
 		(grouped by item group) from the department Scrap warehouse for Dust Refining.
 		Consumable rows already added manually are preserved."""
+		frappe.has_permission("Refining Entry", "read", throw=True)
 		if self.refining_type != "Dust Refining":
 			frappe.throw(_("This action is only available for Dust Refining."))
 
@@ -554,6 +556,7 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def scan_mwo_action(self, barcode):
+		frappe.has_permission("Refining Entry", "read", throw=True)
 		mwo = frappe.db.get_value(
 			"Manufacturing Work Order",
 			{"name": barcode},
@@ -603,6 +606,7 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def scan_serial_no_action(self, barcode):
+		frappe.has_permission("Refining Entry", "read", throw=True)
 		serial_no = frappe.db.get_value(
 			"Serial No",
 			{"name": barcode, "status": "Active"},
@@ -712,6 +716,7 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def scan_scrap_qr_action(self, barcode):
+		frappe.has_permission("Refining Entry", "read", throw=True)
 		batch = frappe.db.get_value(
 			"Batch", {"name": barcode}, ["name", "item"], as_dict=True
 		)
@@ -1117,6 +1122,7 @@ class RefiningEntry(Document):
 
 	@frappe.whitelist()
 	def start_refining(self):
+		frappe.has_permission("Refining Entry", "write", throw=True)
 		if self.status != "Classified":
 			frappe.throw(_("Materials must be classified before starting refining."))
 		self.db_set("status", "Refining In Progress")
@@ -1413,8 +1419,16 @@ class RefiningEntry(Document):
 				)
 
 		elif self.refining_type == "Serial Number Refining":
+			# Batch the Serial No status flip into a single UPDATE — 'Serial No' is a
+			# high-traffic ERPNext DocType and every row here gets the same status.
+			serial_numbers = [
+				sn.serial_number for sn in self.serial_no_details if sn.serial_number
+			]
+			if serial_numbers:
+				frappe.db.set_value(
+					"Serial No", {"name": ["in", serial_numbers]}, "status", "Inactive"
+				)
 			for sn in self.serial_no_details:
-				frappe.db.set_value("Serial No", sn.serial_number, "status", "Inactive")
 				# Deactivate the serial's OWN as-built BOM (custom_bom_no) — the physical
 				# piece has been melted down. Falling back to the design item's generic
 				# active BOM (as before) deactivated the WRONG BOM: an item can have
@@ -1857,21 +1871,35 @@ class RefiningEntry(Document):
 		zero_map = {field: 0 for field in self._MWO_WEIGHT_FIELDS}
 		mop_zero_map = dict(zero_map)
 		mop_zero_map["gemstone_wt_in_gram"] = 0
-		for row in self.mwo_details:
-			mwo = row.manufacturing_work_order
-			if not mwo:
-				continue
-			frappe.db.set_value("Manufacturing Work Order", mwo, zero_map)
+		mwo_names = [
+			row.manufacturing_work_order
+			for row in self.mwo_details
+			if row.manufacturing_work_order
+		]
+		if not mwo_names:
+			return
 
-			# Every operation that has not started manufacturing yet — the current
-			# pending operation plus any further (downstream) operations in the route.
-			pending_mops = frappe.db.get_all(
-				"Manufacturing Operation",
-				filters={"manufacturing_work_order": mwo, "status": "Not Started"},
-				pluck="name",
+		# Same zero_map for every refined MWO -> one UPDATE instead of one per row.
+		frappe.db.set_value(
+			"Manufacturing Work Order", {"name": ["in", mwo_names]}, zero_map
+		)
+
+		# Every operation that has not started manufacturing yet — the current
+		# pending operation plus any further (downstream) operations in the route.
+		# Fetched for all MWOs at once (avoids the per-MWO get_all in a loop) and
+		# zeroed in a single UPDATE.
+		pending_mops = frappe.db.get_all(
+			"Manufacturing Operation",
+			filters={
+				"manufacturing_work_order": ["in", mwo_names],
+				"status": "Not Started",
+			},
+			pluck="name",
+		)
+		if pending_mops:
+			frappe.db.set_value(
+				"Manufacturing Operation", {"name": ["in", pending_mops]}, mop_zero_map
 			)
-			for mop in pending_mops:
-				frappe.db.set_value("Manufacturing Operation", mop, mop_zero_map)
 
 	def create_dust_opening_receipt_se(self):
 		# When the physical dust exceeds the system stock, the extra dust must be brought
@@ -2418,7 +2446,9 @@ class RefiningEntry(Document):
 		if not self.auto_create_batch:
 			return None
 
-		item = frappe.get_doc("Item", item_code)
+		item = frappe.db.get_value(
+			"Item", item_code, ["has_batch_no", "batch_number_series"], as_dict=True
+		)
 		if not item.has_batch_no:
 			return None
 
@@ -2514,6 +2544,7 @@ class RefiningEntry(Document):
 		selected Scrap Item), so ordinary department stock sharing a warehouse is never
 		pulled in. Non-batch stock cannot carry the Scrap marker and is excluded.
 		"""
+		frappe.has_permission("Refining Entry", "read", throw=True)
 		if self.refining_type != "Scrap Refining":
 			frappe.throw(_("This action is only available for Scrap Refining."))
 

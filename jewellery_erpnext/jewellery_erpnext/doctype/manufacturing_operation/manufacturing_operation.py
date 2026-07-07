@@ -592,6 +592,7 @@ class ManufacturingOperation(Document):
 
 	@frappe.whitelist()
 	def create_fg(self):
+		frappe.has_permission("Manufacturing Operation", "write", throw=True)
 		se_name, _fg_serial = create_manufacturing_entry(self)
 		pmo = frappe.db.get_value(
 			"Manufacturing Work Order",
@@ -606,6 +607,7 @@ class ManufacturingOperation(Document):
 
 	@frappe.whitelist()
 	def get_stock_entry(self):
+		frappe.has_permission("Manufacturing Operation", "read", throw=True)
 		StockEntry = frappe.qb.DocType("Stock Entry")
 		# StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
 		StockEntryMopItem = frappe.qb.DocType("Stock Entry Detail")
@@ -642,6 +644,7 @@ class ManufacturingOperation(Document):
 
 	@frappe.whitelist()
 	def get_stock_summary(self):
+		frappe.has_permission("Manufacturing Operation", "read", throw=True)
 		StockEntry = frappe.qb.DocType("Stock Entry")
 		# StockEntryDetail = frappeqb.DocType("Stock Entry Detail")
 		StockEntryMopItem = frappe.qb.DocType("Stock Entry Detail")
@@ -794,39 +797,27 @@ class ManufacturingOperation(Document):
 			)
 
 			# To Set Product WT on PMO Tolerance METAL/Diamond/Gemstone Table.
+			# All rows under a given parent get the same product_wt, so a single
+			# dict-filtered UPDATE per table replaces the per-row set_value loop.
 			docname = self.manufacturing_order
-			metal_product_tolerance_list = frappe.db.get_all(
-				"Metal Product Tolerance", {"parent": docname}, pluck="name"
+			frappe.db.set_value(
+				"Metal Product Tolerance",
+				{"parent": docname},
+				"product_wt",
+				get_mwo_weight[0].gross_wt or get_mwo_weight[0].net_wt or 0,
 			)
-			for mpt_name in metal_product_tolerance_list:
-				frappe.db.set_value(
-					"Metal Product Tolerance",
-					mpt_name,
-					"product_wt",
-					get_mwo_weight[0].gross_wt or get_mwo_weight[0].net_wt or 0,
-				)
-
-			diamond_product_tolerance_list = frappe.db.get_all(
-				"Diamond Product Tolerance", {"parent": docname}, pluck="name"
+			frappe.db.set_value(
+				"Diamond Product Tolerance",
+				{"parent": docname},
+				"product_wt",
+				get_mwo_weight[0].diamond_wt or 0,
 			)
-			for dpt_name in diamond_product_tolerance_list:
-				frappe.db.set_value(
-					"Diamond Product Tolerance",
-					dpt_name,
-					"product_wt",
-					get_mwo_weight[0].diamond_wt or 0,
-				)
-
-			gemstone_product_tolerance_list = frappe.db.get_all(
-				"Gemstone Product Tolerance", {"parent": docname}, pluck="name"
+			frappe.db.set_value(
+				"Gemstone Product Tolerance",
+				{"parent": docname},
+				"product_wt",
+				get_mwo_weight[0].gemstone_wt or 0,
 			)
-			for gpt_name in gemstone_product_tolerance_list:
-				frappe.db.set_value(
-					"Gemstone Product Tolerance",
-					gpt_name,
-					"product_wt",
-					get_mwo_weight[0].gemstone_wt or 0,
-				)
 
 	def set_pmo_weight_details_in_bulk(self):
 		ManufacturingWorkOrder = frappe.qb.DocType("Manufacturing Work Order")
@@ -942,8 +933,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	if not pmo_det.qty:
 		frappe.throw(f"{pmo_det.name} : Have {pmo_det.qty} Cannot Create Stock Entry")
 
-	get_item_doc = frappe.get_doc("Item", pmo_det.item_code)
-	if get_item_doc.has_serial_no == 0:
+	if frappe.db.get_value("Item", pmo_det.item_code, "has_serial_no") == 0:
 		frappe.throw(
 			f"The Item {pmo_det.name} does not have Serial No plese check item master"
 		)
@@ -3554,15 +3544,20 @@ def finish_other_tagging_operations(doc, pmo):
 		)
 	).run(as_dict=True)  # name
 
-	for mop in mop_data:
+	mop_names = [mop.manufacturing_operation for mop in mop_data]
+	if mop_names:
 		frappe.db.set_value(
-			"Manufacturing Operation", mop.manufacturing_operation, "status", "Finished"
+			"Manufacturing Operation",
+			{"name": ["in", mop_names]},
+			"status",
+			"Finished",
 		)
 
 
 # timer code
 @frappe.whitelist()
 def make_time_log(data):
+	frappe.has_permission("Manufacturing Operation", "write", throw=True)
 	if isinstance(data, str):
 		args = json.loads(data)
 	args = frappe._dict(args)
@@ -3573,6 +3568,7 @@ def make_time_log(data):
 
 @frappe.whitelist()
 def get_bom_summary(design_id_bom: str = None):
+	frappe.has_permission("Manufacturing Operation", "read", throw=True)
 	if design_id_bom:
 		# use get_all with parent filter
 
@@ -3600,6 +3596,7 @@ def get_bom_summary(design_id_bom: str = None):
 def get_linked_stock_entries_for_serial_number_creator(
 	mwo, department, design_id_bom, qty
 ):
+	frappe.has_permission("Manufacturing Operation", "read", throw=True)
 	target_wh = frappe.db.get_value(
 		"Warehouse",
 		{"disabled": 0, "department": department, "warehouse_type": "Manufacturing"},
@@ -3673,6 +3670,7 @@ def get_linked_stock_entries_for_serial_number_creator(
 
 @frappe.whitelist()
 def get_linked_stock_entries(mwo, department):
+	frappe.has_permission("Manufacturing Operation", "read", throw=True)
 	target_wh = frappe.db.get_value(
 		"Warehouse", {"disabled": 0, "department": department}
 	)
@@ -4844,6 +4842,7 @@ def get_make_scrap_entry_rows(manufacturing_operation):
 	received material. (Previously this targeted the department Scrap warehouse, which
 	diverged from Make Receive Entry.)
 	"""
+	frappe.has_permission("Manufacturing Operation", "read", throw=True)
 	return get_make_receive_entry_rows(manufacturing_operation)
 
 
@@ -4863,6 +4862,7 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 	whole receive rolls back, so scrap is never left un-marked. See
 	get_make_scrap_entry_rows.
 	"""
+	frappe.has_permission("Manufacturing Operation", "write", throw=True)
 	if isinstance(se_data, str):
 		se_data = json.loads(se_data)
 	result = create_mr_wo_stock_entry(se_data, request_id=request_id)
@@ -5266,6 +5266,7 @@ def get_mop_log_balance(manufacturing_operation):
 	Used by client-side code (Swap Metal, Make Receive Entry) as a replacement for
 	the removed mop_balance_table child table.
 	"""
+	frappe.has_permission("Manufacturing Operation", "read", throw=True)
 	return get_current_mop_balance_rows(
 		manufacturing_operation,
 		include_fields=[

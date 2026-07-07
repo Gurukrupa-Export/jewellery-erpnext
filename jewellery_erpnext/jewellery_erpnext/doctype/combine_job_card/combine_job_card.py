@@ -1,13 +1,11 @@
 import json
 
 import frappe
-from erpnext.manufacturing.doctype.job_card.job_card import JobCard
-from frappe import _, bold
+from frappe import _
 from frappe.model.document import Document
-from frappe.query_builder import Case, CustomFunction
 from frappe.query_builder.custom import ConstantColumn
 from frappe.query_builder.functions import IfNull, Sum
-from frappe.utils import add_to_date, get_datetime, time_diff, time_diff_in_hours
+from frappe.utils import add_to_date, get_datetime, time_diff_in_hours
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.job_card import make_stock_entry
 
@@ -29,7 +27,7 @@ class CombineJobCard(Document):
 			self.set_wax_weight()
 
 	def set_wax_weight(self):
-		wo_list = [jc.work_order for jc in self.details]
+		[jc.work_order for jc in self.details]
 
 		# JobCard = frappe.qb.DocType("Job Card")
 		# IF = CustomFunction("IF", ["condition", "true_expr", "false_expr"])
@@ -55,17 +53,27 @@ class CombineJobCard(Document):
 		# self.tree_wax_weight = ww.get("wax1", 0) + ww.get("wax2", 0)
 
 	def before_save(self):
-		# Link Docname to Individual Job Card
-		for job_card in self.details:
-			frappe.db.set_value("Job Card", job_card.job_card, "in_combined_job_card", True)
-			frappe.db.set_value("Job Card", job_card.job_card, "workstation_type", self.workstation_type)
+		# Link Docname to Individual Job Card. Every linked Job Card gets the same
+		# two values, so a single dict-filtered UPDATE replaces the per-row loop.
+		jc_names = [job_card.job_card for job_card in self.details if job_card.job_card]
+		if jc_names:
+			frappe.db.set_value(
+				"Job Card",
+				{"name": ["in", jc_names]},
+				{
+					"in_combined_job_card": True,
+					"workstation_type": self.workstation_type,
+				},
+			)
 			# frappe.db.set_value('Job Card', job_card.job_card, 'workstation', self.workstation)
 
 	def on_submit(self):
 		balance = self.total_in_gross_weight - self.total_out_gross_weight
 		balance = round(balance, 3)
 		if balance != 0:
-			return frappe.throw(_("Difference Between In Weight and Out Weight Should Be 0"))
+			return frappe.throw(
+				_("Difference Between In Weight and Out Weight Should Be 0")
+			)
 		self.submit_job_card()
 
 	def render_job_card_data(self):
@@ -76,9 +84,9 @@ class CombineJobCard(Document):
 		self.get_totals()
 
 	def get_internal_in_weight(self):
-		job_card_list = tuple(row.job_card for row in self.details)
+		tuple(row.job_card for row in self.details)
 
-		JobCardInternalTransferItem = frappe.qb.DocType("Job Card Internal Transfer Item")
+		frappe.qb.DocType("Job Card Internal Transfer Item")
 		# JobCard = frappe.qb.DocType("Job Card")
 
 		# query = (
@@ -121,14 +129,17 @@ class CombineJobCard(Document):
 		# 	)
 		# 	self.internal_in_weight_html = html_content
 
-	def get_internal_in_weight_from_prev_combined_job_card(self, internal_in_weight_data):
-		data = []
+	def get_internal_in_weight_from_prev_combined_job_card(
+		self, internal_in_weight_data
+	):
 		job_cards = [
 			jc.get("job_card")
 			for i in internal_in_weight_data
-			for jc in frappe.get_doc("Combine Job Card", i.get("from_combine_job_card")).details
+			for jc in frappe.get_doc(
+				"Combine Job Card", i.get("from_combine_job_card")
+			).details
 		]
-		job_cards_tuple = tuple(job_cards) if job_cards else ("",)
+		tuple(job_cards) if job_cards else ("",)
 
 		# JobCard = frappe.qb.DocType("Job Card")
 		# query = (
@@ -192,14 +203,20 @@ class CombineJobCard(Document):
 		if external_in_weight_data:
 			external_in_wt = sum(
 				i["gross_wt"] / 5
-				if (i.get("item_code").startswith("D") or i.get("item_code").startswith("G"))
+				if (
+					i.get("item_code").startswith("D")
+					or i.get("item_code").startswith("G")
+				)
 				else i["gross_wt"]
 				for i in external_in_weight_data
 			)
-			self.total_in_gross_weight += self.total_in_gross_weight + round(external_in_wt, 3)
+			self.total_in_gross_weight += self.total_in_gross_weight + round(
+				external_in_wt, 3
+			)
 			self.total_in_gross_weight = round(self.total_in_gross_weight, 3)
 			html_content = frappe.render_template(
-				table_html, {"data": external_in_weight_data, "table_type": "External In Weight"}
+				table_html,
+				{"data": external_in_weight_data, "table_type": "External In Weight"},
 			)
 			self.external_in_weight_html = html_content
 
@@ -207,7 +224,9 @@ class CombineJobCard(Document):
 		self.total_out_gross_weight = 0
 		job_card_list = tuple(row.job_card for row in self.details)
 
-		JobCardInternalTransferItem = frappe.qb.DocType("Job Card Internal Transfer Item")
+		JobCardInternalTransferItem = frappe.qb.DocType(
+			"Job Card Internal Transfer Item"
+		)
 		query = (
 			frappe.qb.from_(JobCardInternalTransferItem)
 			.select(
@@ -261,7 +280,9 @@ class CombineJobCard(Document):
 			return
 		for idx, d in enumerate(self.get("time_logs")):
 			if d.to_time and get_datetime(d.from_time) > get_datetime(d.to_time):
-				frappe.throw(_("Row {0}: From time must be less than to time").format(d.idx))
+				frappe.throw(
+					_("Row {0}: From time must be less than to time").format(d.idx)
+				)
 
 			if d.from_time and d.to_time:
 				d.time_in_mins = time_diff_in_hours(d.to_time, d.from_time) * 60
@@ -273,7 +294,9 @@ class CombineJobCard(Document):
 				last_row_to_time = last_row.get("to_time")
 				final_time = add_to_date(last_row_to_time, minutes=last_row_mins)
 				if d.from_time <= final_time:
-					frappe.throw(f"Row: {idx} From time should be after {str(final_time)}")
+					frappe.throw(
+						f"Row: {idx} From time should be after {str(final_time)}"
+					)
 
 	def submit_job_card(self):
 		for idx, jc in enumerate(self.details):
@@ -286,7 +309,9 @@ class CombineJobCard(Document):
 							"time_logs",
 							{
 								"employee": d.employee,
-								"from_time": add_to_date(d.from_time, minutes=time_in_mins),
+								"from_time": add_to_date(
+									d.from_time, minutes=time_in_mins
+								),
 								"to_time": add_to_date(d.to_time, minutes=time_in_mins),
 								"time_in_mins": d.time_in_mins,
 								"completed_qty": jc.for_quantity,
@@ -322,12 +347,15 @@ class CombineJobCard(Document):
 
 	@frappe.whitelist()
 	def get_job_cards(self):
+		frappe.has_permission("Combine Job Card", "read", throw=True)
 		if not self.production_plan:
 			frappe.throw(_("Please select production plan to get job cards."))
 		if not self.operation:
 			frappe.throw(_("Please select operation to get job cards."))
-		wo = frappe.get_list("Work Order", {"production_plan": self.production_plan, "docstatus": 1})
-		wo_list = tuple(row.name for row in wo)
+		wo = frappe.get_list(
+			"Work Order", {"production_plan": self.production_plan, "docstatus": 1}
+		)
+		tuple(row.name for row in wo)
 
 		# JobCard = frappe.qb.DocType("Job Card")
 		# query = (
@@ -356,14 +384,20 @@ class CombineJobCard(Document):
 	def get_totals(self):
 		job_card_list = tuple(row.job_card for row in self.details)
 
-		JobCardInternalTransferItem = frappe.qb.DocType("Job Card Internal Transfer Item")
+		JobCardInternalTransferItem = frappe.qb.DocType(
+			"Job Card Internal Transfer Item"
+		)
 		StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
 
 		internal_in_weights_query = (
 			frappe.qb.from_(JobCardInternalTransferItem)
 			.select(
-				IfNull(Sum(JobCardInternalTransferItem.gross_wt), 0).as_("internal_in_gross_wt"),
-				IfNull(Sum(JobCardInternalTransferItem.net_wt), 0).as_("internal_in_net_wt"),
+				IfNull(Sum(JobCardInternalTransferItem.gross_wt), 0).as_(
+					"internal_in_gross_wt"
+				),
+				IfNull(Sum(JobCardInternalTransferItem.net_wt), 0).as_(
+					"internal_in_net_wt"
+				),
 			)
 			.where(
 				(JobCardInternalTransferItem.docstatus == 1)
@@ -377,7 +411,7 @@ class CombineJobCard(Document):
 				)
 			)
 		)
-		internal_in_weights = internal_in_weights_query.run(as_dict=True)
+		internal_in_weights_query.run(as_dict=True)
 
 		external_in_weights_query = (
 			frappe.qb.from_(StockEntryDetail)
@@ -389,16 +423,23 @@ class CombineJobCard(Document):
 			.where(
 				(StockEntryDetail.docstatus == 1)
 				& (StockEntryDetail.to_job_card.isin(job_card_list))
-				& ((StockEntryDetail.from_job_card == "") | (StockEntryDetail.from_job_card.isnull()))
+				& (
+					(StockEntryDetail.from_job_card == "")
+					| (StockEntryDetail.from_job_card.isnull())
+				)
 			)
 		)
-		external_in_weights = external_in_weights_query.run(as_dict=True)
+		external_in_weights_query.run(as_dict=True)
 
 		out_weights_query = (
 			frappe.qb.from_(JobCardInternalTransferItem)
 			.select(
-				IfNull(Sum(JobCardInternalTransferItem.gross_wt), 0).as_("out_weights_gross_wt"),
-				IfNull(Sum(JobCardInternalTransferItem.net_wt), 0).as_("out_weights_net_wt"),
+				IfNull(Sum(JobCardInternalTransferItem.gross_wt), 0).as_(
+					"out_weights_gross_wt"
+				),
+				IfNull(Sum(JobCardInternalTransferItem.net_wt), 0).as_(
+					"out_weights_net_wt"
+				),
 			)
 			.where(
 				(JobCardInternalTransferItem.docstatus == 1)
@@ -412,13 +453,17 @@ class CombineJobCard(Document):
 				)
 			)
 		)
-		out_weights = out_weights_query.run(as_dict=True)
+		out_weights_query.run(as_dict=True)
 
 		wastages_query = (
 			frappe.qb.from_(JobCardInternalTransferItem)
 			.select(
-				IfNull(Sum(JobCardInternalTransferItem.gross_wt), 0).as_("wastages_gross_wt"),
-				IfNull(Sum(JobCardInternalTransferItem.net_wt), 0).as_("wastages_net_wt"),
+				IfNull(Sum(JobCardInternalTransferItem.gross_wt), 0).as_(
+					"wastages_gross_wt"
+				),
+				IfNull(Sum(JobCardInternalTransferItem.net_wt), 0).as_(
+					"wastages_net_wt"
+				),
 			)
 			.where(
 				(JobCardInternalTransferItem.docstatus == 1)
@@ -436,7 +481,7 @@ class CombineJobCard(Document):
 				)
 			)
 		)
-		wastages = wastages_query.run(as_dict=True)
+		wastages_query.run(as_dict=True)
 		# self.total_in_gross_weight = internal_in_weights[0]['internal_in_gross_wt']
 		# self.total_out_gross_weight  = out_weights[0]['out_weights_gross_wt']
 
@@ -472,6 +517,7 @@ class CombineJobCard(Document):
 
 @frappe.whitelist()
 def create_stock_entry(job_cards):
+	frappe.has_permission("Combine Job Card", "write", throw=True)
 	job_cards = json.loads(job_cards)
 	se_created = []
 	for jc in job_cards:
@@ -482,7 +528,9 @@ def create_stock_entry(job_cards):
 			doc = make_stock_entry(jc[0])
 			doc.save()
 			se_created.append(doc.name)
-			frappe.db.set_value("Combine Job Card Detail", jc[1], "stock_entry", doc.name)
+			frappe.db.set_value(
+				"Combine Job Card Detail", jc[1], "stock_entry", doc.name
+			)
 		except Exception as e:
 			frappe.log_error("Error in create_stock_entry(Cjobcard)", e)
 	return se_created
@@ -490,6 +538,7 @@ def create_stock_entry(job_cards):
 
 @frappe.whitelist()
 def submit_stock_entry(doclist):
+	frappe.has_permission("Combine Job Card", "write", throw=True)
 	doclist = json.loads(doclist)
 	failed = []
 	for name in doclist:
@@ -506,8 +555,9 @@ def submit_stock_entry(doclist):
 
 @frappe.whitelist()
 def stock_entry_detail(item):
-	job_card = frappe.get_doc("Job Card", item)
-
+	# NOTE: implementation is currently disabled (all query logic below is
+	# commented out); the function is a no-op stub retained for the client call.
+	pass
 	# JobCard = frappe.qb.DocType("Job Card")
 	# JobCardScrapItem = frappe.qb.DocType("Job Card Scrap Item")
 	# StockEntry = frappe.qb.DocType("Stock Entry")

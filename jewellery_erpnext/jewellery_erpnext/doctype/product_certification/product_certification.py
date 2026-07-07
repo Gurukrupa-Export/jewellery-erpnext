@@ -17,9 +17,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
 	create_material_receipt_for_certification,
-	create_po,
 	process_fire_assy_xrf_submit,
-	update_bom_details,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
@@ -921,24 +919,75 @@ def create_stock_entry(doc):
 						if serial_wh:
 							source_wh = serial_wh
 
-					se_doc.append(
-						"items",
-						{
-							"item_code": row.item_code,
-							"serial_no": row.serial_no,
-							"qty": 1 if row.serial_no else row.gross_weight,
-							"s_warehouse": source_wh,
-							"t_warehouse": t_warehouse_serial
-							if doc.type == "Issue"
-							else s_warehouse,
-							"Inventory_type": "Regular Stock",
-							"reference_doctype": "Serial No",
-							"reference_docname": row.serial_no,
-							"serial_and_batch_bundle": None,
-							"use_serial_batch_fields": True,
-							"gross_weight": row.gross_weight,
-						},
+					qty_to_issue = flt(1 if row.serial_no else row.gross_weight, 3)
+					has_batch = frappe.get_cached_value(
+						"Item", row.item_code, "has_batch_no"
 					)
+
+					if doc.type == "Issue" and has_batch and not row.serial_no:
+						from erpnext.stock.doctype.batch.batch import (
+							get_available_batches,
+						)
+						from frappe.utils import nowtime, today
+
+						batches = get_available_batches(
+							{
+								"item_code": row.item_code,
+								"warehouse": source_wh,
+								"posting_date": getattr(doc, "date", today())
+								or today(),
+								"posting_time": nowtime(),
+							}
+						)
+
+						for batch_no, batch_qty in batches.items():
+							if qty_to_issue <= 0.0001:
+								break
+							if batch_qty <= 0:
+								continue
+
+							alloc_qty = min(qty_to_issue, flt(batch_qty, 3))
+							qty_to_issue = flt(qty_to_issue - alloc_qty, 3)
+
+							se_doc.append(
+								"items",
+								{
+									"item_code": row.item_code,
+									"qty": alloc_qty,
+									"s_warehouse": source_wh,
+									"t_warehouse": t_warehouse_serial,
+									"Inventory_type": "Regular Stock",
+									"use_serial_batch_fields": True,
+									"batch_no": batch_no,
+									"gross_weight": alloc_qty,
+								},
+							)
+
+						if qty_to_issue > 0.0001:
+							frappe.throw(
+								_(
+									"Insufficient stock for Item {0} in Warehouse {1}"
+								).format(row.item_code, source_wh)
+							)
+					else:
+						se_doc.append(
+							"items",
+							{
+								"item_code": row.item_code,
+								"serial_no": row.serial_no,
+								"qty": qty_to_issue,
+								"s_warehouse": source_wh,
+								"t_warehouse": t_warehouse_serial
+								if doc.type == "Issue"
+								else s_warehouse,
+								"Inventory_type": "Regular Stock",
+								"reference_doctype": "Serial No",
+								"reference_docname": row.serial_no,
+								"serial_and_batch_bundle": None,
+								"use_serial_batch_fields": True,
+								"gross_weight": qty_to_issue,
+							},
+						)
 		if not se_doc.items:
 			frappe.throw(_("No item found for Repack"))
 		se_doc.flags.throw_batch_error = True
@@ -1336,5 +1385,6 @@ def deferred_po_bom(pc_name):
 		create_po,
 		update_bom_details,
 	)
+
 	create_po(pc)
 	update_bom_details(pc)

@@ -195,6 +195,7 @@ class CustomStockEntry(StockEntry):
 
 @frappe.whitelist()
 def get_html_data(doc):
+	frappe.has_permission("Stock Entry", "read", throw=True)
 	if isinstance(doc, str):
 		doc = json.loads(doc)
 	itemwise_data = {}

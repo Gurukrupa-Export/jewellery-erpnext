@@ -1,9 +1,12 @@
-import frappe
 import json
+
+import frappe
 from frappe.utils import flt
+
 
 @frappe.whitelist()
 def get_summary_data(doc):
+	frappe.has_permission("Employee IR", "read", throw=True)
 	if isinstance(doc, str):
 		doc = json.loads(doc)
 	data = [

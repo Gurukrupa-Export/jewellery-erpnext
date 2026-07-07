@@ -71,10 +71,12 @@ class ManufacturingWorkOrder(Document):
 				pluck="name",
 			)
 			if mop_list:
-				for mop in mop_list:
-					frappe.db.set_value(
-						"Manufacturing Operation", mop, "status", "Finished"
-					)
+				frappe.db.set_value(
+					"Manufacturing Operation",
+					{"name": ["in", mop_list]},
+					"status",
+					"Finished",
+				)
 
 		create_manufacturing_operation(self)
 		if self.split_from:
@@ -242,9 +244,9 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_repair_un_pack_stock_entry(self):
-		bom_weight = frappe.db.get_value("BOM", self.master_bom, "gross_weight")
+		frappe.db.get_value("BOM", self.master_bom, "gross_weight")
 
-		pmo_weight = frappe.db.get_value(
+		frappe.db.get_value(
 			"Parent Manufacturing Order", self.manufacturing_order, "customer_weight"
 		)
 
@@ -629,15 +631,18 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 		fields=["name"],
 	)
 	if mr_list:
-		for mr in mr_list:
-			frappe.db.set_value("Material Request", mr.name, "docstatus", "2")
-			frappe.db.set_value(
-				"Material Request", mr.name, "workflow_state", "Cancelled"
-			)
+		# All matched Material Requests get the same cancel state -> one UPDATE
+		# ('Material Request' is a high-traffic ERPNext DocType).
+		frappe.db.set_value(
+			"Material Request",
+			{"name": ["in", [mr.name for mr in mr_list]]},
+			{"docstatus": "2", "workflow_state": "Cancelled"},
+		)
 
 
 @frappe.whitelist()
 def get_linked_stock_entries(mwo_name):  # MWO Details Tab code
+	frappe.has_permission("Manufacturing Work Order", "read", throw=True)
 	StockEntryDetail = frappe.qb.DocType("Stock Entry Detail")
 	StockEntry = frappe.qb.DocType("Stock Entry")
 
