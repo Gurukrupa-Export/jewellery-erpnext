@@ -194,6 +194,13 @@ jobs:
           bench --site test_site run-tests \
             --app jewellery_erpnext --doctype "Serial Number Creator"
 
+      - name: Run SNC Submit Guard
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_submit_guard
+
       - name: Run Product Certification
         run: |
           cd ~/frappe-bench
