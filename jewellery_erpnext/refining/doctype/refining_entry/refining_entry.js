@@ -14,7 +14,7 @@ frappe.ui.form.on("Refining Entry", {
 			filters: { is_stock_item: 1 },
 		}));
 		frm.set_query("warehouse", () => {
-			let wh_type = "Scrap";
+			let wh_type = ["in", ["Raw Material", "Scrap"]];
 			if (frm.doc.refining_type === "Work Order Refining") {
 				wh_type = "Manufacturing";
 			} else if (frm.doc.refining_type === "Serial Number Refining") {
@@ -59,7 +59,6 @@ frappe.ui.form.on("Refining Entry", {
 	refresh(frm) {
 		frm.trigger("set_field_visibility");
 		frm.trigger("add_action_buttons");
-		frm.trigger("render_raw_material_html");
 		frm.trigger("set_recovery_grid_editability");
 
 		// Suppress Frappe Workflow's auto-generated action buttons on submitted docs,
@@ -114,7 +113,9 @@ frappe.ui.form.on("Refining Entry", {
 	department(frm) {
 		if (frm.doc.department) {
 			let wh_type = "Scrap";
-			if (frm.doc.refining_type === "Work Order Refining") {
+			if (frm.doc.refining_type === "Scrap Refining") {
+				wh_type = "Raw Material";
+			} else if (frm.doc.refining_type === "Work Order Refining") {
 				wh_type = "Manufacturing";
 			} else if (frm.doc.refining_type === "Serial Number Refining") {
 				wh_type = ["in", ["Finished Goods", "Transit of Tagging", "Product Certification"]];
@@ -285,7 +286,7 @@ frappe.ui.form.on("Refining Entry", {
 									fieldtype: "HTML",
 									fieldname: "instruction",
 									options:
-										'<div class="text-muted mb-2">Enter the exact Physical Qty you want to refine. Leave 0 to skip.</div>',
+										'<div class="text-muted mb-2">Tick the rows you want to refine. Physical Qty is pre-filled with the full available balance — adjust it to refine less.</div>',
 								},
 								{
 									fieldname: "scrap_items",
@@ -351,7 +352,21 @@ frappe.ui.form.on("Refining Entry", {
 							],
 							primary_action_label: "Add to Table",
 							primary_action: function (values) {
-								let selected = values.scrap_items.filter((d) => d.qty > 0);
+								// Only add the rows the operator actually TICKED. Physical Qty is
+								// pre-filled on every row, so filtering by qty>0 alone (the old
+								// behaviour) added every fetched row regardless of the checkboxes.
+								let checked = d.fields_dict.scrap_items.grid.get_selected_children();
+								if (!checked.length) {
+									frappe.msgprint(__("Please tick the rows you want to add."));
+									return;
+								}
+								let selected = checked.filter((row) => row.qty > 0);
+								if (selected.length === 0) {
+									frappe.msgprint(
+										__("Set a Physical Qty greater than 0 on the ticked rows.")
+									);
+									return;
+								}
 								if (selected.length > 0) {
 									selected.forEach((row) => {
 										let existing = (frm.doc.material_items || []).find(
@@ -537,19 +552,6 @@ frappe.ui.form.on("Refining Entry", {
 				);
 				btn.addClass("btn-primary");
 			}
-		}
-	},
-
-	render_raw_material_html(frm) {
-		const field = frm.get_field("raw_material_html");
-		if (!field) return;
-		const types = ["Work Order Refining", "Serial Number Refining", "Dust Refining", "Scrap Refining"];
-		if (!frm.is_new() && types.includes(frm.doc.refining_type)) {
-			frm.call("get_linked_stock_entries_html").then((r) => {
-				field.$wrapper.html(r.message || "");
-			});
-		} else {
-			field.$wrapper.html("");
 		}
 	},
 });

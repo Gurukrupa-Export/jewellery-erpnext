@@ -14,6 +14,7 @@
   "column_break_jtffh",
   "manufacturer",
   "date_time",
+  "issue_submitted_on",
   "section_break_5eq34",
   "type",
   "transfer_type",
@@ -96,6 +97,14 @@
    "fieldtype": "Datetime",
    "label": "Date / Time",
    "no_copy": 1
+  },
+  {
+   "fieldname": "issue_submitted_on",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Issue Submitted On",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fieldname": "operation",

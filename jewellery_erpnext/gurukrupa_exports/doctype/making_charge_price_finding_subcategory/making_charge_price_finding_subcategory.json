@@ -12,6 +12,8 @@
   "rate_per_diamond",
   "metal_touch",
   "mfg_complexity_code",
+  "rate_per_gm_from_wt_threshold",
+  "rate_per_gm_to_wt_threshold",
   "column_break_4",
   "wastage",
   "wastage_per_pcs",
@@ -101,19 +103,29 @@
    "fieldname": "mfg_complexity_code",
    "fieldtype": "Select",
    "label": "Mfg Complexity Code",
-   "options": "\nSimple\nMedium\nComplex"
+   "options": "\nSimple\nMedium\nComplex\nXXD-R\nXXD-M\nXXD-C\nXXD-H\nXXD-F\nXXD-N"
   },
   {
    "fieldname": "wastage_per_pcs",
    "fieldtype": "Float",
    "label": "Wastage Per Pcs"
+  },
+  {
+   "fieldname": "rate_per_gm_from_wt_threshold",
+   "fieldtype": "Float",
+   "label": "Rate per gm From Wt Threshold"
+  },
+  {
+   "fieldname": "rate_per_gm_to_wt_threshold",
+   "fieldtype": "Float",
+   "label": "Rate per gm to wt Threshold"
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-06-13 11:31:02.106346",
- "modified_by": "shruti_b@gkexport.com",
+ "modified": "2026-07-03 10:22:46.780348",
+ "modified_by": "shubham_k@gkexport.com",
  "module": "Gurukrupa Exports",
  "name": "Making Charge Price Finding Subcategory",
  "owner": "Administrator",

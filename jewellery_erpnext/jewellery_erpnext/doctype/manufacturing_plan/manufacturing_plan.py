@@ -11,6 +11,9 @@ from frappe.utils import cint
 from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import (
 	make_subcontracting_order,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
+	get_current_mould_no,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	make_manufacturing_order,
 )
@@ -256,7 +259,6 @@ class ManufacturingPlan(Document):
 					SalesOrderItem.bom,
 					SalesOrderItem.custom_tracking_bom,
 					SalesOrder.customer,
-					Item.mould.as_("mould_no"),
 					Item.master_bom.as_("master_bom"),
 					SalesOrderItem.diamond_quality,
 					SalesOrderItem.custom_customer_sample.as_("customer_sample"),
@@ -306,6 +308,7 @@ class ManufacturingPlan(Document):
 					item_row["qty_per_manufacturing_order"] = 1
 					item_row["bom"] = bom
 					item_row["order_form_type"] = item_row.get("order_form_type")
+					item_row["mould_no"] = get_current_mould_no(item_row["item_code"])
 					self.append("manufacturing_plan_table", item_row)
 				else:
 					item_code = item_row["item_code"]
@@ -341,6 +344,7 @@ class ManufacturingPlan(Document):
 					"manufacturing_order_qty": qty,
 					"qty_per_manufacturing_order": qty,
 					"mwo": row["mwo"],
+					"mould_no": get_current_mould_no(row["item_code"]),
 				},
 			)
 
@@ -637,9 +641,12 @@ def create_manufacturing_order(doc, row, cache_data=None):
 def create_subcontracting_order(doc):
 	make_subcontracting_order(doc)
 
+
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filters):
+def get_repair_pending_ppo_sales_order(
+	doctype, txt, searchfield, start, page_len, filters
+):
 	SalesOrder = frappe.qb.DocType("Sales Order")
 	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
 
@@ -666,7 +673,12 @@ def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_le
 		frappe.qb.from_(SalesOrder)
 		.distinct()
 		.from_(SalesOrderItem)
-		.select(SalesOrder.name, SalesOrder.transaction_date, SalesOrder.company, SalesOrder.customer)
+		.select(
+			SalesOrder.name,
+			SalesOrder.transaction_date,
+			SalesOrder.company,
+			SalesOrder.customer,
+		)
 		.where((SalesOrder.name == SalesOrderItem.parent) & conditions)
 		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
 		.limit(page_len)
@@ -675,4 +687,3 @@ def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_le
 
 	so_data = query.run(as_dict=True)
 	return so_data
-

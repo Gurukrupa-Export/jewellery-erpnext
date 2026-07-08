@@ -46,3 +46,40 @@ class TreeNumber(Document):
 	def after_insert(self):
 		counter = cint(frappe.db.sql("select max(counter) from `tabTree Number`")[0][0])
 		self.db_set("counter", counter + 1)
+
+	@frappe.whitelist()
+	def issue_material(self, item_code, qty, source_warehouse=None):
+		"""Issue material into this (standalone) tree's MSL warehouse via a Material Transfer SE."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_stock_entry import (
+			issue_material as _issue_material,
+		)
+
+		return _issue_material(self, item_code, qty, source_warehouse)
+
+	@frappe.whitelist()
+	def receive_material(self, rows):
+		"""Receive / book loss for this tree via a Material Transfer SE."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_stock_entry import (
+			receive_material as _receive_material,
+		)
+
+		return _receive_material(self, rows)
+
+	@frappe.whitelist()
+	def reverse_tree_stock_entries(self):
+		"""Cancel every Material Transfer SE this tree created (unwind a mis-issue/receive)."""
+		frappe.has_permission("Tree Number", "write", self, throw=True)
+		from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events.tree_stock_entry import (
+			cancel_tree_stock_entries,
+		)
+
+		cancelled = cancel_tree_stock_entries(self)
+		# Zero the ledger + reset status so the tree can be re-issued cleanly.
+		for md in self.material_details:
+			md.issue_qty = 0
+			md.receive_qty = 0
+			md.loss_qty = 0
+			md.pending_qty = 0
+		self.status = "Issued" if self.material_details else "Draft"
+		self.save(ignore_permissions=True)
+		return cancelled

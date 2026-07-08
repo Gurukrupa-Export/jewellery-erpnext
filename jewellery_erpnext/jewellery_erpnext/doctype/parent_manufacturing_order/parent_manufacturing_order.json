@@ -23,6 +23,7 @@
   "abbr",
   "customer",
   "item_code",
+  "mould_no",
   "serial_no",
   "rowname",
   "amended_from",
@@ -175,6 +176,13 @@
    "fieldtype": "Link",
    "label": "Design Code",
    "options": "Item"
+  },
+  {
+   "fieldname": "mould_no",
+   "fieldtype": "Data",
+   "label": "Mould No",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fetch_from": "sales_order_item.serial_no",

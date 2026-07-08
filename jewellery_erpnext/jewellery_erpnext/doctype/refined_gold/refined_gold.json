@@ -62,21 +62,21 @@
    "fieldname": "dust_weight",
    "fieldtype": "Float",
    "label": "Dust Weight",
-   "precision": "2"
+   "precision": ""
   },
   {
    "allow_on_submit": 1,
    "fieldname": "after_burn_weight",
    "fieldtype": "Float",
    "label": "After Burn Weight",
-   "precision": "2"
+   "precision": ""
   },
   {
    "allow_on_submit": 1,
    "fieldname": "powder_weight",
    "fieldtype": "Float",
    "label": "Powder Weight",
-   "precision": "2"
+   "precision": ""
   },
   {
    "allow_on_submit": 1,
@@ -84,7 +84,7 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Refining Gold Weight",
-   "precision": "2"
+   "precision": ""
   },
   {
    "fieldname": "column_break_lhcwj",

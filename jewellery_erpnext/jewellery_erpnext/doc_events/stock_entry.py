@@ -39,11 +39,16 @@ MANUFACTURER = frappe.defaults.get_user_default("manufacturer")
 
 def before_validate(self, method):
 	validate_ir(self)
-	if (
-		not self.get("__islocal")
-		and frappe.db.exists("Stock Entry", self.name)
-		and self.docstatus == 0
-	) or self.flags.throw_batch_error:
+	if self.docstatus == 0:
+		# FIFO batch allocation now runs automatically for every draft (incl.
+		# brand-new / unsaved docs) — this replaces the old "Get FIFO Batches"
+		# button. update_batches() is internally guarded (not self.auto_created)
+		# and idempotent (rows whose batch_no is still valid are kept as-is), and
+		# only db_update()s when the SE already exists, so it is safe on unsaved
+		# inserts: get_fifo_batches' row.db_set is a no-op in-memory set while
+		# self.name is None, and the rebuilt items persist on insert.
+		# flags.throw_batch_error still controls throw-vs-msgprint inside
+		# get_fifo_batches.
 		self.update_batches()
 
 	pure_item_purity = None
@@ -53,11 +58,19 @@ def before_validate(self, method):
 	for row in self.items:
 		if (
 			not self.auto_created
+			and row.s_warehouse
 			and not row.batch_no
 			and not row.serial_no
-			and row.s_warehouse
+			and frappe.db.get_value("Item", row.item_code, "has_batch_no")
 		):
-			frappe.throw(_("Please click Get FIFO Batch Button"))
+			# Allocation (update_batches) already ran above; a batch-tracked source
+			# row still without a batch means there is genuinely no stock to draw
+			# from. Non-batch-tracked source items are exempt.
+			frappe.throw(
+				_("No stock available to allocate a batch for {0} in {1}").format(
+					row.item_code, row.s_warehouse
+				)
+			)
 
 		if not self.auto_created and row.manufacturing_operation:
 			if not dir_staus_data.get(row.manufacturing_operation):

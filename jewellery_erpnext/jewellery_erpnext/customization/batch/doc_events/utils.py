@@ -77,6 +77,7 @@ def update_inventory_dimentions(self):
 		not item_allows_customer_goods
 		and is_customer_inventory
 		and not is_subcontracting_gold_repack(self)
+		and not is_process_loss_repack(self)
 	):
 		frappe.throw(_("This item is not allowed as Customer Goods"))
 
@@ -102,6 +103,36 @@ def is_subcontracting_gold_repack(batch):
 			"Stock Entry", getattr(batch, "reference_name", None), "stock_entry_type"
 		)
 		== "Subcontracting Repack"
+	)
+
+
+def is_process_loss_repack(batch):
+	"""Exempt Employee IR Process Loss scrap/loss batches from the Customer Goods
+	guard.
+
+	The Process Loss Stock Entry (Employee IR receive) moves a customer's metal
+	that has been booked as loss into a scrap/loss *variant* item, and that
+	material stays the customer's -- so the produce row is stamped
+	inventory_type = "Customer Goods" (see
+	employee_ir/doc_events/loss_stock_entry.py::_resolve_batch_inventory). The
+	loss variant item is not necessarily flagged
+	``custom_inventory_type_can_be_customer_goods``, so without this exemption the
+	batch-creation guard above would throw "This item is not allowed as Customer
+	Goods" and block the whole EIR receive submit. Mirror
+	``is_subcontracting_gold_repack``: only exempt batches minted by a
+	Process Loss Stock Entry that actually carries a customer.
+	"""
+	if getattr(batch, "reference_doctype", None) != "Stock Entry":
+		return False
+
+	if not getattr(batch, "custom_customer", None):
+		return False
+
+	return (
+		frappe.db.get_value(
+			"Stock Entry", getattr(batch, "reference_name", None), "stock_entry_type"
+		)
+		== "Process Loss"
 	)
 
 

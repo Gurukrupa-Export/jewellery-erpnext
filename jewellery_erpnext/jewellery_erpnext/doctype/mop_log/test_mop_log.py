@@ -7,7 +7,6 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.types.frappedict import _dict as FrappeDict
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
 	dir_for_issue,
 	dir_for_receive,
@@ -465,7 +464,6 @@ class TestMainSlipEmployeeIRRelaxations(IntegrationTestCase):
 class TestMOPLog(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_mop_log_creation(self):

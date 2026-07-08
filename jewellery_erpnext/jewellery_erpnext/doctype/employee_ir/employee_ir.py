@@ -14,6 +14,7 @@ from frappe.utils import (
 	get_first_day,
 	get_last_day,
 	getdate,
+	now_datetime,
 	nowdate,
 	time_diff,
 	time_diff_in_hours,
@@ -46,12 +47,14 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontr
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 	create_tree_on_issue,
+	is_casting_eir,
 	unlink_tree_on_issue_cancel,
 	update_tree_on_receive,
 	validate_casting_tree,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
+	validate_employee_ir_receive_delay,
 	validate_loss_qty,
 	validate_loss_tables_required,
 	validate_manually_book_loss_details,
@@ -91,6 +94,12 @@ class EmployeeIR(Document):
 				self.append(
 					"employee_ir_operations", {"manufacturing_operation": row.name}
 				)
+
+	def before_submit(self):
+		if self.type == "Issue":
+			self.issue_submitted_on = now_datetime()
+		else:
+			validate_employee_ir_receive_delay(self)
 
 	def on_submit(self):
 		validate_loss_tables_required(self)
@@ -538,8 +547,12 @@ class EmployeeIR(Document):
 			# ONE Repack SE for all loss rows across the entire EIR.
 			create_loss_stock_entries(self)
 
-		# Casting tree: roll received / loss metal into the tree ledger + status.
-		update_tree_on_receive(self, cancel=cancel)
+		# Casting tree: the Tree Number Receive button now owns the tree's Material Details
+		# ledger (record-only), so skip the EIR-side write for casting to avoid double-counting.
+		# The EIR still performs the physical receive (injection + process loss) + weight ledger.
+		# Non-casting EIRs keep the original behaviour (harmless no-op unless a tree is linked).
+		if not is_casting_eir(self):
+			update_tree_on_receive(self, cancel=cancel)
 
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":

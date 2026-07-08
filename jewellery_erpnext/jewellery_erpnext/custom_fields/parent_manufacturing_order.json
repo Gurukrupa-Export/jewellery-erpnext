@@ -1,6 +1,7 @@
 {
  "Parent Manufacturing Order": [
   {
+   "allow_on_submit": 1,
    "dt": "Parent Manufacturing Order",
    "fieldname": "custom_jewelex_batch_no",
    "fieldtype": "Data",

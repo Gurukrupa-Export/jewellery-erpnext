@@ -287,14 +287,32 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 	# Build row_data from source_table (batch-wise) for stock entry
 	row_data = []
 	for row in self.source_table:
+		# Inventory type / customer must correspond to the batch actually being
+		# consumed. source_table carries these from the upstream Stock Entry
+		# Detail, which can disagree with the batch (e.g. a Customer Goods batch
+		# stamped "Regular Stock"), producing an inventory-type mismatch on the
+		# auto-created Manufacture entry. The Batch master is authoritative here,
+		# mirroring the batch-selection convention (stock_entry.js) and repack.
+		inventory_type = row.inventory_type
+		customer = row.customer
+		if row.batch_no:
+			batch_inventory_type, batch_customer = frappe.db.get_value(
+				"Batch", row.batch_no, ["custom_inventory_type", "custom_customer"]
+			) or (None, None)
+			if batch_inventory_type:
+				inventory_type = batch_inventory_type
+				customer = (
+					batch_customer if batch_inventory_type == "Customer Goods" else None
+				)
+
 		row_data.append(
 			{
 				"item_code": row.row_material,
 				"qty": row.qty,
 				"uom": row.uom,
 				"id": 1,  # single FG item
-				"inventory_type": row.inventory_type,
-				"customer": row.customer,
+				"inventory_type": inventory_type,
+				"customer": customer,
 				"batch_no": row.batch_no,
 				"pcs": row.pcs,
 				"s_warehouse": row.s_warehouse,
@@ -628,6 +646,8 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 									"s_warehouse": row["s_warehouse"],
 									"t_warehouse": loss_warehouse,
 									"batch_no": row.get("batch_no"),
+									"inventory_type": row.get("inventory_type"),
+									"customer": row.get("customer"),
 									"use_serial_batch_fields": 1,
 								},
 							)

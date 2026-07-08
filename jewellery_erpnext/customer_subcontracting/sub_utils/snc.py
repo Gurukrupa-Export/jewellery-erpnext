@@ -16,19 +16,40 @@ PURITY_PRIORITY = ("24KT", "22KT", "20KT", "18KT")
 @frappe.whitelist()
 def validate_button_visibility(mwo):
 	mwo = _get_mwo(mwo)
-	if mwo.docstatus != 1 or not mwo.manufacturing_order:
+	# Already settled: nothing to do. This also short-circuits the heavier live
+	# Make Receive computation below for the common already-done case.
+	if cint(getattr(mwo, "snc_done", 0)):
 		return False
+	return _mwo_needs_settlement(mwo)
 
-	transfer = _get_original_material_transfer(mwo.name)
-	if not transfer:
+
+def _mwo_needs_settlement(mwo):
+	"""Live check: does this MWO's operation currently hold borrowed gold that must
+	be settled?
+
+	Reads the same live receivable rows ``create_snc`` actually settles
+	(``_get_receivable_gold_rows``), so it is correct no matter how many
+	``Material Transfer (WORK ORDER)`` documents have fed the operation. The old
+	implementation inspected only the *earliest* transfer, so a later transfer that
+	borrowed another customer's gold was never detected and the MWO stayed
+	"Not Need".
+
+	Does NOT consult ``snc_done`` -- that gate lives in ``validate_button_visibility``.
+	``stamp_snc_requirement`` needs the raw live position so a fresh borrow can
+	re-open a previously completed settlement.
+	"""
+	mwo = _get_mwo(mwo)
+	if (
+		mwo.docstatus != 1
+		or not mwo.manufacturing_order
+		or not mwo.manufacturing_operation
+	):
 		return False
-
-	rows = _get_original_gold_rows(transfer)
-	if not rows:
-		return False
-
 	pmo_is_customer_gold = _is_customer_gold(mwo)
-	return any(_row_needs_settlement(mwo, row, pmo_is_customer_gold) for row in rows)
+	return any(
+		_row_needs_settlement(mwo, row, pmo_is_customer_gold)
+		for row in _get_receivable_gold_rows(mwo)
+	)
 
 
 def _is_customer_gold(mwo):
@@ -52,6 +73,87 @@ def _row_needs_settlement(mwo, row, pmo_is_customer_gold):
 	return bool(batch_customer)
 
 
+def validate_snc_before_submit(doc, method=None):
+	"""Block submit of the finished-goods (for_fg) MWO while any working MWO of the
+	same PMO still needs its 'Create SNC' gold settlement done.
+
+	The FG MWO carries no borrowed gold of its own -- the settlement (and the Create
+	SNC button) live on the working sibling MWOs. So this fires once, at the FG MWO
+	submit, and verifies the siblings, mirroring the per-PMO repack guard.
+	"""
+	if not cint(getattr(doc, "for_fg", 0)) or not doc.manufacturing_order:
+		return
+
+	siblings = frappe.get_all(
+		"Manufacturing Work Order",
+		filters={
+			"manufacturing_order": doc.manufacturing_order,
+			"docstatus": 1,
+			"for_fg": 0,
+			"has_split_mwo": 0,
+			"snc_done": 0,
+			"name": ["!=", doc.name],
+		},
+		fields=["name", "snc_requirement", "snc_done"],
+	)
+
+	pending = []
+	visibility_cache = {}
+	for mwo in siblings:
+		if cint(mwo.snc_done):
+			continue
+
+		# Prefer the stamped field; fall back to live computation for MWOs created
+		# before this field started being populated.
+		if mwo.snc_requirement:
+			needs = mwo.snc_requirement == "Need"
+		else:
+			needs = visibility_cache.get(mwo.name)
+			if needs is None:
+				needs = validate_button_visibility(mwo.name)
+				visibility_cache[mwo.name] = needs
+
+		if needs:
+			pending.append(mwo.name)
+
+	if pending:
+		mwo_list = "<br>".join("- <b>{0}</b>".format(name) for name in pending)
+		frappe.throw(
+			_(
+				"Gold Settlement Pending. Please click 'Create SNC' on the following "
+				"Manufacturing Work Order(s) before submitting:<br>{0}"
+			).format(mwo_list)
+		)
+
+
+def stamp_snc_requirement(doc, method=None):
+	"""Stamp a working MWO's ``snc_requirement`` (Need / Not Need) whenever a
+	``Material Transfer (WORK ORDER)`` feeding it is submitted, using the live
+	held-gold position (the same source ``create_snc`` settles). Skips SNC's own
+	settlement transfers.
+
+	A single MWO can be fed by several transfers from different customers, so the
+	requirement is recomputed from what the operation holds *now*, not from the
+	earliest transfer. When fresh borrowed gold arrives after a prior settlement,
+	this also resets ``snc_done`` so the MWO re-enters the Create SNC flow.
+	"""
+	if doc.stock_entry_type != "Material Transfer (WORK ORDER)" or not doc.get(
+		"manufacturing_work_order"
+	):
+		return
+	if (doc.get("custom_request_id") or "").startswith("SNC-"):
+		return
+
+	needs = _mwo_needs_settlement(doc.manufacturing_work_order)
+	values = {"snc_requirement": "Need" if needs else "Not Need"}
+	if needs:
+		# A previously completed settlement no longer covers this new borrow.
+		values["snc_done"] = 0
+	frappe.db.set_value(
+		"Manufacturing Work Order", doc.manufacturing_work_order, values
+	)
+
+
 @frappe.whitelist()
 def create_snc(mwo):
 	mwo = _get_mwo(mwo)
@@ -62,34 +164,45 @@ def create_snc(mwo):
 
 	original_transfer = _get_original_material_transfer(mwo.name)
 	pmo_is_customer_gold = _is_customer_gold(mwo)
-	original_rows = [
-		row
-		for row in _get_original_gold_rows(original_transfer)
-		if _row_needs_settlement(mwo, row, pmo_is_customer_gold)
-	]
-	if not original_rows:
-		frappe.throw(_("No original Material Transfer gold rows to settle found."))
-
 	# The order owner whose gold is brought in to replace the borrowed gold.
 	# Subcontracting order -> the order customer; regular order -> Regular Stock.
 	owner_customer = mwo.customer if pmo_is_customer_gold else None
 
+	# Settle the gold the operation ACTUALLY holds now (the same live source the
+	# Make Receive uses -- loss-adjusted, per current batch), so the replacement
+	# transfer mirrors the received rows row-for-row instead of copying the stale
+	# earliest Material Transfer.
+	settle_rows = [
+		row
+		for row in _get_receivable_gold_rows(mwo)
+		if _row_needs_settlement(mwo, row, pmo_is_customer_gold)
+	]
+	if not settle_rows:
+		frappe.throw(_("No borrowed gold rows to settle found."))
+
 	created = {"make_receive": None, "conversions": [], "transfers": []}
-	for row in original_rows:
-		required_batch = find_owner_batch(owner_customer, row["item_code"], row["qty"])
+	transfer_rows = []
+	for row in settle_rows:
+		required_batch = find_owner_batch(
+			owner_customer, row["item_code"], row["qty"], company=mwo.company
+		)
 		if required_batch:
-			target_warehouse = required_batch["warehouse"]
-			make_receive = trigger_make_receive(mwo, target_warehouse)
-			created["make_receive"] = created["make_receive"] or make_receive
-			transfer = create_material_transfer_work_order(
-				mwo=mwo,
-				original_transfer=original_transfer,
-				original_row=row,
-				batch_no=required_batch["batch_no"],
-				source_warehouse=target_warehouse,
-				owner_customer=owner_customer,
+			# Receive the borrowed gold once, then bring the owner's own gold back
+			# to the warehouse this row was received from.
+			if created["make_receive"] is None:
+				created["make_receive"] = trigger_make_receive(
+					mwo, required_batch["warehouse"], receive_items=settle_rows
+				)
+			transfer_rows.append(
+				{
+					"item_code": row["item_code"],
+					"qty": row["qty"],
+					"custom_pure_qty": row["custom_pure_qty"],
+					"batch_no": required_batch["batch_no"],
+					"s_warehouse": required_batch["warehouse"],
+					"t_warehouse": row["s_warehouse"],
+				}
 			)
-			created["transfers"].append(transfer)
 			continue
 
 		source_batch = find_owner_rm_warehouse(
@@ -97,14 +210,17 @@ def create_snc(mwo):
 			row["item_code"],
 			row["custom_pure_qty"],
 			search_different_purity=True,
+			company=mwo.company,
 		)
 		if not source_batch:
 			frappe.throw(
 				_("No available stock for {0}.").format(_owner_label(owner_customer))
 			)
 
-		make_receive = trigger_make_receive(mwo, source_batch["warehouse"])
-		created["make_receive"] = created["make_receive"] or make_receive
+		if created["make_receive"] is None:
+			created["make_receive"] = trigger_make_receive(
+				mwo, source_batch["warehouse"], receive_items=settle_rows
+			)
 		conversion = create_repack_metal_conversion(
 			mwo=mwo,
 			original_transfer=original_transfer,
@@ -134,16 +250,24 @@ def create_snc(mwo):
 			owner_customer=row.get("batch_customer"),
 		)
 		created["conversions"].append(usage_conversion["stock_entry"])
-		transfer = create_material_transfer_work_order(
-			mwo=mwo,
-			original_transfer=original_transfer,
-			original_row=row,
-			batch_no=conversion["target_batch"],
-			source_warehouse=conversion["warehouse"],
-			owner_customer=owner_customer,
+		transfer_rows.append(
+			{
+				"item_code": row["item_code"],
+				"qty": row["qty"],
+				"custom_pure_qty": row["custom_pure_qty"],
+				"batch_no": conversion["target_batch"],
+				"s_warehouse": conversion["warehouse"],
+				"t_warehouse": row["s_warehouse"],
+			}
 		)
-		created["transfers"].append(transfer)
 
+	created["transfers"].append(
+		create_material_transfer_work_order(
+			mwo, original_transfer, transfer_rows, owner_customer
+		)
+	)
+
+	frappe.db.set_value("Manufacturing Work Order", mwo.name, "snc_done", 1)
 	return created
 
 
@@ -151,16 +275,22 @@ def _owner_label(owner_customer):
 	return "Customer {0}".format(owner_customer) if owner_customer else "Regular Stock"
 
 
-def find_owner_batch(owner_customer, item_code, required_qty):
-	return find_owner_rm_warehouse(owner_customer, item_code, required_qty)
+def find_owner_batch(owner_customer, item_code, required_qty, company=None):
+	return find_owner_rm_warehouse(
+		owner_customer, item_code, required_qty, company=company
+	)
 
 
 def find_owner_rm_warehouse(
-	owner_customer, item_code, required_qty_or_pure_qty, search_different_purity=False
+	owner_customer,
+	item_code,
+	required_qty_or_pure_qty,
+	search_different_purity=False,
+	company=None,
 ):
 	if not search_different_purity:
 		return _find_available_owner_batch(
-			owner_customer, item_code, required_qty_or_pure_qty
+			owner_customer, item_code, required_qty_or_pure_qty, company
 		)
 
 	required_purity = _get_purity_label(item_code)
@@ -173,7 +303,7 @@ def find_owner_rm_warehouse(
 				continue
 			source_qty = flt(flt(required_qty_or_pure_qty) / (source_purity / 100), 3)
 			batch = _find_available_owner_batch(
-				owner_customer, candidate_item, source_qty
+				owner_customer, candidate_item, source_qty, company
 			)
 			if batch:
 				batch["qty"] = source_qty
@@ -266,14 +396,11 @@ def create_repack_metal_conversion(
 
 
 def create_material_transfer_work_order(
-	mwo,
-	original_transfer,
-	original_row,
-	batch_no,
-	source_warehouse,
-	owner_customer=None,
+	mwo, original_transfer, rows, owner_customer=None
 ):
-	target_warehouse = original_row.get("t_warehouse") or original_transfer.to_warehouse
+	"""Build ONE 'Material Transfer (WORK ORDER)' that mirrors the Make Receive:
+	one row per received borrowed-gold row, each bringing the owner's replacement
+	gold back into the warehouse that borrowed gold was received from."""
 	inventory_type = _owner_inventory_type(owner_customer)
 	se = frappe.new_doc("Stock Entry")
 	se.update(
@@ -285,36 +412,51 @@ def create_material_transfer_work_order(
 			"manufacturing_order": mwo.manufacturing_order,
 			"manufacturing_work_order": mwo.name,
 			"manufacturing_operation": mwo.manufacturing_operation,
-			"from_warehouse": source_warehouse,
-			"to_warehouse": target_warehouse,
+			"from_warehouse": rows[0]["s_warehouse"],
+			"to_warehouse": rows[0]["t_warehouse"],
 			"inventory_type": inventory_type,
 			"_customer": owner_customer,
 		}
 	)
-	_append_item(
-		se,
-		{
-			"item_code": original_row["item_code"],
-			"qty": original_row["qty"],
-			"custom_pure_qty": original_row["custom_pure_qty"],
-			"batch_no": batch_no,
-			"s_warehouse": source_warehouse,
-			"t_warehouse": target_warehouse,
-			"inventory_type": inventory_type,
-			"customer": owner_customer,
-			"custom_manufacturing_work_order": mwo.name,
-			"custom_parent_manufacturing_order": mwo.manufacturing_order,
-			"manufacturing_operation": mwo.manufacturing_operation,
-		},
-	)
+	for row in rows:
+		_append_item(
+			se,
+			{
+				"item_code": row["item_code"],
+				"qty": row["qty"],
+				"custom_pure_qty": row["custom_pure_qty"],
+				"batch_no": row["batch_no"],
+				"s_warehouse": row["s_warehouse"],
+				"t_warehouse": row["t_warehouse"],
+				"inventory_type": inventory_type,
+				"customer": owner_customer,
+				"custom_manufacturing_work_order": mwo.name,
+				"custom_parent_manufacturing_order": mwo.manufacturing_order,
+				"manufacturing_operation": mwo.manufacturing_operation,
+			},
+		)
 	se.insert(ignore_permissions=True)
 	_submit_consuming_stock_entry(se)
 	return se.name
 
 
-def trigger_make_receive(mwo, target_warehouse):
+def _get_receivable_gold_rows(mwo, target_warehouse=None):
+	"""Gold (M-G-) rows the operation ACTUALLY holds now, from the same live Make
+	Receive source (loss-adjusted SRE remaining), shaped like ``create_mr_wo_stock_entry``
+	receive_items plus the ``batch_customer`` / ``custom_pure_qty`` / ``s_warehouse``
+	the settlement transfer needs.
+
+	The Make Receive rows carry neither ``inventory_type``/``customer`` nor
+	``custom_pure_qty``: ownership is read off the Batch master and pure qty is
+	recomputed from item purity. The ``target_warehouse`` only labels the receive
+	destination -- it does not affect which rows or quantities are returned.
+	"""
 	if not mwo.manufacturing_operation:
 		frappe.throw(_("Manufacturing Operation is required to trigger Make Receive."))
+
+	if not target_warehouse:
+		rm_warehouses = _get_raw_material_warehouses(mwo.company)
+		target_warehouse = rm_warehouses[0] if rm_warehouses else None
 
 	rows = (
 		get_make_receive_entry_rows(
@@ -324,27 +466,45 @@ def trigger_make_receive(mwo, target_warehouse):
 	)
 	receive_items = []
 	for row in rows:
+		item_code = row.get("item_code") or ""
 		# SNC only settles gold; receive gold rows only, never diamond/findings.
-		if not (row.get("item_code") or "").startswith("M-G-"):
+		if not item_code.startswith("M-G-"):
 			continue
-		qty = flt(row.get("available_to_receive_qty"))
+		qty = flt(row.get("available_to_receive_qty"), 3)
 		if qty <= 0:
 			continue
+		batch_no = row.get("batch_no")
+		inventory_type = batch_customer = None
+		if batch_no:
+			inventory_type, batch_customer = frappe.db.get_value(
+				"Batch", batch_no, ["custom_inventory_type", "custom_customer"]
+			) or (None, None)
 		receive_items.append(
 			{
 				"stock_reservation_entry": row.get("stock_reservation_entry"),
 				"stock_reservation_entry_detail": row.get(
 					"stock_reservation_entry_detail"
 				),
-				"item_code": row.get("item_code"),
-				"batch_no": row.get("batch_no"),
+				"item_code": item_code,
+				"batch_no": batch_no,
 				"qty": qty,
 				"pcs": cint(row.get("available_to_receive_pcs") or 0),
-				"inventory_type": row.get("inventory_type"),
-				"customer": row.get("customer"),
+				"inventory_type": inventory_type,
+				"customer": batch_customer,
+				"batch_customer": batch_customer,
+				"custom_pure_qty": flt(qty * _get_item_purity(item_code) / 100, 3),
+				"s_warehouse": row.get("s_warehouse"),
 			}
 		)
+	return receive_items
 
+
+def trigger_make_receive(mwo, target_warehouse, receive_items=None):
+	if not mwo.manufacturing_operation:
+		frappe.throw(_("Manufacturing Operation is required to trigger Make Receive."))
+
+	if receive_items is None:
+		receive_items = _get_receivable_gold_rows(mwo, target_warehouse)
 	if not receive_items:
 		frappe.throw(_("No Make Receive rows are available for SNC."))
 
@@ -383,28 +543,7 @@ def _owner_inventory_type(owner_customer):
 	return "Customer Goods" if owner_customer else "Regular Stock"
 
 
-def _get_original_gold_rows(transfer):
-	"""Return all gold (M-G-) rows of the original Material Transfer, tagging each
-	with the borrowed batch's customer (``None`` for regular/company stock)."""
-	rows = []
-	for row in transfer.items:
-		if not row.batch_no or not (row.item_code or "").startswith("M-G-"):
-			continue
-		batch_customer = frappe.db.get_value("Batch", row.batch_no, "custom_customer")
-		rows.append(
-			{
-				"item_code": row.item_code,
-				"batch_no": row.batch_no,
-				"batch_customer": batch_customer,
-				"qty": flt(row.qty, 3),
-				"custom_pure_qty": flt(row.custom_pure_qty, 3),
-				"t_warehouse": row.t_warehouse,
-			}
-		)
-	return rows
-
-
-def _find_available_owner_batch(owner_customer, item_code, required_qty):
+def _find_available_owner_batch(owner_customer, item_code, required_qty, company=None):
 	if owner_customer:
 		batch_filters = {
 			"item": item_code,
@@ -420,7 +559,7 @@ def _find_available_owner_batch(owner_customer, item_code, required_qty):
 	batches = frappe.get_all(
 		"Batch", filters=batch_filters, pluck="name", order_by="creation asc"
 	)
-	warehouses = _get_raw_material_warehouses()
+	warehouses = _get_raw_material_warehouses(company)
 	if not batches or not warehouses:
 		return None
 
@@ -513,10 +652,16 @@ def _submit_consuming_stock_entry(se):
 	se.submit()
 
 
-def _get_raw_material_warehouses():
+def _get_raw_material_warehouses(company=None):
+	filters = {"warehouse_type": "Raw Material", "disabled": 0}
+	if company:
+		# Scope to the SNC's company; otherwise a batch found in another company's
+		# Raw Material warehouse would build a Stock Entry stamped with this company
+		# and fail validate_warehouse_company at submit.
+		filters["company"] = company
 	return frappe.get_all(
 		"Warehouse",
-		filters={"warehouse_type": "Raw Material", "disabled": 0},
+		filters=filters,
 		pluck="name",
 	)
 

@@ -8,7 +8,6 @@ from frappe import ValidationError
 from frappe.tests import IntegrationTestCase
 from frappe.utils import cint
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
 	create_po,
 )
@@ -23,7 +22,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.test_seri
 class TestProductCertification(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
+		stock = frappe.get_single("Stock Settings")
+		stock.allow_negative_stock = 1
+		stock.allow_negative_stock_for_batch = 1
+		stock.save()
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"

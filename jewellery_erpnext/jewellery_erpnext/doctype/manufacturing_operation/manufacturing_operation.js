@@ -320,20 +320,20 @@ frappe.ui.form.on("Manufacturing Operation", {
 			});
 		}).addClass("btn-primary");
 
-		// Create Scrap Item: same auto-fill + transfer machinery as Make Receive
-		// Entry, but moves the operation's materials into the department Scrap
-		// warehouse via a "Material Transfer (WORK ORDER)" so the stock is
-		// segregated as scrap and excluded from manufacturing/RM pickers.
-		frm.add_custom_button(__("Create Scrap Item"), () => {
+		// Receive Scrap Item: receives the operation's scrap into the department Raw
+		// Material warehouse (SRE machinery, same item code — no dedicated scrap item)
+		// and repacks it into a new batch tagged custom_batch_type="Scrap" so Scrap
+		// Refining can fetch it.
+		frm.add_custom_button(__("Receive Scrap Item"), () => {
 			open_wo_transfer_dialog(frm, {
 				fetch_method:
 					"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_make_scrap_entry_rows",
 				create_method:
 					"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.create_scrap_wo_stock_entry",
-				no_sre_title: __("Create Scrap Item"),
-				dialog_title: __("Create Scrap Item — Material Transfer (WORK ORDER)"),
-				primary_action_label: __("Create Scrap Item"),
-				create_freeze_message: __("Creating Scrap Item Transfer..."),
+				no_sre_title: __("Receive Scrap Item"),
+				dialog_title: __("Receive Scrap Item — Material Receive (WORK ORDER)"),
+				primary_action_label: __("Receive Scrap Item"),
+				create_freeze_message: __("Receiving Scrap Item..."),
 				created_title: __("Scrap Item Stock Entry Created"),
 				existing_title: __("Existing Scrap Item Stock Entry"),
 				result_label: __("Scrap Item Entry: {0}"),

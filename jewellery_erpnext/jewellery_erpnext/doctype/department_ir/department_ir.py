@@ -21,7 +21,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_department_ir,
 	get_last_mop_index,
 )
-from jewellery_erpnext.utils import set_values_in_bulk
+from jewellery_erpnext.utils import is_mwo_refined, set_values_in_bulk
 
 
 class DepartmentIR(Document):
@@ -784,6 +784,30 @@ def create_operation_for_next_dept(ir_name, mwo, mop, next_department):
 	new_mop_doc.previous_mop = mop
 	new_mop_doc.operation = None
 	new_mop_doc.previous_se_data_updated = 0
+	if is_mwo_refined(mwo):
+		# The MWO's metal has left for the refinery: every operation created after
+		# the Refining Entry must start at 0. copy_doc above keeps no_copy fields
+		# (default ignore_no_copy=True), so the source operation's pre-refining
+		# weight buckets would otherwise be carried into the new operation.
+		for field in (
+			"qty",
+			"gross_wt",
+			"net_wt",
+			"finding_wt",
+			"diamond_wt",
+			"diamond_wt_in_gram",
+			"diamond_pcs",
+			"gemstone_wt",
+			"gemstone_wt_in_gram",
+			"gemstone_pcs",
+			"other_wt",
+			"prev_gross_wt",
+			"received_gross_wt",
+			"received_net_wt",
+			"loss_wt",
+		):
+			if hasattr(new_mop_doc, field):
+				setattr(new_mop_doc, field, 0)
 	new_mop_doc.insert()
 	frappe.db.set_value(
 		"Manufacturing Work Order", mwo, "manufacturing_operation", new_mop_doc.name
