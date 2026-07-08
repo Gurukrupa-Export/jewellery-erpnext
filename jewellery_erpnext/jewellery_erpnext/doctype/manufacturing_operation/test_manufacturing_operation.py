@@ -5,7 +5,6 @@ import frappe
 from frappe.model.workflow import apply_workflow
 from frappe.tests import IntegrationTestCase
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
 	DepartmentIR,
 )
@@ -22,7 +21,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.test_m
 class TestManufacturingOperation(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_manufacturing_operations(self):

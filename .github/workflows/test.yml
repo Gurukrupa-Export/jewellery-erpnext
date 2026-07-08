@@ -72,7 +72,7 @@ jobs:
       - name: Install Bench and Apps
         run: ./install.sh
 
-      - name: Import Fixtures
+      - name: Migrate
         run: |
           cd ~/frappe-bench
           bench --site test_site migrate
@@ -81,7 +81,7 @@ jobs:
         run: |
           cd ~/frappe-bench
           bench --site test_site execute \
-            jewellery_erpnext.create_test_data.setup_data
+            jewellery_erpnext.create_test_data.create_test_data
 
       - name: Run Sketch Order Form Tests
         run: |

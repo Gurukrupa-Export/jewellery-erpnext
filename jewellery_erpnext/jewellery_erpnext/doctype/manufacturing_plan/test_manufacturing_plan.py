@@ -7,7 +7,6 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, add_to_date, now, today
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan import (
 	get_details_to_append,
 	get_pending_ppo_sales_order,
@@ -22,7 +21,6 @@ from jewellery_erpnext.jewellery_erpnext.tests.test_sales_order import (
 class TestManufacturingPlan(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)

@@ -6,7 +6,6 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufacturing_plan import (
 	create_sales_order,
 	manufacturing_plan_creation,
@@ -20,7 +19,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 class TestParentManufacturingOrder(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
