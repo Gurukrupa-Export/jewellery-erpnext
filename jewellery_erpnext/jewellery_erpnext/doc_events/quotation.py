@@ -1171,8 +1171,9 @@ def xl_preview(docname):
 
 	
 	for item in doc.items:
-		if item.quotation_bom:
-			bom_doc = frappe.get_doc("BOM", item.quotation_bom)
+		if item.copy_bom:
+			# bom_doc = frappe.get_doc("BOM", item.quotation_bom)
+			bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
 
 			# total_qty = sum([float(d.quantity or 0) for d in bom_doc.diamond_detail])
 			total_qty = sum([round(float(d.quantity or 0), 2) for d in bom_doc.diamond_detail])
@@ -1183,8 +1184,8 @@ def xl_preview(docname):
 			gross_weight = round(gross_weight, 2)
 			# gross_weight = round(gross_weight, 3)
 
-			gemstone_weight = float(bom_doc.total_gemstone_weight_in_gms or 0)
-			other_weight = float(bom_doc.other_weight or 0)
+			gemstone_weight = float(bom_doc.gemstone_weight or 0)
+			# other_weight = float(bom_doc.other_weight or 0)
 
 			
 			metal_weight = float(bom_doc.metal_weight or 0)
@@ -1288,7 +1289,8 @@ def xl_preview(docname):
 					round(gross_weight, 3) if (i == 0 and gross_weight != 0) else "",
 					# f"{gross_weight:.3f}" if (i == 0 and gross_weight != 0) else "",
 					round(gemstone_weight, 2) if (i == 0 and gemstone_weight != 0) else "",
-					round(other_weight, 2) if (i == 0 and other_weight != 0) else "",
+					# round(other_weight, 2) if (i == 0 and other_weight != 0) else "",
+					"",
 					f"{calculated_gold_rate:.{precision}f}" if i == 0 else "",
 					# round(metal_weight, 2) if i == 0 else "", 
 					f"{metal_weight:.{precision}f}" if i == 0 else "", 
