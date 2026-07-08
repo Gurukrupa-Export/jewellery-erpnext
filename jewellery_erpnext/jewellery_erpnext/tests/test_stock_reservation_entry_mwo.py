@@ -3,7 +3,18 @@
 
 from unittest.mock import MagicMock, patch
 
+from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+	StockReservationEntry,
+)
 from frappe.tests import IntegrationTestCase
+
+from jewellery_erpnext.jewellery_erpnext.customization.stock_reservation_entry.stock_reservation_entry import (
+	CustomStockReservationEntry,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+	onsubmit,
+	stock_reservation_entry_for_mwo,
+)
 
 
 class TestStockReservationEntryForMWO(IntegrationTestCase):
@@ -42,10 +53,6 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		mock_new_doc,
 		_mock_mop,
 	):
-		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-			stock_reservation_entry_for_mwo,
-		)
-
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
 				return ("SO-1", "SOI-1", "MNF-1")
@@ -133,10 +140,6 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		mock_new_doc,
 		_mock_mop,
 	):
-		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-			stock_reservation_entry_for_mwo,
-		)
-
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
 				return ("SO-1", "SOI-1", "MNF-1")
@@ -209,9 +212,6 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		_mock_mop,
 	):
 		"""Employee IR metal injection: reserve line qty even if availability reads 0 in the same pass."""
-		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-			stock_reservation_entry_for_mwo,
-		)
 
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
@@ -289,9 +289,6 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		'Material Transfer (WORK ORDER)', but the EIR injection created a
 		Repack SE with employee_ir set. The gate must be bypassed.
 		"""
-		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-			stock_reservation_entry_for_mwo,
-		)
 
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
@@ -409,11 +406,72 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 
 		doc.product_certification = None
 
-		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-			onsubmit,
-		)
-
 		onsubmit(doc, method=None)
 
 		# Must NOT create SRE — Repack not in config, no employee_ir
 		mock_new_doc.assert_not_called()
+
+
+def _bare_sre(**fields):
+	# Bypass Document.__init__ — we only exercise the override branch logic;
+	# no DB, no meta load, no controller hooks.
+	sre = CustomStockReservationEntry.__new__(CustomStockReservationEntry)
+	for k, v in fields.items():
+		setattr(sre, k, v)
+	sre.get = lambda key, default=None: getattr(sre, key, default)
+	return sre
+
+
+class TestCustomStockReservationEntry(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_skips_auto_reserve_for_mwo_mop_flow(self):
+		# Override only fires for Serial-and-Batch reservations — auto-pick is
+		# a no-op for Qty-based anyway, so the gate matches production code.
+		sre = _bare_sre(
+			manufacturing_work_order="MWO-1",
+			manufacturing_operation="MOP-1",
+			reservation_based_on="Serial and Batch",
+			sb_entries=[{"batch_no": "B-PICKED", "qty": 2.0, "warehouse": "WH-Dept"}],
+		)
+
+		with patch.object(
+			StockReservationEntry, "auto_reserve_serial_and_batch"
+		) as parent_mock:
+			sre.auto_reserve_serial_and_batch("Voucher")
+
+		parent_mock.assert_not_called()
+		self.assertEqual(len(sre.sb_entries), 1)
+		self.assertEqual(sre.sb_entries[0]["batch_no"], "B-PICKED")
+
+	def test_delegates_to_super_when_only_mwo_set(self):
+		sre = _bare_sre(manufacturing_work_order="MWO-1", manufacturing_operation=None)
+
+		with patch.object(
+			StockReservationEntry, "auto_reserve_serial_and_batch"
+		) as parent_mock:
+			sre.auto_reserve_serial_and_batch("Voucher")
+
+		parent_mock.assert_called_once_with("Voucher")
+
+	def test_delegates_to_super_when_only_mop_set(self):
+		sre = _bare_sre(manufacturing_work_order=None, manufacturing_operation="MOP-1")
+
+		with patch.object(
+			StockReservationEntry, "auto_reserve_serial_and_batch"
+		) as parent_mock:
+			sre.auto_reserve_serial_and_batch("Voucher")
+
+		parent_mock.assert_called_once_with("Voucher")
+
+	def test_delegates_to_super_for_normal_flow(self):
+		sre = _bare_sre(manufacturing_work_order=None, manufacturing_operation=None)
+
+		with patch.object(
+			StockReservationEntry, "auto_reserve_serial_and_batch"
+		) as parent_mock:
+			sre.auto_reserve_serial_and_batch(None)
+
+		parent_mock.assert_called_once_with(None)

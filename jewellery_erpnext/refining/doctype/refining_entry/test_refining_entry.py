@@ -5,7 +5,6 @@ from frappe.model.workflow import apply_workflow
 from frappe.tests import IntegrationTestCase
 from frappe.utils import today
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	create_scrap_wo_stock_entry,
 	get_make_scrap_entry_rows,
@@ -26,7 +25,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.test_seri
 class TestRefiningEntry(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.flt_pre = int(frappe.get_single_value("System Settings", "float_precision"))
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 		return

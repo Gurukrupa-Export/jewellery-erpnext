@@ -1931,8 +1931,8 @@ def create_test_data():
 		stock.enable_stock_reservation = 1
 		stock.auto_indent = 1
 		stock.reorder_email_notify = 1
-		stock.allow_negative_stock = 1
-		stock.allow_negative_stock_for_batch = 1
+		# stock.allow_negative_stock = 1
+		# stock.allow_negative_stock_for_batch = 1
 		stock.save()
 
 		itm_varient_setting = frappe.get_single("Item Variant Settings")
@@ -2674,9 +2674,11 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 
+	setup_data()
 	create_attribute_value()
 	create_item_attribute()
 	create_users_data()
+	frappe.db.commit()
 
 
 def setup_data():
@@ -3212,7 +3214,6 @@ def setup_data():
 			}
 		).insert(ignore_permissions=True)
 
-	frappe.db.commit()
 	create_warehouse_and_department()
 	print("Setup for the test data has been completed")
 
