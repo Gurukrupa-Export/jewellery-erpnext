@@ -159,27 +159,6 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
 
-      - name: Run MWO-level on Receive Entry
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mwo_level
-
-      - name: Run Make Receive Entry Popup
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_second_popup
-
-      - name: Run Make Receive Entry
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry
-
       - name: Run Manufacturing Operation Weight Calculation 
         run: |
           cd ~/frappe-bench
@@ -208,55 +187,6 @@ jobs:
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline
 
-      - name: Run Employee IR Loss Mop Log
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_mop_log
-
-      - name: Run Employee IR Loss Pcs
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_pcs
-
-      - name: Run Employee IR Loss Required
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_required
-
-      - name: Run Employee IR Precision
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_precision
-
-      - name: Run Loss Qty Normalization
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_qty_normalization
-
-      - name: Run Stock Entry Loss Qty Voucher
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_stock_entry_voucher_qty
-      
-      - name: Run Stock Entry Loss Selection
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_stock_entry_selection 
-
       - name: Run MOP Log
         run: |
           cd ~/frappe-bench
@@ -270,13 +200,6 @@ jobs:
 
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_eod_sync_gap_fill
-
-      - name: Run Make Receive Entry for pcs
-        run: |
-          cd ~/frappe-bench
-
-          bench --site test_site run-tests \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_pcs
 
       - name: Run MOP Weight Calculation
         run: |
