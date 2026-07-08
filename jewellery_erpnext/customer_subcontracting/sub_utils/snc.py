@@ -16,21 +16,40 @@ PURITY_PRIORITY = ("24KT", "22KT", "20KT", "18KT")
 @frappe.whitelist()
 def validate_button_visibility(mwo):
 	mwo = _get_mwo(mwo)
-	if mwo.docstatus != 1 or not mwo.manufacturing_order:
-		return False
+	# Already settled: nothing to do. This also short-circuits the heavier live
+	# Make Receive computation below for the common already-done case.
 	if cint(getattr(mwo, "snc_done", 0)):
 		return False
+	return _mwo_needs_settlement(mwo)
 
-	transfer = _get_original_material_transfer(mwo.name)
-	if not transfer:
+
+def _mwo_needs_settlement(mwo):
+	"""Live check: does this MWO's operation currently hold borrowed gold that must
+	be settled?
+
+	Reads the same live receivable rows ``create_snc`` actually settles
+	(``_get_receivable_gold_rows``), so it is correct no matter how many
+	``Material Transfer (WORK ORDER)`` documents have fed the operation. The old
+	implementation inspected only the *earliest* transfer, so a later transfer that
+	borrowed another customer's gold was never detected and the MWO stayed
+	"Not Need".
+
+	Does NOT consult ``snc_done`` -- that gate lives in ``validate_button_visibility``.
+	``stamp_snc_requirement`` needs the raw live position so a fresh borrow can
+	re-open a previously completed settlement.
+	"""
+	mwo = _get_mwo(mwo)
+	if (
+		mwo.docstatus != 1
+		or not mwo.manufacturing_order
+		or not mwo.manufacturing_operation
+	):
 		return False
-
-	rows = _get_original_gold_rows(transfer)
-	if not rows:
-		return False
-
 	pmo_is_customer_gold = _is_customer_gold(mwo)
-	return any(_row_needs_settlement(mwo, row, pmo_is_customer_gold) for row in rows)
+	return any(
+		_row_needs_settlement(mwo, row, pmo_is_customer_gold)
+		for row in _get_receivable_gold_rows(mwo)
+	)
 
 
 def _is_customer_gold(mwo):
@@ -108,9 +127,15 @@ def validate_snc_before_submit(doc, method=None):
 
 
 def stamp_snc_requirement(doc, method=None):
-	"""Stamp a working MWO's ``snc_requirement`` (Need / Not Need) when its original
-	gold ``Material Transfer (WORK ORDER)`` is submitted, using the same 5-case logic
-	that drives the Create SNC button visibility. Skips SNC's own settlement transfers.
+	"""Stamp a working MWO's ``snc_requirement`` (Need / Not Need) whenever a
+	``Material Transfer (WORK ORDER)`` feeding it is submitted, using the live
+	held-gold position (the same source ``create_snc`` settles). Skips SNC's own
+	settlement transfers.
+
+	A single MWO can be fed by several transfers from different customers, so the
+	requirement is recomputed from what the operation holds *now*, not from the
+	earliest transfer. When fresh borrowed gold arrives after a prior settlement,
+	this also resets ``snc_done`` so the MWO re-enters the Create SNC flow.
 	"""
 	if doc.stock_entry_type != "Material Transfer (WORK ORDER)" or not doc.get(
 		"manufacturing_work_order"
@@ -119,12 +144,13 @@ def stamp_snc_requirement(doc, method=None):
 	if (doc.get("custom_request_id") or "").startswith("SNC-"):
 		return
 
-	needs = validate_button_visibility(doc.manufacturing_work_order)
+	needs = _mwo_needs_settlement(doc.manufacturing_work_order)
+	values = {"snc_requirement": "Need" if needs else "Not Need"}
+	if needs:
+		# A previously completed settlement no longer covers this new borrow.
+		values["snc_done"] = 0
 	frappe.db.set_value(
-		"Manufacturing Work Order",
-		doc.manufacturing_work_order,
-		"snc_requirement",
-		"Need" if needs else "Not Need",
+		"Manufacturing Work Order", doc.manufacturing_work_order, values
 	)
 
 
@@ -421,10 +447,9 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 	the settlement transfer needs.
 
 	The Make Receive rows carry neither ``inventory_type``/``customer`` nor
-	``custom_pure_qty``: ownership is read off the Batch master (exactly like
-	``_get_original_gold_rows``) and pure qty is recomputed from item purity. The
-	``target_warehouse`` only labels the receive destination -- it does not affect
-	which rows or quantities are returned.
+	``custom_pure_qty``: ownership is read off the Batch master and pure qty is
+	recomputed from item purity. The ``target_warehouse`` only labels the receive
+	destination -- it does not affect which rows or quantities are returned.
 	"""
 	if not mwo.manufacturing_operation:
 		frappe.throw(_("Manufacturing Operation is required to trigger Make Receive."))
@@ -516,27 +541,6 @@ def _get_original_material_transfer(mwo_name):
 
 def _owner_inventory_type(owner_customer):
 	return "Customer Goods" if owner_customer else "Regular Stock"
-
-
-def _get_original_gold_rows(transfer):
-	"""Return all gold (M-G-) rows of the original Material Transfer, tagging each
-	with the borrowed batch's customer (``None`` for regular/company stock)."""
-	rows = []
-	for row in transfer.items:
-		if not row.batch_no or not (row.item_code or "").startswith("M-G-"):
-			continue
-		batch_customer = frappe.db.get_value("Batch", row.batch_no, "custom_customer")
-		rows.append(
-			{
-				"item_code": row.item_code,
-				"batch_no": row.batch_no,
-				"batch_customer": batch_customer,
-				"qty": flt(row.qty, 3),
-				"custom_pure_qty": flt(row.custom_pure_qty, 3),
-				"t_warehouse": row.t_warehouse,
-			}
-		)
-	return rows
 
 
 def _find_available_owner_batch(owner_customer, item_code, required_qty, company=None):
