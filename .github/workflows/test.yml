@@ -101,7 +101,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2]
 
     services:
       mariadb:
@@ -192,7 +192,7 @@ jobs:
           
           case ${{ matrix.group }} in
             1)
-              echo "Running Core Flow Tests..."
+              echo "Running Core Flow & Manufacturing Tests..."
               bench --site test_site run-tests --app jewellery_erpnext --doctype "Sketch Order Form"
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
@@ -200,9 +200,6 @@ jobs:
               bench --site test_site run-tests --app jewellery_erpnext --doctype "Department IR"
               bench --site test_site run-tests --app jewellery_erpnext --doctype "Employee IR"
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline
-              ;;
-            2)
-              echo "Running Manufacturing Tests..."
               bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Plan"
               bench --site test_site run-tests --app jewellery_erpnext --doctype "Parent Manufacturing Order"
               bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Work Order"
@@ -211,8 +208,8 @@ jobs:
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_mwo
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
               ;;
-            3)
-              echo "Running Inventory & Log Tests..."
+            2)
+              echo "Running Inventory, Log, Advanced & System Tests..."
               bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Log"
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
               bench --site test_site run-tests --app jewellery_erpnext --doctype "Serial Number Creator"
@@ -220,9 +217,6 @@ jobs:
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repack
               bench --site test_site run-tests --app jewellery_erpnext --doctype "Subcontracting Log"
-              ;;
-            4)
-              echo "Running Advanced & System Tests..."
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bounded_retry
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_lock_order
               bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serialize

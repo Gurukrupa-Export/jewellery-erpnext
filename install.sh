@@ -88,6 +88,12 @@ echo "::endgroup::"
 
 echo "::group::Install Apps"
 
+echo "Disabling gke_customization fixtures..."
+
+mv \
+    apps/gke_customization/gke_customization/fixtures \
+    apps/gke_customization/gke_customization/fixtures_disabled
+
 if [ "$SKIP_SITE_SETUP" = false ]; then
     bench --site test_site install-app erpnext
     bench --site test_site install-app hrms
@@ -99,14 +105,7 @@ if [ "$SKIP_SITE_SETUP" = false ]; then
     bench --site test_site install-app helpdesk
 
     bench --site test_site install-app jewellery_erpnext
-    echo "Disabling gke_customization fixtures..."
-
-    mv \
-    apps/gke_customization/gke_customization/fixtures \
-    apps/gke_customization/gke_customization/fixtures_disabled
-
     bench --site test_site install-app gke_customization
-
     bench --site test_site install-app gurukrupa_biometric
     bench --site test_site install-app gurukrupa_customizations
 else
