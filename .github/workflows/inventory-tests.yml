@@ -1,0 +1,96 @@
+name: Inventory Tests
+
+on:
+  pull_request:
+    branches:
+      - v16_develop_aerele
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MYSQL_ROOT_PASSWORD: travis
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ptravis"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:6
+        ports:
+          - 6379:6379
+
+    env:
+      DB: mariadb
+      TYPE: server
+
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      - name: Checkout Fixture Branch
+        uses: actions/checkout@v4
+        with:
+          repository: Gurukrupa-Export/jewellery-erpnext
+          ref: git_action_v16
+          path: fixture_source
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: "pip"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Cache uv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('install.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server mariadb-client redis-tools wkhtmltopdf build-essential libffi-dev libssl-dev
+
+      - name: Make Install Script Executable
+        run: chmod +x install.sh
+
+      - name: Install Bench and Apps
+        run: ./install.sh
+
+      - name: Migrate & Create Test Data
+        run: |
+          cd ~/frappe-bench
+          bench --site test_site migrate
+          bench --site test_site execute jewellery_erpnext.create_test_data.create_test_data
+
+      - name: Run Inventory Tests
+        run: |
+          cd ~/frappe-bench
+          echo "Running Inventory Tests..."
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Log"
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Serial Number Creator"
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_submit_guard
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repack
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Subcontracting Log"
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
