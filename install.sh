@@ -1,11 +1,16 @@
 #!/bin/bash
 set -e
 
+SKIP_SITE_SETUP=false
+if [ "$1" == "--skip-site-setup" ]; then
+    SKIP_SITE_SETUP=true
+fi
+
 cd ~ || exit
 
 echo "::group::Install Bench"
 pip install --upgrade pip
-pip install frappe-bench
+pip install uv frappe-bench
 echo "::endgroup::"
 
 echo "::group::Init Bench"
@@ -83,27 +88,29 @@ echo "::endgroup::"
 
 echo "::group::Install Apps"
 
-bench --site test_site install-app erpnext
-bench --site test_site install-app hrms
-bench --site test_site install-app payments
-bench --site test_site install-app india_compliance
-bench --site test_site install-app lending
-bench --site test_site install-app wiki
-bench --site test_site install-app telephony
-bench --site test_site install-app helpdesk
+if [ "$SKIP_SITE_SETUP" = false ]; then
+    bench --site test_site install-app erpnext
+    bench --site test_site install-app hrms
+    bench --site test_site install-app payments
+    bench --site test_site install-app india_compliance
+    bench --site test_site install-app lending
+    bench --site test_site install-app wiki
+    bench --site test_site install-app telephony
+    bench --site test_site install-app helpdesk
 
-bench --site test_site install-app jewellery_erpnext
-echo "Disabling gke_customization fixtures..."
+    bench --site test_site install-app jewellery_erpnext
+    echo "Disabling gke_customization fixtures..."
 
-mv \
-apps/gke_customization/gke_customization/fixtures \
-apps/gke_customization/gke_customization/fixtures_disabled
+    mv \
+    apps/gke_customization/gke_customization/fixtures \
+    apps/gke_customization/gke_customization/fixtures_disabled
 
-bench --site test_site install-app gke_customization
+    bench --site test_site install-app gke_customization
 
-echo "Restoring gke_customization fixtures..."
-
-bench --site test_site install-app gurukrupa_biometric
-bench --site test_site install-app gurukrupa_customizations
+    bench --site test_site install-app gurukrupa_biometric
+    bench --site test_site install-app gurukrupa_customizations
+else
+    echo "Skipping app installation on site (--skip-site-setup provided)"
+fi
 
 echo "::endgroup::"
