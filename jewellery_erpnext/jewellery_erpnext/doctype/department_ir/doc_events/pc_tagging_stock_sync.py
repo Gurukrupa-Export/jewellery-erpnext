@@ -293,7 +293,10 @@ def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates):
 	if not batch_no:
 		return candidates[0]
 	for wh in candidates:
-		if flt(_physical_batch_qty(item_code, batch_no, wh) or 0) + TOLERANCE >= requested_qty:
+		if (
+			flt(_physical_batch_qty(item_code, batch_no, wh) or 0) + TOLERANCE
+			>= requested_qty
+		):
 			return wh
 	return None
 
@@ -643,6 +646,30 @@ def _process_row(dept_ir_doc, row, scenario):
 
 	if not transfer_lines:
 		return
+
+	# Canonical lock order (F-002 fix): this flow previously took NO lock-ordering at
+	# all -- it cancelled SREs and updated Bins before its transfer SE took the naming
+	# series, an inverted order that races conformant SE submits into 1213 deadlock
+	# cycles. Pin the Stock Entry naming-series row (position 2) and then the transfer
+	# Bins (position 3) up front, before the SRE cancels below, so the whole flow is
+	# Series -> Bin -> SRE like the canonical order. Additive: preallocate_series is
+	# SELECT ... FOR UPDATE only (no increment), re-entrant with the real naming at the
+	# se.save()/submit() below; lock_bins takes only Bin locks the transfer would take
+	# anyway, just earlier and sorted. Placed after the no-op guard so an empty run
+	# never locks anything.
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_bins,
+		preallocate_series_for_docs,
+	)
+
+	_series_stub = frappe.new_doc("Stock Entry")
+	_series_stub.company = dept_ir_doc.company
+	_series_stub.stock_entry_type = "Material Transfer to Department"
+	preallocate_series_for_docs(_series_stub)
+	lock_bins(
+		[(l["item_code"], l["s_warehouse"]) for l in transfer_lines]
+		+ [(l["item_code"], l["t_warehouse"]) for l in transfer_lines]
+	)
 
 	# Step 1: Cancel old SREs (only when an SRE was found for the line)
 	cancelled_sre_names = set()

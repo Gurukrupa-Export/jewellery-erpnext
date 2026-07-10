@@ -6,7 +6,12 @@ from frappe.query_builder import DocType
 def get_warehouses(doc, warehouse_data):
 	if not warehouse_data.get(doc.department):
 		warehouse_data[doc.department] = frappe.get_value(
-			"Warehouse", {"disabled": 0, "department": doc.department, "warehouse_type": "Manufacturing"}
+			"Warehouse",
+			{
+				"disabled": 0,
+				"department": doc.department,
+				"warehouse_type": "Manufacturing",
+			},
 		)
 	department_wh = warehouse_data.get(doc.department)
 	if not department_wh:
@@ -27,7 +32,12 @@ def get_warehouses(doc, warehouse_data):
 	else:
 		if not warehouse_data.get(doc.employee):
 			warehouse_data[doc.employee] = frappe.get_value(
-				"Warehouse", {"disabled": 0, "employee": doc.employee, "warehouse_type": "Manufacturing"}
+				"Warehouse",
+				{
+					"disabled": 0,
+					"employee": doc.employee,
+					"warehouse_type": "Manufacturing",
+				},
 			)
 		employee_wh = warehouse_data.get(doc.employee)
 
@@ -53,7 +63,11 @@ def get_stock_data(manufacturing_operation, employee_wh, department):
 		.distinct()
 		.where(
 			(StockEntry.docstatus == 1)
-			& (StockEntryDetail.manufacturing_operation.like(f"%{manufacturing_operation}%"))
+			& (
+				StockEntryDetail.manufacturing_operation.like(
+					f"%{manufacturing_operation}%"
+				)
+			)
 			& (StockEntryDetail.t_warehouse == employee_wh)
 			& (StockEntryDetail.to_department == department)
 		)
@@ -69,7 +83,11 @@ def get_stock_data_new(manufacturing_operation, employee_wh, department):
 		frappe.qb.from_(StockEntry)
 		.inner_join(StockEntryDetail)
 		.on(StockEntryDetail.parent == StockEntry.name)
-		.select((StockEntry.name).as_("se_name"), (StockEntryDetail.item_code).as_("item_code"),(StockEntryDetail.manufacturing_operation).as_("manufacturing_operation"))
+		.select(
+			(StockEntry.name).as_("se_name"),
+			(StockEntryDetail.item_code).as_("item_code"),
+			(StockEntryDetail.manufacturing_operation).as_("manufacturing_operation"),
+		)
 		.where(
 			(StockEntry.docstatus == 1)
 			& (StockEntryDetail.manufacturing_operation == manufacturing_operation)

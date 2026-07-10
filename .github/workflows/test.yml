@@ -145,6 +145,13 @@ jobs:
           bench --site test_site run-tests \
             --app jewellery_erpnext --doctype "Manufacturing Work Order"
 
+      - name: Run Mould ID Propagation
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_mould_id_propagation
+
       - name: Run Manufacturing Operation
         run: |
           cd ~/frappe-bench
@@ -368,3 +375,10 @@ jobs:
 
           bench --site test_site run-tests \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_casting
+
+      - name: Run Warehouse Issue/Receive Material
+        run: |
+          cd ~/frappe-bench
+
+          bench --site test_site run-tests \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_warehouse_stock_entry

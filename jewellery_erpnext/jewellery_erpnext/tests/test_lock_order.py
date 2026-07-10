@@ -240,18 +240,139 @@ class TestPreallocateSeriesForDocs(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
+	@patch.object(lock_order, "document_naming_rule_for_doc", return_value=None)
 	@patch.object(lock_order, "preallocate_series")
 	@patch.object(lock_order, "series_prefix_for_doc")
-	def test_skips_none_docs_and_forwards_resolved_prefixes(
-		self, mock_prefix, mock_pre
-	):
+	def test_naming_series_path_when_no_dnr(self, mock_prefix, mock_pre, mock_dnr):
+		# No Document Naming Rule governs either doc -> both use their naming_series row.
 		mock_prefix.side_effect = ["MAT-STE-2026-", None]
 		d1 = frappe._dict(doctype="Stock Entry")
 		d2 = frappe._dict(doctype="Stock Ledger Entry")
 		lock_order.preallocate_series_for_docs(d1, None, d2)
-		# None *docs* are skipped before resolution; None *prefixes* are filtered downstream.
+		# None *docs* skipped before resolution; the DNR resolver runs for the 2 real docs.
+		self.assertEqual(mock_dnr.call_count, 2)
 		self.assertEqual(mock_prefix.call_count, 2)
-		mock_pre.assert_called_once_with(["MAT-STE-2026-", None])
+		# None (hash-named) prefixes are filtered out; only real prefixes are pinned.
+		mock_pre.assert_called_once_with(["MAT-STE-2026-"])
+
+	@patch.object(lock_order.frappe.db, "get_value")
+	@patch.object(lock_order, "document_naming_rule_for_doc")
+	@patch.object(lock_order, "preallocate_series")
+	@patch.object(lock_order, "series_prefix_for_doc")
+	def test_dnr_governed_doc_pins_counter_not_naming_series(
+		self, mock_prefix, mock_pre, mock_dnr, mock_getval
+	):
+		# When a Document Naming Rule governs the doc (F-003), pin its counter row
+		# FOR UPDATE and do NOT also lock the naming_series row it never increments.
+		mock_dnr.return_value = "KGJPL-RULE"
+		d = frappe._dict(doctype="Stock Entry")
+		lock_order.preallocate_series_for_docs(d)
+		mock_prefix.assert_not_called()  # naming_series path skipped for DNR-governed docs
+		mock_getval.assert_called_once_with(
+			"Document Naming Rule", "KGJPL-RULE", "counter", for_update=True
+		)
+		mock_pre.assert_called_once_with([])  # no naming_series prefixes to pin
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestSeriesStubs(IntegrationTestCase):
+	"""series_stubs must build one Stock Entry stub per DISTINCT type (order-
+	preserving dedupe), each carrying company + stock_entry_type, so
+	preallocate_series_for_docs can pin every nested SE type's naming counter."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_one_stub_per_distinct_type_with_fields(self):
+		stubs = lock_order.series_stubs("Test Co", "Repack", "Manufacture", "Repack")
+		self.assertEqual(len(stubs), 2)  # order-preserving dedupe
+		self.assertEqual([s.stock_entry_type for s in stubs], ["Repack", "Manufacture"])
+		for s in stubs:
+			self.assertEqual(s.doctype, "Stock Entry")
+			self.assertEqual(s.company, "Test Co")
+			# The new_doc default naming_series must survive so the tabSeries
+			# fallback stays resolvable for a company with no naming rules.
+			self.assertTrue(s.get("naming_series"))
+
+	def test_empty_types_gives_no_stubs(self):
+		self.assertEqual(lock_order.series_stubs("Test Co"), [])
+
+	@patch.object(lock_order.frappe.db, "get_value")
+	@patch.object(lock_order, "document_naming_rule_for_doc")
+	@patch.object(lock_order, "preallocate_series")
+	def test_stubs_pin_one_dnr_per_type(self, mock_pre, mock_dnr, mock_getval):
+		# Each per-type stub resolving a distinct rule -> each rule's counter is
+		# pinned exactly once, in sorted order.
+		mock_dnr.side_effect = ["RULE-B", "RULE-A"]
+		stubs = lock_order.series_stubs("Test Co", "Repack", "Manufacture")
+		lock_order.preallocate_series_for_docs(*stubs)
+		self.assertEqual(mock_dnr.call_count, 2)
+		pinned = [c.args[1] for c in mock_getval.call_args_list]
+		self.assertEqual(pinned, ["RULE-A", "RULE-B"])  # sorted acquisition order
+		mock_pre.assert_called_once_with([])
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestDocumentNamingRuleForDoc(IntegrationTestCase):
+	"""document_naming_rule_for_doc resolves the *active* rule frappe will actually use
+	(matched by conditions), returns None when none governs the doc, and never raises."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _rule(self, name, conditions):
+		return SimpleNamespace(
+			name=name, document_type="Stock Entry", conditions=conditions
+		)
+
+	def test_returns_first_matching_active_rule(self):
+		cond = SimpleNamespace(field="company", condition="=", value="KG GK")
+		rule = self._rule("KGJPL-RULE", [cond])
+		doc = frappe._dict(doctype="Stock Entry", company="KG GK")
+		with patch.object(
+			lock_order.frappe.cache_manager,
+			"get_doctype_map",
+			return_value=[SimpleNamespace(name="KGJPL-RULE")],
+		), patch.object(lock_order.frappe, "get_cached_doc", return_value=rule), patch(
+			"frappe.utils.evaluate_filters", return_value=True
+		):
+			self.assertEqual(lock_order.document_naming_rule_for_doc(doc), "KGJPL-RULE")
+
+	def test_skips_non_matching_conditions(self):
+		cond = SimpleNamespace(field="company", condition="=", value="KG GK")
+		rule = self._rule("KGJPL-RULE", [cond])
+		doc = frappe._dict(doctype="Stock Entry", company="Gurukrupa")
+		with patch.object(
+			lock_order.frappe.cache_manager,
+			"get_doctype_map",
+			return_value=[SimpleNamespace(name="KGJPL-RULE")],
+		), patch.object(lock_order.frappe, "get_cached_doc", return_value=rule), patch(
+			"frappe.utils.evaluate_filters", return_value=False
+		):
+			self.assertIsNone(lock_order.document_naming_rule_for_doc(doc))
+
+	def test_returns_none_when_no_rules(self):
+		doc = frappe._dict(doctype="Stock Entry")
+		with patch.object(
+			lock_order.frappe.cache_manager, "get_doctype_map", return_value=[]
+		):
+			self.assertIsNone(lock_order.document_naming_rule_for_doc(doc))
+
+	def test_swallows_errors_and_returns_none(self):
+		# Resolution must never break a submit -- any failure degrades to "no pin".
+		doc = frappe._dict(doctype="Stock Entry")
+		with patch.object(
+			lock_order.frappe.cache_manager,
+			"get_doctype_map",
+			side_effect=RuntimeError("boom"),
+		):
+			self.assertIsNone(lock_order.document_naming_rule_for_doc(doc))
 
 	def tearDown(self):
 		return super().tearDown()

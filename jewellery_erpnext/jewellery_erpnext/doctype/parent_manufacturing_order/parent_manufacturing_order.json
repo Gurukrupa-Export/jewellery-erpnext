@@ -23,7 +23,7 @@
   "abbr",
   "customer",
   "item_code",
-  "mould_no",
+  "mould_id",
   "serial_no",
   "rowname",
   "amended_from",
@@ -178,9 +178,9 @@
    "options": "Item"
   },
   {
-   "fieldname": "mould_no",
+   "fieldname": "mould_id",
    "fieldtype": "Data",
-   "label": "Mould No",
+   "label": "Mould List ID",
    "no_copy": 1,
    "read_only": 1
   },

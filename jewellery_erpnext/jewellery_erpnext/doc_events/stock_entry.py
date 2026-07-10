@@ -25,6 +25,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 )
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
 	lock_bins_for_rows,
+	lock_items,
 	preallocate_series_for_docs,
 	sorted_stock_rows,
 )
@@ -92,6 +93,7 @@ def before_validate(self, method):
 		]:
 			if not pure_item_purity:
 				if self.stock_entry_type == "Material Transfer (MAIN SLIP)":
+					manufacturer = None
 					if self.to_main_slip:
 						manufacturer = frappe.db.get_value(
 							"Main Slip", self.to_main_slip, "manufacturer"
@@ -100,6 +102,10 @@ def before_validate(self, method):
 						manufacturer = frappe.db.get_value(
 							"Main Slip", self.main_slip, "manufacturer"
 						)
+					# Fallback so a MAIN SLIP SE with no Main Slip link (e.g. the Tree Number Issue
+					# button) resolves a manufacturer instead of raising UnboundLocalError.
+					if not manufacturer:
+						manufacturer = self.manufacturer or MANUFACTURER
 				elif self.manufacturing_order:
 					manufacturer = frappe.db.get_value(
 						"Parent Manufacturing Order",
@@ -598,11 +604,31 @@ def prelock_bins(self, method=None):
 	Entries (one place covers MR / repack / metal-conversion / main-slip injection / EOD /
 	loss / SNC etc.). Additive — ERPNext locks these same Bins during posting anyway; this
 	only fixes the acquisition order."""
+	# EXPERIMENTAL (F-004, opt-in, OFF by default): canonical position 0 -- serialize
+	# same-item submits so ERPNext core's cross-voucher repost locks can't deadlock. Broadest
+	# scope, so acquired FIRST to avoid inverting against Series/Bin. Real throughput cost;
+	# enable per site with site_config "serialize_stock_submit_by_item": 1 and A/B measure.
+	if frappe.conf.get("serialize_stock_submit_by_item"):
+		lock_items([r.item_code for r in self.items])
 	# Canonical position 2: pin this SE's naming-series counter (tabSeries) FOR UPDATE
 	# *before* any Bin lock, so a transaction can never hold a Bin while waiting on the
 	# series row another transaction holds while waiting on that Bin. Re-entrant with the
 	# getseries() call already made at insert (same row, same txn) — purely additive.
 	preallocate_series_for_docs(self)
+	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
+
+
+def prelock_bins_on_cancel(self, method=None):
+	"""Canonical Bin ordering on the CANCEL path (F-002 / F-012 fix).
+
+	ERPNext's StockEntry.on_cancel reverses SLEs and re-acquires the same (item,
+	warehouse) Bin rows, but in lazy row-iteration order -- no canonical sort -- so a
+	cancel racing a concurrent conformant submit could take Bins in the opposite order
+	and deadlock (1213). before_cancel previously carried only the EOD-lock validator,
+	so nothing pre-ordered the cancel's Bins. Pin them up front, sorted, matching every
+	other flow. No series pre-lock: a cancel mints no new document name. Additive --
+	these are the same Bins core's update_stock_ledger() takes anyway, just earlier and
+	in canonical order; lock_bins_for_rows skips any (item, warehouse) with no Bin."""
 	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
 
 

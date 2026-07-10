@@ -20,9 +20,12 @@ create any parallel stock entries.
 Grouping rules (confirmed with user):
   * One Tree == exactly the MWO set in one Casting Issue EIR.
   * All MWOs on one tree must share metal type / touch / purity / colour.
-  * An MWO can belong to only one *active* (not yet fully Received) tree. To redo
-    a tree you cancel its issue EIR — which releases all its MWOs — and re-issue
-    every work order together. A single MWO cannot be issued onto an existing tree.
+  * A casting group is re-issued all-or-nothing: an Issue EIR that touches a tree's
+    ``casting_group`` must carry EVERY work order cast together. This is enforced at
+    submit by ``validate_casting_group_complete`` (which offers the "Load Full Casting
+    Tree" helper). A whole-group re-issue is allowed directly — regardless of the prior
+    tree's received state — so there is no cancel-first requirement; a partial re-issue
+    is what gets rejected (naming the missing members).
 """
 
 import frappe
@@ -32,6 +35,22 @@ from frappe.utils import flt
 from jewellery_erpnext.utils import get_item_from_attribute
 
 METAL_ATTRS = ("metal_type", "metal_touch", "metal_purity", "metal_colour")
+
+
+def _se_precision():
+	"""Qty precision for the tree Material Details ledger — pinned to Stock Entry Detail.transfer_qty (3)."""
+	return frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+
+
+def _pending_eps():
+	"""Tolerance for 'fully received' comparisons: half the smallest representable qty (0.0005 at prec 3).
+
+	Single source of truth for the receive/loss tolerance used by the over-receive caps AND by
+	``_tree_status``. Without it, ``received + loss == issued`` lands ``pending_qty`` on
+	floating-point dust (e.g. ``3 - 2.9 - 0.1`` ≈ 8e-17, a hair ABOVE zero), so a strict
+	``pending_qty <= 0`` would never flip the tree to "Received".
+	"""
+	return (10 ** -_se_precision()) / 2
 
 
 def is_casting_eir(eir):
@@ -96,7 +115,15 @@ def casting_issue_qty_by_item(rows):
 # Validation
 # ---------------------------------------------------------------------------
 def validate_casting_tree(eir):
-	"""Same-metal enforcement + atomic-issue guard for casting (tree) EIRs."""
+	"""Same-metal enforcement for casting (tree) EIRs.
+
+	All work orders cast on one tree must share metal type / touch / purity / colour. The
+	all-or-nothing *re-issue* rule (a casting group must move together) is NOT enforced here — it is
+	a submit-time concern owned by ``validate_casting_group_complete``. Keeping it out of ``validate``
+	lets a whole-group re-issue go through directly (regardless of the prior tree's received state)
+	and keeps partial drafts saveable while the operator assembles rows; only a *partial* re-issue is
+	rejected, at submit, naming the missing members.
+	"""
 	if not is_casting_eir(eir):
 		return
 
@@ -104,7 +131,7 @@ def validate_casting_tree(eir):
 	if not rows:
 		return
 
-	# 1) All MWOs on one tree must share metal type / touch / purity / colour.
+	# All MWOs on one tree must share metal type / touch / purity / colour.
 	_ref_row, ref_mwo = rows[0]
 	for _row, mwo in rows[1:]:
 		for attr in METAL_ATTRS:
@@ -123,22 +150,172 @@ def validate_casting_tree(eir):
 					)
 				)
 
-	# 2) Atomic issue: an MWO may belong to only one active (non-Received) tree.
-	if eir.type == "Issue":
-		for _row, mwo in rows:
-			existing_tree = frappe.db.get_value(
-				"Manufacturing Work Order", mwo.name, "tree_number"
-			)
-			if not existing_tree:
+
+def _issue_eligibility_filters(department, subcontracting):
+	"""MOP filter dict for an Issue — mirrors employee_ir.js scan_mwo / get_operations.
+
+	Uses ``frappe.get_all`` filter semantics (ifnull-aware) on purpose so this matches the
+	client exactly and the "Load Full Casting Tree" button can never disagree with the
+	completeness validator (both go through this one filter).
+	"""
+	filters = {
+		"department": department,
+		"operation": ["is", "not set"],
+		"status": ["in", ["Not Started"]],
+		"department_ir_status": ["not in", ["In-Transit", "Revert"]],
+	}
+	if subcontracting == "Yes":
+		filters["employee"] = ["is", "not set"]
+	else:
+		filters["subcontractor"] = ["is", "not set"]
+	return filters
+
+
+def eligible_casting_group_mops(department, subcontracting, groups):
+	"""Issue-eligible MOP rows for every MWO sharing one of ``groups`` (its casting tree)."""
+	groups = [g for g in (groups or []) if g]
+	if not groups:
+		return []
+	mwos = frappe.get_all(
+		"Manufacturing Work Order", {"casting_group": ["in", groups]}, pluck="name"
+	)
+	if not mwos:
+		return []
+	filters = _issue_eligibility_filters(department, subcontracting)
+	filters["manufacturing_work_order"] = ["in", mwos]
+	return frappe.get_all(
+		"Manufacturing Operation",
+		filters,
+		[
+			"name as manufacturing_operation",
+			"manufacturing_work_order",
+			"gross_wt",
+			"diamond_wt",
+			"diamond_pcs",
+			"gemstone_wt",
+			"gemstone_pcs",
+		],
+	)
+
+
+def validate_casting_group_complete(eir):
+	"""No partial re-issue: an Issue touching a casting group must carry the WHOLE tree.
+
+	Runs on submit only (wired from ``EmployeeIR.before_submit``) so partial drafts can still be
+	saved while the operator scans / assembles rows. On the very first issue the MWOs have neither
+	``casting_group`` nor ``tree_number`` yet (both are stamped by ``create_tree_on_issue`` on
+	submit), so the check is a no-op there and only bites on a re-issue.
+
+	This is now the SOLE enforcer of the all-or-nothing re-issue rule (``validate_casting_tree`` no
+	longer blocks in ``validate``), so the group key falls back to ``tree_number`` for the
+	(currently non-existent, but possible after a manual edit / import) case of a tree'd MWO that
+	lacks a ``casting_group`` — the rule must never silently no-op for a work order that is on a tree.
+	"""
+	if eir.type != "Issue" or not is_casting_eir(eir):
+		return
+
+	rows = _mwo_rows(eir)
+	if not rows:
+		return
+
+	groups = {
+		(mwo.get("casting_group") or mwo.get("tree_number"))
+		for _row, mwo in rows
+		if (mwo.get("casting_group") or mwo.get("tree_number"))
+	}
+	if not groups:
+		return
+
+	group_list = list(groups)
+	# Members share either the casting_group (normal) or the tree_number (fallback); union both so a
+	# group keyed by tree_number still resolves its full member set.
+	required = set(
+		frappe.get_all(
+			"Manufacturing Work Order",
+			{"casting_group": ["in", group_list]},
+			pluck="name",
+		)
+	) | set(
+		frappe.get_all(
+			"Manufacturing Work Order",
+			{"tree_number": ["in", group_list]},
+			pluck="name",
+		)
+	)
+	present = {
+		row.manufacturing_work_order
+		for row in eir.employee_ir_operations
+		if row.manufacturing_work_order
+	}
+	missing = required - present
+	if not missing:
+		return
+
+	# Split the missing members: those still at casting can be pulled in with the button; those
+	# that have advanced past casting must be reversed back before this tree can be re-issued.
+	addable = {
+		m["manufacturing_work_order"]
+		for m in eligible_casting_group_mops(eir.department, eir.subcontracting, groups)
+	} & missing
+	blocked = missing - addable
+
+	parts = [
+		_(
+			"This casting tree must be re-issued in full — every work order cast together has to move together."
+		)
+	]
+	if addable:
+		parts.append(
+			_(
+				"Still at casting (use <b>Load Full Casting Tree</b> to add): <b>{0}</b>."
+			).format(", ".join(sorted(addable)))
+		)
+	if blocked:
+		parts.append(
+			_(
+				"Already past casting — reverse these back to casting first: <b>{0}</b>."
+			).format(", ".join(sorted(blocked)))
+		)
+	frappe.throw(" ".join(parts), title=_("Incomplete casting-tree re-issue"))
+
+
+def validate_casting_receive(eir):
+	"""Block a casting Receive EIR from over-receiving vs each Tree Number's available (issued) qty.
+
+	Mirrors the tree-button ``(recv + loss) <= pending`` cap (tree_stock_entry.receive_material).
+	Runs at ``validate()`` — BEFORE ``update_tree_on_receive`` applies the ledger on submit — so each
+	tree's current ``pending_qty`` does NOT yet include this EIR's contribution; therefore
+	``contribution <= pending`` is the correct comparison. Only Receive-type casting EIRs are guarded
+	(the cancel path never calls validate, so reversals are unaffected). A never-issued tree has
+	``pending_qty = 0``, so any receive throws — enforcing "Issue Material first, then receive".
+	"""
+	if eir.type != "Receive" or not is_casting_eir(eir):
+		return
+
+	trees = _aggregate_receive_by_tree(eir, sign=1)
+	if not trees:
+		return
+
+	prec = frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+	eps = (10**-prec) / 2
+
+	for tree_name, items in trees.items():
+		tree = frappe.get_doc("Tree Number", tree_name)
+		pending_by_item = {
+			md.item_code: flt(md.pending_qty) for md in tree.material_details
+		}
+		for item, delta in items.items():
+			contribution = flt(delta["recv"]) + flt(delta["loss"])
+			if contribution <= eps:
 				continue
-			status = frappe.db.get_value("Tree Number", existing_tree, "status")
-			if status and status != "Received":
+			pending = pending_by_item.get(item, 0.0)
+			if contribution - pending > eps:
 				frappe.throw(
 					_(
-						"MWO <b>{0}</b> is already issued to tree <b>{1}</b> ({2}). "
-						"Cancel that tree's issue Employee IR and re-issue all work orders "
-						"together — a single work order cannot be issued onto an existing tree."
-					).format(mwo.name, existing_tree, status)
+						"Tree {0}, Item {1}: this receive books {2} (receive + loss) but only {3} is "
+						"pending (issued and not yet received). Reduce the received/loss weight, or "
+						"issue more onto the tree first."
+					).format(tree_name, item, contribution, pending)
 				)
 
 
@@ -164,6 +341,20 @@ def create_tree_on_issue(eir):
 	tree.employee = eir.employee
 	tree.employee_ir = eir.name
 	tree.status = "Issued"
+	# Pre-fill the Issue source with the department Raw Material warehouse so it is visible when the
+	# operator opens the tree, instead of only being lazily back-filled on first Issue. Best-effort /
+	# non-throwing (a missing dept RM warehouse must not block the casting Issue) — the strict
+	# resolver runs later on the Issue-button path (tree_stock_entry._resolve_source_warehouse).
+	tree.source_warehouse = frappe.db.get_value(
+		"Warehouse",
+		{
+			"department": eir.department,
+			"warehouse_type": "Raw Material",
+			"disabled": 0,
+			"is_group": 0,
+		},
+		"name",
+	)
 	for attr in METAL_ATTRS:
 		tree.set(attr, ref_mwo.get(attr))
 
@@ -185,10 +376,26 @@ def create_tree_on_issue(eir):
 	tree.flags.ignore_permissions = True
 	tree.insert()
 
-	for _row, mwo in rows:
-		frappe.db.set_value(
-			"Manufacturing Work Order", mwo.name, "tree_number", tree.name
+	# One stable, opaque group id for everything cast together. Reuse an existing group if any
+	# row already carries one (a re-issue); otherwise the fresh tree's name becomes the group.
+	# Coalescing onto a single id — rather than only stamping empty rows — keeps a physically
+	# single tree from carrying two group ids when a re-issued MWO is cast beside a brand-new one.
+	group_id = (
+		next(
+			(
+				mwo.get("casting_group")
+				for _row, mwo in rows
+				if mwo.get("casting_group")
+			),
+			None,
 		)
+		or tree.name
+	)
+	for _row, mwo in rows:
+		updates = {"tree_number": tree.name}
+		if mwo.get("casting_group") != group_id:
+			updates["casting_group"] = group_id
+		frappe.db.set_value("Manufacturing Work Order", mwo.name, updates)
 
 	return tree.name
 
@@ -205,7 +412,11 @@ def unlink_tree_on_issue_cancel(eir):
 		has_activity = any(
 			flt(r.receive_qty) or flt(r.loss_qty) for r in tree.material_details
 		)
-		if has_activity or tree.status in ("Partially Received", "Received"):
+		if has_activity or tree.status in (
+			"Partially Received",
+			"Received",
+			"Submitted",
+		):
 			frappe.throw(
 				_(
 					"Cannot cancel the issue for tree <b>{0}</b>: material has already "
@@ -241,15 +452,14 @@ def unlink_tree_on_issue_cancel(eir):
 # ---------------------------------------------------------------------------
 # Receive
 # ---------------------------------------------------------------------------
-def update_tree_on_receive(eir, cancel=False):
-	"""Add (or reverse) received / loss metal on each linked tree + set status."""
-	if not is_casting_eir(eir):
-		return
+def _aggregate_receive_by_tree(eir, sign=1):
+	"""{tree_name: {metal_item: {"recv": qty, "loss": qty}}} for this EIR's receive.
 
-	sign = -1 if cancel else 1
+	Groups each operation row's ``received_gross_wt`` and booked metal loss (``_mwo_loss_dict``) by the
+	MWO's tree + metal item. ``sign=-1`` reverses the contribution (cancel path). Shared by
+	``validate_casting_receive`` (pre-submit guard) and ``update_tree_on_receive`` (ledger apply).
+	"""
 	mwo_loss = _mwo_loss_dict(eir)
-
-	# Group receive contributions: tree -> item -> {recv, loss}
 	trees = {}
 	for row in eir.employee_ir_operations:
 		if not row.manufacturing_work_order:
@@ -267,13 +477,46 @@ def update_tree_on_receive(eir, cancel=False):
 		agg = bucket.setdefault(item, {"recv": 0, "loss": 0})
 		agg["recv"] += sign * flt(row.received_gross_wt)
 		agg["loss"] += sign * flt(mwo_loss.get(row.manufacturing_work_order, 0))
+	return trees
+
+
+def update_tree_on_receive(eir, cancel=False):
+	"""Add (or reverse) received / loss metal on each linked tree + set status."""
+	if not is_casting_eir(eir):
+		return
+
+	sign = -1 if cancel else 1
+	trees = _aggregate_receive_by_tree(eir, sign=sign)
+
+	eps = _pending_eps()
 
 	for tree_name, items in trees.items():
 		tree = frappe.get_doc("Tree Number", tree_name)
+		# A manually-submitted (locked) tree accepts no further receive/cancel — the manual
+		# Submit is terminal, so a casting EIR receive must not silently reopen it.
+		if tree.status == "Submitted":
+			frappe.throw(
+				_(
+					"Tree {0} is submitted (locked); cannot book receive/loss against it. "
+					"Reopen the tree first if this is intended."
+				).format(tree_name)
+			)
 		for md in tree.material_details:
 			delta = items.get(md.item_code)
 			if not delta:
 				continue
+			# Defense-in-depth (forward path only): re-check against the freshly-loaded pending so a
+			# concurrent Receive EIR that passed validate() independently cannot drive pending
+			# negative. Cancel (sign=-1) is skipped — its deltas are negative and must reverse freely.
+			if not cancel:
+				contribution = flt(delta["recv"]) + flt(delta["loss"])
+				if contribution - flt(md.pending_qty) > eps:
+					frappe.throw(
+						_(
+							"Tree {0}, Item {1}: this receive books {2} (receive + loss) but only {3} "
+							"is pending. Reduce the received/loss weight, or issue more onto the tree first."
+						).format(tree_name, md.item_code, contribution, md.pending_qty)
+					)
 			md.receive_qty = flt(md.receive_qty) + delta["recv"]
 			md.loss_qty = flt(md.loss_qty) + delta["loss"]
 			md.pending_qty = flt(md.issue_qty) - flt(md.receive_qty) - flt(md.loss_qty)
@@ -290,5 +533,14 @@ def _tree_status(tree):
 	)
 	if not received:
 		return "Issued"
-	fully = all(flt(md.pending_qty) <= 0 for md in tree.material_details)
+	# "Received" requires EVERY row to be both issued (issue_qty > 0) and consumed
+	# (pending_qty <= eps). A never-issued seed row (issue_qty = 0 -> pending_qty = 0) must NOT
+	# flip a multi-item tree to Received while that item still needs issuing. The eps tolerance
+	# (same one the over-receive cap uses) makes "received + loss == issued" read as fully
+	# received instead of getting stuck on floating-point dust just above zero.
+	eps = _pending_eps()
+	fully = all(
+		flt(md.issue_qty) > 0 and flt(md.pending_qty) <= eps
+		for md in tree.material_details
+	)
 	return "Received" if fully else "Partially Received"

@@ -44,7 +44,8 @@
    "fieldname": "item_code",
    "fieldtype": "Link",
    "label": "Item Code",
-   "options": "Item"
+   "options": "Item",
+   "unique": 1
   },
   {
    "fieldname": "old_stylebio",
@@ -77,7 +78,8 @@
   {
    "fieldname": "mould_no",
    "fieldtype": "Data",
-   "label": "Mould No"
+   "label": "Mould No",
+   "read_only": 1
   },
   {
    "fetch_from": "mould_warehouse.code",

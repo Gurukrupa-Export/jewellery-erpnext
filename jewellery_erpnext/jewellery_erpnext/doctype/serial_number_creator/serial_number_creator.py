@@ -345,9 +345,16 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		from jewellery_erpnext.jewellery_erpnext.lock_order import (
 			lock_bins,
 			preallocate_series_for_docs,
+			series_stubs,
 		)
 
-		preallocate_series_for_docs(frappe.new_doc("Stock Entry"))
+		# Pin the naming counter of each nested SE type this cascade mints (the loss
+		# Repack SEs and the Manufacture SE) -- per-(company x type) Document Naming
+		# Rule counter post-reshard, or the tabSeries fallback. A blank stub matches
+		# no rule and would pin the wrong (shared MAT-STE-) row instead.
+		preallocate_series_for_docs(
+			*series_stubs(self.company, "Repack", "Manufacture")
+		)
 		lock_bins([(r["item_code"], r.get("s_warehouse")) for r in row_data])
 
 		bins_to_update = set()
@@ -654,7 +661,11 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 							se_loss.insert(ignore_permissions=True)
 							se_loss.submit()
 
-				frappe.clear_cache()
+				# (perf/lock-hold) Removed a per-row global frappe.clear_cache() here: it
+				# wiped the entire cache on every source row, forcing cold re-reads for the
+				# rest of the held-lock window. The only per-row staleness that matters (Bin
+				# qty after SRE consume) is already handled by the scoped
+				# clear_document_cache("Bin") at the consume step above.
 
 		if bins_to_update:
 			from erpnext.stock.utils import get_or_make_bin

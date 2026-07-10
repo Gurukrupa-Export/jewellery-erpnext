@@ -1,5 +1,10 @@
 import frappe
+from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
+	get_auto_batch_nos,
+	get_qty_based_available_batches,
+)
 from frappe.utils import flt, nowtime
+
 
 class BatchValuationLedger:
 	"""
@@ -7,14 +12,29 @@ class BatchValuationLedger:
 	- Fetches and stores historical batch data for efficient reuse.
 	- Supports in-flight updates during stock transactions.
 	"""
+
 	def __init__(self):
 		self._ledger_data = None
 
-	def initialize(self, sles: list, creation=None, exclude_voucher_no: str = "", exclude_voucher_detail_nos: set = None):
+	def initialize(
+		self,
+		sles: list,
+		creation=None,
+		exclude_voucher_no: str = "",
+		exclude_voucher_detail_nos: set = None,
+	):
 		"""Initialize ledger with historical batch data for given SLEs."""
-		self._ledger_data = self.get_historical_batch_ledger_data(sles, creation, exclude_voucher_no, exclude_voucher_detail_nos)
+		self._ledger_data = self.get_historical_batch_ledger_data(
+			sles, creation, exclude_voucher_no, exclude_voucher_detail_nos
+		)
 
-	def get_historical_batch_ledger_data(self, sles: list, creation: str=None, exclude_voucher_no: str = "", exclude_voucher_detail_nos: set = None):
+	def get_historical_batch_ledger_data(
+		self,
+		sles: list,
+		creation: str = None,
+		exclude_voucher_no: str = "",
+		exclude_voucher_detail_nos: set = None,
+	):
 		"""Fetch historical batch data for outward SLEs with precise exclusion and temporal logic."""
 		outward_sles = [sle for sle in sles if flt(sle.get("actual_qty", 0)) < 0]
 		if not outward_sles:
@@ -38,7 +58,7 @@ class BatchValuationLedger:
 			bundle_batches = frappe.get_all(
 				"Serial and Batch Entry",
 				filters={"parent": ["in", list(serial_bundle_ids)]},
-				fields=["batch_no"]
+				fields=["batch_no"],
 			)
 			batch_nos.update(b.batch_no for b in bundle_batches if b.batch_no)
 
@@ -48,7 +68,7 @@ class BatchValuationLedger:
 		batchwise_batches = frappe.get_all(
 			"Batch",
 			filters={"name": ["in", list(batch_nos)], "use_batchwise_valuation": 1},
-			fields=["name"]
+			fields=["name"],
 		)
 		batchwise_batch_nos = [b.name for b in batchwise_batches]
 
@@ -64,7 +84,9 @@ class BatchValuationLedger:
 
 		if exclude_voucher_detail_nos:
 			params["exclude_voucher_detail_nos"] = tuple(exclude_voucher_detail_nos)
-			voucher_exclusion_clause = "AND sb.voucher_detail_no NOT IN %(exclude_voucher_detail_nos)s"
+			voucher_exclusion_clause = (
+				"AND sb.voucher_detail_no NOT IN %(exclude_voucher_detail_nos)s"
+			)
 		else:
 			voucher_exclusion_clause = "AND sb.voucher_no <> %(exclude_voucher_no)s"
 
@@ -75,13 +97,19 @@ class BatchValuationLedger:
 			params["posting_time"] = posting_time
 
 			timestamp_conditions.append("sb.posting_date < %(posting_date)s")
-			timestamp_conditions.append("(sb.posting_date = %(posting_date)s AND sb.posting_time < %(posting_time)s)")
+			timestamp_conditions.append(
+				"(sb.posting_date = %(posting_date)s AND sb.posting_time < %(posting_time)s)"
+			)
 
 			if creation:
 				params["creation"] = creation
-				timestamp_conditions.append("(sb.posting_date = %(posting_date)s AND sb.posting_time = %(posting_time)s AND sb.creation < %(creation)s)")
+				timestamp_conditions.append(
+					"(sb.posting_date = %(posting_date)s AND sb.posting_time = %(posting_time)s AND sb.creation < %(creation)s)"
+				)
 
-		final_timestamp_filter = f"AND ({' OR '.join(timestamp_conditions)})" if timestamp_conditions else ""
+		final_timestamp_filter = (
+			f"AND ({' OR '.join(timestamp_conditions)})" if timestamp_conditions else ""
+		)
 
 		sql = f"""
 			SELECT
@@ -110,7 +138,7 @@ class BatchValuationLedger:
 		return {
 			(row.warehouse, row.item_code, row.batch_no): {
 				"incoming_rate": flt(row.incoming_rate),
-				"qty": flt(row.qty)
+				"qty": flt(row.qty),
 			}
 			for row in results
 		}
@@ -123,8 +151,12 @@ class BatchValuationLedger:
 		for entry in bundle_entries:
 			key = (sle.warehouse, sle.item_code, entry.batch_no)
 			self._ledger_data[key] = {
-				"incoming_rate": flt(self._ledger_data.get(key, {}).get("incoming_rate", 0.0)) + flt(entry.stock_value_difference),
-				"qty": flt(self._ledger_data.get(key, {}).get("qty", 0.0)) + flt(entry.qty)
+				"incoming_rate": flt(
+					self._ledger_data.get(key, {}).get("incoming_rate", 0.0)
+				)
+				+ flt(entry.stock_value_difference),
+				"qty": flt(self._ledger_data.get(key, {}).get("qty", 0.0))
+				+ flt(entry.qty),
 			}
 
 	def get_batch_data(self, warehouse, item_code, batch_no):
@@ -136,3 +168,81 @@ class BatchValuationLedger:
 	def clear(self):
 		"""Reset ledger data."""
 		self._ledger_data = None
+
+
+def get_authoritative_batch_qty(item_code, warehouse, batch_nos):
+	"""Per-batch balance from the SAME source ERPNext's submit-time negative-batch guard
+	uses (``BatchNoValuation.get_batch_stock_before_date``): ``SUM(qty)`` over submitted
+	``Serial and Batch Entry`` rows.
+
+	Unlike ``erpnext ... get_available_batches`` (which INNER JOINs ``Stock Ledger Entry``
+	and so silently ignores an ORPHANED bundle that has no SLE), this counts every
+	``docstatus = 1`` bundle entry, so an orphan Outward bundle correctly lowers the
+	balance. Returns ``{batch_no: qty}``; batches with no submitted entries are absent
+	(callers treat a missing batch as 0)."""
+	if not item_code or not warehouse or not batch_nos:
+		return {}
+	rows = frappe.db.sql(
+		"""
+		SELECT batch_no, SUM(qty) AS qty
+		FROM `tabSerial and Batch Entry`
+		WHERE docstatus = 1
+		  AND item_code = %(item_code)s
+		  AND warehouse = %(warehouse)s
+		  AND batch_no IN %(batch_nos)s
+		  AND type_of_transaction IN ('Inward', 'Outward')
+		  AND voucher_type != 'Pick List'
+		GROUP BY batch_no
+		""",
+		{
+			"item_code": item_code,
+			"warehouse": warehouse,
+			"batch_nos": tuple(batch_nos),
+		},
+		as_dict=True,
+	)
+	return {r.batch_no: flt(r.qty) for r in rows}
+
+
+def capped_auto_batch_nos(kwargs):
+	"""Drop-in for erpnext ``get_auto_batch_nos`` that never offers more of a batch than
+	its authoritative ``Serial and Batch Entry`` balance.
+
+	``qty`` is intentionally stripped before the availability query so a phantom
+	(orphan-inflated) batch cannot FIFO-truncate real batches out of the result; each
+	batch is then capped at ``min(reported, authoritative)``, batches whose authoritative
+	balance is <= 0 are dropped, and finally ``get_auto_batch_nos``' own qty-based FIFO
+	truncation is re-applied. For clean data ``authoritative == reported`` for every
+	batch, so the output equals ``get_auto_batch_nos(kwargs)`` (no behaviour change)."""
+	if not isinstance(kwargs, dict):
+		kwargs = frappe._dict(kwargs)
+	requested_qty = flt(kwargs.get("qty"))
+
+	base_kwargs = frappe._dict(kwargs)
+	base_kwargs.pop(
+		"qty", None
+	)  # fetch ALL batches; don't let phantom stock truncate real ones
+	batches = get_auto_batch_nos(base_kwargs) or []
+
+	item_code = kwargs.get("item_code")
+	warehouse = kwargs.get("warehouse")
+	# Only cap for a single (item, warehouse); degenerate inputs fall back to the raw result.
+	if batches and item_code and warehouse and not isinstance(warehouse, (list, tuple)):
+		auth = get_authoritative_batch_qty(
+			item_code, warehouse, [b.batch_no for b in batches]
+		)
+		cleaned = []
+		for b in batches:
+			cap = flt(auth.get(b.batch_no, 0.0))
+			if cap <= 0:
+				continue  # phantom / fully-consumed batch — skip
+			if flt(b.qty) > cap:
+				b.qty = cap
+			if flt(b.qty) <= 0:
+				continue
+			cleaned.append(b)
+		batches = cleaned
+
+	if requested_qty:
+		return get_qty_based_available_batches(batches, requested_qty)
+	return batches
