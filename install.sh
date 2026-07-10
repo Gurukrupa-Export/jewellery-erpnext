@@ -1,11 +1,6 @@
 #!/bin/bash
 set -e
 
-SKIP_SITE_SETUP=false
-if [ "$1" == "--skip-site-setup" ]; then
-    SKIP_SITE_SETUP=true
-fi
-
 cd ~ || exit
 
 echo "::group::Install Bench"
@@ -94,22 +89,18 @@ mv \
     apps/gke_customization/gke_customization/fixtures \
     apps/gke_customization/gke_customization/fixtures_disabled
 
-if [ "$SKIP_SITE_SETUP" = false ]; then
-    bench --site test_site install-app erpnext
-    bench --site test_site install-app hrms
-    bench --site test_site install-app payments
-    bench --site test_site install-app india_compliance
-    bench --site test_site install-app lending
-    bench --site test_site install-app wiki
-    bench --site test_site install-app telephony
-    bench --site test_site install-app helpdesk
+bench --site test_site install-app erpnext
+bench --site test_site install-app hrms
+bench --site test_site install-app payments
+bench --site test_site install-app india_compliance
+bench --site test_site install-app lending
+bench --site test_site install-app wiki
+bench --site test_site install-app telephony
+bench --site test_site install-app helpdesk
 
-    bench --site test_site install-app jewellery_erpnext
-    bench --site test_site install-app gke_customization
-    bench --site test_site install-app gurukrupa_biometric
-    bench --site test_site install-app gurukrupa_customizations
-else
-    echo "Skipping app installation on site (--skip-site-setup provided)"
-fi
+bench --site test_site install-app jewellery_erpnext
+bench --site test_site install-app gke_customization
+bench --site test_site install-app gurukrupa_biometric
+bench --site test_site install-app gurukrupa_customizations
 
 echo "::endgroup::"
