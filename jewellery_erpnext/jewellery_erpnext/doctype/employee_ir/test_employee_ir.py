@@ -8,7 +8,6 @@ from frappe.tests import IntegrationTestCase
 from frappe.types.frappedict import _dict as FrappeDict
 from frappe.utils import add_to_date, now_datetime
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.test_department_ir import (
 	mo_creation,
 )
@@ -333,7 +332,6 @@ class TestManufacturingOperationBalance(IntegrationTestCase):
 class TestEmployeeIR(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_employee_ir_scan(self):

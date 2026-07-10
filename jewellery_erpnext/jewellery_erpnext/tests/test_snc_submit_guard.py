@@ -116,12 +116,49 @@ class TestSncSubmitGuard(IntegrationTestCase):
 			snc_done=1,
 			customer="Customer A",
 		)
+		# snc_done short-circuits before the (heavier) live held-gold computation.
 		with patch.object(snc, "_get_mwo", return_value=mwo), patch.object(
-			snc, "_get_original_material_transfer"
-		) as get_transfer, patch.object(snc, "_get_original_gold_rows") as get_rows:
+			snc, "_mwo_needs_settlement"
+		) as needs:
 			self.assertFalse(snc.validate_button_visibility("MWO-WORK-1"))
-		get_transfer.assert_not_called()
-		get_rows.assert_not_called()
+		needs.assert_not_called()
+
+	def test_needs_settlement_detects_later_transfer_borrow(self):
+		# Regression for the multi-transfer bug: the first transfer is the order
+		# customer's own gold (Not Need), a later transfer borrows another customer's
+		# gold. Detection reads the LIVE held position, so the borrow is caught no
+		# matter which transfer brought it.
+		mwo = _Doc(
+			name="MWO-WORK-1",
+			docstatus=1,
+			manufacturing_order="PMO-0001",
+			manufacturing_operation="MOP-1",
+			customer="MHCU0012",
+		)
+		received = [
+			_receive_row("M-G-18KT-75.4-P", 2.0, "Waxing WO", "MHCU0012", "B-OWN"),
+			_receive_row("M-G-18KT-75.4-P", 1.0, "Setting WO", "KACU0043", "B-BORROW"),
+		]
+		with patch.object(snc, "_get_mwo", return_value=mwo), patch.object(
+			snc, "_is_customer_gold", return_value=1
+		), patch.object(snc, "_get_receivable_gold_rows", return_value=received):
+			self.assertTrue(snc._mwo_needs_settlement(mwo))
+
+	def test_needs_settlement_false_when_only_own_gold(self):
+		mwo = _Doc(
+			name="MWO-WORK-1",
+			docstatus=1,
+			manufacturing_order="PMO-0001",
+			manufacturing_operation="MOP-1",
+			customer="MHCU0012",
+		)
+		received = [
+			_receive_row("M-G-18KT-75.4-P", 2.0, "Waxing WO", "MHCU0012", "B-OWN"),
+		]
+		with patch.object(snc, "_get_mwo", return_value=mwo), patch.object(
+			snc, "_is_customer_gold", return_value=1
+		), patch.object(snc, "_get_receivable_gold_rows", return_value=received):
+			self.assertFalse(snc._mwo_needs_settlement(mwo))
 
 	def test_mixed_lists_only_unsettled(self):
 		siblings = [
@@ -141,22 +178,28 @@ class TestSncSubmitGuard(IntegrationTestCase):
 
 	# ---- stamp_snc_requirement ------------------------------------------
 
-	def test_stamp_sets_need(self):
+	def test_stamp_sets_need_and_reopens_done(self):
+		# Fresh borrowed gold -> Need, and any prior settlement is re-opened.
 		with patch.object(
-			snc, "validate_button_visibility", return_value=True
+			snc, "_mwo_needs_settlement", return_value=True
 		), patch.object(snc.frappe.db, "set_value") as set_value:
 			snc.stamp_snc_requirement(_transfer())
 		set_value.assert_called_once_with(
-			"Manufacturing Work Order", "MWO-WORK-1", "snc_requirement", "Need"
+			"Manufacturing Work Order",
+			"MWO-WORK-1",
+			{"snc_requirement": "Need", "snc_done": 0},
 		)
 
-	def test_stamp_sets_not_need(self):
+	def test_stamp_sets_not_need_without_touching_done(self):
+		# No borrowed gold held -> Not Need; a completed settlement stays done.
 		with patch.object(
-			snc, "validate_button_visibility", return_value=False
+			snc, "_mwo_needs_settlement", return_value=False
 		), patch.object(snc.frappe.db, "set_value") as set_value:
 			snc.stamp_snc_requirement(_transfer())
 		set_value.assert_called_once_with(
-			"Manufacturing Work Order", "MWO-WORK-1", "snc_requirement", "Not Need"
+			"Manufacturing Work Order",
+			"MWO-WORK-1",
+			{"snc_requirement": "Not Need"},
 		)
 
 	def test_stamp_skips_non_transfer(self):

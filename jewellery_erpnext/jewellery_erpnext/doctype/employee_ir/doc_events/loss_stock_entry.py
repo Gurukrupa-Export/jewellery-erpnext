@@ -181,6 +181,8 @@ def _prepare_loss_row(eir, row, table_name):
 
 	_validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name)
 
+	inventory_type, customer = _resolve_batch_inventory(row)
+
 	return {
 		"row": row,
 		"table_name": table_name,
@@ -190,6 +192,8 @@ def _prepare_loss_row(eir, row, table_name):
 		"s_warehouse": sre_doc.warehouse,
 		"t_warehouse": t_warehouse,
 		"loss_item": loss_item,
+		"inventory_type": inventory_type,
+		"customer": customer,
 	}
 
 
@@ -207,6 +211,69 @@ def _resolve_mwo(eir, row, table_name):
 			).format(eir.name, table_name, row.idx)
 		)
 	return mwo
+
+
+def _resolve_batch_inventory(row):
+	"""Resolve ``(inventory_type, customer)`` from the loss row's SOURCE batch.
+
+	The Process Loss SE is built with ``auto_created = 1``, so neither
+	``CustomStockEntry.update_batches`` (the interactive Batch backfill,
+	customization/stock_entry/stock_entry.py) nor the FIFO resolver runs for it.
+	The only thing that touches inventory_type on this SE is the fill-if-empty
+	stamp in Stock Entry ``before_validate`` (doc_events/stock_entry.py), which
+	defaults any *blank* row to "Regular Stock". The loss rows arrive blank
+	(validate_process_loss appends employee_loss_details with inventory_type
+	commented out), so every row was being booked as "Regular Stock" even when
+	the metal came out of a Customer Goods batch.
+
+	The loss physically leaves ``row.batch_no``, so the ledger row -- and the
+	scrap batch minted from the produce row (Batch.update_inventory_dimentions
+	copies inventory_type/customer off the SE Detail row) -- must carry THAT
+	batch's inventory type. The Batch is the source of truth, so it wins; fall
+	back to any value already on the loss row, then to "Regular Stock". Setting
+	the value here (before ``se.insert()``) pre-empts the before_validate stamp,
+	which only fires ``if not row.inventory_type``.
+	"""
+	batch_inv = {}
+	if getattr(row, "batch_no", None):
+		batch_inv = (
+			frappe.db.get_value(
+				"Batch",
+				row.batch_no,
+				["custom_inventory_type", "custom_customer"],
+				as_dict=True,
+			)
+			or {}
+		)
+	inventory_type = (
+		batch_inv.get("custom_inventory_type")
+		or getattr(row, "inventory_type", None)
+		or "Regular Stock"
+	)
+	# Customer only travels with customer-owned inventory; a Regular Stock row
+	# must never carry a stray customer (mirrors the Make Receive batch
+	# resolution in manufacturing_operation.py).
+	if inventory_type in ("Customer Goods", "Customer Stock"):
+		customer = batch_inv.get("custom_customer") or getattr(row, "customer", None)
+		# Couple the two: a customer inventory type with no resolvable customer is
+		# malformed. The scrap batch's guard-exemption (is_process_loss_repack)
+		# needs a customer, so emitting a customer type without one would stamp an
+		# inventory type the loss item may not allow and hard-fail the EIR receive
+		# submit. Fall back to Regular Stock (as main_slip.create_metal_loss does)
+		# rather than crash; the today's behaviour was Regular Stock anyway.
+		if not customer:
+			frappe.logger().warning(
+				"create_loss_stock_entries: batch {0} (item {1}) is {2} with no "
+				"customer; booking loss row as Regular Stock".format(
+					getattr(row, "batch_no", None),
+					getattr(row, "item_code", None),
+					inventory_type,
+				)
+			)
+			inventory_type = "Regular Stock"
+	else:
+		customer = None
+	return inventory_type, customer
 
 
 def _find_sre(eir, row, mwo, table_name, qty):
@@ -570,6 +637,20 @@ def _build_combined_loss_se(eir, pending):
 	if manufacturing_order:
 		se.manufacturing_order = manufacturing_order
 
+	# Carry the source batch's customer voucher type onto the SE header so the
+	# scrap batches minted from the produce rows inherit it
+	# (Batch.update_inventory_dimentions reads customer_voucher_type off the SE).
+	# One EIR loss is a single customer context in practice, so the first
+	# customer-owned loss row's batch is authoritative.
+	for entry in pending:
+		if entry["customer"]:
+			voucher_type = frappe.db.get_value(
+				"Batch", entry["row"].batch_no, "custom_customer_voucher_type"
+			)
+			if voucher_type:
+				se.customer_voucher_type = voucher_type
+			break
+
 	for entry in pending:
 		row = entry["row"]
 		qty = entry["qty"]
@@ -595,8 +676,8 @@ def _build_combined_loss_se(eir, pending):
 				"conversion_factor": 1,
 				"manufacturing_operation": mop,
 				"custom_manufacturing_work_order": entry_mwo,
-				"inventory_type": row.inventory_type,
-				"customer": row.customer,
+				"inventory_type": entry["inventory_type"],
+				"customer": entry["customer"],
 				"use_serial_batch_fields": 1,
 			},
 		)
@@ -616,10 +697,12 @@ def _build_combined_loss_se(eir, pending):
 			"custom_manufacturing_work_order": entry_mwo,
 			"use_serial_batch_fields": 1,
 		}
-		if getattr(row, "inventory_type", None):
-			produce_row["inventory_type"] = row.inventory_type
-		if getattr(row, "customer", None):
-			produce_row["customer"] = row.customer
+		# Scrap/loss inherits the source batch's inventory type: a customer's
+		# metal stays the customer's even after it is booked as loss. The minted
+		# scrap batch picks this up via Batch.update_inventory_dimentions.
+		produce_row["inventory_type"] = entry["inventory_type"]
+		if entry["customer"]:
+			produce_row["customer"] = entry["customer"]
 		se.append("items", produce_row)
 
 	return se

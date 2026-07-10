@@ -1,0 +1,56 @@
+name: Core Tests
+
+on:
+  pull_request:
+    branches:
+      - v16_develop_aerele
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MYSQL_ROOT_PASSWORD: travis
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ptravis"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:6
+        ports:
+          - 6379:6379
+
+    env:
+      DB: mariadb
+      TYPE: server
+
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      - name: Setup CI Environment
+        uses: ./.github/actions/setup
+
+      - name: Run Core Tests
+        run: |
+          cd ~/frappe-bench
+          echo "Running Core Tests..."
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Sketch Order Form"
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Department IR"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Employee IR"
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline
