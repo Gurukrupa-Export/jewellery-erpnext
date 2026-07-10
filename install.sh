@@ -5,7 +5,7 @@ cd ~ || exit
 
 echo "::group::Install Bench"
 pip install --upgrade pip
-pip install uv frappe-bench
+pip install frappe-bench
 echo "::endgroup::"
 
 echo "::group::Init Bench"
@@ -83,12 +83,6 @@ echo "::endgroup::"
 
 echo "::group::Install Apps"
 
-echo "Disabling gke_customization fixtures..."
-
-mv \
-    apps/gke_customization/gke_customization/fixtures \
-    apps/gke_customization/gke_customization/fixtures_disabled
-
 bench --site test_site install-app erpnext
 bench --site test_site install-app hrms
 bench --site test_site install-app payments
@@ -99,7 +93,16 @@ bench --site test_site install-app telephony
 bench --site test_site install-app helpdesk
 
 bench --site test_site install-app jewellery_erpnext
+echo "Disabling gke_customization fixtures..."
+
+mv \
+apps/gke_customization/gke_customization/fixtures \
+apps/gke_customization/gke_customization/fixtures_disabled
+
 bench --site test_site install-app gke_customization
+
+echo "Restoring gke_customization fixtures..."
+
 bench --site test_site install-app gurukrupa_biometric
 bench --site test_site install-app gurukrupa_customizations
 
