@@ -411,7 +411,6 @@ class TestCastingIssueQtySeed(IntegrationTestCase):
 		self.assertEqual(md.pending_qty, 0)
 
 
-<<<<<<< HEAD
 def _mwo_doc(name, tree_number):
 	"""Fake MWO for the receive-aggregation path (needs attribute access for _metal_item and
 	.get('tree_number'))."""
@@ -882,7 +881,8 @@ class TestGetCastingGroupOperations(IntegrationTestCase):
 
 	def tearDown(self):
 		return super().tearDown()
-=======
+
+
 class _FakeSE:
 	"""Captures the Stock Entry the helper builds without touching the DB."""
 
@@ -1202,4 +1202,3 @@ class TestWarehouseResolvers(IntegrationTestCase):
 		with patch.object(tse.frappe.db, "get_all", return_value=dupes):
 			with self.assertRaises(ValidationError):
 				tse._resolve_scrap_warehouse("DEPT")
->>>>>>> 2c9a3f53b4a682eae2d21c58547cb4d72b7e3c57

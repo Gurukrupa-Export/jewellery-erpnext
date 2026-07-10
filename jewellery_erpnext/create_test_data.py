@@ -2827,6 +2827,32 @@ def setup_data():
 				{"doctype": "Attribute Value", "attribute_value": _attr_value}
 			).insert(ignore_permissions=True)
 
+	# Provision the setting-type Attribute Values backing the Sketch Order Form /
+	# Sketch Order link fields (setting_type -> is_setting_type, sub_setting_type1 ->
+	# is_sub_setting_type). These are created only by the full create_test_data()
+	# helper (create_attribute_value), never by setup_data(), so the Sketch Order Form
+	# suite hits LinkValidationError ("Could not find ... Setting Type: Close ...")
+	# under the setup_data-only CI bootstrap. Parents are inserted before their
+	# sub-settings so parent_attribute_value resolves. Idempotent.
+	for _setting_value in (
+		{"attribute_value": "Open", "is_setting_type": 1},
+		{"attribute_value": "Close", "is_setting_type": 1},
+		{
+			"attribute_value": "Close-Open Setting",
+			"is_sub_setting_type": 1,
+			"parent_attribute_value": "Open",
+		},
+		{
+			"attribute_value": "Close Setting",
+			"is_sub_setting_type": 1,
+			"parent_attribute_value": "Close",
+		},
+	):
+		if not frappe.db.exists("Attribute Value", _setting_value["attribute_value"]):
+			frappe.get_doc({"doctype": "Attribute Value", **_setting_value}).insert(
+				ignore_permissions=True
+			)
+
 	if not frappe.db.exists("Customer", "Test_Customer_External"):
 		customer = frappe.get_doc(
 			{
