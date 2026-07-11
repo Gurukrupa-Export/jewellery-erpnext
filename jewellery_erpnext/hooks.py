@@ -95,7 +95,7 @@ doc_events = {
 	},
 	"Sales Order": {
 		"before_validate": [
-			"jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
+			# "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
 		],
 		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
