@@ -11,6 +11,9 @@ from frappe.utils import cint
 from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import (
 	make_subcontracting_order,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
+	get_mould_id_map,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	make_manufacturing_order,
 )
@@ -103,6 +106,21 @@ class ManufacturingPlan(Document):
 
 	def validate(self):
 		self.validate_qty_with_bom_creation()
+		self.refresh_mould_ids()
+
+	def refresh_mould_ids(self):
+		"""Keep every plan row's Mould List ID (the Mould docname) in sync with the
+		current Mould per Item on every validate -- not only at item-fetch time -- so
+		submitted/edited/manually added rows always reflect the current Mould. The
+		field is read_only (system-managed), so overwriting is safe."""
+		item_codes = {
+			row.item_code for row in self.manufacturing_plan_table if row.item_code
+		}
+		if not item_codes:
+			return
+		mould_id_map = get_mould_id_map(item_codes)
+		for row in self.manufacturing_plan_table:
+			row.mould_id = mould_id_map.get(row.item_code)
 
 	def validate_qty_with_bom_creation(self):
 		total = 0
@@ -256,7 +274,6 @@ class ManufacturingPlan(Document):
 					SalesOrderItem.bom,
 					SalesOrderItem.custom_tracking_bom,
 					SalesOrder.customer,
-					Item.mould.as_("mould_no"),
 					Item.master_bom.as_("master_bom"),
 					SalesOrderItem.diamond_quality,
 					SalesOrderItem.custom_customer_sample.as_("customer_sample"),
@@ -287,35 +304,8 @@ class ManufacturingPlan(Document):
 				query = query.where(SalesOrderItem.setting_type == self.setting_type)
 
 			items = query.run(as_dict=True)
-
-			self.manufacturing_plan_table = []
-			for item_row in items:
-				bom = item_row.get("bom") or item_row.get("master_bom")
-				if not bom and item_row.get("order_form_type") == "Repair Order":
-					bom = item_row.get("serial_id_bom")
-				if bom:
-					item_row["manufacturing_order_qty"] = item_row.get("pending_qty")
-					if self.is_subcontracting:
-						item_row["subcontracting"] = self.is_subcontracting
-						item_row["subcontracting_qty"] = item_row.get("pending_qty")
-						item_row["supplier"] = self.supplier
-						item_row["estimated_delivery_date"] = self.estimated_date
-						item_row["purchase_type"] = self.purchase_type
-						item_row["manufacturing_order_qty"] = 0
-
-					item_row["qty_per_manufacturing_order"] = 1
-					item_row["bom"] = bom
-					item_row["order_form_type"] = item_row.get("order_form_type")
-					self.append("manufacturing_plan_table", item_row)
-				else:
-					item_code = item_row["item_code"]
-					frappe.throw(
-						_(
-							f"Sales Order BOM Not Found.</br>Please Set Master BOM for <b>{item_code}</b> into Item Master"
-						)
-					)
 		else:
-			self.manufacturing_plan_table = []
+			items = []
 
 		mwo_data = frappe.db.sql(
 			"""
@@ -331,6 +321,38 @@ class ManufacturingPlan(Document):
 			as_dict=True,
 		)
 
+		mould_id_map = get_mould_id_map(
+			[row["item_code"] for row in items] + [row["item_code"] for row in mwo_data]
+		)
+
+		self.manufacturing_plan_table = []
+		for item_row in items:
+			bom = item_row.get("bom") or item_row.get("master_bom")
+			if not bom and item_row.get("order_form_type") == "Repair Order":
+				bom = item_row.get("serial_id_bom")
+			if bom:
+				item_row["manufacturing_order_qty"] = item_row.get("pending_qty")
+				if self.is_subcontracting:
+					item_row["subcontracting"] = self.is_subcontracting
+					item_row["subcontracting_qty"] = item_row.get("pending_qty")
+					item_row["supplier"] = self.supplier
+					item_row["estimated_delivery_date"] = self.estimated_date
+					item_row["purchase_type"] = self.purchase_type
+					item_row["manufacturing_order_qty"] = 0
+
+				item_row["qty_per_manufacturing_order"] = 1
+				item_row["bom"] = bom
+				item_row["order_form_type"] = item_row.get("order_form_type")
+				item_row["mould_id"] = mould_id_map.get(item_row["item_code"])
+				self.append("manufacturing_plan_table", item_row)
+			else:
+				item_code = item_row["item_code"]
+				frappe.throw(
+					_(
+						f"Sales Order BOM Not Found.</br>Please Set Master BOM for <b>{item_code}</b> into Item Master"
+					)
+				)
+
 		for row in mwo_data:
 			qty = row["total_qty"]
 			self.append(
@@ -341,6 +363,7 @@ class ManufacturingPlan(Document):
 					"manufacturing_order_qty": qty,
 					"qty_per_manufacturing_order": qty,
 					"mwo": row["mwo"],
+					"mould_id": mould_id_map.get(row["item_code"]),
 				},
 			)
 
@@ -637,9 +660,12 @@ def create_manufacturing_order(doc, row, cache_data=None):
 def create_subcontracting_order(doc):
 	make_subcontracting_order(doc)
 
+
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filters):
+def get_repair_pending_ppo_sales_order(
+	doctype, txt, searchfield, start, page_len, filters
+):
 	SalesOrder = frappe.qb.DocType("Sales Order")
 	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
 
@@ -666,7 +692,12 @@ def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_le
 		frappe.qb.from_(SalesOrder)
 		.distinct()
 		.from_(SalesOrderItem)
-		.select(SalesOrder.name, SalesOrder.transaction_date, SalesOrder.company, SalesOrder.customer)
+		.select(
+			SalesOrder.name,
+			SalesOrder.transaction_date,
+			SalesOrder.company,
+			SalesOrder.customer,
+		)
 		.where((SalesOrder.name == SalesOrderItem.parent) & conditions)
 		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
 		.limit(page_len)
@@ -675,4 +706,3 @@ def get_repair_pending_ppo_sales_order(doctype, txt, searchfield, start, page_le
 
 	so_data = query.run(as_dict=True)
 	return so_data
-

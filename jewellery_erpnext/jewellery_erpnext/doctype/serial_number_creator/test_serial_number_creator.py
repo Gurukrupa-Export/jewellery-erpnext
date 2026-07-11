@@ -7,7 +7,6 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
 	dir_for_issue,
 	dir_for_receive,
@@ -37,8 +36,7 @@ class TestSerialNumberCreator(IntegrationTestCase):
 	def setUp(self):
 		self.doc = frappe.new_doc("Serial Number Creator")
 		self.doc.type = "Manufacturing"
-		self.doc.company = "Your Company"
-		create_test_data()
+		self.doc.company = "Test_Company"
 		self.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 		return super().setUp()
 

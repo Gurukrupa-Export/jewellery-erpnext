@@ -1,6 +1,15 @@
+import math
+
 import frappe
 from frappe import _
-from frappe.utils import cint, flt
+from frappe.utils import (
+	add_to_date,
+	cint,
+	flt,
+	get_datetime,
+	now_datetime,
+	time_diff_in_seconds,
+)
 
 
 def get_loss_qty_in_grams(item_code: str | None, qty) -> float:
@@ -355,3 +364,75 @@ def validate_loss_qty(self):
 					"<b>{0}</b> Proportionally Loss {1} not match with recive weight {2}"
 				).format(i, loss_details.get(i), er_loss_details.get(i))
 			)
+
+
+def validate_employee_ir_receive_delay(doc):
+	"""Block Employee IR Receive submission until each row's Issue-configured
+	delay (Department Operation.employee_ir_receive_delay) has elapsed.
+
+	Correspondence between a Receive row and its Issue reuses the same
+	resolver ``on_submit_receive`` already relies on for MOP Log lineage
+	(``resolve_employee_ir_issue_voucher_for_receive``), so "no Issue found"
+	means the same thing here as it does everywhere else in the app. Rows
+	whose corresponding Issue cannot be resolved, or whose Issue has no
+	usable submission timestamp, are skipped rather than blocked.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		resolve_employee_ir_issue_voucher_for_receive,
+	)
+
+	now = now_datetime()
+	issue_cache = {}
+	delay_cache = {}
+	worst_wait = 0
+	worst_row = None
+	worst_issue = None
+
+	for row in doc.employee_ir_operations or []:
+		issue_name = resolve_employee_ir_issue_voucher_for_receive(doc, row)
+		if not issue_name:
+			continue
+
+		if issue_name not in issue_cache:
+			issue_cache[issue_name] = frappe.db.get_value(
+				"Employee IR",
+				issue_name,
+				["operation", "issue_submitted_on", "date_time"],
+				as_dict=True,
+			)
+		issue = issue_cache[issue_name]
+		if not issue:
+			continue
+
+		submitted_on = issue.issue_submitted_on or issue.date_time
+		if not submitted_on:
+			continue
+
+		if issue.operation not in delay_cache:
+			delay_cache[issue.operation] = cint(
+				frappe.db.get_value(
+					"Department Operation", issue.operation, "employee_ir_receive_delay"
+				)
+			)
+		delay_minutes = delay_cache[issue.operation]
+		if delay_minutes <= 0:
+			continue
+
+		allowed_from = add_to_date(get_datetime(submitted_on), minutes=delay_minutes)
+		if now < allowed_from:
+			remaining_minutes = math.ceil(time_diff_in_seconds(allowed_from, now) / 60)
+			if remaining_minutes > worst_wait:
+				worst_wait, worst_row, worst_issue = remaining_minutes, row, issue_name
+
+	if worst_wait > 0:
+		frappe.throw(
+			_(
+				"Employee IR Receive cannot be submitted yet (Row #{0}, Operation {1}, "
+				"Issue {2}). Please wait another {3} minute(s) before submitting."
+			).format(
+				worst_row.idx,
+				worst_row.manufacturing_operation,
+				worst_issue,
+				worst_wait,
+			)
+		)

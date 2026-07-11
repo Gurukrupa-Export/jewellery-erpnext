@@ -14,6 +14,7 @@ from frappe.utils import (
 	get_first_day,
 	get_last_day,
 	getdate,
+	now_datetime,
 	nowdate,
 	time_diff,
 	time_diff_in_hours,
@@ -46,13 +47,15 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontr
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 	create_tree_on_issue,
-	is_casting_eir,
 	unlink_tree_on_issue_cancel,
 	update_tree_on_receive,
+	validate_casting_group_complete,
+	validate_casting_receive,
 	validate_casting_tree,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
+	validate_employee_ir_receive_delay,
 	validate_loss_qty,
 	validate_loss_tables_required,
 	validate_manually_book_loss_details,
@@ -70,7 +73,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_resolve_department_warehouse,
 )
 from jewellery_erpnext.utils import (
-	get_item_from_attribute_full,
+	get_item_from_attribute_full,  # noqa: F401 – patched by tests
 )
 
 
@@ -92,6 +95,13 @@ class EmployeeIR(Document):
 				self.append(
 					"employee_ir_operations", {"manufacturing_operation": row.name}
 				)
+
+	def before_submit(self):
+		if self.type == "Issue":
+			self.issue_submitted_on = now_datetime()
+			validate_casting_group_complete(self)
+		else:
+			validate_employee_ir_receive_delay(self)
 
 	def on_submit(self):
 		validate_loss_tables_required(self)
@@ -138,6 +148,7 @@ class EmployeeIR(Document):
 		# valid_reparing_or_next_operation(self)
 		validate_loss_qty(self)
 		validate_casting_tree(self)
+		validate_casting_receive(self)
 
 	def on_cancel(self):
 		if self.type == "Issue":
@@ -355,9 +366,17 @@ class EmployeeIR(Document):
 			# sequence. Loss-SE source Bins resolved later are still locked (in sorted order)
 			# by each SE's prelock_bins hook; create_loss_stock_entries reduces SREs in
 			# stock_lock_key order (RULE A).
+			from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
+				PROCESS_LOSS_SE_TYPE,
+			)
+			from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
+				MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
+				REPACK_STOCK_ENTRY_TYPE,
+			)
 			from jewellery_erpnext.jewellery_erpnext.lock_order import (
 				lock_bins,
 				preallocate_series_for_docs,
+				series_stubs,
 			)
 
 			_eir_pairs = [
@@ -365,7 +384,18 @@ class EmployeeIR(Document):
 				for r in (self.manually_book_loss_details + self.employee_loss_details)
 				for wh in (department_wh, actor_wh)
 			]
-			preallocate_series_for_docs(frappe.new_doc("Stock Entry"))
+			# Pin each nested SE type's naming counter (the per-(company x type)
+			# Document Naming Rule counter post-reshard, or the tabSeries fallback)
+			# BEFORE the Bins -- a blank stub matches no naming rule and would pin
+			# the wrong (shared MAT-STE-) row while leaving the real counters unpinned.
+			preallocate_series_for_docs(
+				*series_stubs(
+					self.company,
+					MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
+					REPACK_STOCK_ENTRY_TYPE,
+					PROCESS_LOSS_SE_TYPE,
+				)
+			)
 			lock_bins(_eir_pairs)
 
 		for row in self.employee_ir_operations:
@@ -539,12 +569,11 @@ class EmployeeIR(Document):
 			# ONE Repack SE for all loss rows across the entire EIR.
 			create_loss_stock_entries(self)
 
-		# Casting tree: the Tree Number Receive button now owns the tree's Material Details
-		# ledger (record-only), so skip the EIR-side write for casting to avoid double-counting.
-		# The EIR still performs the physical receive (injection + process loss) + weight ledger.
-		# Non-casting EIRs keep the original behaviour (harmless no-op unless a tree is linked).
-		if not is_casting_eir(self):
-			update_tree_on_receive(self, cancel=cancel)
+		# Casting tree: the Employee IR Receive books the CAST OUTPUT into the tree's Material
+		# Details receive_qty/loss_qty. The tree Receive button separately returns the post-cast
+		# LEFTOVER to Dept RM (bounded by the pending cap, so the two never overlap). Runs on
+		# submit and cancel (cancel reverses via sign=-1). Early-returns for non-casting EIRs.
+		update_tree_on_receive(self, cancel=cancel)
 
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":
@@ -648,10 +677,32 @@ class EmployeeIR(Document):
 					mwo, opt, gwt, r_gwt, allowed_loss_percentage
 				)
 
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
+			batch_owner_no_wastage,
+		)
+
 		self.employee_loss_details = []
 		for row in rows_to_append:
 			proportionally_loss = flt(row["proportionally_loss"], 3)
 			if proportionally_loss > 0:
+				# No wastage for customer-supplied material: block loss on a no-wastage
+				# customer's batch so it never becomes a customer-owned scrap batch. The
+				# operator must receive the full weight (received == issued) for the
+				# operation holding this customer's material; the unused metal returns as
+				# raw material.
+				if batch_owner_no_wastage(row.get("batch_no")):
+					frappe.throw(
+						_(
+							"No wastage is allowed for customer material (MWO {0}, operation "
+							"{1}, batch {2}). Set the received gross weight equal to the issued "
+							"weight so no loss is booked; the unused metal is returned as raw "
+							"material."
+						).format(
+							row.get("manufacturing_work_order"),
+							row.get("manufacturing_operation"),
+							row.get("batch_no"),
+						)
+					)
 				variant_of = frappe.db.get_value("Item", row["item_code"], "variant_of")
 				self.append(
 					"employee_loss_details",
@@ -723,20 +774,6 @@ class EmployeeIR(Document):
 			)
 			# Declaration & fetch required value
 			sum_qty = {}  # for sum of qty matched item
-
-			# getting Metal property from MNF Work Order
-			mwo_metal_property = frappe.get_cached_value(
-				"Manufacturing Work Order",
-				mwo,
-				[
-					"metal_type",
-					"metal_touch",
-					"metal_purity",
-					"master_bom",
-					"is_finding_mwo",
-				],
-				as_dict=1,
-			)
 
 			# Keep only the latest qty snapshot per (item_code, batch_no).
 			# qty_after_transaction_batch_based is a running balance so the last
@@ -890,6 +927,44 @@ def get_manufacturing_operations(source_name, target_doc=None):
 			},
 		)
 	return target_doc
+
+
+@frappe.whitelist()
+def get_casting_group_operations(department, subcontracting, present_operations):
+	"""Return the issue-eligible sibling MOP rows of the casting tree(s) already in this EIR.
+
+	Powers the "Load Full Casting Tree" button: given the operations already present, resolve
+	their MWOs' casting groups and return every still-at-casting sibling MOP not yet present, so
+	one click completes the tree. Shares ``eligible_casting_group_mops`` with the submit-time
+	completeness validator, so the button can never disagree with the check.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
+		eligible_casting_group_mops,
+	)
+
+	present = (
+		json.loads(present_operations)
+		if isinstance(present_operations, str)
+		else (present_operations or [])
+	)
+	present = {p for p in present if p}
+	if not present:
+		return []
+
+	mwo_names = frappe.get_all(
+		"Manufacturing Operation",
+		{"name": ["in", list(present)]},
+		pluck="manufacturing_work_order",
+	)
+	groups = set(
+		frappe.get_all(
+			"Manufacturing Work Order",
+			{"name": ["in", [m for m in mwo_names if m]]},
+			pluck="casting_group",
+		)
+	)
+	eligible = eligible_casting_group_mops(department, subcontracting, groups)
+	return [m for m in eligible if m["manufacturing_operation"] not in present]
 
 
 def create_qc_record(row, operation, employee_ir):

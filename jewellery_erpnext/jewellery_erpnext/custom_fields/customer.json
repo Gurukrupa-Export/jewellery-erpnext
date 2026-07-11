@@ -504,6 +504,24 @@
   },
   {
    "dt": "Customer",
+   "fieldname": "custom_block_refining",
+   "fieldtype": "Check",
+   "insert_after": "custom_separate_hallmarking_invoice",
+   "label": "Block from Dust/Scrap Refining",
+   "description": "Keep this customer's batches out of Dust/Scrap Refining entries.",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
+   "fieldname": "custom_no_wastage",
+   "fieldtype": "Check",
+   "insert_after": "custom_block_refining",
+   "label": "No Wastage (Customer Material)",
+   "description": "Do not book manufacturing loss on this customer's material; return the unused weight as raw material.",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Customer",
    "fieldname": "custom_require_customer_bulk_numbers",
    "fieldtype": "Check",
    "insert_after": "custom_advanced_manual_bagging_available",

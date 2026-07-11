@@ -27,6 +27,7 @@
   "seq",
   "customer",
   "item_code",
+  "mould_id",
   "master_bom",
   "item_category",
   "item_sub_category",
@@ -66,6 +67,7 @@
   "department",
   "manufacturing_operation",
   "tree_number",
+  "casting_group",
   "project",
   "jewelex_batch_no",
   "delivery_date_tab",
@@ -134,6 +136,13 @@
    "fieldtype": "Link",
    "label": "Design Code",
    "options": "Item"
+  },
+  {
+   "fieldname": "mould_id",
+   "fieldtype": "Data",
+   "label": "Mould List ID",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fetch_from": "manufacturing_order.serial_no",
@@ -524,6 +533,15 @@
    "fieldtype": "Link",
    "label": "Tree Number",
    "options": "Tree Number",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "description": "Stable casting-tree group id (the first tree's name). Retained across re-issues and tree cancellation so the full cast-together set is always re-issued together.",
+   "fieldname": "casting_group",
+   "fieldtype": "Data",
+   "label": "Casting Group",
+   "no_copy": 1,
    "read_only": 1
   },
   {

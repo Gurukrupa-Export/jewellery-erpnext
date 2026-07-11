@@ -17,7 +17,13 @@ def create_so_for_subcontracting(po_doc):
 	so_doc.delivery_date = frappe.utils.today()
 	for row in po_doc.items:
 		so_doc.append(
-			"items", {"item_code": row.item_code, "qty": row.qty, "uom": row.uom, "rate": row.rate}
+			"items",
+			{
+				"item_code": row.item_code,
+				"qty": row.qty,
+				"uom": row.uom,
+				"rate": row.rate,
+			},
 		)
 	so_doc.save()
 	# so_doc.submit()

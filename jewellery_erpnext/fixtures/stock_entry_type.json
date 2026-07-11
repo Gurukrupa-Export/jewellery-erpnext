@@ -198,5 +198,12 @@
   "modified": "2023-11-17 12:32:59.983995",
   "name": "Material Receipt - Sales Person",
   "purpose": "Material Transfer"
+ },
+ {
+  "add_to_transit": 0,
+  "docstatus": 0,
+  "doctype": "Stock Entry Type",
+  "name": "Material Transfer (MAIN SLIP)",
+  "purpose": "Material Transfer"
  }
 ]

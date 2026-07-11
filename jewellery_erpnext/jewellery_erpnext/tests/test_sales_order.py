@@ -7,7 +7,6 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days
 from gke_customization.gke_order_forms.doctype.order.order import make_quotation_batch
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 	create_tracking_bom_directly,
 )
@@ -23,7 +22,6 @@ from jewellery_erpnext.jewellery_erpnext.tests.test_quotation import (
 class TestSalesOrder(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 		cls.department = frappe.get_value(
 			"Department",

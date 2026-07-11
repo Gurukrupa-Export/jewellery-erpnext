@@ -70,15 +70,14 @@ class TestMainSlipInjectIdempotency(FrappeTestCase):
 	def test_existing_repack_se_short_circuits(self):
 		eir = _eir()
 		row = _row()
-		with patch.object(
-			msi, "_resolve_department_warehouse", return_value="WH-Dept"
-		), patch.object(
-			msi, "_existing_injection_se", return_value=True
-		) as mock_exists, patch.object(
-			msi, "_resolve_inject_metal_items"
-		) as mock_resolve, patch.object(
-			msi, "_inject_via_main_slip_batches"
-		) as mock_inject_ms:
+		with (
+			patch.object(msi, "_resolve_department_warehouse", return_value="WH-Dept"),
+			patch.object(
+				msi, "_existing_injection_se", return_value=True
+			) as mock_exists,
+			patch.object(msi, "_resolve_inject_metal_items") as mock_resolve,
+			patch.object(msi, "_inject_via_main_slip_batches") as mock_inject_ms,
+		):
 			out = msi.inject_extra_metal_for_eir_receive(eir, row)
 		self.assertEqual(out, [])
 		mock_exists.assert_called_once()
@@ -266,11 +265,13 @@ class TestFallbackInjectSegments(FrappeTestCase):
 				return 1.0
 			return 0.0
 
-		with patch(f"{_MSI_PATH}.frappe.db.get_value", return_value=mwo_row), patch(
-			f"{_MSI_PATH}.get_item_from_attribute", return_value="M-G-18KT-Y"
-		), patch(f"{_MSI_PATH}._get_bin_qty", side_effect=_bin_qty), patch(
-			f"{_MSI_PATH}._pure_metal_item_for_mwo", return_value="M-G-24KT"
-		), patch(f"{_MSI_PATH}._get_item_metal_purity") as mock_purity:
+		with (
+			patch(f"{_MSI_PATH}.frappe.db.get_value", return_value=mwo_row),
+			patch(f"{_MSI_PATH}.get_item_from_attribute", return_value="M-G-18KT-Y"),
+			patch(f"{_MSI_PATH}._get_bin_qty", side_effect=_bin_qty),
+			patch(f"{_MSI_PATH}._pure_metal_item_for_mwo", return_value="M-G-24KT"),
+			patch(f"{_MSI_PATH}._get_item_metal_purity") as mock_purity,
+		):
 
 			def _purity(item):
 				return {"M-G-24KT": 99.9, "M-G-18KT-Y": 75.4}.get(item)
@@ -477,16 +478,17 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 		se.append.side_effect = lambda _, payload: se.items.append(payload)
 		mock_new_doc.return_value = se
 
-		with patch(
-			f"{_MSI_PATH}._resolve_inject_metal_items",
-			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
-		), patch(
-			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
-		), patch(
-			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"
-		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
-			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
-		), patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
+		with (
+			patch(
+				f"{_MSI_PATH}._resolve_inject_metal_items",
+				return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+			),
+			patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"),
+			patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"),
+			patch(f"{_MSI_PATH}._existing_injection_se", return_value=False),
+			patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"),
+			patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"),
+		):
 			out = msi.inject_extra_metal_for_eir_receive(_eir(main_slip="MS-1"), _row())
 
 		self.assertEqual(len(out), 1)
@@ -529,16 +531,17 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 					return "75.4"
 			return "PMO-1"
 
-		with patch(
-			f"{_MSI_PATH}._resolve_inject_metal_items",
-			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
-		), patch(
-			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
-		), patch(
-			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Sub"
-		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
-			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
-		), patch(f"{_MSI_PATH}.frappe.db.get_value", side_effect=_fake_get_value):
+		with (
+			patch(
+				f"{_MSI_PATH}._resolve_inject_metal_items",
+				return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+			),
+			patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"),
+			patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Sub"),
+			patch(f"{_MSI_PATH}._existing_injection_se", return_value=False),
+			patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"),
+			patch(f"{_MSI_PATH}.frappe.db.get_value", side_effect=_fake_get_value),
+		):
 			out = msi.inject_extra_metal_for_eir_receive(
 				_eir(
 					main_slip="MS-1",
@@ -586,16 +589,17 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 		se.append.side_effect = lambda _, payload: se.items.append(payload)
 		mock_new_doc.return_value = se
 
-		with patch(
-			f"{_MSI_PATH}._resolve_inject_metal_items",
-			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
-		), patch(
-			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
-		), patch(
-			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"
-		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
-			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
-		), patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
+		with (
+			patch(
+				f"{_MSI_PATH}._resolve_inject_metal_items",
+				return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+			),
+			patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"),
+			patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"),
+			patch(f"{_MSI_PATH}._existing_injection_se", return_value=False),
+			patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"),
+			patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"),
+		):
 			with self.assertRaises(frappe.ValidationError):
 				msi.inject_extra_metal_for_eir_receive(_eir(main_slip="MS-1"), _row())
 
@@ -616,16 +620,17 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 		)
 		se = MagicMock()
 		mock_new_doc.return_value = se
-		with patch(
-			f"{_MSI_PATH}._resolve_inject_metal_items",
-			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
-		), patch(
-			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
-		), patch(
-			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"
-		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
-			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
-		), patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
+		with (
+			patch(
+				f"{_MSI_PATH}._resolve_inject_metal_items",
+				return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+			),
+			patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"),
+			patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Src"),
+			patch(f"{_MSI_PATH}._existing_injection_se", return_value=False),
+			patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"),
+			patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"),
+		):
 			with self.assertRaises(frappe.ValidationError):
 				msi.inject_extra_metal_for_eir_receive(_eir(main_slip="MS-1"), _row())
 
@@ -653,16 +658,17 @@ class TestMainSlipInjectViaBatches(FrappeTestCase):
 		se.append.side_effect = lambda _, payload: se.items.append(payload)
 		mock_new_doc.return_value = se
 
-		with patch(
-			f"{_MSI_PATH}._resolve_inject_metal_items",
-			return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
-		), patch(
-			f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"
-		), patch(
-			f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Emp"
-		), patch(f"{_MSI_PATH}._existing_injection_se", return_value=False), patch(
-			f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"
-		), patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"):
+		with (
+			patch(
+				f"{_MSI_PATH}._resolve_inject_metal_items",
+				return_value=[{"item_code": "M-G-18KT-Y", "qty": 2.0}],
+			),
+			patch(f"{_MSI_PATH}._resolve_department_warehouse", return_value="WH-Dept"),
+			patch(f"{_MSI_PATH}._resolve_source_warehouse", return_value="WH-Emp"),
+			patch(f"{_MSI_PATH}._existing_injection_se", return_value=False),
+			patch(f"{_MSI_PATH}._apply_fifo_batches_to_stock_entry"),
+			patch(f"{_MSI_PATH}.frappe.db.get_value", return_value="PMO-1"),
+		):
 			out = msi.inject_extra_metal_for_eir_receive(
 				_eir(main_slip="MS-1", subcontracting="No"), _row()
 			)
@@ -682,7 +688,7 @@ class TestSelectFifoBatchesReservableAtDest(FrappeTestCase):
 	@patch(f"{_MSI_PATH}.frappe.db.sql")
 	@patch(f"{_MSI_PATH}.get_batch_qty")
 	@patch(f"{_MSI_PATH}.frappe.db.get_all")
-	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	@patch(f"{_MSI_PATH}.capped_auto_batch_nos")
 	def test_skips_over_reserved_batch_and_picks_safe(
 		self, mock_auto, mock_get_all, mock_batch_qty, mock_sql
 	):
@@ -714,7 +720,7 @@ class TestSelectFifoBatchesReservableAtDest(FrappeTestCase):
 	@patch(f"{_MSI_PATH}.frappe.db.sql")
 	@patch(f"{_MSI_PATH}.get_batch_qty")
 	@patch(f"{_MSI_PATH}.frappe.db.get_all")
-	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	@patch(f"{_MSI_PATH}.capped_auto_batch_nos")
 	def test_spills_across_multiple_safe_batches(
 		self, mock_auto, mock_get_all, mock_batch_qty, mock_sql
 	):
@@ -739,7 +745,7 @@ class TestSelectFifoBatchesReservableAtDest(FrappeTestCase):
 	@patch(f"{_MSI_PATH}.frappe.db.sql")
 	@patch(f"{_MSI_PATH}.get_batch_qty")
 	@patch(f"{_MSI_PATH}.frappe.db.get_all")
-	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	@patch(f"{_MSI_PATH}.capped_auto_batch_nos")
 	def test_returns_none_when_no_safe_batch_covers_need(
 		self, mock_auto, mock_get_all, mock_batch_qty, mock_sql
 	):
@@ -755,7 +761,7 @@ class TestSelectFifoBatchesReservableAtDest(FrappeTestCase):
 		)
 		self.assertIsNone(out)
 
-	@patch(f"{_MSI_PATH}.get_auto_batch_nos", return_value=[])
+	@patch(f"{_MSI_PATH}.capped_auto_batch_nos", return_value=[])
 	def test_returns_none_when_no_source_batches(self, _mock_auto):
 		out = msi._select_fifo_batches_reservable_at_dest(
 			self._se(), "ITEM-1", "WH-Src", "WH-Dest", 0.035
@@ -766,7 +772,7 @@ class TestSelectFifoBatchesReservableAtDest(FrappeTestCase):
 class TestExpandSourceRowsPrefersReservableBatch(FrappeTestCase):
 	@patch(f"{_MSI_PATH}._select_fifo_batches_reservable_at_dest")
 	@patch(f"{_MSI_PATH}.frappe.db.get_all")
-	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	@patch(f"{_MSI_PATH}.capped_auto_batch_nos")
 	@patch(f"{_MSI_PATH}.frappe.get_cached_value", return_value=1)
 	def test_transfer_row_uses_dest_reservable_selection(
 		self, _mock_item, mock_auto, mock_get_all, mock_select
@@ -799,7 +805,7 @@ class TestExpandSourceRowsPrefersReservableBatch(FrappeTestCase):
 
 	@patch(f"{_MSI_PATH}._select_fifo_batches_reservable_at_dest")
 	@patch(f"{_MSI_PATH}.frappe.db.get_all")
-	@patch(f"{_MSI_PATH}.get_auto_batch_nos")
+	@patch(f"{_MSI_PATH}.capped_auto_batch_nos")
 	@patch(f"{_MSI_PATH}.frappe.get_cached_value", return_value=1)
 	def test_falls_back_to_plain_fifo_when_selector_returns_none(
 		self, _mock_item, mock_auto, mock_get_all, mock_select
@@ -826,3 +832,65 @@ class TestExpandSourceRowsPrefersReservableBatch(FrappeTestCase):
 		out = msi._expand_source_rows_for_fifo(se, row)
 		self.assertEqual([r["batch_no"] for r in out], ["B-OLD"])
 		mock_select.assert_called_once()
+
+	@patch(f"{_MSI_PATH}._select_fifo_batches_reservable_at_dest", return_value=None)
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	@patch(f"{_MSI_PATH}.capped_auto_batch_nos")
+	@patch(f"{_MSI_PATH}.frappe.get_cached_value", return_value=1)
+	def test_phantom_batch_dropped_allocates_from_real_batches(
+		self, _mock_item, mock_auto, mock_get_all, _mock_select
+	):
+		# capped_auto_batch_nos has already dropped the phantom (orphan-inflated)
+		# batch, so the allocator only ever sees real batches and spreads `need`
+		# across them instead of over-committing an empty batch and blowing up with
+		# BatchNegativeStockError at submit.
+		mock_auto.return_value = [
+			frappe._dict(batch_no="B-REAL1", qty=0.02),
+			frappe._dict(batch_no="B-REAL2", qty=0.015),
+		]
+		mock_get_all.return_value = [
+			{
+				"name": "B-REAL1",
+				"custom_inventory_type": "Regular Stock",
+				"custom_customer": None,
+			},
+			{
+				"name": "B-REAL2",
+				"custom_inventory_type": "Regular Stock",
+				"custom_customer": None,
+			},
+		]
+		se = SimpleNamespace(posting_date="2026-06-04", posting_time="10:00:00")
+		row = {
+			"item_code": "ITEM-1",
+			"s_warehouse": "WH-Src",
+			"t_warehouse": "WH-Dest",
+			"qty": 0.035,
+			"serial_no": None,
+			"batch_no": None,
+		}
+		out = msi._expand_source_rows_for_fifo(se, row)
+		self.assertEqual([r["batch_no"] for r in out], ["B-REAL1", "B-REAL2"])
+		self.assertAlmostEqual(sum(r["qty"] for r in out), 0.035)
+
+	@patch(f"{_MSI_PATH}._select_fifo_batches_reservable_at_dest", return_value=None)
+	@patch(f"{_MSI_PATH}.capped_auto_batch_nos")
+	@patch(f"{_MSI_PATH}.frappe.get_cached_value", return_value=1)
+	def test_throws_cleanly_when_real_batches_short(
+		self, _mock_item, mock_auto, _mock_select
+	):
+		# After the phantom is dropped, real stock genuinely cannot cover `need`:
+		# expect the clean "insufficient FIFO batch stock" shortfall throw, NOT a raw
+		# BatchNegativeStockError surfacing later at SLE submit.
+		mock_auto.return_value = [frappe._dict(batch_no="B-REAL1", qty=0.01)]
+		se = SimpleNamespace(posting_date="2026-06-04", posting_time="10:00:00")
+		row = {
+			"item_code": "ITEM-1",
+			"s_warehouse": "WH-Src",
+			"t_warehouse": "WH-Dest",
+			"qty": 0.035,
+			"serial_no": None,
+			"batch_no": None,
+		}
+		with self.assertRaises(frappe.ValidationError):
+			msi._expand_source_rows_for_fifo(se, row)

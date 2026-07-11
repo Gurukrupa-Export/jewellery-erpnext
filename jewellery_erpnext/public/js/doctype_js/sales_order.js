@@ -20,7 +20,6 @@ frappe.ui.form.on("Sales Order", {
 			}
 		}
 	},
-
 	refresh: function (frm) {
 		frm.add_custom_button(
 			__("Customer Approval"),
@@ -158,7 +157,6 @@ frappe.ui.form.on("Sales Order", {
 					},
 					callback: function (r) {
 						if (r.message) {
-
 						}
 					},
 				});
@@ -181,6 +179,7 @@ frappe.ui.form.on("Sales Order", {
 					{
 						item_code: d.item_code,
 						price_list: frm.doc.selling_price_list,
+						bom_no: d.bom,
 					},
 					"price_list_rate",
 					function (r) {
@@ -225,33 +224,6 @@ let filter_customer = (frm) => {
 };
 
 frappe.ui.form.on("Sales Order Item", {
-
-	// serial_no: function (frm, cdt, cdn) {
-	// 	let row = locals[cdt][cdn];
-
-	// 	if (!row.serial_no) return;
-	// 	// console.log("hii")
-	// 	frappe.db.get_doc('Serial No', row.serial_no)
-	// 		.then(serial_doc => {
-
-	// 			if (serial_doc.huid && serial_doc.huid.length > 0) {
-	// 				frappe.model.set_value(cdt, cdn, 'custom_huid', serial_doc.huid[0].huid
-	// 				);
-	// 				console.log("huid", serial_doc.huid[0].huid);
-	// 			}
-
-	// 			return frappe.db.get_doc('BOM', serial_doc.custom_bom_no);
-	// 		})
-	// 		.then(bom_doc => {
-	// 			console.log('diamond quality', bom_doc.diamond_quality);
-
-	// 			frappe.model.set_value(cdt, cdn, 'diamond_quality', bom_doc.diamond_quality
-	// 			);
-	// 		})
-	// 		.catch(err => {
-	// 			console.log(err);
-	// 		});
-	// },
 	edit_bom: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
 
@@ -561,6 +533,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Sieve Size Range"),
 				columns: 1,
 				read_only: 1,
+				in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -614,7 +587,6 @@ frappe.ui.form.on("Sales Order Item", {
 				read_only: 1,
 				columns: 1,
 			},
-
 			{
 				fieldtype: "Float",
 				fieldname: "total_diamond_rate",
@@ -977,7 +949,6 @@ frappe.ui.form.on("Sales Order Item", {
 				in_list_view: 1,
 				default: 1,
 			},
-
 			{
 				fieldtype: "Float",
 				fieldname: "making_rate",
@@ -1360,7 +1331,6 @@ frappe.ui.form.on("Sales Order Item", {
 					label: "Certification Amount",
 					read_only: 1,
 				},
-
 				{
 					fieldtype: "Column Break",
 				},

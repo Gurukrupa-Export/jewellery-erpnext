@@ -6,13 +6,10 @@ from frappe.model.workflow import apply_workflow
 from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days, now
 
-from jewellery_erpnext.create_test_data import create_test_data
-
 
 class TestSketchOrderForm(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)

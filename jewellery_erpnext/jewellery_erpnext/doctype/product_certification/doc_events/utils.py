@@ -525,6 +525,7 @@ def create_material_receipt_for_certification(self):
 	from jewellery_erpnext.jewellery_erpnext.lock_order import (
 		lock_bins,
 		preallocate_series_for_docs,
+		series_stubs,
 	)
 
 	_pc_pairs = [
@@ -532,7 +533,12 @@ def create_material_receipt_for_certification(self):
 		for rd in (main_rows + repack_rows)
 		for wh in ("s_warehouse", "t_warehouse")
 	]
-	preallocate_series_for_docs(frappe.new_doc("Stock Entry"))
+	# Pin the naming counter of BOTH nested SE types built below (the per-(company x
+	# type) Document Naming Rule counter post-reshard, or the tabSeries fallback).
+	# A blank stub matches no rule and would pin the wrong (shared MAT-STE-) row.
+	preallocate_series_for_docs(
+		*series_stubs(self.company, "Material Receipt for Certification", "Repack")
+	)
 	lock_bins(_pc_pairs)
 
 	# ── 1. Material Receipt for Certification — main item only ──
