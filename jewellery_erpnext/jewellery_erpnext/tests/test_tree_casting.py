@@ -431,9 +431,9 @@ def _recv_eir(rows, typ="Receive", loss_rows=None):
 		type=typ,
 		manually_book_loss_details=[
 			SimpleNamespace(
-				variant_of="M", manufacturing_work_order=m, proportionally_loss=l
+				variant_of="M", manufacturing_work_order=m, proportionally_loss=loss
 			)
-			for m, l in (loss_rows or [])
+			for m, loss in (loss_rows or [])
 		],
 		employee_loss_details=[],
 		employee_ir_operations=[
@@ -942,6 +942,7 @@ def _run(
 		patch.object(tse, "_resolve_msl_warehouse", return_value=msl_wh),
 		patch.object(tse, "_get_department_rm_warehouse", return_value=rm_wh),
 		patch.object(tse, "_resolve_scrap_warehouse", return_value=scrap_wh),
+		patch.object(tse, "_resolve_tree_loss_item", return_value="ML-LOSS-ITEM"),
 	):
 		fn(*args)
 	return fake
@@ -1020,20 +1021,26 @@ class TestReceiveMaterial(IntegrationTestCase):
 			tree,
 			[{"item_code": "GOLD-18KT", "receive_qty": 6.0, "loss_qty": 1.0}],
 		)
-		self.assertEqual(fake.stock_entry_type, "Material Transfer")
-		self.assertEqual(len(fake.items), 2)
+		# Both recv and loss SEs share the same _FakeSE stub (frappe.new_doc returns it
+		# twice). The stub accumulates all items: 1 from the Material Transfer recv SE
+		# + 2 from the Process Loss repack (consume + produce pair).
+		self.assertTrue(fake.submitted)
+		self.assertEqual(len(fake.items), 3)
 		received = fake.items[0]
-		loss = fake.items[1]
 		# received leg: MSL -> Dept RM
 		self.assertEqual(
 			(received.s_warehouse, received.t_warehouse), ("EMP-MSL", "DEPT-RM")
 		)
 		self.assertEqual(received.qty, 6.0)
-		# loss leg: MSL -> Dept Scrap
-		self.assertEqual(
-			(loss.s_warehouse, loss.t_warehouse), ("EMP-MSL", "DEPT-SCRAP")
-		)
-		self.assertEqual(loss.qty, 1.0)
+		# loss repack: consume metal at MSL (no target) + produce ML variant at Scrap (no source)
+		consume = fake.items[1]
+		produce = fake.items[2]
+		self.assertEqual(consume.s_warehouse, "EMP-MSL")
+		self.assertIsNone(consume.t_warehouse)
+		self.assertEqual(consume.qty, 1.0)
+		self.assertIsNone(produce.s_warehouse)
+		self.assertEqual(produce.t_warehouse, "DEPT-SCRAP")
+		self.assertEqual(produce.qty, 1.0)
 
 	def test_receive_partial_then_full_status(self):
 		tree = self._issued_tree(10.0)
@@ -1064,11 +1071,16 @@ class TestReceiveMaterial(IntegrationTestCase):
 			tree,
 			[{"item_code": "GOLD-18KT", "receive_qty": 0, "loss_qty": 4.0}],
 		)
-		self.assertEqual(len(fake.items), 1)
-		self.assertEqual(
-			(fake.items[0].s_warehouse, fake.items[0].t_warehouse),
-			("EMP-MSL", "DEPT-SCRAP"),
-		)
+		# Only the loss repack SE is posted (consume + produce = 2 items).
+		self.assertEqual(len(fake.items), 2)
+		consume = fake.items[0]
+		produce = fake.items[1]
+		self.assertEqual(consume.s_warehouse, "EMP-MSL")
+		self.assertIsNone(consume.t_warehouse)
+		self.assertEqual(consume.qty, 4.0)
+		self.assertIsNone(produce.s_warehouse)
+		self.assertEqual(produce.t_warehouse, "DEPT-SCRAP")
+		self.assertEqual(produce.qty, 4.0)
 		self.assertEqual(tree.material_details[0].pending_qty, 0.0)
 		self.assertEqual(tree.status, "Received")
 
@@ -1111,11 +1123,11 @@ class TestCastingTreeButtons(IntegrationTestCase):
 	def test_casting_issue_posts_se_and_increments_issue_qty(self):
 		tree = _new_tree(employee_ir="EIR-CASTING-0001")
 		fake = _run(tse.issue_material, tree, "GOLD-18KT", 5.0)
-		self.assertEqual(fake.stock_entry_type, "Material Transfer")
+		self.assertEqual(fake.stock_entry_type, "Material Transfer (MAIN SLIP)")
 		self.assertTrue(fake.submitted)
 		self.assertEqual(tree.material_details[0].issue_qty, 5.0)
 
-	def test_casting_receive_is_record_only_and_auto_dusts(self):
+	def test_casting_receive_posts_se_for_casting_tree(self):
 		tree = _new_tree(
 			employee_ir="EIR-CASTING-0001",
 			material_details=[
@@ -1131,14 +1143,12 @@ class TestCastingTreeButtons(IntegrationTestCase):
 		fake = _run(
 			tse.receive_material, tree, [{"item_code": "GOLD-18KT", "receive_qty": 6.0}]
 		)
-		# Record-only: NO Stock Entry is built/submitted for a casting tree.
-		self.assertEqual(len(fake.items), 0)
-		self.assertFalse(fake.submitted)
+		# Casting tree receive posts a real SE (Material Transfer MAIN SLIP).
+		self.assertTrue(fake.submitted)
+		self.assertEqual(len(fake.items), 1)
 		md = tree.material_details[0]
 		self.assertEqual(md.receive_qty, 6.0)
-		self.assertEqual(md.loss_qty, 4.0)  # dust = pending - receive
-		self.assertEqual(md.pending_qty, 0.0)
-		self.assertEqual(tree.status, "Received")
+		self.assertEqual(md.pending_qty, 4.0)
 
 	def test_casting_receive_caps_at_issued(self):
 		tree = _new_tree(
