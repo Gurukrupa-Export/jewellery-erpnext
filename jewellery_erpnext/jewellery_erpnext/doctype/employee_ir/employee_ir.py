@@ -73,7 +73,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_resolve_department_warehouse,
 )
 from jewellery_erpnext.utils import (
-	get_item_from_attribute_full,
+	get_item_from_attribute_full,  # noqa: F401 – patched by tests
 )
 
 
@@ -677,10 +677,32 @@ class EmployeeIR(Document):
 					mwo, opt, gwt, r_gwt, allowed_loss_percentage
 				)
 
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
+			batch_owner_no_wastage,
+		)
+
 		self.employee_loss_details = []
 		for row in rows_to_append:
 			proportionally_loss = flt(row["proportionally_loss"], 3)
 			if proportionally_loss > 0:
+				# No wastage for customer-supplied material: block loss on a no-wastage
+				# customer's batch so it never becomes a customer-owned scrap batch. The
+				# operator must receive the full weight (received == issued) for the
+				# operation holding this customer's material; the unused metal returns as
+				# raw material.
+				if batch_owner_no_wastage(row.get("batch_no")):
+					frappe.throw(
+						_(
+							"No wastage is allowed for customer material (MWO {0}, operation "
+							"{1}, batch {2}). Set the received gross weight equal to the issued "
+							"weight so no loss is booked; the unused metal is returned as raw "
+							"material."
+						).format(
+							row.get("manufacturing_work_order"),
+							row.get("manufacturing_operation"),
+							row.get("batch_no"),
+						)
+					)
 				variant_of = frappe.db.get_value("Item", row["item_code"], "variant_of")
 				self.append(
 					"employee_loss_details",
@@ -752,20 +774,6 @@ class EmployeeIR(Document):
 			)
 			# Declaration & fetch required value
 			sum_qty = {}  # for sum of qty matched item
-
-			# getting Metal property from MNF Work Order
-			mwo_metal_property = frappe.get_cached_value(
-				"Manufacturing Work Order",
-				mwo,
-				[
-					"metal_type",
-					"metal_touch",
-					"metal_purity",
-					"master_bom",
-					"is_finding_mwo",
-				],
-				as_dict=1,
-			)
 
 			# Keep only the latest qty snapshot per (item_code, batch_no).
 			# qty_after_transaction_batch_based is a running balance so the last
