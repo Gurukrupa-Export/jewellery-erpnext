@@ -1,0 +1,70 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-07-10 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "item_code",
+  "issue_qty",
+  "receive_qty",
+  "loss_qty",
+  "pending_qty"
+ ],
+ "fields": [
+  {
+   "columns": 4,
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "issue_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Issue Qty",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "receive_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Receive Qty",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "loss_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Loss Qty",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "fieldname": "pending_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Pending Qty",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-10 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "Warehouse MSL Tracking",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

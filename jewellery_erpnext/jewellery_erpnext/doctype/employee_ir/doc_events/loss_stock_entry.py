@@ -491,8 +491,7 @@ def _resolve_raw_material_warehouse(eir):
 		if not wh:
 			frappe.throw(
 				_(
-					"Employee IR {0}: No Raw Material warehouse found for "
-					"employee {1}"
+					"Employee IR {0}: No Raw Material warehouse found for employee {1}"
 				).format(eir.name, eir.employee)
 			)
 	return wh

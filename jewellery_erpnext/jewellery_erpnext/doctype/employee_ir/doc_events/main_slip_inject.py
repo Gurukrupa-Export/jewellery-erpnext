@@ -52,12 +52,12 @@ from __future__ import annotations
 
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
-from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
-	get_auto_batch_nos,
-)
 from frappe import _
 from frappe.utils import cint, flt, nowtime, today
 
+from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+	capped_auto_batch_nos,
+)
 from jewellery_erpnext.utils import get_item_from_attribute
 
 REPACK_STOCK_ENTRY_TYPE = "Repack"
@@ -122,7 +122,7 @@ def _expand_source_rows_for_fifo(se, row):
 		for_stock_levels=False,
 		consider_negative_batches=False,
 	)
-	batches = get_auto_batch_nos(kwargs) or []
+	batches = capped_auto_batch_nos(kwargs) or []
 
 	# Transfer rows land in a MOP department warehouse where the EIR injection then
 	# creates a Stock Reservation Entry. ERPNext's SRE before_submit independently
@@ -192,7 +192,7 @@ def _select_fifo_batches_reservable_at_dest(se, item_code, s_wh, t_wh, need):
 	when the reservable batches cannot cover it (caller falls back to plain FIFO).
 	"""
 	all_batches = (
-		get_auto_batch_nos(
+		capped_auto_batch_nos(
 			frappe._dict(
 				posting_date=se.posting_date,
 				posting_time=se.posting_time,

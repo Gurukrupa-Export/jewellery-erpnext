@@ -1,6 +1,8 @@
-import frappe
 import json
+
+import frappe
 from frappe.utils import flt
+
 
 @frappe.whitelist()
 def get_summary_data(doc):

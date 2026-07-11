@@ -61,6 +61,14 @@ frappe.ui.form.on("Metal Conversions", {
 		// Clear All Fields
 		clear_metal_field(frm);
 	},
+	is_melting_loss(frm) {
+		if (frm.doc.is_melting_loss) {
+			// Loss-recording mode: drop every conversion-only field.
+			clear_metal_field(frm);
+		} else {
+			frm.set_value("loss_qty", null);
+		}
+	},
 	batch(frm) {
 		frm.set_value("batch_available_qty", null);
 		frm.set_value("supplier", null);
@@ -118,12 +126,7 @@ frappe.ui.form.on("MC Source Table", {
 				callback: (r) => {
 					if (r.message) {
 						var child_doc = locals[cdt][cdn];
-						frappe.model.set_value(
-							child_doc.doctype,
-							child_doc.name,
-							"total",
-							r.message[0]
-						);
+						frappe.model.set_value(child_doc.doctype, child_doc.name, "total", r.message[0]);
 					}
 				},
 			});
@@ -182,11 +185,7 @@ function set_batch_filter(frm, field_name) {
 	};
 }
 function set_child_table_batch_filter(frm, child_table_name) {
-	frm.fields_dict[child_table_name].grid.get_field("batch").get_query = function (
-		doc,
-		cdt,
-		cdn
-	) {
+	frm.fields_dict[child_table_name].grid.get_field("batch").get_query = function (doc, cdt, cdn) {
 		var child = locals[cdt][cdn];
 		console.log(child.item_code);
 		return {
@@ -256,9 +255,7 @@ function calculate_metal(frm) {
 						clear_alloy(frm);
 						frappe.show_alert(
 							{
-								message: __(
-									"Alloy Selection Invisible Due to Calculation is <b>0</b>"
-								),
+								message: __("Alloy Selection Invisible Due to Calculation is <b>0</b>"),
 								indicator: "green",
 							},
 							5
@@ -361,18 +358,8 @@ function set_batch_value(frm, cdt, cdn) {
 					"batch_available_qty",
 					r.message[0]
 				);
-				frappe.model.set_value(
-					child_doc.doctype,
-					child_doc.name,
-					"supplier",
-					r.message[1]
-				);
-				frappe.model.set_value(
-					child_doc.doctype,
-					child_doc.name,
-					"customer",
-					r.message[2]
-				);
+				frappe.model.set_value(child_doc.doctype, child_doc.name, "supplier", r.message[1]);
+				frappe.model.set_value(child_doc.doctype, child_doc.name, "customer", r.message[2]);
 				if (!r.message[3]) {
 					frappe.model.set_value(
 						child_doc.doctype,
@@ -381,12 +368,7 @@ function set_batch_value(frm, cdt, cdn) {
 						"Regular Stock"
 					);
 				} else {
-					frappe.model.set_value(
-						child_doc.doctype,
-						child_doc.name,
-						"inventory_type",
-						r.message[3]
-					);
+					frappe.model.set_value(child_doc.doctype, child_doc.name, "inventory_type", r.message[3]);
 				}
 			}
 		},

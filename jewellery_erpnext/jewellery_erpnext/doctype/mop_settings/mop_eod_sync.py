@@ -183,7 +183,9 @@ def sync_mop_logs(sync_log_name=None, from_datetime=None, to_datetime=None):
 				if result["kind"] == "resolvable":
 					main_buckets.setdefault(bucket_key, []).append(result)
 				elif result["kind"] == "failed" and result.get("issues_rows"):
-					issues_buckets.setdefault(bucket_key, []).extend(result["issues_rows"])
+					issues_buckets.setdefault(bucket_key, []).extend(
+						result["issues_rows"]
+					)
 
 			# COMMIT: one submitted Material Transfer to Department per (company,
 			# manufacturer) for all resolvable MWOs.
@@ -333,9 +335,7 @@ def sync_mop_logs(sync_log_name=None, from_datetime=None, to_datetime=None):
 def _bulk_set_child_rows(child_row_names, values):
 	"""Apply the same field updates to a list of MOP EOD Sync Log Item rows."""
 	for rn in child_row_names or []:
-		frappe.db.set_value(
-			"MOP EOD Sync Log Item", rn, values, update_modified=False
-		)
+		frappe.db.set_value("MOP EOD Sync Log Item", rn, values, update_modified=False)
 
 
 def _plan_mwo_group(
@@ -628,8 +628,43 @@ def _plan_mwo_group(
 	}
 
 
+def _rollback_to_savepoint(save_point):
+	"""Roll back to ``save_point``, tolerating its absence (F-012).
+
+	A deadlock (MariaDB 1213) rolls back the ENTIRE transaction and discards every
+	savepoint. A subsequent ``rollback(save_point=...)`` from inside a failure handler
+	would then raise 1305 ("SAVEPOINT ... does not exist"), and that secondary error
+	would propagate out and abort the rest of the EOD run (all remaining buckets). A 1205
+	lock-wait timeout rolls back only the statement (savepoint intact) and takes the
+	normal path.
+
+	When the savepoint rollback fails, fall back to a FULL ``frappe.db.rollback()``
+	(guarded): in the dominant 1305-after-1213 case the server has already discarded
+	every uncommitted write, so the full rollback loses nothing and merely re-aligns
+	frappe's client-side transaction state before the caller's failure-bookkeeping
+	writes; in the residual savepoint-gone-but-transaction-alive case it prevents the
+	next per-bucket commit from persisting a half-applied bucket (e.g. cancelled SREs
+	without the submitted SE). All four callers only record in-memory failures/stats
+	plus re-issue child-row status writes afterwards, so a full rollback is safe."""
+	try:
+		frappe.db.rollback(save_point=save_point)
+	except Exception:
+		try:
+			frappe.db.rollback()
+		except Exception:
+			# Even the full rollback failed (dead connection etc.) -- nothing more we
+			# can do here; the caller's bookkeeping/commit will surface the state.
+			pass
+
+
 def _commit_company_main_se(
-	company, manufacturer, main_mwos, failures, stats, sync_log_name=None, selective=False
+	company,
+	manufacturer,
+	main_mwos,
+	failures,
+	stats,
+	sync_log_name=None,
+	selective=False,
 ):
 	"""Build ONE submitted *Material Transfer to Department* for all resolvable MWOs of a
 	(company, manufacturer).
@@ -660,7 +695,7 @@ def _commit_company_main_se(
 		)
 		frappe.db.release_savepoint("eod_draft_phase")
 	except Exception as exc:
-		frappe.db.rollback(save_point="eod_draft_phase")
+		_rollback_to_savepoint("eod_draft_phase")
 		failures.append(
 			{
 				"step": "draft_save",
@@ -727,7 +762,7 @@ def _commit_company_main_se(
 		# Whole Phase-2 savepoint rolled back: submit + SRE cancel/re-reserve undone, so
 		# reservations are restored. The Phase-1 draft (saved before this savepoint)
 		# survives for manual recovery.
-		frappe.db.rollback(save_point="eod_submit_phase")
+		_rollback_to_savepoint("eod_submit_phase")
 		failures.append(
 			{
 				"step": "submit",
@@ -762,7 +797,9 @@ def _commit_company_main_se(
 		)
 
 
-def _commit_company_issues_se(company, manufacturer, issues_rows, stats, sync_log_name=None):
+def _commit_company_issues_se(
+	company, manufacturer, issues_rows, stats, sync_log_name=None
+):
 	"""Best-effort single DRAFT *Material Transfer to Department* holding the buildable
 	rows of failed MWOs, for visibility. Wrapped so it can never block the run."""
 	if not issues_rows:
@@ -781,7 +818,7 @@ def _commit_company_issues_se(company, manufacturer, issues_rows, stats, sync_lo
 		frappe.db.release_savepoint("eod_issues_phase")
 		stats["draft_ses"].append(draft_se_name)
 	except Exception:
-		frappe.db.rollback(save_point="eod_issues_phase")
+		_rollback_to_savepoint("eod_issues_phase")
 		frappe.logger().exception(
 			"MOP EOD Sync: could not build draft issues SE for %s / %s",
 			company,
@@ -961,7 +998,7 @@ def _reconcile_reservations_for_mwo(mwo, dry_run=True):
 					frappe.logger().info("%s CANCELLED.", msg)
 					frappe.db.release_savepoint("eod_sre_reconcile")
 				except Exception:
-					frappe.db.rollback(save_point="eod_sre_reconcile")
+					_rollback_to_savepoint("eod_sre_reconcile")
 					frappe.logger().exception(
 						"EOD SRE reconcile cancel failed: %s", sre.name
 					)
@@ -1825,7 +1862,9 @@ def _eod_physical_batch_qty(item_code, batch_no, warehouse):
 		return 0.0
 
 
-def _pick_eod_source_warehouse(item_code, batch_no, required_qty, candidates, t_warehouse):
+def _pick_eod_source_warehouse(
+	item_code, batch_no, required_qty, candidates, t_warehouse
+):
 	"""Choose the EOD source warehouse by PHYSICAL batch stock (the SRE is only logical).
 
 	``candidates`` is the ordered list of SRE-derived source warehouses for the (item,
@@ -1855,11 +1894,17 @@ def _pick_eod_source_warehouse(item_code, batch_no, required_qty, candidates, t_
 
 	tol = 1e-6
 	# 1. Physically already at the target department warehouse -> completed no-op.
-	if flt(_eod_physical_batch_qty(item_code, batch_no, t_warehouse) or 0) + tol >= required_qty:
+	if (
+		flt(_eod_physical_batch_qty(item_code, batch_no, t_warehouse) or 0) + tol
+		>= required_qty
+	):
 		return t_warehouse
 	# 2. First candidate warehouse that physically covers the qty.
 	for wh in candidates:
-		if flt(_eod_physical_batch_qty(item_code, batch_no, wh) or 0) + tol >= required_qty:
+		if (
+			flt(_eod_physical_batch_qty(item_code, batch_no, wh) or 0) + tol
+			>= required_qty
+		):
 			return wh
 	# 3/4. Nothing covers it: keep the first (active-ordered) candidate so batch_short fires
 	# with real numbers; only the genuine "no candidate at all" case is left unresolved.

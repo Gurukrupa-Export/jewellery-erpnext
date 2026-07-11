@@ -7,17 +7,46 @@ def crate_autoname(self):
 	self.naming_series = "M-" + company_abbr + "-.{category_code}.-.#####"
 
 
-def get_current_mould_no(item_code):
-	"""Single source of truth: return the Mould.mould_no for item_code, or None."""
+def get_current_mould_id(item_code):
+	"""Single source of truth: return the Mould List ID (the Mould docname) for
+	item_code, or None. This is the value propagated to Manufacturing Plan / PMO /
+	MWO -- the Mould's own ``mould_no`` (a warehouse/rake/tray/box location string)
+	is a separate concern and is often blank for auto-created Moulds."""
 	if not item_code:
 		return None
-	return frappe.db.get_value("Mould", {"item_code": item_code}, "mould_no")
+	return frappe.db.get_value(
+		"Mould", {"item_code": item_code}, "name", order_by="creation desc"
+	)
+
+
+def get_mould_id_map(item_codes):
+	"""Batched version of get_current_mould_id for many item_codes at once."""
+	item_codes = {code for code in item_codes if code}
+	if not item_codes:
+		return {}
+	rows = frappe.get_all(
+		"Mould",
+		filters={"item_code": ["in", list(item_codes)]},
+		fields=["item_code", "name"],
+		order_by="creation desc",
+	)
+	mould_map = {}
+	for row in rows:
+		mould_map.setdefault(row.item_code, row.name)
+	return mould_map
+
+
+def mould_exists_for_item(item_code, exclude=None):
+	if not item_code:
+		return None
+	filters = {"item_code": item_code}
+	if exclude:
+		filters["name"] = ["!=", exclude]
+	return frappe.db.exists("Mould", filters)
 
 
 def validate_unique_item_code(self):
-	existing = frappe.db.exists(
-		"Mould", {"item_code": self.item_code, "name": ["!=", self.name]}
-	)
+	existing = mould_exists_for_item(self.item_code, exclude=self.name)
 	if existing:
 		frappe.throw(
 			_(
@@ -31,7 +60,12 @@ def clear_item_mould_cache(self, method=None):
 
 
 def update_details(self):
-	if self.is_new():
+	# Compute the location string (mould_no) only once every input is present.
+	# Auto-created Moulds (Employee IR casting flow) are inserted with blank
+	# warehouse/rake/tray/box; leave mould_no blank (no throw, no rake[0] crash)
+	# until the user fills them in on the Mould screen -- at which point a normal
+	# save recomputes mould_no and refreshes the Item.mould cache.
+	if not (self.warehouse and self.rake and self.tray_no and self.box_no):
 		return
 	rake = self.rake
 	rake = rake[0].capitalize()

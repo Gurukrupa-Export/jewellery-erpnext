@@ -878,14 +878,6 @@ def create_mop_log_for_employee_ir_receive(
 	full_loss_map = get_employee_ir_loss_map(doc)
 	consumed_loss_keys = set()
 
-	# Build the EIR-wide loss map once, then narrow to entries that match
-	# THIS receive row's MOP+MWO. Prior loss buckets get consumed exactly
-	# once across the source-log loop; if multiple source logs match the
-	# same (item, batch), only the first one absorbs the loss to prevent
-	# double-subtraction.
-	full_loss_map = get_employee_ir_loss_map(doc)
-	consumed_loss_keys = set()
-
 	for log in mop_logs:
 		loss_key = (
 			row.manufacturing_operation,
