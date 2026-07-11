@@ -189,6 +189,9 @@ def _apply_kg_gk_diamond_sieve(doc, diamond, price_list_type, customer):
 	if entries:
 		entry = entries[0]
 		diamond.total_diamond_rate = entry.get("rate", 0)
+		diamond.diamond_rate_for_specified_quantity = (
+			diamond.total_diamond_rate * diamond.quantity
+		)
 		diamond.fg_purchase_rate = entry.get("supplier_fg_purchase_rate", 0)
 		diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 
@@ -282,6 +285,9 @@ def _apply_standard_diamond_sieve(doc, diamond, price_list_type):
 	if entries:
 		entry = entries[0]
 		diamond.total_diamond_rate = entry.get("rate", 0)
+		diamond.diamond_rate_for_specified_quantity = (
+			diamond.total_diamond_rate * diamond.quantity
+		)
 		diamond.fg_purchase_rate = entry.get("supplier_fg_purchase_rate", 0)
 		diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 
