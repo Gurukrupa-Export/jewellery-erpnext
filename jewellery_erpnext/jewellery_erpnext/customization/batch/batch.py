@@ -270,11 +270,11 @@ def on_update(doc, method):
 
 import frappe
 from frappe import _
-from frappe.utils import today, now_datetime
+from frappe.utils import today, now_datetime, get_datetime
 
 
 @frappe.whitelist()
-def create_repack_stock_entry(batch_no, item_code, qty, target_rate, company, warehouse):
+def create_repack_stock_entry(batch_no, item_code, qty, target_rate, company, warehouse, posting_datetime=None):
     qty = float(qty)
     target_rate = float(target_rate)
 
@@ -303,9 +303,15 @@ def create_repack_stock_entry(batch_no, item_code, qty, target_rate, company, wa
     se.stock_entry_type = "Repack"
     se.purpose = "Repack"
     se.company = company
-    se.posting_date = today()
-    se.posting_time = now_datetime().strftime("%H:%M:%S")
-    se.set_posting_time = 0
+    if posting_datetime:
+        dt = get_datetime(posting_datetime)
+        se.posting_date = dt.date()
+        se.posting_time = dt.strftime("%H:%M:%S")
+        se.set_posting_time = 1
+    else:
+        se.posting_date = today()
+        se.posting_time = now_datetime().strftime("%H:%M:%S")
+        se.set_posting_time = 0
 
     # --- Source Row (outgoing) — let ERPNext auto-fetch rate from SLE ---
     se.append("items", {
@@ -352,6 +358,10 @@ def create_repack_stock_entry(batch_no, item_code, qty, target_rate, company, wa
     se.insert(ignore_permissions=True)
     se.submit()
 
+    # --- Fetch the ACTUAL net amount ERPNext posted to Stock Adjustment ---
+    # (se.value_difference is unreliable for batch-valued items — it's based on
+    # the row's stored basic_rate, not the batch-specific valuation rate that
+    # the Stock Ledger/GL actually used at submit time)
     gl_totals = frappe.db.get_all(
         "GL Entry",
         filters={
@@ -369,13 +379,13 @@ def create_repack_stock_entry(batch_no, item_code, qty, target_rate, company, wa
 
 
     # --- Create Journal Entry only if there is a difference ---
-    if net_stock_adjustment != 0:
+    if net_stock_adjustment  != 0:
         je = _create_repack_journal_entry(
             se_name=se.name,
             company=company,
             cost_center=cost_center,
             expense_account=expense_account,
-            value_difference=net_stock_adjustment,
+            value_difference=net_stock_adjustment ,
             posting_date=se.posting_date
         )
         return {"stock_entry": se.name, "journal_entry": je}
@@ -448,6 +458,5 @@ def _create_repack_journal_entry(
     je.submit()
 
     return je.name
-
 
 

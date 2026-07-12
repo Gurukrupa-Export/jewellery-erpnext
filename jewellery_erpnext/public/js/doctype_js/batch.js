@@ -1,3 +1,4 @@
+
 frappe.ui.form.on("Batch", {
 refresh: (frm) => {
 		if (!frm.is_new()) {
@@ -52,6 +53,13 @@ function make_repack_dialog(frm) {
                         }
                     };
                 }
+            },
+            {
+                fieldname: "posting_datetime",
+                fieldtype: "Datetime",
+                label: __("Posting Date & Time"),
+                reqd: 1,
+                default: frappe.datetime.now_datetime()
             }
         ],
         primary_action_label: __("Submit"),
@@ -69,7 +77,8 @@ function make_repack_dialog(frm) {
                             qty: values.qty,
                             target_rate: values.rate,
                             company: frm.doc.custom_company,
-                            warehouse: values.warehouse
+                            warehouse: values.warehouse,
+                            posting_datetime: values.posting_datetime
                         },
                         freeze: true,
                         freeze_message: __("Creating Repack Entry..."),
