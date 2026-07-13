@@ -202,7 +202,7 @@ def tax(self):
 				self.rounded_total =self.grand_total
 
 def set_gst_details(self):
-    if self.sales_type not in ("Finished Goods", "Subcontracting"):
+    if self.sales_type not in ("Finished Goods", "Subcontracting","Branch Sales"):
         return
 
     customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
@@ -217,6 +217,9 @@ def set_gst_details(self):
         "Finished Goods": {
             "Gurukrupa Export Private Limited": "GST 3% - GEPL",
             "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
+        },
+		"Branch Sales": {
+        "Gurukrupa Export Private Limited": "GST 3% - GEPL"
         },
         "Subcontracting": {
             "Gurukrupa Export Private Limited": "GST 5% - GEPL",
@@ -341,6 +344,10 @@ def _get_bom_context(self):
         ["customer_group", "custom_precision_variable",
          "custom_precision_for_metal", "custom_precision_for_stone","custom_precision_for_net_weight","custom_precision_for_gross_weight"],
     )
+    if self.custom_precision: 
+        metal_precision  = 2 
+    if self.custom_precision_for_stone:
+        stone_precision = 2
     return frappe._dict(
         gold_gst_rate=gold_gst_rate,
         customer_group=customer_group,
@@ -414,13 +421,13 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
     Cached — keyed by subcategory too so different BOM types
     don't share each other's making charge rows.
     """
-    if self.company == "KG GK Jewellers Private Limited":
-        effective_customer = cctx.reference_customer
-        # frappe.throw(f"{effective_customer}")
-    elif self.company == "Gurukrupa Export Private Limited" and ctx.customer_group == "Internal":
-        effective_customer = cctx.reference_customer_c2c
-    else:
-        effective_customer = self.customer
+    # if self.company == "KG GK Jewellers Private Limited":
+    #     effective_customer = cctx.reference_customer
+    #     # frappe.throw(f"{effective_customer}")
+    # elif self.company == "Gurukrupa Export Private Limited" and ctx.customer_group == "Internal":
+    #     effective_customer = cctx.reference_customer_c2c
+    # else:
+    effective_customer = self.customer
 
     # ← FIX: include item_subcategory in cache key
     cache_key = (
@@ -544,7 +551,20 @@ def _get_calculated_gold_rate(customer, metal_type, metal_touch,gold_rate_with_g
         ) / (100 + int(gold_gst_rate))
     return _gold_rate_cache[key]
 
+def get_stock_entry_additional_cost(self, doc):
 
+    creation_docname = getattr(doc, "custom_creation_docname", None)
+    if not creation_docname:
+        return 0
+
+    stock_entry = frappe.db.get_value(
+        "Stock Entry",
+        {"custom_serial_number_creator": creation_docname},
+        ["name", "total_additional_costs"],
+        as_dict=True,
+    )
+
+    return stock_entry.total_additional_costs if stock_entry else 0
 def _process_metal_detail(self, doc, ctx, cctx):
     if not hasattr(doc, "metal_detail"):
         return
@@ -640,23 +660,30 @@ def _process_metal_detail1(self, doc, ctx, cctx):
     if not hasattr(doc, "metal_detail"):
         return
     metal_prec = int(ctx.metal_precision or 3)
-    for s in doc.metal_detail:
 
-        s.quantity = round(s.quantity, metal_prec)
+    operational_cost = get_stock_entry_additional_cost(self,doc)
+    chain_weight = sum(
+        r.quantity for r in doc.finding_detail
+        if r.finding_category == 'Chains'
+    )
+    total_weight = doc.metal_and_finding_weight + chain_weight
+    for s in doc.metal_detail:
+        
         customer_metal_purity = _metal_purity_cache.get(
                 (self.customer, s.metal_type, s.metal_touch)
             )
+        s.quantity = round(s.quantity, metal_prec)
+
         if self.company == "Gurukrupa Export Private Limited" and ctx.customer_group == "Internal":
             if s.is_customer_item:
                 s.rate           = 0
-                # s.making_rate    = sub_info.get("subcontracting_rate", 0)
-                s.making_rate=  550 if doc.item_category != 'Chains' else 200 
+                s.making_rate=operational_cost/total_weight
                 s.wastage_rate   = 0
                 s.wastage_amount = 0
             else:
                 s.rate= round(s.se_rate,2)
                 s.wastage_rate          = 0
-                s.making_rate= 550 if doc.item_category != 'Chains' else 200 
+                s.making_rate=operational_cost/total_weight
                 s.wastage_amount        = 0
                 s.customer_metal_purity = customer_metal_purity
             s.amount        = round(s.rate * s.quantity, 2)
@@ -665,21 +692,23 @@ def _process_metal_detail1(self, doc, ctx, cctx):
         elif self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal":
             if s.is_customer_item:
                 s.rate          = s.se_rate
-                s.making_rate   = 550 if doc.item_category != 'Chains' else 200 
+                s.making_rate=operational_cost/total_weight
                 s.making_amount = round(s.making_rate * s.quantity, 2)
             else:
                 if cctx.billing_currency == "USD":
                     s.se_rate     = s.se_rate * cctx.exchange_rate
-                    s.making_rate =(550 if doc.item_category != 'Chains' else 200 )*cctx.exchange_rate
+                    s.making_rate=(operational_cost/total_weight)*cctx.exchange_rate
                 else:
-                    s.making_rate =550 if doc.item_category != 'Chains' else 200 
+                    s.making_rate=operational_cost/total_weight
                 s.rate           = s.se_rate
                 s.wastage_rate   = 0
                 s.wastage_amount = 0
                 s.making_amount  = round(s.making_rate * s.quantity, 2)
             s.amount = round(s.rate * s.quantity, 2)
+
         else:
             _, sub_info, threshold = _get_making_charge(self, doc, s.metal_touch, ctx, cctx)
+            # frappe.throw(str(sub_info))
             calculated_gold_rate  = _get_calculated_gold_rate(
                 self.customer, s.metal_type, s.metal_touch,
                 self.gold_rate_with_gst, ctx.gold_gst_rate,
@@ -691,6 +720,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
             else:
                 making_rate        = sub_info.get("rate_per_gm", 0)
                 wastage_rate_value = sub_info.get("wastage", 0) / 100.0
+
 
             if s.is_customer_item:
                 s.rate          = 0
@@ -708,7 +738,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
                 s.amount                = round(s.rate * s.quantity, 2)
                 s.making_rate           = making_rate
                 s.making_amount         = (
-                    s.making_rate if doc.metal_and_finding_weight < 2
+                    s.making_rate if doc.metal_and_finding_weight < threshold
                     else s.making_rate * s.quantity
                 )
                 s.wastage_rate   = wastage
@@ -717,10 +747,13 @@ def _process_metal_detail1(self, doc, ctx, cctx):
                     if self.customer != "TNCU0101"
                     else s.wastage_rate * s.quantity * self.gold_rate
                 )
+                # frappe.throw(str(s.making_rate))
 
     doc.total_metal_amount   = sum(flt(r.amount)        for r in doc.get("metal_detail",   []))
     doc.total_wastage_amount = sum(flt(r.wastage_amount) for r in doc.get("metal_detail",   []))
+    # frappe.msgprint(f"it7t6{doc.total_wastage_amount},{sum(flt(r.wastage_amount) for r in doc.get("finding_detail",   []))}")
     doc.total_making_amount  = sum(flt(r.making_amount)  for r in doc.get("metal_detail",   []))
+
 
 def _process_finding_detail(self, doc, ctx, cctx):
     if not hasattr(doc, "finding_detail") or not doc.finding_detail:
@@ -927,13 +960,20 @@ def _get_finding_sub_info(mc_name, finding_type, doc):
 
 def _process_finding_detail1(self, doc, ctx, cctx):
     if not hasattr(doc, "finding_detail") or not doc.finding_detail:
+        doc.total_finding_amount =0
+        
         return
 
     finding_cache = {}   # local per-BOM-doc: finding_type → find_data
     f_metal_prec = int(ctx.metal_precision or 3)
-
+    operational_cost = get_stock_entry_additional_cost(self,doc)
+    chain_weight = sum(
+        r.quantity for r in doc.finding_detail
+        if r.finding_category == 'Chains'
+    )
+    total_weight = doc.metal_and_finding_weight + chain_weight
     for f in doc.finding_detail:
-        
+        # frappe.msgprint("jhgh")
         customer_metal_purity = _metal_purity_cache.get(
             (self.customer, f.metal_type, f.metal_touch)
         )
@@ -944,7 +984,7 @@ def _process_finding_detail1(self, doc, ctx, cctx):
         if f.is_customer_item:
             f.rate           = 0
             f.amount         = 0
-            f.making_rate    = find_data.get("subcontracting_rate")
+            # f.making_rate    = find_data.get("subcontracting_rate")
             f.wastage_rate   = 0
             f.wastage_amount = 0
             f.making_amount  = round(f.making_rate * f.quantity, 2)
@@ -953,7 +993,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
             # f.rate           = round(calculated_gold_rate, 2)
             f.rate= round(f.se_rate,2)
             f.amount         = round(f.rate * f.quantity, 2)
-            f.making_rate    = 550 if f.finding_category != 'Chains' else 200 
+            # f.making_rate    = 550 if f.finding_category != 'Chains' else 200 
+            f.making_rate=operational_cost/total_weight
             f.wastage_rate   = 0
             f.wastage_amount = 0
             f.making_amount  = round(f.making_rate * f.quantity, 2)
@@ -961,10 +1002,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
         elif self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal":
             if cctx.billing_currency == "USD":
                 f.se_rate     = f.se_rate * cctx.exchange_rate
-                # f.making_rate = find_data.get("supplier_fg_purchase_rate") * cctx.exchange_rate
             else:
-                f.making_rate    = 550 if f.finding_category != 'Chains' else 200 
-            # f.rate           = round(calculated_gold_rate, 2)
+                f.making_rate=operational_cost/total_weight
             f.rate= round(f.se_rate,2)
             f.amount         = round(f.rate * f.quantity, 2)
             f.wastage_rate   = 0
@@ -977,6 +1016,7 @@ def _process_finding_detail1(self, doc, ctx, cctx):
             finding_type = f.finding_type
             if finding_type not in finding_cache:
                 finding_cache[finding_type] = _get_finding_sub_info(mc_name, finding_type, doc)
+                
 
             find_data = finding_cache[finding_type]
 
@@ -987,7 +1027,7 @@ def _process_finding_detail1(self, doc, ctx, cctx):
             f.rate   = round(calculated_gold_rate, 2)
             f.amount = round(f.rate * f.quantity, 2)
             finding_weight = getattr(doc, "metal_and_finding_weight", None)
-            if finding_weight is not None and finding_weight < 2:
+            if finding_weight is not None and finding_weight < threshold:
                 making_rate     = find_data.get("rate_per_pc", 0)
                 wastage_rate    = find_data.get("wastage_per_pcs", 0) / 100.0
                 f.making_amount = making_rate
@@ -996,14 +1036,16 @@ def _process_finding_detail1(self, doc, ctx, cctx):
                 wastage_rate    = find_data.get("wastage", 0) / 100.0
                 f.making_amount = making_rate * f.quantity
             f.making_rate    = making_rate
+            # frappe.msgprint(f"kjh{f.making_amount}")
             f.wastage_rate   = wastage_rate
             f.wastage_amount = (
                 f.wastage_rate * f.amount
                 if self.customer != "TNCU0101"
                 else f.wastage_rate * f.quantity * self.gold_rate
             )
-
+    
     doc.total_finding_amount         = sum(flt(r.amount)        for r in doc.get("finding_detail", []))
+   
     doc.total_finding_making_amount  = sum(flt(r.making_amount) for r in doc.get("finding_detail", []))
     doc.total_finding_wastage_amount = sum(flt(r.wastage_amount) for r in doc.get("finding_detail", []))
 
@@ -1081,6 +1123,8 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
                             "outwork_handling_charges_rate"],
                 )
             if not gpc:
+                gem.gemstone_rate_for_specified_quantity=0
+                gem.total_gemstone_rate = 0
                 frappe.msgprint(
                     f'No Gemstone Price List found: {gem.get("per_pc_or_per_carat")}, '
                     f'{gem.get("cut_or_cab")}, {gem.get("gemstone_type")}, {gem.get("stone_shape")}'
@@ -1385,6 +1429,7 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 #         doc.diamond_bom_amount = doc.total_diamond_amount
 def _process_diamond_detail(self, doc, ctx, row, cctx):
     if not hasattr(doc, "diamond_detail"):
+        doc.total_diamond_amount=0
         return
 
     from_site = frappe.db.get_single_value("Data Migration in KGGK", "from_site_1")
@@ -1392,11 +1437,12 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
     api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
     use_api   = bool(from_site)
 
-    customer_key = (
-        cctx.reference_customer
-        if self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal"
-        else self.customer
-    )
+    # customer_key = (
+    #     cctx.reference_customer
+    #     if self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal"
+    #     else self.customer
+    # )
+    customer_key = self.customer
     if self.custom_diamond_quality:
         row.diamond_quality = self.custom_diamond_quality
     stone_prec = int(ctx.stone_precision or 3)
@@ -1407,7 +1453,7 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
     for d in doc.diamond_detail:
         d.quality        = row.diamond_quality
         d.quantity       = round(d.quantity, stone_prec)
-        d.weight_per_pcs = d.quantity / d.pcs
+        d.weight_per_pcs = d.quantity / d.pcs if d.pcs else d.quantity
         if 0.001 < d.weight_per_pcs > 0.005:
             d.weight_per_pcs = round(d.weight_per_pcs, 3)
 
@@ -1491,6 +1537,9 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
                 frappe.msgprint(f'No Diamond Pricelist for {d.quality}, {d.weight_per_pcs}')
                 d.total_diamond_rate                  = 0
                 d.diamond_rate_for_specified_quantity = 0
+                doc.total_diamond_amount = sum(
+                flt(r.diamond_rate_for_specified_quantity) for r in doc.get("diamond_detail", [])
+            )
                 continue
         if self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal":
             if cctx.billing_currency == "USD":
@@ -1499,7 +1548,7 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
             if d.quantity > 0.005:
                 d.quantity = round(d.quantity, stone_prec)
             d.diamond_rate_for_specified_quantity = round(
-                d.quantity * (d.handling_rate + d.se_rate), 2
+                d.quantity * (d.handling_rate + d.total_diamond_rate), 2
             )
         
         elif self.company == "Gurukrupa Export Private Limited" and ctx.customer_group == "Internal":
@@ -1679,7 +1728,8 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
         )
 
     # ── 8. Reconcile metal rows to match net weight ──────────────
-    _reconcile_metal_weights(doc, ctx, doc.metal_and_finding_weight, so_self=self, cctx=cctx)
+    if not( self.company == "KG GK Jewellers Private Limited" or ctx.customer_group == "Internal"):
+        _reconcile_metal_weights(doc, ctx, doc.metal_and_finding_weight, so_self=self, cctx=cctx)
 
     # ── 9. Gross weight ONCE from reconciled rows ────────────────
     # DI: diamond_gms is absorbed into metal rows by reconcile — do
