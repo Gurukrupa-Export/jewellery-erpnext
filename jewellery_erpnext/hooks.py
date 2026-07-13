@@ -32,6 +32,7 @@ doctype_js = {
 	"Purchase Invoice": "public/js/doctype_js/purchase_invoice.js",
 	"Stock Reconciliation": "public/js/doctype_js/stock_reconciliation.js",
 	"Payment Entry": "public/js/doctype_js/payment_entry.js",
+	"Warehouse": "public/js/doctype_js/warehouse.js",
 }
 
 doctype_list_js = {
@@ -55,6 +56,12 @@ doctype_list_js = {
 # WorkOrder.get_work_orders = get_work_orders
 
 _EOD_LOCK_VALIDATOR = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.validate_not_eod_sync_locked"
+
+# Non-retry deadlock reduction: pin this connection to READ COMMITTED (no gap locks)
+# for every web request + RQ job. GATED by site_config "use_read_committed" (default
+# OFF) so it can be enabled/rolled back without a code change. See db_isolation.py.
+before_request = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
+before_job = ["jewellery_erpnext.jewellery_erpnext.db_isolation.set_read_committed"]
 
 doc_events = {
 	# Block stock/manufacturing transactions while EOD sync is running.
@@ -88,7 +95,7 @@ doc_events = {
 	},
 	"Sales Order": {
 		"before_validate": [
-			"jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
+			# "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
 		],
 		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
@@ -139,13 +146,17 @@ doc_events = {
 			"jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_gold_repack",
 			"jewellery_erpnext.customer_subcontracting.sub_utils.snc.stamp_snc_requirement",
 		],
-		"before_cancel": _EOD_LOCK_VALIDATOR,
+		"before_cancel": [
+			_EOD_LOCK_VALIDATOR,
+			# F-002/F-012: pre-order this SE's Bins on cancel too, matching every other
+			# flow, so a cancel can't race a concurrent submit into a 1213 deadlock.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
+		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
 	},
 	"Manufacturing Work Order": {
-		"before_insert": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_no",
-		"validate": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_no",
+		"validate": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_id",
 		"before_submit": [
 			"jewellery_erpnext.customer_subcontracting.sub_utils.snc.validate_snc_before_submit"
 		],
@@ -218,6 +229,12 @@ doc_events = {
 	"Unreconcile Payment": {
 		"before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.unreconcile_payment.before_submit",
 	},
+}
+
+# Department-wise visibility for Employee (MSL) warehouses (req #6). Scopes ONLY
+# employee warehouses to the viewer's department; all shared warehouses stay visible.
+permission_query_conditions = {
+	"Warehouse": "jewellery_erpnext.jewellery_erpnext.doc_events.warehouse.get_permission_query_conditions",
 }
 
 override_whitelisted_methods = {

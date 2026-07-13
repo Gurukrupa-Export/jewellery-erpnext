@@ -230,10 +230,16 @@ def update_department_and_create_stock_entry(material_request_name, new_departme
 			frappe.throw("Raw material is already in this department.")
 
 	# 3. Update department, reset counter
-	doc.db_set("custom_department", new_department)
-	doc.db_set("custom_custom_counter", 1)
-	doc.db_set("workflow_state", "Material Transferred to Department")
-	doc.db_set("custom_operation_type", "Transfer to Department")
+	# (write-reduction) one UPDATE on this MR row instead of four consecutive db_set
+	# calls -- fewer row re-locks and one `modified` bump instead of four.
+	doc.db_set(
+		{
+			"custom_department": new_department,
+			"custom_custom_counter": 1,
+			"workflow_state": "Material Transferred to Department",
+			"custom_operation_type": "Transfer to Department",
+		}
+	)
 
 	# 4. Call to create Stock Entry
 	new_se_name = make_department_stock_entry(

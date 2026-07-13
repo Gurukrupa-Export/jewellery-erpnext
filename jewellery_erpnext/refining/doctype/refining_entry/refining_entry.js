@@ -130,6 +130,51 @@ frappe.ui.form.on("Refining Entry", {
 		}
 	},
 
+	refining_entry_po(frm) {
+		if (frm.doc.refining_entry_po && frm.is_new()) {
+			frappe.show_alert(__("Fetching details from Purchase Order..."));
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.refining.doctype.refining_entry.refining_entry.fetch_details_from_po",
+				args: { po_name: frm.doc.refining_entry_po },
+				callback: function (r) {
+					if (r.message) {
+						let doc = r.message;
+						let keys = [
+							"refining_type",
+							"is_external",
+							"supplier",
+							"refining_process",
+							"company",
+							"department",
+							"refining_department",
+							"warehouse",
+							"refining_warehouse",
+							"parent_refining_entry",
+						];
+						keys.forEach((k) => frm.set_value(k, doc[k]));
+
+						frm.clear_table("material_items");
+						if (doc.material_items) {
+							doc.material_items.forEach((row) => {
+								let child = frm.add_child("material_items");
+								Object.assign(child, row);
+							});
+						}
+
+						frm.clear_table("batch_tracking");
+						if (doc.batch_tracking) {
+							doc.batch_tracking.forEach((row) => {
+								let child = frm.add_child("batch_tracking");
+								Object.assign(child, row);
+							});
+						}
+						frm.refresh();
+					}
+				},
+			});
+		}
+	},
+
 	set_recovery_grid_editability(frm) {
 		// Only the recovered_pcs / recovered_weight columns are operator-editable, and
 		// only while recovery is being entered (on the child processing entry). The

@@ -440,6 +440,17 @@
    "fieldtype": "Section Break",
    "insert_after": "stock_qty",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Purchase Order Item",
+   "fieldname": "custom_refining_price_list",
+   "fieldtype": "Link",
+   "insert_after": "custom_gross_wt",
+   "label": "Refining Price List",
+   "module": "Jewellery Erpnext",
+   "options": "Refinery Price List",
+   "read_only": 1,
+   "no_copy": 1
   }
  ]
 }

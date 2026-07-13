@@ -11,7 +11,7 @@
   "item_code",
   "manufacturing_bom",
   "bom",
-  "mould_no",
+  "mould_id",
   "delivery_date",
   "estimated_delivery_date",
   "manufacturing_end_date",
@@ -68,11 +68,11 @@
   },
   {
    "columns": 2,
-   "fieldname": "mould_no",
+   "fieldname": "mould_id",
    "fieldtype": "Data",
    "in_list_view": 1,
    "in_preview": 1,
-   "label": "Mould No",
+   "label": "Mould List ID",
    "read_only": 1
   },
   {

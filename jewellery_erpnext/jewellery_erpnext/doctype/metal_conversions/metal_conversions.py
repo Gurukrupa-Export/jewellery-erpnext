@@ -8,6 +8,11 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.melting_loss import (
+	cancel_melting_loss_stock_entries,
+	make_melting_loss_stock_entry,
+	validate_melting_loss,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.utils import (
 	update_alloy_betch,
 	update_batch_details,
@@ -17,6 +22,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 
 class MetalConversions(Document):
 	def on_submit(self):
+		if self.get("is_melting_loss"):
+			# Pure loss-recording mode: book ONLY the Loss Qty as a Process Loss SE
+			# (RM -> Scrap). No conversion Stock Entry is created.
+			make_melting_loss_stock_entry(self)
+			return
 		if self.multiple_metal_converter == 0:
 			if (
 				self.target_item
@@ -49,9 +59,17 @@ class MetalConversions(Document):
 	def validate(self):
 		# if not self.batch and self.multiple_metal_converter == 0:
 		# 	frappe.throw(_("Batch Missing"))
+		# Melting-loss guards + conversion-field clearing MUST run first so the
+		# downstream alloy / batch helpers see the cleared state.
+		validate_melting_loss(self)
 		update_alloy_betch(self)
 		update_source_betch(self)
 		get_inventory_type(self)
+
+	def on_cancel(self):
+		# Scoped cascade: cancels only auto-created Process Loss SEs owned by this
+		# document; a no-op for conversion-mode documents.
+		cancel_melting_loss_stock_entries(self)
 
 	@frappe.whitelist()
 	def clear_fields(self):
@@ -335,7 +353,21 @@ def make_metal_stock_entry(self):
 	# RULE B (canonical lock order): pre-lock the source/target Bins in sorted order so
 	# concurrent metal conversions acquire shared item+warehouse Bins in the same sequence
 	# (breaks 1213 reverse-order cycles). Additive — does not change the Stock Entry built.
-	from jewellery_erpnext.jewellery_erpnext.lock_order import lock_bins
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_bins,
+		preallocate_series_for_docs,
+	)
+
+	# RULE A (canonical lock order): pin the Stock Entry naming-series row (canonical
+	# position 2) BEFORE the Bins so this flow acquires Series-then-Bin like every
+	# conformant SE submit -- fixes the Bin-before-Series inversion behind F-002 1213
+	# deadlock cycles. Additive: preallocate_series is SELECT ... FOR UPDATE only (no
+	# increment), re-entrant with the real naming at insert. company/stock_entry_type
+	# are set so the series prefix (and any future sharded/DNR counter) resolves.
+	_series_stub = frappe.new_doc("Stock Entry")
+	_series_stub.company = self.company
+	_series_stub.stock_entry_type = "Repack-Metal Conversion"
+	preallocate_series_for_docs(_series_stub)
 
 	lock_bins(
 		[
@@ -467,7 +499,18 @@ def make_multiple_metal_stock_entry(self):
 	source_wh = self.source_warehouse
 	# RULE B (canonical lock order): pre-lock source + target Bins in sorted order so
 	# concurrent conversions acquire shared item+warehouse Bins in the same sequence.
-	from jewellery_erpnext.jewellery_erpnext.lock_order import lock_bins
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_bins,
+		preallocate_series_for_docs,
+	)
+
+	# RULE A (canonical lock order): pin the Stock Entry naming-series row BEFORE the
+	# Bins (Series-then-Bin) -- fixes the Bin-before-Series inversion behind F-002
+	# 1213 cycles. Additive: SELECT ... FOR UPDATE only, re-entrant with insert naming.
+	_series_stub = frappe.new_doc("Stock Entry")
+	_series_stub.company = self.company
+	_series_stub.stock_entry_type = "Repack-Metal Conversion"
+	preallocate_series_for_docs(_series_stub)
 
 	_prelock = [(r.item_code, source_wh) for r in self.mc_source_table]
 	_prelock.append((self.get("m_target_item"), self.get("target_warehouse")))

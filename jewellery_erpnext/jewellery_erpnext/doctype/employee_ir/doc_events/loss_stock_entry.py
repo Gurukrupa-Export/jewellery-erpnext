@@ -27,6 +27,25 @@ CHILD_TABLE_EMPLOYEE = "employee_loss_details"
 CHILD_TABLE_MANUAL = "manually_book_loss_details"
 
 
+def is_no_wastage_customer(customer):
+	"""True when ``customer`` is flagged ``custom_no_wastage`` — customer-supplied
+	material must not be charged manufacturing loss (the unused weight is returned as
+	raw material instead of becoming a customer-owned scrap batch)."""
+	return bool(customer) and bool(
+		frappe.db.get_value("Customer", customer, "custom_no_wastage")
+	)
+
+
+def batch_owner_no_wastage(batch_no):
+	"""True when ``batch_no`` is owned by a no-wastage customer (keyed on the batch's
+	``custom_customer``, the same ownership source as ``_resolve_batch_inventory``)."""
+	if not batch_no:
+		return False
+	return is_no_wastage_customer(
+		frappe.db.get_value("Batch", batch_no, "custom_customer")
+	)
+
+
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
@@ -160,6 +179,18 @@ def _prepare_loss_row(eir, row, table_name):
 				title="Employee IR sub-precision loss row skipped", message=msg
 			)
 		return None
+
+	# No wastage for customer-supplied material: a representable loss on a no-wastage
+	# customer's batch must never be booked (it would mint a customer-owned scrap
+	# batch). Blocks any path — including programmatic/API — that reaches SE creation.
+	if batch_owner_no_wastage(row.batch_no):
+		frappe.throw(
+			_(
+				"Employee IR {0}: no wastage is allowed for customer material "
+				"(batch {1}, item {2}). Received weight must equal issued weight so no "
+				"loss is booked; the unused metal is returned as raw material."
+			).format(eir.name, row.batch_no, row.item_code)
+		)
 
 	if not row.item_code:
 		frappe.throw(
@@ -460,8 +491,7 @@ def _resolve_raw_material_warehouse(eir):
 		if not wh:
 			frappe.throw(
 				_(
-					"Employee IR {0}: No Raw Material warehouse found for "
-					"employee {1}"
+					"Employee IR {0}: No Raw Material warehouse found for employee {1}"
 				).format(eir.name, eir.employee)
 			)
 	return wh

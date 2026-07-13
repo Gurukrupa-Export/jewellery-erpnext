@@ -170,6 +170,17 @@
      },
      {
       "dt": "Purchase Order",
+      "fieldname": "refining_entry",
+      "fieldtype": "Link",
+      "insert_after": "company",
+      "read_only": 1,
+      "no_copy": 1,
+      "label": "Refining Entry",
+      "module": "Jewellery Erpnext",
+      "options": "Refining Entry"
+     },
+     {
+      "dt": "Purchase Order",
       "fieldname": "custom_product_certification",
       "fieldtype": "Link",
       "insert_after": "company",

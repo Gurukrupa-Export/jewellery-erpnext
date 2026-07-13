@@ -123,6 +123,33 @@ def lock_bins_for_rows(rows, *warehouse_attrs):
 	return lock_bins(pairs)
 
 
+def lock_items(item_codes):
+	"""EXPERIMENTAL (F-004, opt-in): serialize concurrent Stock Entry submits that touch
+	the same item by acquiring a ``FOR UPDATE`` lock on each distinct ``tabItem`` row, in
+	sorted order, BEFORE stock posting (canonical position 0 -- broadest scope, so it can
+	never invert against Series/Bin).
+
+	This is the only app-level way to stop ERPNext core's own cross-voucher repost locks
+	(``stock_ledger.py:1680`` future-SLE index-range gap lock, and ``:1374``
+	``get_lazy_doc`` FOR UPDATE on OTHER vouchers' Stock Entry rows -- neither reachable by
+	Bin-level ordering) from deadlocking against a concurrent submit's child-row inserts.
+	Cross-host safe (a real DB row lock, unlike the filesystem ``conflict_lock``) and
+	transaction-scoped (releases on COMMIT/ROLLBACK).
+
+	TRADE-OFF (accepted by the operator who enables it): two submits touching the same
+	item now serialize across ALL warehouses -- a real throughput cost under load, and it
+	holds the Item master row for the submit's duration. **OFF by default**; enable per
+	site with ``site_config.json`` ``"serialize_stock_submit_by_item": 1`` and A/B measure
+	the deadlock rate before keeping it on. The F-004 collision is INFERRED (no holder-side
+	deadlock capture exists on this system), so this MUST be validated by measurement, not
+	assumed to help -- and it may worsen the naming-contention latency it stacks on top of.
+	"""
+	for item_code in sorted({c for c in item_codes if c}):
+		frappe.db.sql(
+			"SELECT name FROM `tabItem` WHERE name = %s FOR UPDATE", (item_code,)
+		)
+
+
 def preallocate_series(prefixes):
 	"""Pre-acquire the ``tabSeries`` counter-row lock for each given prefix, in sorted
 	order, *before* any Bin lock is taken (canonical position 2).
@@ -190,12 +217,108 @@ def series_prefix_for_doc(doc):
 	return captured.get("prefix")
 
 
-def preallocate_series_for_docs(*docs):
-	"""Pre-acquire the ``tabSeries`` counter-row lock (canonical position 2) for the
-	naming series of each given doc/new_doc, before any Bin lock is taken.
+def document_naming_rule_for_doc(doc):
+	"""Resolve the *active* Document Naming Rule whose counter ``set_new_name`` will lock
+	for ``doc`` (matched by document_type + conditions, i.e. company / stock_entry_type),
+	WITHOUT incrementing it — or ``None`` when no rule governs this doc and it falls back
+	to its naming series.
 
-	Convenience wrapper over :func:`series_prefix_for_doc` + :func:`preallocate_series`.
-	Docs named by ``hash`` (e.g. Stock Ledger Entry / Stock Reservation Entry once
-	repointed) contribute no prefix and are silently skipped.
+	A Document Naming Rule counter lives in the ``tabDocument Naming Rule`` row itself
+	(not ``tabSeries``); when a rule matches, frappe's naming precedence
+	(``set_naming_from_document_naming_rule`` runs *before* the naming-series path) uses
+	it INSTEAD of the naming series. Pre-locking must therefore pin whichever of the two
+	a doc actually uses. Resolution reuses frappe's own rule map + ``evaluate_filters`` so
+	it picks exactly the rule frappe will pick at insert. Best-effort: any failure returns
+	``None`` — pre-locking must never break a submit.
 	"""
-	preallocate_series([series_prefix_for_doc(d) for d in docs if d is not None])
+	try:
+		from frappe.utils import evaluate_filters
+
+		rules = frappe.cache_manager.get_doctype_map(
+			"Document Naming Rule",
+			doc.doctype,
+			filters={"document_type": doc.doctype, "disabled": 0},
+			order_by="priority desc",
+		)
+		for d in rules:
+			rule = frappe.get_cached_doc("Document Naming Rule", d.name)
+			if rule.conditions and not evaluate_filters(
+				doc,
+				[
+					(rule.document_type, c.field, c.condition, c.value)
+					for c in rule.conditions
+				],
+			):
+				continue
+			return rule.name
+	except Exception:
+		return None
+	return None
+
+
+def series_stubs(company, *stock_entry_types):
+	"""Build one Stock Entry naming stub per distinct ``stock_entry_type`` (order-
+	preserving dedupe), each carrying ``company`` + the type, for
+	:func:`preallocate_series_for_docs`.
+
+	Cascades that pre-lock BEFORE minting their nested Stock Entries must pass stubs
+	that resolve the same naming counter the real nested SEs will lock. Since every
+	active Stock Entry Document Naming Rule matches on (company, stock_entry_type), a
+	blank ``frappe.new_doc("Stock Entry")`` matches NO rule and falls back to pinning
+	the shared ``MAT-STE-`` tabSeries row — the wrong counter post-reshard. One stub
+	per nested SE type pins each real per-(company x type) DNR counter (or, for a
+	company with no rules, the naming-series fallback, which the blank new_doc's
+	default ``naming_series`` keeps resolvable).
+
+	Usage::
+
+	    preallocate_series_for_docs(*series_stubs(self.company, "Repack", "Manufacture"))
+	"""
+	stubs = []
+	for setype in dict.fromkeys(stock_entry_types):
+		stub = frappe.new_doc("Stock Entry")
+		stub.company = company
+		stub.stock_entry_type = setype
+		stubs.append(stub)
+	return stubs
+
+
+def preallocate_series_for_docs(*docs):
+	"""Pre-acquire the naming-counter lock (canonical position 2) for each given
+	doc/new_doc, before any Bin lock is taken.
+
+	Respects frappe's naming precedence: when an active Document Naming Rule governs a
+	doc, its ``tabDocument Naming Rule.counter`` row is the lock to pin — the
+	naming-series ``tabSeries`` row is NOT used for that doc, so it is deliberately not
+	locked (locking it would add needless contention on a row this doc never increments,
+	the exact F-001 hot row we are relieving). Otherwise the naming-series ``tabSeries``
+	row is pinned via :func:`series_prefix_for_doc` + :func:`preallocate_series`. This is
+	the F-003 fix: the previously un-pinnable Document Naming Rule counter is now acquired
+	in canonical order.
+
+	Both kinds of naming-counter lock are acquired in one deterministic order (DNR rows
+	sorted by name, then ``tabSeries`` rows sorted by prefix) so concurrent transactions
+	take shared naming rows in the same sequence. Docs named by ``hash`` contribute no
+	lock and are silently skipped. Re-entrant: the real ``set_new_name`` at insert
+	re-locks the same row within the same transaction.
+
+	Multi-type cascades pass one stub per distinct nested Stock Entry type via
+	:func:`series_stubs` so EVERY nested type's naming counter is pinned up front
+	(DNR names are deduped in a set and acquired in sorted order below).
+	"""
+	series_prefixes = []
+	dnr_names = set()
+	for d in docs:
+		if d is None:
+			continue
+		dnr = document_naming_rule_for_doc(d)
+		if dnr:
+			dnr_names.add(dnr)
+			continue
+		prefix = series_prefix_for_doc(d)
+		if prefix:
+			series_prefixes.append(prefix)
+
+	for name in sorted(dnr_names):
+		frappe.db.get_value("Document Naming Rule", name, "counter", for_update=True)
+	preallocate_series(series_prefixes)

@@ -137,6 +137,11 @@ def update_source_betch(self):
 	if not batch_data:
 		frappe.throw(_("No batch available for given warehouse"))
 	self.source_batch_details = []
+	# In melting-loss mode only the Loss Qty is consumed (RM -> Scrap); the
+	# remainder is untouched. Conversion mode is unchanged (allocates source_qty).
+	required_qty = (
+		flt(self.loss_qty) if self.get("is_melting_loss") else flt(self.source_qty)
+	)
 	inventory_type = "Regular Stock"
 	if self.customer and self.is_customer_metal:
 		inventory_type = "Customer Goods"
@@ -155,20 +160,20 @@ def update_source_betch(self):
 
 			# Determine the quantity to be assigned
 			qty = 0
-			if total_qty != flt(self.source_qty):
+			if total_qty != required_qty:
 				if (
 					custom_inventory_type == "Customer Goods"
 					and custom_customer == self.customer
 				) or custom_inventory_type == "Regular Stock":
 					# If the current batch has more quantity than needed, use the difference
-					if flt(self.source_qty) > remaining_qty + i.qty:
+					if required_qty > remaining_qty + i.qty:
 						qty = i.qty
 						remaining_qty += i.qty
 					else:
-						qty = flt(self.source_qty) - remaining_qty
-						remaining_qty = flt(
-							self.source_qty
-						)  # Ensure remaining_qty equals source_qty
+						qty = required_qty - remaining_qty
+						remaining_qty = (
+							required_qty  # Ensure remaining_qty equals required_qty
+						)
 					total_qty += qty
 
 					# Append details to source_batch_details
@@ -176,10 +181,10 @@ def update_source_betch(self):
 						"source_batch_details", {"qty": qty, "batch": i.batch_no}
 					)
 
-			if remaining_qty >= flt(self.source_qty):
+			if remaining_qty >= required_qty:
 				break  # Stop if we have filled the required quantity
 
-		if total_qty != flt(self.source_qty):
+		if total_qty != required_qty:
 			frappe.throw(
 				_(
 					"The source quantity is not available for the given warehouse. The available quantity is {}.".format(

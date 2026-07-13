@@ -11,6 +11,7 @@ frappe.ui.form.on("Employee IR", {
 				frm.save();
 			});
 		}
+		add_load_full_casting_tree_button(frm);
 	},
 	onload(frm) {
 		frm.fields_dict["employee_ir_operations"].grid.add_new_row = false;
@@ -496,4 +497,60 @@ function set_child_table_batch_filter(frm) {
 			},
 		};
 	};
+}
+
+// Casting re-issue is all-or-nothing (see doc_events/tree_casting.py). This button pulls in the
+// still-at-casting siblings of whatever casting tree(s) are already on the form so the operator
+// can complete the tree in one click; the submit-time validator blocks a partial re-issue.
+function add_load_full_casting_tree_button(frm) {
+	if (frm.doc.docstatus !== 0 || frm.doc.type !== "Issue" || !frm.doc.operation) {
+		return;
+	}
+	frappe.db.get_value("Department Operation", frm.doc.operation, "tree_no_reqd").then((r) => {
+		if (!r.message || !r.message.tree_no_reqd) {
+			return;
+		}
+		frm.add_custom_button(__("Load Full Casting Tree"), () => {
+			let present = (frm.doc.employee_ir_operations || [])
+				.map((row) => row.manufacturing_operation)
+				.filter(Boolean);
+			if (!present.length) {
+				frappe.msgprint(__("Add at least one work order first."));
+				return;
+			}
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.get_casting_group_operations",
+				args: {
+					department: frm.doc.department,
+					subcontracting: frm.doc.subcontracting,
+					present_operations: JSON.stringify(present),
+				},
+				freeze: true,
+				freeze_message: __("Loading full casting tree..."),
+				callback: (r) => {
+					let rows = r.message || [];
+					if (!rows.length) {
+						frappe.msgprint(__("Full casting tree already loaded."));
+						return;
+					}
+					rows.forEach((op) => {
+						frm.add_child("employee_ir_operations", {
+							manufacturing_work_order: op.manufacturing_work_order,
+							manufacturing_operation: op.manufacturing_operation,
+							gross_wt: op.gross_wt,
+							diamond_wt: op.diamond_wt,
+							diamond_pcs: op.diamond_pcs,
+							gemstone_wt: op.gemstone_wt,
+							gemstone_pcs: op.gemstone_pcs,
+						});
+					});
+					frm.refresh_field("employee_ir_operations");
+					frappe.show_alert({
+						message: __("Added {0} work order(s) from the casting tree.", [rows.length]),
+						indicator: "green",
+					});
+				},
+			});
+		});
+	});
 }
