@@ -19,6 +19,20 @@ frappe.ui.form.on("Refining Entry", {
 				wh_type = "Manufacturing";
 			} else if (frm.doc.refining_type === "Serial Number Refining") {
 				wh_type = ["in", ["Finished Goods", "Transit of Tagging", "Product Certification"]];
+			} else if (frm.doc.refining_type === "External Refinery") {
+				// External Refinery can source Scrap/Dust, MWO, or Serial material — the
+				// operator picks the warehouse matching whichever they're about to scan/fetch.
+				wh_type = [
+					"in",
+					[
+						"Raw Material",
+						"Scrap",
+						"Manufacturing",
+						"Finished Goods",
+						"Transit of Tagging",
+						"Product Certification",
+					],
+				];
 			}
 			return {
 				filters: {
@@ -113,7 +127,10 @@ frappe.ui.form.on("Refining Entry", {
 	department(frm) {
 		if (frm.doc.department) {
 			let wh_type = "Scrap";
-			if (frm.doc.refining_type === "Scrap Refining") {
+			if (frm.doc.refining_type === "Scrap Refining" || frm.doc.refining_type === "External Refinery") {
+				// External Refinery defaults to the Raw Material warehouse (Scrap/Dust is the
+				// common case); switch Source Warehouse manually before scanning MWO/Serial
+				// material sourced from a different warehouse type.
 				wh_type = "Raw Material";
 			} else if (frm.doc.refining_type === "Work Order Refining") {
 				wh_type = "Manufacturing";
@@ -141,7 +158,6 @@ frappe.ui.form.on("Refining Entry", {
 						let doc = r.message;
 						let keys = [
 							"refining_type",
-							"is_external",
 							"supplier",
 							"refining_process",
 							"company",
@@ -149,7 +165,9 @@ frappe.ui.form.on("Refining Entry", {
 							"refining_department",
 							"warehouse",
 							"refining_warehouse",
-							"parent_refining_entry",
+							"supplier_warehouse",
+							"refined_metal_item",
+							"qty_to_refine",
 						];
 						keys.forEach((k) => frm.set_value(k, doc[k]));
 
@@ -250,6 +268,7 @@ frappe.ui.form.on("Refining Entry", {
 			"Work Order Refining": "RFN-MWO-.YY.-.#####",
 			"Serial Number Refining": "RFN-SRN-.YY.-.#####",
 			"Scrap Refining": "RFN-SCP-.YY.-.#####",
+			"External Refinery": "RFN-EXT-.YY.-.#####",
 		};
 		if (series_map[frm.doc.refining_type]) {
 			frm.set_value("naming_series", series_map[frm.doc.refining_type]);
@@ -258,21 +277,22 @@ frappe.ui.form.on("Refining Entry", {
 
 	set_field_visibility(frm) {
 		const type = frm.doc.refining_type;
+		const is_external = type === "External Refinery";
 		// Dust-specific sections
 		const is_dust = type === "Dust Refining";
 		frm.toggle_display("section_break_dust", is_dust);
 		frm.toggle_display("section_break_verification", is_dust || type === "Scrap Refining");
 
-		// MWO-specific
-		frm.toggle_display("scan_mwo", type === "Work Order Refining");
-		frm.toggle_display("mwo_details", type === "Work Order Refining");
+		// MWO-specific — also available under External Refinery (mixed material sourcing)
+		frm.toggle_display("scan_mwo", type === "Work Order Refining" || is_external);
+		frm.toggle_display("mwo_details", type === "Work Order Refining" || is_external);
 
-		// SN-specific
-		frm.toggle_display("scan_serial_no", type === "Serial Number Refining");
-		frm.toggle_display("serial_no_details", type === "Serial Number Refining");
+		// SN-specific — also available under External Refinery
+		frm.toggle_display("scan_serial_no", type === "Serial Number Refining" || is_external);
+		frm.toggle_display("serial_no_details", type === "Serial Number Refining" || is_external);
 
-		// Scrap-specific
-		frm.toggle_display("scan_scrap_qr", type === "Scrap Refining");
+		// Scrap-specific — also available under External Refinery
+		frm.toggle_display("scan_scrap_qr", type === "Scrap Refining" || is_external);
 	},
 
 	add_action_buttons(frm) {
@@ -313,9 +333,10 @@ frappe.ui.form.on("Refining Entry", {
 			});
 		}
 
-		// Scrap-specific: fetch all scrap items across all departments
+		// Scrap-specific: fetch all scrap items across all departments — also available
+		// under External Refinery (mixed material sourcing).
 		const show_scrap_btn =
-			frm.doc.refining_type === "Scrap Refining" &&
+			(frm.doc.refining_type === "Scrap Refining" || frm.doc.refining_type === "External Refinery") &&
 			frm.doc.docstatus === 0 &&
 			(!status || status === "Draft");
 
@@ -452,6 +473,21 @@ frappe.ui.form.on("Refining Entry", {
 		}
 
 		if (frm.is_new()) return;
+
+		// External Refinery has its own submit-only lifecycle (no classify/repack/
+		// verify/complete/transfer) — the internal "Refining Process" buttons below don't
+		// apply. The sending entry auto-creates a service Purchase Order; surface it here
+		// so the operator can find it to create the receiving entry against it.
+		if (frm.doc.refining_type === "External Refinery") {
+			if (frm.doc.refining_entry_po) {
+				frm.add_custom_button(
+					__("View Purchase Order"),
+					() => frappe.set_route("Form", "Purchase Order", frm.doc.refining_entry_po),
+					__("Refining Process")
+				);
+			}
+			return;
+		}
 
 		// Parent only buttons
 		if (!frm.doc.parent_refining_entry) {

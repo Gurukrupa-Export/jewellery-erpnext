@@ -46,12 +46,26 @@ def execute():
 				"read_only": 1,
 				"no_copy": 1,
 				"module": "Jewellery Erpnext",
-			}
+			},
+			{
+				"fieldname": "custom_is_refined_metal_line",
+				"fieldtype": "Check",
+				"label": "Is Refined Metal Line",
+				"description": (
+					"Marks the rate-0 accountability line for the metal itself on an "
+					"External Refinery service PO (as opposed to the service charge "
+					"line), so the receiving entry can find it."
+				),
+				"insert_after": "custom_refining_price_list",
+				"read_only": 1,
+				"no_copy": 1,
+				"module": "Jewellery Erpnext",
+			},
 		],
 	}
 
 	create_custom_fields(custom_fields, ignore_validate=True)
 	frappe.logger().info(
 		"add_po_refining_entry_field: ensured Purchase Order.refining_entry + "
-		"Purchase Order Item.custom_refining_price_list"
+		"Purchase Order Item.custom_refining_price_list / custom_is_refined_metal_line"
 	)
