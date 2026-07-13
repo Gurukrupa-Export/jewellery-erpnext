@@ -2674,63 +2674,68 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 		# Patches
-		from jewellery_erpnext.patches.add_mr_transfer_se_fields import (
-			execute as _ensure_mr_transfer_se_fields,
-		)
+		in_migrate = getattr(frappe.flags, "in_migrate", False)
+		frappe.flags.in_migrate = True
+		try:
+			from jewellery_erpnext.patches.add_mr_transfer_se_fields import (
+				execute as _ensure_mr_transfer_se_fields,
+			)
 
-		_ensure_mr_transfer_se_fields()
+			_ensure_mr_transfer_se_fields()
 
-		from jewellery_erpnext.patches.add_order_form_detail_pre_order_field import (
-			execute as _ensure_order_form_detail_pre_order_field,
-		)
+			from jewellery_erpnext.patches.add_order_form_detail_pre_order_field import (
+				execute as _ensure_order_form_detail_pre_order_field,
+			)
 
-		_ensure_order_form_detail_pre_order_field()
+			_ensure_order_form_detail_pre_order_field()
 
-		from jewellery_erpnext.patches.add_stock_entry_tree_number_field import (
-			execute as _ensure_stock_entry_tree_number_field,
-		)
+			from jewellery_erpnext.patches.add_stock_entry_tree_number_field import (
+				execute as _ensure_stock_entry_tree_number_field,
+			)
 
-		_ensure_stock_entry_tree_number_field()
+			_ensure_stock_entry_tree_number_field()
 
-		from jewellery_erpnext.patches.add_warehouse_msl_tracking_field import (
-			execute as _ensure_warehouse_msl_tracking_field,
-		)
+			from jewellery_erpnext.patches.add_warehouse_msl_tracking_field import (
+				execute as _ensure_warehouse_msl_tracking_field,
+			)
 
-		_ensure_warehouse_msl_tracking_field()
+			_ensure_warehouse_msl_tracking_field()
 
-		from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
+			from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
 
-		ensure_fetch_from_columns()
+			ensure_fetch_from_columns()
 
-		from jewellery_erpnext.property_setter_guard import (
-			ensure_field_precision_property_setters,
-		)
+			from jewellery_erpnext.property_setter_guard import (
+				ensure_field_precision_property_setters,
+			)
 
-		ensure_field_precision_property_setters()
+			ensure_field_precision_property_setters()
 
-		from jewellery_erpnext.patches.add_customer_refining_flags import (
-			execute as customer_refining_flags,
-		)
+			from jewellery_erpnext.patches.add_customer_refining_flags import (
+				execute as customer_refining_flags,
+			)
 
-		customer_refining_flags()
+			customer_refining_flags()
 
-		from jewellery_erpnext.patches.add_po_refining_entry_field import (
-			execute as po_refining_entry_field,
-		)
+			from jewellery_erpnext.patches.add_po_refining_entry_field import (
+				execute as po_refining_entry_field,
+			)
 
-		po_refining_entry_field()
+			po_refining_entry_field()
 
-		from jewellery_erpnext.patches.seed_refinery_price_list import (
-			execute as refining_price_list,
-		)
+			from jewellery_erpnext.patches.seed_refinery_price_list import (
+				execute as refining_price_list,
+			)
 
-		refining_price_list()
+			refining_price_list()
 
-		from jewellery_erpnext.patches.seed_refining_masters import (
-			execute as refining_masters,
-		)
+			from jewellery_erpnext.patches.seed_refining_masters import (
+				execute as refining_masters,
+			)
 
-		refining_masters()
+			refining_masters()
+		finally:
+			frappe.flags.in_migrate = in_migrate
 
 	setup_data()
 	create_attribute_value()
