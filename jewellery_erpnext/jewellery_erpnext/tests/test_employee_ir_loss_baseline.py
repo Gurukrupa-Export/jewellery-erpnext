@@ -1856,7 +1856,7 @@ def _det_flt(value, precision=None, rounding_method=None):
 	return round(num, precision) if precision is not None else num
 
 
-def _row(item_code, qty, batch_no=None, idx=1):
+def _se_row(item_code, qty, batch_no=None, idx=1):
 	return SimpleNamespace(item_code=item_code, qty=qty, batch_no=batch_no, idx=idx)
 
 
@@ -1873,7 +1873,7 @@ def _doc(**fields):
 		"msl_warehouse": "EMP-0001 RM - GK",
 		"scrap_warehouse": "Casting Scrap - GK",
 		"stock_entry": None,
-		"items": [_row("M-G-18KT-75.4-Y", 5.0)],
+		"items": [_se_row("M-G-18KT-75.4-Y", 5.0)],
 	}
 	defaults.update(fields)
 	d = SimpleNamespace(**defaults)
@@ -2070,7 +2070,10 @@ class TestBuilder(IntegrationTestCase):
 
 	def test_multiple_items_produce_per_row(self):
 		doc = _doc(
-			items=[_row("M-G-18KT-75.4-Y", 5.0), _row("F-G-18KT-75.4-Y", 2.0, idx=2)]
+			items=[
+				_se_row("M-G-18KT-75.4-Y", 5.0),
+				_se_row("F-G-18KT-75.4-Y", 2.0, idx=2),
+			]
 		)
 		se = self._build(doc)
 		# 2 consume + 2 produce
@@ -2079,7 +2082,7 @@ class TestBuilder(IntegrationTestCase):
 		self.assertEqual(len(produce_rows), 2)
 
 	def test_batch_specified_on_row_used_directly(self):
-		doc = _doc(items=[_row("M-G-18KT-75.4-Y", 4.0, batch_no="B-USER")])
+		doc = _doc(items=[_se_row("M-G-18KT-75.4-Y", 4.0, batch_no="B-USER")])
 		captured = {}
 
 		def _get_doc(payload):
@@ -2135,7 +2138,7 @@ class TestCancel(IntegrationTestCase):
 		self.assertEqual(called, [])
 
 
-def _row(**fields):
+def _inv_row(**fields):
 	defaults = {
 		"idx": 1,
 		"item_code": "M-G-18KT-75.4-Y",
@@ -2163,7 +2166,7 @@ class TestLossBatchInventoryResolution(IntegrationTestCase):
 	def test_customer_goods_batch_flows_through(self):
 		# The reported bug: source batch is Customer Goods -> row must be too.
 		inv, cust = self._resolve(
-			_row(),
+			_inv_row(),
 			{
 				"custom_inventory_type": "Customer Goods",
 				"custom_customer": "Kanish Ext",
@@ -2175,7 +2178,7 @@ class TestLossBatchInventoryResolution(IntegrationTestCase):
 	def test_regular_stock_batch_yields_no_customer(self):
 		# Batch has no custom_inventory_type -> Regular Stock and no stray customer.
 		inv, cust = self._resolve(
-			_row(), {"custom_inventory_type": None, "custom_customer": None}
+			_inv_row(), {"custom_inventory_type": None, "custom_customer": None}
 		)
 		self.assertEqual(inv, "Regular Stock")
 		self.assertIsNone(cust)
@@ -2183,7 +2186,7 @@ class TestLossBatchInventoryResolution(IntegrationTestCase):
 	def test_batch_wins_over_row_value(self):
 		# The batch is the physical truth; a stale value on the loss row must not win.
 		inv, cust = self._resolve(
-			_row(inventory_type="Regular Stock", customer="Someone Else"),
+			_inv_row(inventory_type="Regular Stock", customer="Someone Else"),
 			{
 				"custom_inventory_type": "Customer Goods",
 				"custom_customer": "Kanish Ext",
@@ -2196,7 +2199,8 @@ class TestLossBatchInventoryResolution(IntegrationTestCase):
 		# Defensive coherence: a Regular Stock row never carries a customer, even
 		# if the batch record somehow has one.
 		inv, cust = self._resolve(
-			_row(), {"custom_inventory_type": "Regular Stock", "custom_customer": "X"}
+			_inv_row(),
+			{"custom_inventory_type": "Regular Stock", "custom_customer": "X"},
 		)
 		self.assertEqual(inv, "Regular Stock")
 		self.assertIsNone(cust)
@@ -2205,7 +2209,7 @@ class TestLossBatchInventoryResolution(IntegrationTestCase):
 		# Batch exists but custom_inventory_type unset -> fall back to the row's
 		# own value (e.g. a manually_book_loss_details row the user tagged).
 		inv, cust = self._resolve(
-			_row(inventory_type="Customer Stock", customer="Kanish Ext"),
+			_inv_row(inventory_type="Customer Stock", customer="Kanish Ext"),
 			{"custom_inventory_type": None, "custom_customer": None},
 		)
 		self.assertEqual(inv, "Customer Stock")
@@ -2216,13 +2220,14 @@ class TestLossBatchInventoryResolution(IntegrationTestCase):
 		# customer type with no customer would defeat the scrap-batch guard
 		# exemption and hard-fail the submit, so it downgrades to Regular Stock.
 		inv, cust = self._resolve(
-			_row(), {"custom_inventory_type": "Customer Goods", "custom_customer": None}
+			_inv_row(),
+			{"custom_inventory_type": "Customer Goods", "custom_customer": None},
 		)
 		self.assertEqual(inv, "Regular Stock")
 		self.assertIsNone(cust)
 
 	def test_no_batch_no_defaults_to_regular(self):
-		inv, cust = self._resolve(_row(batch_no=None), None)
+		inv, cust = self._resolve(_inv_row(batch_no=None), None)
 		self.assertEqual(inv, "Regular Stock")
 		self.assertIsNone(cust)
 
