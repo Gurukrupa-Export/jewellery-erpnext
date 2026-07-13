@@ -3,7 +3,7 @@ from collections import defaultdict
 import frappe
 from frappe.model.workflow import apply_workflow
 from frappe.tests import IntegrationTestCase
-from frappe.utils import today
+from frappe.utils import flt, today
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	create_scrap_wo_stock_entry,
@@ -429,6 +429,117 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(se4.items[1].item_code, "D-NT-RO-6B-+9-9.5")
 		self.assertEqual(se4.items[1].qty, 0.925)
 
+	def test_external_refinery_entry(self):
+		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 5.0)
+		ensure_refining_process("Test Refining Process")
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "External Refinery"
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.refining_process = "Test Refining Process"
+		re.department = "Waxing - T"
+		re.warehouse = "Waxing RM - T"
+		re.refining_department = "Refinery - T"
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-18KT-75.4-P",
+				"warehouse": "Waxing RM - T",
+				"qty": 5.0,
+				"source_type": "Scrap",
+			},
+		)
+		re.save()
+
+		apply_workflow(re, "Submit")
+		re.reload()
+
+		self.assertEqual(re.qty_to_refine, 5.0)
+		self.assertIsNotNone(re.supplier_warehouse)
+		self.assertIsNotNone(re.material_transfer_se)
+
+		se1 = frappe.get_doc("Stock Entry", re.material_transfer_se)
+		self.assertEqual(se1.stock_entry_type, "Material Transfer")
+		self.assertEqual(se1.items[0].s_warehouse, "Waxing RM - T")
+		self.assertEqual(se1.items[0].t_warehouse, re.supplier_warehouse)
+		self.assertEqual(se1.items[0].item_code, "ML-G-18KT-75.4-P")
+		self.assertEqual(se1.items[0].qty, 5.0)
+		self.assertEqual(se1.to_subcontractor, "Test_Supplier")
+
+		supplier_qty_after_send = frappe.db.get_value(
+			"Bin",
+			{"item_code": "ML-G-18KT-75.4-P", "warehouse": re.supplier_warehouse},
+			"actual_qty",
+		)
+		self.assertEqual(flt(supplier_qty_after_send, self.flt_pre), 5.0)
+
+		# Receive: single Repack SE, no second Refining Entry.
+		se_name = re.receive_from_supplier(recovery_weight=4.8)
+		re.reload()
+
+		self.assertEqual(re.received_weight, 4.8)
+		self.assertEqual(re.repack_se, se_name)
+
+		# Recovery Summary is populated from the received weight, same as the
+		# other 4 refining types' Recovered Metal table drives it.
+		self.assertEqual(re.gross_pure_weight, 5.0)
+		self.assertEqual(re.expected_recovery, 5.0)
+		self.assertEqual(re.actual_recovery, 4.8)
+		self.assertEqual(re.refined_fine_weight, 4.8)
+		self.assertEqual(re.refining_loss, 0.2)
+		self.assertEqual(len(re.refined_gold), 1)
+		self.assertEqual(re.refined_gold[0].refining_gold_weight, 4.8)
+
+		repack = frappe.get_doc("Stock Entry", re.repack_se)
+		self.assertEqual(repack.stock_entry_type, "Repack")
+		self.assertEqual(repack.items[0].item_code, "ML-G-18KT-75.4-P")
+		self.assertEqual(repack.items[0].qty, 5.0)
+		self.assertEqual(repack.items[0].s_warehouse, re.supplier_warehouse)
+		self.assertIsNone(repack.items[0].t_warehouse)
+		self.assertEqual(repack.items[1].item_code, re.refined_metal_item)
+		self.assertEqual(repack.items[1].qty, 4.8)
+		self.assertIsNone(repack.items[1].s_warehouse)
+		self.assertEqual(repack.items[1].t_warehouse, "Waxing RM - T")
+
+		supplier_qty_after_receive = frappe.db.get_value(
+			"Bin",
+			{"item_code": "ML-G-18KT-75.4-P", "warehouse": re.supplier_warehouse},
+			"actual_qty",
+		)
+		self.assertEqual(flt(supplier_qty_after_receive, self.flt_pre), 0.0)
+
+		# A second receive attempt against the same entry must be rejected.
+		self.assertRaises(
+			frappe.ValidationError, re.receive_from_supplier, recovery_weight=1.0
+		)
+
+		# Cancelling reverses both the transfer and the repack Stock Entries.
+		re.cancel()
+		se1.reload()
+		repack.reload()
+		self.assertEqual(se1.docstatus, 2)
+		self.assertEqual(repack.docstatus, 2)
+
+	def test_external_refinery_submit_fails_without_supplier(self):
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "External Refinery"
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.warehouse = "Waxing RM - T"
+		re.refining_department = "Refinery - T"
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-18KT-75.4-P",
+				"warehouse": "Waxing RM - T",
+				"qty": 1.0,
+				"source_type": "Scrap",
+			},
+		)
+		re.insert(ignore_mandatory=True)
+		self.assertRaises(frappe.ValidationError, re.before_submit)
+
 	def test_validate_configuration(self):
 		re = frappe.new_doc("Refining Entry")
 		re.refining_type = "Dust Refining"
@@ -563,6 +674,24 @@ def loss_entry():
 	)
 	se.save()
 	se.submit()
+
+
+def gold_receipt(warehouse, item_code, qty):
+	se = frappe.new_doc("Stock Entry")
+	se.company = "Test_Company"
+	se.manufacturer = "Shubh"
+	se.branch = frappe.db.exists("Branch", {"branch_name": "Test Branch"})
+	se.stock_entry_type = "Material Receipt"
+	se.append("items", {"t_warehouse": warehouse, "item_code": item_code, "qty": qty})
+	se.save()
+	se.submit()
+
+
+def ensure_refining_process(process_name):
+	if not frappe.db.exists("Refining Process", process_name):
+		frappe.get_doc(
+			{"doctype": "Refining Process", "process_name": process_name}
+		).insert(ignore_permissions=True)
 
 
 def mwo_semi_finished_goods(self):
