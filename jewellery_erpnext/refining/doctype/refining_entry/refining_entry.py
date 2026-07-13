@@ -2472,8 +2472,8 @@ class RefiningEntry(Document):
 			frappe.throw(
 				_(
 					"No service item configured for external refining — set one on the price "
-					"row or seed the default 'Refining Charges' item."
-				)
+					"row or seed the default service item {0}."
+				).format(frappe.bold("REF-SVC-001"))
 			)
 		line = {
 			"item_code": service_item,
@@ -2486,26 +2486,39 @@ class RefiningEntry(Document):
 			"custom_refining_price_list": row.get("name"),
 		}
 
-		po_name = self.refining_entry_po or frappe.db.get_value(
-			"Purchase Order", {"refining_entry": self.name, "docstatus": 0}, "name"
+		# The submit-stage PO may already have been submitted by the buyer by the time
+		# the completion line is billed — that must NOT block refining completion. Reuse
+		# an open (draft) PO for this entry when one exists, otherwise start a fresh draft
+		# PO for this line. Idempotent across ALL of the entry's POs (draft or submitted):
+		# never bill the same price row twice, regardless of which PO it landed on.
+		po_names = frappe.get_all(
+			"Purchase Order",
+			filters={"refining_entry": self.name, "docstatus": ["<", 2]},
+			pluck="name",
 		)
-		if po_name:
-			po = frappe.get_doc("Purchase Order", po_name)
-			if po.docstatus != 0:
-				frappe.throw(
-					_(
-						"Refining service PO {0} is already submitted; cannot add a line."
-					).format(frappe.bold(po.name))
-				)
-			# Idempotent: skip if this price row is already billed on the PO.
+		if (
+			self.refining_entry_po
+			and self.refining_entry_po not in po_names
+			and frappe.db.exists("Purchase Order", self.refining_entry_po)
+		):
+			po_names.append(self.refining_entry_po)
+
+		open_po = None
+		for name in po_names:
+			doc = frappe.get_doc("Purchase Order", name)
 			if any(
-				d.get("custom_refining_price_list") == row.get("name") for d in po.items
+				d.get("custom_refining_price_list") == row.get("name")
+				for d in doc.items
 			):
+				# This price row is already billed on one of the entry's POs.
 				return
-			po.append("items", line)
-			po.save(ignore_permissions=True)
-			if not self.refining_entry_po:
-				self.db_set("refining_entry_po", po.name)
+			if doc.docstatus == 0 and open_po is None:
+				open_po = doc
+
+		if open_po is not None:
+			open_po.append("items", line)
+			open_po.save(ignore_permissions=True)
+			po = open_po
 		else:
 			po = frappe.new_doc("Purchase Order")
 			po.refining_entry = self.name
@@ -2516,29 +2529,42 @@ class RefiningEntry(Document):
 				po.purchase_type = "Service"
 			po.append("items", line)
 			po.save(ignore_permissions=True)
+
+		if not self.refining_entry_po:
 			self.db_set("refining_entry_po", po.name)
 
 	def _cancel_refining_po(self):
-		"""Cancel (or close, if still draft) the auto-created refining service PO when
-		the entry is cancelled. A PO that has already been received/billed must not be
-		silently voided — surface a clear error so the operator reverses it first."""
-		if not self.refining_entry_po or not frappe.db.exists(
-			"Purchase Order", self.refining_entry_po
+		"""Cancel (submitted) or delete (still draft) every auto-created refining service
+		PO linked to this entry when the entry is cancelled. A PO that has already been
+		received/billed must not be silently voided — surface a clear error so the operator
+		reverses it first. Draft POs are deleted rather than left dangling as "Closed"."""
+		po_names = frappe.get_all(
+			"Purchase Order",
+			filters={"refining_entry": self.name, "docstatus": ["<", 2]},
+			pluck="name",
+		)
+		if (
+			self.refining_entry_po
+			and self.refining_entry_po not in po_names
+			and frappe.db.exists("Purchase Order", self.refining_entry_po)
 		):
-			return
-		po = frappe.get_doc("Purchase Order", self.refining_entry_po)
-		if po.docstatus == 1:
-			if flt(po.per_received) > 0 or flt(po.per_billed) > 0:
-				frappe.throw(
-					_(
-						"Cannot cancel this Refining Entry: its service PO {0} is already "
-						"received/billed. Reverse the Purchase Order first."
-					).format(frappe.bold(po.name))
-				)
-			po.flags.ignore_permissions = True
-			po.cancel()
-		elif po.docstatus == 0:
-			frappe.db.set_value("Purchase Order", po.name, "status", "Closed")
+			po_names.append(self.refining_entry_po)
+
+		for name in po_names:
+			po = frappe.get_doc("Purchase Order", name)
+			if po.docstatus == 1:
+				if flt(po.per_received) > 0 or flt(po.per_billed) > 0:
+					frappe.throw(
+						_(
+							"Cannot cancel this Refining Entry: its service PO {0} is already "
+							"received/billed. Reverse the Purchase Order first."
+						).format(frappe.bold(po.name))
+					)
+				po.flags.ignore_permissions = True
+				po.cancel()
+			elif po.docstatus == 0:
+				po.flags.ignore_permissions = True
+				po.delete(ignore_permissions=True)
 
 	def create_scrap_transfer_se(self):
 		scrap_warehouse = self.scrap_warehouse
