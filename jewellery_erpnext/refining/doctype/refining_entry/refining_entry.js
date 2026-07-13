@@ -147,52 +147,6 @@ frappe.ui.form.on("Refining Entry", {
 		}
 	},
 
-	refining_entry_po(frm) {
-		if (frm.doc.refining_entry_po && frm.is_new()) {
-			frappe.show_alert(__("Fetching details from Purchase Order..."));
-			frappe.call({
-				method: "jewellery_erpnext.jewellery_erpnext.refining.doctype.refining_entry.refining_entry.fetch_details_from_po",
-				args: { po_name: frm.doc.refining_entry_po },
-				callback: function (r) {
-					if (r.message) {
-						let doc = r.message;
-						let keys = [
-							"refining_type",
-							"supplier",
-							"refining_process",
-							"company",
-							"department",
-							"refining_department",
-							"warehouse",
-							"refining_warehouse",
-							"supplier_warehouse",
-							"refined_metal_item",
-							"qty_to_refine",
-						];
-						keys.forEach((k) => frm.set_value(k, doc[k]));
-
-						frm.clear_table("material_items");
-						if (doc.material_items) {
-							doc.material_items.forEach((row) => {
-								let child = frm.add_child("material_items");
-								Object.assign(child, row);
-							});
-						}
-
-						frm.clear_table("batch_tracking");
-						if (doc.batch_tracking) {
-							doc.batch_tracking.forEach((row) => {
-								let child = frm.add_child("batch_tracking");
-								Object.assign(child, row);
-							});
-						}
-						frm.refresh();
-					}
-				},
-			});
-		}
-	},
-
 	set_recovery_grid_editability(frm) {
 		// Only the recovered_pcs / recovered_weight columns are operator-editable, and
 		// only while recovery is being entered (on the child processing entry). The
@@ -476,8 +430,9 @@ frappe.ui.form.on("Refining Entry", {
 
 		// External Refinery has its own submit-only lifecycle (no classify/repack/
 		// verify/complete/transfer) — the internal "Refining Process" buttons below don't
-		// apply. The sending entry auto-creates a service Purchase Order; surface it here
-		// so the operator can find it to create the receiving entry against it.
+		// apply. Everything happens on this one document: the sending entry auto-creates
+		// an optional service Purchase Order, and "Receive Material from Supplier"
+		// records the physical receipt directly here (no second Refining Entry).
 		if (frm.doc.refining_type === "External Refinery") {
 			if (frm.doc.refining_entry_po) {
 				frm.add_custom_button(
@@ -485,6 +440,41 @@ frappe.ui.form.on("Refining Entry", {
 					() => frappe.set_route("Form", "Purchase Order", frm.doc.refining_entry_po),
 					__("Refining Process")
 				);
+			}
+
+			if (frm.doc.docstatus === 1 && !frm.doc.repack_se) {
+				let btn = frm.add_custom_button(
+					__("Receive Material from Supplier"),
+					() => {
+						frappe.prompt(
+							[
+								{
+									fieldname: "recovery_weight",
+									fieldtype: "Float",
+									label: __("Recovery Weight"),
+									reqd: 1,
+									default: frm.doc.qty_to_refine || 0,
+								},
+								{
+									fieldname: "received_qty",
+									fieldtype: "Float",
+									label: __("Received Quantity (if applicable)"),
+								},
+							],
+							(values) => {
+								frappe.show_alert(__("Receiving Material..."));
+								frm.call("receive_from_supplier", {
+									recovery_weight: values.recovery_weight,
+									received_qty: values.received_qty,
+								}).then(() => frm.reload_doc());
+							},
+							__("Receive Material from Supplier"),
+							__("Receive")
+						);
+					},
+					__("Refining Process")
+				);
+				btn.addClass("btn-primary");
 			}
 			return;
 		}

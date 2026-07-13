@@ -109,94 +109,31 @@ class RefiningEntry(Document):
 			self.create_refining_po()
 
 	def on_cancel(self):
-		if self.refining_type == "External Refinery":
-			self.on_cancel_external()
-			return
+		# External Refinery shares this path — cancel_linked_stock_entries also catches
+		# its repack_se (tagged with custom_refining_entry like every other type's SEs),
+		# and _cancel_refining_po already finds every PO linked via refining_entry=self.name
+		# (the service PO plus any true-up), so no special-case dispatch is needed.
 		self.cancel_linked_stock_entries()
 		self._cancel_refining_po()
 
 	# --- External Refinery ---
 	#
 	# A distinct 5th refining type with its own submit-only lifecycle — no classify/
-	# repack/verify/complete/transfer. Two Refining Entry documents drive one external
-	# refining transaction, discriminated as follows:
-	#   - Sending entry: refining_type == "External Refinery", refining_entry_po UNSET
-	#     at submit time. Issues material to the supplier's warehouse and creates the
-	#     service Purchase Order, then db_sets refining_entry_po onto itself.
-	#   - Receiving entry: created via fetch_details_from_po by selecting that PO into a
-	#     NEW document's refining_entry_po field (set pre-submit, by the operator) —
-	#     books the refined metal back in as a Purchase Receipt.
-	# After both submit, BOTH documents point at the same refining_entry_po — it is only
-	# a submit-time discriminator. Cancel-time code instead keys off purchase_receipt /
-	# reconcile_se, which only the receiving entry ever populates.
+	# repack/verify/complete/transfer, and everything happens on ONE document (no
+	# separate "receiving entry"):
+	#   - Submit: issues material to the supplier's warehouse (Material Transfer) and
+	#     creates an optional service Purchase Order billing the Refinery Price List
+	#     Gross-Weight charge, if one is configured.
+	#   - "Receive Material from Supplier" (receive_from_supplier, called from a dialog,
+	#     any time after submit): books a single Repack Stock Entry that issues the
+	#     originally sent material out of the supplier warehouse and receives the
+	#     recovered pure metal into the source department's Raw Material warehouse in
+	#     one atomic movement — no Purchase Receipt, no second Refining Entry.
 
 	def before_submit_external(self):
 		if not self.supplier:
 			frappe.throw(_("Refinery Supplier is mandatory for External Refinery."))
 
-		if self.refining_entry_po:
-			po = frappe.db.get_value(
-				"Purchase Order",
-				self.refining_entry_po,
-				["refining_entry", "docstatus"],
-				as_dict=True,
-			)
-			if not po or po.docstatus != 1:
-				frappe.throw(
-					_(
-						"Refining Service PO {0} must be a submitted Purchase Order."
-					).format(self.refining_entry_po)
-				)
-			if not po.refining_entry or po.refining_entry == self.name:
-				frappe.throw(
-					_(
-						"Refining Service PO {0} is not linked to a sending External "
-						"Refinery Entry."
-					).format(self.refining_entry_po)
-				)
-			if (
-				frappe.db.get_value("Refining Entry", po.refining_entry, "docstatus")
-				!= 1
-			):
-				frappe.throw(
-					_(
-						"The sending External Refinery Entry {0} for this Purchase "
-						"Order must be submitted first."
-					).format(po.refining_entry)
-				)
-			if flt(self.received_weight) <= 0:
-				frappe.throw(_("Received Weight must be greater than zero."))
-			if not self.supplier_challan_no:
-				frappe.throw(
-					_("Supplier Challan No is mandatory to receive refined material.")
-				)
-			# Only one receiving entry is allowed per PO — a second one would create a
-			# second Purchase Receipt against the same accountability line (ERPNext's own
-			# over-receipt guard only blocks CUMULATIVE over-receipt, not a second partial
-			# receipt within the still-outstanding qty) and double-count the refined metal.
-			# Both the sending AND receiving entry end up carrying this same
-			# refining_entry_po once the sending entry submits — exclude it explicitly
-			# (via purchase_receipt, set only by a completed receiving entry) so the very
-			# first legitimate receiving entry isn't blocked by its own sending entry.
-			existing = frappe.db.exists(
-				"Refining Entry",
-				{
-					"name": ["!=", self.name],
-					"refining_entry_po": self.refining_entry_po,
-					"docstatus": 1,
-					"purchase_receipt": ["is", "set"],
-				},
-			)
-			if existing:
-				frappe.throw(
-					_(
-						"Refined material has already been received against Purchase "
-						"Order {0} (entry {1})."
-					).format(self.refining_entry_po, existing)
-				)
-			return
-
-		# Sending entry
 		if not self.material_items and (self.mwo_details or self.serial_no_details):
 			self.build_material_table()
 		if not self.material_items:
@@ -219,116 +156,21 @@ class RefiningEntry(Document):
 			frappe.throw(_("No gold weight to send for External Refinery."))
 
 	def on_submit_external(self):
-		if self.refining_entry_po:
-			self.receive_external_refined_metal()
-		else:
-			self.create_material_transfer_se(target_warehouse=self.supplier_warehouse)
-			self.create_external_refining_po()
-
-	def on_cancel_external(self):
-		if self.purchase_receipt or self.reconcile_se:
-			# Receiving entry: reverse the Purchase Receipt, then the reconciliation
-			# Material Issue.
-			if self.purchase_receipt:
-				pr = frappe.get_doc("Purchase Receipt", self.purchase_receipt)
-				if pr.docstatus == 1:
-					if flt(pr.per_billed) > 0:
-						frappe.throw(
-							_(
-								"Cannot cancel: Purchase Receipt {0} is already billed. "
-								"Reverse the Purchase Invoice first."
-							).format(frappe.bold(pr.name))
-						)
-					pr.flags.ignore_permissions = True
-					pr.cancel()
-			if self.reconcile_se:
-				se = frappe.get_doc("Stock Entry", self.reconcile_se)
-				if se.docstatus == 1:
-					se.flags.ignore_permissions = True
-					se.cancel()
-			if self.refining_entry_po:
-				sending_name = frappe.db.get_value(
-					"Purchase Order", self.refining_entry_po, "refining_entry"
-				)
-				if sending_name:
-					self._cancel_true_up_po(sending_name, self.refining_entry_po)
-		else:
-			# Sending entry: block if refined material has already been received
-			# against this entry's PO (a receiving entry shares the same refining_entry_po).
-			if self.refining_entry_po and frappe.db.exists(
-				"Refining Entry",
-				{
-					"name": ["!=", self.name],
-					"refining_entry_po": self.refining_entry_po,
-					"docstatus": 1,
-				},
-			):
-				frappe.throw(
-					_(
-						"Cannot cancel: refined material has already been received "
-						"against Purchase Order {0}. Reverse the receiving entry first."
-					).format(self.refining_entry_po)
-				)
-			self.cancel_linked_stock_entries()
-			self._cancel_refining_po()
-
-	def _cancel_true_up_po(self, sending_name, primary_po_name):
-		"""Delete any draft true-up service PO that
-		_bill_external_receipt_service_charge created for THIS receiving entry. Found by
-		refining_entry (the sending entry) excluding the primary submitted PO — there is
-		at most one, since a second receiving entry against the same PO is blocked in
-		before_submit_external. Not tracked by a dedicated link field since it is purely
-		additive (never gates anything downstream)."""
-		po_names = frappe.get_all(
-			"Purchase Order",
-			filters={
-				"refining_entry": sending_name,
-				"name": ["!=", primary_po_name],
-				"docstatus": ["<", 2],
-			},
-			pluck="name",
-		)
-		for name in po_names:
-			po = frappe.get_doc("Purchase Order", name)
-			if po.docstatus == 1:
-				if flt(po.per_billed) > 0:
-					frappe.throw(
-						_(
-							"Cannot cancel: service Purchase Order {0} is already "
-							"billed. Reverse it first."
-						).format(frappe.bold(po.name))
-					)
-				po.flags.ignore_permissions = True
-				po.cancel()
-			elif po.docstatus == 0:
-				po.flags.ignore_permissions = True
-				po.delete(ignore_permissions=True)
+		self.create_material_transfer_se(target_warehouse=self.supplier_warehouse)
+		self.create_external_refining_po()
 
 	def create_external_refining_po(self):
-		"""Sending entry, after the material transfer: create the service Purchase Order.
-		It carries a Gross-Weight-basis service charge line (if a matching Refinery Price
-		List band exists — the weight is final now) plus an accountability line for the
-		metal itself, priced at its current valuation (see _sent_metal_valuation_rate).
-		Not a purchase in substance (no money changes hands for the company's own
-		returned metal), but priced rather than rate-0: ERPNext enforces Purchase
-		Receipt.rate == Purchase Order.rate by default (Buying Settings "Stop" action),
-		so receive_external_refined_metal's mapped Purchase Receipt line must inherit
-		this same rate rather than override it. The PO's received qty then tracks what
-		comes back. Fine/After-Burning-basis service charges are billed on receipt
-		instead, once the actual recovered weight is known (see
-		receive_external_refined_metal)."""
+		"""After the material transfer: create an optional service Purchase Order
+		billing the Refinery Price List Gross-Weight-basis charge for this refining
+		process (the sent weight is final now). Left as a draft for the buyer to
+		review/submit. No PO is created if no price band matches — billing is
+		best-effort, not a precondition for the physical flow. Fine/After-Burning-basis
+		charges are billed once the actual received weight is known (see
+		_bill_external_receipt_service_charge, called from receive_from_supplier)."""
 		from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
 			compute_refining_amount,
 			get_refinery_rate,
 		)
-
-		po = frappe.new_doc("Purchase Order")
-		po.refining_entry = self.name
-		po.supplier = self.supplier
-		po.company = self.company
-		po.transaction_date = self.posting_date
-		if frappe.db.exists("Purchase Type", "Service"):
-			po.purchase_type = "Service"
 
 		dust_item = self._resolve_external_dust_item()
 		row = get_refinery_rate(
@@ -338,113 +180,168 @@ class RefiningEntry(Document):
 			company=self.company,
 			supplier=self.supplier,
 		)
-		if row and row.get("weight_basis") == "Gross Weight":
-			service_item = row.get("service_item") or self._default_refining_service_item()
-			if not service_item:
-				frappe.throw(
-					_(
-						"No service item configured for external refining — set one on "
-						"the price row or seed the default service item {0}."
-					).format(frappe.bold("REF-SVC-001"))
-				)
-			po.append(
-				"items",
-				{
-					"item_code": service_item,
-					"qty": 1,
-					"rate": compute_refining_amount(
-						row.get("charge_type"), row.get("rate"), self.qty_to_refine
-					),
-					"schedule_date": self.posting_date,
-					"custom_gross_wt": self.qty_to_refine,
-					"custom_refining_price_list": row.get("name"),
-				},
+		if not row or row.get("weight_basis") != "Gross Weight":
+			return
+
+		service_item = row.get("service_item") or self._default_refining_service_item()
+		if not service_item:
+			frappe.throw(
+				_(
+					"No service item configured for external refining — set one on "
+					"the price row or seed the default service item {0}."
+				).format(frappe.bold("REF-SVC-001"))
 			)
 
-		# Accountability line for the metal itself, priced at its current valuation (see
-		# docstring above for why rate-0 doesn't work) — it lets the PO track what is
-		# expected back and lets Purchase Receipt update per_received against it.
+		po = frappe.new_doc("Purchase Order")
+		po.refining_entry = self.name
+		po.supplier = self.supplier
+		po.company = self.company
+		po.transaction_date = self.posting_date
+		if frappe.db.exists("Purchase Type", "Service"):
+			po.purchase_type = "Service"
 		po.append(
 			"items",
 			{
-				"item_code": self.refined_metal_item,
-				"qty": self.qty_to_refine,
-				"rate": self._sent_metal_valuation_rate(self),
+				"item_code": service_item,
+				"qty": 1,
+				"rate": compute_refining_amount(
+					row.get("charge_type"), row.get("rate"), self.qty_to_refine
+				),
 				"schedule_date": self.posting_date,
-				"custom_is_refined_metal_line": 1,
+				"custom_gross_wt": self.qty_to_refine,
+				"custom_refining_price_list": row.get("name"),
 			},
 		)
-
 		po.insert(ignore_permissions=True)
-		po.submit()
 		self.db_set("refining_entry_po", po.name)
 
-	def receive_external_refined_metal(self):
-		"""Receiving entry: create a Purchase Receipt against the sending entry's PO for
-		the refined-metal line — landing the recovered pure metal in the SOURCE
-		department's Raw Material warehouse and updating the PO's received qty — then
-		reconcile the supplier warehouse by issuing out the originally sent material (the
-		sent-minus-received difference is refining loss, absorbed by that issue).
-
-		Valuation caveat: the Purchase Receipt books a purchase (credits Stock Received
-		But Not Billed) with no offsetting Purchase Invoice, since no money changes hands
-		for the company's own returned metal. Pricing the metal line at the sent
-		valuation (set on the Purchase Order itself, at create_external_refining_po time —
-		see its docstring for why the rate must match, not be overridden here) and
-		expensing the loss via the reconciling Material Issue keeps qty and approximate
-		value correct, but the SRBNB balance needs periodic clearing. ERPNext
-		Subcontracting (Subcontracting Order/Receipt) would model this exactly; PO+PR is
-		the approach built here per explicit design choice."""
-		from erpnext.buying.doctype.purchase_order.purchase_order import (
-			make_purchase_receipt,
-		)
-
-		po = frappe.get_doc("Purchase Order", self.refining_entry_po)
-		sending = frappe.get_doc("Refining Entry", po.refining_entry)
-
-		target_wh = self._get_source_dept_rm_warehouse(sending.department)
-
-		pr = make_purchase_receipt(po.name)
-		metal_row = None
-		for row in pr.items:
-			if row.item_code == sending.refined_metal_item:
-				metal_row = row
-				break
-		if not metal_row:
+	@frappe.whitelist()
+	def receive_from_supplier(self, recovery_weight, received_qty=None):
+		"""Record receipt of refined metal from the supplier directly on THIS entry —
+		no second Refining Entry, no Purchase Receipt. Builds a single Repack Stock
+		Entry that issues the originally sent material out of the supplier warehouse
+		and receives the recovered pure metal into the source department's Raw
+		Material warehouse in one atomic movement; ERPNext values the output from the
+		consumed input automatically (standard Repack costing), so no explicit rate is
+		needed. Also bills any Fine/After-Burning-basis service charge now that the
+		actual received weight is known."""
+		self.require_refining_role(REFINING_ROLES, _("receive material from supplier"))
+		if self.refining_type != "External Refinery":
+			frappe.throw(_("This action is only available for External Refinery."))
+		if self.docstatus != 1:
+			frappe.throw(_("Submit the entry before receiving material."))
+		if self.repack_se:
 			frappe.throw(
 				_(
-					"Refined Metal Item {0} not found on Purchase Order {1}."
-				).format(frappe.bold(sending.refined_metal_item), po.name)
+					"Refined material has already been received against this entry "
+					"(Stock Entry {0})."
+				).format(frappe.bold(self.repack_se))
+			)
+		recovery_weight = flt(recovery_weight, 3)
+		if recovery_weight <= 0:
+			frappe.throw(_("Recovery Weight must be greater than zero."))
+
+		target_wh = self._get_source_dept_rm_warehouse(self.department)
+
+		precision = 3
+		min_qty = 0.001
+
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = "Repack"
+		se.purpose = "Repack"
+		se.company = self.company
+		se.custom_refining_entry = self.name
+		se.auto_created = 1
+		se.to_subcontractor = self.supplier
+
+		expected_qty = 0.0
+		issued_qty = 0.0
+		for item in self.material_items:
+			if item.get("source_type") == "BOM Component":
+				continue
+			qty = flt(item.qty, precision)
+			if qty < min_qty:
+				continue
+			expected_qty += qty
+			has_batch = frappe.db.get_value("Item", item.item_code, "has_batch_no")
+			if has_batch:
+				allocations = self.allocate_fifo_batches(
+					item.item_code,
+					self.supplier_warehouse,
+					qty,
+					throw_if_missing=False,
+				)
+				for alloc in allocations:
+					if flt(alloc["qty"], precision) >= min_qty:
+						issued_qty += flt(alloc["qty"], precision)
+						se.append(
+							"items",
+							{
+								"item_code": item.item_code,
+								"qty": alloc["qty"],
+								"uom": item.uom,
+								"s_warehouse": self.supplier_warehouse,
+								"batch_no": alloc["batch_no"],
+								"serial_no": item.serial_no,
+								"use_serial_batch_fields": 1,
+							},
+						)
+			else:
+				issued_qty += qty
+				se.append(
+					"items",
+					{
+						"item_code": item.item_code,
+						"qty": qty,
+						"uom": item.uom,
+						"s_warehouse": self.supplier_warehouse,
+						"serial_no": item.serial_no,
+						"use_serial_batch_fields": 1,
+					},
+				)
+
+		if not se.items:
+			frappe.throw(
+				_("No material available in the Supplier Warehouse to receive against.")
 			)
 
-		# make_purchase_receipt maps every not-yet-fully-received PO line, including the
-		# service charge line (if one exists). A Purchase Receipt must cover ONLY the
-		# physically received metal — drop everything else so the service line isn't
-		# marked "received" and doesn't post a stock/GL entry for a non-stock charge.
-		pr.set("items", [metal_row])
+		metal_row = {
+			"item_code": self.refined_metal_item,
+			"qty": recovery_weight,
+			"uom": "Gram",
+			"t_warehouse": target_wh,
+			"use_serial_batch_fields": 1,
+		}
+		if frappe.db.get_value("Item", self.refined_metal_item, "has_batch_no"):
+			metal_row["batch_no"] = self._auto_create_batch(self.refined_metal_item)
+		se.append("items", metal_row)
 
-		# Rate is deliberately NOT overridden here — it must stay equal to the Purchase
-		# Order line's rate (ERPNext's Buying Settings "Stop" action rejects a mismatch).
-		metal_row.qty = flt(self.received_weight, 3)
-		metal_row.warehouse = target_wh
-		if frappe.db.get_value("Item", metal_row.item_code, "has_batch_no"):
-			metal_row.batch_no = self._auto_create_batch(metal_row.item_code)
-			metal_row.use_serial_batch_fields = 1
+		se.insert(ignore_permissions=True)
+		se.submit()
 
-		pr.custom_refining_entry = self.name
-		pr.custom_supplier_challan_no = self.supplier_challan_no
-		pr.set_warehouse = target_wh
-		pr.flags.ignore_permissions = True
-		pr.insert(ignore_permissions=True)
-		pr.submit()
-		self.db_set("purchase_receipt", pr.name)
+		self.db_set("received_weight", recovery_weight)
+		self.db_set("repack_se", se.name)
+		if received_qty:
+			self.db_set("received_qty", flt(received_qty))
 
-		self._reconcile_supplier_warehouse(sending)
+		# allocate_fifo_batches(throw_if_missing=False) caps at available stock and
+		# returns silently on shortfall — surface it instead of leaving the supplier
+		# warehouse with an un-reconciled, uninvestigated balance.
+		shortfall = flt(expected_qty - issued_qty, precision)
+		if shortfall >= min_qty:
+			frappe.log_error(
+				title="External Refinery: supplier warehouse reconciliation shortfall",
+				message=(
+					f"Refining Entry {self.name}: expected to issue {expected_qty} out "
+					f"of supplier warehouse {self.supplier_warehouse}, only "
+					f"{issued_qty} was available. Shortfall {shortfall} — investigate "
+					f"supplier warehouse stock."
+				),
+			)
 
-		# Fine/After-Burning-basis service charge, if the price band matches on the
-		# actual received weight (deferred from create_external_refining_po, where only
-		# Gross-Weight-basis bands could be billed).
-		self._bill_external_receipt_service_charge(sending)
+		self._bill_external_receipt_service_charge()
+
+		return se.name
 
 	def _get_source_dept_rm_warehouse(self, department):
 		wh = frappe.db.get_value(
@@ -460,105 +357,11 @@ class RefiningEntry(Document):
 			)
 		return wh
 
-	def _sent_metal_valuation_rate(self, sending):
-		"""Approximate valuation for the received pure-metal PR line: the most recent
-		valuation rate posted for that item, company-wide. See the valuation caveat on
-		receive_external_refined_metal."""
-		rate = frappe.db.get_value(
-			"Stock Ledger Entry",
-			{
-				"item_code": sending.refined_metal_item,
-				"company": sending.company,
-				"is_cancelled": 0,
-			},
-			"valuation_rate",
-			order_by="posting_date desc, posting_time desc, creation desc",
-		)
-		return flt(rate, 2)
-
-	def _reconcile_supplier_warehouse(self, sending):
-		"""Issue the originally sent material out of the supplier warehouse now that it
-		has been accounted for as received (or lost) — otherwise it would sit there
-		indefinitely, double-counted against the department RM receipt."""
-		precision = 3
-		min_qty = 0.001
-
-		se = frappe.new_doc("Stock Entry")
-		se.stock_entry_type = "Material Issue"
-		se.purpose = "Material Issue"
-		se.company = sending.company
-		se.custom_refining_entry = self.name
-		se.auto_created = 1
-		se.to_subcontractor = sending.supplier
-
-		expected_qty = 0.0
-		issued_qty = 0.0
-		for item in sending.material_items:
-			if item.get("source_type") == "BOM Component":
-				continue
-			qty = flt(item.qty, precision)
-			if qty < min_qty:
-				continue
-			expected_qty += qty
-			has_batch = frappe.db.get_value("Item", item.item_code, "has_batch_no")
-			if has_batch:
-				allocations = sending.allocate_fifo_batches(
-					item.item_code,
-					sending.supplier_warehouse,
-					qty,
-					throw_if_missing=False,
-				)
-				for alloc in allocations:
-					if flt(alloc["qty"], precision) >= min_qty:
-						issued_qty += flt(alloc["qty"], precision)
-						se.append(
-							"items",
-							{
-								"item_code": item.item_code,
-								"qty": alloc["qty"],
-								"uom": item.uom,
-								"s_warehouse": sending.supplier_warehouse,
-								"batch_no": alloc["batch_no"],
-								"serial_no": item.serial_no,
-								"use_serial_batch_fields": 1,
-							},
-						)
-			else:
-				issued_qty += qty
-				se.append(
-					"items",
-					{
-						"item_code": item.item_code,
-						"qty": qty,
-						"uom": item.uom,
-						"s_warehouse": sending.supplier_warehouse,
-						"serial_no": item.serial_no,
-						"use_serial_batch_fields": 1,
-					},
-				)
-
-		if se.items:
-			se.insert(ignore_permissions=True)
-			se.submit()
-			self.db_set("reconcile_se", se.name)
-
-		# allocate_fifo_batches(throw_if_missing=False) caps at available stock and
-		# returns silently on shortfall — surface it instead of leaving the supplier
-		# warehouse with an un-reconciled, uninvestigated balance (e.g. a prior partial
-		# reconciliation, or stock moved out of the supplier warehouse by other means).
-		shortfall = flt(expected_qty - issued_qty, precision)
-		if shortfall >= min_qty:
-			frappe.log_error(
-				title="External Refinery: supplier warehouse reconciliation shortfall",
-				message=(
-					f"Refining Entry {self.name} (sending entry {sending.name}): expected "
-					f"to issue {expected_qty} out of supplier warehouse "
-					f"{sending.supplier_warehouse}, only {issued_qty} was available. "
-					f"Shortfall {shortfall} — investigate supplier warehouse stock."
-				),
-			)
-
-	def _bill_external_receipt_service_charge(self, sending):
+	def _bill_external_receipt_service_charge(self):
+		"""Fine/After-Burning-basis service charge, if the price band matches on the
+		actual received weight (deferred from create_external_refining_po, where only
+		Gross-Weight-basis bands could be billed since the received weight wasn't
+		known yet)."""
 		from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
 			compute_refining_amount,
 			get_refinery_rate,
@@ -568,20 +371,20 @@ class RefiningEntry(Document):
 		if weight_g <= 0:
 			return
 
-		dust_item = sending._resolve_external_dust_item()
+		dust_item = self._resolve_external_dust_item()
 		row = get_refinery_rate(
 			dust_item,
 			weight_g,
-			refining_process=sending.refining_process,
-			company=sending.company,
-			supplier=sending.supplier,
+			refining_process=self.refining_process,
+			company=self.company,
+			supplier=self.supplier,
 		)
 		if not row or row.get("weight_basis") == "Gross Weight":
 			return
 
 		po_names = frappe.get_all(
 			"Purchase Order",
-			filters={"refining_entry": sending.name, "docstatus": ["<", 2]},
+			filters={"refining_entry": self.name, "docstatus": ["<", 2]},
 			pluck="name",
 		)
 		for name in po_names:
@@ -590,10 +393,10 @@ class RefiningEntry(Document):
 				d.get("custom_refining_price_list") == row.get("name")
 				for d in doc.items
 			):
-				# Already billed on one of this transaction's POs.
+				# Already billed on one of this entry's POs.
 				return
 
-		service_item = row.get("service_item") or sending._default_refining_service_item()
+		service_item = row.get("service_item") or self._default_refining_service_item()
 		if not service_item:
 			frappe.throw(
 				_(
@@ -611,18 +414,29 @@ class RefiningEntry(Document):
 			"custom_gross_wt": weight_g,
 			"custom_refining_price_list": row.get("name"),
 		}
-		# The sending entry's service PO is already submitted (required before a
-		# receiving entry can exist against it) — a true-up charge appends as a new draft
-		# PO for the same supplier rather than reopening the submitted one.
-		true_up = frappe.new_doc("Purchase Order")
-		true_up.refining_entry = sending.name
-		true_up.supplier = sending.supplier
-		true_up.company = sending.company
-		true_up.transaction_date = self.posting_date
-		if frappe.db.exists("Purchase Type", "Service"):
-			true_up.purchase_type = "Service"
-		true_up.append("items", line)
-		true_up.insert(ignore_permissions=True)
+		# Append to the existing service PO if it's still a draft; otherwise (already
+		# submitted, or none was created at submit time) start a fresh draft PO for the
+		# true-up charge.
+		po = None
+		if self.refining_entry_po:
+			existing = frappe.get_doc("Purchase Order", self.refining_entry_po)
+			if existing.docstatus == 0:
+				po = existing
+		if po:
+			po.append("items", line)
+			po.save(ignore_permissions=True)
+		else:
+			po = frappe.new_doc("Purchase Order")
+			po.refining_entry = self.name
+			po.supplier = self.supplier
+			po.company = self.company
+			po.transaction_date = self.posting_date
+			if frappe.db.exists("Purchase Type", "Service"):
+				po.purchase_type = "Service"
+			po.append("items", line)
+			po.insert(ignore_permissions=True)
+			if not self.refining_entry_po:
+				self.db_set("refining_entry_po", po.name)
 
 	# --- Validations ---
 
@@ -3108,6 +2922,11 @@ class RefiningEntry(Document):
 				po.flags.ignore_permissions = True
 				po.cancel()
 			elif po.docstatus == 0:
+				# Frappe's delete_doc refuses to delete a document that's still linked
+				# FROM another document — including this Refining Entry's own
+				# refining_entry_po field, even mid-cancel. Clear that link first.
+				if self.refining_entry_po == name:
+					self.db_set("refining_entry_po", None)
 				po.flags.ignore_permissions = True
 				po.delete(ignore_permissions=True)
 
@@ -4052,51 +3871,3 @@ class RefiningEntry(Document):
 			)
 
 		return allocations
-
-
-@frappe.whitelist()
-def fetch_details_from_po(po_name):
-	"""Called from the UI when selecting a Purchase Order on a new External Refinery
-	Refining Entry. Returns the details of the sending entry to populate the new
-	receiving entry. Deliberately does NOT set parent_refining_entry — the receiving
-	entry is discriminated from the sending entry by refining_entry_po being set
-	pre-submit, not by a parent/duplicate relationship."""
-	po = frappe.get_doc("Purchase Order", po_name)
-	if not po.refining_entry:
-		frappe.throw(
-			_(
-				"Selected Purchase Order {0} is not linked to any Refining Entry."
-			).format(po_name)
-		)
-
-	parent_entry = frappe.get_doc("Refining Entry", po.refining_entry)
-
-	data = {
-		"refining_type": parent_entry.refining_type,
-		"supplier": parent_entry.supplier,
-		"refining_process": parent_entry.refining_process,
-		"company": parent_entry.company,
-		"department": parent_entry.department,
-		"refining_department": parent_entry.refining_department,
-		"warehouse": parent_entry.warehouse,
-		"refining_warehouse": parent_entry.refining_warehouse,
-		"supplier_warehouse": parent_entry.supplier_warehouse,
-		"refined_metal_item": parent_entry.refined_metal_item,
-		"qty_to_refine": parent_entry.qty_to_refine,
-		"material_items": [],
-		"batch_tracking": [],
-	}
-
-	for row in parent_entry.material_items:
-		r = row.as_dict()
-		r.pop("name", None)
-		r.pop("parent", None)
-		data["material_items"].append(r)
-
-	for row in parent_entry.batch_tracking:
-		r = row.as_dict()
-		r.pop("name", None)
-		r.pop("parent", None)
-		data["batch_tracking"].append(r)
-
-	return data

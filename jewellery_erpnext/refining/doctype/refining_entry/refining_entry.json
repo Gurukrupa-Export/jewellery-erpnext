@@ -75,9 +75,7 @@
   "refined_metal_item",
   "qty_to_refine",
   "received_weight",
-  "supplier_challan_no",
-  "purchase_receipt",
-  "reconcile_se",
+  "received_qty",
   "repack_se",
   "column_break_se",
   "transfer_se",
@@ -533,13 +531,15 @@
   },
   {
    "allow_on_submit": 1,
+   "allow_on_submit": 1,
    "depends_on": "eval:doc.refining_type=='External Refinery'",
+   "description": "Auto-created service Purchase Order billing the Refinery Price List charge for this entry, if a price band is configured. Optional — the physical send/receive flow does not depend on it.",
    "fieldname": "refining_entry_po",
    "fieldtype": "Link",
    "label": "Refining Service PO",
    "no_copy": 1,
    "options": "Purchase Order",
-   "set_only_once": 1
+   "read_only": 1
   },
   {
    "depends_on": "eval:doc.refining_type=='External Refinery'",
@@ -559,39 +559,25 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval:doc.refining_type=='External Refinery' && doc.refining_entry_po",
-   "description": "Actual refined weight received back from the supplier. Entered on the receiving entry before submit.",
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.refining_type=='External Refinery'",
+   "description": "Actual refined weight received back from the supplier. Set by the \"Receive Material from Supplier\" action.",
    "fieldname": "received_weight",
    "fieldtype": "Float",
    "label": "Received Weight",
-   "precision": "3"
-  },
-  {
-   "depends_on": "eval:doc.refining_type=='External Refinery' && doc.refining_entry_po",
-   "description": "Supplier's delivery challan number for the returned refined metal — required on the Purchase Receipt.",
-   "fieldname": "supplier_challan_no",
-   "fieldtype": "Data",
-   "label": "Supplier Challan No"
-  },
-  {
-   "allow_on_submit": 1,
-   "depends_on": "eval:doc.refining_type=='External Refinery'",
-   "fieldname": "purchase_receipt",
-   "fieldtype": "Link",
-   "label": "Purchase Receipt",
    "no_copy": 1,
-   "options": "Purchase Receipt",
+   "precision": "3",
    "read_only": 1
   },
   {
    "allow_on_submit": 1,
    "depends_on": "eval:doc.refining_type=='External Refinery'",
-   "description": "Material Issue that clears the sent metal out of the Supplier Warehouse on receipt.",
-   "fieldname": "reconcile_se",
-   "fieldtype": "Link",
-   "label": "Reconciliation SE",
+   "description": "Received quantity (pcs), if applicable — informational only.",
+   "fieldname": "received_qty",
+   "fieldtype": "Float",
+   "label": "Received Quantity",
    "no_copy": 1,
-   "options": "Stock Entry",
+   "precision": "3",
    "read_only": 1
   },
   {
