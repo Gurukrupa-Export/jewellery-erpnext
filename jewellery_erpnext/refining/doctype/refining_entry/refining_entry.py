@@ -319,10 +319,40 @@ class RefiningEntry(Document):
 		se.insert(ignore_permissions=True)
 		se.submit()
 
-		self.db_set("received_weight", recovery_weight)
-		self.db_set("repack_se", se.name)
+		# Populate the Recovery Summary (Actual Recovery, Recovery %, Refining Loss,
+		# etc.) from this row exactly like the other 4 refining types, by reusing
+		# calculate_totals() directly — called explicitly rather than relying on
+		# save()'s implicit validate() pass, since that pass runs before the
+		# in-memory changes made here are what gets persisted.
+		self.received_weight = recovery_weight
+		self.repack_se = se.name
 		if received_qty:
-			self.db_set("received_qty", flt(received_qty))
+			self.received_qty = flt(received_qty)
+		self.append(
+			"refined_gold",
+			{
+				"item_code": self.refined_metal_item,
+				"refining_gold_weight": recovery_weight,
+				"pure_weight": recovery_weight,
+			},
+		)
+		self.calculate_totals()
+		self.db_set(
+			{
+				"received_weight": self.received_weight,
+				"repack_se": self.repack_se,
+				"received_qty": flt(self.received_qty),
+				"gross_pure_weight": self.gross_pure_weight,
+				"expected_recovery": self.expected_recovery,
+				"actual_recovery": self.actual_recovery,
+				"refined_fine_weight": self.refined_fine_weight,
+				"recovery_percentage": self.recovery_percentage,
+				"refining_loss": self.refining_loss,
+			},
+			notify=False,
+		)
+		refined_gold_row = self.refined_gold[-1]
+		refined_gold_row.db_insert()
 
 		# allocate_fifo_batches(throw_if_missing=False) caps at available stock and
 		# returns silently on shortfall — surface it instead of leaving the supplier
@@ -743,7 +773,15 @@ class RefiningEntry(Document):
 		gross_pure_weight = 0.0
 		expected_recovery = 0.0
 
-		if self.refining_type == "Serial Number Refining":
+		if self.refining_type == "External Refinery":
+			# External refining is an opaque supplier process — material_items rows
+			# added via scan_scrap_qr_action or typed in manually rarely carry a
+			# purity value, so the purity-weighted computation below would silently
+			# read 0. qty_to_refine (the gold-item weight actually sent, computed at
+			# submit) is a purity-independent baseline that's always available.
+			gross_pure_weight = flt(self.qty_to_refine)
+			expected_recovery = flt(self.qty_to_refine)
+		elif self.refining_type == "Serial Number Refining":
 			bom_components = [
 				item
 				for item in self.material_items
@@ -1732,8 +1770,6 @@ class RefiningEntry(Document):
 			10,
 			title="Completing Refining",
 			description="Creating Repack Stock Entry...",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 		self.create_repack_se()
 
@@ -1747,8 +1783,6 @@ class RefiningEntry(Document):
 			50,
 			title="Completing Refining",
 			description="Updating source dependencies...",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 		if self.refining_type == "Work Order Refining":
 			# SOP: Current and future operation quantities -> 0 for every refined MWO.
@@ -1857,8 +1891,6 @@ class RefiningEntry(Document):
 			80,
 			title="Completing Refining",
 			description="Handling Refining Loss...",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 		# If there is refining loss, convert to dust and move to scrap warehouse
 		if self.refining_loss > 0:
@@ -1874,8 +1906,6 @@ class RefiningEntry(Document):
 			100,
 			title="Completing Refining",
 			description="Refining Completed Successfully",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 
 	@frappe.whitelist()
@@ -1890,8 +1920,6 @@ class RefiningEntry(Document):
 			10,
 			title="Transferring Materials",
 			description="Finding Central RM Warehouse...",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 		# Always transfer recovered materials to Central RM warehouse
 		target_warehouse = self._get_central_rm_warehouse()
@@ -1914,8 +1942,6 @@ class RefiningEntry(Document):
 			30,
 			title="Transferring Materials",
 			description="Processing pure gold...",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 		# Transfer all recovered gold as 24KT pure gold (matching repack output)
 		pure_gold_item = self._get_pure_gold_24kt_item()
@@ -1952,8 +1978,6 @@ class RefiningEntry(Document):
 			50,
 			title="Transferring Materials",
 			description="Processing diamonds...",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 		for dia in self.recovered_diamond:
 			dia_qty = flt(dia.recovered_weight)
@@ -1986,8 +2010,6 @@ class RefiningEntry(Document):
 			70,
 			title="Transferring Materials",
 			description="Processing gemstones...",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 		for gem in self.recovered_gemstone:
 			gem_qty = flt(gem.recovered_weight)
@@ -2019,8 +2041,6 @@ class RefiningEntry(Document):
 			85,
 			title="Transferring Materials",
 			description="Submitting Stock Entry...",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 		se.insert(ignore_permissions=True)
 		se.submit()
@@ -2030,8 +2050,6 @@ class RefiningEntry(Document):
 			100,
 			title="Transferring Materials",
 			description="Materials Transferred Successfully",
-			doctype=self.doctype,
-			docname=self.name,
 		)
 
 	# --- Stock Entry Automation ---

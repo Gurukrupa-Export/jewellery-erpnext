@@ -462,11 +462,18 @@ frappe.ui.form.on("Refining Entry", {
 								},
 							],
 							(values) => {
+								// Disable the trigger button for the duration of the call —
+								// the dialog itself closes immediately on submit, so without
+								// this a user can re-open it and fire a second request before
+								// the first one's reload_doc() lands.
+								btn.prop("disabled", true);
 								frappe.show_alert(__("Receiving Material..."));
 								frm.call("receive_from_supplier", {
 									recovery_weight: values.recovery_weight,
 									received_qty: values.received_qty,
-								}).then(() => frm.reload_doc());
+								})
+									.then(() => frm.reload_doc())
+									.finally(() => btn.prop("disabled", false));
 							},
 							__("Receive Material from Supplier"),
 							__("Receive")

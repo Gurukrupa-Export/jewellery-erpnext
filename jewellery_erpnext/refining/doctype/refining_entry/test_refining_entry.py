@@ -481,6 +481,16 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(re.received_weight, 4.8)
 		self.assertEqual(re.repack_se, se_name)
 
+		# Recovery Summary is populated from the received weight, same as the
+		# other 4 refining types' Recovered Metal table drives it.
+		self.assertEqual(re.gross_pure_weight, 5.0)
+		self.assertEqual(re.expected_recovery, 5.0)
+		self.assertEqual(re.actual_recovery, 4.8)
+		self.assertEqual(re.refined_fine_weight, 4.8)
+		self.assertEqual(re.refining_loss, 0.2)
+		self.assertEqual(len(re.refined_gold), 1)
+		self.assertEqual(re.refined_gold[0].refining_gold_weight, 4.8)
+
 		repack = frappe.get_doc("Stock Entry", re.repack_se)
 		self.assertEqual(repack.stock_entry_type, "Repack")
 		self.assertEqual(repack.items[0].item_code, "ML-G-18KT-75.4-P")
