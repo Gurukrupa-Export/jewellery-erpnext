@@ -191,6 +191,10 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.before_validate",
 		],
+        
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate",
+		],
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.on_submit",
 	},
 	"Serial No": {
