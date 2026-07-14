@@ -16,6 +16,7 @@ quantity is untouched and NO conversion Stock Entry is created.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import frappe
 from frappe.exceptions import ValidationError
 from frappe.tests import IntegrationTestCase
 
@@ -88,6 +89,9 @@ class TestMeltingLossValidation(IntegrationTestCase):
 		pass
 
 	def setUp(self):
+		if not hasattr(frappe, "db") or not frappe.db:
+			frappe.db = MagicMock()
+
 		self._patches = [
 			patch.object(melting_loss, "_loss_precision", return_value=3),
 			patch.object(melting_loss, "flt", _det_flt),
@@ -179,6 +183,11 @@ class _FakeSE:
 
 	def __init__(self, payload):
 		self.payload = payload
+		self.doctype = (
+			payload.get("doctype", "Stock Entry")
+			if isinstance(payload, dict)
+			else "Stock Entry"
+		)
 		self.items = []
 		self.name = "SE-LOSS-0001"
 		self.saved = False
@@ -200,6 +209,9 @@ class TestMeltingLossBuilder(IntegrationTestCase):
 		pass
 
 	def setUp(self):
+		if not hasattr(frappe, "db") or not frappe.db:
+			frappe.db = MagicMock()
+
 		self._patches = [
 			patch.object(melting_loss, "_loss_precision", return_value=3),
 			patch.object(melting_loss, "flt", _det_flt),
@@ -216,13 +228,16 @@ class TestMeltingLossBuilder(IntegrationTestCase):
 		captured = {}
 
 		def _get_doc(payload):
+			if isinstance(payload, str):
+				# if payload is doctype name
+				payload = {"doctype": payload}
 			se = _FakeSE(payload)
 			captured["se"] = se
 			return se
 
 		with patch("frappe.db.exists", return_value=existing), patch(
 			"frappe.get_doc", side_effect=_get_doc
-		), patch.object(
+		), patch("frappe.new_doc", side_effect=_get_doc), patch.object(
 			melting_loss, "_resolve_loss_item", return_value="ML-G-18KT-75.4-Y"
 		), patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_scrap_warehouse",

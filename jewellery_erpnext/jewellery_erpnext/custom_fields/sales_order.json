@@ -397,6 +397,25 @@
    "insert_after": "delivery_date",
    "label": "Update Delivery Date",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_precision",
+   "fieldtype": "Check",
+   "insert_after": "precision",
+   "is_system_generated": 1,
+   "label": "Precision For Metal(2 Digit)",
+   "module": "Jewellery Erpnext"
+  },
+  
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_precision_for_stone",
+   "fieldtype": "Check",
+   "insert_after": "custom_precision",
+   "is_system_generated": 1,
+   "label": "Precision For Stone(2 Digit)",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
