@@ -693,7 +693,12 @@ class RefiningEntry(Document):
 				"name",
 			)
 
-		if self.department:
+		# External Refinery mixes Loss/Dust/MWO/Serial/Scrap material in one entry —
+		# there is no single warehouse type to guess from Department (unlike the other
+		# 4 types, which each source from exactly one type). Never auto-derive or
+		# overwrite Source Warehouse here; the operator picks it manually before each
+		# scan/fetch action (the field is editable, not read-only, only for this type).
+		if self.department and self.refining_type != "External Refinery":
 			is_final_polish = "Final Polish" in self.department
 			if not self.warehouse or is_final_polish:
 				# Dust refining: source is from the department Scrap warehouse.
@@ -708,11 +713,6 @@ class RefiningEntry(Document):
 					wh_type = "Manufacturing"
 				elif self.refining_type == "Serial Number Refining":
 					wh_type = "Manufacturing"
-				elif self.refining_type == "External Refinery":
-					# Mixed sourcing (Scrap/Dust/MWO/Serial) — default to Raw Material,
-					# the common case; the operator switches Source Warehouse manually
-					# before scanning MWO/Serial material from a different warehouse type.
-					wh_type = "Raw Material"
 				else:
 					wh_type = "Manufacturing"
 
