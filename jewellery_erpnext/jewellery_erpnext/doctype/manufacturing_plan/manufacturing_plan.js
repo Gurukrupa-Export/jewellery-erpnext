@@ -4,6 +4,26 @@
 frappe.ui.form.on("Manufacturing Plan", {
 	refresh(frm) {
 		if (frm.doc.docstatus == 1) frm.trigger("show_progress");
+		if (frm.doc.docstatus == 1) {
+			frm.add_custom_button(__("Create CAD MWO"), function () {
+				frappe.call({
+					method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_cad_eligible_items",
+					args: {
+						manufacturing_plan: frm.doc.name,
+					},
+					callback: function (r) {
+						let item_codes = r.message || [];
+						if (!item_codes.length) {
+							frappe.msgprint(
+								__("All items in this Manufacturing Plan already have a CAD Manufacturing Work Order.")
+							);
+							return;
+						}
+						show_cad_item_select_dialog(frm, item_codes);
+					},
+				});
+			});
+		}
 		frm.set_query("setting_type", function (doc) {
 			return {
 				query: "jewellery_erpnext.query.item_attribute_query",
@@ -101,6 +121,104 @@ frappe.ui.form.on("Manufacturing Plan", {
 		frm.dashboard.add_progress(__("Status"), bars, message);
 	},
 });
+
+function show_cad_item_select_dialog(frm, item_codes) {
+	let rows_html = item_codes
+		.map(
+			(code) => `
+			<tr>
+				<td style="width: 40px; text-align: center;">
+					<input type="checkbox" class="cad-mwo-item-check" data-item-code="${frappe.utils.escape_html(code)}">
+				</td>
+				<td>${frappe.utils.escape_html(code)}</td>
+			</tr>`
+		)
+		.join("");
+
+	let dialog = new frappe.ui.Dialog({
+		title: __("Select Item Code"),
+		fields: [
+			{
+				fieldname: "items_html",
+				fieldtype: "HTML",
+				options: `
+					<div style="max-height: 350px; overflow-y: auto;">
+						<table class="table table-bordered">
+							<thead>
+								<tr>
+									<th style="width: 40px; text-align: center;">
+										<input type="checkbox" class="cad-mwo-select-all">
+									</th>
+									<th>${__("Item Code")}</th>
+								</tr>
+							</thead>
+							<tbody>${rows_html}</tbody>
+						</table>
+					</div>
+				`,
+			},
+		],
+		primary_action_label: __("Next"),
+		primary_action: function () {
+			let selected_items = dialog.$wrapper
+				.find(".cad-mwo-item-check:checked")
+				.map(function () {
+					return $(this).attr("data-item-code");
+				})
+				.get();
+
+			if (!selected_items.length) {
+				frappe.msgprint(__("Please select at least one Item Code"));
+				return;
+			}
+			dialog.hide();
+			show_cad_reason_dialog(frm, selected_items);
+		},
+	});
+
+	dialog.$wrapper.find(".cad-mwo-select-all").on("change", function () {
+		dialog.$wrapper.find(".cad-mwo-item-check").prop("checked", $(this).is(":checked"));
+	});
+
+	dialog.show();
+}
+
+function show_cad_reason_dialog(frm, item_codes) {
+	frappe.prompt(
+		[
+			{
+				fieldname: "reason",
+				label: "Reason",
+				fieldtype: "Select",
+				reqd: 1,
+				options: [
+					"Cpx rpt",
+					"Mould broken & extra need for bulk order",
+					"Prong thickness & height for wax setting",
+					"Mumbai CAD, if CAD image show in (ppc wax cad) then we have to transfer for rubber mould work",
+				].join("\n"),
+			},
+		],
+		function (reason_data) {
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.create_cad_mwo_bulk",
+				args: {
+					manufacturing_plan: frm.doc.name,
+					item_codes: item_codes,
+					reason: reason_data.reason,
+				},
+				callback: function (r) {
+					if (!r.exc) {
+						frm.reload_doc();
+					}
+				},
+			});
+		},
+		__("Select Reason"),
+		__("Submit")
+	);
+}
+
 
 var map_current_doc = function (opts) {
 	function _map(frm) {
