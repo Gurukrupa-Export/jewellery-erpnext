@@ -474,22 +474,37 @@ class TestRefiningEntry(IntegrationTestCase):
 		)
 		self.assertEqual(flt(supplier_qty_after_send, self.flt_pre), 5.0)
 
-		# Receive: single Repack SE, no second Refining Entry.
-		se_name = re.receive_from_supplier(recovery_weight=4.8)
+		# Receive: single Repack SE, no second Refining Entry. Recovery weight (3.6)
+		# is chosen below the item's actual pure content (5.0 * 75.4% = 3.77) so the
+		# Recovery Summary reflects a realistic, non-clamped recovery percentage.
+		se_name = re.receive_from_supplier(recovery_weight=3.6)
 		re.reload()
 
-		self.assertEqual(re.received_weight, 4.8)
+		self.assertEqual(re.received_weight, 3.6)
 		self.assertEqual(re.repack_se, se_name)
+		self.assertEqual(re.status, "Transferred")
 
-		# Recovery Summary is populated from the received weight, same as the
-		# other 4 refining types' Recovered Metal table drives it.
-		self.assertEqual(re.gross_pure_weight, 5.0)
-		self.assertEqual(re.expected_recovery, 5.0)
-		self.assertEqual(re.actual_recovery, 4.8)
-		self.assertEqual(re.refined_fine_weight, 4.8)
-		self.assertEqual(re.refining_loss, 0.2)
+		# Recovery Summary and Gold Recovery Details are populated by reusing
+		# generate_recovery_table() — the same proportional-by-pure-content
+		# distribution the other 4 refining types use — so Gross Pure Weight is the
+		# item's actual pure content (5.0g * 75.4%), not its raw gross weight.
+		self.assertEqual(re.gross_pure_weight, 3.77)
+		self.assertEqual(re.expected_recovery, 3.77)
+		self.assertEqual(re.actual_recovery, 3.6)
+		self.assertEqual(re.refined_fine_weight, 3.6)
+		self.assertEqual(re.refining_loss, 0.17)
+		self.assertEqual(re.recovery_percentage, 95.49)
+
+		self.assertEqual(len(re.gold_recovery_details), 1)
+		grd = re.gold_recovery_details[0]
+		self.assertEqual(grd.purity_percentage, 75.4)
+		self.assertEqual(grd.input_weight, 5.0)
+		self.assertEqual(grd.pure_gold_weight, 3.77)
+		self.assertEqual(grd.recovered_weight, 3.6)
+
 		self.assertEqual(len(re.refined_gold), 1)
-		self.assertEqual(re.refined_gold[0].refining_gold_weight, 4.8)
+		self.assertEqual(re.refined_gold[0].item_code, re.refined_metal_item)
+		self.assertEqual(re.refined_gold[0].refining_gold_weight, 3.6)
 
 		repack = frappe.get_doc("Stock Entry", re.repack_se)
 		self.assertEqual(repack.stock_entry_type, "Repack")
@@ -498,7 +513,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(repack.items[0].s_warehouse, re.supplier_warehouse)
 		self.assertIsNone(repack.items[0].t_warehouse)
 		self.assertEqual(repack.items[1].item_code, re.refined_metal_item)
-		self.assertEqual(repack.items[1].qty, 4.8)
+		self.assertEqual(repack.items[1].qty, 3.6)
 		self.assertIsNone(repack.items[1].s_warehouse)
 		self.assertEqual(repack.items[1].t_warehouse, "Waxing RM - T")
 
