@@ -1752,7 +1752,7 @@ let set_edit_bom_details = (
 		// Calculate the difference
 		let difference_qty = without_precision_rate - with_precision_rate;
 		let total_diamond_rate_qty = (d.quantity * parseFloat(d.total_diamond_rate)).toFixed(2);
-		total_sum_diamond += parseFloat(total_diamond_rate_qty);
+		let total_sum_diamond = doc.total_diamond_amount;
 		amount = parseFloat(total_diamond_rate_qty);
 		let rate_to_use = d.total_diamond_rate;
 
