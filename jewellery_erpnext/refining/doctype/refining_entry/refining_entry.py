@@ -225,8 +225,14 @@ class RefiningEntry(Document):
 		po.supplier = self.supplier
 		po.company = self.company
 		po.transaction_date = self.posting_date
-		if frappe.db.exists("Purchase Type", "Service"):
-			po.purchase_type = "Service"
+		# ALWAYS assign the attribute (None when the master is missing): the app's own
+		# PO validate hook (doc_events/purchase_order.py update_rate) reads
+		# self.purchase_type unconditionally, and on sites where the custom field isn't
+		# in the Purchase Order meta (e.g. the CI fixture set), reading a never-assigned
+		# attribute raises AttributeError instead of returning None.
+		po.purchase_type = (
+			"Service" if frappe.db.exists("Purchase Type", "Service") else None
+		)
 		for line in lines:
 			po.append("items", line)
 		po.insert(ignore_permissions=True)
@@ -457,8 +463,12 @@ class RefiningEntry(Document):
 			po.supplier = self.supplier
 			po.company = self.company
 			po.transaction_date = self.posting_date
-			if frappe.db.exists("Purchase Type", "Service"):
-				po.purchase_type = "Service"
+			# Always assign (None when the master is missing) — see the same pattern in
+			# create_external_refining_po for why a conditional assignment breaks on
+			# sites without the purchase_type custom field in the PO meta.
+			po.purchase_type = (
+				"Service" if frappe.db.exists("Purchase Type", "Service") else None
+			)
 			for line in lines:
 				po.append("items", line)
 			po.insert(ignore_permissions=True)
