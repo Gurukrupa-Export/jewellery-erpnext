@@ -15,9 +15,18 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import frappe
+from frappe import ValidationError
 from frappe.tests import IntegrationTestCase
 
-from jewellery_erpnext.jewellery_erpnext.doc_events import warehouse_stock_entry as wse
+from jewellery_erpnext.jewellery_erpnext.doc_events import (
+	warehouse,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events import (
+	warehouse_stock_entry as wse,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events import (
+	warehouse_tracking as wt,
+)
 
 
 def _det_flt(value, precision=None, rounding_method=None):
@@ -360,3 +369,256 @@ class TestGetReceivableItems(IntegrationTestCase):
 		):
 			out = wse.get_receivable_items("MSL-WH")
 		self.assertEqual(out, [{"item_code": "M-G", "pending_qty": 5.0}])
+
+
+def _wh(**fields):
+	"""A stand-in Warehouse document."""
+	defaults = {
+		"name": "WH-EMP-0001",
+		"employee": "EMP-0001",
+		"department": None,
+		"disabled": 0,
+		"_is_new": False,
+		"_before": None,
+	}
+	defaults.update(fields)
+	d = SimpleNamespace(**defaults)
+	d.is_new = lambda: d._is_new
+	d.get_doc_before_save = lambda: d._before
+	return d
+
+
+class TestIsPrivileged(IntegrationTestCase):
+	def test_administrator(self):
+		self.assertTrue(warehouse._is_privileged("Administrator"))
+
+	def test_system_manager(self):
+		with patch.object(
+			warehouse.frappe, "get_roles", return_value=["System Manager", "Employee"]
+		):
+			self.assertTrue(warehouse._is_privileged("u@x"))
+
+	def test_stock_manager(self):
+		with patch.object(
+			warehouse.frappe, "get_roles", return_value=["Stock Manager"]
+		):
+			self.assertTrue(warehouse._is_privileged("u@x"))
+
+	def test_plain_user(self):
+		with patch.object(
+			warehouse.frappe,
+			"get_roles",
+			return_value=["Employee", "Manufacturing User"],
+		):
+			self.assertFalse(warehouse._is_privileged("u@x"))
+
+
+class TestGetUserDepartment(IntegrationTestCase):
+	def test_lookup(self):
+		with patch.object(
+			warehouse.frappe.db, "get_value", return_value="Casting - GK"
+		) as m:
+			self.assertEqual(warehouse.get_user_department("u@x"), "Casting - GK")
+			m.assert_called_once_with("Employee", {"user_id": "u@x"}, "department")
+
+	def test_defaults_to_session_user(self):
+		with patch.object(
+			warehouse.frappe, "session", SimpleNamespace(user="sess@x")
+		), patch.object(warehouse.frappe.db, "get_value", return_value=None) as m:
+			warehouse.get_user_department()
+			m.assert_called_once_with("Employee", {"user_id": "sess@x"}, "department")
+
+
+class TestValidateMslDepartmentScope(IntegrationTestCase):
+	def _run(self, doc, user_dept, wh_emp_dept, privileged=False):
+		with patch.object(
+			warehouse.frappe, "session", SimpleNamespace(user="u@x")
+		), patch.object(
+			warehouse, "_is_privileged", return_value=privileged
+		), patch.object(
+			warehouse, "get_user_department", return_value=user_dept
+		), patch.object(warehouse.frappe.db, "get_value", return_value=wh_emp_dept):
+			warehouse.validate_msl_department_scope(doc)
+
+	def test_non_employee_warehouse_noop(self):
+		# Mismatched depts but employee unset -> not an MSL warehouse -> no throw.
+		self._run(_wh(employee=None), "A", "B")
+
+	def test_privileged_bypass(self):
+		self._run(_wh(), "A", "B", privileged=True)
+
+	def test_user_without_department_throws(self):
+		with self.assertRaises(ValidationError):
+			self._run(_wh(), None, "B")
+
+	def test_department_mismatch_throws(self):
+		with self.assertRaises(ValidationError):
+			self._run(_wh(), "A", "B")
+
+	def test_department_match_passes(self):
+		self._run(_wh(), "Casting - GK", "Casting - GK")
+
+
+class TestGuardMslReenable(IntegrationTestCase):
+	def _run(self, doc, privileged=False):
+		with patch.object(
+			warehouse.frappe, "session", SimpleNamespace(user="u@x")
+		), patch.object(warehouse, "_is_privileged", return_value=privileged):
+			warehouse.guard_msl_reenable(doc)
+
+	def test_new_doc_noop(self):
+		self._run(_wh(_is_new=True, disabled=0, _before=_wh(disabled=1)))
+
+	def test_non_employee_noop(self):
+		self._run(_wh(employee=None, disabled=0, _before=_wh(disabled=1)))
+
+	def test_still_disabled_noop(self):
+		self._run(_wh(disabled=1, _before=_wh(disabled=1)))
+
+	def test_privileged_bypass(self):
+		self._run(_wh(disabled=0, _before=_wh(disabled=1)), privileged=True)
+
+	def test_reenable_throws(self):
+		with self.assertRaises(ValidationError):
+			self._run(_wh(disabled=0, _before=_wh(disabled=1)))
+
+	def test_was_already_enabled_noop(self):
+		self._run(_wh(disabled=0, _before=_wh(disabled=0)))
+
+
+class TestPermissionQueryConditions(IntegrationTestCase):
+	def test_privileged_no_restriction(self):
+		with patch.object(warehouse, "_is_privileged", return_value=True):
+			self.assertEqual(warehouse.get_permission_query_conditions("admin"), "")
+
+	def test_no_department_hides_employee_warehouses(self):
+		with patch.object(
+			warehouse, "_is_privileged", return_value=False
+		), patch.object(warehouse, "get_user_department", return_value=None):
+			cond = warehouse.get_permission_query_conditions("u@x")
+		self.assertEqual(cond, "(`tabWarehouse`.employee IS NULL)")
+
+	def test_department_scopes_employee_warehouses(self):
+		with patch.object(
+			warehouse, "_is_privileged", return_value=False
+		), patch.object(
+			warehouse, "get_user_department", return_value="Casting - GK"
+		), patch.object(
+			warehouse.frappe.db, "escape", side_effect=lambda v: "'%s'" % v
+		):
+			cond = warehouse.get_permission_query_conditions("u@x")
+		self.assertIn("`tabWarehouse`.employee IS NULL", cond)
+		self.assertIn(
+			"SELECT name FROM `tabEmployee` WHERE department = 'Casting - GK'", cond
+		)
+
+	def test_defaults_to_session_user(self):
+		with patch.object(
+			warehouse.frappe, "session", SimpleNamespace(user="sess@x")
+		), patch.object(warehouse, "_is_privileged", return_value=True) as m:
+			warehouse.get_permission_query_conditions()
+			m.assert_called_once_with("sess@x")
+
+
+def _det_flt(value, precision=None, rounding_method=None):
+	try:
+		num = float(value or 0)
+	except (TypeError, ValueError):
+		return 0.0
+	return round(num, precision) if precision is not None else num
+
+
+class _FakeWH:
+	def __init__(self):
+		self.rows = []
+		self.flags = SimpleNamespace()
+		self.saved = False
+
+	def set(self, field, val):
+		self.rows = list(val)
+
+	def append(self, field, row):
+		self.rows.append(row)
+
+	def save(self, ignore_permissions=False):
+		self.saved = True
+
+
+class TestPendingComputation(IntegrationTestCase):
+	def setUp(self):
+		self._p = patch.object(wt, "flt", _det_flt)
+		self._p.start()
+
+	def tearDown(self):
+		self._p.stop()
+
+	def test_pending_is_issue_minus_receive_minus_loss(self):
+		raw = [
+			{
+				"warehouse": "WH",
+				"employee": "E",
+				"employee_name": "n",
+				"department": "D",
+				"item_code": "M-G",
+				"issue_qty": 10.0,
+				"receive_qty": 3.0,
+				"loss_qty": 1.0,
+			}
+		]
+		with patch("frappe.db.escape", side_effect=lambda v: "'%s'" % v), patch(
+			"frappe.db.sql", return_value=raw
+		):
+			out = wt.get_warehouse_item_tracking({"warehouse": "WH"})
+		self.assertEqual(out[0]["pending_qty"], 6.0)
+		self.assertEqual(out[0]["issue_qty"], 10.0)
+		self.assertEqual(out[0]["loss_qty"], 1.0)
+
+
+class TestRecalculateScoping(IntegrationTestCase):
+	def test_empty_arg(self):
+		self.assertEqual(wt.recalculate_msl_tracking(None), 0)
+
+	def test_skips_non_employee(self):
+		with patch(
+			"frappe.db.get_value",
+			return_value=SimpleNamespace(employee=None, warehouse_type="Raw Material"),
+		):
+			self.assertEqual(wt.recalculate_msl_tracking("WH"), 0)
+
+	def test_skips_wip_warehouse(self):
+		with patch(
+			"frappe.db.get_value",
+			return_value=SimpleNamespace(
+				employee="EMP", warehouse_type="Manufacturing"
+			),
+		), patch.object(wt, "get_warehouse_item_tracking") as g, patch(
+			"frappe.get_doc"
+		) as gd:
+			self.assertEqual(wt.recalculate_msl_tracking("WH"), 0)
+			g.assert_not_called()
+			gd.assert_not_called()
+
+	def test_writes_rm_warehouse(self):
+		fake = _FakeWH()
+		rows = [
+			{
+				"item_code": "M-G",
+				"issue_qty": 10.0,
+				"receive_qty": 3.0,
+				"loss_qty": 1.0,
+				"pending_qty": 6.0,
+			}
+		]
+		with patch(
+			"frappe.db.get_value",
+			return_value=SimpleNamespace(employee="EMP", warehouse_type="Raw Material"),
+		), patch.object(wt, "get_warehouse_item_tracking", return_value=rows), patch(
+			"frappe.get_doc", return_value=fake
+		):
+			n = wt.recalculate_msl_tracking("WH")
+		self.assertEqual(n, 1)
+		self.assertEqual(len(fake.rows), 1)
+		self.assertEqual(fake.rows[0]["item_code"], "M-G")
+		self.assertEqual(fake.rows[0]["pending_qty"], 6.0)
+		self.assertTrue(fake.flags.ignore_msl_guards)
+		self.assertTrue(fake.saved)
