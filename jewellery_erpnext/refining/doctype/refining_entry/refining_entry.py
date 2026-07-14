@@ -319,40 +319,37 @@ class RefiningEntry(Document):
 		se.insert(ignore_permissions=True)
 		se.submit()
 
-		# Populate the Recovery Summary (Actual Recovery, Recovery %, Refining Loss,
-		# etc.) from this row exactly like the other 4 refining types, by reusing
-		# calculate_totals() directly — called explicitly rather than relying on
-		# save()'s implicit validate() pass, since that pass runs before the
-		# in-memory changes made here are what gets persisted.
+		# Backfill purity on rows that don't have one set (e.g. added via
+		# scan_scrap_qr_action, which doesn't capture it) — generate_recovery_table
+		# groups by row.purity directly, so a blank value would silently drop that
+		# row out of the distribution.
+		for item in self.material_items:
+			if not item.purity:
+				item.purity = self.get_item_purity(item.item_code)
+
+		# Reuse the SAME proportional-by-pure-content distribution the other 4
+		# refining types use: populates Gold Recovery Details (per karat) and
+		# Recovered Metal (one refined_gold row per karat, not a single blended row),
+		# and computes the Recovery Summary totals — all via the same already-audited
+		# logic, rather than a separate ad-hoc computation.
+		self.generate_recovery_table(total_recovered_weight=recovery_weight)
+
 		self.received_weight = recovery_weight
 		self.repack_se = se.name
 		if received_qty:
 			self.received_qty = flt(received_qty)
-		self.append(
-			"refined_gold",
-			{
-				"item_code": self.refined_metal_item,
-				"refining_gold_weight": recovery_weight,
-				"pure_weight": recovery_weight,
-			},
-		)
-		self.calculate_totals()
 		self.db_set(
 			{
 				"received_weight": self.received_weight,
 				"repack_se": self.repack_se,
 				"received_qty": flt(self.received_qty),
-				"gross_pure_weight": self.gross_pure_weight,
-				"expected_recovery": self.expected_recovery,
-				"actual_recovery": self.actual_recovery,
-				"refined_fine_weight": self.refined_fine_weight,
-				"recovery_percentage": self.recovery_percentage,
-				"refining_loss": self.refining_loss,
+				# Terminal status — overrides the "Classified" status
+				# generate_recovery_table set; External Refinery has no
+				# classify/repack/verify/complete lifecycle of its own.
+				"status": "Transferred",
 			},
 			notify=False,
 		)
-		refined_gold_row = self.refined_gold[-1]
-		refined_gold_row.db_insert()
 
 		# allocate_fifo_batches(throw_if_missing=False) caps at available stock and
 		# returns silently on shortfall — surface it instead of leaving the supplier
@@ -381,9 +378,9 @@ class RefiningEntry(Document):
 		)
 		if not wh:
 			frappe.throw(
-				_(
-					"No Raw Material warehouse configured for Department {0}."
-				).format(frappe.bold(department))
+				_("No Raw Material warehouse configured for Department {0}.").format(
+					frappe.bold(department)
+				)
 			)
 		return wh
 
@@ -591,7 +588,9 @@ class RefiningEntry(Document):
 			return
 
 		is_external = self.refining_type == "External Refinery"
-		if self.refining_type == "Work Order Refining" or (is_external and self.mwo_details):
+		if self.refining_type == "Work Order Refining" or (
+			is_external and self.mwo_details
+		):
 			for row in self.mwo_details:
 				if not row.manufacturing_work_order:
 					continue
@@ -694,7 +693,12 @@ class RefiningEntry(Document):
 				"name",
 			)
 
-		if self.department:
+		# External Refinery mixes Loss/Dust/MWO/Serial/Scrap material in one entry —
+		# there is no single warehouse type to guess from Department (unlike the other
+		# 4 types, which each source from exactly one type). Never auto-derive or
+		# overwrite Source Warehouse here; the operator picks it manually before each
+		# scan/fetch action (the field is editable, not read-only, only for this type).
+		if self.department and self.refining_type != "External Refinery":
 			is_final_polish = "Final Polish" in self.department
 			if not self.warehouse or is_final_polish:
 				# Dust refining: source is from the department Scrap warehouse.
@@ -709,11 +713,6 @@ class RefiningEntry(Document):
 					wh_type = "Manufacturing"
 				elif self.refining_type == "Serial Number Refining":
 					wh_type = "Manufacturing"
-				elif self.refining_type == "External Refinery":
-					# Mixed sourcing (Scrap/Dust/MWO/Serial) — default to Raw Material,
-					# the common case; the operator switches Source Warehouse manually
-					# before scanning MWO/Serial material from a different warehouse type.
-					wh_type = "Raw Material"
 				else:
 					wh_type = "Manufacturing"
 
@@ -774,13 +773,23 @@ class RefiningEntry(Document):
 		expected_recovery = 0.0
 
 		if self.refining_type == "External Refinery":
-			# External refining is an opaque supplier process — material_items rows
-			# added via scan_scrap_qr_action or typed in manually rarely carry a
-			# purity value, so the purity-weighted computation below would silently
-			# read 0. qty_to_refine (the gold-item weight actually sent, computed at
-			# submit) is a purity-independent baseline that's always available.
-			gross_pure_weight = flt(self.qty_to_refine)
-			expected_recovery = flt(self.qty_to_refine)
+			# Same purity-weighted computation as the generic branch below (kept
+			# consistent with Gold Recovery Details, which receive_from_supplier
+			# populates via generate_recovery_table once purity is backfilled onto
+			# every row). Before receipt, material_items rows added via
+			# scan_scrap_qr_action rarely carry a purity value yet — fall back to
+			# qty_to_refine (the gold-item weight sent, computed at submit) so the
+			# Recovery Summary still shows something sensible in the meantime.
+			for item in self.material_items:
+				if item.purity:
+					purity_pct = frappe.db.get_value(
+						"Attribute Value", item.purity, "purity_percentage"
+					)
+					if purity_pct:
+						gross_pure_weight += flt(item.qty) * (flt(purity_pct) / 100.0)
+			if gross_pure_weight <= 0:
+				gross_pure_weight = flt(self.qty_to_refine)
+			expected_recovery = gross_pure_weight
 		elif self.refining_type == "Serial Number Refining":
 			bom_components = [
 				item
@@ -1217,12 +1226,15 @@ class RefiningEntry(Document):
 			preserved = [
 				row.as_dict()
 				for row in self.material_items
-				if row.get("source_type") not in ("MWO", "Serial Number", "BOM Component")
+				if row.get("source_type")
+				not in ("MWO", "Serial Number", "BOM Component")
 			]
 
 		self.set("material_items", [])
 
-		if self.refining_type == "Work Order Refining" or (is_external and self.mwo_details):
+		if self.refining_type == "Work Order Refining" or (
+			is_external and self.mwo_details
+		):
 			# Work Order material physically sits in the warehouse where it was reserved
 			# (the Stock Reservation Entry warehouse), which is not necessarily the MOP
 			# department's Manufacturing warehouse. Sourcing the transfer from the MOP
@@ -2098,7 +2110,9 @@ class RefiningEntry(Document):
 
 		self._dust_shortfalls = []
 		is_external = self.refining_type == "External Refinery"
-		block_customer = self.refining_type in ("Dust Refining", "Scrap Refining") or is_external
+		block_customer = (
+			self.refining_type in ("Dust Refining", "Scrap Refining") or is_external
+		)
 		for item in self.material_items:
 			if item.get("source_type") == "BOM Component":
 				continue
@@ -3276,7 +3290,10 @@ class RefiningEntry(Document):
 		Dust/Scrap-sourced rows there so a blocked customer's MWO/Serial material (not
 		wastage) isn't wrongly rejected."""
 		is_external = self.refining_type == "External Refinery"
-		if self.refining_type not in ("Dust Refining", "Scrap Refining") and not is_external:
+		if (
+			self.refining_type not in ("Dust Refining", "Scrap Refining")
+			and not is_external
+		):
 			return
 		for row in self.material_items:
 			if is_external and row.get("source_type") not in ("Dust", "Scrap"):

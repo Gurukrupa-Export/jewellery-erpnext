@@ -125,12 +125,15 @@ frappe.ui.form.on("Refining Entry", {
 	},
 
 	department(frm) {
+		// External Refinery mixes Loss/Dust/MWO/Serial/Scrap material in one entry —
+		// there's no single warehouse type to guess from Department, so Source
+		// Warehouse is never auto-filled here; the operator picks it manually (the
+		// field is made editable for this type in set_field_visibility).
+		if (frm.doc.refining_type === "External Refinery") return;
+
 		if (frm.doc.department) {
 			let wh_type = "Scrap";
-			if (frm.doc.refining_type === "Scrap Refining" || frm.doc.refining_type === "External Refinery") {
-				// External Refinery defaults to the Raw Material warehouse (Scrap/Dust is the
-				// common case); switch Source Warehouse manually before scanning MWO/Serial
-				// material sourced from a different warehouse type.
+			if (frm.doc.refining_type === "Scrap Refining") {
 				wh_type = "Raw Material";
 			} else if (frm.doc.refining_type === "Work Order Refining") {
 				wh_type = "Manufacturing";
@@ -247,6 +250,11 @@ frappe.ui.form.on("Refining Entry", {
 
 		// Scrap-specific — also available under External Refinery
 		frm.toggle_display("scan_scrap_qr", type === "Scrap Refining" || is_external);
+
+		// External Refinery mixes Loss/Dust/MWO/Serial/Scrap material — there's no
+		// single warehouse type to guess, so unlike the other 4 types (where Source
+		// Warehouse is auto-derived and read-only), the operator picks it manually here.
+		frm.set_df_property("warehouse", "read_only", is_external ? 0 : 1);
 	},
 
 	add_action_buttons(frm) {
