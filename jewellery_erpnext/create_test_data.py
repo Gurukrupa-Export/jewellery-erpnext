@@ -3286,6 +3286,11 @@ def setup_data():
 			}
 		).insert(ignore_permissions=True)
 
+	if not frappe.db.exists("UOM", "Litre"):
+		frappe.get_doc({"doctype": "UOM", "uom_name": "Litre"}).insert(
+			ignore_permissions=True
+		)
+
 	create_warehouse_and_department()
 	print("Setup for the test data has been completed")
 
