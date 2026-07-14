@@ -264,7 +264,7 @@ frappe.ui.form.on("Sales Order Item", {
 				reqd: 1,
 				read_only: 1,
 				columns: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -280,7 +280,7 @@ frappe.ui.form.on("Sales Order Item", {
 				reqd: 1,
 				read_only: 1,
 				columns: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -381,6 +381,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Wastage Amount"),
 				columns: 1,
 				read_only: 1,
+				in_list_view: 1,
 				
 			},
 			{
@@ -518,7 +519,7 @@ frappe.ui.form.on("Sales Order Item", {
 				columns: 1,
 				read_only: 1,
 				reqd: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -851,7 +852,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Metal Purity"),
 				read_only: 1,
 				reqd: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -893,7 +894,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Metal Colour"),
 				read_only: 1,
 				reqd: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
