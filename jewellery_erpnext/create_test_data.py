@@ -2710,6 +2710,16 @@ def setup_data():
 
 	_ensure_warehouse_msl_tracking_field()
 
+	# External Refinery service-PO back-link fields (Purchase Order.refining_entry,
+	# Purchase Order Item.custom_refining_price_list) — same fixture-only-on-fresh-sites
+	# issue as above; without these, create_external_refining_po would fail link
+	# validation on a fresh/CI site. Idempotent.
+	from jewellery_erpnext.patches.add_po_refining_entry_field import (
+		execute as _ensure_po_refining_entry_field,
+	)
+
+	_ensure_po_refining_entry_field()
+
 	# Ensure the "Material Transfer (MAIN SLIP)" Stock Entry Type master exists. The casting Tree
 	# Number "Issue Material" button builds an SE of this type; it lives only in
 	# fixtures/stock_entry_type.json (dead on fresh/CI sites), so without it se.insert() fails link
