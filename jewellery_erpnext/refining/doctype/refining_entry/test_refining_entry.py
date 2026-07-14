@@ -431,13 +431,13 @@ class TestRefiningEntry(IntegrationTestCase):
 
 	def test_external_refinery_entry(self):
 		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 5.0)
-		ensure_refining_process("Test Refining Process")
+		ensure_item_price_list("ML-G-18KT-75.4-P")
 
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "External Refinery"
+		re.refining_type = "Scrap Refining"
+		re.is_external = 1
 		re.company = "Test_Company"
 		re.supplier = "Test_Supplier"
-		re.refining_process = "Test Refining Process"
 		re.department = "Waxing - T"
 		re.warehouse = "Waxing RM - T"
 		re.refining_department = "Refinery - T"
@@ -458,6 +458,14 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(re.qty_to_refine, 5.0)
 		self.assertIsNotNone(re.supplier_warehouse)
 		self.assertIsNotNone(re.material_transfer_se)
+
+		# Per-item pricing: the sent item's Refinery Price List Gross-Weight slab
+		# (flat 750 for 0-50 g, seeded above) is billed on the auto-created PO.
+		self.assertIsNotNone(re.refining_entry_po)
+		po = frappe.get_doc("Purchase Order", re.refining_entry_po)
+		self.assertEqual(len(po.items), 1)
+		self.assertEqual(po.items[0].rate, 750)
+		self.assertEqual(po.items[0].custom_gross_wt, 5.0)
 
 		se1 = frappe.get_doc("Stock Entry", re.material_transfer_se)
 		self.assertEqual(se1.stock_entry_type, "Material Transfer")
@@ -538,7 +546,8 @@ class TestRefiningEntry(IntegrationTestCase):
 
 	def test_external_refinery_submit_fails_without_supplier(self):
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "External Refinery"
+		re.refining_type = "Scrap Refining"
+		re.is_external = 1
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
 		re.warehouse = "Waxing RM - T"
@@ -702,11 +711,24 @@ def gold_receipt(warehouse, item_code, qty):
 	se.submit()
 
 
-def ensure_refining_process(process_name):
-	if not frappe.db.exists("Refining Process", process_name):
-		frappe.get_doc(
-			{"doctype": "Refining Process", "process_name": process_name}
-		).insert(ignore_permissions=True)
+def ensure_item_price_list(item_code):
+	"""One Refinery Price List document for ``item_code`` with a simple Gross-Weight
+	slab (flat 750 for 0-50 g), so external-refining PO billing has a price to hit."""
+	if frappe.db.exists("Refinery Price List", {"item": item_code}):
+		return
+	doc = frappe.get_doc({"doctype": "Refinery Price List", "item": item_code})
+	doc.append(
+		"slabs",
+		{
+			"band_label": "0.0 gm - 50 gm",
+			"from_weight": 0,
+			"to_weight": 50,
+			"charge_type": "Flat Charge",
+			"rate": 750,
+			"weight_basis": "Gross Weight",
+		},
+	)
+	doc.insert(ignore_permissions=True)
 
 
 def mwo_semi_finished_goods(self):
