@@ -5,8 +5,8 @@
 Material on an employee MSL warehouse.
 
 Pure-logic: DB / Stock Entry persistence are patched. Covers the MSL-warehouse
-validation guards, the Issue corridor (Dept RM -> this MSL WH via a plain
-``Material Transfer``), and the Receive auto-difference model
+validation guards, the Issue corridor (Dept RM -> this MSL WH via a
+``Material Transfer (MAIN SLIP)``), and the Receive auto-difference model
 (``loss = pending - returned``, difference booked to Dept Scrap via a
 ``Process Loss`` Repack).
 """
@@ -223,7 +223,7 @@ class TestIssueMaterial(_OpTestBase):
 		name = wse.issue_material("MSL-WH", "M-G", 5)
 		self.assertEqual(len(self._made), 1)
 		se = self._made[0]
-		self.assertEqual(se.stock_entry_type, wse.MATERIAL_TRANSFER)
+		self.assertEqual(se.stock_entry_type, wse.MATERIAL_TRANSFER_MAIN_SLIP)
 		self.assertEqual(se.purpose, "Material Transfer")
 		self.assertEqual(se.auto_created, 1)
 		self.assertTrue(se.submitted)
@@ -263,7 +263,7 @@ class TestReceiveMaterial(_OpTestBase):
 			)
 		self.assertEqual(len(self._made), 2)
 		se_recv, se_loss = self._made
-		self.assertEqual(se_recv.stock_entry_type, wse.MATERIAL_TRANSFER)
+		self.assertEqual(se_recv.stock_entry_type, wse.MATERIAL_TRANSFER_MAIN_SLIP)
 		self.assertEqual(se_recv.purpose, "Material Transfer")
 		self.assertEqual(se_loss.stock_entry_type, wse.PROCESS_LOSS)
 		self.assertEqual(se_loss.purpose, "Repack")
@@ -288,7 +288,9 @@ class TestReceiveMaterial(_OpTestBase):
 				"MSL-WH", [{"item_code": "M-G", "return_qty": 10}]
 			)
 		self.assertEqual(len(self._made), 1)
-		self.assertEqual(self._made[0].stock_entry_type, wse.MATERIAL_TRANSFER)
+		self.assertEqual(
+			self._made[0].stock_entry_type, wse.MATERIAL_TRANSFER_MAIN_SLIP
+		)
 		self.assertEqual(len(names), 1)
 
 	def test_zero_return_scraps_all(self):

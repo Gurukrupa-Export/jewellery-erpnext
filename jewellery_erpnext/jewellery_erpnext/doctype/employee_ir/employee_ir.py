@@ -149,6 +149,44 @@ class EmployeeIR(Document):
 		validate_loss_qty(self)
 		validate_casting_tree(self)
 		validate_casting_receive(self)
+		self.validate_fg_bom_fields()
+
+	def validate_fg_bom_fields(self):
+		"""Enforce subcategory-driven FG BOM fields on Receive.
+
+		Recomputes the required fields from the configuration (not from the
+		client-populated grid) so a receive submitted with an empty/tampered
+		custom_fg_bom_fields table cannot bypass mandatory entry, then validates
+		each entered value against its configured type.
+		"""
+		if self.type != "Receive":
+			return
+
+		ops = [
+			{
+				"manufacturing_operation": r.manufacturing_operation,
+				"manufacturing_work_order": r.manufacturing_work_order,
+			}
+			for r in (self.employee_ir_operations or [])
+		]
+		expected = get_fg_bom_fields(ops)
+		entered = {
+			(r.manufacturing_operation, r.field_name): r
+			for r in (self.custom_fg_bom_fields or [])
+		}
+		for cfg in expected:
+			if not cfg.get("is_mandatory"):
+				continue
+			row = entered.get((cfg["manufacturing_operation"], cfg["field_name"]))
+			if not row or not (row.value or "").strip():
+				frappe.throw(
+					_("FG BOM Field '{0}' is mandatory.").format(
+						cfg["field_label"] or cfg["field_name"]
+					)
+				)
+
+		for row in self.custom_fg_bom_fields or []:
+			_validate_fg_bom_field_value(row)
 
 	def on_cancel(self):
 		if self.type == "Issue":
@@ -267,6 +305,8 @@ class EmployeeIR(Document):
 			create_tree_on_issue(self)
 		else:
 			unlink_tree_on_issue_cancel(self)
+
+		self._refresh_msl_tracking()
 
 	# for receive
 	def on_submit_receive(self, cancel=False):
@@ -574,6 +614,37 @@ class EmployeeIR(Document):
 		# LEFTOVER to Dept RM (bounded by the pending cap, so the two never overlap). Runs on
 		# submit and cancel (cancel reverses via sign=-1). Early-returns for non-casting EIRs.
 		update_tree_on_receive(self, cancel=cancel)
+
+		self._refresh_msl_tracking()
+
+	def _refresh_msl_tracking(self):
+		"""Re-materialize the employee's Raw Material (MSL) warehouse tracking
+		table from the ledger after Issue/Receive posts stock.
+
+		``custom_msl_tracking`` is a materialized cache — its only source of
+		truth is ``recalculate_msl_tracking`` (a full recompute from the Stock
+		Ledger). The Employee IR Issue/Receive posts SLEs against the employee's
+		Raw Material (MSL) warehouse but never refreshed this cache, so the
+		on-form Receive/Pending qty drifted from the ledger. Mirror the Employee
+		Loss Entry / warehouse-button pattern. A refresh failure must never roll
+		back the stock posting, so failures are logged, not raised.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking import (
+			recalculate_msl_tracking,
+		)
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
+			_resolve_source_warehouse_raw_material,
+		)
+
+		try:
+			msl_wh = _resolve_source_warehouse_raw_material(self)
+			if msl_wh:
+				recalculate_msl_tracking(msl_wh)
+		except Exception:
+			frappe.log_error(
+				title="Employee IR: MSL tracking refresh failed",
+				message=frappe.get_traceback(),
+			)
 
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":
@@ -1294,3 +1365,123 @@ def calculation_time_log(doc, row, self):
 
 				if full_hours >= total_shift_hours:
 					row.time_in_days = full_hours / total_shift_hours
+
+
+def _validate_fg_bom_field_value(row):
+	"""Reject an entered FG BOM field value that doesn't match its configured type.
+
+	Config field_type is otherwise only advisory (the grid value is free-text), so
+	without this a non-numeric Int would silently coerce to 0 and an off-list Select
+	would land verbatim on the BOM.
+	"""
+	value = (row.value or "").strip()
+	if not value:
+		return
+	label = row.field_label or row.field_name
+	ftype = row.field_type
+	if ftype == "Int":
+		if not value.lstrip("-").isdigit():
+			frappe.throw(_("FG BOM Field '{0}' must be a whole number.").format(label))
+	elif ftype in ("Float", "Currency"):
+		try:
+			float(value)
+		except ValueError:
+			frappe.throw(_("FG BOM Field '{0}' must be a number.").format(label))
+	elif ftype == "Check":
+		if value not in ("0", "1"):
+			frappe.throw(_("FG BOM Field '{0}' must be 0 or 1.").format(label))
+	elif ftype == "Date":
+		try:
+			getdate(value)
+		except Exception:
+			frappe.throw(
+				_("FG BOM Field '{0}' must be a valid date (YYYY-MM-DD).").format(label)
+			)
+	elif ftype == "Select":
+		opts = [o.strip() for o in (row.options or "").splitlines() if o.strip()]
+		if opts and value not in opts:
+			frappe.throw(
+				_("FG BOM Field '{0}' must be one of: {1}.").format(
+					label, ", ".join(opts)
+				)
+			)
+
+
+def _get_mwo_subcategory(mwo):
+	"""Subcategory of the FG item the MWO produces.
+
+	Must mirror what create_finished_goods_bom stamps as the FG BOM's
+	item_subcategory (the copy step matches on it): the FG item is the PMO's
+	new_item when present (repair replacement), else the MWO item. Resolving it
+	the same way here keeps capture and apply on the same subcategory.
+	"""
+	if not mwo:
+		return None
+	mwo_row = frappe.db.get_value(
+		"Manufacturing Work Order",
+		mwo,
+		["item_code", "manufacturing_order"],
+		as_dict=True,
+	)
+	if not mwo_row:
+		return None
+	fg_item = None
+	if mwo_row.manufacturing_order:
+		fg_item = frappe.db.get_value(
+			"Parent Manufacturing Order", mwo_row.manufacturing_order, "new_item"
+		)
+	fg_item = fg_item or mwo_row.item_code
+	if not fg_item:
+		return None
+	return frappe.db.get_value("Item", fg_item, "item_subcategory")
+
+
+@frappe.whitelist()
+def get_fg_bom_fields(operations):
+	"""Resolve the configured FG BOM fields for an Employee IR Receive.
+
+	`operations` is the employee_ir_operations rows (JSON). For each row we derive
+	the FG item's subcategory from its MWO and pull the active FG BOM Field
+	Configuration rows for that subcategory, one output row per configured field.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.fg_bom_field_configuration.fg_bom_field_configuration import (
+		get_active_fields_for_subcategory,
+	)
+
+	if isinstance(operations, str):
+		operations = json.loads(operations or "[]")
+
+	subcat_cache = {}
+	seen = set()
+	result = []
+	for op in operations or []:
+		mwo = op.get("manufacturing_work_order")
+		mop = op.get("manufacturing_operation")
+		if not mwo:
+			continue
+		if mwo not in subcat_cache:
+			subcat_cache[mwo] = _get_mwo_subcategory(mwo)
+		subcategory = subcat_cache[mwo]
+		if not subcategory:
+			continue
+		for cfg in get_active_fields_for_subcategory(subcategory):
+			# One FG per subcategory -> show each configured field once, even when a
+			# receive has several operations of the same subcategory. First operation
+			# owns the row (the copy step matches on manufacturing_operation).
+			key = (subcategory, cfg["field_name"])
+			if key in seen:
+				continue
+			seen.add(key)
+			result.append(
+				{
+					"manufacturing_operation": mop,
+					"subcategory": subcategory,
+					"field_label": cfg["field_label"],
+					"field_name": cfg["field_name"],
+					"field_type": cfg["field_type"],
+					"options": cfg["options"],
+					"is_mandatory": cfg["is_mandatory"],
+					"fg_bom_field": cfg["fg_bom_field"],
+				}
+			)
+	return result

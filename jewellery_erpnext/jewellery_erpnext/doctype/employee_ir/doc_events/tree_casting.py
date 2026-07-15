@@ -30,7 +30,7 @@ Grouping rules (confirmed with user):
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.utils import get_item_from_attribute
 
@@ -280,14 +280,19 @@ def validate_casting_group_complete(eir):
 
 
 def validate_casting_receive(eir):
-	"""Block a casting Receive EIR from over-receiving vs each Tree Number's available (issued) qty.
+	"""Guard a casting Receive EIR against the metal COMMITTED to its work orders (the gross weight).
 
-	Mirrors the tree-button ``(recv + loss) <= pending`` cap (tree_stock_entry.receive_material).
-	Runs at ``validate()`` — BEFORE ``update_tree_on_receive`` applies the ledger on submit — so each
-	tree's current ``pending_qty`` does NOT yet include this EIR's contribution; therefore
-	``contribution <= pending`` is the correct comparison. Only Receive-type casting EIRs are guarded
-	(the cancel path never calls validate, so reversals are unaffected). A never-issued tree has
-	``pending_qty = 0``, so any receive throws — enforcing "Issue Material first, then receive".
+	The tree's "issued" baseline is the operations' ``gross_wt`` — the metal the work orders were
+	expected to return — NOT the button-owned ``issue_qty``. So an operator can receive back the
+	committed metal without first pressing the tree "Issue Material" button:
+
+	  * ``received <= gross`` (normal receive, with loss): always allowed (``recv + loss == gross``).
+	  * ``received > gross`` (a gain): the excess ``received - gross`` is drawn from the tree. It is
+	    physically sourced by ``inject_extra_metal_for_eir_receive`` (gated ``is_main_slip_required``);
+	    without a Main Slip there is nothing to source it from, so an unbacked gain is blocked.
+	  * ``recv <= gross`` but ``recv + loss > gross``: a genuine loss over-booking — still blocked.
+
+	Runs at ``validate()``; only Receive-type casting EIRs are guarded (cancel never calls validate).
 	"""
 	if eir.type != "Receive" or not is_casting_eir(eir):
 		return
@@ -296,26 +301,37 @@ def validate_casting_receive(eir):
 	if not trees:
 		return
 
-	prec = frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
-	eps = (10**-prec) / 2
+	eps = _pending_eps()
+	main_slip_backed = bool(cint(getattr(eir, "is_main_slip_required", 0)))
 
 	for tree_name, items in trees.items():
-		tree = frappe.get_doc("Tree Number", tree_name)
-		pending_by_item = {
-			md.item_code: flt(md.pending_qty) for md in tree.material_details
-		}
 		for item, delta in items.items():
-			contribution = flt(delta["recv"]) + flt(delta["loss"])
-			if contribution <= eps:
+			recv, loss, gross = (
+				flt(delta["recv"]),
+				flt(delta["loss"]),
+				flt(delta["gross"]),
+			)
+			if recv <= eps and loss <= eps:
 				continue
-			pending = pending_by_item.get(item, 0.0)
-			if contribution - pending > eps:
+			if recv - gross > eps:
+				# GAIN: received more than committed. The excess is drawn from the tree and must be
+				# physically sourced by the Main Slip injection; block an unbacked gain.
+				if not main_slip_backed:
+					frappe.throw(
+						_(
+							"Tree {0}, Item {1}: received {2} exceeds the committed gross weight {3}, "
+							"and this operation has no Main Slip to draw the extra from the tree. "
+							"Reduce the received weight."
+						).format(tree_name, item, recv, gross)
+					)
+				continue
+			if (recv + loss) - gross > eps:
+				# received <= gross, but loss pushes the total over committed -> loss over-booked.
 				frappe.throw(
 					_(
-						"Tree {0}, Item {1}: this receive books {2} (receive + loss) but only {3} is "
-						"pending (issued and not yet received). Reduce the received/loss weight, or "
-						"issue more onto the tree first."
-					).format(tree_name, item, contribution, pending)
+						"Tree {0}, Item {1}: this receive books {2} (receive + loss) but only {3} "
+						"(gross weight committed to the work orders) is available. Reduce the loss weight."
+					).format(tree_name, item, recv + loss, gross)
 				)
 
 
@@ -453,11 +469,14 @@ def unlink_tree_on_issue_cancel(eir):
 # Receive
 # ---------------------------------------------------------------------------
 def _aggregate_receive_by_tree(eir, sign=1):
-	"""{tree_name: {metal_item: {"recv": qty, "loss": qty}}} for this EIR's receive.
+	"""{tree_name: {metal_item: {"recv": qty, "loss": qty, "gross": qty}}} for this EIR's receive.
 
-	Groups each operation row's ``received_gross_wt`` and booked metal loss (``_mwo_loss_dict``) by the
-	MWO's tree + metal item. ``sign=-1`` reverses the contribution (cancel path). Shared by
+	Groups each operation row's ``received_gross_wt``, booked metal loss (``_mwo_loss_dict``) and the
+	committed ``gross_wt`` (the metal the work orders were expected to return) by the MWO's tree +
+	metal item. ``sign=-1`` reverses the contribution (cancel path). Shared by
 	``validate_casting_receive`` (pre-submit guard) and ``update_tree_on_receive`` (ledger apply).
+	``gross`` is the tree's "issued" baseline: a normal receive (received <= gross) satisfies
+	``recv + loss == gross``; a gain (received > gross) draws the excess from the tree.
 	"""
 	mwo_loss = _mwo_loss_dict(eir)
 	trees = {}
@@ -474,9 +493,10 @@ def _aggregate_receive_by_tree(eir, sign=1):
 		if not item:
 			continue
 		bucket = trees.setdefault(tree_name, {})
-		agg = bucket.setdefault(item, {"recv": 0, "loss": 0})
+		agg = bucket.setdefault(item, {"recv": 0, "loss": 0, "gross": 0})
 		agg["recv"] += sign * flt(row.received_gross_wt)
 		agg["loss"] += sign * flt(mwo_loss.get(row.manufacturing_work_order, 0))
+		agg["gross"] += sign * flt(row.gross_wt)
 	return trees
 
 
@@ -505,21 +525,33 @@ def update_tree_on_receive(eir, cancel=False):
 			delta = items.get(md.item_code)
 			if not delta:
 				continue
-			# Defense-in-depth (forward path only): re-check against the freshly-loaded pending so a
-			# concurrent Receive EIR that passed validate() independently cannot drive pending
-			# negative. Cancel (sign=-1) is skipped — its deltas are negative and must reverse freely.
+			# Defense-in-depth (forward path only): re-check against the committed gross baseline so a
+			# concurrent Receive EIR that passed validate() independently cannot book a loss over the
+			# committed metal. Mirrors validate_casting_receive: received<=gross is always fine, and a
+			# gain (recv>gross) is left to the injection to source. Cancel (sign=-1) is skipped — its
+			# deltas are negative and must reverse freely.
 			if not cancel:
-				contribution = flt(delta["recv"]) + flt(delta["loss"])
-				if contribution - flt(md.pending_qty) > eps:
+				recv, loss, gross = (
+					flt(delta["recv"]),
+					flt(delta["loss"]),
+					flt(delta["gross"]),
+				)
+				if recv - gross <= eps and (recv + loss) - gross > eps:
 					frappe.throw(
 						_(
 							"Tree {0}, Item {1}: this receive books {2} (receive + loss) but only {3} "
-							"is pending. Reduce the received/loss weight, or issue more onto the tree first."
-						).format(tree_name, md.item_code, contribution, md.pending_qty)
+							"(gross weight committed) is available. Reduce the loss weight."
+						).format(tree_name, md.item_code, recv + loss, gross)
 					)
 			md.receive_qty = flt(md.receive_qty) + delta["recv"]
 			md.loss_qty = flt(md.loss_qty) + delta["loss"]
-			md.pending_qty = flt(md.issue_qty) - flt(md.receive_qty) - flt(md.loss_qty)
+			# Effective issued baseline = max(button issue_qty, receive + loss): issue_qty stays
+			# button-owned, so a never-button-issued tree floors to pending 0 (fully received, the
+			# committed metal drawn from the tree) instead of a phantom negative. Cancel-safe because
+			# issue_qty is never written here — reversing receive/loss recomputes pending exactly.
+			md.pending_qty = max(
+				0.0, flt(md.issue_qty) - flt(md.receive_qty) - flt(md.loss_qty)
+			)
 		tree.status = _tree_status(tree)
 		tree.flags.ignore_permissions = True
 		tree.save()
@@ -533,14 +565,16 @@ def _tree_status(tree):
 	)
 	if not received:
 		return "Issued"
-	# "Received" requires EVERY row to be both issued (issue_qty > 0) and consumed
-	# (pending_qty <= eps). A never-issued seed row (issue_qty = 0 -> pending_qty = 0) must NOT
-	# flip a multi-item tree to Received while that item still needs issuing. The eps tolerance
-	# (same one the over-receive cap uses) makes "received + loss == issued" read as fully
-	# received instead of getting stuck on floating-point dust just above zero.
+	# "Received" requires EVERY row to be ENGAGED (issued via the button OR received/lost — the
+	# committed metal can be drawn from the tree without a button issue, so issue_qty=0 with a
+	# receive is a valid fully-received state) AND consumed (pending_qty <= eps). A never-touched
+	# seed row (all zeros — e.g. an unreceived multicolour colour) must NOT flip a multi-item tree
+	# to Received. The eps tolerance (same one the over-receive cap uses) makes
+	# "received + loss == issued" read as fully received instead of getting stuck on float dust.
 	eps = _pending_eps()
 	fully = all(
-		flt(md.issue_qty) > 0 and flt(md.pending_qty) <= eps
+		(flt(md.issue_qty) > 0 or flt(md.receive_qty) > 0 or flt(md.loss_qty) > 0)
+		and flt(md.pending_qty) <= eps
 		for md in tree.material_details
 	)
 	return "Received" if fully else "Partially Received"
