@@ -1439,12 +1439,12 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
     api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
     use_api   = bool(from_site)
 
-    # customer_key = (
-    #     cctx.reference_customer
-    #     if self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal"
-    #     else self.customer
-    # )
-    customer_key = self.customer
+    customer_key = (
+        cctx.reference_customer
+        if self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal"
+        else self.customer
+    )
+    # customer_key = self.customer
     if self.custom_diamond_quality:
         row.diamond_quality = self.custom_diamond_quality
     stone_prec = int(ctx.stone_precision or 3)
@@ -1544,14 +1544,20 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
             )
                 continue
         if self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal":
-            if cctx.billing_currency == "USD":
-                d.se_rate = d.se_rate * cctx.exchange_rate
-            d.total_diamond_rate = d.se_rate * 1.15
-            if d.quantity > 0.005:
-                d.quantity = round(d.quantity, stone_prec)
-            d.diamond_rate_for_specified_quantity = round(
-                d.quantity * (d.handling_rate + d.total_diamond_rate), 2
-            )
+            if d.is_customer_item:
+                d.fg_purchase_rate   = latest.get("supplier_fg_purchase_rate", 0)
+                d.diamond_rate_for_specified_quantity = round(
+                    d.quantity * (d.fg_purchase_rate), 2
+                )
+            else:
+                if cctx.billing_currency == "USD":
+                    d.se_rate = d.se_rate * cctx.exchange_rate
+                d.total_diamond_rate = d.se_rate * 1.15
+                if d.quantity > 0.005:
+                    d.quantity = round(d.quantity, stone_prec)
+                d.diamond_rate_for_specified_quantity = round(
+                    d.quantity * (d.handling_rate + d.total_diamond_rate), 2
+                )
         
         elif self.company == "Gurukrupa Export Private Limited" and ctx.customer_group == "Internal":
             # d.fg_purchase_rate   = latest.get("supplier_fg_purchase_rate", 0)
