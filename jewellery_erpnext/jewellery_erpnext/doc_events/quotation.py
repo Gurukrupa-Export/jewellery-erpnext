@@ -1,7 +1,11 @@
 import json
+from io import BytesIO
 
 import frappe
 from frappe import _
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
 
 from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.utils import (
 	update_si,
@@ -896,7 +900,7 @@ def _create_single_tracking_bom(
 				"workstation": bom_op.workstation,
 				"time_in_mins": bom_op.time_in_mins,
 				"hour_rate": bom_op.hour_rate,
-				"cost": bom_op.cost,
+				"operating_cost": bom_op.operating_cost,
 			},
 		)
 
@@ -1137,46 +1141,62 @@ def _apply_customer_pricing(
 create_new_bom = create_tracking_bom_directly
 
 
-
-
-
-
-
-
-
-
-
-
-import frappe
-from openpyxl import Workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment
-from io import BytesIO
-
 @frappe.whitelist()
 def xl_preview(docname):
 	doc = frappe.get_doc("Quotation", docname)
-	precision =frappe.get_value("Customer",doc.party_name,"custom_precision_variable")
+	precision = frappe.get_value(
+		"Customer", doc.party_name, "custom_precision_variable"
+	)
 	rows_diamond = []
 
-	
 	columns = [
-		"Index","Item Code","Serial No","Item Name","Diamond Quality","PCS","Diamond Weight","Average",
-		"Total Cts","Grams","Total Diamond Rate","Diamond Amount","Gross Weight","Gemstone Weight",
-		"Other Weight","Gold Rate","Net Weight","Gold Amount","Customer Purity","Chain Weight",
-		"Chain Amount","Chain Purity","Per Gram MC","Chain MC","Chain Wastage %","Chain Wastage Amount",
-		"Jewellery Per Gram MC","Jewellery MC","Gold Wastage %","Jewellery Wastage","Gemstone Pcs",
-		"Gemstone Cts","Gemstone Amount","Cert Charge","Hallmark Charge","Total Amt"
+		"Index",
+		"Item Code",
+		"Serial No",
+		"Item Name",
+		"Diamond Quality",
+		"PCS",
+		"Diamond Weight",
+		"Average",
+		"Total Cts",
+		"Grams",
+		"Total Diamond Rate",
+		"Diamond Amount",
+		"Gross Weight",
+		"Gemstone Weight",
+		"Other Weight",
+		"Gold Rate",
+		"Net Weight",
+		"Gold Amount",
+		"Customer Purity",
+		"Chain Weight",
+		"Chain Amount",
+		"Chain Purity",
+		"Per Gram MC",
+		"Chain MC",
+		"Chain Wastage %",
+		"Chain Wastage Amount",
+		"Jewellery Per Gram MC",
+		"Jewellery MC",
+		"Gold Wastage %",
+		"Jewellery Wastage",
+		"Gemstone Pcs",
+		"Gemstone Cts",
+		"Gemstone Amount",
+		"Cert Charge",
+		"Hallmark Charge",
+		"Total Amt",
 	]
 
-	
 	for item in doc.items:
 		if item.copy_bom:
 			# bom_doc = frappe.get_doc("BOM", item.quotation_bom)
 			bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
 
 			# total_qty = sum([float(d.quantity or 0) for d in bom_doc.diamond_detail])
-			total_qty = sum([round(float(d.quantity or 0), 2) for d in bom_doc.diamond_detail])
+			total_qty = sum(
+				[round(float(d.quantity or 0), 2) for d in bom_doc.diamond_detail]
+			)
 			total_qty = round(total_qty, 2)
 
 			grams = total_qty * 0.2
@@ -1187,38 +1207,60 @@ def xl_preview(docname):
 			gemstone_weight = float(bom_doc.gemstone_weight or 0)
 			# other_weight = float(bom_doc.other_weight or 0)
 
-			
 			metal_weight = float(bom_doc.metal_weight or 0)
 
-			gemstone_pcs_rows = [float(g.pcs or 0) for g in bom_doc.gemstone_detail] if bom_doc.gemstone_detail else []
-			gemstone_cts_rows = [float(g.quantity or 0) for g in bom_doc.gemstone_detail] if bom_doc.gemstone_detail else []
-			gemstone_amount_rows = [float(g.gemstone_rate_for_specified_quantity or 0) for g in bom_doc.gemstone_detail] if bom_doc.gemstone_detail else []
+			gemstone_pcs_rows = (
+				[float(g.pcs or 0) for g in bom_doc.gemstone_detail]
+				if bom_doc.gemstone_detail
+				else []
+			)
+			gemstone_cts_rows = (
+				[float(g.quantity or 0) for g in bom_doc.gemstone_detail]
+				if bom_doc.gemstone_detail
+				else []
+			)
+			gemstone_amount_rows = (
+				[
+					float(g.gemstone_rate_for_specified_quantity or 0)
+					for g in bom_doc.gemstone_detail
+				]
+				if bom_doc.gemstone_detail
+				else []
+			)
 
-			
-			chain_weight, chain_amount, chain_mc, chain_wastage, chain_purity = 0, 0, 0, 0, 0
+			chain_weight, chain_amount, chain_mc, chain_wastage, chain_purity = (
+				0,
+				0,
+				0,
+				0,
+				0,
+			)
 			per_gram_mc, chain_wastage_amount = 0, 0
 
 			if bom_doc.finding_detail:
 				for f in bom_doc.finding_detail:
 					if f.finding_category and f.finding_category.lower() == "chains":
-						
 						chain_weight = float(f.quantity or 0)
 						chain_purity = float(f.customer_metal_purity or 0)
 						per_gram_mc = float(f.making_rate or 0)
 						chain_mc = float(f.making_amount or 0)
 						chain_wastage = float(f.wastage_rate or 0)
 
-						
 						if chain_weight > 0:
 							quotation_gold_rate = float(doc.gold_rate or 0)
-							chain_amount = (quotation_gold_rate * chain_purity / 100) * chain_weight
-						chain_wastage_amount = (chain_amount * chain_wastage) /100 if chain_wastage else 0
+							chain_amount = (
+								quotation_gold_rate * chain_purity / 100
+							) * chain_weight
+						chain_wastage_amount = (
+							(chain_amount * chain_wastage) / 100 if chain_wastage else 0
+						)
 					else:
-						
 						metal_weight += float(f.quantity or 0)
 
 			if bom_doc.metal_detail:
-				customer_metal_purity = float(bom_doc.metal_detail[0].customer_metal_purity or 0)
+				customer_metal_purity = float(
+					bom_doc.metal_detail[0].customer_metal_purity or 0
+				)
 				gold_wastage = float(bom_doc.metal_detail[0].wastage_rate or 0)
 				jewellery_per_gram_mc = float(bom_doc.metal_detail[0].making_rate or 0)
 			else:
@@ -1226,7 +1268,7 @@ def xl_preview(docname):
 
 			quotation_gold_rate = float(doc.gold_rate or 0)
 			calculated_gold_rate = (quotation_gold_rate * customer_metal_purity) / 100
-			calculated_gold_rate = float(f"{calculated_gold_rate:.2f}") 
+			calculated_gold_rate = float(f"{calculated_gold_rate:.2f}")
 
 			cert_charge = float(bom_doc.certification_amount or 0)
 			hallmark_charge = float(bom_doc.hallmarking_amount or 0)
@@ -1234,24 +1276,36 @@ def xl_preview(docname):
 			for i, diamond in enumerate(bom_doc.diamond_detail):
 				pcs = float(diamond.pcs or 0)
 				qty = float(diamond.quantity or 0)
-				qty = float(f"{qty:.2f}")  
+				qty = float(f"{qty:.2f}")
 				avg = (qty / pcs) if pcs else 0
 				rate = float(diamond.total_diamond_rate or 0)
 				diamond_amount = rate * qty
 
-				
 				# gold_amount_val = calculated_gold_rate * metal_weight if i == 0 else 0
 				net_weight = round(metal_weight, 2)
-				gold_amount_val = round(calculated_gold_rate * net_weight, 2) if i == 0 else 0
-				jewellery_wastage_val = gold_amount_val * (gold_wastage / 100) if i == 0 else 0
+				gold_amount_val = (
+					round(calculated_gold_rate * net_weight, 2) if i == 0 else 0
+				)
+				jewellery_wastage_val = (
+					gold_amount_val * (gold_wastage / 100) if i == 0 else 0
+				)
 				jewellery_mc_val = metal_weight * jewellery_per_gram_mc if i == 0 else 0
 
-				gemstone_pcs_val = gemstone_pcs_rows[i] if i < len(gemstone_pcs_rows) else 0
-				gemstone_cts_val = gemstone_cts_rows[i] if i < len(gemstone_cts_rows) else 0
-				gemstone_amount_val = gemstone_amount_rows[i] if i < len(gemstone_amount_rows) else 0
+				gemstone_pcs_val = (
+					gemstone_pcs_rows[i] if i < len(gemstone_pcs_rows) else 0
+				)
+				gemstone_cts_val = (
+					gemstone_cts_rows[i] if i < len(gemstone_cts_rows) else 0
+				)
+				gemstone_amount_val = (
+					gemstone_amount_rows[i] if i < len(gemstone_amount_rows) else 0
+				)
 
-				
-				if i < len(bom_doc.finding_detail) and bom_doc.finding_detail[i].finding_category and bom_doc.finding_detail[i].finding_category.lower() == "chains":
+				if (
+					i < len(bom_doc.finding_detail)
+					and bom_doc.finding_detail[i].finding_category
+					and bom_doc.finding_detail[i].finding_category.lower() == "chains"
+				):
 					row_chain_amount = chain_amount
 					row_chain_mc = chain_mc
 					row_chain_wastage_amount = chain_wastage_amount
@@ -1272,50 +1326,57 @@ def xl_preview(docname):
 					+ float(gold_amount_val or 0)
 					+ float(diamond_amount or 0)
 				)
-				rows_diamond.append([
-					item.idx if i == 0 else "",
-					item.item_code if i == 0 else "",
-					item.serial_no if i == 0 else "",
-					item.item_name if i == 0 else "",
-					item.diamond_quality,
-					pcs,
-					f"{qty:.2f}",
-					f"{avg:.3f}",  
-					round(total_qty, 2) if (i == 0 and total_qty != 0) else "",
-					# round(grams, 3) if (i == 0 and grams != 0) else "",
-					f"{grams:.{precision}f}" if (i == 0 and grams != 0) else "",
-					round(rate, 2),
-					round(diamond_amount, 2),
-					round(gross_weight, 3) if (i == 0 and gross_weight != 0) else "",
-					# f"{gross_weight:.3f}" if (i == 0 and gross_weight != 0) else "",
-					round(gemstone_weight, 2) if (i == 0 and gemstone_weight != 0) else "",
-					# round(other_weight, 2) if (i == 0 and other_weight != 0) else "",
-					"",
-					f"{calculated_gold_rate:.{precision}f}" if i == 0 else "",
-					# round(metal_weight, 2) if i == 0 else "", 
-					f"{metal_weight:.{precision}f}" if i == 0 else "", 
-					f"{gold_amount_val:.{precision}f}" if i == 0 else "",
-					customer_metal_purity if i == 0 else "",
-					round(chain_weight, 2) if i == 0 else "",  
-					round(chain_amount, 2) if i == 0 else "",
-					chain_purity if i == 0 else "",
-					round(per_gram_mc, 2) if i == 0 else "",
-					round(chain_mc, 2) if i == 0 else "",
-					round(chain_wastage, 2) if i == 0 else "",
-					round(chain_wastage_amount, 2) if i == 0 else "",
-					round(jewellery_per_gram_mc, 2) if i == 0 else "",
-					round(jewellery_mc_val, 2) if i == 0 else "",
-					round(gold_wastage, 2) if i == 0 else "",
-					round(jewellery_wastage_val, 2) if i == 0 else "",
-					gemstone_pcs_val if gemstone_pcs_val != 0 else "",
-					round(gemstone_cts_val, 2) if gemstone_cts_val != 0 else "",
-					round(gemstone_amount_val, 2) if gemstone_amount_val != 0 else "",
-					round(cert_charge, 2) if i == 0 else "",
-					round(hallmark_charge, 2) if i == 0 else "",
-					round(total_amt, 2)
-				])
+				rows_diamond.append(
+					[
+						item.idx if i == 0 else "",
+						item.item_code if i == 0 else "",
+						item.serial_no if i == 0 else "",
+						item.item_name if i == 0 else "",
+						item.diamond_quality,
+						pcs,
+						f"{qty:.2f}",
+						f"{avg:.3f}",
+						round(total_qty, 2) if (i == 0 and total_qty != 0) else "",
+						# round(grams, 3) if (i == 0 and grams != 0) else "",
+						f"{grams:.{precision}f}" if (i == 0 and grams != 0) else "",
+						round(rate, 2),
+						round(diamond_amount, 2),
+						round(gross_weight, 3)
+						if (i == 0 and gross_weight != 0)
+						else "",
+						# f"{gross_weight:.3f}" if (i == 0 and gross_weight != 0) else "",
+						round(gemstone_weight, 2)
+						if (i == 0 and gemstone_weight != 0)
+						else "",
+						# round(other_weight, 2) if (i == 0 and other_weight != 0) else "",
+						"",
+						f"{calculated_gold_rate:.{precision}f}" if i == 0 else "",
+						# round(metal_weight, 2) if i == 0 else "",
+						f"{metal_weight:.{precision}f}" if i == 0 else "",
+						f"{gold_amount_val:.{precision}f}" if i == 0 else "",
+						customer_metal_purity if i == 0 else "",
+						round(chain_weight, 2) if i == 0 else "",
+						round(chain_amount, 2) if i == 0 else "",
+						chain_purity if i == 0 else "",
+						round(per_gram_mc, 2) if i == 0 else "",
+						round(chain_mc, 2) if i == 0 else "",
+						round(chain_wastage, 2) if i == 0 else "",
+						round(chain_wastage_amount, 2) if i == 0 else "",
+						round(jewellery_per_gram_mc, 2) if i == 0 else "",
+						round(jewellery_mc_val, 2) if i == 0 else "",
+						round(gold_wastage, 2) if i == 0 else "",
+						round(jewellery_wastage_val, 2) if i == 0 else "",
+						gemstone_pcs_val if gemstone_pcs_val != 0 else "",
+						round(gemstone_cts_val, 2) if gemstone_cts_val != 0 else "",
+						round(gemstone_amount_val, 2)
+						if gemstone_amount_val != 0
+						else "",
+						round(cert_charge, 2) if i == 0 else "",
+						round(hallmark_charge, 2) if i == 0 else "",
+						round(total_amt, 2),
+					]
+				)
 
-	
 	sum_row = [""] * len(columns)
 	sum_row[5] = round(sum(float(r[5] or 0) for r in rows_diamond), 2)
 	sum_row[6] = round(sum(float(r[6] or 0) for r in rows_diamond), 2)
@@ -1342,12 +1403,10 @@ def xl_preview(docname):
 
 	rows_diamond.append(sum_row)
 
-	
 	wb = Workbook()
 	ws = wb.active
 	ws.title = "Diamond Detail"
 
-	
 	company_name = "M/S. GURUKRUPA EXPORT PVT LIMITED"
 	ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
 	cell = ws.cell(row=1, column=1, value=company_name)
@@ -1363,16 +1422,12 @@ def xl_preview(docname):
 		for col_num, cell_value in enumerate(row_data, 1):
 			ws.cell(row=row_num, column=col_num, value=cell_value)
 
-	
 	for i, column in enumerate(columns, 1):
 		ws.column_dimensions[get_column_letter(i)].width = 15
 
-	
 	output = BytesIO()
 	wb.save(output)
 	output.seek(0)
 	frappe.local.response.filecontent = output.read()
 	frappe.local.response.filename = f"Diamond_Detail_{docname}.xlsx"
 	frappe.local.response.type = "download"
-
-
