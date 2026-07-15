@@ -277,14 +277,12 @@ frappe.ui.form.on("Refining Entry", {
 	set_field_visibility(frm) {
 		const type = frm.doc.refining_type;
 		const is_external = !!frm.doc.is_external;
-		// Dust-specific sections. External refining skips the internal dust
-		// physical-verification step, so hide that section for it.
+		// Dust-specific sections. Physical verification applies to external dust
+		// refining too — the counted physical quantity is what actually goes to the
+		// supplier, and the excess over system stock is receipted and sent along.
 		const is_dust = type === "Dust Refining";
 		frm.toggle_display("section_break_dust", is_dust);
-		frm.toggle_display(
-			"section_break_verification",
-			!is_external && (is_dust || type === "Scrap Refining")
-		);
+		frm.toggle_display("section_break_verification", is_dust || type === "Scrap Refining");
 
 		// MWO-specific
 		frm.toggle_display("scan_mwo", type === "Work Order Refining");

@@ -140,6 +140,12 @@ class RefiningEntry(Document):
 			frappe.throw(
 				_("No materials to refine. Add or fetch materials before submitting.")
 			)
+		# Same physical-verification guard the internal Dust path enforces: the
+		# Material Items table must total the counted physical quantity (the operator
+		# adds the difference item manually) — the excess is then receipted into the
+		# supplier warehouse on submit, exactly like the internal dust-opening receipt.
+		if self.refining_type == "Dust Refining":
+			self.validate_dust_opening_material()
 		self.validate_customer_block()
 
 		self.supplier_warehouse = self._get_supplier_warehouse()
@@ -157,6 +163,14 @@ class RefiningEntry(Document):
 
 	def on_submit_external(self):
 		self.create_material_transfer_se(target_warehouse=self.supplier_warehouse)
+		# Dust: the physical-over-system excess (recorded as shortfalls during the
+		# transfer) is receipted straight into the supplier warehouse so it travels
+		# with the rest of the dust — mirrors the internal dust-opening receipt, which
+		# receipts it into the refining warehouse.
+		if self.refining_type == "Dust Refining":
+			self.create_dust_opening_receipt_se(
+				target_warehouse=self.supplier_warehouse
+			)
 		self.create_external_refining_po()
 
 	def _billable_item_weights(self):
@@ -278,9 +292,20 @@ class RefiningEntry(Document):
 		se.custom_refining_entry = self.name
 		se.auto_created = 1
 		se.to_subcontractor = self.supplier
+		# The Stock Entry before_validate pure-qty hook resolves the Manufacturing
+		# Setting via the SE's manufacturer for Metal/Finding rows; carry the entry's
+		# manufacturer so it doesn't depend on the submitting user's session default.
+		se.manufacturer = self.manufacturer
 
+		# Group batch-less rows item-wise and FIFO-allocate ONCE per item: multiple
+		# rows of the same item (e.g. the fetched dust rows plus the operator-added
+		# physical-difference row) would otherwise each FIFO-allocate independently and
+		# double-claim the same batches, over-consuming them into negative stock.
+		# Rows carrying a serial number keep their per-row identity.
 		expected_qty = 0.0
 		issued_qty = 0.0
+		grouped = {}
+		serial_rows = []
 		for item in self.material_items:
 			if item.get("source_type") == "BOM Component":
 				continue
@@ -288,10 +313,18 @@ class RefiningEntry(Document):
 			if qty < min_qty:
 				continue
 			expected_qty += qty
-			has_batch = frappe.db.get_value("Item", item.item_code, "has_batch_no")
+			if item.serial_no:
+				serial_rows.append(item)
+			else:
+				g = grouped.setdefault(item.item_code, {"qty": 0.0, "uom": item.uom})
+				g["qty"] += qty
+
+		for item_code, g in grouped.items():
+			qty = flt(g["qty"], precision)
+			has_batch = frappe.db.get_value("Item", item_code, "has_batch_no")
 			if has_batch:
 				allocations = self.allocate_fifo_batches(
-					item.item_code,
+					item_code,
 					self.supplier_warehouse,
 					qty,
 					throw_if_missing=False,
@@ -302,12 +335,11 @@ class RefiningEntry(Document):
 						se.append(
 							"items",
 							{
-								"item_code": item.item_code,
+								"item_code": item_code,
 								"qty": alloc["qty"],
-								"uom": item.uom,
+								"uom": g["uom"],
 								"s_warehouse": self.supplier_warehouse,
 								"batch_no": alloc["batch_no"],
-								"serial_no": item.serial_no,
 								"use_serial_batch_fields": 1,
 							},
 						)
@@ -316,14 +348,28 @@ class RefiningEntry(Document):
 				se.append(
 					"items",
 					{
-						"item_code": item.item_code,
+						"item_code": item_code,
 						"qty": qty,
-						"uom": item.uom,
+						"uom": g["uom"],
 						"s_warehouse": self.supplier_warehouse,
-						"serial_no": item.serial_no,
 						"use_serial_batch_fields": 1,
 					},
 				)
+
+		for item in serial_rows:
+			qty = flt(item.qty, precision)
+			issued_qty += qty
+			se.append(
+				"items",
+				{
+					"item_code": item.item_code,
+					"qty": qty,
+					"uom": item.uom,
+					"s_warehouse": self.supplier_warehouse,
+					"serial_no": item.serial_no,
+					"use_serial_batch_fields": 1,
+				},
+			)
 
 		if not se.items:
 			frappe.throw(
@@ -756,11 +802,10 @@ class RefiningEntry(Document):
 				)
 
 	def validate_quantities(self):
-		# External refining skips the dust physical-verification step (the operator
-		# hands the material straight to the supplier; there is no internal
-		# physical-vs-system reconciliation), so don't block save on a blank
-		# Physical Quantity there.
-		if self.refining_type == "Dust Refining" and not cint(self.is_external):
+		# Applies to external dust refining too: the physical count is what actually
+		# goes to the supplier, and the physical-over-system excess is receipted and
+		# sent along with the rest (see before_submit_external / on_submit_external).
+		if self.refining_type == "Dust Refining":
 			sys_qty = flt(self.system_quantity)
 			phys_qty = flt(self.physical_quantity)
 			self.difference_quantity = phys_qty - sys_qty
@@ -2052,8 +2097,11 @@ class RefiningEntry(Document):
 		# If we queue submission, we don't need auto_created=1 since it'll bypass blockages, but we'll keep it for custom validation bypasses
 		se.auto_created = 1
 		if target_warehouse:
-			# External refining: tag the material as issued to the subcontractor supplier.
+			# External refining: tag the material as issued to the subcontractor supplier,
+			# and carry the entry's manufacturer for the SE pure-qty hook (see
+			# receive_from_supplier for the full rationale).
 			se.to_subcontractor = self.supplier
+			se.manufacturer = self.manufacturer
 
 		# Work Order Refining: release the source MWO Stock Reservation Entries BEFORE
 		# building/submitting the transfer, so this Stock Entry can consume the now
@@ -2328,9 +2376,12 @@ class RefiningEntry(Document):
 			for mop in pending_mops:
 				frappe.db.set_value("Manufacturing Operation", mop, mop_zero_map)
 
-	def create_dust_opening_receipt_se(self):
+	def create_dust_opening_receipt_se(self, target_warehouse=None):
 		# When the physical dust exceeds the system stock, the extra dust must be brought
-		# into the refining warehouse via a Material Receipt so the repack can consume it.
+		# into the refining warehouse (or, for external refining, the supplier warehouse
+		# it was physically handed over to) via a Material Receipt so the downstream
+		# repack/receive can consume it.
+		target = target_warehouse or self.refining_warehouse
 
 		# We now use the exact shortfalls calculated during create_material_transfer_se.
 		shortfalls = getattr(self, "_dust_shortfalls", [])
@@ -2343,6 +2394,10 @@ class RefiningEntry(Document):
 		se.company = self.company
 		se.custom_refining_entry = self.name
 		se.auto_created = 1
+		if target_warehouse:
+			# External refining: carry the entry's manufacturer for the SE pure-qty
+			# hook (see receive_from_supplier for the full rationale).
+			se.manufacturer = self.manufacturer
 
 		added = False
 		for sf in shortfalls:
@@ -2355,7 +2410,7 @@ class RefiningEntry(Document):
 					"item_code": sf["item_code"],
 					"qty": sf["qty"],
 					"uom": sf["uom"],
-					"t_warehouse": self.refining_warehouse,
+					"t_warehouse": target,
 					"purity": sf["purity"],
 					"batch_no": dust_batch,
 					"use_serial_batch_fields": 1,
