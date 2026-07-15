@@ -81,25 +81,25 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				});
 			}
 		}
-		if (frm.doc.docstatus == 0 && frm.doc.department && frm.doc.department.startsWith("Serial Number")) {
-			frm.add_custom_button(__("Create Repack"), function () {
-				frappe.call({
-					method: "jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_pending_repack",
-					args: {
-						mwo_name: frm.doc.name,
-					},
-					freeze: true,
-					freeze_message: __("Creating Repack..."),
-					callback: function (r) {
-						if (!r.exc) {
-							frappe.msgprint(__("Customer Gold Repack Created"));
+		// if (frm.doc.docstatus == 0 && frm.doc.department && frm.doc.department.startsWith("Serial Number")) {
+		// 	frm.add_custom_button(__("Create Repack"), function () {
+		// 		frappe.call({
+		// 			method: "jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_pending_repack",
+		// 			args: {
+		// 				mwo_name: frm.doc.name,
+		// 			},
+		// 			freeze: true,
+		// 			freeze_message: __("Creating Repack..."),
+		// 			callback: function (r) {
+		// 				if (!r.exc) {
+		// 					frappe.msgprint(__("Customer Gold Repack Created"));
 
-							frm.reload_doc();
-						}
-					},
-				});
-			});
-		}
+		// 					frm.reload_doc();
+		// 				}
+		// 			},
+		// 		});
+		// 	});
+		// }
 		set_html(frm);
 	},
 	transfer_to_raw: function (frm) {
