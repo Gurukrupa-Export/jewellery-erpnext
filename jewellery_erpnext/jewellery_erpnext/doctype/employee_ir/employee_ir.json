@@ -46,6 +46,9 @@
   "section_break_shn6x",
   "employee_ir_operations",
   "summary",
+  "fg_bom_fields_section",
+  "refresh_fg_bom_fields",
+  "custom_fg_bom_fields",
   "section_break_dxdag",
   "employee_loss_details",
   "mop_loss_details_total",
@@ -67,6 +70,27 @@
    "options": "Employee IR",
    "print_hide": 1,
    "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.type == \"Receive\"",
+   "fieldname": "fg_bom_fields_section",
+   "fieldtype": "Section Break",
+   "label": "FG BOM Fields"
+  },
+  {
+   "depends_on": "eval:doc.type == \"Receive\"",
+   "description": "Loads the subcategory-driven fields configured in FG BOM Field Configuration.",
+   "fieldname": "refresh_fg_bom_fields",
+   "fieldtype": "Button",
+   "label": "Load FG BOM Fields"
+  },
+  {
+   "depends_on": "eval:doc.type == \"Receive\"",
+   "fieldname": "custom_fg_bom_fields",
+   "fieldtype": "Table",
+   "label": "FG BOM Fields",
+   "options": "Employee IR FG BOM Field"
   },
   {
    "fieldname": "type",
