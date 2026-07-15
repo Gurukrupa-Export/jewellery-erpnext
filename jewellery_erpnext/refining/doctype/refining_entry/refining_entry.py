@@ -376,6 +376,10 @@ class RefiningEntry(Document):
 								"s_warehouse": self.supplier_warehouse,
 								"batch_no": alloc["batch_no"],
 								"use_serial_batch_fields": 1,
+								# Scrap/dust routinely enters stock via zero-rate
+								# Material Receipts; the repack must not block on a
+								# missing valuation history.
+								"allow_zero_valuation_rate": 1,
 							},
 						)
 			else:
@@ -388,6 +392,7 @@ class RefiningEntry(Document):
 						"uom": g["uom"],
 						"s_warehouse": self.supplier_warehouse,
 						"use_serial_batch_fields": 1,
+						"allow_zero_valuation_rate": 1,
 					},
 				)
 
@@ -403,6 +408,7 @@ class RefiningEntry(Document):
 					"s_warehouse": self.supplier_warehouse,
 					"serial_no": item.serial_no,
 					"use_serial_batch_fields": 1,
+					"allow_zero_valuation_rate": 1,
 				},
 			)
 
@@ -417,6 +423,7 @@ class RefiningEntry(Document):
 			"uom": "Gram",
 			"t_warehouse": target_wh,
 			"use_serial_batch_fields": 1,
+			"allow_zero_valuation_rate": 1,
 		}
 		if frappe.db.get_value("Item", self.refined_metal_item, "has_batch_no"):
 			metal_row["batch_no"] = self._auto_create_batch(self.refined_metal_item)
