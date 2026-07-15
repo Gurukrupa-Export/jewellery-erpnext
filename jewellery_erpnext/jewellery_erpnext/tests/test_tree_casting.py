@@ -134,10 +134,17 @@ class TestTreeStatus(IntegrationTestCase):
 		self.assertEqual(tree_casting._tree_status(tree), "Partially Received")
 
 	def test_never_issued_row_blocks_received(self):
-		# Row A issued+received (done), Row B never issued (issue_qty=0 -> pending=0).
-		# Must NOT flip to "Received" while B still needs issuing.
+		# Row A issued+received (done), Row B never touched (all zeros — e.g. an unreceived
+		# multicolour colour). Must NOT flip to "Received" while B still needs receiving.
 		tree = SimpleNamespace(material_details=[_md(10, 10, 0), _md(0, 0, 0)])
 		self.assertEqual(tree_casting._tree_status(tree), "Partially Received")
+
+	def test_received_when_issue_zero_fully_received(self):
+		# Casting receive drew the committed metal from the tree without a button issue:
+		# issue_qty=0 but receive_qty>0 and pending<=eps -> fully Received (a received row is
+		# "engaged" even with issue_qty=0).
+		tree = SimpleNamespace(material_details=[_md(0, 8, 0)])
+		self.assertEqual(tree_casting._tree_status(tree), "Received")
 
 	def test_received_when_receive_plus_loss_equals_issue_float_dust(self):
 		# Regression for GEPL-TR-26-00147: 3 - 2.9 - 0.1 leaves floating-point dust (~8e-17)
@@ -424,11 +431,21 @@ def _mwo_doc(name, tree_number):
 	)
 
 
-def _recv_eir(rows, typ="Receive", loss_rows=None):
-	"""Receive EIR. rows: [(mwo_name, received_gross_wt)]; loss_rows: [(mwo_name, proportionally_loss)]."""
+def _recv_eir(rows, typ="Receive", loss_rows=None, is_main_slip_required=1):
+	"""Receive EIR. rows: [(mwo, received_gross_wt[, gross_wt])] — gross_wt defaults to received
+	(exact fill / no gain); loss_rows: [(mwo, proportionally_loss)]."""
+
+	def _op(r):
+		name, recv = r[0], r[1]
+		gross = r[2] if len(r) > 2 else recv
+		return SimpleNamespace(
+			manufacturing_work_order=name, received_gross_wt=recv, gross_wt=gross
+		)
+
 	return SimpleNamespace(
 		operation="Casting WO",
 		type=typ,
+		is_main_slip_required=is_main_slip_required,
 		manually_book_loss_details=[
 			SimpleNamespace(
 				variant_of="M", manufacturing_work_order=m, proportionally_loss=n
@@ -436,29 +453,19 @@ def _recv_eir(rows, typ="Receive", loss_rows=None):
 			for m, n in (loss_rows or [])
 		],
 		employee_loss_details=[],
-		employee_ir_operations=[
-			SimpleNamespace(manufacturing_work_order=name, received_gross_wt=wt)
-			for name, wt in rows
-		],
-	)
-
-
-def _pending_tree(item, pending, name="TREE-0001"):
-	"""Tree with a single material_details row exposing only what validate reads."""
-	return SimpleNamespace(
-		name=name,
-		material_details=[SimpleNamespace(item_code=item, pending_qty=pending)],
+		employee_ir_operations=[_op(r) for r in rows],
 	)
 
 
 class TestValidateCastingReceive(IntegrationTestCase):
-	"""validate_casting_receive blocks a casting Receive EIR from over-receiving vs the tree's
-	available (issued) qty — the EIR path that was previously unguarded (the tree-button path is
-	covered in test_tree_material_tracking)."""
+	"""validate_casting_receive guards a casting Receive EIR against the metal COMMITTED to its work
+	orders (the operations' gross weight), NOT the button-owned issue_qty. Received<=gross is always
+	allowed (giving back the committed metal, even with issue_qty=0); a gain (received>gross) is
+	allowed only when a Main Slip can source the excess from the tree; a loss over-booking throws."""
 
 	ITEM = "M-G-18KT-75-Y"
 
-	def _run(self, eir, tree, mwos=None):
+	def _run(self, eir, mwos=None):
 		mwos = mwos or {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
 
 		def fake_get_value(doctype, name, field, *a, **k):
@@ -466,6 +473,8 @@ class TestValidateCastingReceive(IntegrationTestCase):
 				return 1  # tree_no_reqd -> casting
 			return None
 
+		# validate_casting_receive reads the gross baseline straight off the EIR rows — it no
+		# longer loads the Tree Number, so no get_doc patch is needed.
 		with (
 			patch.object(
 				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
@@ -473,7 +482,6 @@ class TestValidateCastingReceive(IntegrationTestCase):
 			patch.object(
 				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
 			),
-			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
 			patch.object(tree_casting.frappe, "get_precision", return_value=3),
 			patch.object(
 				tree_casting, "get_item_from_attribute", return_value=self.ITEM
@@ -481,46 +489,35 @@ class TestValidateCastingReceive(IntegrationTestCase):
 		):
 			tree_casting.validate_casting_receive(eir)
 
-	def test_over_receipt_throws(self):
-		# Real example: pending 5.0, EIR books 5.1 -> throw.
-		with self.assertRaises(ValidationError):
-			self._run(_recv_eir([("MWO-A", 5.1)]), _pending_tree(self.ITEM, 5.0))
-
-	def test_exact_fill_passes(self):
-		self._run(
-			_recv_eir([("MWO-A", 5.0)]), _pending_tree(self.ITEM, 5.0)
-		)  # no throw
+	def test_normal_receive_issue_zero_passes(self):
+		# Headline fix: tree never button-issued; received (8) == committed gross (8) -> no throw.
+		self._run(_recv_eir([("MWO-A", 8.0, 8.0)]))
 
 	def test_under_receipt_passes(self):
-		self._run(
-			_recv_eir([("MWO-A", 3.0)]), _pending_tree(self.ITEM, 5.0)
-		)  # no throw
+		# received 3 < committed gross 8 (rest is loss) -> no throw.
+		self._run(_recv_eir([("MWO-A", 3.0, 8.0)]))
 
-	def test_issue_zero_blocks_receive(self):
-		# Tree never issued (issue_qty=0 -> pending=0): any receive must throw (issue-first rule).
+	def test_gain_draws_excess_from_tree(self):
+		# received 10 > committed gross 8, Main Slip present -> excess drawn from tree, allowed.
+		self._run(_recv_eir([("MWO-A", 10.0, 8.0)]))
+
+	def test_gain_without_main_slip_throws(self):
+		# received 10 > gross 8 but no Main Slip to source the excess from the tree -> throw.
 		with self.assertRaises(ValidationError):
-			self._run(_recv_eir([("MWO-A", 2.6)]), _pending_tree(self.ITEM, 0.0))
+			self._run(_recv_eir([("MWO-A", 10.0, 8.0)], is_main_slip_required=0))
+
+	def test_normal_receive_with_loss_passes(self):
+		# recv 4 + loss 1 == committed gross 5 -> giving back the committed metal, no throw.
+		self._run(_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.0)]))
+
+	def test_loss_over_book_throws(self):
+		# recv 4 <= gross 5 but recv + loss = 5.5 > gross -> loss over-booked, throw.
+		with self.assertRaises(ValidationError):
+			self._run(_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.5)]))
 
 	def test_issue_type_is_ignored(self):
-		# type != "Receive" -> early return, no cap even when grossly over.
-		self._run(
-			_recv_eir([("MWO-A", 99.0)], typ="Issue"), _pending_tree(self.ITEM, 5.0)
-		)
-
-	def test_receive_plus_loss_over_throws(self):
-		# recv 4.0 + loss 1.5 = 5.5 > pending 5.0 -> throw (loss counts toward the cap).
-		with self.assertRaises(ValidationError):
-			self._run(
-				_recv_eir([("MWO-A", 4.0)], loss_rows=[("MWO-A", 1.5)]),
-				_pending_tree(self.ITEM, 5.0),
-			)
-
-	def test_receive_plus_loss_exact_passes(self):
-		# recv 4.0 + loss 1.0 = 5.0 == pending 5.0 -> passes.
-		self._run(
-			_recv_eir([("MWO-A", 4.0)], loss_rows=[("MWO-A", 1.0)]),
-			_pending_tree(self.ITEM, 5.0),
-		)
+		# type != "Receive" -> early return, no guard even when grossly over.
+		self._run(_recv_eir([("MWO-A", 99.0, 1.0)], typ="Issue"))
 
 	def tearDown(self):
 		return super().tearDown()
@@ -571,6 +568,51 @@ class TestUpdateTreeOnReceiveCancel(IntegrationTestCase):
 
 		self.assertEqual(tree.material_details[0].receive_qty, 0.0)
 		self.assertEqual(tree.material_details[0].pending_qty, 5.0)
+
+	def test_cancel_no_button_returns_issue_zero(self):
+		# Never button-issued tree: the EIR receive drew 8g from the tree (issue_qty stays 0,
+		# pending floored to 0). Cancelling must return receive_qty and pending to 0 with issue_qty
+		# still 0 — there is nothing to un-bump because the fix never writes issue_qty on the EIR path.
+		tree = SimpleNamespace(
+			name="TREE-0001",
+			status="Received",
+			flags=SimpleNamespace(),
+			material_details=[
+				SimpleNamespace(
+					item_code=self.ITEM,
+					issue_qty=0.0,
+					receive_qty=8.0,
+					loss_qty=0.0,
+					pending_qty=0.0,
+				)
+			],
+		)
+		tree.save = lambda *a, **k: None
+		mwos = {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
+		eir = _recv_eir([("MWO-A", 8.0, 8.0)])
+
+		def fake_get_value(doctype, name, field, *a, **k):
+			return 1 if doctype == "Department Operation" else None
+
+		with (
+			patch.object(
+				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
+			),
+			patch.object(
+				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
+			),
+			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
+			patch.object(tree_casting.frappe, "get_precision", return_value=3),
+			patch.object(
+				tree_casting, "get_item_from_attribute", return_value=self.ITEM
+			),
+		):
+			tree_casting.update_tree_on_receive(eir, cancel=True)
+
+		self.assertEqual(tree.material_details[0].receive_qty, 0.0)
+		self.assertEqual(tree.material_details[0].loss_qty, 0.0)
+		self.assertEqual(tree.material_details[0].pending_qty, 0.0)
+		self.assertEqual(tree.material_details[0].issue_qty, 0.0)
 
 	def tearDown(self):
 		return super().tearDown()

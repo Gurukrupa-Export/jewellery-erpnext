@@ -10,15 +10,15 @@ set and ``warehouse_type == "Raw Material"``; its department is taken from the e
 (``employee`` / ``department`` are mutually exclusive on a warehouse, so the warehouse's own
 ``department`` is NULL — ``doc_events/warehouse.py``).
 
-  * **Issue Material**   -> plain ``Material Transfer`` SE: Dept RM WH -> this MSL WH.
-  * **Receive Material** -> received leg  = ``Material Transfer`` (this MSL -> Dept RM);
+  * **Issue Material**   -> ``Material Transfer (MAIN SLIP)`` SE: Dept RM WH -> this MSL WH.
+  * **Receive Material** -> received leg  = ``Material Transfer (MAIN SLIP)`` (this MSL -> Dept RM);
                             loss leg      = ``Process Loss`` Repack (metal @ MSL -> ML loss
                             variant @ Dept Scrap). Loss is **auto-computed** per item:
                             ``loss = pending - returned`` (each settled item is fully drained).
 
 Notes:
-  * **Ledger-invisible SEs.** ``Material Transfer`` and ``Process Loss`` are absent from MOP
-    Settings' ``Stock Entry Type To Reservation``, so ``doc_events/stock_entry.onsubmit`` skips
+  * **Ledger-invisible SEs.** ``Material Transfer (MAIN SLIP)`` and ``Process Loss`` are absent from
+    MOP Settings' ``Stock Entry Type To Reservation``, so ``doc_events/stock_entry.onsubmit`` skips
     reservation + MOP Log. ``auto_created = 1`` also bypasses the WORK-ORDER / metal-property
     validations in ``before_validate`` (``se.manufacturer`` is set so the M/F pure-metal block
     still resolves a ``Manufacturing Setting``).
@@ -66,6 +66,10 @@ from jewellery_erpnext.jewellery_erpnext.lock_order import (
 )
 
 MATERIAL_TRANSFER = "Material Transfer"
+# Ledger-invisible transfer type used for the MSL transfer legs (issue + receive-return). Same
+# purpose ("Material Transfer") as the plain type and equally absent from MOP Settings' reservation
+# list; mirrors the Tree Number casting flow. Seeded in create_test_data.py for CI.
+MATERIAL_TRANSFER_MAIN_SLIP = "Material Transfer (MAIN SLIP)"
 # Ledger-invisible Repack type used for the receive loss leg (converts the metal into its ML loss
 # variant). NOT the plain "Repack" type — that one IS in MOP Settings' reservation list. This is
 # the same type the Employee IR loss engine uses and is absent from the reservation list.
@@ -162,7 +166,7 @@ def _resolve_loss_item(ctx, item_code):
 # ---------------------------------------------------------------------------
 # Stock Entry header builders
 # ---------------------------------------------------------------------------
-def _new_transfer_se(ctx, company_wh, se_type=MATERIAL_TRANSFER):
+def _new_transfer_se(ctx, company_wh, se_type=MATERIAL_TRANSFER_MAIN_SLIP):
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = se_type
 	se.purpose = "Material Transfer"

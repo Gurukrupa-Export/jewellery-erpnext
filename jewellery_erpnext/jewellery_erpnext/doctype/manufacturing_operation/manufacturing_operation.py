@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import json
+import string
 
 import frappe
 from frappe import _
@@ -936,6 +937,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"serial_no",
 			"repair_type",
 			"product_type",
+			"type",
 		],
 		as_dict=1,
 	)
@@ -1092,11 +1094,17 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			},
 		)
 	sr_no = ""
-	compose_series = genrate_serial_no(doc, diamond_grade_data)
-	while True:
-		sr_no = make_autoname(compose_series)
-		if not frappe.db.exists("Serial No", sr_no):
-			break
+	# Repair completion: derive the new FG serial from the ORIGINAL piece being
+	# repaired (doc.serial_no) as <base>/A, /B, /C ... instead of minting a fresh
+	# coded-series serial. Non-repair jobs keep the normal naming series.
+	if pmo_det.get("type") == "Repair" and doc.serial_no:
+		sr_no = _next_repair_serial(doc.serial_no)
+	else:
+		compose_series = genrate_serial_no(doc, diamond_grade_data)
+		while True:
+			sr_no = make_autoname(compose_series)
+			if not frappe.db.exists("Serial No", sr_no):
+				break
 
 	new_bom_serial_no = sr_no
 	# serial_no_pass_entry(doc,sr_no,to_wh,pmo_det)
@@ -1301,6 +1309,51 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	# Return both the Stock Entry name (used as the rate-source identifier in
 	# create_finished_goods_bom) and the finished-good serial number.
 	return se.name, new_bom_serial_no
+
+
+def _next_repair_serial(original):
+	"""Return the next repair-revision serial for a repaired piece.
+
+	Always suffixes the ORIGINAL base serial (the part before the first "/"), so a
+	piece returning as "SN0001/A" still bases off "SN0001" and yields "SN0001/B".
+	Mirrors the A->Z child-suffix algorithm in
+	customer_subcontracting/batch_rename.py::create_child_batches.
+	"""
+	base = original.split("/")[0]
+	rows = frappe.db.sql(
+		"SELECT name FROM `tabSerial No` WHERE name LIKE %s",
+		(base + "/%",),
+		as_dict=True,
+	)
+	letters = [
+		n.name.split("/")[-1]
+		for n in rows
+		if n.name.split("/")[-1] in string.ascii_uppercase
+	]
+
+	if not letters:
+		nxt = "A"
+	else:
+		idx = string.ascii_uppercase.index(max(letters))
+		if idx + 1 >= len(string.ascii_uppercase):
+			frappe.throw(
+				_("Serial {0} already uses all 26 repair suffixes (A-Z).").format(base)
+			)
+		nxt = string.ascii_uppercase[idx + 1]
+
+	sr_no = f"{base}/{nxt}"
+	while frappe.db.exists("Serial No", sr_no):
+		if nxt == "Z":
+			frappe.throw(
+				_(
+					"Cannot create a unique repair serial for {0}: all 26 suffixes "
+					"(A-Z) are already used."
+				).format(base)
+			)
+		nxt = chr(ord(nxt) + 1)
+		sr_no = f"{base}/{nxt}"
+
+	return sr_no
 
 
 def genrate_serial_no(doc, diamond_grade_data):
@@ -3435,12 +3488,121 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		if new_bom.total_diamond_pcs
 		else 0
 	)
+	# Copy subcategory-driven values captured on the Employee IR Receive into the
+	# configured BOM fields (Dynamic FG BOM Field Mapping).
+	_apply_fg_bom_dynamic_fields(new_bom, self)
+
 	new_bom.flags.ignore_links = True
 	new_bom.insert(ignore_mandatory=True, ignore_links=True)
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
 	self.fg_bom = new_bom.name
 	self.db_set("fg_bom", new_bom.name, update_modified=False)
+
+
+def _cast_fg_bom_value(value, field_type):
+	"""Coerce a stored string value to the type expected by the target BOM field."""
+	if value in (None, ""):
+		return None
+	if field_type in ("Int", "Check"):
+		return cint(value)
+	if field_type in ("Float", "Currency"):
+		return flt(value)
+	return value
+
+
+def _apply_fg_bom_dynamic_fields(new_bom, doc):
+	"""Copy Employee IR Receive dynamic-field values into the FG BOM.
+
+	The Employee IR Receive where a value is entered runs on a MANUFACTURING
+	operation (e.g. Final Polish), while this FG BOM is built by the Serial Number
+	Creator on the TAGGING operation -- different manufacturing_operation values.
+	The only thing that ties them together is the shared Parent Manufacturing Order,
+	so we match by PMO + the FG's item_subcategory (not manufacturing_operation).
+	Writes each configured value into the mapped BOM field (only fields that still
+	exist on BOM). Missing PMO / subcategory / IR / config => no-op.
+	"""
+	pmo = getattr(doc, "parent_manufacturing_order", None)
+	if not pmo and getattr(doc, "manufacturing_work_order", None):
+		pmo = frappe.db.get_value(
+			"Manufacturing Work Order",
+			doc.manufacturing_work_order,
+			"manufacturing_order",
+		)
+
+	subcategory = new_bom.get("item_subcategory")
+	if not subcategory and new_bom.get("item"):
+		subcategory = frappe.db.get_value("Item", new_bom.item, "item_subcategory")
+
+	if not pmo or not subcategory:
+		return
+
+	Field = frappe.qb.DocType("Employee IR FG BOM Field")
+	EmployeeIR = frappe.qb.DocType("Employee IR")
+	EmployeeIROperation = frappe.qb.DocType("Employee IR Operation")
+	MWO = frappe.qb.DocType("Manufacturing Work Order")
+	rows = (
+		frappe.qb.from_(Field)
+		.join(EmployeeIR)
+		.on((Field.parent == EmployeeIR.name) & (Field.parenttype == "Employee IR"))
+		.join(EmployeeIROperation)
+		.on(
+			(EmployeeIROperation.parent == EmployeeIR.name)
+			# Tie the field to ITS OWN operation, not just any operation on the same
+			# Employee IR -- otherwise a multi-operation receive can resolve the PMO
+			# through an unrelated operation and leak the value into another PMO's BOM.
+			& (
+				EmployeeIROperation.manufacturing_operation
+				== Field.manufacturing_operation
+			)
+		)
+		.join(MWO)
+		.on(EmployeeIROperation.manufacturing_work_order == MWO.name)
+		.select(Field.field_name, Field.fg_bom_field, Field.field_type, Field.value)
+		.where(
+			(EmployeeIR.type == "Receive")
+			& (EmployeeIR.docstatus == 1)
+			& (MWO.manufacturing_order == pmo)
+			& (Field.subcategory == subcategory)
+		)
+		.orderby(EmployeeIR.modified, order=frappe.qb.desc)
+	).run(as_dict=True)
+	if not rows:
+		return
+
+	# Resolve each target from the LIVE config (subcategory + field_name), not the
+	# capture-time snapshot on the Employee IR child row. Rows captured before the
+	# config was mapped store fg_bom_field=None; reading the config here lets a later
+	# mapping take effect for any not-yet-built BOM without re-capturing the Receive.
+	config_map = {
+		r.field_name: r.fg_bom_field
+		for r in frappe.get_all(
+			"FG BOM Field Config Detail",
+			filters={
+				"parenttype": "FG BOM Field Configuration",
+				"subcategory": subcategory,
+				"is_active": 1,
+			},
+			fields=["field_name", "fg_bom_field"],
+		)
+		if r.fg_bom_field
+	}
+
+	bom_meta = frappe.get_meta("BOM")
+	seen = set()
+	for row in rows:
+		# Prefer the stored mapping; fall back to the live config for pre-mapping captures.
+		target = row.fg_bom_field or config_map.get(row.field_name)
+		# Latest Employee IR wins; an IR with N operations yields N duplicate join rows.
+		if not target or target in seen:
+			continue
+		if not bom_meta.has_field(target):
+			continue
+		cast_value = _cast_fg_bom_value(row.value, row.field_type)
+		if cast_value is None:
+			continue
+		new_bom.set(target, cast_value)
+		seen.add(target)
 
 
 def get_stock_entry_data(self):

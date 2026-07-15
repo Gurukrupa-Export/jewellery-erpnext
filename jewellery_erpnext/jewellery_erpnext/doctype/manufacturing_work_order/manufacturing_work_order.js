@@ -57,6 +57,17 @@ frappe.ui.form.on("Manufacturing Work Order", {
 			frm.add_custom_button(__("Unpack Raw Material"), function () {
 				frm.trigger("unpack_raw_material");
 			});
+			// Unpack Serial No: only for Repair work orders. PMO type is not on the
+			// form, so resolve it before adding the button.
+			frappe.db
+				.get_value("Parent Manufacturing Order", frm.doc.manufacturing_order, "type")
+				.then((r) => {
+					if (r.message && r.message.type === "Repair") {
+						frm.add_custom_button(__("Unpack Serial No"), function () {
+							frm.trigger("unpack_serial_no");
+						});
+					}
+				});
 		}
 		if (frm.doc.docstatus == 1 && frm.doc.is_finding_mwo == 1) {
 			if (!frm.doc.final_transfer_entry) {
@@ -70,25 +81,25 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				});
 			}
 		}
-		if (frm.doc.docstatus == 0 && frm.doc.department && frm.doc.department.startsWith("Serial Number")) {
-			frm.add_custom_button(__("Create Repack"), function () {
-				frappe.call({
-					method: "jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_pending_repack",
-					args: {
-						mwo_name: frm.doc.name,
-					},
-					freeze: true,
-					freeze_message: __("Creating Repack..."),
-					callback: function (r) {
-						if (!r.exc) {
-							frappe.msgprint(__("Customer Gold Repack Created"));
+		// if (frm.doc.docstatus == 0 && frm.doc.department && frm.doc.department.startsWith("Serial Number")) {
+		// 	frm.add_custom_button(__("Create Repack"), function () {
+		// 		frappe.call({
+		// 			method: "jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_pending_repack",
+		// 			args: {
+		// 				mwo_name: frm.doc.name,
+		// 			},
+		// 			freeze: true,
+		// 			freeze_message: __("Creating Repack..."),
+		// 			callback: function (r) {
+		// 				if (!r.exc) {
+		// 					frappe.msgprint(__("Customer Gold Repack Created"));
 
-							frm.reload_doc();
-						}
-					},
-				});
-			});
-		}
+		// 					frm.reload_doc();
+		// 				}
+		// 			},
+		// 		});
+		// 	});
+		// }
 		set_html(frm);
 	},
 	transfer_to_raw: function (frm) {
@@ -155,6 +166,20 @@ frappe.ui.form.on("Manufacturing Work Order", {
 			callback: (r) => {
 				if (!r.exc) {
 					frappe.msgprint(__("Item Unpacking done."));
+					frm.refresh();
+				}
+			},
+		});
+	},
+	unpack_serial_no: function (frm) {
+		frm.call({
+			doc: frm.doc,
+			method: "create_unpack_serial_no_stock_entry",
+			freeze: true,
+			freeze_message: __("Unpacking Serial No...."),
+			callback: (r) => {
+				if (!r.exc) {
+					frappe.msgprint(__("Serial No unpacked into raw materials."));
 					frm.refresh();
 				}
 			},
