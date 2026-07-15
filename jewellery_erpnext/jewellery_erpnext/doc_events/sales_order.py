@@ -694,6 +694,8 @@ def _process_metal_detail1(self, doc, ctx, cctx):
                 s.rate          = s.se_rate
                 s.making_rate=operational_cost/total_weight
                 s.making_amount = round(s.making_rate * s.quantity, 2)
+                s.wastage_rate   = 0
+                s.wastage_amount = 0
             else:
                 if cctx.billing_currency == "USD":
                     s.se_rate     = s.se_rate * cctx.exchange_rate
