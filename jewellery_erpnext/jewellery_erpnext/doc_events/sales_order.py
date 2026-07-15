@@ -1550,6 +1550,7 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
                 d.diamond_rate_for_specified_quantity = round(
                     d.quantity * (d.handling_rate), 2
                 )
+                d.total_diamond_rate = 0
             else:
                 if cctx.billing_currency == "USD":
                     d.se_rate = d.se_rate * cctx.exchange_rate
