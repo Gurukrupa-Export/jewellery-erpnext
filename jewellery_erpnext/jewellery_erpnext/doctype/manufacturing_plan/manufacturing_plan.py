@@ -15,6 +15,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_mould_id_map,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
+	create_mwo,
 	make_manufacturing_order,
 )
 
@@ -659,6 +660,82 @@ def create_manufacturing_order(doc, row, cache_data=None):
 
 def create_subcontracting_order(doc):
 	make_subcontracting_order(doc)
+
+@frappe.whitelist()
+def get_cad_eligible_items(manufacturing_plan):
+	"""Item codes in this plan whose earliest Parent Manufacturing Order has no CAD/CAM MWO yet."""
+	item_codes = frappe.db.sql(
+		"""
+		SELECT DISTINCT item_code
+		FROM `tabManufacturing Plan Table`
+		WHERE parent = %s AND item_code IS NOT NULL AND item_code != ''
+		""",
+		(manufacturing_plan,),
+	)
+
+	eligible = []
+	for (item_code,) in item_codes:
+		pmo = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			{"manufacturing_plan": manufacturing_plan, "item_code": item_code},
+			"name",
+			order_by="creation asc",
+		)
+		if not pmo:
+			continue
+		if frappe.db.get_value("Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}):
+			continue
+		eligible.append(item_code)
+	return eligible
+
+@frappe.whitelist()
+def create_cad_mwo(manufacturing_plan, item_code, reason=None):
+	"""Create a CAD/CAM Manufacturing Work Order for an item in this plan.
+
+	Attaches to the earliest Parent Manufacturing Order for (manufacturing_plan, item_code),
+	since CAD/CAM design work happens once per item, not once per unit.
+	"""
+	pmo = frappe.db.get_value(
+		"Parent Manufacturing Order",
+		{"manufacturing_plan": manufacturing_plan, "item_code": item_code},
+		"name",
+		order_by="creation asc",
+	)
+	if not pmo:
+		frappe.throw(
+			_("No Parent Manufacturing Order found for Item {0} in Manufacturing Plan {1}").format(
+				item_code, manufacturing_plan
+			)
+		)
+	return create_mwo(pmo, None, reason)
+
+
+@frappe.whitelist()
+def create_cad_mwo_bulk(manufacturing_plan, item_codes, reason=None):
+	"""Create CAD/CAM Manufacturing Work Orders for multiple items in this plan.
+
+	Each item is committed as soon as it succeeds, so one item lacking a Parent
+	Manufacturing Order doesn't roll back the items already created before it.
+	"""
+	if isinstance(item_codes, str):
+		item_codes = json.loads(item_codes)
+
+	failed = []
+	for item_code in item_codes:
+		try:
+			create_cad_mwo(manufacturing_plan, item_code, reason)
+			frappe.db.commit()
+		except Exception:
+			frappe.db.rollback()
+			frappe.log_error(title="CAD MWO bulk creation failed")
+			failed.append(item_code)
+
+	if failed:
+		frappe.msgprint(
+			_("Could not create CAD MWO for: {0}").format(", ".join(failed)), indicator="red"
+		)
+
+
 
 
 @frappe.whitelist()

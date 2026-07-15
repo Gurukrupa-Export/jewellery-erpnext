@@ -44,9 +44,14 @@ runs:
       shell: bash
       run: ./install.sh
 
-    - name: Migrate & Create Test Data
+    - name: Migrate
       shell: bash
       run: |
         cd ~/frappe-bench
         bench --site test_site migrate
+
+    - name: Create Test Data
+      shell: bash
+      run: |
+        cd ~/frappe-bench
         bench --site test_site execute jewellery_erpnext.create_test_data.create_test_data
