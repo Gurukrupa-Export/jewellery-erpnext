@@ -904,10 +904,17 @@ class RefiningEntry(Document):
 		)
 
 		if self.expected_recovery > 0:
-			self.recovery_percentage = min(
+			pct = min(
 				(self.refined_fine_weight / self.expected_recovery) * 100.0,
 				100.0,
 			)
+			# The field displays at 2 decimals, so e.g. 99.9966% would ROUND UP to
+			# "100.00" while a non-zero Refining Loss shows right next to it — a
+			# contradiction to the reader. Cap the display at 99.99 whenever any loss
+			# remains; a full 100.00 appears only when the loss is exactly zero.
+			if self.refining_loss > 0 and pct > 99.99:
+				pct = 99.99
+			self.recovery_percentage = pct
 		else:
 			self.recovery_percentage = 0.0
 
@@ -1580,6 +1587,19 @@ class RefiningEntry(Document):
 			recovered_weight = self.get_proportional_recovery_weight(
 				pure_gold_weight, total_pure_input_weight, total_recovered_weight
 			)
+			row_loss = flt(
+				max(flt(pure_gold_weight, 3) - flt(recovered_weight, 3), 0), 3
+			)
+			row_pct = flt(
+				(flt(recovered_weight, 3) / flt(pure_gold_weight, 3)) * 100.0
+				if flt(pure_gold_weight, 3)
+				else 0.0,
+				2,
+			)
+			# Never let 2-decimal display rounding show "100.00" next to a non-zero
+			# loss (same guard as calculate_totals).
+			if row_loss > 0 and row_pct > 99.99:
+				row_pct = 99.99
 			self.append(
 				"gold_recovery_details",
 				{
@@ -1590,15 +1610,8 @@ class RefiningEntry(Document):
 					"pure_gold_weight": flt(pure_gold_weight, 3),
 					"recovered_weight": flt(recovered_weight, 3),
 					# Loss is only meaningful when recovered < pure gold content
-					"loss_weight": flt(
-						max(flt(pure_gold_weight, 3) - flt(recovered_weight, 3), 0), 3
-					),
-					"recovery_pct": flt(
-						(flt(recovered_weight, 3) / flt(pure_gold_weight, 3)) * 100.0
-						if flt(pure_gold_weight, 3)
-						else 0.0,
-						2,
-					),
+					"loss_weight": row_loss,
+					"recovery_pct": row_pct,
 				},
 			)
 
@@ -1690,6 +1703,10 @@ class RefiningEntry(Document):
 				else 0.0,
 				2,
 			)
+			# Never let 2-decimal display rounding show "100.00" next to a non-zero
+			# loss (same guard as calculate_totals).
+			if loss_weight > 0 and recovery_pct > 99.99:
+				recovery_pct = 99.99
 
 			# Update in-memory for downstream use
 			row.recovered_weight = recovered_weight
@@ -1775,6 +1792,10 @@ class RefiningEntry(Document):
 			else 0.0,
 			100.0,
 		)
+		# Never let 2-decimal display rounding show "100.00" next to a non-zero loss
+		# (same guard as calculate_totals).
+		if refining_loss > 0 and recovery_percentage > 99.99:
+			recovery_percentage = 99.99
 
 		self.db_set(
 			{
