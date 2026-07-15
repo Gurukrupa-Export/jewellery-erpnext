@@ -1546,8 +1546,9 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
         if self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal":
             if d.is_customer_item:
                 d.fg_purchase_rate   = latest.get("supplier_fg_purchase_rate", 0)
+                d.handling_rate   = latest.get("supplier_fg_purchase_rate", 0)
                 d.diamond_rate_for_specified_quantity = round(
-                    d.quantity * (d.fg_purchase_rate), 2
+                    d.quantity * (d.handling_rate), 2
                 )
             else:
                 if cctx.billing_currency == "USD":
