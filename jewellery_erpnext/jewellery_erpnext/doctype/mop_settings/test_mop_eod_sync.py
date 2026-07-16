@@ -31,6 +31,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_preload_sre_warehouse_map,
 	_process_mwo_group,
 	_reconcile_reservations_for_mwo,
+	_reserve_batch_at_physical_warehouse,
 	_reserve_sres_from_eod_se_rows,
 	_resolve_department_warehouse,
 	_resolve_eod_manufacturer_label,
@@ -758,7 +759,14 @@ class TestSyncMopLogsEntryPoint(FrappeTestCase):
 		}
 
 		# MWO-A plans as resolvable (committed into one SE); MWO-B fails in planning.
-		def _plan(group_key, mop_data_list, failures, stats, sync_log_name=None, selective=False):
+		def _plan(
+			group_key,
+			mop_data_list,
+			failures,
+			stats,
+			sync_log_name=None,
+			selective=False,
+		):
 			_, mwo = group_key
 			if mwo == "MWO-A":
 				return {
@@ -772,11 +780,26 @@ class TestSyncMopLogsEntryPoint(FrappeTestCase):
 					"last_mop_name": "MOP-A",
 					"child_row_names": [],
 				}
-			failures.append({"step": "no_sre_warehouse", "mwo": mwo, "error_message": "fail"})
+			failures.append(
+				{"step": "no_sre_warehouse", "mwo": mwo, "error_message": "fail"}
+			)
 			stats["failed_mwos"] += 1
-			return {"kind": "failed", "company": "Co", "manufacturer": "MF-1", "issues_rows": []}
+			return {
+				"kind": "failed",
+				"company": "Co",
+				"manufacturer": "MF-1",
+				"issues_rows": [],
+			}
 
-		def _commit(company, manufacturer, main_mwos, failures, stats, sync_log_name=None, selective=False):
+		def _commit(
+			company,
+			manufacturer,
+			main_mwos,
+			failures,
+			stats,
+			sync_log_name=None,
+			selective=False,
+		):
 			stats["submitted_ses"].append("SE-A")
 			stats["processed_mwos"] += len(main_mwos)
 
@@ -840,7 +863,9 @@ class TestSyncRange(FrappeTestCase):
 	def test_resolve_run_range_defaults_to_today_when_unset(self):
 		self.assertEqual(_resolve_run_range(None, None), _today_range())
 		# A single bound is not enough to override; falls back to today.
-		self.assertEqual(_resolve_run_range("2026-01-01 00:00:00", None), _today_range())
+		self.assertEqual(
+			_resolve_run_range("2026-01-01 00:00:00", None), _today_range()
+		)
 
 	def test_resolve_run_range_uses_custom_window_when_both_set(self):
 		rng = _resolve_run_range("2026-01-01 08:00:00", "2026-01-01 20:00:00")
@@ -1138,7 +1163,10 @@ class TestSyncMopLogsWindow(FrappeTestCase):
 			patch(f"{_MOD}.set_eod_sync_running"),
 			patch(f"{_MOD}._reconcile_reservations_for_mwo"),
 			patch(f"{_MOD}._process_mwo_group"),
-			patch(f"{_MOD}.frappe.get_doc", return_value=FrappeDict({"eod_sync_work_order_filter": []})),
+			patch(
+				f"{_MOD}.frappe.get_doc",
+				return_value=FrappeDict({"eod_sync_work_order_filter": []}),
+			),
 			patch(f"{_MOD}.recalculate_sync_log_totals"),
 			patch(f"{_MOD}.frappe.db.set_value"),
 			patch(f"{_MOD}._get_unsynced_mop_groups", side_effect=_capture),
@@ -1274,13 +1302,9 @@ class TestReserveFromEodSeRows(FrappeTestCase):
 		ep = "erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry."
 		with patch(f"{_MOD}.frappe.new_doc", side_effect=_new_doc), patch(
 			f"{_MOD}.frappe.get_cached_value", side_effect=_cached
-		), patch(
-			f"{_MOD}.frappe.db.get_value", return_value=(mo, mfr)
-		), patch(
+		), patch(f"{_MOD}.frappe.db.get_value", return_value=(mo, mfr)), patch(
 			f"{_MOD}._eod_base_mr_voucher_qty", return_value=base_mr
-		), patch(
-			ep + "get_available_qty_to_reserve", return_value=avail
-		), patch(
+		), patch(ep + "get_available_qty_to_reserve", return_value=avail), patch(
 			# Batched rows resolve free qty via the SBB-aware helper (ERPNext's
 			# batch-keyed availability reads 0 under v16); mirror `avail` unless the
 			# test sets batch_free to diverge them.
@@ -1337,13 +1361,13 @@ class TestReserveFromEodSeRows(FrappeTestCase):
 				"manufacturing_operation": "MOP-LAST",
 			}
 		]
-		_created, sres = self._reserve(rows, avail=10.0, has_batch_no=1, stock_uom="Carat")
+		_created, sres = self._reserve(
+			rows, avail=10.0, has_batch_no=1, stock_uom="Carat"
+		)
 		sre = sres[0]
 		self.assertEqual(sre.reservation_based_on, "Serial and Batch")
 		sb_calls = [
-			c
-			for c in sre.append.call_args_list
-			if c.args and c.args[0] == "sb_entries"
+			c for c in sre.append.call_args_list if c.args and c.args[0] == "sb_entries"
 		]
 		self.assertEqual(len(sb_calls), 1)
 		sb_row = sb_calls[0].args[1]
@@ -1431,7 +1455,9 @@ class TestReserveFromEodSeRows(FrappeTestCase):
 			}
 		]
 		# MR base 5010.0 dominates the floor 11.0 → voucher_qty = 5010.0
-		_created, sres = self._reserve(rows, avail=10.0, so_reserved=8.0, base_mr=5010.0)
+		_created, sres = self._reserve(
+			rows, avail=10.0, so_reserved=8.0, base_mr=5010.0
+		)
 		self.assertEqual(sres[0].voucher_qty, 5010.0)
 
 	def test_skips_row_without_sales_order(self):
@@ -1937,7 +1963,13 @@ class TestEodConsolidation(FrappeTestCase):
 		}
 
 		_commit_company_main_se(
-			"Co", "MF-1", main_mwos, failures, stats, sync_log_name=None, selective=False
+			"Co",
+			"MF-1",
+			main_mwos,
+			failures,
+			stats,
+			sync_log_name=None,
+			selective=False,
 		)
 
 		# Exactly ONE Stock Entry is created and submitted for both MWOs.
@@ -1962,11 +1994,11 @@ class TestEodConsolidation(FrappeTestCase):
 
 	@patch(f"{_MOD}._check_eod_source_batch_stock", return_value={})
 	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
-	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-SRE"]})
+	@patch(
+		f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-SRE"]}
+	)
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
-	def test_plan_returns_resolvable_for_clean_mwo(
-		self, _art, _sre, _item_val, _check
-	):
+	def test_plan_returns_resolvable_for_clean_mwo(self, _art, _sre, _item_val, _check):
 		logs = [
 			_log(
 				item_code="M-1",
@@ -1975,9 +2007,7 @@ class TestEodConsolidation(FrappeTestCase):
 				to_warehouse="WH-DEPT",
 			)
 		]
-		mop_data_list = [
-			{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": logs}
-		]
+		mop_data_list = [{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": logs}]
 		failures = []
 		stats = {"processed_mwos": 0, "failed_mwos": 0, "submitted_ses": []}
 		result = _plan_mwo_group(
@@ -2298,7 +2328,11 @@ class TestCommitCompanyIssuesSe(FrappeTestCase):
 	def test_rows_saved_as_unresolved_draft(self, mock_save, _sp, _rel):
 		stats = {"draft_ses": []}
 		_commit_company_issues_se(
-			"Co", "MF-1", [{"item_code": "M-1", "qty": 1.0}], stats, sync_log_name="LOG-1"
+			"Co",
+			"MF-1",
+			[{"item_code": "M-1", "qty": 1.0}],
+			stats,
+			sync_log_name="LOG-1",
 		)
 		mock_save.assert_called_once()
 		self.assertEqual(
@@ -2408,7 +2442,9 @@ class TestResolveEodManufacturerLabel(FrappeTestCase):
 			{"mop_doc": _mop_doc(manufacturer="B")},
 			{"mop_doc": _mop_doc(manufacturer="A")},
 		]
-		self.assertEqual(_resolve_eod_manufacturer_label(mop_data_list, "MWO-1"), "A, B")
+		self.assertEqual(
+			_resolve_eod_manufacturer_label(mop_data_list, "MWO-1"), "A, B"
+		)
 
 	def test_none_mop_doc_skipped(self):
 		mop_data_list = [
@@ -2420,7 +2456,9 @@ class TestResolveEodManufacturerLabel(FrappeTestCase):
 	@patch(f"{_MOD}.frappe.db.get_value", return_value="MF-Q")
 	def test_no_manufacturers_falls_back_to_mwo(self, _mock):
 		mop_data_list = [{"mop_doc": _mop_doc(manufacturer=None)}]
-		self.assertEqual(_resolve_eod_manufacturer_label(mop_data_list, "MWO-1"), "MF-Q")
+		self.assertEqual(
+			_resolve_eod_manufacturer_label(mop_data_list, "MWO-1"), "MF-Q"
+		)
 
 	def test_empty_and_no_mwo_returns_none(self):
 		self.assertIsNone(_resolve_eod_manufacturer_label([], None))
@@ -2485,7 +2523,9 @@ class TestPlanMwoGroupBranches(FrappeTestCase):
 
 	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
 	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
-	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-TO"]})
+	@patch(
+		f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-TO"]}
+	)
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
 	def test_same_warehouse_genuine_noop(self, _art, _sre, mock_mark, _val):
 		# SRE warehouse == last op to_warehouse → row dropped → genuine no-op.
@@ -2509,7 +2549,9 @@ class TestPlanMwoGroupBranches(FrappeTestCase):
 	@patch(f"{_MOD}._eod_physical_batch_qty")
 	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
 	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
-	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-STALE"]})
+	@patch(
+		f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-STALE"]}
+	)
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
 	def test_plan_noop_when_batch_already_at_target(
 		self, _art, _sre, mock_mark, _val, mock_phys
@@ -2570,7 +2612,9 @@ class TestPlanMwoGroupBranches(FrappeTestCase):
 	)
 	@patch(f"{_MOD}._validate_eod_items_for_mwo_reservation")
 	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
-	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-SRE"]})
+	@patch(
+		f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-SRE"]}
+	)
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
 	def test_batch_short_fails_with_issues_rows(
 		self, _art, _sre, mock_mark, _val, _check
@@ -2600,7 +2644,9 @@ class TestPlanMwoGroupBranches(FrappeTestCase):
 		side_effect=frappe.ValidationError("bad batch data"),
 	)
 	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
-	@patch(f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-SRE"]})
+	@patch(
+		f"{_MOD}._preload_sre_warehouse_map", return_value={("M-1", "B1"): ["WH-SRE"]}
+	)
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)
 	def test_validation_failure_fails_mwo(self, _art, _sre, mock_mark, _val, _check):
 		logs = [
@@ -2713,7 +2759,9 @@ class TestFormatBatchShortDiagnostics(FrappeTestCase):
 	@patch(f"{_MOD}._list_open_sre_other_warehouses", return_value=[])
 	@patch(f"{_MOD}._list_open_sre_for_batch")
 	def test_lists_open_sre_here(self, mock_here, _other, _mfr, _mops):
-		mock_here.return_value = [{"name": "SRE-1", "warehouse": "WH-1", "open_qty": 3.0}]
+		mock_here.return_value = [
+			{"name": "SRE-1", "warehouse": "WH-1", "open_qty": 3.0}
+		]
 		msg = _format_batch_short_diagnostics(
 			"M-1", "WH-1", "B1", 5.0, 5.0, "MWO-1", [{"mop_name": "MOP-A"}], "Co"
 		)
@@ -2726,7 +2774,9 @@ class TestFormatBatchShortDiagnostics(FrappeTestCase):
 	@patch(f"{_MOD}._list_open_sre_other_warehouses", return_value=[])
 	@patch(f"{_MOD}._list_open_sre_for_batch")
 	def test_stale_sre_hint_when_physical_zero(self, mock_here, _other, _mfr, _mops):
-		mock_here.return_value = [{"name": "SRE-1", "warehouse": "WH-1", "open_qty": 3.0}]
+		mock_here.return_value = [
+			{"name": "SRE-1", "warehouse": "WH-1", "open_qty": 3.0}
+		]
 		msg = _format_batch_short_diagnostics(
 			"M-1", "WH-1", "B1", 5.0, 0.0, "MWO-1", [{"mop_name": "MOP-A"}], "Co"
 		)
@@ -2737,7 +2787,9 @@ class TestFormatBatchShortDiagnostics(FrappeTestCase):
 	@patch(f"{_MOD}._list_open_sre_other_warehouses")
 	@patch(f"{_MOD}._list_open_sre_for_batch", return_value=[])
 	def test_other_warehouse_fallback(self, _here, mock_other, _mfr, _mops):
-		mock_other.return_value = [{"name": "SRE-2", "warehouse": "WH-2", "open_qty": 2.0}]
+		mock_other.return_value = [
+			{"name": "SRE-2", "warehouse": "WH-2", "open_qty": 2.0}
+		]
 		msg = _format_batch_short_diagnostics(
 			"M-1", "WH-1", "B1", 5.0, 5.0, "MWO-1", [{"mop_name": "MOP-A"}], "Co"
 		)
@@ -2821,7 +2873,9 @@ class TestSnapshotBatchEdges(FrappeTestCase):
 	@patch(f"{_MOD}.frappe.get_all")
 	@patch(f"{_MOD}.frappe.get_cached_value", return_value=(1, 0))
 	@patch(f"{_MOD}.frappe.db.get_all")
-	def test_fully_delivered_batch_dropped(self, mock_db_get_all, _cached, mock_get_all):
+	def test_fully_delivered_batch_dropped(
+		self, mock_db_get_all, _cached, mock_get_all
+	):
 		mock_db_get_all.return_value = [self._sre_row(delivered_qty=1.0)]
 		mock_get_all.return_value = [
 			FrappeDict({"batch_no": "B1", "qty": 5.0, "delivered_qty": 2.0}),
@@ -2855,3 +2909,207 @@ class TestApplyMwoFilterRowsNoOperation(FrappeTestCase):
 		included, excluded = _apply_mwo_filter_rows(logs, filter_rows)
 		self.assertEqual(len(included), 2)
 		self.assertEqual(excluded, [])
+
+
+class TestReserveBatchAtPhysicalWarehouse(FrappeTestCase):
+	"""Physical-warehouse-aware WIP re-reservation (the EOD orphan heal).
+
+	Reserving at the warehouse where the batch PHYSICALLY sits (not the current-op
+	department warehouse) is required for correctness: the later Process Loss SE consumes
+	from ``sre.warehouse``, so a wrong warehouse would trade "no SRE" for negative stock.
+	"""
+
+	def _run(
+		self,
+		*,
+		active_sre=False,
+		so_anchor={
+			"sales_order": "SO-1",
+			"sales_order_item": "SOI-1",
+			"base_mr_voucher_qty": 100,
+		},
+		physical={"WH-X": 5.0},
+		siblings=(),
+		dept_wh="WH-DEPT",
+		mop_logs=(),
+		free_by_wh={"WH-X": 5.0, "WH-DEPT": 0.0},
+		balance=5.0,
+		needed=0.01,
+		operation="MOP-CUR",
+		item_flags=(1, 0, "Gram"),
+		build_return="SRE-NEW",
+	):
+		"""Run _reserve_batch_at_physical_warehouse with every collaborator mocked.
+
+		Returns (result, build_mock) where build_mock is the patched
+		_build_and_submit_mwo_sre (inspect .called / .call_args).
+		"""
+
+		def _free(_item, wh, _batch):
+			return free_by_wh.get(wh, 0.0)
+
+		with patch(f"{_MOD}._active_sre_exists", return_value=active_sre), patch(
+			f"{_MOD}._resolve_mwo_so_anchor", return_value=so_anchor
+		), patch(
+			f"{_MOD}._physical_batch_warehouses", return_value=dict(physical)
+		), patch(
+			f"{_MOD}._cancelled_and_sibling_sre_warehouses", return_value=list(siblings)
+		), patch(f"{_MOD}._mop_log_to_warehouses", return_value=list(mop_logs)), patch(
+			f"{_MOD}._resolve_department_warehouse", return_value=dept_wh
+		), patch(f"{_MOD}.frappe.get_cached_doc", return_value=MagicMock()), patch(
+			f"{_MOD}._free_batch_qty_to_reserve", side_effect=_free
+		), patch(f"{_MOD}._mwo_batch_balance", return_value=balance), patch(
+			f"{_MOD}.frappe.get_cached_value", return_value=item_flags
+		), patch(
+			f"{_MOD}._build_and_submit_mwo_sre", return_value=build_return
+		) as build_mock:
+			result = _reserve_batch_at_physical_warehouse(
+				"MWO-1", "M-1", "B1", needed, operation, "Co"
+			)
+		return result, build_mock
+
+	def test_picks_physical_warehouse_over_dept(self):
+		result, build = self._run()
+		self.assertEqual(result, ["SRE-NEW"])
+		self.assertTrue(build.called)
+		# Signature: (company, mwo, item_code, warehouse, batch_no, reserved_qty, available, ...)
+		args = build.call_args.args
+		self.assertEqual(
+			args[3], "WH-X"
+		)  # warehouse = the one with free physical stock
+		self.assertEqual(
+			args[5], 5.0
+		)  # reserved_qty = min(max(balance, needed), best_free)
+
+	def test_reserves_mwo_balance_not_whole_free_pool(self):
+		# Batch shared by two orphaned MWOs: 10 free at WH-X but this MWO's balance is 6.
+		result, build = self._run(
+			physical={"WH-X": 10.0}, free_by_wh={"WH-X": 10.0}, balance=6.0
+		)
+		self.assertEqual(result, ["SRE-NEW"])
+		self.assertEqual(build.call_args.args[3], "WH-X")
+		self.assertEqual(build.call_args.args[5], 6.0)
+
+	def test_no_warehouse_holds_free_qty_returns_none(self):
+		result, build = self._run(physical={}, free_by_wh={"WH-DEPT": 0.0})
+		self.assertIsNone(result)
+		self.assertFalse(build.called)
+
+	def test_best_free_below_needed_returns_none(self):
+		# Best warehouse cannot even cover the loss floor -> fail loudly, never relocate.
+		result, build = self._run(
+			physical={"WH-X": 5.0}, free_by_wh={"WH-X": 5.0}, needed=6.0
+		)
+		self.assertIsNone(result)
+		self.assertFalse(build.called)
+
+	def test_no_sales_order_anchor_returns_none(self):
+		result, build = self._run(so_anchor=None)
+		self.assertIsNone(result)
+		self.assertFalse(build.called)
+
+	def test_idempotent_when_active_sre_exists(self):
+		result, build = self._run(active_sre=True)
+		self.assertIsNone(result)
+		self.assertFalse(build.called)
+
+	def test_non_batch_returns_none(self):
+		# No batch_no -> nothing to heal (Process Loss is batch-only).
+		with patch(f"{_MOD}._active_sre_exists", return_value=False):
+			self.assertIsNone(
+				_reserve_batch_at_physical_warehouse(
+					"MWO-1", "M-1", None, 0.01, "MOP-CUR", "Co"
+				)
+			)
+
+
+class TestEodPostConditionGuard(FrappeTestCase):
+	"""EOD Phase 2 must never commit a batched cancellation without a live replacement."""
+
+	def _snapshot(self):
+		return [
+			{
+				"sre": SimpleNamespace(
+					name="SRE-OLD", item_code="M-1", manufacturing_operation="MOP-A"
+				),
+				"remaining": 3.0,
+				"has_batch_no": 1,
+				"has_serial_no": 0,
+				"sb_entries": [{"batch_no": "B1", "qty": 3.0}],
+			}
+		]
+
+	def _main_mwos(self):
+		return [
+			{
+				"mwo": "MWO-1",
+				"items": [
+					{
+						"item_code": "M-1",
+						"t_warehouse": "WH-DEPT",
+						"custom_manufacturing_work_order": "MWO-1",
+						"qty": 3.0,
+						"batch_no": "B1",
+						"manufacturing_operation": "MOP-A",
+					}
+				],
+				"t_warehouse": "WH-DEPT",
+				"child_row_names": ["CR-1"],
+				"mop_data_list": [{"mop_name": "MOP-A", "mop_doc": _mop_doc()}],
+			}
+		]
+
+	def _commit(self, heal_return):
+		"""Run _commit_company_main_se Phase 2 with the re-reservation skipped so the
+		batched snapshot is orphaned; heal_return drives the guard's outcome.
+
+		Returns (failures, stats, marks, hard_deletes, rollbacks).
+		"""
+		failures = []
+		stats = {
+			"processed_mwos": 0,
+			"failed_mwos": 0,
+			"submitted_ses": [],
+			"draft_ses": [],
+		}
+		marks, hard_deletes, rollbacks = [], [], []
+
+		with patch(f"{_MOD}.frappe.db.savepoint"), patch(
+			f"{_MOD}.frappe.db.release_savepoint"
+		), patch(
+			f"{_MOD}._rollback_to_savepoint",
+			side_effect=lambda sp: rollbacks.append(sp),
+		), patch(f"{_MOD}._save_draft_eod_se", return_value="SE-DRAFT"), patch(
+			f"{_MOD}._snapshot_mwo_sres_for_relocation", return_value=self._snapshot()
+		), patch(f"{_MOD}._cancel_sre_snapshots"), patch(
+			f"{_MOD}.frappe.get_doc", return_value=FakeStockEntry("SE-DRAFT")
+		), patch(
+			# Simulate the v16 batch skip: nothing re-reserved.
+			f"{_MOD}._reserve_sres_from_eod_se_rows"
+		), patch(f"{_MOD}._active_sre_exists", return_value=False), patch(
+			f"{_MOD}._reserve_batch_at_physical_warehouse", return_value=heal_return
+		), patch(
+			f"{_MOD}._hard_delete_cancelled_snapshots",
+			side_effect=lambda snaps: hard_deletes.append(snaps),
+		), patch(
+			f"{_MOD}._mark_all_mwo_mop_logs_synced",
+			side_effect=lambda mwos, selective=False: marks.append(mwos),
+		), patch(f"{_MOD}._stamp_last_eod_sync"), patch(f"{_MOD}._bulk_set_child_rows"):
+			_commit_company_main_se("Co", "MF-1", self._main_mwos(), failures, stats)
+		return failures, stats, marks, hard_deletes, rollbacks
+
+	def test_heal_success_commits_bucket(self):
+		failures, stats, marks, hard_deletes, rollbacks = self._commit(["SRE-HEAL"])
+		self.assertEqual(failures, [])
+		self.assertIn("SE-DRAFT", stats["submitted_ses"])
+		self.assertEqual(marks, [["MWO-1"]])  # MOP Logs marked synced
+		self.assertEqual(len(hard_deletes), 1)  # cancelled snapshots hard-deleted
+		self.assertEqual(rollbacks, [])
+
+	def test_heal_failure_rolls_back_and_does_not_mark_synced(self):
+		failures, stats, marks, hard_deletes, rollbacks = self._commit(None)
+		self.assertIn("eod_submit_phase", rollbacks)  # bucket rolled back
+		self.assertEqual(len(failures), 1)
+		self.assertEqual(marks, [])  # never marked synced
+		self.assertEqual(hard_deletes, [])  # cancellation NOT made permanent
+		self.assertEqual(stats["submitted_ses"], [])
