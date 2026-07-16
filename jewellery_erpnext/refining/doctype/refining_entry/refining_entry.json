@@ -12,6 +12,7 @@
   "refining_type",
   "is_external",
   "supplier",
+  "pricing_item",
   "company",
   "posting_date",
   "column_break_general",
@@ -128,6 +129,14 @@
    "label": "Refinery Supplier",
    "mandatory_depends_on": "eval:doc.is_external",
    "options": "Supplier"
+  },
+  {
+   "depends_on": "eval:doc.is_external",
+   "description": "Which Refinery Price List prices this consignment. Auto-set from the Refining Type (Serial/MWO → Finish & Semi Finish Scrap, Scrap → Metal Refining Scrap, Dust → Main Dust) — switch it for other dust kinds (Vacuum Bag, Tools Dust, Ultra Liquid…).",
+   "fieldname": "pricing_item",
+   "fieldtype": "Link",
+   "label": "Pricing Category",
+   "options": "Item"
   },
   {
    "fieldname": "company",

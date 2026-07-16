@@ -20,6 +20,11 @@ frappe.ui.form.on("Refining Entry", {
 		frm.set_query("loss_item", () => ({
 			filters: { is_stock_item: 1 },
 		}));
+		frm.set_query("pricing_item", () => ({
+			// The pricing categories from the price sheet live in these two groups
+			// (seeded by seed_refining_masters).
+			filters: { item_group: ["in", ["Refining Scrap", "Refining Chemical"]] },
+		}));
 		frm.set_query("warehouse", () => {
 			let wh_type = ["in", ["Raw Material", "Scrap"]];
 			if (frm.doc.is_external) {
@@ -115,6 +120,11 @@ frappe.ui.form.on("Refining Entry", {
 		frm.trigger("set_field_visibility");
 		frm.trigger("set_naming_series");
 		frm.trigger("department");
+		// Re-derive the Pricing Category for the new type (only fills when blank).
+		if (frm.doc.is_external) {
+			frm.set_value("pricing_item", null);
+			frm.trigger("set_default_pricing_item");
+		}
 	},
 
 	refining_department(frm) {
@@ -139,7 +149,30 @@ frappe.ui.form.on("Refining Entry", {
 		if (!frm.doc.is_external) {
 			frm.set_value("supplier", null);
 			frm.set_value("supplier_warehouse", null);
+			frm.set_value("pricing_item", null);
+		} else {
+			frm.trigger("set_default_pricing_item");
 		}
+	},
+
+	set_default_pricing_item(frm) {
+		// Pricing Category defaults from the Refining Type (per the price sheet):
+		// Serial/MWO consignments price as Finish & Semi Finish Scrap, Scrap refining
+		// as Metal Refining Scrap, Dust as Main Dust (operator switches to Vacuum Bag /
+		// Tools Dust / Ultra Liquid etc. as applicable). Server-side defaulting in
+		// before_submit_external stays authoritative.
+		if (!frm.doc.is_external || frm.doc.pricing_item) return;
+		const map = {
+			"Serial Number Refining": "REF-FSJ-001",
+			"Work Order Refining": "REF-FSJ-001",
+			"Scrap Refining": "REF-RMS-001",
+			"Dust Refining": "REF-MD-001",
+		};
+		const item = map[frm.doc.refining_type];
+		if (!item) return;
+		frappe.db.exists("Item", item).then((exists) => {
+			if (exists) frm.set_value("pricing_item", item);
+		});
 	},
 
 	supplier(frm) {

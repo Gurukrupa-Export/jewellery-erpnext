@@ -2,12 +2,12 @@ import copy
 
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
-from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
-	get_auto_batch_nos,
-)
 from frappe import _
 from frappe.utils import flt, nowtime
 
+from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+	capped_auto_batch_nos,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	get_fifo_batches,
 )
@@ -74,7 +74,7 @@ def update_alloy_betch(self):
 			_("Selected batch does not have sufficient qty for transaction")
 		)
 	else:
-		batch_data = get_auto_batch_nos(
+		batch_data = capped_auto_batch_nos(
 			frappe._dict(
 				{
 					"posting_date": self.get("posting_date") or self.get("date"),
@@ -122,7 +122,12 @@ def update_alloy_betch(self):
 
 
 def update_source_betch(self):
-	batch_data = get_auto_batch_nos(
+	# Cap each batch at its authoritative Serial-and-Batch balance so an orphan
+	# bundle (docstatus=1, no SLE) can't inflate availability and seed a phantom
+	# row that later throws BatchNegativeStockError at SE submit. qty is omitted
+	# deliberately -> capped_auto_batch_nos returns ALL real batches so the
+	# inventory-type / customer filter below runs against the full set.
+	batch_data = capped_auto_batch_nos(
 		frappe._dict(
 			{
 				"posting_date": self.get("posting_date") or self.get("date"),

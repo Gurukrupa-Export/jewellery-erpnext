@@ -53,18 +53,16 @@ frappe.ui.form.on("Manufacturing Work Order", {
 				frm.trigger("split_work_order");
 			});
 		}
+		// Single unpack button, Repair work orders only: unpacks the repaired serial
+		// into the linked Repair Order's BOM raw materials as Customer Goods. PMO type
+		// is not on the form, so resolve it before adding the button.
 		if (frm.doc.docstatus == 1 && frm.doc.serial_no) {
-			frm.add_custom_button(__("Unpack Raw Material"), function () {
-				frm.trigger("unpack_raw_material");
-			});
-			// Unpack Serial No: only for Repair work orders. PMO type is not on the
-			// form, so resolve it before adding the button.
 			frappe.db
 				.get_value("Parent Manufacturing Order", frm.doc.manufacturing_order, "type")
 				.then((r) => {
 					if (r.message && r.message.type === "Repair") {
-						frm.add_custom_button(__("Unpack Serial No"), function () {
-							frm.trigger("unpack_serial_no");
+						frm.add_custom_button(__("Unpack Raw Material"), function () {
+							frm.trigger("unpack_raw_material");
 						});
 					}
 				});
@@ -160,23 +158,9 @@ frappe.ui.form.on("Manufacturing Work Order", {
 	unpack_raw_material: function (frm) {
 		frm.call({
 			doc: frm.doc,
-			method: "create_repair_un_pack_stock_entry",
-			freeze: true,
-			freeze_message: __("Unpacking...."),
-			callback: (r) => {
-				if (!r.exc) {
-					frappe.msgprint(__("Item Unpacking done."));
-					frm.refresh();
-				}
-			},
-		});
-	},
-	unpack_serial_no: function (frm) {
-		frm.call({
-			doc: frm.doc,
 			method: "create_unpack_serial_no_stock_entry",
 			freeze: true,
-			freeze_message: __("Unpacking Serial No...."),
+			freeze_message: __("Unpacking...."),
 			callback: (r) => {
 				if (!r.exc) {
 					frappe.msgprint(__("Serial No unpacked into raw materials."));
