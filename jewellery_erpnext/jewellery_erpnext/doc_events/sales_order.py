@@ -492,7 +492,11 @@ def _get_company_context(self, row, ctx):
 
 		_company_ctx_cache[cache_key] = cctx
 
-	return _company_ctx_cache[cache_key]
+	cctx = _company_ctx_cache[cache_key]
+	if self.company == "KG GK Jewellers Private Limited":
+		row.ref_customer = cctx.reference_customer
+
+	return cctx
 
 
 def _get_making_charge(self, doc, touch, ctx, cctx):
@@ -1169,7 +1173,7 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate          = 0
 				f.amount = 0
 				f.making_rate=operational_cost/total_weight
-				f.making_amount = round(s.making_rate * s.quantity, 2)
+				f.making_amount = round(f.making_rate * f.quantity, 2)
 				f.wastage_rate   = 0
 				f.wastage_amount = 0
 				f.fg_purchase_rate = 0
@@ -1739,8 +1743,9 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
                 "customer":        customer_key,
                 "diamond_type":    d.diamond_type,
                 "stone_shape":     d.stone_shape,
-                "diamond_quality": d.quality,
             }
+            if self.company != "KG GK Jewellers Private Limited":
+                common_filters["diamond_quality"] = d.quality
             fields = [
                 "rate", "outright_handling_charges_rate",
                 "outright_handling_charges_in_percentage",
