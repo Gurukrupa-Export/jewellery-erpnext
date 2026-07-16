@@ -145,6 +145,11 @@ def _prepare_loss_row(eir, row, table_name):
 
 	Returns None when proportionally_loss <= 0.
 	Raises on any missing mandatory field or unresolvable reference.
+
+	Mostly read-only, with two documented edge-case side effects: it logs an Error Log for
+	a sub-precision loss row, and ``_find_sre`` may self-heal an EOD-orphaned WIP reservation
+	(re-creating the missing Stock Reservation Entry at the batch's physical warehouse) before
+	the batch can be resolved.
 	"""
 	# Gate at the Stock Entry Detail's ACTUAL transfer_qty precision so a loss that survives
 	# here is guaranteed representable when ERPNext's set_transfer_qty() recomputes
@@ -307,30 +312,29 @@ def _resolve_batch_inventory(row):
 	return inventory_type, customer
 
 
-def _find_sre(eir, row, mwo, table_name, qty):
-	"""Return ``(sre_doc, candidates)`` for this loss row.
+_SRE_LOOKUP_FIELDS = [
+	"name",
+	"warehouse",
+	"reserved_qty",
+	"available_qty",
+	"voucher_qty",
+	"reservation_based_on",
+	"has_batch_no",
+	"company",
+	"voucher_type",
+	"voucher_no",
+	"voucher_detail_no",
+	"stock_uom",
+	"manufacturing_operation",
+]
 
-	A batch's reservation legitimately spans multiple operation-tagged SREs in
-	the SAME warehouse (SRE = physical truth; the bulk metal arrives via one
-	operation-tagged Stock Entry while small increments arrive via others, and
-	Employee IR logical moves never re-tag reservations). Loss must therefore be
-	deducted against the batch's reservation as a whole, not the SRE that merely
-	carries the current operation's tag.
 
-	Selection:
-	  * Prefer a batch-level match via the Serial and Batch Entry child table;
-	    fall back to a Qty-based reservation (no sb_entries) if the batch join
-	    returns nothing.
-	  * Restrict candidates to a SINGLE warehouse so we never deduct across
-	    physical locations: the warehouse of the operation-matched SRE if one
-	    exists, else the warehouse holding the largest reserved_qty.
-	  * Within that warehouse pick the SRE that can COVER the loss, preferring
-	    the current operation's SRE, then the largest. If none individually
-	    covers the loss, return the largest so ``_validate_sre_qty`` raises with
-	    an accurate aggregate message.
+def _query_batch_and_qty_sres(mwo, item_code, batch_no):
+	"""Return submitted (docstatus=1) SREs for (mwo, item, batch).
 
-	``candidates`` (the ordered, single-warehouse list) is returned alongside so
-	the validation can report the batch's aggregate reservation on failure.
+	Prefer a batch-level match via the Serial and Batch Entry child table; fall back to a
+	Qty-based reservation (no sb_entries) if the batch join returns nothing. Shared by the
+	initial lookup and the post-heal re-query in ``_find_sre``.
 	"""
 	rows = frappe.db.sql(
 		"""
@@ -355,7 +359,7 @@ def _find_sre(eir, row, mwo, table_name, qty):
           AND sbe.batch_no = %s
           AND sre.docstatus = 1
         """,
-		(mwo, row.item_code, row.batch_no),
+		(mwo, item_code, batch_no),
 		as_dict=True,
 	)
 
@@ -365,25 +369,67 @@ def _find_sre(eir, row, mwo, table_name, qty):
 			"Stock Reservation Entry",
 			{
 				"manufacturing_work_order": mwo,
-				"item_code": row.item_code,
+				"item_code": item_code,
 				"docstatus": 1,
 			},
-			[
-				"name",
-				"warehouse",
-				"reserved_qty",
-				"available_qty",
-				"voucher_qty",
-				"reservation_based_on",
-				"has_batch_no",
-				"company",
-				"voucher_type",
-				"voucher_no",
-				"voucher_detail_no",
-				"stock_uom",
-				"manufacturing_operation",
-			],
+			_SRE_LOOKUP_FIELDS,
 		)
+
+	return rows
+
+
+def _find_sre(eir, row, mwo, table_name, qty):
+	"""Return ``(sre_doc, candidates)`` for this loss row.
+
+	A batch's reservation legitimately spans multiple operation-tagged SREs in
+	the SAME warehouse (SRE = physical truth; the bulk metal arrives via one
+	operation-tagged Stock Entry while small increments arrive via others, and
+	Employee IR logical moves never re-tag reservations). Loss must therefore be
+	deducted against the batch's reservation as a whole, not the SRE that merely
+	carries the current operation's tag.
+
+	Selection:
+	  * Prefer a batch-level match via the Serial and Batch Entry child table;
+	    fall back to a Qty-based reservation (no sb_entries) if the batch join
+	    returns nothing.
+	  * Restrict candidates to a SINGLE warehouse so we never deduct across
+	    physical locations: the warehouse of the operation-matched SRE if one
+	    exists, else the warehouse holding the largest reserved_qty.
+	  * Within that warehouse pick the SRE that can COVER the loss, preferring
+	    the current operation's SRE, then the largest. If none individually
+	    covers the loss, return the largest so ``_validate_sre_qty`` raises with
+	    an accurate aggregate message.
+
+	``candidates`` (the ordered, single-warehouse list) is returned alongside so
+	the validation can report the batch's aggregate reservation on failure.
+
+	Self-heal: if no submitted SRE is found, EOD sync may have orphaned this MWO's WIP
+	reservation (source SREs cancelled, re-reservation silently skipped because the batch
+	is physically at a warehouse other than the EOD row target — see
+	``mop_eod_sync._reserve_batch_at_physical_warehouse``). We re-create the missing SRE at
+	the batch's physical warehouse and re-query, throwing only if it is still unreservable.
+	"""
+	rows = _query_batch_and_qty_sres(mwo, row.item_code, row.batch_no)
+
+	if not rows:
+		# Orphaned reservation: heal it at the warehouse where the batch physically sits, then
+		# re-run BOTH queries. Reserving at the physical warehouse (not the current-op dept WH)
+		# is required for correctness — _prepare_loss_row consumes the loss from sre.warehouse,
+		# so a wrong warehouse would trade "no SRE" for negative batch stock.
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+			_reserve_batch_at_physical_warehouse,
+		)
+
+		operation = getattr(
+			row, "manufacturing_operation", None
+		) or frappe.db.get_value(
+			"Manufacturing Work Order", mwo, "manufacturing_operation"
+		)
+		healed = _reserve_batch_at_physical_warehouse(
+			mwo, row.item_code, row.batch_no, qty, operation, eir.company
+		)
+		if healed:
+			rows = _query_batch_and_qty_sres(mwo, row.item_code, row.batch_no)
 
 	if not rows:
 		frappe.throw(

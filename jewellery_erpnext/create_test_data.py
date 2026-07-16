@@ -2311,6 +2311,17 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 
+		# The repair "Unpack Raw Material" flow submits SEs of this type; ensure it
+		# exists before the reservation seed links to it (not shipped in fixtures).
+		if not frappe.db.exists("Stock Entry Type", "Repair Unpack"):
+			frappe.get_doc(
+				{
+					"doctype": "Stock Entry Type",
+					"name": "Repair Unpack",
+					"purpose": "Repack",
+				}
+			).insert(ignore_permissions=True)
+
 		mop_settings = frappe.get_single("MOP Settings")
 		if not mop_settings.stock_entry_type_to_reservation:
 			mop_settings.append(
@@ -2333,6 +2344,15 @@ def create_test_data():
 				{
 					"stock_entry_type_to_reservation": "Material Receive (WORK ORDER)",
 					"is_decrease_weight": 1,
+				},
+			)
+			# Repair "Unpack Raw Material" books BOM raw materials into the work order
+			# as an inward move, so it reserves + logs like a WORK ORDER transfer.
+			mop_settings.append(
+				"stock_entry_type_to_reservation",
+				{
+					"stock_entry_type_to_reservation": "Repair Unpack",
+					"is_increase_weight": 1,
 				},
 			)
 			mop_settings.save()
@@ -2711,6 +2731,12 @@ def create_test_data():
 
 			ensure_field_precision_property_setters()
 
+			from jewellery_erpnext.patches.add_order_type_repair_option import (
+				ensure_order_type_repair_option,
+			)
+
+			ensure_order_type_repair_option()
+
 			from jewellery_erpnext.patches.add_customer_refining_flags import (
 				execute as customer_refining_flags,
 			)
@@ -2734,6 +2760,12 @@ def create_test_data():
 			)
 
 			refining_masters()
+
+			from jewellery_erpnext.patches.add_sales_order_precision_fields import (
+				execute as sales_order_precision_fields,
+			)
+
+			sales_order_precision_fields()
 		finally:
 			frappe.flags.in_migrate = in_migrate
 

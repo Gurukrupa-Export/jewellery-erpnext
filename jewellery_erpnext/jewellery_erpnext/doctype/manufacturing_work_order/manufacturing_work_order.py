@@ -398,15 +398,83 @@ class ManufacturingWorkOrder(Document):
 		se.save()
 		se.submit()
 
+	def _resolve_repair_order_bom(self):
+		"""Return (repair BOM, PMO name) for this repair unpack.
+
+		The BOM to unpack against is the Repair Order's ``new_bom`` -- the real
+		repair-components BOM (the actual metal/diamond/stone lines, batch-tracked),
+		reached from the PMO's ``order_form_type`` / ``order_form_id`` dynamic link.
+		We deliberately do NOT use the Repair Order's ``bom`` field: in practice ``bom``
+		is fetched from the design order-form detail and is a thin design PLACEHOLDER
+		(often a single serial-tracked "Design Variant" line, sometimes draft) that does
+		not describe the real components and cannot be booked inward. ``new_bom`` is the
+		clone that carries the actual components. Throws if there is no Repair Order link
+		or the Repair Order has no ``new_bom``.
+		"""
+		pmo_name = self.manufacturing_order
+		order_form_type, order_form_id = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			pmo_name,
+			["order_form_type", "order_form_id"],
+		) or (None, None)
+		if order_form_type != "Repair Order" or not order_form_id:
+			frappe.throw(
+				_(
+					"No Repair Order is linked to {0}; cannot resolve the repair BOM to unpack."
+				).format(pmo_name)
+			)
+		repair_bom = frappe.db.get_value("Repair Order", order_form_id, "new_bom")
+		if not repair_bom:
+			frappe.throw(
+				_(
+					"Repair Order {0} has no repair BOM (New BOM) to unpack; create it first."
+				).format(order_form_id)
+			)
+		return repair_bom, pmo_name
+
+	def _assert_serial_in_department(self, source_wh):
+		"""Block unpacking unless the serial's current warehouse belongs to THIS work
+		order's department. Department stored as "" and NULL are normalized together.
+		"""
+		sn_dept = frappe.db.get_value("Warehouse", source_wh, "department")
+		if (sn_dept or None) != (self.department or None):
+			frappe.throw(
+				_(
+					"Serial No {0} is in {1} (department {2}), not this work order's "
+					"department {3}. Move it into a {3} warehouse before unpacking."
+				).format(self.serial_no, source_wh, sn_dept or "-", self.department)
+			)
+
+	def _assert_components_bookable(self, item_codes, bom_name):
+		"""Fail fast (before building the SE) if any component is serial-tracked with no
+		Serial No Series. erpnext cannot auto-generate a serial bundle for such an inward
+		row and would otherwise raise a cryptic "Serial and Batch Bundle not set" deep in
+		the stock-ledger submit. (A thin/placeholder BOM often carries a serial-tracked
+		"Design Variant" line.)
+		"""
+		for item_code in item_codes:
+			has_serial, serial_series = frappe.db.get_value(
+				"Item", item_code, ["has_serial_no", "serial_no_series"]
+			) or (0, None)
+			if has_serial and not serial_series:
+				frappe.throw(
+					_(
+						"Cannot unpack: BOM {0} contains serial-tracked item {1} with no "
+						"Serial No Series, so its serial cannot be auto-generated. Use a "
+						"batch-tracked repair BOM, or set a Serial No Series on {1}."
+					).format(bom_name, item_code)
+				)
+
 	@frappe.whitelist()
 	def create_unpack_serial_no_stock_entry(self):
-		"""Unpack a repaired FG serial into its BOM raw materials as Customer Goods.
+		"""Unpack a repaired FG serial into the Repair Order's BOM raw materials as
+		Customer Goods.
 
 		Consumes the finished-good serial from the RM warehouse that currently holds
-		it and books the BOM raw materials straight into the department's
-		Manufacturing warehouse, so the repair operations have their inputs without a
-		separate stock transfer. Only valid for Repair work orders (see Unpack
-		Serial No button). This is a Customer-Goods sibling of
+		it and books the Repair Order BOM's raw materials straight into the
+		department's Manufacturing warehouse, so the repair operations have their
+		inputs without a separate stock transfer. Only valid for Repair work orders
+		(see the Unpack Raw Material button). This is a Customer-Goods sibling of
 		create_repair_un_pack_stock_entry (which stays for the legacy flow).
 		"""
 		pmo_type = frappe.db.get_value(
@@ -415,10 +483,18 @@ class ManufacturingWorkOrder(Document):
 		if pmo_type != "Repair" or not self.serial_no:
 			frappe.throw(
 				_(
-					"Unpack Serial No is only available for Repair work orders that "
+					"Unpack Raw Material is only available for Repair work orders that "
 					"carry a serial number."
 				)
 			)
+
+		# The repair BOM lives on the linked Repair Order (new_bom), not the MWO's
+		# inherited master_bom. Resolve it, persist onto the PMO + this MWO, and use it.
+		repair_bom, pmo_name = self._resolve_repair_order_bom()
+		frappe.db.set_value(
+			"Parent Manufacturing Order", pmo_name, "master_bom", repair_bom
+		)
+		self.db_set("master_bom", repair_bom)
 
 		# Source: the RM warehouse that currently holds the serial (not the
 		# manufacturer's repair warehouse used by the legacy method).
@@ -429,6 +505,10 @@ class ManufacturingWorkOrder(Document):
 					"Serial No {0} is not in stock (no warehouse to unpack from)."
 				).format(self.serial_no)
 			)
+
+		# The serial must physically sit in a warehouse of THIS work order's
+		# department before it can be unpacked here.
+		self._assert_serial_in_department(source_wh)
 
 		# Target: the department's Manufacturing warehouse.
 		target_wh = frappe.get_value(
@@ -485,33 +565,18 @@ class ManufacturingWorkOrder(Document):
 				/ row_dict[row.item_code]["count"]
 			)
 
-		# Map each metal raw item back to its own MWO/operation in this order.
-		mwo_data = frappe.db.get_all(
-			"Manufacturing Work Order",
-			{"manufacturing_order": self.manufacturing_order},
-			[
-				"name",
-				"metal_type",
-				"metal_touch",
-				"metal_purity",
-				"metal_colour",
-				"manufacturing_operation",
-			],
-		)
-		mwo_map = {}
-		for row in mwo_data:
-			metal_item = get_item_from_attribute(
-				row.metal_type, row.metal_touch, row.metal_purity, row.metal_colour
-			)
-			mwo_map[metal_item] = {"mwo": row.name, "mop": row.manufacturing_operation}
-
-		bom_item = frappe.get_doc("BOM", self.master_bom)
+		bom_item = frappe.get_doc("BOM", repair_bom)
 		if not bom_item.quantity:
 			frappe.throw(
 				_(
 					"BOM {0} has zero quantity; cannot scale unpack raw materials."
-				).format(self.master_bom)
+				).format(repair_bom)
 			)
+
+		self._assert_components_bookable(
+			[row.item_code for row in bom_item.items], repair_bom
+		)
+
 		se = frappe.get_doc(
 			{
 				"doctype": "Stock Entry",
@@ -521,6 +586,12 @@ class ManufacturingWorkOrder(Document):
 				"inventory_type": "Customer Goods",
 				"auto_created": 1,
 				"branch": self.branch,
+				# Header MWO/PMO/operation are required by the MOP-Log + reservation
+				# path (stock_entry.py onsubmit) so the unpacked material surfaces in
+				# the Manufacturing Operation instead of leaving gross_wt at 0.
+				"manufacturing_order": self.manufacturing_order,
+				"manufacturing_work_order": self.name,
+				"manufacturing_operation": self.manufacturing_operation,
 			}
 		)
 		# Source row: consume the FG serial under its ACTUAL inventory type so the
@@ -570,12 +641,6 @@ class ManufacturingWorkOrder(Document):
 			):
 				rate = row_dict[row.item_code].get("avg_basic_rate")
 
-			mwo = self.name
-			mop = self.manufacturing_operation
-			if mwo_map.get(row.item_code):
-				mwo = mwo_map[row.item_code]["mwo"]
-				mop = mwo_map[row.item_code]["mop"]
-
 			se.append(
 				"items",
 				{
@@ -589,8 +654,10 @@ class ManufacturingWorkOrder(Document):
 					"set_basic_rate_manually": 1,
 					"basic_rate": rate,
 					"batch_no": batch_no,
-					"custom_manufacturing_work_order": mwo,
-					"manufacturing_operation": mop,
+					# All unpacked materials belong to THIS repair MWO's operation so
+					# they surface in its MOP (MOP Log is keyed by the row's operation).
+					"custom_manufacturing_work_order": self.name,
+					"manufacturing_operation": self.manufacturing_operation,
 				},
 			)
 
