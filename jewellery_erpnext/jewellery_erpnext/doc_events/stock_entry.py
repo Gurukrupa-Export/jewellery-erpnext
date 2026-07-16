@@ -30,6 +30,7 @@ from jewellery_erpnext.jewellery_erpnext.lock_order import (
 	sorted_stock_rows,
 )
 from jewellery_erpnext.utils import (
+	_bulk_map,
 	get_item_from_attribute,
 	get_variant_of_item,
 	group_aggregate_with_concat,
@@ -53,8 +54,17 @@ def before_validate(self, method):
 		self.update_batches()
 
 	pure_item_purity = None
+	# get_purity_percentage is a pure item_code->value/None DB lookup; memoize it so
+	# repeated item codes across rows (common for metal items) hit the DB once.
+	purity_cache = {}
 
 	dir_staus_data = frappe._dict()
+
+	# has_batch_no is read once per row below; prefetch it for the (post-update_batches)
+	# item table so this is one query instead of O(rows).
+	has_batch_map = _bulk_map(
+		"Item", [row.item_code for row in self.items], ["has_batch_no"]
+	)
 
 	for row in self.items:
 		if (
@@ -62,7 +72,7 @@ def before_validate(self, method):
 			and row.s_warehouse
 			and not row.batch_no
 			and not row.serial_no
-			and frappe.db.get_value("Item", row.item_code, "has_batch_no")
+			and (has_batch_map.get(row.item_code) or {}).get("has_batch_no")
 		):
 			# Allocation (update_batches) already ran above; a batch-tracked source
 			# row still without a batch means there is genuinely no stock to draw
@@ -131,7 +141,9 @@ def before_validate(self, method):
 
 				pure_item_purity = get_purity_percentage(pure_item)
 
-			item_purity = get_purity_percentage(row.item_code)
+			if row.item_code not in purity_cache:
+				purity_cache[row.item_code] = get_purity_percentage(row.item_code)
+			item_purity = purity_cache[row.item_code]
 
 			if not item_purity:
 				continue
@@ -400,8 +412,22 @@ def validate_metal_properties(doc):
 			key = row.manufacturing_operation or main_slip
 			item_data[row.item_code]["mop"] = [key] if key else []
 			item_data[row.item_code]["variant"] = row.custom_variant_of
-			item_data[row.item_code]["ignore_touch_and_purity"] = frappe.db.get_value(
-				"Item", row.item_code, "custom_is_manufacturing_item"
+			# Fold the two Item reads for this row (also read as custom_ignore_work_order
+			# in the mwo colour check below) into a single fetch.
+			itm = (
+				frappe.db.get_value(
+					"Item",
+					row.item_code,
+					["custom_is_manufacturing_item", "custom_ignore_work_order"],
+					as_dict=True,
+				)
+				or {}
+			)
+			item_data[row.item_code]["ignore_touch_and_purity"] = itm.get(
+				"custom_is_manufacturing_item"
+			)
+			item_data[row.item_code]["ignore_work_order"] = itm.get(
+				"custom_ignore_work_order"
 			)
 		else:
 			if (
@@ -503,7 +529,7 @@ def validate_metal_properties(doc):
 				)
 				and mwo_data.metal_colour.lower()
 				!= item_data[item].metal_colour.lower()
-				and frappe.db.get_value("Item", item, "custom_ignore_work_order") == 0
+				and item_data[item]["ignore_work_order"] == 0
 			):
 				mwo_erros[mwo].append("Metal Colour")
 
@@ -700,19 +726,26 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 		)
 		return
 
+	# Prefetch the existing (row_name, manufacturing_operation) pairs for this voucher
+	# in one query instead of a per-row exists() check. row.name is unique per row, so
+	# a create_mop_log earlier in this loop can never satisfy a later row's check — the
+	# pre-loop snapshot is equivalent to re-querying each iteration.
+	existing_mop_logs = {
+		(r.row_name, r.manufacturing_operation)
+		for r in frappe.get_all(
+			"MOP Log",
+			filters={
+				"voucher_type": "Stock Entry",
+				"voucher_no": self.name,
+				"is_cancelled": 0,
+			},
+			fields=["row_name", "manufacturing_operation"],
+		)
+	}
 	for row in self.items:
 		if not (row.get("manufacturing_operation") and row.item_code):
 			continue
-		if frappe.db.exists(
-			"MOP Log",
-			{
-				"voucher_type": "Stock Entry",
-				"voucher_no": self.name,
-				"row_name": row.name,
-				"manufacturing_operation": row.manufacturing_operation,
-				"is_cancelled": 0,
-			},
-		):
+		if (row.name, row.manufacturing_operation) in existing_mop_logs:
 			continue
 		create_mop_log(self, row, is_synced=True)
 
@@ -865,10 +898,11 @@ def stock_reservation_entry_for_mwo(self):
 def validate_items(self):
 	if self.stock_entry_type != "Broken / Loss":
 		return
+	bom_item_codes = set(
+		frappe.get_all("BOM Item", filters={"parent": self.bom_no}, pluck="item_code")
+	)
 	for i in self.items:
-		if not frappe.db.get_value(
-			"BOM Item", {"parent": self.bom_no, "item_code": i.get("item_code")}
-		):
+		if i.get("item_code") not in bom_item_codes:
 			return frappe.throw(
 				f"Item {i.get('item_code')} Not Present In BOM {self.bom_no}"
 			)
@@ -932,21 +966,29 @@ def create_finished_bom(self):
 			rm["qty"] = rm["qty"] - scrap["qty"]
 
 	bom_doc.item = items_to_manufacture[0]
+	# Loop-invariant (depends only on self.bom_no) — fetch once, not once per raw item.
+	diamond_quality = frappe.db.get_value(
+		"BOM Diamond Detail", {"parent": self.bom_no}, "quality"
+	)
 	for raw_item in raw_materials:
 		qty = raw_item.get("qty") or 1
-		diamond_quality = frappe.db.get_value(
-			"BOM Diamond Detail", {"parent": self.bom_no}, "quality"
-		)
 		# Set all the items into respective Child Tables For BOM rate Calculation
 		updated_bom = set_item_details(
 			raw_item.get("item_code"), bom_doc, qty, diamond_quality
 		)
-	updated_bom.customer = frappe.db.get_value("BOM", self.bom_no, "customer")
-	updated_bom.gold_rate_with_gst = frappe.db.get_value(
-		"BOM", self.bom_no, "gold_rate_with_gst"
+	bom_info = (
+		frappe.db.get_value(
+			"BOM",
+			self.bom_no,
+			["customer", "gold_rate_with_gst", "tag_no"],
+			as_dict=True,
+		)
+		or {}
 	)
+	updated_bom.customer = bom_info.get("customer")
+	updated_bom.gold_rate_with_gst = bom_info.get("gold_rate_with_gst")
 	updated_bom.is_default = 0
-	updated_bom.tag_no = frappe.db.get_value("BOM", self.bom_no, "tag_no")
+	updated_bom.tag_no = bom_info.get("tag_no")
 	updated_bom.bom_type = "Finished Goods"
 	updated_bom.reference_doctype = "Work Order"
 	updated_bom.save(ignore_permissions=True)

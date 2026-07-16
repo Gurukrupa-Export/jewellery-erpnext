@@ -44,6 +44,27 @@ def set_items_from_attribute(item_template, item_template_attribute):
 		return variant
 
 
+def _bulk_map(doctype, names, fields):
+	"""{name: _dict(field->value)} for the given names.
+
+	Behaviour-identical replacement for per-row frappe.db.get_value: a missing
+	name OR a NULL column both resolve to None via
+	``(_bulk_map(...).get(name) or {}).get(field)``.
+
+	Lives here (a leaf module) rather than in either stock_entry file so both the
+	CustomStockEntry controller and the doc_events module can import it without a
+	circular import (customization.stock_entry <-> doc_events.stock_entry).
+	"""
+	names = list({n for n in names if n})
+	out = {}
+	if names:
+		for r in frappe.get_all(
+			doctype, filters={"name": ["in", names]}, fields=["name"] + list(fields)
+		):
+			out[r.name] = r
+	return out
+
+
 @frappe.whitelist()
 def get_item_from_attribute(metal_type, metal_touch, metal_purity, metal_colour=None):
 	# items are created without metal_touch as attribute so not considering it in condition for now

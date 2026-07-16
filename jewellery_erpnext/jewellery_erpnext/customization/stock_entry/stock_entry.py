@@ -24,6 +24,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
 	custom_get_scrap_items_from_job_card,
 )
+from jewellery_erpnext.utils import _bulk_map
 
 
 def before_validate(self, method):
@@ -59,15 +60,29 @@ class CustomStockEntry(StockEntry):
 			# rows (via get_fifo_batches) and already-filled rows kept below record
 			# their consumption here.
 			consumed = {}
+			# Prefetch the Item / Department fields read per row below (and again in
+			# the rebuild loop) so the loops issue one query each instead of O(rows).
+			# get_fifo_batches only splits a source row into more rows of the SAME
+			# item_code, so an Item map built from self.items also covers the rebuild.
+			item_map = _bulk_map(
+				"Item",
+				[row.item_code for row in self.items],
+				["variant_of", "has_batch_no"],
+			)
+			dept_map = _bulk_map(
+				"Department",
+				[row.get("department") for row in self.items],
+				["custom_can_not_make_dg_entry"],
+			)
 			for row in self.items:
 				if (
 					row.get("department")
-					and frappe.db.get_value(
-						"Department", row.department, "custom_can_not_make_dg_entry"
+					and (dept_map.get(row.department) or {}).get(
+						"custom_can_not_make_dg_entry"
 					)
 					== 1
 				):
-					if frappe.db.get_value("Item", row.item_code, "variant_of") in [
+					if (item_map.get(row.item_code) or {}).get("variant_of") in [
 						"D",
 						"G",
 					]:
@@ -76,7 +91,7 @@ class CustomStockEntry(StockEntry):
 								row.item_code, row.department
 							)
 						)
-				if frappe.db.get_value("Item", row.item_code, "has_batch_no"):
+				if (item_map.get(row.item_code) or {}).get("has_batch_no"):
 					if row.s_warehouse:
 						if row.get("batch_no"):
 							# Batch already filled — keep it as-is and do NOT refetch /
@@ -106,32 +121,60 @@ class CustomStockEntry(StockEntry):
 			# (get_fifo_batches) only runs for rows with an empty batch, so a save where
 			# every batch-tracked source row is already filled does zero refetches.
 			if rows_to_append:
+				# Prefetch the two Batch fields (one query instead of two per row) and
+				# the diamond-attribute lookups. FIFO introduces new batch_no values,
+				# so these maps are built from rows_to_append (post-split), not
+				# self.items.
+				def _row_field(it, field):
+					return (
+						it.get(field)
+						if isinstance(it, dict)
+						else getattr(it, field, None)
+					)
+
+				batch_map = _bulk_map(
+					"Batch",
+					[_row_field(it, "batch_no") for it in rows_to_append],
+					["custom_inventory_type", "custom_customer"],
+				)
+				d_codes = [
+					_row_field(it, "item_code")
+					for it in rows_to_append
+					if (item_map.get(_row_field(it, "item_code")) or {}).get(
+						"variant_of"
+					)
+					== "D"
+				]
+				grade_map, sieve_map = {}, {}
+				if d_codes:
+					for r in frappe.get_all(
+						"Item Variant Attribute",
+						filters={
+							"parent": ["in", list(set(d_codes))],
+							"attribute": [
+								"in",
+								["Diamond Grade", "Diamond Sieve Size"],
+							],
+						},
+						fields=["parent", "attribute", "attribute_value"],
+					):
+						if r.attribute == "Diamond Grade":
+							grade_map.setdefault(r.parent, r.attribute_value)
+						else:
+							sieve_map.setdefault(r.parent, r.attribute_value)
+
 				self.items = []
 				for item in rows_to_append:
 					if isinstance(item, dict):
 						item = frappe._dict(item)
 					if item.batch_no:
+						binfo = batch_map.get(item.batch_no) or {}
 						if not item.inventory_type:
-							item.inventory_type = frappe.db.get_value(
-								"Batch", item.batch_no, "custom_inventory_type"
-							)
-						item.customer = frappe.db.get_value(
-							"Batch", item.batch_no, "custom_customer"
-						)
-					if frappe.db.get_value("Item", item.item_code, "variant_of") == "D":
-						attribute = frappe.db.get_value(
-							"Item Variant Attribute",
-							{"parent": item.item_code, "attribute": "Diamond Grade"},
-							"attribute_value",
-						)
-						diamond_sieve_size = frappe.db.get_value(
-							"Item Variant Attribute",
-							{
-								"parent": item.item_code,
-								"attribute": "Diamond Sieve Size",
-							},
-							"attribute_value",
-						)
+							item.inventory_type = binfo.get("custom_inventory_type")
+						item.customer = binfo.get("custom_customer")
+					if (item_map.get(item.item_code) or {}).get("variant_of") == "D":
+						attribute = grade_map.get(item.item_code)
+						diamond_sieve_size = sieve_map.get(item.item_code)
 						weight = (
 							frappe.db.get_value(
 								"Attribute Value Diamond Sieve Size",
