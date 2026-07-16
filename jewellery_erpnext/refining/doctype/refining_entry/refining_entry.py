@@ -11,6 +11,18 @@ REFINING_ROLES = ["Refining User", "Refining Manager", "System Manager"]
 # `require_refining_role` still auto-passes for Administrator.
 REFINING_MANAGER_ROLES = ["Refining Manager", "System Manager"]
 
+# External refining bills by pricing CATEGORY, resolved from the refining type (per the
+# "Process Dust With Rate" sheet): Serial/MWO consignments are priced as Finish & Semi
+# Finish Scrap, Scrap refining as Metal Refining Scrap, and Dust defaults to Main Dust
+# (operator switches the Pricing Category for other dust kinds — Vacuum Bag, Tools
+# Dust, Ultra Liquid, ...). The category items are seeded by seed_refining_masters.
+EXTERNAL_PRICING_CATEGORY = {
+	"Serial Number Refining": "REF-FSJ-001",
+	"Work Order Refining": "REF-FSJ-001",
+	"Scrap Refining": "REF-RMS-001",
+	"Dust Refining": "REF-MD-001",
+}
+
 
 class RefiningEntry(Document):
 	def before_insert(self):
@@ -128,6 +140,14 @@ class RefiningEntry(Document):
 		if not self.supplier:
 			frappe.throw(_("Refinery Supplier is mandatory for external refining."))
 
+		# Pricing category (the Refinery Price List this consignment bills under),
+		# resolved from the refining type unless the operator picked one (Dust has
+		# several possible categories — Main Dust is only the default).
+		if not self.pricing_item:
+			default_item = EXTERNAL_PRICING_CATEGORY.get(self.refining_type)
+			if default_item and frappe.db.exists("Item", default_item):
+				self.pricing_item = default_item
+
 		# Same submit-time material build the internal path does for the types that
 		# source from other documents (Dust fetches the dept scrap warehouse, Work
 		# Order pulls the MWO's running balance); Scrap/Serial rows come from scans.
@@ -173,25 +193,23 @@ class RefiningEntry(Document):
 			)
 		self.create_external_refining_po()
 
-	def _billable_item_weights(self):
-		"""Sent material grouped item-wise: ``{item_code: total_qty}``. Pricing is
-		resolved per ITEM (each sent item has its own Refinery Price List document with
-		process/weight-band slabs), so the PO gets one service line per priced item."""
-		weights = {}
-		for row in self.material_items:
-			if not row.item_code or row.get("source_type") == "BOM Component":
-				continue
-			weights[row.item_code] = weights.get(row.item_code, 0.0) + flt(row.qty)
-		return {code: flt(qty, 3) for code, qty in weights.items() if flt(qty, 3) > 0}
-
-	def _external_service_po_line(self, price_row, weight_g):
-		from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
-			compute_refining_amount,
+	def _gross_sent_weight(self):
+		"""Total sent quantity across the Material Items table (excluding display-only
+		BOM Component rows) — the gross consignment weight the price sheet bands are
+		defined on."""
+		return flt(
+			sum(
+				flt(row.qty)
+				for row in self.material_items
+				if row.item_code and row.get("source_type") != "BOM Component"
+			),
+			3,
 		)
 
-		service_item = (
-			price_row.get("service_item") or self._default_refining_service_item()
-		)
+	def _external_service_po_line(self, price_row, weight_g, rate):
+		service_item = (price_row or {}).get(
+			"service_item"
+		) or self._default_refining_service_item()
 		if not service_item:
 			frappe.throw(
 				_(
@@ -202,37 +220,55 @@ class RefiningEntry(Document):
 		return {
 			"item_code": service_item,
 			"qty": 1,
-			"rate": compute_refining_amount(
-				price_row.get("charge_type"), price_row.get("rate"), weight_g
-			),
+			"rate": rate,
 			"schedule_date": self.posting_date,
 			"custom_gross_wt": weight_g,
-			"custom_refining_price_list": price_row.get("name"),
+			"custom_refining_price_list": (price_row or {}).get("name"),
 		}
 
 	def create_external_refining_po(self):
-		"""After the material transfer: create an optional service Purchase Order with
-		one charge line PER SENT ITEM, resolved from that item's Refinery Price List
-		(Gross-Weight-basis slabs only — the sent weight is final now). Left as a draft
-		for the buyer to review/submit. Items with no price entry are skipped and no PO
-		is created if nothing is billable — billing is best-effort, not a precondition
-		for the physical flow. Fine/After-Burning-basis slabs are billed once the actual
-		received weight is known (see _bill_external_receipt_service_charge)."""
+		"""After the material transfer: ALWAYS create the draft service Purchase Order
+		— every external entry gets one, no exceptions. The single charge line is
+		priced from the entry's Pricing Category (get_refinery_rate on the gross sent
+		weight):
+		  - Gross-Weight-basis slab matched → rate computed now.
+		  - Received-Fine/After-Burning slab matched → rate 0 now; filled in by
+		    _bill_external_receipt_service_charge once the recovery weight is known.
+		  - No slab matched (weight-band gap, unpriced category) → rate 0 for the
+		    purchase team to price manually.
+		Left as a draft for the buyer to review/submit; the physical flow never blocks
+		on pricing."""
 		from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
+			compute_refining_amount,
 			get_refinery_rate,
 		)
 
-		lines = []
-		for item_code, qty in self._billable_item_weights().items():
-			row = get_refinery_rate(
-				item_code, qty, company=self.company, supplier=self.supplier
+		gross_weight = self._gross_sent_weight()
+		row = (
+			get_refinery_rate(
+				self.pricing_item,
+				gross_weight,
+				company=self.company,
+				supplier=self.supplier,
 			)
-			if not row or row.get("weight_basis") != "Gross Weight":
-				continue
-			lines.append(self._external_service_po_line(row, qty))
+			if self.pricing_item
+			else None
+		)
 
-		if not lines:
-			return
+		rate = 0
+		if row and row.get("weight_basis") == "Gross Weight":
+			rate = compute_refining_amount(
+				row.get("charge_type"), row.get("rate"), gross_weight
+			)
+		elif not row:
+			frappe.msgprint(
+				_(
+					"No Refinery Price List slab matched Pricing Category {0} at {1} g — "
+					"the Purchase Order line was created at rate 0 for manual pricing."
+				).format(frappe.bold(self.pricing_item or "-"), gross_weight),
+				alert=True,
+				indicator="orange",
+			)
 
 		po = frappe.new_doc("Purchase Order")
 		po.refining_entry = self.name
@@ -247,8 +283,7 @@ class RefiningEntry(Document):
 		po.purchase_type = (
 			"Service" if frappe.db.exists("Purchase Type", "Service") else None
 		)
-		for line in lines:
-			po.append("items", line)
+		po.append("items", self._external_service_po_line(row, gross_weight, rate))
 		po.insert(ignore_permissions=True)
 		self.db_set("refining_entry_po", po.name)
 
@@ -341,6 +376,10 @@ class RefiningEntry(Document):
 								"s_warehouse": self.supplier_warehouse,
 								"batch_no": alloc["batch_no"],
 								"use_serial_batch_fields": 1,
+								# Scrap/dust routinely enters stock via zero-rate
+								# Material Receipts; the repack must not block on a
+								# missing valuation history.
+								"allow_zero_valuation_rate": 1,
 							},
 						)
 			else:
@@ -353,6 +392,7 @@ class RefiningEntry(Document):
 						"uom": g["uom"],
 						"s_warehouse": self.supplier_warehouse,
 						"use_serial_batch_fields": 1,
+						"allow_zero_valuation_rate": 1,
 					},
 				)
 
@@ -368,6 +408,7 @@ class RefiningEntry(Document):
 					"s_warehouse": self.supplier_warehouse,
 					"serial_no": item.serial_no,
 					"use_serial_batch_fields": 1,
+					"allow_zero_valuation_rate": 1,
 				},
 			)
 
@@ -382,6 +423,7 @@ class RefiningEntry(Document):
 			"uom": "Gram",
 			"t_warehouse": target_wh,
 			"use_serial_batch_fields": 1,
+			"allow_zero_valuation_rate": 1,
 		}
 		if frappe.db.get_value("Item", self.refined_metal_item, "has_batch_no"):
 			metal_row["batch_no"] = self._auto_create_batch(self.refined_metal_item)
@@ -456,70 +498,65 @@ class RefiningEntry(Document):
 		return wh
 
 	def _bill_external_receipt_service_charge(self):
-		"""Fine/After-Burning-basis service charges, billed per sent item now that the
-		actual received weight is known (deferred from create_external_refining_po,
-		which could only bill Gross-Weight-basis slabs). The recovered fine weight is
-		apportioned across the sent items by their sent-weight share, since the supplier
-		reports one aggregate recovered weight, not a per-item breakdown. Runs at most
-		once per entry (receive_from_supplier's repack_se guard), so no idempotency
-		bookkeeping is needed."""
+		"""Received-Fine/After-Burning-basis service charge, billed now that the actual
+		received weight is known (create_external_refining_po left the PO line at rate 0
+		for these). Resolves the SAME Pricing Category slab; if the entry's draft PO
+		still has that rate-0 line, its rate is updated in place — otherwise (PO already
+		submitted by the purchase team) a fresh true-up draft PO carries the charge.
+		Runs at most once per entry (receive_from_supplier's repack_se guard)."""
 		from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
+			compute_refining_amount,
 			get_refinery_rate,
 		)
 
 		received_g = flt(self.received_weight, 3)
-		if received_g <= 0:
+		if received_g <= 0 or not self.pricing_item:
 			return
 
-		item_weights = self._billable_item_weights()
-		total_sent = sum(item_weights.values())
-		if total_sent <= 0:
+		row = get_refinery_rate(
+			self.pricing_item,
+			self._gross_sent_weight(),
+			company=self.company,
+			supplier=self.supplier,
+		)
+		if not row or row.get("weight_basis") == "Gross Weight":
+			# Gross-basis was already billed at submit; unmatched stays manual.
 			return
 
-		lines = []
-		for item_code, sent_qty in item_weights.items():
-			row = get_refinery_rate(
-				item_code, sent_qty, company=self.company, supplier=self.supplier
-			)
-			if not row or row.get("weight_basis") == "Gross Weight":
-				continue
-			weight_share = flt(received_g * (sent_qty / total_sent), 3)
-			if weight_share <= 0:
-				continue
-			lines.append(self._external_service_po_line(row, weight_share))
+		rate = compute_refining_amount(
+			row.get("charge_type"), row.get("rate"), received_g
+		)
 
-		if not lines:
-			return
-
-		# Append to the existing service PO if it's still a draft; otherwise (already
-		# submitted, or none was created at submit time) start a fresh draft PO for the
-		# true-up charges.
-		po = None
+		# Preferred path: fill in the rate-0 line on the entry's still-draft PO.
 		if self.refining_entry_po:
-			existing = frappe.get_doc("Purchase Order", self.refining_entry_po)
-			if existing.docstatus == 0:
-				po = existing
-		if po:
-			for line in lines:
-				po.append("items", line)
-			po.save(ignore_permissions=True)
-		else:
-			po = frappe.new_doc("Purchase Order")
-			po.refining_entry = self.name
-			po.supplier = self.supplier
-			po.company = self.company
-			po.transaction_date = self.posting_date
-			# Always assign (None when the master is missing) — see the same pattern in
-			# create_external_refining_po for why a conditional assignment breaks on
-			# sites without the purchase_type custom field in the PO meta.
-			po.purchase_type = (
-				"Service" if frappe.db.exists("Purchase Type", "Service") else None
-			)
-			for line in lines:
-				po.append("items", line)
-			po.insert(ignore_permissions=True)
-			if not self.refining_entry_po:
-				self.db_set("refining_entry_po", po.name)
+			po = frappe.get_doc("Purchase Order", self.refining_entry_po)
+			if po.docstatus == 0:
+				for line in po.items:
+					if line.get("custom_refining_price_list") == row.get(
+						"name"
+					) and not flt(line.rate):
+						line.rate = rate
+						line.custom_gross_wt = received_g
+						po.save(ignore_permissions=True)
+						return
+
+		# Fallback: PO already submitted (or its line was manually changed) — bill the
+		# charge on a fresh true-up draft PO.
+		po = frappe.new_doc("Purchase Order")
+		po.refining_entry = self.name
+		po.supplier = self.supplier
+		po.company = self.company
+		po.transaction_date = self.posting_date
+		# Always assign (None when the master is missing) — see the same pattern in
+		# create_external_refining_po for why a conditional assignment breaks on
+		# sites without the purchase_type custom field in the PO meta.
+		po.purchase_type = (
+			"Service" if frappe.db.exists("Purchase Type", "Service") else None
+		)
+		po.append("items", self._external_service_po_line(row, received_g, rate))
+		po.insert(ignore_permissions=True)
+		if not self.refining_entry_po:
+			self.db_set("refining_entry_po", po.name)
 
 	# --- Validations ---
 
