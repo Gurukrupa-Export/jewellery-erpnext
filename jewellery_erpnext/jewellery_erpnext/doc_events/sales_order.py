@@ -1791,10 +1791,12 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
             if d.is_customer_item:
                 d.fg_purchase_rate   = 0
                 d.fg_purchase_amount = 0
-                d.handling_rate   = latest.get("supplier_fg_purchase_rate", 0)
-                d.diamond_rate_for_specified_quantity = round(
-                    d.quantity * (d.handling_rate), 2
-                )
+                # d.handling_rate   = latest.get("supplier_fg_purchase_rate", 0)
+                # d.diamond_rate_for_specified_quantity = round(
+                #     d.quantity * (d.handling_rate), 2
+                # )
+                d.handling_rate   = 0
+                d.diamond_rate_for_specified_quantity = 0
                 d.total_diamond_rate = 0
             else:
                 if cctx.billing_currency == "USD":
