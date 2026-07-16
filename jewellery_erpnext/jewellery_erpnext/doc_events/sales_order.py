@@ -805,11 +805,14 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 
         elif self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal":
             if s.is_customer_item:
-                s.rate          = s.se_rate
+                s.rate          = 0
+                s.amount = 0
                 s.making_rate=operational_cost/total_weight
                 s.making_amount = round(s.making_rate * s.quantity, 2)
                 s.wastage_rate   = 0
                 s.wastage_amount = 0
+                s.fg_purchase_rate = 0
+                s.fg_purchase_amount = 0
             else:
                 if cctx.billing_currency == "USD":
                     s.se_rate     = s.se_rate * cctx.exchange_rate
@@ -1162,15 +1165,27 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 			self.company == "KG GK Jewellers Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			if cctx.billing_currency == "USD":
-				f.se_rate = f.se_rate * cctx.exchange_rate
+			if f.is_customer_item:
+				f.rate          = 0
+				f.amount = 0
+				f.making_rate=operational_cost/total_weight
+				f.making_amount = round(s.making_rate * s.quantity, 2)
+				f.wastage_rate   = 0
+				f.wastage_amount = 0
+				f.fg_purchase_rate = 0
+				f.fg_purchase_amount = 0
 			else:
-				f.making_rate = operational_cost / total_weight
-			f.rate = round(f.se_rate, 2)
-			f.amount = round(f.rate * f.quantity, 2)
-			f.wastage_rate = 0
-			f.wastage_amount = 0
-			f.making_amount = round(f.making_rate * f.quantity, 2)
+				if cctx.billing_currency == "USD":
+					f.se_rate = f.se_rate * cctx.exchange_rate
+				else:
+					f.making_rate = operational_cost / total_weight
+				f.rate = round(f.se_rate, 2)
+				f.amount = round(f.rate * f.quantity, 2)
+				f.wastage_rate = 0
+				f.wastage_amount = 0
+				f.making_amount = round(f.making_rate * f.quantity, 2)
+				f.fg_purchase_rate = 0
+				f.fg_purchase_amount = 0
 
 		else:
 			mc_name, sub_info, threshold = _get_making_charge(
@@ -1258,16 +1273,28 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 			self.company == "KG GK Jewellers Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			gem.total_gemstone_rate = (
-				gem.se_rate * cctx.exchange_rate
-				if cctx.billing_currency == "USD"
-				else gem.se_rate
-			)
-			gem.gemstone_rate_for_specified_quantity = (
-				float(gem.total_gemstone_rate) * float(gem.quantity)
-				if gem.per_pc_or_per_carat == "Per Carat"
-				else float(gem.total_gemstone_rate) * float(gem.pcs)
-			)
+			if gem.is_customer_item:
+				gem.total_gemstone_rate = 0
+				gem.fg_purchase_rate = 0
+				gem.gemstone_rate_for_specified_quantity = 0
+				gem.fg_purchase_amount = 0
+				gem.se_rate = 0
+				# gem.total_gemstone_rate = 0
+				# gem.total_gemstone_rate = 0
+			else:
+				gem.total_gemstone_rate = (
+					gem.se_rate * cctx.exchange_rate
+					if cctx.billing_currency == "USD"
+					else gem.se_rate
+				)
+				gem.gemstone_rate_for_specified_quantity = (
+					float(gem.total_gemstone_rate) * float(gem.quantity)
+					if gem.per_pc_or_per_carat == "Per Carat"
+					else float(gem.total_gemstone_rate) * float(gem.pcs)
+				)
+				gem.total_gemstone_rate = 0
+				gem.fg_purchase_rate = 0
+				gem.fg_purchase_amount = 0
 
 		# ---------------- Fixed ----------------
 		elif gemstone_price_list_customer == "Fixed" and ctx.customer_group != "Retail":
@@ -1757,7 +1784,8 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
                 continue
         if self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal":
             if d.is_customer_item:
-                d.fg_purchase_rate   = latest.get("supplier_fg_purchase_rate", 0)
+                d.fg_purchase_rate   = 0
+                d.fg_purchase_amount = 0
                 d.handling_rate   = latest.get("supplier_fg_purchase_rate", 0)
                 d.diamond_rate_for_specified_quantity = round(
                     d.quantity * (d.handling_rate), 2
