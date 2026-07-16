@@ -7,11 +7,11 @@ Run with:
 Note: frappe.db / frappe.qb are LocalProxy objects, so a default patch() mints
 async-mock children. We always inject an explicit MagicMock via patch(target, obj).
 """
-import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	_apply_fg_bom_dynamic_fields,
@@ -43,7 +43,7 @@ def _qb_chain_mock(run_rows):
 	return mock_qb
 
 
-class TestNextRepairSerial(unittest.TestCase):
+class TestNextRepairSerial(IntegrationTestCase):
 	def test_first_repair_appends_a(self):
 		with patch(f"{MOD}.frappe.db", _db_mock([])):
 			self.assertEqual(_next_repair_serial("SN0001"), "SN0001/A")
@@ -84,7 +84,7 @@ class TestNextRepairSerial(unittest.TestCase):
 			self.assertEqual(_next_repair_serial("SN0001"), "SN0001/B")
 
 
-class TestCastFgBomValue(unittest.TestCase):
+class TestCastFgBomValue(IntegrationTestCase):
 	def test_int(self):
 		self.assertEqual(_cast_fg_bom_value("5", "Int"), 5)
 
@@ -113,7 +113,7 @@ def _bom_mock(item_subcategory=None, item=None):
 	return new_bom
 
 
-class TestApplyFgBomDynamicFields(unittest.TestCase):
+class TestApplyFgBomDynamicFields(IntegrationTestCase):
 	def test_sets_only_mapped_existing_nonempty_deduped(self):
 		# The join now returns the field rows directly (PMO + subcategory match).
 		mock_qb = _qb_chain_mock(
@@ -202,7 +202,3 @@ class TestApplyFgBomDynamicFields(unittest.TestCase):
 		):
 			_apply_fg_bom_dynamic_fields(new_bom, doc)
 		new_bom.set.assert_not_called()
-
-
-if __name__ == "__main__":
-	unittest.main()

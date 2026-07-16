@@ -4,11 +4,11 @@ Pure-logic unit tests for FG BOM Field Configuration.validate.
 Run with:
   bench --site <site> run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.fg_bom_field_configuration.test_fg_bom_field_configuration
 """
-import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.fg_bom_field_configuration.fg_bom_field_configuration import (
 	FGBOMFieldConfiguration,
@@ -28,7 +28,11 @@ def _row(idx, subcategory, field_name, fg_bom_field, is_active=1):
 	)
 
 
-class TestFGBOMFieldConfigurationValidate(unittest.TestCase):
+class TestFGBOMFieldConfigurationValidate(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(f"{MOD}.frappe.get_meta")
 	def test_rejects_unknown_bom_field(self, mock_get_meta):
 		meta = MagicMock()
@@ -98,7 +102,3 @@ class TestFGBOMFieldConfigurationValidate(unittest.TestCase):
 		obj = SimpleNamespace(field_config=[row])
 		FGBOMFieldConfiguration.validate(obj)
 		self.assertFalse(row.fg_bom_field)
-
-
-if __name__ == "__main__":
-	unittest.main()

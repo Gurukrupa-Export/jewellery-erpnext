@@ -329,7 +329,10 @@ class ManufacturingPlan(Document):
 		self.manufacturing_plan_table = []
 		for item_row in items:
 			bom = item_row.get("bom") or item_row.get("master_bom")
-			if not bom and item_row.get("order_form_type") == "Repair Order":
+			if not bom and (
+				item_row.get("order_form_type") == "Repair Order"
+				or self.select_manufacture_order == "Repair"
+			):
 				bom = item_row.get("serial_id_bom")
 			if bom:
 				item_row["manufacturing_order_qty"] = item_row.get("pending_qty")
@@ -380,6 +383,7 @@ def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filt
 		(SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty)
 		& (SalesOrderItem.order_form_type != "Repair Order")
 		& (SalesOrder.custom_repair_order_form.isnull())
+		& (SalesOrder.order_type != "Repair")
 	)
 
 	if txt:
@@ -433,7 +437,7 @@ def get_repair_pending_ppo_sales_order(
 	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
 
 	conditions = (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty) & (
-		SalesOrderItem.order_form_type == "Repair Order"
+		SalesOrder.order_type == "Repair"
 	)
 
 	if txt:
@@ -554,10 +558,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	master_bom = None
 	if doc.select_manufacture_order == "Manufacturing":
 		master_bom = row.manufacturing_bom
-	elif (
-		doc.select_manufacture_order == "Repair"
-		and row.order_form_type == "Repair Order"
-	):
+	elif doc.select_manufacture_order == "Repair":
 		master_bom = row.serial_id_bom
 
 	if master_bom:
@@ -661,6 +662,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 def create_subcontracting_order(doc):
 	make_subcontracting_order(doc)
 
+
 @frappe.whitelist()
 def get_cad_eligible_items(manufacturing_plan):
 	"""Item codes in this plan whose earliest Parent Manufacturing Order has no CAD/CAM MWO yet."""
@@ -683,10 +685,13 @@ def get_cad_eligible_items(manufacturing_plan):
 		)
 		if not pmo:
 			continue
-		if frappe.db.get_value("Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}):
+		if frappe.db.get_value(
+			"Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}
+		):
 			continue
 		eligible.append(item_code)
 	return eligible
+
 
 @frappe.whitelist()
 def create_cad_mwo(manufacturing_plan, item_code, reason=None):
@@ -703,9 +708,9 @@ def create_cad_mwo(manufacturing_plan, item_code, reason=None):
 	)
 	if not pmo:
 		frappe.throw(
-			_("No Parent Manufacturing Order found for Item {0} in Manufacturing Plan {1}").format(
-				item_code, manufacturing_plan
-			)
+			_(
+				"No Parent Manufacturing Order found for Item {0} in Manufacturing Plan {1}"
+			).format(item_code, manufacturing_plan)
 		)
 	return create_mwo(pmo, None, reason)
 
@@ -732,54 +737,6 @@ def create_cad_mwo_bulk(manufacturing_plan, item_codes, reason=None):
 
 	if failed:
 		frappe.msgprint(
-			_("Could not create CAD MWO for: {0}").format(", ".join(failed)), indicator="red"
+			_("Could not create CAD MWO for: {0}").format(", ".join(failed)),
+			indicator="red",
 		)
-
-
-
-
-@frappe.whitelist()
-@frappe.validate_and_sanitize_search_inputs
-def get_repair_pending_ppo_sales_order(
-	doctype, txt, searchfield, start, page_len, filters
-):
-	SalesOrder = frappe.qb.DocType("Sales Order")
-	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
-
-	conditions = (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty) & (
-		SalesOrderItem.order_form_type == "Repair Order"
-	)
-
-	if txt:
-		conditions &= SalesOrder.name.like(f"%{txt}%")
-
-	if customer := filters.get("customer"):
-		conditions &= SalesOrder.customer == customer
-
-	if company := filters.get("company"):
-		conditions &= SalesOrder.company == company
-
-	if branch := filters.get("branch"):
-		conditions &= SalesOrder.branch == branch
-
-	if txn_date := filters.get("transaction_date"):
-		conditions &= SalesOrder.transaction_date == txn_date
-
-	query = (
-		frappe.qb.from_(SalesOrder)
-		.distinct()
-		.from_(SalesOrderItem)
-		.select(
-			SalesOrder.name,
-			SalesOrder.transaction_date,
-			SalesOrder.company,
-			SalesOrder.customer,
-		)
-		.where((SalesOrder.name == SalesOrderItem.parent) & conditions)
-		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
-		.limit(page_len)
-		.offset(start)
-	)
-
-	so_data = query.run(as_dict=True)
-	return so_data
