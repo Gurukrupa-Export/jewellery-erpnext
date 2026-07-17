@@ -8,11 +8,11 @@ Run with:
 Note: frappe.db is a LocalProxy, so a default patch() mints async-mock children.
 We inject an explicit MagicMock via patch(target, obj).
 """
-import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
+from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order import (
 	ManufacturingWorkOrder,
@@ -42,7 +42,7 @@ def _resolve(pmo_value, ro_new_bom):
 		return ManufacturingWorkOrder._resolve_repair_order_bom(fake_self)
 
 
-class TestResolveRepairOrderBom(unittest.TestCase):
+class TestResolveRepairOrderBom(IntegrationTestCase):
 	def test_returns_new_bom_for_repair_order(self):
 		bom, pmo = _resolve(("Repair Order", "RO-1"), "BOM-X")
 		self.assertEqual(bom, "BOM-X")
@@ -76,7 +76,7 @@ def _check_dept(sn_dept, mwo_dept):
 		ManufacturingWorkOrder._assert_serial_in_department(fake_self, "WH-1")
 
 
-class TestAssertSerialInDepartment(unittest.TestCase):
+class TestAssertSerialInDepartment(IntegrationTestCase):
 	def test_matching_department_ok(self):
 		_check_dept("Dept A", "Dept A")  # no throw
 
@@ -112,7 +112,7 @@ def _check_bookable(item_tracking):
 		)
 
 
-class TestAssertComponentsBookable(unittest.TestCase):
+class TestAssertComponentsBookable(IntegrationTestCase):
 	def test_batch_and_seriesed_serial_items_ok(self):
 		# batch item (0, None) and serial item WITH a series -> allowed.
 		_check_bookable({"BATCH-ITEM": (0, None), "SER-ITEM": (1, "SER-.###")})
@@ -123,7 +123,3 @@ class TestAssertComponentsBookable(unittest.TestCase):
 
 	def test_empty_bom_ok(self):
 		_check_bookable({})
-
-
-if __name__ == "__main__":
-	unittest.main()
