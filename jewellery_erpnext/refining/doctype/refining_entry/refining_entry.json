@@ -12,7 +12,7 @@
   "refining_type",
   "is_external",
   "supplier",
-  "refining_process",
+  "pricing_item",
   "company",
   "posting_date",
   "column_break_general",
@@ -110,34 +110,33 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Refining Type",
-   "options": "\nDust Refining\nWork Order Refining\nSerial Number Refining\nScrap Refining\nExternal Refinery",
+   "options": "\nDust Refining\nWork Order Refining\nSerial Number Refining\nScrap Refining",
    "reqd": 1
   },
   {
    "default": "0",
-   "description": "Deprecated — superseded by Refining Type = External Refinery. Retained for historical records only.",
+   "depends_on": "eval:doc.refining_type",
+   "description": "Send this material to an external refinery (supplier) instead of the internal refining department. On submit, material is issued to the Supplier Warehouse and a service Purchase Order is created; the refined pure metal is received back via the Receive Material from Supplier action.",
    "fieldname": "is_external",
    "fieldtype": "Check",
-   "hidden": 1,
-   "label": "External Refining (Deprecated)",
-   "read_only": 1
+   "in_standard_filter": 1,
+   "label": "Is External Refining"
   },
   {
-   "depends_on": "eval:doc.refining_type=='External Refinery'",
+   "depends_on": "eval:doc.is_external",
    "fieldname": "supplier",
    "fieldtype": "Link",
    "label": "Refinery Supplier",
-   "mandatory_depends_on": "eval:doc.refining_type=='External Refinery'",
+   "mandatory_depends_on": "eval:doc.is_external",
    "options": "Supplier"
   },
   {
-   "depends_on": "eval:doc.refining_type=='External Refinery'",
-   "description": "Refining process from the Refinery Price List (e.g. Polishing/Vacuum). Determines the service rate.",
-   "fieldname": "refining_process",
+   "depends_on": "eval:doc.is_external",
+   "description": "Which Refinery Price List prices this consignment. Auto-set from the Refining Type (Serial/MWO → Finish & Semi Finish Scrap, Scrap → Metal Refining Scrap, Dust → Main Dust) — switch it for other dust kinds (Vacuum Bag, Tools Dust, Ultra Liquid…).",
+   "fieldname": "pricing_item",
    "fieldtype": "Link",
-   "label": "Refining Process",
-   "mandatory_depends_on": "eval:doc.refining_type=='External Refinery'",
-   "options": "Refining Process"
+   "label": "Pricing Category",
+   "options": "Item"
   },
   {
    "fieldname": "company",
@@ -186,7 +185,7 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval:doc.refining_type=='External Refinery'",
+   "depends_on": "eval:doc.is_external",
    "description": "Warehouse of the selected Refinery Supplier (Warehouse.subcontractor). Materials are issued here on submit.",
    "fieldname": "supplier_warehouse",
    "fieldtype": "Link",
@@ -531,8 +530,7 @@
   },
   {
    "allow_on_submit": 1,
-   "allow_on_submit": 1,
-   "depends_on": "eval:doc.refining_type=='External Refinery'",
+   "depends_on": "eval:doc.is_external",
    "description": "Auto-created service Purchase Order billing the Refinery Price List charge for this entry, if a price band is configured. Optional — the physical send/receive flow does not depend on it.",
    "fieldname": "refining_entry_po",
    "fieldtype": "Link",
@@ -542,7 +540,7 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval:doc.refining_type=='External Refinery'",
+   "depends_on": "eval:doc.is_external",
    "fieldname": "refined_metal_item",
    "fieldtype": "Link",
    "label": "Refined Metal Item",
@@ -550,7 +548,7 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval:doc.refining_type=='External Refinery'",
+   "depends_on": "eval:doc.is_external",
    "description": "Gross gold weight sent to the supplier. Also the Purchase Order metal line quantity.",
    "fieldname": "qty_to_refine",
    "fieldtype": "Float",
@@ -560,7 +558,7 @@
   },
   {
    "allow_on_submit": 1,
-   "depends_on": "eval:doc.refining_type=='External Refinery'",
+   "depends_on": "eval:doc.is_external",
    "description": "Actual refined weight received back from the supplier. Set by the \"Receive Material from Supplier\" action.",
    "fieldname": "received_weight",
    "fieldtype": "Float",
@@ -571,7 +569,7 @@
   },
   {
    "allow_on_submit": 1,
-   "depends_on": "eval:doc.refining_type=='External Refinery'",
+   "depends_on": "eval:doc.is_external",
    "description": "Received quantity (pcs), if applicable — informational only.",
    "fieldname": "received_qty",
    "fieldtype": "Float",

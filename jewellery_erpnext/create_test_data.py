@@ -2311,6 +2311,17 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 
+		# The repair "Unpack Raw Material" flow submits SEs of this type; ensure it
+		# exists before the reservation seed links to it (not shipped in fixtures).
+		if not frappe.db.exists("Stock Entry Type", "Repair Unpack"):
+			frappe.get_doc(
+				{
+					"doctype": "Stock Entry Type",
+					"name": "Repair Unpack",
+					"purpose": "Repack",
+				}
+			).insert(ignore_permissions=True)
+
 		mop_settings = frappe.get_single("MOP Settings")
 		if not mop_settings.stock_entry_type_to_reservation:
 			mop_settings.append(
@@ -2333,6 +2344,15 @@ def create_test_data():
 				{
 					"stock_entry_type_to_reservation": "Material Receive (WORK ORDER)",
 					"is_decrease_weight": 1,
+				},
+			)
+			# Repair "Unpack Raw Material" books BOM raw materials into the work order
+			# as an inward move, so it reserves + logs like a WORK ORDER transfer.
+			mop_settings.append(
+				"stock_entry_type_to_reservation",
+				{
+					"stock_entry_type_to_reservation": "Repair Unpack",
+					"is_increase_weight": 1,
 				},
 			)
 			mop_settings.save()
@@ -2673,6 +2693,79 @@ def create_test_data():
 					],
 				}
 			).insert(ignore_permissions=True)
+		# Patches
+		in_migrate = getattr(frappe.flags, "in_migrate", False)
+		frappe.flags.in_migrate = True
+		try:
+			from jewellery_erpnext.patches.add_mr_transfer_se_fields import (
+				execute as _ensure_mr_transfer_se_fields,
+			)
+
+			_ensure_mr_transfer_se_fields()
+
+			from jewellery_erpnext.patches.add_order_form_detail_pre_order_field import (
+				execute as _ensure_order_form_detail_pre_order_field,
+			)
+
+			_ensure_order_form_detail_pre_order_field()
+
+			from jewellery_erpnext.patches.add_stock_entry_tree_number_field import (
+				execute as _ensure_stock_entry_tree_number_field,
+			)
+
+			_ensure_stock_entry_tree_number_field()
+
+			from jewellery_erpnext.patches.add_warehouse_msl_tracking_field import (
+				execute as _ensure_warehouse_msl_tracking_field,
+			)
+
+			_ensure_warehouse_msl_tracking_field()
+
+			from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
+
+			ensure_fetch_from_columns()
+
+			from jewellery_erpnext.property_setter_guard import (
+				ensure_field_precision_property_setters,
+			)
+
+			ensure_field_precision_property_setters()
+
+			from jewellery_erpnext.patches.add_order_type_repair_option import (
+				ensure_order_type_repair_option,
+			)
+
+			ensure_order_type_repair_option()
+
+			from jewellery_erpnext.patches.add_customer_refining_flags import (
+				execute as customer_refining_flags,
+			)
+
+			customer_refining_flags()
+
+			from jewellery_erpnext.patches.add_po_refining_entry_field import (
+				execute as po_refining_entry_field,
+			)
+
+			po_refining_entry_field()
+
+			# Masters (the dust/scrap Items) MUST be seeded before the price list:
+			# seed_refinery_price_list skips any price row whose Item does not exist yet,
+			# so running it first would create no price lists at all (get_refinery_rate
+			# then returns None and external-refining POs are priced at 0).
+			from jewellery_erpnext.patches.seed_refining_masters import (
+				execute as refining_masters,
+			)
+
+			refining_masters()
+
+			from jewellery_erpnext.patches.seed_refinery_price_list import (
+				execute as refining_price_list,
+			)
+
+			refining_price_list()
+		finally:
+			frappe.flags.in_migrate = in_migrate
 
 	setup_data()
 	create_attribute_value()
@@ -2682,48 +2775,6 @@ def create_test_data():
 
 
 def setup_data():
-	from jewellery_erpnext.patches.add_mr_transfer_se_fields import (
-		execute as _ensure_mr_transfer_se_fields,
-	)
-
-	_ensure_mr_transfer_se_fields()
-
-	from jewellery_erpnext.patches.add_order_form_detail_pre_order_field import (
-		execute as _ensure_order_form_detail_pre_order_field,
-	)
-
-	_ensure_order_form_detail_pre_order_field()
-
-	from jewellery_erpnext.patches.add_stock_entry_tree_number_field import (
-		execute as _ensure_stock_entry_tree_number_field,
-	)
-
-	_ensure_stock_entry_tree_number_field()
-
-	# Provision the Warehouse.custom_msl_tracking child table (req #7/#8). It lives
-	# only in custom_fields/warehouse.json + its patch, which install-app marks
-	# complete WITHOUT running on fresh sites, so recalculate_msl_tracking's
-	# doc.append("custom_msl_tracking", ...) would be a silent no-op. Idempotent.
-	from jewellery_erpnext.patches.add_warehouse_msl_tracking_field import (
-		execute as _ensure_warehouse_msl_tracking_field,
-	)
-
-	_ensure_warehouse_msl_tracking_field()
-
-	# External Refinery service-PO back-link fields (Purchase Order.refining_entry,
-	# Purchase Order Item.custom_refining_price_list) — same fixture-only-on-fresh-sites
-	# issue as above; without these, create_external_refining_po would fail link
-	# validation on a fresh/CI site. Idempotent.
-	from jewellery_erpnext.patches.add_po_refining_entry_field import (
-		execute as _ensure_po_refining_entry_field,
-	)
-
-	_ensure_po_refining_entry_field()
-
-	# Ensure the "Material Transfer (MAIN SLIP)" Stock Entry Type master exists. The casting Tree
-	# Number "Issue Material" button builds an SE of this type; it lives only in
-	# fixtures/stock_entry_type.json (dead on fresh/CI sites), so without it se.insert() fails link
-	# validation. Idempotent. It stays OUT of MOP Settings' reservation list, so it is ledger-invisible.
 	if not frappe.db.exists("Stock Entry Type", "Material Transfer (MAIN SLIP)"):
 		frappe.get_doc(
 			{
@@ -2733,11 +2784,6 @@ def setup_data():
 			}
 		).insert(ignore_permissions=True)
 
-	# Ensure the "Process Loss" Stock Entry Type master exists (mirrors the
-	# ensure_process_loss_stock_entry_type patch). Employee IR loss, Main Slip loss
-	# and the Metal Conversions melting-loss flow all build SEs of this type; it lives
-	# only on production (created manually), so without it se.insert() fails link
-	# validation on fresh/CI sites. Idempotent.
 	if not frappe.db.exists("Stock Entry Type", "Process Loss"):
 		frappe.get_doc(
 			{
@@ -2746,21 +2792,6 @@ def setup_data():
 				"purpose": "Repack",
 			}
 		).insert(ignore_permissions=True)
-
-	# Provision every custom_* column targeted by an app fetch_from. These live in
-	# custom_fields/*.json + per-field patches that install-app marks complete WITHOUT
-	# running on fresh sites, so a missing column makes link validation raise 1054 on
-	# save/submit (e.g. MWO.jewelex_batch_no -> manufacturing_order.custom_jewelex_batch_no).
-	# Idempotent: a no-op once the columns exist.
-	from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
-
-	ensure_fetch_from_columns()
-
-	from jewellery_erpnext.property_setter_guard import (
-		ensure_field_precision_property_setters,
-	)
-
-	ensure_field_precision_property_setters()
 
 	if not frappe.db.exists("Gender", "Other"):
 		frappe.get_doc({"doctype": "Gender", "gender": "Other"}).insert(
@@ -2837,13 +2868,6 @@ def setup_data():
 				{"doctype": "Attribute Value", "attribute_value": _attr_value}
 			).insert(ignore_permissions=True)
 
-	# Provision the setting-type Attribute Values backing the Sketch Order Form /
-	# Sketch Order link fields (setting_type -> is_setting_type, sub_setting_type1 ->
-	# is_sub_setting_type). These are created only by the full create_test_data()
-	# helper (create_attribute_value), never by setup_data(), so the Sketch Order Form
-	# suite hits LinkValidationError ("Could not find ... Setting Type: Close ...")
-	# under the setup_data-only CI bootstrap. Parents are inserted before their
-	# sub-settings so parent_attribute_value resolves. Idempotent.
 	for _setting_value in (
 		{"attribute_value": "Open", "is_setting_type": 1},
 		{"attribute_value": "Close", "is_setting_type": 1},
@@ -3291,6 +3315,11 @@ def setup_data():
 				"uom_name": "Carat",
 			}
 		).insert(ignore_permissions=True)
+
+	if not frappe.db.exists("UOM", "Litre"):
+		frappe.get_doc({"doctype": "UOM", "uom_name": "Litre"}).insert(
+			ignore_permissions=True
+		)
 
 	create_warehouse_and_department()
 	print("Setup for the test data has been completed")

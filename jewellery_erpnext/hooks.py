@@ -143,7 +143,7 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.on_submit",
 			"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.create_subcontracting_log",
-			"jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_gold_repack",
+			# "jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_gold_repack",
 			"jewellery_erpnext.customer_subcontracting.sub_utils.snc.stamp_snc_requirement",
 		],
 		"before_cancel": [
@@ -191,7 +191,6 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.before_validate",
 		],
-        
 		"validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate",
 		],

@@ -16,11 +16,17 @@ quantity is untouched and NO conversion Stock Entry is created.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import frappe
 from frappe.exceptions import ValidationError
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events import (
 	melting_loss,
+	utils,
+)
+
+_UTILS_PATH = (
+	"jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.utils"
 )
 
 
@@ -88,6 +94,9 @@ class TestMeltingLossValidation(IntegrationTestCase):
 		pass
 
 	def setUp(self):
+		if not hasattr(frappe, "db") or not frappe.db:
+			frappe.db = MagicMock()
+
 		self._patches = [
 			patch.object(melting_loss, "_loss_precision", return_value=3),
 			patch.object(melting_loss, "flt", _det_flt),
@@ -179,6 +188,11 @@ class _FakeSE:
 
 	def __init__(self, payload):
 		self.payload = payload
+		self.doctype = (
+			payload.get("doctype", "Stock Entry")
+			if isinstance(payload, dict)
+			else "Stock Entry"
+		)
 		self.items = []
 		self.name = "SE-LOSS-0001"
 		self.saved = False
@@ -200,6 +214,9 @@ class TestMeltingLossBuilder(IntegrationTestCase):
 		pass
 
 	def setUp(self):
+		if not hasattr(frappe, "db") or not frappe.db:
+			frappe.db = MagicMock()
+
 		self._patches = [
 			patch.object(melting_loss, "_loss_precision", return_value=3),
 			patch.object(melting_loss, "flt", _det_flt),
@@ -216,13 +233,16 @@ class TestMeltingLossBuilder(IntegrationTestCase):
 		captured = {}
 
 		def _get_doc(payload):
+			if isinstance(payload, str):
+				# if payload is doctype name
+				payload = {"doctype": payload}
 			se = _FakeSE(payload)
 			captured["se"] = se
 			return se
 
 		with patch("frappe.db.exists", return_value=existing), patch(
 			"frappe.get_doc", side_effect=_get_doc
-		), patch.object(
+		), patch("frappe.new_doc", side_effect=_get_doc), patch.object(
 			melting_loss, "_resolve_loss_item", return_value="ML-G-18KT-75.4-Y"
 		), patch(
 			"jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.gemstone_conversion.get_scrap_warehouse",
@@ -321,3 +341,121 @@ class TestMeltingLossCancel(IntegrationTestCase):
 		):
 			melting_loss.cancel_melting_loss_stock_entries(doc)
 		self.assertEqual(len(cancelled), 1)
+
+
+class _FakeMCDoc:
+	"""Stand-in Metal Conversions doc for update_source_betch.
+
+	SimpleNamespace lacks ``.append`` and ``.get``; update_source_betch reassigns
+	``self.source_batch_details = []`` then appends dict rows to it.
+	"""
+
+	def __init__(self, **fields):
+		self.source_batch_details = []
+		for key, value in fields.items():
+			setattr(self, key, value)
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+	def append(self, table, row):
+		getattr(self, table).append(frappe._dict(row))
+
+
+class TestUpdateSourceBatch(IntegrationTestCase):
+	"""update_source_betch must consume ONLY the capped (authoritative) batch list.
+
+	The bug: raw get_auto_batch_nos over-reports an orphan-SBB phantom batch, whose
+	row later throws BatchNegativeStockError at SE submit. Swapping to
+	capped_auto_batch_nos drops the phantom here; genuine shortfalls surface the
+	friendly V7 throw at validate time instead.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		if not hasattr(frappe, "db") or not frappe.db:
+			frappe.db = MagicMock()
+		self._patches = [
+			patch.object(utils, "flt", _det_flt),
+			# Every source batch here is Regular Stock owned by no customer.
+			patch(
+				f"{_UTILS_PATH}.frappe.db.get_value",
+				return_value=("Regular Stock", None),
+			),
+		]
+		for p in self._patches:
+			p.start()
+
+	def tearDown(self):
+		for p in self._patches:
+			p.stop()
+
+	def _doc(self, **fields):
+		defaults = {
+			"is_melting_loss": 1,
+			"loss_qty": 0.1,
+			"source_qty": 2.0,
+			"source_item": "M-G-18KT-75.4-Y",
+			"source_warehouse": "Waxing RM - GEPL",
+			"customer": None,
+			"is_customer_metal": 0,
+			# Set posting_time so the builder never calls the real nowtime().
+			"date": "2026-07-15",
+			"posting_time": "10:00:00",
+		}
+		defaults.update(fields)
+		return _FakeMCDoc(**defaults)
+
+	def test_phantom_dropped_and_qty_omitted(self):
+		# capped_auto_batch_nos has already dropped the orphan phantom; only a real
+		# batch survives. The phantom GE2D081-... must NOT appear in the result.
+		real = [frappe._dict(batch_no="REAL", qty=0.5, warehouse="Waxing RM - GEPL")]
+		with patch(
+			f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=real
+		) as mock_capped:
+			doc = self._doc()
+			utils.update_source_betch(doc)
+		self.assertEqual(
+			[dict(r) for r in doc.source_batch_details],
+			[{"qty": 0.1, "batch": "REAL"}],
+		)
+		# qty must NOT be passed: it would let a phantom FIFO-truncate real batches
+		# before the inventory-type / customer filter runs.
+		self.assertNotIn("qty", mock_capped.call_args[0][0])
+
+	def test_friendly_shortfall_throw_not_batch_negative(self):
+		# After the phantom is dropped, the real batch can't cover loss_qty (0.1):
+		# the friendly V7 throw fires at validate, standing in for the deep
+		# BatchNegativeStockError that used to fire at SE submit.
+		short = [frappe._dict(batch_no="REAL", qty=0.05, warehouse="Waxing RM - GEPL")]
+		with patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=short):
+			doc = self._doc()
+			with self.assertRaisesRegex(
+				ValidationError, "source quantity is not available"
+			):
+				utils.update_source_betch(doc)
+
+	def test_all_phantom_throws_no_batch(self):
+		# Only the phantom existed; capping returns an empty list.
+		with patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=[]):
+			doc = self._doc()
+			with self.assertRaisesRegex(
+				ValidationError, "No batch available for given warehouse"
+			):
+				utils.update_source_betch(doc)
+
+	def test_conversion_mode_unchanged(self):
+		# is_melting_loss=0 -> required_qty = source_qty; FIFO across two real batches.
+		batches = [
+			frappe._dict(batch_no="B1", qty=0.6, warehouse="Waxing RM - GEPL"),
+			frappe._dict(batch_no="B2", qty=0.9, warehouse="Waxing RM - GEPL"),
+		]
+		with patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=batches):
+			doc = self._doc(is_melting_loss=0, source_qty=1.0)
+			utils.update_source_betch(doc)
+		rows = [dict(r) for r in doc.source_batch_details]
+		self.assertEqual([r["batch"] for r in rows], ["B1", "B2"])
+		self.assertAlmostEqual(sum(r["qty"] for r in rows), 1.0, places=3)

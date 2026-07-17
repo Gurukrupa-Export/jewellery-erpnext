@@ -15,6 +15,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_mould_id_map,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
+	create_mwo,
 	make_manufacturing_order,
 )
 
@@ -328,7 +329,10 @@ class ManufacturingPlan(Document):
 		self.manufacturing_plan_table = []
 		for item_row in items:
 			bom = item_row.get("bom") or item_row.get("master_bom")
-			if not bom and item_row.get("order_form_type") == "Repair Order":
+			if not bom and (
+				item_row.get("order_form_type") == "Repair Order"
+				or self.select_manufacture_order == "Repair"
+			):
 				bom = item_row.get("serial_id_bom")
 			if bom:
 				item_row["manufacturing_order_qty"] = item_row.get("pending_qty")
@@ -379,6 +383,7 @@ def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filt
 		(SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty)
 		& (SalesOrderItem.order_form_type != "Repair Order")
 		& (SalesOrder.custom_repair_order_form.isnull())
+		& (SalesOrder.order_type != "Repair")
 	)
 
 	if txt:
@@ -432,7 +437,7 @@ def get_repair_pending_ppo_sales_order(
 	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
 
 	conditions = (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty) & (
-		SalesOrderItem.order_form_type == "Repair Order"
+		SalesOrder.order_type == "Repair"
 	)
 
 	if txt:
@@ -553,10 +558,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	master_bom = None
 	if doc.select_manufacture_order == "Manufacturing":
 		master_bom = row.manufacturing_bom
-	elif (
-		doc.select_manufacture_order == "Repair"
-		and row.order_form_type == "Repair Order"
-	):
+	elif doc.select_manufacture_order == "Repair":
 		master_bom = row.serial_id_bom
 
 	if master_bom:
@@ -662,47 +664,79 @@ def create_subcontracting_order(doc):
 
 
 @frappe.whitelist()
-@frappe.validate_and_sanitize_search_inputs
-def get_repair_pending_ppo_sales_order(
-	doctype, txt, searchfield, start, page_len, filters
-):
-	SalesOrder = frappe.qb.DocType("Sales Order")
-	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
-
-	conditions = (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty) & (
-		SalesOrderItem.order_form_type == "Repair Order"
+def get_cad_eligible_items(manufacturing_plan):
+	"""Item codes in this plan whose earliest Parent Manufacturing Order has no CAD/CAM MWO yet."""
+	item_codes = frappe.db.sql(
+		"""
+		SELECT DISTINCT item_code
+		FROM `tabManufacturing Plan Table`
+		WHERE parent = %s AND item_code IS NOT NULL AND item_code != ''
+		""",
+		(manufacturing_plan,),
 	)
 
-	if txt:
-		conditions &= SalesOrder.name.like(f"%{txt}%")
-
-	if customer := filters.get("customer"):
-		conditions &= SalesOrder.customer == customer
-
-	if company := filters.get("company"):
-		conditions &= SalesOrder.company == company
-
-	if branch := filters.get("branch"):
-		conditions &= SalesOrder.branch == branch
-
-	if txn_date := filters.get("transaction_date"):
-		conditions &= SalesOrder.transaction_date == txn_date
-
-	query = (
-		frappe.qb.from_(SalesOrder)
-		.distinct()
-		.from_(SalesOrderItem)
-		.select(
-			SalesOrder.name,
-			SalesOrder.transaction_date,
-			SalesOrder.company,
-			SalesOrder.customer,
+	eligible = []
+	for (item_code,) in item_codes:
+		pmo = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			{"manufacturing_plan": manufacturing_plan, "item_code": item_code},
+			"name",
+			order_by="creation asc",
 		)
-		.where((SalesOrder.name == SalesOrderItem.parent) & conditions)
-		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
-		.limit(page_len)
-		.offset(start)
-	)
+		if not pmo:
+			continue
+		if frappe.db.get_value(
+			"Manufacturing Work Order", {"manufacturing_order": pmo, "for_cad_cam": 1}
+		):
+			continue
+		eligible.append(item_code)
+	return eligible
 
-	so_data = query.run(as_dict=True)
-	return so_data
+
+@frappe.whitelist()
+def create_cad_mwo(manufacturing_plan, item_code, reason=None):
+	"""Create a CAD/CAM Manufacturing Work Order for an item in this plan.
+
+	Attaches to the earliest Parent Manufacturing Order for (manufacturing_plan, item_code),
+	since CAD/CAM design work happens once per item, not once per unit.
+	"""
+	pmo = frappe.db.get_value(
+		"Parent Manufacturing Order",
+		{"manufacturing_plan": manufacturing_plan, "item_code": item_code},
+		"name",
+		order_by="creation asc",
+	)
+	if not pmo:
+		frappe.throw(
+			_(
+				"No Parent Manufacturing Order found for Item {0} in Manufacturing Plan {1}"
+			).format(item_code, manufacturing_plan)
+		)
+	return create_mwo(pmo, None, reason)
+
+
+@frappe.whitelist()
+def create_cad_mwo_bulk(manufacturing_plan, item_codes, reason=None):
+	"""Create CAD/CAM Manufacturing Work Orders for multiple items in this plan.
+
+	Each item is committed as soon as it succeeds, so one item lacking a Parent
+	Manufacturing Order doesn't roll back the items already created before it.
+	"""
+	if isinstance(item_codes, str):
+		item_codes = json.loads(item_codes)
+
+	failed = []
+	for item_code in item_codes:
+		try:
+			create_cad_mwo(manufacturing_plan, item_code, reason)
+			frappe.db.commit()
+		except Exception:
+			frappe.db.rollback()
+			frappe.log_error(title="CAD MWO bulk creation failed")
+			failed.append(item_code)
+
+	if failed:
+		frappe.msgprint(
+			_("Could not create CAD MWO for: {0}").format(", ".join(failed)),
+			indicator="red",
+		)

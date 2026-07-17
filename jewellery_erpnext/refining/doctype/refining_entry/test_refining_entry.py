@@ -431,13 +431,12 @@ class TestRefiningEntry(IntegrationTestCase):
 
 	def test_external_refinery_entry(self):
 		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 5.0)
-		ensure_refining_process("Test Refining Process")
 
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "External Refinery"
+		re.refining_type = "Scrap Refining"
+		re.is_external = 1
 		re.company = "Test_Company"
 		re.supplier = "Test_Supplier"
-		re.refining_process = "Test Refining Process"
 		re.department = "Waxing - T"
 		re.warehouse = "Waxing RM - T"
 		re.refining_department = "Refinery - T"
@@ -458,6 +457,17 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(re.qty_to_refine, 5.0)
 		self.assertIsNotNone(re.supplier_warehouse)
 		self.assertIsNotNone(re.material_transfer_se)
+
+		# Category pricing: a Scrap-type external entry defaults its Pricing Category
+		# to Metal Refining Scrap (REF-RMS-001, seeded by seed_refining_masters /
+		# seed_refinery_price_list), whose 0-50 g Gross-Weight slab is Flat 750 — one
+		# PO line, billed at submit. A PO must exist for EVERY external entry.
+		self.assertEqual(re.pricing_item, "REF-RMS-001")
+		self.assertIsNotNone(re.refining_entry_po)
+		po = frappe.get_doc("Purchase Order", re.refining_entry_po)
+		self.assertEqual(len(po.items), 1)
+		self.assertEqual(po.items[0].rate, 750)
+		self.assertEqual(po.items[0].custom_gross_wt, 5.0)
 
 		se1 = frappe.get_doc("Stock Entry", re.material_transfer_se)
 		self.assertEqual(se1.stock_entry_type, "Material Transfer")
@@ -538,7 +548,8 @@ class TestRefiningEntry(IntegrationTestCase):
 
 	def test_external_refinery_submit_fails_without_supplier(self):
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "External Refinery"
+		re.refining_type = "Scrap Refining"
+		re.is_external = 1
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
 		re.warehouse = "Waxing RM - T"
@@ -700,13 +711,6 @@ def gold_receipt(warehouse, item_code, qty):
 	se.append("items", {"t_warehouse": warehouse, "item_code": item_code, "qty": qty})
 	se.save()
 	se.submit()
-
-
-def ensure_refining_process(process_name):
-	if not frappe.db.exists("Refining Process", process_name):
-		frappe.get_doc(
-			{"doctype": "Refining Process", "process_name": process_name}
-		).insert(ignore_permissions=True)
 
 
 def mwo_semi_finished_goods(self):

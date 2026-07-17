@@ -2,7 +2,9 @@ import frappe
 from frappe import _
 
 def validate(self, method):
-    # pass
+    if self.is_return:
+        self.set("custom_invoice_item", [])
+        return
     self.set("custom_invoice_item", [])
     added_items = set()  
 
