@@ -12,6 +12,7 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.inventory_utils import (
 	in_configured_timeslot,
 	validate_customer_voucher,
+	validate_sample_goods_not_consumed,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	get_fifo_batches,
@@ -30,6 +31,7 @@ def before_validate(self, method):
 	if not in_configured_timeslot(self):
 		frappe.throw(_("Not Allowed to do entries, its freeze time"))
 	validate_customer_voucher(self)
+	validate_sample_goods_not_consumed(self)
 	set_employee(self)
 	set_gross_wt(self)
 	validate_warehouse(self)

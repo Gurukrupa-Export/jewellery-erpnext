@@ -69,12 +69,18 @@ doc_events = {
 	# so the sync process can create Stock Entries and update MOP Logs unhindered.
 	"Employee IR": {
 		"before_save": _EOD_LOCK_VALIDATOR,
-		"before_submit": _EOD_LOCK_VALIDATOR,
+		"before_submit": [
+			_EOD_LOCK_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.validate_no_sample_issue",
+		],
 		"before_cancel": _EOD_LOCK_VALIDATOR,
 	},
 	"Department IR": {
 		"before_save": _EOD_LOCK_VALIDATOR,
-		"before_submit": _EOD_LOCK_VALIDATOR,
+		"before_submit": [
+			_EOD_LOCK_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils.validate_no_sample_issue",
+		],
 		"before_cancel": _EOD_LOCK_VALIDATOR,
 	},
 	"MOP Log": {

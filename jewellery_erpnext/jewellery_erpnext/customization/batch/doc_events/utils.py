@@ -84,7 +84,43 @@ def update_inventory_dimentions(self):
 	if self.reference_doctype == "Stock Entry" and self.custom_customer:
 		self.custom_customer_voucher_type = frappe.db.get_value(
 			"Stock Entry", self.reference_name, "customer_voucher_type"
+		) or _source_batch_voucher_type(self)
+
+
+def _source_batch_voucher_type(batch):
+	"""The voucher type of the customer's batch this one was made from.
+
+	``customer_voucher_type`` only lives on the SE that first *received* the goods; a derived entry
+	(a Process Loss repack, a conversion) leaves the header blank, so reading it alone stamps the
+	new batch with an empty voucher type and the material stops looking like the Customer
+	Subcontracting / Sample / Repair stock it still is. Fall back to the batch this one was
+	physically made from -- the consumed row of the same Stock Entry, matched on the customer we
+	already resolved.
+
+	The SE header is deliberately not written instead (as the Employee IR loss engine does at
+	loss_stock_entry.py): setting it trips ``validate_customer_voucher``, which throws for batch
+	items under "Customer Repair" -- the same trap documented at manufacturing_work_order.py's
+	unpack flow.
+	"""
+	source_batches = frappe.db.get_all(
+		"Stock Entry Detail",
+		filters={
+			"parent": batch.reference_name,
+			"customer": batch.custom_customer,
+			"s_warehouse": ["is", "set"],
+			"batch_no": ["is", "set"],
+		},
+		pluck="batch_no",
+	)
+	for batch_no in source_batches:
+		if not batch_no or batch_no == batch.name:
+			continue
+		voucher_type = frappe.db.get_value(
+			"Batch", batch_no, "custom_customer_voucher_type"
 		)
+		if voucher_type:
+			return voucher_type
+	return None
 
 
 def is_subcontracting_gold_repack(batch):

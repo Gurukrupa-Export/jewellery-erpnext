@@ -2731,6 +2731,12 @@ def create_test_data():
 
 			ensure_field_precision_property_setters()
 
+			from jewellery_erpnext.patches.ensure_float_precision_three import (
+				ensure_float_precision,
+			)
+
+			ensure_float_precision()
+
 			from jewellery_erpnext.patches.add_order_type_repair_option import (
 				ensure_order_type_repair_option,
 			)

@@ -2156,9 +2156,12 @@ class TestLossBatchInventoryResolution(IntegrationTestCase):
 		pass
 
 	def _resolve(self, row, batch_value):
+		# The rules moved to customization/utils/row_ownership (shared with the
+		# tree and warehouse loss builders); loss_stock_entry._resolve_batch_inventory
+		# now delegates there, so `frappe` must be patched where the lookup happens.
 		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir."
-			"doc_events.loss_stock_entry.frappe"
+			"jewellery_erpnext.jewellery_erpnext.customization.utils."
+			"row_ownership.frappe"
 		) as mock_frappe:
 			mock_frappe.db.get_value.return_value = batch_value
 			return loss_stock_entry._resolve_batch_inventory(row)
