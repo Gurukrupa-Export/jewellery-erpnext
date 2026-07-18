@@ -21,18 +21,22 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufa
 MOD = "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order"
 
 
-def _resolve(pmo_value, ro_new_bom):
+def _resolve(pmo_value, ro_bom, requested_fields=None):
 	"""Call _resolve_repair_order_bom with frappe.db.get_value mocked.
 
-	pmo_value : what get_value returns for the PMO row -- (order_form_type, order_form_id) or None.
-	ro_new_bom: what get_value returns for Repair Order.new_bom (the real repair-components BOM).
+	pmo_value: what get_value returns for the PMO row -- (order_form_type, order_form_id) or None.
+	ro_bom   : what get_value returns for the Repair Order's BOM field (the design BOM).
+	requested_fields: optional list the caller can inspect to assert WHICH Repair Order field
+	    was read (guards against regressing to new_bom).
 	"""
 
 	def gv(dt, name, fieldname):
 		if dt == "Parent Manufacturing Order":
 			return pmo_value
 		if dt == "Repair Order":
-			return ro_new_bom
+			if requested_fields is not None:
+				requested_fields.append(fieldname)
+			return ro_bom
 		return None
 
 	mock_db = MagicMock()
@@ -48,6 +52,19 @@ class TestResolveRepairOrderBom(IntegrationTestCase):
 		self.assertEqual(bom, "BOM-X")
 		self.assertEqual(pmo, "PMO-1")
 
+	def test_reads_the_design_bom_field_not_new_bom(self):
+		"""new_bom is only ever written when required_design == 'No', so a Manual/CAD
+		repair never has one. Requiring it blocked the unpack outright -- the resolver
+		must read the design ``bom`` link instead."""
+		asked = []
+		_resolve(("Repair Order", "RO-1"), "BOM-X", requested_fields=asked)
+		self.assertEqual(asked, ["bom"])
+
+	def test_resolves_when_repair_order_has_no_new_bom(self):
+		# The Manual-design case: new_bom absent is irrelevant, only `bom` is consulted.
+		bom, _ = _resolve(("Repair Order", "ORD/RO/00021-2"), "BOM-EA02216-001-001")
+		self.assertEqual(bom, "BOM-EA02216-001-001")
+
 	def test_throws_when_order_form_is_not_repair_order(self):
 		# order_form_type is "Order", not "Repair Order".
 		with self.assertRaises(frappe.ValidationError):
@@ -62,7 +79,7 @@ class TestResolveRepairOrderBom(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			_resolve(None, "BOM-X")
 
-	def test_throws_when_repair_order_has_no_new_bom(self):
+	def test_throws_when_repair_order_has_no_bom(self):
 		with self.assertRaises(frappe.ValidationError):
 			_resolve(("Repair Order", "RO-1"), None)
 

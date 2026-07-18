@@ -22,6 +22,10 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, nowtime, today
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	resolve_batch_ownership,
+)
+
 PROCESS_LOSS_SE_TYPE = "Process Loss"
 CHILD_TABLE_EMPLOYEE = "employee_loss_details"
 CHILD_TABLE_MANUAL = "manually_book_loss_details"
@@ -265,51 +269,14 @@ def _resolve_batch_inventory(row):
 	The loss physically leaves ``row.batch_no``, so the ledger row -- and the
 	scrap batch minted from the produce row (Batch.update_inventory_dimentions
 	copies inventory_type/customer off the SE Detail row) -- must carry THAT
-	batch's inventory type. The Batch is the source of truth, so it wins; fall
-	back to any value already on the loss row, then to "Regular Stock". Setting
-	the value here (before ``se.insert()``) pre-empts the before_validate stamp,
-	which only fires ``if not row.inventory_type``.
+	batch's inventory type. Setting the value here (before ``se.insert()``)
+	pre-empts the before_validate stamp, which only fires
+	``if not row.inventory_type``.
+
+	The rules themselves live in ``customization/utils/row_ownership`` so the
+	tree and warehouse loss builders resolve ownership identically.
 	"""
-	batch_inv = {}
-	if getattr(row, "batch_no", None):
-		batch_inv = (
-			frappe.db.get_value(
-				"Batch",
-				row.batch_no,
-				["custom_inventory_type", "custom_customer"],
-				as_dict=True,
-			)
-			or {}
-		)
-	inventory_type = (
-		batch_inv.get("custom_inventory_type")
-		or getattr(row, "inventory_type", None)
-		or "Regular Stock"
-	)
-	# Customer only travels with customer-owned inventory; a Regular Stock row
-	# must never carry a stray customer (mirrors the Make Receive batch
-	# resolution in manufacturing_operation.py).
-	if inventory_type in ("Customer Goods", "Customer Stock"):
-		customer = batch_inv.get("custom_customer") or getattr(row, "customer", None)
-		# Couple the two: a customer inventory type with no resolvable customer is
-		# malformed. The scrap batch's guard-exemption (is_process_loss_repack)
-		# needs a customer, so emitting a customer type without one would stamp an
-		# inventory type the loss item may not allow and hard-fail the EIR receive
-		# submit. Fall back to Regular Stock (as main_slip.create_metal_loss does)
-		# rather than crash; the today's behaviour was Regular Stock anyway.
-		if not customer:
-			frappe.logger().warning(
-				"create_loss_stock_entries: batch {0} (item {1}) is {2} with no "
-				"customer; booking loss row as Regular Stock".format(
-					getattr(row, "batch_no", None),
-					getattr(row, "item_code", None),
-					inventory_type,
-				)
-			)
-			inventory_type = "Regular Stock"
-	else:
-		customer = None
-	return inventory_type, customer
+	return resolve_batch_ownership(row)
 
 
 _SRE_LOOKUP_FIELDS = [
