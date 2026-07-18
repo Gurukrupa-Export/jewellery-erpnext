@@ -95,6 +95,13 @@ def ensure_float_precision():
 	if cint(settings.float_precision) < MIN_FLOAT_PRECISION:
 		settings.float_precision = str(MIN_FLOAT_PRECISION)
 	settings.flags.ignore_permissions = True
+	# A fresh CI site (``bench new-site`` with no setup wizard) leaves System Settings'
+	# mandatory ``language`` and ``time_zone`` NULL, so a plain save() dies with
+	# MandatoryError before it can propagate anything. We only ever touch float_precision
+	# here, so skip the mandatory check -- validate() and on_update->set_defaults() still
+	# run, so the propagation below is unaffected. On real sites both fields are already
+	# populated, making this a no-op there.
+	settings.flags.ignore_mandatory = True
 	# save() -> on_update -> set_defaults() -> frappe.db.set_default("float_precision", "3").
 	settings.save()
 
