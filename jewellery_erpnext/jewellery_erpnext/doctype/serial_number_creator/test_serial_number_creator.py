@@ -7,6 +7,10 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+	_snc_se_detail_maps,
+	_stone_se_rate,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
 	dir_for_issue,
 	dir_for_receive,
@@ -26,6 +30,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_nu
 )
 
 _SNC_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator"
+_MOP_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation"
 
 
 class TestSerialNumberCreator(IntegrationTestCase):
@@ -495,3 +500,65 @@ class TestPickSourceWarehouse(IntegrationTestCase):
 			["Tagging WO - GEPL"],
 		)
 		self.assertEqual(wh, "Tagging WO - GEPL")
+
+
+class TestSNCSeDetailMaps(IntegrationTestCase):
+	"""``_snc_se_detail_maps`` re-derives per-item rate and inventory type from the
+	Manufacture SE, so the SNC-created FG BOM can set ``is_customer_item`` (the
+	aggregated fg_details rows don't carry inventory_type). Regression: without the
+	inventory-type map, is_customer_item was always 0 on SNC-created BOMs even though
+	the Manufacture SE showed the material as Customer Goods.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	def test_customer_goods_and_rate_maps(self, mock_sql):
+		# One customer-goods diamond, one regular metal, one item whose consumed rows
+		# had no inventory_type (MAX(...) -> None). MySQL MAX(bool) yields 1/0/None.
+		mock_sql.return_value = [
+			frappe._dict(item_code="D-CG", rate=0.0, is_customer_goods=1),
+			frappe._dict(item_code="M-REG", rate=4500.0, is_customer_goods=0),
+			frappe._dict(item_code="D-NULL", rate=0.0, is_customer_goods=None),
+		]
+		rate_map, inv_map = _snc_se_detail_maps("MAT-STE-TEST")
+
+		self.assertEqual(rate_map, {"D-CG": 0.0, "M-REG": 4500.0, "D-NULL": 0.0})
+		# Any Customer-Goods batch -> "Customer Goods"; 0/None -> "Regular Stock".
+		self.assertEqual(inv_map["D-CG"], "Customer Goods")
+		self.assertEqual(inv_map["M-REG"], "Regular Stock")
+		self.assertEqual(inv_map["D-NULL"], "Regular Stock")
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	def test_empty_se_returns_empty_maps(self, mock_sql):
+		mock_sql.return_value = []
+		rate_map, inv_map = _snc_se_detail_maps("MAT-STE-EMPTY")
+		self.assertEqual(rate_map, {})
+		self.assertEqual(inv_map, {})
+
+
+class TestStoneSeRate(IntegrationTestCase):
+	"""``_stone_se_rate`` fills diamond/gemstone se_rate from the Item's maintained
+	valuation_rate when the qty-weighted consumed rate is 0. Regression: diamond/
+	gemstone se_rate was blank whenever the Manufacture SE basic_rate was 0 (the
+	common case, since custom_metal_rate is metal-only).
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_consumed_rate_wins_when_present(self):
+		self.assertEqual(_stone_se_rate(4500.0, 1.0), 4500.0)
+
+	def test_falls_back_to_valuation_when_rate_zero(self):
+		self.assertEqual(_stone_se_rate(0.0, 25.5), 25.5)
+
+	def test_falls_back_when_rate_none(self):
+		self.assertEqual(_stone_se_rate(None, 25.5), 25.5)
+
+	def test_zero_when_neither_available(self):
+		self.assertEqual(_stone_se_rate(0.0, 0.0), 0.0)
+		self.assertEqual(_stone_se_rate(None, None), 0.0)

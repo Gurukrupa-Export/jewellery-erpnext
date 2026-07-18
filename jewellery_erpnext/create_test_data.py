@@ -2755,23 +2755,21 @@ def create_test_data():
 
 			po_refining_entry_field()
 
-			from jewellery_erpnext.patches.seed_refinery_price_list import (
-				execute as refining_price_list,
-			)
-
-			refining_price_list()
-
+			# Masters (the dust/scrap Items) MUST be seeded before the price list:
+			# seed_refinery_price_list skips any price row whose Item does not exist yet,
+			# so running it first would create no price lists at all (get_refinery_rate
+			# then returns None and external-refining POs are priced at 0).
 			from jewellery_erpnext.patches.seed_refining_masters import (
 				execute as refining_masters,
 			)
 
 			refining_masters()
 
-			from jewellery_erpnext.patches.add_sales_order_precision_fields import (
-				execute as sales_order_precision_fields,
+			from jewellery_erpnext.patches.seed_refinery_price_list import (
+				execute as refining_price_list,
 			)
 
-			sales_order_precision_fields()
+			refining_price_list()
 		finally:
 			frappe.flags.in_migrate = in_migrate
 

@@ -87,6 +87,16 @@
   },
   {
    "dt": "Sales Order Item",
+   "fieldname": "ref_customer",
+   "fieldtype": "Link",
+   "insert_after": "diamond_quality",
+   "label": "Ref Customer",
+   "module": "Jewellery Erpnext",
+   "options": "Customer",
+   "read_only": 1
+  },
+  {
+   "dt": "Sales Order Item",
    "fieldname": "bom_rate",
    "fieldtype": "Currency",
    "insert_after": "base_price_list_rate",

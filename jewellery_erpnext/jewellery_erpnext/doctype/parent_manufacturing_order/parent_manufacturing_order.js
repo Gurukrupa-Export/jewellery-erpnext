@@ -29,31 +29,6 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 					},
 				};
 			});
-
-			// Only call & set diamond_grade when NOT using custom diamond grade
-			if (!frm.doc.use_custom_diamond_grade) {
-				frappe.call({
-					method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_diamond_grade",
-					args: {
-						doctype: "Diamond Grade",
-						txt: "",
-						searchfield: "diamond_grade",
-						start: 0,
-						page_len: 10,
-						filters: {
-							customer: frm.doc.customer,
-							diamond_quality: frm.doc.diamond_quality,
-							use_custom_diamond_grade: 0,
-							is_customer_diamond: frm.doc.is_customer_diamond ? 1 : 0,
-						},
-					},
-					callback: function (r) {
-						if (r.message && r.message.length > 0) {
-							frm.set_value("diamond_grade", r.message[0][0]);
-						}
-					},
-				});
-			}
 		}
 
 		// Always control read-only dynamically
@@ -104,8 +79,21 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		}
 	},
 
+	customer(frm) {
+		set_auto_diamond_grade(frm);
+	},
+
+	diamond_quality(frm) {
+		set_auto_diamond_grade(frm);
+	},
+
+	is_customer_diamond(frm) {
+		set_auto_diamond_grade(frm);
+	},
+
 	use_custom_diamond_grade(frm) {
 		frm.set_df_property("diamond_grade", "read_only", !frm.doc.use_custom_diamond_grade);
+		set_auto_diamond_grade(frm);
 	},
 
 	create_customer_transfer: function (frm) {
@@ -184,6 +172,29 @@ frappe.ui.form.on("Parent Manufacturing Order", {
 		}
 	},
 });
+
+// Must never be called from refresh: frm.set_value marks the form dirty, so resolving the grade on
+// load makes a freshly opened record show as unsaved. Only run it when the user changes an input;
+// on save the controller resolves the same value through resolve_diamond_grade.
+function set_auto_diamond_grade(frm) {
+	if (frm.doc.use_custom_diamond_grade) {
+		return;
+	}
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query.get_auto_diamond_grade",
+		args: {
+			customer: frm.doc.customer,
+			ref_customer: frm.doc.ref_customer,
+			diamond_quality: frm.doc.diamond_quality,
+			is_customer_diamond: frm.doc.is_customer_diamond ? 1 : 0,
+		},
+		callback: function (r) {
+			if (r.message) {
+				frm.set_value("diamond_grade", r.message);
+			}
+		},
+	});
+}
 
 function filter_departments(frm, field_name) {
 	frm.set_query(field_name, function () {

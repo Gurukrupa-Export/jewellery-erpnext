@@ -13,6 +13,9 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
 from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_current_mould_id,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.filters_query import (
+	resolve_diamond_grade,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.finding_mwo import (
 	create_finding_mwo,
 	create_stock_entry,
@@ -253,8 +256,14 @@ def _validate_metal_item_attributes(item_code, row, bom_table):
 class ParentManufacturingOrder(Document):
 	def before_save(self):
 		if self.is_new() or self.flags.ignore_validations:
+			# update_parent_details (which refreshes ref_customer) is skipped on insert, so there
+			# is no fresher input to wait for. Resolving here stores the grade on the inserted
+			# row instead of leaving the form to write it in on first open.
+			self._set_diamond_grade()
 			return
 		update_parent_details(self)
+		# Must stay AFTER update_parent_details: that refreshes ref_customer, which the grade is
+		# resolved against.
 		self._set_diamond_grade()
 		if not self.diamond_grade and not frappe.db.get_value(
 			"Item", self.item_code, "has_batch_no"
@@ -263,6 +272,10 @@ class ParentManufacturingOrder(Document):
 		self.metal_details()
 
 	def before_submit(self):
+		# frappe runs validate + before_submit on submit and skips before_save, so the grade has
+		# to be resolved here too: without it a PMO that reached submit without a stored grade
+		# silently skips the tracking BOM update below.
+		self._set_diamond_grade()
 		if self.diamond_grade and self.custom_tracking_bom:
 			frappe.db.sql(
 				"""
@@ -274,37 +287,16 @@ class ParentManufacturingOrder(Document):
 			)
 
 	def _set_diamond_grade(self):
-		customer = self.ref_customer or self.customer
-		if not (
-			self.diamond_quality and customer and not self.use_custom_diamond_grade
-		):
+		if self.use_custom_diamond_grade:
 			return
-		diamond_grade_data = frappe.db.get_value(
-			"Customer Diamond Grade",
-			{"parent": customer, "diamond_quality": self.diamond_quality},
-			[
-				"diamond_grade_1",
-				"diamond_grade_2",
-				"diamond_grade_3",
-				"diamond_grade_4",
-			],
+
+		grade = resolve_diamond_grade(
+			self.ref_customer or self.customer,
+			self.diamond_quality,
+			self.is_customer_diamond,
 		)
-
-		if not diamond_grade_data:
-			return
-
-		for row in diamond_grade_data:
-			if not row:
-				continue
-			is_customer_grade = frappe.db.get_value(
-				"Attribute Value", row, "is_customer_diamond_quality"
-			)
-			if self.is_customer_diamond and is_customer_grade:
-				self.diamond_grade = row
-				break
-			elif not self.is_customer_diamond and not is_customer_grade:
-				self.diamond_grade = row
-				break
+		if grade:
+			self.diamond_grade = grade
 
 	def metal_details(self):
 		if self.custom_tracking_bom:
