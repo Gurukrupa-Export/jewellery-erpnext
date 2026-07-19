@@ -484,7 +484,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		)
 		self.assertEqual(flt(supplier_qty_after_send, self.flt_pre), 5.0)
 
-		# Receive: single Repack SE, no second Refining Entry. Recovery weight (3.6)
+		# Receive: single Manufacture SE, no second Refining Entry. Recovery weight (3.6)
 		# is chosen below the item's actual pure content (5.0 * 75.4% = 3.77) so the
 		# Recovery Summary reflects a realistic, non-clamped recovery percentage.
 		se_name = re.receive_from_supplier(recovery_weight=3.6)
@@ -517,7 +517,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(re.refined_gold[0].refining_gold_weight, 3.6)
 
 		repack = frappe.get_doc("Stock Entry", re.repack_se)
-		self.assertEqual(repack.stock_entry_type, "Repack")
+		self.assertEqual(repack.stock_entry_type, "Manufacture")
 		self.assertEqual(repack.items[0].item_code, "ML-G-18KT-75.4-P")
 		self.assertEqual(repack.items[0].qty, 5.0)
 		self.assertEqual(repack.items[0].s_warehouse, re.supplier_warehouse)
@@ -545,6 +545,151 @@ class TestRefiningEntry(IntegrationTestCase):
 		repack.reload()
 		self.assertEqual(se1.docstatus, 2)
 		self.assertEqual(repack.docstatus, 2)
+
+	def test_external_refining_po_multi_category(self):
+		"""External dust consignment mixing a metal-loss item (no price list of its own)
+		with two priced refining categories → ONE Purchase Order line per pricing category.
+		The ML-G loss row collapses to the entry's default Pricing Category (Main Dust,
+		REF-MD-001); REF-UL-001 (Ultra Liquid) and REF-NB-001 (Napkin/Thread/Buff) bill
+		under themselves. Each line is priced at submit from its own slab on its own
+		summed weight, for ANY weight basis (Flat + two Per-Kg/After-Burning bands)."""
+		# Stage the physical material in the source warehouse so the submit-time transfer
+		# to the supplier warehouse has stock to move.
+		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 30.0)
+		gold_receipt("Waxing RM - T", "REF-UL-001", 2000.0)
+		gold_receipt("Waxing RM - T", "REF-NB-001", 500.0)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Dust Refining"
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.manufacturer = "Shubh"
+		re.department = "Waxing - T"
+		re.warehouse = "Waxing RM - T"
+		re.refining_department = "Refinery - T"
+		# Physical == the material total, so there is no physical-over-system excess to
+		# receipt (create_dust_opening_receipt_se early-returns with no shortfall) and
+		# validate_dust_opening_material passes.
+		re.physical_quantity = 2530.0
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-18KT-75.4-P",
+				"warehouse": "Waxing RM - T",
+				"qty": 30.0,
+				"uom": "Gram",
+				"source_type": "Dust",
+			},
+		)
+		re.append(
+			"material_items",
+			{
+				"item_code": "REF-UL-001",
+				"warehouse": "Waxing RM - T",
+				"qty": 2000.0,
+				"uom": "Litre",
+				"source_type": "Consumable",
+				"is_consumable": 1,
+			},
+		)
+		re.append(
+			"material_items",
+			{
+				"item_code": "REF-NB-001",
+				"warehouse": "Waxing RM - T",
+				"qty": 500.0,
+				"uom": "Gram",
+				"source_type": "Dust",
+			},
+		)
+		re.save()
+
+		apply_workflow(re, "Submit")
+		re.reload()
+
+		# Only the gold alloy is melted; UL/NB are not gold items.
+		self.assertEqual(re.qty_to_refine, 30.0)
+		self.assertEqual(re.pricing_item, "REF-MD-001")
+		self.assertIsNotNone(re.refining_entry_po)
+
+		po = frappe.get_doc("Purchase Order", re.refining_entry_po)
+		self.assertEqual(len(po.items), 3)
+
+		# Match lines by their price-list back-link (the parent Refinery Price List doc),
+		# not by index, since dict-insertion order is an implementation detail.
+		lines = {row.custom_refining_price_list: row for row in po.items}
+
+		def price_list_of(item):
+			return frappe.db.get_value("Refinery Price List", {"item": item}, "name")
+
+		md = lines[price_list_of("REF-MD-001")]
+		self.assertEqual(md.custom_gross_wt, 30.0)
+		self.assertEqual(md.rate, 800)  # 0-50 g Flat 800
+
+		nb = lines[price_list_of("REF-NB-001")]
+		self.assertEqual(nb.custom_gross_wt, 500.0)
+		self.assertEqual(nb.rate, 900)  # Per Kg 1800 * 500/1000
+
+		ul = lines[price_list_of("REF-UL-001")]
+		self.assertEqual(ul.custom_gross_wt, 2000.0)
+		self.assertEqual(ul.rate, 4000)  # Per Kg 2000 * 2000/1000
+
+	def test_external_refining_po_unpriced_category_line(self):
+		"""A category whose weight falls outside every slab band gets a rate-0 line for
+		manual pricing (no double counting, no dropped line). REF-UL-001's only slab is
+		"After burn >1kg" (from 1000 g), so a 20 g Ultra Liquid row matches nothing."""
+		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 30.0)
+		gold_receipt("Waxing RM - T", "REF-UL-001", 20.0)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Dust Refining"
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.manufacturer = "Shubh"
+		re.department = "Waxing - T"
+		re.warehouse = "Waxing RM - T"
+		re.refining_department = "Refinery - T"
+		re.physical_quantity = 50.0
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-18KT-75.4-P",
+				"warehouse": "Waxing RM - T",
+				"qty": 30.0,
+				"uom": "Gram",
+				"source_type": "Dust",
+			},
+		)
+		re.append(
+			"material_items",
+			{
+				"item_code": "REF-UL-001",
+				"warehouse": "Waxing RM - T",
+				"qty": 20.0,
+				"uom": "Litre",
+				"source_type": "Consumable",
+				"is_consumable": 1,
+			},
+		)
+		re.save()
+
+		apply_workflow(re, "Submit")
+		re.reload()
+
+		po = frappe.get_doc("Purchase Order", re.refining_entry_po)
+		self.assertEqual(len(po.items), 2)
+		lines = {row.custom_refining_price_list: row for row in po.items}
+
+		md = lines[
+			frappe.db.get_value("Refinery Price List", {"item": "REF-MD-001"}, "name")
+		]
+		self.assertEqual(md.rate, 800)
+		# The unmatched Ultra Liquid line has no price-list back-link and rate 0.
+		ul = lines[None]
+		self.assertEqual(ul.custom_gross_wt, 20.0)
+		self.assertEqual(ul.rate, 0)
 
 	def test_external_refinery_submit_fails_without_supplier(self):
 		re = frappe.new_doc("Refining Entry")

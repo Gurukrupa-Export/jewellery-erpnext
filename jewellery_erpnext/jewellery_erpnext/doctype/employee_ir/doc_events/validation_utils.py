@@ -11,6 +11,24 @@ from frappe.utils import (
 	time_diff_in_seconds,
 )
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
+	assert_no_sample_in_operations,
+)
+
+
+def validate_no_sample_issue(doc, method=None):
+	"""Block an Employee IR "Issue" that would push Customer Sample Goods to the floor.
+
+	Fail-fast guard wired on Employee IR ``before_submit`` (runs before
+	``on_submit -> on_submit_issue_new`` writes any MOP Log), so the operator is blocked at
+	the Issue click with a clear message rather than the block surfacing later in the
+	EOD-minted "Material Transfer to Department" Stock Entry. The Stock Entry backstop
+	(``validate_sample_goods_not_consumed``) remains the last-resort net.
+	"""
+	if getattr(doc, "type", None) != "Issue":
+		return
+	assert_no_sample_in_operations(doc.employee_ir_operations, doc)
+
 
 def get_loss_qty_in_grams(item_code: str | None, qty) -> float:
 	# Normalize a loss qty to grams. D/G item codes carry carat-denominated

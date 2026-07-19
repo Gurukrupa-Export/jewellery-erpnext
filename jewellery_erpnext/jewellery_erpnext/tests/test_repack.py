@@ -424,6 +424,81 @@ class TestRepackAutomation(IntegrationTestCase):
 		):
 			self.assertFalse(batch_utils.is_subcontracting_gold_repack(batch))
 
+	def test_repair_unpack_allows_customer_goods_at_mint_via_voucher_type(self):
+		# The unpack mints each component's Batch BEFORE the Stock Entry exists, so at the
+		# only moment the guard fires reference_doctype is still None and neither
+		# reference-based exemption can fire. The "Customer Repair" voucher type stamped just
+		# before batch.save() is what identifies the unpack -- no DB read needed.
+		batch = SimpleNamespace(
+			reference_doctype=None,
+			reference_name=None,
+			custom_customer="Customer A",
+			custom_customer_voucher_type="Customer Repair",
+			item="D-NT-RO-6B-+8-8.5",
+		)
+		self.assertTrue(batch_utils.is_repair_unpack(batch))
+
+	def test_repair_unpack_allows_customer_goods_via_se_reference(self):
+		# Second leg: after the SE links the batch, recognise it by the Repair Unpack SE.
+		batch = SimpleNamespace(
+			reference_doctype="Stock Entry",
+			reference_name="GE-SE-RU-26-00003",
+			custom_customer="Customer A",
+			custom_customer_voucher_type=None,
+			item="D-NT-RO-6B-+8-8.5",
+		)
+		with patch.object(
+			batch_utils.frappe.db, "get_value", return_value="Repair Unpack"
+		):
+			self.assertTrue(batch_utils.is_repair_unpack(batch))
+
+	def test_repair_unpack_requires_a_customer(self):
+		# A Customer Goods batch with no customer is malformed (row_ownership rule 3) and
+		# must not be silently exempted.
+		batch = SimpleNamespace(
+			reference_doctype=None,
+			reference_name=None,
+			custom_customer=None,
+			custom_customer_voucher_type="Customer Repair",
+			item="D-NT-RO-6B-+8-8.5",
+		)
+		self.assertFalse(batch_utils.is_repair_unpack(batch))
+
+	def test_repair_unpack_not_applied_to_other_se_types(self):
+		batch = SimpleNamespace(
+			reference_doctype="Stock Entry",
+			reference_name="MAT-STE-TRANSFER",
+			custom_customer="Customer A",
+			custom_customer_voucher_type=None,
+			item="D-NT-RO-6B-+8-8.5",
+		)
+		with patch.object(
+			batch_utils.frappe.db, "get_value", return_value="Customer Goods Transfer"
+		):
+			self.assertFalse(batch_utils.is_repair_unpack(batch))
+
+	def test_guard_message_names_the_offending_item(self):
+		# The anonymous "This item is not allowed as Customer Goods" caused a misdiagnosis;
+		# the message must now carry the item so the offending component is obvious.
+		batch = SimpleNamespace(
+			item="D-NT-RO-6B-+8-8.5",
+			custom_inventory_type="Customer Goods",
+			custom_customer="Customer A",
+			custom_customer_voucher_type=None,
+			custom_voucher_detail_no=None,
+			reference_doctype=None,
+			reference_name=None,
+			name="B-NEW-01",
+			get=lambda key, default=None: default,
+		)
+		db = MagicMock()
+		db.get_all.return_value = []
+		db.get_value.return_value = 0
+		with patch.object(batch_utils.frappe, "db", db):
+			with self.assertRaises(Exception) as cm:
+				batch_utils.update_inventory_dimentions(batch)
+		self.assertIn("D-NT-RO-6B-+8-8.5", str(cm.exception))
+
 	def test_update_settlement_log_marks_gold_log_partially_settled(self):
 		log = _log(pending_pure_qty=10, settled_pure_qty=2)
 		log.save = MagicMock()

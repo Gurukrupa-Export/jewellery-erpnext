@@ -11,11 +11,13 @@ REFINING_ROLES = ["Refining User", "Refining Manager", "System Manager"]
 # `require_refining_role` still auto-passes for Administrator.
 REFINING_MANAGER_ROLES = ["Refining Manager", "System Manager"]
 
-# External refining bills by pricing CATEGORY, resolved from the refining type (per the
-# "Process Dust With Rate" sheet): Serial/MWO consignments are priced as Finish & Semi
-# Finish Scrap, Scrap refining as Metal Refining Scrap, and Dust defaults to Main Dust
-# (operator switches the Pricing Category for other dust kinds — Vacuum Bag, Tools
-# Dust, Ultra Liquid, ...). The category items are seeded by seed_refining_masters.
+# The DEFAULT pricing CATEGORY per refining type (per the "Process Dust With Rate" sheet):
+# Serial/MWO consignments default to Finish & Semi Finish Scrap, Scrap refining to Metal
+# Refining Scrap, Dust to Main Dust. This is only the FALLBACK — the external PO now emits
+# one line per category found in the Material Items (see _external_price_categories): a row
+# stocked as a priced category (Ultra Liquid, Napkin/Thread/Buff, Tools Dust, Vacuum Bag,
+# ...) bills under ITSELF, while ML/FL loss and plain scrap rows fall back to this default.
+# The category items are seeded by seed_refining_masters.
 EXTERNAL_PRICING_CATEGORY = {
 	"Serial Number Refining": "REF-FSJ-001",
 	"Work Order Refining": "REF-FSJ-001",
@@ -170,11 +172,17 @@ class RefiningEntry(Document):
 
 		self.supplier_warehouse = self._get_supplier_warehouse()
 		self.refined_metal_item = self._get_pure_gold_24kt_item()
+		# Gold weight actually melted by the refiner: the gold ALLOY only. Across every
+		# external refining type the refiner melts only the metal and hands back the
+		# findings, diamonds and gemstones intact (see _is_returned_intact), so their
+		# weight is not part of the recoverable metal.
 		self.qty_to_refine = flt(
 			sum(
 				flt(row.qty)
 				for row in self.material_items
-				if row.item_code and self.is_gold_item(row.item_code)
+				if row.item_code
+				and self.is_gold_item(row.item_code)
+				and not self._is_returned_intact(row.item_code)
 			),
 			3,
 		)
@@ -193,28 +201,76 @@ class RefiningEntry(Document):
 			)
 		self.create_external_refining_po()
 
-	def _gross_sent_weight(self):
-		"""Total sent quantity across the Material Items table (excluding display-only
-		BOM Component rows) — the gross consignment weight the price sheet bands are
-		defined on."""
-		return flt(
-			sum(
-				flt(row.qty)
-				for row in self.material_items
-				if row.item_code and row.get("source_type") != "BOM Component"
-			),
-			3,
-		)
+	def _external_price_categories(self):
+		"""Ordered ``{pricing_category_item -> summed_weight_g}`` across the sent Material
+		Items — one entry per PO line to bill.
+
+		A row's pricing CATEGORY is its OWN ``item_code`` when a Refinery Price List exists
+		for that item (the seeded REF-* categories: Ultra Liquid, Napkin/Thread/Buff, Tools
+		Dust, Vacuum Bag, Sedimentation, Main Dust, …); otherwise it collapses to the
+		entry's DEFAULT category ``self.pricing_item`` (Main Dust for Dust, Metal Refining
+		Scrap for Scrap, Finish & Semi Finish for MWO/Serial). So ML-/FL- loss and plain
+		scrap rows merge into the default line, while a row physically stocked as a priced
+		category bills under itself. Same category → one combined line; different → separate.
+
+		Display-only BOM Component rows are excluded (same rule as the former gross-weight
+		sum); consumable rows ARE counted. Zero/negative-qty rows are skipped so a phantom
+		Flat-charge line can't appear. dict insertion order gives deterministic PO line order.
+		The key may be ``None`` (empty ``pricing_item`` and an unpriced item) — that still
+		yields exactly one rate-0 manual line."""
+		categories = {}
+		has_price_list = {}
+		for row in self.material_items:
+			if not row.item_code or row.get("source_type") == "BOM Component":
+				continue
+			qty = flt(row.qty, 3)
+			if qty <= 0:
+				continue
+			code = row.item_code
+			if code not in has_price_list:
+				has_price_list[code] = bool(
+					frappe.db.exists("Refinery Price List", {"item": code})
+				)
+			category = code if has_price_list[code] else (self.pricing_item or None)
+			categories[category] = flt(categories.get(category, 0.0) + qty, 3)
+		return categories
 
 	def _external_service_po_line(self, price_row, weight_g, rate):
 		service_item = (price_row or {}).get(
 			"service_item"
 		) or self._default_refining_service_item()
+		# The PO line bills a refining SERVICE charge, so its item MUST be a non-stock
+		# service item. A price slab misconfigured with a stock item (e.g. a metal/loss
+		# code like ML-G-18KT-75.4-Y) would otherwise put a stock item on the Purchase
+		# Order, which fails validation with "Warehouse is mandatory for stock Item ...".
+		# Fall back to the default service item and flag the bad slab rather than blocking
+		# the whole submit.
+		if service_item and frappe.db.get_value("Item", service_item, "is_stock_item"):
+			fallback = self._default_refining_service_item()
+			frappe.msgprint(
+				_(
+					"Refinery Price List slab {0} has the stock item {1} set as its "
+					"Service Item; a refining-charge line must be a non-stock service "
+					"item. Billing to {2} instead — please fix the slab's Service Item."
+				).format(
+					frappe.bold((price_row or {}).get("name") or "-"),
+					frappe.bold(service_item),
+					frappe.bold(fallback or "-"),
+				),
+				alert=True,
+				indicator="orange",
+			)
+			service_item = (
+				fallback
+				if fallback
+				and not frappe.db.get_value("Item", fallback, "is_stock_item")
+				else None
+			)
 		if not service_item:
 			frappe.throw(
 				_(
-					"No service item configured for external refining — set one on "
-					"the price slab or seed the default service item {0}."
+					"No service item configured for external refining — set a non-stock "
+					"Service Item on the price slab or seed the default service item {0}."
 				).format(frappe.bold("REF-SVC-001"))
 			)
 		return {
@@ -228,47 +284,23 @@ class RefiningEntry(Document):
 
 	def create_external_refining_po(self):
 		"""After the material transfer: ALWAYS create the draft service Purchase Order
-		— every external entry gets one, no exceptions. The single charge line is
-		priced from the entry's Pricing Category (get_refinery_rate on the gross sent
-		weight):
-		  - Gross-Weight-basis slab matched → rate computed now.
-		  - Received-Fine/After-Burning slab matched → rate 0 now; filled in by
-		    _bill_external_receipt_service_charge once the recovery weight is known.
-		  - No slab matched (weight-band gap, unpriced category) → rate 0 for the
-		    purchase team to price manually.
+		— every external entry gets one, no exceptions. It carries ONE LINE PER PRICING
+		CATEGORY present in the Material Items table (see _external_price_categories): a
+		dust consignment yields e.g. a Main Dust line (all ML/FL loss merged), an Ultra
+		Liquid line and a Napkin/Thread/Buff line; Scrap/MWO/Serial collapse to a single
+		category → one line.
+
+		Each line is priced NOW from that category's own Refinery Price List slab on the
+		category's summed material-items weight (get_refinery_rate + compute_refining_amount,
+		for ANY weight basis — the weights are already in the table at submit). A category
+		with no matching slab (weight-band gap, unpriced category, or no price list at all
+		e.g. REF-BR-001) gets a rate-0 line for the purchase team to price manually.
 		Left as a draft for the buyer to review/submit; the physical flow never blocks
 		on pricing."""
 		from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
 			compute_refining_amount,
 			get_refinery_rate,
 		)
-
-		gross_weight = self._gross_sent_weight()
-		row = (
-			get_refinery_rate(
-				self.pricing_item,
-				gross_weight,
-				company=self.company,
-				supplier=self.supplier,
-			)
-			if self.pricing_item
-			else None
-		)
-
-		rate = 0
-		if row and row.get("weight_basis") == "Gross Weight":
-			rate = compute_refining_amount(
-				row.get("charge_type"), row.get("rate"), gross_weight
-			)
-		elif not row:
-			frappe.msgprint(
-				_(
-					"No Refinery Price List slab matched Pricing Category {0} at {1} g — "
-					"the Purchase Order line was created at rate 0 for manual pricing."
-				).format(frappe.bold(self.pricing_item or "-"), gross_weight),
-				alert=True,
-				indicator="orange",
-			)
 
 		po = frappe.new_doc("Purchase Order")
 		po.refining_entry = self.name
@@ -283,9 +315,42 @@ class RefiningEntry(Document):
 		po.purchase_type = (
 			"Service" if frappe.db.exists("Purchase Type", "Service") else None
 		)
-		po.append("items", self._external_service_po_line(row, gross_weight, rate))
+
+		unpriced = []
+		for category, weight_g in self._external_price_categories().items():
+			row = (
+				get_refinery_rate(
+					category,
+					weight_g,
+					company=self.company,
+					supplier=self.supplier,
+				)
+				if category
+				else None
+			)
+			if row:
+				rate = compute_refining_amount(
+					row.get("charge_type"), row.get("rate"), weight_g
+				)
+			else:
+				rate = 0
+				unpriced.append((category, weight_g))
+			po.append("items", self._external_service_po_line(row, weight_g, rate))
+
 		po.insert(ignore_permissions=True)
 		self.db_set("refining_entry_po", po.name)
+
+		if unpriced:
+			frappe.msgprint(
+				_(
+					"No Refinery Price List slab matched these categories — their Purchase "
+					"Order lines were created at rate 0 for manual pricing: {0}"
+				).format(
+					", ".join(f"{frappe.bold(c or '-')} ({w} g)" for c, w in unpriced)
+				),
+				alert=True,
+				indicator="orange",
+			)
 
 	@frappe.whitelist()
 	def receive_from_supplier(self, recovery_weight, received_qty=None):
@@ -320,9 +385,17 @@ class RefiningEntry(Document):
 		precision = 3
 		min_qty = 0.001
 
+		# Booked as a Manufacture (not a plain Repack): the refiner melts the gold alloy
+		# into pure 24KT and hands back the findings/diamonds/gemstones, so the receipt has
+		# ONE finished good (the pure metal) plus several by-products (the returned stones/
+		# findings) — exactly the shape create_repack_se uses internally. ERPNext's Repack
+		# validation instead force-marks EVERY received row as a finished good and then
+		# refuses to auto-cost multiple finished goods ("set the basic rate manually"); a
+		# work-order-less Manufacture keeps our is_finished_item flags and auto-costs the
+		# single FG from the consumed inputs, letting the scrap by-products land at 0.
 		se = frappe.new_doc("Stock Entry")
-		se.stock_entry_type = "Repack"
-		se.purpose = "Repack"
+		se.stock_entry_type = "Manufacture"
+		se.purpose = "Manufacture"
 		se.company = self.company
 		se.custom_refining_entry = self.name
 		se.auto_created = 1
@@ -339,6 +412,11 @@ class RefiningEntry(Document):
 		# Rows carrying a serial number keep their per-row identity.
 		expected_qty = 0.0
 		issued_qty = 0.0
+		# Actually-consumed qty per item, so a returned (non-serial) row can never output
+		# more than physically came back out of the supplier warehouse (guards against
+		# creating phantom department stock when a transfer/receive shortfall means less was
+		# available than the Material Items row claims).
+		consumed_by_item = {}
 		grouped = {}
 		serial_rows = []
 		for item in self.material_items:
@@ -367,6 +445,9 @@ class RefiningEntry(Document):
 				for alloc in allocations:
 					if flt(alloc["qty"], precision) >= min_qty:
 						issued_qty += flt(alloc["qty"], precision)
+						consumed_by_item[item_code] = consumed_by_item.get(
+							item_code, 0.0
+						) + flt(alloc["qty"], precision)
 						se.append(
 							"items",
 							{
@@ -384,6 +465,7 @@ class RefiningEntry(Document):
 						)
 			else:
 				issued_qty += qty
+				consumed_by_item[item_code] = consumed_by_item.get(item_code, 0.0) + qty
 				se.append(
 					"items",
 					{
@@ -399,6 +481,9 @@ class RefiningEntry(Document):
 		for item in serial_rows:
 			qty = flt(item.qty, precision)
 			issued_qty += qty
+			consumed_by_item[item.item_code] = (
+				consumed_by_item.get(item.item_code, 0.0) + qty
+			)
 			se.append(
 				"items",
 				{
@@ -422,12 +507,71 @@ class RefiningEntry(Document):
 			"qty": recovery_weight,
 			"uom": "Gram",
 			"t_warehouse": target_wh,
+			"is_finished_item": 1,
 			"use_serial_batch_fields": 1,
 			"allow_zero_valuation_rate": 1,
 		}
 		if frappe.db.get_value("Item", self.refined_metal_item, "has_batch_no"):
 			metal_row["batch_no"] = self._auto_create_batch(self.refined_metal_item)
 		se.append("items", metal_row)
+
+		# Return the non-metal materials (findings, diamonds, gemstones) intact. The refiner
+		# melts only the gold alloy — reborn above as the single pure-24KT metal row — and
+		# hands everything else back, for EVERY external refining type:
+		#   - Dust / Scrap / Work Order: these are real material_items rows, already CONSUMED
+		#     out of the supplier warehouse in the input rows above; re-outputting them here
+		#     into the department RM warehouse nets to a supplier -> department transfer.
+		#   - Serial Number: the stones/findings sit INSIDE the FG serial (consumed above)
+		#     and are represented by its "BOM Component" rows; here they are "exploded" out
+		#     as repack outputs (output-only — there is no separate supplier-warehouse stock
+		#     to consume for them), exactly like the internal serial repack books its
+		#     recovered diamond/gemstone rows.
+		# Aggregated per item so one fresh return batch is created for each. Without this the
+		# findings/stones were issued out (or melted away) and never received anywhere.
+		returned = {}
+		for item in self.material_items:
+			if not self._is_returned_intact(item.item_code):
+				continue
+			qty = flt(item.qty, precision)
+			if qty < min_qty:
+				continue
+			# Serial's returnables are "BOM Component" rows exploded from the consumed FG
+			# (output-only, no separate supplier stock); the other types' returnables are
+			# real rows consumed from the supplier above and are capped below at the amount
+			# actually consumed.
+			from_bom = item.get("source_type") == "BOM Component"
+			r = returned.setdefault(
+				item.item_code, {"qty": 0.0, "uom": item.uom, "from_bom": from_bom}
+			)
+			r["qty"] += qty
+
+		for ret_item, r in returned.items():
+			out_qty = flt(r["qty"], precision)
+			if not r["from_bom"]:
+				# Never return more of a real (non-serial) item than physically came back
+				# out of the supplier warehouse, so a transfer/receive shortfall cannot mint
+				# phantom department stock.
+				out_qty = min(
+					out_qty, flt(consumed_by_item.get(ret_item, 0.0), precision)
+				)
+			if out_qty < min_qty:
+				continue
+			row = {
+				"item_code": ret_item,
+				"qty": out_qty,
+				"uom": r["uom"] or frappe.db.get_value("Item", ret_item, "stock_uom"),
+				"t_warehouse": target_wh,
+				# Scrap-type by-product (NOT a finished good): the single finished good is
+				# the pure metal above, so the Manufacture auto-costs it from the consumed
+				# inputs and these land at zero valuation — mirrors create_repack_se.
+				"type": "Scrap",
+				"is_finished_item": 0,
+				"use_serial_batch_fields": 1,
+				"allow_zero_valuation_rate": 1,
+			}
+			if frappe.db.get_value("Item", ret_item, "has_batch_no"):
+				row["batch_no"] = self._auto_create_batch(ret_item)
+			se.append("items", row)
 
 		se.insert(ignore_permissions=True)
 		se.submit()
@@ -479,8 +623,6 @@ class RefiningEntry(Document):
 				),
 			)
 
-		self._bill_external_receipt_service_charge()
-
 		return se.name
 
 	def _get_source_dept_rm_warehouse(self, department):
@@ -496,67 +638,6 @@ class RefiningEntry(Document):
 				)
 			)
 		return wh
-
-	def _bill_external_receipt_service_charge(self):
-		"""Received-Fine/After-Burning-basis service charge, billed now that the actual
-		received weight is known (create_external_refining_po left the PO line at rate 0
-		for these). Resolves the SAME Pricing Category slab; if the entry's draft PO
-		still has that rate-0 line, its rate is updated in place — otherwise (PO already
-		submitted by the purchase team) a fresh true-up draft PO carries the charge.
-		Runs at most once per entry (receive_from_supplier's repack_se guard)."""
-		from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
-			compute_refining_amount,
-			get_refinery_rate,
-		)
-
-		received_g = flt(self.received_weight, 3)
-		if received_g <= 0 or not self.pricing_item:
-			return
-
-		row = get_refinery_rate(
-			self.pricing_item,
-			self._gross_sent_weight(),
-			company=self.company,
-			supplier=self.supplier,
-		)
-		if not row or row.get("weight_basis") == "Gross Weight":
-			# Gross-basis was already billed at submit; unmatched stays manual.
-			return
-
-		rate = compute_refining_amount(
-			row.get("charge_type"), row.get("rate"), received_g
-		)
-
-		# Preferred path: fill in the rate-0 line on the entry's still-draft PO.
-		if self.refining_entry_po:
-			po = frappe.get_doc("Purchase Order", self.refining_entry_po)
-			if po.docstatus == 0:
-				for line in po.items:
-					if line.get("custom_refining_price_list") == row.get(
-						"name"
-					) and not flt(line.rate):
-						line.rate = rate
-						line.custom_gross_wt = received_g
-						po.save(ignore_permissions=True)
-						return
-
-		# Fallback: PO already submitted (or its line was manually changed) — bill the
-		# charge on a fresh true-up draft PO.
-		po = frappe.new_doc("Purchase Order")
-		po.refining_entry = self.name
-		po.supplier = self.supplier
-		po.company = self.company
-		po.transaction_date = self.posting_date
-		# Always assign (None when the master is missing) — see the same pattern in
-		# create_external_refining_po for why a conditional assignment breaks on
-		# sites without the purchase_type custom field in the PO meta.
-		po.purchase_type = (
-			"Service" if frappe.db.exists("Purchase Type", "Service") else None
-		)
-		po.append("items", self._external_service_po_line(row, received_g, rate))
-		po.insert(ignore_permissions=True)
-		if not self.refining_entry_po:
-			self.db_set("refining_entry_po", po.name)
 
 	# --- Validations ---
 
@@ -869,6 +950,18 @@ class RefiningEntry(Document):
 			# qty_to_refine (the gold-item weight sent, computed at submit) so the
 			# Recovery Summary still shows something sensible in the meantime.
 			for item in self.material_items:
+				# Only the gold ALLOY that is actually melted contributes to the pure-metal
+				# input. Findings/diamonds/gemstones are returned intact (see
+				# _is_returned_intact) — excluding them stops a returned finding's gold from
+				# booking as refining loss. Restricting to is_gold_item also drops the
+				# non-metal FG serial row (source_type "Serial Number"), whose qty is a
+				# piece count, not grams — it would otherwise double-count against the BOM
+				# metal-component rows that carry the real melted weight.
+				if not (
+					self.is_gold_item(item.item_code)
+					and not self._is_returned_intact(item.item_code)
+				):
+					continue
 				if item.purity:
 					purity_pct = frappe.db.get_value(
 						"Attribute Value", item.purity, "purity_percentage"
@@ -1568,6 +1661,17 @@ class RefiningEntry(Document):
 			]
 			if bom_components:
 				for item in bom_components:
+					# External refining melts ONLY the gold alloy: exclude the returned
+					# findings/stones AND the self-referential FG serial BOM row (a piece
+					# count, not meltable grams) from the melted-gold distribution — the same
+					# "melted metal" predicate _compute_input_pure_weight uses, so the
+					# distribution's input weight matches the Recovery Summary. Internal
+					# serial refining melts findings, so it still counts them (external gate).
+					if cint(self.is_external) and not (
+						self.is_gold_item(item.item_code)
+						and not self._is_returned_intact(item.item_code)
+					):
+						continue
 					if item.purity:
 						pct = frappe.db.get_value(
 							"Attribute Value", item.purity, "purity_percentage"
@@ -1591,6 +1695,12 @@ class RefiningEntry(Document):
 							input_item_map[pct_flt] = sn.item_code
 		else:
 			for item in self.material_items:
+				# External refining returns findings/diamonds/gemstones intact (see
+				# _is_returned_intact); keep them out of the gold-recovery distribution so no
+				# finding karat shows a phantom loss row. Internal refining melts findings,
+				# so it still counts them (external gate).
+				if cint(self.is_external) and self._is_returned_intact(item.item_code):
+					continue
 				if item.purity:
 					pct = frappe.db.get_value(
 						"Attribute Value", item.purity, "purity_percentage"
@@ -3245,21 +3355,81 @@ class RefiningEntry(Document):
 		)
 
 	def is_diamond_item(self, item_code):
+		"""Diamond (loose/melee/recovered). The classic D-/DL- SKUs are recognised in EVERY
+		context. The broader signals — the "Diamond …" item group and the DM-/DBK-/DB-
+		variants (which the old exact "== 'Diamond'" / D-,DL- checks silently dropped) — are
+		applied ONLY for external refining, where every non-metal item is handed back intact
+		and so must be recognised. Gating the broadening on is_external keeps INTERNAL
+		recovery classification (auto_classify_recoverable_non_metal) byte-for-byte
+		unchanged; the identical DM-/DBK-/DB- loss in internal refining is a separate,
+		pre-existing bug deliberately left untouched here."""
 		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
 		item_group = frappe.db.get_value("Item", item_code, "item_group")
-		return (
+		if (
 			variant_of in ("D", "DL")
 			or item_group == "Diamond"
 			or (item_code and item_code.upper().startswith(("D-", "DL-")))
+		):
+			return True
+		if not cint(self.is_external):
+			return False
+		return (
+			(item_group and "Diamond" in item_group)
+			or variant_of in ("DM", "DBK", "DB")
+			or (item_code and item_code.upper().startswith(("DM-", "DBK-", "DB-")))
 		)
 
 	def is_gemstone_item(self, item_code):
+		"""Gemstone (coloured stone). The classic G-/GL- SKUs are recognised in EVERY
+		context; the broader "Gemstone …" item group and the GB- variant are recognised ONLY
+		for external refining (where all non-metal is returned intact), keeping INTERNAL
+		classification unchanged. See is_diamond_item for the full rationale. NOTE: the
+		broad match leads with the item group, NOT a "starts with G" prefix — many non-gem
+		variants also start with G (GCM, GLS, GA, …) and must NOT be misread as gemstones."""
 		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
 		item_group = frappe.db.get_value("Item", item_code, "item_group")
-		return (
+		if (
 			variant_of in ("G", "GL")
 			or item_group in ("Gemstone", "Gem Stone")
 			or (item_code and item_code.upper().startswith(("G-", "GL-")))
+		):
+			return True
+		if not cint(self.is_external):
+			return False
+		return (
+			(item_group and ("Gemstone" in item_group or "Gem Stone" in item_group))
+			or variant_of == "GB"
+			or (item_code and item_code.upper().startswith("GB-"))
+		)
+
+	def is_finding_item(self, item_code):
+		"""Findings (clasps, jump rings, chain parts) — authoritative signal is a
+		"Finding …" item group ("Finding - V/T", "Finding DNU"); variant_of ships as F/FL.
+		NOTE: findings carry a gold purity, so is_gold_item() ALSO matches them; callers
+		that need "gold alloy that is actually melted" must exclude findings explicitly
+		(see _is_returned_intact)."""
+		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+		item_group = frappe.db.get_value("Item", item_code, "item_group")
+		return (
+			(item_group and "Finding" in item_group)
+			or variant_of in ("F", "FL")
+			or (item_code and item_code.upper().startswith(("F-", "FL-")))
+		)
+
+	def _is_returned_intact(self, item_code):
+		"""External refining (ALL types): findings, diamonds and gemstones travel to the
+		refiner alongside the metal but are NOT melted — the refiner processes only the gold
+		alloy and hands these back physically. They are therefore (a) excluded from the
+		pure-metal weight / recovery computations (else a returned finding's gold would
+		surface as a phantom refining loss) and (b) re-output into the source department's
+		Raw Material warehouse on receipt (receive_from_supplier). This applies to Dust,
+		Scrap, Work Order and Serial Number external refining alike. Internal refining melts
+		findings and separately "recovers" only the stones, so the callers gate this
+		melt-vs-return split on cint(self.is_external)."""
+		return (
+			self.is_finding_item(item_code)
+			or self.is_diamond_item(item_code)
+			or self.is_gemstone_item(item_code)
 		)
 
 	def auto_classify_recoverable_non_metal(self):

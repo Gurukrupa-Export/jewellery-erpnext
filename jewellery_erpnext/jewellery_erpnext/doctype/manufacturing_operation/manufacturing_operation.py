@@ -1702,29 +1702,63 @@ def get_material_wt(doc):
 	return {}
 
 
+def _snc_se_detail_maps(se_name):
+	"""Per-item rate and inventory-type maps from a Manufacture Stock Entry.
+
+	Reads the consumed Stock Entry Detail rows of ``se_name`` grouped by item_code:
+
+	- ``rate_map``: qty-weighted Batch Rate — the maintained ``custom_metal_rate``
+	  (fetched onto the SE detail from the batch), falling back to ``basic_rate``
+	  when unset. Covers metal/findings (Batch Rate) and diamond/gemstone (basic_rate).
+	- ``inv_map``: inventory type. The aggregated SNC ``fg_details`` rows do NOT carry
+	  inventory_type, so the FG BOM's ``is_customer_item`` was always 0. Re-derive it
+	  here from the SE — the same batch-master-corrected value the user sees as
+	  "Customer Goods" on the Manufacture entry. The query groups by item_code, so an
+	  item split across Regular + Customer-Goods batches is collapsed: it is marked
+	  "Customer Goods" if ANY consumed batch is Customer Goods.
+	"""
+	se_rates = frappe.db.sql(
+		"""
+		SELECT item_code,
+			SUM(COALESCE(NULLIF(custom_metal_rate, 0), basic_rate) * qty)
+				/ NULLIF(SUM(qty), 0) AS rate,
+			MAX(inventory_type = 'Customer Goods') AS is_customer_goods
+		FROM `tabStock Entry Detail`
+		WHERE parent = %s
+		GROUP BY item_code
+		""",
+		(se_name,),
+		as_dict=True,
+	)
+	rate_map = {r.item_code: r.rate for r in se_rates}
+	inv_map = {
+		r.item_code: ("Customer Goods" if r.is_customer_goods else "Regular Stock")
+		for r in se_rates
+	}
+	return rate_map, inv_map
+
+
+def _stone_se_rate(consumed_rate, item_valuation_rate):
+	"""se_rate for a diamond/gemstone BOM row.
+
+	Diamonds/gemstones consume with ``basic_rate`` 0 in most Manufacture SEs
+	(``custom_metal_rate`` is metal-only), so the qty-weighted consumed rate is 0.
+	Fall back to the Item master's maintained ``valuation_rate`` so se_rate isn't
+	left blank. Returns 0.0 only when neither source has a value.
+	"""
+	return flt(consumed_rate) or flt(item_valuation_rate)
+
+
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	# frappe.throw("create_finished_goods_bom")
 	# If called from Serial Number Creator, use its prepared table as source of truth
 	if getattr(self, "doctype", None) == "Serial Number Creator" and self.get(
 		"fg_details"
 	):
-		# se_rate is the per-item Batch Rate, qty-weighted across the consumed
-		# batches. Read the batch's maintained Batch Rate (custom_metal_rate, fetched
-		# onto Stock Entry Detail) and fall back to basic_rate when it is unset — this
-		# covers metal/findings (Batch Rate) and diamond/gemstone (basic_rate) alike.
-		se_rates = frappe.db.sql(
-			"""
-			SELECT item_code,
-				SUM(COALESCE(NULLIF(custom_metal_rate, 0), basic_rate) * qty)
-					/ NULLIF(SUM(qty), 0) AS rate
-			FROM `tabStock Entry Detail`
-			WHERE parent = %s
-			GROUP BY item_code
-			""",
-			(se_name,),
-			as_dict=True,
-		)
-		se_rate_map = {r.item_code: r.rate for r in se_rates}
+		# se_rate_map: per-item Batch Rate, qty-weighted across the consumed batches.
+		# se_inv_map: per-item inventory type re-derived from the Manufacture SE (see
+		# _snc_se_detail_maps) — the fg_details rows don't carry it.
+		se_rate_map, se_inv_map = _snc_se_detail_maps(se_name)
 
 		data = [
 			{
@@ -1734,6 +1768,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				"uom": d.uom,
 				"rate": getattr(d, "rate", None) or se_rate_map.get(d.row_material, 0),
 				"custom_sub_setting_type": getattr(d, "sub_setting_type", None),
+				"inventory_type": se_inv_map.get(d.row_material),
 			}
 			for d in self.fg_details
 		]
@@ -1780,7 +1815,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	pmo_data = frappe.db.get_value(
 		"Parent Manufacturing Order",
 		self.parent_manufacturing_order,
-		["diamond_quality", "qty", "sales_order", "quotation"],
+		["diamond_quality", "qty", "sales_order", "quotation", "customer"],
 		as_dict=1,
 	)
 	# Missing PMO is a real data error, not a transient one: surface it clearly instead of
@@ -1813,6 +1848,20 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.custom_serial_number_creator = self.name
 	new_bom.total_operation_time = total_time
 	new_bom.actual_operation_time = 0
+
+	# The FG BOM inherits the design BOM's customer via copy_doc, but GEPL design BOMs
+	# frequently leave it blank while the real order customer lives on the PMO. Without a
+	# customer, the GEPL making-charge lookup below (and the on-save recompute in
+	# set_bom_rate, which keys on BOM.customer) find no Making Charge Price and making_amount
+	# comes out 0. Backfill from the PMO when missing so making charges resolve. GEPL only:
+	# KGJPL sources making via ref_customer in the other branch and its customers aren't
+	# guaranteed to carry a gemstone price-list type (which BOM validation would then demand).
+	if (
+		self.company == "Gurukrupa Export Private Limited"
+		and not new_bom.customer
+		and pmo_data.get("customer")
+	):
+		new_bom.customer = pmo_data.get("customer")
 
 	# Clear existing child tables to rebuild from Stock Entry data
 	new_bom.metal_detail = []
@@ -1978,7 +2027,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 			# frappe.throw(f"{row["is_customer_item"]}")
 			row["rate"] = new_bom.gold_rate_with_gst
-			row["se_rate"] = item.get("rate")
+			row["se_rate"] = _stone_se_rate(item.get("rate"), item_row.valuation_rate)
 			sieve_size_range = ""
 			for attribute in item_row.attributes:
 				atrribute_name = format_attrbute_name(attribute.attribute)
@@ -2940,7 +2989,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row = {}
 			row["stock_uom"] = item.get("uom")
 			# Fetching basic details
-			row["se_rate"] = item.get("rate")
+			row["se_rate"] = _stone_se_rate(item.get("rate"), item_row.valuation_rate)
 			row["rate"] = new_bom.gold_rate_with_gst
 			row["quantity"] = flt(item.get("qty", 0)) / flt(pmo_data.get("qty", 1))
 			row["pcs"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)

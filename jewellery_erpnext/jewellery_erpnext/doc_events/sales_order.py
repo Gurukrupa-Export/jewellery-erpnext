@@ -823,7 +823,12 @@ def _process_metal_detail1(self, doc, ctx, cctx):
                     s.making_rate=(operational_cost/total_weight)*cctx.exchange_rate
                 else:
                     s.making_rate=operational_cost/total_weight
-                s.rate           = s.se_rate
+                    calculated_gold_rate  = _get_calculated_gold_rate(
+                    self.customer, s.metal_type, s.metal_touch,
+                    self.gold_rate_with_gst, ctx.gold_gst_rate,
+                    )
+                # s.rate           = s.se_rate
+                s.rate = round(calculated_gold_rate, 2)
                 s.wastage_rate   = 0
                 s.wastage_amount = 0
                 s.making_amount  = round(s.making_rate * s.quantity, 2)
@@ -1183,7 +1188,12 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 					f.se_rate = f.se_rate * cctx.exchange_rate
 				else:
 					f.making_rate = operational_cost / total_weight
-				f.rate = round(f.se_rate, 2)
+				calculated_gold_rate  = _get_calculated_gold_rate(
+				self.customer, f.metal_type, f.metal_touch,
+				self.gold_rate_with_gst, ctx.gold_gst_rate,
+			)
+				f.rate=round(calculated_gold_rate, 2)
+				# f.rate = round(f.se_rate, 2)
 				f.amount = round(f.rate * f.quantity, 2)
 				f.wastage_rate = 0
 				f.wastage_amount = 0
