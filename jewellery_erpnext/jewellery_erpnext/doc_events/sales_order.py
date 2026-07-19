@@ -13,8 +13,38 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	set_bom_rate,
 )
 
+# Companies allowed to use Sales Type "Hybrid" (3% on company-owned material +
+# 5% on customer-supplied material within the same BOM). Extend this tuple to
+# roll Hybrid out to more companies later.
+HYBRID_ENABLED_COMPANIES = ("KG GK Jewellers Private Limited",)
+
+# Placeholder item that carries the aggregated customer-supplied (5%) amount
+# for Hybrid Sales Orders — see add_hybrid_subcontracting_row().
+HYBRID_SUBCONTRACTING_ITEM = "Subcontracting Charges"
+
+# Item Tax Templates for Hybrid rows, by company — same "Finished Goods"
+# (owned, 3%) / "Subcontracting" (customer-supplied, 5%) template naming
+# already used in tax() and set_gst_details() above. Also used directly by
+# set_sales_type_tax_template() for plain (non-Hybrid) Finished Goods /
+# Subcontracting orders.
+SALES_TYPE_ITEM_TAX_TEMPLATE = {
+	"Finished Goods": {
+		"Gurukrupa Export Private Limited": "GST 3% - GEPL",
+		"KG GK Jewellers Private Limited": "GST 3% - KGJPL",
+	},
+	"Subcontracting": {
+		"Gurukrupa Export Private Limited": "GST 5% - GEPL",
+		"KG GK Jewellers Private Limited": "GST 5% - KGJPL",
+	},
+}
+
 
 def before_validate(self, method):
+	# Drop any Hybrid subcontracting-charge row left over from a previous
+	# save before create_new_bom1 runs, so it never gets treated as a real
+	# serial-no/BOM row. add_hybrid_subcontracting_row() rebuilds it fresh.
+	self.items = [row for row in self.items if not row.get("custom_is_subcontracting_charge_row")]
+
 	validate_sales_type(self)
 	# update_snc(self)
 	# update_same_customer_snc(self)
@@ -24,6 +54,8 @@ def before_validate(self, method):
 	# if self.sales_type != 'Branch Sales':
 	# create_new_bom(self)
 	create_new_bom1(self)
+	add_hybrid_subcontracting_row(self)
+	set_sales_type_tax_template(self)
 	# gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
 	# if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
 	# 	tax(self)
@@ -31,7 +63,7 @@ def before_validate(self, method):
 	# self.calculate_taxes_and_totals()
 	validate_serial_number(self)
 	# validate_items(self)
-	set_gst_details(self)
+	# set_gst_details(self)  # superseded by add_hybrid_subcontracting_row() for Hybrid; see history for why
 	validate_item_dharm(self)
 	# self.calculate_taxes_and_totals()
 	# calculate_gst_rate(self)
@@ -40,11 +72,9 @@ def before_validate(self, method):
 	# create_new_bom(self)
 	# validate_items(self)
 
-
 # def after_validate(self,method):
 # 	frappe.throw("hiii")
 # 	self.calculate_taxes_and_totals()
-
 
 def set_repair_serial_bom(self):
 	"""Bridge the repair BOM Quotation -> Sales Order for header-order_type repairs.
@@ -78,12 +108,10 @@ def on_submit(self, method):
 	# create_branch_so(self)
 	validate_snc(self)
 
-
 def before_submit(self, method):
 	# validate_items(self)
 	if not self.get("custom_invoice_item"):
 		frappe.throw(_("Invoice Item table is mandatory for submission."))
-
 
 def on_cancel(self, method):
 	for row in self.items:
@@ -100,64 +128,57 @@ def on_cancel(self, method):
 	# cancel_bom(self)
 	validate_snc(self)
 
-
 def tax(self):
 	for row in self.items:
-		item_tax_template = ""
+		item_tax_template = ''
 		account_list = []
-		customer_state = frappe.db.get_value(
-			"Address", {"name": self.customer_address}, "gst_state_number"
-		)
-		company_state = frappe.db.get_value(
-			"Address", {"name": self.company_address}, "gst_state_number"
-		)
-		self.tax_category = (
-			"In-State" if customer_state == company_state else "Out-State"
-		)
+		customer_state = frappe.db.get_value("Address", {"name": self.customer_address}, "gst_state_number")
+		company_state = frappe.db.get_value("Address", {"name": self.company_address}, "gst_state_number")
+		self.tax_category = 'In-State' if customer_state == company_state else 'Out-State'
 		# Map Sales Type + Company to appropriate Item Tax Template
 		template_map = {
-			"Finished Goods": {
-				"Gurukrupa Export Private Limited": "GST 3% - GEPL",
-				"KG GK Jewellers Private Limited": "GST 3% - KGJPL",
+			'Finished Goods': {
+				'Gurukrupa Export Private Limited': 'GST 3% - GEPL',
+				'KG GK Jewellers Private Limited': 'GST 3% - KGJPL',
 			},
-			"Subcontracting": {
-				"Gurukrupa Export Private Limited": "GST 5% - GEPL",
-				"KG GK Jewellers Private Limited": "GST 5% - KGJPL",
+			'Subcontracting': {
+				'Gurukrupa Export Private Limited': 'GST 5% - GEPL',
+				'KG GK Jewellers Private Limited': 'GST 5% - KGJPL',
 			},
 		}
-		item_tax_template = template_map.get(self.sales_type, {}).get(self.company, "")
+		item_tax_template = template_map.get(self.sales_type, {}).get(self.company, '')
 		if frappe.db.get_value("Item", row.item_code, "item_subcategory"):
-			if item_tax_template:
-				row.item_tax_template = item_tax_template
 
-				# Per-line indicative GST split for UI; actual accounts come from template
-			if self.tax_category == "Out-State":
-				row.igst = 5.0 if self.sales_type == "Subcontracting" else 3.0
-				row.igst_amount = round((row.net_rate or 0) * (row.igst / 100), 2)
-				row.cgst_amount = 0
-				row.sgst_amount = 0
+					if item_tax_template:
+						row.item_tax_template = item_tax_template
+                    
+                    
+                    # Per-line indicative GST split for UI; actual accounts come from template
+					if self.tax_category == 'Out-State':
+						row.igst = 5.0 if self.sales_type == 'Subcontracting' else 3.0
+						row.igst_amount = round((row.net_rate or 0) * (row.igst / 100), 2)
+						row.cgst_amount = 0
+						row.sgst_amount = 0
+					
+					else:
+						rate = 5.0 if self.sales_type == 'Subcontracting' else 3.0
+						row.cgst = rate / 2
+						row.sgst = rate / 2
+						row.cgst_amount = (row.net_rate or 0) * (row.cgst / 100)
+						row.sgst_amount = (row.net_rate or 0) * (row.sgst / 100)
+						row.igst_amount = 0
 
-			else:
-				rate = 5.0 if self.sales_type == "Subcontracting" else 3.0
-				row.cgst = rate / 2
-				row.sgst = rate / 2
-				row.cgst_amount = (row.net_rate or 0) * (row.cgst / 100)
-				row.sgst_amount = (row.net_rate or 0) * (row.sgst / 100)
-				row.igst_amount = 0
-
+			
 		self.taxes = []
 
+			
 		if item_tax_template:
-			if item_tax_template not in [
-				"Exempted - GEPL",
-				"Exempted - KGJPL",
-				"Exempted - SHC",
-				"Exempted - SD",
-			]:
+			
+			if item_tax_template not in ['Exempted - GEPL', 'Exempted - KGJPL', 'Exempted - SHC', 'Exempted - SD']:
 				row.item_tax_template = item_tax_template
-				row.gst_treatment = "Taxable"
+				row.gst_treatment = 'Taxable'
 
-				if self.tax_category == "In-State":
+				if self.tax_category == 'In-State':
 					if not self.is_reverse_charge:
 						tax = frappe.db.sql(
 							f"""select tax_type,tax_rate
@@ -177,7 +198,7 @@ def tax(self):
 									and tax_type not like '%IGST%'""",
 							as_dict=1,
 						)
-
+						
 				else:
 					if not self.is_reverse_charge:
 						tax = frappe.db.sql(
@@ -206,164 +227,415 @@ def tax(self):
 						continue
 					account_list.append(j.get("tax_type"))
 
-					if "IGST RCM" in j.get("tax_type"):
-						gst_tax_type = "igst_rcm"
-					elif "SGST RCM" in j.get("tax_type"):
-						gst_tax_type = "sgst_rcm"
-					elif "CGST RCM" in j.get("tax_type"):
-						gst_tax_type = "cgst_rcm"
-					elif "IGST" in j.get("tax_type"):
-						gst_tax_type = "igst"
-					elif "SGST" in j.get("tax_type"):
-						gst_tax_type = "sgst"
-					elif "CGST" in j.get("tax_type"):
-						gst_tax_type = "cgst"
+					if 'IGST RCM' in j.get("tax_type"):
+						gst_tax_type = 'igst_rcm'
+					elif 'SGST RCM' in j.get("tax_type"):
+						gst_tax_type = 'sgst_rcm'
+					elif 'CGST RCM' in j.get("tax_type"):
+						gst_tax_type = 'cgst_rcm'
+					elif 'IGST' in j.get("tax_type"):
+						gst_tax_type = 'igst'
+					elif 'SGST' in j.get("tax_type"):
+						gst_tax_type = 'sgst'
+					elif 'CGST' in j.get("tax_type"):
+						gst_tax_type = 'cgst'
 					else:
 						gst_tax_type = None
 
-					add_deduct_tax = "Deduct" if "RCM" in j.get("tax_type") else "Add"
-
-					self.append(
-						"taxes",
-						{
-							"category": "Total",
-							"add_deduct_tax": add_deduct_tax,
-							"charge_type": "On Net Total",
-							"account_head": j.get("tax_type"),
-							"description": j.get("tax_type").replace(" - GE", ""),
-							"rate": j.get("tax_rate"),
-							"tax_amount": (self.total or 0)
-							* (j.get("tax_rate", 0) / 100),
-							"total": self.total
-							+ (self.total or 0) * (j.get("tax_rate", 0) / 100),
-							"gst_tax_type": gst_tax_type,
-						},
-					)
-				self.grand_total = self.total + (self.total or 0) * (
-					j.get("tax_rate", 0) / 100
-				)
-				self.rounded_total = self.grand_total
-
+					add_deduct_tax = "Deduct" if 'RCM' in j.get("tax_type") else "Add"
+					
+					self.append("taxes", {
+						"category": "Total",
+						"add_deduct_tax": add_deduct_tax,
+						"charge_type": "On Net Total",
+						"account_head": j.get("tax_type"),
+						"description": j.get("tax_type").replace(" - GE", ""),
+						"rate": j.get("tax_rate"),
+						"tax_amount":(self.total or 0) * (j.get("tax_rate", 0) / 100),
+						"total":self.total + (self.total or 0) * (j.get("tax_rate", 0) / 100) ,
+						"gst_tax_type": gst_tax_type
+					})
+				self.grand_total = self.total + (self.total or 0) * (j.get("tax_rate", 0) / 100)
+				self.rounded_total =self.grand_total
 
 def set_gst_details(self):
-	if self.sales_type not in ("Finished Goods", "Subcontracting", "Branch Sales"):
+    if self.sales_type not in ("Finished Goods", "Subcontracting", "Branch Sales", "Hybrid"):
+        return
+
+    customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
+    company_state  = frappe.db.get_value("Address", self.company_address,  "gst_state_number")
+
+    if not customer_state or not company_state:
+        return
+
+    self.tax_category = "In-State" if customer_state == company_state else "Out-State"
+
+    item_template_map = {
+        "Finished Goods": {
+            "Gurukrupa Export Private Limited": "GST 3% - GEPL",
+            "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
+        },
+        "Branch Sales": {
+        "Gurukrupa Export Private Limited": "GST 3% - GEPL"
+        },
+        "Subcontracting": {
+            "Gurukrupa Export Private Limited": "GST 5% - GEPL",
+            "KG GK Jewellers Private Limited":  "GST 5% - KGJPL",
+        },
+    }
+    # Hybrid has no rate/template of its own — for account-head selection
+    # only, it borrows the Finished Goods template; the real 3%/5% rates
+    # come from the customer's Finished Goods / Subcontracting rows (see
+    # _set_hybrid_gst_details below).
+    item_template_map["Hybrid"] = item_template_map["Finished Goods"]
+
+    item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
+    # frappe.throw(f"{item_tax_template}")
+    if not item_tax_template:
+        return
+
+    taxes_and_charges = frappe.db.get_value(
+        "Sales Taxes and Charges Template",
+        {
+            "company":      self.company,
+            "tax_category": self.tax_category,
+            "disabled":     0,
+        },
+        "name"
+    )
+
+    if not taxes_and_charges:
+        frappe.log_error(
+            f"No Sales Taxes and Charges Template found for "
+            f"Company: {self.company}, Tax Category: {self.tax_category}",
+            "set_gst_details"
+        )
+        return
+
+    self.taxes_and_charges = taxes_and_charges
+
+    if self.sales_type == "Hybrid":
+        _set_hybrid_gst_details(self, item_tax_template)
+        return
+
+    template_rates = frappe.get_all(
+        "Item Tax Template Detail",
+        filters={"parent": item_tax_template},
+        fields=["tax_type", "tax_rate"]
+    )
+
+    tax_rate = frappe.db.get_value(
+        "Sales Type Multiselect",
+        {
+            "parent": self.customer,
+            "sales_type": self.sales_type
+        },
+        "tax_rate"
+    )
+
+    tax_rate_f = flt(tax_rate)
+    cgst_rate = sgst_rate = igst_rate = 0.0
+    for r in template_rates:
+        tax_type = r.tax_type or ""
+        if "Output" not in tax_type or "RCM" in tax_type:
+            continue
+        if "CGST" in tax_type:
+            cgst_rate = flt(tax_rate_f)
+        elif "SGST" in tax_type:
+            sgst_rate = flt(tax_rate_f)
+        elif "IGST" in tax_type:
+            igst_rate = flt(tax_rate_f)
+
+    account_rate_map = {}
+    for r in template_rates:
+        tax_type = r.tax_type or ""
+        if "Output" not in tax_type or "RCM" in tax_type:
+            continue
+        account_rate_map[r.tax_type] = flt(tax_rate_f)
+
+    self.taxes = []
+    tax_rows = frappe.get_all(
+        "Sales Taxes and Charges",
+        filters={"parent": self.taxes_and_charges},
+        fields=["charge_type", "account_head", "description", "rate", "cost_center"],
+        order_by="idx asc"
+    )
+    for t in tax_rows:
+        correct_rate = account_rate_map.get(t.account_head, t.rate)
+        self.append("taxes", {
+            "charge_type":  t.charge_type,
+            "account_head": t.account_head,
+            "description":  t.description,
+            "rate":         correct_rate,
+            "cost_center":  t.cost_center,
+            "tax_amount":correct_rate * self.total /100
+        })
+    for item in self.items:
+        if not item.item_code:
+            continue
+
+        item.item_tax_template = item_tax_template
+        item.gst_treatment     = "Taxable"
+        item.cgst_rate         = 0.0
+        item.sgst_rate         = 0.0
+        item.igst_rate         = 0.0
+        item.cgst_amount       = 0.0
+        item.sgst_amount       = 0.0
+        item.igst_amount       = 0.0
+
+        taxable_value = flt(item.taxable_value)
+
+        if self.tax_category == "In-State":
+            item.cgst_rate   = tax_rate/2
+            item.sgst_rate   = tax_rate/2
+            item.cgst_amount = flt(taxable_value * item.cgst_rate / 100, 2)
+            item.sgst_amount = flt(taxable_value * item.sgst_rate / 100, 2)
+        else:
+            item.igst_rate   = tax_rate
+            item.igst_amount = flt(taxable_value * item.igst_rate / 100, 2)
+
+def _set_hybrid_gst_details(self, item_tax_template):
+    """
+    Hybrid: each Sales Order Item row carries both company-owned material
+    (taxed at the customer's Finished Goods rate, e.g. 3%) and
+    customer-supplied material (taxed at the customer's Subcontracting
+    rate, e.g. 5%) — split earlier into row.custom_company_owned_amount /
+    row.custom_customer_supplied_amount by _update_bom_totals().
+
+    A single row can't carry two distinct legal GST rates, so the row's
+    cgst_rate/sgst_rate/igst_rate become a blended (weighted-average) rate
+    while cgst_amount/sgst_amount/igst_amount are the exact correct rupee
+    totals. The header "taxes" table is not limited that way, so it gets
+    the clean real-rate breakdown instead (e.g. CGST 1.5% + SGST 1.5% on
+    the owned portion, CGST 2.5% + SGST 2.5% on the supplied portion).
+    """
+    if self.company not in HYBRID_ENABLED_COMPANIES:
+        frappe.throw(_("Hybrid Sales Type is not yet enabled for company {0}").format(self.company))
+
+    fg_rate = flt(frappe.db.get_value(
+        "Sales Type Multiselect",
+        {"parent": self.customer, "sales_type": "Finished Goods"},
+        "tax_rate",
+    ))
+    sc_rate = flt(frappe.db.get_value(
+        "Sales Type Multiselect",
+        {"parent": self.customer, "sales_type": "Subcontracting"},
+        "tax_rate",
+    ))
+
+    total_owned    = sum(flt(item.custom_company_owned_amount)     for item in self.items)
+    total_supplied = sum(flt(item.custom_customer_supplied_amount) for item in self.items)
+
+    self.taxes = []
+    tax_rows = frappe.get_all(
+        "Sales Taxes and Charges",
+        filters={"parent": self.taxes_and_charges},
+        fields=["charge_type", "account_head", "description", "rate", "cost_center"],
+        order_by="idx asc",
+    )
+
+    # One template row per account head (CGST/SGST/IGST) — reused for both
+    # the Finished Goods and Subcontracting rows we append below.
+    account_by_type = {}
+    for t in tax_rows:
+        head = t.account_head or ""
+        if "IGST" in head:
+            account_by_type.setdefault("IGST", t)
+        elif "CGST" in head:
+            account_by_type.setdefault("CGST", t)
+        elif "SGST" in head:
+            account_by_type.setdefault("SGST", t)
+
+    def _append_tax_row(account_key, rate, amount, label):
+        template = account_by_type.get(account_key)
+        if not template:
+            return
+        self.append("taxes", {
+            "charge_type":  template.charge_type,
+            "account_head": template.account_head,
+            "description":  f"{template.description} ({label})",
+            "rate":         rate,
+            "cost_center":  template.cost_center,
+            "tax_amount":   amount,
+        })
+
+    if self.tax_category == "In-State":
+        _append_tax_row("CGST", fg_rate / 2, round(total_owned * fg_rate / 2 / 100, 2), "Finished Goods")
+        _append_tax_row("SGST", fg_rate / 2, round(total_owned * fg_rate / 2 / 100, 2), "Finished Goods")
+        _append_tax_row("CGST", sc_rate / 2, round(total_supplied * sc_rate / 2 / 100, 2), "Subcontracting")
+        _append_tax_row("SGST", sc_rate / 2, round(total_supplied * sc_rate / 2 / 100, 2), "Subcontracting")
+    else:
+        _append_tax_row("IGST", fg_rate, round(total_owned * fg_rate / 100, 2), "Finished Goods")
+        _append_tax_row("IGST", sc_rate, round(total_supplied * sc_rate / 100, 2), "Subcontracting")
+
+    for item in self.items:
+        if not item.item_code:
+            continue
+
+        item.item_tax_template = item_tax_template
+        item.gst_treatment     = "Taxable"
+
+        owned         = flt(item.custom_company_owned_amount)
+        supplied      = flt(item.custom_customer_supplied_amount)
+        taxable_value = owned + supplied
+
+        if self.tax_category == "In-State":
+            cgst_amount = round(owned * fg_rate / 2 / 100 + supplied * sc_rate / 2 / 100, 2)
+            item.cgst_amount = cgst_amount
+            item.sgst_amount = cgst_amount
+            item.igst_amount = 0.0
+            item.cgst_rate   = round(cgst_amount / taxable_value * 100, 4) if taxable_value else 0.0
+            item.sgst_rate   = item.cgst_rate
+            item.igst_rate   = 0.0
+        else:
+            igst_amount = round(owned * fg_rate / 100 + supplied * sc_rate / 100, 2)
+            item.igst_amount = igst_amount
+            item.cgst_amount = 0.0
+            item.sgst_amount = 0.0
+            item.cgst_rate   = 0.0
+            item.sgst_rate   = 0.0
+            item.igst_rate   = round(igst_amount / taxable_value * 100, 4) if taxable_value else 0.0
+
+
+def add_hybrid_subcontracting_row(self):
+	"""
+	Hybrid: each real row's amount is currently owned + supplied combined
+	(see the custom_company_owned_amount / custom_customer_supplied_amount
+	split computed in _update_bom_totals). Move the supplied portion out of
+	every row and into a single aggregated HYBRID_SUBCONTRACTING_ITEM row,
+	so each row ends up taxed at one clean rate instead of a blended one —
+	real rows at the Finished Goods rate, this row at the Subcontracting
+	rate (the item itself carries 5% Item Tax Templates).
+	"""
+	if self.sales_type != "Hybrid":
 		return
 
-	customer_state = frappe.db.get_value(
-		"Address", self.customer_address, "gst_state_number"
-	)
-	company_state = frappe.db.get_value(
-		"Address", self.company_address, "gst_state_number"
-	)
+	ctx   = _get_bom_context(self)
+	_prec = int(ctx.precision or 2)
 
-	if not customer_state or not company_state:
+	fg_template = SALES_TYPE_ITEM_TAX_TEMPLATE["Finished Goods"].get(self.company)
+	sc_template = SALES_TYPE_ITEM_TAX_TEMPLATE["Subcontracting"].get(self.company)
+
+	total_supplied = 0.0
+	for row in self.items:
+		# Every remaining row is owned-only after the split below, so it
+		# always gets the Finished Goods (3%) template.
+		if fg_template:
+			row.item_tax_template = fg_template
+
+		supplied = flt(row.custom_customer_supplied_amount)
+		if not supplied:
+			continue
+		row.amount = round(flt(row.amount) - supplied, _prec)
+		row.rate   = row.amount
+		row.custom_customer_supplied_amount = 0
+		total_supplied += supplied
+
+	if total_supplied:
+		gst_hsn_code = frappe.db.get_value("Item", HYBRID_SUBCONTRACTING_ITEM, "gst_hsn_code")
+		self.append("items", {
+			"item_code": HYBRID_SUBCONTRACTING_ITEM,
+			"item_name": HYBRID_SUBCONTRACTING_ITEM,
+			"description": HYBRID_SUBCONTRACTING_ITEM,
+			"qty": 1,
+			"uom": "Nos",
+			"conversion_factor": 1,
+			"rate": round(total_supplied, _prec),
+			"amount": round(total_supplied, _prec),
+			"gst_hsn_code": gst_hsn_code,
+			"item_tax_template": sc_template,
+			"custom_is_subcontracting_charge_row": 1,
+		})
+
+	self.total = round(sum(flt(item.amount) for item in self.items), _prec)
+
+
+def clear_hybrid_header_tax_rate(self, method=None):
+	"""
+	Hybrid mixes two rates (3% owned + 5% supplied) in one order, so unlike
+	Finished Goods / Subcontracting there's no single correct number for
+	sync_header_tax_rate() to put on the header row. Every row already
+	carries its own item_tax_template (set in add_hybrid_subcontracting_row),
+	which is what actually drives the computed tax_amount — so the header
+	row's own rate is just as cosmetically unused here as it is there.
+	Rather than leave the Sales Taxes and Charges Template's generic
+	nominal rate (e.g. 9%) showing — which asserts a specific number
+	that's actually wrong for both halves of the order — clear it to 0
+	instead of picking either one. The correct per-rate detail still shows
+	in the GST breakup table.
+
+	Hooked on before_save (not before_validate): the `taxes` table isn't
+	populated from the template yet during before_validate on a brand-new
+	order — it only exists once core's tax calculation has run as part of
+	validate(). Running this before_save (after that, and after India
+	Compliance's own before_save hook, since this app is last in
+	apps.txt) guarantees there's something to clear on every save,
+	first save included.
+	"""
+	if self.sales_type != "Hybrid":
 		return
 
-	self.tax_category = "In-State" if customer_state == company_state else "Out-State"
+	for row in self.taxes:
+		if row.gst_tax_type:
+			row.rate = 0
 
-	item_template_map = {
-		"Finished Goods": {
-			"Gurukrupa Export Private Limited": "GST 3% - GEPL",
-			"KG GK Jewellers Private Limited": "GST 3% - KGJPL",
-		},
-		"Branch Sales": {"Gurukrupa Export Private Limited": "GST 3% - GEPL"},
-		"Subcontracting": {
-			"Gurukrupa Export Private Limited": "GST 5% - GEPL",
-			"KG GK Jewellers Private Limited": "GST 5% - KGJPL",
-		},
+
+def set_sales_type_tax_template(self):
+	"""
+	Finished Goods / Subcontracting (non-Hybrid): set each row's
+	item_tax_template from sales_type + company, same as
+	add_hybrid_subcontracting_row() does for Hybrid rows. Without this,
+	item_tax_template stays blank and India Compliance silently falls back
+	to the header Sales Taxes and Charges Template's own flat nominal rate
+	(e.g. 9%+9%) instead of the correct 3%/5% — confirmed against several
+	live Sales Orders where this was wrong.
+	"""
+	if self.sales_type not in ("Finished Goods", "Subcontracting"):
+		return
+
+	template = SALES_TYPE_ITEM_TAX_TEMPLATE[self.sales_type].get(self.company)
+	if not template:
+		return
+
+	for row in self.items:
+		if row.item_code:
+			row.item_tax_template = template
+
+	sync_header_tax_rate(self, template)
+
+
+def sync_header_tax_rate(self, template):
+	"""
+	Finished Goods / Subcontracting: the header Sales Taxes and Charges
+	Template row carries a generic nominal rate (e.g. 9%) that has nothing
+	to do with jewellery GST — the real 3%/5% comes entirely from each
+	item's item_tax_template (set above), which already drives the actual
+	computed tax_amount regardless of what the header row's own rate says.
+	That leaves the header showing "9%" next to a correctly-computed
+	3%/5% amount, which reads as wrong even though the money is right.
+
+	Cosmetic-only: overwrite the header row's displayed rate to match the
+	same Item Tax Template already driving the real calculation, so the
+	number on screen can never drift from the number being charged. Only
+	safe here because these sales types have exactly one rate for the
+	whole order — Hybrid mixes two rates and needs the header row's rate
+	to stay as-is (see _set_hybrid_gst_details / the GST breakup table).
+	"""
+	if not self.taxes:
+		return
+
+	rate_by_account = {
+		d.tax_type: d.tax_rate
+		for d in frappe.get_all(
+			"Item Tax Template Detail",
+			filters={"parent": template},
+			fields=["tax_type", "tax_rate"],
+		)
 	}
-	item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
-	if not item_tax_template:
-		return
 
-	taxes_and_charges = frappe.db.get_value(
-		"Sales Taxes and Charges Template",
-		{
-			"company": self.company,
-			"tax_category": self.tax_category,
-			"disabled": 0,
-		},
-		"name",
-	)
-
-	if not taxes_and_charges:
-		frappe.log_error(
-			f"No Sales Taxes and Charges Template found for "
-			f"Company: {self.company}, Tax Category: {self.tax_category}",
-			"set_gst_details",
-		)
-		return
-
-	self.taxes_and_charges = taxes_and_charges
-
-	template_rates = frappe.get_all(
-		"Item Tax Template Detail",
-		filters={"parent": item_tax_template},
-		fields=["tax_type", "tax_rate"],
-	)
-
-	cgst_rate = sgst_rate = igst_rate = 0.0
-	for r in template_rates:
-		tax_type = r.tax_type or ""
-		if "Output" not in tax_type or "RCM" in tax_type:
-			continue
-		if "CGST" in tax_type:
-			cgst_rate = flt(r.tax_rate)
-		elif "SGST" in tax_type:
-			sgst_rate = flt(r.tax_rate)
-		elif "IGST" in tax_type:
-			igst_rate = flt(r.tax_rate)
-
-	account_rate_map = {}
-	for r in template_rates:
-		tax_type = r.tax_type or ""
-		if "Output" not in tax_type or "RCM" in tax_type:
-			continue
-		account_rate_map[r.tax_type] = flt(r.tax_rate)
-
-	self.taxes = []
-	tax_rows = frappe.get_all(
-		"Sales Taxes and Charges",
-		filters={"parent": self.taxes_and_charges},
-		fields=["charge_type", "account_head", "description", "rate", "cost_center"],
-		order_by="idx asc",
-	)
-	for t in tax_rows:
-		correct_rate = account_rate_map.get(t.account_head, t.rate)
-		self.append(
-			"taxes",
-			{
-				"charge_type": t.charge_type,
-				"account_head": t.account_head,
-				"description": t.description,
-				"rate": correct_rate,
-				"cost_center": t.cost_center,
-			},
-		)
-
-	for item in self.items:
-		if not item.item_code:
-			continue
-
-		item.item_tax_template = item_tax_template
-		item.gst_treatment = "Taxable"
-		item.cgst_rate = 0.0
-		item.sgst_rate = 0.0
-		item.igst_rate = 0.0
-		item.cgst_amount = 0.0
-		item.sgst_amount = 0.0
-		item.igst_amount = 0.0
-
-		taxable_value = flt(item.taxable_value)
-
-		if self.tax_category == "In-State":
-			item.cgst_rate = cgst_rate
-			item.sgst_rate = sgst_rate
-			item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
-			item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
-		else:
-			item.igst_rate = igst_rate
-			item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
+	for row in self.taxes:
+		if row.account_head in rate_by_account:
+			row.rate = rate_by_account[row.account_head]
 
 
 CHUNK_SIZE = 10
@@ -384,7 +656,6 @@ def _clear_caches():
 	_metal_purity_cache.clear()
 	_ccp_cache.clear()
 	_gemstone_pl_cache.clear()
-
 
 def _get_bom_context(self):
 	gold_gst_rate = frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
@@ -663,117 +934,6 @@ def get_stock_entry_additional_cost(self, doc):
 	return stock_entry.total_additional_costs if stock_entry else 0
 
 
-def _process_metal_detail(self, doc, ctx, cctx):
-	if not hasattr(doc, "metal_detail"):
-		return
-
-	for s in doc.metal_detail:
-		s.quantity = round(s.quantity, ctx.metal_precision)
-
-		if (
-			self.company == "Gurukrupa Export Private Limited"
-			and ctx.customer_group == "Internal"
-		):
-			if s.is_customer_item:
-				s.rate = 0
-				s.making_rate = sub_info.get("subcontracting_rate", 0)
-				s.wastage_rate = 0
-				s.wastage_amount = 0
-			else:
-				s.rate = round(calculated_gold_rate, 2)
-				s.making_rate = sub_info.get("supplier_fg_purchase_rate", 0)
-				s.wastage_rate = 0
-				s.wastage_amount = 0
-				s.customer_metal_purity = customer_metal_purity
-			s.amount = round(s.rate * s.quantity, 2)
-			s.making_amount = round(s.making_rate * s.quantity, 2)
-
-		elif (
-			self.company == "KG GK Jewellers Private Limited"
-			and ctx.customer_group == "Internal"
-		):
-			if s.is_customer_item:
-				s.rate = s.se_rate
-				s.making_rate = 550 if doc.item_category != "Chains" else 200
-				s.making_amount = round(s.making_rate * s.quantity, 2)
-			else:
-				if cctx.billing_currency == "USD":
-					s.se_rate = s.se_rate * cctx.exchange_rate
-					s.making_rate = (
-						550 if doc.item_category != "Chains" else 200
-					) * cctx.exchange_rate
-				else:
-					s.making_rate = 550 if doc.item_category != "Chains" else 200
-				s.rate = s.se_rate
-				s.wastage_rate = 0
-				s.wastage_amount = 0
-				s.making_amount = round(s.making_rate * s.quantity, 2)
-			s.amount = round(s.rate * s.quantity, 2)
-
-		else:
-			_, sub_info, threshold = _get_making_charge(
-				self, doc, s.metal_touch, ctx, cctx
-			)
-
-			customer_metal_purity = _get_metal_purity(
-				self.customer, s.metal_type, s.metal_touch
-			)
-			calculated_gold_rate = (
-				float(customer_metal_purity) * self.gold_rate_with_gst
-			) / (100 + int(ctx.gold_gst_rate))
-			if doc.metal_and_finding_weight < threshold:
-				making_rate = sub_info.get("rate_per_pc", 0)
-				wastage_rate_value = sub_info.get("wastage_per_pcs", 0) / 100.0
-			else:
-				making_rate = sub_info.get("rate_per_gm", 0)
-				wastage_rate_value = sub_info.get("wastage", 0) / 100.0
-
-			if s.is_customer_item:
-				s.rate = 0
-				s.amount = 0
-				s.making_rate = sub_info.get("subcontracting_rate", 0)
-				s.making_amount = round(s.making_rate * s.quantity, 2)
-				s.wastage = sub_info.get("subcontracting_wastage", 0) / 100.0
-			else:
-				# re-fetch via cache (same key, no extra DB hit)
-				customer_metal_purity = _get_metal_purity(
-					self.customer, s.metal_type, s.metal_touch
-				)
-				calculated_gold_rate = (
-					float(customer_metal_purity) * self.gold_rate_with_gst
-				) / (100 + int(ctx.gold_gst_rate))
-				# wastage = (
-				#     sub_info.get("subcontracting_wastage", 0) / 100.0
-				#     if getattr(doc, "is_customer_item", False)
-				#     else wastage_rate_value
-				# )
-				wastage = wastage_rate_value
-				s.customer_metal_purity = customer_metal_purity
-				s.rate = round(calculated_gold_rate, 2)
-				s.amount = round(s.rate * s.quantity, 2)
-				s.making_rate = making_rate
-				s.making_amount = round(
-					s.making_rate
-					if doc.metal_and_finding_weight < threshold
-					else s.making_rate * s.quantity,
-					2,
-				)
-				s.wastage_rate = wastage
-				s.wastage_amount = (
-					s.wastage_rate * s.amount
-					if self.customer != "TNCU0101"
-					else s.wastage_rate * s.quantity * self.gold_rate
-				)
-
-	doc.total_metal_amount = sum(flt(r.amount) for r in doc.get("metal_detail", []))
-	doc.total_wastage_amount = sum(
-		flt(r.wastage_amount) for r in doc.get("metal_detail", [])
-	)
-	doc.total_making_amount = sum(
-		flt(r.making_amount) for r in doc.get("metal_detail", [])
-	)
-
-
 def _process_metal_detail1(self, doc, ctx, cctx):
     if not hasattr(doc, "metal_detail"):
         return
@@ -808,10 +968,17 @@ def _process_metal_detail1(self, doc, ctx, cctx):
             s.making_amount = round(s.making_rate * s.quantity, 2)
 
         elif self.company == "KG GK Jewellers Private Limited" and ctx.customer_group == "Internal":
+            _, sub_info, threshold = _get_making_charge(self, doc, s.metal_touch, ctx, cctx)
+            # frappe.throw(str(sub_info))
+            calculated_gold_rate  = _get_calculated_gold_rate(
+                self.customer, s.metal_type, s.metal_touch,
+                self.gold_rate_with_gst, ctx.gold_gst_rate,
+            )
             if s.is_customer_item:
                 s.rate          = 0
                 s.amount = 0
-                s.making_rate=operational_cost/total_weight
+                # s.making_rate=operational_cost/total_weight
+                s.making_rate = sub_info.get("rate_per_gm", 0)
                 s.making_amount = round(s.making_rate * s.quantity, 2)
                 s.wastage_rate   = 0
                 s.wastage_amount = 0
@@ -881,147 +1048,6 @@ def _process_metal_detail1(self, doc, ctx, cctx):
     doc.total_wastage_amount = sum(flt(r.wastage_amount) for r in doc.get("metal_detail",   []))
     # frappe.msgprint(f"it7t6{doc.total_wastage_amount},{sum(flt(r.wastage_amount) for r in doc.get("finding_detail",   []))}")
     doc.total_making_amount  = sum(flt(r.making_amount)  for r in doc.get("metal_detail",   []))
-
-
-def _process_finding_detail(self, doc, ctx, cctx):
-	if not hasattr(doc, "finding_detail") or not doc.finding_detail:
-		return
-
-	finding_cache = {}  # local per-BOM-doc cache (finding_type → find_data)
-
-	for f in doc.finding_detail:
-		mc_name, sub_info, threshold = _get_making_charge(
-			self, doc, f.metal_touch, ctx, cctx
-		)
-
-		finding_type = f.finding_type
-		if finding_type not in finding_cache:
-			find = frappe.db.get_all(
-				"Making Charge Price Finding Subcategory",
-				filters={"parent": mc_name, "subcategory": finding_type},
-				fields=[
-					"rate_per_gm",
-					"rate_per_pc",
-					"wastage",
-					"wastage_per_pcs",
-					"supplier_fg_purchase_rate",
-					"subcontracting_rate",
-					"subcontracting_wastage",
-				],
-				limit=1,
-			)
-			if find:
-				find_data = find[0]
-			else:
-				find = frappe.db.get_all(
-					"Making Charge Price Item Subcategory",
-					filters={"parent": mc_name, "subcategory": doc.item_subcategory},
-					fields=[
-						"subcategory",
-						"rate_per_gm",
-						"rate_per_pc",
-						"supplier_fg_purchase_rate",
-						"wastage",
-						"subcontracting_rate",
-						"subcontracting_wastage",
-						"wastage_per_pcs",
-						"name",
-						"to_diamond",
-						"from_diamond",
-						"rate_per_gm_threshold",
-					],
-				)
-				find_data = find[0]
-				f_threshold = find_data.get("rate_per_gm_threshold") or 2
-				diamond_pcs = doc.total_diamond_pcs or 0
-				if doc.metal_and_finding_weight < f_threshold:
-					for sf_row in find:
-						if sf_row.from_diamond and (
-							int(sf_row.from_diamond)
-							<= int(diamond_pcs)
-							<= int(sf_row.to_diamond)
-						):
-							find_data = sf_row
-							break
-			finding_cache[finding_type] = find_data
-
-		find_data = finding_cache[finding_type]
-
-		customer_metal_purity = _get_metal_purity(
-			self.customer, f.metal_type, f.metal_touch
-		)
-		calculated_gold_rate = (
-			float(customer_metal_purity) * self.gold_rate_with_gst
-		) / (100 + int(ctx.gold_gst_rate))
-
-		f.customer_metal_purity = customer_metal_purity
-		f.quantity = round(f.quantity, ctx.metal_precision)
-
-		if f.is_customer_item:
-			f.rate = 0
-			f.amount = 0
-			f.making_rate = find_data.get("subcontracting_rate")
-			f.wastage_rate = 0
-			f.wastage_amount = 0
-			f.making_amount = round(f.making_rate * f.quantity, 2)
-
-		elif (
-			self.company == "Gurukrupa Export Private Limited"
-			and ctx.customer_group == "Internal"
-		):
-			f.rate = round(calculated_gold_rate, 2)
-			f.amount = round(f.rate * f.quantity, 2)
-			f.making_rate = find_data.get("supplier_fg_purchase_rate")
-			f.wastage_rate = 0
-			f.wastage_amount = 0
-			f.making_amount = round(f.making_rate * f.quantity, 2)
-
-		elif (
-			self.company == "KG GK Jewellers Private Limited"
-			and ctx.customer_group == "Internal"
-		):
-			if cctx.billing_currency == "USD":
-				f.se_rate = f.se_rate * cctx.exchange_rate
-				f.making_rate = (
-					find_data.get("supplier_fg_purchase_rate") * cctx.exchange_rate
-				)
-			else:
-				f.making_rate = find_data.get("supplier_fg_purchase_rate")
-			f.rate = round(calculated_gold_rate, 2)
-			f.amount = round(f.rate * f.quantity, 2)
-			f.wastage_rate = 0
-			f.wastage_amount = 0
-			f.making_amount = round(f.making_rate * f.quantity, 2)
-
-		else:
-			f.rate = round(calculated_gold_rate, 2)
-			f.amount = round(f.rate * f.quantity, 2)
-			finding_weight = getattr(doc, "metal_and_finding_weight", None)
-			if finding_weight is not None and finding_weight < (
-				find_data.get("rate_per_gm_threshold") or 2
-			):
-				making_rate = find_data.get("rate_per_pc", 0)
-				wastage_rate = find_data.get("wastage_per_pcs", 0) / 100.0
-				f.making_amount = round(making_rate, 2)
-			else:
-				making_rate = find_data.get("rate_per_gm", 0)
-				wastage_rate = find_data.get("wastage", 0) / 100.0
-				f.making_amount = round(making_rate * f.quantity, 2)
-			f.making_rate = making_rate
-			f.wastage_rate = wastage_rate
-			f.wastage_amount = (
-				f.wastage_rate * f.amount
-				if self.customer != "TNCU0101"
-				else f.wastage_rate * f.quantity * self.gold_rate
-			)
-
-	doc.total_finding_amount = sum(flt(r.amount) for r in doc.get("finding_detail", []))
-	doc.total_finding_making_amount = sum(
-		flt(r.making_amount) for r in doc.get("finding_detail", [])
-	)
-	doc.total_finding_wastage_amount = sum(
-		flt(r.wastage_amount) for r in doc.get("finding_detail", [])
-	)
 
 
 _finding_sub_cache = {}
@@ -1174,10 +1200,18 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 			self.company == "KG GK Jewellers Private Limited"
 			and ctx.customer_group == "Internal"
 		):
+			mc_name, sub_info, threshold = _get_making_charge(self, doc, f.metal_touch, ctx, cctx)
+
+			finding_type = f.finding_type
+			if finding_type not in finding_cache:
+				finding_cache[finding_type] = _get_finding_sub_info(mc_name, finding_type, doc)
+                
+			find_data = finding_cache[finding_type]
 			if f.is_customer_item:
 				f.rate          = 0
 				f.amount = 0
-				f.making_rate=operational_cost/total_weight
+				# f.making_rate=operational_cost/total_weight
+				f.making_rate     = find_data.get("rate_per_gm", 0)
 				f.making_amount = round(f.making_rate * f.quantity, 2)
 				f.wastage_rate   = 0
 				f.wastage_amount = 0
@@ -1187,7 +1221,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				if cctx.billing_currency == "USD":
 					f.se_rate = f.se_rate * cctx.exchange_rate
 				else:
-					f.making_rate = operational_cost / total_weight
+					# f.making_rate = operational_cost / total_weight
+					f.making_rate     = find_data.get("rate_per_gm", 0)
 				calculated_gold_rate  = _get_calculated_gold_rate(
 				self.customer, f.metal_type, f.metal_touch,
 				self.gold_rate_with_gst, ctx.gold_gst_rate,
@@ -2140,8 +2175,60 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 	d_co, d_ci = _split_weight(doc.diamond_detail, 0.2)
 	g_co, g_ci = _split_weight(doc.gemstone_detail, 0.2)
 
+	# row.custom_company_rm_weight = m_co + f_co + d_co + g_co
+	# row.custom_customer_weight = m_ci + f_ci + d_ci + g_ci
 	row.custom_company_rm_weight = m_co + f_co + d_co + g_co
-	row.custom_customer_weight = m_ci + f_ci + d_ci + g_ci
+	row.custom_customer_weight   = m_ci + f_ci + d_ci + g_ci
+
+	# ── Hybrid: split this row's taxable amount into company-owned
+	# (is_customer_item = 0, taxed at the Finished Goods rate) vs
+	# customer-supplied (is_customer_item = 1, taxed at the Subcontracting
+	# rate) material, so set_gst_details() can blend the two rates without
+	# needing to re-walk the BOM. Certification/hallmarking/freight/custom
+	# duty/sale amount are always treated as company-owned.
+	if self.sales_type == "Hybrid":
+		def _owned_supplied(detail, value_fn):
+			owned = supplied = 0.0
+			for r in detail:
+				value = value_fn(r)
+				if r.is_customer_item:
+					supplied += value
+				else:
+					owned += value
+			return owned, supplied
+
+		m_owned, m_supplied = _owned_supplied(
+			doc.metal_detail, lambda r: flt(r.amount) + flt(r.making_amount) + flt(r.wastage_amount)
+		)
+		f_owned, f_supplied = _owned_supplied(
+			doc.finding_detail, lambda r: flt(r.amount) + flt(r.making_amount) + flt(r.wastage_amount)
+		)
+		d_owned, d_supplied = _owned_supplied(
+			doc.diamond_detail, lambda r: flt(r.diamond_rate_for_specified_quantity)
+		)
+		g_owned, g_supplied = _owned_supplied(
+			doc.gemstone_detail, lambda r: flt(r.gemstone_rate_for_specified_quantity)
+		)
+		misc_owned = (
+			flt(doc.certification_amount) + flt(doc.hallmarking_amount)
+			+ flt(doc.custom_duty_amount) + flt(doc.freight_amount) + flt(doc.sale_amount)
+		)
+
+		row.custom_company_owned_amount = round(
+			m_owned + f_owned + d_owned + g_owned + misc_owned, _prec
+		)
+		row.custom_customer_supplied_amount = round(
+			m_supplied + f_supplied + d_supplied + g_supplied, _prec
+		)
+	else:
+		row.custom_company_owned_amount     = 0
+		row.custom_customer_supplied_amount = 0
+
+	if self.custom_diamond_quality:
+		row.diamond_quality = self.custom_diamond_quality
+
+	# ── 15. Accumulate SO total ──────────────────────────────────
+	self.total = round(self.total + row.amount, _prec)
 
 	if self.custom_diamond_quality:
 		row.diamond_quality = self.custom_diamond_quality
@@ -2202,7 +2289,6 @@ def _process_single_row(self, row, ctx):
 		create_serial_no_bom(self, row, ctx)
 		if not row.bom:
 			return
-		# frappe.msgprint(f"{row.bom}")
 		# ── Step 2: always process the BOM (new or existing) ─────────
 		if frappe.db.get_value("BOM", row.bom, "docstatus") == 1:
 			frappe.db.set_value("BOM", row.bom, "docstatus", "0")
@@ -2365,12 +2451,12 @@ def create_new_bom1(self):
 	No RQ jobs. No chunking. No queue explosion.
 
 	Performance improvements vs original:
-	        • _get_company_context  : queried once per serial_no/SO  (was once per row)
-	        • _get_making_charge    : queried once per unique combo   (was once per row)
-	        • Metal purity lookups  : queried once per (customer, type, touch)
-	        • CCP doc               : queried once per customer
-	        • Gemstone PL type      : queried once per customer
-	        • Child row writes      : 1 bulk UPDATE                  (was N set_value calls)
+			• _get_company_context  : queried once per serial_no/SO  (was once per row)
+			• _get_making_charge    : queried once per unique combo   (was once per row)
+			• Metal purity lookups  : queried once per (customer, type, touch)
+			• CCP doc               : queried once per customer
+			• Gemstone PL type      : queried once per customer
+			• Child row writes      : 1 bulk UPDATE                  (was N set_value calls)
 	"""
 	_clear_caches()  # always start fresh — never use stale data from a prior call
 
@@ -2870,8 +2956,11 @@ def validate_item_dharm(self):
 		"Certification",
 		"Branch Sales",
 		"Repairing",
+		"Hybrid"
 	)
 	if self.sales_type in allowed:
+		if self.sales_type == "Hybrid" and self.company not in HYBRID_ENABLED_COMPANIES:
+			frappe.throw(_("Hybrid Sales Type is not yet enabled for company {0}").format(self.company))
 		customer_payment_term_doc = frappe.get_doc(
 			"Customer Payment Terms", {"customer": self.customer}
 		)
@@ -2887,6 +2976,20 @@ def validate_item_dharm(self):
 			item_type = row.item_type
 			e_invoice_item = frappe.get_doc("E Invoice Item", item_type)
 			# frappe.msgprint(f"{e_invoice_item}")
+			if self.sales_type == "Hybrid":
+				# Hybrid carries no tax_rate of its own — job-work item
+				# types (repair/labour, used for customer-supplied
+				# material) get the Subcontracting rate, everything else
+				# (owned material, making, hallmarking, certification)
+				# gets the Finished Goods rate.
+				lookup_sales_type = (
+					"Subcontracting"
+					if (e_invoice_item.is_for_repair or e_invoice_item.is_for_labour)
+					else "Finished Goods"
+				)
+			else:
+				lookup_sales_type = self.sales_type
+				
 			matched_sales_type_row = None
 			for st_row in e_invoice_item.sales_type:
 				if st_row.sales_type == self.sales_type:

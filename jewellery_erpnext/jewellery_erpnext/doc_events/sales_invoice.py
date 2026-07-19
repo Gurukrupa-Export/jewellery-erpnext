@@ -170,7 +170,7 @@ def get_allowed_item_types(customer, sales_type):
 def on_submit(self,method):
 	if self.company == 'Sadguru Diamond':
 		return
-	if self.sales_type != 'Certification':
+	if self.sales_type not in  ['Certification','']:
 		separate_hallmarking_invoice = frappe.db.get_value(
 			"Customer", self.customer, "custom_separate_hallmarking_invoice"
 		)
@@ -699,12 +699,27 @@ def update_si_data(self):
 				bom_doc = frappe.get_doc("BOM", row.bom)
 				# Sum directly from BOM detail rows — rates already updated in before_validate
 				# if gold rate changed vs SO, otherwise original BOM amounts are used as-is
-				row.metal_amount = flt(sum(r.amount for r in bom_doc.metal_detail), 3) * exchange_rate
+				if self.sales_type == "Hybrid":
+					# Hybrid: customer-supplied material/making was already split
+					# out into a separate "Subcontracting Charges" row on the
+					# Sales Order (see add_hybrid_subcontracting_row in
+					# sales_order.py). Only sum the company-owned portion here,
+					# or that amount gets counted twice — once on this row,
+					# once on the Subcontracting Charges row.
+					metal_rows     = [r for r in bom_doc.metal_detail if not r.is_customer_item]
+					finding_rows   = [r for r in bom_doc.finding_detail if not r.is_customer_item]
+					diamond_total  = sum(flt(r.diamond_rate_for_specified_quantity) for r in bom_doc.diamond_detail if not r.is_customer_item)
+					gemstone_total = sum(flt(r.gemstone_rate_for_specified_quantity) for r in bom_doc.gemstone_detail if not r.is_customer_item)
+				else:
+					metal_rows, finding_rows = bom_doc.metal_detail, bom_doc.finding_detail
+					diamond_total  = bom_doc.total_diamond_amount
+					gemstone_total = bom_doc.gemstone_bom_amount
+				row.metal_amount = flt(sum(r.amount for r in metal_rows), 3) * exchange_rate
 				# frappe.throw(f"{bom_doc.making_charge}")
-				row.making_amount = flt(sum(r.making_amount for r in bom_doc.finding_detail)) + flt(sum(r.making_amount for r in bom_doc.metal_detail))
-				row.finding_amount = flt(sum(r.amount for r in bom_doc.finding_detail), 3) * exchange_rate
-				row.diamond_amount = bom_doc.total_diamond_amount * exchange_rate
-				row.gemstone_amount = bom_doc.gemstone_bom_amount * exchange_rate
+				row.making_amount = flt(sum(r.making_amount for r in finding_rows)) + flt(sum(r.making_amount for r in metal_rows))
+				row.finding_amount = flt(sum(r.amount for r in finding_rows), 3) * exchange_rate
+				row.diamond_amount = diamond_total * exchange_rate
+				row.gemstone_amount = gemstone_total * exchange_rate
 				row.custom_certification_amount = bom_doc.certification_amount * exchange_rate
 				if bom_doc.certification_amount and separate_hallmarking_invoice:
 					row.custom_certification_amount = 0
@@ -1218,6 +1233,8 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 			rate_per_gm = flt(making_charges.get("rate_per_gm") or 0)
 			rate_per_pc = flt(making_charges.get("rate_per_pc") or 0)
 			threshold = flt(making_charges.get("rate_per_gm_threshold") or 2)
+			subcontracting_rate=flt(making_charges.get("subcontracting_rate") or 0)
+			subcontracting_wastage=flt(making_charges.get("subcontracting_wastage") or 0)
 
 			# 🔥 IMPORTANT FIX: ALWAYS COMPARE WITH BOM LEVEL WEIGHT
 			weight = flt(bom_doc.metal_and_finding_weight or 0)
@@ -1406,7 +1423,7 @@ def update_payment_terms(self, payment_terms_data=None):
 
 			if payment_term_dict[row]["due_date_based_on"] == "Day(s) after invoice date":
 				due_date = getdate(self.posting_date) + timedelta(
-    					days=int(payment_terms["due_days"])
+						days=int(payment_terms["due_days"])
 							)
 
 			elif payment_term_dict[row]["due_date_based_on"] == "Day(s) after the end of the invoice month":

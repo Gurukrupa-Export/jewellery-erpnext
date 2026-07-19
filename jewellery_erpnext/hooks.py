@@ -105,6 +105,7 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
 		],
 		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
+        "before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.clear_hybrid_header_tax_rate",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_submit",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
