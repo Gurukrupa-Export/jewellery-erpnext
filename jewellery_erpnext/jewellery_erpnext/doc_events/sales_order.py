@@ -46,35 +46,84 @@ def before_validate(self, method):
 	self.items = [row for row in self.items if not row.get("custom_is_subcontracting_charge_row")]
 
 	validate_sales_type(self)
-	# update_snc(self)
-	# update_same_customer_snc(self)
 	validate_quotation_item(self)
 	set_repair_serial_bom(self)
-	# validate_customer_approval_invoice_items(self)
-	# if self.sales_type != 'Branch Sales':
-	# create_new_bom(self)
 	create_new_bom1(self)
 	add_hybrid_subcontracting_row(self)
+	set_missing_tax_category_and_template(self)
 	set_sales_type_tax_template(self)
-	# gst_category=frappe.db.get_value('Customer',self.customer,'gst_category')
-	# if gst_category in ['Registered Regular', 'Registered Composition','Tax Deductor','Tax Collector','Input Service Distributor']:
-	# 	tax(self)
-
-	# self.calculate_taxes_and_totals()
 	validate_serial_number(self)
-	# validate_items(self)
 	# set_gst_details(self)  # superseded by add_hybrid_subcontracting_row() for Hybrid; see history for why
 	validate_item_dharm(self)
-	# self.calculate_taxes_and_totals()
-	# calculate_gst_rate(self)
 	if not self.get("__islocal") and self.docstatus == 0:
 		set_bom_item_details(self)
-	# create_new_bom(self)
-	# validate_items(self)
 
-# def after_validate(self,method):
-# 	frappe.throw("hiii")
-# 	self.calculate_taxes_and_totals()
+def set_missing_tax_category_and_template(self):
+	"""
+	Re-derive tax_category and taxes_and_charges when either is blank (e.g.
+	cleared by a user on an existing order), so GST still comes through
+	automatically instead of staying empty forever. Only fills in what's
+	missing - never overrides a value already on the doc.
+
+	Deliberately narrower than the old (disabled) set_gst_details(): it does
+	NOT set item-level cgst_rate/sgst_rate/igst_rate using the
+	customer-specific "Sales Type Multiselect" rate - that's left entirely
+	to set_sales_type_tax_template()/sync_header_tax_rate(), which already
+	drives the real 3%/5% rate from the company's Item Tax Template.
+
+	The taxes child table itself IS rebuilt here (copied straight from the
+	template's own Sales Taxes and Charges rows) rather than relying on
+	core's AccountsController.set_taxes_and_charges() - that only fires when
+	Accounts Settings.add_taxes_from_taxes_and_charges_template is enabled,
+	which isn't guaranteed to be on on every site (confirmed off on at least
+	one), so doing it explicitly here keeps this independent of that setting.
+	"""
+	if self.sales_type not in ("Outright", "Outwork", "Branch Sales", "Hybrid"):
+		return
+	if self.tax_category and self.taxes_and_charges and self.get("taxes"):
+		return
+
+	customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
+	company_state = frappe.db.get_value("Address", self.company_address, "gst_state_number")
+	if not customer_state or not company_state:
+		return
+
+	if not self.tax_category:
+		self.tax_category = "In-State" if customer_state == company_state else "Out-State"
+
+	if not self.taxes_and_charges:
+		taxes_and_charges = frappe.db.get_value(
+			"Sales Taxes and Charges Template",
+			{"company": self.company, "tax_category": self.tax_category, "disabled": 0},
+			"name",
+		)
+		if not taxes_and_charges:
+			frappe.log_error(
+				f"No Sales Taxes and Charges Template found for "
+				f"Company: {self.company}, Tax Category: {self.tax_category}",
+				"set_missing_tax_category_and_template",
+			)
+			return
+		self.taxes_and_charges = taxes_and_charges
+
+	if not self.get("taxes"):
+		tax_rows = frappe.get_all(
+			"Sales Taxes and Charges",
+			filters={"parent": self.taxes_and_charges},
+			fields=["charge_type", "account_head", "description", "rate", "cost_center"],
+			order_by="idx asc",
+		)
+		for t in tax_rows:
+			self.append("taxes", {
+				"charge_type": t.charge_type,
+				"account_head": t.account_head,
+				"description": t.description,
+				"rate": t.rate,
+				"cost_center": t.cost_center,
+			})
+
+
+
 
 def set_repair_serial_bom(self):
 	"""Bridge the repair BOM Quotation -> Sales Order for header-order_type repairs.
@@ -104,12 +153,9 @@ def set_repair_serial_bom(self):
 
 
 def on_submit(self, method):
-	# submit_bom(self)
-	# create_branch_so(self)
 	validate_snc(self)
 
 def before_submit(self, method):
-	# validate_items(self)
 	if not self.get("custom_invoice_item"):
 		frappe.throw(_("Invoice Item table is mandatory for submission."))
 
