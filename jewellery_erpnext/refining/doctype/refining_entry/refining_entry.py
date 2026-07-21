@@ -128,10 +128,7 @@ class RefiningEntry(Document):
 		if (
 			self.refining_type == "Dust Refining"
 			and (self.warehouse or self.multiple_department)
-		) or (
-			self.refining_type == "Work Order Refining"
-			and self.manufacturing_work_order_details
-		):
+		) or (self.refining_type == "Work Order Refining" and self.mwo_details):
 			self.build_material_table()
 
 	def set_dust_system_quantity(self):
