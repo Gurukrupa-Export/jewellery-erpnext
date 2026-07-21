@@ -42,11 +42,17 @@ class TreeNumber(Document):
 
 		Floating-point dust (e.g. 3 - 2.9 - 0.1 ≈ 8e-17) is tolerated downstream by the eps
 		guard in _tree_status and the receive caps, so pending is left unrounded here.
+
+		Casting trees (``employee_ir`` set) keep ``issue_qty`` button-owned but the Employee IR
+		Receive draws the committed metal from the tree even when it was never button-issued, so
+		``pending`` floors at 0 (a never-issued row reads 0, not a phantom negative). Standalone
+		trees keep the raw value — their button paths cap receive at pending, so a negative there
+		signals a real bug that must stay visible.
 		"""
+		is_casting = bool(self.get("employee_ir"))
 		for row in self.material_details:
-			row.pending_qty = (
-				flt(row.issue_qty) - flt(row.receive_qty) - flt(row.loss_qty)
-			)
+			pending = flt(row.issue_qty) - flt(row.receive_qty) - flt(row.loss_qty)
+			row.pending_qty = max(0.0, pending) if is_casting else pending
 
 	def after_insert(self):
 		counter = cint(frappe.db.sql("select max(counter) from `tabTree Number`")[0][0])

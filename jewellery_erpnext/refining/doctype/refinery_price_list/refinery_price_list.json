@@ -3,137 +3,41 @@
  "allow_import": 1,
  "allow_rename": 1,
  "autoname": "RFP-.#####",
- "creation": "2026-07-09 00:00:00.000000",
+ "creation": "2026-07-09 00:00:00",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "refining_process",
-  "dust_item",
-  "band_label",
+  "item",
   "column_break_keys",
-  "charge_type",
-  "weight_basis",
-  "section_break_band",
-  "from_weight",
-  "to_weight",
-  "column_break_rate",
-  "rate",
-  "currency",
-  "section_break_extra",
-  "service_item",
   "supplier",
-  "column_break_extra",
   "company",
-  "effective_from"
+  "column_break_extra",
+  "currency",
+  "effective_from",
+  "section_break_slabs",
+  "slabs"
  ],
  "fields": [
   {
-   "description": "Refining process (Sheet 1 col A), e.g. Polishing/Vacuum.",
-   "fieldname": "refining_process",
+   "fieldname": "item",
    "fieldtype": "Link",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Refining Process",
-   "options": "Refining Process",
-   "reqd": 1
-  },
-  {
-   "description": "The dust/scrap Item this rate applies to.",
-   "fieldname": "dust_item",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_standard_filter": 1,
-   "label": "Dust Item",
+   "label": "Item",
    "options": "Item",
    "reqd": 1
-  },
-  {
-   "description": "Original weight-band text from the price sheet (e.g. \"Below 1 kg\").",
-   "fieldname": "band_label",
-   "fieldtype": "Data",
-   "label": "Band Label"
   },
   {
    "fieldname": "column_break_keys",
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "charge_type",
-   "fieldtype": "Select",
-   "in_list_view": 1,
-   "label": "Charge Type",
-   "options": "Flat Charge\nPer Gram\nPer Kg",
-   "reqd": 1
-  },
-  {
-   "description": "Which weight the charge applies to. Fine/After-burning are known only after refining completes.",
-   "fieldname": "weight_basis",
-   "fieldtype": "Select",
-   "label": "Weight Basis",
-   "options": "Gross Weight\nReceived Fine Weight\nAfter Burning Weight",
-   "reqd": 1
-  },
-  {
-   "fieldname": "section_break_band",
-   "fieldtype": "Section Break",
-   "label": "Weight Band (grams)"
-  },
-  {
-   "description": "Lower bound in grams, inclusive.",
-   "fieldname": "from_weight",
-   "fieldtype": "Float",
-   "in_list_view": 1,
-   "label": "From Weight (g)"
-  },
-  {
-   "description": "Upper bound in grams, inclusive. Leave 0 for no upper limit (\"Above N\").",
-   "fieldname": "to_weight",
-   "fieldtype": "Float",
-   "in_list_view": 1,
-   "label": "To Weight (g)"
-  },
-  {
-   "fieldname": "column_break_rate",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Flat amount, or per-gram / per-kg rate depending on Charge Type.",
-   "fieldname": "rate",
-   "fieldtype": "Currency",
-   "in_list_view": 1,
-   "label": "Rate",
-   "options": "currency",
-   "reqd": 1
-  },
-  {
-   "fieldname": "currency",
-   "fieldtype": "Link",
-   "label": "Currency",
-   "options": "Currency"
-  },
-  {
-   "fieldname": "section_break_extra",
-   "fieldtype": "Section Break"
-  },
-  {
-   "description": "Optional item billed on the service PO line. If blank, the entry falls back to a bench-default refining-charges item.",
-   "fieldname": "service_item",
-   "fieldtype": "Link",
-   "label": "Service Item",
-   "options": "Item"
-  },
-  {
-   "description": "Optional. The Excel price list has no supplier; leave blank for a single price list.",
    "fieldname": "supplier",
    "fieldtype": "Link",
    "in_standard_filter": 1,
    "label": "Supplier",
    "options": "Supplier"
-  },
-  {
-   "fieldname": "column_break_extra",
-   "fieldtype": "Column Break"
   },
   {
    "fieldname": "company",
@@ -142,18 +46,40 @@
    "options": "Company"
   },
   {
+   "fieldname": "column_break_extra",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
    "fieldname": "effective_from",
    "fieldtype": "Date",
    "label": "Effective From"
+  },
+  {
+   "fieldname": "section_break_slabs",
+   "fieldtype": "Section Break",
+   "label": "Price Slabs"
+  },
+  {
+   "fieldname": "slabs",
+   "fieldtype": "Table",
+   "label": "Slabs",
+   "options": "Refinery Price Slab",
+   "reqd": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-09 00:00:00.000000",
- "modified_by": "Administrator",
+ "modified": "2026-07-16 16:26:35.729254",
+ "modified_by": "manikandan_ext@gkexport.com",
  "module": "Refining",
  "name": "Refinery Price List",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {
@@ -186,6 +112,7 @@
    "role": "Refining User"
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

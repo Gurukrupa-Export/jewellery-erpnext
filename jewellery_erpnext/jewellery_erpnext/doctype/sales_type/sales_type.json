@@ -8,7 +8,8 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "type"
+  "type",
+  "tax_rate"
  ],
  "fields": [
   {
@@ -16,11 +17,17 @@
    "fieldtype": "Data",
    "label": "Type",
    "unique": 1
+  },
+  {
+   "fieldname": "tax_rate",
+   "fieldtype": "Percent",
+   "label": "Tax Rate"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2024-02-15 11:07:20.499700",
+ "modified": "2026-07-18 13:19:12.622177",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Sales Type",
@@ -40,6 +47,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

@@ -264,7 +264,7 @@ frappe.ui.form.on("Sales Order Item", {
 				reqd: 1,
 				read_only: 1,
 				columns: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -280,7 +280,7 @@ frappe.ui.form.on("Sales Order Item", {
 				reqd: 1,
 				read_only: 1,
 				columns: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -374,6 +374,7 @@ frappe.ui.form.on("Sales Order Item", {
 				fieldname: "wastage_rate",
 				label: __("Wastage Rate"),
 				columns: 1,
+				in_list_view: 1,
 			},
 			{
 				fieldtype: "Float",
@@ -381,6 +382,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Wastage Amount"),
 				columns: 1,
 				read_only: 1,
+				in_list_view: 1,
 				
 			},
 			{
@@ -518,7 +520,7 @@ frappe.ui.form.on("Sales Order Item", {
 				columns: 1,
 				read_only: 1,
 				reqd: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -533,7 +535,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Sieve Size Range"),
 				columns: 1,
 				read_only: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -851,7 +853,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Metal Purity"),
 				read_only: 1,
 				reqd: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -893,7 +895,7 @@ frappe.ui.form.on("Sales Order Item", {
 				label: __("Metal Colour"),
 				read_only: 1,
 				reqd: 1,
-				in_list_view: 1,
+				// in_list_view: 1,
 				options: "Attribute Value",
 				get_query() {
 					return {
@@ -1654,8 +1656,8 @@ let set_edit_bom_details = (
 					let gold_rate_with_gst = flt(cur_frm.doc.gold_rate_with_gst || 0);
 					let metal_purity = flt(metal_purity_value || 0);
 
-					let calculated_actual_rate = (d.metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
-					let calculated_gold_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_actual_rate = (metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
+					let calculated_gold_rate = (d.customer_metal_purity * gold_rate_with_gst) / (100 + parseInt(gold_gst_rate));
 					let calculated_gold_rate_quantity = calculated_gold_rate * d.quantity;
 					let calculated_actual_rate_quantity = calculated_actual_rate * d.quantity;
 
@@ -1668,23 +1670,23 @@ let set_edit_bom_details = (
 					// let rate_to_use = gold_rate_with_gst;
 					let gold_amount = calculated_actual_rate * d.quantity;
 
-					if (
-						cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
-						cur_frm.doc.customer === "GJCU0009"
-					) {
-						rate_to_use = d.se_rate;
-						// rate_to_use=calculated_gold_rate
-						making_rate_to_use = d.making_rate;
-						// d.making_amount = making_rate_to_use * d.quantity;
-						gold_amount = rate_to_use * d.quantity;
-					} else if (
-						cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
-						cur_frm.doc.customer_name === "Gurukrupa Export Private Limited - Chennai"
-					) {
-						making_rate_to_use = d.making_rate || 0;
-						console.log("hii", making_rate_to_use)
-					}
-
+					// if (
+					// 	cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
+					// 	cur_frm.doc.customer === "GJCU0009"
+					// ) {
+					// 	rate_to_use = d.se_rate;
+					// 	// rate_to_use=calculated_gold_rate
+					// 	making_rate_to_use = d.making_rate;
+					// 	// d.making_amount = making_rate_to_use * d.quantity;
+					// 	gold_amount = rate_to_use * d.quantity;
+					// } else if (
+					// 	cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
+					// 	cur_frm.doc.customer_name === "Gurukrupa Export Private Limited - Chennai"
+					// ) {
+					// 	making_rate_to_use = d.making_rate || 0;
+					// 	console.log("hii", making_rate_to_use)
+					// }
+					making_rate_to_use = d.making_rate;
 					metal_data.push({
 						docname: d.name,
 						metal_type: d.metal_type,
@@ -1724,7 +1726,7 @@ let set_edit_bom_details = (
 
 
 
-	let total_sum_diamond = 0;
+	// let total_sum_diamond = 0;
 	let count = 0;
 	let total_calls = doc.diamond_detail.length;
 
@@ -1751,29 +1753,31 @@ let set_edit_bom_details = (
 
 		// Calculate the difference
 		let difference_qty = without_precision_rate - with_precision_rate;
-		let total_diamond_rate_qty = (d.quantity * parseFloat(d.total_diamond_rate)).toFixed(2);
-		total_sum_diamond += parseFloat(total_diamond_rate_qty);
+		// let total_diamond_rate_qty = (d.quantity * parseFloat(d.total_diamond_rate)).toFixed(2);
+		let total_diamond_rate_qty = (d.diamond_rate_for_specified_quantity);
+		let total_sum_diamond = doc.total_diamond_amount;
 		amount = parseFloat(total_diamond_rate_qty);
 		let rate_to_use = d.total_diamond_rate;
 
 
-		if (
-			cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
-			cur_frm.doc.customer === "GJCU0009"
-		) {
-			rate_to_use = flt(d.se_rate || 0);
-		}
+		// if (
+		// 	cur_frm.doc.company === "KG GK Jewellers Private Limited" &&
+		// 	cur_frm.doc.customer === "GJCU0009"
+		// ) {
+		// 	rate_to_use = flt(d.se_rate || 0);
+		// }
 
-		if (
-			cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
-			cur_frm.doc.customer === "TNCU0002" &&
-			cur_frm.doc.sales_type === "Branch"
+		// if (
+		// 	cur_frm.doc.company === "Gurukrupa Export Private Limited" &&
+		// 	cur_frm.doc.customer === "TNCU0002" &&
+		// 	cur_frm.doc.sales_type === "Branch"
 
-		) {
+		// ) {
 
-			rate_to_use = flt(d.fg_purchase_rate || 0);
-		}
-		console.log("hiioo11", d.stone_shape, d.weight_per_pcs, cur_frm.doc.customer);
+		// 	rate_to_use = flt(d.fg_purchase_rate || 0);
+		// }
+		rate_to_use  = flt(d.total_diamond_rate || 0);
+		// console.log("hiioo11", d.stone_shape, d.weight_per_pcs, cur_frm.doc.customer);
 		// frappe.db.get_list('Diamond Price List', {
 		// 	filters: {
 		// 		from_weight: ['<=', d.weight_per_pcs],
@@ -1905,7 +1909,7 @@ let set_edit_bom_details = (
 			// let rate_to_use = d.rate;
 			
 			total_wastage_amount += wastage_amount +d.wastage_amount;
-			console.log('total_wastage_amount', total_wastage_amount);
+			// console.log('total_wastage_amount', total_wastage_amount);
 			// dialog.set_value("finding_amount", finding_amount);
 			let making_rate_to_use = d.making_rate;
 			frappe.call({
@@ -2019,8 +2023,8 @@ let set_edit_bom_details = (
 	dialog.set_value("total_gemstone_pieces", doc.total_gemstone_pcs)
 	dialog.set_value("custom_duty_amount", doc.custom_duty_amount)
 	dialog.set_value("freight_amount", doc.freight_amount)
-	// dialog.set_value("rate", (doc.total_bom_amount+ doc.hallmarking_amount + doc.making_charge))
-	// dialog.set_value("amount", (doc.total_bom_amount+ doc.hallmarking_amount + doc.making_charge))
+	dialog.set_value("rate", (doc.total_bom_amount+ doc.hallmarking_amount + doc.making_charge + doc.certification_amount))
+	dialog.set_value("amount", (doc.total_bom_amount+ doc.hallmarking_amount + doc.making_charge + doc.certification_amount))
 	dialog.set_value("sale_amount", doc.sale_amount)
 
 	frappe.call({
@@ -2037,10 +2041,13 @@ let set_edit_bom_details = (
 				precision = 2;
 			}
 
-
+			let total_wastage_amount = doc.total_wastage_amount || 0;
+			for (let row of (doc.finding_detail || [])) {
+				total_wastage_amount += row.wastage_amount || 0;
+			}
 			// Set all fields from BOM
 			// console.log('total_wastage amount', total_wastage_amount);
-			dialog.set_value("metal_amount", metal_amount || 0);
+			dialog.set_value("metal_amount", doc.total_metal_amount);
 			dialog.set_value("making_amount", doc.making_charge);
 			dialog.set_value("wastage_amount", total_wastage_amount );
 			dialog.set_value("gemstone_amount", gemstone_amount || 0);

@@ -90,7 +90,17 @@ class TestManufacturingPlan(IntegrationTestCase):
 	def test_manufacturing_plan_repair(self):
 		repair_so = create_repair_sales_order(self)
 
-		# The re-added picker query must surface the repair sales order...
+		# order_type == "Repair" must have propagated Quotation -> Sales Order...
+		self.assertEqual(
+			frappe.db.get_value("Sales Order", repair_so, "order_type"), "Repair"
+		)
+		# ...and the before_validate bridge must have populated serial_id_bom on every item.
+		so_serial_boms = frappe.get_all(
+			"Sales Order Item", filters={"parent": repair_so}, pluck="serial_id_bom"
+		)
+		self.assertTrue(so_serial_boms and all(so_serial_boms))
+
+		# The repair picker (now filtered on order_type == "Repair") must surface the SO...
 		repair_list = get_repair_pending_ppo_sales_order(
 			"Sales Order",
 			None,
@@ -101,7 +111,7 @@ class TestManufacturingPlan(IntegrationTestCase):
 		)
 		self.assertIn(repair_so, [row.name for row in repair_list])
 
-		# ...and the normal (non-repair) picker must NOT.
+		# ...and the normal (non-repair) picker must NOT (symmetric exclusion).
 		normal_list = get_pending_ppo_sales_order(
 			"Sales Order",
 			None,
@@ -112,17 +122,12 @@ class TestManufacturingPlan(IntegrationTestCase):
 		)
 		self.assertNotIn(repair_so, [row.name for row in normal_list])
 
-		# Repair-mode mapping must append the repair rows via the shared mapper.
+		# Repair-mode mapping must append rows and resolve each BOM from serial_id_bom.
 		doc = frappe.new_doc("Manufacturing Plan")
 		doc.select_manufacture_order = "Repair"
 		man_plan = get_details_to_append(json.dumps([repair_so]), doc)
-		repair_rows = [
-			row
-			for row in man_plan.manufacturing_plan_table
-			if row.order_form_type == "Repair Order"
-		]
-		self.assertTrue(repair_rows)
-		for row in repair_rows:
+		self.assertTrue(man_plan.manufacturing_plan_table)
+		for row in man_plan.manufacturing_plan_table:
 			self.assertTrue(row.serial_id_bom)
 			self.assertTrue(row.bom)
 
@@ -163,13 +168,26 @@ def create_sales_order(self):
 
 
 def create_repair_sales_order(self):
-	"""Build a Repair-Order sales order so the Get Repair Order picker has data.
+	"""Build a header-``order_type`` Repair sales order so the Get Repair Order picker has data.
 
-	Mirrors create_sales_order but flips every item to ``Repair Order`` and points
-	``serial_id_bom`` at the item's BOM (the BOM repair MOs are built from).
+	The repair is marked purely at the header via ``order_type = "Repair"`` (the sole repair
+	marker). We stamp the submitted source Quotation with ``order_type = "Repair"`` and give each
+	Quotation item a ``custom_serial_id_bom``; the Sales Order then inherits ``order_type`` via
+	``get_mapped_doc`` (same-named field) and its ``serial_id_bom`` via the before_validate bridge
+	(``set_repair_serial_bom``). This exercises the full new propagation path end to end.
 	"""
 	create_quotation(self)
 	quotation = frappe.get_value("Quotation", {"workflow_state": "Submitted"}, "name")
+
+	# Mark the (submitted) quotation as a repair and give each item a repair BOM to bridge over.
+	# (Quotation Item has no ``bom`` column, so source the repair BOM from the Item's master BOM.)
+	frappe.db.set_value("Quotation", quotation, "order_type", "Repair")
+	for qi in frappe.get_all(
+		"Quotation Item", filters={"parent": quotation}, fields=["name", "item_code"]
+	):
+		bom = frappe.db.get_value("Item", qi.item_code, "master_bom")
+		frappe.db.set_value("Quotation Item", qi.name, "custom_serial_id_bom", bom)
+
 	sales_order = make_sales_order(quotation)
 	sales_order.sales_type = "Finished Goods"
 	sales_order.delivery_date = add_days(sales_order.transaction_date, 3)
@@ -182,13 +200,6 @@ def create_repair_sales_order(self):
 		row.rate = 150000
 		if not row.warehouse:
 			row.warehouse = self.warehouse
-		row.order_form_type = "Repair Order"
-		row.order_form_id = (
-			None  # drop the inherited "Order" link; empty Dynamic Link skips validation
-		)
-		row.serial_id_bom = row.bom or frappe.db.get_value(
-			"Item", row.item_code, "master_bom"
-		)
 	sales_order.save()
 	sales_order.submit()
 	return sales_order.name

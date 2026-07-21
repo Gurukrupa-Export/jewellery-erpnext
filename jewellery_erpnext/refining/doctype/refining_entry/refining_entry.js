@@ -4,18 +4,44 @@
 frappe.ui.form.on("Refining Entry", {
 	setup(frm) {
 		// Filters
-		frm.set_query("department", () => ({
-			filters: { company: frm.doc.company, is_group: 0 },
-		}));
+		frm.set_query("department", () => {
+			// Global rule: the Source Department dropdown only offers the logged-in
+			// user's own department (from their Employee record, stashed in onload).
+			// Users without an Employee record (e.g. Administrator) see all departments.
+			const filters = { company: frm.doc.company, is_group: 0 };
+			if (frm.__employee_department) {
+				filters.name = frm.__employee_department;
+			}
+			return { filters };
+		});
 		frm.set_query("refining_department", () => ({
 			filters: { company: frm.doc.company, is_group: 0 },
 		}));
 		frm.set_query("loss_item", () => ({
 			filters: { is_stock_item: 1 },
 		}));
+		frm.set_query("pricing_item", () => ({
+			// The pricing categories from the price sheet live in these two groups
+			// (seeded by seed_refining_masters).
+			filters: { item_group: ["in", ["Refining Scrap", "Refining Chemical"]] },
+		}));
 		frm.set_query("warehouse", () => {
 			let wh_type = ["in", ["Raw Material", "Scrap"]];
-			if (frm.doc.refining_type === "Work Order Refining") {
+			if (frm.doc.is_external) {
+				// External refining sends loss/dust/semi-finished material picked by
+				// the operator — allow any stock-holding warehouse type.
+				wh_type = [
+					"in",
+					[
+						"Raw Material",
+						"Scrap",
+						"Manufacturing",
+						"Finished Goods",
+						"Transit of Tagging",
+						"Product Certification",
+					],
+				];
+			} else if (frm.doc.refining_type === "Work Order Refining") {
 				wh_type = "Manufacturing";
 			} else if (frm.doc.refining_type === "Serial Number Refining") {
 				wh_type = ["in", ["Finished Goods", "Transit of Tagging", "Product Certification"]];
@@ -44,16 +70,18 @@ frappe.ui.form.on("Refining Entry", {
 	},
 
 	onload(frm) {
-		// Default the Source Department from the logged-in user's Employee record so
-		// refining is scoped to the user's own department (server-side validate is the
-		// authoritative safety net; this is UX only).
-		if (frm.is_new() && !frm.doc.department) {
-			frappe.db.get_value("Employee", { user_id: frappe.session.user }, "department").then((r) => {
-				if (r.message && r.message.department) {
+		// Fetch the logged-in user's Employee department once: it both defaults the
+		// Source Department on new entries AND restricts the department dropdown to
+		// only that department (see the set_query in setup) — the global rule that
+		// refining is scoped to the user's own department.
+		frappe.db.get_value("Employee", { user_id: frappe.session.user }, "department").then((r) => {
+			if (r.message && r.message.department) {
+				frm.__employee_department = r.message.department;
+				if (frm.is_new() && !frm.doc.department) {
 					frm.set_value("department", r.message.department);
 				}
-			});
-		}
+			}
+		});
 	},
 
 	refresh(frm) {
@@ -92,6 +120,11 @@ frappe.ui.form.on("Refining Entry", {
 		frm.trigger("set_field_visibility");
 		frm.trigger("set_naming_series");
 		frm.trigger("department");
+		// Re-derive the Pricing Category for the new type (only fills when blank).
+		if (frm.doc.is_external) {
+			frm.set_value("pricing_item", null);
+			frm.trigger("set_default_pricing_item");
+		}
 	},
 
 	refining_department(frm) {
@@ -110,7 +143,70 @@ frappe.ui.form.on("Refining Entry", {
 		}
 	},
 
+	is_external(frm) {
+		frm.trigger("set_field_visibility");
+		frm.trigger("add_action_buttons");
+		if (!frm.doc.is_external) {
+			frm.set_value("supplier", null);
+			frm.set_value("supplier_warehouse", null);
+			frm.set_value("pricing_item", null);
+		} else {
+			frm.trigger("set_default_pricing_item");
+		}
+	},
+
+	set_default_pricing_item(frm) {
+		// Pricing Category defaults from the Refining Type (per the price sheet):
+		// Serial/MWO consignments price as Finish & Semi Finish Scrap, Scrap refining
+		// as Metal Refining Scrap, Dust as Main Dust (operator switches to Vacuum Bag /
+		// Tools Dust / Ultra Liquid etc. as applicable). Server-side defaulting in
+		// before_submit_external stays authoritative.
+		if (!frm.doc.is_external || frm.doc.pricing_item) return;
+		const map = {
+			"Serial Number Refining": "REF-FSJ-001",
+			"Work Order Refining": "REF-FSJ-001",
+			"Scrap Refining": "REF-RMS-001",
+			"Dust Refining": "REF-MD-001",
+		};
+		const item = map[frm.doc.refining_type];
+		if (!item) return;
+		frappe.db.exists("Item", item).then((exists) => {
+			if (exists) frm.set_value("pricing_item", item);
+		});
+	},
+
+	supplier(frm) {
+		// External refining: auto-fetch the supplier's linked warehouse
+		// (Warehouse.subcontractor) as soon as the supplier is selected. Prefer a Raw
+		// Material-type warehouse (mirrors the server-side _get_supplier_warehouse
+		// resolution, which stays authoritative at submit).
+		if (!frm.doc.is_external || !frm.doc.supplier) {
+			frm.set_value("supplier_warehouse", null);
+			return;
+		}
+		const base = {
+			subcontractor: frm.doc.supplier,
+			company: frm.doc.company,
+			disabled: 0,
+			is_group: 0,
+		};
+		frappe.db.get_value("Warehouse", { ...base, warehouse_type: "Raw Material" }, "name").then((r) => {
+			if (r.message && r.message.name) {
+				frm.set_value("supplier_warehouse", r.message.name);
+				return;
+			}
+			frappe.db.get_value("Warehouse", base, "name").then((r2) => {
+				frm.set_value("supplier_warehouse", r2.message && r2.message.name ? r2.message.name : null);
+			});
+		});
+	},
+
 	department(frm) {
+		// External refining sends loss/dust/semi-finished material picked by the
+		// operator — never auto-fill their manually chosen Source Warehouse (the
+		// field is made editable for external in set_field_visibility).
+		if (frm.doc.is_external) return;
+
 		if (frm.doc.department) {
 			let wh_type = "Scrap";
 			if (frm.doc.refining_type === "Scrap Refining") {
@@ -127,51 +223,6 @@ frappe.ui.form.on("Refining Entry", {
 						frm.set_value("warehouse", r.message.name);
 					}
 				});
-		}
-	},
-
-	refining_entry_po(frm) {
-		if (frm.doc.refining_entry_po && frm.is_new()) {
-			frappe.show_alert(__("Fetching details from Purchase Order..."));
-			frappe.call({
-				method: "jewellery_erpnext.jewellery_erpnext.refining.doctype.refining_entry.refining_entry.fetch_details_from_po",
-				args: { po_name: frm.doc.refining_entry_po },
-				callback: function (r) {
-					if (r.message) {
-						let doc = r.message;
-						let keys = [
-							"refining_type",
-							"is_external",
-							"supplier",
-							"refining_process",
-							"company",
-							"department",
-							"refining_department",
-							"warehouse",
-							"refining_warehouse",
-							"parent_refining_entry",
-						];
-						keys.forEach((k) => frm.set_value(k, doc[k]));
-
-						frm.clear_table("material_items");
-						if (doc.material_items) {
-							doc.material_items.forEach((row) => {
-								let child = frm.add_child("material_items");
-								Object.assign(child, row);
-							});
-						}
-
-						frm.clear_table("batch_tracking");
-						if (doc.batch_tracking) {
-							doc.batch_tracking.forEach((row) => {
-								let child = frm.add_child("batch_tracking");
-								Object.assign(child, row);
-							});
-						}
-						frm.refresh();
-					}
-				},
-			});
 		}
 	},
 
@@ -258,7 +309,10 @@ frappe.ui.form.on("Refining Entry", {
 
 	set_field_visibility(frm) {
 		const type = frm.doc.refining_type;
-		// Dust-specific sections
+		const is_external = !!frm.doc.is_external;
+		// Dust-specific sections. Physical verification applies to external dust
+		// refining too — the counted physical quantity is what actually goes to the
+		// supplier, and the excess over system stock is receipted and sent along.
 		const is_dust = type === "Dust Refining";
 		frm.toggle_display("section_break_dust", is_dust);
 		frm.toggle_display("section_break_verification", is_dust || type === "Scrap Refining");
@@ -273,6 +327,11 @@ frappe.ui.form.on("Refining Entry", {
 
 		// Scrap-specific
 		frm.toggle_display("scan_scrap_qr", type === "Scrap Refining");
+
+		// External refining sends loss/dust/semi-finished material picked by the
+		// operator — unlike the internal flow (where Source Warehouse is auto-derived
+		// and read-only), the operator picks it manually here.
+		frm.set_df_property("warehouse", "read_only", is_external ? 0 : 1);
 	},
 
 	add_action_buttons(frm) {
@@ -452,6 +511,64 @@ frappe.ui.form.on("Refining Entry", {
 		}
 
 		if (frm.is_new()) return;
+
+		// External refining has its own submit-only lifecycle (no classify/repack/
+		// verify/complete/transfer) — the internal "Refining Process" buttons below don't
+		// apply. Everything happens on this one document: submit auto-creates an
+		// optional service Purchase Order, and "Receive Material from Supplier"
+		// records the physical receipt directly here (no second Refining Entry).
+		if (frm.doc.is_external) {
+			if (frm.doc.refining_entry_po) {
+				frm.add_custom_button(
+					__("View Purchase Order"),
+					() => frappe.set_route("Form", "Purchase Order", frm.doc.refining_entry_po),
+					__("Refining Process")
+				);
+			}
+
+			if (frm.doc.docstatus === 1 && !frm.doc.repack_se) {
+				let btn = frm.add_custom_button(
+					__("Receive Material from Supplier"),
+					() => {
+						frappe.prompt(
+							[
+								{
+									fieldname: "recovery_weight",
+									fieldtype: "Float",
+									label: __("Recovery Weight"),
+									reqd: 1,
+									default: frm.doc.qty_to_refine || 0,
+								},
+								{
+									fieldname: "received_qty",
+									fieldtype: "Float",
+									label: __("Received Quantity (if applicable)"),
+								},
+							],
+							(values) => {
+								// Disable the trigger button for the duration of the call —
+								// the dialog itself closes immediately on submit, so without
+								// this a user can re-open it and fire a second request before
+								// the first one's reload_doc() lands.
+								btn.prop("disabled", true);
+								frappe.show_alert(__("Receiving Material..."));
+								frm.call("receive_from_supplier", {
+									recovery_weight: values.recovery_weight,
+									received_qty: values.received_qty,
+								})
+									.then(() => frm.reload_doc())
+									.finally(() => btn.prop("disabled", false));
+							},
+							__("Receive Material from Supplier"),
+							__("Receive")
+						);
+					},
+					__("Refining Process")
+				);
+				btn.addClass("btn-primary");
+			}
+			return;
+		}
 
 		// Parent only buttons
 		if (!frm.doc.parent_refining_entry) {

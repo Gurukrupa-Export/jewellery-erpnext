@@ -22,6 +22,10 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, nowtime, today
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	resolve_batch_ownership,
+)
+
 PROCESS_LOSS_SE_TYPE = "Process Loss"
 CHILD_TABLE_EMPLOYEE = "employee_loss_details"
 CHILD_TABLE_MANUAL = "manually_book_loss_details"
@@ -145,6 +149,11 @@ def _prepare_loss_row(eir, row, table_name):
 
 	Returns None when proportionally_loss <= 0.
 	Raises on any missing mandatory field or unresolvable reference.
+
+	Mostly read-only, with two documented edge-case side effects: it logs an Error Log for
+	a sub-precision loss row, and ``_find_sre`` may self-heal an EOD-orphaned WIP reservation
+	(re-creating the missing Stock Reservation Entry at the batch's physical warehouse) before
+	the batch can be resolved.
 	"""
 	# Gate at the Stock Entry Detail's ACTUAL transfer_qty precision so a loss that survives
 	# here is guaranteed representable when ERPNext's set_transfer_qty() recomputes
@@ -260,51 +269,80 @@ def _resolve_batch_inventory(row):
 	The loss physically leaves ``row.batch_no``, so the ledger row -- and the
 	scrap batch minted from the produce row (Batch.update_inventory_dimentions
 	copies inventory_type/customer off the SE Detail row) -- must carry THAT
-	batch's inventory type. The Batch is the source of truth, so it wins; fall
-	back to any value already on the loss row, then to "Regular Stock". Setting
-	the value here (before ``se.insert()``) pre-empts the before_validate stamp,
-	which only fires ``if not row.inventory_type``.
+	batch's inventory type. Setting the value here (before ``se.insert()``)
+	pre-empts the before_validate stamp, which only fires
+	``if not row.inventory_type``.
+
+	The rules themselves live in ``customization/utils/row_ownership`` so the
+	tree and warehouse loss builders resolve ownership identically.
 	"""
-	batch_inv = {}
-	if getattr(row, "batch_no", None):
-		batch_inv = (
-			frappe.db.get_value(
-				"Batch",
-				row.batch_no,
-				["custom_inventory_type", "custom_customer"],
-				as_dict=True,
-			)
-			or {}
-		)
-	inventory_type = (
-		batch_inv.get("custom_inventory_type")
-		or getattr(row, "inventory_type", None)
-		or "Regular Stock"
+	return resolve_batch_ownership(row)
+
+
+_SRE_LOOKUP_FIELDS = [
+	"name",
+	"warehouse",
+	"reserved_qty",
+	"available_qty",
+	"voucher_qty",
+	"reservation_based_on",
+	"has_batch_no",
+	"company",
+	"voucher_type",
+	"voucher_no",
+	"voucher_detail_no",
+	"stock_uom",
+	"manufacturing_operation",
+]
+
+
+def _query_batch_and_qty_sres(mwo, item_code, batch_no):
+	"""Return submitted (docstatus=1) SREs for (mwo, item, batch).
+
+	Prefer a batch-level match via the Serial and Batch Entry child table; fall back to a
+	Qty-based reservation (no sb_entries) if the batch join returns nothing. Shared by the
+	initial lookup and the post-heal re-query in ``_find_sre``.
+	"""
+	rows = frappe.db.sql(
+		"""
+        SELECT
+            sre.name,
+            sre.warehouse,
+            sre.reserved_qty,
+            sre.available_qty,
+            sre.voucher_qty,
+            sre.reservation_based_on,
+            sre.has_batch_no,
+            sre.company,
+            sre.voucher_type,
+            sre.voucher_no,
+            sre.voucher_detail_no,
+            sre.stock_uom,
+            sre.manufacturing_operation
+        FROM `tabStock Reservation Entry` sre
+        INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
+        WHERE sre.manufacturing_work_order = %s
+          AND sre.item_code = %s
+          AND sbe.batch_no = %s
+          AND sre.docstatus = 1
+        """,
+		(mwo, item_code, batch_no),
+		as_dict=True,
 	)
-	# Customer only travels with customer-owned inventory; a Regular Stock row
-	# must never carry a stray customer (mirrors the Make Receive batch
-	# resolution in manufacturing_operation.py).
-	if inventory_type in ("Customer Goods", "Customer Stock"):
-		customer = batch_inv.get("custom_customer") or getattr(row, "customer", None)
-		# Couple the two: a customer inventory type with no resolvable customer is
-		# malformed. The scrap batch's guard-exemption (is_process_loss_repack)
-		# needs a customer, so emitting a customer type without one would stamp an
-		# inventory type the loss item may not allow and hard-fail the EIR receive
-		# submit. Fall back to Regular Stock (as main_slip.create_metal_loss does)
-		# rather than crash; the today's behaviour was Regular Stock anyway.
-		if not customer:
-			frappe.logger().warning(
-				"create_loss_stock_entries: batch {0} (item {1}) is {2} with no "
-				"customer; booking loss row as Regular Stock".format(
-					getattr(row, "batch_no", None),
-					getattr(row, "item_code", None),
-					inventory_type,
-				)
-			)
-			inventory_type = "Regular Stock"
-	else:
-		customer = None
-	return inventory_type, customer
+
+	if not rows:
+		# Fallback: Qty-based reservation (reservation_based_on = "Qty")
+		rows = frappe.db.get_all(
+			"Stock Reservation Entry",
+			{
+				"manufacturing_work_order": mwo,
+				"item_code": item_code,
+				"docstatus": 1,
+			},
+			_SRE_LOOKUP_FIELDS,
+		)
+
+	return rows
 
 
 def _find_sre(eir, row, mwo, table_name, qty):
@@ -331,59 +369,34 @@ def _find_sre(eir, row, mwo, table_name, qty):
 
 	``candidates`` (the ordered, single-warehouse list) is returned alongside so
 	the validation can report the batch's aggregate reservation on failure.
+
+	Self-heal: if no submitted SRE is found, EOD sync may have orphaned this MWO's WIP
+	reservation (source SREs cancelled, re-reservation silently skipped because the batch
+	is physically at a warehouse other than the EOD row target — see
+	``mop_eod_sync._reserve_batch_at_physical_warehouse``). We re-create the missing SRE at
+	the batch's physical warehouse and re-query, throwing only if it is still unreservable.
 	"""
-	rows = frappe.db.sql(
-		"""
-        SELECT
-            sre.name,
-            sre.warehouse,
-            sre.reserved_qty,
-            sre.available_qty,
-            sre.voucher_qty,
-            sre.reservation_based_on,
-            sre.has_batch_no,
-            sre.company,
-            sre.voucher_type,
-            sre.voucher_no,
-            sre.voucher_detail_no,
-            sre.stock_uom,
-            sre.manufacturing_operation
-        FROM `tabStock Reservation Entry` sre
-        INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
-        WHERE sre.manufacturing_work_order = %s
-          AND sre.item_code = %s
-          AND sbe.batch_no = %s
-          AND sre.docstatus = 1
-        """,
-		(mwo, row.item_code, row.batch_no),
-		as_dict=True,
-	)
+	rows = _query_batch_and_qty_sres(mwo, row.item_code, row.batch_no)
 
 	if not rows:
-		# Fallback: Qty-based reservation (reservation_based_on = "Qty")
-		rows = frappe.db.get_all(
-			"Stock Reservation Entry",
-			{
-				"manufacturing_work_order": mwo,
-				"item_code": row.item_code,
-				"docstatus": 1,
-			},
-			[
-				"name",
-				"warehouse",
-				"reserved_qty",
-				"available_qty",
-				"voucher_qty",
-				"reservation_based_on",
-				"has_batch_no",
-				"company",
-				"voucher_type",
-				"voucher_no",
-				"voucher_detail_no",
-				"stock_uom",
-				"manufacturing_operation",
-			],
+		# Orphaned reservation: heal it at the warehouse where the batch physically sits, then
+		# re-run BOTH queries. Reserving at the physical warehouse (not the current-op dept WH)
+		# is required for correctness — _prepare_loss_row consumes the loss from sre.warehouse,
+		# so a wrong warehouse would trade "no SRE" for negative batch stock.
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+			_reserve_batch_at_physical_warehouse,
 		)
+
+		operation = getattr(
+			row, "manufacturing_operation", None
+		) or frappe.db.get_value(
+			"Manufacturing Work Order", mwo, "manufacturing_operation"
+		)
+		healed = _reserve_batch_at_physical_warehouse(
+			mwo, row.item_code, row.batch_no, qty, operation, eir.company
+		)
+		if healed:
+			rows = _query_batch_and_qty_sres(mwo, row.item_code, row.batch_no)
 
 	if not rows:
 		frappe.throw(

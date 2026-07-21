@@ -12,6 +12,14 @@ frappe.ui.form.on("Employee IR", {
 			});
 		}
 		add_load_full_casting_tree_button(frm);
+		// Auto-load subcategory-driven FG BOM fields for a Receive (only if empty,
+		// so user-entered values are never wiped on a refresh).
+		if (frm.doc.docstatus == 0 && frm.doc.type == "Receive") {
+			load_fg_bom_fields(frm, false);
+		}
+	},
+	refresh_fg_bom_fields(frm) {
+		load_fg_bom_fields(frm, true);
 	},
 	onload(frm) {
 		frm.fields_dict["employee_ir_operations"].grid.add_new_row = false;
@@ -552,5 +560,54 @@ function add_load_full_casting_tree_button(frm) {
 				},
 			});
 		});
+	});
+}
+
+function load_fg_bom_fields(frm, force) {
+	if (frm.doc.type !== "Receive") return;
+	const ops = (frm.doc.employee_ir_operations || [])
+		.filter((r) => r.manufacturing_work_order)
+		.map((r) => ({
+			manufacturing_operation: r.manufacturing_operation,
+			manufacturing_work_order: r.manufacturing_work_order,
+		}));
+	if (!ops.length) return;
+	// Don't clobber values the user is entering unless they explicitly reload.
+	if (!force && (frm.doc.custom_fg_bom_fields || []).length) return;
+
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.get_fg_bom_fields",
+		args: { operations: JSON.stringify(ops) },
+		freeze: force,
+		freeze_message: __("Loading FG BOM fields..."),
+		callback: function (r) {
+			const rows = r.message || [];
+			// Preserve any already-entered values (keyed by operation + field name).
+			const prev = {};
+			(frm.doc.custom_fg_bom_fields || []).forEach((row) => {
+				prev[`${row.manufacturing_operation}::${row.field_name}`] = row.value;
+			});
+			frm.clear_table("custom_fg_bom_fields");
+			rows.forEach((row) => {
+				frm.add_child("custom_fg_bom_fields", {
+					manufacturing_operation: row.manufacturing_operation,
+					subcategory: row.subcategory,
+					field_label: row.field_label,
+					field_name: row.field_name,
+					field_type: row.field_type,
+					options: row.options,
+					is_mandatory: row.is_mandatory,
+					fg_bom_field: row.fg_bom_field,
+					value: prev[`${row.manufacturing_operation}::${row.field_name}`] || "",
+				});
+			});
+			frm.refresh_field("custom_fg_bom_fields");
+			if (force && !rows.length) {
+				frappe.show_alert({
+					message: __("No active FG BOM fields configured for this subcategory."),
+					indicator: "orange",
+				});
+			}
+		},
 	});
 }
