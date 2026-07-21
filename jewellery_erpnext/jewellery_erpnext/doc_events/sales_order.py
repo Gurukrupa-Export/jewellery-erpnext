@@ -1033,13 +1033,12 @@ def _process_metal_detail1(self, doc, ctx, cctx):
             else:
                 if cctx.billing_currency == "USD":
                     s.se_rate     = s.se_rate * cctx.exchange_rate
-                    s.making_rate=(operational_cost/total_weight)*cctx.exchange_rate
+                    # s.making_rate=(operational_cost/total_weight)*cctx.exchange_rate
+                    s.making_rate = sub_info.get("rate_per_gm", 0)*cctx.exchange_rate
                 else:
-                    s.making_rate=operational_cost/total_weight
-                    calculated_gold_rate  = _get_calculated_gold_rate(
-                    self.customer, s.metal_type, s.metal_touch,
-                    self.gold_rate_with_gst, ctx.gold_gst_rate,
-                    )
+                    # s.making_rate=operational_cost/total_weight
+                    s.making_rate = sub_info.get("rate_per_gm", 0)
+
                 # s.rate           = s.se_rate
                 s.rate = round(calculated_gold_rate, 2)
                 s.wastage_rate   = 0
@@ -1202,7 +1201,6 @@ def _get_finding_sub_info(mc_name, finding_type, doc):
 def _process_finding_detail1(self, doc, ctx, cctx):
 	if not hasattr(doc, "finding_detail") or not doc.finding_detail:
 		doc.total_finding_amount = 0
-
 		return
 
 	finding_cache = {}  # local per-BOM-doc: finding_type → find_data
@@ -1219,12 +1217,21 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 		)
 
 		f.customer_metal_purity = customer_metal_purity
-		f.quantity = round(f.quantity, f_metal_prec)
+		mc_name, sub_info, threshold = _get_making_charge(self, doc, f.metal_touch, ctx, cctx)
+
+		finding_type = f.finding_type
+		if finding_type not in finding_cache:
+			finding_cache[finding_type] = _get_finding_sub_info(mc_name, finding_type, doc)
+
+		find_data = finding_cache[finding_type]
+
+		f.customer_metal_purity = customer_metal_purity
+		f.quantity              = round(f.quantity, f_metal_prec)
 
 		if f.is_customer_item:
 			f.rate = 0
 			f.amount = 0
-			# f.making_rate    = find_data.get("subcontracting_rate")
+			f.making_rate    = find_data.get("subcontracting_rate")
 			f.wastage_rate = 0
 			f.wastage_amount = 0
 			f.making_amount = round(f.making_rate * f.quantity, 2)
@@ -1269,10 +1276,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				else:
 					# f.making_rate = operational_cost / total_weight
 					f.making_rate     = find_data.get("rate_per_gm", 0)
-				calculated_gold_rate  = _get_calculated_gold_rate(
-				self.customer, f.metal_type, f.metal_touch,
-				self.gold_rate_with_gst, ctx.gold_gst_rate,
-			)
+					
+				calculated_gold_rate  = _get_calculated_gold_rate(self.customer, f.metal_type, f.metal_touch,self.gold_rate_with_gst, ctx.gold_gst_rate,)
 				f.rate=round(calculated_gold_rate, 2)
 				# f.rate = round(f.se_rate, 2)
 				f.amount = round(f.rate * f.quantity, 2)
