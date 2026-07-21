@@ -1264,8 +1264,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate          = 0
 				f.amount = 0
 				# f.making_rate=operational_cost/total_weight
-				f.making_rate     = find_data.get("rate_per_gm", 0)
-				f.making_amount = round(f.making_rate * f.quantity, 2)
+				f.making_rate     = 0
+				f.making_amount = 0
 				f.wastage_rate   = 0
 				f.wastage_amount = 0
 				f.fg_purchase_rate = 0
