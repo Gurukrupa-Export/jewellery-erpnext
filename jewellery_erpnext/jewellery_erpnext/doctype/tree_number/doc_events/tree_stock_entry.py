@@ -31,6 +31,14 @@ Notes:
     MAIN SLIP ``before_validate`` branch resolves without a Main Slip link.
   * Warehouse resolution reuses existing app resolvers (``Warehouse`` custom fields
     ``employee`` / ``department``); MSL is the employee's Raw-Material warehouse.
+  * **Receive returns the batches the Issue put in.** The MSL warehouse is the *employee's*, so it
+    pools metal from every tree, main slip and EIR injection for that operator — warehouse-wide
+    FIFO would hand back whichever batch happens to be oldest, i.e. someone else's (a Customer
+    Goods batch in, company metal out). ``receive_material`` therefore resolves each batch itself
+    via ``_allocate_tree_batches`` and pre-stamps the rows, which makes
+    ``_apply_fifo_batches_to_stock_entry`` a no-op for them (``_expand_source_rows_for_fifo``
+    early-returns on a row that already carries ``batch_no``). ``issue_material`` keeps plain FIFO
+    — sourcing fresh metal from the department pool is exactly what it should do.
 """
 
 import json
@@ -39,8 +47,15 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+	capped_auto_batch_nos,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	normalize_ownership,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 	_apply_fifo_batches_to_stock_entry,
+	_ensure_posting_datetime,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 	_pending_eps,
@@ -159,17 +174,48 @@ def _new_transfer_se(tree, se_type=MATERIAL_TRANSFER, company_wh=None):
 	return se
 
 
-def _append_item(se, item_code, qty, s_warehouse, t_warehouse):
+def _stamp_batch(row, batch_no=None, inventory_type=None, customer=None):
+	"""Stamp a pre-resolved batch (and its ownership) onto a row dict.
+
+	``inventory_type`` is a ledger-enforced Inventory Dimension and is mandatory on Stock Entry
+	Detail, so a caller that resolves the batch itself MUST carry the batch's ownership across —
+	``_expand_source_rows_for_fifo`` only stamps it on the branch that picks the batch by FIFO,
+	which a pre-stamped row deliberately skips.
+	"""
+	if batch_no:
+		row["batch_no"] = batch_no
+	if inventory_type:
+		row["inventory_type"] = inventory_type
+	if customer:
+		row["customer"] = customer
+	return row
+
+
+def _append_item(
+	se,
+	item_code,
+	qty,
+	s_warehouse,
+	t_warehouse,
+	batch_no=None,
+	inventory_type=None,
+	customer=None,
+):
 	se.append(
 		"items",
-		{
-			"item_code": item_code,
-			"qty": qty,
-			"s_warehouse": s_warehouse,
-			"t_warehouse": t_warehouse,
-			"uom": "Gram",
-			"use_serial_batch_fields": 1,
-		},
+		_stamp_batch(
+			{
+				"item_code": item_code,
+				"qty": qty,
+				"s_warehouse": s_warehouse,
+				"t_warehouse": t_warehouse,
+				"uom": "Gram",
+				"use_serial_batch_fields": 1,
+			},
+			batch_no,
+			inventory_type,
+			customer,
+		),
 	)
 
 
@@ -206,47 +252,209 @@ def _resolve_tree_loss_item(tree, item_code, loss_type="Loss"):
 	return get_item_loss_item(tree.company, item_code, variant_of, loss_type)
 
 
-def _append_repack_loss_pair(se, metal_item, loss_item, qty, msl_wh, scrap_wh):
+def _append_repack_loss_pair(
+	se,
+	metal_item,
+	loss_item,
+	qty,
+	msl_wh,
+	scrap_wh,
+	batch_no=None,
+	inventory_type=None,
+	customer=None,
+):
 	"""Append a consume(metal @ MSL) + produce(ML variant @ Scrap) row pair to a Repack SE.
 
 	Produce-row flags mirror ``loss_stock_entry._build_combined_loss_se`` so the metal value is
 	written off as loss (``set_basic_rate_manually`` opts the produce row out of the
 	valuation-rate requirement; no ``basic_rate`` is set).
+
+	``batch_no`` pre-resolves the consumed batch (see ``_tree_owed_batches``); the produce row is
+	left without a ``batch_no`` so its ML batch is minted on submit — but it still carries the
+	consumed batch's ownership. A customer's metal stays the customer's even after it is booked as
+	loss, and the minted ML batch reads inventory_type/customer straight off this row
+	(``Batch.update_inventory_dimentions``), so dropping them here silently converts customer stock
+	into company stock. Ownership goes through ``normalize_ownership`` rather than being copied
+	verbatim: a Customer Goods batch with no customer must degrade to Regular Stock, or the minted
+	batch trips the "This item is not allowed as Customer Goods" guard and fails the submit.
 	"""
-	# Consume: metal out of MSL (batch filled later by FIFO).
+	inventory_type, customer = normalize_ownership(
+		inventory_type, customer, batch_no=batch_no, item_code=metal_item
+	)
+	# Consume: metal out of MSL (pre-stamped batch, or filled later by FIFO when omitted).
 	se.append(
 		"items",
-		{
-			"item_code": metal_item,
-			"qty": qty,
-			"transfer_qty": qty,
-			"conversion_factor": 1,
-			"s_warehouse": msl_wh,
-			"t_warehouse": None,
-			"uom": "Gram",
-			"stock_uom": "Gram",
-			"pcs": "1",
-			"use_serial_batch_fields": 1,
-		},
+		_stamp_batch(
+			{
+				"item_code": metal_item,
+				"qty": qty,
+				"transfer_qty": qty,
+				"conversion_factor": 1,
+				"s_warehouse": msl_wh,
+				"t_warehouse": None,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"pcs": "1",
+				"use_serial_batch_fields": 1,
+			},
+			batch_no,
+			inventory_type,
+			customer,
+		),
 	)
-	# Produce: ML loss variant into Scrap.
+	# Produce: ML loss variant into Scrap — same ownership, no batch (minted on submit).
 	se.append(
 		"items",
-		{
-			"item_code": loss_item,
-			"qty": qty,
-			"transfer_qty": qty,
-			"conversion_factor": 1,
-			"s_warehouse": None,
-			"t_warehouse": scrap_wh,
-			"uom": "Gram",
-			"stock_uom": "Gram",
-			"pcs": "1",
-			"is_finished_item": 1,
-			"set_basic_rate_manually": 1,
-			"use_serial_batch_fields": 1,
-		},
+		_stamp_batch(
+			{
+				"item_code": loss_item,
+				"qty": qty,
+				"transfer_qty": qty,
+				"conversion_factor": 1,
+				"s_warehouse": None,
+				"t_warehouse": scrap_wh,
+				"uom": "Gram",
+				"stock_uom": "Gram",
+				"pcs": "1",
+				"is_finished_item": 1,
+				"set_basic_rate_manually": 1,
+				"use_serial_batch_fields": 1,
+			},
+			None,
+			inventory_type,
+			customer,
+		),
 	)
+
+
+# ---------------------------------------------------------------------------
+# Batch provenance — Receive returns the batches the Issue put in
+# ---------------------------------------------------------------------------
+def _batch_ownership(batch_nos):
+	"""``{batch_no: (inventory_type, customer)}`` — one round-trip for a whole allocation."""
+	if not batch_nos:
+		return {}
+	return {
+		b.name: (b.custom_inventory_type, b.custom_customer)
+		for b in frappe.db.get_all(
+			"Batch",
+			filters={"name": ["in", list(batch_nos)]},
+			fields=["name", "custom_inventory_type", "custom_customer"],
+		)
+	}
+
+
+def _tree_owed_batches(se, tree, item_code, msl_wh):
+	"""``[(batch_no, qty)]`` this tree still owes back at ``msl_wh``, in FIFO order.
+
+	The tree's own Stock Entries ARE the record — ``custom_tree_number`` is stamped on every leg
+	(``_new_transfer_se``) — so the pool is derived on the fly rather than cached in a field that
+	could drift: per batch, ``issued into MSL - already taken back out of MSL``. Only
+	``docstatus = 1`` counts, so a reversed tree (``cancel_tree_stock_entries``) drops out of the
+	netting for free.
+
+	The netted result is then capped at what is PHYSICALLY left of each batch at MSL. That cap is
+	load-bearing, not defensive: the MSL warehouse is the *employee's* (shared by every tree, main
+	slip and EIR injection for that operator), and the casting Employee IR's gain injection draws
+	this tree's own metal out of it without stamping ``custom_tree_number``. Casting mints no new
+	batch at MSL, so the leftover genuinely IS the issued batch — only its quantity moves.
+
+	The loss leg's produce row can never be double-counted: it carries no ``s_warehouse`` and its
+	item is the ML variant, so the warehouse and ``item_code`` predicates both exclude it.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT sed.batch_no, sed.s_warehouse, sed.t_warehouse, sed.qty
+		FROM `tabStock Entry Detail` sed
+		JOIN `tabStock Entry` se ON se.name = sed.parent
+		WHERE se.custom_tree_number = %(tree)s
+		  AND se.docstatus = 1
+		  AND sed.item_code = %(item_code)s
+		  AND IFNULL(sed.batch_no, '') != ''
+		  AND (sed.t_warehouse = %(msl)s OR sed.s_warehouse = %(msl)s)
+		""",
+		{"tree": tree.name, "item_code": item_code, "msl": msl_wh},
+		as_dict=True,
+	)
+
+	owed = {}
+	for r in rows:
+		qty = flt(r.qty)
+		if r.t_warehouse == msl_wh:
+			owed[r.batch_no] = flt(owed.get(r.batch_no)) + qty
+		if r.s_warehouse == msl_wh:
+			owed[r.batch_no] = flt(owed.get(r.batch_no)) - qty
+
+	eps = _pending_eps()
+	owed = {b: q for b, q in owed.items() if q > eps}
+	if not owed:
+		return []
+
+	# `qty` is deliberately NOT passed: it would FIFO-truncate the availability list before the
+	# owed cap below can apply. `batch_no` (honoured as a list) restricts the pick to this tree's
+	# batches; capped_auto_batch_nos still orders by Batch.creation and drops orphan-SBB phantoms.
+	_ensure_posting_datetime(se)
+	available = (
+		capped_auto_batch_nos(
+			frappe._dict(
+				posting_date=se.posting_date,
+				posting_time=se.posting_time,
+				item_code=item_code,
+				warehouse=msl_wh,
+				batch_no=list(owed),
+				for_stock_levels=False,
+				consider_negative_batches=False,
+			)
+		)
+		or []
+	)
+
+	out = []
+	for b in available:
+		qty = min(flt(owed.get(b.batch_no)), flt(b.qty))
+		if qty > eps:
+			out.append((b.batch_no, qty))
+	return out
+
+
+def _allocate_tree_batches(se, tree, item_code, msl_wh, need):
+	"""``[(batch_no, qty)]`` covering ``need`` from this tree's own owed batches, else throw.
+
+	Fail-fast rather than falling back to warehouse-wide FIFO: the MSL pool holds other operators'
+	and other customers' metal, so a fallback would silently hand back material this tree never
+	issued — the exact defect this function exists to prevent.
+	"""
+	prec = _se_precision()
+	eps = _pending_eps()
+	pool = _tree_owed_batches(se, tree, item_code, msl_wh)
+
+	out = []
+	remaining = flt(need, prec)
+	for batch_no, avail in pool:
+		if remaining <= eps:
+			break
+		take = flt(min(flt(avail), remaining), prec)
+		if take <= 0:
+			continue
+		out.append((batch_no, take))
+		remaining = flt(remaining - take, prec)
+
+	if remaining > eps:
+		frappe.throw(
+			_(
+				"Tree {0}, Item {1}: need {2} but only {3} of the batches this tree issued into "
+				"{4} is still available ({5}). Returning any other batch would hand back material "
+				"this tree never issued — check whether it was already drawn out for another job."
+			).format(
+				tree.name,
+				item_code,
+				flt(need, prec),
+				flt(flt(need, prec) - remaining, prec),
+				msl_wh,
+				", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("none"),
+			)
+		)
+	return out
 
 
 def _ledger_row(tree, item_code):
@@ -411,24 +619,11 @@ def receive_material(tree, rows):
 		)
 		se_recv = _new_transfer_se(tree, se_type, company_wh=msl_wh)
 		se_recv.employee = employee
-		for p in plan:
-			recv = flt(p["recv"], prec)
-			if recv > 0:
-				_append_item(se_recv, p["item"], recv, msl_wh, dept_rm)
-				recv_pairs += [(p["item"], msl_wh), (p["item"], dept_rm)]
 
 	# --- Loss: Process Loss Repack consuming metal @ MSL and producing the ML variant @ Scrap.
 	if has_loss:
 		se_loss = _new_repack_loss_se(tree, company_wh=msl_wh)
 		se_loss.employee = employee
-		for p in plan:
-			loss = flt(p["loss"], prec)
-			if loss > 0:
-				loss_item = _resolve_tree_loss_item(tree, p["item"])
-				_append_repack_loss_pair(
-					se_loss, p["item"], loss_item, loss, msl_wh, scrap_wh
-				)
-				loss_pairs += [(p["item"], msl_wh), (loss_item, scrap_wh)]
 
 	if not se_recv and not se_loss:
 		frappe.throw(
@@ -437,13 +632,69 @@ def receive_material(tree, rows):
 			)
 		)
 
+	# Warehouse pairs come from the plan, not from the allocation below: every batch of an item
+	# shares the item's warehouses, so the Bins to lock are known before any batch is resolved.
+	loss_items = {}
+	for p in plan:
+		if flt(p["recv"], prec) > 0:
+			recv_pairs += [(p["item"], msl_wh), (p["item"], dept_rm)]
+		if flt(p["loss"], prec) > 0:
+			loss_items[p["item"]] = _resolve_tree_loss_item(tree, p["item"])
+			loss_pairs += [(p["item"], msl_wh), (loss_items[p["item"]], scrap_wh)]
+
 	# Canonical lock order (lock_order.py): ALL naming counters (pos 2) before ANY Bin (pos 3),
 	# across BOTH SEs, in one deterministic sequence. preallocate_series_for_docs is None-safe.
+	# Locking before the allocation also keeps the batch-availability read behind it stable.
 	preallocate_series_for_docs(se_recv, se_loss)
 	lock_bins(recv_pairs + loss_pairs)
 
-	# Post the transfer FIRST, then compute the loss FIFO against post-transfer MSL stock so the
-	# two legs never double-pick the same batch (all Bins stay locked across both submits).
+	# Return what this tree issued. Each item's receive AND loss are allocated from ONE pool of the
+	# tree's own owed batches, so the two legs can never book the same batch qty twice — and every
+	# row carries its batch's ownership (inventory_type / customer) across with it.
+	for p in plan:
+		rem_recv = flt(p["recv"], prec)
+		rem_loss = flt(p["loss"], prec)
+		need = flt(rem_recv + rem_loss, prec)
+		if need <= 0:
+			continue
+		allocation = _allocate_tree_batches(
+			se_recv or se_loss, tree, p["item"], msl_wh, need
+		)
+		ownership = _batch_ownership([b for b, _ in allocation])
+		for batch_no, qty in allocation:
+			inv, cust = ownership.get(batch_no, (None, None))
+			take = flt(min(qty, rem_recv), prec)
+			if take > 0:
+				_append_item(
+					se_recv,
+					p["item"],
+					take,
+					msl_wh,
+					dept_rm,
+					batch_no=batch_no,
+					inventory_type=inv,
+					customer=cust,
+				)
+				rem_recv = flt(rem_recv - take, prec)
+				qty = flt(qty - take, prec)
+			take = flt(min(qty, rem_loss), prec)
+			if take > 0:
+				_append_repack_loss_pair(
+					se_loss,
+					p["item"],
+					loss_items[p["item"]],
+					take,
+					msl_wh,
+					scrap_wh,
+					batch_no=batch_no,
+					inventory_type=inv,
+					customer=cust,
+				)
+				rem_loss = flt(rem_loss - take, prec)
+
+	# Post the transfer FIRST so both legs' consumption lands in a stable order (all Bins stay
+	# locked across both submits). The FIFO helper is a structural no-op now that every source row
+	# carries a batch, but it still normalises each SE's posting datetime.
 	if se_recv:
 		_apply_fifo_batches_to_stock_entry(se_recv)
 		se_recv.flags.ignore_permissions = True

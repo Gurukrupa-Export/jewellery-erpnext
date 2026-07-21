@@ -771,6 +771,30 @@
    "label": "PO Details",
    "module": "Jewellery Erpnext",
    "options": "Purchase Order Item"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_company_owned_amount",
+   "fieldtype": "Currency",
+   "insert_after": "base_price_list_rate",
+   "label": "Company Owned Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_customer_supplied_amount",
+   "fieldtype": "Currency",
+   "insert_after": "custom_company_owned_amount",
+   "label": "Customer Supplied Amount",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_is_subcontracting_charge_row",
+   "fieldtype": "Check",
+   "insert_after": "custom_mfg_complexity_code",
+   "label": "Is Subcontracting Charge Row",
+   "module": "Jewellery Erpnext"
   }
  ]
 }

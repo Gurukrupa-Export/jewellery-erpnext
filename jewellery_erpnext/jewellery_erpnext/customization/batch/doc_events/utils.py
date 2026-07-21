@@ -78,13 +78,61 @@ def update_inventory_dimentions(self):
 		and is_customer_inventory
 		and not is_subcontracting_gold_repack(self)
 		and not is_process_loss_repack(self)
+		and not is_repair_unpack(self)
 	):
-		frappe.throw(_("This item is not allowed as Customer Goods"))
+		frappe.throw(
+			_(
+				"Item {0} is not allowed as {1} (customer: {2}, batch: {3}). Tick "
+				"'Inventory Type Can be Customer Goods' on the Item, or book it as "
+				"Regular Stock."
+			).format(
+				frappe.bold(self.item),
+				self.custom_inventory_type,
+				self.custom_customer or "-",
+				frappe.bold(self.name or self.get("batch_id") or _("new")),
+			)
+		)
 
 	if self.reference_doctype == "Stock Entry" and self.custom_customer:
 		self.custom_customer_voucher_type = frappe.db.get_value(
 			"Stock Entry", self.reference_name, "customer_voucher_type"
+		) or _source_batch_voucher_type(self)
+
+
+def _source_batch_voucher_type(batch):
+	"""The voucher type of the customer's batch this one was made from.
+
+	``customer_voucher_type`` only lives on the SE that first *received* the goods; a derived entry
+	(a Process Loss repack, a conversion) leaves the header blank, so reading it alone stamps the
+	new batch with an empty voucher type and the material stops looking like the Customer
+	Subcontracting / Sample / Repair stock it still is. Fall back to the batch this one was
+	physically made from -- the consumed row of the same Stock Entry, matched on the customer we
+	already resolved.
+
+	The SE header is deliberately not written instead (as the Employee IR loss engine does at
+	loss_stock_entry.py): setting it trips ``validate_customer_voucher``, which throws for batch
+	items under "Customer Repair" -- the same trap documented at manufacturing_work_order.py's
+	unpack flow.
+	"""
+	source_batches = frappe.db.get_all(
+		"Stock Entry Detail",
+		filters={
+			"parent": batch.reference_name,
+			"customer": batch.custom_customer,
+			"s_warehouse": ["is", "set"],
+			"batch_no": ["is", "set"],
+		},
+		pluck="batch_no",
+	)
+	for batch_no in source_batches:
+		if not batch_no or batch_no == batch.name:
+			continue
+		voucher_type = frappe.db.get_value(
+			"Batch", batch_no, "custom_customer_voucher_type"
 		)
+		if voucher_type:
+			return voucher_type
+	return None
 
 
 def is_subcontracting_gold_repack(batch):
@@ -133,6 +181,46 @@ def is_process_loss_repack(batch):
 			"Stock Entry", getattr(batch, "reference_name", None), "stock_entry_type"
 		)
 		== "Process Loss"
+	)
+
+
+def is_repair_unpack(batch):
+	"""Exempt Repair-Unpack Customer Goods batches from the item-flag guard.
+
+	``create_unpack_serial_no_stock_entry`` (manufacturing_work_order.py) disassembles a
+	customer's repair article into its FULL design-BOM composition and books every component
+	as the customer's stock. The article was physically brought in by the customer, so each
+	component IS theirs -- ownership comes from the repair, not from a
+	``custom_inventory_type_can_be_customer_goods`` flag on each component's Item master. That
+	flag is sparsely maintained (no finding variant carries it), so without this exemption an
+	unpack throws "Item ... is not allowed as Customer Goods" on the first unflagged diamond or
+	finding and the whole submit fails. Same rationale as the loss variant in
+	``is_process_loss_repack``.
+
+	Unlike its two sibling helpers, this one CANNOT key on ``reference_doctype`` alone: the
+	unpack mints each component's Batch *standalone, before the Stock Entry exists*
+	(``batch_doc.save()`` runs before the SE is built), so at the only moment the guard fires
+	``reference_doctype`` is still None. It is instead recognised by the ``Customer Repair``
+	voucher type stamped on the batch just before that save -- a marker no other flow writes.
+	The reference-based leg (mirroring the two siblings) is kept as well, so the exemption also
+	holds if the batch is re-validated after the SE links it. Both legs require a customer:
+	a Customer Goods batch with no customer is malformed and must not be silently exempted (see
+	``normalize_ownership`` rule 3 in customization/utils/row_ownership.py).
+	"""
+	if not getattr(batch, "custom_customer", None):
+		return False
+
+	if getattr(batch, "custom_customer_voucher_type", None) == "Customer Repair":
+		return True
+
+	if getattr(batch, "reference_doctype", None) != "Stock Entry":
+		return False
+
+	return (
+		frappe.db.get_value(
+			"Stock Entry", getattr(batch, "reference_name", None), "stock_entry_type"
+		)
+		== "Repair Unpack"
 	)
 
 

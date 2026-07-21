@@ -69,12 +69,18 @@ doc_events = {
 	# so the sync process can create Stock Entries and update MOP Logs unhindered.
 	"Employee IR": {
 		"before_save": _EOD_LOCK_VALIDATOR,
-		"before_submit": _EOD_LOCK_VALIDATOR,
+		"before_submit": [
+			_EOD_LOCK_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.validate_no_sample_issue",
+		],
 		"before_cancel": _EOD_LOCK_VALIDATOR,
 	},
 	"Department IR": {
 		"before_save": _EOD_LOCK_VALIDATOR,
-		"before_submit": _EOD_LOCK_VALIDATOR,
+		"before_submit": [
+			_EOD_LOCK_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils.validate_no_sample_issue",
+		],
 		"before_cancel": _EOD_LOCK_VALIDATOR,
 	},
 	"MOP Log": {
@@ -99,6 +105,7 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
 		],
 		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
+        "before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.clear_hybrid_header_tax_rate",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_submit",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",

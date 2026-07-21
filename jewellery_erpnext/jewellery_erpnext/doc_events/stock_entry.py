@@ -20,6 +20,9 @@ from frappe.utils import cint, flt
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	validate_loss_ownership_carried,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
@@ -149,6 +152,9 @@ def before_validate(self, method):
 			and not row.batch_no
 		):
 			row.inventory_type = "Regular Stock"
+
+	# Must run BEFORE the blanket default below, which is what erases the evidence.
+	validate_loss_ownership_carried(self)
 
 	# Ensure all items have a valid inventory_type to prevent None in Stock Ledger Entry
 	for row in self.items:
@@ -779,24 +785,29 @@ def stock_reservation_entry_for_mwo(self):
 		has_batch_no, has_serial_no = frappe.get_cached_value(
 			"Item", row.item_code, ["has_batch_no", "has_serial_no"]
 		)
+		# ERPNext's SRE before_submit (validate_with_allowed_qty) re-checks availability at the
+		# WAREHOUSE ledger level (get_available_qty_to_reserve without batch_no -> get_stock_balance
+		# / qty_after_transaction), NOT the batch bundle. That figure is the hard ceiling on what
+		# this reservation may claim, so read it up front for every row.
+		wh_available_qty = get_available_qty_to_reserve(row.item_code, row.t_warehouse)
 		if has_batch_no and row.get("batch_no"):
 			available_qty_to_reserve = get_available_qty_to_reserve(
 				row.item_code, row.t_warehouse, batch_no=row.batch_no
 			)
 		else:
-			available_qty_to_reserve = get_available_qty_to_reserve(
-				row.item_code, row.t_warehouse
-			)
-		qty_to_be_reserved = (
-			row.qty if available_qty_to_reserve >= row.qty else available_qty_to_reserve
-		)
-		qty_to_be_reserved = flt(qty_to_be_reserved)
-		# Employee IR extra-metal injection: stock just landed; availability checks can lag
-		# the same transaction. Reserve the inbound line qty when this SE is tied to an EIR.
-		# Gate on is_eir_injection — without the gate, regular Repack/Manufacture SEs would
-		# create SREs with no reservable qty, regressing test_skips_when_no_reservable_qty.
+			available_qty_to_reserve = wh_available_qty
+		qty_to_be_reserved = flt(min(flt(row.qty), available_qty_to_reserve))
+		# A batch booked by this same transaction reads 0 until it settles (and Employee IR
+		# extra-metal injections land stock whose availability lags the same way). Fall back to the
+		# inbound line qty rather than refusing to reserve stock that demonstrably just landed.
 		if qty_to_be_reserved <= 0 and flt(row.qty) > 0:
 			qty_to_be_reserved = flt(row.qty)
+		# Apply the ledger ceiling LAST, so neither the fallback above nor a precision-3 batch qty
+		# can claim more than ERPNext's re-check will allow ("Cannot reserve more than Allowed
+		# Qty"). A 0 ledger means "cannot tell yet", not "nothing there" -- it must not zero out a
+		# reservation the fallback just rescued.
+		if wh_available_qty > 0:
+			qty_to_be_reserved = flt(min(qty_to_be_reserved, wh_available_qty))
 		if qty_to_be_reserved <= 0:
 			frappe.throw(
 				_(

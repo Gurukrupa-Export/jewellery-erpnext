@@ -978,11 +978,19 @@ def _run(
 	rm_wh="DEPT-RM",
 	scrap_wh="DEPT-SCRAP",
 	loss_item="GOLD-18KT-ML",
+	owed=None,
+	ownership=None,
 ):
 	"""Call an op helper with persistence + warehouse/loss-item resolution mocked.
 
 	Returns a _RunResult (list of every FakeSE created, in build order — receive posts the
 	received transfer first, then the loss Repack); ``.value`` holds the helper's return.
+
+	``owed`` stubs the tree's owed-batch pool (``_tree_owed_batches``) — a ``[(batch_no, qty)]``
+	list, or a ``{item_code: [(batch_no, qty)]}`` dict for multi-item trees. It defaults to a
+	single unbounded batch per item so shape-focused tests need not model batch provenance;
+	``TestTreeOwedBatches`` / ``TestReceiveBatchParity`` cover that layer directly.
+	``ownership`` stubs ``_batch_ownership`` (``{batch_no: (inventory_type, customer)}``).
 	"""
 	fakes = _RunResult()
 
@@ -991,6 +999,13 @@ def _run(
 		fakes.append(fake)
 		return fake
 
+	def _owed(_se, _tree, item_code, _msl_wh):
+		if owed is None:
+			return [(f"{item_code}-BATCH", 1e9)]
+		if isinstance(owed, dict):
+			return list(owed.get(item_code, []))
+		return list(owed)
+
 	with (
 		patch.object(tse.frappe, "new_doc", side_effect=_mint),
 		patch.object(tse.frappe, "has_permission", return_value=True),
@@ -998,6 +1013,8 @@ def _run(
 		patch.object(tse, "_apply_fifo_batches_to_stock_entry"),
 		patch.object(tse, "preallocate_series_for_docs"),
 		patch.object(tse, "lock_bins"),
+		patch.object(tse, "_tree_owed_batches", side_effect=_owed),
+		patch.object(tse, "_batch_ownership", return_value=ownership or {}),
 		patch.object(tse, "_resolve_source_warehouse", return_value=source_wh),
 		patch.object(tse, "_resolve_msl_warehouse", return_value=msl_wh),
 		patch.object(tse, "_get_department_rm_warehouse", return_value=rm_wh),
@@ -1478,3 +1495,280 @@ class TestSubmitAndLock(IntegrationTestCase):
 				tree,
 				[{"item_code": "GOLD-18KT", "receive_qty": 1.0}],
 			)
+
+
+# ---------------------------------------------------------------------------
+# Batch provenance: Receive returns the batches the Issue put in
+# ---------------------------------------------------------------------------
+class TestTreeOwedBatches(IntegrationTestCase):
+	"""``_tree_owed_batches`` — netting the tree's OWN Stock Entries, capped at physical stock.
+
+	Regression origin: on GEPL-TR-26-00150 the Issue moved 6g of a Customer-Goods batch into the
+	employee's shared MSL warehouse and the Receive handed back 6g of a *company* batch that
+	merely happened to be one day older (blind warehouse-wide FIFO). Netting states the defect as
+	an invariant: a batch with ``taken_out > issued_in`` is metal the tree never received.
+	"""
+
+	MSL = "EMP-MSL"
+
+	def _call(self, rows, available, item_code="GOLD-18KT"):
+		"""Drive the allocator over faked SED rows + faked physical availability."""
+		db = MagicMock()
+		db.sql.return_value = rows
+		se = SimpleNamespace(posting_date="2026-07-17", posting_time="10:00:00")
+		with (
+			patch.object(tse, "frappe", MagicMock(db=db, _dict=frappe._dict)),
+			patch.object(tse, "_ensure_posting_datetime"),
+			patch.object(
+				tse,
+				"capped_auto_batch_nos",
+				return_value=[frappe._dict(b) for b in available],
+			),
+			patch.object(tse, "_pending_eps", return_value=0.0005),
+		):
+			return tse._tree_owed_batches(
+				se, SimpleNamespace(name="TREE-1"), item_code, self.MSL
+			)
+
+	def _in(self, batch, qty):
+		return frappe._dict(
+			batch_no=batch, s_warehouse="SRC", t_warehouse=self.MSL, qty=qty
+		)
+
+	def _out(self, batch, qty, t_warehouse="DEPT-RM"):
+		return frappe._dict(
+			batch_no=batch, s_warehouse=self.MSL, t_warehouse=t_warehouse, qty=qty
+		)
+
+	def test_issued_batch_is_owed_back(self):
+		out = self._call(
+			[self._in("B-CUST", 6.0)], [{"batch_no": "B-CUST", "qty": 10.226}]
+		)
+		# Capped at what the tree issued (6.0), not at everything of that batch sitting in MSL.
+		self.assertEqual(out, [("B-CUST", 6.0)])
+
+	def test_prior_receive_and_loss_net_out(self):
+		rows = [
+			self._in("B1", 6.0),
+			self._out("B1", 2.0),  # earlier receive leg
+			self._out("B1", 0.5, t_warehouse=None),  # earlier loss leg's consume row
+		]
+		out = self._call(rows, [{"batch_no": "B1", "qty": 99.0}])
+		self.assertEqual(out, [("B1", 3.5)])
+
+	def test_fully_returned_batch_drops_out(self):
+		out = self._call(
+			[self._in("B1", 6.0), self._out("B1", 6.0)],
+			[{"batch_no": "B1", "qty": 99.0}],
+		)
+		self.assertEqual(out, [])
+
+	def test_capped_at_physical_when_drawn_out_untagged(self):
+		"""A casting EIR injection drains the tree's own batch without stamping custom_tree_number.
+
+		Netting alone would still claim 6.0; the physical cap is what keeps it honest.
+		"""
+		out = self._call([self._in("B1", 6.0)], [{"batch_no": "B1", "qty": 1.25}])
+		self.assertEqual(out, [("B1", 1.25)])
+
+	def test_batch_gone_from_msl_yields_empty_pool(self):
+		self.assertEqual(self._call([self._in("B1", 6.0)], []), [])
+
+	def test_multi_batch_issue_keeps_availability_order(self):
+		"""capped_auto_batch_nos orders by (Batch.creation, batch_no); the pool must not reorder."""
+		out = self._call(
+			[self._in("B-NEW", 4.0), self._in("B-OLD", 3.0)],
+			[{"batch_no": "B-OLD", "qty": 50.0}, {"batch_no": "B-NEW", "qty": 50.0}],
+		)
+		self.assertEqual(out, [("B-OLD", 3.0), ("B-NEW", 4.0)])
+
+	def test_query_filters_to_submitted_rows_of_this_tree(self):
+		"""Cancelled SEs must not count — cancel_tree_stock_entries leaves their SED rows intact."""
+		db = MagicMock()
+		db.sql.return_value = []
+		se = SimpleNamespace(posting_date="2026-07-17", posting_time="10:00:00")
+		with (
+			patch.object(tse, "frappe", MagicMock(db=db, _dict=frappe._dict)),
+			patch.object(tse, "_ensure_posting_datetime"),
+			patch.object(tse, "_pending_eps", return_value=0.0005),
+		):
+			tse._tree_owed_batches(
+				se, SimpleNamespace(name="TREE-1"), "GOLD-18KT", self.MSL
+			)
+		query, params = db.sql.call_args[0][0], db.sql.call_args[0][1]
+		self.assertIn("se.docstatus = 1", query)
+		self.assertIn("se.custom_tree_number = %(tree)s", query)
+		self.assertEqual(
+			params, {"tree": "TREE-1", "item_code": "GOLD-18KT", "msl": self.MSL}
+		)
+
+	def test_sub_eps_owed_dust_is_dropped(self):
+		out = self._call(
+			[self._in("B1", 6.0), self._out("B1", 5.9999)],
+			[{"batch_no": "B1", "qty": 99.0}],
+		)
+		self.assertEqual(out, [])
+
+
+class TestAllocateTreeBatches(IntegrationTestCase):
+	def _alloc(self, pool, need):
+		with (
+			patch.object(tse, "_tree_owed_batches", return_value=pool),
+			patch.object(tse, "_se_precision", return_value=3),
+			patch.object(tse, "_pending_eps", return_value=0.0005),
+		):
+			return tse._allocate_tree_batches(
+				SimpleNamespace(),
+				SimpleNamespace(name="TREE-1"),
+				"GOLD-18KT",
+				"EMP-MSL",
+				need,
+			)
+
+	def test_allocates_in_pool_order_across_batches(self):
+		self.assertEqual(
+			self._alloc([("B-OLD", 2.0), ("B-NEW", 5.0)], 6.0),
+			[("B-OLD", 2.0), ("B-NEW", 4.0)],
+		)
+
+	def test_stops_once_need_is_covered(self):
+		self.assertEqual(self._alloc([("B1", 10.0), ("B2", 5.0)], 3.0), [("B1", 3.0)])
+
+	def test_shortfall_throws_rather_than_returning_a_foreign_batch(self):
+		with self.assertRaises(ValidationError) as cm:
+			self._alloc([("B1", 2.0)], 5.9)
+		msg = str(cm.exception)
+		self.assertIn("need 5.9", msg)
+		self.assertIn("only 2.0", msg)
+		self.assertIn("B1: 2.0", msg)
+
+	def test_empty_pool_throws_naming_none(self):
+		with self.assertRaises(ValidationError) as cm:
+			self._alloc([], 1.0)
+		self.assertIn("none", str(cm.exception))
+
+
+class TestReceiveBatchParity(IntegrationTestCase):
+	"""End-to-end through ``receive_material``: the rows the buttons actually build."""
+
+	def _tree(self, issue=6.0):
+		return _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": issue,
+					"receive_qty": 0,
+					"loss_qty": 0,
+					"pending_qty": issue,
+				}
+			]
+		)
+
+	def test_receive_returns_the_issued_batch_with_its_ownership(self):
+		"""The reported bug, pinned: an older foreign batch in MSL must not be picked."""
+		fakes = _run(
+			tse.receive_material,
+			self._tree(),
+			[{"item_code": "GOLD-18KT", "receive_qty": 5.9, "loss_qty": 0.1}],
+			owed=[("B-CUST", 6.0)],
+			ownership={"B-CUST": ("Customer Goods", "MHCU0012")},
+		)
+		se_recv, se_loss = fakes
+		received = se_recv.items[0]
+		self.assertEqual(received.batch_no, "B-CUST")
+		self.assertEqual(received.inventory_type, "Customer Goods")
+		self.assertEqual(received.customer, "MHCU0012")
+		self.assertEqual(received.qty, 5.9)
+
+		# The loss leg consumes the same batch — it must not write off company metal either.
+		consume, produce = se_loss.items
+		self.assertEqual(consume.batch_no, "B-CUST")
+		self.assertEqual(consume.inventory_type, "Customer Goods")
+		self.assertEqual(consume.qty, 0.1)
+		# Produce row mints a fresh ML batch on submit, so it stays unstamped.
+		self.assertFalse(hasattr(produce, "batch_no"))
+
+	def test_both_legs_share_one_pool_and_never_double_book(self):
+		"""6.0 owed, 5.9 received + 0.1 lost: the loss leg draws the remainder, not a second 6.0."""
+		fakes = _run(
+			tse.receive_material,
+			self._tree(),
+			[{"item_code": "GOLD-18KT", "receive_qty": 5.9, "loss_qty": 0.1}],
+			owed=[("B1", 6.0)],
+		)
+		booked = sum(i.qty for i in fakes[0].items) + fakes[1].items[0].qty
+		self.assertEqual(booked, 6.0)
+
+	def test_allocation_splits_across_batches_and_spans_both_legs(self):
+		"""One batch runs out mid-receive; the next covers the rest and then the loss."""
+		fakes = _run(
+			tse.receive_material,
+			self._tree(10.0),
+			[{"item_code": "GOLD-18KT", "receive_qty": 6.0, "loss_qty": 1.0}],
+			owed=[("B1", 4.0), ("B2", 5.0)],
+		)
+		se_recv, se_loss = fakes
+		self.assertEqual(
+			[(i.batch_no, i.qty) for i in se_recv.items], [("B1", 4.0), ("B2", 2.0)]
+		)
+		# Loss consumes what is left of B2 only — B1 was exhausted by the receive leg.
+		self.assertEqual(
+			[(i.batch_no, i.qty) for i in se_loss.items if i.s_warehouse], [("B2", 1.0)]
+		)
+
+	def test_loss_only_receive_uses_the_issued_batch(self):
+		fakes = _run(
+			tse.receive_material,
+			self._tree(),
+			[{"item_code": "GOLD-18KT", "loss_qty": 0.5}],
+			owed=[("B-CUST", 6.0)],
+			ownership={"B-CUST": ("Customer Goods", "MHCU0012")},
+		)
+		self.assertEqual(len(fakes), 1)
+		consume = fakes[0].items[0]
+		self.assertEqual((consume.batch_no, consume.qty), ("B-CUST", 0.5))
+		self.assertEqual(consume.customer, "MHCU0012")
+
+	def test_shortfall_throws_before_anything_is_submitted(self):
+		fakes = _RunResult()
+		with self.assertRaises(ValidationError):
+			fakes = _run(
+				tse.receive_material,
+				self._tree(),
+				[{"item_code": "GOLD-18KT", "receive_qty": 5.9}],
+				owed=[("B1", 2.0)],
+			)
+		self.assertFalse([f for f in fakes if f.submitted])
+
+	def test_multi_item_tree_allocates_per_item(self):
+		tree = _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": 5.0,
+					"receive_qty": 0,
+					"loss_qty": 0,
+					"pending_qty": 5.0,
+				},
+				{
+					"item_code": "GOLD-22KT",
+					"issue_qty": 3.0,
+					"receive_qty": 0,
+					"loss_qty": 0,
+					"pending_qty": 3.0,
+				},
+			]
+		)
+		fakes = _run(
+			tse.receive_material,
+			tree,
+			[
+				{"item_code": "GOLD-18KT", "receive_qty": 5.0},
+				{"item_code": "GOLD-22KT", "receive_qty": 3.0},
+			],
+			owed={"GOLD-18KT": [("B-18", 5.0)], "GOLD-22KT": [("B-22", 3.0)]},
+		)
+		self.assertEqual(
+			[(i.item_code, i.batch_no, i.qty) for i in fakes[0].items],
+			[("GOLD-18KT", "B-18", 5.0), ("GOLD-22KT", "B-22", 3.0)],
+		)
