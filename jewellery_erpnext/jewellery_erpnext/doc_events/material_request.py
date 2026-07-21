@@ -165,36 +165,51 @@ def before_update_after_submit(self, method):
 
 
 def validate_target_item(self):
-	for row in self.items:
-		if not getattr(row, "custom_alternative_item", None):
-			continue
+	rows = [row for row in self.items if getattr(row, "custom_alternative_item", None)]
+	if not rows:
+		return
 
-		attr_value = frappe.db.get_value(
+	# Sieve size + dimensions are fetched for the whole table up front. Doing it
+	# per row cost four queries per row and dominated every Material Request save.
+	# (parent, "Diamond Sieve Size") is unique, so a flat dict loses nothing.
+	item_codes = {row.item_code for row in rows}
+	item_codes.update(row.custom_alternative_item for row in rows)
+	sieve_size = {
+		d.parent: d.attribute_value
+		for d in frappe.get_all(
 			"Item Variant Attribute",
-			{"attribute": "Diamond Sieve Size", "parent": row.item_code},
-			"attribute_value",
+			filters={
+				"attribute": "Diamond Sieve Size",
+				"parent": ("in", list(item_codes)),
+			},
+			fields=["parent", "attribute_value"],
 		)
+	}
+
+	attribute_values = {value for value in sieve_size.values() if value}
+	dimensions = {}
+	if attribute_values:
+		dimensions = {
+			d.name: d
+			for d in frappe.get_all(
+				"Attribute Value",
+				filters={"name": ("in", list(attribute_values))},
+				fields=["name", "height", "weight"],
+			)
+		}
+
+	for row in rows:
+		attr_value = sieve_size.get(row.item_code)
 		if not attr_value:
 			continue
 
-		alternative_item_attr_value = frappe.db.get_value(
-			"Item Variant Attribute",
-			{"attribute": "Diamond Sieve Size", "parent": row.custom_alternative_item},
-			"attribute_value",
-		)
+		alternative_item_attr_value = sieve_size.get(row.custom_alternative_item)
 
 		if not alternative_item_attr_value:
 			continue
 
-		height_weight = frappe.db.get_value(
-			"Attribute Value", attr_value, ["height", "weight"], as_dict=True
-		)
-		alt_height_weight = frappe.db.get_value(
-			"Attribute Value",
-			alternative_item_attr_value,
-			["height", "weight"],
-			as_dict=True,
-		)
+		height_weight = dimensions.get(attr_value)
+		alt_height_weight = dimensions.get(alternative_item_attr_value)
 
 		if not height_weight or not alt_height_weight:
 			continue
@@ -249,7 +264,10 @@ def materialize_transfer_se(mr_name):
 	validator blocks the submit and it is recorded as Failed (re-submit after EOD).
 	"""
 	from jewellery_erpnext.jewellery_erpnext.bounded_retry import run_with_retry
-	from jewellery_erpnext.jewellery_erpnext.serialize import LockTimeoutError, conflict_lock
+	from jewellery_erpnext.jewellery_erpnext.serialize import (
+		LockTimeoutError,
+		conflict_lock,
+	)
 
 	try:
 		with conflict_lock("mr_transfer_se", mr_name, timeout=30):
@@ -263,7 +281,10 @@ def materialize_transfer_se(mr_name):
 		frappe.db.set_value(
 			"Material Request",
 			mr_name,
-			{"custom_transfer_se_state": "Failed", "custom_transfer_se_error": str(e)[:140]},
+			{
+				"custom_transfer_se_state": "Failed",
+				"custom_transfer_se_error": str(e)[:140],
+			},
 			update_modified=False,
 		)
 		frappe.db.commit()
@@ -305,14 +326,31 @@ def _create_transfer_se(mr_name):
 		if item_row.custom_alternative_item:
 			mr_item_to_alternative[item_row.name] = item_row.custom_alternative_item
 
+	# One query for every referenced Material Request Item instead of one per SE row.
+	mri_names = list(
+		{
+			row.material_request_item
+			for row in new_se_doc.items
+			if row.material_request_item
+		}
+	)
+	mri_warehouse = {}
+	if mri_names:
+		mri_warehouse = {
+			d.name: d.warehouse
+			for d in frappe.get_all(
+				"Material Request Item",
+				filters={"name": ("in", mri_names)},
+				fields=["name", "warehouse"],
+			)
+		}
+
 	for row in new_se_doc.items:
 		alternative_item = mr_item_to_alternative.get(row.material_request_item)
 		if alternative_item:
 			row.item_code = alternative_item
 
-		original_t_warehouse = frappe.db.get_value(
-			"Material Request Item", row.material_request_item, "warehouse"
-		)
+		original_t_warehouse = mri_warehouse.get(row.material_request_item)
 		row.s_warehouse = row.t_warehouse
 		row.t_warehouse = original_t_warehouse
 		row.serial_and_batch_bundle = None
@@ -472,14 +510,14 @@ def make_stock_entry(source_name, target_doc=None):
 def make_in_transit_stock_entry(
 	source_name, to_warehouse, transfer_type, pmo=None, mnfr=None
 ):
-	to_department, warehouse_type = frappe.db.get_value(
-		"Warehouse", to_warehouse, ["department", "warehouse_type"]
+	# All three fields come off the same Warehouse row, so read it once.
+	to_department, warehouse_type, in_transit_warehouse = frappe.db.get_value(
+		"Warehouse",
+		to_warehouse,
+		["department", "warehouse_type", "default_in_transit_warehouse"],
 	)
 	from_department, set_warehouse = frappe.db.get_value(
 		"Material Request", source_name, ["set_from_warehouse", "set_warehouse"]
-	)
-	in_transit_warehouse = frappe.db.get_value(
-		"Warehouse", to_warehouse, "default_in_transit_warehouse"
 	)
 
 	check_frm_warehus_type = None
@@ -586,16 +624,29 @@ def create_stock_entry(self, method):
 	se_doc.purpose = "Material Transfer"
 	se_doc.add_to_transit = True
 
-	for row in self.items:
-		department = frappe.db.get_value("Warehouse", row.from_warehouse, "department")
-		t_warehouse = frappe.db.get_value(
-			"Warehouse",
-			{"disabled": 0, "department": department, "warehouse_type": "Reserve"},
-			"name",
-		)
+	# Rows nearly always share a handful of source warehouses, so each distinct
+	# one is resolved once rather than costing two queries on every row.
+	reserve_warehouse = {}
 
-		if not t_warehouse:
-			frappe.throw(_("Transit warehouse not found for {0}").format(department))
+	for row in self.items:
+		if row.from_warehouse not in reserve_warehouse:
+			department = frappe.db.get_value(
+				"Warehouse", row.from_warehouse, "department"
+			)
+			t_warehouse = frappe.db.get_value(
+				"Warehouse",
+				{"disabled": 0, "department": department, "warehouse_type": "Reserve"},
+				"name",
+			)
+
+			if not t_warehouse:
+				frappe.throw(
+					_("Transit warehouse not found for {0}").format(department)
+				)
+
+			reserve_warehouse[row.from_warehouse] = t_warehouse
+
+		t_warehouse = reserve_warehouse[row.from_warehouse]
 
 		se_doc.append(
 			"items",

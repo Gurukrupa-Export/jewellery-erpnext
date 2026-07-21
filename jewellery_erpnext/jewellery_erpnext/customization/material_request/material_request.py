@@ -57,11 +57,28 @@ def make_mop_stock_entry(self, **kwargs):
 				},
 				"name",
 			)
+		# One query for every referenced Material Request Item instead of one per
+		# distinct item on the copied Stock Entry.
+		mri_names = list(
+			{
+				row.material_request_item
+				for row in new_se_doc.items
+				if row.material_request_item
+			}
+		)
+		if mri_names:
+			warehouse_data.update(
+				{
+					d.name: d.warehouse
+					for d in frappe.get_all(
+						"Material Request Item",
+						filters={"name": ("in", mri_names)},
+						fields=["name", "warehouse"],
+					)
+				}
+			)
+
 		for row in new_se_doc.items:
-			if not warehouse_data.get(row.material_request_item):
-				warehouse_data[row.material_request_item] = frappe.db.get_value(
-					"Material Request Item", row.material_request_item, "warehouse"
-				)
 			s_warehouse = warehouse_data.get(row.material_request_item)
 			# s_warehouse = frappe.db.sql(f"""WITH last_se AS (
 			# 	SELECT sei.parent AS stock_entry_name
