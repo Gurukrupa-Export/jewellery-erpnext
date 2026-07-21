@@ -4,7 +4,7 @@ import frappe
 from erpnext.setup.utils import get_exchange_rate
 from frappe import _
 from frappe.query_builder.custom import ConstantColumn
-from frappe.utils import flt, get_last_day , getdate
+from frappe.utils import flt, get_last_day , getdate,strip
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import _calculate_diamond_amount
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_totals
@@ -97,6 +97,10 @@ def before_validate(self, method):
 		update_payment_terms(self, payment_terms_data)
 		# set_gst_details(self)
 def validate(self, method):
+	if self.is_return:
+		set_gst_details(self)
+		self.calculate_taxes_and_totals()
+		return
 	prec = frappe.db.get_value(
 		"Customer",
 		self.customer,
@@ -113,11 +117,11 @@ def validate(self, method):
 			if row.bom:
 				bom_doc = frappe.get_doc("BOM", row.bom)
 				for m in bom_doc.metal_detail:
-					if not m.is_customer_item:
+					# if not m.is_customer_item:
 						update_making_charges(row, bom_doc, m, self.gold_rate_with_gst) 
 						# frappe.msgprint(f"hii{m.making_amount},{m.making_rate},{m.quantity}")
 				for m in bom_doc.finding_detail:
-					if not m.is_customer_item:
+					# if not m.is_customer_item:
 						update_making_charges(row, bom_doc, m, self.gold_rate_with_gst) 
 						
 				bom_doc.diamond_bom_amount = bom_doc.total_diamond_amount
@@ -169,6 +173,10 @@ def get_allowed_item_types(customer, sales_type):
 	
 def on_submit(self,method):
 	if self.company == 'Sadguru Diamond':
+		return
+	if self.is_return:
+		for row in self.items:
+			frappe.db.set_value("Serial No", row.get("serial_no"), {"status": "Active","warehouse":"Product Allocation FG - KGJPL"})
 		return
 	if self.sales_type not in  ['Certification','']:
 		separate_hallmarking_invoice = frappe.db.get_value(
@@ -595,12 +603,14 @@ def update_si_data(self):
 				if invoice_data.get(custom_item):
 					invoice_data[custom_item]["qty"] += 1
 					invoice_data[custom_item]["amount"] += bom_doc.hallmarking_amount
+					invoice_data[custom_item]["rate"] = invoice_data[custom_item]["amount"]/invoice_data[custom_item]["qty"]
 				else:
 					invoice_data[custom_item] = {
 						"qty": 1,
 						"hsn_code": hsn_code,
 						"uom": uom,
 						"amount": bom_doc.hallmarking_amount,
+						"rate":bom_doc.hallmarking_amount,
 						"income_account": row.income_account,
 						"cost_center": row.cost_center,
 					}
@@ -613,11 +623,13 @@ def update_si_data(self):
 				if invoice_data.get(custom_item):
 					invoice_data[custom_item]["qty"] += 1
 					invoice_data[custom_item]["amount"] += bom_doc.certification_amount
+					invoice_data[custom_item]["rate"] = invoice_data[custom_item]["amount"]/invoice_data[custom_item]["qty"]
 				else:
 					invoice_data[custom_item] = {
 						"qty": 1,
 						"hsn_code": hsn_code,
 						"uom": uom,
+						"rate":bom_doc.certification_amount,
 						"amount": bom_doc.certification_amount,
 						"income_account": row.income_account,
 						"cost_center": row.cost_center,
@@ -1150,6 +1162,8 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 				child_table.rate_per_pc,
 				child_table.rate_per_gm_threshold,
 				child_table.wastage,
+				child_table.subcontracting_rate,
+				child_table.subcontracting_wastage,
 				child_table.wastage_per_pcs,
 				child_table.supplier_fg_purchase_rate,
 			)
@@ -1172,17 +1186,17 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 
 		if bom_row.parentfield != "metal_detail":
 			query = query.where(child_table.metal_touch == bom_row.metal_touch)
-			frappe.msgprint(f"huyt{bom_row.making_amount}")
+			# frappe.msgprint(f"huyt{bom_row.making_amount}")
 
 		query = query.limit(1)
-
+		# frappe.msgprint(f"yt{query}")
 		making_charge_details = query.run(as_dict=True)
 
 		
 
 		# ---------------- FALLBACK FOR FINDING ----------------
 		if not making_charge_details and bom_row.parentfield != "metal_detail":
-
+			# frappe.msgprint(f"hiioooiiu{bom_row.metal_type},{bom_doc.customer}")
 			query = (
 				frappe.qb.from_(MCP)
 				.left_join(MCPFS)
@@ -1193,6 +1207,8 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 					MCPFS.rate_per_gm_threshold,
 					MCPFS.wastage,
 					MCPFS.wastage_per_pcs,
+					MCPFS.subcontracting_rate,
+					MCPFS.subcontracting_wastage,
 					MCPFS.subcategory,
 					MCPFS.supplier_fg_purchase_rate,
 					ConstantColumn(1).as_("non_finding_rate"),
@@ -1213,57 +1229,63 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 				.limit(1)
 			)
 
+		
 			making_charge_details = query.run(as_dict=True)
+			if len(making_charge_details) > 0:
+				# frappe.msgprint(f"poiihyfy,{making_charge_details}")
 
+				making_charges = making_charge_details[0]
+
+				
+				rate_per_gm = flt(making_charges.get("rate_per_gm") or 0)
+				rate_per_pc = flt(making_charges.get("rate_per_pc") or 0)
+				threshold = flt(making_charges.get("rate_per_gm_threshold") or 2)
+				subcontracting_rate=flt(making_charges.get("subcontracting_rate") or 0)
+				subcontracting_wastage=flt(making_charges.get("subcontracting_wastage") or 0)
+
+				# 🔥 IMPORTANT FIX: ALWAYS COMPARE WITH BOM LEVEL WEIGHT
+				weight = flt(bom_doc.metal_and_finding_weight or 0)
+
+				# ---------------- THRESHOLD LOGIC (FIXED FOR FINDING) ----------------
+			
 		# ---------------- APPLY RESULT ----------------
 		if len(making_charge_details) > 0:
-			frappe.msgprint(f"poiihyfy,{making_charge_details}")
+			# frappe.msgprint(f"poiihyfy,{making_charge_details}")
 
 			making_charges = making_charge_details[0]
 
-			# if override_internal:
-			# 	# bom_row.making_rate = 550 if item_category != "Chains" else 200
-			# 	bom_row.wastage_rate = 0
-
-			# 	making_charges["rate_per_gm"] = bom_row.making_rate
-			# 	making_charges["rate_per_pc"] = 0
-			# 	making_charges["wastage"] = 0
-			# 	making_charges["rate_per_gm_threshold"] = 0
 
 			rate_per_gm = flt(making_charges.get("rate_per_gm") or 0)
 			rate_per_pc = flt(making_charges.get("rate_per_pc") or 0)
 			threshold = flt(making_charges.get("rate_per_gm_threshold") or 2)
 			subcontracting_rate=flt(making_charges.get("subcontracting_rate") or 0)
 			subcontracting_wastage=flt(making_charges.get("subcontracting_wastage") or 0)
-
 			# 🔥 IMPORTANT FIX: ALWAYS COMPARE WITH BOM LEVEL WEIGHT
 			weight = flt(bom_doc.metal_and_finding_weight or 0)
+			# frappe.throw(f"{weight}")
 
 			# ---------------- THRESHOLD LOGIC (FIXED FOR FINDING) ----------------
-			if weight <= threshold :
-				metal_making_charges = rate_per_pc
-				bom_row.making_rate = rate_per_pc
-				wastage_rate = flt(making_charges.get("wastage_per_pcs") or 0)
-				# frappe.msgprint(f"kiuy{metal_making_charges}")
+			if bom_row.is_customer_item:
+				bom_row.rate=0
+				bom_row.making_rate =subcontracting_rate
+				metal_making_charges = subcontracting_rate * bom_row.quantity
+				wastage_rate = subcontracting_wastage
+				frappe.msgprint("hii")
 			else:
-				
-				metal_making_charges = rate_per_gm * bom_row.quantity
-				# frappe.msgprint(f"uukiuy{metal_making_charges}")
-				bom_row.making_rate = rate_per_gm
-				wastage_rate = flt(making_charges.get("wastage") or 0)
-			if bom_row.parentfield == "finding_detail":
-				frappe.msgprint(f"hiioooiiu{weight},{threshold}")
 				if weight <= threshold :
-					frappe.msgprint("hii")
 					metal_making_charges = rate_per_pc
+					# metal_making_charges = 5
 					bom_row.making_rate = rate_per_pc
+					# bom_row.making_rate = 0
+					bom_row.making_amount = bom_row.making_rate
 					wastage_rate = flt(making_charges.get("wastage_per_pcs") or 0)
-					frappe.msgprint(f"kiurry{metal_making_charges}")
+					# frappe.msgprint(f"if1 {bom_row.parentfield}{bom_row.making_amount}| {bom_row.as_dict()} | {bom_row.making_rate} | {weight} | {threshold}")
 				else:
 					metal_making_charges = rate_per_gm * bom_row.quantity
 					bom_row.making_rate = rate_per_gm
+					bom_row.making_amount = metal_making_charges
 					wastage_rate = flt(making_charges.get("wastage") or 0)
-					frappe.msgprint(f"qqkiuy{metal_making_charges}")
+			
 			bom_row.making_amount = metal_making_charges
 			bom_row.wastage_rate = wastage_rate
 			bom_row.wastage_amount = bom_row.wastage_rate * bom_row.amount / 100
@@ -1291,17 +1313,12 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 				bom_row.quantity + additional_net_weight
 			)
 
-	# ---------------- TOTALS ----------------
-	bom_doc.total_making_amount = sum(
-		flt(r.making_amount) for r in bom_doc.metal_detail
-	)
 
 	bom_doc.making_charge = flt(
 		sum(r.making_amount for r in bom_doc.metal_detail)
 		+ sum(r.making_amount for r in bom_doc.finding_detail)
 	)
-
-	# bom_doc.save()
+	
 
 
 def update_payment_terms(self, payment_terms_data=None):
@@ -1460,3 +1477,33 @@ def update_income_account(self):
 		if income_account:
 			for row in self.items:
 				row.income_account = income_account
+
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_completed_product_return_orders(doctype, txt, searchfield, start, page_len, filters):
+
+    return frappe.db.sql("""
+        SELECT pro.name
+        FROM `tabProduct Return Order Form` pro
+        WHERE pro.docstatus = 1
+          AND pro.name LIKE %(txt)s
+          AND NOT EXISTS (
+                SELECT 1
+                FROM `tabProduct Return Order` prf
+                WHERE prf.product_return_order_form = pro.name
+                  AND prf.docstatus != 1
+          )
+          AND EXISTS (
+                SELECT 1
+                FROM `tabProduct Return Order` prf
+                WHERE prf.product_return_order_form = pro.name
+          )
+        ORDER BY pro.modified DESC
+        LIMIT %(start)s, %(page_len)s
+    """, {
+        "txt": f"%{txt}%",
+        "start": start,
+        "page_len": page_len,
+    })
