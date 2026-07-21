@@ -218,7 +218,14 @@ class TestSncSubmitGuard(IntegrationTestCase):
 		set_value.assert_not_called()
 
 
-def _receive_row(item_code, qty, s_warehouse, batch_customer, batch_no):
+def _receive_row(
+	item_code,
+	qty,
+	s_warehouse,
+	batch_customer,
+	batch_no,
+	voucher_type="Customer Subcontracting",
+):
 	"""A normalized receivable-gold row as _get_receivable_gold_rows would return."""
 	return {
 		"item_code": item_code,
@@ -227,12 +234,66 @@ def _receive_row(item_code, qty, s_warehouse, batch_customer, batch_no):
 		"custom_pure_qty": round(qty * 0.754, 3),
 		"batch_customer": batch_customer,
 		"customer": batch_customer,
+		"batch_voucher_type": voucher_type,
 		"inventory_type": "Customer Goods" if batch_customer else "Regular Stock",
 		"s_warehouse": s_warehouse,
 		"pcs": 1,
 		"stock_reservation_entry": "SRE-1",
 		"stock_reservation_entry_detail": None,
 	}
+
+
+class TestRowNeedsSettlement(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _mwo(self, customer="MHCU0012"):
+		return _Doc(name="MWO-WORK-1", customer=customer)
+
+	def test_regular_order_customer_repair_row_skipped(self):
+		# Case 3: regular order borrowing a customer's "Customer Repair" gold must NOT
+		# be settled (regression: it needed settlement before the voucher-type gate).
+		row = _receive_row(
+			"M-G-18KT-75.4-P",
+			1.0,
+			"Setting WO",
+			"KACU0043",
+			"B-KACU",
+			voucher_type="Customer Repair",
+		)
+		self.assertFalse(
+			snc._row_needs_settlement(self._mwo(), row, pmo_is_customer_gold=0)
+		)
+
+	def test_regular_order_customer_subcontracting_row_settled(self):
+		# Control for case 2: same borrow under "Customer Subcontracting" still settles.
+		row = _receive_row(
+			"M-G-18KT-75.4-P",
+			1.0,
+			"Setting WO",
+			"KACU0043",
+			"B-KACU",
+			voucher_type="Customer Subcontracting",
+		)
+		self.assertTrue(
+			snc._row_needs_settlement(self._mwo(), row, pmo_is_customer_gold=0)
+		)
+
+	def test_subcon_different_customer_repair_row_skipped(self):
+		# Case 6 guard: even a DIFFERENT customer's gold is skipped when its voucher
+		# type is "Customer Repair" -- the global rule wins over order-type logic.
+		row = _receive_row(
+			"M-G-18KT-75.4-P",
+			1.0,
+			"Setting WO",
+			"KACU0043",
+			"B-KACU",
+			voucher_type="Customer Repair",
+		)
+		self.assertFalse(
+			snc._row_needs_settlement(self._mwo(), row, pmo_is_customer_gold=1)
+		)
 
 
 class TestSncCreateSettlement(IntegrationTestCase):
@@ -317,4 +378,44 @@ class TestSncCreateSettlement(IntegrationTestCase):
 
 		rows = make_transfer.call_args[0][2]
 		self.assertEqual([r["qty"] for r in rows], [1.0])  # only the customer-gold row
+		self.assertEqual(len(make_receive.call_args.kwargs["receive_items"]), 1)
+
+	def test_customer_repair_row_not_settled(self):
+		# Mixed borrow on a regular order: a "Customer Subcontracting" customer batch
+		# settles; a "Customer Repair" customer batch is left untouched.
+		mwo = _Doc(
+			name="MWO-WORK-3",
+			manufacturing_order="PMO-0003",
+			manufacturing_operation="MOP-3",
+			customer="MHCU0012",
+			company="GEPL",
+		)
+		received = [
+			_receive_row(
+				"M-G-18KT-75.4-P",
+				1.0,
+				"Setting WO",
+				"KACU0043",
+				"B-KACU",
+				voucher_type="Customer Subcontracting",
+			),
+			_receive_row(
+				"M-G-18KT-75.4-P",
+				3.0,
+				"Repair WO",
+				"TNCU0007",
+				"B-REPAIR",
+				voucher_type="Customer Repair",
+			),
+		]
+		make_receive, make_transfer, _ = self._run_create_snc(
+			mwo, received, 0, {"batch_no": "REG-BATCH", "warehouse": "Regular RM"}
+		)
+
+		rows = make_transfer.call_args[0][2]
+		# Only the subcontracting row is settled; the repair row is skipped.
+		self.assertEqual([r["qty"] for r in rows], [1.0])
+		self.assertEqual([r["item_code"] for r in rows], ["M-G-18KT-75.4-P"])
+		# Receive is driven by the settle rows, so the repair row is excluded there too
+		# (same as regular gold in test_regular_order_settles_only_customer_gold).
 		self.assertEqual(len(make_receive.call_args.kwargs["receive_items"]), 1)
