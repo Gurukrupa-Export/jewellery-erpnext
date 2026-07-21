@@ -78,7 +78,7 @@ def set_missing_tax_category_and_template(self):
 	which isn't guaranteed to be on on every site (confirmed off on at least
 	one), so doing it explicitly here keeps this independent of that setting.
 	"""
-	if self.sales_type not in ("Outright", "Outwork", "Branch Sales", "Hybrid"):
+	if self.sales_type not in ("Finished Goods", "Subcontracting", "Branch Sales", "Hybrid"):
 		return
 	if self.tax_category and self.taxes_and_charges and self.get("taxes"):
 		return
