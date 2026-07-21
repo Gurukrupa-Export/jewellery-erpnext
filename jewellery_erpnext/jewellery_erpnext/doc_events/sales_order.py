@@ -3014,7 +3014,7 @@ def customer_approval_filter(doctype, txt, searchfield, start, page_len, filters
 
 def validate_item_dharm(self):
 	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
-	allowed = ("Outright", "Outwork", "Certification","Branch Sales","Repairing","Hybrid")
+	allowed = ("Finished Goods", "Subcontracting", "Certification","Branch Sales","Repairing","Hybrid")
 	if self.sales_type in allowed:
 		if self.sales_type == "Hybrid" and self.company not in HYBRID_ENABLED_COMPANIES:
 			frappe.throw(_("Hybrid Sales Type is not yet enabled for company {0}").format(self.company))
@@ -3044,9 +3044,9 @@ def validate_item_dharm(self):
 				# (owned material, making, hallmarking, certification)
 				# gets the Outright rate.
 				lookup_sales_type = (
-					"Outwork"
+					"Subcontracting"
 					if (e_invoice_item.is_for_repair or e_invoice_item.is_for_labour)
-					else "Outright"
+					else "Finished Goods"
 				)
 			else:
 				lookup_sales_type = self.sales_type
