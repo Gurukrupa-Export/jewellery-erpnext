@@ -61,6 +61,14 @@ frappe.ui.form.on("Metal Conversions", {
 		// Clear All Fields
 		clear_metal_field(frm);
 	},
+	scan_source_item(frm) {
+		// Item-code-only scan: drop the scanned metal item into the active mode
+		// (grid row in Multiple, Source Item in Single). Qty/batch/purity are left
+		// for the operator / existing handlers, so nothing but the item is fetched.
+		if (!frm.doc.scan_source_item) return;
+		frappe.show_alert(__("Adding item..."));
+		frm.call("scan_source_item_action", { barcode: frm.doc.scan_source_item }).then(() => frm.refresh());
+	},
 	is_melting_loss(frm) {
 		if (frm.doc.is_melting_loss) {
 			// Loss-recording mode: drop every conversion-only field.

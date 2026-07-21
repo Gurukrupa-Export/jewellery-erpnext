@@ -23,6 +23,7 @@
   "branch",
   "section_break_6lpva",
   "source_warehouse",
+  "scan_source_item",
   "column_break_6oxul",
   "target_warehouse",
   "column_break_aw0qk",
@@ -158,6 +159,12 @@
    "label": "Stock Entry",
    "no_copy": 1,
    "options": "Stock Entry"
+  },
+  {
+   "fieldname": "scan_source_item",
+   "fieldtype": "Data",
+   "label": "Scan Item Code",
+   "options": "Barcode"
   },
   {
    "collapsible": 1,
