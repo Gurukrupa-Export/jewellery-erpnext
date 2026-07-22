@@ -30,6 +30,20 @@ def _purity(item_code):
 	return _TEST_PURITY.get(item_code)
 
 
+def _skip_generated_test_records(cls):
+	"""Mark ``cls.doctype``'s auto-generated test records as already present.
+
+	IntegrationTestCase.setUpClass walks Product Certification's link graph to build
+	fixtures, and that graph reaches Company — whose erpnext test module bootstraps the
+	whole master-data set at import time and blows up in CI. Classes that build their
+	documents by hand need none of it, so seed the cache the generator checks
+	(``make_test_records`` uses the same idiom to avoid repeat work) and let
+	``super().setUpClass()`` still do its real job: site init, connection handles and the
+	class-level rollback that keeps inserted documents out of the next test.
+	"""
+	frappe.local.test_objects.setdefault(cls.doctype, [])
+
+
 class TestProductCertification(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -596,9 +610,10 @@ class TestProductCertification(IntegrationTestCase):
 			with patch(PURITY_PATH, side_effect=_purity):
 				certification.save()
 
-				# 30 × 99.9 / 91.9 = 32.617 at 24KT, so 100 − 60 − 32.617 = 7.383 is lost.
-				self.assertEqual(pure_row.conversion_quantity, 32.617)
-				self.assertEqual(loss_row.gross_weight, 7.383)
+				# 30 × 99.9 / 91.9 = 32.612 at 24KT, so 100 − 60 − 32.612 = 7.388 is lost,
+				# and the three rows still sum back to the 100 issued.
+				self.assertEqual(pure_row.conversion_quantity, 32.612)
+				self.assertEqual(loss_row.gross_weight, 7.388)
 
 				certification.submit()
 			mock_process.assert_called_once()
@@ -764,6 +779,11 @@ class TestFireAssyLossWeight(IntegrationTestCase):
 	0.05 where the purity-converted answer is 0.041).
 	"""
 
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records(cls)
+		super().setUpClass()
+
 	def _doc(self, service_type, issue_weight, rows, main_slip=None, tree_no=None):
 		doc = frappe.new_doc("Product Certification")
 		doc.type = "Receive"
@@ -925,6 +945,11 @@ class TestPartialReceipt(IntegrationTestCase):
 	ledger under test is service-type agnostic, and the stock side is covered by
 	TestHallmarkingStockEntryPcs.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records(cls)
+		super().setUpClass()
 
 	def setUp(self):
 		# The ledger under test is pure arithmetic over the two child tables — it does
