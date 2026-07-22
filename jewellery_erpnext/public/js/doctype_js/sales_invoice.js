@@ -1581,49 +1581,48 @@ let set_edit_bom_details = (
 	var hall_amount = 0;
 	var customer_metal_purity =0;
 	// metal details table append
-	$.each(doc.metal_detail, function (index, d) {
-		metal_amount += d.amount;
-		making_amount += d.making_amount;
-		wastage_amount += d.wastage_amount;
-		frappe.call({
-				method: "jewellery_erpnext.query.get_customer_mtel_purity",
-				args: {
-					customer: cur_frm.doc.customer,
-					metal_type: d.metal_type,
-					metal_touch: d.metal_touch,
-				},
-				callback: function (response) {
-					let metal_purity_value = response.message || "N/A";
-					// console.log('hii',metal_purity_value);
-		// customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{d.metal_type}' and metal_touch = '{d.metal_touch}'""",as_dict=True)[0]['metal_purity']
-		dialog.fields_dict.metal_detail.df.data.push({
-			docname: d.name,
-			metal_type: d.metal_type,
-			metal_touch: d.metal_touch,
-			metal_purity: d.metal_purity,
-			customer_metal_purity: metal_purity_value,
-			metal_colour: d.metal_colour,
-			amount: d.amount,
-			rate: d.rate,
-			actual_rate: d.rate,
-			quantity: d.quantity,
-			actual_quantity: d.actual_quantity,
-			difference_qty: d.difference_qty,
-			wastage_rate: d.wastage_rate,
-			wastage_amount: d.wastage_amount,
-			making_rate: d.making_rate,
-			// making_rate_copy: d.making_rate,
-			making_amount: d.making_amount,
-			difference: d.difference,
-		});
-		metal_data = dialog.fields_dict.metal_detail.df.data;
-		dialog.fields_dict.metal_detail.grid.refresh();
-		}
-			});
-		
-		
-	});
+	dialog.fields_dict.metal_detail.df.data = [];
 
+$.each(doc.metal_detail, function (index, d) {
+    frappe.call({
+        method: "jewellery_erpnext.query.get_customer_mtel_purity",
+        args: {
+            customer: cur_frm.doc.customer,
+            metal_type: d.metal_type,
+            metal_touch: d.metal_touch,
+        },
+        callback: function (response) {
+            let metal_purity_value = response.message || "N/A";
+
+            dialog.fields_dict.metal_detail.df.data.push({
+                docname: d.name,
+                metal_type: d.metal_type,
+                metal_touch: d.metal_touch,
+                metal_purity: d.metal_purity,
+                customer_metal_purity: metal_purity_value,
+                metal_colour: d.metal_colour,
+                amount: d.amount,
+                rate: d.rate,
+                actual_rate: d.rate,
+                quantity: d.quantity,
+                actual_quantity: d.actual_quantity,
+                difference_qty: d.difference_qty,
+                wastage_rate: d.wastage_rate,
+                wastage_amount: d.wastage_amount,
+                making_rate: d.making_rate,
+                making_amount: d.making_amount,
+                difference: d.difference,
+            });
+
+            if (
+                dialog.fields_dict.metal_detail.df.data.length ===
+                doc.metal_detail.length
+            ) {
+                dialog.fields_dict.metal_detail.grid.refresh();
+            }
+        }
+    });
+});
 	// diamond details table append
 	$.each(doc.diamond_detail, function (index, d) {
 		diamond_amount += d.diamond_rate_for_specified_quantity;
@@ -1676,47 +1675,55 @@ let set_edit_bom_details = (
 	});
 
 	// finding details table append
-	$.each(doc.finding_detail, function (index, d) {
-		finding_amount += d.amount;
-		making_amount += d.making_amount;
-		frappe.call({
-				method: "jewellery_erpnext.query.get_customer_mtel_purity",
-				args: {
-					customer: cur_frm.doc.customer,
-					metal_type: d.metal_type,
-					metal_touch: d.metal_touch,
-				},
-				callback: function (response) {
-					let metal_purity_value = response.message || "N/A";
-		dialog.fields_dict.finding_detail.df.data.push({
-			docname: d.name,
-			metal_type: d.metal_type,
-			finding_category: d.finding_category,
-			finding_type: d.finding_type,
-			finding_size: d.finding_size,
-			metal_touch: d.metal_touch,
-			metal_purity: d.metal_purity,
-			customer_metal_purity: metal_purity_value,
-			amount: d.amount,
-			rate: d.rate,
-			actual_rate: d.rate,
-			metal_colour: d.metal_colour,
-			quantity: d.quantity,
-			actual_quantity: d.actual_quantity,
-			difference_qty: d.difference_qty,
-			wastage_rate: d.wastage_rate,
-			wastage_amount: d.wastage_amount,
-			making_rate: d.making_rate,
-			making_amount: d.making_amount,
-			difference: d.difference,
-		});
-		finding_data = dialog.fields_dict.finding_detail.df.data;
-		dialog.fields_dict.finding_detail.grid.refresh();
-		}
-			});
-		
-	});
+	dialog.fields_dict.finding_detail.df.data = [];
 
+$.each(doc.finding_detail, function (index, d) {
+    finding_amount += d.amount;
+    making_amount += d.making_amount;
+
+    frappe.call({
+        method: "jewellery_erpnext.query.get_customer_mtel_purity",
+        args: {
+            customer: cur_frm.doc.customer,
+            metal_type: d.metal_type,
+            metal_touch: d.metal_touch,
+        },
+        callback: function (response) {
+            let metal_purity_value = response.message || "N/A";
+
+            dialog.fields_dict.finding_detail.df.data.push({
+                docname: d.name,
+                metal_type: d.metal_type,
+                finding_category: d.finding_category,
+                finding_type: d.finding_type,
+                finding_size: d.finding_size,
+                metal_touch: d.metal_touch,
+                metal_purity: d.metal_purity,
+                customer_metal_purity: metal_purity_value,
+                amount: d.amount,
+                rate: d.rate,
+                actual_rate: d.rate,
+                metal_colour: d.metal_colour,
+                quantity: d.quantity,
+                actual_quantity: d.actual_quantity,
+                difference_qty: d.difference_qty,
+                wastage_rate: d.wastage_rate,
+                wastage_amount: d.wastage_amount,
+                making_rate: d.making_rate,
+                making_amount: d.making_amount,
+                difference: d.difference,
+            });
+
+            if (
+                dialog.fields_dict.finding_detail.df.data.length ===
+                doc.finding_detail.length
+            ) {
+                finding_data = dialog.fields_dict.finding_detail.df.data;
+                dialog.fields_dict.finding_detail.grid.refresh();
+            }
+        }
+    });
+});
 	// other details table append
 	$.each(doc.other_detail, function (index, d) {
 		dialog.fields_dict.other_detail.df.data.push({

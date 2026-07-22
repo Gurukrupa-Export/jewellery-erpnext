@@ -119,6 +119,39 @@
    "insert_after": "custom_apply_product_tolerance",
    "label": "Allow Finding MWO",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "custom_stock_reconciliation_window_section",
+   "fieldtype": "Section Break",
+   "insert_after": "custom_is_finding",
+   "label": "Stock Reconciliation Window",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "Start of the daily window during which Stock Reconciliation is allowed for this department. All other stock movement is blocked while the window is open.",
+   "dt": "Department",
+   "fieldname": "custom_stock_reconciliation_from_time",
+   "fieldtype": "Time",
+   "insert_after": "custom_stock_reconciliation_window_section",
+   "label": "From Time",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Department",
+   "fieldname": "custom_stock_reconciliation_column_break",
+   "fieldtype": "Column Break",
+   "insert_after": "custom_stock_reconciliation_from_time",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "description": "End of the daily window. Once this time passes, stock movement is automatically allowed again.",
+   "dt": "Department",
+   "fieldname": "custom_stock_reconciliation_to_time",
+   "fieldtype": "Time",
+   "insert_after": "custom_stock_reconciliation_column_break",
+   "label": "To Time",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
