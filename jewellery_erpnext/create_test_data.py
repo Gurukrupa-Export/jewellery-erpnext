@@ -2755,6 +2755,16 @@ def create_test_data():
 
 			po_refining_entry_field()
 
+			# Batch.custom_employee (employee-wise scrap/dust refining) is NOT in the
+			# git_action_v16 fixtures, so — like the other custom-field patches above —
+			# it must be provisioned here for test_site, else get_scrap_items_balance /
+			# _dust_employee_batch_rows raise "Unknown column 'custom_employee'".
+			from jewellery_erpnext.patches.add_batch_employee_field import (
+				execute as _ensure_batch_employee_field,
+			)
+
+			_ensure_batch_employee_field()
+
 			# Masters (the dust/scrap Items) MUST be seeded before the price list:
 			# seed_refinery_price_list skips any price row whose Item does not exist yet,
 			# so running it first would create no price lists at all (get_refinery_rate

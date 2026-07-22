@@ -40,9 +40,9 @@ class MetalConversions(Document):
 		if self.multiple_metal_converter == 1:
 			if self.mc_source_table == []:
 				frappe.throw(_("Source Item Missing"))
-			if self.m_target_qty <= 0 or self.m_target_item == None:
+			if self.m_target_qty <= 0 or self.m_target_item is None:
 				frappe.throw(_("Target Item or Target Qty Missing"))
-			if self.alloy_qty <= 0 or self.alloy == None:
+			if self.alloy_qty <= 0 or self.alloy is None:
 				frappe.throw(_("Alloy Item or Alloy Qty Missing"))
 			self.get_alloy_bailance()
 			make_multiple_metal_stock_entry(self)
@@ -325,6 +325,26 @@ class MetalConversions(Document):
 
 		total = qty * source_item_purity
 		return total, source_item_purity
+
+
+@frappe.whitelist()
+def get_scan_metal_item(barcode):
+	"""Resolve a scanned barcode to a metal Item code for the Metal Conversions
+	scan-to-add convenience. Item-code only: returns just the validated item — qty,
+	batch and purity are filled by the operator / existing handlers exactly like manual
+	entry. Raises if the code is unknown or is not a metal (M/F variant) item.
+
+	Module level (doc-independent) on purpose: the client resolves a scan and sets the
+	value itself, so it works reliably on an unsaved form instead of round-tripping doc
+	mutations through the server."""
+	item = frappe.db.get_value("Item", {"name": barcode}, "name")
+	if not item:
+		frappe.throw(_("Item {0} not found.").format(barcode))
+	# Honour the same constraint the Source Item / grid Link fields enforce
+	# (set_Metal_filter -> variant_of in M/F): only metal items are convertible.
+	if frappe.db.get_value("Item", item, "variant_of") not in ("M", "F"):
+		frappe.throw(_("Scanned item {0} is not a metal item.").format(item))
+	return item
 
 
 def get_metal_purity_percentage(item_code):
@@ -652,7 +672,7 @@ def get_batch_details(batch):
 
 def get_inventory_type(self):
 	inventory_type = None
-	customer = None
+	# customer = None
 	table_batch = self.batch or None
 	if not table_batch:
 		for row in self.source_batch_details:
@@ -672,18 +692,18 @@ def get_inventory_type(self):
 			error.append("Batch Qty zero")
 		if reference_doctype:
 			if reference_doctype == "Purchase Receipt":
-				supplier = frappe.get_value(
-					reference_doctype, reference_name, "supplier"
-				)
+				# supplier = frappe.get_value(
+				# 	reference_doctype, reference_name, "supplier"
+				# )
 				inventory_type = "Regular Stock"
 			if reference_doctype == "Stock Entry":
 				inventory_type = frappe.get_value(
 					"Batch", table_batch, "custom_inventory_type"
 				)
-				if inventory_type == "Customer Goods":
-					customer = frappe.get_value(
-						reference_doctype, reference_name, "_customer"
-					)
+			# 	if inventory_type == "Customer Goods":
+			# 		customer = frappe.get_value(
+			# 			reference_doctype, reference_name, "_customer"
+			# 		)
 		if error:
 			frappe.throw(", ".join(error))
 	self.inventory_type = inventory_type
