@@ -4,11 +4,9 @@ import frappe
 from erpnext.setup.utils import get_exchange_rate
 from frappe import _
 from frappe.query_builder.custom import ConstantColumn
-from frappe.utils import flt, get_last_day, getdate, strip
+from frappe.utils import flt, get_last_day , getdate,strip
 
-from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
-	_calculate_diamond_amount,
-)
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import _calculate_diamond_amount
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_totals
 
 
@@ -22,13 +20,11 @@ def _so_gold_rate_changed(si_gold_rate, sales_order):
 
 
 def before_validate(self, method):
-	# pass
-	# frappe.throw("hii")
 	if self.is_return:
 		return
-	if self.sales_type != "Certification":
+	if self.sales_type != 'Certification':
 		if self.gold_rate:
-			self.gold_rate_with_gst = round(self.gold_rate * 1.03, 3)
+			self.gold_rate_with_gst=round(self.gold_rate * 1.03,3)
 		if self.item_same_as_above:
 			self.invoice_item = []
 			for row in self.items:
@@ -39,117 +35,68 @@ def before_validate(self, method):
 
 				if duplicate_row:
 					self.append("invoice_item", duplicate_row)
-		customer_group = frappe.db.get_value(
-			"Customer", self.customer, "customer_group"
-		)
-		prec = frappe.db.get_value(
-			"Customer", self.customer, "custom_precision_variable"
-		)
-		if not (
-			self.company == "KG GK Jewellers Private Limited"
-			or customer_group == "Internal"
-		):
-			# frappe.throw('hii')
+		customer_group=frappe.db.get_value('Customer',self.customer,'customer_group')
+		prec= frappe.db.get_value('Customer',self.customer,'custom_precision_variable')
+		if not (self.company == "KG GK Jewellers Private Limited" or customer_group == "Internal"):
 			for row_s in self.items:
-				# if row.serial_no:
-				# 	row.bom = frappe.db.get_value("BOM", {"tag_no": row.serial_no}, "name")
-
-				if row_s.bom:
-					bom_doc = frappe.get_doc("BOM", row_s.bom)
-					# if _so_gold_rate_changed(self.gold_rate, row_s.sales_order):
-					gold_gst_rate = frappe.db.get_single_value(
-						"Jewellery Settings", "gold_gst_rate"
-					)
-					for row in bom_doc.metal_detail:
-						update_making_charges(
-							row_s, bom_doc, row, self.gold_rate_with_gst
+					if row_s.bom:
+						bom_doc = frappe.get_doc("BOM", row_s.bom)
+						gold_gst_rate=frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate")
+						for row in bom_doc.metal_detail:
+							update_making_charges(row_s, bom_doc, row, self.gold_rate_with_gst) 
+							customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
+							row.customer_metal_purity=customer_metal_purity
+							rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
+							row.rate = round(rate,2)
+							row.amount=round(row.rate*row.quantity,2 )
+							row.wastage_amount = row.amount * row.wastage_rate
+						bom_doc.total_metal_amount= sum(row.amount for row in bom_doc.metal_detail)
+						for row in bom_doc.finding_detail:
+							update_making_charges(row_s, bom_doc, row, self.gold_rate_with_gst) 
+							customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",as_dict=True)[0]['metal_purity']
+							row.customer_metal_purity=customer_metal_purity
+							rate = (float(row.customer_metal_purity) * self.gold_rate_with_gst) / (100 + int(gold_gst_rate))
+							row.rate = round(rate,2)
+							row.amount=round(row.rate*row.quantity,2 )
+							row.wastage_amount = row.amount * row.wastage_rate
+						bom_doc.total_finding_amount= sum(row.amount for row in bom_doc.finding_detail)
+						bom_doc.diamond_bom_amount = bom_doc.total_diamond_amount
+						total_bom_amount = round(
+							bom_doc.total_bom_amount
+							+ bom_doc.making_charge
+							+ flt(bom_doc.certification_amount)
+							+ flt(bom_doc.custom_duty_amount)
+							+ flt(bom_doc.hallmarking_amount)
+							+ flt(bom_doc.freight_amount)
+							+ flt(bom_doc.sale_amount),
+							prec,
 						)
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
-						row.customer_metal_purity = customer_metal_purity
-						rate = (
-							float(row.customer_metal_purity) * self.gold_rate_with_gst
-						) / (100 + int(gold_gst_rate))
-						row.rate = round(rate, 2)
-						# frappe.msgprint(f"uytyrdfg{row.making_amount}")
-						row.amount = round(row.rate * row.quantity, 2)
-						row.wastage_amount = row.amount * row.wastage_rate
-					bom_doc.total_metal_amount = sum(
-						row.amount for row in bom_doc.metal_detail
-					)
-					for row in bom_doc.finding_detail:
-						update_making_charges(
-							row_s, bom_doc, row, self.gold_rate_with_gst
-						)
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
-						row.customer_metal_purity = customer_metal_purity
-						rate = (
-							float(row.customer_metal_purity) * self.gold_rate_with_gst
-						) / (100 + int(gold_gst_rate))
-						row.rate = round(rate, 2)
-						row.amount = round(row.rate * row.quantity, 2)
-						row.wastage_amount = row.amount * row.wastage_rate
-					bom_doc.total_finding_amount = sum(
-						row.amount for row in bom_doc.finding_detail
-					)
-					bom_doc.diamond_bom_amount = bom_doc.total_diamond_amount
-					total_bom_amount = round(
-						bom_doc.total_bom_amount
-						+ bom_doc.making_charge
-						+ flt(bom_doc.certification_amount)
-						+ flt(bom_doc.custom_duty_amount)
-						+ flt(bom_doc.hallmarking_amount)
-						+ flt(bom_doc.freight_amount)
-						+ flt(bom_doc.sale_amount),
-						prec,
-					)
-					row_s.rate = total_bom_amount
-					row_s.amount = row_s.rate
-					row_s.taxable_value = (
-						row_s.base_net_amount
-					) = (
-						row_s.base_net_rate
-					) = (
-						row_s.net_amount
-					) = (
-						row_s.net_rate
-					) = row_s.base_amount = row_s.base_rate = total_bom_amount
-					#
-					# frappe.throw_s(f"{bom_doc.total}")
-					bom_doc.save(ignore_permissions=True)
+						row_s.rate = total_bom_amount
+						row_s.amount = row_s.rate
+						row_s.taxable_value=row_s.base_net_amount=row_s.base_net_rate = row_s.net_amount=row_s.net_rate=row_s.base_amount=row_s.base_rate=total_bom_amount
+						bom_doc.save(ignore_permissions=True)
+						row_s.wastage_amount = bom_doc.total_wastage_amount
 
-					row_s.wastage_amount = bom_doc.total_wastage_amount
-
-		# for r in self.items:
-		# 	if not r.delivery_note:
-		# 		frappe.throw("Invoice can be created only from delivery note")
-		# update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
 		update_income_account(self)
-		payment_terms_data = update_si_data(self)
+		payment_terms_data = update_si_data(self )
 		update_payment_terms(self, payment_terms_data)
-		# set_gst_details(self)
-
 
 def validate(self, method):
 	if self.is_return:
 		set_gst_details(self)
 		self.calculate_taxes_and_totals()
 		return
-	prec = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
+	prec = frappe.db.get_value(
+		"Customer",
+		self.customer,
+		"custom_precision_variable"
+	)
 
 	update_income_account(self)
-	payment_terms_data = update_si_data(self)
+	payment_terms_data = update_si_data(self )
 	update_payment_terms(self, payment_terms_data)
-	customer_group = frappe.db.get_value("Customer", self.customer, "customer_group")
-	if not (
-		self.company == "KG GK Jewellers Private Limited"
-		or customer_group == "Internal"
-	):
+	customer_group=frappe.db.get_value('Customer',self.customer,'customer_group')
+	if not (self.company == "KG GK Jewellers Private Limited" or customer_group == "Internal"):
 		self.total = 0
 		for row in self.items:
 			if row.bom:
@@ -157,13 +104,10 @@ def validate(self, method):
 				for m in bom_doc.metal_detail:
 					# if not m.is_customer_item:
 					update_making_charges(row, bom_doc, m, self.gold_rate_with_gst)
-					# frappe.msgprint(f"hii{m.making_amount},{m.making_rate},{m.quantity}")
 				for m in bom_doc.finding_detail:
 					# if not m.is_customer_item:
 					update_making_charges(row, bom_doc, m, self.gold_rate_with_gst)
-
 				bom_doc.diamond_bom_amount = bom_doc.total_diamond_amount
-				# frappe.msgprint(f"hii{bom_doc.diamond_bom_amount}")
 				total_bom_amount = round(
 					bom_doc.total_bom_amount
 					+ bom_doc.making_charge
@@ -177,19 +121,12 @@ def validate(self, method):
 
 				row.rate = total_bom_amount
 				row.amount = row.rate
-				row.taxable_value = (
-					row.base_net_amount
-				) = (
-					row.base_net_rate
-				) = (
-					row.net_amount
-				) = row.net_rate = row.base_amount = row.base_rate = total_bom_amount
-				# frappe.throw(f"{row.taxable_value}hii")
-			self.total += row.amount
-
+				row.taxable_value=row.base_net_amount=row.base_net_rate = row.net_amount=row.net_rate=row.base_amount=row.base_rate=total_bom_amount
+			self.total+=row.amount
+	
 	set_gst_details(self)
 	self.calculate_taxes_and_totals()
-
+	
 
 def get_allowed_item_types(customer, sales_type):
 	"""Return the set of E Invoice Item names whose Customer Payment Terms entry
@@ -201,9 +138,7 @@ def get_allowed_item_types(customer, sales_type):
 	if not customer_payment_term_name:
 		return allowed_item_types
 
-	customer_payment_term_doc = frappe.get_doc(
-		"Customer Payment Terms", customer_payment_term_name
-	)
+	customer_payment_term_doc = frappe.get_doc("Customer Payment Terms", customer_payment_term_name)
 	for row in customer_payment_term_doc.customer_payment_details:
 		item_type = row.item_type
 		e_invoice_item = frappe.get_doc("E Invoice Item", item_type)
@@ -216,500 +151,398 @@ def get_allowed_item_types(customer, sales_type):
 			allowed_item_types.add(item_type)
 
 	return allowed_item_types
-
-
-def on_submit(self, method):
-	if self.company == "Sadguru Diamond":
+	
+def on_submit(self,method):
+	if self.company == 'Sadguru Diamond':
 		return
 	if self.is_return:
 		for row in self.items:
-			frappe.db.set_value(
-				"Serial No",
-				row.get("serial_no"),
-				{"status": "Active", "warehouse": "Product Allocation FG - KGJPL"},
-			)
+			frappe.db.set_value("Serial No", row.get("serial_no"), {"status": "Active","warehouse":"Product Allocation FG - KGJPL"})
 		return
-	if self.sales_type not in ["Certification", ""]:
+	if self.sales_type not in  ['Certification','']:
 		separate_hallmarking_invoice = frappe.db.get_value(
 			"Customer", self.customer, "custom_separate_hallmarking_invoice"
 		)
 		certification_items = []
 		certification_invoice = []
 		for row in self.items:
+			if not row.bom:
+				continue
 			bom_doc = frappe.get_doc("BOM", row.bom)
 			if bom_doc.certification_amount and separate_hallmarking_invoice:
-				custom_item, hsn_code, uom = frappe.db.get_value(
-					"E Invoice Item",
-					{"is_for_certification": 1},
-					["name", "hsn_code", "uom"],
+					custom_item, hsn_code, uom = frappe.db.get_value(
+					"E Invoice Item", {"is_for_certification": 1}, ["name", "hsn_code", "uom"]
 				)
-				certification_items.append(
-					{
+					certification_items.append({
+							"qty": 1,
+							"hsn_code": hsn_code,
+							"uom": uom,
+							"bom":row.bom,
+							"amount":bom_doc.certification_amount,
+							"rate":bom_doc.certification_amount,
+							"income_account": row.income_account,
+							"cost_center": row.cost_center,
+							"delivery_note":row.delivery_note,
+							"item_code":row.item_code,
+							"sales_order":row.sales_order
+						})
+					certification_invoice.append({
+						"amount":bom_doc.certification_amount,
+						"base_amount":bom_doc.certification_amount,
+						"base_rate":bom_doc.certification_amount,
+						"rate":bom_doc.certification_amount,
 						"qty": 1,
-						"hsn_code": hsn_code,
-						"uom": uom,
-						"bom": row.bom,
-						"amount": bom_doc.certification_amount,
-						"rate": bom_doc.certification_amount,
-						"income_account": row.income_account,
-						"cost_center": row.cost_center,
-						"delivery_note": row.delivery_note,
-						"item_code": row.item_code,
-						"sales_order": row.sales_order,
-					}
-				)
-				certification_invoice.append(
-					{
-						"amount": bom_doc.certification_amount,
-						"base_amount": bom_doc.certification_amount,
-						"base_rate": bom_doc.certification_amount,
-						"rate": bom_doc.certification_amount,
-						"qty": 1,
-						"item_name": custom_item,
-						"conversion_factor": 1,
-						"item_code": custom_item,
+						"item_name":custom_item,
+						"conversion_factor":1,
+						"item_code":custom_item,
 						"hsn_code": hsn_code,
 						"income_account": row.income_account,
-						"uom": uom,
-					}
-				)
-
-				if certification_items:
-					certification_si = frappe.new_doc("Sales Invoice")
-					certification_si.customer = self.customer
-					certification_si.tax_category = self.tax_category
-					certification_si.sales_type = "Certification"
-					certification_si.company = self.company
-					certification_si.posting_date = self.posting_date
-					for item in certification_items:
-						certification_si.append("items", item)
-
-						# frappe.throw("hii")
-					for invoice in certification_invoice:
-						certification_si.append("invoice_item", invoice)
-
-					certification_si.insert(
-						ignore_permissions=True, ignore_mandatory=True
-					)
-					certification_si.save()
-
+						"uom":uom,
+					})
+					if certification_items:
+						certification_si = frappe.new_doc("Sales Invoice")
+						certification_si.customer = self.customer
+						certification_si.tax_category=self.tax_category
+						certification_si.sales_type="Certification"
+						certification_si.company = self.company 
+						certification_si.posting_date = self.posting_date
+						for item in certification_items:
+							certification_si.append("items", item)
+						for invoice in certification_invoice:
+							certification_si.append("invoice_item",invoice)
+						certification_si.insert(ignore_permissions=True,ignore_mandatory=True)
+						certification_si.save()
 
 def set_gst_details(self):
-	if self.sales_type not in ("Finished Goods", "Subcontracting", "Branch Sales"):
-		return
+    if self.sales_type not in ("Finished Goods", "Subcontracting","Branch Sales"):
+        return
 
-	customer_state = frappe.db.get_value(
-		"Address", self.customer_address, "gst_state_number"
-	)
-	company_state = frappe.db.get_value(
-		"Address", self.company_address, "gst_state_number"
-	)
+    customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
+    company_state  = frappe.db.get_value("Address", self.company_address,  "gst_state_number")
 
-	if not customer_state or not company_state:
-		return
+    if not customer_state or not company_state:
+        return
 
-	self.tax_category = "In-State" if customer_state == company_state else "Out-State"
+    self.tax_category = "In-State" if customer_state == company_state else "Out-State"
 
-	item_template_map = {
-		"Finished Goods": {
-			"Gurukrupa Export Private Limited": "GST 3% - GEPL",
-			"KG GK Jewellers Private Limited": "GST 3% - KGJPL",
-		},
-		"Branch Sales": {"Gurukrupa Export Private Limited": "GST 3% - GEPL"},
-		"Subcontracting": {
-			"Gurukrupa Export Private Limited": "GST 5% - GEPL",
-			"KG GK Jewellers Private Limited": "GST 5% - KGJPL",
-		},
-	}
-	item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
-	if not item_tax_template:
-		return
+    item_template_map = {
+        "Finished Goods": {
+            "Gurukrupa Export Private Limited": "GST 3% - GEPL",
+            "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
+        },
+		"Branch Sales": {
+        "Gurukrupa Export Private Limited": "GST 3% - GEPL"
+        },
+        "Subcontracting": {
+            "Gurukrupa Export Private Limited": "GST 5% - GEPL",
+            "KG GK Jewellers Private Limited":  "GST 5% - KGJPL",
+        },
+    }
+    item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
+    if not item_tax_template:
+        return
 
-	taxes_and_charges = frappe.db.get_value(
-		"Sales Taxes and Charges Template",
-		{
-			"company": self.company,
-			"tax_category": self.tax_category,
-			"disabled": 0,
-		},
-		"name",
-	)
+    taxes_and_charges = frappe.db.get_value(
+        "Sales Taxes and Charges Template",
+        {
+            "company":      self.company,
+            "tax_category": self.tax_category,
+            "disabled":     0,
+        },
+        "name"
+    )
 
-	if not taxes_and_charges:
-		frappe.log_error(
-			f"No Sales Taxes and Charges Template found for "
-			f"Company: {self.company}, Tax Category: {self.tax_category}",
-			"set_gst_details",
-		)
-		return
+    if not taxes_and_charges:
+        frappe.log_error(
+            f"No Sales Taxes and Charges Template found for "
+            f"Company: {self.company}, Tax Category: {self.tax_category}",
+            "set_gst_details"
+        )
+        return
 
-	self.taxes_and_charges = taxes_and_charges
+    self.taxes_and_charges = taxes_and_charges
 
-	template_rates = frappe.get_all(
-		"Item Tax Template Detail",
-		filters={"parent": item_tax_template},
-		fields=["tax_type", "tax_rate"],
-	)
+    template_rates = frappe.get_all(
+        "Item Tax Template Detail",
+        filters={"parent": item_tax_template},
+        fields=["tax_type", "tax_rate"]
+    )
 
-	cgst_rate = sgst_rate = igst_rate = 0.0
-	for r in template_rates:
-		tax_type = r.tax_type or ""
-		if "Output" not in tax_type or "RCM" in tax_type:
-			continue
-		if "CGST" in tax_type:
-			cgst_rate = flt(r.tax_rate)
-		elif "SGST" in tax_type:
-			sgst_rate = flt(r.tax_rate)
-		elif "IGST" in tax_type:
-			igst_rate = flt(r.tax_rate)
+    cgst_rate = sgst_rate = igst_rate = 0.0
+    for r in template_rates:
+        tax_type = r.tax_type or ""
+        if "Output" not in tax_type or "RCM" in tax_type:
+            continue
+        if "CGST" in tax_type:
+            cgst_rate = flt(r.tax_rate)
+        elif "SGST" in tax_type:
+            sgst_rate = flt(r.tax_rate)
+        elif "IGST" in tax_type:
+            igst_rate = flt(r.tax_rate)
 
-	account_rate_map = {}
-	for r in template_rates:
-		tax_type = r.tax_type or ""
-		if "Output" not in tax_type or "RCM" in tax_type:
-			continue
-		account_rate_map[r.tax_type] = flt(r.tax_rate)
+    account_rate_map = {}
+    for r in template_rates:
+        tax_type = r.tax_type or ""
+        if "Output" not in tax_type or "RCM" in tax_type:
+            continue
+        account_rate_map[r.tax_type] = flt(r.tax_rate)
 
-	self.taxes = []
-	tax_rows = frappe.get_all(
-		"Sales Taxes and Charges",
-		filters={"parent": self.taxes_and_charges},
-		fields=["charge_type", "account_head", "description", "rate", "cost_center"],
-		order_by="idx asc",
-	)
-	for t in tax_rows:
-		correct_rate = account_rate_map.get(t.account_head, t.rate)
-		self.append(
-			"taxes",
-			{
-				"charge_type": t.charge_type,
-				"account_head": t.account_head,
-				"description": t.description,
-				"rate": correct_rate,
-				"cost_center": t.cost_center,
-			},
-		)
+    self.taxes = []
+    tax_rows = frappe.get_all(
+        "Sales Taxes and Charges",
+        filters={"parent": self.taxes_and_charges},
+        fields=["charge_type", "account_head", "description", "rate", "cost_center"],
+        order_by="idx asc"
+    )
+    for t in tax_rows:
+        correct_rate = account_rate_map.get(t.account_head, t.rate)
+        self.append("taxes", {
+            "charge_type":  t.charge_type,
+            "account_head": t.account_head,
+            "description":  t.description,
+            "rate":         correct_rate,
+            "cost_center":  t.cost_center,
+        })
+    for item in self.items:
+        if not item.item_code:
+            continue
 
-	for item in self.items:
-		if not item.item_code:
-			continue
+        item.item_tax_template = item_tax_template
+        item.gst_treatment     = "Taxable"
+        item.cgst_rate         = 0.0
+        item.sgst_rate         = 0.0
+        item.igst_rate         = 0.0
+        item.cgst_amount       = 0.0
+        item.sgst_amount       = 0.0
+        item.igst_amount       = 0.0
 
-		item.item_tax_template = item_tax_template
-		item.gst_treatment = "Taxable"
-		item.cgst_rate = 0.0
-		item.sgst_rate = 0.0
-		item.igst_rate = 0.0
-		item.cgst_amount = 0.0
-		item.sgst_amount = 0.0
-		item.igst_amount = 0.0
-
-		# taxable_value = flt(item.taxable_value)
-		taxable_value = self.total
-		if self.tax_category == "In-State":
-			item.cgst_rate = cgst_rate
-			item.sgst_rate = sgst_rate
-			item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
-			item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
-		else:
-			item.igst_rate = igst_rate
-			item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
-
-
-from io import BytesIO
+        taxable_value=self.total
+        if self.tax_category == "In-State":
+            item.cgst_rate   = cgst_rate
+            item.sgst_rate   = sgst_rate
+            item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
+            item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
+        else:
+            item.igst_rate   = igst_rate
+            item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
-
+from openpyxl.styles import Font, Alignment
+from io import BytesIO
 
 @frappe.whitelist()
 def xl_preview_sales_invoice(docname):
-	doc = frappe.get_doc("Sales Invoice", docname)
-	rows_diamond = []
+    doc = frappe.get_doc("Sales Invoice", docname)
+    rows_diamond = []
 
-	# Excel columns (Diamond Rate pehle, Diamond Amount baadme shift kiya hai)
-	columns = [
-		"Index",
-		"Item Code",
-		"Serial No",
-		"Item Name",
-		"Diamond Quality",
-		"PCS",
-		"Diamond Weight",
-		"Average",
-		"Total Cts",
-		"Grams",
-		"Total Diamond Rate",
-		"Diamond Amount",
-		"Gross Weight",
-		"Gemstone Weight",
-		"Other Weight",
-		"Gold Rate",
-		"Net Weight",
-		"Gold Amount",
-		"Customer Purity",
-		"Chain Weight",
-		"Chain Amount",
-		"Chain Purity",
-		"Per Gram MC",
-		"Chain MC",
-		"Chain Wastage %",
-		"Chain Wastage Amount",
-		"Jewellery Per Gram MC",
-		"Jewellery MC",
-		"Gold Wastage %",
-		"Jewellery Wastage",
-		"Gemstone Pcs",
-		"Gemstone Cts",
-		"Gemstone Amount",
-		"Cert Charge",
-		"Hallmark Charge",
-		"Total Amt",
-	]
+    # Excel columns (Diamond Rate pehle, Diamond Amount baadme shift kiya hai)
+    columns = [
+        "Index","Item Code","Serial No","Item Name","Diamond Quality","PCS","Diamond Weight","Average",
+        "Total Cts","Grams","Total Diamond Rate","Diamond Amount","Gross Weight","Gemstone Weight",
+        "Other Weight","Gold Rate","Net Weight","Gold Amount","Customer Purity","Chain Weight",
+        "Chain Amount","Chain Purity","Per Gram MC","Chain MC","Chain Wastage %","Chain Wastage Amount",
+        "Jewellery Per Gram MC","Jewellery MC","Gold Wastage %","Jewellery Wastage","Gemstone Pcs",
+        "Gemstone Cts","Gemstone Amount","Cert Charge","Hallmark Charge","Total Amt"
+    ]
 
-	# --- Populate rows_diamond ---
-	for item in doc.items:
-		#  New logic for BOM selection
-		bom_name = item.bom
-		# if item.quotation_bom:
-		#     bom_name = item.quotation_bom
-		# elif hasattr(item, "bom") and item.bom:   # Check if BOM field exists in Sales Order Item
-		#     bom_name = item.bom
+    # --- Populate rows_diamond ---
+    for item in doc.items:
+        #  New logic for BOM selection
+        bom_name = item.bom
+        # if item.quotation_bom:
+        #     bom_name = item.quotation_bom
+        # elif hasattr(item, "bom") and item.bom:   # Check if BOM field exists in Sales Order Item
+        #     bom_name = item.bom
 
-		if not bom_name:
-			continue  # Skip if no BOM found
+        if not bom_name:
+            continue  # Skip if no BOM found
 
-		bom_doc = frappe.get_doc("BOM", bom_name)
+        bom_doc = frappe.get_doc("BOM", bom_name)
 
-		total_qty = sum([float(d.quantity or 0) for d in bom_doc.diamond_detail])
-		grams = total_qty * 0.2
+        total_qty = sum([float(d.quantity or 0) for d in bom_doc.diamond_detail])
+        grams = total_qty * 0.2
 
-		gross_weight = float(bom_doc.gross_weight or 0)
-		gross_weight = round(gross_weight, 2)
+        gross_weight = float(bom_doc.gross_weight or 0)
+        gross_weight = round(gross_weight, 2)
 
-		gemstone_weight = float(bom_doc.total_gemstone_weight_in_gms or 0)
-		other_weight = float(bom_doc.other_weight or 0)
-		net_weight = float(bom_doc.metal_and_finding_weight or 0)
+        gemstone_weight = float(bom_doc.total_gemstone_weight_in_gms or 0)
+        other_weight = float(bom_doc.other_weight or 0)
+        net_weight = float(bom_doc.metal_and_finding_weight or 0)
 
-		gemstone_pcs_rows = (
-			[float(g.pcs or 0) for g in bom_doc.gemstone_detail]
-			if bom_doc.gemstone_detail
-			else []
-		)
-		gemstone_cts_rows = (
-			[float(g.quantity or 0) for g in bom_doc.gemstone_detail]
-			if bom_doc.gemstone_detail
-			else []
-		)
-		gemstone_amount_rows = (
-			[
-				float(g.gemstone_rate_for_specified_quantity or 0)
-				for g in bom_doc.gemstone_detail
-			]
-			if bom_doc.gemstone_detail
-			else []
-		)
+        gemstone_pcs_rows = [float(g.pcs or 0) for g in bom_doc.gemstone_detail] if bom_doc.gemstone_detail else []
+        gemstone_cts_rows = [float(g.quantity or 0) for g in bom_doc.gemstone_detail] if bom_doc.gemstone_detail else []
+        gemstone_amount_rows = [float(g.gemstone_rate_for_specified_quantity or 0) for g in bom_doc.gemstone_detail] if bom_doc.gemstone_detail else []
 
-		chain_weight_val, chain_mc_val, chain_wastage_val = 0.0, 0.0, 0.0
-		chain_weight, chain_amount, chain_mc, chain_wastage, chain_purity = (
-			0,
-			0,
-			0,
-			0,
-			0,
-		)
-		per_gram_mc, chain_wastage_amount = 0, 0
-		net_weight_from_findings = 0.0
+        chain_weight_val, chain_mc_val, chain_wastage_val = 0.0, 0.0, 0.0
+        chain_weight, chain_amount, chain_mc, chain_wastage, chain_purity = 0, 0, 0, 0, 0
+        per_gram_mc, chain_wastage_amount = 0, 0
+        net_weight_from_findings = 0.0
 
-		if bom_doc.finding_detail:
-			for f in bom_doc.finding_detail:
-				qty = float(f.quantity or 0)
-				if f.finding_category and f.finding_category.lower() == "chains":
-					chain_weight_val += qty
-					chain_purity = float(f.customer_metal_purity or 0)
-					per_gram_mc = float(f.making_rate or 0)
-					chain_mc_val = float(f.making_amount or 0)
-					chain_wastage_val = float(f.wastage_rate or 0)
-				else:
-					net_weight_from_findings += qty
+        if bom_doc.finding_detail:
+            for f in bom_doc.finding_detail:
+                qty = float(f.quantity or 0)
+                if f.finding_category and f.finding_category.lower() == "chains":
+                    chain_weight_val += qty
+                    chain_purity = float(f.customer_metal_purity or 0)
+                    per_gram_mc = float(f.making_rate or 0)
+                    chain_mc_val = float(f.making_amount or 0)
+                    chain_wastage_val = float(f.wastage_rate or 0)
+                else:
+                    net_weight_from_findings += qty
 
-		# --- FIXED CHAIN AMOUNT CALCULATION ---
-		if chain_weight_val > 0:
-			chain_weight = chain_weight_val
-			quotation_gold_rate = float(doc.gold_rate or 0)
-			chain_amount = (quotation_gold_rate * chain_purity / 100) * chain_weight
-			chain_mc = chain_mc_val
-			chain_wastage = chain_wastage_val
-			chain_wastage_amount = (
-				(chain_amount * chain_wastage_val) if chain_wastage_val else 0
-			)
+        # --- FIXED CHAIN AMOUNT CALCULATION ---
+        if chain_weight_val > 0:
+            chain_weight = chain_weight_val
+            quotation_gold_rate = float(doc.gold_rate or 0)
+            chain_amount = (quotation_gold_rate * chain_purity / 100) * chain_weight
+            chain_mc = chain_mc_val
+            chain_wastage = chain_wastage_val
+            chain_wastage_amount = (chain_amount * chain_wastage_val) if chain_wastage_val else 0
 
-		net_weight_display = net_weight + net_weight_from_findings
+        net_weight_display = net_weight + net_weight_from_findings
 
-		#  Net Weight se chain weight minus karna ---
-		if chain_weight > 0:
-			net_weight_display = net_weight_display - chain_weight
+        #  Net Weight se chain weight minus karna ---
+        if chain_weight > 0:
+            net_weight_display = net_weight_display - chain_weight
 
-		if bom_doc.metal_detail:
-			customer_metal_purity = float(
-				bom_doc.metal_detail[0].customer_metal_purity or 0
-			)
-			gold_wastage = float(bom_doc.metal_detail[0].wastage_rate or 0)
-			jewellery_per_gram_mc = float(bom_doc.metal_detail[0].making_rate or 0)
-		else:
-			customer_metal_purity, gold_wastage, jewellery_per_gram_mc = 0.0, 0, 0
+        if bom_doc.metal_detail:
+            customer_metal_purity = float(bom_doc.metal_detail[0].customer_metal_purity or 0)
+            gold_wastage = float(bom_doc.metal_detail[0].wastage_rate or 0)
+            jewellery_per_gram_mc = float(bom_doc.metal_detail[0].making_rate or 0)
+        else:
+            customer_metal_purity, gold_wastage, jewellery_per_gram_mc = 0.0, 0, 0
 
-		quotation_gold_rate = float(doc.gold_rate or 0)
-		calculated_gold_rate = (quotation_gold_rate * customer_metal_purity) / 100
-		calculated_gold_rate = float(f"{calculated_gold_rate:.2f}")  # Always 2 decimals
+        quotation_gold_rate = float(doc.gold_rate or 0)
+        calculated_gold_rate = (quotation_gold_rate * customer_metal_purity) / 100
+        calculated_gold_rate = float(f"{calculated_gold_rate:.2f}")   # Always 2 decimals
 
-		cert_charge = float(bom_doc.certification_amount or 0)
-		hallmark_charge = float(bom_doc.hallmarking_amount or 0)
+        cert_charge = float(bom_doc.certification_amount or 0)
+        hallmark_charge = float(bom_doc.hallmarking_amount or 0)
 
-		for i, diamond in enumerate(bom_doc.diamond_detail):
-			pcs = float(diamond.pcs or 0)
-			qty = float(diamond.quantity or 0)  #
-			qty = float(f"{qty:.2f}")  #
-			avg = (qty / pcs) if pcs else 0
-			rate = float(diamond.total_diamond_rate or 0)
-			diamond_amount = rate * qty
+        for i, diamond in enumerate(bom_doc.diamond_detail):
+            pcs = float(diamond.pcs or 0)
+            qty = float(diamond.quantity or 0)   #
+            qty = float(f"{qty:.2f}")            #
+            avg = (qty / pcs) if pcs else 0
+            rate = float(diamond.total_diamond_rate or 0)
+            diamond_amount = rate * qty
 
-			gold_amount_val = calculated_gold_rate * net_weight_display if i == 0 else 0
-			jewellery_wastage_val = (
-				gold_amount_val * (gold_wastage / 100) if i == 0 else 0
-			)
+            gold_amount_val = calculated_gold_rate * net_weight_display if i == 0 else 0
+            jewellery_wastage_val = gold_amount_val * (gold_wastage / 100) if i == 0 else 0
 
-			gemstone_pcs_val = gemstone_pcs_rows[i] if i < len(gemstone_pcs_rows) else 0
-			gemstone_cts_val = gemstone_cts_rows[i] if i < len(gemstone_cts_rows) else 0
-			gemstone_amount_val = (
-				gemstone_amount_rows[i] if i < len(gemstone_amount_rows) else 0
-			)
+            gemstone_pcs_val = gemstone_pcs_rows[i] if i < len(gemstone_pcs_rows) else 0
+            gemstone_cts_val = gemstone_cts_rows[i] if i < len(gemstone_cts_rows) else 0
+            gemstone_amount_val = gemstone_amount_rows[i] if i < len(gemstone_amount_rows) else 0
 
-			jewellery_mc_val = (
-				net_weight_display * jewellery_per_gram_mc if i == 0 else 0
-			)
+            jewellery_mc_val = net_weight_display * jewellery_per_gram_mc if i == 0 else 0
 
-			total_amt = (
-				hallmark_charge
-				+ cert_charge
-				+ jewellery_mc_val
-				+ gemstone_amount_val
-				+ gold_amount_val
-				+ jewellery_wastage_val
-				+ diamond_amount
-			)
+            total_amt = (
+                hallmark_charge + cert_charge + jewellery_mc_val +
+                gemstone_amount_val + gold_amount_val +
+                jewellery_wastage_val + diamond_amount
+            )
 
-			rows_diamond.append(
-				[
-					item.idx if i == 0 else "",
-					item.item_code if i == 0 else "",
-					item.serial_no if i == 0 else "",
-					item.item_name if i == 0 else "",
-					# item.diamond_quality,
-					pcs,
-					f"{qty:.2f}",
-					f"{avg:.3f}",  #
-					round(total_qty, 2) if (i == 0 and total_qty != 0) else "",
-					round(grams, 2) if (i == 0 and grams != 0) else "",
-					round(rate, 2),  #
-					round(diamond_amount, 2),  #
-					round(gross_weight, 2) if (i == 0 and gross_weight != 0) else "",
-					round(gemstone_weight, 2)
-					if (i == 0 and gemstone_weight != 0)
-					else "",
-					round(other_weight, 2) if (i == 0 and other_weight != 0) else "",
-					f"{calculated_gold_rate:.2f}" if i == 0 else "",
-					round(net_weight_display, 2) if i == 0 else "",
-					f"{gold_amount_val:.2f}" if i == 0 else "",
-					customer_metal_purity if i == 0 else "",
-					round(chain_weight, 2) if i == 0 else "",
-					round(chain_amount, 2) if i == 0 else "",
-					chain_purity if i == 0 else "",
-					round(per_gram_mc, 2) if i == 0 else "",
-					round(chain_mc, 2) if i == 0 else "",
-					round(chain_wastage, 2) if i == 0 else "",
-					round(chain_wastage_amount, 2) if i == 0 else "",
-					round(jewellery_per_gram_mc, 2) if i == 0 else "",
-					round(jewellery_mc_val, 2) if i == 0 else "",
-					round(gold_wastage, 2) if i == 0 else "",
-					round(jewellery_wastage_val, 2) if i == 0 else "",
-					gemstone_pcs_val if gemstone_pcs_val != 0 else "",
-					round(gemstone_cts_val, 2) if gemstone_cts_val != 0 else "",
-					round(gemstone_amount_val, 2) if gemstone_amount_val != 0 else "",
-					round(cert_charge, 2) if i == 0 else "",
-					round(hallmark_charge, 2) if i == 0 else "",
-					round(total_amt, 2),
-				]
-			)
+            rows_diamond.append([
+                item.idx if i == 0 else "",
+                item.item_code if i == 0 else "",
+                item.serial_no if i == 0 else "",
+                item.item_name if i == 0 else "",
+                # item.diamond_quality,
+                pcs,
+                f"{qty:.2f}",
+                f"{avg:.3f}",   # 
+                round(total_qty, 2) if (i == 0 and total_qty != 0) else "",
+                round(grams, 2) if (i == 0 and grams != 0) else "",
+                round(rate, 2),   # 
+                round(diamond_amount, 2),  # 
+                round(gross_weight, 2) if (i == 0 and gross_weight != 0) else "",
+                round(gemstone_weight, 2) if (i == 0 and gemstone_weight != 0) else "",
+                round(other_weight, 2) if (i == 0 and other_weight != 0) else "",
+                f"{calculated_gold_rate:.2f}" if i == 0 else "",
+                round(net_weight_display, 2) if i == 0 else "",
+                f"{gold_amount_val:.2f}" if i == 0 else "",
+                customer_metal_purity if i == 0 else "",
+                round(chain_weight, 2) if i == 0 else "",
+                round(chain_amount, 2) if i == 0 else "",
+                chain_purity if i == 0 else "",
+                round(per_gram_mc, 2) if i == 0 else "",
+                round(chain_mc, 2) if i == 0 else "",
+                round(chain_wastage, 2) if i == 0 else "",
+                round(chain_wastage_amount, 2) if i == 0 else "",
+                round(jewellery_per_gram_mc, 2) if i == 0 else "",
+                round(jewellery_mc_val, 2) if i == 0 else "",
+                round(gold_wastage, 2) if i == 0 else "",
+                round(jewellery_wastage_val, 2) if i == 0 else "",
+                gemstone_pcs_val if gemstone_pcs_val != 0 else "",
+                round(gemstone_cts_val, 2) if gemstone_cts_val != 0 else "",
+                round(gemstone_amount_val, 2) if gemstone_amount_val != 0 else "",
+                round(cert_charge, 2) if i == 0 else "",
+                round(hallmark_charge, 2) if i == 0 else "",
+                round(total_amt, 2)
+            ])
 
-	# --- SUM ROW ---
-	sum_row = [""] * len(columns)
-	sum_row[5] = round(sum(float(r[5] or 0) for r in rows_diamond), 2)
-	sum_row[6] = round(sum(float(r[6] or 0) for r in rows_diamond), 2)
-	sum_row[8] = round(sum(float(r[8] or 0) for r in rows_diamond), 2)
-	sum_row[10] = round(
-		sum(float(r[10] or 0) for r in rows_diamond), 2
-	)  # Total Diamond Rate
-	sum_row[11] = round(
-		sum(float(r[11] or 0) for r in rows_diamond), 2
-	)  # Diamond Amount
-	sum_row[12] = round(sum(float(r[12] or 0) for r in rows_diamond), 2)
-	sum_row[13] = round(sum(float(r[13] or 0) for r in rows_diamond), 2)
-	sum_row[14] = round(sum(float(r[14] or 0) for r in rows_diamond), 2)
-	sum_row[16] = round(sum(float(r[16] or 0) for r in rows_diamond), 2)
-	sum_row[17] = round(sum(float(r[17] or 0) for r in rows_diamond), 2)
-	sum_row[19] = round(sum(float(r[19] or 0) for r in rows_diamond), 2)
-	sum_row[20] = round(sum(float(r[20] or 0) for r in rows_diamond), 2)
-	sum_row[23] = round(sum(float(r[23] or 0) for r in rows_diamond), 2)
-	sum_row[25] = round(sum(float(r[25] or 0) for r in rows_diamond), 2)
-	sum_row[27] = round(
-		sum(float(r[27] or 0) for r in rows_diamond), 2
-	)  #  Jewellery MC total
-	sum_row[29] = round(sum(float(r[29] or 0) for r in rows_diamond), 2)
-	sum_row[30] = round(sum(float(r[30] or 0) for r in rows_diamond), 2)
-	sum_row[31] = round(sum(float(r[31] or 0) for r in rows_diamond), 2)
-	sum_row[32] = round(sum(float(r[32] or 0) for r in rows_diamond), 2)
-	sum_row[33] = round(sum(float(r[33] or 0) for r in rows_diamond), 2)
-	sum_row[34] = round(sum(float(r[34] or 0) for r in rows_diamond), 2)
-	# sum_row[35] = round(sum(float(r[35] or 0) for r in rows_diamond), 2)
+    # --- SUM ROW ---
+    sum_row = [""] * len(columns)
+    sum_row[5]  = round(sum(float(r[5] or 0) for r in rows_diamond), 2)
+    sum_row[6]  = round(sum(float(r[6] or 0) for r in rows_diamond), 2)
+    sum_row[8]  = round(sum(float(r[8] or 0) for r in rows_diamond), 2)
+    sum_row[10] = round(sum(float(r[10] or 0) for r in rows_diamond), 2)  # Total Diamond Rate
+    sum_row[11] = round(sum(float(r[11] or 0) for r in rows_diamond), 2)  # Diamond Amount
+    sum_row[12] = round(sum(float(r[12] or 0) for r in rows_diamond), 2)
+    sum_row[13] = round(sum(float(r[13] or 0) for r in rows_diamond), 2)
+    sum_row[14] = round(sum(float(r[14] or 0) for r in rows_diamond), 2)
+    sum_row[16] = round(sum(float(r[16] or 0) for r in rows_diamond), 2)
+    sum_row[17] = round(sum(float(r[17] or 0) for r in rows_diamond), 2)
+    sum_row[19] = round(sum(float(r[19] or 0) for r in rows_diamond), 2)
+    sum_row[20] = round(sum(float(r[20] or 0) for r in rows_diamond), 2)
+    sum_row[23] = round(sum(float(r[23] or 0) for r in rows_diamond), 2)
+    sum_row[25] = round(sum(float(r[25] or 0) for r in rows_diamond), 2)
+    sum_row[27] = round(sum(float(r[27] or 0) for r in rows_diamond), 2)  #  Jewellery MC total
+    sum_row[29] = round(sum(float(r[29] or 0) for r in rows_diamond), 2)
+    sum_row[30] = round(sum(float(r[30] or 0) for r in rows_diamond), 2)
+    sum_row[31] = round(sum(float(r[31] or 0) for r in rows_diamond), 2)
+    sum_row[32] = round(sum(float(r[32] or 0) for r in rows_diamond), 2)
+    sum_row[33] = round(sum(float(r[33] or 0) for r in rows_diamond), 2)
+    sum_row[34] = round(sum(float(r[34] or 0) for r in rows_diamond), 2)
+    # sum_row[35] = round(sum(float(r[35] or 0) for r in rows_diamond), 2)
 
-	rows_diamond.append(sum_row)
+    rows_diamond.append(sum_row)
 
-	# --- Create Workbook ---
-	wb = Workbook()
-	ws = wb.active
-	ws.title = "Diamond Detail"
+    # --- Create Workbook ---
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Diamond Detail"
 
-	# --- Add Company Name ---
-	company_name = "M/S. GURUKRUPA EXPORT PVT LIMITED"
-	ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
-	cell = ws.cell(row=1, column=1, value=company_name)
-	cell.font = Font(bold=True, size=15)
-	cell.alignment = Alignment(horizontal="center", vertical="center")
+    # --- Add Company Name ---
+    company_name = "M/S. GURUKRUPA EXPORT PVT LIMITED"
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
+    cell = ws.cell(row=1, column=1, value=company_name)
+    cell.font = Font(bold=True, size=15)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
 
-	# --- Add Headers ---
-	for col_num, column_title in enumerate(columns, 1):
-		c = ws.cell(row=2, column=col_num, value=column_title)
-		c.font = Font(bold=True)
-		c.alignment = Alignment(horizontal="center", vertical="center")
+    # --- Add Headers ---
+    for col_num, column_title in enumerate(columns, 1):
+        c = ws.cell(row=2, column=col_num, value=column_title)
+        c.font = Font(bold=True)
+        c.alignment = Alignment(horizontal="center", vertical="center")
 
-	# --- Add Data Rows ---
-	for row_num, row_data in enumerate(rows_diamond, 3):
-		for col_num, cell_value in enumerate(row_data, 1):
-			ws.cell(row=row_num, column=col_num, value=cell_value)
+    # --- Add Data Rows ---
+    for row_num, row_data in enumerate(rows_diamond, 3):
+        for col_num, cell_value in enumerate(row_data, 1):
+            ws.cell(row=row_num, column=col_num, value=cell_value)
 
-	# --- Auto column width ---
-	for i, column in enumerate(columns, 1):
-		ws.column_dimensions[get_column_letter(i)].width = 15
+    # --- Auto column width ---
+    for i, column in enumerate(columns, 1):
+        ws.column_dimensions[get_column_letter(i)].width = 15
 
-	# --- Save to BytesIO and Download ---
-	output = BytesIO()
-	wb.save(output)
-	output.seek(0)
-	frappe.local.response.filecontent = output.read()
-	frappe.local.response.filename = f"Diamond_Detail_SO_{docname}.xlsx"
-	frappe.local.response.type = "download"
-
+    # --- Save to BytesIO and Download ---
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    frappe.local.response.filecontent = output.read()
+    frappe.local.response.filename = f"Diamond_Detail_SO_{docname}.xlsx"
+    frappe.local.response.type = "download"
 
 def update_si_data(self):
 	self.is_customer_metal = False
@@ -724,10 +557,9 @@ def update_si_data(self):
 		"Customer", self.customer, "custom_separate_hallmarking_invoice"
 	)
 	allowed_item_types = get_allowed_item_types(self.customer, self.sales_type)
-	# frappe.throw(f"hii,{separate_hallmarking_invoice}")
 	for row in self.items:
-		# frappe.throw(str(row.as_dict()))
 		if row.bom and not self.item_same_as_above:
+			
 			exchange_rate = 1
 			bom_doc = frappe.get_doc("BOM", row.bom)
 			if bom_doc.currency != self.currency:
@@ -735,93 +567,46 @@ def update_si_data(self):
 					bom_doc.currency, self.currency, transaction_date=self.posting_date
 				)
 			gold_rate_changed = True
-			update_bom_details(
-				self, row, bom_doc, is_branch_customer, invoice_data, gold_rate_changed
-			)
-			if bom_doc.hallmarking_amount:
+			update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data,gold_rate_changed)
+			if bom_doc.hallmarking_amount :
 				custom_item, hsn_code, uom = frappe.db.get_value(
-					"E Invoice Item",
-					{"is_for_hallmarking": 1},
-					["name", "hsn_code", "uom"],
-				)
-				# frappe.throw(f"{custom_item}")
+				"E Invoice Item", {"is_for_hallmarking": 1}, ["name", "hsn_code", "uom"]
+			)
 				if invoice_data.get(custom_item):
 					invoice_data[custom_item]["qty"] += 1
 					invoice_data[custom_item]["amount"] += bom_doc.hallmarking_amount
-					invoice_data[custom_item]["rate"] = (
-						invoice_data[custom_item]["amount"]
-						/ invoice_data[custom_item]["qty"]
-					)
+					invoice_data[custom_item]["rate"] = invoice_data[custom_item]["amount"]/invoice_data[custom_item]["qty"]
 				else:
 					invoice_data[custom_item] = {
 						"qty": 1,
 						"hsn_code": hsn_code,
 						"uom": uom,
 						"amount": bom_doc.hallmarking_amount,
-						"rate": bom_doc.hallmarking_amount,
+						"rate":bom_doc.hallmarking_amount,
 						"income_account": row.income_account,
 						"cost_center": row.cost_center,
 					}
-
+					
 			if bom_doc.certification_amount and not separate_hallmarking_invoice:
 				custom_item, hsn_code, uom = frappe.db.get_value(
-					"E Invoice Item",
-					{"is_for_certification": 1},
-					["name", "hsn_code", "uom"],
-				)
-				# frappe.throw(f"{custom_item}")
+				"E Invoice Item", {"is_for_certification": 1}, ["name", "hsn_code", "uom"]
+			)
 				if invoice_data.get(custom_item):
 					invoice_data[custom_item]["qty"] += 1
 					invoice_data[custom_item]["amount"] += bom_doc.certification_amount
-					invoice_data[custom_item]["rate"] = (
-						invoice_data[custom_item]["amount"]
-						/ invoice_data[custom_item]["qty"]
-					)
+					invoice_data[custom_item]["rate"] = invoice_data[custom_item]["amount"]/invoice_data[custom_item]["qty"]
 				else:
 					invoice_data[custom_item] = {
 						"qty": 1,
 						"hsn_code": hsn_code,
 						"uom": uom,
-						"rate": bom_doc.certification_amount,
+						"rate":bom_doc.certification_amount,
 						"amount": bom_doc.certification_amount,
 						"income_account": row.income_account,
 						"cost_center": row.cost_center,
 					}
-
-			# for i in invoice_data:
-			# 	invoice_data[i]["amount"] *= exchange_rate
-
-			update_einvoice_items(
-				self, invoice_data, payment_terms_data, allowed_item_types
-			)
-			# update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data)
-			# frappe.throw(f"hiii")
-			# if bom_doc.hallmarking_amount and not separate_hallmarking_invoice:
-			# 	custom_item, hsn_code, uom = frappe.db.get_value(
-			# 	"E Invoice Item", {"is_for_hallmarking": 1}, ["name", "hsn_code", "uom"]
-			# )
-			# 	hallmarking_invoice_items.append({
-			# 			"qty": 1,
-			# 			"hsn_code": hsn_code,
-			# 			"uom": uom,
-			# 			"amount": bom_doc.hallmarking_amount,
-			# 			"income_account": row.income_account,
-			# 			"cost_center": row.cost_center,
-			# 			"delivery_note":row.delivery_note
-
-			# 		})
-			# if hallmarking_invoice_items:
-			# 	hallmarking_si = frappe.new_doc("Sales Invoice")
-			# 	hallmarking_si.customer = self.customer
-			# 	hallmarking_si.company = self.company
-			# 	hallmarking_si.posting_date = self.posting_date
-			# 	for item in hallmarking_invoice_items:
-			# 		hallmarking_si.append("items", item)
-			# 		# frappe.throw("hii")
-			# 	hallmarking_si.insert(ignore_permissions=True)
-			# hallmarking_si.save()
-
-			# frappe.throw(f"{item}")
+			
+			update_einvoice_items(self, invoice_data, payment_terms_data ,allowed_item_types)
 			if row.get("custom_freight_amount"):
 				custom_item, hsn_code, uom = frappe.db.get_value(
 					"E Invoice Item", {"is_for_freight": 1}, ["name", "hsn_code", "uom"]
@@ -838,87 +623,46 @@ def update_si_data(self):
 						"income_account": row.income_account,
 						"cost_center": row.cost_center,
 					}
-
-			# if row.get("custom_hallmarking_amount"):
-			# 	# frappe.throw(f"hii")
-			# # and not separate_hallmarking_invoice:
-			# 	custom_item, hsn_code, uom = frappe.db.get_value(
-			# 		"E Invoice Item", {"is_for_hallmarking": 1}, ["name", "hsn_code", "uom"]
-			# 	)
-			# 	if invoice_data.get(custom_item):
-			# 		invoice_data[custom_item]["qty"] += 1
-			# 		invoice_data[custom_item]["amount"] += row.custom_hallmarking_amount
-			# 	else:
-			# 		invoice_data[custom_item] = {
-			# 			"qty": 1,
-			# 			"hsn_code": hsn_code,
-			# 			"uom": uom,
-			# 			"amount": row.custom_hallmarking_amount,
-			# 			"income_account": row.income_account,
-			# 			"cost_center": row.cost_center,
-			# 		}
-			# # for i in invoice_data:
-			# # 	invoice_data[i]["amount"] *= exchange_rate
-
-			# update_einvoice_items(self, invoice_data, payment_terms_data)
-			if self.sales_type != "Certification":
+			if self.sales_type != 'Certification':
 				bom_doc = frappe.get_doc("BOM", row.bom)
 				# Sum directly from BOM detail rows — rates already updated in before_validate
 				# if gold rate changed vs SO, otherwise original BOM amounts are used as-is
 				if self.sales_type == "Hybrid":
-					# Hybrid: customer-supplied material/making was already split
-					# out into a separate "Subcontracting Charges" row on the
-					# Sales Order (see add_hybrid_subcontracting_row in
-					# sales_order.py). Only sum the company-owned portion here,
-					# or that amount gets counted twice — once on this row,
-					# once on the Subcontracting Charges row.
-					metal_rows = [
-						r for r in bom_doc.metal_detail if not r.is_customer_item
-					]
-					finding_rows = [
-						r for r in bom_doc.finding_detail if not r.is_customer_item
-					]
-					diamond_total = sum(
-						flt(r.diamond_rate_for_specified_quantity)
-						for r in bom_doc.diamond_detail
-						if not r.is_customer_item
-					)
-					gemstone_total = sum(
-						flt(r.gemstone_rate_for_specified_quantity)
-						for r in bom_doc.gemstone_detail
-						if not r.is_customer_item
-					)
+					# Hybrid: customer-supplied material was already split out
+					# into a separate "Subcontracting Charges" row on the Sales
+					# Order (see add_hybrid_outwork_row in sales_order.py). Only
+					# sum the company-owned material here, or that amount gets
+					# counted twice — once on this row, once on the
+					# Subcontracting Charges row.
+					#
+					# Making charge (metal/finding) and handling charge
+					# (diamond) are always job-work value regardless of
+					# is_customer_item — they never belong on this row, only
+					# on the Subcontracting Charges row (see the matching
+					# split in _update_bom_totals() in sales_order.py).
+					metal_rows     = [r for r in bom_doc.metal_detail if not r.is_customer_item]
+					finding_rows   = [r for r in bom_doc.finding_detail if not r.is_customer_item]
+					diamond_total  = sum(flt(r.diamond_rate_for_specified_quantity) for r in bom_doc.diamond_detail if not r.is_customer_item)
+					gemstone_total = sum(flt(r.gemstone_rate_for_specified_quantity) for r in bom_doc.gemstone_detail if not r.is_customer_item)
 				else:
-					metal_rows, finding_rows = (
-						bom_doc.metal_detail,
-						bom_doc.finding_detail,
-					)
-					diamond_total = bom_doc.total_diamond_amount
+					metal_rows, finding_rows = bom_doc.metal_detail, bom_doc.finding_detail
+					diamond_total  = bom_doc.total_diamond_amount
 					gemstone_total = bom_doc.gemstone_bom_amount
-				row.metal_amount = (
-					flt(sum(r.amount for r in metal_rows), 3) * exchange_rate
+				row.metal_amount = flt(sum(r.amount for r in metal_rows), 3) * exchange_rate
+				row.making_amount = (
+					0
+					if self.sales_type == "Hybrid"
+					else flt(sum(r.making_amount for r in finding_rows)) + flt(sum(r.making_amount for r in metal_rows))
 				)
-				# frappe.throw(f"{bom_doc.making_charge}")
-				row.making_amount = flt(
-					sum(r.making_amount for r in finding_rows)
-				) + flt(sum(r.making_amount for r in metal_rows))
-				row.finding_amount = (
-					flt(sum(r.amount for r in finding_rows), 3) * exchange_rate
-				)
+				row.finding_amount = flt(sum(r.amount for r in finding_rows), 3) * exchange_rate
 				row.diamond_amount = diamond_total * exchange_rate
 				row.gemstone_amount = gemstone_total * exchange_rate
-				row.custom_certification_amount = (
-					bom_doc.certification_amount * exchange_rate
-				)
+				row.custom_certification_amount = bom_doc.certification_amount * exchange_rate
 				if bom_doc.certification_amount and separate_hallmarking_invoice:
 					row.custom_certification_amount = 0
 				row.custom_freight_amount = bom_doc.freight_amount * exchange_rate
-				row.custom_hallmarking_amount = (
-					bom_doc.hallmarking_amount * exchange_rate
-				)
-				row.custom_custom_duty_amount = (
-					bom_doc.custom_duty_amount * exchange_rate
-				)
+				row.custom_hallmarking_amount = bom_doc.hallmarking_amount * exchange_rate
+				row.custom_custom_duty_amount = bom_doc.custom_duty_amount * exchange_rate
 				row.rate = flt(
 					row.metal_amount
 					+ row.making_amount
@@ -934,15 +678,12 @@ def update_si_data(self):
 				row.amount = row.qty * row.rate
 	return payment_terms_data
 
-
-def update_einvoice_items(self, invoice_data, payment_terms_data, allowed_item_types):
+def update_einvoice_items(self, invoice_data, payment_terms_data,allowed_item_types):
 	if not self.get("invoice_item"):
 		self.invoice_item = []
 	else:
 		self.set("invoice_item", [])
-	precision = frappe.db.get_value(
-		"Customer", self.customer, "custom_precision_variable"
-	)
+	precision = frappe.db.get_value('Customer',self.customer,"custom_precision_variable")
 	for row in invoice_data:
 		if row not in allowed_item_types:
 			continue
@@ -969,351 +710,11 @@ def update_einvoice_items(self, invoice_data, payment_terms_data, allowed_item_t
 				},
 			)
 
-	# if self.invoice_item:
-	# 	self.taxes_and_charges = None
-	# 	self.taxes = []
-	# 	out_state = 0
-	# 	if frappe.db.get_value("Address", self.company_address, "state") != frappe.db.get_value(
-	# 		"Address", self.customer_address, "state"
-	# 	):
-	# 		out_state = 1
-
-	# 	self.taxes_and_charges = frappe.db.get_value(
-	# 		"Sales Taxes and Charges Template",
-	# 		{"sales_type": self.sales_type, "out_state": out_state, "company": self.company},
-	# 	)
-
-
-# def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gold_rate_changed=True):
-# 	gold_item = None
-# 	gold_making_item = None
-# 	bom_doc.customer = self.customer
-# 	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
-# 	# frappe.msgprint(f"iuhuyg{precision}")
-# 	so_doc = frappe.get_doc("Sales Order", row.sales_order)
-# 	so_item_map = {}
-# 	for item in so_doc.custom_invoice_item:
-# 		so_item_map[item.item_code] = item
-
-# 	def add_to_invoice(item_code, so_item, fallback_amount=0, fallback_qty=0,fallback_rate=0, hsn=None, uom=None):
-
-# 		if so_item:
-# 			amount = so_item.amount
-# 			qty = so_item.qty
-# 			rate = so_item.rate
-# 		else:
-# 			amount = fallback_amount
-# 			qty = fallback_qty
-# 			rate = fallback_rate
-
-# 		if item_code in invoice_data:
-# 			if so_item:
-# 				invoice_data[item_code]["amount"] = amount
-# 				invoice_data[item_code]["qty"] = qty
-# 				invoice_data[item_code]["rate"] = rate
-# 			else:
-# 				# fallback case → can accumulate
-# 				invoice_data[item_code]["amount"] += amount
-# 				invoice_data[item_code]["qty"] += qty
-# 				invoice_data[item_code]["rate"] = rate
-# 		else:
-# 			invoice_data[item_code] = {
-# 				"amount": amount,
-# 				"qty": qty,
-# 				"rate": rate,
-# 				"hsn_code": hsn,
-# 				"uom": uom,
-# 				"income_account": row.income_account,
-# 				"cost_center": row.cost_center,
-# 			}
-# 	for i in bom_doc.metal_detail:
-# 		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-# 		# frappe.msgprint(f"jiufdrthg{i.making_amount},{i.quantity}")
-# 		# if not i.is_customer_item:
-# 		# 	calculate_metal_making_amount(row, bom_doc, i, self.gold_rate_with_gst)
-# 		einvoice_item, hsn_code, uom = frappe.db.get_value(
-# 			"E Invoice Item",
-# 			{
-# 				"is_for_metal": 1,
-# 				"metal_type": i.metal_type,
-# 				"metal_purity": i.metal_touch,
-# 			},
-# 			["name", "hsn_code", "uom"],
-# 		) or (None, None, None)
-
-# 		filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
-
-# 		making_item, making_hsn, making_uom = frappe.db.get_value(
-# 			"E Invoice Item",
-# 			{
-# 				filter_value: 1,
-# 				"metal_type": i.metal_type,
-# 				"metal_purity": i.metal_touch,
-# 			},
-# 			["name", "hsn_code", "uom"],
-# 		) or (None, None, None)
-
-# 		so_metal = so_item_map.get(einvoice_item)
-# 		so_making = so_item_map.get(making_item)
-
-# 		if einvoice_item and not i.is_customer_item:
-# 			# frappe.msgprint(f"jhgfwe{i.making_amount}")
-# 			add_to_invoice(
-# 				einvoice_item,
-# 				so_metal,
-# 				fallback_amount=round(i.amount,precision),
-# 				fallback_qty=i.quantity,
-
-# 				fallback_rate=i.rate,
-# 				hsn=hsn_code,
-# 				uom=uom,
-# 			)
-
-# 		if making_item and not is_branch_customer:
-# 			# frappe.msgprint(f"juytrhgfwe{i.making_amount},{i.quantity}")
-# 			is_metal_per_pc = (
-# 				flt(i.making_rate) > 0
-# 				and abs(flt(i.making_amount) - flt(i.making_rate)) < 0.01
-# 			)
-# 			making_amount_with_wastage = flt(i.making_amount) + flt(i.wastage_amount)
-# 			# metal_making_qty = 1 if is_metal_per_pc else i.quantity
-# 			# frappe.msgprint(f"jooo{i.making_amount},{making_amount_with_wastage}")
-# 			add_to_invoice(
-# 				making_item,
-# 				so_making,
-# 				fallback_amount=round(making_amount_with_wastage,precision),
-# 				fallback_qty=i.quantity,
-# 				fallback_rate=i.making_rate,
-# 				hsn=making_hsn,
-# 				uom=making_uom,
-# 			)
-
-# 		if i.is_customer_item:
-# 			self.is_customer_metal = True
-
-
-# 	for i in bom_doc.finding_detail:
-# 		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-# 		einvoice_item = hsn_code = uom = None
-
-# 		# ---------------- Finding amount: category-specific match ----------------
-# 		result = frappe.db.get_value(
-# 			"E Invoice Item",
-# 			{
-# 				"is_for_finding": 1,
-# 				"metal_type": i.metal_type,
-# 				"metal_purity": i.metal_touch,
-# 				"finding_category": i.finding_category,
-# 			},
-# 			["name", "hsn_code", "uom"],
-# 		)
-# 		if result:
-# 			einvoice_item, hsn_code, uom = result
-# 		else:
-# 			# FIXED: fallback must only match a genuinely generic record
-# 			# (finding_category is unset) — not just any record sharing
-# 			# metal_type/metal_purity, which could accidentally be a
-# 			# different category's record.
-# 			result = frappe.db.get_value(
-# 				"E Invoice Item",
-# 				{
-# 					"is_for_metal": 1,
-# 					"metal_type": i.metal_type,
-# 					"metal_purity": i.metal_touch,
-# 					"finding_category": ["is", "not set"],
-# 				},
-# 				["name", "hsn_code", "uom"],
-# 			)
-# 			if result:
-# 				einvoice_item, hsn_code, uom = result
-
-# 		filter_value = "is_for_labour" if i.is_customer_item else "is_for_finding_making"
-
-# 		making_item = making_hsn = making_uom = None
-
-# 		# ---------------- Making charge: category-specific match ----------------
-# 		result = frappe.db.get_value(
-# 			"E Invoice Item",
-# 			{
-# 				filter_value: 1,
-# 				"metal_type": i.metal_type,
-# 				"metal_purity": i.metal_touch,
-# 				"finding_category": i.finding_category,
-# 			},
-# 			["name", "hsn_code", "uom"],
-# 		)
-# 		if result:
-# 			making_item, making_hsn, making_uom = result
-# 		else:
-# 			# FIXED: fallback mirrors the SO's behavior — drop into the
-# 			# generic metal "is_for_making" bucket when no category-specific
-# 			# finding-making record exists.
-# 			result = frappe.db.get_value(
-# 				"E Invoice Item",
-# 				{
-# 					"is_for_making": 1,
-# 					"metal_type": i.metal_type,
-# 					"metal_purity": i.metal_touch,
-# 				},
-# 				["name", "hsn_code", "uom"],
-# 			)
-# 			if result:
-# 				making_item, making_hsn, making_uom = result
-
-# 		so_finding = so_item_map.get(einvoice_item)
-# 		so_making = so_item_map.get(making_item)
-
-# 		if einvoice_item and not i.is_customer_item:
-# 			add_to_invoice(
-# 				einvoice_item,
-# 				so_finding,
-# 				fallback_amount=round(i.amount,precision),
-# 				fallback_qty=i.quantity,
-# 				fallback_rate=i.rate,
-# 				hsn=hsn_code,
-# 				uom=uom,
-# 			)
-
-# 		if making_item:
-# 			making_amount_with_wastage = flt(i.making_amount) + flt(i.wastage_amount)
-# 			# frappe.msgprint(f"jfrdtrd{making_amount_with_wastage}")
-# 			add_to_invoice(
-# 				making_item,
-# 				so_making,
-# 				fallback_amount=round(making_amount_with_wastage,precision),
-# 				fallback_qty=i.quantity,
-# 				fallback_rate=i.making_rate,
-# 				hsn=making_hsn,
-# 				uom=making_uom,
-# 			)
-# 		# frappe.msgprint(f"huftyf{add_to_invoice.fallback_amount}")
-# 		if i.is_customer_item:
-# 			self.is_customer_metal = True
-
-
-# 	for i in bom_doc.diamond_detail:
-
-
-# 		einvoice_item = hsn_code = uom = None
-
-# 		result = frappe.db.get_value(
-# 			"E Invoice Item",
-# 			{
-# 				"is_for_diamond": 1,
-# 				"diamond_type": i.diamond_type
-# 			},
-# 			["name", "hsn_code", "uom"],
-# 		)
-
-# 		if result:
-# 			einvoice_item, hsn_code, uom = result
-# 		else:
-# 			continue
-
-# 		so_item = so_item_map.get(einvoice_item)
-
-# 		if so_item:
-# 			amount = so_item.amount
-# 			qty = so_item.qty
-# 			rate = so_item.rate
-
-# 		else:
-# 			amount = _calculate_diamond_amount(bom_doc, i, {}, {})
-# 			if is_branch_customer:
-# 				amount = i.se_rate * i.quantity
-
-# 			qty = i.quantity
-# 			rate = 0
-
-# 		if not i.is_customer_item:
-# 			if einvoice_item in invoice_data:
-# 				invoice_data[einvoice_item]["amount"] = round(amount , precision)
-# 				invoice_data[einvoice_item]["qty"] = qty
-# 			else:
-# 				invoice_data[einvoice_item] = {
-# 					"amount": amount,
-# 					"qty": qty,
-# 					"rate": rate,
-# 					"hsn_code": hsn_code,
-# 					"uom": uom,
-# 					"income_account": row.income_account,
-# 					"cost_center": row.cost_center,
-# 				}
-
-# 		if i.is_customer_item:
-# 			self.is_customer_diamond = True
-# 	for i in bom_doc.gemstone_detail:
-
-# 		einvoice_item, hsn_code, uom = frappe.db.get_value(
-# 			"E Invoice Item",
-# 			{"is_for_gemstone": 1},
-# 			["name", "hsn_code", "uom"],
-# 		) or (None, None, None)
-
-# 		if not einvoice_item:
-# 			continue
-
-# 		so_item = so_item_map.get(einvoice_item)
-
-# 		if so_item:
-# 			amount = so_item.amount
-# 			qty = so_item.qty
-# 			rate = so_item.rate
-# 		else:
-
-# 			amount = i.gemstone_rate_for_specified_quantity
-# 			qty = i.quantity
-# 			rate = i.total_gemstone_rate
-
-# 			if is_branch_customer:
-# 				amount = i.se_rate * i.quantity
-# 				rate = i.se_rate
-
-
-# 		if einvoice_item and not i.is_customer_item:
-# 			if so_item_map.get(einvoice_item):
-# 				invoice_data[f"{einvoice_item}"] = {
-# 					"amount": so_item_map[einvoice_item].amount,
-# 					"qty": so_item_map[einvoice_item].qty,
-# 					"rate": so_item_map[einvoice_item].rate,
-# 					"hsn_code": hsn_code,
-# 					"uom": uom,
-# 					"income_account": row.income_account,
-# 					"cost_center": row.cost_center,
-# 				}
-# 			else:
-# 				invoice_data[f"{einvoice_item}"] = {
-# 					"amount": amount,
-# 					"qty": i.quantity,
-# 					"rate": i.rate,
-# 					"hsn_code": hsn_code,
-# 					"uom": uom,
-# 					"income_account": row.income_account,
-# 					"cost_center": row.cost_center,
-# 				}
-
-# 		if i.is_customer_item:
-# 			self.is_customer_gemstone = True
-
-# 	bom_doc.gold_rate_with_gst = self.gold_rate_with_gst
-# 	# if gold_rate_changed:
-# 	customer_group=frappe.db.get_value('Customer',self.customer,'customer_group')
-# 	if not (self.company == "KG GK Jewellers Private Limited" or customer_group == "Internal"):
-# 		bom_doc.validate()
-# 		bom_doc.save()
-# 		update_totals("BOM", bom_doc.name)
-
-
-def update_bom_details(
-	self, row, bom_doc, is_branch_customer, invoice_data, gold_rate_changed=True
-):
+def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gold_rate_changed=True):
 	gold_item = None
 	gold_making_item = None
 	bom_doc.customer = self.customer
-	precision = frappe.db.get_value(
-		"Customer", self.customer, "custom_precision_variable"
-	)
-	# frappe.msgprint(f"iuhuyg{precision}")
+	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
 	# New records invoice against the Quotation (the manufacturing flow no longer creates a Sales
 	# Order); legacy records against the Sales Order. Both expose the same ``custom_invoice_item``
 	# e-invoice table, so only the source document differs.
@@ -1325,18 +726,11 @@ def update_bom_details(
 		so_doc = None
 
 	so_item_map = {}
-	for item in so_doc.custom_invoice_item if so_doc else []:
+	for item in (so_doc.custom_invoice_item if so_doc else []):
 		so_item_map[item.item_code] = item
 
-	def add_to_invoice(
-		item_code,
-		so_item,
-		fallback_amount=0,
-		fallback_qty=0,
-		fallback_rate=0,
-		hsn=None,
-		uom=None,
-	):
+	def add_to_invoice(item_code, so_item, fallback_amount=0, fallback_qty=0,fallback_rate=0, hsn=None, uom=None):
+
 		if so_item:
 			amount = so_item.amount
 			qty = so_item.qty
@@ -1366,12 +760,8 @@ def update_bom_details(
 				"income_account": row.income_account,
 				"cost_center": row.cost_center,
 			}
-
 	for i in bom_doc.metal_detail:
-		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-		# frappe.msgprint(f"jiufdrthg{i.making_amount},{i.quantity}")
-		# if not i.is_customer_item:
-		# 	calculate_metal_making_amount(row, bom_doc, i, self.gold_rate_with_gst)
+		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst) 
 		einvoice_item, hsn_code, uom = frappe.db.get_value(
 			"E Invoice Item",
 			{
@@ -1405,30 +795,28 @@ def update_bom_details(
 		so_making = so_item_map.get(making_item)
 
 		if einvoice_item and not i.is_customer_item:
-			# frappe.msgprint(f"jhgfwe{i.making_amount}")
 			add_to_invoice(
 				einvoice_item,
 				so_metal,
-				fallback_amount=round(i.amount, precision),
+				fallback_amount=round(i.amount,precision),
 				fallback_qty=i.quantity,
+
 				fallback_rate=i.rate,
 				hsn=hsn_code,
 				uom=uom,
 			)
 
 		if making_item and not is_branch_customer:
-			# frappe.msgprint(f"juytrhgfwe{i.making_amount},{i.quantity}")
 			is_metal_per_pc = (
 				flt(i.making_rate) > 0
 				and abs(flt(i.making_amount) - flt(i.making_rate)) < 0.01
 			)
 			making_amount_with_wastage = flt(i.making_amount) + flt(i.wastage_amount)
 			# metal_making_qty = 1 if is_metal_per_pc else i.quantity
-			# frappe.msgprint(f"jooo{i.making_amount},{making_amount_with_wastage}")
 			add_to_invoice(
 				making_item,
 				so_making,
-				fallback_amount=round(making_amount_with_wastage, precision),
+				fallback_amount=round(making_amount_with_wastage,precision),
 				fallback_qty=i.quantity,
 				fallback_rate=i.making_rate,
 				hsn=making_hsn,
@@ -1438,107 +826,7 @@ def update_bom_details(
 		if i.is_customer_item:
 			self.is_customer_metal = True
 
-	# for i in bom_doc.finding_detail:
-	# 	update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-	# 	einvoice_item = hsn_code = uom = None
 
-	# 	result = frappe.db.get_value(
-	# 		"E Invoice Item",
-	# 		{
-	# 			"is_for_finding": 1,
-	# 			"metal_type": i.metal_type,
-	# 			"metal_purity": i.metal_touch,
-	# 			"finding_category": i.finding_category,
-	# 		},
-	# 		["name", "hsn_code", "uom"],
-	# 	)
-
-	# 	if result:
-	# 		# frappe.msgprint(f"ytdrdr{i.making_amount}")
-	# 		einvoice_item, hsn_code, uom = result
-	# 	else:
-
-	# 		result = frappe.db.get_value(
-	# 			"E Invoice Item",
-	# 			{
-	# 				"is_for_metal": 1,
-	# 				"metal_type": i.metal_type,
-	# 				"metal_purity": i.metal_touch,
-	# 			},
-	# 			["name", "hsn_code", "uom"],
-	# 		)
-	# 		# frappe.throw(f"{result}")---------------------------------------------------------------------------------------
-	# 		if result:
-	# 			frappe.msgprint(f"hyuttr{i.making_amount}")
-	# 			einvoice_item, hsn_code, uom = result
-
-	# 	filter_value = "is_for_labour" if i.is_customer_item else "is_for_finding_making"
-
-	# 	making_item = making_hsn = making_uom = None
-
-	# 	result = frappe.db.get_value(
-	# 		"E Invoice Item",
-	# 		{
-	# 			filter_value: 1,
-	# 			"is_for_metal": 1,
-	# 			"metal_type": i.metal_type,
-	# 			"metal_purity": i.metal_touch,
-	# 			"finding_category": i.finding_category,
-	# 		},
-	# 		["name", "hsn_code", "uom"],
-	# 	)
-
-	# 	if result:
-	# 		making_item, making_hsn, making_uom = result
-	# 	else:
-	# 		result = frappe.db.get_value(
-	# 			"E Invoice Item",
-	# 			{
-	# 				filter_value: 1,
-	# 				"metal_type": i.metal_type,
-	# 				"metal_purity": i.metal_touch,
-	# 			},
-	# 			["name", "hsn_code", "uom"],
-	# 		)
-	# 		if result:
-	# 			making_item, making_hsn, making_uom = result
-
-	# 	so_finding = so_item_map.get(einvoice_item)
-	# 	so_making = so_item_map.get(making_item)
-
-	# 	if einvoice_item and not i.is_customer_item:
-	# 		add_to_invoice(
-	# 			einvoice_item,
-	# 			so_finding,
-	# 			fallback_amount=i.amount,
-	# 			fallback_qty=i.quantity,
-	# 			fallback_rate=i.rate,
-	# 			hsn=hsn_code,
-	# 			uom=uom,
-	# 		)
-
-	# 	if making_item:
-	# 		# update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-	# 		is_finding_per_pc = (
-	# 			flt(i.making_rate) > 0
-	# 			and abs(flt(i.making_amount) - flt(i.making_rate)) < 0.01
-	# 		)
-	# 		making_amount_with_wastage = flt(i.making_amount) + flt(i.wastage_amount)
-	# 		# frappe.msgprint(f"kjhgfsdf{making_amount_with_wastage},{i.quantity}")
-	# 		# finding_making_qty = 1 if is_finding_per_pc else i.quantity
-	# 		if not is_finding_per_pc:
-	# 			add_to_invoice(
-	# 				making_item,
-	# 				so_making,
-	# 				fallback_amount=making_amount_with_wastage,
-	# 				fallback_qty=i.quantity,
-	# 				fallback_rate=i.making_rate,
-	# 				hsn=making_hsn,
-	# 				uom=making_uom,
-	# 			)
-
-	# 	if i.is_customer_item:
-	# 		self.is_customer_metal = True
 	for i in bom_doc.finding_detail:
 		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
 		einvoice_item = hsn_code = uom = None
@@ -1623,7 +911,7 @@ def update_bom_details(
 			add_to_invoice(
 				einvoice_item,
 				so_finding,
-				fallback_amount=round(i.amount, precision),
+				fallback_amount=round(i.amount,precision),
 				fallback_qty=i.quantity,
 				fallback_rate=i.rate,
 				hsn=hsn_code,
@@ -1632,33 +920,33 @@ def update_bom_details(
 
 		if making_item:
 			making_amount_with_wastage = flt(i.making_amount) + flt(i.wastage_amount)
-			# frappe.msgprint(f"jfrdtrd{making_amount_with_wastage}")
 			add_to_invoice(
 				making_item,
 				so_making,
-				fallback_amount=round(making_amount_with_wastage, precision),
+				fallback_amount=round(making_amount_with_wastage,precision),
 				fallback_qty=i.quantity,
 				fallback_rate=i.making_rate,
 				hsn=making_hsn,
 				uom=making_uom,
 			)
-		# frappe.msgprint(f"huftyf{add_to_invoice.fallback_amount}")
 		if i.is_customer_item:
 			self.is_customer_metal = True
-
+	
 	for i in bom_doc.diamond_detail:
 		einvoice_item = hsn_code = uom = None
-
 		result = frappe.db.get_value(
 			"E Invoice Item",
-			{"is_for_diamond": 1, "diamond_type": i.diamond_type},
+			{
+				"is_for_diamond": 1,
+				"diamond_type": i.diamond_type
+			},
 			["name", "hsn_code", "uom"],
 		)
 
 		if result:
 			einvoice_item, hsn_code, uom = result
 		else:
-			continue
+			continue  
 
 		so_item = so_item_map.get(einvoice_item)
 
@@ -1677,7 +965,7 @@ def update_bom_details(
 
 		if not i.is_customer_item:
 			if einvoice_item in invoice_data:
-				invoice_data[einvoice_item]["amount"] = round(amount, precision)
+				invoice_data[einvoice_item]["amount"] = round(amount , precision)
 				invoice_data[einvoice_item]["qty"] = qty
 			else:
 				invoice_data[einvoice_item] = {
@@ -1706,9 +994,7 @@ def update_bom_details(
 			) or (None, None, None)
 			if labour_item:
 				so_labour = so_item_map.get(labour_item)
-				handling_amount = round(
-					flt(i.quantity) * flt(i.handling_rate), precision
-				)
+				handling_amount = round(flt(i.quantity) * flt(i.handling_rate), precision)
 				add_to_invoice(
 					labour_item,
 					so_labour,
@@ -1722,6 +1008,7 @@ def update_bom_details(
 		if i.is_customer_item:
 			self.is_customer_diamond = True
 	for i in bom_doc.gemstone_detail:
+
 		einvoice_item, hsn_code, uom = frappe.db.get_value(
 			"E Invoice Item",
 			{"is_for_gemstone": 1},
@@ -1738,6 +1025,7 @@ def update_bom_details(
 			qty = so_item.qty
 			rate = so_item.rate
 		else:
+			
 			amount = i.gemstone_rate_for_specified_quantity
 			qty = i.quantity
 			rate = i.total_gemstone_rate
@@ -1746,6 +1034,7 @@ def update_bom_details(
 				amount = i.se_rate * i.quantity
 				rate = i.se_rate
 
+		
 		if einvoice_item and not i.is_customer_item:
 			if so_item_map.get(einvoice_item):
 				invoice_data[f"{einvoice_item}"] = {
@@ -1770,470 +1059,23 @@ def update_bom_details(
 
 		if i.is_customer_item:
 			self.is_customer_gemstone = True
-	# /////////////////////////////////////////////////////////////////////////
-	# for i in bom_doc.metal_detail:
-	# 	amount = i.amount
-	# 	if is_branch_customer:
-	# 		amount = i.se_rate * i.quantity
-	# 	if not i.is_customer_item:
-	# 		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-
-	# 	filter_value = "is_for_making"
-	# 	if i.is_customer_item:
-	# 		filter_value = "is_for_labour"
-	# 	if not gold_item:
-	# 		gold_item, hsn_code, gold_uom = frappe.db.get_value(
-	# 			"E Invoice Item",
-	# 			{"is_for_metal": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
-	# 			["name", "hsn_code", "uom"],
-	# 		)
-	# 	if not gold_making_item:
-	# 		gold_making_item, making_hsn_code, gold_making_uom = frappe.db.get_value(
-	# 			"E Invoice Item",
-	# 			{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
-	# 			["name", "hsn_code", "uom"],
-	# 		)
-	# 	if gold_item:
-	# 		if invoice_data.get(gold_item):
-	# 			invoice_data[gold_item]["amount"] += amount
-	# 		else:
-	# 			invoice_data[gold_item] = {
-	# 				"amount": amount,
-	# 				"hsn_code": hsn_code,
-	# 				"qty": 0,
-	# 				"uom": gold_uom,
-	# 				"income_account": row.income_account,
-	# 				"cost_center": row.cost_center,
-	# 			}
-
-	# 		if amount > 0:
-	# 			invoice_data[gold_item]["qty"] += i.quantity
-
-	# 	if gold_making_item and not is_branch_customer:
-	# 		if invoice_data.get(gold_making_item):
-	# 			invoice_data[gold_making_item]["amount"] += i.making_amount
-	# 			frappe.throw(f"{invoice_data[gold_making_item]["amount"]}")
-	# 		else:
-	# 			invoice_data[gold_making_item] = {
-	# 				"amount": i.making_amount,
-	# 				"hsn_code": making_hsn_code,
-	# 				"qty": 0,
-	# 				"uom": gold_making_uom,
-	# 				"income_account": row.income_account,
-	# 				"cost_center": row.cost_center,
-	# 			}
-
-	# 		if i.making_amount > 0:
-	# 			invoice_data[gold_making_item]["qty"] += i.quantity
-
-	# 	if i.is_customer_item:
-	# 		self.is_customer_metal = True
-
-	# einvoice_item = None
-	# making_item = None
-	# for i in bom_doc.finding_detail:
-	# 	amount = i.amount
-	# 	# frappe.msgprint(f"hii{amount}")
-	# 	if is_branch_customer:
-	# 		amount = i.se_rate * i.quantity
-	# 	if not i.is_customer_item:
-	# 		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-	# 	filter_value = "is_for_finding_making"
-	# 	if i.is_customer_item:
-	# 		filter_value = "is_for_labour"
-
-	# 	# if not einvoice_item:
-	# 	# 	einvoice_item, hsn_code, uom = frappe.db.get_value(
-	# 	# 		"E Invoice Item",
-	# 	# 		{"is_for_finding": 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch,"finding_category": i.finding_category},
-	# 	# 		["name", "hsn_code", "uom"],
-	# 	# 	)
-	# 	# if not einvoice_item:
-	# 	# 	einvoice_item, hsn_code, uom = frappe.db.get_value(
-	# 	# 		"E Invoice Item",
-	# 	# 		{
-	# 	# 			"is_for_metal": 1,
-	# 	# 			"metal_type": i.metal_type,
-	# 	# 			"metal_purity": i.metal_touch
-	# 	# 		},
-	# 	# 		["name", "hsn_code", "uom"],
-	# 	# 	)
-	# 	# frappe.throw(f"{einvoice_item}")
-	# 	einvoice_item = hsn_code = uom = None
-
-	# 	if not einvoice_item:
-	# 		result = frappe.db.get_value(
-	# 			"E Invoice Item",
-	# 			{
-	# 				"is_for_finding": 1,
-	# 				"metal_type": i.metal_type,
-	# 				"metal_purity": i.metal_touch,
-	# 				"finding_category": i.finding_category
-	# 			},
-	# 			["name", "hsn_code", "uom"],
-	# 		)
-
-	# 		if result:
-	# 			einvoice_item, hsn_code, uom = result
-
-	# 	# 2. Fallback to metal
-	# 	if not einvoice_item:
-	# 		result = frappe.db.get_value(
-	# 			"E Invoice Item",
-	# 			{
-	# 				"is_for_metal": 1,
-	# 				"metal_type": i.metal_type,
-	# 				"metal_purity": i.metal_touch
-	# 			},
-	# 			["name", "hsn_code", "uom"],
-	# 		)
-
-	# 		if result:
-	# 			einvoice_item, hsn_code, uom = result
-
-	# 	# Debug
-	# 	frappe.msgprint(f"{einvoice_item}")
-	#   ////////////////////////////////////////////////
-	# if not making_item:
-	# 	making_item, making_hsn_code, making_uom = frappe.db.get_value(
-	# 		"E Invoice Item",
-	# 		{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
-	# 		["name", "hsn_code", "uom"],
-	# 	)
-	# //////////////////////////////////////////////////////////////////	#
-	# 		making_item = making_hsn_code = making_uom = None
-
-	# # 1. Try exact match (WITH category)
-	# 		result = frappe.db.get_value(
-	# 			"E Invoice Item",
-	# 			{
-	# 				filter_value: 1,
-	# 				"metal_type": i.metal_type,
-	# 				"metal_purity": i.metal_touch,
-	# 				"finding_category": i.finding_category
-	# 			},
-	# 			["name", "hsn_code", "uom"],
-	# 		)
-
-	# 		if result:
-	# 			making_item, making_hsn_code, making_uom = result
-
-	# 		# 2. Fallback ONLY if category is empty
-	# 		elif not i.finding_category:
-	# 			result = frappe.db.get_value(
-	# 				"E Invoice Item",
-	# 				{
-	# 					filter_value: 1,
-	# 					"metal_type": i.metal_type,
-	# 					"metal_purity": i.metal_touch
-	# 				},
-	# 				["name", "hsn_code", "uom"],
-	# 			)
-
-	# 			if result:
-	# 				making_item, making_hsn_code, making_uom = result
-	# 		# if not i.not_finding_rate:
-	# 		# 	if gold_item:
-	# 		# 		if invoice_data.get(gold_item):
-	# 		# 			invoice_data[gold_item]["amount"] += amount
-	# 		# 		else:
-	# 		# 			invoice_data[gold_item] = {
-	# 		# 				"amount": amount,
-	# 		# 				"hsn_code": hsn_code,
-	# 		# 				"qty": 0,
-	# 		# 				"uom": gold_uom,
-	# 		# 				"income_account": row.income_account,
-	# 		# 				"cost_center": row.cost_center,
-	# 		# 			}
-
-	# 		# 		if amount > 0:
-	# 		# 			invoice_data[gold_item]["qty"] += i.quantity
-
-	# 		# 	if gold_making_item and not is_branch_customer:
-	# 		# 		if invoice_data.get(gold_making_item):
-	# 		# 			invoice_data[gold_making_item]["amount"] += i.making_amount
-	# 		# 		else:
-	# 		# 			invoice_data[gold_making_item] = {
-	# 		# 				"amount": i.making_amount,
-	# 		# 				"hsn_code": making_hsn_code,
-	# 		# 				"qty": 0,
-	# 		# 				"uom": gold_making_uom,
-	# 		# 				"income_account": row.income_account,
-	# 		# 				"cost_center": row.cost_center,
-	# 		# 			}
-
-	# 		# 		if i.making_amount > 0:
-	# 		# 			invoice_data[gold_making_item]["qty"] += i.quantity
-
-	# 		# else:
-	# 		# if i.finding_category==invoice_data.get(finding_category)
-
-	# 		if einvoice_item:
-	# 			if invoice_data.get(einvoice_item):
-	# 				invoice_data[einvoice_item]["amount"] += amount
-	# 			else:
-	# 				invoice_data[einvoice_item] = {
-	# 					"amount": amount,
-	# 					"hsn_code": hsn_code,
-	# 					"qty": 0,
-	# 					"uom": uom,
-	# 					"income_account": row.income_account,
-	# 					"cost_center": row.cost_center,
-	# 				}
-
-	# 			if amount > 0:
-	# 				invoice_data[einvoice_item]["qty"] += i.quantity
-
-	# 		if making_item:
-	# 			if invoice_data.get(making_item):
-	# 				invoice_data[making_item]["amount"] += i.making_amount
-	# 			else:
-	# 				invoice_data[making_item] = {
-	# 					"amount": i.making_amount,
-	# 					"hsn_code": making_hsn_code,
-	# 					"qty": 0,
-	# 					"uom": making_uom,
-	# 					"income_account": row.income_account,
-	# 					"cost_center": row.cost_center,
-	# 				}
-
-	# 			if i.making_amount > 0:
-	# 				invoice_data[making_item]["qty"] += i.quantity
-	# 		elif gold_making_item and not is_branch_customer:
-	# 			if invoice_data.get(gold_making_item):
-	# 				invoice_data[gold_making_item]["amount"] += i.making_amount
-	# 			else:
-	# 				invoice_data[gold_making_item] = {
-	# 					"amount": i.making_amount,
-	# 					"hsn_code": making_hsn_code,
-	# 					"qty": 0,
-	# 					"uom": gold_making_uom,
-	# 					"income_account": row.income_account,
-	# 					"cost_center": row.cost_center,
-	# 				}
-
-	# 			if i.making_amount > 0:
-	# 				invoice_data[gold_making_item]["qty"] += i.quantity
-
-	# 		if i.is_customer_item:
-	# 			self.is_customer_metal = True
-
-	# if is_branch_customer and bom_doc.get("operation_cost"):
-	# 	invoice_data[gold_making_item] = {"amount": bom_doc.operation_cost, "qty": 1}
-
-	# einvoice_item = None
-	# ss_range = {}
-	# for diamond in bom_doc.diamond_detail:
-	# 	ss_range = {}
-	# 	actual_qty = diamond.quantity
-	# 	diamond.quantity = flt(diamond.quantity, bom_doc.diamond_pricision)
-	# 	diamond.difference = actual_qty - diamond.quantity
-	# 	if not diamond.sieve_size_range:
-	# 		continue
-	# 	det = ss_range.get(diamond.sieve_size_range) or {}
-	# 	# det['pcs'] = flt(det.get("pcs")) + diamond.pcs
-	# 	det["pcs"] = (flt(det.get("pcs")) + flt(diamond.get("pcs"))) or 1
-	# 	det["quantity"] = flt(flt(det.get("quantity")) + diamond.quantity, 3)
-	# 	det["std_wt"] = flt(flt(det["quantity"], 2) / det["pcs"], 3)
-	# 	ss_range[diamond.sieve_size_range] = det
-
-	# cust_diamond_price_list_type = frappe.db.get_value(
-	# 	"Customer", bom_doc.customer, "diamond_price_list"
-	# )
-
-	# diamond_price_list_data = frappe._dict()
-
-	# for i in bom_doc.diamond_detail:
-	# 	bom_doc.cust_diamond_price_list_type = cust_diamond_price_list_type
-	# 	det = ss_range.get(diamond.sieve_size_range) or {}
-
-	# 	amount = _calculate_diamond_amount(bom_doc, i, det, diamond_price_list_data)
-	# 	# amount = i.diamond_rate_for_specified_quantity
-	# 	if is_branch_customer:
-	# 		amount = i.se_rate * i.quantity
-	# 	if not einvoice_item:
-	# 		einvoice_item, hsn_code, uom = frappe.db.get_value(
-	# 			"E Invoice Item",
-	# 			{"is_for_diamond": 1, "diamond_type": i.diamond_type},
-	# 			["name", "hsn_code", "uom"],
-	# 		)
-
-	# 	if einvoice_item:
-	# 		einvoice_item_name = einvoice_item
-	# 		# if i.diamond_type != "Real":
-	# 		# 	einvoice_item_name += f" {i.diamond_type}"
-
-	# 		if invoice_data.get(einvoice_item_name):
-	# 			invoice_data[einvoice_item_name]["amount"] += amount
-	# 		else:
-	# 			invoice_data[einvoice_item_name] = {
-	# 				"amount": amount,
-	# 				"hsn_code": hsn_code,
-	# 				"qty": 0,
-	# 				"uom": uom,
-	# 				"income_account": row.income_account,
-	# 				"cost_center": row.cost_center,
-	# 			}
-
-	# 		if amount > 0:
-	# 			invoice_data[einvoice_item_name]["qty"] += i.quantity
-
-	# 	if custom_diamond_quality := row.custom_diamond_quality or self.custom_diamond_quality:
-	# 		i.quality = custom_diamond_quality
-
-	# 	if i.is_customer_item:
-	# 		self.is_customer_diamond = True
-
-	# einvoice_item = None
-	# for i in bom_doc.gemstone_detail:
-	# 	actual_qty = i.quantity
-	# 	i.quantity = flt(i.quantity, bom_doc.gemstone_pricision)
-	# 	i.difference = actual_qty - i.quantity
-	# 	# Calculate the weight per piece
-	# 	i.pcs = int(i.pcs) or 1
-	# 	gemstone_weight_per_pcs = i.quantity / i.pcs
-
-	# 	# Create filters for retrieving the Gemstone Price List
-	# 	filters = {
-	# 		"price_list": self.selling_price_list,
-	# 		"price_list_type": i.price_list_type,
-	# 		"customer": self.customer,
-	# 		"cut_or_cab": i.cut_or_cab,
-	# 		"gemstone_grade": i.gemstone_grade,
-	# 	}
-	# 	# if i.price_list_type == "Weight (in cts)":
-	# 	# 	filters.update(
-	# 	# 		{
-	# 	# 			"gemstone_type": i.gemstone_type,
-	# 	# 			"stone_shape": i.stone_shape,
-	# 	# 			"gemstone_quality": i.gemstone_quality,
-	# 	# 			"from_weight": ["<=", gemstone_weight_per_pcs],
-	# 	# 			"to_weight": [">=", gemstone_weight_per_pcs],
-	# 	# 		}
-	# 	# 	)
-	# 	if i.price_list_type == "Diamond Range" and i.gemstone_size:
-	# 		filters.update(
-	# 			{
-	# 				"to_stone_size": [">=", i.gemstone_size],
-	# 				"from_stone_size": ["<=", i.gemstone_size],
-	# 			}
-	# 		)
-	# 	else:
-	# 		filters["gemstone_type"] = i.gemstone_type
-	# 		filters["stone_shape"] = i.stone_shape
-	# 		filters["gemstone_quality"] = i.gemstone_quality
-	# 		filters["gemstone_quality"] = i.gemstone_quality
-	# 		filters["gemstone_size"] = i.gemstone_size
-
-	# 	# Retrieve the Gemstone Price List and calculate the rate
-	# 	gemstone_price_list = frappe.get_list(
-	# 		"Gemstone Price List",
-	# 		filters=filters,
-	# 		fields=["name", "rate", "handling_charges_rate", "supplier_fg_purchase_rate"],
-	# 		order_by="effective_from desc",
-	# 		limit=1,
-	# 	)
-
-	# 	multiplier = 0
-	# 	item_category = frappe.db.get_value("Item", bom_doc.item, "item_category")
-	# 	if i.price_list_type == "Diamond Range":
-	# 		for gr in gemstone_price_list:
-	# 			multiplier = (
-	# 				frappe.db.get_value(
-	# 					"Gemstone Multiplier",
-	# 					{"parent": gr.name, "item_category": item_category, "parentfield": "gemstone_multiplier"},
-	# 					frappe.scrub(i.gemstone_quality),
-	# 				)
-	# 				or 0
-	# 			)
-	# 			fg_multiplier = (
-	# 				frappe.db.get_value(
-	# 					"Gemstone Multiplier",
-	# 					{
-	# 						"parent": gr.name,
-	# 						"item_category": item_category,
-	# 						"parentfield": "supplier_fg_multiplier",
-	# 					},
-	# 					frappe.scrub(i.gemstone_quality),
-	# 				)
-	# 				or 0
-	# 			)
-
-	# 	if not gemstone_price_list:
-	# 		frappe.msgprint(
-	# 			f"Gemstone Amount for {i.gemstone_type} is 0\n Please Check if Gemstone Price Exists For {filters}"
-	# 		)
-	# 		return 0
-
-	# 	# Get Handling Rate of the Diamond if it is a cutomer provided Diamond
-	# 	pr = int(i.gemstone_pr)
-	# 	if i.price_list_type == "Diamond Range":
-	# 		rate = multiplier * pr
-	# 	else:
-	# 		rate = (
-	# 			gemstone_price_list[0].get("handling_charges_rate")
-	# 			if i.is_customer_item
-	# 			else gemstone_price_list[0].get("rate")
-	# 		)
-	# 	i.total_gemstone_rate = rate
-	# 	i.gemstone_rate_for_specified_quantity = int(rate) * i.quantity
-
-	# 	amount = i.gemstone_rate_for_specified_quantity
-	# 	if is_branch_customer:
-	# 		amount = i.se_rate * i.quantity
-	# 	if not einvoice_item:
-	# 		einvoice_item, hsn_code, uom = frappe.db.get_value(
-	# 			"E Invoice Item", {"is_for_gemstone": 1}, ["name", "hsn_code", "uom"]
-	# 		)
-
-	# 	if einvoice_item:
-	# 		if invoice_data.get(f"{einvoice_item}"):
-	# 			invoice_data[f"{einvoice_item}"]["amount"] += amount
-	# 		else:
-	# 			invoice_data[f"{einvoice_item}"] = {
-	# 				"amount": amount,
-	# 				"hsn_code": hsn_code,
-	# 				"qty": 0,
-	# 				"uom": uom,
-	# 				"income_account": row.income_account,
-	# 				"cost_center": row.cost_center,
-	# 			}
-
-	# 		if amount > 0:
-	# 			invoice_data[f"{einvoice_item}"]["qty"] += i.quantity
-
-	# bom_doc.doc_pricision = (
-	# 	2 if frappe.db.get_value("Customer", bom_doc.customer, "custom_consider_2_digit_for_bom") else 3
-	# )
-	# bom_doc.diamond_pricision = (
-	# 	2
-	# 	if frappe.db.get_value("Customer", bom_doc.customer, "custom_consider_2_digit_for_diamond")
-	# 	else 3
-	# )
-	# bom_doc.gemstone_pricision = (
-	# 	2
-	# 	if frappe.db.get_value("Customer", bom_doc.customer, "custom_consider_2_digit_for_gemstone")
-	# 	else 3
-	# )
+	
 	bom_doc.gold_rate_with_gst = self.gold_rate_with_gst
-	# if gold_rate_changed:
-	customer_group = frappe.db.get_value("Customer", self.customer, "customer_group")
-	if not (
-		self.company == "KG GK Jewellers Private Limited"
-		or customer_group == "Internal"
-	):
+	customer_group=frappe.db.get_value('Customer',self.customer,'customer_group')
+	if not (self.company == "KG GK Jewellers Private Limited" or customer_group == "Internal"):
 		bom_doc.validate()
 		bom_doc.save()
 		update_totals("BOM", bom_doc.name)
-	# else:
-	# 	bom_doc.db_set("gold_rate_with_gst", self.gold_rate_with_gst)
-
 
 def update_making_charges(row, bom_doc, bom_row, gold_rate):
+
 	bom_doc.set_additional_rate = False
 
 	item_details = frappe.db.get_value(
-		"Item", row.item_code, ["item_subcategory", "setting_type"], as_dict=True
+		"Item",
+		row.item_code,
+		["item_subcategory", "setting_type"],
+		as_dict=True
 	)
 
 	sub_category = (item_details.get("item_subcategory") or "").strip()
@@ -2246,7 +1088,7 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 		bom_doc.company == "KG GK Jewellers Private Limited"
 		or customer_group == "Internal"
 	)
-	if not override_internal:
+	if not override_internal :
 		MCP = frappe.qb.DocType("Making Charge Price")
 		MCPIS = frappe.qb.DocType("Making Charge Price Item Subcategory")
 		MCPFS = frappe.qb.DocType("Making Charge Price Finding Subcategory")
@@ -2296,9 +1138,10 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 		# frappe.msgprint(f"yt{query}")
 		making_charge_details = query.run(as_dict=True)
 
+		
+
 		# ---------------- FALLBACK FOR FINDING ----------------
 		if not making_charge_details and bom_row.parentfield != "metal_detail":
-			# frappe.msgprint(f"hiioooiiu{bom_row.metal_type},{bom_doc.customer}")
 			query = (
 				frappe.qb.from_(MCP)
 				.left_join(MCPFS)
@@ -2331,66 +1174,50 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 				.limit(1)
 			)
 
+		
 			making_charge_details = query.run(as_dict=True)
 			if len(making_charge_details) > 0:
-				# frappe.msgprint(f"poiihyfy,{making_charge_details}")
-
 				making_charges = making_charge_details[0]
-
 				rate_per_gm = flt(making_charges.get("rate_per_gm") or 0)
 				rate_per_pc = flt(making_charges.get("rate_per_pc") or 0)
 				threshold = flt(making_charges.get("rate_per_gm_threshold") or 2)
-				subcontracting_rate = flt(
-					making_charges.get("subcontracting_rate") or 0
-				)
-				subcontracting_wastage = flt(
-					making_charges.get("subcontracting_wastage") or 0
-				)
+				subcontracting_rate=flt(making_charges.get("subcontracting_rate") or 0)
+				subcontracting_wastage=flt(making_charges.get("subcontracting_wastage") or 0)
 
 				# 🔥 IMPORTANT FIX: ALWAYS COMPARE WITH BOM LEVEL WEIGHT
 				weight = flt(bom_doc.metal_and_finding_weight or 0)
-
 				# ---------------- THRESHOLD LOGIC (FIXED FOR FINDING) ----------------
-
+			
 		# ---------------- APPLY RESULT ----------------
 		if len(making_charge_details) > 0:
-			# frappe.msgprint(f"poiihyfy,{making_charge_details}")
-
 			making_charges = making_charge_details[0]
-
 			rate_per_gm = flt(making_charges.get("rate_per_gm") or 0)
 			rate_per_pc = flt(making_charges.get("rate_per_pc") or 0)
 			threshold = flt(making_charges.get("rate_per_gm_threshold") or 2)
-			subcontracting_rate = flt(making_charges.get("subcontracting_rate") or 0)
-			subcontracting_wastage = flt(
-				making_charges.get("subcontracting_wastage") or 0
-			)
+			subcontracting_rate=flt(making_charges.get("subcontracting_rate") or 0)
+			subcontracting_wastage=flt(making_charges.get("subcontracting_wastage") or 0)
 			# 🔥 IMPORTANT FIX: ALWAYS COMPARE WITH BOM LEVEL WEIGHT
 			weight = flt(bom_doc.metal_and_finding_weight or 0)
 			# frappe.throw(f"{weight}")
 
 			# ---------------- THRESHOLD LOGIC (FIXED FOR FINDING) ----------------
 			if bom_row.is_customer_item:
-				bom_row.rate = 0
-				bom_row.making_rate = subcontracting_rate
+				bom_row.rate=0
+				bom_row.making_rate =subcontracting_rate
 				metal_making_charges = subcontracting_rate * bom_row.quantity
 				wastage_rate = subcontracting_wastage
-				frappe.msgprint("hii")
 			else:
-				if weight <= threshold:
+				if weight <= threshold :
 					metal_making_charges = rate_per_pc
 					# metal_making_charges = 5
 					bom_row.making_rate = rate_per_pc
-					# bom_row.making_rate = 0
 					bom_row.making_amount = bom_row.making_rate
 					wastage_rate = flt(making_charges.get("wastage_per_pcs") or 0)
-					# frappe.msgprint(f"if1 {bom_row.parentfield}{bom_row.making_amount}| {bom_row.as_dict()} | {bom_row.making_rate} | {weight} | {threshold}")
 				else:
 					metal_making_charges = rate_per_gm * bom_row.quantity
 					bom_row.making_rate = rate_per_gm
 					bom_row.making_amount = metal_making_charges
 					wastage_rate = flt(making_charges.get("wastage") or 0)
-
 			bom_row.making_amount = metal_making_charges
 			bom_row.wastage_rate = wastage_rate
 			bom_row.wastage_amount = bom_row.wastage_rate * bom_row.amount / 100
@@ -2398,32 +1225,26 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 			additional_net_weight = 0
 
 			# ---------------- DIAMOND LOGIC ----------------
-			if (
-				not bom_doc.set_additional_rate
-				and bom_row.parentfield == "metal_detail"
-			):
-				if frappe.db.get_value(
-					"Customer", bom_doc.customer, "compute_making_charges_on"
-				) == "Diamond Inclusive" and flt(bom_row.metal_purity) == flt(
-					bom_doc.metal_purity
+			if not bom_doc.set_additional_rate and bom_row.parentfield == "metal_detail":
+				if (
+					frappe.db.get_value("Customer", bom_doc.customer, "compute_making_charges_on")
+					== "Diamond Inclusive"
+					and flt(bom_row.metal_purity) == flt(bom_doc.metal_purity)
 				):
 					if not bom_doc.total_diamond_weight_per_gram:
 						bom_doc.total_diamond_weight_per_gram = flt(
 							flt(bom_doc.total_diamond_weight) / 5, 3
 						)
 
-					bom_row.additional_net_weight = (
-						bom_doc.total_diamond_weight_per_gram
-					)
+					bom_row.additional_net_weight = bom_doc.total_diamond_weight_per_gram
 					additional_net_weight = bom_row.additional_net_weight
 					bom_doc.set_additional_rate = True
 
-			bom_row.fg_purchase_rate = flt(
-				making_charges.get("supplier_fg_purchase_rate") or 0
-			)
+			bom_row.fg_purchase_rate = flt(making_charges.get("supplier_fg_purchase_rate") or 0)
 			bom_row.fg_purchase_amount = bom_row.fg_purchase_rate * (
 				bom_row.quantity + additional_net_weight
 			)
+
 
 	bom_doc.making_charge = flt(
 		sum(r.making_amount for r in bom_doc.metal_detail)
@@ -2432,15 +1253,11 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 
 
 def update_payment_terms(self, payment_terms_data=None):
-	# frappe.throw(str(payment_terms_data))
 	if self.payment_terms_template:
 		return
-
+	
 	if not self.grand_total:
 		return
-	# custom_term = None
-	# if frappe.db.exists("Customer Payment Terms", {"customer": self.customer}):
-	# 	custom_term = frappe.get_doc("Customer Payment Terms", {"customer": self.customer})
 
 	payment_term_dict = {}
 	due_date_list = []
@@ -2473,9 +1290,9 @@ def update_payment_terms(self, payment_terms_data=None):
 
 	if remaining_terms:
 		frappe.throw(
-			_(
-				"Following Items not mentioned in Customer Payment Terms. <br><b>{0}</b>"
-			).format("<br>".join(remaining_terms))
+			_("Following Items not mentioned in Customer Payment Terms. <br><b>{0}</b>").format(
+				"<br>".join(remaining_terms)
+			)
 		)
 	# if custom_term:
 	# 	for row in custom_term.customer_payment_details:
@@ -2521,14 +1338,10 @@ def update_payment_terms(self, payment_terms_data=None):
 
 			description = []
 			for item_type in payment_term_dict[row]["item_type"]:
-				charge_type = frappe.db.get_value(
-					"E Invoice Item", item_type, "charge_type"
-				)
-				if (
-					charge_type in ["Making Charges", "Labour Charges"]
-					and total_making_amount > 0
-				):
+				charge_type = frappe.db.get_value("E Invoice Item", item_type, "charge_type")
+				if charge_type in ["Making Charges", "Labour Charges"] and total_making_amount > 0:
 					if charge_type == "Making Charges" and not self.is_customer_metal:
+						
 						# payment_amount += total_making_amount
 						payment_amount += payment_terms_data.get(item_type)
 						# payment_amount += self.total_taxes_and_charges
@@ -2540,14 +1353,8 @@ def update_payment_terms(self, payment_terms_data=None):
 				elif charge_type == "Studded Metal" and total_metal_amount > 0:
 					payment_amount += payment_terms_data.get(item_type)
 					description.append(item_type)
-				elif (
-					charge_type in ["Studded Diamond", "Handling Charges"]
-					and total_diamond_amount > 0
-				):
-					if (
-						charge_type == "Studded Diamond"
-						and not self.is_customer_diamond
-					):
+				elif charge_type in ["Studded Diamond", "Handling Charges"] and total_diamond_amount > 0:
+					if charge_type == "Studded Diamond" and not self.is_customer_diamond:
 						payment_amount += payment_terms_data.get(item_type)
 						# payment_amount += total_diamond_amount
 						description.append(item_type)
@@ -2558,18 +1365,12 @@ def update_payment_terms(self, payment_terms_data=None):
 					payment_amount += total_gemstone_amount
 					description.append(item_type)
 
-			if (
-				payment_term_dict[row]["due_date_based_on"]
-				== "Day(s) after invoice date"
-			):
+			if payment_term_dict[row]["due_date_based_on"] == "Day(s) after invoice date":
 				due_date = getdate(self.posting_date) + timedelta(
-					days=int(payment_terms["due_days"])
-				)
+						days=int(payment_terms["due_days"])
+							)
 
-			elif (
-				payment_term_dict[row]["due_date_based_on"]
-				== "Day(s) after the end of the invoice month"
-			):
+			elif payment_term_dict[row]["due_date_based_on"] == "Day(s) after the end of the invoice month":
 				posting_date = get_last_day(self.posting_date)
 				due_date = datetime.strptime(posting_date, "%Y-%m-%d") + timedelta(
 					days=int(payment_term_dict[row]["due_days"])
@@ -2583,14 +1384,10 @@ def update_payment_terms(self, payment_terms_data=None):
 				item_to_append.append(
 					{
 						"due_date": due_date,
-						"description": ", ".join(
-							item_type for item_type in description
-						),
+						"description": ", ".join(item_type for item_type in description),
 						"payment_term": row,
 						"payment_amount": payment_amount,
-						"custom_invoice_portion": flt(
-							(payment_amount / self.grand_total) * 100
-						)
+						"custom_invoice_portion": flt((payment_amount / self.grand_total) * 100)
 						if self.grand_total > 0
 						else 0,
 					}
@@ -2599,26 +1396,20 @@ def update_payment_terms(self, payment_terms_data=None):
 		self.due_date = max(due_date_list)
 		self.extend("payment_schedule", item_to_append)
 
-
 def update_income_account(self):
 	if self.is_opening == "No":
 		income_account = frappe.db.get_value(
-			"Account",
-			{"company": self.company, "custom_sales_type": self.sales_type},
-			"name",
+			"Account", {"company": self.company, "custom_sales_type": self.sales_type}, "name"
 		)
 		if income_account:
 			for row in self.items:
 				row.income_account = income_account
 
-
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_completed_product_return_orders(
-	doctype, txt, searchfield, start, page_len, filters
-):
-	return frappe.db.sql(
-		"""
+def get_completed_product_return_orders(doctype, txt, searchfield, start, page_len, filters):
+
+    return frappe.db.sql("""
         SELECT pro.name
         FROM `tabProduct Return Order Form` pro
         WHERE pro.docstatus = 1
@@ -2636,10 +1427,9 @@ def get_completed_product_return_orders(
           )
         ORDER BY pro.modified DESC
         LIMIT %(start)s, %(page_len)s
-    """,
-		{
-			"txt": f"%{txt}%",
-			"start": start,
-			"page_len": page_len,
-		},
-	)
+    """, {
+        "txt": f"%{txt}%",
+        "start": start,
+        "page_len": page_len,
+    })
+
