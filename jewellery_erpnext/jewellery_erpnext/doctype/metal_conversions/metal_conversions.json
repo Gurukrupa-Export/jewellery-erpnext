@@ -23,12 +23,12 @@
   "branch",
   "section_break_6lpva",
   "source_warehouse",
-  "scan_source_item",
   "column_break_6oxul",
   "target_warehouse",
   "column_break_aw0qk",
   "stock_entry",
   "metal_converter_tab",
+  "scan_source_item",
   "source_item",
   "source_qty",
   "is_melting_loss",
@@ -55,6 +55,7 @@
   "section_break_6tcjy",
   "source_attribute_value",
   "multiple_metal_converter_tab",
+  "scan_mc_source_item",
   "mc_source_table",
   "section_break_xldck",
   "calculate",
@@ -162,6 +163,12 @@
   },
   {
    "fieldname": "scan_source_item",
+   "fieldtype": "Data",
+   "label": "Scan Item Code",
+   "options": "Barcode"
+  },
+  {
+   "fieldname": "scan_mc_source_item",
    "fieldtype": "Data",
    "label": "Scan Item Code",
    "options": "Barcode"

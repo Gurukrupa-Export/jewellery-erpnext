@@ -18,6 +18,161 @@ frappe.ui.form.on("Sales Invoice", {
 			"label",
 			"E Invoice Item"
 		);
+
+		
+    frm.add_custom_button(__("Get Product Return Order Form"), function () {
+
+    frappe.prompt(
+        [
+            {
+                fieldname: "product_return_order_form",
+                fieldtype: "Link",
+                label: "Product Return Order Form",
+                options: "Product Return Order Form",
+                reqd: 1,
+                get_query: function () {
+                    return {
+                        query: "jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.get_completed_product_return_orders"
+                    };
+                }
+            }
+        ],
+        function (values) {
+
+            // Get Product Return Order Form
+            frappe.call({
+                method: "frappe.client.get",
+                args: {
+                    doctype: "Product Return Order Form",
+                    name: values.product_return_order_form
+                },
+                callback: function (r) {
+
+                    if (!r.message) return;
+
+                    let prf = r.message;
+
+                    frm.set_value("customer", prf.customer);
+                    frm.set_value("company", prf.company);
+                    frm.set_value("gold_rate_with_gst", prf.gold_rate_with_gst);
+                    frm.set_value("custom_product_return_form_ref", prf.name);
+
+                    frm.clear_table("items");
+
+
+                    // Fetch Product Return Orders linked with this PRF
+                    frappe.call({
+                        method: "frappe.client.get_list",
+                        args: {
+                            doctype: "Product Return Order",
+                            filters: {
+                                product_return_order_form: prf.name
+                            },
+                            fields: [
+                                "name",
+                                "item_code",
+                                "serial_no",
+                                "new_bom",
+                                "rate",
+                                "amount"
+                            ],
+                            limit_page_length: 0
+                        },
+                        callback: function (res) {
+
+                            let pro_list = res.message || [];
+
+                            if (!pro_list.length) {
+                                frappe.msgprint(__("No Product Return Order found for this form."));
+                                return;
+                            }
+
+
+                            prf.items.forEach(function (row) {
+
+                                let d = frm.add_child("items");
+
+                                d.item_code = row.item_code;
+                                d.custom_serial_no = row.serial_no;
+                                d.item_name = row.item_name;
+                                d.serial_no = row.serial_no;
+                                d.qty = -Math.abs(row.qty);
+                                d.income_account = "Sales - KGJPL";
+                                d.uom = row.uom;
+
+
+                                // Match Product Return Order
+                                let matched_pro = pro_list.find(function (pro) {
+                                    return (
+                                        pro.item_code === row.item_code &&
+                                        pro.serial_no === row.serial_no
+                                    );
+                                });
+
+
+                                if (matched_pro && matched_pro.new_bom) {
+
+                                    d.bom = matched_pro.new_bom;
+
+
+                                    // Fetch BOM Details
+                                    frappe.call({
+                                        method: "frappe.client.get",
+                                        args: {
+                                            doctype: "BOM",
+                                            name: matched_pro.new_bom
+                                        },
+                                        callback: function (bom_res) {
+
+                                            if (bom_res.message) {
+
+                                                let bom = bom_res.message;
+
+                                                console.log("BOM:", bom);
+
+
+                                                d.rate =
+                                                    flt(bom.total_bom_amount) +
+                                                    flt(bom.certification_amount) +
+                                                    flt(bom.making_charge) +
+                                                    flt(bom.hallmarking_amount);
+
+
+                                                d.amount = d.rate * Math.abs(d.qty);
+
+
+                                                frm.refresh_field("items");
+                                            }
+                                        }
+                                    });
+
+
+                                } else {
+
+                                    // Fallback from Product Return Order Form
+                                    d.rate = row.rate || 0;
+                                    d.amount = row.amount || 0;
+
+                                }
+
+                            });
+
+
+                            frm.refresh_field("items");
+
+                        }
+                    });
+
+                }
+            });
+
+        },
+        __("Select Product Return Order Form"),
+        __("Get")
+    );
+
+});
+	
 	},
 	setup(frm) {
 		frm.set_query("custom_diamond_quality", function () {
@@ -1426,50 +1581,47 @@ let set_edit_bom_details = (
 	var hall_amount = 0;
 	var customer_metal_purity =0;
 	// metal details table append
-	dialog.fields_dict.metal_detail.df.data = [];
-
 	$.each(doc.metal_detail, function (index, d) {
 		metal_amount += d.amount;
 		making_amount += d.making_amount;
 		wastage_amount += d.wastage_amount;
 		frappe.call({
-			method: "jewellery_erpnext.query.get_customer_mtel_purity",
-			args: {
-				customer: cur_frm.doc.customer,
-				metal_type: d.metal_type,
-				metal_touch: d.metal_touch,
-			},
-			callback: function (response) {
-				let metal_purity_value = response.message || "N/A";
-
-				dialog.fields_dict.metal_detail.df.data.push({
-					docname: d.name,
+				method: "jewellery_erpnext.query.get_customer_mtel_purity",
+				args: {
+					customer: cur_frm.doc.customer,
 					metal_type: d.metal_type,
 					metal_touch: d.metal_touch,
-					metal_purity: d.metal_purity,
-					customer_metal_purity: metal_purity_value,
-					metal_colour: d.metal_colour,
-					amount: d.amount,
-					rate: d.rate,
-					actual_rate: d.rate,
-					quantity: d.quantity,
-					actual_quantity: d.actual_quantity,
-					difference_qty: d.difference_qty,
-					wastage_rate: d.wastage_rate,
-					wastage_amount: d.wastage_amount,
-					making_rate: d.making_rate,
-					making_amount: d.making_amount,
-					difference: d.difference,
-				});
-
-				if (
-					dialog.fields_dict.metal_detail.df.data.length ===
-					doc.metal_detail.length
-				) {
-					dialog.fields_dict.metal_detail.grid.refresh();
-				}
-			}
+				},
+				callback: function (response) {
+					let metal_purity_value = response.message || "N/A";
+					// console.log('hii',metal_purity_value);
+		// customer_metal_purity = frappe.db.sql(f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{d.metal_type}' and metal_touch = '{d.metal_touch}'""",as_dict=True)[0]['metal_purity']
+		dialog.fields_dict.metal_detail.df.data.push({
+			docname: d.name,
+			metal_type: d.metal_type,
+			metal_touch: d.metal_touch,
+			metal_purity: d.metal_purity,
+			customer_metal_purity: metal_purity_value,
+			metal_colour: d.metal_colour,
+			amount: d.amount,
+			rate: d.rate,
+			actual_rate: d.rate,
+			quantity: d.quantity,
+			actual_quantity: d.actual_quantity,
+			difference_qty: d.difference_qty,
+			wastage_rate: d.wastage_rate,
+			wastage_amount: d.wastage_amount,
+			making_rate: d.making_rate,
+			// making_rate_copy: d.making_rate,
+			making_amount: d.making_amount,
+			difference: d.difference,
 		});
+		metal_data = dialog.fields_dict.metal_detail.df.data;
+		dialog.fields_dict.metal_detail.grid.refresh();
+		}
+			});
+		
+		
 	});
 
 	// diamond details table append

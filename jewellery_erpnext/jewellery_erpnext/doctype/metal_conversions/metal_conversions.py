@@ -326,28 +326,25 @@ class MetalConversions(Document):
 		total = qty * source_item_purity
 		return total, source_item_purity
 
-	@frappe.whitelist()
-	def scan_source_item_action(self, barcode):
-		"""Item-code-only scan: resolve the scanned barcode to a metal Item and drop it
-		into the active mode. Fetches ONLY the item — qty/batch/purity/total are left for
-		the operator and the existing handlers (MC Source Table.qty and
-		before_validate -> update_batch_details on save) to fill, exactly as manual entry."""
-		item = frappe.db.get_value("Item", {"name": barcode}, "name")
-		if not item:
-			frappe.throw(_("Item {0} not found.").format(barcode))
 
-		# Honour the same constraint the Source Item / grid Link fields enforce
-		# (set_Metal_filter -> variant_of in M/F): only metal items are convertible.
-		if frappe.db.get_value("Item", item, "variant_of") not in ("M", "F"):
-			frappe.throw(_("Scanned item {0} is not a metal item.").format(item))
+@frappe.whitelist()
+def get_scan_metal_item(barcode):
+	"""Resolve a scanned barcode to a metal Item code for the Metal Conversions
+	scan-to-add convenience. Item-code only: returns just the validated item — qty,
+	batch and purity are filled by the operator / existing handlers exactly like manual
+	entry. Raises if the code is unknown or is not a metal (M/F variant) item.
 
-		if self.multiple_metal_converter:
-			self.append("mc_source_table", {"item_code": item})
-		else:
-			self.source_item = item
-
-		self.scan_source_item = ""  # clear the input for the next scan
-		return True
+	Module level (doc-independent) on purpose: the client resolves a scan and sets the
+	value itself, so it works reliably on an unsaved form instead of round-tripping doc
+	mutations through the server."""
+	item = frappe.db.get_value("Item", {"name": barcode}, "name")
+	if not item:
+		frappe.throw(_("Item {0} not found.").format(barcode))
+	# Honour the same constraint the Source Item / grid Link fields enforce
+	# (set_Metal_filter -> variant_of in M/F): only metal items are convertible.
+	if frappe.db.get_value("Item", item, "variant_of") not in ("M", "F"):
+		frappe.throw(_("Scanned item {0} is not a metal item.").format(item))
+	return item
 
 
 def get_metal_purity_percentage(item_code):
