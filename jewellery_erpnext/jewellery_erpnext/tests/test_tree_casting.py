@@ -1131,6 +1131,10 @@ class TestReceiveMaterial(IntegrationTestCase):
 		self.assertEqual(produce.qty, 1.0)
 		self.assertEqual(produce.is_finished_item, 1)
 		self.assertEqual(produce.set_basic_rate_manually, 1)
+		# basic_rate is deliberately NOT set by the builder: CustomStockEntry.set_basic_rate
+		# assigns it from the consumed rows once ERPNext has resolved their outgoing rates
+		# (customization/utils/loss_valuation) -- see test_process_loss_valuation.py.
+		self.assertFalse(getattr(produce, "basic_rate", None))
 
 	def test_receive_partial_then_full_status(self):
 		tree = self._issued_tree(10.0)
