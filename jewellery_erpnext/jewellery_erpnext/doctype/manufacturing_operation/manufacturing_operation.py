@@ -928,6 +928,8 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 		pmo,
 		[
 			"name",
+			"quotation",
+			"quotation_item",
 			"sales_order",
 			"sales_order_item",
 			"manufacturing_plan",
@@ -1007,17 +1009,27 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 						"warehouse",
 					)
 
-		# Fallback to Sales Order reservation if not found by operation
-		if not s_wh and pmo_det.get("sales_order"):
-			s_wh = frappe.db.get_value(
-				"Stock Reservation Entry",
-				{
-					**sre_filters,
-					"voucher_type": "Sales Order",
-					"voucher_no": pmo_det.get("sales_order"),
-				},
-				"warehouse",
+		# Fallback to demand-voucher reservation if not found by operation. New records
+		# anchor on the Quotation; legacy records on the Sales Order.
+		if not s_wh:
+			from jewellery_erpnext.utils import resolve_demand_anchor
+
+			demand_voucher_type, demand_voucher_no, _detail_no = resolve_demand_anchor(
+				pmo_det.get("quotation"),
+				pmo_det.get("quotation_item"),
+				pmo_det.get("sales_order"),
+				pmo_det.get("sales_order_item"),
 			)
+			if demand_voucher_no:
+				s_wh = frappe.db.get_value(
+					"Stock Reservation Entry",
+					{
+						**sre_filters,
+						"voucher_type": demand_voucher_type,
+						"voucher_no": demand_voucher_no,
+					},
+					"warehouse",
+				)
 
 		# Final fallback: Try to resolve from MOP Log if still None
 		if not s_wh:
