@@ -293,6 +293,54 @@ frappe.ui.form.on("Refining Entry", {
 		}
 	},
 
+	employee(frm) {
+		// Employee scopes which scrap/dust batches the fetch pulls, so changing it makes
+		// any already-fetched System Quantity / Material Items stale. Clear the
+		// auto-fetched dust state (preserving manually added consumable rows) and prompt
+		// a re-fetch. Scrap rows are hand-picked from a dialog, so only warn there rather
+		// than destroying the operator's selection. Never auto-refetch: fetch is
+		// side-effecting (fetch_dust_materials saves; the scrap path opens a modal).
+		if (frm.is_new()) return;
+
+		if (frm.doc.refining_type === "Dust Refining") {
+			const kept = (frm.doc.material_items || []).filter(
+				(r) => r.is_consumable || r.source_type === "Consumable"
+			);
+			frm.clear_table("material_items");
+			kept.forEach((r) => {
+				const row = frm.add_child("material_items");
+				Object.assign(row, r);
+			});
+			frm.refresh_field("material_items");
+			frm.set_value("system_quantity", 0);
+			frm.set_value("physical_quantity", 0);
+			frm.set_value("difference_quantity", 0);
+			frappe.show_alert({
+				message: __("Employee changed — re-run Fetch Dust Balance and Fetch Scrap Materials."),
+				indicator: "orange",
+			});
+		} else if (frm.doc.refining_type === "Scrap Refining") {
+			frappe.show_alert({
+				message: __("Employee changed — re-run Fetch Scrap Items."),
+				indicator: "orange",
+			});
+		}
+	},
+
+	multiple_operation(frm) {
+		// A depends_on-hidden Link keeps its value; clear a stale employee so it can't
+		// silently scope a multiple-operation dust run (employee-wise is single-op only).
+		if (frm.doc.multiple_operation && frm.doc.employee) {
+			frm.set_value("employee", null);
+		}
+	},
+
+	multiple_department(frm) {
+		if (frm.doc.multiple_department && frm.doc.employee) {
+			frm.set_value("employee", null);
+		}
+	},
+
 	// --- Custom triggers ---
 
 	set_naming_series(frm) {
@@ -368,7 +416,15 @@ frappe.ui.form.on("Refining Entry", {
 					return;
 				}
 				frappe.show_alert(__("Fetching scrap materials..."));
-				frm.call("fetch_dust_materials").then(() => frm.reload_doc());
+				frm.call("fetch_dust_materials").then((r) => {
+					// With an employee selected, an empty result is a legitimate state
+					// (that employee has no scrap/dust batches) — flag it so it is not
+					// mistaken for a misconfiguration.
+					if (frm.doc.employee && (!r || !r.message)) {
+						frappe.msgprint(__("No scrap/dust batches found for the selected Employee."));
+					}
+					frm.reload_doc();
+				});
 			});
 		}
 

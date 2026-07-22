@@ -4,7 +4,7 @@ import frappe
 from erpnext.setup.utils import get_exchange_rate
 from frappe import _
 from frappe.query_builder.custom import ConstantColumn
-from frappe.utils import flt, get_last_day , getdate
+from frappe.utils import flt, get_last_day , getdate,strip
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import _calculate_diamond_amount
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_totals
@@ -1123,10 +1123,10 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 
 		if bom_row.parentfield != "metal_detail":
 			query = query.where(child_table.metal_touch == bom_row.metal_touch)
-			frappe.msgprint(f"huyt{bom_row.making_amount}")
+			# frappe.msgprint(f"huyt{bom_row.making_amount}")
 
 		query = query.limit(1)
-
+		# frappe.msgprint(f"yt{query}")
 		making_charge_details = query.run(as_dict=True)
 
 		
@@ -1165,6 +1165,7 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 				.limit(1)
 			)
 
+		
 			making_charge_details = query.run(as_dict=True)
 			if len(making_charge_details) > 0:
 				making_charges = making_charge_details[0]
@@ -1188,6 +1189,7 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 			subcontracting_wastage=flt(making_charges.get("subcontracting_wastage") or 0)
 			# 🔥 IMPORTANT FIX: ALWAYS COMPARE WITH BOM LEVEL WEIGHT
 			weight = flt(bom_doc.metal_and_finding_weight or 0)
+			# frappe.throw(f"{weight}")
 
 			# ---------------- THRESHOLD LOGIC (FIXED FOR FINDING) ----------------
 			if bom_row.is_customer_item:
@@ -1198,6 +1200,7 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 			else:
 				if weight <= threshold :
 					metal_making_charges = rate_per_pc
+					# metal_making_charges = 5
 					bom_row.making_rate = rate_per_pc
 					bom_row.making_amount = bom_row.making_rate
 					wastage_rate = flt(making_charges.get("wastage_per_pcs") or 0)
@@ -1233,10 +1236,6 @@ def update_making_charges(row, bom_doc, bom_row, gold_rate):
 				bom_row.quantity + additional_net_weight
 			)
 
-	# ---------------- TOTALS ----------------
-	bom_doc.total_making_amount = sum(
-		flt(r.making_amount) for r in bom_doc.metal_detail
-	)
 
 	bom_doc.making_charge = flt(
 		sum(r.making_amount for r in bom_doc.metal_detail)

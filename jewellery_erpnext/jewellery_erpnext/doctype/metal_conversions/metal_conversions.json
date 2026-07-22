@@ -28,6 +28,7 @@
   "column_break_aw0qk",
   "stock_entry",
   "metal_converter_tab",
+  "scan_source_item",
   "source_item",
   "source_qty",
   "is_melting_loss",
@@ -54,6 +55,7 @@
   "section_break_6tcjy",
   "source_attribute_value",
   "multiple_metal_converter_tab",
+  "scan_mc_source_item",
   "mc_source_table",
   "section_break_xldck",
   "calculate",
@@ -158,6 +160,18 @@
    "label": "Stock Entry",
    "no_copy": 1,
    "options": "Stock Entry"
+  },
+  {
+   "fieldname": "scan_source_item",
+   "fieldtype": "Data",
+   "label": "Scan Item Code",
+   "options": "Barcode"
+  },
+  {
+   "fieldname": "scan_mc_source_item",
+   "fieldtype": "Data",
+   "label": "Scan Item Code",
+   "options": "Barcode"
   },
   {
    "collapsible": 1,

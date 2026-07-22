@@ -28,6 +28,20 @@ def update_inventory_dimentions(self):
 			self.custom_customer = frappe.db.get_value(
 				row.options, self.custom_voucher_detail_no, "customer"
 			)
+			# Stamp the responsible employee so scrap/dust can be fetched employee-wise
+			# in refining (Batch.custom_employee). Prefer the source row's own employee
+			# (Employee Loss Entry sets it per produce row); fall back to the Stock Entry
+			# header employee (Employee IR Process Loss sets it only on the header).
+			# Copied the same way custom_customer/custom_inventory_type are.
+			emp = frappe.db.get_value(
+				row.options, self.custom_voucher_detail_no, "employee"
+			)
+			if not emp and self.reference_doctype == "Stock Entry":
+				emp = frappe.db.get_value(
+					"Stock Entry", self.reference_name, "employee"
+				)
+			if emp:
+				self.custom_employee = emp
 			attribute_value = frappe.db.get_value(
 				"Item Variant Attribute",
 				{"parent": self.item, "attribute": "Metal Type"},
