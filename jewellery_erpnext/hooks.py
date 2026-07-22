@@ -57,6 +57,12 @@ doctype_list_js = {
 
 _EOD_LOCK_VALIDATOR = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock.validate_not_eod_sync_locked"
 
+# Stock Reconciliation Time Window (MOP Settings "enforce_stock_recon_window", default OFF).
+# While a department's recon window is open: block every stock-movement transaction that
+# touches it, and allow a Stock Reconciliation only inside the window. See stock_recon_window.py.
+_RECON_WINDOW_MOVEMENT_VALIDATOR = "jewellery_erpnext.jewellery_erpnext.stock_recon_window.validate_stock_movement_allowed"
+_RECON_WINDOW_RECON_VALIDATOR = "jewellery_erpnext.jewellery_erpnext.stock_recon_window.validate_reconciliation_within_window"
+
 # Non-retry deadlock reduction: pin this connection to READ COMMITTED (no gap locks)
 # for every web request + RQ job. GATED by site_config "use_read_committed" (default
 # OFF) so it can be enabled/rolled back without a code change. See db_isolation.py.
@@ -68,25 +74,27 @@ doc_events = {
 	# The validator bypasses itself when frappe.flags.in_eod_mop_sync is True
 	# so the sync process can create Stock Entries and update MOP Logs unhindered.
 	"Employee IR": {
-		"before_save": _EOD_LOCK_VALIDATOR,
+		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
+			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.validate_no_sample_issue",
 		],
-		"before_cancel": _EOD_LOCK_VALIDATOR,
+		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 	},
 	"Department IR": {
-		"before_save": _EOD_LOCK_VALIDATOR,
+		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
+			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.department_ir_utils.validate_no_sample_issue",
 		],
-		"before_cancel": _EOD_LOCK_VALIDATOR,
+		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 	},
 	"MOP Log": {
-		"before_save": _EOD_LOCK_VALIDATOR,
-		"before_submit": _EOD_LOCK_VALIDATOR,
-		"before_cancel": _EOD_LOCK_VALIDATOR,
+		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
+		"before_submit": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
+		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 	},
 	"Quotation": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.quotation.quotation.before_validate",
@@ -105,7 +113,7 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
 		],
 		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
-        "before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.clear_hybrid_header_tax_rate",
+		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.clear_hybrid_header_tax_rate",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_submit",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
@@ -134,13 +142,14 @@ doc_events = {
 	},
 	"Stock Entry": {
 		# "validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate",
-		"before_save": _EOD_LOCK_VALIDATOR,
+		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
 		],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
+			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
@@ -155,6 +164,7 @@ doc_events = {
 		],
 		"before_cancel": [
 			_EOD_LOCK_VALIDATOR,
+			_RECON_WINDOW_MOVEMENT_VALIDATOR,
 			# F-002/F-012: pre-order this SE's Bins on cancel too, matching every other
 			# flow, so a cancel can't race a concurrent submit into a 1213 deadlock.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
@@ -227,8 +237,8 @@ doc_events = {
 	},
 	"Stock Reconciliation": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department",
-		"before_save": _EOD_LOCK_VALIDATOR,
-		"before_submit": _EOD_LOCK_VALIDATOR,
+		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_RECON_VALIDATOR],
+		"before_submit": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_RECON_VALIDATOR],
 		"before_cancel": _EOD_LOCK_VALIDATOR,
 	},
 	"Payment Entry": {
