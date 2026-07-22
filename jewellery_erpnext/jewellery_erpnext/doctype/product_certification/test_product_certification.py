@@ -6,17 +6,28 @@ from unittest.mock import patch
 import frappe
 from frappe import ValidationError
 from frappe.tests import IntegrationTestCase
-from frappe.utils import cint
+from frappe.utils import cint, flt
 
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
 	create_po,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification import (
+	create_product_certification_receive,
 	get_stock_item_against_mwo,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.test_serial_number_creator import (
 	create_snc,
 )
+
+PURITY_PATH = "jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.get_purity_percentage"
+
+# Purities for the synthetic Fire Assy items — the real ones come from the Metal Purity
+# attribute value, which test items do not carry.
+_TEST_PURITY = {"TEST-ITEM-001": 91.9, "PURE-ITEM-001": 99.9}
+
+
+def _purity(item_code):
+	return _TEST_PURITY.get(item_code)
 
 
 class TestProductCertification(IntegrationTestCase):
@@ -575,11 +586,21 @@ class TestProductCertification(IntegrationTestCase):
 			self.assertIn("PURE-ITEM-001", exploded_items)
 			self.assertIn("LOSS-ITEM-001", exploded_items)
 
-			for d in certification.exploded_product_details:
-				d.gross_weight = 33.3333333333
-			certification.exploded_product_details[0].gross_weight += 0.0000000001
+			# Only the received metal and the recovered pure are entered — the loss row
+			# and the pure row's purity-converted quantity are derived on save.
+			main_row, pure_row, loss_row = certification.exploded_product_details
+			main_row.gross_weight = 60.0
+			pure_row.gross_weight = 30.0
+			loss_row.gross_weight = 0.0
 
-			certification.submit()
+			with patch(PURITY_PATH, side_effect=_purity):
+				certification.save()
+
+				# 30 × 99.9 / 91.9 = 32.617 at 24KT, so 100 − 60 − 32.617 = 7.383 is lost.
+				self.assertEqual(pure_row.conversion_quantity, 32.617)
+				self.assertEqual(loss_row.gross_weight, 7.383)
+
+				certification.submit()
 			mock_process.assert_called_once()
 
 	@patch("frappe.model.document.Document._validate_links")
@@ -732,6 +753,338 @@ class TestProductCertification(IntegrationTestCase):
 
 	def tearDown(self):
 		return super().tearDown()
+
+
+class TestFireAssyLossWeight(IntegrationTestCase):
+	"""The reported "loss is not calculated in the receive entry" bug.
+
+	Kept free of the heavy create_test_data() fixture: calculate_fire_assy_loss_weight is
+	pure arithmetic over the two child tables, so an unsaved document is enough to pin
+	the behaviour that production data proved wrong (GE-PFA-26-00082 booked a hand-typed
+	0.05 where the purity-converted answer is 0.041).
+	"""
+
+	def _doc(self, service_type, issue_weight, rows, main_slip=None, tree_no=None):
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Receive"
+		doc.service_type = service_type
+		doc.append(
+			"product_details",
+			{
+				"item_code": "TEST-ITEM-001",
+				"main_slip": main_slip,
+				"tree_no": tree_no,
+				"total_weight": issue_weight,
+				"pure_item": "PURE-ITEM-001",
+				"loss_item": "LOSS-ITEM-001",
+			},
+		)
+		for item_code, gross_weight in rows:
+			doc.append(
+				"exploded_product_details",
+				{
+					"item_code": item_code,
+					"main_slip": main_slip,
+					"tree_no": tree_no,
+					"gross_weight": gross_weight,
+				},
+			)
+		return doc
+
+	def _calculate(self, doc):
+		with patch(PURITY_PATH, side_effect=_purity):
+			doc.calculate_fire_assy_loss_weight()
+		return doc.exploded_product_details
+
+	def test_loss_calculated_without_main_slip(self):
+		"""The bug: keying on main_slip alone made the routine return early.
+
+		Most Fire Assy documents carry no main slip at all, so the loss row was left at
+		whatever the operator typed.
+		"""
+		doc = self._doc(
+			"Fire Assy Service",
+			2.0,
+			[("TEST-ITEM-001", 1.85), ("PURE-ITEM-001", 0.1), ("LOSS-ITEM-001", 0.0)],
+		)
+		_main, pure, loss = self._calculate(doc)
+
+		self.assertEqual(pure.conversion_quantity, 0.109)
+		self.assertEqual(loss.gross_weight, 0.041)
+
+	def test_loss_calculated_with_main_slip_unchanged(self):
+		doc = self._doc(
+			"Fire Assy Service",
+			1.0,
+			[("TEST-ITEM-001", 0.9), ("PURE-ITEM-001", 0.02), ("LOSS-ITEM-001", 0.0)],
+			main_slip="SLIP-001",
+			tree_no="TREE-001",
+		)
+		_main, pure, loss = self._calculate(doc)
+
+		self.assertEqual(pure.conversion_quantity, 0.022)
+		self.assertEqual(loss.gross_weight, 0.078)
+
+	def test_loss_calculated_for_xrf_without_pure_row(self):
+		"""XRF was excluded outright by the old service_type guard, and it has no pure
+		row — so `if not pure_weight: continue` would have skipped it regardless."""
+		doc = self._doc(
+			"XRF Services",
+			7.0,
+			[("TEST-ITEM-001", 6.5), ("LOSS-ITEM-001", 0.0)],
+		)
+		_main, loss = self._calculate(doc)
+
+		self.assertEqual(loss.gross_weight, 0.5)
+
+	def test_loss_clamped_at_zero_on_gain(self):
+		doc = self._doc(
+			"Fire Assy Service",
+			1.0,
+			[("TEST-ITEM-001", 1.0), ("PURE-ITEM-001", 0.5), ("LOSS-ITEM-001", 0.0)],
+		)
+		_main, _pure, loss = self._calculate(doc)
+
+		self.assertEqual(loss.gross_weight, 0.0)
+
+	def test_nothing_entered_yet_does_not_book_the_whole_issue_as_loss(self):
+		"""The exploded rows are created on the first save, before any weight is typed.
+
+		Booking the issue as loss there would balance validate_exploded_qty and let an
+		all-loss document through.
+		"""
+		doc = self._doc(
+			"Fire Assy Service",
+			30.0,
+			[("TEST-ITEM-001", 0.0), ("PURE-ITEM-001", 0.0), ("LOSS-ITEM-001", 0.0)],
+		)
+		rows = self._calculate(doc)
+
+		self.assertEqual([r.gross_weight for r in rows], [0.0, 0.0, 0.0])
+
+	def test_missing_purity_throws_instead_of_silently_zeroing(self):
+		doc = self._doc(
+			"Fire Assy Service",
+			2.0,
+			[("TEST-ITEM-001", 1.85), ("PURE-ITEM-001", 0.1), ("LOSS-ITEM-001", 0.0)],
+		)
+		with patch(PURITY_PATH, return_value=None):
+			with self.assertRaises(frappe.ValidationError):
+				doc.calculate_fire_assy_loss_weight()
+
+	def test_distribute_amount_does_not_overwrite_the_computed_loss(self):
+		"""distribute_amount used to back-fill zero-weight exploded rows with an
+		un-purity-converted remainder, which fought the loss calculation."""
+		doc = self._doc(
+			"Fire Assy Service",
+			2.0,
+			[("TEST-ITEM-001", 1.85), ("PURE-ITEM-001", 0.1), ("LOSS-ITEM-001", 0.0)],
+		)
+		doc.total_amount = 90.0
+		self._calculate(doc)
+		doc.distribute_amount()
+
+		main, pure, loss = doc.exploded_product_details
+		self.assertEqual(loss.gross_weight, 0.041)
+		self.assertEqual(main.gross_weight, 1.85)
+		self.assertEqual(pure.gross_weight, 0.1)
+		self.assertEqual([r.amount for r in doc.exploded_product_details], [30.0] * 3)
+
+	def test_distribute_amount_keys_on_each_rows_own_order(self):
+		"""The back-fill used to reuse the `common_order` left over from the loop above,
+		so it only ever looked up the LAST Product Details row's order."""
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Receive"
+		doc.service_type = "Hall Marking Service"
+		doc.total_amount = 100.0
+		for pmo, weight in (("PMO-A", 2.0), ("PMO-B", 5.0)):
+			doc.append(
+				"product_details",
+				{"parent_manufacturing_order": pmo, "total_weight": weight},
+			)
+		for pmo in ("PMO-A", "PMO-B"):
+			doc.append(
+				"exploded_product_details",
+				{
+					"item_code": "TEST-ITEM-001",
+					"parent_manufacturing_order": pmo,
+					"gross_weight": 0,
+				},
+			)
+
+		doc.distribute_amount()
+
+		self.assertEqual(doc.exploded_product_details[0].gross_weight, 2.0)
+		self.assertEqual(doc.exploded_product_details[1].gross_weight, 5.0)
+
+
+class TestPartialReceipt(IntegrationTestCase):
+	"""Receive status rollup, over-receipt cap and the pre-filled "Create Receiving".
+
+	Service type is left blank so submit does not reach into the stock machinery — the
+	ledger under test is service-type agnostic, and the stock side is covered by
+	TestHallmarkingStockEntryPcs.
+	"""
+
+	def setUp(self):
+		# The ledger under test is pure arithmetic over the two child tables — it does
+		# not care whether the company or the item codes exist, so the documents stay
+		# synthetic and this class needs no create_test_data() fixture.
+		for target in (
+			"frappe.model.document.Document._validate_links",
+			"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.create_stock_entry",
+			"frappe.enqueue",
+		):
+			patcher = patch(target)
+			self.addCleanup(patcher.stop)
+			patcher.start()
+
+	def _issue(self, *weights):
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Issue"
+		doc.company = "Test_Company"
+		for index, weight in enumerate(weights, start=1):
+			doc.append(
+				"product_details",
+				{"item_code": f"PARTIAL-ITEM-{index:03d}", "total_weight": weight},
+			)
+		doc.insert(ignore_permissions=True)
+		doc.submit()
+		return doc
+
+	def _receive(self, issue, rows):
+		"""``rows`` is ``[(issue_row_index, weight), ...]`` — a subset of the issue."""
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Receive"
+		doc.company = "Test_Company"
+		doc.receive_against = issue.name
+		for index, weight in rows:
+			source = issue.product_details[index]
+			doc.append(
+				"product_details",
+				{
+					"item_code": source.item_code,
+					"total_weight": weight,
+					"issue_row": source.name,
+				},
+			)
+		doc.insert(ignore_permissions=True)
+		return doc
+
+	def _status(self, issue):
+		return frappe.db.get_value(
+			"Product Certification", issue.name, "receive_status"
+		)
+
+	def _ledger(self, issue):
+		return [
+			(flt(r.received_weight), flt(r.pending_weight))
+			for r in frappe.get_all(
+				"Product Details",
+				filters={
+					"parent": issue.name,
+					"parenttype": "Product Certification",
+				},
+				fields=["received_weight", "pending_weight"],
+				order_by="idx asc",
+			)
+		]
+
+	def test_issue_starts_not_received(self):
+		issue = self._issue(2.0, 5.0)
+
+		self.assertEqual(self._status(issue), "Not Received")
+		self.assertEqual(self._ledger(issue), [(0.0, 2.0), (0.0, 5.0)])
+
+	def test_partial_then_full_receipt(self):
+		issue = self._issue(2.0, 5.0)
+
+		self._receive(issue, [(0, 2.0)]).submit()
+		self.assertEqual(self._status(issue), "Partially Received")
+		self.assertEqual(self._ledger(issue), [(2.0, 0.0), (0.0, 5.0)])
+
+		second = self._receive(issue, [(1, 5.0)])
+		second.submit()
+		self.assertEqual(self._status(issue), "Fully Received")
+		self.assertEqual(self._ledger(issue), [(2.0, 0.0), (5.0, 0.0)])
+
+		# Cancelling the last receipt must put the Issue back, not leave it closed.
+		second.cancel()
+		self.assertEqual(self._status(issue), "Partially Received")
+		self.assertEqual(self._ledger(issue), [(2.0, 0.0), (0.0, 5.0)])
+
+	def test_weight_level_partial_on_a_single_row(self):
+		issue = self._issue(30.0)
+
+		self._receive(issue, [(0, 12.0)]).submit()
+		self.assertEqual(self._status(issue), "Partially Received")
+		self.assertEqual(self._ledger(issue), [(12.0, 18.0)])
+
+		self._receive(issue, [(0, 18.0)]).submit()
+		self.assertEqual(self._status(issue), "Fully Received")
+		self.assertEqual(self._ledger(issue), [(30.0, 0.0)])
+
+	def test_float_dust_still_reads_as_fully_received(self):
+		"""3 × 10 against 30 lands pending on ~1e-15, not exactly 0."""
+		issue = self._issue(30.0)
+		for _ in range(3):
+			self._receive(issue, [(0, 10.0)]).submit()
+
+		self.assertEqual(self._status(issue), "Fully Received")
+
+	def test_over_receipt_is_blocked(self):
+		issue = self._issue(2.0)
+		self._receive(issue, [(0, 1.5)]).submit()
+
+		with self.assertRaises(frappe.ValidationError):
+			self._receive(issue, [(0, 1.0)])
+
+	def test_over_receipt_capped_on_the_sum_of_repeated_rows(self):
+		issue = self._issue(2.0)
+
+		with self.assertRaises(frappe.ValidationError):
+			self._receive(issue, [(0, 1.5), (0, 1.0)])
+
+	def test_amending_a_receipt_does_not_count_itself(self):
+		issue = self._issue(2.0)
+		receive = self._receive(issue, [(0, 2.0)])
+		receive.submit()
+
+		# Re-validating the same document must not see its own weight as consumed.
+		receive.reload()
+		receive.validate()
+
+	def test_create_receiving_prefills_only_the_pending_rows(self):
+		issue = self._issue(2.0, 5.0)
+		self._receive(issue, [(0, 2.0)]).submit()
+
+		target = create_product_certification_receive(issue.name)
+
+		self.assertEqual(target.type, "Receive")
+		self.assertEqual(target.receive_against, issue.name)
+		self.assertEqual(len(target.product_details), 1)
+		self.assertEqual(target.product_details[0].total_weight, 5.0)
+		self.assertEqual(
+			target.product_details[0].issue_row, issue.product_details[1].name
+		)
+		# The Issue's exploded rows must not ride along — get_exploded_table rebuilds
+		# the table from the rows that actually land on this receipt.
+		self.assertEqual(len(target.exploded_product_details), 0)
+
+	def test_create_receiving_prefills_the_outstanding_weight(self):
+		issue = self._issue(30.0)
+		self._receive(issue, [(0, 12.0)]).submit()
+
+		target = create_product_certification_receive(issue.name)
+
+		self.assertEqual(target.product_details[0].total_weight, 18.0)
+
+	def test_create_receiving_refuses_a_closed_issue(self):
+		issue = self._issue(2.0)
+		self._receive(issue, [(0, 2.0)]).submit()
+
+		with self.assertRaises(frappe.ValidationError):
+			create_product_certification_receive(issue.name)
 
 
 class TestHallmarkingStockEntryPcs(IntegrationTestCase):
