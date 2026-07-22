@@ -1136,7 +1136,14 @@ class RefiningEntry(Document):
 	def _dust_available_qty(self, warehouse):
 		"""Available qty of ALL items in a warehouse.
 		Mirrors _fetch_loss_items_from_warehouse so System Quantity equals the sum of
-		the Material Items it fetches (reads from raw Bin.actual_qty to match Stock Balance)."""
+		the Material Items it fetches. Without an employee filter this reads raw
+		Bin.actual_qty (matches Stock Balance). With an employee selected it sums only
+		that employee's scrap/dust batches, using the exact same enumeration the material
+		fetch uses (_dust_employee_batch_rows), so the two can never diverge."""
+		if self.employee:
+			return sum(
+				flt(r["qty"], 3) for r in self._dust_employee_batch_rows(warehouse)
+			)
 		total = 0.0
 		bins = frappe.db.get_all(
 			"Bin",
@@ -1148,6 +1155,45 @@ class RefiningEntry(Document):
 			if aq > 0:
 				total += aq
 		return total
+
+	def _dust_employee_batch_rows(self, warehouse):
+		"""Per-batch dust rows in ``warehouse`` restricted to Batch.custom_employee ==
+		self.employee. Shared by _dust_available_qty (System Quantity) and
+		_fetch_loss_items_from_warehouse (Material Items) so the total and the fetched
+		rows are computed from the exact same batch enumeration and stay identical.
+
+		Non-batch stock cannot carry the employee marker, so it is excluded entirely
+		when an employee filter is active (acceptable per the feature requirement).
+		Blocked-customer batches are NOT excluded here (mirroring the unfiltered dust
+		path): blocked customers are enforced authoritatively at submit
+		(create_material_transfer_se / validate_customer_block), and matching that keeps
+		System Quantity consistent with the material rows."""
+		rows = []
+		if not warehouse or not self.employee:
+			return rows
+		bins = frappe.db.get_all(
+			"Bin",
+			filters={"warehouse": warehouse, "actual_qty": [">", 0]},
+			fields=["item_code"],
+		)
+		for b in bins:
+			if not frappe.db.get_value("Item", b.item_code, "has_batch_no"):
+				continue
+			for a in self.allocate_fifo_batches(
+				b.item_code, warehouse, 9999999, throw_if_missing=False
+			):
+				aq = flt(a.get("qty"), 3)
+				if aq <= 0:
+					continue
+				if (
+					frappe.db.get_value("Batch", a.get("batch_no"), "custom_employee")
+					!= self.employee
+				):
+					continue
+				rows.append(
+					{"item_code": b.item_code, "batch_no": a.get("batch_no"), "qty": aq}
+				)
+		return rows
 
 	@frappe.whitelist()
 	def fetch_dust_materials(self):
@@ -1589,7 +1635,20 @@ class RefiningEntry(Document):
 		item_group_cache = {}
 		grouped_items = {}
 		for item in self.material_items:
-			key = (item.item_code, item.serial_no, item.warehouse)
+			# Employee-filtered dust rows are per-batch and MUST stay per-batch: keep
+			# batch_no in the grouping key and payload so they neither merge across
+			# batches nor lose their batch (which would make submit re-FIFO across ALL
+			# batches, breaking the employee filter and diverging from System Quantity).
+			# Every other row keeps the historical item-wise merge — row_batch is a
+			# constant None there, so the key collapses to the old 3-tuple and MWO/SN/
+			# plain-dust grouping is byte-for-byte unchanged.
+			dust_batch_row = bool(
+				self.refining_type == "Dust Refining"
+				and self.employee
+				and item.get("batch_no")
+			)
+			row_batch = item.batch_no if dust_batch_row else None
+			key = (item.item_code, item.serial_no, item.warehouse, row_batch)
 			if item.item_code not in item_group_cache:
 				item_group_cache[item.item_code] = item.get(
 					"item_group"
@@ -1599,6 +1658,7 @@ class RefiningEntry(Document):
 					"item_code": item.item_code,
 					"serial_no": item.serial_no,
 					"warehouse": item.warehouse,
+					"batch_no": row_batch,
 					"qty": item.qty,
 					"uom": item.uom,
 					"source_type": item.source_type,
@@ -3182,8 +3242,33 @@ class RefiningEntry(Document):
 		self._fetch_loss_items_from_warehouse(scrap_wh)
 
 	def _fetch_loss_items_from_warehouse(self, warehouse):
-		"""Fetch ALL loss items (dust items) from a specific warehouse."""
+		"""Fetch ALL loss items (dust items) from a specific warehouse.
+
+		With no employee filter: batch-less rows from raw Bin (unchanged) — batches are
+		FIFO-resolved at submit. With an employee selected: per-batch rows carrying
+		batch_no, restricted to that employee's batches, drawn from the SAME enumeration
+		that _dust_available_qty sums, so System Quantity and these rows always match."""
 		if not warehouse:
+			return
+
+		if self.employee:
+			for r in self._dust_employee_batch_rows(warehouse):
+				purity = self.get_item_purity(r["item_code"])
+				uom = frappe.db.get_value("Item", r["item_code"], "stock_uom") or "Gram"
+				item_group = frappe.db.get_value("Item", r["item_code"], "item_group")
+				self.append(
+					"material_items",
+					{
+						"item_code": r["item_code"],
+						"item_group": item_group,
+						"warehouse": warehouse,
+						"qty": r["qty"],
+						"batch_no": r["batch_no"],
+						"uom": uom,
+						"source_type": "Dust",
+						"purity": purity,
+					},
+				)
 			return
 
 		bins = frappe.db.get_all(
@@ -3277,12 +3362,19 @@ class RefiningEntry(Document):
 					if aq <= 0:
 						continue
 					# Only Scrap-tagged batches are eligible for Scrap Refining.
-					if (
-						frappe.db.get_value(
-							"Batch", a.get("batch_no"), "custom_batch_type"
-						)
-						!= "Scrap"
-					):
+					# When an Employee is selected, additionally restrict to that
+					# employee's own scrap batches (Batch.custom_employee). Fetch both
+					# markers in one call. Batches minted before custom_employee existed
+					# return None and are correctly excluded when an employee is set
+					# (forward-only, per requirement).
+					btype, bemp = frappe.db.get_value(
+						"Batch",
+						a.get("batch_no"),
+						["custom_batch_type", "custom_employee"],
+					) or (None, None)
+					if btype != "Scrap":
+						continue
+					if self.employee and bemp != self.employee:
 						continue
 					scrap_items.append(
 						{
