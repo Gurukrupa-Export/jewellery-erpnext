@@ -45,16 +45,6 @@ frappe.ui.form.on("Quotation", {
 				},
 				__("Create")
 			);
-			frm.add_custom_button(
-				__("Delivery Note"),
-				function () {
-					frappe.model.open_mapped_doc({
-						method: "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.make_delivery_note_batch",
-						frm: frm,
-					});
-				},
-				__("Create")
-			);
 		}
 		if (frm.has_perm("submit")) {
 			if (frm.doc.docstatus == 1) {

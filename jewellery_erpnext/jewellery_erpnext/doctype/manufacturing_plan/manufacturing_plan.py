@@ -507,6 +507,36 @@ def make_manufacturing_plan(source_name, target_doc=None):
 	)
 	target.docs_to_append = [source_name]
 	target.get_items_for_production()
+
+	# Every line is already planned (qty <= manufacturing_order_qty), so there is nothing left
+	# to fetch. Say so instead of opening a blank plan, which just looks broken.
+	if not target.manufacturing_plan_table:
+		existing_plans = frappe.db.sql_list(
+			"""
+			SELECT DISTINCT mpt.parent
+			FROM `tabManufacturing Plan Table` mpt
+			JOIN `tabManufacturing Plan` mp ON mp.name = mpt.parent
+			WHERE mpt.quotation = %s AND mp.docstatus = 1
+			ORDER BY mpt.parent
+			""",
+			(source_name,),
+		)
+		if existing_plans:
+			frappe.throw(
+				_(
+					"All items in Quotation {0} are already planned in: {1}. "
+					"Nothing left to plan."
+				).format(source_name, ", ".join(existing_plans)),
+				title=_("Already Planned"),
+			)
+		frappe.throw(
+			_(
+				"No pending items to plan in Quotation {0}. Each item needs a BOM "
+				"(Copy BOM on the row, or Master BOM on the Item) and pending qty."
+			).format(source_name),
+			title=_("Nothing to Plan"),
+		)
+
 	return target
 
 
