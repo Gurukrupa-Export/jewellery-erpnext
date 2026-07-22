@@ -2068,6 +2068,10 @@ class TestBuilder(IntegrationTestCase):
 		self.assertEqual(produce["set_basic_rate_manually"], 1)
 		self.assertEqual(produce["inventory_type"], "Regular Stock")
 		self.assertNotIn("batch_no", produce)
+		# basic_rate is deliberately NOT set by the builder: CustomStockEntry.set_basic_rate
+		# assigns it from the consumed rows once ERPNext has resolved their outgoing rates
+		# (customization/utils/loss_valuation) -- see test_process_loss_valuation.py.
+		self.assertNotIn("basic_rate", produce)
 		self.assertTrue(se.saved and se.submitted)
 		doc.db_set.assert_called_once_with("stock_entry", "SE-LOSS-0001")
 

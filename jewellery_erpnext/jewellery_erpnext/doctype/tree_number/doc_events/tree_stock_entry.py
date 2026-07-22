@@ -265,9 +265,12 @@ def _append_repack_loss_pair(
 ):
 	"""Append a consume(metal @ MSL) + produce(ML variant @ Scrap) row pair to a Repack SE.
 
-	Produce-row flags mirror ``loss_stock_entry._build_combined_loss_se`` so the metal value is
-	written off as loss (``set_basic_rate_manually`` opts the produce row out of the
-	valuation-rate requirement; no ``basic_rate`` is set).
+	Produce-row flags mirror ``loss_stock_entry._build_combined_loss_se``:
+	``set_basic_rate_manually`` opts the produce row out of ERPNext's Repack rate pooling (which
+	would smear every FG row's cost across one shared rate). No ``basic_rate`` is set here --
+	``CustomStockEntry.set_basic_rate`` assigns it centrally from the consumed rows once ERPNext
+	has resolved their outgoing rates, so the metal's value moves onto the loss item instead of
+	vanishing from the ledger (see ``customization/utils/loss_valuation``).
 
 	``batch_no`` pre-resolves the consumed batch (see ``_tree_owed_batches``); the produce row is
 	left without a ``batch_no`` so its ML batch is minted on submit — but it still carries the
