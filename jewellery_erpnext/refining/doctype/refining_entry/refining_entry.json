@@ -29,6 +29,7 @@
   "scan_serial_no",
   "scan_scrap_qr",
   "scrap_item",
+  "employee",
   "work_order_action",
   "mwo_details",
   "serial_no_details",
@@ -39,7 +40,6 @@
   "column_break_dust",
   "multiple_operation",
   "multiple_department",
-  "employee",
   "operation",
   "loss_item",
   "refining_department_detail",
@@ -323,7 +323,7 @@
    "label": "For Multiple Department"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department",
+   "depends_on": "eval:(doc.refining_type=='Scrap Refining') || (doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department)",
    "fieldname": "employee",
    "fieldtype": "Link",
    "label": "Employee",

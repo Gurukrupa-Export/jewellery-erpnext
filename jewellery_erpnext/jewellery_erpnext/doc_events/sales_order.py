@@ -78,7 +78,7 @@ def set_missing_tax_category_and_template(self):
 	which isn't guaranteed to be on on every site (confirmed off on at least
 	one), so doing it explicitly here keeps this independent of that setting.
 	"""
-	if self.sales_type not in ("Outright", "Outwork", "Branch Sales", "Hybrid"):
+	if self.sales_type not in ("Finished Goods", "Subcontracting", "Branch Sales", "Hybrid"):
 		return
 	if self.tax_category and self.taxes_and_charges and self.get("taxes"):
 		return
@@ -1033,13 +1033,12 @@ def _process_metal_detail1(self, doc, ctx, cctx):
             else:
                 if cctx.billing_currency == "USD":
                     s.se_rate     = s.se_rate * cctx.exchange_rate
-                    s.making_rate=(operational_cost/total_weight)*cctx.exchange_rate
+                    # s.making_rate=(operational_cost/total_weight)*cctx.exchange_rate
+                    s.making_rate = sub_info.get("rate_per_gm", 0)*cctx.exchange_rate
                 else:
-                    s.making_rate=operational_cost/total_weight
-                    calculated_gold_rate  = _get_calculated_gold_rate(
-                    self.customer, s.metal_type, s.metal_touch,
-                    self.gold_rate_with_gst, ctx.gold_gst_rate,
-                    )
+                    # s.making_rate=operational_cost/total_weight
+                    s.making_rate = sub_info.get("rate_per_gm", 0)
+
                 # s.rate           = s.se_rate
                 s.rate = round(calculated_gold_rate, 2)
                 s.wastage_rate   = 0
@@ -1202,7 +1201,6 @@ def _get_finding_sub_info(mc_name, finding_type, doc):
 def _process_finding_detail1(self, doc, ctx, cctx):
 	if not hasattr(doc, "finding_detail") or not doc.finding_detail:
 		doc.total_finding_amount = 0
-
 		return
 
 	finding_cache = {}  # local per-BOM-doc: finding_type → find_data
@@ -1219,12 +1217,21 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 		)
 
 		f.customer_metal_purity = customer_metal_purity
-		f.quantity = round(f.quantity, f_metal_prec)
+		mc_name, sub_info, threshold = _get_making_charge(self, doc, f.metal_touch, ctx, cctx)
+
+		finding_type = f.finding_type
+		if finding_type not in finding_cache:
+			finding_cache[finding_type] = _get_finding_sub_info(mc_name, finding_type, doc)
+
+		find_data = finding_cache[finding_type]
+
+		f.customer_metal_purity = customer_metal_purity
+		f.quantity              = round(f.quantity, f_metal_prec)
 
 		if f.is_customer_item:
 			f.rate = 0
 			f.amount = 0
-			# f.making_rate    = find_data.get("subcontracting_rate")
+			f.making_rate    = find_data.get("subcontracting_rate")
 			f.wastage_rate = 0
 			f.wastage_amount = 0
 			f.making_amount = round(f.making_rate * f.quantity, 2)
@@ -1257,8 +1264,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate          = 0
 				f.amount = 0
 				# f.making_rate=operational_cost/total_weight
-				f.making_rate     = find_data.get("rate_per_gm", 0)
-				f.making_amount = round(f.making_rate * f.quantity, 2)
+				f.making_rate     = 0
+				f.making_amount = 0
 				f.wastage_rate   = 0
 				f.wastage_amount = 0
 				f.fg_purchase_rate = 0
@@ -1269,10 +1276,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				else:
 					# f.making_rate = operational_cost / total_weight
 					f.making_rate     = find_data.get("rate_per_gm", 0)
-				calculated_gold_rate  = _get_calculated_gold_rate(
-				self.customer, f.metal_type, f.metal_touch,
-				self.gold_rate_with_gst, ctx.gold_gst_rate,
-			)
+					
+				calculated_gold_rate  = _get_calculated_gold_rate(self.customer, f.metal_type, f.metal_touch,self.gold_rate_with_gst, ctx.gold_gst_rate,)
 				f.rate=round(calculated_gold_rate, 2)
 				# f.rate = round(f.se_rate, 2)
 				f.amount = round(f.rate * f.quantity, 2)
@@ -2233,39 +2238,54 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 	# needing to re-walk the BOM. Certification/hallmarking/freight/custom
 	# duty/sale amount are always treated as company-owned.
 	if self.sales_type == "Hybrid":
-		def _owned_supplied(detail, value_fn):
+		def _material_vs_labour(detail):
+			"""Metal/Finding: material amount is owned-gated (already 0
+			when is_customer_item=1); making+wastage is always labour —
+			it's job-work value whether it's our metal or the customer's."""
 			owned = supplied = 0.0
 			for r in detail:
-				value = value_fn(r)
+				owned    += flt(r.amount)
+				supplied += flt(r.making_amount) + flt(r.wastage_amount)
+			return owned, supplied
+
+		def _material_vs_handling(detail):
+			"""Diamond: base stone rate is owned-gated (already 0 when
+			is_customer_item=1); handling_rate is always labour, set for
+			both owned and supplied rows."""
+			owned = supplied = 0.0
+			for r in detail:
+				owned    += flt(r.quantity) * flt(r.total_diamond_rate)
+				supplied += flt(r.quantity) * flt(r.handling_rate)
+			return owned, supplied
+
+		def _owned_supplied_gemstone(detail):
+			# Gemstone has no separate handling_rate field — total_gemstone_rate
+			# is either the material rate or the handling rate depending on
+            # is_customer_item, never both — so it stays ownership-gated.
+			owned = supplied = 0.0
+			for r in detail:
+				value = flt(r.gemstone_rate_for_specified_quantity)
 				if r.is_customer_item:
 					supplied += value
 				else:
 					owned += value
 			return owned, supplied
 
-		m_owned, m_supplied = _owned_supplied(
-			doc.metal_detail, lambda r: flt(r.amount) + flt(r.making_amount) + flt(r.wastage_amount)
-		)
-		f_owned, f_supplied = _owned_supplied(
-			doc.finding_detail, lambda r: flt(r.amount) + flt(r.making_amount) + flt(r.wastage_amount)
-		)
-		d_owned, d_supplied = _owned_supplied(
-			doc.diamond_detail, lambda r: flt(r.diamond_rate_for_specified_quantity)
-		)
-		g_owned, g_supplied = _owned_supplied(
-			doc.gemstone_detail, lambda r: flt(r.gemstone_rate_for_specified_quantity)
-		)
+		m_owned, m_supplied = _material_vs_labour(doc.metal_detail)
+		f_owned, f_supplied = _material_vs_labour(doc.finding_detail)
+		d_owned, d_supplied = _material_vs_handling(doc.diamond_detail)
+		g_owned, g_supplied = _owned_supplied_gemstone(doc.gemstone_detail)
 		misc_owned = (
-			flt(doc.certification_amount) + flt(doc.hallmarking_amount)
-			+ flt(doc.custom_duty_amount) + flt(doc.freight_amount) + flt(doc.sale_amount)
-		)
+            flt(doc.certification_amount) + flt(doc.hallmarking_amount)
+            + flt(doc.custom_duty_amount) + flt(doc.freight_amount) + flt(doc.sale_amount)
+        )
 
 		row.custom_company_owned_amount = round(
-			m_owned + f_owned + d_owned + g_owned + misc_owned, _prec
-		)
+            m_owned + f_owned + d_owned + g_owned + misc_owned, _prec
+        )
 		row.custom_customer_supplied_amount = round(
-			m_supplied + f_supplied + d_supplied + g_supplied, _prec
-		)
+            m_supplied + f_supplied + d_supplied + g_supplied, _prec
+        )
 	else:
 		row.custom_company_owned_amount     = 0
 		row.custom_customer_supplied_amount = 0
@@ -2993,41 +3013,36 @@ def customer_approval_filter(doctype, txt, searchfield, start, page_len, filters
 
 
 def validate_item_dharm(self):
-	precision = frappe.db.get_value(
-		"Customer", self.customer, "custom_precision_variable"
-	)
-	allowed = (
-		"Finished Goods",
-		"Subcontracting",
-		"Certification",
-		"Branch Sales",
-		"Repairing",
-		"Hybrid"
-	)
+	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
+	allowed = ("Finished Goods", "Subcontracting", "Certification","Branch Sales","Repairing","Hybrid")
 	if self.sales_type in allowed:
 		if self.sales_type == "Hybrid" and self.company not in HYBRID_ENABLED_COMPANIES:
 			frappe.throw(_("Hybrid Sales Type is not yet enabled for company {0}").format(self.company))
+
 		customer_payment_term_doc = frappe.get_doc(
-			"Customer Payment Terms", {"customer": self.customer}
+			"Customer Payment Terms",
+			{"customer": self.customer}
 		)
 
 		e_invoice_items = []
 
 		for row in self.items:
+
 			gross_weighh = frappe.get_value("BOM", row.bom, "gross_weight")
 			row.custom_gross_weight = gross_weighh
+
 
 		# Prepare invoice items as before
 		for row in customer_payment_term_doc.customer_payment_details:
 			item_type = row.item_type
 			e_invoice_item = frappe.get_doc("E Invoice Item", item_type)
-			# frappe.msgprint(f"{e_invoice_item}")
+
 			if self.sales_type == "Hybrid":
 				# Hybrid carries no tax_rate of its own — job-work item
 				# types (repair/labour, used for customer-supplied
-				# material) get the Subcontracting rate, everything else
+				# material) get the Outwork rate, everything else
 				# (owned material, making, hallmarking, certification)
-				# gets the Finished Goods rate.
+				# gets the Outright rate.
 				lookup_sales_type = (
 					"Subcontracting"
 					if (e_invoice_item.is_for_repair or e_invoice_item.is_for_labour)
@@ -3035,40 +3050,35 @@ def validate_item_dharm(self):
 				)
 			else:
 				lookup_sales_type = self.sales_type
-				
+
 			matched_sales_type_row = None
 			for st_row in e_invoice_item.sales_type:
-				if st_row.sales_type == self.sales_type:
+				if st_row.sales_type == lookup_sales_type:
 					matched_sales_type_row = st_row
 					break
 
 			if self.sales_type and not matched_sales_type_row:
 				continue
 
-			e_invoice_items.append(
-				{
-					"item_type": item_type,
-					"is_for_metal": e_invoice_item.is_for_metal,
-					"is_for_hallmarking": e_invoice_item.is_for_hallmarking,
-					"is_for_certification": e_invoice_item.is_for_certification,
-					"is_for_labour": e_invoice_item.is_for_labour,
-					"is_for_diamond": e_invoice_item.is_for_diamond,
-					"diamond_type": e_invoice_item.diamond_type,
-					"is_for_making": e_invoice_item.is_for_making,
-					"is_for_finding": e_invoice_item.is_for_finding,
-					"is_for_finding_making": e_invoice_item.is_for_finding_making,
-					"is_for_gemstone": e_invoice_item.is_for_gemstone,
-					"metal_type": e_invoice_item.metal_type,
-					"metal_purity": e_invoice_item.metal_purity,
-					"uom": e_invoice_item.uom,
-					"finding_category": e_invoice_item.finding_category,
-					"tax_rate": matched_sales_type_row.tax_rate
-					if matched_sales_type_row
-					else 0,
-					"is_for_repair": e_invoice_item.is_for_repair,
-				}
-			)
-			# frappe.msgprint(f"{e_invoice_items}")
+			e_invoice_items.append({
+				"item_type": item_type,
+				"is_for_metal": e_invoice_item.is_for_metal,
+				"is_for_hallmarking":e_invoice_item.is_for_hallmarking,
+				"is_for_certification":e_invoice_item.is_for_certification,
+				"is_for_labour": e_invoice_item.is_for_labour,
+				"is_for_diamond": e_invoice_item.is_for_diamond,
+				"diamond_type": e_invoice_item.diamond_type,
+				"is_for_making": e_invoice_item.is_for_making,
+				"is_for_finding": e_invoice_item.is_for_finding,
+				"is_for_finding_making": e_invoice_item.is_for_finding_making,
+				"is_for_gemstone": e_invoice_item.is_for_gemstone,
+				"metal_type": e_invoice_item.metal_type,
+				"metal_purity": e_invoice_item.metal_purity,
+				"uom": e_invoice_item.uom,
+				"finding_category":e_invoice_item.finding_category,
+				"tax_rate": matched_sales_type_row.tax_rate if matched_sales_type_row else 0,
+				"is_for_repair":e_invoice_item.is_for_repair
+			})
 
 		self.set("custom_invoice_item", [])
 		aggregated_metal_items = {}
@@ -3083,17 +3093,19 @@ def validate_item_dharm(self):
 		aggregated_repairing_items = {}
 		for item in self.items:
 			bom_doc = None
-			if item.custom_tracking_bom:
-				bom_doc = frappe.get_doc("Tracking Bom", item.custom_tracking_bom)
-			elif item.bom:
+			if item.bom:
 				bom_doc = frappe.get_doc("BOM", item.bom)
 			if bom_doc:
 				if bom_doc.hallmarking_amount:
 					# frappe.throw("hii")
 					for e_item in e_invoice_items:
-						if e_item["is_for_hallmarking"]:
+						if (
+							e_item["is_for_hallmarking"]
+						):  
 							key = (e_item["item_type"], e_item["uom"])
+							
 							if key not in aggregated_hallmarking_items:
+								
 								aggregated_hallmarking_items[key] = {
 									"item_code": e_item["item_type"],
 									"item_name": e_item["item_type"],
@@ -3103,30 +3115,28 @@ def validate_item_dharm(self):
 									"tax_rate": e_item["tax_rate"],
 									"tax_amount": 0,
 									"amount_with_tax": 0,
-									"delivery_date": self.delivery_date,
+									"delivery_date": self.delivery_date
 								}
-							aggregated_hallmarking_items[key][
-								"amount"
-							] += bom_doc.hallmarking_amount
-							aggregated_hallmarking_items[key]["qty"] += 1
-							if bom_doc.item_category == "Earrings":
-								aggregated_hallmarking_items[key]["qty"] += 1
-							tax_rate_decimal = (
-								aggregated_hallmarking_items[key]["tax_rate"] / 100
-							)
-							aggregated_hallmarking_items[key]["tax_amount"] += (
-								bom_doc.hallmarking_amount * tax_rate_decimal
-							)
+
+							aggregated_hallmarking_items[key]["amount"] += bom_doc.hallmarking_amount
+							# frappe.msgprint(f"hii{bom_doc.hallmarking_amount}")		
+							aggregated_hallmarking_items[key]["qty"]+=1
+							if bom_doc.item_category=='Earrings':
+								aggregated_hallmarking_items[key]["qty"]+=1
+							tax_rate_decimal = aggregated_hallmarking_items[key]["tax_rate"] / 100
+							aggregated_hallmarking_items[key]["tax_amount"] += bom_doc.hallmarking_amount * tax_rate_decimal
 
 							aggregated_hallmarking_items[key]["amount_with_tax"] = (
-								aggregated_hallmarking_items[key]["amount"]
-								+ aggregated_hallmarking_items[key]["tax_amount"]
+									aggregated_hallmarking_items[key]["amount"] +
+								aggregated_hallmarking_items[key]["tax_amount"]
 							)
-
+							
 				if bom_doc.certification_amount:
 					# frappe.throw("hii")
 					for e_item in e_invoice_items:
-						if e_item["is_for_certification"]:
+						if (
+							e_item["is_for_certification"]
+						):
 							key = (e_item["item_type"], e_item["uom"])
 							if key not in aggregated_certification_items:
 								aggregated_certification_items[key] = {
@@ -3138,32 +3148,31 @@ def validate_item_dharm(self):
 									"tax_rate": e_item["tax_rate"],
 									"tax_amount": 0,
 									"amount_with_tax": 0,
-									"delivery_date": self.delivery_date,
+									"delivery_date": self.delivery_date
 								}
-							aggregated_certification_items[key][
-								"amount"
-							] += bom_doc.certification_amount
-							aggregated_certification_items[key]["qty"] += 1
-							aggregated_certification_items[key]["tax_amount"] += (
-								bom_doc.certification_amount * tax_rate_decimal
-							)
+							aggregated_certification_items[key]["amount"] += bom_doc.certification_amount
+							# frappe.msgprint(f"hii{bom_doc.certification_amount}")
+							aggregated_certification_items[key]["qty"]+=1
+							tax_rate_decimal = aggregated_certification_items[key]["tax_rate"] / 100
+							aggregated_certification_items[key]["tax_amount"] += bom_doc.certification_amount * tax_rate_decimal
 
 							aggregated_certification_items[key]["amount_with_tax"] = (
-								aggregated_certification_items[key]["amount"]
-								+ aggregated_certification_items[key]["tax_amount"]
+									aggregated_certification_items[key]["amount"] +
+								aggregated_certification_items[key]["tax_amount"]
 							)
 				for metal in bom_doc.metal_detail:
+					
 					if not metal.is_customer_item:
-						# frappe.throw(f"hii{metal.metal_touch},{metal.stock_uom},{metal.metal_type})")
+						# frappe.msgprint(f"hkhii{metal.metal_touch},{metal.stock_uom},{metal.metal_type})")
 						for e_item in e_invoice_items:
 							if (
-								e_item["is_for_metal"]
-								and metal.metal_type == e_item["metal_type"]
-								and metal.metal_touch == e_item["metal_purity"]
-								and metal.stock_uom == e_item["uom"]
+								e_item["is_for_metal"] and
+								metal.metal_type == e_item["metal_type"] and
+								metal.metal_touch == e_item["metal_purity"] and
+								metal.stock_uom == e_item["uom"]
 							):
 								key = (e_item["item_type"], e_item["uom"])
-
+								
 								if key not in aggregated_metal_items:
 									aggregated_metal_items[key] = {
 										"item_code": e_item["item_type"],
@@ -3174,43 +3183,36 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 
 								multiplied_qty = metal.quantity * item.qty
-
+								
 								# metal_rate = metal.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else metal.rate
 								# making_amount=metal.making_amount
-								metal_rate = metal.rate
-								metal_amount = round(
-									metal_rate * multiplied_qty, precision
-								)
-								# frappe.msgprint(f"heelo,{metal_amount},{metal.wastage_rate }")
+								metal_rate=metal.rate
+								metal_amount = round(metal_rate * multiplied_qty , precision) 
 								# Sum quantities and amounts
 								aggregated_metal_items[key]["qty"] += multiplied_qty
 								aggregated_metal_items[key]["amount"] += metal_amount
 								# frappe.throw(f"hiii")
 
 								# Calculate tax amount
-								tax_rate_decimal = (
-									aggregated_metal_items[key]["tax_rate"] / 100
-								)
-								aggregated_metal_items[key]["tax_amount"] += (
-									metal_amount * tax_rate_decimal
-								)
+								tax_rate_decimal = aggregated_metal_items[key]["tax_rate"] / 100
+								aggregated_metal_items[key]["tax_amount"] += metal_amount * tax_rate_decimal
 
 								aggregated_metal_items[key]["amount_with_tax"] = (
-									aggregated_metal_items[key]["amount"]
-									+ aggregated_metal_items[key]["tax_amount"]
+									aggregated_metal_items[key]["amount"] +
+									aggregated_metal_items[key]["tax_amount"]
 								)
 								break
-
+								
 						for e_item in e_invoice_items:
 							if (
-								e_item["is_for_making"]
-								and metal.metal_type == e_item["metal_type"]
-								and metal.metal_touch == e_item["metal_purity"]
-								and metal.stock_uom == e_item["uom"]
+								e_item["is_for_making"] and
+								metal.metal_type == e_item["metal_type"] and
+								metal.metal_touch == e_item["metal_purity"] and
+								metal.stock_uom == e_item["uom"]
 							):
 								key = (e_item["item_type"], e_item["uom"])
 
@@ -3225,49 +3227,44 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 
-								multiplied_qty = metal.quantity * item.qty
-								metal_making_amount = round(
-									metal.making_amount * item.qty
-									+ (metal.wastage_amount * item.qty),
-									precision,
-								)
-								aggregated_metal_making_items[key][
-									"qty"
-								] += multiplied_qty
-								aggregated_metal_making_items[key][
-									"amount"
-								] += metal_making_amount
+								# is_per_pc = (
+								# 	flt(metal.making_rate) > 0
+								# 	and abs(flt(metal.making_amount) - flt(metal.making_rate)) < 0.01
+								# )
+								# if is_per_pc:
+								# 	frappe.msgprint(f"oiuhgvbjb{metal.making_amount},{metal.making_rate}")
+								multiplied_qty =  metal.quantity * item.qty
+								metal_making_amount = round(metal.making_amount * item.qty  + (metal.wastage_amount * item.qty) , precision)
+								aggregated_metal_making_items[key]["qty"] += multiplied_qty
+								# frappe.msgprint(f"poihuuhg{metal_making_amount}, {multiplied_qty}")
+								aggregated_metal_making_items[key]["amount"] += metal_making_amount
 
-								tax_rate_decimal = (
-									aggregated_metal_making_items[key]["tax_rate"] / 100
-								)
-								aggregated_metal_making_items[key]["tax_amount"] += (
-									metal_making_amount * tax_rate_decimal
-								)
+								tax_rate_decimal = aggregated_metal_making_items[key]["tax_rate"] / 100
+								aggregated_metal_making_items[key]["tax_amount"] += metal_making_amount * tax_rate_decimal
 
-								aggregated_metal_making_items[key][
-									"amount_with_tax"
-								] = (
-									aggregated_metal_making_items[key]["amount"]
-									+ aggregated_metal_making_items[key]["tax_amount"]
+								aggregated_metal_making_items[key]["amount_with_tax"] = (
+										aggregated_metal_making_items[key]["amount"] +
+									aggregated_metal_making_items[key]["tax_amount"]
 								)
 								break
-
+							
 								# frappe.throw(f"{multiplied_qty},{aggregated_metal_items[key]["qty"]}")
 					else:
+						
 						for e_item in e_invoice_items:
 							# frappe.throw(f"{metal.stock_uom},{e_item["uom"]}")
 							if (
-								e_item["is_for_repair"]
+								e_item["is_for_repair"] 
 								# metal.metal_type == e_item["metal_type"] and
 								# metal.metal_touch == e_item["metal_purity"] and
 								# metal.stock_uom == e_item["uom"]
-							):
-								key = e_item["item_type"]
-
+							): 
+           						
+								key = (e_item["item_type"])
+								
 								# frappe.throw("hii")
 								if key not in aggregated_repairing_items:
 									aggregated_repairing_items[key] = {
@@ -3280,29 +3277,24 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 
 								multiplied_qty = metal.quantity * item.qty
-								metal_making_amount = metal.making_rate * multiplied_qty
+								metal_making_amount = metal.making_rate * multiplied_qty  
 								aggregated_repairing_items[key]["qty"] += multiplied_qty
-								aggregated_repairing_items[key][
-									"amount"
-								] += metal_making_amount
+								aggregated_repairing_items[key]["amount"] += metal_making_amount
 
-								tax_rate_decimal = (
-									aggregated_repairing_items[key]["tax_rate"] / 100
-								)
-								aggregated_repairing_items[key]["tax_amount"] += (
-									metal_making_amount * tax_rate_decimal
-								)
+								tax_rate_decimal = aggregated_repairing_items[key]["tax_rate"] / 100
+								aggregated_repairing_items[key]["tax_amount"] += metal_making_amount * tax_rate_decimal
 
 								aggregated_repairing_items[key]["amount_with_tax"] = (
-									aggregated_repairing_items[key]["amount"]
-									+ aggregated_repairing_items[key]["tax_amount"]
+										aggregated_repairing_items[key]["amount"] +
+									aggregated_repairing_items[key]["tax_amount"]
 								)
 								break
 						for e_item in e_invoice_items:
+							
 							if (
 								e_item["is_for_labour"]
 								# and metal.stock_uom == e_item["uom"]
@@ -3320,35 +3312,28 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 
 								multiplied_qty = metal.quantity * item.qty
 								# metal_rate = metal.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else metal.making_rate
-								metal_rate = metal.making_rate
+								metal_rate =metal.making_rate
 								metal_amount = metal_rate * multiplied_qty
 
-								aggregated_metal_labour_items[key][
-									"qty"
-								] += multiplied_qty
-								aggregated_metal_labour_items[key][
-									"amount"
-								] += metal_amount
-								tax_rate_decimal = (
-									aggregated_metal_labour_items[key]["tax_rate"] / 100
+								aggregated_metal_labour_items[key]["qty"] += multiplied_qty
+								aggregated_metal_labour_items[key]["amount"] += metal_amount
+								tax_rate_decimal = aggregated_metal_labour_items[key]["tax_rate"] / 100
+								aggregated_metal_labour_items[key]["tax_amount"] += metal_amount * tax_rate_decimal
+								aggregated_metal_labour_items[key]["amount_with_tax"] = (
+									aggregated_metal_labour_items[key]["amount"] +
+									aggregated_metal_labour_items[key]["tax_amount"]
 								)
-								aggregated_metal_labour_items[key]["tax_amount"] += (
-									metal_amount * tax_rate_decimal
-								)
-								aggregated_metal_labour_items[key][
-									"amount_with_tax"
-								] = (
-									aggregated_metal_labour_items[key]["amount"]
-									+ aggregated_metal_labour_items[key]["tax_amount"]
-								)
+								
+						
 
 				for diamond in bom_doc.diamond_detail:
 					if not diamond.is_customer_item:
+						# frappe.msgprint(f"gytffy{diamond.diamond_type},{diamond.stock_uom}")
 						for e_item in e_invoice_items:
 							if (
 								e_item["is_for_diamond"]
@@ -3356,7 +3341,7 @@ def validate_item_dharm(self):
 								and e_item["uom"] == diamond.stock_uom
 							):
 								key = (e_item["item_type"], e_item["uom"])
-								# frappe.throw("hii")
+								# frappe.msgprint("hii")
 								if key not in aggregated_diamond_items:
 									aggregated_diamond_items[key] = {
 										"item_code": e_item["item_type"],
@@ -3368,51 +3353,80 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 
 								multiplied_qty = diamond.quantity * item.qty
-								diamond_rate = (
-									diamond.se_rate
-									if self.company == "KG GK Jewellers Private Limited"
-									and self.customer == "GJCU0009"
-									else diamond.total_diamond_rate
-								)
-								diamond_amount = round(
-									float(diamond.diamond_rate_for_specified_quantity),
-									precision,
-								)
-
+								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
+								if self.sales_type == "Hybrid":
+									# Hybrid: only the base stone value is Outright
+									# material here — handling_rate is always
+									# job-work value, folded into the labour/
+									# Subcontracting bucket below regardless of
+									# is_customer_item.
+									diamond_amount = round(flt(diamond.quantity) * flt(diamond.total_diamond_rate) * item.qty, precision)
+								else:
+									diamond_amount = round(float(diamond.diamond_rate_for_specified_quantity) , precision)
+								# frappe.msgprint(f"hii{diamond_amount}")
 								aggregated_diamond_items[key]["qty"] += multiplied_qty
-								aggregated_diamond_items[key][
-									"amount"
-								] += diamond_amount
+								aggregated_diamond_items[key]["amount"] += diamond_amount
 
 								# Calculate average rate after accumulation
 								if aggregated_diamond_items[key]["qty"] > 0:
-									aggregated_diamond_items[key]["rate"] = (
-										aggregated_diamond_items[key]["amount"]
-										/ aggregated_diamond_items[key]["qty"]
-									)
+									aggregated_diamond_items[key]["rate"] = aggregated_diamond_items[key]["amount"] / aggregated_diamond_items[key]["qty"]
 								else:
 									aggregated_diamond_items[key]["rate"] = 0
 
-								tax_rate_decimal = (
-									aggregated_diamond_items[key]["tax_rate"] / 100
-								)
-								aggregated_diamond_items[key]["tax_amount"] += (
-									diamond_amount * tax_rate_decimal
-								)
+								tax_rate_decimal = aggregated_diamond_items[key]["tax_rate"] / 100
+								aggregated_diamond_items[key]["tax_amount"] += diamond_amount * tax_rate_decimal
 
 								aggregated_diamond_items[key]["amount_with_tax"] = (
-									aggregated_diamond_items[key]["amount"]
-									+ aggregated_diamond_items[key]["tax_amount"]
+									aggregated_diamond_items[key]["amount"] +
+									aggregated_diamond_items[key]["tax_amount"]
 								)
-					else:
-						for e_item in e_invoice_items:
-							if e_item["is_for_repair"]:
-								key = e_item["item_type"]
 
+						if self.sales_type == "Hybrid":
+							# Handling charge is always job-work value, whether
+							# the stone is company-owned or customer-supplied —
+							# route it to the same labour/Subcontracting bucket
+							# used by the customer-supplied branch below.
+							handling_amount = round(flt(diamond.quantity) * flt(diamond.handling_rate) * item.qty, precision)
+							if handling_amount:
+								for e_item in e_invoice_items:
+									if e_item["is_for_labour"] and e_item["uom"] == diamond.stock_uom:
+										key = (e_item["item_type"], e_item["uom"])
+										if key not in aggregated_metal_labour_items:
+											aggregated_metal_labour_items[key] = {
+												"item_code": e_item["item_type"],
+												"item_name": e_item["item_type"],
+												"uom": e_item["uom"],
+												"qty": 0,
+												"rate": 0,
+												"amount": 0,
+												"tax_rate": e_item["tax_rate"],
+												"tax_amount": 0,
+												"amount_with_tax": 0,
+												"delivery_date": self.delivery_date
+											}
+										multiplied_qty = diamond.quantity * item.qty
+										aggregated_metal_labour_items[key]["qty"] += multiplied_qty
+										aggregated_metal_labour_items[key]["amount"] += handling_amount
+										tax_rate_decimal = aggregated_metal_labour_items[key]["tax_rate"] / 100
+										aggregated_metal_labour_items[key]["tax_amount"] += handling_amount * tax_rate_decimal
+										aggregated_metal_labour_items[key]["amount_with_tax"] = (
+											aggregated_metal_labour_items[key]["amount"] +
+											aggregated_metal_labour_items[key]["tax_amount"]
+										)
+										break
+					else:
+						
+						for e_item in e_invoice_items:
+							if (
+								e_item["is_for_repair"]
+								
+							):
+								key = (e_item["item_type"])
+								
 								# frappe.throw("hii")
 								if key not in aggregated_repairing_items:
 									aggregated_repairing_items[key] = {
@@ -3425,45 +3439,28 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 
-								multiplied_qty = (diamond.quantity * item.qty) / 5
-								diamond_rate = (
-									diamond.se_rate
-									if self.company == "KG GK Jewellers Private Limited"
-									and self.customer == "GJCU0009"
-									else diamond.total_diamond_rate
-								)
-								diamond_amount = round(
-									float(diamond.diamond_rate_for_specified_quantity),
-									precision,
-								)
+								multiplied_qty = (diamond.quantity * item.qty)/5
+								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
+								diamond_amount = round(float(diamond.diamond_rate_for_specified_quantity) , precision)
 
 								aggregated_repairing_items[key]["qty"] += multiplied_qty
-								aggregated_repairing_items[key][
-									"amount"
-								] += diamond_amount
+								aggregated_repairing_items[key]["amount"] += diamond_amount
 
 								# Calculate average rate after accumulation
 								if aggregated_repairing_items[key]["qty"] > 0:
-									aggregated_repairing_items[key]["rate"] = (
-										aggregated_repairing_items[key]["amount"]
-										/ aggregated_repairing_items[key]["qty"]
-									)
+									aggregated_repairing_items[key]["rate"] = aggregated_repairing_items[key]["amount"] / aggregated_repairing_items[key]["qty"]
 								else:
 									aggregated_repairing_items[key]["rate"] = 0
 
-								tax_rate_decimal = (
-									aggregated_repairing_items[key]["tax_rate"] / 100
-								)
-								aggregated_repairing_items[key]["tax_amount"] += (
-									diamond_amount * tax_rate_decimal
-								)
+								tax_rate_decimal = aggregated_repairing_items[key]["tax_rate"] / 100
+								aggregated_repairing_items[key]["tax_amount"] += diamond_amount * tax_rate_decimal
 
 								aggregated_repairing_items[key]["amount_with_tax"] = (
-									aggregated_repairing_items[key]["amount"]
-									+ aggregated_repairing_items[key]["tax_amount"]
+									aggregated_repairing_items[key]["amount"] +
+									aggregated_repairing_items[key]["tax_amount"]
 								)
 								break
 						for e_item in e_invoice_items:
@@ -3485,48 +3482,28 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 
 								multiplied_qty = diamond.quantity * item.qty
-								diamond_rate = (
-									diamond.se_rate
-									if self.company == "KG GK Jewellers Private Limited"
-									and self.customer == "GJCU0009"
-									else diamond.total_diamond_rate
-								)
-								diamond_amount = float(
-									diamond.diamond_rate_for_specified_quantity
-								)
+								diamond_rate = diamond.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else diamond.total_diamond_rate
+								diamond_amount = float(diamond.diamond_rate_for_specified_quantity)
 
-								aggregated_metal_labour_items[key]["qty"] += (
-									multiplied_qty / 5
-								)
-								aggregated_metal_labour_items[key][
-									"amount"
-								] += diamond_amount
+								aggregated_metal_labour_items[key]["qty"] += multiplied_qty/5
+								aggregated_metal_labour_items[key]["amount"] += diamond_amount
 								# Calculate average rate after accumulation
 								if aggregated_metal_labour_items[key]["qty"] > 0:
-									aggregated_metal_labour_items[key]["rate"] = (
-										aggregated_metal_labour_items[key]["amount"]
-										/ aggregated_metal_labour_items[key]["qty"]
-									)
+									aggregated_metal_labour_items[key]["rate"] = aggregated_metal_labour_items[key]["amount"] / aggregated_metal_labour_items[key]["qty"]
 								else:
 									aggregated_metal_labour_items[key]["rate"] = 0
 
-								tax_rate_decimal = (
-									aggregated_metal_labour_items[key]["tax_rate"] / 100
-								)
-								aggregated_metal_labour_items[key]["tax_amount"] += (
-									diamond_amount * tax_rate_decimal
-								)
+								tax_rate_decimal = aggregated_metal_labour_items[key]["tax_rate"] / 100
+								aggregated_metal_labour_items[key]["tax_amount"] += diamond_amount * tax_rate_decimal
 
-								aggregated_metal_labour_items[key][
-									"amount_with_tax"
-								] = (
-									aggregated_metal_labour_items[key]["amount"]
-									+ aggregated_metal_labour_items[key]["tax_amount"]
-								)
+								aggregated_metal_labour_items[key]["amount_with_tax"] = (
+									aggregated_metal_labour_items[key]["amount"] +
+									aggregated_metal_labour_items[key]["tax_amount"]
+								)		
 
 				for gemstone in bom_doc.gemstone_detail:
 					for e_item in e_invoice_items:
@@ -3548,53 +3525,34 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 
 								multiplied_qty = gemstone.quantity * item.qty
-								gemstone_rate = (
-									gemstone.se_rate
-									if self.company == "KG GK Jewellers Private Limited"
-									and self.customer == "GJCU0009"
-									else gemstone.total_gemstone_rate
-								)
-								gemstone_amount = round(
-									float(
-										gemstone.gemstone_rate_for_specified_quantity
-									),
-									precision,
-								)
+								gemstone_rate = gemstone.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else gemstone.total_gemstone_rate
+								gemstone_amount = round(float(gemstone.gemstone_rate_for_specified_quantity) , precision)
 
 								aggregated_gemstone_items[key]["qty"] += multiplied_qty
-								aggregated_gemstone_items[key][
-									"amount"
-								] += gemstone_amount
+								aggregated_gemstone_items[key]["amount"] += gemstone_amount
 
 								# Calculate average rate after accumulation
 								if aggregated_gemstone_items[key]["qty"] > 0:
-									aggregated_gemstone_items[key]["rate"] = (
-										aggregated_gemstone_items[key]["amount"]
-										/ aggregated_gemstone_items[key]["qty"]
-									)
+									aggregated_gemstone_items[key]["rate"] = aggregated_gemstone_items[key]["amount"] / aggregated_gemstone_items[key]["qty"]
 								else:
 									aggregated_gemstone_items[key]["rate"] = 0
 
-								tax_rate_decimal = (
-									aggregated_gemstone_items[key]["tax_rate"] / 100
-								)
-								aggregated_gemstone_items[key]["tax_amount"] += (
-									gemstone_amount * tax_rate_decimal
-								)
+								tax_rate_decimal = aggregated_gemstone_items[key]["tax_rate"] / 100
+								aggregated_gemstone_items[key]["tax_amount"] += gemstone_amount * tax_rate_decimal
 
 								aggregated_gemstone_items[key]["amount_with_tax"] = (
-									aggregated_gemstone_items[key]["amount"]
-									+ aggregated_gemstone_items[key]["tax_amount"]
+									aggregated_gemstone_items[key]["amount"] +
+									aggregated_gemstone_items[key]["tax_amount"]
 								)
 						else:
 							if (
-								e_item["is_for_labour"]
-								and e_item["uom"] == gemstone.stock_uom
-							):
+							e_item["is_for_labour"]
+							and e_item["uom"] == gemstone.stock_uom
+						):
 								key = (e_item["item_type"], e_item["uom"])
 
 								if key not in aggregated_metal_labour_items:
@@ -3608,64 +3566,34 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 
 								multiplied_qty = gemstone.quantity * item.qty
-								gemstone_rate = (
-									gemstone.se_rate
-									if self.company == "KG GK Jewellers Private Limited"
-									and self.customer == "GJCU0009"
-									else gemstone.total_gemstone_rate
-								)
-								gemstone_amount = round(
-									float(
-										gemstone.gemstone_rate_for_specified_quantity
-									),
-									precision,
-								)
+								gemstone_rate = gemstone.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else gemstone.total_gemstone_rate
+								gemstone_amount = round(float(gemstone.gemstone_rate_for_specified_quantity) , precision)
 
-								aggregated_metal_labour_items[key]["qty"] += (
-									multiplied_qty / 5
-								)
-								aggregated_metal_labour_items[key][
-									"amount"
-								] += gemstone_amount
+								aggregated_metal_labour_items[key]["qty"] += multiplied_qty/5
+								aggregated_metal_labour_items[key]["amount"] += gemstone_amount
 								# Calculate average rate after accumulation
 								if aggregated_metal_labour_items[key]["qty"] > 0:
-									aggregated_metal_labour_items[key]["rate"] = (
-										aggregated_metal_labour_items[key]["amount"]
-										/ aggregated_metal_labour_items[key]["qty"]
-									)
+									aggregated_metal_labour_items[key]["rate"] = aggregated_metal_labour_items[key]["amount"] / aggregated_metal_labour_items[key]["qty"]
 								else:
 									aggregated_metal_labour_items[key]["rate"] = 0
 
-								tax_rate_decimal = (
-									aggregated_metal_labour_items[key]["tax_rate"] / 100
-								)
-								aggregated_metal_labour_items[key]["tax_amount"] += (
-									gemstone_amount * tax_rate_decimal
-								)
+								tax_rate_decimal = aggregated_metal_labour_items[key]["tax_rate"] / 100
+								aggregated_metal_labour_items[key]["tax_amount"] += gemstone_amount * tax_rate_decimal
 
-								aggregated_metal_labour_items[key][
-									"amount_with_tax"
-								] = (
-									aggregated_metal_labour_items[key]["amount"]
-									+ aggregated_metal_labour_items[key]["tax_amount"]
+								aggregated_metal_labour_items[key]["amount_with_tax"] = (
+									aggregated_metal_labour_items[key]["amount"] +
+									aggregated_metal_labour_items[key]["tax_amount"]
 								)
 
 				for finding in bom_doc.finding_detail:
 					if not finding.is_customer_item:
 						finding_handled = False
 						for e_item in e_invoice_items:
-							if (
-								e_item["is_for_finding"]
-								and e_item["metal_type"] == finding.metal_type
-								and e_item["metal_purity"] == finding.metal_touch
-								and e_item["uom"] == finding.stock_uom
-								and e_item["finding_category"]
-								== finding.finding_category
-							):
+							if (e_item["is_for_finding"] and e_item["metal_type"] == finding.metal_type and e_item["metal_purity"] == finding.metal_touch and e_item["uom"] == finding.stock_uom and e_item["finding_category"] == finding.finding_category):
 								finding_handled = True
 								key = (e_item["item_type"], e_item["uom"])
 								if key not in aggregated_finding_items:
@@ -3679,56 +3607,36 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
 								multiplied_qty = finding.quantity * item.qty
-								making_amount = round(finding.making_amount, precision)
-								finding_rate = 0
-								if (
-									self.company == "KG GK Jewellers Private Limited"
-									and self.customer == "GJCU0009"
-								):
+								making_amount = round(finding.making_amount , precision)
+								finding_rate = 0 
+								if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
+									finding_rate = finding.se_rate 
+								elif self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
 									finding_rate = finding.se_rate
-								elif (
-									self.company == "KG GK Jewellers Private Limited"
-									and self.customer == "GJCU0009"
-								):
-									finding_rate = finding.se_rate
-								elif (
-									self.company == "KG GK Jewellers Private Limited"
-									and self.customer == "GJCU0009"
-								):
-									finding_rate = finding.se_rate
-								finding_making_amount = finding.rate * multiplied_qty
+								elif self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009":
+									finding_rate = finding.se_rate 
+								finding_making_amount = (finding.rate * multiplied_qty) 
 								# frappe.throw(f"{multiplied_qty}")
 								aggregated_finding_items[key]["qty"] += multiplied_qty
-								aggregated_finding_items[key][
-									"amount"
-								] += finding_making_amount
-								aggregated_finding_items[key]["rate"] = finding_rate
+								aggregated_finding_items[key]["amount"] += finding_making_amount
 
-								tax_rate_decimal = (
-									aggregated_finding_items[key]["tax_rate"] / 100
-								)
-								aggregated_finding_items[key]["tax_amount"] += (
-									finding_making_amount * tax_rate_decimal
-								)
+								aggregated_finding_items[key]["rate"] = finding_rate
+								
+								tax_rate_decimal = aggregated_finding_items[key]["tax_rate"] / 100
+								aggregated_finding_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
 
 								aggregated_finding_items[key]["amount_with_tax"] = (
-									aggregated_finding_items[key]["amount"]
-									+ aggregated_finding_items[key]["tax_amount"]
+									aggregated_finding_items[key]["amount"] +
+									aggregated_finding_items[key]["tax_amount"]
 								)
 								break
 
 						if not finding_handled:
 							for e_item in e_invoice_items:
-								if (
-									e_item["is_for_metal"]
-									and finding.metal_type == e_item["metal_type"]
-									and finding.metal_touch == e_item["metal_purity"]
-									and finding.stock_uom == e_item["uom"]
-									and e_item["finding_category"] is None
-								):
+								if (e_item["is_for_metal"] and finding.metal_type == e_item["metal_type"] and finding.metal_touch == e_item["metal_purity"] and finding.stock_uom == e_item["uom"] and e_item["finding_category"] is None):
 									key = (e_item["item_type"], e_item["uom"])
 									if key not in aggregated_metal_items:
 										aggregated_metal_items[key] = {
@@ -3741,52 +3649,30 @@ def validate_item_dharm(self):
 											"tax_amount": 0,
 											"amount_with_tax": 0,
 											"delivery_date": self.delivery_date,
-											"rate": 0,
+											"rate": 0
 										}
-
-									finding_rate = (
-										finding.se_rate
-										if self.company
-										== "KG GK Jewellers Private Limited"
-										and self.customer == "GJCU0009"
-										else finding.rate
-									)
+									
+									finding_rate = finding.se_rate if self.company == "KG GK Jewellers Private Limited" and self.customer == "GJCU0009" else finding.rate
 									multiplied_qty = finding.quantity * item.qty
-									making_amount = round(
-										finding.making_amount, precision
-									)
-									finding_making_amount = (
-										finding.rate * multiplied_qty
-									)
-
+									making_amount = round(finding.making_amount , precision)
+									finding_making_amount = (finding.rate * multiplied_qty)
+									
 									aggregated_metal_items[key]["qty"] += multiplied_qty
-									aggregated_metal_items[key][
-										"amount"
-									] += finding.amount
+									aggregated_metal_items[key]["amount"] += finding.amount
 									aggregated_metal_items[key]["rate"] = finding_rate
-
-									tax_rate_decimal = (
-										aggregated_metal_items[key]["tax_rate"] / 100
-									)
-									aggregated_metal_items[key]["tax_amount"] += (
-										finding_making_amount * tax_rate_decimal
-									)
+									
+									tax_rate_decimal = aggregated_metal_items[key]["tax_rate"] / 100
+									aggregated_metal_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
 									aggregated_metal_items[key]["amount_with_tax"] = (
-										aggregated_metal_items[key]["amount"]
-										+ aggregated_metal_items[key]["tax_amount"]
+										aggregated_metal_items[key]["amount"] + 
+										aggregated_metal_items[key]["tax_amount"]
 									)
 									break
 
+						
 						finding_making_handled = False
 						for e_item in e_invoice_items:
-							if (
-								e_item["is_for_finding_making"]
-								and e_item["metal_type"] == finding.metal_type
-								and e_item["metal_purity"] == finding.metal_touch
-								and e_item["uom"] == finding.stock_uom
-								and e_item["finding_category"]
-								== finding.finding_category
-							):
+							if (e_item["is_for_finding_making"] and e_item["metal_type"] == finding.metal_type and e_item["metal_purity"] == finding.metal_touch and e_item["uom"] == finding.stock_uom and e_item["finding_category"] == finding.finding_category):
 								finding_making_handled = True
 								key = (e_item["item_type"], e_item["uom"])
 								if key not in aggregated_finding_making_items:
@@ -3800,50 +3686,39 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
-
+								
 								multiplied_qty = finding.quantity * item.qty
 								# frappe.throw(f"{finding.quantity},{item.qty}")
-								making_amount = round(finding.making_amount, precision)
-								finding_making_amount = (
-									finding.making_amount * item.qty
-								) + (finding.wastage_amount * item.qty)
-
-								aggregated_finding_making_items[key][
-									"qty"
-								] += multiplied_qty
-								aggregated_finding_making_items[key][
-									"amount"
-								] += finding_making_amount
+								making_amount = round(finding.making_amount , precision)
+								finding_making_amount = (finding.making_amount * item.qty) + (finding.wastage_amount * item.qty)
+								
+								aggregated_finding_making_items[key]["qty"] += multiplied_qty
+								aggregated_finding_making_items[key]["amount"] += finding_making_amount
+								# frappe.throw(f"{aggregated_finding_making_items[key]["amount"]}")
 								# if aggregated_finding_making_items[key]["qty"] > 0:
 								# 	aggregated_finding_making_items[key]["rate"] = aggregated_finding_making_items[key]["amount"] / aggregated_finding_making_items[key]["qty"]
 								# else:
 								# 	aggregated_finding_making_items[key]["rate"] = 0
-
-								tax_rate_decimal = (
-									aggregated_finding_making_items[key]["tax_rate"]
-									/ 100
-								)
-								aggregated_finding_making_items[key]["tax_amount"] += (
-									finding_making_amount * tax_rate_decimal
-								)
-								aggregated_finding_making_items[key][
-									"amount_with_tax"
-								] = (
-									aggregated_finding_making_items[key]["amount"]
-									+ aggregated_finding_making_items[key]["tax_amount"]
+								
+								tax_rate_decimal = aggregated_finding_making_items[key]["tax_rate"] / 100
+								aggregated_finding_making_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
+								aggregated_finding_making_items[key]["amount_with_tax"] = (
+									aggregated_finding_making_items[key]["amount"] +
+									aggregated_finding_making_items[key]["tax_amount"]
 								)
 								break
-
+						
 						if not finding_making_handled:
+							is_finding_per_pc = (
+								flt(finding.making_rate) > 0
+								and abs(flt(finding.making_amount) - flt(finding.making_rate)) < 0.01
+							)
+							# if is_finding_per_pc:
+							# 	continue
 							for e_item in e_invoice_items:
-								if (
-									e_item["is_for_making"]
-									and e_item["metal_type"] == finding.metal_type
-									and e_item["metal_purity"] == finding.metal_touch
-									and e_item["uom"] == finding.stock_uom
-								):
+								if (e_item["is_for_making"] and e_item["metal_type"] == finding.metal_type and e_item["metal_purity"] == finding.metal_touch and e_item["uom"] == finding.stock_uom):
 									key = (e_item["item_type"], e_item["uom"])
 									if key not in aggregated_metal_making_items:
 										aggregated_metal_making_items[key] = {
@@ -3856,42 +3731,25 @@ def validate_item_dharm(self):
 											"tax_rate": e_item["tax_rate"],
 											"tax_amount": 0,
 											"amount_with_tax": 0,
-											"delivery_date": self.delivery_date,
+											"delivery_date": self.delivery_date
 										}
-
+									
 									multiplied_qty = finding.quantity * item.qty
-									finding_making_amount = round(
-										finding.making_amount * item.qty
-										+ finding.wastage_amount * item.qty,
-										precision,
-									)
-									aggregated_metal_making_items[key][
-										"qty"
-									] += multiplied_qty
-									aggregated_metal_making_items[key][
-										"amount"
-									] += finding_making_amount
+									finding_making_amount = round(finding.making_amount * item.qty + finding.wastage_amount * item.qty, precision)
+									aggregated_metal_making_items[key]["qty"] += multiplied_qty
+									aggregated_metal_making_items[key]["amount"] += finding_making_amount
 
-									tax_rate_decimal = (
-										aggregated_metal_making_items[key]["tax_rate"]
-										/ 100
-									)
-									aggregated_metal_making_items[key][
-										"tax_amount"
-									] += finding_making_amount * tax_rate_decimal
-									aggregated_metal_making_items[key][
-										"amount_with_tax"
-									] = (
-										aggregated_metal_making_items[key]["amount"]
-										+ aggregated_metal_making_items[key][
-											"tax_amount"
-										]
+									tax_rate_decimal = aggregated_metal_making_items[key]["tax_rate"] / 100
+									aggregated_metal_making_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
+									aggregated_metal_making_items[key]["amount_with_tax"] = (
+										aggregated_metal_making_items[key]["amount"] +
+										aggregated_metal_making_items[key]["tax_amount"]
 									)
 									break
 					else:
 						for e_item in e_invoice_items:
-							if e_item["is_for_repair"]:
-								key = e_item["item_type"]
+							if (e_item["is_for_repair"] ):
+								key = (e_item["item_type"])
 								if key not in aggregated_repairing_items:
 									aggregated_repairing_items[key] = {
 										"item_code": e_item["item_type"],
@@ -3903,40 +3761,29 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
-
+								
 								multiplied_qty = finding.quantity * item.qty
 								making_amount = finding.making_amount
-								finding_making_amount = (
-									finding.making_rate * multiplied_qty
-								)
+								finding_making_amount = (finding.making_rate * multiplied_qty)
 								aggregated_repairing_items[key]["qty"] += multiplied_qty
-								aggregated_repairing_items[key][
-									"amount"
-								] += finding_making_amount
+								aggregated_repairing_items[key]["amount"] += finding_making_amount
 
 								if aggregated_repairing_items[key]["qty"] > 0:
-									aggregated_repairing_items[key]["rate"] = (
-										aggregated_repairing_items[key]["amount"]
-										/ aggregated_repairing_items[key]["qty"]
-									)
+									aggregated_repairing_items[key]["rate"] = aggregated_repairing_items[key]["amount"] / aggregated_repairing_items[key]["qty"]
 								else:
 									aggregated_repairing_items[key]["rate"] = 0
-
-								tax_rate_decimal = (
-									aggregated_repairing_items[key]["tax_rate"] / 100
-								)
-								aggregated_repairing_items[key]["tax_amount"] += (
-									finding_making_amount * tax_rate_decimal
-								)
+								
+								tax_rate_decimal = aggregated_repairing_items[key]["tax_rate"] / 100
+								aggregated_repairing_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
 								aggregated_repairing_items[key]["amount_with_tax"] = (
-									aggregated_repairing_items[key]["amount"]
-									+ aggregated_repairing_items[key]["tax_amount"]
+									aggregated_repairing_items[key]["amount"] +
+									aggregated_repairing_items[key]["tax_amount"]
 								)
 								break
 						for e_item in e_invoice_items:
-							if e_item["is_for_labour"]:
+							if (e_item["is_for_labour"] ):
 								key = (e_item["item_type"], e_item["uom"])
 								if key not in aggregated_metal_labour_items:
 									aggregated_metal_labour_items[key] = {
@@ -3949,42 +3796,63 @@ def validate_item_dharm(self):
 										"tax_rate": e_item["tax_rate"],
 										"tax_amount": 0,
 										"amount_with_tax": 0,
-										"delivery_date": self.delivery_date,
+										"delivery_date": self.delivery_date
 									}
-
+								
 								multiplied_qty = finding.quantity * item.qty
 								making_amount = finding.making_amount
-								finding_making_amount = (
-									finding.making_rate * multiplied_qty
-								)
-								aggregated_metal_labour_items[key][
-									"qty"
-								] += multiplied_qty
-								aggregated_metal_labour_items[key][
-									"amount"
-								] += finding_making_amount
+								finding_making_amount = (finding.making_rate * multiplied_qty)
+								aggregated_metal_labour_items[key]["qty"] += multiplied_qty
+								aggregated_metal_labour_items[key]["amount"] += finding_making_amount
 
 								if aggregated_metal_labour_items[key]["qty"] > 0:
-									aggregated_metal_labour_items[key]["rate"] = (
-										aggregated_metal_labour_items[key]["amount"]
-										/ aggregated_metal_labour_items[key]["qty"]
-									)
+									aggregated_metal_labour_items[key]["rate"] = aggregated_metal_labour_items[key]["amount"] / aggregated_metal_labour_items[key]["qty"]
 								else:
 									aggregated_metal_labour_items[key]["rate"] = 0
-
-								tax_rate_decimal = (
-									aggregated_metal_labour_items[key]["tax_rate"] / 100
-								)
-								aggregated_metal_labour_items[key]["tax_amount"] += (
-									finding_making_amount * tax_rate_decimal
-								)
-								aggregated_metal_labour_items[key][
-									"amount_with_tax"
-								] = (
-									aggregated_metal_labour_items[key]["amount"]
-									+ aggregated_metal_labour_items[key]["tax_amount"]
+								
+								tax_rate_decimal = aggregated_metal_labour_items[key]["tax_rate"] / 100
+								aggregated_metal_labour_items[key]["tax_amount"] += finding_making_amount * tax_rate_decimal
+								aggregated_metal_labour_items[key]["amount_with_tax"] = (
+									aggregated_metal_labour_items[key]["amount"] +
+									aggregated_metal_labour_items[key]["tax_amount"]
 								)
 								break
+
+		# Hybrid: making charge is always job-work value (Outwork rate),
+		# regardless of is_customer_item — metal/finding making charges
+		# above got aggregated into the Outright-taxed "making" buckets
+		# by default, so for Hybrid fold them into the labour/
+		# Subcontracting bucket instead of listing them separately.
+		if self.sales_type == "Hybrid":
+			for making_dict in (aggregated_metal_making_items, aggregated_finding_making_items):
+				for key, val in making_dict.items():
+					labour_item = next(
+						(e for e in e_invoice_items if e["is_for_labour"] and e["uom"] == val["uom"]),
+						None,
+					)
+					if not labour_item:
+						continue
+					target_key = (labour_item["item_type"], labour_item["uom"])
+					if target_key not in aggregated_metal_labour_items:
+						aggregated_metal_labour_items[target_key] = {
+							"item_code": labour_item["item_type"],
+							"item_name": labour_item["item_type"],
+							"uom": labour_item["uom"],
+							"qty": 0,
+							"rate": 0,
+							"amount": 0,
+							"tax_rate": labour_item["tax_rate"],
+							"tax_amount": 0,
+							"amount_with_tax": 0,
+							"delivery_date": val["delivery_date"],
+						}
+					target = aggregated_metal_labour_items[target_key]
+					target["qty"]    += val["qty"]
+					target["amount"] += val["amount"]
+					tax_rate_decimal  = target["tax_rate"] / 100
+					target["tax_amount"]     += val["amount"] * tax_rate_decimal
+					target["amount_with_tax"] = target["amount"] + target["tax_amount"]
+				making_dict.clear()
 
 		# After aggregation, calculate average rate = total amount / total qty per key
 		for key, val in aggregated_diamond_items.items():
@@ -3992,9 +3860,10 @@ def validate_item_dharm(self):
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["rate"] = round(val["rate"], precision)
 			self.append("custom_invoice_item", val)
-
+   
 		for key, val in aggregated_metal_items.items():
 			if val["qty"] > 0:
+				
 				average_rate = val["amount"] / val["qty"]
 			else:
 				average_rate = 0
@@ -4002,21 +3871,21 @@ def validate_item_dharm(self):
 			val["rate"] = round(val["rate"], precision)
 			val["amount"] = round(val["amount"], precision)
 			self.append("custom_invoice_item", val)
-
+   
 		for key, val in aggregated_finding_items.items():
 			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["rate"] = round(val["rate"], precision)
-
+			
 			self.append("custom_invoice_item", val)
-
+   
 		for key, val in aggregated_gemstone_items.items():
 			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["rate"] = round(val["rate"], precision)
-
+			
 			self.append("custom_invoice_item", val)
-
+   
 		for key, val in aggregated_metal_making_items.items():
 			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
@@ -4027,9 +3896,9 @@ def validate_item_dharm(self):
 			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["rate"] = round(val["rate"], precision)
-
+			
 			self.append("custom_invoice_item", val)
-
+   
 		for key, val in aggregated_hallmarking_items.items():
 			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
@@ -4039,16 +3908,16 @@ def validate_item_dharm(self):
 		for key, val in aggregated_metal_labour_items.items():
 			val["amount"] = round(val["amount"], precision)
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
-			val["qty"] = round(val["qty"], 2)
+			val["qty"] = round(val["qty"],2)
 			val["rate"] = round(val["rate"], precision)
 			self.append("custom_invoice_item", val)
-
+   
 		for key, val in aggregated_repairing_items.items():
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			val["rate"] = round(val["rate"], precision)
 			val["amount"] = round(val["amount"], precision)
 			self.append("custom_invoice_item", val)
-
+		
 		for key, val in aggregated_certification_items.items():
 			val["rate"] = val["amount"] / val["qty"] if val["qty"] else 0
 			self.append("custom_invoice_item", val)
