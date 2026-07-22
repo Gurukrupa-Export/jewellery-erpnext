@@ -46,7 +46,7 @@
    "depends_on": "eval:doc.select_manufacture_order==\"Manufacturing\"",
    "fieldname": "get_sales_order",
    "fieldtype": "Button",
-   "label": "Get Sales Order"
+   "label": "Get Quotation"
   },
   {
    "fieldname": "manufacturing_plan_table",
@@ -135,7 +135,7 @@
    "depends_on": "eval:doc.select_manufacture_order==\"Repair\"",
    "fieldname": "get_repair_order",
    "fieldtype": "Button",
-   "label": "Get Repair Order"
+   "label": "Get Repair Quotation"
   },
   {
    "fieldname": "setting_type",
