@@ -86,6 +86,7 @@
   "order_details_tab",
   "order_form_id",
   "quotation",
+  "quotation_item",
   "sales_order",
   "manufacturing_plan",
   "column_break_0hg6a",
@@ -156,7 +157,7 @@
    "read_only": 1
   },
   {
-   "fetch_from": "sales_order.customer",
+   "fetch_from": "quotation.party_name",
    "fieldname": "customer",
    "fieldtype": "Link",
    "label": "Customer Code",
@@ -374,11 +375,18 @@
    "fieldtype": "Column Break"
   },
   {
-   "fetch_from": "sales_order_item.prevdoc_docname",
    "fieldname": "quotation",
    "fieldtype": "Link",
    "label": "Quotation Id",
-   "options": "Quotation"
+   "options": "Quotation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "quotation_item",
+   "fieldtype": "Link",
+   "label": "Quotation Item",
+   "options": "Quotation Item",
+   "read_only": 1
   },
   {
    "fetch_from": "sales_order_item.order_form_date",
@@ -875,7 +883,7 @@
    "options": "Manufacturing Plan"
   },
   {
-   "fetch_from": "parent_sales_order.customer",
+   "fetch_from": "parent_quotation.party_name",
    "fieldname": "ref_customer",
    "fieldtype": "Link",
    "label": "Ref Customer",

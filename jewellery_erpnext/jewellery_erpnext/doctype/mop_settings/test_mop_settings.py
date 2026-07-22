@@ -3732,8 +3732,9 @@ class TestReserveBatchAtPhysicalWarehouse(IntegrationTestCase):
 		*,
 		active_sre=False,
 		so_anchor={
-			"sales_order": "SO-1",
-			"sales_order_item": "SOI-1",
+			"voucher_type": "Quotation",
+			"voucher_no": "QTN-1",
+			"voucher_detail_no": "QTNI-1",
 			"base_mr_voucher_qty": 100,
 		},
 		physical={"WH-X": 5.0},

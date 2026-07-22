@@ -24,20 +24,20 @@ class ManufacturingPlan(Document):
 	def on_cancel(self):
 		frappe.db.sql(
 			"""
-            UPDATE `tabSales Order Item` soi
+            UPDATE `tabQuotation Item` qi
             JOIN `tabManufacturing Plan Table` mpt
-                ON soi.name = mpt.docname
+                ON qi.name = mpt.quotation_item
             JOIN `tabManufacturing Plan` mp
                 ON (mpt.parent = mp.name AND mp.name = %(mp_name)s)
-            JOIN `tabSales Order` so
-				ON (soi.parent = so.name AND so.docstatus = 1)
+            JOIN `tabQuotation` q
+				ON (qi.parent = q.name AND q.docstatus = 1)
             SET
-                soi.manufacturing_order_qty =
-                    COALESCE(soi.manufacturing_order_qty, 0)
+                qi.manufacturing_order_qty =
+                    COALESCE(qi.manufacturing_order_qty, 0)
                     - COALESCE(mpt.manufacturing_order_qty, 0)
                     - COALESCE(mpt.subcontracting_qty, 0),
-                so.modified = NOW(),
-                so.modified_by = %(modified_by)s
+                q.modified = NOW(),
+                q.modified_by = %(modified_by)s
         """,
 			{
 				"mp_name": self.name,
@@ -50,20 +50,20 @@ class ManufacturingPlan(Document):
 		# customer_diamond_data removed for memory efficiency
 		frappe.db.sql(
 			"""
-					UPDATE `tabSales Order Item` soi
+					UPDATE `tabQuotation Item` qi
 					JOIN `tabManufacturing Plan Table` mpt
-						ON soi.name = mpt.docname
+						ON qi.name = mpt.quotation_item
 					JOIN `tabManufacturing Plan` mp
 						ON (mpt.parent = mp.name AND mp.name = %(mp_name)s)
-					JOIN `tabSales Order` so
-						ON (soi.parent = so.name AND so.docstatus = 1)
+					JOIN `tabQuotation` q
+						ON (qi.parent = q.name AND q.docstatus = 1)
 					SET
-						soi.manufacturing_order_qty =
-							COALESCE(soi.manufacturing_order_qty, 0)
+						qi.manufacturing_order_qty =
+							COALESCE(qi.manufacturing_order_qty, 0)
 							+ COALESCE(mpt.manufacturing_order_qty, 0)
 							+ COALESCE(mpt.subcontracting_qty, 0),
-						so.modified = NOW(),
-						so.modified_by = %(modified_by)s
+						q.modified = NOW(),
+						q.modified_by = %(modified_by)s
 				""",
 			{
 				"mp_name": self.name,
@@ -78,7 +78,7 @@ class ManufacturingPlan(Document):
 		frappe.flags._mp_tracking_bom_queue = []
 		try:
 			for row in self.manufacturing_plan_table:
-				if row.docname or row.mwo:
+				if row.quotation_item or row.mwo:
 					create_manufacturing_order(self, row, cache_data)
 					frappe.flags.is_manufactur_order_created = True
 					if row.subcontracting:
@@ -151,7 +151,7 @@ class ManufacturingPlan(Document):
 		self.total_planned_qty = total
 
 	def get_manufacturing_plan_data(self):
-		so_items = set()
+		quotation_items = set()
 		mwo_items = set()
 		bom_names = set()
 		customer_names = set()
@@ -159,8 +159,8 @@ class ManufacturingPlan(Document):
 		customer_diamond_keys = set()
 
 		for row in self.manufacturing_plan_table:
-			if row.docname:
-				so_items.add(row.docname)
+			if row.quotation_item:
+				quotation_items.add(row.quotation_item)
 			if row.mwo:
 				mwo_items.add(row.mwo)
 			if row.manufacturing_bom:
@@ -176,9 +176,9 @@ class ManufacturingPlan(Document):
 			if row.customer and row.diamond_quality:
 				customer_diamond_keys.add((row.customer, row.diamond_quality))
 
-		so_data_map = fetch_doc_map(
-			"Sales Order Item",
-			so_items,
+		quotation_data_map = fetch_doc_map(
+			"Quotation Item",
+			quotation_items,
 			["name", "metal_type", "metal_touch", "metal_colour", "diamond_grade"],
 		)
 
@@ -242,7 +242,7 @@ class ManufacturingPlan(Document):
 			)
 
 		return {
-			"so_data": so_data_map,
+			"quotation_data": quotation_data_map,
 			"mwo_data": mwo_data_map,
 			"bom_data": bom_data_map,
 			"customer_data": customer_data_map,
@@ -258,51 +258,49 @@ class ManufacturingPlan(Document):
 	@frappe.whitelist()
 	def get_items_for_production(self):
 		if self.select_manufacture_order in ["Manufacturing", "Repair"]:
-			SalesOrderItem = frappe.qb.DocType("Sales Order Item")
+			QuotationItem = frappe.qb.DocType("Quotation Item")
 			Item = frappe.qb.DocType("Item")
-			SalesOrder = frappe.qb.DocType("Sales Order")
+			Quotation = frappe.qb.DocType("Quotation")
 
 			query = (
-				frappe.qb.from_(SalesOrderItem)
+				frappe.qb.from_(QuotationItem)
 				.join(Item)
-				.on(SalesOrderItem.item_code == Item.name)
-				.join(SalesOrder)
-				.on(SalesOrderItem.parent == SalesOrder.name)
+				.on(QuotationItem.item_code == Item.name)
+				.join(Quotation)
+				.on(QuotationItem.parent == Quotation.name)
 				.select(
-					SalesOrderItem.name.as_("docname"),
-					SalesOrderItem.parent.as_("sales_order"),
-					SalesOrderItem.item_code,
-					SalesOrderItem.bom,
-					SalesOrderItem.custom_tracking_bom,
-					SalesOrder.customer,
+					QuotationItem.name.as_("quotation_item"),
+					QuotationItem.parent.as_("quotation"),
+					QuotationItem.item_code,
+					QuotationItem.copy_bom.as_("bom"),
+					QuotationItem.custom_tracking_bom,
+					Quotation.party_name.as_("customer"),
 					Item.master_bom.as_("master_bom"),
-					SalesOrderItem.diamond_quality,
-					SalesOrderItem.custom_customer_sample.as_("customer_sample"),
-					SalesOrderItem.custom_customer_voucher_no.as_(
-						"customer_voucher_no"
-					),
-					SalesOrderItem.custom_customer_gold.as_("customer_gold"),
-					SalesOrderItem.custom_customer_diamond.as_("customer_diamond"),
-					SalesOrderItem.custom_customer_stone.as_("customer_stone"),
-					SalesOrderItem.custom_customer_good.as_("customer_good"),
-					SalesOrderItem.custom_customer_weight.as_("customer_weight"),
-					(SalesOrderItem.qty - SalesOrderItem.manufacturing_order_qty).as_(
+					QuotationItem.diamond_quality,
+					QuotationItem.custom_customer_sample.as_("customer_sample"),
+					QuotationItem.custom_customer_voucher_no.as_("customer_voucher_no"),
+					QuotationItem.custom_customer_gold.as_("customer_gold"),
+					QuotationItem.custom_customer_diamond.as_("customer_diamond"),
+					QuotationItem.custom_customer_stone.as_("customer_stone"),
+					QuotationItem.custom_customer_good.as_("customer_good"),
+					QuotationItem.custom_customer_weight.as_("customer_weight"),
+					(QuotationItem.qty - QuotationItem.manufacturing_order_qty).as_(
 						"pending_qty"
 					),
-					SalesOrderItem.order_form_type,
-					SalesOrderItem.custom_repair_type.as_("repair_type"),
-					SalesOrderItem.custom_product_type.as_("product_type"),
-					SalesOrderItem.serial_no,
-					SalesOrderItem.serial_id_bom,
+					QuotationItem.order_form_type,
+					QuotationItem.custom_repair_type.as_("repair_type"),
+					QuotationItem.custom_product_type.as_("product_type"),
+					QuotationItem.serial_no,
+					QuotationItem.custom_serial_id_bom.as_("serial_id_bom"),
 				)
 				.where(
-					(SalesOrderItem.parent.isin(self.docs_to_append))
-					& (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty)
+					(QuotationItem.parent.isin(self.docs_to_append))
+					& (QuotationItem.qty > QuotationItem.manufacturing_order_qty)
 				)
 			)
 
 			if self.setting_type:
-				query = query.where(SalesOrderItem.setting_type == self.setting_type)
+				query = query.where(QuotationItem.setting_type == self.setting_type)
 
 			items = query.run(as_dict=True)
 		else:
@@ -374,109 +372,108 @@ class ManufacturingPlan(Document):
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filters):
-	SalesOrder = frappe.qb.DocType("Sales Order")
-	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
+def get_pending_ppo_quotation(doctype, txt, searchfield, start, page_len, filters):
+	Quotation = frappe.qb.DocType("Quotation")
+	QuotationItem = frappe.qb.DocType("Quotation Item")
 	Item = frappe.qb.DocType("Item")
 
 	conditions = (
-		(SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty)
-		& (SalesOrderItem.order_form_type != "Repair Order")
-		& (SalesOrder.custom_repair_order_form.isnull())
-		& (SalesOrder.order_type != "Repair")
+		(QuotationItem.qty > QuotationItem.manufacturing_order_qty)
+		& (QuotationItem.order_form_type != "Repair Order")
+		& (Quotation.order_type != "Repair")
 	)
 
 	if txt:
-		conditions &= SalesOrder.name.like(f"%{txt}%")
+		conditions &= Quotation.name.like(f"%{txt}%")
 
-	if customer := filters.get("customer"):
-		conditions &= SalesOrder.customer == customer
+	if customer := filters.get("party_name"):
+		conditions &= Quotation.party_name == customer
 
 	if company := filters.get("company"):
-		conditions &= SalesOrder.company == company
+		conditions &= Quotation.company == company
 
 	if branch := filters.get("branch"):
-		conditions &= SalesOrder.branch == branch
+		conditions &= Quotation.branch == branch
 
 	if txn_date := filters.get("transaction_date"):
-		conditions &= SalesOrder.transaction_date == txn_date
+		conditions &= Quotation.transaction_date == txn_date
 
 	query = (
-		frappe.qb.from_(SalesOrder)
+		frappe.qb.from_(Quotation)
 		.distinct()
-		.from_(SalesOrderItem)
+		.from_(QuotationItem)
 		.join(Item)
-		.on(SalesOrderItem.item_code == Item.name)
+		.on(QuotationItem.item_code == Item.name)
 		.select(
-			SalesOrder.name,
-			SalesOrder.transaction_date,
-			SalesOrder.company,
-			SalesOrder.customer,
+			Quotation.name,
+			Quotation.transaction_date,
+			Quotation.company,
+			Quotation.party_name.as_("customer"),
 		)
 		.where(
-			(SalesOrder.name == SalesOrderItem.parent)
-			& (SalesOrder.docstatus == 1)
+			(Quotation.name == QuotationItem.parent)
+			& (Quotation.docstatus == 1)
 			& conditions
-			& (Item.master_bom.isnotnull() | SalesOrderItem.bom.isnotnull())
+			& (Item.master_bom.isnotnull() | QuotationItem.copy_bom.isnotnull())
 		)
-		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
+		.orderby(Quotation.transaction_date, order=frappe.qb.desc)
 		.limit(page_len)
 		.offset(start)
 	)
-	so_data = query.run(as_dict=True)
+	quotation_data = query.run(as_dict=True)
 
-	return so_data
+	return quotation_data
 
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_repair_pending_ppo_sales_order(
+def get_repair_pending_ppo_quotation(
 	doctype, txt, searchfield, start, page_len, filters
 ):
-	SalesOrder = frappe.qb.DocType("Sales Order")
-	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
+	Quotation = frappe.qb.DocType("Quotation")
+	QuotationItem = frappe.qb.DocType("Quotation Item")
 
-	conditions = (SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty) & (
-		SalesOrder.order_type == "Repair"
+	conditions = (QuotationItem.qty > QuotationItem.manufacturing_order_qty) & (
+		Quotation.order_type == "Repair"
 	)
 
 	if txt:
-		conditions &= SalesOrder.name.like(f"%{txt}%")
+		conditions &= Quotation.name.like(f"%{txt}%")
 
-	if customer := filters.get("customer"):
-		conditions &= SalesOrder.customer == customer
+	if customer := filters.get("party_name"):
+		conditions &= Quotation.party_name == customer
 
 	if company := filters.get("company"):
-		conditions &= SalesOrder.company == company
+		conditions &= Quotation.company == company
 
 	if branch := filters.get("branch"):
-		conditions &= SalesOrder.branch == branch
+		conditions &= Quotation.branch == branch
 
 	if txn_date := filters.get("transaction_date"):
-		conditions &= SalesOrder.transaction_date == txn_date
+		conditions &= Quotation.transaction_date == txn_date
 
 	query = (
-		frappe.qb.from_(SalesOrder)
+		frappe.qb.from_(Quotation)
 		.distinct()
-		.from_(SalesOrderItem)
+		.from_(QuotationItem)
 		.select(
-			SalesOrder.name,
-			SalesOrder.transaction_date,
-			SalesOrder.company,
-			SalesOrder.customer,
+			Quotation.name,
+			Quotation.transaction_date,
+			Quotation.company,
+			Quotation.party_name.as_("customer"),
 		)
 		.where(
-			(SalesOrder.name == SalesOrderItem.parent)
-			& (SalesOrder.docstatus == 1)
+			(Quotation.name == QuotationItem.parent)
+			& (Quotation.docstatus == 1)
 			& conditions
 		)
-		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
+		.orderby(Quotation.transaction_date, order=frappe.qb.desc)
 		.limit(page_len)
 		.offset(start)
 	)
-	so_data = query.run(as_dict=True)
+	quotation_data = query.run(as_dict=True)
 
-	return so_data
+	return quotation_data
 
 
 @frappe.whitelist()
@@ -488,6 +485,29 @@ def get_details_to_append(source_names, target_doc=None):
 	target_doc.docs_to_append = json.loads(source_names)
 	target_doc.get_items_for_production()
 	return target_doc
+
+
+@frappe.whitelist()
+def make_manufacturing_plan(source_name, target_doc=None):
+	"""Quotation-side entry point: build a Manufacturing Plan pre-filled from a Quotation.
+
+	Reuses ``get_items_for_production`` so the row-population logic stays in one place.
+	"""
+	quotation = frappe.db.get_value(
+		"Quotation", source_name, ["company", "branch", "order_type"], as_dict=True
+	)
+	if not quotation:
+		frappe.throw(_("Quotation {0} not found").format(source_name))
+
+	target = frappe.new_doc("Manufacturing Plan")
+	target.company = quotation.company
+	target.branch = quotation.branch
+	target.select_manufacture_order = (
+		"Repair" if quotation.order_type == "Repair" else "Manufacturing"
+	)
+	target.docs_to_append = [source_name]
+	target.get_items_for_production()
+	return target
 
 
 @frappe.whitelist()
@@ -526,7 +546,7 @@ def create_manufacturing_order(doc, row, cache_data=None):
 	if not cnt:
 		return
 
-	so_data_map = cache_data.get("so_data", {})
+	quotation_data_map = cache_data.get("quotation_data", {})
 	mwo_data_map = cache_data.get("mwo_data", {})
 	bom_data_map = cache_data.get("bom_data", {})
 	customer_data_map = cache_data.get("customer_data", {})
@@ -536,15 +556,15 @@ def create_manufacturing_order(doc, row, cache_data=None):
 
 	so_det = {}
 	# Use plain dict copy instead of frappe._dict for memory/speed
-	if row.sales_order and row.docname in so_data_map:
-		so_det = so_data_map[row.docname].copy()
+	if row.quotation and row.quotation_item in quotation_data_map:
+		so_det = quotation_data_map[row.quotation_item].copy()
 	elif row.mwo and row.mwo in mwo_data_map:
 		so_det = mwo_data_map[row.mwo].copy()
 	else:
 		# Fallback
 		doc_type, docname = (
-			("Sales Order Item", row.docname)
-			if row.sales_order
+			("Quotation Item", row.quotation_item)
+			if row.quotation
 			else ("Manufacturing Work Order", row.mwo)
 		)
 		fields = ["metal_type", "metal_touch", "metal_colour"]

@@ -34,6 +34,28 @@ frappe.ui.form.on("Quotation", {
 			},
 			__("Get Items From")
 		);
+		if (frm.doc.docstatus == 1) {
+			frm.add_custom_button(
+				__("Manufacturing Plan"),
+				function () {
+					frappe.model.open_mapped_doc({
+						method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.make_manufacturing_plan",
+						frm: frm,
+					});
+				},
+				__("Create")
+			);
+			frm.add_custom_button(
+				__("Delivery Note"),
+				function () {
+					frappe.model.open_mapped_doc({
+						method: "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.make_delivery_note_batch",
+						frm: frm,
+					});
+				},
+				__("Create")
+			);
+		}
 		if (frm.has_perm("submit")) {
 			if (frm.doc.docstatus == 1) {
 				if (frm.doc.status != "Closed") {

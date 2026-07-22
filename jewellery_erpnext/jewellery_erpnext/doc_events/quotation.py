@@ -1431,3 +1431,112 @@ def xl_preview(docname):
 	frappe.local.response.filecontent = output.read()
 	frappe.local.response.filename = f"Diamond_Detail_{docname}.xlsx"
 	frappe.local.response.type = "download"
+
+
+@frappe.whitelist()
+def make_delivery_note_batch(source_name, target_doc=None):
+	"""Build a Delivery Note directly from the manufactured serials of the given Quotations.
+
+	This is the Sales-Order-free replacement for ``sales_order.make_sales_order_batch``: the
+	manufacturing flow no longer creates a Sales Order, so finished serials are delivered straight
+	against the Quotation via ``Delivery Note Item.custom_against_quotation`` (which
+	``doc_events.delivery_note.validate`` then uses to pull the ``Quotation E Invoice Item`` rows).
+
+	Serials are located the same way the Sales Order closeout does it: each Serial Number Creator
+	carries ``quotation`` (fetched from its Parent Manufacturing Order) and has one posted Stock
+	Entry whose details hold the finished serial numbers.
+	"""
+	from frappe.utils import flt
+
+	# ``source_name`` is a single Quotation name when routed through ``open_mapped_doc`` (the
+	# Quotation-form button), or a JSON list when batching several quotations onto one note.
+	quotations = source_name
+	if isinstance(quotations, str):
+		try:
+			quotations = json.loads(quotations)
+		except ValueError:
+			quotations = [quotations]
+	if isinstance(quotations, str):
+		quotations = [quotations]
+
+	if target_doc:
+		if isinstance(target_doc, str):
+			target_doc = json.loads(target_doc)
+		target_doc = frappe.get_doc(target_doc)
+	else:
+		target_doc = frappe.new_doc("Delivery Note")
+
+	target_doc.items = []
+
+	for quotation_name in quotations:
+		quotation = frappe.db.get_value("Quotation", quotation_name, "*", as_dict=True)
+		if not quotation:
+			continue
+
+		target_doc.customer = quotation.party_name
+		target_doc.company = quotation.company
+
+		# Serials manufactured for this Quotation, via Serial Number Creator -> Stock Entry.
+		snc_names = frappe.get_all(
+			"Serial Number Creator",
+			filters={"quotation": quotation_name, "docstatus": ["!=", 2]},
+			pluck="name",
+		)
+		stock_entries = []
+		for snc in snc_names:
+			stock_entry = frappe.db.get_value(
+				"Stock Entry", {"custom_serial_number_creator": snc}, "name"
+			)
+			if stock_entry:
+				stock_entries.append(stock_entry)
+
+		if not stock_entries:
+			continue
+
+		items = frappe.get_all(
+			"Quotation Item", filters={"parent": quotation_name}, fields="*"
+		)
+
+		for it in items:
+			available_serials = []
+			for stock_entry in stock_entries:
+				serial_row = frappe.db.sql(
+					"""
+					SELECT sed.serial_no
+					FROM `tabStock Entry Detail` sed
+					WHERE sed.parent = %s AND sed.item_code = %s
+					ORDER BY sed.idx DESC
+					LIMIT 1
+					""",
+					(stock_entry, it.item_code),
+					as_dict=1,
+				)
+				if serial_row and serial_row[0].get("serial_no"):
+					available_serials.append(serial_row[0]["serial_no"])
+
+			if not available_serials:
+				continue
+
+			serial_count = 0
+			for s_no in available_serials:
+				if serial_count >= flt(it.qty):
+					break
+				target_doc.append(
+					"items",
+					{
+						"item_code": it.item_code,
+						"item_name": it.item_name,
+						"serial_no": s_no,
+						"bom": frappe.db.get_value("Serial No", s_no, "custom_bom_no"),
+						"diamond_quality": it.get("diamond_quality"),
+						"description": it.description,
+						"qty": 1,
+						"rate": it.rate,
+						"warehouse": it.warehouse,
+						"custom_against_quotation": quotation_name,
+						"uom": it.uom,
+					},
+				)
+				serial_count += 1
+
+	return target_doc
