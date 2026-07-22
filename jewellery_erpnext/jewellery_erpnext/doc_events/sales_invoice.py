@@ -156,8 +156,8 @@ def on_submit(self,method):
 	if self.company == 'Sadguru Diamond':
 		return
 	if self.is_return:
-		for row in self.items:
-			frappe.db.set_value("Serial No", row.get("serial_no"), {"status": "Active","warehouse":"Product Allocation FG - KGJPL"})
+		# for row in self.items:
+		# 	frappe.db.set_value("Serial No", row.get("serial_no"), {"status": "Active","warehouse":"Product Allocation FG - KGJPL"})
 		return
 	if self.sales_type not in  ['Certification','']:
 		separate_hallmarking_invoice = frappe.db.get_value(
