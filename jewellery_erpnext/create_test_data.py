@@ -2773,6 +2773,15 @@ def create_test_data():
 
 			po_refining_entry_field()
 
+			# Serial No.custom_ownership_tag is NOT in the git_action_v16 fixtures, so —
+			# like the other custom-field patches above — it must be provisioned here for
+			# test_site, else create_manufacturing_entry's set_value raises
+			# "Unknown column 'custom_ownership_tag'" the moment an SNC is submitted.
+			from jewellery_erpnext.patches.add_serial_no_ownership_tag_field import (
+				execute as _ensure_serial_no_ownership_tag_field,
+			)
+
+			_ensure_serial_no_ownership_tag_field()
 			# Batch.custom_employee (employee-wise scrap/dust refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /

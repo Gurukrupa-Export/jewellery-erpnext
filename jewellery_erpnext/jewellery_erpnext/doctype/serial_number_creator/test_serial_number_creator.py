@@ -8,6 +8,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+	_derive_ownership_tag,
 	_snc_se_detail_maps,
 	_stone_se_rate,
 )
@@ -562,3 +563,56 @@ class TestStoneSeRate(IntegrationTestCase):
 	def test_zero_when_neither_available(self):
 		self.assertEqual(_stone_se_rate(0.0, 0.0), 0.0)
 		self.assertEqual(_stone_se_rate(None, None), 0.0)
+
+
+class TestDeriveOwnershipTag(IntegrationTestCase):
+	"""``_derive_ownership_tag`` classifies the FG serial as Outright / Outwork /
+	Hybrid from the material the Manufacture SE consumed. It reads the batch-corrected
+	``row_data`` (consumption rows only), NOT ``_snc_se_detail_maps``' inv_map — that
+	one includes the finished-good row, whose inventory_type is hardcoded
+	"Regular Stock", which would misreport every pure customer-material job as Hybrid.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_all_regular_stock_is_outright(self):
+		row_data = [
+			{"inventory_type": "Regular Stock"},
+			{"inventory_type": "Regular Stock"},
+		]
+		self.assertEqual(_derive_ownership_tag(row_data), "Outright")
+
+	def test_all_customer_goods_is_outwork(self):
+		row_data = [
+			{"inventory_type": "Customer Goods"},
+			{"inventory_type": "Customer Goods"},
+		]
+		self.assertEqual(_derive_ownership_tag(row_data), "Outwork")
+
+	def test_mixed_is_hybrid(self):
+		row_data = [
+			{"inventory_type": "Regular Stock"},
+			{"inventory_type": "Customer Goods"},
+		]
+		self.assertEqual(_derive_ownership_tag(row_data), "Hybrid")
+
+	def test_nothing_derivable_returns_none(self):
+		# No rows, blank strings and missing keys all mean "cannot tell" — the caller
+		# leaves the Serial No untagged rather than guessing.
+		self.assertIsNone(_derive_ownership_tag([]))
+		self.assertIsNone(_derive_ownership_tag(None))
+		self.assertIsNone(
+			_derive_ownership_tag(
+				[{"inventory_type": ""}, {"inventory_type": None}, {}]
+			)
+		)
+
+	def test_blank_rows_do_not_promote_outwork_to_hybrid(self):
+		row_data = [{"inventory_type": "Customer Goods"}, {"inventory_type": ""}, {}]
+		self.assertEqual(_derive_ownership_tag(row_data), "Outwork")
+
+	def test_blank_rows_do_not_block_outright(self):
+		row_data = [{"inventory_type": "Regular Stock"}, {"inventory_type": None}]
+		self.assertEqual(_derive_ownership_tag(row_data), "Outright")
