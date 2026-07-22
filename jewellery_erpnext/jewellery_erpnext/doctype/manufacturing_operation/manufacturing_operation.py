@@ -5163,8 +5163,13 @@ def _undo_scrap_mop_log_entries(receive_se_name):
 		recalculate_manufacturing_operation_weights(mop_name)
 
 
-def _create_scrap_batch(item_code):
+def _create_scrap_batch(item_code, employee=None):
 	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Scrap'.
+
+	``employee`` stamps Batch.custom_employee so the scrap can be fetched employee-wise
+	in Scrap Refining. This batch is created directly (before any Stock Entry links it),
+	so the usual SE->batch employee copy (Batch.update_inventory_dimentions) never runs;
+	stamp it explicitly here from the operation's employee.
 
 	Returns None for non-batch items (they cannot carry the Scrap marker)."""
 	if not frappe.db.get_value("Item", item_code, "has_batch_no"):
@@ -5172,6 +5177,8 @@ def _create_scrap_batch(item_code):
 	batch = frappe.new_doc("Batch")
 	batch.item = item_code
 	batch.custom_batch_type = "Scrap"
+	if employee:
+		batch.custom_employee = employee
 	# Set batch_type before insert so it persists whether the item auto-names the
 	# batch (batch_number_series) or we generate an id below.
 	if not frappe.db.get_value("Item", item_code, "batch_number_series"):
@@ -5228,12 +5235,18 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	repack.company = se.company
 	repack.auto_created = 1
 	repack.custom_request_id = scrap_request_id
+	op_employee = None
 	if getattr(se, "manufacturing_operation", None):
 		repack.manufacturing_operation = se.manufacturing_operation
+		# The operation's karigar is the employee responsible for this scrap; stamp it
+		# on the minted Scrap batches so Scrap Refining can be scoped employee-wise.
+		op_employee = frappe.db.get_value(
+			"Manufacturing Operation", se.manufacturing_operation, "employee"
+		)
 	repack.remarks = _("Scrap batch conversion for {0}").format(receive_se_name)
 
 	for item in rows:
-		new_batch = _create_scrap_batch(item.item_code)
+		new_batch = _create_scrap_batch(item.item_code, employee=op_employee)
 		if not new_batch:
 			continue
 		# Fetch valuation rate so the finished-good row has a valid basic_rate

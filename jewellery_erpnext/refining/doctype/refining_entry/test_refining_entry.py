@@ -429,6 +429,83 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(se4.items[1].item_code, "D-NT-RO-6B-+9-9.5")
 		self.assertEqual(se4.items[1].qty, 0.925)
 
+	def test_scrap_refining_employee_filter(self):
+		"""Employee-wise scrap issuance: the Receive-Scrap flow stamps the operation's
+		employee onto the minted Scrap batch (Batch.custom_employee), and Scrap Refining
+		returns only that employee's batches when an Employee is selected."""
+		emp = "HR-EMP-00002"
+		mwo = mwo_semi_finished_goods(self)
+		mwo.reload()
+		doc = frappe.get_doc("Manufacturing Operation", mwo.manufacturing_operation)
+		# Attribute the operation (and thus its scrap) to a known employee so the minted
+		# Scrap batch is stamped with custom_employee (see _create_scrap_batch).
+		doc.db_set("employee", emp)
+
+		rtn = get_make_scrap_entry_rows(doc.name)
+		receive_entry = []
+		for i in range(len(rtn["rows"])):
+			receive_entry.append(
+				{
+					"idx": i,
+					"stock_reservation_entry": rtn["rows"][i][
+						"stock_reservation_entry"
+					],
+					"stock_reservation_entry_detail": rtn["rows"][i][
+						"stock_reservation_entry_detail"
+					],
+					"item_code": rtn["rows"][i]["item_code"],
+					"s_warehouse": rtn["rows"][i]["s_warehouse"],
+					"qty": rtn["rows"][i]["reserved_qty"],
+					"pcs": 0,
+					"batch_no": rtn["rows"][i]["batch_no"],
+				}
+			)
+
+		se_data = {
+			"manufacturing_work_order": doc.manufacturing_work_order,
+			"manufacturing_operation": doc.name,
+			"manufacturing_order": doc.manufacturing_order,
+			"department": doc.department,
+			"receive_items": receive_entry,
+		}
+		create_scrap_wo_stock_entry(se_data)
+
+		# Part B: the freshly minted Scrap batch(es) carry the operation's employee.
+		minted = set(
+			frappe.get_all(
+				"Batch",
+				{"custom_batch_type": "Scrap", "custom_employee": emp},
+				pluck="name",
+			)
+		)
+		self.assertTrue(
+			minted, "Receive-Scrap must stamp the operation employee on the Scrap batch"
+		)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Scrap Refining"
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.warehouse = "Waxing RM - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		re.save()
+
+		# Part C: selecting the employee returns that employee's scrap batches...
+		re.employee = emp
+		owned = {r["batch_no"] for r in re.get_scrap_items_balance()}
+		self.assertTrue(
+			minted <= owned,
+			"employee filter must return the selected employee's scrap batches",
+		)
+
+		# ...and a different employee (who owns no scrap here) does not see them.
+		re.employee = "__NO_SUCH_EMPLOYEE__"
+		other = {r["batch_no"] for r in re.get_scrap_items_balance()}
+		self.assertFalse(
+			minted & other, "a non-owning employee must not see the scrap batches"
+		)
+
 	def test_external_refinery_entry(self):
 		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 5.0)
 
