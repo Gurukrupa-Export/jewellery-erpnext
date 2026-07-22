@@ -5,6 +5,9 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.party_link import (
+	get_linked_customer,
+)
 
 
 def update_inventory_dimentions(self):
@@ -22,10 +25,10 @@ def update_inventory_dimentions(self):
 		["options"],
 	):
 		if frappe.db.exists(row.options, self.custom_voucher_detail_no):
-			self.custom_inventory_type = frappe.db.get_value(
+			self.custom_inventory_type = _row_value(
 				row.options, self.custom_voucher_detail_no, "inventory_type"
 			)
-			self.custom_customer = frappe.db.get_value(
+			self.custom_customer = _row_value(
 				row.options, self.custom_voucher_detail_no, "customer"
 			)
 			# Stamp the responsible employee so scrap/dust can be fetched employee-wise
@@ -33,9 +36,7 @@ def update_inventory_dimentions(self):
 			# (Employee Loss Entry sets it per produce row); fall back to the Stock Entry
 			# header employee (Employee IR Process Loss sets it only on the header).
 			# Copied the same way custom_customer/custom_inventory_type are.
-			emp = frappe.db.get_value(
-				row.options, self.custom_voucher_detail_no, "employee"
-			)
+			emp = _row_value(row.options, self.custom_voucher_detail_no, "employee")
 			if not emp and self.reference_doctype == "Stock Entry":
 				emp = frappe.db.get_value(
 					"Stock Entry", self.reference_name, "employee"
@@ -47,36 +48,24 @@ def update_inventory_dimentions(self):
 				{"parent": self.item, "attribute": "Metal Type"},
 				"attribute_value",
 			)
-			if self.reference_doctype != "Stock Entry":
-				if self.item in alloy_item_list:
-					self.custom_alloy_rate = frappe.db.get_value(
-						row.options, self.custom_voucher_detail_no, "rate"
+			# Batch Rate is stamped from the row that created the batch: Purchase
+			# Receipt Item.rate, or the Stock Entry Detail's own maintained rate
+			# falling back to basic_rate. Stamped only while the field is still
+			# empty (see _can_stamp_rate) so a later re-save cannot clobber the
+			# qty-weighted rate batch.on_update blends for Repack-Metal Conversion.
+			if self.item in alloy_item_list:
+				if _can_stamp_rate(self, "custom_alloy_rate"):
+					self.custom_alloy_rate = _source_row_rate(
+						self, row.options, "custom_alloy_rate"
 					)
-				elif self.item not in alloy_item_list and frappe.db.get_value(
-					"Attribute Value", attribute_value, "is_metal_type"
-				):
-					self.custom_metal_rate = frappe.db.get_value(
-						row.options, self.custom_voucher_detail_no, "rate"
+			elif (
+				frappe.db.get_value("Attribute Value", attribute_value, "is_metal_type")
+				or _stamp_rate_for_all_items()
+			):
+				if _can_stamp_rate(self, "custom_metal_rate"):
+					self.custom_metal_rate = _source_row_rate(
+						self, row.options, "custom_metal_rate"
 					)
-			else:
-				if self.item in alloy_item_list:
-					self.custom_alloy_rate = frappe.db.get_value(
-						row.options, self.custom_voucher_detail_no, "custom_alloy_rate"
-					)
-					if not self.custom_alloy_rate:
-						self.custom_alloy_rate = frappe.db.get_value(
-							row.options, self.custom_voucher_detail_no, "basic_rate"
-						)
-				elif self.item not in alloy_item_list and frappe.db.get_value(
-					"Attribute Value", attribute_value, "is_metal_type"
-				):
-					self.custom_metal_rate = frappe.db.get_value(
-						row.options, self.custom_voucher_detail_no, "custom_metal_rate"
-					)
-					if not self.custom_metal_rate:
-						self.custom_metal_rate = frappe.db.get_value(
-							row.options, self.custom_voucher_detail_no, "basic_rate"
-						)
 			break
 
 	item_allows_customer_goods = frappe.db.get_value(
@@ -111,6 +100,120 @@ def update_inventory_dimentions(self):
 		self.custom_customer_voucher_type = frappe.db.get_value(
 			"Stock Entry", self.reference_name, "customer_voucher_type"
 		) or _source_batch_voucher_type(self)
+	elif self.reference_doctype == "Purchase Receipt" and self.custom_customer:
+		self.custom_customer_voucher_type = (
+			_purchase_receipt_voucher_type(self) or self.custom_customer_voucher_type
+		)
+
+
+def _row_value(child_doctype, row_name, fieldname):
+	"""Read one field off the voucher row, tolerating a column that is not there.
+
+	The child tables that mint batches do not all carry the same custom fields --
+	``employee`` exists on Stock Entry Detail but NOT on Purchase Receipt Item --
+	and this app's ``custom_fields/*.json`` are not applied by migrate (the
+	patch-only custom-field gap documented in ``fetch_from_guard``), so a column
+	can be absent on a real site even where the JSON declares it. An unguarded
+	read raises MariaDB 1054 "Unknown column" from inside ``Batch.validate``,
+	which aborts the entire submit of the voucher creating the batch -- that is
+	what made every batch-tracked Purchase Receipt fail on submit.
+
+	``frappe.db.has_column`` is the right probe rather than ``meta.has_field``:
+	the failure is a *schema* one, and a field declared in JSON but never patched
+	onto the site is exactly the case that must be treated as missing.
+	"""
+	if not frappe.db.has_column(child_doctype, fieldname):
+		return None
+
+	return frappe.db.get_value(child_doctype, row_name, fieldname)
+
+
+def _can_stamp_rate(batch, fieldname):
+	"""Whether the Batch Rate / Alloy Rate may still be written.
+
+	The requirement is that *newly created* batches carry the rate of the voucher
+	row that made them. Re-stamping on every save would also undo the qty-weighted
+	rate ``batch.on_update`` blends from ``custom_origin_entries`` for a
+	Repack-Metal Conversion, since ``validate`` runs before ``on_update`` only on
+	the save that does the blending -- any later save would overwrite it.
+
+	An empty field is always fillable (a batch that never got a rate should still
+	get one); a rate that is already set is only rewritten while the batch is new.
+	``getattr`` guards the ``is_new`` lookup because the doc-event tests drive this
+	function with ``SimpleNamespace`` stand-ins rather than real Documents.
+	"""
+	if not flt(getattr(batch, fieldname, 0)):
+		return True
+
+	is_new = getattr(batch, "is_new", None)
+	return bool(is_new()) if callable(is_new) else True
+
+
+def _source_row_rate(batch, child_doctype, se_fieldname):
+	"""The rate carried by the voucher row that created this batch.
+
+	A Purchase Receipt Item (and any other non-Stock-Entry voucher row) carries a
+	single ``rate``. A Stock Entry Detail carries its own maintained Batch/Alloy
+	Rate -- fetched from the *consumed* batch, so it is empty on the produce row
+	that mints a new batch -- and falls back to ``basic_rate``, the valuation the
+	entry itself booked.
+	"""
+	if batch.reference_doctype != "Stock Entry":
+		return _row_value(child_doctype, batch.custom_voucher_detail_no, "rate")
+
+	rate = _row_value(child_doctype, batch.custom_voucher_detail_no, se_fieldname)
+	if not rate:
+		rate = _row_value(child_doctype, batch.custom_voucher_detail_no, "basic_rate")
+	return rate
+
+
+def _stamp_rate_for_all_items():
+	"""Feature flag: also stamp Batch Rate for non-metal, non-alloy items.
+
+	OFF by default, because widening this is not neutral.
+	``Stock Entry Detail.custom_metal_rate`` is ``fetch_from
+	batch_no.custom_metal_rate``, and the SNC / FG-BOM rate maps
+	(``manufacturing_operation._snc_se_detail_maps``) read
+	``COALESCE(NULLIF(custom_metal_rate, 0), basic_rate)`` -- deliberately falling
+	through to the live ``basic_rate`` for diamond and gemstone, as that
+	function's docstring states. Filling the batch rate for those items silently
+	switches them to the batch's creation-time rate. Enable per site only after
+	confirming that is the intended valuation.
+	"""
+	return bool(frappe.conf.get("stamp_batch_rate_for_all_items"))
+
+
+def _purchase_receipt_voucher_type(batch):
+	"""``Customer Subcontracting`` for goods received against a customer's supplier.
+
+	A Purchase Receipt whose supplier is ticked
+	``custom_consider_purchase_receipt_as_customergoods`` books its rows as Customer
+	Goods owned by the Customer linked to that Supplier -- ``primary_party`` of the
+	``Party Link`` whose ``secondary_party`` is the supplier (see
+	``purchase_receipt/doc_events/utils.py::update_inventory_type``, which stamps
+	``row.customer`` the same way). The batch minted from such a receipt is that
+	customer's subcontracting stock, so it must carry the voucher type -- the
+	Stock Entry leg above never fires for a Purchase Receipt reference, which is
+	why these batches previously had a customer but no voucher type.
+
+	The Party Link customer is re-resolved and compared against the customer already
+	on the batch: a batch whose ownership came from somewhere else must not be
+	relabelled as this customer's subcontracting stock.
+	"""
+	supplier = frappe.db.get_value("Purchase Receipt", batch.reference_name, "supplier")
+	if not supplier:
+		return None
+
+	if not frappe.db.get_value(
+		"Supplier", supplier, "custom_consider_purchase_receipt_as_customergoods"
+	):
+		return None
+
+	primary_customer = get_linked_customer(supplier)
+	if not primary_customer or primary_customer != batch.custom_customer:
+		return None
+
+	return "Customer Subcontracting"
 
 
 def _source_batch_voucher_type(batch):
