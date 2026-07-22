@@ -7,7 +7,7 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufacturing_plan import (
-	create_sales_order,
+	create_manufacturing_quotation,
 	manufacturing_plan_creation,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
@@ -475,7 +475,7 @@ class TestParentManufacturingOrder(IntegrationTestCase):
 
 
 def create_man_plan(self):
-	create_sales_order(self)
+	create_manufacturing_quotation(self)
 	doc = frappe.new_doc("Manufacturing Plan")
 	doc.select_manufacture_order = "Manufacturing"
 	man_plan = manufacturing_plan_creation(doc)
