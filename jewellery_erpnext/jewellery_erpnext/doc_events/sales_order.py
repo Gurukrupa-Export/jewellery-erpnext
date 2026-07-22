@@ -1228,26 +1228,36 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 		f.customer_metal_purity = customer_metal_purity
 		f.quantity              = round(f.quantity, f_metal_prec)
 
-		if f.is_customer_item:
-			f.rate = 0
-			f.amount = 0
-			f.making_rate    = find_data.get("subcontracting_rate")
-			f.wastage_rate = 0
-			f.wastage_amount = 0
-			f.making_amount = round(f.making_rate * f.quantity, 2)
+		# if f.is_customer_item:
+		# 	f.rate = 0
+		# 	f.amount = 0
+		# 	f.making_rate    = find_data.get("subcontracting_rate")
+		# 	f.wastage_rate = 0
+		# 	f.wastage_amount = 0
+		# 	f.making_amount = round(f.making_rate * f.quantity, 2)
 
-		elif (
+		if (
 			self.company == "Gurukrupa Export Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			# f.rate           = round(calculated_gold_rate, 2)
-			f.rate = round(f.se_rate, 2)
-			f.amount = round(f.rate * f.quantity, 2)
-			# f.making_rate    = 550 if f.finding_category != 'Chains' else 200
-			f.making_rate = operational_cost / total_weight
-			f.wastage_rate = 0
-			f.wastage_amount = 0
-			f.making_amount = round(f.making_rate * f.quantity, 2)
+			if f.is_customer_item:
+				f.rate = 0
+				f.amount = 0
+				f.making_rate    = find_data.get("rate_per_gm")
+				if self.sales_type =='Hybrid' and f.finding_category=='Chains':
+					f.making_rate     = 0
+				f.wastage_rate = 0
+				f.wastage_amount = 0
+				f.making_amount = round(f.making_rate * f.quantity, 2)
+			#  f.rate           = round(calculated_gold_rate, 2)
+			else:
+				f.rate = round(f.se_rate, 2)
+				f.amount = round(f.rate * f.quantity, 2)
+				# f.making_rate    = 550 if f.finding_category != 'Chains' else 200
+				f.making_rate = operational_cost / total_weight
+				f.wastage_rate = 0
+				f.wastage_amount = 0
+				f.making_amount = round(f.making_rate * f.quantity, 2)
 
 		elif (
 			self.company == "KG GK Jewellers Private Limited"
@@ -1264,8 +1274,10 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate          = 0
 				f.amount = 0
 				# f.making_rate=operational_cost/total_weight
-				f.making_rate     = 0
-				f.making_amount = 0
+				f.making_rate     = find_data.get("rate_per_gm")
+				if self.sales_type =='Hybrid' and f.finding_category=='Chains':
+					f.making_rate     = 0
+				f.making_amount = round(f.making_rate * f.quantity, 2)
 				f.wastage_rate   = 0
 				f.wastage_amount = 0
 				f.fg_purchase_rate = 0
@@ -1307,25 +1319,35 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				self.gold_rate_with_gst,
 				ctx.gold_gst_rate,
 			)
-			f.rate = round(calculated_gold_rate, 2)
-			f.amount = round(f.rate * f.quantity, 2)
-			finding_weight = getattr(doc, "metal_and_finding_weight", None)
-			if finding_weight is not None and finding_weight < threshold:
-				making_rate = find_data.get("rate_per_pc", 0)
-				wastage_rate = find_data.get("wastage_per_pcs", 0) / 100.0
-				f.making_amount = making_rate
+			if f.is_customer_item:
+				f.rate = 0
+				f.amount = 0
+				f.making_rate    = find_data.get("rate_per_gm")
+				if self.sales_type =='Hybrid' and f.finding_category=='Chains':
+					f.making_rate     = 0
+				f.wastage_rate = 0
+				f.wastage_amount = 0
+				f.making_amount = round(f.making_rate * f.quantity, 2)
 			else:
-				making_rate = find_data.get("rate_per_gm", 0)
-				wastage_rate = find_data.get("wastage", 0) / 100.0
-				f.making_amount = making_rate * f.quantity
-			f.making_rate = making_rate
-			# frappe.msgprint(f"kjh{f.making_amount}")
-			f.wastage_rate = wastage_rate
-			f.wastage_amount = (
-				f.wastage_rate * f.amount
-				if self.customer != "TNCU0101"
-				else f.wastage_rate * f.quantity * self.gold_rate
-			)
+				f.rate = round(calculated_gold_rate, 2)
+				f.amount = round(f.rate * f.quantity, 2)
+				finding_weight = getattr(doc, "metal_and_finding_weight", None)
+				if finding_weight is not None and finding_weight < threshold:
+					making_rate = find_data.get("rate_per_pc", 0)
+					wastage_rate = find_data.get("wastage_per_pcs", 0) / 100.0
+					f.making_amount = making_rate
+				else:
+					making_rate = find_data.get("rate_per_gm", 0)
+					wastage_rate = find_data.get("wastage", 0) / 100.0
+					f.making_amount = making_rate * f.quantity
+				f.making_rate = making_rate
+				# frappe.msgprint(f"kjh{f.making_amount}")
+				f.wastage_rate = wastage_rate
+				f.wastage_amount = (
+					f.wastage_rate * f.amount
+					if self.customer != "TNCU0101"
+					else f.wastage_rate * f.quantity * self.gold_rate
+				)
 
 	doc.total_finding_amount = sum(flt(r.amount) for r in doc.get("finding_detail", []))
 
