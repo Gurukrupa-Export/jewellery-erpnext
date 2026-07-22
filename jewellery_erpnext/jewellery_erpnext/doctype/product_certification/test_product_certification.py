@@ -25,13 +25,17 @@ PURITY_PATH = "jewellery_erpnext.jewellery_erpnext.doctype.product_certification
 # attribute value, which test items do not carry.
 _TEST_PURITY = {"TEST-ITEM-001": 91.9, "PURE-ITEM-001": 99.9}
 
+# Must match the "name" in product_certification.json — that is what the test runner
+# derives cls.doctype from, and the key _skip_generated_test_records seeds.
+_DOCTYPE = "Product Certification"
+
 
 def _purity(item_code):
 	return _TEST_PURITY.get(item_code)
 
 
-def _skip_generated_test_records(cls):
-	"""Mark ``cls.doctype``'s auto-generated test records as already present.
+def _skip_generated_test_records():
+	"""Mark this doctype's auto-generated test records as already present.
 
 	IntegrationTestCase.setUpClass walks Product Certification's link graph to build
 	fixtures, and that graph reaches Company — whose erpnext test module bootstraps the
@@ -40,8 +44,12 @@ def _skip_generated_test_records(cls):
 	(``make_test_records`` uses the same idiom to avoid repeat work) and let
 	``super().setUpClass()`` still do its real job: site init, connection handles and the
 	class-level rollback that keeps inserted documents out of the next test.
+
+	The doctype is named literally rather than read off ``cls.doctype``: that attribute is
+	assigned by UnitTestCase.setUpClass, so it does not exist yet when this runs — it has
+	to, since the generation being skipped happens later in that same super() call.
 	"""
-	frappe.local.test_objects.setdefault(cls.doctype, [])
+	frappe.local.test_objects.setdefault(_DOCTYPE, [])
 
 
 class TestProductCertification(IntegrationTestCase):
@@ -781,7 +789,7 @@ class TestFireAssyLossWeight(IntegrationTestCase):
 
 	@classmethod
 	def setUpClass(cls):
-		_skip_generated_test_records(cls)
+		_skip_generated_test_records()
 		super().setUpClass()
 
 	def _doc(self, service_type, issue_weight, rows, main_slip=None, tree_no=None):
@@ -948,7 +956,7 @@ class TestPartialReceipt(IntegrationTestCase):
 
 	@classmethod
 	def setUpClass(cls):
-		_skip_generated_test_records(cls)
+		_skip_generated_test_records()
 		super().setUpClass()
 
 	def setUp(self):
