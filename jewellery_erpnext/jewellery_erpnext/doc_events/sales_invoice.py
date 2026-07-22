@@ -156,8 +156,8 @@ def on_submit(self,method):
 	if self.company == 'Sadguru Diamond':
 		return
 	if self.is_return:
-		for row in self.items:
-			frappe.db.set_value("Serial No", row.get("serial_no"), {"status": "Active","warehouse":"Product Allocation FG - KGJPL"})
+		# for row in self.items:
+		# 	frappe.db.set_value("Serial No", row.get("serial_no"), {"status": "Active","warehouse":"Product Allocation FG - KGJPL"})
 		return
 	if self.sales_type not in  ['Certification','']:
 		separate_hallmarking_invoice = frappe.db.get_value(
@@ -715,9 +715,18 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gol
 	gold_making_item = None
 	bom_doc.customer = self.customer
 	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
-	so_doc = frappe.get_doc("Sales Order", row.sales_order)
+	# New records invoice against the Quotation (the manufacturing flow no longer creates a Sales
+	# Order); legacy records against the Sales Order. Both expose the same ``custom_invoice_item``
+	# e-invoice table, so only the source document differs.
+	if row.get("custom_quotation"):
+		so_doc = frappe.get_doc("Quotation", row.custom_quotation)
+	elif row.get("sales_order"):
+		so_doc = frappe.get_doc("Sales Order", row.sales_order)
+	else:
+		so_doc = None
+
 	so_item_map = {}
-	for item in so_doc.custom_invoice_item:
+	for item in (so_doc.custom_invoice_item if so_doc else []):
 		so_item_map[item.item_code] = item
 
 	def add_to_invoice(item_code, so_item, fallback_amount=0, fallback_qty=0,fallback_rate=0, hsn=None, uom=None):
