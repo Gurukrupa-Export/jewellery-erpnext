@@ -883,10 +883,15 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gol
 			# (is_for_labour for Hybrid/customer-supplied, is_for_making
 			# otherwise), not hardcoded to is_for_making, so Hybrid making
 			# charges don't fall back into the Outright-taxed bucket.
+			fallback_filter_value = (
+				"is_for_labour"
+				if (i.is_customer_item or self.sales_type == "Hybrid")
+				else "is_for_making"
+			)
 			result = frappe.db.get_value(
 				"E Invoice Item",
 				{
-					filter_value: 1,
+					fallback_filter_value: 1,
 					"metal_type": i.metal_type,
 					"metal_purity": i.metal_touch,
 				},
