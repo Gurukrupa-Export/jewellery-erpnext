@@ -2,16 +2,6 @@
  "Quotation Item": [
   {
    "dt": "Quotation Item",
-   "fieldname": "manufacturing_order_qty",
-   "fieldtype": "Float",
-   "insert_after": "qty",
-   "label": "Manufacturing Order Qty",
-   "module": "Jewellery Erpnext",
-   "no_copy": 1,
-   "read_only": 1
-  },
-  {
-   "dt": "Quotation Item",
    "fieldname": "custom_hallmarking_amount",
    "fieldtype": "Float",
    "insert_after": "making_charge",

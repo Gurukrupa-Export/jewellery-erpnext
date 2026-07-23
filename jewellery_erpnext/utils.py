@@ -10,52 +10,6 @@ from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
 
 
-def resolve_demand_anchor(
-	quotation=None, quotation_item=None, sales_order=None, sales_order_item=None
-):
-	"""Stock-reservation demand anchor as ``(voucher_type, voucher_no, voucher_detail_no)``.
-
-	Newly created records anchor stock reservation (Stock Reservation Entry voucher) on the
-	**Quotation**; legacy records fall back to the **Sales Order**. Returns
-	``(None, None, None)`` when neither is set (e.g. a stock-based MWO), so callers can skip
-	rather than mint a malformed reservation.
-	"""
-	if quotation:
-		return "Quotation", quotation, quotation_item
-	if sales_order:
-		return "Sales Order", sales_order, sales_order_item
-	return None, None, None
-
-
-def resolve_pmo_demand_anchor(pmo):
-	"""``(voucher_type, voucher_no, voucher_detail_no)`` for a Parent Manufacturing Order name."""
-	if not pmo:
-		return None, None, None
-	det = (
-		frappe.db.get_value(
-			"Parent Manufacturing Order",
-			pmo,
-			["quotation", "quotation_item", "sales_order", "sales_order_item"],
-			as_dict=True,
-		)
-		or {}
-	)
-	return resolve_demand_anchor(
-		det.get("quotation"),
-		det.get("quotation_item"),
-		det.get("sales_order"),
-		det.get("sales_order_item"),
-	)
-
-
-def resolve_mwo_demand_anchor(mwo):
-	"""``(voucher_type, voucher_no, voucher_detail_no)`` for a Manufacturing Work Order name."""
-	if not mwo:
-		return None, None, None
-	pmo = frappe.db.get_value("Manufacturing Work Order", mwo, "manufacturing_order")
-	return resolve_pmo_demand_anchor(pmo)
-
-
 @frappe.whitelist()
 def set_items_from_attribute(item_template, item_template_attribute):
 	if isinstance(item_template_attribute, str):

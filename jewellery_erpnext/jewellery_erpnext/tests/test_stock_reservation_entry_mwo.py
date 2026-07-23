@@ -55,10 +55,7 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 	):
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
-				# (quotation, quotation_item, sales_order, sales_order_item, manufacturer).
-				# No quotation -> the demand anchor falls back to the Sales Order, which is
-				# the legacy path these tests cover.
-				return (None, None, "SO-1", "SOI-1", "MNF-1")
+				return ("SO-1", "SOI-1", "MNF-1")
 			if doctype == "Item":
 				return (1, 0)
 			raise AssertionError(doctype)
@@ -153,10 +150,7 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
-				# (quotation, quotation_item, sales_order, sales_order_item, manufacturer).
-				# No quotation -> the demand anchor falls back to the Sales Order, which is
-				# the legacy path these tests cover.
-				return (None, None, "SO-1", "SOI-1", "MNF-1")
+				return ("SO-1", "SOI-1", "MNF-1")
 			if doctype == "Item":
 				return (1, 0)
 			raise AssertionError(doctype)
@@ -250,10 +244,7 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
-				# (quotation, quotation_item, sales_order, sales_order_item, manufacturer).
-				# No quotation -> the demand anchor falls back to the Sales Order, which is
-				# the legacy path these tests cover.
-				return (None, None, "SO-1", "SOI-1", "MNF-1")
+				return ("SO-1", "SOI-1", "MNF-1")
 			if doctype == "Item":
 				return (1, 0)
 			raise AssertionError(doctype)
@@ -336,10 +327,7 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
-				# (quotation, quotation_item, sales_order, sales_order_item, manufacturer).
-				# No quotation -> the demand anchor falls back to the Sales Order, which is
-				# the legacy path these tests cover.
-				return (None, None, "SO-1", "SOI-1", "MNF-1")
+				return ("SO-1", "SOI-1", "MNF-1")
 			if doctype == "Item":
 				return (1, 0)
 			raise AssertionError(doctype)
@@ -413,10 +401,7 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 	):
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
-				# (quotation, quotation_item, sales_order, sales_order_item, manufacturer).
-				# No quotation -> the demand anchor falls back to the Sales Order, which is
-				# the legacy path these tests cover.
-				return (None, None, "SO-1", "SOI-1", "MNF-1")
+				return ("SO-1", "SOI-1", "MNF-1")
 			if doctype == "Item":
 				return (0, 0)
 			raise AssertionError(doctype)
@@ -489,10 +474,7 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
-				# (quotation, quotation_item, sales_order, sales_order_item, manufacturer).
-				# No quotation -> the demand anchor falls back to the Sales Order, which is
-				# the legacy path these tests cover.
-				return (None, None, "SO-1", "SOI-1", "MNF-1")
+				return ("SO-1", "SOI-1", "MNF-1")
 			if doctype == "Item":
 				return (1, 0)
 			raise AssertionError(doctype)
@@ -569,10 +551,7 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
-				# (quotation, quotation_item, sales_order, sales_order_item, manufacturer).
-				# No quotation -> the demand anchor falls back to the Sales Order, which is
-				# the legacy path these tests cover.
-				return (None, None, "SO-1", "SOI-1", "MNF-1")
+				return ("SO-1", "SOI-1", "MNF-1")
 			if doctype == "Item":
 				return (1, 0)
 			raise AssertionError(doctype)
@@ -653,15 +632,12 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 	):
 		"""Non-EIR Repack SE must respect the config gate — no SRE if not in MOP Settings."""
 
-		# get_cached_value is invoked early to unpack 5 values from
-		# Parent Manufacturing Order; supply a 5-tuple so the function
+		# get_cached_value is invoked early to unpack 3 values from
+		# Parent Manufacturing Order; supply a 3-tuple so the function
 		# reaches the per-row loop where the gate fires.
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
-				# (quotation, quotation_item, sales_order, sales_order_item, manufacturer).
-				# No quotation -> the demand anchor falls back to the Sales Order, which is
-				# the legacy path these tests cover.
-				return (None, None, "SO-1", "SOI-1", "MNF-1")
+				return ("SO-1", "SOI-1", "MNF-1")
 			if doctype == "Item":
 				return (0, 0)
 			return ("X", "Y", "Z")
@@ -703,96 +679,6 @@ def _bare_sre(**fields):
 		setattr(sre, k, v)
 	sre.get = lambda key, default=None: getattr(sre, key, default)
 	return sre
-
-
-class TestStockReservationDemandAnchor(IntegrationTestCase):
-	"""The SRE demand voucher is the Quotation for new records, the Sales Order for legacy ones.
-
-	Manufacturing now plans straight off the Quotation and never creates a Sales Order, so
-	``stock_reservation_entry_for_mwo`` resolves its voucher via
-	``jewellery_erpnext.utils.resolve_demand_anchor``.
-	"""
-
-	@classmethod
-	def setUpClass(cls):
-		pass
-
-	def _run(self, pmo_row):
-		"""Drive stock_reservation_entry_for_mwo for one simple inbound row.
-
-		``pmo_row`` is the 5-tuple get_cached_value returns for the Parent Manufacturing Order:
-		(quotation, quotation_item, sales_order, sales_order_item, manufacturer).
-		Returns (sre_mock, sre_reserved_qty_mock).
-		"""
-		mod = "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry"
-		with patch(f"{mod}.create_mop_log"), patch(
-			f"{mod}.frappe.new_doc"
-		) as mock_new_doc, patch(
-			f"{mod}.get_sre_reserved_qty_for_voucher_detail_no", return_value=0.0
-		) as mock_reserved, patch(
-			f"{mod}.get_available_qty_to_reserve", return_value=50.0
-		), patch(f"{mod}.frappe.get_cached_value") as mock_cached, patch(
-			f"{mod}.frappe.db.get_values", return_value=None
-		), patch(f"{mod}.frappe.db.get_all", return_value=["Repack"]):
-
-			def _cached(doctype, name, fields):
-				if doctype == "Parent Manufacturing Order":
-					return pmo_row
-				if doctype == "Item":
-					return (0, 0)
-				raise AssertionError(doctype)
-
-			mock_cached.side_effect = _cached
-			sre = MagicMock()
-			mock_new_doc.return_value = sre
-
-			doc = MagicMock()
-			doc.stock_entry_type = "Repack"
-			doc.manufacturing_order = "PMO-1"
-			doc.manufacturing_work_order = "MWO-1"
-			doc.company = "GE"
-			doc.manufacturer = None
-			doc.employee_ir = None
-
-			row = MagicMock()
-			row.item_code = "M-ALLOY"
-			row.qty = 2.0
-			row.t_warehouse = "WH-Dept"
-			row.s_warehouse = None
-			row.uom = "Gram"
-			row.batch_no = None
-			row.manufacturing_operation = "MOP-1"
-			row.get = MagicMock(side_effect=lambda k, d=None: getattr(row, k, d))
-			doc.items = [row]
-
-			stock_reservation_entry_for_mwo(doc)
-			return sre, mock_reserved
-
-	def test_reserves_against_quotation_for_new_records(self):
-		"""PMO carries a quotation -> the SRE voucher is that Quotation."""
-		sre, mock_reserved = self._run(("QTN-1", "QTNI-1", None, None, "MNF-1"))
-
-		self.assertEqual(sre.voucher_type, "Quotation")
-		self.assertEqual(sre.voucher_no, "QTN-1")
-		self.assertEqual(sre.voucher_detail_no, "QTNI-1")
-		# the existing-reservation cap must be read against the Quotation as well
-		mock_reserved.assert_called_with("M-ALLOY", "Quotation", "QTN-1", "QTNI-1")
-
-	def test_reserves_against_sales_order_for_legacy_records(self):
-		"""PMO has no quotation (pre-change doc) -> fall back to the Sales Order."""
-		sre, mock_reserved = self._run((None, None, "SO-1", "SOI-1", "MNF-1"))
-
-		self.assertEqual(sre.voucher_type, "Sales Order")
-		self.assertEqual(sre.voucher_no, "SO-1")
-		self.assertEqual(sre.voucher_detail_no, "SOI-1")
-		mock_reserved.assert_called_with("M-ALLOY", "Sales Order", "SO-1", "SOI-1")
-
-	def test_quotation_wins_when_both_are_set(self):
-		"""A backfilled doc carrying both must reserve against the Quotation."""
-		sre, _ = self._run(("QTN-1", "QTNI-1", "SO-1", "SOI-1", "MNF-1"))
-
-		self.assertEqual(sre.voucher_type, "Quotation")
-		self.assertEqual(sre.voucher_no, "QTN-1")
 
 
 class TestCustomStockReservationEntry(IntegrationTestCase):

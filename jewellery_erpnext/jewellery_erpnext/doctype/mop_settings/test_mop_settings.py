@@ -1984,8 +1984,6 @@ class TestReserveFromEodSeRows(IntegrationTestCase):
 		batch_free=None,
 		so_reserved=0.0,
 		base_mr=None,
-		quotation=None,
-		quotation_item=None,
 		sales_order="SO-1",
 		sales_order_item="SOI-1",
 		mo="MO-1",
@@ -2008,11 +2006,7 @@ class TestReserveFromEodSeRows(IntegrationTestCase):
 
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
-				# The demand anchor is resolved from
-				# (quotation, quotation_item, sales_order, sales_order_item, manufacturer):
-				# new records reserve against the Quotation, legacy ones against the
-				# Sales Order. Defaults keep these tests on the legacy Sales Order path.
-				return (quotation, quotation_item, sales_order, sales_order_item, mfr)
+				return (sales_order, sales_order_item, mfr)
 			if doctype == "Item":
 				return (has_batch_no, has_serial_no, stock_uom)
 			raise AssertionError(f"unexpected get_cached_value doctype: {doctype}")
@@ -2067,53 +2061,6 @@ class TestReserveFromEodSeRows(IntegrationTestCase):
 		self.assertEqual(sre.reservation_based_on, "Qty")
 		sre.insert.assert_called_once()
 		sre.submit.assert_called_once()
-
-	def test_qty_item_quotation_anchored_at_target(self):
-		"""New records: the EOD reservation is anchored to the Quotation, not a Sales Order."""
-		rows = [
-			{
-				"custom_manufacturing_work_order": "MWO-1",
-				"item_code": "M-1",
-				"t_warehouse": "WH-DEPT",
-				"qty": 5.0,
-				"manufacturing_operation": "MOP-LAST",
-			}
-		]
-		_created, sres = self._reserve(
-			rows,
-			avail=10.0,
-			quotation="QTN-1",
-			quotation_item="QTNI-1",
-			sales_order=None,
-			sales_order_item=None,
-		)
-		self.assertEqual(len(sres), 1)
-		sre = sres[0]
-		self.assertEqual(sre.voucher_type, "Quotation")
-		self.assertEqual(sre.voucher_no, "QTN-1")
-		self.assertEqual(sre.voucher_detail_no, "QTNI-1")
-		self.assertEqual(sre.warehouse, "WH-DEPT")
-		self.assertEqual(sre.reserved_qty, 5.0)
-		sre.insert.assert_called_once()
-		sre.submit.assert_called_once()
-
-	def test_quotation_wins_over_sales_order_when_both_set(self):
-		"""A backfilled PMO carrying both anchors must reserve against the Quotation."""
-		rows = [
-			{
-				"custom_manufacturing_work_order": "MWO-1",
-				"item_code": "M-1",
-				"t_warehouse": "WH-DEPT",
-				"qty": 5.0,
-				"manufacturing_operation": "MOP-LAST",
-			}
-		]
-		_created, sres = self._reserve(
-			rows, avail=10.0, quotation="QTN-1", quotation_item="QTNI-1"
-		)
-		self.assertEqual(len(sres), 1)
-		self.assertEqual(sres[0].voucher_type, "Quotation")
-		self.assertEqual(sres[0].voucher_no, "QTN-1")
 
 	def test_batch_item_builds_sb_entry_at_target(self):
 		rows = [
@@ -3785,9 +3732,8 @@ class TestReserveBatchAtPhysicalWarehouse(IntegrationTestCase):
 		*,
 		active_sre=False,
 		so_anchor={
-			"voucher_type": "Quotation",
-			"voucher_no": "QTN-1",
-			"voucher_detail_no": "QTNI-1",
+			"sales_order": "SO-1",
+			"sales_order_item": "SOI-1",
 			"base_mr_voucher_qty": 100,
 		},
 		physical={"WH-X": 5.0},
