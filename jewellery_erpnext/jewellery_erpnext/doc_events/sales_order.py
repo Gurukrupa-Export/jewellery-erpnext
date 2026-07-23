@@ -1385,10 +1385,10 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 			self.company == "Gurukrupa Export Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			gem.total_gemstone_rate = gem.se_rate
+			gem.total_gemstone_rate = round(gem.se_rate , 2)
 
-			gem.gemstone_rate_for_specified_quantity = (
-				float(gem.total_gemstone_rate) / 100 * float(gem.quantity)
+			gem.gemstone_rate_for_specified_quantity = round(
+				float(gem.total_gemstone_rate) / 100 * float(gem.quantity) , 2
 			)
 
 		elif (
@@ -1401,20 +1401,19 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 				gem.gemstone_rate_for_specified_quantity = 0
 				gem.fg_purchase_amount = 0
 				gem.se_rate = 0
-				# gem.total_gemstone_rate = 0
-				# gem.total_gemstone_rate = 0
+			
 			else:
-				gem.total_gemstone_rate = (
+				gem.total_gemstone_rate = round(
 					gem.se_rate * cctx.exchange_rate
 					if cctx.billing_currency == "USD"
-					else gem.se_rate
+					else gem.se_rate, 2
 				)
-				gem.gemstone_rate_for_specified_quantity = (
+				gem.gemstone_rate_for_specified_quantity = round(
 					float(gem.total_gemstone_rate) * float(gem.quantity)
 					if gem.per_pc_or_per_carat == "Per Carat"
-					else float(gem.total_gemstone_rate) * float(gem.pcs)
+					else float(gem.total_gemstone_rate) * float(gem.pcs) , 2
 				)
-				gem.total_gemstone_rate = 0
+				# gem.total_gemstone_rate = 0
 				gem.fg_purchase_rate = 0
 				gem.fg_purchase_amount = 0
 
