@@ -1414,7 +1414,7 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 					if gem.per_pc_or_per_carat == "Per Carat"
 					else float(gem.total_gemstone_rate) * float(gem.pcs)
 				)
-				gem.total_gemstone_rate = 0
+				# gem.total_gemstone_rate = 0
 				gem.fg_purchase_rate = 0
 				gem.fg_purchase_amount = 0
 
