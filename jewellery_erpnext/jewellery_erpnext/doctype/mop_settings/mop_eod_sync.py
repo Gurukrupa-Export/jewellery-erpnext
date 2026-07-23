@@ -1738,16 +1738,12 @@ def _physical_batch_warehouses(item_code, batch_no):
 
 
 def _resolve_mwo_so_anchor(mwo, mwo_cache=None):
-	"""Resolve the demand-voucher anchor for a MWO as
-	``{"voucher_type","voucher_no","voucher_detail_no","base_mr_voucher_qty"}``.
+	"""Resolve ``{"sales_order","sales_order_item","base_mr_voucher_qty"}`` for a MWO.
 
-	New records anchor stock reservation on the **Quotation** (``quotation`` /
-	``quotation_item`` on the Parent Manufacturing Order); legacy records fall back to the
-	**Sales Order** (``sales_order`` / ``sales_order_item``). Returns ``None`` when the MWO
-	has no demand anchor at all (e.g. a stock-based MWO); the caller then skips reservation
-	rather than minting a malformed SRE. Lifted from the inner closure of
-	``_reserve_sres_from_eod_se_rows`` so the physical-warehouse heal
-	(``_reserve_batch_at_physical_warehouse``) shares the exact same anchor resolution.
+	Returns ``None`` when the MWO has no Sales Order anchor (e.g. a stock-based MWO); the
+	caller then skips reservation rather than minting a malformed SRE. Lifted from the inner
+	closure of ``_reserve_sres_from_eod_se_rows`` so the physical-warehouse heal
+	(``_reserve_batch_at_physical_warehouse``) shares the exact same SO-anchor resolution.
 	Pass ``mwo_cache`` (a dict) to memoise across rows.
 	"""
 	if mwo_cache is not None and mwo in mwo_cache:
@@ -1755,36 +1751,18 @@ def _resolve_mwo_so_anchor(mwo, mwo_cache=None):
 	mo, mfr = frappe.db.get_value(
 		"Manufacturing Work Order", mwo, ["manufacturing_order", "manufacturer"]
 	) or (None, None)
-	quotation = quotation_item = sales_order = sales_order_item = mo_manufacturer = None
+	sales_order = sales_order_item = mo_manufacturer = None
 	if mo:
-		quotation, quotation_item, sales_order, sales_order_item, mo_manufacturer = (
-			frappe.get_cached_value(
-				"Parent Manufacturing Order",
-				mo,
-				[
-					"quotation",
-					"quotation_item",
-					"sales_order",
-					"sales_order_item",
-					"manufacturer",
-				],
-			)
-			or (None, None, None, None, None)
-		)
+		sales_order, sales_order_item, mo_manufacturer = frappe.get_cached_value(
+			"Parent Manufacturing Order",
+			mo,
+			["sales_order", "sales_order_item", "manufacturer"],
+		) or (None, None, None)
 	resolved = None
-	# New records reserve against the Quotation; legacy records against the Sales Order.
-	if quotation:
+	if sales_order:
 		resolved = {
-			"voucher_type": "Quotation",
-			"voucher_no": quotation,
-			"voucher_detail_no": quotation_item,
-			"base_mr_voucher_qty": _eod_base_mr_voucher_qty(mo, mfr or mo_manufacturer),
-		}
-	elif sales_order:
-		resolved = {
-			"voucher_type": "Sales Order",
-			"voucher_no": sales_order,
-			"voucher_detail_no": sales_order_item,
+			"sales_order": sales_order,
+			"sales_order_item": sales_order_item,
 			"base_mr_voucher_qty": _eod_base_mr_voucher_qty(mo, mfr or mo_manufacturer),
 		}
 	if mwo_cache is not None:
@@ -1820,17 +1798,17 @@ def _build_and_submit_mwo_sre(
 		get_sre_reserved_qty_for_voucher_detail_no,
 	)
 
-	# Lift the demand-voucher cap exactly like the original creator: the voucher line is
+	# Lift the Sales Order demand cap exactly like the original creator: the SO line is
 	# intentionally over-reserved across components, so size voucher_qty to cover the
 	# current reservation. The source SRE was already cancelled, so it is excluded from
-	# this global sum. voucher_type is "Quotation" for new records, "Sales Order" for legacy.
-	total_voucher_reserved = get_sre_reserved_qty_for_voucher_detail_no(
+	# this global sum.
+	total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
 		item_code,
-		resolved["voucher_type"],
-		resolved["voucher_no"],
-		resolved["voucher_detail_no"],
+		"Sales Order",
+		resolved["sales_order"],
+		resolved["sales_order_item"],
 	)
-	floor = flt(total_voucher_reserved) + reserved_qty
+	floor = flt(total_so_reserved) + reserved_qty
 	base_mr_voucher_qty = resolved["base_mr_voucher_qty"]
 	if base_mr_voucher_qty is not None:
 		effective_voucher_qty = max(flt(base_mr_voucher_qty), floor)
@@ -1838,9 +1816,9 @@ def _build_and_submit_mwo_sre(
 		effective_voucher_qty = floor
 
 	new_sre = frappe.new_doc("Stock Reservation Entry")
-	new_sre.voucher_type = resolved["voucher_type"]
-	new_sre.voucher_no = resolved["voucher_no"]
-	new_sre.voucher_detail_no = resolved["voucher_detail_no"]
+	new_sre.voucher_type = "Sales Order"
+	new_sre.voucher_no = resolved["sales_order"]
+	new_sre.voucher_detail_no = resolved["sales_order_item"]
 	new_sre.voucher_qty = effective_voucher_qty
 	new_sre.item_code = item_code
 	new_sre.warehouse = warehouse

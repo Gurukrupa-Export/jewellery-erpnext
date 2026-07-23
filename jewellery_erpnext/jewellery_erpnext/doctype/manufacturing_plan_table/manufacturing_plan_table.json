@@ -6,8 +6,6 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "quotation",
-  "quotation_item",
   "sales_order",
   "docname",
   "item_code",
@@ -50,23 +48,6 @@
   "mwo"
  ],
  "fields": [
-  {
-   "fieldname": "quotation",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "in_preview": 1,
-   "label": "Quotation",
-   "options": "Quotation",
-   "read_only": 1
-  },
-  {
-   "fieldname": "quotation_item",
-   "fieldtype": "Link",
-   "hidden": 1,
-   "label": "Quotation Item",
-   "options": "Quotation Item",
-   "read_only": 1
-  },
   {
    "fieldname": "sales_order",
    "fieldtype": "Link",

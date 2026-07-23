@@ -693,12 +693,12 @@ def make_manufacturing_order(
 	service_type = service_type or []
 	mp_context = mp_context or {}
 
-	if row.quotation:
+	if row.sales_order:
 		doc = frappe.new_doc("Parent Manufacturing Order")
 		doc.company = source_doc.company
-		doc.quotation = row.quotation
+		doc.sales_order = row.sales_order
 		doc.custom_tracking_bom = row.custom_tracking_bom
-		doc.quotation_item = row.quotation_item
+		doc.sales_order_item = row.docname
 		doc.item_code = row.item_code
 		doc.metal_type = so_det.get("metal_type")
 		doc.metal_touch = so_det.get("metal_touch")

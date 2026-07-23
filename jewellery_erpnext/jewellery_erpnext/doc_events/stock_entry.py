@@ -737,31 +737,11 @@ def stock_reservation_entry_for_mwo(self):
 				"Parent Manufacturing Order and Manufacturing Work Order is required to create Stock Reservation Entry"
 			)
 		)
-	from jewellery_erpnext.utils import resolve_demand_anchor
-
-	(
-		quotation,
-		quotation_item,
-		sales_order,
-		sales_order_item,
-		manufacturer,
-	) = frappe.get_cached_value(
+	sales_order, sales_order_item, manufacturer = frappe.get_cached_value(
 		"Parent Manufacturing Order",
 		self.manufacturing_order,
-		[
-			"quotation",
-			"quotation_item",
-			"sales_order",
-			"sales_order_item",
-			"manufacturer",
-		],
+		["sales_order", "sales_order_item", "manufacturer"],
 	)
-	# New records reserve against the Quotation; legacy records against the Sales Order.
-	(
-		demand_voucher_type,
-		demand_voucher_no,
-		demand_voucher_detail_no,
-	) = resolve_demand_anchor(quotation, quotation_item, sales_order, sales_order_item)
 	voucher_qty_row = frappe.db.sql(
 		"""
         SELECT sum(custom_total_quantity) FROM `tabMaterial Request`
@@ -841,10 +821,7 @@ def stock_reservation_entry_for_mwo(self):
 			)
 
 		total_so_reserved = get_sre_reserved_qty_for_voucher_detail_no(
-			row.item_code,
-			demand_voucher_type,
-			demand_voucher_no,
-			demand_voucher_detail_no,
+			row.item_code, "Sales Order", sales_order, sales_order_item
 		)
 		effective_voucher_qty = (
 			flt(base_mr_voucher_qty) if base_mr_voucher_qty is not None else 0
@@ -858,8 +835,8 @@ def stock_reservation_entry_for_mwo(self):
 			effective_voucher_qty = flt(total_so_reserved) + qty_to_be_reserved
 
 		new_stock_reservation_entries_mwo = frappe.new_doc("Stock Reservation Entry")
-		new_stock_reservation_entries_mwo.voucher_type = demand_voucher_type
-		new_stock_reservation_entries_mwo.voucher_no = demand_voucher_no
+		new_stock_reservation_entries_mwo.voucher_type = "Sales Order"
+		new_stock_reservation_entries_mwo.voucher_no = sales_order
 		new_stock_reservation_entries_mwo.item_code = row.item_code
 		new_stock_reservation_entries_mwo.voucher_qty = effective_voucher_qty
 		new_stock_reservation_entries_mwo.reserved_qty = qty_to_be_reserved
@@ -873,7 +850,7 @@ def stock_reservation_entry_for_mwo(self):
 		new_stock_reservation_entries_mwo.manufacturing_operation = (
 			row.manufacturing_operation
 		)
-		new_stock_reservation_entries_mwo.voucher_detail_no = demand_voucher_detail_no
+		new_stock_reservation_entries_mwo.voucher_detail_no = sales_order_item
 		new_stock_reservation_entries_mwo.available_qty = max(
 			available_qty_to_reserve, qty_to_be_reserved
 		)

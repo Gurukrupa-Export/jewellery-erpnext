@@ -17,7 +17,7 @@
    "insert_after": "custom_inventory_type_can_be_customer_goods",
    "is_system_generated": 1,
    "label": "Is Photoshop Images",
-   "module": "Jewellery Erpnext",
+   "module": "Jewellery Erpnext"
   },
   {
    "dt": "Item",

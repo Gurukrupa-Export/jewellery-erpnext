@@ -304,14 +304,31 @@ def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates):
 def _resolve_voucher_fields_from_mwo(mwo):
 	"""Return (voucher_type, voucher_no, voucher_detail_no) for a new SRE.
 
-	The SRE is anchored on the demand voucher via the Parent Manufacturing Order: the
-	**Quotation** for newly created records, the **Sales Order** for legacy ones (see
-	``jewellery_erpnext.utils.resolve_mwo_demand_anchor``). Falls back to None values when the
-	chain cannot be resolved so the caller can decide whether to throw or skip.
-	"""
-	from jewellery_erpnext.utils import resolve_mwo_demand_anchor
+	The project convention (confirmed in stock_entry.py:stock_reservation_entry_for_mwo)
+	is to link SREs to the Sales Order via the Parent Manufacturing Order:
+	  voucher_type = "Sales Order"
+	  voucher_no   = Parent Manufacturing Order → sales_order
+	  voucher_detail_no = Parent Manufacturing Order → sales_order_item
 
-	return resolve_mwo_demand_anchor(mwo)
+	Falls back to None values when the chain cannot be resolved so the caller
+	can decide whether to throw or skip.
+	"""
+	manufacturing_order = frappe.db.get_value(
+		"Manufacturing Work Order", mwo, "manufacturing_order"
+	)
+	if not manufacturing_order:
+		return None, None, None
+
+	result = frappe.db.get_value(
+		"Parent Manufacturing Order",
+		manufacturing_order,
+		["sales_order", "sales_order_item"],
+		as_dict=True,
+	)
+	if not result:
+		return None, None, None
+
+	return "Sales Order", result.get("sales_order"), result.get("sales_order_item")
 
 
 def _build_sre_from_context(

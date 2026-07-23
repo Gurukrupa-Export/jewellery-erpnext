@@ -1330,22 +1330,18 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 		item_codes = list(
 			set(r.get("item_code") for r in mop_balance_rows if r.get("item_code"))
 		)
-		demand_voucher_type = demand_voucher_no = None
+		sales_order = None
 		if pmo_name:
-			from jewellery_erpnext.utils import resolve_pmo_demand_anchor
-
-			(
-				demand_voucher_type,
-				demand_voucher_no,
-				_detail_no,
-			) = resolve_pmo_demand_anchor(pmo_name)
-		if demand_voucher_no and item_codes:
+			sales_order = frappe.db.get_value(
+				"Parent Manufacturing Order", pmo_name, "sales_order"
+			)
+		if sales_order and item_codes:
 			sre_list_2 = frappe.db.get_all(
 				"Stock Reservation Entry",
 				filters={
 					"docstatus": 1,
-					"voucher_type": demand_voucher_type,
-					"voucher_no": demand_voucher_no,
+					"voucher_type": "Sales Order",
+					"voucher_no": sales_order,
 					"item_code": ["in", item_codes],
 				},
 				fields=[
