@@ -311,7 +311,9 @@ def _resolve_voucher_fields_from_mwo(mwo):
 	"""
 	from jewellery_erpnext.utils import resolve_mwo_demand_anchor
 
-	return resolve_mwo_demand_anchor(mwo)
+	# require_detail: this feeds an SRE, so a Quotation carrying no quotation_item must fall
+	# through to the Sales Order rather than resolve to an anchor the caller below rejects.
+	return resolve_mwo_demand_anchor(mwo, require_detail=True)
 
 
 def _build_sre_from_context(
@@ -650,8 +652,8 @@ def _process_row(dept_ir_doc, row, scenario):
 	_series_stub.stock_entry_type = "Material Transfer to Department"
 	preallocate_series_for_docs(_series_stub)
 	lock_bins(
-		[(l["item_code"], l["s_warehouse"]) for l in transfer_lines]
-		+ [(l["item_code"], l["t_warehouse"]) for l in transfer_lines]
+		[(loc["item_code"], loc["s_warehouse"]) for loc in transfer_lines]
+		+ [(loc["item_code"], loc["t_warehouse"]) for loc in transfer_lines]
 	)
 
 	# Step 1: Cancel old SREs (only when an SRE was found for the line)

@@ -56,3 +56,8 @@ jewellery_erpnext.patches.add_quotation_manufacturing_order_qty_field
 jewellery_erpnext.patches.add_quotation_sre_voucher_type
 jewellery_erpnext.patches.add_quotation_delivery_billing_links
 jewellery_erpnext.patches.add_department_stock_recon_window_fields
+# Re-runs add_serial_no_ownership_tag_field to clear the field's `description` on sites
+# that already ran it (staging, gk.site). Patch Log keys on the whole string, and
+# execute_patch imports `patchmodule.split(maxsplit=1)[0]`, so the trailing comment makes
+# this a distinct log entry pointing at the same module.
+jewellery_erpnext.patches.add_serial_no_ownership_tag_field #clear-description-2026-07-23

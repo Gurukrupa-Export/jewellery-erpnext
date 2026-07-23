@@ -10,8 +10,42 @@ from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
 
 
+def recover_quotation_item(quotation, item_code):
+	"""The ``Quotation Item`` row on ``quotation`` for ``item_code`` — or ``None``.
+
+	A Parent Manufacturing Order copies ``quotation_item`` from its Manufacturing Plan row
+	(``parent_manufacturing_order.make_manufacturing_order``); when that row carried none,
+	the PMO points at a Quotation with no line, and every Stock Reservation Entry built from
+	it is unusable. The line is still recoverable, because the PMO records the ``item_code``
+	it was planned for.
+
+	Returns ``None`` when the match is AMBIGUOUS (the Quotation quotes the same item on more
+	than one line) as well as when it is missing: picking one arbitrarily would silently
+	reserve against the wrong demand line, which is worse than the caller's explicit failure.
+	``limit=2`` is enough to tell "exactly one" from "more than one".
+	"""
+	if not (quotation and item_code):
+		return None
+	rows = frappe.get_all(
+		"Quotation Item",
+		filters={
+			"parent": quotation,
+			"parenttype": "Quotation",
+			"item_code": item_code,
+		},
+		pluck="name",
+		limit=2,
+	)
+	return rows[0] if len(rows) == 1 else None
+
+
 def resolve_demand_anchor(
-	quotation=None, quotation_item=None, sales_order=None, sales_order_item=None
+	quotation=None,
+	quotation_item=None,
+	sales_order=None,
+	sales_order_item=None,
+	require_detail=False,
+	item_code=None,
 ):
 	"""Stock-reservation demand anchor as ``(voucher_type, voucher_no, voucher_detail_no)``.
 
@@ -19,15 +53,34 @@ def resolve_demand_anchor(
 	**Quotation**; legacy records fall back to the **Sales Order**. Returns
 	``(None, None, None)`` when neither is set (e.g. a stock-based MWO), so callers can skip
 	rather than mint a malformed reservation.
+
+	``require_detail`` decides what a HALF-stamped order counts as. A PMO planned straight
+	off a Quotation can carry ``quotation`` with a blank ``quotation_item``; the plain
+	resolver still answers "Quotation", because the two header-level callers
+	(``get_order_customer``, which reads ``party_name``) need the order document, not the
+	line.
+
+	Callers that mint or look up a Stock Reservation Entry must pass ``require_detail=True``:
+	``voucher_detail_no`` is mandatory on an SRE, so a detail-less anchor is not merely
+	incomplete, it is unusable. With the flag set, a half-stamped Quotation falls THROUGH to
+	the Sales Order instead of shadowing it, and only a genuinely unanchored PMO returns
+	``(None, None, None)``.
+
+	``item_code`` (the PMO's) opts into recovering a missing ``quotation_item`` from the
+	Quotation itself — see ``recover_quotation_item``. It is only consulted when the anchor
+	would otherwise be unusable, so the common path stays a pure, DB-free computation.
 	"""
 	if quotation:
-		return "Quotation", quotation, quotation_item
-	if sales_order:
+		if not quotation_item and require_detail and item_code:
+			quotation_item = recover_quotation_item(quotation, item_code)
+		if quotation_item or not require_detail:
+			return "Quotation", quotation, quotation_item
+	if sales_order and (sales_order_item or not require_detail):
 		return "Sales Order", sales_order, sales_order_item
 	return None, None, None
 
 
-def resolve_pmo_demand_anchor(pmo):
+def resolve_pmo_demand_anchor(pmo, require_detail=False):
 	"""``(voucher_type, voucher_no, voucher_detail_no)`` for a Parent Manufacturing Order name."""
 	if not pmo:
 		return None, None, None
@@ -35,7 +88,13 @@ def resolve_pmo_demand_anchor(pmo):
 		frappe.db.get_value(
 			"Parent Manufacturing Order",
 			pmo,
-			["quotation", "quotation_item", "sales_order", "sales_order_item"],
+			[
+				"quotation",
+				"quotation_item",
+				"sales_order",
+				"sales_order_item",
+				"item_code",
+			],
 			as_dict=True,
 		)
 		or {}
@@ -45,15 +104,17 @@ def resolve_pmo_demand_anchor(pmo):
 		det.get("quotation_item"),
 		det.get("sales_order"),
 		det.get("sales_order_item"),
+		require_detail=require_detail,
+		item_code=det.get("item_code"),
 	)
 
 
-def resolve_mwo_demand_anchor(mwo):
+def resolve_mwo_demand_anchor(mwo, require_detail=False):
 	"""``(voucher_type, voucher_no, voucher_detail_no)`` for a Manufacturing Work Order name."""
 	if not mwo:
 		return None, None, None
 	pmo = frappe.db.get_value("Manufacturing Work Order", mwo, "manufacturing_order")
-	return resolve_pmo_demand_anchor(pmo)
+	return resolve_pmo_demand_anchor(pmo, require_detail=require_detail)
 
 
 @frappe.whitelist()

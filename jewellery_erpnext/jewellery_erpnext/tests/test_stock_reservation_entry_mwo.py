@@ -3,6 +3,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import frappe
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	StockReservationEntry,
 )
@@ -717,11 +718,15 @@ class TestStockReservationDemandAnchor(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def _run(self, pmo_row):
+	def _run(self, pmo_row, recovered_quotation_item=None):
 		"""Drive stock_reservation_entry_for_mwo for one simple inbound row.
 
-		``pmo_row`` is the 5-tuple get_cached_value returns for the Parent Manufacturing Order:
-		(quotation, quotation_item, sales_order, sales_order_item, manufacturer).
+		``pmo_row`` is the 6-tuple get_cached_value returns for the Parent Manufacturing Order:
+		(quotation, quotation_item, sales_order, sales_order_item, manufacturer, item_code).
+
+		``recovered_quotation_item`` is what ``recover_quotation_item`` should hand back when
+		a blank ``quotation_item`` sends the resolver looking on the Quotation itself; ``None``
+		models both "no such line" and "ambiguous".
 		Returns (sre_mock, sre_reserved_qty_mock).
 		"""
 		mod = "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry"
@@ -733,7 +738,10 @@ class TestStockReservationDemandAnchor(IntegrationTestCase):
 			f"{mod}.get_available_qty_to_reserve", return_value=50.0
 		), patch(f"{mod}.frappe.get_cached_value") as mock_cached, patch(
 			f"{mod}.frappe.db.get_values", return_value=None
-		), patch(f"{mod}.frappe.db.get_all", return_value=["Repack"]):
+		), patch(f"{mod}.frappe.db.get_all", return_value=["Repack"]), patch(
+			"jewellery_erpnext.utils.recover_quotation_item",
+			return_value=recovered_quotation_item,
+		):
 
 			def _cached(doctype, name, fields):
 				if doctype == "Parent Manufacturing Order":
@@ -770,7 +778,7 @@ class TestStockReservationDemandAnchor(IntegrationTestCase):
 
 	def test_reserves_against_quotation_for_new_records(self):
 		"""PMO carries a quotation -> the SRE voucher is that Quotation."""
-		sre, mock_reserved = self._run(("QTN-1", "QTNI-1", None, None, "MNF-1"))
+		sre, mock_reserved = self._run(("QTN-1", "QTNI-1", None, None, "MNF-1", "FG-1"))
 
 		self.assertEqual(sre.voucher_type, "Quotation")
 		self.assertEqual(sre.voucher_no, "QTN-1")
@@ -780,7 +788,7 @@ class TestStockReservationDemandAnchor(IntegrationTestCase):
 
 	def test_reserves_against_sales_order_for_legacy_records(self):
 		"""PMO has no quotation (pre-change doc) -> fall back to the Sales Order."""
-		sre, mock_reserved = self._run((None, None, "SO-1", "SOI-1", "MNF-1"))
+		sre, mock_reserved = self._run((None, None, "SO-1", "SOI-1", "MNF-1", "FG-1"))
 
 		self.assertEqual(sre.voucher_type, "Sales Order")
 		self.assertEqual(sre.voucher_no, "SO-1")
@@ -789,10 +797,56 @@ class TestStockReservationDemandAnchor(IntegrationTestCase):
 
 	def test_quotation_wins_when_both_are_set(self):
 		"""A backfilled doc carrying both must reserve against the Quotation."""
-		sre, _ = self._run(("QTN-1", "QTNI-1", "SO-1", "SOI-1", "MNF-1"))
+		sre, _ = self._run(("QTN-1", "QTNI-1", "SO-1", "SOI-1", "MNF-1", "FG-1"))
 
 		self.assertEqual(sre.voucher_type, "Quotation")
 		self.assertEqual(sre.voucher_no, "QTN-1")
+
+	def test_recovers_missing_quotation_item_from_the_quotation(self):
+		"""Quotation-only PMO whose line was never stamped: recover it, do not fail.
+
+		This is the flow that has no Sales Order to fall back to, so recovery is the only
+		thing standing between the operator and "Voucher Detail No is required".
+		"""
+		sre, mock_reserved = self._run(
+			("QTN-1", None, None, None, "MNF-1", "FG-1"),
+			recovered_quotation_item="QTNI-RECOVERED",
+		)
+
+		self.assertEqual(sre.voucher_type, "Quotation")
+		self.assertEqual(sre.voucher_no, "QTN-1")
+		self.assertEqual(sre.voucher_detail_no, "QTNI-RECOVERED")
+		mock_reserved.assert_called_with(
+			"M-ALLOY", "Quotation", "QTN-1", "QTNI-RECOVERED"
+		)
+
+	def test_half_stamped_quotation_falls_back_to_sales_order(self):
+		"""A Quotation with no quotation_item must not shadow a usable Sales Order.
+
+		Reproduces "Voucher Detail No is required": the anchor used to resolve to
+		("Quotation", QTN-1, None) the moment `quotation` was set, and that None went
+		straight into the SRE's mandatory voucher_detail_no. Recovery finds nothing here
+		(ambiguous or absent line), so the Sales Order must win.
+		"""
+		sre, mock_reserved = self._run(
+			("QTN-1", None, "SO-1", "SOI-1", "MNF-1", "FG-1")
+		)
+
+		self.assertEqual(sre.voucher_type, "Sales Order")
+		self.assertEqual(sre.voucher_no, "SO-1")
+		self.assertEqual(sre.voucher_detail_no, "SOI-1")
+		mock_reserved.assert_called_with("M-ALLOY", "Sales Order", "SO-1", "SOI-1")
+
+	def test_throws_named_error_when_no_anchor_resolvable(self):
+		"""An unanchored PMO must name itself, not surface ERPNext's bare mandatory-field error.
+
+		Recovery returns None (the Quotation quotes the item on two lines, or none), and
+		there is no Sales Order — so nothing is guessed and the caller is told which PMO.
+		"""
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			self._run(("QTN-1", None, None, None, "MNF-1", "FG-1"))
+
+		self.assertIn("PMO-1", str(ctx.exception))
 
 
 class TestCustomStockReservationEntry(IntegrationTestCase):

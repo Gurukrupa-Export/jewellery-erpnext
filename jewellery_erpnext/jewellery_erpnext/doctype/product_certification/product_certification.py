@@ -170,6 +170,41 @@ class ProductCertification(Document):
 				).format(exploded_weight, total_weight)
 			)
 
+	def seed_fire_assy_issue_weight(self):
+		"""Carry the issued weight onto the main exploded row of a Fire Assy / XRF Issue.
+
+		Nothing else does. ``get_exploded_table`` builds these rows from
+		``(item_code, main_slip, tree_no)`` alone, so they are born at ``gross_weight`` 0, and
+		the usual owner of Fire Assy/XRF weights — ``calculate_fire_assy_loss_weight`` — bails
+		out on anything that is not a Receive. ``distribute_amount``'s generic back-fill does
+		not cover the gap either: it keys on ``(order, serial_no)`` while these rows carry
+		neither, so every lookup missed and left the row at 0.
+
+		The result was an Issue whose exploded rows were ALL zero-weight. ``create_stock_entry``
+		skips zero-weight rows for these service types (they are how a loss row is represented),
+		so it skipped every row and threw "No item found for Repack".
+
+		Only the row whose ``item_code`` matches the Product Details row is seeded — the pure
+		(Fire Assy) and loss rows must stay at 0, because that is exactly what marks them
+		skippable on the way out, and the Receive is where they take their real values.
+		Blank-only: an operator-entered weight is never overwritten.
+		"""
+		issued = defaultdict(float)
+		for row in self.product_details:
+			issued[(_slip_key(row), row.item_code)] += flt(row.total_weight)
+		if not issued:
+			return
+
+		for row in self.exploded_product_details:
+			if row.gross_weight:
+				continue
+			key = (_slip_key(row), row.item_code)
+			if issued.get(key):
+				row.gross_weight = issued[key]
+				# Zeroed so a second exploded row on the same slip+item (e.g. a pure item
+				# that happens to equal the issued item) cannot claim the weight twice.
+				issued[key] = 0
+
 	def calculate_fire_assy_loss_weight(self):
 		"""Auto-calculate the scrap/loss weight on a Fire Assy / XRF Receive.
 
@@ -344,6 +379,10 @@ class ProductCertification(Document):
 		if self.service_type in ["Fire Assy Service", "XRF Services"]:
 			for row in self.exploded_product_details:
 				row.amount = amt
+			# ...except on an Issue, which that owner declines (it is Receive-only). See
+			# seed_fire_assy_issue_weight.
+			if self.type == "Issue":
+				self.seed_fire_assy_issue_weight()
 			return
 
 		qty_data = {}
@@ -1334,11 +1373,13 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 		if pmo_name:
 			from jewellery_erpnext.utils import resolve_pmo_demand_anchor
 
+			# require_detail: this looks up SREs, which are now minted under the anchor the
+			# same flag picks — a half-stamped Quotation would search the wrong voucher.
 			(
 				demand_voucher_type,
 				demand_voucher_no,
 				_detail_no,
-			) = resolve_pmo_demand_anchor(pmo_name)
+			) = resolve_pmo_demand_anchor(pmo_name, require_detail=True)
 		if demand_voucher_no and item_codes:
 			sre_list_2 = frappe.db.get_all(
 				"Stock Reservation Entry",

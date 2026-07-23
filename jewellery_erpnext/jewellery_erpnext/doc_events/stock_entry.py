@@ -745,6 +745,7 @@ def stock_reservation_entry_for_mwo(self):
 		sales_order,
 		sales_order_item,
 		manufacturer,
+		pmo_item_code,
 	) = frappe.get_cached_value(
 		"Parent Manufacturing Order",
 		self.manufacturing_order,
@@ -754,6 +755,8 @@ def stock_reservation_entry_for_mwo(self):
 			"sales_order",
 			"sales_order_item",
 			"manufacturer",
+			# Only used to recover a missing quotation_item — see resolve_demand_anchor.
+			"item_code",
 		],
 	)
 	# New records reserve against the Quotation; legacy records against the Sales Order.
@@ -761,7 +764,38 @@ def stock_reservation_entry_for_mwo(self):
 		demand_voucher_type,
 		demand_voucher_no,
 		demand_voucher_detail_no,
-	) = resolve_demand_anchor(quotation, quotation_item, sales_order, sales_order_item)
+	) = resolve_demand_anchor(
+		quotation,
+		quotation_item,
+		sales_order,
+		sales_order_item,
+		# An SRE cannot exist without voucher_detail_no, so a Quotation stamped on the PMO
+		# without its quotation_item must not shadow a usable Sales Order. item_code lets a
+		# quotation-only PMO recover that missing line from the Quotation instead of failing.
+		require_detail=True,
+		item_code=pmo_item_code,
+	)
+	# resolve_demand_anchor's contract is that (None, None, None) means "no usable anchor" and
+	# the caller decides. Without this check the None went straight into voucher_detail_no and
+	# surfaced as ERPNext's bare "Voucher Detail No is required", naming nothing. Mirrors the
+	# guard in department_ir/doc_events/pc_tagging_stock_sync.py::_build_sre_from_context.
+	if not (demand_voucher_type and demand_voucher_no and demand_voucher_detail_no):
+		frappe.throw(
+			_(
+				"Cannot create Stock Reservation Entry for {0}: Parent Manufacturing Order {1} "
+				"has no usable demand anchor. It needs either a Quotation with its Quotation "
+				"Item, or a Sales Order with its Sales Order Item — currently "
+				"quotation={2}, quotation_item={3}, sales_order={4}, sales_order_item={5}."
+			).format(
+				self.name,
+				self.manufacturing_order,
+				quotation or "-",
+				quotation_item or "-",
+				sales_order or "-",
+				sales_order_item or "-",
+			),
+			title=_("Unresolved Demand Anchor"),
+		)
 	voucher_qty_row = frappe.db.sql(
 		"""
         SELECT sum(custom_total_quantity) FROM `tabMaterial Request`

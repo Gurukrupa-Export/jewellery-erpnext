@@ -82,7 +82,6 @@
    "allow_on_submit": 1,
    "default": "Not Received",
    "depends_on": "eval:doc.type == \"Issue\"",
-   "description": "Rolled up from the submitted Receive entries booked against this Issue.",
    "fieldname": "receive_status",
    "fieldtype": "Select",
    "in_standard_filter": 1,
@@ -260,8 +259,8 @@
    "link_fieldname": "supplier"
   }
  ],
- "modified": "2024-07-24 11:40:25.018849",
- "modified_by": "Administrator",
+ "modified": "2026-07-23 12:44:57.347738",
+ "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Product Certification",
  "naming_rule": "By \"Naming Series\" field",

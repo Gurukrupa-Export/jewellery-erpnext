@@ -35,6 +35,11 @@ run ad-hoc::
 
     bench --site <site> execute jewellery_erpnext.patches.add_serial_no_ownership_tag_field.execute
 
+The field carries NO ``description``: the Outright/Outwork/Hybrid meaning documented
+above was originally shown as help text under the input, and was dropped as UI noise.
+It is set to ``""`` rather than omitted so the re-run actually clears it on sites that
+already have the old text — see the comment on the field below.
+
 Idempotent: ``create_custom_fields`` keys on ``(dt, fieldname)``.
 """
 
@@ -56,11 +61,11 @@ def execute():
 				"no_copy": 1,
 				"in_list_view": 1,
 				"in_standard_filter": 1,
-				"description": (
-					"Outright = own material, Outwork = customer material, Hybrid = both. "
-					"Derived from the material consumed by the Manufacture Stock Entry "
-					"created at Serial Number Creator submit."
-				),
+				# Explicitly blank, not omitted: create_custom_fields does
+				# `custom_field.update(df)`, so a key that is absent leaves whatever the
+				# DB already holds. Sites provisioned before this was cleared only lose
+				# the old help text because "" overwrites it.
+				"description": "",
 			}
 		]
 	}

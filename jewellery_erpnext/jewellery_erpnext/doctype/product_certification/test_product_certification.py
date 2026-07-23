@@ -946,6 +946,106 @@ class TestFireAssyLossWeight(IntegrationTestCase):
 		self.assertEqual(doc.exploded_product_details[1].gross_weight, 5.0)
 
 
+class TestFireAssyIssueWeight(IntegrationTestCase):
+	"""The reported "No item found for Repack" on a Fire Assy / XRF Issue (KG-PXRF-26-00013).
+
+	Nothing seeded gross_weight on an Issue: get_exploded_table builds the rows from
+	(item_code, main_slip, tree_no) with no weight, calculate_fire_assy_loss_weight is
+	Receive-only, and distribute_amount's generic back-fill keys on (order, serial_no) —
+	which these rows do not carry. Every exploded row stayed at 0, create_stock_entry skips
+	zero-weight rows for these service types, and the document threw with an empty table.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _issue(self, service_type, pd_rows, exploded_rows):
+		"""pd_rows/exploded_rows are (item_code, main_slip, weight) tuples."""
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Issue"
+		doc.service_type = service_type
+		for item_code, main_slip, weight in pd_rows:
+			doc.append(
+				"product_details",
+				{
+					"item_code": item_code,
+					"main_slip": main_slip,
+					"total_weight": weight,
+				},
+			)
+		for item_code, main_slip, weight in exploded_rows:
+			doc.append(
+				"exploded_product_details",
+				{
+					"item_code": item_code,
+					"main_slip": main_slip,
+					"gross_weight": weight,
+				},
+			)
+		doc.distribute_amount()
+		return doc.exploded_product_details
+
+	def test_xrf_issue_seeds_the_main_row(self):
+		"""The exact failing shape: XRF, no main slip, main + loss row, both born at 0."""
+		main, loss = self._issue(
+			"XRF Services",
+			[("TEST-ITEM-001", None, 12.5)],
+			[("TEST-ITEM-001", None, 0.0), ("LOSS-ITEM-001", None, 0.0)],
+		)
+
+		self.assertEqual(main.gross_weight, 12.5)
+		# The loss row must stay at 0 — that is what marks it skippable on the way out.
+		self.assertEqual(loss.gross_weight, 0.0)
+
+	def test_fire_assy_issue_seeds_per_main_slip(self):
+		"""Two slips must not pool their weights, and the pure row stays empty."""
+		rows = self._issue(
+			"Fire Assy Service",
+			[("ITEM-A", "MS-1", 10.0), ("ITEM-B", "MS-2", 4.0)],
+			[
+				("ITEM-A", "MS-1", 0.0),
+				("PURE-ITEM-001", "MS-1", 0.0),
+				("LOSS-ITEM-001", "MS-1", 0.0),
+				("ITEM-B", "MS-2", 0.0),
+				("PURE-ITEM-001", "MS-2", 0.0),
+				("LOSS-ITEM-001", "MS-2", 0.0),
+			],
+		)
+
+		self.assertEqual(
+			[r.gross_weight for r in rows], [10.0, 0.0, 0.0, 4.0, 0.0, 0.0]
+		)
+
+	def test_operator_entered_weight_is_not_overwritten(self):
+		"""Blank-only: a hand-typed issue weight wins over the Product Details total."""
+		main, _loss = self._issue(
+			"XRF Services",
+			[("TEST-ITEM-001", None, 12.5)],
+			[("TEST-ITEM-001", None, 7.5), ("LOSS-ITEM-001", None, 0.0)],
+		)
+
+		self.assertEqual(main.gross_weight, 7.5)
+
+	def test_receive_is_left_to_the_loss_calculation(self):
+		"""Seeding must not reach a Receive — calculate_fire_assy_loss_weight owns that."""
+		doc = frappe.new_doc("Product Certification")
+		doc.type = "Receive"
+		doc.service_type = "XRF Services"
+		doc.append(
+			"product_details", {"item_code": "TEST-ITEM-001", "total_weight": 12.5}
+		)
+		doc.append(
+			"exploded_product_details",
+			{"item_code": "TEST-ITEM-001", "gross_weight": 0.0},
+		)
+
+		doc.distribute_amount()
+
+		self.assertEqual(doc.exploded_product_details[0].gross_weight, 0.0)
+
+
 class TestPartialReceipt(IntegrationTestCase):
 	"""Receive status rollup, over-receipt cap and the pre-filled "Create Receiving".
 

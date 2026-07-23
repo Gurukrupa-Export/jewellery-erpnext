@@ -1743,9 +1743,14 @@ def _resolve_mwo_so_anchor(mwo, mwo_cache=None):
 
 	New records anchor stock reservation on the **Quotation** (``quotation`` /
 	``quotation_item`` on the Parent Manufacturing Order); legacy records fall back to the
-	**Sales Order** (``sales_order`` / ``sales_order_item``). Returns ``None`` when the MWO
-	has no demand anchor at all (e.g. a stock-based MWO); the caller then skips reservation
-	rather than minting a malformed SRE. Lifted from the inner closure of
+	**Sales Order** (``sales_order`` / ``sales_order_item``). Resolution itself is delegated
+	to ``jewellery_erpnext.utils.resolve_pmo_demand_anchor`` so this path cannot drift from
+	the interactive one in ``doc_events/stock_entry.stock_reservation_entry_for_mwo``.
+
+	Returns ``None`` when the MWO has no USABLE demand anchor — no order at all (e.g. a
+	stock-based MWO), or an order whose detail line cannot be resolved even after recovery.
+	Either way the caller skips reservation rather than minting an SRE with a null
+	``voucher_detail_no``, which ERPNext rejects outright. Lifted from the inner closure of
 	``_reserve_sres_from_eod_se_rows`` so the physical-warehouse heal
 	(``_reserve_batch_at_physical_warehouse``) shares the exact same anchor resolution.
 	Pass ``mwo_cache`` (a dict) to memoise across rows.
@@ -1755,38 +1760,33 @@ def _resolve_mwo_so_anchor(mwo, mwo_cache=None):
 	mo, mfr = frappe.db.get_value(
 		"Manufacturing Work Order", mwo, ["manufacturing_order", "manufacturer"]
 	) or (None, None)
-	quotation = quotation_item = sales_order = sales_order_item = mo_manufacturer = None
-	if mo:
-		quotation, quotation_item, sales_order, sales_order_item, mo_manufacturer = (
-			frappe.get_cached_value(
-				"Parent Manufacturing Order",
-				mo,
-				[
-					"quotation",
-					"quotation_item",
-					"sales_order",
-					"sales_order_item",
-					"manufacturer",
-				],
-			)
-			or (None, None, None, None, None)
-		)
+	mo_manufacturer = None
 	resolved = None
-	# New records reserve against the Quotation; legacy records against the Sales Order.
-	if quotation:
-		resolved = {
-			"voucher_type": "Quotation",
-			"voucher_no": quotation,
-			"voucher_detail_no": quotation_item,
-			"base_mr_voucher_qty": _eod_base_mr_voucher_qty(mo, mfr or mo_manufacturer),
-		}
-	elif sales_order:
-		resolved = {
-			"voucher_type": "Sales Order",
-			"voucher_no": sales_order,
-			"voucher_detail_no": sales_order_item,
-			"base_mr_voucher_qty": _eod_base_mr_voucher_qty(mo, mfr or mo_manufacturer),
-		}
+	if mo:
+		mo_manufacturer = frappe.get_cached_value(
+			"Parent Manufacturing Order", mo, "manufacturer"
+		)
+		# Delegates to the shared resolver rather than repeating the quotation/sales-order
+		# precedence. The hand-rolled version here anchored on the Quotation the moment it
+		# was set and passed `quotation_item` through unchecked, so a PMO whose line was
+		# never stamped produced an SRE with a null voucher_detail_no — the same
+		# "Voucher Detail No is required" failure the interactive path hit, but surfacing
+		# as a failed background sync. require_detail=True makes such a Quotation fall
+		# through to the Sales Order (or recover its line via the PMO item_code).
+		from jewellery_erpnext.utils import resolve_pmo_demand_anchor
+
+		voucher_type, voucher_no, voucher_detail_no = resolve_pmo_demand_anchor(
+			mo, require_detail=True
+		)
+		if voucher_type and voucher_no and voucher_detail_no:
+			resolved = {
+				"voucher_type": voucher_type,
+				"voucher_no": voucher_no,
+				"voucher_detail_no": voucher_detail_no,
+				"base_mr_voucher_qty": _eod_base_mr_voucher_qty(
+					mo, mfr or mo_manufacturer
+				),
+			}
 	if mwo_cache is not None:
 		mwo_cache[mwo] = resolved
 	return resolved
