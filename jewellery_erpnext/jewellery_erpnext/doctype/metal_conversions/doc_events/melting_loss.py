@@ -240,8 +240,11 @@ def make_melting_loss_stock_entry(doc):
 
 	# ONE produce row into the Scrap warehouse. No batch_no: the loss variant has
 	# create_new_batch = 1, so the Serial and Batch Bundle mints a NEW batch on
-	# submit. Scrap is booked as Regular Stock (a zero-valued write-off); the
-	# customer is recorded on the row for traceability only.
+	# submit. Scrap is booked as Regular Stock by policy -- the melted metal is written
+	# off to the company; the customer is recorded on the row for traceability only.
+	# basic_rate is left unset here: CustomStockEntry.set_basic_rate assigns it from the
+	# consumed rows' value (customization/utils/loss_valuation), so the scrap carries the
+	# metal's valuation instead of entering stock at rate 0.
 	se.append(
 		"items",
 		{

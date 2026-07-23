@@ -2743,6 +2743,24 @@ def create_test_data():
 
 			ensure_order_type_repair_option()
 
+			from jewellery_erpnext.patches.add_quotation_manufacturing_order_qty_field import (
+				execute as quotation_manufacturing_order_qty_field,
+			)
+
+			quotation_manufacturing_order_qty_field()
+
+			from jewellery_erpnext.patches.add_quotation_sre_voucher_type import (
+				ensure_quotation_sre_voucher_type,
+			)
+
+			ensure_quotation_sre_voucher_type()
+
+			from jewellery_erpnext.patches.add_quotation_delivery_billing_links import (
+				execute as quotation_delivery_billing_links,
+			)
+
+			quotation_delivery_billing_links()
+
 			from jewellery_erpnext.patches.add_customer_refining_flags import (
 				execute as customer_refining_flags,
 			)
@@ -2755,6 +2773,15 @@ def create_test_data():
 
 			po_refining_entry_field()
 
+			# Serial No.custom_ownership_tag is NOT in the git_action_v16 fixtures, so —
+			# like the other custom-field patches above — it must be provisioned here for
+			# test_site, else create_manufacturing_entry's set_value raises
+			# "Unknown column 'custom_ownership_tag'" the moment an SNC is submitted.
+			from jewellery_erpnext.patches.add_serial_no_ownership_tag_field import (
+				execute as _ensure_serial_no_ownership_tag_field,
+			)
+
+			_ensure_serial_no_ownership_tag_field()
 			# Batch.custom_employee (employee-wise scrap/dust refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /
