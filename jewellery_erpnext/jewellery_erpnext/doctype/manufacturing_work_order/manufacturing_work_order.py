@@ -749,7 +749,8 @@ class ManufacturingWorkOrder(Document):
 
 	def validate_photoshop_images(self):
 		"""Block submission if the Finished Item has 'Is Photoshop Images' enabled
-		and any of the six finish images on the Item or Master BOM are missing."""
+		and the Item or its Master BOM has no finish image uploaded (at least one
+		image is required on each)."""
 		# The shared CI fixtures build finished-good items that resolve the
 		# 'Is Photoshop Images' flag as set (no test uploads the finish images),
 		# so this hard guard would trip every MWO-submit test even though those
@@ -773,26 +774,23 @@ class ManufacturingWorkOrder(Document):
 
 		msg_parts = []
 		if missing.get("item"):
-			labels = ", ".join([f"<b>{label}</b>" for label in missing["item"]])
 			msg_parts.append(
-				_("Finished Item ({0}) is missing images: {1}").format(
-					self.item_code, labels
+				_("Finished Item ({0}) has no finish image uploaded.").format(
+					self.item_code
 				)
 			)
 		if missing.get("bom"):
-			labels = ", ".join([f"<b>{label}</b>" for label in missing["bom"]])
 			msg_parts.append(
-				_("Master BOM ({0}) is missing images: {1}").format(
-					self.master_bom, labels
+				_("Master BOM ({0}) has no finish image uploaded.").format(
+					self.master_bom
 				)
 			)
 
 		frappe.throw(
 			_(
-				"MWO cannot be submitted. Please ensure all six Finished Item images "
-				"and all required Master BOM images are uploaded before submitting the "
-				"Manufacturing Work Order. Missing images must be updated first.<br><br>"
-				"{0}"
+				"MWO cannot be submitted. Please upload at least one Finished Item "
+				"image and at least one Master BOM image before submitting the "
+				"Manufacturing Work Order.<br><br>{0}"
 			).format("<br>".join(msg_parts)),
 			title=_("Missing Photoshop Images"),
 		)
@@ -1155,32 +1153,30 @@ BOM_IMAGE_FIELDS = {
 
 
 def _get_missing_photoshop_images(item_code, master_bom):
-	"""Return dict with keys 'item' and/or 'bom', each a list of
-	missing image labels.  Returns empty dict when nothing is missing."""
+	"""Return dict with keys 'item' and/or 'bom', each a list of the empty
+	image slots for that record.
+
+	Only ONE image is mandatory on each side, so a record is flagged only when
+	it has NO finish image at all; a record that already has any one image is
+	treated as satisfied.  When a record is flagged, every (empty) slot is
+	listed so the upload dialog can offer them.  Returns empty dict when
+	nothing is missing."""
 	missing = {}
 
-	# --- Check Finished Item images ---
+	# --- Finished Item images: require at least one ---
 	item_values = frappe.db.get_value(
 		"Item", item_code, list(ITEM_IMAGE_FIELDS.keys()), as_dict=True
 	)
-	if item_values:
-		missing_item = [
-			ITEM_IMAGE_FIELDS[f] for f in ITEM_IMAGE_FIELDS if not item_values.get(f)
-		]
-		if missing_item:
-			missing["item"] = missing_item
+	if item_values and not any(item_values.get(f) for f in ITEM_IMAGE_FIELDS):
+		missing["item"] = [ITEM_IMAGE_FIELDS[f] for f in ITEM_IMAGE_FIELDS]
 
-	# --- Check Master BOM images ---
+	# --- Master BOM images: require at least one ---
 	if master_bom:
 		bom_values = frappe.db.get_value(
 			"BOM", master_bom, list(BOM_IMAGE_FIELDS.keys()), as_dict=True
 		)
-		if bom_values:
-			missing_bom = [
-				BOM_IMAGE_FIELDS[f] for f in BOM_IMAGE_FIELDS if not bom_values.get(f)
-			]
-			if missing_bom:
-				missing["bom"] = missing_bom
+		if bom_values and not any(bom_values.get(f) for f in BOM_IMAGE_FIELDS):
+			missing["bom"] = [BOM_IMAGE_FIELDS[f] for f in BOM_IMAGE_FIELDS]
 
 	return missing
 

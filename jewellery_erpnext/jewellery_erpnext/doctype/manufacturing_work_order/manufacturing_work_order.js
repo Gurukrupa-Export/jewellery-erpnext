@@ -153,8 +153,8 @@ frappe.ui.form.on("Manufacturing Work Order", {
 						title: __("Missing Photoshop Images"),
 						indicator: "orange",
 						message: __(
-							"MWO cannot be submitted. Please upload all missing Finished Item " +
-								"and Master BOM images first. Click <b>Upload Missing Images</b> " +
+							"MWO cannot be submitted. Please upload at least one Finished Item " +
+								"image and one Master BOM image first. Click <b>Upload Missing Images</b> " +
 								"to upload them now."
 						),
 					});
