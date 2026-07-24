@@ -153,9 +153,8 @@ frappe.ui.form.on("Manufacturing Work Order", {
 						title: __("Missing Photoshop Images"),
 						indicator: "orange",
 						message: __(
-							"MWO cannot be submitted. Please upload all missing Finished Item " +
-								"and Master BOM images first. Click <b>Upload Missing Images</b> " +
-								"to upload them now."
+							"MWO cannot be submitted. Please upload at least one Finished Item " +
+								"image first. Click <b>Upload Missing Images</b> to upload it now."
 						),
 					});
 					// Open the upload dialog automatically
@@ -312,10 +311,10 @@ function open_upload_images_dialog(frm) {
 
 			const missing = r.message.missing;
 			const item_fields_map = r.message.item_image_fields || {};
-			const bom_fields_map = r.message.bom_image_fields || {};
 			let dialog_fields = [];
 
-			// Build Finished Item image fields
+			// Only Finished Item image slots are offered — the Master BOM images
+			// are mirrored from the Item automatically (on upload and on submit).
 			if (missing.item && missing.item.length) {
 				dialog_fields.push({
 					fieldtype: "Section Break",
@@ -327,24 +326,6 @@ function open_upload_images_dialog(frm) {
 					if (fieldname) {
 						dialog_fields.push({
 							fieldname: "item__" + fieldname,
-							fieldtype: "Attach Image",
-							label: label,
-						});
-					}
-				}
-			}
-
-			// Build BOM image fields
-			if (missing.bom && missing.bom.length) {
-				dialog_fields.push({
-					fieldtype: "Section Break",
-					label: __("Master BOM Images ({0})", [frm.doc.master_bom]),
-				});
-				for (const label of missing.bom) {
-					const fieldname = Object.keys(bom_fields_map).find((k) => bom_fields_map[k] === label);
-					if (fieldname) {
-						dialog_fields.push({
-							fieldname: "bom__" + fieldname,
 							fieldtype: "Attach Image",
 							label: label,
 						});
