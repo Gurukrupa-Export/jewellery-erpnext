@@ -118,6 +118,9 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
 	},
+	"Purchase Invoice": {
+		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.before_validate",
+	},
 	"BOM": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.before_validate",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.validate",

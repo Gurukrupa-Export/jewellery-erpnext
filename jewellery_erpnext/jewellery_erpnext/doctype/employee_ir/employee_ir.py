@@ -150,7 +150,51 @@ class EmployeeIR(Document):
 		validate_casting_tree(self)
 		validate_casting_receive(self)
 		self.validate_fg_bom_fields()
+		self.validate_purchase_invoice()
 
+	def validate_purchase_invoice(self):
+		if self.type == "Receive" and self.subcontracting == "Yes":
+			if not self.employee_ir_operations:
+				return
+				
+			# Trace back to the Issue IR using the first MWO in the child table
+			mwo = self.employee_ir_operations[0].manufacturing_work_order
+			if not mwo:
+				return
+				
+			# Get the Employee IR Issue using MWO and Department
+			issue_ir = frappe.db.sql("""
+				SELECT parent 
+				FROM `tabEmployee IR Operation` 
+				WHERE manufacturing_work_order = %s 
+				AND parent IN (SELECT name FROM `tabEmployee IR` WHERE type = 'Issue' AND department = %s AND docstatus = 1)
+				LIMIT 1
+			""", (mwo, self.department))
+			
+			if issue_ir:
+				issue_name = issue_ir[0][0]
+				po = frappe.db.get_value("Purchase Order", {"employee_ir": issue_name, "docstatus": ["<", 2]}, "name")
+				
+				if po:
+					pi_exists = frappe.db.sql("""
+						SELECT parent 
+						FROM `tabPurchase Invoice Item` 
+						WHERE purchase_order = %s AND docstatus = 1
+						LIMIT 1
+					""", (po,))
+					
+					if not pi_exists:
+						frappe.throw(
+							"Please create a Purchase Invoice for Purchase Order {0} before receiving the Employee IR.".format(
+								f"<a href='/app/purchase-order/{po}'>{po}</a>"
+							)
+						)
+				else:
+					frappe.throw(
+						"No Purchase Order found for Issue IR {0}. A Purchase Invoice is required before receiving.".format(
+							f"<a href='/app/employee-ir/{issue_name}'>{issue_name}</a>"
+						)
+					)
 	def validate_fg_bom_fields(self):
 		"""Enforce subcategory-driven FG BOM fields on Receive.
 
@@ -683,7 +727,7 @@ class EmployeeIR(Document):
 		company = frappe.db.get_value(
 			"Company", {"supplier_code": self.subcontractor}, "name"
 		)
-		po.company = company or self.company
+		po.company = self.company or company
 		po.employee_ir = self.name
 		po.purchase_type = "FG Purchase"
 
