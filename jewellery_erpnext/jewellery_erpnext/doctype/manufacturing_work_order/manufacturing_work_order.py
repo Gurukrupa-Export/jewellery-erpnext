@@ -532,6 +532,54 @@ class ManufacturingWorkOrder(Document):
 				)
 
 	@frappe.whitelist()
+	def make_customer_goods_issue(self):
+		mop_logs = frappe.get_all(
+			"MOP Log",
+			filters={
+				"manufacturing_work_order": self.name,
+				"docstatus": ["!=", 2],
+				"item_code": ["!=", self.item_code]
+			},
+			fields=["item_code", "qty_after_transaction", "pcs_after_transaction", "to_warehouse", "creation"],
+			order_by="creation desc"
+		)
+		
+		latest_per_item = {}
+		for log in mop_logs:
+			if log.item_code not in latest_per_item:
+				latest_per_item[log.item_code] = log
+				
+		items = []
+		for item_code, log in latest_per_item.items():
+			from frappe.utils import flt
+			if flt(log.qty_after_transaction) > 0:
+				stock_uom = frappe.get_cached_value("Item", item_code, "stock_uom")
+				items.append({
+					"item_code": item_code,
+					"qty": flt(log.qty_after_transaction),
+					"transfer_qty": flt(log.qty_after_transaction),
+					"pcs": flt(log.pcs_after_transaction),
+					"uom": stock_uom,
+					"stock_uom": stock_uom,
+					"conversion_factor": 1.0,
+					"s_warehouse": log.to_warehouse,
+					"custom_manufacturing_work_order": self.name,
+				})
+
+		pmo = frappe.get_doc("Parent Manufacturing Order", self.manufacturing_order) if self.manufacturing_order else None
+		
+		se = frappe.new_doc("Stock Entry")
+		se.stock_entry_type = "Customer Goods Issue"
+		se._customer = pmo.customer if pmo else None
+		if hasattr(se, "customer"):
+			se.customer = pmo.customer if pmo else None
+		
+		for data in items:
+			se.append("items", data)
+			
+		return se
+
+	@frappe.whitelist()
 	def create_unpack_serial_no_stock_entry(self):
 		"""Unpack a repaired FG serial into the Repair Order's BOM raw materials as
 		Customer Goods.
