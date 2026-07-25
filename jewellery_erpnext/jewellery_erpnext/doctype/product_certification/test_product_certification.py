@@ -946,6 +946,205 @@ class TestFireAssyLossWeight(IntegrationTestCase):
 		self.assertEqual(doc.exploded_product_details[1].gross_weight, 5.0)
 
 
+class TestFireAssyIssueWeight(IntegrationTestCase):
+	"""The Issue-side counterpart of TestFireAssyLossWeight.
+
+	Fire Assy / XRF Issues stopped populating the main exploded row's gross_weight after PR #926
+	removed the generic distribute_amount back-fill for these service types, so submit threw
+	"No item found for Repack". set_fire_assy_issue_weight restores it: the operator-typed
+	product_details.total_weight lands on the main exploded row, per (main_slip, tree_no) group,
+	while pure/loss rows stay 0 (they are skipped when the Stock Entry is built).
+
+	Pure arithmetic over the two child tables, like the loss calc — an unsaved document is enough.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
+	def _doc(self, service_type, product_rows, exploded_rows, txn_type="Issue"):
+		"""product_rows: (item_code, total_weight, main_slip, tree_no) tuples.
+		exploded_rows: (item_code, gross_weight, main_slip, tree_no) tuples."""
+		doc = frappe.new_doc("Product Certification")
+		doc.type = txn_type
+		doc.service_type = service_type
+		for item_code, total_weight, main_slip, tree_no in product_rows:
+			doc.append(
+				"product_details",
+				{
+					"item_code": item_code,
+					"total_weight": total_weight,
+					"main_slip": main_slip,
+					"tree_no": tree_no,
+				},
+			)
+		for item_code, gross_weight, main_slip, tree_no in exploded_rows:
+			doc.append(
+				"exploded_product_details",
+				{
+					"item_code": item_code,
+					"gross_weight": gross_weight,
+					"main_slip": main_slip,
+					"tree_no": tree_no,
+				},
+			)
+		return doc
+
+	def test_fire_assy_issue_sets_main_row_weight(self):
+		doc = self._doc(
+			"Fire Assy Service",
+			[("TEST-ITEM-001", 2.0, None, None)],
+			[
+				("TEST-ITEM-001", 0.0, None, None),
+				("PURE-ITEM-001", 0.0, None, None),
+				("LOSS-ITEM-001", 0.0, None, None),
+			],
+		)
+		doc.set_fire_assy_issue_weight()
+
+		main, pure, loss = doc.exploded_product_details
+		self.assertEqual(main.gross_weight, 2.0)
+		self.assertEqual(pure.gross_weight, 0.0)
+		self.assertEqual(loss.gross_weight, 0.0)
+
+	def test_xrf_issue_sets_main_row_weight(self):
+		"""XRF has no pure row — only main + loss."""
+		doc = self._doc(
+			"XRF Services",
+			[("TEST-ITEM-001", 7.0, None, None)],
+			[("TEST-ITEM-001", 0.0, None, None), ("LOSS-ITEM-001", 0.0, None, None)],
+		)
+		doc.set_fire_assy_issue_weight()
+
+		main, loss = doc.exploded_product_details
+		self.assertEqual(main.gross_weight, 7.0)
+		self.assertEqual(loss.gross_weight, 0.0)
+
+	def test_multi_tree_each_group_gets_its_own_weight(self):
+		doc = self._doc(
+			"Fire Assy Service",
+			[
+				("TEST-ITEM-001", 2.0, "SLIP-A", "TREE-A"),
+				("TEST-ITEM-001", 5.0, "SLIP-B", "TREE-B"),
+			],
+			[
+				("TEST-ITEM-001", 0.0, "SLIP-A", "TREE-A"),
+				("PURE-ITEM-001", 0.0, "SLIP-A", "TREE-A"),
+				("LOSS-ITEM-001", 0.0, "SLIP-A", "TREE-A"),
+				("TEST-ITEM-001", 0.0, "SLIP-B", "TREE-B"),
+				("PURE-ITEM-001", 0.0, "SLIP-B", "TREE-B"),
+				("LOSS-ITEM-001", 0.0, "SLIP-B", "TREE-B"),
+			],
+		)
+		doc.set_fire_assy_issue_weight()
+
+		weights = [r.gross_weight for r in doc.exploded_product_details]
+		self.assertEqual(weights, [2.0, 0.0, 0.0, 5.0, 0.0, 0.0])
+
+	def test_same_slip_rows_are_summed_onto_one_main_row(self):
+		"""Two scan lines for one tree issue their combined weight — no double count."""
+		doc = self._doc(
+			"Fire Assy Service",
+			[
+				("TEST-ITEM-001", 1.5, "SLIP-A", "TREE-A"),
+				("TEST-ITEM-001", 0.5, "SLIP-A", "TREE-A"),
+			],
+			[
+				("TEST-ITEM-001", 0.0, "SLIP-A", "TREE-A"),
+				("PURE-ITEM-001", 0.0, "SLIP-A", "TREE-A"),
+				("LOSS-ITEM-001", 0.0, "SLIP-A", "TREE-A"),
+			],
+		)
+		doc.set_fire_assy_issue_weight()
+
+		main, pure, loss = doc.exploded_product_details
+		self.assertEqual(main.gross_weight, 2.0)
+		self.assertEqual(pure.gross_weight, 0.0)
+		self.assertEqual(loss.gross_weight, 0.0)
+
+	def test_overwrite_keeps_main_in_sync_with_corrected_total_weight(self):
+		"""Un-guarded overwrite: idempotent on re-save, and a corrected total_weight propagates."""
+		doc = self._doc(
+			"Fire Assy Service",
+			[("TEST-ITEM-001", 2.0, None, None)],
+			[
+				("TEST-ITEM-001", 0.0, None, None),
+				("PURE-ITEM-001", 0.0, None, None),
+				("LOSS-ITEM-001", 0.0, None, None),
+			],
+		)
+		doc.set_fire_assy_issue_weight()
+		doc.set_fire_assy_issue_weight()
+		self.assertEqual(doc.exploded_product_details[0].gross_weight, 2.0)
+
+		doc.product_details[0].total_weight = 3.0
+		doc.set_fire_assy_issue_weight()
+		self.assertEqual(doc.exploded_product_details[0].gross_weight, 3.0)
+
+	def test_receive_is_left_untouched(self):
+		"""The type guard: a Receive's operator-entered main/pure weights are never overwritten."""
+		doc = self._doc(
+			"Fire Assy Service",
+			[("TEST-ITEM-001", 2.0, None, None)],
+			[
+				("TEST-ITEM-001", 1.85, None, None),
+				("PURE-ITEM-001", 0.1, None, None),
+				("LOSS-ITEM-001", 0.0, None, None),
+			],
+			txn_type="Receive",
+		)
+		doc.set_fire_assy_issue_weight()
+
+		main, pure, loss = doc.exploded_product_details
+		self.assertEqual(main.gross_weight, 1.85)
+		self.assertEqual(pure.gross_weight, 0.1)
+		self.assertEqual(loss.gross_weight, 0.0)
+
+	def test_duplicate_main_row_is_not_double_weighted(self):
+		"""get_exploded_table can emit a duplicate main row for one group (its existing_data
+		guard is not updated in-loop). The next() first-match must weight only the first row,
+		so create_stock_entry — which skips gross_weight<=0 rows — never double-issues."""
+		doc = self._doc(
+			"Fire Assy Service",
+			[("TEST-ITEM-001", 2.0, "SLIP-A", "TREE-A")],
+			[
+				("TEST-ITEM-001", 0.0, "SLIP-A", "TREE-A"),
+				("TEST-ITEM-001", 0.0, "SLIP-A", "TREE-A"),  # duplicate main row
+				("LOSS-ITEM-001", 0.0, "SLIP-A", "TREE-A"),
+			],
+		)
+		doc.set_fire_assy_issue_weight()
+
+		first, duplicate, loss = doc.exploded_product_details
+		self.assertEqual(first.gross_weight, 2.0)
+		self.assertEqual(duplicate.gross_weight, 0.0)
+		self.assertEqual(loss.gross_weight, 0.0)
+
+	def test_validate_wires_in_the_issue_weight_step(self):
+		"""Guards the validate() wiring, not just the method in isolation.
+
+		The other tests call set_fire_assy_issue_weight() directly, so deleting its call from
+		validate() — the exact shape of the original "No item found for Repack" bug — would
+		leave them all green. This drives validate() end to end (get_exploded_table stubbed,
+		since it needs a manufacturer / Manufacturing Setting; every other validate step
+		early-returns for an Issue) and asserts the main row came out weighted.
+		"""
+		doc = self._doc(
+			"Fire Assy Service",
+			[("TEST-ITEM-001", 2.0, None, None)],
+			[
+				("TEST-ITEM-001", 0.0, None, None),
+				("PURE-ITEM-001", 0.0, None, None),
+				("LOSS-ITEM-001", 0.0, None, None),
+			],
+		)
+		with patch.object(type(doc), "get_exploded_table", lambda self: None):
+			doc.validate()
+
+		self.assertEqual(doc.exploded_product_details[0].gross_weight, 2.0)
+
+
 class TestPartialReceipt(IntegrationTestCase):
 	"""Receive status rollup, over-receipt cap and the pre-filled "Create Receiving".
 
