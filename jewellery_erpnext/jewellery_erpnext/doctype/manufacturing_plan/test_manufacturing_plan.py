@@ -5,15 +5,16 @@ import json
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import add_to_date, now, today
+from frappe.utils import add_days, add_to_date, now, today
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan import (
 	get_details_to_append,
-	get_pending_ppo_quotation,
-	get_repair_pending_ppo_quotation,
+	get_pending_ppo_sales_order,
+	get_repair_pending_ppo_sales_order,
 )
 from jewellery_erpnext.jewellery_erpnext.tests.test_sales_order import (
 	create_quotation,
+	make_sales_order,
 )
 
 
@@ -30,7 +31,7 @@ class TestManufacturingPlan(IntegrationTestCase):
 		)
 
 	def test_manufacturing_plan(self):
-		create_manufacturing_quotation(self)
+		create_sales_order(self)
 		doc = frappe.new_doc("Manufacturing Plan")
 		doc.select_manufacture_order = "Manufacturing"
 		man_plan = manufacturing_plan_creation(doc)
@@ -56,11 +57,11 @@ class TestManufacturingPlan(IntegrationTestCase):
 			)
 			self.assertEqual(man_plan.manufacturing_plan_table[0].bom, pmo.master_bom)
 			self.assertEqual(
-				man_plan.manufacturing_plan_table[0].quotation, pmo.quotation
+				man_plan.manufacturing_plan_table[0].sales_order, pmo.sales_order
 			)
 
 	def test_manufacturing_plan_subcontracting(self):
-		create_manufacturing_quotation(self)
+		create_sales_order(self)
 		doc = frappe.new_doc("Manufacturing Plan")
 		doc.select_manufacture_order = "Manufacturing"
 		man_plan = manufacturing_plan_creation(doc)
@@ -87,46 +88,44 @@ class TestManufacturingPlan(IntegrationTestCase):
 		man_plan.submit()
 
 	def test_manufacturing_plan_repair(self):
-		repair_quotation = create_repair_quotation(self)
+		repair_so = create_repair_sales_order(self)
 
-		# order_type == "Repair" is the sole repair marker, set on the Quotation header...
+		# order_type == "Repair" must have propagated Quotation -> Sales Order...
 		self.assertEqual(
-			frappe.db.get_value("Quotation", repair_quotation, "order_type"), "Repair"
+			frappe.db.get_value("Sales Order", repair_so, "order_type"), "Repair"
 		)
-		# ...and every Quotation item must carry the repair BOM the fetch aliases to serial_id_bom.
-		quotation_serial_boms = frappe.get_all(
-			"Quotation Item",
-			filters={"parent": repair_quotation},
-			pluck="custom_serial_id_bom",
+		# ...and the before_validate bridge must have populated serial_id_bom on every item.
+		so_serial_boms = frappe.get_all(
+			"Sales Order Item", filters={"parent": repair_so}, pluck="serial_id_bom"
 		)
-		self.assertTrue(quotation_serial_boms and all(quotation_serial_boms))
+		self.assertTrue(so_serial_boms and all(so_serial_boms))
 
-		# The repair picker (filtered on order_type == "Repair") must surface the Quotation...
-		repair_list = get_repair_pending_ppo_quotation(
-			"Quotation",
+		# The repair picker (now filtered on order_type == "Repair") must surface the SO...
+		repair_list = get_repair_pending_ppo_sales_order(
+			"Sales Order",
 			None,
 			"name",
 			0,
 			20,
 			{"company": "Test_Company"},
 		)
-		self.assertIn(repair_quotation, [row.name for row in repair_list])
+		self.assertIn(repair_so, [row.name for row in repair_list])
 
 		# ...and the normal (non-repair) picker must NOT (symmetric exclusion).
-		normal_list = get_pending_ppo_quotation(
-			"Quotation",
+		normal_list = get_pending_ppo_sales_order(
+			"Sales Order",
 			None,
 			"name",
 			0,
 			20,
 			{"company": "Test_Company"},
 		)
-		self.assertNotIn(repair_quotation, [row.name for row in normal_list])
+		self.assertNotIn(repair_so, [row.name for row in normal_list])
 
 		# Repair-mode mapping must append rows and resolve each BOM from serial_id_bom.
 		doc = frappe.new_doc("Manufacturing Plan")
 		doc.select_manufacture_order = "Repair"
-		man_plan = get_details_to_append(json.dumps([repair_quotation]), doc)
+		man_plan = get_details_to_append(json.dumps([repair_so]), doc)
 		self.assertTrue(man_plan.manufacturing_plan_table)
 		for row in man_plan.manufacturing_plan_table:
 			self.assertTrue(row.serial_id_bom)
@@ -137,38 +136,50 @@ class TestManufacturingPlan(IntegrationTestCase):
 
 
 def manufacturing_plan_creation(doc):
-	quotation_list = get_pending_ppo_quotation(
-		"Quotation",
+	so_list = get_pending_ppo_sales_order(
+		"Sales Order",
 		None,
 		"name",
 		0,
 		1,
 		{"company": "Test_Company"},
 	)
-	man_plan = get_details_to_append(json.dumps([quotation_list[0].name]), doc)
+	man_plan = get_details_to_append(json.dumps([so_list[0].name]), doc)
 	return man_plan
 
 
-def create_manufacturing_quotation(self):
-	"""Submit a Quotation the Manufacturing Plan can plan directly from.
-
-	The Sales Order step was removed from the manufacturing flow, so the plan now fetches its
-	rows straight off the Quotation (``get_items_for_production`` queries Quotation Item).
-	"""
+def create_sales_order(self):
 	create_quotation(self)
-	return frappe.get_value("Quotation", {"workflow_state": "Submitted"}, "name")
+	quotation = frappe.get_value("Quotation", {"workflow_state": "Submitted"}, "name")
+	sales_order = make_sales_order(quotation)
+	sales_order.sales_type = "Finished Goods"
+	sales_order.delivery_date = add_days(sales_order.transaction_date, 3)
+	sales_order.custom_diamond_quality = "EF-VVS"
+	for row in sales_order.items:
+		row.bom_rate = 150000
+		row.gold_bom_rate = 120000
+		row.diamond_bom_rate = 25000
+		row.making_charges = 5000
+		row.rate = 150000
+		if not row.warehouse:
+			row.warehouse = self.warehouse
+	sales_order.save()
+	sales_order.submit()
 
 
-def create_repair_quotation(self):
-	"""Build a header-``order_type`` Repair Quotation so the Get Repair Quotation picker has data.
+def create_repair_sales_order(self):
+	"""Build a header-``order_type`` Repair sales order so the Get Repair Order picker has data.
 
 	The repair is marked purely at the header via ``order_type = "Repair"`` (the sole repair
-	marker) and each Quotation item gets a ``custom_serial_id_bom`` -- which the plan fetch
-	aliases to the row's ``serial_id_bom`` and uses to resolve the repair BOM.
+	marker). We stamp the submitted source Quotation with ``order_type = "Repair"`` and give each
+	Quotation item a ``custom_serial_id_bom``; the Sales Order then inherits ``order_type`` via
+	``get_mapped_doc`` (same-named field) and its ``serial_id_bom`` via the before_validate bridge
+	(``set_repair_serial_bom``). This exercises the full new propagation path end to end.
 	"""
-	quotation = create_manufacturing_quotation(self)
+	create_quotation(self)
+	quotation = frappe.get_value("Quotation", {"workflow_state": "Submitted"}, "name")
 
-	# Mark the (submitted) quotation as a repair and give each item a repair BOM.
+	# Mark the (submitted) quotation as a repair and give each item a repair BOM to bridge over.
 	# (Quotation Item has no ``bom`` column, so source the repair BOM from the Item's master BOM.)
 	frappe.db.set_value("Quotation", quotation, "order_type", "Repair")
 	for qi in frappe.get_all(
@@ -177,4 +188,18 @@ def create_repair_quotation(self):
 		bom = frappe.db.get_value("Item", qi.item_code, "master_bom")
 		frappe.db.set_value("Quotation Item", qi.name, "custom_serial_id_bom", bom)
 
-	return quotation
+	sales_order = make_sales_order(quotation)
+	sales_order.sales_type = "Finished Goods"
+	sales_order.delivery_date = add_days(sales_order.transaction_date, 3)
+	sales_order.custom_diamond_quality = "EF-VVS"
+	for row in sales_order.items:
+		row.bom_rate = 150000
+		row.gold_bom_rate = 120000
+		row.diamond_bom_rate = 25000
+		row.making_charges = 5000
+		row.rate = 150000
+		if not row.warehouse:
+			row.warehouse = self.warehouse
+	sales_order.save()
+	sales_order.submit()
+	return sales_order.name

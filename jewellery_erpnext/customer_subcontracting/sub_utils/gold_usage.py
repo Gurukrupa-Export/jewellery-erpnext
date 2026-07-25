@@ -103,19 +103,11 @@ def classify_gold_usage(doc, item):
 
 
 def get_order_customer(doc):
-	from jewellery_erpnext.utils import resolve_pmo_demand_anchor
-
-	pmo = getattr(doc, "manufacturing_order", None)
-	if not pmo:
+	sales_order = get_sales_order(doc)
+	if not sales_order:
 		return None
 
-	# New records derive the customer from the Quotation; legacy records from the Sales Order.
-	voucher_type, voucher_no, _detail_no = resolve_pmo_demand_anchor(pmo)
-	if not voucher_no:
-		return None
-	if voucher_type == "Quotation":
-		return frappe.db.get_value("Quotation", voucher_no, "party_name")
-	return frappe.db.get_value("Sales Order", voucher_no, "customer")
+	return frappe.db.get_value("Sales Order", sales_order, "customer")
 
 
 def get_sales_order(doc):

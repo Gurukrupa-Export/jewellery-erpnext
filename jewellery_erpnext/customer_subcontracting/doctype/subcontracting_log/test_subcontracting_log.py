@@ -105,34 +105,22 @@ class TestGoldUsage(IntegrationTestCase):
 			"Parent Manufacturing Order", "PMO-001", "sales_order"
 		)
 
-	@patch("jewellery_erpnext.utils.resolve_pmo_demand_anchor")
+	@patch(
+		"jewellery_erpnext.customer_subcontracting.sub_utils.gold_usage.get_sales_order"
+	)
 	@patch("frappe.db.get_value")
-	def test_get_order_customer(self, mock_get_value, mock_anchor):
-		"""The customer comes from the PMO's demand voucher: Quotation for new records,
-		Sales Order for legacy ones."""
+	def test_get_order_customer(self, mock_get_value, mock_get_sales_order):
 		doc = MagicMock()
 
-		# No manufacturing order at all.
-		doc.manufacturing_order = None
+		# Test no sales order
+		mock_get_sales_order.return_value = None
 		self.assertIsNone(get_order_customer(doc))
 
-		# PMO with no demand anchor (e.g. a stock-based order).
-		doc.manufacturing_order = "PMO-001"
-		mock_anchor.return_value = (None, None, None)
-		self.assertIsNone(get_order_customer(doc))
-
-		# Legacy record -> read the customer off the Sales Order.
-		mock_anchor.return_value = ("Sales Order", "SO-001", "SOI-001")
+		# Test with sales order
+		mock_get_sales_order.return_value = "SO-001"
 		mock_get_value.return_value = "CUST-001"
 		self.assertEqual(get_order_customer(doc), "CUST-001")
 		mock_get_value.assert_called_once_with("Sales Order", "SO-001", "customer")
-
-		# New record -> read the customer off the Quotation (party_name).
-		mock_get_value.reset_mock()
-		mock_anchor.return_value = ("Quotation", "QTN-001", "QTNI-001")
-		mock_get_value.return_value = "CUST-002"
-		self.assertEqual(get_order_customer(doc), "CUST-002")
-		mock_get_value.assert_called_once_with("Quotation", "QTN-001", "party_name")
 
 	@patch("frappe.db.get_value")
 	def test_get_mwo_type(self, mock_get_value):

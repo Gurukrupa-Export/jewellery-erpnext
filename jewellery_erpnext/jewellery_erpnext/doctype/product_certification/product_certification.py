@@ -76,6 +76,7 @@ class ProductCertification(Document):
 		self.update_bom()
 		self.get_exploded_table()
 		self.calculate_fire_assy_loss_weight()
+		self.set_fire_assy_issue_weight()
 		self.distribute_amount()
 
 	def before_submit(self):
@@ -299,6 +300,59 @@ class ProductCertification(Document):
 				0.0,
 				flt(issue_weight - receive_weight - converted_pure_wt, precision),
 			)
+
+	def set_fire_assy_issue_weight(self):
+		"""Populate the main exploded row's gross_weight on a Fire Assy / XRF Issue.
+
+		The Issue-side sibling of ``calculate_fire_assy_loss_weight``. On an Issue there is
+		no loss/pure — the operator types the sample weight into ``product_details.total_weight``
+		(the exploded rows are machine-generated blank), and the whole sample is what leaves for
+		assay. So the main exploded row of each ``_slip_key`` group takes that group's issued
+		weight; ``create_stock_entry`` then issues exactly that row (pure/loss stay 0 and are
+		skipped).
+
+		Grouped identically to the Receive-side loss calc so the two never disagree about a
+		group's issued weight. Un-guarded overwrite keeps the main row in sync when the operator
+		corrects ``total_weight``; the ``type == "Issue"`` guard keeps it from ever touching a
+		Receive's operator-entered main weight. This restores the back-fill the generic
+		``distribute_amount`` path used to provide before its Fire Assy / XRF early-return.
+		"""
+		if self.type != "Issue" or self.service_type not in [
+			"Fire Assy Service",
+			"XRF Services",
+		]:
+			return
+		if not self.exploded_product_details or not self.product_details:
+			return
+
+		# (main_slip, tree_no) → {main_item, issue_weight}
+		slip_data = {}
+		for pd in self.product_details:
+			data = slip_data.setdefault(
+				_slip_key(pd), {"main_item": None, "issue_weight": 0.0}
+			)
+			# Summed, not overwritten: two rows on the same slip issue their combined weight.
+			data["issue_weight"] += flt(pd.total_weight)
+			data["main_item"] = data["main_item"] or pd.item_code
+
+		slip_rows = defaultdict(list)
+		for row in self.exploded_product_details:
+			key = _slip_key(row)
+			if key in slip_data:
+				slip_rows[key].append(row)
+
+		for key, sd in slip_data.items():
+			if not sd["main_item"]:
+				continue
+			# First match only: if get_exploded_table ever emits a duplicate main row, only
+			# the first carries the weight — the duplicate stays 0 (skipped in the Stock
+			# Entry), so the issued qty is never doubled.
+			main_row = next(
+				(r for r in slip_rows.get(key, []) if r.item_code == sd["main_item"]),
+				None,
+			)
+			if main_row is not None:
+				main_row.gross_weight = sd["issue_weight"]
 
 	def update_bom(self):
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
@@ -1330,22 +1384,18 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 		item_codes = list(
 			set(r.get("item_code") for r in mop_balance_rows if r.get("item_code"))
 		)
-		demand_voucher_type = demand_voucher_no = None
+		sales_order = None
 		if pmo_name:
-			from jewellery_erpnext.utils import resolve_pmo_demand_anchor
-
-			(
-				demand_voucher_type,
-				demand_voucher_no,
-				_detail_no,
-			) = resolve_pmo_demand_anchor(pmo_name)
-		if demand_voucher_no and item_codes:
+			sales_order = frappe.db.get_value(
+				"Parent Manufacturing Order", pmo_name, "sales_order"
+			)
+		if sales_order and item_codes:
 			sre_list_2 = frappe.db.get_all(
 				"Stock Reservation Entry",
 				filters={
 					"docstatus": 1,
-					"voucher_type": demand_voucher_type,
-					"voucher_no": demand_voucher_no,
+					"voucher_type": "Sales Order",
+					"voucher_no": sales_order,
 					"item_code": ["in", item_codes],
 				},
 				fields=[

@@ -15,9 +15,7 @@ frappe.ui.form.on("Manufacturing Plan", {
 						let item_codes = r.message || [];
 						if (!item_codes.length) {
 							frappe.msgprint(
-								__(
-									"All items in this Manufacturing Plan already have a CAD Manufacturing Work Order."
-								)
+								__("All items in this Manufacturing Plan already have a CAD Manufacturing Work Order.")
 							);
 							return;
 						}
@@ -42,16 +40,16 @@ frappe.ui.form.on("Manufacturing Plan", {
 	get_sales_order(frm) {
 		map_current_doc({
 			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_details_to_append",
-			source_doctype: "Quotation",
+			source_doctype: "Sales Order",
 			target: frm,
 			setters: {
-				party_name: null,
+				customer: null,
 				transaction_date: null,
 				company: frm.doc.company,
 				branch: frm.doc.branch,
 			},
 			get_query_method:
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_pending_ppo_quotation",
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_pending_ppo_sales_order",
 			size: "extra-large",
 		});
 	},
@@ -77,16 +75,16 @@ frappe.ui.form.on("Manufacturing Plan", {
 	get_repair_order(frm) {
 		map_current_doc({
 			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_details_to_append",
-			source_doctype: "Quotation",
+			source_doctype: "Sales Order",
 			target: frm,
 			setters: {
-				party_name: null,
+				customer: null,
 				transaction_date: null,
 				company: frm.doc.company,
 				branch: frm.doc.branch,
 			},
 			get_query_method:
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_repair_pending_ppo_quotation",
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_repair_pending_ppo_sales_order",
 			size: "extra-large",
 		});
 	},
@@ -220,6 +218,7 @@ function show_cad_reason_dialog(frm, item_codes) {
 		__("Submit")
 	);
 }
+
 
 var map_current_doc = function (opts) {
 	function _map(frm) {
