@@ -19,7 +19,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 HYBRID_ENABLED_COMPANIES = ("KG GK Jewellers Private Limited",)
 
 # Placeholder item that carries the aggregated customer-supplied (5%) amount
-# for Hybrid Sales Orders — see add_hybrid_Outwork_row().
+# for Hybrid Sales Orders — see add_hybrid_outwork_row().
 HYBRID_OUTWORK_ITEM = "Subcontracting Charges"
 
 # Item Tax Templates for Hybrid rows, by company — same "Outright"
@@ -42,7 +42,7 @@ SALES_TYPE_ITEM_TAX_TEMPLATE = {
 def before_validate(self, method):
 	# Drop any Hybrid Outwork-charge row left over from a previous
 	# save before create_new_bom1 runs, so it never gets treated as a real
-	# serial-no/BOM row. add_hybrid_Outwork_row() rebuilds it fresh.
+	# serial-no/BOM row. add_hybrid_outwork_row() rebuilds it fresh.
 	self.items = [row for row in self.items if not row.get("custom_is_subcontracting_charge_row")]
 
 	validate_sales_type(self)
@@ -53,7 +53,7 @@ def before_validate(self, method):
 	set_missing_tax_category_and_template(self)
 	set_sales_type_tax_template(self)
 	validate_serial_number(self)
-	# set_gst_details(self)  # superseded by add_hybrid_Outwork_row() for Hybrid; see history for why
+	# set_gst_details(self)  # superseded by add_hybrid_outwork_row() for Hybrid; see history for why
 	validate_item_dharm(self)
 	if not self.get("__islocal") and self.docstatus == 0:
 		set_bom_item_details(self)
@@ -543,7 +543,7 @@ def _set_hybrid_gst_details(self, item_tax_template):
             item.igst_rate   = round(igst_amount / taxable_value * 100, 4) if taxable_value else 0.0
 
 
-def add_hybrid_Outwork_row(self):
+def add_hybrid_outwork_row(self):
 	"""
 	Hybrid: each real row's amount is currently owned + supplied combined
 	(see the custom_company_owned_amount / custom_customer_supplied_amount
@@ -601,7 +601,7 @@ def clear_hybrid_header_tax_rate(self, method=None):
 	Hybrid mixes two rates (3% owned + 5% supplied) in one order, so unlike
 	Outright / Outwork there's no single correct number for
 	sync_header_tax_rate() to put on the header row. Every row already
-	carries its own item_tax_template (set in add_hybrid_Outwork_row),
+	carries its own item_tax_template (set in add_hybrid_outwork_row),
 	which is what actually drives the computed tax_amount — so the header
 	row's own rate is just as cosmetically unused here as it is there.
 	Rather than leave the Sales Taxes and Charges Template's generic
@@ -630,7 +630,7 @@ def set_sales_type_tax_template(self):
 	"""
 	Outright / Outwork (non-Hybrid): set each row's
 	item_tax_template from sales_type + company, same as
-	add_hybrid_Outwork_row() does for Hybrid rows. Without this,
+	add_hybrid_outwork_row() does for Hybrid rows. Without this,
 	item_tax_template stays blank and India Compliance silently falls back
 	to the header Sales Taxes and Charges Template's own flat nominal rate
 	(e.g. 9%+9%) instead of the correct 3%/5% — confirmed against several
