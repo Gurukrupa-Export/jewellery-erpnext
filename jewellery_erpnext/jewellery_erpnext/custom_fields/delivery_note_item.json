@@ -217,6 +217,62 @@
    "no_copy": 1,
    "options": "Company:company:default_currency",
    "read_only": 1
+  },
+   {
+   "dt": "Delivery Note Item",
+   "fieldname": "custom_metal_weight",
+   "fieldtype": "Float",
+   "insert_after": "taxable_value",
+   "label": "Metal Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "custom_finding_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_metal_weight",
+   "label": "Finding Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "custom_gemstone_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_finding_weight",
+   "label": "Gemstone Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "custom_diamond_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_gemstone_weight",
+   "label": "Diamond Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "custom_other_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_diamond_weight",
+   "label": "Other Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "custom_diamond_pcs",
+   "fieldtype": "Float",
+   "insert_after": "custom_other_weight",
+   "label": "Diamond Pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note Item",
+   "fieldname": "custom_gemstone_pcs",
+   "fieldtype": "Float",
+   "insert_after": "custom_diamond_pcs",
+   "label": "Gemstone Pcs",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
