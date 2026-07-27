@@ -114,6 +114,11 @@ class TreeNumber(Document):
 
 		eps = tree_balance.pending_eps()
 
+		# Re-derive pending from the quantities before judging it. The stored column cannot be
+		# trusted here: rows written before the floor was removed persisted pending 0 on a ledger
+		# that is really over-drawn, so reading it straight would wave those trees through.
+		self.calculate_material_pending()
+
 		# An over-drawn row cannot be written off — the leftover selection below only picks up
 		# POSITIVE pending, so a negative one would slip through and the tree would lock with a
 		# permanently broken ledger and no correction path.

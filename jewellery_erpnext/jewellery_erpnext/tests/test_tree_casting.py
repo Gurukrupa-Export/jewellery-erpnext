@@ -1618,6 +1618,54 @@ class TestSubmitAndLock(IntegrationTestCase):
 		self.assertEqual(called_rows, [{"item_code": "GOLD-18KT", "loss_qty": 7.0}])
 		self.assertEqual(tree.status, "Submitted")
 
+	def test_submit_tree_rejects_an_over_drawn_ledger(self):
+		# Over-drawn: 2.36 received against nothing issued. The write-off below only picks up
+		# POSITIVE pending, so without this guard the tree locks at "Submitted" with a broken
+		# ledger and no correction path.
+		tree = _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": 0.0,
+					"receive_qty": 2.36,
+					"loss_qty": 0.0,
+					"pending_qty": -2.36,
+				}
+			]
+		)
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(tse, "receive_material") as mock_recv,
+			self.assertRaises(ValidationError),
+		):
+			tree.submit_tree()
+		mock_recv.assert_not_called()
+		self.assertNotEqual(tree.status, "Submitted")
+
+	def test_submit_tree_rederives_pending_before_judging_it(self):
+		# Regression, found by driving the real app against GEPL-TR-26-00154: rows written before
+		# the floor was removed persist pending_qty 0 on a ledger that is really over-drawn.
+		# Trusting the stored column waved those trees straight through to "Submitted".
+		tree = _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": 0.0,
+					"receive_qty": 2.36,
+					"loss_qty": 0.0,
+					"pending_qty": 0.0,  # stale: the old code floored this
+				}
+			]
+		)
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(tse, "receive_material") as mock_recv,
+			self.assertRaises(ValidationError),
+		):
+			tree.submit_tree()
+		mock_recv.assert_not_called()
+		self.assertNotEqual(tree.status, "Submitted")
+
 	def test_submit_tree_rejects_when_never_received(self):
 		# No receive activity at all -> _tree_status == "Issued" -> cannot submit (receive/reverse first).
 		tree = _new_tree(
