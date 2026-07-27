@@ -378,9 +378,17 @@ def _active_sres_for(item_code, batch_no, mwo_names, warehouse=None, exclude=Non
 			remaining = min(header_remaining, scoped)
 		else:
 			remaining = header_remaining
+		# Round to the site's 3dp stock precision BEFORE the liveness test, so the
+		# threshold and the returned value agree. Filtering on the raw remainder and
+		# returning the rounded one lets a remainder in (TOLERANCE, 0.0005) come back
+		# as 0.0: the caller would see a "live" reservation that contributes no
+		# capacity, marking sre_matched True — which consumes the SRE and skips the
+		# PC-Receive / Stock-Entry warehouse fallbacks on the strength of nothing.
+		# ``_reserved_warehouse_caps`` already rounds-then-filters; match it.
+		remaining = flt(remaining, 3)
 		if remaining <= TOLERANCE:
 			continue
-		out.append((sre, flt(remaining, 3)))
+		out.append((sre, remaining))
 
 	out.sort(key=lambda t: (-t[1], t[0]["warehouse"] or ""))
 	return out

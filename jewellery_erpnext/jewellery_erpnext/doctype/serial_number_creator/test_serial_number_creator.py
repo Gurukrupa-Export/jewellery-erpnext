@@ -832,6 +832,43 @@ class TestActiveSresFor(IntegrationTestCase):
 		self.assertEqual(_active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"]), [])
 
 	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_remainder_rounding_to_zero_is_not_live(self, mock_get_all):
+		# A remainder inside (TOLERANCE, 0.0005) rounds to 0.000 at the site's 3dp stock
+		# precision. Returning it would make sre_matched True on a reservation with no
+		# capacity: the SRE would be consumed and the PC-Receive / Stock-Entry warehouse
+		# fallbacks skipped for nothing. Unreachable while the qty columns are
+		# decimal(21,3), but the threshold must not depend on that.
+		mock_get_all.side_effect = self._mock_get_all(
+			[
+				{
+					"name": "sre1",
+					"warehouse": _WAXING,
+					"reserved_qty": 3.5,
+					"delivered_qty": 3.4997,
+				}
+			],
+			[],
+		)
+		self.assertEqual(_active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"]), [])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_smallest_real_remainder_is_live(self, mock_get_all):
+		# The smallest remainder the schema can actually produce (0.001) must survive.
+		mock_get_all.side_effect = self._mock_get_all(
+			[
+				{
+					"name": "sre1",
+					"warehouse": _WAXING,
+					"reserved_qty": 3.5,
+					"delivered_qty": 3.499,
+				}
+			],
+			[],
+		)
+		out = _active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"])
+		self.assertEqual([rem for _sre, rem in out], [0.001])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
 	def test_qty_based_sre_uses_header_remaining(self, mock_get_all):
 		mock_get_all.side_effect = self._mock_get_all(
 			[
