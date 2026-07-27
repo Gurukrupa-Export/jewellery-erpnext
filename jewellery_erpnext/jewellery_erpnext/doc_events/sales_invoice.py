@@ -219,7 +219,7 @@ def on_submit(self,method):
 		new_si.set("items", [])
 		new_si.set("invoice_item", [])
 		new_si.set("taxes", [])
-			
+		
 		new_si.append("items", {
 					"item_code": "Subcontracting Charges",
 					"item_name": "Subcontracting Charges",
@@ -271,7 +271,13 @@ def on_submit(self,method):
 		new_si.set("items", [])
 		new_si.set("invoice_item", [])
 		new_si.set("taxes", [])
-			
+		dn_detail = None
+		if row.delivery_note:
+			dn_detail = frappe.db.get_value(
+				"Delivery Note Item",
+				{"parent": row.delivery_note, "item_code": "Subcontracting Charges", "against_sales_order": row.sales_order},
+				"name",
+			)
 		new_si.append("items", {
 					"item_code": "Subcontracting Charges",
 					"item_name": "Subcontracting Charges",
@@ -282,6 +288,8 @@ def on_submit(self,method):
 					"rate": total_making_charge,
 					"amount": total_making_charge,
 					"sales_order":row.sales_order,
+					"delivery_note": row.delivery_note,
+					"dn_detail": dn_detail,
 					# "gst_hsn_code": gst_hsn_code,
 					# "item_tax_template": sc_template,
 					"custom_is_subcontracting_charge_row": 1,
