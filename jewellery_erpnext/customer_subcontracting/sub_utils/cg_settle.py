@@ -24,13 +24,17 @@ allocation guard) and the pre-submit consumable-balance assertion.
 """
 
 import frappe
+from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.utils import flt
 
 from jewellery_erpnext.customer_subcontracting.sub_utils.snc import (
+	PURITY_PRIORITY,
 	_append_item,
 	_consumable_batch_qty_map,
+	_get_gold_items_for_purity,
 	_get_item_purity,
+	_get_purity_label,
 	_get_raw_material_warehouses,
 	_submit_consuming_stock_entry,
 	find_owner_rm_warehouse,
@@ -57,6 +61,7 @@ TOLERANCE = 0.001
 
 # Sourcing outcomes recorded per row (for the response / logging).
 LEVEL_AVAILABLE = "Available"
+LEVEL_CONVERT_IN_PLACE = "ConvertInPlace"
 LEVEL_SAME_PURITY = "SamePurity"
 LEVEL_CONVERT = "Convert"
 
@@ -153,6 +158,11 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target):
 		"target": target,
 		"required": required,
 		"shortfall": shortfall,
+		# The batch the MR references. The MR's own transfer is batch-strict (the
+		# MR -> Stock Entry mapper copies this onto the transfer row), so the sourced
+		# material must land in THIS batch, not a fresh child batch. None => let the
+		# child-batch minter name it (fallback).
+		"mr_batch": row.get("batch_no"),
 	}
 
 	if shortfall <= TOLERANCE:
@@ -164,6 +174,29 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target):
 	_claim_target(consumed_target, customer, item, target, have)
 
 	others = [w for w in all_rm if w != target]
+	pure_short = _pure_weight(row, item, shortfall, required)
+
+	# Convert-in-place — the customer's OWN convertible purity is already sitting IN the
+	# target warehouse (the common return case: their 24KT was converted to 18KT for
+	# manufacturing and never left Central). Convert it back in place: one repack, no
+	# borrowing, no regular-gold balancing. Preferred over borrowing from elsewhere.
+	# Aggregates across the customer's batches, since the converted metal is usually
+	# spread over several.
+	in_target = _gather_convertible(
+		customer, item, pure_short, target, company, allocated
+	)
+	if in_target:
+		# The customer conversion is systematic only (no physical melt), so mirror it with
+		# regular gold (item -> item2 in the target) to keep each purity's system total
+		# matching physical — the same balancing the cross-warehouse case does.
+		reg = _reserve_regular(item, shortfall, company, target, allocated, row.idx)
+		return dict(
+			base,
+			level=LEVEL_CONVERT_IN_PLACE,
+			src=in_target,
+			regular=reg,
+			pure_short=pure_short,
+		)
 
 	# Case 2 — same purity available in another warehouse.
 	src = find_owner_rm_warehouse(
@@ -178,8 +211,7 @@ def _plan_row(row, mr, company, all_rm, allocated, consumed_target):
 		reg = _reserve_regular(item, shortfall, company, target, allocated, row.idx)
 		return dict(base, level=LEVEL_SAME_PURITY, src=src, regular=reg)
 
-	# Case 3 — only a different purity available; convert it.
-	pure_short = _pure_weight(row, item, shortfall, required)
+	# Case 3 — only a different purity available, in another warehouse; convert + balance.
 	conv = find_owner_rm_warehouse(
 		customer,
 		item,
@@ -254,6 +286,89 @@ def _claim_target(consumed_target, customer, item, warehouse, qty):
 	consumed_target[key] = flt(consumed_target.get(key, 0), 3) + flt(qty, 3)
 
 
+def _gather_convertible(customer, item, pure_needed, warehouse, company, allocated):
+	"""Gather enough of the customer's convertible purity in ONE warehouse to cover
+	``pure_needed`` (pure weight), possibly across SEVERAL batches.
+
+	The customer's converted metal is normally spread over multiple batches, so unlike
+	the single-batch finder this accumulates batches of one candidate purity until the
+	pure requirement is met. Returns
+	``{"item_code", "purity", "warehouse", "rows": [{"batch_no", "qty"}]}`` (source qty in
+	candidate-item units) and reserves each consumed batch in ``allocated``; ``None`` if no
+	single candidate purity can cover it. Higher purities are tried first (PURITY_PRIORITY).
+	"""
+	pure_needed = flt(pure_needed, 3)
+	if pure_needed <= TOLERANCE:
+		return None
+
+	required_label = _get_purity_label(item)
+	for purity in PURITY_PRIORITY:
+		if purity == required_label:
+			continue
+		for candidate in _get_gold_items_for_purity(purity, item):
+			cand_purity = flt(_get_item_purity(candidate))
+			if not cand_purity:
+				continue
+			rows, acc_pure = _accumulate_batches(
+				customer, candidate, cand_purity, pure_needed, warehouse, allocated
+			)
+			if acc_pure >= pure_needed - TOLERANCE and rows:
+				for r in rows:
+					key = (r["batch_no"], warehouse)
+					allocated[key] = flt(allocated.get(key, 0), 3) + r["qty"]
+				return {
+					"item_code": candidate,
+					"purity": cand_purity,
+					"warehouse": warehouse,
+					"rows": rows,
+				}
+	return None
+
+
+def _accumulate_batches(
+	customer, candidate, cand_purity, pure_needed, warehouse, allocated
+):
+	"""Take the customer's ``candidate`` batches in ``warehouse`` (oldest first) until the
+	pure requirement is met. Returns (rows, accumulated_pure) without reserving."""
+	batches = frappe.get_all(
+		"Batch",
+		filters={"item": candidate, "custom_customer": customer, "disabled": 0},
+		order_by="creation asc",
+		pluck="name",
+	)
+	if not batches:
+		return [], 0.0
+
+	cmap = _consumable_batch_qty_map(batches, candidate, [warehouse])
+	rows = []
+	acc_pure = 0.0
+	for batch in batches:
+		consumable = flt(cmap.get((batch, warehouse), 0), 3)
+		if consumable <= TOLERANCE:
+			continue
+		# Net reservations (get_batch_qty) and this run's earlier claims, so we never
+		# promise stock that is reserved or already earmarked.
+		netted = min(
+			consumable,
+			flt(
+				get_batch_qty(batch_no=batch, warehouse=warehouse, item_code=candidate),
+				3,
+			),
+		)
+		avail = flt(netted - flt(allocated.get((batch, warehouse), 0), 3), 3)
+		if avail <= TOLERANCE:
+			continue
+		need_units = flt((pure_needed - acc_pure) / (cand_purity / 100), 3)
+		take = flt(min(avail, need_units), 3)
+		if take <= TOLERANCE:
+			continue
+		rows.append({"batch_no": batch, "qty": take})
+		acc_pure = flt(acc_pure + take * cand_purity / 100, 3)
+		if acc_pure >= pure_needed - TOLERANCE:
+			break
+	return rows, acc_pure
+
+
 # ---------------------------------------------------------------------------
 # Execution (writes): mint + submit the Stock Entries the plan calls for.
 # ---------------------------------------------------------------------------
@@ -274,7 +389,9 @@ def _execute(mr, actionable):
 	lock_bins(_bin_pairs(actionable))
 
 	for entry in actionable:
-		if entry["level"] == LEVEL_SAME_PURITY:
+		if entry["level"] == LEVEL_CONVERT_IN_PLACE:
+			_settle_convert_in_place(mr, entry)
+		elif entry["level"] == LEVEL_SAME_PURITY:
 			_settle_same_purity(mr, entry)
 		elif entry["level"] == LEVEL_CONVERT:
 			_settle_convert(mr, entry)
@@ -286,11 +403,54 @@ def _bin_pairs(actionable):
 		item, target, src = e["item"], e["target"], e["src"]
 		pairs.append((item, target))
 		pairs.append((item, src["warehouse"]))
-		if e["level"] == LEVEL_CONVERT:
-			# the different-purity source item also moves
+		if e["level"] in (LEVEL_CONVERT, LEVEL_CONVERT_IN_PLACE):
+			# the different-purity source item also moves / is consumed
 			pairs.append((src["item_code"], src["warehouse"]))
 			pairs.append((src["item_code"], target))
 	return pairs
+
+
+def _settle_convert_in_place(mr, entry):
+	"""The customer's convertible purity is already in the target: convert it back there,
+	then mirror the conversion with regular gold to keep physical stock balanced.
+
+	Two repacks, both in the target, no transfers:
+	  1. customer:  item2 -> item   (systematic; produced into the MR batch)
+	  2. regular:   item  -> item2  (company gold; restores each purity's physical total,
+	     since the customer conversion did not physically melt anything)
+	"""
+	conv = entry["src"]  # {item_code, warehouse: target, rows: [{batch_no, qty}]}
+	item = entry["item"]
+	item2 = conv["item_code"]
+	target = entry["target"]
+	shortfall = entry["shortfall"]
+	# Total source consumed by the customer conversion; the regular mirror produces it
+	# back so the item2 physical total is unchanged.
+	source_total = flt(sum(flt(r["qty"], 3) for r in conv["rows"]), 3)
+
+	# 1. Customer conversion: item2 (gathered batches) -> item, into the MR batch.
+	_convert_multi(
+		mr,
+		source_item=item2,
+		source_rows=conv["rows"],
+		target_item=item,
+		target_qty=shortfall,
+		warehouse=target,
+		customer=entry["customer"],
+		target_batch=entry.get("mr_batch"),
+	)
+	# 2. Regular mirror: item (regular) -> item2 (regular), same quantities reversed.
+	reg = entry["regular"]
+	_convert(
+		mr,
+		source_item=item,
+		source_qty=shortfall,
+		source_batch=reg["batch_no"],
+		target_item=item2,
+		target_qty=source_total,
+		warehouse=target,
+		customer=None,
+	)
 
 
 def _settle_same_purity(mr, entry):
@@ -299,10 +459,30 @@ def _settle_same_purity(mr, entry):
 	target = entry["target"]
 	src = entry["src"]
 	reg = entry["regular"]
+	mr_batch = entry.get("mr_batch")
+	found_batch = src["batch_no"]
+
+	# The MR transfer is batch-strict, so the customer's gold must arrive in the MR's
+	# batch. A transfer can't relabel, so when the found batch differs, relabel it in the
+	# source warehouse first (same-item repack: consume found -> produce mr_batch) and
+	# move mr_batch in; otherwise transfer the found batch (already the MR batch) as-is.
+	transfer_batch = found_batch
+	if mr_batch and found_batch != mr_batch:
+		transfer_batch = _convert(
+			mr,
+			source_item=item,
+			source_qty=qty,
+			source_batch=found_batch,
+			target_item=item,
+			target_qty=qty,
+			warehouse=src["warehouse"],
+			customer=entry["customer"],
+			target_batch=mr_batch,
+		)
 
 	# Bring the customer's gold in from the lending warehouse.
 	_transfer(
-		mr, item, qty, src["batch_no"], src["warehouse"], target, entry["customer"]
+		mr, item, qty, transfer_batch, src["warehouse"], target, entry["customer"]
 	)
 	# Return an equal quantity of regular gold, so the lender ends whole.
 	_transfer(mr, item, qty, reg["batch_no"], target, src["warehouse"], None)
@@ -331,7 +511,9 @@ def _settle_convert(mr, entry):
 	source_qty = flt(conv["qty"], 3)
 	W = conv["warehouse"]
 
-	# 1. Customer conversion in W: item2 -> item.
+	# 1. Customer conversion in W: item2 -> item, produced INTO the MR's batch so the
+	#    batch-strict MR transfer later finds it (falls back to an auto batch if the MR
+	#    row carries none).
 	produced_item_batch = _convert(
 		mr,
 		source_item=item2,
@@ -341,6 +523,7 @@ def _settle_convert(mr, entry):
 		target_qty=qty,
 		warehouse=W,
 		customer=entry["customer"],
+		target_batch=entry.get("mr_batch"),
 	)
 	# 2. Regular conversion in target: item -> item2 (company gold).
 	produced_item2_batch = _convert(
@@ -414,33 +597,72 @@ def _convert(
 	target_qty,
 	warehouse,
 	customer,
+	target_batch=None,
 ):
-	"""Repack one purity into another inside a single warehouse; return the target batch."""
+	"""Repack one purity into another inside a single warehouse; return the target batch.
+
+	``target_batch`` -- when given, the produced (inward) row is stamped with it, so
+	``create_child_batches`` skips minting a fresh child batch (it only mints for
+	produced rows with no batch) and the metal is produced into that existing batch. Used
+	to land the sourced material in the batch the Material Request references.
+	"""
+	return _convert_multi(
+		mr,
+		source_item=source_item,
+		source_rows=[{"batch_no": source_batch, "qty": flt(source_qty, 3)}],
+		target_item=target_item,
+		target_qty=target_qty,
+		warehouse=warehouse,
+		customer=customer,
+		target_batch=target_batch,
+	)
+
+
+def _convert_multi(
+	mr,
+	source_item,
+	source_rows,
+	target_item,
+	target_qty,
+	warehouse,
+	customer,
+	target_batch=None,
+):
+	"""Repack one purity into another inside a single warehouse, consuming one or more
+	source batches of ``source_item``; return the target batch.
+
+	See ``_convert`` for the ``target_batch`` semantics. Multiple source rows let a
+	conversion draw the requirement from several batches when it is spread across them.
+	"""
 	inv = CUSTOMER_GOODS if customer else REGULAR_STOCK
 	se = _new_se(mr, REPACK_SE_TYPE, "Repack", warehouse, warehouse, customer)
-	_append_item(
-		se,
-		{
-			"item_code": source_item,
-			"qty": flt(source_qty, 3),
-			"batch_no": source_batch,
-			"s_warehouse": warehouse,
-			"inventory_type": inv,
-			"customer": customer,
-		},
-	)
-	_append_item(
-		se,
-		{
-			"item_code": target_item,
-			"qty": flt(target_qty, 3),
-			"t_warehouse": warehouse,
-			"inventory_type": inv,
-			"customer": customer,
-		},
-	)
+	for sr in source_rows:
+		_append_item(
+			se,
+			{
+				"item_code": source_item,
+				"qty": flt(sr["qty"], 3),
+				"batch_no": sr["batch_no"],
+				"s_warehouse": warehouse,
+				"inventory_type": inv,
+				"customer": customer,
+			},
+		)
+	produced_row = {
+		"item_code": target_item,
+		"qty": flt(target_qty, 3),
+		"t_warehouse": warehouse,
+		"inventory_type": inv,
+		"customer": customer,
+	}
+	if target_batch:
+		produced_row["batch_no"] = target_batch
+	_append_item(se, produced_row)
 	se.insert(ignore_permissions=True)
 	_submit_consuming_stock_entry(se)
+
+	if target_batch:
+		return target_batch
 
 	produced = frappe.db.get_value(
 		"Stock Entry Detail",
