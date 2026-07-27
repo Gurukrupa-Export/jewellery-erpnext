@@ -1,0 +1,258 @@
+# Copyright (c) 2026, Nirali and contributors
+# For license information, please see license.txt
+
+"""Canonical arithmetic for the Tree Number ``material_details`` ledger.
+
+One source of truth for precision, the pending formula, the row invariants and the
+status state machine. Every writer -- ``TreeNumber.validate``, the Issue/Receive
+buttons in ``tree_stock_entry``, and the casting Employee IR layer in
+``tree_casting`` -- goes through here so the four paths cannot drift apart again.
+
+The ledger models one physical pool: the tree's MSL (employee Raw Material)
+warehouse.
+
+    issue_qty    metal moved INTO the pool     (Dept RM -> MSL, Issue Material)
+    receive_qty  metal drawn OUT to product    (MSL -> WO via the casting Employee
+                                                IR gain injection, or MSL -> Dept RM
+                                                via the Receive Material button)
+    loss_qty     metal written off out of pool (MSL -> Dept Scrap)
+    pending_qty  what is still sitting in the pool
+
+so ``receive_qty + loss_qty <= issue_qty`` is a physical constraint, not a policy:
+you cannot take more out of the pool than was put in. ``pending_qty`` is therefore
+kept UNFLOORED -- a negative reading means the ledger is over-drawn and must stay
+visible rather than being clamped to zero.
+"""
+
+import frappe
+from frappe import _
+from frappe.utils import flt
+
+STATUS_DRAFT = "Draft"
+STATUS_ISSUED = "Issued"
+STATUS_PARTIALLY_RECEIVED = "Partially Received"
+STATUS_RECEIVED = "Received"
+STATUS_SUBMITTED = "Submitted"
+
+QTY_FIELDS = ("issue_qty", "receive_qty", "loss_qty")
+
+
+def qty_precision():
+	"""Qty precision for the ledger -- pinned to ``Stock Entry Detail.transfer_qty`` (3).
+
+	Read from the live DocField rather than hardcoded so the ledger, the Stock Entries it
+	mirrors and the test assertions all move together if the field is ever re-pinned.
+	"""
+	return frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+
+
+def pending_eps():
+	"""Tolerance for 'fully consumed' comparisons: half the smallest representable qty.
+
+	0.0005 at precision 3. Without it ``receive + loss == issue`` lands ``pending_qty`` on
+	floating-point dust (``3 - 2.9 - 0.1`` is ~8e-17, a hair ABOVE zero) and a strict
+	``pending <= 0`` would never flip a tree to "Received".
+	"""
+	return (10 ** -qty_precision()) / 2
+
+
+def _zero_normalised(value):
+	"""Collapse ``-0.0`` to ``0.0`` so the ledger never stores a negative zero."""
+	return 0.0 if value == 0 else value
+
+
+def _get(obj, field, default=None):
+	"""Read a field off a Frappe Document/child row or a plain object.
+
+	The helpers are called both with real Documents and with lightweight stand-ins, so go
+	through ``.get`` when it exists and fall back to attribute access otherwise.
+	"""
+	getter = getattr(obj, "get", None)
+	if callable(getter):
+		try:
+			value = getter(field)
+		except TypeError:
+			value = None
+		if value is not None:
+			return value
+	return getattr(obj, field, default)
+
+
+def calculate_pending(issue_qty, receive_qty, loss_qty, precision=None):
+	"""Pending = Issue - Receive - Loss, rounded to the ledger precision.
+
+	Deliberately UNFLOORED: an over-drawn row must read negative so the audit and the
+	operator can see it. The write paths prevent new negatives; clamping here would only
+	hide the ones that already exist.
+	"""
+	if precision is None:
+		precision = qty_precision()
+	pending = flt(
+		flt(issue_qty, precision)
+		- flt(receive_qty, precision)
+		- flt(loss_qty, precision),
+		precision,
+	)
+	return _zero_normalised(pending)
+
+
+def recompute_row_pending(row, precision=None):
+	"""Set ``row.pending_qty`` from the row's own quantities."""
+	row.pending_qty = calculate_pending(
+		_get(row, "issue_qty"),
+		_get(row, "receive_qty"),
+		_get(row, "loss_qty"),
+		precision,
+	)
+	return row.pending_qty
+
+
+def row_violation(row, precision=None):
+	"""How far ``receive + loss`` overshoots ``issue`` on this row (0.0 when balanced)."""
+	if precision is None:
+		precision = qty_precision()
+	overshoot = flt(
+		flt(_get(row, "receive_qty"), precision)
+		+ flt(_get(row, "loss_qty"), precision)
+		- flt(_get(row, "issue_qty"), precision),
+		precision,
+	)
+	return max(0.0, overshoot)
+
+
+def available_to_draw(row, precision=None):
+	"""Qty still drawable from this row, floored at 0.
+
+	The floor matters: 155 legacy rows on the live site store a negative pending. Without
+	it every ordinary zero-draw receive against those trees would compute a nonsense
+	"capacity" and block.
+	"""
+	pending = calculate_pending(
+		_get(row, "issue_qty"),
+		_get(row, "receive_qty"),
+		_get(row, "loss_qty"),
+		precision,
+	)
+	return max(0.0, pending)
+
+
+def validate_row_balance(doc, precision=None, previous_violations=None):
+	"""Enforce the ledger invariants on every ``material_details`` row.
+
+	Non-negative quantities are absolute. The ``receive + loss <= issue`` rule is enforced
+	**non-worseningly**: a row that already violated it before this save may be saved again
+	unchanged, but may never violate it further. Without that allowance the 154 historically
+	over-drawn rows would become unsavable, which would in turn block ``submit_tree``,
+	``reverse_tree_stock_entries`` and every Employee IR cancel that touches them. New and
+	worsening violations are rejected outright; the legacy ones surface through the audit.
+	"""
+	if precision is None:
+		precision = qty_precision()
+	eps = pending_eps()
+	previous_violations = previous_violations or {}
+
+	seen_items = {}
+	for row in _get(doc, "material_details") or []:
+		for field in QTY_FIELDS:
+			if flt(_get(row, field), precision) < -eps:
+				frappe.throw(
+					_("Row #{0} ({1}): {2} cannot be negative ({3}).").format(
+						row.idx,
+						row.item_code,
+						frappe.unscrub(field),
+						flt(_get(row, field), precision),
+					),
+					title=_("Invalid Tree Material Balance"),
+				)
+
+		if row.item_code in seen_items:
+			frappe.throw(
+				_(
+					"Item {0} appears on rows #{1} and #{2} of Tree {3}. Each material item "
+					"may hold only one ledger row."
+				).format(row.item_code, seen_items[row.item_code], row.idx, doc.name),
+				title=_("Duplicate Tree Material Row"),
+			)
+		seen_items[row.item_code] = row.idx
+
+		violation = row_violation(row, precision)
+		was = flt(previous_violations.get(row.name, 0.0), precision)
+		if violation - was > eps:
+			frappe.throw(
+				_(
+					"Row #{0} ({1}): Receive Qty ({2}) plus Loss Qty ({3}) exceeds Issue Qty "
+					"({4}) on Tree {5}. Issue material to the tree before receiving it back."
+				).format(
+					row.idx,
+					row.item_code,
+					flt(_get(row, "receive_qty"), precision),
+					flt(_get(row, "loss_qty"), precision),
+					flt(_get(row, "issue_qty"), precision),
+					doc.name,
+				),
+				title=_("Tree Receive Exceeds Issue"),
+			)
+
+
+def stored_row_violations(doc, precision=None):
+	"""``{row name: violation}`` as currently persisted, for the non-worsening check."""
+	if not _get(doc, "name") or _get(doc, "__islocal"):
+		return {}
+	rows = frappe.get_all(
+		"Tree Material Detail",
+		filters={"parent": doc.name, "parenttype": "Tree Number"},
+		fields=["name", "issue_qty", "receive_qty", "loss_qty"],
+	)
+	return {r.name: row_violation(r, precision) for r in rows}
+
+
+def tree_status(tree):
+	"""Derive the Tree Number status from the whole ledger.
+
+	    Draft               nothing has moved at all
+	    Issued              metal issued, none returned or lost yet
+	    Partially Received  metal issued and partly consumed, some still pending
+	    Received            metal issued and every row fully consumed
+
+	``Submitted`` is terminal and owned by ``TreeNumber.submit_tree``; it is never derived
+	here. A tree with no issued metal can never read "Received" -- that is precisely the
+	defect this state machine exists to prevent.
+	"""
+	rows = _get(tree, "material_details") or []
+	if not rows:
+		return STATUS_DRAFT
+
+	eps = pending_eps()
+	precision = qty_precision()
+
+	total_issue = sum(flt(_get(md, "issue_qty"), precision) for md in rows)
+	moved = any(
+		flt(_get(md, "receive_qty"), precision) > eps
+		or flt(_get(md, "loss_qty"), precision) > eps
+		for md in rows
+	)
+
+	if total_issue <= eps:
+		# Nothing was ever issued. Without issued metal there is nothing to be "Received";
+		# any receive/loss sitting here is an over-draw for the audit to flag.
+		return STATUS_PARTIALLY_RECEIVED if moved else STATUS_DRAFT
+
+	if not moved:
+		return STATUS_ISSUED
+
+	# "Received" needs EVERY row both ENGAGED (issued onto the tree) and consumed
+	# (pending within dust tolerance). A never-issued seed row -- e.g. an unreceived
+	# multicolour colour -- must not flip a multi-item tree to Received while its metal
+	# is still to come.
+	fully = all(
+		flt(_get(md, "issue_qty"), precision) > eps
+		and calculate_pending(
+			_get(md, "issue_qty"),
+			_get(md, "receive_qty"),
+			_get(md, "loss_qty"),
+			precision,
+		)
+		<= eps
+		for md in rows
+	)
+	return STATUS_RECEIVED if fully else STATUS_PARTIALLY_RECEIVED
