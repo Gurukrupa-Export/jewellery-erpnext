@@ -90,8 +90,11 @@ def settle_material_request(mr_name):
 
 
 def _validate_settleable(mr):
-	if mr.docstatus != 0:
-		frappe.throw(_("Settle is only available on a draft Material Request."))
+	# Settle tops up the source warehouse with independent Stock Entries; it never
+	# saves the Material Request, so it is valid on a draft OR a submitted MR — only a
+	# cancelled one is rejected.
+	if mr.docstatus == 2:
+		frappe.throw(_("Settle is not available on a cancelled Material Request."))
 	if mr.material_request_type != "Material Transfer":
 		frappe.throw(_("Settle is only available for a Material Transfer."))
 	if not mr.get("items"):

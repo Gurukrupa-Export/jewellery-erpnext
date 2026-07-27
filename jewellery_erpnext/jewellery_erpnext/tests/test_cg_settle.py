@@ -102,11 +102,16 @@ class TestSettleValidation(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def test_submitted_mr_is_rejected(self):
-		mr = _mr(docstatus=1)
+	def test_cancelled_mr_is_rejected(self):
+		mr = _mr(docstatus=2)
 		with patch(f"{_C}.frappe.get_doc", return_value=mr):
 			with self.assertRaises(frappe.ValidationError):
 				cg_settle.settle_material_request("MAT-MR-1")
+
+	def test_submitted_mr_is_settleable(self):
+		# Settle now runs on submitted MRs too (not just drafts); only a cancelled
+		# document is rejected.
+		cg_settle._validate_settleable(_mr(docstatus=1))
 
 	def test_non_material_transfer_is_rejected(self):
 		mr = _mr(material_request_type="Purchase")

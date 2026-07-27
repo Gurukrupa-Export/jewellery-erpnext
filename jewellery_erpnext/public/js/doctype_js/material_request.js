@@ -10,9 +10,11 @@ frappe.ui.form.on("Material Request", {
 			);
 		}
 		// Settle: top up set_from_warehouse with the customer's material (SNC-style)
-		// when it is short. Only meaningful on a draft customer-goods Material Transfer.
+		// when it is short. Available on a customer-goods Material Transfer that is not
+		// cancelled — so it stays on the document after it is submitted, not only while
+		// it is a draft.
 		if (
-			frm.doc.docstatus === 1 &&
+			frm.doc.docstatus !== 2 &&
 			frm.doc.material_request_type === "Material Transfer" &&
 			frm.doc.inventory_type === "Customer Goods"
 		) {
