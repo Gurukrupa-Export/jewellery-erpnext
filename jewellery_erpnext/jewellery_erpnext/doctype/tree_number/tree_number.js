@@ -13,9 +13,13 @@ frappe.ui.form.on("Tree Number", {
 		if (["Draft", "Issued", "Partially Received"].includes(status)) {
 			frm.add_custom_button(__("Issue Material"), () => issue_material_dialog(frm), __("Material"));
 		}
-		if (["Issued", "Partially Received"].includes(status)) {
+		// Receive is only meaningful while the tree still holds material. Server-side the
+		// (recv+loss)<=pending cap enforces this; hiding the button just avoids offering an
+		// action that can only fail. Never rely on this alone.
+		if (["Issued", "Partially Received"].includes(status) && tree_pending(frm) > 0) {
 			frm.add_custom_button(__("Receive Material"), () => receive_material_dialog(frm), __("Material"));
 		}
+		render_balance_summary(frm);
 		// Submit Tree: manual finalize once the tree has had some receive activity (Received or
 		// Partially Received). Locks the tree at "Submitted" — no further Issue/Receive
 		// (server-enforced). A Partially Received tree writes off its remaining pending as loss first.
@@ -166,15 +170,51 @@ frappe.ui.form.on("Tree Number", {
 	},
 });
 
-frappe.ui.form.on("Tree Material Detail", {
-	issue_qty: (frm, cdt, cdn) => recompute_pending(frm, cdt, cdn),
-	receive_qty: (frm, cdt, cdn) => recompute_pending(frm, cdt, cdn),
-	loss_qty: (frm, cdt, cdn) => recompute_pending(frm, cdt, cdn),
-});
+// No client-side recompute of pending_qty. issue/receive/loss are ledger-owned and read-only,
+// written only by the Issue/Receive Material server paths; pending is derived exactly once, in
+// TreeNumber.calculate_material_pending. A client mirror could only ever disagree with it.
 
-function recompute_pending(frm, cdt, cdn) {
-	let d = locals[cdt][cdn];
-	frappe.model.set_value(cdt, cdn, "pending_qty", flt(d.issue_qty) - flt(d.receive_qty) - flt(d.loss_qty));
+function tree_pending(frm) {
+	// Unfloored on purpose: a negative total means the tree is over-drawn, and that must read
+	// as "nothing available to receive", not wrap around into a positive.
+	return (frm.doc.material_details || []).reduce(
+		(total, row) => total + (flt(row.issue_qty) - flt(row.receive_qty) - flt(row.loss_qty)),
+		0
+	);
+}
+
+function render_balance_summary(frm) {
+	let rows = frm.doc.material_details || [];
+	if (!rows.length) return;
+
+	let body = rows
+		.map((row) => {
+			let pending = flt(row.issue_qty) - flt(row.receive_qty) - flt(row.loss_qty);
+			// Surface an over-draw instead of letting it hide in a column of numbers.
+			let flag = pending < 0 ? ' <span class="indicator-pill red">over-drawn</span>' : "";
+			return `<tr>
+				<td>${frappe.utils.escape_html(row.item_code || "")}</td>
+				<td class="text-right">${format_number(row.issue_qty)}</td>
+				<td class="text-right">${format_number(row.receive_qty)}</td>
+				<td class="text-right">${format_number(row.loss_qty)}</td>
+				<td class="text-right">${format_number(pending)}${flag}</td>
+			</tr>`;
+		})
+		.join("");
+
+	frm.dashboard.add_section(
+		`<div style="overflow-x:auto"><table class="table table-bordered table-sm">
+			<thead><tr>
+				<th>${__("Item")}</th>
+				<th class="text-right">${__("Issued")}</th>
+				<th class="text-right">${__("Received")}</th>
+				<th class="text-right">${__("Loss")}</th>
+				<th class="text-right">${__("Pending")}</th>
+			</tr></thead>
+			<tbody>${body}</tbody>
+		</table></div>`,
+		__("Material Balance")
+	);
 }
 
 function issue_material_dialog(frm) {
