@@ -356,6 +356,13 @@ class TestCalculateTotalsUsesMassBalance(IntegrationTestCase):
 			doc
 		)
 
+		# calculate_totals rounds with frappe.utils.flt, and flt(value, precision) resolves the
+		# rounding method through frappe.get_system_settings -> frappe.db on first use in a
+		# process. Mocking frappe.db before that read leaves flt unable to resolve it, and flt
+		# SWALLOWS the failure and returns 0.0 -- every weight below silently becomes 0. Resolve
+		# it against the real DB first so the value is cached on frappe.local; the mock then only
+		# has to stand in for the writes we actually want to suppress.
+		frappe.get_system_settings("rounding_method")
 		with patch.object(frappe, "db", MagicMock()):
 			RefiningEntry.calculate_totals(doc)
 
