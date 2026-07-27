@@ -3,6 +3,10 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.refining.doctype.refining_entry.recovery_distribution import (
+	build_row_targets,
+)
+
 # Roles allowed to drive the refining department processing actions
 REFINING_ROLES = ["Refining User", "Refining Manager", "System Manager"]
 
@@ -1041,27 +1045,27 @@ class RefiningEntry(Document):
 		self.refined_fine_weight = flt(self.refined_fine_weight, 3)
 		self.actual_recovery = flt(self.actual_recovery, 3)
 
-		# When the per-karat Gold Recovery Details table is populated, the Recovery
-		# Summary must agree with it EXACTLY. Each table row stores its pure content and
-		# loss already rounded to 3 dp; summing those (sum-of-rounded) can differ from
-		# rounding the full-precision input sum (round-of-sum) by ~0.001 per extra
-		# karat/touch — the reported "1 mg variation with more than one touch of gold"
-		# between the summary loss and the loss column. Derive the summary from the table
-		# so the total and the per-row column never diverge by a stray milligram.
-		if self.gold_recovery_details:
-			self.gross_pure_weight = flt(
-				sum(flt(r.pure_gold_weight, 3) for r in self.gold_recovery_details), 3
-			)
-			self.expected_recovery = self.gross_pure_weight
-			self.refining_loss = flt(
-				sum(flt(r.loss_weight, 3) for r in self.gold_recovery_details), 3
-			)
-		else:
-			# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
-			# (rounding / assay variance) and must never book a negative loss.
-			self.refining_loss = flt(
-				max(self.gross_pure_weight - self.refined_fine_weight, 0.0), 3
-			)
+		# The Recovery Summary is derived from the PARENT inputs (material_items x purity,
+		# refined_gold), never from the Gold Recovery Details table.
+		#
+		# It briefly worked the other way round, to make the summary loss agree with the
+		# table's loss column to the milligram. That inverted the dependency: the table is
+		# written once per lifecycle by two button actions that become unreachable once the
+		# entry leaves "Refining In Progress", while this runs on EVERY save. Rows written by
+		# a superseded formula (loss measured against the gross alloy weight, or a gross-
+		# proportional split scored on the pure basis) were then adopted as the truth — and
+		# `refining_loss` is minted as pure-24KT dust by create_repack_se, so a stale column
+		# became phantom gold. One real entry moved 0.033 -> 0.860 g on a no-op save.
+		#
+		# The milligram divergence is real, but it is fixed at the WRITER instead: the table
+		# is apportioned FROM these totals by _sync_recovery_table, so each column sums back
+		# exactly. Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
+		# (rounding / assay variance) and must never book a negative loss.
+		self.refining_loss = flt(
+			max(self.gross_pure_weight - self.refined_fine_weight, 0.0), 3
+		)
+
+		self._preserve_settled_summary()
 
 		if self.expected_recovery > 0:
 			pct = min(
@@ -1077,6 +1081,144 @@ class RefiningEntry(Document):
 			self.recovery_percentage = pct
 		else:
 			self.recovery_percentage = 0.0
+
+		self._sync_recovery_table()
+
+	# Weights are grams; anything at or below this is rounding noise, not a real move.
+	SUMMARY_DRIFT_TOLERANCE = 0.0005
+
+	def _preserve_settled_summary(self):
+		"""Never silently restate the gold figures of an entry whose stock has already moved.
+
+		``calculate_totals`` runs on every save, and a Refining Entry stays ``docstatus = 0``
+		for its whole lifecycle — the workflow lives in ``status``. So an entry that already
+		posted its repack / transfer Stock Entries is still freely savable, and any later drift
+		in the inputs (an edited material row, a purity master that now resolves differently, a
+		changed formula) would rewrite the very numbers those Stock Entries were posted with.
+
+		When the stock has moved, the stored figures win and the divergence is surfaced via
+		``recovery_table_out_of_sync`` instead of being applied. Fixing it is then a deliberate
+		act, not a side effect of opening the form.
+		"""
+		if not (self.repack_se or self.transfer_se):
+			return
+
+		previous = self.get_doc_before_save()
+		if not previous:
+			return
+
+		drifted = False
+		for field in (
+			"gross_pure_weight",
+			"expected_recovery",
+			"refined_fine_weight",
+			"actual_recovery",
+			"refining_loss",
+		):
+			stored = flt(previous.get(field))
+			if abs(flt(self.get(field)) - stored) > self.SUMMARY_DRIFT_TOLERANCE:
+				self.set(field, stored)
+				drifted = True
+
+		if drifted:
+			# Remembered for the rest of this save: _sync_recovery_table must not clear a
+			# flag raised here when it goes on to heal the table successfully.
+			self._summary_held = True
+			self.recovery_table_out_of_sync = 1
+
+	def _sync_recovery_table(self):
+		"""Re-derive the per-karat columns FROM the authoritative parent totals.
+
+		The Gold Recovery Details rows are written once per lifecycle by two button actions
+		that disappear from the form once the entry leaves "Refining In Progress", so a row can
+		outlive the formula that produced it. Three formula generations exist in the wild —
+		loss measured against the gross alloy weight, a gross-proportional split scored on the
+		pure basis, and the current pure-proportional form — and nothing ever recomputed the
+		older two. Re-deriving here keeps the displayed split honest without waiting for a
+		button the operator can no longer reach.
+
+		Deliberately narrow:
+		  * only the four derived columns, NEVER a parent total — the figures that drive the
+		    repack and scrap Stock Entries are computed from parent inputs and are not touched
+		    here;
+		  * only while ``docstatus == 0``;
+		  * a no-op when there is no table yet, or when no purity basis can be rebuilt (the
+		    external pre-receipt case, where rows carry no purity) — leaving the rows alone
+		    beats blanking them;
+		  * pure math, no role gate — this runs inside ``validate``.
+		"""
+		if self.docstatus != 0 or not self.gold_recovery_details:
+			return
+
+		# The summary was held back because this entry's stock has already moved, so the table
+		# cannot be reconciled to it — leave the flag raised and the rows untouched.
+		if getattr(self, "_summary_held", False):
+			return
+
+		purity_map = self._collect_input_purity_map()[0]
+		if not purity_map or sum(flt(v) for v in purity_map.values()) <= 0:
+			# No basis to rebuild from: flag it rather than silently leaving a stale table
+			# that looks authoritative.
+			if self._recovery_table_diverges():
+				self.recovery_table_out_of_sync = 1
+			return
+
+		pure_weights = [
+			flt(purity_map.get(flt(row.purity_percentage), 0.0))
+			* (flt(row.purity_percentage) / 100.0)
+			for row in self.gold_recovery_details
+		]
+		if sum(pure_weights) <= 0:
+			if self._recovery_table_diverges():
+				self.recovery_table_out_of_sync = 1
+			return
+
+		targets = build_row_targets(
+			pure_weights, self.refined_fine_weight, self.refining_loss
+		)
+		for row, target in zip(self.gold_recovery_details, targets):
+			row.update(target)
+
+		self.recovery_table_out_of_sync = 0
+
+	def _recovery_table_diverges(self):
+		"""True when the table's loss column no longer sums to the summary loss."""
+		if not self.gold_recovery_details:
+			return False
+		column = flt(sum(flt(r.loss_weight) for r in self.gold_recovery_details), 3)
+		return abs(column - flt(self.refining_loss, 3)) > self.SUMMARY_DRIFT_TOLERANCE
+
+	def _validate_mint_identity(self):
+		"""The repack entry mints TWO pure outputs; together they cannot exceed the input.
+
+		``create_repack_se`` produces ``sum(refined_gold.refining_gold_weight)`` (== the parent
+		``actual_recovery``) of pure 24KT gold AND ``refining_loss`` of pure-24KT dust. So the
+		only identity that actually constrains the ledger is
+
+		    actual_recovery + refining_loss <= gross_pure_weight
+
+		Note this is NOT the same as checking ``refining_loss`` against
+		``gross_pure_weight - refined_fine_weight``: that is how ``refining_loss`` is defined,
+		so it can never fail. The gap is real because ``actual_recovery`` sums
+		``refining_gold_weight`` while ``refined_fine_weight`` prefers ``pure_weight``, and the
+		two diverge whenever the operator's entered figures disagree.
+		"""
+		minted = flt(self.actual_recovery) + flt(self.refining_loss)
+		available = flt(self.gross_pure_weight)
+		# Same 0.1 g assay/rounding margin validate_recovery_distribution already allows.
+		if minted > available + 0.1:
+			frappe.throw(
+				_(
+					"Refining would create more pure gold than it consumed: recovered "
+					"{0} g plus loss {1} g exceeds the pure gold input of {2} g. Correct "
+					"the Recovered Gold rows or the Recovery Summary before proceeding."
+				).format(
+					flt(self.actual_recovery, 3),
+					flt(self.refining_loss, 3),
+					flt(available, 3),
+				),
+				title=_("Refining Mass Balance"),
+			)
 
 	def validate_recovery_distribution(self):
 		# Refining always yields pure 24KT gold, so the recovered gold is compared against
@@ -1747,13 +1889,17 @@ class RefiningEntry(Document):
 		)
 		return duplicate.name
 
-	@frappe.whitelist()
-	def generate_recovery_table(self, total_recovered_weight=None):
-		"""Distribute gold recovery in proportion to each karat's PURE gold content."""
-		self.require_refining_role(REFINING_ROLES, _("classify materials"))
-		self.set("gold_recovery_details", [])
-		self.auto_classify_recoverable_non_metal()
+	def _collect_input_purity_map(self):
+		"""Gross input weight per purity percentage, plus a representative item per purity.
 
+		Lifted verbatim out of ``generate_recovery_table`` so the distribution and the
+		save-time table heal share ONE definition of "melted gold input" — including the
+		external ``_is_returned_intact`` filter and the Serial-Number BOM-components-vs-
+		``serial_no_details`` branching. No role gate and no writes: it is safe to call from
+		``validate``.
+
+		Returns ``(input_purity_map, input_item_map)``.
+		"""
 		input_purity_map = {}
 		input_item_map = {}
 		if self.refining_type == "Serial Number Refining":
@@ -1814,6 +1960,17 @@ class RefiningEntry(Document):
 						input_purity_map[pct_flt] += flt(item.qty)
 						input_item_map[pct_flt] = item.item_code
 
+		return input_purity_map, input_item_map
+
+	@frappe.whitelist()
+	def generate_recovery_table(self, total_recovered_weight=None):
+		"""Distribute gold recovery in proportion to each karat's PURE gold content."""
+		self.require_refining_role(REFINING_ROLES, _("classify materials"))
+		self.set("gold_recovery_details", [])
+		self.auto_classify_recoverable_non_metal()
+
+		input_purity_map, input_item_map = self._collect_input_purity_map()
+
 		# Recovered gold is pure 24KT, so it is split in proportion to each karat's
 		# PURE gold content, not its gross input weight. A gross-weight split
 		# over-allocates recovery to low-purity rows — an 18KT (75.4%) row could be
@@ -1827,29 +1984,28 @@ class RefiningEntry(Document):
 			input_purity_map, input_item_map
 		)
 
+		# Build the row basis first, then apportion every column off the totals in one pass so
+		# the columns sum EXACTLY to the summary regardless of how many karats are present
+		# (see recovery_distribution.build_row_targets — this is the real fix for the "1 mg
+		# variation with more than one touch of gold").
+		row_basis = []
 		for pmap in purity_maps:
 			pmap_pct = flt(pmap.purity_percentage)
 			input_weight = input_purity_map.get(pmap_pct, 0)
 			if input_weight <= 0:
 				continue
+			row_basis.append((pmap, input_weight, input_weight * (pmap_pct / 100.0)))
 
-			pure_gold_weight = input_weight * (pmap_pct / 100.0)
-			recovered_weight = self.get_proportional_recovery_weight(
-				pure_gold_weight, total_pure_input_weight, total_recovered_weight
-			)
-			row_loss = flt(
-				max(flt(pure_gold_weight, 3) - flt(recovered_weight, 3), 0), 3
-			)
-			row_pct = flt(
-				(flt(recovered_weight, 3) / flt(pure_gold_weight, 3)) * 100.0
-				if flt(pure_gold_weight, 3)
-				else 0.0,
-				2,
-			)
-			# Never let 2-decimal display rounding show "100.00" next to a non-zero
-			# loss (same guard as calculate_totals).
-			if row_loss > 0 and row_pct > 99.99:
-				row_pct = 99.99
+		total_loss = max(
+			flt(total_pure_input_weight, 3) - flt(total_recovered_weight, 3), 0.0
+		)
+		targets = build_row_targets(
+			[pure for _pmap, _input, pure in row_basis],
+			total_recovered_weight,
+			total_loss,
+		)
+
+		for (pmap, input_weight, _pure), target in zip(row_basis, targets):
 			self.append(
 				"gold_recovery_details",
 				{
@@ -1857,11 +2013,7 @@ class RefiningEntry(Document):
 					"purity_percentage": pmap.purity_percentage,
 					"item_code": pmap.item_template,
 					"input_weight": flt(input_weight, 3),
-					"pure_gold_weight": flt(pure_gold_weight, 3),
-					"recovered_weight": flt(recovered_weight, 3),
-					# Loss is only meaningful when recovered < pure gold content
-					"loss_weight": row_loss,
-					"recovery_pct": row_pct,
+					**target,
 				},
 			)
 
@@ -1919,60 +2071,29 @@ class RefiningEntry(Document):
 		# Split in proportion to each row's PURE gold content (see
 		# generate_recovery_table): a gross-weight split let a low-purity row
 		# "recover" more pure gold than it contained (recovery % above 100).
-		# Pre-compute each row's split at FULL precision, then round. loss_weight and
-		# recovery_pct are derived from the FULL-precision share vs the FULL-precision
-		# pure content so a sub-milligram rounding artifact reads as 0.000 loss / 100%
-		# (previously a pure that rounded up while its recovery rounded down showed a
-		# contradictory 0.001 loss on a 100.00%-recovered row). The rounding remainder
-		# is pushed onto the largest row so the persisted recovered weights still sum
-		# to the entered total.
-		full_share = {
-			id(row): self.get_proportional_recovery_weight(
-				flt(row.pure_gold_weight),
-				total_pure_input_weight,
-				total_recovered_weight,
-			)
-			for row in self.gold_recovery_details
-		}
-		row_weights = {rid: flt(v, 3) for rid, v in full_share.items()}
-		remainder = flt(flt(total_recovered_weight, 3) - sum(row_weights.values()), 3)
-		if remainder and row_weights:
-			largest = max(row_weights, key=row_weights.get)
-			row_weights[largest] = flt(row_weights[largest] + remainder, 3)
+		#
+		# Apportioned with the largest-remainder method rather than rounded row by row, so
+		# every column sums back to its total EXACTLY for any number of karats. That is the
+		# real fix for the "1 mg variation with more than one touch of gold": the drift was
+		# sum-of-rounded vs round-of-sum, and it is removed here at the WRITER instead of by
+		# making the Recovery Summary adopt whatever the table happens to hold.
+		#
+		# Loss is apportioned too, NOT computed per row as max(pure - recovered, 0): that
+		# clamp discards one row's negative against another's positive, so the column could
+		# sum to more gold than actually went missing (one real entry read 0.860 g against a
+		# 0.033 g mass balance).
+		pure_weights = [flt(row.pure_gold_weight) for row in self.gold_recovery_details]
+		total_loss = max(
+			flt(total_pure_input_weight, 3) - flt(total_recovered_weight, 3), 0.0
+		)
+		targets = build_row_targets(pure_weights, total_recovered_weight, total_loss)
 
-		for row in self.gold_recovery_details:
-			recovered_weight = row_weights[id(row)]
-			pure_full = flt(row.pure_gold_weight)
-			pure_gold_weight = flt(pure_full, 3)
-			# Compute loss and recovery % using the rounded display values so the
-			# percentage exactly matches the weights the user sees on screen.
-			loss_weight = flt(max(pure_gold_weight - recovered_weight, 0), 3)
-			recovery_pct = flt(
-				(recovered_weight / pure_gold_weight) * 100.0
-				if pure_gold_weight
-				else 0.0,
-				2,
-			)
-			# Never let 2-decimal display rounding show "100.00" next to a non-zero
-			# loss (same guard as calculate_totals).
-			if loss_weight > 0 and recovery_pct > 99.99:
-				recovery_pct = 99.99
-
+		for row, target in zip(self.gold_recovery_details, targets):
 			# Update in-memory for downstream use
-			row.recovered_weight = recovered_weight
-			row.loss_weight = loss_weight
-			row.recovery_pct = recovery_pct
-			row.pure_gold_weight = pure_gold_weight
+			row.update(target)
 
 			# Persist directly to DB, bypassing validate_update_after_submit
-			row.db_set(
-				{
-					"recovered_weight": recovered_weight,
-					"loss_weight": loss_weight,
-					"recovery_pct": recovery_pct,
-					"pure_gold_weight": pure_gold_weight,
-				}
-			)
+			row.db_set(dict(target))
 
 		# Rebuild refined_gold child table via DB operations
 		self._rebuild_refined_gold_via_db()
@@ -2033,22 +2154,11 @@ class RefiningEntry(Document):
 		refined_fine_weight = flt(refined_fine_weight, 3)
 		actual_recovery = flt(actual_recovery, 3)
 
-		# Keep the Recovery Summary in lockstep with the per-karat Gold Recovery Details
-		# table (sum-of-rounded, not round-of-sum) so the summary loss and the table's
-		# loss column never differ by a stray milligram when multiple karats/touches are
-		# present. See calculate_totals for the rounding rationale.
-		if self.gold_recovery_details:
-			gross_pure_weight = flt(
-				sum(flt(r.pure_gold_weight, 3) for r in self.gold_recovery_details), 3
-			)
-			expected_recovery = gross_pure_weight
-			refining_loss = flt(
-				sum(flt(r.loss_weight, 3) for r in self.gold_recovery_details), 3
-			)
-		else:
-			# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
-			# (rounding / assay variance) and must never book a negative loss.
-			refining_loss = flt(max(gross_pure_weight - refined_fine_weight, 0.0), 3)
+		# Derived from the PARENT inputs, never from the Gold Recovery Details table — the
+		# table is apportioned FROM these totals instead (see calculate_totals for why the
+		# other direction was wrong). Clamp at 0: recovered 24KT gold can slightly exceed the
+		# computed pure input (rounding / assay variance) and must never book a negative loss.
+		refining_loss = flt(max(gross_pure_weight - refined_fine_weight, 0.0), 3)
 		recovery_percentage = min(
 			(refined_fine_weight / expected_recovery) * 100.0
 			if expected_recovery > 0
@@ -2070,6 +2180,23 @@ class RefiningEntry(Document):
 				"recovery_percentage": flt(recovery_percentage, 2),
 			}
 		)
+
+		# This path bypasses validate (db_set), so heal the table explicitly and persist the
+		# rows the same way distribute_recovered_gold does. db_set is a no-op on an unsaved
+		# row (name is None), so only persist rows that already exist.
+		self._sync_recovery_table()
+		for row in self.gold_recovery_details:
+			if not row.name:
+				continue
+			row.db_set(
+				{
+					"pure_gold_weight": flt(row.pure_gold_weight, 3),
+					"recovered_weight": flt(row.recovered_weight, 3),
+					"loss_weight": flt(row.loss_weight, 3),
+					"recovery_pct": flt(row.recovery_pct, 2),
+				}
+			)
+		self.db_set("recovery_table_out_of_sync", cint(self.recovery_table_out_of_sync))
 
 	@frappe.whitelist()
 	def verify_recovery(self):
@@ -2725,6 +2852,9 @@ class RefiningEntry(Document):
 		# this savepoint discards the auto-created batches, the inserted draft, the submit, and
 		# every cascade side effect in one shot. Only work done inside create_repack_se is
 		# rolled back — complete_refining's earlier writes precede the savepoint and survive.
+		# This entry mints pure gold AND pure dust; refuse before either reaches the ledger.
+		self._validate_mint_identity()
+
 		repack_savepoint = "refining_repack_attempt"
 		frappe.db.savepoint(repack_savepoint)
 
@@ -3139,6 +3269,7 @@ class RefiningEntry(Document):
 				po.delete(ignore_permissions=True)
 
 	def create_scrap_transfer_se(self):
+		self._validate_mint_identity()
 		scrap_warehouse = self.scrap_warehouse
 		dust_item = self.get_dust_item()
 		if scrap_warehouse and dust_item:
@@ -3687,19 +3818,13 @@ class RefiningEntry(Document):
 			or (item_code and item_code.upper().startswith("GB-"))
 		)
 
-	def is_finding_item(self, item_code):
-		"""Findings (clasps, jump rings, chain parts) — authoritative signal is a
-		"Finding …" item group ("Finding - V/T", "Finding DNU"); variant_of ships as F/FL.
-		NOTE: findings carry a gold purity, so is_gold_item() ALSO matches them. Findings
-		are treated as meltable gold (melted and recovered as pure gold), NOT returned
-		intact — see _is_returned_intact."""
-		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
-		item_group = frappe.db.get_value("Item", item_code, "item_group")
-		return (
-			(item_group and "Finding" in item_group)
-			or variant_of in ("F", "FL")
-			or (item_code and item_code.upper().startswith(("F-", "FL-")))
-		)
+	# is_finding_item() was removed here deliberately, not lost. Findings classification had
+	# exactly one consumer — _is_returned_intact — and that stopped calling it when findings
+	# became meltable gold (they are melted and recovered as pure 24KT, so they are NOT handed
+	# back intact). It then had zero callers bench-wide. Refining draws no distinction between
+	# a finding and any other gold alloy row; only diamonds and gemstones are returned. If a
+	# finding-specific rule is ever needed again, restore it from git history rather than
+	# assuming the classification was still live.
 
 	def _is_returned_intact(self, item_code):
 		"""External refining (ALL types): diamonds and gemstones travel to the refiner

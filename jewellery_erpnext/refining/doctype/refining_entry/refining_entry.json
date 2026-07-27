@@ -63,6 +63,7 @@
   "expected_recovery",
   "actual_recovery",
   "recovery_percentage",
+  "recovery_table_out_of_sync",
   "column_break_totals",
   "gross_pure_weight",
   "refined_fine_weight",
@@ -501,6 +502,15 @@
    "fieldtype": "Float",
    "label": "Refining Loss",
    "precision": "3"
+  },
+  {
+   "default": "0",
+   "description": "Set automatically when the per-karat Gold Recovery Details table can no longer be reconciled with the Recovery Summary, or when the summary was held back because this entry's Stock Entries are already posted. Read-only: clear it by correcting the underlying figures.",
+   "fieldname": "recovery_table_out_of_sync",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Recovery Table Out Of Sync",
+   "read_only": 1
   },
   {
    "fieldname": "column_break_totals2",
