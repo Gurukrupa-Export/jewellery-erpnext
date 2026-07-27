@@ -60,9 +60,13 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_sli
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 	_pending_eps,
 	_tree_status,
+	lock_tree,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
 	_get_department_rm_warehouse,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
+	tree_material_balance as tree_balance,
 )
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
 	lock_bins,
@@ -477,11 +481,12 @@ def _ledger_row(tree, item_code):
 
 
 def _recompute_pending(md):
-	md.pending_qty = flt(md.issue_qty) - flt(md.receive_qty) - flt(md.loss_qty)
+	"""Delegate to the canonical ledger arithmetic (single formula for all four paths)."""
+	return tree_balance.recompute_row_pending(md)
 
 
 def _se_precision():
-	return frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+	return tree_balance.qty_precision()
 
 
 def _reject_if_submitted(tree):
@@ -500,6 +505,8 @@ def _reject_if_submitted(tree):
 def issue_material(tree, item_code, qty, source_warehouse=None):
 	"""Issue `qty` of `item_code` from the Source WH into the tree's MSL WH."""
 	frappe.has_permission("Tree Number", "write", tree, throw=True)
+	# Parent control row before tabSeries / tabBin (lock_order canonical sequence).
+	lock_tree(tree.name)
 	_reject_if_submitted(tree)
 
 	if not item_code:
@@ -566,6 +573,8 @@ def receive_material(tree, rows):
 	cannot double-count the Employee-IR receive.
 	"""
 	frappe.has_permission("Tree Number", "write", tree, throw=True)
+	# Parent control row before tabSeries / tabBin (lock_order canonical sequence).
+	lock_tree(tree.name)
 	_reject_if_submitted(tree)
 
 	if isinstance(rows, str):

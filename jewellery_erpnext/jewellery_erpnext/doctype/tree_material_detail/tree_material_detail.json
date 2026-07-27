@@ -26,21 +26,27 @@
    "fieldname": "issue_qty",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Issue Qty"
+   "label": "Issue Qty",
+   "read_only": 1,
+   "description": "Metal issued onto the tree (Dept RM -> MSL). Written only by the Issue Material button."
   },
   {
    "columns": 2,
    "fieldname": "receive_qty",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Receive Qty"
+   "label": "Receive Qty",
+   "read_only": 1,
+   "description": "Metal drawn back out of the tree — by the casting Employee IR gain, or returned to Dept RM by the Receive Material button."
   },
   {
    "columns": 2,
    "fieldname": "loss_qty",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Loss Qty"
+   "label": "Loss Qty",
+   "read_only": 1,
+   "description": "Metal written off from the tree to Dept Scrap. Written only by the Receive Material button / Submit Tree."
   },
   {
    "columns": 2,
