@@ -12,7 +12,7 @@ frappe.ui.form.on("Material Request", {
 		// Settle: top up set_from_warehouse with the customer's material (SNC-style)
 		// when it is short. Only meaningful on a draft customer-goods Material Transfer.
 		if (
-			frm.doc.docstatus === 0 &&
+			frm.doc.docstatus === 1 &&
 			frm.doc.material_request_type === "Material Transfer" &&
 			frm.doc.inventory_type === "Customer Goods"
 		) {

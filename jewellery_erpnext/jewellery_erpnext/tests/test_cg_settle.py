@@ -122,6 +122,21 @@ class TestSettleValidation(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				cg_settle.settle_material_request("MAT-MR-1")
 
+	def test_empty_items_is_rejected(self):
+		mr = _mr(items=[])
+		with patch(f"{_C}.frappe.get_doc", return_value=mr):
+			with self.assertRaises(frappe.ValidationError):
+				cg_settle.settle_material_request("MAT-MR-1")
+
+	def test_missing_target_warehouse_is_rejected(self):
+		# No from_warehouse on the row and no set_from_warehouse on the MR.
+		mr = _mr([_row(from_wh=None)], set_from_warehouse=None)
+		with patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
+			f"{_C}._get_raw_material_warehouses", return_value=[OTHER]
+		):
+			with self.assertRaises(frappe.ValidationError):
+				cg_settle.settle_material_request("MAT-MR-1")
+
 	def tearDown(self):
 		return super().tearDown()
 
@@ -303,6 +318,30 @@ class TestSettleAllocationGuard(IntegrationTestCase):
 		for m in maps[1:]:
 			self.assertIs(m, maps[0])
 
+	def test_second_row_cannot_reuse_target_stock_claimed_by_first_row(self):
+		# consumed_target behaviour, end to end: the target holds 8 of the customer's
+		# item; two rows each need 5. Row 1 is satisfied from the target and claims it,
+		# so row 2 no longer sees that stock as free and must source its 2-unit shortfall.
+		mr = _mr([_row(idx=1, qty=5.0), _row(idx=2, qty=5.0)])
+		calls = []
+		with _patch_execute(), patch(f"{_C}.frappe.get_doc", return_value=mr), patch(
+			f"{_C}._get_raw_material_warehouses", return_value=[TARGET, OTHER]
+		), patch(f"{_C}.frappe.get_all", return_value=["B-TGT"]), patch(
+			f"{_C}._consumable_batch_qty_map", return_value={("B-TGT", TARGET): 8.0}
+		), patch(
+			f"{_C}.find_owner_rm_warehouse",
+			side_effect=_ladder(
+				same=_batch(OTHER), regular=_batch(TARGET, batch="REG"), record=calls
+			),
+		), patch(f"{_C}._transfer"):
+			res = cg_settle.settle_material_request("MAT-MR-1")
+
+		# Only row 2 needed sourcing; row 1 was Available from the target.
+		self.assertEqual(res["settled"], [2])
+		same_calls = [c for c in calls if c["owner"] == CUSTOMER]
+		self.assertEqual(len(same_calls), 1)
+		self.assertEqual(same_calls[0]["qty"], 2.0)  # 5 required - 3 remaining
+
 	def tearDown(self):
 		return super().tearDown()
 
@@ -331,6 +370,177 @@ class TestOwnerQtyInWarehouse(IntegrationTestCase):
 			self.assertEqual(
 				cg_settle._owner_qty_in_warehouse(CUSTOMER, ITEM, TARGET, {}), 0.0
 			)
+
+	def test_over_claim_floors_at_zero(self):
+		# Earlier rows earmarked more than is on hand -> never report a negative.
+		consumed = {(CUSTOMER, ITEM, TARGET): 20.0}
+		with patch(f"{_C}.frappe.get_all", return_value=["B1"]), patch(
+			f"{_C}._consumable_batch_qty_map", return_value={("B1", TARGET): 8.0}
+		):
+			self.assertEqual(
+				cg_settle._owner_qty_in_warehouse(CUSTOMER, ITEM, TARGET, consumed), 0.0
+			)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestSettleHelpers(IntegrationTestCase):
+	"""Small pure helpers used by the planner and locker."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_pure_weight_scales_by_shortfall_proportion(self):
+		# 9.16 pure over a 10 required, sourcing only the 6 shortfall -> 5.496.
+		row = _row(qty=10.0, pure=9.16)
+		self.assertEqual(cg_settle._pure_weight(row, ITEM, 6.0, 10.0), 5.496)
+
+	def test_pure_weight_falls_back_to_item_purity(self):
+		# No custom_pure_qty on the row -> derive from the item's purity %.
+		row = _row(qty=10.0, pure=0)
+		with patch(f"{_C}._get_item_purity", return_value=75.0):
+			self.assertEqual(cg_settle._pure_weight(row, ITEM, 6.0, 10.0), 4.5)
+
+	def test_claim_target_ignores_non_positive_qty(self):
+		consumed = {}
+		cg_settle._claim_target(consumed, CUSTOMER, ITEM, TARGET, 0)
+		cg_settle._claim_target(consumed, CUSTOMER, ITEM, TARGET, -5.0)
+		self.assertEqual(consumed, {})
+		cg_settle._claim_target(consumed, CUSTOMER, ITEM, TARGET, 3.0)
+		self.assertEqual(consumed[(CUSTOMER, ITEM, TARGET)], 3.0)
+
+	def test_bin_pairs_same_purity_locks_item_in_both_warehouses(self):
+		actionable = [
+			{
+				"level": cg_settle.LEVEL_SAME_PURITY,
+				"item": ITEM,
+				"target": TARGET,
+				"src": {"warehouse": OTHER},
+			}
+		]
+		self.assertEqual(
+			cg_settle._bin_pairs(actionable), [(ITEM, TARGET), (ITEM, OTHER)]
+		)
+
+	def test_bin_pairs_convert_also_locks_the_source_item(self):
+		actionable = [
+			{
+				"level": cg_settle.LEVEL_CONVERT,
+				"item": ITEM,
+				"target": TARGET,
+				"src": {"warehouse": OTHER, "item_code": ITEM2},
+			}
+		]
+		self.assertEqual(
+			cg_settle._bin_pairs(actionable),
+			[(ITEM, TARGET), (ITEM, OTHER), (ITEM2, OTHER), (ITEM2, TARGET)],
+		)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestStockEntryBuilders(IntegrationTestCase):
+	"""The Stock Entry construction/insert/submit helpers, mocked out of the
+	orchestration tests."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_new_se_stamps_customer_goods_and_branch_fallback(self):
+		se = MagicMock()
+		with patch(f"{_C}.frappe.new_doc", return_value=se), patch(
+			f"{_C}.frappe.db.get_value", return_value="BR-FALLBACK"
+		) as gv:
+			result = cg_settle._new_se(
+				_mr(branch=None),
+				cg_settle.TRANSFER_SE_TYPE,
+				"Material Transfer",
+				OTHER,
+				TARGET,
+				CUSTOMER,
+			)
+		self.assertIs(result, se)
+		vals = se.update.call_args[0][0]
+		self.assertEqual(vals["stock_entry_type"], cg_settle.TRANSFER_SE_TYPE)
+		self.assertEqual(vals["inventory_type"], cg_settle.CUSTOMER_GOODS)
+		self.assertEqual(vals["_customer"], CUSTOMER)
+		self.assertEqual(vals["auto_created"], 1)
+		self.assertEqual(vals["add_to_transit"], 0)
+		self.assertEqual(vals["branch"], "BR-FALLBACK")
+		gv.assert_called_once_with("Warehouse", OTHER, "custom_branch")
+
+	def test_new_se_is_regular_stock_without_a_customer(self):
+		se = MagicMock()
+		with patch(f"{_C}.frappe.new_doc", return_value=se):
+			cg_settle._new_se(
+				_mr(),
+				cg_settle.TRANSFER_SE_TYPE,
+				"Material Transfer",
+				OTHER,
+				TARGET,
+				None,
+			)
+		vals = se.update.call_args[0][0]
+		self.assertEqual(vals["inventory_type"], cg_settle.REGULAR_STOCK)
+		self.assertIsNone(vals["_customer"])
+
+	def test_transfer_appends_row_inserts_and_submits(self):
+		se = MagicMock()
+		se.name = "SE-T1"
+		with patch(f"{_C}._new_se", return_value=se) as new_se, patch(
+			f"{_C}._append_item"
+		) as append, patch(f"{_C}._submit_consuming_stock_entry") as submit:
+			name = cg_settle._transfer(_mr(), ITEM, 6.0, "B-1", OTHER, TARGET, CUSTOMER)
+		self.assertEqual(name, "SE-T1")
+		self.assertEqual(new_se.call_args[0][1], cg_settle.TRANSFER_SE_TYPE)
+		self.assertEqual(new_se.call_args[0][2], "Material Transfer")
+		row = append.call_args[0][1]
+		self.assertEqual(row["item_code"], ITEM)
+		self.assertEqual(row["qty"], 6.0)
+		self.assertEqual(row["batch_no"], "B-1")
+		self.assertEqual((row["s_warehouse"], row["t_warehouse"]), (OTHER, TARGET))
+		self.assertEqual(row["inventory_type"], cg_settle.CUSTOMER_GOODS)
+		se.insert.assert_called_once_with(ignore_permissions=True)
+		submit.assert_called_once_with(se)
+
+	def test_convert_builds_two_row_repack_and_returns_produced_batch(self):
+		se = MagicMock()
+		se.name = "SE-C1"
+		with patch(f"{_C}._new_se", return_value=se) as new_se, patch(
+			f"{_C}._append_item"
+		) as append, patch(f"{_C}._submit_consuming_stock_entry") as submit, patch(
+			f"{_C}.frappe.db.get_value", return_value="OUT-BATCH"
+		):
+			produced = cg_settle._convert(
+				_mr(), ITEM2, 9.17, "SRC-B", ITEM, 10.0, OTHER, CUSTOMER
+			)
+		self.assertEqual(produced, "OUT-BATCH")
+		self.assertEqual(new_se.call_args[0][1], cg_settle.REPACK_SE_TYPE)
+		self.assertEqual(new_se.call_args[0][2], "Repack")
+		self.assertEqual(append.call_count, 2)
+		src_row = append.call_args_list[0][0][1]
+		tgt_row = append.call_args_list[1][0][1]
+		self.assertEqual((src_row["item_code"], src_row["s_warehouse"]), (ITEM2, OTHER))
+		self.assertEqual((tgt_row["item_code"], tgt_row["t_warehouse"]), (ITEM, OTHER))
+		se.insert.assert_called_once_with(ignore_permissions=True)
+		submit.assert_called_once_with(se)
+
+	def test_convert_raises_when_no_target_batch_is_produced(self):
+		se = MagicMock()
+		se.name = "SE-C2"
+		with patch(f"{_C}._new_se", return_value=se), patch(
+			f"{_C}._append_item"
+		), patch(f"{_C}._submit_consuming_stock_entry"), patch(
+			f"{_C}.frappe.db.get_value", return_value=None
+		):
+			with self.assertRaises(frappe.ValidationError):
+				cg_settle._convert(
+					_mr(), ITEM2, 9.17, "SRC-B", ITEM, 10.0, OTHER, CUSTOMER
+				)
 
 	def tearDown(self):
 		return super().tearDown()
