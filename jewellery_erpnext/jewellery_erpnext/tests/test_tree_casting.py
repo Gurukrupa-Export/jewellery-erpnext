@@ -140,12 +140,22 @@ class TestTreeStatus(IntegrationTestCase):
 		tree = SimpleNamespace(material_details=[_md(10, 10, 0), _md(0, 0, 0)])
 		self.assertEqual(tree_casting._tree_status(tree), "Partially Received")
 
-	def test_received_when_issue_zero_fully_received(self):
-		# Casting receive drew the committed metal from the tree without a button issue:
-		# issue_qty=0 but receive_qty>0 and pending<=eps -> fully Received (a received row is
-		# "engaged" even with issue_qty=0).
+	def test_issue_zero_with_receive_is_never_received(self):
+		# The GEPL-TR-26-00154 defect: metal recorded as received against a tree that was never
+		# issued. Without issued metal there is nothing to have received, so the tree must never
+		# read "Received" — it is an over-draw for the audit to flag.
 		tree = SimpleNamespace(material_details=[_md(0, 8, 0)])
-		self.assertEqual(tree_casting._tree_status(tree), "Received")
+		self.assertEqual(tree_casting._tree_status(tree), "Partially Received")
+
+	def test_untouched_tree_is_draft(self):
+		tree = SimpleNamespace(material_details=[_md(0, 0, 0)])
+		self.assertEqual(tree_casting._tree_status(tree), "Draft")
+
+	def test_tree_without_material_rows_is_draft(self):
+		# Bare Main Slip-created trees carry no ledger at all.
+		self.assertEqual(
+			tree_casting._tree_status(SimpleNamespace(material_details=[])), "Draft"
+		)
 
 	def test_received_when_receive_plus_loss_equals_issue_float_dust(self):
 		# Regression for GEPL-TR-26-00147: 3 - 2.9 - 0.1 leaves floating-point dust (~8e-17)
@@ -458,31 +468,54 @@ def _recv_eir(rows, typ="Receive", loss_rows=None, is_main_slip_required=1):
 	)
 
 
+def _ledger_tree(issue=0.0, receive=0.0, loss=0.0, item="M-G-18KT-75-Y"):
+	"""Fake Tree Number carrying one material row, for the receive guard."""
+	tree = SimpleNamespace(
+		name="TREE-0001",
+		status="Issued",
+		flags=SimpleNamespace(),
+		material_details=[
+			SimpleNamespace(
+				item_code=item,
+				issue_qty=issue,
+				receive_qty=receive,
+				loss_qty=loss,
+				pending_qty=issue - receive - loss,
+			)
+		],
+	)
+	tree.save = lambda *a, **k: None
+	return tree
+
+
 class TestValidateCastingReceive(IntegrationTestCase):
-	"""validate_casting_receive guards a casting Receive EIR against the metal COMMITTED to its work
-	orders (the operations' gross weight), NOT the button-owned issue_qty. Received<=gross is always
-	allowed (giving back the committed metal, even with issue_qty=0); a gain (received>gross) is
-	allowed only when a Main Slip can source the excess from the tree; a loss over-booking throws."""
+	"""validate_casting_receive guards a casting Receive EIR against the metal ISSUED onto its tree.
+
+	Only the per-row gain (received_gross_wt - gross_wt) is drawn from the tree — that is exactly
+	what the Main Slip injection mints out of the MSL warehouse the tree funds. A receive with no
+	gain touches nothing. A gain needs both a Main Slip to source it physically and enough
+	outstanding tree balance to back it."""
 
 	ITEM = "M-G-18KT-75-Y"
 
-	def _run(self, eir, mwos=None):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, eir, mwos=None, tree=None):
 		mwos = mwos or {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
+		tree = tree if tree is not None else _ledger_tree(issue=100.0, item=self.ITEM)
 
-		def fake_get_value(doctype, name, field, *a, **k):
-			if doctype == "Department Operation":
-				return 1  # tree_no_reqd -> casting
-			return None
-
-		# validate_casting_receive reads the gross baseline straight off the EIR rows — it no
-		# longer loads the Tree Number, so no get_doc patch is needed.
+		db = MagicMock()
+		db.get_value.side_effect = lambda dt, *a, **k: (
+			1 if dt == "Department Operation" else None
+		)
 		with (
-			patch.object(
-				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
-			),
+			patch.object(tree_casting.frappe, "db", db),
 			patch.object(
 				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
 			),
+			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
 			patch.object(tree_casting.frappe, "get_precision", return_value=3),
 			patch.object(
 				tree_casting, "get_item_from_attribute", return_value=self.ITEM
@@ -490,31 +523,49 @@ class TestValidateCastingReceive(IntegrationTestCase):
 		):
 			tree_casting.validate_casting_receive(eir)
 
-	def test_normal_receive_issue_zero_passes(self):
-		# Headline fix: tree never button-issued; received (8) == committed gross (8) -> no throw.
-		self._run(_recv_eir([("MWO-A", 8.0, 8.0)]))
+	def test_normal_receive_passes(self):
+		# received (8) == gross (8) -> no gain, nothing drawn from the tree, no ledger read.
+		self._run(_recv_eir([("MWO-A", 8.0, 8.0)]), tree=_ledger_tree(issue=0.0))
 
 	def test_under_receipt_passes(self):
-		# received 3 < committed gross 8 (rest is loss) -> no throw.
-		self._run(_recv_eir([("MWO-A", 3.0, 8.0)]))
+		# received 3 < gross 8 (rest is loss) -> no gain, tree untouched.
+		self._run(_recv_eir([("MWO-A", 3.0, 8.0)]), tree=_ledger_tree(issue=0.0))
 
 	def test_gain_draws_excess_from_tree(self):
-		# received 10 > committed gross 8, Main Slip present -> excess drawn from tree, allowed.
+		# received 10 > gross 8; the tree holds 100 outstanding -> the 2 fits, allowed.
 		self._run(_recv_eir([("MWO-A", 10.0, 8.0)]))
 
+	def test_gain_without_tree_issue_throws(self):
+		# The headline rule: a 2g gain against a tree that was never issued has nothing behind it.
+		with self.assertRaises(ValidationError):
+			self._run(_recv_eir([("MWO-A", 10.0, 8.0)]), tree=_ledger_tree(issue=0.0))
+
+	def test_gain_beyond_tree_pending_throws(self):
+		# Gain 2.0 but only 1.5 outstanding on the tree -> block the whole receive.
+		with self.assertRaises(ValidationError):
+			self._run(_recv_eir([("MWO-A", 10.0, 8.0)]), tree=_ledger_tree(issue=1.5))
+
 	def test_gain_without_main_slip_throws(self):
-		# received 10 > gross 8 but no Main Slip to source the excess from the tree -> throw.
+		# received 10 > gross 8 but no Main Slip to source the excess -> nothing can move.
 		with self.assertRaises(ValidationError):
 			self._run(_recv_eir([("MWO-A", 10.0, 8.0)], is_main_slip_required=0))
 
 	def test_normal_receive_with_loss_passes(self):
-		# recv 4 + loss 1 == committed gross 5 -> giving back the committed metal, no throw.
-		self._run(_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.0)]))
+		# recv 4 + loss 1 == gross 5. Booked metal loss never leaves the MSL pool, so it is not
+		# a tree draw; the tree ledger stays out of it entirely.
+		self._run(
+			_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.0)]),
+			tree=_ledger_tree(issue=0.0),
+		)
 
-	def test_loss_over_book_throws(self):
-		# recv 4 <= gross 5 but recv + loss = 5.5 > gross -> loss over-booked, throw.
-		with self.assertRaises(ValidationError):
-			self._run(_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.5)]))
+	def test_loss_over_book_is_not_a_tree_concern(self):
+		# Over-booking loss is owned by validate_loss_qty / validate_loss_tables_required, which
+		# cap total loss at (gross - received). The tree guard must not double-police it: with no
+		# gain there is no tree draw, so this passes here.
+		self._run(
+			_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.5)]),
+			tree=_ledger_tree(issue=0.0),
+		)
 
 	def test_issue_type_is_ignored(self):
 		# type != "Receive" -> early return, no guard even when grossly over.
@@ -525,37 +576,26 @@ class TestValidateCastingReceive(IntegrationTestCase):
 
 
 class TestUpdateTreeOnReceiveCancel(IntegrationTestCase):
-	"""update_tree_on_receive(cancel=True) reverses the ledger without the forward over-receipt
-	guard firing (deltas are negative and must always be allowed)."""
+	"""update_tree_on_receive(cancel=True) subtracts the same magnitude the forward pass added.
+
+	The draw is computed at sign=+1 and the RESULT negated. Negating the inputs instead would push
+	every gain through max(received - gross, 0) as a negative and silently reverse nothing, leaving
+	the ledger inflated and the Issue EIR permanently uncancellable."""
 
 	ITEM = "M-G-18KT-75-Y"
 
-	def test_cancel_reverses_without_guard(self):
-		tree = SimpleNamespace(
-			name="TREE-0001",
-			status="Received",
-			flags=SimpleNamespace(),
-			material_details=[
-				SimpleNamespace(
-					item_code=self.ITEM,
-					issue_qty=5.0,
-					receive_qty=5.0,
-					loss_qty=0.0,
-					pending_qty=0.0,
-				)
-			],
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _cancel(self, eir, tree, mwos=None):
+		mwos = mwos or {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
+		db = MagicMock()
+		db.get_value.side_effect = lambda dt, *a, **k: (
+			1 if dt == "Department Operation" else None
 		)
-		tree.save = lambda *a, **k: None
-		mwos = {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
-		eir = _recv_eir([("MWO-A", 5.0)])
-
-		def fake_get_value(doctype, name, field, *a, **k):
-			return 1 if doctype == "Department Operation" else None
-
 		with (
-			patch.object(
-				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
-			),
+			patch.object(tree_casting.frappe, "db", db),
 			patch.object(
 				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
 			),
@@ -567,53 +607,38 @@ class TestUpdateTreeOnReceiveCancel(IntegrationTestCase):
 		):
 			tree_casting.update_tree_on_receive(eir, cancel=True)
 
+	def test_cancel_reverses_the_gain(self):
+		# Forward drew 2.0 (gross 8 -> received 10) against an issue of 5.
+		tree = _ledger_tree(issue=5.0, receive=2.0, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 10.0, 8.0)]), tree)
 		self.assertEqual(tree.material_details[0].receive_qty, 0.0)
-		self.assertEqual(tree.material_details[0].pending_qty, 5.0)
+		self.assertEqual(tree.material_details[0].issue_qty, 5.0)
 
-	def test_cancel_no_button_returns_issue_zero(self):
-		# Never button-issued tree: the EIR receive drew 8g from the tree (issue_qty stays 0,
-		# pending floored to 0). Cancelling must return receive_qty and pending to 0 with issue_qty
-		# still 0 — there is nothing to un-bump because the fix never writes issue_qty on the EIR path.
-		tree = SimpleNamespace(
-			name="TREE-0001",
-			status="Received",
-			flags=SimpleNamespace(),
-			material_details=[
-				SimpleNamespace(
-					item_code=self.ITEM,
-					issue_qty=0.0,
-					receive_qty=8.0,
-					loss_qty=0.0,
-					pending_qty=0.0,
-				)
-			],
-		)
-		tree.save = lambda *a, **k: None
-		mwos = {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
-		eir = _recv_eir([("MWO-A", 8.0, 8.0)])
-
-		def fake_get_value(doctype, name, field, *a, **k):
-			return 1 if doctype == "Department Operation" else None
-
-		with (
-			patch.object(
-				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
-			),
-			patch.object(
-				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
-			),
-			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
-			patch.object(tree_casting.frappe, "get_precision", return_value=3),
-			patch.object(
-				tree_casting, "get_item_from_attribute", return_value=self.ITEM
-			),
-		):
-			tree_casting.update_tree_on_receive(eir, cancel=True)
-
+	def test_cancel_without_guard(self):
+		# Cancel is a credit, not a draw — the availability guard must never fire, even on a
+		# tree with no issued balance at all.
+		tree = _ledger_tree(issue=0.0, receive=2.0, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 10.0, 8.0)]), tree)
 		self.assertEqual(tree.material_details[0].receive_qty, 0.0)
-		self.assertEqual(tree.material_details[0].loss_qty, 0.0)
-		self.assertEqual(tree.material_details[0].pending_qty, 0.0)
-		self.assertEqual(tree.material_details[0].issue_qty, 0.0)
+
+	def test_cancel_of_a_no_gain_receive_is_a_no_op(self):
+		# received == gross drew nothing forward, so cancelling must take nothing back.
+		tree = _ledger_tree(issue=5.0, receive=5.0, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 8.0, 8.0)]), tree)
+		self.assertEqual(tree.material_details[0].receive_qty, 5.0)
+
+	def test_cancel_never_drives_receive_negative(self):
+		tree = _ledger_tree(issue=5.0, receive=1.0, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 10.0, 8.0)]), tree)
+		self.assertGreaterEqual(tree.material_details[0].receive_qty, 0.0)
+
+	def test_cancel_leaves_issue_and_loss_untouched(self):
+		# The EIR path owns receive_qty only; issue_qty is button-owned and loss_qty belongs to
+		# the tree's own Receive/Submit legs.
+		tree = _ledger_tree(issue=5.0, receive=2.0, loss=0.5, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 10.0, 8.0)]), tree)
+		self.assertEqual(tree.material_details[0].issue_qty, 5.0)
+		self.assertEqual(tree.material_details[0].loss_qty, 0.5)
 
 	def tearDown(self):
 		return super().tearDown()
