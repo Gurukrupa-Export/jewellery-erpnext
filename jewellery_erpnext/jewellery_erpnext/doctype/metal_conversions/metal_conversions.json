@@ -27,6 +27,8 @@
   "target_warehouse",
   "column_break_aw0qk",
   "stock_entry",
+  "section_break_quab",
+  "remarks",
   "metal_converter_tab",
   "scan_source_item",
   "source_item",
@@ -318,6 +320,17 @@
    "mandatory_depends_on": "eval: doc.is_customer_metal;",
    "options": "Customer"
   },
+
+  {
+   "fieldname": "section_break_quab",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Select",
+   "label": "Remarks",
+   "options": "\nremark"
+  }
   {
    "fieldname": "section_break_9izc4",
    "fieldtype": "Section Break"
