@@ -21,6 +21,13 @@ def _so_gold_rate_changed(si_gold_rate, sales_order):
 
 def before_validate(self, method):
 	if self.is_return:
+		for row in self.get("invoice_item") or []:
+			if flt(row.qty) > 0:
+				row.qty = -1 * flt(row.qty)
+			if flt(row.amount) > 0:
+				row.amount = -1 * flt(row.amount)
+			if flt(row.base_amount) > 0:
+				row.base_amount = -1 * flt(row.base_amount)
 		return
 	if self.sales_type != 'Certification':
 		if self.gold_rate:

@@ -172,10 +172,10 @@ class RefiningEntry(Document):
 
 		self.supplier_warehouse = self._get_supplier_warehouse()
 		self.refined_metal_item = self._get_pure_gold_24kt_item()
-		# Gold weight actually melted by the refiner: the gold ALLOY only. Across every
-		# external refining type the refiner melts only the metal and hands back the
-		# findings, diamonds and gemstones intact (see _is_returned_intact), so their
-		# weight is not part of the recoverable metal.
+		# Gold weight actually melted by the refiner: the gold ALLOY, INCLUDING gold
+		# findings (they are melted and recovered as pure gold). Across every external
+		# refining type the refiner hands back only the diamonds and gemstones intact
+		# (see _is_returned_intact), so only their weight is excluded from the metal.
 		self.qty_to_refine = flt(
 			sum(
 				flt(row.qty)
@@ -502,6 +502,18 @@ class RefiningEntry(Document):
 				_("No material available in the Supplier Warehouse to receive against.")
 			)
 
+		# Keep customer-owned metal tagged Customer Goods across the external round trip:
+		# stamp the consumed rows from their supplier-warehouse batches (auto_created SEs skip
+		# the generic backfill), then mint the recovered pure metal back to that customer when
+		# the whole consumed lot is theirs (same rule/guard as the internal repack).
+		self._stamp_batch_ownership(se)
+		output_customer = self._recovered_output_customer(se, self.refined_metal_item)
+		output_owner_row = (
+			{"inventory_type": "Customer Goods", "customer": output_customer}
+			if output_customer
+			else {}
+		)
+
 		metal_row = {
 			"item_code": self.refined_metal_item,
 			"qty": recovery_weight,
@@ -510,22 +522,26 @@ class RefiningEntry(Document):
 			"is_finished_item": 1,
 			"use_serial_batch_fields": 1,
 			"allow_zero_valuation_rate": 1,
+			**output_owner_row,
 		}
 		if frappe.db.get_value("Item", self.refined_metal_item, "has_batch_no"):
-			metal_row["batch_no"] = self._auto_create_batch(self.refined_metal_item)
+			metal_row["batch_no"] = self._auto_create_batch(
+				self.refined_metal_item, customer=output_customer
+			)
 		se.append("items", metal_row)
 
-		# Return the non-metal materials (findings, diamonds, gemstones) intact. The refiner
-		# melts only the gold alloy — reborn above as the single pure-24KT metal row — and
-		# hands everything else back, for EVERY external refining type:
+		# Return the diamonds and gemstones intact. The refiner melts the gold alloy —
+		# INCLUDING gold findings — reborn above as the single pure-24KT metal row, and
+		# hands only the stones back, for EVERY external refining type (findings are NOT
+		# re-output; their gold is in the recovered metal — see _is_returned_intact):
 		#   - Dust / Scrap / Work Order: these are real material_items rows, already CONSUMED
 		#     out of the supplier warehouse in the input rows above; re-outputting them here
 		#     into the department RM warehouse nets to a supplier -> department transfer.
-		#   - Serial Number: the stones/findings sit INSIDE the FG serial (consumed above)
-		#     and are represented by its "BOM Component" rows; here they are "exploded" out
-		#     as repack outputs (output-only — there is no separate supplier-warehouse stock
-		#     to consume for them), exactly like the internal serial repack books its
-		#     recovered diamond/gemstone rows.
+		#   - Serial Number: the stones sit INSIDE the FG serial (consumed above) and are
+		#     represented by its "BOM Component" rows; here they are "exploded" out as repack
+		#     outputs (output-only — there is no separate supplier-warehouse stock to consume
+		#     for them), exactly like the internal serial repack books its recovered
+		#     diamond/gemstone rows.
 		# Aggregated per item so one fresh return batch is created for each. Without this the
 		# findings/stones were issued out (or melted away) and never received anywhere.
 		returned = {}
@@ -948,12 +964,13 @@ class RefiningEntry(Document):
 			# Recovery Summary still shows something sensible in the meantime.
 			for item in self.material_items:
 				# Only the gold ALLOY that is actually melted contributes to the pure-metal
-				# input. Findings/diamonds/gemstones are returned intact (see
-				# _is_returned_intact) — excluding them stops a returned finding's gold from
-				# booking as refining loss. Restricting to is_gold_item also drops the
-				# non-metal FG serial row (source_type "Serial Number"), whose qty is a
-				# piece count, not grams — it would otherwise double-count against the BOM
-				# metal-component rows that carry the real melted weight.
+				# input. Diamonds/gemstones are returned intact (see _is_returned_intact)
+				# and excluded; gold FINDINGS are melted, so they stay counted here (their
+				# recovered gold reconciles against the pure input). Restricting to
+				# is_gold_item also drops the non-metal FG serial row (source_type
+				# "Serial Number"), whose qty is a piece count, not grams — it would
+				# otherwise double-count against the BOM metal-component rows that carry
+				# the real melted weight.
 				if not (
 					self.is_gold_item(item.item_code)
 					and not self._is_returned_intact(item.item_code)
@@ -1024,11 +1041,27 @@ class RefiningEntry(Document):
 		self.refined_fine_weight = flt(self.refined_fine_weight, 3)
 		self.actual_recovery = flt(self.actual_recovery, 3)
 
-		# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
-		# (rounding / assay variance) and must never book a negative loss.
-		self.refining_loss = flt(
-			max(self.gross_pure_weight - self.refined_fine_weight, 0.0), 3
-		)
+		# When the per-karat Gold Recovery Details table is populated, the Recovery
+		# Summary must agree with it EXACTLY. Each table row stores its pure content and
+		# loss already rounded to 3 dp; summing those (sum-of-rounded) can differ from
+		# rounding the full-precision input sum (round-of-sum) by ~0.001 per extra
+		# karat/touch — the reported "1 mg variation with more than one touch of gold"
+		# between the summary loss and the loss column. Derive the summary from the table
+		# so the total and the per-row column never diverge by a stray milligram.
+		if self.gold_recovery_details:
+			self.gross_pure_weight = flt(
+				sum(flt(r.pure_gold_weight, 3) for r in self.gold_recovery_details), 3
+			)
+			self.expected_recovery = self.gross_pure_weight
+			self.refining_loss = flt(
+				sum(flt(r.loss_weight, 3) for r in self.gold_recovery_details), 3
+			)
+		else:
+			# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
+			# (rounding / assay variance) and must never book a negative loss.
+			self.refining_loss = flt(
+				max(self.gross_pure_weight - self.refined_fine_weight, 0.0), 3
+			)
 
 		if self.expected_recovery > 0:
 			pct = min(
@@ -1647,7 +1680,20 @@ class RefiningEntry(Document):
 				and self.employee
 				and item.get("batch_no")
 			)
-			row_batch = item.batch_no if dust_batch_row else None
+			# Customer-owned Work Order material must be consumed from (and tagged with) the
+			# customer's OWN batch in the transfer and repack SEs (see _stamp_batch_ownership).
+			# Preserve its batch through consolidation — like the employee-dust case — so the
+			# exact customer batch flows to the SEs instead of being re-FIFO'd across the
+			# warehouse (which could pick a different customer's / regular batch and also
+			# raised the "Insufficient batch stock" the reporter hit on RFN-MWO-26-00099).
+			customer_batch_row = bool(
+				self.refining_type == "Work Order Refining"
+				and item.get("batch_no")
+				and self._batch_is_customer_owned(item.batch_no)
+			)
+			row_batch = (
+				item.batch_no if (dust_batch_row or customer_batch_row) else None
+			)
 			key = (item.item_code, item.serial_no, item.warehouse, row_batch)
 			if item.item_code not in item_group_cache:
 				item_group_cache[item.item_code] = item.get(
@@ -1718,12 +1764,12 @@ class RefiningEntry(Document):
 			]
 			if bom_components:
 				for item in bom_components:
-					# External refining melts ONLY the gold alloy: exclude the returned
-					# findings/stones AND the self-referential FG serial BOM row (a piece
+					# External refining melts the gold alloy INCLUDING findings: exclude only
+					# the returned stones AND the self-referential FG serial BOM row (a piece
 					# count, not meltable grams) from the melted-gold distribution — the same
 					# "melted metal" predicate _compute_input_pure_weight uses, so the
-					# distribution's input weight matches the Recovery Summary. Internal
-					# serial refining melts findings, so it still counts them (external gate).
+					# distribution's input weight matches the Recovery Summary. Findings are
+					# melted for both internal and external refining (see _is_returned_intact).
 					if cint(self.is_external) and not (
 						self.is_gold_item(item.item_code)
 						and not self._is_returned_intact(item.item_code)
@@ -1752,10 +1798,10 @@ class RefiningEntry(Document):
 							input_item_map[pct_flt] = sn.item_code
 		else:
 			for item in self.material_items:
-				# External refining returns findings/diamonds/gemstones intact (see
-				# _is_returned_intact); keep them out of the gold-recovery distribution so no
-				# finding karat shows a phantom loss row. Internal refining melts findings,
-				# so it still counts them (external gate).
+				# External refining returns diamonds/gemstones intact (see
+				# _is_returned_intact); keep them out of the gold-recovery distribution.
+				# Gold findings ARE melted (internal and external alike), so they stay in
+				# the distribution and contribute their karat's pure gold.
 				if cint(self.is_external) and self._is_returned_intact(item.item_code):
 					continue
 				if item.purity:
@@ -1987,9 +2033,22 @@ class RefiningEntry(Document):
 		refined_fine_weight = flt(refined_fine_weight, 3)
 		actual_recovery = flt(actual_recovery, 3)
 
-		# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
-		# (rounding / assay variance) and must never book a negative loss.
-		refining_loss = flt(max(gross_pure_weight - refined_fine_weight, 0.0), 3)
+		# Keep the Recovery Summary in lockstep with the per-karat Gold Recovery Details
+		# table (sum-of-rounded, not round-of-sum) so the summary loss and the table's
+		# loss column never differ by a stray milligram when multiple karats/touches are
+		# present. See calculate_totals for the rounding rationale.
+		if self.gold_recovery_details:
+			gross_pure_weight = flt(
+				sum(flt(r.pure_gold_weight, 3) for r in self.gold_recovery_details), 3
+			)
+			expected_recovery = gross_pure_weight
+			refining_loss = flt(
+				sum(flt(r.loss_weight, 3) for r in self.gold_recovery_details), 3
+			)
+		else:
+			# Clamp at 0: recovered 24KT gold can slightly exceed the computed pure input
+			# (rounding / assay variance) and must never book a negative loss.
+			refining_loss = flt(max(gross_pure_weight - refined_fine_weight, 0.0), 3)
 		recovery_percentage = min(
 			(refined_fine_weight / expected_recovery) * 100.0
 			if expected_recovery > 0
@@ -2296,6 +2355,9 @@ class RefiningEntry(Document):
 			title="Transferring Materials",
 			description="Submitting Stock Entry...",
 		)
+		# Keep customer-owned recovered gold tagged Customer Goods on the outbound move to
+		# Central RM (the recovered batch was minted Customer Goods in create_repack_se).
+		self._stamp_batch_ownership(se)
 		se.insert(ignore_permissions=True)
 		se.submit()
 		self.db_set("transfer_se", se.name)
@@ -2483,6 +2545,9 @@ class RefiningEntry(Document):
 					)
 
 		if se.items:
+			# Keep customer-owned metal tagged Customer Goods through the transfer into the
+			# refining/supplier warehouse (auto_created SEs skip the generic backfill).
+			self._stamp_batch_ownership(se)
 			se.insert(ignore_permissions=True)
 			se.submit()
 			self.db_set("material_transfer_se", se.name)
@@ -2868,13 +2933,30 @@ class RefiningEntry(Document):
 						},
 					)
 
+		# Stamp customer ownership on every consumed (input) row from its batch. At this point
+		# se.items holds only the input-consume rows (outputs are appended below).
+		self._stamp_batch_ownership(se)
+
 		# Output items (produced - Pure Gold 24KT only, Diamond, Gemstone)
 		batch_tracking_rows = []
 		# SOP: All gold is converted to a single Pure Gold 24KT item
 		pure_gold_item = self._get_pure_gold_24kt_item()
 		total_gold_weight = sum(flt(g.refining_gold_weight) for g in self.refined_gold)
+
+		# Recovered gold inherits the input's ownership ONLY when the entire consumed lot is
+		# one customer's (no company/other-owner metal blended in) — otherwise the single
+		# pure-gold output would misclassify that gold. _recovered_output_customer enforces
+		# that and the Customer-Goods item-flag gate (see it for the rationale).
+		output_customer = self._recovered_output_customer(se, pure_gold_item)
+		output_owner_row = (
+			{"inventory_type": "Customer Goods", "customer": output_customer}
+			if output_customer
+			else {}
+		)
 		if total_gold_weight > 0 and pure_gold_item:
-			new_batch = self._auto_create_batch(pure_gold_item)
+			new_batch = self._auto_create_batch(
+				pure_gold_item, customer=output_customer
+			)
 			se.append(
 				"items",
 				{
@@ -2885,6 +2967,7 @@ class RefiningEntry(Document):
 					"batch_no": new_batch,
 					"is_finished_item": 1,
 					"use_serial_batch_fields": 1,
+					**output_owner_row,
 				},
 			)
 			batch_tracking_rows.append(
@@ -3190,7 +3273,7 @@ class RefiningEntry(Document):
 			return karat
 		return None
 
-	def _auto_create_batch(self, item_code):
+	def _auto_create_batch(self, item_code, customer=None):
 		if not self.auto_create_batch:
 			return None
 
@@ -3200,6 +3283,12 @@ class RefiningEntry(Document):
 
 		batch = frappe.new_doc("Batch")
 		batch.item = item_code
+		# Recovered output of customer-owned metal stays the customer's property (Q4):
+		# tag the fresh batch as Customer Goods so it is Customer Goods everywhere it is
+		# read back (Stock Balance, later refining, the batch->row ownership backfill).
+		if customer:
+			batch.custom_customer = customer
+			batch.custom_inventory_type = "Customer Goods"
 
 		# If item has a batch naming series, ERPNext autoname handles it.
 		# Otherwise, generate a batch_id from item code + timestamp.
@@ -3405,6 +3494,113 @@ class RefiningEntry(Document):
 			frappe.db.get_value("Customer", cust, "custom_block_refining")
 		)
 
+	def _batch_customer_owner(self, batch_no):
+		"""Return (inventory_type, customer) ownership of ``batch_no`` from the Batch
+		master, or (None, None) for a blank/unknown batch. Refining Stock Entries are
+		auto_created, so the generic CustomStockEntry.update_batches back-fill is skipped
+		and doc_events/stock_entry.py forces blank rows to 'Regular Stock' — the reason
+		customer-owned metal used to lose its ownership in refining. Callers stamp the SE
+		row explicitly from this instead."""
+		if not batch_no:
+			return None, None
+		return frappe.db.get_value(
+			"Batch", batch_no, ["custom_inventory_type", "custom_customer"]
+		) or (None, None)
+
+	def _batch_is_customer_owned(self, batch_no):
+		"""True when a batch is customer-owned (Customer Goods / Customer Stock with a
+		customer set). Used to keep the customer's batch identity through the material-table
+		consolidation and to tag recovered output as Customer Goods."""
+		inv_type, customer = self._batch_customer_owner(batch_no)
+		return bool(customer) and inv_type in ("Customer Goods", "Customer Stock")
+
+	def _item_allows_customer_goods(self, item_code):
+		"""True when the Item permits a Customer Goods inventory type. Minting a Customer
+		Goods batch for an item without this flag hard-fails in
+		Batch.update_inventory_dimentions, so recovered-output tagging is gated on it."""
+		return bool(
+			frappe.db.get_value(
+				"Item", item_code, "custom_inventory_type_can_be_customer_goods"
+			)
+		)
+
+	def _stamp_batch_ownership(self, se):
+		"""Stamp inventory_type + customer on every batched row of ``se`` from its batch's
+		ownership, and return the set of customers seen. Refining SEs are auto_created, so
+		the generic batch->row backfill (CustomStockEntry.update_batches) is skipped and
+		doc_events/stock_entry.py forces blank rows to 'Regular Stock' — call this before
+		insert so customer-owned batches keep their ownership across the transfer/repack/
+		outbound moves. Ownership is resolved via the app's single source of truth
+		(row_ownership.resolve_batch_ownership), so the Rule 2/3 coherence checks (a customer
+		type with no customer downgrades to Regular Stock) are applied uniformly."""
+		from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+			resolve_batch_ownership,
+		)
+
+		customers = set()
+		for row in se.items:
+			if not row.get("batch_no"):
+				continue
+			inventory_type, customer = resolve_batch_ownership(row)
+			row.inventory_type = inventory_type
+			row.customer = customer
+			if customer:
+				customers.add(customer)
+		return customers
+
+	def _recovered_output_customer(self, se, output_item):
+		"""Customer to mint the recovered pure metal (``output_item``) to, or None.
+
+		Only when EVERY consumed (input) batched row belongs to the SAME single customer —
+		no company (Regular Stock) metal and no second owner. The repack blends all inputs
+		into one pure-metal output, so a mixed lot cannot be attributed to one customer
+		without misclassifying the company's / another owner's gold; such a lot conservatively
+		downgrades to Regular Stock (company holds it for manual reconciliation) rather than
+		over-claim. Call AFTER ``_stamp_batch_ownership`` (so consumed rows carry their
+		resolved customer) and BEFORE the output rows are appended (so only inputs are seen).
+
+		Also gated on ``_item_allows_customer_goods``: minting a Customer Goods batch for an
+		item without the flag hard-fails in Batch.update_inventory_dimentions, so downgrade
+		with a note instead."""
+		customers = set()
+		saw_company_metal = False
+		for row in se.items:
+			if not (row.get("s_warehouse") and row.get("batch_no")):
+				continue
+			if row.get("customer"):
+				customers.add(row.get("customer"))
+			else:
+				saw_company_metal = True
+
+		if len(customers) != 1 or saw_company_metal:
+			# Only worth flagging when a customer's metal is present but the lot is mixed;
+			# an all-company lot legitimately produces company stock, silently.
+			if customers:
+				frappe.msgprint(
+					_(
+						"Refining lot mixes customer-owned and company/other-owner metal, "
+						"so the recovered gold is booked as Regular Stock. Refine a single "
+						"customer's material on its own to retain customer ownership."
+					),
+					indicator="orange",
+					alert=True,
+				)
+			return None
+
+		customer = next(iter(customers))
+		if output_item and not self._item_allows_customer_goods(output_item):
+			frappe.msgprint(
+				_(
+					"Recovered gold item {0} is not enabled for Customer Goods, so the "
+					"recovered metal is booked as Regular Stock. Tick 'Inventory Type Can "
+					"be Customer Goods' on that item to retain customer ownership."
+				).format(frappe.bold(output_item)),
+				indicator="orange",
+				alert=True,
+			)
+			return None
+		return customer
+
 	def validate_customer_block(self):
 		"""Early, per-row guard: reject any Material Item whose batch belongs to a
 		blocked customer for Dust/Scrap refining (internal or external), so the operator
@@ -3494,9 +3690,9 @@ class RefiningEntry(Document):
 	def is_finding_item(self, item_code):
 		"""Findings (clasps, jump rings, chain parts) — authoritative signal is a
 		"Finding …" item group ("Finding - V/T", "Finding DNU"); variant_of ships as F/FL.
-		NOTE: findings carry a gold purity, so is_gold_item() ALSO matches them; callers
-		that need "gold alloy that is actually melted" must exclude findings explicitly
-		(see _is_returned_intact)."""
+		NOTE: findings carry a gold purity, so is_gold_item() ALSO matches them. Findings
+		are treated as meltable gold (melted and recovered as pure gold), NOT returned
+		intact — see _is_returned_intact."""
 		variant_of = frappe.db.get_value("Item", item_code, "variant_of")
 		item_group = frappe.db.get_value("Item", item_code, "item_group")
 		return (
@@ -3506,20 +3702,19 @@ class RefiningEntry(Document):
 		)
 
 	def _is_returned_intact(self, item_code):
-		"""External refining (ALL types): findings, diamonds and gemstones travel to the
-		refiner alongside the metal but are NOT melted — the refiner processes only the gold
-		alloy and hands these back physically. They are therefore (a) excluded from the
-		pure-metal weight / recovery computations (else a returned finding's gold would
-		surface as a phantom refining loss) and (b) re-output into the source department's
-		Raw Material warehouse on receipt (receive_from_supplier). This applies to Dust,
-		Scrap, Work Order and Serial Number external refining alike. Internal refining melts
-		findings and separately "recovers" only the stones, so the callers gate this
-		melt-vs-return split on cint(self.is_external)."""
-		return (
-			self.is_finding_item(item_code)
-			or self.is_diamond_item(item_code)
-			or self.is_gemstone_item(item_code)
-		)
+		"""External refining (ALL types): diamonds and gemstones travel to the refiner
+		alongside the metal but are NOT melted — the refiner processes the gold alloy
+		(including gold FINDINGS, which are melted) and hands the stones back physically.
+		The returned stones are therefore (a) excluded from the pure-metal weight /
+		recovery computations and (b) re-output into the source department's Raw Material
+		warehouse on receipt (receive_from_supplier). This applies to Dust, Scrap, Work
+		Order and Serial Number external refining alike.
+
+		NOTE (2026-07): findings are gold alloy and ARE melted/recovered as pure gold, so
+		they are NOT returned intact — they are excluded here so their weight flows into
+		the melted-metal input and the recovery distribution (matching internal refining,
+		which already melts findings). Only diamonds and gemstones remain returned."""
+		return self.is_diamond_item(item_code) or self.is_gemstone_item(item_code)
 
 	def auto_classify_recoverable_non_metal(self):
 		diamond_items = {row.item for row in self.recovered_diamond}
