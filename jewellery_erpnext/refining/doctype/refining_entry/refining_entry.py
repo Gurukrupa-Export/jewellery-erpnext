@@ -502,6 +502,18 @@ class RefiningEntry(Document):
 				_("No material available in the Supplier Warehouse to receive against.")
 			)
 
+		# Keep customer-owned metal tagged Customer Goods across the external round trip:
+		# stamp the consumed rows from their supplier-warehouse batches (auto_created SEs skip
+		# the generic backfill), then mint the recovered pure metal back to that customer when
+		# the whole consumed lot is theirs (same rule/guard as the internal repack).
+		self._stamp_batch_ownership(se)
+		output_customer = self._recovered_output_customer(se, self.refined_metal_item)
+		output_owner_row = (
+			{"inventory_type": "Customer Goods", "customer": output_customer}
+			if output_customer
+			else {}
+		)
+
 		metal_row = {
 			"item_code": self.refined_metal_item,
 			"qty": recovery_weight,
@@ -510,9 +522,12 @@ class RefiningEntry(Document):
 			"is_finished_item": 1,
 			"use_serial_batch_fields": 1,
 			"allow_zero_valuation_rate": 1,
+			**output_owner_row,
 		}
 		if frappe.db.get_value("Item", self.refined_metal_item, "has_batch_no"):
-			metal_row["batch_no"] = self._auto_create_batch(self.refined_metal_item)
+			metal_row["batch_no"] = self._auto_create_batch(
+				self.refined_metal_item, customer=output_customer
+			)
 		se.append("items", metal_row)
 
 		# Return the diamonds and gemstones intact. The refiner melts the gold alloy —
@@ -2918,10 +2933,9 @@ class RefiningEntry(Document):
 						},
 					)
 
-		# Stamp customer ownership on every consumed (input) row from its batch and collect
-		# the melted customer(s). At this point se.items holds only the input-consume rows
-		# (outputs are appended below), so this covers exactly the inputs.
-		consumed_customers = self._stamp_batch_ownership(se)
+		# Stamp customer ownership on every consumed (input) row from its batch. At this point
+		# se.items holds only the input-consume rows (outputs are appended below).
+		self._stamp_batch_ownership(se)
 
 		# Output items (produced - Pure Gold 24KT only, Diamond, Gemstone)
 		batch_tracking_rows = []
@@ -2929,30 +2943,11 @@ class RefiningEntry(Document):
 		pure_gold_item = self._get_pure_gold_24kt_item()
 		total_gold_weight = sum(flt(g.refining_gold_weight) for g in self.refined_gold)
 
-		# Recovered gold inherits the input's ownership: when a single customer's metal was
-		# melted, mint the pure 24KT back as that customer's Customer Goods (Q4). Mixed or
-		# no customer -> leave it as regular company stock. Guard on the item flag: minting a
-		# Customer Goods batch for an item without custom_inventory_type_can_be_customer_goods
-		# hard-fails in Batch.update_inventory_dimentions, so downgrade to Regular Stock rather
-		# than abort the repack (matches the app's row_ownership downgrade philosophy).
-		output_customer = (
-			next(iter(consumed_customers)) if len(consumed_customers) == 1 else None
-		)
-		if (
-			output_customer
-			and pure_gold_item
-			and not self._item_allows_customer_goods(pure_gold_item)
-		):
-			frappe.msgprint(
-				_(
-					"Recovered gold item {0} is not enabled for Customer Goods, so the "
-					"recovered metal is booked as Regular Stock. Tick 'Inventory Type Can "
-					"be Customer Goods' on that item to retain customer ownership."
-				).format(frappe.bold(pure_gold_item)),
-				indicator="orange",
-				alert=True,
-			)
-			output_customer = None
+		# Recovered gold inherits the input's ownership ONLY when the entire consumed lot is
+		# one customer's (no company/other-owner metal blended in) — otherwise the single
+		# pure-gold output would misclassify that gold. _recovered_output_customer enforces
+		# that and the Customer-Goods item-flag gate (see it for the rationale).
+		output_customer = self._recovered_output_customer(se, pure_gold_item)
 		output_owner_row = (
 			{"inventory_type": "Customer Goods", "customer": output_customer}
 			if output_customer
@@ -3552,6 +3547,59 @@ class RefiningEntry(Document):
 			if customer:
 				customers.add(customer)
 		return customers
+
+	def _recovered_output_customer(self, se, output_item):
+		"""Customer to mint the recovered pure metal (``output_item``) to, or None.
+
+		Only when EVERY consumed (input) batched row belongs to the SAME single customer —
+		no company (Regular Stock) metal and no second owner. The repack blends all inputs
+		into one pure-metal output, so a mixed lot cannot be attributed to one customer
+		without misclassifying the company's / another owner's gold; such a lot conservatively
+		downgrades to Regular Stock (company holds it for manual reconciliation) rather than
+		over-claim. Call AFTER ``_stamp_batch_ownership`` (so consumed rows carry their
+		resolved customer) and BEFORE the output rows are appended (so only inputs are seen).
+
+		Also gated on ``_item_allows_customer_goods``: minting a Customer Goods batch for an
+		item without the flag hard-fails in Batch.update_inventory_dimentions, so downgrade
+		with a note instead."""
+		customers = set()
+		saw_company_metal = False
+		for row in se.items:
+			if not (row.get("s_warehouse") and row.get("batch_no")):
+				continue
+			if row.get("customer"):
+				customers.add(row.get("customer"))
+			else:
+				saw_company_metal = True
+
+		if len(customers) != 1 or saw_company_metal:
+			# Only worth flagging when a customer's metal is present but the lot is mixed;
+			# an all-company lot legitimately produces company stock, silently.
+			if customers:
+				frappe.msgprint(
+					_(
+						"Refining lot mixes customer-owned and company/other-owner metal, "
+						"so the recovered gold is booked as Regular Stock. Refine a single "
+						"customer's material on its own to retain customer ownership."
+					),
+					indicator="orange",
+					alert=True,
+				)
+			return None
+
+		customer = next(iter(customers))
+		if output_item and not self._item_allows_customer_goods(output_item):
+			frappe.msgprint(
+				_(
+					"Recovered gold item {0} is not enabled for Customer Goods, so the "
+					"recovered metal is booked as Regular Stock. Tick 'Inventory Type Can "
+					"be Customer Goods' on that item to retain customer ownership."
+				).format(frappe.bold(output_item)),
+				indicator="orange",
+				alert=True,
+			)
+			return None
+		return customer
 
 	def validate_customer_block(self):
 		"""Early, per-row guard: reject any Material Item whose batch belongs to a
