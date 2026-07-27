@@ -26,6 +26,9 @@ Grouping rules (confirmed with user):
     Tree" helper). A whole-group re-issue is allowed directly — regardless of the prior
     tree's received state — so there is no cancel-first requirement; a partial re-issue
     is what gets rejected (naming the missing members).
+    This rule is GATED by ``MOP Settings.enforce_full_casting_tree_reissue`` and ships
+    OFF, so by default a partial re-issue IS allowed; tick the box to enforce it. The
+    "Load Full Casting Tree" button is available regardless of the setting.
 """
 
 import frappe
@@ -35,6 +38,27 @@ from frappe.utils import cint, flt
 from jewellery_erpnext.utils import get_item_from_attribute
 
 METAL_ATTRS = ("metal_type", "metal_touch", "metal_purity", "metal_colour")
+
+_SETTINGS = "MOP Settings"
+_FULL_TREE_REISSUE_FLAG = "enforce_full_casting_tree_reissue"
+
+
+def full_casting_tree_reissue_enforced():
+	"""True when the all-or-nothing casting re-issue rule is switched ON (default OFF).
+
+	The switch deliberately lives on the ``MOP Settings`` Single rather than site_config (the
+	app's usual flag home) because managed / cloud sites cannot edit ``site_config.json`` -- an
+	admin needs to be able to enable / roll back this rule from the UI WITHOUT a code change.
+	``MOP Settings`` is an app-owned doctype, so the field ships via ``bench migrate``; unlike a
+	custom field it needs no patch and cannot fall into the disabled-``after_migrate`` trap.
+
+	Default OFF costs nothing to provision: a site that has never saved MOP Settings has no
+	``tabSingles`` row for the field, and ``get_single_value`` casts that missing value by
+	fieldtype (``cast("Check", None)`` -> ``cint(None)`` -> ``0``). The read is ``0``, not
+	``None`` and not ``"0"``, so the rule is inert until an admin ticks the box -- no patch, no
+	backfill, no ``create_test_data`` seeding.
+	"""
+	return bool(cint(frappe.db.get_single_value(_SETTINGS, _FULL_TREE_REISSUE_FLAG)))
 
 
 def _se_precision():
@@ -119,10 +143,14 @@ def validate_casting_tree(eir):
 
 	All work orders cast on one tree must share metal type / touch / purity / colour. The
 	all-or-nothing *re-issue* rule (a casting group must move together) is NOT enforced here — it is
-	a submit-time concern owned by ``validate_casting_group_complete``. Keeping it out of ``validate``
-	lets a whole-group re-issue go through directly (regardless of the prior tree's received state)
-	and keeps partial drafts saveable while the operator assembles rows; only a *partial* re-issue is
-	rejected, at submit, naming the missing members.
+	a submit-time concern owned by ``validate_casting_group_complete`` (gated, default OFF). Keeping
+	it out of ``validate`` lets a whole-group re-issue go through directly (regardless of the prior
+	tree's received state) and keeps partial drafts saveable while the operator assembles rows; only
+	a *partial* re-issue is rejected, at submit, naming the missing members.
+
+	The same-metal rule below is NOT gated — it is a physical constraint on what can share a
+	crucible, not a policy about which work orders move together. A partial re-issue permitted by
+	the setting must still be metal-homogeneous.
 	"""
 	if not is_casting_eir(eir):
 		return
@@ -206,12 +234,30 @@ def validate_casting_group_complete(eir):
 	``casting_group`` nor ``tree_number`` yet (both are stamped by ``create_tree_on_issue`` on
 	submit), so the check is a no-op there and only bites on a re-issue.
 
-	This is now the SOLE enforcer of the all-or-nothing re-issue rule (``validate_casting_tree`` no
-	longer blocks in ``validate``), so the group key falls back to ``tree_number`` for the
-	(currently non-existent, but possible after a manual edit / import) case of a tree'd MWO that
-	lacks a ``casting_group`` — the rule must never silently no-op for a work order that is on a tree.
+	When enabled this is the SOLE enforcer of the all-or-nothing re-issue rule
+	(``validate_casting_tree`` no longer blocks in ``validate``), so the group key falls back to
+	``tree_number`` for the (currently non-existent, but possible after a manual edit / import)
+	case of a tree'd MWO that lacks a ``casting_group`` — the rule must never silently no-op for a
+	work order that is on a tree.
+
+	GATED, default OFF: fires only when ``MOP Settings.enforce_full_casting_tree_reissue`` is
+	checked, so it can be enabled / rolled back WITHOUT a code change and soaked on a copy site
+	first. Out of the box the rule does not run and a partial re-issue is allowed. The "Load Full
+	Casting Tree" button stays available either way — it is a convenience, not a guard.
+	``create_tree_on_issue`` also keeps stamping ``casting_group`` regardless of the flag, so
+	grouping data accrues while the switch is off and turning it on later is not a cold start.
+
+	Guard ORDER is load-bearing: the type / casting check runs BEFORE the settings read, never
+	after. ``EmployeeIR.before_submit`` calls this for EVERY Issue EIR, casting or not, and
+	``frappe.db.get_single_value`` resolves the field from meta and THROWS "Field ... does not
+	exist" when it is absent. Reading the flag first would therefore break every Issue submit in
+	the app on a site running this code before ``bench migrate`` installs the field; scoping first
+	confines that window to casting Issues, where the feature actually lives.
 	"""
 	if eir.type != "Issue" or not is_casting_eir(eir):
+		return
+
+	if not full_casting_tree_reissue_enforced():
 		return
 
 	rows = _mwo_rows(eir)

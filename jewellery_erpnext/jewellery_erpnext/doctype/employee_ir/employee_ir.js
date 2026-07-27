@@ -507,9 +507,11 @@ function set_child_table_batch_filter(frm) {
 	};
 }
 
-// Casting re-issue is all-or-nothing (see doc_events/tree_casting.py). This button pulls in the
-// still-at-casting siblings of whatever casting tree(s) are already on the form so the operator
-// can complete the tree in one click; the submit-time validator blocks a partial re-issue.
+// This button pulls in the still-at-casting siblings of whatever casting tree(s) are already on
+// the form so the operator can complete the tree in one click. The submit-time validator
+// (doc_events/tree_casting.py) blocks a partial re-issue only when
+// MOP Settings.enforce_full_casting_tree_reissue is ticked; this button is shown either way,
+// since assembling the full tree is useful regardless of whether the rule is enforced.
 function add_load_full_casting_tree_button(frm) {
 	if (frm.doc.docstatus !== 0 || frm.doc.type !== "Issue" || !frm.doc.operation) {
 		return;

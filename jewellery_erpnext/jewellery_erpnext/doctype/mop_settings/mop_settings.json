@@ -24,7 +24,10 @@
   "eod_sync_work_order_filter",
   "stock_recon_window_section",
   "stock_recon_window_help",
-  "enforce_stock_recon_window"
+  "enforce_stock_recon_window",
+  "casting_tree_section",
+  "casting_tree_reissue_help",
+  "enforce_full_casting_tree_reissue"
  ],
  "fields": [
   {
@@ -149,6 +152,24 @@
    "fieldname": "enforce_stock_recon_window",
    "fieldtype": "Check",
    "label": "Enforce Stock Reconciliation Time Window"
+  },
+  {
+   "fieldname": "casting_tree_section",
+   "fieldtype": "Section Break",
+   "label": "Casting Tree"
+  },
+  {
+   "fieldname": "casting_tree_reissue_help",
+   "fieldtype": "HTML",
+   "label": "Casting Tree Re-Issue Help",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Full Casting Tree Re-Issue works:</b><ul style='margin:6px 0 0 16px;'><li>Work orders cast on one tree share a <b>Casting Group</b>, stamped on the first Casting Issue.</li><li>When the box below is <b>checked</b>: a later Casting <b>Issue</b> touching that group is blocked at submit unless the Employee IR carries <b>every</b> work order cast together. Use <b>Load Full Casting Tree</b> on the Employee IR to pull in the missing members in one click.</li><li>When <b>unchecked</b> (the default): a <b>partial</b> re-issue is allowed. The subset moves onto a new Tree Number while the rest stay on the old one, so the old tree's Material Details ledger may never reach <b>Received</b>.</li><li><b>Load Full Casting Tree</b> stays available either way &mdash; it is a convenience, not a guard.</li></ul></div>"
+  },
+  {
+   "default": "0",
+   "description": "Master switch. When unchecked, a Casting Issue may carry only part of a casting tree. When checked, an Issue touching a casting group must carry every work order cast together.",
+   "fieldname": "enforce_full_casting_tree_reissue",
+   "fieldtype": "Check",
+   "label": "Enforce Full Casting Tree Re-Issue"
   }
  ],
  "grid_page_length": 50,
