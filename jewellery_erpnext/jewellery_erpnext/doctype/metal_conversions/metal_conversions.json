@@ -330,7 +330,7 @@
    "fieldtype": "Select",
    "label": "Remarks",
    "options": "\nremark"
-  }
+  },
   {
    "fieldname": "section_break_9izc4",
    "fieldtype": "Section Break"
