@@ -7,7 +7,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import get_datetime, now_datetime, nowdate
+from frappe.utils import cint, get_datetime, nowdate
 
 # Employee IR injection submits Material Transfer (WORK ORDER) and/or Repack Stock Entries.
 # Both must appear in Stock Entry Type To Reservation or ``stock_reservation_entry_for_mwo``
@@ -22,6 +22,7 @@ class MOPSettings(Document):
 		self._validate_reservation_types()
 		self._validate_eod_sync_time_permission()
 		self._validate_eod_sync_window()
+		self._log_casting_reissue_toggle()
 
 	def _validate_reservation_types(self):
 		rows = self.get("stock_entry_type_to_reservation") or []
@@ -56,6 +57,28 @@ class MOPSettings(Document):
 			"Edit",
 			_("EOD Sync Time changed from {0} to {1}.").format(
 				frappe.bold(old_time or "(none)"), frappe.bold(new_time or "(none)")
+			),
+		)
+
+	def _log_casting_reissue_toggle(self):
+		"""Leave an audit trail when the casting-tree re-issue rule is switched on or off.
+
+		The flag disables a safety validation (no partial re-issue of a casting tree), so who
+		turned it off and when is worth recording. Mirrors the EOD Sync Time comment above, but
+		without the role gate — MOP Settings is already System Manager-only.
+		"""
+		old = self.get_doc_before_save()
+		if not old:
+			return
+		field = "enforce_full_casting_tree_reissue"
+		was = cint(old.get(field))
+		now = cint(self.get(field))
+		if was == now:
+			return
+		self.add_comment(
+			"Edit",
+			_("Enforce Full Casting Tree Re-Issue turned {0}.").format(
+				frappe.bold(_("ON") if now else _("OFF"))
 			),
 		)
 
