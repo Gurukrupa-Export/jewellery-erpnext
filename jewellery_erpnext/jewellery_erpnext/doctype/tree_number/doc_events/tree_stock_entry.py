@@ -511,6 +511,15 @@ def issue_material(tree, item_code, qty, source_warehouse=None):
 
 	if not item_code:
 		frappe.throw(_("Select an Item to issue."))
+
+	# One crucible melts one alloy: the item must carry the tree's own metal type, touch and
+	# purity. Checked HERE, before any Stock Entry is built, because these SEs are stamped
+	# auto_created=1 and that deliberately bypasses the metal-property validation in
+	# doc_events/stock_entry.py -- so nothing downstream would catch a mis-picked metal. Left
+	# unchecked it is worse than a bad transfer: _ledger_row would open a brand-new
+	# material_details line for the foreign item.
+	tree_balance.validate_item_matches_tree_metal(tree, item_code)
+
 	qty = flt(qty, _se_precision())
 	if qty <= 0:
 		frappe.throw(

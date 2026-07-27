@@ -24,6 +24,10 @@ class TreeNumber(Document):
 		self.calculate_flask_details()
 		self.calculate_material_pending()
 		tree_balance.validate_row_balance(self, previous_violations=previous_violations)
+		# Defence in depth for the same-metal rule: the Issue Material button is the only path
+		# that can add a ledger row, but a direct API write bypasses it. Every live row already
+		# matches its tree, so this needs no non-worsening escape hatch.
+		tree_balance.validate_material_details_metal(self)
 
 	def calculate_tree_details(self):
 		"""Wax tree weight -> computed gold weight using the KT conversion factor."""
@@ -188,3 +192,44 @@ class TreeNumber(Document):
 		self.status = tree_balance.tree_status(self)
 		self.save(ignore_permissions=True)
 		return cancelled
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def tree_metal_item_query(doctype, txt, searchfield, start, page_len, filters):
+	"""Items issuable to a tree: same Metal Type, Metal Touch and Metal Purity.
+
+	Powers the Issue Material dialog's Item field. Convenience only -- the load-bearing check is
+	``tree_material_balance.validate_item_matches_tree_metal`` on the server. A tree with no metal
+	set (the bare ones Main Slip creates) is left unfiltered, matching the guard.
+
+	Metal COLOUR is deliberately not filtered: a multicolour tree holds one row per colour.
+	"""
+	tree = frappe.db.get_value(
+		"Tree Number",
+		(filters or {}).get("tree_number"),
+		["metal_type", "metal_touch", "metal_purity"],
+		as_dict=True,
+	)
+	wanted = tree_balance.tree_metal_attributes(tree) if tree else {}
+
+	conditions = ["i.disabled = 0", "i.name like %(txt)s"]
+	values = {"txt": f"%{txt}%", "start": start, "page_len": page_len}
+	for idx, (attribute, value) in enumerate(wanted.items()):
+		# One EXISTS per attribute: an item must carry ALL of them, and a plain join would
+		# multiply rows instead of intersecting them.
+		conditions.append(
+			f"""EXISTS (SELECT 1 FROM `tabItem Variant Attribute` a{idx}
+				WHERE a{idx}.parent = i.name
+				  AND a{idx}.attribute = %(attr{idx})s
+				  AND a{idx}.attribute_value = %(val{idx})s)"""
+		)
+		values[f"attr{idx}"] = attribute
+		values[f"val{idx}"] = value
+
+	return frappe.db.sql(
+		f"""SELECT i.name, i.item_name FROM `tabItem` i
+			WHERE {" AND ".join(conditions)}
+			ORDER BY i.name LIMIT %(start)s, %(page_len)s""",
+		values,
+	)

@@ -29,6 +29,9 @@ from frappe.tests import IntegrationTestCase
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
 	tree_casting,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
+	tree_material_balance as tree_balance,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import tree_utils
 from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events import (
 	tree_stock_entry as tse,
@@ -1223,6 +1226,100 @@ class TestIssueMaterial(IntegrationTestCase):
 		tree = _new_tree()
 		with self.assertRaises(ValidationError):
 			_run(tse.issue_material, tree, "", 5.0)
+
+
+class TestIssueMaterialSameMetal(IntegrationTestCase):
+	"""Only metal of the tree's own type / touch / purity may be issued onto it.
+
+	One crucible melts one alloy. Colour is NOT checked: a multicolour tree legitimately holds one
+	ledger row per colour (live tree GEPL-TR-26-00109 carries both -Y and -P), and a Tree Number
+	only has room for a single metal_colour."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _tree(self, touch="18KT", purity="75.4"):
+		tree = _new_tree()
+		tree.metal_type = "Gold"
+		tree.metal_touch = touch
+		tree.metal_purity = purity
+		tree.metal_colour = "Yellow"
+		return tree
+
+	def _issue(self, tree, item_code, attrs, qty=5.0):
+		"""Run issue_material with the item's attribute lookup stubbed."""
+		with patch.object(
+			tse.tree_balance, "item_metal_attributes", return_value={item_code: attrs}
+		):
+			return _run(tse.issue_material, tree, item_code, qty)
+
+	GOLD_18KT = {"Metal Type": "Gold", "Metal Touch": "18KT", "Metal Purity": "75.4"}
+
+	def test_matching_metal_issues(self):
+		tree = self._tree()
+		self._issue(tree, "M-G-18KT-75.4-Y", self.GOLD_18KT)
+		self.assertEqual(tree.material_details[0].issue_qty, 5.0)
+
+	def test_different_colour_is_allowed(self):
+		# Same alloy, other colour -> fine. This is the multicolour tree case.
+		tree = self._tree()
+		attrs = dict(self.GOLD_18KT)
+		self._issue(tree, "M-G-18KT-75.4-P", attrs)
+		self.assertEqual(tree.material_details[0].item_code, "M-G-18KT-75.4-P")
+
+	def test_wrong_touch_throws(self):
+		tree = self._tree()
+		attrs = {"Metal Type": "Gold", "Metal Touch": "22KT", "Metal Purity": "75.4"}
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-G-22KT-91.9-Y", attrs)
+
+	def test_wrong_purity_throws(self):
+		tree = self._tree()
+		attrs = {"Metal Type": "Gold", "Metal Touch": "18KT", "Metal Purity": "91.9"}
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-G-18KT-91.9-Y", attrs)
+
+	def test_wrong_type_throws(self):
+		tree = self._tree()
+		attrs = {"Metal Type": "Silver", "Metal Touch": "18KT", "Metal Purity": "75.4"}
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-S-18KT-75.4-Y", attrs)
+
+	def test_item_without_attributes_throws(self):
+		# The master alloys (M-AL, M-Alloy 381, ...) declare only Metal Type. They belong in the
+		# melt, not on a tree, and cannot be shown to match -- so they are rejected.
+		tree = self._tree()
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-AL", {"Metal Type": "Gold"})
+
+	def test_purity_is_compared_as_a_string(self):
+		# "75.40" is a different Attribute Value from "75.4"; coercing to float would accept a
+		# purity the rest of the app (BOM, variant resolution) treats as distinct.
+		tree = self._tree(purity="75.4")
+		attrs = {"Metal Type": "Gold", "Metal Touch": "18KT", "Metal Purity": "75.40"}
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-G-18KT-75.40-Y", attrs)
+
+	def test_tree_without_metal_is_unconstrained(self):
+		# Bare trees created by Main Slip carry no metal at all (377 of them live). They must stay
+		# issuable -- there is nothing to match against.
+		tree = _new_tree()
+		self.assertEqual(tree_balance.tree_metal_attributes(tree), {})
+		_run(tse.issue_material, tree, "ANYTHING", 5.0)
+		self.assertEqual(tree.material_details[0].issue_qty, 5.0)
+
+	def test_message_names_both_sides(self):
+		tree = self._tree()
+		attrs = {"Metal Type": "Gold", "Metal Touch": "22KT", "Metal Purity": "75.4"}
+		with self.assertRaises(ValidationError) as ctx:
+			self._issue(tree, "M-G-22KT-91.9-Y", attrs)
+		msg = str(ctx.exception)
+		for token in ("M-G-22KT-91.9-Y", "22KT", "18KT", "Metal Touch"):
+			self.assertIn(token, msg)
+
+	def tearDown(self):
+		return super().tearDown()
 
 
 # ---------------------------------------------------------------------------

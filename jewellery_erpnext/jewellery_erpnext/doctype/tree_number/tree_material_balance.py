@@ -36,6 +36,19 @@ STATUS_SUBMITTED = "Submitted"
 
 QTY_FIELDS = ("issue_qty", "receive_qty", "loss_qty")
 
+# Item Variant Attribute names -> the Tree Number field holding the same value.
+#
+# Metal COLOUR is deliberately absent. A Tree Number carries ONE metal_colour, copied from the
+# first work order, but a multicolour tree legitimately holds one ledger row per colour -- live
+# tree GEPL-TR-26-00109 has both M-G-18KT-75.4-Y and -P while its own colour reads "Pink". Checking
+# colour would reject the Yellow row on exactly the trees the feature exists for.
+# ``validate_casting_tree`` exempts colour for the same reason.
+METAL_ATTRIBUTE_FIELDS = {
+	"Metal Type": "metal_type",
+	"Metal Touch": "metal_touch",
+	"Metal Purity": "metal_purity",
+}
+
 
 def qty_precision():
 	"""Qty precision for the ledger -- pinned to ``Stock Entry Detail.transfer_qty`` (3).
@@ -256,3 +269,117 @@ def tree_status(tree):
 		for md in rows
 	)
 	return STATUS_RECEIVED if fully else STATUS_PARTIALLY_RECEIVED
+
+
+# ---------------------------------------------------------------------------
+# Same-metal rule
+# ---------------------------------------------------------------------------
+def item_metal_attributes(item_codes):
+	"""``{item_code: {"Metal Type": v, "Metal Touch": v, "Metal Purity": v}}``.
+
+	One query for every item asked about -- ``TreeNumber.validate`` runs on every save, so a
+	per-row lookup here would quietly become N+1. Follows the read shape already used by
+	``jewellery_erpnext.query.get_item_code``.
+	"""
+	if isinstance(item_codes, str):
+		item_codes = [item_codes]
+	item_codes = [i for i in dict.fromkeys(item_codes) if i]
+	if not item_codes:
+		return {}
+
+	out = {i: {} for i in item_codes}
+	for row in frappe.db.get_all(
+		"Item Variant Attribute",
+		filters={
+			"parent": ["in", item_codes],
+			"attribute": ["in", list(METAL_ATTRIBUTE_FIELDS)],
+		},
+		fields=["parent", "attribute", "attribute_value"],
+	):
+		out.setdefault(row.parent, {})[row.attribute] = row.attribute_value
+	return out
+
+
+def _norm(value):
+	"""Attribute values are Attribute Value link names -- compare as trimmed strings.
+
+	Deliberately NOT numeric: "75.4" and "75.40" are two different Attribute Values, and coercing
+	them to floats would silently accept a purity the master data treats as distinct.
+	"""
+	return (value or "").strip()
+
+
+def tree_metal_attributes(tree):
+	"""``{attribute name: value}`` the tree constrains, skipping blanks.
+
+	Empty for the bare Tree Numbers Main Slip creates (no employee, no metal, no ledger) -- there
+	is nothing to match against, so those trees are left unconstrained.
+	"""
+	out = {}
+	for attribute, fieldname in METAL_ATTRIBUTE_FIELDS.items():
+		value = _norm(_get(tree, fieldname))
+		if value:
+			out[attribute] = value
+	return out
+
+
+def validate_item_matches_tree_metal(
+	tree, item_code, attributes_by_item=None, row_idx=None
+):
+	"""Only metal of the tree's own type / touch / purity may go onto that tree.
+
+	Casting melts one alloy per crucible, so an item of a different touch or purity has no business
+	on the tree -- and ``_ledger_row`` would silently open a NEW material_details line for it,
+	turning a mis-pick into a second ledger the operator never asked for.
+
+	An item that does not declare the attribute is rejected rather than assumed compatible: it
+	cannot be shown to match. On the live site every such item is a master alloy (M-AL,
+	M-Alloy 381, ...) that belongs in the melt, not on a tree.
+	"""
+	wanted = tree_metal_attributes(tree)
+	if not wanted or not item_code:
+		return
+
+	if attributes_by_item is None:
+		attributes_by_item = item_metal_attributes(item_code)
+	found = attributes_by_item.get(item_code) or {}
+
+	where = _("Row #{0}: ").format(row_idx) if row_idx else ""
+	for attribute, tree_value in wanted.items():
+		item_value = _norm(found.get(attribute))
+		if not item_value:
+			frappe.throw(
+				_(
+					"{0}Item {1} does not declare a {2}, so it cannot be matched against Tree {3} "
+					"({2} {4}). Only metal of the same Metal Type, Metal Touch and Metal Purity may "
+					"be issued to a tree."
+				).format(where, item_code, attribute, _get(tree, "name"), tree_value),
+				title=_("Metal Does Not Match Tree"),
+			)
+		if item_value != tree_value:
+			frappe.throw(
+				_(
+					"{0}Item {1} has {2} <b>{3}</b> but Tree {4} is {2} <b>{5}</b>. Only metal of "
+					"the same Metal Type, Metal Touch and Metal Purity may be issued to a tree."
+				).format(
+					where,
+					item_code,
+					attribute,
+					item_value,
+					_get(tree, "name"),
+					tree_value,
+				),
+				title=_("Metal Does Not Match Tree"),
+			)
+
+
+def validate_material_details_metal(tree):
+	"""Every ledger row must carry metal matching the tree. One query for all rows."""
+	rows = _get(tree, "material_details") or []
+	if not rows or not tree_metal_attributes(tree):
+		return
+	attributes_by_item = item_metal_attributes([r.item_code for r in rows])
+	for row in rows:
+		validate_item_matches_tree_metal(
+			tree, row.item_code, attributes_by_item=attributes_by_item, row_idx=row.idx
+		)

@@ -220,7 +220,21 @@ function render_balance_summary(frm) {
 function issue_material_dialog(frm) {
 	frappe.prompt(
 		[
-			{ fieldtype: "Link", options: "Item", fieldname: "item_code", label: __("Item"), reqd: 1 },
+			{
+				fieldtype: "Link",
+				options: "Item",
+				fieldname: "item_code",
+				label: __("Item"),
+				reqd: 1,
+				// Convenience only -- the server rejects a metal mismatch regardless. This just
+				// stops offering items that cannot be issued (including the master alloys, which
+				// carry no Metal Touch/Purity at all). Metal COLOUR is intentionally not filtered:
+				// a multicolour tree legitimately holds one row per colour.
+				get_query: () => ({
+					query: "jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_number.tree_metal_item_query",
+					filters: { tree_number: frm.doc.name },
+				}),
+			},
 			{ fieldtype: "Float", fieldname: "qty", label: __("Qty"), reqd: 1 },
 			{
 				fieldtype: "Link",

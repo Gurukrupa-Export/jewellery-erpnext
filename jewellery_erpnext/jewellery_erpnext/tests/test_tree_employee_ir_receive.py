@@ -6,7 +6,7 @@
 The casting Employee IR Receive may credit a tree ONLY with metal actually drawn
 FROM that tree. That quantity is the per-row gain::
 
-	draw_row = max(received_gross_wt - gross_wt, 0)
+        draw_row = max(received_gross_wt - gross_wt, 0)
 
 which is exactly what ``inject_extra_metal_for_eir_receive`` physically pulls out
 of the employee MSL (Raw Material) warehouse -- the same warehouse the tree
@@ -420,3 +420,60 @@ class TestItemMapping(_TreeReceiveHarness):
 		eir = make_recv_eir([("MWO-A", 0.0, 1.000)])
 		with self.assertRaises(ValidationError):
 			self.run_update(eir, tree)
+
+
+class TestAgreedWorkedExample(_TreeReceiveHarness):
+	"""The numbers the business signed off on, pinned end to end.
+
+	    Employee IR Issue, operation gross 2.9  -> tree issue_qty 0   (NOT 2.9)
+	    operator issues 2 g on the tree button  -> tree issue_qty 2
+	    Employee IR Receive, received 2         -> tree receive_qty 0 (2 <= 2.9, no gain)
+	    Employee IR Receive, received 3.9       -> tree receive_qty 1 (3.9 - 2.9)
+
+	The Employee IR only ever hands the tree what came back ABOVE the weight the operation was
+	already carrying; everything at or below 2.9 is the operation's own metal returning.
+	"""
+
+	def test_issue_seeds_zero_not_the_operation_gross(self):
+		# create_tree_on_issue lists the metal item but leaves issue_qty at 0 -- the operation's
+		# 2.9 g is planned weight, not metal that has been put on the tree.
+		tree = make_tree(issue=0.0, status="Draft")
+		self.assertEqual(self.row(tree).issue_qty, 0.0)
+		self.assertEqual(tree_casting._tree_status(tree), "Draft")
+
+	def test_manual_issue_of_2_is_what_the_ledger_records(self):
+		tree = make_tree(issue=2.0)
+		self.assertEqual(self.row(tree).issue_qty, 2.0)
+		self.assertAlmostEqual(self.row(tree).pending_qty, 2.0, places=3)
+		self.assertEqual(tree_casting._tree_status(tree), "Issued")
+
+	def test_received_2_against_gross_2_9_draws_nothing(self):
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 2.0)])
+		self.run_validate(eir, tree)
+		self.run_update(eir, tree)
+		self.assertAlmostEqual(self.row(tree).receive_qty, 0.0, places=3)
+		self.assertAlmostEqual(self.row(tree).pending_qty, 2.0, places=3)
+
+	def test_received_3_9_against_gross_2_9_draws_exactly_1(self):
+		tree = make_tree(issue=2.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)])
+		self.run_validate(eir, tree)
+		self.run_update(eir, tree)
+		self.assertAlmostEqual(self.row(tree).receive_qty, 1.0, places=3)
+		self.assertAlmostEqual(self.row(tree).pending_qty, 1.0, places=3)
+		self.assertEqual(tree.status, "Partially Received")
+
+	def test_the_1_g_draw_needs_the_2_g_to_have_been_issued(self):
+		# Same receive against a tree nobody issued to -> blocked, not silently recorded.
+		tree = make_tree(issue=0.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)])
+		with self.assertRaises(ValidationError):
+			self.run_validate(eir, tree)
+
+	def test_cancelling_that_receive_returns_the_1_g(self):
+		tree = make_tree(issue=2.0, receive=1.0)
+		eir = make_recv_eir([("MWO-A", 2.9, 3.9)])
+		self.run_update(eir, tree, cancel=True)
+		self.assertAlmostEqual(self.row(tree).receive_qty, 0.0, places=3)
+		self.assertAlmostEqual(self.row(tree).pending_qty, 2.0, places=3)
