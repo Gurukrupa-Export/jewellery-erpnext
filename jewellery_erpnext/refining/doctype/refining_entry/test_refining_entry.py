@@ -1143,17 +1143,17 @@ class TestRefiningEntry(IntegrationTestCase):
 		return re
 
 	def test_recovered_metal_reuses_existing_batch(self):
-		"""The refined 24KT belongs in the batch the item already has — the one the
-		batch selector shows — not in a fresh per-receipt batch."""
+		"""The refined 24KT belongs in a batch the item already has — one the batch
+		selector shows — not in a fresh per-receipt batch."""
 		re = self._external_scrap_entry()
 
-		# Seed an existing batch of the recovered metal item in the receiving warehouse.
+		# Seed an existing batch of the recovered metal item in the receiving warehouse,
+		# so there is a candidate even when this test runs on its own.
 		gold_receipt("Waxing RM - T", re.refined_metal_item, 1.0)
-		existing = frappe.db.get_value(
-			"Stock Entry Detail",
-			{"item_code": re.refined_metal_item, "t_warehouse": "Waxing RM - T"},
-			"batch_no",
-			order_by="creation desc",
+		existing = set(
+			frappe.get_all(
+				"Batch", filters={"item": re.refined_metal_item}, pluck="name"
+			)
 		)
 		self.assertTrue(existing, "fixture produced no batch for the recovered metal")
 
@@ -1164,7 +1164,19 @@ class TestRefiningEntry(IntegrationTestCase):
 		metal_row = next(
 			row for row in repack.items if row.item_code == re.refined_metal_item
 		)
-		self.assertEqual(metal_row.batch_no, existing)
+		# WHICH existing batch wins is FIFO's call (get_batch_qty returns the site's
+		# configured pick order), and earlier tests in this suite have already received
+		# 24KT into this same warehouse — so pin the requirement itself: the row lands in
+		# a batch that already existed, and no new batch is minted for the item.
+		self.assertIn(metal_row.batch_no, existing)
+		self.assertEqual(
+			set(
+				frappe.get_all(
+					"Batch", filters={"item": re.refined_metal_item}, pluck="name"
+				)
+			),
+			existing,
+		)
 
 	def test_recovered_metal_skips_a_customer_owned_batch(self):
 		"""Company recovery must never land in a customer's batch — ownership never
