@@ -3589,6 +3589,20 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	_apply_fg_bom_dynamic_fields(new_bom, self)
 
 	new_bom.flags.ignore_links = True
+
+	if self.company == "Gurukrupa Export Private Limited":
+		new_bom.custom_gk_cost_gold_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("metal_detail", []))
+		new_bom.custom_gk_cost_diamond_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("diamond_detail", []))
+		new_bom.custom_gk_cost_gemstone_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("gemstone_detail", []))
+		new_bom.custom_gk_cost_finding_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("finding_detail", []))
+		new_bom.custom_gk_cost_other_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("other_detail", []))
+	elif self.company == "KG GK Jewellers Private Limited":
+		new_bom.custom_kg_cost_gold_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("metal_detail", []))
+		new_bom.custom_kg_cost_diamond_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("diamond_detail", []))
+		new_bom.custom_kg_cost_gemstone_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("gemstone_detail", []))
+		new_bom.custom_kg_cost_finding_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("finding_detail", []))
+		new_bom.custom_kg_cost_other_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("other_detail", []))
+
 	new_bom.insert(ignore_mandatory=True, ignore_links=True)
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
