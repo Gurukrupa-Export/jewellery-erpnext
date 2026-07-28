@@ -2853,6 +2853,13 @@ def setup_data():
 			}
 		).insert(ignore_permissions=True)
 
+	# A fresh CI site has no default company anywhere, so anything that derives company
+	# from defaults (batch autoname's prefix, ERPNext's own doc defaults) has nothing to
+	# read. Pin it once here rather than per-test.
+	if not frappe.defaults.get_global_default("company"):
+		frappe.db.set_default("company", "Test_Company")
+		frappe.db.set_single_value("Global Defaults", "default_company", "Test_Company")
+
 	if not frappe.db.exists("Fiscal Year", "2026-2027"):
 		frappe.get_doc(
 			{
