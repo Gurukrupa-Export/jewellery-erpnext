@@ -1,159 +1,201 @@
 {
-    "actions": [],
-    "allow_rename": 1,
-    "creation": "2026-02-16 18:58:35.162394",
-    "doctype": "DocType",
-    "engine": "InnoDB",
-    "field_order": [
-        "stock_entry_type_to_reservation",
-        "sync_mop_log",
-        "eod_sync_section",
-        "eod_sync_time",
-        "eod_sync_from_datetime",
-        "eod_sync_to_datetime",
-        "eod_sync_running",
-        "eod_sync_started_on",
-        "eod_sync_last_completed_on",
-        "eod_sync_lock_until",
-        "eod_sync_status",
-        "eod_sync_last_error_log",
-        "eod_sync_last_sync_log",
-        "eod_sync_message",
-        "eod_sync_work_order_filter_section",
-        "eod_sync_work_order_filter_help",
-        "eod_sync_work_order_filter"
-    ],
-    "fields": [
-        {
-            "fieldname": "stock_entry_type_to_reservation",
-            "fieldtype": "Table",
-            "label": "Stock Entry Type To Reservation",
-            "options": "Stock Entry Type To Reservation"
-        },
-        {
-            "fieldname": "sync_mop_log",
-            "fieldtype": "Button",
-            "label": "EOD Sync"
-        },
-        {
-            "fieldname": "eod_sync_section",
-            "fieldtype": "Section Break",
-            "label": "EOD Sync Settings"
-        },
-        {
-            "default": "00:00:00",
-            "fieldname": "eod_sync_time",
-            "fieldtype": "Time",
-            "label": "EOD Sync Time",
-            "reqd": 1
-        },
-        {
-            "description": "Start of the window scanned by a manual EOD Sync. Defaults to today 00:00. The automatic nightly sync always uses today and ignores this.",
-            "fieldname": "eod_sync_from_datetime",
-            "fieldtype": "Datetime",
-            "label": "EOD Sync From"
-        },
-        {
-            "description": "End of the window scanned by a manual EOD Sync. Defaults to the end of today. The automatic nightly sync always uses today and ignores this.",
-            "fieldname": "eod_sync_to_datetime",
-            "fieldtype": "Datetime",
-            "label": "EOD Sync To"
-        },
-        {
-            "default": "0",
-            "fieldname": "eod_sync_running",
-            "fieldtype": "Check",
-            "label": "EOD Sync Running",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_started_on",
-            "fieldtype": "Datetime",
-            "label": "EOD Sync Started On",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_last_completed_on",
-            "fieldtype": "Datetime",
-            "label": "Last Completed On",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_lock_until",
-            "fieldtype": "Datetime",
-            "label": "EOD Sync Lock Until",
-            "read_only": 1
-        },
-        {
-            "default": "Idle",
-            "fieldname": "eod_sync_status",
-            "fieldtype": "Select",
-            "label": "EOD Sync Status",
-            "options": "\nIdle\nQueued\nRunning\nCompleted\nFailed\nTimeout Released",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_last_error_log",
-            "fieldtype": "Link",
-            "label": "Last EOD Error Log",
-            "options": "Error Log",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_last_sync_log",
-            "fieldtype": "Link",
-            "label": "Latest EOD Sync Log",
-            "options": "MOP EOD Sync Log",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_message",
-            "fieldtype": "Small Text",
-            "label": "EOD Sync Message",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_work_order_filter_section",
-            "fieldtype": "Section Break",
-            "label": "Selective EOD Sync"
-        },
-        {
-            "fieldname": "eod_sync_work_order_filter_help",
-            "fieldtype": "HTML",
-            "label": "EOD Sync Filter Help",
-            "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Selective EOD Sync Works:</b><ul style='margin:6px 0 0 16px;'><li>If this table is <b>empty</b>, EOD Sync will process all eligible MOP Logs created today.</li><li>If rows are added, EOD Sync will process <b>only the selected Manufacturing Work Orders / Operations</b> from the configured Sync From Datetime onward.</li><li>Previous-day MOP Logs and logs before Sync From Datetime will <b>not</b> be processed.</li></ul></div>"
-        },
-        {
-            "fieldname": "eod_sync_work_order_filter",
-            "fieldtype": "Table",
-            "label": "EOD Sync Work Order Filter",
-            "options": "MOP EOD Sync Work Order Filter"
-        }
-    ],
-    "grid_page_length": 50,
-    "index_web_pages_for_search": 1,
-    "issingle": 1,
-    "links": [],
-    "modified": "2026-05-31 00:00:00.000000",
-    "modified_by": "Administrator",
-    "module": "Jewellery Erpnext",
-    "name": "MOP Settings",
-    "owner": "Administrator",
-    "permissions": [
-        {
-            "create": 1,
-            "delete": 1,
-            "email": 1,
-            "print": 1,
-            "read": 1,
-            "role": "System Manager",
-            "share": 1,
-            "write": 1
-        }
-    ],
-    "row_format": "Dynamic",
-    "rows_threshold_for_grid_search": 20,
-    "sort_field": "creation",
-    "sort_order": "DESC",
-    "states": []
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-02-16 18:58:35.162394",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "stock_entry_type_to_reservation",
+  "sync_mop_log",
+  "eod_sync_section",
+  "eod_sync_time",
+  "eod_sync_from_datetime",
+  "eod_sync_to_datetime",
+  "eod_sync_running",
+  "eod_sync_started_on",
+  "eod_sync_last_completed_on",
+  "eod_sync_lock_until",
+  "eod_sync_status",
+  "eod_sync_last_error_log",
+  "eod_sync_last_sync_log",
+  "eod_sync_message",
+  "eod_sync_work_order_filter_section",
+  "eod_sync_work_order_filter_help",
+  "eod_sync_work_order_filter",
+  "stock_recon_window_section",
+  "stock_recon_window_help",
+  "enforce_stock_recon_window",
+  "casting_tree_section",
+  "casting_tree_reissue_help",
+  "enforce_full_casting_tree_reissue"
+ ],
+ "fields": [
+  {
+   "fieldname": "stock_entry_type_to_reservation",
+   "fieldtype": "Table",
+   "label": "Stock Entry Type To Reservation",
+   "options": "Stock Entry Type To Reservation"
+  },
+  {
+   "fieldname": "sync_mop_log",
+   "fieldtype": "Button",
+   "label": "EOD Sync"
+  },
+  {
+   "fieldname": "eod_sync_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Sync Settings"
+  },
+  {
+   "default": "00:00:00",
+   "fieldname": "eod_sync_time",
+   "fieldtype": "Time",
+   "label": "EOD Sync Time",
+   "reqd": 1
+  },
+  {
+   "description": "Start of the window scanned by a manual EOD Sync. Defaults to today 00:00. The automatic nightly sync always uses today and ignores this.",
+   "fieldname": "eod_sync_from_datetime",
+   "fieldtype": "Datetime",
+   "label": "EOD Sync From"
+  },
+  {
+   "description": "End of the window scanned by a manual EOD Sync. Defaults to the end of today. The automatic nightly sync always uses today and ignores this.",
+   "fieldname": "eod_sync_to_datetime",
+   "fieldtype": "Datetime",
+   "label": "EOD Sync To"
+  },
+  {
+   "default": "0",
+   "fieldname": "eod_sync_running",
+   "fieldtype": "Check",
+   "label": "EOD Sync Running",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_started_on",
+   "fieldtype": "Datetime",
+   "label": "EOD Sync Started On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_last_completed_on",
+   "fieldtype": "Datetime",
+   "label": "Last Completed On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_lock_until",
+   "fieldtype": "Datetime",
+   "label": "EOD Sync Lock Until",
+   "read_only": 1
+  },
+  {
+   "default": "Idle",
+   "fieldname": "eod_sync_status",
+   "fieldtype": "Select",
+   "label": "EOD Sync Status",
+   "options": "\nIdle\nQueued\nRunning\nCompleted\nFailed\nTimeout Released",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_last_error_log",
+   "fieldtype": "Link",
+   "label": "Last EOD Error Log",
+   "options": "Error Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_last_sync_log",
+   "fieldtype": "Link",
+   "label": "Latest EOD Sync Log",
+   "options": "MOP EOD Sync Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_message",
+   "fieldtype": "Small Text",
+   "label": "EOD Sync Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_work_order_filter_section",
+   "fieldtype": "Section Break",
+   "label": "Selective EOD Sync"
+  },
+  {
+   "fieldname": "eod_sync_work_order_filter_help",
+   "fieldtype": "HTML",
+   "label": "EOD Sync Filter Help",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Selective EOD Sync Works:</b><ul style='margin:6px 0 0 16px;'><li>If this table is <b>empty</b>, EOD Sync will process all eligible MOP Logs created today.</li><li>If rows are added, EOD Sync will process <b>only the selected Manufacturing Work Orders / Operations</b> from the configured Sync From Datetime onward.</li><li>Previous-day MOP Logs and logs before Sync From Datetime will <b>not</b> be processed.</li></ul></div>"
+  },
+  {
+   "fieldname": "eod_sync_work_order_filter",
+   "fieldtype": "Table",
+   "label": "EOD Sync Work Order Filter",
+   "options": "MOP EOD Sync Work Order Filter"
+  },
+  {
+   "fieldname": "stock_recon_window_section",
+   "fieldtype": "Section Break",
+   "label": "Stock Reconciliation Time Window"
+  },
+  {
+   "fieldname": "stock_recon_window_help",
+   "fieldtype": "HTML",
+   "label": "Stock Reconciliation Window Help",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How the Stock Reconciliation Window works:</b><ul style='margin:6px 0 0 16px;'><li>Set <b>From Time</b> / <b>To Time</b> on each <b>Department</b>.</li><li>While a department's window is <b>open</b>: Stock Reconciliation for it is allowed, and all other stock movement touching it is <b>blocked</b>.</li><li>Outside the window: stock movement is allowed and Stock Reconciliation is <b>blocked</b>.</li><li>A department with <b>no</b> From/To Time set is never restricted.</li><li>Unchecking the box below disables the whole feature immediately.</li></ul></div>"
+  },
+  {
+   "default": "0",
+   "description": "Master switch. When unchecked, no reconciliation-window restriction is applied anywhere.",
+   "fieldname": "enforce_stock_recon_window",
+   "fieldtype": "Check",
+   "label": "Enforce Stock Reconciliation Time Window"
+  },
+  {
+   "fieldname": "casting_tree_section",
+   "fieldtype": "Section Break",
+   "label": "Casting Tree"
+  },
+  {
+   "fieldname": "casting_tree_reissue_help",
+   "fieldtype": "HTML",
+   "label": "Casting Tree Re-Issue Help",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Full Casting Tree Re-Issue works:</b><ul style='margin:6px 0 0 16px;'><li>Work orders cast on one tree share a <b>Casting Group</b>, stamped on the first Casting Issue.</li><li>When the box below is <b>checked</b>: a later Casting <b>Issue</b> touching that group is blocked at submit unless the Employee IR carries <b>every</b> work order cast together. Use <b>Load Full Casting Tree</b> on the Employee IR to pull in the missing members in one click.</li><li>When <b>unchecked</b> (the default): a <b>partial</b> re-issue is allowed. The subset moves onto a new Tree Number while the rest stay on the old one, so the old tree's Material Details ledger may never reach <b>Received</b>.</li><li><b>Load Full Casting Tree</b> stays available either way &mdash; it is a convenience, not a guard.</li></ul></div>"
+  },
+  {
+   "default": "0",
+   "description": "Master switch. When unchecked, a Casting Issue may carry only part of a casting tree. When checked, an Issue touching a casting group must carry every work order cast together.",
+   "fieldname": "enforce_full_casting_tree_reissue",
+   "fieldtype": "Check",
+   "label": "Enforce Full Casting Tree Re-Issue"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-05-31 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "MOP Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
 }

@@ -36,3 +36,41 @@ def get_batch_details(doctype, txt, searchfield, start, page_len, filters):
 	)
 	data = query.run()
 	return data
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def get_manual_loss_items(doctype, txt, searchfield, start, page_len, filters):
+	# Returns item_code candidates for Manually Book Loss Details, restricted to
+	# items that appear in the selected Manufacturing Work Order (via MOP Log,
+	# the same ledger get_batch_details reads). Narrowed by manufacturing_operation
+	# when the row supplies it. If no work order is set yet the dropdown is empty
+	# on purpose so the operator selects the work order first.
+	searchfield = "item_code"
+	if not filters.get("manufacturing_work_order"):
+		return []
+
+	ML = frappe.qb.DocType("MOP Log")
+
+	query = (
+		frappe.qb.from_(ML)
+		.select(ML.item_code)
+		.distinct()
+		.where(
+			(ML.manufacturing_work_order == filters.get("manufacturing_work_order"))
+			& (ML.is_cancelled == 0)
+		)
+	)
+
+	if filters.get("manufacturing_operation"):
+		query = query.where(
+			ML.manufacturing_operation == filters.get("manufacturing_operation")
+		)
+
+	query = (
+		query.where((ML[searchfield].like(f"%{txt}%")))
+		.orderby(ML.item_code, order=frappe.qb.desc)
+		.limit(page_len)
+		.offset(start)
+	)
+	return query.run()
