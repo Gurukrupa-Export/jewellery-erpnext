@@ -3,6 +3,7 @@ import random
 import string
 
 import frappe
+from frappe import _
 from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
@@ -45,9 +46,20 @@ def autoname(self, method=None):
 			"Sadguru Diamond": "SD",
 			"Sadguru Hallmarking Centre": "SHC",
 		}
-		company_abbr = company.get(self.custom_company) or company.get(
-			frappe.defaults.get_user_default("company")
+		batch_company = (
+			self.get("custom_company")
+			or frappe.defaults.get_user_default("company")
+			or frappe.defaults.get_global_default("company")
 		)
+		company_abbr = company.get(batch_company)
+		if not company_abbr:
+			frappe.throw(
+				_(
+					"Cannot generate a batch name for item {0}: no batch abbreviation is "
+					"mapped for company {1}. Set the Batch's Company, or add the company to "
+					"the abbreviation map in batch.autoname."
+				).format(frappe.bold(self.item), frappe.bold(batch_company or "-"))
+			)
 
 		if item_group == "Diamond - V":
 			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-D".format(
@@ -203,7 +215,9 @@ def _resolve_metal_purity(item_code):
 		"attribute_value",
 	)
 	if attribute_value:
-		pct = frappe.db.get_value("Attribute Value", attribute_value, "purity_percentage")
+		pct = frappe.db.get_value(
+			"Attribute Value", attribute_value, "purity_percentage"
+		)
 		if pct:
 			return flt(pct)
 		try:
