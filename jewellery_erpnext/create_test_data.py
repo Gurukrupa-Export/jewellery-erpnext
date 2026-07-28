@@ -2764,6 +2764,14 @@ def create_test_data():
 			)
 
 			_ensure_serial_no_ownership_tag_field()
+
+			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures either — same
+			# reasoning as custom_ownership_tag above.
+			from jewellery_erpnext.patches.add_serial_no_order_type_field import (
+				execute as _ensure_serial_no_order_type_field,
+			)
+
+			_ensure_serial_no_order_type_field()
 			# Batch.custom_employee (employee-wise scrap/dust refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /
