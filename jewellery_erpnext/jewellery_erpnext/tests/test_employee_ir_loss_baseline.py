@@ -67,6 +67,9 @@ class _StubEIR:
 		self.type = "Receive"
 		self.company = "GE"
 		self.department = "Trishul - GEPL"
+		# Department Operation the receive belongs to; None configures no
+		# finding-category loss gate, so the baseline behaviour is unchanged.
+		self.operation = None
 		self.employee_ir_operations = ops
 		self.employee_loss_details = []
 		self.manually_book_loss_details = []
@@ -197,6 +200,8 @@ class TestBookMetalLossPrecisionResidual(IntegrationTestCase):
 		class DocStub:
 			def __init__(self, manual_rows):
 				self.manually_book_loss_details = manual_rows or []
+				# No finding-category loss gate configured for these baselines.
+				self.operation = None
 
 		doc = DocStub(manual_loss_rows)
 
@@ -730,6 +735,8 @@ class TestBookMetalLossSpecExamples(IntegrationTestCase):
 		class DocStub:
 			def __init__(self, manual_rows):
 				self.manually_book_loss_details = manual_rows or []
+				# No finding-category loss gate configured for these baselines.
+				self.operation = None
 
 		doc = DocStub(manual_loss_rows)
 

@@ -25,6 +25,12 @@ from frappe.utils import (
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
 	get_po_rates,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_loss_gate import (
+	get_finding_category_map,
+	get_loss_booking_map,
+	is_loss_booking_blocked,
+	validate_loss_rows_against_gate,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_utils import (
 	get_summary_data,
 )
@@ -107,6 +113,11 @@ class EmployeeIR(Document):
 
 	def on_submit(self):
 		validate_loss_tables_required(self)
+		# Re-checked at submit, not just at validate: validate_process_loss and
+		# validate_manually_book_loss_details both early-return once docstatus != 0,
+		# so a draft saved before the Department Operation flag was flipped would
+		# otherwise submit with stale loss rows on a now-blocked category.
+		validate_loss_rows_against_gate(self)
 		validate_qc(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
@@ -147,6 +158,7 @@ class EmployeeIR(Document):
 		round_employee_ir_weights_to_precision(self)
 		self.validate_process_loss()
 		validate_manually_book_loss_details(self)
+		validate_loss_rows_against_gate(self)
 		# valid_reparing_or_next_operation(self)
 		validate_loss_qty(self)
 		validate_casting_tree(self)
@@ -783,6 +795,12 @@ class EmployeeIR(Document):
 			{"company": self.company, "department": self.department},
 			"allowed_loss_percentage",
 		)
+		# Per-operation finding-category loss gate, read once for the whole
+		# document rather than per book_metal_loss call. Keyed on self.operation
+		# (the Department Operation actually being received), not on the
+		# {company, department} filter dict used for allowed_loss_percentage above.
+		booking_map = get_loss_booking_map(self.operation)
+
 		rows_to_append = []
 		for child in self.employee_ir_operations:
 			if child.received_gross_wt and self.type == "Receive":
@@ -791,7 +809,7 @@ class EmployeeIR(Document):
 				opt = child.manufacturing_operation
 				r_gwt = child.received_gross_wt
 				rows_to_append += self.book_metal_loss(
-					mwo, opt, gwt, r_gwt, allowed_loss_percentage
+					mwo, opt, gwt, r_gwt, allowed_loss_percentage, booking_map
 				)
 
 		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
@@ -851,8 +869,15 @@ class EmployeeIR(Document):
 		self.mop_loss_details_total = flt(mop_baseline, 3)
 
 	@frappe.whitelist()
-	def book_metal_loss(self, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
+	def book_metal_loss(
+		self, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None, booking_map=None
+	):
 		doc = self
+		# booking_map is prefetched once by validate_process_loss; resolve it here
+		# for direct/whitelisted callers so the gate can never be bypassed by
+		# calling this method on its own.
+		if booking_map is None:
+			booking_map = get_loss_booking_map(self.operation)
 		# mnf_opt = frappe.get_doc("Manufacturing Operation", opt)
 
 		# To Check Tollarance which book a loss down side.
@@ -892,14 +917,60 @@ class EmployeeIR(Document):
 			# Declaration & fetch required value
 			sum_qty = {}  # for sum of qty matched item
 
+			# Finding-category loss gate: a finding whose category is flagged
+			# "no loss booking" for this Department Operation drops out of the
+			# proportional pool below, BEFORE total_qty is summed — so the
+			# remaining rows absorb its share and the booked total still equals
+			# flt(loss, 3). Categories that are not listed book loss as before.
+			# Skipped entirely when the operation configures no categories — which
+			# is the common case — so the gate costs zero extra queries by default.
+			category_map = (
+				get_finding_category_map(
+					[child["item_code"] for child in mop_balance_table]
+				)
+				if booking_map
+				else {}
+			)
+
 			# Keep only the latest qty snapshot per (item_code, batch_no).
 			# qty_after_transaction_batch_based is a running balance so the last
 			# row in creation order is the current stock for that batch.
 			latest_per_batch = {}
+			blocked_categories = set()
 			for child in mop_balance_table:
 				if child["item_code"][0] not in ["M", "F"]:
 					continue
+				if is_loss_booking_blocked(
+					child["item_code"], booking_map, category_map
+				):
+					blocked_categories.add(category_map.get(child["item_code"]))
+					continue
 				latest_per_batch[(child["item_code"], child["batch_no"])] = child
+
+			# Every eligible row was gated out, so the shortfall has nothing to be
+			# booked against. Fail here naming the cause rather than letting
+			# validate_loss_tables_required raise its generic "no loss details found".
+			# Only a shortfall needs attributing; a receive that gained weight books
+			# no loss rows either way.
+			if (
+				blocked_categories
+				and not latest_per_batch
+				and flt(gwt, 3) > flt(r_gwt, 3)
+			):
+				frappe.throw(
+					_(
+						"Manufacturing Work Order {0}: the receive is short by {1} g but every "
+						"item in the operation balance belongs to a finding category with Loss "
+						"Booking turned off ({2}) on operation <b>{3}</b>. There is nothing left "
+						"to book the loss against — either receive the full issued weight, or "
+						"tick Loss Booking for one of those categories on the Department Operation."
+					).format(
+						mwo,
+						flt(flt(gwt, 3) - flt(r_gwt, 3), 3),
+						", ".join(sorted(c for c in blocked_categories if c)),
+						doc.operation,
+					)
+				)
 
 			total_qty = 0
 			for key, child in latest_per_batch.items():
