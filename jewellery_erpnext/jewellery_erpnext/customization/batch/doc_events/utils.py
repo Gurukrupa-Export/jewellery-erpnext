@@ -357,6 +357,18 @@ def update_pure_qty(self):
 
 	# pure_item = frappe.db.get_value("Manufacturing Setting", company, "pure_gold_item")
 
+	# Only the manufacturing documents (Manufacturing Work Order / Operation, Refining
+	# Entry, ...) carry a `manufacturer`; a Batch may just as well reference a Stock Entry,
+	# Purchase Receipt or Sales Invoice, none of which have the column -- reading it blindly
+	# raises OperationalError "Unknown column 'manufacturer'" and aborts the whole save.
+	# That stayed hidden while every such batch was saved only at creation time (batch_qty
+	# is 0 then, so this returns above); it fires as soon as a batch that already holds
+	# stock is re-saved, e.g. the origin-entries update in
+	# customization/serial_and_batch_bundle/doc_events/utils.py::update_parent_batch_id when
+	# an inward bundle lands in an EXISTING batch.
+	if not frappe.get_meta(self.reference_doctype).has_field("manufacturer"):
+		return
+
 	manufacturer = frappe.db.get_value(
 		self.reference_doctype, self.reference_name, "manufacturer"
 	)
