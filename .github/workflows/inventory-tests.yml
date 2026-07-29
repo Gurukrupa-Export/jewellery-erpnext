@@ -56,3 +56,7 @@ jobs:
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Subcontracting Log"
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_autoname
+          # CustomStockEntry.validate_reserved_batches — erpnext >= v16.29 measures every
+          # batch-consuming Stock Entry against reservations it cannot own (SRE vouchers are
+          # Sales Orders; no manufacturing SE sets work_order). Guards the override.
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_reserved_batch_guard

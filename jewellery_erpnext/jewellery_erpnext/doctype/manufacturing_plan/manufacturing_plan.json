@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_bulk_edit": 1,
  "allow_rename": 1,
  "autoname": "MP-.abbr.-.YYYY.-.#####",
  "creation": "2023-03-29 17:13:20.635791",
@@ -144,33 +145,33 @@
    "options": "Attribute Value"
   },
   {
+   "default": "0",
    "fieldname": "is_subcontracting",
-   "fieldtype": "Select",
-   "label": "Is Subcontracting",
-   "options": "\nYes\nNo",
-   "reqd": 1
+   "fieldtype": "Check",
+   "label": "Is Subcontracting"
   },
   {
-   "depends_on": "eval: doc.is_subcontracting == \"Yes\";",
+   "depends_on": "eval: doc.is_subcontracting == 1;",
    "fieldname": "supplier",
    "fieldtype": "Link",
    "label": "Supplier",
    "options": "Supplier"
   },
   {
-   "depends_on": "eval: doc.is_subcontracting == \"Yes\";",
+   "depends_on": "eval: doc.is_subcontracting == 1;",
    "fieldname": "estimated_date",
    "fieldtype": "Date",
    "label": "Estimated Date"
   },
   {
-   "depends_on": "eval: doc.is_subcontracting == \"Yes\";",
+   "depends_on": "eval: doc.is_subcontracting == 1;",
    "fieldname": "purchase_type",
    "fieldtype": "Link",
    "label": "Purchase Type",
    "options": "Purchase Type"
   },
   {
+   "depends_on": "eval:doc.select_manufacture_order==\"Finding Manufacturing\"",
    "fieldname": "get_mwo",
    "fieldtype": "Button",
    "label": "Get MWO"
@@ -189,7 +190,7 @@
    "link_fieldname": "manufacturing_plan"
   }
  ],
- "modified": "2026-07-29 17:37:27.667668",
+ "modified": "2026-07-29 18:02:30.718734",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",

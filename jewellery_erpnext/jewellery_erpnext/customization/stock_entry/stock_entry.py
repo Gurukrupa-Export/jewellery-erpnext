@@ -1,5 +1,6 @@
 import copy
 import json
+from collections import defaultdict
 
 import frappe
 from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
@@ -212,6 +213,260 @@ class CustomStockEntry(StockEntry):
 		"""
 		super().set_basic_rate(reset_outgoing_rate, raise_error_if_no_rate)
 		set_process_loss_produce_rates(self)
+
+	def validate_reserved_batches(self):
+		"""Reserved-batch guard, expressed in this app's reservation vocabulary.
+
+		ERPNext (>= v16.29, backport PR #57169) exempts a Stock Entry's own reservations
+		ONLY by matching ``SE.work_order`` / ``SE.subcontracting_inward_order`` against
+		``SRE.voucher_no``. This app cannot satisfy that, structurally:
+
+		* erpnext hard-restricts SRE vouchers to Sales Orders
+		  (``stock_reservation_entry.py`` ``allowed_voucher_types``), so every SRE minted
+		  here is ``voucher_type = "Sales Order"`` and the manufacturing job is carried on
+		  the custom Data fields ``manufacturing_work_order`` / ``manufacturing_operation``.
+		* no manufacturing Stock Entry sets ``work_order`` -- the Manufacture SE is built
+		  with ``manufacturing_order`` / ``manufacturing_work_order`` /
+		  ``manufacturing_operation`` / ``custom_serial_number_creator`` instead.
+		* even if it did, Work Order names and Sales Order names are disjoint, so the
+		  comparison could never match.
+
+		So upstream's ``own_vouchers`` is empty for every batch-consuming Stock Entry on
+		this site, and ``get_reserved_batches`` filters on nothing but ``batch_no`` and
+		``docstatus`` -- no item, warehouse, company or status scope. The result is that a
+		job holding a perfectly valid reservation is measured against every reservation on
+		that batch, in warehouses it never touched, for items it never moved.
+
+		On erpnext <= v16.28 the whole body was unreachable here (its outer loop skipped
+		when both reference fields were empty), which is why this only started failing
+		after the upgrade.
+
+		This override keeps the guard's intent and makes it satisfiable:
+
+		1. exempt reservations belonging to this entry's own PMO / MWO / MOP chain, keyed
+		   by SRE *name* (``voucher_no`` is a shared Sales Order and cannot identify a job);
+		2. restrict the check to the ``(item_code, warehouse)`` pairs this entry actually
+		   drew stock from;
+		3. on a residual shortfall, warn on internal manufacturing movements and throw on
+		   everything else. Real over-consumption is still caught downstream by
+		   ``NegativeStockError`` in ``erpnext/stock/stock_ledger.py``.
+
+		Version-agnostic by construction: it replaces the method wholesale, and the call
+		site in ``StockController.make_sl_entries`` plus the zero-arg signature are
+		identical across v16.27 - v16.30.
+		"""
+		from erpnext.stock.doctype.batch.batch import get_batch_qty
+
+		if not frappe.db.get_single_value("Stock Settings", "enable_stock_reservation"):
+			return
+
+		batches = frappe.get_all(
+			"Serial and Batch Entry",
+			filters={
+				"voucher_type": self.doctype,
+				"voucher_no": self.name,
+				"docstatus": 1,
+				"batch_no": ("is", "set"),
+				"qty": ("<", 0),
+			},
+			pluck="batch_no",
+		)
+		if not batches:
+			return
+
+		# Only the (item, warehouse) pairs this entry actually consumed from are in scope.
+		touched = {
+			(row.item_code, row.s_warehouse)
+			for row in self.get("items")
+			if row.s_warehouse
+		}
+		if not touched:
+			return
+
+		# Cheapest discriminator first: most entries consume batches nobody has reserved,
+		# and this returns empty for them before any manufacturing-chain lookup runs.
+		reserved_rows = self._get_scoped_reserved_batches(batches)
+		if not reserved_rows:
+			return
+
+		own_sres = self._own_reservation_names()
+		own_vouchers = {
+			self.get(field)
+			for field in ("work_order", "subcontracting_inward_order")
+			if self.get(field)
+		}
+
+		outstanding_qty = defaultdict(float)
+		reservations = defaultdict(list)
+		for row in reserved_rows:
+			if row.name in own_sres or (
+				own_vouchers and row.voucher_no in own_vouchers
+			):
+				continue
+			if (row.item_code, row.warehouse) not in touched:
+				continue
+
+			outstanding = flt(row.qty) - flt(row.delivered_qty)
+			if outstanding <= 0:
+				continue
+
+			key = (row.batch_no, row.warehouse)
+			outstanding_qty[key] += outstanding
+			reservations[key].append(row)
+
+		if not outstanding_qty:
+			return
+
+		precision = frappe.get_precision("Serial and Batch Entry", "qty")
+		for (batch_no, warehouse), reserved_qty in outstanding_qty.items():
+			if flt(reserved_qty, precision) <= 0:
+				continue
+
+			batch_qty = get_batch_qty(
+				batch_no,
+				warehouse,
+				posting_date=self.posting_date,
+				posting_time=self.posting_time,
+				consider_negative_batches=True,
+			)
+			if flt(batch_qty, precision) >= flt(reserved_qty, precision):
+				continue
+
+			self._report_reserved_batch_shortfall(
+				batch_no,
+				warehouse,
+				batch_qty,
+				reserved_qty,
+				reservations[(batch_no, warehouse)],
+			)
+
+	def _own_reservation_names(self):
+		"""Names of the Stock Reservation Entries this entry is entitled to consume.
+
+		Scoped to the manufacturing chain the entry belongs to: every MWO under its PMO,
+		its own MWO, and the Manufacturing Operations named on the header or any item row.
+		Matching on SRE *name* rather than ``voucher_no`` matters -- several jobs share one
+		Sales Order, so a voucher match would exempt other jobs' reservations too.
+		"""
+		mwos = set()
+		mops = set()
+
+		if self.get("manufacturing_work_order"):
+			mwos.add(self.manufacturing_work_order)
+		if self.get("manufacturing_operation"):
+			mops.add(self.manufacturing_operation)
+		for row in self.get("items"):
+			if row.get("manufacturing_operation"):
+				mops.add(row.manufacturing_operation)
+
+		if self.get("manufacturing_order"):
+			mwos.update(
+				frappe.get_all(
+					"Manufacturing Work Order",
+					{"manufacturing_order": self.manufacturing_order, "docstatus": 1},
+					pluck="name",
+				)
+			)
+
+		if not mwos and not mops:
+			return set()
+
+		names = set()
+		for field, values in (
+			("manufacturing_work_order", mwos),
+			("manufacturing_operation", mops),
+		):
+			if not values:
+				continue
+			names.update(
+				frappe.get_all(
+					"Stock Reservation Entry",
+					{"docstatus": 1, field: ("in", list(values))},
+					pluck="name",
+				)
+			)
+		return names
+
+	def _get_scoped_reserved_batches(self, batches):
+		"""Like core's ``get_reserved_batches``, plus the SRE name/item and the child qtys."""
+		sre = frappe.qb.DocType("Stock Reservation Entry")
+		sb_entry = frappe.qb.DocType("Serial and Batch Entry")
+
+		return (
+			frappe.qb.from_(sre)
+			.join(sb_entry)
+			.on(sre.name == sb_entry.parent)
+			.select(
+				sre.name,
+				sre.voucher_type,
+				sre.voucher_no,
+				sre.item_code,
+				sre.warehouse,
+				sb_entry.batch_no,
+				sb_entry.qty,
+				sb_entry.delivered_qty,
+			)
+			.where((sre.docstatus == 1) & (sb_entry.batch_no.isin(batches)))
+		).run(as_dict=True)
+
+	def _report_reserved_batch_shortfall(
+		self, batch_no, warehouse, batch_qty, reserved_qty, rows
+	):
+		"""Record the conflict and let the entry through; never block on it.
+
+		Blocking does not protect the competing Sales Orders. Refining Entry
+		RFN-MWO-26-00118 is the worked example: batch GE2D081-MGL22919Y0-80 held 0.434 in
+		Model Making WO - KGJPL against 0.606 of reservations across nine Sales Orders, and
+		the entry moved ~0.01 of it. The 0.172 shortfall pre-dated the document and outlived
+		it -- the throw only stopped whichever entry happened to submit next.
+
+		Nor can the check tell a legitimate consumer from an illegitimate one here: upstream
+		identifies ownership solely through ``SE.work_order`` -> ``SRE.voucher_no``, and
+		erpnext restricts SRE vouchers to Sales Orders, so ``own_vouchers`` is unmatchable
+		for every Stock Entry this app builds. An earlier revision gated the throw on
+		"is this an internal manufacturing movement", but of the ~56 Stock Entry builders in
+		this app eight groups carry no header marker at all (``material_request.py`` MR
+		reserve, ``finding_mwo.py`` both legs, ``main_slip.py:436``, ``repack.py:296``,
+		``batch_rename.py:394``, ``job_card.py:180``, the ``get_mapped_doc`` templates), so
+		no gate could reach them and they would have hard-thrown in production.
+
+		Real over-consumption is still caught downstream by ``NegativeStockError`` in
+		``erpnext/stock/stock_ledger.py`` -- that is the check that protects stock integrity.
+		The root defect is release-side: nothing cancels or reduces the SRE at
+		``s_warehouse`` when reserved batch stock leaves it (``doc_events/stock_entry.py``
+		reserves inbound rows only), so reservations outlive the stock they point at.
+		"""
+		vouchers = ", ".join(
+			f"{frappe.bold(voucher_type)} {frappe.bold(voucher_no)}"
+			for voucher_type, voucher_no in dict.fromkeys(
+				(row.voucher_type, row.voucher_no) for row in rows
+			)
+		)
+		message = _(
+			"Batch {0} in warehouse {1} is short of the quantity reserved for {2}."
+			" {3} {4} was allowed through -- the shortfall is not caused by this entry."
+		).format(
+			frappe.bold(batch_no),
+			frappe.bold(warehouse),
+			vouchers,
+			frappe.bold(self.doctype),
+			frappe.bold(self.name),
+		)
+
+		frappe.log_error(
+			title=_("Reserved Batch Shortfall"),
+			message=(
+				f"{message}\n\n"
+				f"Batch {batch_no} @ {warehouse}: available {batch_qty}, "
+				f"reserved by other vouchers {reserved_qty}.\n"
+				f"Stock Entry type: {self.get('stock_entry_type')}.\n"
+				"Reservations outliving their stock indicate a missing source-side SRE "
+				"release; see validate_reserved_batches for the analysis."
+			),
+		)
+		frappe.msgprint(
+			message, title=_("Reserved Batch Shortfall"), indicator="orange"
+		)
 
 
 @frappe.whitelist()

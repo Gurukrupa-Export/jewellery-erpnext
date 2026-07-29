@@ -9,6 +9,7 @@ from frappe.core.doctype.submission_queue.submission_queue import SubmissionQueu
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.customization.submission_queue.submission_queue import (
+	SERIALIZED_SUBMIT_DOCTYPES,
 	CustomSubmissionQueue,
 )
 
@@ -34,13 +35,7 @@ class TestCustomSubmissionQueueDedup(IntegrationTestCase):
 		pass
 
 	def test_hot_doctype_routes_with_job_id_and_deduplicate(self, _qd):
-		for dt in [
-			"Employee IR",
-			"Department IR",
-			"Product Certification",
-			"Stock Entry",
-			"Main Slip",
-		]:
+		for dt in SERIALIZED_SUBMIT_DOCTYPES:
 			sq = _bare_queue(ref_doctype=dt, ref_docname="DOC-1")
 			sq.after_insert()
 			sq.queue_action.assert_called_once()
@@ -49,6 +44,18 @@ class TestCustomSubmissionQueueDedup(IntegrationTestCase):
 			self.assertTrue(kwargs["deduplicate"])
 			self.assertEqual(kwargs["queue"], "long")
 			self.assertTrue(kwargs["enqueue_after_commit"])
+
+	def test_cascade_doctypes_are_serialized(self, _qd):
+		# Serial Number Creator and Refining Entry are queue_in_background and fan out into
+		# many Stock Entries in one transaction; they must not fall back to the base path
+		# (default queue, 600s timeout, no de-duplication).
+		for dt in ("Serial Number Creator", "Refining Entry"):
+			self.assertIn(dt, SERIALIZED_SUBMIT_DOCTYPES)
+			sq = _bare_queue(ref_doctype=dt, ref_docname="DOC-1")
+			sq.after_insert()
+			kwargs = sq.queue_action.call_args.kwargs
+			self.assertTrue(kwargs["deduplicate"])
+			self.assertEqual(kwargs["timeout"], 4500)
 
 	def test_non_hot_doctype_falls_back_to_super(self, _qd):
 		with patch.object(SubmissionQueue, "after_insert") as mock_super:
