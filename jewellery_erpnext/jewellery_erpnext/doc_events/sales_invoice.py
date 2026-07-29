@@ -406,7 +406,7 @@ def set_gst_details(self):
         template_key = "Outright" if has_real_items else "Outwork"
     else:
         template_key = self.sales_type
-    item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
+    item_tax_template = item_template_map.get(template_key, {}).get(self.company)
     if not item_tax_template:
         return
 
@@ -873,11 +873,11 @@ def update_einvoice_items(self, invoice_data, payment_terms_data,allowed_item_ty
 					"uom": invoice_data[row]["uom"] or "Nos",
 					"gst_hsn_code": invoice_data[row]["hsn_code"],
 					"conversion_factor": 1,
-					"qty": invoice_data[row]["qty"],
+					"qty": qty,
 					"rate": invoice_data[row].get("rate", 0),
 					"base_rate": invoice_data[row].get("rate", 0),
-					"amount": flt(invoice_data[row]["amount"], 3),
-					"base_amount": invoice_data[row]["amount"],
+					"amount": flt(amount, 3),
+					"base_amount": amount,
 					"income_account": invoice_data[row]["income_account"],
 					"cost_center": invoice_data[row]["cost_center"],
 				},
