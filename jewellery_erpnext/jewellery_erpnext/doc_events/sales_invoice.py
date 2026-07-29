@@ -29,6 +29,10 @@ def before_validate(self, method):
 			if flt(row.base_amount) > 0:
 				row.base_amount = -1 * flt(row.base_amount)
 		return
+	if self.sales_type == 'Hybrid':
+		has_real_items = any(row.item_code != "Subcontracting Charges" for row in self.items)
+		if has_real_items:
+			self.items = [row for row in self.items if row.item_code != "Subcontracting Charges"]
 	if self.sales_type != 'Certification':
 		if self.gold_rate:
 			self.gold_rate_with_gst=round(self.gold_rate * 1.03,3)
