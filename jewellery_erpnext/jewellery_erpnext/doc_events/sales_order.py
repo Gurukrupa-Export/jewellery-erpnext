@@ -3350,7 +3350,7 @@ def validate_item_dharm(self):
 								e_item["is_for_labour"]
 								# and metal.stock_uom == e_item["uom"]
 								# and metal.metal_type == e_item["metal_type"]
-								# and metal.metal_touch == e_item["metal_purity"]
+								and metal.metal_touch == e_item["metal_purity"]
 							):
 								key = (e_item["item_type"], e_item["uom"])
 								if key not in aggregated_metal_labour_items:
