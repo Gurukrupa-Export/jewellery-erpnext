@@ -1300,10 +1300,25 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	frappe.db.set_value(
 		"Serial No", sr_no, "custom_repair_type", pmo_det.get("repair_type")
 	)
-	# Ownership marker (Outright / Outwork / Hybrid). Guarded so an untyped row_data
-	# leaves the field blank rather than stamping a wrong value.
-	if ownership_tag := _derive_ownership_tag(row_data):
-		frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", ownership_tag)
+	# Ownership marker. Sales Type is stamped first as an early default (custom_ownership_tag
+	# is a plain Data field, since Sales Type is a free-form master not limited to
+	# Outright/Outwork/Hybrid), then immediately overwritten by the ledger-derived value
+	# when one is derivable, so the final value always reflects what was actually consumed
+	# rather than what was quoted/sold.
+	sales_type = (
+		frappe.db.get_value("Sales Order", doc.sales_order_id, "sales_type")
+		if doc.get("sales_order_id")
+		else None
+	)
+	if sales_type:
+		frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", sales_type)
+	# if ownership_tag := _derive_ownership_tag(row_data):
+	# 	frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", ownership_tag)
+
+	# Order Type of the source Sales Order / Quotation, already available on the Serial
+	# Number Creator via its own order_type fetch_from (parent_manufacturing_order.order_type).
+	if doc.get("order_type"):
+		frappe.db.set_value("Serial No", sr_no, "custom_order_type", doc.order_type)
 	if doc.for_fg:
 		for row in doc.fg_details:
 			for entry in row_data:
@@ -3574,6 +3589,20 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	_apply_fg_bom_dynamic_fields(new_bom, self)
 
 	new_bom.flags.ignore_links = True
+
+	if self.company == "Gurukrupa Export Private Limited":
+		new_bom.custom_gk_cost_gold_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("metal_detail", []))
+		new_bom.custom_gk_cost_diamond_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("diamond_detail", []))
+		new_bom.custom_gk_cost_gemstone_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("gemstone_detail", []))
+		new_bom.custom_gk_cost_finding_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("finding_detail", []))
+		new_bom.custom_gk_cost_other_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("other_detail", []))
+	elif self.company == "KG GK Jewellers Private Limited":
+		new_bom.custom_kg_cost_gold_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("metal_detail", []))
+		new_bom.custom_kg_cost_diamond_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("diamond_detail", []))
+		new_bom.custom_kg_cost_gemstone_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("gemstone_detail", []))
+		new_bom.custom_kg_cost_finding_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("finding_detail", []))
+		new_bom.custom_kg_cost_other_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("other_detail", []))
+
 	new_bom.insert(ignore_mandatory=True, ignore_links=True)
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)

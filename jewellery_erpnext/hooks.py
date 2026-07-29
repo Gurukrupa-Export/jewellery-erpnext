@@ -114,6 +114,7 @@ doc_events = {
 		],
 		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
 		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.clear_hybrid_header_tax_rate",
+		"set_missing_values": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.fetch_sales_type_from_quotation",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_submit",
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
@@ -236,7 +237,10 @@ doc_events = {
 		"on_update": "jewellery_erpnext.jewellery_erpnext.customization.batch.batch.on_update",
 	},
 	"Stock Reconciliation": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department",
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_department",
+			"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.validate_transit_warehouse_empty",
+		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_RECON_VALIDATOR],
 		"before_submit": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_RECON_VALIDATOR],
 		"before_cancel": _EOD_LOCK_VALIDATOR,

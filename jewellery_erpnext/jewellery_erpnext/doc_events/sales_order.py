@@ -2208,7 +2208,22 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 		+ sum(r.making_amount for r in doc.finding_detail),
 		_prec,
 	)
-
+	if (self.company == "KG GK Jewellers Private Limited" or ctx.customer_group == "Internal"):
+		doc.custom_kg_selling_gold_bom_amount=doc.gold_bom_amount
+		doc.custom_kg_selling_total_bom_amount=doc.total_bom_amount
+		doc.custom_kg_selling_making_charge= doc.making_charge
+		doc.custom_kg_selling_other_bom_amount= doc.other_bom_amount
+		doc.custom_kg_selling_finding_bom_amount= doc.finding_bom_amount
+		doc.custom_kg_selling_gemstone_bom_amount= doc.gemstone_bom_amount
+		doc.custom_kg_selling_diamond_bom_amount= doc.diamond_bom_amount
+	else:
+		doc.custom_gk_sell_gold_bom_amount=doc.gold_bom_amount
+		doc.custom_gk_sell_total_bom_amount=doc.total_bom_amount
+		doc.custom_gk_sell_making_charge= doc.making_charge
+		doc.custom_gk_sell_other_bom_amount= doc.other_bom_amount
+		doc.custom_gk_sell_finding_bom_amount= doc.finding_bom_amount
+		doc.custom_gk_sell_gemstone_bom_amount= doc.gemstone_bom_amount
+		doc.custom_gk_sell_diamond_bom_amount= doc.diamond_bom_amount
 	# ── 13. Total amount ─────────────────────────────────────────
 	total_amount = round(
 		doc.total_bom_amount
@@ -3990,6 +4005,32 @@ def validate_sales_type(self):
 			pass
 	if not self.sales_type:
 		frappe.throw("Sales Type is mandatory.")
+
+
+def fetch_sales_type_from_quotation(doc, method=None):
+	"""When a Sales Order is mapped from a Quotation (Create > Sales Order),
+	carry over the Quotation's Sales Type (Quotation.custom_sales_type ->
+	Sales Order.sales_type). The mapper's generic same-fieldname copy misses
+	this since the fieldnames differ; Order Type already copies fine on its
+	own since both doctypes use the same fieldname.
+
+	Runs as the mapper's postprocess step (target.run_method("set_missing_values")
+	inside quotation.py's _make_sales_order), which fires server-side while the
+	mapped doc is being built -- before it's sent to the browser -- so the value
+	is already populated on the fresh, unsaved Sales Order form.
+
+	Skips if sales_type is already set (never overrides a manual choice) or if
+	there's no prevdoc_docname (Sales Order not created from a Quotation), so it
+	never interferes with the Customer-based get_sales_type() flow.
+	"""
+	if doc.sales_type:
+		return
+	quotation = next((r.prevdoc_docname for r in doc.items if r.prevdoc_docname), None)
+	if not quotation:
+		return
+	sales_type = frappe.db.get_value("Quotation", quotation, "custom_sales_type")
+	if sales_type:
+		doc.sales_type = sales_type
 
 
 import json

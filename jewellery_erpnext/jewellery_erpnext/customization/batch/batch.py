@@ -1,14 +1,77 @@
 import datetime
 import random
+import re
 import string
 
 import frappe
-from frappe.utils import flt
+from frappe import _
+from frappe.utils import cstr, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events.utils import (
 	update_inventory_dimentions,
 	update_pure_qty,
 )
+
+# Hand-picked batch prefixes for the Gurukrupa group companies. These are NOT derivable
+# from Company.abbr — they are baked into every existing batch name and into the '-'
+# delimited parsing in customer_subcontracting/batch_rename.py, so they stay fixed.
+BATCH_COMPANY_ABBR = {
+	"Gurukrupa Export Private Limited": "GE",
+	"KG GK Jewellers Private Limited": "KG",
+	"Sadguru Diamond": "SD",
+	"Sadguru Hallmarking Centre": "SHC",
+}
+
+
+def _sanitize_abbr(value):
+	"""Batch names are '-' delimited (batch_rename splits on it and reads the trailing
+	serial), so a prefix must stay alphanumeric."""
+	return re.sub(r"[^A-Za-z0-9]", "", cstr(value)).upper()
+
+
+def get_batch_company_abbr(doc):
+	"""Company prefix for a variant batch name.
+
+	Resolution order — company: the Batch's own ``custom_company`` (set explicitly by
+	callers that know which company owns the material, e.g. Refining Entry's
+	``_auto_create_batch``), else the session user's default, else the global default,
+	else the only Company on the site when there is exactly one (CI, a fresh bench:
+	nothing to disambiguate).
+
+	Abbreviation: the group map above, else the Company's own ``abbr``. The fallback
+	matters because batch creation is implicit — a Stock Entry on a company nobody added
+	to the map must still be able to mint a batch instead of aborting the transaction.
+
+	Only a company that cannot be determined AT ALL on a multi-company site is refused:
+	guessing a prefix there stamps one company's material with another's code, which is
+	unrecoverable once the batch is transacted (and the pre-existing behaviour — a batch
+	literally named ``None2607W1-M...`` — is not a usable alternative)."""
+	company = (
+		doc.get("custom_company")
+		or frappe.defaults.get_user_default("company")
+		or frappe.defaults.get_global_default("company")
+	)
+	if not company:
+		companies = frappe.get_all("Company", pluck="name", limit=2)
+		if len(companies) == 1:
+			company = companies[0]
+
+	if company:
+		abbr = (
+			BATCH_COMPANY_ABBR.get(company)
+			or _sanitize_abbr(frappe.db.get_value("Company", company, "abbr"))
+			or _sanitize_abbr(company)[:3]
+		)
+		if abbr:
+			return abbr
+
+	frappe.throw(
+		_(
+			"Cannot generate a batch name for item {0}: the company it belongs to could "
+			"not be determined. Set the Batch's Company, or set a default company for "
+			"your user / in Global Defaults."
+		).format(frappe.bold(doc.item))
+	)
 
 
 def validate(self, method):
@@ -39,15 +102,7 @@ def autoname(self, method=None):
 		month_code = get_month_code()
 		week_code = get_week_code()
 		# start_of_week, end_of_week = get_current_week_date_range()
-		company = {
-			"Gurukrupa Export Private Limited": "GE",
-			"KG GK Jewellers Private Limited": "KG",
-			"Sadguru Diamond": "SD",
-			"Sadguru Hallmarking Centre": "SHC",
-		}
-		company_abbr = company.get(self.custom_company) or company.get(
-			frappe.defaults.get_user_default("company")
-		)
+		company_abbr = get_batch_company_abbr(self)
 
 		if item_group == "Diamond - V":
 			batch_number = f"{company_abbr}{year_code}{month_code}{week_code}-D".format(
@@ -203,7 +258,9 @@ def _resolve_metal_purity(item_code):
 		"attribute_value",
 	)
 	if attribute_value:
-		pct = frappe.db.get_value("Attribute Value", attribute_value, "purity_percentage")
+		pct = frappe.db.get_value(
+			"Attribute Value", attribute_value, "purity_percentage"
+		)
 		if pct:
 			return flt(pct)
 		try:

@@ -1,4 +1,5 @@
 from collections import defaultdict
+from unittest.mock import patch
 
 import frappe
 from frappe.model.workflow import apply_workflow
@@ -893,6 +894,437 @@ class TestRefiningEntry(IntegrationTestCase):
 		)
 		dre.status = "Recovery Entered"
 		self.assertRaises(frappe.ValidationError, dre.validate)
+
+	# --- Work Order source resolution (RFN-MWO-26-00114) ---
+	#
+	# Work Order Refining takes its required qty from the MOP Log running balance, a
+	# VIRTUAL ledger, and then allocates it from PHYSICAL batch stock. When several
+	# batches of one item were summed into a single batch-less line pointed at one
+	# reservation warehouse, the transfer demanded more than that warehouse held and
+	# aborted the submit ("Required: 0.629, Missing: 0.005"). These cover the pieces
+	# that keep the two ledgers reconciled.
+
+	def test_mwo_source_warehouse_follows_physical_batch_stock(self):
+		"""A batch whose reservation warehouse is empty is sourced from the warehouse
+		that physically holds it, not from the (stale) reservation."""
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Work Order Refining"
+		re.company = "Test_Company"
+		re.warehouse = "MPM WO - T"
+
+		stock = {("Hammer WIP - T", "BATCH-A"): 0.629}
+
+		def fake_physical_qty(item_code, batch_no, warehouse):
+			return stock.get((warehouse, batch_no), 0.0)
+
+		sre_map = {
+			# The reservation still names the stale warehouse.
+			("MWO-1", "D-NT-RO-6B-+8-8.5", "BATCH-A"): ["Stale WIP - T"],
+			("MWO-1", "D-NT-RO-6B-+8-8.5", None): ["Stale WIP - T", "Hammer WIP - T"],
+		}
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._eod_physical_batch_qty",
+			side_effect=fake_physical_qty,
+		):
+			resolved = re._resolve_mwo_source_warehouse(
+				"MWO-1",
+				"D-NT-RO-6B-+8-8.5",
+				"BATCH-A",
+				0.629,
+				sre_map,
+				"MPM WO - T",
+				"MPM WO - T",
+			)
+
+		self.assertEqual(resolved, "Hammer WIP - T")
+
+	def test_mwo_source_warehouse_falls_back_when_nothing_covers(self):
+		"""No warehouse covers the qty -> keep the reservation warehouse, so the
+		shortfall is reported against the warehouse the reservation actually names."""
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Work Order Refining"
+		re.company = "Test_Company"
+		re.warehouse = "MPM WO - T"
+
+		sre_map = {("MWO-1", "D-NT-RO-6B-+8-8.5", "BATCH-A"): ["Hammer WIP - T"]}
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync._eod_physical_batch_qty",
+			return_value=0.624,
+		):
+			resolved = re._resolve_mwo_source_warehouse(
+				"MWO-1",
+				"D-NT-RO-6B-+8-8.5",
+				"BATCH-A",
+				0.629,
+				sre_map,
+				None,
+				None,
+			)
+
+		self.assertEqual(resolved, "Hammer WIP - T")
+
+	def test_sales_order_sre_narrowing(self):
+		"""Sales-Order-matched reservations are admitted only for material this entry
+		actually moves — a Sales Order is shared across many MWOs."""
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Work Order Refining"
+		wanted_items = {"D-NT-RO-6B-+8-8.5"}
+		wanted_batches = {("D-NT-RO-6B-+8-8.5", "BATCH-A")}
+
+		qty_based = frappe._dict(
+			item_code="D-NT-RO-6B-+8-8.5", has_batch_no=1, reservation_based_on="Qty"
+		)
+		batch_based = frappe._dict(
+			item_code="D-NT-RO-6B-+8-8.5",
+			has_batch_no=1,
+			reservation_based_on="Serial and Batch",
+		)
+		other_item = frappe._dict(
+			item_code="M-G-22KT-91.9-Y",
+			has_batch_no=1,
+			reservation_based_on="Serial and Batch",
+		)
+
+		# Qty-based reservation: only the item has to match.
+		self.assertTrue(
+			re._sre_matches_keys(qty_based, wanted_items, wanted_batches, [])
+		)
+		# Batch-based: must name a batch we are moving.
+		self.assertTrue(
+			re._sre_matches_keys(batch_based, wanted_items, wanted_batches, ["BATCH-A"])
+		)
+		self.assertFalse(
+			re._sre_matches_keys(batch_based, wanted_items, wanted_batches, ["BATCH-Z"])
+		)
+		# A different item is never in scope.
+		self.assertFalse(
+			re._sre_matches_keys(other_item, wanted_items, wanted_batches, ["BATCH-A"])
+		)
+
+	def test_shortfall_message_is_diagnostic(self):
+		"""The submit-time throw must name the batch, the numbers and where the stock
+		actually is — it surfaces from a background Submission Queue job, where a bare
+		item/warehouse message left the operator with nothing to act on."""
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Work Order Refining"
+		re.company = "Test_Company"
+
+		msg = re._batch_shortfall_message(
+			item_code="D-NT-RO-6B-+8-8.5",
+			warehouse="Hammer WIP - T",
+			required_qty=0.629,
+			shortfall=0.005,
+			allocated_qty=0.624,
+			batches=[{"batch_no": "BATCH-A", "qty": 0.624}],
+			bin_qty=0.624,
+			diagnostics={
+				"batch_no": "BATCH-A",
+				"manufacturing_work_order": "MWO-1",
+				"company": "Test_Company",
+			},
+		)
+
+		self.assertIn("D-NT-RO-6B-+8-8.5", msg)
+		self.assertIn("Hammer WIP - T", msg)
+		self.assertIn("BATCH-A", msg)
+		self.assertIn("0.629", msg)
+		self.assertIn("0.005", msg)
+		self.assertIn("MWO-1", msg)
+
+	def test_mwo_sres_survive_an_allocation_failure(self):
+		"""Reservations are released only once every transfer row is resolved. Cancelling
+		first meant an allocation throw left the stock unreserved with no transfer to
+		show for it — the path RFN-MWO-26-00114 took through the Submission Queue."""
+		mwo = mwo_semi_finished_goods(self)
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Work Order Refining"
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		re.scan_mwo_action(mwo.name)
+		re.save()
+
+		# One unsatisfiable batched row is enough: the real FIFO allocation runs, finds
+		# nothing, and throws from inside the row loop.
+		re.set(
+			"material_items",
+			[
+				{
+					"item_code": "D-NT-RO-6B-+9-9.5",
+					"qty": 9999.0,
+					"warehouse": "Refining RM - T",
+					"source_type": "MWO",
+					"manufacturing_work_order": mwo.name,
+				}
+			],
+		)
+
+		with patch.object(type(re), "_cancel_source_mwo_sres", autospec=True) as cancel:
+			self.assertRaises(frappe.ValidationError, re.create_material_transfer_se)
+
+		cancel.assert_not_called()
+
+	def test_mwo_material_rows_are_not_merged_across_batches(self):
+		"""One material row per MOP balance row. Merging them into a batch-less line
+		summed quantities that can live in DIFFERENT warehouses, and the transfer then
+		re-FIFO'd the total against whichever single warehouse the merged line got."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+			get_current_mop_balance_rows,
+		)
+
+		mwo = mwo_semi_finished_goods(self)
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Work Order Refining"
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		re.scan_mwo_action(mwo.name)
+		re.save()
+
+		# Same MOP selection build_material_table uses.
+		last_mop = (
+			frappe.db.get_value(
+				"Manufacturing Operation",
+				{"manufacturing_work_order": mwo.name, "status": "Not Started"},
+				"name",
+				order_by="creation desc",
+			)
+			or re.mwo_details[0].manufacturing_operation
+		)
+		balance_rows = [
+			row
+			for row in get_current_mop_balance_rows(
+				last_mop,
+				include_fields=[
+					"item_code",
+					"qty_after_transaction_batch_based as qty",
+					"batch_no",
+				],
+			)
+			if flt(row.get("qty"), 3) > 0
+		]
+
+		self.assertTrue(balance_rows, "fixture produced no MOP balance")
+		self.assertEqual(len(re.material_items), len(balance_rows))
+		self.assertEqual(
+			{(row.item_code, row.batch_no) for row in re.material_items},
+			{(row.get("item_code"), row.get("batch_no")) for row in balance_rows},
+		)
+
+	# --- External refining: batch reuse, no loss output, no design code ---
+
+	def _external_scrap_entry(self, qty=5.0):
+		"""Submitted external Scrap entry, ready to receive from the supplier."""
+		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", qty)
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Scrap Refining"
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.department = "Waxing - T"
+		re.warehouse = "Waxing RM - T"
+		re.refining_department = "Refinery - T"
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-18KT-75.4-P",
+				"warehouse": "Waxing RM - T",
+				"qty": qty,
+				"source_type": "Scrap",
+			},
+		)
+		re.save()
+		apply_workflow(re, "Submit")
+		re.reload()
+		return re
+
+	def test_recovered_metal_reuses_existing_batch(self):
+		"""The refined 24KT belongs in a batch the item already has — one the batch
+		selector shows — not in a fresh per-receipt batch."""
+		re = self._external_scrap_entry()
+
+		# Seed an existing batch of the recovered metal item in the receiving warehouse,
+		# so there is a candidate even when this test runs on its own.
+		gold_receipt("Waxing RM - T", re.refined_metal_item, 1.0)
+		existing = set(
+			frappe.get_all(
+				"Batch", filters={"item": re.refined_metal_item}, pluck="name"
+			)
+		)
+		self.assertTrue(existing, "fixture produced no batch for the recovered metal")
+
+		re.receive_from_supplier(recovery_weight=3.6)
+		re.reload()
+
+		repack = frappe.get_doc("Stock Entry", re.repack_se)
+		metal_row = next(
+			row for row in repack.items if row.item_code == re.refined_metal_item
+		)
+		# WHICH existing batch wins is FIFO's call (get_batch_qty returns the site's
+		# configured pick order), and earlier tests in this suite have already received
+		# 24KT into this same warehouse — so pin the requirement itself: the row lands in
+		# a batch that already existed, and no new batch is minted for the item.
+		self.assertIn(metal_row.batch_no, existing)
+		self.assertEqual(
+			set(
+				frappe.get_all(
+					"Batch", filters={"item": re.refined_metal_item}, pluck="name"
+				)
+			),
+			existing,
+		)
+
+	def test_recovered_metal_skips_a_customer_owned_batch(self):
+		"""Company recovery must never land in a customer's batch — ownership never
+		crosses, so a fresh batch is minted instead."""
+		re = self._external_scrap_entry()
+
+		gold_receipt("Waxing RM - T", re.refined_metal_item, 1.0)
+		seeded = frappe.db.get_value(
+			"Stock Entry Detail",
+			{"item_code": re.refined_metal_item, "t_warehouse": "Waxing RM - T"},
+			"batch_no",
+			order_by="creation desc",
+		)
+		self.assertTrue(seeded)
+		frappe.db.set_value(
+			"Batch",
+			seeded,
+			{
+				"custom_inventory_type": "Customer Goods",
+				"custom_customer": "Test_Customer",
+			},
+		)
+
+		re.receive_from_supplier(recovery_weight=3.6)
+		re.reload()
+
+		repack = frappe.get_doc("Stock Entry", re.repack_se)
+		metal_row = next(
+			row for row in repack.items if row.item_code == re.refined_metal_item
+		)
+		self.assertNotEqual(metal_row.batch_no, seeded)
+
+	def test_external_receive_books_no_loss_item(self):
+		"""Send 22KT-equivalent scrap, get 24KT back — and nothing else. The loss is a
+		number on the Recovery Summary, never a stock-increasing row."""
+		re = self._external_scrap_entry()
+		re.receive_from_supplier(recovery_weight=3.6)
+		re.reload()
+
+		self.assertGreater(re.refining_loss, 0)
+
+		repack = frappe.get_doc("Stock Entry", re.repack_se)
+		received = [
+			row for row in repack.items if row.t_warehouse and not row.s_warehouse
+		]
+		self.assertTrue(received)
+		for row in received:
+			self.assertFalse(
+				row.item_code.upper().startswith(("ML-", "FL-")),
+				f"{row.item_code} is a loss item received into stock",
+			)
+
+	def test_loss_guard_survives_a_site_without_the_pure_loss_item(self):
+		"""Regression: resolving the loss set through get_dust_item() would, on a site
+		with no ML-G-24KT-99.9-Y, fall back to the recovered PURE GOLD item — making the
+		guard throw on the legitimate metal row and block every external receive."""
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Scrap Refining"
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.refined_metal_item = "M-G-24KT-99.9-Y"
+
+		se = frappe.new_doc("Stock Entry")
+		se.append(
+			"items",
+			{
+				"item_code": "M-G-24KT-99.9-Y",
+				"qty": 3.6,
+				"t_warehouse": "Waxing RM - T",
+			},
+		)
+
+		with patch.object(type(re), "get_dust_item", return_value="M-G-24KT-99.9-Y"):
+			# Must not raise: the recovered metal is never an offender.
+			re._assert_no_loss_output(se)
+
+	def test_external_serial_material_table_excludes_the_design_code(self):
+		"""The design code is a PIECE COUNT, not refinable grams. External serial
+		refining keeps it out of Material Items entirely — including the self-referential
+		BOM row that produced the duplicate."""
+		snc = create_snc(self)
+		snc.submit()
+		sn = frappe.get_doc("Serial No", snc.fg_serial_no)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Serial Number Refining"
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.department = "Tagging - T"
+		re.warehouse = "Tagging FG - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		re.scan_serial_no_action(sn.name)
+
+		self.assertTrue(re.material_items, "no BOM components were fetched")
+		for row in re.material_items:
+			self.assertNotEqual(
+				row.item_code,
+				sn.item_code,
+				"the design code is still in the Material Items table",
+			)
+			self.assertEqual(row.source_type, "BOM Component")
+
+		# The serial still has to reach the refiner — its movement now comes from
+		# serial_no_details instead of the material table.
+		movement = re._serial_movement_rows()
+		self.assertEqual(len(movement), 1)
+		self.assertEqual(movement[0].serial_no, sn.name)
+		self.assertEqual(movement[0].item_code, sn.item_code)
+
+	def test_serial_movement_rows_skip_serials_already_in_the_table(self):
+		"""An entry submitted BEFORE this change still carries its FG row. Synthesising
+		a movement row for it too would transfer/consume the piece twice."""
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Serial Number Refining"
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.warehouse = "Tagging FG - T"
+		re.append(
+			"serial_no_details",
+			{"serial_number": "SN-LEGACY-1", "item_code": "Test Design", "pcs": 1},
+		)
+
+		self.assertEqual(len(re._serial_movement_rows()), 1)
+
+		re.append(
+			"material_items",
+			{
+				"item_code": "Test Design",
+				"qty": 1,
+				"serial_no": "SN-LEGACY-1",
+				"source_type": "Serial Number",
+			},
+		)
+		self.assertEqual(re._serial_movement_rows(), [])
+
+	def test_internal_serial_refining_keeps_the_design_code(self):
+		"""Scope guard: only external refining changed."""
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = "Serial Number Refining"
+		re.company = "Test_Company"
+		re.warehouse = "Tagging FG - T"
+		re.append(
+			"serial_no_details",
+			{"serial_number": "SN-LEGACY-1", "item_code": "Test Design", "pcs": 1},
+		)
+		self.assertEqual(re._serial_movement_rows(), [])
 
 	def tearDown(self):
 		return super().tearDown()
