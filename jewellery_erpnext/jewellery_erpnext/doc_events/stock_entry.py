@@ -116,11 +116,14 @@ def before_validate(self, method):
 						"manufacturer",
 					)
 				else:
-					# `manufacturer` is NOT a Stock Entry field -- it is only ever an
-					# in-memory attribute set by the callers that know it (Refining Entry
-					# carries its own). Read it with .get() so a Stock Entry that never got
-					# one (any UI metal receipt/transfer outside a manufacturing order)
-					# falls back to the session default instead of raising AttributeError.
+					# Stock Entry.manufacturer is a custom field (gke_customization ships it
+					# in fixtures/custom_field.json) and is therefore NOT guaranteed to be
+					# installed: gk.site currently has no such Custom Field and no column,
+					# only the Stock Entry Detail one. It is also set as a plain in-memory
+					# attribute by callers that know it without persisting it (Refining
+					# Entry carries its own onto the SEs it builds). Read it with .get() so
+					# a Stock Entry that lacks the field falls back to the session default
+					# instead of raising AttributeError mid-save.
 					manufacturer = self.get("manufacturer") or MANUFACTURER
 
 				pure_item = frappe.db.get_value(
@@ -130,19 +133,30 @@ def before_validate(self, method):
 				)
 
 				# Manufacturing Setting is keyed by manufacturer, but the live records are
-				# keyed by COMPANY (name = company, `manufacturer` left blank). A blank
-				# manufacturer therefore "works" by accident -- the filter degrades to
-				# `manufacturer IS NULL`, which matches those records -- while a manufacturer
-				# that IS set (on the document, or as a session default) matches nothing and
-				# used to abort the save with a message telling the user to set the very
-				# thing that broke it. Fall back to the company's own record, which is what
-				# the original company-keyed lookup above did before it was commented out.
+				# per-COMPANY (one row each, named after the company). A manufacturer that is
+				# actually set -- on the document, or as a session default -- therefore
+				# matches nothing, and this used to abort the save with a message telling the
+				# user to set the very thing that broke it. Fall back to the company's own
+				# setting, which is what the company-keyed lookup above did before it was
+				# commented out.
+				#
+				# The fallback never GUESSES between manufacturers: it takes the company-wide
+				# record (no manufacturer on it) when there is one, else the company's single
+				# record. A company that genuinely keeps one setting per manufacturer keeps
+				# throwing, because picking an arbitrary sibling there would silently cost the
+				# metal off another manufacturer's pure_gold_item.
 				if not pure_item and self.company:
-					pure_item = frappe.db.get_value(
+					settings = frappe.get_all(
 						"Manufacturing Setting",
-						{"company": self.company},
-						"pure_gold_item",
+						filters={"company": self.company},
+						fields=["name", "manufacturer", "pure_gold_item"],
+						order_by="name",
 					)
+					company_wide = [s for s in settings if not s.manufacturer]
+					if company_wide:
+						pure_item = company_wide[0].pure_gold_item
+					elif len(settings) == 1:
+						pure_item = settings[0].pure_gold_item
 
 				if not pure_item:
 					frappe.throw(
