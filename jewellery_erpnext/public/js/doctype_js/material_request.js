@@ -9,6 +9,33 @@ frappe.ui.form.on("Material Request", {
 				__("Create")
 			);
 		}
+		// Settle: top up set_from_warehouse with the customer's material (SNC-style)
+		// when it is short. Available on a customer-goods Material Transfer that is not
+		// cancelled — so it stays on the document after it is submitted, not only while
+		// it is a draft.
+		if (
+			frm.doc.docstatus !== 2 &&
+			frm.doc.material_request_type === "Material Transfer" &&
+			frm.doc.inventory_type === "Customer Goods"
+		) {
+			frm.add_custom_button(__("Settle"), function () {
+				frappe.call({
+					method: "jewellery_erpnext.customer_subcontracting.sub_utils.cg_settle.settle_material_request",
+					args: { mr_name: frm.doc.name },
+					freeze: true,
+					freeze_message: __("Settling..."),
+					callback: function (r) {
+						if (r.message) {
+							frappe.show_alert({
+								message: r.message.message,
+								indicator: (r.message.settled || []).length ? "green" : "blue",
+							});
+							frm.reload_doc();
+						}
+					},
+				});
+			});
+		}
 		frm.add_custom_button(
 			__("Parent Manufacturing Order"),
 			function () {

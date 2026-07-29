@@ -152,6 +152,36 @@ class EmployeeIR(Document):
 		validate_casting_tree(self)
 		validate_casting_receive(self)
 		self.validate_fg_bom_fields()
+		self.set_repeat_receive_flag()
+
+	def set_repeat_receive_flag(self):
+		"""Stamp ``is_repeat_receive`` and clear a Worker Performance that no longer applies.
+
+		Recomputed from the database rather than trusted from the client, the same
+		stance validate_fg_bom_fields takes: the flag drives a depends_on, so a
+		posted value could otherwise reveal (or hide) the field at will.
+
+		The flag is ANY-of-rows: one Employee IR carries a single answer but many
+		work orders, so a Receive containing at least one repeat asks the question.
+		"""
+		if self.type != "Receive":
+			self.is_repeat_receive = 0
+			self.worker_performance = None
+			return
+
+		ops = [
+			{
+				"manufacturing_operation": row.manufacturing_operation,
+				"manufacturing_work_order": row.manufacturing_work_order,
+			}
+			for row in (self.employee_ir_operations or [])
+		]
+		repeats = get_repeat_work_orders(ops, self.operation, self.name)
+		self.is_repeat_receive = 1 if repeats else 0
+		if not self.is_repeat_receive:
+			# A Receive can stop being a repeat (the earlier one gets cancelled)
+			# after somebody answered; a hidden field must not keep a stale verdict.
+			self.worker_performance = None
 
 	def validate_fg_bom_fields(self):
 		"""Enforce subcategory-driven FG BOM fields on Receive.
@@ -1505,3 +1535,87 @@ def get_fg_bom_fields(operations):
 				}
 			)
 	return result
+
+
+def _resolve_work_orders(operations):
+	"""Work order names for ``employee_ir_operations`` rows, in one round trip.
+
+	``manufacturing_work_order`` is ``fetch_from`` + ``fetch_if_empty`` on the child
+	row, so a freshly scanned or mapped row can reach us carrying only its
+	Manufacturing Operation. Rows like that are resolved through their MOP rather
+	than skipped -- dropping them would silently hide the field on exactly the
+	entries a shop-floor user creates by scanning.
+	"""
+	mwos = set()
+	missing_mops = set()
+	for row in operations or []:
+		mwo = row.get("manufacturing_work_order")
+		if mwo:
+			mwos.add(mwo)
+		elif row.get("manufacturing_operation"):
+			missing_mops.add(row["manufacturing_operation"])
+
+	if missing_mops:
+		for mop in frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", list(missing_mops)]},
+			fields=["name", "manufacturing_work_order"],
+		):
+			if mop.manufacturing_work_order:
+				mwos.add(mop.manufacturing_work_order)
+
+	return mwos
+
+
+@frappe.whitelist()
+def get_repeat_work_orders(operations, operation, employee_ir=None):
+	"""Work orders on this Receive that already completed a cycle at ``operation``.
+
+	A cycle is counted as a *submitted* Employee IR Receive for the same work order
+	at the same Department Operation. Deliberately keyed on
+	(manufacturing_work_order, operation) and never on the Manufacturing Operation:
+	``create_operation_for_next_op`` copies the MOP and saves a new one per cycle,
+	so a MOP name carries no history.
+
+	Returns the list rather than a bare flag so the form can name the offending
+	work orders -- with one answer per document, knowing *which* one is rework is
+	what makes the question answerable.
+	"""
+	if isinstance(operations, str):
+		operations = json.loads(operations or "[]")
+
+	if not operation:
+		return []
+
+	mwos = _resolve_work_orders(operations)
+	if not mwos:
+		return []
+
+	return _repeat_query(mwos, operation, employee_ir).run(
+		pluck="manufacturing_work_order"
+	)
+
+
+def _repeat_query(mwos, operation, employee_ir=None):
+	"""The prior-cycle lookup, split out so its predicates are testable without a DB."""
+	EIR = DocType("Employee IR")
+	EOP = DocType("Employee IR Operation")
+	query = (
+		frappe.qb.from_(EIR)
+		.inner_join(EOP)
+		.on(EOP.parent == EIR.name)
+		.select(EOP.manufacturing_work_order)
+		.distinct()
+		.where(
+			# docstatus == 1, not != 2: we are counting COMPLETED history, so a
+			# draft or cancelled Receive must not make the next one look like rework.
+			(EIR.docstatus == 1)
+			& (EIR.type == "Receive")
+			& (EIR.operation == operation)
+			& (EOP.manufacturing_work_order.isin(sorted(mwos)))
+		)
+	)
+	if employee_ir:
+		# Save-after-submit would otherwise match the document against itself.
+		query = query.where(EIR.name != employee_ir)
+	return query

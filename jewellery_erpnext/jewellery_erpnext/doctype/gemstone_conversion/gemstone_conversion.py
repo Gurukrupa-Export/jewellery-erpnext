@@ -6,7 +6,7 @@ import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt
+from frappe.utils import flt, now_datetime, time_diff_in_seconds
 
 from jewellery_erpnext.jewellery_erpnext.doctype.gemstone_conversion.doc_events.batch_utils import (
 	update_fifo_batch,
@@ -87,6 +87,9 @@ class GemstoneConversion(Document):
 			# frappe.throw("HERE")
 			make_warehouse_transfer_stock_entry(self)
 			create_fg_subcontracting_po(self)
+
+		if self.conversion_type == 'Resize':
+			stamp_resize_conversion_time(self)
 
 		if self.g_source_item and self.batch and self.source_warehouse:
 			self.source_valuation_rate = get_source_batch_valuation_rate(
@@ -238,6 +241,55 @@ class GemstoneConversion(Document):
 				)
 
 
+def stamp_resize_conversion_time(self):
+	if self.workflow_state == 'Issue' and not self.issue_time:
+		self.issue_time = now_datetime()
+
+	if self.workflow_state == 'Receive':
+		if not self.receive_time:
+			self.receive_time = now_datetime()
+		if self.issue_time and self.receive_time < self.issue_time:
+			frappe.throw(_("Receive Time cannot be before Issue Time"))
+
+		if self.is_subcontracting:
+			self.conversion_cost = get_subcontracting_pi_amount(self.fg_subcontracting_po)
+		else:
+			self.conversion_cost = get_employee_conversion_cost(
+				self.to_employee, self.issue_time, self.receive_time
+			)
+
+
+def get_subcontracting_pi_amount(fg_subcontracting_po):
+	pi_name = frappe.db.get_value(
+		"Purchase Invoice Item",
+		{"purchase_order": fg_subcontracting_po, "docstatus": 1},
+		"parent",
+	)
+	if not pi_name:
+		frappe.throw(
+			_("Submit a Purchase Invoice against FG Subcontracting PO <b>{0}</b> before Receive.").format(
+				fg_subcontracting_po
+			)
+		)
+	return flt(frappe.db.get_value("Purchase Invoice", pi_name, "grand_total"))
+
+
+def get_employee_conversion_cost(to_employee, issue_time, receive_time):
+	if not (issue_time and receive_time):
+		frappe.throw(_("Issue Time and Receive Time are required to calculate conversion cost."))
+
+	hour_rate = frappe.db.get_value("Workstation", {"employee": to_employee}, "hour_rate")
+	if not hour_rate:
+		frappe.throw(
+			_(
+				"No Workstation found for Employee <b>{0}</b>. Configure a Workstation with Employee = {0} and set its Hour Rate."
+			).format(to_employee)
+		)
+
+	minutes_worked = time_diff_in_seconds(receive_time, issue_time) / 60
+	return flt(hour_rate) * minutes_worked / 60
+
+
 def set_subcontractor_warehouse(self):
 	if self.conversion_type != "Resize":
 		return
@@ -292,16 +344,7 @@ def make_gemstone_stock_entry(self):
 	# back - repack consumes it directly from there instead of a separate transfer first.
 	source_wh = self.target_warehouse if is_resize else self.source_warehouse
 
-	loss_expense_account = None
 	if is_resize:
-		if self.g_loss_qty:
-			loss_expense_account = frappe.db.get_value("Loss Type", self.loss_type, "loss_account")
-			if not loss_expense_account:
-				frappe.throw(
-					_("Set a Loss Account against Loss Type <b>{0}</b> to book the resize loss.").format(
-						self.loss_type
-					)
-				)
 		scrap_warehouse = None
 	else:
 		scrap_warehouse = get_scrap_warehouse(self.department)
@@ -332,11 +375,14 @@ def make_gemstone_stock_entry(self):
 			"s_warehouse": source_wh,
 		}
 	)
-	target_basic_rate = flt(self.source_valuation_rate) * (flt(self.rate_factor) or 1)
+	if is_resize:
+		target_basic_rate = flt(self.source_valuation_rate) + flt(self.conversion_cost)
+	else:
+		target_basic_rate = flt(self.source_valuation_rate) * (flt(self.rate_factor) or 1)
 	for row in self.sc_target_table:
 		if row.item_code == loss_item:
 			if is_resize:
-				# Resize: loss is expensed, not kept as scrap stock - no Stock Entry row for it.
+				# Resize: loss item is not tracked as scrap stock - no Stock Entry row for it.
 				continue
 			t_wh = scrap_warehouse
 		else:
@@ -367,7 +413,6 @@ def make_gemstone_stock_entry(self):
 				"s_warehouse": row["s_warehouse"],
 				"use_serial_batch_fields": True,
 				"serial_and_batch_bundle": None,
-				"expense_account": loss_expense_account if is_resize else None,
 			},
 		)
 	for row in target_item:
@@ -384,12 +429,17 @@ def make_gemstone_stock_entry(self):
 				"basic_rate": row["basic_rate"],
 				"basic_amount": flt(row["basic_rate"] * row["qty"]),
 				"set_basic_rate_manually": 1,
-				"expense_account": loss_expense_account if is_resize else None,
 			},
 		)
 	se.save()
 	se.submit()
 	self.stock_entry = se.name
+
+	if is_resize:
+		se.reload()
+		self.flags.repack_target_batch_map = {
+			row.item_code: row.batch_no for row in se.items if row.t_warehouse
+		}
 
 
 @frappe.whitelist()
@@ -404,7 +454,7 @@ def get_source_batch_valuation_rate(item_code, batch_no, warehouse):
 	if frappe.db.get_value("Batch", batch_no, "use_batchwise_valuation"):
 		data = frappe.db.sql(
 			"""
-			SELECT SUM(sbe.stock_value_difference) AS stock_value, SUM(sbe.qty) AS qty
+			SELECT sbe.stock_value_difference AS stock_value, sbe.qty AS qty
 			FROM `tabSerial and Batch Bundle` sb
 			INNER JOIN `tabSerial and Batch Entry` sbe ON sb.name = sbe.parent
 			WHERE sbe.batch_no = %(batch_no)s
@@ -412,6 +462,9 @@ def get_source_batch_valuation_rate(item_code, batch_no, warehouse):
 				AND sb.item_code = %(item_code)s
 				AND sb.docstatus = 1
 				AND sb.is_cancelled = 0
+				AND sbe.qty > 0
+			ORDER BY sb.posting_date ASC, sb.posting_time ASC, sb.creation ASC
+			LIMIT 1
 			""",
 			{"batch_no": batch_no, "warehouse": warehouse, "item_code": item_code},
 			as_dict=True,
@@ -472,6 +525,7 @@ def make_target_item_transfer_stock_entry(self):
 		return
 
 	loss_item = get_loss_item(self.company, self.g_source_item, self.loss_type)
+	target_batch_map = self.flags.repack_target_batch_map or {}
 
 	se = frappe.get_doc(
 		{
@@ -495,6 +549,9 @@ def make_target_item_transfer_stock_entry(self):
 				"item_code": row.item_code,
 				"qty": row.qty,
 				"inventory_type": self.inventory_type,
+				# Carry forward the exact batch Repack just created instead of
+				# letting the incoming leg auto-create a new one.
+				"batch_no": target_batch_map.get(row.item_code),
 				"department": self.department,
 				"employee": self.employee,
 				"manufacturer": self.manufacturer,

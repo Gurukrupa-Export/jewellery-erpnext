@@ -4,6 +4,7 @@
 frappe.ui.form.on("Employee IR", {
 	refresh(frm) {
 		set_child_table_batch_filter(frm);
+		set_child_table_item_filter(frm);
 		set_html(frm);
 		if (frm.doc.docstatus == 0 && !frm.doc.__islocal && frm.doc.type == "Receive" && frm.doc.is_qc_reqd) {
 			frm.add_custom_button(__("Generate QC"), function () {
@@ -17,6 +18,7 @@ frappe.ui.form.on("Employee IR", {
 		if (frm.doc.docstatus == 0 && frm.doc.type == "Receive") {
 			load_fg_bom_fields(frm, false);
 		}
+		load_repeat_flag(frm);
 	},
 	refresh_fg_bom_fields(frm) {
 		load_fg_bom_fields(frm, true);
@@ -25,11 +27,9 @@ frappe.ui.form.on("Employee IR", {
 		frm.fields_dict["employee_ir_operations"].grid.add_new_row = false;
 		$(frm.fields_dict["employee_ir_operations"].grid.wrapper).find(".grid-add-row").hide();
 	},
-	// validate: function (frm) {
-	// 	if (frm.doc.employee_ir_operations.length > 50) {
-	// 		frappe.throw(__("Only 50 MOP allowed in one document"));
-	// 	}
-	// },
+	async validate(frm) {
+		await validate_employee_ir_wo_limit(frm);
+	},
 	setup(frm) {
 		frm.ignore_doctypes_on_cancel_all = ["Stock Entry", "Serial and Batch Bundle"];
 		frm.set_query("operation", function () {
@@ -104,16 +104,28 @@ frappe.ui.form.on("Employee IR", {
 	type(frm) {
 		frm.clear_table("department_ir_operation");
 		frm.refresh_field("department_ir_operation");
+		load_repeat_flag(frm);
 	},
-	scan_mwo(frm) {
+	operation(frm) {
+		// Repeat-ness is per (work order, operation), so re-pointing the operation
+		// can flip the answer even with the same rows loaded.
+		load_repeat_flag(frm);
+	},
+	async scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
 			frm.doc.employee_ir_operations.forEach(function (item) {
 				if (item.manufacturing_work_order == frm.doc.scan_mwo)
 					frappe.throw(__("{0} Manufacturing Work Order already exists", [frm.doc.scan_mwo]));
 			});
-			// if (frm.doc.employee_ir_operations.length > 30) {
-			// 	frappe.throw(__("Only 30 MOP allowed in one document"));
-			// }
+			let wo_limit = await get_employee_ir_wo_limit(frm);
+			if (wo_limit > 0 && frm.doc.employee_ir_operations.length >= wo_limit) {
+				frappe.throw(
+					__("Only {0} work order(s) allowed per Employee IR for department {1}.", [
+						wo_limit,
+						frm.doc.department,
+					])
+				);
+			}
 			var query_filters = {
 				department: frm.doc.department,
 				manufacturing_work_order: frm.doc.scan_mwo,
@@ -174,6 +186,7 @@ frappe.ui.form.on("Employee IR", {
 									gemstone_pcs: values.gemstone_pcs,
 								});
 								frm.refresh_field("employee_ir_operations");
+								load_repeat_flag(frm);
 							}
 						);
 					} else {
@@ -512,6 +525,26 @@ function set_child_table_batch_filter(frm) {
 // (doc_events/tree_casting.py) blocks a partial re-issue only when
 // MOP Settings.enforce_full_casting_tree_reissue is ticked; this button is shown either way,
 // since assembling the full tree is useful regardless of whether the rule is enforced.
+function set_child_table_item_filter(frm) {
+	frm.fields_dict["manually_book_loss_details"].grid.get_field("item_code").get_query = function (
+		frm,
+		cdt,
+		cdn
+	) {
+		let d = locals[cdt][cdn];
+		return {
+			query: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.filters.get_manual_loss_items",
+			filters: {
+				manufacturing_work_order: d.manufacturing_work_order,
+				manufacturing_operation: d.manufacturing_operation,
+			},
+		};
+	};
+}
+
+// Casting re-issue is all-or-nothing (see doc_events/tree_casting.py). This button pulls in the
+// still-at-casting siblings of whatever casting tree(s) are already on the form so the operator
+// can complete the tree in one click; the submit-time validator blocks a partial re-issue.
 function add_load_full_casting_tree_button(frm) {
 	if (frm.doc.docstatus !== 0 || frm.doc.type !== "Issue" || !frm.doc.operation) {
 		return;
@@ -555,6 +588,7 @@ function add_load_full_casting_tree_button(frm) {
 						});
 					});
 					frm.refresh_field("employee_ir_operations");
+					load_repeat_flag(frm);
 					frappe.show_alert({
 						message: __("Added {0} work order(s) from the casting tree.", [rows.length]),
 						indicator: "green",
@@ -563,6 +597,56 @@ function add_load_full_casting_tree_button(frm) {
 			});
 		});
 	});
+}
+
+// Worker Performance is only asked when a work order comes BACK to an operation it
+// has already been through. Nothing on the client can know that -- only submitted
+// history can -- so the flag is resolved server-side and re-applied here. This is
+// purely so the field appears before save; EmployeeIR.set_repeat_receive_flag
+// recomputes it authoritatively on validate.
+function load_repeat_flag(frm) {
+	// A submitted document already carries the stamped flag; don't re-query it.
+	if (frm.doc.docstatus !== 0) return;
+
+	if (frm.doc.type !== "Receive" || !frm.doc.operation) {
+		apply_repeat_flag(frm, []);
+		return;
+	}
+	const ops = (frm.doc.employee_ir_operations || []).map((r) => ({
+		manufacturing_operation: r.manufacturing_operation,
+		// May be blank on a freshly scanned row; the server resolves it via the MOP.
+		manufacturing_work_order: r.manufacturing_work_order,
+	}));
+	if (!ops.length) {
+		apply_repeat_flag(frm, []);
+		return;
+	}
+
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.get_repeat_work_orders",
+		args: {
+			operations: JSON.stringify(ops),
+			operation: frm.doc.operation,
+			employee_ir: frm.doc.__islocal ? null : frm.doc.name,
+		},
+		callback: (r) => apply_repeat_flag(frm, r.message || []),
+	});
+}
+
+function apply_repeat_flag(frm, repeats) {
+	// Assigned straight onto frm.doc rather than through set_value: this is a derived
+	// value the server recomputes on validate, and set_value would mark an otherwise
+	// untouched form dirty.
+	frm.doc.is_repeat_receive = repeats.length ? 1 : 0;
+	// One header answer can cover several work orders, so name the ones that are
+	// actually rework -- otherwise the question is unanswerable on a mixed receive.
+	frm.set_df_property(
+		"worker_performance",
+		"description",
+		repeats.length ? __("Repeat work order(s) at this operation: {0}", [repeats.join(", ")]) : ""
+	);
+	// refresh_field alone does NOT re-evaluate depends_on.
+	frm.layout.refresh_dependency();
 }
 
 function load_fg_bom_fields(frm, force) {
@@ -612,4 +696,32 @@ function load_fg_bom_fields(frm, force) {
 			}
 		},
 	});
+}
+
+// Per-department cap on the number of Manufacturing Work Orders in one Employee IR
+// (both Issue and Receive). The limit is maintained on the Department doctype
+// (custom_employee_ir_work_order_limit); 0 or unset means no limit. Casting is
+// exempted purely by setting the casting department's limit to 0 — there is no
+// tree_no_reqd / casting-detection code by design.
+async function get_employee_ir_wo_limit(frm) {
+	if (!frm.doc.department) return 0;
+	const r = await frappe.db.get_value(
+		"Department",
+		frm.doc.department,
+		"custom_employee_ir_work_order_limit"
+	);
+	return cint(r && r.message && r.message.custom_employee_ir_work_order_limit);
+}
+
+async function validate_employee_ir_wo_limit(frm) {
+	const limit = await get_employee_ir_wo_limit(frm);
+	const count = (frm.doc.employee_ir_operations || []).length;
+	if (limit > 0 && count > limit) {
+		frappe.throw(
+			__("Only {0} work order(s) allowed per Employee IR for department {1}.", [
+				limit,
+				frm.doc.department,
+			])
+		);
+	}
 }

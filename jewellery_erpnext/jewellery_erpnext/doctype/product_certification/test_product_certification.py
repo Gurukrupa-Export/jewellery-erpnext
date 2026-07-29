@@ -1,6 +1,7 @@
 # Copyright (c) 2023, Nirali and Contributors
 # See license.txt
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import frappe
@@ -12,6 +13,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 	create_po,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification import (
+	ProductCertification,
 	create_product_certification_receive,
 	get_stock_item_against_mwo,
 )
@@ -32,6 +34,19 @@ _DOCTYPE = "Product Certification"
 
 def _purity(item_code):
 	return _TEST_PURITY.get(item_code)
+
+
+def _serial_department(serial_no):
+	"""Department of the warehouse a freshly minted serial currently sits in.
+
+	``ProductCertification.validate_serial_warehouse_department`` blocks an Issue whose
+	Product Details serial is not in a warehouse of the document's department. The serial
+	``create_snc`` mints lands wherever the manufacturing flow left it, not in a Product
+	Certification warehouse, so tests that issue it must name that same department --
+	moving the stock into Product Certification first is a Department IR flow these tests
+	do not model. The department rule itself is covered by TestSerialWarehouseDepartment.
+	"""
+	return frappe.db.get_value("Warehouse", serial_no.warehouse, "department")
 
 
 def _skip_generated_test_records():
@@ -88,7 +103,7 @@ class TestProductCertification(IntegrationTestCase):
 		certification_issue = frappe.new_doc("Product Certification")
 		certification_issue.company = "Test_Company"
 		certification_issue.service_type = "Hall Marking Service"
-		certification_issue.department = "Product Certification - T"
+		certification_issue.department = _serial_department(serial_no)
 		certification_issue.supplier = "Test_Supplier"
 		fetch_sn(certification_issue, serial_no.name)
 		certification_issue.save()
@@ -166,7 +181,7 @@ class TestProductCertification(IntegrationTestCase):
 		certification_issue = frappe.new_doc("Product Certification")
 		certification_issue.company = "Test_Company"
 		certification_issue.service_type = "Diamond Certificate service"
-		certification_issue.department = "Product Certification - T"
+		certification_issue.department = _serial_department(serial_no)
 		certification_issue.supplier = "Test_Supplier"
 		fetch_sn(certification_issue, serial_no.name)
 		certification_issue.save()
@@ -1484,3 +1499,121 @@ def fetch_sn(doc, data):
 			)
 
 	doc.scan = ""
+
+
+PC_MOD = "jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification"
+
+
+def _stub_get_all(serial_wh, wh_dept):
+	"""Stand in for the two lookups validate_serial_warehouse_department makes.
+
+	Returns list-of-lists because the method calls get_all with as_list=True and
+	feeds the result straight into dict().
+	"""
+
+	def _inner(doctype, filters=None, fields=None, as_list=False, **kwargs):
+		wanted = set(filters["name"][1])
+		if doctype == "Serial No":
+			return [[sn, wh] for sn, wh in serial_wh.items() if sn in wanted]
+		if doctype == "Warehouse":
+			return [[wh, dept] for wh, dept in wh_dept.items() if wh in wanted]
+		raise AssertionError(f"unexpected get_all for {doctype}")
+
+	return _inner
+
+
+def _check_serial_dept(serials, department, serial_wh, wh_dept, doc_type="Issue"):
+	"""Run validate_serial_warehouse_department against an in-memory document.
+
+	DB-free: only frappe.get_all is stubbed, so frappe.throw / _ / frappe.bold still
+	behave normally and the assertions exercise the real message construction.
+	"""
+	fake_self = SimpleNamespace(
+		type=doc_type,
+		department=department,
+		product_details=[
+			SimpleNamespace(idx=i + 1, serial_no=sn) for i, sn in enumerate(serials)
+		],
+	)
+	with patch(f"{PC_MOD}.frappe.get_all", _stub_get_all(serial_wh, wh_dept)):
+		ProductCertification.validate_serial_warehouse_department(fake_self)
+
+
+PC_DEPT = "Product Certification - T"
+PC_WO = "Product Certification WO - T"
+PC_TRANSIT = "Product Certification Transit - T"
+OTHER_WH = "Tagging FG - T"
+OTHER_DEPT = "Tagging - T"
+SUPPLIER_WH = "Hallmarking Centre WIP WH - T"
+
+_WH_DEPT = {
+	PC_WO: PC_DEPT,
+	PC_TRANSIT: PC_DEPT,
+	OTHER_WH: OTHER_DEPT,
+	SUPPLIER_WH: "",  # subcontractor warehouses carry no department
+}
+
+
+class TestSerialWarehouseDepartment(IntegrationTestCase):
+	"""On an Issue, a Product Details serial must sit in a warehouse of the document's
+	Department -- see ProductCertification.validate_serial_warehouse_department."""
+
+	def test_serial_in_department_wo_warehouse_ok(self):
+		_check_serial_dept(["SN1"], PC_DEPT, {"SN1": PC_WO}, _WH_DEPT)
+
+	def test_serial_in_department_transit_warehouse_ok(self):
+		# ANY warehouse of the department passes -- the check deliberately does not pin
+		# a warehouse_type, because a department owns several warehouses.
+		_check_serial_dept(["SN1"], PC_DEPT, {"SN1": PC_TRANSIT}, _WH_DEPT)
+
+	def test_serial_in_another_department_throws(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": OTHER_WH}, _WH_DEPT)
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("SN1", msg)
+		self.assertIn(OTHER_WH, msg)
+		self.assertIn(OTHER_DEPT, msg)
+		self.assertIn(PC_DEPT, msg)
+
+	def test_serial_in_warehouse_without_department_throws(self):
+		# "" and None normalize together, so a department-less warehouse must NOT be
+		# mistaken for a match when the document does carry a department.
+		with self.assertRaises(ValidationError):
+			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": SUPPLIER_WH}, _WH_DEPT)
+
+	def test_serial_not_in_stock_throws(self):
+		# ERPNext clears Serial No.warehouse on every outward movement.
+		with self.assertRaises(ValidationError) as cm:
+			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": None}, _WH_DEPT)
+		self.assertIn("not in stock", frappe.utils.strip_html(str(cm.exception)))
+
+	def test_receive_is_not_validated(self):
+		# A Receive legitimately carries serials still in the supplier's WIP warehouse.
+		_check_serial_dept(
+			["SN1"], PC_DEPT, {"SN1": SUPPLIER_WH}, _WH_DEPT, doc_type="Receive"
+		)
+
+	def test_blank_department_skips_check(self):
+		_check_serial_dept(["SN1"], None, {"SN1": OTHER_WH}, _WH_DEPT)
+
+	def test_rows_without_serial_are_ignored(self):
+		# MWO/PMO-only rows carry no serial and must pass untouched.
+		_check_serial_dept([None, ""], PC_DEPT, {}, _WH_DEPT)
+
+	def test_offending_row_index_is_reported(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_serial_dept(
+				["SN1", "SN2"],
+				PC_DEPT,
+				{"SN1": PC_WO, "SN2": OTHER_WH},
+				_WH_DEPT,
+			)
+		self.assertIn("Row #2", frappe.utils.strip_html(str(cm.exception)))
+
+	def test_mixed_rows_all_in_department_ok(self):
+		_check_serial_dept(
+			["SN1", None, "SN2"],
+			PC_DEPT,
+			{"SN1": PC_WO, "SN2": PC_TRANSIT},
+			_WH_DEPT,
+		)
