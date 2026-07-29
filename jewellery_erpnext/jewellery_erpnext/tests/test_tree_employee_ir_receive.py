@@ -26,6 +26,7 @@ DB access is mocked by doctype, matching the house style in test_tree_casting.py
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import frappe
 from frappe.exceptions import ValidationError
 from frappe.tests import IntegrationTestCase
 
@@ -118,6 +119,26 @@ class _TreeReceiveHarness(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		pass
+
+	def setUp(self):
+		# Resolve the rounding method against the REAL db before any test installs the
+		# frappe.db mock.
+		#
+		# tree_draw_by_tree sizes the draw with flt(received_gross_wt - gross_wt, prec), and
+		# flt(value, precision) -> rounded() -> frappe.get_system_settings("rounding_method"),
+		# which loads the System Settings doc through frappe.db the first time a process needs
+		# it and caches it on frappe.local. Mocked out before that read ever happens, the
+		# lookup cannot resolve -- and flt SWALLOWS the failure and returns 0.0 rather than
+		# raising. The draw then reads 0.0, falls under the eps guard, and
+		# update_tree_on_receive returns before it ever touches a tree.
+		#
+		# Only ever bit the FIRST test in the module (TestAgreedWorkedExample sorts first, and
+		# test_cancelling_that_receive_returns_the_1_g first within it): every later test warms
+		# the cache incidentally, calling flt outside a patch. So it passed on a dev site whose
+		# session was already warm, and failed on CI, which runs each module in its own freshly
+		# booted process -- exactly the failure 0b4e638 fixed in the refining suite.
+		super().setUp()
+		frappe.get_system_settings("rounding_method")
 
 	def run_update(self, eir, tree, cancel=False, mwos=None):
 		mwos = mwos or {

@@ -77,11 +77,22 @@ class TestPendingFormula(IntegrationTestCase):
 		self.assertEqual(tb.calculate_pending(3, 2.9, 0.1), 0.0)
 
 	def test_t14_precision_boundary(self):
-		# One unit at the configured precision must survive; half a unit must round away.
+		# One unit at the configured precision must survive; anything below the rounding
+		# boundary must round away.
+		#
+		# Deliberately NOT asserted at exactly half a unit. That is a TIE, and which way a tie
+		# breaks is System Settings > Rounding Method — site configuration, not a property of
+		# calculate_pending, which simply delegates to flt(). Only "Banker's Rounding" sends
+		# 0.0005 down to 0. Frappe's default, "Banker's Rounding (legacy)", applies its
+		# banker tie-break ONLY at precision 0 (`if not precision and decimal_part == 0.5`)
+		# and rounds a tie up at precision 3, exactly like "Commercial Rounding". So the tie
+		# assertion passed on a dev site set to "Banker's Rounding" and failed on CI's
+		# freshly created test_site, which carries the default — 0.001 != 0.0.
 		prec = tb.qty_precision()
 		unit = 10**-prec
 		self.assertAlmostEqual(tb.calculate_pending(unit, 0, 0), unit, places=prec)
-		self.assertEqual(tb.calculate_pending(unit / 2, 0, 0), 0.0)
+		# A quarter unit is unambiguously below the boundary under all three methods.
+		self.assertEqual(tb.calculate_pending(unit / 4, 0, 0), 0.0)
 
 	def test_t15_negative_zero_normalised(self):
 		result = tb.calculate_pending(0.0, 0.0, 0.0)
