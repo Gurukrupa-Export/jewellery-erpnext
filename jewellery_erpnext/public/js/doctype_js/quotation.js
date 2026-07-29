@@ -263,6 +263,33 @@ frappe.ui.form.on("Quotation", {
 		});
 		refresh_field("items");
 	},
+	custom_sales_type: function (frm) {
+		const config = {
+			Hybrid: {
+				custom_customer_finding: "Yes",
+				custom_customer_good: "No",
+				custom_customer_stone: "No",
+				custom_customer_diamond: "No",
+				custom_customer_gold: "No"
+			},
+			Outwork: {
+				custom_customer_finding: "Yes",
+				custom_customer_good: "Yes",
+				custom_customer_stone: "Yes",
+				custom_customer_diamond: "Yes",
+				custom_customer_gold: "Yes"
+			},
+			Outright: {
+				custom_customer_finding: "No",
+				custom_customer_good: "No",
+				custom_customer_stone: "No",
+				custom_customer_diamond: "No",
+				custom_customer_gold: "No"
+			}
+		};
+
+		frm.set_value(config[frm.doc.custom_sales_type] || {});
+	},
 });
 
 function set_item_attribute_filters_on_fields_in_parent_doctype(frm, fields) {
