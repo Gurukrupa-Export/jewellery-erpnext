@@ -253,7 +253,15 @@ def on_submit(self,method):
 
 		set_gst_details(new_si)
 		new_si.calculate_taxes_and_totals()
-		new_si.insert(ignore_permissions=True)
+		# new_si.insert(ignore_permissions=True)
+		try:
+			new_si.insert(ignore_permissions=True)
+		except Exception as e:
+			frappe.log_error(
+				title="New SI Creation Failed",
+				message=frappe.get_traceback()
+			)
+			frappe.throw(f"Error while creating new SI: {str(e)}")
 		frappe.db.set_value("Serial No", row.get("serial_no"), {"status": "Active","warehouse":"Product Allocation FG - KGJPL"})
 		return
 	if self.sales_type=='Hybrid' :
@@ -313,7 +321,15 @@ def on_submit(self,method):
 
 		set_gst_details(new_si)
 		new_si.calculate_taxes_and_totals()
-		new_si.insert(ignore_permissions=True)
+		# new_si.insert(ignore_permissions=True)
+		try:
+			new_si.insert(ignore_permissions=True)
+		except Exception as e:
+			frappe.log_error(
+				title="New SI Creation Failed",
+				message=frappe.get_traceback()
+			)
+			frappe.throw(f"Error while creating new SI: {str(e)}")
 
 
 		
@@ -406,7 +422,7 @@ def set_gst_details(self):
         template_key = "Outright" if has_real_items else "Outwork"
     else:
         template_key = self.sales_type
-    item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
+    item_tax_template = item_template_map.get(template_key, {}).get(self.company)
     if not item_tax_template:
         return
 
@@ -873,11 +889,11 @@ def update_einvoice_items(self, invoice_data, payment_terms_data,allowed_item_ty
 					"uom": invoice_data[row]["uom"] or "Nos",
 					"gst_hsn_code": invoice_data[row]["hsn_code"],
 					"conversion_factor": 1,
-					"qty": invoice_data[row]["qty"],
+					"qty": qty,
 					"rate": invoice_data[row].get("rate", 0),
 					"base_rate": invoice_data[row].get("rate", 0),
-					"amount": flt(invoice_data[row]["amount"], 3),
-					"base_amount": invoice_data[row]["amount"],
+					"amount": flt(amount, 3),
+					"base_amount": amount,
 					"income_account": invoice_data[row]["income_account"],
 					"cost_center": invoice_data[row]["cost_center"],
 				},
