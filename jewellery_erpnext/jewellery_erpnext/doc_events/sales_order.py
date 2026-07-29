@@ -2208,7 +2208,22 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 		+ sum(r.making_amount for r in doc.finding_detail),
 		_prec,
 	)
-
+	if (self.company == "KG GK Jewellers Private Limited" or ctx.customer_group == "Internal"):
+		doc.custom_kg_selling_gold_bom_amount=doc.gold_bom_amount
+		doc.custom_kg_selling_total_bom_amount=doc.total_bom_amount
+		doc.custom_kg_selling_making_charge= doc.making_charge
+		doc.custom_kg_selling_other_bom_amount= doc.other_bom_amount
+		doc.custom_kg_selling_finding_bom_amount= doc.finding_bom_amount
+		doc.custom_kg_selling_gemstone_bom_amount= doc.gemstone_bom_amount
+		doc.custom_kg_selling_diamond_bom_amount= doc.diamond_bom_amount
+	else:
+		doc.custom_gk_sell_gold_bom_amount=doc.gold_bom_amount
+		doc.custom_gk_sell_total_bom_amount=doc.total_bom_amount
+		doc.custom_gk_sell_making_charge= doc.making_charge
+		doc.custom_gk_sell_other_bom_amount= doc.other_bom_amount
+		doc.custom_gk_sell_finding_bom_amount= doc.finding_bom_amount
+		doc.custom_gk_sell_gemstone_bom_amount= doc.gemstone_bom_amount
+		doc.custom_gk_sell_diamond_bom_amount= doc.diamond_bom_amount
 	# ── 13. Total amount ─────────────────────────────────────────
 	total_amount = round(
 		doc.total_bom_amount
