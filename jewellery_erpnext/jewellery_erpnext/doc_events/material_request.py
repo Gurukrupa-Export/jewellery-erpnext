@@ -130,7 +130,7 @@ def before_update_after_submit(self, method):
 	mop_fields = frappe.db.get_value(
 		"Manufacturing Operation",
 		self.custom_manufacturing_operation,
-		["status", "department"],
+		["status", "department", "previous_mop"],
 		as_dict=True,
 	)
 
@@ -144,23 +144,45 @@ def before_update_after_submit(self, method):
 	if mop_fields.status == "Finished":
 		frappe.throw(_("Cannot select an operation that is already Finished."))
 
-	if self.custom_department:
-		make_department_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
-	else:
+	# The material physically sits in the Request Items' warehouse -- the
+	# "Material Transfer From Reserve" Stock Entry put it there on submit. Gate
+	# BOTH branches on that department matching the operation's: ``custom_department``
+	# is a write-once stamp of the *source* (bagging) department and is never equal
+	# to the operation's department, so keying the guard on it -- or leaving it, as
+	# before, only on the no-``custom_department`` branch -- lets every wrong-department
+	# operation through.
+	#
+	# Only enforce once the operation has been walked into a department by a
+	# Department IR. The MWO's first operation is minted in Manufacturing Setting's
+	# ``default_department`` (manufacturing_work_order.create_manufacturing_operation)
+	# and acts as a gathering point for material staged across several departments,
+	# so it can never match and must not be blocked.
+	# department_ir.create_operation_for_next_dept_new stamps ``previous_mop`` on
+	# every Department-IR-created operation, so its absence marks a never-moved one.
+	if mop_fields.previous_mop:
 		if not self.items or not self.items[0].warehouse:
 			frappe.throw(_("Warehouse is missing from Request Items."))
 
-		table_warehouse_department = frappe.db.get_value(
+		row_department = frappe.db.get_value(
 			"Warehouse", self.items[0].warehouse, "department"
 		)
 
-		if mop_fields.department != table_warehouse_department:
+		if mop_fields.department != row_department:
 			frappe.throw(
 				_(
-					"Manufacturing Operation's Department and selected Warehouse Department do not match."
+					"Material is in department {0}, but Manufacturing Operation {1} "
+					"belongs to department {2}. Transfer the material to {2} before "
+					"using Transfer to MOP."
+				).format(
+					row_department or _("(not set)"),
+					self.custom_manufacturing_operation,
+					mop_fields.department or _("(not set)"),
 				)
 			)
 
+	if self.custom_department:
+		make_department_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
+	else:
 		make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
 
 
@@ -249,7 +271,10 @@ def materialize_transfer_se(mr_name):
 	validator blocks the submit and it is recorded as Failed (re-submit after EOD).
 	"""
 	from jewellery_erpnext.jewellery_erpnext.bounded_retry import run_with_retry
-	from jewellery_erpnext.jewellery_erpnext.serialize import LockTimeoutError, conflict_lock
+	from jewellery_erpnext.jewellery_erpnext.serialize import (
+		LockTimeoutError,
+		conflict_lock,
+	)
 
 	try:
 		with conflict_lock("mr_transfer_se", mr_name, timeout=30):
@@ -263,7 +288,10 @@ def materialize_transfer_se(mr_name):
 		frappe.db.set_value(
 			"Material Request",
 			mr_name,
-			{"custom_transfer_se_state": "Failed", "custom_transfer_se_error": str(e)[:140]},
+			{
+				"custom_transfer_se_state": "Failed",
+				"custom_transfer_se_error": str(e)[:140],
+			},
 			update_modified=False,
 		)
 		frappe.db.commit()
