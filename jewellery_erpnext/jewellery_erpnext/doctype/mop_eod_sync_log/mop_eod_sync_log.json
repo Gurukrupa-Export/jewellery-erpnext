@@ -30,6 +30,7 @@
   "col_break_3",
   "unsynced_items",
   "failed_items",
+  "draft_items",
   "skipped_items",
   "excluded_items",
   "qty_section",
@@ -39,6 +40,7 @@
   "col_break_4",
   "unsynced_qty",
   "failed_qty",
+  "draft_qty",
   "skipped_qty",
   "excluded_qty",
   "progress_percent",
@@ -195,6 +197,13 @@
    "read_only": 1
   },
   {
+   "description": "Rows whose Stock Entry was built but not submitted. Recoverable — not failures.",
+   "fieldname": "draft_items",
+   "fieldtype": "Int",
+   "label": "Draft Items",
+   "read_only": 1
+  },
+  {
    "fieldname": "skipped_items",
    "fieldtype": "Int",
    "label": "Skipped Items",
@@ -247,6 +256,13 @@
    "fieldname": "failed_qty",
    "fieldtype": "Float",
    "label": "Failed Qty",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "fieldname": "draft_qty",
+   "fieldtype": "Float",
+   "label": "Draft Qty",
    "precision": "3",
    "read_only": 1
   },

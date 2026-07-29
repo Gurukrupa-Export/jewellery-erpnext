@@ -30,53 +30,114 @@ import frappe
 DEFAULT_SYNC_LOG = "MOP-EOD-SYNC-2026-03606"
 
 
-def _classify(sync_log_name):
-	"""Return (retryable, skipped): {mwo: [draft_se,...]} from the sync log."""
+def _classify(sync_log_name=None):
+	"""Return (retryable, skipped): ``{mwo: [draft_se, ...]}``.
+
+	``sync_log_name=None`` sweeps EVERY sync log instead of one, which is what the
+	backlog needs -- 52 stuck drafts accumulated across many nights.
+
+	Three preconditions decide "retryable", each protecting against a double-transfer:
+
+	1. **Source.** Only drafts tagged ``MOP EOD Sync`` are retried. Drafts tagged
+	   ``MOP EOD Sync (Unresolved)`` are the best-effort "issues" SEs holding buildable
+	   rows of MWOs that were held back; no child row points at them and a future run
+	   rebuilds that work, so re-driving them would post the same stock twice. On the
+	   live site the 52 drafts split 25 / 27 between the two, so a scope of
+	   ``custom_is_eod_sync_stock_entry = 1 AND docstatus = 0`` silently doubles.
+	2. **Not already submitted.** A draft submitted by hand moved stock without the SRE
+	   relocation; re-running would build a second transfer. Manual reconciliation only.
+	3. **Still unsynced.** An MWO whose MOP Logs are already ``is_synced = 1`` has been
+	   accounted for; re-planning it would transfer the same balance again.
+	"""
+	filters = {"status": "Draft Created"}
+	if sync_log_name:
+		filters["parent"] = sync_log_name
 	rows = frappe.get_all(
 		"MOP EOD Sync Log Item",
-		filters={"parent": sync_log_name, "status": "Draft Created"},
+		filters=filters,
 		fields=["manufacturing_work_order", "draft_stock_entry"],
 		limit_page_length=0,
 	)
 	mwo_drafts = {}
 	for r in rows:
-		if r.manufacturing_work_order:
+		if r.manufacturing_work_order and r.draft_stock_entry:
 			mwo_drafts.setdefault(r.manufacturing_work_order, set()).add(
-				r.draft_stock_entry or ""
+				r.draft_stock_entry
 			)
 
 	retryable, skipped = {}, {}
 	for mwo, drafts in mwo_drafts.items():
 		states = []
 		for se in drafts:
-			if not se:
-				continue
-			ds = frappe.db.get_value("Stock Entry", se, "docstatus")
-			states.append((se, ds))
-		# Submitted (docstatus 1) draft anywhere → inconsistent, manual reconciliation.
-		if any(ds == 1 for _, ds in states):
-			skipped[mwo] = [se for se, ds in states if ds == 1]
-		else:
-			retryable[mwo] = [se for se, ds in states if ds == 0]
+			row = (
+				frappe.db.get_value(
+					"Stock Entry",
+					se,
+					["docstatus", "custom_eod_sync_source"],
+					as_dict=True,
+				)
+				or {}
+			)
+			if not row:
+				continue  # draft already deleted by an earlier recovery
+			states.append((se, row.get("docstatus"), row.get("custom_eod_sync_source")))
+
+		if not states:
+			continue
+		# (2) submitted by hand anywhere -> inconsistent, never auto-retry.
+		if any(ds == 1 for _, ds, _ in states):
+			skipped[mwo] = [se for se, ds, _ in states if ds == 1]
+			continue
+		# (1) only the real consolidated transfer drafts.
+		main_drafts = [
+			se for se, ds, src in states if ds == 0 and src == "MOP EOD Sync"
+		]
+		if not main_drafts:
+			continue
+		# (3) nothing left to sync means it was already accounted for.
+		if not frappe.db.exists(
+			"MOP Log",
+			{"manufacturing_work_order": mwo, "is_synced": 0, "is_cancelled": 0},
+		):
+			skipped[mwo] = main_drafts
+			continue
+		retryable[mwo] = main_drafts
 	return retryable, skipped
 
 
-def execute(sync_log_name=DEFAULT_SYNC_LOG, dry_run=True):
-	if not frappe.db.exists("MOP EOD Sync Log", sync_log_name):
+def execute(sync_log_name=None, dry_run=True):
+	"""``sync_log_name=None`` (the default) sweeps every sync log."""
+	if sync_log_name and not frappe.db.exists("MOP EOD Sync Log", sync_log_name):
 		print(f"[retry-stuck-eod] Sync log {sync_log_name} not found; nothing to do.")
 		return
 
 	retryable, skipped = _classify(sync_log_name)
 
-	print(f"[retry-stuck-eod] Sync log {sync_log_name}")
+	print(f"[retry-stuck-eod] Sync log {sync_log_name or '(ALL LOGS)'}")
 	print(f"  Retryable MWOs (will delete orphan draft + re-run): {len(retryable)}")
 	for mwo, drafts in retryable.items():
 		print(f"    {mwo}: drafts={drafts or '(none)'}")
 	print(
-		f"  Skipped MWOs (manually submitted — manual reconciliation needed): {len(skipped)}"
+		f"  Skipped MWOs (manually submitted, or already fully synced): {len(skipped)}"
 	)
 	for mwo, drafts in skipped.items():
-		print(f"    {mwo}: submitted={drafts}")
+		print(f"    {mwo}: {drafts}")
+
+	# Ownership pre-flight. EOD transfer rows used to carry no inventory_type, so the
+	# blanket "default blank to Regular Stock" booked customer-owned metal as company
+	# stock. Re-driving these MWOs must not repeat that, so refuse to run until the
+	# builder fix is in place.
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+		_build_eod_se_rows,
+	)
+
+	if "_stamp_eod_row_ownership" not in _build_eod_se_rows.__code__.co_names:
+		print(
+			"[retry-stuck-eod] ABORT: _build_eod_se_rows does not stamp row ownership. "
+			"Re-driving these MWOs would book Customer Goods batches as Regular Stock. "
+			"Apply the ownership fix first."
+		)
+		return
 
 	if dry_run:
 		print(
@@ -146,7 +207,13 @@ def execute(sync_log_name=DEFAULT_SYNC_LOG, dry_run=True):
 			issues_buckets.setdefault(bucket_key, []).extend(result["issues_rows"])
 	for (company, manufacturer), main_mwos in main_buckets.items():
 		_commit_company_main_se(
-			company, manufacturer, main_mwos, failures, stats, sync_log_name=None, selective=True
+			company,
+			manufacturer,
+			main_mwos,
+			failures,
+			stats,
+			sync_log_name=None,
+			selective=True,
 		)
 	for (company, manufacturer), issues_rows in issues_buckets.items():
 		_commit_company_issues_se(
@@ -175,7 +242,7 @@ def execute(sync_log_name=DEFAULT_SYNC_LOG, dry_run=True):
 			limit_page_length=0,
 		)
 		total = len(logs)
-		unsynced = sum(1 for l in logs if not l.is_synced)
+		unsynced = sum(1 for lo in logs if not lo.is_synced)
 		print(f"    {mwo}: logs={total} still_unsynced={unsynced}")
 
 
