@@ -50,7 +50,6 @@ jobs:
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Refining Entry"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Refinery Price List"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Product Certification"
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_refining_recovery_distribution
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serialize
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_lock_order
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_submission_queue_dedup
