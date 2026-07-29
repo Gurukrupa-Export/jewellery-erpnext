@@ -253,7 +253,15 @@ def on_submit(self,method):
 
 		set_gst_details(new_si)
 		new_si.calculate_taxes_and_totals()
-		new_si.insert(ignore_permissions=True)
+		# new_si.insert(ignore_permissions=True)
+		try:
+			new_si.insert(ignore_permissions=True)
+		except Exception as e:
+			frappe.log_error(
+				title="New SI Creation Failed",
+				message=frappe.get_traceback()
+			)
+			frappe.throw(f"Error while creating new SI: {str(e)}")
 		frappe.db.set_value("Serial No", row.get("serial_no"), {"status": "Active","warehouse":"Product Allocation FG - KGJPL"})
 		return
 	if self.sales_type=='Hybrid' :
@@ -313,7 +321,15 @@ def on_submit(self,method):
 
 		set_gst_details(new_si)
 		new_si.calculate_taxes_and_totals()
-		new_si.insert(ignore_permissions=True)
+		# new_si.insert(ignore_permissions=True)
+		try:
+			new_si.insert(ignore_permissions=True)
+		except Exception as e:
+			frappe.log_error(
+				title="New SI Creation Failed",
+				message=frappe.get_traceback()
+			)
+			frappe.throw(f"Error while creating new SI: {str(e)}")
 
 
 		
