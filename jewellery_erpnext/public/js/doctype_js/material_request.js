@@ -190,12 +190,15 @@ frappe.ui.form.on("Material Request", {
 		if (!mop || !warehouse) return;
 
 		Promise.all([
-			frappe.db.get_value("Manufacturing Operation", mop, "department"),
+			frappe.db.get_value("Manufacturing Operation", mop, ["department", "previous_mop"]),
 			frappe.db.get_value("Warehouse", warehouse, "department"),
 		]).then(([mop_res, wh_res]) => {
 			const mop_dept = mop_res.message && mop_res.message.department;
 			const row_dept = wh_res.message && wh_res.message.department;
-			if (mop_dept && row_dept && mop_dept !== row_dept) {
+			// Mirrors the server guard: an operation that has never been moved by a
+			// Department IR sits in the default department and is a gathering point.
+			const moved = mop_res.message && mop_res.message.previous_mop;
+			if (moved && mop_dept && row_dept && mop_dept !== row_dept) {
 				frappe.show_alert(
 					{
 						message: __(

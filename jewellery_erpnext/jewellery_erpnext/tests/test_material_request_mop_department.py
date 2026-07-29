@@ -9,6 +9,10 @@ Request Items' warehouse department against ``Manufacturing Operation.department
 It deliberately does NOT key on ``Material Request.custom_department`` -- that field
 is a write-once stamp of the *source* (bagging) department and never equals the
 operation's department.
+
+It applies only to an operation that has been walked into a department by a
+Department IR (``previous_mop`` set). The MWO's first operation is a gathering point
+in the default department and is exempt.
 """
 
 from types import SimpleNamespace
@@ -37,6 +41,15 @@ def _mr(
 		custom_department=custom_department,
 		items=[SimpleNamespace(warehouse=warehouse)] if warehouse is not None else [],
 	)
+
+
+def _mop_row(department, status="Not Started", previous_mop="MOP-PREV-001"):
+	"""A Manufacturing Operation row as before_update_after_submit reads it.
+
+	``previous_mop`` defaults to set, i.e. an operation a Department IR has already
+	walked into ``department`` -- the case the guard applies to.
+	"""
+	return frappe._dict(status=status, department=department, previous_mop=previous_mop)
 
 
 class TestTransferToMopDepartmentGuard(IntegrationTestCase):
@@ -78,7 +91,7 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 
 	def test_mismatch_throws_and_names_all_three(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = frappe._dict(status="Not Started", department="Pre Polish - GEPL")
+		row = _mop_row("Pre Polish - GEPL")
 		msg, _d, _p = self._run_expecting_throw(doc, row, "Diamond Setting - GEPL")
 		self.assertIn("Diamond Setting - GEPL", msg)  # where the material is
 		self.assertIn(_MOP, msg)  # the operation
@@ -86,7 +99,7 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 
 	def test_mismatch_creates_no_stock_entry(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = frappe._dict(status="Not Started", department="Pre Polish - GEPL")
+		row = _mop_row("Pre Polish - GEPL")
 		_msg, dept_se, plain_se = self._run_expecting_throw(
 			doc, row, "Diamond Setting - GEPL"
 		)
@@ -96,7 +109,7 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 	def test_mismatch_blocked_on_custom_department_branch(self):
 		"""Regression: custom_department used to bypass the check entirely."""
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = frappe._dict(status="Not Started", department="Sub Contracting - GEPL")
+		row = _mop_row("Sub Contracting - GEPL")
 		_msg, dept_se, _p = self._run_expecting_throw(
 			doc, row, "Diamond Setting - GEPL"
 		)
@@ -104,28 +117,28 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 
 	def test_match_with_custom_department_calls_department_maker(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = frappe._dict(status="Not Started", department="Diamond Setting - GEPL")
+		row = _mop_row("Diamond Setting - GEPL")
 		dept_se, plain_se = self._run(doc, row, "Diamond Setting - GEPL")
 		dept_se.assert_called_once_with(doc, mop=_MOP)
 		plain_se.assert_not_called()
 
 	def test_match_without_custom_department_calls_plain_maker(self):
 		doc = _mr(custom_department=None)
-		row = frappe._dict(status="Not Started", department="Diamond Setting - GEPL")
+		row = _mop_row("Diamond Setting - GEPL")
 		dept_se, plain_se = self._run(doc, row, "Diamond Setting - GEPL")
 		plain_se.assert_called_once_with(doc, mop=_MOP)
 		dept_se.assert_not_called()
 
 	def test_mop_department_unset_throws(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = frappe._dict(status="Not Started", department=None)
+		row = _mop_row(None)
 		msg, _d, _p = self._run_expecting_throw(doc, row, "Diamond Setting - GEPL")
 		self.assertIn("(not set)", msg)
 		self.assertIn("Diamond Setting - GEPL", msg)
 
 	def test_warehouse_department_unset_throws(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = frappe._dict(status="Not Started", department="Diamond Setting - GEPL")
+		row = _mop_row("Diamond Setting - GEPL")
 		msg, _d, _p = self._run_expecting_throw(doc, row, None)
 		self.assertIn("(not set)", msg)
 		self.assertIn("Diamond Setting - GEPL", msg)
@@ -133,22 +146,64 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 	def test_both_departments_unset_is_treated_as_a_match(self):
 		"""None == None -- no mismatch to report, so the existing flow proceeds."""
 		doc = _mr(custom_department=None)
-		row = frappe._dict(status="Not Started", department=None)
+		row = _mop_row(None)
 		_d, plain_se = self._run(doc, row, None)
 		plain_se.assert_called_once_with(doc, mop=_MOP)
 
 	def test_missing_items_throws_warehouse_message(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL", warehouse=None)
-		row = frappe._dict(status="Not Started", department="Diamond Setting - GEPL")
+		row = _mop_row("Diamond Setting - GEPL")
 		msg, dept_se, _p = self._run_expecting_throw(doc, row, "Diamond Setting - GEPL")
 		self.assertIn("Warehouse is missing", msg)
 		dept_se.assert_not_called()
+
+	# --- the never-moved gathering-point exemption -----------------------
+
+	def test_never_moved_mop_is_exempt_from_the_department_check(self):
+		"""The MWO's first operation is minted in the default department and
+		gathers material staged across several departments, so a mismatch there is
+		normal. This is the shape create_pmo builds in the DB-backed fixtures."""
+		doc = _mr(custom_department="Diamond Bagging - GEPL")
+		row = _mop_row("Manufacturing Plan & Management - GEPL", previous_mop=None)
+		dept_se, plain_se = self._run(doc, row, "Diamond Setting - GEPL")
+		dept_se.assert_called_once_with(doc, mop=_MOP)
+		plain_se.assert_not_called()
+
+	def test_never_moved_mop_exempt_on_plain_branch_too(self):
+		doc = _mr(custom_department=None)
+		row = _mop_row("Manufacturing Plan & Management - GEPL", previous_mop=None)
+		dept_se, plain_se = self._run(doc, row, "Diamond Setting - GEPL")
+		plain_se.assert_called_once_with(doc, mop=_MOP)
+		dept_se.assert_not_called()
+
+	def test_never_moved_mop_skips_the_warehouse_lookup_entirely(self):
+		"""No items at all is fine on the exempt path -- the guard never looks."""
+		doc = _mr(custom_department="Diamond Bagging - GEPL", warehouse=None)
+		row = _mop_row("Manufacturing Plan & Management - GEPL", previous_mop=None)
+		dept_se, _p = self._run(doc, row, None)
+		dept_se.assert_called_once_with(doc, mop=_MOP)
+
+	def test_blank_previous_mop_is_treated_as_never_moved(self):
+		doc = _mr(custom_department="Diamond Bagging - GEPL")
+		row = _mop_row("Pre Polish - GEPL", previous_mop="")
+		dept_se, _p = self._run(doc, row, "Diamond Setting - GEPL")
+		dept_se.assert_called_once_with(doc, mop=_MOP)
+
+	def test_finished_check_still_applies_to_a_never_moved_mop(self):
+		doc = _mr(custom_department="Diamond Bagging - GEPL")
+		row = _mop_row(
+			"Manufacturing Plan & Management - GEPL",
+			status="Finished",
+			previous_mop=None,
+		)
+		msg, _d, _p = self._run_expecting_throw(doc, row, "Diamond Setting - GEPL")
+		self.assertIn("Finished", msg)
 
 	# --- pre-existing guards keep priority -------------------------------
 
 	def test_finished_mop_takes_priority(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL")
-		row = frappe._dict(status="Finished", department="Pre Polish - GEPL")
+		row = _mop_row("Pre Polish - GEPL", status="Finished")
 		msg, _d, _p = self._run_expecting_throw(doc, row, "Diamond Setting - GEPL")
 		self.assertIn("Finished", msg)
 
@@ -159,7 +214,7 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 
 	def test_no_mop_selected_throws(self):
 		doc = _mr(custom_department="Diamond Bagging - GEPL", mop=None)
-		row = frappe._dict(status="Not Started", department="Diamond Setting - GEPL")
+		row = _mop_row("Diamond Setting - GEPL")
 		msg, _d, _p = self._run_expecting_throw(doc, row, "Diamond Setting - GEPL")
 		self.assertIn("select a Manufacturing Operation", msg)
 
@@ -168,7 +223,7 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 			custom_department="Diamond Bagging - GEPL",
 			workflow_state="Material Transferred",
 		)
-		row = frappe._dict(status="Not Started", department="Pre Polish - GEPL")
+		row = _mop_row("Pre Polish - GEPL")
 		dept_se, plain_se = self._run(doc, row, "Diamond Setting - GEPL")
 		dept_se.assert_not_called()
 		plain_se.assert_not_called()
