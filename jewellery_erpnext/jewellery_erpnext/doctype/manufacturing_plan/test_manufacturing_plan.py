@@ -39,7 +39,7 @@ class TestManufacturingPlan(IntegrationTestCase):
 		man_plan.branch = self.branch
 		if man_plan.setting_type:
 			man_plan.setting_type = "Close"
-		man_plan.is_subcontracting = "No"
+		man_plan.is_subcontracting = 0
 		man_plan.save()
 		self.assertEqual(
 			man_plan.total_planned_qty, len(man_plan.manufacturing_plan_table)
@@ -70,7 +70,10 @@ class TestManufacturingPlan(IntegrationTestCase):
 		man_plan.company = "Test_Company"
 		if man_plan.setting_type:
 			man_plan.setting_type = "Close"
-		man_plan.is_subcontracting = "Yes"
+		# is_subcontracting is a Check: a "Yes"/"No" string would cint() to 0 and silently
+		# save the header as NOT subcontracting, leaving this test green while exercising
+		# nothing but the per-row row.subcontracting flag set below.
+		man_plan.is_subcontracting = 1
 		man_plan.supplier = "Test_Supplier"
 		man_plan.estimated_date = add_to_date(now(), days=-4)
 		man_plan.purchase_type = "FG Purchase"
@@ -87,6 +90,28 @@ class TestManufacturingPlan(IntegrationTestCase):
 			man_plan.total_planned_qty, len(man_plan.manufacturing_plan_table)
 		)
 		man_plan.submit()
+
+		# The header flag must survive the round-trip as 1, not be coerced to 0.
+		self.assertEqual(
+			frappe.db.get_value(
+				"Manufacturing Plan", man_plan.name, "is_subcontracting"
+			),
+			1,
+		)
+
+		# on_submit -> create_subcontracting_order -> make_subcontracting_order builds one
+		# Purchase Order per supplier, stamped with this plan.
+		po_name = frappe.db.get_value(
+			"Purchase Order", {"manufacturing_plan": man_plan.name}, "name"
+		)
+		self.assertIsNotNone(po_name, "no subcontracting Purchase Order was created")
+		po = frappe.get_doc("Purchase Order", po_name)
+		self.assertEqual(po.supplier, man_plan.supplier)
+		self.assertEqual(po.purchase_type, man_plan.purchase_type)
+		self.assertEqual(
+			sorted(row.item_code for row in po.items),
+			sorted(row.item_code for row in man_plan.manufacturing_plan_table),
+		)
 
 	def test_manufacturing_plan_repair(self):
 		repair_so = create_repair_sales_order(self)

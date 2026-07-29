@@ -247,9 +247,15 @@ class CustomStockEntry(StockEntry):
 		   by SRE *name* (``voucher_no`` is a shared Sales Order and cannot identify a job);
 		2. restrict the check to the ``(item_code, warehouse)`` pairs this entry actually
 		   drew stock from;
-		3. on a residual shortfall, warn on internal manufacturing movements and throw on
-		   everything else. Real over-consumption is still caught downstream by
+		3. on a residual shortfall, record the conflict and let the entry through -- it is
+		   never blocked. See ``_report_reserved_batch_shortfall`` for why blocking protects
+		   nobody here, and why gating the throw on "is this an internal movement" was tried
+		   and abandoned. Real over-consumption is still caught downstream by
 		   ``NegativeStockError`` in ``erpnext/stock/stock_ledger.py``.
+
+		(1) and (2) no longer decide whether the entry proceeds, but they still decide what
+		gets logged: without them the Error Log would name this job's own reservations and
+		warehouses the entry never touched.
 
 		Version-agnostic by construction: it replaces the method wholesale, and the call
 		site in ``StockController.make_sl_entries`` plus the zero-arg signature are
@@ -388,7 +394,16 @@ class CustomStockEntry(StockEntry):
 		return names
 
 	def _get_scoped_reserved_batches(self, batches):
-		"""Like core's ``get_reserved_batches``, plus the SRE name/item and the child qtys."""
+		"""Like core's ``get_reserved_batches``, plus the SRE name/item and the child qtys.
+
+		The ``parenttype`` predicate is deliberate hardening, not a fix for an observed bug --
+		do not drop it as redundant. ``Serial and Batch Entry`` is a child of both
+		``Serial and Batch Bundle`` and ``Stock Reservation Entry``, and core's version of this
+		query joins on ``parent`` alone. That is safe today only because the two name spaces
+		happen not to overlap (SBB is a 20-char hash; SRE is ``MAT-SRE-.YYYY.-.#####``, moved to
+		a 10-char hash by ``patches/repoint_sle_sre_autoname_hash``) -- an accident of naming,
+		not an invariant anything enforces.
+		"""
 		sre = frappe.qb.DocType("Stock Reservation Entry")
 		sb_entry = frappe.qb.DocType("Serial and Batch Entry")
 
@@ -406,7 +421,11 @@ class CustomStockEntry(StockEntry):
 				sb_entry.qty,
 				sb_entry.delivered_qty,
 			)
-			.where((sre.docstatus == 1) & (sb_entry.batch_no.isin(batches)))
+			.where(
+				(sre.docstatus == 1)
+				& (sb_entry.parenttype == "Stock Reservation Entry")
+				& (sb_entry.batch_no.isin(batches))
+			)
 		).run(as_dict=True)
 
 	def _report_reserved_batch_shortfall(
