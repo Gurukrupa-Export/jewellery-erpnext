@@ -3,6 +3,7 @@ from erpnext.stock.doctype.stock_reconciliation.stock_reconciliation import (
 	StockReconciliation,
 )
 from frappe import _
+from frappe.utils import flt
 
 
 @frappe.whitelist()
@@ -53,6 +54,62 @@ def validate_department(self, method=None):
 			_(
 				"Some Manufacturing Operations are in Transit mode, Complete Transit First then perform the action"
 			)
+		)
+
+
+def validate_transit_warehouse_empty(self, method=None):
+	"""Block save/submit unless every reconciled item has zero stock in the department's
+	Transit warehouse.
+
+	Reconciling a department while items still sit in its transit warehouse (mid-transfer)
+	yields wrong balances. So: resolve the department from ``custom_department``, find its
+	Transit warehouse (``Warehouse{department, warehouse_type="Transit", disabled=0}``), and
+	require ``Bin.actual_qty`` there to be 0 for every distinct item on the reconciliation.
+
+	``custom_department`` is read via ``.get()`` (it is a gke_customization fixture field and
+	may be absent on un-synced sites) so a missing field degrades to "skip" rather than raising.
+	A missing Bin row means no stock for that (item, warehouse) pair, i.e. 0 -- handled by
+	``flt(None) == 0.0`` and ``on_hand.get(ic, 0.0)``.
+	"""
+	department = self.get("custom_department")
+	if not department:
+		return
+
+	transit_warehouse = frappe.db.get_value(
+		"Warehouse",
+		{"department": department, "warehouse_type": "Transit", "disabled": 0},
+		"name",
+	)
+	if not transit_warehouse:
+		return  # department has no transit warehouse -> nothing can be in transit
+
+	item_codes = {row.item_code for row in self.items if row.item_code}
+	if not item_codes:
+		return
+
+	# One bulk read (matches the app's Bin bulk-prefetch idiom, main_slip_inject.py:858).
+	on_hand = {
+		b["item_code"]: flt(b["actual_qty"])
+		for b in frappe.db.get_all(
+			"Bin",
+			filters={
+				"warehouse": transit_warehouse,
+				"item_code": ["in", list(item_codes)],
+			},
+			fields=["item_code", "actual_qty"],
+		)
+	}
+
+	blocked = sorted(ic for ic in item_codes if on_hand.get(ic, 0.0) != 0)
+	if blocked:
+		rows = "".join(f"<li>{ic}: {on_hand[ic]}</li>" for ic in blocked)
+		frappe.throw(
+			_(
+				"Stock Reconciliation cannot be saved: the following item(s) still have stock "
+				"in the transit warehouse <b>{0}</b>. Clear the transit warehouse first."
+			).format(transit_warehouse)
+			+ f"<ul>{rows}</ul>",
+			title=_("Transit Warehouse Not Empty"),
 		)
 
 

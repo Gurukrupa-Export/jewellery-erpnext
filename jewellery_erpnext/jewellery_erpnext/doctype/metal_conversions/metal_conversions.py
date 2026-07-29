@@ -1,6 +1,8 @@
 # Copyright (c) 2024, Nirali and contributors
 # For license information, please see license.txt
 
+import re
+
 import frappe
 from erpnext.controllers.queries import get_batch_no
 from erpnext.stock.doctype.batch.batch import get_batch_qty
@@ -18,6 +20,41 @@ from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.ut
 	update_batch_details,
 	update_source_betch,
 )
+
+# Remark sentences offered by the Remarks dropdown. Add a sentence here and it shows up
+# in the form with no other change; use "{percentage}" where the document's Percentage
+# belongs, or leave it out for a sentence that carries no percentage.
+REMARK_TEMPLATES = ("NR {percentage}% PLAIN ROUND BALLS LOSS BOOK",)
+
+# Matches the number a rendered template put in place of "{percentage}".
+_PERCENTAGE_PATTERN = "[-0-9.]+"
+
+
+def render_remark_options(percentage, precision):
+	"""Render every remark sentence with this document's Percentage substituted.
+
+	Single source of truth for the Remarks dropdown: the client fills the Select from
+	this (via ``MetalConversions.get_remark_options``) and ``set_remarks`` re-renders the
+	stored value from it, so the text the user picked and the text we store cannot drift.
+	"""
+	value = f"{flt(percentage, precision):.{precision}f}"
+	return [template.format(percentage=value) for template in REMARK_TEMPLATES]
+
+
+def template_index(remark):
+	"""Index of the REMARK_TEMPLATES entry a stored remark came from, else None.
+
+	Matches on the fixed words only, so a remark rendered at one percentage is still
+	recognised after the Percentage has been edited -- that is what lets ``set_remarks``
+	re-render it instead of rejecting it.
+	"""
+	for idx, template in enumerate(REMARK_TEMPLATES):
+		body = _PERCENTAGE_PATTERN.join(
+			re.escape(part) for part in template.split("{percentage}")
+		)
+		if re.match("^" + body + "$", remark or ""):
+			return idx
+	return None
 
 
 class MetalConversions(Document):
@@ -65,6 +102,40 @@ class MetalConversions(Document):
 		update_alloy_betch(self)
 		update_source_betch(self)
 		get_inventory_type(self)
+		self.set_remarks()
+
+	def set_remarks(self):
+		"""Guard Remarks and keep it in step with Percentage.
+
+		Remarks is a Select whose option TEXT carries the document's Percentage, so the
+		option list is per-document and cannot live in the DocType JSON. The JSON
+		therefore ships no ``options``, which makes frappe skip its own Select check
+		(``base_document._validate_selects`` returns early on a falsy ``df.options``) --
+		this method is the replacement guard.
+
+		It also RE-RENDERS the stored sentence, so a Percentage edited after the remark
+		was picked can never leave a stale number behind, whether the edit came from the
+		form, the API or an import.
+		"""
+		if not self.remarks:
+			return
+
+		idx = template_index(self.remarks)
+		if idx is None:
+			frappe.throw(
+				_(
+					"Remarks must be chosen from the list. {0} is not a valid remark."
+				).format(frappe.bold(self.remarks))
+			)
+
+		self.remarks = render_remark_options(
+			self.percentage, self.precision("percentage")
+		)[idx]
+
+	@frappe.whitelist()
+	def get_remark_options(self):
+		"""Remark sentences for this document's Percentage -- fills the client dropdown."""
+		return render_remark_options(self.percentage, self.precision("percentage"))
 
 	def on_cancel(self):
 		# Scoped cascade: cancels only auto-created Process Loss SEs owned by this
@@ -86,6 +157,10 @@ class MetalConversions(Document):
 				"date",
 				"source_warehouse",
 				"target_warehouse",
+				# Document-level header fields (Details tab), not mode-specific ones --
+				# switching converter mode must not silently drop the operator's remark.
+				"percentage",
+				"remarks",
 			):
 				self.set(field.fieldname, None)
 
