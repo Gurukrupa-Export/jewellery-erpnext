@@ -108,7 +108,7 @@ def before_validate(self, method):
 					# Fallback so a MAIN SLIP SE with no Main Slip link (e.g. the Tree Number Issue
 					# button) resolves a manufacturer instead of raising UnboundLocalError.
 					if not manufacturer:
-						manufacturer = self.manufacturer or MANUFACTURER
+						manufacturer = self.get("manufacturer") or MANUFACTURER
 				elif self.manufacturing_order:
 					manufacturer = frappe.db.get_value(
 						"Parent Manufacturing Order",
@@ -116,10 +116,12 @@ def before_validate(self, method):
 						"manufacturer",
 					)
 				else:
-					if self.manufacturer:
-						manufacturer = self.manufacturer
-					else:
-						manufacturer = MANUFACTURER
+					# `manufacturer` is NOT a Stock Entry field -- it is only ever an
+					# in-memory attribute set by the callers that know it (Refining Entry
+					# carries its own). Read it with .get() so a Stock Entry that never got
+					# one (any UI metal receipt/transfer outside a manufacturing order)
+					# falls back to the session default instead of raising AttributeError.
+					manufacturer = self.get("manufacturer") or MANUFACTURER
 
 				pure_item = frappe.db.get_value(
 					"Manufacturing Setting",
@@ -127,9 +129,29 @@ def before_validate(self, method):
 					"pure_gold_item",
 				)
 
+				# Manufacturing Setting is keyed by manufacturer, but the live records are
+				# keyed by COMPANY (name = company, `manufacturer` left blank). A blank
+				# manufacturer therefore "works" by accident -- the filter degrades to
+				# `manufacturer IS NULL`, which matches those records -- while a manufacturer
+				# that IS set (on the document, or as a session default) matches nothing and
+				# used to abort the save with a message telling the user to set the very
+				# thing that broke it. Fall back to the company's own record, which is what
+				# the original company-keyed lookup above did before it was commented out.
+				if not pure_item and self.company:
+					pure_item = frappe.db.get_value(
+						"Manufacturing Setting",
+						{"company": self.company},
+						"pure_gold_item",
+					)
+
 				if not pure_item:
 					frappe.throw(
-						_("Select Manufacturer in session defaults or in Filed")
+						_(
+							"Set Pure Gold Item in the Manufacturing Setting for manufacturer {0} or company {1}"
+						).format(
+							frappe.bold(manufacturer or _("(not set)")),
+							frappe.bold(self.company),
+						)
 					)
 
 				pure_item_purity = get_purity_percentage(pure_item)
