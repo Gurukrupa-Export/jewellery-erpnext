@@ -188,9 +188,18 @@ def create_snc(mwo):
 
 	created = {"make_receive": None, "conversions": [], "transfers": []}
 	transfer_rows = []
+	# One allocation map for the whole settlement: the owner-batch finders take no DB
+	# hold, so without it two settle rows can be handed the same batch and over-draw it.
+	allocated = {}
 	for row in settle_rows:
+		# Reserves: consumed by the ONE Material Transfer built at the very end, so
+		# nothing reduces the ledger before the next row looks.
 		required_batch = find_owner_batch(
-			owner_customer, row["item_code"], row["qty"], company=mwo.company
+			owner_customer,
+			row["item_code"],
+			row["qty"],
+			company=mwo.company,
+			allocated=allocated,
 		)
 		if required_batch:
 			# Receive the borrowed gold once, then bring the owner's own gold back
@@ -211,12 +220,17 @@ def create_snc(mwo):
 			)
 			continue
 
+		# Reads the map but does NOT reserve: the conversion below submits immediately,
+		# so the ledger is already reduced before the next row looks. Reserving as well
+		# would double-count the same source quantity.
 		source_batch = find_owner_rm_warehouse(
 			owner_customer,
 			row["item_code"],
 			row["custom_pure_qty"],
 			search_different_purity=True,
 			company=mwo.company,
+			allocated=allocated,
+			reserve=False,
 		)
 		if not source_batch:
 			frappe.throw(
@@ -256,6 +270,14 @@ def create_snc(mwo):
 			owner_customer=row.get("batch_customer"),
 		)
 		created["conversions"].append(usage_conversion["stock_entry"])
+		# Claim the conversion OUTPUT. This is the claim that actually fixes the
+		# original crash: the output is fresh owner stock that no finder returned, so
+		# without recording it here a later row's find_owner_batch re-discovers the
+		# batch this row just minted and both rows draw on the same 1.0 g.
+		output_key = (conversion["target_batch"], conversion["warehouse"])
+		allocated[output_key] = flt(allocated.get(output_key, 0), 3) + flt(
+			row["qty"], 3
+		)
 		transfer_rows.append(
 			{
 				"item_code": row["item_code"],
@@ -281,9 +303,23 @@ def _owner_label(owner_customer):
 	return "Customer {0}".format(owner_customer) if owner_customer else "Regular Stock"
 
 
-def find_owner_batch(owner_customer, item_code, required_qty, company=None):
+def find_owner_batch(
+	owner_customer,
+	item_code,
+	required_qty,
+	company=None,
+	warehouses=None,
+	allocated=None,
+	reserve=True,
+):
 	return find_owner_rm_warehouse(
-		owner_customer, item_code, required_qty, company=company
+		owner_customer,
+		item_code,
+		required_qty,
+		company=company,
+		warehouses=warehouses,
+		allocated=allocated,
+		reserve=reserve,
 	)
 
 
@@ -293,10 +329,26 @@ def find_owner_rm_warehouse(
 	required_qty_or_pure_qty,
 	search_different_purity=False,
 	company=None,
+	warehouses=None,
+	allocated=None,
+	reserve=True,
 ):
+	"""Locate a batch of ``owner_customer``'s metal big enough for the requirement.
+
+	``warehouses`` narrows the search (defaults to every Raw Material warehouse in the
+	company); ``allocated`` is a caller-owned ``{(batch_no, warehouse): qty}`` map that
+	makes a multi-row run self-consistent -- see :func:`_find_available_owner_batch`.
+	``reserve`` decides whether a hit is *recorded* in that map or merely read against.
+	"""
 	if not search_different_purity:
 		return _find_available_owner_batch(
-			owner_customer, item_code, required_qty_or_pure_qty, company
+			owner_customer,
+			item_code,
+			required_qty_or_pure_qty,
+			company,
+			warehouses=warehouses,
+			allocated=allocated,
+			reserve=reserve,
 		)
 
 	required_purity = _get_purity_label(item_code)
@@ -309,7 +361,13 @@ def find_owner_rm_warehouse(
 				continue
 			source_qty = flt(flt(required_qty_or_pure_qty) / (source_purity / 100), 3)
 			batch = _find_available_owner_batch(
-				owner_customer, candidate_item, source_qty, company
+				owner_customer,
+				candidate_item,
+				source_qty,
+				company,
+				warehouses=warehouses,
+				allocated=allocated,
+				reserve=reserve,
 			)
 			if batch:
 				batch["qty"] = source_qty
@@ -556,7 +614,34 @@ def _owner_inventory_type(owner_customer):
 	return "Customer Goods" if owner_customer else "Regular Stock"
 
 
-def _find_available_owner_batch(owner_customer, item_code, required_qty, company=None):
+def _find_available_owner_batch(
+	owner_customer,
+	item_code,
+	required_qty,
+	company=None,
+	warehouses=None,
+	allocated=None,
+	reserve=True,
+):
+	"""Find one (batch, warehouse) holding at least ``required_qty`` of the owner's metal.
+
+	``allocated`` -- when the caller passes a ``{(batch_no, warehouse): qty}`` dict, the
+	running claim is subtracted from BOTH availability checks. The finder takes no
+	database hold, so without that map a loop over several rows can be handed the SAME
+	batch twice and over-draw it at submit ("need X have Y").
+
+	``reserve`` -- whether a hit is recorded in the map, and it depends on WHEN the
+	caller's consumer submits:
+
+	* ``True`` (default) for stock consumed by a Stock Entry built later in the run --
+	  nothing has reduced the ledger yet, so the claim must be held in the map.
+	* ``False`` when the caller submits its consuming entry IMMEDIATELY after the find.
+	  The ledger is already reduced before the next lookup, so also reserving would
+	  double-count the same quantity.
+
+	Stock that a run *creates* (e.g. a conversion's output batch) is never returned by a
+	finder, so it can only be claimed by the caller writing to the map directly.
+	"""
 	if owner_customer:
 		batch_filters = {
 			"item": item_code,
@@ -572,7 +657,8 @@ def _find_available_owner_batch(owner_customer, item_code, required_qty, company
 	batches = frappe.get_all(
 		"Batch", filters=batch_filters, pluck="name", order_by="creation asc"
 	)
-	warehouses = _get_raw_material_warehouses(company)
+	if warehouses is None:
+		warehouses = _get_raw_material_warehouses(company)
 	if not batches or not warehouses:
 		return None
 
@@ -585,7 +671,11 @@ def _find_available_owner_batch(owner_customer, item_code, required_qty, company
 
 	for batch_no in batches:
 		for warehouse in warehouses:
-			if consumable.get((batch_no, warehouse), 0) < required:
+			# Net out whatever earlier rows of this same run already claimed here.
+			taken = (
+				flt(allocated.get((batch_no, warehouse), 0), 3) if allocated else 0.0
+			)
+			if flt(consumable.get((batch_no, warehouse), 0), 3) - taken < required:
 				continue
 			# Consumable stock exists here; confirm it is not fully reserved
 			# (get_batch_qty nets Stock Reservation Entries) before committing.
@@ -595,13 +685,15 @@ def _find_available_owner_batch(owner_customer, item_code, required_qty, company
 				),
 				3,
 			)
-			if available_qty < required:
+			if available_qty - taken < required:
 				continue
+			if allocated is not None and reserve:
+				allocated[(batch_no, warehouse)] = taken + required
 			return {
 				"batch_no": batch_no,
 				"item_code": item_code,
 				"warehouse": warehouse,
-				"available_qty": consumable[(batch_no, warehouse)],
+				"available_qty": flt(consumable[(batch_no, warehouse)] - taken, 3),
 				"qty": required,
 			}
 	return None

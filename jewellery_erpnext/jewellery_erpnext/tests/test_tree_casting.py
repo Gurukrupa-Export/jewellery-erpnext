@@ -12,7 +12,8 @@ scenario (BOM -> Manufacturing Plan -> PMO -> MWO -> MOP -> EIR):
 	Received as the Material Details ledger fills.
   * validate_casting_tree: all-same-metal on one tree. (The all-or-nothing
 	re-issue rule is enforced at submit by validate_casting_group_complete, NOT
-	here — see TestValidateCastingGroupComplete.)
+	here — see TestValidateCastingGroupComplete. That rule is gated by
+	MOP Settings.enforce_full_casting_tree_reissue and ships OFF.)
 
 DB access inside the functions is mocked by doctype so the tests stay fast and
 independent of master data.
@@ -640,11 +641,24 @@ class TestValidateCastingGroupComplete(IntegrationTestCase):
 	"""validate_casting_group_complete — no partial re-issue of a casting tree. The required set is
 	EVERY member sharing the casting_group; a member still at casting is 'addable' (button), one
 	that has advanced past casting is 'blocked' (must be reversed first). Grouping is via
-	casting_group, so it holds even after the tree was cancelled/deleted (tree_number cleared)."""
+	casting_group, so it holds even after the tree was cancelled/deleted (tree_number cleared).
 
-	def _run(self, eir, present_mwos, required, eligible_mwos, casting=True):
+	The rule is gated by MOP Settings.enforce_full_casting_tree_reissue, which ships OFF. Every
+	enforcement test here forces it ON via _run(enforce=True) (the default) so they keep pinning
+	the RULE; the gate itself is covered by the test_gate_* tests at the end of the class."""
+
+	def _run(
+		self, eir, present_mwos, required, eligible_mwos, casting=True, enforce=True
+	):
 		"""present_mwos: {name: _FakeMWO with casting_group}; required: full member name list;
-		eligible_mwos: member names still issue-eligible (returned by eligible_casting_group_mops)."""
+		eligible_mwos: member names still issue-eligible (returned by eligible_casting_group_mops).
+
+		``enforce`` drives the MOP Settings master switch
+		(``enforce_full_casting_tree_reissue``). It defaults to True so the enforcement tests
+		below keep asserting the RULE rather than the gate -- at the shipped default (OFF) the
+		"no throw" ones would otherwise pass vacuously. Returns the get_single_value mock so the
+		gate tests can assert whether, and with what, the switch was read.
+		"""
 
 		def fake_get_value(doctype, name, field, *a, **k):
 			if doctype == "Department Operation":
@@ -660,7 +674,12 @@ class TestValidateCastingGroupComplete(IntegrationTestCase):
 				for m in eligible_mwos
 			]
 
+		# frappe.db is a LocalProxy, so an auto-created patch would mint an AsyncMock whose
+		# truthy coroutine return would pin the gate ON in every test. Inject a real MagicMock.
+		single = MagicMock(return_value=1 if enforce else 0)
+
 		with (
+			patch.object(tree_casting.frappe.db, "get_single_value", single),
 			patch.object(
 				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
 			),
@@ -675,6 +694,8 @@ class TestValidateCastingGroupComplete(IntegrationTestCase):
 			),
 		):
 			tree_casting.validate_casting_group_complete(eir)
+
+		return single
 
 	def test_first_issue_no_group_skips(self):
 		# No casting_group yet (stamped on submit) -> nothing to complete even if siblings exist.
@@ -767,6 +788,111 @@ class TestValidateCastingGroupComplete(IntegrationTestCase):
 				eligible_mwos=["MWO-A", "MWO-B"],
 			)
 		self.assertIn("MWO-B", str(cm.exception))
+
+	# ------------------------------------------------------------------
+	# MOP Settings gate: enforce_full_casting_tree_reissue (default OFF).
+	# Every test above forces it ON; these prove the switch works both ways.
+	# ------------------------------------------------------------------
+
+	def test_gate_off_allows_partial_reissue(self):
+		# THE REGRESSION TEST. Byte-identical inputs to
+		# test_reissue_partial_set_throws_naming_missing, opposite outcome -- driven only by
+		# the setting. OFF is the shipped default, so out of the box a partial re-issue submits.
+		self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=False,
+		)  # no throw
+
+	def test_gate_off_allows_partial_reissue_with_advanced_sibling(self):
+		# The "blocked" branch (sibling already past casting, normally "reverse these back
+		# first") is gated too: OFF means the whole rule is off, not just the addable half.
+		self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A"],  # B not eligible -> would be "blocked" when ON
+			enforce=False,
+		)  # no throw
+
+	def test_gate_off_allows_partial_reissue_via_tree_number_fallback(self):
+		# The defence-in-depth tree_number group key is gated as well -- no leak through it.
+		self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _FakeMWO("MWO-A", casting_group=None, tree_number="G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=False,
+		)  # no throw
+
+	def test_gate_on_preserves_message_and_title(self):
+		# Switch ON -> today's error surface unchanged. Assertions stay tag-free: msgprint
+		# strips HTML when stdin is a tty (interactive bench) but keeps it in CI, so only
+		# markup-free substrings are stable across both.
+		with self.assertRaises(ValidationError) as cm:
+			self._run(
+				_grp_eir(["MWO-A"]),
+				{"MWO-A": _grp_mwo("MWO-A", "G")},
+				required=["MWO-A", "MWO-B"],
+				eligible_mwos=["MWO-A", "MWO-B"],
+				enforce=True,
+			)
+		msg = str(cm.exception)
+		self.assertIn("must be re-issued in full", msg)
+		self.assertIn("Load Full Casting Tree", msg)
+		self.assertIn("MWO-B", msg)
+
+	def test_gate_on_full_group_reissue_still_passes(self):
+		# Unchanged happy path under the switch: whole group present -> no throw.
+		self._run(
+			_grp_eir(["MWO-A", "MWO-B"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G"), "MWO-B": _grp_mwo("MWO-B", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=True,
+		)  # no throw
+
+	def test_gate_reads_the_mop_settings_switch(self):
+		# Pins the wiring: exact Single + exact fieldname, read once. A typo in either makes
+		# frappe.db.get_single_value throw "Field ... does not exist" in PRODUCTION, because it
+		# resolves the df from meta before returning (frappe/database/database.py:914-920).
+		single = self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=False,
+		)
+		single.assert_called_once_with(
+			"MOP Settings", "enforce_full_casting_tree_reissue"
+		)
+
+	def test_gate_not_consulted_for_non_casting_eir(self):
+		# EmployeeIR.before_submit runs this for EVERY Issue EIR, not just casting ones
+		# (employee_ir.py:100-102). The switch must therefore be read only AFTER the
+		# type/casting guard, so a site running this code before `bench migrate` installs the
+		# field cannot break every Issue submit with "Field ... does not exist".
+		single = self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			casting=False,
+			enforce=False,
+		)  # no throw
+		single.assert_not_called()
+
+	def test_gate_not_consulted_for_receive_type(self):
+		single = self._run(
+			_grp_eir(["MWO-A"], typ="Receive"),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=False,
+		)  # no throw
+		single.assert_not_called()
 
 	def tearDown(self):
 		return super().tearDown()
@@ -1131,6 +1257,10 @@ class TestReceiveMaterial(IntegrationTestCase):
 		self.assertEqual(produce.qty, 1.0)
 		self.assertEqual(produce.is_finished_item, 1)
 		self.assertEqual(produce.set_basic_rate_manually, 1)
+		# basic_rate is deliberately NOT set by the builder: CustomStockEntry.set_basic_rate
+		# assigns it from the consumed rows once ERPNext has resolved their outgoing rates
+		# (customization/utils/loss_valuation) -- see test_process_loss_valuation.py.
+		self.assertFalse(getattr(produce, "basic_rate", None))
 
 	def test_receive_partial_then_full_status(self):
 		tree = self._issued_tree(10.0)

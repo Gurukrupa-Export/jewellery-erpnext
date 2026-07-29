@@ -1300,6 +1300,25 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	frappe.db.set_value(
 		"Serial No", sr_no, "custom_repair_type", pmo_det.get("repair_type")
 	)
+	# Ownership marker. Sales Type is stamped first as an early default (custom_ownership_tag
+	# is a plain Data field, since Sales Type is a free-form master not limited to
+	# Outright/Outwork/Hybrid), then immediately overwritten by the ledger-derived value
+	# when one is derivable, so the final value always reflects what was actually consumed
+	# rather than what was quoted/sold.
+	sales_type = (
+		frappe.db.get_value("Sales Order", doc.sales_order_id, "sales_type")
+		if doc.get("sales_order_id")
+		else None
+	)
+	if sales_type:
+		frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", sales_type)
+	# if ownership_tag := _derive_ownership_tag(row_data):
+	# 	frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", ownership_tag)
+
+	# Order Type of the source Sales Order / Quotation, already available on the Serial
+	# Number Creator via its own order_type fetch_from (parent_manufacturing_order.order_type).
+	if doc.get("order_type"):
+		frappe.db.set_value("Serial No", sr_no, "custom_order_type", doc.order_type)
 	if doc.for_fg:
 		for row in doc.fg_details:
 			for entry in row_data:
@@ -1736,6 +1755,34 @@ def _snc_se_detail_maps(se_name):
 		for r in se_rates
 	}
 	return rate_map, inv_map
+
+
+def _derive_ownership_tag(row_data):
+	"""Outright / Outwork / Hybrid for the FG serial, from the material consumed.
+
+	``row_data`` is the batch-corrected consumption list built in
+	``to_prepare_data_for_make_mnf_stock_entry`` (serial_number_creator.py): the same
+	``inventory_type`` that lands on the Manufacture SE rows, with the Batch master
+	taking precedence over the upstream Stock Entry Detail.
+
+	Deliberately NOT derived from ``_snc_se_detail_maps``' ``inv_map``: that query has
+	no ``is_finished_item = 0`` filter, so the FG row's hardcoded "Regular Stock" would
+	turn every pure customer-material job into Hybrid. ``row_data`` is consumption-only.
+
+	Blank inventory types are ignored rather than assumed Regular Stock, so a job whose
+	rows carry no type is left untagged instead of silently mislabelled Outright (or
+	promoted to Hybrid). Returns ``None`` when nothing is derivable.
+	"""
+	types = {(row.get("inventory_type") or "").strip() for row in (row_data or [])}
+	types.discard("")
+
+	if not types:
+		return None
+	if types == {"Customer Goods"}:
+		return "Outwork"
+	if "Customer Goods" in types:
+		return "Hybrid"
+	return "Outright"
 
 
 def _stone_se_rate(consumed_rate, item_valuation_rate):
@@ -3542,6 +3589,20 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	_apply_fg_bom_dynamic_fields(new_bom, self)
 
 	new_bom.flags.ignore_links = True
+
+	if self.company == "Gurukrupa Export Private Limited":
+		new_bom.custom_gk_cost_gold_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("metal_detail", []))
+		new_bom.custom_gk_cost_diamond_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("diamond_detail", []))
+		new_bom.custom_gk_cost_gemstone_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("gemstone_detail", []))
+		new_bom.custom_gk_cost_finding_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("finding_detail", []))
+		new_bom.custom_gk_cost_other_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("other_detail", []))
+	elif self.company == "KG GK Jewellers Private Limited":
+		new_bom.custom_kg_cost_gold_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("metal_detail", []))
+		new_bom.custom_kg_cost_diamond_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("diamond_detail", []))
+		new_bom.custom_kg_cost_gemstone_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("gemstone_detail", []))
+		new_bom.custom_kg_cost_finding_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("finding_detail", []))
+		new_bom.custom_kg_cost_other_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("other_detail", []))
+
 	new_bom.insert(ignore_mandatory=True, ignore_links=True)
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
@@ -5079,56 +5140,15 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 	result = create_mr_wo_stock_entry(se_data, request_id=request_id)
 	receive_se = result.get("docname") if isinstance(result, dict) else None
 	if receive_se:
-		# The receive SE (Material Receive WORK ORDER) creates MOP Log entries
-		# as a side effect of the onsubmit hook. Scrap material is leaving the
-		# manufacturing flow — those deductions must NOT reduce the MOP balance.
-		# Cancel them and recalculate the affected MOPs' weights.
-		_undo_scrap_mop_log_entries(receive_se)
+		# The receive SE (Material Receive WORK ORDER) creates MOP Log entries as a side
+		# effect of the on-submit hook. Scrap physically comes OUT of the metal issued to
+		# the operation, so those deductions MUST reduce the MOP/MWO balance exactly like a
+		# normal receive — the scrapped weight is no longer work-in-progress. We therefore
+		# KEEP the MOP Log rows. (Previously _undo_scrap_mop_log_entries cancelled them,
+		# which left the MOP over-stating WIP — the reported "receive scrap does not affect
+		# the mop and mwo".)
 		_convert_received_scrap_to_scrap_batch(receive_se, request_id=request_id)
 	return result
-
-
-def _undo_scrap_mop_log_entries(receive_se_name):
-	"""Cancel MOP Log entries created by the scrap receive SE.
-
-	The scrap flow reuses the Make Receive machinery for SRE validation and
-	warehouse handling, but scrap material is not part of the manufacturing
-	balance. The MOP Log deductions created during submit must be reversed
-	so the MOP's gross_wt/net_wt are unaffected."""
-	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-		recalculate_manufacturing_operation_weights,
-	)
-
-	affected_mops = set()
-	mop_logs = frappe.get_all(
-		"MOP Log",
-		filters={
-			"voucher_type": "Stock Entry",
-			"voucher_no": receive_se_name,
-			"is_cancelled": 0,
-		},
-		fields=["name", "manufacturing_operation"],
-	)
-	for log in mop_logs:
-		if log.manufacturing_operation:
-			affected_mops.add(log.manufacturing_operation)
-
-	if mop_logs:
-		frappe.db.sql(
-			"""
-			UPDATE `tabMOP Log`
-			SET is_cancelled = 1
-			WHERE voucher_type = 'Stock Entry'
-			  AND voucher_no = %s
-			  AND is_cancelled = 0
-			""",
-			(receive_se_name,),
-		)
-
-	# Recalculate weights on every affected MOP so they reflect the
-	# pre-scrap balance (as if the receive never happened to MOP tracking).
-	for mop_name in affected_mops:
-		recalculate_manufacturing_operation_weights(mop_name)
 
 
 def _create_scrap_batch(item_code, employee=None):

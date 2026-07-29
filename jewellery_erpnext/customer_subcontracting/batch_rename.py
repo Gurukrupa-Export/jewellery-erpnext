@@ -56,18 +56,48 @@ def create_parent_batches(doc, method=None):
 			serial = str(int(serial) + 1).zfill(2)
 			batch_name = f"{customer}-{year_code}{month}-{item_code}-{serial}"
 
+		previous_autoname_flag = frappe.flags.is_batch_autoname
 		frappe.flags.is_batch_autoname = True
 
-		batch = frappe.new_doc("Batch")
-		batch.batch_id = batch_name
-		batch.item = item_code
-		batch.reference_doctype = doc.doctype
-		batch.reference_name = doc.name
-		batch.custom_customer = doc._customer
-		batch.custom_inventory_type = "Customer Goods"
-		batch.custom_customer_voucher_type = "Customer Subcontracting"
-		batch.insert(ignore_permissions=True)
+		try:
+			batch = frappe.new_doc("Batch")
+			batch.batch_id = batch_name
+			batch.item = item_code
+			batch.reference_doctype = doc.doctype
+			batch.reference_name = doc.name
+			batch.custom_voucher_detail_no = row.name
+			# doc._customer is set by the customer-subcontracting orchestration on the
+			# Stock Entry leg only; on a Purchase Receipt the owning customer arrives on
+			# the row, resolved from the supplier's Party Link by
+			# purchase_receipt/doc_events/utils.py::update_inventory_type.
+			batch.custom_customer = doc._customer or customer
+			batch.custom_inventory_type = "Customer Goods"
+			batch.custom_customer_voucher_type = "Customer Subcontracting"
+			batch.custom_metal_rate = _source_row_rate(doc, row)
+			batch.insert(ignore_permissions=True)
+		finally:
+			frappe.flags.is_batch_autoname = previous_autoname_flag
+
 		row.batch_no = batch_name
+
+
+def _source_row_rate(doc, row):
+	"""Batch Rate for a batch this module builds by hand.
+
+	These batches are inserted under ``frappe.flags.is_batch_autoname``, which makes
+	``Batch.validate`` return before ``update_inventory_dimentions`` -- so the shared
+	rate stamping in ``customization/batch/doc_events/utils.py`` never runs for them
+	and they were created with no Batch Rate at all. Read it straight off the row
+	that is minting the batch instead: the Stock Entry Detail's maintained rate
+	falling back to ``basic_rate``, or the Purchase Receipt Item's ``rate``.
+
+	Only 24KT metal reaches this module (callers filter on the item code), so the
+	value always belongs on ``custom_metal_rate`` -- never ``custom_alloy_rate``.
+	"""
+	if doc.doctype == "Stock Entry":
+		return flt(row.get("custom_metal_rate")) or flt(row.get("basic_rate"))
+
+	return flt(row.get("rate"))
 
 
 def get_year_code():
@@ -196,17 +226,23 @@ def create_child_batches(doc, method=None):
 			alphabet = chr(ord(alphabet) + 1)
 			batch_name = f"{base_name}-{alphabet}"
 
+		previous_autoname_flag = frappe.flags.is_batch_autoname
 		frappe.flags.is_batch_autoname = True
 
-		batch = frappe.new_doc("Batch")
-		batch.batch_id = batch_name
-		batch.item = item_code
-		batch.reference_doctype = doc.doctype
-		batch.reference_name = doc.name
-		batch.custom_customer = doc._customer
-		batch.custom_inventory_type = "Customer Goods"
-		batch.custom_customer_voucher_type = "Customer Subcontracting"
-		batch.insert(ignore_permissions=True)
+		try:
+			batch = frappe.new_doc("Batch")
+			batch.batch_id = batch_name
+			batch.item = item_code
+			batch.reference_doctype = doc.doctype
+			batch.reference_name = doc.name
+			batch.custom_voucher_detail_no = row.name
+			batch.custom_customer = doc._customer
+			batch.custom_inventory_type = "Customer Goods"
+			batch.custom_customer_voucher_type = "Customer Subcontracting"
+			batch.custom_metal_rate = _source_row_rate(doc, row)
+			batch.insert(ignore_permissions=True)
+		finally:
+			frappe.flags.is_batch_autoname = previous_autoname_flag
 
 		row.batch_no = batch_name
 

@@ -24,6 +24,7 @@
   "column_break_4",
   "po_no",
   "order_type",
+  "sales_type",
   "due_days",
   "design_by",
   "merchandiser",
@@ -337,7 +338,7 @@
    "fieldname": "flow_type",
    "fieldtype": "Select",
    "label": "Flow Type",
-   "options": "MTO\nMTBI\nFILLER\nGCC\nUS\nJWO"
+   "options": "MTO\nMTBI\nFILLER\nGCC\nUS\nJWO\nRepair"
   },
   {
    "allow_on_submit": 1,
@@ -396,11 +397,17 @@
    "fieldtype": "Datetime",
    "label": "Updated Delivery Date"
   },
-   {
+  {
    "fieldname": "merchandiser",
    "fieldtype": "Link",
    "label": "Merchandiser",
    "options": "Employee"
+  },
+  {
+   "fieldname": "sales_type",
+   "fieldtype": "Link",
+   "label": "Sales Type",
+   "options": "Sales Type"
   }
  ],
  "index_web_pages_for_search": 1,
@@ -415,8 +422,8 @@
    "link_fieldname": "custom_form_id"
   }
  ],
- "modified": "2025-11-05 17:01:03.590095",
- "modified_by": "prachi_b@gkexport.com",
+ "modified": "2026-07-22 11:27:18.569900",
+ "modified_by": "shubham_k@gkexport.com",
  "module": "Gurukrupa Exports",
  "name": "Sketch Order Form",
  "naming_rule": "Expression (old style)",

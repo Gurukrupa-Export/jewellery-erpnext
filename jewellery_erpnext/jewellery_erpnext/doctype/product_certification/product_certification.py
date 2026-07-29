@@ -15,6 +15,13 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import 
 from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 	get_item_loss_item,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.receive_status import (
+	FULLY_RECEIVED,
+	pending_eps,
+	se_precision,
+	update_receive_status,
+	validate_over_receipt,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
 	create_material_receipt_for_certification,
 	create_po,
@@ -24,6 +31,16 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
 )
+
+
+def _slip_key(row):
+	"""Fire Assy / XRF grouping key, shared by every routine that pairs a Product Details
+	row with its generated Exploded Product Details rows.
+
+	It is the same ``[main_slip, tree_no]`` pair ``get_exploded_table`` dedupes on, with
+	blanks normalised so ``None`` and ``""`` land in one group instead of two.
+	"""
+	return (row.get("main_slip") or "", row.get("tree_no") or "")
 
 
 class ProductCertification(Document):
@@ -55,9 +72,11 @@ class ProductCertification(Document):
 			frappe.throw(_("Please set warehouse for selected supplier"))
 
 		self.validate_items()
+		validate_over_receipt(self)
 		self.update_bom()
 		self.get_exploded_table()
 		self.calculate_fire_assy_loss_weight()
+		self.set_fire_assy_issue_weight()
 		self.distribute_amount()
 
 	def before_submit(self):
@@ -115,74 +134,88 @@ class ProductCertification(Document):
 		if not self.exploded_product_details or not self.product_details:
 			return
 
-		# Check if main_slip is used at all
-		has_main_slip = any(row.main_slip for row in self.product_details)
+		# Grouped on the same (main_slip, tree_no) key the loss calculation and
+		# get_exploded_table use. A document that carries no main slip / tree at all
+		# collapses to a single ("", "") group — i.e. the grand-total comparison.
+		issued = defaultdict(float)
+		first_idx = {}
+		for row in self.product_details:
+			key = _slip_key(row)
+			issued[key] += flt(row.total_weight)
+			first_idx.setdefault(key, row.idx)
 
-		if has_main_slip:
-			for row in self.product_details:
-				main_slip = row.main_slip
-				if not main_slip:
-					continue
+		booked = defaultdict(float)
+		for row in self.exploded_product_details:
+			booked[_slip_key(row)] += flt(row.conversion_quantity or row.gross_weight)
 
-				total_weight = flt(row.total_weight)
+		for key, total_weight in issued.items():
+			exploded_weight = booked.get(key, 0.0)
+			if abs(total_weight - exploded_weight) <= 0.001:
+				continue
 
-				exploded_weight = sum(
-					flt(d.conversion_quantity or d.gross_weight)
-					for d in self.exploded_product_details
-					if d.main_slip == main_slip
-				)
-
-				if abs(total_weight - exploded_weight) > 0.001:
-					frappe.throw(
-						_(
-							"Row #{0}: Total Gross Weight in Exploded Product Details ({1}) does not match Total Weight in Product Details ({2}) for Main Slip {3}"
-						).format(row.idx, exploded_weight, total_weight, main_slip)
-					)
-		else:
-			# Fallback to grand totals
-			total_product_weight = sum(
-				flt(d.total_weight) for d in self.product_details
-			)
-			total_exploded_weight = sum(
-				flt(d.conversion_quantity or d.gross_weight)
-				for d in self.exploded_product_details
-			)
-			if abs(total_product_weight - total_exploded_weight) > 0.001:
+			main_slip, tree_no = key
+			if main_slip or tree_no:
 				frappe.throw(
 					_(
-						"Total Gross Weight in Exploded Product Details ({0}) does not match Total Weight in Product Details ({1})"
-					).format(total_exploded_weight, total_product_weight)
+						"Row #{0}: Total Gross Weight in Exploded Product Details ({1}) does not match Total Weight in Product Details ({2}) for Main Slip {3}"
+					).format(
+						first_idx.get(key),
+						exploded_weight,
+						total_weight,
+						main_slip or tree_no,
+					)
 				)
+			frappe.throw(
+				_(
+					"Total Gross Weight in Exploded Product Details ({0}) does not match Total Weight in Product Details ({1})"
+				).format(exploded_weight, total_weight)
+			)
 
 	def calculate_fire_assy_loss_weight(self):
-		"""Auto-calculate scrap/loss item weight for Fire Assy Service Receive.
+		"""Auto-calculate the scrap/loss weight on a Fire Assy / XRF Receive.
 
-		For each main_slip group in exploded_product_details:
+		Per (main_slip, tree_no) group in exploded_product_details:
 		  Row 1 = main item   (e.g. 22KT-91.9)  – user enters gross_weight (receive wt)
-		  Row 2 = pure item   (e.g. 24KT-99.9)  – user enters gross_weight
-		  Row 3 = loss/scrap   (e.g. ML-22KT)    – auto-calculated
+		  Row 2 = pure item   (e.g. 24KT-99.9)  – user enters gross_weight (Fire Assy only)
+		  Row 3 = loss/scrap  (e.g. ML-22KT)    – auto-calculated
 
 		Loss formula:
 		  converted_pure_wt = pure_wt × (pure_purity / main_purity)
 		  loss_wt = issue_wt − receive_wt − converted_pure_wt
+
+		Grouping on (main_slip, tree_no) rather than main_slip alone is the fix for the
+		reported "loss is not calculated" bug: most documents are entered WITHOUT a main
+		slip, and keying on it alone made the whole routine return early. A document with
+		no slip/tree collapses to one ("", "") group and is handled identically.
+
+		XRF Services has no pure row at all, so ``converted_pure_wt`` is simply 0 there —
+		it must not short-circuit the loss.
 		"""
-		if self.type != "Receive" or self.service_type != "Fire Assy Service":
+		if self.type != "Receive" or self.service_type not in [
+			"Fire Assy Service",
+			"XRF Services",
+		]:
 			return
 		if not self.exploded_product_details or not self.product_details:
 			return
 
-		# Build lookup: main_slip → {item_code, total_weight (issue weight), pure_item, loss_item}
+		# (main_slip, tree_no) → {main_item, issue_weight, pure_item, loss_item}
 		slip_data = {}
 		for pd in self.product_details:
-			ms = pd.get("main_slip")
-			if not ms:
-				continue
-			slip_data[ms] = {
-				"main_item": pd.item_code,
-				"issue_weight": flt(pd.total_weight),
-				"pure_item": pd.get("pure_item"),
-				"loss_item": pd.get("loss_item"),
-			}
+			data = slip_data.setdefault(
+				_slip_key(pd),
+				{
+					"main_item": None,
+					"issue_weight": 0.0,
+					"pure_item": None,
+					"loss_item": None,
+				},
+			)
+			# Summed, not overwritten: two rows on the same slip issue their combined weight.
+			data["issue_weight"] += flt(pd.total_weight)
+			data["main_item"] = data["main_item"] or pd.item_code
+			data["pure_item"] = data["pure_item"] or pd.get("pure_item")
+			data["loss_item"] = data["loss_item"] or pd.get("loss_item")
 
 		if not slip_data:
 			return
@@ -195,27 +228,35 @@ class ProductCertification(Document):
 				purity_cache[item_code] = flt(get_purity_percentage(item_code))
 			return purity_cache[item_code]
 
-		# Group exploded rows by main_slip
+		def _require_purity(item_code):
+			purity = _get_purity(item_code)
+			if not purity:
+				frappe.throw(
+					_(
+						"Item {0} has no Metal Purity percentage configured, so the loss "
+						"weight cannot be calculated. Set the purity percentage on its "
+						"Metal Purity attribute value."
+					).format(frappe.bold(item_code)),
+					title=_("Metal Purity Missing"),
+				)
+			return purity
+
 		slip_rows = defaultdict(list)
 		for row in self.exploded_product_details:
-			ms = row.get("main_slip")
-			if ms and ms in slip_data:
-				slip_rows[ms].append(row)
+			key = _slip_key(row)
+			if key in slip_data:
+				slip_rows[key].append(row)
 
-		for ms, rows in slip_rows.items():
-			sd = slip_data[ms]
+		precision = se_precision()
+
+		for key, rows in slip_rows.items():
+			sd = slip_data[key]
 			main_item = sd["main_item"]
 			pure_item = sd["pure_item"]
 			loss_item = sd["loss_item"]
 			issue_weight = sd["issue_weight"]
 
-			if not (main_item and pure_item and loss_item):
-				continue
-
-			main_purity = _get_purity(main_item)
-			pure_purity = _get_purity(pure_item)
-
-			if not main_purity:
+			if not (main_item and loss_item):
 				continue
 
 			# Find the specific rows
@@ -226,30 +267,92 @@ class ProductCertification(Document):
 			for r in rows:
 				if r.item_code == main_item and not main_row:
 					main_row = r
-				elif r.item_code == pure_item and not pure_row:
+				elif pure_item and r.item_code == pure_item and not pure_row:
 					pure_row = r
 				elif r.item_code == loss_item and not loss_row:
 					loss_row = r
 
-			if not (main_row and pure_row and loss_row):
+			if not (main_row and loss_row):
 				continue
 
 			receive_weight = flt(main_row.gross_weight)
-			pure_weight = flt(pure_row.gross_weight)
+			pure_weight = flt(pure_row.gross_weight) if pure_row else 0.0
 
-			if not pure_weight:
+			# Nothing entered yet (the exploded rows are created on the first save, before
+			# the operator types any weight). Booking the entire issue as loss here would
+			# balance validate_exploded_qty and let an all-loss document be submitted.
+			if not receive_weight and not pure_weight:
 				continue
 
-			# Convert 24KT weight into equivalent weight at the main item's purity
-			converted_pure_wt = flt(pure_weight * (pure_purity / main_purity), 3)
+			converted_pure_wt = 0.0
+			if pure_weight:
+				# Convert 24KT weight into equivalent weight at the main item's purity
+				main_purity = _require_purity(main_item)
+				pure_purity = _require_purity(pure_item)
+				converted_pure_wt = flt(
+					pure_weight * (pure_purity / main_purity), precision
+				)
 
-			# Auto-calculate loss weight
-			loss_wt = flt(issue_weight - receive_weight - converted_pure_wt, 3)
-			if loss_wt < 0:
-				loss_wt = 0
+			if pure_row:
+				pure_row.conversion_quantity = converted_pure_wt
 
-			loss_row.gross_weight = loss_wt
-			pure_row.conversion_quantity = converted_pure_wt
+			loss_row.gross_weight = max(
+				0.0,
+				flt(issue_weight - receive_weight - converted_pure_wt, precision),
+			)
+
+	def set_fire_assy_issue_weight(self):
+		"""Populate the main exploded row's gross_weight on a Fire Assy / XRF Issue.
+
+		The Issue-side sibling of ``calculate_fire_assy_loss_weight``. On an Issue there is
+		no loss/pure — the operator types the sample weight into ``product_details.total_weight``
+		(the exploded rows are machine-generated blank), and the whole sample is what leaves for
+		assay. So the main exploded row of each ``_slip_key`` group takes that group's issued
+		weight; ``create_stock_entry`` then issues exactly that row (pure/loss stay 0 and are
+		skipped).
+
+		Grouped identically to the Receive-side loss calc so the two never disagree about a
+		group's issued weight. Un-guarded overwrite keeps the main row in sync when the operator
+		corrects ``total_weight``; the ``type == "Issue"`` guard keeps it from ever touching a
+		Receive's operator-entered main weight. This restores the back-fill the generic
+		``distribute_amount`` path used to provide before its Fire Assy / XRF early-return.
+		"""
+		if self.type != "Issue" or self.service_type not in [
+			"Fire Assy Service",
+			"XRF Services",
+		]:
+			return
+		if not self.exploded_product_details or not self.product_details:
+			return
+
+		# (main_slip, tree_no) → {main_item, issue_weight}
+		slip_data = {}
+		for pd in self.product_details:
+			data = slip_data.setdefault(
+				_slip_key(pd), {"main_item": None, "issue_weight": 0.0}
+			)
+			# Summed, not overwritten: two rows on the same slip issue their combined weight.
+			data["issue_weight"] += flt(pd.total_weight)
+			data["main_item"] = data["main_item"] or pd.item_code
+
+		slip_rows = defaultdict(list)
+		for row in self.exploded_product_details:
+			key = _slip_key(row)
+			if key in slip_data:
+				slip_rows[key].append(row)
+
+		for key, sd in slip_data.items():
+			if not sd["main_item"]:
+				continue
+			# First match only: if get_exploded_table ever emits a duplicate main row, only
+			# the first carries the weight — the duplicate stays 0 (skipped in the Stock
+			# Entry), so the issued qty is never doubled.
+			main_row = next(
+				(r for r in slip_rows.get(key, []) if r.item_code == sd["main_item"]),
+				None,
+			)
+			if main_row is not None:
+				main_row.gross_weight = sd["issue_weight"]
 
 	def update_bom(self):
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
@@ -287,25 +390,38 @@ class ProductCertification(Document):
 		length = len(self.exploded_product_details)
 		if self.type == "Issue":
 			self.total_amount = 0
-		amt = self.total_amount / length
+		amt = flt(self.total_amount) / length
+
+		# Fire Assy / XRF weights are owned by calculate_fire_assy_loss_weight — the
+		# remainder back-fill below is un-purity-converted and would overwrite the
+		# computed loss row. Only the amount split applies there.
+		if self.service_type in ["Fire Assy Service", "XRF Services"]:
+			for row in self.exploded_product_details:
+				row.amount = amt
+			return
 
 		qty_data = {}
 		for row in self.product_details:
-			common_order = (
-				row.parent_manufacturing_order or row.manufacturing_work_order
+			key = (
+				row.parent_manufacturing_order or row.manufacturing_work_order,
+				row.serial_no,
 			)
-			if qty_data.get((common_order, row.serial_no)):
-				qty_data[(common_order, row.serial_no)] += row.total_weight
-			else:
-				qty_data[(common_order, row.serial_no)] = row.total_weight
+			qty_data[key] = flt(qty_data.get(key)) + flt(row.total_weight)
 
 		for row in self.exploded_product_details:
-			if qty_data.get((common_order, row.serial_no)):
-				if row.gross_weight == 0 or not row.gross_weight:
-					row.gross_weight = qty_data[(common_order, row.serial_no)]
-					qty_data[(common_order, row.serial_no)] = 0
+			# Keyed on THIS row's own order — it used to reuse the `common_order` left
+			# over from the loop above (the last Product Details row's order), which only
+			# happened to be right when every row shared one order.
+			key = (
+				row.parent_manufacturing_order or row.manufacturing_work_order,
+				row.serial_no,
+			)
+			if qty_data.get(key):
+				if not row.gross_weight:
+					row.gross_weight = qty_data[key]
+					qty_data[key] = 0
 				else:
-					qty_data[(common_order, row.serial_no)] -= row.gross_weight
+					qty_data[key] -= row.gross_weight
 			row.amount = amt
 
 	def on_submit(self):
@@ -321,6 +437,25 @@ class ProductCertification(Document):
 				deduplicate=True,
 			)
 		self.update_huid()
+		self.update_receive_status()
+
+	def on_cancel(self):
+		self.update_receive_status()
+
+	def update_receive_status(self):
+		"""Roll the receipt ledger on the Issue this document belongs to.
+
+		Recomputed from every submitted Receive rather than applied as a delta, so
+		submit and cancel share one code path and cannot drift apart.
+
+		An Issue rolls its OWN ledger on submit: without that, ``pending_weight`` sits at
+		0 on a document where nothing has come back yet, which reads as "fully received"
+		to anyone looking at the grid.
+		"""
+		if self.type == "Receive" and self.receive_against:
+			update_receive_status(self.receive_against)
+		elif self.type == "Issue":
+			self.receive_status = update_receive_status(self.name)
 
 	def update_huid(self):
 		for row in self.exploded_product_details:
@@ -746,6 +881,10 @@ class ProductCertification(Document):
 				existing_data.append([row.main_slip, row.tree_no])
 
 			for row in self.product_details:
+				# Resolved unconditionally: loss_item used to be set only on the save that
+				# created the exploded rows, so re-saving an existing document left it blank
+				# and the loss calculation had nothing to key on.
+				loss_item = get_item_loss_item(self.company, row.item_code, "M")
 				if [row.main_slip, row.tree_no] not in existing_data:
 					exploded_product_details.append(
 						{
@@ -762,7 +901,6 @@ class ProductCertification(Document):
 								"tree_no": row.tree_no,
 							}
 						)
-					loss_item = get_item_loss_item(self.company, row.item_code, "M")
 					exploded_product_details.append(
 						{
 							"item_code": loss_item,
@@ -770,7 +908,7 @@ class ProductCertification(Document):
 							"tree_no": row.tree_no,
 						}
 					)
-					row.loss_item = loss_item
+				row.loss_item = loss_item
 				row.pure_item = pure_item
 
 		for row in exploded_product_details:
@@ -780,10 +918,16 @@ class ProductCertification(Document):
 	def get_item_from_main_slip(self, tree_no):
 		metal = frappe.db.get_value(
 			"Main Slip",
-			{"tree_number": tree_no},
+			{"tree_number": tree_no, "docstatus": 1},
 			["metal_type", "metal_touch", "metal_purity", "metal_colour", "name"],
 			as_dict=1,
 		)
+		if not metal:
+			frappe.throw(
+				_("No submitted Main Slip found for Tree No {0}.").format(
+					frappe.bold(tree_no)
+				)
+			)
 		from jewellery_erpnext.utils import get_item_from_attribute
 
 		return {
@@ -1054,6 +1198,115 @@ def get_stock_entry_type(txn_type, purpose):
 # 		)
 
 
+def _pd_reference(row):
+	"""The order a Product Details row's Stock Entry lines are stamped with.
+
+	``create_stock_entry`` writes ``reference_docname`` as "MWO when set, else PMO", so
+	the Issue SE lines can be matched back to the rows that produced them.
+	"""
+	return row.get("manufacturing_work_order") or row.get("parent_manufacturing_order")
+
+
+def _pd_common_order(row):
+	"""The PMO-else-MWO key ``create_stock_entry`` groups its stock-entry calls on."""
+	return row.get("parent_manufacturing_order") or row.get("manufacturing_work_order")
+
+
+def _receive_fraction_by_reference(doc, common_order):
+	"""``{reference_docname: fraction}`` — how much of each order this Receive books.
+
+	Scoped to one ``common_order`` (the PMO-else-MWO key ``create_stock_entry`` dedupes
+	its calls on) so that an Issue spanning two orders does not append every Issue SE
+	line once per call.
+
+	1.0 means "the whole outstanding issue for that reference"; anything less prorates
+	the Issue SE lines. References absent from the map are not on this receipt.
+	"""
+	receiving = defaultdict(float)
+	for pd in doc.product_details:
+		reference = _pd_reference(pd)
+		if reference and _pd_common_order(pd) == common_order:
+			receiving[reference] += flt(pd.total_weight)
+
+	if not receiving:
+		return {}
+
+	issued = defaultdict(float)
+	for pd in frappe.get_all(
+		"Product Details",
+		filters={"parent": doc.receive_against, "parenttype": "Product Certification"},
+		fields=[
+			"manufacturing_work_order",
+			"parent_manufacturing_order",
+			"total_weight",
+		],
+	):
+		reference = _pd_reference(pd)
+		if reference:
+			issued[reference] += flt(pd.total_weight)
+
+	fractions = {}
+	for reference, weight in receiving.items():
+		issued_weight = issued.get(reference)
+		# No issued weight to divide by (weights are optional on HM/DCS rows) — the row
+		# is on this receipt, so treat it as a full receipt of its reference.
+		fractions[reference] = (weight / issued_weight) if issued_weight else 1.0
+	return fractions
+
+
+def _outstanding_issue_qty(doc, issue_se):
+	"""``{(reference, item_code, batch_no): qty}`` still to come back from the supplier.
+
+	Issued qty minus everything already drawn by SUBMITTED Receive documents booked
+	against the same Issue — the cap that stops repeated partial receipts from
+	over-returning stock.
+	"""
+	outstanding = defaultdict(float)
+	for item in frappe.get_all(
+		"Stock Entry Detail",
+		filters={"parent": issue_se},
+		fields=["item_code", "qty", "batch_no", "reference_docname"],
+	):
+		outstanding[
+			(item.get("reference_docname"), item.item_code, item.get("batch_no"))
+		] += flt(item.qty)
+
+	prior_receives = frappe.get_all(
+		"Product Certification",
+		filters={
+			"receive_against": doc.receive_against,
+			"type": "Receive",
+			"docstatus": 1,
+			"name": ["!=", doc.name],
+		},
+		pluck="name",
+	)
+	if prior_receives:
+		for item in frappe.get_all(
+			"Stock Entry Detail",
+			filters={
+				"parent": [
+					"in",
+					frappe.get_all(
+						"Stock Entry",
+						filters={
+							"product_certification": ["in", prior_receives],
+							"docstatus": 1,
+						},
+						pluck="name",
+					)
+					or [""],
+				]
+			},
+			fields=["item_code", "qty", "batch_no", "reference_docname"],
+		):
+			outstanding[
+				(item.get("reference_docname"), item.item_code, item.get("batch_no"))
+			] -= flt(item.qty)
+
+	return outstanding
+
+
 def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 		get_current_mop_balance_rows,
@@ -1274,35 +1527,99 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				"batch_no",
 				"s_warehouse",
 				"t_warehouse",
+				"reference_doctype",
+				"reference_docname",
 			],
 		)
 
+		# A partial receipt must draw only its own share. Restrict the Issue SE lines to
+		# the orders THIS receipt covers, prorate by how much of each order's issued
+		# weight is being booked now, and cap on what earlier receipts left outstanding.
+		common_order = _pd_common_order(row)
+		fractions = _receive_fraction_by_reference(doc, common_order)
+		outstanding = _outstanding_issue_qty(doc, issue_se)
+		eps = pending_eps()
+		precision = se_precision()
+		has_reference = any(item.get("reference_docname") for item in issue_items)
+
 		for item in issue_items:
+			reference = item.get("reference_docname")
+			if has_reference and reference not in fractions:
+				continue
+
+			key = (reference, item.item_code, item.get("batch_no"))
+			available = outstanding.get(key, flt(item.qty))
+			if available <= eps:
+				continue
+
+			fraction = fractions.get(reference, 1.0)
+			if fraction >= 1 - eps:
+				# Receiving this reference in full — take everything still outstanding, so
+				# repeated partial receipts reconcile exactly instead of stranding
+				# rounding dust in the supplier warehouse.
+				qty = available
+			else:
+				qty = min(flt(flt(item.qty) * fraction, precision), available)
+
+			if qty <= eps:
+				continue
+
 			item_row = {
 				"item_code": item.item_code,
-				"qty": item.qty,
+				"qty": qty,
 				"s_warehouse": item.t_warehouse,  # Issue's target becomes Receive's source
 				"t_warehouse": s_warehouse,  # Department warehouse as target for receive
 				"Inventory_type": "Regular Stock",
-				"reference_doctype": "Manufacturing Work Order"
-				if row.manufacturing_work_order
-				else "Parent Manufacturing Order",
-				"reference_docname": row.manufacturing_work_order
-				if row.manufacturing_work_order
-				else row.parent_manufacturing_order,
+				# Mirror the Issue line's own reference so the next partial receipt can
+				# match its outstanding on the same key. Falls back to the exploded row
+				# for legacy Issue entries that carry no reference.
+				"reference_doctype": item.get("reference_doctype")
+				or (
+					"Manufacturing Work Order"
+					if row.manufacturing_work_order
+					else "Parent Manufacturing Order"
+				),
+				"reference_docname": reference
+				or (
+					row.manufacturing_work_order
+					if row.manufacturing_work_order
+					else row.parent_manufacturing_order
+				),
 				"use_serial_batch_fields": True,
 				"batch_no": item.get("batch_no"),
 			}
-			# Carry the corrected pcs from the Issue SE (diamond/gemstone rows).
+			# Carry the corrected pcs from the Issue SE (diamond/gemstone rows),
+			# scaled to the share being received.
 			if item.get("pcs"):
-				item_row["pcs"] = item.get("pcs")
+				pcs = (
+					cint(item.get("pcs"))
+					if fraction >= 1 - eps or not flt(item.qty)
+					else cint(flt(item.get("pcs")) * (qty / flt(item.qty)))
+				)
+				if pcs:
+					item_row["pcs"] = pcs
 			se_doc.append("items", item_row)
 
 
 @frappe.whitelist()
 def create_product_certification_receive(source_name, target_doc=None):
+	if (
+		frappe.db.get_value("Product Certification", source_name, "receive_status")
+		== FULLY_RECEIVED
+	):
+		frappe.throw(
+			_("{0} is already fully received.").format(frappe.bold(source_name))
+		)
+
+	eps = pending_eps()
+
 	def set_missing_values(source, target):
 		target.type = "Receive"
+
+	def set_pending_weight(source, target, source_parent):
+		# The Receive row carries what is still OUTSTANDING, not what was issued —
+		# the operator edits it down further for a partial receipt.
+		target.total_weight = flt(source.total_weight) - flt(source.received_weight)
 
 	doc = get_mapped_doc(
 		"Product Certification",
@@ -1311,7 +1628,25 @@ def create_product_certification_receive(source_name, target_doc=None):
 			"Product Certification": {
 				"doctype": "Product Certification",
 				"field_map": {"name": "receive_against"},
-				"field_no_map": ["date"],
+				"field_no_map": ["date", "receive_status"],
+			},
+			# get_mapped_doc auto-copies any same-named child table that has no explicit
+			# map, so this has to say "ignore" out loud: a partial receipt must not
+			# inherit the exploded rows (and full-issue weights) of items it is not
+			# receiving. get_exploded_table rebuilds the table from the rows that
+			# actually land on this document.
+			"Exploded Product Details": {
+				"doctype": "Exploded Product Details",
+				"ignore": True,
+			},
+			"Product Details": {
+				"doctype": "Product Details",
+				"field_map": {"name": "issue_row"},
+				"field_no_map": ["received_weight", "pending_weight"],
+				"condition": lambda d: (
+					flt(d.total_weight) - flt(d.received_weight) > eps
+				),
+				"postprocess": set_pending_weight,
 			},
 		},
 		target_doc,
@@ -1331,10 +1666,8 @@ def add_to_serial_no(serial_no, doc, row):
 
 
 def deferred_po_bom(pc_name):
+	# create_po / update_bom_details come from the module-level import — the local
+	# re-import this used to carry shadowed them and left both flagged as unused.
 	pc = frappe.get_doc("Product Certification", pc_name)
-	from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
-		create_po,
-		update_bom_details,
-	)
 	create_po(pc)
 	update_bom_details(pc)

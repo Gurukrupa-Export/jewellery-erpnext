@@ -1007,7 +1007,11 @@ def get_casting_group_operations(department, subcontracting, present_operations)
 	Powers the "Load Full Casting Tree" button: given the operations already present, resolve
 	their MWOs' casting groups and return every still-at-casting sibling MOP not yet present, so
 	one click completes the tree. Shares ``eligible_casting_group_mops`` with the submit-time
-	completeness validator, so the button can never disagree with the check.
+	completeness validator, so the button can never disagree with that check when it is enabled.
+
+	Deliberately NOT gated by ``MOP Settings.enforce_full_casting_tree_reissue``: assembling a
+	whole tree in one click is useful whether or not the rule is enforced, and gating it would
+	only make the helper disappear exactly when someone turns the rule on to use it.
 	"""
 	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 		eligible_casting_group_mops,

@@ -19,20 +19,20 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 HYBRID_ENABLED_COMPANIES = ("KG GK Jewellers Private Limited",)
 
 # Placeholder item that carries the aggregated customer-supplied (5%) amount
-# for Hybrid Sales Orders — see add_hybrid_subcontracting_row().
-HYBRID_SUBCONTRACTING_ITEM = "Subcontracting Charges"
+# for Hybrid Sales Orders — see add_hybrid_outwork_row().
+HYBRID_OUTWORK_ITEM = "Subcontracting Charges"
 
-# Item Tax Templates for Hybrid rows, by company — same "Finished Goods"
-# (owned, 3%) / "Subcontracting" (customer-supplied, 5%) template naming
+# Item Tax Templates for Hybrid rows, by company — same "Outright"
+# (owned, 3%) / "Outwork" (customer-supplied, 5%) template naming
 # already used in tax() and set_gst_details() above. Also used directly by
-# set_sales_type_tax_template() for plain (non-Hybrid) Finished Goods /
-# Subcontracting orders.
+# set_sales_type_tax_template() for plain (non-Hybrid) Outright /
+# Outwork orders.
 SALES_TYPE_ITEM_TAX_TEMPLATE = {
-	"Finished Goods": {
+	"Outright": {
 		"Gurukrupa Export Private Limited": "GST 3% - GEPL",
 		"KG GK Jewellers Private Limited": "GST 3% - KGJPL",
 	},
-	"Subcontracting": {
+	"Outwork": {
 		"Gurukrupa Export Private Limited": "GST 5% - GEPL",
 		"KG GK Jewellers Private Limited": "GST 5% - KGJPL",
 	},
@@ -40,20 +40,20 @@ SALES_TYPE_ITEM_TAX_TEMPLATE = {
 
 
 def before_validate(self, method):
-	# Drop any Hybrid subcontracting-charge row left over from a previous
+	# Drop any Hybrid Outwork-charge row left over from a previous
 	# save before create_new_bom1 runs, so it never gets treated as a real
-	# serial-no/BOM row. add_hybrid_subcontracting_row() rebuilds it fresh.
+	# serial-no/BOM row. add_hybrid_outwork_row() rebuilds it fresh.
 	self.items = [row for row in self.items if not row.get("custom_is_subcontracting_charge_row")]
 
 	validate_sales_type(self)
 	validate_quotation_item(self)
 	set_repair_serial_bom(self)
 	create_new_bom1(self)
-	add_hybrid_subcontracting_row(self)
+	add_hybrid_outwork_row(self)
 	set_missing_tax_category_and_template(self)
 	set_sales_type_tax_template(self)
 	validate_serial_number(self)
-	# set_gst_details(self)  # superseded by add_hybrid_subcontracting_row() for Hybrid; see history for why
+	# set_gst_details(self)  # superseded by add_hybrid_outwork_row() for Hybrid; see history for why
 	validate_item_dharm(self)
 	if not self.get("__islocal") and self.docstatus == 0:
 		set_bom_item_details(self)
@@ -78,7 +78,7 @@ def set_missing_tax_category_and_template(self):
 	which isn't guaranteed to be on on every site (confirmed off on at least
 	one), so doing it explicitly here keeps this independent of that setting.
 	"""
-	if self.sales_type not in ("Finished Goods", "Subcontracting", "Branch Sales", "Hybrid"):
+	if self.sales_type not in ("Outright", "Outwork", "Branch Sales", "Hybrid"):
 		return
 	if self.tax_category and self.taxes_and_charges and self.get("taxes"):
 		return
@@ -183,11 +183,11 @@ def tax(self):
 		self.tax_category = 'In-State' if customer_state == company_state else 'Out-State'
 		# Map Sales Type + Company to appropriate Item Tax Template
 		template_map = {
-			'Finished Goods': {
+			'Outright': {
 				'Gurukrupa Export Private Limited': 'GST 3% - GEPL',
 				'KG GK Jewellers Private Limited': 'GST 3% - KGJPL',
 			},
-			'Subcontracting': {
+			'Outwork': {
 				'Gurukrupa Export Private Limited': 'GST 5% - GEPL',
 				'KG GK Jewellers Private Limited': 'GST 5% - KGJPL',
 			},
@@ -201,13 +201,13 @@ def tax(self):
                     
                     # Per-line indicative GST split for UI; actual accounts come from template
 					if self.tax_category == 'Out-State':
-						row.igst = 5.0 if self.sales_type == 'Subcontracting' else 3.0
+						row.igst = 5.0 if self.sales_type == 'Outwork' else 3.0
 						row.igst_amount = round((row.net_rate or 0) * (row.igst / 100), 2)
 						row.cgst_amount = 0
 						row.sgst_amount = 0
 					
 					else:
-						rate = 5.0 if self.sales_type == 'Subcontracting' else 3.0
+						rate = 5.0 if self.sales_type == 'Outwork' else 3.0
 						row.cgst = rate / 2
 						row.sgst = rate / 2
 						row.cgst_amount = (row.net_rate or 0) * (row.cgst / 100)
@@ -305,7 +305,7 @@ def tax(self):
 				self.rounded_total =self.grand_total
 
 def set_gst_details(self):
-    if self.sales_type not in ("Finished Goods", "Subcontracting", "Branch Sales", "Hybrid"):
+    if self.sales_type not in ("Outright", "Outwork", "Branch Sales", "Hybrid"):
         return
 
     customer_state = frappe.db.get_value("Address", self.customer_address, "gst_state_number")
@@ -317,23 +317,23 @@ def set_gst_details(self):
     self.tax_category = "In-State" if customer_state == company_state else "Out-State"
 
     item_template_map = {
-        "Finished Goods": {
+        "Outright": {
             "Gurukrupa Export Private Limited": "GST 3% - GEPL",
             "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
         },
         "Branch Sales": {
         "Gurukrupa Export Private Limited": "GST 3% - GEPL"
         },
-        "Subcontracting": {
+        "Outwork": {
             "Gurukrupa Export Private Limited": "GST 5% - GEPL",
             "KG GK Jewellers Private Limited":  "GST 5% - KGJPL",
         },
     }
     # Hybrid has no rate/template of its own — for account-head selection
-    # only, it borrows the Finished Goods template; the real 3%/5% rates
-    # come from the customer's Finished Goods / Subcontracting rows (see
+    # only, it borrows the Outright template; the real 3%/5% rates
+    # come from the customer's Outright / Outwork rows (see
     # _set_hybrid_gst_details below).
-    item_template_map["Hybrid"] = item_template_map["Finished Goods"]
+    item_template_map["Hybrid"] = item_template_map["Outright"]
 
     item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
     # frappe.throw(f"{item_tax_template}")
@@ -443,8 +443,8 @@ def set_gst_details(self):
 def _set_hybrid_gst_details(self, item_tax_template):
     """
     Hybrid: each Sales Order Item row carries both company-owned material
-    (taxed at the customer's Finished Goods rate, e.g. 3%) and
-    customer-supplied material (taxed at the customer's Subcontracting
+    (taxed at the customer's Outright rate, e.g. 3%) and
+    customer-supplied material (taxed at the customer's Outwork
     rate, e.g. 5%) — split earlier into row.custom_company_owned_amount /
     row.custom_customer_supplied_amount by _update_bom_totals().
 
@@ -460,12 +460,12 @@ def _set_hybrid_gst_details(self, item_tax_template):
 
     fg_rate = flt(frappe.db.get_value(
         "Sales Type Multiselect",
-        {"parent": self.customer, "sales_type": "Finished Goods"},
+        {"parent": self.customer, "sales_type": "Outright"},
         "tax_rate",
     ))
     sc_rate = flt(frappe.db.get_value(
         "Sales Type Multiselect",
-        {"parent": self.customer, "sales_type": "Subcontracting"},
+        {"parent": self.customer, "sales_type": "Outwork"},
         "tax_rate",
     ))
 
@@ -481,7 +481,7 @@ def _set_hybrid_gst_details(self, item_tax_template):
     )
 
     # One template row per account head (CGST/SGST/IGST) — reused for both
-    # the Finished Goods and Subcontracting rows we append below.
+    # the Outright and Outwork rows we append below.
     account_by_type = {}
     for t in tax_rows:
         head = t.account_head or ""
@@ -506,13 +506,13 @@ def _set_hybrid_gst_details(self, item_tax_template):
         })
 
     if self.tax_category == "In-State":
-        _append_tax_row("CGST", fg_rate / 2, round(total_owned * fg_rate / 2 / 100, 2), "Finished Goods")
-        _append_tax_row("SGST", fg_rate / 2, round(total_owned * fg_rate / 2 / 100, 2), "Finished Goods")
-        _append_tax_row("CGST", sc_rate / 2, round(total_supplied * sc_rate / 2 / 100, 2), "Subcontracting")
-        _append_tax_row("SGST", sc_rate / 2, round(total_supplied * sc_rate / 2 / 100, 2), "Subcontracting")
+        _append_tax_row("CGST", fg_rate / 2, round(total_owned * fg_rate / 2 / 100, 2), "Outright")
+        _append_tax_row("SGST", fg_rate / 2, round(total_owned * fg_rate / 2 / 100, 2), "Outright")
+        _append_tax_row("CGST", sc_rate / 2, round(total_supplied * sc_rate / 2 / 100, 2), "Outwork")
+        _append_tax_row("SGST", sc_rate / 2, round(total_supplied * sc_rate / 2 / 100, 2), "Outwork")
     else:
-        _append_tax_row("IGST", fg_rate, round(total_owned * fg_rate / 100, 2), "Finished Goods")
-        _append_tax_row("IGST", sc_rate, round(total_supplied * sc_rate / 100, 2), "Subcontracting")
+        _append_tax_row("IGST", fg_rate, round(total_owned * fg_rate / 100, 2), "Outright")
+        _append_tax_row("IGST", sc_rate, round(total_supplied * sc_rate / 100, 2), "Outwork")
 
     for item in self.items:
         if not item.item_code:
@@ -543,14 +543,14 @@ def _set_hybrid_gst_details(self, item_tax_template):
             item.igst_rate   = round(igst_amount / taxable_value * 100, 4) if taxable_value else 0.0
 
 
-def add_hybrid_subcontracting_row(self):
+def add_hybrid_outwork_row(self):
 	"""
 	Hybrid: each real row's amount is currently owned + supplied combined
 	(see the custom_company_owned_amount / custom_customer_supplied_amount
 	split computed in _update_bom_totals). Move the supplied portion out of
-	every row and into a single aggregated HYBRID_SUBCONTRACTING_ITEM row,
+	every row and into a single aggregated HYBRID_Outwork_ITEM row,
 	so each row ends up taxed at one clean rate instead of a blended one —
-	real rows at the Finished Goods rate, this row at the Subcontracting
+	real rows at the Outright rate, this row at the Outwork
 	rate (the item itself carries 5% Item Tax Templates).
 	"""
 	if self.sales_type != "Hybrid":
@@ -559,13 +559,13 @@ def add_hybrid_subcontracting_row(self):
 	ctx   = _get_bom_context(self)
 	_prec = int(ctx.precision or 2)
 
-	fg_template = SALES_TYPE_ITEM_TAX_TEMPLATE["Finished Goods"].get(self.company)
-	sc_template = SALES_TYPE_ITEM_TAX_TEMPLATE["Subcontracting"].get(self.company)
+	fg_template = SALES_TYPE_ITEM_TAX_TEMPLATE["Outright"].get(self.company)
+	sc_template = SALES_TYPE_ITEM_TAX_TEMPLATE["Outwork"].get(self.company)
 
 	total_supplied = 0.0
 	for row in self.items:
 		# Every remaining row is owned-only after the split below, so it
-		# always gets the Finished Goods (3%) template.
+		# always gets the Outright (3%) template.
 		if fg_template:
 			row.item_tax_template = fg_template
 
@@ -578,11 +578,11 @@ def add_hybrid_subcontracting_row(self):
 		total_supplied += supplied
 
 	if total_supplied:
-		gst_hsn_code = frappe.db.get_value("Item", HYBRID_SUBCONTRACTING_ITEM, "gst_hsn_code")
+		gst_hsn_code = frappe.db.get_value("Item", HYBRID_OUTWORK_ITEM, "gst_hsn_code")
 		self.append("items", {
-			"item_code": HYBRID_SUBCONTRACTING_ITEM,
-			"item_name": HYBRID_SUBCONTRACTING_ITEM,
-			"description": HYBRID_SUBCONTRACTING_ITEM,
+			"item_code": HYBRID_OUTWORK_ITEM,
+			"item_name": HYBRID_OUTWORK_ITEM,
+			"description": HYBRID_OUTWORK_ITEM,
 			"qty": 1,
 			"uom": "Nos",
 			"conversion_factor": 1,
@@ -599,9 +599,9 @@ def add_hybrid_subcontracting_row(self):
 def clear_hybrid_header_tax_rate(self, method=None):
 	"""
 	Hybrid mixes two rates (3% owned + 5% supplied) in one order, so unlike
-	Finished Goods / Subcontracting there's no single correct number for
+	Outright / Outwork there's no single correct number for
 	sync_header_tax_rate() to put on the header row. Every row already
-	carries its own item_tax_template (set in add_hybrid_subcontracting_row),
+	carries its own item_tax_template (set in add_hybrid_outwork_row),
 	which is what actually drives the computed tax_amount — so the header
 	row's own rate is just as cosmetically unused here as it is there.
 	Rather than leave the Sales Taxes and Charges Template's generic
@@ -628,15 +628,15 @@ def clear_hybrid_header_tax_rate(self, method=None):
 
 def set_sales_type_tax_template(self):
 	"""
-	Finished Goods / Subcontracting (non-Hybrid): set each row's
+	Outright / Outwork (non-Hybrid): set each row's
 	item_tax_template from sales_type + company, same as
-	add_hybrid_subcontracting_row() does for Hybrid rows. Without this,
+	add_hybrid_outwork_row() does for Hybrid rows. Without this,
 	item_tax_template stays blank and India Compliance silently falls back
 	to the header Sales Taxes and Charges Template's own flat nominal rate
 	(e.g. 9%+9%) instead of the correct 3%/5% — confirmed against several
 	live Sales Orders where this was wrong.
 	"""
-	if self.sales_type not in ("Finished Goods", "Subcontracting"):
+	if self.sales_type not in ("Outright", "Outwork"):
 		return
 
 	template = SALES_TYPE_ITEM_TAX_TEMPLATE[self.sales_type].get(self.company)
@@ -652,7 +652,7 @@ def set_sales_type_tax_template(self):
 
 def sync_header_tax_rate(self, template):
 	"""
-	Finished Goods / Subcontracting: the header Sales Taxes and Charges
+	Outright / Outwork: the header Sales Taxes and Charges
 	Template row carries a generic nominal rate (e.g. 9%) that has nothing
 	to do with jewellery GST — the real 3%/5% comes entirely from each
 	item's item_tax_template (set above), which already drives the actual
@@ -909,7 +909,7 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
 					"wastage",
 					"wastage_per_pcs",
 					"subcontracting_rate",
-					"subcontracting_wastage",
+					"Subcontracting_wastage",
 					"rate_per_gm_threshold",
 					"to_diamond",
 					"from_diamond",
@@ -1228,26 +1228,36 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 		f.customer_metal_purity = customer_metal_purity
 		f.quantity              = round(f.quantity, f_metal_prec)
 
-		if f.is_customer_item:
-			f.rate = 0
-			f.amount = 0
-			f.making_rate    = find_data.get("subcontracting_rate")
-			f.wastage_rate = 0
-			f.wastage_amount = 0
-			f.making_amount = round(f.making_rate * f.quantity, 2)
+		# if f.is_customer_item:
+		# 	f.rate = 0
+		# 	f.amount = 0
+		# 	f.making_rate    = find_data.get("subcontracting_rate")
+		# 	f.wastage_rate = 0
+		# 	f.wastage_amount = 0
+		# 	f.making_amount = round(f.making_rate * f.quantity, 2)
 
-		elif (
+		if (
 			self.company == "Gurukrupa Export Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			# f.rate           = round(calculated_gold_rate, 2)
-			f.rate = round(f.se_rate, 2)
-			f.amount = round(f.rate * f.quantity, 2)
-			# f.making_rate    = 550 if f.finding_category != 'Chains' else 200
-			f.making_rate = operational_cost / total_weight
-			f.wastage_rate = 0
-			f.wastage_amount = 0
-			f.making_amount = round(f.making_rate * f.quantity, 2)
+			if f.is_customer_item:
+				f.rate = 0
+				f.amount = 0
+				f.making_rate    = find_data.get("rate_per_gm")
+				if self.sales_type =='Hybrid' and f.finding_category=='Chains':
+					f.making_rate     = 0
+				f.wastage_rate = 0
+				f.wastage_amount = 0
+				f.making_amount = round(f.making_rate * f.quantity, 2)
+			#  f.rate           = round(calculated_gold_rate, 2)
+			else:
+				f.rate = round(f.se_rate, 2)
+				f.amount = round(f.rate * f.quantity, 2)
+				# f.making_rate    = 550 if f.finding_category != 'Chains' else 200
+				f.making_rate = operational_cost / total_weight
+				f.wastage_rate = 0
+				f.wastage_amount = 0
+				f.making_amount = round(f.making_rate * f.quantity, 2)
 
 		elif (
 			self.company == "KG GK Jewellers Private Limited"
@@ -1264,8 +1274,10 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate          = 0
 				f.amount = 0
 				# f.making_rate=operational_cost/total_weight
-				f.making_rate     = 0
-				f.making_amount = 0
+				f.making_rate     = find_data.get("rate_per_gm")
+				if self.sales_type =='Hybrid' and f.finding_category=='Chains':
+					f.making_rate     = 0
+				f.making_amount = round(f.making_rate * f.quantity, 2)
 				f.wastage_rate   = 0
 				f.wastage_amount = 0
 				f.fg_purchase_rate = 0
@@ -1307,25 +1319,35 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				self.gold_rate_with_gst,
 				ctx.gold_gst_rate,
 			)
-			f.rate = round(calculated_gold_rate, 2)
-			f.amount = round(f.rate * f.quantity, 2)
-			finding_weight = getattr(doc, "metal_and_finding_weight", None)
-			if finding_weight is not None and finding_weight < threshold:
-				making_rate = find_data.get("rate_per_pc", 0)
-				wastage_rate = find_data.get("wastage_per_pcs", 0) / 100.0
-				f.making_amount = making_rate
+			if f.is_customer_item:
+				f.rate = 0
+				f.amount = 0
+				f.making_rate    = find_data.get("rate_per_gm")
+				if self.sales_type =='Hybrid' and f.finding_category=='Chains':
+					f.making_rate     = 0
+				f.wastage_rate = 0
+				f.wastage_amount = 0
+				f.making_amount = round(f.making_rate * f.quantity, 2)
 			else:
-				making_rate = find_data.get("rate_per_gm", 0)
-				wastage_rate = find_data.get("wastage", 0) / 100.0
-				f.making_amount = making_rate * f.quantity
-			f.making_rate = making_rate
-			# frappe.msgprint(f"kjh{f.making_amount}")
-			f.wastage_rate = wastage_rate
-			f.wastage_amount = (
-				f.wastage_rate * f.amount
-				if self.customer != "TNCU0101"
-				else f.wastage_rate * f.quantity * self.gold_rate
-			)
+				f.rate = round(calculated_gold_rate, 2)
+				f.amount = round(f.rate * f.quantity, 2)
+				finding_weight = getattr(doc, "metal_and_finding_weight", None)
+				if finding_weight is not None and finding_weight < threshold:
+					making_rate = find_data.get("rate_per_pc", 0)
+					wastage_rate = find_data.get("wastage_per_pcs", 0) / 100.0
+					f.making_amount = making_rate
+				else:
+					making_rate = find_data.get("rate_per_gm", 0)
+					wastage_rate = find_data.get("wastage", 0) / 100.0
+					f.making_amount = making_rate * f.quantity
+				f.making_rate = making_rate
+				# frappe.msgprint(f"kjh{f.making_amount}")
+				f.wastage_rate = wastage_rate
+				f.wastage_amount = (
+					f.wastage_rate * f.amount
+					if self.customer != "TNCU0101"
+					else f.wastage_rate * f.quantity * self.gold_rate
+				)
 
 	doc.total_finding_amount = sum(flt(r.amount) for r in doc.get("finding_detail", []))
 
@@ -1363,10 +1385,10 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 			self.company == "Gurukrupa Export Private Limited"
 			and ctx.customer_group == "Internal"
 		):
-			gem.total_gemstone_rate = gem.se_rate
+			gem.total_gemstone_rate = round(gem.se_rate , 2)
 
-			gem.gemstone_rate_for_specified_quantity = (
-				float(gem.total_gemstone_rate) / 100 * float(gem.quantity)
+			gem.gemstone_rate_for_specified_quantity = round(
+				float(gem.total_gemstone_rate) / 100 * float(gem.quantity) , 2
 			)
 
 		elif (
@@ -1379,20 +1401,19 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 				gem.gemstone_rate_for_specified_quantity = 0
 				gem.fg_purchase_amount = 0
 				gem.se_rate = 0
-				# gem.total_gemstone_rate = 0
-				# gem.total_gemstone_rate = 0
+			
 			else:
-				gem.total_gemstone_rate = (
+				gem.total_gemstone_rate = round(
 					gem.se_rate * cctx.exchange_rate
 					if cctx.billing_currency == "USD"
-					else gem.se_rate
+					else gem.se_rate, 2
 				)
-				gem.gemstone_rate_for_specified_quantity = (
+				gem.gemstone_rate_for_specified_quantity = round(
 					float(gem.total_gemstone_rate) * float(gem.quantity)
 					if gem.per_pc_or_per_carat == "Per Carat"
-					else float(gem.total_gemstone_rate) * float(gem.pcs)
+					else float(gem.total_gemstone_rate) * float(gem.pcs) , 2
 				)
-				gem.total_gemstone_rate = 0
+				# gem.total_gemstone_rate = 0
 				gem.fg_purchase_rate = 0
 				gem.fg_purchase_amount = 0
 
@@ -2214,6 +2235,21 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 	row.gemstone_bom_rate = round(doc.gemstone_bom_amount, _prec)
 	row.other_bom_rate = round(doc.other_bom_amount, _prec)
 	row.making_charge = round(doc.making_charge, _prec)
+	row.custom_diamond_pcs=doc.total_diamond_pcs
+	row.custom_gemstone_pcs=doc.total_gemstone_pcs
+	row.custom_other_weight = doc.total_other_weight
+	row.custom_metal_weight=doc.total_metal_weight
+	row.custom_finding_weight=doc.finding_weight
+	row.custom_diamond_weight=doc.total_diamond_weight_in_gms
+	row.custom_gemstone_weight=doc.total_gemstone_weight_in_gms
+
+	self.custom_diamond_pcs = sum(flt(r.custom_diamond_pcs) for r in self.items)
+	self.custom_gemstone_pcs = sum(flt(r.custom_gemstone_pcs) for r in self.items)
+	self.custom_other_weight = sum(flt(r.custom_other_weight) for r in self.items)
+	self.custom_metal_weight = sum(flt(r.custom_metal_weight) for r in self.items)
+	self.custom_finding_weight = sum(flt(r.custom_finding_weight) for r in self.items)
+	self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
+	self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
 
 	def _split_weight(detail, factor=1.0):
 		return (
@@ -2232,8 +2268,8 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 	row.custom_customer_weight   = m_ci + f_ci + d_ci + g_ci
 
 	# ── Hybrid: split this row's taxable amount into company-owned
-	# (is_customer_item = 0, taxed at the Finished Goods rate) vs
-	# customer-supplied (is_customer_item = 1, taxed at the Subcontracting
+	# (is_customer_item = 0, taxed at the Outright rate) vs
+	# customer-supplied (is_customer_item = 1, taxed at the Outwork
 	# rate) material, so set_gst_details() can blend the two rates without
 	# needing to re-walk the BOM. Certification/hallmarking/freight/custom
 	# duty/sale amount are always treated as company-owned.
@@ -3014,7 +3050,7 @@ def customer_approval_filter(doctype, txt, searchfield, start, page_len, filters
 
 def validate_item_dharm(self):
 	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
-	allowed = ("Finished Goods", "Subcontracting", "Certification","Branch Sales","Repairing","Hybrid")
+	allowed = ("Outright", "Outwork", "Certification","Branch Sales","Repairing","Hybrid")
 	if self.sales_type in allowed:
 		if self.sales_type == "Hybrid" and self.company not in HYBRID_ENABLED_COMPANIES:
 			frappe.throw(_("Hybrid Sales Type is not yet enabled for company {0}").format(self.company))
@@ -3044,9 +3080,9 @@ def validate_item_dharm(self):
 				# (owned material, making, hallmarking, certification)
 				# gets the Outright rate.
 				lookup_sales_type = (
-					"Subcontracting"
+					"Outwork"
 					if (e_invoice_item.is_for_repair or e_invoice_item.is_for_labour)
-					else "Finished Goods"
+					else "Outright"
 				)
 			else:
 				lookup_sales_type = self.sales_type
@@ -3362,7 +3398,7 @@ def validate_item_dharm(self):
 									# Hybrid: only the base stone value is Outright
 									# material here — handling_rate is always
 									# job-work value, folded into the labour/
-									# Subcontracting bucket below regardless of
+									# Outwork bucket below regardless of
 									# is_customer_item.
 									diamond_amount = round(flt(diamond.quantity) * flt(diamond.total_diamond_rate) * item.qty, precision)
 								else:
@@ -3388,7 +3424,7 @@ def validate_item_dharm(self):
 						if self.sales_type == "Hybrid":
 							# Handling charge is always job-work value, whether
 							# the stone is company-owned or customer-supplied —
-							# route it to the same labour/Subcontracting bucket
+							# route it to the same labour/Outwork bucket
 							# used by the customer-supplied branch below.
 							handling_amount = round(flt(diamond.quantity) * flt(diamond.handling_rate) * item.qty, precision)
 							if handling_amount:
@@ -3822,7 +3858,7 @@ def validate_item_dharm(self):
 		# regardless of is_customer_item — metal/finding making charges
 		# above got aggregated into the Outright-taxed "making" buckets
 		# by default, so for Hybrid fold them into the labour/
-		# Subcontracting bucket instead of listing them separately.
+		# Outwork bucket instead of listing them separately.
 		if self.sales_type == "Hybrid":
 			for making_dict in (aggregated_metal_making_items, aggregated_finding_making_items):
 				for key, val in making_dict.items():
@@ -3954,6 +3990,32 @@ def validate_sales_type(self):
 			pass
 	if not self.sales_type:
 		frappe.throw("Sales Type is mandatory.")
+
+
+def fetch_sales_type_from_quotation(doc, method=None):
+	"""When a Sales Order is mapped from a Quotation (Create > Sales Order),
+	carry over the Quotation's Sales Type (Quotation.custom_sales_type ->
+	Sales Order.sales_type). The mapper's generic same-fieldname copy misses
+	this since the fieldnames differ; Order Type already copies fine on its
+	own since both doctypes use the same fieldname.
+
+	Runs as the mapper's postprocess step (target.run_method("set_missing_values")
+	inside quotation.py's _make_sales_order), which fires server-side while the
+	mapped doc is being built -- before it's sent to the browser -- so the value
+	is already populated on the fresh, unsaved Sales Order form.
+
+	Skips if sales_type is already set (never overrides a manual choice) or if
+	there's no prevdoc_docname (Sales Order not created from a Quotation), so it
+	never interferes with the Customer-based get_sales_type() flow.
+	"""
+	if doc.sales_type:
+		return
+	quotation = next((r.prevdoc_docname for r in doc.items if r.prevdoc_docname), None)
+	if not quotation:
+		return
+	sales_type = frappe.db.get_value("Quotation", quotation, "custom_sales_type")
+	if sales_type:
+		doc.sales_type = sales_type
 
 
 import json

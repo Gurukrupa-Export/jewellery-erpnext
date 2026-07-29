@@ -10,14 +10,14 @@
  "idx": 0,
  "is_standard": "Yes",
  "letter_head": null,
- "modified": "2026-06-01 12:09:55.878134",
+ "modified": "2026-07-28 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
- "name": "Item Wise MWO MOP Log",
+ "name": "Manufacturing Operation Balance Details Report",
  "owner": "manikandan_ext@gkexport.com",
  "prepared_report": 0,
  "ref_doctype": "MOP Log",
- "report_name": "Item Wise MWO MOP Log",
+ "report_name": "Manufacturing Operation Balance Details Report",
  "report_type": "Script Report",
  "roles": [
   {

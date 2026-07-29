@@ -2755,6 +2755,23 @@ def create_test_data():
 
 			po_refining_entry_field()
 
+			# Serial No.custom_ownership_tag is NOT in the git_action_v16 fixtures, so —
+			# like the other custom-field patches above — it must be provisioned here for
+			# test_site, else create_manufacturing_entry's set_value raises
+			# "Unknown column 'custom_ownership_tag'" the moment an SNC is submitted.
+			from jewellery_erpnext.patches.add_serial_no_ownership_tag_field import (
+				execute as _ensure_serial_no_ownership_tag_field,
+			)
+
+			_ensure_serial_no_ownership_tag_field()
+
+			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures either — same
+			# reasoning as custom_ownership_tag above.
+			from jewellery_erpnext.patches.add_serial_no_order_type_field import (
+				execute as _ensure_serial_no_order_type_field,
+			)
+
+			_ensure_serial_no_order_type_field()
 			# Batch.custom_employee (employee-wise scrap/dust refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /
@@ -2843,6 +2860,13 @@ def setup_data():
 				"gst_category": "Registered Regular",
 			}
 		).insert(ignore_permissions=True)
+
+	# A fresh CI site has no default company anywhere, so anything that derives company
+	# from defaults (batch autoname's prefix, ERPNext's own doc defaults) has nothing to
+	# read. Pin it once here rather than per-test.
+	if not frappe.defaults.get_global_default("company"):
+		frappe.db.set_default("company", "Test_Company")
+		frappe.db.set_single_value("Global Defaults", "default_company", "Test_Company")
 
 	if not frappe.db.exists("Fiscal Year", "2026-2027"):
 		frappe.get_doc(
