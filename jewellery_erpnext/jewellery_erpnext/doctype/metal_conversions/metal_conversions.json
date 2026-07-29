@@ -27,9 +27,6 @@
   "target_warehouse",
   "column_break_aw0qk",
   "stock_entry",
-  "section_break_quab",
-  "percentage",
-  "remarks",
   "metal_converter_tab",
   "source_item",
   "source_qty",
@@ -50,6 +47,8 @@
   "target_alloy_check",
   "target_alloy",
   "target_alloy_qty",
+  "percentage",
+  "remarks",
   "section_break_9izc4",
   "batch_available_qty",
   "inventory_type",
@@ -308,11 +307,6 @@
    "options": "Customer"
   },
   {
-   "fieldname": "section_break_quab",
-   "fieldtype": "Section Break"
-  },
-  {
-   "description": "Drives the Remarks sentence, e.g. 1.8 -> \"NR 1.80% PLAIN ROUND BALLS LOSS BOOK\". Pinned to 2 decimals: this site runs System Settings float_precision 3 for gram/carat weights, which is not how a loss-book percentage is written.",
    "fieldname": "percentage",
    "fieldtype": "Percent",
    "label": "Percentage",
@@ -320,7 +314,6 @@
    "precision": "2"
   },
   {
-   "description": "Options are rendered per document with the Percentage substituted, so this field deliberately ships NO options -- see MetalConversions.set_remarks.",
    "fieldname": "remarks",
    "fieldtype": "Select",
    "label": "Remarks"
@@ -456,7 +449,7 @@
    "link_fieldname": "custom_metal_conversion_reference"
   }
  ],
- "modified": "2026-07-29 12:00:00.000000",
+ "modified": "2026-07-29 12:55:07.264354",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Metal Conversions",
