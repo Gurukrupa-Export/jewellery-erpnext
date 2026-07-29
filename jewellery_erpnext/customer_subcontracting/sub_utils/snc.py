@@ -63,10 +63,16 @@ def _is_customer_gold(mwo):
 def _row_needs_settlement(mwo, row, pmo_is_customer_gold):
 	"""Decide whether an original transfer gold row must be settled by SNC.
 
+	A batch received under a "Customer Repair" voucher is never settled by SNC,
+	regardless of order type or batch ownership (business rule): repair gold is
+	returned as-is, so no owner gold is owed against it.
+
 	Subcontracting order: settle whenever the borrowed gold is not the order
 	customer's own gold (covers other-customer gold and regular/company gold).
 	Regular order: settle only when a customer's gold was borrowed.
 	"""
+	if row.get("batch_voucher_type") == "Customer Repair":
+		return False
 	batch_customer = row.get("batch_customer")
 	if pmo_is_customer_gold:
 		return batch_customer != mwo.customer
@@ -532,11 +538,17 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 		if qty <= 0:
 			continue
 		batch_no = row.get("batch_no")
-		inventory_type = batch_customer = None
+		inventory_type = batch_customer = batch_voucher_type = None
 		if batch_no:
-			inventory_type, batch_customer = frappe.db.get_value(
-				"Batch", batch_no, ["custom_inventory_type", "custom_customer"]
-			) or (None, None)
+			inventory_type, batch_customer, batch_voucher_type = frappe.db.get_value(
+				"Batch",
+				batch_no,
+				[
+					"custom_inventory_type",
+					"custom_customer",
+					"custom_customer_voucher_type",
+				],
+			) or (None, None, None)
 		receive_items.append(
 			{
 				"stock_reservation_entry": row.get("stock_reservation_entry"),
@@ -550,6 +562,7 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 				"inventory_type": inventory_type,
 				"customer": batch_customer,
 				"batch_customer": batch_customer,
+				"batch_voucher_type": batch_voucher_type,
 				"custom_pure_qty": flt(qty * _get_item_purity(item_code) / 100, 3),
 				"s_warehouse": row.get("s_warehouse"),
 			}
