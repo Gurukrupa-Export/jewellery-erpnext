@@ -147,7 +147,7 @@
    "fieldname": "is_subcontracting",
    "fieldtype": "Select",
    "label": "Is Subcontracting",
-   "options": "Yes\nNo",
+   "options": "\nYes\nNo",
    "reqd": 1
   },
   {
@@ -189,7 +189,7 @@
    "link_fieldname": "manufacturing_plan"
   }
  ],
- "modified": "2026-07-29 16:35:12.376119",
+ "modified": "2026-07-29 17:37:27.667668",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",
