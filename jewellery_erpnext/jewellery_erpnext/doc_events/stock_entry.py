@@ -152,11 +152,13 @@ def before_validate(self, method):
 						fields=["name", "manufacturer", "pure_gold_item"],
 						order_by="name",
 					)
-					company_wide = [s for s in settings if not s.manufacturer]
-					if company_wide:
-						pure_item = company_wide[0].pure_gold_item
-					elif len(settings) == 1:
+
+					if len(settings) == 1:
 						pure_item = settings[0].pure_gold_item
+					else:
+						company_wide = [s for s in settings if not s.manufacturer]
+						if len(company_wide) == 1:
+							pure_item = company_wide[0].pure_gold_item
 
 				if not pure_item:
 					frappe.throw(
