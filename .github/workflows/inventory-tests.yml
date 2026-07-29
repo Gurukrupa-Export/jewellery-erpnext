@@ -56,3 +56,4 @@ jobs:
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Subcontracting Log"
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_autoname
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Diamond Conversion"
