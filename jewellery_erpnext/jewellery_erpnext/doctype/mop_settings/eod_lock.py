@@ -127,7 +127,7 @@ def release_expired_eod_sync_lock():
 	row = frappe.db.get_value(
 		_SETTINGS,
 		_SETTINGS,
-		["eod_sync_running", "eod_sync_lock_until"],
+		["eod_sync_running", "eod_sync_lock_until", "eod_sync_last_sync_log"],
 		as_dict=True,
 	)
 	if not row or not cint(row.eod_sync_running):
@@ -136,21 +136,43 @@ def release_expired_eod_sync_lock():
 	if not lock_until or get_datetime(lock_until) >= now_datetime():
 		return
 
+	message = (
+		"EOD sync lock was automatically released after the configured 2-hour window. "
+		"Please verify Error Log and pending draft Stock Entries before retrying."
+	)
 	frappe.db.set_value(
 		_SETTINGS,
 		_SETTINGS,
 		{
 			"eod_sync_running": 0,
 			"eod_sync_status": "Timeout Released",
-			"eod_sync_message": (
-				"EOD sync lock was automatically released after the configured 2-hour window. "
-				"Please verify Error Log and pending draft Stock Entries before retrying."
-			),
+			"eod_sync_message": message,
 		},
 	)
+
+	# Carry the timeout onto the run's own log. Without this the Sync Log stays at
+	# "Running" forever and mop_eod_sync_log.js keeps polling it every 5 seconds.
+	sync_log = row.eod_sync_last_sync_log
+	if sync_log and frappe.db.get_value("MOP EOD Sync Log", sync_log, "status") in (
+		"Queued",
+		"Running",
+	):
+		frappe.db.set_value(
+			"MOP EOD Sync Log",
+			sync_log,
+			{
+				"status": "Timeout Released",
+				"completed_on": now_datetime(),
+				"progress_message": message,
+			},
+			update_modified=False,
+		)
+
 	frappe.db.commit()
 	frappe.logger().warning(
-		"MOP EOD Sync: expired lock auto-released (lock_until=%s)", lock_until
+		"MOP EOD Sync: expired lock auto-released (lock_until=%s, sync_log=%s)",
+		lock_until,
+		sync_log,
 	)
 
 

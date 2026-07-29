@@ -1362,9 +1362,10 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			all_pmo_mwos = [mwo_name]
 
 		# --- Find and cancel SREs, use SRE warehouse as source ---
+		sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+
 		sre_list_1 = []
 		if all_pmo_mwos:
-			sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 			sre_filters = {"docstatus": 1}
 			if "manufacturing_work_order" in sre_cols:
 				sre_filters["manufacturing_work_order"] = ["in", all_pmo_mwos]
@@ -1390,14 +1391,22 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				"Parent Manufacturing Order", pmo_name, "sales_order"
 			)
 		if sales_order and item_codes:
+			sre_filters_2 = {
+				"docstatus": 1,
+				"voucher_type": "Sales Order",
+				"voucher_no": sales_order,
+				"item_code": ["in", item_codes],
+			}
+			# Only UNTAGGED (SO-level) reservations belong here. Every MWO on a Sales Order
+			# shares voucher_no, and the metal/finding item codes are common across the whole
+			# order -- without this scope a Product Certification of one PMO consumes the WIP
+			# reservations of every other MWO on the SO (measured: 216 SREs across 115 MWOs
+			# from a PC covering 2). MWO-tagged SREs for THIS PMO are already in sre_list_1.
+			if "manufacturing_work_order" in sre_cols:
+				sre_filters_2["manufacturing_work_order"] = ["in", ["", None]]
 			sre_list_2 = frappe.db.get_all(
 				"Stock Reservation Entry",
-				filters={
-					"docstatus": 1,
-					"voucher_type": "Sales Order",
-					"voucher_no": sales_order,
-					"item_code": ["in", item_codes],
-				},
+				filters=sre_filters_2,
 				fields=[
 					"name",
 					"item_code",
