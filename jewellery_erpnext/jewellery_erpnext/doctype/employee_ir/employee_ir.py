@@ -47,6 +47,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontr
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 	create_tree_on_issue,
+	lock_trees_for_eir,
+	pin_tree_numbers_on_receive,
 	unlink_tree_on_issue_cancel,
 	update_tree_on_receive,
 	validate_casting_group_complete,
@@ -340,6 +342,14 @@ class EmployeeIR(Document):
 
 	# for receive
 	def on_submit_receive(self, cancel=False):
+		# Canonical lock order (lock_order.py): the Tree Number is a PARENT CONTROL ROW and must
+		# be locked at position 1 — before any tabSeries / tabBin lock taken further down by the
+		# Main Slip injection and the Process Loss entries. Locking it only at
+		# update_tree_on_receive time (the tail of this method) would let this transaction hold
+		# Bins while waiting on a Tree that a concurrent Tree Number button holds while waiting on
+		# those same Bins: a textbook 1213 cycle.
+		lock_trees_for_eir(self)
+
 		precision = cint(
 			frappe.db.get_single_value("System Settings", "float_precision")
 		)
@@ -639,10 +649,16 @@ class EmployeeIR(Document):
 			# ONE Repack SE for all loss rows across the entire EIR.
 			create_loss_stock_entries(self)
 
-		# Casting tree: the Employee IR Receive books the CAST OUTPUT into the tree's Material
-		# Details receive_qty/loss_qty. The tree Receive button separately returns the post-cast
-		# LEFTOVER to Dept RM (bounded by the pending cap, so the two never overlap). Runs on
-		# submit and cancel (cancel reverses via sign=-1). Early-returns for non-casting EIRs.
+		# Casting tree: this receive draws metal OUT of the tree only to the extent it returned
+		# more than the operation carried (received_gross_wt - gross_wt, per row) — exactly what
+		# the Main Slip injection minted out of the tree's MSL warehouse. The tree Receive button
+		# separately returns the post-cast LEFTOVER to Dept RM, and both are capped by pending, so
+		# the two can never overlap. Runs on submit and cancel. Early-returns for non-casting EIRs.
+		if not cancel:
+			# Pin the tree per row BEFORE applying, so a later re-issue (which repoints
+			# MWO.tree_number at a brand-new tree) cannot make this voucher's cancel reverse
+			# against the wrong ledger.
+			pin_tree_numbers_on_receive(self)
 		update_tree_on_receive(self, cancel=cancel)
 
 		self._refresh_msl_tracking()
