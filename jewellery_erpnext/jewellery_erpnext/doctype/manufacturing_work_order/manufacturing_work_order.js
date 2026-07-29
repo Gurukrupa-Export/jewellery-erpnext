@@ -100,7 +100,7 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		// }
 
 		// Show "Upload Missing Images" button on Draft MWOs when photoshop check is relevant
-		if (frm.doc.docstatus == 0 && frm.doc.item_code && !frm.doc.__islocal) {
+		if (frm.doc.docstatus == 0 && frm.doc.item_code && !frm.doc.__islocal && frm.doc.for_fg) {
 			frappe.call({
 				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",
 				args: {
@@ -132,7 +132,7 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		// Client-side intercept: check for missing photoshop images before
 		// submission.  If images are missing, open a dialog to let the user
 		// upload them inline and retry submission after saving.
-		if (!frm.doc.item_code) return;
+		if (!frm.doc.item_code || !frm.doc.for_fg) return;
 
 		frappe.call({
 			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",

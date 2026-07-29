@@ -6,6 +6,9 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
+	tree_material_balance as tree_balance,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_utils import (
 	get_computed_gold_wt,
 	get_flask_weights,
@@ -14,9 +17,17 @@ from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_utils import (
 
 class TreeNumber(Document):
 	def validate(self):
+		# Snapshot the persisted violations BEFORE recomputing, so validate_row_balance can tell
+		# a pre-existing over-draw (historical data, must stay openable) from a new one.
+		previous_violations = tree_balance.stored_row_violations(self)
 		self.calculate_tree_details()
 		self.calculate_flask_details()
 		self.calculate_material_pending()
+		tree_balance.validate_row_balance(self, previous_violations=previous_violations)
+		# Defence in depth for the same-metal rule: the Issue Material button is the only path
+		# that can add a ledger row, but a direct API write bypasses it. Every live row already
+		# matches its tree, so this needs no non-worsening escape hatch.
+		tree_balance.validate_material_details_metal(self)
 
 	def calculate_tree_details(self):
 		"""Wax tree weight -> computed gold weight using the KT conversion factor."""
@@ -40,19 +51,18 @@ class TreeNumber(Document):
 	def calculate_material_pending(self):
 		"""Pending Qty = Issue Qty - Receive Qty - Loss Qty per material row.
 
-		Floating-point dust (e.g. 3 - 2.9 - 0.1 ≈ 8e-17) is tolerated downstream by the eps
-		guard in _tree_status and the receive caps, so pending is left unrounded here.
+		THE single writer of ``pending_qty`` — ``validate`` runs on every save, so whatever the
+		Issue/Receive paths compute is re-derived here. Keeping one writer is what stops the four
+		call paths drifting apart again.
 
-		Casting trees (``employee_ir`` set) keep ``issue_qty`` button-owned but the Employee IR
-		Receive draws the committed metal from the tree even when it was never button-issued, so
-		``pending`` floors at 0 (a never-issued row reads 0, not a phantom negative). Standalone
-		trees keep the raw value — their button paths cap receive at pending, so a negative there
-		signals a real bug that must stay visible.
+		Deliberately UNFLOORED for casting trees too. The old floor was there to hide the negative
+		left by a receive booked against a tree that was never issued; now that the receive itself
+		is capped at what the tree holds, a negative can only mean historical over-draw — which
+		must stay visible for the audit rather than being silently clamped to zero.
 		"""
-		is_casting = bool(self.get("employee_ir"))
+		precision = tree_balance.qty_precision()
 		for row in self.material_details:
-			pending = flt(row.issue_qty) - flt(row.receive_qty) - flt(row.loss_qty)
-			row.pending_qty = max(0.0, pending) if is_casting else pending
+			tree_balance.recompute_row_pending(row, precision)
 
 	def after_insert(self):
 		counter = cint(frappe.db.sql("select max(counter) from `tabTree Number`")[0][0])
@@ -91,12 +101,14 @@ class TreeNumber(Document):
 		refuse to touch the tree.
 		"""
 		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
-			_pending_eps,
-			_tree_status,
+			lock_tree,
 		)
 
 		frappe.has_permission("Tree Number", "write", self, throw=True)
-		if _tree_status(self) not in ("Received", "Partially Received"):
+		# Parent control row first (lock_order position 1) — receive_material below takes Series
+		# and Bin locks, so the tree must already be held before it runs.
+		lock_tree(self.name)
+		if tree_balance.tree_status(self) not in ("Received", "Partially Received"):
 			frappe.throw(
 				_(
 					"Tree {0} can be submitted only after material has been received "
@@ -104,10 +116,33 @@ class TreeNumber(Document):
 				).format(self.name)
 			)
 
+		eps = tree_balance.pending_eps()
+
+		# Re-derive pending from the quantities before judging it. The stored column cannot be
+		# trusted here: rows written before the floor was removed persisted pending 0 on a ledger
+		# that is really over-drawn, so reading it straight would wave those trees through.
+		self.calculate_material_pending()
+
+		# An over-drawn row cannot be written off — the leftover selection below only picks up
+		# POSITIVE pending, so a negative one would slip through and the tree would lock with a
+		# permanently broken ledger and no correction path.
+		over_drawn = [md for md in self.material_details if flt(md.pending_qty) < -eps]
+		if over_drawn:
+			frappe.throw(
+				_(
+					"Tree {0} cannot be submitted: {1} has been received/lost beyond what was "
+					"issued (pending {2}). Reconcile the ledger before locking the tree."
+				).format(
+					self.name,
+					", ".join(md.item_code for md in over_drawn),
+					", ".join(str(flt(md.pending_qty)) for md in over_drawn),
+				),
+				title=_("Tree Ledger Over-Drawn"),
+			)
+
 		# Write off any remaining pending (above the dust tolerance) as loss so the ledger balances
 		# to pending 0 before the tree locks. Reuses receive_material's loss leg (Process Loss SE +
 		# ledger update + canonical lock ordering); it saves the tree with the updated ledger/status.
-		eps = _pending_eps()
 		leftover = [
 			{"item_code": md.item_code, "loss_qty": flt(md.pending_qty)}
 			for md in self.material_details
@@ -129,7 +164,12 @@ class TreeNumber(Document):
 		BEFORE any receive activity — mirrors unlink_tree_on_issue_cancel. This blocks reversing
 		a tree whose casting EIR already physically received (which would cancel the Source->MSL
 		SE against a drained MSL -> negative stock) or desync a received tree from a live EIR."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
+			lock_tree,
+		)
+
 		frappe.has_permission("Tree Number", "write", self, throw=True)
+		lock_tree(self.name)
 		if any(
 			flt(r.receive_qty) or flt(r.loss_qty) for r in self.material_details
 		) or (self.status in ("Partially Received", "Received", "Submitted")):
@@ -144,10 +184,52 @@ class TreeNumber(Document):
 		)
 
 		cancelled = cancel_tree_stock_entries(self)
-		# Zero the issue ledger + reset status so the tree can be re-issued cleanly.
+		# Zero the issue ledger so the tree can be re-issued cleanly. Status is then derived, not
+		# asserted: an emptied ledger is "Draft", never "Issued" — nothing is on the tree any more.
 		for md in self.material_details:
 			md.issue_qty = 0
 			md.pending_qty = 0
-		self.status = "Issued" if self.material_details else "Draft"
+		self.status = tree_balance.tree_status(self)
 		self.save(ignore_permissions=True)
 		return cancelled
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def tree_metal_item_query(doctype, txt, searchfield, start, page_len, filters):
+	"""Items issuable to a tree: same Metal Type, Metal Touch and Metal Purity.
+
+	Powers the Issue Material dialog's Item field. Convenience only -- the load-bearing check is
+	``tree_material_balance.validate_item_matches_tree_metal`` on the server. A tree with no metal
+	set (the bare ones Main Slip creates) is left unfiltered, matching the guard.
+
+	Metal COLOUR is deliberately not filtered: a multicolour tree holds one row per colour.
+	"""
+	tree = frappe.db.get_value(
+		"Tree Number",
+		(filters or {}).get("tree_number"),
+		["metal_type", "metal_touch", "metal_purity"],
+		as_dict=True,
+	)
+	wanted = tree_balance.tree_metal_attributes(tree) if tree else {}
+
+	conditions = ["i.disabled = 0", "i.name like %(txt)s"]
+	values = {"txt": f"%{txt}%", "start": start, "page_len": page_len}
+	for idx, (attribute, value) in enumerate(wanted.items()):
+		# One EXISTS per attribute: an item must carry ALL of them, and a plain join would
+		# multiply rows instead of intersecting them.
+		conditions.append(
+			f"""EXISTS (SELECT 1 FROM `tabItem Variant Attribute` a{idx}
+				WHERE a{idx}.parent = i.name
+				  AND a{idx}.attribute = %(attr{idx})s
+				  AND a{idx}.attribute_value = %(val{idx})s)"""
+		)
+		values[f"attr{idx}"] = attribute
+		values[f"val{idx}"] = value
+
+	return frappe.db.sql(
+		f"""SELECT i.name, i.item_name FROM `tabItem` i
+			WHERE {" AND ".join(conditions)}
+			ORDER BY i.name LIMIT %(start)s, %(page_len)s""",
+		values,
+	)
