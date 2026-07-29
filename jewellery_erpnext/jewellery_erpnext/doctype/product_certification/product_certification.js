@@ -49,6 +49,7 @@ frappe.ui.form.on("Product Certification", {
 	scan: function (frm) {
 		if (!frm.doc.scan) return;
 		let scanned_value = frm.doc.scan.trim();
+		frappe.model.set_value(frm.doctype, frm.docname, "scan", ""); // Clear immediately to prevent double-trigger race conditions
 
 		// Fire Assy rows are keyed on tree_no + main_slip, so a Tree Number is the
 		// natural thing to scan there. Resolved through the same whitelisted method the
@@ -76,7 +77,6 @@ frappe.ui.form.on("Product Certification", {
 					});
 
 					frm.refresh_field("product_details");
-					frm.set_value("scan", "");
 					return true;
 				});
 			});
@@ -135,7 +135,6 @@ function scan_mwo_or_serial(frm, scanned_value) {
 					});
 
 					frm.refresh_field("product_details");
-					frm.set_value("scan", "");
 				});
 
 				return;
@@ -174,10 +173,8 @@ function scan_mwo_or_serial(frm, scanned_value) {
 								});
 
 								frm.refresh_field("product_details");
-								frm.set_value("scan", "");
 							});
 					} else {
-						frm.set_value("scan", "");
 						frappe.throw(
 							frm.doc.service_type === "Fire Assy Service"
 								? __(

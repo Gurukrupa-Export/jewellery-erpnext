@@ -31,7 +31,6 @@
   "percentage",
   "remarks",
   "metal_converter_tab",
-  "scan_source_item",
   "source_item",
   "source_qty",
   "is_melting_loss",
@@ -58,7 +57,6 @@
   "section_break_6tcjy",
   "source_attribute_value",
   "multiple_metal_converter_tab",
-  "scan_mc_source_item",
   "mc_source_table",
   "section_break_xldck",
   "calculate",
@@ -163,18 +161,6 @@
    "label": "Stock Entry",
    "no_copy": 1,
    "options": "Stock Entry"
-  },
-  {
-   "fieldname": "scan_source_item",
-   "fieldtype": "Data",
-   "label": "Scan Item Code",
-   "options": "Barcode"
-  },
-  {
-   "fieldname": "scan_mc_source_item",
-   "fieldtype": "Data",
-   "label": "Scan Item Code",
-   "options": "Barcode"
   },
   {
    "collapsible": 1,
@@ -470,7 +456,7 @@
    "link_fieldname": "custom_metal_conversion_reference"
   }
  ],
- "modified": "2025-02-18 14:38:40.607735",
+ "modified": "2026-07-29 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Metal Conversions",
@@ -488,6 +474,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
