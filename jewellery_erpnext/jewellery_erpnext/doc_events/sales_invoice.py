@@ -888,7 +888,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gol
 	gold_making_item = None
 	bom_doc.customer = self.customer
 	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
-	so_doc = frappe.get_doc("Sales Order", row.sales_order)
+	# so_doc = frappe.get_doc("Sales Order", row.sales_order)
 	so_item_map = {}
 
 	if not self.is_return and row.sales_order:
