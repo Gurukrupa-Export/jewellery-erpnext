@@ -27,6 +27,7 @@ class DiamondConversion(Document):
 	def validate(self):
 		to_check_valid_qty_in_table(self)
 		validate_target_item(self)
+		validate_purity(self)
 
 	@frappe.whitelist()
 	def get_detail_tab_value(self):
@@ -151,6 +152,80 @@ def validate_target_item(self):
 					_("{0} attribute value not available in the sieve size value").format(row.item_code)
 				)
 
+
+def validate_purity(self):
+	allowed_purities = frappe.db.get_all(
+		"Diamond Conversion Purity",
+		filters={
+			"parent": self.manufacturer,
+			"parenttype": "Manufacturing Setting",
+			"parentfield": "diamond_conversion_purity"
+		},
+		fields=["from_purity", "to_purity"],
+	)
+
+	allowed_tuples = {(d.from_purity, d.to_purity) for d in allowed_purities}
+
+	item_codes = list({row.item_code for row in self.sc_source_table + self.sc_target_table})
+	
+	attributes = frappe.db.get_all(
+		"Item Variant Attribute",
+		filters={"attribute": "Diamond Grade", "parent": ["in", item_codes]},
+		fields=["parent", "attribute_value"]
+	)
+	grade_map = {d.parent: d.attribute_value for d in attributes}
+
+	source_purities = set()
+	for row in self.sc_source_table:
+		purity = grade_map.get(row.item_code)
+		if purity:
+			source_purities.add(purity)
+		else:
+			frappe.throw(
+				_("Row #{0}: Source item {1} is missing the Diamond Grade attribute.").format(
+					row.idx, frappe.bold(row.item_code)
+				)
+			)
+
+	target_purities = set()
+	for row in self.sc_target_table:
+		purity = grade_map.get(row.item_code)
+		if purity:
+			target_purities.add(purity)
+		else:
+			frappe.throw(
+				_("Row #{0}: Target item {1} is missing the Diamond Grade attribute.").format(
+					row.idx, frappe.bold(row.item_code)
+				)
+			)
+
+	for s_purity in source_purities:
+		valid_target_found = False
+		for t_purity in target_purities:
+			if s_purity == t_purity or (s_purity, t_purity) in allowed_tuples:
+				valid_target_found = True
+				break
+		
+		if not valid_target_found:
+			frappe.throw(
+				_("No valid target Diamond Grade found for source Diamond Grade {0}. Allowed conversions as per Manufacturing Settings of {1} must exist.").format(
+					frappe.bold(s_purity), frappe.bold(self.manufacturer)
+				)
+			)
+
+	for t_purity in target_purities:
+		valid_source_found = False
+		for s_purity in source_purities:
+			if s_purity == t_purity or (s_purity, t_purity) in allowed_tuples:
+				valid_source_found = True
+				break
+		
+		if not valid_source_found:
+			frappe.throw(
+				_("No valid source Diamond Grade found to convert to target Diamond Grade {0}. Allowed conversions as per Manufacturing Settings of {1} must exist.").format(
+					frappe.bold(t_purity), frappe.bold(self.manufacturer)
+				)
+			)
 
 def make_diamond_stock_entry(self):
 	target_wh = self.target_warehouse

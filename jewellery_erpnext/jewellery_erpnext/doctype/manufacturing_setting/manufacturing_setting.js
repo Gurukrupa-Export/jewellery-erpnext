@@ -31,6 +31,22 @@ frappe.ui.form.on("Manufacturing Setting", {
 				},
 			};
 		});
+
+		frm.set_query("from_purity", "diamond_conversion_purity", function () {
+			return {
+				filters: {
+					is_diamond_grade: 1
+				}
+			};
+		});
+
+		frm.set_query("to_purity", "diamond_conversion_purity", function () {
+			return {
+				filters: {
+					is_diamond_grade: 1
+				}
+			};
+		});
 	},
 });
 
