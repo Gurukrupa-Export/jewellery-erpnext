@@ -18,6 +18,7 @@ def validate(self, method):
                 row.custom_finding_weight=bom_doc.finding_weight
                 row.custom_diamond_weight=bom_doc.total_diamond_weight_in_gms
                 row.custom_gemstone_weight=bom_doc.total_gemstone_weight_in_gms
+                row.custom_gross_weight=bom_doc.gross_weight
     self.custom_diamond_pcs = sum(int(r.custom_diamond_pcs or 0) for r in self.items)
     self.custom_gemstone_pcs = sum(float(r.custom_gemstone_pcs or 0) for r in self.items)
     self.custom_other_weight = sum(float(r.custom_other_weight) for r in self.items)
@@ -25,6 +26,7 @@ def validate(self, method):
     self.custom_finding_weight = sum(float(r.custom_finding_weight) for r in self.items)
     self.custom_diamond_weight = sum(float(r.custom_diamond_weight) for r in self.items)
     self.custom_gemstone_weight = sum(float(r.custom_gemstone_weight) for r in self.items)
+    self.custom_gross_weight = sum(float(r.custom_gross_weight) for r in self.items)
             # sales_order_id = row.against_sales_order
             
     #         invoice_items = frappe.get_all(

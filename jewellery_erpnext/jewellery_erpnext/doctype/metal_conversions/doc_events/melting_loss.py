@@ -96,13 +96,13 @@ def validate_melting_loss(doc):
 			)
 		)
 
-	# V12 — customer mandatory when customer metal; otherwise clear a stale customer
-	# (mandatory_depends_on is client-only; enforce server-side).
-	if cint(doc.get("is_customer_metal")):
-		if not doc.customer:
-			frappe.throw(_("Customer is mandatory when Is Customer Metal is checked."))
-	else:
-		doc.customer = None
+	# V12 — a loss document has no owning customer. "Is Customer Metal" is gone: the
+	# operator no longer declares ownership anywhere, and this flow books ONE scrap row
+	# force-typed "Regular Stock" (see make_melting_loss_stock_entry), which is why
+	# update_source_betch restricts the loss allocation to Regular Stock batches. Clear
+	# any customer that reached the doc via the API or a stale draft so it cannot be
+	# stamped onto the consume rows.
+	doc.customer = None
 
 	_clear_conversion_fields(doc)
 
