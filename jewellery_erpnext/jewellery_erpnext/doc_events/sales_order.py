@@ -2257,7 +2257,7 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 	row.custom_finding_weight=doc.finding_weight
 	row.custom_diamond_weight=doc.total_diamond_weight_in_gms
 	row.custom_gemstone_weight=doc.total_gemstone_weight_in_gms
-
+	row.custom_gross_weight=doc.gross_weight
 	self.custom_diamond_pcs = sum(flt(r.custom_diamond_pcs) for r in self.items)
 	self.custom_gemstone_pcs = sum(flt(r.custom_gemstone_pcs) for r in self.items)
 	self.custom_other_weight = sum(flt(r.custom_other_weight) for r in self.items)
@@ -2265,6 +2265,7 @@ def _update_bom_totals(self, doc, row, ctx, item_code, serial_no, cctx=None):
 	self.custom_finding_weight = sum(flt(r.custom_finding_weight) for r in self.items)
 	self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
 	self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
+	self.custom_gross_weight= sum(flt(r.custom_gross_weight) for r in self.items)
 
 	def _split_weight(detail, factor=1.0):
 		return (

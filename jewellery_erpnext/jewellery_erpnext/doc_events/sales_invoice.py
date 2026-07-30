@@ -109,6 +109,7 @@ def validate(self, method):
 				row_s.custom_finding_weight=bom_doc.finding_weight
 				row_s.custom_diamond_weight=bom_doc.total_diamond_weight_in_gms
 				row_s.custom_gemstone_weight=bom_doc.total_gemstone_weight_in_gms
+				row_s.custom_gross_weight=bom_doc.gross_weight
 		self.custom_diamond_pcs = sum(flt(r.custom_diamond_pcs) for r in self.items)
 		self.custom_gemstone_pcs = sum(flt(r.custom_gemstone_pcs) for r in self.items)
 		self.custom_other_weight = sum(flt(r.custom_other_weight) for r in self.items)
@@ -116,6 +117,7 @@ def validate(self, method):
 		self.custom_finding_weight = sum(flt(r.custom_finding_weight) for r in self.items)
 		self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
 		self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
+		self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
 		payment_terms_data = update_si_data(self )
 		update_payment_terms(self, payment_terms_data)
 		return
@@ -139,6 +141,7 @@ def validate(self, method):
 			row_s.custom_finding_weight=bom_doc.finding_weight
 			row_s.custom_diamond_weight=bom_doc.total_diamond_weight_in_gms
 			row_s.custom_gemstone_weight=bom_doc.total_gemstone_weight_in_gms
+			row_s.custom_gross_weight=bom_doc.gross_weight
 	self.custom_diamond_pcs = sum(flt(r.custom_diamond_pcs) for r in self.items)
 	self.custom_gemstone_pcs = sum(flt(r.custom_gemstone_pcs) for r in self.items)
 	self.custom_other_weight = sum(flt(r.custom_other_weight) for r in self.items)
@@ -146,6 +149,7 @@ def validate(self, method):
 	self.custom_finding_weight = sum(flt(r.custom_finding_weight) for r in self.items)
 	self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
 	self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
+	self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
 	if not (self.company == "KG GK Jewellers Private Limited" or customer_group == "Internal"):
 		self.total = 0
 		for row in self.items:

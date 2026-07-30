@@ -327,12 +327,20 @@
    "module": "Jewellery Erpnext"
   },
   {
-   "dt": "Delivery Note ",
+   "dt": "Delivery Note",
    "fieldname": "custom_gemstone_pcs",
    "fieldtype": "Float",
    "is_system_generated": 1,
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Delivery Note",
+   "fieldname": "custom_gross_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_gemstone_pcs",
+   "label": "Gross Weight",
    "module": "Jewellery Erpnext"
   }
  ]
