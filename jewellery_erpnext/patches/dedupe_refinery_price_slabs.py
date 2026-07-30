@@ -40,9 +40,15 @@ def _identity(slab):
 
 
 def _overlaps(a, b):
+	# STRICT inequality, matching validate_slab_bands: bands that merely touch at a
+	# boundary ("0.0 gm - 50 gm" + "Above 50 gm") are contiguous, not overlapping, and
+	# pick_price_slab resolves the shared endpoint to the first row. Comparing with <=
+	# reported every ordinary contiguous pair, burying the genuine conflicts this patch
+	# exists to surface. Must stay in step with validate_slab_bands, which the docstring
+	# above points operators at.
 	a_hi = flt(a.to_weight) or float("inf")
 	b_hi = flt(b.to_weight) or float("inf")
-	return flt(a.from_weight) <= b_hi and flt(b.from_weight) <= a_hi
+	return flt(a.from_weight) < b_hi and flt(b.from_weight) < a_hi
 
 
 def execute():

@@ -34,11 +34,20 @@ class RefineryPriceList(Document):
 		# Overlapping bands within one document make pick_price_slab's first-by-idx rule an
 		# arbitrary tie-break. Previously the bands were also keyed by Refining Process, so
 		# two rows could legitimately share a band; without that column they cannot.
+		# Compared with STRICT inequality so bands that merely TOUCH at a boundary are not
+		# treated as overlapping. The price sheet expresses every multi-band item as
+		# "0.0 gm - 50 gm" + "Above 50 gm", i.e. to_weight == the next from_weight, so a
+		# closed-interval test flags the normal contiguous shape and made the seed skip
+		# REF-MD-001, REF-RMS-001 and REF-FSJ-001 outright. The shared endpoint is not
+		# ambiguous in practice: pick_price_slab scans in row order and returns the FIRST
+		# covering band, so exactly 50 g bills on "0.0 gm - 50 gm" — which is what the
+		# sheet's own wording says. Genuinely overlapping bands (sharing a range of
+		# positive width, or two rows on the same band) still throw.
 		for i, a in enumerate(self.slabs):
 			for b in self.slabs[i + 1 :]:
 				a_hi = flt(a.to_weight) or float("inf")
 				b_hi = flt(b.to_weight) or float("inf")
-				if flt(a.from_weight) <= b_hi and flt(b.from_weight) <= a_hi:
+				if flt(a.from_weight) < b_hi and flt(b.from_weight) < a_hi:
 					frappe.throw(
 						_(
 							"Rows #{0} and #{1} cover overlapping weight bands "

@@ -121,6 +121,30 @@ def execute():
 		_set_sentinel()
 		return
 
+	_apply_swap(has_batch_type)
+
+	_set_sentinel()
+	frappe.clear_cache(doctype="Refining Entry")
+	frappe.clear_cache(doctype="Refining Material Line")
+	frappe.clear_cache(doctype="Batch")
+
+	frappe.logger().info(
+		"rename_refining_scrap_terminology_data: swapped refining_type / source_type"
+		f"{' / custom_batch_type' if has_batch_type else ''}"
+	)
+
+
+def _apply_swap(has_batch_type):
+	"""The swap itself, with no fence of its own — ``execute`` owns the sentinel and the
+	fail-closed pre-flight.
+
+	Split out so the 1:1 mapping can be asserted directly. Going through ``execute`` cannot
+	test it on any site that has already migrated: the pre-flight (correctly) refuses the
+	moment post-rename values exist anywhere in the table, which on a test site they always
+	do — every other test creates them. Call this ONLY from ``execute`` or from a test that
+	has planted a known pre-rename state; on its own it is not idempotent and a second call
+	swaps back.
+	"""
 	# No commit between the statements: the patch runner commits once on success and rolls
 	# the whole thing back on exception, so the three tables move together.
 	frappe.db.sql(
@@ -151,13 +175,3 @@ def execute():
 			 WHERE custom_batch_type = 'Scrap'
 			"""
 		)
-
-	_set_sentinel()
-	frappe.clear_cache(doctype="Refining Entry")
-	frappe.clear_cache(doctype="Refining Material Line")
-	frappe.clear_cache(doctype="Batch")
-
-	frappe.logger().info(
-		"rename_refining_scrap_terminology_data: swapped refining_type / source_type"
-		f"{' / custom_batch_type' if has_batch_type else ''}"
-	)

@@ -23,6 +23,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.test_seri
 	create_snc,
 )
 from jewellery_erpnext.patches.rename_refining_scrap_terminology_data import (
+	_apply_swap as apply_terminology_swap,
+)
+from jewellery_erpnext.patches.rename_refining_scrap_terminology_data import (
 	_clear_sentinel as clear_swap_sentinel,
 )
 from jewellery_erpnext.patches.rename_refining_scrap_terminology_data import (
@@ -49,6 +52,18 @@ from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
 	PURE_LOSS_ITEM,
 )
 
+#: Scrap Refining is the operator's weigh-in type: validate_quantities requires a
+#: Physical Quantity > 0. Tests that exercise something else (restrictions, the rename
+#: patch) still have to supply one.
+#:
+#: Deliberately far larger than anything the shared test site accumulates in
+#: "Waxing Scrap - T": these tests all run against ONE site and every loss_entry() call
+#: receipts another 4.38 g that the next Scrap Refining entry auto-fetches, so the system
+#: quantity depends on how many tests ran first — i.e. on the alphabetical method order.
+#: A fixed, generously large weigh-in keeps difference_quantity positive wherever the test
+#: lands. Assert on system_quantity, never on this number.
+PLACEHOLDER_PHYSICAL_QTY = 500.0
+
 
 class TestRefiningEntry(IntegrationTestCase):
 	@classmethod
@@ -67,8 +82,18 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.manufacturer = "Shubh"
 		re.from_date = today()
 		re.to_date = today()
-		re.physical_quantity = 5.27
+		# Positive weigh-in so the first save clears validate_quantities; the real figure is
+		# derived below, once the auto-fetch has populated System Quantity.
+		re.physical_quantity = PLACEHOLDER_PHYSICAL_QTY
 		re.save()
+
+		# "Waxing Scrap - T" is shared by the whole suite and every loss_entry() receipts
+		# another 4.38 g into it, so the fetched system quantity depends on how many tests
+		# ran before this one — i.e. on alphabetical method order. Derive the weigh-in from
+		# what was actually fetched, keeping the 0.89 g of physical-over-system excess these
+		# tests exercise, instead of a fixed 5.27 total that only held while this test ran
+		# first and that silently goes NEGATIVE once enough scrap has accumulated.
+		re.physical_quantity = flt(re.system_quantity) + 0.89
 
 		re.append(
 			"material_items",
@@ -95,12 +120,24 @@ class TestRefiningEntry(IntegrationTestCase):
 		se2 = frappe.get_doc("Stock Entry", re.receiving_se)
 
 		self.assertEqual(se1.stock_entry_type, "Material Transfer")
-		self.assertEqual(se1.items[0].s_warehouse, re.warehouse)
-		self.assertEqual(se1.items[0].t_warehouse, re.refining_warehouse)
-		self.assertEqual(se1.items[0].item_code, re.material_items[0].item_code)
-		self.assertEqual(se1.items[0].qty, re.material_items[0].qty)
-		self.assertEqual(se1.items[1].item_code, re.material_items[1].item_code)
-		self.assertEqual(se1.items[1].qty, re.material_items[1].qty)
+		for item in se1.items:
+			self.assertEqual(item.s_warehouse, re.warehouse)
+			self.assertEqual(item.t_warehouse, re.refining_warehouse)
+
+		# The material table aggregates per ITEM, while the transfer splits per BATCH — one
+		# row per loss_entry() receipt still sitting in the scrap warehouse — so the two
+		# agree on totals, not row for row. Comparing se1.items[i] to material_items[i]
+		# only held while this test ran first and each item had exactly one batch.
+		transferred = defaultdict(float)
+		for item in se1.items:
+			transferred[item.item_code] += flt(item.qty)
+		fetched = re.material_items[:2]
+		self.assertEqual(len(transferred), len(fetched))
+		for row in fetched:
+			self.assertEqual(
+				flt(transferred[row.item_code], self.flt_pre),
+				flt(row.qty, self.flt_pre),
+			)
 
 		self.assertEqual(se2.stock_entry_type, "Material Receipt")
 		self.assertEqual(se2.items[0].t_warehouse, re.refining_warehouse)
@@ -123,9 +160,18 @@ class TestRefiningEntry(IntegrationTestCase):
 			self.assertEqual(row.input_weight, purity_qty[row.karat])
 
 		dre.start_refining()
-		dre.distribute_recovered_gold(3.578)
+		# 3.578 g was the pure content of ONE loss_entry() sweep — i.e. a 100% recovery,
+		# zero loss. Once the scrap warehouse accumulates, a fixed figure silently becomes a
+		# PARTIAL recovery and the repack's output rows no longer match actual_recovery.
+		# Recover the whole pure input so the scenario stays "fully recovered" wherever this
+		# test lands in the alphabetical run order; on a site where only one sweep exists
+		# this is still exactly 3.578.
+		full_recovery = flt(
+			sum(flt(row.pure_gold_weight) for row in dre.gold_recovery_details), 3
+		)
+		dre.distribute_recovered_gold(full_recovery)
 
-		self.assertEqual(dre.actual_recovery, 3.578)
+		self.assertEqual(dre.actual_recovery, full_recovery)
 
 		dre.verify_recovery()
 		dre.complete_refining()
@@ -135,11 +181,24 @@ class TestRefiningEntry(IntegrationTestCase):
 		se3 = frappe.get_doc("Stock Entry", dre.repack_se)
 		self.assertEqual(se3.stock_entry_type, "Manufacture")
 		self.assertEqual(se3.custom_refining_entry, dre.name)
-		for i in range(len(dre.material_items)):
-			self.assertEqual(se3.items[i].s_warehouse, "Refining RM - T")
-			self.assertIsNone(se3.items[i].t_warehouse)
-			self.assertEqual(se3.items[i].item_code, dre.material_items[i].item_code)
-			self.assertEqual(se3.items[i].qty, dre.material_items[i].qty)
+		# Same per-ITEM table against per-BATCH stock entry as se1 above: the repack issues
+		# one row per batch, so the consumption side agrees on totals, not row for row.
+		consumed = defaultdict(float)
+		for item in se3.items:
+			if not item.s_warehouse:
+				continue
+			self.assertEqual(item.s_warehouse, "Refining RM - T")
+			self.assertIsNone(item.t_warehouse)
+			consumed[item.item_code] += flt(item.qty)
+
+		self.assertEqual(
+			sorted(consumed), sorted(row.item_code for row in dre.material_items)
+		)
+		for row in dre.material_items:
+			self.assertEqual(
+				flt(consumed[row.item_code], self.flt_pre),
+				flt(row.qty, self.flt_pre),
+			)
 
 		self.assertIsNone(se3.items[-1].s_warehouse)
 		self.assertEqual(se3.items[-1].t_warehouse, "Refining RM - T")
@@ -364,7 +423,14 @@ class TestRefiningEntry(IntegrationTestCase):
 			"department": doc.department,
 			"receive_items": receive_entry,
 		}
+		# "Waxing RM - T" is shared by the whole suite, and get_scrap_items_balance() sweeps
+		# EVERY Unused/Loose Material batch sitting in it — including the ones other tests
+		# minted. Record which batches this entry creates so the refining entry below is
+		# built from exactly one MWO's material, whatever else has accumulated.
+		before = set(frappe.get_all("Batch", pluck="name"))
 		create_scrap_wo_stock_entry(se_data)
+		minted = set(frappe.get_all("Batch", pluck="name")) - before
+
 		re = frappe.new_doc("Refining Entry")
 		re.refining_type = "Unused/Loose Material Refining"
 		re.company = "Test_Company"
@@ -374,7 +440,9 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.manufacturer = "Shubh"
 		re.save()
 
-		selected = re.get_scrap_items_balance()
+		selected = [
+			row for row in re.get_scrap_items_balance() if row.get("batch_no") in minted
+		]
 		for row in selected:
 			re.append(
 				"material_items",
@@ -841,6 +909,12 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.company = "Test_Company"
 		re.supplier = "Test_Supplier"
 		re.manufacturer = "Shubh"
+		# before_submit_external defaults this from EXTERNAL_PRICING_CATEGORY, and this test
+		# calls _external_po_lines() straight after save() without submitting. Set it here,
+		# as test_external_po_uses_the_covered_items_mapping does: without it the MATERIAL
+		# row has no price list to fall back on and lands in `unpriced` too, so the split
+		# this test is about would pass for the wrong reason.
+		re.pricing_item = "REF-MD-001"
 		re.department = "Waxing - T"
 		re.warehouse = "Waxing RM - T"
 		re.refining_department = "Refinery - T"
@@ -1160,8 +1234,18 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.manufacturer = "Shubh"
 		re.from_date = today()
 		re.to_date = today()
-		re.physical_quantity = 5.27
+		# Positive weigh-in so the first save clears validate_quantities; the real figure is
+		# derived below, once the auto-fetch has populated System Quantity.
+		re.physical_quantity = PLACEHOLDER_PHYSICAL_QTY
 		re.save()
+
+		# "Waxing Scrap - T" is shared by the whole suite and every loss_entry() receipts
+		# another 4.38 g into it, so the fetched system quantity depends on how many tests
+		# ran before this one — i.e. on alphabetical method order. Derive the weigh-in from
+		# what was actually fetched, keeping the 0.89 g of physical-over-system excess these
+		# tests exercise, instead of a fixed 5.27 total that only held while this test ran
+		# first and that silently goes NEGATIVE once enough scrap has accumulated.
+		re.physical_quantity = flt(re.system_quantity) + 0.89
 
 		re.append(
 			"material_items",
@@ -1696,6 +1780,9 @@ class TestRefiningEntry(IntegrationTestCase):
 				"refining_type": REFINING_TYPE_SCRAP,
 				"posting_date": today(),
 				"department": "Waxing - T",
+				# ignore_mandatory skips reqd fields, not validate() — and Scrap Refining
+				# still has to clear the Physical Quantity guard.
+				"physical_quantity": PLACEHOLDER_PHYSICAL_QTY,
 			}
 		).insert(ignore_mandatory=True)
 		unused = frappe.get_doc(
@@ -1725,7 +1812,11 @@ class TestRefiningEntry(IntegrationTestCase):
 		clear_swap_sentinel()
 		self.addCleanup(set_swap_sentinel)
 
-		swap_terminology()
+		# Driven through _apply_swap, not execute(): this site has already migrated, so
+		# post-rename values exist all over the table (every other test makes them) and
+		# execute()'s fail-closed pre-flight would — correctly — refuse. Both of its fences
+		# are asserted below instead.
+		apply_terminology_swap(frappe.db.has_column("Batch", "custom_batch_type"))
 
 		self.assertEqual(
 			frappe.db.get_value("Refining Entry", scrap.name, "refining_type"),
@@ -1737,7 +1828,20 @@ class TestRefiningEntry(IntegrationTestCase):
 		)
 		self.assertNotEqual(scrap.name, unused.name)
 
-		# Second run must be a no-op, not a swap back.
+		# Fence 1 — pre-flight: the sentinel is still clear, but the rows above are now
+		# post-rename, so execute() must refuse rather than swap them a second time.
+		swap_terminology()
+		self.assertEqual(
+			frappe.db.get_value("Refining Entry", scrap.name, "refining_type"),
+			REFINING_TYPE_SCRAP,
+		)
+		self.assertEqual(
+			frappe.db.get_value("Refining Entry", unused.name, "refining_type"),
+			REFINING_TYPE_UNUSED,
+		)
+
+		# Fence 2 — sentinel: refusing above also SETS it, so the next run short-circuits
+		# before the pre-flight even runs.
 		swap_terminology()
 		self.assertEqual(
 			frappe.db.get_value("Refining Entry", scrap.name, "refining_type"),
@@ -1765,6 +1869,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.manufacturer = "Shubh"
 		re.from_date = today()
 		re.to_date = today()
+		re.physical_quantity = PLACEHOLDER_PHYSICAL_QTY
 		re.save()
 
 		self.assertEqual(
@@ -1790,6 +1895,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.manufacturer = "Shubh"
 		re.from_date = today()
 		re.to_date = today()
+		re.physical_quantity = PLACEHOLDER_PHYSICAL_QTY
 		re.save()
 
 		self.assertTrue(
@@ -1867,6 +1973,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		re.manufacturer = "Shubh"
 		re.from_date = today()
 		re.to_date = today()
+		re.physical_quantity = PLACEHOLDER_PHYSICAL_QTY
 		with patch(
 			"jewellery_erpnext.refining.doctype.refining_entry.refining_entry.resolve_manufacturing_setting",
 			return_value=None,

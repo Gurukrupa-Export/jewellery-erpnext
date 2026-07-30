@@ -257,11 +257,11 @@
   },
   {
    "link_doctype": "Purchase Order",
-   "link_fieldname": "supplier"
+   "link_fieldname": "product_certification"
   }
  ],
- "modified": "2024-07-24 11:40:25.018849",
- "modified_by": "Administrator",
+ "modified": "2026-07-30 21:11:33.018835",
+ "modified_by": "manikandan_ext@gkexport.com",
  "module": "Jewellery Erpnext",
  "name": "Product Certification",
  "naming_rule": "By \"Naming Series\" field",

@@ -144,6 +144,14 @@ ROWS = [
 		"Gross Weight",
 	),
 	(
+		# Same band, charge and rate as the Filing/Setting/Grinding row above: the sheet
+		# lists "Only Dust" twice and leaves the basis cell BLANK on this second listing.
+		# A blank cell is an omission, not an assertion of Gross Weight — normalising it
+		# to the default manufactured a second slab for 50 gm-∞ differing only in basis,
+		# which survived the byte-identical dedupe, tripped validate_slab_bands and made
+		# the seed skip REF-MD-001 entirely (it is the DEFAULT pricing_item, so
+		# every external consignment then priced at rate 0). Carry the annotated basis so
+		# the duplicate collapses onto the real row.
 		"Chemical Process",
 		"REF-MD-001",
 		"Above 50 gm",
@@ -151,7 +159,7 @@ ROWS = [
 		0,
 		"Per Gram",
 		18,
-		"Gross Weight",
+		"Received Fine Weight",
 	),
 	(
 		"Tools Scrap",
