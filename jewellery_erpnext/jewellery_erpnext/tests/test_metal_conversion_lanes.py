@@ -51,6 +51,13 @@ def _alloc(qty, batch):
 	return row
 
 
+def _shrink_last_lane(lanes, target_qty, precision=3):
+	"""split_conversion stand-in that under-apportions, to trip the sum guard."""
+	lanes = lanes_mod.split_conversion(lanes, target_qty, precision)
+	lanes[-1]["target_qty"] = lanes[-1]["target_qty"] - 1.0
+	return lanes
+
+
 class TestBuildLanes(IntegrationTestCase):
 	"""build_lanes groups a FIFO allocation by ownership, preserving FIFO order."""
 
@@ -242,10 +249,9 @@ class TestSplitAllocations(IntegrationTestCase):
 
 
 class _FakeMCDoc:
-	"""Stand-in Metal Conversions doc for build_conversion_lanes / the SE builder."""
+	"""Stand-in Metal Conversions doc for the Stock Entry builder."""
 
 	def __init__(self, **fields):
-		self.conversion_lanes = []
 		self.source_batch_details = []
 		self.alloy_batch_details = []
 		for key, value in fields.items():
@@ -261,103 +267,6 @@ class _FakeMCDoc:
 		row = frappe._dict(row)
 		getattr(self, table).append(row)
 		return row
-
-
-class TestBuildConversionLanes(IntegrationTestCase):
-	"""build_conversion_lanes publishes the lanes and the header summaries."""
-
-	@classmethod
-	def setUpClass(cls):
-		pass
-
-	def setUp(self):
-		if not hasattr(frappe, "db") or not frappe.db:
-			frappe.db = MagicMock()
-		self._patches = [patch.object(mc, "flt", _det_flt)]
-		for p in self._patches:
-			p.start()
-
-	def tearDown(self):
-		for p in self._patches:
-			p.stop()
-
-	def _doc(self, **fields):
-		defaults = {
-			"multiple_metal_converter": 0,
-			"is_melting_loss": 0,
-			"source_qty": 20.0,
-			"target_qty": 26.667,
-			"inventory_type": None,
-			"customer": None,
-		}
-		defaults.update(fields)
-		return _FakeMCDoc(**defaults)
-
-	def test_mixed_draw_publishes_two_lanes_and_blanks_the_header(self):
-		doc = self._doc(source_batch_details=[_alloc(8.0, "REG"), _alloc(12.0, "CG")])
-		lane_map = {
-			"REG": ("Regular Stock", None),
-			"CG": ("Customer Goods", "TNCU0001"),
-		}
-		with patch.object(mc, "get_batch_lane_map", return_value=lane_map):
-			mc.build_conversion_lanes(doc)
-
-		self.assertEqual(len(doc.conversion_lanes), 2)
-		self.assertEqual(doc.conversion_lanes[0].target_qty, 10.667)
-		self.assertEqual(doc.conversion_lanes[1].target_qty, 16.0)
-		self.assertEqual(doc.conversion_lanes[1].customer, "TNCU0001")
-		self.assertEqual(doc.conversion_lanes[0].batches, "REG:8.0")
-		# Ambiguous draw -> no single document-level inventory type...
-		self.assertIsNone(doc.inventory_type)
-		# ...but exactly one customer is involved, so the summary is still meaningful.
-		self.assertEqual(doc.customer, "TNCU0001")
-
-	def test_single_lane_fills_the_header_summaries(self):
-		doc = self._doc(source_batch_details=[_alloc(20.0, "CG")])
-		with patch.object(
-			mc,
-			"get_batch_lane_map",
-			return_value={"CG": ("Customer Goods", "TNCU0001")},
-		):
-			mc.build_conversion_lanes(doc)
-
-		self.assertEqual(len(doc.conversion_lanes), 1)
-		self.assertEqual(doc.inventory_type, "Customer Goods")
-		self.assertEqual(doc.customer, "TNCU0001")
-
-	def test_two_customers_leave_the_customer_summary_blank(self):
-		doc = self._doc(source_batch_details=[_alloc(10.0, "A1"), _alloc(10.0, "B1")])
-		lane_map = {
-			"A1": ("Customer Goods", "CUST-A"),
-			"B1": ("Customer Goods", "CUST-B"),
-		}
-		with patch.object(mc, "get_batch_lane_map", return_value=lane_map):
-			mc.build_conversion_lanes(doc)
-
-		self.assertEqual(len(doc.conversion_lanes), 2)
-		self.assertIsNone(doc.customer)
-		self.assertIsNone(doc.inventory_type)
-
-	def test_multiple_converter_mode_is_untouched(self):
-		doc = self._doc(
-			multiple_metal_converter=1,
-			source_batch_details=[_alloc(8.0, "REG")],
-		)
-		with patch.object(mc, "get_batch_lane_map") as lane_map:
-			mc.build_conversion_lanes(doc)
-		lane_map.assert_not_called()
-		self.assertEqual(doc.conversion_lanes, [])
-
-	def test_melting_loss_publishes_lanes_without_conversion_math(self):
-		doc = self._doc(is_melting_loss=1, source_batch_details=[_alloc(1.0, "REG")])
-		with patch.object(
-			mc, "get_batch_lane_map", return_value={"REG": ("Regular Stock", None)}
-		):
-			mc.build_conversion_lanes(doc)
-
-		self.assertEqual(len(doc.conversion_lanes), 1)
-		self.assertEqual(doc.conversion_lanes[0].target_qty, 0.0)
-		self.assertEqual(doc.conversion_lanes[0].alloy_qty, 0.0)
 
 
 class _FakeSE:
@@ -422,26 +331,15 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		return _FakeMCDoc(**defaults)
 
 	def _two_lane_doc(self, **overrides):
-		doc = self._doc(
+		"""8 g Regular + 12 g Customer Goods -> 10.667 / 16.0 at 100 -> 75 purity.
+
+		Nothing about the lanes is pre-seeded: the builder derives them from
+		``source_batch_details`` and the batch ownership map, which is the whole point
+		of not storing them.
+		"""
+		return self._doc(
 			source_batch_details=[_alloc(8.0, "REG"), _alloc(12.0, "CG")], **overrides
 		)
-		doc.conversion_lanes = [
-			frappe._dict(
-				inventory_type="Regular Stock",
-				customer=None,
-				source_qty=8.0,
-				target_qty=10.667,
-				alloy_qty=2.667,
-			),
-			frappe._dict(
-				inventory_type="Customer Goods",
-				customer="TNCU0001",
-				source_qty=12.0,
-				target_qty=16.0,
-				alloy_qty=4.0,
-			),
-		]
-		return doc
 
 	def _build(self, doc, lane_map=None):
 		lane_map = lane_map or {
@@ -568,15 +466,6 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 	def test_single_lane_voucher_is_shaped_exactly_as_before(self):
 		"""Regression: an unmixed conversion must be unchanged by the lane work."""
 		doc = self._doc(source_batch_details=[_alloc(20.0, "CG")])
-		doc.conversion_lanes = [
-			frappe._dict(
-				inventory_type="Customer Goods",
-				customer="TNCU0001",
-				source_qty=20.0,
-				target_qty=26.667,
-				alloy_qty=6.667,
-			)
-		]
 		se = self._build(doc, lane_map={"CG": ("Customer Goods", "TNCU0001")})
 
 		self.assertEqual(len(se.items), 2)
@@ -586,6 +475,33 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		self.assertEqual(se.items[1].qty, 26.667)
 		self.assertTrue(all(r.customer == "TNCU0001" for r in se.items))
 
+	def test_one_lane_per_ownership_not_per_batch(self):
+		"""Two batches of the same ownership are ONE lane, hence one target row."""
+		doc = self._doc(
+			source_batch_details=[
+				_alloc(5.0, "CG"),
+				_alloc(8.0, "REG"),
+				_alloc(7.0, "CG2"),
+			]
+		)
+		se = self._build(
+			doc,
+			lane_map={
+				"CG": ("Customer Goods", "TNCU0001"),
+				"REG": ("Regular Stock", None),
+				"CG2": ("Customer Goods", "TNCU0001"),
+			},
+		)
+
+		targets = [r for r in se.items if r.get("t_warehouse")]
+		self.assertEqual(len(targets), 2)
+		# Lanes keep FIFO first-appearance order: Customer Goods was seen first.
+		self.assertEqual(targets[0].customer, "TNCU0001")
+		self.assertIsNone(targets[1].customer)
+		# 12 g of the customer's metal across two batches -> one 16 g target row.
+		self.assertEqual(targets[0].qty, 16.0)
+		self.assertEqual(targets[1].qty, 10.667)
+
 	def test_saved_submitted_and_linked_back(self):
 		doc = self._two_lane_doc()
 		se = self._build(doc)
@@ -593,25 +509,19 @@ class TestMakeMetalStockEntry(IntegrationTestCase):
 		self.assertTrue(se.submitted)
 		self.assertEqual(doc.stock_entry, "SE-CONV-0001")
 
-	def test_throws_when_no_lanes_were_resolved(self):
+	def test_throws_when_nothing_is_allocated(self):
 		doc = self._doc(source_batch_details=[])
-		doc.conversion_lanes = []
-		with self.assertRaisesRegex(ValidationError, "No conversion lanes"):
-			self._build(doc)
-
-	def test_throws_when_a_lane_does_not_match_its_allocation(self):
-		"""Replaces the old "inventory types are not consistent" guard.
-
-		Mixed ownership is now the point; what must still hold is that each lane
-		booked exactly the qty it was allocated.
-		"""
-		doc = self._two_lane_doc()
-		doc.conversion_lanes[0].source_qty = 9.0  # allocation says 8.0
-		with self.assertRaisesRegex(ValidationError, "Lane .* allocated"):
+		with self.assertRaisesRegex(ValidationError, "No source batches are allocated"):
 			self._build(doc)
 
 	def test_throws_when_lane_targets_do_not_sum_to_the_document_target(self):
-		doc = self._two_lane_doc()
-		doc.conversion_lanes[1].target_qty = 15.0  # 10.667 + 15.0 != 26.667
-		with self.assertRaisesRegex(ValidationError, "does not match"):
-			self._build(doc)
+		"""Replaces the old "inventory types are not consistent" guard.
+
+		Mixed ownership is now the point; what must still hold is that apportioning
+		the target across lanes neither invents nor drops metal. Here the allocation
+		covers 20 g but Target Qty claims a figure the purity ratio cannot produce.
+		"""
+		doc = self._two_lane_doc(target_qty=26.667)
+		with patch.object(mc, "split_conversion", side_effect=_shrink_last_lane):
+			with self.assertRaisesRegex(ValidationError, "does not match"):
+				self._build(doc)
