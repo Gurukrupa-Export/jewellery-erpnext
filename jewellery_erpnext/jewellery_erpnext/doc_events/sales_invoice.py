@@ -118,7 +118,7 @@ def validate(self, method):
 		self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
 		self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
 		self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
-		payment_terms_data = update_si_data(self )
+		payment_terms_data = update_si_data(self)
 		update_payment_terms(self, payment_terms_data)
 		return
 	prec = frappe.db.get_value(
@@ -254,8 +254,8 @@ def on_submit(self,method):
 					"item_name":custom_item,
 					"conversion_factor":1,
 					"item_code":custom_item,
-					"hsn_code": hsn_code,
-					"income_account": row.income_account,
+					# "hsn_code": hsn_code,
+					# "income_account": row.income_account,
 					"uom":uom,})
 		new_si.total = flt(sum(flt(d.amount) for d in new_si.items))
 
@@ -322,8 +322,8 @@ def on_submit(self,method):
 					"item_name":custom_item,
 					"conversion_factor":1,
 					"item_code":custom_item,
-					"hsn_code": hsn_code,
-					"income_account": row.income_account,
+					# "hsn_code": hsn_code,
+					# "income_account": row.income_account,
 					"uom":uom,})
 		new_si.total = flt(sum(flt(d.amount) for d in new_si.items))
 
