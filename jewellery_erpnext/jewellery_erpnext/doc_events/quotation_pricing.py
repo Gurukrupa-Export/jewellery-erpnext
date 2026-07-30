@@ -351,8 +351,8 @@ def _apply_making_charge_metal(self, doc, metal, customer):
 				"rate_per_gm",
 				"supplier_fg_purchase_rate",
 				"wastage",
-				"custom_subcontracting_rate",
-				"custom_subcontracting_wastage",
+				"subcontracting_rate",
+				"subcontracting_wastage",
 			],
 		)
 		if subcategories:
@@ -369,8 +369,8 @@ def _apply_making_charge_metal(self, doc, metal, customer):
 				fg_purchase_rate = match.get("supplier_fg_purchase_rate", 0)
 				fg_purchase_amount = fg_purchase_rate * metal.quantity
 				if metal.is_customer_item:
-					metal.rate = match.get("custom_subcontracting_rate", 0)
-					wastage_rate = match.get("custom_subcontracting_wastage", 0)
+					metal.rate = match.get("subcontracting_rate", 0)
+					wastage_rate = match.get("subcontracting_wastage", 0)
 					fg_purchase_rate = 0
 					fg_purchase_amount = 0
 					rate_per_gm = 0
@@ -424,8 +424,8 @@ def _apply_making_charge_finding(self, doc, find, customer):
 				"rate_per_gm",
 				"supplier_fg_purchase_rate",
 				"wastage",
-				"custom_subcontracting_rate",
-				"custom_subcontracting_wastage",
+				"subcontracting_rate",
+				"subcontracting_wastage",
 			],
 		)
 		if subcategories:
@@ -442,9 +442,9 @@ def _apply_making_charge_finding(self, doc, find, customer):
 			fg_purchase_rate = matching_subcategory.get("supplier_fg_purchase_rate", 0)
 			fg_purchase_amount = fg_purchase_rate * find.quantity
 			if find.is_customer_item:
-				find.rate = matching_subcategory.get("custom_subcontracting_rate", 0)
+				find.rate = matching_subcategory.get("subcontracting_rate", 0)
 				wastage_rate = matching_subcategory.get(
-					"custom_subcontracting_wastage", 0
+					"subcontracting_wastage", 0
 				)
 				fg_purchase_rate = 0
 				fg_purchase_amount = 0
