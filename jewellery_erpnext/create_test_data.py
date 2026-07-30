@@ -2765,6 +2765,12 @@ def create_test_data():
 
 			_ensure_conversion_lane_tag_field()
 
+			from jewellery_erpnext.patches.add_supplier_allowed_item_group import (
+				execute as _ensure_supplier_allowed_item_group_field,
+			)
+
+			_ensure_supplier_allowed_item_group_field()
+
 			from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
 
 			ensure_fetch_from_columns()
