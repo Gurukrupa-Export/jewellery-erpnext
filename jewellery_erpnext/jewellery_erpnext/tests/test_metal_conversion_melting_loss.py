@@ -59,7 +59,6 @@ def _doc(**fields):
 		"source_item": "M-G-18KT-75.4-Y",
 		"source_qty": 500.0,
 		"loss_qty": 20.0,
-		"is_customer_metal": 0,
 		"customer": None,
 		"company": "GK",
 		"branch": "Main",
@@ -166,21 +165,6 @@ class TestMeltingLossValidation(IntegrationTestCase):
 		self.assertEqual(doc.source_alloy_check, 0)
 		self.assertEqual(doc.target_alloy_check, 0)
 		self.assertEqual(doc.alloy_batch_details, [])
-
-	def test_customer_mandatory_when_customer_metal(self):
-		doc = _doc(is_customer_metal=1, customer=None)
-		with self.assertRaises(ValidationError):
-			melting_loss.validate_melting_loss(doc)
-
-	def test_customer_cleared_when_not_customer_metal(self):
-		doc = _doc(is_customer_metal=0, customer="ACME")
-		melting_loss.validate_melting_loss(doc)
-		self.assertIsNone(doc.customer)
-
-	def test_customer_kept_when_customer_metal(self):
-		doc = _doc(is_customer_metal=1, customer="ACME")
-		melting_loss.validate_melting_loss(doc)
-		self.assertEqual(doc.customer, "ACME")
 
 
 class _FakeSE:
@@ -290,6 +274,10 @@ class TestMeltingLossBuilder(IntegrationTestCase):
 		self.assertEqual(produce["set_basic_rate_manually"], 1)
 		self.assertEqual(produce["inventory_type"], "Regular Stock")
 		self.assertNotIn("batch_no", produce)
+		# basic_rate is deliberately NOT set by the builder: CustomStockEntry.set_basic_rate
+		# assigns it from the consumed rows once ERPNext has resolved their outgoing rates
+		# (customization/utils/loss_valuation) -- see test_process_loss_valuation.py.
+		self.assertNotIn("basic_rate", produce)
 		self.assertTrue(se.saved and se.submitted)
 		doc.db_set.assert_called_once_with("stock_entry", "SE-LOSS-0001")
 
@@ -380,11 +368,13 @@ class TestUpdateSourceBatch(IntegrationTestCase):
 			frappe.db = MagicMock()
 		self._patches = [
 			patch.object(utils, "flt", _det_flt),
-			# Every source batch here is Regular Stock owned by no customer.
-			patch(
-				f"{_UTILS_PATH}.frappe.db.get_value",
-				return_value=("Regular Stock", None),
-			),
+			# Every source batch here is Regular Stock owned by no customer. An
+			# empty lane map means get_batch_lane_map found nothing to override,
+			# so update_source_betch falls back to its ("Regular Stock", None)
+			# default for every batch -- patched (rather than mocking frappe.db)
+			# so these stay pure-logic tests after the switch to a bulk read.
+			patch(f"{_UTILS_PATH}.get_batch_lane_map", return_value={}),
+			patch(f"{_UTILS_PATH}.get_sample_batches", return_value=set()),
 		]
 		for p in self._patches:
 			p.start()
@@ -401,7 +391,6 @@ class TestUpdateSourceBatch(IntegrationTestCase):
 			"source_item": "M-G-18KT-75.4-Y",
 			"source_warehouse": "Waxing RM - GEPL",
 			"customer": None,
-			"is_customer_metal": 0,
 			# Set posting_time so the builder never calls the real nowtime().
 			"date": "2026-07-15",
 			"posting_time": "10:00:00",
@@ -459,3 +448,132 @@ class TestUpdateSourceBatch(IntegrationTestCase):
 		rows = [dict(r) for r in doc.source_batch_details]
 		self.assertEqual([r["batch"] for r in rows], ["B1", "B2"])
 		self.assertAlmostEqual(sum(r["qty"] for r in rows), 1.0, places=3)
+
+	def test_conversion_mode_allocates_across_mixed_ownership(self):
+		"""The requirement: 20 g draws 8 g Regular + 12 g Customer Goods.
+
+		The old code narrowed FIFO to ONE declared inventory type, so a warehouse
+		holding both ownerships threw a shortfall even with enough metal present.
+		"""
+		batches = [
+			frappe._dict(batch_no="REG", qty=8.0, warehouse="Waxing RM - GEPL"),
+			frappe._dict(batch_no="CG", qty=12.0, warehouse="Waxing RM - GEPL"),
+		]
+		lanes = {
+			"REG": ("Regular Stock", None),
+			"CG": ("Customer Goods", "TNCU0001"),
+		}
+		with (
+			patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=batches),
+			patch(f"{_UTILS_PATH}.get_batch_lane_map", return_value=lanes),
+		):
+			doc = self._doc(is_melting_loss=0, source_qty=20.0)
+			utils.update_source_betch(doc)
+		self.assertEqual(
+			[dict(r) for r in doc.source_batch_details],
+			[{"qty": 8.0, "batch": "REG"}, {"qty": 12.0, "batch": "CG"}],
+		)
+
+	def test_conversion_mode_spans_two_customers(self):
+		"""Nothing stops FIFO crossing two customers -> three lanes downstream."""
+		batches = [
+			frappe._dict(batch_no="CG_A", qty=3.0, warehouse="Waxing RM - GEPL"),
+			frappe._dict(batch_no="REG", qty=2.0, warehouse="Waxing RM - GEPL"),
+			frappe._dict(batch_no="CG_B", qty=5.0, warehouse="Waxing RM - GEPL"),
+		]
+		lanes = {
+			"CG_A": ("Customer Goods", "CUST-A"),
+			"REG": ("Regular Stock", None),
+			"CG_B": ("Customer Goods", "CUST-B"),
+		}
+		with (
+			patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=batches),
+			patch(f"{_UTILS_PATH}.get_batch_lane_map", return_value=lanes),
+		):
+			doc = self._doc(is_melting_loss=0, source_qty=8.0)
+			utils.update_source_betch(doc)
+		# FIFO order preserved, partial draw on the last batch
+		self.assertEqual(
+			[dict(r) for r in doc.source_batch_details],
+			[
+				{"qty": 3.0, "batch": "CG_A"},
+				{"qty": 2.0, "batch": "REG"},
+				{"qty": 3.0, "batch": "CG_B"},
+			],
+		)
+
+	def test_conversion_mode_skips_customer_sample_goods(self):
+		"""Sample stock is never allocated: the SE would hard-throw at submit.
+
+		"Repack-Metal Conversion" is not in SAMPLE_ALLOWED_SE_TYPES, so a sample
+		row reaching validate_sample_goods_not_consumed makes the doc
+		un-submittable. It must be skipped here, not surfaced later.
+		"""
+		batches = [
+			frappe._dict(batch_no="SAMPLE", qty=5.0, warehouse="Waxing RM - GEPL"),
+			frappe._dict(batch_no="CG", qty=6.0, warehouse="Waxing RM - GEPL"),
+		]
+		lanes = {
+			"SAMPLE": ("Customer Goods", "TNCU0001"),
+			"CG": ("Customer Goods", "TNCU0001"),
+		}
+		with (
+			patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=batches),
+			patch(f"{_UTILS_PATH}.get_batch_lane_map", return_value=lanes),
+			patch(f"{_UTILS_PATH}.get_sample_batches", return_value={"SAMPLE"}),
+		):
+			doc = self._doc(is_melting_loss=0, source_qty=6.0)
+			utils.update_source_betch(doc)
+		self.assertEqual(
+			[dict(r) for r in doc.source_batch_details],
+			[{"qty": 6.0, "batch": "CG"}],
+		)
+
+	def test_null_inventory_type_is_treated_as_regular_stock(self):
+		"""A batch with no custom_inventory_type is company stock, not a third lane.
+
+		Previously ``None != "Regular Stock"`` skipped it silently and surfaced a
+		bogus "source quantity is not available" throw.
+		"""
+		batches = [
+			frappe._dict(batch_no="UNTYPED", qty=4.0, warehouse="Waxing RM - GEPL")
+		]
+		with (
+			patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=batches),
+			patch(
+				f"{_UTILS_PATH}.get_batch_lane_map",
+				return_value={"UNTYPED": ("Regular Stock", None)},
+			),
+		):
+			doc = self._doc(is_melting_loss=0, source_qty=4.0)
+			utils.update_source_betch(doc)
+		self.assertEqual(
+			[dict(r) for r in doc.source_batch_details],
+			[{"qty": 4.0, "batch": "UNTYPED"}],
+		)
+
+	def test_melting_loss_stays_regular_stock_only(self):
+		"""Melting loss must not draw customer metal.
+
+		make_melting_loss_stock_entry books ONE scrap row force-typed
+		"Regular Stock", so allocating a customer's batch here would silently
+		convert customer metal into company scrap.
+		"""
+		batches = [
+			frappe._dict(batch_no="CG", qty=5.0, warehouse="Waxing RM - GEPL"),
+			frappe._dict(batch_no="REG", qty=5.0, warehouse="Waxing RM - GEPL"),
+		]
+		lanes = {
+			"CG": ("Customer Goods", "TNCU0001"),
+			"REG": ("Regular Stock", None),
+		}
+		with (
+			patch(f"{_UTILS_PATH}.capped_auto_batch_nos", return_value=batches),
+			patch(f"{_UTILS_PATH}.get_batch_lane_map", return_value=lanes),
+		):
+			doc = self._doc(is_melting_loss=1, loss_qty=1.0)
+			utils.update_source_betch(doc)
+		self.assertEqual(
+			[dict(r) for r in doc.source_batch_details],
+			[{"qty": 1.0, "batch": "REG"}],
+		)

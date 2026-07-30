@@ -24,6 +24,7 @@ frappe.ui.form.on("Purchase Order", {
 	refresh(frm) {
 		set_si_reference_field_filter(frm);
 		get_items(frm);
+		filter_items_by_supplier(frm);
 	},
 	purchase_type(frm) {
 		filter_supplier(frm);
@@ -1084,8 +1085,7 @@ frappe.ui.form.on("Purchase Order Item", {
 					fieldname: "diamond_inclusive",
 					fieldtype: "Currency",
 					label: "Diamond Inclusive Rate",
-					description:
-						"Diamond Inclusive = Gross Wt - Stone Wt(in gram) - Finding Wt - Other Wt",
+					description: "Diamond Inclusive = Gross Wt - Stone Wt(in gram) - Finding Wt - Other Wt",
 					precision: 3,
 				},
 				{
@@ -1201,18 +1201,8 @@ frappe.ui.form.on("Purchase Order Item", {
 					])
 					.then((r) => {
 						frappe.model.set_value(cdt, cdn, "item_code", r.message.item_code);
-						frappe.model.set_value(
-							cdt,
-							cdn,
-							"manufacturing_bom",
-							r.message.custom_bom_no
-						);
-						frappe.model.set_value(
-							cdt,
-							cdn,
-							"custom_gross_wt",
-							r.message.custom_gross_wt
-						);
+						frappe.model.set_value(cdt, cdn, "manufacturing_bom", r.message.custom_bom_no);
+						frappe.model.set_value(cdt, cdn, "custom_gross_wt", r.message.custom_gross_wt);
 					});
 			}
 		}
@@ -1294,15 +1284,7 @@ let edit_bom_documents = (
 			},
 		});
 	} else {
-		set_edit_bom_details(
-			doc,
-			dialog,
-			metal_data,
-			diamond_data,
-			gemstone_data,
-			finding_data,
-			other_data
-		);
+		set_edit_bom_details(doc, dialog, metal_data, diamond_data, gemstone_data, finding_data, other_data);
 	}
 };
 
@@ -1497,10 +1479,7 @@ let set_edit_bom_details = (
 	dialog.set_value("diamond_weight", doc.diamond_weight || 0);
 	dialog.set_value("gemstone_weight", doc.gemstone_weight || 0);
 	if (dialog.get_value("sale_key"))
-		dialog.set_value(
-			"saleAmount",
-			dialog.get_value("sale_amount") / dialog.get_value("sale_key")
-		);
+		dialog.set_value("saleAmount", dialog.get_value("sale_amount") / dialog.get_value("sale_key"));
 };
 
 function scan_api_call(input, callback) {
@@ -1539,23 +1518,23 @@ let set_si_reference_field_filter = (frm) => {
 };
 
 let get_items = (frm) => {
-    frm.add_custom_button(
-        __("Sales Invoice"),
-        function () {
-            let query_args = {
-                filters: {
-                    docstatus: ["!=", 2],
+	frm.add_custom_button(
+		__("Sales Invoice"),
+		function () {
+			let query_args = {
+				filters: {
+					docstatus: ["!=", 2],
 					sales_type: frm.doc.purchase_type === "Branch Purchase" ? "Branch Sales" : "",
-                },
-            };
+				},
+			};
 
-            if (frm.doc.supplier === "GJSU0383" && frm.doc.company === "Gurukrupa Export Private Limited") {
-                query_args.filters.company = "KG GK Jewellers Private Limited";
-                query_args.filters.customer = "GJCU0009";
-            }
-            if (frm.doc.supplier === "GJSU0569" && frm.doc.company === "Gurukrupa Export Private Limited") {
-                query_args.filters.company = "Gurukrupa Export Private Limited";
-                // query_args.filters.customer = "TNCU0002";
+			if (frm.doc.supplier === "GJSU0383" && frm.doc.company === "Gurukrupa Export Private Limited") {
+				query_args.filters.company = "KG GK Jewellers Private Limited";
+				query_args.filters.customer = "GJCU0009";
+			}
+			if (frm.doc.supplier === "GJSU0569" && frm.doc.company === "Gurukrupa Export Private Limited") {
+				query_args.filters.company = "Gurukrupa Export Private Limited";
+				// query_args.filters.customer = "TNCU0002";
 				if (frm.doc.branch) {
 					frappe.db.get_value("Branch", frm.doc.branch, "custom_customer", (r) => {
 						if (r && r.custom_customer) {
@@ -1563,106 +1542,170 @@ let get_items = (frm) => {
 						}
 					});
 				}
-            }
+			}
 
-            let d = new frappe.ui.form.MultiSelectDialog({
-                doctype: "Sales Invoice",
-                target: frm,
-                setters: {
-                    posting_date: null,
-                    status: "",
-                },
-                add_filters_group: 1,
-                date_field: "posting_date",
-                get_query() {
-                    return query_args;
-                },
-                action(selections) {
-                    if (selections && selections.length) {
-                        frappe.call({
-                            method: "jewellery_erpnext.utils.get_sales_invoice_items",
-                            freeze: true,
-                            args: {
-                                sales_invoices: selections,
-                            },
-                            callback: function (r) {
-                                if (r && r.message && r.message.items && r.message.items.length) {
+			let d = new frappe.ui.form.MultiSelectDialog({
+				doctype: "Sales Invoice",
+				target: frm,
+				setters: {
+					posting_date: null,
+					status: "",
+				},
+				add_filters_group: 1,
+				date_field: "posting_date",
+				get_query() {
+					return query_args;
+				},
+				action(selections) {
+					if (selections && selections.length) {
+						frappe.call({
+							method: "jewellery_erpnext.utils.get_sales_invoice_items",
+							freeze: true,
+							args: {
+								sales_invoices: selections,
+							},
+							callback: function (r) {
+								if (r && r.message && r.message.items && r.message.items.length) {
 									// console.log('hii',r.message.items);
-                                    let firstWarehouse = r.message.items[0] && r.message.items[0].warehouse;
-                                    let goldRates = r.message.gold_rates;
+									let firstWarehouse = r.message.items[0] && r.message.items[0].warehouse;
+									let goldRates = r.message.gold_rates;
 
-                                    r.message.items.forEach((element) => {
+									r.message.items.forEach((element) => {
 										if (!element.bom) {
-											return; 
+											return;
 										}
-                                        let target_row;
-                                        const empty_row = frm.doc.items.find(row => !row.item_code);
+										let target_row;
+										const empty_row = frm.doc.items.find((row) => !row.item_code);
 
-                                        const set_fields = (rowname) => {
-                                            frappe.model.set_value("Purchase Order Item", rowname, "qty", element.qty);
-                                            frappe.model.set_value("Purchase Order Item", rowname, "rate", element.rate);
-                                            frappe.model.set_value("Purchase Order Item", rowname, "custom_sales_invoice", element.parent);
-                                            frappe.model.set_value("Purchase Order Item", rowname, "item_name", element.item_name || "");
-                                            frappe.model.set_value("Purchase Order Item", rowname, "uom", element.uom || "Nos");
-											frappe.model.set_value("Purchase Order Item", rowname, "serial_no", element.serial_no || "serial_no");
-                                        };
+										const set_fields = (rowname) => {
+											frappe.model.set_value(
+												"Purchase Order Item",
+												rowname,
+												"qty",
+												element.qty
+											);
+											frappe.model.set_value(
+												"Purchase Order Item",
+												rowname,
+												"rate",
+												element.rate
+											);
+											frappe.model.set_value(
+												"Purchase Order Item",
+												rowname,
+												"custom_sales_invoice",
+												element.parent
+											);
+											frappe.model.set_value(
+												"Purchase Order Item",
+												rowname,
+												"item_name",
+												element.item_name || ""
+											);
+											frappe.model.set_value(
+												"Purchase Order Item",
+												rowname,
+												"uom",
+												element.uom || "Nos"
+											);
+											frappe.model.set_value(
+												"Purchase Order Item",
+												rowname,
+												"serial_no",
+												element.serial_no || "serial_no"
+											);
+										};
 
-                                        if (empty_row) {
-												target_row = empty_row;
-												console.log("hiirr", element.rate);
+										if (empty_row) {
+											target_row = empty_row;
+											console.log("hiirr", element.rate);
 
-												frappe.model.set_value(
+											frappe.model
+												.set_value(
 													"Purchase Order Item",
 													target_row.name,
 													"item_code",
 													element.item_code
-												).then(() => {
+												)
+												.then(() => {
 													return frappe.model.set_value(
 														"Purchase Order Item",
 														target_row.name,
 														"rate",
 														element.rate
 													);
-												}).then(() => { 
+												})
+												.then(() => {
 													console.log(
 														"Rate after set:",
 														locals["Purchase Order Item"][target_row.name].rate
 													);
 													set_fields(target_row.name);
 												});
-											}  else {
-                                            target_row = frm.add_child("items", {
-                                                item_code: element.item_code
-                                            });
-                                            frappe.model.set_value("Purchase Order Item", target_row.name, "item_code", element.item_code)
-                                                .then(() => set_fields(target_row.name));
-                                        }
-                                    });
+										} else {
+											target_row = frm.add_child("items", {
+												item_code: element.item_code,
+											});
+											frappe.model
+												.set_value(
+													"Purchase Order Item",
+													target_row.name,
+													"item_code",
+													element.item_code
+												)
+												.then(() => set_fields(target_row.name));
+										}
+									});
 
-                                    if (firstWarehouse && frm.doc.supplier !== "GJSU0383") {
-                                        frm.set_value("set_from_warehouse", firstWarehouse);
-                                    }
+									if (firstWarehouse && frm.doc.supplier !== "GJSU0383") {
+										frm.set_value("set_from_warehouse", firstWarehouse);
+									}
 
-                                    let first_invoice = r.message.items[0].parent;
-                                    if (goldRates && goldRates[first_invoice]) {
-                                        frm.set_value("gold_rate_with_gst", goldRates[first_invoice]);
-                                    }
+									let first_invoice = r.message.items[0].parent;
+									if (goldRates && goldRates[first_invoice]) {
+										frm.set_value("gold_rate_with_gst", goldRates[first_invoice]);
+									}
 
-                                    frm.refresh_field("items");
-                                    // frm.set_value("from_sales_invoice", 1);
-                                } else {
-                                    frappe.msgprint(__("No items found in the selected Sales Invoices."));
-                                }
-                            },
-                        });
-                        d.dialog.hide();
-                        hide_table_button(frm);
-                    }
-                },
-            });
-        },
-        __("Get Items From")
-    );
+									frm.refresh_field("items");
+									// frm.set_value("from_sales_invoice", 1);
+								} else {
+									frappe.msgprint(__("No items found in the selected Sales Invoices."));
+								}
+							},
+						});
+						d.dialog.hide();
+						hide_table_button(frm);
+					}
+				},
+			});
+		},
+		__("Get Items From")
+	);
+};
+
+// Per-supplier Metal whitelist (Supplier -> Allowed Item Group). Convenience only: the
+// load-bearing check is supplier_allowed_items.validate on the server, which also catches
+// the supplier being changed after items were already picked. Mirrors erpnext
+// BuyingController.setup_queries so the subcontracting branches behave exactly as before --
+// only the query function changes. Non-metal item groups are unaffected.
+let filter_items_by_supplier = (frm) => {
+	frm.set_query("item_code", "items", function () {
+		let filters = { supplier: frm.doc.supplier };
+		if (frm.doc.is_subcontracted) {
+			if (frm.doc.is_old_subcontracting_flow) {
+				filters["is_sub_contracted_item"] = 1;
+			} else {
+				filters["is_stock_item"] = 0;
+			}
+		} else {
+			filters["is_purchase_item"] = 1;
+			filters["has_variants"] = 0;
+		}
+		return {
+			query: "jewellery_erpnext.jewellery_erpnext.doc_events.supplier_allowed_items.supplier_item_query",
+			filters: filters,
+		};
+	});
 };
 
 let filter_supplier = (frm) => {

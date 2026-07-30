@@ -112,13 +112,13 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Pending\nSynced\nUnsynced\nSkipped\nFailed\nExcluded\nDraft Created\nSubmitted"
+   "options": "Pending\nSynced\nUnsynced\nSkipped\nDeferred\nFailed\nExcluded\nDraft Created\nSubmitted"
   },
   {
    "fieldname": "sync_stage",
    "fieldtype": "Select",
    "label": "Sync Stage",
-   "options": "Collect MOP Log\nResolve SRE Warehouse\nBuild Stock Entry Row\nValidate Item\nValidate Batch Stock\nSave Draft Stock Entry\nSubmit Stock Entry\nMark MOP Log Synced\nCompleted"
+   "options": "Collect MOP Log\nResolve SRE Warehouse\nBuild Stock Entry Row\nValidate Item\nValidate Batch Stock\nAllocate Bucket Stock\nWIP Reservation Healed\nSave Draft Stock Entry\nSubmit Stock Entry\nMark MOP Log Synced\nCompleted"
   },
   {
    "fieldname": "is_synced",
@@ -164,7 +164,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Error Type",
-   "options": "\nNot Created Today\nMWO Not In EOD Filter\nBefore Sync From Datetime\nManufacturing Operation Not In Filter\nMissing SRE\nMissing Target Warehouse\nMissing Batch\nMissing Serial\nInsufficient Batch Stock\nStock Entry Save Failed\nStock Entry Submit Failed\nValidation Failed\nUnknown Error"
+   "options": "\nNot Created Today\nMWO Not In EOD Filter\nBefore Sync From Datetime\nManufacturing Operation Not In Filter\nMissing SRE\nMissing Target Warehouse\nMissing Batch\nMissing Serial\nInsufficient Batch Stock\nDeferred - Bucket Stock Contention\nPermanently Short\nStock Entry Save Failed\nStock Entry Submit Failed\nValidation Failed\nUnknown Error"
   },
   {
    "fieldname": "error_message",

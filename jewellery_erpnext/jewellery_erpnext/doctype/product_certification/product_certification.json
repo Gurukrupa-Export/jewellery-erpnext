@@ -18,6 +18,7 @@
   "section_break_6xngr",
   "naming_series",
   "type",
+  "receive_status",
   "scan",
   "customer",
   "brand_type",
@@ -76,6 +77,19 @@
    "fieldtype": "Select",
    "label": "Type",
    "options": "Issue\nReceive"
+  },
+  {
+   "allow_on_submit": 1,
+   "default": "Not Received",
+   "depends_on": "eval:doc.type == \"Issue\"",
+   "description": "Rolled up from the submitted Receive entries booked against this Issue.",
+   "fieldname": "receive_status",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Receive Status",
+   "no_copy": 1,
+   "options": "\nNot Received\nPartially Received\nFully Received",
+   "read_only": 1
   },
   {
    "depends_on": "eval: (doc.service_type == 'Diamond Certificate service')",

@@ -1,159 +1,329 @@
 {
-    "actions": [],
-    "allow_rename": 1,
-    "creation": "2026-02-16 18:58:35.162394",
-    "doctype": "DocType",
-    "engine": "InnoDB",
-    "field_order": [
-        "stock_entry_type_to_reservation",
-        "sync_mop_log",
-        "eod_sync_section",
-        "eod_sync_time",
-        "eod_sync_from_datetime",
-        "eod_sync_to_datetime",
-        "eod_sync_running",
-        "eod_sync_started_on",
-        "eod_sync_last_completed_on",
-        "eod_sync_lock_until",
-        "eod_sync_status",
-        "eod_sync_last_error_log",
-        "eod_sync_last_sync_log",
-        "eod_sync_message",
-        "eod_sync_work_order_filter_section",
-        "eod_sync_work_order_filter_help",
-        "eod_sync_work_order_filter"
-    ],
-    "fields": [
-        {
-            "fieldname": "stock_entry_type_to_reservation",
-            "fieldtype": "Table",
-            "label": "Stock Entry Type To Reservation",
-            "options": "Stock Entry Type To Reservation"
-        },
-        {
-            "fieldname": "sync_mop_log",
-            "fieldtype": "Button",
-            "label": "EOD Sync"
-        },
-        {
-            "fieldname": "eod_sync_section",
-            "fieldtype": "Section Break",
-            "label": "EOD Sync Settings"
-        },
-        {
-            "default": "00:00:00",
-            "fieldname": "eod_sync_time",
-            "fieldtype": "Time",
-            "label": "EOD Sync Time",
-            "reqd": 1
-        },
-        {
-            "description": "Start of the window scanned by a manual EOD Sync. Defaults to today 00:00. The automatic nightly sync always uses today and ignores this.",
-            "fieldname": "eod_sync_from_datetime",
-            "fieldtype": "Datetime",
-            "label": "EOD Sync From"
-        },
-        {
-            "description": "End of the window scanned by a manual EOD Sync. Defaults to the end of today. The automatic nightly sync always uses today and ignores this.",
-            "fieldname": "eod_sync_to_datetime",
-            "fieldtype": "Datetime",
-            "label": "EOD Sync To"
-        },
-        {
-            "default": "0",
-            "fieldname": "eod_sync_running",
-            "fieldtype": "Check",
-            "label": "EOD Sync Running",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_started_on",
-            "fieldtype": "Datetime",
-            "label": "EOD Sync Started On",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_last_completed_on",
-            "fieldtype": "Datetime",
-            "label": "Last Completed On",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_lock_until",
-            "fieldtype": "Datetime",
-            "label": "EOD Sync Lock Until",
-            "read_only": 1
-        },
-        {
-            "default": "Idle",
-            "fieldname": "eod_sync_status",
-            "fieldtype": "Select",
-            "label": "EOD Sync Status",
-            "options": "\nIdle\nQueued\nRunning\nCompleted\nFailed\nTimeout Released",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_last_error_log",
-            "fieldtype": "Link",
-            "label": "Last EOD Error Log",
-            "options": "Error Log",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_last_sync_log",
-            "fieldtype": "Link",
-            "label": "Latest EOD Sync Log",
-            "options": "MOP EOD Sync Log",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_message",
-            "fieldtype": "Small Text",
-            "label": "EOD Sync Message",
-            "read_only": 1
-        },
-        {
-            "fieldname": "eod_sync_work_order_filter_section",
-            "fieldtype": "Section Break",
-            "label": "Selective EOD Sync"
-        },
-        {
-            "fieldname": "eod_sync_work_order_filter_help",
-            "fieldtype": "HTML",
-            "label": "EOD Sync Filter Help",
-            "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Selective EOD Sync Works:</b><ul style='margin:6px 0 0 16px;'><li>If this table is <b>empty</b>, EOD Sync will process all eligible MOP Logs created today.</li><li>If rows are added, EOD Sync will process <b>only the selected Manufacturing Work Orders / Operations</b> from the configured Sync From Datetime onward.</li><li>Previous-day MOP Logs and logs before Sync From Datetime will <b>not</b> be processed.</li></ul></div>"
-        },
-        {
-            "fieldname": "eod_sync_work_order_filter",
-            "fieldtype": "Table",
-            "label": "EOD Sync Work Order Filter",
-            "options": "MOP EOD Sync Work Order Filter"
-        }
-    ],
-    "grid_page_length": 50,
-    "index_web_pages_for_search": 1,
-    "issingle": 1,
-    "links": [],
-    "modified": "2026-05-31 00:00:00.000000",
-    "modified_by": "Administrator",
-    "module": "Jewellery Erpnext",
-    "name": "MOP Settings",
-    "owner": "Administrator",
-    "permissions": [
-        {
-            "create": 1,
-            "delete": 1,
-            "email": 1,
-            "print": 1,
-            "read": 1,
-            "role": "System Manager",
-            "share": 1,
-            "write": 1
-        }
-    ],
-    "row_format": "Dynamic",
-    "rows_threshold_for_grid_search": 20,
-    "sort_field": "creation",
-    "sort_order": "DESC",
-    "states": []
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-02-16 18:58:35.162394",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "stock_entry_type_to_reservation",
+  "sync_mop_log",
+  "eod_sync_section",
+  "eod_sync_time",
+  "eod_sync_from_datetime",
+  "eod_sync_to_datetime",
+  "eod_sync_running",
+  "eod_sync_started_on",
+  "eod_sync_last_completed_on",
+  "eod_sync_lock_until",
+  "eod_sync_status",
+  "eod_sync_last_error_log",
+  "eod_sync_last_sync_log",
+  "eod_sync_message",
+  "eod_sync_work_order_filter_section",
+  "eod_sync_work_order_filter_help",
+  "eod_sync_work_order_filter",
+  "stock_recon_window_section",
+  "stock_recon_window_help",
+  "enforce_stock_recon_window",
+  "casting_tree_section",
+  "casting_tree_reissue_help",
+  "enforce_full_casting_tree_reissue",
+  "eod_chunk_section",
+  "eod_chunk_help",
+  "eod_chunk_max_mwos",
+  "eod_chunk_max_rows",
+  "eod_soft_deadline_minutes",
+  "eod_catchup_section",
+  "eod_catchup_help",
+  "enable_eod_backlog_catchup",
+  "eod_catchup_max_mwos",
+  "eod_allocation_section",
+  "eod_allocation_help",
+  "enable_eod_bucket_allocation",
+  "eod_plan_heal_section",
+  "eod_plan_heal_help",
+  "enable_eod_plan_sre_heal",
+  "msl_pending_gate_section",
+  "msl_pending_gate_help",
+  "msl_pending_gate_enforce_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "stock_entry_type_to_reservation",
+   "fieldtype": "Table",
+   "label": "Stock Entry Type To Reservation",
+   "options": "Stock Entry Type To Reservation"
+  },
+  {
+   "fieldname": "sync_mop_log",
+   "fieldtype": "Button",
+   "label": "EOD Sync"
+  },
+  {
+   "fieldname": "eod_sync_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Sync Settings"
+  },
+  {
+   "default": "00:00:00",
+   "fieldname": "eod_sync_time",
+   "fieldtype": "Time",
+   "label": "EOD Sync Time",
+   "reqd": 1
+  },
+  {
+   "description": "Start of the window scanned by a manual EOD Sync. Defaults to today 00:00. The automatic nightly sync always uses today and ignores this.",
+   "fieldname": "eod_sync_from_datetime",
+   "fieldtype": "Datetime",
+   "label": "EOD Sync From"
+  },
+  {
+   "description": "End of the window scanned by a manual EOD Sync. Defaults to the end of today. The automatic nightly sync always uses today and ignores this.",
+   "fieldname": "eod_sync_to_datetime",
+   "fieldtype": "Datetime",
+   "label": "EOD Sync To"
+  },
+  {
+   "default": "0",
+   "fieldname": "eod_sync_running",
+   "fieldtype": "Check",
+   "label": "EOD Sync Running",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_started_on",
+   "fieldtype": "Datetime",
+   "label": "EOD Sync Started On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_last_completed_on",
+   "fieldtype": "Datetime",
+   "label": "Last Completed On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_lock_until",
+   "fieldtype": "Datetime",
+   "label": "EOD Sync Lock Until",
+   "read_only": 1
+  },
+  {
+   "default": "Idle",
+   "fieldname": "eod_sync_status",
+   "fieldtype": "Select",
+   "label": "EOD Sync Status",
+   "options": "\nIdle\nQueued\nRunning\nCompleted\nFailed\nTimeout Released",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_last_error_log",
+   "fieldtype": "Link",
+   "label": "Last EOD Error Log",
+   "options": "Error Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_last_sync_log",
+   "fieldtype": "Link",
+   "label": "Latest EOD Sync Log",
+   "options": "MOP EOD Sync Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_message",
+   "fieldtype": "Small Text",
+   "label": "EOD Sync Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "eod_sync_work_order_filter_section",
+   "fieldtype": "Section Break",
+   "label": "Selective EOD Sync"
+  },
+  {
+   "fieldname": "eod_sync_work_order_filter_help",
+   "fieldtype": "HTML",
+   "label": "EOD Sync Filter Help",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Selective EOD Sync Works:</b><ul style='margin:6px 0 0 16px;'><li>If this table is <b>empty</b>, EOD Sync will process all eligible MOP Logs created today.</li><li>If rows are added, EOD Sync will process <b>only the selected Manufacturing Work Orders / Operations</b> from the configured Sync From Datetime onward.</li><li>Previous-day MOP Logs and logs before Sync From Datetime will <b>not</b> be processed.</li></ul></div>"
+  },
+  {
+   "fieldname": "eod_sync_work_order_filter",
+   "fieldtype": "Table",
+   "label": "EOD Sync Work Order Filter",
+   "options": "MOP EOD Sync Work Order Filter"
+  },
+  {
+   "fieldname": "stock_recon_window_section",
+   "fieldtype": "Section Break",
+   "label": "Stock Reconciliation Time Window"
+  },
+  {
+   "fieldname": "stock_recon_window_help",
+   "fieldtype": "HTML",
+   "label": "Stock Reconciliation Window Help",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How the Stock Reconciliation Window works:</b><ul style='margin:6px 0 0 16px;'><li>Set <b>From Time</b> / <b>To Time</b> on each <b>Department</b>.</li><li>While a department's window is <b>open</b>: Stock Reconciliation for it is allowed, and all other stock movement touching it is <b>blocked</b>.</li><li>Outside the window: stock movement is allowed and Stock Reconciliation is <b>blocked</b>.</li><li>A department with <b>no</b> From/To Time set is never restricted.</li><li>Unchecking the box below disables the whole feature immediately.</li></ul></div>"
+  },
+  {
+   "default": "0",
+   "description": "Master switch. When unchecked, no reconciliation-window restriction is applied anywhere.",
+   "fieldname": "enforce_stock_recon_window",
+   "fieldtype": "Check",
+   "label": "Enforce Stock Reconciliation Time Window"
+  },
+  {
+   "fieldname": "casting_tree_section",
+   "fieldtype": "Section Break",
+   "label": "Casting Tree"
+  },
+  {
+   "fieldname": "casting_tree_reissue_help",
+   "fieldtype": "HTML",
+   "label": "Casting Tree Re-Issue Help",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Full Casting Tree Re-Issue works:</b><ul style='margin:6px 0 0 16px;'><li>Work orders cast on one tree share a <b>Casting Group</b>, stamped on the first Casting Issue.</li><li>When the box below is <b>checked</b>: a later Casting <b>Issue</b> touching that group is blocked at submit unless the Employee IR carries <b>every</b> work order cast together. Use <b>Load Full Casting Tree</b> on the Employee IR to pull in the missing members in one click.</li><li>When <b>unchecked</b> (the default): a <b>partial</b> re-issue is allowed. The subset moves onto a new Tree Number while the rest stay on the old one, so the old tree's Material Details ledger may never reach <b>Received</b>.</li><li><b>Load Full Casting Tree</b> stays available either way &mdash; it is a convenience, not a guard.</li></ul></div>"
+  },
+  {
+   "default": "0",
+   "description": "Master switch. When unchecked, a Casting Issue may carry only part of a casting tree. When checked, an Issue touching a casting group must carry every work order cast together.",
+   "fieldname": "enforce_full_casting_tree_reissue",
+   "fieldtype": "Check",
+   "label": "Enforce Full Casting Tree Re-Issue"
+  },
+  {
+   "fieldname": "eod_chunk_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Stock Entry Chunking"
+  },
+  {
+   "fieldname": "eod_chunk_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>Why the EOD transfer is split</b><br>A single very large Material Transfer cannot be saved <i>and</i> submitted in a reasonable time: ERPNext creates one Stock Ledger Entry document per row and revalues inline as it goes, and each Stock Reservation Entry re-aggregates its whole item/warehouse into Bin. One real run produced a <b>26,489-row</b> draft worth ₹10.66 cr that never submitted before the lock expired.<br><br>The bucket is therefore split into chunks bounded by <b>both</b> caps below, whichever is reached first. Each chunk is its own Stock Entry and is committed on success, so earlier chunks survive a later failure — and a failed chunk is halved and retried down to a single Work Order, so one bad Work Order strands only itself.<br><br><b>A Manufacturing Work Order is never split across chunks.</b> A single Work Order larger than the row cap forms its own oversized chunk.<br><br>Set both caps to <b>0</b> to restore the old one-Stock-Entry-per-bucket behaviour. Reference points: ERPNext itself moves Stock Reconciliation to the background above 100 rows, and the largest EOD Stock Entry this system has ever submitted successfully had 152 rows.</div>"
+  },
+  {
+   "default": "50",
+   "description": "Maximum Manufacturing Work Orders per EOD Stock Entry. 0 = no limit on this axis.",
+   "fieldname": "eod_chunk_max_mwos",
+   "fieldtype": "Int",
+   "label": "Max Work Orders per Stock Entry",
+   "non_negative": 1
+  },
+  {
+   "default": "150",
+   "description": "Maximum item rows per EOD Stock Entry. 0 = no limit on this axis. A single Work Order is never split, so a Work Order with more rows than this still forms one chunk.",
+   "fieldname": "eod_chunk_max_rows",
+   "fieldtype": "Int",
+   "label": "Max Rows per Stock Entry",
+   "non_negative": 1
+  },
+  {
+   "default": "200",
+   "description": "Stop starting new work this many minutes into a run, then finish cleanly and release the lock. Must stay inside the 4-hour lock window so the graceful stop beats the hard job timeout. 0 disables the deadline (not recommended — a run that overruns is then killed hard and leaves the lock to the hourly reaper).",
+   "fieldname": "eod_soft_deadline_minutes",
+   "fieldtype": "Int",
+   "label": "Soft Deadline (minutes)",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "eod_catchup_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Backlog Catch-up"
+  },
+  {
+   "fieldname": "eod_catchup_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>Why a separate catch-up pass exists</b><br>The scheduled run scans <b>today only</b> and fires once a day. A MOP Log created <i>after</i> tonight's run therefore sits in a window no later scheduled run will ever scan again — it only ever showed up in the read-only <i>old unsynced MOP Log count</i>. That is how a backlog of roughly <b>647,000 rows across ~12,939 Work Orders</b> built up, and why clearing it needed a hand-built manual run over a huge date range.<br><br>The today-only window is unchanged. After the main pass finishes cleanly, this drains the <b>oldest</b> pre-window Work Orders, up to the cap below, through exactly the same plan → allocate → chunk → commit pipeline.<br><br>It is skipped when the main pass reported blocking failures or the soft deadline has passed — a run already in trouble does not take on more work.<br><br>Watch <b>Old Unsynced MOP Log Count</b> run over run: it is the honest progress signal. If it is not falling, raise the cap or give the drain its own off-hours window.</div>"
+  },
+  {
+   "default": "1",
+   "description": "After the main pass, drain the oldest pre-window unsynced MOP Logs (bounded by the cap below).",
+   "fieldname": "enable_eod_backlog_catchup",
+   "fieldtype": "Check",
+   "label": "Enable Backlog Catch-up"
+  },
+  {
+   "default": "500",
+   "description": "Maximum Manufacturing Work Orders drained from the backlog per run, oldest first. 0 disables the catch-up pass.",
+   "fieldname": "eod_catchup_max_mwos",
+   "fieldtype": "Int",
+   "label": "Max Backlog Work Orders per Run",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "eod_allocation_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Stock Allocation"
+  },
+  {
+   "fieldname": "eod_allocation_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How EOD Stock Allocation works</b><br>Stock is validated per Manufacturing Work Order, but each EOD Stock Entry consumes the <b>sum</b> across the MWOs it carries — so two MWOs that each fit can jointly overdraw a batch and fail the transfer.<br><br>When enabled, MWOs are admitted against a <b>run-wide</b> running tally of physical batch stock and warehouse headroom, oldest unsynced MOP Log first. An MWO that does not fit is <b>deferred</b> to the next run (reported as <i>Deferred - Bucket Stock Contention</i>). An MWO that cannot fit even on its own is reported as <i>Permanently Short</i> — a data defect needing reconciliation.<br><br><b>Keep this ON.</b> With chunked Stock Entries an over-subscribed chunk strands only itself, so contention fails quietly instead of loudly; this tally is what prevents it. Turn OFF only to reproduce the old all-or-nothing behaviour.</div>"
+  },
+  {
+   "default": "1",
+   "description": "Admit MWOs into the EOD transfer against a run-wide running stock tally; defer the ones that do not fit instead of failing the chunk. Load-bearing once chunking is on — turn OFF only to reproduce the old all-or-nothing behaviour.",
+   "fieldname": "enable_eod_bucket_allocation",
+   "fieldtype": "Check",
+   "label": "Enable EOD Stock Allocation"
+  },
+  {
+   "fieldname": "eod_plan_heal_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Plan-Phase Reservation Heal"
+  },
+  {
+   "fieldname": "eod_plan_heal_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Plan-Phase Reservation Heal works</b><br>When an EOD row has no active Stock Reservation Entry, its whole Manufacturing Work Order is held out of the transfer — even though the batch is usually still physically in stock.<br><br>When enabled, the sync tries to re-create the missing reservation at the warehouse that physically holds the batch, then re-plans the MWO once. Each attempt is wrapped in its own savepoint and fails safe: if no warehouse has enough free batch qty, or the batch is Customer Goods belonging to a different customer than the Sales Order, nothing is created and the row stays a Missing SRE failure.<br><br><b>This submits real Stock Reservation Entries.</b> Leave OFF until you have verified a run with it enabled on a staging site.</div>"
+  },
+  {
+   "default": "0",
+   "description": "Re-create missing WIP reservations during planning instead of holding the whole MWO. Submits real Stock Reservation Entries — enable deliberately.",
+   "fieldname": "enable_eod_plan_sre_heal",
+   "fieldtype": "Check",
+   "label": "Enable EOD Plan-Phase Reservation Heal"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "msl_pending_gate_section",
+   "fieldtype": "Section Break",
+   "label": "Employee (MSL) Warehouse Month-Start Close"
+  },
+  {
+   "fieldname": "msl_pending_gate_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>Month-start pending close</b><br>Blocks issuing material into an employee (MSL) Raw Material warehouse while that warehouse still owes metal from a previous month. The operator clears it by receiving the metal back or booking its Loss — a settlement made in the current month clears the block immediately.<br><br><b>The date below is the whole switch:</b><br>&bull; <b>Blank</b> — off. Nothing is checked.<br>&bull; <b>A future date</b> — warn only. Operators see their backlog but nothing is blocked. Use this to size the impact before enforcing.<br>&bull; <b>Today or a past date</b> — enforced. Issues are blocked.<br><br>System Manager and Stock Manager always bypass the check, exactly as they may re-enable a disabled (closed) MSL warehouse. Every MSL warehouse on a live site will have some prior-month pending on day one, so set a future date first and let it self-activate.</div>"
+  },
+  {
+   "description": "Blank = off. A future date warns only. Today or earlier blocks the issue. Applies to the Warehouse and Tree Number \"Issue Material\" buttons.",
+   "fieldname": "msl_pending_gate_enforce_from",
+   "fieldtype": "Date",
+   "label": "Enforce Month-Start Pending Close From"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-05-31 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "MOP Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
 }

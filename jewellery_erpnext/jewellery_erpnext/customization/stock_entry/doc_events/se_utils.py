@@ -22,6 +22,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.su
 	create_subcontracting_doc,
 )
 from jewellery_erpnext.utils import _bulk_map
+from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
+	SAMPLE_ALLOWED_SE_TYPES,
+	is_customer_sample_batch,
+)
 
 # from jewellery_erpnext.utils import get_item_from_attribute
 
@@ -207,6 +211,18 @@ def get_fifo_batches(self, row, consumed=None):
 		batch_key = (warehouse, batch.batch_no)
 		batch.qty = flt(batch.qty - consumed.get(batch_key, 0), 4)
 		if batch.qty <= 0:
+			continue
+		# Never auto-allocate Customer Sample Goods stock into a Work-Order use /
+		# issue-to-floor / manufacturing consumption row. Samples stay FIFO-eligible only
+		# for the Customer Goods movements (Received / Issue / Transfer). The
+		# stock_entry_type truthiness gate leaves non-Stock-Entry callers (e.g. Metal /
+		# Diamond Conversion, whose doc has no stock_entry_type) untouched. The loud block
+		# for a hand-typed sample batch is validate_sample_goods_not_consumed.
+		if (
+			self.get("stock_entry_type")
+			and self.get("stock_entry_type") not in SAMPLE_ALLOWED_SE_TYPES
+			and is_customer_sample_batch(batch.batch_no)
+		):
 			continue
 		if (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]

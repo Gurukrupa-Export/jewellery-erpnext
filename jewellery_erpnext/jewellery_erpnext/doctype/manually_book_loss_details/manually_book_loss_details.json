@@ -6,8 +6,8 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "item_code",
   "manufacturing_work_order",
+  "item_code",
   "item_name",
   "batch_no",
   "column_break_3",
@@ -159,7 +159,8 @@
    "fieldname": "loss_type",
    "fieldtype": "Link",
    "label": "Loss Type",
-   "options": "Loss Type"
+   "options": "Loss Type",
+   "reqd": 1
   }
  ],
  "index_web_pages_for_search": 1,

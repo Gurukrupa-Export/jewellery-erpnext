@@ -29,6 +29,7 @@
   "scan_serial_no",
   "scan_scrap_qr",
   "scrap_item",
+  "employee",
   "work_order_action",
   "mwo_details",
   "serial_no_details",
@@ -39,7 +40,6 @@
   "column_break_dust",
   "multiple_operation",
   "multiple_department",
-  "employee",
   "operation",
   "loss_item",
   "refining_department_detail",
@@ -116,7 +116,6 @@
   {
    "default": "0",
    "depends_on": "eval:doc.refining_type",
-   "description": "Send this material to an external refinery (supplier) instead of the internal refining department. On submit, material is issued to the Supplier Warehouse and a service Purchase Order is created; the refined pure metal is received back via the Receive Material from Supplier action.",
    "fieldname": "is_external",
    "fieldtype": "Check",
    "in_standard_filter": 1,
@@ -132,7 +131,6 @@
   },
   {
    "depends_on": "eval:doc.is_external",
-   "description": "Which Refinery Price List prices this consignment. Auto-set from the Refining Type (Serial/MWO → Finish & Semi Finish Scrap, Scrap → Metal Refining Scrap, Dust → Main Dust) — switch it for other dust kinds (Vacuum Bag, Tools Dust, Ultra Liquid…).",
    "fieldname": "pricing_item",
    "fieldtype": "Link",
    "label": "Pricing Category",
@@ -186,7 +184,6 @@
   },
   {
    "depends_on": "eval:doc.is_external",
-   "description": "Warehouse of the selected Refinery Supplier (Warehouse.subcontractor). Materials are issued here on submit.",
    "fieldname": "supplier_warehouse",
    "fieldtype": "Link",
    "label": "Supplier Warehouse",
@@ -326,7 +323,7 @@
    "label": "For Multiple Department"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department",
+   "depends_on": "eval:(doc.refining_type=='Scrap Refining') || (doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department)",
    "fieldname": "employee",
    "fieldtype": "Link",
    "label": "Employee",
@@ -531,7 +528,6 @@
   {
    "allow_on_submit": 1,
    "depends_on": "eval:doc.is_external",
-   "description": "Auto-created service Purchase Order billing the Refinery Price List charge for this entry, if a price band is configured. Optional — the physical send/receive flow does not depend on it.",
    "fieldname": "refining_entry_po",
    "fieldtype": "Link",
    "label": "Refining Service PO",
@@ -549,7 +545,6 @@
   },
   {
    "depends_on": "eval:doc.is_external",
-   "description": "Gross gold weight sent to the supplier. Also the Purchase Order metal line quantity.",
    "fieldname": "qty_to_refine",
    "fieldtype": "Float",
    "label": "Qty to Refine",
@@ -559,7 +554,6 @@
   {
    "allow_on_submit": 1,
    "depends_on": "eval:doc.is_external",
-   "description": "Actual refined weight received back from the supplier. Set by the \"Receive Material from Supplier\" action.",
    "fieldname": "received_weight",
    "fieldtype": "Float",
    "label": "Received Weight",
@@ -570,7 +564,6 @@
   {
    "allow_on_submit": 1,
    "depends_on": "eval:doc.is_external",
-   "description": "Received quantity (pcs), if applicable — informational only.",
    "fieldname": "received_qty",
    "fieldtype": "Float",
    "label": "Received Quantity",
@@ -642,8 +635,8 @@
    "link_fieldname": "refining_entry"
   }
  ],
- "modified": "2026-07-09 17:38:52.551546",
- "modified_by": "Administrator",
+ "modified": "2026-07-16 16:25:59.978427",
+ "modified_by": "manikandan_ext@gkexport.com",
  "module": "Refining",
  "name": "Refining Entry",
  "naming_rule": "By \"Naming Series\" field",

@@ -11,7 +11,7 @@ from datetime import datetime, time, timedelta
 import frappe
 from frappe.utils import cint, get_datetime, get_time, getdate, now_datetime, nowdate
 
-from .eod_lock import release_expired_eod_sync_lock, set_eod_sync_queued
+from .eod_lock import _LOCK_SECONDS, release_expired_eod_sync_lock, set_eod_sync_queued
 
 _SYNC_FUNC = "jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.sync_mop_logs"
 
@@ -137,7 +137,7 @@ def check_and_enqueue_eod_sync():
 	frappe.enqueue(
 		_SYNC_FUNC,
 		queue="long",
-		timeout=7200,
+		timeout=_LOCK_SECONDS,
 		enqueue_after_commit=True,
 		job_id="eod_sync",
 		deduplicate=True,

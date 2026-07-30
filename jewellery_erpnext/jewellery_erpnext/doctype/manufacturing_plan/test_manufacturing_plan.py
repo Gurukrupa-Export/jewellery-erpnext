@@ -39,6 +39,7 @@ class TestManufacturingPlan(IntegrationTestCase):
 		man_plan.branch = self.branch
 		if man_plan.setting_type:
 			man_plan.setting_type = "Close"
+		man_plan.is_subcontracting = "No"
 		man_plan.save()
 		self.assertEqual(
 			man_plan.total_planned_qty, len(man_plan.manufacturing_plan_table)
@@ -69,7 +70,7 @@ class TestManufacturingPlan(IntegrationTestCase):
 		man_plan.company = "Test_Company"
 		if man_plan.setting_type:
 			man_plan.setting_type = "Close"
-		man_plan.is_subcontracting = 1
+		man_plan.is_subcontracting = "Yes"
 		man_plan.supplier = "Test_Supplier"
 		man_plan.estimated_date = add_to_date(now(), days=-4)
 		man_plan.purchase_type = "FG Purchase"

@@ -3,6 +3,7 @@
 
 import frappe
 from frappe.model.document import Document
+from frappe.utils import now_datetime
 
 from jewellery_erpnext.customer_subcontracting.sub_utils.gold_usage import (
 	classify_gold_usage,
@@ -57,6 +58,8 @@ def create_subcontracting_log(doc, method=None):
 
 	if not config:
 		return
+
+	pending_rows = []
 
 	for item in doc.items:
 		if not item.batch_no:
@@ -202,5 +205,84 @@ def create_subcontracting_log(doc, method=None):
 
 			continue
 
-		log = frappe.get_doc(log_data)
-		log.insert(ignore_permissions=True)
+		pending_rows.append(log_data)
+
+	_insert_logs_in_bulk(pending_rows)
+
+
+# Framework columns bulk_insert must be given explicitly -- it runs no Document lifecycle.
+_LOG_FRAMEWORK_COLUMNS = (
+	"name",
+	"owner",
+	"creation",
+	"modified",
+	"modified_by",
+	"docstatus",
+	"idx",
+)
+
+
+def _insert_logs_in_bulk(rows, chunk_size=500):
+	"""Insert many Subcontracting Log rows with one multi-row INSERT per chunk.
+
+	A consolidated EOD Stock Entry has one row per batched item -- 26,489 on one real run --
+	and this ran a full ``frappe.get_doc(...).insert()`` for every one of them. Splitting the
+	Stock Entry does NOT reduce that count (the rows are the same rows), so batching here is
+	the only lever.
+
+	Safe to bulk-insert because ``SubcontractingLog`` is a plain ``Document`` with **no**
+	controller methods, there are no ``doc_events`` registered for it in any app, and it has
+	no ``autoname``/naming series -- frappe names it with a 10-char hash, which is supplied
+	here. If any of those three facts ever changes, this must go back to ``doc.insert()``:
+	``bulk_insert`` fires no hooks at all.
+
+	Falls back to per-row inserts if the batch fails, so one bad value costs its own row
+	rather than the whole Stock Entry's audit trail.
+	"""
+	if not rows:
+		return
+
+	stamp = now_datetime()
+	user = frappe.session.user or "Administrator"
+	# Branches build different key sets, and bulk_insert needs one fixed column list.
+	fields = sorted({k for row in rows for k in row if k != "doctype"})
+	existing = set(frappe.db.get_table_columns("Subcontracting Log") or [])
+	if existing:
+		fields = [f for f in fields if f in existing]
+	columns = list(_LOG_FRAMEWORK_COLUMNS) + fields
+
+	values = []
+	for idx, row in enumerate(rows, 1):
+		base = (
+			frappe.generate_hash(length=10),
+			user,
+			stamp,
+			stamp,
+			user,
+			0,
+			idx,
+		)
+		values.append(base + tuple(row.get(f) for f in fields))
+
+	try:
+		frappe.db.bulk_insert(
+			"Subcontracting Log", fields=columns, values=values, chunk_size=chunk_size
+		)
+		return
+	except Exception:
+		frappe.logger().exception(
+			"Subcontracting Log: bulk insert of %s row(s) failed; retrying per row",
+			len(rows),
+		)
+
+	for row in rows:
+		try:
+			frappe.get_doc(dict(row, doctype="Subcontracting Log")).insert(
+				ignore_permissions=True
+			)
+		except Exception:
+			frappe.logger().exception(
+				"Subcontracting Log: could not write row for %s / %s",
+				row.get("reference_docname"),
+				row.get("batch"),
+			)

@@ -20,6 +20,9 @@ from frappe.utils import cint, flt
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	validate_loss_ownership_carried,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
@@ -115,7 +118,7 @@ def before_validate(self, method):
 					# Fallback so a MAIN SLIP SE with no Main Slip link (e.g. the Tree Number Issue
 					# button) resolves a manufacturer instead of raising UnboundLocalError.
 					if not manufacturer:
-						manufacturer = self.manufacturer or MANUFACTURER
+						manufacturer = self.get("manufacturer") or MANUFACTURER
 				elif self.manufacturing_order:
 					manufacturer = frappe.db.get_value(
 						"Parent Manufacturing Order",
@@ -123,10 +126,15 @@ def before_validate(self, method):
 						"manufacturer",
 					)
 				else:
-					if self.manufacturer:
-						manufacturer = self.manufacturer
-					else:
-						manufacturer = MANUFACTURER
+					# Stock Entry.manufacturer is a custom field (gke_customization ships it
+					# in fixtures/custom_field.json) and is therefore NOT guaranteed to be
+					# installed: gk.site currently has no such Custom Field and no column,
+					# only the Stock Entry Detail one. It is also set as a plain in-memory
+					# attribute by callers that know it without persisting it (Refining
+					# Entry carries its own onto the SEs it builds). Read it with .get() so
+					# a Stock Entry that lacks the field falls back to the session default
+					# instead of raising AttributeError mid-save.
+					manufacturer = self.get("manufacturer") or MANUFACTURER
 
 				pure_item = frappe.db.get_value(
 					"Manufacturing Setting",
@@ -134,9 +142,42 @@ def before_validate(self, method):
 					"pure_gold_item",
 				)
 
+				# Manufacturing Setting is keyed by manufacturer, but the live records are
+				# per-COMPANY (one row each, named after the company). A manufacturer that is
+				# actually set -- on the document, or as a session default -- therefore
+				# matches nothing, and this used to abort the save with a message telling the
+				# user to set the very thing that broke it. Fall back to the company's own
+				# setting, which is what the company-keyed lookup above did before it was
+				# commented out.
+				#
+				# The fallback never GUESSES between manufacturers: it takes the company-wide
+				# record (no manufacturer on it) when there is one, else the company's single
+				# record. A company that genuinely keeps one setting per manufacturer keeps
+				# throwing, because picking an arbitrary sibling there would silently cost the
+				# metal off another manufacturer's pure_gold_item.
+				if not pure_item and self.company:
+					settings = frappe.get_all(
+						"Manufacturing Setting",
+						filters={"company": self.company},
+						fields=["name", "manufacturer", "pure_gold_item"],
+						order_by="name",
+					)
+
+					if len(settings) == 1:
+						pure_item = settings[0].pure_gold_item
+					else:
+						company_wide = [s for s in settings if not s.manufacturer]
+						if len(company_wide) == 1:
+							pure_item = company_wide[0].pure_gold_item
+
 				if not pure_item:
 					frappe.throw(
-						_("Select Manufacturer in session defaults or in Filed")
+						_(
+							"Set Pure Gold Item in the Manufacturing Setting for manufacturer {0} or company {1}"
+						).format(
+							frappe.bold(manufacturer or _("(not set)")),
+							frappe.bold(self.company),
+						)
 					)
 
 				pure_item_purity = get_purity_percentage(pure_item)
@@ -161,6 +202,9 @@ def before_validate(self, method):
 			and not row.batch_no
 		):
 			row.inventory_type = "Regular Stock"
+
+	# Must run BEFORE the blanket default below, which is what erases the evidence.
+	validate_loss_ownership_carried(self)
 
 	# Ensure all items have a valid inventory_type to prevent None in Stock Ledger Entry
 	for row in self.items:
@@ -812,24 +856,29 @@ def stock_reservation_entry_for_mwo(self):
 		has_batch_no, has_serial_no = frappe.get_cached_value(
 			"Item", row.item_code, ["has_batch_no", "has_serial_no"]
 		)
+		# ERPNext's SRE before_submit (validate_with_allowed_qty) re-checks availability at the
+		# WAREHOUSE ledger level (get_available_qty_to_reserve without batch_no -> get_stock_balance
+		# / qty_after_transaction), NOT the batch bundle. That figure is the hard ceiling on what
+		# this reservation may claim, so read it up front for every row.
+		wh_available_qty = get_available_qty_to_reserve(row.item_code, row.t_warehouse)
 		if has_batch_no and row.get("batch_no"):
 			available_qty_to_reserve = get_available_qty_to_reserve(
 				row.item_code, row.t_warehouse, batch_no=row.batch_no
 			)
 		else:
-			available_qty_to_reserve = get_available_qty_to_reserve(
-				row.item_code, row.t_warehouse
-			)
-		qty_to_be_reserved = (
-			row.qty if available_qty_to_reserve >= row.qty else available_qty_to_reserve
-		)
-		qty_to_be_reserved = flt(qty_to_be_reserved)
-		# Employee IR extra-metal injection: stock just landed; availability checks can lag
-		# the same transaction. Reserve the inbound line qty when this SE is tied to an EIR.
-		# Gate on is_eir_injection — without the gate, regular Repack/Manufacture SEs would
-		# create SREs with no reservable qty, regressing test_skips_when_no_reservable_qty.
+			available_qty_to_reserve = wh_available_qty
+		qty_to_be_reserved = flt(min(flt(row.qty), available_qty_to_reserve))
+		# A batch booked by this same transaction reads 0 until it settles (and Employee IR
+		# extra-metal injections land stock whose availability lags the same way). Fall back to the
+		# inbound line qty rather than refusing to reserve stock that demonstrably just landed.
 		if qty_to_be_reserved <= 0 and flt(row.qty) > 0:
 			qty_to_be_reserved = flt(row.qty)
+		# Apply the ledger ceiling LAST, so neither the fallback above nor a precision-3 batch qty
+		# can claim more than ERPNext's re-check will allow ("Cannot reserve more than Allowed
+		# Qty"). A 0 ledger means "cannot tell yet", not "nothing there" -- it must not zero out a
+		# reservation the fallback just rescued.
+		if wh_available_qty > 0:
+			qty_to_be_reserved = flt(min(qty_to_be_reserved, wh_available_qty))
 		if qty_to_be_reserved <= 0:
 			frappe.throw(
 				_(

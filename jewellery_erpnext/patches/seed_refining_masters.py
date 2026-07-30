@@ -3,6 +3,9 @@
 Creates (idempotently):
   * Item Groups ``Refining Scrap`` and ``Refining Chemical``
   * the 10 dust/scrap master Items (Sheet 2 "ItemList")
+  * the ``REF-SVC-001`` refining-charge service Item
+  * ``Buying Settings.allow_multiple_items`` (external refining POs repeat the service
+    item across per-category lines; ERPNext blocks that unless this is on)
 
 The Refinery Price List rows (Sheet 1) are seeded separately by
 ``seed_refinery_price_list`` (which links each price row to these items).
@@ -189,11 +192,26 @@ def _ensure_service_item():
 	).insert(ignore_permissions=True)
 
 
+def _ensure_allow_multiple_items():
+	"""External refining bills ONE Purchase Order line per pricing category (see
+	RefiningEntry.create_external_refining_po). When several categories share the default
+	service item REF-SVC-001 — the common case, since price slabs rarely set their own
+	service_item — the PO carries that same item on multiple rows. ERPNext's buying
+	validation (erpnext.buying.utils.validate_for_items) rejects that with "Same item
+	cannot be entered multiple times." unless this Buying Setting is on, so a multi-category
+	consignment fails to create its PO without it. Production already runs with it enabled;
+	enable it on fresh sites (and CI) so they match."""
+	if not frappe.db.get_single_value("Buying Settings", "allow_multiple_items"):
+		frappe.db.set_single_value("Buying Settings", "allow_multiple_items", 1)
+
+
 def execute():
 	_ensure_refining_processes()
 	_ensure_item_groups()
 	_ensure_items()
 	_ensure_service_item()
+	_ensure_allow_multiple_items()
 	frappe.logger().info(
-		"seed_refining_masters: ensured Refining processes + item groups + 10 dust items + service item"
+		"seed_refining_masters: ensured Refining processes + item groups + 10 dust items "
+		"+ service item + allow_multiple_items"
 	)
