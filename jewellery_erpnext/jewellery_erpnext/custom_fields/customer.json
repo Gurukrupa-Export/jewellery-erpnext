@@ -507,8 +507,8 @@
    "fieldname": "custom_block_refining",
    "fieldtype": "Check",
    "insert_after": "custom_separate_hallmarking_invoice",
-   "label": "Block from Dust/Scrap Refining",
-   "description": "Keep this customer's batches out of Dust/Scrap Refining entries.",
+   "label": "Block from Scrap & Unused/Loose Material Refining",
+   "description": "Keep this customer's batches out of Scrap Refining and Unused/Loose Material Refining entries.",
    "module": "Jewellery Erpnext"
   },
   {

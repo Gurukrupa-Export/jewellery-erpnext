@@ -10,16 +10,15 @@
  "field_order": [
   "item",
   "column_break_keys",
-  "supplier",
-  "company",
-  "column_break_extra",
-  "currency",
-  "effective_from",
+  "refining_type",
+  "section_break_items",
+  "covered_items",
   "section_break_slabs",
   "slabs"
  ],
  "fields": [
   {
+   "description": "The pricing CATEGORY this list bills under (a REF-* item). It names the Purchase Order line and is what Refining Entry.pricing_item points at.",
    "fieldname": "item",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -33,32 +32,25 @@
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "supplier",
-   "fieldtype": "Link",
+   "description": "Restrict this price list to one Refining Type. Leave blank to apply to every type — a type-specific list always wins over a blank one.",
+   "fieldname": "refining_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Supplier",
-   "options": "Supplier"
+   "label": "Refining Type",
+   "options": "\nScrap Refining\nWork Order Refining\nSerial Number Refining\nUnused/Loose Material Refining"
   },
   {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "label": "Company",
-   "options": "Company"
+   "fieldname": "section_break_items",
+   "fieldtype": "Section Break",
+   "label": "Covered Items"
   },
   {
-   "fieldname": "column_break_extra",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "currency",
-   "fieldtype": "Link",
-   "label": "Currency",
-   "options": "Currency"
-  },
-  {
-   "fieldname": "effective_from",
-   "fieldtype": "Date",
-   "label": "Effective From"
+   "description": "Material Items item codes that bill under this price list. Enter a concrete variant (ML-G-22KT-91.9-Y) or its item TEMPLATE (ML, FL, M, F, G, D) to cover every variant at once. Leave empty to keep matching on the category Item alone.",
+   "fieldname": "covered_items",
+   "fieldtype": "Table",
+   "label": "Covered Items",
+   "options": "Refinery Price List Item"
   },
   {
    "fieldname": "section_break_slabs",
@@ -75,8 +67,8 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-16 16:26:35.729254",
- "modified_by": "manikandan_ext@gkexport.com",
+ "modified": "2026-07-30 00:00:00.000000",
+ "modified_by": "Administrator",
  "module": "Refining",
  "name": "Refinery Price List",
  "naming_rule": "Expression",

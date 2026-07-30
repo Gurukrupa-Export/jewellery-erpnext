@@ -2810,7 +2810,7 @@ def create_test_data():
 			)
 
 			_ensure_serial_no_order_type_field()
-			# Batch.custom_employee (employee-wise scrap/dust refining) is NOT in the
+			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /
 			# _dust_employee_batch_rows raise "Unknown column 'custom_employee'".
@@ -2830,7 +2830,7 @@ def create_test_data():
 
 			_ensure_sre_replaced_snapshot_field()
 
-			# Masters (the dust/scrap Items) MUST be seeded before the price list:
+			# Masters (the REF-* Items) MUST be seeded before the price list:
 			# seed_refinery_price_list skips any price row whose Item does not exist yet,
 			# so running it first would create no price lists at all (get_refinery_rate
 			# then returns None and external-refining POs are priced at 0).
@@ -2845,6 +2845,18 @@ def create_test_data():
 			)
 
 			refining_price_list()
+
+			# LAST of the refining provisioning: the git_action_v16 fixtures still carry
+			# the pre-rename options for Batch.custom_batch_type ("\nScrap"), and
+			# install-app + migrate re-import them. Refreshing the renamed Select options
+			# here — after every other provisioning step — makes the app definition win,
+			# else _create_scrap_batch trips Frappe's Select validation on every
+			# Receive Unused/Loose Material test.
+			from jewellery_erpnext.patches.rename_refining_scrap_terminology_metadata import (
+				execute as _refresh_refining_terminology_metadata,
+			)
+
+			_refresh_refining_terminology_metadata()
 		finally:
 			frappe.flags.in_migrate = in_migrate
 

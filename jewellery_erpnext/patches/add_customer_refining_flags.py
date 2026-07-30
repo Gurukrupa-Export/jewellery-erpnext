@@ -1,8 +1,8 @@
 """Provision two Customer checkboxes that gate the External Refinery Flow.
 
-- ``custom_block_refining`` — when set, ALL of this customer's batches are kept
-  out of Dust Refining and Scrap Refining (filtered from the fetch and hard-blocked
-  at submit by ``RefiningEntry``).
+- ``custom_block_refining`` — when set, ALL of this customer's batches are kept out of
+  Scrap Refining and Unused/Loose Material Refining (filtered from the fetch and
+  hard-blocked at submit by ``RefiningEntry``).
 - ``custom_no_wastage`` — when set, customer-supplied material must not be charged
   manufacturing wastage: process loss on this customer's batches is blocked so the
   unused weight returns as raw material instead of a customer-owned scrap batch
@@ -32,10 +32,10 @@ def execute():
 			{
 				"fieldname": "custom_block_refining",
 				"fieldtype": "Check",
-				"label": "Block from Dust/Scrap Refining",
+				"label": "Block from Scrap & Unused/Loose Material Refining",
 				"insert_after": "custom_separate_hallmarking_invoice",
 				"module": "Jewellery Erpnext",
-				"description": "Keep this customer's batches out of Dust/Scrap Refining entries.",
+				"description": "Keep this customer's batches out of Scrap Refining and Unused/Loose Material Refining entries.",
 			},
 			{
 				"fieldname": "custom_no_wastage",

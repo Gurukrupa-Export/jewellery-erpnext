@@ -194,6 +194,75 @@ def get_variant_of_item(item_code):
 	return frappe.db.get_value("Item", item_code, "variant_of")
 
 
+def resolve_manufacturing_setting(company=None, manufacturer=None, throw=False):
+	"""NAME of the Manufacturing Setting that applies, or ``None``.
+
+	``Manufacturing Setting`` autonames on ``manufacturer``, but the live records are
+	per-COMPANY (one each, named after the company) with a ``manufacturer`` that is not a
+	real Manufacturer. So a manufacturer-keyed lookup matches nothing for any actual
+	manufacturer, and callers that pass one — or that read a session default — get nothing.
+
+	Resolution, extending the fallback in ``doc_events/stock_entry.before_validate``:
+
+	  1. the record matching BOTH ``manufacturer`` and ``company``;
+	  2. else the record matching ``manufacturer`` alone;
+	  3. else, among the records for ``company``: the only one, else the only one with a
+	     blank ``manufacturer``;
+	  4. else ``None``.
+
+	Step 1 exists because a manufacturer's setting is company-scoped: on gk.site
+	``Labh``'s setting belongs to KGJPL, yet GEPL has entries stamped ``manufacturer =
+	Labh``, and a manufacturer-only lookup would hand them the other company's config. The
+	rest of the app does the manufacturer-only lookup, so step 2 keeps behaviour identical
+	wherever the exact pair does not exist.
+
+	Step 3 never GUESSES between siblings: a company that genuinely keeps one setting per
+	manufacturer resolves to ``None`` rather than silently picking someone else's config.
+
+	Callers get the NAME so they can read whichever field — or child table, keyed on
+	``parent`` — they need. ``throw=False`` (the default) returns ``None`` quietly, which is
+	what any fail-open consumer wants.
+	"""
+	if manufacturer:
+		if company:
+			name = frappe.db.get_value(
+				"Manufacturing Setting",
+				{"manufacturer": manufacturer, "company": company},
+				"name",
+			)
+			if name:
+				return name
+		name = frappe.db.get_value(
+			"Manufacturing Setting", {"manufacturer": manufacturer}, "name"
+		)
+		if name:
+			return name
+
+	if company:
+		settings = frappe.get_all(
+			"Manufacturing Setting",
+			filters={"company": company},
+			fields=["name", "manufacturer"],
+			order_by="name",
+		)
+		if len(settings) == 1:
+			return settings[0].name
+		company_wide = [s for s in settings if not s.manufacturer]
+		if len(company_wide) == 1:
+			return company_wide[0].name
+
+	if throw:
+		frappe.throw(
+			_(
+				"No Manufacturing Setting found for manufacturer {0} or company {1}"
+			).format(
+				frappe.bold(manufacturer or _("(not set)")),
+				frappe.bold(company or _("(not set)")),
+			)
+		)
+	return None
+
+
 def update_existing(doctype, name, field, value=None, debug=False):
 	modified = frappe.utils.now()
 	modified_by = frappe.session.user

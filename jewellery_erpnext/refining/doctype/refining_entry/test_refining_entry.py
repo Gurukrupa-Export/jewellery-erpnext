@@ -1,3 +1,4 @@
+import re
 from collections import defaultdict
 from unittest.mock import patch
 
@@ -21,6 +22,32 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.test_m
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.test_serial_number_creator import (
 	create_snc,
 )
+from jewellery_erpnext.patches.rename_refining_scrap_terminology_data import (
+	_clear_sentinel as clear_swap_sentinel,
+)
+from jewellery_erpnext.patches.rename_refining_scrap_terminology_data import (
+	_set_sentinel as set_swap_sentinel,
+)
+from jewellery_erpnext.patches.rename_refining_scrap_terminology_data import (
+	execute as swap_terminology,
+)
+from jewellery_erpnext.patches.rename_refining_scrap_terminology_metadata import (
+	RENAMED_SELECTS,
+)
+from jewellery_erpnext.refining.constants import (
+	BATCH_TYPE_UNUSED,
+	REFINING_TYPE_OPTIONS,
+	REFINING_TYPE_SCRAP,
+	REFINING_TYPE_UNUSED,
+	SOURCE_TYPE_SCRAP,
+	SOURCE_TYPE_UNUSED,
+)
+from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list import (
+	build_refinery_price_index,
+)
+from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+	PURE_LOSS_ITEM,
+)
 
 
 class TestRefiningEntry(IntegrationTestCase):
@@ -30,10 +57,10 @@ class TestRefiningEntry(IntegrationTestCase):
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 		return
 
-	def test_dust_refining_entry(self):
+	def test_scrap_refining_entry(self):
 		loss_entry()
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Dust Refining"
+		re.refining_type = "Scrap Refining"
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
 		re.refining_department = "Refinery - T"
@@ -49,7 +76,7 @@ class TestRefiningEntry(IntegrationTestCase):
 				"item_code": "Cap",
 				"item_group": "Tools & Accessories",
 				"qty": re.physical_quantity - re.system_quantity,
-				"source_type": "Dust",
+				"source_type": "Scrap",
 			},
 		)
 		re.save()
@@ -306,7 +333,7 @@ class TestRefiningEntry(IntegrationTestCase):
 			"Inactive",
 		)
 
-	def test_scrap_refining(self):
+	def test_unused_loose_material_refining(self):
 		mwo = mwo_semi_finished_goods(self)
 		mwo.reload()
 		doc = frappe.get_doc("Manufacturing Operation", mwo.manufacturing_operation)
@@ -339,7 +366,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		}
 		create_scrap_wo_stock_entry(se_data)
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Scrap Refining"
+		re.refining_type = "Unused/Loose Material Refining"
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
 		re.warehouse = "Waxing RM - T"
@@ -359,7 +386,7 @@ class TestRefiningEntry(IntegrationTestCase):
 					"qty": row.get("qty"),
 					"uom": row.get("uom"),
 					"purity": row.get("purity"),
-					"source_type": "Scrap",
+					"source_type": "Unused/Loose Material",
 				},
 			)
 		re.save()
@@ -430,10 +457,10 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(se4.items[1].item_code, "D-NT-RO-6B-+9-9.5")
 		self.assertEqual(se4.items[1].qty, 0.925)
 
-	def test_scrap_refining_employee_filter(self):
-		"""Employee-wise scrap issuance: the Receive-Scrap flow stamps the operation's
-		employee onto the minted Scrap batch (Batch.custom_employee), and Scrap Refining
-		returns only that employee's batches when an Employee is selected."""
+	def test_unused_loose_material_employee_filter(self):
+		"""Employee-wise issuance: Receive Unused/Loose Material stamps the operation's
+		employee onto the minted batch (Batch.custom_employee), and Unused/Loose Material
+		Refining returns only that employee's batches when an Employee is selected."""
 		emp = "HR-EMP-00002"
 		mwo = mwo_semi_finished_goods(self)
 		mwo.reload()
@@ -475,7 +502,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		minted = set(
 			frappe.get_all(
 				"Batch",
-				{"custom_batch_type": "Scrap", "custom_employee": emp},
+				{"custom_batch_type": "Unused/Loose Material", "custom_employee": emp},
 				pluck="name",
 			)
 		)
@@ -484,7 +511,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		)
 
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Scrap Refining"
+		re.refining_type = "Unused/Loose Material Refining"
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
 		re.warehouse = "Waxing RM - T"
@@ -511,7 +538,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 5.0)
 
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Scrap Refining"
+		re.refining_type = "Unused/Loose Material Refining"
 		re.is_external = 1
 		re.company = "Test_Company"
 		re.supplier = "Test_Supplier"
@@ -524,7 +551,7 @@ class TestRefiningEntry(IntegrationTestCase):
 				"item_code": "ML-G-18KT-75.4-P",
 				"warehouse": "Waxing RM - T",
 				"qty": 5.0,
-				"source_type": "Scrap",
+				"source_type": "Unused/Loose Material",
 			},
 		)
 		re.save()
@@ -534,6 +561,16 @@ class TestRefiningEntry(IntegrationTestCase):
 
 		self.assertEqual(re.qty_to_refine, 5.0)
 		self.assertIsNotNone(re.supplier_warehouse)
+
+		# A Flat Charge is a per-consignment fee, so the line keeps qty 1 / Nos and the
+		# agreed amount in rate. The weight stays visible in custom_gross_wt.
+		po = frappe.get_doc("Purchase Order", re.refining_entry_po)
+		self.assertEqual(len(po.items), 1)
+		self.assertEqual(po.items[0].qty, 1)
+		self.assertEqual(po.items[0].uom, "Nos")
+		self.assertEqual(po.items[0].rate, 750)
+		self.assertEqual(po.items[0].amount, 750)
+		self.assertEqual(po.items[0].custom_gross_wt, 5.0)
 		self.assertIsNotNone(re.material_transfer_se)
 
 		# Category pricing: a Scrap-type external entry defaults its Pricing Category
@@ -624,13 +661,13 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(se1.docstatus, 2)
 		self.assertEqual(repack.docstatus, 2)
 
-	def test_external_refining_po_multi_category(self):
-		"""External dust consignment mixing a metal-loss item (no price list of its own)
-		with two priced refining categories → ONE Purchase Order line per pricing category.
-		The ML-G loss row collapses to the entry's default Pricing Category (Main Dust,
-		REF-MD-001); REF-UL-001 (Ultra Liquid) and REF-NB-001 (Napkin/Thread/Buff) bill
-		under themselves. Each line is priced at submit from its own slab on its own
-		summed weight, for ANY weight basis (Flat + two Per-Kg/After-Burning bands)."""
+	def test_external_refining_po_one_line_per_price_list(self):
+		"""External scrap consignment mixing a metal-loss item (covered by no price list of
+		its own) with two priced categories → ONE Purchase Order line per matched Refinery
+		Price List. The ML-G row falls back to the entry's Pricing Category (the Dust Item,
+		REF-MD-001); REF-UL-001 (Ultra Liquid) and REF-NB-001 (Napkin/Thread/Buff) match on
+		their own category item. Weight-based slabs now carry the WEIGHT as qty with a
+		per-unit rate, so amount = qty x rate; the Flat band keeps qty 1."""
 		# Stage the physical material in the source warehouse so the submit-time transfer
 		# to the supplier warehouse has stock to move.
 		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 30.0)
@@ -638,7 +675,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		gold_receipt("Waxing RM - T", "REF-NB-001", 500.0)
 
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Dust Refining"
+		re.refining_type = "Scrap Refining"
 		re.is_external = 1
 		re.company = "Test_Company"
 		re.supplier = "Test_Supplier"
@@ -657,7 +694,7 @@ class TestRefiningEntry(IntegrationTestCase):
 				"warehouse": "Waxing RM - T",
 				"qty": 30.0,
 				"uom": "Gram",
-				"source_type": "Dust",
+				"source_type": "Scrap",
 			},
 		)
 		re.append(
@@ -678,7 +715,7 @@ class TestRefiningEntry(IntegrationTestCase):
 				"warehouse": "Waxing RM - T",
 				"qty": 500.0,
 				"uom": "Gram",
-				"source_type": "Dust",
+				"source_type": "Scrap",
 			},
 		)
 		re.save()
@@ -701,17 +738,33 @@ class TestRefiningEntry(IntegrationTestCase):
 		def price_list_of(item):
 			return frappe.db.get_value("Refinery Price List", {"item": item}, "name")
 
+		# Flat Charge → qty 1 / Nos, the agreed 800 in rate, weight in custom_gross_wt.
 		md = lines[price_list_of("REF-MD-001")]
 		self.assertEqual(md.custom_gross_wt, 30.0)
-		self.assertEqual(md.rate, 800)  # 0-50 g Flat 800
+		self.assertEqual(md.qty, 1)
+		self.assertEqual(md.uom, "Nos")
+		self.assertEqual(md.rate, 800)
+		self.assertEqual(md.amount, 800)
 
+		# Per Kg 1800 → 1.8 per Gram on 500 g = 900, and the qty is the real weight.
 		nb = lines[price_list_of("REF-NB-001")]
 		self.assertEqual(nb.custom_gross_wt, 500.0)
-		self.assertEqual(nb.rate, 900)  # Per Kg 1800 * 500/1000
+		self.assertEqual(nb.qty, 500.0)
+		self.assertEqual(nb.uom, "Gram")
+		self.assertEqual(nb.rate, 1.8)
+		self.assertEqual(nb.amount, 900)
 
+		# Per Kg 2000 → 2.0 per Litre on 2000 L = 4000. Litres and grams never share a line.
 		ul = lines[price_list_of("REF-UL-001")]
 		self.assertEqual(ul.custom_gross_wt, 2000.0)
-		self.assertEqual(ul.rate, 4000)  # Per Kg 2000 * 2000/1000
+		self.assertEqual(ul.qty, 2000.0)
+		self.assertEqual(ul.uom, "Litre")
+		self.assertEqual(ul.rate, 2.0)
+		self.assertEqual(ul.amount, 4000)
+
+		# The literal requirement, asserted for every line on the PO.
+		for row in po.items:
+			self.assertAlmostEqual(row.amount, row.qty * row.rate, places=2)
 
 	def test_external_refining_po_unpriced_category_line(self):
 		"""A category whose weight falls outside every slab band gets a rate-0 line for
@@ -721,7 +774,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		gold_receipt("Waxing RM - T", "REF-UL-001", 20.0)
 
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Dust Refining"
+		re.refining_type = "Scrap Refining"
 		re.is_external = 1
 		re.company = "Test_Company"
 		re.supplier = "Test_Supplier"
@@ -737,7 +790,7 @@ class TestRefiningEntry(IntegrationTestCase):
 				"warehouse": "Waxing RM - T",
 				"qty": 30.0,
 				"uom": "Gram",
-				"source_type": "Dust",
+				"source_type": "Scrap",
 			},
 		)
 		re.append(
@@ -764,14 +817,252 @@ class TestRefiningEntry(IntegrationTestCase):
 			frappe.db.get_value("Refinery Price List", {"item": "REF-MD-001"}, "name")
 		]
 		self.assertEqual(md.rate, 800)
-		# The unmatched Ultra Liquid line has no price-list back-link and rate 0.
-		ul = lines[None]
+		# The band-gap line now carries the RESOLVED price list, so the buyer knows which
+		# list has the gap, and bills the weight at rate 0.
+		ul = lines[
+			frappe.db.get_value("Refinery Price List", {"item": "REF-UL-001"}, "name")
+		]
 		self.assertEqual(ul.custom_gross_wt, 20.0)
+		self.assertEqual(ul.qty, 20.0)
+		self.assertEqual(ul.uom, "Litre")
 		self.assertEqual(ul.rate, 0)
+
+	def test_external_po_consumable_gets_its_own_line(self):
+		"""A consumable must NEVER be folded into the material line, even when it matches no
+		price list — otherwise its weight silently bills at the material's rate. Mirrors
+		production, where consumables carry is_consumable = 0 and are identified only by
+		source_type."""
+		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 30.0)
+		gold_receipt("Waxing RM - T", "Cap", 3.0)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.manufacturer = "Shubh"
+		re.department = "Waxing - T"
+		re.warehouse = "Waxing RM - T"
+		re.refining_department = "Refinery - T"
+		re.physical_quantity = 33.0
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-18KT-75.4-P",
+				"warehouse": "Waxing RM - T",
+				"qty": 30.0,
+				"uom": "Gram",
+				"source_type": SOURCE_TYPE_SCRAP,
+			},
+		)
+		re.append(
+			"material_items",
+			{
+				"item_code": "Cap",
+				"warehouse": "Waxing RM - T",
+				"qty": 3.0,
+				"uom": "Gram",
+				"source_type": "Consumable",
+				"is_consumable": 0,
+			},
+		)
+		re.save()
+
+		lines, unpriced = re._external_po_lines()
+		self.assertEqual(len(lines), 2)
+
+		md_list = frappe.db.get_value(
+			"Refinery Price List", {"item": "REF-MD-001"}, "name"
+		)
+		material = [
+			line for line in lines if line["custom_refining_price_list"] == md_list
+		]
+		self.assertEqual(len(material), 1)
+		# The consumable's 3 g must NOT be in the material weight.
+		self.assertEqual(material[0]["custom_gross_wt"], 30.0)
+
+		consumable = [
+			line for line in lines if line["custom_refining_price_list"] != md_list
+		]
+		self.assertEqual(len(consumable), 1)
+		self.assertEqual(consumable[0]["custom_gross_wt"], 3.0)
+		self.assertEqual(consumable[0]["rate"], 0)
+		self.assertEqual(len(unpriced), 1)
+
+	def test_external_po_consumable_rows_merge_per_item(self):
+		"""Two rows of the SAME consumable still merge, at a summed qty."""
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.manufacturer = "Shubh"
+		re.pricing_item = "REF-MD-001"
+		for qty in (2.0, 3.0):
+			re.append(
+				"material_items",
+				{
+					"item_code": "Cap",
+					"qty": qty,
+					"uom": "Gram",
+					"source_type": "Consumable",
+				},
+			)
+		groups = re._external_po_groups(build_refinery_price_index(re.refining_type))
+		self.assertEqual(len(groups), 1)
+		self.assertEqual(groups[0]["qty"], 5.0)
+		self.assertEqual(groups[0]["consumable"], "Cap")
+
+	def test_external_po_never_mixes_uoms_and_excludes_returned_stones(self):
+		"""Grams and carats were being summed into one weight. Two independent fixes: the
+		returned-intact rows are not billed at all, and the grouping key includes the UOM so
+		they could never share a line even if they were."""
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.manufacturer = "Shubh"
+		re.pricing_item = "REF-MD-001"
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-18KT-75.4-P",
+				"qty": 30.0,
+				"uom": "Gram",
+				"source_type": SOURCE_TYPE_SCRAP,
+			},
+		)
+		re.append(
+			"material_items",
+			{
+				"item_code": "DL-NT-RO-4-+00-0",
+				"qty": 2.5,
+				"uom": "Carat",
+				"source_type": SOURCE_TYPE_SCRAP,
+			},
+		)
+		groups = re._external_po_groups(build_refinery_price_index(re.refining_type))
+		self.assertEqual(len(groups), 1, "the returned diamond row must not be billed")
+		self.assertEqual(groups[0]["qty"], 30.0)
+		self.assertEqual(groups[0]["uom"], "Gram")
+
+	def test_external_po_uses_the_covered_items_mapping(self):
+		"""A covered-items TEMPLATE row beats the pricing_item fallback and collapses every
+		variant of that template onto one line."""
+		price_list = frappe.get_doc(
+			{
+				"doctype": "Refinery Price List",
+				"item": "REF-CF-001",
+				"refining_type": REFINING_TYPE_SCRAP,
+			}
+		)
+		price_list.append(
+			"slabs",
+			{
+				"from_weight": 0,
+				"to_weight": 0,
+				"charge_type": "Per Gram",
+				"rate": 11,
+				"weight_basis": "Gross Weight",
+			},
+		)
+		price_list.append("covered_items", {"item_code": "ML"})
+		price_list.insert(ignore_permissions=True)
+		self.addCleanup(
+			frappe.delete_doc,
+			"Refinery Price List",
+			price_list.name,
+			force=1,
+			ignore_permissions=True,
+			delete_permanently=True,
+		)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.manufacturer = "Shubh"
+		re.pricing_item = "REF-MD-001"
+		for code, qty in (("ML-G-18KT-75.4-P", 30.0), ("ML-G-22KT-91.9-Y", 20.0)):
+			re.append(
+				"material_items",
+				{
+					"item_code": code,
+					"qty": qty,
+					"uom": "Gram",
+					"source_type": SOURCE_TYPE_SCRAP,
+				},
+			)
+
+		lines, unpriced = re._external_po_lines()
+		self.assertEqual(unpriced, [])
+		self.assertEqual(
+			len(lines), 1, "both ML variants collapse onto the template's line"
+		)
+		self.assertEqual(lines[0]["custom_refining_price_list"], price_list.name)
+		self.assertEqual(lines[0]["qty"], 50.0)
+		self.assertEqual(lines[0]["rate"], 11)
+		self.assertEqual(lines[0]["uom"], "Gram")
+
+	def test_preview_external_refining_po_matches_the_created_po(self):
+		"""The dry-run harness must not drift from the real builder — it is what the change
+		was verified with against production data."""
+		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", 30.0)
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.manufacturer = "Shubh"
+		re.department = "Waxing - T"
+		re.warehouse = "Waxing RM - T"
+		re.refining_department = "Refinery - T"
+		re.physical_quantity = 30.0
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-18KT-75.4-P",
+				"warehouse": "Waxing RM - T",
+				"qty": 30.0,
+				"uom": "Gram",
+				"source_type": SOURCE_TYPE_SCRAP,
+			},
+		)
+		re.save()
+
+		apply_workflow(re, "Submit")
+		re.reload()
+
+		preview = re.preview_external_refining_po()
+		po = frappe.get_doc("Purchase Order", re.refining_entry_po)
+
+		def key(row):
+			return (
+				row["item_code"] if isinstance(row, dict) else row.item_code,
+				flt(row["qty"] if isinstance(row, dict) else row.qty, 3),
+				row["uom"] if isinstance(row, dict) else row.uom,
+				flt(row["rate"] if isinstance(row, dict) else row.rate, 3),
+				row["custom_refining_price_list"]
+				if isinstance(row, dict)
+				else row.custom_refining_price_list,
+				flt(
+					row["custom_gross_wt"]
+					if isinstance(row, dict)
+					else row.custom_gross_wt,
+					3,
+				),
+			)
+
+		self.assertEqual(
+			sorted(key(r) for r in preview["lines"]), sorted(key(r) for r in po.items)
+		)
 
 	def test_external_refinery_submit_fails_without_supplier(self):
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Scrap Refining"
+		re.refining_type = "Unused/Loose Material Refining"
 		re.is_external = 1
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
@@ -783,7 +1074,7 @@ class TestRefiningEntry(IntegrationTestCase):
 				"item_code": "ML-G-18KT-75.4-P",
 				"warehouse": "Waxing RM - T",
 				"qty": 1.0,
-				"source_type": "Scrap",
+				"source_type": "Unused/Loose Material",
 			},
 		)
 		re.insert(ignore_mandatory=True)
@@ -791,26 +1082,26 @@ class TestRefiningEntry(IntegrationTestCase):
 
 	def test_validate_configuration(self):
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Dust Refining"
+		re.refining_type = "Scrap Refining"
 		re.multiple_department = 1
 		re.multiple_operation = 1
 		self.assertRaises(frappe.ValidationError, re.validate)
 
 	def test_validate_physical_quantity_zero(self):
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Dust Refining"
+		re.refining_type = "Scrap Refining"
 		re.physical_quantity = 0
 		self.assertRaises(frappe.ValidationError, re.validate)
 
 	def test_validate_physical_quantity_negative(self):
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Dust Refining"
+		re.refining_type = "Scrap Refining"
 		re.physical_quantity = -5.0
 		self.assertRaises(frappe.ValidationError, re.validate)
 
 	def test_submit_fails_without_materials(self):
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Scrap Refining"
+		re.refining_type = "Unused/Loose Material Refining"
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
 		re.refining_department = "Refinery - T"
@@ -819,7 +1110,7 @@ class TestRefiningEntry(IntegrationTestCase):
 
 	def test_submit_fails_missing_refining_warehouse(self):
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Scrap Refining"
+		re.refining_type = "Unused/Loose Material Refining"
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
 		re.refining_department = "Invalid_Dept"
@@ -862,7 +1153,7 @@ class TestRefiningEntry(IntegrationTestCase):
 	def test_recovery_exceeds_input_validation(self):
 		loss_entry()
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Dust Refining"
+		re.refining_type = "Scrap Refining"
 		re.company = "Test_Company"
 		re.department = "Waxing - T"
 		re.refining_department = "Refinery - T"
@@ -878,7 +1169,7 @@ class TestRefiningEntry(IntegrationTestCase):
 				"item_code": "Cap",
 				"item_group": "Tools & Accessories",
 				"qty": re.physical_quantity - re.system_quantity,
-				"source_type": "Dust",
+				"source_type": "Scrap",
 			},
 		)
 		re.save()
@@ -1117,11 +1408,11 @@ class TestRefiningEntry(IntegrationTestCase):
 
 	# --- External refining: batch reuse, no loss output, no design code ---
 
-	def _external_scrap_entry(self, qty=5.0):
+	def _external_unused_material_entry(self, qty=5.0):
 		"""Submitted external Scrap entry, ready to receive from the supplier."""
 		gold_receipt("Waxing RM - T", "ML-G-18KT-75.4-P", qty)
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Scrap Refining"
+		re.refining_type = "Unused/Loose Material Refining"
 		re.is_external = 1
 		re.company = "Test_Company"
 		re.supplier = "Test_Supplier"
@@ -1134,7 +1425,7 @@ class TestRefiningEntry(IntegrationTestCase):
 				"item_code": "ML-G-18KT-75.4-P",
 				"warehouse": "Waxing RM - T",
 				"qty": qty,
-				"source_type": "Scrap",
+				"source_type": "Unused/Loose Material",
 			},
 		)
 		re.save()
@@ -1145,7 +1436,7 @@ class TestRefiningEntry(IntegrationTestCase):
 	def test_recovered_metal_reuses_existing_batch(self):
 		"""The refined 24KT belongs in a batch the item already has — one the batch
 		selector shows — not in a fresh per-receipt batch."""
-		re = self._external_scrap_entry()
+		re = self._external_unused_material_entry()
 
 		# Seed an existing batch of the recovered metal item in the receiving warehouse,
 		# so there is a candidate even when this test runs on its own.
@@ -1181,7 +1472,7 @@ class TestRefiningEntry(IntegrationTestCase):
 	def test_recovered_metal_skips_a_customer_owned_batch(self):
 		"""Company recovery must never land in a customer's batch — ownership never
 		crosses, so a fresh batch is minted instead."""
-		re = self._external_scrap_entry()
+		re = self._external_unused_material_entry()
 
 		gold_receipt("Waxing RM - T", re.refined_metal_item, 1.0)
 		seeded = frappe.db.get_value(
@@ -1212,7 +1503,7 @@ class TestRefiningEntry(IntegrationTestCase):
 	def test_external_receive_books_no_loss_item(self):
 		"""Send 22KT-equivalent scrap, get 24KT back — and nothing else. The loss is a
 		number on the Recovery Summary, never a stock-increasing row."""
-		re = self._external_scrap_entry()
+		re = self._external_unused_material_entry()
 		re.receive_from_supplier(recovery_weight=3.6)
 		re.reload()
 
@@ -1234,7 +1525,7 @@ class TestRefiningEntry(IntegrationTestCase):
 		with no ML-G-24KT-99.9-Y, fall back to the recovered PURE GOLD item — making the
 		guard throw on the legitimate metal row and block every external receive."""
 		re = frappe.new_doc("Refining Entry")
-		re.refining_type = "Scrap Refining"
+		re.refining_type = "Unused/Loose Material Refining"
 		re.is_external = 1
 		re.company = "Test_Company"
 		re.refined_metal_item = "M-G-24KT-99.9-Y"
@@ -1326,8 +1617,315 @@ class TestRefiningEntry(IntegrationTestCase):
 		)
 		self.assertEqual(re._serial_movement_rows(), [])
 
+	# --- Renamed vocabulary: every copy of the option list must agree with the DocField,
+	# and no stale Property Setter may shadow it. ---
+
+	def test_refining_type_options_are_the_renamed_set(self):
+		self.assertEqual(
+			frappe.get_meta("Refining Entry").get_field("refining_type").options,
+			REFINING_TYPE_OPTIONS,
+		)
+
+	def test_source_type_options_are_the_renamed_set(self):
+		self.assertEqual(
+			frappe.get_meta("Refining Material Line").get_field("source_type").options,
+			"\n".join(
+				[
+					"",
+					"MWO",
+					"Serial Number",
+					SOURCE_TYPE_SCRAP,
+					SOURCE_TYPE_UNUSED,
+					"Loss Item",
+					"Consumable",
+					"BOM Component",
+				]
+			),
+		)
+
+	def test_batch_type_options_are_the_renamed_set(self):
+		"""Also the regression guard on the external git_action_v16 fixture branch, which
+		still ships the pre-rename "\\nScrap" options for this Custom Field."""
+		self.assertEqual(
+			frappe.get_meta("Batch").get_field("custom_batch_type").options,
+			"\n" + BATCH_TYPE_UNUSED,
+		)
+
+	def test_no_stale_select_options_property_setter(self):
+		for doctype, fieldname in RENAMED_SELECTS:
+			self.assertEqual(
+				frappe.db.count(
+					"Property Setter",
+					{
+						"doc_type": doctype,
+						"field_name": fieldname,
+						"property": ["in", ["options", "default"]],
+					},
+				),
+				0,
+				f"a Property Setter is shadowing {doctype}.{fieldname}",
+			)
+
+	def test_report_filter_options_match_the_doctype(self):
+		"""The two query reports duplicate the refining_type option list in JS, where it
+		cannot be derived. A drifted copy silently returns zero rows, so pin it here."""
+		canonical = frappe.get_meta("Refining Entry").get_field("refining_type").options
+		for report in ("weekly_recovery_efficiency", "daily_refining_recovery_report"):
+			path = frappe.get_app_path(
+				"jewellery_erpnext", "refining", "report", report, f"{report}.js"
+			)
+			with open(path) as fh:
+				source = fh.read()
+			found = re.findall(r'options:\s*"((?:[^"\\]|\\.)*)"', source)
+			self.assertTrue(found, f"{report}.js declares no options string")
+			self.assertIn(
+				canonical,
+				[opts.encode().decode("unicode_escape") for opts in found],
+				f"{report}.js refining_type options have drifted from the DocField",
+			)
+
+	def test_terminology_data_patch_swaps_without_collapsing(self):
+		"""The swap is the risky part: Dust->Scrap while Scrap->Unused/Loose Material, in
+		one statement. Plant the PRE-rename state with raw SQL (save() can no longer accept
+		the old literals), run the patch, and assert a 1:1 mapping — then run it again and
+		assert the fence held."""
+		scrap = frappe.get_doc(
+			{
+				"doctype": "Refining Entry",
+				"company": "Test_Company",
+				"refining_type": REFINING_TYPE_SCRAP,
+				"posting_date": today(),
+				"department": "Waxing - T",
+			}
+		).insert(ignore_mandatory=True)
+		unused = frappe.get_doc(
+			{
+				"doctype": "Refining Entry",
+				"company": "Test_Company",
+				"refining_type": REFINING_TYPE_UNUSED,
+				"posting_date": today(),
+				"department": "Waxing - T",
+			}
+		).insert(ignore_mandatory=True)
+
+		frappe.db.set_value(
+			"Refining Entry",
+			scrap.name,
+			"refining_type",
+			"Dust Refining",
+			update_modified=False,
+		)
+		frappe.db.set_value(
+			"Refining Entry",
+			unused.name,
+			"refining_type",
+			"Scrap Refining",
+			update_modified=False,
+		)
+		clear_swap_sentinel()
+		self.addCleanup(set_swap_sentinel)
+
+		swap_terminology()
+
+		self.assertEqual(
+			frappe.db.get_value("Refining Entry", scrap.name, "refining_type"),
+			REFINING_TYPE_SCRAP,
+		)
+		self.assertEqual(
+			frappe.db.get_value("Refining Entry", unused.name, "refining_type"),
+			REFINING_TYPE_UNUSED,
+		)
+		self.assertNotEqual(scrap.name, unused.name)
+
+		# Second run must be a no-op, not a swap back.
+		swap_terminology()
+		self.assertEqual(
+			frappe.db.get_value("Refining Entry", scrap.name, "refining_type"),
+			REFINING_TYPE_SCRAP,
+		)
+		self.assertEqual(
+			frappe.db.get_value("Refining Entry", unused.name, "refining_type"),
+			REFINING_TYPE_UNUSED,
+		)
+
+	# --- Variant restrictions (Manufacturing Setting -> Refining Variant Restrictions) ---
+
+	def test_restriction_excludes_variant_from_autofetch(self):
+		"""Auto-fetched rows are DROPPED with a notice, not thrown on: the operator never
+		chose them. System Quantity must drop in lockstep, or difference_quantity is wrong
+		and validate_dust_opening_material throws on a difference they cannot fill."""
+		add_variant_restriction(self, "ML", REFINING_TYPE_SCRAP)
+		loss_entry()
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		re.from_date = today()
+		re.to_date = today()
+		re.save()
+
+		self.assertEqual(
+			[r.item_code for r in re.material_items if r.item_code.startswith("ML-")],
+			[],
+		)
+		self.assertEqual(
+			flt(re.system_quantity, 3),
+			flt(sum(flt(r.qty) for r in re.material_items), 3),
+			"System Quantity must equal the sum of the surviving rows",
+		)
+
+	def test_restriction_scoped_to_its_refining_type(self):
+		"""A restriction on another type must not touch this one."""
+		add_variant_restriction(self, "ML", REFINING_TYPE_UNUSED)
+		loss_entry()
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		re.from_date = today()
+		re.to_date = today()
+		re.save()
+
+		self.assertTrue(
+			[r for r in re.material_items if (r.item_code or "").startswith("ML-")],
+			"ML rows must still be fetched when the restriction names a different type",
+		)
+
+	def test_blank_refining_type_blocks_every_type(self):
+		add_variant_restriction(self, "ML", None)
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		self.assertEqual(re._restricted_variants(), frozenset({"ML"}))
+
+		re.refining_type = REFINING_TYPE_UNUSED
+		re.__dict__.pop("_refining_restriction_cache", None)
+		self.assertEqual(re._restricted_variants(), frozenset({"ML"}))
+
+	def test_manual_material_row_of_restricted_variant_throws(self):
+		"""Hand-added rows DO throw — the operator chose them, so silence would hide it."""
+		add_variant_restriction(self, "ML", REFINING_TYPE_SCRAP)
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		re.from_date = today()
+		re.to_date = today()
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-22KT-91.9-Y",
+				"qty": 1.0,
+				"source_type": SOURCE_TYPE_SCRAP,
+			},
+		)
+		self.assertRaises(frappe.ValidationError, re.save)
+
+	def test_restriction_matches_the_template_item_code_directly(self):
+		"""Second match arm: the item IS the restricted template, not a variant of it."""
+		add_variant_restriction(self, "ML", REFINING_TYPE_SCRAP)
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.company = "Test_Company"
+		re.manufacturer = "Shubh"
+		self.assertEqual(
+			re._blocked_item_codes(["ML", "ML-G-22KT-91.9-Y"]),
+			{"ML", "ML-G-22KT-91.9-Y"},
+		)
+
+	def test_pure_loss_item_is_exempt_from_restriction(self):
+		"""Restricting ML must not make the mandatory physical-difference row unenterable."""
+		add_variant_restriction(self, "ML", REFINING_TYPE_SCRAP)
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.company = "Test_Company"
+		re.manufacturer = "Shubh"
+		self.assertIn(PURE_LOSS_ITEM, re._restriction_exempt_items())
+
+	def test_restriction_fails_open_without_a_manufacturing_setting(self):
+		"""THE critical property: no resolvable setting means no restrictions and refining
+		behaves exactly as it did before the feature existed."""
+		add_variant_restriction(self, "ML", REFINING_TYPE_SCRAP)
+		loss_entry()
+
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.refining_department = "Refinery - T"
+		re.manufacturer = "Shubh"
+		re.from_date = today()
+		re.to_date = today()
+		with patch(
+			"jewellery_erpnext.refining.doctype.refining_entry.refining_entry.resolve_manufacturing_setting",
+			return_value=None,
+		):
+			re.save()
+			self.assertEqual(re._restricted_variants(), frozenset())
+		self.assertTrue(
+			[r for r in re.material_items if (r.item_code or "").startswith("ML-")],
+			"fail-open must fetch the ML rows exactly as an unrestricted site does",
+		)
+
+	def test_restriction_applies_to_external_refining_too(self):
+		add_variant_restriction(self, "ML", REFINING_TYPE_SCRAP)
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.department = "Waxing - T"
+		re.manufacturer = "Shubh"
+		re.append(
+			"material_items",
+			{
+				"item_code": "ML-G-22KT-91.9-Y",
+				"qty": 1.0,
+				"source_type": SOURCE_TYPE_SCRAP,
+			},
+		)
+		self.assertRaises(frappe.ValidationError, re.save)
+
+	def test_manufacturing_setting_rejects_unknown_refining_type(self):
+		"""Guards against a stale type surviving a future rename via bulk edit / the API."""
+		ms = frappe.get_doc("Manufacturing Setting", "Shubh")
+		ms.append(
+			"refining_variant_restrictions",
+			{"variant": "ML", "refining_type": "Dust Refining"},
+		)
+		self.assertRaises(frappe.ValidationError, ms.save)
+
 	def tearDown(self):
 		return super().tearDown()
+
+
+def add_variant_restriction(test, variant, refining_type=None, manufacturer="Shubh"):
+	"""Append a (variant, refining_type) restriction to a Manufacturing Setting, and clear
+	the table again on teardown — a leaked row would poison every other test in the class,
+	several of which refine ML-* material."""
+	ms = frappe.get_doc("Manufacturing Setting", manufacturer)
+	ms.append(
+		"refining_variant_restrictions",
+		{"variant": variant, "refining_type": refining_type},
+	)
+	ms.save()
+
+	def _clear():
+		doc = frappe.get_doc("Manufacturing Setting", manufacturer)
+		doc.set("refining_variant_restrictions", [])
+		doc.save()
+
+	test.addCleanup(_clear)
 
 
 def loss_entry():

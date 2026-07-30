@@ -6,31 +6,15 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "field_order": [
-  "refining_process",
-  "band_label",
   "charge_type",
   "weight_basis",
   "from_weight",
   "to_weight",
-  "rate",
-  "service_item"
+  "rate"
  ],
  "fields": [
   {
-   "fieldname": "refining_process",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "Refining Process",
-   "options": "Refining Process"
-  },
-  {
-   "description": "Original weight-band text from the price sheet (e.g. \"Below 1 kg\").",
-   "fieldname": "band_label",
-   "fieldtype": "Data",
-   "label": "Band Label"
-  },
-  {
-   "columns": 1,
+   "columns": 2,
    "fieldname": "charge_type",
    "fieldtype": "Select",
    "in_list_view": 1,
@@ -39,8 +23,8 @@
    "reqd": 1
   },
   {
-   "columns": 1,
-   "description": "Which weight the charge applies to. Fine/After-burning are known only once the supplier reports the recovered weight.",
+   "columns": 2,
+   "description": "Which weight the charge applies to. NOTE: every line is currently billed at submit on the gross material weight regardless of this setting; Fine / After-burning are known only once the supplier reports the recovered weight.",
    "fieldname": "weight_basis",
    "fieldtype": "Select",
    "in_list_view": 1,
@@ -49,7 +33,7 @@
    "reqd": 1
   },
   {
-   "columns": 1,
+   "columns": 2,
    "description": "Lower bound in grams, inclusive.",
    "fieldname": "from_weight",
    "fieldtype": "Float",
@@ -57,7 +41,7 @@
    "label": "From Weight (g)"
   },
   {
-   "columns": 1,
+   "columns": 2,
    "description": "Upper bound in grams, inclusive. Leave 0 for no upper limit (\"Above N\").",
    "fieldname": "to_weight",
    "fieldtype": "Float",
@@ -65,27 +49,20 @@
    "label": "To Weight (g)"
   },
   {
-   "columns": 1,
+   "columns": 2,
    "description": "Flat amount, or per-gram / per-kg rate depending on Charge Type.",
    "fieldname": "rate",
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Rate",
    "reqd": 1
-  },
-  {
-   "description": "Optional item billed on the service PO line. If blank, the entry falls back to a bench-default refining-charges item.",
-   "fieldname": "service_item",
-   "fieldtype": "Link",
-   "label": "Service Item",
-   "options": "Item"
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-07-16 16:27:07.235129",
- "modified_by": "manikandan_ext@gkexport.com",
+ "modified": "2026-07-30 00:00:00.000000",
+ "modified_by": "Administrator",
  "module": "Refining",
  "name": "Refinery Price Slab",
  "owner": "Administrator",

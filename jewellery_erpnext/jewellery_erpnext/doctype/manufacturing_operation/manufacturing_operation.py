@@ -33,6 +33,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
 )
+from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
 from jewellery_erpnext.utils import set_values_in_bulk, update_existing
 
 
@@ -2201,9 +2202,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									row["total_diamond_rate"] * row["sieve_size_mm"]
 								)
 								if (
-									latest_entry.get(
-										"outwork_handling_charges_rate"
-									)
+									latest_entry.get("outwork_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
@@ -2227,9 +2226,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									row["total_diamond_rate"] * row["sieve_size_mm"]
 								)
 								if (
-									latest_entry.get(
-										"outright_handling_charges_rate"
-									)
+									latest_entry.get("outright_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
@@ -2313,9 +2310,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								)
 
 								if (
-									latest_entry.get(
-										"outwork_handling_charges_rate"
-									)
+									latest_entry.get("outwork_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
@@ -2341,9 +2336,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									row["total_diamond_rate"] * row["weight_per_pcs"]
 								)
 								if (
-									latest_entry.get(
-										"outright_handling_charges_rate"
-									)
+									latest_entry.get("outright_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
@@ -2406,9 +2399,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									row["total_diamond_rate"] * row["sieve_size_mm"]
 								)
 								if (
-									latest_entry.get(
-										"outwork_handling_charges_rate"
-									)
+									latest_entry.get("outwork_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
@@ -2432,9 +2423,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									row["total_diamond_rate"] * row["sieve_size_mm"]
 								)
 								if (
-									latest_entry.get(
-										"outright_handling_charges_rate"
-									)
+									latest_entry.get("outright_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
@@ -2518,9 +2507,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									row["total_diamond_rate"] * row["weight_per_pcs"]
 								)
 								if (
-									latest_entry.get(
-										"outwork_handling_charges_rate"
-									)
+									latest_entry.get("outwork_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
@@ -2545,9 +2532,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 									row["total_diamond_rate"] * row["weight_per_pcs"]
 								)
 								if (
-									latest_entry.get(
-										"outright_handling_charges_rate"
-									)
+									latest_entry.get("outright_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
@@ -3591,17 +3576,47 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.flags.ignore_links = True
 
 	if self.company == "Gurukrupa Export Private Limited":
-		new_bom.custom_gk_cost_gold_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("metal_detail", []))
-		new_bom.custom_gk_cost_diamond_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("diamond_detail", []))
-		new_bom.custom_gk_cost_gemstone_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("gemstone_detail", []))
-		new_bom.custom_gk_cost_finding_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("finding_detail", []))
-		new_bom.custom_gk_cost_other_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("other_detail", []))
+		new_bom.custom_gk_cost_gold_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("metal_detail", [])
+		)
+		new_bom.custom_gk_cost_diamond_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("diamond_detail", [])
+		)
+		new_bom.custom_gk_cost_gemstone_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("gemstone_detail", [])
+		)
+		new_bom.custom_gk_cost_finding_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("finding_detail", [])
+		)
+		new_bom.custom_gk_cost_other_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("other_detail", [])
+		)
 	elif self.company == "KG GK Jewellers Private Limited":
-		new_bom.custom_kg_cost_gold_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("metal_detail", []))
-		new_bom.custom_kg_cost_diamond_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("diamond_detail", []))
-		new_bom.custom_kg_cost_gemstone_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("gemstone_detail", []))
-		new_bom.custom_kg_cost_finding_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("finding_detail", []))
-		new_bom.custom_kg_cost_other_bom_amount = sum(flt(row.se_rate) * flt(row.quantity) for row in new_bom.get("other_detail", []))
+		new_bom.custom_kg_cost_gold_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("metal_detail", [])
+		)
+		new_bom.custom_kg_cost_diamond_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("diamond_detail", [])
+		)
+		new_bom.custom_kg_cost_gemstone_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("gemstone_detail", [])
+		)
+		new_bom.custom_kg_cost_finding_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("finding_detail", [])
+		)
+		new_bom.custom_kg_cost_other_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("other_detail", [])
+		)
 
 	new_bom.insert(ignore_mandatory=True, ignore_links=True)
 	new_bom.submit()
@@ -5108,63 +5123,57 @@ def create_mr_wo_stock_entry(
 
 @frappe.whitelist()
 def get_make_scrap_entry_rows(manufacturing_operation):
-	"""Auto-fill rows for the Create Scrap Item dialog.
+	"""Auto-fill rows for the Receive Unused/Loose Material dialog.
 
-	Create Scrap Item mirrors Make Receive Entry exactly — same source (the SRE
-	reservation warehouse) and same target (the department Raw Material warehouse);
-	the scrapped material is denoted the same way Make Receive Entry denotes its
-	received material. (Previously this targeted the department Scrap warehouse, which
-	diverged from Make Receive Entry.)
+	Mirrors Make Receive Entry exactly — same source (the SRE reservation warehouse) and
+	same target (the department Raw Material warehouse), and the material is denoted the
+	same way Make Receive Entry denotes its received material.
 	"""
 	return get_make_receive_entry_rows(manufacturing_operation)
 
 
 @frappe.whitelist()
 def create_scrap_wo_stock_entry(se_data, request_id=None):
-	"""Receive Scrap Item.
+	"""Receive Unused/Loose Material.
 
-	There is NO dedicated scrap item code. The operation's scrap is received into
-	the department Raw Material warehouse via the Make Receive machinery (SRE
-	validation, MOP caps, idempotency, SRE cancel/recreate — same source/target
-	allocation as Make Receive Entry, same item code), and then repacked into a NEW
-	batch tagged ``custom_batch_type = "Scrap"``. Scrap Refining fetches only
-	Scrap-typed batches (get_scrap_items_balance), so ordinary department stock in
-	the same warehouse is never pulled into a refining entry.
+	There is NO dedicated item code. The operation's unused material is received into
+	the department Raw Material warehouse via the Make Receive machinery (SRE validation,
+	MOP caps, idempotency, SRE cancel/recreate — same source/target allocation and item
+	code as Make Receive Entry), then repacked into a NEW batch tagged
+	``custom_batch_type = "Unused/Loose Material"``. Unused/Loose Material Refining
+	fetches only those batches (get_scrap_items_balance), so ordinary department stock
+	sharing the warehouse is never pulled into a refining entry.
 
-	The receive + scrap-batch repack run in one transaction: if the repack fails the
-	whole receive rolls back, so scrap is never left un-marked. See
-	get_make_scrap_entry_rows.
+	The receive and the repack run in one transaction: if the repack fails the whole
+	receive rolls back, so the material is never left un-tagged.
 	"""
 	if isinstance(se_data, str):
 		se_data = json.loads(se_data)
 	result = create_mr_wo_stock_entry(se_data, request_id=request_id)
 	receive_se = result.get("docname") if isinstance(result, dict) else None
 	if receive_se:
-		# The receive SE (Material Receive WORK ORDER) creates MOP Log entries as a side
-		# effect of the on-submit hook. Scrap physically comes OUT of the metal issued to
-		# the operation, so those deductions MUST reduce the MOP/MWO balance exactly like a
-		# normal receive — the scrapped weight is no longer work-in-progress. We therefore
-		# KEEP the MOP Log rows. (Previously _undo_scrap_mop_log_entries cancelled them,
-		# which left the MOP over-stating WIP — the reported "receive scrap does not affect
-		# the mop and mwo".)
+		# The receive SE creates MOP Log entries as a side effect of the on-submit hook.
+		# This material comes OUT of the metal issued to the operation, so those deductions
+		# MUST reduce the MOP/MWO balance exactly like a normal receive — the weight is no
+		# longer work-in-progress. So the MOP Log rows are KEPT.
 		_convert_received_scrap_to_scrap_batch(receive_se, request_id=request_id)
 	return result
 
 
 def _create_scrap_batch(item_code, employee=None):
-	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Scrap'.
+	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Unused/Loose Material'.
 
-	``employee`` stamps Batch.custom_employee so the scrap can be fetched employee-wise
-	in Scrap Refining. This batch is created directly (before any Stock Entry links it),
-	so the usual SE->batch employee copy (Batch.update_inventory_dimentions) never runs;
-	stamp it explicitly here from the operation's employee.
+	``employee`` stamps Batch.custom_employee so it can be fetched employee-wise in
+	Unused/Loose Material Refining. The batch is created directly (before any Stock Entry
+	links it), so the usual SE->batch employee copy never runs; stamp it explicitly here
+	from the operation's employee.
 
 	Returns None for non-batch items (they cannot carry the Scrap marker)."""
 	if not frappe.db.get_value("Item", item_code, "has_batch_no"):
 		return None
 	batch = frappe.new_doc("Batch")
 	batch.item = item_code
-	batch.custom_batch_type = "Scrap"
+	batch.custom_batch_type = BATCH_TYPE_UNUSED
 	if employee:
 		batch.custom_employee = employee
 	# Set batch_type before insert so it persists whether the item auto-names the
@@ -5209,8 +5218,8 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 		if skipped_non_batch:
 			frappe.msgprint(
 				_(
-					"Received scrap for non-batch item(s) {0} could not be tagged as "
-					"Scrap and will not be available for Scrap Refining."
+					"Received unused/loose material for non-batch item(s) {0} could not "
+					"be tagged and will not be available for Unused/Loose Material Refining."
 				).format(", ".join(sorted(skipped_non_batch))),
 				indicator="orange",
 				alert=True,
@@ -5226,12 +5235,14 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	op_employee = None
 	if getattr(se, "manufacturing_operation", None):
 		repack.manufacturing_operation = se.manufacturing_operation
-		# The operation's karigar is the employee responsible for this scrap; stamp it
-		# on the minted Scrap batches so Scrap Refining can be scoped employee-wise.
+		# The operation's karigar is the employee responsible for this material; stamp it
+		# on the minted batches so the refining fetch can be scoped employee-wise.
 		op_employee = frappe.db.get_value(
 			"Manufacturing Operation", se.manufacturing_operation, "employee"
 		)
-	repack.remarks = _("Scrap batch conversion for {0}").format(receive_se_name)
+	repack.remarks = _("Unused/Loose Material batch conversion for {0}").format(
+		receive_se_name
+	)
 
 	for item in rows:
 		new_batch = _create_scrap_batch(item.item_code, employee=op_employee)
@@ -5281,8 +5292,8 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	if skipped_non_batch:
 		frappe.msgprint(
 			_(
-				"Received scrap for non-batch item(s) {0} could not be tagged as "
-				"Scrap and will not be available for Scrap Refining."
+				"Received unused/loose material for non-batch item(s) {0} could not "
+				"be tagged and will not be available for Unused/Loose Material Refining."
 			).format(", ".join(sorted(skipped_non_batch))),
 			indicator="orange",
 			alert=True,
