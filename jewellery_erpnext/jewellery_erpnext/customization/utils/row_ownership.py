@@ -41,6 +41,12 @@ from frappe import _
 CUSTOMER_INVENTORY_TYPES = ("Customer Goods", "Customer Stock")
 DEFAULT_INVENTORY_TYPE = "Regular Stock"
 PROCESS_LOSS_SE_TYPE = "Process Loss"
+REPACK_SE_TYPE = "Repack"
+
+# Stock Entry types that consume one item and produce another, so the produced
+# batch's ownership can only come from the consumed one. Both are guarded by
+# ``validate_loss_ownership_carried``.
+OWNERSHIP_CARRYING_SE_TYPES = (PROCESS_LOSS_SE_TYPE, REPACK_SE_TYPE)
 
 
 def _get(row, fieldname):
@@ -108,7 +114,7 @@ def resolve_batch_ownership(row):
 
 
 def validate_loss_ownership_carried(se):
-	"""Fail loudly when a Process Loss builder forgets to carry ownership to its produce row.
+	"""Fail loudly when a consume/produce builder forgets to carry ownership to its produce row.
 
 	This is the bug class this module exists to prevent: the tree and warehouse loss builders
 	consumed a Customer Goods batch and left the ML produce row bare, so
@@ -126,8 +132,14 @@ def validate_loss_ownership_carried(se):
 
 	Deliberately does NOT compare consume vs produce inventory_type: ``melting_loss`` legitimately
 	consumes Customer Goods and produces Regular Stock, and a naive mismatch check would break it.
+
+	Covers **Repack** as well as **Process Loss**. A purity Repack (pure metal -> alloy) mints a new
+	batch from consumed metal exactly as a loss write-off does, and the EIR gain injection's Repack
+	leg used to leave its produce row bare -- laundering a customer's pure metal into company alloy.
+	Widening the guard is safe by its own construction: it fires only on a **blank** produce row, so
+	a builder that deliberately writes company ownership still passes untouched.
 	"""
-	if se.get("stock_entry_type") != PROCESS_LOSS_SE_TYPE:
+	if se.get("stock_entry_type") not in OWNERSHIP_CARRYING_SE_TYPES:
 		return
 
 	customer_sources = [
@@ -149,7 +161,7 @@ def validate_loss_ownership_carried(se):
 		frappe.throw(
 			_(
 				"Row #{0} ({1}) produces stock from {2} batch {3} owned by {4}, but its "
-				"inventory type was never set. A Process Loss entry must carry the consumed "
+				"inventory type was never set. A {5} entry must carry the consumed "
 				"batch's ownership onto the produced row, or the customer's material is "
 				"silently booked as company stock. This is a bug in whichever flow built this "
 				"Stock Entry."
@@ -159,5 +171,6 @@ def validate_loss_ownership_carried(se):
 				src.get("inventory_type"),
 				frappe.bold(src.get("batch_no")),
 				frappe.bold(src.get("customer")),
+				se.get("stock_entry_type"),
 			)
 		)

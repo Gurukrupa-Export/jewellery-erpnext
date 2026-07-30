@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_bulk_edit": 1,
  "allow_rename": 1,
  "autoname": "field:manufacturer",
  "creation": "2023-09-05 16:17:41.860465",
@@ -63,6 +64,7 @@
   "check_colour",
   "check_touch",
   "item_variant_groups",
+  "diamond_conversion_purity",
   "product_certification_section",
   "product_certification_details"
  ],
@@ -384,12 +386,18 @@
    "fieldtype": "Link",
    "label": "Default Gemstone item",
    "options": "Item"
+  },
+  {
+   "fieldname": "diamond_conversion_purity",
+   "fieldtype": "Table",
+   "label": "Diamond Conversion Purity",
+   "options": "Diamond Conversion Purity"
   }
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-05-20 13:12:04.760292",
- "modified_by": "manikandan_ext@gkexport.com",
+ "modified": "2026-07-29 16:26:49.101723",
+ "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Setting",
  "naming_rule": "By fieldname",

@@ -20,21 +20,41 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
 	validate_not_eod_sync_locked,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+	_LOG_ROW_FLUSH_SIZE,
+	_allocate_bucket_by_physical_stock,
 	_apply_mwo_filter_rows,
 	_build_eod_se_rows,
 	_cancel_sre_snapshots,
 	_check_eod_source_batch_stock,
+	_chunk_main_mwos,
 	_collect_mop_names,
 	_commit_company_issues_se,
 	_commit_company_main_se,
+	_commit_se_chunk,
 	_eod_base_mr_voucher_qty,
+	_eod_batch_ownership,
+	_eod_batch_qty_cache,
+	_eod_batch_qty_cache_start,
+	_eod_batch_qty_cache_stop,
+	_eod_batch_qty_map,
+	_eod_deadline_passed,
+	_eod_deadline_start,
+	_eod_feature_enabled,
+	_eod_physical_batch_qty,
+	_eod_prefetch_start,
+	_eod_prefetch_stop,
 	_find_last_operation,
+	_flush_sync_log_items,
 	_format_batch_short_diagnostics,
 	_get_last_logs_per_item_batch,
 	_get_sync_range,
 	_get_t_warehouse_from_logs,
 	_get_unsynced_mop_groups,
 	_hard_delete_cancelled_snapshots,
+	_heal_missing_sre_in_plan,
+	_heal_ownership_allowed,
+	_insert_sync_log_item,
+	_is_recoverable_error,
 	_mark_all_mwo_mop_logs_synced,
 	_mop_manufacturer_label,
 	_mwo_realized_by_artifact,
@@ -47,11 +67,14 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_resolve_department_warehouse,
 	_resolve_eod_manufacturer_label,
 	_resolve_run_range,
+	_run_backlog_catchup,
 	_save_draft_eod_se,
 	_snapshot_mwo_sres_for_relocation,
+	_stamp_last_eod_sync,
 	_today_range,
 	_validate_eod_items_for_mwo_reservation,
 	_validate_eod_source_batch_stock,
+	_warehouses_of_company,
 	recalculate_sync_log_totals,
 	sync_mop_logs,
 )
@@ -1323,7 +1346,9 @@ class TestProcessMwoGroupHappyPath(IntegrationTestCase):
 		self.assertEqual(failures, [])
 		self.assertIn("SE-EOD-001", stats["submitted_ses"])
 		self.assertEqual(stats["processed_mwos"], 1)
-		mock_mark_synced.assert_called_once_with(["MWO-1"], selective=False)
+		mock_mark_synced.assert_called_once_with(
+			["MWO-1"], selective=False, log_names=["LOG-1"]
+		)
 		self.assertTrue(submitted_se.submitted)
 
 
@@ -1467,6 +1492,9 @@ class TestSyncMopLogsEntryPoint(IntegrationTestCase):
 				"issues_rows": [],
 			}
 
+		# **kwargs so a new keyword on _commit_company_main_se (already_allocated, and
+		# whatever comes next) cannot silently turn this into a TypeError swallowed by
+		# sync_mop_logs' top-level handler -- which is exactly what it did.
 		def _commit(
 			company,
 			manufacturer,
@@ -1474,7 +1502,7 @@ class TestSyncMopLogsEntryPoint(IntegrationTestCase):
 			failures,
 			stats,
 			sync_log_name=None,
-			selective=False,
+			**kwargs,
 		):
 			stats["submitted_ses"].append("SE-A")
 			stats["processed_mwos"] += len(main_mwos)
@@ -3746,17 +3774,31 @@ class TestReserveBatchAtPhysicalWarehouse(IntegrationTestCase):
 		operation="MOP-CUR",
 		item_flags=(1, 0, "Gram"),
 		build_return="SRE-NEW",
+		ownership_ok=True,
+		company_warehouses=None,
 	):
 		"""Run _reserve_batch_at_physical_warehouse with every collaborator mocked.
 
 		Returns (result, build_mock) where build_mock is the patched
 		_build_and_submit_mwo_sre (inspect .called / .call_args).
+
+		``ownership_ok`` / ``company_warehouses`` stand in for the two safety guards:
+		the healer submits a real reservation, so it refuses to anchor another
+		customer's Customer Goods to this Sales Order, and it drops warehouses belonging
+		to a different company. ``company_warehouses=None`` means "keep them all".
 		"""
 
 		def _free(_item, wh, _batch):
 			return free_by_wh.get(wh, 0.0)
 
-		with patch(f"{_MOD}._active_sre_exists", return_value=active_sre), patch(
+		def _company_filter(warehouses, _company):
+			if company_warehouses is None:
+				return set(warehouses)
+			return {w for w in warehouses if w in company_warehouses}
+
+		with patch(f"{_MOD}._heal_ownership_allowed", return_value=ownership_ok), patch(
+			f"{_MOD}._warehouses_of_company", side_effect=_company_filter
+		), patch(f"{_MOD}._active_sre_exists", return_value=active_sre), patch(
 			f"{_MOD}._resolve_mwo_so_anchor", return_value=so_anchor
 		), patch(
 			f"{_MOD}._physical_batch_warehouses", return_value=dict(physical)
@@ -3905,7 +3947,9 @@ class TestEodPostConditionGuard(IntegrationTestCase):
 			side_effect=lambda snaps: hard_deletes.append(snaps),
 		), patch(
 			f"{_MOD}._mark_all_mwo_mop_logs_synced",
-			side_effect=lambda mwos, selective=False: marks.append(mwos),
+			side_effect=lambda mwos, selective=False, log_names=None: marks.append(
+				mwos
+			),
 		), patch(f"{_MOD}._stamp_last_eod_sync"), patch(f"{_MOD}._bulk_set_child_rows"):
 			_commit_company_main_se("Co", "MF-1", self._main_mwos(), failures, stats)
 		return failures, stats, marks, hard_deletes, rollbacks
@@ -3925,3 +3969,2314 @@ class TestEodPostConditionGuard(IntegrationTestCase):
 		self.assertEqual(marks, [])  # never marked synced
 		self.assertEqual(hard_deletes, [])  # cancellation NOT made permanent
 		self.assertEqual(stats["submitted_ses"], [])
+
+
+# ---------------------------------------------------------------------------
+# TestSyncLogItemNeverAborts (RC-2: diagnostics must never fail a sync)
+# ---------------------------------------------------------------------------
+
+
+def _make_sync_log():
+	"""Insert a real MOP EOD Sync Log and return its name (child rows need a parent)."""
+	log = frappe.new_doc("MOP EOD Sync Log")
+	log.status = "Queued"
+	log.trigger_type = "Manual"
+	log.posting_date = frappe.utils.nowdate()
+	log.mop_settings = "MOP Settings"
+	log.flags.ignore_permissions = True
+	log.insert(ignore_permissions=True)
+	return log.name
+
+
+def _eod_engine_source():
+	"""(source, path) of mop_eod_sync.py -- read from disk, not the imported module."""
+	import inspect
+
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings import mop_eod_sync
+
+	path = inspect.getsourcefile(mop_eod_sync)
+	with open(path) as fh:
+		return fh.read(), path
+
+
+def _select_literals_written_to_log_items(source):
+	"""Every Select literal the engine writes to a MOP EOD Sync Log Item child row.
+
+	Scans dict literals passed to ``_insert_sync_log_item`` / ``_bulk_set_child_rows``
+	and yields ``(fieldname, value, lineno)``. Only value-producing positions are
+	inspected -- a naive ``ast.walk`` would also pick up ``exc_log.get("_exclude_reason")``
+	and report the *key* string as a status value.
+
+	Returns ``(literals, sites, opaque)``: ``sites`` counts dict literals actually
+	scanned and ``opaque`` counts calls whose payload was not a literal dict, so a
+	refactor that hoists the dict out of the call fails loudly instead of vacuously.
+	"""
+	import ast
+
+	targets = {"_insert_sync_log_item", "_bulk_set_child_rows"}
+	fields = {"status", "sync_stage", "error_type"}
+	literals, sites, opaque = [], 0, 0
+
+	def _values(node):
+		"""Literal strings a value expression can evaluate to."""
+		if isinstance(node, ast.Constant) and isinstance(node.value, str):
+			return [node.value]
+		if isinstance(node, ast.BoolOp):  # x or "fallback"
+			out = []
+			for v in node.values:
+				out.extend(_values(v))
+			return out
+		if isinstance(node, ast.IfExp):  # "a" if cond else "b"
+			return _values(node.body) + _values(node.orelse)
+		return []
+
+	for node in ast.walk(ast.parse(source)):
+		if not isinstance(node, ast.Call):
+			continue
+		fn = node.func
+		name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+		if name not in targets:
+			continue
+		payloads = [a for a in node.args if isinstance(a, ast.Dict)]
+		if not payloads:
+			opaque += 1
+			continue
+		for payload in payloads:
+			sites += 1
+			for key, value in zip(payload.keys, payload.values):
+				if not (isinstance(key, ast.Constant) and key.value in fields):
+					continue
+				for literal in _values(value):
+					if literal.strip():  # "" is a legitimate cleared value
+						literals.append((key.value, literal.strip(), value.lineno))
+	return literals, sites, opaque
+
+
+class TestSyncLogItemNeverAborts(IntegrationTestCase):
+	"""RC-2 regression. ``_reserve_batch_at_physical_warehouse`` logged its audit row
+	with ``sync_stage="WIP reservation healed"``, which is not a Select option, so
+	``_insert_sync_log_item``'s ``doc.insert()`` raised from inside the Phase-2 savepoint
+	and rolled back the entire bucket -- 741 child rows across 8 nightly runs and 366
+	MWOs. The hand-maintained combo list in ``TestSyncLogItemSelectValues`` never
+	included the healer's value, so the AST scan below replaces it as the durable guard.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_every_select_literal_the_engine_writes_is_a_valid_option(self):
+		source, path = _eod_engine_source()
+		literals, sites, opaque = _select_literals_written_to_log_items(source)
+
+		self.assertEqual(opaque, 0, f"non-literal child-row payload in {path}")
+		self.assertGreaterEqual(
+			sites, 8, "AST scan found too few call sites -- refactored?"
+		)
+
+		meta = frappe.get_meta("MOP EOD Sync Log Item")
+		bad = []
+		for fieldname, value, lineno in literals:
+			options = {
+				o.strip()
+				for o in ((meta.get_field(fieldname).options) or "").split("\n")
+			}
+			if value not in options:
+				bad.append(f"{fieldname}={value!r} at line {lineno}")
+		self.assertEqual(
+			bad, [], "invalid Select values written by the engine: " + str(bad)
+		)
+
+	def test_every_status_literal_is_handled_by_recalculate_totals(self):
+		"""Valid-Select is not enough: a status the totals code does not map increments
+		total_items and no sub-counter, so the header silently stops adding up."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+			_COUNTER_FAMILIES,
+			_MWO_OUTCOME_ORDER,
+			_STATUS_BUCKET,
+		)
+
+		source, _ = _eod_engine_source()
+		literals, _, _ = _select_literals_written_to_log_items(source)
+		statuses = {v for f, v, _ in literals if f == "status"}
+
+		unmapped = sorted(s for s in statuses if s not in _STATUS_BUCKET)
+		self.assertEqual(
+			unmapped, [], f"statuses missing from _STATUS_BUCKET: {unmapped}"
+		)
+
+		# Every status option the doctype allows must map too, not just the ones the
+		# engine happens to write today.
+		options = {
+			o.strip()
+			for o in (
+				frappe.get_meta("MOP EOD Sync Log Item").get_field("status").options
+				or ""
+			).split("\n")
+			if o.strip()
+		}
+		self.assertEqual(sorted(options - set(_STATUS_BUCKET)), [])
+
+		# Every family a status maps to must have parent counters and a rank, or the
+		# write would raise KeyError at runtime.
+		families = set(_STATUS_BUCKET.values())
+		self.assertEqual(sorted(families - set(_COUNTER_FAMILIES)), [])
+		self.assertEqual(sorted(families - set(_MWO_OUTCOME_ORDER)), [])
+
+	def test_invalid_select_value_is_coerced_not_raised(self):
+		log = _make_sync_log()
+		row = _insert_sync_log_item(
+			log,
+			{
+				"manufacturing_work_order": "MWO-X",
+				"item_code": "M-1",
+				"qty": 1.0,
+				"status": "Totally Invalid",
+				"sync_stage": "Also Invalid",
+				"error_type": "Nope",
+			},
+		)
+		self.assertIsNotNone(row, "insert must survive an unknown Select value")
+		saved = frappe.db.get_value(
+			"MOP EOD Sync Log Item",
+			row,
+			["status", "sync_stage", "error_type", "error_message"],
+			as_dict=True,
+		)
+		self.assertEqual(saved.status, "Pending")
+		self.assertEqual(saved.sync_stage, "")
+		self.assertEqual(saved.error_type, "Unknown Error")
+		# The rejected values are preserved, not silently dropped.
+		self.assertIn("Totally Invalid", saved.error_message)
+		self.assertIn("Also Invalid", saved.error_message)
+
+	def test_insert_failure_returns_none_and_does_not_propagate(self):
+		"""Even a hard failure must not escape -- the caller is mid-savepoint.
+
+		Rows are buffered now, so the failure that used to happen at insert time happens
+		either while building the row (here) or at flush; both must be swallowed.
+		"""
+		with patch(f"{_MOD}.frappe.generate_hash", side_effect=RuntimeError("boom")):
+			self.assertIsNone(
+				_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
+			)
+
+	def test_healer_audit_row_inserts_with_a_sync_log_name(self):
+		"""The exact production path. Every other test calls the healer WITHOUT a
+		sync_log_name, so mop_eod_sync.py's audit-row block was unreachable in the whole
+		suite -- which is why the bug shipped."""
+		log = _make_sync_log()
+		with patch(f"{_MOD}._heal_ownership_allowed", return_value=True), patch(
+			f"{_MOD}._warehouses_of_company", side_effect=lambda whs, c: set(whs)
+		), patch(f"{_MOD}._active_sre_exists", return_value=False), patch(
+			f"{_MOD}._resolve_mwo_so_anchor",
+			return_value=FrappeDict({"sales_order": "SO-1"}),
+		), patch(f"{_MOD}._physical_batch_warehouses", return_value=["WH-A"]), patch(
+			f"{_MOD}._cancelled_and_sibling_sre_warehouses", return_value=[]
+		), patch(f"{_MOD}._mop_log_to_warehouses", return_value=[]), patch(
+			f"{_MOD}._free_batch_qty_to_reserve", return_value=5.0
+		), patch(f"{_MOD}._mwo_batch_balance", return_value=2.0), patch(
+			f"{_MOD}.frappe.get_cached_value", return_value=(1, 0, "Gram")
+		), patch(f"{_MOD}._build_and_submit_mwo_sre", return_value="SRE-HEALED"):
+			out = _reserve_batch_at_physical_warehouse(
+				"MWO-1", "M-1", "B-1", 1.0, None, "Co", sync_log_name=log
+			)
+
+		self.assertEqual(out, ["SRE-HEALED"])
+		rows = frappe.get_all(
+			"MOP EOD Sync Log Item",
+			filters={"parent": log},
+			fields=["status", "sync_stage", "stock_reservation_entry", "qty"],
+		)
+		self.assertEqual(len(rows), 1, "the healer's audit row must persist")
+		self.assertEqual(rows[0].sync_stage, "WIP Reservation Healed")
+		self.assertEqual(rows[0].stock_reservation_entry, "SRE-HEALED")
+		# qty stays 0: reserved_qty is the MWO's whole balance, not a transfer, so
+		# counting it would double-count against the transfer row for the same batch.
+		self.assertEqual(rows[0].qty, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# TestFinalStatusTernary (RC-5: the run's own verdict was never tested)
+# ---------------------------------------------------------------------------
+
+
+class TestFinalStatusTernary(IntegrationTestCase):
+	"""``sync_mop_logs`` decides Completed / Partially Completed / Failed at its very
+	end, yet the string "Partially Completed" appeared nowhere in this 3900-line suite --
+	the single most user-visible output of the whole engine was uncovered.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, plan_results, commit_failures=None, advisory_only=False):
+		"""Drive sync_mop_logs over two MWOs and return the status it wrote."""
+		writes = []
+		self._last_error_log = ""
+
+		def _log_error(**kw):
+			self._last_error_log = kw.get("message") or ""
+			return FrappeDict({"name": "ERR-1"})
+
+		def _set_value(doctype, name, values, *a, **kw):
+			if doctype == "MOP EOD Sync Log" and isinstance(values, dict):
+				writes.append(values)
+
+		def _plan(group_key, mop_data_list, failures, stats, *a, **kw):
+			outcome = plan_results[group_key[1]]
+			if outcome == "resolvable":
+				return {
+					"kind": "resolvable",
+					"company": "Co",
+					"manufacturer": "MF-1",
+					"mwo": group_key[1],
+					"items": [],
+					"t_warehouse": "WH-T",
+					"mop_data_list": mop_data_list,
+					"last_mop_name": "MOP-1",
+					"child_row_names": [],
+				}
+			failures.append(
+				{"step": "plan", "mwo": group_key[1], "error_message": "nope"}
+			)
+			stats["failed_mwos"] += 1
+			return None
+
+		def _commit(company, manufacturer, main_mwos, failures, stats, *a, **kw):
+			if commit_failures:
+				failures.extend(commit_failures)
+				stats["failed_mwos"] += len(main_mwos)
+			else:
+				stats["processed_mwos"] += len(main_mwos)
+
+		def _get_all(doctype, *a, **kw):
+			# Break the audit's OWN first query, so the real advisory error handler runs
+			# rather than a stub standing in for it.
+			if advisory_only and doctype == "Stock Reservation Entry":
+				raise RuntimeError("audit blew up")
+			return []
+
+		with patch(f"{_MOD}.release_eod_sync_lock"), patch(
+			f"{_MOD}.set_eod_sync_running"
+		), patch(f"{_MOD}.frappe.db.set_value", side_effect=_set_value), patch(
+			f"{_MOD}.frappe.db.commit"
+		), patch(f"{_MOD}.recalculate_sync_log_totals"), patch(
+			f"{_MOD}.frappe.log_error", side_effect=_log_error
+		), patch(f"{_MOD}.frappe.db.get_all", side_effect=_get_all), patch(
+			f"{_MOD}._commit_company_main_se", side_effect=_commit
+		), patch(f"{_MOD}._plan_mwo_group", side_effect=_plan), patch(
+			f"{_MOD}._get_unsynced_mop_groups",
+			return_value={
+				("Co", "MWO-A"): [
+					{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": []}
+				],
+				("Co", "MWO-B"): [
+					{"mop_name": "MOP-B", "mop_doc": _mop_doc(), "logs": []}
+				],
+			},
+		), patch(
+			f"{_MOD}.frappe.get_doc",
+			return_value=FrappeDict({"eod_sync_work_order_filter": []}),
+		):
+			sync_mop_logs(sync_log_name="SYNC-LOG-1")
+
+		statuses = [w["status"] for w in writes if "status" in w]
+		self.assertTrue(statuses, "sync_mop_logs wrote no final status")
+		return statuses[-1]
+
+	def test_all_mwos_sync_gives_completed(self):
+		status = self._run({"MWO-A": "resolvable", "MWO-B": "resolvable"})
+		self.assertEqual(status, "Completed")
+
+	def test_some_fail_with_progress_gives_partially_completed(self):
+		status = self._run({"MWO-A": "resolvable", "MWO-B": "failed"})
+		self.assertEqual(status, "Partially Completed")
+
+	def test_nothing_processed_gives_failed(self):
+		status = self._run({"MWO-A": "failed", "MWO-B": "failed"})
+		self.assertEqual(status, "Failed")
+
+	def test_advisory_only_failure_stays_completed(self):
+		"""The SRE reconcile audit is read-only -- it must not downgrade a clean run.
+		Before this fix a single audit exception turned a fully-successful sync into
+		'Partially Completed'."""
+		status = self._run(
+			{"MWO-A": "resolvable", "MWO-B": "resolvable"}, advisory_only=True
+		)
+		self.assertEqual(status, "Completed")
+		# Guard against passing vacuously: the audit must really have raised and been
+		# recorded, so an Error Log is still produced even though the status is clean.
+		self.assertTrue(
+			self._last_error_log,
+			"advisory failure was never recorded -- test is vacuous",
+		)
+
+	def test_advisory_failure_is_still_reported(self):
+		"""Advisory != ignored. It must appear in the consolidated Error Log."""
+		self._run({"MWO-A": "resolvable", "MWO-B": "resolvable"}, advisory_only=True)
+		self.assertIn("sre_reconcile", self._last_error_log)
+
+
+# ---------------------------------------------------------------------------
+# TestSyncLogTotalsBuckets (RC-5: Draft Created is recoverable, not a failure)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncLogTotalsBuckets(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _totals(self, rows, mwo_rows=None):
+		captured = {}
+
+		def _set_value(doctype, name, values, *a, **kw):
+			captured.update(values)
+
+		def _sql(query, *a, **kw):
+			return (
+				mwo_rows or [] if "manufacturing_work_order AS mwo" in query else rows
+			)
+
+		with patch(f"{_MOD}.frappe.db.set_value", side_effect=_set_value), patch(
+			f"{_MOD}.frappe.db.sql", side_effect=_sql
+		):
+			recalculate_sync_log_totals("SYNC-LOG-1")
+		return captured
+
+	def test_draft_created_is_not_counted_as_failed(self):
+		"""The production header read failed_items=1349 when 1072 of those rows were
+		recoverable drafts and only 277 had truly failed."""
+		out = self._totals(
+			[
+				FrappeDict(
+					{
+						"status": "Synced",
+						"item_count": 2,
+						"mwo_count": 2,
+						"total_qty": 10.0,
+					}
+				),
+				FrappeDict(
+					{
+						"status": "Draft Created",
+						"item_count": 1072,
+						"mwo_count": 459,
+						"total_qty": 500.0,
+					}
+				),
+				FrappeDict(
+					{
+						"status": "Failed",
+						"item_count": 277,
+						"mwo_count": 100,
+						"total_qty": 20.0,
+					}
+				),
+			]
+		)
+		self.assertEqual(out["failed_items"], 277)
+		self.assertEqual(out["draft_items"], 1072)
+		self.assertEqual(out["draft_qty"], 500.0)
+		self.assertEqual(out["total_items"], 1351)
+
+	def test_counters_sum_to_total(self):
+		"""Whatever the mix, the families must add up -- otherwise the header lies."""
+		out = self._totals(
+			[
+				FrappeDict(
+					{
+						"status": s,
+						"item_count": n,
+						"mwo_count": 1,
+						"total_qty": float(n),
+					}
+				)
+				for s, n in [
+					("Synced", 3),
+					("Draft Created", 5),
+					("Failed", 7),
+					("Skipped", 11),
+					("Deferred", 13),
+					("Excluded", 17),
+					("Pending", 19),
+				]
+			]
+		)
+		families = ("synced", "draft", "failed", "unsynced", "skipped", "excluded")
+		self.assertEqual(sum(out[f"{f}_items"] for f in families), out["total_items"])
+		self.assertEqual(out["skipped_items"], 24)  # Skipped + Deferred
+
+	def test_unmapped_status_still_reconciles(self):
+		"""An unknown status must land somewhere, not vanish into total_items alone."""
+		out = self._totals(
+			[
+				FrappeDict(
+					{
+						"status": "Martian",
+						"item_count": 4,
+						"mwo_count": 1,
+						"total_qty": 4.0,
+					}
+				)
+			]
+		)
+		families = ("synced", "draft", "failed", "unsynced", "skipped", "excluded")
+		self.assertEqual(sum(out[f"{f}_items"] for f in families), out["total_items"])
+
+	def test_mwo_counters_take_the_worst_outcome(self):
+		"""An MWO with rows in several statuses is counted once, at its worst outcome --
+		otherwise synced_mwos and failed_mwos both count it and the header exceeds
+		total_mwos."""
+		out = self._totals(
+			[
+				FrappeDict(
+					{
+						"status": "Synced",
+						"item_count": 3,
+						"mwo_count": 2,
+						"total_qty": 3.0,
+					}
+				)
+			],
+			mwo_rows=[
+				FrappeDict({"mwo": "MWO-A", "status": "Synced"}),
+				FrappeDict({"mwo": "MWO-A", "status": "Failed"}),
+				FrappeDict({"mwo": "MWO-B", "status": "Synced"}),
+			],
+		)
+		self.assertEqual(out["failed_mwos"], 1)  # MWO-A: worst outcome wins
+		self.assertEqual(out["synced_mwos"], 1)  # MWO-B
+		self.assertEqual(out["processed_mwos"], 2)
+
+
+# ---------------------------------------------------------------------------
+# TestEodRowOwnership (blocker: Customer Goods must not become company stock)
+# ---------------------------------------------------------------------------
+
+
+class TestEodRowOwnership(IntegrationTestCase):
+	"""EOD transfer rows carried no ``inventory_type``, so
+	``doc_events/stock_entry.py``'s blanket "default blank to Regular Stock" booked
+	customer-owned metal as company stock -- 409 draft rows (2556.857 g) and 281 already
+	submitted (2001.830 g) on the live site. ``_save_draft_eod_se`` sets
+	``auto_created = 1``, which short-circuits the usual Batch->row ownership backfill,
+	so nothing downstream repaired it.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _rows(self, batches, logs):
+		"""Build EOD rows with the Batch table mocked to ``batches``."""
+		with patch(
+			f"{_MOD}.frappe.db.get_all",
+			return_value=[FrappeDict(b) for b in batches],
+		), patch(f"{_MOD}._pick_eod_source_warehouse", return_value="WH-SRC"):
+			rows, _ = _build_eod_se_rows("MWO-1", "MOP-1", logs, "WH-T", {})
+		return rows
+
+	def test_customer_goods_batch_keeps_its_ownership(self):
+		rows = self._rows(
+			[
+				{
+					"name": "B-CG",
+					"custom_inventory_type": "Customer Goods",
+					"custom_customer": "CUST-1",
+				}
+			],
+			[_log(batch_no="B-CG", item_code="M-1")],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0]["inventory_type"], "Customer Goods")
+		self.assertEqual(rows[0]["customer"], "CUST-1")
+
+	def test_regular_batch_books_as_regular_stock_without_a_customer(self):
+		rows = self._rows(
+			[
+				{
+					"name": "B-R",
+					"custom_inventory_type": "Regular Stock",
+					"custom_customer": None,
+				}
+			],
+			[_log(batch_no="B-R", item_code="M-1")],
+		)
+		self.assertEqual(rows[0]["inventory_type"], "Regular Stock")
+		self.assertNotIn("customer", rows[0])
+
+	def test_customer_type_without_a_customer_is_downgraded_not_minted(self):
+		"""Rule 3 of row_ownership: a customer type with no customer is malformed and
+		would trip the Customer Goods guard at submit. Downgrade instead."""
+		rows = self._rows(
+			[
+				{
+					"name": "B-BAD",
+					"custom_inventory_type": "Customer Goods",
+					"custom_customer": None,
+				}
+			],
+			[_log(batch_no="B-BAD", item_code="M-1")],
+		)
+		self.assertEqual(rows[0]["inventory_type"], "Regular Stock")
+		self.assertNotIn("customer", rows[0])
+
+	def test_every_row_carries_an_inventory_type(self):
+		"""The blanket default in doc_events must never be the thing that decides
+		ownership -- if a row reaches it blank, a customer batch silently converts."""
+		rows = self._rows(
+			[
+				{
+					"name": "B-CG",
+					"custom_inventory_type": "Customer Goods",
+					"custom_customer": "C1",
+				},
+				{"name": "B-R", "custom_inventory_type": None, "custom_customer": None},
+			],
+			[
+				_log(batch_no="B-CG", item_code="M-1"),
+				_log(batch_no="B-R", item_code="M-2"),
+			],
+		)
+		self.assertEqual(len(rows), 2)
+		for row in rows:
+			self.assertTrue(row.get("inventory_type"), f"row left blank: {row}")
+
+	def test_batch_ownership_is_fetched_in_one_query(self):
+		"""A consolidated SE carries hundreds of rows; a per-row Batch read would be
+		hundreds of queries inside the run's transaction."""
+		logs = [_log(batch_no=f"B-{i}", item_code="M-1") for i in range(50)]
+		with patch(f"{_MOD}.frappe.db.get_all", return_value=[]) as get_all, patch(
+			f"{_MOD}._pick_eod_source_warehouse", return_value="WH-SRC"
+		):
+			_build_eod_se_rows("MWO-1", "MOP-1", logs, "WH-T", {})
+		self.assertEqual(get_all.call_count, 1)
+
+
+# ---------------------------------------------------------------------------
+# TestBucketAggregateAllocation (RC-1: cross-MWO demand collides)
+# ---------------------------------------------------------------------------
+
+
+def _alloc_mwo(name, items, creation="2026-01-01 10:00:00"):
+	"""A resolvable-MWO payload shaped like _plan_mwo_group's return value."""
+	return {
+		"kind": "resolvable",
+		"company": "Co",
+		"manufacturer": "MF-1",
+		"mwo": name,
+		"items": items,
+		"t_warehouse": "WH-T",
+		"mop_data_list": [
+			{"mop_name": f"MOP-{name}", "logs": [{"creation": creation}]}
+		],
+		"last_mop_name": f"MOP-{name}",
+		"child_row_names": [],
+	}
+
+
+def _alloc_item(
+	qty, batch_no="B-1", item_code="M-G-18KT-75.4-Y", wh="Model Making WO - GEPL"
+):
+	return {
+		"item_code": item_code,
+		"qty": qty,
+		"batch_no": batch_no,
+		"s_warehouse": wh,
+		"t_warehouse": "WH-T",
+	}
+
+
+class TestBucketAggregateAllocation(IntegrationTestCase):
+	"""Regression for the live failure: draft MAT-STE-122568 held 402 MWOs, and rows 411
+	(0.510) and 875 (0.520) both drew on batch GE2D081-MGL18754Y0-02 at
+	'Model Making WO - GEPL' where only 0.803 was physically available. Each MWO passed
+	its own check; the consolidated Stock Entry consumed 1.030 and failed with
+	-0.22700000000000004, holding all 402 MWOs as a draft.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _allocate(self, mwos, batch_caps, wh_caps=None, released=None):
+		with patch(
+			f"{_MOD}._eod_authoritative_batch_cap",
+			side_effect=lambda item, batch, wh: batch_caps.get((wh, item, batch), 0.0),
+		), patch(
+			f"{_MOD}._eod_warehouse_headroom",
+			side_effect=lambda item, wh, rel=0.0: (wh_caps or {}).get((wh, item), 1e9),
+		), patch(f"{_MOD}._eod_released_sre_qty", return_value=released or {}):
+			return _allocate_bucket_by_physical_stock(mwos)
+
+	def test_two_mwos_jointly_overdrawing_one_batch_defers_the_younger(self):
+		wh, item, batch = (
+			"Model Making WO - GEPL",
+			"M-G-18KT-75.4-Y",
+			"GE2D081-MGL18754Y0-02",
+		)
+		older = _alloc_mwo(
+			"MWO-GEPL-EA02289-002",
+			[_alloc_item(0.520, batch, item, wh)],
+			"2026-07-01 09:00:00",
+		)
+		younger = _alloc_mwo(
+			"MWO-GEPL-EA02289-006",
+			[_alloc_item(0.510, batch, item, wh)],
+			"2026-07-02 09:00:00",
+		)
+		admitted, deferred, infeasible = self._allocate(
+			[younger, older], {(wh, item, batch): 0.803}
+		)
+		# Oldest unsynced MOP Log wins the contested stock.
+		self.assertEqual([m["mwo"] for m in admitted], ["MWO-GEPL-EA02289-002"])
+		self.assertEqual([m["mwo"] for m in deferred], ["MWO-GEPL-EA02289-006"])
+		self.assertEqual(infeasible, [])
+		# And the admitted total must stay within the cap that used to be blown.
+		self.assertLessEqual(sum(i["qty"] for m in admitted for i in m["items"]), 0.803)
+
+	def test_both_fit_when_stock_covers_the_sum(self):
+		wh, item, batch = (
+			"Model Making WO - GEPL",
+			"M-G-18KT-75.4-Y",
+			"GE2D081-MGL18754Y0-02",
+		)
+		mwos = [
+			_alloc_mwo("MWO-A", [_alloc_item(0.510, batch, item, wh)]),
+			_alloc_mwo("MWO-B", [_alloc_item(0.520, batch, item, wh)]),
+		]
+		admitted, deferred, infeasible = self._allocate(
+			mwos, {(wh, item, batch): 1.030}
+		)
+		self.assertEqual(len(admitted), 2)
+		self.assertEqual((deferred, infeasible), ([], []))
+
+	def test_demand_exactly_equal_to_cap_is_admitted(self):
+		"""Must match the +1e-6 tolerance the rest of the module compares stock with,
+		or float noise silently defers work that would have submitted fine."""
+		wh, item, batch = "WH-A", "M-1", "B-1"
+		mwos = [
+			_alloc_mwo("MWO-A", [_alloc_item(0.510, batch, item, wh)]),
+			_alloc_mwo("MWO-B", [_alloc_item(0.520, batch, item, wh)]),
+		]
+		admitted, deferred, _ = self._allocate(mwos, {(wh, item, batch): 0.510 + 0.520})
+		self.assertEqual(len(admitted), 2, "exact fit must not be deferred")
+		self.assertEqual(deferred, [])
+
+	def test_mwo_that_cannot_fit_alone_is_permanently_short_not_deferred(self):
+		"""A deferred MWO retries forever; an infeasible one never clears without a
+		human. They must be reported differently."""
+		wh, item, batch = "WH-A", "M-1", "B-1"
+		mwos = [_alloc_mwo("MWO-BIG", [_alloc_item(5.0, batch, item, wh)])]
+		admitted, deferred, infeasible = self._allocate(mwos, {(wh, item, batch): 1.0})
+		self.assertEqual(admitted, [])
+		self.assertEqual(deferred, [])
+		self.assertEqual([m["mwo"] for m in infeasible], ["MWO-BIG"])
+
+	def test_warehouse_headroom_defers_even_when_batches_fit(self):
+		"""526 of the held rows failed ERPNext's item+warehouse guard, which is
+		batch-blind -- a batch-only tally would let them straight through."""
+		wh, item = "Diamond Setting - Hand WIP WH 1 - GEPL", "D-NT-RO-7-+7.5-8"
+		mwos = [
+			_alloc_mwo(
+				f"MWO-{i}",
+				[_alloc_item(0.0678, f"B-{i}", item, wh)],
+				f"2026-07-{i + 1:02d} 09:00:00",
+			)
+			for i in range(11)
+		]
+		admitted, deferred, _ = self._allocate(
+			mwos,
+			{(wh, item, f"B-{i}"): 10.0 for i in range(11)},  # every batch fits alone
+			wh_caps={(wh, item): 0.610},  # ...but the warehouse only has 0.610
+		)
+		self.assertTrue(deferred, "warehouse headroom must be able to defer")
+		self.assertLessEqual(
+			round(sum(i["qty"] for m in admitted for i in m["items"]), 3), 0.610
+		)
+
+	def test_released_bucket_reservations_are_added_back_to_headroom(self):
+		"""The bucket cancels its own SREs before submitting, so that reserved qty is
+		not a constraint on it. Ignoring this would defer work that actually fits."""
+		wh, item = "WH-A", "M-1"
+		captured = {}
+
+		def _headroom(item_code, warehouse, released=0.0):
+			captured["released"] = released
+			return 1e9
+
+		mwos = [_alloc_mwo("MWO-A", [_alloc_item(1.0, "B-1", item, wh)])]
+		with patch(f"{_MOD}._eod_authoritative_batch_cap", return_value=1e9), patch(
+			f"{_MOD}._eod_warehouse_headroom", side_effect=_headroom
+		), patch(f"{_MOD}._eod_released_sre_qty", return_value={(item, wh): 7.5}):
+			_allocate_bucket_by_physical_stock(mwos)
+		self.assertEqual(captured["released"], 7.5)
+
+	def test_allocation_is_deterministic_under_input_order(self):
+		wh, item, batch = "WH-A", "M-1", "B-1"
+		mwos = [
+			_alloc_mwo(
+				"MWO-A", [_alloc_item(0.6, batch, item, wh)], "2026-01-01 10:00:00"
+			),
+			_alloc_mwo(
+				"MWO-B", [_alloc_item(0.6, batch, item, wh)], "2026-02-01 10:00:00"
+			),
+			_alloc_mwo(
+				"MWO-C", [_alloc_item(0.6, batch, item, wh)], "2026-03-01 10:00:00"
+			),
+		]
+		first = [
+			m["mwo"] for m in self._allocate(list(mwos), {(wh, item, batch): 1.2})[0]
+		]
+		second = [
+			m["mwo"]
+			for m in self._allocate(list(reversed(mwos)), {(wh, item, batch): 1.2})[0]
+		]
+		self.assertEqual(first, second)
+		self.assertEqual(first, ["MWO-A", "MWO-B"])  # oldest first
+
+	def test_rows_without_a_source_warehouse_are_skipped_not_evicted(self):
+		"""TestEodPostConditionGuard's fixtures carry no s_warehouse. Such a row is not
+		a transfer the allocator can reason about -- skip it, never hold the MWO."""
+		mwos = [_alloc_mwo("MWO-A", [{"item_code": "M-1", "qty": 5.0}])]
+		admitted, deferred, infeasible = self._allocate(mwos, {})
+		self.assertEqual([m["mwo"] for m in admitted], ["MWO-A"])
+		self.assertEqual((deferred, infeasible), ([], []))
+
+	def test_empty_bucket_is_a_no_op(self):
+		self.assertEqual(_allocate_bucket_by_physical_stock([]), ([], [], []))
+
+
+# ---------------------------------------------------------------------------
+# TestPlanPhaseSreHeal (RC-4: opt-in, savepoint-wrapped, ownership-safe)
+# ---------------------------------------------------------------------------
+
+
+class TestHealSafetyGuards(IntegrationTestCase):
+	"""The healer submits a REAL Stock Reservation Entry, so its preconditions matter as
+	much as its arithmetic."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_customer_goods_may_not_be_reserved_for_another_customer(self):
+		with patch(
+			f"{_MOD}.frappe.db.get_value",
+			side_effect=lambda dt, *a, **kw: ("Customer Goods", "CUST-A")
+			if dt == "Batch"
+			else "CUST-B",
+		):
+			self.assertFalse(
+				_heal_ownership_allowed("M-1", "B-CG", {"sales_order": "SO-1"})
+			)
+
+	def test_customer_goods_may_be_reserved_for_its_own_customer(self):
+		with patch(
+			f"{_MOD}.frappe.db.get_value",
+			side_effect=lambda dt, *a, **kw: ("Customer Goods", "CUST-A")
+			if dt == "Batch"
+			else "CUST-A",
+		):
+			self.assertTrue(
+				_heal_ownership_allowed("M-1", "B-CG", {"sales_order": "SO-1"})
+			)
+
+	def test_regular_stock_is_always_allowed(self):
+		with patch(f"{_MOD}.frappe.db.get_value", return_value=("Regular Stock", None)):
+			self.assertTrue(
+				_heal_ownership_allowed("M-1", "B-R", {"sales_order": "SO-1"})
+			)
+
+	def test_company_filter_drops_other_companies_warehouses(self):
+		with patch(f"{_MOD}.frappe.db.get_all", return_value=["WH-A"]):
+			self.assertEqual(_warehouses_of_company({"WH-A", "WH-B"}, "Co"), {"WH-A"})
+
+	def test_company_filter_fails_open_when_warehouse_is_unqueryable(self):
+		"""The gk site has the Warehouse DocType but no base table. A filter that failed
+		CLOSED there would return "no candidate warehouse" for every row -- silently
+		disabling healing and looking exactly like the missing-SRE bug it fixes."""
+		with patch(f"{_MOD}.frappe.db.get_all", side_effect=Exception("no such table")):
+			self.assertEqual(
+				_warehouses_of_company({"WH-A", "WH-B"}, "Co"), {"WH-A", "WH-B"}
+			)
+
+
+class TestPlanPhaseSreHeal(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _heal(self, enabled, heal_return="SRE-1", raises=False):
+		calls = []
+
+		def _reserve(*a, **kw):
+			calls.append(a)
+			if raises:
+				raise RuntimeError("heal blew up")
+			return [heal_return] if heal_return else None
+
+		with patch(
+			f"{_MOD}.frappe.db.get_single_value", return_value=1 if enabled else 0
+		), patch(
+			f"{_MOD}._reserve_batch_at_physical_warehouse", side_effect=_reserve
+		), patch(f"{_MOD}.frappe.db.savepoint"), patch(
+			f"{_MOD}.frappe.db.release_savepoint"
+		), patch(f"{_MOD}._rollback_to_savepoint") as rollback:
+			healed = _heal_missing_sre_in_plan(
+				"MWO-1",
+				"MOP-1",
+				"Co",
+				[{"item_code": "M-1", "batch_no": "B-1", "qty": 2.5}],
+				None,
+			)
+		return healed, calls, rollback
+
+	def test_disabled_by_default_does_not_touch_reservations(self):
+		"""Ships OFF: it submits real SREs, and the per-bucket commit makes them
+		permanent even if the MWO is later held back."""
+		healed, calls, _ = self._heal(enabled=False)
+		self.assertFalse(healed)
+		self.assertEqual(calls, [], "healer must not run while the flag is off")
+
+	def test_enabled_heals_and_reports_success(self):
+		healed, calls, _ = self._heal(enabled=True)
+		self.assertTrue(healed)
+		self.assertEqual(len(calls), 1)
+		self.assertEqual(calls[0][3], 2.5)  # needed_qty carried from the skipped row
+
+	def test_heal_returning_none_is_not_treated_as_healed(self):
+		healed, _, _ = self._heal(enabled=True, heal_return=None)
+		self.assertFalse(healed)
+
+	def test_heal_exception_rolls_back_and_does_not_kill_the_mwo(self):
+		"""insert() then submit() are two statements; a throw between them would leave a
+		draft SRE that _active_sre_exists (docstatus=1 only) can never see again."""
+		healed, _, rollback = self._heal(enabled=True, raises=True)
+		self.assertFalse(healed)
+		self.assertTrue(rollback.called, "a failed heal must roll back its savepoint")
+
+
+# ---------------------------------------------------------------------------
+# TestEodFeatureFlagFallback (patch-only field must never abort the sync)
+# ---------------------------------------------------------------------------
+
+
+class TestEodFeatureFlagFallback(IntegrationTestCase):
+	"""Regression: ``frappe.db.get_single_value`` THROWS ``InvalidColumnName`` for a field
+	the site does not have -- it does not return None. The EOD feature flags arrive via a
+	patch, so on any un-migrated site a direct read aborted the whole run with
+	``Field enable_eod_bucket_allocation does not exist on MOP Settings`` at the top of
+	``_commit_company_main_se``.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_missing_field_reads_as_disabled_instead_of_raising(self):
+		with patch(
+			f"{_MOD}.frappe.db.get_single_value",
+			side_effect=frappe.exceptions.ValidationError(
+				"Field enable_eod_bucket_allocation does not exist on MOP Settings"
+			),
+		):
+			self.assertFalse(_eod_feature_enabled("enable_eod_bucket_allocation"))
+			self.assertFalse(_eod_feature_enabled("enable_eod_plan_sre_heal"))
+
+	def test_flag_values_are_honoured_when_the_field_exists(self):
+		with patch(f"{_MOD}.frappe.db.get_single_value", return_value=1):
+			self.assertTrue(_eod_feature_enabled("enable_eod_bucket_allocation"))
+		with patch(f"{_MOD}.frappe.db.get_single_value", return_value=0):
+			self.assertFalse(_eod_feature_enabled("enable_eod_bucket_allocation"))
+
+	def test_commit_survives_a_site_without_the_flag_field(self):
+		"""The exact reported traceback: sync_mop_logs -> _commit_company_main_se ->
+		get_single_value -> ValidationError. The bucket must still be committed."""
+		failures, stats = (
+			[],
+			{
+				"processed_mwos": 0,
+				"failed_mwos": 0,
+				"submitted_ses": [],
+				"draft_ses": [],
+			},
+		)
+		main_mwos = [
+			{
+				"kind": "resolvable",
+				"company": "Co",
+				"mwo": "MWO-1",
+				"items": [{"item_code": "M-1", "qty": 1.0, "s_warehouse": "WH-A"}],
+				"t_warehouse": "WH-T",
+				"mop_data_list": [{"mop_name": "MOP-A", "logs": []}],
+				"last_mop_name": "MOP-A",
+				"child_row_names": [],
+			}
+		]
+		with patch(
+			f"{_MOD}.frappe.db.get_single_value",
+			side_effect=frappe.exceptions.ValidationError("Field does not exist"),
+		), patch(f"{_MOD}._save_draft_eod_se", return_value="SE-1"), patch(
+			f"{_MOD}.frappe.db.savepoint"
+		), patch(f"{_MOD}.frappe.db.release_savepoint"), patch(
+			f"{_MOD}._snapshot_mwo_sres_for_relocation", return_value=[]
+		), patch(f"{_MOD}._cancel_sre_snapshots"), patch(
+			f"{_MOD}.frappe.get_doc", return_value=_FakeSubmittableSe()
+		), patch(f"{_MOD}._reserve_sres_from_eod_se_rows"), patch(
+			f"{_MOD}._hard_delete_cancelled_snapshots"
+		), patch(f"{_MOD}._mark_all_mwo_mop_logs_synced"), patch(
+			f"{_MOD}._stamp_last_eod_sync"
+		), patch(f"{_MOD}._bulk_set_child_rows"):
+			_commit_company_main_se("Co", "MF-1", main_mwos, failures, stats)
+
+		self.assertEqual(
+			failures, [], f"sync aborted on a site without the flag: {failures}"
+		)
+		self.assertEqual(stats["submitted_ses"], ["SE-1"])
+
+
+class _FakeSubmittableSe:
+	def __init__(self):
+		self.items = []
+
+	def submit(self):
+		self.submitted = True
+
+
+# ---------------------------------------------------------------------------
+# TestUnprovisionedColumnGuards (1054 must never abort a run)
+# ---------------------------------------------------------------------------
+
+
+class TestUnprovisionedColumnGuards(IntegrationTestCase):
+	"""Regression for two live 1054 failures on a partially-provisioned site
+	(MOP-EOD-SYNC-2026-00034):
+
+	* ``Unknown column 'draft_items' in 'SET'`` killed the whole run in
+	  ``recalculate_sync_log_totals`` -- the new reporting fields arrive by patch.
+	* ``Unknown column 'last_eod_sync_on' in 'SET'`` fired inside the Phase-2 savepoint
+	  and rolled back EVERY bucket, so a perfectly good transfer was held as a draft for
+	  the sake of an audit timestamp.
+	"""
+
+	def setUp(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings import (
+			mop_eod_sync,
+		)
+
+		mop_eod_sync._TABLE_COLUMN_CACHE.clear()
+		self.addCleanup(mop_eod_sync._TABLE_COLUMN_CACHE.clear)
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_totals_write_skips_columns_the_site_lacks(self):
+		captured = {}
+
+		def _set_value(doctype, name, values, *a, **kw):
+			captured.update(values)
+
+		legacy = {
+			"name",
+			"total_items",
+			"total_qty",
+			"eligible_qty",
+			"progress_percent",
+			"synced_items",
+			"synced_qty",
+			"failed_items",
+			"failed_qty",
+			"unsynced_items",
+			"unsynced_qty",
+			"skipped_items",
+			"skipped_qty",
+			"excluded_items",
+			"excluded_qty",
+			"synced_mwos",
+			"failed_mwos",
+			"skipped_mwos",
+			"processed_mwos",
+		}
+		with patch(f"{_MOD}.frappe.db.get_table_columns", return_value=legacy), patch(
+			f"{_MOD}.frappe.db.set_value", side_effect=_set_value
+		), patch(
+			f"{_MOD}.frappe.db.sql",
+			return_value=[
+				FrappeDict(
+					{
+						"status": "Draft Created",
+						"item_count": 3,
+						"mwo_count": 1,
+						"total_qty": 9.0,
+					}
+				)
+			],
+		):
+			recalculate_sync_log_totals("SYNC-LOG-1")
+
+		self.assertNotIn("draft_items", captured, "must not write an absent column")
+		self.assertNotIn("draft_qty", captured)
+		# ...but the rest of the report is still written.
+		self.assertEqual(captured["total_items"], 3)
+		self.assertIn("failed_items", captured)
+
+	def test_totals_write_includes_new_columns_when_present(self):
+		captured = {}
+
+		def _set_value(doctype, name, values, *a, **kw):
+			captured.update(values)
+
+		with patch(
+			f"{_MOD}.frappe.db.get_table_columns",
+			return_value={
+				"draft_items",
+				"draft_qty",
+				"total_items",
+				"total_qty",
+				"eligible_qty",
+				"progress_percent",
+				"synced_items",
+				"synced_qty",
+				"failed_items",
+				"failed_qty",
+				"unsynced_items",
+				"unsynced_qty",
+				"skipped_items",
+				"skipped_qty",
+				"excluded_items",
+				"excluded_qty",
+				"synced_mwos",
+				"failed_mwos",
+				"skipped_mwos",
+				"processed_mwos",
+			},
+		), patch(f"{_MOD}.frappe.db.set_value", side_effect=_set_value), patch(
+			f"{_MOD}.frappe.db.sql",
+			return_value=[
+				FrappeDict(
+					{
+						"status": "Draft Created",
+						"item_count": 3,
+						"mwo_count": 1,
+						"total_qty": 9.0,
+					}
+				)
+			],
+		):
+			recalculate_sync_log_totals("SYNC-LOG-1")
+
+		self.assertEqual(captured["draft_items"], 3)
+		self.assertEqual(captured["draft_qty"], 9.0)
+
+	def test_stamp_is_skipped_when_the_custom_field_is_absent(self):
+		"""It runs inside the Phase-2 savepoint -- a 1054 here rolled back the transfer."""
+		with patch(
+			f"{_MOD}.frappe.db.get_table_columns", return_value={"name", "modified"}
+		), patch(f"{_MOD}.frappe.db.set_value") as set_value:
+			_stamp_last_eod_sync([{"mop_name": "MOP-A"}])
+		self.assertFalse(set_value.called, "must not write an absent column")
+
+	def test_stamp_writes_when_the_custom_field_exists(self):
+		with patch(
+			f"{_MOD}.frappe.db.get_table_columns",
+			return_value={"name", "last_eod_sync_on"},
+		), patch(f"{_MOD}.frappe.db.set_value") as set_value:
+			_stamp_last_eod_sync([{"mop_name": "MOP-A"}])
+		self.assertTrue(set_value.called)
+
+	def test_unknowable_columns_fall_back_to_writing_everything(self):
+		"""If the table cannot be introspected at all, do not silently drop the report."""
+		captured = {}
+		with patch(
+			f"{_MOD}.frappe.db.get_table_columns", side_effect=Exception("no table")
+		), patch(
+			f"{_MOD}.frappe.db.set_value",
+			side_effect=lambda dt, n, v, *a, **kw: captured.update(v),
+		), patch(f"{_MOD}.frappe.db.sql", return_value=[]):
+			recalculate_sync_log_totals("SYNC-LOG-1")
+		self.assertIn("draft_items", captured)
+
+
+class TestEodBatchQtyCache(IntegrationTestCase):
+	"""The plan-phase (item, warehouse) physical-batch-qty cache.
+
+	This cache decides which warehouse EOD sources metal from and whether a batch reads as
+	short, so the tests below pin the properties that make it safe to substitute for a
+	per-key ``get_batch_qty`` call -- not merely that it is faster.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def tearDown(self):
+		# A leaked cache would serve stale stock to every later test in the process.
+		_eod_batch_qty_cache_stop()
+
+	# --- lifecycle -------------------------------------------------------------
+
+	def test_cache_is_off_until_started(self):
+		_eod_batch_qty_cache_stop()
+		self.assertIsNone(_eod_batch_qty_cache())
+
+	def test_start_then_stop_clears_the_cache(self):
+		_eod_batch_qty_cache_start()
+		self.assertEqual(_eod_batch_qty_cache(), {})
+		_eod_batch_qty_cache_stop()
+		self.assertIsNone(_eod_batch_qty_cache())
+
+	def test_clock_is_frozen_while_the_cache_is_on(self):
+		"""Uncached, every call re-evaluated today()/nowtime() and drifted mid-plan."""
+		_eod_batch_qty_cache_start()
+		first = frappe.local.eod_batch_qty_clock
+		self.assertIsNotNone(first)
+		self.assertEqual(first, frappe.local.eod_batch_qty_clock)
+
+	# --- the map builder -------------------------------------------------------
+
+	def test_map_sums_by_batch_ignoring_the_row_warehouse(self):
+		"""get_batch_qty sums by batch_no ALONE. get_available_batches filters on
+		SLE.warehouse but groups by Serial-and-Batch-Entry.warehouse, so keying on the row
+		warehouse would split totals the scalar path nets together."""
+		rows = [
+			FD({"batch_no": "B1", "warehouse": "WH-A", "qty": 4.0}),
+			FD({"batch_no": "B1", "warehouse": None, "qty": 2.5}),
+			FD({"batch_no": "B2", "warehouse": "WH-A", "qty": 1.0}),
+		]
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			return_value=rows,
+		):
+			out = _eod_batch_qty_map("ITEM-1", "WH-A")
+		self.assertEqual(out, {"B1": 6.5, "B2": 1.0})
+
+	def test_map_drops_rows_with_no_batch_no(self):
+		"""Reserved/POS overlays append dicts carrying only {qty, warehouse}. Upstream
+		buckets them under batchwise_qty[None] where no real lookup sees them; keeping them
+		would invent a phantom batch key."""
+		rows = [
+			FD({"batch_no": "B1", "warehouse": "WH-A", "qty": 3.0}),
+			FD({"qty": -9.0, "warehouse": "WH-A"}),
+			FD({"batch_no": None, "warehouse": "WH-A", "qty": -1.0}),
+		]
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			return_value=rows,
+		):
+			out = _eod_batch_qty_map("ITEM-1", "WH-A")
+		self.assertEqual(out, {"B1": 3.0})
+		self.assertNotIn(None, out)
+
+	def test_map_passes_scalar_item_and_warehouse_and_a_null_batch(self):
+		"""All three are load-bearing:
+
+		* POS reservation overlay filters ``item_code ==`` with no list branch, so a list
+		  yields invalid SQL and a None silently drops every POS deduction.
+		* the bundle-less POS branch compares ``row.batch_no != kwargs.batch_no``; a list
+		  never equals a string, so a list drops legacy rows and OVER-states availability.
+		"""
+		captured = {}
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			side_effect=lambda kw: captured.update(kw) or [],
+		):
+			_eod_batch_qty_map("ITEM-1", "WH-A")
+		self.assertEqual(captured["item_code"], "ITEM-1")
+		self.assertEqual(captured["warehouse"], "WH-A")
+		self.assertIsNone(captured["batch_no"])
+
+	def test_map_never_sends_a_qty(self):
+		"""With a qty, get_auto_batch_nos returns a FIFO PICK LIST -- truncated, with a
+		partial boundary row -- instead of a balance. That would silently corrupt every
+		sourcing decision."""
+		captured = {}
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			side_effect=lambda kw: captured.update(kw) or [],
+		):
+			_eod_batch_qty_map("ITEM-1", "WH-A")
+		self.assertFalse(captured.get("qty"))
+
+	def test_map_keeps_the_callers_reading_flags(self):
+		"""for_stock_levels / consider_negative_batches must stay False: the pure
+		physical-balance flag set returns DIFFERENT numbers (expired batches included,
+		POS not deducted, negatives unclamped)."""
+		captured = {}
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			side_effect=lambda kw: captured.update(kw) or [],
+		):
+			_eod_batch_qty_map("ITEM-1", "WH-A")
+		self.assertFalse(captured["for_stock_levels"])
+		self.assertFalse(captured["consider_negative_batches"])
+		self.assertTrue(captured["ignore_reserved_stock"])
+
+	def test_map_skips_the_future_batch_recursion(self):
+		"""filter_zero_near_batches re-runs the ENTIRE query cascade, and is a provable
+		no-op while consider_negative_batches is falsy. Skipping it halves the queries."""
+		captured = {}
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			side_effect=lambda kw: captured.update(kw) or [],
+		):
+			_eod_batch_qty_map("ITEM-1", "WH-A")
+		self.assertTrue(captured["do_not_check_future_batches"])
+
+	def test_map_builds_a_fresh_kwargs_dict_per_call(self):
+		"""filter_zero_near_batches MUTATES the kwargs it is handed (rewrites batch_no,
+		deletes posting_datetime). A shared dict would leave the next call time-unbounded
+		and scoped to the previous call's batch list."""
+		seen = []
+
+		def _mutate(kw):
+			seen.append(id(kw))
+			kw["batch_no"] = ["LEAKED"]
+			kw.pop("posting_datetime", None)
+			return []
+
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			side_effect=_mutate,
+		):
+			_eod_batch_qty_map("ITEM-1", "WH-A")
+			captured = {}
+			with patch(
+				"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+				side_effect=lambda kw: captured.update(kw) or [],
+			):
+				_eod_batch_qty_map("ITEM-2", "WH-B")
+
+		self.assertIsNone(
+			captured["batch_no"], "batch_no leaked from the previous call"
+		)
+		self.assertIsNotNone(
+			captured.get("posting_datetime"),
+			"posting_datetime leaked from the previous call",
+		)
+
+	# --- the cached accessor ---------------------------------------------------
+
+	def test_one_query_serves_every_batch_of_a_pair(self):
+		"""The whole point: 26,489 row lookups collapsed onto 1,414 (item, warehouse) calls."""
+		rows = [
+			FD({"batch_no": "B1", "warehouse": "WH-A", "qty": 5.0}),
+			FD({"batch_no": "B2", "warehouse": "WH-A", "qty": 7.0}),
+		]
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			return_value=rows,
+		) as auto:
+			_eod_batch_qty_cache_start()
+			self.assertEqual(_eod_physical_batch_qty("ITEM-1", "B1", "WH-A"), 5.0)
+			self.assertEqual(_eod_physical_batch_qty("ITEM-1", "B2", "WH-A"), 7.0)
+			self.assertEqual(_eod_physical_batch_qty("ITEM-1", "B1", "WH-A"), 5.0)
+		self.assertEqual(auto.call_count, 1)
+
+	def test_a_missing_batch_reads_as_zero_not_an_error(self):
+		"""Upstream uses defaultdict(float); an absent key must be 0.0, never a KeyError."""
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			return_value=[FD({"batch_no": "B1", "warehouse": "WH-A", "qty": 5.0})],
+		):
+			_eod_batch_qty_cache_start()
+			self.assertEqual(_eod_physical_batch_qty("ITEM-1", "NOPE", "WH-A"), 0.0)
+
+	def test_different_warehouses_are_cached_separately(self):
+		def _rows(kw):
+			qty = 5.0 if kw["warehouse"] == "WH-A" else 11.0
+			return [FD({"batch_no": "B1", "warehouse": kw["warehouse"], "qty": qty})]
+
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			side_effect=_rows,
+		) as auto:
+			_eod_batch_qty_cache_start()
+			self.assertEqual(_eod_physical_batch_qty("ITEM-1", "B1", "WH-A"), 5.0)
+			self.assertEqual(_eod_physical_batch_qty("ITEM-1", "B1", "WH-B"), 11.0)
+		self.assertEqual(auto.call_count, 2)
+
+	def test_with_the_cache_off_it_reads_through_to_get_batch_qty(self):
+		"""Phase 2 must never be served a pre-submit reading."""
+		_eod_batch_qty_cache_stop()
+		with patch(
+			"erpnext.stock.doctype.batch.batch.get_batch_qty", return_value=3.25
+		) as scalar:
+			self.assertEqual(_eod_physical_batch_qty("ITEM-1", "B1", "WH-A"), 3.25)
+		self.assertTrue(scalar.called)
+
+	def test_non_batch_and_warehouseless_lines_still_return_none(self):
+		"""Contract relied on by _pick_eod_source_warehouse; unchanged by caching."""
+		_eod_batch_qty_cache_start()
+		self.assertIsNone(_eod_physical_batch_qty("ITEM-1", None, "WH-A"))
+		self.assertIsNone(_eod_physical_batch_qty("ITEM-1", "B1", None))
+
+	def test_a_query_failure_still_reads_as_zero(self):
+		"""Preserves the pre-cache swallow-and-return-0.0 contract."""
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			side_effect=Exception("boom"),
+		):
+			_eod_batch_qty_cache_start()
+			self.assertEqual(_eod_physical_batch_qty("ITEM-1", "B1", "WH-A"), 0.0)
+
+	def test_the_positional_signature_tests_depend_on_is_intact(self):
+		"""Several tests replace this function with side_effect=lambda i, b, w: ...
+
+		The cache is therefore read from frappe.local, never passed as a parameter.
+		"""
+		import inspect
+
+		params = list(inspect.signature(_eod_physical_batch_qty).parameters)
+		self.assertEqual(params, ["item_code", "batch_no", "warehouse"])
+
+	# --- the shortfall check shares the cache ----------------------------------
+
+	def test_batch_short_check_reads_through_the_cache(self):
+		"""It used to call get_batch_qty directly, re-reading keys the warehouse picker
+		had just read."""
+		items = [
+			{
+				"item_code": "ITEM-1",
+				"batch_no": "B1",
+				"s_warehouse": "WH-A",
+				"qty": 10.0,
+			},
+			{
+				"item_code": "ITEM-1",
+				"batch_no": "B2",
+				"s_warehouse": "WH-A",
+				"qty": 1.0,
+			},
+		]
+		rows = [
+			FD({"batch_no": "B1", "warehouse": "WH-A", "qty": 4.0}),
+			FD({"batch_no": "B2", "warehouse": "WH-A", "qty": 6.0}),
+		]
+		with patch(
+			"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_batch_nos",
+			return_value=rows,
+		) as auto:
+			_eod_batch_qty_cache_start()
+			short = _check_eod_source_batch_stock(items)
+		self.assertEqual(
+			auto.call_count, 1, "both rows share one (item, warehouse) key"
+		)
+		self.assertEqual(short, {("WH-A", "ITEM-1", "B1"): (10.0, 4.0)})
+
+
+def _chunk_entry(mwo, rows=1):
+	"""A minimal resolvable-MWO dict shaped like _plan_mwo_group's output."""
+	return {
+		"kind": "resolvable",
+		"company": "Co",
+		"manufacturer": "MF-1",
+		"mwo": mwo,
+		"items": [
+			{
+				"item_code": "M-1",
+				"qty": 1.0,
+				"s_warehouse": "WH-S",
+				"t_warehouse": "WH-T",
+				"batch_no": f"B-{mwo}-{i}",
+				"custom_manufacturing_work_order": mwo,
+				"manufacturing_operation": f"MOP-{mwo}",
+			}
+			for i in range(rows)
+		],
+		"t_warehouse": "WH-T",
+		"mop_data_list": [{"mop_name": f"MOP-{mwo}", "logs": []}],
+		"last_mop_name": f"MOP-{mwo}",
+		"child_row_names": [f"ROW-{mwo}-{i}" for i in range(rows)],
+	}
+
+
+class TestChunkMainMwos(IntegrationTestCase):
+	"""Bucket partitioning. Both caps matter: MWO row counts here run 1..156 (median 2),
+	so an MWO cap alone lets a chunk reach ~2,000 rows."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _chunks(self, entries, max_mwos, max_rows):
+		def _setting(field, default):
+			return {"eod_chunk_max_mwos": max_mwos, "eod_chunk_max_rows": max_rows}[
+				field
+			]
+
+		with patch(f"{_MOD}._eod_setting_int", side_effect=_setting):
+			return _chunk_main_mwos(entries)
+
+	def test_splits_on_the_mwo_cap(self):
+		entries = [_chunk_entry(f"MWO-{i}") for i in range(5)]
+		chunks = self._chunks(entries, max_mwos=2, max_rows=0)
+		self.assertEqual([len(c) for c in chunks], [2, 2, 1])
+
+	def test_splits_on_the_row_cap(self):
+		entries = [_chunk_entry(f"MWO-{i}", rows=3) for i in range(4)]
+		chunks = self._chunks(entries, max_mwos=0, max_rows=6)
+		self.assertEqual([len(c) for c in chunks], [2, 2])
+
+	def test_whichever_cap_trips_first_wins(self):
+		entries = [_chunk_entry(f"MWO-{i}", rows=1) for i in range(6)]
+		chunks = self._chunks(entries, max_mwos=2, max_rows=100)
+		self.assertEqual([len(c) for c in chunks], [2, 2, 2])
+
+	def test_an_mwo_is_never_split_even_when_it_exceeds_the_row_cap(self):
+		"""The MWO is the indivisible accounting unit: half an MWO would have its
+		reservation cancelled with no row left to re-reserve from."""
+		entries = [_chunk_entry("BIG", rows=200), _chunk_entry("SMALL", rows=1)]
+		chunks = self._chunks(entries, max_mwos=0, max_rows=150)
+		self.assertEqual(len(chunks), 2)
+		self.assertEqual(len(chunks[0]), 1)
+		self.assertEqual(len(chunks[0][0]["items"]), 200, "oversized MWO kept whole")
+
+	def test_both_caps_zero_restores_one_se_per_bucket(self):
+		entries = [_chunk_entry(f"MWO-{i}") for i in range(9)]
+		chunks = self._chunks(entries, max_mwos=0, max_rows=0)
+		self.assertEqual([len(c) for c in chunks], [9])
+
+	def test_no_empty_chunks_are_emitted(self):
+		entries = [_chunk_entry(f"MWO-{i}", rows=10) for i in range(3)]
+		chunks = self._chunks(entries, max_mwos=1, max_rows=1)
+		self.assertEqual([len(c) for c in chunks], [1, 1, 1])
+		self.assertTrue(all(chunks))
+
+
+class TestChunkCommitAndSplit(IntegrationTestCase):
+	"""Per-chunk commit and the binary-split isolation that replaces whole-bucket rollback."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, entries, fail_mwos=(), max_mwos=2, max_rows=0):
+		"""Drive _commit_company_main_se with a stubbed chunk committer."""
+		attempts = []
+
+		def _chunk(company, manufacturer, chunk, failures, stats, *a, **kw):
+			mwos = [m["mwo"] for m in chunk]
+			attempts.append(
+				{
+					"mwos": mwos,
+					"keep_draft": kw.get("keep_draft_on_failure"),
+					"record": kw.get("record_failure"),
+				}
+			)
+			if any(m in fail_mwos for m in mwos):
+				return False
+			stats["processed_mwos"] += len(chunk)
+			return True
+
+		def _setting(field, default):
+			return {"eod_chunk_max_mwos": max_mwos, "eod_chunk_max_rows": max_rows}[
+				field
+			]
+
+		failures, stats = [], {"processed_mwos": 0, "failed_mwos": 0}
+		with patch(f"{_MOD}._eod_setting_int", side_effect=_setting), patch(
+			f"{_MOD}._eod_feature_enabled", return_value=False
+		), patch(f"{_MOD}._commit_se_chunk", side_effect=_chunk):
+			_commit_company_main_se(
+				"Co",
+				"MF-1",
+				entries,
+				failures,
+				stats,
+				"SYNC-LOG-1",
+				already_allocated=True,
+			)
+		return attempts, failures, stats
+
+	def test_a_clean_bucket_commits_one_chunk_at_a_time(self):
+		entries = [_chunk_entry(f"MWO-{i}") for i in range(4)]
+		attempts, _, stats = self._run(entries)
+		self.assertEqual(
+			[a["mwos"] for a in attempts], [["MWO-0", "MWO-1"], ["MWO-2", "MWO-3"]]
+		)
+		self.assertEqual(stats["processed_mwos"], 4)
+
+	def test_a_failing_chunk_is_halved_and_retried(self):
+		entries = [_chunk_entry(f"MWO-{i}") for i in range(2)]
+		attempts, _, stats = self._run(entries, fail_mwos={"MWO-1"}, max_mwos=2)
+		self.assertEqual(
+			[a["mwos"] for a in attempts],
+			[["MWO-0", "MWO-1"], ["MWO-0"], ["MWO-1"]],
+			"failed pair must be split, not abandoned",
+		)
+		self.assertEqual(stats["processed_mwos"], 1, "the good MWO still syncs")
+
+	def test_only_the_terminal_attempt_keeps_its_draft_and_reports(self):
+		"""Intermediate attempts must leave no orphan draft behind and must not
+		double-report the same failure."""
+		entries = [_chunk_entry(f"MWO-{i}") for i in range(2)]
+		attempts, _, _ = self._run(entries, fail_mwos={"MWO-1"}, max_mwos=2)
+		grouped = next(a for a in attempts if len(a["mwos"]) == 2)
+		singles = [a for a in attempts if len(a["mwos"]) == 1]
+		self.assertFalse(
+			grouped["keep_draft"], "grouped attempt must roll its draft back"
+		)
+		self.assertFalse(grouped["record"], "grouped attempt must not report")
+		self.assertTrue(all(s["keep_draft"] for s in singles))
+		self.assertTrue(all(s["record"] for s in singles))
+
+	def test_a_single_mwo_chunk_is_terminal_immediately(self):
+		entries = [_chunk_entry("MWO-0")]
+		attempts, _, _ = self._run(entries, fail_mwos={"MWO-0"}, max_mwos=2)
+		self.assertEqual(len(attempts), 1, "nothing left to split")
+		self.assertTrue(attempts[0]["keep_draft"])
+		self.assertTrue(attempts[0]["record"])
+
+	def test_recursion_bottoms_out_at_single_mwos(self):
+		entries = [_chunk_entry(f"MWO-{i}") for i in range(4)]
+		attempts, _, _ = self._run(
+			entries, fail_mwos={f"MWO-{i}" for i in range(4)}, max_mwos=4
+		)
+		singles = [a for a in attempts if len(a["mwos"]) == 1]
+		self.assertEqual(
+			sorted(a["mwos"][0] for a in singles), ["MWO-0", "MWO-1", "MWO-2", "MWO-3"]
+		)
+		self.assertTrue(
+			all(len(a["mwos"]) >= 1 for a in attempts), "never splits below one"
+		)
+
+	def test_retry_budget_is_bounded_and_reported(self):
+		"""An entirely-bad bucket must not grind forever, and whatever the cap abandons
+		has to be said out loud rather than silently dropped."""
+		entries = [_chunk_entry(f"MWO-{i}") for i in range(16)]
+		with patch(f"{_MOD}.frappe.logger") as logger:
+			attempts, _, _ = self._run(
+				entries, fail_mwos={f"MWO-{i}" for i in range(16)}, max_mwos=16
+			)
+		self.assertLess(len(attempts), 40, "recursion must be budget-bounded")
+		warned = any(
+			"retry budget exhausted" in str(c)
+			for c in logger.return_value.warning.call_args_list
+		)
+		self.assertTrue(warned or len(attempts) < 32)
+
+
+class TestChunkSavepointCommitOrder(IntegrationTestCase):
+	"""MariaDB drops EVERY savepoint on COMMIT.
+
+	A savepoint opened before a commit and rolled back after it silently does not exist, and
+	_rollback_to_savepoint would then take its full-rollback fallback -- discarding work that
+	looked committed. This is the single most dangerous property of per-chunk commits, so it
+	is asserted directly on the call ORDER.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_every_savepoint_is_released_before_the_chunk_commits(self):
+		calls = []
+
+		def _sp(name):
+			calls.append(("savepoint", name))
+
+		def _release(name):
+			calls.append(("release", name))
+
+		def _commit():
+			calls.append(("commit", None))
+
+		entry = _chunk_entry("MWO-1")
+		with patch(f"{_MOD}.frappe.db.savepoint", side_effect=_sp), patch(
+			f"{_MOD}.frappe.db.release_savepoint", side_effect=_release
+		), patch(f"{_MOD}.frappe.db.commit", side_effect=_commit), patch(
+			f"{_MOD}._save_draft_eod_se", return_value="SE-1"
+		), patch(f"{_MOD}._snapshot_mwo_sres_for_relocation", return_value=[]), patch(
+			f"{_MOD}._reserve_sres_from_eod_se_rows"
+		), patch(f"{_MOD}._eod_rows_from_submitted_se", return_value=[]), patch(
+			f"{_MOD}._mark_all_mwo_mop_logs_synced"
+		), patch(f"{_MOD}._stamp_last_eod_sync"), patch(
+			f"{_MOD}._bulk_set_child_rows"
+		), patch(f"{_MOD}.frappe.get_doc", return_value=MagicMock()):
+			ok = _commit_se_chunk(
+				"Co",
+				"MF-1",
+				[entry],
+				[],
+				{"processed_mwos": 0, "submitted_ses": []},
+				"SYNC-LOG-1",
+			)
+
+		self.assertTrue(ok)
+		commit_at = [i for i, c in enumerate(calls) if c[0] == "commit"]
+		self.assertEqual(len(commit_at), 1, "a chunk commits exactly once")
+		commit_at = commit_at[0]
+		opened = [
+			n
+			for i, (kind, n) in enumerate(calls)
+			if kind == "savepoint" and i < commit_at
+		]
+		released = [
+			n
+			for i, (kind, n) in enumerate(calls)
+			if kind == "release" and i < commit_at
+		]
+		self.assertTrue(opened, "test is vacuous if no savepoint was opened")
+		self.assertEqual(
+			sorted(opened),
+			sorted(released),
+			"every savepoint opened before the COMMIT must be released before it",
+		)
+
+	def test_a_retryable_failure_rolls_the_outer_savepoint_back(self):
+		"""So the abandoned attempt's draft Stock Entry does not survive as debris."""
+		rolled = []
+		entry = _chunk_entry("MWO-1")
+		with patch(f"{_MOD}.frappe.db.savepoint"), patch(
+			f"{_MOD}.frappe.db.release_savepoint"
+		), patch(f"{_MOD}.frappe.db.commit"), patch(
+			f"{_MOD}._rollback_to_savepoint", side_effect=rolled.append
+		), patch(f"{_MOD}._save_draft_eod_se", return_value="SE-1"), patch(
+			f"{_MOD}._snapshot_mwo_sres_for_relocation",
+			side_effect=RuntimeError("boom"),
+		), patch(f"{_MOD}._bulk_set_child_rows"):
+			ok = _commit_se_chunk(
+				"Co",
+				"MF-1",
+				[entry],
+				[],
+				{"processed_mwos": 0, "submitted_ses": []},
+				"SYNC-LOG-1",
+				keep_draft_on_failure=False,
+				record_failure=False,
+			)
+		self.assertFalse(ok)
+		self.assertIn("eod_submit_phase", rolled)
+		self.assertIn("eod_chunk_phase", rolled)
+
+	def test_a_terminal_failure_keeps_the_draft(self):
+		"""Existing recovery behaviour: the draft survives for manual submission."""
+		rolled = []
+		failures, stats = (
+			[],
+			{
+				"processed_mwos": 0,
+				"submitted_ses": [],
+				"draft_ses": [],
+				"failed_mwos": 0,
+			},
+		)
+		entry = _chunk_entry("MWO-1")
+		with patch(f"{_MOD}.frappe.db.savepoint"), patch(
+			f"{_MOD}.frappe.db.release_savepoint"
+		), patch(f"{_MOD}.frappe.db.commit"), patch(
+			f"{_MOD}._rollback_to_savepoint", side_effect=rolled.append
+		), patch(f"{_MOD}._save_draft_eod_se", return_value="SE-1"), patch(
+			f"{_MOD}._snapshot_mwo_sres_for_relocation",
+			side_effect=RuntimeError("boom"),
+		), patch(f"{_MOD}._bulk_set_child_rows"):
+			ok = _commit_se_chunk(
+				"Co",
+				"MF-1",
+				[entry],
+				failures,
+				stats,
+				"SYNC-LOG-1",
+				keep_draft_on_failure=True,
+				record_failure=True,
+			)
+		self.assertFalse(ok)
+		self.assertNotIn(
+			"eod_chunk_phase", rolled, "no outer savepoint when keeping the draft"
+		)
+		self.assertEqual(stats["draft_ses"], ["SE-1"])
+		self.assertEqual(failures[0]["step"], "submit")
+
+
+class TestSoftDeadline(IntegrationTestCase):
+	"""The graceful stop that replaces the hard RQ kill.
+
+	Before this, a run that overran was killed mid-statement: the lock was left for the
+	hourly reaper (which has itself been seen stuck in the queue) and a multi-crore draft
+	Stock Entry was left behind with nothing explaining it.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def tearDown(self):
+		frappe.local.eod_sync_deadline = None
+
+	def test_no_deadline_when_configured_zero(self):
+		with patch(f"{_MOD}._eod_setting_int", return_value=0):
+			self.assertIsNone(_eod_deadline_start(now_datetime()))
+		self.assertFalse(_eod_deadline_passed())
+
+	def test_deadline_not_passed_immediately(self):
+		with patch(f"{_MOD}._eod_setting_int", return_value=200):
+			_eod_deadline_start(now_datetime())
+		self.assertFalse(_eod_deadline_passed())
+
+	def test_deadline_passed_once_the_window_elapsed(self):
+		with patch(f"{_MOD}._eod_setting_int", return_value=1):
+			_eod_deadline_start(add_to_date(now_datetime(), minutes=-5))
+		self.assertTrue(_eod_deadline_passed())
+
+	def test_chunks_stop_starting_past_the_deadline_and_are_counted(self):
+		"""Committed chunks stay committed; un-started MWOs stay unsynced for next run."""
+		entries = [_chunk_entry(f"MWO-{i}") for i in range(6)]
+		committed = []
+
+		def _chunk(company, manufacturer, chunk, failures, stats, *a, **kw):
+			committed.append([m["mwo"] for m in chunk])
+			# Trip the deadline after the first chunk lands.
+			frappe.local.eod_sync_deadline = add_to_date(now_datetime(), minutes=-1)
+			stats["processed_mwos"] += len(chunk)
+			return True
+
+		def _setting(field, default):
+			return {"eod_chunk_max_mwos": 2, "eod_chunk_max_rows": 0}.get(
+				field, default
+			)
+
+		stats = {
+			"processed_mwos": 0,
+			"failed_mwos": 0,
+			"deadline_stopped": False,
+			"deadline_skipped_mwos": 0,
+			"deadline_skipped_chunks": 0,
+		}
+		frappe.local.eod_sync_deadline = None
+		with patch(f"{_MOD}._eod_setting_int", side_effect=_setting), patch(
+			f"{_MOD}._eod_feature_enabled", return_value=False
+		), patch(f"{_MOD}._commit_se_chunk", side_effect=_chunk):
+			_commit_company_main_se(
+				"Co", "MF-1", entries, [], stats, "SYNC-LOG-1", already_allocated=True
+			)
+
+		self.assertEqual(committed, [["MWO-0", "MWO-1"]], "only the first chunk ran")
+		self.assertTrue(stats["deadline_stopped"])
+		self.assertEqual(stats["deadline_skipped_chunks"], 2)
+		self.assertEqual(stats["deadline_skipped_mwos"], 4)
+		self.assertEqual(stats["processed_mwos"], 2, "committed work is still counted")
+
+	def test_a_deadline_stop_is_never_reported_as_completed(self):
+		"""Completed stamps eod_sync_last_completed_on, which makes the scheduler treat the
+		day as done -- exactly the way work gets stranded."""
+		writes = []
+
+		def _set_value(doctype, name, values, *a, **kw):
+			if doctype == "MOP EOD Sync Log" and isinstance(values, dict):
+				writes.append(values)
+
+		def _plan(group_key, mop_data_list, failures, stats, *a, **kw):
+			# Trip the deadline during planning, so nothing is even attempted.
+			frappe.local.eod_sync_deadline = add_to_date(now_datetime(), minutes=-1)
+			return None
+
+		with patch(f"{_MOD}.release_eod_sync_lock"), patch(
+			f"{_MOD}.set_eod_sync_running"
+		), patch(f"{_MOD}.frappe.db.set_value", side_effect=_set_value), patch(
+			f"{_MOD}.frappe.db.commit"
+		), patch(f"{_MOD}.recalculate_sync_log_totals"), patch(
+			f"{_MOD}.frappe.db.get_all", return_value=[]
+		), patch(f"{_MOD}._plan_mwo_group", side_effect=_plan), patch(
+			f"{_MOD}._eod_feature_enabled", return_value=False
+		), patch(
+			f"{_MOD}.frappe.log_error", return_value=FrappeDict({"name": "ERR-1"})
+		), patch(
+			f"{_MOD}._get_unsynced_mop_groups",
+			return_value={
+				("Co", "MWO-A"): [
+					{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": []}
+				],
+				("Co", "MWO-B"): [
+					{"mop_name": "MOP-B", "mop_doc": _mop_doc(), "logs": []}
+				],
+			},
+		), patch(
+			f"{_MOD}.frappe.get_doc",
+			return_value=FrappeDict({"eod_sync_work_order_filter": []}),
+		):
+			sync_mop_logs(sync_log_name="SYNC-LOG-1")
+
+		statuses = [w["status"] for w in writes if "status" in w]
+		self.assertTrue(statuses)
+		self.assertEqual(statuses[-1], "Partially Completed")
+		messages = [w.get("progress_message", "") for w in writes]
+		self.assertTrue(
+			any("soft deadline" in m for m in messages),
+			"the stop must explain itself on the Sync Log",
+		)
+
+
+class TestRecoverableErrors(IntegrationTestCase):
+	"""A timeout means "cut short", not "broken".
+
+	worker.log holds three real JobTimeoutExceptions from this sync, each firing inside the
+	recovery handler's own rollback. Reporting those as an unexpected defect sent people
+	hunting a bug that was not there.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_rq_job_timeout_is_recoverable(self):
+		from rq.timeouts import JobTimeoutException
+
+		self.assertTrue(_is_recoverable_error(JobTimeoutException("timed out")))
+
+	def test_a_plain_bug_is_not_recoverable(self):
+		self.assertFalse(_is_recoverable_error(AttributeError("typo")))
+		self.assertFalse(_is_recoverable_error(RuntimeError("boom")))
+
+	def test_deadlock_is_recoverable_when_frappe_exposes_it(self):
+		exc_cls = getattr(frappe, "QueryDeadlockError", None)
+		if not (isinstance(exc_cls, type) and issubclass(exc_cls, BaseException)):
+			self.skipTest("this frappe build does not expose QueryDeadlockError")
+		self.assertTrue(_is_recoverable_error(exc_cls("deadlock")))
+
+	def test_a_cut_short_run_that_synced_work_is_partially_completed(self):
+		from rq.timeouts import JobTimeoutException
+
+		writes = []
+
+		def _set_value(doctype, name, values, *a, **kw):
+			if doctype == "MOP EOD Sync Log" and isinstance(values, dict):
+				writes.append(values)
+
+		def _plan(group_key, mop_data_list, failures, stats, *a, **kw):
+			stats["processed_mwos"] += 1
+			raise JobTimeoutException("Task exceeded maximum timeout value")
+
+		with patch(f"{_MOD}.release_eod_sync_lock"), patch(
+			f"{_MOD}.set_eod_sync_running"
+		), patch(f"{_MOD}.frappe.db.set_value", side_effect=_set_value), patch(
+			f"{_MOD}.frappe.db.commit"
+		), patch(f"{_MOD}.recalculate_sync_log_totals"), patch(
+			f"{_MOD}.frappe.log_error", return_value=FrappeDict({"name": "ERR-1"})
+		), patch(f"{_MOD}._plan_mwo_group", side_effect=_plan), patch(
+			f"{_MOD}._get_unsynced_mop_groups",
+			return_value={
+				("Co", "MWO-A"): [
+					{"mop_name": "MOP-A", "mop_doc": _mop_doc(), "logs": []}
+				]
+			},
+		), patch(
+			f"{_MOD}.frappe.get_doc",
+			return_value=FrappeDict({"eod_sync_work_order_filter": []}),
+		):
+			sync_mop_logs(sync_log_name="SYNC-LOG-1")
+
+		statuses = [w["status"] for w in writes if "status" in w]
+		self.assertEqual(statuses[-1], "Partially Completed")
+		self.assertTrue(
+			any("cut short" in w.get("progress_message", "") for w in writes),
+			"a timeout must not be described as an unexpected error",
+		)
+
+
+class TestEodReservationGateStaysClosed(IntegrationTestCase):
+	"""``stock_reservation_entry_for_mwo`` must never fire on the EOD transfer.
+
+	Nothing in code keeps it off: the gate is a DATA condition -- "Material Transfer to
+	Department" simply not being listed in MOP Settings' Stock Entry Type To Reservation
+	table (doc_events/stock_entry.py `onsubmit`). Add that row and every EOD submit would
+	throw (the consolidated header deliberately carries no manufacturing_order), and if it
+	somehow got past that it would do ~4 reads plus an SRE insert+submit PER ROW -- tens of
+	thousands of them on a backlog run.
+
+	mop_eod_sync's module docstring depends on this staying absent, so the coupling is
+	asserted here rather than left as a comment.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_eod_se_type_is_not_in_the_reservation_gate(self):
+		listed = frappe.db.get_all(
+			"Stock Entry Type To Reservation",
+			filters={"parent": "MOP Settings"},
+			pluck="stock_entry_type_to_reservation",
+		)
+		self.assertNotIn(
+			"Material Transfer to Department",
+			listed,
+			"EOD sync's own Stock Entry type must stay out of the reservation gate: it "
+			"would throw on the blank header MWO, and would build one SRE per row.",
+		)
+
+
+class TestBacklogCatchup(IntegrationTestCase):
+	"""The bounded drain for MOP Logs the today-only window can never reach again."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		frappe.local.eod_catchup_limit_override = None
+		frappe.local.eod_sync_deadline = None
+
+	def tearDown(self):
+		frappe.local.eod_catchup_limit_override = None
+		frappe.local.eod_sync_deadline = None
+		frappe.flags.eod_sync_range = None
+
+	def _run(self, **over):
+		"""Call _run_backlog_catchup with everything stubbed; return what it did."""
+		calls = {"planned": None, "range_during": None}
+
+		def _plan_commit(groups, failures, stats, sync_log_name, selective):
+			calls["planned"] = groups
+			calls["range_during"] = frappe.flags.eod_sync_range
+
+		cfg = {
+			"enabled": True,
+			"deadline": False,
+			"failures": [],
+			"selective": False,
+			"rows": [
+				FrappeDict(
+					{
+						"manufacturing_work_order": "MWO-OLD",
+						"oldest": "2026-05-01 09:00:00",
+					}
+				)
+			],
+			"groups": {
+				("Co", "MWO-OLD"): [
+					{"mop_name": "MOP-OLD", "mop_doc": _mop_doc(), "logs": []}
+				]
+			},
+		}
+		cfg.update(over)
+
+		stats = {"total_mwos": 3, "processed_mwos": 0}
+		frappe.flags.eod_sync_range = ("2026-07-30 00:00:00", "2026-07-30 23:59:59")
+		with patch(f"{_MOD}._eod_feature_enabled", return_value=cfg["enabled"]), patch(
+			f"{_MOD}._eod_deadline_passed", return_value=cfg["deadline"]
+		), patch(f"{_MOD}._eod_setting_int", return_value=500), patch(
+			f"{_MOD}.frappe.db.sql", return_value=cfg["rows"]
+		), patch(f"{_MOD}._get_backlog_groups", return_value=cfg["groups"]), patch(
+			f"{_MOD}.frappe.db.set_value"
+		), patch(f"{_MOD}.frappe.db.commit"), patch(
+			f"{_MOD}._plan_and_commit_groups", side_effect=_plan_commit
+		):
+			_run_backlog_catchup(
+				MagicMock(), cfg["failures"], stats, "SYNC-LOG-1", cfg["selective"]
+			)
+		return calls, stats
+
+	def test_it_drains_the_oldest_pre_window_mwos(self):
+		calls, stats = self._run()
+		self.assertIsNotNone(calls["planned"], "catch-up did not run")
+		self.assertEqual(stats["catchup_mwos"], 1)
+		self.assertEqual(stats["total_mwos"], 4, "catch-up MWOs join the run total")
+
+	def test_the_window_is_swapped_to_the_catchup_range_while_it_runs(self):
+		"""_mark_all_mwo_mop_logs_synced is bounded by this flag in non-selective mode, so a
+		mismatched window would transfer the stock and mark NOTHING synced -- re-transferring
+		the same logs on every future run."""
+		calls, _ = self._run()
+		self.assertEqual(
+			calls["range_during"],
+			("2026-05-01 09:00:00", "2026-07-30 00:00:00"),
+			"catch-up must publish its own window, not the main pass's",
+		)
+
+	def test_the_original_window_is_restored_afterwards(self):
+		self._run()
+		self.assertEqual(
+			frappe.flags.eod_sync_range,
+			("2026-07-30 00:00:00", "2026-07-30 23:59:59"),
+		)
+
+	def test_the_window_is_restored_even_if_the_pass_raises(self):
+		def _boom(*a, **kw):
+			raise RuntimeError("boom")
+
+		frappe.flags.eod_sync_range = ("2026-07-30 00:00:00", "2026-07-30 23:59:59")
+		with patch(f"{_MOD}._eod_feature_enabled", return_value=True), patch(
+			f"{_MOD}._eod_deadline_passed", return_value=False
+		), patch(f"{_MOD}._eod_setting_int", return_value=500), patch(
+			f"{_MOD}.frappe.db.sql",
+			return_value=[
+				FrappeDict(
+					{
+						"manufacturing_work_order": "MWO-OLD",
+						"oldest": "2026-05-01 09:00:00",
+					}
+				)
+			],
+		), patch(f"{_MOD}._get_backlog_groups", side_effect=_boom):
+			with self.assertRaises(RuntimeError):
+				_run_backlog_catchup(
+					MagicMock(), [], {"total_mwos": 0}, "SYNC-LOG-1", False
+				)
+		self.assertEqual(
+			frappe.flags.eod_sync_range,
+			("2026-07-30 00:00:00", "2026-07-30 23:59:59"),
+			"a leaked catch-up window would mis-scope the next mark-synced",
+		)
+
+	def test_skipped_when_the_flag_is_off(self):
+		calls, _ = self._run(enabled=False)
+		self.assertIsNone(calls["planned"])
+
+	def test_skipped_past_the_soft_deadline(self):
+		"""A run already out of time must not take on extra work."""
+		calls, _ = self._run(deadline=True)
+		self.assertIsNone(calls["planned"])
+
+	def test_skipped_when_the_main_pass_had_blocking_failures(self):
+		calls, _ = self._run(failures=[{"step": "submit", "error_message": "x"}])
+		self.assertIsNone(calls["planned"])
+
+	def test_advisory_failures_do_not_block_the_catchup(self):
+		calls, _ = self._run(failures=[{"step": "sre_reconcile", "advisory": True}])
+		self.assertIsNotNone(calls["planned"])
+
+	def test_skipped_in_selective_mode(self):
+		"""Selective mode already syncs full unsynced history for its listed MWOs."""
+		calls, _ = self._run(selective=True)
+		self.assertIsNone(calls["planned"])
+
+	def test_nothing_to_drain_is_a_no_op(self):
+		calls, stats = self._run(rows=[])
+		self.assertIsNone(calls["planned"])
+		self.assertNotIn("catchup_mwos", stats)
+
+	def test_an_explicit_drain_request_overrides_the_feature_flag(self):
+		"""The Drain Backlog button asked for exactly this pass."""
+		frappe.local.eod_catchup_limit_override = 250
+		calls, _ = self._run(enabled=False)
+		self.assertIsNotNone(
+			calls["planned"], "explicit request must not be gated by the flag"
+		)
+
+
+class TestEodPrefetch(IntegrationTestCase):
+	"""Run-scoped prefetches for the three lookups that cost one query per MWO."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def tearDown(self):
+		_eod_prefetch_stop()
+
+	def _groups(self):
+		return {
+			("Co", "MWO-1"): [
+				{
+					"mop_name": "MOP-1",
+					"mop_doc": _mop_doc(),
+					"logs": [FD({"item_code": "M-1", "batch_no": "B1"})],
+				}
+			],
+			("Co", "MWO-2"): [
+				{
+					"mop_name": "MOP-2",
+					"mop_doc": _mop_doc(),
+					"logs": [FD({"item_code": "M-2", "batch_no": "B2"})],
+				}
+			],
+		}
+
+	def test_prefetch_uses_one_query_per_doctype_not_one_per_mwo(self):
+		seen = []
+
+		def _get_all(doctype, *a, **kw):
+			seen.append(doctype)
+			return []
+
+		with patch(f"{_MOD}.frappe.db.get_all", side_effect=_get_all):
+			_eod_prefetch_start(self._groups())
+
+		self.assertEqual(
+			sorted(seen), ["Batch", "Item", "Stock Entry"], "one query per doctype"
+		)
+
+	def test_artifact_lookup_is_served_from_the_prefetch(self):
+		frappe.local.eod_artifact_map = {"MWO-1": "SE-ART-1"}
+		with patch(f"{_MOD}.frappe.db.get_value") as get_value:
+			self.assertEqual(_mwo_realized_by_artifact("MWO-1"), "SE-ART-1")
+			self.assertIsNone(_mwo_realized_by_artifact("MWO-NONE"))
+		self.assertFalse(get_value.called, "must not query per MWO")
+
+	def test_artifact_lookup_falls_back_with_no_prefetch(self):
+		_eod_prefetch_stop()
+		with patch(f"{_MOD}.frappe.db.get_value", return_value="SE-X") as get_value:
+			self.assertEqual(_mwo_realized_by_artifact("MWO-1"), "SE-X")
+		self.assertTrue(get_value.called)
+
+	def test_batch_ownership_served_from_the_prefetch(self):
+		frappe.local.eod_batch_ownership = {"B1": ("Customer Goods", "CUST-1")}
+		with patch(f"{_MOD}.frappe.db.get_all") as get_all:
+			out = _eod_batch_ownership(["B1"])
+		self.assertEqual(out, {"B1": ("Customer Goods", "CUST-1")})
+		self.assertFalse(get_all.called)
+
+	def test_a_batch_missing_from_the_prefetch_falls_through_to_a_real_query(self):
+		"""Treating an absent batch as "no ownership" would book a customer's metal as
+		company stock -- the exact failure _stamp_eod_row_ownership exists to prevent."""
+		frappe.local.eod_batch_ownership = {"B1": ("Customer Goods", "CUST-1")}
+		with patch(
+			f"{_MOD}.frappe.db.get_all",
+			return_value=[
+				FD(
+					{
+						"name": "B2",
+						"custom_inventory_type": "Regular Stock",
+						"custom_customer": None,
+					}
+				)
+			],
+		) as get_all:
+			out = _eod_batch_ownership(["B1", "B2"])
+		self.assertTrue(get_all.called, "a partial prefetch must not be trusted")
+		self.assertIn("B2", out)
+
+	def test_item_flags_served_from_the_prefetch(self):
+		frappe.local.eod_item_flags = {
+			"M-1": FD({"name": "M-1", "has_batch_no": 1, "has_serial_no": 0})
+		}
+		items = [{"item_code": "M-1", "qty": 1.0, "batch_no": "B1"}]
+		with patch(f"{_MOD}.frappe.db.get_all") as get_all:
+			_validate_eod_items_for_mwo_reservation(items)
+		self.assertFalse(get_all.called)
+
+	def test_item_flags_partial_prefetch_falls_through(self):
+		frappe.local.eod_item_flags = {
+			"M-1": FD({"name": "M-1", "has_batch_no": 0, "has_serial_no": 0})
+		}
+		items = [{"item_code": "M-9", "qty": 1.0}]
+		with patch(
+			f"{_MOD}.frappe.db.get_all",
+			return_value=[FD({"name": "M-9", "has_batch_no": 0, "has_serial_no": 0})],
+		) as get_all:
+			_validate_eod_items_for_mwo_reservation(items)
+		self.assertTrue(
+			get_all.called, "an unknown code must be looked up, not assumed absent"
+		)
+
+	def test_stop_clears_every_prefetch(self):
+		frappe.local.eod_artifact_map = {"a": "b"}
+		frappe.local.eod_item_flags = {"a": "b"}
+		frappe.local.eod_batch_ownership = {"a": "b"}
+		_eod_prefetch_stop()
+		self.assertIsNone(frappe.local.eod_artifact_map)
+		self.assertIsNone(frappe.local.eod_item_flags)
+		self.assertIsNone(frappe.local.eod_batch_ownership)
+
+
+class TestSyncLogItemBuffering(IntegrationTestCase):
+	"""In-run buffering of MOP EOD Sync Log Item rows.
+
+	``_insert_sync_log_item`` only batches while ``frappe.flags.in_eod_mop_sync`` is set,
+	because that is exactly the span with guaranteed flush points. Outside a run it writes
+	through, so callers such as ``backfill_missing_wip_reservations`` and the recovery patch
+	can still read a row straight back. These tests therefore declare the in-run context;
+	without it they would be exercising the write-through path instead.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		frappe.flags.in_eod_mop_sync = True
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		frappe.local.eod_sync_log_row_failures = 0
+
+	def tearDown(self):
+		frappe.flags.in_eod_mop_sync = False
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+
+	def test_flush_failure_does_not_propagate_and_falls_back_per_row(self):
+		"""A bulk INSERT failure must cost only the bad row, not the whole batch -- that
+		per-row robustness is the contract buffering replaced."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
+		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-2", "qty": 2.0})
+
+		with patch(
+			f"{_MOD}.frappe.db.bulk_insert", side_effect=RuntimeError("bulk boom")
+		), patch(f"{_MOD}._do_insert_sync_log_item") as per_row:
+			written = _flush_sync_log_items()
+
+		self.assertEqual(written, 2)
+		self.assertEqual(per_row.call_count, 2, "both rows retried individually")
+
+	def test_flush_counts_rows_it_could_not_write_at_all(self):
+		"""Silently losing diagnostics is the one thing worse than losing them loudly."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		frappe.local.eod_sync_log_row_failures = 0
+		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
+
+		with patch(
+			f"{_MOD}.frappe.db.bulk_insert", side_effect=RuntimeError("bulk boom")
+		), patch(
+			f"{_MOD}._do_insert_sync_log_item", side_effect=RuntimeError("row boom")
+		):
+			_flush_sync_log_items()
+
+		self.assertEqual(frappe.local.eod_sync_log_row_failures, 1)
+
+	def test_buffered_row_name_is_returned_without_touching_the_database(self):
+		"""child_row_names must be usable with zero round trips -- that is the point."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		with patch(f"{_MOD}.frappe.db.bulk_insert") as bulk, patch(
+			f"{_MOD}.frappe.get_doc"
+		) as get_doc:
+			name = _insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
+		self.assertTrue(name)
+		self.assertFalse(bulk.called, "must not flush before the batch is full")
+		self.assertFalse(get_doc.called, "must not build a Document per row")
+
+	def test_rows_are_flushed_once_the_batch_fills(self):
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		with patch(f"{_MOD}.frappe.db.bulk_insert") as bulk, patch(
+			f"{_MOD}.frappe.db.savepoint"
+		), patch(f"{_MOD}.frappe.db.release_savepoint"):
+			for i in range(_LOG_ROW_FLUSH_SIZE):
+				_insert_sync_log_item("SYNC-LOG-X", {"item_code": f"M-{i}", "qty": 1.0})
+		self.assertEqual(bulk.call_count, 1)
+		self.assertEqual(frappe.local.eod_sync_log_buffer, [])
+
+	def test_buffered_rows_get_sequential_idx_per_parent(self):
+		"""The Sync Log child grid is read by humans; idx 0 everywhere is not acceptable."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		_insert_sync_log_item("SYNC-LOG-A", {"item_code": "M-1"})
+		_insert_sync_log_item("SYNC-LOG-A", {"item_code": "M-2"})
+		_insert_sync_log_item("SYNC-LOG-B", {"item_code": "M-3"})
+		rows = frappe.local.eod_sync_log_buffer
+		self.assertEqual([r["idx"] for r in rows], [1, 2, 1])
+		self.assertEqual(
+			[r["parent"] for r in rows], ["SYNC-LOG-A", "SYNC-LOG-A", "SYNC-LOG-B"]
+		)
+
+	def test_absent_columns_are_dropped_from_the_bulk_insert(self):
+		"""An unmigrated site must degrade the report, not fail the INSERT with a 1054."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
+		with patch(
+			f"{_MOD}.frappe.db.get_table_columns",
+			return_value=["name", "parent", "qty"],
+		), patch(f"{_MOD}.frappe.db.bulk_insert") as bulk, patch(
+			f"{_MOD}.frappe.db.savepoint"
+		), patch(f"{_MOD}.frappe.db.release_savepoint"):
+			_flush_sync_log_items()
+		self.assertEqual(bulk.call_args.kwargs["fields"], ["name", "parent", "qty"])

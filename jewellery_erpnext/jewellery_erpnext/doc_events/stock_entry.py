@@ -108,7 +108,7 @@ def before_validate(self, method):
 					# Fallback so a MAIN SLIP SE with no Main Slip link (e.g. the Tree Number Issue
 					# button) resolves a manufacturer instead of raising UnboundLocalError.
 					if not manufacturer:
-						manufacturer = self.manufacturer or MANUFACTURER
+						manufacturer = self.get("manufacturer") or MANUFACTURER
 				elif self.manufacturing_order:
 					manufacturer = frappe.db.get_value(
 						"Parent Manufacturing Order",
@@ -116,10 +116,15 @@ def before_validate(self, method):
 						"manufacturer",
 					)
 				else:
-					if self.manufacturer:
-						manufacturer = self.manufacturer
-					else:
-						manufacturer = MANUFACTURER
+					# Stock Entry.manufacturer is a custom field (gke_customization ships it
+					# in fixtures/custom_field.json) and is therefore NOT guaranteed to be
+					# installed: gk.site currently has no such Custom Field and no column,
+					# only the Stock Entry Detail one. It is also set as a plain in-memory
+					# attribute by callers that know it without persisting it (Refining
+					# Entry carries its own onto the SEs it builds). Read it with .get() so
+					# a Stock Entry that lacks the field falls back to the session default
+					# instead of raising AttributeError mid-save.
+					manufacturer = self.get("manufacturer") or MANUFACTURER
 
 				pure_item = frappe.db.get_value(
 					"Manufacturing Setting",
@@ -127,9 +132,42 @@ def before_validate(self, method):
 					"pure_gold_item",
 				)
 
+				# Manufacturing Setting is keyed by manufacturer, but the live records are
+				# per-COMPANY (one row each, named after the company). A manufacturer that is
+				# actually set -- on the document, or as a session default -- therefore
+				# matches nothing, and this used to abort the save with a message telling the
+				# user to set the very thing that broke it. Fall back to the company's own
+				# setting, which is what the company-keyed lookup above did before it was
+				# commented out.
+				#
+				# The fallback never GUESSES between manufacturers: it takes the company-wide
+				# record (no manufacturer on it) when there is one, else the company's single
+				# record. A company that genuinely keeps one setting per manufacturer keeps
+				# throwing, because picking an arbitrary sibling there would silently cost the
+				# metal off another manufacturer's pure_gold_item.
+				if not pure_item and self.company:
+					settings = frappe.get_all(
+						"Manufacturing Setting",
+						filters={"company": self.company},
+						fields=["name", "manufacturer", "pure_gold_item"],
+						order_by="name",
+					)
+
+					if len(settings) == 1:
+						pure_item = settings[0].pure_gold_item
+					else:
+						company_wide = [s for s in settings if not s.manufacturer]
+						if len(company_wide) == 1:
+							pure_item = company_wide[0].pure_gold_item
+
 				if not pure_item:
 					frappe.throw(
-						_("Select Manufacturer in session defaults or in Filed")
+						_(
+							"Set Pure Gold Item in the Manufacturing Setting for manufacturer {0} or company {1}"
+						).format(
+							frappe.bold(manufacturer or _("(not set)")),
+							frappe.bold(self.company),
+						)
 					)
 
 				pure_item_purity = get_purity_percentage(pure_item)

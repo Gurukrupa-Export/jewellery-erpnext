@@ -12,7 +12,8 @@ scenario (BOM -> Manufacturing Plan -> PMO -> MWO -> MOP -> EIR):
 	Received as the Material Details ledger fills.
   * validate_casting_tree: all-same-metal on one tree. (The all-or-nothing
 	re-issue rule is enforced at submit by validate_casting_group_complete, NOT
-	here — see TestValidateCastingGroupComplete.)
+	here — see TestValidateCastingGroupComplete. That rule is gated by
+	MOP Settings.enforce_full_casting_tree_reissue and ships OFF.)
 
 DB access inside the functions is mocked by doctype so the tests stay fast and
 independent of master data.
@@ -27,6 +28,9 @@ from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
 	tree_casting,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import (
+	tree_material_balance as tree_balance,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.tree_number import tree_utils
 from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.doc_events import (
@@ -139,12 +143,22 @@ class TestTreeStatus(IntegrationTestCase):
 		tree = SimpleNamespace(material_details=[_md(10, 10, 0), _md(0, 0, 0)])
 		self.assertEqual(tree_casting._tree_status(tree), "Partially Received")
 
-	def test_received_when_issue_zero_fully_received(self):
-		# Casting receive drew the committed metal from the tree without a button issue:
-		# issue_qty=0 but receive_qty>0 and pending<=eps -> fully Received (a received row is
-		# "engaged" even with issue_qty=0).
+	def test_issue_zero_with_receive_is_never_received(self):
+		# The GEPL-TR-26-00154 defect: metal recorded as received against a tree that was never
+		# issued. Without issued metal there is nothing to have received, so the tree must never
+		# read "Received" — it is an over-draw for the audit to flag.
 		tree = SimpleNamespace(material_details=[_md(0, 8, 0)])
-		self.assertEqual(tree_casting._tree_status(tree), "Received")
+		self.assertEqual(tree_casting._tree_status(tree), "Partially Received")
+
+	def test_untouched_tree_is_draft(self):
+		tree = SimpleNamespace(material_details=[_md(0, 0, 0)])
+		self.assertEqual(tree_casting._tree_status(tree), "Draft")
+
+	def test_tree_without_material_rows_is_draft(self):
+		# Bare Main Slip-created trees carry no ledger at all.
+		self.assertEqual(
+			tree_casting._tree_status(SimpleNamespace(material_details=[])), "Draft"
+		)
 
 	def test_received_when_receive_plus_loss_equals_issue_float_dust(self):
 		# Regression for GEPL-TR-26-00147: 3 - 2.9 - 0.1 leaves floating-point dust (~8e-17)
@@ -457,31 +471,54 @@ def _recv_eir(rows, typ="Receive", loss_rows=None, is_main_slip_required=1):
 	)
 
 
+def _ledger_tree(issue=0.0, receive=0.0, loss=0.0, item="M-G-18KT-75-Y"):
+	"""Fake Tree Number carrying one material row, for the receive guard."""
+	tree = SimpleNamespace(
+		name="TREE-0001",
+		status="Issued",
+		flags=SimpleNamespace(),
+		material_details=[
+			SimpleNamespace(
+				item_code=item,
+				issue_qty=issue,
+				receive_qty=receive,
+				loss_qty=loss,
+				pending_qty=issue - receive - loss,
+			)
+		],
+	)
+	tree.save = lambda *a, **k: None
+	return tree
+
+
 class TestValidateCastingReceive(IntegrationTestCase):
-	"""validate_casting_receive guards a casting Receive EIR against the metal COMMITTED to its work
-	orders (the operations' gross weight), NOT the button-owned issue_qty. Received<=gross is always
-	allowed (giving back the committed metal, even with issue_qty=0); a gain (received>gross) is
-	allowed only when a Main Slip can source the excess from the tree; a loss over-booking throws."""
+	"""validate_casting_receive guards a casting Receive EIR against the metal ISSUED onto its tree.
+
+	Only the per-row gain (received_gross_wt - gross_wt) is drawn from the tree — that is exactly
+	what the Main Slip injection mints out of the MSL warehouse the tree funds. A receive with no
+	gain touches nothing. A gain needs both a Main Slip to source it physically and enough
+	outstanding tree balance to back it."""
 
 	ITEM = "M-G-18KT-75-Y"
 
-	def _run(self, eir, mwos=None):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, eir, mwos=None, tree=None):
 		mwos = mwos or {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
+		tree = tree if tree is not None else _ledger_tree(issue=100.0, item=self.ITEM)
 
-		def fake_get_value(doctype, name, field, *a, **k):
-			if doctype == "Department Operation":
-				return 1  # tree_no_reqd -> casting
-			return None
-
-		# validate_casting_receive reads the gross baseline straight off the EIR rows — it no
-		# longer loads the Tree Number, so no get_doc patch is needed.
+		db = MagicMock()
+		db.get_value.side_effect = lambda dt, *a, **k: (
+			1 if dt == "Department Operation" else None
+		)
 		with (
-			patch.object(
-				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
-			),
+			patch.object(tree_casting.frappe, "db", db),
 			patch.object(
 				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
 			),
+			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
 			patch.object(tree_casting.frappe, "get_precision", return_value=3),
 			patch.object(
 				tree_casting, "get_item_from_attribute", return_value=self.ITEM
@@ -489,31 +526,49 @@ class TestValidateCastingReceive(IntegrationTestCase):
 		):
 			tree_casting.validate_casting_receive(eir)
 
-	def test_normal_receive_issue_zero_passes(self):
-		# Headline fix: tree never button-issued; received (8) == committed gross (8) -> no throw.
-		self._run(_recv_eir([("MWO-A", 8.0, 8.0)]))
+	def test_normal_receive_passes(self):
+		# received (8) == gross (8) -> no gain, nothing drawn from the tree, no ledger read.
+		self._run(_recv_eir([("MWO-A", 8.0, 8.0)]), tree=_ledger_tree(issue=0.0))
 
 	def test_under_receipt_passes(self):
-		# received 3 < committed gross 8 (rest is loss) -> no throw.
-		self._run(_recv_eir([("MWO-A", 3.0, 8.0)]))
+		# received 3 < gross 8 (rest is loss) -> no gain, tree untouched.
+		self._run(_recv_eir([("MWO-A", 3.0, 8.0)]), tree=_ledger_tree(issue=0.0))
 
 	def test_gain_draws_excess_from_tree(self):
-		# received 10 > committed gross 8, Main Slip present -> excess drawn from tree, allowed.
+		# received 10 > gross 8; the tree holds 100 outstanding -> the 2 fits, allowed.
 		self._run(_recv_eir([("MWO-A", 10.0, 8.0)]))
 
+	def test_gain_without_tree_issue_throws(self):
+		# The headline rule: a 2g gain against a tree that was never issued has nothing behind it.
+		with self.assertRaises(ValidationError):
+			self._run(_recv_eir([("MWO-A", 10.0, 8.0)]), tree=_ledger_tree(issue=0.0))
+
+	def test_gain_beyond_tree_pending_throws(self):
+		# Gain 2.0 but only 1.5 outstanding on the tree -> block the whole receive.
+		with self.assertRaises(ValidationError):
+			self._run(_recv_eir([("MWO-A", 10.0, 8.0)]), tree=_ledger_tree(issue=1.5))
+
 	def test_gain_without_main_slip_throws(self):
-		# received 10 > gross 8 but no Main Slip to source the excess from the tree -> throw.
+		# received 10 > gross 8 but no Main Slip to source the excess -> nothing can move.
 		with self.assertRaises(ValidationError):
 			self._run(_recv_eir([("MWO-A", 10.0, 8.0)], is_main_slip_required=0))
 
 	def test_normal_receive_with_loss_passes(self):
-		# recv 4 + loss 1 == committed gross 5 -> giving back the committed metal, no throw.
-		self._run(_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.0)]))
+		# recv 4 + loss 1 == gross 5. Booked metal loss never leaves the MSL pool, so it is not
+		# a tree draw; the tree ledger stays out of it entirely.
+		self._run(
+			_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.0)]),
+			tree=_ledger_tree(issue=0.0),
+		)
 
-	def test_loss_over_book_throws(self):
-		# recv 4 <= gross 5 but recv + loss = 5.5 > gross -> loss over-booked, throw.
-		with self.assertRaises(ValidationError):
-			self._run(_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.5)]))
+	def test_loss_over_book_is_not_a_tree_concern(self):
+		# Over-booking loss is owned by validate_loss_qty / validate_loss_tables_required, which
+		# cap total loss at (gross - received). The tree guard must not double-police it: with no
+		# gain there is no tree draw, so this passes here.
+		self._run(
+			_recv_eir([("MWO-A", 4.0, 5.0)], loss_rows=[("MWO-A", 1.5)]),
+			tree=_ledger_tree(issue=0.0),
+		)
 
 	def test_issue_type_is_ignored(self):
 		# type != "Receive" -> early return, no guard even when grossly over.
@@ -524,37 +579,26 @@ class TestValidateCastingReceive(IntegrationTestCase):
 
 
 class TestUpdateTreeOnReceiveCancel(IntegrationTestCase):
-	"""update_tree_on_receive(cancel=True) reverses the ledger without the forward over-receipt
-	guard firing (deltas are negative and must always be allowed)."""
+	"""update_tree_on_receive(cancel=True) subtracts the same magnitude the forward pass added.
+
+	The draw is computed at sign=+1 and the RESULT negated. Negating the inputs instead would push
+	every gain through max(received - gross, 0) as a negative and silently reverse nothing, leaving
+	the ledger inflated and the Issue EIR permanently uncancellable."""
 
 	ITEM = "M-G-18KT-75-Y"
 
-	def test_cancel_reverses_without_guard(self):
-		tree = SimpleNamespace(
-			name="TREE-0001",
-			status="Received",
-			flags=SimpleNamespace(),
-			material_details=[
-				SimpleNamespace(
-					item_code=self.ITEM,
-					issue_qty=5.0,
-					receive_qty=5.0,
-					loss_qty=0.0,
-					pending_qty=0.0,
-				)
-			],
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _cancel(self, eir, tree, mwos=None):
+		mwos = mwos or {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
+		db = MagicMock()
+		db.get_value.side_effect = lambda dt, *a, **k: (
+			1 if dt == "Department Operation" else None
 		)
-		tree.save = lambda *a, **k: None
-		mwos = {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
-		eir = _recv_eir([("MWO-A", 5.0)])
-
-		def fake_get_value(doctype, name, field, *a, **k):
-			return 1 if doctype == "Department Operation" else None
-
 		with (
-			patch.object(
-				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
-			),
+			patch.object(tree_casting.frappe, "db", db),
 			patch.object(
 				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
 			),
@@ -566,53 +610,38 @@ class TestUpdateTreeOnReceiveCancel(IntegrationTestCase):
 		):
 			tree_casting.update_tree_on_receive(eir, cancel=True)
 
+	def test_cancel_reverses_the_gain(self):
+		# Forward drew 2.0 (gross 8 -> received 10) against an issue of 5.
+		tree = _ledger_tree(issue=5.0, receive=2.0, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 10.0, 8.0)]), tree)
 		self.assertEqual(tree.material_details[0].receive_qty, 0.0)
-		self.assertEqual(tree.material_details[0].pending_qty, 5.0)
+		self.assertEqual(tree.material_details[0].issue_qty, 5.0)
 
-	def test_cancel_no_button_returns_issue_zero(self):
-		# Never button-issued tree: the EIR receive drew 8g from the tree (issue_qty stays 0,
-		# pending floored to 0). Cancelling must return receive_qty and pending to 0 with issue_qty
-		# still 0 — there is nothing to un-bump because the fix never writes issue_qty on the EIR path.
-		tree = SimpleNamespace(
-			name="TREE-0001",
-			status="Received",
-			flags=SimpleNamespace(),
-			material_details=[
-				SimpleNamespace(
-					item_code=self.ITEM,
-					issue_qty=0.0,
-					receive_qty=8.0,
-					loss_qty=0.0,
-					pending_qty=0.0,
-				)
-			],
-		)
-		tree.save = lambda *a, **k: None
-		mwos = {"MWO-A": _mwo_doc("MWO-A", "TREE-0001")}
-		eir = _recv_eir([("MWO-A", 8.0, 8.0)])
-
-		def fake_get_value(doctype, name, field, *a, **k):
-			return 1 if doctype == "Department Operation" else None
-
-		with (
-			patch.object(
-				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
-			),
-			patch.object(
-				tree_casting.frappe, "get_cached_doc", side_effect=lambda dt, n: mwos[n]
-			),
-			patch.object(tree_casting.frappe, "get_doc", return_value=tree),
-			patch.object(tree_casting.frappe, "get_precision", return_value=3),
-			patch.object(
-				tree_casting, "get_item_from_attribute", return_value=self.ITEM
-			),
-		):
-			tree_casting.update_tree_on_receive(eir, cancel=True)
-
+	def test_cancel_without_guard(self):
+		# Cancel is a credit, not a draw — the availability guard must never fire, even on a
+		# tree with no issued balance at all.
+		tree = _ledger_tree(issue=0.0, receive=2.0, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 10.0, 8.0)]), tree)
 		self.assertEqual(tree.material_details[0].receive_qty, 0.0)
-		self.assertEqual(tree.material_details[0].loss_qty, 0.0)
-		self.assertEqual(tree.material_details[0].pending_qty, 0.0)
-		self.assertEqual(tree.material_details[0].issue_qty, 0.0)
+
+	def test_cancel_of_a_no_gain_receive_is_a_no_op(self):
+		# received == gross drew nothing forward, so cancelling must take nothing back.
+		tree = _ledger_tree(issue=5.0, receive=5.0, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 8.0, 8.0)]), tree)
+		self.assertEqual(tree.material_details[0].receive_qty, 5.0)
+
+	def test_cancel_never_drives_receive_negative(self):
+		tree = _ledger_tree(issue=5.0, receive=1.0, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 10.0, 8.0)]), tree)
+		self.assertGreaterEqual(tree.material_details[0].receive_qty, 0.0)
+
+	def test_cancel_leaves_issue_and_loss_untouched(self):
+		# The EIR path owns receive_qty only; issue_qty is button-owned and loss_qty belongs to
+		# the tree's own Receive/Submit legs.
+		tree = _ledger_tree(issue=5.0, receive=2.0, loss=0.5, item=self.ITEM)
+		self._cancel(_recv_eir([("MWO-A", 10.0, 8.0)]), tree)
+		self.assertEqual(tree.material_details[0].issue_qty, 5.0)
+		self.assertEqual(tree.material_details[0].loss_qty, 0.5)
 
 	def tearDown(self):
 		return super().tearDown()
@@ -640,11 +669,24 @@ class TestValidateCastingGroupComplete(IntegrationTestCase):
 	"""validate_casting_group_complete — no partial re-issue of a casting tree. The required set is
 	EVERY member sharing the casting_group; a member still at casting is 'addable' (button), one
 	that has advanced past casting is 'blocked' (must be reversed first). Grouping is via
-	casting_group, so it holds even after the tree was cancelled/deleted (tree_number cleared)."""
+	casting_group, so it holds even after the tree was cancelled/deleted (tree_number cleared).
 
-	def _run(self, eir, present_mwos, required, eligible_mwos, casting=True):
+	The rule is gated by MOP Settings.enforce_full_casting_tree_reissue, which ships OFF. Every
+	enforcement test here forces it ON via _run(enforce=True) (the default) so they keep pinning
+	the RULE; the gate itself is covered by the test_gate_* tests at the end of the class."""
+
+	def _run(
+		self, eir, present_mwos, required, eligible_mwos, casting=True, enforce=True
+	):
 		"""present_mwos: {name: _FakeMWO with casting_group}; required: full member name list;
-		eligible_mwos: member names still issue-eligible (returned by eligible_casting_group_mops)."""
+		eligible_mwos: member names still issue-eligible (returned by eligible_casting_group_mops).
+
+		``enforce`` drives the MOP Settings master switch
+		(``enforce_full_casting_tree_reissue``). It defaults to True so the enforcement tests
+		below keep asserting the RULE rather than the gate -- at the shipped default (OFF) the
+		"no throw" ones would otherwise pass vacuously. Returns the get_single_value mock so the
+		gate tests can assert whether, and with what, the switch was read.
+		"""
 
 		def fake_get_value(doctype, name, field, *a, **k):
 			if doctype == "Department Operation":
@@ -660,7 +702,12 @@ class TestValidateCastingGroupComplete(IntegrationTestCase):
 				for m in eligible_mwos
 			]
 
+		# frappe.db is a LocalProxy, so an auto-created patch would mint an AsyncMock whose
+		# truthy coroutine return would pin the gate ON in every test. Inject a real MagicMock.
+		single = MagicMock(return_value=1 if enforce else 0)
+
 		with (
+			patch.object(tree_casting.frappe.db, "get_single_value", single),
 			patch.object(
 				tree_casting.frappe.db, "get_value", side_effect=fake_get_value
 			),
@@ -675,6 +722,8 @@ class TestValidateCastingGroupComplete(IntegrationTestCase):
 			),
 		):
 			tree_casting.validate_casting_group_complete(eir)
+
+		return single
 
 	def test_first_issue_no_group_skips(self):
 		# No casting_group yet (stamped on submit) -> nothing to complete even if siblings exist.
@@ -767,6 +816,111 @@ class TestValidateCastingGroupComplete(IntegrationTestCase):
 				eligible_mwos=["MWO-A", "MWO-B"],
 			)
 		self.assertIn("MWO-B", str(cm.exception))
+
+	# ------------------------------------------------------------------
+	# MOP Settings gate: enforce_full_casting_tree_reissue (default OFF).
+	# Every test above forces it ON; these prove the switch works both ways.
+	# ------------------------------------------------------------------
+
+	def test_gate_off_allows_partial_reissue(self):
+		# THE REGRESSION TEST. Byte-identical inputs to
+		# test_reissue_partial_set_throws_naming_missing, opposite outcome -- driven only by
+		# the setting. OFF is the shipped default, so out of the box a partial re-issue submits.
+		self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=False,
+		)  # no throw
+
+	def test_gate_off_allows_partial_reissue_with_advanced_sibling(self):
+		# The "blocked" branch (sibling already past casting, normally "reverse these back
+		# first") is gated too: OFF means the whole rule is off, not just the addable half.
+		self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A"],  # B not eligible -> would be "blocked" when ON
+			enforce=False,
+		)  # no throw
+
+	def test_gate_off_allows_partial_reissue_via_tree_number_fallback(self):
+		# The defence-in-depth tree_number group key is gated as well -- no leak through it.
+		self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _FakeMWO("MWO-A", casting_group=None, tree_number="G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=False,
+		)  # no throw
+
+	def test_gate_on_preserves_message_and_title(self):
+		# Switch ON -> today's error surface unchanged. Assertions stay tag-free: msgprint
+		# strips HTML when stdin is a tty (interactive bench) but keeps it in CI, so only
+		# markup-free substrings are stable across both.
+		with self.assertRaises(ValidationError) as cm:
+			self._run(
+				_grp_eir(["MWO-A"]),
+				{"MWO-A": _grp_mwo("MWO-A", "G")},
+				required=["MWO-A", "MWO-B"],
+				eligible_mwos=["MWO-A", "MWO-B"],
+				enforce=True,
+			)
+		msg = str(cm.exception)
+		self.assertIn("must be re-issued in full", msg)
+		self.assertIn("Load Full Casting Tree", msg)
+		self.assertIn("MWO-B", msg)
+
+	def test_gate_on_full_group_reissue_still_passes(self):
+		# Unchanged happy path under the switch: whole group present -> no throw.
+		self._run(
+			_grp_eir(["MWO-A", "MWO-B"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G"), "MWO-B": _grp_mwo("MWO-B", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=True,
+		)  # no throw
+
+	def test_gate_reads_the_mop_settings_switch(self):
+		# Pins the wiring: exact Single + exact fieldname, read once. A typo in either makes
+		# frappe.db.get_single_value throw "Field ... does not exist" in PRODUCTION, because it
+		# resolves the df from meta before returning (frappe/database/database.py:914-920).
+		single = self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=False,
+		)
+		single.assert_called_once_with(
+			"MOP Settings", "enforce_full_casting_tree_reissue"
+		)
+
+	def test_gate_not_consulted_for_non_casting_eir(self):
+		# EmployeeIR.before_submit runs this for EVERY Issue EIR, not just casting ones
+		# (employee_ir.py:100-102). The switch must therefore be read only AFTER the
+		# type/casting guard, so a site running this code before `bench migrate` installs the
+		# field cannot break every Issue submit with "Field ... does not exist".
+		single = self._run(
+			_grp_eir(["MWO-A"]),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			casting=False,
+			enforce=False,
+		)  # no throw
+		single.assert_not_called()
+
+	def test_gate_not_consulted_for_receive_type(self):
+		single = self._run(
+			_grp_eir(["MWO-A"], typ="Receive"),
+			{"MWO-A": _grp_mwo("MWO-A", "G")},
+			required=["MWO-A", "MWO-B"],
+			eligible_mwos=["MWO-A", "MWO-B"],
+			enforce=False,
+		)  # no throw
+		single.assert_not_called()
 
 	def tearDown(self):
 		return super().tearDown()
@@ -1006,6 +1160,19 @@ def _run(
 			return list(owed.get(item_code, []))
 		return list(owed)
 
+	def _priority(batch_nos, with_no_wastage=False):
+		# Same `ownership` stub the legacy _batch_ownership patch below uses, in the
+		# richer shape ownership_priority.batch_priority_map returns. Keeping one
+		# source means a test that declares ownership drives BOTH the receive-leg
+		# ranking and the row stamping.
+		out = {}
+		for b in batch_nos or []:
+			inv, cust = (ownership or {}).get(b, (None, None))
+			out[b] = frappe._dict(
+				inventory_type=inv, customer=cust, creation="", no_wastage=False
+			)
+		return out
+
 	with (
 		patch.object(tse.frappe, "new_doc", side_effect=_mint),
 		patch.object(tse.frappe, "has_permission", return_value=True),
@@ -1013,6 +1180,10 @@ def _run(
 		patch.object(tse, "_apply_fifo_batches_to_stock_entry"),
 		patch.object(tse, "preallocate_series_for_docs"),
 		patch.object(tse, "lock_bins"),
+		# Month-start close is exercised by its own suite; here it must not reach
+		# the database.
+		patch.object(tse, "validate_no_prior_period_pending"),
+		patch.object(tse, "batch_priority_map", side_effect=_priority),
 		patch.object(tse, "_tree_owed_batches", side_effect=_owed),
 		patch.object(tse, "_batch_ownership", return_value=ownership or {}),
 		patch.object(tse, "_resolve_source_warehouse", return_value=source_wh),
@@ -1074,6 +1245,100 @@ class TestIssueMaterial(IntegrationTestCase):
 			_run(tse.issue_material, tree, "", 5.0)
 
 
+class TestIssueMaterialSameMetal(IntegrationTestCase):
+	"""Only metal of the tree's own type / touch / purity may be issued onto it.
+
+	One crucible melts one alloy. Colour is NOT checked: a multicolour tree legitimately holds one
+	ledger row per colour (live tree GEPL-TR-26-00109 carries both -Y and -P), and a Tree Number
+	only has room for a single metal_colour."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _tree(self, touch="18KT", purity="75.4"):
+		tree = _new_tree()
+		tree.metal_type = "Gold"
+		tree.metal_touch = touch
+		tree.metal_purity = purity
+		tree.metal_colour = "Yellow"
+		return tree
+
+	def _issue(self, tree, item_code, attrs, qty=5.0):
+		"""Run issue_material with the item's attribute lookup stubbed."""
+		with patch.object(
+			tse.tree_balance, "item_metal_attributes", return_value={item_code: attrs}
+		):
+			return _run(tse.issue_material, tree, item_code, qty)
+
+	GOLD_18KT = {"Metal Type": "Gold", "Metal Touch": "18KT", "Metal Purity": "75.4"}
+
+	def test_matching_metal_issues(self):
+		tree = self._tree()
+		self._issue(tree, "M-G-18KT-75.4-Y", self.GOLD_18KT)
+		self.assertEqual(tree.material_details[0].issue_qty, 5.0)
+
+	def test_different_colour_is_allowed(self):
+		# Same alloy, other colour -> fine. This is the multicolour tree case.
+		tree = self._tree()
+		attrs = dict(self.GOLD_18KT)
+		self._issue(tree, "M-G-18KT-75.4-P", attrs)
+		self.assertEqual(tree.material_details[0].item_code, "M-G-18KT-75.4-P")
+
+	def test_wrong_touch_throws(self):
+		tree = self._tree()
+		attrs = {"Metal Type": "Gold", "Metal Touch": "22KT", "Metal Purity": "75.4"}
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-G-22KT-91.9-Y", attrs)
+
+	def test_wrong_purity_throws(self):
+		tree = self._tree()
+		attrs = {"Metal Type": "Gold", "Metal Touch": "18KT", "Metal Purity": "91.9"}
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-G-18KT-91.9-Y", attrs)
+
+	def test_wrong_type_throws(self):
+		tree = self._tree()
+		attrs = {"Metal Type": "Silver", "Metal Touch": "18KT", "Metal Purity": "75.4"}
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-S-18KT-75.4-Y", attrs)
+
+	def test_item_without_attributes_throws(self):
+		# The master alloys (M-AL, M-Alloy 381, ...) declare only Metal Type. They belong in the
+		# melt, not on a tree, and cannot be shown to match -- so they are rejected.
+		tree = self._tree()
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-AL", {"Metal Type": "Gold"})
+
+	def test_purity_is_compared_as_a_string(self):
+		# "75.40" is a different Attribute Value from "75.4"; coercing to float would accept a
+		# purity the rest of the app (BOM, variant resolution) treats as distinct.
+		tree = self._tree(purity="75.4")
+		attrs = {"Metal Type": "Gold", "Metal Touch": "18KT", "Metal Purity": "75.40"}
+		with self.assertRaises(ValidationError):
+			self._issue(tree, "M-G-18KT-75.40-Y", attrs)
+
+	def test_tree_without_metal_is_unconstrained(self):
+		# Bare trees created by Main Slip carry no metal at all (377 of them live). They must stay
+		# issuable -- there is nothing to match against.
+		tree = _new_tree()
+		self.assertEqual(tree_balance.tree_metal_attributes(tree), {})
+		_run(tse.issue_material, tree, "ANYTHING", 5.0)
+		self.assertEqual(tree.material_details[0].issue_qty, 5.0)
+
+	def test_message_names_both_sides(self):
+		tree = self._tree()
+		attrs = {"Metal Type": "Gold", "Metal Touch": "22KT", "Metal Purity": "75.4"}
+		with self.assertRaises(ValidationError) as ctx:
+			self._issue(tree, "M-G-22KT-91.9-Y", attrs)
+		msg = str(ctx.exception)
+		for token in ("M-G-22KT-91.9-Y", "22KT", "18KT", "Metal Touch"):
+			self.assertIn(token, msg)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
 # ---------------------------------------------------------------------------
 # Receive Material
 # ---------------------------------------------------------------------------
@@ -1131,6 +1396,10 @@ class TestReceiveMaterial(IntegrationTestCase):
 		self.assertEqual(produce.qty, 1.0)
 		self.assertEqual(produce.is_finished_item, 1)
 		self.assertEqual(produce.set_basic_rate_manually, 1)
+		# basic_rate is deliberately NOT set by the builder: CustomStockEntry.set_basic_rate
+		# assigns it from the consumed rows once ERPNext has resolved their outgoing rates
+		# (customization/utils/loss_valuation) -- see test_process_loss_valuation.py.
+		self.assertFalse(getattr(produce, "basic_rate", None))
 
 	def test_receive_partial_then_full_status(self):
 		tree = self._issued_tree(10.0)
@@ -1463,6 +1732,54 @@ class TestSubmitAndLock(IntegrationTestCase):
 		self.assertEqual(called_rows, [{"item_code": "GOLD-18KT", "loss_qty": 7.0}])
 		self.assertEqual(tree.status, "Submitted")
 
+	def test_submit_tree_rejects_an_over_drawn_ledger(self):
+		# Over-drawn: 2.36 received against nothing issued. The write-off below only picks up
+		# POSITIVE pending, so without this guard the tree locks at "Submitted" with a broken
+		# ledger and no correction path.
+		tree = _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": 0.0,
+					"receive_qty": 2.36,
+					"loss_qty": 0.0,
+					"pending_qty": -2.36,
+				}
+			]
+		)
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(tse, "receive_material") as mock_recv,
+			self.assertRaises(ValidationError),
+		):
+			tree.submit_tree()
+		mock_recv.assert_not_called()
+		self.assertNotEqual(tree.status, "Submitted")
+
+	def test_submit_tree_rederives_pending_before_judging_it(self):
+		# Regression, found by driving the real app against GEPL-TR-26-00154: rows written before
+		# the floor was removed persist pending_qty 0 on a ledger that is really over-drawn.
+		# Trusting the stored column waved those trees straight through to "Submitted".
+		tree = _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": 0.0,
+					"receive_qty": 2.36,
+					"loss_qty": 0.0,
+					"pending_qty": 0.0,  # stale: the old code floored this
+				}
+			]
+		)
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(tse, "receive_material") as mock_recv,
+			self.assertRaises(ValidationError),
+		):
+			tree.submit_tree()
+		mock_recv.assert_not_called()
+		self.assertNotEqual(tree.status, "Submitted")
+
 	def test_submit_tree_rejects_when_never_received(self):
 		# No receive activity at all -> _tree_status == "Issued" -> cannot submit (receive/reverse first).
 		tree = _new_tree(
@@ -1575,12 +1892,42 @@ class TestTreeOwedBatches(IntegrationTestCase):
 		self.assertEqual(self._call([self._in("B1", 6.0)], []), [])
 
 	def test_multi_batch_issue_keeps_availability_order(self):
-		"""capped_auto_batch_nos orders by (Batch.creation, batch_no); the pool must not reorder."""
+		"""capped_auto_batch_nos orders by (Batch.creation, batch_no).
+
+		The pool re-buckets that order by ownership tier and NOTHING else, so with a
+		single tier — here, no resolvable ownership at all — the availability order
+		survives untouched. Note B-NEW sorts alphabetically before B-OLD, so an
+		ownership sort that fell back to the batch name would flip these two.
+		"""
 		out = self._call(
 			[self._in("B-NEW", 4.0), self._in("B-OLD", 3.0)],
 			[{"batch_no": "B-OLD", "qty": 50.0}, {"batch_no": "B-NEW", "qty": 50.0}],
 		)
 		self.assertEqual(out, [("B-OLD", 3.0), ("B-NEW", 4.0)])
+
+	def test_customer_batches_are_returned_before_company_batches(self):
+		"""Consuming order: the customer's own metal comes back off the tree first.
+
+		B-REG is first in availability (FIFO) order and would win on creation alone;
+		the customer tier must lift B-CUST above it.
+		"""
+		ranks = {
+			"B-CUST": frappe._dict(
+				inventory_type="Customer Goods", customer="CUST-1", no_wastage=False
+			),
+			"B-REG": frappe._dict(
+				inventory_type="Regular Stock", customer=None, no_wastage=False
+			),
+		}
+		with patch.object(tse, "batch_priority_map", return_value=ranks):
+			out = self._call(
+				[self._in("B-REG", 4.0), self._in("B-CUST", 3.0)],
+				[
+					{"batch_no": "B-REG", "qty": 50.0},
+					{"batch_no": "B-CUST", "qty": 50.0},
+				],
+			)
+		self.assertEqual(out, [("B-CUST", 3.0), ("B-REG", 4.0)])
 
 	def test_query_filters_to_submitted_rows_of_this_tree(self):
 		"""Cancelled SEs must not count — cancel_tree_stock_entries leaves their SED rows intact."""
@@ -1772,3 +2119,117 @@ class TestReceiveBatchParity(IntegrationTestCase):
 			[(i.item_code, i.batch_no, i.qty) for i in fakes[0].items],
 			[("GOLD-18KT", "B-18", 5.0), ("GOLD-22KT", "B-22", 3.0)],
 		)
+
+
+class TestReceiveTwoPassOwnership(IntegrationTestCase):
+	"""Receive returns the customer's metal; loss is written off against the company's.
+
+	These two rules are OPPOSITE orderings of one pool, so a single ordered walk
+	cannot satisfy both. The regression this class pins: allocating ``recv + loss``
+	in one pass and slicing it makes the loss leg inherit whatever the receive leg
+	did not take, so with customer-first ordering the customer's gold gets scrapped
+	as soon as the pool's customer qty covers the combined need.
+
+	Keeps the base ``setUpClass`` (like its sibling ``TestReceiveBatchParity``) --
+	``_new_tree`` builds a real Tree Number document and needs the bootstrap.
+	"""
+
+	def _tree(self, issue=20.0):
+		return _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": issue,
+					"receive_qty": 0,
+					"loss_qty": 0,
+					"pending_qty": issue,
+				}
+			]
+		)
+
+	OWN = {
+		"B-CUST": ("Customer Goods", "MHCU0012"),
+		"B-REG": ("Regular Stock", None),
+	}
+
+	def _receive(self, recv, loss, owed, ownership=None):
+		# _new_transfer_se resolves the SE company via get_cached_value on a
+		# warehouse name this pure-logic harness never creates; the shared _run
+		# helper does not stub it.
+		with patch.object(tse.frappe, "get_cached_value", return_value="CO"):
+			return _run(
+				tse.receive_material,
+				self._tree(),
+				[{"item_code": "GOLD-18KT", "receive_qty": recv, "loss_qty": loss}],
+				owed=owed,
+				ownership=self.OWN if ownership is None else ownership,
+			)
+
+	@staticmethod
+	def _by_batch(se):
+		"""``{batch_no: consumed qty}`` for a leg, ignoring loss-pair produce rows."""
+		out = {}
+		for row in se.items:
+			if not getattr(row, "s_warehouse", None):
+				continue  # produce row of the loss pair
+			out[row.batch_no] = out.get(row.batch_no, 0) + row.qty
+		return out
+
+	def test_the_counterexample_customer_covers_need_but_loss_takes_regular(self):
+		"""Pool [CG 10, RS 10], recv 2, loss 3.
+
+		The old single-pass allocator stopped at need = 5 and took it all from the
+		customer batch, so the loss leg scrapped customer gold while the Regular
+		batch was never touched.
+		"""
+		se_recv, se_loss = self._receive(
+			2.0, 3.0, owed=[("B-CUST", 10.0), ("B-REG", 10.0)]
+		)
+		self.assertEqual(self._by_batch(se_recv), {"B-CUST": 2.0})
+		self.assertEqual(self._by_batch(se_loss), {"B-REG": 3.0})
+
+	def test_pure_write_off_prefers_regular(self):
+		"""``Tree Number.submit_tree`` settles leftovers with recv = 0."""
+		(se_loss,) = self._receive(0.0, 4.0, owed=[("B-CUST", 10.0), ("B-REG", 10.0)])
+		self.assertEqual(self._by_batch(se_loss), {"B-REG": 4.0})
+
+	def test_pure_receive_prefers_customer(self):
+		(se_recv,) = self._receive(6.0, 0.0, owed=[("B-CUST", 10.0), ("B-REG", 10.0)])
+		self.assertEqual(self._by_batch(se_recv), {"B-CUST": 6.0})
+
+	def test_loss_spills_to_customer_only_once_regular_is_exhausted(self):
+		se_recv, se_loss = self._receive(
+			1.0, 5.0, owed=[("B-CUST", 10.0), ("B-REG", 2.0)]
+		)
+		self.assertEqual(self._by_batch(se_recv), {"B-CUST": 1.0})
+		self.assertEqual(self._by_batch(se_loss), {"B-REG": 2.0, "B-CUST": 3.0})
+
+	def test_legs_never_double_book_the_same_batch_qty(self):
+		se_recv, se_loss = self._receive(
+			7.0, 4.0, owed=[("B-CUST", 8.0), ("B-REG", 5.0)]
+		)
+		taken = {}
+		for se in (se_recv, se_loss):
+			for batch, qty in self._by_batch(se).items():
+				taken[batch] = taken.get(batch, 0) + qty
+		self.assertLessEqual(taken["B-CUST"], 8.0)
+		self.assertLessEqual(taken.get("B-REG", 0), 5.0)
+		self.assertAlmostEqual(sum(taken.values()), 11.0, places=3)
+
+	def test_shortfall_still_throws_before_anything_is_submitted(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._receive(6.0, 4.0, owed=[("B-CUST", 3.0)])
+
+	def test_single_owner_pool_is_unchanged(self):
+		"""A tree with no customer metal allocates exactly as it always did."""
+		se_recv, se_loss = self._receive(
+			4.0,
+			2.0,
+			owed=[("B-1", 5.0), ("B-2", 5.0)],
+			ownership={
+				"B-1": ("Regular Stock", None),
+				"B-2": ("Regular Stock", None),
+			},
+		)
+		self.assertEqual(self._by_batch(se_recv), {"B-1": 4.0})
+		self.assertEqual(self._by_batch(se_loss), {"B-1": 1.0, "B-2": 1.0})
