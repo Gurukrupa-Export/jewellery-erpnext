@@ -24,6 +24,8 @@
   "section_break_pk7m5",
   "operation",
   "employee",
+  "is_repeat_receive",
+  "worker_performance",
   "column_break_mooif",
   "show_manufacturing_operation",
   "is_main_slip_required",
@@ -106,6 +108,25 @@
    "label": "Employee",
    "mandatory_depends_on": "eval: doc.subcontracting == \"No\";",
    "options": "Employee"
+  },
+  {
+   "default": "0",
+   "description": "Server-stamped: at least one work order on this Receive already completed a cycle at this operation. Drives the Worker Performance depends_on; never set by the user.",
+   "fieldname": "is_repeat_receive",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Is Repeat Receive",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "default": "NO",
+   "depends_on": "eval:doc.is_repeat_receive && doc.type==\"Receive\"",
+   "fieldname": "worker_performance",
+   "fieldtype": "Select",
+   "label": "Worker Performance",
+   "no_copy": 1,
+   "options": "NO\nYES"
   },
   {
    "depends_on": "eval:doc.type==\"Issue\"",

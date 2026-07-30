@@ -71,6 +71,7 @@ class ProductCertification(Document):
 		):
 			frappe.throw(_("Please set warehouse for selected supplier"))
 
+		self.validate_serial_warehouse_department()
 		self.validate_items()
 		validate_over_receipt(self)
 		self.update_bom()
@@ -81,6 +82,79 @@ class ProductCertification(Document):
 
 	def before_submit(self):
 		self.validate_exploded_qty()
+
+	def validate_serial_warehouse_department(self):
+		"""On an Issue, every Product Details serial must sit in a warehouse of this
+		document's Department.
+
+		Resolved serial -> warehouse -> department rather than department -> warehouse:
+		a department owns several warehouses (Product Certification has a Manufacturing
+		"WO" one and a Transit one), so the forward direction would have to guess a
+		``warehouse_type`` and would reject a serial legitimately parked in Transit.
+
+		Issue only. A Receive carries serials that are still in the supplier's WIP
+		warehouse -- moving them back is what the receipt is for.
+		"""
+		if self.type != "Issue" or not self.department:
+			return
+
+		serials = {row.serial_no for row in self.product_details if row.serial_no}
+		if not serials:
+			return
+
+		serial_wh = dict(
+			frappe.get_all(
+				"Serial No",
+				filters={"name": ("in", list(serials))},
+				fields=["name", "warehouse"],
+				as_list=True,
+			)
+		)
+		warehouses = {wh for wh in serial_wh.values() if wh}
+		wh_dept = (
+			dict(
+				frappe.get_all(
+					"Warehouse",
+					filters={"name": ("in", list(warehouses))},
+					fields=["name", "department"],
+					as_list=True,
+				)
+			)
+			if warehouses
+			else {}
+		)
+
+		for row in self.product_details:
+			if not row.serial_no:
+				continue
+
+			warehouse = serial_wh.get(row.serial_no)
+			if not warehouse:
+				# ERPNext clears Serial No.warehouse on every outward movement, so a
+				# blank warehouse means "not in stock", not "unknown".
+				frappe.throw(
+					_("Row #{0}: Serial No {1} is not in stock.").format(
+						row.idx, frappe.bold(row.serial_no)
+					),
+					title=_("Serial No Not In Stock"),
+				)
+
+			# Warehouse.department is nullable and older rows carry "" -- normalise both
+			# sides so an unlinked warehouse is not mistaken for a match.
+			if (wh_dept.get(warehouse) or None) != (self.department or None):
+				frappe.throw(
+					_(
+						"Row #{0}: Serial No {1} is in {2}, which belongs to department "
+						"{3}, not {4}. Move it into a {4} warehouse before issuing."
+					).format(
+						row.idx,
+						frappe.bold(row.serial_no),
+						frappe.bold(warehouse),
+						frappe.bold(wh_dept.get(warehouse) or "-"),
+						frappe.bold(self.department),
+					),
+					title=_("Serial No Not In Department Warehouse"),
+				)
 
 	def validate_items(self):
 		if self.type == "Receive":
@@ -1362,9 +1436,10 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			all_pmo_mwos = [mwo_name]
 
 		# --- Find and cancel SREs, use SRE warehouse as source ---
+		sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+
 		sre_list_1 = []
 		if all_pmo_mwos:
-			sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 			sre_filters = {"docstatus": 1}
 			if "manufacturing_work_order" in sre_cols:
 				sre_filters["manufacturing_work_order"] = ["in", all_pmo_mwos]
@@ -1390,14 +1465,22 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				"Parent Manufacturing Order", pmo_name, "sales_order"
 			)
 		if sales_order and item_codes:
+			sre_filters_2 = {
+				"docstatus": 1,
+				"voucher_type": "Sales Order",
+				"voucher_no": sales_order,
+				"item_code": ["in", item_codes],
+			}
+			# Only UNTAGGED (SO-level) reservations belong here. Every MWO on a Sales Order
+			# shares voucher_no, and the metal/finding item codes are common across the whole
+			# order -- without this scope a Product Certification of one PMO consumes the WIP
+			# reservations of every other MWO on the SO (measured: 216 SREs across 115 MWOs
+			# from a PC covering 2). MWO-tagged SREs for THIS PMO are already in sre_list_1.
+			if "manufacturing_work_order" in sre_cols:
+				sre_filters_2["manufacturing_work_order"] = ["in", ["", None]]
 			sre_list_2 = frappe.db.get_all(
 				"Stock Reservation Entry",
-				filters={
-					"docstatus": 1,
-					"voucher_type": "Sales Order",
-					"voucher_no": sales_order,
-					"item_code": ["in", item_codes],
-				},
+				filters=sre_filters_2,
 				fields=[
 					"name",
 					"item_code",

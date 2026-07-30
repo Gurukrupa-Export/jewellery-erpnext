@@ -343,6 +343,26 @@ class TestDepartmentIR(IntegrationTestCase):
 	def tearDown(self):
 		return super().tearDown()
 
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir.frappe.get_all"
+	)
+	def test_receive_rows_are_fetched_in_creation_order(
+		self, mock_get_all, _mock_get_value
+	):
+		"""Manufacturing Operation sorts "modified DESC" by default, which had the Receive
+		leg build its child table in a different order than the Issue processed its rows.
+		Pinned to insertion order so both legs agree."""
+		mock_get_all.return_value = []
+		doc = FakeDepartmentIR(doctype="Department IR", name="DIR-ORDER-001")
+		DepartmentIR.get_manufacturing_operations_from_department_ir(
+			doc, "DIR-ISSUE-001"
+		)
+
+		self.assertEqual(mock_get_all.call_args.kwargs.get("order_by"), "creation asc")
+
 
 def mo_creation():
 	mwo = frappe.get_last_doc("Manufacturing Work Order")

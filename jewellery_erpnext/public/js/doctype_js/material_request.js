@@ -179,6 +179,39 @@ frappe.ui.form.on("Material Request", {
 				});
 		}
 	},
+	// Warn as soon as the operation is picked, rather than letting the operator
+	// discover the mismatch when "Transfer to MOP" throws. Non-blocking on purpose:
+	// the field is mandatory in the "Material Transferred" state, so throwing here
+	// would make the document unsaveable. The server guard
+	// (doc_events/material_request.before_update_after_submit) is the hard block.
+	custom_manufacturing_operation(frm) {
+		const mop = frm.doc.custom_manufacturing_operation;
+		const warehouse = (frm.doc.items || []).length && frm.doc.items[0].warehouse;
+		if (!mop || !warehouse) return;
+
+		Promise.all([
+			frappe.db.get_value("Manufacturing Operation", mop, ["department", "previous_mop"]),
+			frappe.db.get_value("Warehouse", warehouse, "department"),
+		]).then(([mop_res, wh_res]) => {
+			const mop_dept = mop_res.message && mop_res.message.department;
+			const row_dept = wh_res.message && wh_res.message.department;
+			// Mirrors the server guard: an operation that has never been moved by a
+			// Department IR sits in the default department and is a gathering point.
+			const moved = mop_res.message && mop_res.message.previous_mop;
+			if (moved && mop_dept && row_dept && mop_dept !== row_dept) {
+				frappe.show_alert(
+					{
+						message: __(
+							"Material is in {0}; operation {1} is in {2}. Transfer it to {2} first.",
+							[row_dept, mop, mop_dept]
+						),
+						indicator: "orange",
+					},
+					10
+				);
+			}
+		});
+	},
 	// before_workflow_action(frm) {
 	// 	if (frm.doc.workflow_state == "Material Transferred") {
 	// 		if (!frm.doc.custom_manufacturing_operation) {

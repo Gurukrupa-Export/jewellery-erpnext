@@ -148,11 +148,21 @@ def _build_sre_info_by_key(active_sres, item_batch_keys):
 					if not existing or flt(be["qty"]) > existing[2]:
 						info[key] = (sre["name"], sre["warehouse"], flt(be["qty"]))
 		else:
+			# A genuinely non-batch SRE (has_batch_no = 0) can only satisfy a non-batch
+			# line; letting it claim a batched key handed that line an unrelated
+			# warehouse. A batch-tracked item reserved on "Qty" has no Serial and Batch
+			# Entry rows to match on, so it still maps to every key of its item
+			# (unchanged behaviour) -- narrowing that would drop a legitimate candidate
+			# and, with it, the cancel of its reservation.
+			sre_is_batch_item = cint(sre["has_batch_no"])
 			for key in item_batch_keys:
-				if key[0] == sre["item_code"]:
-					existing = info.get(key)
-					if not existing or avail > existing[2]:
-						info[key] = (sre["name"], sre["warehouse"], avail)
+				if key[0] != sre["item_code"]:
+					continue
+				if not sre_is_batch_item and key[1]:
+					continue
+				existing = info.get(key)
+				if not existing or avail > existing[2]:
+					info[key] = (sre["name"], sre["warehouse"], avail)
 	return info
 
 
@@ -205,28 +215,84 @@ def _get_dept_ir_mop_logs_any(dept_ir_name, row_name):
 	)
 
 
-def _find_stock_entry_source_warehouse(
-	dept_ir_name, row_name, item_code, batch_no, mwo
-):
-	"""Fallback: resolve s_warehouse from an existing submitted SE Detail row
-	linked to this Department IR, for the given item/batch combination.
+def _row_mop_names(dept_ir_logs, fallback=None):
+	"""Manufacturing Operations owned by ONE Department IR row.
 
-	This is the secondary fallback after MOP Log from_warehouse and before SRE.
+	``create_mop_log_for_department_ir`` stamps every log it writes for a row with that
+	row's destination operation (mop_log.py:602): the NEW operation minted by
+	``create_operation_for_next_dept`` on the Issue leg, the In-Transit operation carried
+	on the row on the Receive leg. Both are unique to a single row of a single Department
+	IR, and ``_process_row`` copies the same value onto every Stock Entry Detail line it
+	creates -- so this set IS the row's identity inside Stock Entry.
 	"""
-	se_names = frappe.db.get_all(
+	names = {log.get("manufacturing_operation") for log in dept_ir_logs}
+	names.discard(None)
+	return sorted(names or ({fallback} if fallback else set()))
+
+
+def _submitted_se_names_for_dir(dept_ir_name):
+	"""Submitted Stock Entries linked to this Department IR (any row)."""
+	return frappe.db.get_all(
 		"Stock Entry",
 		filters={"department_ir": dept_ir_name, "docstatus": 1},
 		pluck="name",
 	)
-	if not se_names:
+
+
+def _find_row_stock_entry(se_names, row_mops):
+	"""Submitted SE of this Department IR that already covers THIS row's operations.
+
+	Row-scoped on purpose. The previous form of this check was scoped to the whole
+	Department IR, so on a multi-row IR row 1 created its Stock Entry and every later row
+	matched row 1's entry and returned without moving any stock -- the MOP Log said the
+	material had moved while physically it had not.
+	"""
+	if not se_names or not row_mops:
 		return None
-	filters = {"parent": ["in", se_names], "item_code": item_code}
+	rows = frappe.db.get_all(
+		"Stock Entry Detail",
+		filters={
+			"parent": ["in", se_names],
+			"parenttype": "Stock Entry",
+			"manufacturing_operation": ["in", row_mops],
+		},
+		fields=["parent"],
+		limit=1,
+	)
+	return rows[0]["parent"] if rows else None
+
+
+def _find_stock_entry_source_warehouse(se_names, row_mops, item_code, batch_no):
+	"""Fallback: resolve s_warehouse from a submitted SE Detail row of THIS row.
+
+	Secondary fallback, after MOP Log from_warehouse and before SRE.
+
+	Scoped by ``row_mops`` -- it previously spanned every Stock Entry of the Department
+	IR with ``limit=1`` and no ``order_by`` (and silently ignored the ``row_name`` /
+	``mwo`` arguments it accepted), so it could hand back a sibling row's warehouse.
+	``order_by`` makes the pick deterministic; the ``s_warehouse`` filter drops
+	receipt-only lines that carry no source.
+
+	NOTE: with the row-scoped guard in ``_process_row`` this fallback is normally
+	unreachable -- the guard matches a strict superset of what this can match, so it
+	returns early whenever such a row exists. Kept, correctly scoped, as cheap defence.
+	"""
+	if not se_names or not row_mops:
+		return None
+	filters = {
+		"parent": ["in", se_names],
+		"parenttype": "Stock Entry",
+		"item_code": item_code,
+		"manufacturing_operation": ["in", row_mops],
+		"s_warehouse": ["is", "set"],
+	}
 	if batch_no:
 		filters["batch_no"] = batch_no
 	rows = frappe.db.get_all(
 		"Stock Entry Detail",
 		filters=filters,
 		fields=["s_warehouse"],
+		order_by="creation desc",
 		limit=1,
 	)
 	return rows[0]["s_warehouse"] if rows else None
@@ -447,22 +513,6 @@ def _process_row(dept_ir_doc, row, scenario):
 	mwo = row.manufacturing_work_order
 	mop_name = row.manufacturing_operation  # the PC MOP (from the DIR row)
 
-	# Bug 6: Duplicate SE guard — if a submitted SE already exists for this
-	# Department IR, the sync has already run. Return early to stay idempotent.
-	existing_se = frappe.db.get_all(
-		"Stock Entry",
-		filters={"department_ir": dept_ir_doc.name, "docstatus": 1},
-		limit=1,
-		pluck="name",
-	)
-	if existing_se:
-		frappe.log_error(
-			"process_pc_tagging_stock_sync: SE {0} already exists for Department IR {1}. "
-			"Skipping to prevent duplicate.".format(existing_se[0], dept_ir_doc.name),
-			"PC Tagging Sync Duplicate Guard",
-		)
-		return
-
 	dept_ir_logs_raw = _get_dept_ir_mop_logs(dept_ir_doc.name, row.name)
 	if not dept_ir_logs_raw:
 		return
@@ -482,6 +532,39 @@ def _process_row(dept_ir_doc, row, scenario):
 		):
 			_dedup[_key] = _log
 	dept_ir_logs = list(_dedup.values())
+
+	# Duplicate-SE guard, scoped to THIS ROW rather than the whole Department IR.
+	# process_pc_tagging_stock_sync calls _process_row once per child row and each call
+	# creates exactly one Stock Entry, so a Department-IR-wide check made row 1 create its
+	# entry and every later row return without moving stock: the MOP Log claimed the
+	# material had moved to the next department while it was still sitting in the current
+	# one, and the follow-on Receive then failed the physical-stock fail-fast below.
+	#
+	# Keyed on the row's Manufacturing Operations, which _process_row writes onto every
+	# Stock Entry Detail line it creates (see the se.append() further down). Built from
+	# the RAW logs, not the deduped view, so the key set is maximally inclusive.
+	row_mops = _row_mop_names(dept_ir_logs_raw, fallback=mop_name)
+	dir_se_names = _submitted_se_names_for_dir(dept_ir_doc.name)
+	existing_se = _find_row_stock_entry(dir_se_names, row_mops)
+	if existing_se:
+		frappe.log_error(
+			"process_pc_tagging_stock_sync: Stock Entry {0} already covers Department IR "
+			"{1} row {2} (operations {3}). Skipping to prevent duplicate.".format(
+				existing_se, dept_ir_doc.name, row.name, ", ".join(row_mops)
+			),
+			"PC Tagging Sync Duplicate Guard",
+		)
+		# The skip used to be log-only, so a row whose stock never moved looked like a
+		# clean submit. Tell the user.
+		frappe.msgprint(
+			_(
+				"Row {0}: stock was already transferred by Stock Entry {1}. "
+				"Skipping to avoid a duplicate movement."
+			).format(row.idx, existing_se),
+			title=_("PC→Tagging sync: row already synced"),
+			indicator="orange",
+		)
+		return
 
 	item_batch_keys = {(log["item_code"], log["batch_no"]) for log in dept_ir_logs}
 	active_sres = _get_active_sres_for_mwo(mwo)
@@ -556,17 +639,34 @@ def _process_row(dept_ir_doc, row, scenario):
 		#   MOP Log from_warehouse → submitted SE Detail → active SRE warehouse.
 		sre_hit = sre_info_by_key.get((item_code, batch_no))
 
-		candidates = []
-		if log.get("from_warehouse"):
-			candidates.append(log["from_warehouse"])
+		# Ordered, de-duplicated, falsy-stripped. Without the dedup a MOP Log
+		# from_warehouse equal to the SRE warehouse was probed twice and named twice in
+		# the fail-fast diagnostic below, reading like two distinct shortfalls.
 		se_source_wh = _find_stock_entry_source_warehouse(
-			dept_ir_doc.name, row.name, item_code, batch_no, mwo
+			dir_se_names, row_mops, item_code, batch_no
 		)
-		if se_source_wh:
-			candidates.append(se_source_wh)
-		if sre_hit:
-			candidates.append(sre_hit[1])
+		candidates = list(
+			dict.fromkeys(
+				wh
+				for wh in (
+					log.get("from_warehouse"),
+					se_source_wh,
+					sre_hit[1] if sre_hit else None,
+				)
+				if wh
+			)
+		)
 
+		# No cross-row `used={warehouse: qty}` ledger here, unlike the mirror at
+		# serial_number_creator._pick_source_warehouse. There, every row is resolved
+		# before ONE Manufacture entry is submitted, so siblings sharing an (item, batch)
+		# would both draw on the same warehouse. Here each row submits its own Stock Entry
+		# before the next row runs (se.submit() below), stock_ledger.make_entry writes the
+		# SLE synchronously in the same transaction, and get_available_batches reads live
+		# SLE rows -- so the next row already sees this row's consumption. Within one row
+		# the _dedup above guarantees one line per (item_code, batch_no).
+		# If this is ever consolidated into a single Stock Entry per Department IR, the
+		# shared ledger becomes mandatory.
 		s_warehouse = _pick_source_warehouse(
 			item_code, batch_no, flt(qty, 3), candidates
 		)
@@ -667,8 +767,8 @@ def _process_row(dept_ir_doc, row, scenario):
 	_series_stub.stock_entry_type = "Material Transfer to Department"
 	preallocate_series_for_docs(_series_stub)
 	lock_bins(
-		[(l["item_code"], l["s_warehouse"]) for l in transfer_lines]
-		+ [(l["item_code"], l["t_warehouse"]) for l in transfer_lines]
+		[(line["item_code"], line["s_warehouse"]) for line in transfer_lines]
+		+ [(line["item_code"], line["t_warehouse"]) for line in transfer_lines]
 	)
 
 	# Step 1: Cancel old SREs (only when an SRE was found for the line)
@@ -687,6 +787,13 @@ def _process_row(dept_ir_doc, row, scenario):
 	se.company = dept_ir_doc.company
 	se.department_ir = dept_ir_doc.name
 	se.auto_created = 1
+	# Carry the Department IR's own manufacturer. doc_events/stock_entry.before_validate
+	# resolves it from the module-level MANUFACTURER, which is
+	# frappe.defaults.get_user_default("manufacturer") captured at import -- so without
+	# this the entry only builds inside a Desk session that happens to have that default
+	# set, and throws "Select Manufacturer in session defaults or in Filed" from any
+	# headless caller (patch, scheduler, test). The document already knows the answer.
+	_safe_set(se, "manufacturer", dept_ir_doc.manufacturer)
 	_safe_set(se, "manufacturing_work_order", mwo)
 
 	for line in transfer_lines:

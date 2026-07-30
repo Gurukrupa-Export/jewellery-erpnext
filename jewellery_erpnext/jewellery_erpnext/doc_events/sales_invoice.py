@@ -29,6 +29,10 @@ def before_validate(self, method):
 			if flt(row.base_amount) > 0:
 				row.base_amount = -1 * flt(row.base_amount)
 		return
+	if self.sales_type == 'Hybrid':
+		has_real_items = any(row.item_code != "Subcontracting Charges" for row in self.items)
+		if has_real_items:
+			self.items = [row for row in self.items if row.item_code != "Subcontracting Charges"]
 	if self.sales_type != 'Certification':
 		if self.gold_rate:
 			self.gold_rate_with_gst=round(self.gold_rate * 1.03,3)
@@ -105,6 +109,7 @@ def validate(self, method):
 				row_s.custom_finding_weight=bom_doc.finding_weight
 				row_s.custom_diamond_weight=bom_doc.total_diamond_weight_in_gms
 				row_s.custom_gemstone_weight=bom_doc.total_gemstone_weight_in_gms
+				row_s.custom_gross_weight=bom_doc.gross_weight
 		self.custom_diamond_pcs = sum(flt(r.custom_diamond_pcs) for r in self.items)
 		self.custom_gemstone_pcs = sum(flt(r.custom_gemstone_pcs) for r in self.items)
 		self.custom_other_weight = sum(flt(r.custom_other_weight) for r in self.items)
@@ -112,6 +117,7 @@ def validate(self, method):
 		self.custom_finding_weight = sum(flt(r.custom_finding_weight) for r in self.items)
 		self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
 		self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
+		self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
 		payment_terms_data = update_si_data(self )
 		update_payment_terms(self, payment_terms_data)
 		return
@@ -135,6 +141,7 @@ def validate(self, method):
 			row_s.custom_finding_weight=bom_doc.finding_weight
 			row_s.custom_diamond_weight=bom_doc.total_diamond_weight_in_gms
 			row_s.custom_gemstone_weight=bom_doc.total_gemstone_weight_in_gms
+			row_s.custom_gross_weight=bom_doc.gross_weight
 	self.custom_diamond_pcs = sum(flt(r.custom_diamond_pcs) for r in self.items)
 	self.custom_gemstone_pcs = sum(flt(r.custom_gemstone_pcs) for r in self.items)
 	self.custom_other_weight = sum(flt(r.custom_other_weight) for r in self.items)
@@ -142,6 +149,7 @@ def validate(self, method):
 	self.custom_finding_weight = sum(flt(r.custom_finding_weight) for r in self.items)
 	self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
 	self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
+	self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
 	if not (self.company == "KG GK Jewellers Private Limited" or customer_group == "Internal"):
 		self.total = 0
 		for row in self.items:
@@ -253,7 +261,15 @@ def on_submit(self,method):
 
 		set_gst_details(new_si)
 		new_si.calculate_taxes_and_totals()
-		new_si.insert(ignore_permissions=True)
+		# new_si.insert(ignore_permissions=True)
+		try:
+			new_si.insert(ignore_permissions=True)
+		except Exception as e:
+			frappe.log_error(
+				title="New SI Creation Failed",
+				message=frappe.get_traceback()
+			)
+			frappe.throw(f"Error while creating new SI: {str(e)}")
 		frappe.db.set_value("Serial No", row.get("serial_no"), {"status": "Active","warehouse":"Product Allocation FG - KGJPL"})
 		return
 	if self.sales_type=='Hybrid' :
@@ -313,7 +329,15 @@ def on_submit(self,method):
 
 		set_gst_details(new_si)
 		new_si.calculate_taxes_and_totals()
-		new_si.insert(ignore_permissions=True)
+		# new_si.insert(ignore_permissions=True)
+		try:
+			new_si.insert(ignore_permissions=True)
+		except Exception as e:
+			frappe.log_error(
+				title="New SI Creation Failed",
+				message=frappe.get_traceback()
+			)
+			frappe.throw(f"Error while creating new SI: {str(e)}")
 
 
 		
@@ -406,7 +430,7 @@ def set_gst_details(self):
         template_key = "Outright" if has_real_items else "Outwork"
     else:
         template_key = self.sales_type
-    item_tax_template = item_template_map.get(self.sales_type, {}).get(self.company)
+    item_tax_template = item_template_map.get(template_key, {}).get(self.company)
     if not item_tax_template:
         return
 
@@ -873,11 +897,11 @@ def update_einvoice_items(self, invoice_data, payment_terms_data,allowed_item_ty
 					"uom": invoice_data[row]["uom"] or "Nos",
 					"gst_hsn_code": invoice_data[row]["hsn_code"],
 					"conversion_factor": 1,
-					"qty": invoice_data[row]["qty"],
+					"qty": qty,
 					"rate": invoice_data[row].get("rate", 0),
 					"base_rate": invoice_data[row].get("rate", 0),
-					"amount": flt(invoice_data[row]["amount"], 3),
-					"base_amount": invoice_data[row]["amount"],
+					"amount": flt(amount, 3),
+					"base_amount": amount,
 					"income_account": invoice_data[row]["income_account"],
 					"cost_center": invoice_data[row]["cost_center"],
 				},
@@ -888,7 +912,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gol
 	gold_making_item = None
 	bom_doc.customer = self.customer
 	precision = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
-	so_doc = frappe.get_doc("Sales Order", row.sales_order)
+	# so_doc = frappe.get_doc("Sales Order", row.sales_order)
 	so_item_map = {}
 
 	if not self.is_return and row.sales_order:

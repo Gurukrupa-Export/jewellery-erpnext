@@ -16,6 +16,9 @@ frappe.ui.form.on("Metal Conversions", {
 				query: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.filters.item_query_filters",
 			};
 		};
+		// Remarks ships no options in the DocType JSON, so a saved doc has nothing to
+		// render its stored value against until this runs.
+		set_remark_options(frm);
 	},
 	setup(frm) {
 		// Set Metal Tab Filter
@@ -39,6 +42,9 @@ frappe.ui.form.on("Metal Conversions", {
 		frm.set_value("target_warehouse", frm.doc.source_warehouse);
 		frm.refresh_field("target_warehouse");
 	},
+	percentage(frm) {
+		set_remark_options(frm);
+	},
 	multiple_metal_converter(frm) {
 		// For Clearing All Field's
 		frappe.call({
@@ -60,21 +66,6 @@ frappe.ui.form.on("Metal Conversions", {
 	source_qty(frm) {
 		// Clear All Fields
 		clear_metal_field(frm);
-	},
-	scan_source_item(frm) {
-		// Single mode (Metal Converter tab): resolve + metal-validate the scanned code
-		// on the server, then set Source Item client-side so it lands reliably even on
-		// an unsaved form. Item only — qty is entered by the operator.
-		metal_scan_add(frm, "scan_source_item", (item) => frm.set_value("source_item", item));
-	},
-	scan_mc_source_item(frm) {
-		// Multiple mode (Multiple Metal Converter tab): append the scanned metal item as
-		// a new grid row (item only; qty/batch fill via the existing MC Source Table
-		// handlers on entry / save).
-		metal_scan_add(frm, "scan_mc_source_item", (item) => {
-			frm.add_child("mc_source_table", { item_code: item });
-			frm.refresh_field("mc_source_table");
-		});
 	},
 	is_melting_loss(frm) {
 		if (frm.doc.is_melting_loss) {
@@ -151,22 +142,34 @@ frappe.ui.form.on("MC Source Table", {
 		set_batch_value(frm, cdt, cdn);
 	},
 });
-function metal_scan_add(frm, scan_field, apply) {
-	// Resolve a scanned Item Code (server validates it is a metal M/F item), then apply
-	// it client-side and clear the input for the next scan. Doing the mutation on the
-	// client keeps it reliable on an unsaved form.
-	const code = (frm.doc[scan_field] || "").trim();
-	if (!code) return;
-	frappe
-		.call({
-			method: "jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.metal_conversions.get_scan_metal_item",
-			args: { barcode: code },
-		})
-		.then((r) => {
-			frm.set_value(scan_field, "");
-			if (r && r.message) apply(r.message);
-		});
+function set_remark_options(frm) {
+	// Remarks is a Select whose option TEXT carries the document's Percentage, so the
+	// list is built per document instead of living in the DocType JSON (where it would
+	// be shared by every document). The server renders it -- see
+	// metal_conversions.py::render_remark_options -- and re-renders the stored value on
+	// validate, so what the dropdown shows and what we store can never drift.
+	if (!frm.fields_dict["remarks"]) return;
+
+	const previous = frm.fields_dict["remarks"].df.options;
+	const picked = Array.isArray(previous) ? previous.indexOf(frm.doc.remarks) : -1;
+
+	frappe.call({
+		method: "get_remark_options",
+		doc: frm.doc,
+		callback: (r) => {
+			const options = [""].concat(r.message || []);
+			frm.set_df_property("remarks", "options", options);
+
+			// Both lists are [""] + templates in the same order, so the index survives a
+			// Percentage change -- re-point a picked remark at the re-rendered sentence.
+			if (picked > 0 && options[picked] && options[picked] !== frm.doc.remarks) {
+				frm.set_value("remarks", options[picked]);
+			}
+			frm.refresh_field("remarks");
+		},
+	});
 }
+
 function set_wh_filter(frm, field_name) {
 	frm.set_query(field_name, function () {
 		return {

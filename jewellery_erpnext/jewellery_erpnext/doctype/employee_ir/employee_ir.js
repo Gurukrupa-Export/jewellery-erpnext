@@ -18,6 +18,7 @@ frappe.ui.form.on("Employee IR", {
 		if (frm.doc.docstatus == 0 && frm.doc.type == "Receive") {
 			load_fg_bom_fields(frm, false);
 		}
+		load_repeat_flag(frm);
 	},
 	refresh_fg_bom_fields(frm) {
 		load_fg_bom_fields(frm, true);
@@ -103,6 +104,12 @@ frappe.ui.form.on("Employee IR", {
 	type(frm) {
 		frm.clear_table("department_ir_operation");
 		frm.refresh_field("department_ir_operation");
+		load_repeat_flag(frm);
+	},
+	operation(frm) {
+		// Repeat-ness is per (work order, operation), so re-pointing the operation
+		// can flip the answer even with the same rows loaded.
+		load_repeat_flag(frm);
 	},
 	async scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
@@ -179,6 +186,7 @@ frappe.ui.form.on("Employee IR", {
 									gemstone_pcs: values.gemstone_pcs,
 								});
 								frm.refresh_field("employee_ir_operations");
+								load_repeat_flag(frm);
 							}
 						);
 					} else {
@@ -580,6 +588,7 @@ function add_load_full_casting_tree_button(frm) {
 						});
 					});
 					frm.refresh_field("employee_ir_operations");
+					load_repeat_flag(frm);
 					frappe.show_alert({
 						message: __("Added {0} work order(s) from the casting tree.", [rows.length]),
 						indicator: "green",
@@ -588,6 +597,56 @@ function add_load_full_casting_tree_button(frm) {
 			});
 		});
 	});
+}
+
+// Worker Performance is only asked when a work order comes BACK to an operation it
+// has already been through. Nothing on the client can know that -- only submitted
+// history can -- so the flag is resolved server-side and re-applied here. This is
+// purely so the field appears before save; EmployeeIR.set_repeat_receive_flag
+// recomputes it authoritatively on validate.
+function load_repeat_flag(frm) {
+	// A submitted document already carries the stamped flag; don't re-query it.
+	if (frm.doc.docstatus !== 0) return;
+
+	if (frm.doc.type !== "Receive" || !frm.doc.operation) {
+		apply_repeat_flag(frm, []);
+		return;
+	}
+	const ops = (frm.doc.employee_ir_operations || []).map((r) => ({
+		manufacturing_operation: r.manufacturing_operation,
+		// May be blank on a freshly scanned row; the server resolves it via the MOP.
+		manufacturing_work_order: r.manufacturing_work_order,
+	}));
+	if (!ops.length) {
+		apply_repeat_flag(frm, []);
+		return;
+	}
+
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir.get_repeat_work_orders",
+		args: {
+			operations: JSON.stringify(ops),
+			operation: frm.doc.operation,
+			employee_ir: frm.doc.__islocal ? null : frm.doc.name,
+		},
+		callback: (r) => apply_repeat_flag(frm, r.message || []),
+	});
+}
+
+function apply_repeat_flag(frm, repeats) {
+	// Assigned straight onto frm.doc rather than through set_value: this is a derived
+	// value the server recomputes on validate, and set_value would mark an otherwise
+	// untouched form dirty.
+	frm.doc.is_repeat_receive = repeats.length ? 1 : 0;
+	// One header answer can cover several work orders, so name the ones that are
+	// actually rework -- otherwise the question is unanswerable on a mixed receive.
+	frm.set_df_property(
+		"worker_performance",
+		"description",
+		repeats.length ? __("Repeat work order(s) at this operation: {0}", [repeats.join(", ")]) : ""
+	);
+	// refresh_field alone does NOT re-evaluate depends_on.
+	frm.layout.refresh_dependency();
 }
 
 function load_fg_bom_fields(frm, force) {

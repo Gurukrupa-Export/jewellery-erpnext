@@ -27,7 +27,13 @@
   "enforce_stock_recon_window",
   "casting_tree_section",
   "casting_tree_reissue_help",
-  "enforce_full_casting_tree_reissue"
+  "enforce_full_casting_tree_reissue",
+  "eod_allocation_section",
+  "eod_allocation_help",
+  "enable_eod_bucket_allocation",
+  "eod_plan_heal_section",
+  "eod_plan_heal_help",
+  "enable_eod_plan_sre_heal"
  ],
  "fields": [
   {
@@ -170,6 +176,40 @@
    "fieldname": "enforce_full_casting_tree_reissue",
    "fieldtype": "Check",
    "label": "Enforce Full Casting Tree Re-Issue"
+  },
+  {
+   "fieldname": "eod_allocation_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Bucket Stock Allocation"
+  },
+  {
+   "fieldname": "eod_allocation_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Bucket Stock Allocation works</b><br>The EOD sync puts every resolvable Manufacturing Work Order of a company/manufacturer into <b>one</b> Material Transfer. Stock is validated per MWO, but the Stock Entry consumes the <b>sum</b> across MWOs, so two MWOs that each fit can jointly overdraw a batch and fail the whole transfer.<br><br>When enabled, MWOs are admitted against a running tally of physical batch stock and warehouse headroom, oldest unsynced MOP Log first. An MWO that does not fit is <b>deferred</b> to the next run (reported as <i>Deferred - Bucket Stock Contention</i>) instead of failing the bucket. An MWO that cannot fit even on its own is reported as <i>Permanently Short</i> — that is a data defect needing reconciliation.<br><br>Leave OFF to keep the previous all-or-nothing behaviour.</div>"
+  },
+  {
+   "default": "0",
+   "description": "Admit MWOs into the consolidated EOD transfer against a running stock tally; defer the ones that do not fit instead of failing the whole bucket.",
+   "fieldname": "enable_eod_bucket_allocation",
+   "fieldtype": "Check",
+   "label": "Enable EOD Bucket Stock Allocation"
+  },
+  {
+   "fieldname": "eod_plan_heal_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Plan-Phase Reservation Heal"
+  },
+  {
+   "fieldname": "eod_plan_heal_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Plan-Phase Reservation Heal works</b><br>When an EOD row has no active Stock Reservation Entry, its whole Manufacturing Work Order is held out of the transfer — even though the batch is usually still physically in stock.<br><br>When enabled, the sync tries to re-create the missing reservation at the warehouse that physically holds the batch, then re-plans the MWO once. Each attempt is wrapped in its own savepoint and fails safe: if no warehouse has enough free batch qty, or the batch is Customer Goods belonging to a different customer than the Sales Order, nothing is created and the row stays a Missing SRE failure.<br><br><b>This submits real Stock Reservation Entries.</b> Leave OFF until you have verified a run with it enabled on a staging site.</div>"
+  },
+  {
+   "default": "0",
+   "description": "Re-create missing WIP reservations during planning instead of holding the whole MWO. Submits real Stock Reservation Entries — enable deliberately.",
+   "fieldname": "enable_eod_plan_sre_heal",
+   "fieldtype": "Check",
+   "label": "Enable EOD Plan-Phase Reservation Heal"
   }
  ],
  "grid_page_length": 50,

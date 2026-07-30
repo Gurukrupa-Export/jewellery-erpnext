@@ -144,26 +144,27 @@
    "options": "Attribute Value"
   },
   {
-   "default": "0",
    "fieldname": "is_subcontracting",
-   "fieldtype": "Check",
-   "label": "Is Subcontracting"
+   "fieldtype": "Select",
+   "label": "Is Subcontracting",
+   "options": "\nYes\nNo",
+   "reqd": 1
   },
   {
-   "depends_on": "eval: doc.is_subcontracting == 1;",
+   "depends_on": "eval: doc.is_subcontracting == \"Yes\";",
    "fieldname": "supplier",
    "fieldtype": "Link",
    "label": "Supplier",
    "options": "Supplier"
   },
   {
-   "depends_on": "eval: doc.is_subcontracting == 1;",
+   "depends_on": "eval: doc.is_subcontracting == \"Yes\";",
    "fieldname": "estimated_date",
    "fieldtype": "Date",
    "label": "Estimated Date"
   },
   {
-   "depends_on": "eval: doc.is_subcontracting == 1;",
+   "depends_on": "eval: doc.is_subcontracting == \"Yes\";",
    "fieldname": "purchase_type",
    "fieldtype": "Link",
    "label": "Purchase Type",
@@ -188,7 +189,7 @@
    "link_fieldname": "manufacturing_plan"
   }
  ],
- "modified": "2026-02-11 13:26:47.504529",
+ "modified": "2026-07-29 17:37:27.667668",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Plan",

@@ -80,8 +80,14 @@ class DepartmentIR(Document):
 		if self.type == "Issue":
 			filters["status"] = ["in", ["Finished", "Revert"]]
 			filters["department"] = self.current_department
+		# Manufacturing Operation sorts "modified DESC" by default, which makes the row
+		# order of this child table drift between fetches. Pin it to insertion order so
+		# every leg of a transfer processes its rows in the same, reproducible sequence.
 		records = frappe.get_list(
-			"Manufacturing Operation", filters, ["name", "gross_wt"]
+			"Manufacturing Operation",
+			filters,
+			["name", "gross_wt"],
+			order_by="creation asc",
 		)
 		self.department_ir_operation = []
 		if records:
@@ -504,6 +510,10 @@ class DepartmentIR(Document):
 	@frappe.whitelist()
 	def get_manufacturing_operations_from_department_ir(self, docname):
 		self.department_ir_operation = []
+		# These operations were minted by create_operation_for_next_dept in the Issue's
+		# child-row order, so "creation asc" reproduces that order exactly. Without it
+		# Manufacturing Operation's default "modified DESC" sort had the Receive leg
+		# process rows in a different order than the Issue did.
 		for row in frappe.get_all(
 			"Manufacturing Operation",
 			{"department_issue_id": docname, "department_ir_status": "In-Transit"},
@@ -514,6 +524,7 @@ class DepartmentIR(Document):
 				"previous_mop",
 				"department",
 			],
+			order_by="creation asc",
 		):
 			self.current_department = row.department
 			mop_details = frappe.db.get_value(
