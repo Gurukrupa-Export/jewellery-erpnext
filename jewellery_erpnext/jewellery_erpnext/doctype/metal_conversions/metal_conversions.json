@@ -32,10 +32,10 @@
   "source_qty",
   "is_melting_loss",
   "loss_qty",
-  "is_customer_metal",
   "customer",
   "batch",
   "source_batch_details",
+  "conversion_lanes",
   "source_alloy_check",
   "source_alloy",
   "source_alloy_batch",
@@ -299,12 +299,12 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval: doc.is_customer_metal;",
+   "description": "Derived from the allocated batches. Set only when the whole conversion draws from a single customer; see Conversion Lanes for a mixed-ownership draw.",
    "fieldname": "customer",
    "fieldtype": "Link",
    "label": "Customer",
-   "mandatory_depends_on": "eval: doc.is_customer_metal;",
-   "options": "Customer"
+   "options": "Customer",
+   "read_only": 1
   },
   {
    "fieldname": "percentage",
@@ -435,10 +435,12 @@
    "options": "Alloy Batch Details"
   },
   {
-   "default": "0",
-   "fieldname": "is_customer_metal",
-   "fieldtype": "Check",
-   "label": "Is Customer Metal"
+   "description": "One row per ownership the FIFO draw touched. Each lane converts to the target purity on its own and lands in its own target batch.",
+   "fieldname": "conversion_lanes",
+   "fieldtype": "Table",
+   "label": "Conversion Lanes",
+   "options": "Metal Conversion Lane",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,

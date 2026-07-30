@@ -18,7 +18,6 @@
  ],
  "fields": [
   {
-   "description": "The pricing CATEGORY this list bills under (a REF-* item). It names the Purchase Order line and is what Refining Entry.pricing_item points at.",
    "fieldname": "item",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -32,7 +31,6 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Restrict this price list to one Refining Type. Leave blank to apply to every type — a type-specific list always wins over a blank one.",
    "fieldname": "refining_type",
    "fieldtype": "Select",
    "in_list_view": 1,
@@ -46,7 +44,6 @@
    "label": "Covered Items"
   },
   {
-   "description": "Material Items item codes that bill under this price list. Enter a concrete variant (ML-G-22KT-91.9-Y) or its item TEMPLATE (ML, FL, M, F, G, D) to cover every variant at once. Leave empty to keep matching on the category Item alone.",
    "fieldname": "covered_items",
    "fieldtype": "Table",
    "label": "Covered Items",
@@ -67,8 +64,8 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-30 00:00:00.000000",
- "modified_by": "Administrator",
+ "modified": "2026-07-30 17:08:58.091174",
+ "modified_by": "manikandan_ext@gkexport.com",
  "module": "Refining",
  "name": "Refinery Price List",
  "naming_rule": "Expression",

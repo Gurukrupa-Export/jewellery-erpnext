@@ -2,6 +2,7 @@
 # See license.txt
 
 # import frappe
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from frappe.tests import IntegrationTestCase
@@ -62,22 +63,94 @@ class IntegrationTestSubcontractingLog(IntegrationTestCase):
 	@patch(
 		"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.get_inventory_data"
 	)
-	@patch("frappe.get_doc")
-	def test_customer_goods_received(self, mock_get_doc, mock_get_inventory_data):
+	@patch("frappe.db.bulk_insert")
+	def test_customer_goods_received(self, mock_bulk_insert, mock_get_inventory_data):
+		"""Rows are written with ONE multi-row INSERT, not a document per row.
+
+		A consolidated EOD Stock Entry carries one row per batched item -- 26,489 on one
+		real run -- and this used to be a full ``frappe.get_doc(...).insert()`` each.
+
+		Note this patches ``frappe.db.bulk_insert`` rather than ``frappe.get_doc``: patching
+		the latter globally poisons frappe's document cache (``now_datetime`` resolves System
+		Settings through it, and a MagicMock cannot be pickled into redis).
+		"""
 		self.doc.stock_entry_type = "Customer Goods Received"
 		item = MagicMock()
 		item.batch_no = "BATCH-001"
 		self.doc.items = [item]
 
-		mock_get_inventory_data.return_value = {"doctype": "Subcontracting Log"}
-		mock_log = MagicMock()
-		mock_get_doc.return_value = mock_log
+		mock_get_inventory_data.return_value = {
+			"doctype": "Subcontracting Log",
+			"batch": "BATCH-001",
+			"item": "M-GOLD-001",
+			"quantity": 10,
+			"reference_docname": "STE-001",
+		}
 
 		create_subcontracting_log(self.doc)
 
 		mock_get_inventory_data.assert_called_once()
-		mock_get_doc.assert_called_once_with({"doctype": "Subcontracting Log"})
-		mock_log.insert.assert_called_once_with(ignore_permissions=True)
+		mock_bulk_insert.assert_called_once()
+
+		doctype = mock_bulk_insert.call_args.args[0]
+		fields = mock_bulk_insert.call_args.kwargs["fields"]
+		values = mock_bulk_insert.call_args.kwargs["values"]
+		self.assertEqual(doctype, "Subcontracting Log")
+		self.assertEqual(len(values), 1, "one row in, one row out")
+
+		# bulk_insert runs no Document lifecycle, so the framework columns must be supplied.
+		for column in (
+			"name",
+			"owner",
+			"creation",
+			"modified",
+			"modified_by",
+			"docstatus",
+		):
+			self.assertIn(column, fields)
+		# ...and the payload must survive the projection to a fixed column list.
+		row = dict(zip(fields, values[0], strict=True))
+		self.assertEqual(row["batch"], "BATCH-001")
+		self.assertEqual(row["quantity"], 10)
+		self.assertTrue(
+			row["name"], "a hash name must be generated, not left to the DB"
+		)
+		self.assertNotIn("doctype", fields, "doctype is not a column")
+
+	@patch(
+		"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.get_inventory_data"
+	)
+	# Pin the clock: now_datetime() resolves System Settings through frappe.get_doc, which is
+	# patched below, and a MagicMock cannot be pickled into the document cache.
+	@patch(
+		"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.now_datetime",
+		return_value=datetime(2026, 7, 30, 0, 0, 0),
+	)
+	@patch("frappe.get_doc")
+	@patch("frappe.db.bulk_insert", side_effect=RuntimeError("bulk boom"))
+	def test_bulk_failure_falls_back_to_per_row_inserts(
+		self, mock_bulk_insert, mock_get_doc, _mock_now, mock_get_inventory_data
+	):
+		"""One bad value must cost its own row, not the whole Stock Entry's audit trail."""
+		self.doc.stock_entry_type = "Customer Goods Received"
+		items = []
+		for i in range(2):
+			item = MagicMock()
+			item.batch_no = f"BATCH-00{i}"
+			items.append(item)
+		self.doc.items = items
+		mock_get_inventory_data.side_effect = lambda doc, item, config: {
+			"doctype": "Subcontracting Log",
+			"batch": item.batch_no,
+		}
+
+		create_subcontracting_log(self.doc)
+
+		self.assertTrue(mock_bulk_insert.called)
+		self.assertEqual(mock_get_doc.call_count, 2, "both rows retried individually")
+		self.assertEqual(
+			mock_get_doc.return_value.insert.call_count, 2, "and actually inserted"
+		)
 
 
 class TestGoldUsage(IntegrationTestCase):

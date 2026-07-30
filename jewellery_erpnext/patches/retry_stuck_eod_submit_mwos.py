@@ -84,14 +84,31 @@ def _classify(sync_log_name=None):
 
 		if not states:
 			continue
-		# (2) submitted by hand anywhere -> inconsistent, never auto-retry.
-		if any(ds == 1 for _, ds, _ in states):
-			skipped[mwo] = [se for se, ds, _ in states if ds == 1]
-			continue
 		# (1) only the real consolidated transfer drafts.
 		main_drafts = [
 			se for se, ds, src in states if ds == 0 and src == "MOP EOD Sync"
 		]
+		# (2) submitted by hand -> that stock already moved, so retrying would double it.
+		#
+		# EOD now writes one Stock Entry per CHUNK, so a single MWO can own several drafts.
+		# The old blanket `any(ds == 1)` quarantined the whole MWO the moment an operator
+		# submitted any one of them, stranding its still-retryable siblings. Quarantine only
+		# when a submitted SE exists AND no clean draft is left to retry: a mixed MWO is
+		# genuinely ambiguous, but "one submitted, none pending" is simply done.
+		submitted = [se for se, ds, _ in states if ds == 1]
+		if submitted and not main_drafts:
+			skipped[mwo] = submitted
+			continue
+		if submitted and main_drafts:
+			# Partially submitted across chunks -- a human has to decide. Report loudly
+			# rather than guessing which half already moved stock.
+			skipped[mwo] = submitted + main_drafts
+			print(
+				f"[retry-stuck-eod] {mwo}: {len(submitted)} submitted and "
+				f"{len(main_drafts)} draft EOD Stock Entry(s) — partially committed across "
+				"chunks. Skipped: reconcile by hand before retrying."
+			)
+			continue
 		if not main_drafts:
 			continue
 		# (3) nothing left to sync means it was already accounted for.
@@ -248,18 +265,28 @@ def execute(sync_log_name=None, dry_run=True):
 
 def verify(sync_log_name=DEFAULT_SYNC_LOG):
 	"""Read-only post-retry report: for each formerly-retryable MWO show its new
-	submitted transfer SE (if any) and active SRE count at the target."""
+	submitted transfer SE(s) and active SRE count at the target.
+
+	``custom_manufacturing_work_order`` lives on **Stock Entry Detail**, not on the Stock
+	Entry parent -- and the consolidated EOD Stock Entry deliberately leaves its header MWO
+	blank. Filtering the parent by it therefore returned nothing (or an Unknown column),
+	which made this report silently useless. Join through the child table instead, and
+	expect several SEs per MWO now that EOD writes one per chunk.
+	"""
 	retryable, _ = _classify(sync_log_name)
 	for mwo in retryable:
-		ses = frappe.get_all(
-			"Stock Entry",
-			filters={
-				"custom_manufacturing_work_order": mwo,
-				"stock_entry_type": "Material Transfer to Department",
-				"docstatus": 1,
-			},
-			fields=["name"],
-			limit_page_length=0,
+		ses = frappe.db.sql(
+			"""
+			SELECT DISTINCT se.name
+			FROM `tabStock Entry` se
+			INNER JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+			WHERE sed.custom_manufacturing_work_order = %s
+			  AND se.stock_entry_type = 'Material Transfer to Department'
+			  AND se.docstatus = 1
+			ORDER BY se.name
+			""",
+			(mwo,),
+			as_dict=True,
 		)
 		sres = frappe.get_all(
 			"Stock Reservation Entry",
