@@ -59,6 +59,16 @@
    "options": "Operation MultiSelect"
   },
   {
+   "description": "Metal items this supplier is allowed to supply. Applies to Metal item groups only — every other item group stays unrestricted.",
+   "dt": "Supplier",
+   "fieldname": "custom_allowed_item_group",
+   "fieldtype": "Table",
+   "insert_after": "operations",
+   "label": "Allowed Item Group",
+   "module": "Jewellery Erpnext",
+   "options": "Supplier Allowed Item Group"
+  },
+  {
    "dt": "Supplier",
    "fieldname": "section_break_hnpah",
    "fieldtype": "Section Break",
