@@ -1176,10 +1176,21 @@ def create_test_data():
 			)
 			making_charge_price.insert(ignore_permissions=True)
 
-		if not frappe.db.exists("Purchase Type", "FG Purchase"):
-			frappe.get_doc({"doctype": "Purchase Type", "type": "FG Purchase"}).insert(
-				ignore_permissions=True
-			)
+		# Every Purchase Type this app stamps on a Purchase Order it creates:
+		# make_subcontracting_order / Employee IR use "FG Purchase", Product
+		# Certification and the external refining flow use "Service", Sketch Order Form
+		# uses "Subcontracting". Purchase Order.purchase_type is a Link (provisioned by
+		# add_po_purchase_type_field), so a missing master fails link validation on save.
+		for _purchase_type in (
+			"FG Purchase",
+			"Service",
+			"Subcontracting",
+			"Branch Purchase",
+		):
+			if not frappe.db.exists("Purchase Type", _purchase_type):
+				frappe.get_doc(
+					{"doctype": "Purchase Type", "type": _purchase_type}
+				).insert(ignore_permissions=True)
 
 		if not frappe.db.exists("Warehouse Type", "Scrap"):
 			frappe.get_doc({"doctype": "Warehouse Type", "__newname": "Scrap"}).insert(
@@ -2792,6 +2803,17 @@ def create_test_data():
 			)
 
 			po_refining_entry_field()
+
+			# Purchase Order.purchase_type is NOT in the git_action_v16 fixtures either,
+			# yet doc_events/purchase_order.py::set_gst_details reads it on every PO
+			# validate and make_subcontracting_order stamps it on the subcontracting PO.
+			# Without the field the value is silently dropped instead of persisted, so it
+			# cannot be read back off a reloaded PO.
+			from jewellery_erpnext.patches.add_po_purchase_type_field import (
+				execute as _ensure_po_purchase_type_field,
+			)
+
+			_ensure_po_purchase_type_field()
 
 			# Serial No.custom_ownership_tag is NOT in the git_action_v16 fixtures, so —
 			# like the other custom-field patches above — it must be provisioned here for
