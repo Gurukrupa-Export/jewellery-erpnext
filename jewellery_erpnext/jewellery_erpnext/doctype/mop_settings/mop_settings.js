@@ -6,6 +6,7 @@ frappe.ui.form.on("MOP Settings", {
 		_prefill_eod_sync_window(frm);
 		_setup_eod_status_indicator(frm);
 		_setup_eod_sync_button(frm);
+		_setup_drain_backlog_button(frm);
 		_apply_permission_restrictions(frm);
 		_setup_eod_sync_log_progress(frm);
 		_setup_open_sync_log_button(frm);
@@ -92,7 +93,7 @@ function _setup_eod_sync_button(frm) {
 				title: __("EOD Sync In Progress"),
 				message: __(
 					"EOD sync is in progress. You cannot proceed to make any transactions. " +
-						"Please contact your administrator or try again after 2 hours after the specified time."
+						"Please contact your administrator or try again after the lock window ends."
 				),
 				indicator: "orange",
 			});
@@ -115,18 +116,66 @@ function _setup_eod_sync_button(frm) {
 	});
 }
 
+function _setup_drain_backlog_button(frm) {
+	// The scheduled window is today-only, so MOP Logs written after a nightly run are never
+	// picked up by a later scheduled run. This drains the OLDEST of them deliberately,
+	// bounded, instead of someone hand-building a manual run over a huge date range.
+	if (!_is_system_manager()) return;
+
+	frm.add_custom_button(__("Drain Backlog"), function () {
+		if (_is_eod_locked(frm)) {
+			frappe.msgprint({
+				title: __("EOD Sync In Progress"),
+				message: __("Wait for the running EOD sync to finish before draining the backlog."),
+				indicator: "orange",
+			});
+			return;
+		}
+		const suggested = frm.doc.eod_catchup_max_mwos || 500;
+		frappe.prompt(
+			[
+				{
+					fieldname: "limit",
+					fieldtype: "Int",
+					label: __("Max Work Orders to drain"),
+					default: suggested,
+					reqd: 1,
+					description: __(
+						"Oldest unsynced Work Orders first. Larger values take longer and hold the transaction lock for longer — run off-hours."
+					),
+				},
+			],
+			function (values) {
+				frappe.call({
+					method: "drain_backlog",
+					doc: frm.doc,
+					args: { limit: values.limit },
+					callback: function () {
+						frm.reload_doc();
+					},
+				});
+			},
+			__("Drain EOD Backlog"),
+			__("Queue")
+		);
+	});
+}
+
 function _apply_permission_restrictions(frm) {
 	const is_sm = _is_system_manager();
 	const is_locked = _is_eod_locked(frm);
 
 	// Non-System Manager cannot change EOD Sync Time, the manual From/To window, or the filter table
 	if (!is_sm) {
-		["eod_sync_time", "eod_sync_from_datetime", "eod_sync_to_datetime", "eod_sync_work_order_filter"].forEach(
-			(field) => {
-				frm.set_df_property(field, "read_only", 1);
-				frm.refresh_field(field);
-			}
-		);
+		[
+			"eod_sync_time",
+			"eod_sync_from_datetime",
+			"eod_sync_to_datetime",
+			"eod_sync_work_order_filter",
+		].forEach((field) => {
+			frm.set_df_property(field, "read_only", 1);
+			frm.refresh_field(field);
+		});
 	}
 
 	// Disable the EOD Sync button for non-SM or when lock is active

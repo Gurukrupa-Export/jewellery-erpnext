@@ -10,5 +10,14 @@ frappe.ui.form.on("Department Operation", {
 				},
 			};
 		});
+
+		// Restrict the grid's finding_category to values of the "Finding Category"
+		// Item Attribute — the same strings finding items carry on their Item
+		// Variant Attribute rows, which is what the loss gate matches against.
+		frm.set_query("finding_category", "finding_loss_booking", function () {
+			return {
+				query: "jewellery_erpnext.jewellery_erpnext.doctype.department_operation.department_operation.get_finding_categories",
+			};
+		});
 	},
 });

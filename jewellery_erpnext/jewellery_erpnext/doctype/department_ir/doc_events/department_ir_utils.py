@@ -5,10 +5,26 @@ from frappe import _
 from frappe.query_builder import DocType
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
+	assert_no_sample_in_operations,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	update_mop_balance,
 )
 from jewellery_erpnext.utils import is_mwo_refined
+
+
+def validate_no_sample_issue(doc, method=None):
+	"""Block a Department IR "Issue" that would move Customer Sample Goods into production.
+
+	Symmetric to the Employee IR guard; wired on Department IR ``before_submit`` so the
+	block lands at the Issue click, before ``on_submit -> on_submit_issue_new`` writes any
+	MOP Log. The Department IR issue also clones the operation's current MOP Log balance, so
+	the same balance-based detection applies.
+	"""
+	if getattr(doc, "type", None) != "Issue":
+		return
+	assert_no_sample_in_operations(doc.department_ir_operation, doc)
 
 
 def valid_reparing_or_next_operation(self, mwo_list):

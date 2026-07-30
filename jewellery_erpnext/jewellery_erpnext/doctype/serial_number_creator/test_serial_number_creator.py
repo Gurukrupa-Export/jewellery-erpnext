@@ -7,6 +7,11 @@ from unittest.mock import patch
 import frappe
 from frappe.tests import IntegrationTestCase
 
+from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+	_derive_ownership_tag,
+	_snc_se_detail_maps,
+	_stone_se_rate,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
 	dir_for_issue,
 	dir_for_receive,
@@ -17,15 +22,21 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.test_m
 	create_pmo,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+	_active_sres_for,
+	_allocate_pcs_across_rows,
+	_allocate_qty_across_warehouses,
 	_physical_batch_qty,
 	_pick_source_warehouse,
+	_reserved_warehouse_caps,
 	_sre_reserves_batch,
 	_warehouse_has_batch_stock,
 	calulate_id_wise_sum_up,
+	split_source_rows_by_reservation,
 	validate_qty,
 )
 
 _SNC_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator"
+_MOP_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation"
 
 
 class TestSerialNumberCreator(IntegrationTestCase):
@@ -495,3 +506,671 @@ class TestPickSourceWarehouse(IntegrationTestCase):
 			["Tagging WO - GEPL"],
 		)
 		self.assertEqual(wh, "Tagging WO - GEPL")
+
+
+class TestSNCSeDetailMaps(IntegrationTestCase):
+	"""``_snc_se_detail_maps`` re-derives per-item rate and inventory type from the
+	Manufacture SE, so the SNC-created FG BOM can set ``is_customer_item`` (the
+	aggregated fg_details rows don't carry inventory_type). Regression: without the
+	inventory-type map, is_customer_item was always 0 on SNC-created BOMs even though
+	the Manufacture SE showed the material as Customer Goods.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	def test_customer_goods_and_rate_maps(self, mock_sql):
+		# One customer-goods diamond, one regular metal, one item whose consumed rows
+		# had no inventory_type (MAX(...) -> None). MySQL MAX(bool) yields 1/0/None.
+		mock_sql.return_value = [
+			frappe._dict(item_code="D-CG", rate=0.0, is_customer_goods=1),
+			frappe._dict(item_code="M-REG", rate=4500.0, is_customer_goods=0),
+			frappe._dict(item_code="D-NULL", rate=0.0, is_customer_goods=None),
+		]
+		rate_map, inv_map = _snc_se_detail_maps("MAT-STE-TEST")
+
+		self.assertEqual(rate_map, {"D-CG": 0.0, "M-REG": 4500.0, "D-NULL": 0.0})
+		# Any Customer-Goods batch -> "Customer Goods"; 0/None -> "Regular Stock".
+		self.assertEqual(inv_map["D-CG"], "Customer Goods")
+		self.assertEqual(inv_map["M-REG"], "Regular Stock")
+		self.assertEqual(inv_map["D-NULL"], "Regular Stock")
+
+	@patch(f"{_MOP_MODULE}.frappe.db.sql")
+	def test_empty_se_returns_empty_maps(self, mock_sql):
+		mock_sql.return_value = []
+		rate_map, inv_map = _snc_se_detail_maps("MAT-STE-EMPTY")
+		self.assertEqual(rate_map, {})
+		self.assertEqual(inv_map, {})
+
+
+class TestStoneSeRate(IntegrationTestCase):
+	"""``_stone_se_rate`` fills diamond/gemstone se_rate from the Item's maintained
+	valuation_rate when the qty-weighted consumed rate is 0. Regression: diamond/
+	gemstone se_rate was blank whenever the Manufacture SE basic_rate was 0 (the
+	common case, since custom_metal_rate is metal-only).
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_consumed_rate_wins_when_present(self):
+		self.assertEqual(_stone_se_rate(4500.0, 1.0), 4500.0)
+
+	def test_falls_back_to_valuation_when_rate_zero(self):
+		self.assertEqual(_stone_se_rate(0.0, 25.5), 25.5)
+
+	def test_falls_back_when_rate_none(self):
+		self.assertEqual(_stone_se_rate(None, 25.5), 25.5)
+
+	def test_zero_when_neither_available(self):
+		self.assertEqual(_stone_se_rate(0.0, 0.0), 0.0)
+		self.assertEqual(_stone_se_rate(None, None), 0.0)
+
+
+class TestDeriveOwnershipTag(IntegrationTestCase):
+	"""``_derive_ownership_tag`` classifies the FG serial as Outright / Outwork /
+	Hybrid from the material the Manufacture SE consumed. It reads the batch-corrected
+	``row_data`` (consumption rows only), NOT ``_snc_se_detail_maps``' inv_map — that
+	one includes the finished-good row, whose inventory_type is hardcoded
+	"Regular Stock", which would misreport every pure customer-material job as Hybrid.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_all_regular_stock_is_outright(self):
+		row_data = [
+			{"inventory_type": "Regular Stock"},
+			{"inventory_type": "Regular Stock"},
+		]
+		self.assertEqual(_derive_ownership_tag(row_data), "Outright")
+
+	def test_all_customer_goods_is_outwork(self):
+		row_data = [
+			{"inventory_type": "Customer Goods"},
+			{"inventory_type": "Customer Goods"},
+		]
+		self.assertEqual(_derive_ownership_tag(row_data), "Outwork")
+
+	def test_mixed_is_hybrid(self):
+		row_data = [
+			{"inventory_type": "Regular Stock"},
+			{"inventory_type": "Customer Goods"},
+		]
+		self.assertEqual(_derive_ownership_tag(row_data), "Hybrid")
+
+	def test_nothing_derivable_returns_none(self):
+		# No rows, blank strings and missing keys all mean "cannot tell" — the caller
+		# leaves the Serial No untagged rather than guessing.
+		self.assertIsNone(_derive_ownership_tag([]))
+		self.assertIsNone(_derive_ownership_tag(None))
+		self.assertIsNone(
+			_derive_ownership_tag(
+				[{"inventory_type": ""}, {"inventory_type": None}, {}]
+			)
+		)
+
+	def test_blank_rows_do_not_promote_outwork_to_hybrid(self):
+		row_data = [{"inventory_type": "Customer Goods"}, {"inventory_type": ""}, {}]
+		self.assertEqual(_derive_ownership_tag(row_data), "Outwork")
+
+	def test_blank_rows_do_not_block_outright(self):
+		row_data = [{"inventory_type": "Regular Stock"}, {"inventory_type": None}]
+		self.assertEqual(_derive_ownership_tag(row_data), "Outright")
+
+
+# ── Warehouse-split source rows ────────────────────────────────────────────────
+#
+# Live case behind the whole group: SNC 7e4huirltd, batch None2F074-MGL22919Y0-01VO7
+# of M-G-22KT-91.9-Y. The job reserved 3.557 in "Waxing WO - KGJPL" and 0.02 in
+# "Model Making WO - KGJPL" — 3.577 total, exactly the source row qty — but the single
+# source row demanded all 3.577 from one warehouse and submit threw. The same batch also
+# sits in four other warehouses (Casting MSL WH 1: 6.35, Model Making RM: 5.0, Assembly
+# MSL WH 14: 4.98, Waxing RM: 1.763) reserved for OTHER jobs, which must never be drawn on.
+
+_LIVE_BATCH = "None2F074-MGL22919Y0-01VO7"
+_LIVE_ITEM = "M-G-22KT-91.9-Y"
+_WAXING = "Waxing WO - KGJPL"
+_MODEL_MAKING = "Model Making WO - KGJPL"
+
+
+class TestAllocateQtyAcrossWarehouses(IntegrationTestCase):
+	"""Greedy split of a row qty over the warehouses this job has reserved."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_live_case_splits_across_two_warehouses(self):
+		caps = [(_WAXING, 3.557, ["a"]), (_MODEL_MAKING, 0.02, ["b"])]
+		allocs = _allocate_qty_across_warehouses(3.577, caps)
+		self.assertEqual(allocs, [(_WAXING, 3.557), (_MODEL_MAKING, 0.02)])
+		self.assertEqual(sum(q for _wh, q in allocs), 3.577)
+
+	def test_single_warehouse_covering_returns_one_row(self):
+		caps = [("Diamond Setting WO - KGJPL", 0.29, ["c"])]
+		self.assertEqual(
+			_allocate_qty_across_warehouses(0.29, caps),
+			[("Diamond Setting WO - KGJPL", 0.29)],
+		)
+
+	def test_partial_coverage_returns_none(self):
+		# Reserved 3.5 but 3.577 needed: refuse to split rather than strand the
+		# remainder on a warehouse with no reservation for this job.
+		caps = [(_WAXING, 3.48, ["a"]), (_MODEL_MAKING, 0.02, ["b"])]
+		self.assertIsNone(_allocate_qty_across_warehouses(3.577, caps))
+
+	def test_no_caps_or_zero_qty_returns_none(self):
+		self.assertIsNone(_allocate_qty_across_warehouses(3.577, []))
+		self.assertIsNone(_allocate_qty_across_warehouses(0, [(_WAXING, 5.0, ["a"])]))
+
+	def test_surplus_capacity_is_truncated(self):
+		# 5.0 reserved, only 0.02 needed -> take 0.02 and stop; the second warehouse is
+		# never reached, so its reservation is left alone.
+		caps = [(_WAXING, 5.0, ["a"]), (_MODEL_MAKING, 1.0, ["b"])]
+		self.assertEqual(_allocate_qty_across_warehouses(0.02, caps), [(_WAXING, 0.02)])
+
+	def test_sum_is_exact_for_sub_milligram_qty(self):
+		# calulate_id_wise_sum_up compares per-item totals; the split must not drift.
+		caps = [(_WAXING, 3.557, ["a"]), (_MODEL_MAKING, 0.05, ["b"])]
+		allocs = _allocate_qty_across_warehouses(3.5771, caps)
+		self.assertEqual(sum(q for _wh, q in allocs), 3.5771)
+
+	def test_zero_capacity_warehouse_never_emitted(self):
+		caps = [(_WAXING, 3.577, ["a"]), (_MODEL_MAKING, 0.00005, ["b"])]
+		self.assertEqual(
+			_allocate_qty_across_warehouses(3.577, caps), [(_WAXING, 3.577)]
+		)
+
+
+class TestAllocatePcsAcrossRows(IntegrationTestCase):
+	"""Pcs must survive the split: fg_details SUMs pcs for D/G items and takes max()
+	for metal, so the distribution has to preserve whichever the item uses.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_metal_keeps_whole_count_on_largest_row(self):
+		parts = _allocate_pcs_across_rows(
+			_LIVE_ITEM, 2, [(_WAXING, 3.557), (_MODEL_MAKING, 0.02)]
+		)
+		self.assertEqual(parts, [2.0, 0.0])
+		self.assertEqual(sum(parts), 2)  # SUM preserved
+		self.assertEqual(max(parts), 2)  # MAX preserved
+
+	def test_diamond_splits_pcs_and_preserves_total(self):
+		parts = _allocate_pcs_across_rows(
+			"D-NT-RO-6B-+1.5-2", 8, [("WH-A", 0.2), ("WH-B", 0.09)]
+		)
+		self.assertEqual(sum(parts), 8)
+		self.assertTrue(all(p >= 1 for p in parts))
+
+	def test_diamond_with_fewer_stones_than_rows_keeps_count_whole(self):
+		parts = _allocate_pcs_across_rows(
+			"D-NT-RO-6B-+1.5-2", 1, [("WH-A", 0.2), ("WH-B", 0.09)]
+		)
+		self.assertEqual(parts, [1.0, 0.0])
+
+	def test_fractional_count_is_not_split_into_fractional_stones(self):
+		parts = _allocate_pcs_across_rows(
+			"D-NT-RO-6B-+1.5-2", 2.5, [("WH-A", 0.2), ("WH-B", 0.09)]
+		)
+		self.assertEqual(parts, [2.5, 0.0])
+
+	def test_zero_pcs_and_single_row(self):
+		self.assertEqual(
+			_allocate_pcs_across_rows(_LIVE_ITEM, 0, [("WH-A", 1), ("WH-B", 1)]),
+			[0.0, 0.0],
+		)
+		self.assertEqual(_allocate_pcs_across_rows(_LIVE_ITEM, 2, [("WH-A", 1)]), [2.0])
+
+	def test_never_returns_none_for_a_row(self):
+		# Stock Entry Detail.pcs is a Data field with default "1" — a None would
+		# silently become 1 and inflate the count.
+		for parts in (
+			_allocate_pcs_across_rows(_LIVE_ITEM, 2, [("A", 1), ("B", 1)]),
+			_allocate_pcs_across_rows("D-X", 3, [("A", 1), ("B", 1)]),
+			_allocate_pcs_across_rows(_LIVE_ITEM, None, [("A", 1), ("B", 1)]),
+		):
+			self.assertTrue(all(p is not None for p in parts))
+
+
+class TestActiveSresFor(IntegrationTestCase):
+	"""Which reservations count as live, and how much of one belongs to a batch."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _mock_get_all(sres, children):
+		def _inner(doctype, **kwargs):
+			if doctype == "Stock Reservation Entry":
+				return sres
+			return children
+
+		return _inner
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_batch_scoped_remaining_from_children(self, mock_get_all):
+		# Header reserves 5.0 across two batches; only 3.557 of it is this batch's.
+		mock_get_all.side_effect = self._mock_get_all(
+			[
+				{
+					"name": "sre1",
+					"warehouse": _WAXING,
+					"reserved_qty": 5.0,
+					"delivered_qty": 0.0,
+				}
+			],
+			[
+				{
+					"parent": "sre1",
+					"batch_no": _LIVE_BATCH,
+					"qty": 3.557,
+					"delivered_qty": 0.0,
+				},
+				{
+					"parent": "sre1",
+					"batch_no": "OTHER-BATCH",
+					"qty": 1.443,
+					"delivered_qty": 0.0,
+				},
+			],
+		)
+		out = _active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"])
+		self.assertEqual([rem for _sre, rem in out], [3.557])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_sre_on_another_batch_is_skipped(self, mock_get_all):
+		mock_get_all.side_effect = self._mock_get_all(
+			[
+				{
+					"name": "sre1",
+					"warehouse": _WAXING,
+					"reserved_qty": 5.0,
+					"delivered_qty": 0.0,
+				}
+			],
+			[
+				{
+					"parent": "sre1",
+					"batch_no": "OTHER-BATCH",
+					"qty": 5.0,
+					"delivered_qty": 0.0,
+				}
+			],
+		)
+		self.assertEqual(_active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"]), [])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_fully_delivered_child_is_skipped(self, mock_get_all):
+		mock_get_all.side_effect = self._mock_get_all(
+			[
+				{
+					"name": "sre1",
+					"warehouse": _WAXING,
+					"reserved_qty": 3.557,
+					"delivered_qty": 0.0,
+				}
+			],
+			[
+				{
+					"parent": "sre1",
+					"batch_no": _LIVE_BATCH,
+					"qty": 3.557,
+					"delivered_qty": 3.557,
+				}
+			],
+		)
+		self.assertEqual(_active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"]), [])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_remainder_rounding_to_zero_is_not_live(self, mock_get_all):
+		# A remainder inside (TOLERANCE, 0.0005) rounds to 0.000 at the site's 3dp stock
+		# precision. Returning it would make sre_matched True on a reservation with no
+		# capacity: the SRE would be consumed and the PC-Receive / Stock-Entry warehouse
+		# fallbacks skipped for nothing. Unreachable while the qty columns are
+		# decimal(21,3), but the threshold must not depend on that.
+		mock_get_all.side_effect = self._mock_get_all(
+			[
+				{
+					"name": "sre1",
+					"warehouse": _WAXING,
+					"reserved_qty": 3.5,
+					"delivered_qty": 3.4997,
+				}
+			],
+			[],
+		)
+		self.assertEqual(_active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"]), [])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_smallest_real_remainder_is_live(self, mock_get_all):
+		# The smallest remainder the schema can actually produce (0.001) must survive.
+		mock_get_all.side_effect = self._mock_get_all(
+			[
+				{
+					"name": "sre1",
+					"warehouse": _WAXING,
+					"reserved_qty": 3.5,
+					"delivered_qty": 3.499,
+				}
+			],
+			[],
+		)
+		out = _active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"])
+		self.assertEqual([rem for _sre, rem in out], [0.001])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_qty_based_sre_uses_header_remaining(self, mock_get_all):
+		mock_get_all.side_effect = self._mock_get_all(
+			[
+				{
+					"name": "sre1",
+					"warehouse": _WAXING,
+					"reserved_qty": 4.0,
+					"delivered_qty": 1.0,
+				}
+			],
+			[],
+		)
+		out = _active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"])
+		self.assertEqual([rem for _sre, rem in out], [3.0])
+
+	@patch(f"{_SNC_MODULE}.frappe.get_all")
+	def test_excluded_sre_is_dropped(self, mock_get_all):
+		mock_get_all.side_effect = self._mock_get_all(
+			[
+				{
+					"name": "sre1",
+					"warehouse": _WAXING,
+					"reserved_qty": 3.0,
+					"delivered_qty": 0.0,
+				}
+			],
+			[],
+		)
+		self.assertEqual(
+			_active_sres_for(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"], exclude={"sre1"}), []
+		)
+
+	def test_no_mwos_returns_empty(self):
+		self.assertEqual(_active_sres_for(_LIVE_ITEM, _LIVE_BATCH, []), [])
+
+
+class TestReservedWarehouseCaps(IntegrationTestCase):
+	"""Capacity is ``min(reserved-remaining, physical)`` per warehouse, and ONLY for
+	warehouses this job actually holds a reservation in.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty")
+	@patch(f"{_SNC_MODULE}._active_sres_for")
+	def test_live_case_two_warehouses(self, mock_sres, mock_phys):
+		mock_sres.return_value = [
+			({"name": "a", "warehouse": _WAXING}, 3.557),
+			({"name": "b", "warehouse": _MODEL_MAKING}, 0.02),
+		]
+		physical = {_WAXING: 3.557, _MODEL_MAKING: 0.02}
+		mock_phys.side_effect = lambda item, batch, wh: physical[wh]
+		self.assertEqual(
+			_reserved_warehouse_caps(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"]),
+			[(_WAXING, 3.557, ["a"]), (_MODEL_MAKING, 0.02, ["b"])],
+		)
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty")
+	@patch(f"{_SNC_MODULE}._active_sres_for")
+	def test_warehouse_holding_the_batch_without_a_reservation_is_excluded(
+		self, mock_sres, mock_phys
+	):
+		# Casting MSL WH 1 physically holds 6.35 of the batch but belongs to another
+		# job. It has no SRE for this PMO, so it can never become a candidate.
+		mock_sres.return_value = [({"name": "a", "warehouse": _WAXING}, 3.557)]
+		mock_phys.return_value = 3.557
+		caps = _reserved_warehouse_caps(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"])
+		self.assertEqual([wh for wh, _cap, _sres in caps], [_WAXING])
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty", return_value=1.0)
+	@patch(f"{_SNC_MODULE}._active_sres_for")
+	def test_physical_stock_caps_an_over_reservation(self, mock_sres, _mock_phys):
+		# Reserved 5.0 but only 1.0 physically left there: never promise the 5.0.
+		mock_sres.return_value = [({"name": "a", "warehouse": _WAXING}, 5.0)]
+		self.assertEqual(
+			_reserved_warehouse_caps(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"]),
+			[(_WAXING, 1.0, ["a"])],
+		)
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty", return_value=0.0)
+	@patch(f"{_SNC_MODULE}._active_sres_for")
+	def test_stale_reservation_with_no_physical_stock_is_dropped(
+		self, mock_sres, _mock_phys
+	):
+		mock_sres.return_value = [({"name": "a", "warehouse": _WAXING}, 3.557)]
+		self.assertEqual(
+			_reserved_warehouse_caps(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"]), []
+		)
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty", return_value=10.0)
+	@patch(f"{_SNC_MODULE}._active_sres_for")
+	def test_two_reservations_in_one_warehouse_merge(self, mock_sres, _mock_phys):
+		mock_sres.return_value = [
+			({"name": "a", "warehouse": _WAXING}, 2.0),
+			({"name": "b", "warehouse": _WAXING}, 1.5),
+		]
+		self.assertEqual(
+			_reserved_warehouse_caps(_LIVE_ITEM, _LIVE_BATCH, ["MWO-1"]),
+			[(_WAXING, 3.5, ["a", "b"])],
+		)
+
+
+class TestPickSourceWarehouseUsedLedger(IntegrationTestCase):
+	"""The ``used`` ledger stops two rows of a split group both claiming the warehouse
+	that only has enough for one of them.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty", return_value=3.557)
+	def test_no_ledger_behaves_as_before(self, _mock):
+		self.assertEqual(
+			_pick_source_warehouse(_LIVE_ITEM, _LIVE_BATCH, 0.02, [_WAXING]), _WAXING
+		)
+
+	@patch(f"{_SNC_MODULE}._physical_batch_qty")
+	def test_exhausted_warehouse_is_skipped(self, mock_phys):
+		physical = {_WAXING: 3.557, _MODEL_MAKING: 0.02}
+		mock_phys.side_effect = lambda item, batch, wh: physical[wh]
+		# The 3.557 row already took all of Waxing; the 0.02 sibling must fall through.
+		wh = _pick_source_warehouse(
+			_LIVE_ITEM,
+			_LIVE_BATCH,
+			0.02,
+			[_WAXING, _MODEL_MAKING],
+			used={_WAXING: 3.557},
+		)
+		self.assertEqual(wh, _MODEL_MAKING)
+
+
+class TestSplitSourceRowsByReservation(IntegrationTestCase):
+	"""``source_table`` is keyed by (item, batch, warehouse); ``fg_details`` stays
+	item-wise. The split preserves the per-item qty total, so calulate_id_wise_sum_up
+	keeps balancing.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _snc(self, rows):
+		doc = frappe.new_doc("Serial Number Creator")
+		doc.manufacturing_work_order = "MWO-TEST-001"
+		for row in rows:
+			doc.append("source_table", row)
+		return doc
+
+	def _live_doc(self):
+		return self._snc(
+			[
+				{
+					"row_material": "D-NT-RO-6B-+1.5-2",
+					"qty": 0.29,
+					"pcs": 8,
+					"uom": "Carat",
+					"batch_no": "None2F073-DNTROX6A05B00-W04B5",
+					"s_warehouse": "Diamond Setting WO - KGJPL",
+				},
+				{
+					"row_material": _LIVE_ITEM,
+					"qty": 3.577,
+					"pcs": 2,
+					"uom": "Gram",
+					"batch_no": _LIVE_BATCH,
+					"s_warehouse": _WAXING,
+				},
+			]
+		)
+
+	@staticmethod
+	def _caps_for_live_case(item_code, batch_no, _mwos):
+		if item_code == _LIVE_ITEM:
+			return [(_WAXING, 3.557, ["a"]), (_MODEL_MAKING, 0.02, ["b"])]
+		return [("Diamond Setting WO - KGJPL", 0.29, ["c"])]
+
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps")
+	def test_splits_metal_row_and_leaves_diamond_alone(self, mock_caps, _mock_mwos):
+		mock_caps.side_effect = self._caps_for_live_case
+		doc = self._live_doc()
+		split_source_rows_by_reservation(doc)
+
+		self.assertEqual(len(doc.source_table), 3)
+		metal = [r for r in doc.source_table if r.row_material == _LIVE_ITEM]
+		self.assertEqual(
+			[(r.s_warehouse, r.qty) for r in metal],
+			[(_WAXING, 3.557), (_MODEL_MAKING, 0.02)],
+		)
+		# Per-item totals unchanged -> calulate_id_wise_sum_up still balances.
+		self.assertEqual(sum(r.qty for r in metal), 3.577)
+		# Metal pcs stays whole on the larger row (fg_details takes max()).
+		self.assertEqual([r.pcs for r in metal], [2.0, 0.0])
+		# Non-warehouse detail is carried onto the new row.
+		self.assertEqual([r.uom for r in metal], ["Gram", "Gram"])
+		# The diamond row, which one warehouse fully covers, is untouched.
+		diamond = [r for r in doc.source_table if r.row_material != _LIVE_ITEM]
+		self.assertEqual(len(diamond), 1)
+		self.assertEqual(diamond[0].qty, 0.29)
+		self.assertEqual([r.idx for r in doc.source_table], [1, 2, 3])
+
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps")
+	def test_second_pass_is_a_no_op(self, mock_caps, _mock_mwos):
+		mock_caps.side_effect = self._caps_for_live_case
+		doc = self._live_doc()
+		split_source_rows_by_reservation(doc)
+		before = [
+			(r.row_material, r.s_warehouse, r.qty, r.pcs) for r in doc.source_table
+		]
+		split_source_rows_by_reservation(doc)
+		after = [
+			(r.row_material, r.s_warehouse, r.qty, r.pcs) for r in doc.source_table
+		]
+		self.assertEqual(before, after)
+
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps", return_value=[])
+	def test_no_reservation_leaves_rows_untouched(self, _mock_caps, _mock_mwos):
+		doc = self._live_doc()
+		split_source_rows_by_reservation(doc)
+		self.assertEqual(len(doc.source_table), 2)
+		self.assertEqual(doc.source_table[1].s_warehouse, _WAXING)
+
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps")
+	def test_shortfall_leaves_rows_untouched(self, mock_caps, _mock_mwos):
+		# Only 3.5 reserved for a 3.577 row -> no split; submit fails fast with the
+		# reserved-vs-physical message instead of silently under-consuming.
+		mock_caps.return_value = [(_WAXING, 3.48, ["a"]), (_MODEL_MAKING, 0.02, ["b"])]
+		doc = self._snc(
+			[
+				{
+					"row_material": _LIVE_ITEM,
+					"qty": 3.577,
+					"pcs": 2,
+					"batch_no": _LIVE_BATCH,
+					"s_warehouse": _WAXING,
+				}
+			]
+		)
+		split_source_rows_by_reservation(doc)
+		self.assertEqual(len(doc.source_table), 1)
+		self.assertEqual(doc.source_table[0].qty, 3.577)
+
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps")
+	def test_collapses_back_when_reservations_merge(self, mock_caps, _mock_mwos):
+		# A draft split earlier; the reservations have since consolidated onto one
+		# warehouse, so the group must merge back to a single row.
+		mock_caps.return_value = [(_WAXING, 5.0, ["a"])]
+		doc = self._snc(
+			[
+				{
+					"row_material": _LIVE_ITEM,
+					"qty": 3.557,
+					"pcs": 2,
+					"batch_no": _LIVE_BATCH,
+					"s_warehouse": _WAXING,
+				},
+				{
+					"row_material": _LIVE_ITEM,
+					"qty": 0.02,
+					"pcs": 0,
+					"batch_no": _LIVE_BATCH,
+					"s_warehouse": _MODEL_MAKING,
+				},
+			]
+		)
+		split_source_rows_by_reservation(doc)
+		self.assertEqual(len(doc.source_table), 1)
+		self.assertEqual(doc.source_table[0].s_warehouse, _WAXING)
+		self.assertEqual(doc.source_table[0].qty, 3.577)
+
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps")
+	def test_corrects_a_stale_single_warehouse(self, mock_caps, _mock_mwos):
+		mock_caps.return_value = [(_MODEL_MAKING, 3.577, ["a"])]
+		doc = self._snc(
+			[
+				{
+					"row_material": _LIVE_ITEM,
+					"qty": 3.577,
+					"pcs": 2,
+					"batch_no": _LIVE_BATCH,
+					"s_warehouse": _WAXING,
+				}
+			]
+		)
+		split_source_rows_by_reservation(doc)
+		self.assertEqual(len(doc.source_table), 1)
+		self.assertEqual(doc.source_table[0].s_warehouse, _MODEL_MAKING)
+
+	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps")
+	def test_skipped_without_a_work_order(self, mock_caps):
+		doc = frappe.new_doc("Serial Number Creator")
+		doc.append(
+			"source_table",
+			{"row_material": _LIVE_ITEM, "qty": 3.577, "batch_no": _LIVE_BATCH},
+		)
+		split_source_rows_by_reservation(doc)
+		mock_caps.assert_not_called()

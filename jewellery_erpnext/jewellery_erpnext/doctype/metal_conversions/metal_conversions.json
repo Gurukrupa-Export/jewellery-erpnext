@@ -32,8 +32,6 @@
   "source_qty",
   "is_melting_loss",
   "loss_qty",
-  "is_customer_metal",
-  "customer",
   "batch",
   "source_batch_details",
   "source_alloy_check",
@@ -47,9 +45,10 @@
   "target_alloy_check",
   "target_alloy",
   "target_alloy_qty",
+  "percentage",
+  "remarks",
   "section_break_9izc4",
   "batch_available_qty",
-  "inventory_type",
   "supplier",
   "section_break_6tcjy",
   "source_attribute_value",
@@ -289,20 +288,16 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval:doc.batch",
-   "fieldname": "inventory_type",
-   "fieldtype": "Link",
-   "label": "Inventory Type",
-   "options": "Inventory Type",
-   "read_only": 1
+   "fieldname": "percentage",
+   "fieldtype": "Percent",
+   "label": "Percentage",
+   "non_negative": 1,
+   "precision": "2"
   },
   {
-   "depends_on": "eval: doc.is_customer_metal;",
-   "fieldname": "customer",
-   "fieldtype": "Link",
-   "label": "Customer",
-   "mandatory_depends_on": "eval: doc.is_customer_metal;",
-   "options": "Customer"
+   "fieldname": "remarks",
+   "fieldtype": "Select",
+   "label": "Remarks"
   },
   {
    "fieldname": "section_break_9izc4",
@@ -419,12 +414,6 @@
    "fieldtype": "Table",
    "label": "Source Batch Details",
    "options": "Alloy Batch Details"
-  },
-  {
-   "default": "0",
-   "fieldname": "is_customer_metal",
-   "fieldtype": "Check",
-   "label": "Is Customer Metal"
   }
  ],
  "index_web_pages_for_search": 1,
@@ -435,7 +424,7 @@
    "link_fieldname": "custom_metal_conversion_reference"
   }
  ],
- "modified": "2025-02-18 14:38:40.607735",
+ "modified": "2026-07-29 12:55:07.264354",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Metal Conversions",
@@ -453,6 +442,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

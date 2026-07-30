@@ -98,7 +98,72 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		// 		});
 		// 	});
 		// }
+
+		// Show "Upload Missing Images" button on Draft MWOs when photoshop check is relevant
+		if (frm.doc.docstatus == 0 && frm.doc.item_code && !frm.doc.__islocal && frm.doc.for_fg) {
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",
+				args: {
+					item_code: frm.doc.item_code,
+					master_bom: frm.doc.master_bom || "",
+				},
+				callback: function (r) {
+					if (
+						r.message &&
+						r.message.check_required &&
+						r.message.missing &&
+						Object.keys(r.message.missing).length
+					) {
+						frm.add_custom_button(
+							__("Upload Missing Images"),
+							function () {
+								open_upload_images_dialog(frm);
+							},
+							__("Actions")
+						);
+					}
+				},
+			});
+		}
+
 		set_html(frm);
+	},
+	before_submit: function (frm) {
+		// Client-side intercept: check for missing photoshop images before
+		// submission.  If images are missing, open a dialog to let the user
+		// upload them inline and retry submission after saving.
+		if (!frm.doc.item_code || !frm.doc.for_fg) return;
+
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",
+			args: {
+				item_code: frm.doc.item_code,
+				master_bom: frm.doc.master_bom || "",
+			},
+			async: false,
+			callback: function (r) {
+				if (
+					r.message &&
+					r.message.check_required &&
+					r.message.missing &&
+					Object.keys(r.message.missing).length
+				) {
+					frappe.validated = false;
+					frappe.msgprint({
+						title: __("Missing Photoshop Images"),
+						indicator: "orange",
+						message: __(
+							"MWO cannot be submitted. Please upload at least one Finished Item " +
+								"image first. Click <b>Upload Missing Images</b> to upload it now."
+						),
+					});
+					// Open the upload dialog automatically
+					setTimeout(function () {
+						open_upload_images_dialog(frm);
+					}, 500);
+				}
+			},
+		});
 	},
 	transfer_to_raw: function (frm) {
 		frm.call({
@@ -228,6 +293,100 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		try_fetch_snc();
 	},
 });
+
+// -------- Upload Missing Images Dialog --------
+
+function open_upload_images_dialog(frm) {
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",
+		args: {
+			item_code: frm.doc.item_code,
+			master_bom: frm.doc.master_bom || "",
+		},
+		callback: function (r) {
+			if (!r.message || !r.message.missing || !Object.keys(r.message.missing).length) {
+				frappe.msgprint(__("All images are already uploaded."));
+				return;
+			}
+
+			const missing = r.message.missing;
+			const item_fields_map = r.message.item_image_fields || {};
+			let dialog_fields = [];
+
+			// Only Finished Item image slots are offered — the Master BOM images
+			// are mirrored from the Item automatically (on upload and on submit).
+			if (missing.item && missing.item.length) {
+				dialog_fields.push({
+					fieldtype: "Section Break",
+					label: __("Finished Item Images ({0})", [frm.doc.item_code]),
+				});
+				for (const label of missing.item) {
+					// Reverse-lookup fieldname from label
+					const fieldname = Object.keys(item_fields_map).find((k) => item_fields_map[k] === label);
+					if (fieldname) {
+						dialog_fields.push({
+							fieldname: "item__" + fieldname,
+							fieldtype: "Attach Image",
+							label: label,
+						});
+					}
+				}
+			}
+
+			const dlg = new frappe.ui.Dialog({
+				title: __("Upload Missing Images"),
+				fields: dialog_fields,
+				size: "large",
+				primary_action_label: __("Upload & Save"),
+				primary_action: function () {
+					const values = dlg.get_values();
+					let item_images = {};
+					let bom_images = {};
+
+					for (const [key, val] of Object.entries(values)) {
+						if (key.startsWith("item__") && val) {
+							item_images[key.replace("item__", "")] = val;
+						} else if (key.startsWith("bom__") && val) {
+							bom_images[key.replace("bom__", "")] = val;
+						}
+					}
+
+					if (!Object.keys(item_images).length && !Object.keys(bom_images).length) {
+						frappe.msgprint(__("Please upload at least one image."));
+						return;
+					}
+
+					frappe.call({
+						method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.update_photoshop_images",
+						args: {
+							item_code: frm.doc.item_code,
+							master_bom: frm.doc.master_bom || "",
+							item_images: JSON.stringify(item_images),
+							bom_images: JSON.stringify(bom_images),
+						},
+						freeze: true,
+						freeze_message: __("Saving images..."),
+						callback: function (res) {
+							if (res.message && res.message.success) {
+								frappe.show_alert({
+									message: __(
+										"Images updated on Item Master and/or Master BOM successfully."
+									),
+									indicator: "green",
+								});
+								dlg.hide();
+								frm.reload_doc();
+							}
+						},
+					});
+				},
+			});
+			dlg.show();
+		},
+	});
+}
+
+// -------- HTML helpers --------
 
 function set_html(frm) {
 	if (frm.doc.__islocal && !frm.doc.is_last_operation) {

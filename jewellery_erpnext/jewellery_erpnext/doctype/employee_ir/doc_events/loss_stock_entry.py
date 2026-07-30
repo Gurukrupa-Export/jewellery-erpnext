@@ -7,8 +7,11 @@ from the SRE source warehouse to either:
   - Scrap warehouse by department  (is_main_slip_required = 0)
   - Employee / Subcontractor Raw Material warehouse  (is_main_slip_required = 1)
 
-After each SE is submitted the matching Stock Reservation Entry is cancelled
-and recreated with reduced reserved_qty.
+Before the SE is submitted, each matching Stock Reservation Entry that still holds a
+reservation is cancelled and recreated with reduced reserved_qty, so the loss quantity
+is free for the ledger entry. Reservations already spent upstream (delivered/consumed/
+transferred == reserved, e.g. consumed by a Product Certification) are left alone: they
+hold no stock in ERPNext's Bin formula, so there is nothing to release.
 
 Cancel path: cancels all Process Loss SEs owned by this EIR and restores the
 original SRE reserved quantities via custom_replaced_sre_snapshot (JSON).
@@ -22,9 +25,64 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, nowtime, today
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	resolve_batch_ownership,
+)
+
 PROCESS_LOSS_SE_TYPE = "Process Loss"
 CHILD_TABLE_EMPLOYEE = "employee_loss_details"
 CHILD_TABLE_MANUAL = "manually_book_loss_details"
+
+# Float noise guard for reservation/stock comparisons. Same value and intent as
+# pc_tagging_stock_sync.TOLERANCE / serial_number_creator.TOLERANCE.
+TOLERANCE = 0.0001
+
+
+def _sre_remaining(sre):
+	"""Reservation an SRE still holds, in stock UOM.
+
+	Mirrors ERPNext's own Bin formula
+	(``reserved_qty - delivered_qty - transferred_qty - consumed_qty``, see
+	``erpnext/stock/doctype/bin/bin.py`` update_reserved_stock and
+	``stock_ledger.get_reserved_stock``). A submitted-but-Delivered SRE therefore holds
+	ZERO reserved stock: it blocks nothing and there is nothing left to release.
+
+	Accepts either a dict row (from ``_query_batch_and_qty_sres``) or a loaded Document.
+	"""
+	get = sre.get if hasattr(sre, "get") else lambda key: getattr(sre, key, 0)
+	return flt(
+		flt(get("reserved_qty"))
+		- flt(get("delivered_qty"))
+		- flt(get("transferred_qty"))
+		- flt(get("consumed_qty")),
+		3,
+	)
+
+
+def _physical_batch_qty(item_code, batch_no, warehouse):
+	"""Physical SBB qty of (item, batch) at ``warehouse``, ignoring reservations.
+
+	Thin re-export of the shared helper in ``pc_tagging_stock_sync`` so this module has a
+	single import site. In v16 real per-batch stock lives in Serial and Batch Bundle, not
+	``tabStock Ledger Entry.batch_no`` (which is NULL) — ``get_batch_qty`` handles that.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tagging_stock_sync import (
+		_physical_batch_qty as _shared_physical_batch_qty,
+	)
+
+	return _shared_physical_batch_qty(item_code, batch_no, warehouse)
+
+
+def _warehouses_with_physical_batch(item_code, batch_no):
+	"""``[(warehouse, qty)]`` for warehouses physically holding the batch, qty desc.
+
+	Shared with ``pc_tagging_stock_sync``; used for fail-fast diagnostics only.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.pc_tagging_stock_sync import (
+		_warehouses_with_physical_batch as _shared_warehouses_with_physical_batch,
+	)
+
+	return _shared_warehouses_with_physical_batch(item_code, batch_no)
 
 
 def is_no_wastage_customer(customer):
@@ -101,8 +159,15 @@ def create_loss_stock_entries(eir):
 		)
 	)
 
-	# Reduce all SREs first so stock is free for the ledger entry.
+	# Reduce all SREs first so stock is free for the ledger entry. Rows whose
+	# reservation was already spent upstream (Product Certification consumes SREs via
+	# consume_stock_reservation_entry) hold no reserved stock at all, so nothing blocks
+	# the loss SE and there is nothing to release -- reducing them would only rebuild a
+	# reservation ERPNext then rejects ("Reserved Qty should be greater than Delivered
+	# Qty", stock_reservation_entry.validate_with_allowed_qty).
 	for entry in pending:
+		if not entry.get("needs_sre_reduction"):
+			continue
 		_reduce_sre(
 			eir, entry["row"], entry["sre_doc"], entry["qty"], entry["table_name"]
 		)
@@ -129,10 +194,96 @@ def cancel_loss_stock_entries(eir):
 		},
 		pluck="name",
 	)
+	if se_names:
+		_assert_no_orphaned_reductions(eir, se_names)
+
 	for se_name in se_names:
 		frappe.get_doc("Stock Entry", se_name).cancel()
 
 	_restore_reduced_sres(eir)
+
+
+def _assert_no_orphaned_reductions(eir, se_names):
+	"""Refuse to cancel when this EIR's reductions can no longer be undone.
+
+	``custom_replaced_sre_snapshot`` was referenced by ``_reduce_sre`` long before any
+	patch created the column. Assigning an unknown fieldname to a Document is not an
+	error -- ``get_valid_dict()`` filters it out -- so on every site but ``gk`` the
+	snapshot was silently dropped and the reduction left no trace.
+
+	Cancelling such an EIR would cancel its Process Loss Stock Entries (returning the
+	loss quantity to stock) while the reservations stay permanently reduced. Stopping is
+	the honest outcome: the reservation has to be corrected by hand.
+
+	The check is narrow on purpose. Finding no markers is *legitimate* when every SRE was
+	already spent (``_sre_remaining <= TOLERANCE``) or fully consumed by the loss
+	(``new_qty <= TOLERANCE``) -- in both cases ``_reduce_sre`` returns without creating a
+	replacement, so there is genuinely nothing to restore. Only the real orphan signature
+	throws: a cancelled reservation replaced, within the same instant, by a still-live one
+	that carries neither marker.
+	"""
+	if _restore_marker_count(eir):
+		return
+
+	window = frappe.db.sql(
+		"""
+        SELECT MIN(creation), MAX(creation)
+        FROM `tabStock Entry`
+        WHERE name IN %(se_names)s
+        """,
+		{"se_names": tuple(se_names)},
+	)
+	if not window or not window[0][0]:
+		return
+	start, end = window[0]
+
+	orphan = frappe.db.sql(
+		"""
+        SELECT c.name, n.name
+        FROM `tabStock Reservation Entry` c
+        JOIN `tabStock Reservation Entry` n
+          ON n.item_code = c.item_code
+         AND n.warehouse = c.warehouse
+         AND n.voucher_no = c.voucher_no
+         AND n.voucher_detail_no = c.voucher_detail_no
+         AND n.docstatus = 1
+         AND n.creation BETWEEN c.modified AND c.modified + INTERVAL 5 SECOND
+         AND COALESCE(n.employee_ir, '') = ''
+         AND COALESCE(n.custom_replaced_sre_snapshot, '') = ''
+        WHERE c.docstatus = 2
+          AND c.modified BETWEEN %(start)s AND %(end)s
+        LIMIT 1
+        """,
+		{"start": start, "end": end},
+	)
+	if not orphan:
+		return
+
+	frappe.throw(
+		_(
+			"Employee IR {0} cannot be cancelled automatically. Its Process Loss entries "
+			"reduced Stock Reservation Entries before this site recorded how to restore "
+			"them (for example {1}, replaced by {2}), so cancelling would release the "
+			"loss quantity while leaving the reservation permanently short. Restore the "
+			"affected reservations manually, then cancel."
+		).format(eir.name, orphan[0][0], orphan[0][1])
+	)
+
+
+def _restore_marker_count(eir):
+	"""Count reservations this EIR can still be unwound from (see _restore_reduced_sres)."""
+	return frappe.db.sql(
+		"""
+        SELECT COUNT(*)
+        FROM `tabStock Reservation Entry`
+        WHERE docstatus = 1
+          AND (
+            employee_ir = %(eir)s
+            OR custom_replaced_sre_snapshot LIKE %(legacy)s
+          )
+        """,
+		{"eir": eir.name, "legacy": f'%"employee_ir": "{eir.name}"%'},
+	)[0][0]
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +376,9 @@ def _prepare_loss_row(eir, row, table_name):
 		"qty": qty,
 		"mwo": mwo,
 		"sre_doc": sre_doc,
+		# False when the reservation was already spent upstream (e.g. consumed by a
+		# Product Certification): it holds no stock, so there is nothing to release.
+		"needs_sre_reduction": _sre_remaining(sre_doc) > TOLERANCE,
 		"s_warehouse": sre_doc.warehouse,
 		"t_warehouse": t_warehouse,
 		"loss_item": loss_item,
@@ -265,57 +419,23 @@ def _resolve_batch_inventory(row):
 	The loss physically leaves ``row.batch_no``, so the ledger row -- and the
 	scrap batch minted from the produce row (Batch.update_inventory_dimentions
 	copies inventory_type/customer off the SE Detail row) -- must carry THAT
-	batch's inventory type. The Batch is the source of truth, so it wins; fall
-	back to any value already on the loss row, then to "Regular Stock". Setting
-	the value here (before ``se.insert()``) pre-empts the before_validate stamp,
-	which only fires ``if not row.inventory_type``.
+	batch's inventory type. Setting the value here (before ``se.insert()``)
+	pre-empts the before_validate stamp, which only fires
+	``if not row.inventory_type``.
+
+	The rules themselves live in ``customization/utils/row_ownership`` so the
+	tree and warehouse loss builders resolve ownership identically.
 	"""
-	batch_inv = {}
-	if getattr(row, "batch_no", None):
-		batch_inv = (
-			frappe.db.get_value(
-				"Batch",
-				row.batch_no,
-				["custom_inventory_type", "custom_customer"],
-				as_dict=True,
-			)
-			or {}
-		)
-	inventory_type = (
-		batch_inv.get("custom_inventory_type")
-		or getattr(row, "inventory_type", None)
-		or "Regular Stock"
-	)
-	# Customer only travels with customer-owned inventory; a Regular Stock row
-	# must never carry a stray customer (mirrors the Make Receive batch
-	# resolution in manufacturing_operation.py).
-	if inventory_type in ("Customer Goods", "Customer Stock"):
-		customer = batch_inv.get("custom_customer") or getattr(row, "customer", None)
-		# Couple the two: a customer inventory type with no resolvable customer is
-		# malformed. The scrap batch's guard-exemption (is_process_loss_repack)
-		# needs a customer, so emitting a customer type without one would stamp an
-		# inventory type the loss item may not allow and hard-fail the EIR receive
-		# submit. Fall back to Regular Stock (as main_slip.create_metal_loss does)
-		# rather than crash; the today's behaviour was Regular Stock anyway.
-		if not customer:
-			frappe.logger().warning(
-				"create_loss_stock_entries: batch {0} (item {1}) is {2} with no "
-				"customer; booking loss row as Regular Stock".format(
-					getattr(row, "batch_no", None),
-					getattr(row, "item_code", None),
-					inventory_type,
-				)
-			)
-			inventory_type = "Regular Stock"
-	else:
-		customer = None
-	return inventory_type, customer
+	return resolve_batch_ownership(row)
 
 
 _SRE_LOOKUP_FIELDS = [
 	"name",
 	"warehouse",
 	"reserved_qty",
+	"delivered_qty",
+	"transferred_qty",
+	"consumed_qty",
 	"available_qty",
 	"voucher_qty",
 	"reservation_based_on",
@@ -342,6 +462,9 @@ def _query_batch_and_qty_sres(mwo, item_code, batch_no):
             sre.name,
             sre.warehouse,
             sre.reserved_qty,
+            sre.delivered_qty,
+            sre.transferred_qty,
+            sre.consumed_qty,
             sre.available_qty,
             sre.voucher_qty,
             sre.reservation_based_on,
@@ -378,6 +501,57 @@ def _query_batch_and_qty_sres(mwo, item_code, batch_no):
 	return rows
 
 
+def get_batch_sre_headroom(mwo, batch_nos):
+	"""``{(item_code, batch_no): largest single remaining SRE}`` for ``mwo``.
+
+	The most loss ``_validate_sre_qty`` will let a single row book against a batch.
+	That guard deliberately does NOT aggregate across the batch's SREs -- it throws
+	when the row's qty exceeds the largest *one* of them -- so this is the real
+	per-row ceiling, and the loss waterfall needs it up front.
+
+	Why it matters: the old flat split spread loss thinly over every batch, so a
+	row's share was almost always well under its reservation. The waterfall
+	concentrates the whole loss on the Regular Stock tier, which can push one row
+	past a reservation that is legitimately split across several operation-tagged
+	SREs (see ``_find_sre``). Capping the tier's capacity here makes the excess
+	spill to the next tier instead of failing an Employee IR that submits today.
+
+	One round-trip for the whole document. A batch with no batch-level SRE (the
+	Qty-based fallback) is absent from the result, and the caller then applies no
+	cap -- preserving today's behaviour rather than guessing.
+	"""
+	batch_nos = sorted({b for b in (batch_nos or []) if b})
+	if not mwo or not batch_nos:
+		return {}
+
+	rows = frappe.db.sql(
+		"""
+        SELECT
+            sre.item_code AS item_code,
+            sbe.batch_no AS batch_no,
+            MAX(
+                sre.reserved_qty
+                - IFNULL(sre.delivered_qty, 0)
+                - IFNULL(sre.transferred_qty, 0)
+                - IFNULL(sre.consumed_qty, 0)
+            ) AS headroom
+        FROM `tabStock Reservation Entry` sre
+        INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
+        WHERE sre.manufacturing_work_order = %(mwo)s
+          AND sre.docstatus = 1
+          AND sbe.batch_no IN %(batches)s
+        GROUP BY sre.item_code, sbe.batch_no
+        """,
+		{"mwo": mwo, "batches": batch_nos},
+		as_dict=True,
+	)
+	return {
+		(r["item_code"], r["batch_no"]): flt(r["headroom"], 3)
+		for r in rows
+		if flt(r["headroom"]) > TOLERANCE
+	}
+
+
 def _find_sre(eir, row, mwo, table_name, qty):
 	"""Return ``(sre_doc, candidates)`` for this loss row.
 
@@ -392,6 +566,10 @@ def _find_sre(eir, row, mwo, table_name, qty):
 	  * Prefer a batch-level match via the Serial and Batch Entry child table;
 	    fall back to a Qty-based reservation (no sb_entries) if the batch join
 	    returns nothing.
+	  * Prefer ACTIVE reservations (``_sre_remaining`` > TOLERANCE). A submitted SRE
+	    whose delivered/consumed/transferred qty already covers reserved_qty holds no
+	    stock (ERPNext's Bin formula nets to zero), so it neither blocks the loss SE
+	    nor has anything left to release.
 	  * Restrict candidates to a SINGLE warehouse so we never deduct across
 	    physical locations: the warehouse of the operation-matched SRE if one
 	    exists, else the warehouse holding the largest reserved_qty.
@@ -399,6 +577,11 @@ def _find_sre(eir, row, mwo, table_name, qty):
 	    the current operation's SRE, then the largest. If none individually
 	    covers the loss, return the largest so ``_validate_sre_qty`` raises with
 	    an accurate aggregate message.
+	  * When NO active reservation remains (e.g. a Product Certification already
+	    consumed it) the SRE is still needed for source-warehouse resolution, but a
+	    spent SRE is not physical truth — pick the spent SRE whose warehouse
+	    PHYSICALLY holds the batch in the required qty, and fail fast listing the
+	    warehouses that do if none qualifies.
 
 	``candidates`` (the ordered, single-warehouse list) is returned alongside so
 	the validation can report the batch's aggregate reservation on failure.
@@ -446,32 +629,45 @@ def _find_sre(eir, row, mwo, table_name, qty):
 			)
 		)
 
+	qty = flt(qty, 3)
+	row_mop = getattr(row, "manufacturing_operation", None)
+
+	# Prefer reservations that still hold stock. A spent SRE (delivered/consumed/
+	# transferred == reserved) nets to zero in ERPNext's Bin formula, so it neither
+	# blocks the loss Stock Entry nor has anything left for _reduce_sre to release.
+	active = [r for r in rows if _sre_remaining(r) > TOLERANCE]
+
+	if not active:
+		# Every reservation for this batch was already consumed upstream (a Product
+		# Certification consumes SREs via consume_stock_reservation_entry, which sets
+		# delivered_qty = reserved_qty and leaves docstatus = 1). Nothing is reserved,
+		# so the loss can be booked directly against physical stock -- but a spent SRE
+		# is NOT physical truth, so resolve the source warehouse by actual SBB stock
+		# rather than trusting sre.warehouse.
+		return _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name)
+
 	# Confine candidates to a single warehouse so deduction never spans physical
 	# locations: the operation-matched SRE's warehouse, else the warehouse with
-	# the largest reserved_qty.
-	row_mop = getattr(row, "manufacturing_operation", None)
+	# the largest remaining reservation.
 	op_matched = [
-		r for r in rows if row_mop and r.get("manufacturing_operation") == row_mop
+		r for r in active if row_mop and r.get("manufacturing_operation") == row_mop
 	]
 	chosen_wh = (
 		op_matched[0]["warehouse"]
 		if op_matched
-		else max(rows, key=lambda r: flt(r.get("reserved_qty"), 3))["warehouse"]
+		else max(active, key=lambda r: _sre_remaining(r))["warehouse"]
 	)
-	candidates = [r for r in rows if r.get("warehouse") == chosen_wh]
+	candidates = [r for r in active if r.get("warehouse") == chosen_wh]
 
-	# Order: current operation's SRE first, then by reserved_qty descending.
+	# Order: current operation's SRE first, then by remaining reservation descending.
 	candidates.sort(
 		key=lambda r: (
 			not (bool(row_mop) and r.get("manufacturing_operation") == row_mop),
-			-flt(r.get("reserved_qty"), 3),
+			-_sre_remaining(r),
 		)
 	)
 
-	qty = flt(qty, 3)
-	covering = next(
-		(c for c in candidates if flt(c.get("reserved_qty"), 3) >= qty), None
-	)
+	covering = next((c for c in candidates if _sre_remaining(c) >= qty), None)
 	chosen = covering or (candidates[0] if candidates else None)
 	if not chosen:
 		# Defensive: candidates derives from `rows` (already guarded as non-empty above),
@@ -484,6 +680,60 @@ def _find_sre(eir, row, mwo, table_name, qty):
 		)
 
 	return frappe.get_doc("Stock Reservation Entry", chosen["name"]), candidates
+
+
+def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
+	"""``(sre_doc, candidates)`` when every SRE for this batch is already spent.
+
+	A spent SRE (delivered/consumed/transferred covers reserved_qty) releases no stock
+	and needs no reduction — but ``_prepare_loss_row`` still takes ``s_warehouse`` from
+	it, so the warehouse must be re-validated. Per the rule this codebase already applies
+	in ``pc_tagging_stock_sync`` and ``serial_number_creator``: an SRE is physical truth
+	only while it is active, so pick the spent SRE whose warehouse actually holds the
+	batch. Fail fast (naming the warehouses that DO hold it) rather than booking a loss
+	out of a warehouse the metal has left — that would only trade this error for a
+	BatchNegativeStockError deeper in the Stock Entry.
+
+	We deliberately do NOT self-heal via ``_reserve_batch_at_physical_warehouse`` here:
+	that path exists for ORPHANED reservations (no SRE at all). Re-reserving stock that
+	an upstream step deliberately released would resurrect a closed reservation and can
+	block other flows.
+	"""
+	ordered = sorted(rows, key=lambda r: -flt(r.get("reserved_qty"), 3))
+
+	seen_wh = set()
+	for candidate in ordered:
+		wh = candidate.get("warehouse")
+		if not wh or wh in seen_wh:
+			continue
+		seen_wh.add(wh)
+		physical = flt(_physical_batch_qty(row.item_code, row.batch_no, wh) or 0)
+		if physical + TOLERANCE >= qty:
+			candidates = [r for r in rows if r.get("warehouse") == wh]
+			return (
+				frappe.get_doc("Stock Reservation Entry", candidate["name"]),
+				candidates,
+			)
+
+	holders = _warehouses_with_physical_batch(row.item_code, row.batch_no)
+	holders_txt = ", ".join(f"{wh}={q}" for wh, q in holders) if holders else _("none")
+	frappe.throw(
+		_(
+			"Employee IR {0}, {1} row {2}: the reservation for batch {3} (item {4}) was "
+			"already fully consumed upstream, and none of its warehouses [{5}] still "
+			"physically holds the {6} required for the loss. Warehouses currently "
+			"holding this batch: {7}."
+		).format(
+			eir.name,
+			table_name,
+			row.idx,
+			row.batch_no,
+			row.item_code,
+			", ".join(sorted(seen_wh)) or _("none"),
+			qty,
+			holders_txt,
+		)
+	)
 
 
 def _resolve_t_warehouse(eir, table_name):
@@ -648,24 +898,54 @@ def _resolve_loss_item(eir, row, table_name):
 
 
 def _validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name):
-	"""Guard that the chosen SRE can cover the loss.
+	"""Guard that the loss can actually be sourced.
 
 	``sre_doc`` is the covering SRE picked by ``_find_sre`` (or the largest when
-	none covers). This fires only when no single SRE in the batch's warehouse
-	can absorb the loss; the message reports the batch's aggregate reservation
-	and per-SRE breakdown so a genuine shortfall is diagnosable.
+	none covers). Two regimes:
+
+	  * The SRE still holds a reservation — the loss must fit inside what REMAINS
+	    (``reserved_qty`` minus delivered/transferred/consumed), because that is all
+	    ``_reduce_sre`` can release. This fires only when no single SRE in the batch's
+	    warehouse can absorb the loss; the message reports the batch's aggregate
+	    remaining reservation and per-SRE breakdown so a genuine shortfall is
+	    diagnosable.
+	  * The reservation is spent — nothing is reserved, so the only constraint is
+	    physical stock at the source warehouse. ``_find_sre`` already picked a
+	    warehouse that covers it; re-assert here so the guarantee is local.
 	"""
-	reserved = flt(sre_doc.reserved_qty, 3)
-	if qty > reserved:
-		total = flt(sum(flt(c.get("reserved_qty"), 3) for c in candidates), 3)
-		breakdown = ", ".join(
-			f"{c['name']}={flt(c.get('reserved_qty'), 3)}" for c in candidates
+	remaining = _sre_remaining(sre_doc)
+
+	if remaining <= TOLERANCE:
+		physical = flt(
+			_physical_batch_qty(row.item_code, row.batch_no, sre_doc.warehouse) or 0
 		)
+		if physical + TOLERANCE < qty:
+			frappe.throw(
+				_(
+					"Employee IR {0}, {1} row {2}: loss qty {3} exceeds the physical "
+					"stock of batch {4} in warehouse {5} ({6}). The reservation for this "
+					"batch was already fully consumed upstream, so the loss must be "
+					"covered by physical stock."
+				).format(
+					eir.name,
+					table_name,
+					row.idx,
+					qty,
+					row.batch_no,
+					sre_doc.warehouse,
+					physical,
+				)
+			)
+		return
+
+	if qty > remaining:
+		total = flt(sum(_sre_remaining(c) for c in candidates), 3)
+		breakdown = ", ".join(f"{c['name']}={_sre_remaining(c)}" for c in candidates)
 		frappe.throw(
 			_(
 				"Employee IR {0}, {1} row {2}: loss qty {3} cannot be covered by "
 				"any single Stock Reservation Entry for batch {4} in warehouse {5} "
-				"(largest is {6}={7}; batch totals {8} across [{9}])."
+				"(largest remaining is {6}={7}; batch totals {8} remaining across [{9}])."
 			).format(
 				eir.name,
 				table_name,
@@ -674,7 +954,7 @@ def _validate_sre_qty(eir, row, sre_doc, candidates, qty, table_name):
 				row.batch_no,
 				sre_doc.warehouse,
 				sre_doc.name,
-				reserved,
+				remaining,
 				total,
 				breakdown,
 			)
@@ -823,15 +1103,65 @@ def _reservation_voucher_qty(sre_doc, reserved_qty):
 def _reduce_sre(eir, row, sre_doc, loss_qty, table_name):
 	"""Cancel the existing SRE and recreate it with reduced reserved_qty.
 
-	Stores original_reserved_qty and employee_ir in custom_replaced_sre_snapshot
-	(JSON) so the cancel path can restore the original quantity.
+	Stores original_reserved_qty (plus the per-batch original qty) and employee_ir in
+	custom_replaced_sre_snapshot (JSON) so the cancel path can restore exactly what was
+	taken away.
+
+	No-ops when the reservation is already spent: a Delivered/consumed SRE nets to zero
+	in ERPNext's Bin formula, so it blocks nothing and there is nothing to release.
+	Recreating it would carry ``delivered_qty`` forward (``frappe.copy_doc`` defaults to
+	``ignore_no_copy=True``) and trip
+	``StockReservationEntry.validate_with_allowed_qty``'s
+	"Reserved Qty should be greater than Delivered Qty".
 	"""
+	if _sre_remaining(sre_doc) <= TOLERANCE:
+		return
+
+	# The replacement carries delivered_qty = 0, so it must be sized by what the old entry
+	# still RESERVED, not by its gross reserved_qty -- otherwise a partially-delivered SRE
+	# (reserved 5, delivered 4, net 1) would come back reserving 5 - loss and silently
+	# re-reserve the 4 already handed over.
 	original_reserved_qty = flt(sre_doc.reserved_qty, 3)
-	new_qty = flt(original_reserved_qty - loss_qty, 3)
+	original_delivered_qty = flt(sre_doc.delivered_qty, 3)
+	remaining_qty = _sre_remaining(sre_doc)
+	is_batched = sre_doc.reservation_based_on == "Serial and Batch"
+
+	original_sb_qty = None
+	if is_batched:
+		matching = [sb for sb in sre_doc.sb_entries if sb.batch_no == row.batch_no]
+		if not matching:
+			# Reachable via the batch-agnostic Qty fallback in _query_batch_and_qty_sres:
+			# with no matching row the loop below would change nothing and ERPNext would
+			# reset reserved_qty to sum(sb_entries.qty) on submit
+			# (stock_reservation_entry.py validate_reservation_based_on_serial_and_batch),
+			# silently discarding the reduction. Fail loudly instead.
+			frappe.throw(
+				_(
+					"Employee IR {0}, {1} row {2}: Stock Reservation Entry {3} reserves "
+					"batches [{4}] but not {5}, so the loss cannot be deducted from it."
+				).format(
+					eir.name,
+					table_name,
+					row.idx,
+					sre_doc.name,
+					", ".join(
+						sorted(
+							{sb.batch_no for sb in sre_doc.sb_entries if sb.batch_no}
+						)
+					),
+					row.batch_no,
+				)
+			)
+		# Per-batch remaining, for the same reason as the header figure above.
+		original_sb_qty = flt(
+			flt(matching[0].qty, 3) - flt(matching[0].delivered_qty, 3), 3
+		)
+
+	new_qty = flt(remaining_qty - loss_qty, 3)
 
 	sre_doc.cancel()
 
-	if new_qty <= 0:
+	if new_qty <= TOLERANCE:
 		# Entire reservation consumed — no new SRE needed.
 		return
 
@@ -840,21 +1170,49 @@ def _reduce_sre(eir, row, sre_doc, loss_qty, table_name):
 	new_sre.name = None
 	new_sre.amended_from = None
 	new_sre.status = "Draft"
+	# copy_doc keeps no_copy fields (frappe/model/document.py copy_doc: "No_copy fields
+	# also get copied"), so the consumption counters would ride along onto a brand-new
+	# reservation. Zero them explicitly: this replacement has delivered nothing.
+	new_sre.delivered_qty = 0
+	new_sre.transferred_qty = 0
+	new_sre.consumed_qty = 0
 	new_sre.reserved_qty = new_qty
 	new_sre.voucher_qty = _reservation_voucher_qty(sre_doc, new_qty)
 	new_sre.available_qty = max(flt(sre_doc.available_qty), new_qty)
+	# Two markers, deliberately: `employee_ir` is an exact-match key so the cancel path
+	# does not have to LIKE-scan every reservation in the table, while the snapshot
+	# carries the payload needed to rebuild the reservation.
+	new_sre.employee_ir = eir.name
 	new_sre.custom_replaced_sre_snapshot = json.dumps(
 		{
 			"employee_ir": eir.name,
 			"original_reserved_qty": original_reserved_qty,
+			"original_delivered_qty": original_delivered_qty,
+			"batch_no": row.batch_no if is_batched else None,
+			"original_sb_qty": original_sb_qty,
 		}
 	)
 
-	if sre_doc.reservation_based_on == "Serial and Batch":
+	if is_batched:
+		# DECREMENT the affected batch row only. Assigning the whole new header qty
+		# would corrupt multi-batch reservations: ERPNext recomputes
+		# reserved_qty = sum(sb_entries.qty) on submit. Every row is rebased on its own
+		# remaining qty, since the replacement's delivered_qty starts at 0.
+		kept = []
 		for sb in new_sre.sb_entries:
+			sb.qty = flt(flt(sb.qty, 3) - flt(sb.delivered_qty, 3), 3)
+			sb.delivered_qty = 0
 			if sb.batch_no == row.batch_no:
-				sb.qty = new_qty
-				break
+				sb.qty = flt(sb.qty - loss_qty, 3)
+			if sb.qty <= TOLERANCE:
+				continue
+			kept.append(sb)
+		new_sre.sb_entries = kept
+		for idx, sb in enumerate(new_sre.sb_entries, start=1):
+			sb.idx = idx
+		new_sre.reserved_qty = flt(sum(flt(sb.qty, 3) for sb in new_sre.sb_entries), 3)
+		if new_sre.reserved_qty <= TOLERANCE:
+			return
 
 	new_sre.flags.ignore_permissions = True
 	new_sre.insert(ignore_links=True)
@@ -862,16 +1220,26 @@ def _reduce_sre(eir, row, sre_doc, loss_qty, table_name):
 
 
 def _restore_reduced_sres(eir):
-	"""On EIR cancel: cancel reduced SREs and restore original reserved qty."""
-	# Find SREs created by this EIR via the snapshot field (no dedicated column).
+	"""On EIR cancel: cancel reduced SREs and restore original reserved qty.
+
+	Returns the number of reservations found for this EIR, so the caller can tell
+	"nothing to restore" apart from "the markers were never written" (see
+	``_assert_no_orphaned_reductions``).
+	"""
+	# `employee_ir` is the current marker and matches exactly. The snapshot LIKE is the
+	# legacy arm: reservations reduced before `employee_ir` was stamped carry only the
+	# JSON, and they must stay restorable.
 	rows = frappe.db.sql(
 		"""
         SELECT name, custom_replaced_sre_snapshot
         FROM `tabStock Reservation Entry`
         WHERE docstatus = 1
-          AND custom_replaced_sre_snapshot LIKE %s
+          AND (
+            employee_ir = %(eir)s
+            OR custom_replaced_sre_snapshot LIKE %(legacy)s
+          )
         """,
-		(f'%"employee_ir": "{eir.name}"%',),
+		{"eir": eir.name, "legacy": f'%"employee_ir": "{eir.name}"%'},
 		as_dict=True,
 	)
 
@@ -882,7 +1250,17 @@ def _restore_reduced_sres(eir):
 		except Exception:
 			pass
 
-		orig_qty = flt(snapshot.get("original_reserved_qty", 0), 3)
+		# Restore the reservation the EIR actually took away: the pre-loss REMAINING qty,
+		# since the restored entry (like the reduced one) carries delivered_qty = 0.
+		# original_delivered_qty is absent on snapshots written before this change, where
+		# it was always effectively 0.
+		orig_qty = flt(
+			flt(snapshot.get("original_reserved_qty", 0), 3)
+			- flt(snapshot.get("original_delivered_qty", 0), 3),
+			3,
+		)
+		snap_batch = snapshot.get("batch_no")
+		snap_sb_qty = snapshot.get("original_sb_qty")
 		sre_doc = frappe.get_doc("Stock Reservation Entry", sre_row.name)
 		sre_doc.cancel()
 
@@ -894,14 +1272,52 @@ def _restore_reduced_sres(eir):
 		restored.name = None
 		restored.amended_from = None
 		restored.status = "Draft"
+		# Mirror _reduce_sre: copy_doc carries no_copy counters forward.
+		restored.delivered_qty = 0
+		restored.transferred_qty = 0
+		restored.consumed_qty = 0
 		restored.reserved_qty = orig_qty
 		restored.voucher_qty = _reservation_voucher_qty(sre_doc, orig_qty)
 		restored.available_qty = max(flt(sre_doc.available_qty), orig_qty)
+		# copy_doc carries no_copy fields, so both markers ride along from the reduced
+		# entry. Clear them: this reservation is whole again and must not be picked up
+		# by a second cancel of the same EIR.
+		restored.employee_ir = None
 		restored.custom_replaced_sre_snapshot = None
 
-		for sb in restored.sb_entries:
-			sb.qty = orig_qty
+		if restored.sb_entries:
+			if snap_batch and snap_sb_qty is not None:
+				# Restore ONLY the batch row the loss was taken from. Blanket-assigning
+				# orig_qty to every row would multiply a multi-batch reservation, since
+				# ERPNext recomputes reserved_qty = sum(sb_entries.qty) on submit.
+				matched = next(
+					(sb for sb in restored.sb_entries if sb.batch_no == snap_batch),
+					None,
+				)
+				if matched:
+					matched.qty = flt(snap_sb_qty, 3)
+				else:
+					restored.append(
+						"sb_entries",
+						{
+							"batch_no": snap_batch,
+							"qty": flt(snap_sb_qty, 3),
+							"warehouse": restored.warehouse,
+						},
+					)
+			elif len(restored.sb_entries) == 1:
+				# Legacy snapshot (pre per-batch tracking): unambiguous only when the
+				# reservation covers a single batch.
+				restored.sb_entries[0].qty = orig_qty
+
+			for sb in restored.sb_entries:
+				sb.delivered_qty = 0
+			restored.reserved_qty = flt(
+				sum(flt(sb.qty, 3) for sb in restored.sb_entries), 3
+			)
 
 		restored.flags.ignore_permissions = True
 		restored.insert(ignore_links=True)
 		restored.submit()
+
+	return len(rows)

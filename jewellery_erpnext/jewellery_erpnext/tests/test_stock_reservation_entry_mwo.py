@@ -97,8 +97,11 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 
 		stock_reservation_entry_for_mwo(doc)
 
-		self.assertEqual(mock_avail.call_count, 1)
-		mock_avail.assert_called_once_with("M-ALLOY", "WH-Dept", batch_no="B-OUT")
+		# Batched inbound row now queries availability twice: batch-level and warehouse-level
+		# (the latter caps to what ERPNext's before_submit re-check will allow).
+		self.assertEqual(mock_avail.call_count, 2)
+		mock_avail.assert_any_call("M-ALLOY", "WH-Dept", batch_no="B-OUT")
+		mock_avail.assert_any_call("M-ALLOY", "WH-Dept")
 		mock_new_doc.assert_called_once()
 		sre.append.assert_called()
 		append_kw = sre.append.call_args[0][1]
@@ -107,6 +110,262 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		self.assertEqual(append_kw.get("qty"), 2.0)
 		self.assertEqual(sre.reservation_based_on, "Serial and Batch")
 		sre.insert.assert_called_once_with(ignore_links=1)
+		sre.submit.assert_called_once()
+
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.new_doc")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_sre_reserved_qty_for_voucher_detail_no",
+		return_value=0.0,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_available_qty_to_reserve"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_values",
+		return_value=None,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_all",
+		return_value=["Repack"],
+	)
+	def test_caps_reservation_to_warehouse_ledger_for_batch_diamond(
+		self,
+		_mock_get_all,
+		_mock_get_values,
+		mock_cached,
+		mock_avail,
+		_mock_so_reserved,
+		mock_new_doc,
+		_mock_mop,
+	):
+		"""Repair-unpack diamond bug: the SBB batch qty (precision 3) exceeds the freshly
+		booked SLE ledger balance (precision 2). The reservation must be capped to the
+		warehouse-ledger figure ERPNext's before_submit re-checks against, else the SRE
+		submit throws "Cannot reserve more than Allowed Qty".
+		"""
+
+		def _cached(doctype, name, fields):
+			if doctype == "Parent Manufacturing Order":
+				return ("SO-1", "SOI-1", "MNF-1")
+			if doctype == "Item":
+				return (1, 0)
+			raise AssertionError(doctype)
+
+		mock_cached.side_effect = _cached
+
+		# Batch bundle holds 0.101 (get_batch_qty), but the warehouse ledger balance is 0.10.
+		def _avail(item_code, warehouse, batch_no=None):
+			return 0.101 if batch_no else 0.10
+
+		mock_avail.side_effect = _avail
+
+		sre = MagicMock()
+		mock_new_doc.return_value = sre
+
+		doc = MagicMock()
+		doc.stock_entry_type = "Repack"
+		doc.manufacturing_order = "PMO-1"
+		doc.manufacturing_work_order = "MWO-1"
+		doc.company = "GE"
+		doc.manufacturer = None
+		doc.employee_ir = None
+
+		row = MagicMock()
+		row.item_code = "D-NT-RO-7-+2-2.5"
+		row.qty = 0.101
+		row.t_warehouse = "WH-Dept"
+		row.s_warehouse = None
+		row.uom = "Carat"
+		row.batch_no = "B-DIA"
+		row.manufacturing_operation = "MOP-1"
+		row.get = MagicMock(side_effect=lambda k, d=None: getattr(row, k, d))
+
+		doc.items = [row]
+
+		stock_reservation_entry_for_mwo(doc)
+
+		mock_new_doc.assert_called_once()
+		# Capped to the ledger-recognized 0.10, not the SBB's 0.101.
+		self.assertEqual(sre.reserved_qty, 0.10)
+		sre.append.assert_called()
+		append_kw = sre.append.call_args[0][1]
+		self.assertEqual(append_kw.get("batch_no"), "B-DIA")
+		self.assertEqual(append_kw.get("warehouse"), "WH-Dept")
+		self.assertEqual(append_kw.get("qty"), 0.10)
+		self.assertEqual(sre.reservation_based_on, "Serial and Batch")
+		# voucher_qty fallback = total_so_reserved (0) + qty_to_be_reserved (0.10)
+		self.assertEqual(sre.voucher_qty, 0.10)
+		sre.insert.assert_called_once_with(ignore_links=1)
+		sre.submit.assert_called_once()
+
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.new_doc")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_sre_reserved_qty_for_voucher_detail_no",
+		return_value=0.0,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_available_qty_to_reserve"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_values",
+		return_value=None,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_all",
+		return_value=["Repack"],
+	)
+	def test_fallback_cannot_exceed_warehouse_ledger_when_batch_reads_zero(
+		self,
+		_mock_get_all,
+		_mock_get_values,
+		mock_cached,
+		mock_avail,
+		_mock_so_reserved,
+		mock_new_doc,
+		_mock_mop,
+	):
+		"""Repair-unpack diamond, reproduced from the production traceback.
+
+		A batch created by this same transaction reads 0 until it settles, so the
+		"stock just landed" fallback kicks in and restores row.qty. That restore must
+		still respect the warehouse ledger: booking 0.122 into an empty warehouse
+		settles as a 0.12 ledger balance (float_precision 2), and ERPNext's
+		validate_with_allowed_qty checks against exactly that -- so reserving the
+		uncapped 0.122 threw "Cannot reserve more than Allowed Qty 0.12".
+		"""
+
+		def _cached(doctype, name, fields):
+			if doctype == "Parent Manufacturing Order":
+				return ("SO-1", "SOI-1", "MNF-1")
+			if doctype == "Item":
+				return (1, 0)
+			raise AssertionError(doctype)
+
+		mock_cached.side_effect = _cached
+
+		# The exact locals from the production traceback:
+		#   available_qty_to_reserve = 0.0   (fresh in-transaction batch)
+		#   wh_available_qty         = 0.12  (ledger, precision 2)
+		def _avail(item_code, warehouse, batch_no=None):
+			return 0.0 if batch_no else 0.12
+
+		mock_avail.side_effect = _avail
+
+		sre = MagicMock()
+		mock_new_doc.return_value = sre
+
+		doc = MagicMock()
+		doc.stock_entry_type = "Repack"
+		doc.manufacturing_order = "PMO-1"
+		doc.manufacturing_work_order = "MWO-1"
+		doc.company = "GE"
+		doc.manufacturer = None
+		doc.employee_ir = None
+
+		row = MagicMock()
+		row.item_code = "D-NT-RO-6B-+1-1.5"
+		row.qty = 0.122
+		row.t_warehouse = "Central WO - GEPL"
+		row.s_warehouse = None
+		row.uom = "Carat"
+		row.batch_no = "B-DIA-NEW"
+		row.manufacturing_operation = "MOP-1"
+		row.get = MagicMock(side_effect=lambda k, d=None: getattr(row, k, d))
+
+		doc.items = [row]
+
+		stock_reservation_entry_for_mwo(doc)
+
+		mock_new_doc.assert_called_once()
+		# Capped to the ledger's 0.12 -- the bug reserved the uncapped row.qty 0.122.
+		self.assertEqual(sre.reserved_qty, 0.12)
+		self.assertEqual(sre.voucher_qty, 0.12)
+		append_kw = sre.append.call_args[0][1]
+		self.assertEqual(append_kw.get("qty"), 0.12)
+		sre.submit.assert_called_once()
+
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.new_doc")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_sre_reserved_qty_for_voucher_detail_no",
+		return_value=0.0,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.get_available_qty_to_reserve"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_values",
+		return_value=None,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_all",
+		return_value=["Repack"],
+	)
+	def test_reserves_full_precision_3_qty_once_ledger_can_hold_it(
+		self,
+		_mock_get_all,
+		_mock_get_values,
+		mock_cached,
+		mock_avail,
+		_mock_so_reserved,
+		mock_new_doc,
+		_mock_mop,
+	):
+		"""With float_precision = 3 the ledger carries the third decimal, so the same
+		unpack reserves the FULL 0.122 rather than losing 0.002 to the cap."""
+
+		def _cached(doctype, name, fields):
+			if doctype == "Parent Manufacturing Order":
+				return ("SO-1", "SOI-1", "MNF-1")
+			if doctype == "Item":
+				return (1, 0)
+			raise AssertionError(doctype)
+
+		mock_cached.side_effect = _cached
+
+		def _avail(item_code, warehouse, batch_no=None):
+			return 0.0 if batch_no else 0.122
+
+		mock_avail.side_effect = _avail
+
+		sre = MagicMock()
+		mock_new_doc.return_value = sre
+
+		doc = MagicMock()
+		doc.stock_entry_type = "Repack"
+		doc.manufacturing_order = "PMO-1"
+		doc.manufacturing_work_order = "MWO-1"
+		doc.company = "GE"
+		doc.manufacturer = None
+		doc.employee_ir = None
+
+		row = MagicMock()
+		row.item_code = "D-NT-RO-6B-+1-1.5"
+		row.qty = 0.122
+		row.t_warehouse = "Central WO - GEPL"
+		row.s_warehouse = None
+		row.uom = "Carat"
+		row.batch_no = "B-DIA-NEW"
+		row.manufacturing_operation = "MOP-1"
+		row.get = MagicMock(side_effect=lambda k, d=None: getattr(row, k, d))
+
+		doc.items = [row]
+
+		stock_reservation_entry_for_mwo(doc)
+
+		self.assertEqual(sre.reserved_qty, 0.122)
+		self.assertEqual(sre.voucher_qty, 0.122)
 		sre.submit.assert_called_once()
 
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")

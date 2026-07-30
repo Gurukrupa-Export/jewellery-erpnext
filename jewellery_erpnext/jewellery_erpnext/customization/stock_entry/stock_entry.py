@@ -12,6 +12,7 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.inventory_utils import (
 	in_configured_timeslot,
 	validate_customer_voucher,
+	validate_sample_goods_not_consumed,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	get_fifo_batches,
@@ -19,6 +20,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	set_gross_wt,
 	# validate_inventory_dimention,
 	validate_warehouse,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.loss_valuation import (
+	set_process_loss_produce_rates,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
@@ -31,6 +35,7 @@ def before_validate(self, method):
 	if not in_configured_timeslot(self):
 		frappe.throw(_("Not Allowed to do entries, its freeze time"))
 	validate_customer_voucher(self)
+	validate_sample_goods_not_consumed(self)
 	set_employee(self)
 	set_gross_wt(self)
 	validate_warehouse(self)
@@ -234,6 +239,22 @@ class CustomStockEntry(StockEntry):
 
 	def get_bom_scrap_material(self, qty):
 		custom_get_bom_scrap_material(self, qty)
+
+	def set_basic_rate(self, reset_outgoing_rate=True, raise_error_if_no_rate=True):
+		"""Value a Process Loss SE's produce rows from the rows they consumed.
+
+		ERPNext skips every ``set_basic_rate_manually`` row -- which is every loss/scrap
+		produce row -- leaving basic_rate and basic_amount at 0, so the metal's value left
+		the ledger and nothing replaced it. See ``utils/loss_valuation`` for why the flag
+		cannot simply be dropped, and why this belongs on the controller rather than in
+		each of the six builders (ERPNext re-derives Repack rates on every repost).
+
+		Runs after super() so the consume rows already carry their basic_amount, and
+		before ``update_valuation_rate`` / ``set_total_incoming_outgoing_value`` in
+		``calculate_rate_and_amount``, which then pick the new values up for free.
+		"""
+		super().set_basic_rate(reset_outgoing_rate, raise_error_if_no_rate)
+		set_process_loss_produce_rates(self)
 
 
 @frappe.whitelist()

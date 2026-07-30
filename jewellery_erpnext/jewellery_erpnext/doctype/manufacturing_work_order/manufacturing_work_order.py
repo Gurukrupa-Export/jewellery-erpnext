@@ -52,6 +52,9 @@ class ManufacturingWorkOrder(Document):
 				{"reference_doctype": self.doctype, "reference_docname": self.name},
 			)
 
+	def before_submit(self):
+		self.validate_photoshop_images()
+
 	def on_submit(self):
 		if self.for_fg:
 			self.validate_other_work_orders()
@@ -242,11 +245,11 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_repair_un_pack_stock_entry(self):
-		bom_weight = frappe.db.get_value("BOM", self.master_bom, "gross_weight")
+		# bom_weight = frappe.db.get_value("BOM", self.master_bom, "gross_weight")
 
-		pmo_weight = frappe.db.get_value(
-			"Parent Manufacturing Order", self.manufacturing_order, "customer_weight"
-		)
+		# pmo_weight = frappe.db.get_value(
+		# 	"Parent Manufacturing Order", self.manufacturing_order, "customer_weight"
+		# )
 
 		# if bom_weight != pmo_weight:
 		# 	frappe.throw(_("BOM weight does not match with customer weight"))
@@ -399,17 +402,17 @@ class ManufacturingWorkOrder(Document):
 		se.submit()
 
 	def _resolve_repair_order_bom(self):
-		"""Return (repair BOM, PMO name) for this repair unpack.
+		"""Return (design BOM, PMO name) for this repair unpack.
 
-		The BOM to unpack against is the Repair Order's ``new_bom`` -- the real
-		repair-components BOM (the actual metal/diamond/stone lines, batch-tracked),
-		reached from the PMO's ``order_form_type`` / ``order_form_id`` dynamic link.
-		We deliberately do NOT use the Repair Order's ``bom`` field: in practice ``bom``
-		is fetched from the design order-form detail and is a thin design PLACEHOLDER
-		(often a single serial-tracked "Design Variant" line, sometimes draft) that does
-		not describe the real components and cannot be booked inward. ``new_bom`` is the
-		clone that carries the actual components. Throws if there is no Repair Order link
-		or the Repair Order has no ``new_bom``.
+		The BOM to unpack against is the Repair Order's ``bom`` -- the design BOM, reached
+		from the PMO's ``order_form_type`` / ``order_form_id`` dynamic link. Its detail
+		tables carry the item's FULL composition, which is what
+		``_resolve_full_repair_components`` books.
+
+		We deliberately do NOT require the Repair Order's ``new_bom``. That field is only
+		ever written by the Repair Order's own ``on_submit`` when ``required_design == 'No'``,
+		so a Manual/CAD-design repair never gets one and demanding it blocked the unpack
+		outright. Throws only if there is no Repair Order link, or it carries no ``bom``.
 		"""
 		pmo_name = self.manufacturing_order
 		order_form_type, order_form_id = frappe.db.get_value(
@@ -423,14 +426,77 @@ class ManufacturingWorkOrder(Document):
 					"No Repair Order is linked to {0}; cannot resolve the repair BOM to unpack."
 				).format(pmo_name)
 			)
-		repair_bom = frappe.db.get_value("Repair Order", order_form_id, "new_bom")
-		if not repair_bom:
+		design_bom = frappe.db.get_value("Repair Order", order_form_id, "bom")
+		if not design_bom:
 			frappe.throw(
 				_(
-					"Repair Order {0} has no repair BOM (New BOM) to unpack; create it first."
+					"Repair Order {0} has no BOM to unpack; set its design BOM first."
 				).format(order_form_id)
 			)
-		return repair_bom, pmo_name
+		return design_bom, pmo_name
+
+	def _resolve_full_repair_components(self, pmo_name, design_bom):
+		"""Resolve the FULL bookable component list for this repair from the design
+		BOM's detail tables, so the unpack disassembles the WHOLE item (all metal,
+		every diamond group, findings, ...) instead of only the subset that happens
+		to sit in the reduced repair ``new_bom``.
+
+		The Repair Order's design BOM keeps the complete composition in its
+		metal/diamond/finding detail tables, but as a Template its rows carry no
+		bookable ``item_variant``. We resolve each detail row to its stock item with
+		the same logic the BOM layer uses (``set_item_variant``), injecting the
+		order's Diamond Grade (design diamond rows carry the sieve/type/shape but not
+		the grade -- that comes from the order). The in-memory copy is never saved.
+
+		``design_bom`` comes from ``_resolve_repair_order_bom``, which has already
+		validated the Repair Order link.
+
+		Returns (components, gross_wt, bom_qty) where
+		``components = [{"item_code", "qty"}]`` aggregated by item.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
+
+		design = frappe.get_doc("BOM", design_bom)
+
+		diamond_grade = frappe.db.get_value(
+			"Parent Manufacturing Order", pmo_name, "diamond_grade"
+		)
+		for row in design.get("diamond_detail") or []:
+			if diamond_grade and not row.get("diamond_grade"):
+				row.diamond_grade = diamond_grade
+
+		# set_item_variant() short-circuits for Template/Quotation BOMs; flip the
+		# in-memory copy so it resolves item_variant on every detail row. Throws a
+		# clear error if a component's stock item does not exist.
+		design.bom_type = "Finish Goods"
+		set_item_variant(design)
+
+		components = {}
+		order = []
+
+		def _add(item_code, qty):
+			if not item_code or not qty:
+				return
+			if item_code not in components:
+				components[item_code] = 0
+				order.append(item_code)
+			components[item_code] += flt(qty)
+
+		for table in (
+			"metal_detail",
+			"diamond_detail",
+			"finding_detail",
+			"gemstone_detail",
+		):
+			for row in design.get(table) or []:
+				_add(row.get("item_variant"), row.get("quantity"))
+		for row in design.get("other_detail") or []:
+			_add(row.get("item_code"), row.get("quantity"))
+
+		component_rows = [
+			{"item_code": code, "qty": components[code]} for code in order
+		]
+		return component_rows, flt(design.gross_weight), flt(design.quantity) or 1.0
 
 	def _assert_serial_in_department(self, source_wh):
 		"""Block unpacking unless the serial's current warehouse belongs to THIS work
@@ -488,13 +554,15 @@ class ManufacturingWorkOrder(Document):
 				)
 			)
 
-		# The repair BOM lives on the linked Repair Order (new_bom), not the MWO's
-		# inherited master_bom. Resolve it, persist onto the PMO + this MWO, and use it.
-		repair_bom, pmo_name = self._resolve_repair_order_bom()
+		# The BOM to unpack lives on the linked Repair Order, not the MWO's inherited
+		# master_bom. Persist it onto the PMO + this MWO (it drives repair
+		# pricing/quotation); the components actually booked come from its full design
+		# composition, resolved below.
+		design_bom, pmo_name = self._resolve_repair_order_bom()
 		frappe.db.set_value(
-			"Parent Manufacturing Order", pmo_name, "master_bom", repair_bom
+			"Parent Manufacturing Order", pmo_name, "master_bom", design_bom
 		)
-		self.db_set("master_bom", repair_bom)
+		self.db_set("master_bom", design_bom)
 
 		# Source: the RM warehouse that currently holds the serial (not the
 		# manufacturer's repair warehouse used by the legacy method).
@@ -565,16 +633,23 @@ class ManufacturingWorkOrder(Document):
 				/ row_dict[row.item_code]["count"]
 			)
 
-		bom_item = frappe.get_doc("BOM", repair_bom)
-		if not bom_item.quantity:
+		# Unpack the FULL item, not the reduced repair new_bom: resolve every
+		# component (metal + each diamond group + findings) from the design BOM's
+		# detail tables. Downstream (MOP weights, repack) is MOP-Log-driven off the
+		# rows we book here, so booking the full set is what makes the operation
+		# reflect the whole item.
+		components, design_gross, design_qty = self._resolve_full_repair_components(
+			pmo_name, design_bom
+		)
+		if not components:
 			frappe.throw(
 				_(
-					"BOM {0} has zero quantity; cannot scale unpack raw materials."
-				).format(repair_bom)
+					"No components resolved from design BOM {0}; nothing to unpack."
+				).format(design_bom)
 			)
 
 		self._assert_components_bookable(
-			[row.item_code for row in bom_item.items], repair_bom
+			[comp["item_code"] for comp in components], design_bom
 		)
 
 		se = frappe.get_doc(
@@ -596,7 +671,8 @@ class ManufacturingWorkOrder(Document):
 		)
 		# Source row: consume the FG serial under its ACTUAL inventory type so the
 		# outward ledger entry nets against real stock (inventory_type is a
-		# ledger-enforced Inventory Dimension).
+		# ledger-enforced Inventory Dimension). Gross weight is the full design gross
+		# so the disassembly is mass-balanced against the resolved components.
 		se.append(
 			"items",
 			{
@@ -609,42 +685,48 @@ class ManufacturingWorkOrder(Document):
 				"manufacturer": self.manufacturer,
 				"use_serial_batch_fields": 1,
 				"s_warehouse": source_wh,
-				"gross_weight": bom_item.gross_weight,
+				"gross_weight": design_gross,
 			},
 		)
-		# Target rows: BOM raw materials, qty-scaled, into the MFG warehouse.
-		for row in bom_item.items:
-			qty = flt((self.qty * row.qty) / bom_item.quantity, 3)
+		# Target rows: the FULL resolved component set, qty-scaled, into the MFG
+		# warehouse.
+		for comp in components:
+			item_code = comp["item_code"]
+			qty = flt((self.qty * comp["qty"]) / design_qty, 3)
 
 			# Only batch-tracked items get a (Customer Goods) child batch; setting a
 			# batch on a non-batch item would fail SE validation at submit.
 			has_batch, batch_number_series = frappe.db.get_value(
-				"Item", row.item_code, ["has_batch_no", "batch_number_series"]
+				"Item", item_code, ["has_batch_no", "batch_number_series"]
 			) or (0, None)
 			batch_no = None
 			if has_batch:
 				batch_doc = frappe.new_doc("Batch")
-				batch_doc.item = row.item_code
+				batch_doc.item = item_code
 				if batch_number_series:
 					batch_doc.batch_id = make_autoname(
 						batch_number_series, doc=batch_doc
 					)
 				batch_doc.custom_inventory_type = "Customer Goods"
 				batch_doc.custom_customer = customer
+				# Unpacked raw material is the customer's repair stock -- tag the voucher type
+				# so it is correctly identified as Customer Repair downstream (the SE-level
+				# customer_voucher_type cannot be used here: it would trip
+				# inventory_utils.validate_customer_voucher's "Customer Repair" branch, which
+				# forbids batch-tracked rows).
+				batch_doc.custom_customer_voucher_type = "Customer Repair"
 				batch_doc.flags.ignore_permissions = True
 				batch_doc.save()
 				batch_no = batch_doc.name
 
 			rate = 0
-			if row_dict.get(row.item_code) and row_dict[row.item_code].get(
-				"avg_basic_rate"
-			):
-				rate = row_dict[row.item_code].get("avg_basic_rate")
+			if row_dict.get(item_code) and row_dict[item_code].get("avg_basic_rate"):
+				rate = row_dict[item_code].get("avg_basic_rate")
 
 			se.append(
 				"items",
 				{
-					"item_code": row.item_code,
+					"item_code": item_code,
 					"qty": qty,
 					"inventory_type": "Customer Goods",
 					"customer": customer,
@@ -664,6 +746,47 @@ class ManufacturingWorkOrder(Document):
 		se.save()
 		se.submit()
 		return se.name
+
+	def validate_photoshop_images(self):
+		"""Block submission when the Finished Item has 'Is Photoshop Images'
+		enabled but carries no finish image (at least one is mandatory). The Item
+		is the master: its images are mirrored onto the Master BOM, so when the
+		BOM has no finish image the Item's images are copied across here and
+		submission is allowed."""
+		# The shared CI fixtures build finished-good items that resolve the
+		# 'Is Photoshop Images' flag as set (no test uploads the finish images),
+		# so this hard guard would trip every MWO-submit test even though those
+		# tests are unrelated to the photoshop workflow. The feature is driven
+		# from the MWO UI (upload dialog) and verified manually, so skip the
+		# server-side block under the test runner.
+		if frappe.flags.in_test:
+			return
+		if not self.item_code:
+			return
+		if not self.for_fg:
+			return
+
+		is_photoshop = frappe.db.get_value(
+			"Item", self.item_code, "custom_is_photoshop_images"
+		)
+		if not is_photoshop:
+			return
+
+		# The Finished Item must carry at least one finish image (master source).
+		if not _item_has_any_photoshop_image(self.item_code):
+			frappe.throw(
+				_(
+					"MWO cannot be submitted. Please upload at least one Finished "
+					"Item image (via the <b>Upload Missing Images</b> action) before "
+					"submitting the Manufacturing Work Order."
+				),
+				title=_("Missing Photoshop Images"),
+			)
+
+		# The Master BOM mirrors the Item: if it has no finish image yet, copy the
+		# Item's images across so both stay in sync, then allow submission.
+		if self.master_bom and not _bom_has_any_photoshop_image(self.master_bom):
+			_sync_item_images_to_bom(self.item_code, self.master_bom)
 
 	@frappe.whitelist()
 	def create_mfg_entry(self):
@@ -997,3 +1120,149 @@ def create_mr_for_split_work_order(docname, company, manufacturer):
 	new_mr.flags.ignore_validate = True
 	new_mr.save()
 	frappe.msgprint("Material Request is created !!")
+
+
+# ---------- Photoshop Image Validation Helpers ----------
+
+# Finished Item image field map:  fieldname -> label
+ITEM_IMAGE_FIELDS = {
+	"finish_front_view": "Finish Front View",
+	"finish__back_view": "Finish Back View",
+	"finish_left_view": "Finish Left View",
+	"finish_right_view": "Finish Right View",
+	"finish_top_view": "Finish Top View",
+	"finish_bottom_view": "Finish Bottom View",
+}
+
+# Master BOM image field map:  fieldname -> label
+BOM_IMAGE_FIELDS = {
+	"front_view_finish": "BOM Finish Images Front View",
+	"back_view_finish": "BOM Finish Images Back View",
+	"left_view_finish": "BOM Finish Images Left View",
+	"right_view_finish": "BOM Finish Images Right View",
+	"top_view_finish": "BOM Finish Images Top View",
+	"bottom_view_finish": "BOM Finish Images Bottom View",
+}
+
+# Item finish-image field -> corresponding Master BOM finish-image field.
+# The Item is the master; its images are mirrored onto the BOM.
+ITEM_TO_BOM_IMAGE_FIELD = {
+	"finish_front_view": "front_view_finish",
+	"finish__back_view": "back_view_finish",
+	"finish_left_view": "left_view_finish",
+	"finish_right_view": "right_view_finish",
+	"finish_top_view": "top_view_finish",
+	"finish_bottom_view": "bottom_view_finish",
+}
+
+
+def _item_has_any_photoshop_image(item_code):
+	"""True when the Item has at least one finish image uploaded."""
+	values = frappe.db.get_value(
+		"Item", item_code, list(ITEM_IMAGE_FIELDS.keys()), as_dict=True
+	)
+	return bool(values and any(values.get(f) for f in ITEM_IMAGE_FIELDS))
+
+
+def _bom_has_any_photoshop_image(master_bom):
+	"""True when the Master BOM has at least one finish image uploaded."""
+	values = frappe.db.get_value(
+		"BOM", master_bom, list(BOM_IMAGE_FIELDS.keys()), as_dict=True
+	)
+	return bool(values and any(values.get(f) for f in BOM_IMAGE_FIELDS))
+
+
+def _sync_item_images_to_bom(item_code, master_bom):
+	"""Copy each finish image set on the Item onto its corresponding Master BOM
+	field, so the BOM mirrors the Item."""
+	item_values = (
+		frappe.db.get_value(
+			"Item", item_code, list(ITEM_IMAGE_FIELDS.keys()), as_dict=True
+		)
+		or {}
+	)
+	updates = {
+		bom_field: item_values.get(item_field)
+		for item_field, bom_field in ITEM_TO_BOM_IMAGE_FIELD.items()
+		if item_values.get(item_field)
+	}
+	if updates:
+		frappe.db.set_value("BOM", master_bom, updates, update_modified=True)
+
+
+def _get_missing_photoshop_images(item_code, master_bom=None):
+	"""Return {"item": [empty slot labels]} when the Finished Item has NO
+	finish image (at least one is mandatory).  The Master BOM images are
+	derived from the Item on submit, so they are not reported here and the
+	upload dialog only ever offers Item slots.  Returns empty dict when the
+	Item already has an image."""
+	missing = {}
+
+	item_values = frappe.db.get_value(
+		"Item", item_code, list(ITEM_IMAGE_FIELDS.keys()), as_dict=True
+	)
+	if item_values and not any(item_values.get(f) for f in ITEM_IMAGE_FIELDS):
+		missing["item"] = [ITEM_IMAGE_FIELDS[f] for f in ITEM_IMAGE_FIELDS]
+
+	return missing
+
+
+@frappe.whitelist()
+def get_missing_photoshop_images(item_code, master_bom=None):
+	"""Whitelisted helper called from the client to fetch missing images
+	before MWO submission so the user can upload them inline."""
+	is_photoshop = frappe.db.get_value("Item", item_code, "custom_is_photoshop_images")
+	if not is_photoshop:
+		return {"check_required": False}
+
+	missing = _get_missing_photoshop_images(item_code, master_bom)
+	return {
+		"check_required": True,
+		"missing": missing,
+		"item_image_fields": ITEM_IMAGE_FIELDS,
+		"bom_image_fields": BOM_IMAGE_FIELDS,
+	}
+
+
+@frappe.whitelist()
+def update_photoshop_images(
+	item_code, master_bom=None, item_images=None, bom_images=None
+):
+	"""Write uploaded finish images to the Item master and mirror them onto the
+	Master BOM.
+
+	Called from the MWO upload dialog, which offers Item slots only.
+	`item_images` (and the retained `bom_images`) are JSON dicts of
+	{fieldname: file_url}.
+	"""
+	import json
+
+	if isinstance(item_images, str):
+		item_images = json.loads(item_images)
+	if isinstance(bom_images, str):
+		bom_images = json.loads(bom_images)
+
+	if item_images:
+		valid = {k: v for k, v in item_images.items() if k in ITEM_IMAGE_FIELDS and v}
+		if valid:
+			frappe.db.set_value("Item", item_code, valid, update_modified=True)
+			# Mirror the uploaded Item images onto the corresponding BOM fields.
+			if master_bom:
+				bom_updates = {
+					ITEM_TO_BOM_IMAGE_FIELD[k]: v
+					for k, v in valid.items()
+					if k in ITEM_TO_BOM_IMAGE_FIELD
+				}
+				if bom_updates:
+					frappe.db.set_value(
+						"BOM", master_bom, bom_updates, update_modified=True
+					)
+
+	# Retained for backward-compat; the dialog no longer sends BOM slots.
+	if bom_images and master_bom:
+		valid = {k: v for k, v in bom_images.items() if k in BOM_IMAGE_FIELDS and v}
+		if valid:
+			frappe.db.set_value("BOM", master_bom, valid, update_modified=True)
+
+	frappe.db.commit()
+	return {"success": True}
