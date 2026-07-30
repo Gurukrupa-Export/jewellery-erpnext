@@ -65,6 +65,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority 
 	batch_priority_map,
 	batch_sort_key,
 	consume_rank,
+	stamp_produce_rows_from_consumes,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	normalize_ownership,
@@ -394,6 +395,16 @@ def _apply_fifo_to_repack_stock_entry(se, mode=None):
 	for d in new_items:
 		se.append("items", d)
 
+	# The consume rows above were resolved (and ownership-stamped) by
+	# _expand_source_rows_for_fifo, but each produce row is a plain copy of the
+	# original with only qty changed -- it carries NO ownership. Left bare,
+	# doc_events/stock_entry.before_validate blanket-defaults it to "Regular Stock"
+	# and the alloy batch minted from that row inherits company ownership, so a
+	# purity Repack of a customer's pure metal silently launders it into ours.
+	# precision left to the helper: it is only needed for a mixed-owner split, and
+	# resolving it eagerly would cost a meta lookup on every repack.
+	stamp_produce_rows_from_consumes(se, row_to_dict=_row_to_append_dict)
+
 
 def _pure_metal_item_for_mwo(mwo_name):
 	manufacturer = frappe.get_cached_value(
@@ -614,6 +625,54 @@ def cancel_injections_for_eir(eir_name):
 # ---------------------------------------------------------------------------
 
 
+def _main_slip_pool(eir):
+	"""The Main Slip batch pool for this Employee IR, resolved ONCE and shared.
+
+	``inject_extra_metal_for_eir_receive`` runs once per ``employee_ir_operations``
+	row, i.e. once per work order. Re-reading the pool per row meant every work
+	order saw the batch at its full undepleted quantity: depletion was written only
+	to the local list (``available_qty``), never back to the Main Slip, so two work
+	orders on one Employee IR could each mint 6 g out of the same 10 g batch and the
+	shortfall guard could never fire.
+
+	Caching on ``eir.flags`` makes every work order allocate from one ledger, which
+	is what "check all the work orders" requires. ``_persist_main_slip_consumption``
+	then writes the total back so a *second* Employee IR cannot re-spend it either.
+	"""
+	pool = eir.flags.get("main_slip_pool")
+	if pool is None:
+		pool = list(_iter_main_slip_batches(eir.main_slip))
+		eir.flags.main_slip_pool = pool
+	return pool
+
+
+def _persist_main_slip_consumption(pool):
+	"""Write consumed qty back onto the Main Slip rows this EIR actually drew from.
+
+	Without this the depletion is per-document: a second Employee IR against the
+	same Main Slip re-reads the original ``consume_qty`` and spends the batch again.
+
+	``frappe.db.set_value`` on the individual child rows, deliberately -- re-saving
+	the Main Slip would trigger ``update_batch_details``, a full recompute that
+	rebuilds ``consume_qty`` from ``stock_details`` (a table nothing populates any
+	more) and would immediately undo this. ``batch_details`` is ``allow_on_submit``,
+	so writing to a submitted slip is permitted.
+	"""
+	for batch in pool:
+		drawn = flt(batch.get("_drawn"))
+		if drawn <= 0:
+			continue
+		frappe.db.set_value(
+			"Main Slip SE Details",
+			batch["name"],
+			"consume_qty",
+			flt(flt(batch.get("consume_qty")) + drawn, _fifo_precision()),
+			update_modified=False,
+		)
+		batch["consume_qty"] = flt(batch.get("consume_qty")) + drawn
+		batch["_drawn"] = 0.0
+
+
 def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 	"""Walk Main Slip batch_details in inventory-type priority and emit one SE
 	per consumed segment until each target item's required qty is satisfied.
@@ -629,7 +688,8 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 			)
 		)
 
-	batches = list(_iter_main_slip_batches(eir.main_slip))
+	# Shared across every work order on this Employee IR — see _main_slip_pool.
+	batches = _main_slip_pool(eir)
 	se_names = []
 	purity_cache = {}
 
@@ -644,7 +704,14 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 			if available <= 0:
 				continue
 
-			inv_type = batch.get("inventory_type")
+			# Resolved from the BATCH by _iter_main_slip_batches, not from the row.
+			# This decides Repack-vs-Material-Transfer, so it has to move together
+			# with the ranking: a batch ranked Pure Metal but branched as Regular
+			# takes the transfer path, gets skipped by the item_code guard below,
+			# and silently under-produces until the shortfall throw.
+			inv_type = (
+				batch.get("_owner_meta") or (batch.get("inventory_type"), None)
+			)[0]
 			is_pure_subcontracting = (
 				inv_type == "Pure Metal" and eir.subcontracting == "Yes"
 			)
@@ -679,6 +746,7 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 					produce_qty=produce_this,
 					source_wh=source_wh,
 					dept_wh=dept_wh,
+					owner=batch.get("_owner_meta"),
 				)
 			else:
 				# Direct Material Transfer; the batch item must match the
@@ -694,6 +762,7 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 					qty=take,
 					source_wh=source_wh,
 					dept_wh=dept_wh,
+					owner=batch.get("_owner_meta"),
 				)
 				produce_this = take
 				consume_this = take
@@ -705,6 +774,9 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 			se_names.append(se.name)
 
 			batch["available_qty"] = available - consume_this
+			# Track the draw so _persist_main_slip_consumption can write it back
+			# to the Main Slip once this work order's SEs are all submitted.
+			batch["_drawn"] = flt(batch.get("_drawn")) + consume_this
 			remaining = round(remaining - produce_this, 3)
 			produced += produce_this
 
@@ -723,33 +795,39 @@ def _inject_via_main_slip_batches(eir, row, target_items, dept_wh):
 				)
 			)
 
+	# Only after every target for this work order is satisfied — a shortfall throws
+	# above and rolls the transaction back, so a partial draw is never persisted.
+	_persist_main_slip_consumption(batches)
 	return se_names
 
 
 def _iter_main_slip_batches(main_slip):
-	"""Yield Main Slip SE Details rows (``variant_of = 'M'``) in inventory_type
+	"""Yield Main Slip ``batch_details`` rows (``variant_of = 'M'``) in ownership
 	priority order, only those with positive available qty.
 
-	Sort happens entirely client-side on the composite key
-	``(consume_rank, creation, name)``; we skip a redundant SQL ``ORDER BY``
-	because we'd re-sort by priority anyway.
-
 	Order is ``CONSUME_PRIORITY``: Customer Goods / Customer Stock, then Regular
-	Stock, then Pure Metal. Two things changed when this moved off the old
-	module-local dict, both deliberate:
+	Stock, then Pure Metal -- a job draws down the customer's own metal before the
+	company's. This is the gain path (it mints metal because the receive came back
+	heavier than it went out), so consuming customer-owned batches here draws a
+	customer down without a backing issue. That is the accepted business rule.
 
-	* Regular and Customer swapped, so a job draws down the customer's own metal
-	  before the company's.
-	* ``"Customer Stock"`` had no key in the old dict and fell to its ``99``
-	  default, i.e. it sorted *after* Pure Metal. It now ranks with Customer Goods.
+	**Ranked on the BATCH, not on the row.** ``Main Slip SE Details.inventory_type``
+	is ``fetch_from = se_item.inventory_type`` with ``fetch_if_empty: 1`` -- a
+	write-once snapshot of whatever a Stock Entry Detail row said, never refreshed,
+	and never sourced from ``Batch``. It drifts for at least four reasons: the batch
+	is re-resolved on every ``Batch`` save; ``customer_subcontracting.batch_rename``
+	hard-sets batches to Customer Goods after the fact; a blank SE row is
+	blanket-defaulted to Regular Stock by ``doc_events/stock_entry``; and
+	``batch_details`` rows carry no ``se_item``, so the fetch never fires on them at
+	all. Meanwhile ``_stamp_row_ownership`` already BOOKS the SE off the batch --
+	so ranking on the row meant ranking and booking could name different owners.
 
-	This is the gain path -- it mints metal into the operation because the receive
-	came back heavier than it went out -- so consuming customer-owned batches here
-	draws a customer down without a backing issue. That is the accepted business
-	rule, but it is why every row this path builds must carry its ownership
-	explicitly (see ``_stamp_row_ownership``): a blank ``inventory_type`` is
-	blanket-defaulted to Regular Stock by ``doc_events/stock_entry.before_validate``,
-	which would launder the customer's metal into company stock.
+	The rank is taken **after** ``normalize_ownership``, not off the raw batch
+	value. A Customer Goods batch with no customer normalizes to Regular Stock when
+	stamped; ranking it 0 would reproduce the same contradiction from the other side.
+
+	Each yielded row gets ``_owner_meta`` -- the resolved ``(inventory_type,
+	customer)`` -- so downstream builders reuse it instead of re-querying per SE.
 	"""
 	rows = (
 		frappe.db.get_all(
@@ -773,20 +851,56 @@ def _iter_main_slip_batches(main_slip):
 		)
 		or []
 	)
+	if not rows:
+		return
 
-	def _sort_key(r):
-		return (
-			consume_rank(r.get("inventory_type")),
-			r.get("creation") or "",
-			r.get("name") or "",
-		)
+	# One round-trip for every batch on the slip.
+	ranks = batch_priority_map([r.get("batch_no") for r in rows])
+	for r in rows:
+		r["_owner_meta"] = _resolve_row_owner(r, ranks)
 
-	for r in sorted(rows, key=_sort_key):
+	# Two stable sorts: the rows arrive unordered (no SQL ORDER BY), so
+	# (creation, name) is doing real work, and re-sorting by rank afterwards keeps
+	# that order inside each tier. See batch_sort_key's docstring for why the two
+	# must not be folded into a single composite key.
+	rows.sort(key=lambda r: (r.get("creation") or "", r.get("name") or ""))
+	rows.sort(key=lambda r: consume_rank(r["_owner_meta"][0]))
+
+	for r in rows:
+		# Nothing validates consume_qty <= qty on the Main Slip (that check is
+		# commented out in update_batch_details), so this can legitimately go
+		# negative; the skip is the only guard.
 		available = flt(r.get("qty", 0)) - flt(r.get("consume_qty", 0))
 		if available <= 0:
 			continue
 		r["available_qty"] = available
 		yield r
+
+
+def _resolve_row_owner(row, ranks):
+	"""``(inventory_type, customer)`` for a Main Slip batch row -- batch first.
+
+	Falls back to the row's own fields only when the batch cannot be resolved
+	(``batch_no`` is not ``reqd`` on this child table, and both Main Slip tables are
+	``allow_on_submit``, so hand-entered rows with no batch are reachable). An
+	unresolvable row keeps whatever the row claimed, which ``consume_rank`` then
+	sorts last if it is unknown -- deliberately, so a row nobody can vouch for never
+	outranks the customer metal being drained first.
+	"""
+	meta = ranks.get(row.get("batch_no"))
+	if meta:
+		return normalize_ownership(
+			meta.get("inventory_type"),
+			meta.get("customer"),
+			batch_no=row.get("batch_no"),
+			item_code=row.get("item_code"),
+		)
+	return normalize_ownership(
+		row.get("inventory_type"),
+		row.get("customer"),
+		batch_no=row.get("batch_no"),
+		item_code=row.get("item_code"),
+	)
 
 
 def _get_item_metal_purity(item_code):
@@ -1124,7 +1238,7 @@ def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dep
 	return se
 
 
-def _stamp_row_ownership(item, batch_no, item_code=None):
+def _stamp_row_ownership(item, batch_no, item_code=None, owner=None):
 	"""Carry ``batch_no``'s ownership onto an SE row dict, in place.
 
 	Every row this module builds already knows its batch, so it takes
@@ -1137,18 +1251,26 @@ def _stamp_row_ownership(item, batch_no, item_code=None):
 
 	This was dormant while Regular Stock ranked first; with customer-first
 	consumption it is the default path, so the stamp is mandatory.
+
+	``owner`` is a pre-resolved ``(inventory_type, customer)`` pair from
+	``_iter_main_slip_batches``; passing it avoids one Batch query per Stock Entry
+	built. Without it the batch is resolved here.
 	"""
-	if not batch_no:
-		return item
-	meta = batch_priority_map([batch_no]).get(batch_no)
-	if not meta:
-		return item
-	inv, cust = normalize_ownership(
-		meta.get("inventory_type"),
-		meta.get("customer"),
-		batch_no=batch_no,
-		item_code=item_code or item.get("item_code"),
-	)
+	if owner is not None:
+		# Already resolved in bulk by _iter_main_slip_batches; no second query.
+		inv, cust = owner
+	else:
+		if not batch_no:
+			return item
+		meta = batch_priority_map([batch_no]).get(batch_no)
+		if not meta:
+			return item
+		inv, cust = normalize_ownership(
+			meta.get("inventory_type"),
+			meta.get("customer"),
+			batch_no=batch_no,
+			item_code=item_code or item.get("item_code"),
+		)
 	if inv:
 		item["inventory_type"] = inv
 	if cust:
@@ -1156,7 +1278,9 @@ def _stamp_row_ownership(item, batch_no, item_code=None):
 	return item
 
 
-def _build_material_transfer_se(eir, row, item_code, batch_no, qty, source_wh, dept_wh):
+def _build_material_transfer_se(
+	eir, row, item_code, batch_no, qty, source_wh, dept_wh, owner=None
+):
 	"""Main Slip path: Material Transfer (WORK ORDER) - consume + produce the
 	same item, from source warehouse to MOP department warehouse."""
 	se = frappe.new_doc("Stock Entry")
@@ -1178,6 +1302,7 @@ def _build_material_transfer_se(eir, row, item_code, batch_no, qty, source_wh, d
 			},
 			batch_no,
 			item_code,
+			owner=owner,
 		),
 	)
 	return se
@@ -1193,6 +1318,7 @@ def _build_purity_repack_se(
 	produce_qty,
 	source_wh,
 	dept_wh,
+	owner=None,
 ):
 	"""Main Slip subcontracting Pure-Metal path: Repack SE that consumes the
 	pure metal (typically 24KT) from the source warehouse and produces the
@@ -1213,6 +1339,7 @@ def _build_purity_repack_se(
 		},
 		source_batch,
 		source_item,
+		owner=owner,
 	)
 	se.append("items", consume)
 	# The produce row mints a NEW batch of the target alloy, and that batch reads

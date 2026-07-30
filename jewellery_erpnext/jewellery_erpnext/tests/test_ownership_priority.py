@@ -443,3 +443,129 @@ class TestSortBatches(IntegrationTestCase):
 		cands = [frappe._dict(batch_no="B-GHOST"), frappe._dict(batch_no="B-RS")]
 		out = opri.sort_batches(cands, self._ranks(), mode="consume")
 		self.assertEqual(len(out), 2)
+
+
+class TestStampProduceRowsFromConsumes(IntegrationTestCase):
+	"""A consume/produce builder must carry the consumed batch's ownership across.
+
+	Left bare, a produce row is blanket-defaulted to Regular Stock by
+	``doc_events/stock_entry.before_validate``, and the batch minted from it inherits
+	company ownership — laundering a customer's metal. This is the shared helper both
+	the Process Loss builders and the purity Repack builders now use.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	class _SE:
+		"""Stock Entry stand-in whose rows are plain dicts."""
+
+		def __init__(self, rows):
+			self.items = [dict(r) for r in rows]
+
+		def set(self, _field, value):
+			self.items = list(value)
+
+		def append(self, _field, row):
+			self.items.append(row)
+			return row
+
+	@staticmethod
+	def _consume(batch, qty, inv, cust=None):
+		return {
+			"item_code": "M-G",
+			"batch_no": batch,
+			"qty": qty,
+			"s_warehouse": "MSL",
+			"t_warehouse": None,
+			"inventory_type": inv,
+			"customer": cust,
+		}
+
+	@staticmethod
+	def _produce(qty, item="M-G-ML"):
+		return {
+			"item_code": item,
+			"qty": qty,
+			"s_warehouse": None,
+			"t_warehouse": "SCRAP",
+		}
+
+	def test_single_owner_stamps_in_place_without_rebuilding(self):
+		se = self._SE(
+			[self._consume("B1", 4.0, "Customer Goods", "CUST-1"), self._produce(4.0)]
+		)
+		rebuilt = opri.stamp_produce_rows_from_consumes(se, precision=PREC)
+		self.assertFalse(rebuilt)
+		self.assertEqual(len(se.items), 2)
+		self.assertEqual(se.items[1]["inventory_type"], "Customer Goods")
+		self.assertEqual(se.items[1]["customer"], "CUST-1")
+
+	def test_company_metal_produces_company_metal(self):
+		se = self._SE([self._consume("B1", 4.0, "Regular Stock"), self._produce(4.0)])
+		opri.stamp_produce_rows_from_consumes(se, precision=PREC)
+		self.assertEqual(se.items[1]["inventory_type"], "Regular Stock")
+		self.assertIsNone(se.items[1]["customer"])
+
+	def test_customer_goods_without_customer_downgrades(self):
+		se = self._SE([self._consume("B1", 4.0, "Customer Goods"), self._produce(4.0)])
+		opri.stamp_produce_rows_from_consumes(se, precision=PREC)
+		self.assertEqual(se.items[1]["inventory_type"], "Regular Stock")
+		self.assertIsNone(se.items[1]["customer"])
+
+	def test_mixed_owners_split_pro_rata_and_sum_exactly(self):
+		se = self._SE(
+			[
+				self._consume("B-CG", 3.0, "Customer Goods", "CUST-1"),
+				self._consume("B-RS", 1.0, "Regular Stock"),
+				self._produce(4.0),
+			]
+		)
+		rebuilt = opri.stamp_produce_rows_from_consumes(se, precision=PREC)
+		self.assertTrue(rebuilt)
+		produce = [r for r in se.items if not r.get("s_warehouse")]
+		self.assertEqual(len(produce), 2)
+		by_owner = {r["inventory_type"]: flt(r["qty"], PREC) for r in produce}
+		self.assertEqual(by_owner["Customer Goods"], 3.0)
+		self.assertEqual(by_owner["Regular Stock"], 1.0)
+		self.assertEqual(flt(sum(r["qty"] for r in produce), PREC), 4.0)
+
+	def test_uneven_split_last_share_absorbs_the_remainder(self):
+		se = self._SE(
+			[
+				self._consume("B-CG", 1.0, "Customer Goods", "CUST-1"),
+				self._consume("B-RS", 2.0, "Regular Stock"),
+				self._produce(1.0),
+			]
+		)
+		opri.stamp_produce_rows_from_consumes(se, precision=PREC)
+		produce = [r for r in se.items if not r.get("s_warehouse")]
+		# The pair must stay balanced no matter how the thirds round.
+		self.assertEqual(flt(sum(r["qty"] for r in produce), PREC), 1.0)
+
+	def test_produce_row_with_no_consume_run_is_untouched(self):
+		se = self._SE([self._produce(4.0)])
+		opri.stamp_produce_rows_from_consumes(se, precision=PREC)
+		self.assertNotIn("inventory_type", se.items[0])
+
+	def test_zero_qty_consume_run_leaves_produce_alone(self):
+		se = self._SE(
+			[self._consume("B1", 0.0, "Customer Goods", "CUST-1"), self._produce(4.0)]
+		)
+		opri.stamp_produce_rows_from_consumes(se, precision=PREC)
+		self.assertNotIn("inventory_type", se.items[1])
+
+	def test_consecutive_pairs_each_take_their_own_owner(self):
+		se = self._SE(
+			[
+				self._consume("B-CG", 2.0, "Customer Goods", "CUST-1"),
+				self._produce(2.0),
+				self._consume("B-RS", 3.0, "Regular Stock"),
+				self._produce(3.0),
+			]
+		)
+		opri.stamp_produce_rows_from_consumes(se, precision=PREC)
+		self.assertEqual(se.items[1]["inventory_type"], "Customer Goods")
+		self.assertEqual(se.items[1]["customer"], "CUST-1")
+		self.assertEqual(se.items[3]["inventory_type"], "Regular Stock")

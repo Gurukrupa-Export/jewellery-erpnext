@@ -6,6 +6,9 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+	stamp_produce_rows_from_consumes,
+)
 from jewellery_erpnext.utils import get_item_from_attribute
 
 
@@ -736,10 +739,17 @@ def create_metal_loss(doc, item, variant_of, metal_loss, batch_data, mop=None):
 					"to_department": doc.department,
 					"manufacturer": doc.manufacturer,
 					"inventory_type": row["inventory_type"],
+					"customer": row.get("customer"),
 					"batch_no": row["batch_no"],
 					"use_serial_batch_fields": True,
 				},
 			)
+	# The produce row's ownership is NOT hardcoded. It used to be pinned to
+	# "Regular Stock", so repacking a customer's metal minted company scrap: the
+	# batch created from this row reads inventory_type/customer straight off it via
+	# Batch.custom_voucher_detail_no. Leave it unset and let the shared stamper
+	# carry the consumed rows' ownership across, splitting pro-rata if the consume
+	# rows belong to different owners.
 	se.append(
 		"items",
 		{
@@ -750,9 +760,9 @@ def create_metal_loss(doc, item, variant_of, metal_loss, batch_data, mop=None):
 			"main_slip": doc.name,
 			"to_department": doc.department,
 			"manufacturer": doc.manufacturer,
-			"inventory_type": "Regular Stock",
 		},
 	)
+	stamp_produce_rows_from_consumes(se)
 
 	se.save()
 	se.submit()

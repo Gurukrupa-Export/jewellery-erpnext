@@ -38,6 +38,7 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	CUSTOMER_INVENTORY_TYPES,
 	DEFAULT_INVENTORY_TYPE,
+	normalize_ownership,
 )
 
 # Lower rank = picked first.
@@ -355,6 +356,140 @@ def _split_tier_proportionally(allocations, tier, tier_qty, take, precision):
 		if share <= 0:
 			continue
 		allocations[key] = flt(flt(allocations.get(key)) + share, precision)
+
+
+# ---------------------------------------------------------------------------
+# Produce-row ownership
+# ---------------------------------------------------------------------------
+
+
+def _row_to_dict(row):
+	"""Copy a row (dict or child Document) into a plain append-able dict."""
+	drop = ("name", "idx", "owner", "creation", "modified")
+	if isinstance(row, dict):
+		return {k: v for k, v in row.items() if k not in drop}
+	d = row.as_dict()
+	for k in drop:
+		d.pop(k, None)
+	return d
+
+
+def _row_set(row, field, value):
+	"""Write a field on a row that may be a plain dict or already a child Document."""
+	if isinstance(row, dict):
+		row[field] = value
+	else:
+		setattr(row, field, value)
+
+
+def produce_rows_for_run(produce_row, run, precision=3, row_to_dict=None):
+	"""Stamp ``produce_row`` from the consume ``run`` that feeds it, splitting on mixed owners.
+
+	Returns the row(s) that should replace ``produce_row``. The single-owner case
+	-- the norm -- stamps in place and returns ``[produce_row]``, so the caller can
+	skip rebuilding the item table entirely.
+
+	A row carries exactly one owner, so a produce row fed by batches belonging to
+	different owners is split pro-rata into one row per owner; the last split
+	absorbs the rounding remainder so the consume/produce pair stays balanced.
+	"""
+	row_to_dict = row_to_dict or _row_to_dict
+
+	# Group the run's consumed qty by owner, preserving FIFO order.
+	by_owner = {}
+	for c in run:
+		key = (c.get("inventory_type") or None, c.get("customer") or None)
+		by_owner[key] = by_owner.get(key, 0.0) + flt(c.get("qty"))
+
+	total = sum(by_owner.values())
+	if not total:
+		return [produce_row]
+
+	owners = list(by_owner.items())
+
+	if len(owners) == 1:
+		(inv, cust), _qty = owners[0]
+		inv, cust = normalize_ownership(
+			inv, cust, item_code=produce_row.get("item_code")
+		)
+		_row_set(produce_row, "inventory_type", inv)
+		_row_set(produce_row, "customer", cust)
+		return [produce_row]
+
+	# Resolved lazily: only a mixed-owner split needs it, and the single-owner path
+	# (the norm) must not pay for a meta lookup it never uses.
+	if precision is None:
+		precision = frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
+
+	produce_qty = flt(produce_row.get("qty"))
+	out = []
+	remaining = produce_qty
+	for i, ((inv, cust), consumed) in enumerate(owners):
+		inv, cust = normalize_ownership(
+			inv, cust, item_code=produce_row.get("item_code")
+		)
+		if i == len(owners) - 1:
+			qty = flt(remaining, precision)
+		else:
+			qty = flt(produce_qty * (consumed / total), precision)
+			remaining -= qty
+		if qty <= 0:
+			continue
+		d = row_to_dict(produce_row)
+		d["qty"] = qty
+		d["transfer_qty"] = qty
+		d["inventory_type"] = inv
+		d["customer"] = cust
+		out.append(frappe._dict(d))
+	return out or [produce_row]
+
+
+def stamp_produce_rows_from_consumes(se, precision=3, row_to_dict=None):
+	"""Carry each consumed batch's ownership onto the produce row it feeds.
+
+	The bug this exists to prevent: a builder resolves batches on its CONSUME rows
+	(so those carry the right owner) but leaves the PRODUCE row bare, because the
+	FIFO expander short-circuits any row without an ``s_warehouse``. A bare produce
+	row is then blanket-defaulted to ``Regular Stock`` by
+	``doc_events/stock_entry.before_validate``, and the batch minted from it -- which
+	reads ``inventory_type`` / ``customer`` straight off that row via
+	``Batch.custom_voucher_detail_no`` -- silently stops being the customer's.
+
+	Applies to any consume/produce builder: ``Process Loss`` write-offs and purity
+	``Repack`` conversions alike. Rows are walked as ``[consume..., produce]`` runs.
+
+	Returns ``True`` when the item table had to be rebuilt (a mixed-owner split),
+	``False`` when every produce row was stamped in place.
+	"""
+	row_to_dict = row_to_dict or _row_to_dict
+	rebuilt = []
+	run = []
+	split_needed = False
+
+	for row in list(se.items):
+		s_wh, t_wh = row.get("s_warehouse"), row.get("t_warehouse")
+		if s_wh and not t_wh:
+			run.append(row)
+			rebuilt.append(row)
+			continue
+		if t_wh and not s_wh and run:
+			produced = produce_rows_for_run(row, run, precision, row_to_dict)
+			split_needed = split_needed or len(produced) > 1
+			rebuilt.extend(produced)
+			run = []
+			continue
+		rebuilt.append(row)
+		run = []
+
+	if not split_needed:
+		# Single owner per produce row: produce_rows_for_run already stamped it in
+		# place, so the item table is untouched and needs no rebuild.
+		return False
+
+	se.set("items", [])
+	for d in rebuilt:
+		se.append("items", row_to_dict(d))
+	return True
 
 
 def describe_customer_spill(spill_rows, precision=3):

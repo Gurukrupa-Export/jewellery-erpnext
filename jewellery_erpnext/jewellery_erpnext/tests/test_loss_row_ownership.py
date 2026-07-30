@@ -13,6 +13,7 @@ Mocked/pure-logic style (see test_sample_goods_guard.py): SimpleNamespace fake d
 
 from unittest.mock import MagicMock, patch
 
+import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils import row_ownership as ro
@@ -369,3 +370,72 @@ class _DictRow:
 
 	def items(self):
 		return self.__dict__.items()
+
+
+class TestOwnershipGuardCoversRepack(IntegrationTestCase):
+	"""``validate_loss_ownership_carried`` guards Repack as well as Process Loss.
+
+	A purity Repack mints a new batch out of consumed metal exactly as a loss
+	write-off does. The EIR gain injection's Repack leg used to leave its produce
+	row bare, so a customer's pure metal was silently repacked into company alloy.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _se(se_type, produce_inventory_type=None):
+		return frappe._dict(
+			stock_entry_type=se_type,
+			items=[
+				frappe._dict(
+					idx=1,
+					item_code="M-G-24KT",
+					batch_no="B-CG",
+					s_warehouse="MSL",
+					t_warehouse=None,
+					inventory_type="Customer Goods",
+					customer="CUST-1",
+				),
+				frappe._dict(
+					idx=2,
+					item_code="M-G-18KT",
+					s_warehouse=None,
+					t_warehouse="DEPT",
+					inventory_type=produce_inventory_type,
+				),
+			],
+		)
+
+	def test_repack_with_bare_produce_row_throws(self):
+		with self.assertRaises(frappe.ValidationError):
+			ro.validate_loss_ownership_carried(self._se("Repack"))
+
+	def test_process_loss_with_bare_produce_row_still_throws(self):
+		with self.assertRaises(frappe.ValidationError):
+			ro.validate_loss_ownership_carried(self._se("Process Loss"))
+
+	def test_repack_carrying_ownership_passes(self):
+		self.assertIsNone(
+			ro.validate_loss_ownership_carried(
+				self._se("Repack", produce_inventory_type="Customer Goods")
+			)
+		)
+
+	def test_deliberate_company_write_off_passes(self):
+		# melting_loss books the produced row to the company by policy. A non-blank
+		# value is exactly what distinguishes that from a builder that forgot.
+		self.assertIsNone(
+			ro.validate_loss_ownership_carried(
+				self._se("Repack", produce_inventory_type="Regular Stock")
+			)
+		)
+
+	def test_unrelated_stock_entry_types_are_ignored(self):
+		for se_type in (
+			"Material Transfer",
+			"Material Transfer (WORK ORDER)",
+			"Material Receipt",
+		):
+			self.assertIsNone(ro.validate_loss_ownership_carried(self._se(se_type)))

@@ -2405,7 +2405,11 @@ def _eir_msi(**overrides):
 		is_main_slip_required=1,
 	)
 	base.update(overrides)
-	return SimpleNamespace(**base)
+	doc = SimpleNamespace(**base)
+	# Every real Document carries `flags`; the injection caches the Main Slip batch
+	# pool there so all work orders on one Employee IR share one depleting ledger.
+	doc.flags = frappe._dict()
+	return doc
 
 
 def _row_msi(**overrides):
@@ -2783,38 +2787,162 @@ def _batch_row(**overrides):
 		creation="2026-04-19 09:00:00",
 	)
 	base.update(overrides)
+	# The real iterator resolves ownership from the Batch and hands it down as
+	# _owner_meta; tests that stub the iterator must carry it too, or the
+	# Repack-vs-Material-Transfer branch falls back to the row.
+	base.setdefault("_owner_meta", (base.get("inventory_type"), base.get("customer")))
 	return base
 
 
 class TestMainSlipBatchIterator(IntegrationTestCase):
+	"""The walk ranks on the BATCH, never on the Main Slip row.
+
+	``Main Slip SE Details.inventory_type`` is a write-once ``fetch_from`` snapshot
+	of a Stock Entry Detail row (``fetch_if_empty: 1``), and ``batch_details`` rows
+	carry no ``se_item`` at all, so it is frozen the moment it is written while the
+	Batch keeps being re-resolved. These tests therefore give the row and the batch
+	CONTRADICTORY values and assert the batch wins.
+	"""
+
+	@staticmethod
+	def _ranks(**by_batch):
+		"""Stub `batch_priority_map` output: {batch_no: _dict(inventory_type, customer)}."""
+		return {
+			b: frappe._dict(
+				inventory_type=inv,
+				customer=("CUST-1" if inv and inv.startswith("Customer") else None),
+				creation="",
+				no_wastage=False,
+			)
+			for b, inv in by_batch.items()
+		}
+
 	@patch(f"{_MSI_PATH}.frappe.db.get_all")
 	def test_priority_order_customer_then_regular_then_pure(self, mock_get_all):
 		"""Consumption draws the customer's own metal down before the company's.
 
-		Inverted from the original Regular -> Customer -> Pure order: the walk now
-		uses the shared ``ownership_priority.CONSUME_PRIORITY``. Creation dates are
-		deliberately the reverse of the expected order, so only the ownership rank
-		can produce this result.
+		Creation dates are deliberately the reverse of the expected order, so only
+		the ownership rank can produce this result.
 		"""
 		mock_get_all.return_value = [
 			_batch_row(
 				name="B-PURE",
-				inventory_type="Pure Metal",
+				batch_no="BATCH-PURE",
 				creation="2026-04-01 00:00:00",
 			),
 			_batch_row(
 				name="B-REG",
-				inventory_type="Regular Stock",
+				batch_no="BATCH-REG",
 				creation="2026-04-02 00:00:00",
 			),
 			_batch_row(
 				name="B-CUST",
-				inventory_type="Customer Goods",
+				batch_no="BATCH-CUST",
 				creation="2026-04-03 00:00:00",
 			),
 		]
-		ordered = [r["name"] for r in msi._iter_main_slip_batches("MS-001")]
+		ranks = self._ranks(
+			**{
+				"BATCH-PURE": "Pure Metal",
+				"BATCH-REG": "Regular Stock",
+				"BATCH-CUST": "Customer Goods",
+			}
+		)
+		with patch.object(msi, "batch_priority_map", return_value=ranks):
+			ordered = [r["name"] for r in msi._iter_main_slip_batches("MS-001")]
 		self.assertEqual(ordered, ["B-CUST", "B-REG", "B-PURE"])
+
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	def test_batch_overrides_a_stale_row_value(self, mock_get_all):
+		"""The row says Regular Stock; the Batch says Customer Goods. Batch wins.
+
+		This is the real drift: `customer_subcontracting.batch_rename` hard-sets a
+		batch to Customer Goods long after the Main Slip row was frozen. Ranking on
+		the row would consume the customer's metal LAST while `_stamp_row_ownership`
+		still bills it to them.
+		"""
+		mock_get_all.return_value = [
+			_batch_row(
+				name="B-STALE",
+				batch_no="BATCH-CUST",
+				inventory_type="Regular Stock",
+				creation="2026-04-01 00:00:00",
+			),
+			_batch_row(
+				name="B-REG",
+				batch_no="BATCH-REG",
+				inventory_type="Regular Stock",
+				creation="2026-04-02 00:00:00",
+			),
+		]
+		ranks = self._ranks(
+			**{"BATCH-CUST": "Customer Goods", "BATCH-REG": "Regular Stock"}
+		)
+		with patch.object(msi, "batch_priority_map", return_value=ranks):
+			rows = list(msi._iter_main_slip_batches("MS-001"))
+		self.assertEqual([r["name"] for r in rows], ["B-STALE", "B-REG"])
+		self.assertEqual(rows[0]["_owner_meta"], ("Customer Goods", "CUST-1"))
+
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	def test_customer_goods_without_a_customer_ranks_as_regular(self, mock_get_all):
+		"""Rank is taken AFTER normalize_ownership, so it cannot contradict the stamp.
+
+		A Customer Goods batch with no customer normalizes to Regular Stock when the
+		SE row is stamped. Ranking it 0 would consume it first while booking it as
+		company metal -- the same contradiction, mirrored.
+		"""
+		mock_get_all.return_value = [
+			_batch_row(name="B-ORPHAN", batch_no="BATCH-ORPHAN"),
+			_batch_row(name="B-CUST", batch_no="BATCH-CUST"),
+		]
+		ranks = {
+			"BATCH-ORPHAN": frappe._dict(
+				inventory_type="Customer Goods",
+				customer=None,
+				creation="",
+				no_wastage=False,
+			),
+			"BATCH-CUST": frappe._dict(
+				inventory_type="Customer Goods",
+				customer="CUST-1",
+				creation="",
+				no_wastage=False,
+			),
+		}
+		with patch.object(msi, "batch_priority_map", return_value=ranks):
+			rows = list(msi._iter_main_slip_batches("MS-001"))
+		self.assertEqual([r["name"] for r in rows], ["B-CUST", "B-ORPHAN"])
+		self.assertEqual(rows[1]["_owner_meta"], ("Regular Stock", None))
+
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	def test_unresolvable_batch_falls_back_to_the_row(self, mock_get_all):
+		"""`batch_no` is not `reqd` and both Main Slip tables are `allow_on_submit`.
+
+		With nothing to resolve, the row's own claim stands -- normalized, so a
+		customer type still needs a customer to survive.
+		"""
+		mock_get_all.return_value = [
+			_batch_row(
+				name="B-NOBATCH",
+				batch_no=None,
+				inventory_type="Customer Goods",
+				customer="CUST-1",
+			),
+		]
+		with patch.object(msi, "batch_priority_map", return_value={}):
+			rows = list(msi._iter_main_slip_batches("MS-001"))
+		self.assertEqual(rows[0]["_owner_meta"], ("Customer Goods", "CUST-1"))
+
+	@patch(f"{_MSI_PATH}.frappe.db.get_all")
+	def test_unresolvable_batch_with_no_customer_downgrades(self, mock_get_all):
+		mock_get_all.return_value = [
+			_batch_row(
+				name="B-NOBATCH", batch_no=None, inventory_type="Customer Goods"
+			),
+		]
+		with patch.object(msi, "batch_priority_map", return_value={}):
+			rows = list(msi._iter_main_slip_batches("MS-001"))
+		self.assertEqual(rows[0]["_owner_meta"], ("Regular Stock", None))
 
 	@patch(f"{_MSI_PATH}.frappe.db.get_all")
 	def test_customer_stock_ranks_with_customer_goods(self, mock_get_all):
@@ -2825,22 +2953,24 @@ class TestMainSlipBatchIterator(IntegrationTestCase):
 		"""
 		mock_get_all.return_value = [
 			_batch_row(
-				name="B-PURE",
-				inventory_type="Pure Metal",
-				creation="2026-04-01 00:00:00",
+				name="B-PURE", batch_no="BATCH-PURE", creation="2026-04-01 00:00:00"
 			),
 			_batch_row(
-				name="B-CSTOCK",
-				inventory_type="Customer Stock",
-				creation="2026-04-02 00:00:00",
+				name="B-CSTOCK", batch_no="BATCH-CSTOCK", creation="2026-04-02 00:00:00"
 			),
 			_batch_row(
-				name="B-REG",
-				inventory_type="Regular Stock",
-				creation="2026-04-03 00:00:00",
+				name="B-REG", batch_no="BATCH-REG", creation="2026-04-03 00:00:00"
 			),
 		]
-		ordered = [r["name"] for r in msi._iter_main_slip_batches("MS-001")]
+		ranks = self._ranks(
+			**{
+				"BATCH-PURE": "Pure Metal",
+				"BATCH-CSTOCK": "Customer Stock",
+				"BATCH-REG": "Regular Stock",
+			}
+		)
+		with patch.object(msi, "batch_priority_map", return_value=ranks):
+			ordered = [r["name"] for r in msi._iter_main_slip_batches("MS-001")]
 		self.assertEqual(ordered, ["B-CSTOCK", "B-REG", "B-PURE"])
 
 	@patch(f"{_MSI_PATH}.frappe.db.get_all")
@@ -3720,3 +3850,72 @@ class TestBookMetalLossWaterfall(IntegrationTestCase):
 		)
 		self.assertAlmostEqual(by["BRS"]["proportionally_loss"], 1.0, places=3)
 		self.assertAlmostEqual(by["BRS"]["received_gross_weight"], 3.0, places=3)
+
+
+class TestMainSlipPoolSharedAcrossWorkOrders(IntegrationTestCase):
+	"""One Main Slip pool per Employee IR, depleting across every work order.
+
+	``inject_extra_metal_for_eir_receive`` runs once per ``employee_ir_operations``
+	row. Re-reading the pool per row meant each work order saw the batch at its full
+	quantity — depletion was written only to the local list, never back to the Main
+	Slip — so two work orders could each mint 6 g out of the same 10 g batch and the
+	shortfall guard could never fire.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_pool_is_resolved_once_and_reused(self):
+		eir = _eir_msi()
+		rows = [_batch_row(name="B1", batch_no="BATCH-1", qty=10.0, consume_qty=0.0)]
+		with patch.object(
+			msi, "_iter_main_slip_batches", return_value=iter(rows)
+		) as it:
+			first = msi._main_slip_pool(eir)
+			second = msi._main_slip_pool(eir)
+		it.assert_called_once()
+		self.assertIs(first, second)
+
+	def test_second_work_order_sees_the_first_one_s_depletion(self):
+		eir = _eir_msi()
+		rows = [_batch_row(name="B1", batch_no="BATCH-1", qty=10.0, consume_qty=0.0)]
+		with patch.object(msi, "_iter_main_slip_batches", return_value=iter(rows)):
+			pool = msi._main_slip_pool(eir)
+			pool[0]["available_qty"] = 10.0
+			# Work order 1 draws 6 g.
+			pool[0]["available_qty"] -= 6.0
+			pool[0]["_drawn"] = 6.0
+			# Work order 2 must see the remainder, not a fresh 10 g.
+			again = msi._main_slip_pool(eir)
+		self.assertEqual(again[0]["available_qty"], 4.0)
+
+	def test_consume_qty_is_persisted_for_drawn_rows_only(self):
+		pool = [
+			_batch_row(name="B1", batch_no="BATCH-1", qty=10.0, consume_qty=2.0)
+			| {"_drawn": 6.0},
+			_batch_row(name="B2", batch_no="BATCH-2", qty=5.0, consume_qty=0.0),
+		]
+		with patch.object(msi.frappe.db, "set_value") as sv, patch(
+			"frappe.get_precision", return_value=3
+		):
+			msi._persist_main_slip_consumption(pool)
+		sv.assert_called_once()
+		args = sv.call_args[0]
+		self.assertEqual(args[0], "Main Slip SE Details")
+		self.assertEqual(args[1], "B1")
+		self.assertEqual(args[2], "consume_qty")
+		self.assertEqual(args[3], 8.0)  # 2.0 already consumed + 6.0 drawn now
+
+	def test_persisting_clears_the_draw_so_it_cannot_double_post(self):
+		pool = [
+			_batch_row(name="B1", batch_no="BATCH-1", qty=10.0, consume_qty=0.0)
+			| {"_drawn": 4.0}
+		]
+		with patch.object(msi.frappe.db, "set_value") as sv, patch(
+			"frappe.get_precision", return_value=3
+		):
+			msi._persist_main_slip_consumption(pool)
+			msi._persist_main_slip_consumption(pool)
+		sv.assert_called_once()
+		self.assertEqual(pool[0]["consume_qty"], 4.0)
