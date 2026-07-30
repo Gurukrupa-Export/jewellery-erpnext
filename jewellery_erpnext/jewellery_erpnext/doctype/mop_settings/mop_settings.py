@@ -9,6 +9,8 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, get_datetime, nowdate
 
+from .eod_lock import _LOCK_MSG, _LOCK_SECONDS
+
 # Employee IR injection submits Material Transfer (WORK ORDER) and/or Repack Stock Entries.
 # Both must appear in Stock Entry Type To Reservation or ``stock_reservation_entry_for_mwo``
 # skips that voucher type.
@@ -102,13 +104,9 @@ class MOPSettings(Document):
 			frappe.throw(_("Only System Manager can manually start EOD Sync."))
 
 		if is_eod_sync_locked():
-			frappe.throw(
-				_(
-					"EOD sync is in progress. You cannot proceed to make any transactions. "
-					"Please contact your administrator or try again after 2 hours after the specified time."
-				),
-				title=_("EOD Sync In Progress"),
-			)
+			# Same wording as the doc-event guard, derived from eod_lock._LOCK_HOURS -- this
+			# copy said "2 hours" long after the window changed.
+			frappe.throw(_(_LOCK_MSG), title=_("EOD Sync In Progress"))
 
 		# Resolve the From/To window for this manual run. Blank fields fall back to
 		# today's start/end; the scheduler never sets these, so only manual runs can
@@ -141,7 +139,7 @@ class MOPSettings(Document):
 		frappe.enqueue(
 			"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.sync_mop_logs",
 			queue="long",
-			timeout=7200,
+			timeout=_LOCK_SECONDS,
 			enqueue_after_commit=True,
 			job_id="eod_sync",
 			deduplicate=True,
@@ -154,5 +152,64 @@ class MOPSettings(Document):
 				"EOD MOP Log Sync has been queued. Open {0} to track progress. "
 				"Transactions will be blocked while the sync is running."
 			).format(frappe.utils.get_link_to_form("MOP EOD Sync Log", sync_log_name)),
+			alert=True,
+		)
+
+	@frappe.whitelist()
+	def drain_backlog(self, limit=None):
+		"""Run a sync whose point is the BACKLOG, with a larger catch-up cap.
+
+		Same pipeline as the nightly run — today's window first, then the catch-up pass —
+		but with the per-run catch-up cap raised for this run only, so a long-standing
+		backlog can be drained deliberately off-hours instead of by hand-building a manual
+		run over a huge date range (which is what produced the 26,489-row Stock Entry).
+
+		Shares ``job_id="eod_sync"`` with every other trigger: there is exactly one sync, and
+		``deduplicate=True`` means pressing this while a run is queued is a no-op.
+		"""
+		from .eod_lock import is_eod_sync_locked, set_eod_sync_queued
+
+		if "System Manager" not in frappe.get_roles():
+			frappe.throw(_("Only System Manager can drain the EOD backlog."))
+
+		if is_eod_sync_locked():
+			frappe.throw(_(_LOCK_MSG), title=_("EOD Sync In Progress"))
+
+		catchup_limit = cint(limit) or cint(self.eod_catchup_max_mwos) or 500
+
+		sync_log = frappe.new_doc("MOP EOD Sync Log")
+		sync_log.status = "Queued"
+		sync_log.trigger_type = "Manual"
+		sync_log.started_by = frappe.session.user
+		sync_log.posting_date = nowdate()
+		sync_log.eod_sync_time = self.eod_sync_time
+		sync_log.mop_settings = "MOP Settings"
+		sync_log.flags.ignore_permissions = True
+		sync_log.insert()
+
+		frappe.db.set_value(
+			"MOP Settings", "MOP Settings", "eod_sync_last_sync_log", sync_log.name
+		)
+
+		set_eod_sync_queued(sync_log_name=sync_log.name)
+		frappe.enqueue(
+			"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.sync_mop_logs",
+			queue="long",
+			timeout=_LOCK_SECONDS,
+			enqueue_after_commit=True,
+			job_id="eod_sync",
+			deduplicate=True,
+			sync_log_name=sync_log.name,
+			catchup_limit=catchup_limit,
+		)
+		frappe.msgprint(
+			_(
+				"Backlog drain queued for up to {0} Work Order(s). Open {1} to track "
+				"progress. Watch Old Unsynced MOP Log Count fall run over run — if it does "
+				"not, raise the cap. Transactions are blocked while the sync runs."
+			).format(
+				catchup_limit,
+				frappe.utils.get_link_to_form("MOP EOD Sync Log", sync_log.name),
+			),
 			alert=True,
 		)
