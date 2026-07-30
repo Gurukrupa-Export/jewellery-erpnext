@@ -12,7 +12,9 @@ Mechanism per row (with ``eir.main_slip`` set)::
 
     for each colour -> resolved target metal item (via MWO attributes):
         walk Main Slip ``batch_details`` rows (variant_of = "M") in inventory_type
-        priority order: Regular Stock -> Customer Goods -> Pure Metal
+        priority order: Customer Goods / Customer Stock -> Regular Stock -> Pure Metal
+        (``ownership_priority.CONSUME_PRIORITY`` -- a job draws down the customer's
+        own metal before the company's)
 
         for each available batch segment:
             consume_qty = min(batch.available, remaining_required)
@@ -58,18 +60,20 @@ from frappe.utils import cint, flt, nowtime, today
 from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
 	capped_auto_batch_nos,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+	allocate_in_order,
+	batch_priority_map,
+	batch_sort_key,
+	consume_rank,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	normalize_ownership,
+)
 from jewellery_erpnext.utils import get_item_from_attribute
 
 REPACK_STOCK_ENTRY_TYPE = "Repack"
 MATERIAL_TRANSFER_STOCK_ENTRY_TYPE = "Material Transfer (WORK ORDER)"
-
-# Priority order for consuming Main Slip batch_details when injecting extra
-# metal into MOP. Lower index = higher priority.
-INVENTORY_TYPE_PRIORITY = {
-	"Regular Stock": 0,
-	"Customer Goods": 1,
-	"Pure Metal": 2,
-}
+PROCESS_LOSS_STOCK_ENTRY_TYPE = "Process Loss"
 
 
 def _ensure_posting_datetime(se):
@@ -97,8 +101,18 @@ def _row_qty_val(row):
 	return flt(row.get("qty") if isinstance(row, dict) else row.qty)
 
 
-def _expand_source_rows_for_fifo(se, row):
-	"""Split one outgoing row into FIFO batch rows. Returns list of dicts for ``append('items')``."""
+def _expand_source_rows_for_fifo(se, row, mode=None):
+	"""Split one outgoing row into per-batch rows, ownership tier first then FIFO.
+
+	``mode`` is ``"consume"`` (customer metal drawn first) or ``"loss"`` (company
+	metal written off first); resolved by ``_apply_fifo_batches_to_stock_entry``
+	from the SE type when not passed.
+
+	Five early exits, in order -- a row that takes any of them is returned
+	untouched, so ownership ordering does NOT reach it: no ``s_warehouse``
+	(produce rows), a serial, a ``batch_no`` already picked by the caller, a
+	non-batched item, and finally "no positive batch", which drops the row.
+	"""
 	item_code = row.get("item_code") if isinstance(row, dict) else row.item_code
 	s_wh = row.get("s_warehouse") if isinstance(row, dict) else row.s_warehouse
 	if not s_wh:
@@ -113,12 +127,18 @@ def _expand_source_rows_for_fifo(se, row):
 		return [_row_to_append_dict(row)]
 
 	need = _row_qty_val(row)
+	# `qty` is deliberately NOT passed. capped_auto_batch_nos re-applies ERPNext's
+	# own qty-based FIFO truncation (get_qty_based_available_batches) as its LAST
+	# step, which walks the pool in Batch.creation order and breaks -- discarding
+	# every later batch. Asking for `need` therefore picks the batches before we
+	# ever see them, and any ownership sort afterwards would be a no-op. Fetch the
+	# whole (already balance-capped) pool, rank it, then allocate ourselves. Same
+	# reasoning as tree_stock_entry._tree_owed_batches.
 	kwargs = frappe._dict(
 		posting_date=se.posting_date,
 		posting_time=se.posting_time,
 		item_code=item_code,
 		warehouse=s_wh,
-		qty=need,
 		for_stock_levels=False,
 		consider_negative_batches=False,
 	)
@@ -133,63 +153,77 @@ def _expand_source_rows_for_fifo(se, row):
 	t_wh = row.get("t_warehouse") if isinstance(row, dict) else row.t_warehouse
 	if t_wh:
 		reservable = _select_fifo_batches_reservable_at_dest(
-			se, item_code, s_wh, t_wh, need
+			se, item_code, s_wh, t_wh, need, mode=mode
 		)
 		if reservable is not None:
 			batches = reservable
 
-	got = 0.0
-	positive = []
-	positive_batches = []
-	for b in batches:
-		if flt(b.qty) > 0:
-			got += b.qty
-			positive.append(b)
-			positive_batches.append(b.batch_no)
-	if round(need - got, 6) > 0:
-		frappe.throw(
-			_(
-				"EIR injection: insufficient FIFO batch stock for {0}: need {1} g in {2} (available {3})."
-			).format(item_code, need, s_wh, got)
-		)
-	if not positive:
+	pool = [b for b in batches if flt(b.qty) > 0]
+	if not pool:
+		if round(need, 6) > 0:
+			_throw_insufficient(item_code, need, s_wh, 0.0)
 		return []
 
-	# One round-trip for all batches instead of N per-batch get_value calls.
-	batch_meta = {
-		bm["name"]: bm
-		for bm in frappe.db.get_all(
-			"Batch",
-			filters={"name": ["in", positive_batches]},
-			fields=["name", "custom_inventory_type", "custom_customer"],
+	ranks = batch_priority_map([b.batch_no for b in pool])
+	pool.sort(
+		key=lambda b: batch_sort_key(
+			b.batch_no, ranks.get(b.batch_no), mode or "consume"
 		)
-	}
+	)
+
+	available = flt(sum(flt(b.qty) for b in pool))
+	allocation, shortfall = allocate_in_order(
+		[(b.batch_no, flt(b.qty)) for b in pool], need, _fifo_precision()
+	)
+	if round(shortfall, 6) > 0:
+		_throw_insufficient(item_code, need, s_wh, available)
+	if not allocation:
+		return []
 
 	out = []
 	base = _row_to_append_dict(row)
-	for b in positive:
+	for picked_batch, qty_val in allocation:
 		line = dict(base)
-		qty_val = flt(b.qty)
-		line["batch_no"] = b.batch_no
+		line["batch_no"] = picked_batch
 		line["qty"] = qty_val
 		line["transfer_qty"] = qty_val
-		inv = batch_meta.get(b.batch_no) or {}
-		if inv.get("custom_inventory_type"):
-			line["inventory_type"] = inv["custom_inventory_type"]
-		if inv.get("custom_customer"):
-			line["customer"] = inv["custom_customer"]
+		meta = ranks.get(picked_batch)
+		if meta:
+			inv, cust = normalize_ownership(
+				meta.get("inventory_type"),
+				meta.get("customer"),
+				batch_no=picked_batch,
+				item_code=item_code,
+			)
+			if inv:
+				line["inventory_type"] = inv
+			if cust:
+				line["customer"] = cust
 		out.append(line)
 	return out
 
 
-def _select_fifo_batches_reservable_at_dest(se, item_code, s_wh, t_wh, need):
-	"""Pick FIFO source batches that can also be *reserved* at the destination.
+def _fifo_precision():
+	return frappe.get_precision("Stock Entry Detail", "transfer_qty") or 3
 
-	Walks the source warehouse batches in FIFO order, skips any batch that is
-	already over-reserved at ``t_wh`` (existing Stock Reservation Entries exceed
-	the batch's actual qty there), and allocates ``need`` across the rest. Returns
-	a list of ``frappe._dict(batch_no, qty)`` that covers ``need``, or ``None``
-	when the reservable batches cannot cover it (caller falls back to plain FIFO).
+
+def _throw_insufficient(item_code, need, s_wh, got):
+	frappe.throw(
+		_(
+			"EIR injection: insufficient FIFO batch stock for {0}: need {1} g in {2} (available {3})."
+		).format(item_code, need, s_wh, got)
+	)
+
+
+def _select_fifo_batches_reservable_at_dest(se, item_code, s_wh, t_wh, need, mode=None):
+	"""Pick source batches that can also be *reserved* at the destination.
+
+	Walks the source warehouse batches in ownership-tier order (then FIFO within a
+	tier), skips any batch that is already over-reserved at ``t_wh`` (existing Stock
+	Reservation Entries exceed the batch's actual qty there), and allocates ``need``
+	across the rest. Returns a list of ``frappe._dict(batch_no, qty)`` that covers
+	``need``, or ``None`` when the reservable batches cannot cover it (caller falls
+	back to the plain pool, which is ranked the same way).
 	"""
 	all_batches = (
 		capped_auto_batch_nos(
@@ -208,16 +242,19 @@ def _select_fifo_batches_reservable_at_dest(se, item_code, s_wh, t_wh, need):
 	if not candidates:
 		return None
 
-	# Deterministic FIFO order by Batch creation, then batch name.
-	creation = {
-		b["name"]: b.get("creation")
-		for b in frappe.db.get_all(
-			"Batch",
-			filters={"name": ["in", [c.batch_no for c in candidates]]},
-			fields=["name", "creation"],
+	# Deterministic FIFO by Batch creation and name, THEN re-bucketed by ownership
+	# tier. Two stable sorts in that order leave FIFO intact inside each tier. One
+	# round-trip now covers both the creation tie-break and the rank; this used to
+	# be a creation-only query here plus a second ownership query further down.
+	ranks = batch_priority_map([c.batch_no for c in candidates])
+	candidates.sort(
+		key=lambda c: ((ranks.get(c.batch_no) or {}).get("creation") or "", c.batch_no)
+	)
+	candidates.sort(
+		key=lambda c: batch_sort_key(
+			c.batch_no, ranks.get(c.batch_no), mode or "consume"
 		)
-	}
-	candidates.sort(key=lambda c: (creation.get(c.batch_no) or "", c.batch_no))
+	)
 
 	# Destination actual qty (ignoring reservations) and active reserved qty,
 	# per batch — one round-trip each.
@@ -273,27 +310,46 @@ def _select_fifo_batches_reservable_at_dest(se, item_code, s_wh, t_wh, need):
 	return allocation
 
 
+def _se_priority_mode(se):
+	"""``"loss"`` for a Process Loss SE, else ``"consume"``.
+
+	The two ownership rules are opposites: metal is CONSUMED customer-first, but
+	written off company-first. A Process Loss SE is the only builder whose source
+	rows are a write-off, so it is the only one that flips.
+
+	Note this keys on ``stock_entry_type``, not ``purpose``: a Process Loss SE
+	carries ``purpose = "Repack"`` but ``stock_entry_type = "Process Loss"``, so it
+	takes the *transfer* branch of the dispatcher below while still ranking as loss.
+	"""
+	return (
+		"loss"
+		if se.get("stock_entry_type") == PROCESS_LOSS_STOCK_ENTRY_TYPE
+		else "consume"
+	)
+
+
 def _apply_fifo_batches_to_stock_entry(se):
-	"""Populate ``batch_no`` on source rows using ERPNext FIFO (``get_auto_batch_nos``)."""
+	"""Populate ``batch_no`` on source rows, ownership tier first then FIFO."""
 	_ensure_posting_datetime(se)
 	if not se.get("items"):
 		return
+	mode = _se_priority_mode(se)
 	if se.stock_entry_type == REPACK_STOCK_ENTRY_TYPE:
-		_apply_fifo_to_repack_stock_entry(se)
+		_apply_fifo_to_repack_stock_entry(se, mode)
 	else:
-		_apply_fifo_to_transfer_stock_entry(se)
+		_apply_fifo_to_transfer_stock_entry(se, mode)
 
 
-def _apply_fifo_to_transfer_stock_entry(se):
+def _apply_fifo_to_transfer_stock_entry(se, mode=None):
 	new_items = []
 	for row in list(se.items):
-		new_items.extend(_expand_source_rows_for_fifo(se, row))
+		new_items.extend(_expand_source_rows_for_fifo(se, row, mode))
 	se.set("items", [])
 	for d in new_items:
 		se.append("items", d)
 
 
-def _apply_fifo_to_repack_stock_entry(se):
+def _apply_fifo_to_repack_stock_entry(se, mode=None):
 	rows = list(se.items)
 	new_items = []
 	i = 0
@@ -316,7 +372,7 @@ def _apply_fifo_to_repack_stock_entry(se):
 		if cur_s and not cur_t and nxt and nxt_t and not nxt_s:
 			c_tot = _row_qty_val(cur)
 			p_tot = _row_qty_val(nxt)
-			consumes = _expand_source_rows_for_fifo(se, cur)
+			consumes = _expand_source_rows_for_fifo(se, cur, mode)
 			rem_p = p_tot
 			for j, c in enumerate(consumes):
 				cq = flt(c.get("qty"))
@@ -675,8 +731,25 @@ def _iter_main_slip_batches(main_slip):
 	priority order, only those with positive available qty.
 
 	Sort happens entirely client-side on the composite key
-	``(inventory_type_priority, creation, name)``; we skip a redundant SQL
-	``ORDER BY`` because we'd re-sort by priority anyway.
+	``(consume_rank, creation, name)``; we skip a redundant SQL ``ORDER BY``
+	because we'd re-sort by priority anyway.
+
+	Order is ``CONSUME_PRIORITY``: Customer Goods / Customer Stock, then Regular
+	Stock, then Pure Metal. Two things changed when this moved off the old
+	module-local dict, both deliberate:
+
+	* Regular and Customer swapped, so a job draws down the customer's own metal
+	  before the company's.
+	* ``"Customer Stock"`` had no key in the old dict and fell to its ``99``
+	  default, i.e. it sorted *after* Pure Metal. It now ranks with Customer Goods.
+
+	This is the gain path -- it mints metal into the operation because the receive
+	came back heavier than it went out -- so consuming customer-owned batches here
+	draws a customer down without a backing issue. That is the accepted business
+	rule, but it is why every row this path builds must carry its ownership
+	explicitly (see ``_stamp_row_ownership``): a blank ``inventory_type`` is
+	blanket-defaulted to Regular Stock by ``doc_events/stock_entry.before_validate``,
+	which would launder the customer's metal into company stock.
 	"""
 	rows = (
 		frappe.db.get_all(
@@ -703,7 +776,7 @@ def _iter_main_slip_batches(main_slip):
 
 	def _sort_key(r):
 		return (
-			INVENTORY_TYPE_PRIORITY.get(r.get("inventory_type"), 99),
+			consume_rank(r.get("inventory_type")),
 			r.get("creation") or "",
 			r.get("name") or "",
 		)
@@ -1051,6 +1124,38 @@ def _build_repack_from_purity_segments(eir, row, purity_segments, source_wh, dep
 	return se
 
 
+def _stamp_row_ownership(item, batch_no, item_code=None):
+	"""Carry ``batch_no``'s ownership onto an SE row dict, in place.
+
+	Every row this module builds already knows its batch, so it takes
+	``_expand_source_rows_for_fifo``'s "batch_no already set" early exit and is
+	never stamped by the FIFO helper. Left bare, ``doc_events/stock_entry``'s
+	``before_validate`` blanket-defaults ``inventory_type`` to Regular Stock, and
+	the batch minted from that row (``Batch.update_inventory_dimentions`` reads it
+	back off ``custom_voucher_detail_no``) inherits the wrong owner -- a customer's
+	metal silently becomes company stock.
+
+	This was dormant while Regular Stock ranked first; with customer-first
+	consumption it is the default path, so the stamp is mandatory.
+	"""
+	if not batch_no:
+		return item
+	meta = batch_priority_map([batch_no]).get(batch_no)
+	if not meta:
+		return item
+	inv, cust = normalize_ownership(
+		meta.get("inventory_type"),
+		meta.get("customer"),
+		batch_no=batch_no,
+		item_code=item_code or item.get("item_code"),
+	)
+	if inv:
+		item["inventory_type"] = inv
+	if cust:
+		item["customer"] = cust
+	return item
+
+
 def _build_material_transfer_se(eir, row, item_code, batch_no, qty, source_wh, dept_wh):
 	"""Main Slip path: Material Transfer (WORK ORDER) - consume + produce the
 	same item, from source warehouse to MOP department warehouse."""
@@ -1059,17 +1164,21 @@ def _build_material_transfer_se(eir, row, item_code, batch_no, qty, source_wh, d
 	_stamp_se_header(se, eir, row)
 	se.append(
 		"items",
-		{
-			"item_code": item_code,
-			"qty": qty,
-			"s_warehouse": source_wh,
-			"t_warehouse": dept_wh,
-			"uom": "Gram",
-			"batch_no": batch_no,
-			"manufacturing_operation": row.manufacturing_operation,
-			"custom_manufacturing_work_order": row.manufacturing_work_order,
-			"use_serial_batch_fields": 1,
-		},
+		_stamp_row_ownership(
+			{
+				"item_code": item_code,
+				"qty": qty,
+				"s_warehouse": source_wh,
+				"t_warehouse": dept_wh,
+				"uom": "Gram",
+				"batch_no": batch_no,
+				"manufacturing_operation": row.manufacturing_operation,
+				"custom_manufacturing_work_order": row.manufacturing_work_order,
+				"use_serial_batch_fields": 1,
+			},
+			batch_no,
+			item_code,
+		),
 	)
 	return se
 
@@ -1093,8 +1202,7 @@ def _build_purity_repack_se(
 	se = frappe.new_doc("Stock Entry")
 	se.stock_entry_type = REPACK_STOCK_ENTRY_TYPE
 	_stamp_se_header(se, eir, row)
-	se.append(
-		"items",
+	consume = _stamp_row_ownership(
 		{
 			"item_code": source_item,
 			"qty": consume_qty,
@@ -1103,17 +1211,31 @@ def _build_purity_repack_se(
 			"batch_no": source_batch,
 			"use_serial_batch_fields": 1,
 		},
+		source_batch,
+		source_item,
 	)
-	se.append(
-		"items",
-		{
-			"item_code": target_item,
-			"qty": produce_qty,
-			"t_warehouse": dept_wh,
-			"uom": "Gram",
-			"manufacturing_operation": row.manufacturing_operation,
-			"custom_manufacturing_work_order": row.manufacturing_work_order,
-			"use_serial_batch_fields": 1,
-		},
+	se.append("items", consume)
+	# The produce row mints a NEW batch of the target alloy, and that batch reads
+	# its owner off this row. Carry the consumed batch's ownership across, or a
+	# repack of customer metal produces company stock.
+	produce = {
+		"item_code": target_item,
+		"qty": produce_qty,
+		"t_warehouse": dept_wh,
+		"uom": "Gram",
+		"manufacturing_operation": row.manufacturing_operation,
+		"custom_manufacturing_work_order": row.manufacturing_work_order,
+		"use_serial_batch_fields": 1,
+	}
+	inv, cust = normalize_ownership(
+		consume.get("inventory_type"),
+		consume.get("customer"),
+		batch_no=source_batch,
+		item_code=target_item,
 	)
+	if inv:
+		produce["inventory_type"] = inv
+	if cust:
+		produce["customer"] = cust
+	se.append("items", produce)
 	return se
