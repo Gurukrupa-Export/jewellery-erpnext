@@ -76,10 +76,12 @@ frappe.ui.form.on("Metal Conversions", {
 		}
 	},
 	batch(frm) {
+		// customer and inventory_type are deliberately NOT written here any more: both
+		// are derived server-side from the FIFO allocation (build_conversion_lanes),
+		// which can span several ownerships at once. Setting them from a single batch
+		// would contradict the Conversion Lanes table.
 		frm.set_value("batch_available_qty", null);
 		frm.set_value("supplier", null);
-		frm.set_value("customer", null);
-		frm.set_value("inventory_type", null);
 		frappe.call({
 			method: "get_batch_detail",
 			doc: frm.doc,
@@ -87,15 +89,12 @@ frappe.ui.form.on("Metal Conversions", {
 				docname: frm.doc.name,
 			},
 			callback: (r) => {
+				if (!r.message) return;
 				frm.set_value("batch_available_qty", r.message[0]);
 				frm.set_value("supplier", r.message[1]);
-				frm.set_value("customer", r.message[2]);
-				frm.set_value("inventory_type", r.message[3]);
 
 				frm.refresh_field("batch_available_qty");
 				frm.refresh_field("supplier");
-				frm.refresh_field("customer");
-				frm.refresh_field("inventory_type");
 			},
 		});
 	},

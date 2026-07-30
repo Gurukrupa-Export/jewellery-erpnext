@@ -2759,6 +2759,12 @@ def create_test_data():
 
 			_ensure_warehouse_msl_tracking_field()
 
+			from jewellery_erpnext.patches.add_conversion_lane_tag_field import (
+				execute as _ensure_conversion_lane_tag_field,
+			)
+
+			_ensure_conversion_lane_tag_field()
+
 			from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
 
 			ensure_fetch_from_columns()
