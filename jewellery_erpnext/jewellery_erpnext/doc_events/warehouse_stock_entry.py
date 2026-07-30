@@ -38,6 +38,13 @@ from frappe.utils import flt
 # Doc-agnostic SE row builders (take only `se` + primitives — no Tree coupling), reused from the
 # tree flow so the subtle row flags (use_serial_batch_fields / is_finished_item /
 # set_basic_rate_manually) stay defined in exactly one place.
+from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+	batch_priority_map,
+	describe_customer_spill,
+	is_customer_rank,
+	loss_rank,
+	stamp_produce_rows_from_consumes,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	normalize_ownership,
 )
@@ -46,6 +53,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership impor
 from jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking import (
 	get_warehouse_item_tracking,
 	recalculate_msl_tracking,
+	validate_no_prior_period_pending,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 	_apply_fifo_batches_to_stock_entry,
@@ -211,91 +219,79 @@ def _stamp_loss_produce_rows(se):
 	the Tree flow does. ``_apply_fifo_batches_to_stock_entry`` then resolves the consume rows and
 	stamps each one's ownership from its batch, but produce rows short-circuit that helper
 	(``_expand_source_rows_for_fifo`` returns early when a row has no ``s_warehouse``) and come back
-	untouched. Left alone they default to "Regular Stock" and the minted ML batch — which reads
-	inventory_type/customer straight off this row — silently stops being the customer's.
+	untouched.
 
-	Rows arrive as ``[consume..., produce]`` runs. A row carries exactly one owner, so a produce row
-	fed by batches with different owners is split pro-rata into one row per owner; the last split
-	absorbs the rounding remainder so the pair stays balanced.
+	Thin wrapper over ``ownership_priority.stamp_produce_rows_from_consumes``, which owns the walk
+	and the mixed-owner pro-rata split. The same helper now also runs on purity Repack entries, so
+	the rule lives in exactly one place.
 	"""
-	prec = _se_precision()
-	rebuilt = []
-	run = []
-	split_needed = False
+	stamp_produce_rows_from_consumes(
+		se, precision=_se_precision(), row_to_dict=_row_to_append_dict
+	)
 
-	for row in list(se.items):
-		s_wh, t_wh = row.get("s_warehouse"), row.get("t_warehouse")
-		if s_wh and not t_wh:
-			run.append(row)
-			rebuilt.append(row)
-			continue
-		if t_wh and not s_wh and run:
-			produced = _produce_rows_for_run(row, run, prec)
-			split_needed = split_needed or len(produced) > 1
-			rebuilt.extend(produced)
-			run = []
-			continue
-		rebuilt.append(row)
-		run = []
 
-	if not split_needed:
-		# Single owner per produce row: _produce_rows_for_run already stamped it in place, so the
-		# item table is untouched and needs no rebuild.
+def _guard_customer_loss(se_loss):
+	"""Vet the loss leg's resolved batches for customer ownership.
+
+	Two rules, both mirroring the Employee IR loss engine so the MSL button cannot
+	drift from it:
+
+	* A ``Customer.custom_no_wastage`` batch is a hard stop. Those batches rank
+	  behind every ordinary customer in the loss ordering, so reaching one means
+	  nothing else in the warehouse had capacity -- the operator must return the
+	  full weight instead of scrapping the customer's metal.
+	* Any other customer-owned batch is allowed but warned about, once, naming
+	  customer / item / batch / qty. Spilling is legitimate; doing it silently is not.
+	"""
+	spill = []
+	for row in se_loss.get("items") or []:
+		if not row.get("s_warehouse") or row.get("t_warehouse"):
+			continue  # produce row of the loss pair
+		batch_no = row.get("batch_no")
+		if not batch_no:
+			continue
+		meta = batch_priority_map([batch_no], with_no_wastage=True).get(batch_no)
+		if not meta:
+			continue
+		inv, cust = normalize_ownership(
+			meta.inventory_type,
+			meta.customer,
+			batch_no=batch_no,
+			item_code=row.get("item_code"),
+		)
+		if not is_customer_rank(loss_rank(inv)):
+			continue
+		if meta.no_wastage:
+			frappe.throw(
+				_(
+					"No wastage is allowed for customer material (batch {0}, customer {1}). "
+					"Return the full pending weight so no loss is booked; the unused metal "
+					"goes back as raw material."
+				).format(frappe.bold(batch_no), frappe.bold(cust))
+			)
+		spill.append(
+			{
+				"customer": cust,
+				"item_code": row.get("item_code"),
+				"batch_no": batch_no,
+				"qty": flt(row.get("qty")),
+			}
+		)
+
+	if not spill:
 		return
-
-	se.set("items", [])
-	for d in rebuilt:
-		se.append("items", _row_to_append_dict(d))
-
-
-def _produce_rows_for_run(produce_row, run, prec):
-	"""Stamp ``produce_row`` from its consume ``run``, splitting it when owners differ.
-
-	Returns the row(s) that should replace ``produce_row``. The single-owner case (the norm) stamps
-	in place and returns ``[produce_row]`` so the caller can skip rebuilding the table.
-	"""
-	# Group the run's consumed qty by owner, preserving FIFO order.
-	by_owner = {}
-	for c in run:
-		key = (c.get("inventory_type") or None, c.get("customer") or None)
-		by_owner[key] = by_owner.get(key, 0.0) + flt(c.get("qty"))
-
-	total = sum(by_owner.values())
-	if not total:
-		return [produce_row]
-
-	owners = list(by_owner.items())
-
-	if len(owners) == 1:
-		(inv, cust), _qty = owners[0]
-		inv, cust = normalize_ownership(
-			inv, cust, item_code=produce_row.get("item_code")
-		)
-		_row_set(produce_row, "inventory_type", inv)
-		_row_set(produce_row, "customer", cust)
-		return [produce_row]
-
-	produce_qty = flt(produce_row.get("qty"))
-	out = []
-	remaining = produce_qty
-	for i, ((inv, cust), consumed) in enumerate(owners):
-		inv, cust = normalize_ownership(
-			inv, cust, item_code=produce_row.get("item_code")
-		)
-		if i == len(owners) - 1:
-			qty = flt(remaining, prec)
-		else:
-			qty = flt(produce_qty * (consumed / total), prec)
-			remaining -= qty
-		if qty <= 0:
-			continue
-		d = _row_to_append_dict(produce_row)
-		d["qty"] = qty
-		d["transfer_qty"] = qty
-		d["inventory_type"] = inv
-		d["customer"] = cust
-		out.append(frappe._dict(d))
-	return out or [produce_row]
+	prec = _se_precision()
+	total = flt(sum(r["qty"] for r in spill), prec)
+	frappe.msgprint(
+		_(
+			"Company metal in this warehouse could not absorb the whole loss, so {0} g "
+			"was written off against customer-owned material:"
+		).format(frappe.bold(total))
+		+ "<br><br>"
+		+ "<br>".join(describe_customer_spill(spill, precision=prec)),
+		title=_("Customer Material Absorbed Loss"),
+		indicator="orange",
+	)
 
 
 def _refresh_tracking(warehouse):
@@ -334,6 +330,11 @@ def issue_material(warehouse, item_code, qty, source_warehouse=None):
 	"""
 	frappe.has_permission("Stock Entry", "create", throw=True)
 	ctx = _validate_msl_warehouse(warehouse)
+	# Month-start close. Deliberately AFTER _validate_msl_warehouse so its
+	# disabled-warehouse message (the hard close) wins over this soft one, and well
+	# before preallocate_series_for_docs / lock_bins below so a rejection holds no
+	# locks. Not gated on Receive -- that is the drain that clears the pending.
+	validate_no_prior_period_pending(ctx.msl_wh)
 
 	if not item_code:
 		frappe.throw(_("Select an Item to issue."))
@@ -468,6 +469,10 @@ def receive_material(warehouse, rows):
 		se_recv.submit()
 	if se_loss:
 		_apply_fifo_batches_to_stock_entry(se_loss)
+		# The FIFO helper ranks this leg loss-first (Regular Stock before customer
+		# metal), but ordering alone does not decide whether a customer MAY absorb
+		# loss at all. Vet the resolved batches before anything is written.
+		_guard_customer_loss(se_loss)
 		_stamp_loss_produce_rows(se_loss)
 		se_loss.flags.ignore_permissions = True
 		se_loss.insert()

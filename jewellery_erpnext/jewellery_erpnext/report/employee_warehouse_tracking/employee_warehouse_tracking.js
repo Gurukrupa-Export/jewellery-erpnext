@@ -48,5 +48,14 @@ frappe.query_reports["Employee Warehouse Tracking"] = {
 			label: __("To Date"),
 			fieldtype: "Date",
 		},
+		{
+			fieldname: "group_by_month",
+			label: __("Group by Month"),
+			fieldtype: "Check",
+			default: 0,
+			// One row per month instead of one cumulative row. Note Pending Qty then
+			// reads as that month's movement (issue - receive - loss), not a running
+			// balance, so it can be negative for a month that returned older metal.
+		},
 	],
 };
