@@ -1492,6 +1492,9 @@ class TestSyncMopLogsEntryPoint(IntegrationTestCase):
 				"issues_rows": [],
 			}
 
+		# **kwargs so a new keyword on _commit_company_main_se (already_allocated, and
+		# whatever comes next) cannot silently turn this into a TypeError swallowed by
+		# sync_mop_logs' top-level handler -- which is exactly what it did.
 		def _commit(
 			company,
 			manufacturer,
@@ -1499,7 +1502,7 @@ class TestSyncMopLogsEntryPoint(IntegrationTestCase):
 			failures,
 			stats,
 			sync_log_name=None,
-			selective=False,
+			**kwargs,
 		):
 			stats["submitted_ses"].append("SE-A")
 			stats["processed_mwos"] += len(main_mwos)
@@ -4158,88 +4161,6 @@ class TestSyncLogItemNeverAborts(IntegrationTestCase):
 				_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
 			)
 
-	def test_flush_failure_does_not_propagate_and_falls_back_per_row(self):
-		"""A bulk INSERT failure must cost only the bad row, not the whole batch -- that
-		per-row robustness is the contract buffering replaced."""
-		frappe.local.eod_sync_log_buffer = []
-		frappe.local.eod_sync_log_idx = {}
-		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
-		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-2", "qty": 2.0})
-
-		with patch(
-			f"{_MOD}.frappe.db.bulk_insert", side_effect=RuntimeError("bulk boom")
-		), patch(f"{_MOD}._do_insert_sync_log_item") as per_row:
-			written = _flush_sync_log_items()
-
-		self.assertEqual(written, 2)
-		self.assertEqual(per_row.call_count, 2, "both rows retried individually")
-
-	def test_flush_counts_rows_it_could_not_write_at_all(self):
-		"""Silently losing diagnostics is the one thing worse than losing them loudly."""
-		frappe.local.eod_sync_log_buffer = []
-		frappe.local.eod_sync_log_idx = {}
-		frappe.local.eod_sync_log_row_failures = 0
-		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
-
-		with patch(
-			f"{_MOD}.frappe.db.bulk_insert", side_effect=RuntimeError("bulk boom")
-		), patch(
-			f"{_MOD}._do_insert_sync_log_item", side_effect=RuntimeError("row boom")
-		):
-			_flush_sync_log_items()
-
-		self.assertEqual(frappe.local.eod_sync_log_row_failures, 1)
-
-	def test_buffered_row_name_is_returned_without_touching_the_database(self):
-		"""child_row_names must be usable with zero round trips -- that is the point."""
-		frappe.local.eod_sync_log_buffer = []
-		frappe.local.eod_sync_log_idx = {}
-		with patch(f"{_MOD}.frappe.db.bulk_insert") as bulk, patch(
-			f"{_MOD}.frappe.get_doc"
-		) as get_doc:
-			name = _insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
-		self.assertTrue(name)
-		self.assertFalse(bulk.called, "must not flush before the batch is full")
-		self.assertFalse(get_doc.called, "must not build a Document per row")
-
-	def test_rows_are_flushed_once_the_batch_fills(self):
-		frappe.local.eod_sync_log_buffer = []
-		frappe.local.eod_sync_log_idx = {}
-		with patch(f"{_MOD}.frappe.db.bulk_insert") as bulk, patch(
-			f"{_MOD}.frappe.db.savepoint"
-		), patch(f"{_MOD}.frappe.db.release_savepoint"):
-			for i in range(_LOG_ROW_FLUSH_SIZE):
-				_insert_sync_log_item("SYNC-LOG-X", {"item_code": f"M-{i}", "qty": 1.0})
-		self.assertEqual(bulk.call_count, 1)
-		self.assertEqual(frappe.local.eod_sync_log_buffer, [])
-
-	def test_buffered_rows_get_sequential_idx_per_parent(self):
-		"""The Sync Log child grid is read by humans; idx 0 everywhere is not acceptable."""
-		frappe.local.eod_sync_log_buffer = []
-		frappe.local.eod_sync_log_idx = {}
-		_insert_sync_log_item("SYNC-LOG-A", {"item_code": "M-1"})
-		_insert_sync_log_item("SYNC-LOG-A", {"item_code": "M-2"})
-		_insert_sync_log_item("SYNC-LOG-B", {"item_code": "M-3"})
-		rows = frappe.local.eod_sync_log_buffer
-		self.assertEqual([r["idx"] for r in rows], [1, 2, 1])
-		self.assertEqual(
-			[r["parent"] for r in rows], ["SYNC-LOG-A", "SYNC-LOG-A", "SYNC-LOG-B"]
-		)
-
-	def test_absent_columns_are_dropped_from_the_bulk_insert(self):
-		"""An unmigrated site must degrade the report, not fail the INSERT with a 1054."""
-		frappe.local.eod_sync_log_buffer = []
-		frappe.local.eod_sync_log_idx = {}
-		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
-		with patch(
-			f"{_MOD}.frappe.db.get_table_columns",
-			return_value=["name", "parent", "qty"],
-		), patch(f"{_MOD}.frappe.db.bulk_insert") as bulk, patch(
-			f"{_MOD}.frappe.db.savepoint"
-		), patch(f"{_MOD}.frappe.db.release_savepoint"):
-			_flush_sync_log_items()
-		self.assertEqual(bulk.call_args.kwargs["fields"], ["name", "parent", "qty"])
-
 	def test_healer_audit_row_inserts_with_a_sync_log_name(self):
 		"""The exact production path. Every other test calls the healer WITHOUT a
 		sync_log_name, so mop_eod_sync.py's audit-row block was unreachable in the whole
@@ -6251,3 +6172,111 @@ class TestEodPrefetch(IntegrationTestCase):
 		self.assertIsNone(frappe.local.eod_artifact_map)
 		self.assertIsNone(frappe.local.eod_item_flags)
 		self.assertIsNone(frappe.local.eod_batch_ownership)
+
+
+class TestSyncLogItemBuffering(IntegrationTestCase):
+	"""In-run buffering of MOP EOD Sync Log Item rows.
+
+	``_insert_sync_log_item`` only batches while ``frappe.flags.in_eod_mop_sync`` is set,
+	because that is exactly the span with guaranteed flush points. Outside a run it writes
+	through, so callers such as ``backfill_missing_wip_reservations`` and the recovery patch
+	can still read a row straight back. These tests therefore declare the in-run context;
+	without it they would be exercising the write-through path instead.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		frappe.flags.in_eod_mop_sync = True
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		frappe.local.eod_sync_log_row_failures = 0
+
+	def tearDown(self):
+		frappe.flags.in_eod_mop_sync = False
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+
+	def test_flush_failure_does_not_propagate_and_falls_back_per_row(self):
+		"""A bulk INSERT failure must cost only the bad row, not the whole batch -- that
+		per-row robustness is the contract buffering replaced."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
+		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-2", "qty": 2.0})
+
+		with patch(
+			f"{_MOD}.frappe.db.bulk_insert", side_effect=RuntimeError("bulk boom")
+		), patch(f"{_MOD}._do_insert_sync_log_item") as per_row:
+			written = _flush_sync_log_items()
+
+		self.assertEqual(written, 2)
+		self.assertEqual(per_row.call_count, 2, "both rows retried individually")
+
+	def test_flush_counts_rows_it_could_not_write_at_all(self):
+		"""Silently losing diagnostics is the one thing worse than losing them loudly."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		frappe.local.eod_sync_log_row_failures = 0
+		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
+
+		with patch(
+			f"{_MOD}.frappe.db.bulk_insert", side_effect=RuntimeError("bulk boom")
+		), patch(
+			f"{_MOD}._do_insert_sync_log_item", side_effect=RuntimeError("row boom")
+		):
+			_flush_sync_log_items()
+
+		self.assertEqual(frappe.local.eod_sync_log_row_failures, 1)
+
+	def test_buffered_row_name_is_returned_without_touching_the_database(self):
+		"""child_row_names must be usable with zero round trips -- that is the point."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		with patch(f"{_MOD}.frappe.db.bulk_insert") as bulk, patch(
+			f"{_MOD}.frappe.get_doc"
+		) as get_doc:
+			name = _insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
+		self.assertTrue(name)
+		self.assertFalse(bulk.called, "must not flush before the batch is full")
+		self.assertFalse(get_doc.called, "must not build a Document per row")
+
+	def test_rows_are_flushed_once_the_batch_fills(self):
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		with patch(f"{_MOD}.frappe.db.bulk_insert") as bulk, patch(
+			f"{_MOD}.frappe.db.savepoint"
+		), patch(f"{_MOD}.frappe.db.release_savepoint"):
+			for i in range(_LOG_ROW_FLUSH_SIZE):
+				_insert_sync_log_item("SYNC-LOG-X", {"item_code": f"M-{i}", "qty": 1.0})
+		self.assertEqual(bulk.call_count, 1)
+		self.assertEqual(frappe.local.eod_sync_log_buffer, [])
+
+	def test_buffered_rows_get_sequential_idx_per_parent(self):
+		"""The Sync Log child grid is read by humans; idx 0 everywhere is not acceptable."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		_insert_sync_log_item("SYNC-LOG-A", {"item_code": "M-1"})
+		_insert_sync_log_item("SYNC-LOG-A", {"item_code": "M-2"})
+		_insert_sync_log_item("SYNC-LOG-B", {"item_code": "M-3"})
+		rows = frappe.local.eod_sync_log_buffer
+		self.assertEqual([r["idx"] for r in rows], [1, 2, 1])
+		self.assertEqual(
+			[r["parent"] for r in rows], ["SYNC-LOG-A", "SYNC-LOG-A", "SYNC-LOG-B"]
+		)
+
+	def test_absent_columns_are_dropped_from_the_bulk_insert(self):
+		"""An unmigrated site must degrade the report, not fail the INSERT with a 1054."""
+		frappe.local.eod_sync_log_buffer = []
+		frappe.local.eod_sync_log_idx = {}
+		_insert_sync_log_item("SYNC-LOG-X", {"item_code": "M-1", "qty": 1.0})
+		with patch(
+			f"{_MOD}.frappe.db.get_table_columns",
+			return_value=["name", "parent", "qty"],
+		), patch(f"{_MOD}.frappe.db.bulk_insert") as bulk, patch(
+			f"{_MOD}.frappe.db.savepoint"
+		), patch(f"{_MOD}.frappe.db.release_savepoint"):
+			_flush_sync_log_items()
+		self.assertEqual(bulk.call_args.kwargs["fields"], ["name", "parent", "qty"])

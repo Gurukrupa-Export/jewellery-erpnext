@@ -4428,13 +4428,24 @@ def _insert_sync_log_item(sync_log_name, row_dict):
 	Diagnostics must never be able to fail a sync -- callers are typically mid-savepoint, so
 	nothing may escape from here. Select values are still coerced to valid options first.
 
-	Rows are NOT in the database until flushed. Anything that reads or updates the child
-	table must call :func:`_flush_sync_log_items` first; ``recalculate_sync_log_totals`` and
-	``_bulk_set_child_rows`` both do.
+	**Buffering applies only inside a sync run.** During a run there are guaranteed flush
+	points (end of plan phase, every ``_bulk_set_child_rows``, ``recalculate_sync_log_totals``,
+	and the ``finally`` block), so rows always land. Outside a run there is no such guarantee:
+	callers like the whitelisted ``backfill_missing_wip_reservations``, the recovery patch and
+	direct healer calls insert a row and reasonably expect to be able to read it back, and
+	nothing would ever flush it for them. Those write through immediately instead.
+
+	Inside a run, rows are NOT in the database until flushed, so anything that reads or
+	updates the child table must call :func:`_flush_sync_log_items` first.
 	"""
 	if not sync_log_name:
 		return None
 	try:
+		# Write-through when there is no run to flush the buffer. `in_eod_mop_sync` is set for
+		# exactly the span of sync_mop_logs, which is exactly the span with flush points.
+		if not getattr(frappe.flags, "in_eod_mop_sync", False):
+			return _do_insert_sync_log_item(sync_log_name, dict(row_dict))
+
 		buffer = getattr(frappe.local, "eod_sync_log_buffer", None)
 		if buffer is None:
 			buffer = frappe.local.eod_sync_log_buffer = []
