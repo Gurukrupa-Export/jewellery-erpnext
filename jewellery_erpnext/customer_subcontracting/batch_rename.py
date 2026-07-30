@@ -11,6 +11,9 @@ from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subc
 from jewellery_erpnext.customer_subcontracting.report.subcontracting_report.subcontracting_report import (
 	get_linked_batches,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	CUSTOMER_INVENTORY_TYPES,
+)
 
 
 def create_parent_batches(doc, method=None):
@@ -145,31 +148,55 @@ def get_next_serial(customer, year_code, month):
 	return "01"
 
 
+def _row_lane_key(row):
+	"""Ownership key of a Stock Entry row: ``(inventory_type, customer)``.
+
+	An empty ``inventory_type`` means company stock, so it normalises to
+	"Regular Stock" rather than becoming a third kind of ownership.
+	"""
+	return (
+		getattr(row, "inventory_type", None) or "Regular Stock",
+		getattr(row, "customer", None) or None,
+	)
+
+
+def _lane_parent_batches(doc):
+	"""``{lane key: first source batch of that lane}``, in row order."""
+	parents = {}
+	for row in doc.items:
+		if row.s_warehouse and row.batch_no:
+			parents.setdefault(_row_lane_key(row), row.batch_no)
+	return parents
+
+
 def create_child_batches(doc, method=None):
 	if doc.doctype != "Stock Entry":
 		return
 
-	# create_child_batches mints "Customer Goods" child batches and requires
-	# doc._customer (set only by the customer-subcontracting orchestration). SEs
-	# outside that flow (e.g. auto-created "Process Loss") must not mint child
-	# batches -- their batch-tracked produce items auto-create a batch on submit.
-	if not getattr(doc, "_customer", None):
+	# create_child_batches mints "Customer Goods" child batches for the customer-
+	# subcontracting orchestration, which signals itself with doc._customer. A Metal
+	# Conversion that draws across mixed ownership has no single owning customer on the
+	# header, so a row-level customer also opens the gate. SEs outside either case (e.g.
+	# auto-created "Process Loss") must not mint child batches -- their batch-tracked
+	# produce items auto-create a batch on submit.
+	header_customer = getattr(doc, "_customer", None)
+	if not header_customer and not any(
+		getattr(row, "customer", None) for row in doc.items
+	):
 		return
 
-	parent_batch = None
-	for r in doc.items:
-		if r.s_warehouse and r.batch_no:
-			parent_batch = r.batch_no
-			break
+	parents = _lane_parent_batches(doc)
 
-	if not parent_batch:
+	# A voucher whose rows are all one ownership is handled exactly as before: one
+	# parent batch for the whole entry, every batch-less produce row minted from it.
+	# Every pre-existing caller (SNC's create_repack_metal_conversion, Customer Goods
+	# Received, Subcontracting Repack) builds such a voucher, so their behaviour is
+	# unchanged by the lane handling below -- which matters because SNC reads its target
+	# batch back off Stock Entry Detail and throws if nothing was minted.
+	single_lane = len(parents) <= 1
+
+	if not parents:
 		return
-
-	parts = parent_batch.split("-")
-	if len(parts) < 4:
-		return
-
-	parent_serial = parts[-1]
 
 	for row in doc.items:
 		if row.s_warehouse or row.batch_no:
@@ -178,8 +205,35 @@ def create_child_batches(doc, method=None):
 		if not row.t_warehouse:
 			continue
 
+		lane_key = _row_lane_key(row)
+
+		if single_lane:
+			parent_batch = next(iter(parents.values()))
+			customer = getattr(row, "customer", None) or header_customer
+		else:
+			# Mixed ownership: only customer-owned produce rows get a customer child
+			# batch. A Regular Stock row is left with an empty batch_no on purpose so
+			# the Serial-and-Batch path mints it -- that is the only path that stamps
+			# ownership from the row itself and runs the Customer-Goods item guard.
+			if lane_key[0] not in CUSTOMER_INVENTORY_TYPES:
+				continue
+
+			parent_batch = parents.get(lane_key)
+			if not parent_batch:
+				continue
+
+			customer = lane_key[1] or header_customer
+
+		parts = parent_batch.split("-")
+		if len(parts) < 4:
+			# The parent was not named by this module (e.g. a Customer Goods batch
+			# created by a customer Purchase Receipt has only three segments), so there
+			# is no serial to extend. Skip this row and let the Serial-and-Batch path
+			# mint it -- historically this aborted the whole voucher.
+			continue
+
 		item_code = row.item_code
-		customer = getattr(row, "customer", None)
+		parent_serial = parts[-1]
 
 		if customer:
 			prefix = f"{customer}-{parts[1]}"
@@ -236,7 +290,10 @@ def create_child_batches(doc, method=None):
 			batch.reference_doctype = doc.doctype
 			batch.reference_name = doc.name
 			batch.custom_voucher_detail_no = row.name
-			batch.custom_customer = doc._customer
+			# The owning customer comes from the ROW on a mixed voucher: the header
+			# describes at most one lane, and stamping it everywhere is what would
+			# mislabel another lane's target batch.
+			batch.custom_customer = customer or header_customer
 			batch.custom_inventory_type = "Customer Goods"
 			batch.custom_customer_voucher_type = "Customer Subcontracting"
 			batch.custom_metal_rate = _source_row_rate(doc, row)
