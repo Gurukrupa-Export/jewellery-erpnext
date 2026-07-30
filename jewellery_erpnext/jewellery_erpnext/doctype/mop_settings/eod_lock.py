@@ -6,15 +6,37 @@ from frappe import _
 from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 
 _SETTINGS = "MOP Settings"
-_LOCK_HOURS = 2
+
+# THE single source of truth for how long an EOD run may hold the lock.
+#
+# This one number drives three things that used to be three separate literals: the lock
+# window written to eod_sync_lock_until, the RQ job timeout at every enqueue site, and the
+# wording of the two user-facing messages below. They drifted apart before -- worse, three
+# real JobTimeoutExceptions in worker.log fired at 1500s (the `long` queue default) because
+# one invocation path never passed a timeout at all.
+#
+# 4 hours is a CEILING, not an expectation. The lock blocks before_save/before_submit/
+# before_cancel on Employee IR, Department IR, MOP Log, Stock Entry and Stock Reconciliation
+# for its whole duration, so a run that stops making progress must release it early rather
+# than sit on it -- that is what the soft deadline in mop_eod_sync does. Keep the scheduled
+# run off-hours.
+_LOCK_HOURS = 4
+_LOCK_SECONDS = _LOCK_HOURS * 60 * 60
+
+# Soft deadline: stop STARTING new work this many minutes into a run, then finish cleanly
+# and release the lock. Must stay comfortably inside _LOCK_HOURS so the graceful stop always
+# wins the race against the hard RQ kill.
+_SOFT_DEADLINE_MINUTES = 200
+
 _LOCK_MSG = (
 	"EOD sync is in progress. You cannot proceed to make any transactions. "
-	"Please contact your administrator or try again after 2 hours after the specified time."
+	f"Please contact your administrator or try again after {_LOCK_HOURS} hours after the "
+	"specified time."
 )
 
 
 def is_eod_sync_locked():
-	"""Return True when EOD sync is running and the 2-hour lock window is still active.
+	"""Return True when EOD sync is running and the lock window is still active.
 
 	Uses a direct DB read (not cached doc) so the latest committed state is always seen.
 	Returns False if the lock window has expired even when eod_sync_running is still 1
@@ -35,7 +57,7 @@ def is_eod_sync_locked():
 
 
 def set_eod_sync_running(sync_log_name=None):
-	"""Mark EOD sync as running, set a 2-hour lock window, and commit immediately.
+	"""Mark EOD sync as running, open the lock window, and commit immediately.
 
 	The immediate commit ensures every concurrent DB connection sees the lock before
 	the heavy processing starts. Optionally updates the MOP EOD Sync Log status.
@@ -119,7 +141,7 @@ def release_eod_sync_lock(success=True, error_log_name=None, sync_log_name=None)
 
 
 def release_expired_eod_sync_lock():
-	"""Auto-release a stale lock when the 2-hour window has passed.
+	"""Auto-release a stale lock when the lock window has passed.
 
 	Called every hour by the scheduler and at the top of each per-minute check.
 	Safe to call when no lock is active — returns immediately.
@@ -137,7 +159,8 @@ def release_expired_eod_sync_lock():
 		return
 
 	message = (
-		"EOD sync lock was automatically released after the configured 2-hour window. "
+		f"EOD sync lock was automatically released after the configured {_LOCK_HOURS}-hour "
+		"window. "
 		"Please verify Error Log and pending draft Stock Entries before retrying."
 	)
 	frappe.db.set_value(

@@ -10,12 +10,20 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import flt
 
+from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.lanes import (
+	REGULAR_STOCK,
+	apportion,
+	build_lanes,
+	split_allocations,
+	split_conversion,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.melting_loss import (
 	cancel_melting_loss_stock_entries,
 	make_melting_loss_stock_entry,
 	validate_melting_loss,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.metal_conversions.doc_events.utils import (
+	get_batch_lane_map,
 	update_alloy_betch,
 	update_batch_details,
 	update_source_betch,
@@ -101,7 +109,7 @@ class MetalConversions(Document):
 		validate_melting_loss(self)
 		update_alloy_betch(self)
 		update_source_betch(self)
-		get_inventory_type(self)
+		build_conversion_lanes(self)
 		self.set_remarks()
 
 	def set_remarks(self):
@@ -423,8 +431,8 @@ def get_metal_purity_percentage(item_code):
 def make_metal_stock_entry(self):
 	target_wh = self.target_warehouse
 	source_wh = self.source_warehouse
-	inventory_type = self.inventory_type or "Regular Stock"
-	customer = self.customer
+	# Ownership is no longer a document-level property: every row takes its
+	# inventory_type / customer from its own lane (see build_conversion_lanes).
 	# RULE B (canonical lock order): pre-lock the source/target Bins in sorted order so
 	# concurrent metal conversions acquire shared item+warehouse Bins in the same sequence
 	# (breaks 1213 reverse-order cycles). Additive — does not change the Stock Entry built.
@@ -452,6 +460,40 @@ def make_metal_stock_entry(self):
 			(self.target_alloy, target_wh),
 		]
 	)
+	lanes = list(self.conversion_lanes or [])
+	if not lanes:
+		frappe.throw(
+			_(
+				"No conversion lanes were resolved for this document. Please re-save it and try again."
+			)
+		)
+
+	precision = self.precision("target_qty") or 3
+	weights = [flt(lane.source_qty) for lane in lanes]
+
+	# The alloy totals are apportioned from what is STORED on the document -- not
+	# recomputed from the purities -- because those are the figures the operator saw
+	# and the figures get_alloy_bailance checked against Bin. Apportioning guarantees
+	# the lane shares sum back to the validated total exactly, so no lane can quietly
+	# consume alloy that was never confirmed available.
+	source_alloy_needs = target_alloy_qtys = [0.0 for _ in lanes]
+	source_alloy_rows = [[] for _ in lanes]
+
+	if self.source_alloy and flt(self.source_alloy_qty) > 0:
+		source_alloy_needs = apportion(flt(self.source_alloy_qty), weights, precision)
+		source_alloy_rows = split_allocations(
+			self.alloy_batch_details or [], source_alloy_needs, precision
+		)
+	if self.target_alloy and flt(self.target_alloy_qty) > 0:
+		target_alloy_qtys = apportion(flt(self.target_alloy_qty), weights, precision)
+
+	# The header can only describe an unambiguous voucher. inventory_type is set only
+	# for a single-lane draw; _customer opens create_child_batches' gate (which is now
+	# row-aware) and is left blank when no lane is customer-owned so that path is
+	# skipped entirely for an all-Regular conversion.
+	single_lane = lanes[0].inventory_type if len(lanes) == 1 else None
+	header_customer = next((lane.customer for lane in lanes if lane.customer), None)
+
 	se = frappe.get_doc(
 		{
 			"doctype": "Stock Entry",
@@ -459,115 +501,150 @@ def make_metal_stock_entry(self):
 			"purpose": "Repack",
 			"company": self.company,
 			"custom_metal_conversion_reference": self.name,
-			"inventory_type": inventory_type,
-			"_customer": self.customer,
+			"inventory_type": single_lane,
+			"_customer": header_customer,
 			"auto_created": 1,
 			"branch": self.branch,
 		}
 	)
-	source_item = []
-	target_item = []
-	for i in self.source_batch_details:
-		source_item.append(
-			{
-				"item_code": self.source_item,
-				"qty": flt(i.qty, 3),
-				"inventory_type": inventory_type,
-				"customer": customer,
-				"batch_no": i.batch,
-				"department": self.department,
-				"employee": self.employee,
-				"manufacturer": self.manufacturer,
-				"s_warehouse": source_wh,
-			}
-		)
-	target_item.append(
-		{
-			"item_code": self.target_item,
-			"qty": self.target_qty,
-			"inventory_type": inventory_type,
-			"customer": customer,
+
+	def _common():
+		return {
 			"department": self.department,
 			"employee": self.employee,
 			"manufacturer": self.manufacturer,
-			"t_warehouse": target_wh,
 		}
-	)
-	if self.source_alloy and flt(self.source_alloy_qty) > 0:
-		for i in self.alloy_batch_details:
-			source_item.append(
-				{
-					"item_code": self.source_alloy,
-					"qty": flt(i.qty, 3),
-					"inventory_type": "Regular Stock",
-					"batch_no": i.batch,
-					"department": self.department,
-					"employee": self.employee,
-					"manufacturer": self.manufacturer,
-					"s_warehouse": source_wh,
-				}
-			)
-	if self.target_alloy and self.target_alloy_qty > 0:
-		target_item.append(
-			{
-				"item_code": self.target_alloy,
-				"qty": self.target_alloy_qty,
-				"inventory_type": inventory_type,
-				"department": self.department,
-				"employee": self.employee,
-				"manufacturer": self.manufacturer,
-				"t_warehouse": target_wh,
-			}
-		)
-	inventory_types_source = set()
-	inventory_types_target = set()
-	inventory_types_final = set()
-	for row in source_item:
-		item_inv_type = row["inventory_type"] or "Regular Stock"
-		se.append(
-			"items",
-			{
-				"item_code": row["item_code"],
-				"qty": row["qty"],
-				"inventory_type": item_inv_type,
-				"customer": row.get("customer"),
-				"batch_no": row["batch_no"],
-				"department": row["department"],
-				"employee": row["employee"],
-				"manufacturer": row["manufacturer"],
-				"s_warehouse": row["s_warehouse"],
-				"use_serial_batch_fields": True,
-			},
-		)
-		if self.source_alloy != row["item_code"]:
-			inventory_types_source.add(item_inv_type)
-	for row in target_item:
-		item_inv_type = row["inventory_type"] or "Regular Stock"
-		se.append(
-			"items",
-			{
-				"item_code": row["item_code"],
-				"qty": row["qty"],
-				"inventory_type": item_inv_type,
-				"customer": row.get("customer"),
-				"department": row["department"],
-				"employee": row["employee"],
-				"manufacturer": row["manufacturer"],
-				"t_warehouse": row["t_warehouse"],
-			},
-		)
-		inventory_types_target.add(item_inv_type)
 
-	inventory_types_final = inventory_types_source.union(inventory_types_target)
-	if len(inventory_types_final) > 1:
+	# Rows are emitted lane by lane -- each lane's sources immediately followed by its
+	# target -- so the voucher reads source/target/source/target and every row carries
+	# the lane it belongs to.
+	booked_source = [0.0 for _ in lanes]
+	booked_target = 0.0
+	allocations_by_lane = _allocations_by_lane(self)
+
+	for idx, lane in enumerate(lanes):
+		tag = lane_tag(lane.inventory_type, lane.customer)
+		lane_inv_type = lane.inventory_type or REGULAR_STOCK
+		lane_allocations = allocations_by_lane.get(
+			(lane_inv_type, lane.customer or None), []
+		)
+
+		for allocation in lane_allocations:
+			se.append(
+				"items",
+				dict(
+					_common(),
+					item_code=self.source_item,
+					qty=flt(allocation["qty"], precision),
+					inventory_type=lane_inv_type,
+					customer=lane.customer,
+					batch_no=allocation["batch"],
+					s_warehouse=source_wh,
+					custom_conversion_lane=tag,
+					use_serial_batch_fields=True,
+				),
+			)
+			booked_source[idx] = flt(
+				booked_source[idx] + flt(allocation["qty"], precision), precision
+			)
+
+		# Alloy stays "Regular Stock" -- it IS company stock being consumed -- but it is
+		# tagged to the lane it funds so its origin entries and Batch Rate contribution
+		# can be attributed to the right target batch.
+		for allocation in source_alloy_rows[idx]:
+			se.append(
+				"items",
+				dict(
+					_common(),
+					item_code=self.source_alloy,
+					qty=flt(allocation["qty"], precision),
+					inventory_type=REGULAR_STOCK,
+					batch_no=allocation["batch"],
+					s_warehouse=source_wh,
+					custom_conversion_lane=tag,
+					use_serial_batch_fields=True,
+				),
+			)
+
+		se.append(
+			"items",
+			dict(
+				_common(),
+				item_code=self.target_item,
+				qty=flt(lane.target_qty, precision),
+				inventory_type=lane_inv_type,
+				customer=lane.customer,
+				t_warehouse=target_wh,
+				custom_conversion_lane=tag,
+			),
+		)
+		booked_target = flt(booked_target + flt(lane.target_qty, precision), precision)
+
+		if flt(target_alloy_qtys[idx], precision) > 0:
+			# Alloy freed by raising the purity belongs to the lane whose metal freed
+			# it, customer included -- otherwise a customer's alloy would silently
+			# become company stock.
+			se.append(
+				"items",
+				dict(
+					_common(),
+					item_code=self.target_alloy,
+					qty=flt(target_alloy_qtys[idx], precision),
+					inventory_type=lane_inv_type,
+					customer=lane.customer,
+					t_warehouse=target_wh,
+					custom_conversion_lane=tag,
+				),
+			)
+
+	# Replaces the old "Inventory types in Source Table are not consistent" throw. That
+	# guard existed only because this voucher used to be single-ownership by
+	# construction; mixed ownership is now the point. What still must hold is that every
+	# lane consumed exactly its own source qty and the lane targets sum to the document
+	# target -- i.e. the split neither invented nor dropped metal.
+	tolerance = 1.0 / (10 ** (precision + 1))
+	for idx, lane in enumerate(lanes):
+		if abs(booked_source[idx] - flt(lane.source_qty, precision)) > tolerance:
+			frappe.throw(
+				_(
+					"Lane {0} allocated {1} but booked {2} on the Stock Entry. Please re-save the document."
+				).format(
+					frappe.bold(lane_tag(lane.inventory_type, lane.customer)),
+					flt(lane.source_qty, precision),
+					booked_source[idx],
+				)
+			)
+	if abs(booked_target - flt(self.target_qty, precision)) > tolerance:
 		frappe.throw(
 			_(
-				"Inventory types in <b>Source Table</b> are not consistent. Please check."
-			)
+				"Target Qty {0} does not match the {1} booked across conversion lanes. Please re-save the document."
+			).format(flt(self.target_qty, precision), booked_target)
 		)
+
 	se.save()
 	se.submit()
 	self.stock_entry = se.name
+
+
+def _allocations_by_lane(self):
+	"""``{lane key: [{batch, qty}]}`` for the whole allocation, in FIFO order.
+
+	The lane rows carry their batches as a display string only, so the authoritative
+	allocation is re-read from ``source_batch_details`` and grouped with the same
+	``get_batch_lane_map`` the lanes were built from -- the two therefore cannot
+	disagree. Built once per voucher rather than once per lane, since it costs a
+	query.
+	"""
+	rows = list(self.source_batch_details or [])
+	lane_map = get_batch_lane_map([row.batch for row in rows])
+
+	grouped = {}
+	for row in rows:
+		inventory_type, customer = lane_map.get(row.batch, (REGULAR_STOCK, None))
+		key = (inventory_type or REGULAR_STOCK, customer or None)
+		grouped.setdefault(key, []).append({"batch": row.batch, "qty": flt(row.qty)})
+
+	return grouped
 
 
 def make_multiple_metal_stock_entry(self):
@@ -725,40 +802,67 @@ def get_batch_details(batch):
 	return batch_details
 
 
-def get_inventory_type(self):
-	inventory_type = None
-	# customer = None
-	table_batch = self.batch or None
-	if not table_batch:
-		for row in self.source_batch_details:
-			batch_value = getattr(row, "batch", None)
-			if not batch_value and hasattr(row, "get"):
-				batch_value = row.get("batch")
-			if batch_value:
-				table_batch = batch_value
-				break
-	error = []
-	if table_batch:
-		bal_qty = get_batch_qty(batch_no=table_batch, warehouse=self.source_warehouse)
-		reference_doctype, reference_name = frappe.get_value(
-			"Batch", table_batch, ["reference_doctype", "reference_name"]
+def lane_tag(inventory_type, customer):
+	"""The value stamped onto ``Stock Entry Detail.custom_conversion_lane``.
+
+	The lane a row belongs to cannot be re-derived downstream for every row: alloy
+	consume rows are booked "Regular Stock" yet legitimately fund a customer lane,
+	and no per-lane alloy proportion is stored anywhere else. So the builder writes
+	the lane explicitly and ``create_child_batches`` /
+	``update_parent_batch_id`` key off it.
+	"""
+	return f"{inventory_type or REGULAR_STOCK}|{customer or ''}"
+
+
+def build_conversion_lanes(self):
+	"""Split the FIFO allocation into ownership lanes and publish them on the doc.
+
+	Replaces the old ``get_inventory_type``, which derived ONE ``inventory_type``
+	for the whole document from whichever batch happened to be allocated first.
+	That only worked while the allocator was restricted to a single ownership; now
+	a 20 g draw can legitimately span 8 g Regular + 12 g Customer Goods, and each
+	ownership has to convert and land separately.
+
+	``self.inventory_type`` and ``self.customer`` survive as read-only *summaries*:
+	they are filled only when the draw is unambiguous (a single lane / a single
+	customer) and left blank otherwise, with ``conversion_lanes`` carrying the full
+	picture. Both are still read by the gke reports.
+	"""
+	if self.get("multiple_metal_converter"):
+		# Multiple-converter mode has its own per-row table (mc_source_table) and is
+		# still single-ownership by construction; it does not use lanes.
+		return
+
+	precision = self.precision("target_qty") or 3
+	batch_nos = [
+		row.get("batch") if hasattr(row, "get") else getattr(row, "batch", None)
+		for row in (self.source_batch_details or [])
+	]
+	lanes = build_lanes(self.source_batch_details or [], get_batch_lane_map(batch_nos))
+
+	# In melting-loss mode no conversion Stock Entry is built, so there is nothing
+	# to apportion -- the lanes are informational only (and the allocator has already
+	# restricted them to Regular Stock).
+	if not self.get("is_melting_loss"):
+		split_conversion(lanes, flt(self.target_qty), precision)
+
+	self.conversion_lanes = []
+	for lane in lanes:
+		self.append(
+			"conversion_lanes",
+			{
+				"inventory_type": lane["inventory_type"],
+				"customer": lane["customer"],
+				"source_qty": lane["source_qty"],
+				"target_qty": lane.get("target_qty") or 0.0,
+				"alloy_qty": lane.get("alloy_qty") or 0.0,
+				"batches": ", ".join(
+					f"{b['batch']}:{flt(b['qty'], precision)}" for b in lane["batches"]
+				),
+			},
 		)
-		if not bal_qty:
-			error.append("Batch Qty zero")
-		if reference_doctype:
-			if reference_doctype == "Purchase Receipt":
-				# supplier = frappe.get_value(
-				# 	reference_doctype, reference_name, "supplier"
-				# )
-				inventory_type = "Regular Stock"
-			if reference_doctype == "Stock Entry":
-				inventory_type = frappe.get_value(
-					"Batch", table_batch, "custom_inventory_type"
-				)
-			# 	if inventory_type == "Customer Goods":
-			# 		customer = frappe.get_value(
-			# 			reference_doctype, reference_name, "_customer"
-			# 		)
-		if error:
-			frappe.throw(", ".join(error))
-	self.inventory_type = inventory_type
+
+	self.inventory_type = lanes[0]["inventory_type"] if len(lanes) == 1 else None
+
+	customers = {lane["customer"] for lane in lanes if lane["customer"]}
+	self.customer = customers.pop() if len(customers) == 1 else None
