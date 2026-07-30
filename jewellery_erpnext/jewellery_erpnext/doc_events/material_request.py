@@ -193,20 +193,21 @@ def validate_target_item(self):
 
 	# Sieve size + dimensions are fetched for the whole table up front. Doing it
 	# per row cost four queries per row and dominated every Material Request save.
-	# (parent, "Diamond Sieve Size") is unique, so a flat dict loses nothing.
+	# One "Diamond Sieve Size" row per item is expected, so first-win via
+	# setdefault mirrors the original per-row frappe.db.get_value (single row) and
+	# stays order-independent should a malformed duplicate ever appear.
 	item_codes = {row.item_code for row in rows}
 	item_codes.update(row.custom_alternative_item for row in rows)
-	sieve_size = {
-		d.parent: d.attribute_value
-		for d in frappe.get_all(
-			"Item Variant Attribute",
-			filters={
-				"attribute": "Diamond Sieve Size",
-				"parent": ("in", list(item_codes)),
-			},
-			fields=["parent", "attribute_value"],
-		)
-	}
+	sieve_size = {}
+	for d in frappe.get_all(
+		"Item Variant Attribute",
+		filters={
+			"attribute": "Diamond Sieve Size",
+			"parent": ("in", list(item_codes)),
+		},
+		fields=["parent", "attribute_value"],
+	):
+		sieve_size.setdefault(d.parent, d.attribute_value)
 
 	attribute_values = {value for value in sieve_size.values() if value}
 	dimensions = {}
