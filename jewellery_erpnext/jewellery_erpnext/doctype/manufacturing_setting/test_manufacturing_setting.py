@@ -4,12 +4,12 @@
 from unittest.mock import patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import UnitTestCase
 
 from jewellery_erpnext.utils import resolve_manufacturing_setting
 
 
-class TestManufacturingSetting(FrappeTestCase):
+class TestManufacturingSetting(UnitTestCase):
 	"""Unit tests for resolve_manufacturing_setting — no fixtures, so the three fallback
 	branches are exercised independently of whatever the site's real records look like.
 
