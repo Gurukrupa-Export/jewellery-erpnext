@@ -321,8 +321,9 @@ frappe.ui.form.on("Manufacturing Operation", {
 		}).addClass("btn-primary");
 
 		// Receive Unused/Loose Material: receives the operation's unused material into the
-		// department Raw Material warehouse (SRE machinery, same item code — there is no
-		// dedicated item) and repacks it into a new batch tagged
+		// department Raw Material warehouse (SRE machinery, same item code as Make Receive
+		// Entry), then repacks it onto the dedicated unused/loose item — M- becomes ML-,
+		// F- becomes FL-, at the same purity and colour — under a new batch tagged
 		// custom_batch_type="Unused/Loose Material" so refining can fetch it.
 		frm.add_custom_button(__("Receive Unused/Loose Material"), () => {
 			open_wo_transfer_dialog(frm, {

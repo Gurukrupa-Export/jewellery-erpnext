@@ -5136,13 +5136,18 @@ def get_make_scrap_entry_rows(manufacturing_operation):
 def create_scrap_wo_stock_entry(se_data, request_id=None):
 	"""Receive Unused/Loose Material.
 
-	There is NO dedicated item code. The operation's unused material is received into
-	the department Raw Material warehouse via the Make Receive machinery (SRE validation,
-	MOP caps, idempotency, SRE cancel/recreate — same source/target allocation and item
-	code as Make Receive Entry), then repacked into a NEW batch tagged
+	The operation's unused material is received into the department Raw Material warehouse
+	via the Make Receive machinery (SRE validation, MOP caps, idempotency, SRE
+	cancel/recreate — same source/target allocation and item code as Make Receive Entry),
+	then repacked onto its DEDICATED unused/loose item (``M-`` -> ``ML-``, ``F-`` -> ``FL-``,
+	same purity and colour) under a NEW batch tagged
 	``custom_batch_type = "Unused/Loose Material"``. Unused/Loose Material Refining
 	fetches only those batches (get_scrap_items_balance), so ordinary department stock
 	sharing the warehouse is never pulled into a refining entry.
+
+	The item swap happens in the repack, not the receive: the receive SE has to stay on the
+	reserved item code or the SRE cancel/recreate and the MOP Log deductions would no longer
+	line up with what was issued.
 
 	The receive and the repack run in one transaction: if the repack fails the whole
 	receive rolls back, so the material is never left un-tagged.
@@ -5158,6 +5163,115 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 		# longer work-in-progress. So the MOP Log rows are KEPT.
 		_convert_received_scrap_to_scrap_batch(receive_se, request_id=request_id)
 	return result
+
+
+#: Source item template -> the unused/loose material template its returns book onto.
+#: Metal and Finding only; every other template (D/G/O and the alloys) keeps its own
+#: item code, exactly as before.
+UNUSED_TARGET_TEMPLATE = {"M": "ML", "F": "FL"}
+
+#: Attribute names carrying the purity. "Purity" is a legacy alias still present on some
+#: items — RefiningEntry._compute_item_purity accepts both, so mirror it here.
+_PURITY_ATTRIBUTES = ("Metal Purity", "Purity")
+_COLOUR_ATTRIBUTE = "Metal Colour"
+
+
+def _item_metal_attributes(item_code):
+	"""``(purity, colour)`` off the item's Item Variant Attribute rows, or ``(None, None)``.
+
+	The metal attributes live ONLY in ``Item Variant Attribute`` — there are no
+	``custom_metal_*`` fields on Item anywhere in the bench."""
+	rows = frappe.db.get_all(
+		"Item Variant Attribute",
+		filters={
+			"parent": item_code,
+			"attribute": ["in", list(_PURITY_ATTRIBUTES) + [_COLOUR_ATTRIBUTE]],
+		},
+		fields=["attribute", "attribute_value"],
+	)
+	values = {r.attribute: r.attribute_value for r in rows}
+	purity = next((values[a] for a in _PURITY_ATTRIBUTES if values.get(a)), None)
+	return purity, values.get(_COLOUR_ATTRIBUTE)
+
+
+def _resolve_unused_loose_item(item_code):
+	"""The unused/loose item ``item_code``'s returns should be booked onto, or ``None``.
+
+	Material a karigar did not consume is received back onto a DEDICATED item — ``ML-`` for
+	metal, ``FL-`` for findings — carrying the SAME purity and colour as the item it came
+	from. The target is resolved from the template plus the source item's own attributes, so
+	nothing is hardcoded to a particular site's item master.
+
+	Returns ``None`` (meaning "leave this row on its own item code") when the row is out of
+	scope: a template with no mapping (D/G/O), or a source item with no purity/colour to
+	match on (the alloys — ``M-AL``, ``M-394``, ``M-S-99.9``). Those receives work today and
+	must not start failing.
+
+	Throws when the row IS in scope but the target cannot be pinned down — a missing variant
+	or an ambiguous one. Both are item-master problems that a human has to resolve; guessing
+	would silently book the material onto the wrong purity."""
+	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+	target_template = UNUSED_TARGET_TEMPLATE.get(variant_of)
+	if not target_template:
+		return None
+
+	purity, colour = _item_metal_attributes(item_code)
+	if not purity or not colour:
+		return None
+
+	ItemDoc = frappe.qb.DocType("Item")
+	Attr = frappe.qb.DocType("Item Variant Attribute")
+	purity_attr = (
+		frappe.qb.from_(Attr)
+		.select(Attr.parent)
+		.where(
+			Attr.attribute.isin(list(_PURITY_ATTRIBUTES))
+			& (Attr.attribute_value == purity)
+		)
+	)
+	colour_attr = (
+		frappe.qb.from_(Attr)
+		.select(Attr.parent)
+		.where((Attr.attribute == _COLOUR_ATTRIBUTE) & (Attr.attribute_value == colour))
+	)
+	candidates = (
+		frappe.qb.from_(ItemDoc)
+		.select(ItemDoc.name)
+		.where(
+			(ItemDoc.variant_of == target_template)
+			& (ItemDoc.disabled == 0)
+			& ItemDoc.name.isin(purity_attr)
+			& ItemDoc.name.isin(colour_attr)
+		)
+		.orderby(ItemDoc.name)
+		.run(pluck=True)
+	)
+
+	if len(candidates) == 1:
+		return candidates[0]
+
+	if not candidates:
+		frappe.throw(
+			_(
+				"No Unused/Loose Material item exists for {0}. Please create a variant of "
+				"template <b>{1}</b> with Metal Purity <b>{2}</b> and Metal Colour <b>{3}</b> "
+				"before receiving."
+			).format(frappe.bold(item_code), target_template, purity, colour)
+		)
+
+	frappe.throw(
+		_(
+			"{0} matches more than one Unused/Loose Material item of template <b>{1}</b> "
+			"with Metal Purity <b>{2}</b> and Metal Colour <b>{3}</b>: {4}. Please disable "
+			"the ones that should not be used."
+		).format(
+			frappe.bold(item_code),
+			target_template,
+			purity,
+			colour,
+			frappe.bold(", ".join(candidates)),
+		)
+	)
 
 
 def _create_scrap_batch(item_code, employee=None):
@@ -5186,10 +5300,13 @@ def _create_scrap_batch(item_code, employee=None):
 
 
 def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
-	"""Repack the just-received scrap into fresh custom_batch_type='Scrap' batches.
+	"""Repack the just-received material onto its unused/loose item and a tagged batch.
 
-	Same item code, same warehouse, same qty — only the batch changes, so the scrap
-	is isolated from ordinary manufacturing stock under a Scrap-typed batch."""
+	Same warehouse and same qty; the batch ALWAYS changes (to a fresh one tagged
+	``custom_batch_type = "Unused/Loose Material"``) and the item code changes too whenever
+	``_resolve_unused_loose_item`` maps it — ``M-`` metal becomes ``ML-`` and ``F-`` findings
+	become ``FL-`` at the same purity and colour. Rows with no mapping (D/G/O, alloys) keep
+	their own item code and are isolated by the batch tag alone, as before."""
 	se = frappe.get_doc("Stock Entry", receive_se_name)
 	if cint(se.docstatus) != 1:
 		return
@@ -5245,12 +5362,26 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	)
 
 	for item in rows:
-		new_batch = _create_scrap_batch(item.item_code, employee=op_employee)
+		target_item = _resolve_unused_loose_item(item.item_code) or item.item_code
+		new_batch = _create_scrap_batch(target_item, employee=op_employee)
 		if not new_batch:
+			if target_item != item.item_code:
+				# The source was batch-tracked (rows filtered on that above) but its
+				# unused/loose counterpart is not, so the material would be produced onto
+				# an untagged, unfetchable item. Skipping would lose it silently.
+				frappe.throw(
+					_(
+						"Unused/Loose Material item {0} is not batch-tracked, so the "
+						"material received from {1} cannot be tagged for refining. Please "
+						"enable Has Batch No on {0}."
+					).format(frappe.bold(target_item), frappe.bold(item.item_code))
+				)
 			continue
 		# Fetch valuation rate so the finished-good row has a valid basic_rate
 		# when set_basic_rate_manually is enabled (required by ERPNext when
-		# multiple finished goods exist in a single Repack entry).
+		# multiple finished goods exist in a single Repack entry). Source and target
+		# share a purity, so the same rate conserves value and the Repack posts no
+		# Stock Adjustment.
 		val_rate = flt(item.valuation_rate or item.basic_rate or 0)
 		# Consume the received material from its current (ordinary) batch...
 		repack.append(
@@ -5267,13 +5398,15 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 				"basic_rate": val_rate,
 			},
 		)
-		# ...and re-produce the same qty of the same item under the Scrap batch.
+		# ...and produce the same qty onto the unused/loose item under the tagged batch.
 		repack.append(
 			"items",
 			{
-				"item_code": item.item_code,
+				"item_code": target_item,
 				"qty": item.qty,
-				"uom": item.uom or "Gram",
+				"uom": frappe.db.get_value("Item", target_item, "stock_uom")
+				or item.uom
+				or "Gram",
 				"t_warehouse": item.t_warehouse,
 				"batch_no": new_batch,
 				"use_serial_batch_fields": 1,

@@ -2690,6 +2690,224 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 
+		# Unused/Loose Material targets for the seeded metal items. Receive Unused/Loose
+		# Material books returns onto the ML variant matching the source's Metal Purity +
+		# Metal Colour (see _resolve_unused_loose_item), and THROWS when none exists — so
+		# every seeded M variant that can be received needs its ML counterpart, and no two
+		# ML variants may share a purity+colour pair or the resolution is ambiguous.
+		# Deliberately NOT seeding ML-G-24KT-99.9-Y here: that code is PURE_LOSS_ITEM, and
+		# creating it flips RefiningEntry.get_dust_item() from the _get_pure_loss_item()
+		# fallback chain to the pure code for the WHOLE refining suite. No test receives
+		# 24KT metal as unused material, so this feature does not need it.
+		for _ml_code, _ml_touch, _ml_purity, _ml_colour, _ml_series in (
+			("ML-G-22KT-91.6-Y", "22KT", "91.6", "Yellow", "GE2D075-MGL22916Y0-.##."),
+			("ML-G-22KT-91.6-P", "22KT", "91.6", "Pink", "GE2D075-MGL22916P0-.##."),
+		):
+			if frappe.db.exists("Item", _ml_code):
+				continue
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"is_design_code": 0,
+					"item_code": _ml_code,
+					"custom_reason_for_design_code_": "New Design",
+					"item_name": _ml_code,
+					"gst_hsn_code": "010121",
+					"item_group": "Metal - V",
+					"stock_uom": "Gram",
+					"is_stock_item": 1,
+					"has_variants": 0,
+					"include_item_in_manufacturing": 1,
+					"manufacturing_type": "Casted",
+					"productivity": "Studded",
+					"description": (
+						f"<b><u>ML</u></b><br>Metal Type : Gold<br>Metal Touch : {_ml_touch}"
+						f"<br>Metal Purity : {_ml_purity}<br>Metal Colour : {_ml_colour}<br>"
+					),
+					"end_of_life": "2099-12-31",
+					"default_material_request_type": "Purchase",
+					"valuation_rate": 1,
+					"has_batch_no": 1,
+					"create_new_batch": 1,
+					"batch_number_series": _ml_series,
+					"variant_of": "ML",
+					"variant_based_on": "Item Attribute",
+					"is_purchase_item": 1,
+					"grant_commission": 1,
+					"is_sales_item": 1,
+					"uoms": [
+						{
+							"uom": "Gram",
+							"conversion_factor": 1,
+						}
+					],
+					"attributes": [
+						{
+							"variant_of": "ML",
+							"attribute": "Metal Type",
+							"attribute_value": "Gold",
+						},
+						{
+							"variant_of": "ML",
+							"attribute": "Metal Touch",
+							"attribute_value": _ml_touch,
+						},
+						{
+							"variant_of": "ML",
+							"attribute": "Metal Purity",
+							"attribute_value": _ml_purity,
+						},
+						{
+							"variant_of": "ML",
+							"attribute": "Metal Colour",
+							"attribute_value": _ml_colour,
+						},
+					],
+				}
+			).insert(ignore_permissions=True)
+
+		# FL — the Finding counterpart of ML. Same attribute set as F, since a finding's
+		# identity is its category/sub-category/size as much as its metal.
+		if not frappe.db.exists("Item", "FL"):
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"is_design_code": 0,
+					"item_code": "FL",
+					"custom_reason_for_design_code_": "New Design",
+					"item_name": "FL",
+					"gst_hsn_code": "71131120",
+					"item_group": "Finding - T",
+					"stock_uom": "Gram",
+					"is_stock_item": 0,
+					"has_variants": 1,
+					"include_item_in_manufacturing": 0,
+					"manufacturing_type": "Casted",
+					"productivity": "Studded",
+					"description": "FL",
+					"end_of_life": "2099-12-31",
+					"default_material_request_type": "Purchase",
+					"has_batch_no": 0,
+					"create_new_batch": 0,
+					"variant_based_on": "Item Attribute",
+					"is_purchase_item": 1,
+					"country_of_origin": "India",
+					"grant_commission": 1,
+					"is_sales_item": 1,
+					"uoms": [
+						{
+							"uom": "Gram",
+							"conversion_factor": 1,
+						}
+					],
+					"attributes": [
+						{"attribute": "Metal Type"},
+						{"attribute": "Metal Touch"},
+						{"attribute": "Metal Purity"},
+						{"attribute": "Metal Colour"},
+						{"attribute": "Finding Category"},
+						{"attribute": "Finding Sub-Category"},
+						{"attribute": "Finding Size"},
+					],
+					"taxes": [],
+				}
+			).insert(ignore_permissions=True)
+
+		# One FL variant per seeded F variant, at the same purity+colour so the resolver
+		# finds exactly one candidate.
+		for _fl_code, _fl_colour, _fl_series in (
+			(
+				"FL-G-22KT-91.9-Y-CHA-KC-2.50 MM",
+				"Yellow",
+				"GE2D075-FGL22919Y0KCB50MM0-.##.",
+			),
+			(
+				"FL-G-22KT-91.9-P-CHA-KC-2.50 MM",
+				"Pink",
+				"GE2D075-FGL22919P0KCB50MM0-.##.",
+			),
+		):
+			if frappe.db.exists("Item", _fl_code):
+				continue
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"is_design_code": 0,
+					"item_code": _fl_code,
+					"custom_reason_for_design_code_": "New Design",
+					"item_name": _fl_code,
+					"gst_hsn_code": "71131120",
+					"item_group": "Finding - V",
+					"stock_uom": "Gram",
+					"is_stock_item": 1,
+					"has_variants": 0,
+					"include_item_in_manufacturing": 1,
+					"manufacturing_type": "Casted",
+					"productivity": "Studded",
+					"description": (
+						"<b><u>FL</u></b><br>Metal Type : Gold<br>Metal Touch : 22KT<br>"
+						f"Metal Purity : 91.9<br>Metal Colour : {_fl_colour}<br>"
+						"Finding Category : Chains<br>Finding Sub-Category : Kodi Chain<br>"
+						"Finding Size : 2.50 MM<br>"
+					),
+					"end_of_life": "2099-12-31",
+					"default_material_request_type": "Purchase",
+					"valuation_rate": 1,
+					"has_batch_no": 1,
+					"create_new_batch": 1,
+					"batch_number_series": _fl_series,
+					"variant_of": "FL",
+					"variant_based_on": "Item Attribute",
+					"is_purchase_item": 1,
+					"country_of_origin": "India",
+					"grant_commission": 1,
+					"is_sales_item": 1,
+					"uoms": [
+						{
+							"uom": "Gram",
+							"conversion_factor": 1,
+						}
+					],
+					"attributes": [
+						{
+							"variant_of": "FL",
+							"attribute": "Metal Type",
+							"attribute_value": "Gold",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Metal Touch",
+							"attribute_value": "22KT",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Metal Purity",
+							"attribute_value": "91.9",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Metal Colour",
+							"attribute_value": _fl_colour,
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Finding Category",
+							"attribute_value": "Chains",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Finding Sub-Category",
+							"attribute_value": "Kodi Chain",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Finding Size",
+							"attribute_value": "2.50 MM",
+						},
+					],
+				}
+			).insert(ignore_permissions=True)
+
 		if not frappe.db.exists("Item", "Cap"):
 			frappe.get_doc(
 				{
