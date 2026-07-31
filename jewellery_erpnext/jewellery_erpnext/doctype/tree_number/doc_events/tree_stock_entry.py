@@ -50,8 +50,19 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
 	capped_auto_batch_nos,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+	allocate_in_order,
+	batch_priority_map,
+	batch_sort_key,
+	describe_customer_spill,
+	is_customer_rank,
+	loss_rank,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 	normalize_ownership,
+)
+from jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking import (
+	validate_no_prior_period_pending,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 	_apply_fifo_batches_to_stock_entry,
@@ -338,17 +349,14 @@ def _append_repack_loss_pair(
 # Batch provenance — Receive returns the batches the Issue put in
 # ---------------------------------------------------------------------------
 def _batch_ownership(batch_nos):
-	"""``{batch_no: (inventory_type, customer)}`` — one round-trip for a whole allocation."""
-	if not batch_nos:
-		return {}
-	return {
-		b.name: (b.custom_inventory_type, b.custom_customer)
-		for b in frappe.db.get_all(
-			"Batch",
-			filters={"name": ["in", list(batch_nos)]},
-			fields=["name", "custom_inventory_type", "custom_customer"],
-		)
-	}
+	"""``{batch_no: (inventory_type, customer)}`` — one round-trip for a whole allocation.
+
+	Thin adapter over ``ownership_priority.batch_priority_map`` (which fetches the
+	same columns plus ``creation`` for the FIFO tie-break). Kept as a named module
+	attribute because the Tree Number suites patch it directly.
+	"""
+	ranks = batch_priority_map(batch_nos)
+	return {b: (m.inventory_type, m.customer) for b, m in ranks.items()}
 
 
 def _tree_owed_batches(se, tree, item_code, msl_wh):
@@ -421,6 +429,13 @@ def _tree_owed_batches(se, tree, item_code, msl_wh):
 		qty = min(flt(owed.get(b.batch_no)), flt(b.qty))
 		if qty > eps:
 			out.append((b.batch_no, qty))
+
+	# Ownership tier first, then the Batch.creation FIFO order capped_auto_batch_nos
+	# already produced. Consuming order: the customer's own metal comes back before
+	# the company's. The loss leg re-sorts this same pool the other way round --
+	# see _allocate_tree_legs.
+	ranks = batch_priority_map([b for b, _q in out])
+	out.sort(key=lambda bq: batch_sort_key(bq[0], ranks.get(bq[0]), "consume"))
 	return out
 
 
@@ -462,6 +477,96 @@ def _allocate_tree_batches(se, tree, item_code, msl_wh, need):
 			)
 		)
 	return out
+
+
+def _allocate_tree_legs(se, tree, item_code, msl_wh, recv, loss):
+	"""``(recv_allocation, loss_allocation)`` — two ranked passes over ONE pool.
+
+	The receive leg and the loss leg want OPPOSITE orderings of the same batches:
+	the customer's metal should go back to them first, while wastage should be
+	written off against the company's. A single ordered walk cannot satisfy both.
+	Allocating ``recv + loss`` in one pass and slicing it -- which is what this
+	flow used to do -- makes the loss leg inherit whatever the receive leg did not
+	take, so with customer-first ordering the customer's gold ends up scrapped
+	whenever the pool's customer qty covers the combined need. ``Tree Number.submit_tree``
+	settles leftovers with ``recv = 0``, which is exactly that case.
+
+	So: pass 1 takes ``recv`` from the pool in ``consume_rank`` order, pass 2 takes
+	``loss`` from what is LEFT, re-sorted into ``loss_rank`` order. A shared
+	``taken`` ledger keeps the two passes from double-booking a batch.
+	"""
+	prec = _se_precision()
+	pool = _tree_owed_batches(se, tree, item_code, msl_wh)
+	ranks = batch_priority_map([b for b, _q in pool], with_no_wastage=True)
+	taken = {}
+
+	recv_alloc, recv_short = allocate_in_order(pool, recv, prec, taken=taken)
+	loss_pool = sorted(
+		pool, key=lambda bq: batch_sort_key(bq[0], ranks.get(bq[0]), "loss")
+	)
+	loss_alloc, loss_short = allocate_in_order(loss_pool, loss, prec, taken=taken)
+
+	shortfall = flt(recv_short + loss_short, prec)
+	if shortfall > _pending_eps():
+		need = flt(flt(recv, prec) + flt(loss, prec), prec)
+		_throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec)
+
+	return recv_alloc, loss_alloc, ranks
+
+
+def _warn_tree_customer_loss(customer_loss, prec):
+	"""ONE orange warning when a tree write-off lands on customer-owned metal.
+
+	Mirrors the Employee IR spill warning: the loss pass only reaches a customer
+	batch once the company's are exhausted, which is allowed but must be visible.
+	Never throws -- the single hard stop is the no-wastage check at the call site.
+	"""
+	if not customer_loss:
+		return
+	merged = {}
+	for row in customer_loss:
+		key = (row["customer"], row["item_code"], row["batch_no"])
+		merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), prec)
+	total = flt(sum(merged.values()), prec)
+	lines = describe_customer_spill(
+		[
+			{"customer": c, "item_code": i, "batch_no": b, "qty": q}
+			for (c, i, b), q in sorted(merged.items(), key=lambda kv: str(kv[0]))
+		],
+		precision=prec,
+	)
+	frappe.msgprint(
+		_(
+			"Company metal on this tree could not absorb the whole loss, so {0} g was "
+			"written off against customer-owned material:"
+		).format(frappe.bold(total))
+		+ "<br><br>"
+		+ "<br>".join(lines),
+		title=_("Customer Material Absorbed Loss"),
+		indicator="orange",
+	)
+
+
+def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
+	"""Fail fast rather than falling back to warehouse-wide FIFO.
+
+	The MSL pool holds other operators' and other customers' metal, so a fallback
+	would silently hand back material this tree never issued.
+	"""
+	frappe.throw(
+		_(
+			"Tree {0}, Item {1}: need {2} but only {3} of the batches this tree issued into "
+			"{4} is still available ({5}). Returning any other batch would hand back material "
+			"this tree never issued — check whether it was already drawn out for another job."
+		).format(
+			tree.name,
+			item_code,
+			flt(need, prec),
+			flt(need - shortfall, prec),
+			msl_wh,
+			", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("none"),
+		)
+	)
 
 
 def _ledger_row(tree, item_code):
@@ -534,6 +639,12 @@ def issue_material(tree, item_code, qty, source_warehouse=None):
 		frappe.throw(
 			_("Source and MSL warehouse cannot be the same ({0}).").format(source_wh)
 		)
+
+	# Month-start close: this is one of only two paths that move stock INTO an
+	# employee MSL warehouse, so it is one of only two that can carry an unsettled
+	# balance across a month boundary. Runs before any Series/Bin lock below, so a
+	# rejection holds nothing.
+	validate_no_prior_period_pending(msl_wh)
 
 	# Casting trees record the Issue as a MAIN SLIP transfer (relabel only — still ledger-invisible).
 	se_type = (
@@ -669,49 +780,82 @@ def receive_material(tree, rows):
 	preallocate_series_for_docs(se_recv, se_loss)
 	lock_bins(recv_pairs + loss_pairs)
 
-	# Return what this tree issued. Each item's receive AND loss are allocated from ONE pool of the
-	# tree's own owed batches, so the two legs can never book the same batch qty twice — and every
-	# row carries its batch's ownership (inventory_type / customer) across with it.
+	# Return what this tree issued. Both legs draw from ONE pool of the tree's own
+	# owed batches via a shared `taken` ledger, so they can never book the same
+	# batch qty twice — but each leg is ordered for its OWN rule: the customer's
+	# metal is handed back first, the company's is written off first. Every row
+	# carries its batch's ownership (inventory_type / customer) across with it.
+	customer_loss = []
 	for p in plan:
 		rem_recv = flt(p["recv"], prec)
 		rem_loss = flt(p["loss"], prec)
-		need = flt(rem_recv + rem_loss, prec)
-		if need <= 0:
+		if flt(rem_recv + rem_loss, prec) <= 0:
 			continue
-		allocation = _allocate_tree_batches(
-			se_recv or se_loss, tree, p["item"], msl_wh, need
+		recv_alloc, loss_alloc, ranks = _allocate_tree_legs(
+			se_recv or se_loss, tree, p["item"], msl_wh, rem_recv, rem_loss
 		)
-		ownership = _batch_ownership([b for b, _ in allocation])
-		for batch_no, qty in allocation:
-			inv, cust = ownership.get(batch_no, (None, None))
-			take = flt(min(qty, rem_recv), prec)
-			if take > 0:
-				_append_item(
-					se_recv,
-					p["item"],
-					take,
-					msl_wh,
-					dept_rm,
-					batch_no=batch_no,
-					inventory_type=inv,
-					customer=cust,
+
+		for batch_no, qty in recv_alloc:
+			meta = ranks.get(batch_no)
+			inv, cust = normalize_ownership(
+				meta.inventory_type if meta else None,
+				meta.customer if meta else None,
+				batch_no=batch_no,
+				item_code=p["item"],
+			)
+			_append_item(
+				se_recv,
+				p["item"],
+				qty,
+				msl_wh,
+				dept_rm,
+				batch_no=batch_no,
+				inventory_type=inv,
+				customer=cust,
+			)
+
+		for batch_no, qty in loss_alloc:
+			meta = ranks.get(batch_no)
+			# No wastage for customer-supplied material. Such batches rank LAST in
+			# the loss pass, so reaching one means nothing else this tree owes had
+			# any capacity left — the throw is the correct outcome, not a side
+			# effect of proportional spreading.
+			if meta and meta.no_wastage:
+				frappe.throw(
+					_(
+						"Tree {0}, Item {1}: no wastage is allowed for customer material "
+						"(batch {2}, customer {3}). Return the full weight so no loss is "
+						"booked; the unused metal goes back as raw material."
+					).format(tree.name, p["item"], batch_no, meta.customer)
 				)
-				rem_recv = flt(rem_recv - take, prec)
-				qty = flt(qty - take, prec)
-			take = flt(min(qty, rem_loss), prec)
-			if take > 0:
-				_append_repack_loss_pair(
-					se_loss,
-					p["item"],
-					loss_items[p["item"]],
-					take,
-					msl_wh,
-					scrap_wh,
-					batch_no=batch_no,
-					inventory_type=inv,
-					customer=cust,
+			inv, cust = normalize_ownership(
+				meta.inventory_type if meta else None,
+				meta.customer if meta else None,
+				batch_no=batch_no,
+				item_code=p["item"],
+			)
+			if is_customer_rank(loss_rank(inv)):
+				customer_loss.append(
+					{
+						"customer": cust,
+						"item_code": p["item"],
+						"batch_no": batch_no,
+						"qty": qty,
+					}
 				)
-				rem_loss = flt(rem_loss - take, prec)
+			_append_repack_loss_pair(
+				se_loss,
+				p["item"],
+				loss_items[p["item"]],
+				qty,
+				msl_wh,
+				scrap_wh,
+				batch_no=batch_no,
+				inventory_type=inv,
+				customer=cust,
+			)
+
+	_warn_tree_customer_loss(customer_loss, prec)
 
 	# Post the transfer FIRST so both legs' consumption lands in a stable order (all Bins stay
 	# locked across both submits). The FIFO helper is a structural no-op now that every source row

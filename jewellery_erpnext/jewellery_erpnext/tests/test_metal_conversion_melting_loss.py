@@ -166,23 +166,6 @@ class TestMeltingLossValidation(IntegrationTestCase):
 		self.assertEqual(doc.target_alloy_check, 0)
 		self.assertEqual(doc.alloy_batch_details, [])
 
-	def test_customer_always_cleared(self):
-		"""A loss document has no owning customer.
-
-		"Is Customer Metal" is gone -- ownership is never declared by the operator --
-		and this flow books ONE scrap row force-typed "Regular Stock", so any customer
-		arriving via the API or a stale draft must be cleared before it can be stamped
-		onto the consume rows.
-		"""
-		doc = _doc(customer="ACME")
-		melting_loss.validate_melting_loss(doc)
-		self.assertIsNone(doc.customer)
-
-	def test_customer_cleared_when_already_empty(self):
-		doc = _doc(customer=None)
-		melting_loss.validate_melting_loss(doc)
-		self.assertIsNone(doc.customer)
-
 
 class _FakeSE:
 	"""Captures the Stock Entry payload the builder constructs."""

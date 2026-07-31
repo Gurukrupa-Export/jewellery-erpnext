@@ -22,6 +22,13 @@ from frappe.utils import (
 	today,
 )
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+	batch_priority_map,
+	describe_customer_spill,
+	is_customer_rank,
+	loss_rank,
+	tiered_allocate,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
 	get_po_rates,
 )
@@ -37,6 +44,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_uti
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
 	cancel_loss_stock_entries,
 	create_loss_stock_entries,
+	get_batch_sre_headroom,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 	cancel_injections_for_eir,
@@ -801,6 +809,11 @@ class EmployeeIR(Document):
 		# {company, department} filter dict used for allowed_loss_percentage above.
 		booking_map = get_loss_booking_map(self.operation)
 
+		# Recomputed from scratch on every validate, so the spill collected by the
+		# previous run must not leak into this one.
+		self.flags.customer_loss_spill = []
+		self.flags.loss_overflow = []
+
 		rows_to_append = []
 		for child in self.employee_ir_operations:
 			if child.received_gross_wt and self.type == "Receive":
@@ -812,50 +825,59 @@ class EmployeeIR(Document):
 					mwo, opt, gwt, r_gwt, allowed_loss_percentage, booking_map
 				)
 
-		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
-			batch_owner_no_wastage,
+		booked_rows = [
+			r for r in rows_to_append if flt(r["proportionally_loss"], 3) > 0
+		]
+		# Two bulk maps instead of three DB round-trips per booked row
+		# (Item.variant_of, plus Batch -> Customer inside batch_owner_no_wastage).
+		variant_map = _bulk_variant_of([r["item_code"] for r in booked_rows])
+		no_wastage_batches = _bulk_no_wastage_batches(
+			[r.get("batch_no") for r in booked_rows]
 		)
 
 		self.employee_loss_details = []
-		for row in rows_to_append:
+		for row in booked_rows:
 			proportionally_loss = flt(row["proportionally_loss"], 3)
-			if proportionally_loss > 0:
-				# No wastage for customer-supplied material: block loss on a no-wastage
-				# customer's batch so it never becomes a customer-owned scrap batch. The
-				# operator must receive the full weight (received == issued) for the
-				# operation holding this customer's material; the unused metal returns as
-				# raw material.
-				if batch_owner_no_wastage(row.get("batch_no")):
-					frappe.throw(
-						_(
-							"No wastage is allowed for customer material (MWO {0}, operation "
-							"{1}, batch {2}). Set the received gross weight equal to the issued "
-							"weight so no loss is booked; the unused metal is returned as raw "
-							"material."
-						).format(
-							row.get("manufacturing_work_order"),
-							row.get("manufacturing_operation"),
-							row.get("batch_no"),
-						)
+			# No wastage for customer-supplied material: block loss on a no-wastage
+			# customer's batch so it never becomes a customer-owned scrap batch. The
+			# operator must receive the full weight (received == issued) for the
+			# operation holding this customer's material; the unused metal returns as
+			# raw material. Such batches rank LAST in the loss waterfall, so reaching
+			# one means nothing else on the operation had any capacity left — the
+			# throw is the correct outcome, not an accident of proportional spreading.
+			if row.get("batch_no") in no_wastage_batches:
+				frappe.throw(
+					_(
+						"No wastage is allowed for customer material (MWO {0}, operation "
+						"{1}, batch {2}). Set the received gross weight equal to the issued "
+						"weight so no loss is booked; the unused metal is returned as raw "
+						"material."
+					).format(
+						row.get("manufacturing_work_order"),
+						row.get("manufacturing_operation"),
+						row.get("batch_no"),
 					)
-				variant_of = frappe.db.get_value("Item", row["item_code"], "variant_of")
-				self.append(
-					"employee_loss_details",
-					{
-						"item_code": row["item_code"],
-						"net_weight": row["qty"],
-						# "stock_uom": row["stock_uom"],
-						"variant_of": variant_of,
-						"batch_no": row["batch_no"],
-						"manufacturing_work_order": row["manufacturing_work_order"],
-						"manufacturing_operation": row["manufacturing_operation"],
-						"proportionally_loss": proportionally_loss,
-						"received_gross_weight": row["received_gross_weight"],
-						"main_slip_consumption": row.get("main_slip_consumption"),
-						# "inventory_type": row["inventory_type"],
-						"customer": row.get("customer"),
-					},
 				)
+			self.append(
+				"employee_loss_details",
+				{
+					"item_code": row["item_code"],
+					"net_weight": row["qty"],
+					# "stock_uom": row["stock_uom"],
+					"variant_of": variant_map.get(row["item_code"]),
+					"batch_no": row["batch_no"],
+					"manufacturing_work_order": row["manufacturing_work_order"],
+					"manufacturing_operation": row["manufacturing_operation"],
+					"proportionally_loss": proportionally_loss,
+					"received_gross_weight": row["received_gross_weight"],
+					"main_slip_consumption": row.get("main_slip_consumption"),
+					# "inventory_type": row["inventory_type"],
+					"customer": row.get("customer"),
+				},
+			)
+
+		# ONE warning for the whole document, after every operation row is booked.
+		self._warn_customer_loss_spill()
 
 		# Pre-deduction MOP baseline: total loss available from the operations
 		# before any manual deduction. Drives downstream caps and serves as the
@@ -987,6 +1009,26 @@ class EmployeeIR(Document):
 				}
 			data = list(sum_qty.values())
 
+			# Ownership tier + reservation headroom for every batch in the balance,
+			# resolved in two round-trips for the whole operation rather than per row.
+			ownership = batch_priority_map(
+				[e["batch_no"] for e in data], with_no_wastage=True
+			)
+			headroom = get_batch_sre_headroom(mwo, [e["batch_no"] for e in data])
+			for entry in data:
+				meta = ownership.get(entry["batch_no"])
+				entry["_inventory_type"] = meta.get("inventory_type") if meta else None
+				entry["_customer"] = meta.get("customer") if meta else None
+				entry["_no_wastage"] = bool(meta.get("no_wastage")) if meta else False
+				# Capacity drives the tier cap and the within-tier proportion; `qty`
+				# stays the true MOP balance so received_gross_weight is unaffected.
+				# They differ only when a reservation is smaller than the balance,
+				# i.e. exactly the case that would otherwise trip _validate_sre_qty.
+				cap = headroom.get((entry["item_code"], entry["batch_no"]))
+				entry["_capacity"] = (
+					min(flt(entry["qty"]), flt(cap)) if cap else flt(entry["qty"])
+				)
+
 			# -------------------------------------------------------------------------
 			# Prepare data and calculation proportionally devide each row based on each qty.
 			total_mannual_loss = 0
@@ -1003,61 +1045,182 @@ class EmployeeIR(Document):
 			loss = flt(flt(gwt, 3) - flt(r_gwt, 3) - flt(total_mannual_loss, 3), 3)
 			ms_consum = 0
 			ms_consum_book = 0
-			stock_loss = 0
 			if loss < 0:
 				ms_consum = abs(round(loss, 2))
 
-			# for entry in data:
-			# 	total_qty += entry["qty"]
-			for entry in data:
-				if total_qty != 0 and loss > 0:
-					stock_loss = (entry["qty"] * loss) / total_qty
-					if stock_loss > 0:
-						entry["received_gross_weight"] = entry["qty"] - stock_loss
-						entry["proportionally_loss"] = stock_loss
-						entry["main_slip_consumption"] = 0
-					else:
-						ms_consum_book = round(
-							(ms_consum * entry["qty"]) / total_qty, 4
-						)
-						entry["proportionally_loss"] = 0
-						entry["received_gross_weight"] = 0
-						entry["main_slip_consumption"] = ms_consum_book
-
-			# Precision-3 reconciliation: independently rounding each row's
-			# proportionally_loss can leave the sum drifting from flt(loss, 3),
-			# which trips validate_loss_qty's per-MWO equality check. Round
-			# each row first, then anchor the residual on the largest-loss
-			# row so the sum matches flt(loss, 3) exactly.
-			if loss > 0 and total_qty != 0:
-				positive = [e for e in data if flt(e["proportionally_loss"]) > 0]
-				if positive:
-					for entry in positive:
-						entry["proportionally_loss"] = flt(
-							entry["proportionally_loss"], 3
-						)
-						entry["received_gross_weight"] = flt(
-							entry["qty"] - entry["proportionally_loss"], 3
-						)
-					target = flt(loss, 3)
-					distributed = flt(
-						sum(e["proportionally_loss"] for e in positive), 3
+			# Ownership waterfall. Loss lands on Regular Stock first, then Pure
+			# Metal, and reaches a customer's gold only when nothing else on the
+			# operation has capacity left. Within a tier the split is proportional
+			# by balance, so an operation whose batches are all one tier — every
+			# site with no customer-owned metal — books exactly what the previous
+			# flat split booked, row for row. tiered_allocate also owns the
+			# precision-3 reconciliation: it guarantees the booked total equals
+			# flt(loss, 3) exactly, which validate_loss_tables_required asserts
+			# against the gross_wt - received_gross_wt baseline (within 0.0005).
+			if total_qty != 0 and loss > 0:
+				allocations, alloc_info = tiered_allocate(
+					data,
+					loss,
+					rank_of=lambda e: loss_rank(e["_inventory_type"], e["_no_wastage"]),
+					qty_of=lambda e: flt(e["_capacity"]),
+					precision=3,
+					key_of=lambda e: (e["item_code"], e["batch_no"]),
+				)
+				for entry in data:
+					booked = flt(
+						allocations.get((entry["item_code"], entry["batch_no"])), 3
 					)
-					residual = flt(target - distributed, 3)
-					if residual:
-						anchor = max(positive, key=lambda e: e["proportionally_loss"])
-						anchor["proportionally_loss"] = flt(
-							anchor["proportionally_loss"] + residual, 3
-						)
-						anchor["received_gross_weight"] = flt(
-							anchor["qty"] - anchor["proportionally_loss"], 3
-						)
+					entry["proportionally_loss"] = booked
+					entry["received_gross_weight"] = (
+						flt(entry["qty"] - booked, 3) if booked else 0
+					)
+					entry["main_slip_consumption"] = 0
+					if booked and is_customer_rank(
+						loss_rank(entry["_inventory_type"], entry["_no_wastage"])
+					):
+						doc._collect_customer_loss_spill(entry, booked)
+				if alloc_info.overflow:
+					# Loss exceeded every batch's capacity on this operation. The
+					# excess is anchored on the FIRST funded tier (company metal) by
+					# tiered_allocate — never on the customer — so nothing here has
+					# to redistribute it, but it is worth surfacing.
+					doc._collect_loss_overflow(mwo, opt, alloc_info.overflow)
+			elif total_qty != 0 and ms_consum:
+				# Gain: nothing is lost, the operation drew extra from the Main Slip.
+				for entry in data:
+					ms_consum_book = round((ms_consum * entry["qty"]) / total_qty, 4)
+					entry["proportionally_loss"] = 0
+					entry["received_gross_weight"] = 0
+					entry["main_slip_consumption"] = ms_consum_book
+
+			for entry in data:
+				for helper_key in (
+					"_inventory_type",
+					"_customer",
+					"_no_wastage",
+					"_capacity",
+				):
+					entry.pop(helper_key, None)
 			# -------------------------------------------------------------------------
 		return data
+
+	def _collect_customer_loss_spill(self, entry, qty):
+		"""Record that customer-owned metal absorbed loss, for ONE warning later.
+
+		Deliberately data, not a ``msgprint``. ``book_metal_loss`` is reached from
+		``validate`` on every draft save and runs once per operation row, so warning
+		in place would fire repeatedly per save and again from every whitelisted
+		caller. ``validate_process_loss`` emits a single deduplicated message after
+		the loop instead.
+		"""
+		spill = self.flags.setdefault("customer_loss_spill", [])
+		spill.append(
+			{
+				"customer": entry.get("_customer"),
+				"item_code": entry.get("item_code"),
+				"batch_no": entry.get("batch_no"),
+				"qty": flt(qty, 3),
+			}
+		)
+
+	def _collect_loss_overflow(self, mwo, opt, qty):
+		"""Record loss that exceeded every batch's capacity on an operation."""
+		self.flags.setdefault("loss_overflow", []).append(
+			{"mwo": mwo, "operation": opt, "qty": flt(qty, 3)}
+		)
+
+	def _warn_customer_loss_spill(self):
+		"""Emit ONE orange warning naming the customer metal that absorbed loss.
+
+		Warns whenever a customer tier was funded at all -- not only when the
+		waterfall overflowed. The ordinary business case is "regular stock ran out
+		and the remainder landed on the customer's gold", which produces no overflow
+		and is exactly what the operator needs to see.
+
+		Never throws: spilling is allowed. The one hard stop remains
+		``batch_owner_no_wastage`` below, and that batch is ranked last precisely so
+		the waterfall reaches it only when nothing else can absorb the loss.
+		"""
+		spill = self.flags.get("customer_loss_spill") or []
+		if not spill:
+			return
+
+		merged = {}
+		for row in spill:
+			key = (row["customer"], row["item_code"], row["batch_no"])
+			merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), 3)
+
+		lines = describe_customer_spill(
+			[
+				{"customer": c, "item_code": i, "batch_no": b, "qty": q}
+				for (c, i, b), q in sorted(merged.items(), key=lambda kv: str(kv[0]))
+			]
+		)
+		total = flt(sum(merged.values()), 3)
+		frappe.msgprint(
+			_(
+				"Company stock could not absorb the whole process loss, so {0} g was "
+				"booked against customer-owned material:"
+			).format(frappe.bold(total))
+			+ "<br><br>"
+			+ "<br>".join(lines),
+			title=_("Customer Material Absorbed Loss"),
+			indicator="orange",
+		)
+		# Durable trace: Employee IR submit runs on queue="long" (CustomSubmissionQueue),
+		# where a msgprint lands in the job log rather than the operator's browser.
+		self.flags.customer_loss_spill_total = total
 
 	@frappe.whitelist()
 	def get_summary_data(self):
 		return get_summary_data(self)
+
+
+def _bulk_variant_of(item_codes):
+	"""``{item_code: variant_of}`` in one round-trip.
+
+	Replaces a per-row ``frappe.db.get_value("Item", ..., "variant_of")`` inside the
+	loss append loop.
+	"""
+	item_codes = sorted({i for i in (item_codes or []) if i})
+	if not item_codes:
+		return {}
+	return {
+		r["name"]: r["variant_of"]
+		for r in frappe.db.get_all(
+			"Item",
+			filters={"name": ["in", item_codes]},
+			fields=["name", "variant_of"],
+		)
+	}
+
+
+def _bulk_no_wastage_batches(batch_nos):
+	"""Batches whose owning Customer is flagged ``custom_no_wastage``.
+
+	Same answer as calling ``loss_stock_entry.batch_owner_no_wastage`` per row, in
+	two round-trips instead of two per row.
+	"""
+	batch_nos = sorted({b for b in (batch_nos or []) if b})
+	if not batch_nos:
+		return set()
+	batches = frappe.db.get_all(
+		"Batch",
+		filters={"name": ["in", batch_nos], "custom_customer": ["is", "set"]},
+		fields=["name", "custom_customer"],
+	)
+	customers = sorted({b["custom_customer"] for b in batches if b["custom_customer"]})
+	if not customers:
+		return set()
+	flagged = {
+		c["name"]
+		for c in frappe.db.get_all(
+			"Customer",
+			filters={"name": ["in", customers], "custom_no_wastage": 1},
+			fields=["name"],
+		)
+	}
+	return {b["name"] for b in batches if b["custom_customer"] in flagged}
 
 
 def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):

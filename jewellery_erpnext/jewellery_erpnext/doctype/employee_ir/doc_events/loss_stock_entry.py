@@ -501,6 +501,57 @@ def _query_batch_and_qty_sres(mwo, item_code, batch_no):
 	return rows
 
 
+def get_batch_sre_headroom(mwo, batch_nos):
+	"""``{(item_code, batch_no): largest single remaining SRE}`` for ``mwo``.
+
+	The most loss ``_validate_sre_qty`` will let a single row book against a batch.
+	That guard deliberately does NOT aggregate across the batch's SREs -- it throws
+	when the row's qty exceeds the largest *one* of them -- so this is the real
+	per-row ceiling, and the loss waterfall needs it up front.
+
+	Why it matters: the old flat split spread loss thinly over every batch, so a
+	row's share was almost always well under its reservation. The waterfall
+	concentrates the whole loss on the Regular Stock tier, which can push one row
+	past a reservation that is legitimately split across several operation-tagged
+	SREs (see ``_find_sre``). Capping the tier's capacity here makes the excess
+	spill to the next tier instead of failing an Employee IR that submits today.
+
+	One round-trip for the whole document. A batch with no batch-level SRE (the
+	Qty-based fallback) is absent from the result, and the caller then applies no
+	cap -- preserving today's behaviour rather than guessing.
+	"""
+	batch_nos = sorted({b for b in (batch_nos or []) if b})
+	if not mwo or not batch_nos:
+		return {}
+
+	rows = frappe.db.sql(
+		"""
+        SELECT
+            sre.item_code AS item_code,
+            sbe.batch_no AS batch_no,
+            MAX(
+                sre.reserved_qty
+                - IFNULL(sre.delivered_qty, 0)
+                - IFNULL(sre.transferred_qty, 0)
+                - IFNULL(sre.consumed_qty, 0)
+            ) AS headroom
+        FROM `tabStock Reservation Entry` sre
+        INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
+        WHERE sre.manufacturing_work_order = %(mwo)s
+          AND sre.docstatus = 1
+          AND sbe.batch_no IN %(batches)s
+        GROUP BY sre.item_code, sbe.batch_no
+        """,
+		{"mwo": mwo, "batches": batch_nos},
+		as_dict=True,
+	)
+	return {
+		(r["item_code"], r["batch_no"]): flt(r["headroom"], 3)
+		for r in rows
+		if flt(r["headroom"]) > TOLERANCE
+	}
+
+
 def _find_sre(eir, row, mwo, table_name, qty):
 	"""Return ``(sre_doc, candidates)`` for this loss row.
 

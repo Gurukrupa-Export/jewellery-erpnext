@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "item_code",
+  "opening_qty",
   "issue_qty",
   "receive_qty",
   "loss_qty",
@@ -14,7 +15,7 @@
  ],
  "fields": [
   {
-   "columns": 4,
+   "columns": 3,
    "fieldname": "item_code",
    "fieldtype": "Link",
    "in_list_view": 1,
@@ -24,41 +25,54 @@
   },
   {
    "columns": 2,
+   "description": "Still pending at the start of the current month (carried in from earlier months).",
+   "fieldname": "opening_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Opening Qty",
+   "read_only": 1
+  },
+  {
+   "columns": 2,
+   "description": "Issued into this warehouse during the CURRENT month. Month-by-month history is in the Employee Warehouse Tracking report.",
    "fieldname": "issue_qty",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Issue Qty",
+   "label": "Issue Qty (This Month)",
    "read_only": 1
   },
   {
    "columns": 2,
+   "description": "Returned out of this warehouse during the CURRENT month (every outward movement that is not a Process Loss).",
    "fieldname": "receive_qty",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Receive Qty",
+   "label": "Receive Qty (This Month)",
    "read_only": 1
   },
   {
-   "columns": 2,
+   "columns": 1,
+   "description": "Written off during the CURRENT month via a Process Loss Stock Entry.",
    "fieldname": "loss_qty",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Loss Qty",
+   "label": "Loss Qty (This Month)",
    "read_only": 1
   },
   {
    "columns": 2,
+   "description": "CUMULATIVE balance still held, all months: Opening + Issue - Receive - Loss. This is the figure the Receive dialog settles against.",
    "fieldname": "pending_qty",
    "fieldtype": "Float",
    "in_list_view": 1,
-   "label": "Pending Qty",
+   "label": "Pending Qty (Total)",
    "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-07-10 00:00:00.000000",
+ "modified": "2026-07-30 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Warehouse MSL Tracking",
