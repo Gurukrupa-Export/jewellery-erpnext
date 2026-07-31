@@ -146,7 +146,7 @@ def execute():
   {
     
    "fieldname": "custom_diamond_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "is_system_generated": 1,
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
@@ -155,7 +155,7 @@ def execute():
   {
     
    "fieldname": "custom_gemstone_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "is_system_generated": 1,
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
@@ -214,7 +214,7 @@ def execute():
   {
     
    "fieldname": "custom_diamond_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
    "module": "Jewellery Erpnext"
@@ -222,7 +222,7 @@ def execute():
   {
     
    "fieldname": "custom_gemstone_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
    "module": "Jewellery Erpnext"
@@ -285,7 +285,7 @@ def execute():
   {
     
    "fieldname": "custom_diamond_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "is_system_generated": 1,
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
@@ -294,7 +294,7 @@ def execute():
   {
     
    "fieldname": "custom_gemstone_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "is_system_generated": 1,
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
@@ -311,10 +311,11 @@ def execute():
   {
     
    "fieldname": "custom_product_return_form_ref",
-   "fieldtype": "Float",
+   "fieldtype": "Link",
    "insert_after": "due_date",
    "label": "Product Return Form",
-   "module": "Jewellery Erpnext"
+   "module": "Jewellery Erpnext",
+   "options": "Product Return Order Form"
   }
       ],
       "Sales Invoice Item":[
@@ -361,7 +362,7 @@ def execute():
   {
     
    "fieldname": "custom_diamond_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
    "module": "Jewellery Erpnext"
@@ -369,7 +370,7 @@ def execute():
   {
     
    "fieldname": "custom_gemstone_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
    "module": "Jewellery Erpnext"
