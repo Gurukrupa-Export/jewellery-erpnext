@@ -43,7 +43,10 @@ from jewellery_erpnext.refining.constants import (
 	BATCH_TYPE_UNUSED,
 	REFINING_TYPE_OPTIONS,
 	REFINING_TYPE_SCRAP,
+	REFINING_TYPE_SERIAL,
 	REFINING_TYPE_UNUSED,
+	REFINING_TYPE_WORK_ORDER,
+	REFINING_TYPES,
 	SOURCE_TYPE_SCRAP,
 	SOURCE_TYPE_UNUSED,
 )
@@ -658,14 +661,12 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertTrue(diamond, "test data must contain at least one D variant")
 		self.assertIsNone(_resolve_unused_loose_item(diamond))
 
-	def test_unused_loose_resolver_ignores_items_with_no_purity_or_colour(self):
-		"""Alloys carry a Metal Type but no purity/colour, so there is nothing to match
-		on. They must fall through unchanged rather than block a receive that works."""
-		alloy = frappe.get_doc(
+	def _metal_variant(self, item_code, attributes):
+		doc = frappe.get_doc(
 			{
 				"doctype": "Item",
-				"item_code": "M-TEST-NO-COLOUR",
-				"item_name": "M-TEST-NO-COLOUR",
+				"item_code": item_code,
+				"item_name": item_code,
 				"gst_hsn_code": "010121",
 				"item_group": "Metal - V",
 				"stock_uom": "Gram",
@@ -673,23 +674,35 @@ class TestRefiningEntry(IntegrationTestCase):
 				"variant_of": "M",
 				"variant_based_on": "Item Attribute",
 				"attributes": [
-					{
-						"variant_of": "M",
-						"attribute": "Metal Type",
-						"attribute_value": "Gold",
-					},
-					{
-						"variant_of": "M",
-						"attribute": "Metal Purity",
-						"attribute_value": "91.9",
-					},
+					dict(variant_of="M", attribute=a, attribute_value=v)
+					for a, v in attributes
 				],
 			}
 		).insert(ignore_permissions=True)
-		try:
-			self.assertIsNone(_resolve_unused_loose_item(alloy.name))
-		finally:
-			frappe.delete_doc("Item", alloy.name, force=1, ignore_permissions=True)
+		self.addCleanup(
+			frappe.delete_doc, "Item", doc.name, force=1, ignore_permissions=True
+		)
+		return doc
+
+	def test_unused_loose_resolver_ignores_alloys_with_neither_attribute(self):
+		"""An alloy (M-AL, M-Genia-221) carries a Metal Type but neither purity nor colour,
+		so there is nothing to match on at all. It must fall through unchanged rather than
+		block a receive that works today — 17 such items are live and in active stock use."""
+		alloy = self._metal_variant("M-TEST-ALLOY", [("Metal Type", "Gold")])
+		self.assertIsNone(_resolve_unused_loose_item(alloy.name))
+
+	def test_unused_loose_resolver_throws_on_a_half_configured_item(self):
+		"""Purity set but no colour is not an alloy — it is a half-filled item master, and
+		silently keeping the material on its own code hides that. Name what is missing."""
+		half = self._metal_variant(
+			"M-TEST-NO-COLOUR",
+			[("Metal Type", "Gold"), ("Metal Purity", "91.9")],
+		)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			_resolve_unused_loose_item(half.name)
+		message = frappe.utils.strip_html(str(caught.exception))
+		self.assertIn("M-TEST-NO-COLOUR", message)
+		self.assertIn("Metal Colour", message)
 
 	def test_unused_loose_resolver_throws_when_no_target_exists(self):
 		frappe.db.set_value("Item", "ML-G-22KT-91.9-Y", "disabled", 1)
@@ -1231,6 +1244,12 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.assertEqual(lines[0]["qty"], 50.0)
 		self.assertEqual(lines[0]["rate"], 11)
 		self.assertEqual(lines[0]["uom"], "Gram")
+		# The line bills the matched price list's OWN item, not the generic REF-SVC-001
+		# charge item every line used to carry.
+		self.assertEqual(lines[0]["item_code"], "REF-CF-001")
+		# REF-* categories are stock items, so the line needs a warehouse or the PO is
+		# rejected with "Warehouse is mandatory for stock Item".
+		self.assertTrue(lines[0].get("warehouse"))
 
 	def test_preview_external_refining_po_matches_the_created_po(self):
 		"""The dry-run harness must not drift from the real builder — it is what the change
@@ -2261,3 +2280,190 @@ def mwo_semi_finished_goods(self):
 			dir_for_receive(dir_issue)
 
 	return mwo
+
+
+class TestRefiningNamingSeries(IntegrationTestCase):
+	"""The series letters must track the current type names.
+
+	They used to trail the Dust->Scrap / Scrap->Unused-Loose rename, so the actual scrap
+	type minted RFN-DST- ("dust") while SCP- ("scrap") went to unused/loose material.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _series_for(self, refining_type):
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = refining_type
+		re.set_naming_series()
+		return re.naming_series
+
+	def test_scrap_refining_mints_scp(self):
+		self.assertEqual(self._series_for(REFINING_TYPE_SCRAP), "RFN-SCP-.YY.-.#####")
+
+	def test_unused_loose_material_mints_ulm(self):
+		self.assertEqual(self._series_for(REFINING_TYPE_UNUSED), "RFN-ULM-.YY.-.#####")
+
+	def test_work_order_and_serial_are_unchanged(self):
+		self.assertEqual(
+			self._series_for(REFINING_TYPE_WORK_ORDER), "RFN-MWO-.YY.-.#####"
+		)
+		self.assertEqual(self._series_for(REFINING_TYPE_SERIAL), "RFN-SRN-.YY.-.#####")
+
+	def test_every_minted_series_is_a_valid_option(self):
+		options = frappe.get_meta("Refining Entry").get_field("naming_series").options
+		allowed = set(options.split("\n"))
+		for refining_type in REFINING_TYPES:
+			self.assertIn(self._series_for(refining_type), allowed)
+
+	def test_legacy_dst_option_is_retained(self):
+		# 111 pre-rename documents are named RFN-DST-*; dropping the option would strand
+		# them. Nothing mints it any more.
+		options = frappe.get_meta("Refining Entry").get_field("naming_series").options
+		self.assertIn("RFN-DST-.YY.-.#####", options.split("\n"))
+		self.assertNotIn(
+			"RFN-DST-.YY.-.#####",
+			{self._series_for(t) for t in REFINING_TYPES},
+		)
+
+	def test_blank_type_does_not_default_to_a_type_series(self):
+		# set_naming_series is a no-op for a blank type, so Frappe falls back to the FIRST
+		# option -- which must not be one that reads as a specific refining type.
+		options = frappe.get_meta("Refining Entry").get_field("naming_series").options
+		self.assertEqual(options.split("\n")[0], "RFN-MWO-.YY.-.#####")
+
+
+class TestReceiveFromSupplierSignature(IntegrationTestCase):
+	"""``Received Quantity (if applicable)`` was write-only and is gone."""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def test_received_qty_is_not_a_parameter(self):
+		import inspect
+
+		from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
+			RefiningEntry,
+		)
+
+		params = inspect.signature(RefiningEntry.receive_from_supplier).parameters
+		self.assertNotIn("received_qty", params)
+		self.assertIn("recovery_weight", params)
+
+	def test_dialog_no_longer_asks_for_it(self):
+		import pathlib
+
+		js = pathlib.Path(frappe.get_app_path("jewellery_erpnext")) / (
+			"refining/doctype/refining_entry/refining_entry.js"
+		)
+		self.assertNotIn("received_qty", js.read_text())
+
+
+class TestExternalPoBillableItem(IntegrationTestCase):
+	"""The PO line bills the matched Refinery Price List's own item.
+
+	Every line used to go out on the generic REF-SVC-001 charge item, so a Purchase Order
+	never said what was actually being refined. No test pinned item_code, which is why it
+	went unnoticed.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		return
+
+	def _entry(self, pricing_item="REF-MD-001", item_code="ML-G-22KT-91.9-Y"):
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.is_external = 1
+		re.company = "Test_Company"
+		re.supplier = "Test_Supplier"
+		re.manufacturer = "Shubh"
+		re.pricing_item = pricing_item
+		re.supplier_warehouse = frappe.db.get_value(
+			"Warehouse",
+			{"company": "Test_Company", "is_group": 0, "disabled": 0},
+			"name",
+		)
+		re.append(
+			"material_items",
+			{
+				"item_code": item_code,
+				"qty": 20.0,
+				"uom": "Gram",
+				"source_type": SOURCE_TYPE_SCRAP,
+			},
+		)
+		return re
+
+	def test_line_uses_the_price_lists_item(self):
+		price_list = frappe.get_doc(
+			{
+				"doctype": "Refinery Price List",
+				"item": "REF-RMS-001",
+				"refining_type": REFINING_TYPE_SCRAP,
+			}
+		)
+		price_list.append(
+			"slabs",
+			{
+				"from_weight": 0,
+				"to_weight": 0,
+				"charge_type": "Flat Charge",
+				"rate": 750,
+				"weight_basis": "Gross Weight",
+			},
+		)
+		price_list.append("covered_items", {"item_code": "ML-G-22KT-91.9-Y"})
+		price_list.insert(ignore_permissions=True)
+		self.addCleanup(
+			frappe.delete_doc,
+			"Refinery Price List",
+			price_list.name,
+			force=1,
+			ignore_permissions=True,
+			delete_permanently=True,
+		)
+
+		lines, _unpriced = self._entry()._external_po_lines()
+		self.assertEqual(len(lines), 1)
+		self.assertEqual(lines[0]["item_code"], "REF-RMS-001")
+		self.assertEqual(lines[0]["rate"], 750)
+
+	def test_stock_item_line_carries_a_warehouse(self):
+		# REF-* categories are stock items; ERPNext rejects a stock PO line without one.
+		lines, _unpriced = self._entry()._external_po_lines()
+		self.assertTrue(
+			frappe.db.get_value("Item", lines[0]["item_code"], "is_stock_item"),
+			"this test is only meaningful for a stock item",
+		)
+		self.assertTrue(lines[0].get("warehouse"))
+
+	def test_uncovered_material_still_falls_back_to_the_pricing_item(self):
+		# No price list covers it, so the group keeps the entry's own pricing category
+		# rather than silently reverting to the generic charge item.
+		lines, unpriced = self._entry(item_code="ML-G-18KT-75.4-P")._external_po_lines()
+		self.assertEqual(len(lines), 1)
+		self.assertEqual(lines[0]["item_code"], "REF-MD-001")
+		self.assertEqual(len(unpriced), 1)
+
+	def test_billable_items_all_have_the_uoms_a_flat_charge_needs(self):
+		# A Flat Charge bills 1 Nos, but the categories are seeded with only Gram/Litre.
+		from jewellery_erpnext.patches.seed_refining_masters import (
+			DUST_ITEMS,
+			SERVICE_ITEM,
+		)
+
+		for item_code in [SERVICE_ITEM] + [code for code, *_ in DUST_ITEMS]:
+			if not frappe.db.exists("Item", item_code):
+				continue
+			uoms = set(
+				frappe.db.get_all(
+					"UOM Conversion Detail",
+					filters={"parent": item_code},
+					pluck="uom",
+				)
+			)
+			self.assertIn("Nos", uoms, f"{item_code} cannot bill a flat charge")
+			self.assertIn("Gram", uoms, f"{item_code} cannot bill a per-gram charge")

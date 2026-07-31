@@ -17,9 +17,11 @@ validation on the next save. Raw SQL bypasses validation, hooks and ``docstatus`
 deliberately does not bump ``modified`` — three statements instead of ~16,000 document
 saves, and the audit trail is left intact.
 
-Naming series are NOT touched. Documents created before the rename keep their ``RFN-DST-``
-/ ``RFN-SCP-`` names, because document names are immutable and re-lettering the series
-would give each type two historical prefixes.
+Naming series are NOT touched by this patch — document names are immutable, so every
+document keeps the name it was created with. The series letters themselves were corrected
+separately (Scrap Refining now mints ``RFN-SCP-``, Unused/Loose Material ``RFN-ULM-``), which
+is why two historical prefixes exist: ``RFN-DST-`` is always pre-rename Dust Refining, and
+``RFN-SCP-`` up to 26-00047 is pre-rename Scrap, i.e. today's unused/loose material.
 
 **Not idempotent — running it twice swaps back.** Three independent fences:
 

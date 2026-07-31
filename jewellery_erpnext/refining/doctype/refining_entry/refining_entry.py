@@ -36,6 +36,20 @@ EXTERNAL_PRICING_CATEGORY = {
 }
 
 
+def _default_receiving_warehouse(company):
+	"""Company's default warehouse for a purchase, for stock lines with nowhere else to go."""
+	if not company:
+		return None
+	return frappe.db.get_value(
+		"Company", company, "default_warehouse_for_sales_return"
+	) or frappe.db.get_value(
+		"Warehouse",
+		{"company": company, "is_group": 0, "disabled": 0, "warehouse_type": "Stores"},
+		"name",
+		order_by="name asc",
+	)
+
+
 class RefiningEntry(Document):
 	def before_insert(self):
 		# Set the series before autoname runs (autoname happens before validate), so
@@ -337,21 +351,22 @@ class RefiningEntry(Document):
 		return list(groups.values())
 
 	def _external_service_po_line(self, group, qty, rate, uom, slab=None):
-		service_item = self._default_refining_service_item()
-		# The line bills a refining SERVICE charge, so its item MUST be non-stock: a stock
-		# item on the PO fails with "Warehouse is mandatory for stock Item".
-		if service_item and frappe.db.get_value("Item", service_item, "is_stock_item"):
-			service_item = None
-		if not service_item:
+		# The item the matched Refinery Price List bills under (REF-RMS-001, REF-MD-001, …),
+		# already resolved into the group by _external_po_groups. It used to be dropped into
+		# the description only, and every line went out on the generic REF-SVC-001 charge
+		# item, so a PO never said what was actually being refined.
+		line_item = group.get("item_code") or self._default_refining_service_item()
+		if not line_item:
 			frappe.throw(
 				_(
-					"No non-stock service item configured for external refining — seed the "
-					"default service item {0}."
+					"No item to bill this refining charge against — set an Item on the "
+					"Refinery Price List, or seed the default service item {0}."
 				).format(frappe.bold("REF-SVC-001"))
 			)
+
 		basis = (slab or {}).get("weight_basis") or "Gross Weight"
-		return {
-			"item_code": service_item,
+		line = {
+			"item_code": line_item,
 			"qty": qty,
 			"uom": uom,
 			"rate": rate,
@@ -371,6 +386,24 @@ class RefiningEntry(Document):
 				basis,
 			),
 		}
+
+		# The category items (REF-RMS-001 and friends) are stock items, unlike the generic
+		# REF-SVC-001 charge item, and ERPNext rejects a stock line with no warehouse.
+		if frappe.db.get_value("Item", line_item, "is_stock_item"):
+			warehouse = self.supplier_warehouse or _default_receiving_warehouse(
+				self.company
+			)
+			if not warehouse:
+				frappe.throw(
+					_(
+						"{0} is a stock item, so its Purchase Order line needs a warehouse. "
+						"Set Supplier Warehouse on this entry, or a Default Warehouse for "
+						"Purchase on the company."
+					).format(frappe.bold(line_item))
+				)
+			line["warehouse"] = warehouse
+
+		return line
 
 	def _external_po_lines(self, index=None):
 		"""``(lines, unpriced)`` for the service Purchase Order. Pure — builds no documents
@@ -477,7 +510,7 @@ class RefiningEntry(Document):
 			)
 
 	@frappe.whitelist()
-	def receive_from_supplier(self, recovery_weight, received_qty=None):
+	def receive_from_supplier(self, recovery_weight):
 		"""Record receipt of refined metal from the supplier directly on THIS entry — no
 		second Refining Entry, no Purchase Receipt. Builds one Repack Stock Entry that
 		issues the originally sent material out of the supplier warehouse and receives
@@ -756,13 +789,10 @@ class RefiningEntry(Document):
 
 		self.received_weight = recovery_weight
 		self.repack_se = se.name
-		if received_qty:
-			self.received_qty = flt(received_qty)
 		self.db_set(
 			{
 				"received_weight": self.received_weight,
 				"repack_se": self.repack_se,
-				"received_qty": flt(self.received_qty),
 				# Terminal status — overrides the "Classified" status
 				# generate_recovery_table set; external refining has no
 				# classify/repack/verify/complete lifecycle of its own.
@@ -834,14 +864,19 @@ class RefiningEntry(Document):
 		self.system_quantity = flt(self._compute_dust_system_quantity(), 3)
 
 	def set_naming_series(self):
-		# The DST/SCP letters predate the Dust->Scrap / Scrap->Unused-Loose-Material
-		# rename. They are deliberately left alone: document names are immutable, so
-		# re-lettering the series would give each type two historical prefixes.
+		# The letters follow the current names: SCP = Scrap, ULM = Unused/Loose Material.
+		# They used to trail the Dust->Scrap / Scrap->Unused-Loose rename, which left the
+		# actual scrap type minting RFN-DST- ("dust") while SCP- ("scrap") went to
+		# unused/loose material -- the reported bug.
+		#
+		# Document names are immutable, so the two historical prefixes stay meaningful:
+		# RFN-DST- is always old Dust Refining, and RFN-SCP- up to 26-00047 is old Scrap
+		# (now unused/loose) while later RFN-SCP- documents are Scrap Refining.
 		series_map = {
-			REFINING_TYPE_SCRAP: "RFN-DST-.YY.-.#####",
+			REFINING_TYPE_SCRAP: "RFN-SCP-.YY.-.#####",
 			REFINING_TYPE_WORK_ORDER: "RFN-MWO-.YY.-.#####",
 			REFINING_TYPE_SERIAL: "RFN-SRN-.YY.-.#####",
-			REFINING_TYPE_UNUSED: "RFN-SCP-.YY.-.#####",
+			REFINING_TYPE_UNUSED: "RFN-ULM-.YY.-.#####",
 		}
 		if self.refining_type in series_map:
 			self.naming_series = series_map[self.refining_type]

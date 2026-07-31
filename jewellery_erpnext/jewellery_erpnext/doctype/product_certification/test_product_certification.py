@@ -40,16 +40,59 @@ def _purity(item_code):
 
 
 def _serial_department(serial_no):
-	"""Department of the warehouse a freshly minted serial currently sits in.
+	"""Department to certify a freshly minted serial under, with the serial moved into it.
 
-	``ProductCertification.validate_serial_warehouse_department`` blocks an Issue whose
-	Product Details serial is not in a warehouse of the document's department. The serial
-	``create_snc`` mints lands wherever the manufacturing flow left it, not in a Product
-	Certification warehouse, so tests that issue it must name that same department --
-	moving the stock into Product Certification first is a Department IR flow these tests
-	do not model. The department rule itself is covered by TestSerialWarehouseDepartment.
+	``ProductCertification.validate_serial_warehouse_department`` requires an Issue's serial
+	to sit in that department's WO (Manufacturing) warehouse, because ``create_stock_entry``
+	sources every serial line from exactly that warehouse.
+
+	``create_snc`` leaves the finished serial in the department's **FG** warehouse (Tagging FG),
+	which is one transfer short of issuable. Real operation moves it on with a Department IR;
+	these tests model just the stock movement, which is all the rule cares about. Certifying
+	under the serial's own department -- rather than Product Certification -- keeps sidestepping
+	the cross-department routing the Department IR would also do.
+
+	The department rule itself is covered by TestSerialWarehouseDepartment.
 	"""
-	return frappe.db.get_value("Warehouse", serial_no.warehouse, "department")
+	department = frappe.db.get_value("Warehouse", serial_no.warehouse, "department")
+	_move_serial_to_department_wo_warehouse(serial_no, department)
+	return department
+
+
+def _move_serial_to_department_wo_warehouse(serial_no, department):
+	"""Material Transfer the serial into ``department``'s WO warehouse, if it is not there."""
+	target = frappe.db.get_value(
+		"Warehouse",
+		{
+			"disabled": 0,
+			"is_group": 0,
+			"department": department,
+			"warehouse_type": "Manufacturing",
+		},
+		"name",
+		order_by="name asc",
+	)
+	source = serial_no.warehouse
+	if not target or source == target:
+		return
+
+	se = frappe.new_doc("Stock Entry")
+	se.stock_entry_type = "Material Transfer"
+	se.company = frappe.db.get_value("Warehouse", target, "company")
+	se.append(
+		"items",
+		{
+			"item_code": serial_no.item_code,
+			"qty": 1,
+			"s_warehouse": source,
+			"t_warehouse": target,
+			"serial_no": serial_no.name,
+			"use_serial_batch_fields": True,
+		},
+	)
+	se.insert(ignore_permissions=True)
+	se.submit()
+	serial_no.reload()
 
 
 def _skip_generated_test_records():

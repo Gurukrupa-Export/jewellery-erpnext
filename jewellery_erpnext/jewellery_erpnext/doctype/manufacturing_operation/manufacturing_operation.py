@@ -5121,7 +5121,16 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 #: Source item template -> the unused/loose material template its returns book onto.
 #: Metal and Finding only; every other template (D/G/O and the alloys) keeps its own
 #: item code, exactly as before.
-UNUSED_TARGET_TEMPLATE = {"M": "ML", "F": "FL"}
+#:
+#: Both item-code conventions in use are listed. Short codes (M/ML, F/FL) are what the
+#: live site carries; the descriptive codes are what newer sites create. A pair whose
+#: target template does not exist on this site is skipped, so listing both is safe.
+UNUSED_TARGET_TEMPLATE = {
+	"M": "ML",
+	"F": "FL",
+	"Metal": "Metal Unused/Loose Material",
+	"Finding": "Finding Unused/Loose Material",
+}
 
 #: Attribute names carrying the purity. "Purity" is a legacy alias still present on some
 #: items — RefiningEntry._compute_item_purity accepts both, so mirror it here.
@@ -5156,21 +5165,38 @@ def _resolve_unused_loose_item(item_code):
 	nothing is hardcoded to a particular site's item master.
 
 	Returns ``None`` (meaning "leave this row on its own item code") when the row is out of
-	scope: a template with no mapping (D/G/O), or a source item with no purity/colour to
-	match on (the alloys — ``M-AL``, ``M-394``, ``M-S-99.9``). Those receives work today and
-	must not start failing.
+	scope: a template with no mapping (D/G/O), a mapped template that does not exist on this
+	site, or an item carrying NEITHER purity nor colour — the alloys (``M-AL``, ``M-394``,
+	``M-Genia-221``). An alloy has nothing to match on by design; those receives work today
+	and must not start failing.
 
-	Throws when the row IS in scope but the target cannot be pinned down — a missing variant
-	or an ambiguous one. Both are item-master problems that a human has to resolve; guessing
-	would silently book the material onto the wrong purity."""
+	Throws when the row IS in scope but the target cannot be pinned down — a HALF-configured
+	source (one of purity/colour set, the other missing), a missing variant, or an ambiguous
+	one. All three are item-master problems a human has to resolve; guessing would silently
+	book the material onto the wrong purity."""
 	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
 	target_template = UNUSED_TARGET_TEMPLATE.get(variant_of)
-	if not target_template:
+	# Both naming conventions are listed in the map, so only the one this site actually
+	# uses resolves; the other is skipped rather than throwing "no such template".
+	if not target_template or not frappe.db.exists("Item", target_template):
 		return None
 
 	purity, colour = _item_metal_attributes(item_code)
-	if not purity or not colour:
+	if not purity and not colour:
+		# An alloy: no purity and no colour to match on at all. Out of scope, as before.
 		return None
+	if not purity or not colour:
+		frappe.throw(
+			_(
+				"{0} has {1} but no {2}, so its Unused/Loose Material item cannot be "
+				"resolved. Set both Metal Purity and Metal Colour on the item, or clear "
+				"both if it is an alloy that should keep its own item code."
+			).format(
+				frappe.bold(item_code),
+				_("Metal Purity") if purity else _("Metal Colour"),
+				_("Metal Colour") if purity else _("Metal Purity"),
+			)
+		)
 
 	ItemDoc = frappe.qb.DocType("Item")
 	Attr = frappe.qb.DocType("Item Variant Attribute")
