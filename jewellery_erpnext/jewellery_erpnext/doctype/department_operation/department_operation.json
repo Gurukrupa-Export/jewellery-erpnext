@@ -20,7 +20,7 @@
 "service_item",
 "column_break_otjqr",
 "is_qc_reqd",
-"is_main_slip_required",
+"is_raw_material",
 "check_purity_in_main_slip",
 "check_touch_in_main_slip",
 "check_colour_in_main_slip",
@@ -53,9 +53,9 @@
 },
 {
 "default": "0",
-"fieldname": "is_main_slip_required",
+"fieldname": "is_raw_material",
 "fieldtype": "Check",
-"label": "Is Main Slip Required"
+"label": "Is Raw Material"
 },
 {
 "default": "0",

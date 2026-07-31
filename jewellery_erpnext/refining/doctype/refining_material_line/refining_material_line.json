@@ -80,7 +80,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Source Type",
-   "options": "\nMWO\nSerial Number\nDust\nScrap\nLoss Item\nConsumable\nBOM Component"
+   "options": "\nMWO\nSerial Number\nScrap\nUnused/Loose Material\nLoss Item\nConsumable\nBOM Component"
   },
   {
    "default": "0",

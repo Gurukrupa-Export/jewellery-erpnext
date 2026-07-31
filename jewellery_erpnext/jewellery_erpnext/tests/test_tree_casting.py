@@ -445,7 +445,7 @@ def _mwo_doc(name, tree_number):
 	)
 
 
-def _recv_eir(rows, typ="Receive", loss_rows=None, is_main_slip_required=1):
+def _recv_eir(rows, typ="Receive", loss_rows=None, is_raw_material=1):
 	"""Receive EIR. rows: [(mwo, received_gross_wt[, gross_wt])] — gross_wt defaults to received
 	(exact fill / no gain); loss_rows: [(mwo, proportionally_loss)]."""
 
@@ -459,7 +459,7 @@ def _recv_eir(rows, typ="Receive", loss_rows=None, is_main_slip_required=1):
 	return SimpleNamespace(
 		operation="Casting WO",
 		type=typ,
-		is_main_slip_required=is_main_slip_required,
+		is_raw_material=is_raw_material,
 		manually_book_loss_details=[
 			SimpleNamespace(
 				variant_of="M", manufacturing_work_order=m, proportionally_loss=n
@@ -551,7 +551,7 @@ class TestValidateCastingReceive(IntegrationTestCase):
 	def test_gain_without_main_slip_throws(self):
 		# received 10 > gross 8 but no Main Slip to source the excess -> nothing can move.
 		with self.assertRaises(ValidationError):
-			self._run(_recv_eir([("MWO-A", 10.0, 8.0)], is_main_slip_required=0))
+			self._run(_recv_eir([("MWO-A", 10.0, 8.0)], is_raw_material=0))
 
 	def test_normal_receive_with_loss_passes(self):
 		# recv 4 + loss 1 == gross 5. Booked metal loss never leaves the MSL pool, so it is not
@@ -1160,6 +1160,19 @@ def _run(
 			return list(owed.get(item_code, []))
 		return list(owed)
 
+	def _priority(batch_nos, with_no_wastage=False):
+		# Same `ownership` stub the legacy _batch_ownership patch below uses, in the
+		# richer shape ownership_priority.batch_priority_map returns. Keeping one
+		# source means a test that declares ownership drives BOTH the receive-leg
+		# ranking and the row stamping.
+		out = {}
+		for b in batch_nos or []:
+			inv, cust = (ownership or {}).get(b, (None, None))
+			out[b] = frappe._dict(
+				inventory_type=inv, customer=cust, creation="", no_wastage=False
+			)
+		return out
+
 	with (
 		patch.object(tse.frappe, "new_doc", side_effect=_mint),
 		patch.object(tse.frappe, "has_permission", return_value=True),
@@ -1167,6 +1180,10 @@ def _run(
 		patch.object(tse, "_apply_fifo_batches_to_stock_entry"),
 		patch.object(tse, "preallocate_series_for_docs"),
 		patch.object(tse, "lock_bins"),
+		# Month-start close is exercised by its own suite; here it must not reach
+		# the database.
+		patch.object(tse, "validate_no_prior_period_pending"),
+		patch.object(tse, "batch_priority_map", side_effect=_priority),
 		patch.object(tse, "_tree_owed_batches", side_effect=_owed),
 		patch.object(tse, "_batch_ownership", return_value=ownership or {}),
 		patch.object(tse, "_resolve_source_warehouse", return_value=source_wh),
@@ -1875,12 +1892,42 @@ class TestTreeOwedBatches(IntegrationTestCase):
 		self.assertEqual(self._call([self._in("B1", 6.0)], []), [])
 
 	def test_multi_batch_issue_keeps_availability_order(self):
-		"""capped_auto_batch_nos orders by (Batch.creation, batch_no); the pool must not reorder."""
+		"""capped_auto_batch_nos orders by (Batch.creation, batch_no).
+
+		The pool re-buckets that order by ownership tier and NOTHING else, so with a
+		single tier — here, no resolvable ownership at all — the availability order
+		survives untouched. Note B-NEW sorts alphabetically before B-OLD, so an
+		ownership sort that fell back to the batch name would flip these two.
+		"""
 		out = self._call(
 			[self._in("B-NEW", 4.0), self._in("B-OLD", 3.0)],
 			[{"batch_no": "B-OLD", "qty": 50.0}, {"batch_no": "B-NEW", "qty": 50.0}],
 		)
 		self.assertEqual(out, [("B-OLD", 3.0), ("B-NEW", 4.0)])
+
+	def test_customer_batches_are_returned_before_company_batches(self):
+		"""Consuming order: the customer's own metal comes back off the tree first.
+
+		B-REG is first in availability (FIFO) order and would win on creation alone;
+		the customer tier must lift B-CUST above it.
+		"""
+		ranks = {
+			"B-CUST": frappe._dict(
+				inventory_type="Customer Goods", customer="CUST-1", no_wastage=False
+			),
+			"B-REG": frappe._dict(
+				inventory_type="Regular Stock", customer=None, no_wastage=False
+			),
+		}
+		with patch.object(tse, "batch_priority_map", return_value=ranks):
+			out = self._call(
+				[self._in("B-REG", 4.0), self._in("B-CUST", 3.0)],
+				[
+					{"batch_no": "B-REG", "qty": 50.0},
+					{"batch_no": "B-CUST", "qty": 50.0},
+				],
+			)
+		self.assertEqual(out, [("B-CUST", 3.0), ("B-REG", 4.0)])
 
 	def test_query_filters_to_submitted_rows_of_this_tree(self):
 		"""Cancelled SEs must not count — cancel_tree_stock_entries leaves their SED rows intact."""
@@ -2072,3 +2119,117 @@ class TestReceiveBatchParity(IntegrationTestCase):
 			[(i.item_code, i.batch_no, i.qty) for i in fakes[0].items],
 			[("GOLD-18KT", "B-18", 5.0), ("GOLD-22KT", "B-22", 3.0)],
 		)
+
+
+class TestReceiveTwoPassOwnership(IntegrationTestCase):
+	"""Receive returns the customer's metal; loss is written off against the company's.
+
+	These two rules are OPPOSITE orderings of one pool, so a single ordered walk
+	cannot satisfy both. The regression this class pins: allocating ``recv + loss``
+	in one pass and slicing it makes the loss leg inherit whatever the receive leg
+	did not take, so with customer-first ordering the customer's gold gets scrapped
+	as soon as the pool's customer qty covers the combined need.
+
+	Keeps the base ``setUpClass`` (like its sibling ``TestReceiveBatchParity``) --
+	``_new_tree`` builds a real Tree Number document and needs the bootstrap.
+	"""
+
+	def _tree(self, issue=20.0):
+		return _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": issue,
+					"receive_qty": 0,
+					"loss_qty": 0,
+					"pending_qty": issue,
+				}
+			]
+		)
+
+	OWN = {
+		"B-CUST": ("Customer Goods", "MHCU0012"),
+		"B-REG": ("Regular Stock", None),
+	}
+
+	def _receive(self, recv, loss, owed, ownership=None):
+		# _new_transfer_se resolves the SE company via get_cached_value on a
+		# warehouse name this pure-logic harness never creates; the shared _run
+		# helper does not stub it.
+		with patch.object(tse.frappe, "get_cached_value", return_value="CO"):
+			return _run(
+				tse.receive_material,
+				self._tree(),
+				[{"item_code": "GOLD-18KT", "receive_qty": recv, "loss_qty": loss}],
+				owed=owed,
+				ownership=self.OWN if ownership is None else ownership,
+			)
+
+	@staticmethod
+	def _by_batch(se):
+		"""``{batch_no: consumed qty}`` for a leg, ignoring loss-pair produce rows."""
+		out = {}
+		for row in se.items:
+			if not getattr(row, "s_warehouse", None):
+				continue  # produce row of the loss pair
+			out[row.batch_no] = out.get(row.batch_no, 0) + row.qty
+		return out
+
+	def test_the_counterexample_customer_covers_need_but_loss_takes_regular(self):
+		"""Pool [CG 10, RS 10], recv 2, loss 3.
+
+		The old single-pass allocator stopped at need = 5 and took it all from the
+		customer batch, so the loss leg scrapped customer gold while the Regular
+		batch was never touched.
+		"""
+		se_recv, se_loss = self._receive(
+			2.0, 3.0, owed=[("B-CUST", 10.0), ("B-REG", 10.0)]
+		)
+		self.assertEqual(self._by_batch(se_recv), {"B-CUST": 2.0})
+		self.assertEqual(self._by_batch(se_loss), {"B-REG": 3.0})
+
+	def test_pure_write_off_prefers_regular(self):
+		"""``Tree Number.submit_tree`` settles leftovers with recv = 0."""
+		(se_loss,) = self._receive(0.0, 4.0, owed=[("B-CUST", 10.0), ("B-REG", 10.0)])
+		self.assertEqual(self._by_batch(se_loss), {"B-REG": 4.0})
+
+	def test_pure_receive_prefers_customer(self):
+		(se_recv,) = self._receive(6.0, 0.0, owed=[("B-CUST", 10.0), ("B-REG", 10.0)])
+		self.assertEqual(self._by_batch(se_recv), {"B-CUST": 6.0})
+
+	def test_loss_spills_to_customer_only_once_regular_is_exhausted(self):
+		se_recv, se_loss = self._receive(
+			1.0, 5.0, owed=[("B-CUST", 10.0), ("B-REG", 2.0)]
+		)
+		self.assertEqual(self._by_batch(se_recv), {"B-CUST": 1.0})
+		self.assertEqual(self._by_batch(se_loss), {"B-REG": 2.0, "B-CUST": 3.0})
+
+	def test_legs_never_double_book_the_same_batch_qty(self):
+		se_recv, se_loss = self._receive(
+			7.0, 4.0, owed=[("B-CUST", 8.0), ("B-REG", 5.0)]
+		)
+		taken = {}
+		for se in (se_recv, se_loss):
+			for batch, qty in self._by_batch(se).items():
+				taken[batch] = taken.get(batch, 0) + qty
+		self.assertLessEqual(taken["B-CUST"], 8.0)
+		self.assertLessEqual(taken.get("B-REG", 0), 5.0)
+		self.assertAlmostEqual(sum(taken.values()), 11.0, places=3)
+
+	def test_shortfall_still_throws_before_anything_is_submitted(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._receive(6.0, 4.0, owed=[("B-CUST", 3.0)])
+
+	def test_single_owner_pool_is_unchanged(self):
+		"""A tree with no customer metal allocates exactly as it always did."""
+		se_recv, se_loss = self._receive(
+			4.0,
+			2.0,
+			owed=[("B-1", 5.0), ("B-2", 5.0)],
+			ownership={
+				"B-1": ("Regular Stock", None),
+				"B-2": ("Regular Stock", None),
+			},
+		)
+		self.assertEqual(self._by_batch(se_recv), {"B-1": 4.0})
+		self.assertEqual(self._by_batch(se_loss), {"B-1": 1.0, "B-2": 1.0})

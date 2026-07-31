@@ -323,19 +323,23 @@ class TestSampleFifoExclusion(IntegrationTestCase):
 			frappe._dict(batch_no="B-REG", qty=5),
 		]
 
-		def _get_value(doctype, name, field, *a, **k):
-			if doctype == "Batch" and field == "custom_inventory_type":
-				return "Customer Goods"
-			if doctype == "Batch" and field == "custom_customer":
-				return "CUST-1"
+		def _get_value(doctype, *args, **kwargs):
+			name = kwargs.get("name") or (args[0] if len(args) > 0 else None)
+			fieldname = kwargs.get("fieldname") or (args[1] if len(args) > 1 else None)
+			
+			if doctype == "Batch":
+				if fieldname == "custom_inventory_type":
+					return "Customer Goods"
+				if fieldname == "custom_customer":
+					return "CUST-1"
 			return None
 
 		with patch.object(
 			se_utils, "get_auto_batch_nos", return_value=batch_data
 		), patch.object(
 			se_utils, "is_customer_sample_batch", side_effect=lambda b: b == "B-SAMPLE"
-		), patch.object(
-			se_utils.frappe.db, "get_value", MagicMock(side_effect=_get_value)
+		), patch(
+			"frappe.db.get_value", side_effect=_get_value
 		):
 			rows = se_utils.get_fifo_batches(se, row)
 		return [r.get("batch_no") for r in rows]

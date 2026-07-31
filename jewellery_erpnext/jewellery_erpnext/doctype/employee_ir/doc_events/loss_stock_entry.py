@@ -4,8 +4,8 @@ On Receive submit: for each row in employee_loss_details and
 manually_book_loss_details with proportionally_loss > 0, creates a
 "Process Loss" (Repack purpose) Stock Entry that moves the loss quantity
 from the SRE source warehouse to either:
-  - Scrap warehouse by department  (is_main_slip_required = 0)
-  - Employee / Subcontractor Raw Material warehouse  (is_main_slip_required = 1)
+  - Scrap warehouse by department  (is_raw_material = 0)
+  - Employee / Subcontractor Raw Material warehouse  (is_raw_material = 1)
 
 Before the SE is submitted, each matching Stock Reservation Entry that still holds a
 reservation is cancelled and recreated with reduced reserved_qty, so the loss quantity
@@ -501,6 +501,57 @@ def _query_batch_and_qty_sres(mwo, item_code, batch_no):
 	return rows
 
 
+def get_batch_sre_headroom(mwo, batch_nos):
+	"""``{(item_code, batch_no): largest single remaining SRE}`` for ``mwo``.
+
+	The most loss ``_validate_sre_qty`` will let a single row book against a batch.
+	That guard deliberately does NOT aggregate across the batch's SREs -- it throws
+	when the row's qty exceeds the largest *one* of them -- so this is the real
+	per-row ceiling, and the loss waterfall needs it up front.
+
+	Why it matters: the old flat split spread loss thinly over every batch, so a
+	row's share was almost always well under its reservation. The waterfall
+	concentrates the whole loss on the Regular Stock tier, which can push one row
+	past a reservation that is legitimately split across several operation-tagged
+	SREs (see ``_find_sre``). Capping the tier's capacity here makes the excess
+	spill to the next tier instead of failing an Employee IR that submits today.
+
+	One round-trip for the whole document. A batch with no batch-level SRE (the
+	Qty-based fallback) is absent from the result, and the caller then applies no
+	cap -- preserving today's behaviour rather than guessing.
+	"""
+	batch_nos = sorted({b for b in (batch_nos or []) if b})
+	if not mwo or not batch_nos:
+		return {}
+
+	rows = frappe.db.sql(
+		"""
+        SELECT
+            sre.item_code AS item_code,
+            sbe.batch_no AS batch_no,
+            MAX(
+                sre.reserved_qty
+                - IFNULL(sre.delivered_qty, 0)
+                - IFNULL(sre.transferred_qty, 0)
+                - IFNULL(sre.consumed_qty, 0)
+            ) AS headroom
+        FROM `tabStock Reservation Entry` sre
+        INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
+        WHERE sre.manufacturing_work_order = %(mwo)s
+          AND sre.docstatus = 1
+          AND sbe.batch_no IN %(batches)s
+        GROUP BY sre.item_code, sbe.batch_no
+        """,
+		{"mwo": mwo, "batches": batch_nos},
+		as_dict=True,
+	)
+	return {
+		(r["item_code"], r["batch_no"]): flt(r["headroom"], 3)
+		for r in rows
+		if flt(r["headroom"]) > TOLERANCE
+	}
+
+
 def _find_sre(eir, row, mwo, table_name, qty):
 	"""Return ``(sre_doc, candidates)`` for this loss row.
 
@@ -686,8 +737,8 @@ def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
 
 
 def _resolve_t_warehouse(eir, table_name):
-	"""Resolve target warehouse based on is_main_slip_required."""
-	if cint(eir.is_main_slip_required):
+	"""Resolve target warehouse based on is_raw_material."""
+	if cint(eir.is_raw_material):
 		return _resolve_raw_material_warehouse(eir)
 	return _resolve_scrap_warehouse(eir)
 
@@ -698,7 +749,7 @@ def _resolve_raw_material_warehouse(eir):
 			frappe.throw(
 				_(
 					"Employee IR {0}: subcontractor is required when "
-					"is_main_slip_required is enabled"
+					"is_raw_material is enabled"
 				).format(eir.name)
 			)
 		wh = frappe.db.get_value(
@@ -722,7 +773,7 @@ def _resolve_raw_material_warehouse(eir):
 			frappe.throw(
 				_(
 					"Employee IR {0}: employee is required when "
-					"is_main_slip_required is enabled"
+					"is_raw_material is enabled"
 				).format(eir.name)
 			)
 		wh = frappe.db.get_value(
@@ -776,7 +827,7 @@ def _resolve_scrap_warehouse(eir):
 
 def _resolve_loss_item(eir, row, table_name):
 	"""Return the item_code to use on the produce row of the Process Loss SE."""
-	if cint(eir.is_main_slip_required):
+	if cint(eir.is_raw_material):
 		# Same item — loss moves to employee/subcontractor raw-material warehouse.
 		return row.item_code
 

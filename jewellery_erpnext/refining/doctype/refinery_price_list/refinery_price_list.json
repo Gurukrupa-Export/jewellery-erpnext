@@ -10,11 +10,9 @@
  "field_order": [
   "item",
   "column_break_keys",
-  "supplier",
-  "company",
-  "column_break_extra",
-  "currency",
-  "effective_from",
+  "refining_type",
+  "section_break_items",
+  "covered_items",
   "section_break_slabs",
   "slabs"
  ],
@@ -33,32 +31,23 @@
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "supplier",
-   "fieldtype": "Link",
+   "fieldname": "refining_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Supplier",
-   "options": "Supplier"
+   "label": "Refining Type",
+   "options": "\nScrap Refining\nWork Order Refining\nSerial Number Refining\nUnused/Loose Material Refining"
   },
   {
-   "fieldname": "company",
-   "fieldtype": "Link",
-   "label": "Company",
-   "options": "Company"
+   "fieldname": "section_break_items",
+   "fieldtype": "Section Break",
+   "label": "Covered Items"
   },
   {
-   "fieldname": "column_break_extra",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "currency",
-   "fieldtype": "Link",
-   "label": "Currency",
-   "options": "Currency"
-  },
-  {
-   "fieldname": "effective_from",
-   "fieldtype": "Date",
-   "label": "Effective From"
+   "fieldname": "covered_items",
+   "fieldtype": "Table",
+   "label": "Covered Items",
+   "options": "Refinery Price List Item"
   },
   {
    "fieldname": "section_break_slabs",
@@ -75,7 +64,7 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-07-16 16:26:35.729254",
+ "modified": "2026-07-30 17:08:58.091174",
  "modified_by": "manikandan_ext@gkexport.com",
  "module": "Refining",
  "name": "Refinery Price List",

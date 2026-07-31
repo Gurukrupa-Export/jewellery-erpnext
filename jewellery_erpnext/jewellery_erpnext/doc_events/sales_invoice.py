@@ -118,7 +118,7 @@ def validate(self, method):
 		self.custom_diamond_weight = sum(flt(r.custom_diamond_weight) for r in self.items)
 		self.custom_gemstone_weight = sum(flt(r.custom_gemstone_weight) for r in self.items)
 		self.custom_gross_weight = sum(flt(r.custom_gross_weight) for r in self.items)
-		payment_terms_data = update_si_data(self )
+		payment_terms_data = update_si_data(self)
 		update_payment_terms(self, payment_terms_data)
 		return
 	prec = frappe.db.get_value(
@@ -227,7 +227,13 @@ def on_submit(self,method):
 		new_si.set("items", [])
 		new_si.set("invoice_item", [])
 		new_si.set("taxes", [])
-		
+		dn_detail = None
+		if row.delivery_note:
+			dn_detail = frappe.db.get_value(
+				"Delivery Note Item",
+				{"parent": row.delivery_note, "item_code": "Subcontracting Charges", "against_sales_order": row.sales_order},
+				"name",
+			)
 		new_si.append("items", {
 					"item_code": "Subcontracting Charges",
 					"item_name": "Subcontracting Charges",
@@ -238,6 +244,8 @@ def on_submit(self,method):
 					"rate": total_making_charge,
 					"amount": total_making_charge,
 					"sales_order":row.sales_order,
+					"delivery_note": row.delivery_note,
+					"dn_detail": dn_detail,
 					# "gst_hsn_code": gst_hsn_code,
 					# "item_tax_template": sc_template,
 					"custom_is_subcontracting_charge_row": 1,
@@ -254,8 +262,8 @@ def on_submit(self,method):
 					"item_name":custom_item,
 					"conversion_factor":1,
 					"item_code":custom_item,
-					"hsn_code": hsn_code,
-					"income_account": row.income_account,
+					# "hsn_code": hsn_code,
+					# "income_account": row.income_account,
 					"uom":uom,})
 		new_si.total = flt(sum(flt(d.amount) for d in new_si.items))
 
@@ -322,8 +330,8 @@ def on_submit(self,method):
 					"item_name":custom_item,
 					"conversion_factor":1,
 					"item_code":custom_item,
-					"hsn_code": hsn_code,
-					"income_account": row.income_account,
+					# "hsn_code": hsn_code,
+					# "income_account": row.income_account,
 					"uom":uom,})
 		new_si.total = flt(sum(flt(d.amount) for d in new_si.items))
 
@@ -1247,7 +1255,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gol
 				invoice_data[f"{einvoice_item}"] = {
 					"amount": amount,
 					"qty": i.quantity,
-					"rate": i.rate,
+					"rate": rate,
 					"hsn_code": hsn_code,
 					"uom": uom,
 					"income_account": row.income_account,

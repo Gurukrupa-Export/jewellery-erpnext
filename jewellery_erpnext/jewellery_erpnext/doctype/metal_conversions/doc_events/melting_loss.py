@@ -42,10 +42,10 @@ def _loss_precision():
 
 
 def validate_melting_loss(doc):
-	"""V1-V6 + V12 and defensive clearing of conversion fields.
+	"""V1-V6 and defensive clearing of conversion fields.
 
 	Runs FIRST in Metal Conversions.validate so the clearing takes effect before
-	``update_alloy_betch`` / ``update_source_betch`` read the alloy / customer
+	``update_alloy_betch`` / ``update_source_betch`` read the alloy
 	fields. No-op unless ``is_melting_loss`` is checked.
 	"""
 	if not cint(doc.get("is_melting_loss")):
@@ -96,13 +96,10 @@ def validate_melting_loss(doc):
 			)
 		)
 
-	# V12 — customer mandatory when customer metal; otherwise clear a stale customer
-	# (mandatory_depends_on is client-only; enforce server-side).
-	if cint(doc.get("is_customer_metal")):
-		if not doc.customer:
-			frappe.throw(_("Customer is mandatory when Is Customer Metal is checked."))
-	else:
-		doc.customer = None
+	# A loss document has no owning customer to validate: Metal Conversions carries no
+	# customer field at all any more (ownership lives on the Batch), and this flow books
+	# ONE scrap row force-typed "Regular Stock" -- which is why update_source_betch
+	# restricts the loss allocation to Regular Stock batches in the first place.
 
 	_clear_conversion_fields(doc)
 
@@ -230,7 +227,6 @@ def make_melting_loss_stock_entry(doc):
 				"s_warehouse": source_wh,
 				"batch_no": r.batch,
 				"inventory_type": inventory_type,
-				"customer": doc.customer,
 				"department": doc.department,
 				"employee": doc.employee,
 				"manufacturer": doc.manufacturer,
@@ -241,7 +237,7 @@ def make_melting_loss_stock_entry(doc):
 	# ONE produce row into the Scrap warehouse. No batch_no: the loss variant has
 	# create_new_batch = 1, so the Serial and Batch Bundle mints a NEW batch on
 	# submit. Scrap is booked as Regular Stock by policy -- the melted metal is written
-	# off to the company; the customer is recorded on the row for traceability only.
+	# off to the company. Ownership of the consumed metal stays on its source Batch.
 	# basic_rate is left unset here: CustomStockEntry.set_basic_rate assigns it from the
 	# consumed rows' value (customization/utils/loss_valuation), so the scrap carries the
 	# metal's valuation instead of entering stock at rate 0.
@@ -254,7 +250,6 @@ def make_melting_loss_stock_entry(doc):
 			"is_finished_item": 1,
 			"set_basic_rate_manually": 1,
 			"inventory_type": "Regular Stock",
-			"customer": doc.customer,
 			"department": doc.department,
 			"employee": doc.employee,
 			"manufacturer": doc.manufacturer,

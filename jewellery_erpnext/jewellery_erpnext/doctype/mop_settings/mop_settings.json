@@ -28,12 +28,24 @@
   "casting_tree_section",
   "casting_tree_reissue_help",
   "enforce_full_casting_tree_reissue",
+  "eod_chunk_section",
+  "eod_chunk_help",
+  "eod_chunk_max_mwos",
+  "eod_chunk_max_rows",
+  "eod_soft_deadline_minutes",
+  "eod_catchup_section",
+  "eod_catchup_help",
+  "enable_eod_backlog_catchup",
+  "eod_catchup_max_mwos",
   "eod_allocation_section",
   "eod_allocation_help",
   "enable_eod_bucket_allocation",
   "eod_plan_heal_section",
   "eod_plan_heal_help",
-  "enable_eod_plan_sre_heal"
+  "enable_eod_plan_sre_heal",
+  "msl_pending_gate_section",
+  "msl_pending_gate_help",
+  "msl_pending_gate_enforce_from"
  ],
  "fields": [
   {
@@ -178,21 +190,80 @@
    "label": "Enforce Full Casting Tree Re-Issue"
   },
   {
+   "fieldname": "eod_chunk_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Stock Entry Chunking"
+  },
+  {
+   "fieldname": "eod_chunk_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>Why the EOD transfer is split</b><br>A single very large Material Transfer cannot be saved <i>and</i> submitted in a reasonable time: ERPNext creates one Stock Ledger Entry document per row and revalues inline as it goes, and each Stock Reservation Entry re-aggregates its whole item/warehouse into Bin. One real run produced a <b>26,489-row</b> draft worth ₹10.66 cr that never submitted before the lock expired.<br><br>The bucket is therefore split into chunks bounded by <b>both</b> caps below, whichever is reached first. Each chunk is its own Stock Entry and is committed on success, so earlier chunks survive a later failure — and a failed chunk is halved and retried down to a single Work Order, so one bad Work Order strands only itself.<br><br><b>A Manufacturing Work Order is never split across chunks.</b> A single Work Order larger than the row cap forms its own oversized chunk.<br><br>Set both caps to <b>0</b> to restore the old one-Stock-Entry-per-bucket behaviour. Reference points: ERPNext itself moves Stock Reconciliation to the background above 100 rows, and the largest EOD Stock Entry this system has ever submitted successfully had 152 rows.</div>"
+  },
+  {
+   "default": "50",
+   "description": "Maximum Manufacturing Work Orders per EOD Stock Entry. 0 = no limit on this axis.",
+   "fieldname": "eod_chunk_max_mwos",
+   "fieldtype": "Int",
+   "label": "Max Work Orders per Stock Entry",
+   "non_negative": 1
+  },
+  {
+   "default": "150",
+   "description": "Maximum item rows per EOD Stock Entry. 0 = no limit on this axis. A single Work Order is never split, so a Work Order with more rows than this still forms one chunk.",
+   "fieldname": "eod_chunk_max_rows",
+   "fieldtype": "Int",
+   "label": "Max Rows per Stock Entry",
+   "non_negative": 1
+  },
+  {
+   "default": "200",
+   "description": "Stop starting new work this many minutes into a run, then finish cleanly and release the lock. Must stay inside the 4-hour lock window so the graceful stop beats the hard job timeout. 0 disables the deadline (not recommended — a run that overruns is then killed hard and leaves the lock to the hourly reaper).",
+   "fieldname": "eod_soft_deadline_minutes",
+   "fieldtype": "Int",
+   "label": "Soft Deadline (minutes)",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "eod_catchup_section",
+   "fieldtype": "Section Break",
+   "label": "EOD Backlog Catch-up"
+  },
+  {
+   "fieldname": "eod_catchup_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>Why a separate catch-up pass exists</b><br>The scheduled run scans <b>today only</b> and fires once a day. A MOP Log created <i>after</i> tonight's run therefore sits in a window no later scheduled run will ever scan again — it only ever showed up in the read-only <i>old unsynced MOP Log count</i>. That is how a backlog of roughly <b>647,000 rows across ~12,939 Work Orders</b> built up, and why clearing it needed a hand-built manual run over a huge date range.<br><br>The today-only window is unchanged. After the main pass finishes cleanly, this drains the <b>oldest</b> pre-window Work Orders, up to the cap below, through exactly the same plan → allocate → chunk → commit pipeline.<br><br>It is skipped when the main pass reported blocking failures or the soft deadline has passed — a run already in trouble does not take on more work.<br><br>Watch <b>Old Unsynced MOP Log Count</b> run over run: it is the honest progress signal. If it is not falling, raise the cap or give the drain its own off-hours window.</div>"
+  },
+  {
+   "default": "1",
+   "description": "After the main pass, drain the oldest pre-window unsynced MOP Logs (bounded by the cap below).",
+   "fieldname": "enable_eod_backlog_catchup",
+   "fieldtype": "Check",
+   "label": "Enable Backlog Catch-up"
+  },
+  {
+   "default": "500",
+   "description": "Maximum Manufacturing Work Orders drained from the backlog per run, oldest first. 0 disables the catch-up pass.",
+   "fieldname": "eod_catchup_max_mwos",
+   "fieldtype": "Int",
+   "label": "Max Backlog Work Orders per Run",
+   "non_negative": 1
+  },
+  {
    "fieldname": "eod_allocation_section",
    "fieldtype": "Section Break",
-   "label": "EOD Bucket Stock Allocation"
+   "label": "EOD Stock Allocation"
   },
   {
    "fieldname": "eod_allocation_help",
    "fieldtype": "HTML",
-   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How Bucket Stock Allocation works</b><br>The EOD sync puts every resolvable Manufacturing Work Order of a company/manufacturer into <b>one</b> Material Transfer. Stock is validated per MWO, but the Stock Entry consumes the <b>sum</b> across MWOs, so two MWOs that each fit can jointly overdraw a batch and fail the whole transfer.<br><br>When enabled, MWOs are admitted against a running tally of physical batch stock and warehouse headroom, oldest unsynced MOP Log first. An MWO that does not fit is <b>deferred</b> to the next run (reported as <i>Deferred - Bucket Stock Contention</i>) instead of failing the bucket. An MWO that cannot fit even on its own is reported as <i>Permanently Short</i> — that is a data defect needing reconciliation.<br><br>Leave OFF to keep the previous all-or-nothing behaviour.</div>"
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>How EOD Stock Allocation works</b><br>Stock is validated per Manufacturing Work Order, but each EOD Stock Entry consumes the <b>sum</b> across the MWOs it carries — so two MWOs that each fit can jointly overdraw a batch and fail the transfer.<br><br>When enabled, MWOs are admitted against a <b>run-wide</b> running tally of physical batch stock and warehouse headroom, oldest unsynced MOP Log first. An MWO that does not fit is <b>deferred</b> to the next run (reported as <i>Deferred - Bucket Stock Contention</i>). An MWO that cannot fit even on its own is reported as <i>Permanently Short</i> — a data defect needing reconciliation.<br><br><b>Keep this ON.</b> With chunked Stock Entries an over-subscribed chunk strands only itself, so contention fails quietly instead of loudly; this tally is what prevents it. Turn OFF only to reproduce the old all-or-nothing behaviour.</div>"
   },
   {
-   "default": "0",
-   "description": "Admit MWOs into the consolidated EOD transfer against a running stock tally; defer the ones that do not fit instead of failing the whole bucket.",
+   "default": "1",
+   "description": "Admit MWOs into the EOD transfer against a run-wide running stock tally; defer the ones that do not fit instead of failing the chunk. Load-bearing once chunking is on — turn OFF only to reproduce the old all-or-nothing behaviour.",
    "fieldname": "enable_eod_bucket_allocation",
    "fieldtype": "Check",
-   "label": "Enable EOD Bucket Stock Allocation"
+   "label": "Enable EOD Stock Allocation"
   },
   {
    "fieldname": "eod_plan_heal_section",
@@ -210,6 +281,23 @@
    "fieldname": "enable_eod_plan_sre_heal",
    "fieldtype": "Check",
    "label": "Enable EOD Plan-Phase Reservation Heal"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "msl_pending_gate_section",
+   "fieldtype": "Section Break",
+   "label": "Employee (MSL) Warehouse Month-Start Close"
+  },
+  {
+   "fieldname": "msl_pending_gate_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>Month-start pending close</b><br>Blocks issuing material into an employee (MSL) Raw Material warehouse while that warehouse still owes metal from a previous month. The operator clears it by receiving the metal back or booking its Loss — a settlement made in the current month clears the block immediately.<br><br><b>The date below is the whole switch:</b><br>&bull; <b>Blank</b> — off. Nothing is checked.<br>&bull; <b>A future date</b> — warn only. Operators see their backlog but nothing is blocked. Use this to size the impact before enforcing.<br>&bull; <b>Today or a past date</b> — enforced. Issues are blocked.<br><br>System Manager and Stock Manager always bypass the check, exactly as they may re-enable a disabled (closed) MSL warehouse. Every MSL warehouse on a live site will have some prior-month pending on day one, so set a future date first and let it self-activate.</div>"
+  },
+  {
+   "description": "Blank = off. A future date warns only. Today or earlier blocks the issue. Applies to the Warehouse and Tree Number \"Issue Material\" buttons.",
+   "fieldname": "msl_pending_gate_enforce_from",
+   "fieldtype": "Date",
+   "label": "Enforce Month-Start Pending Close From"
   }
  ],
  "grid_page_length": 50,

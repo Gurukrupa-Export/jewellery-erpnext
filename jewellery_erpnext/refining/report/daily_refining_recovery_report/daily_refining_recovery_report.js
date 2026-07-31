@@ -10,7 +10,8 @@ frappe.query_reports["Daily Refining Recovery Report"] = {
 			fieldname: "refining_type",
 			label: __("Refining Type"),
 			fieldtype: "Select",
-			options: "\nDust Refining\nWork Order Refining\nSerial Number Refining\nScrap Refining",
+			options:
+				"\nScrap Refining\nWork Order Refining\nSerial Number Refining\nUnused/Loose Material Refining",
 		},
 		{
 			fieldname: "department",
