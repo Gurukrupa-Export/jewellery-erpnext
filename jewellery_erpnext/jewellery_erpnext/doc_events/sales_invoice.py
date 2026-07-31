@@ -1255,7 +1255,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gol
 				invoice_data[f"{einvoice_item}"] = {
 					"amount": amount,
 					"qty": i.quantity,
-					"rate": i.rate,
+					"rate": rate,
 					"hsn_code": hsn_code,
 					"uom": uom,
 					"income_account": row.income_account,

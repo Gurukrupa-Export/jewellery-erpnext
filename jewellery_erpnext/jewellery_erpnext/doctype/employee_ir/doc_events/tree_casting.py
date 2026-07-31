@@ -323,7 +323,7 @@ def validate_casting_receive(eir):
 	Two independent things must hold for a gain (``received_gross_wt > gross_wt``):
 
 	  1. It must be physically sourceable. ``inject_extra_metal_for_eir_receive`` mints the metal
-	     out of the employee MSL warehouse and is gated on ``is_main_slip_required``; without that
+	     out of the employee MSL warehouse and is gated on ``is_raw_material``; without that
 	     gate nothing moves, so an unbacked gain is blocked (unchanged, long-standing rule).
 	  2. It must be backed by tree stock. The gain is drawn from the very pool the tree "Issue
 	     Material" button funds, so the tree must have that much outstanding. A draw with no issued
@@ -357,7 +357,7 @@ def _validate_unbacked_gain(eir):
 	Kept separate from the tree-balance guard because it is a different failure: here no metal
 	moves at all, so the receive is wrong regardless of what the tree holds.
 	"""
-	if cint(getattr(eir, "is_main_slip_required", 0)):
+	if cint(getattr(eir, "is_raw_material", 0)):
 		return
 
 	eps = _pending_eps()
@@ -623,7 +623,7 @@ def tree_draw_by_tree(eir):
 	which is exactly what ``inject_extra_metal_for_eir_receive`` mints out of the employee MSL
 	(Raw Material) warehouse — the same pool the tree "Issue Material" button funds. Metal already
 	on the operation (``gross_wt``) was never in the tree, and booked metal loss never leaves the
-	MSL pool (with ``is_main_slip_required`` the Process Loss SE returns the metal item straight
+	MSL pool (with ``is_raw_material`` the Process Loss SE returns the metal item straight
 	back into that warehouse), so neither is charged to the tree.
 
 	Clamped PER ROW, never on the aggregate: the injection is minted inside the per-row loop, so
@@ -633,7 +633,7 @@ def tree_draw_by_tree(eir):
 	Returns magnitudes only — the cancel path negates the *result*, never the inputs (negating
 	first would push every gain through ``max(negative, 0)`` and silently reverse nothing).
 	"""
-	if not cint(getattr(eir, "is_main_slip_required", 0)):
+	if not cint(getattr(eir, "is_raw_material", 0)):
 		# No injection runs, so no metal leaves the MSL pool.
 		return {}
 	if (getattr(eir, "subcontracting", "No") or "No") == "Yes":

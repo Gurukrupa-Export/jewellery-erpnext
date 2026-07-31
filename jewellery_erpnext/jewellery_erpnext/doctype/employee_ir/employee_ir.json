@@ -28,7 +28,7 @@
   "worker_performance",
   "column_break_mooif",
   "show_manufacturing_operation",
-  "is_main_slip_required",
+  "is_raw_material",
   "is_qc_reqd",
   "section_break_unylm",
   "next_operation",
@@ -233,10 +233,10 @@
   },
   {
    "default": "0",
-   "fetch_from": "operation.is_main_slip_required",
-   "fieldname": "is_main_slip_required",
+   "fetch_from": "operation.is_raw_material",
+   "fieldname": "is_raw_material",
    "fieldtype": "Check",
-   "label": "Is Main Slip Required"
+   "label": "Is Raw Material"
   },
   {
    "collapsible": 1,
