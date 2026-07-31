@@ -65,3 +65,4 @@ jewellery_erpnext.patches.add_conversion_lane_tag_field
 jewellery_erpnext.patches.add_supplier_allowed_item_group
 jewellery_erpnext.patches.add_missing_ui_custom_fields
 jewellery_erpnext.patches.add_stock_entry_eir_op_index
+jewellery_erpnext.patches.customize_fields
