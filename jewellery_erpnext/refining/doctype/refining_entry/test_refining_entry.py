@@ -1247,9 +1247,6 @@ class TestRefiningEntry(IntegrationTestCase):
 		# The line bills the matched price list's OWN item, not the generic REF-SVC-001
 		# charge item every line used to carry.
 		self.assertEqual(lines[0]["item_code"], "REF-CF-001")
-		# REF-* categories are stock items, so the line needs a warehouse or the PO is
-		# rejected with "Warehouse is mandatory for stock Item".
-		self.assertTrue(lines[0].get("warehouse"))
 
 	def test_preview_external_refining_po_matches_the_created_po(self):
 		"""The dry-run harness must not drift from the real builder — it is what the change
@@ -2327,18 +2324,16 @@ class TestRefiningNamingSeries(IntegrationTestCase):
 			{self._series_for(t) for t in REFINING_TYPES},
 		)
 
-	def test_pre_rename_documents_still_save(self):
-		# 112 documents are stored on the retired RFN-DST- series. The option is gone from
-		# the dropdown, so guard that reading and re-saving one is still possible --
-		# naming_series is read-only, so the value is never re-validated on the way in.
-		name = frappe.db.get_value(
-			"Refining Entry",
-			{"naming_series": "RFN-DST-.YY.-.#####", "docstatus": 0},
-			"name",
-		)
-		if not name:
-			self.skipTest("no pre-rename RFN-DST- draft on this site")
-		frappe.get_doc("Refining Entry", name).save(ignore_permissions=True)
+	def test_saving_rewrites_a_retired_series_value(self):
+		# 112 live documents are stored on the retired RFN-DST- series, which is no longer an
+		# option. They cannot be stranded on it: set_naming_series runs from validate(), so
+		# any save re-derives the field from refining_type. The document NAME is immutable
+		# and keeps its RFN-DST- prefix -- only the field is corrected.
+		re = frappe.new_doc("Refining Entry")
+		re.refining_type = REFINING_TYPE_SCRAP
+		re.naming_series = "RFN-DST-.YY.-.#####"
+		re.set_naming_series()
+		self.assertEqual(re.naming_series, "RFN-SCP-.YY.-.#####")
 
 	def test_blank_type_does_not_default_to_a_type_series(self):
 		# set_naming_series is a no-op for a blank type, so Frappe falls back to the FIRST

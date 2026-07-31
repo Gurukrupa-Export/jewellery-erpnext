@@ -68,3 +68,4 @@ jewellery_erpnext.patches.add_missing_ui_custom_fields
 jewellery_erpnext.patches.add_stock_entry_eir_op_index
 jewellery_erpnext.patches.customize_fields
 jewellery_erpnext.patches.fix_refining_naming_series_options
+jewellery_erpnext.patches.backfill_refining_billable_item_uoms
