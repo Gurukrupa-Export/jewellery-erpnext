@@ -2317,15 +2317,28 @@ class TestRefiningNamingSeries(IntegrationTestCase):
 		for refining_type in REFINING_TYPES:
 			self.assertIn(self._series_for(refining_type), allowed)
 
-	def test_legacy_dst_option_is_retained(self):
-		# 111 pre-rename documents are named RFN-DST-*; dropping the option would strand
-		# them. Nothing mints it any more.
+	def test_options_are_exactly_the_minted_set(self):
+		# The option list and set_naming_series must not drift apart: an option nothing
+		# mints is dead, and a minted series that is not an option fails Select validation
+		# (which is how RFN-ULM- first broke, shadowed by a stale Property Setter).
 		options = frappe.get_meta("Refining Entry").get_field("naming_series").options
-		self.assertIn("RFN-DST-.YY.-.#####", options.split("\n"))
-		self.assertNotIn(
-			"RFN-DST-.YY.-.#####",
+		self.assertEqual(
+			set(options.split("\n")),
 			{self._series_for(t) for t in REFINING_TYPES},
 		)
+
+	def test_pre_rename_documents_still_save(self):
+		# 112 documents are stored on the retired RFN-DST- series. The option is gone from
+		# the dropdown, so guard that reading and re-saving one is still possible --
+		# naming_series is read-only, so the value is never re-validated on the way in.
+		name = frappe.db.get_value(
+			"Refining Entry",
+			{"naming_series": "RFN-DST-.YY.-.#####", "docstatus": 0},
+			"name",
+		)
+		if not name:
+			self.skipTest("no pre-rename RFN-DST- draft on this site")
+		frappe.get_doc("Refining Entry", name).save(ignore_permissions=True)
 
 	def test_blank_type_does_not_default_to_a_type_series(self):
 		# set_naming_series is a no-op for a blank type, so Frappe falls back to the FIRST
@@ -2441,12 +2454,16 @@ class TestExternalPoBillableItem(IntegrationTestCase):
 		self.assertTrue(lines[0].get("warehouse"))
 
 	def test_uncovered_material_still_falls_back_to_the_pricing_item(self):
-		# No price list covers it, so the group keeps the entry's own pricing category
-		# rather than silently reverting to the generic charge item.
+		# Nothing covers ML-G-18KT-75.4-P directly, so the group falls back to the entry's
+		# own pricing category (REF-MD-001) -- and bills under THAT, not the generic charge
+		# item. The fallback category has its own price list, so the line is priced, not
+		# unpriced; the uncovered-and-unpriceable case is
+		# test_external_refining_po_unpriced_category_line.
 		lines, unpriced = self._entry(item_code="ML-G-18KT-75.4-P")._external_po_lines()
 		self.assertEqual(len(lines), 1)
 		self.assertEqual(lines[0]["item_code"], "REF-MD-001")
-		self.assertEqual(len(unpriced), 1)
+		self.assertEqual(unpriced, [])
+		self.assertTrue(lines[0]["custom_refining_price_list"])
 
 	def test_billable_items_all_have_the_uoms_a_flat_charge_needs(self):
 		# A Flat Charge bills 1 Nos, but the categories are seeded with only Gram/Litre.

@@ -389,19 +389,20 @@ class RefiningEntry(Document):
 
 		# The category items (REF-RMS-001 and friends) are stock items, unlike the generic
 		# REF-SVC-001 charge item, and ERPNext rejects a stock line with no warehouse.
+		#
+		# Resolved best-effort and never thrown from: this method feeds _external_po_lines,
+		# which is pure and doubles as the dry-run harness behind
+		# preview_external_refining_po. A throw here would break the preview and the
+		# "every external entry ALWAYS gets a draft PO" invariant. validate() populates
+		# supplier_warehouse on every saved entry (_get_supplier_warehouse throws first if
+		# the supplier has none), so an unresolved warehouse only happens on an unsaved
+		# doc -- and ERPNext raises its own "Warehouse is mandatory" at insert regardless.
 		if frappe.db.get_value("Item", line_item, "is_stock_item"):
 			warehouse = self.supplier_warehouse or _default_receiving_warehouse(
 				self.company
 			)
-			if not warehouse:
-				frappe.throw(
-					_(
-						"{0} is a stock item, so its Purchase Order line needs a warehouse. "
-						"Set Supplier Warehouse on this entry, or a Default Warehouse for "
-						"Purchase on the company."
-					).format(frappe.bold(line_item))
-				)
-			line["warehouse"] = warehouse
+			if warehouse:
+				line["warehouse"] = warehouse
 
 		return line
 
