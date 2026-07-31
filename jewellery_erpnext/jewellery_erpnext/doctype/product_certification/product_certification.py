@@ -63,6 +63,9 @@ def _department_wo_warehouse(department, throw=True):
 	if not department:
 		return None
 
+	# order_by so a site that ever grows a second Manufacturing warehouse for one department
+	# resolves the same one every time, rather than silently rejecting serials depending on
+	# which row the DB happened to return. No department has two today, here or in CI.
 	warehouse = frappe.db.get_value(
 		"Warehouse",
 		{
@@ -72,6 +75,7 @@ def _department_wo_warehouse(department, throw=True):
 			"warehouse_type": "Manufacturing",
 		},
 		"name",
+		order_by="name asc",
 	)
 	if not warehouse and throw:
 		frappe.throw(

@@ -1588,6 +1588,11 @@ class TestSerialWarehouseDepartment(IntegrationTestCase):
 	not hold the piece.
 	"""
 
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
 	def test_serial_in_department_wo_warehouse_ok(self):
 		_check_serial_dept(["SN1"], PC_DEPT, {"SN1": PC_WO})
 
@@ -1703,6 +1708,11 @@ def _run_certification(sre_cols=("manufacturing_work_order",)):
 
 
 class TestProductCertificationSreScope(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
 	def test_sre_list_2_excludes_reservations_tagged_to_another_mwo(self):
 		"""The regression itself: PMO-A's certification must not reach PMO-B's reservation."""
 		filters = _run_certification()
@@ -1733,6 +1743,11 @@ class TestProductCertificationSreScope(IntegrationTestCase):
 
 class TestRestorePatchSelection(IntegrationTestCase):
 	"""The repair patch must only take back reservations outside the certified scope."""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
 
 	def test_skips_sres_whose_mwo_was_legitimately_certified(self):
 		from jewellery_erpnext.patches import restore_over_consumed_pc_reservations as p
@@ -1873,6 +1888,11 @@ class TestGetItemFromTreeNo(IntegrationTestCase):
 	throw "No submitted Main Slip found".
 	"""
 
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
 	def test_current_tree_resolves_from_its_own_attributes(self):
 		out = _resolve_tree(tree=CURRENT_TREE)
 		self.assertEqual(out["item_code"], "M-G-22KT-91.9-Y")
@@ -1953,6 +1973,11 @@ def _check_duplicates(rows):
 class TestDuplicateProductRows(IntegrationTestCase):
 	"""A repeat scan must not append a second row -- it silently doubled the issued weight."""
 
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
+
 	def test_duplicate_serial_throws(self):
 		with self.assertRaises(ValidationError) as cm:
 			_check_duplicates([{"serial_no": "SN1"}, {"serial_no": "SN1"}])
@@ -2019,6 +2044,11 @@ class TestFireAssyWeightRequired(IntegrationTestCase):
 	At 0 the submit used to die inside create_stock_entry with "No item found for Repack",
 	which names neither the row nor the tree.
 	"""
+
+	@classmethod
+	def setUpClass(cls):
+		_skip_generated_test_records()
+		super().setUpClass()
 
 	def test_zero_weight_tree_row_throws_naming_the_tree(self):
 		with self.assertRaises(ValidationError) as cm:
