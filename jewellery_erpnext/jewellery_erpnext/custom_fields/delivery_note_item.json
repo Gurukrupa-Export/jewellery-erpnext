@@ -261,7 +261,7 @@
   {
    "dt": "Delivery Note Item",
    "fieldname": "custom_diamond_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
    "module": "Jewellery Erpnext"
@@ -269,7 +269,7 @@
   {
    "dt": "Delivery Note Item",
    "fieldname": "custom_gemstone_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
    "module": "Jewellery Erpnext"
