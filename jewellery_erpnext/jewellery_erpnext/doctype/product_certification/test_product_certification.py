@@ -1061,7 +1061,12 @@ class TestFireAssyIssueWeight(IntegrationTestCase):
 		self.assertEqual(weights, [2.0, 0.0, 0.0, 5.0, 0.0, 0.0])
 
 	def test_same_slip_rows_are_summed_onto_one_main_row(self):
-		"""Two scan lines for one tree issue their combined weight — no double count."""
+		"""Two lines for one tree issue their combined weight — no double count.
+
+		The grid no longer produces this shape (validate_duplicate_product_rows rejects a
+		second row for the same tree), but the summing still has to hold for documents
+		created before that guard existed.
+		"""
 		doc = self._doc(
 			"Fire Assy Service",
 			[
@@ -1820,24 +1825,36 @@ CURRENT_TREE = _tree(
 LEGACY_TREE = _tree()  # minted by Main Slip.before_insert: company and nothing else
 
 
-def _resolve_tree(tree=None, slips=None, attr_item="M-G-22KT-91.9-Y", ledger_item=None):
+def _ledger(item_code="M-G-22KT-91.9-Y", issue=0.0, receive=0.0, loss=0.0):
+	"""One Tree Material Detail row as frappe.get_all returns it."""
+	return frappe._dict(
+		item_code=item_code, issue_qty=issue, receive_qty=receive, loss_qty=loss
+	)
+
+
+def _resolve_tree(tree=None, slips=None, attr_item="M-G-22KT-91.9-Y", ledger=None):
 	"""Drive get_item_from_tree_no with the DB stubbed out.
 
 	``tree`` is what Tree Number resolves to (None = missing), ``slips`` what the legacy
 	Main Slip fallback finds, ``attr_item`` what get_item_from_attribute returns and
-	``ledger_item`` what the tree's own material_details holds.
+	``ledger`` the tree's own material_details rows (see ``_ledger``).
 	"""
 
 	def _get_value(doctype, filters, fields=None, **kwargs):
 		if doctype == "Tree Number":
 			return tree
-		if doctype == "Tree Material Detail":
-			return ledger_item
 		raise AssertionError(f"unexpected get_value for {doctype}")
+
+	def _get_all(doctype, **kwargs):
+		if doctype == "Tree Material Detail":
+			return ledger or []
+		if doctype == "Main Slip":
+			return slips or []
+		raise AssertionError(f"unexpected get_all for {doctype}")
 
 	with (
 		patch(f"{PC_MOD}.frappe.db.get_value", _get_value),
-		patch(f"{PC_MOD}.frappe.get_all", lambda *a, **k: slips or []),
+		patch(f"{PC_MOD}.frappe.get_all", _get_all),
 		patch(
 			"jewellery_erpnext.utils.get_item_from_attribute",
 			lambda *a, **k: attr_item,
@@ -1865,9 +1882,29 @@ class TestGetItemFromTreeNo(IntegrationTestCase):
 		# No matching Item variant for the attributes: the metal actually issued onto the
 		# tree is a better answer than a blank row.
 		out = _resolve_tree(
-			tree=CURRENT_TREE, attr_item=None, ledger_item="M-G-22KT-91.9-Y"
+			tree=CURRENT_TREE, attr_item=None, ledger=[_ledger(issue=10.0)]
 		)
 		self.assertEqual(out["item_code"], "M-G-22KT-91.9-Y")
+
+	def test_weight_comes_from_the_tree_ledger(self):
+		# The reported bug: every scanned tree landed at 0. KGJPL-TR-26-00297 has
+		# issue 10.0 / receive 9.9 / loss 0.1 and must resolve to the 9.9 drawn off it.
+		out = _resolve_tree(
+			tree=CURRENT_TREE, ledger=[_ledger(issue=10.0, receive=9.9, loss=0.1)]
+		)
+		self.assertEqual(out["total_weight"], 9.9)
+
+	def test_weight_falls_back_to_issue_before_casting(self):
+		# Funded but not yet cast: receive is still 0, so the metal put ON the tree is the
+		# best available answer.
+		out = _resolve_tree(tree=CURRENT_TREE, ledger=[_ledger(issue=6.0)])
+		self.assertEqual(out["total_weight"], 6.0)
+
+	def test_weight_is_zero_when_the_tree_has_no_ledger(self):
+		# A never-funded tree. Left for the operator; validate_fire_assy_weight refuses the
+		# submit while it still reads 0.
+		out = _resolve_tree(tree=CURRENT_TREE, ledger=[])
+		self.assertEqual(out["total_weight"], 0.0)
 
 	def test_legacy_tree_resolves_through_a_draft_main_slip(self):
 		# The old code required docstatus == 1; every other consumer of Main Slip works
@@ -1882,6 +1919,8 @@ class TestGetItemFromTreeNo(IntegrationTestCase):
 		out = _resolve_tree(tree=LEGACY_TREE, slips=[slip])
 		self.assertEqual(out["main_slip"], "WXK-G-22KT-91.9-Y-00199")
 		self.assertEqual(out["item_code"], "M-G-22KT-91.9-Y")
+		# Legacy trees carry no ledger at all, so there is no weight to hand back.
+		self.assertEqual(out["total_weight"], 0.0)
 
 	def test_missing_tree_throws(self):
 		with self.assertRaises(ValidationError) as cm:
@@ -1899,7 +1938,7 @@ class TestGetItemFromTreeNo(IntegrationTestCase):
 		# get_item_from_attribute returns None rather than throwing; the row used to be
 		# appended with a blank Design ID.
 		with self.assertRaises(ValidationError) as cm:
-			_resolve_tree(tree=CURRENT_TREE, attr_item=None, ledger_item=None)
+			_resolve_tree(tree=CURRENT_TREE, attr_item=None, ledger=[])
 		self.assertIn("No metal Item", frappe.utils.strip_html(str(cm.exception)))
 
 
@@ -1944,12 +1983,83 @@ class TestDuplicateProductRows(IntegrationTestCase):
 			]
 		)
 
-	def test_repeated_tree_rows_are_allowed(self):
-		# Several scan lines for one tree are intentional: they are summed onto a single
-		# exploded main row.
-		_check_duplicates(
-			[{"tree_no": "TREE-A"}, {"tree_no": "TREE-A"}, {"tree_no": "TREE-B"}]
-		)
+	def test_duplicate_tree_throws(self):
+		# set_fire_assy_issue_weight does sum same-tree rows onto one exploded main row, so a
+		# duplicate never double-issued -- but now that a scan auto-fills the tree's weight,
+		# two rows would sum to twice the metal.
+		with self.assertRaises(ValidationError) as cm:
+			_check_duplicates(
+				[{"tree_no": "TREE-A"}, {"tree_no": "TREE-B"}, {"tree_no": "TREE-A"}]
+			)
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("Row #3", msg)
+		self.assertIn("Row #1", msg)
+		self.assertIn("TREE-A", msg)
+
+	def test_distinct_tree_rows_pass(self):
+		_check_duplicates([{"tree_no": "TREE-A"}, {"tree_no": "TREE-B"}])
 
 	def test_empty_rows_are_ignored(self):
 		_check_duplicates([{}, {}])
+
+
+def _check_fa_weight(rows, txn_type="Issue", service_type="Fire Assy Service"):
+	"""Run validate_fire_assy_weight over plain row dicts."""
+	fake_self = SimpleNamespace(
+		type=txn_type,
+		service_type=service_type,
+		product_details=[frappe._dict(idx=i + 1, **row) for i, row in enumerate(rows)],
+	)
+	ProductCertification.validate_fire_assy_weight(fake_self)
+
+
+class TestFireAssyWeightRequired(IntegrationTestCase):
+	"""A Fire Assy / XRF Issue row must carry the weight actually being sent.
+
+	At 0 the submit used to die inside create_stock_entry with "No item found for Repack",
+	which names neither the row nor the tree.
+	"""
+
+	def test_zero_weight_tree_row_throws_naming_the_tree(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_fa_weight([{"tree_no": "TREE-A", "total_weight": 0}])
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("Row #1", msg)
+		self.assertIn("TREE-A", msg)
+		self.assertIn("Total Weight", msg)
+
+	def test_offending_row_index_is_reported(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_fa_weight(
+				[
+					{"tree_no": "TREE-A", "total_weight": 9.9},
+					{"tree_no": "TREE-B", "total_weight": 0},
+				]
+			)
+		self.assertIn("Row #2", frappe.utils.strip_html(str(cm.exception)))
+
+	def test_non_zero_weight_passes(self):
+		_check_fa_weight(
+			[
+				{"tree_no": "TREE-A", "total_weight": 9.9},
+				{"tree_no": "TREE-B", "total_weight": 0.25},
+			]
+		)
+
+	def test_xrf_is_checked_too(self):
+		with self.assertRaises(ValidationError):
+			_check_fa_weight(
+				[{"tree_no": "TREE-A", "total_weight": 0}],
+				service_type="XRF Services",
+			)
+
+	def test_receive_is_skipped(self):
+		# A Receive's weights are the operator-entered recovery figures on the exploded rows.
+		_check_fa_weight([{"tree_no": "TREE-A", "total_weight": 0}], txn_type="Receive")
+
+	def test_other_service_types_are_skipped(self):
+		# Hall Marking rows are serial-driven; total_weight is informational there.
+		_check_fa_weight(
+			[{"serial_no": "SN1", "total_weight": 0}],
+			service_type="Hall Marking Service",
+		)

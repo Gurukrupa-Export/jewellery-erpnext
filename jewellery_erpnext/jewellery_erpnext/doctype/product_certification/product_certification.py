@@ -32,6 +32,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_material_balance import (
+	tree_metal_qty,
+)
 
 
 def _slip_key(row):
@@ -120,11 +123,48 @@ class ProductCertification(Document):
 		self.distribute_amount()
 
 	def before_submit(self):
+		self.validate_fire_assy_weight()
 		self.validate_exploded_qty()
 		# Refuse the submit unless the service PO can actually be created. Checked here,
 		# where the operator can fix the master data, rather than in the deferred job —
 		# which runs after commit and would leave a submitted certification with no PO.
 		validate_po_configuration(self)
+
+	def validate_fire_assy_weight(self):
+		"""A Fire Assy / XRF Issue row must carry the weight actually being sent.
+
+		total_weight is the single input to the Issue Stock Entry qty (through
+		``set_fire_assy_issue_weight`` and the main exploded row), to the Receive scrap
+		calculation, and to the whole received / pending ledger. At 0 the submit died deep in
+		``create_stock_entry`` with "No item found for Repack", which names neither the row nor
+		the tree. Checked here rather than in ``validate`` so a draft can still be saved while
+		the operator works out the weight.
+
+		A scan fills this from the tree's ledger; it stays 0 only for a tree that was never
+		funded and for legacy Main Slip trees, which carry no ledger at all.
+		"""
+		if self.type != "Issue" or self.service_type not in [
+			"Fire Assy Service",
+			"XRF Services",
+		]:
+			return
+
+		for row in self.product_details:
+			if flt(row.total_weight) > 0:
+				continue
+
+			subject = row.get("tree_no") or row.get("main_slip") or row.get("item_code")
+			if subject:
+				frappe.throw(
+					_("Row #{0}: Total Weight is required for {1}.").format(
+						row.idx, frappe.bold(subject)
+					),
+					title=_("Total Weight Missing"),
+				)
+			frappe.throw(
+				_("Row #{0}: Total Weight is required.").format(row.idx),
+				title=_("Total Weight Missing"),
+			)
 
 	def validate_duplicate_product_rows(self):
 		"""One Product Details row per serial / per work order.
@@ -134,17 +174,17 @@ class ProductCertification(Document):
 		of the guard -- ``product_details`` is ``allow_bulk_edit``, so the grid and the paste
 		dialog can produce the same duplicates the barcode gun does.
 
-		Tree rows are exempt: several scan lines for one tree are intentional and are summed onto
-		a single exploded main row (see ``calculate_fire_assy_loss_weight``).
+		Tree rows are covered too. ``set_fire_assy_issue_weight`` does sum same-tree rows onto a
+		single exploded main row, so a duplicate never double-issued -- but now that a scan
+		auto-fills the tree's weight, two rows would sum to twice the metal.
 		"""
 		seen = {}
 		for row in self.product_details:
+			# A row carries exactly one of tree / serial / work order, so whichever it has is
+			# its identity.
 			if row.get("tree_no"):
-				continue
-
-			# serial_no and manufacturing_work_order are never both set on a row, so whichever
-			# one the row carries is its identity.
-			if row.get("serial_no"):
+				key = ("Tree No", row.tree_no)
+			elif row.get("serial_no"):
 				key = ("Serial No", row.serial_no)
 			elif row.get("manufacturing_work_order"):
 				key = ("Manufacturing Work Order", row.manufacturing_work_order)
@@ -1121,6 +1161,15 @@ class ProductCertification(Document):
 				title=_("Metal Details Missing"),
 			)
 
+		# The tree's own ledger carries both the metal actually issued onto it and the weight
+		# drawn back off it, so one read serves the item fallback and the weight.
+		ledger = frappe.get_all(
+			"Tree Material Detail",
+			filters={"parent": tree_no, "parenttype": "Tree Number"},
+			fields=["item_code", "issue_qty", "receive_qty", "loss_qty"],
+			order_by="idx asc",
+		)
+
 		item_code = get_item_from_attribute(
 			metal.metal_type,
 			metal.metal_touch,
@@ -1128,17 +1177,14 @@ class ProductCertification(Document):
 			metal.metal_colour,
 		)
 		if not item_code:
-			# The tree's own ledger is the metal that was physically issued onto it — a better
-			# answer than a blank row when no matching Item variant exists.
-			item_code = frappe.db.get_value(
-				"Tree Material Detail",
-				{
-					"parent": tree_no,
-					"parenttype": "Tree Number",
-					"item_code": ("like", "M-%"),
-				},
-				"item_code",
-				order_by="idx asc",
+			# A better answer than a blank row when no matching Item variant exists.
+			item_code = next(
+				(
+					row.item_code
+					for row in ledger
+					if (row.item_code or "").startswith("M-")
+				),
+				None,
 			)
 		if not item_code:
 			frappe.throw(
@@ -1155,6 +1201,9 @@ class ProductCertification(Document):
 		return {
 			"main_slip": main_slip or "",
 			"item_code": item_code,
+			# 0 for a legacy Main Slip tree, which carries no ledger at all. The operator types
+			# it and validate_fire_assy_weight refuses a submit that still reads 0.
+			"total_weight": tree_metal_qty(ledger),
 		}
 
 

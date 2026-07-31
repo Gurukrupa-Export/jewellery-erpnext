@@ -65,6 +65,12 @@ frappe.ui.form.on("Product Certification", {
 			return frappe.db.get_value("Tree Number", scanned_value, "name").then((tree_res) => {
 				if (!(tree_res && tree_res.message && tree_res.message.name)) return false;
 
+				let duplicate = find_existing_row(frm, "tree_no", scanned_value);
+				if (duplicate) {
+					warn_already_scanned(__("Tree No"), scanned_value, duplicate);
+					return true;
+				}
+
 				return (
 					frm
 						.call("get_item_from_tree_no", { tree_no: scanned_value })
@@ -75,8 +81,10 @@ frappe.ui.form.on("Product Certification", {
 								tree_no: scanned_value,
 								main_slip: r.message.main_slip,
 								item_code: r.message.item_code || "",
-								// total_weight is deliberately left blank — the operator
-								// types the sample weight actually sent for assay.
+								// The metal drawn off the tree. 0 for a tree with no ledger --
+								// the operator types it, and validate_fire_assy_weight refuses
+								// a submit that still reads 0.
+								total_weight: r.message.total_weight || 0,
 							});
 
 							frappe.show_alert({
@@ -321,6 +329,9 @@ frappe.ui.form.on("Product Details", {
 				// clean, so the resolved item silently reverts on the next refresh.
 				frappe.model.set_value(cdt, cdn, "item_code", r.message.item_code);
 				frappe.model.set_value(cdt, cdn, "main_slip", r.message.main_slip);
+				// Overwritten on a tree change, like the serial_no and work order triggers:
+				// a different tree means a different weight.
+				frappe.model.set_value(cdt, cdn, "total_weight", r.message.total_weight || 0);
 			},
 		});
 	},

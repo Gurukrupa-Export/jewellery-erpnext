@@ -149,6 +149,34 @@ def available_to_draw(row, precision=None):
 	return max(0.0, pending)
 
 
+def tree_metal_qty(rows, precision=None):
+	"""Metal weight this tree represents, for consumers outside the ledger.
+
+	``receive_qty`` -- what was drawn OFF the tree into product, i.e. the cast output --
+	falling back to ``issue_qty`` for a tree that is funded but not yet cast.
+
+	Deliberately NOT ``pending_qty``. Pending answers "what is still sitting in the pool",
+	which is exactly 0 for every tree that has finished casting: of the 541 trees carrying a
+	ledger on the live site, pending is positive on 11, zero on 376 and negative on 154, while
+	``receive_qty`` is non-zero on 283 and never negative. A Product Certification scanning a
+	finished tree wants the metal that came off it, not the empty remainder.
+
+	Floored at 0 so a legacy over-drawn ledger cannot hand back a negative weight.
+
+	``rows`` is any iterable of ledger rows -- child Documents or plain dicts, via ``_get``.
+	"""
+	if precision is None:
+		precision = qty_precision()
+
+	rows = rows or []
+	received = flt(sum(flt(_get(row, "receive_qty")) for row in rows), precision)
+	if received > 0:
+		return received
+
+	issued = flt(sum(flt(_get(row, "issue_qty")) for row in rows), precision)
+	return max(0.0, issued)
+
+
 def validate_row_balance(doc, precision=None, previous_violations=None):
 	"""Enforce the ledger invariants on every ``material_details`` row.
 
