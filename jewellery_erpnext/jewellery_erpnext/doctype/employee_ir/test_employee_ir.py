@@ -314,7 +314,6 @@ class TestManufacturingOperationBalance(IntegrationTestCase):
 		doc = FrappeDict(
 			{
 				"name": "MOP-TEST-001",
-				"main_slip_no": None,
 				"is_finding": 0,
 				"loss_wt": 0,
 				"employee_loss_wt": 0,
@@ -504,7 +503,6 @@ class TestEmployeeIR(IntegrationTestCase):
 		self.assertIsNone(new_mop.department_receive_id)
 		self.assertFalse(new_mop.department_ir_status)
 		self.assertIsNone(new_mop.operation)
-		self.assertIsNone(new_mop.main_slip_no)
 
 	def test_get_rows_to_append_returns_rows_for_positive_qty(self):
 		doc = frappe._dict({"department": "DPT", "manufacturer": "MFG"})
