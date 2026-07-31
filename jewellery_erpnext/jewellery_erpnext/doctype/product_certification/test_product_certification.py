@@ -9,6 +9,9 @@ from frappe import ValidationError
 from frappe.tests import IntegrationTestCase
 from frappe.utils import cint, flt
 
+from jewellery_erpnext.jewellery_erpnext.doctype.product_certification import (
+	product_certification as pc,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.utils import (
 	create_po,
 )
@@ -19,9 +22,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_c
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.test_serial_number_creator import (
 	create_snc,
-)
-from jewellery_erpnext.jewellery_erpnext.doctype.product_certification import (
-	product_certification as pc,
 )
 
 PURITY_PATH = "jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.get_purity_percentage"
@@ -1120,9 +1120,12 @@ class TestFireAssyIssueWeight(IntegrationTestCase):
 		self.assertEqual(loss.gross_weight, 0.0)
 
 	def test_duplicate_main_row_is_not_double_weighted(self):
-		"""get_exploded_table can emit a duplicate main row for one group (its existing_data
-		guard is not updated in-loop). The next() first-match must weight only the first row,
-		so create_stock_entry — which skips gross_weight<=0 rows — never double-issues."""
+		"""A duplicate main row for one group must be weighted only once.
+
+		get_exploded_table no longer emits one (its existing_data guard is updated in-loop and
+		keyed through _slip_key), but rows can still arrive duplicated from an older document or
+		a hand edit. The next() first-match must weight only the first row, so create_stock_entry
+		— which skips gross_weight<=0 rows — never double-issues."""
 		doc = self._doc(
 			"Fire Assy Service",
 			[("TEST-ITEM-001", 2.0, "SLIP-A", "TREE-A")],
@@ -1521,8 +1524,8 @@ def fetch_sn(doc, data):
 PC_MOD = "jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification"
 
 
-def _stub_get_all(serial_wh, wh_dept):
-	"""Stand in for the two lookups validate_serial_warehouse_department makes.
+def _stub_get_all(serial_wh):
+	"""Stand in for the Serial No -> warehouse lookup validate_serial_warehouse_department makes.
 
 	Returns list-of-lists because the method calls get_all with as_list=True and
 	feeds the result straight into dict().
@@ -1532,18 +1535,19 @@ def _stub_get_all(serial_wh, wh_dept):
 		wanted = set(filters["name"][1])
 		if doctype == "Serial No":
 			return [[sn, wh] for sn, wh in serial_wh.items() if sn in wanted]
-		if doctype == "Warehouse":
-			return [[wh, dept] for wh, dept in wh_dept.items() if wh in wanted]
 		raise AssertionError(f"unexpected get_all for {doctype}")
 
 	return _inner
 
 
-def _check_serial_dept(serials, department, serial_wh, wh_dept, doc_type="Issue"):
+def _check_serial_dept(
+	serials, department, serial_wh, doc_type="Issue", expected_wh=None
+):
 	"""Run validate_serial_warehouse_department against an in-memory document.
 
-	DB-free: only frappe.get_all is stubbed, so frappe.throw / _ / frappe.bold still
-	behave normally and the assertions exercise the real message construction.
+	DB-free: only frappe.get_all and the WO-warehouse resolver are stubbed, so
+	frappe.throw / _ / frappe.bold still behave normally and the assertions exercise the
+	real message construction.
 	"""
 	fake_self = SimpleNamespace(
 		type=doc_type,
@@ -1552,7 +1556,13 @@ def _check_serial_dept(serials, department, serial_wh, wh_dept, doc_type="Issue"
 			SimpleNamespace(idx=i + 1, serial_no=sn) for i, sn in enumerate(serials)
 		],
 	)
-	with patch(f"{PC_MOD}.frappe.get_all", _stub_get_all(serial_wh, wh_dept)):
+	with (
+		patch(f"{PC_MOD}.frappe.get_all", _stub_get_all(serial_wh)),
+		patch(
+			f"{PC_MOD}._department_wo_warehouse",
+			lambda dept, throw=True: expected_wh or PC_WO,
+		),
+	):
 		ProductCertification.validate_serial_warehouse_department(fake_self)
 
 
@@ -1563,77 +1573,66 @@ OTHER_WH = "Tagging FG - T"
 OTHER_DEPT = "Tagging - T"
 SUPPLIER_WH = "Hallmarking Centre WIP WH - T"
 
-_WH_DEPT = {
-	PC_WO: PC_DEPT,
-	PC_TRANSIT: PC_DEPT,
-	OTHER_WH: OTHER_DEPT,
-	SUPPLIER_WH: "",  # subcontractor warehouses carry no department
-}
-
 
 class TestSerialWarehouseDepartment(IntegrationTestCase):
-	"""On an Issue, a Product Details serial must sit in a warehouse of the document's
-	Department -- see ProductCertification.validate_serial_warehouse_department."""
+	"""On an Issue, a Product Details serial must sit in the document Department's WO
+	warehouse -- see ProductCertification.validate_serial_warehouse_department.
+
+	The check is against that one warehouse by name because create_stock_entry sources every
+	serial line from it; anything parked elsewhere would issue out of a warehouse that does
+	not hold the piece.
+	"""
 
 	def test_serial_in_department_wo_warehouse_ok(self):
-		_check_serial_dept(["SN1"], PC_DEPT, {"SN1": PC_WO}, _WH_DEPT)
+		_check_serial_dept(["SN1"], PC_DEPT, {"SN1": PC_WO})
 
-	def test_serial_in_department_transit_warehouse_ok(self):
-		# ANY warehouse of the department passes -- the check deliberately does not pin
-		# a warehouse_type, because a department owns several warehouses.
-		_check_serial_dept(["SN1"], PC_DEPT, {"SN1": PC_TRANSIT}, _WH_DEPT)
+	def test_serial_in_department_transit_warehouse_throws(self):
+		# Transit belongs to the department but is not the WO warehouse: a serial still in
+		# Transit has not finished arriving, and issuing it would source stock that is not
+		# there. It must be moved in first.
+		with self.assertRaises(ValidationError) as cm:
+			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": PC_TRANSIT})
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn(PC_TRANSIT, msg)
+		self.assertIn(PC_WO, msg)
 
 	def test_serial_in_another_department_throws(self):
 		with self.assertRaises(ValidationError) as cm:
-			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": OTHER_WH}, _WH_DEPT)
+			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": OTHER_WH})
 		msg = frappe.utils.strip_html(str(cm.exception))
 		self.assertIn("SN1", msg)
 		self.assertIn(OTHER_WH, msg)
-		self.assertIn(OTHER_DEPT, msg)
-		self.assertIn(PC_DEPT, msg)
+		self.assertIn(PC_WO, msg)
 
-	def test_serial_in_warehouse_without_department_throws(self):
-		# "" and None normalize together, so a department-less warehouse must NOT be
-		# mistaken for a match when the document does carry a department.
+	def test_serial_in_supplier_warehouse_throws(self):
+		# A subcontractor warehouse carries no department at all -- it must not slip through.
 		with self.assertRaises(ValidationError):
-			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": SUPPLIER_WH}, _WH_DEPT)
+			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": SUPPLIER_WH})
 
 	def test_serial_not_in_stock_throws(self):
 		# ERPNext clears Serial No.warehouse on every outward movement.
 		with self.assertRaises(ValidationError) as cm:
-			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": None}, _WH_DEPT)
+			_check_serial_dept(["SN1"], PC_DEPT, {"SN1": None})
 		self.assertIn("not in stock", frappe.utils.strip_html(str(cm.exception)))
 
 	def test_receive_is_not_validated(self):
 		# A Receive legitimately carries serials still in the supplier's WIP warehouse.
-		_check_serial_dept(
-			["SN1"], PC_DEPT, {"SN1": SUPPLIER_WH}, _WH_DEPT, doc_type="Receive"
-		)
+		_check_serial_dept(["SN1"], PC_DEPT, {"SN1": SUPPLIER_WH}, doc_type="Receive")
 
 	def test_blank_department_skips_check(self):
-		_check_serial_dept(["SN1"], None, {"SN1": OTHER_WH}, _WH_DEPT)
+		_check_serial_dept(["SN1"], None, {"SN1": OTHER_WH})
 
 	def test_rows_without_serial_are_ignored(self):
 		# MWO/PMO-only rows carry no serial and must pass untouched.
-		_check_serial_dept([None, ""], PC_DEPT, {}, _WH_DEPT)
+		_check_serial_dept([None, ""], PC_DEPT, {})
 
 	def test_offending_row_index_is_reported(self):
 		with self.assertRaises(ValidationError) as cm:
-			_check_serial_dept(
-				["SN1", "SN2"],
-				PC_DEPT,
-				{"SN1": PC_WO, "SN2": OTHER_WH},
-				_WH_DEPT,
-			)
+			_check_serial_dept(["SN1", "SN2"], PC_DEPT, {"SN1": PC_WO, "SN2": OTHER_WH})
 		self.assertIn("Row #2", frappe.utils.strip_html(str(cm.exception)))
 
-	def test_mixed_rows_all_in_department_ok(self):
-		_check_serial_dept(
-			["SN1", None, "SN2"],
-			PC_DEPT,
-			{"SN1": PC_WO, "SN2": PC_TRANSIT},
-			_WH_DEPT,
-		)
+	def test_mixed_rows_all_in_wo_warehouse_ok(self):
+		_check_serial_dept(["SN1", None, "SN2"], PC_DEPT, {"SN1": PC_WO, "SN2": PC_WO})
 
 
 _PC = "jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification"
@@ -1800,3 +1799,157 @@ class TestRestorePatchSelection(IntegrationTestCase):
 		self.assertIsNone(first)
 		self.assertIsNotNone(second, "second restore must see the first one's claim")
 		self.assertIn("already claimed", second)
+
+
+def _tree(**kw):
+	"""A Tree Number row as frappe.db.get_value(..., as_dict=1) returns it."""
+	base = {
+		"name": "T-TREE-001",
+		"metal_type": None,
+		"metal_touch": None,
+		"metal_purity": None,
+		"metal_colour": None,
+	}
+	base.update(kw)
+	return frappe._dict(base)
+
+
+CURRENT_TREE = _tree(
+	metal_type="Gold", metal_touch="22KT", metal_purity="91.9", metal_colour="Yellow"
+)
+LEGACY_TREE = _tree()  # minted by Main Slip.before_insert: company and nothing else
+
+
+def _resolve_tree(tree=None, slips=None, attr_item="M-G-22KT-91.9-Y", ledger_item=None):
+	"""Drive get_item_from_tree_no with the DB stubbed out.
+
+	``tree`` is what Tree Number resolves to (None = missing), ``slips`` what the legacy
+	Main Slip fallback finds, ``attr_item`` what get_item_from_attribute returns and
+	``ledger_item`` what the tree's own material_details holds.
+	"""
+
+	def _get_value(doctype, filters, fields=None, **kwargs):
+		if doctype == "Tree Number":
+			return tree
+		if doctype == "Tree Material Detail":
+			return ledger_item
+		raise AssertionError(f"unexpected get_value for {doctype}")
+
+	with (
+		patch(f"{PC_MOD}.frappe.db.get_value", _get_value),
+		patch(f"{PC_MOD}.frappe.get_all", lambda *a, **k: slips or []),
+		patch(
+			"jewellery_erpnext.utils.get_item_from_attribute",
+			lambda *a, **k: attr_item,
+		),
+	):
+		return ProductCertification.get_item_from_tree_no(
+			SimpleNamespace(), "T-TREE-001"
+		)
+
+
+class TestGetItemFromTreeNo(IntegrationTestCase):
+	"""Tree No scanning resolves against the Tree Number, not a submitted Main Slip.
+
+	Trees minted since the casting rework carry their own metal attributes and have no Main
+	Slip at all, so the old ``{"tree_number": ..., "docstatus": 1}`` lookup could only ever
+	throw "No submitted Main Slip found".
+	"""
+
+	def test_current_tree_resolves_from_its_own_attributes(self):
+		out = _resolve_tree(tree=CURRENT_TREE)
+		self.assertEqual(out["item_code"], "M-G-22KT-91.9-Y")
+		self.assertEqual(out["main_slip"], "")
+
+	def test_current_tree_falls_back_to_its_material_ledger(self):
+		# No matching Item variant for the attributes: the metal actually issued onto the
+		# tree is a better answer than a blank row.
+		out = _resolve_tree(
+			tree=CURRENT_TREE, attr_item=None, ledger_item="M-G-22KT-91.9-Y"
+		)
+		self.assertEqual(out["item_code"], "M-G-22KT-91.9-Y")
+
+	def test_legacy_tree_resolves_through_a_draft_main_slip(self):
+		# The old code required docstatus == 1; every other consumer of Main Slip works
+		# against draft ("In Use") slips.
+		slip = frappe._dict(
+			name="WXK-G-22KT-91.9-Y-00199",
+			metal_type="Gold",
+			metal_touch="22KT",
+			metal_purity="91.9",
+			metal_colour="Yellow",
+		)
+		out = _resolve_tree(tree=LEGACY_TREE, slips=[slip])
+		self.assertEqual(out["main_slip"], "WXK-G-22KT-91.9-Y-00199")
+		self.assertEqual(out["item_code"], "M-G-22KT-91.9-Y")
+
+	def test_missing_tree_throws(self):
+		with self.assertRaises(ValidationError) as cm:
+			_resolve_tree(tree=None)
+		self.assertIn("does not exist", frappe.utils.strip_html(str(cm.exception)))
+
+	def test_tree_without_metal_and_without_slip_throws(self):
+		with self.assertRaises(ValidationError) as cm:
+			_resolve_tree(tree=LEGACY_TREE, slips=[])
+		self.assertIn(
+			"no metal details", frappe.utils.strip_html(str(cm.exception)).lower()
+		)
+
+	def test_unresolvable_item_throws_instead_of_returning_blank(self):
+		# get_item_from_attribute returns None rather than throwing; the row used to be
+		# appended with a blank Design ID.
+		with self.assertRaises(ValidationError) as cm:
+			_resolve_tree(tree=CURRENT_TREE, attr_item=None, ledger_item=None)
+		self.assertIn("No metal Item", frappe.utils.strip_html(str(cm.exception)))
+
+
+def _check_duplicates(rows):
+	"""Run validate_duplicate_product_rows over plain row dicts."""
+	fake_self = SimpleNamespace(
+		product_details=[frappe._dict(idx=i + 1, **row) for i, row in enumerate(rows)]
+	)
+	ProductCertification.validate_duplicate_product_rows(fake_self)
+
+
+class TestDuplicateProductRows(IntegrationTestCase):
+	"""A repeat scan must not append a second row -- it silently doubled the issued weight."""
+
+	def test_duplicate_serial_throws(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_duplicates([{"serial_no": "SN1"}, {"serial_no": "SN1"}])
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("Row #2", msg)
+		self.assertIn("Row #1", msg)
+		self.assertIn("SN1", msg)
+
+	def test_duplicate_mwo_throws(self):
+		with self.assertRaises(ValidationError) as cm:
+			_check_duplicates(
+				[
+					{"manufacturing_work_order": "MWO-A"},
+					{"manufacturing_work_order": "MWO-B"},
+					{"manufacturing_work_order": "MWO-A"},
+				]
+			)
+		msg = frappe.utils.strip_html(str(cm.exception))
+		self.assertIn("Row #3", msg)
+		self.assertIn("MWO-A", msg)
+
+	def test_distinct_rows_pass(self):
+		_check_duplicates(
+			[
+				{"serial_no": "SN1"},
+				{"serial_no": "SN2"},
+				{"manufacturing_work_order": "MWO-A"},
+			]
+		)
+
+	def test_repeated_tree_rows_are_allowed(self):
+		# Several scan lines for one tree are intentional: they are summed onto a single
+		# exploded main row.
+		_check_duplicates(
+			[{"tree_no": "TREE-A"}, {"tree_no": "TREE-A"}, {"tree_no": "TREE-B"}]
+		)
+
+	def test_empty_rows_are_ignored(self):
+		_check_duplicates([{}, {}])

@@ -1,5 +1,9 @@
 // Copyright (c) 2023, Nirali and contributors
 // For license information, please see license.txt
+
+// Both service types key their rows on tree_no + main_slip, so both accept a scanned Tree Number.
+const TREE_SCAN_SERVICE_TYPES = ["Fire Assy Service", "XRF Services"];
+
 frappe.ui.form.on("Product Certification", {
 	refresh(frm) {
 		if (frm.doc.service_type) {
@@ -51,34 +55,43 @@ frappe.ui.form.on("Product Certification", {
 		let scanned_value = frm.doc.scan.trim();
 		frappe.model.set_value(frm.doctype, frm.docname, "scan", ""); // Clear immediately to prevent double-trigger race conditions
 
-		// Fire Assy rows are keyed on tree_no + main_slip, so a Tree Number is the
+		// Fire Assy / XRF rows are keyed on tree_no + main_slip, so a Tree Number is the
 		// natural thing to scan there. Resolved through the same whitelisted method the
 		// tree_no child trigger uses, so there is one resolution path, not two.
 		let try_tree_number = () => {
-			if (frm.doc.service_type !== "Fire Assy Service") {
+			if (!TREE_SCAN_SERVICE_TYPES.includes(frm.doc.service_type)) {
 				return Promise.resolve(false);
 			}
 			return frappe.db.get_value("Tree Number", scanned_value, "name").then((tree_res) => {
 				if (!(tree_res && tree_res.message && tree_res.message.name)) return false;
 
-				return frm.call("get_item_from_main_slip", { tree_no: scanned_value }).then((r) => {
-					if (!(r && r.message)) return false;
+				return (
+					frm
+						.call("get_item_from_tree_no", { tree_no: scanned_value })
+						.then((r) => {
+							if (!(r && r.message)) return false;
 
-					frm.add_child("product_details", {
-						tree_no: scanned_value,
-						main_slip: r.message.main_slip,
-						item_code: r.message.item_code || "",
-						// total_weight is deliberately left blank — the operator
-						// types the sample weight actually sent for assay.
-					});
+							frm.add_child("product_details", {
+								tree_no: scanned_value,
+								main_slip: r.message.main_slip,
+								item_code: r.message.item_code || "",
+								// total_weight is deliberately left blank — the operator
+								// types the sample weight actually sent for assay.
+							});
 
-					frappe.show_alert({
-						message: __("Added Tree No: {0}", [scanned_value]),
-					});
+							frappe.show_alert({
+								message: __("Added Tree No: {0}", [scanned_value]),
+							});
 
-					frm.refresh_field("product_details");
-					return true;
-				});
+							frm.refresh_field("product_details");
+							return true;
+						})
+						// The scanned value IS a Tree Number, so a server-side throw is terminal:
+						// the error dialog is already up. Swallow the rejection so it does not fall
+						// through to "not a valid MWO or Serial No" and does not leave an unhandled
+						// promise rejection behind.
+						.catch(() => true)
+				);
 			});
 		};
 
@@ -88,6 +101,20 @@ frappe.ui.form.on("Product Certification", {
 		});
 	},
 });
+
+// A repeat scan used to append a second row, silently doubling the issued weight.
+// Tree rows are exempt: several scan lines for one tree are intentional and are summed
+// onto a single exploded main row.
+function find_existing_row(frm, fieldname, value) {
+	return (frm.doc.product_details || []).find((row) => row[fieldname] === value);
+}
+
+function warn_already_scanned(label, value, row) {
+	frappe.show_alert({
+		message: __("{0} {1} is already in row {2}", [label, value, row.idx]),
+		indicator: "red",
+	});
+}
 
 function scan_mwo_or_serial(frm, scanned_value) {
 	frappe.db
@@ -102,6 +129,12 @@ function scan_mwo_or_serial(frm, scanned_value) {
 		.then((mwo_res) => {
 			if (mwo_res && mwo_res.message && mwo_res.message.name) {
 				let mwo = mwo_res.message;
+
+				let duplicate = find_existing_row(frm, "manufacturing_work_order", mwo.name);
+				if (duplicate) {
+					warn_already_scanned(__("Manufacturing Work Order"), mwo.name, duplicate);
+					return;
+				}
 
 				let get_total_weight = () => {
 					if (mwo.manufacturing_operation) {
@@ -153,6 +186,12 @@ function scan_mwo_or_serial(frm, scanned_value) {
 						let sn = sn_res.message;
 						let item_code = sn.item_code;
 
+						let duplicate = find_existing_row(frm, "serial_no", sn.name);
+						if (duplicate) {
+							warn_already_scanned(__("Serial No"), sn.name, duplicate);
+							return;
+						}
+
 						frappe.db
 							.get_value("Item", item_code, ["item_category", "item_subcategory"])
 							.then((item_res) => {
@@ -176,7 +215,7 @@ function scan_mwo_or_serial(frm, scanned_value) {
 							});
 					} else {
 						frappe.throw(
-							frm.doc.service_type === "Fire Assy Service"
+							TREE_SCAN_SERVICE_TYPES.includes(frm.doc.service_type)
 								? __(
 										"Scanned value {0} is not a valid Tree Number, Manufacturing Work Order or Serial No.",
 										[scanned_value]
@@ -273,12 +312,15 @@ frappe.ui.form.on("Product Details", {
 			return;
 		}
 		frappe.call({
-			method: "get_item_from_main_slip",
+			method: "get_item_from_tree_no",
 			args: { tree_no: d.tree_no },
 			doc: frm.doc,
 			callback: function (r) {
-				d.item_code = r.message.item_code;
-				d.main_slip = r.message.main_slip;
+				if (!(r && r.message)) return;
+				// set_value, not a bare assignment on locals — the latter leaves the grid
+				// clean, so the resolved item silently reverts on the next refresh.
+				frappe.model.set_value(cdt, cdn, "item_code", r.message.item_code);
+				frappe.model.set_value(cdt, cdn, "main_slip", r.message.main_slip);
 			},
 		});
 	},
