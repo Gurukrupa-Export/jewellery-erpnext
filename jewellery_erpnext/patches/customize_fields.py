@@ -73,7 +73,7 @@ def execute():
   {
 
    "fieldname": "custom_diamond_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "is_system_generated": 1,
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
@@ -82,7 +82,7 @@ def execute():
   {
   
    "fieldname": "custom_gemstone_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "is_system_generated": 1,
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
