@@ -49,7 +49,7 @@
   "customer_diamond",
   "customer_stone",
   "customer_good",
-  "default_material_request_department_section",
+  "column_break_ofko",
   "diamond_department",
   "column_break_eyifr",
   "gemstone_department",
@@ -57,7 +57,6 @@
   "finding_department",
   "column_break_zep9i",
   "other_material_department",
-  "column_break_zpp9f",
   "metal_department",
   "section_break_cuzmc",
   "type",
@@ -616,11 +615,6 @@
    "options": "Department"
   },
   {
-   "fieldname": "default_material_request_department_section",
-   "fieldtype": "Section Break",
-   "label": "Default Material Request Department"
-  },
-  {
    "fieldname": "column_break_eyifr",
    "fieldtype": "Column Break"
   },
@@ -645,10 +639,6 @@
    "ignore_user_permissions": 1,
    "label": "Other Material Department",
    "options": "Department"
-  },
-  {
-   "fieldname": "column_break_zpp9f",
-   "fieldtype": "Column Break"
   },
   {
    "fieldname": "metal_department",
@@ -902,6 +892,10 @@
    "fieldtype": "Link",
    "label": "Sub Setting Type",
    "options": "Attribute Value"
+  },
+  {
+   "fieldname": "column_break_ofko",
+   "fieldtype": "Column Break"
   }
  ],
  "index_web_pages_for_search": 1,
@@ -920,8 +914,8 @@
    "link_fieldname": "manufacturing_order"
   }
  ],
- "modified": "2026-05-14 15:32:26.856607",
- "modified_by": "manikandan_ext@gkexport.com",
+ "modified": "2026-07-31 16:30:31.031170",
+ "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Parent Manufacturing Order",
  "naming_rule": "Expression",
