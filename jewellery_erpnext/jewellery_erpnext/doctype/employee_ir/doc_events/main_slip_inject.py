@@ -4,7 +4,7 @@
 the employee/subcontractor warehouse into the MOP department warehouse so the
 positive delta surfaces as a MOP Log row via the existing Stock Entry bridge.
 
-Gate:  ``eir.is_main_slip_required = 1`` AND ``row.received_gross_wt > row.gross_wt``
+Gate:  ``eir.is_raw_material = 1`` AND ``row.received_gross_wt > row.gross_wt``
 
 Mechanism per row (with ``eir.main_slip`` set)::
 
@@ -563,7 +563,7 @@ def inject_extra_metal_for_eir_receive(eir, row):
 
 	Returns a list of created Stock Entry names (empty list if skipped).
 	"""
-	if not cint(getattr(eir, "is_main_slip_required", 0)):
+	if not cint(getattr(eir, "is_raw_material", 0)):
 		return []
 
 	extra = flt(row.received_gross_wt) - flt(row.gross_wt)

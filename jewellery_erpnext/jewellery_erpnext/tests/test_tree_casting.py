@@ -445,7 +445,7 @@ def _mwo_doc(name, tree_number):
 	)
 
 
-def _recv_eir(rows, typ="Receive", loss_rows=None, is_main_slip_required=1):
+def _recv_eir(rows, typ="Receive", loss_rows=None, is_raw_material=1):
 	"""Receive EIR. rows: [(mwo, received_gross_wt[, gross_wt])] — gross_wt defaults to received
 	(exact fill / no gain); loss_rows: [(mwo, proportionally_loss)]."""
 
@@ -459,7 +459,7 @@ def _recv_eir(rows, typ="Receive", loss_rows=None, is_main_slip_required=1):
 	return SimpleNamespace(
 		operation="Casting WO",
 		type=typ,
-		is_main_slip_required=is_main_slip_required,
+		is_raw_material=is_raw_material,
 		manually_book_loss_details=[
 			SimpleNamespace(
 				variant_of="M", manufacturing_work_order=m, proportionally_loss=n
@@ -551,7 +551,7 @@ class TestValidateCastingReceive(IntegrationTestCase):
 	def test_gain_without_main_slip_throws(self):
 		# received 10 > gross 8 but no Main Slip to source the excess -> nothing can move.
 		with self.assertRaises(ValidationError):
-			self._run(_recv_eir([("MWO-A", 10.0, 8.0)], is_main_slip_required=0))
+			self._run(_recv_eir([("MWO-A", 10.0, 8.0)], is_raw_material=0))
 
 	def test_normal_receive_with_loss_passes(self):
 		# recv 4 + loss 1 == gross 5. Booked metal loss never leaves the MSL pool, so it is not
