@@ -1,9 +1,10 @@
 """Seed the Refinery Price List from ``Process Dust With Rate.xlsx`` (Sheet 1).
 
-Loads the pricing as DATA (records), not as code. The price list holds ONE document
-per ITEM (Sheet 1 col B) — every item is refined under multiple processes (col A), so
-the per-process weight-band rates live in the document's ``slabs`` child table. Each
-parent is idempotent (an existing document for the item is skipped). Depends on
+Loads the pricing as DATA (records), not as code. The price list holds ONE document per
+ITEM (Sheet 1 col B), with its weight-band rates in the ``slabs`` child table. The
+sheet's Process column (col A) is no longer stored — it only labelled the row — so rows
+differing by process alone are deduped into one slab. Each parent is idempotent (an
+existing document for the item is skipped). Depends on
 ``seed_refining_masters`` for the dust items — an item that does not exist is skipped
 with a warning rather than aborting the migrate.
 
@@ -143,6 +144,14 @@ ROWS = [
 		"Gross Weight",
 	),
 	(
+		# Same band, charge and rate as the Filing/Setting/Grinding row above: the sheet
+		# lists "Only Dust" twice and leaves the basis cell BLANK on this second listing.
+		# A blank cell is an omission, not an assertion of Gross Weight — normalising it
+		# to the default manufactured a second slab for 50 gm-∞ differing only in basis,
+		# which survived the byte-identical dedupe, tripped validate_slab_bands and made
+		# the seed skip REF-MD-001 entirely (it is the DEFAULT pricing_item, so
+		# every external consignment then priced at rate 0). Carry the annotated basis so
+		# the duplicate collapses onto the real row.
 		"Chemical Process",
 		"REF-MD-001",
 		"Above 50 gm",
@@ -150,7 +159,7 @@ ROWS = [
 		0,
 		"Per Gram",
 		18,
-		"Gross Weight",
+		"Received Fine Weight",
 	),
 	(
 		"Tools Scrap",
@@ -183,19 +192,30 @@ def execute():
 		return
 
 	# Group the sheet rows item-wise: one parent document per item, slabs as children.
+	# The Refining Process and Band Label columns were removed from the slab — the process
+	# only ever labelled the row, and two rows that differed by process alone now collapse
+	# into ONE slab (deduped below), which is what the band-overlap guard requires.
 	by_item = {}
-	for process, dust_item, band_label, from_g, to_g, charge_type, rate, basis in ROWS:
-		by_item.setdefault(dust_item, []).append(
-			{
-				"refining_process": process,
-				"band_label": band_label,
-				"from_weight": from_g,
-				"to_weight": to_g,
-				"charge_type": charge_type,
-				"rate": rate,
-				"weight_basis": basis,
-			}
-		)
+	for (
+		_process,
+		dust_item,
+		_band_label,
+		from_g,
+		to_g,
+		charge_type,
+		rate,
+		basis,
+	) in ROWS:
+		slab = {
+			"from_weight": from_g,
+			"to_weight": to_g,
+			"charge_type": charge_type,
+			"rate": rate,
+			"weight_basis": basis,
+		}
+		slabs = by_item.setdefault(dust_item, [])
+		if slab not in slabs:
+			slabs.append(slab)
 
 	created = 0
 	for item_code, slabs in by_item.items():
@@ -208,13 +228,16 @@ def execute():
 			continue
 		doc = frappe.get_doc({"doctype": "Refinery Price List", "item": item_code})
 		for slab in slabs:
-			# Slab rows reference Refining Process records (labels); skip the link if
-			# the master is missing so seeding never aborts the migrate.
-			if slab["refining_process"] and not frappe.db.exists(
-				"Refining Process", slab["refining_process"]
-			):
-				slab = dict(slab, refining_process=None)
 			doc.append("slabs", slab)
-		doc.insert(ignore_permissions=True)
+		# The sheet itself carries overlapping bands for a couple of items (same band, two
+		# weight bases). Seeding must never abort the migrate over price-sheet hygiene, so
+		# report and skip rather than throw.
+		try:
+			doc.insert(ignore_permissions=True)
+		except frappe.ValidationError as e:
+			frappe.logger().warning(
+				f"seed_refinery_price_list: {item_code} not seeded — {e}"
+			)
+			continue
 		created += 1
 	frappe.logger().info(f"seed_refinery_price_list: created {created} price lists")
