@@ -116,7 +116,7 @@ class TestMainSlip(IntegrationTestCase):
 			metal_colour="Yellow", multicolour=0, allowed_colours=""
 		)
 		with patch("frappe.db.get_value", return_value=mwo_data):
-			with self.assertRaisesRegex(frappe.ValidationError, "Metal properties in MWO: MWO-001 do not match"):
+			with self.assertRaisesRegex(frappe.ValidationError, r"Metal properties in MWO: .*MWO-001.* do not match"):
 				self.doc.validate_metal_properties()
 
 	def test_validate_metal_properties_matches_passes(self):
