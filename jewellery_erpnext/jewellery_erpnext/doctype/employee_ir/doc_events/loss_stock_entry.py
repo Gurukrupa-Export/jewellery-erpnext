@@ -4,8 +4,8 @@ On Receive submit: for each row in employee_loss_details and
 manually_book_loss_details with proportionally_loss > 0, creates a
 "Process Loss" (Repack purpose) Stock Entry that moves the loss quantity
 from the SRE source warehouse to either:
-  - Scrap warehouse by department  (is_main_slip_required = 0)
-  - Employee / Subcontractor Raw Material warehouse  (is_main_slip_required = 1)
+  - Scrap warehouse by department  (is_raw_material = 0)
+  - Employee / Subcontractor Raw Material warehouse  (is_raw_material = 1)
 
 Before the SE is submitted, each matching Stock Reservation Entry that still holds a
 reservation is cancelled and recreated with reduced reserved_qty, so the loss quantity
@@ -737,8 +737,8 @@ def _pick_spent_sre_by_physical_stock(eir, row, rows, qty, table_name):
 
 
 def _resolve_t_warehouse(eir, table_name):
-	"""Resolve target warehouse based on is_main_slip_required."""
-	if cint(eir.is_main_slip_required):
+	"""Resolve target warehouse based on is_raw_material."""
+	if cint(eir.is_raw_material):
 		return _resolve_raw_material_warehouse(eir)
 	return _resolve_scrap_warehouse(eir)
 
@@ -749,7 +749,7 @@ def _resolve_raw_material_warehouse(eir):
 			frappe.throw(
 				_(
 					"Employee IR {0}: subcontractor is required when "
-					"is_main_slip_required is enabled"
+					"is_raw_material is enabled"
 				).format(eir.name)
 			)
 		wh = frappe.db.get_value(
@@ -773,7 +773,7 @@ def _resolve_raw_material_warehouse(eir):
 			frappe.throw(
 				_(
 					"Employee IR {0}: employee is required when "
-					"is_main_slip_required is enabled"
+					"is_raw_material is enabled"
 				).format(eir.name)
 			)
 		wh = frappe.db.get_value(
@@ -827,7 +827,7 @@ def _resolve_scrap_warehouse(eir):
 
 def _resolve_loss_item(eir, row, table_name):
 	"""Return the item_code to use on the produce row of the Process Loss SE."""
-	if cint(eir.is_main_slip_required):
+	if cint(eir.is_raw_material):
 		# Same item — loss moves to employee/subcontractor raw-material warehouse.
 		return row.item_code
 

@@ -546,7 +546,7 @@ class EmployeeIR(Document):
 					(row.manufacturing_operation, {**res, "complete_time": curr_time})
 				)
 
-				# Main Slip gain injection: when is_main_slip_required and
+				# Main Slip gain injection: when is_raw_material and
 				# received_gross_wt > gross_wt, repack the delta from the
 				# employee/subcontractor warehouse into the MOP warehouse.
 				# The SE bridge then writes the positive MOP Log row that

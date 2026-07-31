@@ -24,10 +24,17 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events import (
 	utils as batch_utils,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir import employee_ir
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
-	loss_stock_entry,
-	main_slip_inject as msi,
 	finding_loss_gate,
+	loss_stock_entry,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+	main_slip_inject as msi,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_loss_gate import (
+	is_loss_booking_blocked,
+	validate_loss_rows_against_gate,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.precision import (
 	EIR_OPERATION_WEIGHT_FIELDS,
@@ -51,12 +58,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 )
 from jewellery_erpnext.property_setter_guard import (
 	ensure_field_precision_property_setters,
-)
-from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir import employee_ir
-
-from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_loss_gate import (
-	is_loss_booking_blocked,
-	validate_loss_rows_against_gate,
 )
 
 
@@ -2407,7 +2408,7 @@ def _eir_msi(**overrides):
 		subcontractor=None,
 		subcontracting="No",
 		main_slip="MS-001",
-		is_main_slip_required=1,
+		is_raw_material=1,
 	)
 	base.update(overrides)
 	doc = SimpleNamespace(**base)
@@ -2430,8 +2431,8 @@ def _row_msi(**overrides):
 
 
 class TestMainSlipInjectGate(IntegrationTestCase):
-	def test_skips_when_is_main_slip_required_false(self):
-		eir = _eir_msi(is_main_slip_required=0)
+	def test_skips_when_is_raw_material_false(self):
+		eir = _eir_msi(is_raw_material=0)
 		row = _row_msi()
 		with patch.object(msi, "_existing_injection_se") as mock_exists:
 			out = msi.inject_extra_metal_for_eir_receive(eir, row)
@@ -3933,7 +3934,9 @@ class _Row(SimpleNamespace):
 		return getattr(self, key, default)
 
 
-def _eir_worker(type="Receive", operation="Filing", name="EMP-IR-1", rows=None, **fields):
+def _eir_worker(
+	type="Receive", operation="Filing", name="EMP-IR-1", rows=None, **fields
+):
 	"""An Employee IR carrying just enough for set_repeat_receive_flag."""
 	defaults = {
 		"type": type,
@@ -4139,7 +4142,9 @@ class TestSetRepeatReceiveFlag(IntegrationTestCase):
 	def test_any_repeat_row_flags_a_mixed_receive(self):
 		# Pins the ANY rule: one repeat work order alongside a first-timer still asks
 		# the question. Switching to ALL would make this assertion fail.
-		doc = _eir_worker(rows=[_row_worker("MWO-NEW", "MOP-1"), _row_worker("MWO-OLD", "MOP-2")])
+		doc = _eir_worker(
+			rows=[_row_worker("MWO-NEW", "MOP-1"), _row_worker("MWO-OLD", "MOP-2")]
+		)
 		with patch.object(
 			employee_ir, "get_repeat_work_orders", return_value=["MWO-OLD"]
 		):
@@ -4178,7 +4183,9 @@ class TestSetRepeatReceiveFlag(IntegrationTestCase):
 		self.assertEqual(doc.is_repeat_receive, 0)
 
 	def test_passes_operation_and_own_name_to_the_resolver(self):
-		doc = _eir_worker(operation="Setting", name="EMP-IR-99", rows=[_row_worker("MWO-5", "MOP-5")])
+		doc = _eir_worker(
+			operation="Setting", name="EMP-IR-99", rows=[_row_worker("MWO-5", "MOP-5")]
+		)
 		with patch.object(
 			employee_ir, "get_repeat_work_orders", return_value=[]
 		) as resolver:
@@ -4662,7 +4669,9 @@ class TestReduceSreStampsMarkers(IntegrationTestCase):
 
 	def test_snapshot_records_remaining_not_gross_for_delivered_sre(self):
 		"""reserved 5 / delivered 4: restore must give back 1, not 5."""
-		sre = _sre_loss([_sb("BATCH-A", 5.0, delivered_qty=4.0)], 5.0, delivered_qty=4.0)
+		sre = _sre_loss(
+			[_sb("BATCH-A", 5.0, delivered_qty=4.0)], 5.0, delivered_qty=4.0
+		)
 		clone = _clone([_sb("BATCH-A", 5.0, delivered_qty=4.0)])
 
 		with patch("frappe.copy_doc", return_value=clone):
@@ -4864,12 +4873,18 @@ class TestSreRemaining(IntegrationTestCase):
 
 	def test_active_reservation_reports_remaining(self):
 		self.assertEqual(
-			loss_stock_entry._sre_remaining(_sre_row_loss("A", "WH", 3.4, delivered=1.0)), 2.4
+			loss_stock_entry._sre_remaining(
+				_sre_row_loss("A", "WH", 3.4, delivered=1.0)
+			),
+			2.4,
 		)
 
 	def test_fully_delivered_reports_zero(self):
 		self.assertEqual(
-			loss_stock_entry._sre_remaining(_sre_row_loss("A", "WH", 3.396, delivered=3.396)), 0.0
+			loss_stock_entry._sre_remaining(
+				_sre_row_loss("A", "WH", 3.396, delivered=3.396)
+			),
+			0.0,
 		)
 
 	def test_counts_transferred_and_consumed(self):
@@ -4890,7 +4905,9 @@ class TestFindSrePrefersActive(IntegrationTestCase):
 
 	def test_prefers_active_sre_over_delivered_sibling(self):
 		rows = [
-			_sre_row_loss("SPENT", "Waxing WO", 3.396, delivered=3.396, mop="MOP-CURRENT"),
+			_sre_row_loss(
+				"SPENT", "Waxing WO", 3.396, delivered=3.396, mop="MOP-CURRENT"
+			),
 			_sre_row_loss("ACTIVE", "Waxing WO", 3.400, delivered=0.0, mop="MOP-OTHER"),
 		]
 		got = MagicMock(

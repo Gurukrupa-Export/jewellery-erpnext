@@ -124,7 +124,7 @@ def validate_duplication_and_gr_wt(self):
 				row,
 				precision,
 				main_slip=getattr(self, "main_slip", None),
-				is_main_slip_required=self.is_main_slip_required,
+				is_raw_material=self.is_raw_material,
 			)
 
 	if loss_details:
@@ -145,8 +145,8 @@ def validate_mwo(self, row, is_finding):
 			)
 
 
-def validate_gross_wt(row, precision, main_slip=None, is_main_slip_required=False):
-	if main_slip or is_main_slip_required:
+def validate_gross_wt(row, precision, main_slip=None, is_raw_material=False):
+	if main_slip or is_raw_material:
 		return
 	if flt(row.gross_wt, precision) < flt(row.received_gross_wt, precision):
 		frappe.throw(
