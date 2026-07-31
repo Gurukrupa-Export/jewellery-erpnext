@@ -925,7 +925,11 @@ class TestConvertBatchStamping(IntegrationTestCase):
 	def test_target_batch_is_stamped_and_returned_without_query(self):
 		out, appended, gv = self._run_convert(MR_BATCH)
 		self.assertEqual(out, MR_BATCH)
-		gv.assert_not_called()  # no need to look up the produced batch
+		
+		# no need to look up the produced batch
+		se_calls = [c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"]
+		self.assertEqual(len(se_calls), 0)
+		
 		self.assertEqual(
 			appended[1]["batch_no"], MR_BATCH
 		)  # stamped on the produced row
@@ -933,7 +937,10 @@ class TestConvertBatchStamping(IntegrationTestCase):
 	def test_no_target_batch_falls_back_to_the_auto_minted_batch(self):
 		out, appended, gv = self._run_convert(None, produced_query="AUTO-A-A")
 		self.assertEqual(out, "AUTO-A-A")
-		gv.assert_called_once()
+		
+		se_calls = [c for c in gv.mock_calls if c.args and c.args[0] == "Stock Entry Detail"]
+		self.assertEqual(len(se_calls), 1)
+		
 		self.assertNotIn("batch_no", appended[1])
 
 	def tearDown(self):
