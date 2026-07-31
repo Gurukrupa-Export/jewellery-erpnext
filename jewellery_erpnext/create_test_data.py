@@ -1477,15 +1477,19 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 
-		if not frappe.db.exists("Inventory Type", "Customer Goods"):
-			frappe.get_doc(
-				{"doctype": "Inventory Type", "inventory_type": "Customer Goods"}
-			).insert(ignore_permissions=True)
-
-		if not frappe.db.exists("Inventory Type", "Regular Stock"):
-			frappe.get_doc(
-				{"doctype": "Inventory Type", "inventory_type": "Regular Stock"}
-			).insert(ignore_permissions=True)
+		# All four values ownership_priority ranks on. "Pure Metal" and
+		# "Customer Stock" were previously unseeded, so any row linking to them
+		# failed link validation on a fresh / CI site.
+		for inventory_type in (
+			"Customer Goods",
+			"Customer Stock",
+			"Regular Stock",
+			"Pure Metal",
+		):
+			if not frappe.db.exists("Inventory Type", inventory_type):
+				frappe.get_doc(
+					{"doctype": "Inventory Type", "inventory_type": inventory_type}
+				).insert(ignore_permissions=True)
 
 		if not frappe.db.exists("Item", "M-G-22KT-91.6-Y"):
 			frappe.get_doc(
@@ -2764,6 +2768,12 @@ def create_test_data():
 			)
 
 			_ensure_conversion_lane_tag_field()
+
+			from jewellery_erpnext.patches.add_supplier_allowed_item_group import (
+				execute as _ensure_supplier_allowed_item_group_field,
+			)
+
+			_ensure_supplier_allowed_item_group_field()
 
 			from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
 

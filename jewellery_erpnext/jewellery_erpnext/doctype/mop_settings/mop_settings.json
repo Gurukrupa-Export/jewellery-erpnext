@@ -42,7 +42,10 @@
   "enable_eod_bucket_allocation",
   "eod_plan_heal_section",
   "eod_plan_heal_help",
-  "enable_eod_plan_sre_heal"
+  "enable_eod_plan_sre_heal",
+  "msl_pending_gate_section",
+  "msl_pending_gate_help",
+  "msl_pending_gate_enforce_from"
  ],
  "fields": [
   {
@@ -278,6 +281,23 @@
    "fieldname": "enable_eod_plan_sre_heal",
    "fieldtype": "Check",
    "label": "Enable EOD Plan-Phase Reservation Heal"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "msl_pending_gate_section",
+   "fieldtype": "Section Break",
+   "label": "Employee (MSL) Warehouse Month-Start Close"
+  },
+  {
+   "fieldname": "msl_pending_gate_help",
+   "fieldtype": "HTML",
+   "options": "<div class='alert alert-info' style='font-size:13px;'><b>Month-start pending close</b><br>Blocks issuing material into an employee (MSL) Raw Material warehouse while that warehouse still owes metal from a previous month. The operator clears it by receiving the metal back or booking its Loss — a settlement made in the current month clears the block immediately.<br><br><b>The date below is the whole switch:</b><br>&bull; <b>Blank</b> — off. Nothing is checked.<br>&bull; <b>A future date</b> — warn only. Operators see their backlog but nothing is blocked. Use this to size the impact before enforcing.<br>&bull; <b>Today or a past date</b> — enforced. Issues are blocked.<br><br>System Manager and Stock Manager always bypass the check, exactly as they may re-enable a disabled (closed) MSL warehouse. Every MSL warehouse on a live site will have some prior-month pending on day one, so set a future date first and let it self-activate.</div>"
+  },
+  {
+   "description": "Blank = off. A future date warns only. Today or earlier blocks the issue. Applies to the Warehouse and Tree Number \"Issue Material\" buttons.",
+   "fieldname": "msl_pending_gate_enforce_from",
+   "fieldtype": "Date",
+   "label": "Enforce Month-Start Pending Close From"
   }
  ],
  "grid_page_length": 50,

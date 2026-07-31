@@ -14,6 +14,7 @@ voucher is a Process Loss Stock Entry; every other outward movement is a Receive
 
 import frappe
 from frappe import _
+from frappe.utils import cint
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking import (
 	get_warehouse_item_tracking,
@@ -23,8 +24,9 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking import (
 def execute(filters=None):
 	filters = frappe._dict(filters or {})
 	_validate_filters(filters)
-	columns = _get_columns()
-	data = _get_data(filters)
+	group_by_month = bool(cint(filters.get("group_by_month")))
+	columns = _get_columns(group_by_month)
+	data = _get_data(filters, group_by_month)
 	return columns, data
 
 
@@ -33,8 +35,20 @@ def _validate_filters(filters):
 		frappe.throw(_("Company is mandatory."))
 
 
-def _get_columns():
-	return [
+def _get_columns(group_by_month=False):
+	month = (
+		[
+			{
+				"label": _("Month"),
+				"fieldname": "month_start",
+				"fieldtype": "Date",
+				"width": 100,
+			}
+		]
+		if group_by_month
+		else []
+	)
+	return month + [
 		{
 			"label": _("Warehouse"),
 			"fieldname": "warehouse",
@@ -96,7 +110,13 @@ def _get_columns():
 	]
 
 
-def _get_data(filters):
+def _get_data(filters, group_by_month=False):
 	# Same SLE-derived aggregation the Warehouse form uses, so the report and the
 	# on-warehouse child table can never disagree.
-	return get_warehouse_item_tracking(filters)
+	#
+	# With Group by Month on, each row is ONE month's movement and `pending_qty` is
+	# that month's issue - receive - loss, i.e. a delta rather than a carry-forward
+	# balance -- it can legitimately be negative for a month that returned metal
+	# issued earlier. Leave the filter off for a cumulative position.
+	tracking_filters = {k: v for k, v in filters.items() if k != "group_by_month"}
+	return get_warehouse_item_tracking(tracking_filters, group_by_month=group_by_month)
