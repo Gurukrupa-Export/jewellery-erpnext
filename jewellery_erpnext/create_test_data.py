@@ -2148,7 +2148,7 @@ def create_test_data():
 					"company": "Test_Company",
 					"is_subcontracted": 1,
 					"allow_zero_qty_wo": 1,
-					"is_main_slip_required": 1,
+					"is_raw_material": 1,
 					"supplier_group": "Subcontracting",
 					"service_item": "FG Subcontracting",
 				}

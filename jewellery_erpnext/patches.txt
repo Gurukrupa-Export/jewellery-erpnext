@@ -1,6 +1,7 @@
 [pre_model_sync]
 jewellery_erpnext.patches.rename_mould_no_to_mould_id
 jewellery_erpnext.patches.dedupe_mould_item_code
+jewellery_erpnext.patches.rename_is_main_slip_required_to_is_raw_material
 
 [post_model_sync]
 # jewellery_erpnext.patches.sed_copy_to_mop
