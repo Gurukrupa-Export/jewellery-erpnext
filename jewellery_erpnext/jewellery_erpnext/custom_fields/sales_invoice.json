@@ -763,6 +763,14 @@
    "insert_after": "custom_gemstone_pcs",
    "label": "Gross Weight",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Invoice",
+   "fieldname": "custom_product_return_form_ref",
+   "fieldtype": "Float",
+   "insert_after": "due_date",
+   "label": "Product Return Form",
+   "module": "Jewellery Erpnext"
   }
  ]
 }
