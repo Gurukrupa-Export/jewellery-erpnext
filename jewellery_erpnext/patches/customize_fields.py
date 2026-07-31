@@ -311,10 +311,11 @@ def execute():
   {
     
    "fieldname": "custom_product_return_form_ref",
-   "fieldtype": "Float",
+   "fieldtype": "Link",
    "insert_after": "due_date",
    "label": "Product Return Form",
-   "module": "Jewellery Erpnext"
+   "module": "Jewellery Erpnext",
+   "options": "Product Return Order Form"
   }
       ],
       "Sales Invoice Item":[
