@@ -181,31 +181,14 @@ class TestBatchRateStamping(IntegrationTestCase):
 
 		self.assertIsNone(batch.custom_metal_rate)
 
-	# --- Non-metal items stay gated behind the feature flag -----------------------
+	# --- Requirement C: non-metal items are stamped too ---------------------------
 
-	def test_non_metal_item_gets_no_rate_by_default(self):
-		# Stock Entry Detail.custom_metal_rate is fetch_from the batch, and the SNC
-		# rate maps fall through to the live basic_rate for diamond/gemstone --
-		# filling this without the flag would silently change that valuation.
-		batch = _batch(item="D-NT-RO-6B-+8-8.5")
-		values = {
-			"__child_doctype__": "Stock Entry Detail",
-			("Stock Entry Detail", "inventory_type"): "Regular Stock",
-			("Stock Entry Detail", "customer"): None,
-			("Stock Entry Detail", "employee"): None,
-			("Item Variant Attribute", "attribute_value"): None,
-			("Attribute Value", "is_metal_type"): 0,
-			("Stock Entry Detail", "basic_rate"): 900,
-			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
-		}
-		with patch.object(batch_utils.frappe, "db", _db(values)):
-			with patch.object(batch_utils.frappe, "conf", {}):
-				batch_utils.update_inventory_dimentions(batch)
-
-		self.assertFalse(batch.custom_metal_rate)
-
-	def test_non_metal_item_gets_rate_when_flag_enabled(self):
-		batch = _batch(item="D-NT-RO-6B-+8-8.5")
+	def test_diamond_item_gets_the_row_rate(self):
+		# KGJPL-SE-MR-26-00078: a Material Receipt of D-NT-RO-6B-+00-0 at basic_rate
+		# 346 minted batch KG2F075-DNTROX6X20X10-0V2C3 with Batch Rate 0, because a
+		# diamond carries no "Metal Type" attribute and the old code only stamped
+		# items whose Attribute Value had is_metal_type.
+		batch = _batch(item="D-NT-RO-6B-+00-0")
 		values = {
 			"__child_doctype__": "Stock Entry Detail",
 			("Stock Entry Detail", "inventory_type"): "Regular Stock",
@@ -214,16 +197,85 @@ class TestBatchRateStamping(IntegrationTestCase):
 			("Item Variant Attribute", "attribute_value"): None,
 			("Attribute Value", "is_metal_type"): 0,
 			("Stock Entry Detail", "custom_metal_rate"): None,
-			("Stock Entry Detail", "basic_rate"): 900,
+			("Stock Entry Detail", "basic_rate"): 346,
 			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
 		}
 		with patch.object(batch_utils.frappe, "db", _db(values)):
-			with patch.object(
-				batch_utils.frappe, "conf", {"stamp_batch_rate_for_all_items": 1}
-			):
-				batch_utils.update_inventory_dimentions(batch)
+			batch_utils.update_inventory_dimentions(batch)
 
-		self.assertEqual(batch.custom_metal_rate, 900)
+		self.assertEqual(batch.custom_metal_rate, 346)
+
+	def test_diamond_purchase_receipt_gets_the_item_rate(self):
+		batch = _batch(
+			item="D-NT-RO-6B-+0-2",
+			reference_doctype="Purchase Receipt",
+			reference_name="GE-PR-26-00011",
+		)
+		values = {
+			"__child_doctype__": "Purchase Receipt Item",
+			("Purchase Receipt Item", "inventory_type"): "Regular Stock",
+			("Purchase Receipt Item", "customer"): None,
+			("Purchase Receipt Item", "employee"): None,
+			("Item Variant Attribute", "attribute_value"): None,
+			("Attribute Value", "is_metal_type"): 0,
+			("Purchase Receipt Item", "rate"): 32050,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		with patch.object(batch_utils.frappe, "db", _db(values)):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(batch.custom_metal_rate, 32050)
+
+	def test_consumable_item_gets_the_row_rate(self):
+		# Nothing about a consumable is metal, but a batch with a rate is still
+		# better than a batch with 0 -- there is no per-item-group narrowing.
+		batch = _batch(item="Garbage Bags")
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Regular Stock",
+			("Stock Entry Detail", "customer"): None,
+			("Stock Entry Detail", "employee"): None,
+			("Item Variant Attribute", "attribute_value"): None,
+			("Attribute Value", "is_metal_type"): 0,
+			("Stock Entry Detail", "custom_metal_rate"): None,
+			("Stock Entry Detail", "basic_rate"): 95,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		with patch.object(batch_utils.frappe, "db", _db(values)):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(batch.custom_metal_rate, 95)
+
+	def test_alloy_item_still_goes_to_the_alloy_rate(self):
+		# The alloy/metal split is the ONE distinction that survives: batch.on_update
+		# blends the two pools separately for a Repack-Metal Conversion, so an alloy
+		# rate landing on custom_metal_rate would be double-counted there.
+		batch = _batch(item="M-AL")
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Regular Stock",
+			("Stock Entry Detail", "customer"): None,
+			("Stock Entry Detail", "employee"): None,
+			("Stock Entry Detail", "custom_alloy_rate"): None,
+			("Stock Entry Detail", "basic_rate"): 1000,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		db = _db(values)
+		# The alloy lookup is the only get_all("Item", ...) in this function.
+		db.get_all.side_effect = lambda doctype, filters=None, fields=None, **kw: (
+			["M-AL"]
+			if doctype == "Item"
+			else ["Alloy"]
+			if doctype == "Item Group"
+			else [SimpleNamespace(options="Stock Entry Detail")]
+			if doctype == "DocField"
+			else []
+		)
+		with patch.object(batch_utils.frappe, "db", db):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(batch.custom_alloy_rate, 1000)
+		self.assertFalse(batch.custom_metal_rate)
 
 	# --- A blended conversion rate must survive a later save ----------------------
 
