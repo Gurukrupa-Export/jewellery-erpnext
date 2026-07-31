@@ -1180,9 +1180,19 @@ class TestPartialReceipt(IntegrationTestCase):
 		# The ledger under test is pure arithmetic over the two child tables — it does
 		# not care whether the company or the item codes exist, so the documents stay
 		# synthetic and this class needs no create_test_data() fixture.
+		#
+		# The service Purchase Order is patched out for the same reason the stock entry is:
+		# these Issues carry no department, service type or supplier, so both the
+		# submit-time guard (before_submit -> validate_po_configuration) and the creator
+		# (on_submit -> create_po, which re-validates) would reject every one of them. PO
+		# configuration is master data, not part of the receive ledger — TestProductCertification
+		# covers it against the real fixtures. Both names are patched in this module's
+		# namespace because product_certification.py imports them at module level.
 		for target in (
 			"frappe.model.document.Document._validate_links",
 			"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.create_stock_entry",
+			"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.validate_po_configuration",
+			"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.create_po",
 			"frappe.enqueue",
 		):
 			patcher = patch(target)
@@ -1389,14 +1399,18 @@ class TestHallmarkingStockEntryPcs(IntegrationTestCase):
 				return "FAKE-MOP"
 			return orig_get_value(doctype, filters, fieldname, *args, **kwargs)
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.get_current_mop_balance_rows",
-			return_value=balance_rows,
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.product_certification."
-			"product_certification.resolve_and_validate",
-			return_value="Test - WH",
-		), patch.object(frappe.db, "get_value", side_effect=fake_get_value):
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.get_current_mop_balance_rows",
+				return_value=balance_rows,
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.product_certification."
+				"product_certification.resolve_and_validate",
+				return_value="Test - WH",
+			),
+			patch.object(frappe.db, "get_value", side_effect=fake_get_value),
+		):
 			get_stock_item_against_mwo(se_doc, doc, row, "Source - WH", "Target - WH")
 
 		items_by_code = {it.item_code: it for it in se_doc.items}

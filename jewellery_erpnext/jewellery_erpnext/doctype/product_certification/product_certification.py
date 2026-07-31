@@ -27,6 +27,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 	create_po,
 	process_fire_assy_xrf_submit,
 	update_bom_details,
+	validate_po_configuration,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
@@ -82,6 +83,10 @@ class ProductCertification(Document):
 
 	def before_submit(self):
 		self.validate_exploded_qty()
+		# Refuse the submit unless the service PO can actually be created. Checked here,
+		# where the operator can fix the master data, rather than in the deferred job —
+		# which runs after commit and would leave a submitted certification with no PO.
+		validate_po_configuration(self)
 
 	def validate_serial_warehouse_department(self):
 		"""On an Issue, every Product Details serial must sit in a warehouse of this
@@ -503,6 +508,10 @@ class ProductCertification(Document):
 			process_fire_assy_xrf_submit(self, create_stock_entry)
 		else:
 			create_stock_entry(self)
+			# Synchronous: a failure here rolls the whole submit back, so a submitted
+			# certification always has its PO. Only the BOM amount roll-up stays deferred —
+			# that is the part that loops over exploded rows.
+			create_po(self)
 			frappe.enqueue(
 				"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.deferred_po_bom",
 				pc_name=self.name,

@@ -14,7 +14,8 @@ frappe.query_reports["Weekly Recovery Efficiency"] = {
 			fieldname: "refining_type",
 			label: __("Refining Type"),
 			fieldtype: "Select",
-			options: "\nDust Refining\nWork Order Refining\nSerial Number Refining\nScrap Refining",
+			options:
+				"\nScrap Refining\nWork Order Refining\nSerial Number Refining\nUnused/Loose Material Refining",
 		},
 		{ fieldname: "department", label: __("Department"), fieldtype: "Link", options: "Department" },
 	],

@@ -25,7 +25,7 @@ def get_columns():
 			"width": 160,
 		},
 		{
-			"label": _("Dust Item"),
+			"label": _("Scrap Item"),
 			"fieldname": "dust_item",
 			"fieldtype": "Link",
 			"options": "Item",
@@ -38,7 +38,7 @@ def get_columns():
 			"width": 150,
 		},
 		{
-			"label": _("Remaining Scrap"),
+			"label": _("Refining Loss"),
 			"fieldname": "remaining_scrap",
 			"fieldtype": "Float",
 			"width": 140,
@@ -54,7 +54,7 @@ def get_columns():
 
 def get_data(filters):
 	conditions, values = entry_conditions(
-		filters, default_days=30, refining_type="Dust Refining"
+		filters, default_days=30, refining_type="Scrap Refining"
 	)
 	return frappe.db.sql(
 		f"""

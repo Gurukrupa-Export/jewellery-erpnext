@@ -1,30 +1,134 @@
 import frappe
 
 
-# def get_item_for_certification(company, service_type):
-# 	return frappe.db.get_value(
-# 		"Product Certification Details",
-# 		{"parent": company, "certification_type": service_type},
-# 		["purchase_item", "rate"],
-# 		as_dict=1,
-# 	)
 def get_item_for_certification(department, service_type):
+	"""Charge item + rate for a certification service, from the Manufacturing Setting of
+	the Department's Manufacturer.
+
+	``Product Certification Details`` is a child of Manufacturing Setting, which is named
+	after the Manufacturer — so the parent key is the Department's ``manufacturer``. A blank
+	one degrades the filter to ``parent IS NULL`` and silently matches nothing, which is why
+	callers must go through ``validate_po_configuration`` first for an accurate message.
+	"""
 	manufacturer = frappe.db.get_value("Department", department, "manufacturer")
+	if not manufacturer:
+		return None
 	return frappe.db.get_value(
 		"Product Certification Details",
-		{"parent": manufacturer, "certification_type": service_type},
+		{
+			"parent": manufacturer,
+			"parenttype": "Manufacturing Setting",
+			"certification_type": service_type,
+		},
 		["purchase_item", "rate"],
 		as_dict=1,
 	)
 
 
-def create_po(self):
-	if self.type == "Receive":
+def po_is_expected(doc):
+	"""Whether this document should produce a service Purchase Order.
+
+	The single source of truth for the skip rules, shared by the submit-time validation and
+	by create_po itself, so a guard can never disagree with the creator about whether a PO
+	was due.
+	"""
+	if doc.type == "Receive":
+		return False
+	if doc.customer and frappe.db.get_value(
+		"Customer", doc.customer, "custom_ignore_po_creation_for_certification"
+	):
+		return False
+	return True
+
+
+def resolve_po_supplier(doc):
+	"""Supplier for the certification PO: the document's own, else the one named after the
+	Type of Certification. Purchase Order.supplier is mandatory, so a blank one fails the
+	insert."""
+	if doc.supplier:
+		return doc.supplier
+	if doc.type_of_certification:
+		return frappe.db.get_value(
+			"Supplier", {"supplier_name": doc.type_of_certification}, "name"
+		)
+	return None
+
+
+def validate_po_configuration(doc):
+	"""Refuse the submit unless the service Purchase Order can actually be created.
+
+	Everything create_po needs is checked here, at submit time, where the operator can act
+	on it — rather than in the deferred job, which runs after the document has committed and
+	surfaces only as a background traceback, leaving a submitted certification with no PO.
+
+	Each failure names the field that is actually missing. The previous message always
+	pointed at Manufacturing Setting even when the real gap was Department.manufacturer.
+	"""
+	if not po_is_expected(doc):
 		return
 
-	elif self.customer and frappe.db.get_value(
-		"Customer", self.customer, "custom_ignore_po_creation_for_certification"
-	):
+	if not doc.department:
+		frappe.throw(
+			frappe._(
+				"Department is mandatory to create Purchase Order for certification."
+			)
+		)
+	if not doc.service_type:
+		frappe.throw(
+			frappe._(
+				"Service Type is mandatory to create Purchase Order for certification."
+			)
+		)
+
+	if not resolve_po_supplier(doc):
+		frappe.throw(
+			frappe._(
+				"Supplier could not be determined for this certification. Set Supplier on "
+				"this document, or create a Supplier named after the Type of Certification "
+				"{0}."
+			).format(frappe.bold(doc.type_of_certification or "-"))
+		)
+
+	manufacturer = frappe.db.get_value("Department", doc.department, "manufacturer")
+	if not manufacturer:
+		frappe.throw(
+			frappe._(
+				"Department {0} has no Manufacturer set, so the certification charge item "
+				"cannot be resolved. Set Manufacturer on the Department, then ensure its "
+				"Manufacturing Setting has a Product Certification Details row for Service "
+				"Type {1}."
+			).format(frappe.bold(doc.department), frappe.bold(doc.service_type))
+		)
+
+	if not frappe.db.exists("Manufacturing Setting", {"manufacturer": manufacturer}):
+		frappe.throw(
+			frappe._(
+				"No Manufacturing Setting exists for Manufacturer {0} (from Department "
+				"{1}), so the certification charge item cannot be resolved."
+			).format(frappe.bold(manufacturer), frappe.bold(doc.department))
+		)
+
+	item_data = get_item_for_certification(doc.department, doc.service_type)
+	if not item_data or not item_data.get("purchase_item"):
+		frappe.throw(
+			frappe._(
+				"Manufacturing Setting for Manufacturer {0} has no Product Certification "
+				"Details row with a Purchase Item for Service Type {1}. Add it before "
+				"submitting."
+			).format(frappe.bold(manufacturer), frappe.bold(doc.service_type))
+		)
+
+
+def create_po(self):
+	if not po_is_expected(self):
+		return
+
+	# Idempotent: the deferred job is deduplicated by job_id, but a retry or a job queued
+	# before PO creation moved into on_submit must not mint a second PO.
+	existing = frappe.db.exists(
+		"Purchase Order", {"product_certification": self.name, "docstatus": ["<", 2]}
+	)
+	if existing:
 		return
 
 	total_gross_wt = 0
@@ -35,41 +139,14 @@ def create_po(self):
 	po_doc = frappe.new_doc("Purchase Order")
 
 	po_doc.product_certification = self.name
-	supplier = self.supplier
+	supplier = resolve_po_supplier(self)
 
-	if not supplier and self.type_of_certification:
-		supplier = frappe.db.get_value(
-			"Supplier", {"supplier_name": self.type_of_certification}, "name"
-		)
-
-	if not self.department:
-		frappe.throw(
-			frappe._(
-				"Department is mandatory to create Purchase Order for certification."
-			)
-		)
-
-	if not self.service_type:
-		frappe.throw(
-			frappe._(
-				"Service Type is mandatory to create Purchase Order for certification."
-			)
-		)
+	# Re-checked rather than assumed: create_po is also reachable from the deferred job and
+	# from a direct call, not only through before_submit.
+	validate_po_configuration(self)
 
 	po_doc.company = self.company
-
-	# item_data = get_item_for_certification(self.company, self.service_type)
 	item_data = get_item_for_certification(self.department, self.service_type)
-
-	if not item_data:
-		manufacturer = frappe.db.get_value(
-			"Department", self.department, "manufacturer"
-		)
-		frappe.throw(
-			frappe._(
-				"Please configure Product Certification Details for Manufacturer {0} and Service Type {1} in Manufacturing Setting"
-			).format(manufacturer or "associated with department", self.service_type)
-		)
 
 	rate = 0
 	if self.service_type == "Diamond Certificate service":
@@ -120,10 +197,12 @@ def process_fire_assy_xrf_submit(doc, create_stock_entry_fn):
 	Single orchestration point for Fire Assy/XRF submit flow.
 
 	- Creates issue/receive Stock Entry (receive uses single Material Receipt flow)
-	- Creates Purchase Order when applicable (Issue only)
-	- Updates BOM amount breakdown on Receive
+	- Creates Purchase Order when applicable (Issue only), synchronously, so a failure
+	  rolls the submit back instead of stranding a submitted certification with no PO
+	- Updates BOM amount breakdown on Receive (deferred)
 	"""
 	create_stock_entry_fn(doc)
+	create_po(doc)
 	frappe.enqueue(
 		"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.deferred_po_bom",
 		pc_name=doc.name,

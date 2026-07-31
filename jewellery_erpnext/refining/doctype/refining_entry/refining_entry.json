@@ -110,7 +110,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Refining Type",
-   "options": "\nDust Refining\nWork Order Refining\nSerial Number Refining\nScrap Refining",
+   "options": "\nScrap Refining\nWork Order Refining\nSerial Number Refining\nUnused/Loose Material Refining",
    "reqd": 1
   },
   {
@@ -244,17 +244,17 @@
    "options": "Barcode"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
+   "depends_on": "eval:doc.refining_type=='Unused/Loose Material Refining'",
    "fieldname": "scan_scrap_qr",
    "fieldtype": "Data",
-   "label": "Scan Scrap QR",
+   "label": "Scan Unused/Loose Material QR",
    "options": "Barcode"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
+   "depends_on": "eval:doc.refining_type=='Unused/Loose Material Refining'",
    "fieldname": "scrap_item",
    "fieldtype": "Link",
-   "label": "Scrap Item",
+   "label": "Unused/Loose Material Item",
    "options": "Item"
   },
   {
@@ -285,24 +285,24 @@
    "options": "Refining Serial No Detail"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
    "fieldname": "section_break_dust",
    "fieldtype": "Section Break",
-   "label": "Dust Refining Settings"
+   "label": "Scrap Refining Settings"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
    "fieldname": "date_from",
    "fieldtype": "Date",
    "label": "From Date",
-   "mandatory_depends_on": "eval:doc.refining_type=='Dust Refining'"
+   "mandatory_depends_on": "eval:doc.refining_type=='Scrap Refining'"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
    "fieldname": "date_to",
    "fieldtype": "Date",
    "label": "To Date",
-   "mandatory_depends_on": "eval:doc.refining_type=='Dust Refining'"
+   "mandatory_depends_on": "eval:doc.refining_type=='Scrap Refining'"
   },
   {
    "fieldname": "column_break_dust",
@@ -310,27 +310,27 @@
   },
   {
    "default": "0",
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_department",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && !doc.multiple_department",
    "fieldname": "multiple_operation",
    "fieldtype": "Check",
    "label": "For Multiple Operations"
   },
   {
    "default": "0",
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && !doc.multiple_operation",
    "fieldname": "multiple_department",
    "fieldtype": "Check",
    "label": "For Multiple Department"
   },
   {
-   "depends_on": "eval:(doc.refining_type=='Scrap Refining') || (doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department)",
+   "depends_on": "eval:(doc.refining_type=='Unused/Loose Material Refining') || (doc.refining_type=='Scrap Refining' && !doc.multiple_operation && !doc.multiple_department)",
    "fieldname": "employee",
    "fieldtype": "Link",
    "label": "Employee",
    "options": "Employee"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && !doc.multiple_operation && !doc.multiple_department",
    "fieldname": "operation",
    "fieldtype": "Link",
    "label": "Operation",
@@ -343,14 +343,14 @@
    "options": "Item"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && doc.multiple_department==1",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && doc.multiple_department==1",
    "fieldname": "refining_department_detail",
    "fieldtype": "Table",
    "label": "Department Allocation",
    "options": "Refining Department Detail"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && doc.multiple_operation==1",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && doc.multiple_operation==1",
    "fieldname": "refining_operation_detail",
    "fieldtype": "Table",
    "label": "Operation Allocation",
@@ -384,13 +384,13 @@
   {
    "fieldname": "additional_dust_qty",
    "fieldtype": "Float",
-   "label": "Additional Dust Qty"
+   "label": "Additional Scrap Qty"
   },
   {
    "default": "0",
    "fieldname": "dust_received",
    "fieldtype": "Check",
-   "label": "Dust Received"
+   "label": "Scrap Received"
   },
   {
    "fieldname": "column_break_verification",
