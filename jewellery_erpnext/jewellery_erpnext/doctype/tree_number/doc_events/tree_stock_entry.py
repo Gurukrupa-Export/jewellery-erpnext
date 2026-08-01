@@ -12,23 +12,23 @@ Implements the documented *Tree Number Material Tracking* flow. Two tree kinds:
                             Scrap); ``receive_qty`` / ``loss_qty`` +=.
   * **Casting** tree (``employee_ir`` set): dual receive model.
       - Issue Material posts the physical Source -> MSL transfer as a
-        ``Material Transfer (MAIN SLIP)`` SE and owns ``issue_qty``.
+        ``Material Transfer`` SE and owns ``issue_qty``.
       - The Casting Employee IR Receive's ``update_tree_on_receive`` (``tree_casting.py``, called
         from ``employee_ir.py``) books the CAST OUTPUT into ``receive_qty`` / ``loss_qty``.
       - Receive Material (tree button) then RETURNS the post-cast LEFTOVER: received leg =
-        ``Material Transfer (MAIN SLIP)`` (MSL -> Dept RM); loss leg = ``Process Loss`` Repack
+        ``Material Transfer`` (MSL -> Dept RM); loss leg = ``Process Loss`` Repack
         (metal @ MSL -> ML variant @ Dept Scrap); ``receive_qty`` / ``loss_qty`` +=. The per-item
         ``(recv + loss) <= pending`` cap makes it structurally leftover-only, so it can never
         re-receive what the Employee IR already booked.
 
 Notes:
-  * **Ledger-invisible SEs.** ``Material Transfer``, ``Material Transfer (MAIN SLIP)`` and
-    ``Process Loss`` are all absent from MOP Settings' ``Stock Entry Type To Reservation``, so
-    ``doc_events/stock_entry.onsubmit`` skips reservation + MOP Log. ``auto_created = 1`` also
-    bypasses the WORK-ORDER / metal-property validations in ``before_validate``.
+  * **Ledger-invisible SEs.** ``Material Transfer`` and ``Process Loss`` are both absent from
+    MOP Settings' ``Stock Entry Type To Reservation``, so ``doc_events/stock_entry.onsubmit``
+    skips reservation + MOP Log. ``auto_created = 1`` also bypasses the WORK-ORDER /
+    metal-property validations in ``before_validate``.
   * ``se.company`` is derived from the warehouse being moved (not ``tree.company``) so a
     multi-company tree passes ``validate_warehouse_company``; ``se.manufacturer`` is set so the
-    MAIN SLIP ``before_validate`` branch resolves without a Main Slip link.
+    ``before_validate`` metal branch resolves without a Main Slip link.
   * Warehouse resolution reuses existing app resolvers (``Warehouse`` custom fields
     ``employee`` / ``department``); MSL is the employee's Raw-Material warehouse.
   * **Receive returns the batches the Issue put in.** The MSL warehouse is the *employee's*, so it
@@ -85,7 +85,7 @@ from jewellery_erpnext.jewellery_erpnext.lock_order import (
 )
 
 MATERIAL_TRANSFER = "Material Transfer"
-MATERIAL_TRANSFER_MAIN_SLIP = "Material Transfer (MAIN SLIP)"
+MATERIAL_TRANSFER_MAIN_SLIP = "Material Transfer"
 # Ledger-invisible Repack type used for the receive loss leg: it converts the metal into its
 # ML loss variant. NOT the plain "Repack" type (that one IS in MOP Settings' reservation list and
 # would create MOP Log / reservation). "Process Loss" (purpose Repack) is the same type the
@@ -97,9 +97,8 @@ PROCESS_LOSS = "Process Loss"
 # Warehouse resolution
 # ---------------------------------------------------------------------------
 def _is_casting_tree(tree):
-	"""EIR-seeded casting trees (employee_ir set): Issue uses the MAIN SLIP SE type and receive is
-	Employee-IR-driven. Standalone trees (employee_ir empty) use plain Material Transfer + the
-	Receive button."""
+	"""EIR-seeded casting trees (employee_ir set): receive is Employee-IR-driven. Standalone trees
+	(employee_ir empty) use the Receive button. Both post plain Material Transfer SEs."""
 	return bool(tree.get("employee_ir"))
 
 
@@ -182,7 +181,7 @@ def _new_transfer_se(tree, se_type=MATERIAL_TRANSFER, company_wh=None):
 		if company_wh
 		else tree.company
 	)
-	# Needed for the MAIN SLIP before_validate branch to resolve manufacturer without a Main Slip.
+	# Needed for the before_validate metal branch to resolve manufacturer without a Main Slip.
 	se.manufacturer = tree.get("manufacturer")
 	se.custom_tree_number = tree.name
 	se.auto_created = 1
@@ -646,7 +645,7 @@ def issue_material(tree, item_code, qty, source_warehouse=None):
 	# rejection holds nothing.
 	validate_no_prior_period_pending(msl_wh)
 
-	# Casting trees record the Issue as a MAIN SLIP transfer (relabel only — still ledger-invisible).
+	# Both tree kinds record the Issue as a plain Material Transfer (ledger-invisible).
 	se_type = (
 		MATERIAL_TRANSFER_MAIN_SLIP if _is_casting_tree(tree) else MATERIAL_TRANSFER
 	)
@@ -681,8 +680,7 @@ def receive_material(tree, rows):
 
 	Posts up to TWO ledger-invisible Stock Entries (returns their names as a list):
 
-	  * **Received** metal -> ``Material Transfer (MAIN SLIP)`` (casting) / ``Material Transfer``
-	    (standalone): MSL -> Dept RM, same metal item.
+	  * **Received** metal -> ``Material Transfer``: MSL -> Dept RM, same metal item.
 	  * **Loss** -> a separate ``Process Loss`` (purpose Repack) SE that CONSUMES the metal at MSL
 	    and PRODUCES the resolved ML loss variant into Dept Scrap (mirrors the Employee IR loss
 	    engine — the loss item is converted, not moved as-is).
@@ -744,7 +742,7 @@ def receive_material(tree, rows):
 	se_recv = se_loss = None
 	recv_pairs, loss_pairs = [], []
 
-	# --- Received metal: Material Transfer [(MAIN SLIP) for casting] MSL -> Dept RM (same item).
+	# --- Received metal: Material Transfer MSL -> Dept RM (same item).
 	if has_recv:
 		se_type = (
 			MATERIAL_TRANSFER_MAIN_SLIP if _is_casting_tree(tree) else MATERIAL_TRANSFER

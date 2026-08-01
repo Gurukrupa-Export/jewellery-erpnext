@@ -6,7 +6,7 @@ Material on an employee MSL warehouse.
 
 Pure-logic: DB / Stock Entry persistence are patched. Covers the MSL-warehouse
 validation guards, the Issue corridor (Dept RM -> this MSL WH via a
-``Material Transfer (MAIN SLIP)``), and the Receive auto-difference model
+``Material Transfer``), and the Receive auto-difference model
 (``loss = pending - returned``, difference booked to Dept Scrap via a
 ``Process Loss`` Repack).
 """

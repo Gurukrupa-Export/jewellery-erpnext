@@ -1476,15 +1476,15 @@ class TestReceiveMaterial(IntegrationTestCase):
 # Casting (employee_ir-seeded) tree buttons + resolvers
 # ---------------------------------------------------------------------------
 class TestCastingTreeButtons(IntegrationTestCase):
-	"""Casting trees: Issue posts a `Material Transfer (MAIN SLIP)` SE and owns issue_qty; the
+	"""Casting trees: Issue posts a `Material Transfer` SE and owns issue_qty; the
 	Employee IR Receive books the cast output, and the Receive button returns the post-cast
 	leftover (bounded by the pending cap, so it can never re-receive the EIR-booked qty)."""
 
-	def test_casting_issue_posts_main_slip_se(self):
+	def test_casting_issue_posts_material_transfer_se(self):
 		tree = _new_tree(employee_ir="EIR-CASTING-0001")
 		fake = _run(tse.issue_material, tree, "GOLD-18KT", 5.0)[0]
-		# Casting Issue is relabelled as MAIN SLIP (still ledger-invisible).
-		self.assertEqual(fake.stock_entry_type, "Material Transfer (MAIN SLIP)")
+		# Casting Issue posts a plain Material Transfer (ledger-invisible).
+		self.assertEqual(fake.stock_entry_type, "Material Transfer")
 		self.assertTrue(fake.submitted)
 		self.assertEqual(fake.items[0].s_warehouse, "SRC-MFG")
 		self.assertEqual(fake.items[0].t_warehouse, "EMP-MSL")
@@ -1512,12 +1512,12 @@ class TestCastingTreeButtons(IntegrationTestCase):
 		)
 
 	def test_casting_receive_no_longer_throws(self):
-		# Casting trees return the post-cast leftover via the tree button as a MAIN SLIP transfer.
+		# Casting trees return the post-cast leftover via the tree button as a Material Transfer.
 		tree = self._casting_tree(issue=3.0, receive=2.0)  # EIR booked 2 -> pending 1
 		fake = _run(
 			tse.receive_material, tree, [{"item_code": "GOLD-18KT", "receive_qty": 1.0}]
 		)[0]
-		self.assertEqual(fake.stock_entry_type, "Material Transfer (MAIN SLIP)")
+		self.assertEqual(fake.stock_entry_type, "Material Transfer")
 		self.assertEqual(len(fake.items), 1)
 		self.assertEqual(
 			(fake.items[0].s_warehouse, fake.items[0].t_warehouse),
@@ -1556,8 +1556,8 @@ class TestCastingTreeButtons(IntegrationTestCase):
 		)
 		self.assertEqual(len(fakes), 2)
 		se_recv, se_loss = fakes
-		# Received leg -> MAIN SLIP transfer, MSL -> Dept RM.
-		self.assertEqual(se_recv.stock_entry_type, "Material Transfer (MAIN SLIP)")
+		# Received leg -> Material Transfer, MSL -> Dept RM.
+		self.assertEqual(se_recv.stock_entry_type, "Material Transfer")
 		self.assertEqual(
 			(se_recv.items[0].s_warehouse, se_recv.items[0].t_warehouse),
 			("EMP-MSL", "DEPT-RM"),
