@@ -11,7 +11,7 @@ The invariant under test, for every row::
 
     issue_qty >= 0, receive_qty >= 0, loss_qty >= 0
     receive_qty + loss_qty <= issue_qty
-    pending_qty == issue_qty - receive_qty - loss_qty      (UNFLOORED)
+    pending_qty == issue_qty - receive_qty - loss_qty(UNFLOORED)
 """
 
 from types import SimpleNamespace
@@ -303,6 +303,64 @@ class TestPrecisionSource(IntegrationTestCase):
 
 	def test_eps_is_half_a_unit(self):
 		self.assertAlmostEqual(tb.pending_eps(), (10 ** -tb.qty_precision()) / 2)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestTreeMetalQty(IntegrationTestCase):
+	"""tree_metal_qty answers "what metal does this tree represent" for outside consumers.
+
+	Product Certification scans a Tree Number and needs a weight for the assay row. The
+	obvious candidate -- pending -- is exactly 0 for every tree that has finished casting,
+	which is most of them, so the answer is receive with an issue fallback.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_receive_wins_when_the_tree_has_been_cast(self):
+		# The shape of KGJPL-TR-26-00297: fully cast, pending 0, 9.9 drawn off it.
+		rows = [md(10.0, 9.9, 0.1)]
+		self.assertEqual(tb.calculate_pending(10.0, 9.9, 0.1), 0.0)
+		self.assertAlmostEqual(tb.tree_metal_qty(rows), 9.9, places=3)
+
+	def test_issue_is_the_fallback_before_casting(self):
+		# Funded but not yet cast: receive is still 0.
+		self.assertAlmostEqual(tb.tree_metal_qty([md(6.0, 0, 0)]), 6.0, places=3)
+
+	def test_receive_beats_issue_when_both_are_set(self):
+		self.assertAlmostEqual(tb.tree_metal_qty([md(30.0, 29.8, 0.2)]), 29.8, places=3)
+
+	def test_rows_are_summed(self):
+		self.assertAlmostEqual(
+			tb.tree_metal_qty([md(5.0, 4.0, 0), md(3.0, 2.5, 0, item=ITEM_B, idx=2)]),
+			6.5,
+			places=3,
+		)
+
+	def test_empty_ledger_is_zero(self):
+		# A never-funded tree, and legacy Main Slip trees which carry no ledger at all.
+		self.assertEqual(tb.tree_metal_qty([]), 0.0)
+		self.assertEqual(tb.tree_metal_qty(None), 0.0)
+		self.assertEqual(tb.tree_metal_qty([md(0, 0, 0)]), 0.0)
+
+	def test_over_drawn_ledger_never_returns_negative(self):
+		# 154 legacy trees store a negative pending; a weight must never come back negative.
+		self.assertGreaterEqual(tb.tree_metal_qty([md(0, 37000.0, 0)]), 0.0)
+		self.assertEqual(tb.tree_metal_qty([md(-5.0, 0, 0)]), 0.0)
+
+	def test_reads_plain_dicts_as_well_as_documents(self):
+		# get_item_from_tree_no passes frappe.get_all rows, not child Documents.
+		import frappe
+
+		rows = [
+			frappe._dict(
+				item_code=ITEM_A, issue_qty=10.0, receive_qty=9.9, loss_qty=0.1
+			)
+		]
+		self.assertAlmostEqual(tb.tree_metal_qty(rows), 9.9, places=3)
 
 	def tearDown(self):
 		return super().tearDown()

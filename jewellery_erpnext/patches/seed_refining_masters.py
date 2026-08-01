@@ -205,7 +205,13 @@ def _ensure_allow_multiple_items():
 
 
 def _ensure_service_item_uoms():
-	"""Give REF-SVC-001 the UOM Conversion Detail rows the external refining PO needs.
+	"""Give the refining PO's billable items the UOM Conversion Detail rows they need.
+
+	Applies to REF-SVC-001 **and** to every REF-* pricing category, because a Purchase Order
+	line is now billed under the matched Refinery Price List's own item rather than the
+	generic charge item. Those categories are seeded with only their stock UOM (Gram, or
+	Litre for REF-UL-001), while a Flat Charge slab bills 1 Nos — so without this the line's
+	UOM has no conversion row at all.
 
 	The service line's qty is no longer a piece count (1 Nos) but the summed material
 	weight, so its uom is Gram / Litre / Carat depending on what was sent — and
@@ -218,20 +224,22 @@ def _ensure_service_item_uoms():
 	Carat is included because a consignment can legitimately bill a carat line if the
 	returned-intact exclusion in _external_billable_rows is ever relaxed.
 	"""
-	if not frappe.db.exists("Item", SERVICE_ITEM):
-		return
-	item = frappe.get_doc("Item", SERVICE_ITEM)
-	changed = False
-	for uom in ("Nos", "Gram", "Litre", "Carat"):
-		if not frappe.db.exists("UOM", uom):
+	billable = [SERVICE_ITEM] + [code for code, *_ in DUST_ITEMS]
+	for item_code in billable:
+		if not frappe.db.exists("Item", item_code):
 			continue
-		if any(row.uom == uom for row in item.uoms):
-			continue
-		item.append("uoms", {"uom": uom, "conversion_factor": 1.0})
-		changed = True
-	if changed:
-		item.flags.ignore_permissions = True
-		item.save(ignore_permissions=True)
+		item = frappe.get_doc("Item", item_code)
+		changed = False
+		for uom in ("Nos", "Gram", "Litre", "Carat"):
+			if not frappe.db.exists("UOM", uom):
+				continue
+			if any(row.uom == uom for row in item.uoms):
+				continue
+			item.append("uoms", {"uom": uom, "conversion_factor": 1.0})
+			changed = True
+		if changed:
+			item.flags.ignore_permissions = True
+			item.save(ignore_permissions=True)
 
 
 def execute():
