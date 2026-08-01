@@ -6,7 +6,6 @@ from frappe.query_builder.functions import Locate
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
 def item_query_filters(doctype, txt, searchfield, start, page_len, filters):
-
 	Item = frappe.qb.DocType("Item")
 
 	loss_variants = frappe.db.get_list("Item", {"custom_is_loss_item": 1}, pluck="name")
@@ -28,10 +27,18 @@ def item_query_filters(doctype, txt, searchfield, start, page_len, filters):
 			| (Item.item_name.like(f"%{txt}%"))
 			| (Item.item_group.like(f"%{txt}%"))
 		)
-		.orderby(Case().when(Locate(txt, Item.name) > 0, Locate(txt, Item.name)).else_(99999))
-		.orderby(Case().when(Locate(txt, Item.item_name) > 0, Locate(txt, Item.item_name)).else_(99999))
 		.orderby(
-			Case().when(Locate(txt, Item.item_group) > 0, Locate(txt, Item.item_group)).else_(99999)
+			Case().when(Locate(txt, Item.name) > 0, Locate(txt, Item.name)).else_(99999)
+		)
+		.orderby(
+			Case()
+			.when(Locate(txt, Item.item_name) > 0, Locate(txt, Item.item_name))
+			.else_(99999)
+		)
+		.orderby(
+			Case()
+			.when(Locate(txt, Item.item_group) > 0, Locate(txt, Item.item_group))
+			.else_(99999)
 		)
 		.orderby(Item.idx, order=frappe.qb.desc)
 		.orderby(Item.name)
@@ -68,12 +75,20 @@ def warehouse_query_filters(doctype, txt, searchfield, start, page_len, filters)
 	# Construct the query with search conditions
 	query = (
 		query.where(
-			(Warehouse[searchfield].like(f"%{txt}%")) | (Warehouse.warehouse_name.like(f"%{txt}%"))
+			(Warehouse[searchfield].like(f"%{txt}%"))
+			| (Warehouse.warehouse_name.like(f"%{txt}%"))
 		)
-		.orderby(Case().when(Locate(txt, Warehouse.name) > 0, Locate(txt, Warehouse.name)).else_(99999))
 		.orderby(
 			Case()
-			.when(Locate(txt, Warehouse.warehouse_name) > 0, Locate(txt, Warehouse.warehouse_name))
+			.when(Locate(txt, Warehouse.name) > 0, Locate(txt, Warehouse.name))
+			.else_(99999)
+		)
+		.orderby(
+			Case()
+			.when(
+				Locate(txt, Warehouse.warehouse_name) > 0,
+				Locate(txt, Warehouse.warehouse_name),
+			)
 			.else_(99999)
 		)
 		.orderby(Warehouse.idx, order=frappe.qb.desc)
@@ -90,51 +105,78 @@ def get_filters_cond(filters):
 	Warehouse = frappe.qb.DocType("Warehouse")
 	conditions = []
 
-	if filters["stock_entry_type"] == "Material Transfer (DEPARTMENT)" and filters.get("department"):
+	if filters["stock_entry_type"] == "Material Transfer (DEPARTMENT)" and filters.get(
+		"department"
+	):
 		raw_department = frappe.db.get_value(
 			"Warehouse",
-			{"disabled": 0, "warehouse_type": "Raw Material", "department": filters.get("department")},
+			{
+				"disabled": 0,
+				"warehouse_type": "Raw Material",
+				"department": filters.get("department"),
+			},
 		)
 		if raw_department:
-			conditions.append((Warehouse.warehouse_type == "Transit") | (Warehouse.name == raw_department))
+			conditions.append(
+				(Warehouse.warehouse_type == "Transit")
+				| (Warehouse.name == raw_department)
+			)
 		else:
 			conditions.append(Warehouse.warehouse_type == "Transit")
 
 	elif filters["stock_entry_type"] in (
-		"Material Transfer (MAIN SLIP)",
+		"Material Transfer",
 		"Material Transfer (Subcontracting Work Order)",
 	) and filters.get("department"):
 		raw_department = frappe.db.get_value(
 			"Warehouse",
-			{"disabled": 0, "warehouse_type": "Raw Material", "department": filters.get("department")},
+			{
+				"disabled": 0,
+				"warehouse_type": "Raw Material",
+				"department": filters.get("department"),
+			},
 		)
 
-		if filters["stock_entry_type"] == "Material Transfer (MAIN SLIP)":
-			conditions.append((Warehouse.employee != "") | (Warehouse.employee.isnull().negate()))
+		if filters["stock_entry_type"] == "Material Transfer":
+			conditions.append(
+				(Warehouse.employee != "") | (Warehouse.employee.isnull().negate())
+			)
 		else:
-			conditions.append((Warehouse.subcontracter != "") | (Warehouse.subcontracter.isnull().negate()))
+			conditions.append(
+				(Warehouse.subcontracter != "")
+				| (Warehouse.subcontracter.isnull().negate())
+			)
 
-		if raw_department and filters["stock_entry_type"] == "Material Transfer (MAIN SLIP)":
+		if raw_department and filters["stock_entry_type"] == "Material Transfer":
 			conditions.append(
 				(Warehouse.employee != "")
 				| (Warehouse.employee.isnull().negate())
-				| (Warehouse.name == raw_department) & (Warehouse.warehouse_type == "Raw Material")
+				| (Warehouse.name == raw_department)
+				& (Warehouse.warehouse_type == "Raw Material")
 			)
 		elif raw_department:
 			conditions.append(
 				(Warehouse.subcontracter != "")
 				| (Warehouse.subcontracter.isnull().negate())
-				| (Warehouse.name == raw_department) & (Warehouse.warehouse_type == "Raw Material")
+				| (Warehouse.name == raw_department)
+				& (Warehouse.warehouse_type == "Raw Material")
 			)
 		else:
-			conditions.append((Warehouse.subcontracter != "") | (Warehouse.subcontracter.isnull().negate()))
+			conditions.append(
+				(Warehouse.subcontracter != "")
+				| (Warehouse.subcontracter.isnull().negate())
+			)
 
-	elif filters["stock_entry_type"] == "Material Transfer (WORK ORDER)" and filters.get(
-		"department"
-	):
+	elif filters[
+		"stock_entry_type"
+	] == "Material Transfer (WORK ORDER)" and filters.get("department"):
 		raw_department = frappe.db.get_value(
 			"Warehouse",
-			{"disabled": 0, "warehouse_type": "Raw Material", "department": filters.get("department")},
+			{
+				"disabled": 0,
+				"warehouse_type": "Raw Material",
+				"department": filters.get("department"),
+			},
 		)
 		condition = (Warehouse.warehouse_type == "Manufacturing") & (
 			((Warehouse.employee != "") | (Warehouse.employee.isnull().negate()))
