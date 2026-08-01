@@ -415,6 +415,11 @@ def create_material_receipt_for_certification(self):
 	]:
 		return
 
+	# Local import: product_certification.py imports this module at load time.
+	from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification import (
+		_slip_key,
+	)
+
 	if not self.department:
 		frappe.throw(frappe._("Department is mandatory for receipt."))
 	if not self.supplier:
@@ -440,15 +445,19 @@ def create_material_receipt_for_certification(self):
 	issue_item_wh_map = _get_issue_item_source_warehouse_map(issue_se)
 	issue_item_defaults = _get_issue_item_receipt_defaults(issue_se)
 
+	# Keyed on the full (main_slip, tree_no) pair, not main_slip alone: trees minted since the
+	# casting rework carry no Main Slip, so keying on the slip collapses every tree in the
+	# document onto one entry and hands the wrong main/loss item to rows of the other trees.
 	loss_item_by_slip = {}
 	main_item_by_slip = {}
 	all_loss_items = set()
 	all_main_items = set()
 	for pd in self.product_details:
-		if pd.get("main_slip"):
-			main_item_by_slip[pd.main_slip] = pd.item_code
+		key = _slip_key(pd)
+		if any(key):
+			main_item_by_slip[key] = pd.item_code
 			if pd.get("loss_item"):
-				loss_item_by_slip[pd.main_slip] = pd.loss_item
+				loss_item_by_slip[key] = pd.loss_item
 		all_main_items.add(pd.item_code)
 		if pd.get("loss_item"):
 			all_loss_items.add(pd.loss_item)
@@ -462,11 +471,13 @@ def create_material_receipt_for_certification(self):
 		if qty <= 0:
 			continue
 
-		loss_item = loss_item_by_slip.get(row.get("main_slip"))
+		row_key = _slip_key(row)
+
+		loss_item = loss_item_by_slip.get(row_key)
 		if not loss_item and len(all_loss_items) == 1:
 			loss_item = list(all_loss_items)[0]
 
-		main_item = main_item_by_slip.get(row.get("main_slip"))
+		main_item = main_item_by_slip.get(row_key)
 		if not main_item and len(all_main_items) == 1:
 			main_item = list(all_main_items)[0]
 		is_loss_row = bool(loss_item and row.item_code == loss_item)

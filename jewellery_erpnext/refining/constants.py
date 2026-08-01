@@ -20,16 +20,19 @@ outside ``refining/``) can import it without creating a cycle.
 
 History: "Dust Refining" was renamed to "Scrap Refining" and the old "Scrap Refining"
 to "Unused/Loose Material Refining" — the business calls the sweep material scrap, and
-what used to be called scrap is unused/loose material returned from production. The old
-names survive only in the ``RFN-DST-``/``RFN-SCP-`` naming-series prefixes of documents
-created before the rename (document names are immutable).
+what used to be called scrap is unused/loose material returned from production.
+
+The naming series followed later: Scrap Refining now mints ``RFN-SCP-`` and Unused/Loose
+Material Refining mints ``RFN-ULM-``. Document names are immutable, so the older prefixes
+still occur — ``RFN-DST-`` is always pre-rename Dust Refining, and ``RFN-SCP-`` up to
+26-00047 is pre-rename Scrap (i.e. today's unused/loose material).
 """
 
-REFINING_TYPE_SCRAP = "Scrap Refining"  # was "Dust Refining" (series RFN-DST-)
+REFINING_TYPE_SCRAP = "Scrap Refining"  # was "Dust Refining" (series RFN-SCP-)
 REFINING_TYPE_WORK_ORDER = "Work Order Refining"
 REFINING_TYPE_SERIAL = "Serial Number Refining"
 REFINING_TYPE_UNUSED = (
-	"Unused/Loose Material Refining"  # was "Scrap Refining" (RFN-SCP-)
+	"Unused/Loose Material Refining"  # was "Scrap Refining" (series RFN-ULM-)
 )
 
 #: Dropdown order — must match ``Refining Entry.refining_type`` options.

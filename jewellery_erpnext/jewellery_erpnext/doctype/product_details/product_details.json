@@ -115,14 +115,14 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval: parent.service_type == \"Fire Assy Service\";",
+   "depends_on": "eval: [\"Fire Assy Service\", \"XRF Services\"].includes(parent.service_type);",
    "fieldname": "tree_no",
    "fieldtype": "Link",
    "label": "Tree No",
    "options": "Tree Number"
   },
   {
-   "depends_on": "eval: parent.service_type == \"Fire Assy Service\";",
+   "depends_on": "eval: [\"Fire Assy Service\", \"XRF Services\"].includes(parent.service_type);",
    "fieldname": "main_slip",
    "fieldtype": "Link",
    "label": "Main Slip",
@@ -162,7 +162,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2024-09-09 16:55:27.302637",
+ "modified": "2026-07-31 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Product Details",

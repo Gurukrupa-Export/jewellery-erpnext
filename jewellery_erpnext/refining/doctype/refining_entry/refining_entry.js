@@ -376,11 +376,13 @@ frappe.ui.form.on("Refining Entry", {
 	// --- Custom triggers ---
 
 	set_naming_series(frm) {
+		// Must stay in step with RefiningEntry.set_naming_series, which is the one that
+		// actually names the document (before_insert runs ahead of autoname).
 		const series_map = {
-			"Scrap Refining": "RFN-DST-.YY.-.#####",
+			"Scrap Refining": "RFN-SCP-.YY.-.#####",
 			"Work Order Refining": "RFN-MWO-.YY.-.#####",
 			"Serial Number Refining": "RFN-SRN-.YY.-.#####",
-			"Unused/Loose Material Refining": "RFN-SCP-.YY.-.#####",
+			"Unused/Loose Material Refining": "RFN-ULM-.YY.-.#####",
 		};
 		if (series_map[frm.doc.refining_type]) {
 			frm.set_value("naming_series", series_map[frm.doc.refining_type]);
@@ -630,11 +632,6 @@ frappe.ui.form.on("Refining Entry", {
 									reqd: 1,
 									default: frm.doc.qty_to_refine || 0,
 								},
-								{
-									fieldname: "received_qty",
-									fieldtype: "Float",
-									label: __("Received Quantity (if applicable)"),
-								},
 							],
 							(values) => {
 								// Disable the trigger button for the duration of the call —
@@ -645,7 +642,6 @@ frappe.ui.form.on("Refining Entry", {
 								frappe.show_alert(__("Receiving Material..."));
 								frm.call("receive_from_supplier", {
 									recovery_weight: values.recovery_weight,
-									received_qty: values.received_qty,
 								})
 									.then(() => frm.reload_doc())
 									.finally(() => btn.prop("disabled", false));
