@@ -212,7 +212,7 @@ frappe.ui.form.on("Stock Entry", {
 					"Material Transfer (WORK ORDER)",
 					"Material Transfer (Department)",
 					"Material Transfer (Employee)",
-					"Material Transfer (MAIN SLIP)",
+					"Material Transfer",
 				].includes(frm.doc.stock_entry_type) &&
 				row.inventory_type == "Customer Goods" &&
 				!frm.doc.manufacturing_work_order
@@ -450,7 +450,7 @@ frappe.ui.form.on("Stock Entry", {
 		if (
 			[
 				"Material Transfer (DEPARTMENT)",
-				"Material Transfer (MAIN SLIP)",
+				"Material Transfer",
 				"Material Transfer (WORK ORDER)",
 				"Material Transfer (Subcontracting Work Order)",
 			].includes(frm.doc.stock_entry_type)
@@ -624,7 +624,7 @@ frappe.ui.form.on("Stock Entry", {
 		if (
 			frm.doc.purpose != "Manufacture" &&
 			frm.doc.purpose != "Repack" &&
-			frm.doc.stock_entry_type != "Material Transfer (MAIN SLIP)"
+			frm.doc.stock_entry_type != "Material Transfer"
 		) {
 			if (frm.doc.to_employee) {
 				frappe.db

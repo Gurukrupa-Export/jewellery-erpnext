@@ -6,7 +6,7 @@ import json
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint
+from frappe.utils import cint, cstr
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import (
 	make_subcontracting_order,
@@ -18,6 +18,16 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 	create_mwo,
 	make_manufacturing_order,
 )
+
+
+def is_subcontracting_selected(value):
+	"""True only when the plan is actually flagged for subcontracting.
+
+	``Manufacturing Plan.is_subcontracting`` is a Select ("Yes"/"No"), so a plain truthiness
+	test is wrong -- the string "No" is truthy and would take the subcontracting branch.
+	Docs created before the field was converted from Check still hold "1"/"0", so those are
+	accepted too."""
+	return cstr(value).strip().lower() in ("yes", "1")
 
 
 class ManufacturingPlan(Document):
@@ -79,8 +89,10 @@ class ManufacturingPlan(Document):
 		try:
 			for row in self.manufacturing_plan_table:
 				if row.docname or row.mwo:
-					create_manufacturing_order(self, row, cache_data)
-					frappe.flags.is_manufactur_order_created = True
+					# Only claim success for rows that actually produced an order -- a row
+					# whose manufacturing_order_qty is 0 creates nothing.
+					if create_manufacturing_order(self, row, cache_data):
+						frappe.flags.is_manufactur_order_created = True
 					if row.subcontracting:
 						is_subcontracting = True
 					if row.manufacturing_bom is None:
@@ -101,6 +113,13 @@ class ManufacturingPlan(Document):
 
 		if frappe.flags.is_manufactur_order_created:
 			frappe.msgprint(_("Manufacturing Orders Created Successfully"))
+		elif not is_subcontracting:
+			frappe.msgprint(
+				_(
+					"No Manufacturing Order was created. Check Manufacturing Order Qty on the plan rows."
+				),
+				indicator="orange",
+			)
 
 		if is_subcontracting:
 			create_subcontracting_order(self)
@@ -257,6 +276,8 @@ class ManufacturingPlan(Document):
 
 	@frappe.whitelist()
 	def get_items_for_production(self):
+		is_subcontracting = is_subcontracting_selected(self.is_subcontracting)
+
 		if self.select_manufacture_order in ["Manufacturing", "Repair"]:
 			SalesOrderItem = frappe.qb.DocType("Sales Order Item")
 			Item = frappe.qb.DocType("Item")
@@ -336,8 +357,8 @@ class ManufacturingPlan(Document):
 				bom = item_row.get("serial_id_bom")
 			if bom:
 				item_row["manufacturing_order_qty"] = item_row.get("pending_qty")
-				if self.is_subcontracting:
-					item_row["subcontracting"] = self.is_subcontracting
+				if is_subcontracting:
+					item_row["subcontracting"] = 1
 					item_row["subcontracting_qty"] = item_row.get("pending_qty")
 					item_row["supplier"] = self.supplier
 					item_row["estimated_delivery_date"] = self.estimated_date
@@ -518,13 +539,14 @@ def fetch_doc_map(doctype, names, fields, key_field="name"):
 
 
 def create_manufacturing_order(doc, row, cache_data=None):
+	"""Create one Parent Manufacturing Order per unit of the row. Returns the number created."""
 	if cache_data is None:
 		cache_data = {}
 
 	cnt = int(row.manufacturing_order_qty / row.qty_per_manufacturing_order)
 
 	if not cnt:
-		return
+		return 0
 
 	so_data_map = cache_data.get("so_data", {})
 	mwo_data_map = cache_data.get("mwo_data", {})
@@ -657,6 +679,8 @@ def create_manufacturing_order(doc, row, cache_data=None):
 			so_det=so_det,
 			mp_context=mp_context,
 		)
+
+	return cnt
 
 
 def create_subcontracting_order(doc):

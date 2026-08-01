@@ -3109,15 +3109,6 @@ def create_test_data():
 
 
 def setup_data():
-	if not frappe.db.exists("Stock Entry Type", "Material Transfer (MAIN SLIP)"):
-		frappe.get_doc(
-			{
-				"doctype": "Stock Entry Type",
-				"name": "Material Transfer (MAIN SLIP)",
-				"purpose": "Material Transfer",
-			}
-		).insert(ignore_permissions=True)
-
 	if not frappe.db.exists("Stock Entry Type", "Process Loss"):
 		frappe.get_doc(
 			{
