@@ -214,7 +214,7 @@ def get_allowed_item_types(customer, sales_type):
 def on_submit(self,method):
 	if self.company == 'Sadguru Diamond':
 		return
-	if self.is_return:
+	if self.is_return and self.sales_type=='Hybrid':
 		total_making_charge = 0
 		for row in self.items:
 			if row.item_code=='Subcontracting Charges':
