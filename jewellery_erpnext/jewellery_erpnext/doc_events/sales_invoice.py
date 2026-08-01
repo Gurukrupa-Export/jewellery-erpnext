@@ -1170,8 +1170,15 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gol
 
 		if not i.is_customer_item:
 			if einvoice_item in invoice_data:
-				invoice_data[einvoice_item]["amount"] = round(amount , precision)
-				invoice_data[einvoice_item]["qty"] = qty
+				if so_item:
+					invoice_data[einvoice_item]["amount"] = round(amount, precision)
+					invoice_data[einvoice_item]["qty"] = qty
+				else:
+				
+					invoice_data[einvoice_item]["amount"] = round(
+						flt(invoice_data[einvoice_item]["amount"]) + flt(amount), precision
+					)
+					invoice_data[einvoice_item]["qty"] = flt(invoice_data[einvoice_item]["qty"]) + flt(qty)
 			else:
 				invoice_data[einvoice_item] = {
 					"amount": amount,

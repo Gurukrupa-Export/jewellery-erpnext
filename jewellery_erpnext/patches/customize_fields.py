@@ -38,7 +38,7 @@ def execute():
    
    "fieldname": "custom_finding_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_metal_weight",
    "label": "Finding Weight",
    "module": "Jewellery Erpnext"
@@ -47,7 +47,7 @@ def execute():
   
    "fieldname": "custom_gemstone_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_finding_weight",
    "label": "Gemstone Weight",
    "module": "Jewellery Erpnext"
@@ -56,7 +56,7 @@ def execute():
 
    "fieldname": "custom_diamond_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_gemstone_weight",
    "label": "Diamond Weight",
    "module": "Jewellery Erpnext"
@@ -65,7 +65,7 @@ def execute():
   
    "fieldname": "custom_other_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_diamond_weight",
    "label": "Other Weight",
    "module": "Jewellery Erpnext"
@@ -74,7 +74,7 @@ def execute():
 
    "fieldname": "custom_diamond_pcs",
    "fieldtype": "Int",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
    "module": "Jewellery Erpnext"
@@ -83,7 +83,7 @@ def execute():
   
    "fieldname": "custom_gemstone_pcs",
    "fieldtype": "Int",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
    "module": "Jewellery Erpnext"
@@ -102,7 +102,7 @@ def execute():
     
    "fieldname": "custom_metal_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "items",
    "label": "Metal Weight",
    "module": "Jewellery Erpnext"
@@ -111,7 +111,7 @@ def execute():
     
    "fieldname": "custom_finding_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_metal_weight",
    "label": "Finding Weight",
    "module": "Jewellery Erpnext"
@@ -120,7 +120,7 @@ def execute():
     
    "fieldname": "custom_gemstone_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_finding_weight",
    "label": "Gemstone Weight",
    "module": "Jewellery Erpnext"
@@ -129,7 +129,7 @@ def execute():
     
    "fieldname": "custom_diamond_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_gemstone_weight",
    "label": "Diamond Weight",
    "module": "Jewellery Erpnext"
@@ -138,7 +138,7 @@ def execute():
     
    "fieldname": "custom_other_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_diamond_weight",
    "label": "Other Weight",
    "module": "Jewellery Erpnext"
@@ -147,7 +147,7 @@ def execute():
     
    "fieldname": "custom_diamond_pcs",
    "fieldtype": "Int",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
    "module": "Jewellery Erpnext"
@@ -156,7 +156,7 @@ def execute():
     
    "fieldname": "custom_gemstone_pcs",
    "fieldtype": "Int",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
    "module": "Jewellery Erpnext"
@@ -214,7 +214,7 @@ def execute():
   {
     
    "fieldname": "custom_diamond_pcs",
-   "fieldtype": "Int",
+   "fieldtype": "Data",
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
    "module": "Jewellery Erpnext"
@@ -222,7 +222,7 @@ def execute():
   {
     
    "fieldname": "custom_gemstone_pcs",
-   "fieldtype": "Int",
+   "fieldtype": "Data",
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
    "module": "Jewellery Erpnext"
@@ -241,7 +241,7 @@ def execute():
     
    "fieldname": "custom_metal_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "items",
    "label": "Metal Weight",
    "module": "Jewellery Erpnext"
@@ -250,7 +250,7 @@ def execute():
     
    "fieldname": "custom_finding_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_metal_weight",
    "label": "Finding Weight",
    "module": "Jewellery Erpnext"
@@ -259,7 +259,7 @@ def execute():
     
    "fieldname": "custom_gemstone_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_finding_weight",
    "label": "Gemstone Weight",
    "module": "Jewellery Erpnext"
@@ -268,7 +268,7 @@ def execute():
     
    "fieldname": "custom_diamond_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_gemstone_weight",
    "label": "Diamond Weight",
    "module": "Jewellery Erpnext"
@@ -277,7 +277,7 @@ def execute():
     
    "fieldname": "custom_other_weight",
    "fieldtype": "Float",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_diamond_weight",
    "label": "Other Weight",
    "module": "Jewellery Erpnext"
@@ -286,7 +286,7 @@ def execute():
     
    "fieldname": "custom_diamond_pcs",
    "fieldtype": "Int",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
    "module": "Jewellery Erpnext"
@@ -295,7 +295,7 @@ def execute():
     
    "fieldname": "custom_gemstone_pcs",
    "fieldtype": "Int",
-   "is_system_generated": 1,
+   
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
    "module": "Jewellery Erpnext"
@@ -362,7 +362,7 @@ def execute():
   {
     
    "fieldname": "custom_diamond_pcs",
-   "fieldtype": "Int",
+   "fieldtype": "Data",
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
    "module": "Jewellery Erpnext"
@@ -370,7 +370,7 @@ def execute():
   {
     
    "fieldname": "custom_gemstone_pcs",
-   "fieldtype": "Int",
+   "fieldtype": "Data",
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
    "module": "Jewellery Erpnext"
