@@ -18,7 +18,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 
 class GemstoneConversion(Document):
 	def before_validate(self):
-		# update_fifo_batch(self)
+		update_fifo_batch(self)
 		self.validate_gemstone_type()
 		self.validate_target_item()
 

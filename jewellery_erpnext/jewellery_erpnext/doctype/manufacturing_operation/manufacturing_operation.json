@@ -31,7 +31,6 @@
   "for_subcontracting",
   "subcontractor",
   "employee",
-  "main_slip_no",
   "previous_operation",
   "previous_mop",
   "is_finding",
@@ -119,12 +118,6 @@
    "fieldtype": "Select",
    "label": "Type",
    "options": "\nManufacturing Work Order\nMain Slip"
-  },
-  {
-   "fieldname": "main_slip_no",
-   "fieldtype": "Link",
-   "label": "Main Slip No",
-   "options": "Main Slip"
   },
   {
    "fieldname": "department",
@@ -798,11 +791,11 @@
    "link_fieldname": "manufacturing_operation"
   }
  ],
- "modified": "2026-05-07 17:57:37.715363",
- "modified_by": "mitali_s@gkexport.com",
+ "modified": "2026-07-31 16:31:29.486836",
+ "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Manufacturing Operation",
- "naming_rule": "Expression (old style)",
+ "naming_rule": "Expression",
  "owner": "Administrator",
  "permissions": [
   {

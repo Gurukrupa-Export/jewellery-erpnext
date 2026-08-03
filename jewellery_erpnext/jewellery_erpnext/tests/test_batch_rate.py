@@ -13,6 +13,7 @@ against ``SimpleNamespace`` docs with ``frappe.db`` mocked.
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import frappe
 
 from frappe.tests import IntegrationTestCase
 
@@ -22,6 +23,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events import (
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils import (
 	party_link as party_link_utils,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.batch import (
+	batch as batch_module,
 )
 
 
@@ -181,31 +185,14 @@ class TestBatchRateStamping(IntegrationTestCase):
 
 		self.assertIsNone(batch.custom_metal_rate)
 
-	# --- Non-metal items stay gated behind the feature flag -----------------------
+	# --- Requirement C: non-metal items are stamped too ---------------------------
 
-	def test_non_metal_item_gets_no_rate_by_default(self):
-		# Stock Entry Detail.custom_metal_rate is fetch_from the batch, and the SNC
-		# rate maps fall through to the live basic_rate for diamond/gemstone --
-		# filling this without the flag would silently change that valuation.
-		batch = _batch(item="D-NT-RO-6B-+8-8.5")
-		values = {
-			"__child_doctype__": "Stock Entry Detail",
-			("Stock Entry Detail", "inventory_type"): "Regular Stock",
-			("Stock Entry Detail", "customer"): None,
-			("Stock Entry Detail", "employee"): None,
-			("Item Variant Attribute", "attribute_value"): None,
-			("Attribute Value", "is_metal_type"): 0,
-			("Stock Entry Detail", "basic_rate"): 900,
-			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
-		}
-		with patch.object(batch_utils.frappe, "db", _db(values)):
-			with patch.object(batch_utils.frappe, "conf", {}):
-				batch_utils.update_inventory_dimentions(batch)
-
-		self.assertFalse(batch.custom_metal_rate)
-
-	def test_non_metal_item_gets_rate_when_flag_enabled(self):
-		batch = _batch(item="D-NT-RO-6B-+8-8.5")
+	def test_diamond_item_gets_the_row_rate(self):
+		# KGJPL-SE-MR-26-00078: a Material Receipt of D-NT-RO-6B-+00-0 at basic_rate
+		# 346 minted batch KG2F075-DNTROX6X20X10-0V2C3 with Batch Rate 0, because a
+		# diamond carries no "Metal Type" attribute and the old code only stamped
+		# items whose Attribute Value had is_metal_type.
+		batch = _batch(item="D-NT-RO-6B-+00-0")
 		values = {
 			"__child_doctype__": "Stock Entry Detail",
 			("Stock Entry Detail", "inventory_type"): "Regular Stock",
@@ -214,16 +201,85 @@ class TestBatchRateStamping(IntegrationTestCase):
 			("Item Variant Attribute", "attribute_value"): None,
 			("Attribute Value", "is_metal_type"): 0,
 			("Stock Entry Detail", "custom_metal_rate"): None,
-			("Stock Entry Detail", "basic_rate"): 900,
+			("Stock Entry Detail", "basic_rate"): 346,
 			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
 		}
 		with patch.object(batch_utils.frappe, "db", _db(values)):
-			with patch.object(
-				batch_utils.frappe, "conf", {"stamp_batch_rate_for_all_items": 1}
-			):
-				batch_utils.update_inventory_dimentions(batch)
+			batch_utils.update_inventory_dimentions(batch)
 
-		self.assertEqual(batch.custom_metal_rate, 900)
+		self.assertEqual(batch.custom_metal_rate, 346)
+
+	def test_diamond_purchase_receipt_gets_the_item_rate(self):
+		batch = _batch(
+			item="D-NT-RO-6B-+0-2",
+			reference_doctype="Purchase Receipt",
+			reference_name="GE-PR-26-00011",
+		)
+		values = {
+			"__child_doctype__": "Purchase Receipt Item",
+			("Purchase Receipt Item", "inventory_type"): "Regular Stock",
+			("Purchase Receipt Item", "customer"): None,
+			("Purchase Receipt Item", "employee"): None,
+			("Item Variant Attribute", "attribute_value"): None,
+			("Attribute Value", "is_metal_type"): 0,
+			("Purchase Receipt Item", "rate"): 32050,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		with patch.object(batch_utils.frappe, "db", _db(values)):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(batch.custom_metal_rate, 32050)
+
+	def test_consumable_item_gets_the_row_rate(self):
+		# Nothing about a consumable is metal, but a batch with a rate is still
+		# better than a batch with 0 -- there is no per-item-group narrowing.
+		batch = _batch(item="Garbage Bags")
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Regular Stock",
+			("Stock Entry Detail", "customer"): None,
+			("Stock Entry Detail", "employee"): None,
+			("Item Variant Attribute", "attribute_value"): None,
+			("Attribute Value", "is_metal_type"): 0,
+			("Stock Entry Detail", "custom_metal_rate"): None,
+			("Stock Entry Detail", "basic_rate"): 95,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		with patch.object(batch_utils.frappe, "db", _db(values)):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(batch.custom_metal_rate, 95)
+
+	def test_alloy_item_still_goes_to_the_alloy_rate(self):
+		# The alloy/metal split is the ONE distinction that survives: batch.on_update
+		# blends the two pools separately for a Repack-Metal Conversion, so an alloy
+		# rate landing on custom_metal_rate would be double-counted there.
+		batch = _batch(item="M-AL")
+		values = {
+			"__child_doctype__": "Stock Entry Detail",
+			("Stock Entry Detail", "inventory_type"): "Regular Stock",
+			("Stock Entry Detail", "customer"): None,
+			("Stock Entry Detail", "employee"): None,
+			("Stock Entry Detail", "custom_alloy_rate"): None,
+			("Stock Entry Detail", "basic_rate"): 1000,
+			("Item", "custom_inventory_type_can_be_customer_goods"): 1,
+		}
+		db = _db(values)
+		# The alloy lookup is the only get_all("Item", ...) in this function.
+		db.get_all.side_effect = lambda doctype, filters=None, fields=None, **kw: (
+			["M-AL"]
+			if doctype == "Item"
+			else ["Alloy"]
+			if doctype == "Item Group"
+			else [SimpleNamespace(options="Stock Entry Detail")]
+			if doctype == "DocField"
+			else []
+		)
+		with patch.object(batch_utils.frappe, "db", db):
+			batch_utils.update_inventory_dimentions(batch)
+
+		self.assertEqual(batch.custom_alloy_rate, 1000)
+		self.assertFalse(batch.custom_metal_rate)
 
 	# --- A blended conversion rate must survive a later save ----------------------
 
@@ -408,3 +464,105 @@ class TestSubcontractingBatchRate(IntegrationTestCase):
 		doc = SimpleNamespace(doctype="Purchase Receipt")
 		row = SimpleNamespace(get=lambda f: {"rate": 7420}.get(f))
 		self.assertEqual(batch_rename._source_row_rate(doc, row), 7420)
+
+
+def _doc(**fields):
+	defaults = {"item": "D-NT-RO-6B-+9-9.5"}
+	defaults.update(fields)
+	return frappe._dict(defaults)
+
+
+class _Ctx:
+	"""Patch the three sources the resolver reads: user default, global default and
+	the Company table (``abbr`` lookup + the single-company probe)."""
+
+	def __init__(self, user_default=None, global_default=None, companies=(), abbr=None):
+		self.patches = [
+			patch.object(
+				frappe.defaults, "get_user_default", return_value=user_default
+			),
+			patch.object(
+				frappe.defaults, "get_global_default", return_value=global_default
+			),
+			patch.object(frappe, "get_all", return_value=list(companies)),
+			patch.object(frappe.db, "get_value", return_value=abbr),
+		]
+
+	def __enter__(self):
+		for p in self.patches:
+			p.start()
+		return self
+
+	def __exit__(self, *exc):
+		for p in self.patches:
+			p.stop()
+
+
+class TestBatchCompanyAbbr(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_group_company_keeps_its_hand_picked_code(self):
+		"""The four Gurukrupa companies must never drift to Company.abbr -- 20k+
+		existing batch names carry these prefixes."""
+		with _Ctx(abbr="GEPL"):
+			self.assertEqual(
+				batch_module.get_batch_company_abbr(
+					_doc(custom_company="Gurukrupa Export Private Limited")
+				),
+				"GE",
+			)
+			self.assertEqual(
+				batch_module.get_batch_company_abbr(
+					_doc(custom_company="Sadguru Hallmarking Centre")
+				),
+				"SHC",
+			)
+
+	def test_batch_company_wins_over_session_default(self):
+		"""A caller that knows which company owns the material (Refining Entry sets
+		custom_company) must not be overridden by whoever is logged in."""
+		with _Ctx(user_default="Gurukrupa Export Private Limited"):
+			self.assertEqual(
+				batch_module.get_batch_company_abbr(
+					_doc(custom_company="KG GK Jewellers Private Limited")
+				),
+				"KG",
+			)
+
+	def test_unmapped_company_falls_back_to_company_abbr(self):
+		"""A company nobody added to the map still mints batches -- the alternative is
+		aborting the Stock Entry that created it."""
+		with _Ctx(abbr="TC"):
+			self.assertEqual(
+				batch_module.get_batch_company_abbr(
+					_doc(custom_company="Test_Company")
+				),
+				"TC",
+			)
+
+	def test_company_abbr_is_sanitized(self):
+		"""Batch names are '-' delimited (batch_rename reads the trailing serial), so a
+		prefix can never carry a separator."""
+		with _Ctx(abbr="T-C 1"):
+			self.assertEqual(
+				batch_module.get_batch_company_abbr(
+					_doc(custom_company="Test_Company")
+				),
+				"TC1",
+			)
+
+	def test_single_company_site_needs_no_default(self):
+		"""A fresh bench / CI site has no default company anywhere; with exactly one
+		Company there is nothing to disambiguate."""
+		with _Ctx(companies=["Test_Company"], abbr="T"):
+			self.assertEqual(batch_module.get_batch_company_abbr(_doc()), "T")
+
+	def test_ambiguous_multi_company_site_is_refused(self):
+		"""No company anywhere AND several to choose from: guessing would stamp one
+		company's material with another's code, which is unrecoverable once the batch
+		is transacted."""
+		with _Ctx(companies=["Company A", "Company B"]):
+			with self.assertRaises(frappe.ValidationError):
+				batch_module.get_batch_company_abbr(_doc())

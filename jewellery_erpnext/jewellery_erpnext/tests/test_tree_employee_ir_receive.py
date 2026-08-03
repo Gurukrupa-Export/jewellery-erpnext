@@ -87,7 +87,7 @@ def make_tree(issue=0.0, receive=0.0, loss=0.0, status="Issued", name=TREE, rows
 	return tree
 
 
-def make_recv_eir(rows, is_main_slip_required=1, subcontracting="No", typ="Receive"):
+def make_recv_eir(rows, is_raw_material=1, subcontracting="No", typ="Receive"):
 	"""Receive EIR. rows: [(mwo, gross_wt, received_gross_wt)]."""
 	return SimpleNamespace(
 		name="EIR-RECV-1",
@@ -97,7 +97,7 @@ def make_recv_eir(rows, is_main_slip_required=1, subcontracting="No", typ="Recei
 		department="Waxing - GEPL",
 		employee="HR-EMP-00267",
 		subcontracting=subcontracting,
-		is_main_slip_required=is_main_slip_required,
+		is_raw_material=is_raw_material,
 		manually_book_loss_details=[],
 		employee_loss_details=[],
 		employee_ir_operations=[
@@ -310,10 +310,10 @@ class TestZeroDrawNeverConsultsLedger(_TreeReceiveHarness):
 		self.assertAlmostEqual(self.row(tree).receive_qty, 37000.0, places=3)
 
 	def test_no_main_slip_means_no_draw(self):
-		# Without is_main_slip_required nothing is injected, so nothing leaves the MSL pool.
+		# Without is_raw_material nothing is injected, so nothing leaves the MSL pool.
 		# The pre-existing unbacked-gain guard owns this case.
 		tree = make_tree(issue=0.0)
-		eir = make_recv_eir([("MWO-A", 5.000, 4.800)], is_main_slip_required=0)
+		eir = make_recv_eir([("MWO-A", 5.000, 4.800)], is_raw_material=0)
 		self.run_validate(eir, tree)
 		self.run_update(eir, tree)
 		self.assertAlmostEqual(self.row(tree).receive_qty, 0.0, places=3)

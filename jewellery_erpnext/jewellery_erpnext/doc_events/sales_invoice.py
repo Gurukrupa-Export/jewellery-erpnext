@@ -214,14 +214,14 @@ def get_allowed_item_types(customer, sales_type):
 def on_submit(self,method):
 	if self.company == 'Sadguru Diamond':
 		return
-	if self.is_return:
+	if self.is_return and self.sales_type=='Hybrid':
 		total_making_charge = 0
 		for row in self.items:
 			if row.item_code=='Subcontracting Charges':
 				return
 			# frappe.msgprint(f"Row: {row.idx}, Item: {row.item_code}, BOM: {row.bom}")
 			bom_doc = frappe.get_doc("BOM", row.bom)
-			total_making_charge += bom_doc.making_charge
+			total_making_charge += round(bom_doc.making_charge,2)
 		new_si = frappe.copy_doc(self)
 		new_si.sales_invoice = self.name
 		new_si.set("items", [])
@@ -1170,8 +1170,15 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gol
 
 		if not i.is_customer_item:
 			if einvoice_item in invoice_data:
-				invoice_data[einvoice_item]["amount"] = round(amount , precision)
-				invoice_data[einvoice_item]["qty"] = qty
+				if so_item:
+					invoice_data[einvoice_item]["amount"] = round(amount, precision)
+					invoice_data[einvoice_item]["qty"] = qty
+				else:
+				
+					invoice_data[einvoice_item]["amount"] = round(
+						flt(invoice_data[einvoice_item]["amount"]) + flt(amount), precision
+					)
+					invoice_data[einvoice_item]["qty"] = flt(invoice_data[einvoice_item]["qty"]) + flt(qty)
 			else:
 				invoice_data[einvoice_item] = {
 					"amount": amount,
@@ -1255,7 +1262,7 @@ def update_bom_details(self, row, bom_doc, is_branch_customer, invoice_data, gol
 				invoice_data[f"{einvoice_item}"] = {
 					"amount": amount,
 					"qty": i.quantity,
-					"rate": i.rate,
+					"rate": rate,
 					"hsn_code": hsn_code,
 					"uom": uom,
 					"income_account": row.income_account,

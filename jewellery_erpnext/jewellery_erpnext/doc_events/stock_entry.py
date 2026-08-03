@@ -105,7 +105,7 @@ def before_validate(self, method):
 			"Customer Goods Received",
 		]:
 			if not pure_item_purity:
-				if self.stock_entry_type == "Material Transfer (MAIN SLIP)":
+				if self.stock_entry_type == "Material Transfer":
 					manufacturer = None
 					if self.to_main_slip:
 						manufacturer = frappe.db.get_value(
@@ -115,8 +115,9 @@ def before_validate(self, method):
 						manufacturer = frappe.db.get_value(
 							"Main Slip", self.main_slip, "manufacturer"
 						)
-					# Fallback so a MAIN SLIP SE with no Main Slip link (e.g. the Tree Number Issue
-					# button) resolves a manufacturer instead of raising UnboundLocalError.
+					# Fallback so a Material Transfer SE with no Main Slip link (e.g. the Tree
+					# Number Issue button) resolves a manufacturer instead of raising
+					# UnboundLocalError.
 					if not manufacturer:
 						manufacturer = self.get("manufacturer") or MANUFACTURER
 				elif self.manufacturing_order:

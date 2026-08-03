@@ -49,6 +49,10 @@ jobs:
           echo "Running Refining & Advanced Tests..."
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Refining Entry"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Refinery Price List"
+          # resolve_manufacturing_setting: the per-company fallback the refining variant
+          # restrictions depend on (the live records are named after the company, so a
+          # manufacturer-keyed lookup matches nothing).
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Setting"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Product Certification"
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serialize
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_lock_order

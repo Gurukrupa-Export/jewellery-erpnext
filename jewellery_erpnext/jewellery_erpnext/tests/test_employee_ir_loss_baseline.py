@@ -24,11 +24,17 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.batch.doc_events import (
 	utils as batch_utils,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir import employee_ir
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
+	finding_loss_gate,
 	loss_stock_entry,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events import (
 	main_slip_inject as msi,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_loss_gate import (
+	is_loss_booking_blocked,
+	validate_loss_rows_against_gate,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.precision import (
 	EIR_OPERATION_WEIGHT_FIELDS,
@@ -2402,7 +2408,7 @@ def _eir_msi(**overrides):
 		subcontractor=None,
 		subcontracting="No",
 		main_slip="MS-001",
-		is_main_slip_required=1,
+		is_raw_material=1,
 	)
 	base.update(overrides)
 	doc = SimpleNamespace(**base)
@@ -2425,8 +2431,8 @@ def _row_msi(**overrides):
 
 
 class TestMainSlipInjectGate(IntegrationTestCase):
-	def test_skips_when_is_main_slip_required_false(self):
-		eir = _eir_msi(is_main_slip_required=0)
+	def test_skips_when_is_raw_material_false(self):
+		eir = _eir_msi(is_raw_material=0)
 		row = _row_msi()
 		with patch.object(msi, "_existing_injection_se") as mock_exists:
 			out = msi.inject_extra_metal_for_eir_receive(eir, row)
@@ -3919,3 +3925,1326 @@ class TestMainSlipPoolSharedAcrossWorkOrders(IntegrationTestCase):
 			msi._persist_main_slip_consumption(pool)
 		sv.assert_called_once()
 		self.assertEqual(pool[0]["consume_qty"], 4.0)
+
+
+class _Row(SimpleNamespace):
+	"""An employee_ir_operations row."""
+
+	def get(self, key, default=None):
+		return getattr(self, key, default)
+
+
+def _eir_worker(
+	type="Receive", operation="Filing", name="EMP-IR-1", rows=None, **fields
+):
+	"""An Employee IR carrying just enough for set_repeat_receive_flag."""
+	defaults = {
+		"type": type,
+		"operation": operation,
+		"name": name,
+		"employee_ir_operations": rows if rows is not None else [],
+		"is_repeat_receive": 0,
+		"worker_performance": None,
+	}
+	defaults.update(fields)
+	doc = SimpleNamespace(**defaults)
+	# Bind the real method to the stand-in; we are testing the method, not the ORM.
+	doc.set_repeat_receive_flag = (
+		lambda: employee_ir.EmployeeIR.set_repeat_receive_flag(doc)
+	)
+	return doc
+
+
+def _row_worker(mwo="MWO-0001", mop="MOP-0001"):
+	return _Row(manufacturing_work_order=mwo, manufacturing_operation=mop)
+
+
+class TestResolveWorkOrders(IntegrationTestCase):
+	"""_resolve_work_orders: rows may reach us without their work order."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_uses_the_row_value_without_a_lookup(self):
+		with patch.object(employee_ir.frappe, "get_all") as get_all:
+			out = employee_ir._resolve_work_orders(
+				[
+					{
+						"manufacturing_work_order": "MWO-1",
+						"manufacturing_operation": "MOP-1",
+					}
+				]
+			)
+		self.assertEqual(out, {"MWO-1"})
+		get_all.assert_not_called()
+
+	def test_blank_work_order_is_resolved_through_its_mop(self):
+		# A freshly scanned row carries only the MOP (manufacturing_work_order is
+		# fetch_from + fetch_if_empty). Skipping it would hide the field on exactly
+		# the entries a shop-floor user creates by scanning.
+		with patch.object(
+			employee_ir.frappe,
+			"get_all",
+			return_value=[
+				SimpleNamespace(name="MOP-9", manufacturing_work_order="MWO-9")
+			],
+		) as get_all:
+			out = employee_ir._resolve_work_orders(
+				[{"manufacturing_work_order": None, "manufacturing_operation": "MOP-9"}]
+			)
+		self.assertEqual(out, {"MWO-9"})
+		get_all.assert_called_once()
+		self.assertEqual(get_all.call_args[0][0], "Manufacturing Operation")
+
+	def test_only_the_missing_rows_are_looked_up(self):
+		with patch.object(
+			employee_ir.frappe,
+			"get_all",
+			return_value=[
+				SimpleNamespace(name="MOP-B", manufacturing_work_order="MWO-B")
+			],
+		) as get_all:
+			out = employee_ir._resolve_work_orders(
+				[
+					{
+						"manufacturing_work_order": "MWO-A",
+						"manufacturing_operation": "MOP-A",
+					},
+					{
+						"manufacturing_work_order": "",
+						"manufacturing_operation": "MOP-B",
+					},
+				]
+			)
+		self.assertEqual(out, {"MWO-A", "MWO-B"})
+		self.assertEqual(get_all.call_args[1]["filters"], {"name": ["in", ["MOP-B"]]})
+
+	def test_rows_with_neither_reference_are_ignored(self):
+		with patch.object(employee_ir.frappe, "get_all") as get_all:
+			out = employee_ir._resolve_work_orders(
+				[{"manufacturing_work_order": None, "manufacturing_operation": None}]
+			)
+		self.assertEqual(out, set())
+		get_all.assert_not_called()
+
+	def test_duplicate_work_orders_collapse(self):
+		out = employee_ir._resolve_work_orders(
+			[
+				{
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-1",
+				},
+				{
+					"manufacturing_work_order": "MWO-1",
+					"manufacturing_operation": "MOP-2",
+				},
+			]
+		)
+		self.assertEqual(out, {"MWO-1"})
+
+
+class TestRepeatQuery(IntegrationTestCase):
+	"""The predicates that decide what counts as a completed prior cycle."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _sql(self, **kwargs):
+		kwargs.setdefault("mwos", {"MWO-1"})
+		kwargs.setdefault("operation", "Filing")
+		return employee_ir._repeat_query(
+			kwargs["mwos"], kwargs["operation"], kwargs.get("employee_ir")
+		).get_sql()
+
+	def test_counts_only_submitted_receives(self):
+		sql = self._sql()
+		# docstatus=1, NOT <>2: a draft or cancelled Receive did not complete a cycle,
+		# so it must not make the next Receive look like rework.
+		self.assertIn("`docstatus`=1", sql.replace(" ", ""))
+		self.assertIn("Receive", sql)
+
+	def test_scopes_to_the_operation(self):
+		self.assertIn("Polishing", self._sql(operation="Polishing"))
+
+	def test_filters_on_the_requested_work_orders(self):
+		sql = self._sql(mwos={"MWO-7", "MWO-8"})
+		self.assertIn("MWO-7", sql)
+		self.assertIn("MWO-8", sql)
+
+	def test_excludes_the_current_document(self):
+		sql = self._sql(employee_ir="EMP-IR-42")
+		self.assertIn("EMP-IR-42", sql)
+		self.assertIn("<>", sql)
+
+	def test_no_self_exclusion_for_an_unsaved_document(self):
+		self.assertNotIn("<>", self._sql(employee_ir=None))
+
+	def test_joins_the_child_table_on_parent(self):
+		sql = self._sql()
+		self.assertIn("Employee IR Operation", sql)
+		self.assertIn("JOIN", sql.upper())
+
+
+class TestGetRepeatWorkOrders(IntegrationTestCase):
+	"""The whitelisted resolver's short-circuits."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_accepts_a_json_string_from_the_client(self):
+		with patch.object(employee_ir, "_repeat_query") as query, patch.object(
+			employee_ir.frappe, "get_all"
+		):
+			query.return_value.run.return_value = ["MWO-1"]
+			out = employee_ir.get_repeat_work_orders(
+				'[{"manufacturing_work_order": "MWO-1", "manufacturing_operation": "MOP-1"}]',
+				"Filing",
+			)
+		self.assertEqual(out, ["MWO-1"])
+
+	def test_no_operation_short_circuits(self):
+		with patch.object(employee_ir, "_repeat_query") as query:
+			self.assertEqual(employee_ir.get_repeat_work_orders([{"x": 1}], None), [])
+		query.assert_not_called()
+
+	def test_no_resolvable_work_orders_short_circuits(self):
+		with patch.object(employee_ir, "_repeat_query") as query, patch.object(
+			employee_ir.frappe, "get_all", return_value=[]
+		):
+			self.assertEqual(employee_ir.get_repeat_work_orders([], "Filing"), [])
+		query.assert_not_called()
+
+
+class TestSetRepeatReceiveFlag(IntegrationTestCase):
+	"""The document-level stamp: the ANY rule, and clearing a stale verdict."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_first_ever_receive_is_not_a_repeat(self):
+		doc = _eir_worker(rows=[_row_worker()])
+		with patch.object(employee_ir, "get_repeat_work_orders", return_value=[]):
+			doc.set_repeat_receive_flag()
+		self.assertEqual(doc.is_repeat_receive, 0)
+
+	def test_prior_submitted_receive_flags_it(self):
+		doc = _eir_worker(rows=[_row_worker()])
+		with patch.object(
+			employee_ir, "get_repeat_work_orders", return_value=["MWO-0001"]
+		):
+			doc.set_repeat_receive_flag()
+		self.assertEqual(doc.is_repeat_receive, 1)
+
+	def test_any_repeat_row_flags_a_mixed_receive(self):
+		# Pins the ANY rule: one repeat work order alongside a first-timer still asks
+		# the question. Switching to ALL would make this assertion fail.
+		doc = _eir_worker(
+			rows=[_row_worker("MWO-NEW", "MOP-1"), _row_worker("MWO-OLD", "MOP-2")]
+		)
+		with patch.object(
+			employee_ir, "get_repeat_work_orders", return_value=["MWO-OLD"]
+		):
+			doc.set_repeat_receive_flag()
+		self.assertEqual(doc.is_repeat_receive, 1)
+
+	def test_issue_never_asks_and_clears_any_value(self):
+		doc = _eir_worker(type="Issue", rows=[_row_worker()], worker_performance="YES")
+		with patch.object(employee_ir, "get_repeat_work_orders") as resolver:
+			doc.set_repeat_receive_flag()
+		self.assertEqual(doc.is_repeat_receive, 0)
+		self.assertIsNone(doc.worker_performance)
+		resolver.assert_not_called()
+
+	def test_stale_verdict_is_cleared_when_no_longer_a_repeat(self):
+		# The earlier Receive got cancelled after somebody answered; a hidden field
+		# must not keep a verdict that is no longer being asked for.
+		doc = _eir_worker(rows=[_row_worker()], worker_performance="YES")
+		with patch.object(employee_ir, "get_repeat_work_orders", return_value=[]):
+			doc.set_repeat_receive_flag()
+		self.assertEqual(doc.is_repeat_receive, 0)
+		self.assertIsNone(doc.worker_performance)
+
+	def test_answer_survives_on_a_genuine_repeat(self):
+		doc = _eir_worker(rows=[_row_worker()], worker_performance="YES")
+		with patch.object(
+			employee_ir, "get_repeat_work_orders", return_value=["MWO-0001"]
+		):
+			doc.set_repeat_receive_flag()
+		self.assertEqual(doc.worker_performance, "YES")
+
+	def test_empty_grid_is_not_a_repeat(self):
+		doc = _eir_worker(rows=[])
+		with patch.object(employee_ir, "get_repeat_work_orders", return_value=[]):
+			doc.set_repeat_receive_flag()
+		self.assertEqual(doc.is_repeat_receive, 0)
+
+	def test_passes_operation_and_own_name_to_the_resolver(self):
+		doc = _eir_worker(
+			operation="Setting", name="EMP-IR-99", rows=[_row_worker("MWO-5", "MOP-5")]
+		)
+		with patch.object(
+			employee_ir, "get_repeat_work_orders", return_value=[]
+		) as resolver:
+			doc.set_repeat_receive_flag()
+		ops, operation, name = resolver.call_args[0]
+		self.assertEqual(operation, "Setting")
+		self.assertEqual(name, "EMP-IR-99")  # self-exclusion reaches the query
+		self.assertEqual(
+			ops,
+			[{"manufacturing_operation": "MOP-5", "manufacturing_work_order": "MWO-5"}],
+		)
+
+
+GATE = "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_loss_gate"
+EIR = "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir"
+
+METAL = "M-G-22KT-91.9-Y"
+CHAIN = "F-G-22KT-91.9-Y-CHA-KC-2.50 MM"
+CLASP = "F-G-22KT-91.9-Y-CLA-LC-3.00 MM"
+
+
+def _row_loss(item_code, batch_no, qty, pcs=0):
+	return frappe._dict(
+		{"item_code": item_code, "batch_no": batch_no, "qty": qty, "pcs": pcs}
+	)
+
+
+class _DocStub:
+	"""Stand-in for the pieces of Employee IR that book_metal_loss touches."""
+
+	def __init__(self, operation="Casting", manual_rows=None):
+		self.operation = operation
+		self.manually_book_loss_details = manual_rows or []
+
+
+class TestIsLossBookingBlocked(IntegrationTestCase):
+	"""The pure predicate — no DB, no patching needed."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_blocked_when_category_listed_and_flag_off(self):
+		self.assertTrue(
+			is_loss_booking_blocked(CHAIN, {"Chains": 0}, {CHAIN: "Chains"})
+		)
+
+	def test_not_blocked_when_flag_on(self):
+		self.assertFalse(
+			is_loss_booking_blocked(CHAIN, {"Chains": 1}, {CHAIN: "Chains"})
+		)
+
+	def test_not_blocked_when_category_unlisted(self):
+		# Fail-open: the operation gates Clasps, this item is a Chain.
+		self.assertFalse(
+			is_loss_booking_blocked(CHAIN, {"Clasps": 0}, {CHAIN: "Chains"})
+		)
+
+	def test_not_blocked_when_no_table_configured(self):
+		self.assertFalse(is_loss_booking_blocked(CHAIN, {}, {CHAIN: "Chains"}))
+
+	def test_metal_never_blocked(self):
+		# The gate is finding-only; a metal item is never excluded even if some
+		# category were somehow mapped to it.
+		self.assertFalse(
+			is_loss_booking_blocked(METAL, {"Chains": 0}, {METAL: "Chains"})
+		)
+
+	def test_not_blocked_when_item_has_no_category(self):
+		self.assertFalse(is_loss_booking_blocked(CHAIN, {"Chains": 0}, {}))
+
+	def test_handles_missing_item_code(self):
+		self.assertFalse(is_loss_booking_blocked(None, {"Chains": 0}, {}))
+		self.assertFalse(is_loss_booking_blocked("", {"Chains": 0}, {}))
+
+
+class TestBookMetalLossFindingGate(IntegrationTestCase):
+	"""End-to-end through book_metal_loss: exclusion + redistribution."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, mop_log_rows, gwt, r_gwt, booking_map=None, category_map=None):
+		doc = _DocStub()
+		patches = [
+			patch(f"{EIR}.frappe.db.get_all", return_value=mop_log_rows),
+			patch(
+				f"{EIR}.get_loss_booking_map",
+				return_value=booking_map if booking_map is not None else {},
+			),
+			patch(
+				f"{EIR}.get_finding_category_map",
+				return_value=category_map if category_map is not None else {},
+			),
+		]
+		for p in patches:
+			p.start()
+			self.addCleanup(p.stop)
+
+		return EmployeeIR.book_metal_loss(
+			doc,
+			mwo="MWO-1",
+			opt="MOP-1",
+			gwt=gwt,
+			r_gwt=r_gwt,
+			allowed_loss_percentage=None,
+		)
+
+	def test_blocked_finding_excluded_and_metal_absorbs_full_loss(self):
+		"""Metal 80g + Chain 20g, received 98g of 100g.
+
+		With Chains gated off the chain books nothing and the metal takes the
+		whole 2.000 g — not the 1.600 g it would take if the chain participated.
+		"""
+		rows = [_row_loss(METAL, "B-M", 80.0), _row_loss(CHAIN, "B-F", 20.0)]
+		result = self._run(
+			rows,
+			gwt=100.0,
+			r_gwt=98.0,
+			booking_map={"Chains": 0},
+			category_map={CHAIN: "Chains"},
+		)
+
+		by_item = {entry["item_code"]: entry for entry in result}
+		self.assertNotIn(CHAIN, by_item, "gated finding must not appear in the pool")
+		self.assertEqual(flt(by_item[METAL]["proportionally_loss"], 3), 2.000)
+		self.assertEqual(
+			flt(sum(e["proportionally_loss"] for e in result), 3),
+			2.000,
+			"booked total must still equal gross_wt - received_gross_wt",
+		)
+
+	def test_finding_participates_when_flag_on(self):
+		"""Same weights, Chains ticked on => the pre-change proportional split."""
+		rows = [_row_loss(METAL, "B-M", 80.0), _row_loss(CHAIN, "B-F", 20.0)]
+		result = self._run(
+			rows,
+			gwt=100.0,
+			r_gwt=98.0,
+			booking_map={"Chains": 1},
+			category_map={CHAIN: "Chains"},
+		)
+
+		by_item = {entry["item_code"]: entry for entry in result}
+		self.assertEqual(flt(by_item[METAL]["proportionally_loss"], 3), 1.600)
+		self.assertEqual(flt(by_item[CHAIN]["proportionally_loss"], 3), 0.400)
+		self.assertEqual(flt(sum(e["proportionally_loss"] for e in result), 3), 2.000)
+
+	def test_unlisted_category_books_loss(self):
+		"""Fail-open: the operation gates Clasps only, so the Chain still books."""
+		rows = [_row_loss(METAL, "B-M", 80.0), _row_loss(CHAIN, "B-F", 20.0)]
+		result = self._run(
+			rows,
+			gwt=100.0,
+			r_gwt=98.0,
+			booking_map={"Clasps": 0},
+			category_map={CHAIN: "Chains"},
+		)
+
+		by_item = {entry["item_code"]: entry for entry in result}
+		self.assertEqual(flt(by_item[METAL]["proportionally_loss"], 3), 1.600)
+		self.assertEqual(flt(by_item[CHAIN]["proportionally_loss"], 3), 0.400)
+
+	def test_empty_table_is_unchanged_behaviour(self):
+		"""No table configured => byte-identical to the pre-change split.
+
+		This is the guarantee that shipping the feature changes nothing on any
+		existing Department Operation.
+		"""
+		rows = [_row_loss(METAL, "B-M", 80.0), _row_loss(CHAIN, "B-F", 20.0)]
+		result = self._run(rows, gwt=100.0, r_gwt=98.0, booking_map={})
+
+		by_item = {entry["item_code"]: entry for entry in result}
+		self.assertEqual(flt(by_item[METAL]["proportionally_loss"], 3), 1.600)
+		self.assertEqual(flt(by_item[CHAIN]["proportionally_loss"], 3), 0.400)
+
+	def test_only_the_blocked_category_is_excluded(self):
+		"""Two finding categories, one gated: the other still shares the loss."""
+		rows = [
+			_row_loss(METAL, "B-M", 50.0),
+			_row_loss(CHAIN, "B-F1", 30.0),
+			_row_loss(CLASP, "B-F2", 20.0),
+		]
+		result = self._run(
+			rows,
+			gwt=100.0,
+			r_gwt=99.0,
+			booking_map={"Chains": 0, "Clasps": 1},
+			category_map={CHAIN: "Chains", CLASP: "Clasps"},
+		)
+
+		by_item = {entry["item_code"]: entry for entry in result}
+		self.assertNotIn(CHAIN, by_item)
+		# Pool is now 50 + 20 = 70; loss 1.0 splits 50/70 and 20/70.
+		self.assertEqual(flt(by_item[METAL]["proportionally_loss"], 3), 0.714)
+		self.assertEqual(flt(by_item[CLASP]["proportionally_loss"], 3), 0.286)
+		self.assertEqual(flt(sum(e["proportionally_loss"] for e in result), 3), 1.000)
+
+	def test_all_eligible_rows_blocked_throws(self):
+		"""Nothing left to book against => a clear throw, not a silent empty table."""
+		rows = [_row_loss(CHAIN, "B-F", 20.0)]
+		with self.assertRaises(ValidationError) as ctx:
+			self._run(
+				rows,
+				gwt=20.0,
+				r_gwt=19.0,
+				booking_map={"Chains": 0},
+				category_map={CHAIN: "Chains"},
+			)
+		self.assertIn("Chains", str(ctx.exception))
+
+	def test_gain_on_receive_does_not_throw_when_all_blocked(self):
+		"""r_gwt > gwt is not a shortfall, so there is nothing to attribute."""
+		rows = [_row_loss(CHAIN, "B-F", 20.0)]
+		result = self._run(
+			rows,
+			gwt=20.0,
+			r_gwt=21.0,
+			booking_map={"Chains": 0},
+			category_map={CHAIN: "Chains"},
+		)
+		self.assertEqual(result, [])
+
+	def test_dg_rows_still_excluded_alongside_the_gate(self):
+		"""The pre-existing M/F filter is preserved, not replaced."""
+		rows = [
+			_row_loss(METAL, "B-M", 80.0),
+			_row_loss(CHAIN, "B-F", 20.0),
+			_row_loss("D-1-2-3", "B-D", 5.0, pcs=10),
+			_row_loss("G-1-2-3", "B-G", 5.0, pcs=10),
+			_row_loss("O-1-2-3", "B-O", 5.0),
+		]
+		result = self._run(
+			rows,
+			gwt=100.0,
+			r_gwt=98.0,
+			booking_map={"Chains": 0},
+			category_map={CHAIN: "Chains"},
+		)
+
+		self.assertEqual([e["item_code"] for e in result], [METAL])
+		self.assertEqual(flt(result[0]["proportionally_loss"], 3), 2.000)
+
+
+class TestValidateLossRowsAgainstGate(IntegrationTestCase):
+	"""The submit/validate guard covering both loss tables."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _doc(self, employee_rows=None, manual_rows=None, doc_type="Receive"):
+		return frappe._dict(
+			{
+				"name": "EMP-IR-0001",
+				"type": doc_type,
+				"operation": "Casting",
+				"employee_loss_details": employee_rows or [],
+				"manually_book_loss_details": manual_rows or [],
+			}
+		)
+
+	def _patch(self, booking_map, category_map):
+		for target, value in (
+			("get_loss_booking_map", booking_map),
+			("get_finding_category_map", category_map),
+		):
+			p = patch(f"{GATE}.{target}", return_value=value)
+			p.start()
+			self.addCleanup(p.stop)
+
+	def test_manual_row_on_blocked_category_throws(self):
+		self._patch({"Chains": 0}, {CHAIN: "Chains"})
+		doc = self._doc(manual_rows=[frappe._dict({"idx": 1, "item_code": CHAIN})])
+		with self.assertRaises(ValidationError) as ctx:
+			validate_loss_rows_against_gate(doc)
+		message = str(ctx.exception)
+		self.assertIn("Chains", message)
+		self.assertIn("Manually Book Loss Details", message)
+
+	def test_stale_auto_row_on_blocked_category_throws(self):
+		"""Draft saved before the flag was flipped must fail at submit."""
+		self._patch({"Chains": 0}, {CHAIN: "Chains"})
+		doc = self._doc(employee_rows=[frappe._dict({"idx": 1, "item_code": CHAIN})])
+		with self.assertRaises(ValidationError) as ctx:
+			validate_loss_rows_against_gate(doc)
+		self.assertIn("Employee Loss Details", str(ctx.exception))
+
+	def test_allowed_category_passes(self):
+		self._patch({"Chains": 1}, {CHAIN: "Chains"})
+		doc = self._doc(manual_rows=[frappe._dict({"idx": 1, "item_code": CHAIN})])
+		validate_loss_rows_against_gate(doc)
+
+	def test_metal_row_passes(self):
+		self._patch({"Chains": 0}, {METAL: None})
+		doc = self._doc(manual_rows=[frappe._dict({"idx": 1, "item_code": METAL})])
+		validate_loss_rows_against_gate(doc)
+
+	def test_issue_type_is_skipped(self):
+		# The gate is Receive-only; an Issue has no loss tables to police.
+		self._patch({"Chains": 0}, {CHAIN: "Chains"})
+		doc = self._doc(
+			manual_rows=[frappe._dict({"idx": 1, "item_code": CHAIN})],
+			doc_type="Issue",
+		)
+		validate_loss_rows_against_gate(doc)
+
+	def test_no_table_configured_short_circuits(self):
+		"""An operation with no gate must not even resolve item categories."""
+		p = patch(f"{GATE}.get_loss_booking_map", return_value={})
+		p.start()
+		self.addCleanup(p.stop)
+		category = patch(f"{GATE}.get_finding_category_map")
+		mock_category = category.start()
+		self.addCleanup(category.stop)
+
+		doc = self._doc(manual_rows=[frappe._dict({"idx": 1, "item_code": CHAIN})])
+		validate_loss_rows_against_gate(doc)
+		mock_category.assert_not_called()
+
+
+class TestGateMapBuilders(IntegrationTestCase):
+	"""The two prefetch maps."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_loss_booking_map_shape(self):
+		rows = [
+			frappe._dict({"finding_category": "Chains", "loss_booking": 0}),
+			frappe._dict({"finding_category": "Clasps", "loss_booking": 1}),
+			frappe._dict({"finding_category": None, "loss_booking": 0}),
+		]
+		with patch(f"{GATE}.frappe.get_all", return_value=rows) as mock_get_all:
+			result = finding_loss_gate.get_loss_booking_map("Casting")
+		self.assertEqual(result, {"Chains": 0, "Clasps": 1})
+		mock_get_all.assert_called_once()
+
+	def test_loss_booking_map_without_operation_does_not_query(self):
+		with patch(f"{GATE}.frappe.get_all") as mock_get_all:
+			self.assertEqual(finding_loss_gate.get_loss_booking_map(None), {})
+		mock_get_all.assert_not_called()
+
+	def test_category_map_queries_findings_only(self):
+		rows = [frappe._dict({"parent": CHAIN, "attribute_value": "Chains"})]
+		with patch(f"{GATE}.frappe.get_all", return_value=rows) as mock_get_all:
+			result = finding_loss_gate.get_finding_category_map(
+				[METAL, CHAIN, "D-1-2-3", None]
+			)
+		self.assertEqual(result, {CHAIN: "Chains"})
+		# Only the F-prefixed code is sent to the database.
+		self.assertEqual(
+			mock_get_all.call_args.kwargs["filters"]["parent"], ["in", [CHAIN]]
+		)
+
+	def test_category_map_without_findings_does_not_query(self):
+		with patch(f"{GATE}.frappe.get_all") as mock_get_all:
+			self.assertEqual(
+				finding_loss_gate.get_finding_category_map([METAL, "D-1-2-3"]), {}
+			)
+		mock_get_all.assert_not_called()
+
+
+_LSE = "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry"
+
+
+def _loss_row(**fields):
+	base = {
+		"idx": 1,
+		"item_code": "M-G-22KT-91.9-Y",
+		"batch_no": "BATCH-A",
+		"manufacturing_operation": "MOP-CURRENT",
+		"proportionally_loss": 0.143,
+	}
+	base.update(fields)
+	return SimpleNamespace(**base)
+
+
+def _sb(batch_no, qty, delivered_qty=0.0):
+	return SimpleNamespace(
+		batch_no=batch_no, qty=qty, delivered_qty=delivered_qty, idx=1
+	)
+
+
+def _sre_loss(sb_entries, reserved, **extra):
+	base = {
+		"name": "SRE-1",
+		"warehouse": "WH",
+		"reserved_qty": reserved,
+		"delivered_qty": 0.0,
+		"transferred_qty": 0.0,
+		"consumed_qty": 0.0,
+		"available_qty": reserved,
+		"voucher_qty": reserved,
+		"voucher_type": "Material Request",
+		"voucher_no": "MR-1",
+		"voucher_detail_no": "MRI-1",
+		"reservation_based_on": "Serial and Batch",
+		"sb_entries": sb_entries,
+		"cancel": MagicMock(),
+	}
+	base.update(extra)
+	return SimpleNamespace(**base)
+
+
+def _clone(sb_entries):
+	return SimpleNamespace(
+		sb_entries=sb_entries,
+		flags=SimpleNamespace(ignore_permissions=False),
+		insert=MagicMock(),
+		submit=MagicMock(),
+	)
+
+
+class TestSnapshotFieldProvisioned(IntegrationTestCase):
+	"""The column must exist, or every Employee IR cancel raises 1054."""
+
+	def test_snapshot_column_exists(self):
+		self.assertTrue(
+			frappe.db.has_column(
+				"Stock Reservation Entry", "custom_replaced_sre_snapshot"
+			),
+			"Stock Reservation Entry.custom_replaced_sre_snapshot is missing -- "
+			"_restore_reduced_sres would raise 1054 on every Employee IR cancel. "
+			"Run jewellery_erpnext.patches.add_sre_replaced_snapshot_field.execute",
+		)
+
+	def test_patch_is_wired_into_patches_txt(self):
+		"""The column only reaches other sites if migrate runs the patch."""
+		patches = frappe.get_file_items(
+			frappe.get_app_path("jewellery_erpnext", "patches.txt")
+		)
+
+		self.assertIn(
+			"jewellery_erpnext.patches.add_sre_replaced_snapshot_field", patches
+		)
+
+	def test_both_restore_markers_exist(self):
+		"""_restore_reduced_sres queries employee_ir too; it must be a real column."""
+		for column in ("employee_ir", "custom_replaced_sre_snapshot"):
+			self.assertTrue(
+				frappe.db.has_column("Stock Reservation Entry", column),
+				f"Stock Reservation Entry.{column} is missing -- the restore lookup "
+				f"would raise 1054",
+			)
+
+	def test_snapshot_field_is_long_text_and_no_copy(self):
+		"""Data would truncate a multi-batch snapshot; a copied snapshot names a foreign EIR."""
+		meta = frappe.get_meta("Stock Reservation Entry")
+		field = meta.get_field("custom_replaced_sre_snapshot")
+
+		self.assertIsNotNone(field)
+		self.assertEqual(field.fieldtype, "Long Text")
+		self.assertTrue(field.no_copy)
+
+
+class TestReduceSreStampsMarkers(IntegrationTestCase):
+	"""_reduce_sre must record BOTH markers, or the reduction cannot be undone."""
+
+	def test_stamps_employee_ir_and_snapshot(self):
+		sre = _sre_loss([_sb("BATCH-A", 3.0), _sb("BATCH-B", 2.0)], 5.0)
+		clone = _clone([_sb("BATCH-A", 3.0), _sb("BATCH-B", 2.0)])
+
+		with patch("frappe.copy_doc", return_value=clone):
+			loss_stock_entry._reduce_sre(
+				SimpleNamespace(name="EIR-1"),
+				_loss_row(batch_no="BATCH-A"),
+				sre,
+				0.5,
+				"employee_loss_details",
+			)
+
+		self.assertEqual(clone.employee_ir, "EIR-1")
+		snapshot = json.loads(clone.custom_replaced_sre_snapshot)
+		self.assertEqual(snapshot["employee_ir"], "EIR-1")
+		self.assertEqual(snapshot["original_reserved_qty"], 5.0)
+		self.assertEqual(snapshot["batch_no"], "BATCH-A")
+		self.assertEqual(snapshot["original_sb_qty"], 3.0)
+
+	def test_snapshot_records_remaining_not_gross_for_delivered_sre(self):
+		"""reserved 5 / delivered 4: restore must give back 1, not 5."""
+		sre = _sre_loss(
+			[_sb("BATCH-A", 5.0, delivered_qty=4.0)], 5.0, delivered_qty=4.0
+		)
+		clone = _clone([_sb("BATCH-A", 5.0, delivered_qty=4.0)])
+
+		with patch("frappe.copy_doc", return_value=clone):
+			loss_stock_entry._reduce_sre(
+				SimpleNamespace(name="EIR-1"),
+				_loss_row(batch_no="BATCH-A"),
+				sre,
+				0.5,
+				"employee_loss_details",
+			)
+
+		snapshot = json.loads(clone.custom_replaced_sre_snapshot)
+		self.assertEqual(snapshot["original_reserved_qty"], 5.0)
+		self.assertEqual(snapshot["original_delivered_qty"], 4.0)
+		self.assertEqual(snapshot["original_sb_qty"], 1.0)
+
+	def test_spent_sre_is_never_stamped(self):
+		"""A spent reservation is left alone, so there is nothing to mark."""
+		sre = MagicMock()
+		sre.reserved_qty = 3.396
+		sre.delivered_qty = 3.396
+		sre.transferred_qty = 0.0
+		sre.consumed_qty = 0.0
+
+		loss_stock_entry._reduce_sre(
+			SimpleNamespace(name="EIR-1"),
+			_loss_row(),
+			sre,
+			0.143,
+			"employee_loss_details",
+		)
+
+		sre.cancel.assert_not_called()
+
+
+class TestRestoreLookup(IntegrationTestCase):
+	"""The lookup must match the new exact key AND the legacy snapshot rows."""
+
+	def _run(self, rows):
+		db = MagicMock()
+		db.sql.return_value = rows
+		with patch("frappe.db", db):
+			loss_stock_entry._restore_reduced_sres(SimpleNamespace(name="EIR-1"))
+		return db.sql.call_args
+
+	def test_queries_employee_ir_exactly_and_snapshot_as_legacy_fallback(self):
+		query, params = self._run([])[0]
+
+		self.assertIn("employee_ir = %(eir)s", query)
+		self.assertIn("custom_replaced_sre_snapshot LIKE %(legacy)s", query)
+		self.assertEqual(params["eir"], "EIR-1")
+		self.assertEqual(params["legacy"], '%"employee_ir": "EIR-1"%')
+
+	def test_returns_the_number_of_reservations_found(self):
+		"""cancel_loss_stock_entries relies on this to spot unrestorable reductions."""
+		db = MagicMock()
+		db.sql.return_value = []
+		with patch("frappe.db", db):
+			self.assertEqual(
+				loss_stock_entry._restore_reduced_sres(SimpleNamespace(name="EIR-1")), 0
+			)
+
+
+class TestRestoreClearsMarkers(IntegrationTestCase):
+	"""A restored reservation is whole again and must not match a second cancel."""
+
+	def test_clears_both_markers_on_the_restored_entry(self):
+		snapshot = json.dumps(
+			{
+				"employee_ir": "EIR-1",
+				"original_reserved_qty": 5.0,
+				"original_delivered_qty": 0.0,
+				"batch_no": "BATCH-A",
+				"original_sb_qty": 3.0,
+			}
+		)
+		sre_doc = _sre_loss([_sb("BATCH-A", 2.5)], 2.5)
+		restored = _clone([_sb("BATCH-A", 2.5)])
+		restored.employee_ir = "EIR-1"
+		restored.custom_replaced_sre_snapshot = snapshot
+
+		db = MagicMock()
+		# as_dict=True yields frappe._dict, which the restore loop reads by attribute.
+		db.sql.return_value = [
+			frappe._dict(name="SRE-2", custom_replaced_sre_snapshot=snapshot)
+		]
+		with (
+			patch("frappe.db", db),
+			patch("frappe.get_doc", return_value=sre_doc),
+			patch("frappe.copy_doc", return_value=restored),
+			patch(f"{_LSE}._reservation_voucher_qty", return_value=5.0),
+		):
+			loss_stock_entry._restore_reduced_sres(SimpleNamespace(name="EIR-1"))
+
+		self.assertIsNone(restored.employee_ir)
+		self.assertIsNone(restored.custom_replaced_sre_snapshot)
+		# Only the snapshot's batch row is restored, not every row.
+		self.assertEqual(restored.sb_entries[0].qty, 3.0)
+		restored.submit.assert_called_once()
+
+
+class TestOrphanedReductionGuard(IntegrationTestCase):
+	"""Historical reductions carry no marker; cancelling them would silently short stock."""
+
+	def _eir(self):
+		return SimpleNamespace(name="EIR-1")
+
+	def test_no_throw_when_markers_exist(self):
+		db = MagicMock()
+		with (
+			patch("frappe.db", db),
+			patch(f"{_LSE}._restore_marker_count", return_value=3),
+		):
+			loss_stock_entry._assert_no_orphaned_reductions(self._eir(), ["SE-1"])
+
+		db.sql.assert_not_called()
+
+	def test_no_throw_when_nothing_was_ever_reduced(self):
+		"""Every SRE spent or fully consumed: zero markers is the correct outcome."""
+		db = MagicMock()
+		db.sql.side_effect = [
+			[("2026-06-18 10:00:00", "2026-06-18 10:00:05")],  # SE window
+			[],  # no orphan signature
+		]
+		with (
+			patch("frappe.db", db),
+			patch(f"{_LSE}._restore_marker_count", return_value=0),
+		):
+			loss_stock_entry._assert_no_orphaned_reductions(self._eir(), ["SE-1"])
+
+	def test_throws_on_the_orphan_signature(self):
+		db = MagicMock()
+		db.sql.side_effect = [
+			[("2026-06-18 10:00:00", "2026-06-18 10:00:05")],  # SE window
+			[("SRE-OLD", "SRE-NEW")],  # cancelled -> unmarked replacement
+		]
+		with (
+			patch("frappe.db", db),
+			patch(f"{_LSE}._restore_marker_count", return_value=0),
+		):
+			with self.assertRaises(frappe.ValidationError) as ctx:
+				loss_stock_entry._assert_no_orphaned_reductions(self._eir(), ["SE-1"])
+
+		message = str(ctx.exception)
+		self.assertIn("EIR-1", message)
+		self.assertIn("SRE-OLD", message)
+		self.assertIn("SRE-NEW", message)
+
+	def test_no_throw_when_the_stock_entries_have_no_creation_window(self):
+		db = MagicMock()
+		db.sql.side_effect = [[(None, None)]]
+		with (
+			patch("frappe.db", db),
+			patch(f"{_LSE}._restore_marker_count", return_value=0),
+		):
+			loss_stock_entry._assert_no_orphaned_reductions(self._eir(), ["SE-1"])
+
+
+_LSE = "jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry"
+
+
+def _sre_row_loss(name, warehouse, reserved, delivered=0.0, mop=None, **extra):
+	row = {
+		"name": name,
+		"warehouse": warehouse,
+		"reserved_qty": reserved,
+		"delivered_qty": delivered,
+		"transferred_qty": 0.0,
+		"consumed_qty": 0.0,
+		"available_qty": reserved,
+		"voucher_qty": reserved,
+		"reservation_based_on": "Serial and Batch",
+		"manufacturing_operation": mop,
+	}
+	row.update(extra)
+	return row
+
+
+def _loss_row(**fields):
+	base = {
+		"idx": 1,
+		"item_code": "M-G-22KT-91.9-Y",
+		"batch_no": "BATCH-A",
+		"manufacturing_operation": "MOP-CURRENT",
+		"proportionally_loss": 0.143,
+	}
+	base.update(fields)
+	return SimpleNamespace(**base)
+
+
+def _sb(batch_no, qty, delivered_qty=0.0):
+	return SimpleNamespace(
+		batch_no=batch_no, qty=qty, delivered_qty=delivered_qty, idx=1
+	)
+
+
+class TestSreRemaining(IntegrationTestCase):
+	"""_sre_remaining mirrors ERPNext's Bin formula for dicts and Documents alike."""
+
+	def test_active_reservation_reports_remaining(self):
+		self.assertEqual(
+			loss_stock_entry._sre_remaining(
+				_sre_row_loss("A", "WH", 3.4, delivered=1.0)
+			),
+			2.4,
+		)
+
+	def test_fully_delivered_reports_zero(self):
+		self.assertEqual(
+			loss_stock_entry._sre_remaining(
+				_sre_row_loss("A", "WH", 3.396, delivered=3.396)
+			),
+			0.0,
+		)
+
+	def test_counts_transferred_and_consumed(self):
+		row = _sre_row_loss("A", "WH", 5.0)
+		row["transferred_qty"] = 2.0
+		row["consumed_qty"] = 1.0
+		self.assertEqual(loss_stock_entry._sre_remaining(row), 2.0)
+
+	def test_accepts_a_document_not_just_a_dict(self):
+		doc = SimpleNamespace(
+			reserved_qty=3.0, delivered_qty=0.5, transferred_qty=0.0, consumed_qty=0.0
+		)
+		self.assertEqual(loss_stock_entry._sre_remaining(doc), 2.5)
+
+
+class TestFindSrePrefersActive(IntegrationTestCase):
+	"""_find_sre must never pick a spent reservation while an active one exists."""
+
+	def test_prefers_active_sre_over_delivered_sibling(self):
+		rows = [
+			_sre_row_loss(
+				"SPENT", "Waxing WO", 3.396, delivered=3.396, mop="MOP-CURRENT"
+			),
+			_sre_row_loss("ACTIVE", "Waxing WO", 3.400, delivered=0.0, mop="MOP-OTHER"),
+		]
+		got = MagicMock(
+			return_value=SimpleNamespace(name="ACTIVE", warehouse="Waxing WO")
+		)
+		with (
+			patch(f"{_LSE}._query_batch_and_qty_sres", return_value=rows),
+			patch("frappe.get_doc", got),
+		):
+			doc, candidates = loss_stock_entry._find_sre(
+				SimpleNamespace(name="EIR-1", company="C"),
+				_loss_row(),
+				"MWO-1",
+				"employee_loss_details",
+				0.143,
+			)
+
+		# Op-match would have chosen SPENT; remaining-awareness must reject it.
+		got.assert_called_once_with("Stock Reservation Entry", "ACTIVE")
+		self.assertEqual([c["name"] for c in candidates], ["ACTIVE"])
+
+	def test_covering_test_uses_remaining_not_gross(self):
+		"""A large-but-mostly-delivered SRE must not be treated as covering."""
+		rows = [
+			_sre_row_loss("BIG", "WH", 5.0, delivered=4.95),  # remaining 0.05
+			_sre_row_loss("SMALL", "WH", 0.5, delivered=0.0),  # remaining 0.5
+		]
+		got = MagicMock(return_value=SimpleNamespace(name="SMALL", warehouse="WH"))
+		with (
+			patch(f"{_LSE}._query_batch_and_qty_sres", return_value=rows),
+			patch("frappe.get_doc", got),
+		):
+			loss_stock_entry._find_sre(
+				SimpleNamespace(name="EIR-1", company="C"),
+				_loss_row(manufacturing_operation=None),
+				"MWO-1",
+				"employee_loss_details",
+				0.2,
+			)
+
+		got.assert_called_once_with("Stock Reservation Entry", "SMALL")
+
+
+class TestFindSreAllSpent(IntegrationTestCase):
+	"""When every reservation is spent, the warehouse must come from physical stock."""
+
+	def test_picks_warehouse_that_physically_holds_the_batch(self):
+		rows = [
+			# Largest reserved_qty, but the metal has left this warehouse.
+			_sre_row_loss("STALE", "Tagging Transit", 3.5, delivered=3.5),
+			_sre_row_loss("SPENT", "Waxing WO", 3.396, delivered=3.396),
+		]
+		physical = {"Tagging Transit": 0.0, "Waxing WO": 568.557}
+		got = MagicMock(
+			return_value=SimpleNamespace(name="SPENT", warehouse="Waxing WO")
+		)
+		with (
+			patch(f"{_LSE}._query_batch_and_qty_sres", return_value=rows),
+			patch(
+				f"{_LSE}._physical_batch_qty", side_effect=lambda i, b, w: physical[w]
+			),
+			patch("frappe.get_doc", got),
+		):
+			doc, candidates = loss_stock_entry._find_sre(
+				SimpleNamespace(name="EIR-1", company="C"),
+				_loss_row(),
+				"MWO-1",
+				"employee_loss_details",
+				0.143,
+			)
+
+		got.assert_called_once_with("Stock Reservation Entry", "SPENT")
+		self.assertEqual([c["name"] for c in candidates], ["SPENT"])
+
+	def test_throws_when_no_warehouse_physically_covers(self):
+		rows = [_sre_row_loss("SPENT", "Waxing WO", 3.396, delivered=3.396)]
+		with (
+			patch(f"{_LSE}._query_batch_and_qty_sres", return_value=rows),
+			patch(f"{_LSE}._physical_batch_qty", return_value=0.0),
+			patch(
+				f"{_LSE}._warehouses_with_physical_batch",
+				return_value=[("Final Polish RM", 2.5)],
+			),
+			self.assertRaises(frappe.ValidationError) as ctx,
+		):
+			loss_stock_entry._find_sre(
+				SimpleNamespace(name="EIR-1", company="C"),
+				_loss_row(),
+				"MWO-1",
+				"employee_loss_details",
+				0.143,
+			)
+
+		msg = str(ctx.exception)
+		self.assertIn("already fully consumed upstream", msg)
+		self.assertIn("Final Polish RM", msg)
+
+	def test_does_not_self_heal_a_spent_reservation(self):
+		"""_reserve_batch_at_physical_warehouse is for ORPHANS, not released stock."""
+		rows = [_sre_row_loss("SPENT", "Waxing WO", 3.396, delivered=3.396)]
+		heal = MagicMock()
+		with (
+			patch(f"{_LSE}._query_batch_and_qty_sres", return_value=rows),
+			patch(f"{_LSE}._physical_batch_qty", return_value=500.0),
+			patch(
+				"frappe.get_doc",
+				return_value=SimpleNamespace(name="SPENT", warehouse="Waxing WO"),
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync."
+				"_reserve_batch_at_physical_warehouse",
+				heal,
+			),
+		):
+			loss_stock_entry._find_sre(
+				SimpleNamespace(name="EIR-1", company="C"),
+				_loss_row(),
+				"MWO-1",
+				"employee_loss_details",
+				0.143,
+			)
+
+		heal.assert_not_called()
+
+
+class TestValidateSreQty(IntegrationTestCase):
+	"""_validate_sre_qty gates on remaining reservation, or on physical stock when spent."""
+
+	def _eir(self):
+		return SimpleNamespace(name="EIR-1")
+
+	def test_rejects_loss_exceeding_remaining_even_when_gross_covers(self):
+		sre = SimpleNamespace(
+			name="SRE-1",
+			warehouse="WH",
+			reserved_qty=5.0,
+			delivered_qty=4.95,
+			transferred_qty=0.0,
+			consumed_qty=0.0,
+		)
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			loss_stock_entry._validate_sre_qty(
+				self._eir(),
+				_loss_row(),
+				sre,
+				[_sre_row_loss("SRE-1", "WH", 5.0, 4.95)],
+				0.2,
+				"employee_loss_details",
+			)
+		self.assertIn("cannot be covered", str(ctx.exception))
+
+	def test_spent_sre_passes_when_physical_stock_covers(self):
+		sre = SimpleNamespace(
+			name="SRE-1",
+			warehouse="Waxing WO",
+			reserved_qty=3.396,
+			delivered_qty=3.396,
+			transferred_qty=0.0,
+			consumed_qty=0.0,
+		)
+		with patch(f"{_LSE}._physical_batch_qty", return_value=568.557):
+			loss_stock_entry._validate_sre_qty(
+				self._eir(), _loss_row(), sre, [], 0.143, "employee_loss_details"
+			)  # must not raise
+
+	def test_spent_sre_throws_when_physical_stock_short(self):
+		sre = SimpleNamespace(
+			name="SRE-1",
+			warehouse="Waxing WO",
+			reserved_qty=3.396,
+			delivered_qty=3.396,
+			transferred_qty=0.0,
+			consumed_qty=0.0,
+		)
+		with (
+			patch(f"{_LSE}._physical_batch_qty", return_value=0.05),
+			self.assertRaises(frappe.ValidationError) as ctx,
+		):
+			loss_stock_entry._validate_sre_qty(
+				self._eir(), _loss_row(), sre, [], 0.143, "employee_loss_details"
+			)
+		self.assertIn("exceeds the physical stock", str(ctx.exception))
+
+
+class TestReduceSreSkipsSpent(IntegrationTestCase):
+	"""The regression guard: never cancel/recreate a reservation that holds nothing."""
+
+	def test_no_op_for_fully_delivered_sre(self):
+		sre = MagicMock()
+		sre.reserved_qty = 3.396
+		sre.delivered_qty = 3.396
+		sre.transferred_qty = 0.0
+		sre.consumed_qty = 0.0
+
+		loss_stock_entry._reduce_sre(
+			SimpleNamespace(name="EIR-1"),
+			_loss_row(),
+			sre,
+			0.143,
+			"employee_loss_details",
+		)
+
+		sre.cancel.assert_not_called()
+
+	def test_create_loss_stock_entries_skips_reduction_when_flagged(self):
+		"""End-to-end wiring: a pending entry marked spent never reaches _reduce_sre."""
+		eir = SimpleNamespace(
+			name="EIR-1",
+			employee_loss_details=[_loss_row()],
+			manually_book_loss_details=[],
+		)
+		spent = {
+			"row": _loss_row(),
+			"table_name": "employee_loss_details",
+			"qty": 0.143,
+			"sre_doc": SimpleNamespace(warehouse="Waxing WO"),
+			"needs_sre_reduction": False,
+		}
+		reduce_mock = MagicMock()
+		db = MagicMock()
+		db.exists.return_value = False
+		with (
+			patch("frappe.db", db),
+			patch(f"{_LSE}._prepare_loss_row", side_effect=[spent]),
+			patch(f"{_LSE}._reduce_sre", reduce_mock),
+			patch(f"{_LSE}._build_combined_loss_se", return_value=MagicMock()),
+		):
+			loss_stock_entry.create_loss_stock_entries(eir)
+
+		reduce_mock.assert_not_called()
+
+
+class TestReduceSreBatchHandling(IntegrationTestCase):
+	"""_reduce_sre must decrement only the affected batch and reset the no-copy counters."""
+
+	def _sre(self, sb_entries, reserved):
+		return SimpleNamespace(
+			name="SRE-1",
+			warehouse="WH",
+			reserved_qty=reserved,
+			delivered_qty=0.0,
+			transferred_qty=0.0,
+			consumed_qty=0.0,
+			available_qty=reserved,
+			voucher_qty=reserved,
+			voucher_type="Material Request",
+			voucher_no="MR-1",
+			voucher_detail_no="MRI-1",
+			reservation_based_on="Serial and Batch",
+			sb_entries=sb_entries,
+			cancel=MagicMock(),
+		)
+
+	def test_decrements_only_the_matching_batch_row(self):
+		sre = self._sre([_sb("BATCH-A", 3.0), _sb("BATCH-B", 2.0)], 5.0)
+		clone = SimpleNamespace(
+			sb_entries=[_sb("BATCH-A", 3.0), _sb("BATCH-B", 2.0)],
+			flags=SimpleNamespace(ignore_permissions=False),
+			insert=MagicMock(),
+			submit=MagicMock(),
+		)
+		with patch("frappe.copy_doc", return_value=clone):
+			loss_stock_entry._reduce_sre(
+				SimpleNamespace(name="EIR-1"),
+				_loss_row(batch_no="BATCH-A"),
+				sre,
+				0.5,
+				"employee_loss_details",
+			)
+
+		self.assertEqual(
+			[(s.batch_no, s.qty) for s in clone.sb_entries],
+			[("BATCH-A", 2.5), ("BATCH-B", 2.0)],
+		)
+		# ERPNext recomputes reserved_qty = sum(sb_entries.qty) on submit; agree with it.
+		self.assertEqual(clone.reserved_qty, 4.5)
+		# no_copy counters must not ride along onto a brand-new reservation.
+		self.assertEqual(clone.delivered_qty, 0)
+		self.assertEqual(clone.transferred_qty, 0)
+		self.assertEqual(clone.consumed_qty, 0)
+		clone.submit.assert_called_once()
+
+	def test_throws_when_the_sre_does_not_reserve_this_batch(self):
+		"""Silently no-op'ing would let ERPNext reset reserved_qty and lose the reduction."""
+		sre = self._sre([_sb("BATCH-B", 2.0)], 2.0)
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			loss_stock_entry._reduce_sre(
+				SimpleNamespace(name="EIR-1"),
+				_loss_row(batch_no="BATCH-A"),
+				sre,
+				0.5,
+				"employee_loss_details",
+			)
+		self.assertIn("BATCH-A", str(ctx.exception))
+		sre.cancel.assert_not_called()
+
+	def test_partially_delivered_sre_is_rebased_on_remaining_not_gross(self):
+		"""reserved 5 / delivered 4 nets to 1 reserved; the replacement must not re-reserve 4."""
+		sre = self._sre([_sb("BATCH-A", 5.0, delivered_qty=4.0)], 5.0)
+		sre.delivered_qty = 4.0
+		clone = SimpleNamespace(
+			sb_entries=[_sb("BATCH-A", 5.0, delivered_qty=4.0)],
+			flags=SimpleNamespace(ignore_permissions=False),
+			insert=MagicMock(),
+			submit=MagicMock(),
+		)
+		with patch("frappe.copy_doc", return_value=clone):
+			loss_stock_entry._reduce_sre(
+				SimpleNamespace(name="EIR-1"),
+				_loss_row(batch_no="BATCH-A"),
+				sre,
+				0.5,
+				"employee_loss_details",
+			)
+
+		# remaining 1.0 - loss 0.5 = 0.5, and delivered restarts at 0.
+		self.assertEqual(clone.reserved_qty, 0.5)
+		self.assertEqual(clone.sb_entries[0].qty, 0.5)
+		self.assertEqual(clone.sb_entries[0].delivered_qty, 0)
+		self.assertEqual(clone.delivered_qty, 0)
+
+	def test_drops_the_batch_row_when_fully_consumed(self):
+		sre = self._sre([_sb("BATCH-A", 0.5), _sb("BATCH-B", 2.0)], 2.5)
+		clone = SimpleNamespace(
+			sb_entries=[_sb("BATCH-A", 0.5), _sb("BATCH-B", 2.0)],
+			flags=SimpleNamespace(ignore_permissions=False),
+			insert=MagicMock(),
+			submit=MagicMock(),
+		)
+		with patch("frappe.copy_doc", return_value=clone):
+			loss_stock_entry._reduce_sre(
+				SimpleNamespace(name="EIR-1"),
+				_loss_row(batch_no="BATCH-A"),
+				sre,
+				0.5,
+				"employee_loss_details",
+			)
+
+		self.assertEqual([s.batch_no for s in clone.sb_entries], ["BATCH-B"])
+		self.assertEqual(clone.reserved_qty, 2.0)

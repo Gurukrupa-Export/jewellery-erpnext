@@ -1808,7 +1808,7 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
     if self.custom_diamond_quality:
         row.diamond_quality = self.custom_diamond_quality
     stone_prec = int(ctx.stone_precision or 3)
-
+    diamond_additional_cost = frappe.db.get_single_value("Jewellery Settings","inter_company_diamond_additional_cost")
     _DIAMOND_RATE_URL     = f"{from_site}/api/method/gke_customization.gke_order_forms.doc_events.item.get_diamond_rate"
     _DIAMOND_RATE_HEADERS = {"Authorization": f"token {api_key}:{api_secret}"}
 
@@ -1918,7 +1918,8 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
             else:
                 if cctx.billing_currency == "USD":
                     d.se_rate = d.se_rate * cctx.exchange_rate
-                d.total_diamond_rate = d.se_rate * 1.15
+                # d.total_diamond_rate = d.se_rate * 1.15
+                d.total_diamond_rate = d.se_rate * (1 + (int(diamond_additional_cost)/100))
                 if d.quantity > 0.005:
                     d.quantity = round(d.quantity, stone_prec)
                 d.diamond_rate_for_specified_quantity = round(

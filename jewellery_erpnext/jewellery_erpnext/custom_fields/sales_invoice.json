@@ -741,7 +741,7 @@
   {
    "dt": "Sales Invoice",
    "fieldname": "custom_diamond_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "is_system_generated": 1,
    "insert_after": "custom_other_weight",
    "label": "Diamond Pcs",
@@ -750,7 +750,7 @@
   {
    "dt": "Sales Invoice",
    "fieldname": "custom_gemstone_pcs",
-   "fieldtype": "Float",
+   "fieldtype": "Int",
    "is_system_generated": 1,
    "insert_after": "custom_diamond_pcs",
    "label": "Gemstone Pcs",
@@ -763,6 +763,15 @@
    "insert_after": "custom_gemstone_pcs",
    "label": "Gross Weight",
    "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Invoice",
+   "fieldname": "custom_product_return_form_ref",
+   "fieldtype": "Link",
+   "insert_after": "due_date",
+   "label": "Product Return Form",
+   "module": "Jewellery Erpnext",
+   "options": "Product Return Order Form"
   }
  ]
 }

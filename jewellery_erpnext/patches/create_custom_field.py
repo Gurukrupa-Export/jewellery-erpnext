@@ -9,7 +9,7 @@ def execute():
 		if file in [
 			"stock_entry_mop_item.json",
 			"stock_entry.json",
-			"stock_entry_detail.json",
+			"stock_entry_detail.json"
 		]:
 			with open(os.path.join(path, file), "r") as f:
 				CUSTOM_FIELDS.update(json.load(f))
