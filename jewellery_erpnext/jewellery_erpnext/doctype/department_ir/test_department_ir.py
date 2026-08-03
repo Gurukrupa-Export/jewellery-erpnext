@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 import frappe
-from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase, UnitTestCase
 from frappe.types.frappedict import _dict as FrappeDict
 
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir import (
@@ -12,6 +12,10 @@ from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.department_ir imp
 	department_receive_query,
 	fetch_and_update,
 	get_manufacturing_operations,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance import (
+	get_tolerance_failures,
+	validate_product_tolerance,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
 	dir_for_issue,
@@ -384,3 +388,431 @@ def mo_creation():
 	mo.save()
 
 	return mo
+
+
+_TOL_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance"
+
+
+def _dir_row(**kwargs):
+	row = FrappeDict(
+		manufacturing_operation="MOP-0001",
+		manufacturing_work_order="MWO-0001",
+		gross_wt=0.0,
+		net_wt=0.0,
+		finding_wt=0.0,
+		diamond_wt=0.0,
+		gemstone_wt=0.0,
+	)
+	row.update(kwargs)
+	return row
+
+
+def _mwo(**kwargs):
+	mwo = FrappeDict(
+		name="MWO-0001",
+		manufacturing_order="PMO-0001",
+		metal_type="Gold",
+		is_finding_mwo=0,
+		for_fg=0,
+		qty=1,
+	)
+	mwo.update(kwargs)
+	return mwo
+
+
+def _metal_band(**kwargs):
+	band = FrappeDict(
+		parent="PMO-0001",
+		metal_type="Gold",
+		weight_type="Net Weight",
+		from_tolerance_wt=13.95,
+		to_tolerance_wt=16.05,
+		standard_tolerance_wt=15.0,
+	)
+	band.update(kwargs)
+	return band
+
+
+class TestProductToleranceGate(UnitTestCase):
+	"""Department IR Issue is refused when the weight leaves the PMO's band."""
+
+	def _failures(self, rows, mwos, bands, dept="Tagging - T"):
+		doc = FrappeDict(
+			type="Issue",
+			is_finding=0,
+			next_department=dept,
+			current_department="Final Polish - T",
+			department_ir_operation=rows,
+		)
+		with patch(
+			f"{_TOL_MODULE}.frappe.get_all",
+			side_effect=lambda doctype, **kw: mwos
+			if doctype == "Manufacturing Work Order"
+			else bands.get(doctype, []),
+		), patch(f"{_TOL_MODULE}.frappe.get_meta") as meta:
+			meta.return_value.has_field.return_value = True
+			return get_tolerance_failures(doc, rows)
+
+	def _validate(self, doc, flag=1):
+		with patch(
+			f"{_TOL_MODULE}.frappe.get_cached_value", return_value=flag
+		) as cached:
+			with patch(
+				f"{_TOL_MODULE}.get_tolerance_failures", return_value=[]
+			) as calc:
+				validate_product_tolerance(doc)
+		return cached, calc
+
+	# ---- gating ----
+
+	def test_receive_leg_is_never_checked(self):
+		doc = FrappeDict(
+			type="Receive",
+			is_finding=0,
+			next_department=None,
+			department_ir_operation=[_dir_row()],
+		)
+		cached, calc = self._validate(doc)
+		cached.assert_not_called()
+		calc.assert_not_called()
+
+	def test_finding_department_is_still_checked(self):
+		"""is_finding is fetched from next_department.custom_is_finding.
+
+		Tagging, Final Polish and Central all carry that flag, so treating it as
+		"this transfer is a finding run" would switch the check off for exactly the
+		hand-offs it exists to guard.
+		"""
+		doc = FrappeDict(
+			type="Issue",
+			is_finding=1,
+			next_department="Tagging - T",
+			department_ir_operation=[_dir_row()],
+		)
+		cached, calc = self._validate(doc)
+		cached.assert_called_once()
+		calc.assert_called_once()
+
+	def test_unflagged_department_issues_no_tolerance_query(self):
+		doc = FrappeDict(
+			type="Issue",
+			is_finding=0,
+			next_department="Tagging - T",
+			department_ir_operation=[_dir_row()],
+		)
+		_cached, calc = self._validate(doc, flag=0)
+		calc.assert_not_called()
+
+	def test_missing_custom_field_degrades_to_off(self):
+		doc = FrappeDict(
+			type="Issue",
+			is_finding=0,
+			next_department="Tagging - T",
+			department_ir_operation=[_dir_row()],
+		)
+		_cached, calc = self._validate(doc, flag=None)
+		calc.assert_not_called()
+
+	# ---- boundaries ----
+
+	def test_weight_above_band_fails_with_a_named_message(self):
+		failures = self._failures(
+			[_dir_row(net_wt=16.9)],
+			[_mwo()],
+			{"Metal Product Tolerance": [_metal_band()]},
+		)
+		self.assertEqual(len(failures), 1)
+		for token in (
+			"PMO-0001",
+			"MWO-0001",
+			"MOP-0001",
+			"Tagging - T",
+			"16.9",
+			"13.95",
+			"16.05",
+		):
+			self.assertIn(token, failures[0])
+
+	def test_weight_below_band_fails(self):
+		failures = self._failures(
+			[_dir_row(net_wt=13.0)],
+			[_mwo()],
+			{"Metal Product Tolerance": [_metal_band()]},
+		)
+		self.assertEqual(len(failures), 1)
+
+	def test_float_noise_at_the_boundary_passes(self):
+		failures = self._failures(
+			[_dir_row(net_wt=16.0500001)],
+			[_mwo()],
+			{"Metal Product Tolerance": [_metal_band()]},
+		)
+		self.assertEqual(failures, [])
+
+	def test_exact_bounds_pass(self):
+		for weight in (13.95, 16.05):
+			self.assertEqual(
+				self._failures(
+					[_dir_row(net_wt=weight)],
+					[_mwo()],
+					{"Metal Product Tolerance": [_metal_band()]},
+				),
+				[],
+			)
+
+	def test_net_band_compares_net_plus_finding(self):
+		"""MOP net_wt is metal only; the band's source includes findings."""
+		failures = self._failures(
+			[_dir_row(net_wt=15.0, finding_wt=2.0)],
+			[_mwo()],
+			{"Metal Product Tolerance": [_metal_band()]},
+		)
+		self.assertEqual(len(failures), 1)
+
+	def test_gross_band_compares_gross(self):
+		failures = self._failures(
+			[_dir_row(gross_wt=15.0, net_wt=99.0)],
+			[_mwo()],
+			{"Metal Product Tolerance": [_metal_band(weight_type="Gross Weight")]},
+		)
+		self.assertEqual(failures, [])
+
+	def test_zero_weight_is_not_a_violation(self):
+		failures = self._failures(
+			[_dir_row()], [_mwo()], {"Metal Product Tolerance": [_metal_band()]}
+		)
+		self.assertEqual(failures, [])
+
+	def test_pmo_without_bands_passes(self):
+		failures = self._failures([_dir_row(net_wt=999.0)], [_mwo()], {})
+		self.assertEqual(failures, [])
+
+	# ---- selection and bucketing ----
+
+	def test_band_for_another_metal_is_ignored(self):
+		failures = self._failures(
+			[_dir_row(net_wt=16.9)],
+			[_mwo(metal_type="Gold")],
+			{
+				"Metal Product Tolerance": [
+					_metal_band(metal_type="Gold"),
+					_metal_band(
+						metal_type="Silver", from_tolerance_wt=0, to_tolerance_wt=100
+					),
+				]
+			},
+		)
+		self.assertEqual(len(failures), 1)
+
+	def test_producing_work_orders_of_one_pmo_are_summed(self):
+		failures = self._failures(
+			[
+				_dir_row(
+					manufacturing_work_order="MWO-A",
+					manufacturing_operation="MOP-A",
+					net_wt=8.0,
+				),
+				_dir_row(
+					manufacturing_work_order="MWO-B",
+					manufacturing_operation="MOP-B",
+					net_wt=7.0,
+				),
+			],
+			[_mwo(name="MWO-A"), _mwo(name="MWO-B")],
+			{"Metal Product Tolerance": [_metal_band()]},
+		)
+		self.assertEqual(failures, [])
+
+	def test_fg_row_is_dropped_when_producing_rows_are_present(self):
+		failures = self._failures(
+			[
+				_dir_row(manufacturing_work_order="MWO-A", net_wt=15.0),
+				_dir_row(manufacturing_work_order="MWO-FG", net_wt=15.0),
+			],
+			[_mwo(name="MWO-A"), _mwo(name="MWO-FG", for_fg=1)],
+			{"Metal Product Tolerance": [_metal_band()]},
+		)
+		self.assertEqual(failures, [])
+
+	def test_finding_work_orders_are_excluded(self):
+		failures = self._failures(
+			[_dir_row(net_wt=999.0)],
+			[_mwo(is_finding_mwo=1)],
+			{"Metal Product Tolerance": [_metal_band()]},
+		)
+		self.assertEqual(failures, [])
+
+	def test_band_is_scaled_by_quantity(self):
+		self.assertEqual(
+			self._failures(
+				[_dir_row(net_wt=45.0)],
+				[_mwo(qty=3)],
+				{"Metal Product Tolerance": [_metal_band()]},
+			),
+			[],
+		)
+		self.assertEqual(
+			len(
+				self._failures(
+					[_dir_row(net_wt=15.0)],
+					[_mwo(qty=3)],
+					{"Metal Product Tolerance": [_metal_band()]},
+				)
+			),
+			1,
+		)
+
+	# ---- stones ----
+
+	def test_diamond_band_is_checked_in_carats(self):
+		failures = self._failures(
+			[_dir_row(diamond_wt=2.5)],
+			[_mwo()],
+			{
+				"Diamond Product Tolerance": [
+					FrappeDict(
+						parent="PMO-0001",
+						weight_type="Weight wise",
+						from_tolerance_wt=2.0,
+						to_tolerance_wt=2.2,
+						standard_tolerance_wt=2.1,
+					)
+				]
+			},
+		)
+		self.assertEqual(len(failures), 1)
+		self.assertIn("cts", failures[0])
+
+	def test_per_sieve_diamond_bands_are_not_compared_to_a_total(self):
+		failures = self._failures(
+			[_dir_row(diamond_wt=9.9)],
+			[_mwo()],
+			{
+				"Diamond Product Tolerance": [
+					FrappeDict(
+						parent="PMO-0001",
+						weight_type="MM Size wise",
+						from_tolerance_wt=2.0,
+						to_tolerance_wt=2.2,
+						standard_tolerance_wt=2.1,
+					)
+				]
+			},
+		)
+		self.assertEqual(failures, [])
+
+	def test_several_failures_are_reported_together(self):
+		doc = FrappeDict(
+			type="Issue",
+			is_finding=0,
+			next_department="Tagging - T",
+			department_ir_operation=[],
+		)
+		with patch(f"{_TOL_MODULE}.frappe.get_cached_value", return_value=1), patch(
+			f"{_TOL_MODULE}.get_tolerance_failures", return_value=["first", "second"]
+		):
+			doc.department_ir_operation = [_dir_row()]
+			with self.assertRaises(frappe.ValidationError):
+				validate_product_tolerance(doc)
+
+
+class TestProductToleranceBandSelection(UnitTestCase):
+	"""Regressions found by review: each weight basis must be judged on its own."""
+
+	def _failures(self, rows, mwos, bands):
+		doc = FrappeDict(
+			type="Issue",
+			is_finding=0,
+			next_department="Tagging - T",
+			current_department="Final Polish - T",
+			department_ir_operation=rows,
+		)
+		with patch(
+			f"{_TOL_MODULE}.frappe.get_all",
+			side_effect=lambda doctype, **kw: mwos
+			if doctype == "Manufacturing Work Order"
+			else bands.get(doctype, []),
+		), patch(f"{_TOL_MODULE}.frappe.get_meta") as meta:
+			meta.return_value.has_field.return_value = True
+			return get_tolerance_failures(doc, rows)
+
+	def test_passing_net_band_does_not_excuse_a_gross_overrun(self):
+		"""Gross and Net measure different things and are judged separately."""
+		failures = self._failures(
+			[_dir_row(gross_wt=30.0, net_wt=15.0)],
+			[_mwo()],
+			{
+				"Metal Product Tolerance": [
+					_metal_band(weight_type="Net Weight"),
+					_metal_band(
+						weight_type="Gross Weight",
+						from_tolerance_wt=19.8,
+						to_tolerance_wt=22.0,
+					),
+				]
+			},
+		)
+		self.assertEqual(len(failures), 1)
+		self.assertIn("Gross Weight", failures[0])
+		self.assertIn("30.0", failures[0])
+
+	def test_both_bases_can_fail_at_once(self):
+		failures = self._failures(
+			[_dir_row(gross_wt=30.0, net_wt=99.0)],
+			[_mwo()],
+			{
+				"Metal Product Tolerance": [
+					_metal_band(weight_type="Net Weight"),
+					_metal_band(
+						weight_type="Gross Weight",
+						from_tolerance_wt=19.8,
+						to_tolerance_wt=22.0,
+					),
+				]
+			},
+		)
+		self.assertEqual(len(failures), 2)
+
+	def test_duplicate_bands_of_one_basis_still_fail_open(self):
+		"""Legacy PMOs carry a whole schedule for one basis; any match passes."""
+		failures = self._failures(
+			[_dir_row(net_wt=15.0)],
+			[_mwo()],
+			{
+				"Metal Product Tolerance": [
+					_metal_band(from_tolerance_wt=1.0, to_tolerance_wt=2.0),
+					_metal_band(),
+				]
+			},
+		)
+		self.assertEqual(failures, [])
+
+	def test_foreign_metal_band_is_not_applied(self):
+		"""A Gold-only schedule must not police a Platinum work order."""
+		failures = self._failures(
+			[_dir_row(net_wt=40.0)],
+			[_mwo(metal_type="Platinum")],
+			{"Metal Product Tolerance": [_metal_band(metal_type="Gold")]},
+		)
+		self.assertEqual(failures, [])
+
+	def test_universal_diamond_band_is_enforced(self):
+		"""set_diamond_tolerance_table stamps Universal from the whole BOM aggregate,
+		so it is a product total and must be compared like one."""
+		failures = self._failures(
+			[_dir_row(diamond_wt=9.9)],
+			[_mwo()],
+			{
+				"Diamond Product Tolerance": [
+					FrappeDict(
+						parent="PMO-0001",
+						weight_type="Universal",
+						from_tolerance_wt=2.0,
+						to_tolerance_wt=2.2,
+						standard_tolerance_wt=2.1,
+					)
+				]
+			},
+		)
+		self.assertEqual(len(failures), 1)
+		self.assertIn("cts", failures[0])

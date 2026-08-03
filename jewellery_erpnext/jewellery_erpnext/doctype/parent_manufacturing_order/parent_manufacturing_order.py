@@ -7,9 +7,16 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
-from frappe.utils import get_link_to_form
+from frappe.utils import flt, get_link_to_form
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
+from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.tolerance_utils import (
+	diamond_group_key,
+	gemstone_group_key,
+	group_tolerance_rows,
+	metal_group_key,
+	pick_tolerance_row,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.utils import (
 	get_current_mould_id,
 )
@@ -374,9 +381,18 @@ class ParentManufacturingOrder(Document):
 
 	def on_submit(self):
 		if not self.order_form_type or self.order_form_type == "Order":
-			set_metal_tolerance_table(self)
-			set_diamond_tolerance_table(self)
-			# set_gemstone_tolerance_table(self)
+			# One update_after_submit cycle for all three tolerance tables instead of one
+			# per populator, and none at all for a customer with no tolerance master --
+			# the populators return False in that case, matching the old behaviour where
+			# they returned before ever reaching their own save(). Must stay ahead of
+			# submit_bom / create_material_requests / create_manufacturing_work_order:
+			# those db.set_value the PMO row, so a save() after them would raise
+			# TimestampMismatchError.
+			touched = set_metal_tolerance_table(self)
+			touched = set_diamond_tolerance_table(self) or touched
+			# touched = set_gemstone_tolerance_table(self) or touched
+			if touched:
+				self.save()
 			self.submit_bom()
 			if self.type != "Finding Manufacturing":
 				self.create_material_requests()
@@ -1021,297 +1037,239 @@ def gemstone_details_set_mandatory_field(self):
 		frappe.throw("<br>".join(errors))
 
 
-def set_metal_tolerance_table(self):
-	cpt = frappe.db.get_value(
-		"Customer Product Tolerance Master", {"customer_name": self.customer}, "name"
+def _get_tolerance_master(customer):
+	"""Name of the Customer Product Tolerance Master for ``customer``, or None."""
+	return frappe.db.get_value(
+		"Customer Product Tolerance Master", {"customer_name": customer}, "name"
 	)
+
+
+def _throw_no_band(cptm_name, category, group_label, weight):
+	"""No master row's From/To band covers ``weight``.
+
+	This is master-data breakage, not "no tolerance applies": the operator has entered
+	bands that leave this weight in a gap, so silently skipping would ship an order with
+	no tolerance at all. Name the master, the group and the weight so the gap can be
+	closed. Customer Product Tolerance Master.validate refuses new overlapping bands, so
+	in practice this fires on gaps left by historic data.
+	"""
+	frappe.throw(
+		_(
+			"{0}: no tolerance band covers a weight of <b>{1}</b> for {2} in Customer "
+			"Product Tolerance Master {3}. Add or correct the From/To band so this "
+			"weight falls inside one."
+		).format(
+			category,
+			weight,
+			group_label,
+			get_link_to_form("Customer Product Tolerance Master", cptm_name),
+		),
+		title=_("Product Tolerance Band Missing"),
+	)
+
+
+def _group_label(*parts):
+	"""Human-readable name for a tolerance group, e.g. "Net Weight / Gold"."""
+	return " / ".join([str(part) for part in parts if part]) or _("all rows")
+
+
+def _percent_bounds(base, minus_percent, plus_percent):
+	return (
+		round(base * ((100 - flt(minus_percent)) / 100), 4),
+		round(base * ((100 + flt(plus_percent)) / 100), 4),
+	)
+
+
+def set_metal_tolerance_table(self):
+	cpt = _get_tolerance_master(self.customer)
 	if not cpt:
-		return
+		return False
 	cptm = frappe.get_doc("Customer Product Tolerance Master", cpt)
 	bom = self.custom_tracking_bom
 	if not bom:
 		frappe.throw(_("BOM is missing"))
 	bom_doc = frappe.get_doc("Tracking Bom", bom)
-	if cptm.metal_tolerance_table:
-		for mtt_tbl in cptm.metal_tolerance_table:
-			bom_gross_wt = (
-				bom_doc.gross_weight
-				if mtt_tbl.weight_type == "Gross Weight"
-				else bom_doc.metal_and_finding_weight
-			)
-			if mtt_tbl.range_type == "Weight Range":
-				from_tolerance_wt = round(bom_gross_wt - mtt_tbl.tolerance_range, 4)
-				to_tolerance_wt = round(bom_gross_wt + mtt_tbl.tolerance_range, 4)
-			else:
-				from_tolerance_wt = round(
-					bom_gross_wt * ((100 - mtt_tbl.minus_percent) / 100), 4
-				)
-				to_tolerance_wt = round(
-					bom_gross_wt * ((100 + mtt_tbl.plus_percent) / 100), 4
-				)
 
-			child_row = {
-				"doctype": "Metal Product Tolerance",
-				"parent": self.name,
-				"parenttype": self.doctype,
-				"parentfield": "metal_product_tolerance",
+	# Rebuilt from scratch on every run. The table carries no no_copy, so an amended PMO
+	# arrives holding the previous document's rows and would otherwise accumulate a
+	# second full set on submit.
+	self.set("metal_product_tolerance", [])
+
+	# One winner per (weight_type, metal_type): a master legitimately defines Gross AND
+	# Net bands, or Gold AND Silver bands, and each dimension picks its own row. Within a
+	# group the rows are weight bands and exactly one covers the BOM weight.
+	groups = group_tolerance_rows(cptm.metal_tolerance_table or [], metal_group_key)
+	for (weight_type, metal_type), rows in groups.items():
+		bom_gross_wt = flt(
+			bom_doc.gross_weight
+			if weight_type == "Gross Weight"
+			else bom_doc.metal_and_finding_weight
+		)
+		mtt_tbl = pick_tolerance_row(rows, bom_gross_wt)
+		if not mtt_tbl:
+			_throw_no_band(
+				cpt, _("Metal"), _group_label(weight_type, metal_type), bom_gross_wt
+			)
+
+		if mtt_tbl.range_type == "Weight Range":
+			from_tolerance_wt = round(bom_gross_wt - flt(mtt_tbl.tolerance_range), 4)
+			to_tolerance_wt = round(bom_gross_wt + flt(mtt_tbl.tolerance_range), 4)
+		else:
+			from_tolerance_wt, to_tolerance_wt = _percent_bounds(
+				bom_gross_wt, mtt_tbl.minus_percent, mtt_tbl.plus_percent
+			)
+
+		self.append(
+			"metal_product_tolerance",
+			{
+				"weight_type": weight_type or None,
 				"metal_type": mtt_tbl.metal_type,
+				"from_weight": flt(mtt_tbl.from_weight),
+				"to_weight": flt(mtt_tbl.to_weight),
 				"from_tolerance_wt": from_tolerance_wt,
 				"to_tolerance_wt": to_tolerance_wt,
 				"standard_tolerance_wt": round(bom_gross_wt, 4),
-				"product_wt": self.gross_weight
-				if mtt_tbl.weight_type == "Gross Weight"
-				else self.net_weight,
-			}
-			try:
-				self.append("metal_product_tolerance", child_row)
-			except Exception as e:
-				frappe.throw(
-					f"Error appending <b>Metal Product Tolerance Table</b> Please check <b>Customer Product Tolerance Master</b> Doctype Correctly configured or not:</br></br> {str(e)}"
-				)
-	self.save()
+				"product_wt": flt(
+					self.gross_weight
+					if weight_type == "Gross Weight"
+					else self.net_weight
+				),
+			},
+		)
+	return True
 
 
 def set_diamond_tolerance_table(self):
-	cpt = frappe.db.get_value(
-		"Customer Product Tolerance Master", {"customer_name": self.customer}, "name"
-	)
+	cpt = _get_tolerance_master(self.customer)
 	if not cpt:
-		return
+		return False
 	cptm = frappe.get_doc("Customer Product Tolerance Master", cpt)
 	bom = self.custom_tracking_bom
 	if not bom:
 		frappe.throw(_("BOM is missing"))
 	bom_doc = frappe.get_doc("Tracking Bom", bom)
-	if cptm.diamond_tolerance_table:
-		for dtt_tbl in cptm.diamond_tolerance_table:
-			child_row = {}
-			if dtt_tbl.weight_type == "MM Size wise":
-				for dimond_row in bom_doc.diamond_detail:
-					if dimond_row.diamond_sieve_size == dtt_tbl.sieve_size:
-						weight_in_cts = dimond_row.quantity
-						from_tolerance_wt = round(
-							weight_in_cts * ((100 - dtt_tbl.minus_percent) / 100), 4
-						)
-						to_tolerance_wt = round(
-							weight_in_cts * ((100 + dtt_tbl.minus_percent) / 100), 4
-						)
-						child_row = {
-							"doctype": "Diamond Product Tolerance",
-							"parent": self.name,
-							"parenttype": self.doctype,
-							"parentfield": "diamond_product_tolerance",
-							"weight_type": dtt_tbl.weight_type,
-							"sieve_size": dtt_tbl.sieve_size,
-							"size_in_mm": round(dimond_row.size_in_mm, 4),
-							"from_tolerance_wt": from_tolerance_wt,
-							"to_tolerance_wt": to_tolerance_wt,
-							"standard_tolerance_wt": round(weight_in_cts, 4),
-							"product_wt": self.diamond_weight,
-						}
 
-			if dtt_tbl.weight_type == "Group Size wise":
-				sieve_size_ranges = set()
-				quantity_sum = 0
-				size_in_mm = 0
-				for dimond_row in bom_doc.diamond_detail:
-					if dtt_tbl.sieve_size_range == dimond_row.sieve_size_range:
-						quantity_sum += dimond_row.quantity
-						size_in_mm += dimond_row.size_in_mm
-						sieve_size_ranges.add(dimond_row.sieve_size_range)
-				from_tolerance_wt = round(
-					quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
-				)
-				to_tolerance_wt = round(
-					quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
-				)
-				for sieve_size_range in sorted(sieve_size_ranges):
-					if dtt_tbl.sieve_size_range == sieve_size_range:
-						child_row = {
-							"doctype": "Diamond Product Tolerance",
-							"parent": self.name,
-							"parenttype": self.doctype,
-							"parentfield": "diamond_product_tolerance",
-							"weight_type": dtt_tbl.weight_type,
-							"sieve_size": None,
-							"sieve_size_range": sieve_size_range,
-							"size_in_mm": round(size_in_mm, 4),
-							"from_tolerance_wt": from_tolerance_wt,
-							"to_tolerance_wt": to_tolerance_wt,
-							"standard_tolerance_wt": round(quantity_sum, 4),
-							"product_wt": self.diamond_weight,
-						}
+	self.set("diamond_product_tolerance", [])
 
-			if dtt_tbl.weight_type == "Weight wise":
-				diamond_total_wt = 0
-				for dimond_row in bom_doc.diamond_detail:
-					diamond_total_wt += dimond_row.quantity
-					from_tolerance_wt = round(
-						diamond_total_wt * ((100 - dtt_tbl.minus_percent) / 100), 4
-					)
-					to_tolerance_wt = round(
-						diamond_total_wt * ((100 + dtt_tbl.plus_percent) / 100), 4
-					)
-					child_row = {
-						"doctype": "Diamond Product Tolerance",
-						"parent": self.name,
-						"parenttype": self.doctype,
-						"parentfield": "diamond_product_tolerance",
-						"weight_type": dtt_tbl.weight_type,
-						"sieve_size": None,
-						"sieve_size_range": None,
-						"from_tolerance_wt": from_tolerance_wt,
-						"to_tolerance_wt": to_tolerance_wt,
-						"standard_tolerance_wt": round(diamond_total_wt, 4),
-						"product_wt": self.diamond_weight,
-					}
+	groups = group_tolerance_rows(cptm.diamond_tolerance_table or [], diamond_group_key)
+	for (weight_type, _diamond_type, scope), rows in groups.items():
+		matched_rows = []
+		if weight_type == "MM Size wise":
+			matched_rows = [
+				d for d in bom_doc.diamond_detail if d.diamond_sieve_size == scope
+			]
+		elif weight_type == "Group Size wise":
+			matched_rows = [
+				d for d in bom_doc.diamond_detail if d.sieve_size_range == scope
+			]
+		else:
+			# "Weight wise" bands the whole product's diamond weight; "Universal" is the
+			# band-less catch-all over every diamond. Both aggregate the full detail
+			# table -- the old code filtered Universal on `sieve_size_range is None`,
+			# which never matches a blank Link stored as "".
+			matched_rows = list(bom_doc.diamond_detail)
 
-			if dtt_tbl.weight_type == "Universal":
-				empty_sieve_size_ranges = set()
-				empty_quantity_sum = 0
-				empty_size_in_mm = 0
-				for dimond_row in bom_doc.diamond_detail:
-					if dimond_row.sieve_size_range is None:
-						empty_quantity_sum += dimond_row.quantity
-						empty_size_in_mm += dimond_row.size_in_mm
-						empty_sieve_size_ranges.add(dimond_row.sieve_size_range)
-				empty_from_tolerance_wt = round(
-					empty_quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
-				)
-				empty_to_tolerance_wt = round(
-					empty_quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
-				)
-				if empty_sieve_size_ranges:
-					for sieve_size_range in sorted(empty_sieve_size_ranges):
-						child_row = {
-							"doctype": "Diamond Product Tolerance",
-							"parent": self.name,
-							"parenttype": self.doctype,
-							"parentfield": "diamond_product_tolerance",
-							"weight_type": "Universal",
-							"sieve_size": None,
-							"sieve_size_range": None,
-							"size_in_mm": round(empty_size_in_mm, 4),
-							"from_tolerance_wt": empty_from_tolerance_wt,
-							"to_tolerance_wt": empty_to_tolerance_wt,
-							"standard_tolerance_wt": round(empty_quantity_sum, 4),
-							"product_wt": self.diamond_weight,
-						}
+		if not matched_rows:
+			continue
 
-			try:
-				if child_row:
-					self.append("diamond_product_tolerance", child_row)
-			except Exception as e:
-				frappe.throw(
-					f"Error appending <b>Diamond Product Tolerance Table</b> Please check <b>Customer Product Tolerance Master</b> Doctype Correctly configured or not:</br></br> {str(e)}"
-				)
-	self.save()
+		weight_in_cts = sum(flt(d.quantity) for d in matched_rows)
+		# Quantities add up; a stone diameter does not. Every row in this group shares a
+		# sieve size, so take the size rather than summing it -- summing turned a 1.75 mm
+		# sieve into 3.5 mm as soon as two BOM rows shared it.
+		size_in_mm = flt(matched_rows[0].size_in_mm)
+
+		dtt_tbl = pick_tolerance_row(rows, weight_in_cts, "from_diamond", "to_diamond")
+		if not dtt_tbl:
+			_throw_no_band(
+				cpt,
+				_("Diamond"),
+				_group_label(weight_type, _diamond_type, scope),
+				weight_in_cts,
+			)
+
+		from_tolerance_wt, to_tolerance_wt = _percent_bounds(
+			weight_in_cts, dtt_tbl.minus_percent, dtt_tbl.plus_percent
+		)
+
+		self.append(
+			"diamond_product_tolerance",
+			{
+				"weight_type": dtt_tbl.weight_type,
+				"sieve_size": dtt_tbl.sieve_size
+				if weight_type == "MM Size wise"
+				else None,
+				"sieve_size_range": dtt_tbl.sieve_size_range
+				if weight_type == "Group Size wise"
+				else None,
+				"size_in_mm": round(size_in_mm, 4),
+				"from_tolerance_wt": from_tolerance_wt,
+				"to_tolerance_wt": to_tolerance_wt,
+				"standard_tolerance_wt": round(weight_in_cts, 4),
+				"product_wt": flt(self.diamond_weight),
+			},
+		)
+	return True
 
 
 def set_gemstone_tolerance_table(self):
-	cpt = frappe.db.get_value(
-		"Customer Product Tolerance Master", {"customer_name": self.customer}, "name"
-	)
+	cpt = _get_tolerance_master(self.customer)
 	if not cpt:
-		return
+		return False
 	cptm = frappe.get_doc("Customer Product Tolerance Master", cpt)
 	bom = self.custom_tracking_bom
 	if not bom:
 		frappe.throw(_("BOM is missing"))
 	bom_doc = frappe.get_doc("Tracking Bom", bom)
-	if cptm.gemstone_tolerance_table:
-		for dtt_tbl in cptm.gemstone_tolerance_table:
-			child_row = {}
-			if dtt_tbl.weight_type == "Weight Range":
-				shapes = set()
-				quantity_sum = 0
-				for gem_row in bom_doc.gemstone_detail:
-					if dtt_tbl.from_diamond <= gem_row.quantity <= dtt_tbl.to_diamond:
-						quantity_sum += gem_row.quantity
-						shapes.add(gem_row.stone_shape)
-				from_tolerance_wt = round(
-					quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
-				)
-				to_tolerance_wt = round(
-					quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
-				)
-				for shape in sorted(shapes):
-					if dtt_tbl.gemstone_shape == shape:
-						child_row = {
-							"doctype": "Gemstone Product Tolerance",
-							"parent": self.name,
-							"parenttype": self.doctype,
-							"parentfield": "gemstone_product_tolerance",
-							"weight_type": dtt_tbl.weight_type,
-							"gemstone_shape": shape,
-							"gemstone_type": dtt_tbl.gemstone_type,
-							"standard_tolerance_wt": quantity_sum,
-							"from_tolerance_wt": from_tolerance_wt,
-							"to_tolerance_wt": to_tolerance_wt,
-							"product_wt": self.diamond_weight,
-						}
 
-			if dtt_tbl.weight_type == "Gemstone Type Range":
-				gemstone_types = set()
-				quantity_sum = 0
-				for gem_row in bom_doc.gemstone_detail:
-					if dtt_tbl.gemstone_type == gem_row.gemstone_type:
-						quantity_sum += gem_row.quantity
-						gemstone_types.add(gem_row.gemstone_type)
-				from_tolerance_wt = round(
-					quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
-				)
-				to_tolerance_wt = round(
-					quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
-				)
-				for gemstone_type in sorted(gemstone_types):
-					if dtt_tbl.gemstone_type == gemstone_type:
-						child_row = {
-							"doctype": "Gemstone Product Tolerance",
-							"parent": self.name,
-							"parenttype": self.doctype,
-							"parentfield": "gemstone_product_tolerance",
-							"weight_type": dtt_tbl.weight_type,
-							"gemstone_shape": None,
-							"gemstone_type": gemstone_type,
-							"standard_tolerance_wt": quantity_sum,
-							"from_tolerance_wt": from_tolerance_wt,
-							"to_tolerance_wt": to_tolerance_wt,
-							"product_wt": self.diamond_weight,
-						}
+	self.set("gemstone_product_tolerance", [])
 
-			if dtt_tbl.weight_type == "Weight wise":
-				quantity_sum = 0
-				for gem_row in bom_doc.gemstone_detail:
-					quantity_sum += gem_row.quantity
-					from_tolerance_wt = round(
-						quantity_sum * ((100 - dtt_tbl.minus_percent) / 100), 4
-					)
-					to_tolerance_wt = round(
-						quantity_sum * ((100 + dtt_tbl.plus_percent) / 100), 4
-					)
-					child_row = {
-						"doctype": "Gemstone Product Tolerance",
-						"parent": self.name,
-						"parenttype": self.doctype,
-						"parentfield": "gemstone_product_tolerance",
-						"weight_type": dtt_tbl.weight_type,
-						"gemstone_shape": None,
-						"gemstone_type": None,
-						"standard_tolerance_wt": quantity_sum,
-						"from_tolerance_wt": from_tolerance_wt,
-						"to_tolerance_wt": to_tolerance_wt,
-						"product_wt": self.diamond_weight,
-					}
+	groups = group_tolerance_rows(
+		cptm.gemstone_tolerance_table or [], gemstone_group_key
+	)
+	for (weight_type, scope), rows in groups.items():
+		if weight_type == "Weight Range":
+			matched_rows = [
+				g for g in bom_doc.gemstone_detail if g.stone_shape == scope
+			]
+		elif weight_type == "Gemstone Type Range":
+			matched_rows = [
+				g for g in bom_doc.gemstone_detail if g.gemstone_type == scope
+			]
+		else:
+			matched_rows = list(bom_doc.gemstone_detail)
 
-			try:
-				if child_row:
-					self.append("gemstone_product_tolerance", child_row)
-			except Exception as e:
-				frappe.throw(
-					f"Error appending <b>Gemstone Product Tolerance Table</b> Please check <b>Customer Product Tolerance Master</b> Doctype Correctly configured or not:</br></br> {str(e)}"
-				)
-	self.save()
+		if not matched_rows:
+			continue
+
+		quantity_sum = sum(flt(g.quantity) for g in matched_rows)
+
+		gtt_tbl = pick_tolerance_row(rows, quantity_sum, "from_diamond", "to_diamond")
+		if not gtt_tbl:
+			_throw_no_band(
+				cpt, _("Gemstone"), _group_label(weight_type, scope), quantity_sum
+			)
+
+		from_tolerance_wt, to_tolerance_wt = _percent_bounds(
+			quantity_sum, gtt_tbl.minus_percent, gtt_tbl.plus_percent
+		)
+
+		self.append(
+			"gemstone_product_tolerance",
+			{
+				"weight_type": gtt_tbl.weight_type,
+				"gemstone_shape": gtt_tbl.gemstone_shape
+				if weight_type == "Weight Range"
+				else None,
+				"gemstone_type": gtt_tbl.gemstone_type
+				if weight_type == "Gemstone Type Range"
+				else None,
+				"standard_tolerance_wt": round(quantity_sum, 4),
+				"from_tolerance_wt": from_tolerance_wt,
+				"to_tolerance_wt": to_tolerance_wt,
+				"product_wt": flt(self.gemstone_weight),
+			},
+		)
+	return True
 
 
 def create_repair_un_pack_stock_entry(self):
