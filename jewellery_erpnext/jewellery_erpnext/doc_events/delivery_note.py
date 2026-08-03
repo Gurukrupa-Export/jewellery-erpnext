@@ -76,6 +76,7 @@ def update_dn_einvoice_items(self):
 		bom_doc = frappe.get_doc("BOM", row.bom)
 
 		for i in bom_doc.metal_detail:
+			# frappe.throw("jiij")
 			if i.is_customer_item:
 				continue
 			einvoice_item, hsn_code, uom = frappe.db.get_value(
@@ -98,6 +99,7 @@ def update_dn_einvoice_items(self):
 					["name", "hsn_code", "uom"],
 				) or (None, None, None)
 				making_amount = flt(i.making_amount) + flt(i.wastage_amount)
+				# frappe.throw(f"{making_amount}")
 				add(making_item, making_amount, flt(i.quantity), flt(i.making_rate), making_hsn, making_uom)
 
 		for i in bom_doc.finding_detail:
@@ -151,6 +153,23 @@ def update_dn_einvoice_items(self):
 				making_item, making_hsn, making_uom = result
 				making_amount = flt(i.making_amount) + flt(i.wastage_amount)
 				add(making_item, making_amount, flt(i.quantity), flt(i.making_rate), making_hsn, making_uom)
+
+			if i.finding_category != "Chains":
+				metal_making_filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
+				metal_making_item, metal_making_hsn, metal_making_uom = frappe.db.get_value(
+					"E Invoice Item",
+					{metal_making_filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+					["name", "hsn_code", "uom"],
+				) or (None, None, None)
+				metal_making_amount = flt(i.making_amount) + flt(i.wastage_amount)
+				add(
+					metal_making_item,
+					metal_making_amount,
+					flt(i.quantity),
+					flt(i.making_rate),
+					metal_making_hsn,
+					metal_making_uom,
+				)
 
 		for i in bom_doc.diamond_detail:
 			if i.is_customer_item:
@@ -214,7 +233,6 @@ def update_dn_einvoice_items(self):
 				"item_code": item_code,
 				"item_name": item_code,
 				"uom": data["uom"] or "Nos",
-				# "qty": data["qty"],
 				"qty": -abs(data["qty"]) if self.is_return else data["qty"],
 				"rate": data["rate"],
 				"amount": flt(data["amount"], 3),
