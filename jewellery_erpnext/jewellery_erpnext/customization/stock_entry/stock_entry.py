@@ -21,6 +21,10 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	# validate_inventory_dimention,
 	validate_warehouse,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.entered_metal_rate import (
+	capture_entered_metal_rates,
+	restore_entered_metal_rates,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.loss_valuation import (
 	set_process_loss_produce_rates,
 )
@@ -209,8 +213,16 @@ class CustomStockEntry(StockEntry):
 		Runs after super() so the consume rows already carry their basic_amount, and
 		before ``update_valuation_rate`` / ``set_total_incoming_outgoing_value`` in
 		``calculate_rate_and_amount``, which then pick the new values up for free.
+
+		The capture/restore pair around super() keeps a rate the user typed on a
+		Customer Goods row reachable by the Batch that row mints -- super() clears
+		``basic_rate`` on every allow-zero-valuation row, which is why those batches
+		were created rate-less. See ``utils/entered_metal_rate``; the ledger's
+		valuation is deliberately left at 0.
 		"""
+		entered_rates = capture_entered_metal_rates(self)
 		super().set_basic_rate(reset_outgoing_rate, raise_error_if_no_rate)
+		restore_entered_metal_rates(entered_rates)
 		set_process_loss_produce_rates(self)
 
 

@@ -41,7 +41,7 @@ REFINING_PROCESSES = (
 DUST_ITEMS = [
 	(
 		"REF-MD-001",
-		"Main Dust",
+		"Dust Item",
 		"Refining Scrap",
 		"Gram",
 		"Dust collected from Filing, Setting, Grinding and Chemical processes",
@@ -164,8 +164,7 @@ def _ensure_items():
 		).insert(ignore_permissions=True)
 
 
-# Non-stock service item billed on the refining-service PO when a price row has no
-# explicit service_item of its own.
+# The non-stock service item every refining-service PO line is billed as.
 SERVICE_ITEM = "REF-SVC-001"
 
 
@@ -195,8 +194,8 @@ def _ensure_service_item():
 def _ensure_allow_multiple_items():
 	"""External refining bills ONE Purchase Order line per pricing category (see
 	RefiningEntry.create_external_refining_po). When several categories share the default
-	service item REF-SVC-001 — the common case, since price slabs rarely set their own
-	service_item — the PO carries that same item on multiple rows. ERPNext's buying
+	service item REF-SVC-001 — always, now that slabs no longer carry a service_item of
+	their own — the PO carries that same item on multiple rows. ERPNext's buying
 	validation (erpnext.buying.utils.validate_for_items) rejects that with "Same item
 	cannot be entered multiple times." unless this Buying Setting is on, so a multi-category
 	consignment fails to create its PO without it. Production already runs with it enabled;
@@ -205,13 +204,52 @@ def _ensure_allow_multiple_items():
 		frappe.db.set_single_value("Buying Settings", "allow_multiple_items", 1)
 
 
+def _ensure_service_item_uoms():
+	"""Give the refining PO's billable items the UOM Conversion Detail rows they need.
+
+	Applies to REF-SVC-001 **and** to every REF-* pricing category, because a Purchase Order
+	line is now billed under the matched Refinery Price List's own item rather than the
+	generic charge item. Those categories are seeded with only their stock UOM (Gram, or
+	Litre for REF-UL-001), while a Flat Charge slab bills 1 Nos — so without this the line's
+	UOM has no conversion row at all.
+
+	The service line's qty is no longer a piece count (1 Nos) but the summed material
+	weight, so its uom is Gram / Litre / Carat depending on what was sent — and
+	``Purchase Order Item.uom`` is mandatory. Nothing THROWS without these rows
+	(get_conversion_factor falls through to 1.0 when no UOM Conversion Factor exists), but
+	that is an accident of a fallback: an explicit factor-1 row pins it, and it is what
+	Stock Settings.allow_uom_with_conversion_rate_defined_in_item restricts the UI dropdown
+	to if that setting is ever switched on.
+
+	Carat is included because a consignment can legitimately bill a carat line if the
+	returned-intact exclusion in _external_billable_rows is ever relaxed.
+	"""
+	billable = [SERVICE_ITEM] + [code for code, *_ in DUST_ITEMS]
+	for item_code in billable:
+		if not frappe.db.exists("Item", item_code):
+			continue
+		item = frappe.get_doc("Item", item_code)
+		changed = False
+		for uom in ("Nos", "Gram", "Litre", "Carat"):
+			if not frappe.db.exists("UOM", uom):
+				continue
+			if any(row.uom == uom for row in item.uoms):
+				continue
+			item.append("uoms", {"uom": uom, "conversion_factor": 1.0})
+			changed = True
+		if changed:
+			item.flags.ignore_permissions = True
+			item.save(ignore_permissions=True)
+
+
 def execute():
 	_ensure_refining_processes()
 	_ensure_item_groups()
 	_ensure_items()
 	_ensure_service_item()
+	_ensure_service_item_uoms()
 	_ensure_allow_multiple_items()
 	frappe.logger().info(
 		"seed_refining_masters: ensured Refining processes + item groups + 10 dust items "
-		"+ service item + allow_multiple_items"
+		"+ service item (with weight UOMs) + allow_multiple_items"
 	)

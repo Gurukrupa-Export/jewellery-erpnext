@@ -35,7 +35,7 @@ def get_columns():
 			"width": 160,
 		},
 		{
-			"label": _("Total Dust Generated"),
+			"label": _("Total Scrap Generated"),
 			"fieldname": "total_dust_generated",
 			"fieldtype": "Float",
 			"width": 160,

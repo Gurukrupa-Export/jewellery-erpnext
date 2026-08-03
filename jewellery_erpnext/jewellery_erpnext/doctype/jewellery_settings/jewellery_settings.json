@@ -25,6 +25,8 @@
   "system_item",
   "gold_gst_rate",
   "wo_split_limit",
+  "inter_company_diamond_handling_rate",
+  "inter_company_diamond_additional_cost",
   "warehouses_section",
   "source_warehouse",
   "work_in_progress",
@@ -344,6 +346,16 @@
    "fieldtype": "Table",
    "label": "For Certification",
    "options": "Certification Settings"
+  },
+  {
+   "fieldname": "inter_company_diamond_handling_rate",
+   "fieldtype": "Currency",
+   "label": "Inter Company Diamond Handling Rate"
+  },
+  {
+   "fieldname": "inter_company_diamond_additional_cost",
+   "fieldtype": "Data",
+   "label": "Inter Company Diamond Additional Cost(in %)"
   }
  ],
  "index_web_pages_for_search": 1,
