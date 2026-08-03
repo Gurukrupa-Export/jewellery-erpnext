@@ -93,14 +93,12 @@ def update_dn_einvoice_items(self):
 
 			if not is_branch_customer:
 				filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
-				
 				making_item, making_hsn, making_uom = frappe.db.get_value(
 					"E Invoice Item",
 					{
 						filter_value: 1,
 						"metal_type": i.metal_type,
 						"metal_purity": i.metal_touch,
-						"finding_category": ["is", "not set"],
 						"name": ["in", matching_parents],
 					},
 					["name", "hsn_code", "uom"],
@@ -119,6 +117,7 @@ def update_dn_einvoice_items(self):
 					"metal_type": i.metal_type,
 					"metal_purity": i.metal_touch,
 					"finding_category": i.finding_category,
+					"name": ["in", matching_parents],
 				},
 				["name", "hsn_code", "uom"],
 			) or (None, None, None)
@@ -139,75 +138,33 @@ def update_dn_einvoice_items(self):
 			add(einvoice_item, flt(i.amount), flt(i.quantity), flt(i.rate), hsn_code, uom)
 
 			making_amount = flt(i.making_amount) + flt(i.wastage_amount)
-			making_item = making_hsn = making_uom = None
-
-			if i.finding_category == "Chains":
-
-				filter_value = "is_for_labour" if i.is_customer_item else "is_for_finding_making"
+			filter_value = "is_for_labour" if i.is_customer_item else "is_for_finding_making"
+			result = frappe.db.get_value(
+				"E Invoice Item",
+				{
+					filter_value: 1,
+					"metal_type": i.metal_type,
+					"metal_purity": i.metal_touch,
+					"finding_category": i.finding_category,
+					"name": ["in", matching_parents],
+				},
+				["name", "hsn_code", "uom"],
+			)
+			if not result:
+				fallback_filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
 				result = frappe.db.get_value(
 					"E Invoice Item",
 					{
-						filter_value: 1,
+						fallback_filter_value: 1,
 						"metal_type": i.metal_type,
 						"metal_purity": i.metal_touch,
-						"finding_category": i.finding_category,
 						"name": ["in", matching_parents],
 					},
 					["name", "hsn_code", "uom"],
 				)
-				if result:
-					making_item, making_hsn, making_uom = result
-				else:
-					fallback_filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
-					result = frappe.db.get_value(
-						"E Invoice Item",
-						{
-							fallback_filter_value: 1,
-							"metal_type": i.metal_type,
-							"metal_purity": i.metal_touch,
-							"finding_category": ["is", "not set"],
-							"name": ["in", matching_parents],
-						},
-						["name", "hsn_code", "uom"],
-					)
-					if result:
-						making_item, making_hsn, making_uom = result
-			else:
-				# Non-chain findings: prefer a finding-specific making item;
-				# otherwise merge into the generic metal making item - mirroring
-				# how the finding's is_for_metal amount above already merges
-				# into the "Studded ..." line when no finding-specific item exists.
-				filter_value = "is_for_labour" if i.is_customer_item else "is_for_finding_making"
-				result = frappe.db.get_value(
-					"E Invoice Item",
-					{
-						filter_value: 1,
-						"metal_type": i.metal_type,
-						"metal_purity": i.metal_touch,
-						"finding_category": i.finding_category,
-						"name": ["in", matching_parents],
-					},
-					["name", "hsn_code", "uom"],
-				)
-				if result:
-					making_item, making_hsn, making_uom = result
-				else:
-					metal_making_filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
-					result = frappe.db.get_value(
-						"E Invoice Item",
-						{
-							metal_making_filter_value: 1,
-							"metal_type": i.metal_type,
-							"metal_purity": i.metal_touch,
-							"finding_category": ["is", "not set"],
-							"name": ["in", matching_parents],
-						},
-						["name", "hsn_code", "uom"],
-					)
-					if result:
-						making_item, making_hsn, making_uom = result
-
-			add(making_item, making_amount, flt(i.quantity), flt(i.making_rate), making_hsn, making_uom)
+			if result:
+				making_item, making_hsn, making_uom = result
+				add(making_item, making_amount, flt(i.quantity), flt(i.making_rate), making_hsn, making_uom)
 
 		for i in bom_doc.diamond_detail:
 			if i.is_customer_item:
@@ -292,3 +249,4 @@ def apply_einvoice_item_tax(self):
 		row.tax_rate = overall_rate
 		row.tax_amount = flt(flt(row.amount) * overall_rate / 100, 2)
 		row.amount_with_tax = flt(row.amount) + row.tax_amount
+		
