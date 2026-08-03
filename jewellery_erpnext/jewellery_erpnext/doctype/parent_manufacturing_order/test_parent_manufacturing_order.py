@@ -20,6 +20,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufac
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	get_item_code,
+	set_diamond_tolerance_table,
 	set_metal_tolerance_table,
 	validate_mfg_date,
 )
@@ -856,3 +857,168 @@ class TestToleranceMasterBandValidation(UnitTestCase):
 	def test_touching_bands_are_allowed(self):
 		"""...-50 and 50-... share an endpoint; pick_tolerance_row takes the first."""
 		self._validate(self._doc([(0, 50), (50, 100)]))
+
+
+def _bom_diamond(**kwargs):
+	row = frappe._dict(
+		diamond_type="Natural",
+		diamond_sieve_size="+4.5-5",
+		sieve_size_range="Group A",
+		quantity=1.0,
+		size_in_mm=1.75,
+	)
+	row.update(kwargs)
+	return row
+
+
+def _diamond_band(**kwargs):
+	row = frappe._dict(
+		weight_type="MM Size wise",
+		diamond_type=None,
+		sieve_size="+4.5-5",
+		sieve_size_range=None,
+		from_diamond=0,
+		to_diamond=0,
+		plus_percent=10,
+		minus_percent=10,
+	)
+	row.update(kwargs)
+	return row
+
+
+class TestDiamondToleranceScoping(UnitTestCase):
+	"""A diamond band must aggregate only the stones it is scoped to.
+
+	No test previously exercised a populated diamond_tolerance_table at all, which is
+	how the missing diamond_type filter went unnoticed.
+	"""
+
+	def _run(self, master_rows, bom_rows, diamond_weight=0.0):
+		pmo = FakePMO(
+			name="PMO-TEST-0001",
+			doctype="Parent Manufacturing Order",
+			customer="CUST",
+			custom_tracking_bom="TB-0001",
+			diamond_weight=diamond_weight,
+			diamond_product_tolerance=[],
+		)
+		master = FakeToleranceMaster(diamond_tolerance_table=master_rows)
+		bom = frappe._dict(diamond_detail=bom_rows)
+
+		def fake_get_doc(doctype, name):
+			return master if doctype == "Customer Product Tolerance Master" else bom
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+			"parent_manufacturing_order.frappe.db.get_value",
+			return_value="PTM-TEST-0001",
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+			"parent_manufacturing_order.frappe.get_doc",
+			side_effect=fake_get_doc,
+		):
+			set_diamond_tolerance_table(pmo)
+		return pmo.diamond_product_tolerance
+
+	def test_each_type_is_measured_on_its_own_stones(self):
+		"""The reported bug: both bands summed 2 + 3 = 5 cts instead of 2 and 3."""
+		rows = self._run(
+			[
+				_diamond_band(diamond_type="Natural"),
+				_diamond_band(diamond_type="LGD"),
+			],
+			[
+				_bom_diamond(diamond_type="Natural", quantity=2.0),
+				_bom_diamond(diamond_type="LGD", quantity=3.0),
+			],
+		)
+		self.assertEqual(len(rows), 2)
+		by_type = {row.diamond_type: row for row in rows}
+		self.assertEqual(by_type["Natural"].standard_tolerance_wt, 2.0)
+		self.assertEqual(by_type["LGD"].standard_tolerance_wt, 3.0)
+		self.assertEqual(by_type["Natural"].from_tolerance_wt, 1.8)
+		self.assertEqual(by_type["Natural"].to_tolerance_wt, 2.2)
+
+	def test_band_for_a_type_absent_from_the_bom_emits_no_row(self):
+		rows = self._run(
+			[_diamond_band(diamond_type="LGD")],
+			[_bom_diamond(diamond_type="Natural", quantity=2.0)],
+		)
+		self.assertEqual(rows, [])
+
+	def test_universal_still_aggregates_every_type(self):
+		rows = self._run(
+			[
+				_diamond_band(
+					weight_type="Universal", diamond_type=None, sieve_size=None
+				)
+			],
+			[
+				_bom_diamond(diamond_type="Natural", quantity=2.0),
+				_bom_diamond(diamond_type="LGD", quantity=3.0),
+			],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].standard_tolerance_wt, 5.0)
+
+	def test_weight_wise_scoped_by_type_ignores_sieve(self):
+		rows = self._run(
+			[
+				_diamond_band(
+					weight_type="Weight wise", diamond_type="Natural", sieve_size=None
+				)
+			],
+			[
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+4.5-5", quantity=2.0
+				),
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+6-7", quantity=1.0
+				),
+				_bom_diamond(
+					diamond_type="LGD", diamond_sieve_size="+4.5-5", quantity=9.0
+				),
+			],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].standard_tolerance_wt, 3.0)
+
+	def test_sieve_scope_still_applies_alongside_type(self):
+		rows = self._run(
+			[_diamond_band(diamond_type="Natural", sieve_size="+4.5-5")],
+			[
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+4.5-5", quantity=2.0
+				),
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+6-7", quantity=4.0
+				),
+				_bom_diamond(
+					diamond_type="LGD", diamond_sieve_size="+4.5-5", quantity=8.0
+				),
+			],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].standard_tolerance_wt, 2.0)
+
+	def test_size_in_mm_only_for_mm_size_wise(self):
+		mm = self._run(
+			[_diamond_band()],
+			[_bom_diamond(quantity=2.0, size_in_mm=1.75)],
+		)
+		self.assertEqual(mm[0].size_in_mm, 1.75)
+
+		for weight_type, extra in (
+			("Group Size wise", {"sieve_size": None, "sieve_size_range": "Group A"}),
+			("Weight wise", {"sieve_size": None}),
+			("Universal", {"sieve_size": None}),
+		):
+			with self.subTest(weight_type=weight_type):
+				rows = self._run(
+					[_diamond_band(weight_type=weight_type, **extra)],
+					[
+						_bom_diamond(quantity=2.0, size_in_mm=1.75),
+						_bom_diamond(quantity=1.0, size_in_mm=2.5),
+					],
+				)
+				self.assertEqual(rows[0].size_in_mm, 0)

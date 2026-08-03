@@ -816,3 +816,90 @@ class TestProductToleranceBandSelection(UnitTestCase):
 		)
 		self.assertEqual(len(failures), 1)
 		self.assertIn("cts", failures[0])
+
+
+class TestScopedStoneBandsAreNotEnforced(UnitTestCase):
+	"""A type- or shape-scoped stone band is a subtotal; the row carries a total."""
+
+	def _failures(self, rows, mwos, bands):
+		doc = FrappeDict(
+			type="Issue",
+			is_finding=0,
+			next_department="Tagging - T",
+			current_department="Final Polish - T",
+			department_ir_operation=rows,
+		)
+		with patch(
+			f"{_TOL_MODULE}.frappe.get_all",
+			side_effect=lambda doctype, **kw: mwos
+			if doctype == "Manufacturing Work Order"
+			else bands.get(doctype, []),
+		), patch(f"{_TOL_MODULE}.frappe.get_meta") as meta:
+			meta.return_value.has_field.return_value = True
+			return get_tolerance_failures(doc, rows)
+
+	def _diamond(self, **kwargs):
+		band = FrappeDict(
+			parent="PMO-0001",
+			weight_type="Weight wise",
+			diamond_type=None,
+			from_tolerance_wt=2.0,
+			to_tolerance_wt=2.2,
+			standard_tolerance_wt=2.1,
+		)
+		band.update(kwargs)
+		return band
+
+	def test_type_scoped_diamond_band_is_not_enforced(self):
+		failures = self._failures(
+			[_dir_row(diamond_wt=9.9)],
+			[_mwo()],
+			{"Diamond Product Tolerance": [self._diamond(diamond_type="Natural")]},
+		)
+		self.assertEqual(failures, [])
+
+	def test_unscoped_diamond_band_is_still_enforced(self):
+		failures = self._failures(
+			[_dir_row(diamond_wt=9.9)],
+			[_mwo()],
+			{"Diamond Product Tolerance": [self._diamond()]},
+		)
+		self.assertEqual(len(failures), 1)
+
+	def test_scoped_band_does_not_mask_an_unscoped_one(self):
+		"""A loose type-scoped band must not excuse a breach of the whole-product band."""
+		failures = self._failures(
+			[_dir_row(diamond_wt=9.9)],
+			[_mwo()],
+			{
+				"Diamond Product Tolerance": [
+					self._diamond(
+						diamond_type="Natural",
+						from_tolerance_wt=0.0,
+						to_tolerance_wt=100.0,
+					),
+					self._diamond(),
+				]
+			},
+		)
+		self.assertEqual(len(failures), 1)
+
+	def test_type_scoped_gemstone_band_is_not_enforced(self):
+		failures = self._failures(
+			[_dir_row(gemstone_wt=9.9)],
+			[_mwo()],
+			{
+				"Gemstone Product Tolerance": [
+					FrappeDict(
+						parent="PMO-0001",
+						weight_type="Weight wise",
+						gemstone_type="Ruby",
+						gemstone_shape=None,
+						from_tolerance_wt=2.0,
+						to_tolerance_wt=2.2,
+						standard_tolerance_wt=2.1,
+					)
+				]
+			},
+		)
+		self.assertEqual(failures, [])

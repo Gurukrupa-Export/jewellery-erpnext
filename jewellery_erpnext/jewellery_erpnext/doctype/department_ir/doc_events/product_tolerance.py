@@ -45,6 +45,15 @@ WEIGHT_PRECISION = 3
 # skipped rather than mis-compared against a total.
 TOTAL_WEIGHT_TYPES = {"Weight wise", "Universal"}
 
+# Columns that narrow a stone band to part of the product. set_diamond_tolerance_table
+# and set_gemstone_tolerance_table scope their BOM aggregate by these, so a band with
+# one set is a SUBTOTAL -- not comparable to the single total a Department IR row
+# carries, for the same reason the per-sieve weight types above are excluded.
+SCOPE_FIELDS = {
+	"diamond": ("diamond_type",),
+	"gemstone": ("gemstone_type", "gemstone_shape"),
+}
+
 _MWO_FIELDS = (
 	"name",
 	"manufacturing_order",
@@ -124,7 +133,13 @@ def get_tolerance_failures(doc, rows):
 		pmo_bands = bands.get(pmo) or {}
 		failures += _check_metal(doc, pmo, bucket, pmo_bands.get("metal") or [])
 		failures += _check_stone(
-			doc, pmo, bucket, pmo_bands.get("diamond") or [], "diamond_wt", _("Diamond")
+			doc,
+			pmo,
+			bucket,
+			pmo_bands.get("diamond") or [],
+			"diamond_wt",
+			_("Diamond"),
+			SCOPE_FIELDS["diamond"],
 		)
 		failures += _check_stone(
 			doc,
@@ -133,6 +148,7 @@ def get_tolerance_failures(doc, rows):
 			pmo_bands.get("gemstone") or [],
 			"gemstone_wt",
 			_("Gemstone"),
+			SCOPE_FIELDS["gemstone"],
 		)
 	return failures
 
@@ -208,10 +224,13 @@ def get_tolerance_bands(pmo_names):
 		]
 		if category == "metal":
 			fields.append("metal_type")
-		# Metal Product Tolerance only gained weight_type alongside this feature; guard
-		# the read so the module works on a site that has not migrated yet.
-		if frappe.get_meta(doctype).has_field("weight_type"):
-			fields.append("weight_type")
+		# weight_type on Metal Product Tolerance and diamond_type on Diamond Product
+		# Tolerance were both added alongside this feature; guard every optional read so
+		# the module still works on a site that has not migrated yet.
+		meta = frappe.get_meta(doctype)
+		for optional in ("weight_type",) + SCOPE_FIELDS.get(category, ()):
+			if meta.has_field(optional):
+				fields.append(optional)
 		for row in frappe.get_all(
 			doctype,
 			# parenttype matters: these child tables must not be read across parents.
@@ -320,14 +339,23 @@ def _check_bands(doc, pmo, bucket, candidates, label, uom, actual_for):
 	return failures
 
 
-def _check_stone(doc, pmo, bucket, band_rows, weight_field, label):
+def _check_stone(doc, pmo, bucket, band_rows, weight_field, label, scope_fields=()):
 	# Carats throughout: the bands are built from BOM detail quantities, which are carats,
 	# and so is Manufacturing Operation.diamond_wt / gemstone_wt. Never the _in_gram twins.
 	actual = flt(bucket.get(weight_field), WEIGHT_PRECISION)
 	if not actual:
 		return []
 
-	candidates = [b for b in band_rows if b.get("weight_type") in TOTAL_WEIGHT_TYPES]
+	# A band scoped to one diamond type, gemstone type or shape covers part of the
+	# product, while the operation reports one total across all of them. Comparing the
+	# two would judge a subtotal's limits against the whole -- skipped, as the per-sieve
+	# weight types already are. Only unscoped whole-product bands are enforceable here.
+	candidates = [
+		b
+		for b in band_rows
+		if b.get("weight_type") in TOTAL_WEIGHT_TYPES
+		and not any(b.get(field) for field in scope_fields)
+	]
 	if not candidates:
 		return []
 

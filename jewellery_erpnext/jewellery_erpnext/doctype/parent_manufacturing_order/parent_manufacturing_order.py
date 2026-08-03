@@ -1152,38 +1152,46 @@ def set_diamond_tolerance_table(self):
 	self.set("diamond_product_tolerance", [])
 
 	groups = group_tolerance_rows(cptm.diamond_tolerance_table or [], diamond_group_key)
-	for (weight_type, _diamond_type, scope), rows in groups.items():
-		matched_rows = []
+	for (weight_type, diamond_type, scope), rows in groups.items():
+		matched_rows = list(bom_doc.diamond_detail)
+
+		# diamond_type scopes the aggregate independently of the sieve scope, so it is
+		# applied first and each branch narrows further. Without it a band scoped to one
+		# type was computed from every stone of that sieve, other types included --
+		# diamond_group_key has always carried the type, the filter just never did.
+		# "Universal" keys on "" (the master hides the field for it) and stays unfiltered.
+		if diamond_type:
+			matched_rows = [d for d in matched_rows if d.diamond_type == diamond_type]
+
 		if weight_type == "MM Size wise":
-			matched_rows = [
-				d for d in bom_doc.diamond_detail if d.diamond_sieve_size == scope
-			]
+			matched_rows = [d for d in matched_rows if d.diamond_sieve_size == scope]
 		elif weight_type == "Group Size wise":
-			matched_rows = [
-				d for d in bom_doc.diamond_detail if d.sieve_size_range == scope
-			]
-		else:
-			# "Weight wise" bands the whole product's diamond weight; "Universal" is the
-			# band-less catch-all over every diamond. Both aggregate the full detail
-			# table -- the old code filtered Universal on `sieve_size_range is None`,
-			# which never matches a blank Link stored as "".
-			matched_rows = list(bom_doc.diamond_detail)
+			matched_rows = [d for d in matched_rows if d.sieve_size_range == scope]
+		# "Weight wise" bands the whole product's diamond weight and "Universal" is the
+		# band-less catch-all over every diamond, so both take the type-filtered set
+		# as-is. The old code filtered Universal on `sieve_size_range is None`, which
+		# never matches a blank Link stored as "".
 
 		if not matched_rows:
+			# Includes a band whose diamond type does not appear in this BOM at all --
+			# it must produce no row rather than one over somebody else's weight.
 			continue
 
 		weight_in_cts = sum(flt(d.quantity) for d in matched_rows)
-		# Quantities add up; a stone diameter does not. Every row in this group shares a
-		# sieve size, so take the size rather than summing it -- summing turned a 1.75 mm
-		# sieve into 3.5 mm as soon as two BOM rows shared it.
-		size_in_mm = flt(matched_rows[0].size_in_mm)
+		# A sieve's stone diameter, so only meaningful for MM Size wise where the group
+		# is exactly one sieve. Group Size wise spans a range of sieves and Weight wise /
+		# Universal span every sieve, so any single row's diameter there is an arbitrary
+		# pick and summing them (what this did originally) is meaningless.
+		size_in_mm = (
+			flt(matched_rows[0].size_in_mm) if weight_type == "MM Size wise" else 0
+		)
 
 		dtt_tbl = pick_tolerance_row(rows, weight_in_cts, "from_diamond", "to_diamond")
 		if not dtt_tbl:
 			_throw_no_band(
 				cpt,
 				_("Diamond"),
-				_group_label(weight_type, _diamond_type, scope),
+				_group_label(weight_type, diamond_type, scope),
 				weight_in_cts,
 			)
 
@@ -1195,6 +1203,7 @@ def set_diamond_tolerance_table(self):
 			"diamond_product_tolerance",
 			{
 				"weight_type": dtt_tbl.weight_type,
+				"diamond_type": dtt_tbl.diamond_type or None,
 				"sieve_size": dtt_tbl.sieve_size
 				if weight_type == "MM Size wise"
 				else None,
