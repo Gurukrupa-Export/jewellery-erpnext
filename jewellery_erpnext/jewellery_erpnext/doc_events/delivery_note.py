@@ -93,9 +93,16 @@ def update_dn_einvoice_items(self):
 
 			if not is_branch_customer:
 				filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
+				
 				making_item, making_hsn, making_uom = frappe.db.get_value(
 					"E Invoice Item",
-					{filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+					{
+						filter_value: 1,
+						"metal_type": i.metal_type,
+						"metal_purity": i.metal_touch,
+						"finding_category": ["is", "not set"],
+						"name": ["in", matching_parents],
+					},
 					["name", "hsn_code", "uom"],
 				) or (None, None, None)
 				making_amount = flt(i.making_amount) + flt(i.wastage_amount)
@@ -131,45 +138,76 @@ def update_dn_einvoice_items(self):
 					einvoice_item, hsn_code, uom = result
 			add(einvoice_item, flt(i.amount), flt(i.quantity), flt(i.rate), hsn_code, uom)
 
-			filter_value = "is_for_labour" if i.is_customer_item else "is_for_finding_making"
-			result = frappe.db.get_value(
-				"E Invoice Item",
-				{
-					filter_value: 1,
-					"metal_type": i.metal_type,
-					"metal_purity": i.metal_touch,
-					"finding_category": i.finding_category,
-				},
-				["name", "hsn_code", "uom"],
-			)
-			if not result:
-				fallback_filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
+			making_amount = flt(i.making_amount) + flt(i.wastage_amount)
+			making_item = making_hsn = making_uom = None
+
+			if i.finding_category == "Chains":
+
+				filter_value = "is_for_labour" if i.is_customer_item else "is_for_finding_making"
 				result = frappe.db.get_value(
 					"E Invoice Item",
-					{fallback_filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+					{
+						filter_value: 1,
+						"metal_type": i.metal_type,
+						"metal_purity": i.metal_touch,
+						"finding_category": i.finding_category,
+						"name": ["in", matching_parents],
+					},
 					["name", "hsn_code", "uom"],
 				)
-			if result:
-				making_item, making_hsn, making_uom = result
-				making_amount = flt(i.making_amount) + flt(i.wastage_amount)
-				add(making_item, making_amount, flt(i.quantity), flt(i.making_rate), making_hsn, making_uom)
-
-			if i.finding_category != "Chains":
-				metal_making_filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
-				metal_making_item, metal_making_hsn, metal_making_uom = frappe.db.get_value(
+				if result:
+					making_item, making_hsn, making_uom = result
+				else:
+					fallback_filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
+					result = frappe.db.get_value(
+						"E Invoice Item",
+						{
+							fallback_filter_value: 1,
+							"metal_type": i.metal_type,
+							"metal_purity": i.metal_touch,
+							"finding_category": ["is", "not set"],
+							"name": ["in", matching_parents],
+						},
+						["name", "hsn_code", "uom"],
+					)
+					if result:
+						making_item, making_hsn, making_uom = result
+			else:
+				# Non-chain findings: prefer a finding-specific making item;
+				# otherwise merge into the generic metal making item - mirroring
+				# how the finding's is_for_metal amount above already merges
+				# into the "Studded ..." line when no finding-specific item exists.
+				filter_value = "is_for_labour" if i.is_customer_item else "is_for_finding_making"
+				result = frappe.db.get_value(
 					"E Invoice Item",
-					{metal_making_filter_value: 1, "metal_type": i.metal_type, "metal_purity": i.metal_touch},
+					{
+						filter_value: 1,
+						"metal_type": i.metal_type,
+						"metal_purity": i.metal_touch,
+						"finding_category": i.finding_category,
+						"name": ["in", matching_parents],
+					},
 					["name", "hsn_code", "uom"],
-				) or (None, None, None)
-				metal_making_amount = flt(i.making_amount) + flt(i.wastage_amount)
-				add(
-					metal_making_item,
-					metal_making_amount,
-					flt(i.quantity),
-					flt(i.making_rate),
-					metal_making_hsn,
-					metal_making_uom,
 				)
+				if result:
+					making_item, making_hsn, making_uom = result
+				else:
+					metal_making_filter_value = "is_for_labour" if i.is_customer_item else "is_for_making"
+					result = frappe.db.get_value(
+						"E Invoice Item",
+						{
+							metal_making_filter_value: 1,
+							"metal_type": i.metal_type,
+							"metal_purity": i.metal_touch,
+							"finding_category": ["is", "not set"],
+							"name": ["in", matching_parents],
+						},
+						["name", "hsn_code", "uom"],
+					)
+					if result:
+						making_item, making_hsn, making_uom = result
+
+			add(making_item, making_amount, flt(i.quantity), flt(i.making_rate), making_hsn, making_uom)
 
 		for i in bom_doc.diamond_detail:
 			if i.is_customer_item:
