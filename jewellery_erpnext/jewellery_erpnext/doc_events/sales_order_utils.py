@@ -469,6 +469,12 @@ def download_cost_sheet(sales_order):
 					row_data[51] = "Yes" if row_data[7] and row_data[7].lower() == "yellow" else "No"
 					row_data[52] = "Yes" if row_data[7] and row_data[7].lower() == "pink" else "No"
 
+					serial_no_data = frappe.db.get_value(
+						"Serial No",
+						soi.get("serial_no"),
+						["custom_making_component", "custom_technique"],
+						as_dict=True,
+					) or {}
 					mc = frappe.get_all(
 						"Making Charge Price",
 						filters={
@@ -478,17 +484,13 @@ def download_cost_sheet(sales_order):
 							# "from_gold_rate": ["<=", metal_rate_gst],
 							# "to_gold_rate": [">=", metal_rate_gst],
 							"metal_touch": bom.metal_touch,
-							"making_components": frappe.get_value("Serial No",soi.get('serial_no'),'custom_making_component')
+							"making_components": serial_no_data.get("custom_making_component")
 						},
 						fields=["name"],
 						limit=1,
 					)
 					metal_ratio =  bom.get("metal_to_diamond_ratio_excl_of_finding")
-					technique = frappe.get_value(
-						"Serial No",
-						soi.get("serial_no"),
-						"custom_technique"
-					)
+					technique = serial_no_data.get("custom_technique")
 					lbr_amt = None
 					if mc:
 						lbr_amt = frappe.db.get_all(
@@ -515,7 +517,7 @@ def download_cost_sheet(sales_order):
 						round(row_data[COL_TOTAL_DIA] / row_data[39], 3)
 						if row_data[39] else ""
 					)
-					row_data[COL_TECHNIQUE] =  frappe.get_value("Serial No",soi.get('serial_no'),'custom_technique')
+					row_data[COL_TECHNIQUE] =  technique
 
 					if metal_rate_gst:
 						customer_price_data = customer_making_details(customer, metal_rate_gst, metal_rate, bom)
@@ -687,13 +689,22 @@ def download_cost_sheet(sales_order):
 			wastage_amt = 0
 			loss_amt  = 0
 
-			metal_touch = frappe.db.get_value('BOM', row.get('bom'), 'metal_touch')
-			product_size = frappe.db.get_value('BOM', row.get('bom'), 'product_size')
-			metal_colour = frappe.db.get_value('BOM', row.get('bom'), 'metal_colour')
-			setting_type = frappe.db.get_value('BOM', row.get('bom'), 'setting_type')
-			category_item = frappe.db.get_value('BOM', row.get('bom'), 'item_category')
-			subcategory = frappe.db.get_value('BOM', row.get('bom'), 'item_subcategory')
-			net_weight = frappe.db.get_value('BOM', row.get('bom'), 'metal_and_finding_weight')
+			bom_data = frappe.db.get_value(
+				'BOM', row.get('bom'),
+				[
+					'metal_touch', 'product_size', 'metal_colour', 'setting_type',
+					'item_category', 'item_subcategory', 'metal_and_finding_weight',
+					'gross_weight',
+				],
+				as_dict=True,
+			) or {}
+			metal_touch = bom_data.get('metal_touch')
+			product_size = bom_data.get('product_size')
+			metal_colour = bom_data.get('metal_colour')
+			setting_type = bom_data.get('setting_type')
+			category_item = bom_data.get('item_category')
+			subcategory = bom_data.get('item_subcategory')
+			net_weight = bom_data.get('metal_and_finding_weight')
 			diamond_qlty =  row.get('diamond_quality')
 			if diamond_qlty:
 				fg, si = diamond_qlty.split("-")
@@ -720,8 +731,8 @@ def download_cost_sheet(sales_order):
 						finding.append(fnd)
 
 			category = frappe.get_all("Customer Category Detail", filters={
-				'gk_sub_category': frappe.db.get_value('BOM', row.get('bom'), 'item_subcategory'),
-				'gk_category': frappe.db.get_value('BOM', row.get('bom'), 'item_category'),
+				'gk_sub_category': subcategory,
+				'gk_category': category_item,
 				'parent': so_doc.customer,
 			}, fields=['customer_subcategory', 'customer_category'], limit_page_length=1)
 
@@ -802,9 +813,9 @@ def download_cost_sheet(sales_order):
 				"Studded - DIS",
 				digit_code[0].get('digit_15code') if digit_code else "",
 				digit_code[0].get('theme_code') if digit_code else "",
-				frappe.db.get_value('BOM', row.get('bom'), 'item_category'),
+				category_item,
 				"",
-				frappe.db.get_value('BOM', row.get('bom'), 'gross_weight'),
+				bom_data.get('gross_weight'),
 				net_weight,
 				"GM",
 				"WT",
@@ -1329,14 +1340,22 @@ def download_cost_sheet(sales_order):
 
 		for row in so_doc.items:
 
-			# metal_type = frappe.db.get_value('BOM', row.get('bom'), 'metal_type')
-			metal_touch = frappe.db.get_value('BOM', row.get('bom'), 'metal_touch')
-			metal_color = frappe.db.get_value('BOM', row.get('bom'), 'metal_colour')
-			gross_weight = frappe.db.get_value('BOM', row.get('bom'), 'gross_weight')
-			net_weight = frappe.db.get_value('BOM', row.get('bom'), 'metal_and_finding_weight')
-			item_sub_category = frappe.db.get_value('BOM', row.get('bom'), 'item_subcategory')
-			setting_type = frappe.db.get_value('BOM', row.get('bom'), 'setting_type')
-			making_charge = frappe.db.get_value('BOM', row.get('bom'), 'making_charge')
+			bom_data = frappe.db.get_value(
+				'BOM', row.get('bom'),
+				[
+					'metal_touch', 'metal_colour', 'gross_weight', 'metal_and_finding_weight',
+					'item_subcategory', 'setting_type', 'making_charge',
+				],
+				as_dict=True,
+			) or {}
+			# metal_type = bom_data.get('metal_type')
+			metal_touch = bom_data.get('metal_touch')
+			metal_color = bom_data.get('metal_colour')
+			gross_weight = bom_data.get('gross_weight')
+			net_weight = bom_data.get('metal_and_finding_weight')
+			item_sub_category = bom_data.get('item_subcategory')
+			setting_type = bom_data.get('setting_type')
+			making_charge = bom_data.get('making_charge')
 
 			digit_14code = frappe.db.get_value(
 				"Item Theme Code Detail",
@@ -1435,7 +1454,7 @@ def download_cost_sheet(sales_order):
 			total_gold_rate = 0
 			total_net_weight = 0
 
-
+			diamond_detail_rows = []
 			for pcs in diamond_pcs:
 				stone_code = frappe.db.sql("""
 					SELECT rm.customer_code
@@ -1472,8 +1491,55 @@ def download_cost_sheet(sales_order):
 				total_stone_cts += pcs.get('quantity') or 0
 				total_amount += diamond_rt or 0
 				total_handling += handling_rate
-    
+
+				diamond_detail_rows.append([
+					"",
+					stone_code[0].get('customer_code') if stone_code else "",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					pcs.get('size_in_mm' or ''),
+					pcs.get('pcs' or ''),
+					pcs.get('quantity' or ''),
+					pcs.get('weight_per_pcs' or ''),
+					"Diamond",
+					row.get('diamond_quality' or ''),
+					pcs.get('stone_shape' or ''),
+					"Cut",
+					setting_type,
+					diamond_rate[0].get('rate') if diamond_rate else'',
+					# pcs.get('total_diamond_rate' or ''),
+					# pcs.get('diamond_rate_for_specified_quantity' or ''),
+     				diamond_rate[0].get('rate') * pcs.get('quantity' or 0) if diamond_rate[0].get('rate') else '',
+					diamond_rate[0].get('outright_handling_charges_rate') * pcs.get('quantity' or 0) if diamond_rate[0].get('outright_handling_charges_rate') else '',
+				])
+
+			gemstone_detail_rows = []
 			for gems in gemstone:
+				stone_code = frappe.db.sql("""
+					SELECT rm.customer_code
+					FROM `tabCustomer RM Code Detail` rm
+					LEFT JOIN `tabCustomer RM Code` rmc ON rm.parent = rmc.name
+					WHERE 
+						IFNULL(rm.stone_shape, '') = IFNULL(%s, '')
+						AND rmc.customer = %s
+						AND IFNULL(rm.gemstone_type, '') = IFNULL(%s, '')
+						AND IFNULL(rm.gemstone_size, '') = IFNULL(%s, '')
+							
+					""",
+					(
+						gems.get("stone_shape"),
+						so_doc.customer,
+						gems.get("gemstone_type"),
+						gems.get('gemstone_size'),
+					),
+					as_dict=1)
 				gemstone_rate = frappe.db.get_all("Gemstone Price List",filters={
 					"gemstone_quality":gems.get('gemstone_quality'),
 					"gemstone_size":gems.get('gemstone_size' or ''),
@@ -1481,11 +1547,37 @@ def download_cost_sheet(sales_order):
 					"customer":so_doc.customer,
 					"cut_or_cab": gems.get('cut_or_cab')
 				},fields=['outright_handling_charges_rate','rate'])
-    
-				total_stone_qty += gems.get('pcs' or '') or 0		
+
+				total_stone_qty += gems.get('pcs' or '') or 0
 				total_stone_cts += gems.get('quantity') or 0
 				total_amount += gems.get('pcs') * gemstone_rate[0].get('rate') if gemstone_rate else 0
 				total_handling += gems.get('pcs') * gemstone_rate[0].get('outright_handling_charges_rate') if gemstone_rate else 0
+
+				gemstone_detail_rows.append([
+					"",
+					stone_code[0].get('customer_code') if stone_code else "",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					"",
+					gems.get('gemstone_size' or ''),
+					gems.get('pcs' or ''),
+					gems.get('quantity' or ''),
+					"",
+					"Stone",
+					gems.get('gemstone_type' or ''),
+					gems.get('stone_shape' or ''),
+					"Cut" if gems.get('cut_or_cab') == "Faceted" else 'Cab',
+					setting_type,
+					gemstone_rate[0].get('rate') if gemstone_rate else "",
+					gems.get('pcs' or 0) * gemstone_rate[0].get('rate') if gemstone_rate else "",
+					gems.get('pcs' or 0) * gemstone_rate[0].get('outright_handling_charges_rate') if gemstone_rate else "",
+				])
 
 			total = (
 				((net_weight * making_charge_wastage) /100 if making_charge_rate else 0)
@@ -1535,61 +1627,7 @@ def download_cost_sheet(sales_order):
 				cell.border = thin_border
 				if col in orange_columns:
 					cell.fill = orange_fill
-			for pcs in diamond_pcs:
-				stone_code = frappe.db.sql("""
-					SELECT rm.customer_code
-					FROM `tabCustomer RM Code Detail` rm
-					LEFT JOIN `tabCustomer RM Code` rmc ON rm.parent = rmc.name
-					WHERE 
-						IFNULL(rm.stone_shape, '') = IFNULL(%s, '')
-						AND rmc.customer = %s
-						AND IFNULL(rm.diamond_type, '') = IFNULL(%s, '')
-						AND IFNULL(rm.diamond_quality, '') = IFNULL(%s, '')
-						AND CAST(IFNULL(rm.size_in_mm, 0) AS DECIMAL(10,3)) = CAST(%s AS DECIMAL(10,3))
-							
-					""",
-					(
-						pcs.get("stone_shape"),
-						so_doc.customer,
-						pcs.get("diamond_type"),
-						row.get('diamond_quality'),
-						pcs.get("size_in_mm"),
-					),
-					as_dict=1)
-				diamond_rate = frappe.db.get_all("Diamond Price List",filters={
-					"diamond_quality":row.get('diamond_quality'),
-					"size_in_mm":pcs.get('size_in_mm' or ''),
-					"stone_code":stone_code[0].get('customer_code') if stone_code else "",
-					"stone_shape":pcs.get('stone_shape' or ''),
-					"customer":so_doc.customer
-				},fields=['outright_handling_charges_rate','rate'])
-				row_data =[
-					"",
-					stone_code[0].get('customer_code') if stone_code else "",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					pcs.get('size_in_mm' or ''),
-					pcs.get('pcs' or ''),
-					pcs.get('quantity' or ''),
-					pcs.get('weight_per_pcs' or ''),
-					"Diamond",
-					row.get('diamond_quality' or ''),
-					pcs.get('stone_shape' or ''),
-					"Cut",
-					setting_type,
-					diamond_rate[0].get('rate') if diamond_rate else'',
-					# pcs.get('total_diamond_rate' or ''),
-					# pcs.get('diamond_rate_for_specified_quantity' or ''),
-     				diamond_rate[0].get('rate') * pcs.get('quantity' or 0) if diamond_rate[0].get('rate') else '',
-					diamond_rate[0].get('outright_handling_charges_rate') * pcs.get('quantity' or 0) if diamond_rate[0].get('outright_handling_charges_rate') else '',
-				]
+			for row_data in diamond_detail_rows:
 				sheet.append(row_data)
 				last_row = sheet.max_row
 				for col in range(1, len(headers) + 1):
@@ -1598,57 +1636,7 @@ def download_cost_sheet(sales_order):
 					cell.border = thin_border
 					if col in orange_columns:
 						cell.fill = orange_fill
-			for gems in gemstone:
-				stone_code = frappe.db.sql("""
-					SELECT rm.customer_code
-					FROM `tabCustomer RM Code Detail` rm
-					LEFT JOIN `tabCustomer RM Code` rmc ON rm.parent = rmc.name
-					WHERE 
-						IFNULL(rm.stone_shape, '') = IFNULL(%s, '')
-						AND rmc.customer = %s
-						AND IFNULL(rm.gemstone_type, '') = IFNULL(%s, '')
-						AND IFNULL(rm.gemstone_size, '') = IFNULL(%s, '')
-							
-					""",
-					(
-						gems.get("stone_shape"),
-						so_doc.customer,
-						gems.get("gemstone_type"),
-						gems.get('gemstone_size'),
-					),
-					as_dict=1)
-				gemstone_rate = frappe.db.get_all("Gemstone Price List",filters={
-					"gemstone_quality":gems.get('gemstone_quality'),
-					"gemstone_size":gems.get('gemstone_size' or ''),
-					"stone_shape":gems.get('stone_shape' or ''),
-					"customer":so_doc.customer,
-					"cut_or_cab": gems.get('cut_or_cab')
-				},fields=['outright_handling_charges_rate','rate'])
-				row_data =[
-					"",
-					stone_code[0].get('customer_code') if stone_code else "",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					"",
-					gems.get('gemstone_size' or ''),
-					gems.get('pcs' or ''),
-					gems.get('quantity' or ''),
-					"",
-					"Stone",
-					gems.get('gemstone_type' or ''),
-					gems.get('stone_shape' or ''),
-					"Cut" if gems.get('cut_or_cab') == "Faceted" else 'Cab',
-					setting_type,
-					gemstone_rate[0].get('rate') if gemstone_rate else "",
-					gems.get('pcs' or 0) * gemstone_rate[0].get('rate') if gemstone_rate else "",
-					gems.get('pcs' or 0) * gemstone_rate[0].get('outright_handling_charges_rate') if gemstone_rate else "",
-				]
+			for row_data in gemstone_detail_rows:
 				sheet.append(row_data)
 				last_row = sheet.max_row
 				for col in range(1, len(headers) + 1):
