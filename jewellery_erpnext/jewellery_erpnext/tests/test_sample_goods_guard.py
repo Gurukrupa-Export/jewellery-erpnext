@@ -8,7 +8,7 @@ DB/persistence, throws asserted via ``assertRaises`` + inspection of ``throw.cal
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
@@ -323,23 +323,27 @@ class TestSampleFifoExclusion(IntegrationTestCase):
 			frappe._dict(batch_no="B-REG", qty=5),
 		]
 
-		def _get_value(doctype, *args, **kwargs):
-			name = kwargs.get("name") or (args[0] if len(args) > 0 else None)
-			fieldname = kwargs.get("fieldname") or (args[1] if len(args) > 1 else None)
-			
-			if doctype == "Batch":
-				if fieldname == "custom_inventory_type":
-					return "Customer Goods"
-				if fieldname == "custom_customer":
-					return "CUST-1"
-			return None
+		# get_fifo_batches prefetches the per-batch Batch fields through _bulk_map
+		# (a frappe.get_all), not per-row frappe.db.get_value — stub the map itself so
+		# the test stays DB-free. Both batches belong to the row's customer/inventory
+		# type, so allocation is decided purely by the sample gate.
+		batch_info = {
+			"B-SAMPLE": frappe._dict(
+				custom_inventory_type="Customer Goods", custom_customer="CUST-1"
+			),
+			"B-REG": frappe._dict(
+				custom_inventory_type="Customer Goods", custom_customer="CUST-1"
+			),
+		}
 
 		with patch.object(
 			se_utils, "get_auto_batch_nos", return_value=batch_data
 		), patch.object(
 			se_utils, "is_customer_sample_batch", side_effect=lambda b: b == "B-SAMPLE"
-		), patch(
-			"frappe.db.get_value", side_effect=_get_value
+		), patch.object(se_utils, "_bulk_map", return_value=batch_info), patch(
+			# only remaining reader: the Manufacturer allow-regular-goods lookup
+			"frappe.db.get_value",
+			return_value=None,
 		):
 			rows = se_utils.get_fifo_batches(se, row)
 		return [r.get("batch_no") for r in rows]
