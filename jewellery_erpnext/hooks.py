@@ -91,6 +91,13 @@ doc_events = {
 		"before_cancel": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 	},
 	"Department IR": {
+		# On validate, not before_submit: the operator is told the weight is out of
+		# tolerance when the transfer is first saved, and Frappe runs validate on submit
+		# too, so this one entry covers both. See the module docstring for which weights
+		# it sees on each path -- before_validate refreshes them on save but not submit.
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doctype.department_ir.doc_events.product_tolerance.validate_product_tolerance"
+		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
