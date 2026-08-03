@@ -221,7 +221,7 @@ def on_submit(self,method):
 				return
 			# frappe.msgprint(f"Row: {row.idx}, Item: {row.item_code}, BOM: {row.bom}")
 			bom_doc = frappe.get_doc("BOM", row.bom)
-			total_making_charge += bom_doc.making_charge
+			total_making_charge += round(bom_doc.making_charge,2)
 		new_si = frappe.copy_doc(self)
 		new_si.sales_invoice = self.name
 		new_si.set("items", [])
