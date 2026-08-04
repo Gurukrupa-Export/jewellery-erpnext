@@ -4,6 +4,10 @@ import frappe
 from frappe import _
 from frappe.model.mapper import get_mapped_doc
 
+from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.prefetch import (
+	mri_warehouse_map,
+)
+
 
 @frappe.whitelist()
 def make_mop_stock_entry(self, **kwargs):
@@ -39,7 +43,6 @@ def make_mop_stock_entry(self, **kwargs):
 		new_se_doc.auto_created = 1
 		new_se_doc.to_department = mop_data.get("department")
 		new_se_doc.add_to_transit = 0
-		warehouse_data = frappe._dict()
 		t_warehouse = frappe.db.get_value(
 			"Warehouse",
 			{
@@ -57,45 +60,14 @@ def make_mop_stock_entry(self, **kwargs):
 				},
 				"name",
 			)
-		# One query for every referenced Material Request Item instead of one per
-		# distinct item on the copied Stock Entry.
-		mri_names = list(
-			{
-				row.material_request_item
-				for row in new_se_doc.items
-				if row.material_request_item
-			}
-		)
-		if mri_names:
-			warehouse_data.update(
-				{
-					d.name: d.warehouse
-					for d in frappe.get_all(
-						"Material Request Item",
-						filters={"name": ("in", mri_names)},
-						fields=["name", "warehouse"],
-					)
-				}
-			)
+		# One query for every referenced Material Request Item instead of one per distinct
+		# item on the copied Stock Entry. ``self`` here is the client-supplied document as a
+		# plain dict, so its rows are not passed to the helper -- the warehouses are read
+		# from the database exactly as they always were.
+		warehouse_data = mri_warehouse_map(new_se_doc.items)
 
 		for row in new_se_doc.items:
-			s_warehouse = warehouse_data.get(row.material_request_item)
-			# s_warehouse = frappe.db.sql(f"""WITH last_se AS (
-			# 	SELECT sei.parent AS stock_entry_name
-			# 	FROM `tabStock Entry Detail` sei
-			# 	WHERE sei.material_request = '{self.name}'
-			# 	ORDER BY sei.creation DESC
-			# 	LIMIT 1
-			# 	)
-			# 	SELECT sei.t_warehouse
-			# 	FROM `tabStock Entry Detail` sei
-			# 	JOIN last_se ON sei.parent = last_se.stock_entry_name
-			# 	GROUP BY sei.t_warehouse
-			# 	HAVING COUNT(DISTINCT sei.t_warehouse) = 1
-			# 	""",as_dict=1)
-			# if s_warehouse:
-			# 	s_warehouse = s_warehouse[0]['t_warehouse']
-			row.s_warehouse = s_warehouse
+			row.s_warehouse = warehouse_data.get(row.material_request_item)
 			row.t_warehouse = t_warehouse
 			row.to_department = mop_data.get("department")
 			row.manufacturing_operation = kwargs.get("mop")

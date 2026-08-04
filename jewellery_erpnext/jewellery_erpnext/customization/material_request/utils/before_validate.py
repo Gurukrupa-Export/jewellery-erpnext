@@ -4,57 +4,38 @@ from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
+	prefetch_purity_percentages,
 )
 
 
-def _get_purity_percentage_map(items):
-	"""Purity percentage for many items in one query.
+def _is_pure_qty_row(self, row):
+	"""Rows whose pure quantity is derived from metal purity.
 
-	``get_purity_percentage`` builds and runs a three-table join on every call, so
-	asking it once per row dominated the whole Material Request save. The join
-	yields at most one row per item, so a flat dict carries the same answer.
+	Written once and used by both the prefetch and the loop below so the two can never come
+	to select different rows.
 	"""
-	items = [item for item in items if item]
-	if not items:
-		return {}
-
-	IVA = frappe.qb.DocType("Item Variant Attribute")
-	ITEM = frappe.qb.DocType("Item")
-	AV = frappe.qb.DocType("Attribute Value")
-
-	rows = (
-		frappe.qb.from_(IVA)
-		.join(ITEM)
-		.on(ITEM.name == IVA.parent)
-		.join(AV)
-		.on(IVA.attribute_value == AV.name)
-		.select(ITEM.name, AV.purity_percentage)
-		.where((IVA.attribute == "Metal Purity") & (ITEM.name.isin(items)))
-	).run()
-
-	purity_map = {}
-	for item, purity_percentage in rows:
-		# first row wins, mirroring get_purity_percentage's purity_percentage[0][0]
-		purity_map.setdefault(item, purity_percentage)
-	return purity_map
+	return (
+		row.custom_variant_of in ["M", "F"]
+		and self.custom_transfer_type != "Transfer To Branch"
+	)
 
 
 def update_pure_qty(self):
 	self.custom_total_quantity = 0
 	pure_item_purity = None
-	purity_map = _get_purity_percentage_map(
-		{
-			row.custom_alternative_item or row.item_code
-			for row in self.items
-			if row.custom_variant_of in ["M", "F"]
-			and self.custom_transfer_type != "Transfer To Branch"
-		}
+
+	# One query for every purity this document needs, rather than one per distinct item.
+	# ``get_purity_percentage`` is request-cached, so priming it here also serves the Stock
+	# Entry that ``create_stock_entry`` saves later in this same request -- its
+	# ``before_validate`` looks up the very same item codes once per row.
+	prefetch_purity_percentages(
+		row.custom_alternative_item or row.item_code
+		for row in self.items
+		if _is_pure_qty_row(self, row)
 	)
+
 	for row in self.items:
-		if (
-			row.custom_variant_of in ["M", "F"]
-			and self.custom_transfer_type != "Transfer To Branch"
-		):
+		if _is_pure_qty_row(self, row):
 			if not pure_item_purity:
 				# pure_item = frappe.db.get_value("Manufacturing Setting", self.company, "pure_gold_item")
 
@@ -72,7 +53,9 @@ def update_pure_qty(self):
 
 				pure_item_purity = get_purity_percentage(pure_item)
 
-			item_purity = purity_map.get(row.custom_alternative_item or row.item_code)
+			item_purity = get_purity_percentage(
+				row.custom_alternative_item or row.item_code
+			)
 
 			if not item_purity:
 				continue

@@ -13,6 +13,9 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.be
 	update_pure_qty,
 	validate_warehouse,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.prefetch import (
+	mri_warehouse_map,
+)
 
 
 def _get_default_gemstone_item(manufacturer):
@@ -186,53 +189,75 @@ def before_update_after_submit(self, method):
 		make_mop_stock_entry(self, mop=self.custom_manufacturing_operation)
 
 
+def _dimension_key(attribute_value):
+	"""Normalise an attribute value the way MariaDB's collation compares it.
+
+	``utf8mb4_unicode_ci`` is case-insensitive and PAD SPACE, so ``"+11-12 "`` and
+	``"+11-12"`` are the same string to the database.
+	"""
+	return (attribute_value or "").strip().casefold()
+
+
+def _get_dimension(dimension_map, attribute_value):
+	"""Look up an Attribute Value row, exact match first, collation-equivalent second."""
+	return dimension_map.get(attribute_value) or dimension_map.get(
+		_dimension_key(attribute_value)
+	)
+
+
 def validate_target_item(self):
 	rows = [row for row in self.items if getattr(row, "custom_alternative_item", None)]
 	if not rows:
 		return
 
-	# Sieve size + dimensions are fetched for the whole table up front. Doing it
-	# per row cost four queries per row and dominated every Material Request save.
-	# One "Diamond Sieve Size" row per item is expected, so first-win via
-	# setdefault mirrors the original per-row frappe.db.get_value (single row) and
-	# stays order-independent should a malformed duplicate ever appear.
-	item_codes = {row.item_code for row in rows}
+	# Sieve size + dimensions are fetched for the whole table up front. Per row this cost up
+	# to four queries -- two Item Variant Attribute reads and two Attribute Value reads, and
+	# only for rows carrying an alternative item -- which is now two queries for the whole
+	# document. One "Diamond Sieve Size" row per item is expected; should a malformed
+	# duplicate appear, first-win via setdefault keeps the newest row, which is the same one
+	# the replaced frappe.db.get_value returned (both resolve to ORDER BY creation DESC).
+	item_codes = {row.item_code for row in rows if row.item_code}
 	item_codes.update(row.custom_alternative_item for row in rows)
-	sieve_size = {}
+	sieve_size_map = {}
 	for d in frappe.get_all(
 		"Item Variant Attribute",
 		filters={
 			"attribute": "Diamond Sieve Size",
-			"parent": ("in", list(item_codes)),
+			"parent": ("in", sorted(item_codes)),
 		},
 		fields=["parent", "attribute_value"],
 	):
-		sieve_size.setdefault(d.parent, d.attribute_value)
+		sieve_size_map.setdefault(d.parent, d.attribute_value)
 
-	attribute_values = {value for value in sieve_size.values() if value}
-	dimensions = {}
+	attribute_values = {value for value in sieve_size_map.values() if value}
+	dimension_map = {}
 	if attribute_values:
-		dimensions = {
-			d.name: d
-			for d in frappe.get_all(
-				"Attribute Value",
-				filters={"name": ("in", list(attribute_values))},
-				fields=["name", "height", "weight"],
-			)
-		}
+		for d in frappe.get_all(
+			"Attribute Value",
+			filters={"name": ("in", sorted(attribute_values))},
+			fields=["name", "height", "weight"],
+		):
+			dimension_map[d.name] = d
+			# Item Variant Attribute.attribute_value is free-text Data, so it carries no
+			# guarantee of matching an Attribute Value name byte for byte. The replaced
+			# frappe.db.get_value compared in SQL, where the collation forgives case and
+			# trailing spaces; a bare dict lookup does not, and a miss here would skip the
+			# size check below entirely -- failing open on a validation. Keep a normalised
+			# key alongside the exact one so that tolerance survives.
+			dimension_map.setdefault(_dimension_key(d.name), d)
 
 	for row in rows:
-		attr_value = sieve_size.get(row.item_code)
+		attr_value = sieve_size_map.get(row.item_code)
 		if not attr_value:
 			continue
 
-		alternative_item_attr_value = sieve_size.get(row.custom_alternative_item)
+		alternative_item_attr_value = sieve_size_map.get(row.custom_alternative_item)
 
 		if not alternative_item_attr_value:
 			continue
 
-		height_weight = dimensions.get(attr_value)
-		alt_height_weight = dimensions.get(alternative_item_attr_value)
+		height_weight = _get_dimension(dimension_map, attr_value)
+		alt_height_weight = _get_dimension(dimension_map, alternative_item_attr_value)
 
 		if not height_weight or not alt_height_weight:
 			continue
@@ -349,31 +374,18 @@ def _create_transfer_se(mr_name):
 		if item_row.custom_alternative_item:
 			mr_item_to_alternative[item_row.name] = item_row.custom_alternative_item
 
-	# One query for every referenced Material Request Item instead of one per SE row.
-	mri_names = list(
-		{
-			row.material_request_item
-			for row in new_se_doc.items
-			if row.material_request_item
-		}
-	)
-	mri_warehouse = {}
-	if mri_names:
-		mri_warehouse = {
-			d.name: d.warehouse
-			for d in frappe.get_all(
-				"Material Request Item",
-				filters={"name": ("in", mri_names)},
-				fields=["name", "warehouse"],
-			)
-		}
+	# ``mr`` is already loaded with its child rows, and the copied SE's rows were stamped from
+	# them, so the warehouses are resolved in memory instead of read back. Being in-memory
+	# also keeps this correct across a bounded_retry rollback, which re-runs the whole
+	# function -- an up-front read hoisted out of the loop would not be re-taken.
+	mri_warehouse_by_name = mri_warehouse_map(new_se_doc.items, mr)
 
 	for row in new_se_doc.items:
 		alternative_item = mr_item_to_alternative.get(row.material_request_item)
 		if alternative_item:
 			row.item_code = alternative_item
 
-		original_t_warehouse = mri_warehouse.get(row.material_request_item)
+		original_t_warehouse = mri_warehouse_by_name.get(row.material_request_item)
 		row.s_warehouse = row.t_warehouse
 		row.t_warehouse = original_t_warehouse
 		row.serial_and_batch_bundle = None
@@ -647,15 +659,24 @@ def create_stock_entry(self, method):
 	se_doc.purpose = "Material Transfer"
 	se_doc.add_to_transit = True
 
-	# Rows nearly always share a handful of source warehouses, so each distinct
-	# one is resolved once rather than costing two queries on every row.
-	reserve_warehouse = {}
+	# Rows nearly always share a handful of source warehouses, so each distinct one is
+	# resolved once rather than costing two queries on every row. The two lookups are
+	# memoised separately because the reserve warehouse depends only on the department:
+	# several source warehouses in the same department then share one resolution. That
+	# second query filters on disabled/department/warehouse_type, none of which is indexed
+	# on tabWarehouse, so it is the expensive half and worth collapsing hardest.
+	department_map = {}
+	reserve_warehouse_map = {}
 
 	for row in self.items:
-		if row.from_warehouse not in reserve_warehouse:
-			department = frappe.db.get_value(
+		if row.from_warehouse not in department_map:
+			department_map[row.from_warehouse] = frappe.db.get_value(
 				"Warehouse", row.from_warehouse, "department"
 			)
+
+		department = department_map[row.from_warehouse]
+
+		if department not in reserve_warehouse_map:
 			t_warehouse = frappe.db.get_value(
 				"Warehouse",
 				{"disabled": 0, "department": department, "warehouse_type": "Reserve"},
@@ -667,9 +688,9 @@ def create_stock_entry(self, method):
 					_("Transit warehouse not found for {0}").format(department)
 				)
 
-			reserve_warehouse[row.from_warehouse] = t_warehouse
+			reserve_warehouse_map[department] = t_warehouse
 
-		t_warehouse = reserve_warehouse[row.from_warehouse]
+		t_warehouse = reserve_warehouse_map[department]
 
 		se_doc.append(
 			"items",
