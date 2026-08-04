@@ -66,7 +66,7 @@ def make_mop_stock_entry(self, **kwargs):
 			# s_warehouse = frappe.db.sql(f"""WITH last_se AS (
 			# 	SELECT sei.parent AS stock_entry_name
 			# 	FROM `tabStock Entry Detail` sei
-			# 	WHERE sei.material_request = '{self.name}'
+			# 	WHERE sei.material_request = %(material_request)s
 			# 	ORDER BY sei.creation DESC
 			# 	LIMIT 1
 			# 	)
@@ -132,10 +132,10 @@ def make_department_stock_entry(self, **kwargs):
 		frappe.throw("No warehouse for Selected Department ")
 
 	s_warehouse = frappe.db.sql(
-		f"""WITH last_se AS (
+		"""WITH last_se AS (
 		SELECT sei.parent AS stock_entry_name
 		FROM `tabStock Entry Detail` sei
-		WHERE sei.material_request = '{self.name}'
+		WHERE sei.material_request = %(material_request)s
 		ORDER BY sei.creation DESC
 		LIMIT 1
 		)
@@ -145,6 +145,7 @@ def make_department_stock_entry(self, **kwargs):
 		GROUP BY sei.t_warehouse
 		HAVING COUNT(DISTINCT sei.t_warehouse) = 1
 		""",
+		{"material_request": self.name},
 		as_dict=1,
 	)
 	if s_warehouse:
@@ -271,10 +272,10 @@ def make_department_mop_stock_entry(self, **kwargs):
 
 	s_warehouse = ""
 	s_warehouse = frappe.db.sql(
-		f"""WITH last_se AS (
+		"""WITH last_se AS (
 			SELECT sei.parent AS stock_entry_name
 			FROM `tabStock Entry Detail` sei
-			WHERE sei.material_request = '{self.name}'
+			WHERE sei.material_request = %(material_request)s
 			ORDER BY sei.creation DESC
 			LIMIT 1
 			)
@@ -284,6 +285,7 @@ def make_department_mop_stock_entry(self, **kwargs):
 			GROUP BY sei.t_warehouse
 			HAVING COUNT(DISTINCT sei.t_warehouse) = 1
 			""",
+		{"material_request": self.name},
 		as_dict=1,
 	)
 	if s_warehouse:

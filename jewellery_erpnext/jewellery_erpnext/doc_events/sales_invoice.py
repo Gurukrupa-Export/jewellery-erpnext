@@ -12,6 +12,43 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_totals
 
 
+def get_customer_metal_purity(customer, metal_type, metal_touch):
+	"""Return `Metal Criteria.metal_purity` for a customer / metal_type / metal_touch.
+
+	Replaces two identical f-string queries that spliced `self.customer`,
+	`row.metal_type` and `row.metal_touch` straight into single-quoted SQL literals.
+	Frappe permits quotes and backslashes in document names (`frappe/model/naming.py`
+	restricts only `<>`) and Customer autoname derives from free-text `customer_name`,
+	so those values are attacker-influenced, not safe by construction.
+
+	Both call sites also indexed `[0]` with no empty-guard, so a missing Metal Criteria
+	row raised a bare `IndexError` mid-save instead of telling the user what to fix.
+	"""
+	rows = frappe.db.sql(
+		"""
+		SELECT metal_purity
+		FROM `tabMetal Criteria`
+		WHERE parent = %(customer)s
+			AND metal_type = %(metal_type)s
+			AND metal_touch = %(metal_touch)s
+		""",
+		{"customer": customer, "metal_type": metal_type, "metal_touch": metal_touch},
+		as_dict=True,
+	)
+
+	if not rows:
+		frappe.throw(
+			_(
+				"No Metal Criteria found for Customer {0} with Metal Type {1} and Metal Touch {2}."
+			).format(
+				frappe.bold(customer), frappe.bold(metal_type), frappe.bold(metal_touch)
+			),
+			title=_("Missing Metal Criteria"),
+		)
+
+	return rows[0]["metal_purity"]
+
+
 def _so_gold_rate_changed(si_gold_rate, sales_order):
 	if not sales_order:
 		return True
@@ -72,10 +109,9 @@ def before_validate(self, method):
 						update_making_charges(
 							row_s, bom_doc, row, self.gold_rate_with_gst
 						)
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
+						customer_metal_purity = get_customer_metal_purity(
+							self.customer, row.metal_type, row.metal_touch
+						)
 						row.customer_metal_purity = customer_metal_purity
 						rate = (
 							float(row.customer_metal_purity) * self.gold_rate_with_gst
@@ -90,10 +126,9 @@ def before_validate(self, method):
 						update_making_charges(
 							row_s, bom_doc, row, self.gold_rate_with_gst
 						)
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
+						customer_metal_purity = get_customer_metal_purity(
+							self.customer, row.metal_type, row.metal_touch
+						)
 						row.customer_metal_purity = customer_metal_purity
 						rate = (
 							float(row.customer_metal_purity) * self.gold_rate_with_gst
@@ -117,11 +152,15 @@ def before_validate(self, method):
 					)
 					row_s.rate = total_bom_amount
 					row_s.amount = row_s.rate
-					row_s.taxable_value = row_s.base_net_amount = (
+					row_s.taxable_value = (
+						row_s.base_net_amount
+					) = (
 						row_s.base_net_rate
-					) = row_s.net_amount = row_s.net_rate = row_s.base_amount = (
-						row_s.base_rate
-					) = total_bom_amount
+					) = (
+						row_s.net_amount
+					) = (
+						row_s.net_rate
+					) = row_s.base_amount = row_s.base_rate = total_bom_amount
 					bom_doc.save(ignore_permissions=True)
 					row_s.wastage_amount = bom_doc.total_wastage_amount
 
@@ -131,7 +170,6 @@ def before_validate(self, method):
 
 
 def validate(self, method):
-
 	if self.is_return:
 		set_gst_details(self)
 		# payment_terms_data = update_si_data(self )
@@ -224,7 +262,11 @@ def validate(self, method):
 				bom_doc.custom_gk_sell_diamond_bom_amount = bom_doc.diamond_bom_amount
 				row.rate = total_bom_amount
 				row.amount = row.rate
-				row.taxable_value = row.base_net_amount = row.base_net_rate = (
+				row.taxable_value = (
+					row.base_net_amount
+				) = (
+					row.base_net_rate
+				) = (
 					row.net_amount
 				) = row.net_rate = row.base_amount = row.base_rate = total_bom_amount
 			self.total += row.amount
@@ -617,10 +659,11 @@ def set_gst_details(self):
 			item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
 
 
-from openpyxl import Workbook
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, Alignment
 from io import BytesIO
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
 
 
 @frappe.whitelist()
@@ -1152,7 +1195,6 @@ def update_bom_details(
 		hsn=None,
 		uom=None,
 	):
-
 		if so_item:
 			amount = so_item.amount
 			qty = so_item.qty
@@ -1502,7 +1544,6 @@ def update_bom_details(
 
 
 def update_making_charges(row, bom_doc, bom_row, gold_rate):
-
 	bom_doc.set_additional_rate = False
 
 	item_details = frappe.db.get_value(
@@ -1874,7 +1915,6 @@ def update_income_account(self):
 def get_completed_product_return_orders(
 	doctype, txt, searchfield, start, page_len, filters
 ):
-
 	return frappe.db.sql(
 		"""
         SELECT pro.name

@@ -252,42 +252,46 @@ def tax(self):
 				if self.tax_category == "In-State":
 					if not self.is_reverse_charge:
 						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
+							"""select tax_type,tax_rate
 								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and tax_type not like '%IGST%'
-									and tax_type like 'Output%'
-									and tax_type not like '%RCM%'""",
+								where parent = %(item_tax_template)s
+									and tax_type not like '%%IGST%%'
+									and tax_type like 'Output%%'
+									and tax_type not like '%%RCM%%'""",
+							{"item_tax_template": item_tax_template},
 							as_dict=1,
 						)
 					else:
 						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
+							"""select tax_type,tax_rate
 								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and (tax_type like '%RCM%' or (tax_type like 'Output%' and tax_type not like 'Input%'))
-									and tax_type not like '%IGST%'""",
+								where parent = %(item_tax_template)s
+									and (tax_type like '%%RCM%%' or (tax_type like 'Output%%' and tax_type not like 'Input%%'))
+									and tax_type not like '%%IGST%%'""",
+							{"item_tax_template": item_tax_template},
 							as_dict=1,
 						)
 
 				else:
 					if not self.is_reverse_charge:
 						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
+							"""select tax_type,tax_rate
 								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and tax_type like '%IGST%'
-									and tax_type like 'Output%'
-									and tax_type not like '%RCM%'""",
+								where parent = %(item_tax_template)s
+									and tax_type like '%%IGST%%'
+									and tax_type like 'Output%%'
+									and tax_type not like '%%RCM%%'""",
+							{"item_tax_template": item_tax_template},
 							as_dict=1,
 						)
 					else:
 						tax = frappe.db.sql(
-							f"""select tax_type,tax_rate
+							"""select tax_type,tax_rate
 								from `tabItem Tax Template Detail`
-								where parent = '{item_tax_template}'
-									and (tax_type like '%RCM%' or tax_type like 'Output%')
-									and tax_type like '%IGST%'""",
+								where parent = %(item_tax_template)s
+									and (tax_type like '%%RCM%%' or tax_type like 'Output%%')
+									and tax_type like '%%IGST%%'""",
+							{"item_tax_template": item_tax_template},
 							as_dict=1,
 						)
 					# frappe.throw(f"{tax}")
@@ -1563,8 +1567,8 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 				gem.gemstone_rate_for_specified_quantity = 0
 				gem.total_gemstone_rate = 0
 				frappe.msgprint(
-					f"No Gemstone Price List found: {gem.get('per_pc_or_per_carat')}, "
-					f"{gem.get('cut_or_cab')}, {gem.get('gemstone_type')}, {gem.get('stone_shape')}"
+					f'No Gemstone Price List found: {gem.get("per_pc_or_per_carat")}, '
+					f'{gem.get("cut_or_cab")}, {gem.get("gemstone_type")}, {gem.get("stone_shape")}'
 				)
 
 		# ---------------- Retail ----------------
@@ -2714,12 +2718,12 @@ def create_new_bom1(self):
 	No RQ jobs. No chunking. No queue explosion.
 
 	Performance improvements vs original:
-			• _get_company_context  : queried once per serial_no/SO  (was once per row)
-			• _get_making_charge    : queried once per unique combo   (was once per row)
-			• Metal purity lookups  : queried once per (customer, type, touch)
-			• CCP doc               : queried once per customer
-			• Gemstone PL type      : queried once per customer
-			• Child row writes      : 1 bulk UPDATE                  (was N set_value calls)
+	                • _get_company_context  : queried once per serial_no/SO  (was once per row)
+	                • _get_making_charge    : queried once per unique combo   (was once per row)
+	                • Metal purity lookups  : queried once per (customer, type, touch)
+	                • CCP doc               : queried once per customer
+	                • Gemstone PL type      : queried once per customer
+	                • Child row writes      : 1 bulk UPDATE                  (was N set_value calls)
 	"""
 	_clear_caches()  # always start fresh — never use stale data from a prior call
 
@@ -3326,9 +3330,9 @@ def validate_item_dharm(self):
 									"delivery_date": self.delivery_date,
 								}
 
-							aggregated_hallmarking_items[key]["amount"] += (
-								bom_doc.hallmarking_amount
-							)
+							aggregated_hallmarking_items[key][
+								"amount"
+							] += bom_doc.hallmarking_amount
 							# frappe.msgprint(f"hii{bom_doc.hallmarking_amount}")
 							aggregated_hallmarking_items[key]["qty"] += 1
 							if bom_doc.item_category == "Earrings":
@@ -3362,9 +3366,9 @@ def validate_item_dharm(self):
 									"amount_with_tax": 0,
 									"delivery_date": self.delivery_date,
 								}
-							aggregated_certification_items[key]["amount"] += (
-								bom_doc.certification_amount
-							)
+							aggregated_certification_items[key][
+								"amount"
+							] += bom_doc.certification_amount
 							# frappe.msgprint(f"hii{bom_doc.certification_amount}")
 							aggregated_certification_items[key]["qty"] += 1
 							tax_rate_decimal = (
@@ -3465,13 +3469,13 @@ def validate_item_dharm(self):
 									+ (metal.wastage_amount * item.qty),
 									precision,
 								)
-								aggregated_metal_making_items[key]["qty"] += (
-									multiplied_qty
-								)
+								aggregated_metal_making_items[key][
+									"qty"
+								] += multiplied_qty
 								# frappe.msgprint(f"poihuuhg{metal_making_amount}, {multiplied_qty}")
-								aggregated_metal_making_items[key]["amount"] += (
-									metal_making_amount
-								)
+								aggregated_metal_making_items[key][
+									"amount"
+								] += metal_making_amount
 
 								tax_rate_decimal = (
 									aggregated_metal_making_items[key]["tax_rate"] / 100
@@ -3518,9 +3522,9 @@ def validate_item_dharm(self):
 								multiplied_qty = metal.quantity * item.qty
 								metal_making_amount = metal.making_rate * multiplied_qty
 								aggregated_repairing_items[key]["qty"] += multiplied_qty
-								aggregated_repairing_items[key]["amount"] += (
-									metal_making_amount
-								)
+								aggregated_repairing_items[key][
+									"amount"
+								] += metal_making_amount
 
 								tax_rate_decimal = (
 									aggregated_repairing_items[key]["tax_rate"] / 100
@@ -3560,12 +3564,12 @@ def validate_item_dharm(self):
 								metal_rate = metal.making_rate
 								metal_amount = metal_rate * multiplied_qty
 
-								aggregated_metal_labour_items[key]["qty"] += (
-									multiplied_qty
-								)
-								aggregated_metal_labour_items[key]["amount"] += (
-									metal_amount
-								)
+								aggregated_metal_labour_items[key][
+									"qty"
+								] += multiplied_qty
+								aggregated_metal_labour_items[key][
+									"amount"
+								] += metal_amount
 								tax_rate_decimal = (
 									aggregated_metal_labour_items[key]["tax_rate"] / 100
 								)
@@ -3632,9 +3636,9 @@ def validate_item_dharm(self):
 									)
 								# frappe.msgprint(f"hii{diamond_amount}")
 								aggregated_diamond_items[key]["qty"] += multiplied_qty
-								aggregated_diamond_items[key]["amount"] += (
-									diamond_amount
-								)
+								aggregated_diamond_items[key][
+									"amount"
+								] += diamond_amount
 
 								# Calculate average rate after accumulation
 								if aggregated_diamond_items[key]["qty"] > 0:
@@ -3689,9 +3693,9 @@ def validate_item_dharm(self):
 												"delivery_date": self.delivery_date,
 											}
 										multiplied_qty = diamond.quantity * item.qty
-										aggregated_metal_labour_items[key]["qty"] += (
-											multiplied_qty
-										)
+										aggregated_metal_labour_items[key][
+											"qty"
+										] += multiplied_qty
 										aggregated_metal_labour_items[key][
 											"amount"
 										] += handling_amount
@@ -3746,9 +3750,9 @@ def validate_item_dharm(self):
 								)
 
 								aggregated_repairing_items[key]["qty"] += multiplied_qty
-								aggregated_repairing_items[key]["amount"] += (
-									diamond_amount
-								)
+								aggregated_repairing_items[key][
+									"amount"
+								] += diamond_amount
 
 								# Calculate average rate after accumulation
 								if aggregated_repairing_items[key]["qty"] > 0:
@@ -3807,9 +3811,9 @@ def validate_item_dharm(self):
 								aggregated_metal_labour_items[key]["qty"] += (
 									multiplied_qty / 5
 								)
-								aggregated_metal_labour_items[key]["amount"] += (
-									diamond_amount
-								)
+								aggregated_metal_labour_items[key][
+									"amount"
+								] += diamond_amount
 								# Calculate average rate after accumulation
 								if aggregated_metal_labour_items[key]["qty"] > 0:
 									aggregated_metal_labour_items[key]["rate"] = (
@@ -3871,9 +3875,9 @@ def validate_item_dharm(self):
 								)
 
 								aggregated_gemstone_items[key]["qty"] += multiplied_qty
-								aggregated_gemstone_items[key]["amount"] += (
-									gemstone_amount
-								)
+								aggregated_gemstone_items[key][
+									"amount"
+								] += gemstone_amount
 
 								# Calculate average rate after accumulation
 								if aggregated_gemstone_items[key]["qty"] > 0:
@@ -3933,9 +3937,9 @@ def validate_item_dharm(self):
 								aggregated_metal_labour_items[key]["qty"] += (
 									multiplied_qty / 5
 								)
-								aggregated_metal_labour_items[key]["amount"] += (
-									gemstone_amount
-								)
+								aggregated_metal_labour_items[key][
+									"amount"
+								] += gemstone_amount
 								# Calculate average rate after accumulation
 								if aggregated_metal_labour_items[key]["qty"] > 0:
 									aggregated_metal_labour_items[key]["rate"] = (
@@ -4007,9 +4011,9 @@ def validate_item_dharm(self):
 								finding_making_amount = finding.rate * multiplied_qty
 								# frappe.throw(f"{multiplied_qty}")
 								aggregated_finding_items[key]["qty"] += multiplied_qty
-								aggregated_finding_items[key]["amount"] += (
-									finding_making_amount
-								)
+								aggregated_finding_items[key][
+									"amount"
+								] += finding_making_amount
 
 								aggregated_finding_items[key]["rate"] = finding_rate
 
@@ -4066,9 +4070,9 @@ def validate_item_dharm(self):
 									)
 
 									aggregated_metal_items[key]["qty"] += multiplied_qty
-									aggregated_metal_items[key]["amount"] += (
-										finding.amount
-									)
+									aggregated_metal_items[key][
+										"amount"
+									] += finding.amount
 									aggregated_metal_items[key]["rate"] = finding_rate
 
 									tax_rate_decimal = (
@@ -4116,12 +4120,12 @@ def validate_item_dharm(self):
 									finding.making_amount * item.qty
 								) + (finding.wastage_amount * item.qty)
 
-								aggregated_finding_making_items[key]["qty"] += (
-									multiplied_qty
-								)
-								aggregated_finding_making_items[key]["amount"] += (
-									finding_making_amount
-								)
+								aggregated_finding_making_items[key][
+									"qty"
+								] += multiplied_qty
+								aggregated_finding_making_items[key][
+									"amount"
+								] += finding_making_amount
 								# frappe.throw(f"{aggregated_finding_making_items[key]["amount"]}")
 								# if aggregated_finding_making_items[key]["qty"] > 0:
 								# 	aggregated_finding_making_items[key]["rate"] = aggregated_finding_making_items[key]["amount"] / aggregated_finding_making_items[key]["qty"]
@@ -4182,12 +4186,12 @@ def validate_item_dharm(self):
 										+ finding.wastage_amount * item.qty,
 										precision,
 									)
-									aggregated_metal_making_items[key]["qty"] += (
-										multiplied_qty
-									)
-									aggregated_metal_making_items[key]["amount"] += (
-										finding_making_amount
-									)
+									aggregated_metal_making_items[key][
+										"qty"
+									] += multiplied_qty
+									aggregated_metal_making_items[key][
+										"amount"
+									] += finding_making_amount
 
 									tax_rate_decimal = (
 										aggregated_metal_making_items[key]["tax_rate"]
@@ -4229,9 +4233,9 @@ def validate_item_dharm(self):
 									finding.making_rate * multiplied_qty
 								)
 								aggregated_repairing_items[key]["qty"] += multiplied_qty
-								aggregated_repairing_items[key]["amount"] += (
-									finding_making_amount
-								)
+								aggregated_repairing_items[key][
+									"amount"
+								] += finding_making_amount
 
 								if aggregated_repairing_items[key]["qty"] > 0:
 									aggregated_repairing_items[key]["rate"] = (
@@ -4274,12 +4278,12 @@ def validate_item_dharm(self):
 								finding_making_amount = (
 									finding.making_rate * multiplied_qty
 								)
-								aggregated_metal_labour_items[key]["qty"] += (
-									multiplied_qty
-								)
-								aggregated_metal_labour_items[key]["amount"] += (
-									finding_making_amount
-								)
+								aggregated_metal_labour_items[key][
+									"qty"
+								] += multiplied_qty
+								aggregated_metal_labour_items[key][
+									"amount"
+								] += finding_making_amount
 
 								if aggregated_metal_labour_items[key]["qty"] > 0:
 									aggregated_metal_labour_items[key]["rate"] = (
@@ -4521,14 +4525,15 @@ def make_sales_order_batch(sales_orders, target_doc=None):
 			available_serials = []
 			for stock_entry in stock_entries:
 				serial_no = frappe.db.sql(
-					f"""
+					"""
 					SELECT sed.serial_no, sed.item_code
 					FROM `tabStock Entry Detail` sed
-					WHERE sed.parent = '{stock_entry}'
-					AND sed.item_code = '{it.item_code}'
+					WHERE sed.parent = %(stock_entry)s
+					AND sed.item_code = %(item_code)s
 					ORDER BY sed.idx DESC
 					LIMIT 1
 				""",
+					{"stock_entry": stock_entry, "item_code": it.item_code},
 					as_dict=1,
 				)
 
