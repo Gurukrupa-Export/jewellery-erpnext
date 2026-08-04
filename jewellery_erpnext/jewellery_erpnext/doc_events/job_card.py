@@ -143,6 +143,12 @@ def create_new_job_card(
 	workstation,
 	employee,
 ):
+	# Creates a Job Card AND appends a row to an already-submitted Work Order with
+	# `ignore_validate_update_after_submit` plus `ignore_permissions` — the permission
+	# check and the update-after-submit validation are both disabled on that path, so
+	# this is a wider hole than the three sibling endpoints below, not a narrower one.
+	# Gate on Job Card create: that is the document this endpoint exists to produce.
+	frappe.has_permission("Job Card", "create", throw=True)
 	doc = frappe.new_doc("Job Card")
 	doc.company = company
 	doc.posting_date = posting_date
@@ -157,7 +163,7 @@ def create_new_job_card(
 			{"parent": operation, "company": company},
 			"warehouse",
 		)
-		or f"""All Warehouses - {frappe.db.get_value("Company", company, "abbr")}"""
+		or f"""All Warehouses - {frappe.db.get_value("Company", company, 'abbr')}"""
 	)
 	work_order_doc = frappe.get_doc("Work Order", work_order)
 	oper_list = [operation.operation for operation in work_order_doc.operations]
@@ -200,6 +206,18 @@ def create_stock_entry(
 	to_job_card=None,
 	next_operation=None,
 ):
+	# These three endpoints create AND submit a Stock Entry. Whitelisting makes a
+	# method callable by any authenticated session, including a portal user with no
+	# Desk roles, so authorisation has to be explicit. Pattern copied from
+	# doc_events/warehouse_stock_entry.py.
+	#
+	# NOTE: the ignore_permissions=True on the save() below is deliberately left in
+	# place for now and removed in a follow-up, after production logs confirm no
+	# legitimate caller is being turned away. It is not redundant with this check:
+	# Document._save assigns flags.ignore_permissions onto the document, and _submit()
+	# calls self.save() with no arguments, so the flag set here survives into the
+	# submit and skips its permission check too.
+	frappe.has_permission("Stock Entry", "create", throw=True)
 	doc = frappe.new_doc("Stock Entry")
 	doc.stock_entry_type = "Material Transfer for Manufacture"
 	doc.company = company
@@ -238,6 +256,18 @@ def create_stock_entry_material_receipt(
 	to_job_card=None,
 	next_operation=None,
 ):
+	# These three endpoints create AND submit a Stock Entry. Whitelisting makes a
+	# method callable by any authenticated session, including a portal user with no
+	# Desk roles, so authorisation has to be explicit. Pattern copied from
+	# doc_events/warehouse_stock_entry.py.
+	#
+	# NOTE: the ignore_permissions=True on the save() below is deliberately left in
+	# place for now and removed in a follow-up, after production logs confirm no
+	# legitimate caller is being turned away. It is not redundant with this check:
+	# Document._save assigns flags.ignore_permissions onto the document, and _submit()
+	# calls self.save() with no arguments, so the flag set here survives into the
+	# submit and skips its permission check too.
+	frappe.has_permission("Stock Entry", "create", throw=True)
 	doc = frappe.new_doc("Stock Entry")
 	doc.stock_entry_type = "Material Receipt"
 	doc.company = company
@@ -277,6 +307,18 @@ def create_internal_transfer(
 	next_operation=None,
 	balance_gross=None,
 ):
+	# These three endpoints create AND submit a Stock Entry. Whitelisting makes a
+	# method callable by any authenticated session, including a portal user with no
+	# Desk roles, so authorisation has to be explicit. Pattern copied from
+	# doc_events/warehouse_stock_entry.py.
+	#
+	# NOTE: the ignore_permissions=True on the save() below is deliberately left in
+	# place for now and removed in a follow-up, after production logs confirm no
+	# legitimate caller is being turned away. It is not redundant with this check:
+	# Document._save assigns flags.ignore_permissions onto the document, and _submit()
+	# calls self.save() with no arguments, so the flag set here survives into the
+	# submit and skips its permission check too.
+	frappe.has_permission("Stock Entry", "create", throw=True)
 	if balance_gross < gross_wt:
 		return frappe.throw(_("Gross Weight Greater Than Balance Gross !"))
 	doc = frappe.new_doc("Job Card Internal Transfer")
@@ -1411,9 +1453,8 @@ def make_stock_entry(source_name, target_doc=None):
 					"pcs": "pcs",
 				},
 				"postprocess": update_item,
-				"condition": lambda doc: (
-					doc.required_qty > 0 and doc.transferred_qty < doc.required_qty
-				),
+				"condition": lambda doc: doc.required_qty > 0
+				and doc.transferred_qty < doc.required_qty,
 			},
 		},
 		target_doc,
