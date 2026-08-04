@@ -12,7 +12,6 @@ from frappe import _
 
 class CustomStockReconciliation(StockReconciliation):
 	def remove_items_with_no_change(self):
-
 		"""Remove items if qty or rate is not changed"""
 		self.difference_amount = 0.0
 
@@ -31,7 +30,9 @@ class CustomStockReconciliation(StockReconciliation):
 			if not item.batch_no and not item.serial_no:
 				for dimension in get_inventory_dimensions():
 					if item.get(dimension.get("fieldname")):
-						inventory_dimensions_dict[dimension.get("fieldname")] = item.get(dimension.get("fieldname"))
+						inventory_dimensions_dict[dimension.get("fieldname")] = (
+							item.get(dimension.get("fieldname"))
+						)
 
 			item_dict = get_stock_balance_for(
 				item.item_code,
@@ -45,8 +46,14 @@ class CustomStockReconciliation(StockReconciliation):
 
 			if (
 				(item.qty is None or item.qty == item_dict.get("qty"))
-				and (item.valuation_rate is None or item.valuation_rate == item_dict.get("rate"))
-				and (not item.serial_no or (item.serial_no == item_dict.get("serial_nos")))
+				and (
+					item.valuation_rate is None
+					or item.valuation_rate == item_dict.get("rate")
+				)
+				and (
+					not item.serial_no
+					or (item.serial_no == item_dict.get("serial_nos"))
+				)
 			):
 				return False
 			else:
@@ -59,7 +66,11 @@ class CustomStockReconciliation(StockReconciliation):
 
 				if item_dict.get("serial_nos"):
 					item.current_serial_no = item_dict.get("serial_nos")
-					if self.purpose == "Stock Reconciliation" and not item.serial_no and item.qty:
+					if (
+						self.purpose == "Stock Reconciliation"
+						and not item.serial_no
+						and item.qty
+					):
 						item.serial_no = item.current_serial_no
 
 				item.current_qty = item_dict.get("qty")
@@ -85,17 +96,26 @@ class CustomStockReconciliation(StockReconciliation):
 def stock_reconciliation():
 	stock_template = frappe.db.get_all(
 		"Stock Reconciliation template",
-		{"docstatus": 0, "template_status": "Active", "automation_type": "Auto Generate"},
+		{
+			"docstatus": 0,
+			"template_status": "Active",
+			"automation_type": "Auto Generate",
+		},
 		["name", "day", "time", "date"],
 	)
 	current_time = datetime.now().time()
 	current_time_timedelta = timedelta(
-		hours=current_time.hour, minutes=current_time.minute, seconds=current_time.second
+		hours=current_time.hour,
+		minutes=current_time.minute,
+		seconds=current_time.second,
 	)
 	current_date = datetime.now().date()
 	if stock_template:
 		for stock in stock_template:
-			if stock.day == "Every Day : Working" and current_time_timedelta == stock.time:
+			if (
+				stock.day == "Every Day : Working"
+				and current_time_timedelta == stock.time
+			):
 				create_stock_reconciliation(stock)
 			elif (
 				stock.day == "End of Month : Working"
@@ -103,7 +123,9 @@ def stock_reconciliation():
 				and current_time_timedelta == stock.time
 			):
 				create_stock_reconciliation(stock)
-				set_next_execution_date(stock, timedelta(days=30))  # Set the next execution date to next month
+				set_next_execution_date(
+					stock, timedelta(days=30)
+				)  # Set the next execution date to next month
 			elif (
 				stock.day == "End of the Year : Working"
 				and current_date.month == stock.date
@@ -111,7 +133,9 @@ def stock_reconciliation():
 				and current_time_timedelta == stock.time
 			):
 				create_stock_reconciliation(stock)
-				set_next_execution_date(stock, timedelta(days=365))  # Set the next execution date to next year
+				set_next_execution_date(
+					stock, timedelta(days=365)
+				)  # Set the next execution date to next year
 
 
 def create_stock_reconciliation(stock):
@@ -131,5 +155,7 @@ def create_stock_reconciliation(stock):
 
 def set_next_execution_date(stock, interval):
 	next_execution_date = stock.date + interval
-	stock_reconciliation_doc = frappe.get_doc("Stock Reconciliation template", stock.name)
+	stock_reconciliation_doc = frappe.get_doc(
+		"Stock Reconciliation template", stock.name
+	)
 	stock_reconciliation_doc.db_set("date", next_execution_date)

@@ -15,7 +15,9 @@ from frappe.utils import cint, flt, now, time_diff
 class QC(Document):
 	def after_insert(self):
 		frappe.db.set_value(
-			"Manufacturing Operation", self.manufacturing_operation, {"status": "QC Pending"}
+			"Manufacturing Operation",
+			self.manufacturing_operation,
+			{"status": "QC Pending"},
 		)
 
 	def on_submit(self):
@@ -47,7 +49,9 @@ class QC(Document):
 			self.duplicate_qc = qc_doc.name
 			self.save()
 
-		frappe.db.set_value("Manufacturing Operation", self.manufacturing_operation, {"status": status})
+		frappe.db.set_value(
+			"Manufacturing Operation", self.manufacturing_operation, {"status": status}
+		)
 
 	def validate(self):
 		if self.status == "Force Approved" or any(
@@ -100,7 +104,10 @@ class QC(Document):
 				if reading.status == "Rejected":
 					self.status = "Rejected"
 					frappe.msgprint(
-						_("Status set to rejected as there are one or more rejected readings."), alert=True
+						_(
+							"Status set to rejected as there are one or more rejected readings."
+						),
+						alert=True,
 					)
 					break
 				elif reading.status == "Accepted":
@@ -121,7 +128,11 @@ class QC(Document):
 			reading_value = reading.get("reading_" + str(i))
 			frappe.msgprint(reading_value)
 			if reading_value is not None and reading_value.strip():
-				result = flt(reading.get("min_value")) <= flt(reading_value) <= flt(reading.get("max_value"))
+				result = (
+					flt(reading.get("min_value"))
+					<= flt(reading_value)
+					<= flt(reading.get("max_value"))
+				)
 				if not result:
 					return False
 
@@ -130,7 +141,9 @@ class QC(Document):
 	def set_status_based_on_acceptance_formula(self, reading):
 		if not reading.acceptance_formula:
 			frappe.throw(
-				_("Row #{0}: Acceptance Criteria Formula is required.").format(reading.idx),
+				_("Row #{0}: Acceptance Criteria Formula is required.").format(
+					reading.idx
+				),
 				title=_("Missing Formula"),
 			)
 
@@ -143,14 +156,16 @@ class QC(Document):
 		except NameError as e:
 			field = frappe.bold(e.args[0].split()[1])
 			frappe.throw(
-				_("Row #{0}: {1} is not a valid reading field. Please refer to the field description.").format(
-					reading.idx, field
-				),
+				_(
+					"Row #{0}: {1} is not a valid reading field. Please refer to the field description."
+				).format(reading.idx, field),
 				title=_("Invalid Formula"),
 			)
 		except Exception:
 			frappe.throw(
-				_("Row #{0}: Acceptance Criteria Formula is incorrect.").format(reading.idx),
+				_("Row #{0}: Acceptance Criteria Formula is incorrect.").format(
+					reading.idx
+				),
 				title=_("Invalid Formula"),
 			)
 
@@ -195,7 +210,10 @@ def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
 		get_qc_list = frappe.get_list(
 			"QC",
 			fields=["name"],
-			filters={"manufacturing_work_order": mwo, "manufacturing_operation": mnf_opt},
+			filters={
+				"manufacturing_work_order": mwo,
+				"manufacturing_operation": mnf_opt,
+			},
 		)
 		for qc_list in get_qc_list:
 			frappe.db.set_value("QC", qc_list["name"], "received_gross_wt", r_gwt)
@@ -204,14 +222,14 @@ def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
 		# if g_wt == r_gwt:
 
 		if g_wt != r_gwt:
-			for (
-				entry
-			) in (
+			for entry in (
 				emp_ir.employee_ir_operations
 			):  # Set Recieving Weight in Employee IR Operation Table from QC
 				entry.received_gross_wt = r_gwt
 			eir_doc = frappe.get_doc("Employee IR", eir)
-			result = eir_doc.book_metal_loss(mwo=mwo, opt=mnf_opt, gwt=g_wt, r_gwt=r_gwt)
+			result = eir_doc.book_metal_loss(
+				mwo=mwo, opt=mnf_opt, gwt=g_wt, r_gwt=r_gwt
+			)
 			# Set Employee Loss Details Table in Employee IR Doctype
 			if result and isinstance(result, tuple):
 				data = result[0]
@@ -238,7 +256,9 @@ def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
 							row.item_code = r_data["item_code"]
 							row.net_weight = r_data["qty"]
 							row.stock_uom = r_data["stock_uom"]
-							row.manufacturing_work_order = r_data["manufacturing_work_order"]
+							row.manufacturing_work_order = r_data[
+								"manufacturing_work_order"
+							]
 							row.proportionally_loss = r_data["proportionally_loss"]
 							row.received_gross_weight = r_data["received_gross_weight"]
 							row.main_slip_consumption = r_data["main_slip_consumption"]
@@ -253,9 +273,7 @@ def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
 				qc_doc.employee_loss_details = []
 				qc_doc.save()
 
-			for (
-				entry
-			) in (
+			for entry in (
 				emp_ir.employee_ir_operations
 			):  # Set Recieving Weight in Employee IR Operation Table from QC
 				entry.received_gross_wt = r_gwt

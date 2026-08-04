@@ -473,9 +473,9 @@ class ParentManufacturingOrder(Document):
 		department_warehouse_map = {}
 		for dept_info in warehouse_dict.values():
 			if dept_info.department not in department_warehouse_map:
-				department_warehouse_map[
-					dept_info.department
-				] = _get_raw_material_warehouse(dept_info.department)
+				department_warehouse_map[dept_info.department] = (
+					_get_raw_material_warehouse(dept_info.department)
+				)
 
 		metal_items = []
 		diamond_items = []
