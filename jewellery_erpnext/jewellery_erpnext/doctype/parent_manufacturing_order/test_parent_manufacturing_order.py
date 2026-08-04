@@ -4,14 +4,24 @@
 from unittest.mock import patch
 
 import frappe
-from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase, UnitTestCase
 
+from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.customer_product_tolerance_master import (
+	CustomerProductToleranceMaster,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.tolerance_utils import (
+	group_tolerance_rows,
+	metal_group_key,
+	pick_tolerance_row,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufacturing_plan import (
 	create_sales_order,
 	manufacturing_plan_creation,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	get_item_code,
+	set_diamond_tolerance_table,
+	set_metal_tolerance_table,
 	validate_mfg_date,
 )
 
@@ -487,3 +497,528 @@ def create_man_plan(self):
 	man_plan.save()
 	man_plan.submit()
 	return man_plan
+
+
+class FakeToleranceMaster(frappe._dict):
+	pass
+
+
+class FakePMO(frappe._dict):
+	"""Just enough Document surface for the tolerance populators."""
+
+	def set(self, key, value):
+		self[key] = value
+
+	def append(self, key, value):
+		self.setdefault(key, []).append(frappe._dict(value))
+
+
+def _metal_row(**kwargs):
+	row = frappe._dict(
+		weight_type="Net Weight",
+		metal_type=None,
+		range_type="",
+		tolerance_range=0,
+		from_weight=0,
+		to_weight=0,
+		plus_percent=0,
+		minus_percent=0,
+	)
+	row.update(kwargs)
+	return row
+
+
+class TestToleranceBandSelection(UnitTestCase):
+	"""Only the master row whose band covers the BOM weight may reach the PMO."""
+
+	def _run_metal(self, master_rows, bom_gross=0.0, bom_net=15.0, customer="CUST"):
+		pmo = FakePMO(
+			name="PMO-TEST-0001",
+			doctype="Parent Manufacturing Order",
+			customer=customer,
+			custom_tracking_bom="TB-0001",
+			gross_weight=0.0,
+			net_weight=0.0,
+			metal_product_tolerance=[],
+		)
+		master = FakeToleranceMaster(metal_tolerance_table=master_rows)
+		bom = frappe._dict(gross_weight=bom_gross, metal_and_finding_weight=bom_net)
+
+		def fake_get_doc(doctype, name):
+			return master if doctype == "Customer Product Tolerance Master" else bom
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+			"parent_manufacturing_order.frappe.db.get_value",
+			return_value="PTM-TEST-0001",
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+			"parent_manufacturing_order.frappe.get_doc",
+			side_effect=fake_get_doc,
+		):
+			set_metal_tolerance_table(pmo)
+		return pmo.metal_product_tolerance
+
+	def test_only_the_covering_band_reaches_the_pmo(self):
+		"""The reported bug: 15 g against 0-50 @7% and 51-100 @5% must yield ONE row."""
+		rows = self._run_metal(
+			[
+				_metal_row(
+					from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+				),
+				_metal_row(
+					from_weight=51, to_weight=100, plus_percent=5, minus_percent=5
+				),
+			],
+			bom_net=15.0,
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].from_tolerance_wt, 13.95)
+		self.assertEqual(rows[0].to_tolerance_wt, 16.05)
+		self.assertEqual(rows[0].standard_tolerance_wt, 15.0)
+		self.assertEqual(rows[0].from_weight, 0)
+		self.assertEqual(rows[0].to_weight, 50)
+
+	def test_higher_weight_picks_the_second_band(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+				),
+				_metal_row(
+					from_weight=51, to_weight=100, plus_percent=5, minus_percent=5
+				),
+			],
+			bom_net=80.0,
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].from_tolerance_wt, 76.0)
+		self.assertEqual(rows[0].to_tolerance_wt, 84.0)
+
+	def test_band_upper_bound_is_inclusive_and_first_row_wins(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+				),
+				_metal_row(
+					from_weight=50, to_weight=100, plus_percent=5, minus_percent=5
+				),
+			],
+			bom_net=50.0,
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].to_tolerance_wt, 53.5)
+
+	def test_zero_to_weight_means_no_upper_bound(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+				),
+				_metal_row(
+					from_weight=50, to_weight=0, plus_percent=5, minus_percent=5
+				),
+			],
+			bom_net=5000.0,
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].to_tolerance_wt, 5250.0)
+
+	def test_gap_between_bands_throws(self):
+		"""50.5 g falls between 0-50 and 51-100: master data must be corrected."""
+		with self.assertRaises(frappe.ValidationError):
+			self._run_metal(
+				[
+					_metal_row(
+						from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+					),
+					_metal_row(
+						from_weight=51, to_weight=100, plus_percent=5, minus_percent=5
+					),
+				],
+				bom_net=50.5,
+			)
+
+	def test_gross_and_net_groups_each_yield_one_row(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					weight_type="Gross Weight",
+					from_weight=0,
+					to_weight=50,
+					plus_percent=10,
+					minus_percent=10,
+				),
+				_metal_row(
+					weight_type="Net Weight",
+					from_weight=0,
+					to_weight=50,
+					plus_percent=7,
+					minus_percent=7,
+				),
+			],
+			bom_gross=20.0,
+			bom_net=15.0,
+		)
+		self.assertEqual(len(rows), 2)
+		by_type = {row.weight_type: row for row in rows}
+		self.assertEqual(by_type["Gross Weight"].standard_tolerance_wt, 20.0)
+		self.assertEqual(by_type["Net Weight"].standard_tolerance_wt, 15.0)
+
+	def test_metal_types_are_independent_groups(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					metal_type="Gold",
+					from_weight=0,
+					to_weight=50,
+					plus_percent=7,
+					minus_percent=7,
+				),
+				_metal_row(
+					metal_type="Silver",
+					from_weight=0,
+					to_weight=50,
+					plus_percent=5,
+					minus_percent=5,
+				),
+			],
+			bom_net=15.0,
+		)
+		self.assertEqual(len(rows), 2)
+		self.assertEqual({row.metal_type for row in rows}, {"Gold", "Silver"})
+
+	def test_weight_range_uses_flat_tolerance_range(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					range_type="Weight Range",
+					from_weight=0,
+					to_weight=50,
+					tolerance_range=2,
+				)
+			],
+			bom_net=15.0,
+		)
+		self.assertEqual(rows[0].from_tolerance_wt, 13.0)
+		self.assertEqual(rows[0].to_tolerance_wt, 17.0)
+
+	def test_rebuilds_instead_of_appending(self):
+		"""An amended PMO arrives with the old rows; submit must not double them."""
+		master_rows = [
+			_metal_row(from_weight=0, to_weight=50, plus_percent=7, minus_percent=7)
+		]
+		self.assertEqual(len(self._run_metal(master_rows)), 1)
+		self.assertEqual(len(self._run_metal(master_rows)), 1)
+
+	def test_no_master_leaves_the_table_untouched(self):
+		pmo = FakePMO(customer="CUST", metal_product_tolerance=["existing"])
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+			"parent_manufacturing_order.frappe.db.get_value",
+			return_value=None,
+		):
+			set_metal_tolerance_table(pmo)
+		self.assertEqual(pmo.metal_product_tolerance, ["existing"])
+
+
+class TestToleranceUtils(UnitTestCase):
+	def test_pick_returns_none_on_gap(self):
+		rows = [
+			frappe._dict(from_weight=0, to_weight=50),
+			frappe._dict(from_weight=51, to_weight=100),
+		]
+		self.assertIsNone(pick_tolerance_row(rows, 50.5))
+		self.assertIsNotNone(pick_tolerance_row(rows, 50))
+		self.assertIsNotNone(pick_tolerance_row(rows, 51))
+
+	def test_bandless_row_covers_everything(self):
+		rows = [frappe._dict(from_diamond=0, to_diamond=0)]
+		self.assertIsNotNone(
+			pick_tolerance_row(rows, 999, "from_diamond", "to_diamond")
+		)
+
+	def test_group_preserves_document_order(self):
+		rows = [
+			frappe._dict(weight_type="Net Weight", metal_type="Gold", idx=1),
+			frappe._dict(weight_type="Net Weight", metal_type="Gold", idx=2),
+			frappe._dict(weight_type="Gross Weight", metal_type="Gold", idx=3),
+		]
+		groups = group_tolerance_rows(rows, metal_group_key)
+		self.assertEqual(len(groups), 2)
+		self.assertEqual([row.idx for row in groups[("Net Weight", "Gold")]], [1, 2])
+
+
+class TestToleranceMasterBandValidation(UnitTestCase):
+	"""Band sanity rules on Customer Product Tolerance Master.
+
+	Housed here rather than in test_customer_product_tolerance_master.py because CI runs
+	a curated allowlist -- `--doctype "Parent Manufacturing Order"` already loads this
+	module, while nothing runs the tolerance master's own test file. These rules decide
+	which bands set_metal_tolerance_table can resolve, so this is their nearest home.
+	"""
+
+	def _doc(
+		self, bands, table="metal_tolerance_table", frm="from_weight", to="to_weight"
+	):
+		doc = frappe._dict(
+			metal_tolerance_table=[],
+			diamond_tolerance_table=[],
+			gemstone_tolerance_table=[],
+		)
+		doc[table] = [
+			frappe._dict(
+				{
+					"weight_type": "Net Weight",
+					"metal_type": "Gold",
+					frm: a,
+					to: b,
+					"idx": i + 1,
+				}
+			)
+			for i, (a, b) in enumerate(bands)
+		]
+		return doc
+
+	def _validate(self, doc):
+		CustomerProductToleranceMaster.validate_tolerance_bands(doc)
+
+	def test_real_master_schedules_still_save(self):
+		"""Live gk/production band shapes must not be rejected."""
+		for label, bands in {
+			"MHCU0008 (11 contiguous bands, some touching)": [
+				(0, 1.5),
+				(1.51, 3),
+				(3, 5),
+				(5, 10),
+				(10, 15),
+				(15, 25),
+				(25, 50),
+				(50, 75),
+				(75, 100),
+				(100, 150),
+				(150, 99999),
+			],
+			"MHCU0009 (open-ended top band)": [
+				(0, 4.999),
+				(5, 14.999),
+				(15, 49.999),
+				(50, 0),
+			],
+			"GJCU0009 (the reported master, with a gap)": [(0, 50), (51, 100)],
+		}.items():
+			with self.subTest(master=label):
+				self._validate(self._doc(bands))
+
+	def test_overlapping_bands_are_rejected(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(self._doc([(0, 50), (20, 80)]))
+
+	def test_from_greater_than_to_is_rejected(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(self._doc([(50, 10)]))
+
+	def test_two_identical_bands_are_rejected(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(self._doc([(0, 50), (0, 50)]))
+
+	def test_different_groups_may_reuse_the_same_band(self):
+		"""Gold 0-50 and Silver 0-50 are independent schedules, not an overlap."""
+		doc = frappe._dict(
+			diamond_tolerance_table=[],
+			gemstone_tolerance_table=[],
+			metal_tolerance_table=[
+				frappe._dict(
+					weight_type="Net Weight",
+					metal_type="Gold",
+					from_weight=0,
+					to_weight=50,
+					idx=1,
+				),
+				frappe._dict(
+					weight_type="Net Weight",
+					metal_type="Silver",
+					from_weight=0,
+					to_weight=50,
+					idx=2,
+				),
+				frappe._dict(
+					weight_type="Gross Weight",
+					metal_type="Gold",
+					from_weight=0,
+					to_weight=50,
+					idx=3,
+				),
+			],
+		)
+		self._validate(doc)
+
+	def test_touching_bands_are_allowed(self):
+		"""...-50 and 50-... share an endpoint; pick_tolerance_row takes the first."""
+		self._validate(self._doc([(0, 50), (50, 100)]))
+
+
+def _bom_diamond(**kwargs):
+	row = frappe._dict(
+		diamond_type="Natural",
+		diamond_sieve_size="+4.5-5",
+		sieve_size_range="Group A",
+		quantity=1.0,
+		size_in_mm=1.75,
+	)
+	row.update(kwargs)
+	return row
+
+
+def _diamond_band(**kwargs):
+	row = frappe._dict(
+		weight_type="MM Size wise",
+		diamond_type=None,
+		sieve_size="+4.5-5",
+		sieve_size_range=None,
+		from_diamond=0,
+		to_diamond=0,
+		plus_percent=10,
+		minus_percent=10,
+	)
+	row.update(kwargs)
+	return row
+
+
+class TestDiamondToleranceScoping(UnitTestCase):
+	"""A diamond band must aggregate only the stones it is scoped to.
+
+	No test previously exercised a populated diamond_tolerance_table at all, which is
+	how the missing diamond_type filter went unnoticed.
+	"""
+
+	def _run(self, master_rows, bom_rows, diamond_weight=0.0):
+		pmo = FakePMO(
+			name="PMO-TEST-0001",
+			doctype="Parent Manufacturing Order",
+			customer="CUST",
+			custom_tracking_bom="TB-0001",
+			diamond_weight=diamond_weight,
+			diamond_product_tolerance=[],
+		)
+		master = FakeToleranceMaster(diamond_tolerance_table=master_rows)
+		bom = frappe._dict(diamond_detail=bom_rows)
+
+		def fake_get_doc(doctype, name):
+			return master if doctype == "Customer Product Tolerance Master" else bom
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+			"parent_manufacturing_order.frappe.db.get_value",
+			return_value="PTM-TEST-0001",
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+			"parent_manufacturing_order.frappe.get_doc",
+			side_effect=fake_get_doc,
+		):
+			set_diamond_tolerance_table(pmo)
+		return pmo.diamond_product_tolerance
+
+	def test_each_type_is_measured_on_its_own_stones(self):
+		"""The reported bug: both bands summed 2 + 3 = 5 cts instead of 2 and 3."""
+		rows = self._run(
+			[
+				_diamond_band(diamond_type="Natural"),
+				_diamond_band(diamond_type="LGD"),
+			],
+			[
+				_bom_diamond(diamond_type="Natural", quantity=2.0),
+				_bom_diamond(diamond_type="LGD", quantity=3.0),
+			],
+		)
+		self.assertEqual(len(rows), 2)
+		by_type = {row.diamond_type: row for row in rows}
+		self.assertEqual(by_type["Natural"].standard_tolerance_wt, 2.0)
+		self.assertEqual(by_type["LGD"].standard_tolerance_wt, 3.0)
+		self.assertEqual(by_type["Natural"].from_tolerance_wt, 1.8)
+		self.assertEqual(by_type["Natural"].to_tolerance_wt, 2.2)
+
+	def test_band_for_a_type_absent_from_the_bom_emits_no_row(self):
+		rows = self._run(
+			[_diamond_band(diamond_type="LGD")],
+			[_bom_diamond(diamond_type="Natural", quantity=2.0)],
+		)
+		self.assertEqual(rows, [])
+
+	def test_universal_still_aggregates_every_type(self):
+		rows = self._run(
+			[
+				_diamond_band(
+					weight_type="Universal", diamond_type=None, sieve_size=None
+				)
+			],
+			[
+				_bom_diamond(diamond_type="Natural", quantity=2.0),
+				_bom_diamond(diamond_type="LGD", quantity=3.0),
+			],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].standard_tolerance_wt, 5.0)
+
+	def test_weight_wise_scoped_by_type_ignores_sieve(self):
+		rows = self._run(
+			[
+				_diamond_band(
+					weight_type="Weight wise", diamond_type="Natural", sieve_size=None
+				)
+			],
+			[
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+4.5-5", quantity=2.0
+				),
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+6-7", quantity=1.0
+				),
+				_bom_diamond(
+					diamond_type="LGD", diamond_sieve_size="+4.5-5", quantity=9.0
+				),
+			],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].standard_tolerance_wt, 3.0)
+
+	def test_sieve_scope_still_applies_alongside_type(self):
+		rows = self._run(
+			[_diamond_band(diamond_type="Natural", sieve_size="+4.5-5")],
+			[
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+4.5-5", quantity=2.0
+				),
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+6-7", quantity=4.0
+				),
+				_bom_diamond(
+					diamond_type="LGD", diamond_sieve_size="+4.5-5", quantity=8.0
+				),
+			],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].standard_tolerance_wt, 2.0)
+
+	def test_size_in_mm_only_for_mm_size_wise(self):
+		mm = self._run(
+			[_diamond_band()],
+			[_bom_diamond(quantity=2.0, size_in_mm=1.75)],
+		)
+		self.assertEqual(mm[0].size_in_mm, 1.75)
+
+		for weight_type, extra in (
+			("Group Size wise", {"sieve_size": None, "sieve_size_range": "Group A"}),
+			("Weight wise", {"sieve_size": None}),
+			("Universal", {"sieve_size": None}),
+		):
+			with self.subTest(weight_type=weight_type):
+				rows = self._run(
+					[_diamond_band(weight_type=weight_type, **extra)],
+					[
+						_bom_diamond(quantity=2.0, size_in_mm=1.75),
+						_bom_diamond(quantity=1.0, size_in_mm=2.5),
+					],
+				)
+				self.assertEqual(rows[0].size_in_mm, 0)
