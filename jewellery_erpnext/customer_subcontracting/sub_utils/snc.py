@@ -786,22 +786,29 @@ def _get_gold_items_for_purity(purity, required_item_code):
 
 
 def _get_item_purity(item_code):
-	item = frappe.get_doc("Item", item_code)
+	# Read the Metal Purity attribute directly instead of frappe.get_doc("Item", …),
+	# which loads the whole Item document — every child table, including a ~59ms
+	# Design-Attribute-Multiselect load — just to scan for one attribute row. This
+	# helper is called once per receivable gold row, so on a multi-row settlement the
+	# same Item was fetched several times (the "redundant doc fetch" the profile flagged).
+	attribute_value = frappe.db.get_value(
+		"Item Variant Attribute",
+		{"parent": item_code, "attribute": "Metal Purity"},
+		"attribute_value",
+	)
+	if attribute_value is not None:
+		try:
+			return flt(attribute_value)
+		except (TypeError, ValueError):
+			pass
 
-	for row in item.attributes:
-		if row.attribute == "Metal Purity":
-			try:
-				return flt(row.attribute_value)
-			except (TypeError, ValueError):
-				pass
-
-			purity = frappe.db.get_value(
-				"Attribute Value",
-				row.attribute_value,
-				"custom_purity_percentage",
-			)
-			if purity:
-				return flt(purity)
+		purity = frappe.db.get_value(
+			"Attribute Value",
+			attribute_value,
+			"custom_purity_percentage",
+		)
+		if purity:
+			return flt(purity)
 
 	try:
 		return flt((item_code or "").split("-")[-2])
