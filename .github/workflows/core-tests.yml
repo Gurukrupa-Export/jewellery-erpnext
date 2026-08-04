@@ -47,6 +47,9 @@ jobs:
         run: |
           cd ~/frappe-bench
           echo "Running Core Tests..."
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_gemstone_size_parser
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sql_parameterisation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_universal_primitives
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Sketch Order Form"
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order

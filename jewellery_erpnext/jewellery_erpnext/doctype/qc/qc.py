@@ -15,7 +15,9 @@ from frappe.utils import cint, flt, now, time_diff
 class QC(Document):
 	def after_insert(self):
 		frappe.db.set_value(
-			"Manufacturing Operation", self.manufacturing_operation, {"status": "QC Pending"}
+			"Manufacturing Operation",
+			self.manufacturing_operation,
+			{"status": "QC Pending"},
 		)
 
 	def on_submit(self):
@@ -23,6 +25,16 @@ class QC(Document):
 			[row.idx for row in self.readings if not row.status]
 		):
 			frappe.throw(_("QC can only be submitted in Accepted or Rejected state"))
+		self._apply_qc_outcome()
+
+	def _apply_qc_outcome(self):
+		"""Propagate this QC's outcome to the Manufacturing Operation.
+
+		Split out of ``on_submit`` so ``force_approve`` can reuse it without
+		re-entering a lifecycle hook. Calling ``on_submit()`` directly re-ran the
+		submit guard against a status (``Force Approved``) that ``validate``
+		explicitly rejects.
+		"""
 		status = "WIP"
 		if self.status in ["Accepted", "Force Approved"]:
 			pending_qc = frappe.db.get_value(
@@ -31,6 +43,7 @@ class QC(Document):
 					"manufacturing_operation": self.manufacturing_operation,
 					"status": ["not in", ["Accepted", "Force Approved", "Rejected"]],
 					"docstatus": ["!=", 2],
+					"name": ["!=", self.name],
 				},
 				"name",
 			)
@@ -41,13 +54,44 @@ class QC(Document):
 		elif self.status == "Rejected":
 			existing_doc = frappe.get_doc("QC", self.name)
 			qc_doc = frappe.copy_doc(existing_doc)
+			# The replacement must start as a draft, stated explicitly rather than
+			# inherited. `frappe.copy_doc` only clears docstatus when NOT running
+			# under test — `frappe/model/document.py`:
+			#
+			#     if not frappe.in_test:
+			#         fields_to_clear.append("docstatus")
+			#
+			# so under `frappe.in_test` the copy keeps docstatus=1, saving it takes
+			# the submit path, and this method re-enters itself until the stack is
+			# exhausted (reproduced at 96 frames). Production survives only because
+			# copy_doc happens to clear the field there. Do not rely on that.
+			qc_doc.docstatus = 0
 			qc_doc.previous_qc = self.name
 			qc_doc.save()
 			frappe.db.set_value("QC", qc_doc.name, "status", "Pending")
-			self.duplicate_qc = qc_doc.name
-			self.save()
+			# db_set, not `self.duplicate_qc = ...; self.save()`.
+			#
+			# To be precise about what was wrong: the old `self.save()` DID persist
+			# the value — `duplicate_qc` is allow_on_submit, so the write survived
+			# `validate_update_after_submit`. Verified on real data before changing it.
+			#
+			# The defect is the re-entrancy, not a lost write. `save()` on an
+			# already-submitted document re-runs the whole validate chain
+			# (`inspect_and_set_status`, the finish_time/time_taken recalculation)
+			# from inside `on_submit`, and bumps `modified` a second time. It is also
+			# what made `force_approve` fragile: that path sets status to
+			# "Force Approved" and re-enters this method, where `validate` throws
+			# "Not allowed to select 'Force Approved'".
+			#
+			# `db_set` writes the one field and fires before_change/on_change only.
+			# Note it bypasses allow_on_submit entirely rather than honouring it —
+			# that gate lives solely on the save() path — so it is the right tool
+			# here but must not be treated as a permission check.
+			self.db_set("duplicate_qc", qc_doc.name)
 
-		frappe.db.set_value("Manufacturing Operation", self.manufacturing_operation, {"status": status})
+		frappe.db.set_value(
+			"Manufacturing Operation", self.manufacturing_operation, {"status": status}
+		)
 
 	def validate(self):
 		if self.status == "Force Approved" or any(
@@ -63,16 +107,56 @@ class QC(Document):
 			self.finish_time = now()
 			self.time_taken = time_diff(self.finish_time, self.start_time)
 
+	# A rejected QC spawns a replacement, which may itself be rejected and spawn
+	# another. Force-approving walks that chain; this bounds it so a cycle or a
+	# pathological lineage surfaces as an error instead of recursing until the
+	# stack blows.
+	MAX_FORCE_APPROVE_CHAIN = 20
+
 	@frappe.whitelist()
 	def force_approve(self):
+		"""Force-approve this QC and every replacement it spawned.
+
+		Previously recursed via ``frappe.get_doc(...).force_approve()`` with no
+		termination guard, so a duplicate_qc cycle recursed until the interpreter
+		gave up. Rewritten as an iterative walk with a visited set.
+
+		``db_set("status", ...)`` deliberately bypasses ``allow_on_submit`` here —
+		``status`` is not flagged allow_on_submit, and it should not be, because
+		that would expose it to arbitrary Desk edits on submitted documents.
+		"""
+		chain = []
+		seen = set()
+		current = self
+
+		while current is not None and current.name not in seen:
+			seen.add(current.name)
+			chain.append(current)
+			if len(seen) > self.MAX_FORCE_APPROVE_CHAIN:
+				frappe.throw(
+					_(
+						"QC replacement chain from {0} exceeds {1} documents, which indicates "
+						"a data defect. Chain: {2}"
+					).format(
+						frappe.bold(self.name),
+						self.MAX_FORCE_APPROVE_CHAIN,
+						" -> ".join(doc.name for doc in chain),
+					),
+					title=_("QC Chain Too Long"),
+				)
+			next_name = current.duplicate_qc
+			current = frappe.get_doc("QC", next_name) if next_name else None
+
+		for doc in chain:
+			doc._force_approve_self()
+
+	def _force_approve_self(self):
+		"""Force-approve exactly this document, without walking the chain."""
 		self.db_set("status", "Force Approved")
 		for row in self.readings:
 			if row.status == "Rejected":
 				row.db_set("status", "Force Approved")
-		self.on_submit()
-
-		if self.duplicate_qc:
-			frappe.get_doc("QC", self.duplicate_qc).force_approve()
+		self._apply_qc_outcome()
 
 	@frappe.whitelist()
 	def get_specification_details(self):
@@ -100,7 +184,10 @@ class QC(Document):
 				if reading.status == "Rejected":
 					self.status = "Rejected"
 					frappe.msgprint(
-						_("Status set to rejected as there are one or more rejected readings."), alert=True
+						_(
+							"Status set to rejected as there are one or more rejected readings."
+						),
+						alert=True,
 					)
 					break
 				elif reading.status == "Accepted":
@@ -121,7 +208,11 @@ class QC(Document):
 			reading_value = reading.get("reading_" + str(i))
 			frappe.msgprint(reading_value)
 			if reading_value is not None and reading_value.strip():
-				result = flt(reading.get("min_value")) <= flt(reading_value) <= flt(reading.get("max_value"))
+				result = (
+					flt(reading.get("min_value"))
+					<= flt(reading_value)
+					<= flt(reading.get("max_value"))
+				)
 				if not result:
 					return False
 
@@ -130,7 +221,9 @@ class QC(Document):
 	def set_status_based_on_acceptance_formula(self, reading):
 		if not reading.acceptance_formula:
 			frappe.throw(
-				_("Row #{0}: Acceptance Criteria Formula is required.").format(reading.idx),
+				_("Row #{0}: Acceptance Criteria Formula is required.").format(
+					reading.idx
+				),
 				title=_("Missing Formula"),
 			)
 
@@ -143,14 +236,16 @@ class QC(Document):
 		except NameError as e:
 			field = frappe.bold(e.args[0].split()[1])
 			frappe.throw(
-				_("Row #{0}: {1} is not a valid reading field. Please refer to the field description.").format(
-					reading.idx, field
-				),
+				_(
+					"Row #{0}: {1} is not a valid reading field. Please refer to the field description."
+				).format(reading.idx, field),
 				title=_("Invalid Formula"),
 			)
 		except Exception:
 			frappe.throw(
-				_("Row #{0}: Acceptance Criteria Formula is incorrect.").format(reading.idx),
+				_("Row #{0}: Acceptance Criteria Formula is incorrect.").format(
+					reading.idx
+				),
 				title=_("Invalid Formula"),
 			)
 
@@ -195,7 +290,10 @@ def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
 		get_qc_list = frappe.get_list(
 			"QC",
 			fields=["name"],
-			filters={"manufacturing_work_order": mwo, "manufacturing_operation": mnf_opt},
+			filters={
+				"manufacturing_work_order": mwo,
+				"manufacturing_operation": mnf_opt,
+			},
 		)
 		for qc_list in get_qc_list:
 			frappe.db.set_value("QC", qc_list["name"], "received_gross_wt", r_gwt)
@@ -204,14 +302,14 @@ def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
 		# if g_wt == r_gwt:
 
 		if g_wt != r_gwt:
-			for (
-				entry
-			) in (
+			for entry in (
 				emp_ir.employee_ir_operations
 			):  # Set Recieving Weight in Employee IR Operation Table from QC
 				entry.received_gross_wt = r_gwt
 			eir_doc = frappe.get_doc("Employee IR", eir)
-			result = eir_doc.book_metal_loss(mwo=mwo, opt=mnf_opt, gwt=g_wt, r_gwt=r_gwt)
+			result = eir_doc.book_metal_loss(
+				mwo=mwo, opt=mnf_opt, gwt=g_wt, r_gwt=r_gwt
+			)
 			# Set Employee Loss Details Table in Employee IR Doctype
 			if result and isinstance(result, tuple):
 				data = result[0]
@@ -238,7 +336,9 @@ def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
 							row.item_code = r_data["item_code"]
 							row.net_weight = r_data["qty"]
 							row.stock_uom = r_data["stock_uom"]
-							row.manufacturing_work_order = r_data["manufacturing_work_order"]
+							row.manufacturing_work_order = r_data[
+								"manufacturing_work_order"
+							]
 							row.proportionally_loss = r_data["proportionally_loss"]
 							row.received_gross_weight = r_data["received_gross_weight"]
 							row.main_slip_consumption = r_data["main_slip_consumption"]
@@ -253,9 +353,7 @@ def receive_gross_wt_from_qc(doc_name, mwo, mnf_opt, eir, g_wt, r_gwt):
 				qc_doc.employee_loss_details = []
 				qc_doc.save()
 
-			for (
-				entry
-			) in (
+			for entry in (
 				emp_ir.employee_ir_operations
 			):  # Set Recieving Weight in Employee IR Operation Table from QC
 				entry.received_gross_wt = r_gwt

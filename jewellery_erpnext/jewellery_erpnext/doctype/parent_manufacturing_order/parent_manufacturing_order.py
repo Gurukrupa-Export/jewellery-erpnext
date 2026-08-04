@@ -1465,12 +1465,25 @@ def get_stock_summary(pmo_name):
 
 @frappe.whitelist()
 def add_hold_comment(doctype, docname, reason):
-	frappe.logger().info(
-		f"add_hold_comment called with: {doctype}, {docname}, {reason}"
-	)
+	"""Attach a hold reason to a document's timeline.
+
+	`doctype` and `docname` are caller-supplied and this used to run `frappe.get_doc`
+	with no permission check at all, so any authenticated session could attach
+	arbitrary text to the timeline of ANY document of ANY DocType - and use the
+	success/failure of the call as an existence oracle. Despite living on Parent
+	Manufacturing Order, nothing in the body was PMO-scoped.
+
+	The gate matches the framework's own comment endpoint rather than inventing a
+	stricter one: `frappe.desk.form.utils.add_comment` documents itself as "Allow
+	logged user with permission to read document to add a comment" and enforces that
+	via `get_lazy_doc(..., check_permission=True)`, which defaults to "read". Using
+	"write" here would be stricter than Frappe's native comment feature and would
+	break holds for users who can legitimately place them.
+	"""
 	if not reason:
 		return
 	doc = frappe.get_doc(doctype, docname)
+	doc.check_permission()
 	doc.add_comment("Comment", f"Put on hold due to: {reason}")
 
 

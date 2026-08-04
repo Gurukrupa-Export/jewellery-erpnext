@@ -1,8 +1,10 @@
 # Copyright (c) 2024, Nirali and contributors
 # For license information, please see license.txt
 import json
-from erpnext.controllers.queries import get_batch_no
+import re
+
 import frappe
+from erpnext.controllers.queries import get_batch_no
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.model.document import Document
@@ -47,8 +49,11 @@ class GemstoneConversion(Document):
 		if self.workflow_state == "Draft":
 			set_subcontractor_warehouse(self)
 
-		should_auto_add_loss = (self.conversion_type == 'Conversion' and self.workflow_state == 'Draft') or (
-			self.conversion_type == 'Resize' and self.workflow_state in ('Issue', 'Receive')
+		should_auto_add_loss = (
+			self.conversion_type == "Conversion" and self.workflow_state == "Draft"
+		) or (
+			self.conversion_type == "Resize"
+			and self.workflow_state in ("Issue", "Receive")
 		)
 		if should_auto_add_loss:
 			if loss_item and flt((self.g_source_qty or 0) - self.g_target_qty, 2) > 0:
@@ -74,28 +79,31 @@ class GemstoneConversion(Document):
 		# 		frappe.throw(
 		# 			f"Conversion failed batch available qty not meet. </br><b>(Batch Qty = {self.batch_avail_qty})</b><br>select another batch."
 		# 		)
-		if (self.conversion_type == 'Conversion' and self.workflow_state == 'Submitted') or (self.conversion_type == 'Resize' and self.workflow_state == 'Receive'):
+		if (
+			self.conversion_type == "Conversion" and self.workflow_state == "Submitted"
+		) or (self.conversion_type == "Resize" and self.workflow_state == "Receive"):
 			if (self.g_source_qty or 0) == 0 or self.g_target_qty == 0:
 				frappe.throw(
-					_("Add at least one Target Item other than the Loss Item. Source Qty or Target Qty is not allowed to be Zero.")
+					_(
+						"Add at least one Target Item other than the Loss Item. Source Qty or Target Qty is not allowed to be Zero."
+					)
 				)
 		if self.g_source_qty is not None and self.g_source_qty < 0:
 			frappe.throw(_("Source Qty invalid"))
 
 		validate_gemstone_item(self)
-		if self.workflow_state == 'Issue':
+		if self.workflow_state == "Issue":
 			# frappe.throw("HERE")
 			make_warehouse_transfer_stock_entry(self)
 			create_fg_subcontracting_po(self)
 
-		if self.conversion_type == 'Resize':
+		if self.conversion_type == "Resize":
 			stamp_resize_conversion_time(self)
 
 		if self.g_source_item and self.batch and self.source_warehouse:
 			self.source_valuation_rate = get_source_batch_valuation_rate(
 				self.g_source_item, self.batch, self.source_warehouse
 			)
-
 
 	@frappe.whitelist()
 	def get_detail_tab_value(self):
@@ -107,14 +115,18 @@ class GemstoneConversion(Document):
 			errors.append(
 				f"Department Messing against <b>{self.employee} Employee Master</b>"
 			)
-		if not branch and self.company == 'Gurukrupa Export Private Limited':
+		if not branch and self.company == "Gurukrupa Export Private Limited":
 			errors.append(
 				f"Branch Messing against <b>{self.employee} Employee Master</b>"
 			)
 		mnf = frappe.get_value("Department", dpt, "manufacturer")
 		if not mnf:
 			errors.append("Manufacturer Messing against <b>Department Master</b>")
-		s_wh = frappe.get_value("Warehouse", {"disabled": 0, "department": dpt, "warehouse_type":"Raw Material"}, "name")
+		s_wh = frappe.get_value(
+			"Warehouse",
+			{"disabled": 0, "department": dpt, "warehouse_type": "Raw Material"},
+			"name",
+		)
 		if not mnf:
 			errors.append("Warehouse Missing Warehouse Master Department Not Set")
 		if errors:
@@ -242,17 +254,19 @@ class GemstoneConversion(Document):
 
 
 def stamp_resize_conversion_time(self):
-	if self.workflow_state == 'Issue' and not self.issue_time:
+	if self.workflow_state == "Issue" and not self.issue_time:
 		self.issue_time = now_datetime()
 
-	if self.workflow_state == 'Receive':
+	if self.workflow_state == "Receive":
 		if not self.receive_time:
 			self.receive_time = now_datetime()
 		if self.issue_time and self.receive_time < self.issue_time:
 			frappe.throw(_("Receive Time cannot be before Issue Time"))
 
 		if self.is_subcontracting:
-			self.conversion_cost = get_subcontracting_pi_amount(self.fg_subcontracting_po)
+			self.conversion_cost = get_subcontracting_pi_amount(
+				self.fg_subcontracting_po
+			)
 		else:
 			self.conversion_cost = get_employee_conversion_cost(
 				self.to_employee, self.issue_time, self.receive_time
@@ -267,18 +281,22 @@ def get_subcontracting_pi_amount(fg_subcontracting_po):
 	)
 	if not pi_name:
 		frappe.throw(
-			_("Submit a Purchase Invoice against FG Subcontracting PO <b>{0}</b> before Receive.").format(
-				fg_subcontracting_po
-			)
+			_(
+				"Submit a Purchase Invoice against FG Subcontracting PO <b>{0}</b> before Receive."
+			).format(fg_subcontracting_po)
 		)
 	return flt(frappe.db.get_value("Purchase Invoice", pi_name, "grand_total"))
 
 
 def get_employee_conversion_cost(to_employee, issue_time, receive_time):
 	if not (issue_time and receive_time):
-		frappe.throw(_("Issue Time and Receive Time are required to calculate conversion cost."))
+		frappe.throw(
+			_("Issue Time and Receive Time are required to calculate conversion cost.")
+		)
 
-	hour_rate = frappe.db.get_value("Workstation", {"employee": to_employee}, "hour_rate")
+	hour_rate = frappe.db.get_value(
+		"Workstation", {"employee": to_employee}, "hour_rate"
+	)
 	if not hour_rate:
 		frappe.throw(
 			_(
@@ -378,7 +396,9 @@ def make_gemstone_stock_entry(self):
 	if is_resize:
 		target_basic_rate = flt(self.source_valuation_rate) + flt(self.conversion_cost)
 	else:
-		target_basic_rate = flt(self.source_valuation_rate) * (flt(self.rate_factor) or 1)
+		target_basic_rate = flt(self.source_valuation_rate) * (
+			flt(self.rate_factor) or 1
+		)
 	for row in self.sc_target_table:
 		if row.item_code == loss_item:
 			if is_resize:
@@ -479,6 +499,7 @@ def get_source_batch_valuation_rate(item_code, batch_no, warehouse):
 		)
 	)
 
+
 def make_warehouse_transfer_stock_entry(self):
 	if self.issue_stock_entry:
 		return self.issue_stock_entry
@@ -516,6 +537,7 @@ def make_warehouse_transfer_stock_entry(self):
 	se.submit()
 	self.issue_stock_entry = se.name
 	return se.name
+
 
 def make_target_item_transfer_stock_entry(self):
 	if self.target_transfer_stock_entry:
@@ -573,6 +595,7 @@ def make_target_item_transfer_stock_entry(self):
 
 FG_SUBCONTRACTING_ITEM = "FG Subcontracting"
 
+
 def create_fg_subcontracting_po(self):
 	if self.fg_subcontracting_po:
 		return
@@ -625,6 +648,7 @@ def create_fg_subcontracting_po(self):
 	po.save()
 	self.fg_subcontracting_po = po.name
 
+
 def get_scrap_warehouse(department):
 	scrap_wareouse = frappe.db.get_value(
 		"Warehouse",
@@ -641,6 +665,66 @@ def get_scrap_warehouse(department):
 	return scrap_wareouse
 
 
+# Gemstone Size is stored on `Item Variant Attribute.attribute_value` as "N MM" or
+# "N*N MM" — free text on a master record. It used to be handed to eval(), which
+# executed it as Python: any user able to edit an Item Attribute Value had remote
+# code execution, triggered on every Gemstone Conversion validate. The
+# `"*".join(x.split("*"))` wrapper around that eval was a no-op and hid nothing.
+#
+# ast.literal_eval is NOT a usable replacement: it rejects binary operators, so it
+# raises ValueError on "4.00*3.00" (verified on this bench's Python 3.14.3). A
+# strict grammar is the only correct fix.
+#
+# Survey of `gk` at the time of writing: 315 distinct values, 1 null, zero using a
+# separator other than "*", zero with three factors. The grammar below deliberately
+# accepts x/X/× and up to three factors anyway — it costs nothing and stops a future
+# master-data value turning this fix into an outage.
+_GEMSTONE_SIZE_RE = re.compile(
+	r"^\s*(\d+(?:\.\d+)?)"
+	r"(?:\s*[*xX×]\s*(\d+(?:\.\d+)?))?"
+	r"(?:\s*[*xX×]\s*(\d+(?:\.\d+)?))?\s*$"
+)
+
+
+def parse_gemstone_size(value, item_code=None):
+	"""Parse a Gemstone Size attribute into a float. Never evaluates input as code.
+
+	Returns the product of the dimension factors, matching the previous behaviour
+	for every well-formed value ("3.30 MM" -> 3.3, "4.00*3.00 MM" -> 12.0).
+
+	Raises a user-facing ValidationError for missing or malformed values. Empty is
+	deliberately an error rather than 0.0: the parsed source size is compared with
+	`s_gemstone_size < t_gemstone_size`, so silently returning 0.0 would make every
+	target row fail with a misleading "should not bigger than source item" message.
+	"""
+	on_item = f" on {item_code}" if item_code else ""
+
+	if value is None or not str(value).strip():
+		frappe.throw(
+			_("Gemstone Size is not set{0}").format(on_item),
+			title=_("Missing Gemstone Size"),
+		)
+
+	# Strip the unit case-insensitively and with an optional space. A plain
+	# .replace(" MM", "") silently mangles "3.30MM" into an unparseable string.
+	cleaned = re.sub(r"\s*mm\s*$", "", str(value), flags=re.IGNORECASE)
+
+	match = _GEMSTONE_SIZE_RE.match(cleaned)
+	if not match:
+		frappe.throw(
+			_("Invalid Gemstone Size {0}{1} — expected 'N MM' or 'N*N MM'").format(
+				frappe.bold(value), on_item
+			),
+			title=_("Invalid Gemstone Size"),
+		)
+
+	size = flt(match.group(1))
+	for factor in (match.group(2), match.group(3)):
+		if factor is not None:
+			size = size * flt(factor)
+	return size
+
+
 def validate_gemstone_item(self):
 	src_item = json.loads(
 		frappe.db.sql(
@@ -654,8 +738,9 @@ def validate_gemstone_item(self):
 			as_dict=True,
 		)[0]["final_dict"]
 	)
-	s_gemstone_size = src_item.get("Gemstone Size")
-	s_gemstone_size = eval("*".join(s_gemstone_size.replace(" MM", "").split("*")))
+	s_gemstone_size = parse_gemstone_size(
+		src_item.get("Gemstone Size"), self.g_source_item
+	)
 
 	for target_row in self.sc_target_table:
 		if target_row.item_code == self.g_source_item:
@@ -685,9 +770,8 @@ def validate_gemstone_item(self):
 				continue
 
 			elif attribute == "Gemstone Size":
-				t_gemstone_size = item.get(attribute)
-				t_gemstone_size = eval(
-					"*".join(t_gemstone_size.replace(" MM", "").split("*"))
+				t_gemstone_size = parse_gemstone_size(
+					item.get(attribute), target_row.item_code
 				)
 				if s_gemstone_size < t_gemstone_size:
 					frappe.throw(
@@ -708,6 +792,3 @@ def validate_gemstone_item(self):
 def get_filtered_batches(doctype, txt, searchfield, start, page_len, filters):
 	data = get_batch_no(doctype, txt, searchfield, start, page_len, filters)
 	return data
-
-
-

@@ -297,10 +297,13 @@ override_whitelisted_methods = {
 
 override_doctype_class = {
 	"Stock Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.CustomStockEntry",
-	"Stock Reconciliation": [
-		"jewellery_erpnext.jewellery_erpnext.doctype.stock_reconciliation_template.stock_reconciliation_template_utils.CustomStockReconciliation",
-		"jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.CustomStockReconciliation",
-	],
+	# Must stay a single path. Frappe resolves `class_overrides[doctype][-1]`
+	# (frappe/model/base_document.py:117) and silently discards every earlier entry,
+	# so a list is not composition — it is a dropped override. This was previously a
+	# two-element list whose FIRST entry was therefore dead code.
+	# To add behaviour from more than one place, use the `extend_doctype_class` hook
+	# (v16+), which builds a real MRO; do not re-introduce a list here.
+	"Stock Reconciliation": "jewellery_erpnext.jewellery_erpnext.customization.stock_reconciliation.stock_reonciliation.CustomStockReconciliation",
 	"Stock Ledger Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_ledger_entry.stock_ledger_entry.CustomStockLedgerEntry",
 	"Stock Reservation Entry": "jewellery_erpnext.jewellery_erpnext.customization.stock_reservation_entry.stock_reservation_entry.CustomStockReservationEntry",
 	"Serial and Batch Bundle": "jewellery_erpnext.jewellery_erpnext.customization.serial_and_batch_bundle.serial_and_batch_bundle.CustomSerialandBatchBundle",

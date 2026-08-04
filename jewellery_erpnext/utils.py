@@ -405,12 +405,28 @@ def get_value(doctype, filters, fields, default=None, debug=0):
 
 
 @frappe.whitelist()
-def db_get_value(doctype, docname, fields):
-	# this is created to bypass permission issue during db call from client script
-	import json
+def get_department_ir_transfer_departments(department_ir):
+	"""Return the current/next department of one Department IR, permission-checked.
 
-	fields = json.loads(fields)
-	return frappe.db.get_value(doctype, docname, fields, as_dict=1)
+	Replaces `db_get_value(doctype, docname, fields)`, whose own comment said it was
+	"created to bypass permission issue during db call from client script". Every
+	argument was caller-supplied and it called `frappe.db.get_value`, which applies no
+	permission layer - so it read any column of any DocType for any authenticated
+	session: Salary Slip amounts, `User.api_key`, other companies' data.
+
+	It had exactly one caller (department_ir.js), needing two fields of one DocType.
+	Verified before removal: zero DB-resident Client Script or Server Script callers on
+	the live site (checked with an ESCAPE'd LIKE - note `_` is a single-character
+	wildcard in SQL LIKE, so an unescaped `%db_get_value%` falsely matches every
+	`frappe.db.get_value` and reports ~137 phantom callers).
+	"""
+	frappe.has_permission("Department IR", "read", doc=department_ir, throw=True)
+	return frappe.db.get_value(
+		"Department IR",
+		department_ir,
+		["current_department", "next_department"],
+		as_dict=1,
+	)
 
 
 # searches for customers with Sales Type

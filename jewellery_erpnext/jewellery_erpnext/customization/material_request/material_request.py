@@ -67,7 +67,27 @@ def make_mop_stock_entry(self, **kwargs):
 		warehouse_data = mri_warehouse_map(new_se_doc.items)
 
 		for row in new_se_doc.items:
-			row.s_warehouse = warehouse_data.get(row.material_request_item)
+			if not warehouse_data.get(row.material_request_item):
+				warehouse_data[row.material_request_item] = frappe.db.get_value(
+					"Material Request Item", row.material_request_item, "warehouse"
+				)
+			s_warehouse = warehouse_data.get(row.material_request_item)
+			# s_warehouse = frappe.db.sql(f"""WITH last_se AS (
+			# 	SELECT sei.parent AS stock_entry_name
+			# 	FROM `tabStock Entry Detail` sei
+			# 	WHERE sei.material_request = %(material_request)s
+			# 	ORDER BY sei.creation DESC
+			# 	LIMIT 1
+			# 	)
+			# 	SELECT sei.t_warehouse
+			# 	FROM `tabStock Entry Detail` sei
+			# 	JOIN last_se ON sei.parent = last_se.stock_entry_name
+			# 	GROUP BY sei.t_warehouse
+			# 	HAVING COUNT(DISTINCT sei.t_warehouse) = 1
+			# 	""",as_dict=1)
+			# if s_warehouse:
+			# 	s_warehouse = s_warehouse[0]['t_warehouse']
+			row.s_warehouse = s_warehouse
 			row.t_warehouse = t_warehouse
 			row.to_department = mop_data.get("department")
 			row.manufacturing_operation = kwargs.get("mop")
@@ -121,10 +141,10 @@ def make_department_stock_entry(self, **kwargs):
 		frappe.throw("No warehouse for Selected Department ")
 
 	s_warehouse = frappe.db.sql(
-		f"""WITH last_se AS (
+		"""WITH last_se AS (
 		SELECT sei.parent AS stock_entry_name
 		FROM `tabStock Entry Detail` sei
-		WHERE sei.material_request = '{self.name}'
+		WHERE sei.material_request = %(material_request)s
 		ORDER BY sei.creation DESC
 		LIMIT 1
 		)
@@ -134,6 +154,7 @@ def make_department_stock_entry(self, **kwargs):
 		GROUP BY sei.t_warehouse
 		HAVING COUNT(DISTINCT sei.t_warehouse) = 1
 		""",
+		{"material_request": self.name},
 		as_dict=1,
 	)
 	if s_warehouse:
@@ -260,10 +281,10 @@ def make_department_mop_stock_entry(self, **kwargs):
 
 	s_warehouse = ""
 	s_warehouse = frappe.db.sql(
-		f"""WITH last_se AS (
+		"""WITH last_se AS (
 			SELECT sei.parent AS stock_entry_name
 			FROM `tabStock Entry Detail` sei
-			WHERE sei.material_request = '{self.name}'
+			WHERE sei.material_request = %(material_request)s
 			ORDER BY sei.creation DESC
 			LIMIT 1
 			)
@@ -273,6 +294,7 @@ def make_department_mop_stock_entry(self, **kwargs):
 			GROUP BY sei.t_warehouse
 			HAVING COUNT(DISTINCT sei.t_warehouse) = 1
 			""",
+		{"material_request": self.name},
 		as_dict=1,
 	)
 	if s_warehouse:
