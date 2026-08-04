@@ -99,7 +99,8 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		// 	});
 		// }
 
-		// Show "Upload Missing Images" button on Draft MWOs when photoshop check is relevant
+		// Show "Upload Missing Images" on Draft FG MWOs: either the mandatory
+		// Front/Left pair is missing (blocking) or optional slots are still open.
 		if (frm.doc.docstatus == 0 && frm.doc.item_code && !frm.doc.__islocal && frm.doc.for_fg) {
 			frappe.call({
 				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.manufacturing_work_order.get_missing_photoshop_images",
@@ -108,12 +109,10 @@ frappe.ui.form.on("Manufacturing Work Order", {
 					master_bom: frm.doc.master_bom || "",
 				},
 				callback: function (r) {
-					if (
-						r.message &&
-						r.message.check_required &&
-						r.message.missing &&
-						Object.keys(r.message.missing).length
-					) {
+					if (!r.message || !r.message.check_required) return;
+					const blocking = Object.keys(r.message.missing || {}).length;
+					const optional = (r.message.optional_item || []).length;
+					if (blocking || optional) {
 						frm.add_custom_button(
 							__("Upload Missing Images"),
 							function () {
@@ -129,9 +128,10 @@ frappe.ui.form.on("Manufacturing Work Order", {
 		set_html(frm);
 	},
 	before_submit: function (frm) {
-		// Client-side intercept: check for missing photoshop images before
-		// submission.  If images are missing, open a dialog to let the user
-		// upload them inline and retry submission after saving.
+		// Client-side intercept: on FG work orders whose Item is flagged
+		// 'Is Photoshop Images', the Finish Front View AND Left View images are
+		// mandatory on the Item (and mirrored onto the Master BOM). Catch it here
+		// so the user gets the upload dialog instead of a bare server throw.
 		if (!frm.doc.item_code || !frm.doc.for_fg) return;
 
 		frappe.call({
@@ -142,26 +142,33 @@ frappe.ui.form.on("Manufacturing Work Order", {
 			},
 			async: false,
 			callback: function (r) {
-				if (
-					r.message &&
-					r.message.check_required &&
-					r.message.missing &&
-					Object.keys(r.message.missing).length
-				) {
-					frappe.validated = false;
-					frappe.msgprint({
-						title: __("Missing Photoshop Images"),
-						indicator: "orange",
-						message: __(
-							"MWO cannot be submitted. Please upload at least one Finished Item " +
-								"image first. Click <b>Upload Missing Images</b> to upload it now."
-						),
-					});
-					// Open the upload dialog automatically
-					setTimeout(function () {
-						open_upload_images_dialog(frm);
-					}, 500);
-				}
+				if (!r.message || !r.message.check_required) return;
+
+				const missing = r.message.missing || {};
+				if (!Object.keys(missing).length) return;
+
+				const item_fields_map = r.message.item_image_fields || {};
+				const bom_fields_map = r.message.bom_image_fields || {};
+				const labels = (missing.item || [])
+					.map((f) => __(item_fields_map[f] || f))
+					.concat((missing.bom || []).map((f) => __(bom_fields_map[f] || f)));
+
+				frappe.validated = false;
+				frappe.msgprint({
+					title: __("Missing Photoshop Images"),
+					indicator: "orange",
+					message: __(
+						"MWO cannot be submitted. Finish <b>Front View</b> and <b>Left View</b> " +
+							"images are mandatory on the Finished Item and its Master BOM.<br>" +
+							"Missing: <b>{0}</b><br>" +
+							"Click <b>Upload Missing Images</b> to upload them now.",
+						[labels.join(", ")]
+					),
+				});
+				// Open the upload dialog automatically
+				setTimeout(function () {
+					open_upload_images_dialog(frm);
+				}, 500);
 			},
 		});
 	},
@@ -304,32 +311,72 @@ function open_upload_images_dialog(frm) {
 			master_bom: frm.doc.master_bom || "",
 		},
 		callback: function (r) {
-			if (!r.message || !r.message.missing || !Object.keys(r.message.missing).length) {
+			if (!r.message || !r.message.check_required) {
+				frappe.msgprint(__("Photoshop images are not required for this Item."));
+				return;
+			}
+
+			const missing = r.message.missing || {};
+			const item_fields_map = r.message.item_image_fields || {};
+			const bom_fields_map = r.message.bom_image_fields || {};
+			const required_item = missing.item || [];
+			const optional_item = r.message.optional_item || [];
+
+			// Only Finished Item slots are offered — the Item is the master and its
+			// images are mirrored onto the Master BOM (on upload and on submit).
+			// So a surviving BOM gap means no Master BOM is linked: no upload here
+			// can fix that, say so instead of showing a useless dialog.
+			if (!required_item.length && (missing.bom || []).length) {
+				frappe.msgprint({
+					title: __("Master BOM Not Linked"),
+					indicator: "orange",
+					message: __(
+						"Finished Item {0} already carries the mandatory finish images, but the " +
+							"Master BOM is missing {1}. Set the <b>Design Code BOM</b> on this work " +
+							"order, then submit again.",
+						[
+							frm.doc.item_code,
+							(missing.bom || []).map((f) => __(bom_fields_map[f] || f)).join(", "),
+						]
+					),
+				});
+				return;
+			}
+
+			if (!required_item.length && !optional_item.length) {
 				frappe.msgprint(__("All images are already uploaded."));
 				return;
 			}
 
-			const missing = r.message.missing;
-			const item_fields_map = r.message.item_image_fields || {};
 			let dialog_fields = [];
 
-			// Only Finished Item image slots are offered — the Master BOM images
-			// are mirrored from the Item automatically (on upload and on submit).
-			if (missing.item && missing.item.length) {
+			if (required_item.length) {
 				dialog_fields.push({
 					fieldtype: "Section Break",
-					label: __("Finished Item Images ({0})", [frm.doc.item_code]),
+					label: __("Mandatory Finish Images ({0})", [frm.doc.item_code]),
 				});
-				for (const label of missing.item) {
-					// Reverse-lookup fieldname from label
-					const fieldname = Object.keys(item_fields_map).find((k) => item_fields_map[k] === label);
-					if (fieldname) {
-						dialog_fields.push({
-							fieldname: "item__" + fieldname,
-							fieldtype: "Attach Image",
-							label: label,
-						});
-					}
+				for (const fieldname of required_item) {
+					dialog_fields.push({
+						fieldname: "item__" + fieldname,
+						fieldtype: "Attach Image",
+						label: __(item_fields_map[fieldname] || fieldname),
+						reqd: 1,
+					});
+				}
+			}
+
+			if (optional_item.length) {
+				dialog_fields.push({
+					fieldtype: "Section Break",
+					label: __("Other Finish Images (Optional)"),
+					collapsible: 1,
+				});
+				for (const fieldname of optional_item) {
+					dialog_fields.push({
+						fieldname: "item__" + fieldname,
+						fieldtype: "Attach Image",
+						label: __(item_fields_map[fieldname] || fieldname),
+					});
 				}
 			}
 
@@ -339,19 +386,19 @@ function open_upload_images_dialog(frm) {
 				size: "large",
 				primary_action_label: __("Upload & Save"),
 				primary_action: function () {
+					// get_values() returns null when a mandatory slot is empty and has
+					// already told the user which one.
 					const values = dlg.get_values();
-					let item_images = {};
-					let bom_images = {};
+					if (!values) return;
 
+					let item_images = {};
 					for (const [key, val] of Object.entries(values)) {
 						if (key.startsWith("item__") && val) {
 							item_images[key.replace("item__", "")] = val;
-						} else if (key.startsWith("bom__") && val) {
-							bom_images[key.replace("bom__", "")] = val;
 						}
 					}
 
-					if (!Object.keys(item_images).length && !Object.keys(bom_images).length) {
+					if (!Object.keys(item_images).length) {
 						frappe.msgprint(__("Please upload at least one image."));
 						return;
 					}
@@ -362,7 +409,6 @@ function open_upload_images_dialog(frm) {
 							item_code: frm.doc.item_code,
 							master_bom: frm.doc.master_bom || "",
 							item_images: JSON.stringify(item_images),
-							bom_images: JSON.stringify(bom_images),
 						},
 						freeze: true,
 						freeze_message: __("Saving images..."),
@@ -370,7 +416,7 @@ function open_upload_images_dialog(frm) {
 							if (res.message && res.message.success) {
 								frappe.show_alert({
 									message: __(
-										"Images updated on Item Master and/or Master BOM successfully."
+										"Images updated on Item Master and mirrored onto the Master BOM."
 									),
 									indicator: "green",
 								});

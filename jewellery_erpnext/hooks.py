@@ -120,18 +120,35 @@ doc_events = {
 		"onload": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.onload",
 	},
 	"Delivery Note": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.delivery_note.validate",
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.delivery_note.validate",
+			# Last in the list: sees the final item rows, after the e-invoice rebuild above.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.set_serial_reference",
+		],
+		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
+		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Sales Order": {
 		"before_validate": [
 			# "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_validate",
 		],
+		# validate (not before_validate): doc_event handlers run AFTER the controller's own
+		# method, so by here SalesOrder.validate() and this app's before_validate chain
+		# (create_new_bom1, add_hybrid_outwork_row, set_warehouse_from_serial_no, the
+		# custom_is_subcontracting_charge_row purge) have all settled the item rows.
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.set_serial_reference",
+		],
 		# "before_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.before_submit",
 		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.clear_hybrid_header_tax_rate",
 		"set_missing_values": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.fetch_sales_type_from_quotation",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_submit",
-		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
+		"on_cancel": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.on_cancel",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
+		],
+		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
 	},
 	"BOM": {
@@ -234,11 +251,16 @@ doc_events = {
 		],
 		"validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.validate",
+			# Separate hook entry, NOT a call inside sales_invoice.validate: that function
+			# returns early for is_return, which would skip every credit note.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.set_serial_reference",
 		],
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.customization.sales_invoice.sales_invoice.on_submit",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice.on_submit",
 		],
+		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
+		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Serial No": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table"
