@@ -1,5 +1,6 @@
 import frappe
 from erpnext.stock.doctype.stock_reconciliation.stock_reconciliation import (
+	EmptyStockReconciliationItemsError,
 	StockReconciliation,
 )
 from frappe import _
@@ -156,5 +157,41 @@ class CustomStockReconciliation(StockReconciliation):
 		return super().on_submit()
 
 	def remove_items_with_no_change(self):
-		# disable validation
-		return
+		"""Keep every row in the MWO / auto-creation lanes, but still compute totals.
+
+		This used to be a bare ``return``, which looked like it only disabled row
+		trimming. It did far more than that: upstream's implementation
+		(erpnext/stock/doctype/stock_reconciliation/stock_reconciliation.py) is the
+		ONLY place that
+
+		  * initialises and accumulates ``self.difference_amount``,
+		  * back-fills ``item.current_qty`` / ``item.current_valuation_rate``,
+		  * raises ``EmptyStockReconciliationItemsError`` for a no-op reconciliation.
+
+		Skipping it therefore left ``difference_amount`` at whatever the form sent —
+		measured on the production dataset: 27 of 29 submitted Stock Reconciliations
+		carried 0, and 922 of 2,450 submitted item rows carried a zero
+		``current_valuation_rate``.
+
+		So delegate to ``super()`` unconditionally, and undo only the row trimming in
+		the lanes that need every row preserved. Upstream throws AFTER accumulating
+		``difference_amount`` and BEFORE mutating ``self.items``, so catching the
+		empty-items error is safe and still leaves the totals computed.
+		"""
+		keep_all_rows = self.has_custom_mwo() or bool(self.get("custom_auto_creation"))
+
+		if not keep_all_rows:
+			return super().remove_items_with_no_change()
+
+		original_items = list(self.items)
+		try:
+			super().remove_items_with_no_change()
+		except EmptyStockReconciliationItemsError:
+			# A reconciliation whose rows all match current stock is legitimate in
+			# these lanes: the rows are the MWO's items and must survive regardless.
+			pass
+		finally:
+			if len(self.items) != len(original_items):
+				self.items = original_items
+				for idx, row in enumerate(self.items, start=1):
+					row.idx = idx
