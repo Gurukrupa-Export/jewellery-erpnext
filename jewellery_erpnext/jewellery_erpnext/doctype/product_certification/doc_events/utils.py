@@ -63,9 +63,13 @@ def validate_po_configuration(doc):
 
 	Each failure names the field that is actually missing. The previous message always
 	pointed at Manufacturing Setting even when the real gap was Department.manufacturer.
+
+	Returns the resolved charge item so ``create_po`` can reuse it rather than resolving the
+	whole chain (Department → Manufacturer → Manufacturing Setting → charge item) a second
+	time immediately afterwards.
 	"""
 	if not po_is_expected(doc):
-		return
+		return None
 
 	if not doc.department:
 		frappe.throw(
@@ -118,6 +122,8 @@ def validate_po_configuration(doc):
 			).format(frappe.bold(manufacturer), frappe.bold(doc.service_type))
 		)
 
+	return item_data
+
 
 def create_po(self):
 	if not po_is_expected(self):
@@ -131,22 +137,19 @@ def create_po(self):
 	if existing:
 		return
 
-	total_gross_wt = 0
-	total_qty = 0
-	for row in self.exploded_product_details:
-		total_gross_wt += row.gross_weight
-		total_qty += 1
+	total_gross_wt = sum(row.gross_weight for row in self.exploded_product_details)
+	total_qty = len(self.exploded_product_details)
 	po_doc = frappe.new_doc("Purchase Order")
 
 	po_doc.product_certification = self.name
 	supplier = resolve_po_supplier(self)
 
 	# Re-checked rather than assumed: create_po is also reachable from the deferred job and
-	# from a direct call, not only through before_submit.
-	validate_po_configuration(self)
+	# from a direct call, not only through before_submit. Its answer is reused below — it
+	# resolves the very charge item this used to look up again on the next line.
+	item_data = validate_po_configuration(self)
 
 	po_doc.company = self.company
-	item_data = get_item_for_certification(self.department, self.service_type)
 
 	rate = 0
 	if self.service_type == "Diamond Certificate service":
@@ -290,37 +293,23 @@ def _get_supplier_certification_warehouse(company, supplier):
 	return t_warehouse
 
 
-def _get_issue_item_source_warehouse_map(issue_stock_entry):
-	rows = frappe.db.get_all(
-		"Stock Entry Detail",
-		filters={"parent": issue_stock_entry},
-		fields=["item_code", "t_warehouse"],
-	)
-	item_wh = {}
-	item_wh_multi = set()
-	for r in rows:
-		if not r.get("item_code") or not r.get("t_warehouse"):
-			continue
-		if r.item_code in item_wh and item_wh[r.item_code] != r.t_warehouse:
-			item_wh_multi.add(r.item_code)
-		else:
-			item_wh[r.item_code] = r.t_warehouse
+def _get_issue_stock_entry_details(issue_stock_entry):
+	"""Read the Issue Stock Entry's lines once and derive BOTH per-item maps from them.
 
-	for item_code in item_wh_multi:
-		item_wh.pop(item_code, None)
+	``_get_issue_item_source_warehouse_map`` and ``_get_issue_item_receipt_defaults`` used to
+	be two functions issuing the same ``Stock Entry Detail`` query back to back, and the
+	second then issued a ``Serial and Batch Entry`` read and a ``Stock Ledger Entry`` read
+	*per line*. All of it is now four queries for the whole document.
 
-	return item_wh
+	Returns ``(item_wh, item_defaults)``:
 
-
-def _get_issue_item_receipt_defaults(issue_stock_entry):
-	"""
-	Return default source warehouse / batch / serial from Issue SE per item.
-
-	Lookup order for batch/serial:
-	  1. Direct field on Stock Entry Detail row
-	  2. Serial and Batch Bundle entries linked to the row
-	  3. Stock Ledger Entry posted by the Issue SE (Frappe v16 may move
-	     batch data into the SLE/bundle and clear the row-level fields)
+	* ``item_wh`` — item to target warehouse, dropped when the item went to more than one.
+	* ``item_defaults`` — default source warehouse / batch / serial per item, resolved in
+	  the same priority order as before:
+	    1. Direct field on the Stock Entry Detail row
+	    2. Serial and Batch Bundle entries linked to the row
+	    3. Stock Ledger Entry posted by the Issue SE (Frappe v16 may move batch data into
+	       the SLE/bundle and clear the row-level fields)
 	"""
 	rows = frappe.db.get_all(
 		"Stock Entry Detail",
@@ -335,49 +324,83 @@ def _get_issue_item_receipt_defaults(issue_stock_entry):
 		],
 		order_by="idx asc",
 	)
-	item_defaults = {}
+
+	# --- Priority 2 source, for every bundle on the entry at once ---
+	bundles = {
+		r.serial_and_batch_bundle for r in rows if r.get("serial_and_batch_bundle")
+	}
+	bundle_entries = {}
+	if bundles:
+		for entry in frappe.db.get_all(
+			"Serial and Batch Entry",
+			filters={"parent": ("in", list(bundles))},
+			fields=["parent", "batch_no", "serial_no"],
+			order_by="parent asc, idx asc",
+		):
+			bundle_entries.setdefault(entry.parent, []).append(entry)
+
+	# Resolve each line's batch/serial (priorities 1 and 2) first, so we know which items
+	# still need the ledger before asking for it.
+	resolved = []
+	needs_sle_batch = set()
 	for r in rows:
 		item_code = r.get("item_code")
-		if not item_code:
-			continue
-
 		batch_no = r.get("batch_no")
 		serial_no = r.get("serial_no")
 		bundle = r.get("serial_and_batch_bundle")
 
-		# --- Priority 2: look inside the Serial and Batch Bundle ---
 		if bundle and (not batch_no or not serial_no):
-			bundle_entries = frappe.db.get_all(
-				"Serial and Batch Entry",
-				filters={"parent": bundle},
-				fields=["batch_no", "serial_no"],
-				order_by="idx asc",
-			)
+			entries = bundle_entries.get(bundle, [])
 			if not batch_no:
-				for be in bundle_entries:
+				for be in entries:
 					if be.get("batch_no"):
 						batch_no = be.batch_no
 						break
 			if not serial_no:
-				serials = [be.serial_no for be in bundle_entries if be.get("serial_no")]
+				serials = [be.serial_no for be in entries if be.get("serial_no")]
 				if serials:
 					serial_no = "\n".join(serials)
 
-		# --- Priority 3: look at the Stock Ledger Entry ---
+		resolved.append((r, batch_no, serial_no))
+		if item_code and not batch_no:
+			needs_sle_batch.add(item_code)
+
+	# --- Priority 3, for every item still short of a batch, in one read ---
+	# The per-line query this replaces carried the same filters and ordering for every line
+	# of an item, so it always returned this same value.
+	sle_batch = {}
+	if needs_sle_batch:
+		for sle in frappe.db.get_all(
+			"Stock Ledger Entry",
+			filters={
+				"voucher_type": "Stock Entry",
+				"voucher_no": issue_stock_entry,
+				"item_code": ("in", list(needs_sle_batch)),
+				"batch_no": ["is", "set"],
+			},
+			fields=["item_code", "batch_no"],
+			order_by="creation asc",
+		):
+			sle_batch.setdefault(sle.item_code, sle.batch_no)
+
+	item_wh = {}
+	item_wh_multi = set()
+	item_defaults = {}
+
+	for r, batch_no, serial_no in resolved:
+		item_code = r.get("item_code")
+
+		if item_code and r.get("t_warehouse"):
+			if item_code in item_wh and item_wh[item_code] != r.t_warehouse:
+				item_wh_multi.add(item_code)
+			else:
+				item_wh[item_code] = r.t_warehouse
+
+		if not item_code:
+			continue
+
 		if not batch_no:
-			sle_batch = frappe.db.get_value(
-				"Stock Ledger Entry",
-				{
-					"voucher_type": "Stock Entry",
-					"voucher_no": issue_stock_entry,
-					"item_code": item_code,
-					"batch_no": ["is", "set"],
-				},
-				"batch_no",
-				order_by="creation asc",
-			)
-			if sle_batch:
-				batch_no = sle_batch
+			batch_no = sle_batch.get(item_code)
 
 		if item_code not in item_defaults:
 			item_defaults[item_code] = {
@@ -395,7 +418,10 @@ def _get_issue_item_receipt_defaults(issue_stock_entry):
 		if not item_defaults[item_code].get("s_warehouse") and r.get("t_warehouse"):
 			item_defaults[item_code]["s_warehouse"] = r.get("t_warehouse")
 
-	return item_defaults
+	for item_code in item_wh_multi:
+		item_wh.pop(item_code, None)
+
+	return item_wh, item_defaults
 
 
 def create_material_receipt_for_certification(self):
@@ -442,8 +468,7 @@ def create_material_receipt_for_certification(self):
 	default_supplier_wh = _get_supplier_certification_warehouse(
 		self.company, self.supplier
 	)
-	issue_item_wh_map = _get_issue_item_source_warehouse_map(issue_se)
-	issue_item_defaults = _get_issue_item_receipt_defaults(issue_se)
+	issue_item_wh_map, issue_item_defaults = _get_issue_stock_entry_details(issue_se)
 
 	# Keyed on the full (main_slip, tree_no) pair, not main_slip alone: trees minted since the
 	# casting rework carry no Main Slip, so keying on the slip collapses every tree in the
@@ -466,6 +491,17 @@ def create_material_receipt_for_certification(self):
 	main_rows = []
 	repack_rows = []
 
+	# Unwrapped once: the loop below used to rebuild a throwaway list from each set on
+	# every exploded row just to read its only element.
+	sole_loss_item = next(iter(all_loss_items)) if len(all_loss_items) == 1 else None
+	sole_main_item = next(iter(all_main_items)) if len(all_main_items) == 1 else None
+
+	# The two per-row fallbacks below, memoised on what they actually key off. An exploded
+	# table repeats the same item across slips and trees, and each repeat re-ran the same
+	# ledger scan and the same serial scan.
+	sle_batch_cache = {}
+	serial_cache = {}
+
 	for row in self.exploded_product_details:
 		qty = row.get("conversion_quantity") or row.get("gross_weight") or 0
 		if qty <= 0:
@@ -473,13 +509,8 @@ def create_material_receipt_for_certification(self):
 
 		row_key = _slip_key(row)
 
-		loss_item = loss_item_by_slip.get(row_key)
-		if not loss_item and len(all_loss_items) == 1:
-			loss_item = list(all_loss_items)[0]
-
-		main_item = main_item_by_slip.get(row_key)
-		if not main_item and len(all_main_items) == 1:
-			main_item = list(all_main_items)[0]
+		loss_item = loss_item_by_slip.get(row_key) or sole_loss_item
+		main_item = main_item_by_slip.get(row_key) or sole_main_item
 		is_loss_row = bool(loss_item and row.item_code == loss_item)
 		if not is_loss_row and row.item_code in all_loss_items:
 			is_loss_row = True
@@ -503,25 +534,31 @@ def create_material_receipt_for_certification(self):
 
 		t_wh = scrap_wh if is_loss_row else rm_wh
 
-		has_batch_no, has_serial_no = frappe.get_cached_value(
-			"Item", row.item_code, ["has_batch_no", "has_serial_no"]
+		# One read of the Item for all three flags; this used to ask twice per row.
+		has_batch_no, has_serial_no, create_new_batch = frappe.get_cached_value(
+			"Item",
+			row.item_code,
+			["has_batch_no", "has_serial_no", "create_new_batch"],
 		)
 		batch_no = item_defaults.get("batch_no")
 		serial_no = item_defaults.get("serial_no")
 
 		# Batch fallback via SLE
 		if has_batch_no and not batch_no:
-			sle_batch = frappe.db.get_value(
-				"Stock Ledger Entry",
-				{
-					"item_code": row.item_code,
-					"warehouse": s_wh,
-					"batch_no": ["is", "set"],
-					"is_cancelled": 0,
-				},
-				"batch_no",
-				order_by="posting_date desc, posting_time desc, creation desc",
-			)
+			sle_key = (row.item_code, s_wh)
+			if sle_key not in sle_batch_cache:
+				sle_batch_cache[sle_key] = frappe.db.get_value(
+					"Stock Ledger Entry",
+					{
+						"item_code": row.item_code,
+						"warehouse": s_wh,
+						"batch_no": ["is", "set"],
+						"is_cancelled": 0,
+					},
+					"batch_no",
+					order_by="posting_date desc, posting_time desc, creation desc",
+				)
+			sle_batch = sle_batch_cache[sle_key]
 			if sle_batch:
 				batch_no = sle_batch
 
@@ -532,23 +569,26 @@ def create_material_receipt_for_certification(self):
 			except Exception:
 				qty_int = 0
 			if qty_int > 0:
-				available_serials = frappe.db.get_all(
-					"Serial No",
-					filters={
-						"item_code": row.item_code,
-						"warehouse": s_wh,
-						"status": ["not in", ["Delivered", "Inactive"]],
-					},
-					pluck="name",
-					limit=qty_int,
-				)
+				# Keyed on qty too, because the limit is part of the answer. Two rows of
+				# the same item are still handed the same serials -- that is what this
+				# already did, one query at a time.
+				serial_key = (row.item_code, s_wh, qty_int)
+				if serial_key not in serial_cache:
+					serial_cache[serial_key] = frappe.db.get_all(
+						"Serial No",
+						filters={
+							"item_code": row.item_code,
+							"warehouse": s_wh,
+							"status": ["not in", ["Delivered", "Inactive"]],
+						},
+						pluck="name",
+						limit=qty_int,
+					)
+				available_serials = serial_cache[serial_key]
 				if available_serials and len(available_serials) >= qty_int:
 					serial_no = "\n".join(available_serials)
 
 		# Auto-create batch for non-main items if needed
-		create_new_batch = frappe.get_cached_value(
-			"Item", row.item_code, "create_new_batch"
-		)
 		if has_batch_no and not batch_no and not serial_no:
 			if create_new_batch:
 				from erpnext.stock.doctype.batch.batch import make_batch
