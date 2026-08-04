@@ -8,10 +8,13 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.sales_invoice import (
 
 
 def validate(self, method):
+	bom_cache = {}
 	for row in self.items:
-		if row.against_sales_order:
-			if row.bom:
-				bom_doc = frappe.get_doc("BOM", row.bom)
+		if row.bom:
+			if row.bom not in bom_cache:
+				bom_cache[row.bom] = frappe.get_doc("BOM", row.bom)
+			if row.against_sales_order:
+				bom_doc = bom_cache[row.bom]
 				row.custom_diamond_pcs = bom_doc.total_diamond_pcs
 				row.custom_gemstone_pcs = bom_doc.total_gemstone_pcs
 				row.custom_other_weight = bom_doc.total_other_weight
@@ -47,7 +50,7 @@ def validate(self, method):
 	# Sales Order (a fixed snapshot at mapping time), so removing a row here
 	# left stale amounts behind. Rebuild both from whatever items are
 	# currently on this Delivery Note instead.
-	update_dn_einvoice_items(self)
+	update_dn_einvoice_items(self, bom_cache)
 	self.total = flt(sum(flt(row.amount) for row in self.items))
 	set_gst_details(self)
 	self.calculate_taxes_and_totals()
@@ -62,7 +65,34 @@ def _matching_e_invoice_item_parents(sales_type):
 	)
 
 
-def update_dn_einvoice_items(self):
+def _match_einvoice_item(rows, filters):
+	"""In-memory equivalent of frappe.db.get_value('E Invoice Item', filters, ['name', 'hsn_code', 'uom'])
+	against a prefetched row list. Supports the same filter shapes used here: plain equality,
+	('in', [...]) and ('is', 'not set')."""
+	for row in rows:
+		matched = True
+		for field, value in filters.items():
+			if isinstance(value, (list, tuple)):
+				operator, operand = value
+				if operator == "in":
+					if row.get(field) not in operand:
+						matched = False
+						break
+				elif operator == "is" and operand == "not set":
+					if row.get(field):
+						matched = False
+						break
+			elif row.get(field) != value:
+				matched = False
+				break
+		if matched:
+			return row.name, row.hsn_code, row.uom
+	return None
+
+
+def update_dn_einvoice_items(self, bom_cache=None):
+	if bom_cache is None:
+		bom_cache = {}
 	is_branch_customer = frappe.db.get_value(
 		"Sales Type Multiselect", {"parent": self.customer, "sales_type": "Branch"}
 	)
@@ -70,6 +100,27 @@ def update_dn_einvoice_items(self):
 	# document drops making charges (the Sales Order bills them otherwise).
 	skip_making = is_branch_customer and self.sales_type == "Branch Sales"
 	matching_parents = _matching_e_invoice_item_parents(self.sales_type)
+	einvoice_items = frappe.get_all(
+		"E Invoice Item",
+		fields=[
+			"name",
+			"hsn_code",
+			"uom",
+			"is_for_metal",
+			"is_for_labour",
+			"is_for_making",
+			"is_for_finding",
+			"is_for_finding_making",
+			"is_for_diamond",
+			"is_for_gemstone",
+			"is_for_hallmarking",
+			"is_for_certification",
+			"metal_type",
+			"metal_purity",
+			"finding_category",
+			"diamond_type",
+		],
+	)
 
 	aggregated_metal_items = {}
 	aggregated_metal_making_items = {}
@@ -81,9 +132,11 @@ def update_dn_einvoice_items(self):
 	aggregated_certification_items = {}
 
 	def get_einvoice_item(filters):
-		return frappe.db.get_value(
-			"E Invoice Item", filters, ["name", "hsn_code", "uom"]
-		) or (None, None, None)
+		return _match_einvoice_item(einvoice_items, filters) or (None, None, None)
+
+	hallmarking_item, hallmarking_hsn, hallmarking_uom = get_einvoice_item(
+		{"is_for_hallmarking": 1}
+	)
 
 	# Prefer the hallmarking item on the customer's Payment Terms (same as the
 	# Sales Order); fall back to the newest one only if none is configured.
@@ -120,7 +173,10 @@ def update_dn_einvoice_items(self):
 	for row in self.items:
 		if not row.bom:
 			continue
-		bom_doc = frappe.get_doc("BOM", row.bom)
+		bom_doc = bom_cache.get(row.bom)
+		if bom_doc is None:
+			bom_doc = frappe.get_doc("BOM", row.bom)
+			bom_cache[row.bom] = bom_doc
 
 		for i in bom_doc.metal_detail:
 			if i.is_customer_item:
