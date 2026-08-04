@@ -1,8 +1,10 @@
 # Copyright (c) 2024, Nirali and contributors
 # For license information, please see license.txt
 import json
-from erpnext.controllers.queries import get_batch_no
+import re
+
 import frappe
+from erpnext.controllers.queries import get_batch_no
 from erpnext.stock.doctype.batch.batch import get_batch_qty
 from frappe import _
 from frappe.model.document import Document
@@ -663,6 +665,66 @@ def get_scrap_warehouse(department):
 	return scrap_wareouse
 
 
+# Gemstone Size is stored on `Item Variant Attribute.attribute_value` as "N MM" or
+# "N*N MM" — free text on a master record. It used to be handed to eval(), which
+# executed it as Python: any user able to edit an Item Attribute Value had remote
+# code execution, triggered on every Gemstone Conversion validate. The
+# `"*".join(x.split("*"))` wrapper around that eval was a no-op and hid nothing.
+#
+# ast.literal_eval is NOT a usable replacement: it rejects binary operators, so it
+# raises ValueError on "4.00*3.00" (verified on this bench's Python 3.14.3). A
+# strict grammar is the only correct fix.
+#
+# Survey of `gk` at the time of writing: 315 distinct values, 1 null, zero using a
+# separator other than "*", zero with three factors. The grammar below deliberately
+# accepts x/X/× and up to three factors anyway — it costs nothing and stops a future
+# master-data value turning this fix into an outage.
+_GEMSTONE_SIZE_RE = re.compile(
+	r"^\s*(\d+(?:\.\d+)?)"
+	r"(?:\s*[*xX×]\s*(\d+(?:\.\d+)?))?"
+	r"(?:\s*[*xX×]\s*(\d+(?:\.\d+)?))?\s*$"
+)
+
+
+def parse_gemstone_size(value, item_code=None):
+	"""Parse a Gemstone Size attribute into a float. Never evaluates input as code.
+
+	Returns the product of the dimension factors, matching the previous behaviour
+	for every well-formed value ("3.30 MM" -> 3.3, "4.00*3.00 MM" -> 12.0).
+
+	Raises a user-facing ValidationError for missing or malformed values. Empty is
+	deliberately an error rather than 0.0: the parsed source size is compared with
+	`s_gemstone_size < t_gemstone_size`, so silently returning 0.0 would make every
+	target row fail with a misleading "should not bigger than source item" message.
+	"""
+	on_item = f" on {item_code}" if item_code else ""
+
+	if value is None or not str(value).strip():
+		frappe.throw(
+			_("Gemstone Size is not set{0}").format(on_item),
+			title=_("Missing Gemstone Size"),
+		)
+
+	# Strip the unit case-insensitively and with an optional space. A plain
+	# .replace(" MM", "") silently mangles "3.30MM" into an unparseable string.
+	cleaned = re.sub(r"\s*mm\s*$", "", str(value), flags=re.IGNORECASE)
+
+	match = _GEMSTONE_SIZE_RE.match(cleaned)
+	if not match:
+		frappe.throw(
+			_("Invalid Gemstone Size {0}{1} — expected 'N MM' or 'N*N MM'").format(
+				frappe.bold(value), on_item
+			),
+			title=_("Invalid Gemstone Size"),
+		)
+
+	size = flt(match.group(1))
+	for factor in (match.group(2), match.group(3)):
+		if factor is not None:
+			size = size * flt(factor)
+	return size
+
+
 def validate_gemstone_item(self):
 	src_item = json.loads(
 		frappe.db.sql(
@@ -676,8 +738,9 @@ def validate_gemstone_item(self):
 			as_dict=True,
 		)[0]["final_dict"]
 	)
-	s_gemstone_size = src_item.get("Gemstone Size")
-	s_gemstone_size = eval("*".join(s_gemstone_size.replace(" MM", "").split("*")))
+	s_gemstone_size = parse_gemstone_size(
+		src_item.get("Gemstone Size"), self.g_source_item
+	)
 
 	for target_row in self.sc_target_table:
 		if target_row.item_code == self.g_source_item:
@@ -707,9 +770,8 @@ def validate_gemstone_item(self):
 				continue
 
 			elif attribute == "Gemstone Size":
-				t_gemstone_size = item.get(attribute)
-				t_gemstone_size = eval(
-					"*".join(t_gemstone_size.replace(" MM", "").split("*"))
+				t_gemstone_size = parse_gemstone_size(
+					item.get(attribute), target_row.item_code
 				)
 				if s_gemstone_size < t_gemstone_size:
 					frappe.throw(
