@@ -47,6 +47,8 @@ jobs:
         run: |
           cd ~/frappe-bench
           echo "Running Manufacturing Tests..."
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_qc_lifecycle
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_job_card_endpoint_permissions
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Plan"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Parent Manufacturing Order"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Work Order"
