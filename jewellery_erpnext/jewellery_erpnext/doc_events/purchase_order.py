@@ -303,9 +303,16 @@ def make_quotation(source_name, target_doc=None):
 
 	target_doc.po_no = po_doc.custom_customer_po
 
-	target_doc.company = frappe.db.get_value(
+	mapped_company = frappe.db.get_value(
 		"Company", {"supplier_code": po_doc.supplier}, "name"
 	)
+	if mapped_company:
+		target_doc.company = mapped_company
+	elif not target_doc.company:
+		frappe.throw(
+			f"Supplier '{po_doc.supplier}' is not mapped to any internal Company. "
+			"Please set the 'Supplier Code' field in the appropriate Company record."
+		)
 
 	for row in po_doc.items:
 		if not row.custom_pmo:

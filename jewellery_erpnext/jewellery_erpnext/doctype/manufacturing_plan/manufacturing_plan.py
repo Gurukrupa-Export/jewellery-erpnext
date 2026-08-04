@@ -170,6 +170,20 @@ class ManufacturingPlan(Document):
 		if not has_employee_ir:
 			return
 
+		# Idempotency check: verify if a Sales Order is already created for this plan and items
+		existing_so = frappe.db.sql("""
+			SELECT soi.parent
+			FROM `tabSales Order Item` soi
+			JOIN `tabParent Manufacturing Order` pmo ON pmo.name = soi.custom_parent_manufacturing_order
+			JOIN `tabSales Order` so ON so.name = soi.parent
+			WHERE pmo.manufacturing_plan = %s
+			AND pmo.sales_order_item IN %s
+			AND so.docstatus < 2
+			LIMIT 1
+		""", (self.name, tuple(so_item_names)))
+		if existing_so:
+			return
+
 		# Fetch the parent Sales Order
 		parent_so = frappe.get_doc("Sales Order", so_name)
 
@@ -195,8 +209,13 @@ class ManufacturingPlan(Document):
 		new_so.transaction_date = frappe.utils.nowdate()
 		new_so.delivery_date = frappe.utils.add_days(new_so.transaction_date, 7)
 
-		# Append a row for ALL items in the Sales Order
+		# Append a row for only the intended items in the Sales Order
 		for so_item in parent_so.items:
+			if so_item.name not in so_item_names:
+				continue
+			if so_item.po_no not in valid_pos:
+				continue
+
 			pmo_name = frappe.db.get_value(
 				"Parent Manufacturing Order",
 				{"manufacturing_plan": self.name, "sales_order_item": so_item.name},
@@ -237,7 +256,7 @@ class ManufacturingPlan(Document):
 					),
 					"diamond_quality": getattr(so_item, "diamond_quality", None),
 					"custom_parent_manufacturing_order": pmo_name,
-					"po_n0": so_item.po_no,
+					"po_no": so_item.po_no,
 					"custom_po_details": so_item.custom_po_details,
 				},
 			)

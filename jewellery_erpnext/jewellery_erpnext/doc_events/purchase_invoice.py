@@ -7,17 +7,17 @@ class CustomPurchaseInvoice(ERPNextPurchaseInvoice):
         pass
 
 
-def before_validate(self):
-	update_expense_account(self)
-	update_rate_from_sales_invoice(self)
+def before_validate(doc, method=None):
+	update_expense_account(doc)
+	update_rate_from_sales_invoice(doc)
 
 
-def update_rate_from_sales_invoice(self):
+def update_rate_from_sales_invoice(doc):
 	"""
 	Fetch the rate from the Sales Invoice corresponding to the Purchase Order.
 	"""
 	
-	for row in self.items:
+	for row in doc.items:
 		if row.purchase_order:
 			# Get any Sales Order Item where po_no = purchase_order and custom_design_code is set
 			so_item = frappe.db.sql("""
@@ -48,11 +48,11 @@ def update_rate_from_sales_invoice(self):
 					row.amount = frappe.utils.flt(row.qty) * row.rate
 
 
-def update_expense_account(self):
-	if self.is_opening == "No":
+def update_expense_account(doc):
+	if doc.is_opening == "No":
 		expense_account = frappe.db.get_value(
-			"Account", {"company": self.company, "custom_purchase_type": self.purchase_type}, "name"
+			"Account", {"company": doc.company, "custom_purchase_type": doc.purchase_type}, "name"
 		)
 		if expense_account:
-			for row in self.items:
+			for row in doc.items:
 				row.expense_account = expense_account

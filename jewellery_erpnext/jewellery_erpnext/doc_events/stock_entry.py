@@ -696,7 +696,7 @@ def onsubmit(self, method):
 			if row.get("custom_manufacturing_work_order"):
 				mwos.add(row.custom_manufacturing_work_order)
 		for mwo in mwos:
-			frappe.db.set_value("Manufacturing Work Order", mwo, "status", "Finished")
+			frappe.db.set_value("Manufacturing Work Order", mwo, "status", "Completed")
 
 	validate_items(self)
 	# Hard skip reservation logic for Product Certification Receive
