@@ -64,11 +64,9 @@ frappe.ui.form.on("Department IR", {
 	receive_against(frm) {
 		if (frm.doc.receive_against) {
 			frappe.call({
-				method: "jewellery_erpnext.utils.db_get_value",
+				method: "jewellery_erpnext.utils.get_department_ir_transfer_departments",
 				args: {
-					doctype: "Department IR",
-					docname: frm.doc.receive_against,
-					fields: ["current_department", "next_department"],
+					department_ir: frm.doc.receive_against,
 				},
 				callback(r) {
 					var value = r.message;
