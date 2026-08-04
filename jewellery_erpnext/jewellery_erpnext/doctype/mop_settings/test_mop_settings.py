@@ -77,6 +77,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_warehouses_of_company,
 	recalculate_sync_log_totals,
 	sync_mop_logs,
+	_resolve_mwo_so_anchor,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.scheduler import (
 	check_and_enqueue_eod_sync,
@@ -6280,3 +6281,159 @@ class TestSyncLogItemBuffering(IntegrationTestCase):
 		), patch(f"{_MOD}.frappe.db.release_savepoint"):
 			_flush_sync_log_items()
 		self.assertEqual(bulk.call_args.kwargs["fields"], ["name", "parent", "qty"])
+
+
+# ---------------------------------------------------------------------------
+# _resolve_mwo_so_anchor
+# ---------------------------------------------------------------------------
+
+
+class TestResolveMwoSoAnchor(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_MOD}.frappe.db.get_value")
+	def test_returns_none_for_missing_mo(self, mock_gv):
+		mock_gv.return_value = (None, None)
+		self.assertIsNone(_resolve_mwo_so_anchor("MWO-1"))
+
+	@patch(f"{_MOD}._eod_base_mr_voucher_qty")
+	@patch(f"{_MOD}.frappe.get_cached_value")
+	@patch(f"{_MOD}.frappe.db.get_value")
+	def test_returns_none_when_no_anchor_on_mo(self, mock_gv, mock_gcv, mock_qty):
+		mock_gv.return_value = ("MO-1", "MF-1")
+		# Returns sales_order, sales_order_item, manufacturer
+		mock_gcv.return_value = (None, None, "MF-1")
+		self.assertIsNone(_resolve_mwo_so_anchor("MWO-1"))
+
+	@patch(f"{_MOD}._eod_base_mr_voucher_qty")
+	@patch(f"{_MOD}.frappe.get_cached_value")
+	@patch(f"{_MOD}.frappe.db.get_value")
+	def test_resolves_sales_order_fallback(self, mock_gv, mock_gcv, mock_qty):
+		mock_gv.return_value = ("MO-1", "MF-1")
+		mock_gcv.return_value = ("SO-1", "SO-IT-1", "MF-1")
+		mock_qty.return_value = 15.0
+		
+		res = _resolve_mwo_so_anchor("MWO-1")
+		self.assertIsNotNone(res)
+		self.assertEqual(res["sales_order"], "SO-1")
+		self.assertEqual(res["sales_order_item"], "SO-IT-1")
+		self.assertEqual(res["base_mr_voucher_qty"], 15.0)
+
+	@patch(f"{_MOD}.frappe.db.get_value")
+	def test_mwo_cache_usage(self, mock_gv):
+		cache = {}
+		mock_gv.return_value = (None, None)
+		
+		# First call should miss cache and populate it
+		res1 = _resolve_mwo_so_anchor("MWO-1", cache)
+		self.assertIsNone(res1)
+		self.assertIn("MWO-1", cache)
+		self.assertIsNone(cache["MWO-1"])
+		self.assertEqual(mock_gv.call_count, 1)
+
+		# Second call should hit cache, not call db.get_value again
+		res2 = _resolve_mwo_so_anchor("MWO-1", cache)
+		self.assertIsNone(res2)
+		self.assertEqual(mock_gv.call_count, 1)
+
+
+# ---------------------------------------------------------------------------
+# _build_and_submit_mwo_sre
+# ---------------------------------------------------------------------------
+
+class TestBuildAndSubmitMwoSre(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync import (
+			_build_and_submit_mwo_sre,
+		)
+
+		self._build_and_submit_mwo_sre = _build_and_submit_mwo_sre
+
+		self.patcher_new_doc = patch(f"{_MOD}.frappe.new_doc")
+		self.mock_new_doc = self.patcher_new_doc.start()
+		
+		self.mock_sre = MagicMock()
+		self.mock_sre.name = "NEW-SRE-1"
+		self.mock_new_doc.return_value = self.mock_sre
+		
+		self.patcher_get_sre = patch(
+			"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry.get_sre_reserved_qty_for_voucher_detail_no"
+		)
+		self.mock_get_sre = self.patcher_get_sre.start()
+		
+		self.kwargs = {
+			"company": "Test Co",
+			"mwo": "MWO-1",
+			"item_code": "ITEM-1",
+			"warehouse": "WH-1",
+			"batch_no": "B1",
+			"reserved_qty": 5.0,
+			"available": 10.0,
+			"manufacturing_operation": "Op1",
+			"resolved": {
+				"sales_order": "SO-1",
+				"sales_order_item": "SO-IT-1",
+				"base_mr_voucher_qty": None,
+			},
+			"has_batch_no": 1,
+			"has_serial_no": 0,
+			"stock_uom": "Nos",
+		}
+
+	def tearDown(self):
+		self.patcher_new_doc.stop()
+		self.patcher_get_sre.stop()
+
+	def test_uses_base_mr_qty_when_larger_than_floor(self):
+		self.mock_get_sre.return_value = 2.0
+		self.kwargs["resolved"]["base_mr_voucher_qty"] = 10.0
+		
+		self._build_and_submit_mwo_sre(**self.kwargs)
+		self.assertEqual(self.mock_sre.voucher_qty, 10.0)
+
+	def test_uses_floor_qty_when_base_mr_is_smaller(self):
+		self.mock_get_sre.return_value = 2.0
+		self.kwargs["resolved"]["base_mr_voucher_qty"] = 5.0
+		
+		self._build_and_submit_mwo_sre(**self.kwargs)
+		self.assertEqual(self.mock_sre.voucher_qty, 7.0)
+
+	def test_uses_floor_qty_when_base_mr_is_none(self):
+		self.mock_get_sre.return_value = 2.0
+		self.kwargs["resolved"]["base_mr_voucher_qty"] = None
+		
+		self._build_and_submit_mwo_sre(**self.kwargs)
+		self.assertEqual(self.mock_sre.voucher_qty, 7.0)
+
+	def test_sre_batch_no_handling(self):
+		self.mock_get_sre.return_value = 0
+		self.kwargs["has_batch_no"] = 1
+		self.kwargs["batch_no"] = "B1"
+		
+		self._build_and_submit_mwo_sre(**self.kwargs)
+		
+		self.assertEqual(self.mock_sre.reservation_based_on, "Serial and Batch")
+		self.mock_sre.append.assert_called_once_with(
+			"sb_entries",
+			{
+				"batch_no": "B1",
+				"warehouse": "WH-1",
+				"qty": 5.0,
+			},
+		)
+
+	def test_sre_no_batch_handling(self):
+		self.mock_get_sre.return_value = 0
+		self.kwargs["has_batch_no"] = 0
+		self.kwargs["batch_no"] = None
+		
+		self._build_and_submit_mwo_sre(**self.kwargs)
+		
+		self.assertEqual(self.mock_sre.reservation_based_on, "Qty")
+		self.mock_sre.append.assert_not_called()
