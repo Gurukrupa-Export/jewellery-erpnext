@@ -4,6 +4,10 @@ import frappe
 from frappe import _
 from frappe.model.mapper import get_mapped_doc
 
+from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.prefetch import (
+	mri_warehouse_map,
+)
+
 
 @frappe.whitelist()
 def make_mop_stock_entry(self, **kwargs):
@@ -39,7 +43,6 @@ def make_mop_stock_entry(self, **kwargs):
 		new_se_doc.auto_created = 1
 		new_se_doc.to_department = mop_data.get("department")
 		new_se_doc.add_to_transit = 0
-		warehouse_data = frappe._dict()
 		t_warehouse = frappe.db.get_value(
 			"Warehouse",
 			{
@@ -57,6 +60,12 @@ def make_mop_stock_entry(self, **kwargs):
 				},
 				"name",
 			)
+		# One query for every referenced Material Request Item instead of one per distinct
+		# item on the copied Stock Entry. ``self`` here is the client-supplied document as a
+		# plain dict, so its rows are not passed to the helper -- the warehouses are read
+		# from the database exactly as they always were.
+		warehouse_data = mri_warehouse_map(new_se_doc.items)
+
 		for row in new_se_doc.items:
 			if not warehouse_data.get(row.material_request_item):
 				warehouse_data[row.material_request_item] = frappe.db.get_value(

@@ -39,6 +39,15 @@ def pending_eps():
 	return (10 ** -se_precision()) / 2
 
 
+MATCH_FIELDS = (
+	"serial_no",
+	"item_code",
+	"manufacturing_work_order",
+	"parent_manufacturing_order",
+	"tree_no",
+)
+
+
 def _match_filters(row):
 	"""The identity of a Product Details row, as ``validate_items`` already defines it.
 
@@ -54,17 +63,82 @@ def _match_filters(row):
 	}
 
 
-def resolve_issue_row(issue_name, row):
+def match_identity(row):
+	"""``_match_filters`` as a hashable tuple — the PROBE side of an in-Python match.
+
+	One definition, two consumers (``validate_items`` and the issue-row index below), so
+	neither can drift from the filter dict.
+	"""
+	filters = _match_filters(row)
+	return tuple(filters[field] for field in MATCH_FIELDS)
+
+
+def stored_identity(row):
+	"""The same tuple for a row read back from the database — the STORED side.
+
+	Deliberately un-normalised. The filter dict this replaces sent a blank as ``None``,
+	which the query builder turns into ``IS NULL``, so a column holding ``""`` never
+	matched a blank row. Normalising both sides would quietly start matching them.
+	"""
+	return tuple(row.get(field) for field in MATCH_FIELDS)
+
+
+ISSUE_ROW_FIELDS = (
+	"name",
+	"total_weight",
+	"received_weight",
+	"pending_weight",
+	*MATCH_FIELDS,
+)
+
+
+def get_issue_rows(issue_name):
+	"""Every Product Details row of an Issue, in grid order.
+
+	One read shared by the ledger's three consumers -- the row index, the pending map and
+	the status rollup -- which used to fetch the same rows separately.
+	"""
+	if not issue_name:
+		return []
+
+	return frappe.get_all(
+		"Product Details",
+		filters={"parent": issue_name, "parenttype": "Product Certification"},
+		fields=list(ISSUE_ROW_FIELDS),
+		order_by="idx asc",
+	)
+
+
+def build_issue_row_index(issue_rows):
+	"""``{identity tuple: row name}`` for resolving hand-built Receive rows.
+
+	First row wins, which is the single-row answer the per-row ``get_value`` gave; ordering
+	by ``idx`` is what makes "first" the same row on every call.
+	"""
+	index = {}
+	for row in issue_rows:
+		index.setdefault(stored_identity(row), row.name)
+	return index
+
+
+def resolve_issue_row(issue_name, row, index=None):
 	"""Name of the Issue's Product Details row that ``row`` (a Receive row) settles.
 
 	``issue_row`` is set by the "Create Receiving" mapper and is authoritative. Rows
 	typed or scanned by hand fall back to the same identity tuple ``validate_items``
 	uses, so a hand-built Receive still lands on the right ledger row.
+
+	Pass ``index`` (from ``build_issue_row_index``) to resolve without a query -- the
+	fallback used to cost one read per unmapped row, on both sides of the rollup. Without
+	it the behaviour is unchanged, so any other caller still works.
 	"""
 	if row.get("issue_row"):
 		return row.get("issue_row")
 	if not issue_name:
 		return None
+
+	if index is not None:
+		return index.get(match_identity(row))
 
 	filters = _match_filters(row)
 	filters["parent"] = issue_name
@@ -72,12 +146,15 @@ def resolve_issue_row(issue_name, row):
 	return frappe.db.get_value("Product Details", filters, "name")
 
 
-def get_received_map(issue_name, exclude=None):
+def get_received_map(issue_name, exclude=None, issue_rows=None):
 	"""``{issue_pd_row_name: weight}`` booked by submitted Receives against ``issue_name``.
 
 	``exclude`` drops one Product Certification from the tally — the document being
 	cancelled or amended, whose own rows must not count towards the pending it is
 	being validated against.
+
+	``issue_rows`` is the Issue's own rows when the caller already has them; the index they
+	build resolves hand-built Receive rows in memory instead of one query each.
 	"""
 	received = defaultdict(float)
 	if not issue_name:
@@ -109,30 +186,31 @@ def get_received_map(issue_name, exclude=None):
 			"total_weight",
 		],
 	)
+	if issue_rows is None:
+		issue_rows = get_issue_rows(issue_name)
+	index = build_issue_row_index(issue_rows)
+
 	for row in rows:
-		key = resolve_issue_row(issue_name, row)
+		key = resolve_issue_row(issue_name, row, index=index)
 		if key:
 			received[key] += flt(row.total_weight)
 
 	return received
 
 
-def get_pending_map(issue_name, exclude=None):
+def get_pending_map(issue_name, exclude=None, issue_rows=None):
 	"""``{issue_pd_row_name: (total_weight, pending_weight)}`` for an Issue document."""
-	received = get_received_map(issue_name, exclude=exclude)
+	if issue_rows is None:
+		issue_rows = get_issue_rows(issue_name)
+	received = get_received_map(issue_name, exclude=exclude, issue_rows=issue_rows)
 	precision = se_precision()
 
 	pending = {}
-	for name, total_weight in frappe.get_all(
-		"Product Details",
-		filters={"parent": issue_name, "parenttype": "Product Certification"},
-		fields=["name", "total_weight"],
-		as_list=True,
-	):
-		total = flt(total_weight, precision)
-		pending[name] = (
+	for row in issue_rows:
+		total = flt(row.total_weight, precision)
+		pending[row.name] = (
 			total,
-			flt(max(0.0, total - flt(received.get(name), precision)), precision),
+			flt(max(0.0, total - flt(received.get(row.name), precision)), precision),
 		)
 	return pending
 
@@ -159,22 +237,32 @@ def update_receive_status(issue_name):
 	if not issue_name:
 		return
 
-	if frappe.db.get_value("Product Certification", issue_name, "type") != "Issue":
+	current = frappe.db.get_value(
+		"Product Certification", issue_name, ["type", "receive_status"], as_dict=1
+	)
+	if not current or current.type != "Issue":
 		return
 
-	received = get_received_map(issue_name)
+	issue_rows = get_issue_rows(issue_name)
+	received = get_received_map(issue_name, issue_rows=issue_rows)
 	precision = se_precision()
 
 	rows = []
-	for row in frappe.get_all(
-		"Product Details",
-		filters={"parent": issue_name, "parenttype": "Product Certification"},
-		fields=["name", "total_weight"],
-	):
+	for row in issue_rows:
 		total = flt(row.total_weight, precision)
 		received_weight = flt(received.get(row.name), precision)
 		pending_weight = flt(max(0.0, total - received_weight), precision)
 		rows.append((total, pending_weight))
+
+		# Only write when the derived value actually moved. This routine is idempotent by
+		# design — every submit, cancel and the backfill patch recompute the whole ledger —
+		# so on a settled Issue every one of these UPDATEs was writing back what was
+		# already there.
+		if (
+			flt(row.received_weight, precision) == received_weight
+			and flt(row.pending_weight, precision) == pending_weight
+		):
+			continue
 
 		# db_set on the child row: the Issue is submitted, and these are derived
 		# columns — bumping `modified` would churn the parent's version history.
@@ -186,13 +274,14 @@ def update_receive_status(issue_name):
 		)
 
 	status = derive_status(rows, has_receipts=bool(received))
-	frappe.db.set_value(
-		"Product Certification",
-		issue_name,
-		"receive_status",
-		status,
-		update_modified=False,
-	)
+	if status != current.receive_status:
+		frappe.db.set_value(
+			"Product Certification",
+			issue_name,
+			"receive_status",
+			status,
+			update_modified=False,
+		)
 	return status
 
 
@@ -201,7 +290,10 @@ def validate_over_receipt(doc):
 	if doc.type != "Receive" or not doc.receive_against:
 		return
 
-	pending = get_pending_map(doc.receive_against, exclude=doc.name)
+	issue_rows = get_issue_rows(doc.receive_against)
+	pending = get_pending_map(
+		doc.receive_against, exclude=doc.name, issue_rows=issue_rows
+	)
 	if not pending:
 		return
 
@@ -210,10 +302,11 @@ def validate_over_receipt(doc):
 
 	# Aggregate this document first: two rows settling the same Issue row must be
 	# capped on their SUM, not row by row.
+	index = build_issue_row_index(issue_rows)
 	booked = defaultdict(float)
 	first_idx = {}
 	for row in doc.product_details:
-		key = resolve_issue_row(doc.receive_against, row)
+		key = resolve_issue_row(doc.receive_against, row, index=index)
 		if not key:
 			continue
 		row.issue_row = key
