@@ -3,12 +3,13 @@
 
 frappe.ui.form.on("Refinery Price List", {
 	setup(frm) {
-		// The Service Item is what the refining CHARGE is billed as on the PO — a
-		// non-stock purchase item (like REF-SVC-001 "Refining Charges"). Stock metal
-		// items (M-G/ML-G...) are excluded: billing a stock item would imply goods to
-		// receive against the PO, pulling metal into stock that was never bought.
-		frm.set_query("service_item", "slabs", () => ({
-			filters: { is_purchase_item: 1, is_stock_item: 0 },
+		// Deliberately NO restrictive query on covered_items.item_code. The default link
+		// search is what lets an item TEMPLATE (ML / FL / M / F / G / D) be picked, and
+		// templates are the point — one row instead of the thousands of variants some
+		// templates have. Wiring erpnext's item_query, or a has_variants: 0 filter, would
+		// silently kill template matching.
+		frm.set_query("item_code", "covered_items", () => ({
+			filters: { disabled: 0 },
 		}));
 	},
 });

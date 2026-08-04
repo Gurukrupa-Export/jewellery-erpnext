@@ -53,7 +53,10 @@
   "receive_stock_entry",
   "loss_stock_entry",
   "target_transfer_stock_entry",
-  "rate_factor"
+  "rate_factor",
+  "issue_time",
+  "receive_time",
+  "conversion_cost"
  ],
  "fields": [
   {
@@ -280,7 +283,6 @@
    "fieldname": "loss_type",
    "fieldtype": "Link",
    "label": "Loss Type",
-   "mandatory_depends_on": "eval:(doc.workflow_state == 'Receive') || (doc.conversion_type == 'Conversion' && doc.workflow_state == 'Draft' )",
    "options": "Loss Type"
   },
   {
@@ -341,6 +343,21 @@
    "label": "Target Transfer Stock Entry",
    "options": "Stock Entry",
    "read_only": 1
+  },
+  {
+   "fieldname": "issue_time",
+   "fieldtype": "Datetime",
+   "label": "Issue Time"
+  },
+  {
+   "fieldname": "receive_time",
+   "fieldtype": "Datetime",
+   "label": "Receive Time"
+  },
+  {
+   "fieldname": "conversion_cost",
+   "fieldtype": "Currency",
+   "label": "Conversion Cost"
   }
  ],
  "grid_page_length": 50,
@@ -352,7 +369,7 @@
    "link_fieldname": "custom_gemstone_conversion"
   }
  ],
- "modified": "2026-07-18 20:09:10.897276",
+ "modified": "2026-07-22 21:23:21.467050",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Gemstone Conversion",

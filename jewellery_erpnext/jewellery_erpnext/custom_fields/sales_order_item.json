@@ -795,6 +795,71 @@
    "insert_after": "custom_mfg_complexity_code",
    "label": "Is Subcontracting Charge Row",
    "module": "Jewellery Erpnext"
+  },
+   {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_metal_weight",
+   "fieldtype": "Float",
+   "insert_after": "finding_weight_for_chain",
+   "label": "Metal Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_finding_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_metal_weight",
+   "label": "Finding Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_gemstone_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_finding_weight",
+   "label": "Gemstone Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_diamond_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_gemstone_weight",
+   "label": "Diamond Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_other_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_diamond_weight",
+   "label": "Other Weight",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_diamond_pcs",
+   "fieldtype": "Int",
+   "insert_after": "custom_other_weight",
+   "label": "Diamond Pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_gemstone_pcs",
+   "fieldtype": "Int",
+   "insert_after": "custom_diamond_pcs",
+   "label": "Gemstone Pcs",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Sales Order Item",
+   "fieldname": "custom_gross_weight",
+   "fieldtype": "Float",
+   "insert_after": "custom_gemstone_pcs",
+   "label": "Gross Weight",
+   "module": "Jewellery Erpnext"
   }
+  
  ]
 }

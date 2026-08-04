@@ -1,6 +1,7 @@
 import os
 
 import frappe
+from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 from frappe.modules.import_file import import_file_by_path
 
 
@@ -1476,15 +1477,19 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 
-		if not frappe.db.exists("Inventory Type", "Customer Goods"):
-			frappe.get_doc(
-				{"doctype": "Inventory Type", "inventory_type": "Customer Goods"}
-			).insert(ignore_permissions=True)
-
-		if not frappe.db.exists("Inventory Type", "Regular Stock"):
-			frappe.get_doc(
-				{"doctype": "Inventory Type", "inventory_type": "Regular Stock"}
-			).insert(ignore_permissions=True)
+		# All four values ownership_priority ranks on. "Pure Metal" and
+		# "Customer Stock" were previously unseeded, so any row linking to them
+		# failed link validation on a fresh / CI site.
+		for inventory_type in (
+			"Customer Goods",
+			"Customer Stock",
+			"Regular Stock",
+			"Pure Metal",
+		):
+			if not frappe.db.exists("Inventory Type", inventory_type):
+				frappe.get_doc(
+					{"doctype": "Inventory Type", "inventory_type": inventory_type}
+				).insert(ignore_permissions=True)
 
 		if not frappe.db.exists("Item", "M-G-22KT-91.6-Y"):
 			frappe.get_doc(
@@ -2143,7 +2148,7 @@ def create_test_data():
 					"company": "Test_Company",
 					"is_subcontracted": 1,
 					"allow_zero_qty_wo": 1,
-					"is_main_slip_required": 1,
+					"is_raw_material": 1,
 					"supplier_group": "Subcontracting",
 					"service_item": "FG Subcontracting",
 				}
@@ -2356,6 +2361,43 @@ def create_test_data():
 				},
 			)
 			mop_settings.save()
+
+		# EOD sync reporting + allocation schema. Mirrors
+		# patches/add_eod_sync_reporting_and_allocation_fields.py: existing sites get the
+		# patch, fresh / CI sites get this. Without the reload the new sync_stage and
+		# error_type Select options are absent and the EOD sync's own audit rows fail to
+		# insert -- which is the bug that rolled whole buckets back to draft.
+		for _eod_doctype in (
+			"MOP EOD Sync Log Item",
+			"MOP EOD Sync Log",
+			"MOP Settings",
+		):
+			if frappe.db.exists("DocType", _eod_doctype):
+				frappe.reload_doctype(_eod_doctype, force=True)
+		# Manufacturing Operation.last_eod_sync_on is a custom field and the
+		# after_migrate hook that installs custom fields is commented out, so fresh
+		# sites lack it. _stamp_last_eod_sync runs inside the EOD Phase-2 savepoint,
+		# where a 1054 rolls back the whole bucket.
+		create_custom_fields(
+			{
+				"Manufacturing Operation": [
+					{
+						"fieldname": "last_eod_sync_on",
+						"fieldtype": "Datetime",
+						"label": "Last EOD Sync On",
+						"insert_after": "is_received_gross_greater_than",
+						"is_system_generated": 1,
+						"no_copy": 1,
+						"read_only": 1,
+						"module": "Jewellery Erpnext",
+					}
+				]
+			},
+			ignore_validate=True,
+		)
+		# Both EOD feature flags ship OFF; tests that need them opt in explicitly.
+		frappe.db.set_single_value("MOP Settings", "enable_eod_bucket_allocation", 0)
+		frappe.db.set_single_value("MOP Settings", "enable_eod_plan_sre_heal", 0)
 
 		frappe.db.set_single_value("System Settings", "float_precision", "3")
 
@@ -2652,6 +2694,224 @@ def create_test_data():
 				}
 			).insert(ignore_permissions=True)
 
+		# Unused/Loose Material targets for the seeded metal items. Receive Unused/Loose
+		# Material books returns onto the ML variant matching the source's Metal Purity +
+		# Metal Colour (see _resolve_unused_loose_item), and THROWS when none exists — so
+		# every seeded M variant that can be received needs its ML counterpart, and no two
+		# ML variants may share a purity+colour pair or the resolution is ambiguous.
+		# Deliberately NOT seeding ML-G-24KT-99.9-Y here: that code is PURE_LOSS_ITEM, and
+		# creating it flips RefiningEntry.get_dust_item() from the _get_pure_loss_item()
+		# fallback chain to the pure code for the WHOLE refining suite. No test receives
+		# 24KT metal as unused material, so this feature does not need it.
+		for _ml_code, _ml_touch, _ml_purity, _ml_colour, _ml_series in (
+			("ML-G-22KT-91.6-Y", "22KT", "91.6", "Yellow", "GE2D075-MGL22916Y0-.##."),
+			("ML-G-22KT-91.6-P", "22KT", "91.6", "Pink", "GE2D075-MGL22916P0-.##."),
+		):
+			if frappe.db.exists("Item", _ml_code):
+				continue
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"is_design_code": 0,
+					"item_code": _ml_code,
+					"custom_reason_for_design_code_": "New Design",
+					"item_name": _ml_code,
+					"gst_hsn_code": "010121",
+					"item_group": "Metal - V",
+					"stock_uom": "Gram",
+					"is_stock_item": 1,
+					"has_variants": 0,
+					"include_item_in_manufacturing": 1,
+					"manufacturing_type": "Casted",
+					"productivity": "Studded",
+					"description": (
+						f"<b><u>ML</u></b><br>Metal Type : Gold<br>Metal Touch : {_ml_touch}"
+						f"<br>Metal Purity : {_ml_purity}<br>Metal Colour : {_ml_colour}<br>"
+					),
+					"end_of_life": "2099-12-31",
+					"default_material_request_type": "Purchase",
+					"valuation_rate": 1,
+					"has_batch_no": 1,
+					"create_new_batch": 1,
+					"batch_number_series": _ml_series,
+					"variant_of": "ML",
+					"variant_based_on": "Item Attribute",
+					"is_purchase_item": 1,
+					"grant_commission": 1,
+					"is_sales_item": 1,
+					"uoms": [
+						{
+							"uom": "Gram",
+							"conversion_factor": 1,
+						}
+					],
+					"attributes": [
+						{
+							"variant_of": "ML",
+							"attribute": "Metal Type",
+							"attribute_value": "Gold",
+						},
+						{
+							"variant_of": "ML",
+							"attribute": "Metal Touch",
+							"attribute_value": _ml_touch,
+						},
+						{
+							"variant_of": "ML",
+							"attribute": "Metal Purity",
+							"attribute_value": _ml_purity,
+						},
+						{
+							"variant_of": "ML",
+							"attribute": "Metal Colour",
+							"attribute_value": _ml_colour,
+						},
+					],
+				}
+			).insert(ignore_permissions=True)
+
+		# FL — the Finding counterpart of ML. Same attribute set as F, since a finding's
+		# identity is its category/sub-category/size as much as its metal.
+		if not frappe.db.exists("Item", "FL"):
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"is_design_code": 0,
+					"item_code": "FL",
+					"custom_reason_for_design_code_": "New Design",
+					"item_name": "FL",
+					"gst_hsn_code": "71131120",
+					"item_group": "Finding - T",
+					"stock_uom": "Gram",
+					"is_stock_item": 0,
+					"has_variants": 1,
+					"include_item_in_manufacturing": 0,
+					"manufacturing_type": "Casted",
+					"productivity": "Studded",
+					"description": "FL",
+					"end_of_life": "2099-12-31",
+					"default_material_request_type": "Purchase",
+					"has_batch_no": 0,
+					"create_new_batch": 0,
+					"variant_based_on": "Item Attribute",
+					"is_purchase_item": 1,
+					"country_of_origin": "India",
+					"grant_commission": 1,
+					"is_sales_item": 1,
+					"uoms": [
+						{
+							"uom": "Gram",
+							"conversion_factor": 1,
+						}
+					],
+					"attributes": [
+						{"attribute": "Metal Type"},
+						{"attribute": "Metal Touch"},
+						{"attribute": "Metal Purity"},
+						{"attribute": "Metal Colour"},
+						{"attribute": "Finding Category"},
+						{"attribute": "Finding Sub-Category"},
+						{"attribute": "Finding Size"},
+					],
+					"taxes": [],
+				}
+			).insert(ignore_permissions=True)
+
+		# One FL variant per seeded F variant, at the same purity+colour so the resolver
+		# finds exactly one candidate.
+		for _fl_code, _fl_colour, _fl_series in (
+			(
+				"FL-G-22KT-91.9-Y-CHA-KC-2.50 MM",
+				"Yellow",
+				"GE2D075-FGL22919Y0KCB50MM0-.##.",
+			),
+			(
+				"FL-G-22KT-91.9-P-CHA-KC-2.50 MM",
+				"Pink",
+				"GE2D075-FGL22919P0KCB50MM0-.##.",
+			),
+		):
+			if frappe.db.exists("Item", _fl_code):
+				continue
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"is_design_code": 0,
+					"item_code": _fl_code,
+					"custom_reason_for_design_code_": "New Design",
+					"item_name": _fl_code,
+					"gst_hsn_code": "71131120",
+					"item_group": "Finding - V",
+					"stock_uom": "Gram",
+					"is_stock_item": 1,
+					"has_variants": 0,
+					"include_item_in_manufacturing": 1,
+					"manufacturing_type": "Casted",
+					"productivity": "Studded",
+					"description": (
+						"<b><u>FL</u></b><br>Metal Type : Gold<br>Metal Touch : 22KT<br>"
+						f"Metal Purity : 91.9<br>Metal Colour : {_fl_colour}<br>"
+						"Finding Category : Chains<br>Finding Sub-Category : Kodi Chain<br>"
+						"Finding Size : 2.50 MM<br>"
+					),
+					"end_of_life": "2099-12-31",
+					"default_material_request_type": "Purchase",
+					"valuation_rate": 1,
+					"has_batch_no": 1,
+					"create_new_batch": 1,
+					"batch_number_series": _fl_series,
+					"variant_of": "FL",
+					"variant_based_on": "Item Attribute",
+					"is_purchase_item": 1,
+					"country_of_origin": "India",
+					"grant_commission": 1,
+					"is_sales_item": 1,
+					"uoms": [
+						{
+							"uom": "Gram",
+							"conversion_factor": 1,
+						}
+					],
+					"attributes": [
+						{
+							"variant_of": "FL",
+							"attribute": "Metal Type",
+							"attribute_value": "Gold",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Metal Touch",
+							"attribute_value": "22KT",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Metal Purity",
+							"attribute_value": "91.9",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Metal Colour",
+							"attribute_value": _fl_colour,
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Finding Category",
+							"attribute_value": "Chains",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Finding Sub-Category",
+							"attribute_value": "Kodi Chain",
+						},
+						{
+							"variant_of": "FL",
+							"attribute": "Finding Size",
+							"attribute_value": "2.50 MM",
+						},
+					],
+				}
+			).insert(ignore_permissions=True)
+
 		if not frappe.db.exists("Item", "Cap"):
 			frappe.get_doc(
 				{
@@ -2721,6 +2981,18 @@ def create_test_data():
 
 			_ensure_warehouse_msl_tracking_field()
 
+			from jewellery_erpnext.patches.add_conversion_lane_tag_field import (
+				execute as _ensure_conversion_lane_tag_field,
+			)
+
+			_ensure_conversion_lane_tag_field()
+
+			from jewellery_erpnext.patches.add_supplier_allowed_item_group import (
+				execute as _ensure_supplier_allowed_item_group_field,
+			)
+
+			_ensure_supplier_allowed_item_group_field()
+
 			from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
 
 			ensure_fetch_from_columns()
@@ -2764,7 +3036,15 @@ def create_test_data():
 			)
 
 			_ensure_serial_no_ownership_tag_field()
-			# Batch.custom_employee (employee-wise scrap/dust refining) is NOT in the
+
+			# Serial No.custom_order_type is NOT in the git_action_v16 fixtures either — same
+			# reasoning as custom_ownership_tag above.
+			from jewellery_erpnext.patches.add_serial_no_order_type_field import (
+				execute as _ensure_serial_no_order_type_field,
+			)
+
+			_ensure_serial_no_order_type_field()
+			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /
 			# _dust_employee_batch_rows raise "Unknown column 'custom_employee'".
@@ -2773,6 +3053,23 @@ def create_test_data():
 			)
 
 			_ensure_batch_employee_field()
+
+			# Stock Reservation Entry.custom_replaced_sre_snapshot is declared only by
+			# its patch (no fixture, no custom/*.json), so it must be provisioned here
+			# for test_site too, else _restore_reduced_sres raises "Unknown column
+			# 'custom_replaced_sre_snapshot'" on every Employee IR cancel.
+			from jewellery_erpnext.patches.add_sre_replaced_snapshot_field import (
+				execute as _ensure_sre_replaced_snapshot_field,
+			)
+
+			_ensure_sre_replaced_snapshot_field()
+
+			# Masters (the REF-* Items) MUST be seeded before the price list:
+			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (
+				execute as _ensure_missing_ui_custom_fields,
+			)
+
+			_ensure_missing_ui_custom_fields()
 
 			# Masters (the dust/scrap Items) MUST be seeded before the price list:
 			# seed_refinery_price_list skips any price row whose Item does not exist yet,
@@ -2789,6 +3086,18 @@ def create_test_data():
 			)
 
 			refining_price_list()
+
+			# LAST of the refining provisioning: the git_action_v16 fixtures still carry
+			# the pre-rename options for Batch.custom_batch_type ("\nScrap"), and
+			# install-app + migrate re-import them. Refreshing the renamed Select options
+			# here — after every other provisioning step — makes the app definition win,
+			# else _create_scrap_batch trips Frappe's Select validation on every
+			# Receive Unused/Loose Material test.
+			from jewellery_erpnext.patches.rename_refining_scrap_terminology_metadata import (
+				execute as _refresh_refining_terminology_metadata,
+			)
+
+			_refresh_refining_terminology_metadata()
 		finally:
 			frappe.flags.in_migrate = in_migrate
 
@@ -2800,15 +3109,6 @@ def create_test_data():
 
 
 def setup_data():
-	if not frappe.db.exists("Stock Entry Type", "Material Transfer (MAIN SLIP)"):
-		frappe.get_doc(
-			{
-				"doctype": "Stock Entry Type",
-				"name": "Material Transfer (MAIN SLIP)",
-				"purpose": "Material Transfer",
-			}
-		).insert(ignore_permissions=True)
-
 	if not frappe.db.exists("Stock Entry Type", "Process Loss"):
 		frappe.get_doc(
 			{
@@ -2852,6 +3152,13 @@ def setup_data():
 				"gst_category": "Registered Regular",
 			}
 		).insert(ignore_permissions=True)
+
+	# A fresh CI site has no default company anywhere, so anything that derives company
+	# from defaults (batch autoname's prefix, ERPNext's own doc defaults) has nothing to
+	# read. Pin it once here rather than per-test.
+	if not frappe.defaults.get_global_default("company"):
+		frappe.db.set_default("company", "Test_Company")
+		frappe.db.set_single_value("Global Defaults", "default_company", "Test_Company")
 
 	if not frappe.db.exists("Fiscal Year", "2026-2027"):
 		frappe.get_doc(

@@ -27,9 +27,13 @@ from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_event
 	create_po,
 	process_fire_assy_xrf_submit,
 	update_bom_details,
+	validate_po_configuration,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_material_balance import (
+	tree_metal_qty,
 )
 
 
@@ -41,6 +45,47 @@ def _slip_key(row):
 	blanks normalised so ``None`` and ``""`` land in one group instead of two.
 	"""
 	return (row.get("main_slip") or "", row.get("tree_no") or "")
+
+
+def _department_wo_warehouse(department, throw=True):
+	"""The department's WO warehouse -- ``warehouse_type = "Manufacturing"``, e.g.
+	``Product Certification WO - KGJPL``.
+
+	Every Product Certification stock line belongs here. Resolving it once, from the document's
+	department, is what keeps a certification inside its own department ledger: the previous code
+	fell back to *any* warehouse of the department and then let the serial's live warehouse
+	override the answer, which leaked issues into Tagging FG, department Transit and even the
+	other company's Product Certification warehouse.
+
+	Same filter as the canonical resolvers elsewhere in the app -- see
+	``department_ir/doc_events/pc_tagging_stock_sync._resolve_dept_manufacturing_wh``.
+	"""
+	if not department:
+		return None
+
+	# order_by so a site that ever grows a second Manufacturing warehouse for one department
+	# resolves the same one every time, rather than silently rejecting serials depending on
+	# which row the DB happened to return. No department has two today, here or in CI.
+	warehouse = frappe.db.get_value(
+		"Warehouse",
+		{
+			"disabled": 0,
+			"is_group": 0,
+			"department": department,
+			"warehouse_type": "Manufacturing",
+		},
+		"name",
+		order_by="name asc",
+	)
+	if not warehouse and throw:
+		frappe.throw(
+			_(
+				"No WO warehouse found for Department {0}. "
+				"Create an enabled warehouse of type Manufacturing for it."
+			).format(frappe.bold(department)),
+			title=_("Department Warehouse Missing"),
+		)
+	return warehouse
 
 
 class ProductCertification(Document):
@@ -71,15 +116,153 @@ class ProductCertification(Document):
 		):
 			frappe.throw(_("Please set warehouse for selected supplier"))
 
+		self.validate_duplicate_product_rows()
+		self.validate_serial_warehouse_department()
 		self.validate_items()
 		validate_over_receipt(self)
 		self.update_bom()
 		self.get_exploded_table()
 		self.calculate_fire_assy_loss_weight()
+		self.set_fire_assy_issue_weight()
 		self.distribute_amount()
 
 	def before_submit(self):
+		self.validate_fire_assy_weight()
 		self.validate_exploded_qty()
+		# Refuse the submit unless the service PO can actually be created. Checked here,
+		# where the operator can fix the master data, rather than in the deferred job —
+		# which runs after commit and would leave a submitted certification with no PO.
+		validate_po_configuration(self)
+
+	def validate_fire_assy_weight(self):
+		"""A Fire Assy / XRF Issue row must carry the weight actually being sent.
+
+		total_weight is the single input to the Issue Stock Entry qty (through
+		``set_fire_assy_issue_weight`` and the main exploded row), to the Receive scrap
+		calculation, and to the whole received / pending ledger. At 0 the submit died deep in
+		``create_stock_entry`` with "No item found for Repack", which names neither the row nor
+		the tree. Checked here rather than in ``validate`` so a draft can still be saved while
+		the operator works out the weight.
+
+		A scan fills this from the tree's ledger; it stays 0 only for a tree that was never
+		funded and for legacy Main Slip trees, which carry no ledger at all.
+		"""
+		if self.type != "Issue" or self.service_type not in [
+			"Fire Assy Service",
+			"XRF Services",
+		]:
+			return
+
+		for row in self.product_details:
+			if flt(row.total_weight) > 0:
+				continue
+
+			subject = row.get("tree_no") or row.get("main_slip") or row.get("item_code")
+			if subject:
+				frappe.throw(
+					_("Row #{0}: Total Weight is required for {1}.").format(
+						row.idx, frappe.bold(subject)
+					),
+					title=_("Total Weight Missing"),
+				)
+			frappe.throw(
+				_("Row #{0}: Total Weight is required.").format(row.idx),
+				title=_("Total Weight Missing"),
+			)
+
+	def validate_duplicate_product_rows(self):
+		"""One Product Details row per serial / per work order.
+
+		The scan handlers append without looking at what is already in the grid, so a repeated
+		scan used to add a second row and double the issued weight. This is the server-side half
+		of the guard -- ``product_details`` is ``allow_bulk_edit``, so the grid and the paste
+		dialog can produce the same duplicates the barcode gun does.
+
+		Tree rows are covered too. ``set_fire_assy_issue_weight`` does sum same-tree rows onto a
+		single exploded main row, so a duplicate never double-issued -- but now that a scan
+		auto-fills the tree's weight, two rows would sum to twice the metal.
+		"""
+		seen = {}
+		for row in self.product_details:
+			# A row carries exactly one of tree / serial / work order, so whichever it has is
+			# its identity.
+			if row.get("tree_no"):
+				key = ("Tree No", row.tree_no)
+			elif row.get("serial_no"):
+				key = ("Serial No", row.serial_no)
+			elif row.get("manufacturing_work_order"):
+				key = ("Manufacturing Work Order", row.manufacturing_work_order)
+			else:
+				continue
+
+			first_idx = seen.get(key)
+			if first_idx:
+				frappe.throw(
+					_("Row #{0}: {1} {2} is already entered in Row #{3}.").format(
+						row.idx, key[0], frappe.bold(key[1]), first_idx
+					),
+					title=_("Duplicate Row"),
+				)
+			seen[key] = row.idx
+
+	def validate_serial_warehouse_department(self):
+		"""On an Issue, every Product Details serial must sit in this Department's WO warehouse.
+
+		The check is against that one warehouse by name, not merely "some warehouse of this
+		department". ``create_stock_entry`` sources every serial line from the WO warehouse, so
+		anything parked elsewhere -- another department's FG warehouse, this department's
+		Transit warehouse -- would book an issue out of a warehouse that does not hold the piece.
+		A serial in Transit has not finished arriving; move it in first.
+
+		Issue only. A Receive carries serials that are still in the supplier's WIP
+		warehouse -- moving them back is what the receipt is for.
+		"""
+		if self.type != "Issue" or not self.department:
+			return
+
+		serials = {row.serial_no for row in self.product_details if row.serial_no}
+		if not serials:
+			return
+
+		expected_wh = _department_wo_warehouse(self.department)
+
+		serial_wh = dict(
+			frappe.get_all(
+				"Serial No",
+				filters={"name": ("in", list(serials))},
+				fields=["name", "warehouse"],
+				as_list=True,
+			)
+		)
+
+		for row in self.product_details:
+			if not row.serial_no:
+				continue
+
+			warehouse = serial_wh.get(row.serial_no)
+			if not warehouse:
+				# ERPNext clears Serial No.warehouse on every outward movement, so a
+				# blank warehouse means "not in stock", not "unknown".
+				frappe.throw(
+					_("Row #{0}: Serial No {1} is not in stock.").format(
+						row.idx, frappe.bold(row.serial_no)
+					),
+					title=_("Serial No Not In Stock"),
+				)
+
+			if warehouse != expected_wh:
+				frappe.throw(
+					_(
+						"Row #{0}: Serial No {1} is in {2}, not {3}. "
+						"Move it into {3} before issuing."
+					).format(
+						row.idx,
+						frappe.bold(row.serial_no),
+						frappe.bold(warehouse),
+						frappe.bold(expected_wh),
+					),
+					title=_("Serial No Not In Department WO Warehouse"),
+				)
 
 	def validate_items(self):
 		if self.type == "Receive":
@@ -300,6 +483,59 @@ class ProductCertification(Document):
 				flt(issue_weight - receive_weight - converted_pure_wt, precision),
 			)
 
+	def set_fire_assy_issue_weight(self):
+		"""Populate the main exploded row's gross_weight on a Fire Assy / XRF Issue.
+
+		The Issue-side sibling of ``calculate_fire_assy_loss_weight``. On an Issue there is
+		no loss/pure — the operator types the sample weight into ``product_details.total_weight``
+		(the exploded rows are machine-generated blank), and the whole sample is what leaves for
+		assay. So the main exploded row of each ``_slip_key`` group takes that group's issued
+		weight; ``create_stock_entry`` then issues exactly that row (pure/loss stay 0 and are
+		skipped).
+
+		Grouped identically to the Receive-side loss calc so the two never disagree about a
+		group's issued weight. Un-guarded overwrite keeps the main row in sync when the operator
+		corrects ``total_weight``; the ``type == "Issue"`` guard keeps it from ever touching a
+		Receive's operator-entered main weight. This restores the back-fill the generic
+		``distribute_amount`` path used to provide before its Fire Assy / XRF early-return.
+		"""
+		if self.type != "Issue" or self.service_type not in [
+			"Fire Assy Service",
+			"XRF Services",
+		]:
+			return
+		if not self.exploded_product_details or not self.product_details:
+			return
+
+		# (main_slip, tree_no) → {main_item, issue_weight}
+		slip_data = {}
+		for pd in self.product_details:
+			data = slip_data.setdefault(
+				_slip_key(pd), {"main_item": None, "issue_weight": 0.0}
+			)
+			# Summed, not overwritten: two rows on the same slip issue their combined weight.
+			data["issue_weight"] += flt(pd.total_weight)
+			data["main_item"] = data["main_item"] or pd.item_code
+
+		slip_rows = defaultdict(list)
+		for row in self.exploded_product_details:
+			key = _slip_key(row)
+			if key in slip_data:
+				slip_rows[key].append(row)
+
+		for key, sd in slip_data.items():
+			if not sd["main_item"]:
+				continue
+			# First match only: if get_exploded_table ever emits a duplicate main row, only
+			# the first carries the weight — the duplicate stays 0 (skipped in the Stock
+			# Entry), so the issued qty is never doubled.
+			main_row = next(
+				(r for r in slip_rows.get(key, []) if r.item_code == sd["main_item"]),
+				None,
+			)
+			if main_row is not None:
+				main_row.gross_weight = sd["issue_weight"]
+
 	def update_bom(self):
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
 			for row in self.product_details:
@@ -375,6 +611,10 @@ class ProductCertification(Document):
 			process_fire_assy_xrf_submit(self, create_stock_entry)
 		else:
 			create_stock_entry(self)
+			# Synchronous: a failure here rolls the whole submit back, so a submitted
+			# certification always has its PO. Only the BOM amount roll-up stays deferred —
+			# that is the part that loops over exploded rows.
+			create_po(self)
 			frappe.enqueue(
 				"jewellery_erpnext.jewellery_erpnext.doctype.product_certification.product_certification.deferred_po_bom",
 				pc_name=self.name,
@@ -822,16 +1062,17 @@ class ProductCertification(Document):
 				# frappe.throw(_("Please mention Pure Item in Manufacturing Setting"))
 				frappe.throw(_("Select Manufacturer in session defaults or in Filed"))
 
-			existing_data = []
-			for row in self.exploded_product_details:
-				existing_data.append([row.main_slip, row.tree_no])
+			# Normalised through _slip_key: current trees carry no Main Slip at all, so a raw
+			# [main_slip, tree_no] comparison mixes None and "" and appends the same group twice.
+			existing_data = {_slip_key(row) for row in self.exploded_product_details}
 
 			for row in self.product_details:
 				# Resolved unconditionally: loss_item used to be set only on the save that
 				# created the exploded rows, so re-saving an existing document left it blank
 				# and the loss calculation had nothing to key on.
 				loss_item = get_item_loss_item(self.company, row.item_code, "M")
-				if [row.main_slip, row.tree_no] not in existing_data:
+				if _slip_key(row) not in existing_data:
+					existing_data.add(_slip_key(row))
 					exploded_product_details.append(
 						{
 							"item_code": row.item_code,
@@ -861,29 +1102,112 @@ class ProductCertification(Document):
 			self.append("exploded_product_details", row)
 
 	@frappe.whitelist()
-	def get_item_from_main_slip(self, tree_no):
-		metal = frappe.db.get_value(
-			"Main Slip",
-			{"tree_number": tree_no, "docstatus": 1},
-			["metal_type", "metal_touch", "metal_purity", "metal_colour", "name"],
-			as_dict=1,
-		)
-		if not metal:
-			frappe.throw(
-				_("No submitted Main Slip found for Tree No {0}.").format(
-					frappe.bold(tree_no)
-				)
-			)
+	def get_item_from_tree_no(self, tree_no):
+		"""Resolve a scanned Tree Number to its metal item (and legacy Main Slip, if any).
+
+		Trees come from two eras and only one of them involves a Main Slip:
+
+		* **Current** — ``employee_ir/doc_events/tree_casting.create_tree_on_issue`` mints the
+		  Tree Number straight off the casting Employee IR and copies the metal attributes onto
+		  it. There is no Main Slip anywhere in that flow, so resolving through one can only ever
+		  fail. These are the trees operators actually scan.
+		* **Legacy** — ``Main Slip.before_insert`` used to insert a bare Tree Number carrying
+		  nothing but ``company``. Those need the slip to supply the metal.
+
+		Resolution therefore reads the tree first and only falls back to Main Slip when the tree
+		itself carries no metal. The fallback is *not* restricted to submitted slips: every other
+		consumer of Main Slip in the app works against draft ("In Use") slips, so requiring
+		``docstatus == 1`` rejected the live ones.
+		"""
 		from jewellery_erpnext.utils import get_item_from_attribute
 
+		tree = frappe.db.get_value(
+			"Tree Number",
+			tree_no,
+			["name", "metal_type", "metal_touch", "metal_purity", "metal_colour"],
+			as_dict=1,
+		)
+		if not tree:
+			frappe.throw(
+				_("Tree No {0} does not exist.").format(frappe.bold(tree_no)),
+				title=_("Invalid Tree No"),
+			)
+
+		main_slip = None
+		metal = tree if tree.metal_touch else None
+
+		if not metal:
+			# `tree_number` is not unique on Main Slip; order so the same scan always resolves
+			# to the same slip.
+			legacy = frappe.get_all(
+				"Main Slip",
+				filters={"tree_number": tree_no},
+				fields=[
+					"name",
+					"metal_type",
+					"metal_touch",
+					"metal_purity",
+					"metal_colour",
+				],
+				order_by="modified desc",
+				limit=1,
+			)
+			if legacy:
+				main_slip = legacy[0].name
+				metal = legacy[0]
+
+		if not metal or not metal.metal_touch:
+			frappe.throw(
+				_(
+					"Tree No {0} carries no metal details, and no Main Slip was found for it. "
+					"Set the metal type / touch / purity / colour on the Tree Number before scanning it."
+				).format(frappe.bold(tree_no)),
+				title=_("Metal Details Missing"),
+			)
+
+		# The tree's own ledger carries both the metal actually issued onto it and the weight
+		# drawn back off it, so one read serves the item fallback and the weight.
+		ledger = frappe.get_all(
+			"Tree Material Detail",
+			filters={"parent": tree_no, "parenttype": "Tree Number"},
+			fields=["item_code", "issue_qty", "receive_qty", "loss_qty"],
+			order_by="idx asc",
+		)
+
+		item_code = get_item_from_attribute(
+			metal.metal_type,
+			metal.metal_touch,
+			metal.metal_purity,
+			metal.metal_colour,
+		)
+		if not item_code:
+			# A better answer than a blank row when no matching Item variant exists.
+			item_code = next(
+				(
+					row.item_code
+					for row in ledger
+					if (row.item_code or "").startswith("M-")
+				),
+				None,
+			)
+		if not item_code:
+			frappe.throw(
+				_("No metal Item found for Tree No {0} ({1} {2} {3} {4}).").format(
+					frappe.bold(tree_no),
+					metal.metal_type,
+					metal.metal_touch,
+					metal.metal_purity,
+					metal.metal_colour,
+				),
+				title=_("Metal Item Not Found"),
+			)
+
 		return {
-			"main_slip": metal.name,
-			"item_code": get_item_from_attribute(
-				metal.metal_type,
-				metal.metal_touch,
-				metal.metal_purity,
-				metal.metal_colour,
-			),
+			"main_slip": main_slip or "",
+			"item_code": item_code,
+			# 0 for a legacy Main Slip tree, which carries no ledger at all. The operator types
+			# it and validate_fire_assy_weight refuses a submit that still reads 0.
+			"total_weight": tree_metal_qty(ledger),
 		}
 
 
@@ -898,24 +1222,25 @@ def create_stock_entry(doc):
 		se_doc.product_certification = doc.name
 		se_doc.auto_created = 1
 		warehouse_type = "Manufacturing"
-		# if doc.service_type in ["Fire Assy Service", "XRF Services"]:
-		# 	warehouse_type = "Raw Material"
-		s_warehouse = frappe.db.exists(
-			"Warehouse",
-			{
-				"department": doc.department,
-				"warehouse_type": "Raw Material"
-				if doc.service_type in ["Fire Assy Service", "XRF Services"]
-				else warehouse_type,
-				"is_group": 0,
-				"disabled": 0,
-			},
-		)
-		if not s_warehouse:
+		# Fire Assy / XRF issue loose metal for assay, so they still source the department's Raw
+		# Material warehouse. Everything else (Hall Marking, Diamond Certificate) moves finished
+		# pieces and belongs in the department's WO warehouse.
+		s_warehouse = None
+		if doc.service_type in ["Fire Assy Service", "XRF Services"]:
 			s_warehouse = frappe.db.exists(
 				"Warehouse",
-				{"department": doc.department, "is_group": 0, "disabled": 0},
+				{
+					"department": doc.department,
+					"warehouse_type": "Raw Material",
+					"is_group": 0,
+					"disabled": 0,
+				},
 			)
+		# The fallback is the WO warehouse, not "any warehouse of the department" -- the
+		# Product Certification departments carry no Raw Material warehouse at all, so the old
+		# arbitrary fallback is what actually fired there.
+		if not s_warehouse:
+			s_warehouse = _department_wo_warehouse(doc.department)
 
 		company_abbr = frappe.get_cached_value("Company", doc.company, "abbr") or ""
 		t_warehouse_mwo = frappe.db.get_value(
@@ -1001,15 +1326,14 @@ def create_stock_entry(doc):
 				if row.serial_no:
 					added_serial.append(row.serial_no)
 				if row.gross_weight > 0:
+					# No Serial No.warehouse override: the source is the department warehouse
+					# resolved above, and validate_serial_warehouse_department has already
+					# proved every serial is sitting there. Sourcing from wherever the serial
+					# happened to be is what leaked issues out of the department -- and, across
+					# companies, out of the company ledger too.
 					source_wh = (
 						s_warehouse if doc.type == "Issue" else t_warehouse_serial
 					)
-					if row.serial_no:
-						serial_wh = frappe.db.get_value(
-							"Serial No", row.serial_no, "warehouse"
-						)
-						if serial_wh:
-							source_wh = serial_wh
 
 					se_doc.append(
 						"items",
@@ -1253,6 +1577,45 @@ def _outstanding_issue_qty(doc, issue_se):
 	return outstanding
 
 
+def _assert_warehouse_in_department(doc, warehouse, item_code, idx):
+	"""A raw-material line must source from the certification's own department.
+
+	``resolve_and_validate`` answers "where is this stock reserved", which is the right question
+	for batch/SRE correctness but says nothing about department. Left unchecked it issued metal
+	and diamonds straight out of Diamond Setting, Casting and Model Making WIP warehouses on
+	Product Certification documents.
+
+	This throws rather than silently substituting the department's WO warehouse: if the stock is
+	genuinely still in another department, the missing transfer is the bug, and forcing the
+	warehouse here would only book it negative.
+	"""
+	if not warehouse or not doc.department:
+		return
+
+	wh = frappe.db.get_value(
+		"Warehouse", warehouse, ["department", "company"], as_dict=1
+	)
+	if not wh:
+		return
+	if (wh.department or None) == (doc.department or None):
+		return
+
+	frappe.throw(
+		_(
+			"Row {0}: Item {1} is reserved in {2}, which belongs to department {3}, "
+			"not {4}. Transfer it into {5} before issuing."
+		).format(
+			idx,
+			frappe.bold(item_code),
+			frappe.bold(warehouse),
+			frappe.bold(wh.department or "-"),
+			frappe.bold(doc.department),
+			frappe.bold(_department_wo_warehouse(doc.department)),
+		),
+		title=_("Raw Material Not In Department Warehouse"),
+	)
+
+
 def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 		get_current_mop_balance_rows,
@@ -1308,9 +1671,10 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			all_pmo_mwos = [mwo_name]
 
 		# --- Find and cancel SREs, use SRE warehouse as source ---
+		sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
+
 		sre_list_1 = []
 		if all_pmo_mwos:
-			sre_cols = frappe.db.get_table_columns("Stock Reservation Entry")
 			sre_filters = {"docstatus": 1}
 			if "manufacturing_work_order" in sre_cols:
 				sre_filters["manufacturing_work_order"] = ["in", all_pmo_mwos]
@@ -1336,14 +1700,22 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				"Parent Manufacturing Order", pmo_name, "sales_order"
 			)
 		if sales_order and item_codes:
+			sre_filters_2 = {
+				"docstatus": 1,
+				"voucher_type": "Sales Order",
+				"voucher_no": sales_order,
+				"item_code": ["in", item_codes],
+			}
+			# Only UNTAGGED (SO-level) reservations belong here. Every MWO on a Sales Order
+			# shares voucher_no, and the metal/finding item codes are common across the whole
+			# order -- without this scope a Product Certification of one PMO consumes the WIP
+			# reservations of every other MWO on the SO (measured: 216 SREs across 115 MWOs
+			# from a PC covering 2). MWO-tagged SREs for THIS PMO are already in sre_list_1.
+			if "manufacturing_work_order" in sre_cols:
+				sre_filters_2["manufacturing_work_order"] = ["in", ["", None]]
 			sre_list_2 = frappe.db.get_all(
 				"Stock Reservation Entry",
-				filters={
-					"docstatus": 1,
-					"voucher_type": "Sales Order",
-					"voucher_no": sales_order,
-					"item_code": ["in", item_codes],
-				},
+				filters=sre_filters_2,
 				fields=[
 					"name",
 					"item_code",
@@ -1384,6 +1756,7 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 				)
 				or s_warehouse
 			)
+			_assert_warehouse_in_department(doc, item_s_warehouse, item_code, row.idx)
 
 			# pcs is a stone count: carry the batch-based balance for
 			# diamond/gemstone items only (prefix D/G, per FIELD_MAP in mop_log)

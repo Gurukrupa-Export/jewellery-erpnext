@@ -13,6 +13,24 @@ frappe.ui.form.on("Stock Entry", {
 		}
 		frm.trigger("get_items_from_customer_goods");
 
+		// Issue: open a NEW unsaved Customer Goods Issue fetched from this Received
+		// entry. make_stock_in_entry maps Received -> Issue (purpose Material Issue,
+		// custom_cg_issue_against = this entry) and returns an unsaved doc that
+		// open_mapped_doc routes the user to. The transit In/End entries are created
+		// separately by the user via the existing buttons.
+		if (frm.doc.docstatus == 1 && frm.doc.stock_entry_type == "Customer Goods Received") {
+			frm.add_custom_button(
+				__("Issue"),
+				function () {
+					frappe.model.open_mapped_doc({
+						method: "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
+						frm: frm,
+					});
+				},
+				__("Create")
+			);
+		}
+
 		frm.add_custom_button(
 			__("Parent Manufacturing Order"),
 			function () {
@@ -194,7 +212,7 @@ frappe.ui.form.on("Stock Entry", {
 					"Material Transfer (WORK ORDER)",
 					"Material Transfer (Department)",
 					"Material Transfer (Employee)",
-					"Material Transfer (MAIN SLIP)",
+					"Material Transfer",
 				].includes(frm.doc.stock_entry_type) &&
 				row.inventory_type == "Customer Goods" &&
 				!frm.doc.manufacturing_work_order
@@ -432,7 +450,7 @@ frappe.ui.form.on("Stock Entry", {
 		if (
 			[
 				"Material Transfer (DEPARTMENT)",
-				"Material Transfer (MAIN SLIP)",
+				"Material Transfer",
 				"Material Transfer (WORK ORDER)",
 				"Material Transfer (Subcontracting Work Order)",
 			].includes(frm.doc.stock_entry_type)
@@ -606,7 +624,7 @@ frappe.ui.form.on("Stock Entry", {
 		if (
 			frm.doc.purpose != "Manufacture" &&
 			frm.doc.purpose != "Repack" &&
-			frm.doc.stock_entry_type != "Material Transfer (MAIN SLIP)"
+			frm.doc.stock_entry_type != "Material Transfer"
 		) {
 			if (frm.doc.to_employee) {
 				frappe.db

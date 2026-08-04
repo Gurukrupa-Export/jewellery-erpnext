@@ -11,6 +11,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturin
 	get_details_to_append,
 	get_pending_ppo_sales_order,
 	get_repair_pending_ppo_sales_order,
+	is_subcontracting_selected,
 )
 from jewellery_erpnext.jewellery_erpnext.tests.test_sales_order import (
 	create_quotation,
@@ -30,25 +31,50 @@ class TestManufacturingPlan(IntegrationTestCase):
 			"Warehouse", {"warehouse_name": "Test_Warehouse"}, "name"
 		)
 
+	def test_is_subcontracting_selected(self):
+		"""``is_subcontracting`` is a Select, so only an explicit yes may take the
+		subcontracting branch -- the string "No" is truthy and must not. "1"/"0" are the
+		legacy values left over from when the field was a Check."""
+		for value in ("Yes", "yes", " YES ", "1"):
+			self.assertTrue(is_subcontracting_selected(value), msg=value)
+		for value in ("No", "no", "0", "", None):
+			self.assertFalse(is_subcontracting_selected(value), msg=value)
+
 	def test_manufacturing_plan(self):
 		create_sales_order(self)
 		doc = frappe.new_doc("Manufacturing Plan")
 		doc.select_manufacture_order = "Manufacturing"
+		# Set BEFORE fetching the items -- get_items_for_production() reads this field, so
+		# setting it afterwards leaves the branch under test unexercised.
+		doc.is_subcontracting = "No"
 		man_plan = manufacturing_plan_creation(doc)
 		man_plan.company = "Test_Company"
 		man_plan.branch = self.branch
 		if man_plan.setting_type:
 			man_plan.setting_type = "Close"
+
+		# "No" must leave the full pending qty on the manufacturing side.
+		self.assertTrue(man_plan.manufacturing_plan_table)
+		for row in man_plan.manufacturing_plan_table:
+			self.assertTrue(row.pending_qty)
+			self.assertEqual(row.manufacturing_order_qty, row.pending_qty)
+			self.assertFalse(row.subcontracting)
+			self.assertFalse(row.subcontracting_qty)
+
 		man_plan.save()
-		self.assertEqual(
-			man_plan.total_planned_qty, len(man_plan.manufacturing_plan_table)
+		expected_qty = sum(
+			row.manufacturing_order_qty for row in man_plan.manufacturing_plan_table
 		)
+		self.assertTrue(expected_qty)
+		self.assertEqual(man_plan.total_planned_qty, expected_qty)
 		man_plan.submit()
 		pmo_list = frappe.get_all(
 			"Parent Manufacturing Order",
 			filters={"manufacturing_plan": man_plan.name},
 			pluck="name",
 		)
+		# One Parent Manufacturing Order per unit -- a zero qty would silently create none.
+		self.assertEqual(len(pmo_list), expected_qty)
 		for pm in pmo_list:
 			pmo = frappe.get_doc("Parent Manufacturing Order", pm)
 			self.assertEqual(man_plan.name, pmo.manufacturing_plan)
@@ -60,32 +86,59 @@ class TestManufacturingPlan(IntegrationTestCase):
 				man_plan.manufacturing_plan_table[0].sales_order, pmo.sales_order
 			)
 
+		# ...and the consumed qty must be posted back onto the Sales Order Item.
+		for row in man_plan.manufacturing_plan_table:
+			self.assertEqual(
+				frappe.db.get_value(
+					"Sales Order Item", row.docname, "manufacturing_order_qty"
+				),
+				row.manufacturing_order_qty,
+			)
+
 	def test_manufacturing_plan_subcontracting(self):
 		create_sales_order(self)
 		doc = frappe.new_doc("Manufacturing Plan")
 		doc.select_manufacture_order = "Manufacturing"
+		# Every subcontracting input must be set BEFORE the fetch -- get_items_for_production()
+		# copies them onto each row.
+		doc.is_subcontracting = "Yes"
+		doc.supplier = "Test_Supplier"
+		doc.estimated_date = add_to_date(now(), days=-4)
+		doc.purchase_type = "FG Purchase"
 		man_plan = manufacturing_plan_creation(doc)
 		man_plan.branch = self.branch
 		man_plan.company = "Test_Company"
 		if man_plan.setting_type:
 			man_plan.setting_type = "Close"
-		man_plan.is_subcontracting = 1
-		man_plan.supplier = "Test_Supplier"
-		man_plan.estimated_date = add_to_date(now(), days=-4)
-		man_plan.purchase_type = "FG Purchase"
+
+		# The fetch itself must flag the rows. Asserting this before any manual fix-up is the
+		# point: hand-setting row.subcontracting here is what used to hide the defect.
+		self.assertTrue(man_plan.manufacturing_plan_table)
 		for row in man_plan.manufacturing_plan_table:
+			self.assertEqual(row.subcontracting, 1)
+			self.assertEqual(row.subcontracting_qty, row.pending_qty)
+			self.assertEqual(row.manufacturing_order_qty, 0)
+			self.assertEqual(row.supplier, "Test_Supplier")
+			self.assertEqual(row.purchase_type, "FG Purchase")
 			row.estimated_delivery_date = row.estimated_delivery_date or today()
-			row.subcontracting = 1
-			row.supplier = man_plan.supplier
-			row.subcontracting_qty = 1
-			row.manufacturing_order_qty -= 1
-			row.purchase_type = man_plan.purchase_type
 
 		man_plan.save()
-		self.assertEqual(
-			man_plan.total_planned_qty, len(man_plan.manufacturing_plan_table)
+		expected_qty = sum(
+			row.subcontracting_qty for row in man_plan.manufacturing_plan_table
 		)
+		self.assertTrue(expected_qty)
+		self.assertEqual(man_plan.total_planned_qty, expected_qty)
 		man_plan.submit()
+
+		# Subcontracting routes through a Purchase Order, not a Parent Manufacturing Order.
+		self.assertTrue(
+			frappe.db.exists("Purchase Order", {"manufacturing_plan": man_plan.name})
+		)
+		self.assertFalse(
+			frappe.db.exists(
+				"Parent Manufacturing Order", {"manufacturing_plan": man_plan.name}
+			)
+		)
 
 	def test_manufacturing_plan_repair(self):
 		repair_so = create_repair_sales_order(self)

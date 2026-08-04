@@ -40,7 +40,7 @@ def get_columns():
 			"width": 150,
 		},
 		{
-			"label": _("Physical Dust Quantity"),
+			"label": _("Physical Scrap Quantity"),
 			"fieldname": "physical_dust_quantity",
 			"fieldtype": "Float",
 			"width": 160,
@@ -52,7 +52,7 @@ def get_columns():
 			"width": 140,
 		},
 		{
-			"label": _("Dust Item"),
+			"label": _("Scrap Item"),
 			"fieldname": "dust_item",
 			"fieldtype": "Link",
 			"options": "Item",
@@ -63,7 +63,7 @@ def get_columns():
 
 def get_data(filters):
 	conditions, values = entry_conditions(
-		filters, default_days=1, refining_type="Dust Refining"
+		filters, default_days=1, refining_type="Scrap Refining"
 	)
 	return frappe.db.sql(
 		f"""

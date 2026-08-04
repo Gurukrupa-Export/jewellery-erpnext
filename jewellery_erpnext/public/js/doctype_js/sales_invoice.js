@@ -8,7 +8,10 @@ frappe.ui.form.on("Sales Invoice", {
 		filter_customer(frm);
 	},
 	customer(frm) {
-		get_sales_type(frm);
+		if(!frm.doc.custom_product_return_form_ref)
+		{
+			get_sales_type(frm);
+		}
 	},
 	refresh(frm) {
 		if (frm.doc.docstatus === 1) edit_bom_after_submit(frm);
@@ -54,6 +57,7 @@ frappe.ui.form.on("Sales Invoice", {
 
                     frm.set_value("customer", prf.customer);
                     frm.set_value("company", prf.company);
+					frm.set_value("sales_type", prf.invoice_sales_type);
                     frm.set_value("gold_rate_with_gst", prf.gold_rate_with_gst);
                     frm.set_value("custom_product_return_form_ref", prf.name);
 
@@ -134,8 +138,9 @@ frappe.ui.form.on("Sales Invoice", {
                                                 d.rate =
                                                     flt(bom.total_bom_amount) +
                                                     flt(bom.certification_amount) +
-                                                    flt(bom.making_charge) +
-                                                    flt(bom.hallmarking_amount);
+                                                    
+                                                    flt(bom.hallmarking_amount)+
+													(frm.doc.sales_type === "Hybrid" ? 0 : flt(bom.making_charge));
 
 
                                                 d.amount = d.rate * Math.abs(d.qty);

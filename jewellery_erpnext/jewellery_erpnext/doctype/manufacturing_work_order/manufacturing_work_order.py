@@ -245,11 +245,11 @@ class ManufacturingWorkOrder(Document):
 
 	@frappe.whitelist()
 	def create_repair_un_pack_stock_entry(self):
-		bom_weight = frappe.db.get_value("BOM", self.master_bom, "gross_weight")
+		# bom_weight = frappe.db.get_value("BOM", self.master_bom, "gross_weight")
 
-		pmo_weight = frappe.db.get_value(
-			"Parent Manufacturing Order", self.manufacturing_order, "customer_weight"
-		)
+		# pmo_weight = frappe.db.get_value(
+		# 	"Parent Manufacturing Order", self.manufacturing_order, "customer_weight"
+		# )
 
 		# if bom_weight != pmo_weight:
 		# 	frappe.throw(_("BOM weight does not match with customer weight"))
@@ -810,6 +810,8 @@ class ManufacturingWorkOrder(Document):
 		if frappe.flags.in_test:
 			return
 		if not self.item_code:
+			return
+		if not self.for_fg:
 			return
 
 		is_photoshop = frappe.db.get_value(

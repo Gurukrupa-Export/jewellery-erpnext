@@ -6,7 +6,7 @@ Material on an employee MSL warehouse.
 
 Pure-logic: DB / Stock Entry persistence are patched. Covers the MSL-warehouse
 validation guards, the Issue corridor (Dept RM -> this MSL WH via a
-``Material Transfer (MAIN SLIP)``), and the Receive auto-difference model
+``Material Transfer``), and the Receive auto-difference model
 (``loss = pending - returned``, difference booked to Dept Scrap via a
 ``Process Loss`` Repack).
 """
@@ -52,6 +52,10 @@ class _FakeSE:
 	def append(self, field, row):
 		self.items.append(row)
 		return row
+
+	def get(self, field, default=None):
+		# Every real Document has .get; the loss-leg ownership guard uses it.
+		return getattr(self, field, default)
 
 	def insert(self):
 		self.inserted = True
@@ -180,6 +184,13 @@ class _OpTestBase(IntegrationTestCase):
 			patch.object(wse, "preallocate_series_for_docs"),
 			patch.object(wse, "lock_bins"),
 			patch.object(wse, "recalculate_msl_tracking"),
+			# Month-start close has its own suite (TestPriorPeriodGate); here it
+			# must not reach the database.
+			patch.object(wse, "validate_no_prior_period_pending"),
+			# The loss leg now vets its resolved batches for customer ownership;
+			# resolving nothing means no spill and no throw. TestCustomerLossGuard
+			# drives that helper directly.
+			patch.object(wse, "batch_priority_map", return_value={}),
 			patch.object(wse, "_get_department_rm_warehouse", return_value="DEPT-RM"),
 			patch.object(wse, "get_scrap_warehouse", return_value="DEPT-SCRAP"),
 			patch.object(wse, "_resolve_loss_item", return_value="LOSS-ITEM"),
@@ -548,32 +559,72 @@ class _FakeWH:
 
 class TestPendingComputation(IntegrationTestCase):
 	def setUp(self):
-		self._p = patch.object(wt, "flt", _det_flt)
-		self._p.start()
+		self._patches = [
+			patch.object(wt, "flt", _det_flt),
+			# Qty precision is now read from the Stock Entry rather than hardcoded.
+			patch("frappe.get_precision", return_value=3),
+		]
+		for p in self._patches:
+			p.start()
 
 	def tearDown(self):
-		self._p.stop()
+		for p in self._patches:
+			p.stop()
 
-	def test_pending_is_issue_minus_receive_minus_loss(self):
-		raw = [
-			{
-				"warehouse": "WH",
-				"employee": "E",
-				"employee_name": "n",
-				"department": "D",
-				"item_code": "M-G",
-				"issue_qty": 10.0,
-				"receive_qty": 3.0,
-				"loss_qty": 1.0,
-			}
-		]
+	def _run(self, raw, **kwargs):
 		with patch("frappe.db.escape", side_effect=lambda v: "'%s'" % v), patch(
 			"frappe.db.sql", return_value=raw
-		):
-			out = wt.get_warehouse_item_tracking({"warehouse": "WH"})
+		) as sql:
+			out = wt.get_warehouse_item_tracking({"warehouse": "WH"}, **kwargs)
+		return out, sql.call_args[0][0]
+
+	@staticmethod
+	def _raw(**overrides):
+		row = {
+			"warehouse": "WH",
+			"employee": "E",
+			"employee_name": "n",
+			"department": "D",
+			"item_code": "M-G",
+			"issue_qty": 10.0,
+			"receive_qty": 3.0,
+			"loss_qty": 1.0,
+		}
+		row.update(overrides)
+		return row
+
+	def test_pending_is_issue_minus_receive_minus_loss(self):
+		out, _sql = self._run([self._raw()])
 		self.assertEqual(out[0]["pending_qty"], 6.0)
 		self.assertEqual(out[0]["issue_qty"], 10.0)
 		self.assertEqual(out[0]["loss_qty"], 1.0)
+
+	def test_default_path_has_no_month_column(self):
+		_out, sql = self._run([self._raw()])
+		self.assertNotIn("month_start", sql)
+		self.assertIn("GROUP BY sle.warehouse, sle.item_code", sql)
+
+	def test_group_by_month_adds_the_expression_to_select_and_group_by(self):
+		_out, sql = self._run(
+			[self._raw(month_start="2026-07-01")], group_by_month=True
+		)
+		self.assertEqual(
+			sql.count(wt.MONTH_START_EXPR), 3
+		)  # SELECT + GROUP BY + ORDER BY
+		self.assertIn("month_start", sql)
+
+	def test_month_expression_contains_no_literal_percent(self):
+		# The query is an f-string handed to frappe.db.sql WITH a params dict, so
+		# pymysql runs `query % args` over it. A literal % (e.g. DATE_FORMAT's
+		# '%Y-%m-01') raises ValueError: unsupported format character even when the
+		# filter dict is empty.
+		self.assertNotIn("%", wt.MONTH_START_EXPR)
+		_out, sql = self._run(
+			[self._raw(month_start="2026-07-01")], group_by_month=True
+		)
+		for fragment in sql.split("%(")[1:]:
+			# every surviving % must be a named parameter placeholder
+			self.assertIn(")s", fragment)
 
 
 class TestRecalculateScoping(IntegrationTestCase):
@@ -601,8 +652,23 @@ class TestRecalculateScoping(IntegrationTestCase):
 			gd.assert_not_called()
 
 	def test_writes_rm_warehouse(self):
+		"""Month movement over a cumulative opening/closing balance.
+
+		The grid makes two calls to the same helper: one scoped to the current
+		month for issue/receive/loss, one unscoped for the cumulative pending. The
+		row must reconcile as opening + (issue - receive - loss) = pending.
+		"""
 		fake = _FakeWH()
-		rows = [
+		month = [
+			{
+				"item_code": "M-G",
+				"issue_qty": 4.0,
+				"receive_qty": 3.0,
+				"loss_qty": 1.0,
+				"pending_qty": 0.0,
+			}
+		]
+		cumulative = [
 			{
 				"item_code": "M-G",
 				"issue_qty": 10.0,
@@ -614,13 +680,351 @@ class TestRecalculateScoping(IntegrationTestCase):
 		with patch(
 			"frappe.db.get_value",
 			return_value=SimpleNamespace(employee="EMP", warehouse_type="Raw Material"),
-		), patch.object(wt, "get_warehouse_item_tracking", return_value=rows), patch(
-			"frappe.get_doc", return_value=fake
-		):
+		), patch("frappe.get_precision", return_value=3), patch.object(
+			wt, "get_warehouse_item_tracking", side_effect=[month, cumulative]
+		) as g, patch("frappe.get_doc", return_value=fake):
 			n = wt.recalculate_msl_tracking("WH")
+
+		# First call is month-scoped, second is cumulative (no from_date).
+		self.assertIn("from_date", g.call_args_list[0][0][0])
+		self.assertNotIn("from_date", g.call_args_list[1][0][0])
+
 		self.assertEqual(n, 1)
 		self.assertEqual(len(fake.rows), 1)
-		self.assertEqual(fake.rows[0]["item_code"], "M-G")
-		self.assertEqual(fake.rows[0]["pending_qty"], 6.0)
+		row = fake.rows[0]
+		self.assertEqual(row["item_code"], "M-G")
+		self.assertEqual(row["issue_qty"], 4.0)
+		self.assertEqual(row["pending_qty"], 6.0)
+		self.assertEqual(row["opening_qty"], 6.0)
+		self.assertEqual(
+			row["opening_qty"]
+			+ row["issue_qty"]
+			- row["receive_qty"]
+			- row["loss_qty"],
+			row["pending_qty"],
+		)
 		self.assertTrue(fake.flags.ignore_msl_guards)
 		self.assertTrue(fake.saved)
+
+
+# ---------------------------------------------------------------------------
+# Month-start close (warehouse_tracking.validate_no_prior_period_pending)
+# ---------------------------------------------------------------------------
+
+
+class TestPriorPeriodGate(IntegrationTestCase):
+	"""An MSL warehouse cannot take new material while it still owes last month's."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		self._patches = [
+			patch.object(wt, "flt", _det_flt),
+			patch("frappe.get_precision", return_value=3),
+		]
+		for p in self._patches:
+			p.start()
+
+	def tearDown(self):
+		for p in self._patches:
+			p.stop()
+
+	@staticmethod
+	def _row(item, pending):
+		return {
+			"item_code": item,
+			"pending_qty": pending,
+			"receive_qty": 0.0,
+			"loss_qty": 0.0,
+		}
+
+	def _gate(self, tracking_side_effect, enforce_from="2020-01-01", privileged=False):
+		"""Run the gate with the three get_warehouse_item_tracking calls stubbed.
+
+		The warehouse scope guard is stubbed BY NAME rather than by blanket-patching
+		``frappe.db.get_value``: the throw/warn branch formats a message, and
+		frappe's own translation lookups go through that same function, so a
+		blanket stub breaks Language/DocType loading inside msgprint.
+		"""
+
+		with patch.object(wt, "is_msl_warehouse", return_value=True), patch.object(
+			wt, "gate_cutover_date", return_value=enforce_from
+		), patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.warehouse._is_privileged",
+			return_value=privileged,
+		), patch.object(
+			wt, "get_warehouse_item_tracking", side_effect=tracking_side_effect
+		):
+			return wt.validate_no_prior_period_pending("MSL-WH")
+
+	def test_carry_in_is_cumulative_and_bounded_by_to_date_only(self):
+		captured = {}
+
+		def _track(filters, **kwargs):
+			captured.update(filters)
+			return []
+
+		with patch.object(wt, "get_warehouse_item_tracking", side_effect=_track):
+			wt.get_prior_period_pending("MSL-WH", posting_date="2026-07-15")
+
+		# A true carry-in: bounded above by the previous month end, with NO
+		# from_date and no month grouping, so it is a running balance and not one
+		# month's delta.
+		self.assertEqual(str(captured["to_date"]), "2026-06-30")
+		self.assertNotIn("from_date", captured)
+
+	def test_blocks_when_prior_month_is_unsettled(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._gate(
+				[
+					[self._row("M-G", 5.0)],  # carry-in (as at last month end)
+					[self._row("M-G", 5.0)],  # live pending now
+				]
+			)
+
+	def test_same_month_settlement_clears_the_block(self):
+		# The point of the FIFO drawdown: a receive posted THIS month must release a
+		# warehouse blocked on the 1st, otherwise it stays frozen for the rest of
+		# the month with no operator remedy.
+		self.assertIsNone(
+			self._gate(
+				[
+					[self._row("M-G", 5.0)],
+					[
+						self._row("M-G", 0.0)
+					],  # returned within the month -> nothing held
+				]
+			)
+		)
+
+	def test_float_dust_does_not_block(self):
+		self.assertIsNone(
+			self._gate(
+				[
+					[self._row("M-G", 5.0)],
+					[self._row("M-G", 1e-12)],
+				]
+			)
+		)
+
+	def test_smallest_representable_pending_still_blocks(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._gate([[self._row("M-G", 5.0)], [self._row("M-G", 0.001)]])
+
+	def test_dormant_when_enforce_from_is_blank(self):
+		self.assertIsNone(
+			self._gate(
+				[[self._row("M-G", 5.0)], [self._row("M-G", 5.0)]],
+				enforce_from=None,
+			)
+		)
+
+	def test_unset_date_single_reads_as_not_configured(self):
+		"""frappe returns date(1, 1, 1) for a Date Single that was never set.
+
+		That value is TRUTHY and earlier than every posting date, so a bare
+		falsiness check would arm the gate on every site that never configured it
+		and block the Issue button on day one.
+		"""
+		import datetime
+
+		for raw in (datetime.date(1, 1, 1), "0001-01-01", None, ""):
+			with patch("frappe.db.get_single_value", return_value=raw):
+				self.assertIsNone(wt.gate_cutover_date(), f"{raw!r} must read as unset")
+
+		with patch("frappe.db.get_single_value", return_value="2026-09-01"):
+			self.assertEqual(str(wt.gate_cutover_date()), "2026-09-01")
+
+	def test_unset_date_single_does_not_block(self):
+		import datetime
+
+		with patch("frappe.db.get_single_value", return_value=datetime.date(1, 1, 1)):
+			with patch.object(wt, "is_msl_warehouse", return_value=True), patch(
+				"jewellery_erpnext.jewellery_erpnext.doc_events.warehouse._is_privileged",
+				return_value=False,
+			), patch.object(wt, "get_warehouse_item_tracking") as g:
+				self.assertIsNone(wt.validate_no_prior_period_pending("MSL-WH"))
+				g.assert_not_called()
+
+	def test_warns_but_does_not_block_before_the_cutover(self):
+		with patch.object(wt.frappe, "msgprint") as mp:
+			self.assertIsNone(
+				self._gate(
+					[[self._row("M-G", 5.0)], [self._row("M-G", 5.0)]],
+					enforce_from="2099-01-01",
+				)
+			)
+			mp.assert_called_once()
+
+	def test_privileged_user_bypasses(self):
+		self.assertIsNone(
+			self._gate(
+				[[self._row("M-G", 5.0)], [self._row("M-G", 5.0)]], privileged=True
+			)
+		)
+
+	def test_skips_non_msl_warehouse(self):
+		with patch.object(wt, "is_msl_warehouse", return_value=False), patch.object(
+			wt, "get_warehouse_item_tracking"
+		) as g:
+			self.assertIsNone(wt.validate_no_prior_period_pending("WH"))
+			g.assert_not_called()
+
+	def test_scope_guard_rejects_non_employee_and_wip_warehouses(self):
+		for row in (
+			SimpleNamespace(employee=None, warehouse_type="Raw Material"),
+			SimpleNamespace(employee="EMP", warehouse_type="Manufacturing"),
+			None,
+		):
+			with patch("frappe.db.get_value", return_value=row):
+				self.assertFalse(wt.is_msl_warehouse("WH"))
+		with patch(
+			"frappe.db.get_value",
+			return_value=SimpleNamespace(employee="EMP", warehouse_type="Raw Material"),
+		):
+			self.assertTrue(wt.is_msl_warehouse("WH"))
+		self.assertFalse(wt.is_msl_warehouse(None))
+
+	def test_skips_empty_warehouse_arg(self):
+		with patch.object(wt, "get_warehouse_item_tracking") as g:
+			self.assertIsNone(wt.validate_no_prior_period_pending(None))
+			g.assert_not_called()
+
+
+class TestIssueGateWiring(_OpTestBase):
+	"""The gate runs on Issue, before any lock, and never on Receive."""
+
+	def test_issue_is_gated_before_series_and_bins(self):
+		order = []
+		wse.validate_no_prior_period_pending.side_effect = lambda *a, **k: order.append(
+			"gate"
+		)
+		wse.preallocate_series_for_docs.side_effect = lambda *a, **k: order.append(
+			"series"
+		)
+		wse.lock_bins.side_effect = lambda *a, **k: order.append("bins")
+
+		wse.issue_material("MSL-WH", "M-G", 5.0, source_warehouse="DEPT-RM")
+
+		self.assertEqual(order, ["gate", "series", "bins"])
+		wse.validate_no_prior_period_pending.assert_called_once_with("MSL-WH")
+
+	def test_receive_is_not_gated(self):
+		# Receive is the drain that CLEARS the pending; gating it would trap the
+		# operator inside a blocked month.
+		with patch.object(wse, "_pending_by_item", return_value={"M-G": 5.0}):
+			wse.receive_material("MSL-WH", [{"item_code": "M-G", "return_qty": 5.0}])
+		wse.validate_no_prior_period_pending.assert_not_called()
+
+
+class TestCustomerLossGuard(IntegrationTestCase):
+	"""The MSL loss leg vets its resolved batches before anything is written."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _se(*rows):
+		return frappe._dict(
+			items=[frappe._dict(r) for r in rows],
+			get=lambda k, d=None: None,
+		)
+
+	def _run(self, rows, ranks):
+		se = frappe._dict(items=[frappe._dict(r) for r in rows])
+		with patch.object(wse, "flt", _det_flt), patch(
+			"frappe.get_precision", return_value=3
+		), patch.object(wse, "batch_priority_map", return_value=ranks), patch.object(
+			wse.frappe, "msgprint"
+		) as mp:
+			wse._guard_customer_loss(se)
+		return mp
+
+	def test_no_wastage_batch_throws(self):
+		ranks = {
+			"B-NW": frappe._dict(
+				inventory_type="Customer Goods", customer="C1", no_wastage=True
+			)
+		}
+		with self.assertRaises(frappe.ValidationError):
+			self._run(
+				[
+					{
+						"item_code": "M-G",
+						"batch_no": "B-NW",
+						"qty": 2.0,
+						"s_warehouse": "MSL",
+					}
+				],
+				ranks,
+			)
+
+	def test_ordinary_customer_warns_once_and_does_not_throw(self):
+		ranks = {
+			"B-CG": frappe._dict(
+				inventory_type="Customer Goods", customer="C1", no_wastage=False
+			),
+			"B-CG2": frappe._dict(
+				inventory_type="Customer Goods", customer="C1", no_wastage=False
+			),
+		}
+		mp = self._run(
+			[
+				{
+					"item_code": "M-G",
+					"batch_no": "B-CG",
+					"qty": 2.0,
+					"s_warehouse": "MSL",
+				},
+				{
+					"item_code": "M-G",
+					"batch_no": "B-CG2",
+					"qty": 1.0,
+					"s_warehouse": "MSL",
+				},
+			],
+			ranks,
+		)
+		mp.assert_called_once()
+
+	def test_company_metal_is_silent(self):
+		ranks = {
+			"B-RS": frappe._dict(
+				inventory_type="Regular Stock", customer=None, no_wastage=False
+			)
+		}
+		mp = self._run(
+			[
+				{
+					"item_code": "M-G",
+					"batch_no": "B-RS",
+					"qty": 2.0,
+					"s_warehouse": "MSL",
+				}
+			],
+			ranks,
+		)
+		mp.assert_not_called()
+
+	def test_produce_rows_are_ignored(self):
+		ranks = {
+			"B-CG": frappe._dict(
+				inventory_type="Customer Goods", customer="C1", no_wastage=True
+			)
+		}
+		# t_warehouse set + no s_warehouse => the ML produce row, not a consumption.
+		mp = self._run(
+			[
+				{
+					"item_code": "ML",
+					"batch_no": "B-CG",
+					"qty": 2.0,
+					"t_warehouse": "SCRAP",
+				}
+			],
+			ranks,
+		)
+		mp.assert_not_called()

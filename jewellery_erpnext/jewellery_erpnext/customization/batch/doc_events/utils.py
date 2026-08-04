@@ -43,29 +43,22 @@ def update_inventory_dimentions(self):
 				)
 			if emp:
 				self.custom_employee = emp
-			attribute_value = frappe.db.get_value(
-				"Item Variant Attribute",
-				{"parent": self.item, "attribute": "Metal Type"},
-				"attribute_value",
-			)
 			# Batch Rate is stamped from the row that created the batch: Purchase
 			# Receipt Item.rate, or the Stock Entry Detail's own maintained rate
 			# falling back to basic_rate. Stamped only while the field is still
 			# empty (see _can_stamp_rate) so a later re-save cannot clobber the
 			# qty-weighted rate batch.on_update blends for Repack-Metal Conversion.
-			if self.item in alloy_item_list:
-				if _can_stamp_rate(self, "custom_alloy_rate"):
-					self.custom_alloy_rate = _source_row_rate(
-						self, row.options, "custom_alloy_rate"
-					)
-			elif (
-				frappe.db.get_value("Attribute Value", attribute_value, "is_metal_type")
-				or _stamp_rate_for_all_items()
-			):
-				if _can_stamp_rate(self, "custom_metal_rate"):
-					self.custom_metal_rate = _source_row_rate(
-						self, row.options, "custom_metal_rate"
-					)
+			#
+			# Every item gets a rate, not just metal. The split is only alloy vs
+			# everything else: an alloy batch's value belongs on custom_alloy_rate
+			# because batch.on_update blends the two pools separately for a
+			# Repack-Metal Conversion. Diamond, gemstone, finding and consumable
+			# batches were previously left at 0 -- see _rate_field_for_item.
+			rate_field = _rate_field_for_item(self.item, alloy_item_list)
+			if _can_stamp_rate(self, rate_field):
+				setattr(
+					self, rate_field, _source_row_rate(self, row.options, rate_field)
+				)
 			break
 
 	item_allows_customer_goods = frappe.db.get_value(
@@ -167,20 +160,30 @@ def _source_row_rate(batch, child_doctype, se_fieldname):
 	return rate
 
 
-def _stamp_rate_for_all_items():
-	"""Feature flag: also stamp Batch Rate for non-metal, non-alloy items.
+def _rate_field_for_item(item_code, alloy_item_list):
+	"""Which Batch field the minting row's rate belongs on.
 
-	OFF by default, because widening this is not neutral.
-	``Stock Entry Detail.custom_metal_rate`` is ``fetch_from
-	batch_no.custom_metal_rate``, and the SNC / FG-BOM rate maps
-	(``manufacturing_operation._snc_se_detail_maps``) read
-	``COALESCE(NULLIF(custom_metal_rate, 0), basic_rate)`` -- deliberately falling
-	through to the live ``basic_rate`` for diamond and gemstone, as that
-	function's docstring states. Filling the batch rate for those items silently
-	switches them to the batch's creation-time rate. Enable per site only after
-	confirming that is the intended valuation.
+	Alloy is the only special case: ``batch.on_update`` blends alloy and metal
+	into two separate qty-weighted pools for a Repack-Metal Conversion
+	(``custom_alloy_rate`` vs ``custom_metal_rate``), so an alloy batch's value
+	has to land in the alloy pool or the conversion's blend double-counts it.
+
+	Everything else -- metal, diamond, gemstone, finding, consumables -- takes
+	``custom_metal_rate``. This used to be narrowed to items carrying a
+	``Metal Type`` attribute whose Attribute Value has ``is_metal_type``, behind
+	a site_config opt-in for the rest, which left every diamond and gemstone
+	batch at 0 (a Material Receipt of ``D-NT-RO-6B-+00-0`` at basic_rate 346
+	minted a batch with Batch Rate 0).
+
+	Widening it is not neutral and is intended: ``Stock Entry Detail
+	.custom_metal_rate`` is ``fetch_from batch_no.custom_metal_rate``, and the
+	SNC / FG-BOM rate maps (``manufacturing_operation._snc_se_detail_maps``) read
+	``COALESCE(NULLIF(custom_metal_rate, 0), basic_rate)``. Those previously fell
+	through to the live ``basic_rate`` for diamond and gemstone and now use the
+	batch's own rate instead -- which is the consistent answer for material that
+	is on ``use_batchwise_valuation``.
 	"""
-	return bool(frappe.conf.get("stamp_batch_rate_for_all_items"))
+	return "custom_alloy_rate" if item_code in alloy_item_list else "custom_metal_rate"
 
 
 def _purchase_receipt_voucher_type(batch):
@@ -356,6 +359,18 @@ def update_pure_qty(self):
 	# company = frappe.db.get_value(self.reference_doctype, self.reference_name, "company")
 
 	# pure_item = frappe.db.get_value("Manufacturing Setting", company, "pure_gold_item")
+
+	# Only the manufacturing documents (Manufacturing Work Order / Operation, Refining
+	# Entry, ...) carry a `manufacturer`; a Batch may just as well reference a Stock Entry,
+	# Purchase Receipt or Sales Invoice, none of which have the column -- reading it blindly
+	# raises OperationalError "Unknown column 'manufacturer'" and aborts the whole save.
+	# That stayed hidden while every such batch was saved only at creation time (batch_qty
+	# is 0 then, so this returns above); it fires as soon as a batch that already holds
+	# stock is re-saved, e.g. the origin-entries update in
+	# customization/serial_and_batch_bundle/doc_events/utils.py::update_parent_batch_id when
+	# an inward bundle lands in an EXISTING batch.
+	if not frappe.get_meta(self.reference_doctype).has_field("manufacturer"):
+		return
 
 	manufacturer = frappe.db.get_value(
 		self.reference_doctype, self.reference_name, "manufacturer"

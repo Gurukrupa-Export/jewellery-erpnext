@@ -24,7 +24,7 @@ def get_columns():
 			"width": 140,
 		},
 		{
-			"label": _("Dust Generated"),
+			"label": _("Scrap Generated"),
 			"fieldname": "dust_generated",
 			"fieldtype": "Float",
 			"width": 140,
@@ -40,7 +40,7 @@ def get_columns():
 
 def get_data(filters):
 	conditions, values = entry_conditions(
-		filters, default_days=30, refining_type="Dust Refining"
+		filters, default_days=30, refining_type="Scrap Refining"
 	)
 	rows = frappe.db.sql(
 		f"""

@@ -12,7 +12,7 @@ def validate(self, method):
 	self.calculate_taxes_and_totals()
 def set_gst_details(self):
     
-    if self.purchase_type not in ("Finished Goods", "Subcontracting","Branch Purchase"):
+    if self.purchase_type not in ("Finished Goods","FG Purchase", "Subcontracting","Branch Purchase"):
         return
     
     customer_state = frappe.db.get_value("Address", self.supplier_address, "gst_state_number")
@@ -28,6 +28,10 @@ def set_gst_details(self):
             "Gurukrupa Export Private Limited": "GST 3% - GEPL",
             "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
         },
+        "FG Purchase": {
+				"Gurukrupa Export Private Limited": "GST 3% - GEPL",
+				"KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
+                },
         "Subcontracting": {
             "Gurukrupa Export Private Limited": "GST 5% - GEPL",
             "KG GK Jewellers Private Limited":  "GST 5% - KGJPL",
