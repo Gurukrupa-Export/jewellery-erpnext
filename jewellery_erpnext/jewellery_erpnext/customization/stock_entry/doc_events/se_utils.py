@@ -21,11 +21,11 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.subcontracting_utils import (
 	create_subcontracting_doc,
 )
-from jewellery_erpnext.utils import _bulk_map
 from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
 	SAMPLE_ALLOWED_SE_TYPES,
 	is_customer_sample_batch,
 )
+from jewellery_erpnext.utils import bulk_map
 
 # from jewellery_erpnext.utils import get_item_from_attribute
 
@@ -201,11 +201,19 @@ def get_fifo_batches(self, row, consumed=None):
 	# is read up to 3x per batch across the branches, custom_customer once) in a single
 	# query instead of 2-3 get_value calls per batch. Same None/missing semantics as
 	# frappe.db.get_value via ``(batch_info.get(name) or {}).get(field)``.
-	batch_info = _bulk_map(
-		"Batch",
-		[batch.batch_no for batch in batch_data],
-		["custom_inventory_type", "custom_customer"],
-	)
+	# Only the customer-goods branches and the only_regular_stock_allowed gate read it,
+	# so the ordinary Regular Stock path keeps issuing zero Batch queries; every reader
+	# is behind an ``and`` that short-circuits before touching an empty map.
+	batch_info = {}
+	if (
+		row.inventory_type in ["Customer Goods", "Customer Stock"]
+		or self.flags.only_regular_stock_allowed
+	):
+		batch_info = bulk_map(
+			"Batch",
+			[batch.batch_no for batch in batch_data],
+			["custom_inventory_type", "custom_customer"],
+		)
 	for batch in batch_data:
 		# reduce this batch's availability by what earlier rows already took
 		batch_key = (warehouse, batch.batch_no)

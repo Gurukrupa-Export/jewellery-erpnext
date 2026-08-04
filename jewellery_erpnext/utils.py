@@ -44,12 +44,18 @@ def set_items_from_attribute(item_template, item_template_attribute):
 		return variant
 
 
-def _bulk_map(doctype, names, fields):
+def bulk_map(doctype, names, fields):
 	"""{name: _dict(field->value)} for the given names.
 
 	Behaviour-identical replacement for per-row frappe.db.get_value: a missing
 	name OR a NULL column both resolve to None via
-	``(_bulk_map(...).get(name) or {}).get(field)``.
+	``(bulk_map(...).get(name) or {}).get(field)``.
+
+	``order_by=None`` because frappe.get_all otherwise appends the doctype's own
+	default sort (``creation desc`` for Item/Batch, ``creation asc`` for
+	Department), costing a filesort on a result that is keyed by the primary key
+	and consumed only through ``.get(name)`` — never iterated, so row order is
+	unobservable.
 
 	Lives here (a leaf module) rather than in either stock_entry file so both the
 	CustomStockEntry controller and the doc_events module can import it without a
@@ -59,7 +65,10 @@ def _bulk_map(doctype, names, fields):
 	out = {}
 	if names:
 		for r in frappe.get_all(
-			doctype, filters={"name": ["in", names]}, fields=["name"] + list(fields)
+			doctype,
+			filters={"name": ["in", names]},
+			fields=["name"] + list(fields),
+			order_by=None,
 		):
 			out[r.name] = r
 	return out

@@ -33,7 +33,7 @@ from jewellery_erpnext.jewellery_erpnext.lock_order import (
 	sorted_stock_rows,
 )
 from jewellery_erpnext.utils import (
-	_bulk_map,
+	bulk_map,
 	get_item_from_attribute,
 	get_variant_of_item,
 	group_aggregate_with_concat,
@@ -57,17 +57,17 @@ def before_validate(self, method):
 		self.update_batches()
 
 	pure_item_purity = None
-	# get_purity_percentage is a pure item_code->value/None DB lookup; memoize it so
-	# repeated item codes across rows (common for metal items) hit the DB once.
-	purity_cache = {}
 
 	dir_staus_data = frappe._dict()
 
 	# has_batch_no is read once per row below; prefetch it for the (post-update_batches)
-	# item table so this is one query instead of O(rows).
-	has_batch_map = _bulk_map(
-		"Item", [row.item_code for row in self.items], ["has_batch_no"]
-	)
+	# item table so this is one query instead of O(rows). Its only reader sits behind
+	# ``not self.auto_created``, so skip the query entirely on auto-created SEs.
+	has_batch_map = {}
+	if not self.auto_created:
+		has_batch_map = bulk_map(
+			"Item", [row.item_code for row in self.items], ["has_batch_no"]
+		)
 
 	for row in self.items:
 		if (
@@ -183,9 +183,9 @@ def before_validate(self, method):
 
 				pure_item_purity = get_purity_percentage(pure_item)
 
-			if row.item_code not in purity_cache:
-				purity_cache[row.item_code] = get_purity_percentage(row.item_code)
-			item_purity = purity_cache[row.item_code]
+			# get_purity_percentage is already @frappe.request_cache'd, so repeated
+			# item codes across rows resolve from that cache — no local memo needed.
+			item_purity = get_purity_percentage(row.item_code)
 
 			if not item_purity:
 				continue
@@ -769,6 +769,13 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 			""",
 			(self.name,),
 		)
+		return
+
+	# Nothing to sync unless at least one row is MOP-bound; skip the snapshot query
+	# entirely rather than scanning tabMOP Log for a voucher that cannot match.
+	if not any(
+		row.get("manufacturing_operation") and row.item_code for row in self.items
+	):
 		return
 
 	# Prefetch the existing (row_name, manufacturing_operation) pairs for this voucher

@@ -32,7 +32,7 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 	custom_get_bom_scrap_material,
 	custom_get_scrap_items_from_job_card,
 )
-from jewellery_erpnext.utils import _bulk_map
+from jewellery_erpnext.utils import bulk_map
 
 
 def before_validate(self, method):
@@ -73,12 +73,12 @@ class CustomStockEntry(StockEntry):
 			# the rebuild loop) so the loops issue one query each instead of O(rows).
 			# get_fifo_batches only splits a source row into more rows of the SAME
 			# item_code, so an Item map built from self.items also covers the rebuild.
-			item_map = _bulk_map(
+			item_map = bulk_map(
 				"Item",
 				[row.item_code for row in self.items],
 				["variant_of", "has_batch_no"],
 			)
-			dept_map = _bulk_map(
+			dept_map = bulk_map(
 				"Department",
 				[row.get("department") for row in self.items],
 				["custom_can_not_make_dg_entry"],
@@ -133,25 +133,17 @@ class CustomStockEntry(StockEntry):
 				# Prefetch the two Batch fields (one query instead of two per row) and
 				# the diamond-attribute lookups. FIFO introduces new batch_no values,
 				# so these maps are built from rows_to_append (post-split), not
-				# self.items.
-				def _row_field(it, field):
-					return (
-						it.get(field)
-						if isinstance(it, dict)
-						else getattr(it, field, None)
-					)
-
-				batch_map = _bulk_map(
+				# self.items. Every row shape here (dict, frappe._dict, and the
+				# deepcopied Document) supports .get(field) -> None for a missing key.
+				batch_map = bulk_map(
 					"Batch",
-					[_row_field(it, "batch_no") for it in rows_to_append],
+					[it.get("batch_no") for it in rows_to_append],
 					["custom_inventory_type", "custom_customer"],
 				)
 				d_codes = [
-					_row_field(it, "item_code")
+					it.get("item_code")
 					for it in rows_to_append
-					if (item_map.get(_row_field(it, "item_code")) or {}).get(
-						"variant_of"
-					)
+					if (item_map.get(it.get("item_code")) or {}).get("variant_of")
 					== "D"
 				]
 				grade_map, sieve_map = {}, {}

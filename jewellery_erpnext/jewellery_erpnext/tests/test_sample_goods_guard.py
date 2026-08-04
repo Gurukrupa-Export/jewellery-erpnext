@@ -323,7 +323,7 @@ class TestSampleFifoExclusion(IntegrationTestCase):
 			frappe._dict(batch_no="B-REG", qty=5),
 		]
 
-		# get_fifo_batches prefetches the per-batch Batch fields through _bulk_map
+		# get_fifo_batches prefetches the per-batch Batch fields through bulk_map
 		# (a frappe.get_all), not per-row frappe.db.get_value — stub the map itself so
 		# the test stays DB-free. Both batches belong to the row's customer/inventory
 		# type, so allocation is decided purely by the sample gate.
@@ -336,16 +336,48 @@ class TestSampleFifoExclusion(IntegrationTestCase):
 			),
 		}
 
+		# NEVER raise from inside these stubs. ``flt(x, precision)`` swallows *any*
+		# exception and returns 0.0 (frappe/utils/data.py: ``except Exception -> num = 0.0``),
+		# and it reaches frappe.db.get_value via rounded() -> get_system_settings(). A stub
+		# that asserts inline therefore turns ``batch.qty = flt(...)`` into 0.0, every batch
+		# hits ``if batch.qty <= 0: continue`` and the allocation silently comes back empty.
+		# Whether that fires depends only on whether the DocType/System Settings meta cache
+		# is warm — green on a long-lived local site, red on a fresh CI test_site. So:
+		# record here, assert after the call.
+		bulk_map_calls = []
+		get_value_doctypes = []
+
+		def _bulk_map(doctype, names, fields):
+			bulk_map_calls.append((doctype, sorted(names), set(fields)))
+			return batch_info
+
+		def _get_value(doctype, *args, **kwargs):
+			get_value_doctypes.append(doctype)
+			return None
+
 		with patch.object(
 			se_utils, "get_auto_batch_nos", return_value=batch_data
 		), patch.object(
 			se_utils, "is_customer_sample_batch", side_effect=lambda b: b == "B-SAMPLE"
-		), patch.object(se_utils, "_bulk_map", return_value=batch_info), patch(
-			# only remaining reader: the Manufacturer allow-regular-goods lookup
-			"frappe.db.get_value",
-			return_value=None,
+		), patch.object(se_utils, "bulk_map", side_effect=_bulk_map), patch(
+			"frappe.db.get_value", side_effect=_get_value
 		):
 			rows = se_utils.get_fifo_batches(se, row)
+
+		# bulk_map owns every Batch read, so a refactor that reintroduces a per-row
+		# get_value("Batch", ...) — or that asks bulk_map for the wrong doctype/fields or a
+		# stale name list — must fail rather than silently read as None.
+		self.assertEqual(
+			bulk_map_calls,
+			[
+				(
+					"Batch",
+					["B-REG", "B-SAMPLE"],
+					{"custom_inventory_type", "custom_customer"},
+				)
+			],
+		)
+		self.assertNotIn("Batch", get_value_doctypes)
 		return [r.get("batch_no") for r in rows]
 
 	def test_sample_skipped_for_manufacturing_type(self):
