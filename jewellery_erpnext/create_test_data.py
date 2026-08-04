@@ -3044,6 +3044,17 @@ def create_test_data():
 			)
 
 			_ensure_serial_no_order_type_field()
+
+			# Serial No.custom_reference_doctype / custom_reference_docname are NOT in the
+			# git_action_v16 fixtures either — same reasoning as custom_order_type above.
+			# Without them every Sales Order / Delivery Note / Sales Invoice save raises
+			# "Unknown column 'custom_reference_doctype'" from serial_reference.py.
+			from jewellery_erpnext.patches.add_serial_no_sales_reference_fields import (
+				execute as _ensure_serial_no_sales_reference_fields,
+			)
+
+			_ensure_serial_no_sales_reference_fields()
+
 			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /

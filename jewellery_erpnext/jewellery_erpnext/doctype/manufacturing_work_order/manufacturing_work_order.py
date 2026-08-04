@@ -748,17 +748,25 @@ class ManufacturingWorkOrder(Document):
 		return se.name
 
 	def validate_photoshop_images(self):
-		"""Block submission when the Finished Item has 'Is Photoshop Images'
-		enabled but carries no finish image (at least one is mandatory). The Item
-		is the master: its images are mirrored onto the Master BOM, so when the
-		BOM has no finish image the Item's images are copied across here and
-		submission is allowed."""
+		"""Block FG submission when the Finished Item is flagged 'Is Photoshop
+		Images' but the mandatory Front View / Left View finish images are missing.
+
+		The Item is the master: both views must be present on the Item. They are
+		then mirrored onto the Master BOM here, and the BOM is re-read to confirm
+		it really carries the pair - submission is blocked when it does not (no
+		Master BOM linked, or the mirroring write did not land). BOM images are
+		never read back into the Item; the flow is one-way by design.
+
+		Runs from ``before_submit`` ONLY, never from validate/save: Parent
+		Manufacturing Order submission saves the FG work order, so a save-time
+		throw would break PMO submission.
+		"""
 		# The shared CI fixtures build finished-good items that resolve the
 		# 'Is Photoshop Images' flag as set (no test uploads the finish images),
 		# so this hard guard would trip every MWO-submit test even though those
-		# tests are unrelated to the photoshop workflow. The feature is driven
-		# from the MWO UI (upload dialog) and verified manually, so skip the
-		# server-side block under the test runner.
+		# tests are unrelated to the photoshop workflow. Skip the server-side
+		# block under the test runner; the gap helpers are unit tested directly
+		# and this method is exercised with frappe.flags patched out.
 		if frappe.flags.in_test:
 			return
 		if not self.item_code:
@@ -772,21 +780,46 @@ class ManufacturingWorkOrder(Document):
 		if not is_photoshop:
 			return
 
-		# The Finished Item must carry at least one finish image (master source).
-		if not _item_has_any_photoshop_image(self.item_code):
+		# The Finished Item is the master and must carry BOTH mandatory views.
+		missing_item = _get_empty_item_image_fields(self.item_code)
+		if missing_item:
 			frappe.throw(
 				_(
-					"MWO cannot be submitted. Please upload at least one Finished "
-					"Item image (via the <b>Upload Missing Images</b> action) before "
-					"submitting the Manufacturing Work Order."
+					"MWO cannot be submitted. Finished Item <b>{0}</b> is missing "
+					"the mandatory finish image(s): <b>{1}</b>.<br>Front View and "
+					"Left View are both required - use the <b>Upload Missing "
+					"Images</b> action to upload them before submitting."
+				).format(
+					self.item_code,
+					", ".join(ITEM_IMAGE_FIELDS[f] for f in missing_item),
 				),
 				title=_("Missing Photoshop Images"),
 			)
 
-		# The Master BOM mirrors the Item: if it has no finish image yet, copy the
-		# Item's images across so both stay in sync, then allow submission.
-		if self.master_bom and not _bom_has_any_photoshop_image(self.master_bom):
-			_sync_item_images_to_bom(self.item_code, self.master_bom)
+		# Mirror the Item onto the Master BOM, then re-read the BOM to confirm
+		# the pair actually landed there too.
+		missing_bom = list(REQUIRED_BOM_IMAGE_FIELDS)
+		if self.master_bom:
+			missing_bom = _get_empty_bom_image_fields(self.master_bom)
+			if missing_bom:
+				_sync_item_images_to_bom(self.item_code, self.master_bom)
+				missing_bom = _get_empty_bom_image_fields(self.master_bom)
+
+		if missing_bom:
+			frappe.throw(
+				_(
+					"MWO cannot be submitted. Master BOM <b>{0}</b> is still "
+					"missing the mandatory finish image(s): <b>{1}</b>.<br>They "
+					"could not be copied from Finished Item <b>{2}</b> - check "
+					"that a Design Code BOM is linked on this work order, then "
+					"re-upload the images."
+				).format(
+					self.master_bom or _("not set"),
+					", ".join(BOM_IMAGE_FIELDS[f] for f in missing_bom),
+					self.item_code,
+				),
+				title=_("Missing Photoshop Images"),
+			)
 
 	@frappe.whitelist()
 	def create_mfg_entry(self):
@@ -1155,26 +1188,45 @@ ITEM_TO_BOM_IMAGE_FIELD = {
 	"finish_bottom_view": "bottom_view_finish",
 }
 
+# FG submit gate: Front View + Left View are the mandatory pair. They must be on
+# the Item (the master) and, mirrored from it, on the Master BOM. The other four
+# views stay optional and are only offered as extra upload slots.
+REQUIRED_ITEM_IMAGE_FIELDS = ("finish_front_view", "finish_left_view")
 
-def _item_has_any_photoshop_image(item_code):
-	"""True when the Item has at least one finish image uploaded."""
-	values = frappe.db.get_value(
-		"Item", item_code, list(ITEM_IMAGE_FIELDS.keys()), as_dict=True
-	)
-	return bool(values and any(values.get(f) for f in ITEM_IMAGE_FIELDS))
+REQUIRED_BOM_IMAGE_FIELDS = tuple(
+	ITEM_TO_BOM_IMAGE_FIELD[f] for f in REQUIRED_ITEM_IMAGE_FIELDS
+)
 
 
-def _bom_has_any_photoshop_image(master_bom):
-	"""True when the Master BOM has at least one finish image uploaded."""
-	values = frappe.db.get_value(
-		"BOM", master_bom, list(BOM_IMAGE_FIELDS.keys()), as_dict=True
-	)
-	return bool(values and any(values.get(f) for f in BOM_IMAGE_FIELDS))
+def _get_empty_item_image_fields(item_code, fields=None):
+	"""Return the Item finish-image fieldnames that are still empty.
+
+	``fields`` defaults to the mandatory Front/Left pair; pass the full
+	``ITEM_IMAGE_FIELDS`` map to inspect all six slots in one query.
+	"""
+	fields = list(fields or REQUIRED_ITEM_IMAGE_FIELDS)
+	values = frappe.db.get_value("Item", item_code, fields, as_dict=True) or {}
+	return [f for f in fields if not values.get(f)]
+
+
+def _get_empty_bom_image_fields(master_bom, fields=None):
+	"""Return the Master BOM finish-image fieldnames that are still empty.
+
+	``fields`` defaults to the mandatory Front/Left pair (the BOM counterparts
+	of ``REQUIRED_ITEM_IMAGE_FIELDS``).
+	"""
+	fields = list(fields or REQUIRED_BOM_IMAGE_FIELDS)
+	values = frappe.db.get_value("BOM", master_bom, fields, as_dict=True) or {}
+	return [f for f in fields if not values.get(f)]
 
 
 def _sync_item_images_to_bom(item_code, master_bom):
 	"""Copy each finish image set on the Item onto its corresponding Master BOM
-	field, so the BOM mirrors the Item."""
+	field, so the BOM mirrors the Item.
+
+	Only fields the Item actually carries are written - a BOM image is never
+	cleared, so a BOM-only image (e.g. a left view imported from CAD) survives.
+	"""
 	item_values = (
 		frappe.db.get_value(
 			"Item", item_code, list(ITEM_IMAGE_FIELDS.keys()), as_dict=True
@@ -1191,36 +1243,57 @@ def _sync_item_images_to_bom(item_code, master_bom):
 
 
 def _get_missing_photoshop_images(item_code, master_bom=None):
-	"""Return {"item": [empty slot labels]} when the Finished Item has NO
-	finish image (at least one is mandatory).  The Master BOM images are
-	derived from the Item on submit, so they are not reported here and the
-	upload dialog only ever offers Item slots.  Returns empty dict when the
-	Item already has an image."""
+	"""Report the finish-image gaps that block MWO submission.
+
+	Returns ``{}`` when nothing blocks, otherwise a dict of FIELDNAMES::
+
+	    {
+	        "item": ["finish_front_view", "finish_left_view"],
+	        "bom": ["front_view_finish", "left_view_finish"],
+	    }
+
+	``item`` lists the mandatory Front/Left views still empty on the Finished
+	Item.  ``bom`` is only populated when NO Master BOM is linked: with a BOM
+	linked, every BOM gap is either filled from the Item on submit (the mirror)
+	or already reported under ``item``, so reporting it again would be noise.
+	"""
 	missing = {}
 
-	item_values = frappe.db.get_value(
-		"Item", item_code, list(ITEM_IMAGE_FIELDS.keys()), as_dict=True
-	)
-	if item_values and not any(item_values.get(f) for f in ITEM_IMAGE_FIELDS):
-		missing["item"] = [ITEM_IMAGE_FIELDS[f] for f in ITEM_IMAGE_FIELDS]
+	item_gaps = _get_empty_item_image_fields(item_code)
+	if item_gaps:
+		missing["item"] = item_gaps
+
+	if not master_bom:
+		# No Master BOM to mirror onto - an Item upload cannot fix this.
+		missing["bom"] = list(REQUIRED_BOM_IMAGE_FIELDS)
 
 	return missing
 
 
 @frappe.whitelist()
 def get_missing_photoshop_images(item_code, master_bom=None):
-	"""Whitelisted helper called from the client to fetch missing images
-	before MWO submission so the user can upload them inline."""
+	"""Whitelisted helper for the MWO client: what still blocks submission, and
+	which slots the upload dialog should offer.
+
+	``missing`` carries FIELDNAMES (v2 payload - it used to carry labels), and
+	being non-empty means submission is blocked.  ``optional_item`` lists the
+	non-mandatory Item slots that are empty; they are offered for convenience
+	and never block.
+	"""
 	is_photoshop = frappe.db.get_value("Item", item_code, "custom_is_photoshop_images")
 	if not is_photoshop:
 		return {"check_required": False}
 
-	missing = _get_missing_photoshop_images(item_code, master_bom)
+	empty_item = _get_empty_item_image_fields(item_code, list(ITEM_IMAGE_FIELDS))
+	optional_item = [f for f in empty_item if f not in REQUIRED_ITEM_IMAGE_FIELDS]
+
 	return {
 		"check_required": True,
-		"missing": missing,
+		"missing": _get_missing_photoshop_images(item_code, master_bom),
+		"optional_item": optional_item,
 		"item_image_fields": ITEM_IMAGE_FIELDS,
 		"bom_image_fields": BOM_IMAGE_FIELDS,
+		"required_item_fields": list(REQUIRED_ITEM_IMAGE_FIELDS),
 	}
 
 
@@ -1231,9 +1304,11 @@ def update_photoshop_images(
 	"""Write uploaded finish images to the Item master and mirror them onto the
 	Master BOM.
 
-	Called from the MWO upload dialog, which offers Item slots only.
-	`item_images` (and the retained `bom_images`) are JSON dicts of
-	{fieldname: file_url}.
+	Called from the MWO upload dialog, which offers Item slots only: the
+	mandatory Front/Left pair plus the four optional views.  Partial uploads are
+	allowed - ``validate_photoshop_images`` on ``before_submit`` is the single
+	gate.  `item_images` (and the retained `bom_images`, kept for backward
+	compat with cached client bundles) are JSON dicts of {fieldname: file_url}.
 	"""
 	import json
 
