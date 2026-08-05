@@ -168,9 +168,10 @@ class TestMakeMopStockEntry(IntegrationTestCase):
 		self.assertEqual(se.to_department, "Dept A")
 		mr_obj.db_set.assert_called_once_with("custom_mop_se", se.name)
 
+	@patch(f"{_MR_CUSTOM}.frappe.log_error")
 	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
 	@patch(f"{_MR_CUSTOM}.frappe.db.get_value")
-	def test_throws_when_in_transit(self, mock_get_value, mock_get_doc):
+	def test_throws_when_in_transit(self, mock_get_value, mock_get_doc, mock_log_error):
 		def _gv(doctype, name, field=None, **kwargs):
 			if doctype == "Manufacturing Operation":
 				return {"department": "Dept A", "department_ir_status": "In-Transit"}
@@ -457,8 +458,9 @@ class TestGetPmoData(IntegrationTestCase):
 
 
 class TestGetItemDetails(IntegrationTestCase):
+	@patch(f"{_MR_EVENTS}.nowdate", return_value="2026-01-01")
 	@patch(f"{_MR_EVENTS}.frappe.qb.from_")
-	def test_throws_if_inactive_or_missing(self, mock_from):
+	def test_throws_if_inactive_or_missing(self, mock_from, mock_nowdate):
 		mock_chain = MagicMock()
 		mock_from.return_value = mock_chain
 		mock_chain.left_join.return_value = mock_chain
@@ -471,8 +473,9 @@ class TestGetItemDetails(IntegrationTestCase):
 			mr_mod.get_item_details({"item_code": "INV-1"})
 		self.assertIn("inactive or its end-of-life", str(ctx.exception))
 
+	@patch(f"{_MR_EVENTS}.nowdate", return_value="2026-01-01")
 	@patch(f"{_MR_EVENTS}.frappe.qb.from_")
-	def test_returns_correct_details(self, mock_from):
+	def test_returns_correct_details(self, mock_from, mock_nowdate):
 		mock_chain = MagicMock()
 		mock_from.return_value = mock_chain
 		mock_chain.left_join.return_value = mock_chain
@@ -524,10 +527,10 @@ class TestUpdatePureQty(IntegrationTestCase):
 		mr.custom_manufacturer = "Manu-1"
 
 		# metal variant, purely derived
-		row1 = MagicMock(
-			custom_variant_of="M", custom_alternative_item="ITEM-ALLOY", qty=10.0
+		row1 = frappe._dict(
+			custom_variant_of="M", custom_alternative_item="ITEM-ALLOY", qty=10.0, item_code="ITEM-ALLOY"
 		)
-		row2 = MagicMock(
+		row2 = frappe._dict(
 			custom_variant_of="D",
 			custom_alternative_item=None,
 			item_code="GEM-1",
