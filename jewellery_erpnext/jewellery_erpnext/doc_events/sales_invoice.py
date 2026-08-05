@@ -11,6 +11,11 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import update_totals
 
+# Sentinel for optional pre-fetched arguments: distinguishes "caller didn't pass
+# a value" (fall back to fetching it) from "caller passed a legitimate None"
+# (e.g. a customer with no custom_precision_variable set) without re-fetching.
+_NOT_PROVIDED = object()
+
 
 def _so_gold_rate_changed(si_gold_rate, sales_order):
 	if not sales_order:
@@ -19,6 +24,16 @@ def _so_gold_rate_changed(si_gold_rate, sales_order):
 	if not so_gold_rate:
 		return True
 	return abs(flt(si_gold_rate) - flt(so_gold_rate)) > 0.001
+
+
+def _get_metal_purity(rows, metal_type, metal_touch):
+	"""In-memory equivalent of the raw `tabMetal Criteria` lookup against a
+	prefetched, per-customer row list. Indexes [0] like the original SQL call,
+	so it raises the same IndexError when nothing matches."""
+	matches = [
+		r for r in rows if r.metal_type == metal_type and r.metal_touch == metal_touch
+	]
+	return matches[0]["metal_purity"]
 
 
 def before_validate(self, method):
@@ -52,30 +67,53 @@ def before_validate(self, method):
 
 				if duplicate_row:
 					self.append("invoice_item", duplicate_row)
-		customer_group = frappe.db.get_value(
-			"Customer", self.customer, "customer_group"
+		customer_details = (
+			frappe.db.get_value(
+				"Customer",
+				self.customer,
+				["customer_group", "custom_precision_variable"],
+				as_dict=True,
+			)
+			or {}
 		)
-		prec = frappe.db.get_value(
-			"Customer", self.customer, "custom_precision_variable"
-		)
+		customer_group = customer_details.get("customer_group")
+		prec = customer_details.get("custom_precision_variable")
 		if not (
 			self.company == "KG GK Jewellers Private Limited"
 			or customer_group == "Internal"
 		):
+			gold_gst_rate = frappe.db.get_single_value(
+				"Jewellery Settings", "gold_gst_rate"
+			)
+			metal_criteria_rows = frappe.get_all(
+				"Metal Criteria",
+				filters={"parent": self.customer},
+				fields=["metal_type", "metal_touch", "metal_purity"],
+			)
 			for row_s in self.items:
 				if row_s.bom:
 					bom_doc = frappe.get_doc("BOM", row_s.bom)
-					gold_gst_rate = frappe.db.get_single_value(
-						"Jewellery Settings", "gold_gst_rate"
+					item_details = frappe.db.get_value(
+						"Item",
+						row_s.item_code,
+						["item_subcategory", "setting_type"],
+						as_dict=True,
+					)
+					making_charge_customer_group = frappe.db.get_value(
+						"Customer", bom_doc.customer, "customer_group"
 					)
 					for row in bom_doc.metal_detail:
 						update_making_charges(
-							row_s, bom_doc, row, self.gold_rate_with_gst
+							row_s,
+							bom_doc,
+							row,
+							self.gold_rate_with_gst,
+							item_details,
+							making_charge_customer_group,
 						)
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
+						customer_metal_purity = _get_metal_purity(
+							metal_criteria_rows, row.metal_type, row.metal_touch
+						)
 						row.customer_metal_purity = customer_metal_purity
 						rate = (
 							float(row.customer_metal_purity) * self.gold_rate_with_gst
@@ -88,12 +126,16 @@ def before_validate(self, method):
 					)
 					for row in bom_doc.finding_detail:
 						update_making_charges(
-							row_s, bom_doc, row, self.gold_rate_with_gst
+							row_s,
+							bom_doc,
+							row,
+							self.gold_rate_with_gst,
+							item_details,
+							making_charge_customer_group,
 						)
-						customer_metal_purity = frappe.db.sql(
-							f"""select metal_purity from `tabMetal Criteria` where parent = '{self.customer}' and metal_type = '{row.metal_type}' and metal_touch = '{row.metal_touch}'""",
-							as_dict=True,
-						)[0]["metal_purity"]
+						customer_metal_purity = _get_metal_purity(
+							metal_criteria_rows, row.metal_type, row.metal_touch
+						)
 						row.customer_metal_purity = customer_metal_purity
 						rate = (
 							float(row.customer_metal_purity) * self.gold_rate_with_gst
@@ -168,15 +210,30 @@ def validate(self, method):
 		payment_terms_data = update_si_data(self)
 		update_payment_terms(self, payment_terms_data)
 		return
-	prec = frappe.db.get_value("Customer", self.customer, "custom_precision_variable")
+	customer_details = (
+		frappe.db.get_value(
+			"Customer",
+			self.customer,
+			["customer_group", "custom_precision_variable"],
+			as_dict=True,
+		)
+		or {}
+	)
+	customer_group = customer_details.get("customer_group")
+	prec = customer_details.get("custom_precision_variable")
 
 	update_income_account(self)
 	payment_terms_data = update_si_data(self)
 	update_payment_terms(self, payment_terms_data)
-	customer_group = frappe.db.get_value("Customer", self.customer, "customer_group")
+	bom_cache = {}
 	for row_s in self.items:
 		if row_s.bom:
-			bom_doc = frappe.get_doc("BOM", row_s.bom)
+			# keyed by row identity (not row_s.bom) so two different item rows that
+			# happen to reference the same BOM still get independent BOM doc
+			# instances, matching the original per-row frappe.get_doc() behavior.
+			if row_s.idx not in bom_cache:
+				bom_cache[row_s.idx] = frappe.get_doc("BOM", row_s.bom)
+			bom_doc = bom_cache[row_s.idx]
 			row_s.custom_diamond_pcs = bom_doc.total_diamond_pcs
 			row_s.custom_gemstone_pcs = bom_doc.total_gemstone_pcs
 			row_s.custom_other_weight = bom_doc.total_other_weight
@@ -200,13 +257,38 @@ def validate(self, method):
 		self.total = 0
 		for row in self.items:
 			if row.bom:
-				bom_doc = frappe.get_doc("BOM", row.bom)
+				if row.idx not in bom_cache:
+					bom_cache[row.idx] = frappe.get_doc("BOM", row.bom)
+				bom_doc = bom_cache[row.idx]
+				item_details = frappe.db.get_value(
+					"Item",
+					row.item_code,
+					["item_subcategory", "setting_type"],
+					as_dict=True,
+				)
+				making_charge_customer_group = frappe.db.get_value(
+					"Customer", bom_doc.customer, "customer_group"
+				)
 				for m in bom_doc.metal_detail:
 					# if not m.is_customer_item:
-					update_making_charges(row, bom_doc, m, self.gold_rate_with_gst)
+					update_making_charges(
+						row,
+						bom_doc,
+						m,
+						self.gold_rate_with_gst,
+						item_details,
+						making_charge_customer_group,
+					)
 				for m in bom_doc.finding_detail:
 					# if not m.is_customer_item:
-					update_making_charges(row, bom_doc, m, self.gold_rate_with_gst)
+					update_making_charges(
+						row,
+						bom_doc,
+						m,
+						self.gold_rate_with_gst,
+						item_details,
+						making_charge_customer_group,
+					)
 				bom_doc.diamond_bom_amount = bom_doc.total_diamond_amount
 				total_bom_amount = round(
 					bom_doc.total_bom_amount
@@ -253,16 +335,36 @@ def get_allowed_item_types(customer, sales_type):
 	customer_payment_term_doc = frappe.get_doc(
 		"Customer Payment Terms", customer_payment_term_name
 	)
-	for row in customer_payment_term_doc.customer_payment_details:
-		item_type = row.item_type
-		e_invoice_item = frappe.get_doc("E Invoice Item", item_type)
-		matched_sales_type_row = None
-		for st_row in e_invoice_item.sales_type:
-			if st_row.sales_type == sales_type:
-				matched_sales_type_row = st_row
-				break
-		if matched_sales_type_row:
-			allowed_item_types.add(item_type)
+	item_types = {
+		row.item_type for row in customer_payment_term_doc.customer_payment_details
+	}
+	if not item_types:
+		return allowed_item_types
+
+	existing_item_types = set(
+		frappe.get_all(
+			"E Invoice Item",
+			filters={"name": ["in", list(item_types)]},
+			pluck="name",
+		)
+	)
+	missing_item_types = item_types - existing_item_types
+	if missing_item_types:
+		# original code loaded each E Invoice Item via frappe.get_doc(), which
+		# raises DoesNotExistError for a bad item_type — preserve that behavior
+		# instead of silently excluding it.
+		frappe.get_doc("E Invoice Item", next(iter(missing_item_types)))
+
+	matching_parents = frappe.get_all(
+		"Sales Type Multiselect",
+		filters={
+			"parenttype": "E Invoice Item",
+			"parent": ["in", list(item_types)],
+			"sales_type": sales_type,
+		},
+		pluck="parent",
+	)
+	allowed_item_types = set(matching_parents)
 
 	return allowed_item_types
 
@@ -498,12 +600,23 @@ def set_gst_details(self):
 	if self.sales_type not in ("Outright", "Outwork", "Hybrid"):
 		return
 
-	customer_state = frappe.db.get_value(
-		"Address", self.customer_address, "gst_state_number"
+	address_names = [
+		addr for addr in {self.customer_address, self.company_address} if addr
+	]
+	address_state_map = (
+		{
+			row.name: row.gst_state_number
+			for row in frappe.get_all(
+				"Address",
+				filters={"name": ["in", address_names]},
+				fields=["name", "gst_state_number"],
+			)
+		}
+		if address_names
+		else {}
 	)
-	company_state = frappe.db.get_value(
-		"Address", self.company_address, "gst_state_number"
-	)
+	customer_state = address_state_map.get(self.customer_address)
+	company_state = address_state_map.get(self.company_address)
 
 	if not customer_state or not company_state:
 		return
@@ -933,6 +1046,39 @@ def update_si_data(self):
 		"Customer", self.customer, "custom_separate_hallmarking_invoice"
 	)
 	allowed_item_types = get_allowed_item_types(self.customer, self.sales_type)
+	einvoice_items = frappe.get_all(
+		"E Invoice Item",
+		fields=[
+			"name",
+			"hsn_code",
+			"uom",
+			"is_for_metal",
+			"is_for_making",
+			"is_for_labour",
+			"is_for_finding",
+			"is_for_finding_making",
+			"is_for_diamond",
+			"is_for_gemstone",
+			"is_for_hallmarking",
+			"is_for_repair",
+			"is_for_certification",
+			"metal_type",
+			"metal_purity",
+			"finding_category",
+			"diamond_type",
+		],
+		# match frappe.db.get_value()'s default tie-break (oldest `modified` first)
+		# so _match_einvoice_item()'s first-match result agrees with the single-row
+		# get_value() calls it replaces when a filter combo matches multiple rows.
+		order_by="modified",
+	)
+	precision = frappe.db.get_value(
+		"Customer", self.customer, "custom_precision_variable"
+	)
+	hallmarking_lookup_done = False
+	hallmarking_item = hallmarking_hsn = hallmarking_uom = None
+	certification_lookup_done = False
+	certification_item = certification_hsn = certification_uom = None
 	for row in self.items:
 		if row.bom and not self.item_same_as_above:
 			exchange_rate = 1
@@ -943,13 +1089,31 @@ def update_si_data(self):
 				)
 			gold_rate_changed = True
 			update_bom_details(
-				self, row, bom_doc, is_branch_customer, invoice_data, gold_rate_changed
+				self,
+				row,
+				bom_doc,
+				is_branch_customer,
+				invoice_data,
+				gold_rate_changed,
+				einvoice_items,
+				precision,
 			)
 			if bom_doc.hallmarking_amount:
-				custom_item, hsn_code, uom = frappe.db.get_value(
-					"E Invoice Item",
-					{"is_for_hallmarking": 1},
-					["name", "hsn_code", "uom"],
+				if not hallmarking_lookup_done:
+					(
+						hallmarking_item,
+						hallmarking_hsn,
+						hallmarking_uom,
+					) = frappe.db.get_value(
+						"E Invoice Item",
+						{"is_for_hallmarking": 1},
+						["name", "hsn_code", "uom"],
+					)
+					hallmarking_lookup_done = True
+				custom_item, hsn_code, uom = (
+					hallmarking_item,
+					hallmarking_hsn,
+					hallmarking_uom,
 				)
 				if invoice_data.get(custom_item):
 					invoice_data[custom_item]["qty"] += 1
@@ -970,10 +1134,21 @@ def update_si_data(self):
 					}
 
 			if bom_doc.certification_amount and not separate_hallmarking_invoice:
-				custom_item, hsn_code, uom = frappe.db.get_value(
-					"E Invoice Item",
-					{"is_for_certification": 1},
-					["name", "hsn_code", "uom"],
+				if not certification_lookup_done:
+					(
+						certification_item,
+						certification_hsn,
+						certification_uom,
+					) = frappe.db.get_value(
+						"E Invoice Item",
+						{"is_for_certification": 1},
+						["name", "hsn_code", "uom"],
+					)
+					certification_lookup_done = True
+				custom_item, hsn_code, uom = (
+					certification_item,
+					certification_hsn,
+					certification_uom,
 				)
 				if invoice_data.get(custom_item):
 					invoice_data[custom_item]["qty"] += 1
@@ -994,7 +1169,12 @@ def update_si_data(self):
 					}
 
 			update_einvoice_items(
-				self, invoice_data, payment_terms_data, allowed_item_types
+				self,
+				invoice_data,
+				payment_terms_data,
+				allowed_item_types,
+				einvoice_items,
+				precision,
 			)
 			if row.get("custom_freight_amount"):
 				custom_item, hsn_code, uom = frappe.db.get_value(
@@ -1013,6 +1193,9 @@ def update_si_data(self):
 						"cost_center": row.cost_center,
 					}
 			if self.sales_type != "Certification":
+				# Reload: update_bom_details() -> update_totals() persists recalculated
+				# amounts via db_set() on its own separate BOM doc instance, so the
+				# in-memory bom_doc here is stale until re-fetched.
 				bom_doc = frappe.get_doc("BOM", row.bom)
 				# Sum directly from BOM detail rows — rates already updated in before_validate
 				# if gold rate changed vs SO, otherwise original BOM amounts are used as-is
@@ -1094,20 +1277,25 @@ def update_si_data(self):
 	return payment_terms_data
 
 
-def update_einvoice_items(self, invoice_data, payment_terms_data, allowed_item_types):
+def update_einvoice_items(
+	self,
+	invoice_data,
+	payment_terms_data,
+	allowed_item_types,
+	einvoice_items=_NOT_PROVIDED,
+	precision=_NOT_PROVIDED,
+):
 	if not self.get("invoice_item"):
 		self.invoice_item = []
 	else:
 		self.set("invoice_item", [])
-	precision = frappe.db.get_value(
-		"Customer", self.customer, "custom_precision_variable"
-	)
-
-	if invoice_data:
-		item_names = list(invoice_data.keys())
-		item_flags = frappe.get_all(
+	if precision is _NOT_PROVIDED:
+		precision = frappe.db.get_value(
+			"Customer", self.customer, "custom_precision_variable"
+		)
+	if einvoice_items is _NOT_PROVIDED:
+		einvoice_items = frappe.get_all(
 			"E Invoice Item",
-			filters={"name": ["in", item_names]},
 			fields=[
 				"name",
 				"is_for_diamond",
@@ -1122,6 +1310,13 @@ def update_einvoice_items(self, invoice_data, payment_terms_data, allowed_item_t
 				"is_for_certification",
 			],
 		)
+
+	if invoice_data:
+		item_names = list(invoice_data.keys())
+		item_name_set = set(item_names)
+		# name is the primary key, so this in-memory filter against the prefetched
+		# list is exactly equivalent to the WHERE name IN (...) query it replaces.
+		item_flags = [item for item in einvoice_items if item.name in item_name_set]
 
 		sort_weights = {}
 		for item in item_flags:
@@ -1185,13 +1380,76 @@ def update_einvoice_items(self, invoice_data, payment_terms_data, allowed_item_t
 			)
 
 
+def _match_einvoice_item(rows, filters):
+	"""In-memory equivalent of frappe.db.get_value('E Invoice Item', filters, ['name', 'hsn_code', 'uom'])
+	against a prefetched row list. Supports the same filter shapes used here: plain equality,
+	('in', [...]) and ('is', 'not set')."""
+	for row in rows:
+		matched = True
+		for field, value in filters.items():
+			if isinstance(value, (list, tuple)):
+				operator, operand = value
+				if operator == "in":
+					if row.get(field) not in operand:
+						matched = False
+						break
+				elif operator == "is" and operand == "not set":
+					if row.get(field):
+						matched = False
+						break
+			elif row.get(field) != value:
+				matched = False
+				break
+		if matched:
+			return row.name, row.hsn_code, row.uom
+	return None
+
+
 def update_bom_details(
-	self, row, bom_doc, is_branch_customer, invoice_data, gold_rate_changed=True
+	self,
+	row,
+	bom_doc,
+	is_branch_customer,
+	invoice_data,
+	gold_rate_changed=True,
+	einvoice_items=_NOT_PROVIDED,
+	precision=_NOT_PROVIDED,
 ):
 	bom_doc.customer = self.customer
-	precision = frappe.db.get_value(
-		"Customer", self.customer, "custom_precision_variable"
+	if precision is _NOT_PROVIDED:
+		precision = frappe.db.get_value(
+			"Customer", self.customer, "custom_precision_variable"
+		)
+	making_charge_item_details = frappe.db.get_value(
+		"Item", row.item_code, ["item_subcategory", "setting_type"], as_dict=True
 	)
+	making_charge_customer_group = frappe.db.get_value(
+		"Customer", bom_doc.customer, "customer_group"
+	)
+	if einvoice_items is _NOT_PROVIDED:
+		einvoice_items = frappe.get_all(
+			"E Invoice Item",
+			fields=[
+				"name",
+				"hsn_code",
+				"uom",
+				"is_for_metal",
+				"is_for_making",
+				"is_for_labour",
+				"is_for_finding",
+				"is_for_finding_making",
+				"is_for_diamond",
+				"is_for_gemstone",
+				"metal_type",
+				"metal_purity",
+				"finding_category",
+				"diamond_type",
+			],
+			# match frappe.db.get_value()'s default tie-break (oldest `modified` first)
+			# so _match_einvoice_item()'s first-match result agrees with the single-row
+			# get_value() calls it replaces when a filter combo matches multiple rows.
+			order_by="modified",
+		)
 	# so_doc = frappe.get_doc("Sales Order", row.sales_order)
 	so_item_map = {}
 
@@ -1240,15 +1498,21 @@ def update_bom_details(
 			}
 
 	for i in bom_doc.metal_detail:
-		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
-		einvoice_item, hsn_code, uom = frappe.db.get_value(
-			"E Invoice Item",
+		update_making_charges(
+			row,
+			bom_doc,
+			i,
+			self.gold_rate_with_gst,
+			making_charge_item_details,
+			making_charge_customer_group,
+		)
+		einvoice_item, hsn_code, uom = _match_einvoice_item(
+			einvoice_items,
 			{
 				"is_for_metal": 1,
 				"metal_type": i.metal_type,
 				"metal_purity": i.metal_touch,
 			},
-			["name", "hsn_code", "uom"],
 		) or (None, None, None)
 
 		# Hybrid: making charge is always job-work value (Outwork rate),
@@ -1260,14 +1524,13 @@ def update_bom_details(
 			else "is_for_making"
 		)
 
-		making_item, making_hsn, making_uom = frappe.db.get_value(
-			"E Invoice Item",
+		making_item, making_hsn, making_uom = _match_einvoice_item(
+			einvoice_items,
 			{
 				filter_value: 1,
 				"metal_type": i.metal_type,
 				"metal_purity": i.metal_touch,
 			},
-			["name", "hsn_code", "uom"],
 		) or (None, None, None)
 
 		so_metal = so_item_map.get(einvoice_item)
@@ -1305,19 +1568,25 @@ def update_bom_details(
 			self.is_customer_metal = True
 
 	for i in bom_doc.finding_detail:
-		update_making_charges(row, bom_doc, i, self.gold_rate_with_gst)
+		update_making_charges(
+			row,
+			bom_doc,
+			i,
+			self.gold_rate_with_gst,
+			making_charge_item_details,
+			making_charge_customer_group,
+		)
 		einvoice_item = hsn_code = uom = None
 
 		# ---------------- Finding amount: category-specific match ----------------
-		result = frappe.db.get_value(
-			"E Invoice Item",
+		result = _match_einvoice_item(
+			einvoice_items,
 			{
 				"is_for_finding": 1,
 				"metal_type": i.metal_type,
 				"metal_purity": i.metal_touch,
 				"finding_category": i.finding_category,
 			},
-			["name", "hsn_code", "uom"],
 		)
 		if result:
 			einvoice_item, hsn_code, uom = result
@@ -1326,15 +1595,14 @@ def update_bom_details(
 			# (finding_category is unset) — not just any record sharing
 			# metal_type/metal_purity, which could accidentally be a
 			# different category's record.
-			result = frappe.db.get_value(
-				"E Invoice Item",
+			result = _match_einvoice_item(
+				einvoice_items,
 				{
 					"is_for_metal": 1,
 					"metal_type": i.metal_type,
 					"metal_purity": i.metal_touch,
 					"finding_category": ["is", "not set"],
 				},
-				["name", "hsn_code", "uom"],
 			)
 			if result:
 				einvoice_item, hsn_code, uom = result
@@ -1351,15 +1619,14 @@ def update_bom_details(
 		making_item = making_hsn = making_uom = None
 
 		# ---------------- Making charge: category-specific match ----------------
-		result = frappe.db.get_value(
-			"E Invoice Item",
+		result = _match_einvoice_item(
+			einvoice_items,
 			{
 				filter_value: 1,
 				"metal_type": i.metal_type,
 				"metal_purity": i.metal_touch,
 				"finding_category": i.finding_category,
 			},
-			["name", "hsn_code", "uom"],
 		)
 		if result:
 			making_item, making_hsn, making_uom = result
@@ -1374,14 +1641,13 @@ def update_bom_details(
 				if (i.is_customer_item or self.sales_type == "Hybrid")
 				else "is_for_making"
 			)
-			result = frappe.db.get_value(
-				"E Invoice Item",
+			result = _match_einvoice_item(
+				einvoice_items,
 				{
 					fallback_filter_value: 1,
 					"metal_type": i.metal_type,
 					"metal_purity": i.metal_touch,
 				},
-				["name", "hsn_code", "uom"],
 			)
 			if result:
 				making_item, making_hsn, making_uom = result
@@ -1416,10 +1682,9 @@ def update_bom_details(
 
 	for i in bom_doc.diamond_detail:
 		einvoice_item = hsn_code = uom = None
-		result = frappe.db.get_value(
-			"E Invoice Item",
+		result = _match_einvoice_item(
+			einvoice_items,
 			{"is_for_diamond": 1, "diamond_type": i.diamond_type},
-			["name", "hsn_code", "uom"],
 		)
 
 		if result:
@@ -1497,10 +1762,9 @@ def update_bom_details(
 		if i.is_customer_item:
 			self.is_customer_diamond = True
 	for i in bom_doc.gemstone_detail:
-		einvoice_item, hsn_code, uom = frappe.db.get_value(
-			"E Invoice Item",
+		einvoice_item, hsn_code, uom = _match_einvoice_item(
+			einvoice_items,
 			{"is_for_gemstone": 1},
-			["name", "hsn_code", "uom"],
 		) or (None, None, None)
 
 		if not einvoice_item:
@@ -1557,17 +1821,28 @@ def update_bom_details(
 		update_totals("BOM", bom_doc.name)
 
 
-def update_making_charges(row, bom_doc, bom_row, gold_rate):
+def update_making_charges(
+	row,
+	bom_doc,
+	bom_row,
+	gold_rate,
+	item_details=_NOT_PROVIDED,
+	customer_group=_NOT_PROVIDED,
+):
 	bom_doc.set_additional_rate = False
 
-	item_details = frappe.db.get_value(
-		"Item", row.item_code, ["item_subcategory", "setting_type"], as_dict=True
-	)
+	if item_details is _NOT_PROVIDED:
+		item_details = frappe.db.get_value(
+			"Item", row.item_code, ["item_subcategory", "setting_type"], as_dict=True
+		)
 
 	sub_category = (item_details.get("item_subcategory") or "").strip()
 	setting_type = item_details.get("setting_type")
 
-	customer_group = frappe.db.get_value("Customer", bom_doc.customer, "customer_group")
+	if customer_group is _NOT_PROVIDED:
+		customer_group = frappe.db.get_value(
+			"Customer", bom_doc.customer, "customer_group"
+		)
 
 	override_internal = (
 		bom_doc.company == "KG GK Jewellers Private Limited"
