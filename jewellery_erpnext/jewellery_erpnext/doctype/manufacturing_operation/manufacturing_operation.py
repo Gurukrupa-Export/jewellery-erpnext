@@ -5102,34 +5102,102 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 	reserved item code or the SRE cancel/recreate and the MOP Log deductions would no longer
 	line up with what was issued.
 
-	The receive and the repack run in one transaction: if the repack fails the whole
-	receive rolls back, so the material is never left un-tagged.
+	Every row's target is resolved BEFORE any stock moves, so an item-master gap makes this
+	a clean no-op instead of a submit-then-unwind. The receive and the repack then run under
+	one savepoint of their own: ``create_mr_wo_stock_entry`` releases its inner savepoint as
+	soon as the receive is submitted, so without this outer one a throw from the repack could
+	only be undone by the request handler's blanket rollback — leaving any non-HTTP caller
+	with a submitted receive whose material was never tagged.
 	"""
 	if isinstance(se_data, str):
 		se_data = json.loads(se_data)
-	result = create_mr_wo_stock_entry(se_data, request_id=request_id)
-	receive_se = result.get("docname") if isinstance(result, dict) else None
-	if receive_se:
-		# The receive SE creates MOP Log entries as a side effect of the on-submit hook.
-		# This material comes OUT of the metal issued to the operation, so those deductions
-		# MUST reduce the MOP/MWO balance exactly like a normal receive — the weight is no
-		# longer work-in-progress. So the MOP Log rows are KEPT.
-		_convert_received_scrap_to_scrap_batch(receive_se, request_id=request_id)
+
+	_preflight_unused_loose_targets(se_data)
+
+	frappe.db.savepoint("receive_unused_loose")
+	try:
+		result = create_mr_wo_stock_entry(se_data, request_id=request_id)
+		receive_se = result.get("docname") if isinstance(result, dict) else None
+		if receive_se:
+			# The receive SE creates MOP Log entries as a side effect of the on-submit hook.
+			# This material comes OUT of the metal issued to the operation, so those deductions
+			# MUST reduce the MOP/MWO balance exactly like a normal receive — the weight is no
+			# longer work-in-progress. So the MOP Log rows are KEPT.
+			#
+			# Called even when the receive was idempotent: a replay whose repack never landed
+			# self-heals here, and the repack has its own idempotency guard.
+			_convert_received_scrap_to_scrap_batch(receive_se, request_id=request_id)
+	except Exception:
+		frappe.db.rollback(save_point="receive_unused_loose")
+		raise
+	frappe.db.release_savepoint("receive_unused_loose")
 	return result
 
 
-#: Source item template -> the unused/loose material template its returns book onto.
-#: Metal and Finding only; every other template (D/G/O and the alloys) keeps its own
-#: item code, exactly as before.
+def _preflight_unused_loose_targets(se_data):
+	"""Resolve every requested row's unused/loose target before any stock moves.
+
+	Item codes are re-read from the Stock Reservation Entry rather than trusted from the
+	client, exactly as ``create_mr_wo_stock_entry`` does.
+
+	The row filter mirrors ``_convert_received_scrap_to_scrap_batch``: rows with no qty are
+	ignored, and a source item that is not batch-tracked is skipped rather than blocked —
+	the repack already msgprints those and they must not start hard-failing.
+	"""
+	sre_names = {
+		row.get("stock_reservation_entry")
+		for row in (se_data.get("receive_items") or [])
+		if row.get("stock_reservation_entry") and flt(row.get("qty")) > 0
+	}
+	if not sre_names:
+		return
+
+	item_codes = set(
+		frappe.db.get_all(
+			"Stock Reservation Entry",
+			filters={"name": ["in", list(sre_names)]},
+			pluck="item_code",
+		)
+	)
+	for item_code in sorted(item_codes):
+		if not frappe.db.get_value("Item", item_code, "has_batch_no"):
+			continue
+		probe = _probe_unused_loose_item(item_code)
+		if probe.status not in (UNUSED_OK, UNUSED_OUT_OF_SCOPE):
+			frappe.throw(probe.message, title=probe.title)
+
+
+#: Source item template -> the FAMILY whose unused/loose material template its returns
+#: book onto. Metal and Finding only; every other template (D/G/O and the alloys) keeps
+#: its own item code, exactly as before.
 #:
-#: Both item-code conventions in use are listed. Short codes (M/ML, F/FL) are what the
-#: live site carries; the descriptive codes are what newer sites create. A pair whose
-#: target template does not exist on this site is skipped, so listing both is safe.
-UNUSED_TARGET_TEMPLATE = {
-	"M": "ML",
-	"F": "FL",
-	"Metal": "Metal Unused/Loose Material",
-	"Finding": "Finding Unused/Loose Material",
+#: Both item-code conventions in use are listed as SOURCE keys, because a site can mix
+#: them: the live site's sources are ``M-``/``F-`` while its Unused/Loose Material items
+#: may already use the descriptive names.
+UNUSED_SOURCE_FAMILY = {
+	"M": "metal",
+	"Metal": "metal",
+	"F": "finding",
+	"Finding": "finding",
+}
+
+#: Family -> candidate target templates, most specific FIRST. The descriptive template is
+#: the one an operator creates deliberately for this purpose; the short code is the legacy
+#: LOSS template (Variant Loss Table maps M->ML, F->FL) that doubles as the unused/loose
+#: target on sites that never created a dedicated one. A candidate is skipped unless it is
+#: a real template WITH at least one live variant, so a half-provisioned descriptive
+#: template does not black-hole every receive.
+UNUSED_TARGET_TEMPLATES = {
+	"metal": ("Metal Unused/Loose Material", "ML"),
+	"finding": ("Finding Unused/Loose Material", "FL"),
+}
+
+#: Family -> the name the operator knows this material by. Derived from the FAMILY and not
+#: from the resolved template, so the message reads "Metal Unused/Loose Material item is
+#: not there" even on a site whose template is literally called "ML".
+UNUSED_FAMILY_LABEL = {
+	"metal": "Metal Unused/Loose Material",
+	"finding": "Finding Unused/Loose Material",
 }
 
 #: Attribute names carrying the purity. "Purity" is a legacy alias still present on some
@@ -5137,67 +5205,82 @@ UNUSED_TARGET_TEMPLATE = {
 _PURITY_ATTRIBUTES = ("Metal Purity", "Purity")
 _COLOUR_ATTRIBUTE = "Metal Colour"
 
+#: Probe outcomes. Only OK and OUT_OF_SCOPE let a receive proceed.
+UNUSED_OK = "OK"
+UNUSED_OUT_OF_SCOPE = "OUT_OF_SCOPE"
+UNUSED_NO_TEMPLATE = "NO_TEMPLATE"
+UNUSED_HALF_CONFIGURED = "HALF_CONFIGURED"
+UNUSED_NO_MATCH = "NO_MATCH"
+UNUSED_NARROWED_TO_NONE = "NARROWED_TO_NONE"
+UNUSED_AMBIGUOUS = "AMBIGUOUS"
+UNUSED_NOT_BATCH_TRACKED = "NOT_BATCH_TRACKED"
+UNUSED_UOM_MISMATCH = "UOM_MISMATCH"
+UNUSED_SERIAL_TRACKED = "SERIAL_TRACKED"
 
-def _item_metal_attributes(item_code):
-	"""``(purity, colour)`` off the item's Item Variant Attribute rows, or ``(None, None)``.
+
+#: How many candidate item codes to name before summarising. The legacy FL template can
+#: match 59 variants on purity+colour alone; a dialog listing all of them is unreadable.
+_UNUSED_MAX_LISTED = 8
+
+
+def _format_item_list(item_codes, limit=_UNUSED_MAX_LISTED):
+	"""``"a, b, c and 56 more"`` — enough to recognise, short enough to read."""
+	item_codes = list(item_codes)
+	if len(item_codes) <= limit:
+		return ", ".join(item_codes)
+	return _("{0} and {1} more").format(
+		", ".join(item_codes[:limit]), len(item_codes) - limit
+	)
+
+
+def _item_attributes(item_code):
+	"""``{attribute: value}`` for every Item Variant Attribute row of ``item_code``.
 
 	The metal attributes live ONLY in ``Item Variant Attribute`` — there are no
 	``custom_metal_*`` fields on Item anywhere in the bench."""
 	rows = frappe.db.get_all(
 		"Item Variant Attribute",
-		filters={
-			"parent": item_code,
-			"attribute": ["in", list(_PURITY_ATTRIBUTES) + [_COLOUR_ATTRIBUTE]],
-		},
+		filters={"parent": item_code},
 		fields=["attribute", "attribute_value"],
 	)
-	values = {r.attribute: r.attribute_value for r in rows}
+	return {r.attribute: r.attribute_value for r in rows if r.attribute_value}
+
+
+def _item_metal_attributes(item_code):
+	"""``(purity, colour)`` off the item's Item Variant Attribute rows, or ``(None, None)``."""
+	values = _item_attributes(item_code)
 	purity = next((values[a] for a in _PURITY_ATTRIBUTES if values.get(a)), None)
 	return purity, values.get(_COLOUR_ATTRIBUTE)
 
 
-def _resolve_unused_loose_item(item_code):
-	"""The unused/loose item ``item_code``'s returns should be booked onto, or ``None``.
+def _unused_target_template(family):
+	"""THE unused/loose template for ``family`` — descriptive convention preferred.
 
-	Material a karigar did not consume is received back onto a DEDICATED item — ``ML-`` for
-	metal, ``FL-`` for findings — carrying the SAME purity and colour as the item it came
-	from. The target is resolved from the template plus the source item's own attributes, so
-	nothing is hardcoded to a particular site's item master.
+	A candidate qualifies as soon as the Item exists, is a template (``has_variants``) and
+	is not disabled. The site's convention is decided by which template EXISTS, so the
+	descriptive one wins the moment it is created; the short code (``ML``/``FL``) serves
+	only sites that never created a dedicated one.
 
-	Returns ``None`` (meaning "leave this row on its own item code") when the row is out of
-	scope: a template with no mapping (D/G/O), a mapped template that does not exist on this
-	site, or an item carrying NEITHER purity nor colour — the alloys (``M-AL``, ``M-394``,
-	``M-Genia-221``). An alloy has nothing to match on by design; those receives work today
-	and must not start failing.
-
-	Throws when the row IS in scope but the target cannot be pinned down — a HALF-configured
-	source (one of purity/colour set, the other missing), a missing variant, or an ambiguous
-	one. All three are item-master problems a human has to resolve; guessing would silently
-	book the material onto the wrong purity."""
-	variant_of = frappe.db.get_value("Item", item_code, "variant_of")
-	target_template = UNUSED_TARGET_TEMPLATE.get(variant_of)
-	# Both naming conventions are listed in the map, so only the one this site actually
-	# uses resolves; the other is skipped rather than throwing "no such template".
-	if not target_template or not frappe.db.exists("Item", target_template):
-		return None
-
-	purity, colour = _item_metal_attributes(item_code)
-	if not purity and not colour:
-		# An alloy: no purity and no colour to match on at all. Out of scope, as before.
-		return None
-	if not purity or not colour:
-		frappe.throw(
-			_(
-				"{0} has {1} but no {2}, so its Unused/Loose Material item cannot be "
-				"resolved. Set both Metal Purity and Metal Colour on the item, or clear "
-				"both if it is an alloy that should keep its own item code."
-			).format(
-				frappe.bold(item_code),
-				_("Metal Purity") if purity else _("Metal Colour"),
-				_("Metal Colour") if purity else _("Metal Purity"),
-			)
+	Exactly ONE template is returned and resolution searches only that one — there is no
+	per-item fallthrough. If the chosen template has no variant at the source's purity and
+	colour, the receive is BLOCKED. Falling back to the other convention would silently
+	book the material onto the legacy loss item and hide a missing (or deliberately
+	disabled) item master entry, which is exactly what this feature exists to prevent."""
+	for template in UNUSED_TARGET_TEMPLATES.get(family) or ():
+		meta = frappe.db.get_value(
+			"Item", template, ["has_variants", "disabled"], as_dict=True
 		)
+		if meta and meta.has_variants and not meta.disabled:
+			return template
+	return None
 
+
+def _unused_candidates(target_template, purity, colour):
+	"""Live variants of ``target_template`` matching BOTH purity and colour.
+
+	Purity and colour are the whole match key, as specified. ``attribute_value`` is
+	free-text Data, so the comparison is left to SQL (collation-tolerant) rather than
+	being done in Python."""
 	ItemDoc = frappe.qb.DocType("Item")
 	Attr = frappe.qb.DocType("Item Variant Attribute")
 	purity_attr = (
@@ -5213,7 +5296,7 @@ def _resolve_unused_loose_item(item_code):
 		.select(Attr.parent)
 		.where((Attr.attribute == _COLOUR_ATTRIBUTE) & (Attr.attribute_value == colour))
 	)
-	candidates = (
+	return (
 		frappe.qb.from_(ItemDoc)
 		.select(ItemDoc.name)
 		.where(
@@ -5226,40 +5309,299 @@ def _resolve_unused_loose_item(item_code):
 		.run(pluck=True)
 	)
 
-	if len(candidates) == 1:
-		return candidates[0]
 
-	if not candidates:
-		frappe.throw(
-			_(
-				"No Unused/Loose Material item exists for {0}. Please create a variant of "
-				"template <b>{1}</b> with Metal Purity <b>{2}</b> and Metal Colour <b>{3}</b> "
-				"before receiving."
-			).format(frappe.bold(item_code), target_template, purity, colour)
-		)
-
-	frappe.throw(
-		_(
-			"{0} matches more than one Unused/Loose Material item of template <b>{1}</b> "
-			"with Metal Purity <b>{2}</b> and Metal Colour <b>{3}</b>: {4}. Please disable "
-			"the ones that should not be used."
-		).format(
-			frappe.bold(item_code),
-			target_template,
-			purity,
-			colour,
-			frappe.bold(", ".join(candidates)),
+def _template_attribute_names(template):
+	"""Attribute names the template DECLARES, so narrowing never asks for one it lacks."""
+	return set(
+		frappe.db.get_all(
+			"Item Variant Attribute", filters={"parent": template}, pluck="attribute"
 		)
 	)
 
 
-def _create_scrap_batch(item_code, employee=None):
+def _narrow_unused_candidates(candidates, source_attributes, target_template):
+	"""Candidates that ALSO match every other attribute BOTH sides carry.
+
+	Only ever called when purity+colour matched more than one variant — a state that is a
+	hard error otherwise, which is what makes this monotone: it can turn a throw into a
+	resolution or a better-worded throw, never change a match that already succeeds.
+
+	The legacy ``FL`` template carries the full finding attribute set (Finding Category /
+	Sub-Category / Size), so dozens of its variants share a purity+colour pair; narrowing
+	picks the one that is actually the same finding.
+
+	Only attributes the TARGET TEMPLATE declares are used. A template keyed on purity and
+	colour alone therefore has nothing to narrow with, and the caller reports a plain
+	ambiguity ("disable the duplicates") instead of a misleading "create the exact
+	counterpart" — the twin it would be asking for cannot exist under that template.
+
+	The test is EXACT, never a best-guess score: a surviving candidate carries the same
+	value for every narrowed attribute. Booking a clasp's gold onto a jump-ring code would
+	be invisible, so a near miss is dropped rather than preferred."""
+	shared = _template_attribute_names(target_template)
+	narrow_on = {
+		attribute: value
+		for attribute, value in source_attributes.items()
+		if attribute not in _PURITY_ATTRIBUTES
+		and attribute != _COLOUR_ATTRIBUTE
+		and attribute in shared
+	}
+	if not narrow_on:
+		return candidates, narrow_on
+
+	rows = frappe.db.get_all(
+		"Item Variant Attribute",
+		filters={"parent": ["in", candidates], "attribute": ["in", list(narrow_on)]},
+		fields=["parent", "attribute", "attribute_value"],
+	)
+	found = {}
+	for row in rows:
+		found.setdefault(row.parent, {})[row.attribute] = row.attribute_value
+
+	narrowed = [
+		candidate for candidate in candidates if found.get(candidate, {}) == narrow_on
+	]
+	return narrowed, narrow_on
+
+
+def _probe_unused_loose_item(item_code):
+	"""Classify ``item_code``'s unused/loose target WITHOUT throwing.
+
+	Returns a dict carrying ``status`` (one of the ``UNUSED_*`` constants), the resolved
+	``target`` when there is one, and a ready-to-show ``message``/``title``. The resolver,
+	the pre-flight and the audit report all go through here, so what the audit lists and
+	what the button blocks on can never drift apart."""
+	result = frappe._dict(
+		item_code=item_code,
+		status=UNUSED_OUT_OF_SCOPE,
+		target=None,
+		family=None,
+		template=None,
+		purity=None,
+		colour=None,
+		candidates=[],
+		narrowed_on={},
+		title=None,
+		message=None,
+	)
+
+	source = frappe.db.get_value(
+		"Item", item_code, ["variant_of", "stock_uom"], as_dict=True
+	)
+	family = UNUSED_SOURCE_FAMILY.get(source and source.variant_of)
+	if not family:
+		# Diamonds, gemstones, "other" — no unused/loose counterpart by design.
+		return result
+	result.family = family
+	label = UNUSED_FAMILY_LABEL[family]
+
+	purity, colour = _item_metal_attributes(item_code)
+	result.purity, result.colour = purity, colour
+	if not purity and not colour:
+		# An alloy (M-AL, M-394, M-Genia-221): nothing to match on at all, and those
+		# receives work today. Out of scope, as before.
+		return result
+
+	def block(status, message, title=None):
+		result.status = status
+		result.title = title or _("{0} item is not there").format(label)
+		result.message = message
+		return result
+
+	if not purity or not colour:
+		return block(
+			UNUSED_HALF_CONFIGURED,
+			_(
+				"{0} has {1} but no {2}, so its Unused/Loose Material item cannot be "
+				"resolved. Set both Metal Purity and Metal Colour on the item, or clear "
+				"both if it is an alloy that should keep its own item code."
+			).format(
+				frappe.bold(item_code),
+				_("Metal Purity") if purity else _("Metal Colour"),
+				_("Metal Colour") if purity else _("Metal Purity"),
+			),
+			title=_("{0} item cannot be resolved").format(label),
+		)
+
+	template = _unused_target_template(family)
+	result.template = template
+	if not template:
+		return block(
+			UNUSED_NO_TEMPLATE,
+			_(
+				"This site has no {0} item template. Expected one of: <b>{1}</b>. Create "
+				"the template and its variants before receiving."
+			).format(label, ", ".join(UNUSED_TARGET_TEMPLATES[family])),
+		)
+
+	# One template, no fallthrough. A missing or disabled variant under it BLOCKS rather
+	# than quietly resolving under the other convention.
+	candidates = _unused_candidates(template, purity, colour)
+	result.candidates = candidates
+
+	if len(candidates) > 1:
+		narrowed, narrow_on = _narrow_unused_candidates(
+			candidates, _item_attributes(item_code), template
+		)
+		result.narrowed_on = narrow_on
+		if not narrow_on:
+			return block(
+				UNUSED_AMBIGUOUS,
+				_(
+					"{0} matches more than one {1} item of template <b>{2}</b> with Metal "
+					"Purity <b>{3}</b> and Metal Colour <b>{4}</b>: {5}. Please disable the "
+					"ones that should not be used."
+				).format(
+					frappe.bold(item_code),
+					label,
+					template,
+					purity,
+					colour,
+					frappe.bold(_format_item_list(candidates)),
+				),
+				title=_("More than one {0} item matches").format(label),
+			)
+		if not narrowed:
+			return block(
+				UNUSED_NARROWED_TO_NONE,
+				_(
+					"{0} items of template <b>{1}</b> match {2} on Metal Purity <b>{3}</b> "
+					"and Metal Colour <b>{4}</b> ({5}), but none of them also match {6}. "
+					"Create the exact counterpart, or disable all but one of the near "
+					"matches."
+				).format(
+					len(candidates),
+					template,
+					frappe.bold(item_code),
+					purity,
+					colour,
+					_format_item_list(candidates),
+					", ".join(f"{k} {v}" for k, v in sorted(narrow_on.items())),
+				),
+			)
+		if len(narrowed) > 1:
+			return block(
+				UNUSED_AMBIGUOUS,
+				_(
+					"{0} matches more than one {1} item of template <b>{2}</b>, even after "
+					"matching {3}: {4}. Please disable the ones that should not be used."
+				).format(
+					frappe.bold(item_code),
+					label,
+					template,
+					", ".join(f"{k} {v}" for k, v in sorted(narrow_on.items())),
+					frappe.bold(_format_item_list(narrowed)),
+				),
+				title=_("More than one {0} item matches").format(label),
+			)
+		candidates = narrowed
+		result.candidates = narrowed
+
+	if not candidates:
+		return block(
+			UNUSED_NO_MATCH,
+			_(
+				"{0} (Metal Purity <b>{1}</b>, Metal Colour <b>{2}</b>) has no "
+				"Unused/Loose Material counterpart. Create an enabled variant of template "
+				"<b>{3}</b> with that purity and colour and <b>Has Batch No</b> enabled, "
+				"then receive again."
+			).format(frappe.bold(item_code), purity, colour, template),
+		)
+
+	target = candidates[0]
+	result.target = target
+	target_meta = frappe.db.get_value(
+		"Item", target, ["has_batch_no", "has_serial_no", "stock_uom"], as_dict=True
+	)
+
+	if not target_meta.has_batch_no:
+		# The material would be produced onto an untagged item and would never be
+		# fetchable for refining. Skipping would lose it silently.
+		return block(
+			UNUSED_NOT_BATCH_TRACKED,
+			_(
+				"{0} is the Unused/Loose Material item for {1} (Metal Purity <b>{2}</b>, "
+				"Metal Colour <b>{3}</b>), but <b>Has Batch No</b> is off, so the received "
+				"material cannot be tagged for refining. Enable Has Batch No on {0}, then "
+				"receive again."
+			).format(frappe.bold(target), frappe.bold(item_code), purity, colour),
+			title=_("{0} item is not usable").format(label),
+		)
+
+	if target_meta.has_serial_no:
+		# The repack rows carry a batch and no serials; a serial-tracked target would
+		# fail deep inside Stock Entry submit with an opaque message.
+		return block(
+			UNUSED_SERIAL_TRACKED,
+			_(
+				"{0} is the Unused/Loose Material item for {1}, but it is serial-tracked. "
+				"Unused/Loose Material is received by weight under a batch, so the target "
+				"item must not have Has Serial No enabled."
+			).format(frappe.bold(target), frappe.bold(item_code)),
+			title=_("{0} item is not usable").format(label),
+		)
+
+	if (target_meta.stock_uom or "") != (source.stock_uom or ""):
+		# The repack copies the received qty verbatim onto the produce row, so a
+		# different unit would silently book grams as something else.
+		return block(
+			UNUSED_UOM_MISMATCH,
+			_(
+				"{0} is stocked in <b>{1}</b> but its Unused/Loose Material item {2} is "
+				"stocked in <b>{3}</b>. The received quantity cannot be booked across two "
+				"units — set both items to the same Default Unit of Measure."
+			).format(
+				frappe.bold(item_code),
+				source.stock_uom,
+				frappe.bold(target),
+				target_meta.stock_uom,
+			),
+			title=_("{0} item is not usable").format(label),
+		)
+
+	result.status = UNUSED_OK
+	return result
+
+
+def _resolve_unused_loose_item(item_code):
+	"""The unused/loose item ``item_code``'s returns should be booked onto, or ``None``.
+
+	Material a karigar did not consume is received back onto a DEDICATED item carrying the
+	SAME purity and colour as the item it came from — a variant of the ``Metal Unused/Loose
+	Material`` / ``Finding Unused/Loose Material`` template, or of the legacy ``ML``/``FL``
+	template on a site that never created the descriptive one. The target is resolved from
+	the template plus the source item's own attributes, so nothing is hardcoded to a
+	particular site's item master.
+
+	Returns ``None`` (meaning "leave this row on its own item code") only when the row is
+	genuinely out of scope: a template with no mapping (D/G/O), or an item carrying NEITHER
+	purity nor colour — the alloys (``M-AL``, ``M-394``, ``M-Genia-221``). An alloy has
+	nothing to match on by design; those receives work today and must not start failing.
+
+	Throws when the row IS in scope but the target cannot be pinned down or cannot hold the
+	material. All of those are item-master problems a human has to resolve; guessing would
+	silently book the metal onto the wrong purity.
+
+	Note on gk.site: the pure loss item ``ML-G-24KT-99.9-Y`` is also the legitimate target
+	for unused 24KT-Yellow metal. That overlap is intentional — 24KT unused metal IS 24KT
+	metal, and ``Batch.custom_batch_type`` is what separates the two populations for
+	``RefiningEntry.get_scrap_items_balance``."""
+	probe = _probe_unused_loose_item(item_code)
+	if probe.status in (UNUSED_OK, UNUSED_OUT_OF_SCOPE):
+		return probe.target
+	frappe.throw(probe.message, title=probe.title)
+
+
+def _create_scrap_batch(
+	item_code, employee=None, company=None, inventory_type=None, customer=None
+):
 	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Unused/Loose Material'.
 
 	``employee`` stamps Batch.custom_employee so it can be fetched employee-wise in
 	Unused/Loose Material Refining. The batch is created directly (before any Stock Entry
 	links it), so the usual SE->batch employee copy never runs; stamp it explicitly here
-	from the operation's employee.
+	from the operation's employee. ``company`` and the ownership pair are stamped for the
+	same reason — nothing else will fill them in for an auto-created repack.
 
 	Returns None for non-batch items (they cannot carry the Scrap marker)."""
 	if not frappe.db.get_value("Item", item_code, "has_batch_no"):
@@ -5269,6 +5611,19 @@ def _create_scrap_batch(item_code, employee=None):
 	batch.custom_batch_type = BATCH_TYPE_UNUSED
 	if employee:
 		batch.custom_employee = employee
+	if company:
+		# get_batch_company_abbr falls back to the SESSION user's default company and
+		# throws when none resolves, so the batch id would carry the wrong abbreviation
+		# on a multi-company site (and fail outright in a background job). Stamp the
+		# operation's own company, as RefiningEntry._auto_create_batch does.
+		batch.custom_company = company
+	if inventory_type:
+		# Material issued from a customer's batch and returned unused is still that
+		# customer's. The repack is auto_created, so CustomStockEntry.update_batches
+		# skips the generic batch->row ownership backfill and doc_events/stock_entry
+		# would default the rows to "Regular Stock" — carry it explicitly.
+		batch.custom_inventory_type = inventory_type
+		batch.custom_customer = customer
 	# Set batch_type before insert so it persists whether the item auto-names the
 	# batch (batch_number_series) or we generate an id below.
 	if not frappe.db.get_value("Item", item_code, "batch_number_series"):
@@ -5278,14 +5633,46 @@ def _create_scrap_batch(item_code, employee=None):
 	return batch.name
 
 
+def _unused_row_ownership(row, target_item):
+	"""``(inventory_type, customer)`` the unused/loose output should carry.
+
+	Resolved from the SOURCE batch through the app's single source of truth
+	(``resolve_batch_ownership``), then downgraded to Regular Stock when the TARGET item
+	is not allowed to hold customer goods — the target is a different item from the source,
+	so the source carrying the flag guarantees nothing, and minting a Customer Goods batch
+	for an item without it hard-fails in ``Batch.update_inventory_dimentions``."""
+	from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+		resolve_batch_ownership,
+	)
+
+	inventory_type, customer = resolve_batch_ownership(row)
+	if inventory_type not in ("Customer Goods", "Customer Stock"):
+		return None, None
+	if not frappe.db.get_value(
+		"Item", target_item, "custom_inventory_type_can_be_customer_goods"
+	):
+		frappe.msgprint(
+			_(
+				"{0} cannot hold customer goods, so the unused/loose material received "
+				"from {1} is booked as Regular Stock. Enable <b>Inventory Type Can Be "
+				"Customer Goods</b> on {0} to retain the customer's ownership."
+			).format(frappe.bold(target_item), frappe.bold(row.item_code)),
+			indicator="orange",
+			alert=True,
+		)
+		return None, None
+	return inventory_type, customer
+
+
 def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	"""Repack the just-received material onto its unused/loose item and a tagged batch.
 
 	Same warehouse and same qty; the batch ALWAYS changes (to a fresh one tagged
 	``custom_batch_type = "Unused/Loose Material"``) and the item code changes too whenever
-	``_resolve_unused_loose_item`` maps it — ``M-`` metal becomes ``ML-`` and ``F-`` findings
-	become ``FL-`` at the same purity and colour. Rows with no mapping (D/G/O, alloys) keep
-	their own item code and are isolated by the batch tag alone, as before."""
+	``_resolve_unused_loose_item`` maps it — metal becomes the matching Metal Unused/Loose
+	Material variant and findings the matching Finding Unused/Loose Material variant, at the
+	same purity and colour. Rows with no mapping (D/G/O, alloys) keep their own item code and
+	are isolated by the batch tag alone, as before."""
 	se = frappe.get_doc("Stock Entry", receive_se_name)
 	if cint(se.docstatus) != 1:
 		return
@@ -5293,10 +5680,17 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	base_id = (request_id or receive_se_name)[:30]
 	scrap_request_id = f"{base_id}-scrap"
 	# Idempotent: the receive is idempotent by request_id, so its scrap repack must
-	# be too — never double-convert the same received material.
+	# be too — never double-convert the same received material. Both keys are checked:
+	# the request-derived one is what a first pass writes, and the SE-derived one covers
+	# a replay that reached us with a different request_id for the same receive.
+	# custom_request_id is Data(36), so "-scrap" must stay within the 30-char prefix.
+	fallback_request_id = f"{receive_se_name[:30]}-scrap"
 	if frappe.db.exists(
 		"Stock Entry",
-		{"custom_request_id": scrap_request_id, "docstatus": ["!=", 2]},
+		{
+			"custom_request_id": ["in", list({scrap_request_id, fallback_request_id})],
+			"docstatus": ["!=", 2],
+		},
 	):
 		return
 
@@ -5342,12 +5736,19 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 
 	for item in rows:
 		target_item = _resolve_unused_loose_item(item.item_code) or item.item_code
-		new_batch = _create_scrap_batch(target_item, employee=op_employee)
+		inventory_type, customer = _unused_row_ownership(item, target_item)
+		new_batch = _create_scrap_batch(
+			target_item,
+			employee=op_employee,
+			company=se.company,
+			inventory_type=inventory_type,
+			customer=customer,
+		)
 		if not new_batch:
 			if target_item != item.item_code:
-				# The source was batch-tracked (rows filtered on that above) but its
-				# unused/loose counterpart is not, so the material would be produced onto
-				# an untagged, unfetchable item. Skipping would lose it silently.
+				# Unreachable: _probe_unused_loose_item blocks a non-batch-tracked target
+				# before any stock moves. Kept so a future edit cannot quietly start
+				# producing material onto an untagged, unfetchable item.
 				frappe.throw(
 					_(
 						"Unused/Loose Material item {0} is not batch-tracked, so the "
@@ -5375,9 +5776,13 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 				"is_finished_item": 0,
 				"set_basic_rate_manually": 1,
 				"basic_rate": val_rate,
+				"inventory_type": inventory_type,
+				"customer": customer,
 			},
 		)
 		# ...and produce the same qty onto the unused/loose item under the tagged batch.
+		# The target's stock_uom is pinned equal to the source's by the probe, so the
+		# received qty carries across without a unit conversion.
 		repack.append(
 			"items",
 			{
@@ -5392,6 +5797,8 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 				"is_finished_item": 1,
 				"set_basic_rate_manually": 1,
 				"basic_rate": val_rate,
+				"inventory_type": inventory_type,
+				"customer": customer,
 			},
 		)
 
