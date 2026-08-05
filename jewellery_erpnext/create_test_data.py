@@ -2695,14 +2695,26 @@ def create_test_data():
 			).insert(ignore_permissions=True)
 
 		# Unused/Loose Material targets for the seeded metal items. Receive Unused/Loose
-		# Material books returns onto the ML variant matching the source's Metal Purity +
+		# Material books returns onto the variant matching the source's Metal Purity +
 		# Metal Colour (see _resolve_unused_loose_item), and THROWS when none exists — so
-		# every seeded M variant that can be received needs its ML counterpart, and no two
-		# ML variants may share a purity+colour pair or the resolution is ambiguous.
+		# every seeded M variant that can be received needs its ML counterpart.
+		#
+		# The seed keeps every ML purity+colour pair UNIQUE on purpose, so the resolver's
+		# fast path (a single purity+colour match) is what the suite exercises. A collision
+		# is no longer fatal — _narrow_unused_candidates breaks the tie on the source's
+		# remaining attributes — but the tie-break is covered by tests that build their own
+		# colliding variants inline, not by this shared seed.
+		#
+		# Do NOT seed the descriptive templates ("Metal Unused/Loose Material" /
+		# "Finding Unused/Loose Material") here: they are PREFERRED over the short codes,
+		# so their presence would redirect every receive in the suite and break the ML-/FL-
+		# assertions. The two tests that need them create and delete them in their own scope.
+		#
 		# Deliberately NOT seeding ML-G-24KT-99.9-Y here: that code is PURE_LOSS_ITEM, and
 		# creating it flips RefiningEntry.get_dust_item() from the _get_pure_loss_item()
 		# fallback chain to the pure code for the WHOLE refining suite. No test receives
-		# 24KT metal as unused material, so this feature does not need it.
+		# 24KT metal as unused material, so this feature does not need it — and
+		# test_unused_loose_audit_classifies_the_seeded_item_master asserts the omission.
 		for _ml_code, _ml_touch, _ml_purity, _ml_colour, _ml_series in (
 			("ML-G-22KT-91.6-Y", "22KT", "91.6", "Yellow", "GE2D075-MGL22916Y0-.##."),
 			("ML-G-22KT-91.6-P", "22KT", "91.6", "Pink", "GE2D075-MGL22916P0-.##."),
@@ -2818,7 +2830,9 @@ def create_test_data():
 			).insert(ignore_permissions=True)
 
 		# One FL variant per seeded F variant, at the same purity+colour so the resolver
-		# finds exactly one candidate.
+		# finds exactly one candidate on the fast path. The two seeded twins differ only by
+		# Metal Colour; Finding Category / Sub-Category / Size are what
+		# _narrow_unused_candidates would break a tie on if they ever collided.
 		for _fl_code, _fl_colour, _fl_series in (
 			(
 				"FL-G-22KT-91.9-Y-CHA-KC-2.50 MM",
