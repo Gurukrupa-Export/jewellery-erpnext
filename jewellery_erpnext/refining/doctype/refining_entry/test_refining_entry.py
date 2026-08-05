@@ -1000,6 +1000,95 @@ class TestRefiningEntry(IntegrationTestCase):
 				)
 			receive.assert_not_called()
 
+	def test_unused_loose_preflight_is_skipped_on_a_replay(self):
+		"""A replay (same request_id) must not be gated on the CLIENT's payload.
+
+		create_mr_wo_stock_entry short-circuits to the existing SE without reading
+		receive_items at all, and this call exists only to re-run a repack that never
+		landed. Validating a stale payload there would reject a retry over SREs the
+		receive no longer depends on. The repack still resolves against the SE's actual
+		rows, so a genuinely missing target is caught there."""
+		orphan = self._metal_variant(
+			"M-TEST-REPLAY",
+			[
+				("Metal Type", "Gold"),
+				("Metal Touch", "9KT"),
+				("Metal Purity", "37.5"),
+				("Metal Colour", "Yellow"),
+			],
+		)
+		frappe.db.set_value("Item", orphan.name, "has_batch_no", 1)
+		se_data = {
+			"manufacturing_operation": "MOP-REPLAY",
+			"receive_items": [{"stock_reservation_entry": "SRE-TEST", "qty": 1.0}],
+		}
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation."
+				"manufacturing_operation._existing_receive_se",
+				return_value="SE-ALREADY-THERE",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation."
+				"manufacturing_operation._preflight_unused_loose_targets"
+			) as preflight,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation."
+				"manufacturing_operation.create_mr_wo_stock_entry",
+				return_value={"docname": None},
+			),
+		):
+			create_scrap_wo_stock_entry(se_data, request_id="R-REPLAY")
+			preflight.assert_not_called()
+
+	def test_unused_loose_repack_keeps_source_ownership_on_the_consume_row(self):
+		"""Consume and produce ownership are resolved separately.
+
+		Stock is deducted along the inventory_type dimension and this Stock Entry is
+		auto_created, so update_batches never backfills it — consuming a Customer Goods
+		batch under "Regular Stock" would deduct the wrong dimension. Only the PRODUCE
+		side downgrades, and only when the target item cannot hold customer goods."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_unused_row_ownership,
+		)
+
+		row = frappe._dict(
+			item_code="M-G-22KT-91.9-Y",
+			batch_no=None,
+			inventory_type="Customer Goods",
+			customer=self.customer if hasattr(self, "customer") else None,
+		)
+		target = "ML-G-22KT-91.9-Y"
+		allowed = frappe.db.get_value(
+			"Item", target, "custom_inventory_type_can_be_customer_goods"
+		)
+		try:
+			frappe.db.set_value(
+				"Item", target, "custom_inventory_type_can_be_customer_goods", 0
+			)
+			source, produce = _unused_row_ownership(row, target)
+			self.assertEqual(
+				source[0],
+				"Customer Goods",
+				"the consume row must keep the source batch's dimension",
+			)
+			self.assertEqual(
+				produce[0],
+				"Regular Stock",
+				"the produce row downgrades when the target cannot hold customer goods",
+			)
+
+			frappe.db.set_value(
+				"Item", target, "custom_inventory_type_can_be_customer_goods", 1
+			)
+			source, produce = _unused_row_ownership(row, target)
+			self.assertEqual(source, produce, "no downgrade when the target allows it")
+			self.assertEqual(produce[0], "Customer Goods")
+		finally:
+			frappe.db.set_value(
+				"Item", target, "custom_inventory_type_can_be_customer_goods", allowed
+			)
+
 	def test_unused_loose_audit_classifies_the_seeded_item_master(self):
 		"""One cheap end-to-end call so an import or SQL break in the audit cannot ship
 		unnoticed, and so the deliberate 24KT omission stays asserted."""

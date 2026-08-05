@@ -4605,6 +4605,28 @@ def _build_replacement_sre(original_sre, remaining_qty, sb_remaining=None):
 
 
 @frappe.whitelist()
+def _existing_receive_se(
+	mo_name, request_id, stock_entry_type="Material Receive (WORK ORDER)"
+):
+	"""The receive Stock Entry a previous call with this ``request_id`` already made.
+
+	The single definition of "this request has already been served", shared by
+	``create_mr_wo_stock_entry``'s idempotency guard and by the Receive Unused/Loose
+	Material pre-flight, so the two can never disagree about whether a call is a replay."""
+	if not (request_id and mo_name):
+		return None
+	return frappe.db.get_value(
+		"Stock Entry",
+		{
+			"custom_request_id": request_id,
+			"manufacturing_operation": mo_name,
+			"stock_entry_type": stock_entry_type,
+			"docstatus": ["!=", 2],
+		},
+		"name",
+	)
+
+
 def create_mr_wo_stock_entry(
 	se_data,
 	request_id=None,
@@ -4645,24 +4667,14 @@ def create_mr_wo_stock_entry(
 		)
 
 	# Idempotency: same request_id under same MOP + SE type returns the existing SE.
-	if request_id:
-		existing = frappe.db.get_value(
-			"Stock Entry",
-			{
-				"custom_request_id": request_id,
-				"manufacturing_operation": mo.name,
-				"stock_entry_type": stock_entry_type,
-				"docstatus": ["!=", 2],
-			},
-			"name",
-		)
-		if existing:
-			return {
-				"doctype": "Stock Entry",
-				"docname": existing,
-				"request_id": request_id,
-				"idempotent": True,
-			}
+	existing = _existing_receive_se(mo.name, request_id, stock_entry_type)
+	if existing:
+		return {
+			"doctype": "Stock Entry",
+			"docname": existing,
+			"request_id": request_id,
+			"idempotent": True,
+		}
 
 	if target_warehouse:
 		t_warehouse = target_warehouse
@@ -5112,7 +5124,14 @@ def create_scrap_wo_stock_entry(se_data, request_id=None):
 	if isinstance(se_data, str):
 		se_data = json.loads(se_data)
 
-	_preflight_unused_loose_targets(se_data)
+	# The pre-flight reads the CLIENT's rows, so it must only gate a genuinely new
+	# receive. On a replay (same request_id) create_mr_wo_stock_entry short-circuits to
+	# the existing SE without looking at the payload at all, and this call exists purely
+	# to re-run a repack that never landed. Validating a stale payload there could reject
+	# a retry over SREs the receive no longer depends on — the repack does its own
+	# resolution against the SE's ACTUAL rows and blocks there if a target is missing.
+	if not _existing_receive_se(se_data.get("manufacturing_operation"), request_id):
+		_preflight_unused_loose_targets(se_data)
 
 	frappe.db.savepoint("receive_unused_loose")
 	try:
@@ -5634,20 +5653,31 @@ def _create_scrap_batch(
 
 
 def _unused_row_ownership(row, target_item):
-	"""``(inventory_type, customer)`` the unused/loose output should carry.
+	"""``(source_ownership, target_ownership)``, each an ``(inventory_type, customer)``.
 
-	Resolved from the SOURCE batch through the app's single source of truth
-	(``resolve_batch_ownership``), then downgraded to Regular Stock when the TARGET item
-	is not allowed to hold customer goods — the target is a different item from the source,
-	so the source carrying the flag guarantees nothing, and minting a Customer Goods batch
-	for an item without it hard-fails in ``Batch.update_inventory_dimentions``."""
+	The two sides are resolved SEPARATELY and are not always equal.
+
+	The **source** side comes from the consumed batch through the app's single source of
+	truth (``resolve_batch_ownership``) and is what the consume row must carry. Stock is
+	deducted along the ``inventory_type`` dimension, and this Stock Entry is
+	``auto_created`` — so ``CustomStockEntry.update_batches`` skips the usual batch->row
+	backfill and whatever is stamped here is what reaches the Stock Ledger Entry. Consuming
+	a Customer Goods batch under "Regular Stock" would deduct the wrong dimension.
+
+	The **target** side is the same ownership, EXCEPT that it downgrades to Regular Stock
+	when the target item is not allowed to hold customer goods. The target is a different
+	item from the source, so the source carrying that flag guarantees nothing, and minting
+	a Customer Goods batch for an item without it hard-fails in
+	``Batch.update_inventory_dimentions``. That downgrade is a real change of ownership and
+	is announced, not silent."""
 	from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
 		resolve_batch_ownership,
 	)
 
 	inventory_type, customer = resolve_batch_ownership(row)
+	source = (inventory_type, customer)
 	if inventory_type not in ("Customer Goods", "Customer Stock"):
-		return None, None
+		return source, source
 	if not frappe.db.get_value(
 		"Item", target_item, "custom_inventory_type_can_be_customer_goods"
 	):
@@ -5660,8 +5690,8 @@ def _unused_row_ownership(row, target_item):
 			indicator="orange",
 			alert=True,
 		)
-		return None, None
-	return inventory_type, customer
+		return source, ("Regular Stock", None)
+	return source, source
 
 
 def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
@@ -5736,13 +5766,15 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 
 	for item in rows:
 		target_item = _resolve_unused_loose_item(item.item_code) or item.item_code
-		inventory_type, customer = _unused_row_ownership(item, target_item)
+		(src_type, src_customer), (out_type, out_customer) = _unused_row_ownership(
+			item, target_item
+		)
 		new_batch = _create_scrap_batch(
 			target_item,
 			employee=op_employee,
 			company=se.company,
-			inventory_type=inventory_type,
-			customer=customer,
+			inventory_type=out_type,
+			customer=out_customer,
 		)
 		if not new_batch:
 			if target_item != item.item_code:
@@ -5776,8 +5808,9 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 				"is_finished_item": 0,
 				"set_basic_rate_manually": 1,
 				"basic_rate": val_rate,
-				"inventory_type": inventory_type,
-				"customer": customer,
+				# The consumed batch's OWN dimension — stock is deducted along it.
+				"inventory_type": src_type,
+				"customer": src_customer,
 			},
 		)
 		# ...and produce the same qty onto the unused/loose item under the tagged batch.
@@ -5797,8 +5830,10 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 				"is_finished_item": 1,
 				"set_basic_rate_manually": 1,
 				"basic_rate": val_rate,
-				"inventory_type": inventory_type,
-				"customer": customer,
+				# Matches the minted batch: the source's ownership, downgraded to Regular
+				# Stock only when the target item cannot hold customer goods.
+				"inventory_type": out_type,
+				"customer": out_customer,
 			},
 		)
 
