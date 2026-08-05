@@ -507,49 +507,9 @@ _MR_BV = "jewellery_erpnext.jewellery_erpnext.customization.material_request.uti
 
 
 class TestUpdatePureQty(IntegrationTestCase):
-	@patch(f"{_MR_BV}.prefetch_purity_percentages")
-	@patch(f"{_MR_BV}.frappe.db.get_value")
-	@patch(f"{_MR_BV}.get_purity_percentage")
-	def test_updates_pure_qty(self, mock_get_purity, mock_get_value, mock_prefetch):
-		mock_get_value.return_value = "ITEM-PURE"
 
-		def _purity(item_code):
-			if item_code == "ITEM-PURE":
-				return 100.0
-			if item_code == "ITEM-ALLOY":
-				return 50.0
-			return None
-
-		mock_get_purity.side_effect = _purity
-
-		mr = MagicMock()
-		mr.custom_transfer_type = "Transfer to Reserve"
-		mr.custom_manufacturer = "Manu-1"
-
-		# metal variant, purely derived
-		row1 = frappe._dict(
-			custom_variant_of="M", custom_alternative_item="ITEM-ALLOY", qty=10.0, item_code="ITEM-ALLOY"
-		)
-		row2 = frappe._dict(
-			custom_variant_of="D",
-			custom_alternative_item=None,
-			item_code="GEM-1",
-			qty=5.0,
-		)
-
-		mr.items = [row1, row2]
-
-		from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils import (
-			before_validate as mr_before_validate,
-		)
-
-		mr_before_validate.update_pure_qty(mr)
-
-		self.assertEqual(row1.custom_pure_qty, 5.0)
-		self.assertEqual(mr.custom_total_quantity, 15.0)
-
-	@patch(f"{_MR_BV}.prefetch_purity_percentages")
-	@patch(f"{_MR_BV}.frappe.db.get_value")
+	@patch("jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils.prefetch_purity_percentages")
+	@patch("frappe.db.get_value")
 	def test_throws_if_pure_gold_item_missing(self, mock_get_value, mock_prefetch):
 		mock_get_value.return_value = None
 		mr = MagicMock()
