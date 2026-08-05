@@ -5484,14 +5484,15 @@ def _probe_unused_loose_item(item_code):
 			return block(
 				UNUSED_NARROWED_TO_NONE,
 				_(
-					"{0} items of template <b>{1}</b> match {2} on Metal Purity <b>{3}</b> "
-					"and Metal Colour <b>{4}</b> ({5}), but none of them also match {6}. "
-					"Create the exact counterpart, or disable all but one of the near "
-					"matches."
+					"No {0} item matches {1} exactly. {2} item(s) of template <b>{3}</b> "
+					"share Metal Purity <b>{4}</b> and Metal Colour <b>{5}</b> ({6}), but "
+					"none of them also match {7}. Create the exact counterpart, or disable "
+					"all but one of the near matches."
 				).format(
+					label,
+					frappe.bold(item_code),
 					len(candidates),
 					template,
-					frappe.bold(item_code),
 					purity,
 					colour,
 					_format_item_list(candidates),
@@ -5520,11 +5521,10 @@ def _probe_unused_loose_item(item_code):
 		return block(
 			UNUSED_NO_MATCH,
 			_(
-				"{0} (Metal Purity <b>{1}</b>, Metal Colour <b>{2}</b>) has no "
-				"Unused/Loose Material counterpart. Create an enabled variant of template "
-				"<b>{3}</b> with that purity and colour and <b>Has Batch No</b> enabled, "
-				"then receive again."
-			).format(frappe.bold(item_code), purity, colour, template),
+				"{0} (Metal Purity <b>{1}</b>, Metal Colour <b>{2}</b>) has no {3} "
+				"counterpart. Create an enabled variant of template <b>{4}</b> with that "
+				"purity and colour and <b>Has Batch No</b> enabled, then receive again."
+			).format(frappe.bold(item_code), purity, colour, label, template),
 		)
 
 	target = candidates[0]

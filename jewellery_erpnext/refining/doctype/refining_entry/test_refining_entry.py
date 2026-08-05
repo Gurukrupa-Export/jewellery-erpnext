@@ -747,6 +747,14 @@ class TestRefiningEntry(IntegrationTestCase):
 		self.addCleanup(
 			frappe.delete_doc, "Item", doc.name, force=1, ignore_permissions=True
 		)
+		if not has_batch_no:
+			# doc_events/item.before_insert force-sets has_batch_no = 1 for every "- V"
+			# item group, so it cannot be turned off through the document API. Write it
+			# after insert — the point of the fixture is a target that CANNOT be tagged.
+			frappe.db.set_value(
+				"Item", doc.name, {"has_batch_no": 0, "create_new_batch": 0}
+			)
+			doc.reload()
 		return doc
 
 	#: The colliding target the tie-break tests share: same purity + colour as
@@ -786,10 +794,10 @@ class TestRefiningEntry(IntegrationTestCase):
 		what turns "no item" into an actionable "create this one"."""
 		self._ml_variant("ML-TEST-AMBIGUOUS", self._AMBIGUOUS_ML_ATTRS)
 		odd = self._metal_variant(
-			"M-TEST-20KT",
+			"M-TEST-24KT-919-Y",
 			[
 				("Metal Type", "Gold"),
-				("Metal Touch", "20KT"),
+				("Metal Touch", "24KT"),
 				("Metal Purity", "91.9"),
 				("Metal Colour", "Yellow"),
 			],
@@ -806,10 +814,10 @@ class TestRefiningEntry(IntegrationTestCase):
 		otherwise be a hard error, so nothing that resolves today can change. The karat
 		mismatch is surfaced by run_unused_loose_audit as an advisory, not here."""
 		odd = self._metal_variant(
-			"M-TEST-20KT-UNIQUE",
+			"M-TEST-24KT-UNIQUE",
 			[
 				("Metal Type", "Gold"),
-				("Metal Touch", "20KT"),
+				("Metal Touch", "24KT"),
 				("Metal Purity", "91.9"),
 				("Metal Colour", "Yellow"),
 			],
@@ -819,57 +827,36 @@ class TestRefiningEntry(IntegrationTestCase):
 	def test_unused_loose_resolver_throws_when_the_target_is_not_batch_tracked(self):
 		"""A target that cannot carry the Unused/Loose Material batch marker would make
 		the material invisible to refining. Block, and say which switch to flip."""
-		source = self._metal_variant(
-			"M-TEST-58.6-W",
-			[
-				("Metal Type", "Gold"),
-				("Metal Touch", "14KT"),
-				("Metal Purity", "58.6"),
-				("Metal Colour", "White"),
-			],
-		)
-		self._ml_variant(
-			"ML-TEST-58.6-W",
-			[
-				("Metal Type", "Gold"),
-				("Metal Touch", "14KT"),
-				("Metal Purity", "58.6"),
-				("Metal Colour", "White"),
-			],
-			has_batch_no=0,
-		)
+		attrs = [
+			("Metal Type", "Gold"),
+			("Metal Touch", "24KT"),
+			("Metal Purity", "92.0"),
+			("Metal Colour", "Yellow"),
+		]
+		source = self._metal_variant("M-TEST-92-Y", attrs)
+		self._ml_variant("ML-TEST-92-Y", attrs, has_batch_no=0)
 		with self.assertRaises(frappe.ValidationError) as caught:
 			_resolve_unused_loose_item(source.name)
 		message = frappe.utils.strip_html(str(caught.exception))
-		self.assertIn("ML-TEST-58.6-W", message)
+		self.assertIn("ML-TEST-92-Y", message)
 		self.assertIn("Has Batch No", message)
 
 	def test_unused_loose_resolver_throws_on_a_uom_mismatch(self):
 		"""The repack copies the received qty verbatim, so two different units would
 		silently book grams as something else."""
-		source = self._metal_variant(
-			"M-TEST-58.6-Y",
-			[
-				("Metal Type", "Gold"),
-				("Metal Touch", "14KT"),
-				("Metal Purity", "58.6"),
-				("Metal Colour", "Yellow"),
-			],
-		)
-		target = self._ml_variant(
-			"ML-TEST-58.6-Y",
-			[
-				("Metal Type", "Gold"),
-				("Metal Touch", "14KT"),
-				("Metal Purity", "58.6"),
-				("Metal Colour", "Yellow"),
-			],
-		)
+		attrs = [
+			("Metal Type", "Gold"),
+			("Metal Touch", "24KT"),
+			("Metal Purity", "92.0"),
+			("Metal Colour", "Pink"),
+		]
+		source = self._metal_variant("M-TEST-92-P", attrs)
+		target = self._ml_variant("ML-TEST-92-P", attrs)
 		frappe.db.set_value("Item", target.name, "stock_uom", "Nos")
 		with self.assertRaises(frappe.ValidationError) as caught:
 			_resolve_unused_loose_item(source.name)
 		message = frappe.utils.strip_html(str(caught.exception))
-		self.assertIn("ML-TEST-58.6-Y", message)
+		self.assertIn("ML-TEST-92-P", message)
 		self.assertIn("Nos", message)
 
 	def test_unused_loose_message_names_the_family_not_the_template(self):
@@ -880,8 +867,8 @@ class TestRefiningEntry(IntegrationTestCase):
 			"M-TEST-NO-TARGET",
 			[
 				("Metal Type", "Gold"),
-				("Metal Touch", "9KT"),
-				("Metal Purity", "37.5"),
+				("Metal Touch", "24KT"),
+				("Metal Purity", "92.0"),
 				("Metal Colour", "Yellow"),
 			],
 		)
@@ -967,8 +954,8 @@ class TestRefiningEntry(IntegrationTestCase):
 			"M-TEST-BLOCKS-EARLY",
 			[
 				("Metal Type", "Gold"),
-				("Metal Touch", "9KT"),
-				("Metal Purity", "37.5"),
+				("Metal Touch", "24KT"),
+				("Metal Purity", "92.0"),
 				("Metal Colour", "Yellow"),
 			],
 		)
@@ -1012,8 +999,8 @@ class TestRefiningEntry(IntegrationTestCase):
 			"M-TEST-REPLAY",
 			[
 				("Metal Type", "Gold"),
-				("Metal Touch", "9KT"),
-				("Metal Purity", "37.5"),
+				("Metal Touch", "24KT"),
+				("Metal Purity", "92.0"),
 				("Metal Colour", "Yellow"),
 			],
 		)
@@ -1052,11 +1039,15 @@ class TestRefiningEntry(IntegrationTestCase):
 			_unused_row_ownership,
 		)
 
+		# A real customer is required: normalize_ownership rule 3 downgrades a customer
+		# TYPE carrying no customer to Regular Stock, so a bare row would prove nothing.
+		customer = frappe.db.get_value("Customer", {"disabled": 0}, "name")
+		self.assertTrue(customer, "test data must contain at least one Customer")
 		row = frappe._dict(
 			item_code="M-G-22KT-91.9-Y",
 			batch_no=None,
 			inventory_type="Customer Goods",
-			customer=self.customer if hasattr(self, "customer") else None,
+			customer=customer,
 		)
 		target = "ML-G-22KT-91.9-Y"
 		allowed = frappe.db.get_value(
