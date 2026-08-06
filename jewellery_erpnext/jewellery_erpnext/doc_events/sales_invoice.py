@@ -350,10 +350,14 @@ def get_allowed_item_types(customer, sales_type):
 	)
 	missing_item_types = item_types - existing_item_types
 	if missing_item_types:
-		# original code loaded each E Invoice Item via frappe.get_doc(), which
-		# raises DoesNotExistError for a bad item_type — preserve that behavior
-		# instead of silently excluding it.
-		frappe.get_doc("E Invoice Item", next(iter(missing_item_types)))
+		# original code loaded each E Invoice Item via frappe.get_doc(), in
+		# customer_payment_details row order, raising DoesNotExistError on the
+		# first bad item_type it hit — walk rows in that same order instead of
+		# picking an arbitrary element out of the (unordered) missing_item_types
+		# set, so the reported error is deterministic.
+		for row in customer_payment_term_doc.customer_payment_details:
+			if row.item_type in missing_item_types:
+				frappe.get_doc("E Invoice Item", row.item_type)
 
 	matching_parents = frappe.get_all(
 		"Sales Type Multiselect",
@@ -1380,29 +1384,58 @@ def update_einvoice_items(
 			)
 
 
-def _match_einvoice_item(rows, filters):
-	"""In-memory equivalent of frappe.db.get_value('E Invoice Item', filters, ['name', 'hsn_code', 'uom'])
-	against a prefetched row list. Supports the same filter shapes used here: plain equality,
-	('in', [...]) and ('is', 'not set')."""
+_EINVOICE_INDEX_FLAGS = (
+	"is_for_metal",
+	"is_for_making",
+	"is_for_labour",
+	"is_for_finding",
+	"is_for_finding_making",
+	"is_for_diamond",
+	"is_for_gemstone",
+)
+
+
+def _build_einvoice_index(rows):
+	"""Pre-index a prefetched E Invoice Item row list once, replacing the O(N) linear
+	scan _match_einvoice_item() used to do on every call. Covers the exact filter
+	shapes update_bom_details() matches against: (flag, metal_type, metal_purity),
+	the same with finding_category required-unset, the same with finding_category
+	matched exactly, a bare flag lookup (gemstone), and (flag, diamond_type). Each
+	bucket keeps the first row (in `rows` order) per key, matching
+	_match_einvoice_item()'s first-match-wins semantics."""
+	by_metal_purity = {}
+	by_metal_purity_no_category = {}
+	by_metal_purity_category = {}
+	by_flag_only = {}
+	by_diamond_type = {}
+
 	for row in rows:
-		matched = True
-		for field, value in filters.items():
-			if isinstance(value, (list, tuple)):
-				operator, operand = value
-				if operator == "in":
-					if row.get(field) not in operand:
-						matched = False
-						break
-				elif operator == "is" and operand == "not set":
-					if row.get(field):
-						matched = False
-						break
-			elif row.get(field) != value:
-				matched = False
-				break
-		if matched:
-			return row.name, row.hsn_code, row.uom
-	return None
+		entry = (row.name, row.hsn_code, row.uom)
+		for flag in _EINVOICE_INDEX_FLAGS:
+			if not row.get(flag):
+				continue
+			by_flag_only.setdefault(flag, entry)
+			mp_key = (flag, row.get("metal_type"), row.get("metal_purity"))
+			by_metal_purity.setdefault(mp_key, entry)
+			if not row.get("finding_category"):
+				by_metal_purity_no_category.setdefault(mp_key, entry)
+			cat_key = (
+				flag,
+				row.get("metal_type"),
+				row.get("metal_purity"),
+				row.get("finding_category"),
+			)
+			by_metal_purity_category.setdefault(cat_key, entry)
+			dt_key = (flag, row.get("diamond_type"))
+			by_diamond_type.setdefault(dt_key, entry)
+
+	return {
+		"by_metal_purity": by_metal_purity,
+		"by_metal_purity_no_category": by_metal_purity_no_category,
+		"by_metal_purity_category": by_metal_purity_category,
+		"by_flag_only": by_flag_only,
+		"by_diamond_type": by_diamond_type,
+	}
 
 
 def update_bom_details(
@@ -1446,10 +1479,12 @@ def update_bom_details(
 				"diamond_type",
 			],
 			# match frappe.db.get_value()'s default tie-break (oldest `modified` first)
-			# so _match_einvoice_item()'s first-match result agrees with the single-row
-			# get_value() calls it replaces when a filter combo matches multiple rows.
+			# so _build_einvoice_index()'s first-match-wins result agrees with the
+			# single-row get_value() calls it replaces when a filter combo matches
+			# multiple rows.
 			order_by="modified",
 		)
+	einvoice_index = _build_einvoice_index(einvoice_items)
 	# so_doc = frappe.get_doc("Sales Order", row.sales_order)
 	so_item_map = {}
 
@@ -1506,13 +1541,8 @@ def update_bom_details(
 			making_charge_item_details,
 			making_charge_customer_group,
 		)
-		einvoice_item, hsn_code, uom = _match_einvoice_item(
-			einvoice_items,
-			{
-				"is_for_metal": 1,
-				"metal_type": i.metal_type,
-				"metal_purity": i.metal_touch,
-			},
+		einvoice_item, hsn_code, uom = einvoice_index["by_metal_purity"].get(
+			("is_for_metal", i.metal_type, i.metal_touch)
 		) or (None, None, None)
 
 		# Hybrid: making charge is always job-work value (Outwork rate),
@@ -1524,13 +1554,8 @@ def update_bom_details(
 			else "is_for_making"
 		)
 
-		making_item, making_hsn, making_uom = _match_einvoice_item(
-			einvoice_items,
-			{
-				filter_value: 1,
-				"metal_type": i.metal_type,
-				"metal_purity": i.metal_touch,
-			},
+		making_item, making_hsn, making_uom = einvoice_index["by_metal_purity"].get(
+			(filter_value, i.metal_type, i.metal_touch)
 		) or (None, None, None)
 
 		so_metal = so_item_map.get(einvoice_item)
@@ -1579,14 +1604,8 @@ def update_bom_details(
 		einvoice_item = hsn_code = uom = None
 
 		# ---------------- Finding amount: category-specific match ----------------
-		result = _match_einvoice_item(
-			einvoice_items,
-			{
-				"is_for_finding": 1,
-				"metal_type": i.metal_type,
-				"metal_purity": i.metal_touch,
-				"finding_category": i.finding_category,
-			},
+		result = einvoice_index["by_metal_purity_category"].get(
+			("is_for_finding", i.metal_type, i.metal_touch, i.finding_category)
 		)
 		if result:
 			einvoice_item, hsn_code, uom = result
@@ -1595,14 +1614,8 @@ def update_bom_details(
 			# (finding_category is unset) — not just any record sharing
 			# metal_type/metal_purity, which could accidentally be a
 			# different category's record.
-			result = _match_einvoice_item(
-				einvoice_items,
-				{
-					"is_for_metal": 1,
-					"metal_type": i.metal_type,
-					"metal_purity": i.metal_touch,
-					"finding_category": ["is", "not set"],
-				},
+			result = einvoice_index["by_metal_purity_no_category"].get(
+				("is_for_metal", i.metal_type, i.metal_touch)
 			)
 			if result:
 				einvoice_item, hsn_code, uom = result
@@ -1619,14 +1632,8 @@ def update_bom_details(
 		making_item = making_hsn = making_uom = None
 
 		# ---------------- Making charge: category-specific match ----------------
-		result = _match_einvoice_item(
-			einvoice_items,
-			{
-				filter_value: 1,
-				"metal_type": i.metal_type,
-				"metal_purity": i.metal_touch,
-				"finding_category": i.finding_category,
-			},
+		result = einvoice_index["by_metal_purity_category"].get(
+			(filter_value, i.metal_type, i.metal_touch, i.finding_category)
 		)
 		if result:
 			making_item, making_hsn, making_uom = result
@@ -1641,13 +1648,8 @@ def update_bom_details(
 				if (i.is_customer_item or self.sales_type == "Hybrid")
 				else "is_for_making"
 			)
-			result = _match_einvoice_item(
-				einvoice_items,
-				{
-					fallback_filter_value: 1,
-					"metal_type": i.metal_type,
-					"metal_purity": i.metal_touch,
-				},
+			result = einvoice_index["by_metal_purity"].get(
+				(fallback_filter_value, i.metal_type, i.metal_touch)
 			)
 			if result:
 				making_item, making_hsn, making_uom = result
@@ -1682,9 +1684,8 @@ def update_bom_details(
 
 	for i in bom_doc.diamond_detail:
 		einvoice_item = hsn_code = uom = None
-		result = _match_einvoice_item(
-			einvoice_items,
-			{"is_for_diamond": 1, "diamond_type": i.diamond_type},
+		result = einvoice_index["by_diamond_type"].get(
+			("is_for_diamond", i.diamond_type)
 		)
 
 		if result:
@@ -1762,9 +1763,8 @@ def update_bom_details(
 		if i.is_customer_item:
 			self.is_customer_diamond = True
 	for i in bom_doc.gemstone_detail:
-		einvoice_item, hsn_code, uom = _match_einvoice_item(
-			einvoice_items,
-			{"is_for_gemstone": 1},
+		einvoice_item, hsn_code, uom = einvoice_index["by_flag_only"].get(
+			"is_for_gemstone"
 		) or (None, None, None)
 
 		if not einvoice_item:
