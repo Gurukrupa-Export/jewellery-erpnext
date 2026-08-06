@@ -327,12 +327,6 @@ def update_dn_einvoice_items(self, bom_cache=None):
 				hallmarking_item,
 				hallmarking_hsn,
 				hallmarking_uom,
-			einvoice_item, hsn_code, uom = get_einvoice_item({"is_for_hallmarking": 1})
-			add(
-				aggregated_hallmarking_items,
-				einvoice_item,
-				hsn_code,
-				uom,
 				flt(bom_doc.hallmarking_amount),
 				1,
 			)
