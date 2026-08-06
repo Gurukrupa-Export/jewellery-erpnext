@@ -48,7 +48,6 @@ jobs:
           cd ~/frappe-bench
           echo "Running Inventory Tests..."
           bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Log"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Settings"
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Serial Number Creator"
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_submit_guard
@@ -58,3 +57,4 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_rate
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sample_goods_guard
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Diamond Conversion"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Settings"

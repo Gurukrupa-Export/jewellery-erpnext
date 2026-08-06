@@ -327,6 +327,12 @@ def update_dn_einvoice_items(self, bom_cache=None):
 				hallmarking_item,
 				hallmarking_hsn,
 				hallmarking_uom,
+			einvoice_item, hsn_code, uom = get_einvoice_item({"is_for_hallmarking": 1})
+			add(
+				aggregated_hallmarking_items,
+				einvoice_item,
+				hsn_code,
+				uom,
 				flt(bom_doc.hallmarking_amount),
 				1,
 			)
@@ -346,12 +352,12 @@ def update_dn_einvoice_items(self, bom_cache=None):
 
 	self.set("custom_invoice_item", [])
 	for bucket in (
-		aggregated_metal_items,
-		aggregated_metal_making_items,
-		aggregated_finding_items,
-		aggregated_finding_making_items,
 		aggregated_diamond_items,
+		aggregated_metal_items,
+		aggregated_finding_items,
 		aggregated_gemstone_items,
+		aggregated_metal_making_items,
+		aggregated_finding_making_items,
 		aggregated_hallmarking_items,
 		aggregated_certification_items,
 	):

@@ -662,6 +662,138 @@ def validate_metal_properties(doc):
 		frappe.throw(_("{0}").format(combined_error_msg))
 
 
+def validate_material_request_warehouses(self, method=None):
+	"""A Stock Entry mapped from a Material Request does not own its warehouse routing.
+
+	make_stock_entry's update_item copies the MR row's warehouses onto the Stock Entry
+	row, and make_in_transit_stock_entry then re-points every t_warehouse at the target
+	warehouse's transit warehouse. Either way the routing is the decision recorded on the
+	Material Request, so a row that no longer agrees with it was edited afterwards.
+
+	The in-transit form also locks the two grid columns
+	(toggle_mr_transit_warehouse_lock in public/js/doctype_js/stock_entry.js); that lock
+	is cosmetic, this is the enforcement, and it covers API and script writes too.
+
+	Runs as a `validate` doc_event, so it sees the rows after update_batches has rebuilt
+	them (a FIFO split keeps material_request_item and both warehouses on every split row)
+	and after ERPNext's validate_warehouse has filled or nulled blanks by purpose.
+	"""
+	if not self.get("custom_material_request_reference"):
+		return
+
+	rows = [
+		row for row in self.items if row.material_request and row.material_request_item
+	]
+	if not rows:
+		return
+
+	mr_items = bulk_map(
+		"Material Request Item",
+		[row.material_request_item for row in rows],
+		["parent", "warehouse", "from_warehouse"],
+	)
+	mr_types = bulk_map(
+		"Material Request",
+		[row.material_request for row in rows],
+		["material_request_type"],
+	)
+	# Only the target side has a second accepted value, so the transit lookup is limited
+	# to the expected targets this entry actually references.
+	transit_map = bulk_map(
+		"Warehouse",
+		[
+			(mr_items.get(row.material_request_item) or {}).get("warehouse")
+			for row in rows
+		],
+		["default_in_transit_warehouse"],
+	)
+
+	for row in rows:
+		# material_request / material_request_item are written by the mapper but are
+		# API-writable, so they are treated as untrusted: a row whose provenance cannot be
+		# resolved, or whose item belongs to some other request, must not reach the
+		# warehouse comparison -- it would enforce routing taken from an unrelated
+		# Material Request. Deliberately per row: "Get Items From -> Material Request" is
+		# multi-select, so one entry may legitimately carry rows from several requests and
+		# custom_material_request_reference keeps only the last of them.
+		mr_item = mr_items.get(row.material_request_item)
+		if not mr_item:
+			frappe.throw(
+				_(
+					"Row #{0}: Material Request Item {1} no longer exists. Its Material Request link must be corrected before this entry can be saved."
+				).format(row.idx, frappe.bold(row.material_request_item))
+			)
+
+		if mr_item.parent != row.material_request:
+			frappe.throw(
+				_(
+					"Row #{0}: Material Request Item {1} belongs to Material Request {2}, but the row is linked to {3}."
+				).format(
+					row.idx,
+					frappe.bold(row.material_request_item),
+					frappe.bold(mr_item.parent),
+					frappe.bold(row.material_request),
+				)
+			)
+
+		# Mirrors update_item in doc_events/material_request.py, which decides which side
+		# of the row it fills from the Material Request type.
+		mr_type = (mr_types.get(row.material_request) or {}).get(
+			"material_request_type"
+		)
+		if mr_type == "Material Issue":
+			expected_source, expected_target = mr_item.warehouse, None
+		elif mr_type == "Customer Provided":
+			expected_source, expected_target = None, mr_item.warehouse
+		else:
+			expected_source, expected_target = mr_item.from_warehouse, mr_item.warehouse
+
+		# Neither a blank expectation nor a blank row value is an assertion that the side
+		# is wrong. validate_warehouse has already run (controller methods precede
+		# doc_event handlers) and it nulls whichever side the purpose does not use --
+		# a Material Transfer request received as Customer Goods Received legitimately
+		# ends up with no s_warehouse. Where the purpose *does* need the side, that same
+		# ERPNext check rejects a blank before this handler is reached.
+		if expected_source and row.s_warehouse and row.s_warehouse != expected_source:
+			_throw_warehouse_mismatch(
+				row, _("Source Warehouse"), expected_source, row.s_warehouse
+			)
+
+		if (
+			not expected_target
+			or not row.t_warehouse
+			or row.t_warehouse == expected_target
+		):
+			continue
+
+		# The in-transit button routes through the target's transit warehouse rather than
+		# the target itself, so both readings are "as per the Material Request".
+		transit = (transit_map.get(expected_target) or {}).get(
+			"default_in_transit_warehouse"
+		)
+		if transit and row.t_warehouse == transit:
+			continue
+
+		_throw_warehouse_mismatch(
+			row,
+			_("Target Warehouse"),
+			" / ".join(w for w in (expected_target, transit) if w),
+			row.t_warehouse,
+		)
+
+
+def _throw_warehouse_mismatch(row, label, expected, actual):
+	frappe.throw(
+		_("Row #{0}: {1} must be {2} as per Material Request {3}, not {4}").format(
+			row.idx,
+			label,
+			frappe.bold(expected),
+			frappe.bold(row.material_request),
+			frappe.bold(actual or _("(blank)")),
+		)
+	)
+
+
 def on_cancel(self, method=None):
 	update_manufacturing_operation(self, True)
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
