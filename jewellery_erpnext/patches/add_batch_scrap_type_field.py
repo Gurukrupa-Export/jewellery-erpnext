@@ -1,9 +1,11 @@
 """Provision the ``Batch.custom_batch_type`` marker used by Unused/Loose Material Refining.
 
 Material left unused by production is received back into the department (the "Receive
-Unused/Loose Material" Manufacturing Operation action) under the SAME item code but on a
-freshly created batch tagged ``custom_batch_type = "Unused/Loose Material"`` — there is no
-dedicated item. Unused/Loose Material Refining then fetches ONLY those batches
+Unused/Loose Material" Manufacturing Operation action) and repacked onto a dedicated
+unused/loose item on a freshly created batch tagged
+``custom_batch_type = "Unused/Loose Material"``. Rows with no such target (diamonds,
+gemstones, alloys) keep their own item code and rely on the tag alone, which is why the tag
+— not the item code — is the marker. Unused/Loose Material Refining fetches ONLY those batches
 (``RefiningEntry.get_scrap_items_balance``), so ordinary department stock sharing the
 warehouse is never pulled into a refining entry.
 

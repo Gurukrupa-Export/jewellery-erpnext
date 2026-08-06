@@ -73,12 +73,39 @@
    "read_only": 1
   },
   {
-    "dt": "Serial No",
-    "fieldname": "purchase_document_no",
-    "fieldtype": "Data",
-    "label": "Purchase Document No",
-    "module": "Jewellery Erpnext",
-    "insert_after": "custom_serial_no_table"
+   "dt": "Serial No",
+   "fieldname": "purchase_document_no",
+   "fieldtype": "Data",
+   "label": "Purchase Document No",
+   "module": "Jewellery Erpnext",
+   "insert_after": "custom_serial_no_table"
+  },
+  {
+   "dt": "Serial No",
+   "fieldname": "custom_reference_doctype",
+   "fieldtype": "Link",
+   "insert_after": "brand",
+   "label": "Sales Reference Doctype",
+   "module": "Jewellery Erpnext",
+   "options": "DocType",
+   "read_only": 1,
+   "no_copy": 1,
+   "ignore_user_permissions": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "dt": "Serial No",
+   "fieldname": "custom_reference_docname",
+   "fieldtype": "Dynamic Link",
+   "insert_after": "custom_reference_doctype",
+   "label": "Sales Reference Docname",
+   "module": "Jewellery Erpnext",
+   "options": "custom_reference_doctype",
+   "read_only": 1,
+   "no_copy": 1,
+   "ignore_user_permissions": 1,
+   "in_standard_filter": 1,
+   "search_index": 1
   }
  ]
 }
