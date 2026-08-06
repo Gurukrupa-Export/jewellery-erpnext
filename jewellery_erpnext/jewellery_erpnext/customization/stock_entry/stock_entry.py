@@ -21,6 +21,11 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 	# validate_inventory_dimention,
 	validate_warehouse,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.batch_metal_rate import (
+	apply_batch_metal_rate,
+	pin_ledger_valuation_rate,
+	reassert_batch_metal_rate,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.utils.entered_metal_rate import (
 	capture_entered_metal_rates,
 	restore_entered_metal_rates,
@@ -46,7 +51,10 @@ def before_validate(self, method):
 
 
 def on_submit(self, method):
-	pass
+	# Runs after StockEntry.on_submit() -> update_stock_ledger(), which is where an
+	# auto-created outward bundle rewrites basic_rate straight in the DB. See
+	# ``utils/batch_metal_rate.reassert_batch_metal_rate``.
+	reassert_batch_metal_rate(self)
 	# validate_inventory_dimention(self)
 
 
@@ -254,11 +262,32 @@ class CustomStockEntry(StockEntry):
 		``basic_rate`` on every allow-zero-valuation row, which is why those batches
 		were created rate-less. See ``utils/entered_metal_rate``; the ledger's
 		valuation is deliberately left at 0.
+
+		``apply_batch_metal_rate`` runs LAST so a consumed batch's Batch Rate lands on
+		``basic_rate`` -- the field the requirement names -- without ever reaching the rows
+		the two passes above value from it. It stashes the ledger rate it displaces for the
+		``update_valuation_rate`` override below to put back, so the ledger is untouched.
+		See ``utils/batch_metal_rate`` for the eligibility rules, and for why the rate is
+		read from the Batch master rather than the row's fetched ``custom_metal_rate``.
 		"""
 		entered_rates = capture_entered_metal_rates(self)
 		super().set_basic_rate(reset_outgoing_rate, raise_error_if_no_rate)
 		restore_entered_metal_rates(entered_rates)
 		set_process_loss_produce_rates(self)
+		apply_batch_metal_rate(self, reset_outgoing_rate)
+
+	def update_valuation_rate(self, reset_outgoing_rate=True):
+		"""Undo the valuation side of ``apply_batch_metal_rate``'s ``basic_rate`` swap.
+
+		super() has just derived ``valuation_rate`` from the Batch Rate that pass
+		substituted; ``pin_ledger_valuation_rate`` re-applies core's own formula with the
+		displaced ledger rate. So ``basic_rate`` carries the Batch Rate for display while
+		``valuation_rate`` -- what ``get_sle_for_target_warehouse`` and
+		``set_incoming_rate_for_inward_transaction`` actually read -- stays exactly as
+		ERPNext computed it.
+		"""
+		super().update_valuation_rate(reset_outgoing_rate)
+		pin_ledger_valuation_rate(self, reset_outgoing_rate)
 
 
 @frappe.whitelist()
