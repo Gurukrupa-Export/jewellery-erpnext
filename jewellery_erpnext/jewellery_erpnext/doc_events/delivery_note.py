@@ -8,10 +8,14 @@ def validate(self, method):
 	bom_cache = {}
 	for row in self.items:
 		if row.bom:
-			if row.bom not in bom_cache:
-				bom_cache[row.bom] = frappe.get_doc("BOM", row.bom)
+			# keyed by row identity (not row.bom) so two different item rows
+			# that happen to reference the same BOM still get independent BOM
+			# doc instances, matching the original per-row frappe.get_doc()
+			# behavior.
+			if row.idx not in bom_cache:
+				bom_cache[row.idx] = frappe.get_doc("BOM", row.bom)
 			if row.against_sales_order:
-				bom_doc = bom_cache[row.bom]
+				bom_doc = bom_cache[row.idx]
 				row.custom_diamond_pcs = bom_doc.total_diamond_pcs
 				row.custom_gemstone_pcs = bom_doc.total_gemstone_pcs
 				row.custom_other_weight = bom_doc.total_other_weight
@@ -20,28 +24,25 @@ def validate(self, method):
 				row.custom_diamond_weight = bom_doc.total_diamond_weight_in_gms
 				row.custom_gemstone_weight = bom_doc.total_gemstone_weight_in_gms
 				row.custom_gross_weight = bom_doc.gross_weight
-	self.custom_diamond_pcs = sum(int(r.custom_diamond_pcs or 0) for r in self.items)
-	self.custom_gemstone_pcs = sum(
-		float(r.custom_gemstone_pcs or 0) for r in self.items
-	)
-	self.custom_other_weight = sum(
-		float(r.custom_other_weight or 0) for r in self.items
-	)
-	self.custom_metal_weight = sum(
-		float(r.custom_metal_weight or 0) for r in self.items
-	)
-	self.custom_finding_weight = sum(
-		float(r.custom_finding_weight or 0) for r in self.items
-	)
-	self.custom_diamond_weight = sum(
-		float(r.custom_diamond_weight or 0) for r in self.items
-	)
-	self.custom_gemstone_weight = sum(
-		float(r.custom_gemstone_weight or 0) for r in self.items
-	)
-	self.custom_gross_weight = sum(
-		float(r.custom_gross_weight or 0) for r in self.items
-	)
+	diamond_pcs = gemstone_pcs = other_weight = metal_weight = 0
+	finding_weight = diamond_weight = gemstone_weight = gross_weight = 0
+	for r in self.items:
+		diamond_pcs += int(r.custom_diamond_pcs or 0)
+		gemstone_pcs += float(r.custom_gemstone_pcs or 0)
+		other_weight += float(r.custom_other_weight or 0)
+		metal_weight += float(r.custom_metal_weight or 0)
+		finding_weight += float(r.custom_finding_weight or 0)
+		diamond_weight += float(r.custom_diamond_weight or 0)
+		gemstone_weight += float(r.custom_gemstone_weight or 0)
+		gross_weight += float(r.custom_gross_weight or 0)
+	self.custom_diamond_pcs = diamond_pcs
+	self.custom_gemstone_pcs = gemstone_pcs
+	self.custom_other_weight = other_weight
+	self.custom_metal_weight = metal_weight
+	self.custom_finding_weight = finding_weight
+	self.custom_diamond_weight = diamond_weight
+	self.custom_gemstone_weight = gemstone_weight
+	self.custom_gross_weight = gross_weight
 
 	# The e-invoice item table and GST used to be copied straight from the
 	# Sales Order (a fixed snapshot at mapping time), so removing a row here
@@ -114,6 +115,10 @@ def update_dn_einvoice_items(self, bom_cache=None):
 			"finding_category",
 			"diamond_type",
 		],
+		# match frappe.db.get_value()'s default tie-break (oldest `modified` first)
+		# so _match_einvoice_item()'s first-match result agrees with the single-row
+		# get_value() calls it replaces when a filter combo matches multiple rows.
+		order_by="modified",
 	)
 
 	aggregated_metal_items = {}
@@ -152,10 +157,10 @@ def update_dn_einvoice_items(self, bom_cache=None):
 	for row in self.items:
 		if not row.bom:
 			continue
-		bom_doc = bom_cache.get(row.bom)
+		bom_doc = bom_cache.get(row.idx)
 		if bom_doc is None:
 			bom_doc = frappe.get_doc("BOM", row.bom)
-			bom_cache[row.bom] = bom_doc
+			bom_cache[row.idx] = bom_doc
 
 		for i in bom_doc.metal_detail:
 			if i.is_customer_item:
