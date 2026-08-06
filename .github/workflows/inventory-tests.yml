@@ -58,3 +58,4 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sample_goods_guard
           bench --site test_site run-tests --app jewellery_erpnext --doctype "Diamond Conversion"
           bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Settings"
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_entered_metal_rate

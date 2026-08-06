@@ -62,3 +62,5 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_row_ownership
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_allowed_items
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_order
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bulk_map
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_reference
