@@ -12,6 +12,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.utils import batch_metal_
 from jewellery_erpnext.jewellery_erpnext.customization.utils.batch_metal_rate import (
 	apply_batch_metal_rate,
 	eligible_rows,
+	hold_ledger_valuation_rates,
 	pin_ledger_valuation_rate,
 	reassert_batch_metal_rate,
 )
@@ -60,6 +61,7 @@ def _se(rows, purpose="Material Issue"):
 		purpose=purpose,
 		stock_entry_type="Material Issue",
 		items=rows,
+		flags=frappe._dict(),
 	)
 
 
@@ -85,6 +87,49 @@ def _erpnext_update_valuation_rate(se, reset_outgoing_rate=True):
 			extra = row.get("additional_cost") + row.get("landed_cost_voucher_amount")
 			row.amount = row.get("basic_amount") + extra
 			row.valuation_rate = row.get("basic_rate") + extra / row.get("transfer_qty")
+
+
+def _erpnext_set_rate_for_outgoing_items(
+	se, reset_outgoing_rate=True, ledger_rate=LEDGER_RATE
+):
+	"""``StockEntry.set_rate_for_outgoing_items`` -- the step apply_batch_metal_rate follows.
+
+	With ``reset_outgoing_rate=False`` core does NOT re-read the ledger; it recomputes
+	basic_amount from whatever basic_rate was persisted. That is the interleaving the repost
+	tests turn on, and it was previously unmodelled here.
+	"""
+	for row in se.get("items") or []:
+		if not row.get("s_warehouse"):
+			continue
+		if reset_outgoing_rate:
+			row.basic_rate = ledger_rate
+		row.basic_amount = round(row.get("transfer_qty") * row.get("basic_rate"), 2)
+
+
+def _calculate_rate_and_amount(se, reset_outgoing_rate=True, ledger_rate=LEDGER_RATE):
+	"""``StockEntry.calculate_rate_and_amount`` plus CustomStockEntry's two overrides.
+
+	Faithful on the one detail every repost bug here turns on: core hands
+	``reset_outgoing_rate`` to ``set_basic_rate`` (erpnext stock_entry.py:1431) but then calls
+	``self.update_valuation_rate()`` with NO argument (:1434), so the flag is dropped and the
+	valuation pass always arrives as True. CustomStockEntry.update_valuation_rate hands the
+	real mode back down off ``REPOST_FLAG``; this stub reproduces that exactly.
+	"""
+	_erpnext_set_rate_for_outgoing_items(se, reset_outgoing_rate, ledger_rate)
+	apply_batch_metal_rate(se, reset_outgoing_rate)
+	_custom_update_valuation_rate(se)
+
+
+def _custom_update_valuation_rate(se):
+	"""``CustomStockEntry.update_valuation_rate``.
+
+	Always entered as True -- ``calculate_rate_and_amount`` drops the flag it was given
+	(erpnext stock_entry.py:1434), and ``RepostItemValuation._recalculate_valuation_rate``
+	calls it with no ``set_basic_rate`` pass at all.
+	"""
+	held = hold_ledger_valuation_rates(se)
+	_erpnext_update_valuation_rate(se, True)
+	pin_ledger_valuation_rate(se, held)
 
 
 class TestBatchMetalRateMovesToBasicRate(IntegrationTestCase):
@@ -138,9 +183,7 @@ class TestBatchMetalRateMovesToBasicRate(IntegrationTestCase):
 		se = _se([row], purpose="Material Transfer")
 
 		with _batch_rates({"BATCH-A": BATCH_RATE}):
-			apply_batch_metal_rate(se)
-		_erpnext_update_valuation_rate(se)
-		pin_ledger_valuation_rate(se)
+			_calculate_rate_and_amount(se)
 
 		self.assertEqual(row.basic_rate, BATCH_RATE)
 		self.assertEqual(row.valuation_rate, LEDGER_RATE)
@@ -152,26 +195,9 @@ class TestBatchMetalRateMovesToBasicRate(IntegrationTestCase):
 		se = _se([row], purpose="Material Transfer")
 
 		with _batch_rates({"BATCH-A": BATCH_RATE}):
-			apply_batch_metal_rate(se)
-		_erpnext_update_valuation_rate(se)
-		pin_ledger_valuation_rate(se)
+			_calculate_rate_and_amount(se)
 
 		self.assertEqual(row.valuation_rate, LEDGER_RATE + 25.0)
-
-	def test_repost_pass_neither_stashes_nor_pins(self):
-		# reset_outgoing_rate=False: core keeps the stored basic_rate (already OUR Batch
-		# Rate, not a ledger rate) and skips source rows in update_valuation_rate, so the
-		# persisted valuation_rate is authoritative and must survive untouched.
-		row = _row(t_warehouse="Casting Dept - GE", valuation_rate=4321.0)
-		se = _se([row], purpose="Material Transfer")
-
-		with _batch_rates({"BATCH-A": BATCH_RATE}):
-			apply_batch_metal_rate(se, reset_outgoing_rate=False)
-		_erpnext_update_valuation_rate(se, reset_outgoing_rate=False)
-		pin_ledger_valuation_rate(se, reset_outgoing_rate=False)
-
-		self.assertEqual(row.basic_rate, BATCH_RATE)
-		self.assertEqual(row.valuation_rate, 4321.0)
 
 	def test_pin_leaves_untouched_rows_alone(self):
 		# A produce row carries no stash, so the pin must not invent a valuation_rate.
@@ -238,6 +264,133 @@ class TestBatchMetalRateMovesToBasicRate(IntegrationTestCase):
 			apply_batch_metal_rate(se)
 
 		self.assertEqual(row.basic_rate, LEDGER_RATE)
+
+
+class TestRepostPass(IntegrationTestCase):
+	"""The reset_outgoing_rate=False pass, reachable only from
+	``stock_ledger.recalculate_amounts_in_stock_entry``.
+
+	Two things make this path its own hazard. Core hands the flag to ``set_basic_rate`` but
+	calls ``update_valuation_rate()`` bare (erpnext stock_entry.py:1431 vs :1434), so its own
+	"skip source rows" guard never fires and it happily re-derives ``valuation_rate`` from
+	whatever ``basic_rate`` holds -- which here is the Batch Rate. And
+	``set_rate_for_outgoing_items`` does not re-read the ledger in this mode, so the ledger
+	rate is no longer anywhere on the doc to pin from. ``REPOST_FLAG`` closes that by handing
+	the real mode back down.
+
+	Known limitation, deliberately not covered by a test because it is core behaviour we do
+	not control: ``update_rate_on_stock_entry`` overwrites ``basic_rate`` unconditionally but
+	only calls the recalc when ``dependant_sle_voucher_detail_no`` is unset. That field IS set
+	for any source row carrying a ``t_warehouse`` (stock_entry.py:2128-2129), so on a Material
+	Transfer a Repost Item Valuation leaves ``basic_rate`` at the ledger rate with no recalc to
+	restore the Batch Rate. Valuation stays correct; only the display drifts.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_repost_does_not_leak_the_batch_rate_into_valuation_rate(self):
+		# THE regression test. valuation_rate is what get_sle_for_target_warehouse and
+		# SerialandBatchBundle.set_incoming_rate_for_inward_transaction read, so letting the
+		# Batch Rate reach it revalues the inward leg -- the one outcome this module exists
+		# to prevent. The row arrives as the repost loads it: basic_rate already the Batch
+		# Rate we persisted at submit, valuation_rate the ledger rate we pinned.
+		row = _row(
+			t_warehouse="Casting Dept - GE",
+			basic_rate=BATCH_RATE,
+			basic_amount=55284.4,
+			valuation_rate=LEDGER_RATE,
+		)
+		se = _se([row], purpose="Material Transfer")
+
+		with _batch_rates({"BATCH-A": BATCH_RATE}):
+			_calculate_rate_and_amount(se, reset_outgoing_rate=False)
+
+		self.assertEqual(row.valuation_rate, LEDGER_RATE)
+		self.assertNotEqual(row.valuation_rate, BATCH_RATE)
+
+	def test_repost_steady_state_leaves_the_row_unchanged(self):
+		# Nothing overwrote basic_rate, so core recomputes basic_amount from the persisted
+		# Batch Rate and the pass writes back the identical numbers. This is the assertion
+		# the review asked for -- and it holds.
+		row = _row(
+			basic_rate=BATCH_RATE, basic_amount=55284.4, valuation_rate=LEDGER_RATE
+		)
+		se = _se([row])
+		before = (row.basic_rate, row.basic_amount, row.valuation_rate)
+
+		with _batch_rates({"BATCH-A": BATCH_RATE}):
+			_calculate_rate_and_amount(se, reset_outgoing_rate=False)
+
+		self.assertEqual((row.basic_rate, row.basic_amount, row.valuation_rate), before)
+
+	def test_repost_restores_the_batch_rate_after_a_ledger_overwrite(self):
+		# update_rate_on_stock_entry does a raw db.set_value of basic_rate and THEN reloads
+		# the doc, so this pass is the only place the Batch Rate can come back before
+		# d.db_update() persists the row. Gating the pass off on repost -- the fix the review
+		# proposed -- makes every Repost Item Valuation revert the column permanently.
+		row = _row(
+			basic_rate=LEDGER_RATE, basic_amount=50000.0, valuation_rate=LEDGER_RATE
+		)
+		se = _se([row])
+
+		with _batch_rates({"BATCH-A": BATCH_RATE}):
+			_calculate_rate_and_amount(se, reset_outgoing_rate=False)
+
+		self.assertEqual(row.basic_rate, BATCH_RATE)
+		self.assertEqual(row.basic_amount, 55284.4)
+
+	def test_repost_refreshes_a_row_whose_batch_has_no_rate(self):
+		# The hold is per ROW, not per document. Row B's batch carries no Batch Rate, so
+		# apply_batch_metal_rate never rewrote it -- its basic_rate is the fresh ledger rate
+		# update_rate_on_stock_entry just wrote, and core's recomputed valuation_rate for it
+		# is correct and must survive. A doc-wide skip would freeze it at the stale value and
+		# feed that back into the target warehouse at stock_ledger.py:1241.
+		rated = _row(basic_rate=BATCH_RATE, valuation_rate=LEDGER_RATE)
+		unrated = _row(
+			name="sed-0002",
+			batch_no="BATCH-B",
+			basic_rate=28000.0,
+			valuation_rate=30000.0,
+		)
+		se = _se([rated, unrated])
+
+		with _batch_rates({"BATCH-A": BATCH_RATE, "BATCH-B": 0}):
+			_calculate_rate_and_amount(se, reset_outgoing_rate=False)
+
+		self.assertEqual(rated.valuation_rate, LEDGER_RATE)
+		self.assertEqual(unrated.valuation_rate, 28000.0)
+
+	def test_repost_item_valuation_cannot_leak_the_batch_rate(self):
+		# RepostItemValuation._recalculate_valuation_rate (repost_item_valuation.py:347-353)
+		# calls update_valuation_rate() with NO set_basic_rate pass, then db_sets the result --
+		# so there is no stash to pin from and nothing declares the mode. Reachable from the
+		# "Create Reposting Entries" button on the Stock and Account Value Comparison report.
+		row = _row(
+			t_warehouse="Casting Dept - GE",
+			basic_rate=BATCH_RATE,
+			basic_amount=55284.4,
+			valuation_rate=LEDGER_RATE,
+		)
+		se = _se([row], purpose="Material Transfer")
+
+		with _batch_rates({"BATCH-A": BATCH_RATE}):
+			_custom_update_valuation_rate(se)
+
+		self.assertEqual(row.valuation_rate, LEDGER_RATE)
+		self.assertNotEqual(row.valuation_rate, BATCH_RATE)
+
+	def test_nothing_is_held_when_a_fresh_stash_exists(self):
+		# A normal pass carries the exact displaced ledger rate, so the hold must stand aside
+		# and let the stash win -- otherwise a submit would pin the row's pre-save valuation.
+		row = _row()
+		se = _se([row])
+
+		with _batch_rates({"BATCH-A": BATCH_RATE}):
+			apply_batch_metal_rate(se)
+
+		self.assertEqual(hold_ledger_valuation_rates(se), {})
 
 
 class TestReassertBatchMetalRate(IntegrationTestCase):

@@ -23,6 +23,7 @@ from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se
 )
 from jewellery_erpnext.jewellery_erpnext.customization.utils.batch_metal_rate import (
 	apply_batch_metal_rate,
+	hold_ledger_valuation_rates,
 	pin_ledger_valuation_rate,
 	reassert_batch_metal_rate,
 )
@@ -279,15 +280,23 @@ class CustomStockEntry(StockEntry):
 	def update_valuation_rate(self, reset_outgoing_rate=True):
 		"""Undo the valuation side of ``apply_batch_metal_rate``'s ``basic_rate`` swap.
 
-		super() has just derived ``valuation_rate`` from the Batch Rate that pass
-		substituted; ``pin_ledger_valuation_rate`` re-applies core's own formula with the
-		displaced ledger rate. So ``basic_rate`` carries the Batch Rate for display while
-		``valuation_rate`` -- what ``get_sle_for_target_warehouse`` and
-		``set_incoming_rate_for_inward_transaction`` actually read -- stays exactly as
-		ERPNext computed it.
+		super() derives ``valuation_rate`` from the Batch Rate that pass substituted;
+		``pin_ledger_valuation_rate`` re-applies core's own formula with the displaced ledger
+		rate. So ``basic_rate`` carries the Batch Rate for display while ``valuation_rate`` --
+		what ``get_sle_for_target_warehouse`` and ``set_incoming_rate_for_inward_transaction``
+		actually read -- stays exactly as ERPNext computed it.
+
+		The defence has to live here rather than keying off the caller's mode, because the two
+		passes that arrive with no ledger rate on the doc are indistinguishable from a normal
+		one: ``calculate_rate_and_amount`` calls this bare and drops the
+		``reset_outgoing_rate`` it was given (erpnext stock_entry.py:1434), and
+		``RepostItemValuation._recalculate_valuation_rate`` calls it with no ``set_basic_rate``
+		pass at all and then ``db_set``s the result. So hold the previous value first and put
+		it back per row -- see ``utils/batch_metal_rate``.
 		"""
+		held = hold_ledger_valuation_rates(self)
 		super().update_valuation_rate(reset_outgoing_rate)
-		pin_ledger_valuation_rate(self, reset_outgoing_rate)
+		pin_ledger_valuation_rate(self, held)
 
 
 @frappe.whitelist()

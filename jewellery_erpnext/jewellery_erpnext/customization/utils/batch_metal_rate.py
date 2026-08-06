@@ -15,6 +15,18 @@ PRODUCE_PRICED_FROM_CONSUMPTION = ("Repack", "Manufacture")
 # read back. A non-meta attribute: get_valid_dict drops it, so it never reaches the DB.
 _LEDGER_RATE_ATTR = "_batch_metal_rate_ledger_rate"
 
+# Every pass that recomputes valuation_rate does it as basic_rate + extras, so on any pass that
+# did NOT just re-read the ledger it publishes the Batch Rate this module persisted. Three core
+# entry points are that shape and none can be told apart by a flag:
+#   * calculate_rate_and_amount hands reset_outgoing_rate to set_basic_rate but calls
+#     self.update_valuation_rate() with NO argument (erpnext stock_entry.py:1434), so core's own
+#     "if not reset_outgoing_rate and d.s_warehouse: continue" skip never fires on a repost;
+#   * RepostItemValuation._recalculate_valuation_rate (repost_item_valuation.py:347-353) calls
+#     update_valuation_rate() with no set_basic_rate pass at all, then db_sets the result;
+#   * both feed stock_ledger.py:1241, which reads valuation_rate straight back off the row.
+# So the defence lives entirely in the update_valuation_rate override and holds the previous
+# value rather than trusting any caller to declare its mode.
+
 
 def _amount_precision(row):
 	"""Precision for ``basic_amount``; 2 for a plain namespace row (tests)."""
@@ -75,8 +87,8 @@ def apply_batch_metal_rate(se, reset_outgoing_rate=True):
 		if reset_outgoing_rate:
 			# super().set_basic_rate has just re-derived this from the ledger via
 			# get_incoming_rate, so it is the number valuation_rate must end up back at.
-			# Skipped when False: on the repost path the stored basic_rate is already OUR
-			# Batch Rate, and update_valuation_rate ignores source rows in that mode anyway.
+			# On a repost it did not, and basic_rate is the Batch Rate persisted at submit --
+			# useless to pin from, so no stash and hold_ledger_valuation_rates takes over.
 			setattr(row, _LEDGER_RATE_ATTR, flt(row.get("basic_rate")))
 
 		# Do not round off the rate, for the same reason ERPNext's own set_basic_rate does
@@ -88,20 +100,38 @@ def apply_batch_metal_rate(se, reset_outgoing_rate=True):
 		row.custom_metal_rate = 0
 
 
-def pin_ledger_valuation_rate(se, reset_outgoing_rate=True):
-	"""Restore ``valuation_rate`` to the number ERPNext computed, on every row rewritten above.
+def hold_ledger_valuation_rates(se):
+	"""Snapshot ``valuation_rate`` on the rows core is about to re-derive from the Batch Rate.
 
-	Called from ``CustomStockEntry.update_valuation_rate`` after super(), which has just
-	derived ``valuation_rate`` from the Batch Rate we substituted. Re-applies core's own
-	formula with the displaced ledger rate put back.
+	Called at the TOP of ``CustomStockEntry.update_valuation_rate``, before super() runs. On a
+	pass that did not just re-read the ledger there is no ledger rate left anywhere on the doc,
+	so the only surviving one is the ``valuation_rate`` pinned when the entry was submitted --
+	hold it here and ``pin_ledger_valuation_rate`` puts it back.
 
-	No-op when ``reset_outgoing_rate`` is False, because core's ``update_valuation_rate``
-	``continue``s on every source row in that mode -- the persisted value is authoritative
-	there and must not be overwritten from a stale stash.
+	Returns ``{}`` when a fresh ``set_basic_rate`` pass left a stash: there the displaced ledger
+	rate is exact and nothing needs holding.
 	"""
-	if not reset_outgoing_rate:
-		return
+	rows = eligible_rows(se)
+	if not rows:
+		return {}
 
+	if any(getattr(row, _LEDGER_RATE_ATTR, None) is not None for row in rows):
+		return {}
+
+	return {id(row): flt(row.get("valuation_rate")) for row in rows}
+
+
+def pin_ledger_valuation_rate(se, held=None):
+	"""Put ``valuation_rate`` back to the ledger figure super() just overwrote.
+
+	Two sources, most precise first. A row stashed by ``apply_batch_metal_rate`` carries the
+	exact rate core derived from the ledger moments earlier, so core's own formula is re-applied
+	to it. Otherwise the pass never re-read the ledger, and ``held`` carries the pin from submit.
+
+	The restore is per row, not per document: a row whose batch has no Batch Rate was never
+	rewritten, so its ``basic_rate`` is still the ledger's and the value core just computed for
+	it is correct and must stand.
+	"""
 	for row in se.get("items") or []:
 		ledger_rate = getattr(row, _LEDGER_RATE_ATTR, None)
 		if ledger_rate is None:
@@ -120,6 +150,15 @@ def pin_ledger_valuation_rate(se, reset_outgoing_rate=True):
 			)
 			/ transfer_qty
 		)
+
+	if not held:
+		return
+
+	rows = [row for row in eligible_rows(se) if id(row) in held]
+	rates = _batch_rate_map(rows)
+	for row in rows:
+		if rates.get(row.get("batch_no")):
+			row.valuation_rate = held[id(row)]
 
 
 def reassert_batch_metal_rate(se):
