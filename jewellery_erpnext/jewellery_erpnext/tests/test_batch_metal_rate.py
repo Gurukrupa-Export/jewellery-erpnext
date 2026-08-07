@@ -112,8 +112,8 @@ def _calculate_rate_and_amount(se, reset_outgoing_rate=True, ledger_rate=LEDGER_
 	Faithful on the one detail every repost bug here turns on: core hands
 	``reset_outgoing_rate`` to ``set_basic_rate`` (erpnext stock_entry.py:1431) but then calls
 	``self.update_valuation_rate()`` with NO argument (:1434), so the flag is dropped and the
-	valuation pass always arrives as True. CustomStockEntry.update_valuation_rate hands the
-	real mode back down off ``REPOST_FLAG``; this stub reproduces that exactly.
+	valuation pass always arrives as True -- which is why the override cannot key off the
+	caller's mode and holds ``valuation_rate`` across super() instead.
 	"""
 	_erpnext_set_rate_for_outgoing_items(se, reset_outgoing_rate, ledger_rate)
 	apply_batch_metal_rate(se, reset_outgoing_rate)
@@ -267,16 +267,19 @@ class TestBatchMetalRateMovesToBasicRate(IntegrationTestCase):
 
 
 class TestRepostPass(IntegrationTestCase):
-	"""The reset_outgoing_rate=False pass, reachable only from
-	``stock_ledger.recalculate_amounts_in_stock_entry``.
+	"""Every pass that recomputes ``valuation_rate`` without having just re-read the ledger:
+	``stock_ledger.recalculate_amounts_in_stock_entry`` (the ``reset_outgoing_rate=False``
+	pass) and ``RepostItemValuation._recalculate_valuation_rate`` (no ``set_basic_rate`` pass
+	at all).
 
-	Two things make this path its own hazard. Core hands the flag to ``set_basic_rate`` but
-	calls ``update_valuation_rate()`` bare (erpnext stock_entry.py:1431 vs :1434), so its own
-	"skip source rows" guard never fires and it happily re-derives ``valuation_rate`` from
-	whatever ``basic_rate`` holds -- which here is the Batch Rate. And
-	``set_rate_for_outgoing_items`` does not re-read the ledger in this mode, so the ledger
-	rate is no longer anywhere on the doc to pin from. ``REPOST_FLAG`` closes that by handing
-	the real mode back down.
+	Two things make these their own hazard. Core hands the flag to ``set_basic_rate`` but calls
+	``update_valuation_rate()`` bare (erpnext stock_entry.py:1431 vs :1434), so its own "skip
+	source rows" guard never fires and it happily re-derives ``valuation_rate`` from whatever
+	``basic_rate`` holds -- which here is the Batch Rate. And nothing on these passes re-reads
+	the ledger, so the ledger rate is no longer anywhere on the doc to pin from. So the
+	override snapshots the ``valuation_rate`` pinned at submit before super() recomputes it,
+	and restores it per row -- per row, so a row whose batch has no Batch Rate was never
+	rewritten and keeps the value core just computed for it.
 
 	Known limitation, deliberately not covered by a test because it is core behaviour we do
 	not control: ``update_rate_on_stock_entry`` overwrites ``basic_rate`` unconditionally but
