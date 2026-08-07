@@ -65,5 +65,6 @@ jobs:
             --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_row_ownership \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_allowed_items \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_order \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_invoice \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_bulk_map \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_reference
