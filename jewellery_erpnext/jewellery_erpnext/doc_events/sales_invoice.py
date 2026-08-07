@@ -1076,6 +1076,9 @@ def update_si_data(self):
 		# get_value() calls it replaces when a filter combo matches multiple rows.
 		order_by="modified",
 	)
+	# Build the lookup index once for the whole invoice; update_bom_details() is
+	# called once per BOM row below and must not rebuild it on every call.
+	einvoice_index = _build_einvoice_index(einvoice_items)
 	precision = frappe.db.get_value(
 		"Customer", self.customer, "custom_precision_variable"
 	)
@@ -1098,9 +1101,10 @@ def update_si_data(self):
 				bom_doc,
 				is_branch_customer,
 				invoice_data,
-				gold_rate_changed,
-				einvoice_items,
-				precision,
+				gold_rate_changed=gold_rate_changed,
+				einvoice_items=einvoice_items,
+				einvoice_index=einvoice_index,
+				precision=precision,
 			)
 			if bom_doc.hallmarking_amount:
 				if not hallmarking_lookup_done:
@@ -1446,6 +1450,7 @@ def update_bom_details(
 	invoice_data,
 	gold_rate_changed=True,
 	einvoice_items=_NOT_PROVIDED,
+	einvoice_index=_NOT_PROVIDED,
 	precision=_NOT_PROVIDED,
 ):
 	bom_doc.customer = self.customer
@@ -1459,32 +1464,37 @@ def update_bom_details(
 	making_charge_customer_group = frappe.db.get_value(
 		"Customer", bom_doc.customer, "customer_group"
 	)
-	if einvoice_items is _NOT_PROVIDED:
-		einvoice_items = frappe.get_all(
-			"E Invoice Item",
-			fields=[
-				"name",
-				"hsn_code",
-				"uom",
-				"is_for_metal",
-				"is_for_making",
-				"is_for_labour",
-				"is_for_finding",
-				"is_for_finding_making",
-				"is_for_diamond",
-				"is_for_gemstone",
-				"metal_type",
-				"metal_purity",
-				"finding_category",
-				"diamond_type",
-			],
-			# match frappe.db.get_value()'s default tie-break (oldest `modified` first)
-			# so _build_einvoice_index()'s first-match-wins result agrees with the
-			# single-row get_value() calls it replaces when a filter combo matches
-			# multiple rows.
-			order_by="modified",
-		)
-	einvoice_index = _build_einvoice_index(einvoice_items)
+	if einvoice_index is _NOT_PROVIDED:
+		# Fallback for callers that don't prefetch einvoice_items (e.g. quotation
+		# utils): fetch once and build the index here. update_si_data() prefetches
+		# einvoice_items and passes a pre-built einvoice_index, so it skips this
+		# build entirely.
+		if einvoice_items is _NOT_PROVIDED:
+			einvoice_items = frappe.get_all(
+				"E Invoice Item",
+				fields=[
+					"name",
+					"hsn_code",
+					"uom",
+					"is_for_metal",
+					"is_for_making",
+					"is_for_labour",
+					"is_for_finding",
+					"is_for_finding_making",
+					"is_for_diamond",
+					"is_for_gemstone",
+					"metal_type",
+					"metal_purity",
+					"finding_category",
+					"diamond_type",
+				],
+				# match frappe.db.get_value()'s default tie-break (oldest `modified` first)
+				# so _build_einvoice_index()'s first-match-wins result agrees with the
+				# single-row get_value() calls it replaces when a filter combo matches
+				# multiple rows.
+				order_by="modified",
+			)
+		einvoice_index = _build_einvoice_index(einvoice_items)
 	# so_doc = frappe.get_doc("Sales Order", row.sales_order)
 	so_item_map = {}
 
