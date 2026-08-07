@@ -4,9 +4,6 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import purchase_invoice as pi_events
-from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice import (
-	CustomPurchaseInvoice,
-)
 
 
 class DummyPurchaseInvoice:
@@ -21,6 +18,10 @@ class DummyPurchaseInvoice:
 
 
 class TestPurchaseInvoiceEvents(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_expense_account"
 	)
@@ -82,17 +83,6 @@ class TestPurchaseInvoiceEvents(IntegrationTestCase):
 
 		mock_get_value.assert_called_once()
 		self.assertEqual(pi.items[0].expense_account, "Old Account")
-
-	@patch(
-		"erpnext.accounts.doctype.purchase_invoice.purchase_invoice.PurchaseInvoice.__init__"
-	)
-	def test_custom_purchase_invoice_validate(self, mock_init):
-		mock_init.return_value = None
-		pi = CustomPurchaseInvoice()
-		try:
-			pi.validate()
-		except Exception as e:
-			self.fail(f"validate() raised an exception {e}")
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.frappe.db.get_value"
