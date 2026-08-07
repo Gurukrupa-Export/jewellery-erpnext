@@ -1076,9 +1076,11 @@ def update_si_data(self):
 		# get_value() calls it replaces when a filter combo matches multiple rows.
 		order_by="modified",
 	)
-	# Build the lookup index once for the whole invoice; update_bom_details() is
-	# called once per BOM row below and must not rebuild it on every call.
-	einvoice_index = _build_einvoice_index(einvoice_items)
+	# Build the E Invoice lookup index lazily: update_bom_details() (its only
+	# consumer) runs solely on the BOM-guarded branch below, so invoices without
+	# BOM rows skip the O(N) build entirely. It is built once on the first BOM
+	# row and reused for the rest.
+	einvoice_index = None
 	precision = frappe.db.get_value(
 		"Customer", self.customer, "custom_precision_variable"
 	)
@@ -1095,6 +1097,8 @@ def update_si_data(self):
 					bom_doc.currency, self.currency, transaction_date=self.posting_date
 				)
 			gold_rate_changed = True
+			if not einvoice_index:
+				einvoice_index = _build_einvoice_index(einvoice_items)
 			update_bom_details(
 				self,
 				row,
