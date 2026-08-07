@@ -140,6 +140,89 @@ def release_eod_sync_lock(success=True, error_log_name=None, sync_log_name=None)
 	frappe.db.commit()
 
 
+def ensure_eod_sync_lock_released(sync_log_name=None):
+	"""Last-resort net: clear the lock if it is somehow STILL held as the run unwinds.
+
+	Called from ``sync_mop_logs``' ``finally``, so it covers every exit path -- including
+	the one that actually bit on 2026-08-05, where the failure handler itself raised on a
+	dead connection and skipped its own ``release_eod_sync_lock``, and the documented case
+	of a ``JobTimeoutException`` firing *inside* the recovery handler.
+
+	Checks committed state rather than tracking a flag through three release sites, so it
+	is self-correcting and a no-op on the normal success path (which already set
+	``eod_sync_running=0``). Deliberately does NOT stamp ``eod_sync_last_completed_on``:
+	reaching here means the run did not finish cleanly, and marking the day complete would
+	make the scheduler skip it.
+
+	Returns True when it had to intervene.
+	"""
+
+	def _still_locked():
+		return cint(frappe.db.get_value(_SETTINGS, _SETTINGS, "eod_sync_running"))
+
+	try:
+		if not _still_locked():
+			return False
+	except Exception:
+		# The connection is probably still dead. Try once more with a fresh one -- a
+		# restarted MariaDB is usually back within seconds, and by the time the run
+		# unwinds it often accepts connections again.
+		try:
+			frappe.db.connect()
+			if not _still_locked():
+				return False
+		except Exception:
+			frappe.logger().exception(
+				"MOP EOD Sync: could not read lock state during final cleanup, even after "
+				"reconnecting. The hourly release_expired_eod_sync_lock job is the backstop."
+			)
+			return False
+
+	message = (
+		"EOD sync ended without releasing its lock (the run was cut short before its "
+		"handler finished). The lock was cleared during final cleanup — verify the Error "
+		"Log and any pending draft Stock Entries before retrying."
+	)
+	try:
+		frappe.db.set_value(
+			_SETTINGS,
+			_SETTINGS,
+			{
+				"eod_sync_running": 0,
+				"eod_sync_status": "Failed",
+				"eod_sync_lock_until": now_datetime(),
+				"eod_sync_message": message,
+			},
+		)
+		if sync_log_name and frappe.db.get_value(
+			"MOP EOD Sync Log", sync_log_name, "status"
+		) in ("Queued", "Running"):
+			frappe.db.set_value(
+				"MOP EOD Sync Log",
+				sync_log_name,
+				{
+					"status": "Failed",
+					"completed_on": now_datetime(),
+					"progress_message": message,
+				},
+				update_modified=False,
+			)
+		frappe.db.commit()
+	except Exception:
+		frappe.logger().exception(
+			"MOP EOD Sync: FINAL cleanup could not release the EOD sync lock. It will be "
+			"cleared by release_expired_eod_sync_lock once eod_sync_lock_until passes."
+		)
+		return False
+
+	frappe.logger().warning(
+		"MOP EOD Sync: lock released by final cleanup — the run exited without releasing "
+		"it (sync_log=%s).",
+		sync_log_name,
+	)
+	return True
+
+
 def release_expired_eod_sync_lock():
 	"""Auto-release a stale lock when the lock window has passed.
 
