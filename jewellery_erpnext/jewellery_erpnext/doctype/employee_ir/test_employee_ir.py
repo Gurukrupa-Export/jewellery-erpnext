@@ -182,7 +182,7 @@ class TestEmployeeIRReceiveDelayGuard(IntegrationTestCase):
 
 		with self.assertRaises(frappe.ValidationError) as ctx:
 			validate_employee_ir_receive_delay(doc)
-		self.assertIn("cannot be submitted yet", str(ctx.exception))
+		self.assertIn("cannot be submitted at this stage", str(ctx.exception))
 
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_value"
@@ -246,7 +246,7 @@ class TestEmployeeIRReceiveDelayGuard(IntegrationTestCase):
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.resolve_employee_ir_issue_voucher_for_receive"
 	)
-	def test_multiple_issues_report_worst_case_wait(self, _resolve, _get_value):
+	def test_multiple_issues_still_block_until_delays_elapse(self, _resolve, _get_value):
 		row_a = self._mock_row(mop="MOP-A", name="row-a", idx=1)
 		row_b = self._mock_row(mop="MOP-B", name="row-b", idx=2)
 
@@ -290,10 +290,10 @@ class TestEmployeeIRReceiveDelayGuard(IntegrationTestCase):
 		_get_value.side_effect = get_value_side_effect
 		doc = FrappeDict({"employee_ir_operations": [row_a, row_b]})
 
-		with self.assertRaises(frappe.ValidationError) as ctx:
+		# The throw message is intentionally generic (no row / operation / issue / minutes),
+		# so which row is worst-case is not observable here — only that the doc is blocked.
+		with self.assertRaises(frappe.ValidationError):
 			validate_employee_ir_receive_delay(doc)
-		# Row B (Polishing, ~9 min remaining) is more restrictive than Row A (~1 min remaining).
-		self.assertIn("MOP-B", str(ctx.exception))
 
 
 class TestManufacturingOperationBalance(IntegrationTestCase):
