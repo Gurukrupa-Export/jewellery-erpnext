@@ -11,7 +11,7 @@ def validate(self, method):
 
 
 def update_rate(self):
-	if self.purchase_type == "FG Purchase" and not self.is_new():
+	if self.purchase_type == "FG Purchase":
 		bom_data = frappe._dict()
 		for row in self.items:
 			if row.manufacturing_bom:
