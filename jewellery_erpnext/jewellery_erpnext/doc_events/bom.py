@@ -59,7 +59,7 @@ def before_validate(self, method):
 
 
 def validate(self, method):
-	if self.bom_type not in ["Quotation"]:
+	if self.bom_type not in ["Quotation","Sales Order","Manufacturing Process"]:
 		return
 
 	calculate_metal_qty(self)
