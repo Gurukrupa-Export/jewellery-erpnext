@@ -61,4 +61,5 @@ jobs:
             --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_rate \
             --module jewellery_erpnext.jewellery_erpnext.tests.test_sample_goods_guard \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_entered_metal_rate
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_entered_metal_rate \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry
