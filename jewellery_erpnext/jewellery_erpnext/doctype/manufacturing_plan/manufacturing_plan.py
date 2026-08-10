@@ -9,6 +9,7 @@ from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.utils import cint
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import refetch_fg_purchase_rate
 from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import make_subcontracting_order
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	make_manufacturing_order,
@@ -36,7 +37,25 @@ class ManufacturingPlan(Document):
 				frappe.throw(f"Row:{row.idx} Manufacturing Bom Missing")
 
 		if is_subcontracting:
+			self.fetch_fg_purchase_rate()
 			create_subcontracting_order(self)
+
+	def fetch_fg_purchase_rate(self):
+		"""Fetch supplier FG purchase rates into the Manufacturing BOMs before the Purchase Order
+		reads them.
+
+		The Manufacturing BOM is the Sales Order BOM re-labelled in place by
+		`validate_qty_with_bom_creation`, using a raw `frappe.db.set_value`. So `BOM.validate` has
+		never run against `bom_type = "Manufacturing Process"`, and `set_bom_rate` has never fetched
+		`fg_purchase_rate` from the customer price lists for it -- the rates are still whatever the
+		Quotation-time save produced. `refetch_fg_purchase_rate` runs that fetch, containing each
+		BOM in a savepoint so one unpriceable BOM cannot block the whole Manufacturing Plan submit.
+		"""
+		refetch_fg_purchase_rate(
+			row.manufacturing_bom
+			for row in self.manufacturing_plan_table
+			if row.subcontracting and row.manufacturing_bom
+		)
 
 	def on_cancel(self):
 		for row in self.manufacturing_plan_table:
