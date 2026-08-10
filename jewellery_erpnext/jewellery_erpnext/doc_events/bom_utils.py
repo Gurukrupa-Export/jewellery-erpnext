@@ -73,6 +73,104 @@ def set_bom_rate(self):
 	for row in self.gemstone_detail:
 		self.gemstone_fg_purchase += row.fg_purchase_amount if row.fg_purchase_amount else 0
 
+	warn_missing_fg_purchase_rate(self)
+
+
+# (child table fieldname, label, price master to check)
+FG_PURCHASE_RATE_SOURCES = (
+	("metal_detail", "Metal Detail", "Making Charge Price"),
+	("finding_detail", "Finding Detail", "Making Charge Price"),
+	("diamond_detail", "Diamond Detail", "Diamond Price List"),
+	("gemstone_detail", "Gemstone Detail", "Gemstone Price List"),
+)
+
+
+def warn_missing_fg_purchase_rate(self):
+	"""Report raw-material rows left without a supplier FG purchase rate.
+
+	The per-table lookups fail quietly: `_set_total_making_charges` assigns nothing at all when no
+	`Making Charge Price` row matches, and `get_gemstone_rate` bails out of its whole loop on the
+	first unpriced stone. Without this the only symptom is a zero rate on the Purchase Order, long
+	after the fact.
+
+	Limited to Manufacturing Process BOMs -- that is the `bom_type` the FG Purchase order reads
+	via `purchase_order.update_rate`, so warning on any other type would only be noise.
+	"""
+	if self.bom_type != "Manufacturing Process":
+		return
+
+	# The Purchase Order self-heal reports its own consolidated summary across every BOM on the
+	# order -- one msgprint per BOM there would be noise.
+	if frappe.flags.get("ignore_fg_rate_warning"):
+		return
+
+	missing = []
+	for fieldname, label, price_master in FG_PURCHASE_RATE_SOURCES:
+		for row in self.get(fieldname) or []:
+			if not flt(row.get("fg_purchase_rate")):
+				missing.append(
+					_("{0} Row #{1}: no FG Purchase Rate - check {2} for customer {3}").format(
+						label, row.idx, price_master, self.customer or _("(not set)")
+					)
+				)
+
+	if missing:
+		frappe.msgprint(
+			"<br>".join(missing),
+			title=_("FG Purchase Rate Missing"),
+			indicator="orange",
+		)
+
+
+def refetch_fg_purchase_rate(bom_names, quiet=False):
+	"""Re-run `BOM.validate` on each BOM so `set_bom_rate` fetches `fg_purchase_rate` from the
+	customer price lists for the metal, finding, diamond and gemstone rows, sets
+	`fg_purchase_amount = fg_purchase_rate * qty`, and rolls the totals up into the BOM Amount tab.
+
+	Needed because the Manufacturing BOM is the Sales Order BOM re-labelled in place with a raw
+	`frappe.db.set_value` (`ManufacturingPlan.validate_qty_with_bom_creation`,
+	`sales_order.create_new_bom`), so `BOM.validate` has never run against
+	`bom_type = "Manufacturing Process"` and the rates are still whatever the Quotation-time save
+	produced.
+
+	Pass `quiet=True` when the caller reports its own summary (the Purchase Order self-heal).
+
+	Returns a dict of `updated` / `skipped` / `failed` BOM names.
+	"""
+	updated, skipped, failed = [], [], []
+
+	for bom_name in sorted(set(bom_names)):
+		# A submitted BOM takes the update_after_submit path on save, which does not run validate --
+		# nothing would be fetched, so skip it rather than write for no reason.
+		if frappe.db.get_value("BOM", bom_name, "docstatus") == 1:
+			skipped.append(bom_name)
+			continue
+
+		# BOM.validate can throw (missing gemstone price list type, missing metal purity, and any
+		# schema drift on the site). Contain each BOM in a savepoint so one bad BOM neither leaves
+		# partial writes behind nor aborts the caller.
+		save_point = "sp" + frappe.generate_hash(length=8)
+		frappe.db.savepoint(save_point)
+		try:
+			frappe.get_doc("BOM", bom_name).save(ignore_permissions=True)
+			frappe.db.release_savepoint(save_point)
+			updated.append(bom_name)
+		except Exception:
+			frappe.db.rollback(save_point=save_point)
+			frappe.log_error(
+				title=f"FG Purchase Rate fetch failed: {bom_name}", message=frappe.get_traceback()
+			)
+			failed.append(bom_name)
+
+	if failed and not quiet:
+		frappe.msgprint(
+			_("Could not fetch FG Purchase Rate for BOM: {0}").format(", ".join(failed)),
+			title=_("FG Purchase Rate"),
+			indicator="orange",
+		)
+
+	return {"updated": updated, "skipped": skipped, "failed": failed}
+
 
 def get_gold_rate(self):
 	# Get the metal purity from the self object or default to 0

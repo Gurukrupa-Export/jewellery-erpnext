@@ -2,8 +2,43 @@ import json
 
 import frappe
 from erpnext.setup.utils import get_exchange_rate
+from frappe import _
+from frappe.utils import flt
+
+from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import refetch_fg_purchase_rate
 
 # from jewellery_erpnext.utils import update_existing
+
+BOM_AMOUNT_FIELDS = [
+	"making_fg_purchase",
+	"finding_bom_amount",
+	"diamond_fg_purchase",
+	"gemstone_fg_purchase",
+	"certification_amount",
+	"freight_amount",
+	"hallmarking_amount",
+	"custom_duty_amount",
+]
+
+# bom_type and docstatus decide whether an unpriced BOM can be repriced at all.
+BOM_STATE_FIELDS = BOM_AMOUNT_FIELDS + ["bom_type", "docstatus"]
+
+# The amounts the FG Purchase rate is actually built from. If every one is zero the BOM has never
+# been priced, as opposed to being legitimately worth nothing.
+FG_AMOUNT_FIELDS = (
+	"making_fg_purchase",
+	"finding_bom_amount",
+	"diamond_fg_purchase",
+	"gemstone_fg_purchase",
+)
+
+# bom.py only runs set_bom_rate for these types -- saving any other type (notably "Template")
+# is a no-op, so never spend a BOM save attempting it.
+PRICEABLE_BOM_TYPES = ("Quotation", "Sales Order", "Manufacturing Process")
+
+# One Purchase Order can carry 150 rows. Repricing every unpriced BOM inline would run 150 full
+# BOM validates in a single request, so heal this many per save and report the remainder.
+MAX_INLINE_BOM_REFETCH = 25
 
 
 def validate(self, method):
@@ -11,52 +46,160 @@ def validate(self, method):
 
 
 def update_rate(self):
-	if self.purchase_type == "FG Purchase":
-		bom_data = frappe._dict()
-		for row in self.items:
-			if row.manufacturing_bom:
-				# confirm with Rajnibhai on 8 Jan 2025
-				# bom_doc = frappe.get_doc("BOM", row.manufacturing_bom)
-				# bom_doc.gold_rate_with_gst = self.gold_rate_with_gst
-				# bom_doc.validate()
-				# bom_doc.save()
+	if self.purchase_type != "FG Purchase":
+		return
 
-				field = [
-					"making_fg_purchase",
-					"finding_bom_amount",
-					"diamond_fg_purchase",
-					"gemstone_fg_purchase",
-					"certification_amount",
-					"freight_amount",
-					"hallmarking_amount",
-					"custom_duty_amount",
-				]
+	bom_data = frappe._dict()
+	heal = frappe._dict(attempted=set(), repriced=set(), unpriced=set(), deferred=set())
+	updated = False
 
-				if not bom_data.get(row.manufacturing_bom):
-					bom_data[row.manufacturing_bom] = frappe.db.get_value(
-						"BOM", row.manufacturing_bom, field, as_dict=1
-					)
-				bom_doc = bom_data.get(row.manufacturing_bom)
-				row.making_amount = bom_doc.making_fg_purchase
-				row.finding_amount = bom_doc.finding_bom_amount
-				row.diamond_amount = bom_doc.diamond_fg_purchase
-				row.gemstone_amount = bom_doc.gemstone_fg_purchase
-				row.custom_certification_amount = bom_doc.certification_amount
-				row.custom_freight_amount = bom_doc.freight_amount
-				row.custom_hallmarking_amount = bom_doc.hallmarking_amount
-				row.custom_custom_duty_amount = bom_doc.custom_duty_amount
+	for row in self.items:
+		if not row.manufacturing_bom:
+			continue
 
-				row.rate = (
-					row.metal_amount
-					+ row.making_amount
-					+ row.finding_amount
-					+ row.diamond_amount
-					+ row.gemstone_amount
-					+ row.custom_certification_amount
-					+ row.custom_freight_amount
-					+ row.custom_hallmarking_amount
-					+ row.custom_custom_duty_amount
+		# confirm with Rajnibhai on 8 Jan 2025
+		# bom_doc = frappe.get_doc("BOM", row.manufacturing_bom)
+		# bom_doc.gold_rate_with_gst = self.gold_rate_with_gst
+		# bom_doc.validate()
+		# bom_doc.save()
+
+		if row.manufacturing_bom not in bom_data:
+			bom_data[row.manufacturing_bom] = _get_bom_state(row.manufacturing_bom)
+
+		bom_doc = bom_data.get(row.manufacturing_bom)
+		if not bom_doc:
+			frappe.throw(
+				_("Row #{0}: Manufacturing BOM {1} does not exist.").format(
+					row.idx, row.manufacturing_bom
 				)
+			)
+
+		# A BOM with no FG amounts at all was never priced -- Manufacturing Plan adopts the Sales
+		# Order BOM with a raw db.set_value, so BOM.validate (and set_bom_rate with it) never ran.
+		# Fetch the rates once, here, at the point of use.
+		if _needs_fg_rate(bom_doc):
+			bom_doc = _fetch_fg_rate(row.manufacturing_bom, bom_data, heal)
+
+		row.making_amount = flt(bom_doc.making_fg_purchase)
+		row.finding_amount = flt(bom_doc.finding_bom_amount)
+		row.diamond_amount = flt(bom_doc.diamond_fg_purchase)
+		row.gemstone_amount = flt(bom_doc.gemstone_fg_purchase)
+		row.custom_certification_amount = flt(bom_doc.certification_amount)
+		row.custom_freight_amount = flt(bom_doc.freight_amount)
+		row.custom_hallmarking_amount = flt(bom_doc.hallmarking_amount)
+		row.custom_custom_duty_amount = flt(bom_doc.custom_duty_amount)
+
+		row.rate = flt(
+			flt(row.metal_amount)
+			+ row.making_amount
+			+ row.finding_amount
+			+ row.diamond_amount
+			+ row.gemstone_amount
+			+ row.custom_certification_amount
+			+ row.custom_freight_amount
+			+ row.custom_hallmarking_amount
+			+ row.custom_custom_duty_amount,
+			row.precision("rate"),
+		)
+		updated = True
+
+	_report_unpriced(heal)
+
+	if updated:
+		# doc_events `validate` handlers run AFTER the controller's own validate (frappe's
+		# Document.hook compose()), so calculate_taxes_and_totals() has already run against the
+		# pre-update rates -- amount, net_amount and the document totals would otherwise stay one
+		# save behind. Called directly rather than via run_method so the hooks do not re-enter.
+		self.calculate_taxes_and_totals()
+		# set_total_in_words() is a separate call in AccountsController.validate (line ~309), so
+		# it also ran against the old total and would still print "INR Zero only".
+		self.set_total_in_words()
+
+
+def _get_bom_state(bom_name):
+	return frappe.db.get_value("BOM", bom_name, BOM_STATE_FIELDS, as_dict=1)
+
+
+def _needs_fg_rate(bom_doc):
+	"""True when nothing the Purchase Order reads from this BOM has ever been priced."""
+	return not any(flt(bom_doc.get(field)) for field in FG_AMOUNT_FIELDS)
+
+
+def _fetch_fg_rate(bom_name, bom_data, heal):
+	"""Reprice one unpriced BOM in place, at most once per Purchase Order save.
+
+	Returns the BOM state to use for this row -- refreshed when the fetch ran, otherwise the
+	original. Never raises: `refetch_fg_purchase_rate` contains each BOM in a savepoint, so a BOM
+	that throws during validate rolls back on its own and the Purchase Order still saves.
+	"""
+	if bom_name in heal.attempted:
+		return bom_data[bom_name]
+
+	heal.attempted.add(bom_name)
+	bom_doc = bom_data[bom_name]
+
+	# Saving a type bom.py excludes, or a submitted BOM, fetches nothing -- do not spend the save.
+	if bom_doc.docstatus != 0 or bom_doc.bom_type not in PRICEABLE_BOM_TYPES:
+		heal.unpriced.add(bom_name)
+		return bom_doc
+
+	# Budget the BOM *saves*, not the rows looked at -- an order full of Template BOMs must not
+	# exhaust the cap and defer the handful of BOMs that could actually have been repriced.
+	if len(heal.repriced) >= MAX_INLINE_BOM_REFETCH:
+		heal.deferred.add(bom_name)
+		return bom_doc
+
+	heal.repriced.add(bom_name)
+
+	# Each BOM warns about its own unpriced rows; this function reports one consolidated message.
+	frappe.flags.ignore_fg_rate_warning = True
+	try:
+		refetch_fg_purchase_rate([bom_name], quiet=True)
+	finally:
+		frappe.flags.ignore_fg_rate_warning = False
+
+	bom_data[bom_name] = _get_bom_state(bom_name) or bom_doc
+	if _needs_fg_rate(bom_data[bom_name]):
+		heal.unpriced.add(bom_name)
+
+	return bom_data[bom_name]
+
+
+def _report_unpriced(heal):
+	"""One message for the whole order rather than one per BOM."""
+	if heal.unpriced:
+		frappe.msgprint(
+			_("No FG Purchase Rate found for BOM: {0}<br>Check Making Charge Price and Diamond "
+			  "Price List for this customer.").format(", ".join(sorted(heal.unpriced))),
+			title=_("FG Purchase Rate"),
+			indicator="orange",
+		)
+
+	if heal.deferred:
+		frappe.msgprint(
+			_("{0} more BOM(s) still need pricing. Save again, or use 'Fetch FG Purchase "
+			  "Rate'.").format(len(heal.deferred)),
+			title=_("FG Purchase Rate"),
+			indicator="orange",
+		)
+
+
+@frappe.whitelist()
+def fetch_fg_purchase_rate(purchase_order):
+	"""Re-fetch supplier FG purchase rates into the BOMs this Purchase Order reads.
+
+	Manufacturing Plan does this at submit time (`ManufacturingPlan.fetch_fg_purchase_rate`), but
+	BOMs adopted before that existed -- or priced before the customer price masters were filled in
+	-- still hold stale rates. Saving the BOM runs `BOM.validate` -> `set_bom_rate`, which fetches
+	`fg_purchase_rate` for the metal, finding, diamond and gemstone rows and rolls the amounts up
+	into the BOM Amount tab.
+	"""
+	doc = frappe.get_doc("Purchase Order", purchase_order)
+	doc.check_permission("write")
+
+	return refetch_fg_purchase_rate(
+		row.manufacturing_bom for row in doc.items if row.manufacturing_bom
+	)
 
 
 def make_subcontracting_order(doc):
