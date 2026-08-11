@@ -1020,8 +1020,13 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_cached_value"
 	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.sql",
+		return_value=[[None]],
+	)
 	def test_material_receive_work_order_skips_reservation(
 		self,
+		mock_sql,
 		mock_cached,
 		mock_new_doc,
 		_mock_mop,
@@ -1111,6 +1116,7 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_all",
 		return_value=["Repack"],
 	)
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.sql")
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.get_value"
 	)
@@ -1121,6 +1127,7 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		self,
 		mock_sync,
 		mock_get_value,
+		mock_sql,
 		_mock_get_all,
 		_mock_get_values,
 		mock_cached,
@@ -1133,9 +1140,25 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		skip the reservation flow — the PC skip is scoped to Fire Assy
 		and XRF only."""
 
-		mock_get_value.return_value = frappe._dict(
-			service_type="Some Other Service", type="Receive"
-		)
+		def _get_value(doctype, name, field, *args, **kwargs):
+			# onsubmit reads the PC row; stock_reservation_entry_for_mwo reads
+			# the Manufacturing Setting tolerance. One mock, two return types.
+			if doctype == "Product Certification":
+				return frappe._dict(service_type="Some Other Service", type="Receive")
+			if doctype == "Manufacturing Setting":
+				return None
+			raise AssertionError(doctype)
+
+		mock_get_value.side_effect = _get_value
+
+		def _sql(query, *args):
+			# No MR rows -> base_mr_voucher_qty stays None (fallback path);
+			# any other query is the tabBin FOR UPDATE lock in lock_bins.
+			if "custom_total_quantity" in str(query):
+				return [[None]]
+			return None
+
+		mock_sql.side_effect = _sql
 
 		def _cached(doctype, name, fields):
 			if doctype == "Parent Manufacturing Order":
@@ -1175,6 +1198,8 @@ class TestStockReservationEntryForMWO(IntegrationTestCase):
 		mock_new_doc.assert_called_once()
 		self.assertEqual(sre.voucher_type, "Sales Order")
 		self.assertEqual(sre.reserved_qty, 2.0)
+		# Fallback voucher_qty: total_so_reserved (0) + reserved (2).
+		self.assertEqual(sre.voucher_qty, 2.0)
 		sre.insert.assert_called_once_with(ignore_links=1)
 		sre.submit.assert_called_once()
 		mock_sync.assert_called_once_with(doc)
