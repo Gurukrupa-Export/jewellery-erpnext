@@ -770,6 +770,19 @@ class TestBeforeValidate(_StockEntryTestCase):
 			),
 			"allow_zero_valuation": patch.object(se_events, "allow_zero_valuation"),
 			"bulk_map": patch.object(se_events, "bulk_map", return_value={}),
+			# flt() with a precision calls rounded() -> frappe.get_system_settings(
+			# "rounding_method"), a real DB/cache read. Only the scaled-purity branch
+			# of before_validate reaches it (flt((item_purity * qty) /
+			# pure_item_purity, 3)); the equal-purity branch assigns row.qty directly
+			# and never calls flt. On CI's disposable test_site that lookup raised, and
+			# flt swallowed the exception into 0.0 (test_pure_qty_scaled_purity:
+			# 0.0 != 6.0). Pin a valid method so the round is deterministic -- every
+			# valid method yields the same result for the assertion.
+			"get_system_settings": patch.object(
+				se_events.frappe,
+				"get_system_settings",
+				return_value="Banker's Rounding (legacy)",
+			),
 		}
 		patches.update(overrides)
 		return patches
@@ -902,7 +915,7 @@ class TestBeforeValidate(_StockEntryTestCase):
 			"validate_pcs"
 		], ctx["validate_metal_properties"], ctx["bulk_map"], ctx["get_value"], ctx[
 			"get_purity_percentage"
-		], ctx["MANUFACTURER"]:
+		], ctx["get_system_settings"], ctx["MANUFACTURER"]:
 			se_events.before_validate(se, method=None)
 		self.assertEqual(row.custom_pure_qty, 6.0)
 
@@ -1524,9 +1537,6 @@ class TestInventoryUtilsGuards(_StockEntryTestCase):
 
 # ----------------------------------------------------- batch_rename.create_parent_batches
 class TestCreateParentBatches(_StockEntryTestCase):
-	def _month(self):
-		return datetime.today().strftime("%m")
-
 	def _run(self, doc, serial="01"):
 		inserted = []
 
@@ -1536,6 +1546,9 @@ class TestCreateParentBatches(_StockEntryTestCase):
 			inserted.append(batch)
 			return batch
 
+		mock_dt = MagicMock()
+		mock_dt.today.return_value = datetime(2023, 5, 15)
+
 		with patch.object(
 			batch_rename, "get_year_code", return_value="A"
 		), patch.object(
@@ -1544,7 +1557,9 @@ class TestCreateParentBatches(_StockEntryTestCase):
 			batch_rename, "_source_row_rate", return_value=100.0
 		), patch.object(
 			batch_rename.frappe, "new_doc", side_effect=_new_doc
-		), patch.object(batch_rename.frappe.db, "exists", return_value=False):
+		), patch.object(
+			batch_rename.frappe.db, "exists", return_value=False
+		), patch.object(batch_rename, "datetime", mock_dt):
 			batch_rename.create_parent_batches(doc, method=None)
 		return inserted
 
@@ -1599,7 +1614,7 @@ class TestCreateParentBatches(_StockEntryTestCase):
 		inserted = self._run(doc)
 		self.assertEqual(len(inserted), 1)
 		batch = inserted[0]
-		expected = f"CUST-1-A{self._month()}-24KT-GOLD-01"
+		expected = "CUST-1-A05-24KT-GOLD-01"
 		self.assertEqual(batch.batch_id, expected)
 		self.assertEqual(batch.reference_doctype, "Stock Entry")
 		self.assertEqual(batch.reference_name, "SE-1")
@@ -1622,6 +1637,9 @@ class TestCreateParentBatches(_StockEntryTestCase):
 				)
 			]
 		)
+		mock_dt = MagicMock()
+		mock_dt.today.return_value = datetime(2023, 5, 15)
+
 		with patch.object(
 			batch_rename, "get_year_code", return_value="A"
 		), patch.object(
@@ -1630,9 +1648,9 @@ class TestCreateParentBatches(_StockEntryTestCase):
 			batch_rename, "_source_row_rate", return_value=0.0
 		), patch.object(batch_rename.frappe, "new_doc") as new_doc, patch.object(
 			batch_rename.frappe.db, "exists", side_effect=[True, False]
-		):
+		), patch.object(batch_rename, "datetime", mock_dt):
 			batch_rename.create_parent_batches(doc, method=None)
-		expected = f"CUST-1-A{self._month()}-24KT-GOLD-02"
+		expected = "CUST-1-A05-24KT-GOLD-02"
 		self.assertEqual(new_doc.return_value.batch_id, expected)
 		self.assertEqual(doc.items[0].batch_no, expected)
 
