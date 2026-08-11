@@ -23,14 +23,27 @@ def validate_po(self):
 				).format(row.idx)
 			)
 		elif row.po_no:
-			if not po_data.get(row.po_no):
-				po_data[row.po_no] = frappe.db.get_value(
-					"Purchase Order", row.po_no, "custom_quotation"
+			if row.po_no not in po_data:
+				po_data[row.po_no] = (
+					frappe.db.get_value(
+						"Purchase Order",
+						row.po_no,
+						["custom_quotation", "ref_customer"],
+						as_dict=True,
+					)
+					or frappe._dict()
 				)
-			if not po_data.get(row.po_no):
+
+			po_details = po_data[row.po_no]
+
+			if not po_details.get("custom_quotation"):
 				frappe.db.set_value(
 					"Purchase Order", row.po_no, "custom_quotation", self.name
 				)
+				po_details.custom_quotation = self.name
+
+			if not self.ref_customer and po_details.get("ref_customer"):
+				self.ref_customer = po_details.ref_customer
 
 
 def update_customer_details(self, row):

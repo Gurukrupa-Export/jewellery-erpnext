@@ -262,10 +262,16 @@ def _validate_metal_item_attributes(item_code, row, bom_table):
 
 class ParentManufacturingOrder(Document):
 	def before_save(self):
-		if self.is_new() or self.flags.ignore_validations:
-			# update_parent_details (which refreshes ref_customer) is skipped on insert, so there
-			# is no fresher input to wait for. Resolving here stores the grade on the inserted
-			# row instead of leaving the form to write it in on first open.
+		is_new = self.is_new()
+		if is_new or self.flags.ignore_validations:
+			if is_new:
+				# PMOs are inserted from Manufacturing Plan with little more than
+				# sales_order_item set, so the parent chain has to be walked here. Doing it on
+				# insert stores ref_customer (and the quotation it comes from) on the created
+				# row instead of leaving it blank until the first manual save.
+				update_parent_details(self)
+			# Must stay AFTER update_parent_details: that resolves ref_customer, which the grade
+			# is resolved against.
 			self._set_diamond_grade()
 			return
 		update_parent_details(self)
