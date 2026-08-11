@@ -9,6 +9,9 @@ from gke_customization.gke_order_forms.doctype.order_form.test_order_form import
 	make_order_form,
 )
 
+from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.utils import (
+	validate_po,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events import quotation as quotation_module
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 	create_tracking_bom_directly,
@@ -16,6 +19,10 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 	get_gold_rate,
 	update_status,
 	validate_gold_rate_with_gst,
+)
+
+QUOTATION_UTILS = (
+	"jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.utils"
 )
 
 
@@ -207,6 +214,86 @@ class TestQuotation(IntegrationTestCase):
 
 	def test_get_gold_rate_returns_none_when_no_party(self):
 		self.assertIsNone(get_gold_rate(None, "INR"))
+
+	def _quotation_with_po_rows(self, ref_customer=None, po_nos=("PUR-ORD-TEST-1",)):
+		"""Minimal stand-in for a Quotation whose item rows point at a Purchase Order."""
+		items = [
+			SimpleNamespace(
+				idx=idx,
+				po_no=po_no,
+				qty=1,
+				custom_hallmarking_amount=0,
+				custom_customer_gold=None,
+				custom_customer_diamond=None,
+				custom_customer_stone=None,
+				custom_customer_good=None,
+				custom_customer_finding=None,
+			)
+			for idx, po_no in enumerate(po_nos, start=1)
+		]
+		return SimpleNamespace(
+			name="QTN-TEST-1",
+			company="Test Company",
+			party_name="Test Customer",
+			ref_customer=ref_customer,
+			items=items,
+			custom_customer_gold="No",
+			custom_customer_diamond="No",
+			custom_customer_stone="No",
+			custom_customer_good="No",
+			custom_customer_finding="No",
+		)
+
+	def _patched_po_lookup(self, po_value):
+		def get_value(doctype, name=None, fieldname=None, **kwargs):
+			return po_value if doctype == "Purchase Order" else None
+
+		return patch(f"{QUOTATION_UTILS}.frappe.db.get_value", side_effect=get_value)
+
+	def test_validate_po_sets_ref_customer_from_purchase_order(self):
+		doc = self._quotation_with_po_rows(
+			ref_customer=None, po_nos=("PUR-ORD-TEST-1", "PUR-ORD-TEST-1")
+		)
+		po_value = frappe._dict(custom_quotation=None, ref_customer="CUST-A")
+
+		with (
+			self._patched_po_lookup(po_value),
+			patch(f"{QUOTATION_UTILS}.frappe.db.set_value") as set_value,
+		):
+			validate_po(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-A")
+		# both rows share one PO, so it is linked back exactly once
+		set_value.assert_called_once_with(
+			"Purchase Order", "PUR-ORD-TEST-1", "custom_quotation", "QTN-TEST-1"
+		)
+
+	def test_validate_po_does_not_overwrite_existing_ref_customer(self):
+		doc = self._quotation_with_po_rows(ref_customer="CUST-EXISTING")
+		po_value = frappe._dict(custom_quotation="QTN-OTHER", ref_customer="CUST-A")
+
+		with (
+			self._patched_po_lookup(po_value),
+			patch(f"{QUOTATION_UTILS}.frappe.db.set_value") as set_value,
+		):
+			validate_po(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-EXISTING")
+		set_value.assert_not_called()
+
+	def test_validate_po_ignores_po_no_that_is_not_a_purchase_order(self):
+		# order-sourced quotations carry a free-text customer PO in po_no
+		doc = self._quotation_with_po_rows(
+			ref_customer=None, po_nos=("JO_11228198_STXO12409",)
+		)
+
+		with (
+			self._patched_po_lookup(None),
+			patch(f"{QUOTATION_UTILS}.frappe.db.set_value"),
+		):
+			validate_po(doc)
+
+		self.assertIsNone(doc.ref_customer)
 
 	def tearDown(self):
 		return super().tearDown()

@@ -18,12 +18,20 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufac
 	create_sales_order,
 	manufacturing_plan_creation,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
+	update_parent_details,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	get_item_code,
 	set_diamond_tolerance_table,
 	set_metal_tolerance_table,
 	validate_mfg_date,
 )
+
+PMO_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order"
+PMO_UTILS = "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils"
+
+_UNSET = object()
 
 
 class TestParentManufacturingOrder(IntegrationTestCase):
@@ -547,14 +555,17 @@ class TestToleranceBandSelection(UnitTestCase):
 		def fake_get_doc(doctype, name):
 			return master if doctype == "Customer Product Tolerance Master" else bom
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
-			"parent_manufacturing_order.frappe.db.get_value",
-			return_value="PTM-TEST-0001",
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
-			"parent_manufacturing_order.frappe.get_doc",
-			side_effect=fake_get_doc,
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+				"parent_manufacturing_order.frappe.db.get_value",
+				return_value="PTM-TEST-0001",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+				"parent_manufacturing_order.frappe.get_doc",
+				side_effect=fake_get_doc,
+			),
 		):
 			set_metal_tolerance_table(pmo)
 		return pmo.metal_product_tolerance
@@ -908,14 +919,17 @@ class TestDiamondToleranceScoping(UnitTestCase):
 		def fake_get_doc(doctype, name):
 			return master if doctype == "Customer Product Tolerance Master" else bom
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
-			"parent_manufacturing_order.frappe.db.get_value",
-			return_value="PTM-TEST-0001",
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
-			"parent_manufacturing_order.frappe.get_doc",
-			side_effect=fake_get_doc,
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+				"parent_manufacturing_order.frappe.db.get_value",
+				return_value="PTM-TEST-0001",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+				"parent_manufacturing_order.frappe.get_doc",
+				side_effect=fake_get_doc,
+			),
 		):
 			set_diamond_tolerance_table(pmo)
 		return pmo.diamond_product_tolerance
@@ -1022,3 +1036,81 @@ class TestDiamondToleranceScoping(UnitTestCase):
 					],
 				)
 				self.assertEqual(rows[0].size_in_mm, 0)
+
+
+class TestParentDetailsRefCustomer(UnitTestCase):
+	"""update_parent_details walks sales order item -> PO item -> manufacturing plan row to
+	reach the quotation the order came from, and takes Ref Customer from it."""
+
+	SO_ITEM = "SO-ITEM-CHILD"
+	PO_ITEM = "PO-ITEM-1"
+	MP_ROW = "MP-ROW-1"
+	PARENT_SO_ITEM = "SO-ITEM-PARENT"
+
+	def _patched_chain(
+		self, quotation="QTN-1", quotation_ref_customer=None, docname=_UNSET
+	):
+		"""Stub the lookup chain; docname defaults to the parent sales order item."""
+		mfg_plan_details = frappe._dict(
+			parent="MP-1",
+			sales_order="SO-PARENT",
+			docname=self.PARENT_SO_ITEM if docname is _UNSET else docname,
+		)
+
+		def get_value(doctype, name=None, fieldname=None, **kwargs):
+			if doctype == "Sales Order Item" and name == self.SO_ITEM:
+				return self.PO_ITEM
+			if doctype == "Purchase Order Item":
+				return self.MP_ROW
+			if doctype == "Manufacturing Plan Table":
+				return mfg_plan_details
+			if doctype == "Sales Order Item" and name == self.PARENT_SO_ITEM:
+				return quotation
+			if doctype == "Quotation":
+				return quotation_ref_customer
+			if doctype == "Sales Order":
+				return "CUST-FROM-SO"
+			return None
+
+		return patch(f"{PMO_UTILS}.frappe.db.get_value", side_effect=get_value)
+
+	def test_ref_customer_comes_from_the_parent_quotation(self):
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(quotation_ref_customer="CUST-FROM-QTN"):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.parent_quotation, "QTN-1")
+		self.assertEqual(doc.parent_sales_order, "SO-PARENT")
+		self.assertEqual(doc.parent_mp, "MP-1")
+		self.assertEqual(doc.ref_customer, "CUST-FROM-QTN")
+
+	def test_ref_customer_falls_back_to_sales_order_customer(self):
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(quotation_ref_customer=None):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.parent_quotation, "QTN-1")
+		self.assertEqual(doc.ref_customer, "CUST-FROM-SO")
+
+	def test_ref_customer_falls_back_when_there_is_no_parent_quotation(self):
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(docname=None):
+			update_parent_details(doc)
+
+		self.assertIsNone(doc.parent_quotation)
+		self.assertEqual(doc.ref_customer, "CUST-FROM-SO")
+
+	def test_before_save_resolves_parent_details_on_insert(self):
+		doc = frappe.new_doc("Parent Manufacturing Order")
+		self.assertTrue(doc.is_new())
+
+		with (
+			patch(f"{PMO_MODULE}.update_parent_details") as update_parent,
+			patch(f"{PMO_MODULE}.resolve_diamond_grade", return_value=None),
+		):
+			doc.before_save()
+
+		update_parent.assert_called_once_with(doc)
