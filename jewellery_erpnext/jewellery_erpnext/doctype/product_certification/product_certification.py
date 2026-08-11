@@ -17,8 +17,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.product_certification.doc_events.receive_status import (
 	FULLY_RECEIVED,
+	MATCH_FIELDS,
+	match_identity,
 	pending_eps,
 	se_precision,
+	stored_identity,
 	update_receive_status,
 	validate_over_receipt,
 )
@@ -47,6 +50,7 @@ def _slip_key(row):
 	return (row.get("main_slip") or "", row.get("tree_no") or "")
 
 
+@frappe.request_cache
 def _department_wo_warehouse(department, throw=True):
 	"""The department's WO warehouse -- ``warehouse_type = "Manufacturing"``, e.g.
 	``Product Certification WO - KGJPL``.
@@ -59,6 +63,11 @@ def _department_wo_warehouse(department, throw=True):
 
 	Same filter as the canonical resolvers elsewhere in the app -- see
 	``department_ir/doc_events/pc_tagging_stock_sync._resolve_dept_manufacturing_wh``.
+
+	Request-cached (the idiom ``customization/utils/metal_utils.get_purity_percentage``
+	already uses): a submit resolves the same department's warehouse from ``validate``, from
+	``create_stock_entry`` and again from every raw-material assertion. Warehouse master data
+	cannot change mid-request, and the cache is cleared per request and per background job.
 	"""
 	if not department:
 		return None
@@ -285,22 +294,26 @@ class ProductCertification(Document):
 
 		if self.type == "Issue":
 			return
-		for row in self.product_details:
-			if not frappe.db.get_value(
+
+		# One read of the Issue's rows, matched in Python, instead of one query per row.
+		# The probe is receive_status._match_filters, which already documents itself as "the
+		# identity of a Product Details row, as validate_items defines it" -- sharing it is
+		# what stops the two drifting apart.
+		#
+		# The stored side is deliberately NOT normalised: the filter this replaces sent a
+		# blank as None, which the query builder turns into IS NULL, so a stored "" never
+		# matched a blank row. Comparing raw values keeps that distinction.
+		issued = {
+			stored_identity(issue_row)
+			for issue_row in frappe.get_all(
 				"Product Details",
-				{
-					"parent": self.receive_against,
-					"serial_no": row.get("serial_no") if row.get("serial_no") else None,
-					"item_code": row.item_code,
-					"manufacturing_work_order": row.get("manufacturing_work_order")
-					if row.get("manufacturing_work_order")
-					else None,
-					"parent_manufacturing_order": row.get("parent_manufacturing_order")
-					if row.get("parent_manufacturing_order")
-					else None,
-					"tree_no": row.get("tree_no") if row.get("tree_no") else None,
-				},
-			):
+				filters={"parent": self.receive_against},
+				fields=list(MATCH_FIELDS),
+			)
+		}
+
+		for row in self.product_details:
+			if match_identity(row) not in issued:
 				# frappe.throw(_(f"Row #{row.idx}: item not found in {self.receive_against}"))
 				frappe.throw(
 					_("Row #{0}: item not found in {1}").format(
@@ -538,6 +551,52 @@ class ProductCertification(Document):
 
 	def update_bom(self):
 		if self.service_type in ["Hall Marking Service", "Diamond Certificate service"]:
+			# Two reads for the whole table instead of two per row, and only for the rows
+			# that are actually missing a BOM.
+			pending = [row for row in self.product_details if not row.bom]
+			bom_by_serial = {}
+			bom_by_tag = {}
+			master_bom_by_item = {}
+
+			serials = {row.serial_no for row in pending if row.serial_no}
+			if serials:
+				# Resolve from the serial's own custom_bom_no first. That is the BOM the
+				# piece was actually manufactured against, and it is already what both
+				# client-side paths write into this field (the scan handler and the
+				# manufacturing_work_order handler in product_certification.js) -- so this
+				# fallback now agrees with them instead of guessing from the tag.
+				for sn in frappe.get_all(
+					"Serial No",
+					filters={"name": ("in", list(serials))},
+					fields=["name", "custom_bom_no"],
+				):
+					if sn.custom_bom_no:
+						bom_by_serial[sn.name] = sn.custom_bom_no
+
+				# Tag lookup only for serials with no custom_bom_no. BOM.tag_no is not
+				# unique -- rework mints a copy via copy_doc and carries tag_no over
+				# without clearing it on the predecessor, so a tag can be held by many
+				# BOMs. Order explicitly rather than relying on the read's default:
+				# oldest-first is what matches custom_bom_no wherever both are present.
+				missing = serials - set(bom_by_serial)
+				if missing:
+					for bom in frappe.get_all(
+						"BOM",
+						filters={"tag_no": ("in", list(missing))},
+						fields=["name", "tag_no"],
+						order_by="creation asc",
+					):
+						bom_by_tag.setdefault(bom.tag_no, bom.name)
+
+			items = {row.item_code for row in pending if row.item_code}
+			if items:
+				for item in frappe.get_all(
+					"Item",
+					filters={"name": ("in", list(items))},
+					fields=["name", "master_bom"],
+				):
+					master_bom_by_item[item.name] = item.master_bom
+
 			for row in self.product_details:
 				if not (
 					row.serial_no
@@ -553,11 +612,11 @@ class ProductCertification(Document):
 				if row.bom:
 					continue
 				if row.serial_no:
-					row.bom = frappe.db.get_value(
-						"BOM", {"tag_no": row.serial_no}, "name"
+					row.bom = bom_by_serial.get(row.serial_no) or bom_by_tag.get(
+						row.serial_no
 					)
 				if not row.bom:
-					row.bom = frappe.db.get_value("Item", row.item_code, "master_bom")
+					row.bom = master_bom_by_item.get(row.item_code)
 				if not row.bom:
 					# frappe.throw(_(f"Row #{row.idx}: BOM not found for item or serial no"))
 					frappe.throw(
@@ -644,33 +703,251 @@ class ProductCertification(Document):
 			self.receive_status = update_receive_status(self.name)
 
 	def update_huid(self):
+		"""Stamp HUID / certification numbers onto the Serial Nos and Parent Manufacturing
+		Orders behind the exploded rows.
+
+		Grouped by order: this used to load the Parent Manufacturing Order and run a full
+		``save()`` for EVERY exploded row, so ten rows of one order meant ten loads and ten
+		validations of the same document. The rows are appended in the same sequence, so the
+		child table lands identically -- only the number of saves changes.
+		"""
+		pending = []
 		for row in self.exploded_product_details:
 			if row.serial_no:
 				add_to_serial_no(row.serial_no, self, row)
-			elif row.manufacturing_work_order or row.parent_manufacturing_order:
-				if row.huid or row.certification:
-					if row.parent_manufacturing_order:
-						pmo = row.parent_manufacturing_order
-					else:
-						pmo = frappe.db.get_value(
-							"Manufacturing Work Order",
-							row.manufacturing_work_order,
-							"manufacturing_order",
-						)
+			elif (row.manufacturing_work_order or row.parent_manufacturing_order) and (
+				row.huid or row.certification
+			):
+				pending.append(row)
 
-					pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
-					pmo_doc.append(
-						"product_certification_details",
-						{
-							"huid": row.huid,
-							"certification_no": row.certification,
-							"date": self.date if row.huid else None,
-							"certification_date": self.certification_date
-							if row.certification
-							else None,
-						},
-					)
-					pmo_doc.save()
+		if not pending:
+			return
+
+		mwos = {
+			row.manufacturing_work_order
+			for row in pending
+			if not row.parent_manufacturing_order and row.manufacturing_work_order
+		}
+		orders = {}
+		if mwos:
+			orders = {
+				mwo.name: mwo.manufacturing_order
+				for mwo in frappe.get_all(
+					"Manufacturing Work Order",
+					filters={"name": ("in", list(mwos))},
+					fields=["name", "manufacturing_order"],
+				)
+			}
+
+		rows_by_pmo = defaultdict(list)
+		for row in pending:
+			rows_by_pmo[
+				row.parent_manufacturing_order
+				or orders.get(row.manufacturing_work_order)
+			].append(row)
+
+		for pmo, rows in rows_by_pmo.items():
+			pmo_doc = frappe.get_doc("Parent Manufacturing Order", pmo)
+			for row in rows:
+				pmo_doc.append(
+					"product_certification_details",
+					{
+						"huid": row.huid,
+						"certification_no": row.certification,
+						"date": self.date if row.huid else None,
+						"certification_date": self.certification_date
+						if row.certification
+						else None,
+					},
+				)
+			pmo_doc.save()
+
+	def _exploded_source_data(self):
+		"""Every master record the Hall Marking / Diamond Certificate branch of
+		``get_exploded_table`` reads, fetched once per save instead of once per row.
+
+		That branch used to issue ~10 queries per Product Details row -- and three of them
+		re-read a record it had already read earlier in the same iteration: the BOM, the MWO
+		and the PMO were each fetched twice, for two disjoint field lists. Since ``validate``
+		calls ``get_exploded_table`` on every save, a scan-heavy document paid that on every
+		single scan. Indexing by name here turns the loop into plain dict lookups, so the cost
+		is seven queries no matter how many rows were scanned.
+
+		Field lists are the union of what the two passes used, so every consumer still finds
+		the key it asks for; a name that is absent simply misses the map, which is what the
+		single-record reads returned for it.
+		"""
+		boms = {row.bom for row in self.product_details if row.bom}
+		mwos = {
+			row.manufacturing_work_order
+			for row in self.product_details
+			if row.manufacturing_work_order
+		}
+		pmos = {
+			row.parent_manufacturing_order
+			for row in self.product_details
+			if row.parent_manufacturing_order
+		}
+
+		data = frappe._dict(
+			bom={},
+			bom_metal={},
+			mwo={},
+			mop={},
+			latest_mop={},
+			pmo={},
+			pmo_departments={},
+		)
+
+		if boms:
+			for bom in frappe.get_all(
+				"BOM",
+				filters={"name": ("in", list(boms))},
+				fields=[
+					"name",
+					"metal_colour",
+					"gross_weight",
+					"metal_and_finding_weight",
+					"diamond_weight",
+					"gemstone_weight",
+					"finding_weight_",
+					"other_weight",
+					"total_diamond_pcs",
+					"total_gemstone_pcs",
+				],
+			):
+				data.bom[bom.name] = bom
+
+			# order_by so the DISTINCT set lands in the same sequence on every save. The
+			# per-row query this replaces did carry frappe's injected "ORDER BY modified
+			# DESC", but every row of a given parent shares a modified timestamp, so it
+			# was an all-ties no-op and the real sequence came from the DB plan.
+			for detail in frappe.get_all(
+				"BOM Metal Detail",
+				filters={"parent": ("in", list(boms))},
+				fields=["parent", "metal_touch"],
+				distinct=True,
+				order_by="parent asc, metal_touch asc",
+			):
+				data.bom_metal.setdefault(detail.parent, []).append(detail)
+
+		if mwos:
+			for mwo in frappe.get_all(
+				"Manufacturing Work Order",
+				filters={"name": ("in", list(mwos))},
+				fields=[
+					"name",
+					"department",
+					"qty",
+					"metal_touch",
+					"metal_colour",
+					"manufacturing_operation",
+					"gross_wt",
+					"net_wt",
+					"finding_wt",
+					"diamond_wt_in_gram",
+					"gemstone_wt",
+					"other_wt",
+				],
+			):
+				data.mwo[mwo.name] = mwo
+
+			# Latest operation per work order: first row wins under the same `creation desc`
+			# the per-row `limit=1` query used.
+			for operation in frappe.get_all(
+				"Manufacturing Operation",
+				filters={"manufacturing_work_order": ("in", list(mwos))},
+				fields=["manufacturing_work_order", "diamond_pcs", "gemstone_pcs"],
+				order_by="creation desc",
+			):
+				data.latest_mop.setdefault(
+					operation.manufacturing_work_order, operation
+				)
+
+		operations = {
+			mwo.manufacturing_operation
+			for mwo in data.mwo.values()
+			if mwo.manufacturing_operation
+		}
+		if operations:
+			for operation in frappe.get_all(
+				"Manufacturing Operation",
+				filters={"name": ("in", list(operations))},
+				fields=[
+					"name",
+					"received_gross_wt",
+					"gross_wt",
+					"received_net_wt",
+					"net_wt",
+					"diamond_wt_in_gram",
+					"gemstone_wt_in_gram",
+					"finding_wt",
+					"other_wt",
+				],
+			):
+				data.mop[operation.name] = operation
+
+		if pmos:
+			for mwo in frappe.get_all(
+				"Manufacturing Work Order",
+				filters={
+					"docstatus": 1,
+					"manufacturing_order": ("in", list(pmos)),
+					"is_finding_mwo": 0,
+				},
+				fields=["manufacturing_order", "department"],
+			):
+				data.pmo_departments.setdefault(mwo.manufacturing_order, []).append(
+					mwo.department
+				)
+
+		# The MWO names are looked up as PMOs too: the weights fallback below passes
+		# ``parent_manufacturing_order or manufacturing_work_order`` into a Parent
+		# Manufacturing Order read, and a name that is not a PMO misses the map -- exactly
+		# what that read returned for it.
+		pmo_names = pmos | mwos
+		if pmo_names:
+			for pmo in frappe.get_all(
+				"Parent Manufacturing Order",
+				filters={"name": ("in", list(pmo_names))},
+				fields=[
+					"name",
+					"qty",
+					"metal_touch",
+					"metal_colour",
+					"gross_weight",
+					"net_weight",
+					"diamond_weight",
+					"gemstone_weight",
+					"finding_weight",
+					"other_weight",
+				],
+			):
+				data.pmo[pmo.name] = pmo
+
+		return data
+
+	def _exploded_row_index(self):
+		"""``(item_code, serial_no, order)`` -> exploded rows already on the document.
+
+		Built once, from ``exploded_product_details`` as it stands on entry -- rows generated
+		during the loop go to a local list and are only appended at the end, so the index
+		cannot go stale, and the in-place updates the loop makes never touch a key field.
+
+		Matching is wildcard, not equality: a blank field on the Product Details row matches
+		any exploded row. Fully-specified rows -- the normal case -- resolve through the dict;
+		a row carrying a blank falls back to the scan every row used to do.
+		"""
+		index = defaultdict(list)
+		for row in self.exploded_product_details:
+			index[
+				(
+					row.item_code,
+					row.serial_no,
+					row.parent_manufacturing_order or row.manufacturing_work_order,
+				)
+			].append(row)
+		return index
 
 	def get_exploded_table(self):
 		exploded_product_details = []
@@ -681,18 +958,15 @@ class ProductCertification(Document):
 			# 	["category", "count"],
 			# )
 			# custom_cat = {row.category: row.count for row in cat_det}
+			sources = self._exploded_source_data()
+			exploded_index = self._exploded_row_index()
 			metal_det = None
 			for row in self.product_details:
 				metal_touch = ""
-				metal_colour = frappe.db.get_value("BOM", row.bom, "metal_colour")
-				count = 1
+				bom_weights = sources.bom.get(row.bom)
+				metal_colour = bom_weights.metal_colour if bom_weights else None
 				if row.manufacturing_work_order:
-					mwo = frappe.db.get_value(
-						"Manufacturing Work Order",
-						row.manufacturing_work_order,
-						["department", "qty", "metal_touch", "metal_colour"],
-						as_dict=1,
-					)
+					mwo = sources.mwo.get(row.manufacturing_work_order)
 					if self.department != mwo.department:
 						# frappe.throw(_(f"Manufacturing Work Order should be in '{self.department}' department"))
 						frappe.throw(
@@ -700,18 +974,11 @@ class ProductCertification(Document):
 								"Row {0}: Manufacturing Work Order should be in {1} department"
 							).format(row.idx, self.department)
 						)
-					count *= cint(mwo.get("qty"))
 					metal_touch = mwo.get("metal_touch")
 					metal_colour = mwo.get("metal_colour")
 				elif row.parent_manufacturing_order:
-					departments = frappe.db.get_all(
-						"Manufacturing Work Order",
-						{
-							"docstatus": 1,
-							"manufacturing_order": row.parent_manufacturing_order,
-							"is_finding_mwo": 0,
-						},
-						pluck="department",
+					departments = sources.pmo_departments.get(
+						row.parent_manufacturing_order, []
 					)
 					department = list(set(departments))
 
@@ -728,101 +995,52 @@ class ProductCertification(Document):
 								"Row {0}: Manufacturing Work Order should be in {1} department"
 							).format(row.idx, self.department)
 						)
-					pmo_data = frappe.db.get_value(
-						"Parent Manufacturing Order",
-						row.parent_manufacturing_order,
-						["qty", "metal_touch", "metal_colour"],
-						as_dict=1,
-					)
-					count *= cint(pmo_data.get("qty"))
+					pmo_data = sources.pmo.get(row.parent_manufacturing_order)
 					metal_touch = pmo_data.get("metal_touch")
 					metal_colour = pmo_data.get("metal_colour")
 				else:
-					metal_det = frappe.get_all(
-						"BOM Metal Detail",
-						filters={"parent": row.bom},
-						fields=["metal_touch"],
-						distinct=True,
-					)
-					count *= cint(len(metal_det))
+					metal_det = sources.bom_metal.get(row.bom, [])
 
-				# Override count based on category: 2 for earrings, 1 for everything else
-				if row.category and "earring" in str(row.category).lower():
-					count = 2
+				# Count comes from the category alone: 2 for earrings, 1 for everything
+				# else. The qty / metal-detail arithmetic that used to run above fed a
+				# `count` this line then overwrote unconditionally, so it was dead.
+				count = (
+					2 if row.category and "earring" in str(row.category).lower() else 1
+				)
+
+				common_order = (
+					row.parent_manufacturing_order or row.manufacturing_work_order
+				)
+				if row.item_code and row.serial_no and common_order:
+					existing = exploded_index.get(
+						(row.item_code, row.serial_no, common_order), []
+					)
 				else:
-					count = 1
-
-				existing = []
-				for i in self.exploded_product_details:
-					common_order = (
-						row.parent_manufacturing_order or row.manufacturing_work_order
-					)
-					if (
-						(
-							row.item_code == i.item_code
-							or row.item_code == ""
-							or not row.item_code
-						)
+					# A blank field is a wildcard, so a partially-filled row still has to
+					# scan. This is what every row used to do.
+					existing = [
+						i
+						for i in self.exploded_product_details
+						if (not row.item_code or row.item_code == i.item_code)
+						and (not row.serial_no or row.serial_no == i.serial_no)
 						and (
-							row.serial_no == i.serial_no
-							or row.serial_no == ""
-							or not row.serial_no
-						)
-						and (
-							common_order
+							not common_order
+							or common_order
 							== (
 								i.parent_manufacturing_order
 								or i.manufacturing_work_order
 							)
-							or common_order == ""
-							or not common_order
 						)
-					):
-						existing.append(i)
-				# existing = self.get(
-				# 	"exploded_product_details",
-				# 	{
-				# 		"item_code": row.item_code,
-				# 		"serial_no": row.serial_no,
-				# 		"manufacturing_work_order": row.manufacturing_work_order,
-				# 	},
-				# )
+					]
 				if existing and len(existing) == count:
 					continue
 
 				pmo_weights = frappe._dict()
 
 				if row.manufacturing_work_order:
-					mwo_data = frappe.db.get_value(
-						"Manufacturing Work Order",
-						row.manufacturing_work_order,
-						[
-							"manufacturing_operation",
-							"gross_wt",
-							"net_wt",
-							"finding_wt",
-							"diamond_wt_in_gram",
-							"gemstone_wt",
-							"other_wt",
-						],
-						as_dict=1,
-					)
+					mwo_data = sources.mwo.get(row.manufacturing_work_order)
 					if mwo_data and mwo_data.manufacturing_operation:
-						mop_weights = frappe.db.get_value(
-							"Manufacturing Operation",
-							mwo_data.manufacturing_operation,
-							[
-								"received_gross_wt",
-								"gross_wt",
-								"received_net_wt",
-								"net_wt",
-								"diamond_wt_in_gram",
-								"gemstone_wt_in_gram",
-								"finding_wt",
-								"other_wt",
-							],
-							as_dict=1,
-						)
+						mop_weights = sources.mop.get(mwo_data.manufacturing_operation)
 						if mop_weights:
 							pmo_weights = frappe._dict(
 								{
@@ -857,34 +1075,9 @@ class ProductCertification(Document):
 				if not pmo_weights and (
 					row.parent_manufacturing_order or row.manufacturing_work_order
 				):
-					pmo_weights = frappe.db.get_value(
-						"Parent Manufacturing Order",
-						row.parent_manufacturing_order or row.manufacturing_work_order,
-						[
-							"gross_weight",
-							"net_weight",
-							"diamond_weight",
-							"gemstone_weight",
-							"finding_weight",
-							"other_weight",
-						],
-						as_dict=1,
+					pmo_weights = sources.pmo.get(
+						row.parent_manufacturing_order or row.manufacturing_work_order
 					)
-				bom_weights = frappe.db.get_value(
-					"BOM",
-					row.bom,
-					[
-						"gross_weight",
-						"metal_and_finding_weight",
-						"diamond_weight",
-						"gemstone_weight",
-						"finding_weight_",
-						"other_weight",
-						"total_diamond_pcs",
-						"total_gemstone_pcs",
-					],
-					as_dict=1,
-				)
 
 				# Diamond / stone pcs come from the latest Manufacturing Operation when a
 				# Manufacturing Work Order is linked; otherwise (serial-no or PMO rows) fall
@@ -892,19 +1085,13 @@ class ProductCertification(Document):
 				diamond_pcs = 0
 				stone_pcs = 0
 				if row.manufacturing_work_order:
-					latest_operation = frappe.get_all(
-						"Manufacturing Operation",
-						filters={
-							"manufacturing_work_order": row.manufacturing_work_order
-						},
-						fields=["diamond_pcs", "gemstone_pcs"],
-						order_by="creation desc",
-						limit=1,
+					latest_operation = sources.latest_mop.get(
+						row.manufacturing_work_order
 					)
 
 					if latest_operation:
-						diamond_pcs = latest_operation[0].diamond_pcs
-						stone_pcs = latest_operation[0].gemstone_pcs
+						diamond_pcs = latest_operation.diamond_pcs
+						stone_pcs = latest_operation.gemstone_pcs
 
 				if (
 					not diamond_pcs
@@ -1066,11 +1253,22 @@ class ProductCertification(Document):
 			# [main_slip, tree_no] comparison mixes None and "" and appends the same group twice.
 			existing_data = {_slip_key(row) for row in self.exploded_product_details}
 
+			# get_item_loss_item is not a lookup: it runs several queries AND saves the
+			# resolved Item. Memoised on item_code (company and variant are fixed for this
+			# call) because a Fire Assy document is many tree rows of the same metal, which
+			# meant one Item save per tree on every save of the certification.
+			loss_item_by_item = {}
+
 			for row in self.product_details:
 				# Resolved unconditionally: loss_item used to be set only on the save that
 				# created the exploded rows, so re-saving an existing document left it blank
-				# and the loss calculation had nothing to key on.
-				loss_item = get_item_loss_item(self.company, row.item_code, "M")
+				# and the loss calculation had nothing to key on. The memo only collapses
+				# repeats within one save, so that stays true.
+				if row.item_code not in loss_item_by_item:
+					loss_item_by_item[row.item_code] = get_item_loss_item(
+						self.company, row.item_code, "M"
+					)
+				loss_item = loss_item_by_item[row.item_code]
 				if _slip_key(row) not in existing_data:
 					existing_data.add(_slip_key(row))
 					exploded_product_details.append(
@@ -1242,63 +1440,84 @@ def create_stock_entry(doc):
 		if not s_warehouse:
 			s_warehouse = _department_wo_warehouse(doc.department)
 
-		company_abbr = frappe.get_cached_value("Company", doc.company, "abbr") or ""
-		t_warehouse_mwo = frappe.db.get_value(
-			"Warehouse",
-			{
-				"company": doc.company,
-				"subcontractor": doc.supplier,
-				"name": ["like", f"%WIP WH - {company_abbr}%"],
-				"is_group": 0,
-				"disabled": 0,
-			},
-			"name",
-		)
-		if not t_warehouse_mwo:
-			t_warehouse_mwo = frappe.db.exists(
-				"Warehouse",
-				{
-					"company": doc.company,
-					"subcontractor": doc.supplier,
-					"name": ["like", "%WIP%"],
-					"is_group": 0,
-					"disabled": 0,
-				},
-			)
-		if not t_warehouse_mwo:
-			t_warehouse_mwo = frappe.db.exists(
-				"Warehouse",
-				{
-					"company": doc.company,
-					"subcontractor": doc.supplier,
-					"is_group": 0,
-					"disabled": 0,
-				},
-			)
+		# Both supplier targets resolve on first use. A document of only serial rows never
+		# needs the raw-material target and one of only raw-material rows never needs the
+		# serial target, yet both fallback chains -- up to five Warehouse reads -- used to run
+		# on every call regardless of what the rows actually were.
+		resolved_wh = {}
 
-		t_warehouse_serial = frappe.db.exists(
-			"Warehouse",
-			{
-				"company": doc.company,
-				"subcontractor": doc.supplier,
-				"warehouse_type": warehouse_type,
-				"is_group": 0,
-				"disabled": 0,
-			},
-		)
-		if not t_warehouse_serial:
-			t_warehouse_serial = frappe.db.exists(
-				"Warehouse",
-				{
-					"company": doc.company,
-					"subcontractor": doc.supplier,
-					"is_group": 0,
-					"disabled": 0,
-				},
-			)
+		def _t_warehouse_mwo():
+			if "mwo" not in resolved_wh:
+				company_abbr = (
+					frappe.get_cached_value("Company", doc.company, "abbr") or ""
+				)
+				warehouse = frappe.db.get_value(
+					"Warehouse",
+					{
+						"company": doc.company,
+						"subcontractor": doc.supplier,
+						"name": ["like", f"%WIP WH - {company_abbr}%"],
+						"is_group": 0,
+						"disabled": 0,
+					},
+					"name",
+				)
+				if not warehouse:
+					warehouse = frappe.db.exists(
+						"Warehouse",
+						{
+							"company": doc.company,
+							"subcontractor": doc.supplier,
+							"name": ["like", "%WIP%"],
+							"is_group": 0,
+							"disabled": 0,
+						},
+					)
+				if not warehouse:
+					warehouse = frappe.db.exists(
+						"Warehouse",
+						{
+							"company": doc.company,
+							"subcontractor": doc.supplier,
+							"is_group": 0,
+							"disabled": 0,
+						},
+					)
+				resolved_wh["mwo"] = warehouse
+			return resolved_wh["mwo"]
 
-		added_mwo = []
-		added_serial = []
+		def _t_warehouse_serial():
+			if "serial" not in resolved_wh:
+				warehouse = frappe.db.exists(
+					"Warehouse",
+					{
+						"company": doc.company,
+						"subcontractor": doc.supplier,
+						"warehouse_type": warehouse_type,
+						"is_group": 0,
+						"disabled": 0,
+					},
+				)
+				if not warehouse:
+					warehouse = frappe.db.exists(
+						"Warehouse",
+						{
+							"company": doc.company,
+							"subcontractor": doc.supplier,
+							"is_group": 0,
+							"disabled": 0,
+						},
+					)
+				resolved_wh["serial"] = warehouse
+			return resolved_wh["serial"]
+
+		# Sets, not lists: both are membership tests, and a certification covering many
+		# orders turned each one into a linear scan of everything added so far.
+		added_mwo = set()
+		added_serial = set()
+		# Shared across every get_stock_item_against_mwo call of this document -- see the
+		# Receive branch there for what it holds and why.
+		receive_context = {}
 		is_fire_assy_xrf = doc.service_type in ["Fire Assy Service", "XRF Services"]
 		for row in doc.exploded_product_details:
 			common_order = (
@@ -1306,9 +1525,14 @@ def create_stock_entry(doc):
 			)
 			if row.supply_raw_material and common_order not in added_mwo:
 				get_stock_item_against_mwo(
-					se_doc, doc, row, s_warehouse, t_warehouse_mwo
+					se_doc,
+					doc,
+					row,
+					s_warehouse,
+					_t_warehouse_mwo(),
+					context=receive_context,
 				)
-				added_mwo.append(common_order)
+				added_mwo.add(common_order)
 			else:
 				# For Fire Assy / XRF services, exploded rows may lack
 				# serial_no and tree_no but must still be processed when
@@ -1324,16 +1548,15 @@ def create_stock_entry(doc):
 						continue
 
 				if row.serial_no:
-					added_serial.append(row.serial_no)
+					added_serial.add(row.serial_no)
 				if row.gross_weight > 0:
 					# No Serial No.warehouse override: the source is the department warehouse
 					# resolved above, and validate_serial_warehouse_department has already
 					# proved every serial is sitting there. Sourcing from wherever the serial
 					# happened to be is what leaked issues out of the department -- and, across
 					# companies, out of the company ledger too.
-					source_wh = (
-						s_warehouse if doc.type == "Issue" else t_warehouse_serial
-					)
+					supplier_wh = _t_warehouse_serial()
+					source_wh = s_warehouse if doc.type == "Issue" else supplier_wh
 
 					se_doc.append(
 						"items",
@@ -1342,7 +1565,7 @@ def create_stock_entry(doc):
 							"serial_no": row.serial_no,
 							"qty": 1 if row.serial_no else row.gross_weight,
 							"s_warehouse": source_wh,
-							"t_warehouse": t_warehouse_serial
+							"t_warehouse": supplier_wh
 							if doc.type == "Issue"
 							else s_warehouse,
 							"Inventory_type": "Regular Stock",
@@ -1482,7 +1705,29 @@ def _pd_common_order(row):
 	return row.get("parent_manufacturing_order") or row.get("manufacturing_work_order")
 
 
-def _receive_fraction_by_reference(doc, common_order):
+def _issued_weight_by_reference(doc):
+	"""``{reference_docname: weight}`` issued by the Issue this Receive answers.
+
+	Document-level, so ``create_stock_entry`` reads it once and hands it to every order —
+	it used to be re-read for each one.
+	"""
+	issued = defaultdict(float)
+	for pd in frappe.get_all(
+		"Product Details",
+		filters={"parent": doc.receive_against, "parenttype": "Product Certification"},
+		fields=[
+			"manufacturing_work_order",
+			"parent_manufacturing_order",
+			"total_weight",
+		],
+	):
+		reference = _pd_reference(pd)
+		if reference:
+			issued[reference] += flt(pd.total_weight)
+	return issued
+
+
+def _receive_fraction_by_reference(doc, common_order, issued=None):
 	"""``{reference_docname: fraction}`` — how much of each order this Receive books.
 
 	Scoped to one ``common_order`` (the PMO-else-MWO key ``create_stock_entry`` dedupes
@@ -1501,19 +1746,8 @@ def _receive_fraction_by_reference(doc, common_order):
 	if not receiving:
 		return {}
 
-	issued = defaultdict(float)
-	for pd in frappe.get_all(
-		"Product Details",
-		filters={"parent": doc.receive_against, "parenttype": "Product Certification"},
-		fields=[
-			"manufacturing_work_order",
-			"parent_manufacturing_order",
-			"total_weight",
-		],
-	):
-		reference = _pd_reference(pd)
-		if reference:
-			issued[reference] += flt(pd.total_weight)
+	if issued is None:
+		issued = _issued_weight_by_reference(doc)
 
 	fractions = {}
 	for reference, weight in receiving.items():
@@ -1592,7 +1826,9 @@ def _assert_warehouse_in_department(doc, warehouse, item_code, idx):
 	if not warehouse or not doc.department:
 		return
 
-	wh = frappe.db.get_value(
+	# Cached: this fires once per MOP balance row, and warehouse master data is stable for
+	# the length of a submit.
+	wh = frappe.get_cached_value(
 		"Warehouse", warehouse, ["department", "company"], as_dict=1
 	)
 	if not wh:
@@ -1616,7 +1852,9 @@ def _assert_warehouse_in_department(doc, warehouse, item_code, idx):
 	)
 
 
-def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
+def get_stock_item_against_mwo(
+	se_doc, doc, row, s_warehouse, t_warehouse, context=None
+):
 	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 		get_current_mop_balance_rows,
 	)
@@ -1821,11 +2059,23 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 
 	else:
 		# --- Receive type: get items from the Issue stock entry ---
-		issue_se = frappe.db.get_value(
-			"Stock Entry",
-			{"product_certification": doc.receive_against, "docstatus": 1},
-			"name",
-		)
+		#
+		# Everything below except the per-order fraction is a property of the DOCUMENT, not
+		# of this row's order: the Issue Stock Entry, its lines, the outstanding map and the
+		# issued weights. create_stock_entry calls this function once per distinct order and
+		# used to re-derive all of it every time — six or so queries per order, each
+		# answering the same question. `context` is one dict shared across those calls; a
+		# direct call passes nothing and gets a fresh one, exactly as before.
+		if context is None:
+			context = {}
+
+		if "issue_se" not in context:
+			context["issue_se"] = frappe.db.get_value(
+				"Stock Entry",
+				{"product_certification": doc.receive_against, "docstatus": 1},
+				"name",
+			)
+		issue_se = context["issue_se"]
 
 		if not issue_se:
 			frappe.msgprint(
@@ -1835,31 +2085,43 @@ def get_stock_item_against_mwo(se_doc, doc, row, s_warehouse, t_warehouse):
 			)
 			return
 
-		# Get items from the issue stock entry
-		issue_items = frappe.db.get_all(
-			"Stock Entry Detail",
-			filters={"parent": issue_se},
-			fields=[
-				"item_code",
-				"qty",
-				"pcs",
-				"batch_no",
-				"s_warehouse",
-				"t_warehouse",
-				"reference_doctype",
-				"reference_docname",
-			],
-		)
+		if "issue_items" not in context:
+			# Get items from the issue stock entry
+			context["issue_items"] = frappe.db.get_all(
+				"Stock Entry Detail",
+				filters={"parent": issue_se},
+				fields=[
+					"item_code",
+					"qty",
+					"pcs",
+					"batch_no",
+					"s_warehouse",
+					"t_warehouse",
+					"reference_doctype",
+					"reference_docname",
+				],
+			)
+			context["outstanding"] = _outstanding_issue_qty(doc, issue_se)
+			context["issued"] = _issued_weight_by_reference(doc)
+			context["eps"] = pending_eps()
+			context["precision"] = se_precision()
+			context["has_reference"] = any(
+				item.get("reference_docname") for item in context["issue_items"]
+			)
+
+		issue_items = context["issue_items"]
+		outstanding = context["outstanding"]
+		eps = context["eps"]
+		precision = context["precision"]
+		has_reference = context["has_reference"]
 
 		# A partial receipt must draw only its own share. Restrict the Issue SE lines to
 		# the orders THIS receipt covers, prorate by how much of each order's issued
 		# weight is being booked now, and cap on what earlier receipts left outstanding.
 		common_order = _pd_common_order(row)
-		fractions = _receive_fraction_by_reference(doc, common_order)
-		outstanding = _outstanding_issue_qty(doc, issue_se)
-		eps = pending_eps()
-		precision = se_precision()
-		has_reference = any(item.get("reference_docname") for item in issue_items)
+		fractions = _receive_fraction_by_reference(
+			doc, common_order, issued=context["issued"]
+		)
 
 		for item in issue_items:
 			reference = item.get("reference_docname")
@@ -1977,10 +2239,20 @@ def create_product_certification_receive(source_name, target_doc=None):
 
 
 def add_to_serial_no(serial_no, doc, row):
+	# Nothing to add is the common case -- most exploded rows carry no HUID, and a re-submit
+	# carries one that is already there. Saving anyway churned the Serial No's version
+	# history and re-ran its validate hooks; those hooks key on the serial's *current*
+	# purchase_document_no, so a repeat save could append a duplicate row rather than being
+	# the no-op it looked like.
+	if not row.huid:
+		return
+
 	serial_doc = frappe.get_doc("Serial No", serial_no)
 	existing_data = [huild.huid for huild in serial_doc.huid]
-	if row.huid and row.huid not in existing_data:
-		serial_doc.append("huid", {"huid": row.huid, "date": doc.date})
+	if row.huid in existing_data:
+		return
+
+	serial_doc.append("huid", {"huid": row.huid, "date": doc.date})
 	serial_doc.save()
 
 

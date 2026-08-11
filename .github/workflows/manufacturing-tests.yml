@@ -47,17 +47,22 @@ jobs:
         run: |
           cd ~/frappe-bench
           echo "Running Manufacturing Tests..."
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Plan"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Parent Manufacturing Order"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Work Order"
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Operation"
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_transfer_se
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_mop_department
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_mwo
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mould_id_propagation
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_unpack_repair_bom
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_conversion_lane_downstream
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_manufacturing_operation_balance_details_report
-          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_process_loss_valuation
-          bench --site test_site run-tests --app jewellery_erpnext --doctype "Metal Conversions"
+          bench --site test_site run-tests --app jewellery_erpnext \
+            --doctype "Manufacturing Plan" \
+            --doctype "Parent Manufacturing Order" \
+            --doctype "Manufacturing Work Order" \
+            --doctype "Manufacturing Operation" \
+            --doctype "Metal Conversions"
+
+          bench --site test_site run-tests --app jewellery_erpnext \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_transfer_se \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_mop_department \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_customizations \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_mwo \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_mould_id_propagation \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_unpack_repair_bom \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_conversion_lane_downstream \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_manufacturing_operation_balance_details_report \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_process_loss_valuation \
+            --module jewellery_erpnext.jewellery_erpnext.tests.test_mwo_photoshop_images

@@ -3915,12 +3915,17 @@ class RefiningEntry(Document):
 	def get_scrap_items_balance(self):
 		"""Fetch available unused/loose material from the department warehouse(s).
 
-		Material returned from production comes back under the SAME item code (there is
-		no dedicated item) but on a batch tagged ``custom_batch_type =
+		Material returned from production is repacked onto a DEDICATED unused/loose item
+		(a variant of the Metal / Finding Unused/Loose Material template, or of the legacy
+		``ML``/``FL`` template) on a batch tagged ``custom_batch_type =
 		"Unused/Loose Material"`` by the Manufacturing Operation "Receive Unused/Loose
-		Material" action. Only those batches are fetched (optionally narrowed to the
-		selected item), so ordinary department stock sharing a warehouse is never pulled
-		in. Non-batch stock cannot carry the marker and is excluded.
+		Material" action. Rows with no such target — diamonds, gemstones, alloys — keep
+		their own item code and are isolated by the batch tag alone.
+
+		This fetch is item-agnostic: only the batch tag decides. Only those batches are
+		fetched (optionally narrowed to the selected item), so ordinary department stock
+		sharing a warehouse is never pulled in. Non-batch stock cannot carry the marker and
+		is excluded.
 		"""
 		if self.refining_type != "Unused/Loose Material Refining":
 			frappe.throw(

@@ -8,6 +8,7 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import flt, today
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+	UNUSED_TARGET_TEMPLATES,
 	_create_scrap_batch,
 	_resolve_unused_loose_item,
 	create_scrap_wo_stock_entry,
@@ -56,6 +57,7 @@ from jewellery_erpnext.refining.doctype.refinery_price_list.refinery_price_list 
 from jewellery_erpnext.refining.doctype.refining_entry.refining_entry import (
 	PURE_LOSS_ITEM,
 )
+from jewellery_erpnext.unused_loose_audit import run_unused_loose_audit
 
 #: Scrap Refining is the operator's weigh-in type: validate_quantities requires a
 #: Physical Quantity > 0. Tests that exercise something else (restrictions, the rename
@@ -437,16 +439,21 @@ class TestRefiningEntry(IntegrationTestCase):
 		minted = set(frappe.get_all("Batch", pluck="name")) - before
 
 		# The received material is booked onto the DEDICATED unused/loose item, not onto
-		# the production code it was issued as: M- becomes ML- and F- becomes FL-. Rows
-		# with no mapping (diamonds, gemstones) keep their own code, so assert the absence
-		# of M/F rather than the presence of only ML/FL.
+		# the production code it was issued as. Rows with no mapping (diamonds, gemstones)
+		# keep their own code, so assert the absence of M/F rather than the presence of
+		# only the targets. The metal target is named per convention — "ML" on this site,
+		# "Metal Unused/Loose Material" on one that created the descriptive template —
+		# so accept either rather than pinning the suite to one item master.
 		minted_templates = {
 			frappe.db.get_value("Item", item, "variant_of")
 			for item in frappe.get_all(
 				"Batch", {"name": ["in", list(minted)]}, pluck="item"
 			)
 		}
-		self.assertIn("ML", minted_templates)
+		self.assertTrue(
+			minted_templates & set(UNUSED_TARGET_TEMPLATES["metal"]),
+			f"no metal unused/loose batch was minted: {minted_templates}",
+		)
 		self.assertFalse(
 			minted_templates & {"M", "F"},
 			f"unused/loose batches must not stay on the production item: {minted_templates}",
@@ -710,56 +717,378 @@ class TestRefiningEntry(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError) as caught:
 				_resolve_unused_loose_item("M-G-22KT-91.9-Y")
 			message = str(caught.exception)
+			self.assertIn("M-G-22KT-91.9-Y", message)
 			self.assertIn("91.9", message)
 			self.assertIn("Yellow", message)
 		finally:
 			frappe.db.set_value("Item", "ML-G-22KT-91.9-Y", "disabled", 0)
 
-	def test_unused_loose_resolver_throws_when_more_than_one_target_matches(self):
-		"""Purity + colour alone can match several variants. That is a hard error naming
-		the candidates — never a guess, which would book the metal at the wrong purity."""
-		ambiguous = frappe.get_doc(
+	def _ml_variant(self, item_code, attributes, has_batch_no=1, template="ML"):
+		"""An unused/loose target variant, cleaned up with the test."""
+		doc = frappe.get_doc(
 			{
 				"doctype": "Item",
-				"item_code": "ML-TEST-AMBIGUOUS",
-				"item_name": "ML-TEST-AMBIGUOUS",
+				"item_code": item_code,
+				"item_name": item_code,
 				"gst_hsn_code": "010121",
 				"item_group": "Metal - V",
 				"stock_uom": "Gram",
 				"is_stock_item": 1,
-				"has_batch_no": 1,
-				"create_new_batch": 1,
-				"variant_of": "ML",
+				"has_batch_no": has_batch_no,
+				"create_new_batch": has_batch_no,
+				"variant_of": template,
 				"variant_based_on": "Item Attribute",
-				# Deliberately no Metal Touch: a DIFFERENT attribute set, so ERPNext does
-				# not reject it as a duplicate variant, that still collides on purity+colour.
 				"attributes": [
-					{
-						"variant_of": "ML",
-						"attribute": "Metal Type",
-						"attribute_value": "Gold",
-					},
-					{
-						"variant_of": "ML",
-						"attribute": "Metal Purity",
-						"attribute_value": "91.9",
-					},
-					{
-						"variant_of": "ML",
-						"attribute": "Metal Colour",
-						"attribute_value": "Yellow",
-					},
+					dict(variant_of=template, attribute=a, attribute_value=v)
+					for a, v in attributes
 				],
 			}
 		).insert(ignore_permissions=True)
+		self.addCleanup(
+			frappe.delete_doc, "Item", doc.name, force=1, ignore_permissions=True
+		)
+		if not has_batch_no:
+			# doc_events/item.before_insert force-sets has_batch_no = 1 for every "- V"
+			# item group, so it cannot be turned off through the document API. Write it
+			# after insert — the point of the fixture is a target that CANNOT be tagged.
+			frappe.db.set_value(
+				"Item", doc.name, {"has_batch_no": 0, "create_new_batch": 0}
+			)
+			doc.reload()
+		return doc
+
+	#: The colliding target the tie-break tests share: same purity + colour as
+	#: ML-G-22KT-91.9-Y but a DIFFERENT attribute set (no Metal Touch), so ERPNext does not
+	#: reject it as a duplicate variant while it still collides on the match key.
+	_AMBIGUOUS_ML_ATTRS = (
+		("Metal Type", "Gold"),
+		("Metal Purity", "91.9"),
+		("Metal Colour", "Yellow"),
+	)
+
+	def test_unused_loose_resolver_breaks_a_tie_on_the_remaining_attributes(self):
+		"""Purity + colour alone can match several variants. When it does, the source's
+		OTHER attributes decide — an exact test, never a guess. Here only
+		ML-G-22KT-91.9-Y also carries the source's Metal Touch."""
+		self._ml_variant("ML-TEST-AMBIGUOUS", self._AMBIGUOUS_ML_ATTRS)
+		self.assertEqual(
+			_resolve_unused_loose_item("M-G-22KT-91.9-Y"), "ML-G-22KT-91.9-Y"
+		)
+
+	def test_unused_loose_resolver_throws_when_there_is_nothing_to_narrow_on(self):
+		"""A source carrying ONLY purity and colour has nothing left to break the tie
+		with, so the ambiguity is a hard error naming the candidates."""
+		self._ml_variant("ML-TEST-AMBIGUOUS", self._AMBIGUOUS_ML_ATTRS)
+		bare = self._metal_variant(
+			"M-TEST-BARE",
+			[("Metal Purity", "91.9"), ("Metal Colour", "Yellow")],
+		)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			_resolve_unused_loose_item(bare.name)
+		message = str(caught.exception)
+		self.assertIn("ML-G-22KT-91.9-Y", message)
+		self.assertIn("ML-TEST-AMBIGUOUS", message)
+
+	def test_unused_loose_resolver_throws_when_narrowing_leaves_nothing(self):
+		"""Near matches on purity+colour, none of them the same metal. Naming them is
+		what turns "no item" into an actionable "create this one"."""
+		self._ml_variant("ML-TEST-AMBIGUOUS", self._AMBIGUOUS_ML_ATTRS)
+		odd = self._metal_variant(
+			"M-TEST-24KT-919-Y",
+			[
+				("Metal Type", "Gold"),
+				("Metal Touch", "24KT"),
+				("Metal Purity", "91.9"),
+				("Metal Colour", "Yellow"),
+			],
+		)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			_resolve_unused_loose_item(odd.name)
+		message = frappe.utils.strip_html(str(caught.exception))
+		self.assertIn("Metal Unused/Loose Material", message)
+		self.assertIn("ML-G-22KT-91.9-Y", message)
+
+	def test_unused_loose_resolver_never_narrows_a_unique_match(self):
+		"""The match key is purity + colour, full stop. A unique match is returned even
+		when Metal Touch disagrees — the tie-break only ever runs on a set that would
+		otherwise be a hard error, so nothing that resolves today can change. The karat
+		mismatch is surfaced by run_unused_loose_audit as an advisory, not here."""
+		odd = self._metal_variant(
+			"M-TEST-24KT-UNIQUE",
+			[
+				("Metal Type", "Gold"),
+				("Metal Touch", "24KT"),
+				("Metal Purity", "91.9"),
+				("Metal Colour", "Yellow"),
+			],
+		)
+		self.assertEqual(_resolve_unused_loose_item(odd.name), "ML-G-22KT-91.9-Y")
+
+	def test_unused_loose_resolver_throws_when_the_target_is_not_batch_tracked(self):
+		"""A target that cannot carry the Unused/Loose Material batch marker would make
+		the material invisible to refining. Block, and say which switch to flip."""
+		attrs = [
+			("Metal Type", "Gold"),
+			("Metal Touch", "24KT"),
+			("Metal Purity", "92.0"),
+			("Metal Colour", "Yellow"),
+		]
+		source = self._metal_variant("M-TEST-92-Y", attrs)
+		self._ml_variant("ML-TEST-92-Y", attrs, has_batch_no=0)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			_resolve_unused_loose_item(source.name)
+		message = frappe.utils.strip_html(str(caught.exception))
+		self.assertIn("ML-TEST-92-Y", message)
+		self.assertIn("Has Batch No", message)
+
+	def test_unused_loose_resolver_throws_on_a_uom_mismatch(self):
+		"""The repack copies the received qty verbatim, so two different units would
+		silently book grams as something else."""
+		attrs = [
+			("Metal Type", "Gold"),
+			("Metal Touch", "24KT"),
+			("Metal Purity", "92.0"),
+			("Metal Colour", "Pink"),
+		]
+		source = self._metal_variant("M-TEST-92-P", attrs)
+		target = self._ml_variant("ML-TEST-92-P", attrs)
+		frappe.db.set_value("Item", target.name, "stock_uom", "Nos")
+		with self.assertRaises(frappe.ValidationError) as caught:
+			_resolve_unused_loose_item(source.name)
+		message = frappe.utils.strip_html(str(caught.exception))
+		self.assertIn("ML-TEST-92-P", message)
+		self.assertIn("Nos", message)
+
+	def test_unused_loose_message_names_the_family_not_the_template(self):
+		"""On this site the templates are literally called ML and FL. The operator knows
+		this material as "Metal/Finding Unused/Loose Material", so the message must lead
+		with the FAMILY label — deriving it from the template would say "ML item"."""
+		orphan = self._metal_variant(
+			"M-TEST-NO-TARGET",
+			[
+				("Metal Type", "Gold"),
+				("Metal Touch", "24KT"),
+				("Metal Purity", "92.0"),
+				("Metal Colour", "Yellow"),
+			],
+		)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			_resolve_unused_loose_item(orphan.name)
+		message = frappe.utils.strip_html(str(caught.exception))
+		self.assertIn("Metal Unused/Loose Material", message)
+		self.assertNotIn("ML item is not there", message)
+
+	def test_unused_loose_target_prefers_the_descriptive_template(self):
+		"""A site that has created the dedicated "Metal Unused/Loose Material" template
+		must book onto it, not onto the legacy ML loss template."""
+		template = frappe.get_doc(
+			{
+				"doctype": "Item",
+				"item_code": "Metal Unused/Loose Material",
+				"item_name": "Metal Unused/Loose Material",
+				"gst_hsn_code": "010121",
+				"item_group": "Metal - T",
+				"stock_uom": "Gram",
+				"is_stock_item": 0,
+				"has_variants": 1,
+				"variant_based_on": "Item Attribute",
+				"attributes": [
+					{"attribute": "Metal Type"},
+					{"attribute": "Metal Touch"},
+					{"attribute": "Metal Purity"},
+					{"attribute": "Metal Colour"},
+				],
+			}
+		).insert(ignore_permissions=True)
+		self.addCleanup(
+			frappe.delete_doc, "Item", template.name, force=1, ignore_permissions=True
+		)
+		# Deliberately keyed on purity + colour only, exactly as the live sites create
+		# them — no Finding/size attributes, so the match is unambiguous.
+		self._ml_variant(
+			"Metal Unused/Loose Material-G-22KT-91.9-Y",
+			[("Metal Purity", "91.9"), ("Metal Colour", "Yellow")],
+			template=template.name,
+		)
+		self.assertEqual(
+			_resolve_unused_loose_item("M-G-22KT-91.9-Y"),
+			"Metal Unused/Loose Material-G-22KT-91.9-Y",
+		)
+
+	def test_unused_loose_never_falls_back_once_the_template_exists(self):
+		"""Creating the descriptive template COMMITS the site to it. A purity+colour with
+		no variant under it — or whose variant has been disabled — must BLOCK, never
+		resolve quietly onto the legacy ML/FL loss item. Silently booking the metal onto
+		the old code is exactly what this feature exists to prevent, and it is how a
+		disabled item master entry would go unnoticed."""
+		template = frappe.get_doc(
+			{
+				"doctype": "Item",
+				"item_code": "Metal Unused/Loose Material",
+				"item_name": "Metal Unused/Loose Material",
+				"gst_hsn_code": "010121",
+				"item_group": "Metal - T",
+				"stock_uom": "Gram",
+				"is_stock_item": 0,
+				"has_variants": 1,
+				"variant_based_on": "Item Attribute",
+				"attributes": [
+					{"attribute": "Metal Purity"},
+					{"attribute": "Metal Colour"},
+				],
+			}
+		).insert(ignore_permissions=True)
+		self.addCleanup(
+			frappe.delete_doc, "Item", template.name, force=1, ignore_permissions=True
+		)
+		with self.assertRaises(frappe.ValidationError) as caught:
+			_resolve_unused_loose_item("M-G-22KT-91.9-Y")
+		message = frappe.utils.strip_html(str(caught.exception))
+		self.assertIn("Metal Unused/Loose Material", message)
+		self.assertNotIn("ML-G-22KT-91.9-Y", message)
+
+	def test_unused_loose_receive_blocks_before_any_stock_moves(self):
+		"""The whole point of the pre-flight: an item-master gap makes the action a
+		no-op, not a submit-then-unwind that leaves an error-log trail."""
+		orphan = self._metal_variant(
+			"M-TEST-BLOCKS-EARLY",
+			[
+				("Metal Type", "Gold"),
+				("Metal Touch", "24KT"),
+				("Metal Purity", "92.0"),
+				("Metal Colour", "Yellow"),
+			],
+		)
+		frappe.db.set_value("Item", orphan.name, "has_batch_no", 1)
+
+		real_get_all = frappe.db.get_all
+
+		def only_sre_lookup_is_faked(doctype, *args, **kwargs):
+			"""Stand in for the SRE re-read, leave every other query real."""
+			if doctype == "Stock Reservation Entry":
+				return [orphan.name]
+			return real_get_all(doctype, *args, **kwargs)
+
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation."
+				"manufacturing_operation.create_mr_wo_stock_entry"
+			) as receive,
+			patch.object(frappe.db, "get_all", side_effect=only_sre_lookup_is_faked),
+		):
+			with self.assertRaises(frappe.ValidationError):
+				create_scrap_wo_stock_entry(
+					{
+						"manufacturing_operation": "MOP-TEST",
+						"receive_items": [
+							{"stock_reservation_entry": "SRE-TEST", "qty": 1.0}
+						],
+					}
+				)
+			receive.assert_not_called()
+
+	def test_unused_loose_preflight_is_skipped_on_a_replay(self):
+		"""A replay (same request_id) must not be gated on the CLIENT's payload.
+
+		create_mr_wo_stock_entry short-circuits to the existing SE without reading
+		receive_items at all, and this call exists only to re-run a repack that never
+		landed. Validating a stale payload there would reject a retry over SREs the
+		receive no longer depends on. The repack still resolves against the SE's actual
+		rows, so a genuinely missing target is caught there."""
+		orphan = self._metal_variant(
+			"M-TEST-REPLAY",
+			[
+				("Metal Type", "Gold"),
+				("Metal Touch", "24KT"),
+				("Metal Purity", "92.0"),
+				("Metal Colour", "Yellow"),
+			],
+		)
+		frappe.db.set_value("Item", orphan.name, "has_batch_no", 1)
+		se_data = {
+			"manufacturing_operation": "MOP-REPLAY",
+			"receive_items": [{"stock_reservation_entry": "SRE-TEST", "qty": 1.0}],
+		}
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation."
+				"manufacturing_operation._existing_receive_se",
+				return_value="SE-ALREADY-THERE",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation."
+				"manufacturing_operation._preflight_unused_loose_targets"
+			) as preflight,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation."
+				"manufacturing_operation.create_mr_wo_stock_entry",
+				return_value={"docname": None},
+			),
+		):
+			create_scrap_wo_stock_entry(se_data, request_id="R-REPLAY")
+			preflight.assert_not_called()
+
+	def test_unused_loose_repack_keeps_source_ownership_on_the_consume_row(self):
+		"""Consume and produce ownership are resolved separately.
+
+		Stock is deducted along the inventory_type dimension and this Stock Entry is
+		auto_created, so update_batches never backfills it — consuming a Customer Goods
+		batch under "Regular Stock" would deduct the wrong dimension. Only the PRODUCE
+		side downgrades, and only when the target item cannot hold customer goods."""
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			_unused_row_ownership,
+		)
+
+		# A real customer is required: normalize_ownership rule 3 downgrades a customer
+		# TYPE carrying no customer to Regular Stock, so a bare row would prove nothing.
+		customer = frappe.db.get_value("Customer", {"disabled": 0}, "name")
+		self.assertTrue(customer, "test data must contain at least one Customer")
+		row = frappe._dict(
+			item_code="M-G-22KT-91.9-Y",
+			batch_no=None,
+			inventory_type="Customer Goods",
+			customer=customer,
+		)
+		target = "ML-G-22KT-91.9-Y"
+		allowed = frappe.db.get_value(
+			"Item", target, "custom_inventory_type_can_be_customer_goods"
+		)
 		try:
-			with self.assertRaises(frappe.ValidationError) as caught:
-				_resolve_unused_loose_item("M-G-22KT-91.9-Y")
-			message = str(caught.exception)
-			self.assertIn("ML-G-22KT-91.9-Y", message)
-			self.assertIn(ambiguous.name, message)
+			frappe.db.set_value(
+				"Item", target, "custom_inventory_type_can_be_customer_goods", 0
+			)
+			source, produce = _unused_row_ownership(row, target)
+			self.assertEqual(
+				source[0],
+				"Customer Goods",
+				"the consume row must keep the source batch's dimension",
+			)
+			self.assertEqual(
+				produce[0],
+				"Regular Stock",
+				"the produce row downgrades when the target cannot hold customer goods",
+			)
+
+			frappe.db.set_value(
+				"Item", target, "custom_inventory_type_can_be_customer_goods", 1
+			)
+			source, produce = _unused_row_ownership(row, target)
+			self.assertEqual(source, produce, "no downgrade when the target allows it")
+			self.assertEqual(produce[0], "Customer Goods")
 		finally:
-			frappe.delete_doc("Item", ambiguous.name, force=1, ignore_permissions=True)
+			frappe.db.set_value(
+				"Item", target, "custom_inventory_type_can_be_customer_goods", allowed
+			)
+
+	def test_unused_loose_audit_classifies_the_seeded_item_master(self):
+		"""One cheap end-to-end call so an import or SQL break in the audit cannot ship
+		unnoticed, and so the deliberate 24KT omission stays asserted."""
+		rows = run_unused_loose_audit(family="metal", scope="all", as_dict=True)
+		by_item = {row.item_code: row for row in rows}
+		self.assertIn("M-G-24KT-99.9-Y", by_item)
+		self.assertEqual(by_item["M-G-24KT-99.9-Y"].status, "NO_MATCH")
+		# Alloys are out of scope by design and must never appear as a gap.
+		self.assertNotIn("M-TEST-ALLOY", by_item)
 
 	def test_scrap_batch_is_not_minted_for_a_non_batch_item(self):
 		"""_create_scrap_batch returns None for a non-batch item — the signal the repack

@@ -445,12 +445,6 @@ def validate_employee_ir_receive_delay(doc):
 	if worst_wait > 0:
 		frappe.throw(
 			_(
-				"Employee IR Receive cannot be submitted yet (Row #{0}, Operation {1}, "
-				"Issue {2}). Please wait another {3} minute(s) before submitting."
-			).format(
-				worst_row.idx,
-				worst_row.manufacturing_operation,
-				worst_issue,
-				worst_wait,
+				"This Employee IR Receive entry cannot be submitted at this stage. Please try again later."
 			)
 		)
