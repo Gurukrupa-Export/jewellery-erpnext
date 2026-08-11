@@ -252,6 +252,19 @@ class _SIBase(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
+	def setUp(self):
+		super().setUp()
+		# set_gst_details rounds with frappe.utils.flt, and flt(value, precision) ->
+		# rounded() -> frappe.get_system_settings("rounding_method"), which loads System
+		# Settings through frappe.db the first time a process needs it and caches it on
+		# frappe.local. The GST tests install the get_value mock before that read ever
+		# happens on CI's freshly-created test_site, so the lookup cannot resolve and
+		# flt swallows the failure, returning 0.0 -- the amount assertions then read
+		# 0.0, not 30.0/15.0. Resolve it against the real DB first so the value is
+		# cached; the mock then only has to stand in for the lookups the tests actually
+		# want to suppress. Same failure 0b4e638d fixed in the refining suite.
+		frappe.get_system_settings("rounding_method")
+
 
 class TestSoGoldRateChanged(_SIBase):
 	@patch(f"{SI}.frappe.db.get_value")

@@ -47,19 +47,17 @@ jobs:
         run: |
           cd ~/frappe-bench
           echo "Running Refining & Advanced Tests..."
-          bench --site test_site run-tests --app jewellery_erpnext \
-            --doctype "Refining Entry" \
-            --doctype "Refinery Price List" \
-            --doctype "Manufacturing Setting" \
-            --doctype "Product Certification" \
-            --doctype "Tree Number"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Refining Entry"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Refinery Price List"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Setting"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Product Certification"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Tree Number"
 
-          bench --site test_site run-tests --app jewellery_erpnext \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_serialize \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_lock_order \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_submission_queue_dedup \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_casting \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_material_balance \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_employee_ir_receive \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_bounded_retry \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_db_isolation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serialize
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_lock_order
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_submission_queue_dedup
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_casting
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_material_balance
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_tree_employee_ir_receive
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bounded_retry
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_db_isolation
