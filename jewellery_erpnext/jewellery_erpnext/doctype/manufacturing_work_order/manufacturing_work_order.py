@@ -1029,7 +1029,7 @@ def create_split_work_order(docname, company, manufacturer, count=1):
 	# limit = cint(frappe.db.get_value("Manufacturing Setting", {"company", company}, "wo_split_limit"))
 	limit = cint(
 		frappe.db.get_value(
-			"Manufacturing Setting", {"manufacturer", manufacturer}, "wo_split_limit"
+			"Manufacturing Setting", {"manufacturer": manufacturer}, "wo_split_limit"
 		)
 	)
 	if cint(count) < 1 or (cint(count) > limit and limit > 0):
