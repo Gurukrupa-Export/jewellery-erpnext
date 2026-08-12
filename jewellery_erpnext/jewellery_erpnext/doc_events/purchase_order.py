@@ -20,8 +20,15 @@ BOM_AMOUNT_FIELDS = [
 	"custom_duty_amount",
 ]
 
-# bom_type and docstatus decide whether an unpriced BOM can be repriced at all.
-BOM_STATE_FIELDS = BOM_AMOUNT_FIELDS + ["bom_type", "docstatus"]
+# gold_bom_amount is the metal value; gold_rate_with_gst is the rate it was computed at and is only
+# ever a divisor -- never add it to an amount. bom_type/docstatus decide whether an unpriced BOM
+# can be repriced at all.
+BOM_STATE_FIELDS = BOM_AMOUNT_FIELDS + [
+	"gold_bom_amount",
+	"gold_rate_with_gst",
+	"bom_type",
+	"docstatus",
+]
 
 # The amounts the FG Purchase rate is actually built from. If every one is zero the BOM has never
 # been priced, as opposed to being legitimately worth nothing.
@@ -80,8 +87,21 @@ def update_rate(self):
 		if _needs_fg_rate(bom_doc):
 			bom_doc = _fetch_fg_rate(row.manufacturing_bom, bom_data, heal)
 
+		# Metal. gold_bom_amount is the BOM's metal value at the BOM's own gold rate; rescale only
+		# when the buyer entered a gold rate on this order, matching set_bom_rate_in_quotation
+		# (bom_utils) and sales_invoice. With no rate on the order the row keeps the BOM's own
+		# valuation, which is what the Quotation was priced at.
+		gold_factor = 1.0
+		if flt(self.gold_rate_with_gst) > 0 and flt(bom_doc.gold_rate_with_gst) > 0:
+			gold_factor = flt(self.gold_rate_with_gst) / flt(bom_doc.gold_rate_with_gst)
+
+		# gold_bom_amount covers metal_detail + finding_detail (bom_utils.get_gold_rate sums both)
+		# and finding_bom_amount is the finding slice of it -- subtract so findings are paid once.
+		# Quotation and Sales Invoice add both and so count finding metal twice; the PO does not.
+		row.metal_amount = (flt(bom_doc.gold_bom_amount) - flt(bom_doc.finding_bom_amount)) * gold_factor
+		row.finding_amount = flt(bom_doc.finding_bom_amount) * gold_factor
+
 		row.making_amount = flt(bom_doc.making_fg_purchase)
-		row.finding_amount = flt(bom_doc.finding_bom_amount)
 		row.diamond_amount = flt(bom_doc.diamond_fg_purchase)
 		row.gemstone_amount = flt(bom_doc.gemstone_fg_purchase)
 		row.custom_certification_amount = flt(bom_doc.certification_amount)
@@ -90,7 +110,7 @@ def update_rate(self):
 		row.custom_custom_duty_amount = flt(bom_doc.custom_duty_amount)
 
 		row.rate = flt(
-			flt(row.metal_amount)
+			row.metal_amount
 			+ row.making_amount
 			+ row.finding_amount
 			+ row.diamond_amount
@@ -240,6 +260,8 @@ def make_subcontracting_order(doc):
 				}
 			)
 
+	gold_rate = _source_gold_rate(doc)
+
 	for row in supplier_wise_items:
 		po_doc = frappe.new_doc("Purchase Order")
 		po_doc.supplier = row
@@ -250,9 +272,31 @@ def make_subcontracting_order(doc):
 		po_doc.manufacturing_plan = doc.name
 		po_doc.custom_customer_po = supplier_wise_items[row].get("custom_customer_po")
 		po_doc.is_subcontracted = supplier_wise_items[row].get("is_subcontracted")
+		if gold_rate:
+			po_doc.gold_rate_with_gst = gold_rate
 		for item in supplier_wise_items[row]["items"]:
 			po_doc.append("items", item)
 		po_doc.save()
+
+
+def _source_gold_rate(doc):
+	"""Gold rate to stamp on the Purchase Order, taken from the source Sales Order(s).
+
+	Returns a rate only when every source order agrees. A single header rate rescales the metal on
+	every row (`update_rate`), so stamping one rate onto an order drawn from Sales Orders quoted at
+	different gold rates would silently reprice some of them. Leaving it unset is always safe --
+	each row then keeps its own BOM's valuation.
+	"""
+	sales_orders = {row.sales_order for row in doc.manufacturing_plan_table if row.get("sales_order")}
+	if not sales_orders:
+		return None
+
+	rates = {
+		flt(frappe.db.get_value("Sales Order", so, "gold_rate_with_gst")) for so in sales_orders
+	}
+	rates.discard(0)
+
+	return rates.pop() if len(rates) == 1 else None
 
 
 def on_cancel(doc, method=None):
