@@ -1040,11 +1040,25 @@ class TestCalculateItemWeightDetails(IntegrationTestCase):
 			)
 		self.assertNotIn("estimated_finding_gold_wt_bom", doc)
 
-	def test_zero_cad_to_rpt_ratio_raises_zero_division_error(self):
-		"""Current implementation raises ZeroDivisionError when cad_to_rpt is 0.
+	@unittest.expectedFailure
+	def test_zero_cad_to_rpt_ratio_raises_validation_error(self):
+		"""Intended contract: should raise ValidationError when cad_to_rpt is 0.
 
-		NOTE: Once doc_events/item.py is fixed to validate settings and raise
-		frappe.ValidationError, this test should be updated to assert that instead.
+		Currently fails because implementation raises ZeroDivisionError instead.
+		Once doc_events/item.py is fixed to validate settings, this test will pass.
+		"""
+		settings = SimpleNamespace(cad_to_rpt=0, rpt_to_wax=2.0,
+			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
+			wax_to_gold_22=13.0, wax_to_silver=14.0)
+		with patch.object(item_events.frappe, "get_doc", return_value=settings):
+			with self.assertRaises(frappe.ValidationError):
+				item_events.calculate_item_wt_details({"cad_weight": 100.0})
+
+	def test_zero_cad_to_rpt_ratio_currently_raises_zero_division_error(self):
+		"""Document current buggy behavior: raises ZeroDivisionError when cad_to_rpt is 0.
+
+		This test documents the known defect. When the implementation is fixed to
+		raise ValidationError, this test should be removed.
 		"""
 		settings = SimpleNamespace(cad_to_rpt=0, rpt_to_wax=2.0,
 			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
@@ -1053,11 +1067,25 @@ class TestCalculateItemWeightDetails(IntegrationTestCase):
 			with self.assertRaises(ZeroDivisionError):
 				item_events.calculate_item_wt_details({"cad_weight": 100.0})
 
-	def test_zero_rpt_to_wax_ratio_raises_zero_division_error(self):
-		"""Current implementation raises ZeroDivisionError when rpt_to_wax is 0.
+	@unittest.expectedFailure
+	def test_zero_rpt_to_wax_ratio_raises_validation_error(self):
+		"""Intended contract: should raise ValidationError when rpt_to_wax is 0.
 
-		NOTE: Once doc_events/item.py is fixed to validate settings and raise
-		frappe.ValidationError, this test should be updated to assert that instead.
+		Currently fails because implementation raises ZeroDivisionError instead.
+		Once doc_events/item.py is fixed to validate settings, this test will pass.
+		"""
+		settings = SimpleNamespace(cad_to_rpt=5.0, rpt_to_wax=0,
+			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
+			wax_to_gold_22=13.0, wax_to_silver=14.0)
+		with patch.object(item_events.frappe, "get_doc", return_value=settings):
+			with self.assertRaises(frappe.ValidationError):
+				item_events.calculate_item_wt_details({"cad_weight": 100.0})
+
+	def test_zero_rpt_to_wax_ratio_currently_raises_zero_division_error(self):
+		"""Document current buggy behavior: raises ZeroDivisionError when rpt_to_wax is 0.
+
+		This test documents the known defect. When the implementation is fixed to
+		raise ValidationError, this test should be removed.
 		"""
 		settings = SimpleNamespace(cad_to_rpt=5.0, rpt_to_wax=0,
 			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
@@ -1066,11 +1094,21 @@ class TestCalculateItemWeightDetails(IntegrationTestCase):
 			with self.assertRaises(ZeroDivisionError):
 				item_events.calculate_item_wt_details({"cad_weight": 100.0})
 
-	def test_missing_cad_weight_key_raises_key_error(self):
-		"""Current implementation raises KeyError when cad_weight is missing.
+	@unittest.expectedFailure
+	def test_missing_cad_weight_key_raises_validation_error(self):
+		"""Intended contract: should raise ValidationError when cad_weight is missing.
 
-		NOTE: Once doc_events/item.py is fixed to validate input and raise
-		frappe.ValidationError, this test should be updated to assert that instead.
+		Currently fails because implementation raises KeyError instead.
+		Once doc_events/item.py is fixed to validate input, this test will pass.
+		"""
+		with self.assertRaises(frappe.ValidationError):
+			item_events.calculate_item_wt_details({})
+
+	def test_missing_cad_weight_key_currently_raises_key_error(self):
+		"""Document current buggy behavior: raises KeyError when cad_weight is missing.
+
+		This test documents the known defect. When the implementation is fixed to
+		raise ValidationError, this test should be removed.
 		"""
 		with self.assertRaises(KeyError):
 			item_events.calculate_item_wt_details({})
