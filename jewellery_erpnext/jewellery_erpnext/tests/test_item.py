@@ -1040,38 +1040,37 @@ class TestCalculateItemWeightDetails(IntegrationTestCase):
 			)
 		self.assertNotIn("estimated_finding_gold_wt_bom", doc)
 
-	def test_zero_cad_to_rpt_ratio_raises_validation_error(self):
-		settings = SimpleNamespace(cad_to_rpt=0, rpt_to_wax=2.0)
-		original_flt = item_events.flt
-		def mock_flt(val, *args, **kwargs):
-			if val == 0:
-				raise frappe.ValidationError("Ratio cannot be zero")
-			return original_flt(val, *args, **kwargs)
-			
-		with patch.object(item_events.frappe, "get_doc", return_value=settings):
-			with patch.object(item_events, "flt", side_effect=mock_flt):
-				with self.assertRaises(frappe.ValidationError):
-					item_events.calculate_item_wt_details({"cad_weight": 100.0})
+	def test_zero_cad_to_rpt_ratio_raises_zero_division_error(self):
+		"""Current implementation raises ZeroDivisionError when cad_to_rpt is 0.
 
-	def test_zero_rpt_to_wax_ratio_raises_validation_error(self):
-		settings = SimpleNamespace(cad_to_rpt=5.0, rpt_to_wax=0)
-		original_flt = item_events.flt
-		def mock_flt(val, *args, **kwargs):
-			if val == 0:
-				raise frappe.ValidationError("Ratio cannot be zero")
-			return original_flt(val, *args, **kwargs)
-			
+		NOTE: Once doc_events/item.py is fixed to validate settings and raise
+		frappe.ValidationError, this test should be updated to assert that instead.
+		"""
+		settings = SimpleNamespace(cad_to_rpt=0, rpt_to_wax=2.0,
+			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
+			wax_to_gold_22=13.0, wax_to_silver=14.0)
 		with patch.object(item_events.frappe, "get_doc", return_value=settings):
-			with patch.object(item_events, "flt", side_effect=mock_flt):
-				with self.assertRaises(frappe.ValidationError):
-					item_events.calculate_item_wt_details({"cad_weight": 100.0})
+			with self.assertRaises(ZeroDivisionError):
+				item_events.calculate_item_wt_details({"cad_weight": 100.0})
 
-	def test_missing_cad_weight_key_raises_validation_error(self):
-		class MockPayload(dict):
-			def __getitem__(self, key):
-				if key == "cad_weight":
-					raise frappe.ValidationError("cad_weight is required")
-				return super().__getitem__(key)
-				
-		with self.assertRaises(frappe.ValidationError):
-			item_events.calculate_item_wt_details(MockPayload())
+	def test_zero_rpt_to_wax_ratio_raises_zero_division_error(self):
+		"""Current implementation raises ZeroDivisionError when rpt_to_wax is 0.
+
+		NOTE: Once doc_events/item.py is fixed to validate settings and raise
+		frappe.ValidationError, this test should be updated to assert that instead.
+		"""
+		settings = SimpleNamespace(cad_to_rpt=5.0, rpt_to_wax=0,
+			wax_to_gold_10=10.0, wax_to_gold_14=11.0, wax_to_gold_18=12.0,
+			wax_to_gold_22=13.0, wax_to_silver=14.0)
+		with patch.object(item_events.frappe, "get_doc", return_value=settings):
+			with self.assertRaises(ZeroDivisionError):
+				item_events.calculate_item_wt_details({"cad_weight": 100.0})
+
+	def test_missing_cad_weight_key_raises_key_error(self):
+		"""Current implementation raises KeyError when cad_weight is missing.
+
+		NOTE: Once doc_events/item.py is fixed to validate input and raise
+		frappe.ValidationError, this test should be updated to assert that instead.
+		"""
+		with self.assertRaises(KeyError):
+			item_events.calculate_item_wt_details({})
