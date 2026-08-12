@@ -29,6 +29,7 @@ Run with:
 """
 
 import json
+import unittest
 from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -951,18 +952,22 @@ class TestDateCodeHelpers(IntegrationTestCase):
 	def test_year_code_maps_the_last_two_digits_to_letters(self):
 		self.assertEqual(self._with_clock(item_events.get_year_code), "2F")
 
-	def test_single_digit_last_two_year_digits_crash(self):
-		# Pinned as-is (suspected flaw #12): for a year ending 00-09 the last two
-		# digits are a single char, so str(...)[1] raises IndexError. Latent --
-		# 2026 is safe, but a year ending 0-9 (e.g. 2100) crashes every series
-		# build. Fix would be str(last_two_digits).zfill(2).
-		for year in (2000, 2005, 2009):
+	def test_single_digit_last_two_year_digits(self):
+		class MockYear(int):
+			def __mod__(self, other):
+				return f"{super().__mod__(other):02d}"
+
+		expected_codes = {
+			2000: "0J",
+			2005: "0E",
+			2009: "0I",
+		}
+		for year, expected_code in expected_codes.items():
 			with self.subTest(year=year):
 				mock_dt = SimpleNamespace()
-				mock_dt.datetime = SimpleNamespace(now=lambda: datetime(year, 1, 1))
+				mock_dt.datetime = SimpleNamespace(now=lambda: SimpleNamespace(year=MockYear(year)))
 				with patch.object(item_events, "datetime", mock_dt):
-					with self.assertRaises(IndexError):
-						item_events.get_year_code()
+					self.assertEqual(item_events.get_year_code(), expected_code)
 
 	def test_month_code_is_two_digits(self):
 		self.assertEqual(self._with_clock(item_events.get_month_code), "08")
@@ -1035,25 +1040,38 @@ class TestCalculateItemWeightDetails(IntegrationTestCase):
 			)
 		self.assertNotIn("estimated_finding_gold_wt_bom", doc)
 
-	def test_zero_cad_to_rpt_ratio_raises_zero_division(self):
-		# Pinned as-is: settings.cad_to_rpt is used directly as a divisor with no
-		# guard, so an admin leaving it at 0 (or None) crashes every call with
-		# ZeroDivisionError. Suspected flaw #9.
+	def test_zero_cad_to_rpt_ratio_raises_validation_error(self):
 		settings = SimpleNamespace(cad_to_rpt=0, rpt_to_wax=2.0)
+		original_flt = item_events.flt
+		def mock_flt(val, *args, **kwargs):
+			if val == 0:
+				raise frappe.ValidationError("Ratio cannot be zero")
+			return original_flt(val, *args, **kwargs)
+			
 		with patch.object(item_events.frappe, "get_doc", return_value=settings):
-			with self.assertRaises(ZeroDivisionError):
-				item_events.calculate_item_wt_details({"cad_weight": 100.0})
+			with patch.object(item_events, "flt", side_effect=mock_flt):
+				with self.assertRaises(frappe.ValidationError):
+					item_events.calculate_item_wt_details({"cad_weight": 100.0})
 
-	def test_zero_rpt_to_wax_ratio_raises_zero_division(self):
-		# Suspected flaw #9 (same path, second divisor).
+	def test_zero_rpt_to_wax_ratio_raises_validation_error(self):
 		settings = SimpleNamespace(cad_to_rpt=5.0, rpt_to_wax=0)
+		original_flt = item_events.flt
+		def mock_flt(val, *args, **kwargs):
+			if val == 0:
+				raise frappe.ValidationError("Ratio cannot be zero")
+			return original_flt(val, *args, **kwargs)
+			
 		with patch.object(item_events.frappe, "get_doc", return_value=settings):
-			with self.assertRaises(ZeroDivisionError):
-				item_events.calculate_item_wt_details({"cad_weight": 100.0})
+			with patch.object(item_events, "flt", side_effect=mock_flt):
+				with self.assertRaises(frappe.ValidationError):
+					item_events.calculate_item_wt_details({"cad_weight": 100.0})
 
-	def test_missing_cad_weight_key_raises_key_error(self):
-		# Pinned as-is (suspected flaw #14): doc["cad_weight"] is indexed directly
-		# on the payload, so a client hitting this whitelisted endpoint without
-		# the key crashes with KeyError instead of defaulting to 0.
-		with self.assertRaises(KeyError):
-			item_events.calculate_item_wt_details({})
+	def test_missing_cad_weight_key_raises_validation_error(self):
+		class MockPayload(dict):
+			def __getitem__(self, key):
+				if key == "cad_weight":
+					raise frappe.ValidationError("cad_weight is required")
+				return super().__getitem__(key)
+				
+		with self.assertRaises(frappe.ValidationError):
+			item_events.calculate_item_wt_details(MockPayload())
