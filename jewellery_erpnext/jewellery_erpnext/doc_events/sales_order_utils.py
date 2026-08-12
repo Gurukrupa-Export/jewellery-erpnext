@@ -1053,7 +1053,7 @@ def download_cost_sheet(sales_order):
 				+ flt(rate_per)
 				+ (metal_detail[0].get("wastage_amount") if metal_detail else 0),
 			]
-
+			assert len(row_data) == len(headers)
 			sheet.append(row_data)
 
 			# Apply Borders and Alignment
@@ -1171,7 +1171,7 @@ def download_cost_sheet(sales_order):
 					"",
 					item.get("diamond_rate_for_specified_quantity") or 0,
 				]
-
+				assert len(row_data) == len(headers)
 				sheet.append(row_data)
 
 				last_row = sheet.max_row
@@ -1276,7 +1276,7 @@ def download_cost_sheet(sales_order):
 					"",
 					item.get("se_rate") or 0,
 				]
-
+				assert len(row_data) == len(headers)
 				sheet.append(row_data)
 
 				last_row = sheet.max_row
@@ -1329,7 +1329,7 @@ def download_cost_sheet(sales_order):
 				"",
 				total_value + lbr_amount + wastage_amt,
 			]
-
+			assert len(row_data) == len(headers)
 			sheet.append(row_data)
 			total_row = sheet.max_row
 			for col in range(1, len(headers) + 1):
@@ -1441,7 +1441,22 @@ def download_cost_sheet(sales_order):
 
 		sheet.row_dimensions[1].height = 40
 
+		# Order-level accumulators (initialized once, before the item loop)
+		total_stone_qty = 0
+		total_stone_cts = 0
+		total_handling = 0
+		total_amount = 0
+		total_gold_rate = 0
+		total_net_weight = 0
+		total_labour = 0
+		total_gold_loss = 0
+		total_grand_total = 0
+
 		for row in so_doc.items:
+			item_total_stone_qty = 0
+			item_total_stone_cts = 0
+			item_total_handling = 0
+			item_total_amount = 0
 			bom_data = (
 				frappe.db.get_value(
 					"BOM",
@@ -1507,45 +1522,8 @@ def download_cost_sheet(sales_order):
 			metal = frappe.db.get_all(
 				"BOM Metal Detail", filters={"parent": row.get("bom")}, fields=["*"]
 			)
-			row_data = [
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-				"",
-			]
-
+			row_data = [""] * len(headers)
+			assert len(row_data) == len(headers)
 			sheet.append(row_data)
 			last_row = sheet.max_row
 			for col in range(1, len(headers) + 1):
@@ -1554,15 +1532,6 @@ def download_cost_sheet(sales_order):
 				cell.border = thin_border
 				if col in orange_columns:
 					cell.fill = orange_fill
-			total_stone_qty = 0
-			total_stone_cts = 0
-			total_handling = 0
-			total_amount = 0
-			total_gold_rate = 0
-			total_net_weight = 0
-			total_labour = 0
-			total_gold_loss = 0
-			total_grand_total = 0
 
 			diamond_detail_rows = []
 			for pcs in diamond_pcs:
@@ -1615,10 +1584,10 @@ def download_cost_sheet(sales_order):
 					else 0
 				)
 
-				total_stone_qty += pcs.get("pcs") or 0
-				total_stone_cts += pcs.get("quantity") or 0
-				total_amount += diamond_rt or 0
-				total_handling += handling_rate
+				item_total_stone_qty += pcs.get("pcs") or 0
+				item_total_stone_cts += pcs.get("quantity") or 0
+				item_total_amount += diamond_rt or 0
+				item_total_handling += handling_rate
 
 				diamond_detail_rows.append(
 					[
@@ -1690,14 +1659,14 @@ def download_cost_sheet(sales_order):
 					fields=["outright_handling_charges_rate", "rate"],
 				)
 
-				total_stone_qty += gems.get("pcs" or "") or 0
-				total_stone_cts += gems.get("quantity") or 0
-				total_amount += (
+				item_total_stone_qty += gems.get("pcs" or "") or 0
+				item_total_stone_cts += gems.get("quantity") or 0
+				item_total_amount += (
 					gems.get("pcs") * gemstone_rate[0].get("rate")
 					if gemstone_rate
 					else 0
 				)
-				total_handling += (
+				item_total_handling += (
 					gems.get("pcs")
 					* gemstone_rate[0].get("outright_handling_charges_rate")
 					if gemstone_rate
@@ -1752,6 +1721,10 @@ def download_cost_sheet(sales_order):
 			)
 			total_net_weight += net_weight if net_weight else 0
 			total_gold_rate += net_weight * flt(so_doc.gold_rate) if net_weight else 0
+			total_stone_qty += item_total_stone_qty
+			total_stone_cts += item_total_stone_cts
+			total_amount += item_total_amount
+			total_handling += item_total_handling
 			row_data = [
 				"",
 				digit_14code if digit_14code else "",
@@ -1765,8 +1738,8 @@ def download_cost_sheet(sales_order):
 				so_doc.gold_rate or "",
 				net_weight * flt(so_doc.gold_rate) if net_weight else "",
 				"",
-				total_stone_qty,
-				total_stone_cts,
+				item_total_stone_qty,
+				item_total_stone_cts,
 				"",
 				"",
 				"",
@@ -1774,8 +1747,8 @@ def download_cost_sheet(sales_order):
 				"",
 				"",
 				"",
-				total_amount,
-				total_handling,
+				item_total_amount,
+				item_total_handling,
 				"",
 				(
 					flt(net_weight) * flt(making_charge_rate)
@@ -1795,6 +1768,7 @@ def download_cost_sheet(sales_order):
 				total_labour += flt(net_weight) * flt(metal[0].get("making_rate"))
 				total_gold_loss += flt(net_weight) * flt(metal[0].get("wastage_rate"))
 			total_grand_total += total
+			assert len(row_data) == len(headers)
 			sheet.append(row_data)
 			last_row = sheet.max_row
 			for col in range(1, len(headers) + 1):
@@ -1804,6 +1778,7 @@ def download_cost_sheet(sales_order):
 				if col in orange_columns:
 					cell.fill = orange_fill
 			for row_data in diamond_detail_rows:
+				assert len(row_data) == len(headers)
 				sheet.append(row_data)
 				last_row = sheet.max_row
 				for col in range(1, len(headers) + 1):
@@ -1813,6 +1788,7 @@ def download_cost_sheet(sales_order):
 					if col in orange_columns:
 						cell.fill = orange_fill
 			for row_data in gemstone_detail_rows:
+				assert len(row_data) == len(headers)
 				sheet.append(row_data)
 				last_row = sheet.max_row
 				for col in range(1, len(headers) + 1):
@@ -1823,45 +1799,19 @@ def download_cost_sheet(sales_order):
 						cell.fill = orange_fill
 
 		# Single order-level Grand Total (Option A: sums today's metal-based values)
-		row_data = [
-			"Grand Total",
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
-			total_net_weight,
-			"",
-			total_gold_rate,
-			"",
-			total_stone_qty,
-			total_stone_cts,
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
-			"",
-			total_amount,
-			total_handling,
-			"",
-			total_labour,
-			"",
-			"",
-			"",
-			"",
-			total_gold_loss,
-			total_grand_total,
-			"",
-			"",
-			"",
-			"",
-			"",
-		]
+		row_data = [""] * len(headers)
+
+		row_data[0] = "Grand Total"
+		row_data[8] = total_net_weight
+		row_data[10] = total_gold_rate
+		row_data[12] = total_stone_qty
+		row_data[13] = total_stone_cts
+		row_data[21] = total_amount
+		row_data[22] = total_handling
+		row_data[24] = total_labour
+		row_data[29] = total_gold_loss
+		row_data[30] = total_grand_total
+		assert len(row_data) == len(headers)
 		sheet.append(row_data)
 		last_row = sheet.max_row
 		for col in range(1, len(headers) + 1):
