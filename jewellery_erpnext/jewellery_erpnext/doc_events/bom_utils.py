@@ -222,8 +222,11 @@ def get_gold_rate(self):
 			finding_amount += item.amount
 		amount += item.amount
 
-	if finding_amount:
-		self.db_set("finding_bom_amount", finding_amount)
+	# Always persist, including 0. Writing only non-zero values left the old amount behind on a BOM
+	# whose findings were later removed, while gold_bom_amount (which includes the finding metal)
+	# was recomputed -- so Quotation and Sales Invoice, which add both figures, over-charged by the
+	# stale amount, and the Purchase Order split metal/finding wrongly.
+	self.db_set("finding_bom_amount", finding_amount)
 
 	# Return the total amount
 	return amount

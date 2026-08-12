@@ -98,8 +98,18 @@ def update_rate(self):
 		# gold_bom_amount covers metal_detail + finding_detail (bom_utils.get_gold_rate sums both)
 		# and finding_bom_amount is the finding slice of it -- subtract so findings are paid once.
 		# Quotation and Sales Invoice add both and so count finding metal twice; the PO does not.
-		row.metal_amount = (flt(bom_doc.gold_bom_amount) - flt(bom_doc.finding_bom_amount)) * gold_factor
-		row.finding_amount = flt(bom_doc.finding_bom_amount) * gold_factor
+		gold = flt(bom_doc.gold_bom_amount)
+		finding = flt(bom_doc.finding_bom_amount)
+
+		# A BOM saved before bom_utils always-persisted finding_bom_amount can still carry a stale
+		# value after its findings were removed. It is a slice of gold_bom_amount, so it can never
+		# legitimately exceed it -- drop it rather than drive metal negative. Zeroing the impossible
+		# component (instead of clamping metal) keeps metal + finding == gold, so the rate is right.
+		if finding > gold:
+			finding = 0.0
+
+		row.metal_amount = (gold - finding) * gold_factor
+		row.finding_amount = finding * gold_factor
 
 		row.making_amount = flt(bom_doc.making_fg_purchase)
 		row.diamond_amount = flt(bom_doc.diamond_fg_purchase)
@@ -291,8 +301,14 @@ def _source_gold_rate(doc):
 	if not sales_orders:
 		return None
 
+	# One query however many orders feed the plan -- a 133-row plan can span dozens of them.
 	rates = {
-		flt(frappe.db.get_value("Sales Order", so, "gold_rate_with_gst")) for so in sales_orders
+		flt(row.gold_rate_with_gst)
+		for row in frappe.get_all(
+			"Sales Order",
+			filters={"name": ["in", list(sales_orders)]},
+			fields=["gold_rate_with_gst"],
+		)
 	}
 	rates.discard(0)
 
