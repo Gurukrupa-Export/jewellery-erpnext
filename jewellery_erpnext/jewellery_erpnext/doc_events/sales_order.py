@@ -1068,6 +1068,11 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 			self.company == "Gurukrupa Export Private Limited"
 			and ctx.customer_group == "Internal"
 		):
+			_, sub_info, threshold = _get_making_charge(
+				self, doc, s.metal_touch, ctx, cctx
+			)
+			# frappe.throw(str(sub_info))
+			
 			if s.is_customer_item:
 				s.rate = 0
 				s.making_rate = operational_cost / total_weight
@@ -1076,7 +1081,8 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 			else:
 				s.rate = round(s.se_rate, 2)
 				s.wastage_rate = 0
-				s.making_rate = operational_cost / total_weight
+				# s.making_rate = operational_cost / total_weight
+				s.making_rate=sub_info.get("rate_per_gm", 0)
 				s.wastage_amount = 0
 				s.customer_metal_purity = customer_metal_purity
 			s.amount = round(s.rate * s.quantity, 2)
@@ -1344,7 +1350,8 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 				f.rate = round(f.se_rate, 2)
 				f.amount = round(f.rate * f.quantity, 2)
 				# f.making_rate    = 550 if f.finding_category != 'Chains' else 200
-				f.making_rate = operational_cost / total_weight
+				# f.making_rate = operational_cost / total_weight
+				f.making_rate = find_data.get("rate_per_gm")
 				f.wastage_rate = 0
 				f.wastage_amount = 0
 				f.making_amount = round(f.making_rate * f.quantity, 2)
