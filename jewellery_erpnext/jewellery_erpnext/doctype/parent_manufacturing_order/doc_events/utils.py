@@ -9,12 +9,21 @@ def update_parent_details(self):
 
 
 def _set_parent_chain(self):
-	"""Fill parent_quotation / parent_sales_order / parent_mp.
+	"""Fill parent_quotation / parent_sales_order / parent_mp on the document.
 
-	Return what THIS walk established, blank on every link it did not reach. ref_customer is
-	derived from that return value and never re-read off the document, so a parent link left over
-	from an earlier save -- or typed in by hand, since none of these three are read-only -- cannot
-	outrank what the current walk found.
+	Return a dict of what THIS walk established, blank on every link it did not reach:
+
+	        purchase_order  the Purchase Order behind the sales order line
+	        quotation       mirrors self.parent_quotation
+	        sales_order     mirrors self.parent_sales_order
+
+	It is not a full picture of the walk -- parent_mp is set on the document only, because no
+	Ref Customer is derived from it. Anything added here should be added for a reader of the
+	return value, not to make the two lists match.
+
+	The return value exists so _resolve_ref_customer never re-reads these off the document: all
+	three parent fields keep whatever an earlier save stored when the walk exits early, and none
+	of them is read-only, so a stale or hand-typed link must not outrank what this walk found.
 	"""
 	parents = frappe._dict(purchase_order=None, quotation=None, sales_order=None)
 
