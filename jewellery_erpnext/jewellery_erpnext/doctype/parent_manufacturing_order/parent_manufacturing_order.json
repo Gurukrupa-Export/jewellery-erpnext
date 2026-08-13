@@ -2,7 +2,7 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "PMO-.abbr.-.item_code.-.####",
- "creation": "2023-03-03 22:09:50.290798",
+ "creation": "2026-08-11 17:06:48.455507",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -832,6 +832,7 @@
   {
    "allow_on_submit": 1,
    "fetch_from": "sales_order.custom_jewelex_order_no",
+   "fetch_if_empty": 1,
    "fieldname": "jewelex_order_no",
    "fieldtype": "Data",
    "label": "Jewelex Order No"
@@ -900,7 +901,8 @@
    "fieldtype": "Column Break"
   },
   {
-   "fetch_from": "sales_order_item.jewelex_batch_no",
+   "allow_on_submit": 1,
+   "fetch_if_empty": 1,
    "fieldname": "jewelex_batch_no",
    "fieldtype": "Data",
    "label": "Jewelex Batch No"
@@ -922,8 +924,8 @@
    "link_fieldname": "manufacturing_order"
   }
  ],
- "modified": "2026-08-10 18:39:47.790574",
- "modified_by": "manikandan_ext@gkexport.com",
+ "modified": "2026-08-13 10:07:44.936967",
+ "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Parent Manufacturing Order",
  "naming_rule": "Expression",
