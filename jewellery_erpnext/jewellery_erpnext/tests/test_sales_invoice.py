@@ -99,6 +99,8 @@ class StubItemRow:
 		"amount": 0,
 		"base_amount": 0,
 		"bom": None,
+		# validate()'s bom_cache is keyed by idx (row identity), not by bom name.
+		"idx": 1,
 	}
 
 	def __init__(self, **kwargs):
@@ -113,6 +115,7 @@ class StubItemRow:
 
 def _bom(**overrides):
 	fields = dict(
+		customer="CUST-1",
 		total_diamond_pcs=2,
 		total_gemstone_pcs=3,
 		total_other_weight=1.5,
@@ -160,19 +163,18 @@ def _sub_category_si(*categories):
 	)
 
 
-def _get_doc_side_effect(cpt, eii_or_map):
-	"""frappe.get_doc side-effect: the Customer Payment Terms doc for that doctype,
-	else the E Invoice Item doc — either a single doc, or a name -> doc map. The map
-	is a plain dict (frappe._dict is itself a dict subclass, so exclude it)."""
+def _allowed_item_types_get_all(existing_item_types, matching_parents):
+	"""frappe.get_all side-effect for get_allowed_item_types: the batched E Invoice
+	Item existence check, then the batched Sales Type Multiselect match."""
 
-	def _get_doc(doctype, name):
-		if doctype == "Customer Payment Terms":
-			return cpt
-		if isinstance(eii_or_map, dict) and not isinstance(eii_or_map, frappe._dict):
-			return eii_or_map[name]
-		return eii_or_map
+	def _get_all(doctype, **kwargs):
+		if doctype == "E Invoice Item":
+			return list(existing_item_types)
+		if doctype == "Sales Type Multiselect":
+			return list(matching_parents)
+		return []
 
-	return _get_doc
+	return _get_all
 
 
 def _run_with_patches(si, method, *patchers):
@@ -231,14 +233,20 @@ def _gst_charge(account_head, rate):
 	)
 
 
-def _gst_get_all(template_rows, charge_rows):
-	"""frappe.get_all side-effect returning the two GST tables from fixed lists."""
+def _address_get_all(customer_state="GJ", company_state="GJ", template_rows=(), charge_rows=()):
+	"""frappe.get_all side-effect for set_gst_details: the batched Address state
+	lookup, plus optionally the two GST tables from fixed lists."""
 
 	def _get_all(doctype, **kwargs):
+		if doctype == "Address":
+			return [
+				frappe._dict(name="ADDR-1", gst_state_number=customer_state),
+				frappe._dict(name="ADDR-2", gst_state_number=company_state),
+			]
 		if doctype == "Item Tax Template Detail":
-			return template_rows
+			return list(template_rows)
 		if doctype == "Sales Taxes and Charges":
-			return charge_rows
+			return list(charge_rows)
 		return []
 
 	return _get_all
@@ -426,7 +434,9 @@ class TestSalesInvoiceBeforeValidate(_SIBase):
 		mocks = _run_with_patches(
 			si,
 			si_events.before_validate,
-			*_std_before_validate_patches(get_value={"return_value": "Internal"}),
+			*_std_before_validate_patches(
+				get_value={"return_value": {"customer_group": "Internal"}}
+			),
 			patch(f"{SI}.frappe.get_doc"),
 		)
 		self.assertEqual(si.gold_rate_with_gst, round(1000 * 1.03, 3))
@@ -480,14 +490,21 @@ class TestSalesInvoiceValidate(_SIBase):
 
 	def test_non_return_external_customer_recomputes_total(self):
 		si = DummySalesInvoice(
-			company="Other", is_return=0, items=[StubItemRow(bom="BOM-1", amount=999)]
+			company="Other",
+			is_return=0,
+			items=[StubItemRow(item_code="RING-1", bom="BOM-1", amount=999)],
 		)
 		si.calculate_taxes_and_totals = MagicMock()
 		mocks = _run_with_patches(
 			si,
 			si_events.validate,
 			*_std_validate_patches(
-				get_value={"side_effect": [2, "External"]},
+				get_value={
+					"return_value": {
+						"customer_group": "External",
+						"custom_precision_variable": 2,
+					}
+				},
 				extra=[patch(f"{SI}.update_making_charges")],
 			),
 		)
@@ -508,7 +525,14 @@ class TestSalesInvoiceValidate(_SIBase):
 		mocks = _run_with_patches(
 			si,
 			si_events.validate,
-			*_std_validate_patches(get_value={"side_effect": [2, "Internal"]}),
+			*_std_validate_patches(
+				get_value={
+					"return_value": {
+						"customer_group": "Internal",
+						"custom_precision_variable": 2,
+					}
+				}
+			),
 		)
 		self.assertEqual(si.items[0].rate, 999)
 		self.assertEqual(si.items[0].amount, 999)
@@ -816,10 +840,15 @@ class TestGetAllowedItemTypes(_SIBase):
 
 	def test_no_matching_sales_type_returns_empty(self):
 		cpt = frappe._dict(customer_payment_details=[frappe._dict(item_type="METAL")])
-		eii = frappe._dict(sales_type=[frappe._dict(sales_type="Outwork")])
 		with (
 			patch(f"{SI}.frappe.db.get_value", return_value="CPT-1"),
-			patch(f"{SI}.frappe.get_doc", side_effect=_get_doc_side_effect(cpt, eii)),
+			patch(f"{SI}.frappe.get_doc", return_value=cpt),
+			patch(
+				f"{SI}.frappe.get_all",
+				side_effect=_allowed_item_types_get_all(
+					existing_item_types={"METAL"}, matching_parents=[]
+				),
+			),
 		):
 			result = si_events.get_allowed_item_types("CUST-1", "Outright")
 		self.assertEqual(result, set())
@@ -831,10 +860,16 @@ class TestGetAllowedItemTypes(_SIBase):
 				frappe._dict(item_type="STONE"),
 			]
 		)
-		eii = frappe._dict(sales_type=[frappe._dict(sales_type="Outright")])
 		with (
 			patch(f"{SI}.frappe.db.get_value", return_value="CPT-1"),
-			patch(f"{SI}.frappe.get_doc", side_effect=_get_doc_side_effect(cpt, eii)),
+			patch(f"{SI}.frappe.get_doc", return_value=cpt),
+			patch(
+				f"{SI}.frappe.get_all",
+				side_effect=_allowed_item_types_get_all(
+					existing_item_types={"METAL", "STONE"},
+					matching_parents=["METAL", "STONE"],
+				),
+			),
 		):
 			result = si_events.get_allowed_item_types("CUST-1", "Outright")
 		self.assertEqual(result, {"METAL", "STONE"})
@@ -847,16 +882,15 @@ class TestGetAllowedItemTypes(_SIBase):
 				frappe._dict(item_type="DIAMOND"),
 			]
 		)
-		eii_by_type = {
-			"METAL": frappe._dict(sales_type=[frappe._dict(sales_type="Outright")]),
-			"STONE": frappe._dict(sales_type=[frappe._dict(sales_type="Outright")]),
-			"DIAMOND": frappe._dict(sales_type=[frappe._dict(sales_type="Outwork")]),
-		}
 		with (
 			patch(f"{SI}.frappe.db.get_value", return_value="CPT-1"),
+			patch(f"{SI}.frappe.get_doc", return_value=cpt),
 			patch(
-				f"{SI}.frappe.get_doc",
-				side_effect=_get_doc_side_effect(cpt, eii_by_type),
+				f"{SI}.frappe.get_all",
+				side_effect=_allowed_item_types_get_all(
+					existing_item_types={"METAL", "STONE", "DIAMOND"},
+					matching_parents=["METAL", "STONE"],
+				),
 			),
 		):
 			result = si_events.get_allowed_item_types("CUST-1", "Outright")
@@ -874,7 +908,10 @@ class TestSetGstDetails(_SIBase):
 		si = DummySalesInvoice(
 			sales_type="Outright", customer_address="ADDR-1", company_address="ADDR-2"
 		)
-		with patch(f"{SI}.frappe.db.get_value", side_effect=["GJ", None]):
+		with patch(
+			f"{SI}.frappe.get_all",
+			return_value=[frappe._dict(name="ADDR-1", gst_state_number="GJ")],
+		):
 			si_events.set_gst_details(si)
 		self.assertIsNone(si.tax_category)
 
@@ -892,8 +929,8 @@ class TestSetGstDetails(_SIBase):
 					company_address="ADDR-2",
 				)
 				with patch(
-					f"{SI}.frappe.db.get_value",
-					side_effect=[customer_state, company_state],
+					f"{SI}.frappe.get_all",
+					side_effect=_address_get_all(customer_state, company_state),
 				):
 					si_events.set_gst_details(si)
 				self.assertEqual(si.tax_category, expected)
@@ -913,11 +950,11 @@ class TestSetGstDetails(_SIBase):
 					items=[StubItemRow(item_code=item_code)],
 				)
 				with (
+					patch(f"{SI}.frappe.db.get_value", return_value="TAX_TMPL"),
 					patch(
-						f"{SI}.frappe.db.get_value",
-						side_effect=["GJ", "GJ", "TAX_TMPL"],
+						f"{SI}.frappe.get_all",
+						side_effect=_address_get_all("GJ", "GJ"),
 					),
-					patch(f"{SI}.frappe.get_all", return_value=[]),
 				):
 					si_events.set_gst_details(si)
 				self.assertEqual(si.taxes_and_charges, "TAX_TMPL")
@@ -928,15 +965,19 @@ class TestSetGstDetails(_SIBase):
 			sales_type="Outright",
 			company="Gurukrupa Export Private Limited",
 			total=1000.0,
-			items=[StubItemRow(item_code="ITEM-1")],
+			items=[StubItemRow(item_code="ITEM-1", amount=1000.0)],
 		)
 		with (
-			patch(f"{SI}.frappe.db.get_value", side_effect=["MH", "GJ", "STC-TMPL"]),
+			patch(f"{SI}.frappe.db.get_value", return_value="STC-TMPL"),
 			patch(
 				f"{SI}.frappe.get_all",
-				side_effect=_gst_get_all(
-					[frappe._dict(tax_type="IGST Output - GEPL", tax_rate=3.0)],
-					[_gst_charge("IGST Output - GEPL", 3.0)],
+				side_effect=_address_get_all(
+					"MH",
+					"GJ",
+					template_rows=[
+						frappe._dict(tax_type="IGST Output - GEPL", tax_rate=3.0)
+					],
+					charge_rows=[_gst_charge("IGST Output - GEPL", 3.0)],
 				),
 			),
 		):
@@ -950,11 +991,16 @@ class TestSetGstDetails(_SIBase):
 
 	def test_returns_early_if_item_tax_template_missing(self):
 		si = DummySalesInvoice(sales_type="Outright", company="Unknown Company")
-		with patch(
-			f"{SI}.frappe.db.get_value", side_effect=["GJ", "GJ"]
-		) as mock_get_value:
+		with (
+			patch(
+				f"{SI}.frappe.get_all",
+				side_effect=_address_get_all("GJ", "GJ"),
+			) as mock_get_all,
+			patch(f"{SI}.frappe.db.get_value") as mock_get_value,
+		):
 			si_events.set_gst_details(si)
-		self.assertEqual(mock_get_value.call_count, 2)
+		mock_get_all.assert_called_once()
+		mock_get_value.assert_not_called()
 		self.assertIsNone(si.taxes_and_charges)
 
 	def test_logs_error_and_returns_if_taxes_and_charges_template_missing(self):
@@ -962,7 +1008,11 @@ class TestSetGstDetails(_SIBase):
 			sales_type="Outright", company="Gurukrupa Export Private Limited"
 		)
 		with (
-			patch(f"{SI}.frappe.db.get_value", side_effect=["GJ", "GJ", None]),
+			patch(f"{SI}.frappe.db.get_value", return_value=None),
+			patch(
+				f"{SI}.frappe.get_all",
+				side_effect=_address_get_all("GJ", "GJ"),
+			),
 			patch(f"{SI}.frappe.log_error") as mock_log_error,
 		):
 			si_events.set_gst_details(si)
@@ -974,18 +1024,20 @@ class TestSetGstDetails(_SIBase):
 			sales_type="Outright",
 			company="Gurukrupa Export Private Limited",
 			total=1000.0,
-			items=[StubItemRow(item_code="ITEM-1")],
+			items=[StubItemRow(item_code="ITEM-1", amount=1000.0)],
 		)
 		with (
-			patch(f"{SI}.frappe.db.get_value", side_effect=["GJ", "GJ", "STC-TMPL"]),
+			patch(f"{SI}.frappe.db.get_value", return_value="STC-TMPL"),
 			patch(
 				f"{SI}.frappe.get_all",
-				side_effect=_gst_get_all(
-					[
+				side_effect=_address_get_all(
+					"GJ",
+					"GJ",
+					template_rows=[
 						frappe._dict(tax_type="CGST Output - GEPL", tax_rate=1.5),
 						frappe._dict(tax_type="SGST Output - GEPL", tax_rate=1.5),
 					],
-					[
+					charge_rows=[
 						_gst_charge("CGST Output - GEPL", 1.5),
 						_gst_charge("SGST Output - GEPL", 1.5),
 					],
