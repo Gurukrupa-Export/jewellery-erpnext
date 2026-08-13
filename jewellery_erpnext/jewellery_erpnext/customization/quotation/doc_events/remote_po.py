@@ -1,3 +1,5 @@
+from contextlib import suppress
+
 import frappe
 import requests
 
@@ -64,8 +66,14 @@ def fetch_remote_ref_customer(po_name):
 	# Seed the miss first: a failure must not be retried once per remaining row.
 	cache[po_name] = None
 
-	# Ahead of the settings read, so an open breaker costs nothing at all.
-	if frappe.cache().get_value(BREAKER_KEY, expires=True):
+	# Ahead of the settings read, so an open breaker costs nothing at all. A cache that cannot be
+	# read counts as closed and the lookup goes ahead: TIMEOUT is the primary bound, so losing the
+	# breaker costs latency, never the feature. Failing the other way would let a Redis hiccup
+	# silently disable the whole lookup.
+	breaker_open = False
+	with suppress(Exception):
+		breaker_open = bool(frappe.cache().get_value(BREAKER_KEY, expires=True))
+	if breaker_open:
 		return None
 
 	try:
@@ -85,11 +93,15 @@ def fetch_remote_ref_customer(po_name):
 		response.raise_for_status()
 		ref_customer = (response.json() or {}).get("message")
 	except Exception:
-		frappe.cache().set_value(BREAKER_KEY, 1, expires_in_sec=BREAKER_TTL)
-		frappe.log_error(
-			title="Quotation: remote Ref Customer lookup failed",
-			message=f"Purchase Order: {po_name}\n\n{frappe.get_traceback()}",
-		)
+		# Neither of these may raise on the way out: the breaker is a cache write, and log_error
+		# inserts an Error Log from inside the Quotation's own transaction.
+		with suppress(Exception):
+			frappe.cache().set_value(BREAKER_KEY, 1, expires_in_sec=BREAKER_TTL)
+		with suppress(Exception):
+			frappe.log_error(
+				title="Quotation: remote Ref Customer lookup failed",
+				message=f"Purchase Order: {po_name}\n\n{frappe.get_traceback()}",
+			)
 		return None
 
 	cache[po_name] = ref_customer or None

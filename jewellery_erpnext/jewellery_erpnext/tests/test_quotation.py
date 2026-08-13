@@ -492,6 +492,38 @@ class TestRemotePoRefCustomer(IntegrationTestCase):
 			remote_po.BREAKER_KEY, 1, expires_in_sec=remote_po.BREAKER_TTL
 		)
 
+	def test_an_unreadable_breaker_does_not_disable_the_lookup(self):
+		# fail closed: a cache that cannot be read must cost latency, not the feature
+		response = SimpleNamespace(
+			raise_for_status=lambda: None, json=lambda: {"message": "CUST-REMOTE"}
+		)
+		patched_cache, cache = self._patched_cache()
+		cache.get_value.side_effect = RuntimeError("OOM command not allowed")
+
+		with (
+			patched_cache,
+			self._patched_settings(),
+			patch(f"{REMOTE_PO}.requests.post", return_value=response),
+		):
+			self.assertEqual(fetch_remote_ref_customer("PUR-ORD-TEST-1"), "CUST-REMOTE")
+
+	def test_a_failing_breaker_write_and_log_still_return_none(self):
+		# the handler's own cleanup must not raise into the Quotation save it was protecting
+		patched_cache, cache = self._patched_cache()
+		cache.set_value.side_effect = RuntimeError("cache write failed")
+
+		with (
+			patched_cache,
+			self._patched_settings(),
+			patch(
+				f"{REMOTE_PO}.requests.post", side_effect=OSError("connection refused")
+			),
+			patch(
+				f"{REMOTE_PO}.frappe.log_error", side_effect=RuntimeError("log failed")
+			),
+		):
+			self.assertIsNone(fetch_remote_ref_customer("PUR-ORD-TEST-1"))
+
 	def tearDown(self):
 		return super().tearDown()
 
