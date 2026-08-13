@@ -583,21 +583,19 @@ def on_submit(self, method):
 						"uom": uom,
 					}
 				)
-				if certification_items:
-					certification_si = frappe.new_doc("Sales Invoice")
-					certification_si.customer = self.customer
-					certification_si.tax_category = self.tax_category
-					certification_si.sales_type = "Certification"
-					certification_si.company = self.company
-					certification_si.posting_date = self.posting_date
-					for item in certification_items:
-						certification_si.append("items", item)
-					for invoice in certification_invoice:
-						certification_si.append("invoice_item", invoice)
-					certification_si.insert(
-						ignore_permissions=True, ignore_mandatory=True
-					)
-					certification_si.save()
+		if certification_items:
+			certification_si = frappe.new_doc("Sales Invoice")
+			certification_si.customer = self.customer
+			certification_si.tax_category = self.tax_category
+			certification_si.sales_type = "Certification"
+			certification_si.company = self.company
+			certification_si.posting_date = self.posting_date
+			for item in certification_items:
+				certification_si.append("items", item)
+			for invoice in certification_invoice:
+				certification_si.append("invoice_item", invoice)
+			certification_si.insert(ignore_permissions=True, ignore_mandatory=True)
+			certification_si.save()
 
 
 def set_gst_details(self):
@@ -730,7 +728,7 @@ def set_gst_details(self):
 		item.sgst_amount = 0.0
 		item.igst_amount = 0.0
 
-		taxable_value = self.total
+		taxable_value = flt(item.amount)
 		if self.tax_category == "In-State":
 			item.cgst_rate = cgst_rate
 			item.sgst_rate = sgst_rate
@@ -1097,7 +1095,7 @@ def update_si_data(self):
 					bom_doc.currency, self.currency, transaction_date=self.posting_date
 				)
 			gold_rate_changed = True
-			if not einvoice_index:
+			if einvoice_index is None:
 				einvoice_index = _build_einvoice_index(einvoice_items)
 			update_bom_details(
 				self,
@@ -1180,14 +1178,6 @@ def update_si_data(self):
 						"cost_center": row.cost_center,
 					}
 
-			update_einvoice_items(
-				self,
-				invoice_data,
-				payment_terms_data,
-				allowed_item_types,
-				einvoice_items,
-				precision,
-			)
 			if row.get("custom_freight_amount"):
 				custom_item, hsn_code, uom = frappe.db.get_value(
 					"E Invoice Item", {"is_for_freight": 1}, ["name", "hsn_code", "uom"]
@@ -1204,6 +1194,14 @@ def update_si_data(self):
 						"income_account": row.income_account,
 						"cost_center": row.cost_center,
 					}
+			update_einvoice_items(
+				self,
+				invoice_data,
+				payment_terms_data,
+				allowed_item_types,
+				einvoice_items,
+				precision,
+			)
 			if self.sales_type != "Certification":
 				# Reload: update_bom_details() -> update_totals() persists recalculated
 				# amounts via db_set() on its own separate BOM doc instance, so the
