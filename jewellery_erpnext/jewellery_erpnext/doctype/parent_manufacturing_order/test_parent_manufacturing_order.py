@@ -1046,31 +1046,91 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 	PO_ITEM = "PO-ITEM-1"
 	MP_ROW = "MP-ROW-1"
 	PARENT_SO_ITEM = "SO-ITEM-PARENT"
+	PARENT_SALES_ORDER = "SO-PARENT"
+	PARENT_MP = "MP-1"
+	PURCHASE_ORDER = "PUR-ORD-1"
+	OWN_QUOTATION = "QTN-OWN"
+
+	def _stub_fields(self, row, fieldname, as_dict):
+		"""Answer a get_value the way frappe would, for whichever call shape was used.
+
+		One combined read or a read per field are both fine -- how many round trips the walk
+		takes is not what these tests are about. Asking for a field the fixture does not model
+		still fails, so a wrong field name cannot pass unnoticed.
+		"""
+		if isinstance(fieldname, str):
+			self.assertIn(fieldname, row)
+			return row[fieldname]
+
+		for field in fieldname:
+			self.assertIn(field, row)
+		values = [row[field] for field in fieldname]
+		return frappe._dict(zip(fieldname, values)) if as_dict else tuple(values)
 
 	def _patched_chain(
-		self, quotation="QTN-1", quotation_ref_customer=None, docname=_UNSET
+		self,
+		quotation="QTN-1",
+		quotation_ref_customer=None,
+		docname=_UNSET,
+		po_row=_UNSET,
+		m_plan_row=_UNSET,
+		po_ref_customer=None,
+		own_quotation_ref_customer=None,
 	):
-		"""Stub the lookup chain; docname defaults to the parent sales order item."""
+		"""Stub the lookup chain; docname defaults to the parent sales order item.
+
+		Every branch pins the *record* it is asked for, and an unrecognised name fails the test
+		outright. A stub that answers regardless of ``name`` would hand back fixture data for a
+		lookup against the wrong id -- exactly the regression these tests exist to catch, since
+		the whole point of the walk is which record each step reaches. The query *shape* is
+		deliberately not pinned: see _stub_fields.
+		"""
 		mfg_plan_details = frappe._dict(
-			parent="MP-1",
-			sales_order="SO-PARENT",
+			parent=self.PARENT_MP,
+			sales_order=self.PARENT_SALES_ORDER,
 			docname=self.PARENT_SO_ITEM if docname is _UNSET else docname,
+		)
+		po_item = frappe._dict(
+			parent=self.PURCHASE_ORDER,
+			custom_m_plan_details=self.MP_ROW if m_plan_row is _UNSET else m_plan_row,
 		)
 
 		def get_value(doctype, name=None, fieldname=None, **kwargs):
 			if doctype == "Sales Order Item" and name == self.SO_ITEM:
-				return self.PO_ITEM
-			if doctype == "Purchase Order Item":
-				return self.MP_ROW
-			if doctype == "Manufacturing Plan Table":
-				return mfg_plan_details
+				self.assertEqual(fieldname, "custom_po_details")
+				return self.PO_ITEM if po_row is _UNSET else po_row
 			if doctype == "Sales Order Item" and name == self.PARENT_SO_ITEM:
+				self.assertEqual(fieldname, "prevdoc_docname")
 				return quotation
+
+			if doctype == "Purchase Order Item":
+				self.assertEqual(name, self.PO_ITEM if po_row is _UNSET else po_row)
+				return self._stub_fields(po_item, fieldname, kwargs.get("as_dict"))
+
+			if doctype == "Manufacturing Plan Table":
+				# the row the walk actually read off po_item, not a fixed id -- the walk must
+				# follow the link it found rather than one hardcoded here
+				self.assertEqual(name, po_item.custom_m_plan_details)
+				return mfg_plan_details
+
+			if doctype == "Quotation" and name == self.OWN_QUOTATION:
+				return own_quotation_ref_customer
 			if doctype == "Quotation":
+				# only the quotation this walk resolved may be read -- a stale parent_quotation
+				# left on the document must never reach here
+				self.assertEqual(name, quotation)
 				return quotation_ref_customer
+
+			if doctype == "Purchase Order":
+				self.assertEqual(name, self.PURCHASE_ORDER)
+				return po_ref_customer
+
 			if doctype == "Sales Order":
+				# likewise for a stale parent_sales_order
+				self.assertEqual(name, self.PARENT_SALES_ORDER)
 				return "CUST-FROM-SO"
-			return None
+
+			self.fail(f"unexpected lookup: {doctype} {name}")
 
 		return patch(f"{PMO_UTILS}.frappe.db.get_value", side_effect=get_value)
 
@@ -1102,6 +1162,95 @@ class TestParentDetailsRefCustomer(UnitTestCase):
 
 		self.assertIsNone(doc.parent_quotation)
 		self.assertEqual(doc.ref_customer, "CUST-FROM-SO")
+
+	def test_ref_customer_comes_from_the_purchase_order_when_the_m_plan_link_is_missing(
+		self,
+	):
+		# Purchase Order Items raised before custom_m_plan_details existed have no link to
+		# follow, so the walk stops one hop short of the manufacturing plan row
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(m_plan_row=None, po_ref_customer="CUST-FROM-PO"):
+			update_parent_details(doc)
+
+		self.assertIsNone(doc.parent_quotation)
+		self.assertIsNone(doc.parent_sales_order)
+		self.assertEqual(doc.ref_customer, "CUST-FROM-PO")
+
+	def test_the_walk_follows_the_m_plan_link_it_read(self):
+		# the manufacturing plan row is whatever the Purchase Order Item points at; the walk must
+		# follow that link rather than any id fixed in advance
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(
+			m_plan_row="MP-ROW-ALT", quotation_ref_customer="CUST-FROM-QTN"
+		):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.parent_mp, self.PARENT_MP)
+		self.assertEqual(doc.ref_customer, "CUST-FROM-QTN")
+
+	def test_ref_customer_comes_from_its_own_quotation_when_the_walk_never_starts(self):
+		# no custom_po_details on the sales order line, so the walk exits at its first guard
+		doc = frappe._dict(sales_order_item=self.SO_ITEM, quotation=self.OWN_QUOTATION)
+
+		with self._patched_chain(
+			po_row=None, own_quotation_ref_customer="CUST-FROM-OWN-QTN"
+		):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-FROM-OWN-QTN")
+
+	def test_the_parent_quotation_outranks_the_coarser_sources(self):
+		# a Purchase Order carries one Ref Customer for every row on it, so the per-line
+		# sources must win wherever they resolve
+		doc = frappe._dict(sales_order_item=self.SO_ITEM, quotation=self.OWN_QUOTATION)
+
+		with self._patched_chain(
+			quotation_ref_customer="CUST-FROM-QTN",
+			po_ref_customer="CUST-FROM-PO",
+			own_quotation_ref_customer="CUST-FROM-OWN-QTN",
+		):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-FROM-QTN")
+
+	def test_a_stale_parent_quotation_loses_to_the_current_walk(self):
+		# parent_quotation is not read-only and survives an early exit, so an earlier save can
+		# leave one behind; only what this walk re-establishes may feed ref_customer
+		doc = frappe._dict(sales_order_item=self.SO_ITEM, parent_quotation="QTN-STALE")
+
+		# reading QTN-STALE trips the stub, which answers only for the walk's own quotation
+		with self._patched_chain(m_plan_row=None, po_ref_customer="CUST-FROM-PO"):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-FROM-PO")
+
+	def test_stale_parent_links_lose_to_the_orders_own_quotation(self):
+		doc = frappe._dict(
+			sales_order_item=self.SO_ITEM,
+			parent_quotation="QTN-STALE",
+			parent_sales_order="SO-STALE",
+			quotation=self.OWN_QUOTATION,
+		)
+
+		# QTN-STALE and SO-STALE are both unknown to the stub, so consulting either fails the
+		# test rather than quietly returning a plausible customer
+		with self._patched_chain(
+			po_row=None, own_quotation_ref_customer="CUST-FROM-OWN-QTN"
+		):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-FROM-OWN-QTN")
+
+	def test_an_unresolvable_chain_leaves_ref_customer_alone(self):
+		# the field is not read-only, so a save must not wipe a value set by hand
+		doc = frappe._dict(sales_order_item=self.SO_ITEM, ref_customer="CUST-BY-HAND")
+
+		with self._patched_chain(po_row=None):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-BY-HAND")
 
 	def test_before_save_resolves_parent_details_on_insert(self):
 		doc = frappe.new_doc("Parent Manufacturing Order")
