@@ -3,6 +3,11 @@ import json
 import frappe
 from erpnext.setup.utils import get_exchange_rate
 from frappe.utils import flt
+
+from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.remote_po import (
+	fetch_remote_ref_customer,
+)
+
 # from jewellery_erpnext.utils import update_existing
 
 
@@ -10,144 +15,159 @@ def validate(self, method):
 	update_rate(self)
 	set_gst_details(self)
 	self.calculate_taxes_and_totals()
+
+
 def set_gst_details(self):
-    
-    if self.purchase_type not in ("Finished Goods","FG Purchase", "Subcontracting","Branch Purchase"):
-        return
-    
-    customer_state = frappe.db.get_value("Address", self.supplier_address, "gst_state_number")
-    company_state  = frappe.db.get_value("Address", self.company_address,  "gst_state_number")
+	if self.purchase_type not in (
+		"Finished Goods",
+		"FG Purchase",
+		"Subcontracting",
+		"Branch Purchase",
+	):
+		return
 
-    if not customer_state or not company_state:
-        return
+	customer_state = frappe.db.get_value(
+		"Address", self.supplier_address, "gst_state_number"
+	)
+	company_state = frappe.db.get_value(
+		"Address", self.company_address, "gst_state_number"
+	)
 
-    self.tax_category = "In-State" if customer_state == company_state else "Out-State"
+	if not customer_state or not company_state:
+		return
 
-    item_template_map = {
-        "Finished Goods": {
-            "Gurukrupa Export Private Limited": "GST 3% - GEPL",
-            "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
-        },
-        "FG Purchase": {
-				"Gurukrupa Export Private Limited": "GST 3% - GEPL",
-				"KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
-                },
-        "Subcontracting": {
-            "Gurukrupa Export Private Limited": "GST 5% - GEPL",
-            "KG GK Jewellers Private Limited":  "GST 5% - KGJPL",
-        },
-        "Branch Purchase": {
-            "Gurukrupa Export Private Limited": "GST 3% - GEPL",
-            "KG GK Jewellers Private Limited":  "GST 3% - KGJPL",
-        }
-    }
-    item_tax_template = item_template_map.get(self.purchase_type, {}).get(self.company)
-    
-    if not item_tax_template:
-        return
+	self.tax_category = "In-State" if customer_state == company_state else "Out-State"
 
-    taxes_and_charges = frappe.db.get_value(
-        "Purchase Taxes and Charges Template",
-        {
-            "company":      self.company,
-            "tax_category": self.tax_category,
-            "disabled":     0,
-        },
-        "name"
-    )
-    self.taxes_and_charges=taxes_and_charges
-    if not taxes_and_charges:
-        frappe.log_error(
-            f"No Sales Taxes and Charges Template found for "
-            f"Company: {self.company}, Tax Category: {self.tax_category}",
-            "set_gst_details"
-        )
-        return
-    # frappe.throw(f"{taxes_and_charges}")
-    self.taxes_and_charges = taxes_and_charges
+	item_template_map = {
+		"Finished Goods": {
+			"Gurukrupa Export Private Limited": "GST 3% - GEPL",
+			"KG GK Jewellers Private Limited": "GST 3% - KGJPL",
+		},
+		"FG Purchase": {
+			"Gurukrupa Export Private Limited": "GST 3% - GEPL",
+			"KG GK Jewellers Private Limited": "GST 3% - KGJPL",
+		},
+		"Subcontracting": {
+			"Gurukrupa Export Private Limited": "GST 5% - GEPL",
+			"KG GK Jewellers Private Limited": "GST 5% - KGJPL",
+		},
+		"Branch Purchase": {
+			"Gurukrupa Export Private Limited": "GST 3% - GEPL",
+			"KG GK Jewellers Private Limited": "GST 3% - KGJPL",
+		},
+	}
+	item_tax_template = item_template_map.get(self.purchase_type, {}).get(self.company)
 
-    template_rates = frappe.get_all(
-        "Item Tax Template Detail",
-        filters={"parent": item_tax_template},
-        fields=["tax_type", "tax_rate"]
-    )
+	if not item_tax_template:
+		return
 
-    cgst_rate = sgst_rate = igst_rate = 0.0
-    for r in template_rates:
-        tax_type = r.tax_type or ""
-        if "Output" not in tax_type or "RCM" in tax_type:
-            continue
-        if "CGST" in tax_type:
-            cgst_rate = float(r.tax_rate)
-        elif "SGST" in tax_type:
-            sgst_rate = float(r.tax_rate)
-        elif "IGST" in tax_type:
-            igst_rate = float(r.tax_rate)
+	taxes_and_charges = frappe.db.get_value(
+		"Purchase Taxes and Charges Template",
+		{
+			"company": self.company,
+			"tax_category": self.tax_category,
+			"disabled": 0,
+		},
+		"name",
+	)
+	self.taxes_and_charges = taxes_and_charges
+	if not taxes_and_charges:
+		frappe.log_error(
+			f"No Sales Taxes and Charges Template found for "
+			f"Company: {self.company}, Tax Category: {self.tax_category}",
+			"set_gst_details",
+		)
+		return
+	# frappe.throw(f"{taxes_and_charges}")
+	self.taxes_and_charges = taxes_and_charges
 
-    account_rate_map = {}
-    for r in template_rates:
-        tax_type = r.tax_type or ""
-        if "Output" not in tax_type or "RCM" in tax_type:
-            continue
-        account_rate_map[r.tax_type] = float(r.tax_rate)
+	template_rates = frappe.get_all(
+		"Item Tax Template Detail",
+		filters={"parent": item_tax_template},
+		fields=["tax_type", "tax_rate"],
+	)
 
-    self.taxes = []
-    
-    tax_rows = frappe.get_all(
-        "Purchase Taxes and Charges",
-        filters={"parent": self.taxes_and_charges},
-        fields=["charge_type", "account_head", "description", "rate", "cost_center"],
-        order_by="idx asc"
-    )
-    import json
-    # frappe.throw(f"hii{tax_rows}")
-    item_tax_rate = {}
+	cgst_rate = sgst_rate = igst_rate = 0.0
+	for r in template_rates:
+		tax_type = r.tax_type or ""
+		if "Output" not in tax_type or "RCM" in tax_type:
+			continue
+		if "CGST" in tax_type:
+			cgst_rate = float(r.tax_rate)
+		elif "SGST" in tax_type:
+			sgst_rate = float(r.tax_rate)
+		elif "IGST" in tax_type:
+			igst_rate = float(r.tax_rate)
 
-    if self.items and self.items[0].item_tax_rate:
-        item_tax_rate = json.loads(self.items[0].item_tax_rate)
-    for t in tax_rows:
-        # correct_rate = account_rate_map.get(t.account_head, t.rate)
-        t.rate = flt(item_tax_rate.get(t.account_head, t.rate))
-        
-        # correct_rate = flt(self.items[0].item_tax_rate.get(t.account_head, t.rate))
-        # frappe.throw(f"{t.rate}")
-        self.append("taxes", {
-            "charge_type":  t.charge_type,
-            "account_head": t.account_head,
-            "description":  t.description,
-            "rate":         t.rate,
-            "cost_center":  t.cost_center,
-            "tax_amount": self.total * t.rate / 100,
-            "total":(self.total * t.rate / 100)+self.total,
-            "category":'Total',
-            "add_deduct_tax":'Add'
-        })
-        self.total_taxes_and_charges = (self.total * t.rate / 100)+self.total
-        
-        self.grand_total = self.total_taxes_and_charges
-    for item in self.items:
-        if not item.item_code:
-            continue
+	account_rate_map = {}
+	for r in template_rates:
+		tax_type = r.tax_type or ""
+		if "Output" not in tax_type or "RCM" in tax_type:
+			continue
+		account_rate_map[r.tax_type] = float(r.tax_rate)
 
-        item.item_tax_template = item_tax_template
-        item.gst_treatment     = "Taxable"
-        item.cgst_rate         = 0.0
-        item.sgst_rate         = 0.0
-        item.igst_rate         = 0.0
-        item.cgst_amount       = 0.0
-        item.sgst_amount       = 0.0
-        item.igst_amount       = 0.0
+	self.taxes = []
 
-        taxable_value = float(item.taxable_value)
+	tax_rows = frappe.get_all(
+		"Purchase Taxes and Charges",
+		filters={"parent": self.taxes_and_charges},
+		fields=["charge_type", "account_head", "description", "rate", "cost_center"],
+		order_by="idx asc",
+	)
+	import json
 
-        if self.tax_category == "In-State":
-            item.cgst_rate   = cgst_rate
-            item.sgst_rate   = sgst_rate
-            item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
-            item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
-        else:
-            item.igst_rate   = igst_rate
-            item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
+	# frappe.throw(f"hii{tax_rows}")
+	item_tax_rate = {}
+
+	if self.items and self.items[0].item_tax_rate:
+		item_tax_rate = json.loads(self.items[0].item_tax_rate)
+	for t in tax_rows:
+		# correct_rate = account_rate_map.get(t.account_head, t.rate)
+		t.rate = flt(item_tax_rate.get(t.account_head, t.rate))
+
+		# correct_rate = flt(self.items[0].item_tax_rate.get(t.account_head, t.rate))
+		# frappe.throw(f"{t.rate}")
+		self.append(
+			"taxes",
+			{
+				"charge_type": t.charge_type,
+				"account_head": t.account_head,
+				"description": t.description,
+				"rate": t.rate,
+				"cost_center": t.cost_center,
+				"tax_amount": self.total * t.rate / 100,
+				"total": (self.total * t.rate / 100) + self.total,
+				"category": "Total",
+				"add_deduct_tax": "Add",
+			},
+		)
+		self.total_taxes_and_charges = (self.total * t.rate / 100) + self.total
+
+		self.grand_total = self.total_taxes_and_charges
+	for item in self.items:
+		if not item.item_code:
+			continue
+
+		item.item_tax_template = item_tax_template
+		item.gst_treatment = "Taxable"
+		item.cgst_rate = 0.0
+		item.sgst_rate = 0.0
+		item.igst_rate = 0.0
+		item.cgst_amount = 0.0
+		item.sgst_amount = 0.0
+		item.igst_amount = 0.0
+
+		taxable_value = float(item.taxable_value)
+
+		if self.tax_category == "In-State":
+			item.cgst_rate = cgst_rate
+			item.sgst_rate = sgst_rate
+			item.cgst_amount = flt(taxable_value * cgst_rate / 100, 2)
+			item.sgst_amount = flt(taxable_value * sgst_rate / 100, 2)
+		else:
+			item.igst_rate = igst_rate
+			item.igst_amount = flt(taxable_value * igst_rate / 100, 2)
+
 
 def update_rate(self):
 	if self.purchase_type == "FG Purchase" and not self.is_new():
@@ -223,7 +243,9 @@ def make_subcontracting_order(doc):
 			)
 		else:
 			supplier_wise_items[row.supplier]["is_subcontracted"] = 1
-			supplier_wise_items[row.supplier]["schedule_date"] = row.estimated_delivery_date
+			supplier_wise_items[row.supplier][
+				"schedule_date"
+			] = row.estimated_delivery_date
 			supplier_wise_items[row.supplier]["items"].append(
 				{
 					"item_code": default_item,
@@ -240,7 +262,9 @@ def make_subcontracting_order(doc):
 		po_doc = frappe.new_doc("Purchase Order")
 		po_doc.supplier = row
 		po_doc.company = doc.company
-		po_doc.schedule_date = supplier_wise_items[row].get("schedule_date") or po_doc.transaction_date
+		po_doc.schedule_date = (
+			supplier_wise_items[row].get("schedule_date") or po_doc.transaction_date
+		)
 		po_doc.purchase_type = supplier_wise_items[row].get("purchase_type")
 		po_doc.ref_customer = supplier_wise_items[row].get("ref_customer")
 		po_doc.manufacturing_plan = doc.name
@@ -258,12 +282,32 @@ def on_cancel(doc, method=None):
 
 
 @frappe.whitelist()
+def get_po_ref_customer(po_name):
+	"""Return the Ref Customer recorded on a Purchase Order.
+
+	Read-only lookup for the KGGK site, whose mirrored copy of a Gurukrupa Export Purchase Order can
+	reach it without ref_customer. Returns None rather than throwing for an unknown name, because
+	the caller runs inside a Quotation save and swallows everything it gets back.
+	"""
+	if not po_name or not frappe.db.exists("Purchase Order", po_name):
+		return None
+
+	frappe.has_permission("Purchase Order", "read", doc=po_name, throw=True)
+
+	return frappe.db.get_value("Purchase Order", po_name, "ref_customer")
+
+
+@frappe.whitelist()
 def make_quotation(source_name, target_doc=None):
 	def set_missing_values(source, target):
-		from erpnext.controllers.accounts_controller import get_default_taxes_and_charges
+		from erpnext.controllers.accounts_controller import (
+			get_default_taxes_and_charges,
+		)
 
 		quotation = frappe.get_doc(target)
-		company_currency = frappe.get_cached_value("Company", quotation.company, "default_currency")
+		company_currency = frappe.get_cached_value(
+			"Company", quotation.company, "default_currency"
+		)
 		customer = frappe.db.get_value("Company", source.company, "customer_code")
 
 		target.party_name = customer
@@ -272,7 +316,10 @@ def make_quotation(source_name, target_doc=None):
 			exchange_rate = 1
 		else:
 			exchange_rate = get_exchange_rate(
-				quotation.currency, company_currency, quotation.transaction_date, args="for_selling"
+				quotation.currency,
+				company_currency,
+				quotation.transaction_date,
+				args="for_selling",
 			)
 		quotation.conversion_rate = exchange_rate
 		# get default taxes
@@ -291,6 +338,14 @@ def make_quotation(source_name, target_doc=None):
 		}
 		for target_field, source_field in field_map.items():
 			quotation.set(target_field, source.get(source_field))
+
+		if not quotation.ref_customer:
+			# A Purchase Order mirrored onto this site can arrive without ref_customer. Ask the
+			# site that owns it here as well as in validate_po, so the value shows in the form
+			# the moment the mapper returns instead of only after the first save.
+			ref_customer = fetch_remote_ref_customer(source.name)
+			if ref_customer and frappe.db.exists("Customer", ref_customer):
+				quotation.set("ref_customer", ref_customer)
 
 	if isinstance(target_doc, str):
 		target_doc = json.loads(target_doc)
