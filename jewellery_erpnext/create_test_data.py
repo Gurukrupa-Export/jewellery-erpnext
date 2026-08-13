@@ -3007,6 +3007,12 @@ def create_test_data():
 
 			_ensure_supplier_allowed_item_group_field()
 
+			from jewellery_erpnext.patches.add_mr_is_free_item_field import (
+				execute as _ensure_mr_is_free_item_field,
+			)
+
+			_ensure_mr_is_free_item_field()
+
 			from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
 
 			ensure_fetch_from_columns()

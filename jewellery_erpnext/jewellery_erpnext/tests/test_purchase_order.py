@@ -141,6 +141,7 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			res = po_events.make_quotation("PO-1", None)
 			self.assertEqual(res.po_no, "CUST-PO")
 			self.assertEqual(len(res.items), 1)
+			self.assertEqual(res.ref_customer, "Customer X")
 
 	def test_set_gst_details_invalid_purchase_type(self):
 		po = DummyPO(purchase_type="Invalid Type")

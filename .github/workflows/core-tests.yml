@@ -47,25 +47,24 @@ jobs:
         run: |
           cd ~/frappe-bench
           echo "Running Core Tests..."
-          bench --site test_site run-tests --app jewellery_erpnext \
-            --doctype "Sketch Order Form" \
-            --doctype "Department IR" \
-            --doctype "Employee IR"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Sketch Order Form"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Department IR"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Employee IR"
 
-          bench --site test_site run-tests --app jewellery_erpnext \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_bom \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_warehouse_stock_entry \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_ownership_priority \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_bom_field_configuration \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_repair_and_fg_bom \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_filters \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_row_ownership \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_allowed_items \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_order \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_invoice \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_invoice \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_bulk_map \
-            --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_reference
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_quotation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_order
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bom
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_employee_ir_loss_baseline
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_warehouse_stock_entry
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_ownership_priority
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_fg_bom_field_configuration
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repair_and_fg_bom
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_filters
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_loss_row_ownership
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_supplier_allowed_items
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_order
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_purchase_invoice
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sales_invoice
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_bulk_map
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_serial_reference
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_item
