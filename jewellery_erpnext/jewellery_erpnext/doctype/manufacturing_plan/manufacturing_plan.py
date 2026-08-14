@@ -7,6 +7,7 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
+from frappe.query_builder import CustomFunction
 from frappe.utils import cint
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import refetch_fg_purchase_rate
@@ -15,6 +16,8 @@ from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.pare
 	make_manufacturing_order,
 )
 from jewellery_erpnext.utils import update_existing
+
+Greatest = CustomFunction("GREATEST", ["value", "floor"])
 
 
 class ManufacturingPlan(Document):
@@ -58,12 +61,21 @@ class ManufacturingPlan(Document):
 		)
 
 	def on_cancel(self):
+		SalesOrderItem = frappe.qb.DocType("Sales Order Item")
 		for row in self.manufacturing_plan_table:
+			if not row.docname:
+				continue
+			# Clamped at zero: cancelling the Parent Manufacturing Orders raised from this plan
+			# already gives back their own qty, so reversing the plan on top of that can overshoot.
 			update_existing(
 				"Sales Order Item",
 				row.docname,
 				"manufacturing_order_qty",
-				f"greatest(manufacturing_order_qty - {cint(row.manufacturing_order_qty) + cint(row.subcontracting_qty)},0)",
+				Greatest(
+					SalesOrderItem.manufacturing_order_qty
+					- (cint(row.manufacturing_order_qty) + cint(row.subcontracting_qty)),
+					0,
+				),
 			)
 
 	def validate(self):

@@ -153,6 +153,30 @@ def get_variant_of_item(item_code):
 	return frappe.db.get_value("Item", item_code, "variant_of")
 
 
+def _resolve_update_value(Doc, field, value):
+	"""Turn the `"<field> +/- <number>"` shorthand into a real arithmetic expression.
+
+	Everything else -- plain values and query builder terms -- is passed through untouched, so
+	callers needing more than a bare increment can hand over an expression of their own.
+	"""
+	if not isinstance(value, str):
+		return value
+
+	operation = value.split()
+	if len(operation) != 3 or operation[0] != field or operation[1] not in ("+", "-"):
+		return value
+
+	operand = operation[2]
+	if not operand.lstrip("-").replace(".", "", 1).isdigit():
+		return value
+
+	column = getattr(Doc, field)
+	if operation[1] == "-":
+		return column - float(operand)
+
+	return column + float(operand)
+
+
 def update_existing(doctype, name, field, value=None, debug=False):
 	modified = frappe.utils.now()
 	modified_by = frappe.session.user
@@ -168,32 +192,10 @@ def update_existing(doctype, name, field, value=None, debug=False):
 	if isinstance(field, dict):
 		# If field is a dictionary, prepare multiple field updates
 		for key, _value in field.items():
-			if isinstance(_value, str) and ("+" in _value or "-" in _value):
-				operation = _value.split()
-				if (
-					len(operation) == 3
-					and operation[0] == key
-					and operation[2].lstrip("-").replace(".", "", 1).isdigit()
-				):
-					query = query.set(getattr(Doc, key), getattr(Doc, key) + float(operation[2]))
-				else:
-					query = query.set(getattr(Doc, key), _value)
-			else:
-				query = query.set(getattr(Doc, key), _value)
+			query = query.set(getattr(Doc, key), _resolve_update_value(Doc, key, _value))
 	else:
 		# Single field update
-		if isinstance(value, str) and ("+" in value or "-" in value):
-			operation = value.split()
-			if (
-				len(operation) == 3
-				and operation[0] == field
-				and operation[2].lstrip("-").replace(".", "", 1).isdigit()
-			):
-				query = query.set(getattr(Doc, field), getattr(Doc, field) + float(operation[2]))
-			else:
-				query = query.set(getattr(Doc, field), value)
-		else:
-			query = query.set(getattr(Doc, field), value)
+		query = query.set(getattr(Doc, field), _resolve_update_value(Doc, field, value))
 
 	query.run(debug=debug)
 
