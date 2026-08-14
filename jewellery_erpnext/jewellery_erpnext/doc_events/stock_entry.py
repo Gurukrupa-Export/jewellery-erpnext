@@ -330,6 +330,84 @@ def get_receive_work_order_batch(self):
 			entry.batch_no = batch_data[key]
 
 
+# Warehouse fields are immutable once the entry is submitted -- the Stock Ledger Entries were
+# already written against them, so a post-submit rewrite makes the document lie about where the
+# stock physically went. erpnext ships these fields without ``allow_on_submit``, so frappe's own
+# ``_validate_update_after_submit`` normally rejects the change -- but a site-level Property Setter
+# silently unlocks them, and that is exactly how the ``gk`` site accumulated 700 submitted Stock
+# Entries with rewritten target warehouses. Guard here instead: this runs regardless of the site's
+# Property Setters, and regardless of which client posted the change (app JS, a DB-stored Client
+# Script, or a stale browser tab still running an old bundle).
+_PARENT_WAREHOUSE_FIELDS = ("from_warehouse", "to_warehouse")
+_ROW_WAREHOUSE_FIELDS = ("s_warehouse", "t_warehouse")
+
+
+def guard_warehouse_change(self, method=None):
+	if self.flags.get("allow_warehouse_change_after_submit"):
+		return
+
+	db_values = frappe.db.get_value(
+		"Stock Entry", self.name, list(_PARENT_WAREHOUSE_FIELDS), as_dict=True
+	)
+	if not db_values:
+		return
+
+	for fieldname in _PARENT_WAREHOUSE_FIELDS:
+		_reject_warehouse_change(
+			"Stock Entry", fieldname, db_values.get(fieldname), self.get(fieldname)
+		)
+
+	db_rows = {
+		row.name: row
+		for row in frappe.db.get_all(
+			"Stock Entry Detail",
+			filters={"parent": self.name, "parenttype": "Stock Entry"},
+			fields=["name", *_ROW_WAREHOUSE_FIELDS],
+		)
+	}
+
+	for row in self.get("items") or []:
+		# A row that is not in the DB is a post-submit insert; the ``items`` table itself has no
+		# allow_on_submit, so frappe's table-length check rejects that separately.
+		db_row = db_rows.get(row.name)
+		if not db_row:
+			continue
+
+		for fieldname in _ROW_WAREHOUSE_FIELDS:
+			_reject_warehouse_change(
+				"Stock Entry Detail",
+				fieldname,
+				db_row.get(fieldname),
+				row.get(fieldname),
+				idx=row.idx,
+			)
+
+
+def _reject_warehouse_change(doctype, fieldname, db_value, new_value, idx=None):
+	# Normalise None and "" to the same empty value -- a no-op clear of an already-blank field
+	# must not trip the guard.
+	if (db_value or "") == (new_value or ""):
+		return
+
+	label = frappe.get_meta(doctype).get_label(fieldname) or fieldname
+	prefix = _("Row #{0}: ").format(idx) if idx else ""
+
+	frappe.throw(
+		_(
+			"{0}{1} cannot be changed after submission (from {2} to {3}). The stock ledger was"
+			" already posted against the original warehouse. Reload the form and try again; if"
+			" the change is genuinely intended, cancel and amend this Stock Entry."
+		).format(
+			prefix,
+			frappe.bold(label),
+			frappe.bold(db_value or _("(empty)")),
+			frappe.bold(new_value or _("(empty)")),
+		),
+		frappe.UpdateAfterSubmitError,
+		title=_("Cannot Update After Submit"),
+	)
+
+
 def on_update_after_submit(self, method):
 	if (
 		self.subcontracting
