@@ -203,6 +203,7 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
+		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
 	},
 	"Manufacturing Work Order": {
