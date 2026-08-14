@@ -19,3 +19,12 @@ def update_expense_account(self):
 		if expense_account:
 			for row in self.items:
 				row.expense_account = expense_account
+
+def update_effective_tax_rate(self, method=None):
+	# pass
+	if not self.net_total:
+		return
+
+	for tax in self.taxes:
+		if tax.charge_type == "On Net Total" and tax.tax_amount:
+			tax.rate = float(tax.tax_amount / self.net_total * 100, tax.precision("rate"))
