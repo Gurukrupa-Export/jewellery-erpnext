@@ -69,8 +69,7 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": " Size",
-   "options": "Attribute Value",
-   "reqd": 1
+   "options": "Attribute Value"
   },
   {
    "fieldname": "metal_purity",
