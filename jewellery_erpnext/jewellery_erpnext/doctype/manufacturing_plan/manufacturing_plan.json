@@ -23,6 +23,7 @@
   "supplier",
   "estimated_date",
   "purchase_type",
+  "manufacturing_end_date",
   "get_mwo",
   "get_sales_order",
   "get_repair_order",
@@ -169,6 +170,12 @@
    "fieldtype": "Link",
    "label": "Purchase Type",
    "options": "Purchase Type"
+  },
+  {
+   "fieldname": "manufacturing_end_date",
+   "fieldtype": "Date",
+   "label": "Est. MFG End Date",
+   "reqd": 1
   },
   {
    "fieldname": "get_mwo",

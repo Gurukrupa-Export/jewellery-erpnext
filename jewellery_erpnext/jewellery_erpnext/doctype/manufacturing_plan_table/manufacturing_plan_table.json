@@ -148,7 +148,7 @@
   {
    "fieldname": "manufacturing_end_date",
    "fieldtype": "Date",
-   "label": "Manufacturing End Date"
+   "label": "Est. MFG End Date"
   },
   {
    "columns": 1,
