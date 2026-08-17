@@ -24,6 +24,7 @@ frappe.ui.form.on("Purchase Order", {
 	refresh(frm) {
 		set_si_reference_field_filter(frm);
 		get_items(frm);
+		add_fetch_fg_purchase_rate_button(frm);
 	},
 	purchase_type(frm) {
 		filter_supplier(frm);
@@ -1535,6 +1536,46 @@ let set_si_reference_field_filter = (frm) => {
 				sales_type: "Branch Sales",
 			},
 		};
+	});
+};
+
+let add_fetch_fg_purchase_rate_button = (frm) => {
+	// Re-fetches supplier FG purchase rates into the Manufacturing BOMs this order reads.
+	// Manufacturing Plan does this at submit; this covers BOMs priced before the customer
+	// price masters were filled in.
+	if (frm.doc.purchase_type !== "FG Purchase" || frm.doc.docstatus !== 0) return;
+	if (!(frm.doc.items || []).some((row) => row.manufacturing_bom)) return;
+
+	frm.add_custom_button(__("Fetch FG Purchase Rate"), function () {
+		frappe.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.fetch_fg_purchase_rate",
+			args: { purchase_order: frm.doc.name },
+			freeze: true,
+			freeze_message: __("Fetching FG Purchase Rate from customer price lists..."),
+			callback: function (r) {
+				if (!r.message) return;
+				let updated = r.message.updated || [];
+				let skipped = r.message.skipped || [];
+				let failed = r.message.failed || [];
+
+				let lines = [];
+				if (updated.length) lines.push(__("Updated: {0}", [updated.join(", ")]));
+				if (skipped.length)
+					lines.push(__("Skipped (submitted BOM): {0}", [skipped.join(", ")]));
+				if (failed.length) lines.push(__("Failed: {0}", [failed.join(", ")]));
+
+				frappe.msgprint({
+					title: __("FG Purchase Rate"),
+					message: lines.join("<br>") || __("No Manufacturing BOM to update."),
+					indicator: failed.length ? "orange" : "green",
+				});
+
+				// Force a save so the server-side validate hook re-reads the BOM amounts onto
+				// the rows -- reload_doc alone would not re-run update_rate.
+				frm.dirty();
+				frm.save();
+			},
+		});
 	});
 };
 

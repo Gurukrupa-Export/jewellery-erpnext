@@ -98,10 +98,12 @@ def get_fifo_batches(self, row):
 		batch_data = get_batch_data_from_msl(row.item_code, main_slip, row.s_warehouse)
 	else:
 		posting_date = self.get("posting_date") or self.get("date")
+		posting_time = self.get("posting_time")
 		batch_data = get_auto_batch_nos(
 			frappe._dict(
 				{
 					"posting_date": posting_date,
+					"posting_time": posting_time,
 					"item_code": row.item_code,
 					"warehouse": warehouse,
 					"qty": row.qty,
