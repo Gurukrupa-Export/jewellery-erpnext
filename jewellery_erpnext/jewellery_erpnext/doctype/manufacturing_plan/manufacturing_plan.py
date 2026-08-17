@@ -124,6 +124,168 @@ class ManufacturingPlan(Document):
 		if is_subcontracting:
 			create_subcontracting_order(self)
 
+		self.create_employee_ir_sales_orders()
+
+	def create_employee_ir_sales_orders(self):
+		"""
+		Create a new Sales Order for items linked to Purchase Orders created by Employee IR.
+		Groups items by Sales Order so that only one Sales Order is created per Sales Order.
+		"""
+		so_map = {}
+		for row in self.manufacturing_plan_table:
+			if row.sales_order and row.docname:
+				if row.sales_order not in so_map:
+					so_map[row.sales_order] = set()
+				so_map[row.sales_order].add(row.docname)
+
+		if not so_map:
+			return
+
+		for so_name, so_item_names in so_map.items():
+			self.process_so_for_employee_ir(so_name, list(so_item_names))
+
+	def process_so_for_employee_ir(self, so_name, so_item_names):
+		# Fetch the original Sales Order Items that are in this Manufacturing Plan
+		so_items_in_mp = frappe.get_all(
+			"Sales Order Item",
+			filters={"name": ["in", so_item_names]},
+			fields=["name", "po_no"],
+		)
+
+		po_nos = [qi.po_no for qi in so_items_in_mp if qi.po_no]
+
+		# Check which Purchase Orders are created by Employee IR
+		valid_pos = set()
+		if po_nos:
+			valid_pos = set(
+				frappe.get_all(
+					"Purchase Order",
+					filters={"name": ["in", po_nos], "employee_ir": ["!=", ""]},
+					pluck="name",
+				)
+			)
+
+		# Check if at least one item meets the Employee IR condition
+		has_employee_ir = any(qi.po_no in valid_pos for qi in so_items_in_mp)
+		if not has_employee_ir:
+			return
+
+		# Idempotency check: verify if a Sales Order is already created for this plan and items
+		existing_so = frappe.db.sql("""
+			SELECT soi.parent
+			FROM `tabSales Order Item` soi
+			JOIN `tabParent Manufacturing Order` pmo ON pmo.name = soi.custom_parent_manufacturing_order
+			JOIN `tabSales Order` so ON so.name = soi.parent
+			WHERE pmo.manufacturing_plan = %s
+			AND pmo.sales_order_item IN %s
+			AND so.docstatus < 2
+			LIMIT 1
+		""", (self.name, tuple(so_item_names)))
+		if existing_so:
+			return
+
+		# Fetch the parent Sales Order
+		parent_so = frappe.get_doc("Sales Order", so_name)
+
+		# Fetch supplier linked to this customer via Party Link
+		supplier = frappe.db.get_value(
+			"Party Link",
+			{"primary_party": parent_so.customer, "secondary_role": "Supplier"},
+			"secondary_party",
+		)
+		if not supplier:
+			supplier = frappe.db.get_value(
+				"Party Link",
+				{"secondary_party": parent_so.customer, "primary_role": "Supplier"},
+				"primary_party",
+			)
+
+		# Create a single new Sales Order
+		new_so = frappe.new_doc("Sales Order")
+		new_so.customer = parent_so.customer
+		new_so.company = parent_so.company
+		new_so.currency = parent_so.currency
+		new_so.sales_type = "Hybrid"
+		new_so.transaction_date = frappe.utils.nowdate()
+		new_so.delivery_date = frappe.utils.add_days(new_so.transaction_date, 7)
+
+		# Append a row for only the intended items in the Sales Order
+		for so_item in parent_so.items:
+			if so_item.name not in so_item_names:
+				continue
+			if so_item.po_no not in valid_pos:
+				continue
+
+			pmo_name = frappe.db.get_value(
+				"Parent Manufacturing Order",
+				{"manufacturing_plan": self.name, "sales_order_item": so_item.name},
+				"name",
+			)
+
+			# Fetch item subcategory
+			item_subcategory = frappe.db.get_value(
+				"Item", so_item.item_code, "item_subcategory"
+			)
+
+			rate = 0.0
+			if supplier and item_subcategory:
+				ssp_rate = frappe.db.sql(
+					"""
+					SELECT child.supplier_fg_purchase_rate
+					FROM `tabSupplier Services Price` parent
+					JOIN `tabSupplier Services Price Item Subcategory` child
+						ON child.parent = parent.name
+					WHERE parent.supplier = %s AND child.sub_category = %s
+				""",
+					(supplier, item_subcategory),
+				)
+				if ssp_rate and ssp_rate[0][0]:
+					rate = frappe.utils.flt(ssp_rate[0][0])
+
+			new_so.append(
+				"items",
+				{
+					"item_code": "Subcontracting Income",
+					"custom_design_code": so_item.item_code,
+					"qty": so_item.qty,
+					"rate": rate,
+					"delivery_date": new_so.delivery_date,
+					"copy_bom": getattr(so_item, "copy_bom", None),
+					"custom_tracking_bom": getattr(
+						so_item, "custom_tracking_bom", None
+					),
+					"diamond_quality": getattr(so_item, "diamond_quality", None),
+					"custom_parent_manufacturing_order": pmo_name,
+					"po_no": so_item.po_no,
+					"custom_po_details": so_item.custom_po_details,
+				},
+			)
+
+		# Calculate totals and save
+		new_so.set_missing_values()
+		new_so.calculate_taxes_and_totals()
+		new_so.insert(ignore_permissions=True)
+		new_so.submit()
+
+		# Link every Parent Manufacturing Order with the corresponding new Sales Order and Item row
+		# for idx, so_item in enumerate(parent_so.items):
+		# 	new_so_item_name = new_so.items[idx].name
+		# 	frappe.db.sql(
+		# 		"""
+		# 		UPDATE `tabParent Manufacturing Order`
+		# 		SET sales_order = %s, sales_order_item = %s
+		# 		WHERE manufacturing_plan = %s AND sales_order_item = %s
+		# 		""",
+		# 		(new_so.name, new_so_item_name, self.name, so_item.name)
+		# 	)
+
+		frappe.msgprint(
+			_("Successfully created Employee IR Sales Order: {0}").format(
+				f"<a href='/app/sales-order/{new_so.name}'>{new_so.name}</a>"
+			),
+			alert=True,
+		)
+
 	def validate(self):
 		self.validate_qty_with_bom_creation()
 		self.refresh_mould_ids()

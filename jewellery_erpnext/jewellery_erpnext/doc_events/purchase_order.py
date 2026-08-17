@@ -358,15 +358,40 @@ def make_quotation(source_name, target_doc=None):
 
 	target_doc.po_no = po_doc.custom_customer_po
 
+	mapped_company = frappe.db.get_value(
+		"Company", {"supplier_code": po_doc.supplier}, "name"
+	)
+	if mapped_company:
+		target_doc.company = mapped_company
+	elif not target_doc.company:
+		frappe.throw(
+			f"Supplier '{po_doc.supplier}' is not mapped to any internal Company. "
+			"Please set the 'Supplier Code' field in the appropriate Company record."
+		)
+
 	for row in po_doc.items:
+		if not row.custom_pmo:
+			frappe.throw(f"Row #{row.idx}: Parent Manufacturing Order (PMO) is required for Quotation mapping.")
+
+		pmo_data = frappe.db.get_value(
+			"Parent Manufacturing Order",
+			row.custom_pmo,
+			["item_code", "qty", "diamond_quality", "branch", "project", "master_bom"],
+			as_dict=True
+		)
+
+		if not pmo_data:
+			frappe.throw(f"Row #{row.idx}: Invalid Parent Manufacturing Order (PMO) reference: {row.custom_pmo}.")
+
 		target_doc.append(
 			"items",
 			{
-				"branch": row.get("branch"),
-				"project": row.get("project"),
-				"item_code": row.get("item_code"),
-				"qty": row.get("qty"),
-				"diamond_quality": row.get("diamond_quality"),
+				"branch": pmo_data.get("branch") or row.get("branch"),
+				"project": pmo_data.get("project") or row.get("project"),
+				"item_code": pmo_data.get("item_code") or row.get("item_code"),
+				"qty": pmo_data.get("qty") or row.get("qty"),
+				"diamond_quality": pmo_data.get("diamond_quality") or row.get("diamond_quality"),
+				"copy_bom": pmo_data.get("master_bom") or row.get("copy_bom"),
 				"custom_customer_gold": "No",
 				"rate": row.get("rate"),
 				"custom_customer_diamond": "No",

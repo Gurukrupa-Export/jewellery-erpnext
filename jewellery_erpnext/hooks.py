@@ -151,6 +151,7 @@ doc_events = {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.customization.sales_order.sales_order.on_update_after_submit",
 	},
+
 	"BOM": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.before_validate",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.bom.validate",
@@ -240,7 +241,9 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.on_cancel",
 	},
 	"Purchase Invoice": {"validate": [_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
-			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_effective_tax_rate"]},
+			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_effective_tax_rate"],
+		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.before_validate",
+	},
 	"Supplier Quotation": {"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR},
 	"Supplier": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.supplier_allowed_items.validate_supplier_rows"

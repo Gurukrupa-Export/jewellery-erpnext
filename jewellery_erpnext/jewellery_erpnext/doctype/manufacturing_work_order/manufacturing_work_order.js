@@ -41,8 +41,58 @@ frappe.ui.form.on("Manufacturing Work Order", {
 							},
 						});
 					});
+					frm.add_custom_button(__("Create SNC (All Materials)"), function () {
+						frappe.call({
+							method: "jewellery_erpnext.customer_subcontracting.sub_utils.snc.create_snc",
+							args: {
+								mwo: frm.doc.name,
+								include_all_items: 1,
+							},
+							freeze: true,
+							freeze_message: __("Creating SNC (All Items)"),
+							callback: function (response) {
+								if (!response.message) return;
+								const make_receive =
+									response.message.make_receive && response.message.make_receive.docname
+										? response.message.make_receive.docname
+										: __("Not created");
+								frappe.msgprint({
+									title: __("Full SNC Created"),
+									indicator: "green",
+									message: __(
+										"Material Receive: {0}<br>Metal Conversion: {1}<br>Material Transfer: {2}",
+										[
+											make_receive,
+											(response.message.conversions || []).join(", ") || __("None"),
+											(response.message.transfers || []).join(", ") || __("None"),
+										]
+									),
+								});
+								frm.reload_doc();
+							},
+						});
+					});
 				},
 			});
+		}
+		if (frm.doc.docstatus == 1) {
+			frm.add_custom_button(
+				__("Customer Goods Issue"),
+				function () {
+					frappe.call({
+						method: "make_customer_goods_issue",
+						doc: frm.doc,
+						freeze: true,
+						freeze_message: __("Creating Stock Entry"),
+						callback: function (r) {
+							if (r.message) {
+								frappe.model.sync(r.message);
+								frappe.set_route("Form", r.message.doctype, r.message.name);
+							}
+						},
+					});
+				}
+			);
 		}
 		if (
 			frm.doc.docstatus == 1 &&

@@ -44,6 +44,10 @@ MANUFACTURER = frappe.defaults.get_user_default("manufacturer")
 
 def before_validate(self, method):
 	validate_ir(self)
+
+	if self.stock_entry_type == "Customer Goods Issue":
+		self.flags.throw_batch_error = True
+
 	if self.docstatus == 0:
 		# FIFO batch allocation now runs automatically for every draft (incl.
 		# brand-new / unsaved docs) — this replaces the old "Get FIFO Batches"
@@ -922,6 +926,14 @@ def before_submit(self, method):
 
 
 def onsubmit(self, method):
+	if self.stock_entry_type == "Customer Goods Issue":
+		mwos = set()
+		for row in self.items:
+			if row.get("custom_manufacturing_work_order"):
+				mwos.add(row.custom_manufacturing_work_order)
+		for mwo in mwos:
+			frappe.db.set_value("Manufacturing Work Order", mwo, "status", "Completed")
+
 	validate_items(self)
 	# Hard skip reservation logic for Product Certification Receive
 	# (Fire Assy Service / XRF Services), regardless of reservation settings.

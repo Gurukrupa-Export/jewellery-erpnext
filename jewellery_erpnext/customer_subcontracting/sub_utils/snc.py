@@ -161,7 +161,7 @@ def stamp_snc_requirement(doc, method=None):
 
 
 @frappe.whitelist()
-def create_snc(mwo):
+def create_snc(mwo, include_all_items=False):
 	mwo = _get_mwo(mwo)
 	if not validate_button_visibility(mwo.name):
 		frappe.throw(
@@ -180,7 +180,7 @@ def create_snc(mwo):
 	# earliest Material Transfer.
 	settle_rows = [
 		row
-		for row in _get_receivable_gold_rows(mwo)
+		for row in _get_receivable_gold_rows(mwo, include_all_items=include_all_items)
 		if _row_needs_settlement(mwo, row, pmo_is_customer_gold)
 	]
 	if not settle_rows:
@@ -219,6 +219,11 @@ def create_snc(mwo):
 				}
 			)
 			continue
+
+		if not row["item_code"].startswith("M-G-"):
+			frappe.throw(
+				_("No available stock for {0} (Item: {1}).").format(_owner_label(owner_customer), row["item_code"])
+			)
 
 		# Reads the map but does NOT reserve: the conversion below submits immediately,
 		# so the ledger is already reduced before the next row looks. Reserving as well
@@ -504,7 +509,7 @@ def create_material_transfer_work_order(
 	return se.name
 
 
-def _get_receivable_gold_rows(mwo, target_warehouse=None):
+def _get_receivable_gold_rows(mwo, target_warehouse=None, include_all_items=False):
 	"""Gold (M-G-) rows the operation ACTUALLY holds now, from the same live Make
 	Receive source (loss-adjusted SRE remaining), shaped like ``create_mr_wo_stock_entry``
 	receive_items plus the ``batch_customer`` / ``custom_pure_qty`` / ``s_warehouse``
@@ -532,8 +537,17 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 	for row in rows:
 		item_code = row.get("item_code") or ""
 		# SNC only settles gold; receive gold rows only, never diamond/findings.
-		if not item_code.startswith("M-G-"):
-			continue
+		if not include_all_items:
+			if not item_code.startswith("M-G-"):
+				continue
+		else:
+			if not (
+				item_code.startswith("M-G-")
+				or item_code.startswith("F-G")
+				or item_code.startswith("D-")
+				or item_code.startswith("G-")
+			):
+				continue
 		qty = flt(row.get("available_to_receive_qty"), 3)
 		if qty <= 0:
 			continue
@@ -562,8 +576,7 @@ def _get_receivable_gold_rows(mwo, target_warehouse=None):
 				"inventory_type": inventory_type,
 				"customer": batch_customer,
 				"batch_customer": batch_customer,
-				"batch_voucher_type": batch_voucher_type,
-				"custom_pure_qty": flt(qty * _get_item_purity(item_code) / 100, 3),
+				"custom_pure_qty": flt(qty * _get_item_purity(item_code) / 100, 3) if item_code.startswith("M-G-") else qty,
 				"s_warehouse": row.get("s_warehouse"),
 			}
 		)
