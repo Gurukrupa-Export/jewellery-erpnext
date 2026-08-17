@@ -239,8 +239,12 @@ doc_events = {
 		],
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.on_cancel",
 	},
-	"Purchase Invoice": {"validate": [_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
-			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_effective_tax_rate"]},
+	"Purchase Invoice": {
+		"validate": [
+			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_effective_tax_rate",
+		]
+	},
 	"Supplier Quotation": {"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR},
 	"Supplier": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.supplier_allowed_items.validate_supplier_rows"
