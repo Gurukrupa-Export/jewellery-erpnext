@@ -10,6 +10,7 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import frappe
 from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan import (
@@ -25,6 +26,18 @@ class _Doc(SimpleNamespace):
 
 	def get(self, key, default=None):
 		return getattr(self, key, default)
+
+
+def _so(name, delivery_date=None, custom_updated_delivery_date=None):
+	"""A Sales Order row as frappe.get_all really returns it.
+
+	Must be a frappe._dict, not a SimpleNamespace: fetch_doc_map() keys its map with
+	``d[key_field]``, and a SimpleNamespace does not support subscripting."""
+	return frappe._dict(
+		name=name,
+		delivery_date=delivery_date,
+		custom_updated_delivery_date=custom_updated_delivery_date,
+	)
 
 
 class _NewDoc(_Doc):
@@ -211,7 +224,69 @@ class TestValidateManufacturingEndDate(IntegrationTestCase):
 		]
 		throw = self._run(
 			rows,
-			sales_orders=[_Doc(name="SO-1", custom_updated_delivery_date="2026-11-01")],
+			sales_orders=[
+				_so(
+					"SO-1",
+					delivery_date="2026-09-15",
+					custom_updated_delivery_date="2026-11-01",
+				)
+			],
+		)
+		throw.assert_not_called()
+
+	def test_sales_order_delivery_date_is_used_when_the_row_has_none(self):
+		# THE REGRESSION TEST for reading delivery_date off the Sales Order: the row's own
+		# fetch_from copy is empty (flags.ignore_links skips the fetch entirely), so the
+		# old code fell through to `continue` and enforced nothing.
+		rows = [
+			_Doc(
+				idx=1,
+				manufacturing_end_date="2026-10-01",
+				sales_order="SO-1",
+				delivery_date=None,
+			)
+		]
+		throw = self._run(
+			rows,
+			sales_orders=[
+				_so(
+					"SO-1",
+					delivery_date="2026-09-15",
+					custom_updated_delivery_date=None,
+				)
+			],
+		)
+		throw.assert_called_once()
+		self.assertIn("Row #1", throw.call_args[0][0])
+
+	def test_sales_order_missing_from_the_map_falls_back_to_the_row(self):
+		rows = [
+			_Doc(
+				idx=1,
+				manufacturing_end_date="2026-10-01",
+				sales_order="SO-GONE",
+				delivery_date="2026-09-15",
+			)
+		]
+		throw = self._run(rows, sales_orders=[])
+		throw.assert_called_once()
+
+	def test_both_sales_order_dates_null_and_no_row_date_is_skipped(self):
+		# The real shape of every undated row in production: the Sales Order itself has no
+		# delivery date, so there is genuinely nothing to compare against.
+		rows = [
+			_Doc(
+				idx=1,
+				manufacturing_end_date="2026-10-01",
+				sales_order="SO-1",
+				delivery_date=None,
+			)
+		]
+		throw = self._run(
+			rows,
+			sales_orders=[
+				_so("SO-1", delivery_date=None, custom_updated_delivery_date=None)
+			],
 		)
 		throw.assert_not_called()
 

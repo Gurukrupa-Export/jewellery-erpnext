@@ -162,23 +162,27 @@ class ManufacturingPlan(Document):
 		if not rows:
 			return
 
-		updated_map = {}
-		sales_orders = {row.sales_order for row in rows if row.sales_order}
-		if sales_orders:
-			updated_map = {
-				so.name: so.custom_updated_delivery_date
-				for so in frappe.get_all(
-					"Sales Order",
-					filters={"name": ("in", list(sales_orders))},
-					fields=["name", "custom_updated_delivery_date"],
-				)
-			}
+		# The Sales Order is the authority for both dates. Reading them here rather than
+		# leaning on the row's own fetch_from copy keeps this check working even when
+		# fetch_from never ran -- it is resolved as a side effect of _validate_links(),
+		# which flags.ignore_links skips entirely.
+		so_map = fetch_doc_map(
+			"Sales Order",
+			{row.sales_order for row in rows if row.sales_order},
+			["name", "delivery_date", "custom_updated_delivery_date"],
+		)
 
 		for row in rows:
 			# Match the PMO's own comparison basis: a Sales Order whose delivery date was
-			# pushed out carries the new date on custom_updated_delivery_date, and checking
-			# the row's stale delivery_date alone would falsely block the plan.
-			delivery_date = updated_map.get(row.sales_order) or row.delivery_date
+			# pushed out carries the new date on custom_updated_delivery_date, which takes
+			# precedence over the original. row.delivery_date is a last-resort fallback for
+			# a row whose Sales Order could not be read back.
+			so = so_map.get(row.sales_order) or {}
+			delivery_date = (
+				so.get("custom_updated_delivery_date")
+				or so.get("delivery_date")
+				or row.delivery_date
+			)
 			if not delivery_date:
 				continue
 			if getdate(row.manufacturing_end_date) >= getdate(delivery_date):
