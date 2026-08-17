@@ -174,8 +174,7 @@
   {
    "fieldname": "manufacturing_end_date",
    "fieldtype": "Date",
-   "label": "Est. MFG End Date",
-   "reqd": 1
+   "label": "Est. MFG End Date"
   },
   {
    "fieldname": "get_mwo",

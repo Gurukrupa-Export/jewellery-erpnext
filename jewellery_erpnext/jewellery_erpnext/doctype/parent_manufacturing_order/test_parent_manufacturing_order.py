@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase, UnitTestCase
+from frappe.utils import add_days, today
 
 from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.customer_product_tolerance_master import (
 	CustomerProductToleranceMaster,
@@ -502,6 +503,10 @@ def create_man_plan(self):
 	if man_plan.setting_type:
 		man_plan.setting_type = "Close"
 	man_plan.is_subcontracting = "No"
+	# Rows here create PMOs, so each needs an Est. MFG End Date. Setting the header lets
+	# apply_manufacturing_end_date() stamp every row, and +1 day keeps it strictly before
+	# the Sales Order's delivery_date (transaction_date + 3) that the range check compares against.
+	man_plan.manufacturing_end_date = add_days(today(), 1)
 	man_plan.save()
 	man_plan.submit()
 	return man_plan

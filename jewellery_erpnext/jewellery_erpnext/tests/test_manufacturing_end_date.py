@@ -75,6 +75,53 @@ class TestApplyManufacturingEndDate(IntegrationTestCase):
 		self.assertEqual(rows[1].manufacturing_end_date, "2026-09-10")
 
 
+class TestHeaderPushSatisfiesRowMandatory(IntegrationTestCase):
+	"""`reqd` lives on the child row, never on the header.
+
+	A mandatory header would be unsaveable by design: the client blanks it the moment one
+	row is given its own date. The row-level requirement is still satisfiable from the
+	header alone because Document.insert runs run_before_save_methods() -- and therefore
+	apply_manufacturing_end_date() -- ahead of _validate()."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_header_push_fills_rows_before_mandatory_would_see_them(self):
+		rows = [_Doc(manufacturing_end_date=None), _Doc(manufacturing_end_date=None)]
+		fake = _Doc(manufacturing_end_date="2026-09-01", manufacturing_plan_table=rows)
+		mp_mod.ManufacturingPlan.apply_manufacturing_end_date(fake)
+		# Nothing is left blank for the framework's mandatory check to reject.
+		self.assertTrue(all(row.manufacturing_end_date for row in rows))
+
+	def test_blank_header_with_rows_already_dated_is_a_valid_state(self):
+		# THE REGRESSION CASE: exactly what the client produces after a per-row edit, and
+		# exactly what `reqd: 1` on the *header* used to reject outright.
+		rows = [
+			_Doc(
+				manufacturing_end_date="2026-09-01",
+				sales_order=None,
+				delivery_date=None,
+			),
+			_Doc(
+				manufacturing_end_date="2026-09-10",
+				sales_order=None,
+				delivery_date=None,
+			),
+		]
+		fake = _Doc(manufacturing_end_date=None, manufacturing_plan_table=rows)
+		with (
+			patch.object(mp_mod.frappe, "get_all", return_value=[]),
+			patch.object(mp_mod.frappe, "throw", side_effect=RuntimeError) as throw,
+		):
+			mp_mod.ManufacturingPlan.apply_manufacturing_end_date(fake)
+			mp_mod.ManufacturingPlan.validate_manufacturing_end_date(fake)
+		throw.assert_not_called()
+		# The push must not have wiped the individually-set row dates.
+		self.assertEqual(rows[0].manufacturing_end_date, "2026-09-01")
+		self.assertEqual(rows[1].manufacturing_end_date, "2026-09-10")
+
+
 class TestValidateManufacturingEndDate(IntegrationTestCase):
 	"""ManufacturingPlan.validate_manufacturing_end_date mirrors the PMO's validate_mfg_date."""
 

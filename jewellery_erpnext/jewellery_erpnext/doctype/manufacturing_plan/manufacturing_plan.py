@@ -145,10 +145,17 @@ class ManufacturingPlan(Document):
 	def validate_manufacturing_end_date(self):
 		"""Reject a row whose Est. MFG End Date is not strictly before its delivery date.
 
-		Mirrors validate_mfg_date() on Parent Manufacturing Order, which compares against
-		`custom_updated_delivery_date or delivery_date`. That check is skipped while the
-		PMO is new, so without this the bad date submits cleanly and only surfaces later
-		as a PMO that can no longer be saved."""
+		Requiredness itself is left to `reqd` on the child field: run_before_save_methods()
+		(which runs validate, and therefore apply_manufacturing_end_date) is called ahead of
+		_validate() in Document.insert, so a header-only entry has already been stamped onto
+		every row by the time the framework checks for missing mandatory values. The header
+		itself must stay optional -- the client blanks it as soon as one row is given its own
+		date, and a mandatory header would reject that legitimate "mixed dates" state.
+
+		The range check below mirrors validate_mfg_date() on Parent Manufacturing Order,
+		which compares against `custom_updated_delivery_date or delivery_date`. That check is
+		skipped while the PMO is new, so without this the bad date submits cleanly and only
+		surfaces later as a PMO that can no longer be saved."""
 		rows = [
 			row for row in self.manufacturing_plan_table if row.manufacturing_end_date
 		]
