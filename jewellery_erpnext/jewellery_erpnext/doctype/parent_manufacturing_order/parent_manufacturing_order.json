@@ -2,7 +2,7 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "PMO-.abbr.-.item_code.-.####",
- "creation": "2023-03-03 22:09:50.290798",
+ "creation": "2026-08-11 17:06:48.455507",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -98,6 +98,7 @@
   "salesman_name",
   "service_type",
   "jewelex_order_no",
+  "jewelex_batch_no",
   "parent_details_section",
   "parent_quotation",
   "parent_sales_order",
@@ -829,7 +830,9 @@
    "read_only": 1
   },
   {
+   "allow_on_submit": 1,
    "fetch_from": "sales_order.custom_jewelex_order_no",
+   "fetch_if_empty": 1,
    "fieldname": "jewelex_order_no",
    "fieldtype": "Data",
    "label": "Jewelex Order No"
@@ -896,6 +899,13 @@
   {
    "fieldname": "column_break_ofko",
    "fieldtype": "Column Break"
+  },
+  {
+   "allow_on_submit": 1,
+   "fetch_if_empty": 1,
+   "fieldname": "jewelex_batch_no",
+   "fieldtype": "Data",
+   "label": "Jewelex Batch No"
   }
  ],
  "index_web_pages_for_search": 1,
@@ -914,7 +924,7 @@
    "link_fieldname": "manufacturing_order"
   }
  ],
- "modified": "2026-07-31 16:30:31.031170",
+ "modified": "2026-08-13 10:07:44.936967",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Parent Manufacturing Order",

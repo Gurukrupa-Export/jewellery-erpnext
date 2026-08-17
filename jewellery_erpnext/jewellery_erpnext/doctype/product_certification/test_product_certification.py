@@ -113,6 +113,32 @@ def _skip_generated_test_records():
 	frappe.local.test_objects.setdefault(_DOCTYPE, [])
 
 
+def _stub_issued_rows(issue_name, rows):
+	"""Make ``validate_items`` see ``rows`` as the Issue's Product Details.
+
+	It reads the whole table in one ``frappe.get_all`` and matches in Python, so a Receive
+	built against a document that does not exist has to be handed its rows here. Only that
+	exact call is intercepted -- it is the one filtering on ``parent`` alone; the receive
+	ledger's own read of the same table also passes ``parenttype`` -- and everything else
+	goes to the real implementation.
+	"""
+	orig_get_all = frappe.get_all
+
+	def _inner(doctype, *args, **kwargs):
+		filters = kwargs.get("filters")
+		if (
+			doctype == "Product Details"
+			and isinstance(filters, dict)
+			and filters == {"parent": issue_name}
+		):
+			return [frappe._dict(row) for row in rows]
+		# Passed straight through: frappe.get_all's first positional is `fields`, not
+		# `filters`, so re-assembling the call would silently move the argument.
+		return orig_get_all(doctype, *args, **kwargs)
+
+	return patch.object(frappe, "get_all", side_effect=_inner)
+
+
 class TestProductCertification(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -639,7 +665,13 @@ class TestProductCertification(IntegrationTestCase):
 				return "Existing Row"
 			return orig_get_value(doctype, filters, fieldname, *args, **kwargs)
 
-		with patch.object(frappe.db, "get_value", side_effect=side_effect):
+		with (
+			patch.object(frappe.db, "get_value", side_effect=side_effect),
+			_stub_issued_rows(
+				"PC-TEST-001",
+				[{"item_code": "TEST-ITEM-001", "tree_no": "TREE-001"}],
+			),
+		):
 			certification = frappe.new_doc("Product Certification")
 			certification.company = "Test_Company"
 			certification.type = "Receive"
@@ -712,7 +744,13 @@ class TestProductCertification(IntegrationTestCase):
 				return "Existing Row"
 			return orig_get_value(doctype, filters, fieldname, *args, **kwargs)
 
-		with patch.object(frappe.db, "get_value", side_effect=side_effect):
+		with (
+			patch.object(frappe.db, "get_value", side_effect=side_effect),
+			_stub_issued_rows(
+				"PC-TEST-001",
+				[{"item_code": "TEST-ITEM-001", "tree_no": "TREE-001"}],
+			),
+		):
 			certification = frappe.new_doc("Product Certification")
 			certification.company = "Test_Company"
 			certification.type = "Receive"

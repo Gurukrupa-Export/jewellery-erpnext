@@ -142,12 +142,14 @@ class TestStockEntryMopLogBridge(FrappeTestCase):
 		base.update(overrides)
 		return frappe._dict(base)
 
+	# The dedup guard is a single pre-loop snapshot query (frappe.get_all on MOP Log),
+	# not a per-row frappe.db.exists — stub the snapshot so these stay DB-free.
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.exists",
-		return_value=False,
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_all",
+		return_value=[],
 	)
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
-	def test_bridge_writes_one_log_per_mop_bound_row(self, mock_create, mock_exists):
+	def test_bridge_writes_one_log_per_mop_bound_row(self, mock_create, mock_get_all):
 		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 			sync_mop_log_for_stock_entry,
 		)
@@ -168,12 +170,14 @@ class TestStockEntryMopLogBridge(FrappeTestCase):
 			self.assertTrue(kwargs.get("is_synced"))
 
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.exists",
-		return_value=True,
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_all",
+		return_value=[
+			frappe._dict(row_name="sed-d-1", manufacturing_operation="MOP-Trishul-1")
+		],
 	)
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
 	def test_bridge_is_idempotent_when_log_already_exists(
-		self, mock_create, mock_exists
+		self, mock_create, mock_get_all
 	):
 		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 			sync_mop_log_for_stock_entry,
@@ -182,6 +186,45 @@ class TestStockEntryMopLogBridge(FrappeTestCase):
 		se = self._se([self._row()])
 		sync_mop_log_for_stock_entry(se)
 		mock_create.assert_not_called()
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_all",
+		return_value=[],
+	)
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
+	def test_bridge_skips_snapshot_query_when_no_row_is_mop_bound(
+		self, mock_create, mock_get_all
+	):
+		"""No MOP-bound row -> no tabMOP Log scan and no writes."""
+		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+			sync_mop_log_for_stock_entry,
+		)
+
+		se = self._se([self._row(name="sed-no-mop", manufacturing_operation=None)])
+		sync_mop_log_for_stock_entry(se)
+		mock_get_all.assert_not_called()
+		mock_create.assert_not_called()
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.get_all",
+		return_value=[],
+	)
+	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.create_mop_log")
+	def test_bridge_snapshot_is_scoped_to_this_voucher(self, mock_create, mock_get_all):
+		"""The dedup snapshot must filter by voucher only — never by row_name."""
+		from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+			sync_mop_log_for_stock_entry,
+		)
+
+		sync_mop_log_for_stock_entry(self._se([self._row()]))
+
+		self.assertEqual(mock_get_all.call_args[0][0], "MOP Log")
+		filters = mock_get_all.call_args[1]["filters"]
+		self.assertEqual(filters["voucher_type"], "Stock Entry")
+		self.assertEqual(filters["voucher_no"], "SE-BRIDGE-001")
+		self.assertEqual(filters["is_cancelled"], 0)
+		self.assertNotIn("row_name", filters)
+		self.assertNotIn("manufacturing_operation", filters)
 
 	@patch("jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.frappe.db.sql")
 	def test_cancel_path_marks_logs_cancelled(self, mock_sql):

@@ -1,6 +1,6 @@
 import frappe
 from erpnext.accounts.doctype.purchase_invoice.purchase_invoice import PurchaseInvoice as ERPNextPurchaseInvoice
-from frappe.utils import cint
+from frappe.utils import cint , flt
 
 class CustomPurchaseInvoice(ERPNextPurchaseInvoice):
     def validate(self):
@@ -56,3 +56,12 @@ def update_expense_account(doc):
 		if expense_account:
 			for row in doc.items:
 				row.expense_account = expense_account
+
+def update_effective_tax_rate(self, method=None):
+	# pass
+	if not self.net_total:
+		return
+
+	for tax in self.taxes:
+		if tax.charge_type == "On Net Total" and tax.tax_amount:
+			tax.rate = flt(tax.tax_amount / self.net_total * 100, tax.precision("rate"))

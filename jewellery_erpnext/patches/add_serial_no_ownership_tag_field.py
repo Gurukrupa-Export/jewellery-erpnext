@@ -60,13 +60,11 @@ def execute():
 				"no_copy": 1,
 				"in_list_view": 1,
 				"in_standard_filter": 1,
-				"description": (
-					"Outright = own material, Outwork = customer material, Hybrid = both "
-					"(derived from the material consumed by the Manufacture Stock Entry "
-					"created at Serial Number Creator submit); may also briefly hold the "
-					"source Sales Order's Sales Type as an early default, e.g. "
-					"'Finished Goods'."
-				),
+				# No "description": the three-line explanation was crowding the form, and
+				# the meaning is documented in this module's docstring instead. The key is
+				# omitted rather than set to "" so re-running never re-adds it;
+				# add_serial_no_sales_reference_fields.clear_noisy_descriptions() blanks
+				# the value on sites where an earlier revision already wrote one.
 			}
 		]
 	}

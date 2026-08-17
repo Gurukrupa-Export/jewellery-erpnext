@@ -362,7 +362,14 @@ frappe.ui.form.on("Stock Entry", {
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-remove-rows").remove();
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-add-multiple-rows").remove();
 		frm.fields_dict["item_template_attribute"].grid.wrapper.find(".grid-add-row").remove();
-		frm.trigger("stock_entry_type");
+		// Drafts only. frm.trigger() fans out to every registered stock_entry_type handler,
+		// including erpnext's, which chains into add_to_transit and unconditionally runs
+		// frm.set_value("to_warehouse", "") (erpnext/.../stock_entry.js:922). On a submitted
+		// transit entry that dirties the form on load and makes Update raise
+		// UpdateAfterSubmitError, since to_warehouse has no allow_on_submit.
+		if (frm.doc.docstatus === 0) {
+			frm.trigger("stock_entry_type");
+		}
 	},
 	from_job_card: function (frm) {
 		$.each(frm.doc.items || [], function (i, d) {
@@ -611,7 +618,7 @@ frappe.ui.form.on("Stock Entry", {
 						frm.set_value("department", r.message.department);
 						frm.set_value("to_department", r.message.department);
 					});
-			} else {
+			} else if (frm.doc.docstatus === 0) {
 				frm.set_value("from_warehouse", null);
 				frm.set_value("department", null);
 			}
@@ -636,7 +643,7 @@ frappe.ui.form.on("Stock Entry", {
 					.then((r) => {
 						frm.set_value("to_warehouse", r.message.name);
 					});
-			} else {
+			} else if (frm.doc.docstatus === 0) {
 				frm.set_value("to_warehouse", null);
 			}
 		}
