@@ -135,13 +135,13 @@ def set_gst_details(self):
 				"description": t.description,
 				"rate": t.rate,
 				"cost_center": t.cost_center,
-				"tax_amount": self.total * t.rate / 100,
-				"total": (self.total * t.rate / 100) + self.total,
+				"tax_amount": round(self.total * t.rate / 100, 2),
+				"total": round((self.total * t.rate / 100) + self.total, 2),
 				"category": "Total",
 				"add_deduct_tax": "Add",
 			},
 		)
-		self.total_taxes_and_charges = (self.total * t.rate / 100) + self.total
+		self.total_taxes_and_charges = round((self.total * t.rate / 100) + self.total, 2)
 
 		self.grand_total = self.total_taxes_and_charges
 	for item in self.items:
