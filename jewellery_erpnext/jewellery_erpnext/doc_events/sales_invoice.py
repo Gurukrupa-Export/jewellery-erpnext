@@ -577,9 +577,17 @@ def set_gst_details(self):
 	account_rate_map = {}
 	for r in template_rates:
 		tax_type = r.tax_type or ""
-		if "Output" not in tax_type or "RCM" in tax_type:
+		if "Output" not in tax_type:
 			continue
-		account_rate_map[r.tax_type] = flt(r.tax_rate)
+		rate = flt(r.tax_rate)
+		if "RCM" in tax_type:
+			# Sales Taxes and Charges encodes the RCM deduction as a
+			# negative rate directly on the row (no add_deduct_tax flag,
+			# unlike the purchase side) -- the item's own Item Tax
+			# Template only stores the positive magnitude, so negate it
+			# here to match what the header row actually needs.
+			rate = -abs(rate)
+		account_rate_map[r.tax_type] = rate
 
 	self.taxes = []
 	tax_rows = frappe.get_all(

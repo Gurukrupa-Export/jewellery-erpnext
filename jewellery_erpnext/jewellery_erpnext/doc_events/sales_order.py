@@ -737,14 +737,23 @@ def sync_header_tax_rate(self, template):
 	if not self.taxes:
 		return
 
-	rate_by_account = {
-		d.tax_type: d.tax_rate
-		for d in frappe.get_all(
-			"Item Tax Template Detail",
-			filters={"parent": template},
-			fields=["tax_type", "tax_rate"],
-		)
-	}
+	rate_by_account = {}
+	for d in frappe.get_all(
+		"Item Tax Template Detail",
+		filters={"parent": template},
+		fields=["tax_type", "tax_rate"],
+	):
+		tax_type = d.tax_type or ""
+		rate = flt(d.tax_rate)
+		if "RCM" in tax_type:
+			# Sales Taxes and Charges encodes the RCM deduction as a
+			# negative rate directly on the row (no add_deduct_tax flag,
+			# unlike the purchase side) -- the item's own Item Tax
+			# Template only stores the positive magnitude, so negate it
+			# here; otherwise an RCM row would flip from a correct
+			# negative (deduct) rate to a wrong positive (add) one.
+			rate = -abs(rate)
+		rate_by_account[tax_type] = rate
 
 	for row in self.taxes:
 		if row.account_head in rate_by_account:
@@ -1072,7 +1081,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 				self, doc, s.metal_touch, ctx, cctx
 			)
 			# frappe.throw(str(sub_info))
-			
+
 			if s.is_customer_item:
 				s.rate = 0
 				s.making_rate = operational_cost / total_weight
@@ -1082,7 +1091,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 				s.rate = round(s.se_rate, 2)
 				s.wastage_rate = 0
 				# s.making_rate = operational_cost / total_weight
-				s.making_rate=sub_info.get("rate_per_gm", 0)
+				s.making_rate = sub_info.get("rate_per_gm", 0)
 				s.wastage_amount = 0
 				s.customer_metal_purity = customer_metal_purity
 			s.amount = round(s.rate * s.quantity, 2)
@@ -1297,11 +1306,7 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 
 	finding_cache = {}  # local per-BOM-doc: finding_type → find_data
 	f_metal_prec = int(ctx.metal_precision or 3)
-	operational_cost = get_stock_entry_additional_cost(self, doc)
-	chain_weight = sum(
-		r.quantity for r in doc.finding_detail if r.finding_category == "Chains"
-	)
-	total_weight = doc.metal_and_finding_weight + chain_weight
+
 	for f in doc.finding_detail:
 		# frappe.msgprint("jhgh")
 		customer_metal_purity = _metal_purity_cache.get(
