@@ -7,7 +7,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.model.mapper import get_mapped_doc
 from frappe.query_builder.functions import Max
-from frappe.utils import flt, get_link_to_form
+from frappe.utils import flt, get_link_to_form, getdate
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom import set_item_variant
 from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.tolerance_utils import (
@@ -740,6 +740,7 @@ def make_manufacturing_order(
 		doc.qty = row.qty_per_manufacturing_order
 		doc.rowname = row.name
 		doc.master_bom = master_bom
+		doc.manufacturing_end_date = row.manufacturing_end_date
 		doc.diamond_grade = so_det.get("diamond_grade")
 		doc.insert(ignore_mandatory=True)
 
@@ -767,6 +768,7 @@ def make_manufacturing_order(
 		doc.manufacturing_plan = source_doc.name
 		doc.qty = row.qty_per_manufacturing_order
 		doc.rowname = row.name
+		doc.manufacturing_end_date = row.manufacturing_end_date
 		doc.insert(ignore_mandatory=True)
 		row.manufacturing_bom = so_det.get("master_bom")
 
@@ -1347,13 +1349,21 @@ def update_due_days(self):
 			self.custom_updated_delivery_date, self.posting_date
 		)
 	self.manufacturing_end_due_days = frappe.utils.date_diff(
-		self.manufacturing_end_date, self.posting_date
+		self.updated_manufacturing_end_date or self.manufacturing_end_date,
+		self.posting_date,
 	)
 
 
 def validate_mfg_date(self):
 	date = self.custom_updated_delivery_date or self.delivery_date
-	if self.manufacturing_end_date and self.manufacturing_end_date >= date:
+	mfg_end_date = self.updated_manufacturing_end_date or self.manufacturing_end_date
+	# Finding Manufacturing PMOs are created without a sales_order, so delivery_date --
+	# which is fetched from it -- stays empty. Now that these PMOs arrive from the plan
+	# carrying a manufacturing_end_date, the old bare compare hit `str >= None`.
+	# getdate() additionally squares a browser-supplied string against a DB date object.
+	if not date or not mfg_end_date:
+		return
+	if getdate(mfg_end_date) >= getdate(date):
 		frappe.throw(_("Manufacturing date is not allowed over delivery date"))
 
 
