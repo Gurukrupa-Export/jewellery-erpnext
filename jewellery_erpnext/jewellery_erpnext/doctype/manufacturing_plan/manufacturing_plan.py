@@ -6,7 +6,7 @@ import json
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, getdate
 
 from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order import (
 	make_subcontracting_order,
@@ -127,6 +127,70 @@ class ManufacturingPlan(Document):
 	def validate(self):
 		self.validate_qty_with_bom_creation()
 		self.refresh_mould_ids()
+		self.apply_manufacturing_end_date()
+		self.validate_manufacturing_end_date()
+
+	def apply_manufacturing_end_date(self):
+		"""Stamp the header Est. MFG End Date onto every plan row.
+
+		The header is a bulk-apply helper: the client clears it the moment a single
+		row's date is edited, so a non-empty header means every row is meant to carry
+		it. That makes this push idempotent -- and an empty header must leave rows
+		alone rather than wipe them."""
+		if not self.manufacturing_end_date:
+			return
+		for row in self.manufacturing_plan_table:
+			row.manufacturing_end_date = self.manufacturing_end_date
+
+	def validate_manufacturing_end_date(self):
+		"""Reject a row whose Est. MFG End Date is not strictly before its delivery date.
+
+		Requiredness itself is left to `reqd` on the child field: run_before_save_methods()
+		(which runs validate, and therefore apply_manufacturing_end_date) is called ahead of
+		_validate() in Document.insert, so a header-only entry has already been stamped onto
+		every row by the time the framework checks for missing mandatory values. The header
+		itself must stay optional -- the client blanks it as soon as one row is given its own
+		date, and a mandatory header would reject that legitimate "mixed dates" state.
+
+		The range check below mirrors validate_mfg_date() on Parent Manufacturing Order,
+		which compares against `custom_updated_delivery_date or delivery_date`. That check is
+		skipped while the PMO is new, so without this the bad date submits cleanly and only
+		surfaces later as a PMO that can no longer be saved."""
+		rows = [
+			row for row in self.manufacturing_plan_table if row.manufacturing_end_date
+		]
+		if not rows:
+			return
+
+		# The Sales Order is the authority for both dates. Reading them here rather than
+		# leaning on the row's own fetch_from copy keeps this check working even when
+		# fetch_from never ran -- it is resolved as a side effect of _validate_links(),
+		# which flags.ignore_links skips entirely.
+		so_map = fetch_doc_map(
+			"Sales Order",
+			{row.sales_order for row in rows if row.sales_order},
+			["name", "delivery_date", "custom_updated_delivery_date"],
+		)
+
+		for row in rows:
+			# Match the PMO's own comparison basis: a Sales Order whose delivery date was
+			# pushed out carries the new date on custom_updated_delivery_date, which takes
+			# precedence over the original. row.delivery_date is a last-resort fallback for
+			# a row whose Sales Order could not be read back.
+			so = so_map.get(row.sales_order) or {}
+			delivery_date = (
+				so.get("custom_updated_delivery_date")
+				or so.get("delivery_date")
+				or row.delivery_date
+			)
+			if not delivery_date:
+				continue
+			if getdate(row.manufacturing_end_date) >= getdate(delivery_date):
+				frappe.throw(
+					_(
+						"Row #{0}: Est. MFG End Date ({1}) must be before the Delivery Date ({2})"
+					).format(row.idx, row.manufacturing_end_date, delivery_date)
+				)
 
 	def refresh_mould_ids(self):
 		"""Keep every plan row's Mould List ID (the Mould docname) in sync with the
@@ -391,6 +455,11 @@ class ManufacturingPlan(Document):
 					"mould_id": mould_id_map.get(row["item_code"]),
 				},
 			)
+
+		# Both append loops above build rows from scratch, so stamp the header date once
+		# here rather than in each -- the grid then shows it straight after the fetch,
+		# without waiting for validate() on the first save.
+		self.apply_manufacturing_end_date()
 
 
 @frappe.whitelist()
