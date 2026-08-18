@@ -657,14 +657,36 @@ frappe.ui.form.on("Stock Entry", {
 		// });
 	},
 	manufacturing_work_order(frm) {
+		if (!frm.doc.manufacturing_work_order) {
+			// Without this guard the fetch below runs with an empty docname: jQuery sends
+			// filters="", frappe.client.get_value turns that into {"name": ""}, nothing
+			// matches and r.message is {}. Both set_value calls then write `undefined`,
+			// which JSON.stringify drops on save -- so the form shows blank while the DB
+			// keeps the old values. Clear them explicitly instead; they are derived from
+			// the work order, so they should not outlive it.
+			frm.set_value({
+				manufacturing_order: null,
+				manufacturing_operation: null,
+			});
+			return;
+		}
+
 		frappe.db
 			.get_value("Manufacturing Work Order", frm.doc.manufacturing_work_order, [
 				"manufacturing_order",
 				"manufacturing_operation",
 			])
 			.then((r) => {
-				frm.set_value("manufacturing_order", r.message.manufacturing_order);
-				frm.set_value("manufacturing_operation", r.message.manufacturing_operation);
+				const values = r && r.message;
+
+				// get_value returns {} when nothing matched, and {} is truthy -- so check
+				// for keys rather than relying on a plain falsy test.
+				if (!values || !Object.keys(values).length) return;
+
+				frm.set_value({
+					manufacturing_order: values.manufacturing_order || null,
+					manufacturing_operation: values.manufacturing_operation || null,
+				});
 			});
 	},
 	subcontractor(frm) {
