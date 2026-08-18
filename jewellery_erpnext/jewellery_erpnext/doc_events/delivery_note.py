@@ -8,14 +8,10 @@ def validate(self, method):
 	bom_cache = {}
 	for row in self.items:
 		if row.bom:
-			# keyed by row identity (not row.bom) so two different item rows
-			# that happen to reference the same BOM still get independent BOM
-			# doc instances, matching the original per-row frappe.get_doc()
-			# behavior.
-			if row.idx not in bom_cache:
-				bom_cache[row.idx] = frappe.get_doc("BOM", row.bom)
+			if row.bom not in bom_cache:
+				bom_cache[row.bom] = frappe.get_doc("BOM", row.bom)
 			if row.against_sales_order:
-				bom_doc = bom_cache[row.idx]
+				bom_doc = bom_cache[row.bom]
 				row.custom_diamond_pcs = bom_doc.total_diamond_pcs
 				row.custom_gemstone_pcs = bom_doc.total_gemstone_pcs
 				row.custom_other_weight = bom_doc.total_other_weight
@@ -71,15 +67,20 @@ def _match_einvoice_item(rows, filters):
 		matched = True
 		for field, value in filters.items():
 			if isinstance(value, (list, tuple)):
-				operator, operand = value
-				if operator == "in":
+				op, operand = value
+				op = str(op).casefold()
+				if op == "in":
 					if row.get(field) not in operand:
 						matched = False
 						break
-				elif operator == "is" and operand == "not set":
+				elif op == "is" and str(operand).casefold() == "not set":
 					if row.get(field):
 						matched = False
 						break
+				else:
+					raise ValueError(
+						f"_match_einvoice_item: unsupported filter operator {op!r}"
+					)
 			elif row.get(field) != value:
 				matched = False
 				break
@@ -115,10 +116,11 @@ def update_dn_einvoice_items(self, bom_cache=None):
 			"finding_category",
 			"diamond_type",
 		],
-		# match frappe.db.get_value()'s default tie-break (oldest `modified` first)
-		# so _match_einvoice_item()'s first-match result agrees with the single-row
-		# get_value() calls it replaces when a filter combo matches multiple rows.
-		order_by="modified",
+		# frappe.db.get_value(dict filters) resolves to ORDER BY creation DESC LIMIT 1
+		# (database.py:666 rewrites the sentinel to "creation"; query.py:1349 defaults a
+		# directionless field to DESC because db_query_compat is False, while get_all runs
+		# with db_query_compat=True and would default to ASC). Match it exactly.
+		order_by="creation desc",
 	)
 
 	aggregated_metal_items = {}
@@ -135,6 +137,12 @@ def update_dn_einvoice_items(self, bom_cache=None):
 
 	hallmarking_item, hallmarking_hsn, hallmarking_uom = get_einvoice_item(
 		{"is_for_hallmarking": 1}
+	)
+	certification_item, certification_hsn, certification_uom = get_einvoice_item(
+		{"is_for_certification": 1}
+	)
+	gemstone_item, gemstone_hsn, gemstone_uom = get_einvoice_item(
+		{"is_for_gemstone": 1, "name": ["in", matching_parents]}
 	)
 
 	def add(bucket, item_code, hsn, uom, amount, qty):
@@ -157,10 +165,9 @@ def update_dn_einvoice_items(self, bom_cache=None):
 	for row in self.items:
 		if not row.bom:
 			continue
-		bom_doc = bom_cache.get(row.idx)
+		bom_doc = bom_cache.get(row.bom)
 		if bom_doc is None:
-			bom_doc = frappe.get_doc("BOM", row.bom)
-			bom_cache[row.idx] = bom_doc
+			bom_doc = bom_cache[row.bom] = frappe.get_doc("BOM", row.bom)
 
 		for i in bom_doc.metal_detail:
 			if i.is_customer_item:
@@ -303,10 +310,7 @@ def update_dn_einvoice_items(self, bom_cache=None):
 		for i in bom_doc.gemstone_detail:
 			if i.is_customer_item:
 				continue
-			einvoice_item, hsn_code, uom = get_einvoice_item(
-				{"is_for_gemstone": 1, "name": ["in", matching_parents]}
-			)
-			if not einvoice_item:
+			if not gemstone_item:
 				continue
 			if is_branch_customer:
 				amount = flt(i.se_rate) * flt(i.quantity)
@@ -314,9 +318,9 @@ def update_dn_einvoice_items(self, bom_cache=None):
 				amount = flt(i.gemstone_rate_for_specified_quantity)
 			add(
 				aggregated_gemstone_items,
-				einvoice_item,
-				hsn_code,
-				uom,
+				gemstone_item,
+				gemstone_hsn,
+				gemstone_uom,
 				amount,
 				flt(i.quantity),
 			)
@@ -332,14 +336,11 @@ def update_dn_einvoice_items(self, bom_cache=None):
 			)
 
 		if bom_doc.certification_amount:
-			einvoice_item, hsn_code, uom = get_einvoice_item(
-				{"is_for_certification": 1}
-			)
 			add(
 				aggregated_certification_items,
-				einvoice_item,
-				hsn_code,
-				uom,
+				certification_item,
+				certification_hsn,
+				certification_uom,
 				flt(bom_doc.certification_amount),
 				1,
 			)
