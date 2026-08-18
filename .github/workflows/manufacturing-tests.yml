@@ -4,6 +4,8 @@ on:
   pull_request:
     branches:
       - v16_develop_aerele
+      - kggk_uat
+      - kggk_prod
   workflow_dispatch:
 
 concurrency:
