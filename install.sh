@@ -28,7 +28,7 @@ bench get-app helpdesk --branch main
 bench get-app telephony --branch develop
 
 bench get-app https://github.com/resilient-tech/india-compliance.git --branch version-16
-bench get-app https://github.com/Gurukrupa-Export/gke_customization.git --branch kggk_uat
+bench get-app https://github.com/Gurukrupa-Export/gke_customization.git --branch v16_develop_aerele
 bench get-app https://github.com/Gurukrupa-Export/gurukrupa_biometric.git --branch master
 bench get-app https://github.com/Gurukrupa-Export/gurukrupa_customizations.git --branch main
 
