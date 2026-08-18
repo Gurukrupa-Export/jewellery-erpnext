@@ -26,12 +26,24 @@ def _so_gold_rate_changed(si_gold_rate, sales_order):
 	return abs(flt(si_gold_rate) - flt(so_gold_rate)) > 0.001
 
 
+def _ci_padspace_eq(a, b):
+	"""Case-insensitive, trailing-space-insensitive equality, matching MariaDB's
+	utf8mb4_*_ci PAD SPACE collation semantics that the replaced frappe.db.sql()
+	call relied on (e.g. '18kt' and '18KT ' both equal '18KT')."""
+	return str(a or "").rstrip().casefold() == str(b or "").rstrip().casefold()
+
+
 def _get_metal_purity(rows, metal_type, metal_touch):
 	"""In-memory equivalent of the raw `tabMetal Criteria` lookup against a
-	prefetched, per-customer row list. Indexes [0] like the original SQL call,
-	so it raises the same IndexError when nothing matches."""
+	prefetched, per-customer row list. Compares with the same case-insensitive,
+	trailing-space-insensitive semantics as the replaced SQL `=` comparison
+	(see _ci_padspace_eq). Indexes [0] like the original SQL call, so it raises
+	the same IndexError when nothing matches."""
 	matches = [
-		r for r in rows if r.metal_type == metal_type and r.metal_touch == metal_touch
+		r
+		for r in rows
+		if _ci_padspace_eq(r.metal_type, metal_type)
+		and _ci_padspace_eq(r.metal_touch, metal_touch)
 	]
 	return matches[0]["metal_purity"]
 
@@ -89,6 +101,13 @@ def before_validate(self, method):
 				"Metal Criteria",
 				filters={"parent": self.customer},
 				fields=["metal_type", "metal_touch", "metal_purity"],
+				# Metal Criteria declares sort_field="modified", sort_order="DESC" in its
+				# doctype meta, so get_all's default sort would silently promote whichever
+				# duplicate row was edited most recently to the front of the list on every
+				# save. The replaced raw SQL had no ORDER BY at all; order_by=None disables
+				# the meta-driven sort so results stay in the DB's natural (insertion) order
+				# instead of shifting under edits.
+				order_by=None,
 			)
 			for row_s in self.items:
 				if row_s.bom:
@@ -228,12 +247,9 @@ def validate(self, method):
 	bom_cache = {}
 	for row_s in self.items:
 		if row_s.bom:
-			# keyed by row identity (not row_s.bom) so two different item rows that
-			# happen to reference the same BOM still get independent BOM doc
-			# instances, matching the original per-row frappe.get_doc() behavior.
-			if row_s.idx not in bom_cache:
-				bom_cache[row_s.idx] = frappe.get_doc("BOM", row_s.bom)
-			bom_doc = bom_cache[row_s.idx]
+			if row_s.bom not in bom_cache:
+				bom_cache[row_s.bom] = frappe.get_doc("BOM", row_s.bom)
+			bom_doc = bom_cache[row_s.bom]
 			row_s.custom_diamond_pcs = bom_doc.total_diamond_pcs
 			row_s.custom_gemstone_pcs = bom_doc.total_gemstone_pcs
 			row_s.custom_other_weight = bom_doc.total_other_weight
@@ -257,18 +273,20 @@ def validate(self, method):
 		self.total = 0
 		for row in self.items:
 			if row.bom:
-				if row.idx not in bom_cache:
-					bom_cache[row.idx] = frappe.get_doc("BOM", row.bom)
-				bom_doc = bom_cache[row.idx]
+				if row.bom not in bom_cache:
+					bom_cache[row.bom] = frappe.get_doc("BOM", row.bom)
+				bom_doc = bom_cache[row.bom]
 				item_details = frappe.db.get_value(
 					"Item",
 					row.item_code,
 					["item_subcategory", "setting_type"],
 					as_dict=True,
 				)
-				making_charge_customer_group = frappe.db.get_value(
-					"Customer", bom_doc.customer, "customer_group"
-				)
+				# bom_doc.customer is guaranteed == self.customer here: update_si_data()
+				# (called above) runs update_bom_details() for every BOM row first, and
+				# that forces bom_doc.customer = self.customer before saving. No need to
+				# re-query per row what validate() already fetched once as customer_group.
+				making_charge_customer_group = customer_group
 				for m in bom_doc.metal_detail:
 					# if not m.is_customer_item:
 					update_making_charges(
@@ -1048,32 +1066,12 @@ def update_si_data(self):
 		"Customer", self.customer, "custom_separate_hallmarking_invoice"
 	)
 	allowed_item_types = get_allowed_item_types(self.customer, self.sales_type)
-	einvoice_items = frappe.get_all(
-		"E Invoice Item",
-		fields=[
-			"name",
-			"hsn_code",
-			"uom",
-			"is_for_metal",
-			"is_for_making",
-			"is_for_labour",
-			"is_for_finding",
-			"is_for_finding_making",
-			"is_for_diamond",
-			"is_for_gemstone",
-			"is_for_hallmarking",
-			"is_for_repair",
-			"is_for_certification",
-			"metal_type",
-			"metal_purity",
-			"finding_category",
-			"diamond_type",
-		],
-		# match frappe.db.get_value()'s default tie-break (oldest `modified` first)
-		# so _match_einvoice_item()'s first-match result agrees with the single-row
-		# get_value() calls it replaces when a filter combo matches multiple rows.
-		order_by="modified",
-	)
+	# Fetch the full E Invoice Item table lazily: the only consumers
+	# (_build_einvoice_index() and update_einvoice_items()) run solely inside the
+	# BOM-guarded branch below, so invoices without BOM rows (or fully
+	# item-same-as-above invoices) skip this O(N) query entirely. It is fetched
+	# once on the first qualifying row and reused for the rest.
+	einvoice_items = None
 	# Build the E Invoice lookup index lazily: update_bom_details() (its only
 	# consumer) runs solely on the BOM-guarded branch below, so invoices without
 	# BOM rows skip the O(N) build entirely. It is built once on the first BOM
@@ -1095,6 +1093,38 @@ def update_si_data(self):
 					bom_doc.currency, self.currency, transaction_date=self.posting_date
 				)
 			gold_rate_changed = True
+			if einvoice_items is None:
+				einvoice_items = frappe.get_all(
+					"E Invoice Item",
+					fields=[
+						"name",
+						"hsn_code",
+						"uom",
+						"is_for_metal",
+						"is_for_making",
+						"is_for_labour",
+						"is_for_finding",
+						"is_for_finding_making",
+						"is_for_diamond",
+						"is_for_gemstone",
+						"is_for_hallmarking",
+						"is_for_repair",
+						"is_for_certification",
+						"metal_type",
+						"metal_purity",
+						"finding_category",
+						"diamond_type",
+					],
+					# frappe.db.get_value(dict filters) resolves to ORDER BY creation DESC
+					# LIMIT 1 (database.py:666 rewrites the sentinel to "creation";
+					# query.py:1349 defaults a directionless field to DESC because
+					# db_query_compat is False, while get_all runs with db_query_compat=True
+					# and would default to ASC). Match it exactly, so
+					# _build_einvoice_index()'s first-match-wins result agrees with the
+					# single-row get_value() calls it replaces when a filter combo matches
+					# multiple rows.
+					order_by="creation desc",
+				)
 			if einvoice_index is None:
 				einvoice_index = _build_einvoice_index(einvoice_items)
 			update_bom_details(
@@ -1490,11 +1520,14 @@ def update_bom_details(
 					"finding_category",
 					"diamond_type",
 				],
-				# match frappe.db.get_value()'s default tie-break (oldest `modified` first)
-				# so _build_einvoice_index()'s first-match-wins result agrees with the
-				# single-row get_value() calls it replaces when a filter combo matches
-				# multiple rows.
-				order_by="modified",
+				# frappe.db.get_value(dict filters) resolves to ORDER BY creation DESC
+				# LIMIT 1 (database.py:666 rewrites the sentinel to "creation"; query.py:1349
+				# defaults a directionless field to DESC because db_query_compat is False,
+				# while get_all runs with db_query_compat=True and would default to ASC).
+				# Match it exactly, so _build_einvoice_index()'s first-match-wins result
+				# agrees with the single-row get_value() calls it replaces when a filter
+				# combo matches multiple rows.
+				order_by="creation desc",
 			)
 		einvoice_index = _build_einvoice_index(einvoice_items)
 	# so_doc = frappe.get_doc("Sales Order", row.sales_order)
@@ -1823,10 +1856,11 @@ def update_bom_details(
 			self.is_customer_gemstone = True
 
 	bom_doc.gold_rate_with_gst = self.gold_rate_with_gst
-	customer_group = frappe.db.get_value("Customer", self.customer, "customer_group")
+	# making_charge_customer_group is bom_doc.customer's (== self.customer, set above)
+	# customer_group, already fetched once above — no need to re-query it here.
 	if not (
 		self.company == "KG GK Jewellers Private Limited"
-		or customer_group == "Internal"
+		or making_charge_customer_group == "Internal"
 	):
 		bom_doc.validate()
 		bom_doc.save()
