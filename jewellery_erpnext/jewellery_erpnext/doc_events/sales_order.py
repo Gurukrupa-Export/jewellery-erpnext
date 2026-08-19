@@ -1084,7 +1084,8 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 
 			if s.is_customer_item:
 				s.rate = 0
-				s.making_rate = operational_cost / total_weight
+				# s.making_rate = operational_cost / total_weight
+				s.making_rate=sub_info.get("rate_per_gm", 0)
 				s.wastage_rate = 0
 				s.wastage_amount = 0
 			else:

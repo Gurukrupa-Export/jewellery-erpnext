@@ -5,6 +5,8 @@ from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doc_events import purchase_order as po_events
 
+PO_EVENTS = "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order"
+
 
 class DummyPO:
 	def __init__(self, **kwargs):
@@ -64,6 +66,23 @@ class DummyQuotation:
 
 
 class TestPurchaseOrderEvents(IntegrationTestCase):
+	def setUp(self):
+		"""Default this site to owning its Purchase Orders, so nothing is fetched across sites.
+
+		Patched on the importing module rather than on frappe.db: several tests here mock
+		frappe.get_doc, and frappe is the shared module object, so that mock is global. Any real
+		db helper underneath -- get_single_value, exists -- would then load Meta through it and
+		raise, which has nothing to do with what those tests are asserting.
+		"""
+		for target, kwargs in (
+			("fetch_remote_po", {"return_value": None}),
+			("remote_lookup_configured", {"return_value": False}),
+			("assert_local_customer", {"side_effect": lambda customer, *a: customer}),
+		):
+			patcher = patch(f"{PO_EVENTS}.{target}", **kwargs)
+			patcher.start()
+			self.addCleanup(patcher.stop)
+
 	def test_validate(self):
 		po = DummyPO(
 			purchase_type="FG Purchase",
@@ -269,6 +288,130 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			self.assertEqual(res.po_no, "CUST-PO")
 			self.assertEqual(len(res.items), 1)
 			self.assertEqual(res.ref_customer, "Customer X")
+
+	@patch(f"{PO_EVENTS}.frappe.get_doc")
+	@patch(f"{PO_EVENTS}.frappe.new_doc")
+	@patch(f"{PO_EVENTS}.frappe.get_cached_value")
+	@patch(f"{PO_EVENTS}.get_exchange_rate")
+	def test_make_quotation_builds_from_the_remote_purchase_order(
+		self, mock_rate, mock_cached, mock_new_doc, mock_get_doc
+	):
+		# the site holding only a mirror has neither the Ref Customer nor a Company row carrying
+		# the buying company's customer_code, so both arrive resolved by the site that owns the PO
+		quotation_doc = DummyQuotation()
+		mock_get_doc.side_effect = lambda dt, name=None, **kwargs: dt
+		mock_new_doc.return_value = quotation_doc
+		mock_cached.return_value = "INR"
+		mock_rate.return_value = 1
+		remote = {
+			"name": "PO-9",
+			"company": "Gurukrupa Export Private Limited",
+			"transaction_date": "2026-08-14",
+			"ref_customer": "CUST-END",
+			"custom_customer_po": "CUST-PO-9",
+			"customer_code": "CUST-GEPL",
+			"items": [
+				{
+					"name": "PODet-9",
+					"item_code": "Item9",
+					"qty": 2,
+					"rate": 700,
+					"branch": "B9",
+					"project": "P9",
+					"diamond_quality": "VS",
+				}
+			],
+		}
+
+		with (
+			patch(f"{PO_EVENTS}.fetch_remote_po", return_value=remote),
+			patch(
+				"erpnext.controllers.accounts_controller.get_default_taxes_and_charges",
+				return_value={"taxes": []},
+			),
+		):
+			res = po_events.make_quotation("PO-9", None)
+
+		self.assertEqual(res.party_name, "CUST-GEPL")
+		self.assertEqual(res.ref_customer, "CUST-END")
+		self.assertEqual(res.po_no, "CUST-PO-9")
+		self.assertEqual(len(res.items), 1)
+		self.assertEqual(res.items[0]["item_code"], "Item9")
+		self.assertEqual(res.items[0]["branch"], "B9")
+		# the row link must survive: it is what ties the Quotation line back to the PO line
+		self.assertEqual(res.items[0]["custom_po_details"], "PODet-9")
+		self.assertEqual(res.items[0]["po_no"], "PO-9")
+		# and the local mirror is never read once the owning site has answered
+		self.assertEqual(
+			[
+				c
+				for c in mock_get_doc.call_args_list
+				if c.args[:1] == ("Purchase Order",)
+			],
+			[],
+		)
+
+	@patch(f"{PO_EVENTS}.frappe.get_doc")
+	@patch(f"{PO_EVENTS}.frappe.new_doc")
+	@patch(f"{PO_EVENTS}.frappe.get_cached_value")
+	@patch(f"{PO_EVENTS}.frappe.db.get_value")
+	@patch(f"{PO_EVENTS}.get_exchange_rate")
+	def test_make_quotation_says_so_when_it_falls_back_to_the_local_copy(
+		self, mock_rate, mock_get_value, mock_cached, mock_new_doc, mock_get_doc
+	):
+		# a silent fallback is what made this whole class of failure invisible
+		po_doc = DummyPO(company="Test Company", items=[])
+		mock_get_doc.side_effect = lambda dt, name=None, **kwargs: (
+			po_doc if dt == "Purchase Order" else dt
+		)
+		mock_new_doc.return_value = DummyQuotation()
+		mock_cached.return_value = "INR"
+		mock_get_value.return_value = "Cust1"
+		mock_rate.return_value = 1
+
+		with (
+			patch(f"{PO_EVENTS}.fetch_remote_po", return_value=None),
+			patch(f"{PO_EVENTS}.remote_lookup_configured", return_value=True),
+			patch(f"{PO_EVENTS}.frappe.msgprint") as msgprint,
+			patch(
+				"erpnext.controllers.accounts_controller.get_default_taxes_and_charges",
+				return_value={},
+			),
+		):
+			res = po_events.make_quotation("PO-1", None)
+
+		self.assertEqual(res.po_no, "CUST-PO")
+		msgprint.assert_called_once()
+
+	@patch(f"{PO_EVENTS}.frappe.get_doc")
+	@patch(f"{PO_EVENTS}.frappe.new_doc")
+	@patch(f"{PO_EVENTS}.frappe.get_cached_value")
+	@patch(f"{PO_EVENTS}.frappe.db.get_value")
+	@patch(f"{PO_EVENTS}.get_exchange_rate")
+	def test_make_quotation_stays_quiet_on_a_site_that_owns_its_purchase_orders(
+		self, mock_rate, mock_get_value, mock_cached, mock_new_doc, mock_get_doc
+	):
+		# no From Site configured: the local read is the normal path, not a degraded one
+		po_doc = DummyPO(company="Test Company", items=[])
+		mock_get_doc.side_effect = lambda dt, name=None, **kwargs: (
+			po_doc if dt == "Purchase Order" else dt
+		)
+		mock_new_doc.return_value = DummyQuotation()
+		mock_cached.return_value = "INR"
+		mock_get_value.return_value = "Cust1"
+		mock_rate.return_value = 1
+
+		with (
+			patch(f"{PO_EVENTS}.remote_lookup_configured", return_value=False),
+			patch(f"{PO_EVENTS}.frappe.msgprint") as msgprint,
+			patch(
+				"erpnext.controllers.accounts_controller.get_default_taxes_and_charges",
+				return_value={},
+			),
+		):
+			po_events.make_quotation("PO-1", None)
+
+		msgprint.assert_not_called()
 
 	def test_set_gst_details_invalid_purchase_type(self):
 		po = DummyPO(purchase_type="Invalid Type")
@@ -781,6 +924,17 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		# in doc_events/purchase_invoice.py for the same fix.
 		po = DummyPO(
 			items=[frappe._dict(item_code="I1", taxable_value=1000.0)], taxes=[]
+		import json
+
+		po = DummyPO(
+			items=[
+				frappe._dict(
+					item_code="I1",
+					item_tax_rate=json.dumps({"CGST_ACC": 2.5}),
+					taxable_value=1000.0,
+				)
+			],
+			taxes=[],
 		)
 		mock_get_value.side_effect = (
 			lambda *args, **kw: "24" if args[0] == "Address" else "Temp"
@@ -803,6 +957,19 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			return []
 
 		mock_get_all.side_effect = get_all_side_effect
+		mock_get_all.side_effect = (
+			lambda *args, **kw: [
+				frappe._dict(
+					charge_type="Actual",
+					account_head="CGST_ACC",
+					description="CGST",
+					rate=9.0,
+					cost_center="Main",
+				)
+			]
+			if args[0] == "Purchase Taxes and Charges"
+			else []
+		)
 		po_events.set_gst_details(po)
 		self.assertEqual(po.taxes[0]["rate"], 2.5)
 

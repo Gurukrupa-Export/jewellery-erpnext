@@ -244,6 +244,9 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.validate",
 			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
 		],
+			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
+			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_effective_tax_rate",
+		]
 	},
 	"Supplier Quotation": {"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR},
 	"Supplier": {
