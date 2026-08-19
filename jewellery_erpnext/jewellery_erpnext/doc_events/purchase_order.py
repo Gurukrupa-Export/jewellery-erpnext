@@ -165,8 +165,8 @@ def set_gst_details(self):
 				"description": t.description,
 				"rate": t.rate,
 				"cost_center": t.cost_center,
-				"tax_amount": self.total * t.rate / 100,
-				"total": (self.total * t.rate / 100) + self.total,
+				"tax_amount": round(self.total * t.rate / 100, 2),
+				"total": round((self.total * t.rate / 100) + self.total, 2),
 				"category": "Total",
 				# preserve the template row's own Add/Deduct -- this was
 				# previously hardcoded to "Add" for every row, which would
@@ -175,7 +175,7 @@ def set_gst_details(self):
 				"add_deduct_tax": t.add_deduct_tax,
 			},
 		)
-		self.total_taxes_and_charges = (self.total * t.rate / 100) + self.total
+		self.total_taxes_and_charges = round((self.total * t.rate / 100) + self.total, 2)
 
 		self.grand_total = self.total_taxes_and_charges
 	for item in self.items:

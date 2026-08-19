@@ -83,12 +83,18 @@ def set_missing_tax_category_and_template(self):
 	if self.tax_category and self.taxes_and_charges and self.get("taxes"):
 		return
 
-	customer_state = frappe.db.get_value(
-		"Address", self.customer_address, "gst_state_number"
-	)
-	company_state = frappe.db.get_value(
-		"Address", self.company_address, "gst_state_number"
-	)
+	address_states = {
+		a.name: a.gst_state_number
+		for a in frappe.get_all(
+			"Address",
+			filters={
+				"name": ["in", list({self.customer_address, self.company_address})]
+			},
+			fields=["name", "gst_state_number"],
+		)
+	}
+	customer_state = address_states.get(self.customer_address)
+	company_state = address_states.get(self.company_address)
 	if not customer_state or not company_state:
 		return
 
@@ -770,6 +776,13 @@ _making_charge_cache = {}  # (customer, metal_type, setting_type, gold_rate, tou
 _metal_purity_cache = {}  # (customer, metal_type, metal_touch) → metal_purity
 _ccp_cache = {}  # customer → ccp_doc | None
 _gemstone_pl_cache = {}  # customer → price_list_type
+_data_migration_cache = {}  # singleton "Data Migration in KGGK" doc — same record every call
+
+
+def _get_data_migration_settings():
+	if "doc" not in _data_migration_cache:
+		_data_migration_cache["doc"] = frappe.get_single("Data Migration in KGGK")
+	return _data_migration_cache["doc"]
 
 
 def _clear_caches():
@@ -778,6 +791,7 @@ def _clear_caches():
 	_metal_purity_cache.clear()
 	_ccp_cache.clear()
 	_gemstone_pl_cache.clear()
+	_data_migration_cache.clear()
 
 
 def _get_bom_context(self):
@@ -915,9 +929,10 @@ def _get_making_charge(self, doc, touch, ctx, cctx):
 		touch,
 		doc.item_subcategory,  # ← added
 	)
-	from_site = frappe.db.get_single_value("Data Migration in KGGK", "from_site_1")
-	api_key = frappe.db.get_single_value("Data Migration in KGGK", "api_key")
-	api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
+	_dmk = _get_data_migration_settings()
+	from_site = _dmk.from_site_1
+	api_key = _dmk.api_key
+	api_secret = _dmk.api_secret
 
 	use_api = bool(from_site)
 
@@ -1062,7 +1077,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 		return
 	metal_prec = int(ctx.metal_precision or 3)
 
-	operational_cost = get_stock_entry_additional_cost(self, doc)
+	# operational_cost = get_stock_entry_additional_cost(self, doc)
 	chain_weight = sum(
 		r.quantity for r in doc.finding_detail if r.finding_category == "Chains"
 	)
@@ -1084,7 +1099,6 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 
 			if s.is_customer_item:
 				s.rate = 0
-				# s.making_rate = operational_cost / total_weight
 				s.making_rate=sub_info.get("rate_per_gm", 0)
 				s.wastage_rate = 0
 				s.wastage_amount = 0
@@ -1225,9 +1239,10 @@ def _get_finding_sub_info(mc_name, finding_type, doc):
 	fetch-all cache. Falls back to item_subcategory rows
 	(also from cache) if no direct match.
 	"""
-	from_site = frappe.db.get_single_value("Data Migration in KGGK", "from_site_1")
-	api_key = frappe.db.get_single_value("Data Migration in KGGK", "api_key")
-	api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
+	_dmk = _get_data_migration_settings()
+	from_site = _dmk.from_site_1
+	api_key = _dmk.api_key
+	api_secret = _dmk.api_secret
 	use_api = bool(from_site)
 	if use_api:
 		url = f"{from_site}/api/method/gke_customization.gke_order_forms.doc_events.item.get_finding_charge"
@@ -1483,9 +1498,10 @@ def _process_gemstone_detail(self, doc, ctx, cctx):
 		)
 	gemstone_price_list_customer = _gemstone_pl_cache[self.customer]
 
-	from_site = frappe.db.get_single_value("Data Migration in KGGK", "from_site_1")
-	api_key = frappe.db.get_single_value("Data Migration in KGGK", "api_key")
-	api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
+	_dmk = _get_data_migration_settings()
+	from_site = _dmk.from_site_1
+	api_key = _dmk.api_key
+	api_secret = _dmk.api_secret
 	use_api = bool(from_site)
 
 	HEADERS = {"Authorization": f"token {api_key}:{api_secret}"}
@@ -1910,9 +1926,10 @@ def _process_diamond_detail(self, doc, ctx, row, cctx):
 		doc.total_diamond_amount = 0
 		return
 
-	from_site = frappe.db.get_single_value("Data Migration in KGGK", "from_site_1")
-	api_key = frappe.db.get_single_value("Data Migration in KGGK", "api_key")
-	api_secret = frappe.db.get_single_value("Data Migration in KGGK", "api_secret")
+	_dmk = _get_data_migration_settings()
+	from_site = _dmk.from_site_1
+	api_key = _dmk.api_key
+	api_secret = _dmk.api_secret
 	use_api = bool(from_site)
 
 	# customer_key = (
@@ -2563,9 +2580,9 @@ def _process_single_row(self, row, ctx):
 		if not row.bom:
 			return
 		# ── Step 2: always process the BOM (new or existing) ─────────
-		if frappe.db.get_value("BOM", row.bom, "docstatus") == 1:
-			frappe.db.set_value("BOM", row.bom, "docstatus", "0")
 		doc = frappe.get_doc("BOM", row.bom)
+		if doc.docstatus == 1:
+			frappe.db.set_value("BOM", row.bom, "docstatus", "0")
 		# frappe.throw(f"{doc.as_dict()}")
 		# ── Reset quantities from original Serial No BOM ─────────────
 		# On every save, restore design quantities from the source BOM
@@ -3258,10 +3275,6 @@ def validate_item_dharm(self):
 
 		e_invoice_items = []
 
-		for row in self.items:
-			gross_weighh = frappe.get_value("BOM", row.bom, "gross_weight")
-			row.custom_gross_weight = gross_weighh
-
 		# Prepare invoice items as before
 		for row in customer_payment_term_doc.customer_payment_details:
 			item_type = row.item_type
@@ -3329,6 +3342,7 @@ def validate_item_dharm(self):
 			bom_doc = None
 			if item.bom:
 				bom_doc = frappe.get_doc("BOM", item.bom)
+			item.custom_gross_weight = bom_doc.gross_weight if bom_doc else None
 			if bom_doc:
 				if bom_doc.hallmarking_amount:
 					# frappe.throw("hii")
@@ -4486,21 +4500,24 @@ def make_sales_order_batch(sales_orders, target_doc=None):
 			"Sales Order Item", filters={"parent": so_name}, fields="*"
 		)
 
-		for it in items:
-			snc_list = frappe.db.get_list(
-				"Serial Number Creator",
-				filters={"sales_order_id": so_name},
-				fields=["name"],
+		# Depends only on so_name, not on the item — fetch once per Sales
+		# Order instead of once per item (was re-fetching identical results
+		# for every item in the loop below).
+		snc_list = frappe.db.get_list(
+			"Serial Number Creator",
+			filters={"sales_order_id": so_name},
+			fields=["name"],
+		)
+
+		stock_entries = []
+		for snc in snc_list:
+			stock_entry = frappe.db.get_value(
+				"Stock Entry", {"custom_serial_number_creator": snc.name}, "name"
 			)
+			if stock_entry:
+				stock_entries.append(stock_entry)
 
-			stock_entries = []
-			for snc in snc_list:
-				stock_entry = frappe.db.get_value(
-					"Stock Entry", {"custom_serial_number_creator": snc.name}, "name"
-				)
-				if stock_entry:
-					stock_entries.append(stock_entry)
-
+		for it in items:
 			available_serials = []
 			for stock_entry in stock_entries:
 				serial_no = frappe.db.sql(

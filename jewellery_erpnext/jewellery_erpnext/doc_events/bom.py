@@ -643,7 +643,9 @@ def update_totals(parent_doctype, parent_doctype_name):
 	self.db_set("making_fg_purchase", 0)
 	for row in self.metal_detail + self.finding_detail:
 		metal_purity = frappe.db.get_value(
-			"Metal Criteria", {"parent": self.customer, "metal_touch": row.metal_touch}, "metal_purity"
+			"Metal Criteria",
+			{"parent": self.customer, "metal_type": row.metal_type, "metal_touch": row.metal_touch},
+			"metal_purity",
 		)
 		company_metal_purity = row.purity_percentage or 0
 		if not metal_purity:
