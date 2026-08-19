@@ -1053,7 +1053,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 		return
 	metal_prec = int(ctx.metal_precision or 3)
 
-	operational_cost = get_stock_entry_additional_cost(self, doc)
+	# operational_cost = get_stock_entry_additional_cost(self, doc)
 	chain_weight = sum(
 		r.quantity for r in doc.finding_detail if r.finding_category == "Chains"
 	)
@@ -1075,15 +1075,14 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 			
 			if s.is_customer_item:
 				s.rate = 0
-				# s.making_rate = operational_cost / total_weight
 				s.making_rate=sub_info.get("rate_per_gm", 0)
 				s.wastage_rate = 0
 				s.wastage_amount = 0
 			else:
 				s.rate = round(s.se_rate, 2)
 				s.wastage_rate = 0
-				# s.making_rate = operational_cost / total_weight
 				s.making_rate=sub_info.get("rate_per_gm", 0)
+				frappe.msgprint(f"{s.making_rate}")
 				s.wastage_amount = 0
 				s.customer_metal_purity = customer_metal_purity
 			s.amount = round(s.rate * s.quantity, 2)
@@ -1298,7 +1297,7 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 
 	finding_cache = {}  # local per-BOM-doc: finding_type → find_data
 	f_metal_prec = int(ctx.metal_precision or 3)
-	operational_cost = get_stock_entry_additional_cost(self, doc)
+	# operational_cost = get_stock_entry_additional_cost(self, doc)
 	chain_weight = sum(
 		r.quantity for r in doc.finding_detail if r.finding_category == "Chains"
 	)
