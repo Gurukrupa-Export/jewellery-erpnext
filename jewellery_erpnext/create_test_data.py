@@ -3137,6 +3137,7 @@ def create_test_data():
 	create_item_attribute()
 	create_users_data()
 	frappe.db.commit()
+	print("Setup for the test data has been completed")
 
 
 def setup_data():
@@ -3685,7 +3686,6 @@ def setup_data():
 		)
 
 	create_warehouse_and_department()
-	print("Setup for the test data has been completed")
 
 
 def create_warehouse_and_department():
