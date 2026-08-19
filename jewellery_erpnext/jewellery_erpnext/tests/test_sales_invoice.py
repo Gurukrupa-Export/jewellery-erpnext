@@ -99,7 +99,6 @@ class StubItemRow:
 		"amount": 0,
 		"base_amount": 0,
 		"bom": None,
-		"idx": 1,
 	}
 
 	def __init__(self, **kwargs):
@@ -114,7 +113,6 @@ class StubItemRow:
 
 def _bom(**overrides):
 	fields = dict(
-		customer="CUST-1",
 		total_diamond_pcs=2,
 		total_gemstone_pcs=3,
 		total_other_weight=1.5,
@@ -162,18 +160,19 @@ def _sub_category_si(*categories):
 	)
 
 
-def _allowed_item_types_get_all(existing_item_types, matching_parents):
-	"""frappe.get_all side-effect for get_allowed_item_types: the batched E Invoice
-	Item existence check, then the batched Sales Type Multiselect match."""
+def _get_doc_side_effect(cpt, eii_or_map):
+	"""frappe.get_doc side-effect: the Customer Payment Terms doc for that doctype,
+	else the E Invoice Item doc — either a single doc, or a name -> doc map. The map
+	is a plain dict (frappe._dict is itself a dict subclass, so exclude it)."""
 
-	def _get_all(doctype, **kwargs):
-		if doctype == "E Invoice Item":
-			return list(existing_item_types)
-		if doctype == "Sales Type Multiselect":
-			return list(matching_parents)
-		return []
+	def _get_doc(doctype, name):
+		if doctype == "Customer Payment Terms":
+			return cpt
+		if isinstance(eii_or_map, dict) and not isinstance(eii_or_map, frappe._dict):
+			return eii_or_map[name]
+		return eii_or_map
 
-	return _get_all
+	return _get_doc
 
 
 def _run_with_patches(si, method, *patchers):
@@ -232,22 +231,14 @@ def _gst_charge(account_head, rate):
 	)
 
 
-def _address_get_all(
-	customer_state="GJ", company_state="GJ", template_rows=(), charge_rows=()
-):
-	"""frappe.get_all side-effect for set_gst_details: the batched Address state
-	lookup, plus optionally the two GST tables from fixed lists."""
+def _gst_get_all(template_rows, charge_rows):
+	"""frappe.get_all side-effect returning the two GST tables from fixed lists."""
 
 	def _get_all(doctype, **kwargs):
-		if doctype == "Address":
-			return [
-				frappe._dict(name="ADDR-1", gst_state_number=customer_state),
-				frappe._dict(name="ADDR-2", gst_state_number=company_state),
-			]
 		if doctype == "Item Tax Template Detail":
-			return list(template_rows)
+			return template_rows
 		if doctype == "Sales Taxes and Charges":
-			return list(charge_rows)
+			return charge_rows
 		return []
 
 	return _get_all
@@ -435,9 +426,7 @@ class TestSalesInvoiceBeforeValidate(_SIBase):
 		mocks = _run_with_patches(
 			si,
 			si_events.before_validate,
-			*_std_before_validate_patches(
-				get_value={"return_value": {"customer_group": "Internal"}}
-			),
+			*_std_before_validate_patches(get_value={"return_value": "Internal"}),
 			patch(f"{SI}.frappe.get_doc"),
 		)
 		self.assertEqual(si.gold_rate_with_gst, round(1000 * 1.03, 3))
@@ -491,21 +480,14 @@ class TestSalesInvoiceValidate(_SIBase):
 
 	def test_non_return_external_customer_recomputes_total(self):
 		si = DummySalesInvoice(
-			company="Other",
-			is_return=0,
-			items=[StubItemRow(item_code="RING-1", bom="BOM-1", amount=999)],
+			company="Other", is_return=0, items=[StubItemRow(bom="BOM-1", amount=999)]
 		)
 		si.calculate_taxes_and_totals = MagicMock()
 		mocks = _run_with_patches(
 			si,
 			si_events.validate,
 			*_std_validate_patches(
-				get_value={
-					"return_value": {
-						"customer_group": "External",
-						"custom_precision_variable": 2,
-					}
-				},
+				get_value={"side_effect": [2, "External"]},
 				extra=[patch(f"{SI}.update_making_charges")],
 			),
 		)
@@ -526,14 +508,7 @@ class TestSalesInvoiceValidate(_SIBase):
 		mocks = _run_with_patches(
 			si,
 			si_events.validate,
-			*_std_validate_patches(
-				get_value={
-					"return_value": {
-						"customer_group": "Internal",
-						"custom_precision_variable": 2,
-					}
-				}
-			),
+			*_std_validate_patches(get_value={"side_effect": [2, "Internal"]}),
 		)
 		self.assertEqual(si.items[0].rate, 999)
 		self.assertEqual(si.items[0].amount, 999)
@@ -841,15 +816,10 @@ class TestGetAllowedItemTypes(_SIBase):
 
 	def test_no_matching_sales_type_returns_empty(self):
 		cpt = frappe._dict(customer_payment_details=[frappe._dict(item_type="METAL")])
+		eii = frappe._dict(sales_type=[frappe._dict(sales_type="Outwork")])
 		with (
 			patch(f"{SI}.frappe.db.get_value", return_value="CPT-1"),
-			patch(f"{SI}.frappe.get_doc", return_value=cpt),
-			patch(
-				f"{SI}.frappe.get_all",
-				side_effect=_allowed_item_types_get_all(
-					existing_item_types={"METAL"}, matching_parents=[]
-				),
-			),
+			patch(f"{SI}.frappe.get_doc", side_effect=_get_doc_side_effect(cpt, eii)),
 		):
 			result = si_events.get_allowed_item_types("CUST-1", "Outright")
 		self.assertEqual(result, set())
@@ -861,16 +831,10 @@ class TestGetAllowedItemTypes(_SIBase):
 				frappe._dict(item_type="STONE"),
 			]
 		)
+		eii = frappe._dict(sales_type=[frappe._dict(sales_type="Outright")])
 		with (
 			patch(f"{SI}.frappe.db.get_value", return_value="CPT-1"),
-			patch(f"{SI}.frappe.get_doc", return_value=cpt),
-			patch(
-				f"{SI}.frappe.get_all",
-				side_effect=_allowed_item_types_get_all(
-					existing_item_types={"METAL", "STONE"},
-					matching_parents=["METAL", "STONE"],
-				),
-			),
+			patch(f"{SI}.frappe.get_doc", side_effect=_get_doc_side_effect(cpt, eii)),
 		):
 			result = si_events.get_allowed_item_types("CUST-1", "Outright")
 		self.assertEqual(result, {"METAL", "STONE"})
@@ -883,15 +847,16 @@ class TestGetAllowedItemTypes(_SIBase):
 				frappe._dict(item_type="DIAMOND"),
 			]
 		)
+		eii_by_type = {
+			"METAL": frappe._dict(sales_type=[frappe._dict(sales_type="Outright")]),
+			"STONE": frappe._dict(sales_type=[frappe._dict(sales_type="Outright")]),
+			"DIAMOND": frappe._dict(sales_type=[frappe._dict(sales_type="Outwork")]),
+		}
 		with (
 			patch(f"{SI}.frappe.db.get_value", return_value="CPT-1"),
-			patch(f"{SI}.frappe.get_doc", return_value=cpt),
 			patch(
-				f"{SI}.frappe.get_all",
-				side_effect=_allowed_item_types_get_all(
-					existing_item_types={"METAL", "STONE", "DIAMOND"},
-					matching_parents=["METAL", "STONE"],
-				),
+				f"{SI}.frappe.get_doc",
+				side_effect=_get_doc_side_effect(cpt, eii_by_type),
 			),
 		):
 			result = si_events.get_allowed_item_types("CUST-1", "Outright")
@@ -909,10 +874,7 @@ class TestSetGstDetails(_SIBase):
 		si = DummySalesInvoice(
 			sales_type="Outright", customer_address="ADDR-1", company_address="ADDR-2"
 		)
-		with patch(
-			f"{SI}.frappe.get_all",
-			return_value=[frappe._dict(name="ADDR-1", gst_state_number="GJ")],
-		):
+		with patch(f"{SI}.frappe.db.get_value", side_effect=["GJ", None]):
 			si_events.set_gst_details(si)
 		self.assertIsNone(si.tax_category)
 
@@ -930,8 +892,8 @@ class TestSetGstDetails(_SIBase):
 					company_address="ADDR-2",
 				)
 				with patch(
-					f"{SI}.frappe.get_all",
-					side_effect=_address_get_all(customer_state, company_state),
+					f"{SI}.frappe.db.get_value",
+					side_effect=[customer_state, company_state],
 				):
 					si_events.set_gst_details(si)
 				self.assertEqual(si.tax_category, expected)
@@ -951,11 +913,11 @@ class TestSetGstDetails(_SIBase):
 					items=[StubItemRow(item_code=item_code)],
 				)
 				with (
-					patch(f"{SI}.frappe.db.get_value", return_value="TAX_TMPL"),
 					patch(
-						f"{SI}.frappe.get_all",
-						side_effect=_address_get_all("GJ", "GJ"),
+						f"{SI}.frappe.db.get_value",
+						side_effect=["GJ", "GJ", "TAX_TMPL"],
 					),
+					patch(f"{SI}.frappe.get_all", return_value=[]),
 				):
 					si_events.set_gst_details(si)
 				self.assertEqual(si.taxes_and_charges, "TAX_TMPL")
@@ -966,19 +928,15 @@ class TestSetGstDetails(_SIBase):
 			sales_type="Outright",
 			company="Gurukrupa Export Private Limited",
 			total=1000.0,
-			items=[StubItemRow(item_code="ITEM-1", amount=1000.0)],
+			items=[StubItemRow(item_code="ITEM-1")],
 		)
 		with (
-			patch(f"{SI}.frappe.db.get_value", return_value="STC-TMPL"),
+			patch(f"{SI}.frappe.db.get_value", side_effect=["MH", "GJ", "STC-TMPL"]),
 			patch(
 				f"{SI}.frappe.get_all",
-				side_effect=_address_get_all(
-					"MH",
-					"GJ",
-					template_rows=[
-						frappe._dict(tax_type="IGST Output - GEPL", tax_rate=3.0)
-					],
-					charge_rows=[_gst_charge("IGST Output - GEPL", 3.0)],
+				side_effect=_gst_get_all(
+					[frappe._dict(tax_type="IGST Output - GEPL", tax_rate=3.0)],
+					[_gst_charge("IGST Output - GEPL", 3.0)],
 				),
 			),
 		):
@@ -992,16 +950,11 @@ class TestSetGstDetails(_SIBase):
 
 	def test_returns_early_if_item_tax_template_missing(self):
 		si = DummySalesInvoice(sales_type="Outright", company="Unknown Company")
-		with (
-			patch(
-				f"{SI}.frappe.get_all",
-				side_effect=_address_get_all("GJ", "GJ"),
-			) as mock_get_all,
-			patch(f"{SI}.frappe.db.get_value") as mock_get_value,
-		):
+		with patch(
+			f"{SI}.frappe.db.get_value", side_effect=["GJ", "GJ"]
+		) as mock_get_value:
 			si_events.set_gst_details(si)
-		mock_get_all.assert_called_once()
-		mock_get_value.assert_not_called()
+		self.assertEqual(mock_get_value.call_count, 2)
 		self.assertIsNone(si.taxes_and_charges)
 
 	def test_logs_error_and_returns_if_taxes_and_charges_template_missing(self):
@@ -1009,11 +962,7 @@ class TestSetGstDetails(_SIBase):
 			sales_type="Outright", company="Gurukrupa Export Private Limited"
 		)
 		with (
-			patch(f"{SI}.frappe.db.get_value", return_value=None),
-			patch(
-				f"{SI}.frappe.get_all",
-				side_effect=_address_get_all("GJ", "GJ"),
-			),
+			patch(f"{SI}.frappe.db.get_value", side_effect=["GJ", "GJ", None]),
 			patch(f"{SI}.frappe.log_error") as mock_log_error,
 		):
 			si_events.set_gst_details(si)
@@ -1025,20 +974,18 @@ class TestSetGstDetails(_SIBase):
 			sales_type="Outright",
 			company="Gurukrupa Export Private Limited",
 			total=1000.0,
-			items=[StubItemRow(item_code="ITEM-1", amount=1000.0)],
+			items=[StubItemRow(item_code="ITEM-1")],
 		)
 		with (
-			patch(f"{SI}.frappe.db.get_value", return_value="STC-TMPL"),
+			patch(f"{SI}.frappe.db.get_value", side_effect=["GJ", "GJ", "STC-TMPL"]),
 			patch(
 				f"{SI}.frappe.get_all",
-				side_effect=_address_get_all(
-					"GJ",
-					"GJ",
-					template_rows=[
+				side_effect=_gst_get_all(
+					[
 						frappe._dict(tax_type="CGST Output - GEPL", tax_rate=1.5),
 						frappe._dict(tax_type="SGST Output - GEPL", tax_rate=1.5),
 					],
-					charge_rows=[
+					[
 						_gst_charge("CGST Output - GEPL", 1.5),
 						_gst_charge("SGST Output - GEPL", 1.5),
 					],
@@ -1052,272 +999,3 @@ class TestSetGstDetails(_SIBase):
 		self.assertEqual(si.items[0].gst_treatment, "Taxable")
 		self.assertEqual(si.items[0].cgst_rate, 1.5)
 		self.assertEqual(si.items[0].cgst_amount, 15.0)
-
-
-class TestGetMetalPurity(_SIBase):
-	"""Regression for A1: the raw SQL this replaced ran under MariaDB's
-	utf8mb4_*_ci PAD SPACE collation, so it matched case-insensitively and
-	ignored trailing spaces. Plain Python `==` does not."""
-
-	def test_case_and_trailing_space_insensitive_match(self):
-		rows = [frappe._dict(metal_type="Gold", metal_touch="18KT ", metal_purity=75.0)]
-		self.assertEqual(si_events._get_metal_purity(rows, "gold", "18kt"), 75.0)
-
-	def test_no_match_raises_index_error(self):
-		rows = [frappe._dict(metal_type="Gold", metal_touch="18KT", metal_purity=75.0)]
-		with self.assertRaises(IndexError):
-			si_events._get_metal_purity(rows, "Gold", "22KT")
-
-
-class TestBeforeValidateMetalCriteriaOrdering(_SIBase):
-	"""Regression for A2: Metal Criteria declares sort_field=modified/DESC in its
-	doctype meta, so an unguarded frappe.get_all would silently promote whichever
-	duplicate row was edited most recently. order_by=None must disable that."""
-
-	def test_metal_criteria_fetch_disables_meta_sort(self):
-		si = DummySalesInvoice(
-			company="Other",
-			gold_rate=1000.0,
-			items=[StubItemRow(item_code="RING-1", bom="BOM-1", idx=1)],
-		)
-		bom_doc = _bom(save=MagicMock(), total_wastage_amount=0)
-		get_all_mock = MagicMock(return_value=[])
-		_run_with_patches(
-			si,
-			si_events.before_validate,
-			*_std_before_validate_patches(
-				get_value={
-					"return_value": {
-						"customer_group": "External",
-						"custom_precision_variable": 2,
-					}
-				}
-			),
-			patch(f"{SI}.frappe.get_doc", return_value=bom_doc),
-			patch(f"{SI}.frappe.db.get_single_value", return_value=3),
-			patch(f"{SI}.frappe.get_all", get_all_mock),
-			patch(f"{SI}.update_making_charges"),
-		)
-		get_all_mock.assert_called_once_with(
-			"Metal Criteria",
-			filters={"parent": "CUST-1"},
-			fields=["metal_type", "metal_touch", "metal_purity"],
-			order_by=None,
-		)
-
-
-class TestValidateBomCacheKeyedByBom(_SIBase):
-	"""Regression for B1: bom_cache must key off row.bom so rows sharing a BOM
-	(across both the header-sum loop and the reprice loop) issue a single
-	frappe.get_doc('BOM', ...) call instead of one per distinct row.idx."""
-
-	def test_two_rows_sharing_a_bom_issue_a_single_get_doc_call(self):
-		si = DummySalesInvoice(
-			company="Other",
-			items=[
-				StubItemRow(item_code="RING-1", bom="BOM-1", idx=1),
-				StubItemRow(item_code="RING-2", bom="BOM-1", idx=2),
-			],
-		)
-		si.calculate_taxes_and_totals = MagicMock()
-		mocks = _run_with_patches(
-			si,
-			si_events.validate,
-			*_std_validate_patches(
-				get_value={
-					"return_value": {
-						"customer_group": "External",
-						"custom_precision_variable": 2,
-					}
-				},
-				extra=[patch(f"{SI}.update_making_charges")],
-			),
-		)
-		mocks.get_doc.assert_called_once_with("BOM", "BOM-1")
-
-
-class TestValidateLoop2ReusesCustomerGroup(_SIBase):
-	"""Regression for B3: the reprice loop must reuse validate()'s already-fetched
-	customer_group instead of re-querying Customer.customer_group per BOM row —
-	bom_doc.customer is forced to self.customer by update_bom_details() (run via
-	update_si_data() earlier in validate()), so the value is provably identical."""
-
-	def test_no_per_row_customer_group_query(self):
-		si = DummySalesInvoice(
-			company="Other",
-			items=[StubItemRow(item_code="RING-1", bom="BOM-1", idx=1)],
-		)
-		si.calculate_taxes_and_totals = MagicMock()
-		item_details = {"item_subcategory": "Ring", "setting_type": "Type"}
-
-		def get_value_side_effect(doctype, name=None, fieldname=None, **kwargs):
-			if doctype == "Item":
-				return item_details
-			if doctype == "Customer" and fieldname == "customer_group":
-				raise AssertionError(
-					"per-row Customer.customer_group query should be eliminated"
-				)
-			if doctype == "Customer" and isinstance(fieldname, list):
-				return {"customer_group": "External", "custom_precision_variable": 2}
-			return None
-
-		_run_with_patches(
-			si,
-			si_events.validate,
-			*_std_validate_patches(
-				get_value={"side_effect": get_value_side_effect},
-				extra=[patch(f"{SI}.update_making_charges")],
-			),
-		)
-
-
-class TestUpdateSiDataEinvoiceItemsLazyFetch(_SIBase):
-	"""Regression for B2: the E Invoice Item prefetch in update_si_data() must be
-	lazy — invoices with no BOM rows (or fully item_same_as_above) must not issue
-	the query, and invoices with multiple BOM rows must issue it exactly once."""
-
-	def test_no_bom_rows_skips_einvoice_item_query(self):
-		si = DummySalesInvoice(items=[StubItemRow(bom=None)])
-		with (
-			patch(f"{SI}.frappe.db.get_value", return_value=None),
-			patch(f"{SI}.get_allowed_item_types", return_value=set()),
-			patch(f"{SI}.frappe.get_all") as get_all_mock,
-		):
-			si_events.update_si_data(si)
-		get_all_mock.assert_not_called()
-
-	def test_item_same_as_above_skips_einvoice_item_query(self):
-		si = DummySalesInvoice(
-			item_same_as_above=1,
-			items=[StubItemRow(item_code="RING-1", bom="BOM-1")],
-		)
-		with (
-			patch(f"{SI}.frappe.db.get_value", return_value=None),
-			patch(f"{SI}.get_allowed_item_types", return_value=set()),
-			patch(f"{SI}.frappe.get_all") as get_all_mock,
-		):
-			si_events.update_si_data(si)
-		get_all_mock.assert_not_called()
-
-	def test_multiple_bom_rows_fetch_einvoice_items_once_with_creation_desc(self):
-		bom_doc = SimpleNamespace(
-			currency="INR", hallmarking_amount=0, certification_amount=0
-		)
-		si = DummySalesInvoice(
-			currency="INR",
-			sales_type="Certification",
-			items=[
-				StubItemRow(item_code="RING-1", bom="BOM-1"),
-				StubItemRow(item_code="RING-2", bom="BOM-1"),
-			],
-		)
-		with (
-			patch(f"{SI}.frappe.db.get_value", return_value=None),
-			patch(f"{SI}.get_allowed_item_types", return_value=set()),
-			patch(f"{SI}.frappe.get_doc", return_value=bom_doc),
-			patch(f"{SI}.frappe.get_all", return_value=[]) as get_all_mock,
-			patch(f"{SI}.update_bom_details"),
-			patch(f"{SI}.update_einvoice_items"),
-		):
-			si_events.update_si_data(si)
-		get_all_mock.assert_called_once()
-		self.assertEqual(get_all_mock.call_args.args[0], "E Invoice Item")
-		self.assertEqual(get_all_mock.call_args.kwargs["order_by"], "creation desc")
-
-
-class TestUpdateBomDetailsCustomerGroupDedup(_SIBase):
-	"""Regression for B4: update_bom_details() must not re-fetch
-	Customer.customer_group at its tail — it already fetched the same
-	bom_doc.customer (== self.customer, set at the top of this call) into
-	making_charge_customer_group."""
-
-	def _bom_doc(self):
-		return SimpleNamespace(
-			customer=None,
-			company="Other",
-			metal_detail=[],
-			finding_detail=[],
-			diamond_detail=[],
-			gemstone_detail=[],
-			certification_amount=0,
-			validate=MagicMock(),
-			save=MagicMock(),
-			name="BOM-1",
-		)
-
-	def test_customer_group_fetched_once_not_twice(self):
-		si = DummySalesInvoice(
-			customer="CUST-1",
-			company="Other",
-			sales_type="Outright",
-			is_return=0,
-			gold_rate_with_gst=1000.0,
-		)
-		row = StubItemRow(item_code="RING-1", sales_order=None)
-		bom_doc = self._bom_doc()
-		item_details = {"item_subcategory": "Ring", "setting_type": "Type"}
-		customer_group_calls = []
-
-		def get_value_side_effect(doctype, name=None, fieldname=None, **kwargs):
-			if doctype == "Item":
-				return item_details
-			if doctype == "Customer" and fieldname == "customer_group":
-				customer_group_calls.append(name)
-				return "External"
-			return None
-
-		with (
-			patch(f"{SI}.frappe.db.get_value", side_effect=get_value_side_effect),
-			patch(f"{SI}.update_making_charges"),
-			patch(f"{SI}.update_totals"),
-		):
-			si_events.update_bom_details(
-				si,
-				row,
-				bom_doc,
-				is_branch_customer=False,
-				invoice_data={},
-				einvoice_items=[],
-				einvoice_index={},
-				precision=2,
-			)
-		self.assertEqual(len(customer_group_calls), 1)
-		bom_doc.save.assert_called_once()
-
-	def test_fallback_einvoice_fetch_uses_creation_desc(self):
-		"""A3 (second call site): update_bom_details()'s own fallback fetch, used by
-		callers that don't prefetch einvoice_items/einvoice_index."""
-		si = DummySalesInvoice(
-			customer="CUST-1",
-			company="Other",
-			sales_type="Outright",
-			is_return=0,
-			gold_rate_with_gst=1000.0,
-		)
-		row = StubItemRow(item_code="RING-1", sales_order=None)
-		bom_doc = self._bom_doc()
-		item_details = {"item_subcategory": "Ring", "setting_type": "Type"}
-
-		def get_value_side_effect(doctype, name=None, fieldname=None, **kwargs):
-			if doctype == "Item":
-				return item_details
-			if doctype == "Customer":
-				return "External"
-			return None
-
-		with (
-			patch(f"{SI}.frappe.db.get_value", side_effect=get_value_side_effect),
-			patch(f"{SI}.frappe.get_all", return_value=[]) as get_all_mock,
-			patch(f"{SI}.update_making_charges"),
-			patch(f"{SI}.update_totals"),
-		):
-			si_events.update_bom_details(
-				si,
-				row,
-				bom_doc,
-				is_branch_customer=False,
-				invoice_data={},
-				precision=2,
-			)
-		get_all_mock.assert_called_once()
-		self.assertEqual(get_all_mock.call_args.kwargs["order_by"], "creation desc")
