@@ -7,6 +7,9 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.remote_po import (
 	fetch_remote_ref_customer,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice import (
+	_get_rcm_base_account_head,
+)
 
 # from jewellery_erpnext.utils import update_existing
 
@@ -30,7 +33,7 @@ def set_gst_details(self):
 		"Address", self.supplier_address, "gst_state_number"
 	)
 	company_state = frappe.db.get_value(
-		"Address", self.company_address, "gst_state_number"
+		"Address", self.billing_address, "gst_state_number"
 	)
 
 	if not customer_state or not company_state:
@@ -99,34 +102,57 @@ def set_gst_details(self):
 		elif "IGST" in tax_type:
 			igst_rate = float(r.tax_rate)
 
-	account_rate_map = {}
-	for r in template_rates:
-		tax_type = r.tax_type or ""
-		if "Output" not in tax_type or "RCM" in tax_type:
-			continue
-		account_rate_map[r.tax_type] = float(r.tax_rate)
+	# Header row rate: read the item's real Item Tax Template directly
+	# (Input Tax heads) rather than self.items[0].item_tax_rate -- that
+	# field is computed by core ERPNext's update_item_tax_map(), which
+	# silently backfills any account head the template doesn't define
+	# with whatever rate the tax row already had (the Purchase Taxes and
+	# Charges Template default), so an RCM head can look "resolved" while
+	# actually still carrying the stale default. Same fix already applied
+	# and verified for Purchase Invoice/Purchase Receipt in
+	# doc_events/purchase_invoice.py::sync_tax_row_rate_with_item().
+	input_tax_rates = {
+		r.tax_type: flt(r.tax_rate)
+		for r in template_rates
+		if (r.tax_type or "").startswith("Input")
+	}
 
 	self.taxes = []
 
 	tax_rows = frappe.get_all(
 		"Purchase Taxes and Charges",
 		filters={"parent": self.taxes_and_charges},
-		fields=["charge_type", "account_head", "description", "rate", "cost_center"],
+		fields=[
+			"charge_type",
+			"account_head",
+			"description",
+			"rate",
+			"cost_center",
+			"add_deduct_tax",
+		],
 		order_by="idx asc",
 	)
-	import json
 
-	# frappe.throw(f"hii{tax_rows}")
-	item_tax_rate = {}
-
-	if self.items and self.items[0].item_tax_rate:
-		item_tax_rate = json.loads(self.items[0].item_tax_rate)
+	resolved_rates = {}
 	for t in tax_rows:
-		# correct_rate = account_rate_map.get(t.account_head, t.rate)
-		t.rate = flt(item_tax_rate.get(t.account_head, t.rate))
+		if t.account_head in input_tax_rates:
+			t.rate = input_tax_rates[t.account_head]
+			resolved_rates[t.account_head] = t.rate
 
-		# correct_rate = flt(self.items[0].item_tax_rate.get(t.account_head, t.rate))
-		# frappe.throw(f"{t.rate}")
+	# RCM (Reverse Charge) account heads (e.g. "Input Tax IGST RCM - KGJPL")
+	# have no entry of their own in the item's Item Tax Template -- only
+	# the plain "Input Tax IGST - KGJPL" head does. By GST rules the RCM
+	# rate is always the same as the corresponding normal rate, so mirror
+	# it instead of leaving the row on the Purchase Taxes and Charges
+	# Template default.
+	for t in tax_rows:
+		if t.account_head in input_tax_rates:
+			continue
+		base_account_head = _get_rcm_base_account_head(t.account_head)
+		if base_account_head and base_account_head in resolved_rates:
+			t.rate = resolved_rates[base_account_head]
+
+	for t in tax_rows:
 		self.append(
 			"taxes",
 			{
@@ -135,13 +161,17 @@ def set_gst_details(self):
 				"description": t.description,
 				"rate": t.rate,
 				"cost_center": t.cost_center,
-				"tax_amount": round(self.total * t.rate / 100, 2),
-				"total": round((self.total * t.rate / 100) + self.total, 2),
+				"tax_amount": self.total * t.rate / 100,
+				"total": (self.total * t.rate / 100) + self.total,
 				"category": "Total",
-				"add_deduct_tax": "Add",
+				# preserve the template row's own Add/Deduct -- this was
+				# previously hardcoded to "Add" for every row, which would
+				# have applied an RCM row as an extra charge instead of a
+				# deduction.
+				"add_deduct_tax": t.add_deduct_tax,
 			},
 		)
-		self.total_taxes_and_charges = round((self.total * t.rate / 100) + self.total, 2)
+		self.total_taxes_and_charges = (self.total * t.rate / 100) + self.total
 
 		self.grand_total = self.total_taxes_and_charges
 	for item in self.items:

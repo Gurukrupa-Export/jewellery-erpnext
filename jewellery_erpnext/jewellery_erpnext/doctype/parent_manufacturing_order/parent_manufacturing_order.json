@@ -108,7 +108,6 @@
   "delivery_date",
   "estimated_delivery_date",
   "manufacturing_end_date",
-  "updated_manufacturing_end_date",
   "column_break_t9v9f",
   "due_days",
   "est_delivery_days",
@@ -428,12 +427,6 @@
    "fieldname": "manufacturing_end_date",
    "fieldtype": "Date",
    "label": "Est. MFG End Date"
-  },
-  {
-   "allow_on_submit": 1,
-   "fieldname": "updated_manufacturing_end_date",
-   "fieldtype": "Date",
-   "label": "Updated Est. MFG End Date"
   },
   {
    "fieldname": "metal_touch",

@@ -241,9 +241,9 @@ doc_events = {
 	},
 	"Purchase Invoice": {
 		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.validate",
 			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
-			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_effective_tax_rate",
-		]
+		],
 	},
 	"Supplier Quotation": {"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR},
 	"Supplier": {
@@ -282,7 +282,10 @@ doc_events = {
 	},
 	"Purchase Receipt": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.before_validate",
-		"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR,
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.validate",
+			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
+		],
 		"before_submit": "jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.on_submit",
 	},
