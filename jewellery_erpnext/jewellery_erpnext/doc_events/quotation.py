@@ -1111,6 +1111,18 @@ def _apply_customer_pricing(
 		},
 		fields=["name", "price_list_type"],
 	)
+	# The KG GK branch gates and prices diamonds on the ref customer's list, so
+	# it needs the list fetched for that same customer -- fetching by the party
+	# customer and then testing against the ref customer's price_list_type makes
+	# the gate permanently False whenever the two customers differ.
+	diamond_price_list_ref = frappe.get_all(
+		"Diamond Price List",
+		filters={
+			"customer": ref_customer,
+			"price_list_type": diamond_price_list_ref_customer,
+		},
+		fields=["name", "price_list_type"],
+	)
 	gemstone_price_list = frappe.get_all(
 		"Gemstone Price List",
 		filters={
@@ -1119,6 +1131,22 @@ def _apply_customer_pricing(
 		},
 		fields=["name", "price_list_type"],
 	)
+
+	# Resolve which customer the standard branch should price diamonds against.
+	# The party may not be a pricing entity at all -- the internal factory
+	# customer holds none of the Diamond Price List rows, because its correct
+	# diamond price depends on the end customer, which varies per quotation.
+	# Only in that case fall back to the ref customer; a party that has its own
+	# rows keeps using them, so already-priced documents are untouched.
+	diamond_pricing_customer = tracking_bom.customer
+	diamond_pricing_type = diamond_price_list_customer
+	diamond_pricing_list = diamond_price_list
+	if ref_customer and not frappe.db.count(
+		"Diamond Price List", {"customer": tracking_bom.customer}
+	):
+		diamond_pricing_customer = ref_customer
+		diamond_pricing_type = diamond_price_list_ref_customer
+		diamond_pricing_list = diamond_price_list_ref
 
 	if not attribute_data:
 		attribute_data.update(
@@ -1140,7 +1168,7 @@ def _apply_customer_pricing(
 			gemstone_price_list_ref_customer,
 			diamond_price_list_customer,
 			gemstone_price_list_customer,
-			diamond_price_list,
+			diamond_price_list_ref,
 			gemstone_price_list,
 		)
 	else:
@@ -1150,10 +1178,11 @@ def _apply_customer_pricing(
 			tracking_bom,
 			attribute_data,
 			metal_criteria,
-			diamond_price_list_customer,
+			diamond_pricing_type,
 			gemstone_price_list_customer,
-			diamond_price_list,
+			diamond_pricing_list,
 			gemstone_price_list,
+			diamond_pricing_customer,
 		)
 
 	# Apply finding metal purity
