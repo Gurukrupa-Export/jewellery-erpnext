@@ -3117,6 +3117,15 @@ def create_test_data():
 			)
 
 			_ensure_stock_entry_jwelex_tag_field()
+			# The Customer Gold rate snapshot fields on Stock Entry are declared only by
+			# their patch (custom_fields/*.json is inert -- after_migrate is disabled), so
+			# they must be provisioned here for test_site too, else
+			# set_customer_gold_rate_snapshot silently drops every value it writes.
+			from jewellery_erpnext.patches.add_customer_gold_rate_snapshot_fields import (
+				execute as _ensure_customer_gold_rate_fields,
+			)
+
+			_ensure_customer_gold_rate_fields()
 
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (
