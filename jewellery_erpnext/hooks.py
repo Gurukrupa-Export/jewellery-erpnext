@@ -58,6 +58,11 @@ doctype_list_js = {
 # WorkOrder.get_work_orders = get_work_orders
 
 doc_events = {
+	# Queue the KGGK item/BOM push for the plan's subcontracting rows. The push itself is a
+	# background job in gke_customization; submitting is never blocked by it.
+	"Manufacturing Plan": {
+		"on_submit": "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events.add_item_bom_to_kggk.add_item_bom_to_kggk",
+	},
 	"Quotation": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.quotation.quotation.before_validate",
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.validate",

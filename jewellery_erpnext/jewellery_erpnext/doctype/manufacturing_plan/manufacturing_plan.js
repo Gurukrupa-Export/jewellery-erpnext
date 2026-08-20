@@ -12,6 +12,7 @@ frappe.ui.form.on("Manufacturing Plan", {
 				},
 			};
 		});
+		kggk_sync_indicator(frm);
 	},
 	setup(frm) {
 		var parent_fields = [["diamond_quality", "Diamond Quality"]];
@@ -238,4 +239,69 @@ function set_item_attribute_filters_on_fields_in_child_doctype(frm, fields) {
 			};
 		});
 	});
+}
+
+// ─── KGGK sync ───────────────────────────────────────────────────────────────────
+// Submitting the plan queues the push automatically. This is the visible answer to
+// "did it go?" plus a button to re-push whatever is still outstanding. Counts come
+// from the sync markers on the Item and BOM records themselves — there is no log
+// doctype behind this.
+
+function kggk_sync_indicator(frm) {
+	if (frm.doc.docstatus !== 1 || frm.is_new()) return;
+
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events.add_item_bom_to_kggk.get_plan_sync_status",
+		args: { plan_name: frm.doc.name },
+		callback(r) {
+			if (r.exc || !r.message || !r.message.has_rows) return;
+			const d = r.message;
+			const pending =
+				d.total_items - d.synced_items + (d.total_boms - d.synced_boms);
+
+			frm.dashboard.add_indicator(
+				__("KGGK: {0}/{1} items, {2}/{3} BOMs synced", [
+					d.synced_items,
+					d.total_items,
+					d.synced_boms,
+					d.total_boms,
+				]),
+				pending === 0 ? "green" : d.synced_items || d.synced_boms ? "orange" : "red"
+			);
+
+			if (pending > 0) {
+				frm.add_custom_button(
+					__("Sync to KGGK"),
+					() => kggk_sync_now(frm, pending),
+					__("KGGK")
+				);
+			}
+			frm.add_custom_button(
+				__("Re-sync All Rows"),
+				() => kggk_sync_now(frm, d.total_items + d.total_boms, 0),
+				__("KGGK")
+			);
+		},
+	});
+}
+
+function kggk_sync_now(frm, count, only_unsynced = 1) {
+	frappe.confirm(
+		__("Queue {0} record(s) for sync to KGGK?", [count]),
+		() => {
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events.add_item_bom_to_kggk.sync_plan",
+				args: { plan_name: frm.doc.name, only_unsynced: only_unsynced },
+				freeze: true,
+				freeze_message: __("Queueing sync..."),
+				callback(r) {
+					if (r.exc) return;
+					frappe.show_alert({
+						message: (r.message && r.message.message) || __("Queued."),
+						indicator: r.message && r.message.queued ? "blue" : "orange",
+					});
+				},
+			});
+		}
+	);
 }
