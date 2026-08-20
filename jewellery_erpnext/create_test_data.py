@@ -3095,6 +3095,14 @@ def create_test_data():
 
 			_ensure_sre_replaced_snapshot_field()
 
+			# Stock Entry Detail.edit_bom is NOT in the git_action_v16 fixtures either —
+			# same reasoning as the other custom-field patches above.
+			from jewellery_erpnext.patches.add_stock_entry_edit_bom_field import (
+				execute as _ensure_stock_entry_edit_bom_field,
+			)
+
+			_ensure_stock_entry_edit_bom_field()
+
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (
 				execute as _ensure_missing_ui_custom_fields,
