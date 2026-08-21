@@ -75,3 +75,4 @@ jewellery_erpnext.patches.expand_sales_items_sections
 jewellery_erpnext.patches.add_mr_is_free_item_field
 jewellery_erpnext.patches.add_material_request_mwo_field
 jewellery_erpnext.patches.v16_0_rename_close_setting_to_nova_glow
+jewellery_erpnext.patches.add_stock_entry_edit_bom_field

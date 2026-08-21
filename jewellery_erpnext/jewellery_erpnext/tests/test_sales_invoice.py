@@ -289,6 +289,28 @@ class TestSoGoldRateChanged(_SIBase):
 		self.assertTrue(si_events._so_gold_rate_changed(100.0, "SO-1"))
 
 
+class TestLinkedSalesOrder(_SIBase):
+	def test_no_items_returns_none(self):
+		si = DummySalesInvoice(items=[])
+		self.assertIsNone(si_events._linked_sales_order(si))
+
+	def test_items_with_no_sales_order_returns_none(self):
+		si = DummySalesInvoice(items=[StubItemRow(), StubItemRow()])
+		self.assertIsNone(si_events._linked_sales_order(si))
+
+	def test_single_linked_sales_order_returned(self):
+		si = DummySalesInvoice(
+			items=[StubItemRow(sales_order="SO-1"), StubItemRow(sales_order="SO-1")]
+		)
+		self.assertEqual(si_events._linked_sales_order(si), "SO-1")
+
+	def test_multiple_sales_orders_is_ambiguous(self):
+		si = DummySalesInvoice(
+			items=[StubItemRow(sales_order="SO-1"), StubItemRow(sales_order="SO-2")]
+		)
+		self.assertIsNone(si_events._linked_sales_order(si))
+
+
 class TestUpdateIncomeAccount(_SIBase):
 	def test_opening_invoice_skips_lookup(self):
 		si = DummySalesInvoice(is_opening="Yes", items=[StubItemRow()])
@@ -392,6 +414,49 @@ class TestSalesInvoiceBeforeValidate(_SIBase):
 					*_std_before_validate_patches(get_value={}),
 				)
 				self.assertEqual(si.gold_rate_with_gst, expected)
+
+	def test_gold_rate_locked_to_linked_sales_order(self):
+		# A rate entered on the invoice must not stick when it diverges from the
+		# linked Sales Order's rate -- the invoice is repriced to what the order
+		# was actually confirmed at.
+		si = DummySalesInvoice(
+			company=KG_COMPANY,
+			sales_type="Outright",
+			gold_rate=1050.0,
+			items=[StubItemRow(sales_order="SO-1")],
+		)
+
+		def _get_value(doctype, name, fieldname=None, *args, **kwargs):
+			if doctype == "Sales Order" and name == "SO-1" and fieldname == "gold_rate":
+				return 1000.0
+			return None
+
+		_run_with_patches(
+			si,
+			si_events.before_validate,
+			*_std_before_validate_patches(get_value={"side_effect": _get_value}),
+		)
+		self.assertEqual(si.gold_rate, 1000.0)
+		self.assertEqual(si.gold_rate_with_gst, round(1000.0 * 1.03, 3))
+
+	def test_gold_rate_unchanged_when_sales_orders_ambiguous(self):
+		# Items spanning more than one Sales Order have no single order rate to
+		# lock to, so the manually-entered rate is left as-is.
+		si = DummySalesInvoice(
+			company=KG_COMPANY,
+			sales_type="Outright",
+			gold_rate=1050.0,
+			items=[
+				StubItemRow(sales_order="SO-1"),
+				StubItemRow(sales_order="SO-2"),
+			],
+		)
+		_run_with_patches(
+			si,
+			si_events.before_validate,
+			*_std_before_validate_patches(get_value={}),
+		)
+		self.assertEqual(si.gold_rate, 1050.0)
 
 	def test_item_same_as_above_clones_items_into_invoice_item(self):
 		si = DummySalesInvoice(
