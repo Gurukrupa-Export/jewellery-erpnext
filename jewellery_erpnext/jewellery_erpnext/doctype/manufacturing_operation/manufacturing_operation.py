@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import json
+import string
 
 import frappe
 from frappe import _
@@ -32,6 +33,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
 )
+from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
 from jewellery_erpnext.utils import set_values_in_bulk, update_existing
 
 
@@ -144,39 +146,6 @@ class ManufacturingOperation(Document):
 				title=f"MOP weight resync failed: {self.name}",
 				message=frappe.get_traceback(),
 			)
-
-	# def validate_main_slip(self):
-	# 	# Find Employee IR where the child table employee_ir_operations has manufacturing_operation = self.name
-	# 	ir_operations = frappe.get_all(
-	# 		"Employee IR Operation",
-	# 		filters={
-	# 			"manufacturing_operation": self.name,
-	# 			"parenttype": "Employee IR"
-	# 		},
-	# 		fields=["parent"]
-	# 	)
-
-	# 	matched_ir = None
-
-	# 	if ir_operations:
-	# 		parent_ir_names = [op["parent"] for op in ir_operations]
-	# 		employee_ir = frappe.get_all(
-	# 			"Employee IR",
-	# 			filters={
-	# 				"employee": self.employee,
-	# 				"operation": self.operation,
-	# 				"docstatus": 1,
-	# 				"type": "Issue",
-	# 				"name": ["in", parent_ir_names]
-	# 			},
-	# 			fields=["name"]
-	# 		)
-	# 		if employee_ir:
-	# 			ir_doc = frappe.get_doc("Employee IR", employee_ir[0].name)
-	# 			if ir_doc.main_slip:
-	# 				self.main_slip_no = ir_doc.main_slip
-	# 			# else:
-	# 			# 	frappe.msgprint(f"Main Slip is not set in Employee IR {ir_doc.name}.")
 
 	def validate_operation(self):
 		customer = frappe.db.get_value(
@@ -936,6 +905,7 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			"serial_no",
 			"repair_type",
 			"product_type",
+			"type",
 		],
 		as_dict=1,
 	)
@@ -1092,11 +1062,17 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 			},
 		)
 	sr_no = ""
-	compose_series = genrate_serial_no(doc, diamond_grade_data)
-	while True:
-		sr_no = make_autoname(compose_series)
-		if not frappe.db.exists("Serial No", sr_no):
-			break
+	# Repair completion: derive the new FG serial from the ORIGINAL piece being
+	# repaired (doc.serial_no) as <base>/A, /B, /C ... instead of minting a fresh
+	# coded-series serial. Non-repair jobs keep the normal naming series.
+	if pmo_det.get("type") == "Repair" and doc.serial_no:
+		sr_no = _next_repair_serial(doc.serial_no)
+	else:
+		compose_series = genrate_serial_no(doc, diamond_grade_data)
+		while True:
+			sr_no = make_autoname(compose_series)
+			if not frappe.db.exists("Serial No", sr_no):
+				break
 
 	new_bom_serial_no = sr_no
 	# serial_no_pass_entry(doc,sr_no,to_wh,pmo_det)
@@ -1292,6 +1268,25 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	frappe.db.set_value(
 		"Serial No", sr_no, "custom_repair_type", pmo_det.get("repair_type")
 	)
+	# Ownership marker. Sales Type is stamped first as an early default (custom_ownership_tag
+	# is a plain Data field, since Sales Type is a free-form master not limited to
+	# Outright/Outwork/Hybrid), then immediately overwritten by the ledger-derived value
+	# when one is derivable, so the final value always reflects what was actually consumed
+	# rather than what was quoted/sold.
+	sales_type = (
+		frappe.db.get_value("Sales Order", doc.sales_order_id, "sales_type")
+		if doc.get("sales_order_id")
+		else None
+	)
+	if sales_type:
+		frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", sales_type)
+	# if ownership_tag := _derive_ownership_tag(row_data):
+	# 	frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", ownership_tag)
+
+	# Order Type of the source Sales Order / Quotation, already available on the Serial
+	# Number Creator via its own order_type fetch_from (parent_manufacturing_order.order_type).
+	if doc.get("order_type"):
+		frappe.db.set_value("Serial No", sr_no, "custom_order_type", doc.order_type)
 	if doc.for_fg:
 		for row in doc.fg_details:
 			for entry in row_data:
@@ -1301,6 +1296,51 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	# Return both the Stock Entry name (used as the rate-source identifier in
 	# create_finished_goods_bom) and the finished-good serial number.
 	return se.name, new_bom_serial_no
+
+
+def _next_repair_serial(original):
+	"""Return the next repair-revision serial for a repaired piece.
+
+	Always suffixes the ORIGINAL base serial (the part before the first "/"), so a
+	piece returning as "SN0001/A" still bases off "SN0001" and yields "SN0001/B".
+	Mirrors the A->Z child-suffix algorithm in
+	customer_subcontracting/batch_rename.py::create_child_batches.
+	"""
+	base = original.split("/")[0]
+	rows = frappe.db.sql(
+		"SELECT name FROM `tabSerial No` WHERE name LIKE %s",
+		(base + "/%",),
+		as_dict=True,
+	)
+	letters = [
+		n.name.split("/")[-1]
+		for n in rows
+		if n.name.split("/")[-1] in string.ascii_uppercase
+	]
+
+	if not letters:
+		nxt = "A"
+	else:
+		idx = string.ascii_uppercase.index(max(letters))
+		if idx + 1 >= len(string.ascii_uppercase):
+			frappe.throw(
+				_("Serial {0} already uses all 26 repair suffixes (A-Z).").format(base)
+			)
+		nxt = string.ascii_uppercase[idx + 1]
+
+	sr_no = f"{base}/{nxt}"
+	while frappe.db.exists("Serial No", sr_no):
+		if nxt == "Z":
+			frappe.throw(
+				_(
+					"Cannot create a unique repair serial for {0}: all 26 suffixes "
+					"(A-Z) are already used."
+				).format(base)
+			)
+		nxt = chr(ord(nxt) + 1)
+		sr_no = f"{base}/{nxt}"
+
+	return sr_no
 
 
 def genrate_serial_no(doc, diamond_grade_data):
@@ -1560,29 +1600,15 @@ def get_material_wt(doc):
 			other_wt += qty
 
 	gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
-	if doc.main_slip_no or doc.is_finding:
-		if (
-			not frappe.db.get_value(
-				"Manufacturing Operation", doc.name, "is_received_gross_greater_than"
-			)
-			and doc.is_finding
+	if doc.get("is_finding"):
+		# A finding's loss is added back into gross, unless the receive already came in
+		# heavier than what was issued, in which case it is netted off instead.
+		if frappe.db.get_value(
+			"Manufacturing Operation", doc.name, "is_received_gross_greater_than"
 		):
-			gross_wt = (
-				net_wt
-				+ finding_wt
-				+ diamond_wt_in_gram
-				+ gemstone_wt_in_gram
-				+ other_wt
-			) + abs(doc.loss_wt or 0)
+			gross_wt -= abs(doc.get("loss_wt") or 0)
 		else:
-			if doc.is_finding:
-				gross_wt = (
-					net_wt
-					+ finding_wt
-					+ diamond_wt_in_gram
-					+ gemstone_wt_in_gram
-					+ other_wt
-				) - abs(doc.loss_wt or 0)
+			gross_wt += abs(doc.get("loss_wt") or 0)
 	result = {
 		"gross_wt": gross_wt,
 		"net_wt": net_wt,
@@ -1649,29 +1675,91 @@ def get_material_wt(doc):
 	return {}
 
 
+def _snc_se_detail_maps(se_name):
+	"""Per-item rate and inventory-type maps from a Manufacture Stock Entry.
+
+	Reads the consumed Stock Entry Detail rows of ``se_name`` grouped by item_code:
+
+	- ``rate_map``: qty-weighted Batch Rate — the maintained ``custom_metal_rate``
+	  (fetched onto the SE detail from the batch), falling back to ``basic_rate``
+	  when unset. Covers metal/findings (Batch Rate) and diamond/gemstone (basic_rate).
+	- ``inv_map``: inventory type. The aggregated SNC ``fg_details`` rows do NOT carry
+	  inventory_type, so the FG BOM's ``is_customer_item`` was always 0. Re-derive it
+	  here from the SE — the same batch-master-corrected value the user sees as
+	  "Customer Goods" on the Manufacture entry. The query groups by item_code, so an
+	  item split across Regular + Customer-Goods batches is collapsed: it is marked
+	  "Customer Goods" if ANY consumed batch is Customer Goods.
+	"""
+	se_rates = frappe.db.sql(
+		"""
+		SELECT item_code,
+			SUM(COALESCE(NULLIF(custom_metal_rate, 0), basic_rate) * qty)
+				/ NULLIF(SUM(qty), 0) AS rate,
+			MAX(inventory_type = 'Customer Goods') AS is_customer_goods
+		FROM `tabStock Entry Detail`
+		WHERE parent = %s
+		GROUP BY item_code
+		""",
+		(se_name,),
+		as_dict=True,
+	)
+	rate_map = {r.item_code: r.rate for r in se_rates}
+	inv_map = {
+		r.item_code: ("Customer Goods" if r.is_customer_goods else "Regular Stock")
+		for r in se_rates
+	}
+	return rate_map, inv_map
+
+
+def _derive_ownership_tag(row_data):
+	"""Outright / Outwork / Hybrid for the FG serial, from the material consumed.
+
+	``row_data`` is the batch-corrected consumption list built in
+	``to_prepare_data_for_make_mnf_stock_entry`` (serial_number_creator.py): the same
+	``inventory_type`` that lands on the Manufacture SE rows, with the Batch master
+	taking precedence over the upstream Stock Entry Detail.
+
+	Deliberately NOT derived from ``_snc_se_detail_maps``' ``inv_map``: that query has
+	no ``is_finished_item = 0`` filter, so the FG row's hardcoded "Regular Stock" would
+	turn every pure customer-material job into Hybrid. ``row_data`` is consumption-only.
+
+	Blank inventory types are ignored rather than assumed Regular Stock, so a job whose
+	rows carry no type is left untagged instead of silently mislabelled Outright (or
+	promoted to Hybrid). Returns ``None`` when nothing is derivable.
+	"""
+	types = {(row.get("inventory_type") or "").strip() for row in (row_data or [])}
+	types.discard("")
+
+	if not types:
+		return None
+	if types == {"Customer Goods"}:
+		return "Outwork"
+	if "Customer Goods" in types:
+		return "Hybrid"
+	return "Outright"
+
+
+def _stone_se_rate(consumed_rate, item_valuation_rate):
+	"""se_rate for a diamond/gemstone BOM row.
+
+	Diamonds/gemstones consume with ``basic_rate`` 0 in most Manufacture SEs
+	(``custom_metal_rate`` is metal-only), so the qty-weighted consumed rate is 0.
+	Fall back to the Item master's maintained ``valuation_rate`` so se_rate isn't
+	left blank. Returns 0.0 only when neither source has a value.
+	"""
+	return flt(consumed_rate) or flt(item_valuation_rate)
+
+
 def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	# frappe.throw("create_finished_goods_bom")
 	# If called from Serial Number Creator, use its prepared table as source of truth
 	if getattr(self, "doctype", None) == "Serial Number Creator" and self.get(
 		"fg_details"
 	):
-		# se_rate is the per-item Batch Rate, qty-weighted across the consumed
-		# batches. Read the batch's maintained Batch Rate (custom_metal_rate, fetched
-		# onto Stock Entry Detail) and fall back to basic_rate when it is unset — this
-		# covers metal/findings (Batch Rate) and diamond/gemstone (basic_rate) alike.
-		se_rates = frappe.db.sql(
-			"""
-			SELECT item_code,
-				SUM(COALESCE(NULLIF(custom_metal_rate, 0), basic_rate) * qty)
-					/ NULLIF(SUM(qty), 0) AS rate
-			FROM `tabStock Entry Detail`
-			WHERE parent = %s
-			GROUP BY item_code
-			""",
-			(se_name,),
-			as_dict=True,
-		)
-		se_rate_map = {r.item_code: r.rate for r in se_rates}
+		# se_rate_map: per-item Batch Rate, qty-weighted across the consumed batches.
+		# se_inv_map: per-item inventory type re-derived from the Manufacture SE (see
+		# _snc_se_detail_maps) — the fg_details rows don't carry it.
+		se_rate_map, se_inv_map = _snc_se_detail_maps(se_name)
 
 		data = [
 			{
@@ -1681,6 +1769,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 				"uom": d.uom,
 				"rate": getattr(d, "rate", None) or se_rate_map.get(d.row_material, 0),
 				"custom_sub_setting_type": getattr(d, "sub_setting_type", None),
+				"inventory_type": se_inv_map.get(d.row_material),
 			}
 			for d in self.fg_details
 		]
@@ -1727,7 +1816,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	pmo_data = frappe.db.get_value(
 		"Parent Manufacturing Order",
 		self.parent_manufacturing_order,
-		["diamond_quality", "qty", "sales_order", "quotation"],
+		["diamond_quality", "qty", "sales_order", "quotation", "customer"],
 		as_dict=1,
 	)
 	# Missing PMO is a real data error, not a transient one: surface it clearly instead of
@@ -1760,6 +1849,20 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 	new_bom.custom_serial_number_creator = self.name
 	new_bom.total_operation_time = total_time
 	new_bom.actual_operation_time = 0
+
+	# The FG BOM inherits the design BOM's customer via copy_doc, but GEPL design BOMs
+	# frequently leave it blank while the real order customer lives on the PMO. Without a
+	# customer, the GEPL making-charge lookup below (and the on-save recompute in
+	# set_bom_rate, which keys on BOM.customer) find no Making Charge Price and making_amount
+	# comes out 0. Backfill from the PMO when missing so making charges resolve. GEPL only:
+	# KGJPL sources making via ref_customer in the other branch and its customers aren't
+	# guaranteed to carry a gemstone price-list type (which BOM validation would then demand).
+	if (
+		self.company == "Gurukrupa Export Private Limited"
+		and not new_bom.customer
+		and pmo_data.get("customer")
+	):
+		new_bom.customer = pmo_data.get("customer")
 
 	# Clear existing child tables to rebuild from Stock Entry data
 	new_bom.metal_detail = []
@@ -1925,7 +2028,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 
 			# frappe.throw(f"{row["is_customer_item"]}")
 			row["rate"] = new_bom.gold_rate_with_gst
-			row["se_rate"] = item.get("rate")
+			row["se_rate"] = _stone_se_rate(item.get("rate"), item_row.valuation_rate)
 			sieve_size_range = ""
 			for attribute in item_row.attributes:
 				atrribute_name = format_attrbute_name(attribute.attribute)
@@ -2018,8 +2121,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if diamond_price_list_customer == "Size (in mm)":
 						size_in_mm_diamond_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
-							custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
+							SELECT name, supplier_fg_purchase_rate,rate,outright_handling_charges_rate,outright_handling_charges_in_percentage,
+							outwork_handling_charges_rate,outwork_handling_charges_in_percentage
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
@@ -2046,19 +2149,17 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							)
 							if row["is_customer_item"]:
 								row["total_diamond_rate"] = latest_entry.get(
-									"custom_outwork_handling_charges_rate", 0
+									"outwork_handling_charges_rate", 0
 								)
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["sieve_size_mm"]
 								)
 								if (
-									latest_entry.get(
-										"custom_outwork_handling_charges_rate"
-									)
+									latest_entry.get("outwork_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
-										"custom_outwork_handling_charges_in_percentage",
+										"outwork_handling_charges_in_percentage",
 										0,
 									)
 									amount = latest_entry.get("rate", 0) * (
@@ -2072,19 +2173,17 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								row["total_diamond_rate"] = latest_entry.get(
 									"rate", 0
 								) + latest_entry.get(
-									"custom_outright_handling_charges_rate", 0
+									"outright_handling_charges_rate", 0
 								)
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["sieve_size_mm"]
 								)
 								if (
-									latest_entry.get(
-										"custom_outright_handling_charges_rate"
-									)
+									latest_entry.get("outright_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
-										"custom_outright_handling_charges_in_percentage",
+										"outright_handling_charges_in_percentage",
 										0,
 									)
 									rate = latest_entry.get("rate", 0) * (
@@ -2100,7 +2199,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if diamond_price_list_customer == "Sieve Size Range":
 						sieve_size_range_diamond_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate
+							SELECT name, supplier_fg_purchase_rate,rate,outright_handling_charges_rate
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
@@ -2130,8 +2229,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if diamond_price_list_customer == "Weight (in cts)":
 						latest_diamond_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate,custom_outright_handling_charges_rate,custom_outright_handling_charges_in_percentage,
-							custom_outwork_handling_charges_rate,custom_outwork_handling_charges_in_percentage
+							SELECT name, from_weight, to_weight, supplier_fg_purchase_rate,rate,outright_handling_charges_rate,outright_handling_charges_in_percentage,
+							outwork_handling_charges_rate,outwork_handling_charges_in_percentage
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
@@ -2157,20 +2256,18 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							)
 							if row["is_customer_item"]:
 								row["total_diamond_rate"] = latest_entry.get(
-									"custom_outwork_handling_charges_rate", 0
+									"outwork_handling_charges_rate", 0
 								)
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["weight_per_pcs"]
 								)
 
 								if (
-									latest_entry.get(
-										"custom_outwork_handling_charges_rate"
-									)
+									latest_entry.get("outwork_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
-										"custom_outwork_handling_charges_in_percentage",
+										"outwork_handling_charges_in_percentage",
 										0,
 									)
 									amount = latest_entry.get("rate", 0) * (
@@ -2186,19 +2283,17 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								row["total_diamond_rate"] = latest_entry.get(
 									"rate", 0
 								) + latest_entry.get(
-									"custom_outright_handling_charges_rate", 0
+									"outright_handling_charges_rate", 0
 								)
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["weight_per_pcs"]
 								)
 								if (
-									latest_entry.get(
-										"custom_outright_handling_charges_rate"
-									)
+									latest_entry.get("outright_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
-										"custom_outright_handling_charges_in_percentage",
+										"outright_handling_charges_in_percentage",
 										0,
 									)
 									rate = latest_entry.get("rate", 0) * (
@@ -2225,8 +2320,8 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 					if diamond_price_list_ref_customer == "Size (in mm)":
 						size_in_mm_diamond_price_list_entry = frappe.db.sql(
 							"""
-							SELECT name, supplier_fg_purchase_rate,rate,custom_outwork_handling_charges_in_percentage,
-							custom_outright_handling_charges_in_percentage,custom_outright_handling_charges_rate,custom_outwork_handling_charges_rate
+							SELECT name, supplier_fg_purchase_rate,rate,outwork_handling_charges_in_percentage,
+							outright_handling_charges_in_percentage,outright_handling_charges_rate,outwork_handling_charges_rate
 							FROM `tabDiamond Price List`
 							WHERE customer = %s
 							AND price_list_type = %s
@@ -2251,19 +2346,17 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							)
 							if row["is_customer_item"]:
 								row["total_diamond_rate"] = latest_entry.get(
-									"custom_outwork_handling_charges_rate", 0
+									"outwork_handling_charges_rate", 0
 								)
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["sieve_size_mm"]
 								)
 								if (
-									latest_entry.get(
-										"custom_outwork_handling_charges_rate"
-									)
+									latest_entry.get("outwork_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
-										"custom_outwork_handling_charges_in_percentage",
+										"outwork_handling_charges_in_percentage",
 										0,
 									)
 									amount = latest_entry.get("rate", 0) * (
@@ -2277,19 +2370,17 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								row["total_diamond_rate"] = latest_entry.get(
 									"rate", 0
 								) + latest_entry.get(
-									"custom_outright_handling_charges_rate", 0
+									"outright_handling_charges_rate", 0
 								)
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["sieve_size_mm"]
 								)
 								if (
-									latest_entry.get(
-										"custom_outright_handling_charges_rate"
-									)
+									latest_entry.get("outright_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
-										"custom_outright_handling_charges_in_percentage",
+										"outright_handling_charges_in_percentage",
 										0,
 									)
 									rate = latest_entry.get("rate", 0) * (
@@ -2363,19 +2454,17 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 							)
 							if row["is_customer_item"]:
 								row["total_diamond_rate"] = latest_entry.get(
-									"custom_outwork_handling_charges_rate", 0
+									"outwork_handling_charges_rate", 0
 								)
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["weight_per_pcs"]
 								)
 								if (
-									latest_entry.get(
-										"custom_outwork_handling_charges_rate"
-									)
+									latest_entry.get("outwork_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
-										"custom_outwork_handling_charges_in_percentage",
+										"outwork_handling_charges_in_percentage",
 										0,
 									)
 									amount = latest_entry.get("rate", 0) * (
@@ -2390,19 +2479,17 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 								row["total_diamond_rate"] = latest_entry.get(
 									"rate", 0
 								) + latest_entry.get(
-									"custom_outright_handling_charges_rate", 0
+									"outright_handling_charges_rate", 0
 								)
 								row["diamond_rate_for_specified_quantity"] = (
 									row["total_diamond_rate"] * row["weight_per_pcs"]
 								)
 								if (
-									latest_entry.get(
-										"custom_outright_handling_charges_rate"
-									)
+									latest_entry.get("outright_handling_charges_rate")
 									== 0
 								):
 									percentage = latest_entry.get(
-										"custom_outright_handling_charges_in_percentage",
+										"outright_handling_charges_in_percentage",
 										0,
 									)
 									row["total_diamond_rate"] = latest_entry.get(
@@ -2887,7 +2974,7 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 			row = {}
 			row["stock_uom"] = item.get("uom")
 			# Fetching basic details
-			row["se_rate"] = item.get("rate")
+			row["se_rate"] = _stone_se_rate(item.get("rate"), item_row.valuation_rate)
 			row["rate"] = new_bom.gold_rate_with_gst
 			row["quantity"] = flt(item.get("qty", 0)) / flt(pmo_data.get("qty", 1))
 			row["pcs"] = flt(item.get("pcs", 0)) / (flt(pmo_data.get("qty")) or 1.0)
@@ -3435,12 +3522,165 @@ def create_finished_goods_bom(self, se_name, mo_data, total_time=0):
 		if new_bom.total_diamond_pcs
 		else 0
 	)
+	# Copy subcategory-driven values captured on the Employee IR Receive into the
+	# configured BOM fields (Dynamic FG BOM Field Mapping).
+	_apply_fg_bom_dynamic_fields(new_bom, self)
+
 	new_bom.flags.ignore_links = True
+
+	if self.company == "Gurukrupa Export Private Limited":
+		new_bom.custom_gk_cost_gold_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("metal_detail", [])
+		)
+		new_bom.custom_gk_cost_diamond_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("diamond_detail", [])
+		)
+		new_bom.custom_gk_cost_gemstone_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("gemstone_detail", [])
+		)
+		new_bom.custom_gk_cost_finding_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("finding_detail", [])
+		)
+		new_bom.custom_gk_cost_other_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("other_detail", [])
+		)
+	elif self.company == "KG GK Jewellers Private Limited":
+		new_bom.custom_kg_cost_gold_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("metal_detail", [])
+		)
+		new_bom.custom_kg_cost_diamond_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("diamond_detail", [])
+		)
+		new_bom.custom_kg_cost_gemstone_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("gemstone_detail", [])
+		)
+		new_bom.custom_kg_cost_finding_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("finding_detail", [])
+		)
+		new_bom.custom_kg_cost_other_bom_amount = sum(
+			flt(row.se_rate) * flt(row.quantity)
+			for row in new_bom.get("other_detail", [])
+		)
+
 	new_bom.insert(ignore_mandatory=True, ignore_links=True)
 	new_bom.submit()
 	frappe.db.set_value("Serial No", new_bom.tag_no, "custom_bom_no", new_bom.name)
 	self.fg_bom = new_bom.name
 	self.db_set("fg_bom", new_bom.name, update_modified=False)
+
+
+def _cast_fg_bom_value(value, field_type):
+	"""Coerce a stored string value to the type expected by the target BOM field."""
+	if value in (None, ""):
+		return None
+	if field_type in ("Int", "Check"):
+		return cint(value)
+	if field_type in ("Float", "Currency"):
+		return flt(value)
+	return value
+
+
+def _apply_fg_bom_dynamic_fields(new_bom, doc):
+	"""Copy Employee IR Receive dynamic-field values into the FG BOM.
+
+	The Employee IR Receive where a value is entered runs on a MANUFACTURING
+	operation (e.g. Final Polish), while this FG BOM is built by the Serial Number
+	Creator on the TAGGING operation -- different manufacturing_operation values.
+	The only thing that ties them together is the shared Parent Manufacturing Order,
+	so we match by PMO + the FG's item_subcategory (not manufacturing_operation).
+	Writes each configured value into the mapped BOM field (only fields that still
+	exist on BOM). Missing PMO / subcategory / IR / config => no-op.
+	"""
+	pmo = getattr(doc, "parent_manufacturing_order", None)
+	if not pmo and getattr(doc, "manufacturing_work_order", None):
+		pmo = frappe.db.get_value(
+			"Manufacturing Work Order",
+			doc.manufacturing_work_order,
+			"manufacturing_order",
+		)
+
+	subcategory = new_bom.get("item_subcategory")
+	if not subcategory and new_bom.get("item"):
+		subcategory = frappe.db.get_value("Item", new_bom.item, "item_subcategory")
+
+	if not pmo or not subcategory:
+		return
+
+	Field = frappe.qb.DocType("Employee IR FG BOM Field")
+	EmployeeIR = frappe.qb.DocType("Employee IR")
+	EmployeeIROperation = frappe.qb.DocType("Employee IR Operation")
+	MWO = frappe.qb.DocType("Manufacturing Work Order")
+	rows = (
+		frappe.qb.from_(Field)
+		.join(EmployeeIR)
+		.on((Field.parent == EmployeeIR.name) & (Field.parenttype == "Employee IR"))
+		.join(EmployeeIROperation)
+		.on(
+			(EmployeeIROperation.parent == EmployeeIR.name)
+			# Tie the field to ITS OWN operation, not just any operation on the same
+			# Employee IR -- otherwise a multi-operation receive can resolve the PMO
+			# through an unrelated operation and leak the value into another PMO's BOM.
+			& (
+				EmployeeIROperation.manufacturing_operation
+				== Field.manufacturing_operation
+			)
+		)
+		.join(MWO)
+		.on(EmployeeIROperation.manufacturing_work_order == MWO.name)
+		.select(Field.field_name, Field.fg_bom_field, Field.field_type, Field.value)
+		.where(
+			(EmployeeIR.type == "Receive")
+			& (EmployeeIR.docstatus == 1)
+			& (MWO.manufacturing_order == pmo)
+			& (Field.subcategory == subcategory)
+		)
+		.orderby(EmployeeIR.modified, order=frappe.qb.desc)
+	).run(as_dict=True)
+	if not rows:
+		return
+
+	# Resolve each target from the LIVE config (subcategory + field_name), not the
+	# capture-time snapshot on the Employee IR child row. Rows captured before the
+	# config was mapped store fg_bom_field=None; reading the config here lets a later
+	# mapping take effect for any not-yet-built BOM without re-capturing the Receive.
+	config_map = {
+		r.field_name: r.fg_bom_field
+		for r in frappe.get_all(
+			"FG BOM Field Config Detail",
+			filters={
+				"parenttype": "FG BOM Field Configuration",
+				"subcategory": subcategory,
+				"is_active": 1,
+			},
+			fields=["field_name", "fg_bom_field"],
+		)
+		if r.fg_bom_field
+	}
+
+	bom_meta = frappe.get_meta("BOM")
+	seen = set()
+	for row in rows:
+		# Prefer the stored mapping; fall back to the live config for pre-mapping captures.
+		target = row.fg_bom_field or config_map.get(row.field_name)
+		# Latest Employee IR wins; an IR with N operations yields N duplicate join rows.
+		if not target or target in seen:
+			continue
+		if not bom_meta.has_field(target):
+			continue
+		cast_value = _cast_fg_bom_value(row.value, row.field_type)
+		if cast_value is None:
+			continue
+		new_bom.set(target, cast_value)
+		seen.add(target)
 
 
 def get_stock_entry_data(self):
@@ -4365,6 +4605,28 @@ def _build_replacement_sre(original_sre, remaining_qty, sb_remaining=None):
 
 
 @frappe.whitelist()
+def _existing_receive_se(
+	mo_name, request_id, stock_entry_type="Material Receive (WORK ORDER)"
+):
+	"""The receive Stock Entry a previous call with this ``request_id`` already made.
+
+	The single definition of "this request has already been served", shared by
+	``create_mr_wo_stock_entry``'s idempotency guard and by the Receive Unused/Loose
+	Material pre-flight, so the two can never disagree about whether a call is a replay."""
+	if not (request_id and mo_name):
+		return None
+	return frappe.db.get_value(
+		"Stock Entry",
+		{
+			"custom_request_id": request_id,
+			"manufacturing_operation": mo_name,
+			"stock_entry_type": stock_entry_type,
+			"docstatus": ["!=", 2],
+		},
+		"name",
+	)
+
+
 def create_mr_wo_stock_entry(
 	se_data,
 	request_id=None,
@@ -4405,24 +4667,14 @@ def create_mr_wo_stock_entry(
 		)
 
 	# Idempotency: same request_id under same MOP + SE type returns the existing SE.
-	if request_id:
-		existing = frappe.db.get_value(
-			"Stock Entry",
-			{
-				"custom_request_id": request_id,
-				"manufacturing_operation": mo.name,
-				"stock_entry_type": stock_entry_type,
-				"docstatus": ["!=", 2],
-			},
-			"name",
-		)
-		if existing:
-			return {
-				"doctype": "Stock Entry",
-				"docname": existing,
-				"request_id": request_id,
-				"idempotent": True,
-			}
+	existing = _existing_receive_se(mo.name, request_id, stock_entry_type)
+	if existing:
+		return {
+			"doctype": "Stock Entry",
+			"docname": existing,
+			"request_id": request_id,
+			"idempotent": True,
+		}
 
 	if target_warehouse:
 		t_warehouse = target_warehouse
@@ -4836,51 +5088,561 @@ def create_mr_wo_stock_entry(
 
 @frappe.whitelist()
 def get_make_scrap_entry_rows(manufacturing_operation):
-	"""Auto-fill rows for the Create Scrap Item dialog.
+	"""Auto-fill rows for the Receive Unused/Loose Material dialog.
 
-	Create Scrap Item mirrors Make Receive Entry exactly — same source (the SRE
-	reservation warehouse) and same target (the department Raw Material warehouse);
-	the scrapped material is denoted the same way Make Receive Entry denotes its
-	received material. (Previously this targeted the department Scrap warehouse, which
-	diverged from Make Receive Entry.)
+	Mirrors Make Receive Entry exactly — same source (the SRE reservation warehouse) and
+	same target (the department Raw Material warehouse), and the material is denoted the
+	same way Make Receive Entry denotes its received material.
 	"""
 	return get_make_receive_entry_rows(manufacturing_operation)
 
 
 @frappe.whitelist()
 def create_scrap_wo_stock_entry(se_data, request_id=None):
-	"""Receive Scrap Item.
+	"""Receive Unused/Loose Material.
 
-	There is NO dedicated scrap item code. The operation's scrap is received into
-	the department Raw Material warehouse via the Make Receive machinery (SRE
-	validation, MOP caps, idempotency, SRE cancel/recreate — same source/target
-	allocation as Make Receive Entry, same item code), and then repacked into a NEW
-	batch tagged ``custom_batch_type = "Scrap"``. Scrap Refining fetches only
-	Scrap-typed batches (get_scrap_items_balance), so ordinary department stock in
-	the same warehouse is never pulled into a refining entry.
+	The operation's unused material is received into the department Raw Material warehouse
+	via the Make Receive machinery (SRE validation, MOP caps, idempotency, SRE
+	cancel/recreate — same source/target allocation and item code as Make Receive Entry),
+	then repacked onto its DEDICATED unused/loose item (``M-`` -> ``ML-``, ``F-`` -> ``FL-``,
+	same purity and colour) under a NEW batch tagged
+	``custom_batch_type = "Unused/Loose Material"``. Unused/Loose Material Refining
+	fetches only those batches (get_scrap_items_balance), so ordinary department stock
+	sharing the warehouse is never pulled into a refining entry.
 
-	The receive + scrap-batch repack run in one transaction: if the repack fails the
-	whole receive rolls back, so scrap is never left un-marked. See
-	get_make_scrap_entry_rows.
+	The item swap happens in the repack, not the receive: the receive SE has to stay on the
+	reserved item code or the SRE cancel/recreate and the MOP Log deductions would no longer
+	line up with what was issued.
+
+	Every row's target is resolved BEFORE any stock moves, so an item-master gap makes this
+	a clean no-op instead of a submit-then-unwind. The receive and the repack then run under
+	one savepoint of their own: ``create_mr_wo_stock_entry`` releases its inner savepoint as
+	soon as the receive is submitted, so without this outer one a throw from the repack could
+	only be undone by the request handler's blanket rollback — leaving any non-HTTP caller
+	with a submitted receive whose material was never tagged.
 	"""
 	if isinstance(se_data, str):
 		se_data = json.loads(se_data)
-	result = create_mr_wo_stock_entry(se_data, request_id=request_id)
-	receive_se = result.get("docname") if isinstance(result, dict) else None
-	if receive_se:
-		_convert_received_scrap_to_scrap_batch(receive_se, request_id=request_id)
+
+	# The pre-flight reads the CLIENT's rows, so it must only gate a genuinely new
+	# receive. On a replay (same request_id) create_mr_wo_stock_entry short-circuits to
+	# the existing SE without looking at the payload at all, and this call exists purely
+	# to re-run a repack that never landed. Validating a stale payload there could reject
+	# a retry over SREs the receive no longer depends on — the repack does its own
+	# resolution against the SE's ACTUAL rows and blocks there if a target is missing.
+	if not _existing_receive_se(se_data.get("manufacturing_operation"), request_id):
+		_preflight_unused_loose_targets(se_data)
+
+	frappe.db.savepoint("receive_unused_loose")
+	try:
+		result = create_mr_wo_stock_entry(se_data, request_id=request_id)
+		receive_se = result.get("docname") if isinstance(result, dict) else None
+		if receive_se:
+			# The receive SE creates MOP Log entries as a side effect of the on-submit hook.
+			# This material comes OUT of the metal issued to the operation, so those deductions
+			# MUST reduce the MOP/MWO balance exactly like a normal receive — the weight is no
+			# longer work-in-progress. So the MOP Log rows are KEPT.
+			#
+			# Called even when the receive was idempotent: a replay whose repack never landed
+			# self-heals here, and the repack has its own idempotency guard.
+			_convert_received_scrap_to_scrap_batch(receive_se, request_id=request_id)
+	except Exception:
+		frappe.db.rollback(save_point="receive_unused_loose")
+		raise
+	frappe.db.release_savepoint("receive_unused_loose")
 	return result
 
 
-def _create_scrap_batch(item_code):
-	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Scrap'.
+def _preflight_unused_loose_targets(se_data):
+	"""Resolve every requested row's unused/loose target before any stock moves.
+
+	Item codes are re-read from the Stock Reservation Entry rather than trusted from the
+	client, exactly as ``create_mr_wo_stock_entry`` does.
+
+	The row filter mirrors ``_convert_received_scrap_to_scrap_batch``: rows with no qty are
+	ignored, and a source item that is not batch-tracked is skipped rather than blocked —
+	the repack already msgprints those and they must not start hard-failing.
+	"""
+	sre_names = {
+		row.get("stock_reservation_entry")
+		for row in (se_data.get("receive_items") or [])
+		if row.get("stock_reservation_entry") and flt(row.get("qty")) > 0
+	}
+	if not sre_names:
+		return
+
+	item_codes = set(
+		frappe.db.get_all(
+			"Stock Reservation Entry",
+			filters={"name": ["in", list(sre_names)]},
+			pluck="item_code",
+		)
+	)
+	for item_code in sorted(item_codes):
+		if not frappe.db.get_value("Item", item_code, "has_batch_no"):
+			continue
+		probe = _probe_unused_loose_item(item_code)
+		if probe.status not in (UNUSED_OK, UNUSED_OUT_OF_SCOPE):
+			frappe.throw(probe.message, title=probe.title)
+
+
+#: Source item template -> the FAMILY whose unused/loose material template its returns
+#: book onto. Metal and Finding only; every other template (D/G/O and the alloys) keeps
+#: its own item code, exactly as before.
+#:
+#: Both item-code conventions in use are listed as SOURCE keys, because a site can mix
+#: them: the live site's sources are ``M-``/``F-`` while its Unused/Loose Material items
+#: may already use the descriptive names.
+UNUSED_SOURCE_FAMILY = {
+	"M": "metal",
+	"Metal": "metal",
+	"F": "finding",
+	"Finding": "finding",
+}
+
+#: Family -> candidate target templates, most specific FIRST. The descriptive template is
+#: the one an operator creates deliberately for this purpose; the short code is the legacy
+#: LOSS template (Variant Loss Table maps M->ML, F->FL) that doubles as the unused/loose
+#: target on sites that never created a dedicated one. A candidate is skipped unless it is
+#: a real template WITH at least one live variant, so a half-provisioned descriptive
+#: template does not black-hole every receive.
+UNUSED_TARGET_TEMPLATES = {
+	"metal": ("Metal Unused/Loose Material", "ML"),
+	"finding": ("Finding Unused/Loose Material", "FL"),
+}
+
+#: Family -> the name the operator knows this material by. Derived from the FAMILY and not
+#: from the resolved template, so the message reads "Metal Unused/Loose Material item is
+#: not there" even on a site whose template is literally called "ML".
+UNUSED_FAMILY_LABEL = {
+	"metal": "Metal Unused/Loose Material",
+	"finding": "Finding Unused/Loose Material",
+}
+
+#: Attribute names carrying the purity. "Purity" is a legacy alias still present on some
+#: items — RefiningEntry._compute_item_purity accepts both, so mirror it here.
+_PURITY_ATTRIBUTES = ("Metal Purity", "Purity")
+_COLOUR_ATTRIBUTE = "Metal Colour"
+
+#: Probe outcomes. Only OK and OUT_OF_SCOPE let a receive proceed.
+UNUSED_OK = "OK"
+UNUSED_OUT_OF_SCOPE = "OUT_OF_SCOPE"
+UNUSED_NO_TEMPLATE = "NO_TEMPLATE"
+UNUSED_HALF_CONFIGURED = "HALF_CONFIGURED"
+UNUSED_NO_MATCH = "NO_MATCH"
+UNUSED_NARROWED_TO_NONE = "NARROWED_TO_NONE"
+UNUSED_AMBIGUOUS = "AMBIGUOUS"
+UNUSED_NOT_BATCH_TRACKED = "NOT_BATCH_TRACKED"
+UNUSED_UOM_MISMATCH = "UOM_MISMATCH"
+UNUSED_SERIAL_TRACKED = "SERIAL_TRACKED"
+
+
+#: How many candidate item codes to name before summarising. The legacy FL template can
+#: match 59 variants on purity+colour alone; a dialog listing all of them is unreadable.
+_UNUSED_MAX_LISTED = 8
+
+
+def _format_item_list(item_codes, limit=_UNUSED_MAX_LISTED):
+	"""``"a, b, c and 56 more"`` — enough to recognise, short enough to read."""
+	item_codes = list(item_codes)
+	if len(item_codes) <= limit:
+		return ", ".join(item_codes)
+	return _("{0} and {1} more").format(
+		", ".join(item_codes[:limit]), len(item_codes) - limit
+	)
+
+
+def _item_attributes(item_code):
+	"""``{attribute: value}`` for every Item Variant Attribute row of ``item_code``.
+
+	The metal attributes live ONLY in ``Item Variant Attribute`` — there are no
+	``custom_metal_*`` fields on Item anywhere in the bench."""
+	rows = frappe.db.get_all(
+		"Item Variant Attribute",
+		filters={"parent": item_code},
+		fields=["attribute", "attribute_value"],
+	)
+	return {r.attribute: r.attribute_value for r in rows if r.attribute_value}
+
+
+def _item_metal_attributes(item_code):
+	"""``(purity, colour)`` off the item's Item Variant Attribute rows, or ``(None, None)``."""
+	values = _item_attributes(item_code)
+	purity = next((values[a] for a in _PURITY_ATTRIBUTES if values.get(a)), None)
+	return purity, values.get(_COLOUR_ATTRIBUTE)
+
+
+def _unused_target_template(family):
+	"""THE unused/loose template for ``family`` — descriptive convention preferred.
+
+	A candidate qualifies as soon as the Item exists, is a template (``has_variants``) and
+	is not disabled. The site's convention is decided by which template EXISTS, so the
+	descriptive one wins the moment it is created; the short code (``ML``/``FL``) serves
+	only sites that never created a dedicated one.
+
+	Exactly ONE template is returned and resolution searches only that one — there is no
+	per-item fallthrough. If the chosen template has no variant at the source's purity and
+	colour, the receive is BLOCKED. Falling back to the other convention would silently
+	book the material onto the legacy loss item and hide a missing (or deliberately
+	disabled) item master entry, which is exactly what this feature exists to prevent."""
+	for template in UNUSED_TARGET_TEMPLATES.get(family) or ():
+		meta = frappe.db.get_value(
+			"Item", template, ["has_variants", "disabled"], as_dict=True
+		)
+		if meta and meta.has_variants and not meta.disabled:
+			return template
+	return None
+
+
+def _unused_candidates(target_template, purity, colour):
+	"""Live variants of ``target_template`` matching BOTH purity and colour.
+
+	Purity and colour are the whole match key, as specified. ``attribute_value`` is
+	free-text Data, so the comparison is left to SQL (collation-tolerant) rather than
+	being done in Python."""
+	ItemDoc = frappe.qb.DocType("Item")
+	Attr = frappe.qb.DocType("Item Variant Attribute")
+	purity_attr = (
+		frappe.qb.from_(Attr)
+		.select(Attr.parent)
+		.where(
+			Attr.attribute.isin(list(_PURITY_ATTRIBUTES))
+			& (Attr.attribute_value == purity)
+		)
+	)
+	colour_attr = (
+		frappe.qb.from_(Attr)
+		.select(Attr.parent)
+		.where((Attr.attribute == _COLOUR_ATTRIBUTE) & (Attr.attribute_value == colour))
+	)
+	return (
+		frappe.qb.from_(ItemDoc)
+		.select(ItemDoc.name)
+		.where(
+			(ItemDoc.variant_of == target_template)
+			& (ItemDoc.disabled == 0)
+			& ItemDoc.name.isin(purity_attr)
+			& ItemDoc.name.isin(colour_attr)
+		)
+		.orderby(ItemDoc.name)
+		.run(pluck=True)
+	)
+
+
+def _template_attribute_names(template):
+	"""Attribute names the template DECLARES, so narrowing never asks for one it lacks."""
+	return set(
+		frappe.db.get_all(
+			"Item Variant Attribute", filters={"parent": template}, pluck="attribute"
+		)
+	)
+
+
+def _narrow_unused_candidates(candidates, source_attributes, target_template):
+	"""Candidates that ALSO match every other attribute BOTH sides carry.
+
+	Only ever called when purity+colour matched more than one variant — a state that is a
+	hard error otherwise, which is what makes this monotone: it can turn a throw into a
+	resolution or a better-worded throw, never change a match that already succeeds.
+
+	The legacy ``FL`` template carries the full finding attribute set (Finding Category /
+	Sub-Category / Size), so dozens of its variants share a purity+colour pair; narrowing
+	picks the one that is actually the same finding.
+
+	Only attributes the TARGET TEMPLATE declares are used. A template keyed on purity and
+	colour alone therefore has nothing to narrow with, and the caller reports a plain
+	ambiguity ("disable the duplicates") instead of a misleading "create the exact
+	counterpart" — the twin it would be asking for cannot exist under that template.
+
+	The test is EXACT, never a best-guess score: a surviving candidate carries the same
+	value for every narrowed attribute. Booking a clasp's gold onto a jump-ring code would
+	be invisible, so a near miss is dropped rather than preferred."""
+	shared = _template_attribute_names(target_template)
+	narrow_on = {
+		attribute: value
+		for attribute, value in source_attributes.items()
+		if attribute not in _PURITY_ATTRIBUTES
+		and attribute != _COLOUR_ATTRIBUTE
+		and attribute in shared
+	}
+	if not narrow_on:
+		return candidates, narrow_on
+
+	rows = frappe.db.get_all(
+		"Item Variant Attribute",
+		filters={"parent": ["in", candidates], "attribute": ["in", list(narrow_on)]},
+		fields=["parent", "attribute", "attribute_value"],
+	)
+	found = {}
+	for row in rows:
+		found.setdefault(row.parent, {})[row.attribute] = row.attribute_value
+
+	narrowed = [
+		candidate for candidate in candidates if found.get(candidate, {}) == narrow_on
+	]
+	return narrowed, narrow_on
+
+
+def _probe_unused_loose_item(item_code):
+	"""Classify ``item_code``'s unused/loose target WITHOUT throwing.
+
+	Returns a dict carrying ``status`` (one of the ``UNUSED_*`` constants), the resolved
+	``target`` when there is one, and a ready-to-show ``message``/``title``. The resolver,
+	the pre-flight and the audit report all go through here, so what the audit lists and
+	what the button blocks on can never drift apart."""
+	result = frappe._dict(
+		item_code=item_code,
+		status=UNUSED_OUT_OF_SCOPE,
+		target=None,
+		family=None,
+		template=None,
+		purity=None,
+		colour=None,
+		candidates=[],
+		narrowed_on={},
+		title=None,
+		message=None,
+	)
+
+	source = frappe.db.get_value(
+		"Item", item_code, ["variant_of", "stock_uom"], as_dict=True
+	)
+	family = UNUSED_SOURCE_FAMILY.get(source and source.variant_of)
+	if not family:
+		# Diamonds, gemstones, "other" — no unused/loose counterpart by design.
+		return result
+	result.family = family
+	label = UNUSED_FAMILY_LABEL[family]
+
+	purity, colour = _item_metal_attributes(item_code)
+	result.purity, result.colour = purity, colour
+	if not purity and not colour:
+		# An alloy (M-AL, M-394, M-Genia-221): nothing to match on at all, and those
+		# receives work today. Out of scope, as before.
+		return result
+
+	def block(status, message, title=None):
+		result.status = status
+		result.title = title or _("{0} item is not there").format(label)
+		result.message = message
+		return result
+
+	if not purity or not colour:
+		return block(
+			UNUSED_HALF_CONFIGURED,
+			_(
+				"{0} has {1} but no {2}, so its Unused/Loose Material item cannot be "
+				"resolved. Set both Metal Purity and Metal Colour on the item, or clear "
+				"both if it is an alloy that should keep its own item code."
+			).format(
+				frappe.bold(item_code),
+				_("Metal Purity") if purity else _("Metal Colour"),
+				_("Metal Colour") if purity else _("Metal Purity"),
+			),
+			title=_("{0} item cannot be resolved").format(label),
+		)
+
+	template = _unused_target_template(family)
+	result.template = template
+	if not template:
+		return block(
+			UNUSED_NO_TEMPLATE,
+			_(
+				"This site has no {0} item template. Expected one of: <b>{1}</b>. Create "
+				"the template and its variants before receiving."
+			).format(label, ", ".join(UNUSED_TARGET_TEMPLATES[family])),
+		)
+
+	# One template, no fallthrough. A missing or disabled variant under it BLOCKS rather
+	# than quietly resolving under the other convention.
+	candidates = _unused_candidates(template, purity, colour)
+	result.candidates = candidates
+
+	if len(candidates) > 1:
+		narrowed, narrow_on = _narrow_unused_candidates(
+			candidates, _item_attributes(item_code), template
+		)
+		result.narrowed_on = narrow_on
+		if not narrow_on:
+			return block(
+				UNUSED_AMBIGUOUS,
+				_(
+					"{0} matches more than one {1} item of template <b>{2}</b> with Metal "
+					"Purity <b>{3}</b> and Metal Colour <b>{4}</b>: {5}. Please disable the "
+					"ones that should not be used."
+				).format(
+					frappe.bold(item_code),
+					label,
+					template,
+					purity,
+					colour,
+					frappe.bold(_format_item_list(candidates)),
+				),
+				title=_("More than one {0} item matches").format(label),
+			)
+		if not narrowed:
+			return block(
+				UNUSED_NARROWED_TO_NONE,
+				_(
+					"No {0} item matches {1} exactly. {2} item(s) of template <b>{3}</b> "
+					"share Metal Purity <b>{4}</b> and Metal Colour <b>{5}</b> ({6}), but "
+					"none of them also match {7}. Create the exact counterpart, or disable "
+					"all but one of the near matches."
+				).format(
+					label,
+					frappe.bold(item_code),
+					len(candidates),
+					template,
+					purity,
+					colour,
+					_format_item_list(candidates),
+					", ".join(f"{k} {v}" for k, v in sorted(narrow_on.items())),
+				),
+			)
+		if len(narrowed) > 1:
+			return block(
+				UNUSED_AMBIGUOUS,
+				_(
+					"{0} matches more than one {1} item of template <b>{2}</b>, even after "
+					"matching {3}: {4}. Please disable the ones that should not be used."
+				).format(
+					frappe.bold(item_code),
+					label,
+					template,
+					", ".join(f"{k} {v}" for k, v in sorted(narrow_on.items())),
+					frappe.bold(_format_item_list(narrowed)),
+				),
+				title=_("More than one {0} item matches").format(label),
+			)
+		candidates = narrowed
+		result.candidates = narrowed
+
+	if not candidates:
+		return block(
+			UNUSED_NO_MATCH,
+			_(
+				"{0} (Metal Purity <b>{1}</b>, Metal Colour <b>{2}</b>) has no {3} "
+				"counterpart. Create an enabled variant of template <b>{4}</b> with that "
+				"purity and colour and <b>Has Batch No</b> enabled, then receive again."
+			).format(frappe.bold(item_code), purity, colour, label, template),
+		)
+
+	target = candidates[0]
+	result.target = target
+	target_meta = frappe.db.get_value(
+		"Item", target, ["has_batch_no", "has_serial_no", "stock_uom"], as_dict=True
+	)
+
+	if not target_meta.has_batch_no:
+		# The material would be produced onto an untagged item and would never be
+		# fetchable for refining. Skipping would lose it silently.
+		return block(
+			UNUSED_NOT_BATCH_TRACKED,
+			_(
+				"{0} is the Unused/Loose Material item for {1} (Metal Purity <b>{2}</b>, "
+				"Metal Colour <b>{3}</b>), but <b>Has Batch No</b> is off, so the received "
+				"material cannot be tagged for refining. Enable Has Batch No on {0}, then "
+				"receive again."
+			).format(frappe.bold(target), frappe.bold(item_code), purity, colour),
+			title=_("{0} item is not usable").format(label),
+		)
+
+	if target_meta.has_serial_no:
+		# The repack rows carry a batch and no serials; a serial-tracked target would
+		# fail deep inside Stock Entry submit with an opaque message.
+		return block(
+			UNUSED_SERIAL_TRACKED,
+			_(
+				"{0} is the Unused/Loose Material item for {1}, but it is serial-tracked. "
+				"Unused/Loose Material is received by weight under a batch, so the target "
+				"item must not have Has Serial No enabled."
+			).format(frappe.bold(target), frappe.bold(item_code)),
+			title=_("{0} item is not usable").format(label),
+		)
+
+	if (target_meta.stock_uom or "") != (source.stock_uom or ""):
+		# The repack copies the received qty verbatim onto the produce row, so a
+		# different unit would silently book grams as something else.
+		return block(
+			UNUSED_UOM_MISMATCH,
+			_(
+				"{0} is stocked in <b>{1}</b> but its Unused/Loose Material item {2} is "
+				"stocked in <b>{3}</b>. The received quantity cannot be booked across two "
+				"units — set both items to the same Default Unit of Measure."
+			).format(
+				frappe.bold(item_code),
+				source.stock_uom,
+				frappe.bold(target),
+				target_meta.stock_uom,
+			),
+			title=_("{0} item is not usable").format(label),
+		)
+
+	result.status = UNUSED_OK
+	return result
+
+
+def _resolve_unused_loose_item(item_code):
+	"""The unused/loose item ``item_code``'s returns should be booked onto, or ``None``.
+
+	Material a karigar did not consume is received back onto a DEDICATED item carrying the
+	SAME purity and colour as the item it came from — a variant of the ``Metal Unused/Loose
+	Material`` / ``Finding Unused/Loose Material`` template, or of the legacy ``ML``/``FL``
+	template on a site that never created the descriptive one. The target is resolved from
+	the template plus the source item's own attributes, so nothing is hardcoded to a
+	particular site's item master.
+
+	Returns ``None`` (meaning "leave this row on its own item code") only when the row is
+	genuinely out of scope: a template with no mapping (D/G/O), or an item carrying NEITHER
+	purity nor colour — the alloys (``M-AL``, ``M-394``, ``M-Genia-221``). An alloy has
+	nothing to match on by design; those receives work today and must not start failing.
+
+	Throws when the row IS in scope but the target cannot be pinned down or cannot hold the
+	material. All of those are item-master problems a human has to resolve; guessing would
+	silently book the metal onto the wrong purity.
+
+	Note on gk.site: the pure loss item ``ML-G-24KT-99.9-Y`` is also the legitimate target
+	for unused 24KT-Yellow metal. That overlap is intentional — 24KT unused metal IS 24KT
+	metal, and ``Batch.custom_batch_type`` is what separates the two populations for
+	``RefiningEntry.get_scrap_items_balance``."""
+	probe = _probe_unused_loose_item(item_code)
+	if probe.status in (UNUSED_OK, UNUSED_OUT_OF_SCOPE):
+		return probe.target
+	frappe.throw(probe.message, title=probe.title)
+
+
+def _create_scrap_batch(
+	item_code, employee=None, company=None, inventory_type=None, customer=None
+):
+	"""Create a new batch of ``item_code`` tagged custom_batch_type = 'Unused/Loose Material'.
+
+	``employee`` stamps Batch.custom_employee so it can be fetched employee-wise in
+	Unused/Loose Material Refining. The batch is created directly (before any Stock Entry
+	links it), so the usual SE->batch employee copy never runs; stamp it explicitly here
+	from the operation's employee. ``company`` and the ownership pair are stamped for the
+	same reason — nothing else will fill them in for an auto-created repack.
 
 	Returns None for non-batch items (they cannot carry the Scrap marker)."""
 	if not frappe.db.get_value("Item", item_code, "has_batch_no"):
 		return None
 	batch = frappe.new_doc("Batch")
 	batch.item = item_code
-	batch.custom_batch_type = "Scrap"
+	batch.custom_batch_type = BATCH_TYPE_UNUSED
+	if employee:
+		batch.custom_employee = employee
+	if company:
+		# get_batch_company_abbr falls back to the SESSION user's default company and
+		# throws when none resolves, so the batch id would carry the wrong abbreviation
+		# on a multi-company site (and fail outright in a background job). Stamp the
+		# operation's own company, as RefiningEntry._auto_create_batch does.
+		batch.custom_company = company
+	if inventory_type:
+		# Material issued from a customer's batch and returned unused is still that
+		# customer's. The repack is auto_created, so CustomStockEntry.update_batches
+		# skips the generic batch->row ownership backfill and doc_events/stock_entry
+		# would default the rows to "Regular Stock" — carry it explicitly.
+		batch.custom_inventory_type = inventory_type
+		batch.custom_customer = customer
 	# Set batch_type before insert so it persists whether the item auto-names the
 	# batch (batch_number_series) or we generate an id below.
 	if not frappe.db.get_value("Item", item_code, "batch_number_series"):
@@ -4890,21 +5652,75 @@ def _create_scrap_batch(item_code):
 	return batch.name
 
 
-def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
-	"""Repack the just-received scrap into fresh custom_batch_type='Scrap' batches.
+def _unused_row_ownership(row, target_item):
+	"""``(source_ownership, target_ownership)``, each an ``(inventory_type, customer)``.
 
-	Same item code, same warehouse, same qty — only the batch changes, so the scrap
-	is isolated from ordinary manufacturing stock under a Scrap-typed batch."""
+	The two sides are resolved SEPARATELY and are not always equal.
+
+	The **source** side comes from the consumed batch through the app's single source of
+	truth (``resolve_batch_ownership``) and is what the consume row must carry. Stock is
+	deducted along the ``inventory_type`` dimension, and this Stock Entry is
+	``auto_created`` — so ``CustomStockEntry.update_batches`` skips the usual batch->row
+	backfill and whatever is stamped here is what reaches the Stock Ledger Entry. Consuming
+	a Customer Goods batch under "Regular Stock" would deduct the wrong dimension.
+
+	The **target** side is the same ownership, EXCEPT that it downgrades to Regular Stock
+	when the target item is not allowed to hold customer goods. The target is a different
+	item from the source, so the source carrying that flag guarantees nothing, and minting
+	a Customer Goods batch for an item without it hard-fails in
+	``Batch.update_inventory_dimentions``. That downgrade is a real change of ownership and
+	is announced, not silent."""
+	from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+		resolve_batch_ownership,
+	)
+
+	inventory_type, customer = resolve_batch_ownership(row)
+	source = (inventory_type, customer)
+	if inventory_type not in ("Customer Goods", "Customer Stock"):
+		return source, source
+	if not frappe.db.get_value(
+		"Item", target_item, "custom_inventory_type_can_be_customer_goods"
+	):
+		frappe.msgprint(
+			_(
+				"{0} cannot hold customer goods, so the unused/loose material received "
+				"from {1} is booked as Regular Stock. Enable <b>Inventory Type Can Be "
+				"Customer Goods</b> on {0} to retain the customer's ownership."
+			).format(frappe.bold(target_item), frappe.bold(row.item_code)),
+			indicator="orange",
+			alert=True,
+		)
+		return source, ("Regular Stock", None)
+	return source, source
+
+
+def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
+	"""Repack the just-received material onto its unused/loose item and a tagged batch.
+
+	Same warehouse and same qty; the batch ALWAYS changes (to a fresh one tagged
+	``custom_batch_type = "Unused/Loose Material"``) and the item code changes too whenever
+	``_resolve_unused_loose_item`` maps it — metal becomes the matching Metal Unused/Loose
+	Material variant and findings the matching Finding Unused/Loose Material variant, at the
+	same purity and colour. Rows with no mapping (D/G/O, alloys) keep their own item code and
+	are isolated by the batch tag alone, as before."""
 	se = frappe.get_doc("Stock Entry", receive_se_name)
 	if cint(se.docstatus) != 1:
 		return
 
-	scrap_request_id = f"{request_id or receive_se_name}-scrap"
+	base_id = (request_id or receive_se_name)[:30]
+	scrap_request_id = f"{base_id}-scrap"
 	# Idempotent: the receive is idempotent by request_id, so its scrap repack must
-	# be too — never double-convert the same received material.
+	# be too — never double-convert the same received material. Both keys are checked:
+	# the request-derived one is what a first pass writes, and the SE-derived one covers
+	# a replay that reached us with a different request_id for the same receive.
+	# custom_request_id is Data(36), so "-scrap" must stay within the 30-char prefix.
+	fallback_request_id = f"{receive_se_name[:30]}-scrap"
 	if frappe.db.exists(
 		"Stock Entry",
-		{"custom_request_id": scrap_request_id, "docstatus": ["!=", 2]},
+		{
+			"custom_request_id": ["in", list({scrap_request_id, fallback_request_id})],
+			"docstatus": ["!=", 2],
+		},
 	):
 		return
 
@@ -4922,8 +5738,8 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 		if skipped_non_batch:
 			frappe.msgprint(
 				_(
-					"Received scrap for non-batch item(s) {0} could not be tagged as "
-					"Scrap and will not be available for Scrap Refining."
+					"Received unused/loose material for non-batch item(s) {0} could not "
+					"be tagged and will not be available for Unused/Loose Material Refining."
 				).format(", ".join(sorted(skipped_non_batch))),
 				indicator="orange",
 				alert=True,
@@ -4936,14 +5752,49 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	repack.company = se.company
 	repack.auto_created = 1
 	repack.custom_request_id = scrap_request_id
+	op_employee = None
 	if getattr(se, "manufacturing_operation", None):
 		repack.manufacturing_operation = se.manufacturing_operation
-	repack.remarks = _("Scrap batch conversion for {0}").format(receive_se_name)
+		# The operation's karigar is the employee responsible for this material; stamp it
+		# on the minted batches so the refining fetch can be scoped employee-wise.
+		op_employee = frappe.db.get_value(
+			"Manufacturing Operation", se.manufacturing_operation, "employee"
+		)
+	repack.remarks = _("Unused/Loose Material batch conversion for {0}").format(
+		receive_se_name
+	)
 
 	for item in rows:
-		new_batch = _create_scrap_batch(item.item_code)
+		target_item = _resolve_unused_loose_item(item.item_code) or item.item_code
+		(src_type, src_customer), (out_type, out_customer) = _unused_row_ownership(
+			item, target_item
+		)
+		new_batch = _create_scrap_batch(
+			target_item,
+			employee=op_employee,
+			company=se.company,
+			inventory_type=out_type,
+			customer=out_customer,
+		)
 		if not new_batch:
+			if target_item != item.item_code:
+				# Unreachable: _probe_unused_loose_item blocks a non-batch-tracked target
+				# before any stock moves. Kept so a future edit cannot quietly start
+				# producing material onto an untagged, unfetchable item.
+				frappe.throw(
+					_(
+						"Unused/Loose Material item {0} is not batch-tracked, so the "
+						"material received from {1} cannot be tagged for refining. Please "
+						"enable Has Batch No on {0}."
+					).format(frappe.bold(target_item), frappe.bold(item.item_code))
+				)
 			continue
+		# Fetch valuation rate so the finished-good row has a valid basic_rate
+		# when set_basic_rate_manually is enabled (required by ERPNext when
+		# multiple finished goods exist in a single Repack entry). Source and target
+		# share a purity, so the same rate conserves value and the Repack posts no
+		# Stock Adjustment.
+		val_rate = flt(item.valuation_rate or item.basic_rate or 0)
 		# Consume the received material from its current (ordinary) batch...
 		repack.append(
 			"items",
@@ -4955,19 +5806,34 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 				"batch_no": item.batch_no,
 				"use_serial_batch_fields": 1,
 				"is_finished_item": 0,
+				"set_basic_rate_manually": 1,
+				"basic_rate": val_rate,
+				# The consumed batch's OWN dimension — stock is deducted along it.
+				"inventory_type": src_type,
+				"customer": src_customer,
 			},
 		)
-		# ...and re-produce the same qty of the same item under the Scrap batch.
+		# ...and produce the same qty onto the unused/loose item under the tagged batch.
+		# The target's stock_uom is pinned equal to the source's by the probe, so the
+		# received qty carries across without a unit conversion.
 		repack.append(
 			"items",
 			{
-				"item_code": item.item_code,
+				"item_code": target_item,
 				"qty": item.qty,
-				"uom": item.uom or "Gram",
+				"uom": frappe.db.get_value("Item", target_item, "stock_uom")
+				or item.uom
+				or "Gram",
 				"t_warehouse": item.t_warehouse,
 				"batch_no": new_batch,
 				"use_serial_batch_fields": 1,
 				"is_finished_item": 1,
+				"set_basic_rate_manually": 1,
+				"basic_rate": val_rate,
+				# Matches the minted batch: the source's ownership, downgraded to Regular
+				# Stock only when the target item cannot hold customer goods.
+				"inventory_type": out_type,
+				"customer": out_customer,
 			},
 		)
 
@@ -4980,8 +5846,8 @@ def _convert_received_scrap_to_scrap_batch(receive_se_name, request_id=None):
 	if skipped_non_batch:
 		frappe.msgprint(
 			_(
-				"Received scrap for non-batch item(s) {0} could not be tagged as "
-				"Scrap and will not be available for Scrap Refining."
+				"Received unused/loose material for non-batch item(s) {0} could not "
+				"be tagged and will not be available for Unused/Loose Material Refining."
 			).format(", ".join(sorted(skipped_non_batch))),
 			indicator="orange",
 			alert=True,

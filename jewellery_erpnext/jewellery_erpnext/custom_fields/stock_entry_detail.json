@@ -559,6 +559,20 @@
    "no_copy": 1,
    "options": "Company:company:default_currency",
    "read_only": 1
+  },
+  {
+   "description": "Ownership lane this row belongs to, as '<inventory type>|<customer>'. Stamped by Metal Conversions so child-batch minting and Batch Rate origin entries stay scoped to one lane.",
+   "dt": "Stock Entry Detail",
+   "fieldname": "custom_conversion_lane",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "insert_after": "inventory_type",
+   "label": "Conversion Lane",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "print_hide": 1,
+   "read_only": 1,
+   "translatable": 0
   }
  ]
 }

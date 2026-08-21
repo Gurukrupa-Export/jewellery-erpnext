@@ -1,5 +1,4 @@
 import copy
-import json
 
 # import erpnext
 import frappe
@@ -22,6 +21,11 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.subcontracting_utils import (
 	create_subcontracting_doc,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
+	SAMPLE_ALLOWED_SE_TYPES,
+	is_customer_sample_batch,
+)
+from jewellery_erpnext.utils import bulk_map
 
 # from jewellery_erpnext.utils import get_item_from_attribute
 
@@ -193,17 +197,46 @@ def get_fifo_batches(self, row, consumed=None):
 
 	if not row.inventory_type:
 		row.inventory_type = "Regular Stock"
+	# Prefetch the Batch fields read per batch in the loop below (custom_inventory_type
+	# is read up to 3x per batch across the branches, custom_customer once) in a single
+	# query instead of 2-3 get_value calls per batch. Same None/missing semantics as
+	# frappe.db.get_value via ``(batch_info.get(name) or {}).get(field)``.
+	# Only the customer-goods branches and the only_regular_stock_allowed gate read it,
+	# so the ordinary Regular Stock path keeps issuing zero Batch queries; every reader
+	# is behind an ``and`` that short-circuits before touching an empty map.
+	batch_info = {}
+	if (
+		row.inventory_type in ["Customer Goods", "Customer Stock"]
+		or self.flags.only_regular_stock_allowed
+	):
+		batch_info = bulk_map(
+			"Batch",
+			[batch.batch_no for batch in batch_data],
+			["custom_inventory_type", "custom_customer"],
+		)
 	for batch in batch_data:
 		# reduce this batch's availability by what earlier rows already took
 		batch_key = (warehouse, batch.batch_no)
 		batch.qty = flt(batch.qty - consumed.get(batch_key, 0), 4)
 		if batch.qty <= 0:
 			continue
+		# Never auto-allocate Customer Sample Goods stock into a Work-Order use /
+		# issue-to-floor / manufacturing consumption row. Samples stay FIFO-eligible only
+		# for the Customer Goods movements (Received / Issue / Transfer). The
+		# stock_entry_type truthiness gate leaves non-Stock-Entry callers (e.g. Metal /
+		# Diamond Conversion, whose doc has no stock_entry_type) untouched. The loud block
+		# for a hand-typed sample batch is validate_sample_goods_not_consumed.
+		if (
+			self.get("stock_entry_type")
+			and self.get("stock_entry_type") not in SAMPLE_ALLOWED_SE_TYPES
+			and is_customer_sample_batch(batch.batch_no)
+		):
+			continue
 		if (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
-			and frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type")
+			and (batch_info.get(batch.batch_no) or {}).get("custom_inventory_type")
 			== row.inventory_type
-			and frappe.db.get_value("Batch", batch.batch_no, "custom_customer")
+			and (batch_info.get(batch.batch_no) or {}).get("custom_customer")
 			== row.customer
 		):
 			if total_qty > 0 and batch.qty > 0:
@@ -235,7 +268,7 @@ def get_fifo_batches(self, row, consumed=None):
 
 		elif (
 			row.inventory_type in ["Customer Goods", "Customer Stock"]
-			and frappe.db.get_value("Batch", batch.batch_no, "custom_inventory_type")
+			and (batch_info.get(batch.batch_no) or {}).get("custom_inventory_type")
 			!= row.inventory_type
 			and allow_customer_goods == 1
 		):
@@ -267,9 +300,9 @@ def get_fifo_batches(self, row, consumed=None):
 					total_qty -= batch.qty
 
 		elif row.inventory_type not in ["Customer Goods", "Customer Stock"]:
-			if self.flags.only_regular_stock_allowed and frappe.db.get_value(
-				"Batch", batch.batch_no, "custom_inventory_type"
-			) in ["Customer Goods", "Customer Stock"]:
+			if self.flags.only_regular_stock_allowed and (
+				batch_info.get(batch.batch_no) or {}
+			).get("custom_inventory_type") in ["Customer Goods", "Customer Stock"]:
 				continue
 
 			if total_qty > 0 and batch.qty > 0:

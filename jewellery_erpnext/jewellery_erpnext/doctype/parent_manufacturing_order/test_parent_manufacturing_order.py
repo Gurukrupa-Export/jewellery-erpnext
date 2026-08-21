@@ -4,23 +4,39 @@
 from unittest.mock import patch
 
 import frappe
-from frappe.tests import IntegrationTestCase
+from frappe.tests import IntegrationTestCase, UnitTestCase
 
-from jewellery_erpnext.create_test_data import create_test_data
+from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.customer_product_tolerance_master import (
+	CustomerProductToleranceMaster,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.customer_product_tolerance_master.tolerance_utils import (
+	group_tolerance_rows,
+	metal_group_key,
+	pick_tolerance_row,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.test_manufacturing_plan import (
 	create_sales_order,
 	manufacturing_plan_creation,
 )
+from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils import (
+	update_parent_details,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order import (
 	get_item_code,
+	set_diamond_tolerance_table,
+	set_metal_tolerance_table,
 	validate_mfg_date,
 )
+
+PMO_MODULE = "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.parent_manufacturing_order"
+PMO_UTILS = "jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order.doc_events.utils"
+
+_UNSET = object()
 
 
 class TestParentManufacturingOrder(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.department = frappe.get_value(
 			"Department", {"department_name": "Test_Department"}, "name"
 		)
@@ -485,6 +501,765 @@ def create_man_plan(self):
 	man_plan.branch = self.branch
 	if man_plan.setting_type:
 		man_plan.setting_type = "Close"
+	man_plan.is_subcontracting = "No"
 	man_plan.save()
 	man_plan.submit()
 	return man_plan
+
+
+class FakeToleranceMaster(frappe._dict):
+	pass
+
+
+class FakePMO(frappe._dict):
+	"""Just enough Document surface for the tolerance populators."""
+
+	def set(self, key, value):
+		self[key] = value
+
+	def append(self, key, value):
+		self.setdefault(key, []).append(frappe._dict(value))
+
+
+def _metal_row(**kwargs):
+	row = frappe._dict(
+		weight_type="Net Weight",
+		metal_type=None,
+		range_type="",
+		tolerance_range=0,
+		from_weight=0,
+		to_weight=0,
+		plus_percent=0,
+		minus_percent=0,
+	)
+	row.update(kwargs)
+	return row
+
+
+class TestToleranceBandSelection(UnitTestCase):
+	"""Only the master row whose band covers the BOM weight may reach the PMO."""
+
+	def _run_metal(self, master_rows, bom_gross=0.0, bom_net=15.0, customer="CUST"):
+		pmo = FakePMO(
+			name="PMO-TEST-0001",
+			doctype="Parent Manufacturing Order",
+			customer=customer,
+			custom_tracking_bom="TB-0001",
+			gross_weight=0.0,
+			net_weight=0.0,
+			metal_product_tolerance=[],
+		)
+		master = FakeToleranceMaster(metal_tolerance_table=master_rows)
+		bom = frappe._dict(gross_weight=bom_gross, metal_and_finding_weight=bom_net)
+
+		def fake_get_doc(doctype, name):
+			return master if doctype == "Customer Product Tolerance Master" else bom
+
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+				"parent_manufacturing_order.frappe.db.get_value",
+				return_value="PTM-TEST-0001",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+				"parent_manufacturing_order.frappe.get_doc",
+				side_effect=fake_get_doc,
+			),
+		):
+			set_metal_tolerance_table(pmo)
+		return pmo.metal_product_tolerance
+
+	def test_only_the_covering_band_reaches_the_pmo(self):
+		"""The reported bug: 15 g against 0-50 @7% and 51-100 @5% must yield ONE row."""
+		rows = self._run_metal(
+			[
+				_metal_row(
+					from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+				),
+				_metal_row(
+					from_weight=51, to_weight=100, plus_percent=5, minus_percent=5
+				),
+			],
+			bom_net=15.0,
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].from_tolerance_wt, 13.95)
+		self.assertEqual(rows[0].to_tolerance_wt, 16.05)
+		self.assertEqual(rows[0].standard_tolerance_wt, 15.0)
+		self.assertEqual(rows[0].from_weight, 0)
+		self.assertEqual(rows[0].to_weight, 50)
+
+	def test_higher_weight_picks_the_second_band(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+				),
+				_metal_row(
+					from_weight=51, to_weight=100, plus_percent=5, minus_percent=5
+				),
+			],
+			bom_net=80.0,
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].from_tolerance_wt, 76.0)
+		self.assertEqual(rows[0].to_tolerance_wt, 84.0)
+
+	def test_band_upper_bound_is_inclusive_and_first_row_wins(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+				),
+				_metal_row(
+					from_weight=50, to_weight=100, plus_percent=5, minus_percent=5
+				),
+			],
+			bom_net=50.0,
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].to_tolerance_wt, 53.5)
+
+	def test_zero_to_weight_means_no_upper_bound(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+				),
+				_metal_row(
+					from_weight=50, to_weight=0, plus_percent=5, minus_percent=5
+				),
+			],
+			bom_net=5000.0,
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].to_tolerance_wt, 5250.0)
+
+	def test_gap_between_bands_throws(self):
+		"""50.5 g falls between 0-50 and 51-100: master data must be corrected."""
+		with self.assertRaises(frappe.ValidationError):
+			self._run_metal(
+				[
+					_metal_row(
+						from_weight=0, to_weight=50, plus_percent=7, minus_percent=7
+					),
+					_metal_row(
+						from_weight=51, to_weight=100, plus_percent=5, minus_percent=5
+					),
+				],
+				bom_net=50.5,
+			)
+
+	def test_gross_and_net_groups_each_yield_one_row(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					weight_type="Gross Weight",
+					from_weight=0,
+					to_weight=50,
+					plus_percent=10,
+					minus_percent=10,
+				),
+				_metal_row(
+					weight_type="Net Weight",
+					from_weight=0,
+					to_weight=50,
+					plus_percent=7,
+					minus_percent=7,
+				),
+			],
+			bom_gross=20.0,
+			bom_net=15.0,
+		)
+		self.assertEqual(len(rows), 2)
+		by_type = {row.weight_type: row for row in rows}
+		self.assertEqual(by_type["Gross Weight"].standard_tolerance_wt, 20.0)
+		self.assertEqual(by_type["Net Weight"].standard_tolerance_wt, 15.0)
+
+	def test_metal_types_are_independent_groups(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					metal_type="Gold",
+					from_weight=0,
+					to_weight=50,
+					plus_percent=7,
+					minus_percent=7,
+				),
+				_metal_row(
+					metal_type="Silver",
+					from_weight=0,
+					to_weight=50,
+					plus_percent=5,
+					minus_percent=5,
+				),
+			],
+			bom_net=15.0,
+		)
+		self.assertEqual(len(rows), 2)
+		self.assertEqual({row.metal_type for row in rows}, {"Gold", "Silver"})
+
+	def test_weight_range_uses_flat_tolerance_range(self):
+		rows = self._run_metal(
+			[
+				_metal_row(
+					range_type="Weight Range",
+					from_weight=0,
+					to_weight=50,
+					tolerance_range=2,
+				)
+			],
+			bom_net=15.0,
+		)
+		self.assertEqual(rows[0].from_tolerance_wt, 13.0)
+		self.assertEqual(rows[0].to_tolerance_wt, 17.0)
+
+	def test_rebuilds_instead_of_appending(self):
+		"""An amended PMO arrives with the old rows; submit must not double them."""
+		master_rows = [
+			_metal_row(from_weight=0, to_weight=50, plus_percent=7, minus_percent=7)
+		]
+		self.assertEqual(len(self._run_metal(master_rows)), 1)
+		self.assertEqual(len(self._run_metal(master_rows)), 1)
+
+	def test_no_master_leaves_the_table_untouched(self):
+		pmo = FakePMO(customer="CUST", metal_product_tolerance=["existing"])
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+			"parent_manufacturing_order.frappe.db.get_value",
+			return_value=None,
+		):
+			set_metal_tolerance_table(pmo)
+		self.assertEqual(pmo.metal_product_tolerance, ["existing"])
+
+
+class TestToleranceUtils(UnitTestCase):
+	def test_pick_returns_none_on_gap(self):
+		rows = [
+			frappe._dict(from_weight=0, to_weight=50),
+			frappe._dict(from_weight=51, to_weight=100),
+		]
+		self.assertIsNone(pick_tolerance_row(rows, 50.5))
+		self.assertIsNotNone(pick_tolerance_row(rows, 50))
+		self.assertIsNotNone(pick_tolerance_row(rows, 51))
+
+	def test_bandless_row_covers_everything(self):
+		rows = [frappe._dict(from_diamond=0, to_diamond=0)]
+		self.assertIsNotNone(
+			pick_tolerance_row(rows, 999, "from_diamond", "to_diamond")
+		)
+
+	def test_group_preserves_document_order(self):
+		rows = [
+			frappe._dict(weight_type="Net Weight", metal_type="Gold", idx=1),
+			frappe._dict(weight_type="Net Weight", metal_type="Gold", idx=2),
+			frappe._dict(weight_type="Gross Weight", metal_type="Gold", idx=3),
+		]
+		groups = group_tolerance_rows(rows, metal_group_key)
+		self.assertEqual(len(groups), 2)
+		self.assertEqual([row.idx for row in groups[("Net Weight", "Gold")]], [1, 2])
+
+
+class TestToleranceMasterBandValidation(UnitTestCase):
+	"""Band sanity rules on Customer Product Tolerance Master.
+
+	Housed here rather than in test_customer_product_tolerance_master.py because CI runs
+	a curated allowlist -- `--doctype "Parent Manufacturing Order"` already loads this
+	module, while nothing runs the tolerance master's own test file. These rules decide
+	which bands set_metal_tolerance_table can resolve, so this is their nearest home.
+	"""
+
+	def _doc(
+		self, bands, table="metal_tolerance_table", frm="from_weight", to="to_weight"
+	):
+		doc = frappe._dict(
+			metal_tolerance_table=[],
+			diamond_tolerance_table=[],
+			gemstone_tolerance_table=[],
+		)
+		doc[table] = [
+			frappe._dict(
+				{
+					"weight_type": "Net Weight",
+					"metal_type": "Gold",
+					frm: a,
+					to: b,
+					"idx": i + 1,
+				}
+			)
+			for i, (a, b) in enumerate(bands)
+		]
+		return doc
+
+	def _validate(self, doc):
+		CustomerProductToleranceMaster.validate_tolerance_bands(doc)
+
+	def test_real_master_schedules_still_save(self):
+		"""Live gk/production band shapes must not be rejected."""
+		for label, bands in {
+			"MHCU0008 (11 contiguous bands, some touching)": [
+				(0, 1.5),
+				(1.51, 3),
+				(3, 5),
+				(5, 10),
+				(10, 15),
+				(15, 25),
+				(25, 50),
+				(50, 75),
+				(75, 100),
+				(100, 150),
+				(150, 99999),
+			],
+			"MHCU0009 (open-ended top band)": [
+				(0, 4.999),
+				(5, 14.999),
+				(15, 49.999),
+				(50, 0),
+			],
+			"GJCU0009 (the reported master, with a gap)": [(0, 50), (51, 100)],
+		}.items():
+			with self.subTest(master=label):
+				self._validate(self._doc(bands))
+
+	def test_overlapping_bands_are_rejected(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(self._doc([(0, 50), (20, 80)]))
+
+	def test_from_greater_than_to_is_rejected(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(self._doc([(50, 10)]))
+
+	def test_two_identical_bands_are_rejected(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._validate(self._doc([(0, 50), (0, 50)]))
+
+	def test_different_groups_may_reuse_the_same_band(self):
+		"""Gold 0-50 and Silver 0-50 are independent schedules, not an overlap."""
+		doc = frappe._dict(
+			diamond_tolerance_table=[],
+			gemstone_tolerance_table=[],
+			metal_tolerance_table=[
+				frappe._dict(
+					weight_type="Net Weight",
+					metal_type="Gold",
+					from_weight=0,
+					to_weight=50,
+					idx=1,
+				),
+				frappe._dict(
+					weight_type="Net Weight",
+					metal_type="Silver",
+					from_weight=0,
+					to_weight=50,
+					idx=2,
+				),
+				frappe._dict(
+					weight_type="Gross Weight",
+					metal_type="Gold",
+					from_weight=0,
+					to_weight=50,
+					idx=3,
+				),
+			],
+		)
+		self._validate(doc)
+
+	def test_touching_bands_are_allowed(self):
+		"""...-50 and 50-... share an endpoint; pick_tolerance_row takes the first."""
+		self._validate(self._doc([(0, 50), (50, 100)]))
+
+
+def _bom_diamond(**kwargs):
+	row = frappe._dict(
+		diamond_type="Natural",
+		diamond_sieve_size="+4.5-5",
+		sieve_size_range="Group A",
+		quantity=1.0,
+		size_in_mm=1.75,
+	)
+	row.update(kwargs)
+	return row
+
+
+def _diamond_band(**kwargs):
+	row = frappe._dict(
+		weight_type="MM Size wise",
+		diamond_type=None,
+		sieve_size="+4.5-5",
+		sieve_size_range=None,
+		from_diamond=0,
+		to_diamond=0,
+		plus_percent=10,
+		minus_percent=10,
+	)
+	row.update(kwargs)
+	return row
+
+
+class TestDiamondToleranceScoping(UnitTestCase):
+	"""A diamond band must aggregate only the stones it is scoped to.
+
+	No test previously exercised a populated diamond_tolerance_table at all, which is
+	how the missing diamond_type filter went unnoticed.
+	"""
+
+	def _run(self, master_rows, bom_rows, diamond_weight=0.0):
+		pmo = FakePMO(
+			name="PMO-TEST-0001",
+			doctype="Parent Manufacturing Order",
+			customer="CUST",
+			custom_tracking_bom="TB-0001",
+			diamond_weight=diamond_weight,
+			diamond_product_tolerance=[],
+		)
+		master = FakeToleranceMaster(diamond_tolerance_table=master_rows)
+		bom = frappe._dict(diamond_detail=bom_rows)
+
+		def fake_get_doc(doctype, name):
+			return master if doctype == "Customer Product Tolerance Master" else bom
+
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+				"parent_manufacturing_order.frappe.db.get_value",
+				return_value="PTM-TEST-0001",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.parent_manufacturing_order."
+				"parent_manufacturing_order.frappe.get_doc",
+				side_effect=fake_get_doc,
+			),
+		):
+			set_diamond_tolerance_table(pmo)
+		return pmo.diamond_product_tolerance
+
+	def test_each_type_is_measured_on_its_own_stones(self):
+		"""The reported bug: both bands summed 2 + 3 = 5 cts instead of 2 and 3."""
+		rows = self._run(
+			[
+				_diamond_band(diamond_type="Natural"),
+				_diamond_band(diamond_type="LGD"),
+			],
+			[
+				_bom_diamond(diamond_type="Natural", quantity=2.0),
+				_bom_diamond(diamond_type="LGD", quantity=3.0),
+			],
+		)
+		self.assertEqual(len(rows), 2)
+		by_type = {row.diamond_type: row for row in rows}
+		self.assertEqual(by_type["Natural"].standard_tolerance_wt, 2.0)
+		self.assertEqual(by_type["LGD"].standard_tolerance_wt, 3.0)
+		self.assertEqual(by_type["Natural"].from_tolerance_wt, 1.8)
+		self.assertEqual(by_type["Natural"].to_tolerance_wt, 2.2)
+
+	def test_band_for_a_type_absent_from_the_bom_emits_no_row(self):
+		rows = self._run(
+			[_diamond_band(diamond_type="LGD")],
+			[_bom_diamond(diamond_type="Natural", quantity=2.0)],
+		)
+		self.assertEqual(rows, [])
+
+	def test_universal_still_aggregates_every_type(self):
+		rows = self._run(
+			[
+				_diamond_band(
+					weight_type="Universal", diamond_type=None, sieve_size=None
+				)
+			],
+			[
+				_bom_diamond(diamond_type="Natural", quantity=2.0),
+				_bom_diamond(diamond_type="LGD", quantity=3.0),
+			],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].standard_tolerance_wt, 5.0)
+
+	def test_weight_wise_scoped_by_type_ignores_sieve(self):
+		rows = self._run(
+			[
+				_diamond_band(
+					weight_type="Weight wise", diamond_type="Natural", sieve_size=None
+				)
+			],
+			[
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+4.5-5", quantity=2.0
+				),
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+6-7", quantity=1.0
+				),
+				_bom_diamond(
+					diamond_type="LGD", diamond_sieve_size="+4.5-5", quantity=9.0
+				),
+			],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].standard_tolerance_wt, 3.0)
+
+	def test_sieve_scope_still_applies_alongside_type(self):
+		rows = self._run(
+			[_diamond_band(diamond_type="Natural", sieve_size="+4.5-5")],
+			[
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+4.5-5", quantity=2.0
+				),
+				_bom_diamond(
+					diamond_type="Natural", diamond_sieve_size="+6-7", quantity=4.0
+				),
+				_bom_diamond(
+					diamond_type="LGD", diamond_sieve_size="+4.5-5", quantity=8.0
+				),
+			],
+		)
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].standard_tolerance_wt, 2.0)
+
+	def test_size_in_mm_only_for_mm_size_wise(self):
+		mm = self._run(
+			[_diamond_band()],
+			[_bom_diamond(quantity=2.0, size_in_mm=1.75)],
+		)
+		self.assertEqual(mm[0].size_in_mm, 1.75)
+
+		for weight_type, extra in (
+			("Group Size wise", {"sieve_size": None, "sieve_size_range": "Group A"}),
+			("Weight wise", {"sieve_size": None}),
+			("Universal", {"sieve_size": None}),
+		):
+			with self.subTest(weight_type=weight_type):
+				rows = self._run(
+					[_diamond_band(weight_type=weight_type, **extra)],
+					[
+						_bom_diamond(quantity=2.0, size_in_mm=1.75),
+						_bom_diamond(quantity=1.0, size_in_mm=2.5),
+					],
+				)
+				self.assertEqual(rows[0].size_in_mm, 0)
+
+
+class TestParentDetailsRefCustomer(UnitTestCase):
+	"""update_parent_details walks sales order item -> PO item -> manufacturing plan row to
+	reach the quotation the order came from, and takes Ref Customer from it."""
+
+	SO_ITEM = "SO-ITEM-CHILD"
+	PO_ITEM = "PO-ITEM-1"
+	MP_ROW = "MP-ROW-1"
+	PARENT_SO_ITEM = "SO-ITEM-PARENT"
+	PARENT_SALES_ORDER = "SO-PARENT"
+	PARENT_MP = "MP-1"
+	PURCHASE_ORDER = "PUR-ORD-1"
+	OWN_QUOTATION = "QTN-OWN"
+
+	def _stub_fields(self, row, fieldname, as_dict):
+		"""Answer a get_value the way frappe would, for whichever call shape was used.
+
+		One combined read or a read per field are both fine -- how many round trips the walk
+		takes is not what these tests are about. Asking for a field the fixture does not model
+		still fails, so a wrong field name cannot pass unnoticed.
+		"""
+		if isinstance(fieldname, str):
+			self.assertIn(fieldname, row)
+			return row[fieldname]
+
+		for field in fieldname:
+			self.assertIn(field, row)
+		values = [row[field] for field in fieldname]
+		return frappe._dict(zip(fieldname, values)) if as_dict else tuple(values)
+
+	def _patched_chain(
+		self,
+		quotation="QTN-1",
+		quotation_ref_customer=None,
+		docname=_UNSET,
+		po_row=_UNSET,
+		m_plan_row=_UNSET,
+		po_ref_customer=None,
+		own_quotation_ref_customer=None,
+	):
+		"""Stub the lookup chain; docname defaults to the parent sales order item.
+
+		Every branch pins the *record* it is asked for, and an unrecognised name fails the test
+		outright. A stub that answers regardless of ``name`` would hand back fixture data for a
+		lookup against the wrong id -- exactly the regression these tests exist to catch, since
+		the whole point of the walk is which record each step reaches. The query *shape* is
+		deliberately not pinned: see _stub_fields.
+		"""
+		mfg_plan_details = frappe._dict(
+			parent=self.PARENT_MP,
+			sales_order=self.PARENT_SALES_ORDER,
+			docname=self.PARENT_SO_ITEM if docname is _UNSET else docname,
+		)
+		po_item = frappe._dict(
+			parent=self.PURCHASE_ORDER,
+			custom_m_plan_details=self.MP_ROW if m_plan_row is _UNSET else m_plan_row,
+		)
+
+		def get_value(doctype, name=None, fieldname=None, **kwargs):
+			if doctype == "Sales Order Item" and name == self.SO_ITEM:
+				self.assertEqual(fieldname, "custom_po_details")
+				return self.PO_ITEM if po_row is _UNSET else po_row
+			if doctype == "Sales Order Item" and name == self.PARENT_SO_ITEM:
+				self.assertEqual(fieldname, "prevdoc_docname")
+				return quotation
+
+			if doctype == "Purchase Order Item":
+				self.assertEqual(name, self.PO_ITEM if po_row is _UNSET else po_row)
+				return self._stub_fields(po_item, fieldname, kwargs.get("as_dict"))
+
+			if doctype == "Manufacturing Plan Table":
+				# the row the walk actually read off po_item, not a fixed id -- the walk must
+				# follow the link it found rather than one hardcoded here
+				self.assertEqual(name, po_item.custom_m_plan_details)
+				return mfg_plan_details
+
+			if doctype == "Quotation" and name == self.OWN_QUOTATION:
+				return own_quotation_ref_customer
+			if doctype == "Quotation":
+				# only the quotation this walk resolved may be read -- a stale parent_quotation
+				# left on the document must never reach here
+				self.assertEqual(name, quotation)
+				return quotation_ref_customer
+
+			if doctype == "Purchase Order":
+				self.assertEqual(name, self.PURCHASE_ORDER)
+				return po_ref_customer
+
+			if doctype == "Sales Order":
+				# likewise for a stale parent_sales_order
+				self.assertEqual(name, self.PARENT_SALES_ORDER)
+				return "CUST-FROM-SO"
+
+			self.fail(f"unexpected lookup: {doctype} {name}")
+
+		return patch(f"{PMO_UTILS}.frappe.db.get_value", side_effect=get_value)
+
+	def test_ref_customer_comes_from_the_parent_quotation(self):
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(quotation_ref_customer="CUST-FROM-QTN"):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.parent_quotation, "QTN-1")
+		self.assertEqual(doc.parent_sales_order, "SO-PARENT")
+		self.assertEqual(doc.parent_mp, "MP-1")
+		self.assertEqual(doc.ref_customer, "CUST-FROM-QTN")
+
+	def test_ref_customer_falls_back_to_sales_order_customer(self):
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(quotation_ref_customer=None):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.parent_quotation, "QTN-1")
+		self.assertEqual(doc.ref_customer, "CUST-FROM-SO")
+
+	def test_ref_customer_falls_back_when_there_is_no_parent_quotation(self):
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(docname=None):
+			update_parent_details(doc)
+
+		self.assertIsNone(doc.parent_quotation)
+		self.assertEqual(doc.ref_customer, "CUST-FROM-SO")
+
+	def test_ref_customer_comes_from_the_purchase_order_when_the_m_plan_link_is_missing(
+		self,
+	):
+		# Purchase Order Items raised before custom_m_plan_details existed have no link to
+		# follow, so the walk stops one hop short of the manufacturing plan row
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(m_plan_row=None, po_ref_customer="CUST-FROM-PO"):
+			update_parent_details(doc)
+
+		self.assertIsNone(doc.parent_quotation)
+		self.assertIsNone(doc.parent_sales_order)
+		self.assertEqual(doc.ref_customer, "CUST-FROM-PO")
+
+	def test_the_walk_follows_the_m_plan_link_it_read(self):
+		# the manufacturing plan row is whatever the Purchase Order Item points at; the walk must
+		# follow that link rather than any id fixed in advance
+		doc = frappe._dict(sales_order_item=self.SO_ITEM)
+
+		with self._patched_chain(
+			m_plan_row="MP-ROW-ALT", quotation_ref_customer="CUST-FROM-QTN"
+		):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.parent_mp, self.PARENT_MP)
+		self.assertEqual(doc.ref_customer, "CUST-FROM-QTN")
+
+	def test_ref_customer_comes_from_its_own_quotation_when_the_walk_never_starts(self):
+		# no custom_po_details on the sales order line, so the walk exits at its first guard
+		doc = frappe._dict(sales_order_item=self.SO_ITEM, quotation=self.OWN_QUOTATION)
+
+		with self._patched_chain(
+			po_row=None, own_quotation_ref_customer="CUST-FROM-OWN-QTN"
+		):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-FROM-OWN-QTN")
+
+	def test_the_parent_quotation_outranks_the_coarser_sources(self):
+		# a Purchase Order carries one Ref Customer for every row on it, so the per-line
+		# sources must win wherever they resolve
+		doc = frappe._dict(sales_order_item=self.SO_ITEM, quotation=self.OWN_QUOTATION)
+
+		with self._patched_chain(
+			quotation_ref_customer="CUST-FROM-QTN",
+			po_ref_customer="CUST-FROM-PO",
+			own_quotation_ref_customer="CUST-FROM-OWN-QTN",
+		):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-FROM-QTN")
+
+	def test_a_stale_parent_quotation_loses_to_the_current_walk(self):
+		# parent_quotation is not read-only and survives an early exit, so an earlier save can
+		# leave one behind; only what this walk re-establishes may feed ref_customer
+		doc = frappe._dict(sales_order_item=self.SO_ITEM, parent_quotation="QTN-STALE")
+
+		# reading QTN-STALE trips the stub, which answers only for the walk's own quotation
+		with self._patched_chain(m_plan_row=None, po_ref_customer="CUST-FROM-PO"):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-FROM-PO")
+
+	def test_stale_parent_links_lose_to_the_orders_own_quotation(self):
+		doc = frappe._dict(
+			sales_order_item=self.SO_ITEM,
+			parent_quotation="QTN-STALE",
+			parent_sales_order="SO-STALE",
+			quotation=self.OWN_QUOTATION,
+		)
+
+		# QTN-STALE and SO-STALE are both unknown to the stub, so consulting either fails the
+		# test rather than quietly returning a plausible customer
+		with self._patched_chain(
+			po_row=None, own_quotation_ref_customer="CUST-FROM-OWN-QTN"
+		):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-FROM-OWN-QTN")
+
+	def test_an_unresolvable_chain_leaves_ref_customer_alone(self):
+		# the field is not read-only, so a save must not wipe a value set by hand
+		doc = frappe._dict(sales_order_item=self.SO_ITEM, ref_customer="CUST-BY-HAND")
+
+		with self._patched_chain(po_row=None):
+			update_parent_details(doc)
+
+		self.assertEqual(doc.ref_customer, "CUST-BY-HAND")
+
+	def test_before_save_resolves_parent_details_on_insert(self):
+		doc = frappe.new_doc("Parent Manufacturing Order")
+		self.assertTrue(doc.is_new())
+
+		with (
+			patch(f"{PMO_MODULE}.update_parent_details") as update_parent,
+			patch(f"{PMO_MODULE}.resolve_diamond_grade", return_value=None),
+		):
+			doc.before_save()
+
+		update_parent.assert_called_once_with(doc)

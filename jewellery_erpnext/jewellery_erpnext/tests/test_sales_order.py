@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import frappe
 from erpnext.selling.doctype.quotation.quotation import make_sales_order
@@ -7,23 +7,25 @@ from frappe.tests import IntegrationTestCase
 from frappe.utils import add_days
 from gke_customization.gke_order_forms.doctype.order.order import make_quotation_batch
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doc_events.quotation import (
 	create_tracking_bom_directly,
 )
 from jewellery_erpnext.jewellery_erpnext.doc_events.sales_order import (
+	_get_bom_context,
 	before_submit,
 	validate_sales_type,
 )
 from jewellery_erpnext.jewellery_erpnext.tests.test_quotation import (
 	create_order,
 )
+from jewellery_erpnext.patches.add_sales_order_precision_fields import (
+	execute as provision_precision_fields,
+)
 
 
 class TestSalesOrder(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 		cls.department = frappe.get_value(
 			"Department",
@@ -146,6 +148,85 @@ class TestSalesOrder(IntegrationTestCase):
 
 	def tearDown(self):
 		return super().tearDown()
+
+
+_SO_MODULE = "jewellery_erpnext.jewellery_erpnext.doc_events.sales_order"
+
+
+class TestSalesOrderPrecisionFields(IntegrationTestCase):
+	def test_patch_provisions_precision_fields(self):
+		# Idempotent: a no-op once the fields already exist.
+		provision_precision_fields()
+
+		meta = frappe.get_meta("Sales Order")
+		for fieldname in ("custom_precision", "custom_precision_for_stone"):
+			self.assertTrue(
+				meta.has_field(fieldname),
+				f"Sales Order.{fieldname} is missing -- _get_bom_context would raise "
+				"AttributeError on every Sales Order save",
+			)
+			self.assertTrue(
+				frappe.db.has_column("Sales Order", fieldname),
+				f"Sales Order.{fieldname} column is missing on the DB",
+			)
+
+	def test_bom_context_defaults_to_3_when_override_off(self):
+		# Customer precision fields all unset (None) and no SO override checkbox.
+		with patch(
+			f"{_SO_MODULE}.frappe.db.get_single_value", MagicMock(return_value=3)
+		), patch(
+			f"{_SO_MODULE}.frappe.db.get_value",
+			MagicMock(return_value=("Internal", 3, None, None, None, None)),
+		):
+			ctx = _get_bom_context(frappe._dict(customer="Test"))
+
+		# .get("custom_precision") is falsy -> Customer value (None) -> default 3
+		self.assertEqual(ctx.metal_precision, 3)
+		self.assertEqual(ctx.stone_precision, 3)
+
+	def test_bom_context_honours_customer_value_when_override_off(self):
+		with patch(
+			f"{_SO_MODULE}.frappe.db.get_single_value", MagicMock(return_value=3)
+		), patch(
+			f"{_SO_MODULE}.frappe.db.get_value",
+			MagicMock(return_value=("Internal", 4, 5, 6, None, None)),
+		):
+			ctx = _get_bom_context(frappe._dict(customer="Test"))
+
+		# Override off -> the Customer's configured metal/stone precision wins.
+		self.assertEqual(ctx.metal_precision, 5)
+		self.assertEqual(ctx.stone_precision, 6)
+
+	def test_bom_context_override_collapses_to_3(self):
+		so = frappe._dict(
+			customer="Test", custom_precision=1, custom_precision_for_stone=1
+		)
+		with patch(
+			f"{_SO_MODULE}.frappe.db.get_single_value", MagicMock(return_value=3)
+		), patch(
+			f"{_SO_MODULE}.frappe.db.get_value",
+			MagicMock(return_value=("Internal", 4, 5, 6, None, None)),
+		):
+			ctx = _get_bom_context(so)
+
+		# Checkbox on -> forced 3 regardless of the Customer value.
+		self.assertEqual(ctx.metal_precision, 3)
+		self.assertEqual(ctx.stone_precision, 3)
+
+	def test_bom_context_does_not_raise_when_field_absent(self):
+		# A bare doc with no custom_precision attribute must not crash the read.
+		with patch(
+			f"{_SO_MODULE}.frappe.db.get_single_value", MagicMock(return_value=3)
+		), patch(
+			f"{_SO_MODULE}.frappe.db.get_value",
+			MagicMock(return_value=("Internal", 3, None, None, None, None)),
+		):
+			try:
+				ctx = _get_bom_context(frappe._dict(customer="Test"))
+			except AttributeError as e:
+				self.fail(f"_get_bom_context raised on absent override field: {e}")
+
+		self.assertEqual(ctx.metal_precision, 3)
 
 
 def create_quotation(self):

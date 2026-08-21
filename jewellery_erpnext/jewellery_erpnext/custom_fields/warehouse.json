@@ -80,6 +80,26 @@
    "label": "Branch",
    "module": "Jewellery Erpnext",
    "options": "Branch"
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.employee && doc.warehouse_type=='Raw Material'",
+   "dt": "Warehouse",
+   "fieldname": "custom_msl_tracking_section",
+   "fieldtype": "Section Break",
+   "insert_after": "warehouse_type",
+   "label": "MSL Tracking",
+   "module": "Jewellery Erpnext"
+  },
+  {
+   "dt": "Warehouse",
+   "fieldname": "custom_msl_tracking",
+   "fieldtype": "Table",
+   "insert_after": "custom_msl_tracking_section",
+   "label": "Item-wise Tracking",
+   "module": "Jewellery Erpnext",
+   "options": "Warehouse MSL Tracking",
+   "read_only": 1
   }
  ]
 }

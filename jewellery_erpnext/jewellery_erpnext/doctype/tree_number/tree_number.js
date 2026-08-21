@@ -3,48 +3,93 @@
 
 frappe.ui.form.on("Tree Number", {
 	refresh(frm) {
-		// Issue / Receive Material buttons drive plain Material Transfer Stock Entries.
-		// Enabled on standalone AND casting (employee_ir-seeded) trees; the casting
-		// Employee IR Receive is logical-only, so there is no double-count.
+		// Issue Material posts a Stock Entry on both standalone and casting trees.
+		// Receive Material returns leftover material for both tree kinds: standalone trees receive
+		// directly; casting trees return the post-cast leftover after the Employee IR books output.
+		// The dialog's pending>0 filter + the server (recv+loss)<=pending cap keep it leftover-only.
 		if (frm.is_new()) return;
 
 		let status = frm.doc.status;
 		if (["Draft", "Issued", "Partially Received"].includes(status)) {
 			frm.add_custom_button(__("Issue Material"), () => issue_material_dialog(frm), __("Material"));
 		}
-		if (["Issued", "Partially Received"].includes(status)) {
+		// Receive is only meaningful while the tree still holds material. Server-side the
+		// (recv+loss)<=pending cap enforces this; hiding the button just avoids offering an
+		// action that can only fail. Never rely on this alone.
+		if (["Issued", "Partially Received"].includes(status) && tree_pending(frm) > 0) {
 			frm.add_custom_button(__("Receive Material"), () => receive_material_dialog(frm), __("Material"));
 		}
-		frm.add_custom_button(
-			__("Reverse Tree Stock Entries"),
-			() => {
-				frappe.confirm(__("Cancel all Stock Entries this tree created and reset its ledger?"), () => {
-					frm.call({
-						method: "reverse_tree_stock_entries",
-						doc: frm.doc,
-						freeze: true,
-						freeze_message: __("Reversing..."),
-					}).then((r) => {
-						if (!r.exc) {
-							frappe.show_alert({
-								message: __("Reversed {0} Stock Entry(s)", [(r.message || []).length]),
-								indicator: "orange",
-							});
-							frm.reload_doc();
-						}
+		render_balance_summary(frm);
+		// Submit Tree: manual finalize once the tree has had some receive activity (Received or
+		// Partially Received). Locks the tree at "Submitted" — no further Issue/Receive
+		// (server-enforced). A Partially Received tree writes off its remaining pending as loss first.
+		if (["Received", "Partially Received"].includes(status)) {
+			frm.add_custom_button(
+				__("Submit Tree"),
+				() => {
+					let msg =
+						status === "Received"
+							? __(
+									"Finalize this tree? It will be locked at 'Submitted' — no further Issue/Receive."
+							  )
+							: __(
+									"This tree is only Partially Received. Submitting will write off the remaining pending as loss (to Scrap) and lock the tree at 'Submitted' — no further Issue/Receive. Continue?"
+							  );
+					frappe.confirm(msg, () => {
+						frm.call({
+							method: "submit_tree",
+							doc: frm.doc,
+							freeze: true,
+							freeze_message: __("Submitting..."),
+						}).then((r) => {
+							if (!r.exc) {
+								frappe.show_alert({ message: __("Tree submitted"), indicator: "green" });
+								frm.reload_doc();
+							}
+						});
 					});
-				});
-			},
-			__("Material")
-		);
+				},
+				__("Material")
+			);
+		}
+		// A submitted (locked) tree exposes no mutation actions.
+		if (status !== "Submitted") {
+			frm.add_custom_button(
+				__("Reverse Tree Stock Entries"),
+				() => {
+					frappe.confirm(
+						__("Cancel all Stock Entries this tree created and reset its ledger?"),
+						() => {
+							frm.call({
+								method: "reverse_tree_stock_entries",
+								doc: frm.doc,
+								freeze: true,
+								freeze_message: __("Reversing..."),
+							}).then((r) => {
+								if (!r.exc) {
+									frappe.show_alert({
+										message: __("Reversed {0} Stock Entry(s)", [
+											(r.message || []).length,
+										]),
+										indicator: "orange",
+									});
+									frm.reload_doc();
+								}
+							});
+						}
+					);
+				},
+				__("Material")
+			);
+		}
 	},
 	department(frm) {
-		// Default the Issue source to the department's Manufacturing warehouse.
+		// Default the Issue source to the department's Raw Material warehouse.
 		if (!frm.doc.department || frm.doc.source_warehouse) return;
 		frappe.db
 			.get_value(
 				"Warehouse",
-				{ department: frm.doc.department, warehouse_type: "Manufacturing", disabled: 0 },
+				{ department: frm.doc.department, warehouse_type: "Raw Material", disabled: 0 },
 				"name"
 			)
 			.then((r) => {
@@ -125,21 +170,71 @@ frappe.ui.form.on("Tree Number", {
 	},
 });
 
-frappe.ui.form.on("Tree Material Detail", {
-	issue_qty: (frm, cdt, cdn) => recompute_pending(frm, cdt, cdn),
-	receive_qty: (frm, cdt, cdn) => recompute_pending(frm, cdt, cdn),
-	loss_qty: (frm, cdt, cdn) => recompute_pending(frm, cdt, cdn),
-});
+// No client-side recompute of pending_qty. issue/receive/loss are ledger-owned and read-only,
+// written only by the Issue/Receive Material server paths; pending is derived exactly once, in
+// TreeNumber.calculate_material_pending. A client mirror could only ever disagree with it.
 
-function recompute_pending(frm, cdt, cdn) {
-	let d = locals[cdt][cdn];
-	frappe.model.set_value(cdt, cdn, "pending_qty", flt(d.issue_qty) - flt(d.receive_qty) - flt(d.loss_qty));
+function tree_pending(frm) {
+	// Unfloored on purpose: a negative total means the tree is over-drawn, and that must read
+	// as "nothing available to receive", not wrap around into a positive.
+	return (frm.doc.material_details || []).reduce(
+		(total, row) => total + (flt(row.issue_qty) - flt(row.receive_qty) - flt(row.loss_qty)),
+		0
+	);
+}
+
+function render_balance_summary(frm) {
+	let rows = frm.doc.material_details || [];
+	if (!rows.length) return;
+
+	let body = rows
+		.map((row) => {
+			let pending = flt(row.issue_qty) - flt(row.receive_qty) - flt(row.loss_qty);
+			// Surface an over-draw instead of letting it hide in a column of numbers.
+			let flag = pending < 0 ? ' <span class="indicator-pill red">over-drawn</span>' : "";
+			return `<tr>
+				<td>${frappe.utils.escape_html(row.item_code || "")}</td>
+				<td class="text-right">${format_number(row.issue_qty)}</td>
+				<td class="text-right">${format_number(row.receive_qty)}</td>
+				<td class="text-right">${format_number(row.loss_qty)}</td>
+				<td class="text-right">${format_number(pending)}${flag}</td>
+			</tr>`;
+		})
+		.join("");
+
+	frm.dashboard.add_section(
+		`<div style="overflow-x:auto"><table class="table table-bordered table-sm">
+			<thead><tr>
+				<th>${__("Item")}</th>
+				<th class="text-right">${__("Issued")}</th>
+				<th class="text-right">${__("Received")}</th>
+				<th class="text-right">${__("Loss")}</th>
+				<th class="text-right">${__("Pending")}</th>
+			</tr></thead>
+			<tbody>${body}</tbody>
+		</table></div>`,
+		__("Material Balance")
+	);
 }
 
 function issue_material_dialog(frm) {
 	frappe.prompt(
 		[
-			{ fieldtype: "Link", options: "Item", fieldname: "item_code", label: __("Item"), reqd: 1 },
+			{
+				fieldtype: "Link",
+				options: "Item",
+				fieldname: "item_code",
+				label: __("Item"),
+				reqd: 1,
+				// Convenience only -- the server rejects a metal mismatch regardless. This just
+				// stops offering items that cannot be issued (including the master alloys, which
+				// carry no Metal Touch/Purity at all). Metal COLOUR is intentionally not filtered:
+				// a multicolour tree legitimately holds one row per colour.
+				get_query: () => ({
+					query: "jewellery_erpnext.jewellery_erpnext.doctype.tree_number.tree_number.tree_metal_item_query",
+					filters: { tree_number: frm.doc.name },
+				}),
+			},
 			{ fieldtype: "Float", fieldname: "qty", label: __("Qty"), reqd: 1 },
 			{
 				fieldtype: "Link",
@@ -147,7 +242,7 @@ function issue_material_dialog(frm) {
 				fieldname: "source_warehouse",
 				label: __("Source Warehouse"),
 				default: frm.doc.source_warehouse,
-				description: __("Defaults to the department's Manufacturing warehouse."),
+				description: __("Defaults to the department's Raw Material warehouse."),
 			},
 		],
 		(values) => {
@@ -179,9 +274,8 @@ function receive_material_dialog(frm) {
 		return;
 	}
 
-	// Casting (employee_ir-seeded) trees: operator enters Receive Qty only; the remaining
-	// pending is auto-booked as dust. Standalone trees: operator also enters Loss Qty.
-	let casting = !!frm.doc.employee_ir;
+	// Receive Material returns leftover: all issued material (standalone) or the post-cast leftover
+	// (casting trees). The per-item pending cap on the server keeps casting returns leftover-only.
 	let grid_fields = [
 		{
 			fieldtype: "Link",
@@ -205,43 +299,34 @@ function receive_material_dialog(frm) {
 			fieldname: "receive_qty",
 			label: __("Receive Qty"),
 			in_list_view: 1,
-			columns: casting ? 4 : 3,
+			columns: 3,
 		},
-	];
-	if (!casting) {
-		grid_fields.push({
+		{
 			fieldtype: "Float",
 			fieldname: "loss_qty",
 			label: __("Loss Qty"),
 			in_list_view: 1,
 			columns: 3,
-		});
-	}
+		},
+	];
 
-	let fields = [];
-	if (casting) {
-		fields.push({
-			fieldtype: "HTML",
-			options: `<div class="text-muted small">${__(
-				"Casting tree: the remaining pending (issued − received) is auto-booked as dust to Scrap."
-			)}</div>`,
-		});
-	}
-	fields.push({
-		fieldtype: "Table",
-		fieldname: "rows",
-		label: __("Material"),
-		cannot_add_rows: true,
-		cannot_delete_rows: true,
-		in_place_edit: false,
-		data: pending_rows.map((row) => ({
-			item_code: row.item_code,
-			pending_qty: row.pending_qty,
-			receive_qty: 0,
-			loss_qty: 0,
-		})),
-		fields: grid_fields,
-	});
+	let fields = [
+		{
+			fieldtype: "Table",
+			fieldname: "rows",
+			label: __("Material"),
+			cannot_add_rows: true,
+			cannot_delete_rows: true,
+			in_place_edit: false,
+			data: pending_rows.map((row) => ({
+				item_code: row.item_code,
+				pending_qty: row.pending_qty,
+				receive_qty: 0,
+				loss_qty: 0,
+			})),
+			fields: grid_fields,
+		},
+	];
 
 	let d = new frappe.ui.Dialog({
 		title: __("Receive Material"),
@@ -249,11 +334,9 @@ function receive_material_dialog(frm) {
 		fields: fields,
 		primary_action_label: __("Receive"),
 		primary_action: (data) => {
-			let rows = (data.rows || []).filter(
-				(r) => flt(r.receive_qty) > 0 || (!casting && flt(r.loss_qty) > 0)
-			);
+			let rows = (data.rows || []).filter((r) => flt(r.receive_qty) > 0 || flt(r.loss_qty) > 0);
 			if (!rows.length) {
-				frappe.msgprint(__("Enter a Receive Qty on at least one row."));
+				frappe.msgprint(__("Enter a Receive Qty or Loss Qty on at least one row."));
 				return;
 			}
 			frm.call({
@@ -265,8 +348,10 @@ function receive_material_dialog(frm) {
 			}).then((r) => {
 				if (!r.exc) {
 					d.hide();
+					// receive_material returns a list of 1-2 SE names (received transfer + loss Repack).
+					let names = Array.isArray(r.message) ? r.message.join(", ") : r.message;
 					frappe.show_alert({
-						message: __("Received via Stock Entry {0}", [r.message]),
+						message: __("Received via Stock Entry(s) {0}", [names]),
 						indicator: "green",
 					});
 					frm.reload_doc();

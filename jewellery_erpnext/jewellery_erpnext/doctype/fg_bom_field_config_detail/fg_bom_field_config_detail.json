@@ -1,0 +1,94 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-07-13 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "subcategory",
+  "field_label",
+  "field_name",
+  "field_type",
+  "options",
+  "column_break_config",
+  "is_mandatory",
+  "is_active",
+  "fg_bom_field"
+ ],
+ "fields": [
+  {
+   "fieldname": "subcategory",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Subcategory",
+   "options": "Attribute Value",
+   "reqd": 1
+  },
+  {
+   "fieldname": "field_label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Field Label",
+   "reqd": 1
+  },
+  {
+   "description": "Internal key for this field. Unique within a subcategory.",
+   "fieldname": "field_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Field Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "field_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Field Type",
+   "options": "Data\nInt\nFloat\nCurrency\nSelect\nDate\nCheck\nLink",
+   "reqd": 1
+  },
+  {
+   "description": "For Select: newline-separated options. For Link: the target doctype.",
+   "fieldname": "options",
+   "fieldtype": "Small Text",
+   "label": "Options"
+  },
+  {
+   "fieldname": "column_break_config",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_mandatory",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Mandatory"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Active"
+  },
+  {
+   "description": "Existing field on the BOM doctype that this value is copied into.",
+   "fieldname": "fg_bom_field",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "FG BOM Field"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-13 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Jewellery Erpnext",
+ "name": "FG BOM Field Config Detail",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

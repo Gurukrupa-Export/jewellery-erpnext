@@ -28,7 +28,8 @@
   "diamond_pcs",
   "rpt_wt_issue",
   "rpt_wt_receive",
-  "rpt_wt_loss"
+  "rpt_wt_loss",
+  "tree_number"
  ],
  "fields": [
   {
@@ -171,6 +172,16 @@
    "fieldname": "is_finding_mwo",
    "fieldtype": "Check",
    "label": "Is Finding MWO"
+  },
+  {
+   "fieldname": "tree_number",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Tree Number",
+   "no_copy": 1,
+   "options": "Tree Number",
+   "read_only": 1,
+   "description": "Casting tree this receive drew metal from. Pinned at submit so a cancel reverses the same tree even if the work order has since been re-issued onto a new one."
   }
  ],
  "index_web_pages_for_search": 1,

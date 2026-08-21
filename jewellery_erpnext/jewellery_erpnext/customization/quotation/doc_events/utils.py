@@ -1,6 +1,10 @@
 import frappe
 from frappe import _
 
+from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.remote_po import (
+	fetch_remote_ref_customer,
+)
+
 
 def validate_po(self):
 	allow_quotation = frappe.db.get_value(
@@ -23,14 +27,38 @@ def validate_po(self):
 				).format(row.idx)
 			)
 		elif row.po_no:
-			if not po_data.get(row.po_no):
-				po_data[row.po_no] = frappe.db.get_value(
-					"Purchase Order", row.po_no, "custom_quotation"
+			if row.po_no not in po_data:
+				po_data[row.po_no] = (
+					frappe.db.get_value(
+						"Purchase Order",
+						row.po_no,
+						["custom_quotation", "ref_customer"],
+						as_dict=True,
+					)
+					or frappe._dict()
 				)
-			if not po_data.get(row.po_no):
+
+			po_details = po_data[row.po_no]
+			# get_value returns both requested keys for a real row, so the key is present even
+			# when the value is empty. Order-sourced quotations put a free-text customer PO in
+			# po_no; those resolve to nothing and must stay a silent no-op.
+			is_purchase_order = "ref_customer" in po_details
+
+			if not po_details.get("custom_quotation"):
 				frappe.db.set_value(
 					"Purchase Order", row.po_no, "custom_quotation", self.name
 				)
+				po_details.custom_quotation = self.name
+
+			if not self.ref_customer and is_purchase_order:
+				# A Purchase Order mirrored onto this site can arrive without ref_customer, so
+				# fall back to the site that owns it. Only assign a Customer that resolves
+				# locally: an unresolvable Link turns a blank field into a hard throw on save.
+				ref_customer = po_details.get(
+					"ref_customer"
+				) or fetch_remote_ref_customer(row.po_no)
+				if ref_customer and frappe.db.exists("Customer", ref_customer):
+					self.ref_customer = ref_customer
 
 
 def update_customer_details(self, row):
@@ -58,7 +86,6 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	_calculate_diamond_amount,
 )
-
 
 def update_si(self):
 	invoice_data = {}

@@ -1,0 +1,66 @@
+name: Manufacturing Tests
+
+on:
+  pull_request:
+    branches:
+      - v16_develop_aerele
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MYSQL_ROOT_PASSWORD: travis
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ptravis"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:6
+        ports:
+          - 6379:6379
+
+    env:
+      DB: mariadb
+      TYPE: server
+
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      - name: Setup CI Environment
+        uses: ./.github/actions/setup
+
+      - name: Run Manufacturing Tests
+        run: |
+          cd ~/frappe-bench
+          echo "Running Manufacturing Tests..."
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Plan"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Parent Manufacturing Order"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Work Order"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Manufacturing Operation"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Metal Conversions"
+
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_transfer_se
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_mop_department
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_material_request_customizations
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_reservation_entry_mwo
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mould_id_propagation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_unpack_repair_bom
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_conversion_lane_downstream
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_manufacturing_operation_balance_details_report
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_process_loss_valuation
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mwo_photoshop_images

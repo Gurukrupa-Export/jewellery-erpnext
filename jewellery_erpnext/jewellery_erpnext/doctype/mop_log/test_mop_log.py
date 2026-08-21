@@ -7,7 +7,6 @@ import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.types.frappedict import _dict as FrappeDict
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.test_manufacturing_operation import (
 	dir_for_issue,
 	dir_for_receive,
@@ -407,13 +406,13 @@ class TestDepartmentIRIdempotency(IntegrationTestCase):
 class MockMainSlipIssueEIR:
 	doctype = "Employee IR"
 	name = "EIR-MS-ISSUE-001"
-	is_main_slip_required = 1
+	is_raw_material = 1
 
 
 class MockMainSlipReceiveEIR:
 	doctype = "Employee IR"
 	name = "EIR-MS-RECV-001"
-	is_main_slip_required = 1
+	is_raw_material = 1
 	emp_ir_id = None
 	employee_loss_details = []
 	manually_book_loss_details = []
@@ -423,7 +422,7 @@ class MockMainSlipReceiveEIR:
 
 
 class TestMainSlipEmployeeIRRelaxations(IntegrationTestCase):
-	"""Regressions for the is_main_slip_required gate in mop_log writers."""
+	"""Regressions for the is_raw_material gate in mop_log writers."""
 
 	@classmethod
 	def setUpClass(cls):
@@ -440,7 +439,7 @@ class TestMainSlipEmployeeIRRelaxations(IntegrationTestCase):
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.log_error"
 	)
-	def test_receive_tolerates_missing_keys_when_main_slip_required(
+	def test_receive_tolerates_missing_keys_when_raw_material(
 		self,
 		mock_log_error,
 		mock_resolve,
@@ -465,7 +464,6 @@ class TestMainSlipEmployeeIRRelaxations(IntegrationTestCase):
 class TestMOPLog(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_mop_log_creation(self):

@@ -20,7 +20,7 @@
 "service_item",
 "column_break_otjqr",
 "is_qc_reqd",
-"is_main_slip_required",
+"is_raw_material",
 "check_purity_in_main_slip",
 "check_touch_in_main_slip",
 "check_colour_in_main_slip",
@@ -32,7 +32,11 @@
 "allowed_loss_percentage",
 "column_break_stayp",
 "allowed_diamond_loss",
-"allowed_gemstone_loss"
+"allowed_gemstone_loss",
+"finding_loss_booking_section",
+"finding_loss_booking",
+"employee_ir_timing_section",
+"employee_ir_receive_delay"
 ],
 "fields": [
 {
@@ -49,9 +53,9 @@
 },
 {
 "default": "0",
-"fieldname": "is_main_slip_required",
+"fieldname": "is_raw_material",
 "fieldtype": "Check",
-"label": "Is Main Slip Required"
+"label": "Is Raw Material"
 },
 {
 "default": "0",
@@ -186,6 +190,31 @@
 "fieldtype": "Link",
 "label": "Manufacturer",
 "options": "Manufacturer"
+},
+{
+"fieldname": "finding_loss_booking_section",
+"fieldtype": "Section Break",
+"label": "Finding Category Loss Booking"
+},
+{
+"description": "Per finding category, decide whether Employee IR Receive books process loss against findings in that category. A category that is NOT listed here books loss as normal.",
+"fieldname": "finding_loss_booking",
+"fieldtype": "Table",
+"label": "Finding Category Loss Booking",
+"options": "Finding Category Loss Booking"
+},
+{
+"fieldname": "employee_ir_timing_section",
+"fieldtype": "Section Break",
+"label": "Employee IR Receive Timing"
+},
+{
+"default": "0",
+"description": "Minutes that must elapse after the Employee IR Issue is submitted before its Employee IR Receive can be submitted. 0 = no waiting time.",
+"fieldname": "employee_ir_receive_delay",
+"fieldtype": "Int",
+"label": "Employee IR Receive Delay (Minutes)",
+"non_negative": 1
 }
 ],
 "index_web_pages_for_search": 1,

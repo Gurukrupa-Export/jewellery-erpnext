@@ -14,6 +14,7 @@ from frappe.utils import (
 	get_first_day,
 	get_last_day,
 	getdate,
+	now_datetime,
 	nowdate,
 	time_diff,
 	time_diff_in_hours,
@@ -21,8 +22,21 @@ from frappe.utils import (
 	today,
 )
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
+	batch_priority_map,
+	describe_customer_spill,
+	is_customer_rank,
+	loss_rank,
+	tiered_allocate,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.employee_ir_utils import (
 	get_po_rates,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.finding_loss_gate import (
+	get_finding_category_map,
+	get_loss_booking_map,
+	is_loss_booking_blocked,
+	validate_loss_rows_against_gate,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_utils import (
 	get_summary_data,
@@ -30,6 +44,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.html_uti
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
 	cancel_loss_stock_entries,
 	create_loss_stock_entries,
+	get_batch_sre_headroom,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
 	cancel_injections_for_eir,
@@ -46,13 +61,17 @@ from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.subcontr
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
 	create_tree_on_issue,
-	is_casting_eir,
+	lock_trees_for_eir,
+	pin_tree_numbers_on_receive,
 	unlink_tree_on_issue_cancel,
 	update_tree_on_receive,
+	validate_casting_group_complete,
+	validate_casting_receive,
 	validate_casting_tree,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
 	validate_duplication_and_gr_wt,
+	validate_employee_ir_receive_delay,
 	validate_loss_qty,
 	validate_loss_tables_required,
 	validate_manually_book_loss_details,
@@ -70,7 +89,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_resolve_department_warehouse,
 )
 from jewellery_erpnext.utils import (
-	get_item_from_attribute_full,
+	get_item_from_attribute_full,  # noqa: F401 – patched by tests
 )
 
 
@@ -93,8 +112,20 @@ class EmployeeIR(Document):
 					"employee_ir_operations", {"manufacturing_operation": row.name}
 				)
 
+	def before_submit(self):
+		if self.type == "Issue":
+			self.issue_submitted_on = now_datetime()
+			validate_casting_group_complete(self)
+		else:
+			validate_employee_ir_receive_delay(self)
+
 	def on_submit(self):
 		validate_loss_tables_required(self)
+		# Re-checked at submit, not just at validate: validate_process_loss and
+		# validate_manually_book_loss_details both early-return once docstatus != 0,
+		# so a draft saved before the Department Operation flag was flipped would
+		# otherwise submit with stale loss rows on a now-blocked category.
+		validate_loss_rows_against_gate(self)
 		validate_qc(self)
 		if self.type == "Issue":
 			self.validate_qc("Warn")
@@ -135,9 +166,79 @@ class EmployeeIR(Document):
 		round_employee_ir_weights_to_precision(self)
 		self.validate_process_loss()
 		validate_manually_book_loss_details(self)
+		validate_loss_rows_against_gate(self)
 		# valid_reparing_or_next_operation(self)
 		validate_loss_qty(self)
 		validate_casting_tree(self)
+		validate_casting_receive(self)
+		self.validate_fg_bom_fields()
+		self.set_repeat_receive_flag()
+
+	def set_repeat_receive_flag(self):
+		"""Stamp ``is_repeat_receive`` and clear a Worker Performance that no longer applies.
+
+		Recomputed from the database rather than trusted from the client, the same
+		stance validate_fg_bom_fields takes: the flag drives a depends_on, so a
+		posted value could otherwise reveal (or hide) the field at will.
+
+		The flag is ANY-of-rows: one Employee IR carries a single answer but many
+		work orders, so a Receive containing at least one repeat asks the question.
+		"""
+		if self.type != "Receive":
+			self.is_repeat_receive = 0
+			self.worker_performance = None
+			return
+
+		ops = [
+			{
+				"manufacturing_operation": row.manufacturing_operation,
+				"manufacturing_work_order": row.manufacturing_work_order,
+			}
+			for row in (self.employee_ir_operations or [])
+		]
+		repeats = get_repeat_work_orders(ops, self.operation, self.name)
+		self.is_repeat_receive = 1 if repeats else 0
+		if not self.is_repeat_receive:
+			# A Receive can stop being a repeat (the earlier one gets cancelled)
+			# after somebody answered; a hidden field must not keep a stale verdict.
+			self.worker_performance = None
+
+	def validate_fg_bom_fields(self):
+		"""Enforce subcategory-driven FG BOM fields on Receive.
+
+		Recomputes the required fields from the configuration (not from the
+		client-populated grid) so a receive submitted with an empty/tampered
+		custom_fg_bom_fields table cannot bypass mandatory entry, then validates
+		each entered value against its configured type.
+		"""
+		if self.type != "Receive":
+			return
+
+		ops = [
+			{
+				"manufacturing_operation": r.manufacturing_operation,
+				"manufacturing_work_order": r.manufacturing_work_order,
+			}
+			for r in (self.employee_ir_operations or [])
+		]
+		expected = get_fg_bom_fields(ops)
+		entered = {
+			(r.manufacturing_operation, r.field_name): r
+			for r in (self.custom_fg_bom_fields or [])
+		}
+		for cfg in expected:
+			if not cfg.get("is_mandatory"):
+				continue
+			row = entered.get((cfg["manufacturing_operation"], cfg["field_name"]))
+			if not row or not (row.value or "").strip():
+				frappe.throw(
+					_("FG BOM Field '{0}' is mandatory.").format(
+						cfg["field_label"] or cfg["field_name"]
+					)
+				)
+
+		for row in self.custom_fg_bom_fields or []:
+			_validate_fg_bom_field_value(row)
 
 	def on_cancel(self):
 		if self.type == "Issue":
@@ -257,8 +358,18 @@ class EmployeeIR(Document):
 		else:
 			unlink_tree_on_issue_cancel(self)
 
+		self._refresh_msl_tracking()
+
 	# for receive
 	def on_submit_receive(self, cancel=False):
+		# Canonical lock order (lock_order.py): the Tree Number is a PARENT CONTROL ROW and must
+		# be locked at position 1 — before any tabSeries / tabBin lock taken further down by the
+		# Main Slip injection and the Process Loss entries. Locking it only at
+		# update_tree_on_receive time (the tail of this method) would let this transaction hold
+		# Bins while waiting on a Tree that a concurrent Tree Number button holds while waiting on
+		# those same Bins: a textbook 1213 cycle.
+		lock_trees_for_eir(self)
+
 		precision = cint(
 			frappe.db.get_single_value("System Settings", "float_precision")
 		)
@@ -355,9 +466,17 @@ class EmployeeIR(Document):
 			# sequence. Loss-SE source Bins resolved later are still locked (in sorted order)
 			# by each SE's prelock_bins hook; create_loss_stock_entries reduces SREs in
 			# stock_lock_key order (RULE A).
+			from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.loss_stock_entry import (
+				PROCESS_LOSS_SE_TYPE,
+			)
+			from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
+				MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
+				REPACK_STOCK_ENTRY_TYPE,
+			)
 			from jewellery_erpnext.jewellery_erpnext.lock_order import (
 				lock_bins,
 				preallocate_series_for_docs,
+				series_stubs,
 			)
 
 			_eir_pairs = [
@@ -365,7 +484,18 @@ class EmployeeIR(Document):
 				for r in (self.manually_book_loss_details + self.employee_loss_details)
 				for wh in (department_wh, actor_wh)
 			]
-			preallocate_series_for_docs(frappe.new_doc("Stock Entry"))
+			# Pin each nested SE type's naming counter (the per-(company x type)
+			# Document Naming Rule counter post-reshard, or the tabSeries fallback)
+			# BEFORE the Bins -- a blank stub matches no naming rule and would pin
+			# the wrong (shared MAT-STE-) row while leaving the real counters unpinned.
+			preallocate_series_for_docs(
+				*series_stubs(
+					self.company,
+					MATERIAL_TRANSFER_STOCK_ENTRY_TYPE,
+					REPACK_STOCK_ENTRY_TYPE,
+					PROCESS_LOSS_SE_TYPE,
+				)
+			)
 			lock_bins(_eir_pairs)
 
 		for row in self.employee_ir_operations:
@@ -416,7 +546,7 @@ class EmployeeIR(Document):
 					(row.manufacturing_operation, {**res, "complete_time": curr_time})
 				)
 
-				# Main Slip gain injection: when is_main_slip_required and
+				# Main Slip gain injection: when is_raw_material and
 				# received_gross_wt > gross_wt, repack the delta from the
 				# employee/subcontractor warehouse into the MOP warehouse.
 				# The SE bridge then writes the positive MOP Log row that
@@ -539,12 +669,48 @@ class EmployeeIR(Document):
 			# ONE Repack SE for all loss rows across the entire EIR.
 			create_loss_stock_entries(self)
 
-		# Casting tree: the Tree Number Receive button now owns the tree's Material Details
-		# ledger (record-only), so skip the EIR-side write for casting to avoid double-counting.
-		# The EIR still performs the physical receive (injection + process loss) + weight ledger.
-		# Non-casting EIRs keep the original behaviour (harmless no-op unless a tree is linked).
-		if not is_casting_eir(self):
-			update_tree_on_receive(self, cancel=cancel)
+		# Casting tree: this receive draws metal OUT of the tree only to the extent it returned
+		# more than the operation carried (received_gross_wt - gross_wt, per row) — exactly what
+		# the Main Slip injection minted out of the tree's MSL warehouse. The tree Receive button
+		# separately returns the post-cast LEFTOVER to Dept RM, and both are capped by pending, so
+		# the two can never overlap. Runs on submit and cancel. Early-returns for non-casting EIRs.
+		if not cancel:
+			# Pin the tree per row BEFORE applying, so a later re-issue (which repoints
+			# MWO.tree_number at a brand-new tree) cannot make this voucher's cancel reverse
+			# against the wrong ledger.
+			pin_tree_numbers_on_receive(self)
+		update_tree_on_receive(self, cancel=cancel)
+
+		self._refresh_msl_tracking()
+
+	def _refresh_msl_tracking(self):
+		"""Re-materialize the employee's Raw Material (MSL) warehouse tracking
+		table from the ledger after Issue/Receive posts stock.
+
+		``custom_msl_tracking`` is a materialized cache — its only source of
+		truth is ``recalculate_msl_tracking`` (a full recompute from the Stock
+		Ledger). The Employee IR Issue/Receive posts SLEs against the employee's
+		Raw Material (MSL) warehouse but never refreshed this cache, so the
+		on-form Receive/Pending qty drifted from the ledger. Mirror the Employee
+		Loss Entry / warehouse-button pattern. A refresh failure must never roll
+		back the stock posting, so failures are logged, not raised.
+		"""
+		from jewellery_erpnext.jewellery_erpnext.doc_events.warehouse_tracking import (
+			recalculate_msl_tracking,
+		)
+		from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.main_slip_inject import (
+			_resolve_source_warehouse_raw_material,
+		)
+
+		try:
+			msl_wh = _resolve_source_warehouse_raw_material(self)
+			if msl_wh:
+				recalculate_msl_tracking(msl_wh)
+		except Exception:
+			frappe.log_error(
+				title="Employee IR: MSL tracking refresh failed",
+				message=frappe.get_traceback(),
+			)
 
 	def validate_qc(self, action="Warn"):
 		if not self.is_qc_reqd or self.type == "Receive":
@@ -637,6 +803,17 @@ class EmployeeIR(Document):
 			{"company": self.company, "department": self.department},
 			"allowed_loss_percentage",
 		)
+		# Per-operation finding-category loss gate, read once for the whole
+		# document rather than per book_metal_loss call. Keyed on self.operation
+		# (the Department Operation actually being received), not on the
+		# {company, department} filter dict used for allowed_loss_percentage above.
+		booking_map = get_loss_booking_map(self.operation)
+
+		# Recomputed from scratch on every validate, so the spill collected by the
+		# previous run must not leak into this one.
+		self.flags.customer_loss_spill = []
+		self.flags.loss_overflow = []
+
 		rows_to_append = []
 		for child in self.employee_ir_operations:
 			if child.received_gross_wt and self.type == "Receive":
@@ -645,31 +822,62 @@ class EmployeeIR(Document):
 				opt = child.manufacturing_operation
 				r_gwt = child.received_gross_wt
 				rows_to_append += self.book_metal_loss(
-					mwo, opt, gwt, r_gwt, allowed_loss_percentage
+					mwo, opt, gwt, r_gwt, allowed_loss_percentage, booking_map
 				)
 
+		booked_rows = [
+			r for r in rows_to_append if flt(r["proportionally_loss"], 3) > 0
+		]
+		# Two bulk maps instead of three DB round-trips per booked row
+		# (Item.variant_of, plus Batch -> Customer inside batch_owner_no_wastage).
+		variant_map = _bulk_variant_of([r["item_code"] for r in booked_rows])
+		no_wastage_batches = _bulk_no_wastage_batches(
+			[r.get("batch_no") for r in booked_rows]
+		)
+
 		self.employee_loss_details = []
-		for row in rows_to_append:
+		for row in booked_rows:
 			proportionally_loss = flt(row["proportionally_loss"], 3)
-			if proportionally_loss > 0:
-				variant_of = frappe.db.get_value("Item", row["item_code"], "variant_of")
-				self.append(
-					"employee_loss_details",
-					{
-						"item_code": row["item_code"],
-						"net_weight": row["qty"],
-						# "stock_uom": row["stock_uom"],
-						"variant_of": variant_of,
-						"batch_no": row["batch_no"],
-						"manufacturing_work_order": row["manufacturing_work_order"],
-						"manufacturing_operation": row["manufacturing_operation"],
-						"proportionally_loss": proportionally_loss,
-						"received_gross_weight": row["received_gross_weight"],
-						"main_slip_consumption": row.get("main_slip_consumption"),
-						# "inventory_type": row["inventory_type"],
-						"customer": row.get("customer"),
-					},
+			# No wastage for customer-supplied material: block loss on a no-wastage
+			# customer's batch so it never becomes a customer-owned scrap batch. The
+			# operator must receive the full weight (received == issued) for the
+			# operation holding this customer's material; the unused metal returns as
+			# raw material. Such batches rank LAST in the loss waterfall, so reaching
+			# one means nothing else on the operation had any capacity left — the
+			# throw is the correct outcome, not an accident of proportional spreading.
+			if row.get("batch_no") in no_wastage_batches:
+				frappe.throw(
+					_(
+						"No wastage is allowed for customer material (MWO {0}, operation "
+						"{1}, batch {2}). Set the received gross weight equal to the issued "
+						"weight so no loss is booked; the unused metal is returned as raw "
+						"material."
+					).format(
+						row.get("manufacturing_work_order"),
+						row.get("manufacturing_operation"),
+						row.get("batch_no"),
+					)
 				)
+			self.append(
+				"employee_loss_details",
+				{
+					"item_code": row["item_code"],
+					"net_weight": row["qty"],
+					# "stock_uom": row["stock_uom"],
+					"variant_of": variant_map.get(row["item_code"]),
+					"batch_no": row["batch_no"],
+					"manufacturing_work_order": row["manufacturing_work_order"],
+					"manufacturing_operation": row["manufacturing_operation"],
+					"proportionally_loss": proportionally_loss,
+					"received_gross_weight": row["received_gross_weight"],
+					"main_slip_consumption": row.get("main_slip_consumption"),
+					# "inventory_type": row["inventory_type"],
+					"customer": row.get("customer"),
+				},
+			)
+
+		# ONE warning for the whole document, after every operation row is booked.
+		self._warn_customer_loss_spill()
 
 		# Pre-deduction MOP baseline: total loss available from the operations
 		# before any manual deduction. Drives downstream caps and serves as the
@@ -683,8 +891,15 @@ class EmployeeIR(Document):
 		self.mop_loss_details_total = flt(mop_baseline, 3)
 
 	@frappe.whitelist()
-	def book_metal_loss(self, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None):
+	def book_metal_loss(
+		self, mwo, opt, gwt, r_gwt, allowed_loss_percentage=None, booking_map=None
+	):
 		doc = self
+		# booking_map is prefetched once by validate_process_loss; resolve it here
+		# for direct/whitelisted callers so the gate can never be bypassed by
+		# calling this method on its own.
+		if booking_map is None:
+			booking_map = get_loss_booking_map(self.operation)
 		# mnf_opt = frappe.get_doc("Manufacturing Operation", opt)
 
 		# To Check Tollarance which book a loss down side.
@@ -724,28 +939,60 @@ class EmployeeIR(Document):
 			# Declaration & fetch required value
 			sum_qty = {}  # for sum of qty matched item
 
-			# getting Metal property from MNF Work Order
-			mwo_metal_property = frappe.get_cached_value(
-				"Manufacturing Work Order",
-				mwo,
-				[
-					"metal_type",
-					"metal_touch",
-					"metal_purity",
-					"master_bom",
-					"is_finding_mwo",
-				],
-				as_dict=1,
+			# Finding-category loss gate: a finding whose category is flagged
+			# "no loss booking" for this Department Operation drops out of the
+			# proportional pool below, BEFORE total_qty is summed — so the
+			# remaining rows absorb its share and the booked total still equals
+			# flt(loss, 3). Categories that are not listed book loss as before.
+			# Skipped entirely when the operation configures no categories — which
+			# is the common case — so the gate costs zero extra queries by default.
+			category_map = (
+				get_finding_category_map(
+					[child["item_code"] for child in mop_balance_table]
+				)
+				if booking_map
+				else {}
 			)
 
 			# Keep only the latest qty snapshot per (item_code, batch_no).
 			# qty_after_transaction_batch_based is a running balance so the last
 			# row in creation order is the current stock for that batch.
 			latest_per_batch = {}
+			blocked_categories = set()
 			for child in mop_balance_table:
 				if child["item_code"][0] not in ["M", "F"]:
 					continue
+				if is_loss_booking_blocked(
+					child["item_code"], booking_map, category_map
+				):
+					blocked_categories.add(category_map.get(child["item_code"]))
+					continue
 				latest_per_batch[(child["item_code"], child["batch_no"])] = child
+
+			# Every eligible row was gated out, so the shortfall has nothing to be
+			# booked against. Fail here naming the cause rather than letting
+			# validate_loss_tables_required raise its generic "no loss details found".
+			# Only a shortfall needs attributing; a receive that gained weight books
+			# no loss rows either way.
+			if (
+				blocked_categories
+				and not latest_per_batch
+				and flt(gwt, 3) > flt(r_gwt, 3)
+			):
+				frappe.throw(
+					_(
+						"Manufacturing Work Order {0}: the receive is short by {1} g but every "
+						"item in the operation balance belongs to a finding category with Loss "
+						"Booking turned off ({2}) on operation <b>{3}</b>. There is nothing left "
+						"to book the loss against — either receive the full issued weight, or "
+						"tick Loss Booking for one of those categories on the Department Operation."
+					).format(
+						mwo,
+						flt(flt(gwt, 3) - flt(r_gwt, 3), 3),
+						", ".join(sorted(c for c in blocked_categories if c)),
+						doc.operation,
+					)
+				)
 
 			total_qty = 0
 			for key, child in latest_per_batch.items():
@@ -761,6 +1008,26 @@ class EmployeeIR(Document):
 					"received_gross_weight": 0.0,
 				}
 			data = list(sum_qty.values())
+
+			# Ownership tier + reservation headroom for every batch in the balance,
+			# resolved in two round-trips for the whole operation rather than per row.
+			ownership = batch_priority_map(
+				[e["batch_no"] for e in data], with_no_wastage=True
+			)
+			headroom = get_batch_sre_headroom(mwo, [e["batch_no"] for e in data])
+			for entry in data:
+				meta = ownership.get(entry["batch_no"])
+				entry["_inventory_type"] = meta.get("inventory_type") if meta else None
+				entry["_customer"] = meta.get("customer") if meta else None
+				entry["_no_wastage"] = bool(meta.get("no_wastage")) if meta else False
+				# Capacity drives the tier cap and the within-tier proportion; `qty`
+				# stays the true MOP balance so received_gross_weight is unaffected.
+				# They differ only when a reservation is smaller than the balance,
+				# i.e. exactly the case that would otherwise trip _validate_sre_qty.
+				cap = headroom.get((entry["item_code"], entry["batch_no"]))
+				entry["_capacity"] = (
+					min(flt(entry["qty"]), flt(cap)) if cap else flt(entry["qty"])
+				)
 
 			# -------------------------------------------------------------------------
 			# Prepare data and calculation proportionally devide each row based on each qty.
@@ -778,61 +1045,182 @@ class EmployeeIR(Document):
 			loss = flt(flt(gwt, 3) - flt(r_gwt, 3) - flt(total_mannual_loss, 3), 3)
 			ms_consum = 0
 			ms_consum_book = 0
-			stock_loss = 0
 			if loss < 0:
 				ms_consum = abs(round(loss, 2))
 
-			# for entry in data:
-			# 	total_qty += entry["qty"]
-			for entry in data:
-				if total_qty != 0 and loss > 0:
-					stock_loss = (entry["qty"] * loss) / total_qty
-					if stock_loss > 0:
-						entry["received_gross_weight"] = entry["qty"] - stock_loss
-						entry["proportionally_loss"] = stock_loss
-						entry["main_slip_consumption"] = 0
-					else:
-						ms_consum_book = round(
-							(ms_consum * entry["qty"]) / total_qty, 4
-						)
-						entry["proportionally_loss"] = 0
-						entry["received_gross_weight"] = 0
-						entry["main_slip_consumption"] = ms_consum_book
-
-			# Precision-3 reconciliation: independently rounding each row's
-			# proportionally_loss can leave the sum drifting from flt(loss, 3),
-			# which trips validate_loss_qty's per-MWO equality check. Round
-			# each row first, then anchor the residual on the largest-loss
-			# row so the sum matches flt(loss, 3) exactly.
-			if loss > 0 and total_qty != 0:
-				positive = [e for e in data if flt(e["proportionally_loss"]) > 0]
-				if positive:
-					for entry in positive:
-						entry["proportionally_loss"] = flt(
-							entry["proportionally_loss"], 3
-						)
-						entry["received_gross_weight"] = flt(
-							entry["qty"] - entry["proportionally_loss"], 3
-						)
-					target = flt(loss, 3)
-					distributed = flt(
-						sum(e["proportionally_loss"] for e in positive), 3
+			# Ownership waterfall. Loss lands on Regular Stock first, then Pure
+			# Metal, and reaches a customer's gold only when nothing else on the
+			# operation has capacity left. Within a tier the split is proportional
+			# by balance, so an operation whose batches are all one tier — every
+			# site with no customer-owned metal — books exactly what the previous
+			# flat split booked, row for row. tiered_allocate also owns the
+			# precision-3 reconciliation: it guarantees the booked total equals
+			# flt(loss, 3) exactly, which validate_loss_tables_required asserts
+			# against the gross_wt - received_gross_wt baseline (within 0.0005).
+			if total_qty != 0 and loss > 0:
+				allocations, alloc_info = tiered_allocate(
+					data,
+					loss,
+					rank_of=lambda e: loss_rank(e["_inventory_type"], e["_no_wastage"]),
+					qty_of=lambda e: flt(e["_capacity"]),
+					precision=3,
+					key_of=lambda e: (e["item_code"], e["batch_no"]),
+				)
+				for entry in data:
+					booked = flt(
+						allocations.get((entry["item_code"], entry["batch_no"])), 3
 					)
-					residual = flt(target - distributed, 3)
-					if residual:
-						anchor = max(positive, key=lambda e: e["proportionally_loss"])
-						anchor["proportionally_loss"] = flt(
-							anchor["proportionally_loss"] + residual, 3
-						)
-						anchor["received_gross_weight"] = flt(
-							anchor["qty"] - anchor["proportionally_loss"], 3
-						)
+					entry["proportionally_loss"] = booked
+					entry["received_gross_weight"] = (
+						flt(entry["qty"] - booked, 3) if booked else 0
+					)
+					entry["main_slip_consumption"] = 0
+					if booked and is_customer_rank(
+						loss_rank(entry["_inventory_type"], entry["_no_wastage"])
+					):
+						doc._collect_customer_loss_spill(entry, booked)
+				if alloc_info.overflow:
+					# Loss exceeded every batch's capacity on this operation. The
+					# excess is anchored on the FIRST funded tier (company metal) by
+					# tiered_allocate — never on the customer — so nothing here has
+					# to redistribute it, but it is worth surfacing.
+					doc._collect_loss_overflow(mwo, opt, alloc_info.overflow)
+			elif total_qty != 0 and ms_consum:
+				# Gain: nothing is lost, the operation drew extra from the Main Slip.
+				for entry in data:
+					ms_consum_book = round((ms_consum * entry["qty"]) / total_qty, 4)
+					entry["proportionally_loss"] = 0
+					entry["received_gross_weight"] = 0
+					entry["main_slip_consumption"] = ms_consum_book
+
+			for entry in data:
+				for helper_key in (
+					"_inventory_type",
+					"_customer",
+					"_no_wastage",
+					"_capacity",
+				):
+					entry.pop(helper_key, None)
 			# -------------------------------------------------------------------------
 		return data
+
+	def _collect_customer_loss_spill(self, entry, qty):
+		"""Record that customer-owned metal absorbed loss, for ONE warning later.
+
+		Deliberately data, not a ``msgprint``. ``book_metal_loss`` is reached from
+		``validate`` on every draft save and runs once per operation row, so warning
+		in place would fire repeatedly per save and again from every whitelisted
+		caller. ``validate_process_loss`` emits a single deduplicated message after
+		the loop instead.
+		"""
+		spill = self.flags.setdefault("customer_loss_spill", [])
+		spill.append(
+			{
+				"customer": entry.get("_customer"),
+				"item_code": entry.get("item_code"),
+				"batch_no": entry.get("batch_no"),
+				"qty": flt(qty, 3),
+			}
+		)
+
+	def _collect_loss_overflow(self, mwo, opt, qty):
+		"""Record loss that exceeded every batch's capacity on an operation."""
+		self.flags.setdefault("loss_overflow", []).append(
+			{"mwo": mwo, "operation": opt, "qty": flt(qty, 3)}
+		)
+
+	def _warn_customer_loss_spill(self):
+		"""Emit ONE orange warning naming the customer metal that absorbed loss.
+
+		Warns whenever a customer tier was funded at all -- not only when the
+		waterfall overflowed. The ordinary business case is "regular stock ran out
+		and the remainder landed on the customer's gold", which produces no overflow
+		and is exactly what the operator needs to see.
+
+		Never throws: spilling is allowed. The one hard stop remains
+		``batch_owner_no_wastage`` below, and that batch is ranked last precisely so
+		the waterfall reaches it only when nothing else can absorb the loss.
+		"""
+		spill = self.flags.get("customer_loss_spill") or []
+		if not spill:
+			return
+
+		merged = {}
+		for row in spill:
+			key = (row["customer"], row["item_code"], row["batch_no"])
+			merged[key] = flt(merged.get(key, 0) + flt(row["qty"]), 3)
+
+		lines = describe_customer_spill(
+			[
+				{"customer": c, "item_code": i, "batch_no": b, "qty": q}
+				for (c, i, b), q in sorted(merged.items(), key=lambda kv: str(kv[0]))
+			]
+		)
+		total = flt(sum(merged.values()), 3)
+		frappe.msgprint(
+			_(
+				"Company stock could not absorb the whole process loss, so {0} g was "
+				"booked against customer-owned material:"
+			).format(frappe.bold(total))
+			+ "<br><br>"
+			+ "<br>".join(lines),
+			title=_("Customer Material Absorbed Loss"),
+			indicator="orange",
+		)
+		# Durable trace: Employee IR submit runs on queue="long" (CustomSubmissionQueue),
+		# where a msgprint lands in the job log rather than the operator's browser.
+		self.flags.customer_loss_spill_total = total
 
 	@frappe.whitelist()
 	def get_summary_data(self):
 		return get_summary_data(self)
+
+
+def _bulk_variant_of(item_codes):
+	"""``{item_code: variant_of}`` in one round-trip.
+
+	Replaces a per-row ``frappe.db.get_value("Item", ..., "variant_of")`` inside the
+	loss append loop.
+	"""
+	item_codes = sorted({i for i in (item_codes or []) if i})
+	if not item_codes:
+		return {}
+	return {
+		r["name"]: r["variant_of"]
+		for r in frappe.db.get_all(
+			"Item",
+			filters={"name": ["in", item_codes]},
+			fields=["name", "variant_of"],
+		)
+	}
+
+
+def _bulk_no_wastage_batches(batch_nos):
+	"""Batches whose owning Customer is flagged ``custom_no_wastage``.
+
+	Same answer as calling ``loss_stock_entry.batch_owner_no_wastage`` per row, in
+	two round-trips instead of two per row.
+	"""
+	batch_nos = sorted({b for b in (batch_nos or []) if b})
+	if not batch_nos:
+		return set()
+	batches = frappe.db.get_all(
+		"Batch",
+		filters={"name": ["in", batch_nos], "custom_customer": ["is", "set"]},
+		fields=["name", "custom_customer"],
+	)
+	customers = sorted({b["custom_customer"] for b in batches if b["custom_customer"]})
+	if not customers:
+		return set()
+	flagged = {
+		c["name"]
+		for c in frappe.db.get_all(
+			"Customer",
+			filters={"name": ["in", customers], "custom_no_wastage": 1},
+			fields=["name"],
+		)
+	}
+	return {b["name"] for b in batches if b["custom_customer"] in flagged}
 
 
 def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
@@ -850,7 +1238,6 @@ def create_operation_for_next_op(docname, employee_ir=None, gross_wt=0):
 	new_mop_doc.previous_mop = docname
 	new_mop_doc.operation = None
 	new_mop_doc.previous_se_data_updated = 0
-	new_mop_doc.main_slip_no = None
 	new_mop_doc.save()
 	return new_mop_doc
 
@@ -890,6 +1277,48 @@ def get_manufacturing_operations(source_name, target_doc=None):
 			},
 		)
 	return target_doc
+
+
+@frappe.whitelist()
+def get_casting_group_operations(department, subcontracting, present_operations):
+	"""Return the issue-eligible sibling MOP rows of the casting tree(s) already in this EIR.
+
+	Powers the "Load Full Casting Tree" button: given the operations already present, resolve
+	their MWOs' casting groups and return every still-at-casting sibling MOP not yet present, so
+	one click completes the tree. Shares ``eligible_casting_group_mops`` with the submit-time
+	completeness validator, so the button can never disagree with that check when it is enabled.
+
+	Deliberately NOT gated by ``MOP Settings.enforce_full_casting_tree_reissue``: assembling a
+	whole tree in one click is useful whether or not the rule is enforced, and gating it would
+	only make the helper disappear exactly when someone turns the rule on to use it.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.tree_casting import (
+		eligible_casting_group_mops,
+	)
+
+	present = (
+		json.loads(present_operations)
+		if isinstance(present_operations, str)
+		else (present_operations or [])
+	)
+	present = {p for p in present if p}
+	if not present:
+		return []
+
+	mwo_names = frappe.get_all(
+		"Manufacturing Operation",
+		{"name": ["in", list(present)]},
+		pluck="manufacturing_work_order",
+	)
+	groups = set(
+		frappe.get_all(
+			"Manufacturing Work Order",
+			{"name": ["in", [m for m in mwo_names if m]]},
+			pluck="casting_group",
+		)
+	)
+	eligible = eligible_casting_group_mops(department, subcontracting, groups)
+	return [m for m in eligible if m["manufacturing_operation"] not in present]
 
 
 def create_qc_record(row, operation, employee_ir):
@@ -1219,3 +1648,207 @@ def calculation_time_log(doc, row, self):
 
 				if full_hours >= total_shift_hours:
 					row.time_in_days = full_hours / total_shift_hours
+
+
+def _validate_fg_bom_field_value(row):
+	"""Reject an entered FG BOM field value that doesn't match its configured type.
+
+	Config field_type is otherwise only advisory (the grid value is free-text), so
+	without this a non-numeric Int would silently coerce to 0 and an off-list Select
+	would land verbatim on the BOM.
+	"""
+	value = (row.value or "").strip()
+	if not value:
+		return
+	label = row.field_label or row.field_name
+	ftype = row.field_type
+	if ftype == "Int":
+		if not value.lstrip("-").isdigit():
+			frappe.throw(_("FG BOM Field '{0}' must be a whole number.").format(label))
+	elif ftype in ("Float", "Currency"):
+		try:
+			float(value)
+		except ValueError:
+			frappe.throw(_("FG BOM Field '{0}' must be a number.").format(label))
+	elif ftype == "Check":
+		if value not in ("0", "1"):
+			frappe.throw(_("FG BOM Field '{0}' must be 0 or 1.").format(label))
+	elif ftype == "Date":
+		try:
+			getdate(value)
+		except Exception:
+			frappe.throw(
+				_("FG BOM Field '{0}' must be a valid date (YYYY-MM-DD).").format(label)
+			)
+	elif ftype == "Select":
+		opts = [o.strip() for o in (row.options or "").splitlines() if o.strip()]
+		if opts and value not in opts:
+			frappe.throw(
+				_("FG BOM Field '{0}' must be one of: {1}.").format(
+					label, ", ".join(opts)
+				)
+			)
+
+
+def _get_mwo_subcategory(mwo):
+	"""Subcategory of the FG item the MWO produces.
+
+	Must mirror what create_finished_goods_bom stamps as the FG BOM's
+	item_subcategory (the copy step matches on it): the FG item is the PMO's
+	new_item when present (repair replacement), else the MWO item. Resolving it
+	the same way here keeps capture and apply on the same subcategory.
+	"""
+	if not mwo:
+		return None
+	mwo_row = frappe.db.get_value(
+		"Manufacturing Work Order",
+		mwo,
+		["item_code", "manufacturing_order"],
+		as_dict=True,
+	)
+	if not mwo_row:
+		return None
+	fg_item = None
+	if mwo_row.manufacturing_order:
+		fg_item = frappe.db.get_value(
+			"Parent Manufacturing Order", mwo_row.manufacturing_order, "new_item"
+		)
+	fg_item = fg_item or mwo_row.item_code
+	if not fg_item:
+		return None
+	return frappe.db.get_value("Item", fg_item, "item_subcategory")
+
+
+@frappe.whitelist()
+def get_fg_bom_fields(operations):
+	"""Resolve the configured FG BOM fields for an Employee IR Receive.
+
+	`operations` is the employee_ir_operations rows (JSON). For each row we derive
+	the FG item's subcategory from its MWO and pull the active FG BOM Field
+	Configuration rows for that subcategory, one output row per configured field.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.fg_bom_field_configuration.fg_bom_field_configuration import (
+		get_active_fields_for_subcategory,
+	)
+
+	if isinstance(operations, str):
+		operations = json.loads(operations or "[]")
+
+	subcat_cache = {}
+	seen = set()
+	result = []
+	for op in operations or []:
+		mwo = op.get("manufacturing_work_order")
+		mop = op.get("manufacturing_operation")
+		if not mwo:
+			continue
+		if mwo not in subcat_cache:
+			subcat_cache[mwo] = _get_mwo_subcategory(mwo)
+		subcategory = subcat_cache[mwo]
+		if not subcategory:
+			continue
+		for cfg in get_active_fields_for_subcategory(subcategory):
+			# One FG per subcategory -> show each configured field once, even when a
+			# receive has several operations of the same subcategory. First operation
+			# owns the row (the copy step matches on manufacturing_operation).
+			key = (subcategory, cfg["field_name"])
+			if key in seen:
+				continue
+			seen.add(key)
+			result.append(
+				{
+					"manufacturing_operation": mop,
+					"subcategory": subcategory,
+					"field_label": cfg["field_label"],
+					"field_name": cfg["field_name"],
+					"field_type": cfg["field_type"],
+					"options": cfg["options"],
+					"is_mandatory": cfg["is_mandatory"],
+					"fg_bom_field": cfg["fg_bom_field"],
+				}
+			)
+	return result
+
+
+def _resolve_work_orders(operations):
+	"""Work order names for ``employee_ir_operations`` rows, in one round trip.
+
+	``manufacturing_work_order`` is ``fetch_from`` + ``fetch_if_empty`` on the child
+	row, so a freshly scanned or mapped row can reach us carrying only its
+	Manufacturing Operation. Rows like that are resolved through their MOP rather
+	than skipped -- dropping them would silently hide the field on exactly the
+	entries a shop-floor user creates by scanning.
+	"""
+	mwos = set()
+	missing_mops = set()
+	for row in operations or []:
+		mwo = row.get("manufacturing_work_order")
+		if mwo:
+			mwos.add(mwo)
+		elif row.get("manufacturing_operation"):
+			missing_mops.add(row["manufacturing_operation"])
+
+	if missing_mops:
+		for mop in frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", list(missing_mops)]},
+			fields=["name", "manufacturing_work_order"],
+		):
+			if mop.manufacturing_work_order:
+				mwos.add(mop.manufacturing_work_order)
+
+	return mwos
+
+
+@frappe.whitelist()
+def get_repeat_work_orders(operations, operation, employee_ir=None):
+	"""Work orders on this Receive that already completed a cycle at ``operation``.
+
+	A cycle is counted as a *submitted* Employee IR Receive for the same work order
+	at the same Department Operation. Deliberately keyed on
+	(manufacturing_work_order, operation) and never on the Manufacturing Operation:
+	``create_operation_for_next_op`` copies the MOP and saves a new one per cycle,
+	so a MOP name carries no history.
+
+	Returns the list rather than a bare flag so the form can name the offending
+	work orders -- with one answer per document, knowing *which* one is rework is
+	what makes the question answerable.
+	"""
+	if isinstance(operations, str):
+		operations = json.loads(operations or "[]")
+
+	if not operation:
+		return []
+
+	mwos = _resolve_work_orders(operations)
+	if not mwos:
+		return []
+
+	return _repeat_query(mwos, operation, employee_ir).run(
+		pluck="manufacturing_work_order"
+	)
+
+
+def _repeat_query(mwos, operation, employee_ir=None):
+	"""The prior-cycle lookup, split out so its predicates are testable without a DB."""
+	EIR = DocType("Employee IR")
+	EOP = DocType("Employee IR Operation")
+	query = (
+		frappe.qb.from_(EIR)
+		.inner_join(EOP)
+		.on(EOP.parent == EIR.name)
+		.select(EOP.manufacturing_work_order)
+		.distinct()
+		.where(
+			# docstatus == 1, not != 2: we are counting COMPLETED history, so a
+			# draft or cancelled Receive must not make the next one look like rework.
+			(EIR.docstatus == 1)
+			& (EIR.type == "Receive")
+			& (EIR.operation == operation)
+			& (EOP.manufacturing_work_order.isin(sorted(mwos)))
+		)
+	)
+	if employee_ir:
+		# Save-after-submit would otherwise match the document against itself.
+		query = query.where(EIR.name != employee_ir)
+	return query

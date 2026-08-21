@@ -6,10 +6,13 @@ from unittest.mock import MagicMock, patch
 import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.types.frappedict import _dict as FrappeDict
+from frappe.utils import add_to_date, now_datetime
 
-from jewellery_erpnext.create_test_data import create_test_data
 from jewellery_erpnext.jewellery_erpnext.doctype.department_ir.test_department_ir import (
 	mo_creation,
+)
+from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils import (
+	validate_employee_ir_receive_delay,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.employee_ir import (
 	create_operation_for_next_op,
@@ -105,6 +108,194 @@ class TestEmployeeIRReceiveLineageGuard(IntegrationTestCase):
 		self.assertEqual(mock_mop_log.voucher_no, "EMP-IR-RECV-1")
 
 
+class TestEmployeeIRReceiveDelayGuard(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _mock_row(mop="MOP-TEST-001", name="row-1", idx=1):
+		row = MockRow()
+		row.manufacturing_operation = mop
+		row.name = name
+		row.idx = idx
+		return row
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.resolve_employee_ir_issue_voucher_for_receive",
+		return_value=None,
+	)
+	def test_no_resolvable_issue_skips_check(self, _resolve):
+		doc = FrappeDict({"employee_ir_operations": [self._mock_row()]})
+		validate_employee_ir_receive_delay(doc)  # must not raise
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.resolve_employee_ir_issue_voucher_for_receive",
+		return_value="EMP-IR-ISSUE-1",
+	)
+	def test_zero_delay_allows_immediate_receive(self, _resolve, _get_value):
+		def side_effect(doctype, name=None, fields=None, as_dict=False):
+			if doctype == "Employee IR":
+				return FrappeDict(
+					{
+						"operation": "Casting",
+						"issue_submitted_on": now_datetime(),
+						"date_time": now_datetime(),
+					}
+				)
+			if doctype == "Department Operation":
+				return 0
+			return None
+
+		_get_value.side_effect = side_effect
+		doc = FrappeDict({"employee_ir_operations": [self._mock_row()]})
+		validate_employee_ir_receive_delay(doc)  # must not raise
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.resolve_employee_ir_issue_voucher_for_receive",
+		return_value="EMP-IR-ISSUE-1",
+	)
+	def test_delay_not_elapsed_blocks(self, _resolve, _get_value):
+		recent = add_to_date(now_datetime(), minutes=-1)
+
+		def side_effect(doctype, name=None, fields=None, as_dict=False):
+			if doctype == "Employee IR":
+				return FrappeDict(
+					{
+						"operation": "Casting",
+						"issue_submitted_on": recent,
+						"date_time": recent,
+					}
+				)
+			if doctype == "Department Operation":
+				return 5
+			return None
+
+		_get_value.side_effect = side_effect
+		doc = FrappeDict({"employee_ir_operations": [self._mock_row()]})
+
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			validate_employee_ir_receive_delay(doc)
+		self.assertIn("cannot be submitted at this stage", str(ctx.exception))
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.resolve_employee_ir_issue_voucher_for_receive",
+		return_value="EMP-IR-ISSUE-1",
+	)
+	def test_delay_elapsed_allows_receive(self, _resolve, _get_value):
+		old = add_to_date(now_datetime(), minutes=-10)
+
+		def side_effect(doctype, name=None, fields=None, as_dict=False):
+			if doctype == "Employee IR":
+				return FrappeDict(
+					{
+						"operation": "Casting",
+						"issue_submitted_on": old,
+						"date_time": old,
+					}
+				)
+			if doctype == "Department Operation":
+				return 5
+			return None
+
+		_get_value.side_effect = side_effect
+		doc = FrappeDict({"employee_ir_operations": [self._mock_row()]})
+		validate_employee_ir_receive_delay(doc)  # must not raise
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.resolve_employee_ir_issue_voucher_for_receive",
+		return_value="EMP-IR-ISSUE-1",
+	)
+	def test_legacy_issue_falls_back_to_date_time(self, _resolve, _get_value):
+		recent = add_to_date(now_datetime(), minutes=-1)
+
+		def side_effect(doctype, name=None, fields=None, as_dict=False):
+			if doctype == "Employee IR":
+				return FrappeDict(
+					{
+						"operation": "Casting",
+						"issue_submitted_on": None,
+						"date_time": recent,
+					}
+				)
+			if doctype == "Department Operation":
+				return 5
+			return None
+
+		_get_value.side_effect = side_effect
+		doc = FrappeDict({"employee_ir_operations": [self._mock_row()]})
+
+		with self.assertRaises(frappe.ValidationError):
+			validate_employee_ir_receive_delay(doc)
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.employee_ir.doc_events.validation_utils.frappe.db.get_value"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.resolve_employee_ir_issue_voucher_for_receive"
+	)
+	def test_multiple_issues_still_block_until_delays_elapse(self, _resolve, _get_value):
+		row_a = self._mock_row(mop="MOP-A", name="row-a", idx=1)
+		row_b = self._mock_row(mop="MOP-B", name="row-b", idx=2)
+
+		def resolve_side_effect(doc, row):
+			return (
+				"EMP-IR-ISSUE-A"
+				if row.manufacturing_operation == "MOP-A"
+				else "EMP-IR-ISSUE-B"
+			)
+
+		_resolve.side_effect = resolve_side_effect
+
+		near_deadline = add_to_date(
+			now_datetime(), minutes=-4
+		)  # ~1 min remaining of a 5 min delay
+		far_deadline = add_to_date(
+			now_datetime(), minutes=-1
+		)  # ~9 min remaining of a 10 min delay
+
+		def get_value_side_effect(doctype, name=None, fields=None, as_dict=False):
+			if doctype == "Employee IR":
+				if name == "EMP-IR-ISSUE-A":
+					return FrappeDict(
+						{
+							"operation": "Casting",
+							"issue_submitted_on": near_deadline,
+							"date_time": near_deadline,
+						}
+					)
+				return FrappeDict(
+					{
+						"operation": "Polishing",
+						"issue_submitted_on": far_deadline,
+						"date_time": far_deadline,
+					}
+				)
+			if doctype == "Department Operation":
+				return 5 if name == "Casting" else 10
+			return None
+
+		_get_value.side_effect = get_value_side_effect
+		doc = FrappeDict({"employee_ir_operations": [row_a, row_b]})
+
+		# The throw message is intentionally generic (no row / operation / issue / minutes),
+		# so which row is worst-case is not observable here — only that the doc is blocked.
+		with self.assertRaises(frappe.ValidationError):
+			validate_employee_ir_receive_delay(doc)
+
+
 class TestManufacturingOperationBalance(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
@@ -123,7 +314,6 @@ class TestManufacturingOperationBalance(IntegrationTestCase):
 		doc = FrappeDict(
 			{
 				"name": "MOP-TEST-001",
-				"main_slip_no": None,
 				"is_finding": 0,
 				"loss_wt": 0,
 				"employee_loss_wt": 0,
@@ -141,10 +331,12 @@ class TestManufacturingOperationBalance(IntegrationTestCase):
 class TestEmployeeIR(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
-		create_test_data()
 		cls.branch = frappe.get_value("Branch", {"branch_name": "Test Branch"}, "name")
 
 	def test_employee_ir_scan(self):
+		frappe.db.set_value(
+			"Department Operation", "Wax Pull Out", "employee_ir_receive_delay", 0
+		)
 		create_pmo(self)
 		mo = mo_creation()
 		dir_issue = dir_for_issue(
@@ -189,7 +381,61 @@ class TestEmployeeIR(IntegrationTestCase):
 			)
 			self.assertEqual(row.manufacturing_operation, mo_wax.name)
 
+	def test_employee_ir_receive_blocked_until_delay_elapses(self):
+		create_pmo(self)
+		mo = mo_creation()
+		dir_issue = dir_for_issue(
+			"Manufacturing Plan & Management - T", "Waxing - T", mo
+		)
+		mo.reload()
+		mo_wax = frappe.get_last_doc("Manufacturing Operation")
+		dir_for_receive(dir_issue)
+		mo_wax.reload()
+
+		frappe.db.set_value(
+			"Department Operation", "Wax Pull Out", "employee_ir_receive_delay", 5
+		)
+
+		eir_issue = frappe.new_doc("Employee IR")
+		eir_issue.type = "Issue"
+		eir_issue.department = "Waxing - T"
+		eir_issue.operation = "Wax Pull Out"
+		eir_issue.employee = "HR-EMP-00001"
+		eir_issue.scan_mwo = mo_wax.manufacturing_work_order
+		scan_mwo_eir(eir_issue)
+		eir_issue.save()
+		eir_issue.submit()
+		self.assertIsNotNone(eir_issue.issue_submitted_on)
+
+		eir_receive = frappe.new_doc("Employee IR")
+		eir_receive.department = "Waxing - T"
+		eir_receive.type = "Receive"
+		eir_receive.operation = "Wax Pull Out"
+		eir_receive.employee = "HR-EMP-00001"
+		eir_receive.scan_mwo = mo_wax.manufacturing_work_order
+		scan_mwo_eir(eir_receive)
+		eir_receive.save()
+
+		with self.assertRaises(frappe.ValidationError):
+			eir_receive.submit()
+
+		# Backdate the Issue's submission timestamp to simulate the delay elapsing,
+		# rather than sleeping the test for 5 real minutes.
+		frappe.db.set_value(
+			"Employee IR",
+			eir_issue.name,
+			"issue_submitted_on",
+			add_to_date(now_datetime(), minutes=-10),
+			update_modified=False,
+		)
+		eir_receive.reload()
+		eir_receive.submit()
+		self.assertEqual(eir_receive.docstatus, 1)
+
 	def test_department_ir_by_manufacturing_operation(self):
+		frappe.db.set_value(
+			"Department Operation", "Wax Pull Out", "employee_ir_receive_delay", 0
+		)
 		create_pmo(self)
 		mo = mo_creation()
 		dir_issue = dir_for_issue(
@@ -257,7 +503,6 @@ class TestEmployeeIR(IntegrationTestCase):
 		self.assertIsNone(new_mop.department_receive_id)
 		self.assertFalse(new_mop.department_ir_status)
 		self.assertIsNone(new_mop.operation)
-		self.assertIsNone(new_mop.main_slip_no)
 
 	def test_get_rows_to_append_returns_rows_for_positive_qty(self):
 		doc = frappe._dict({"department": "DPT", "manufacturer": "MFG"})

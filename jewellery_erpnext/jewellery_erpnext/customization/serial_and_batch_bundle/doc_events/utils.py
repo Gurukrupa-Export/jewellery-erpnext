@@ -1,16 +1,51 @@
 import frappe
 from erpnext.stock.serial_batch_bundle import SerialBatchBundle, SerialBatchCreation
-from frappe import _, _dict, bold
+from frappe import _, bold
 from frappe.utils import (
-	add_days,
-	cint,
-	cstr,
 	flt,
 	get_link_to_form,
-	now,
-	nowtime,
-	today,
 )
+
+
+def _conversion_lane_map(bundle, batch_list):
+	"""``{voucher_detail_no: lane tag}`` for a lane-tagged Stock Entry, else ``{}``.
+
+	Only Metal Conversions stamps ``Stock Entry Detail.custom_conversion_lane``. An
+	empty map means "this voucher is not lane-tagged", and the caller then keeps the
+	original voucher-wide behaviour -- so every other flow is untouched.
+
+	The lane cannot be inferred from the batches themselves: alloy consume rows are
+	booked "Regular Stock" yet legitimately fund a customer lane, so the tag written
+	by the builder is the only reliable attribution.
+	"""
+	if bundle.voucher_type != "Stock Entry":
+		return {}
+
+	if not frappe.db.has_column("Stock Entry Detail", "custom_conversion_lane"):
+		return {}
+
+	row_names = {b.voucher_detail_no for b in batch_list if b.voucher_detail_no}
+	row_names.add(bundle.get("voucher_detail_no"))
+	row_names.discard(None)
+	if not row_names:
+		return {}
+
+	lane_map = {
+		row.name: row.custom_conversion_lane
+		for row in frappe.get_all(
+			"Stock Entry Detail",
+			filters={"name": ["in", list(row_names)]},
+			fields=["name", "custom_conversion_lane"],
+		)
+		if row.custom_conversion_lane
+	}
+
+	# Scope only when the produced row itself is tagged; a partially tagged voucher
+	# would otherwise silently drop origin entries.
+	if not lane_map.get(bundle.get("voucher_detail_no")):
+		return {}
+
+	return lane_map
 
 
 def update_parent_batch_id(self):
@@ -38,30 +73,55 @@ def update_parent_batch_id(self):
 		)
 
 		if outward_bundle:
+			outward_entries = frappe.db.get_all(
+				"Serial and Batch Entry",
+				{"parent": ["in", outward_bundle]},
+				["batch_no", "qty", "incoming_rate", "voucher_detail_no"],
+			)
 			batch_list = [
 				frappe._dict(
 					{
 						"name": row.batch_no,
 						"qty": abs(row.qty),
 						"rate": row.incoming_rate,
+						"voucher_detail_no": row.voucher_detail_no,
 					}
 				)
-				for row in frappe.db.get_all(
-					"Serial and Batch Entry",
-					{"parent": ["in", outward_bundle]},
-					["batch_no", "qty", "incoming_rate"],
-				)
+				for row in outward_entries
 			]
+
+			# A voucher normally has one ownership, so every consumed batch is a
+			# legitimate origin of every produced batch. A Metal Conversion, though, can
+			# carry several ownership lanes at once: without scoping, each target batch
+			# would inherit the OTHER lanes' sources too, which both leaks provenance
+			# across customers and makes batch.on_update blend one cross-lane average
+			# rate for all of them. See doctype/metal_conversions.
+			lane_of = _conversion_lane_map(self, batch_list)
 
 			for row in self.entries:
 				if row.batch_no:
 					batch_doc = frappe.get_doc("Batch", row.batch_no)
 
-					existing_entries = [
-						row.batch_no for row in batch_doc.custom_origin_entries
-					]
+					lane = (
+						lane_of.get(self.get("voucher_detail_no")) if lane_of else None
+					)
+					sources = (
+						[
+							b
+							for b in batch_list
+							if lane_of.get(b.voucher_detail_no) == lane
+						]
+						if lane
+						else batch_list
+					)
 
-					for batch in batch_list:
+					for batch in sources:
+						# Recomputed per append: a batch appearing in two outward entries
+						# would otherwise pass a stale snapshot twice and be
+						# double-weighted in the rate blend.
+						existing_entries = {
+							entry.batch_no for entry in batch_doc.custom_origin_entries
+						}
 						if batch.name not in existing_entries:
 							batch_doc.append(
 								"custom_origin_entries",

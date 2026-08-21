@@ -263,6 +263,33 @@ frappe.ui.form.on("Quotation", {
 		});
 		refresh_field("items");
 	},
+	custom_sales_type: function (frm) {
+		const config = {
+			Hybrid: {
+				custom_customer_finding: "Yes",
+				custom_customer_good: "No",
+				custom_customer_stone: "No",
+				custom_customer_diamond: "No",
+				custom_customer_gold: "No"
+			},
+			Outwork: {
+				custom_customer_finding: "Yes",
+				custom_customer_good: "Yes",
+				custom_customer_stone: "Yes",
+				custom_customer_diamond: "Yes",
+				custom_customer_gold: "Yes"
+			},
+			Outright: {
+				custom_customer_finding: "No",
+				custom_customer_good: "No",
+				custom_customer_stone: "No",
+				custom_customer_diamond: "No",
+				custom_customer_gold: "No"
+			}
+		};
+
+		frm.set_value(config[frm.doc.custom_sales_type] || {});
+	},
 });
 
 function set_item_attribute_filters_on_fields_in_parent_doctype(frm, fields) {
@@ -1455,9 +1482,12 @@ frappe.ui.form.on("Quotation Item", {
 					}
 				});
 		}
-		if (row.custom_tracking_bom) {
-			dialog.set_value("bom_no", row.custom_tracking_bom);
-		}
+		// NOTE: bom_no is already populated via the field `default` and the
+		// initial edit_bom_documents() call above. Re-setting it here fired the
+		// field onchange a second time, which ran set_edit_bom_details() again
+		// and duplicated every metal/finding/diamond/gemstone row in the dialog
+		// (the async row pushes from both runs accumulated). Sales Order has no
+		// such trailing set_value, which is why it never doubled.
 
 		dialog.show();
 		dialog.$wrapper.find(".modal-dialog").css("max-width", "90%");
@@ -1487,6 +1517,17 @@ let edit_bom_documents = (
 		args using:
 			bom_no: Link of BOM
 	*/
+	// The bom_no field default (fires onchange on render/show) and the explicit
+	// call in edit_bom() both invoke this for the same BOM when the dialog opens.
+	// Populating twice duplicated every metal/finding/diamond/gemstone row, so
+	// skip if this BOM was already loaded into this dialog. Stamped synchronously
+	// (before the async fetch below) so an in-flight first run still blocks the
+	// second. A genuine BOM change (e.g. serial scan) passes a different bom_no.
+	if (dialog.__last_bom_populated === bom_no) {
+		return;
+	}
+	dialog.__last_bom_populated = bom_no;
+
 	var doc = frappe.model.get_doc("Tracking Bom", bom_no);
 	if (!doc) {
 		frappe.call({
@@ -1562,20 +1603,19 @@ let set_edit_bom_details = (
 	dialog.set_value("diamond_amount", 0);
 	dialog.set_value("saleAmount", 0);
 
+	// clear the original data arrays to prevent duplicate rows
+	metal_data.length = 0;
+	diamond_data.length = 0;
+	gemstone_data.length = 0;
+	finding_data.length = 0;
+	other_data.length = 0;
+
 	// total amount calculation
-	var metal_amount = 0;
-	var making_amount = 0;
 	var wastage_amount = 0;
-	var diamond_amount = 0;
-	var finding_amount = 0;
-	var gemstone_amount = 0;
-	var other_material_amount = 0;
 
 	// metal details table append
 	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then((gold_gst_rate) => {
 		$.each(doc.metal_detail, function (index, d) {
-			metal_amount += d.amount;
-			making_amount += d.making_amount;
 			wastage_amount += d.wastage_amount;
 			frappe.call({
 				method: "jewellery_erpnext.query.get_customer_mtel_purity",
@@ -1627,8 +1667,6 @@ let set_edit_bom_details = (
 
 	// diamond details table append
 	$.each(doc.diamond_detail, function (index, d) {
-		diamond_amount += d.diamond_rate_for_specified_quantity;
-
 		let witout_precision = d.quantity;
 		// console.log(witout_precision);
 		let without_precision_rate = witout_precision * d.total_diamond_rate;
@@ -1681,7 +1719,6 @@ let set_edit_bom_details = (
 
 	// gemstone details table append
 	$.each(doc.gemstone_detail, function (index, d) {
-		gemstone_amount += d.gemstone_rate_for_specified_quantity;
 		let witout_precision = d.quantity;
 		let without_precision_rate = witout_precision * d.total_gemstone_rate;
 
@@ -1733,7 +1770,6 @@ let set_edit_bom_details = (
 	// finding details table append
 	frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then((gold_gst_rate) => {
 		$.each(doc.finding_detail, function (index, d) {
-			finding_amount += d.amount;
 			frappe.call({
 				method: "jewellery_erpnext.query.get_customer_mtel_purity",
 				args: {
@@ -1794,7 +1830,7 @@ let set_edit_bom_details = (
 		dialog.fields_dict.other_detail.grid.refresh();
 	});
 
-	// dialog fields value fetch from BOM
+	// dialog fields value fetch from Tracking BOM doc (use pre-computed amounts)
 	dialog.set_value("gross_weight", doc.gross_weight);
 	// dialog.set_value("certification_amount", doc.certification_amount)
 	// dialog.set_value("hallmarking_amount", doc.hallmarking_amount)
@@ -1802,13 +1838,30 @@ let set_edit_bom_details = (
 	// dialog.set_value("freight_amount", doc.freight_amount)
 	// dialog.set_value("sale_amount", doc.sale_amount)
 
-	dialog.set_value("metal_amount", metal_amount);
-	dialog.set_value("making_amount", making_amount);
-	dialog.set_value("wastage_amount", wastage_amount);
-	dialog.set_value("gemstone_amount", gemstone_amount);
-	dialog.set_value("diamond_amount", diamond_amount);
+	// The Tracking Bom's doc-level *_bom_amount fields are only populated on an
+	// Update (update_totals), so they read 0 when the dialog first opens. Derive
+	// the summary amounts from the child rows instead, matching Sales Order.
+	let metal_amount_total = 0;
+	(doc.metal_detail || []).forEach((d) => (metal_amount_total += flt(d.amount)));
+	let finding_amount_total = 0;
+	(doc.finding_detail || []).forEach((d) => (finding_amount_total += flt(d.amount)));
+	let diamond_amount_total = 0;
+	(doc.diamond_detail || []).forEach(
+		(d) => (diamond_amount_total += flt(d.quantity) * flt(d.total_diamond_rate))
+	);
+	let gemstone_amount_total = 0;
+	(doc.gemstone_detail || []).forEach(
+		(d) => (gemstone_amount_total += flt(d.quantity) * flt(d.total_gemstone_rate))
+	);
+
+	dialog.set_value("metal_amount", metal_amount_total || doc.gold_bom_amount || 0);
+	dialog.set_value("making_amount", doc.making_charge || 0);
+	dialog.set_value("wastage_amount", wastage_amount || 0);
+	dialog.set_value("gemstone_amount", gemstone_amount_total || doc.gemstone_bom_amount || 0);
+	dialog.set_value("diamond_amount", diamond_amount_total || doc.diamond_bom_amount || 0);
+	dialog.set_value("finding_amount", finding_amount_total || doc.finding_bom_amount || 0);
 	dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
-	dialog.set_value("finding_weight", doc.finding_weight_ || 0);
+	dialog.set_value("finding_weight", doc.finding_weight || 0);
 	dialog.set_value("other_weight", doc.other_weight || 0);
 	dialog.set_value("diamond_weight", doc.diamond_weight || 0);
 	dialog.set_value("gemstone_weight", doc.gemstone_weight || 0);

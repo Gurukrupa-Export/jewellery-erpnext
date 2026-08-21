@@ -10,6 +10,9 @@
  "field_order": [
   "naming_series",
   "refining_type",
+  "is_external",
+  "supplier",
+  "pricing_item",
   "company",
   "posting_date",
   "column_break_general",
@@ -17,6 +20,7 @@
   "refining_department",
   "warehouse",
   "refining_warehouse",
+  "supplier_warehouse",
   "column_break_general2",
   "status",
   "manufacturer",
@@ -25,6 +29,7 @@
   "scan_serial_no",
   "scan_scrap_qr",
   "scrap_item",
+  "employee",
   "work_order_action",
   "mwo_details",
   "serial_no_details",
@@ -35,7 +40,6 @@
   "column_break_dust",
   "multiple_operation",
   "multiple_department",
-  "employee",
   "operation",
   "loss_item",
   "refining_department_detail",
@@ -67,6 +71,11 @@
   "recovery_remarks",
   "section_break_se",
   "material_transfer_se",
+  "refining_entry_po",
+  "refined_metal_item",
+  "qty_to_refine",
+  "received_weight",
+  "received_qty",
   "repack_se",
   "column_break_se",
   "transfer_se",
@@ -83,7 +92,7 @@
    "fieldname": "naming_series",
    "fieldtype": "Select",
    "label": "Series",
-   "options": "RFN-DST-.YY.-.#####\nRFN-MWO-.YY.-.#####\nRFN-SRN-.YY.-.#####\nRFN-SCP-.YY.-.#####",
+   "options": "RFN-MWO-.YY.-.#####\nRFN-SRN-.YY.-.#####\nRFN-SCP-.YY.-.#####\nRFN-ULM-.YY.-.#####",
    "read_only": 1,
    "reqd": 1
   },
@@ -101,8 +110,31 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Refining Type",
-   "options": "\nDust Refining\nWork Order Refining\nSerial Number Refining\nScrap Refining",
+   "options": "\nScrap Refining\nWork Order Refining\nSerial Number Refining\nUnused/Loose Material Refining",
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.refining_type",
+   "fieldname": "is_external",
+   "fieldtype": "Check",
+   "in_standard_filter": 1,
+   "label": "Is External Refining"
+  },
+  {
+   "depends_on": "eval:doc.is_external",
+   "fieldname": "supplier",
+   "fieldtype": "Link",
+   "label": "Refinery Supplier",
+   "mandatory_depends_on": "eval:doc.is_external",
+   "options": "Supplier"
+  },
+  {
+   "depends_on": "eval:doc.is_external",
+   "fieldname": "pricing_item",
+   "fieldtype": "Link",
+   "label": "Pricing Category",
+   "options": "Item"
   },
   {
    "fieldname": "company",
@@ -147,6 +179,15 @@
    "fieldname": "refining_warehouse",
    "fieldtype": "Link",
    "label": "Refining Warehouse",
+   "options": "Warehouse",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.is_external",
+   "fieldname": "supplier_warehouse",
+   "fieldtype": "Link",
+   "label": "Supplier Warehouse",
+   "no_copy": 1,
    "options": "Warehouse",
    "read_only": 1
   },
@@ -203,17 +244,17 @@
    "options": "Barcode"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
+   "depends_on": "eval:doc.refining_type=='Unused/Loose Material Refining'",
    "fieldname": "scan_scrap_qr",
    "fieldtype": "Data",
-   "label": "Scan Scrap QR",
+   "label": "Scan Unused/Loose Material QR",
    "options": "Barcode"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
+   "depends_on": "eval:doc.refining_type=='Unused/Loose Material Refining'",
    "fieldname": "scrap_item",
    "fieldtype": "Link",
-   "label": "Scrap Item",
+   "label": "Unused/Loose Material Item",
    "options": "Item"
   },
   {
@@ -244,24 +285,24 @@
    "options": "Refining Serial No Detail"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
    "fieldname": "section_break_dust",
    "fieldtype": "Section Break",
-   "label": "Dust Refining Settings"
+   "label": "Scrap Refining Settings"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
    "fieldname": "date_from",
    "fieldtype": "Date",
    "label": "From Date",
-   "mandatory_depends_on": "eval:doc.refining_type=='Dust Refining'"
+   "mandatory_depends_on": "eval:doc.refining_type=='Scrap Refining'"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining'",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining'",
    "fieldname": "date_to",
    "fieldtype": "Date",
    "label": "To Date",
-   "mandatory_depends_on": "eval:doc.refining_type=='Dust Refining'"
+   "mandatory_depends_on": "eval:doc.refining_type=='Scrap Refining'"
   },
   {
    "fieldname": "column_break_dust",
@@ -269,27 +310,27 @@
   },
   {
    "default": "0",
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_department",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && !doc.multiple_department",
    "fieldname": "multiple_operation",
    "fieldtype": "Check",
    "label": "For Multiple Operations"
   },
   {
    "default": "0",
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && !doc.multiple_operation",
    "fieldname": "multiple_department",
    "fieldtype": "Check",
    "label": "For Multiple Department"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department",
+   "depends_on": "eval:(doc.refining_type=='Unused/Loose Material Refining') || (doc.refining_type=='Scrap Refining' && !doc.multiple_operation && !doc.multiple_department)",
    "fieldname": "employee",
    "fieldtype": "Link",
    "label": "Employee",
    "options": "Employee"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && !doc.multiple_operation && !doc.multiple_department",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && !doc.multiple_operation && !doc.multiple_department",
    "fieldname": "operation",
    "fieldtype": "Link",
    "label": "Operation",
@@ -302,14 +343,14 @@
    "options": "Item"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && doc.multiple_department==1",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && doc.multiple_department==1",
    "fieldname": "refining_department_detail",
    "fieldtype": "Table",
    "label": "Department Allocation",
    "options": "Refining Department Detail"
   },
   {
-   "depends_on": "eval:doc.refining_type=='Dust Refining' && doc.multiple_operation==1",
+   "depends_on": "eval:doc.refining_type=='Scrap Refining' && doc.multiple_operation==1",
    "fieldname": "refining_operation_detail",
    "fieldtype": "Table",
    "label": "Operation Allocation",
@@ -343,13 +384,13 @@
   {
    "fieldname": "additional_dust_qty",
    "fieldtype": "Float",
-   "label": "Additional Dust Qty"
+   "label": "Additional Scrap Qty"
   },
   {
    "default": "0",
    "fieldname": "dust_received",
    "fieldtype": "Check",
-   "label": "Dust Received"
+   "label": "Scrap Received"
   },
   {
    "fieldname": "column_break_verification",
@@ -486,6 +527,53 @@
   },
   {
    "allow_on_submit": 1,
+   "depends_on": "eval:doc.is_external",
+   "fieldname": "refining_entry_po",
+   "fieldtype": "Link",
+   "label": "Refining Service PO",
+   "no_copy": 1,
+   "options": "Purchase Order",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.is_external",
+   "fieldname": "refined_metal_item",
+   "fieldtype": "Link",
+   "label": "Refined Metal Item",
+   "options": "Item",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.is_external",
+   "fieldname": "qty_to_refine",
+   "fieldtype": "Float",
+   "label": "Qty to Refine",
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.is_external",
+   "fieldname": "received_weight",
+   "fieldtype": "Float",
+   "label": "Received Weight",
+   "no_copy": 1,
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
+   "description": "Retired. Nothing writes this any more \u2014 the receive dialog no longer asks for it and no report, price or print format ever read it. Kept, hidden, so stored values are not lost.",
+   "fieldname": "received_qty",
+   "fieldtype": "Float",
+   "hidden": 1,
+   "label": "Received Quantity",
+   "no_copy": 1,
+   "precision": "3",
+   "read_only": 1
+  },
+  {
+   "allow_on_submit": 1,
    "fieldname": "repack_se",
    "fieldtype": "Link",
    "label": "Repack SE",
@@ -542,9 +630,13 @@
   {
    "link_doctype": "Stock Entry",
    "link_fieldname": "custom_refining_entry"
+  },
+  {
+   "link_doctype": "Purchase Order",
+   "link_fieldname": "refining_entry"
   }
  ],
- "modified": "2026-07-03 20:56:46.250471",
+ "modified": "2026-07-31 20:57:25.521868",
  "modified_by": "Administrator",
  "module": "Refining",
  "name": "Refining Entry",

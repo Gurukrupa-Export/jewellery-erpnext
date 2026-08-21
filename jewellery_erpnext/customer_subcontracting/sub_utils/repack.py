@@ -179,7 +179,21 @@ def process_repack_settlement(
 	# in sorted (item_code, warehouse) order, so two concurrent repack-settlement runs acquire
 	# the shared gold batches in the same sequence — breaks 1213 reverse-order deadlock cycles
 	# across the per-log nested SE submits below. Additive: does not change what is created.
-	from jewellery_erpnext.jewellery_erpnext.lock_order import lock_bins
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		lock_bins,
+		preallocate_series_for_docs,
+	)
+
+	# Canonical lock order: pin the Stock Entry naming-series row (position 2) BEFORE the
+	# Bins so the per-log nested SE submits below are Series-then-Bin like every conformant
+	# SE submit -- fixes the Bin-before-Series inversion behind F-002 1213 cycles. The
+	# stub mirrors create_gold_repack_entry()'s naming inputs (type + user-default company)
+	# so the pinned series prefix matches the row the nested inserts will lock. Additive:
+	# SELECT ... FOR UPDATE only, re-entrant with the real naming at insert.
+	_series_stub = frappe.new_doc("Stock Entry")
+	_series_stub.company = frappe.defaults.get_user_default("Company")
+	_series_stub.stock_entry_type = "Subcontracting Repack"
+	preallocate_series_for_docs(_series_stub)
 
 	lock_bins(
 		[(b.get("item_code"), b.get("warehouse")) for b in (incoming_batches or [])]

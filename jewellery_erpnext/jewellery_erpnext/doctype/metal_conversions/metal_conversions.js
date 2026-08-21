@@ -16,6 +16,9 @@ frappe.ui.form.on("Metal Conversions", {
 				query: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.filters.item_query_filters",
 			};
 		};
+		// Remarks ships no options in the DocType JSON, so a saved doc has nothing to
+		// render its stored value against until this runs.
+		set_remark_options(frm);
 	},
 	setup(frm) {
 		// Set Metal Tab Filter
@@ -39,6 +42,9 @@ frappe.ui.form.on("Metal Conversions", {
 		frm.set_value("target_warehouse", frm.doc.source_warehouse);
 		frm.refresh_field("target_warehouse");
 	},
+	percentage(frm) {
+		set_remark_options(frm);
+	},
 	multiple_metal_converter(frm) {
 		// For Clearing All Field's
 		frappe.call({
@@ -61,11 +67,21 @@ frappe.ui.form.on("Metal Conversions", {
 		// Clear All Fields
 		clear_metal_field(frm);
 	},
+	is_melting_loss(frm) {
+		if (frm.doc.is_melting_loss) {
+			// Loss-recording mode: drop every conversion-only field.
+			clear_metal_field(frm);
+		} else {
+			frm.set_value("loss_qty", null);
+		}
+	},
 	batch(frm) {
+		// customer and inventory_type are deliberately NOT written here any more: both
+		// are derived server-side from the FIFO allocation (build_conversion_lanes),
+		// which can span several ownerships at once. Setting them from a single batch
+		// would contradict the Conversion Lanes table.
 		frm.set_value("batch_available_qty", null);
 		frm.set_value("supplier", null);
-		frm.set_value("customer", null);
-		frm.set_value("inventory_type", null);
 		frappe.call({
 			method: "get_batch_detail",
 			doc: frm.doc,
@@ -73,15 +89,12 @@ frappe.ui.form.on("Metal Conversions", {
 				docname: frm.doc.name,
 			},
 			callback: (r) => {
+				if (!r.message) return;
 				frm.set_value("batch_available_qty", r.message[0]);
 				frm.set_value("supplier", r.message[1]);
-				frm.set_value("customer", r.message[2]);
-				frm.set_value("inventory_type", r.message[3]);
 
 				frm.refresh_field("batch_available_qty");
 				frm.refresh_field("supplier");
-				frm.refresh_field("customer");
-				frm.refresh_field("inventory_type");
 			},
 		});
 	},
@@ -118,12 +131,7 @@ frappe.ui.form.on("MC Source Table", {
 				callback: (r) => {
 					if (r.message) {
 						var child_doc = locals[cdt][cdn];
-						frappe.model.set_value(
-							child_doc.doctype,
-							child_doc.name,
-							"total",
-							r.message[0]
-						);
+						frappe.model.set_value(child_doc.doctype, child_doc.name, "total", r.message[0]);
 					}
 				},
 			});
@@ -133,6 +141,34 @@ frappe.ui.form.on("MC Source Table", {
 		set_batch_value(frm, cdt, cdn);
 	},
 });
+function set_remark_options(frm) {
+	// Remarks is a Select whose option TEXT carries the document's Percentage, so the
+	// list is built per document instead of living in the DocType JSON (where it would
+	// be shared by every document). The server renders it -- see
+	// metal_conversions.py::render_remark_options -- and re-renders the stored value on
+	// validate, so what the dropdown shows and what we store can never drift.
+	if (!frm.fields_dict["remarks"]) return;
+
+	const previous = frm.fields_dict["remarks"].df.options;
+	const picked = Array.isArray(previous) ? previous.indexOf(frm.doc.remarks) : -1;
+
+	frappe.call({
+		method: "get_remark_options",
+		doc: frm.doc,
+		callback: (r) => {
+			const options = [""].concat(r.message || []);
+			frm.set_df_property("remarks", "options", options);
+
+			// Both lists are [""] + templates in the same order, so the index survives a
+			// Percentage change -- re-point a picked remark at the re-rendered sentence.
+			if (picked > 0 && options[picked] && options[picked] !== frm.doc.remarks) {
+				frm.set_value("remarks", options[picked]);
+			}
+			frm.refresh_field("remarks");
+		},
+	});
+}
+
 function set_wh_filter(frm, field_name) {
 	frm.set_query(field_name, function () {
 		return {
@@ -182,11 +218,7 @@ function set_batch_filter(frm, field_name) {
 	};
 }
 function set_child_table_batch_filter(frm, child_table_name) {
-	frm.fields_dict[child_table_name].grid.get_field("batch").get_query = function (
-		doc,
-		cdt,
-		cdn
-	) {
+	frm.fields_dict[child_table_name].grid.get_field("batch").get_query = function (doc, cdt, cdn) {
 		var child = locals[cdt][cdn];
 		console.log(child.item_code);
 		return {
@@ -256,9 +288,7 @@ function calculate_metal(frm) {
 						clear_alloy(frm);
 						frappe.show_alert(
 							{
-								message: __(
-									"Alloy Selection Invisible Due to Calculation is <b>0</b>"
-								),
+								message: __("Alloy Selection Invisible Due to Calculation is <b>0</b>"),
 								indicator: "green",
 							},
 							5
@@ -361,18 +391,8 @@ function set_batch_value(frm, cdt, cdn) {
 					"batch_available_qty",
 					r.message[0]
 				);
-				frappe.model.set_value(
-					child_doc.doctype,
-					child_doc.name,
-					"supplier",
-					r.message[1]
-				);
-				frappe.model.set_value(
-					child_doc.doctype,
-					child_doc.name,
-					"customer",
-					r.message[2]
-				);
+				frappe.model.set_value(child_doc.doctype, child_doc.name, "supplier", r.message[1]);
+				frappe.model.set_value(child_doc.doctype, child_doc.name, "customer", r.message[2]);
 				if (!r.message[3]) {
 					frappe.model.set_value(
 						child_doc.doctype,
@@ -381,12 +401,7 @@ function set_batch_value(frm, cdt, cdn) {
 						"Regular Stock"
 					);
 				} else {
-					frappe.model.set_value(
-						child_doc.doctype,
-						child_doc.name,
-						"inventory_type",
-						r.message[3]
-					);
+					frappe.model.set_value(child_doc.doctype, child_doc.name, "inventory_type", r.message[3]);
 				}
 			}
 		},

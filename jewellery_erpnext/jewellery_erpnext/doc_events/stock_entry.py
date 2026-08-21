@@ -20,15 +20,20 @@ from frappe.utils import cint, flt
 from jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils import (
 	get_purity_percentage,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	validate_loss_ownership_carried,
+)
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
 )
 from jewellery_erpnext.jewellery_erpnext.lock_order import (
 	lock_bins_for_rows,
+	lock_items,
 	preallocate_series_for_docs,
 	sorted_stock_rows,
 )
 from jewellery_erpnext.utils import (
+	bulk_map,
 	get_item_from_attribute,
 	get_variant_of_item,
 	group_aggregate_with_concat,
@@ -55,13 +60,22 @@ def before_validate(self, method):
 
 	dir_staus_data = frappe._dict()
 
+	# has_batch_no is read once per row below; prefetch it for the (post-update_batches)
+	# item table so this is one query instead of O(rows). Its only reader sits behind
+	# ``not self.auto_created``, so skip the query entirely on auto-created SEs.
+	has_batch_map = {}
+	if not self.auto_created:
+		has_batch_map = bulk_map(
+			"Item", [row.item_code for row in self.items], ["has_batch_no"]
+		)
+
 	for row in self.items:
 		if (
 			not self.auto_created
 			and row.s_warehouse
 			and not row.batch_no
 			and not row.serial_no
-			and frappe.db.get_value("Item", row.item_code, "has_batch_no")
+			and (has_batch_map.get(row.item_code) or {}).get("has_batch_no")
 		):
 			# Allocation (update_batches) already ran above; a batch-tracked source
 			# row still without a batch means there is genuinely no stock to draw
@@ -91,7 +105,8 @@ def before_validate(self, method):
 			"Customer Goods Received",
 		]:
 			if not pure_item_purity:
-				if self.stock_entry_type == "Material Transfer (MAIN SLIP)":
+				if self.stock_entry_type == "Material Transfer":
+					manufacturer = None
 					if self.to_main_slip:
 						manufacturer = frappe.db.get_value(
 							"Main Slip", self.to_main_slip, "manufacturer"
@@ -100,6 +115,11 @@ def before_validate(self, method):
 						manufacturer = frappe.db.get_value(
 							"Main Slip", self.main_slip, "manufacturer"
 						)
+					# Fallback so a Material Transfer SE with no Main Slip link (e.g. the Tree
+					# Number Issue button) resolves a manufacturer instead of raising
+					# UnboundLocalError.
+					if not manufacturer:
+						manufacturer = self.get("manufacturer") or MANUFACTURER
 				elif self.manufacturing_order:
 					manufacturer = frappe.db.get_value(
 						"Parent Manufacturing Order",
@@ -107,10 +127,15 @@ def before_validate(self, method):
 						"manufacturer",
 					)
 				else:
-					if self.manufacturer:
-						manufacturer = self.manufacturer
-					else:
-						manufacturer = MANUFACTURER
+					# Stock Entry.manufacturer is a custom field (gke_customization ships it
+					# in fixtures/custom_field.json) and is therefore NOT guaranteed to be
+					# installed: gk.site currently has no such Custom Field and no column,
+					# only the Stock Entry Detail one. It is also set as a plain in-memory
+					# attribute by callers that know it without persisting it (Refining
+					# Entry carries its own onto the SEs it builds). Read it with .get() so
+					# a Stock Entry that lacks the field falls back to the session default
+					# instead of raising AttributeError mid-save.
+					manufacturer = self.get("manufacturer") or MANUFACTURER
 
 				pure_item = frappe.db.get_value(
 					"Manufacturing Setting",
@@ -118,13 +143,48 @@ def before_validate(self, method):
 					"pure_gold_item",
 				)
 
+				# Manufacturing Setting is keyed by manufacturer, but the live records are
+				# per-COMPANY (one row each, named after the company). A manufacturer that is
+				# actually set -- on the document, or as a session default -- therefore
+				# matches nothing, and this used to abort the save with a message telling the
+				# user to set the very thing that broke it. Fall back to the company's own
+				# setting, which is what the company-keyed lookup above did before it was
+				# commented out.
+				#
+				# The fallback never GUESSES between manufacturers: it takes the company-wide
+				# record (no manufacturer on it) when there is one, else the company's single
+				# record. A company that genuinely keeps one setting per manufacturer keeps
+				# throwing, because picking an arbitrary sibling there would silently cost the
+				# metal off another manufacturer's pure_gold_item.
+				if not pure_item and self.company:
+					settings = frappe.get_all(
+						"Manufacturing Setting",
+						filters={"company": self.company},
+						fields=["name", "manufacturer", "pure_gold_item"],
+						order_by="name",
+					)
+
+					if len(settings) == 1:
+						pure_item = settings[0].pure_gold_item
+					else:
+						company_wide = [s for s in settings if not s.manufacturer]
+						if len(company_wide) == 1:
+							pure_item = company_wide[0].pure_gold_item
+
 				if not pure_item:
 					frappe.throw(
-						_("Select Manufacturer in session defaults or in Filed")
+						_(
+							"Set Pure Gold Item in the Manufacturing Setting for manufacturer {0} or company {1}"
+						).format(
+							frappe.bold(manufacturer or _("(not set)")),
+							frappe.bold(self.company),
+						)
 					)
 
 				pure_item_purity = get_purity_percentage(pure_item)
 
+			# get_purity_percentage is already @frappe.request_cache'd, so repeated
+			# item codes across rows resolve from that cache — no local memo needed.
 			item_purity = get_purity_percentage(row.item_code)
 
 			if not item_purity:
@@ -143,6 +203,9 @@ def before_validate(self, method):
 			and not row.batch_no
 		):
 			row.inventory_type = "Regular Stock"
+
+	# Must run BEFORE the blanket default below, which is what erases the evidence.
+	validate_loss_ownership_carried(self)
 
 	# Ensure all items have a valid inventory_type to prevent None in Stock Ledger Entry
 	for row in self.items:
@@ -265,6 +328,84 @@ def get_receive_work_order_batch(self):
 
 		if entry.batch_no not in batch_data.get(key, []):
 			entry.batch_no = batch_data[key]
+
+
+# Warehouse fields are immutable once the entry is submitted -- the Stock Ledger Entries were
+# already written against them, so a post-submit rewrite makes the document lie about where the
+# stock physically went. erpnext ships these fields without ``allow_on_submit``, so frappe's own
+# ``_validate_update_after_submit`` normally rejects the change -- but a site-level Property Setter
+# silently unlocks them, and that is exactly how the ``gk`` site accumulated 700 submitted Stock
+# Entries with rewritten target warehouses. Guard here instead: this runs regardless of the site's
+# Property Setters, and regardless of which client posted the change (app JS, a DB-stored Client
+# Script, or a stale browser tab still running an old bundle).
+_PARENT_WAREHOUSE_FIELDS = ("from_warehouse", "to_warehouse")
+_ROW_WAREHOUSE_FIELDS = ("s_warehouse", "t_warehouse")
+
+
+def guard_warehouse_change(self, method=None):
+	if self.flags.get("allow_warehouse_change_after_submit"):
+		return
+
+	db_values = frappe.db.get_value(
+		"Stock Entry", self.name, list(_PARENT_WAREHOUSE_FIELDS), as_dict=True
+	)
+	if not db_values:
+		return
+
+	for fieldname in _PARENT_WAREHOUSE_FIELDS:
+		_reject_warehouse_change(
+			"Stock Entry", fieldname, db_values.get(fieldname), self.get(fieldname)
+		)
+
+	db_rows = {
+		row.name: row
+		for row in frappe.db.get_all(
+			"Stock Entry Detail",
+			filters={"parent": self.name, "parenttype": "Stock Entry"},
+			fields=["name", *_ROW_WAREHOUSE_FIELDS],
+		)
+	}
+
+	for row in self.get("items") or []:
+		# A row that is not in the DB is a post-submit insert; the ``items`` table itself has no
+		# allow_on_submit, so frappe's table-length check rejects that separately.
+		db_row = db_rows.get(row.name)
+		if not db_row:
+			continue
+
+		for fieldname in _ROW_WAREHOUSE_FIELDS:
+			_reject_warehouse_change(
+				"Stock Entry Detail",
+				fieldname,
+				db_row.get(fieldname),
+				row.get(fieldname),
+				idx=row.idx,
+			)
+
+
+def _reject_warehouse_change(doctype, fieldname, db_value, new_value, idx=None):
+	# Normalise None and "" to the same empty value -- a no-op clear of an already-blank field
+	# must not trip the guard.
+	if (db_value or "") == (new_value or ""):
+		return
+
+	label = frappe.get_meta(doctype).get_label(fieldname) or fieldname
+	prefix = _("Row #{0}: ").format(idx) if idx else ""
+
+	frappe.throw(
+		_(
+			"{0}{1} cannot be changed after submission (from {2} to {3}). The stock ledger was"
+			" already posted against the original warehouse. Reload the form and try again; if"
+			" the change is genuinely intended, cancel and amend this Stock Entry."
+		).format(
+			prefix,
+			frappe.bold(label),
+			frappe.bold(db_value or _("(empty)")),
+			frappe.bold(new_value or _("(empty)")),
+		),
+		frappe.UpdateAfterSubmitError,
+		title=_("Cannot Update After Submit"),
+	)
 
 
 def on_update_after_submit(self, method):
@@ -394,8 +535,22 @@ def validate_metal_properties(doc):
 			key = row.manufacturing_operation or main_slip
 			item_data[row.item_code]["mop"] = [key] if key else []
 			item_data[row.item_code]["variant"] = row.custom_variant_of
-			item_data[row.item_code]["ignore_touch_and_purity"] = frappe.db.get_value(
-				"Item", row.item_code, "custom_is_manufacturing_item"
+			# Fold the two Item reads for this row (also read as custom_ignore_work_order
+			# in the mwo colour check below) into a single fetch.
+			itm = (
+				frappe.db.get_value(
+					"Item",
+					row.item_code,
+					["custom_is_manufacturing_item", "custom_ignore_work_order"],
+					as_dict=True,
+				)
+				or {}
+			)
+			item_data[row.item_code]["ignore_touch_and_purity"] = itm.get(
+				"custom_is_manufacturing_item"
+			)
+			item_data[row.item_code]["ignore_work_order"] = itm.get(
+				"custom_ignore_work_order"
 			)
 		else:
 			if (
@@ -497,7 +652,7 @@ def validate_metal_properties(doc):
 				)
 				and mwo_data.metal_colour.lower()
 				!= item_data[item].metal_colour.lower()
-				and frappe.db.get_value("Item", item, "custom_ignore_work_order") == 0
+				and item_data[item]["ignore_work_order"] == 0
 			):
 				mwo_erros[mwo].append("Metal Colour")
 
@@ -585,6 +740,138 @@ def validate_metal_properties(doc):
 		frappe.throw(_("{0}").format(combined_error_msg))
 
 
+def validate_material_request_warehouses(self, method=None):
+	"""A Stock Entry mapped from a Material Request does not own its warehouse routing.
+
+	make_stock_entry's update_item copies the MR row's warehouses onto the Stock Entry
+	row, and make_in_transit_stock_entry then re-points every t_warehouse at the target
+	warehouse's transit warehouse. Either way the routing is the decision recorded on the
+	Material Request, so a row that no longer agrees with it was edited afterwards.
+
+	The in-transit form also locks the two grid columns
+	(toggle_mr_transit_warehouse_lock in public/js/doctype_js/stock_entry.js); that lock
+	is cosmetic, this is the enforcement, and it covers API and script writes too.
+
+	Runs as a `validate` doc_event, so it sees the rows after update_batches has rebuilt
+	them (a FIFO split keeps material_request_item and both warehouses on every split row)
+	and after ERPNext's validate_warehouse has filled or nulled blanks by purpose.
+	"""
+	if not self.get("custom_material_request_reference"):
+		return
+
+	rows = [
+		row for row in self.items if row.material_request and row.material_request_item
+	]
+	if not rows:
+		return
+
+	mr_items = bulk_map(
+		"Material Request Item",
+		[row.material_request_item for row in rows],
+		["parent", "warehouse", "from_warehouse"],
+	)
+	mr_types = bulk_map(
+		"Material Request",
+		[row.material_request for row in rows],
+		["material_request_type"],
+	)
+	# Only the target side has a second accepted value, so the transit lookup is limited
+	# to the expected targets this entry actually references.
+	transit_map = bulk_map(
+		"Warehouse",
+		[
+			(mr_items.get(row.material_request_item) or {}).get("warehouse")
+			for row in rows
+		],
+		["default_in_transit_warehouse"],
+	)
+
+	for row in rows:
+		# material_request / material_request_item are written by the mapper but are
+		# API-writable, so they are treated as untrusted: a row whose provenance cannot be
+		# resolved, or whose item belongs to some other request, must not reach the
+		# warehouse comparison -- it would enforce routing taken from an unrelated
+		# Material Request. Deliberately per row: "Get Items From -> Material Request" is
+		# multi-select, so one entry may legitimately carry rows from several requests and
+		# custom_material_request_reference keeps only the last of them.
+		mr_item = mr_items.get(row.material_request_item)
+		if not mr_item:
+			frappe.throw(
+				_(
+					"Row #{0}: Material Request Item {1} no longer exists. Its Material Request link must be corrected before this entry can be saved."
+				).format(row.idx, frappe.bold(row.material_request_item))
+			)
+
+		if mr_item.parent != row.material_request:
+			frappe.throw(
+				_(
+					"Row #{0}: Material Request Item {1} belongs to Material Request {2}, but the row is linked to {3}."
+				).format(
+					row.idx,
+					frappe.bold(row.material_request_item),
+					frappe.bold(mr_item.parent),
+					frappe.bold(row.material_request),
+				)
+			)
+
+		# Mirrors update_item in doc_events/material_request.py, which decides which side
+		# of the row it fills from the Material Request type.
+		mr_type = (mr_types.get(row.material_request) or {}).get(
+			"material_request_type"
+		)
+		if mr_type == "Material Issue":
+			expected_source, expected_target = mr_item.warehouse, None
+		elif mr_type == "Customer Provided":
+			expected_source, expected_target = None, mr_item.warehouse
+		else:
+			expected_source, expected_target = mr_item.from_warehouse, mr_item.warehouse
+
+		# Neither a blank expectation nor a blank row value is an assertion that the side
+		# is wrong. validate_warehouse has already run (controller methods precede
+		# doc_event handlers) and it nulls whichever side the purpose does not use --
+		# a Material Transfer request received as Customer Goods Received legitimately
+		# ends up with no s_warehouse. Where the purpose *does* need the side, that same
+		# ERPNext check rejects a blank before this handler is reached.
+		if expected_source and row.s_warehouse and row.s_warehouse != expected_source:
+			_throw_warehouse_mismatch(
+				row, _("Source Warehouse"), expected_source, row.s_warehouse
+			)
+
+		if (
+			not expected_target
+			or not row.t_warehouse
+			or row.t_warehouse == expected_target
+		):
+			continue
+
+		# The in-transit button routes through the target's transit warehouse rather than
+		# the target itself, so both readings are "as per the Material Request".
+		transit = (transit_map.get(expected_target) or {}).get(
+			"default_in_transit_warehouse"
+		)
+		if transit and row.t_warehouse == transit:
+			continue
+
+		_throw_warehouse_mismatch(
+			row,
+			_("Target Warehouse"),
+			" / ".join(w for w in (expected_target, transit) if w),
+			row.t_warehouse,
+		)
+
+
+def _throw_warehouse_mismatch(row, label, expected, actual):
+	frappe.throw(
+		_("Row #{0}: {1} must be {2} as per Material Request {3}, not {4}").format(
+			row.idx,
+			label,
+			frappe.bold(expected),
+			frappe.bold(row.material_request),
+			frappe.bold(actual or _("(blank)")),
+		)
+	)
+
+
 def on_cancel(self, method=None):
 	update_manufacturing_operation(self, True)
 	sync_mop_log_for_stock_entry(self, is_cancelled=True)
@@ -598,11 +885,31 @@ def prelock_bins(self, method=None):
 	Entries (one place covers MR / repack / metal-conversion / main-slip injection / EOD /
 	loss / SNC etc.). Additive — ERPNext locks these same Bins during posting anyway; this
 	only fixes the acquisition order."""
+	# EXPERIMENTAL (F-004, opt-in, OFF by default): canonical position 0 -- serialize
+	# same-item submits so ERPNext core's cross-voucher repost locks can't deadlock. Broadest
+	# scope, so acquired FIRST to avoid inverting against Series/Bin. Real throughput cost;
+	# enable per site with site_config "serialize_stock_submit_by_item": 1 and A/B measure.
+	if frappe.conf.get("serialize_stock_submit_by_item"):
+		lock_items([r.item_code for r in self.items])
 	# Canonical position 2: pin this SE's naming-series counter (tabSeries) FOR UPDATE
 	# *before* any Bin lock, so a transaction can never hold a Bin while waiting on the
 	# series row another transaction holds while waiting on that Bin. Re-entrant with the
 	# getseries() call already made at insert (same row, same txn) — purely additive.
 	preallocate_series_for_docs(self)
+	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
+
+
+def prelock_bins_on_cancel(self, method=None):
+	"""Canonical Bin ordering on the CANCEL path (F-002 / F-012 fix).
+
+	ERPNext's StockEntry.on_cancel reverses SLEs and re-acquires the same (item,
+	warehouse) Bin rows, but in lazy row-iteration order -- no canonical sort -- so a
+	cancel racing a concurrent conformant submit could take Bins in the opposite order
+	and deadlock (1213). before_cancel previously carried only the EOD-lock validator,
+	so nothing pre-ordered the cancel's Bins. Pin them up front, sorted, matching every
+	other flow. No series pre-lock: a cancel mints no new document name. Additive --
+	these are the same Bins core's update_stock_ledger() takes anyway, just earlier and
+	in canonical order; lock_bins_for_rows skips any (item, warehouse) with no Bin."""
 	lock_bins_for_rows(self.items, "s_warehouse", "t_warehouse")
 
 
@@ -674,19 +981,33 @@ def sync_mop_log_for_stock_entry(self, is_cancelled=False):
 		)
 		return
 
+	# Nothing to sync unless at least one row is MOP-bound; skip the snapshot query
+	# entirely rather than scanning tabMOP Log for a voucher that cannot match.
+	if not any(
+		row.get("manufacturing_operation") and row.item_code for row in self.items
+	):
+		return
+
+	# Prefetch the existing (row_name, manufacturing_operation) pairs for this voucher
+	# in one query instead of a per-row exists() check. row.name is unique per row, so
+	# a create_mop_log earlier in this loop can never satisfy a later row's check — the
+	# pre-loop snapshot is equivalent to re-querying each iteration.
+	existing_mop_logs = {
+		(r.row_name, r.manufacturing_operation)
+		for r in frappe.get_all(
+			"MOP Log",
+			filters={
+				"voucher_type": "Stock Entry",
+				"voucher_no": self.name,
+				"is_cancelled": 0,
+			},
+			fields=["row_name", "manufacturing_operation"],
+		)
+	}
 	for row in self.items:
 		if not (row.get("manufacturing_operation") and row.item_code):
 			continue
-		if frappe.db.exists(
-			"MOP Log",
-			{
-				"voucher_type": "Stock Entry",
-				"voucher_no": self.name,
-				"row_name": row.name,
-				"manufacturing_operation": row.manufacturing_operation,
-				"is_cancelled": 0,
-			},
-		):
+		if (row.name, row.manufacturing_operation) in existing_mop_logs:
 			continue
 		create_mop_log(self, row, is_synced=True)
 
@@ -753,24 +1074,29 @@ def stock_reservation_entry_for_mwo(self):
 		has_batch_no, has_serial_no = frappe.get_cached_value(
 			"Item", row.item_code, ["has_batch_no", "has_serial_no"]
 		)
+		# ERPNext's SRE before_submit (validate_with_allowed_qty) re-checks availability at the
+		# WAREHOUSE ledger level (get_available_qty_to_reserve without batch_no -> get_stock_balance
+		# / qty_after_transaction), NOT the batch bundle. That figure is the hard ceiling on what
+		# this reservation may claim, so read it up front for every row.
+		wh_available_qty = get_available_qty_to_reserve(row.item_code, row.t_warehouse)
 		if has_batch_no and row.get("batch_no"):
 			available_qty_to_reserve = get_available_qty_to_reserve(
 				row.item_code, row.t_warehouse, batch_no=row.batch_no
 			)
 		else:
-			available_qty_to_reserve = get_available_qty_to_reserve(
-				row.item_code, row.t_warehouse
-			)
-		qty_to_be_reserved = (
-			row.qty if available_qty_to_reserve >= row.qty else available_qty_to_reserve
-		)
-		qty_to_be_reserved = flt(qty_to_be_reserved)
-		# Employee IR extra-metal injection: stock just landed; availability checks can lag
-		# the same transaction. Reserve the inbound line qty when this SE is tied to an EIR.
-		# Gate on is_eir_injection — without the gate, regular Repack/Manufacture SEs would
-		# create SREs with no reservable qty, regressing test_skips_when_no_reservable_qty.
+			available_qty_to_reserve = wh_available_qty
+		qty_to_be_reserved = flt(min(flt(row.qty), available_qty_to_reserve))
+		# A batch booked by this same transaction reads 0 until it settles (and Employee IR
+		# extra-metal injections land stock whose availability lags the same way). Fall back to the
+		# inbound line qty rather than refusing to reserve stock that demonstrably just landed.
 		if qty_to_be_reserved <= 0 and flt(row.qty) > 0:
 			qty_to_be_reserved = flt(row.qty)
+		# Apply the ledger ceiling LAST, so neither the fallback above nor a precision-3 batch qty
+		# can claim more than ERPNext's re-check will allow ("Cannot reserve more than Allowed
+		# Qty"). A 0 ledger means "cannot tell yet", not "nothing there" -- it must not zero out a
+		# reservation the fallback just rescued.
+		if wh_available_qty > 0:
+			qty_to_be_reserved = flt(min(qty_to_be_reserved, wh_available_qty))
 		if qty_to_be_reserved <= 0:
 			frappe.throw(
 				_(
@@ -839,10 +1165,11 @@ def stock_reservation_entry_for_mwo(self):
 def validate_items(self):
 	if self.stock_entry_type != "Broken / Loss":
 		return
+	bom_item_codes = set(
+		frappe.get_all("BOM Item", filters={"parent": self.bom_no}, pluck="item_code")
+	)
 	for i in self.items:
-		if not frappe.db.get_value(
-			"BOM Item", {"parent": self.bom_no, "item_code": i.get("item_code")}
-		):
+		if i.get("item_code") not in bom_item_codes:
 			return frappe.throw(
 				f"Item {i.get('item_code')} Not Present In BOM {self.bom_no}"
 			)
@@ -906,21 +1233,29 @@ def create_finished_bom(self):
 			rm["qty"] = rm["qty"] - scrap["qty"]
 
 	bom_doc.item = items_to_manufacture[0]
+	# Loop-invariant (depends only on self.bom_no) — fetch once, not once per raw item.
+	diamond_quality = frappe.db.get_value(
+		"BOM Diamond Detail", {"parent": self.bom_no}, "quality"
+	)
 	for raw_item in raw_materials:
 		qty = raw_item.get("qty") or 1
-		diamond_quality = frappe.db.get_value(
-			"BOM Diamond Detail", {"parent": self.bom_no}, "quality"
-		)
 		# Set all the items into respective Child Tables For BOM rate Calculation
 		updated_bom = set_item_details(
 			raw_item.get("item_code"), bom_doc, qty, diamond_quality
 		)
-	updated_bom.customer = frappe.db.get_value("BOM", self.bom_no, "customer")
-	updated_bom.gold_rate_with_gst = frappe.db.get_value(
-		"BOM", self.bom_no, "gold_rate_with_gst"
+	bom_info = (
+		frappe.db.get_value(
+			"BOM",
+			self.bom_no,
+			["customer", "gold_rate_with_gst", "tag_no"],
+			as_dict=True,
+		)
+		or {}
 	)
+	updated_bom.customer = bom_info.get("customer")
+	updated_bom.gold_rate_with_gst = bom_info.get("gold_rate_with_gst")
 	updated_bom.is_default = 0
-	updated_bom.tag_no = frappe.db.get_value("BOM", self.bom_no, "tag_no")
+	updated_bom.tag_no = bom_info.get("tag_no")
 	updated_bom.bom_type = "Finished Goods"
 	updated_bom.reference_doctype = "Work Order"
 	updated_bom.save(ignore_permissions=True)

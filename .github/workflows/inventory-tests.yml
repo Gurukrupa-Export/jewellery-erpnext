@@ -1,0 +1,63 @@
+name: Inventory Tests
+
+on:
+  pull_request:
+    branches:
+      - v16_develop_aerele
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MYSQL_ROOT_PASSWORD: travis
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ptravis"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:6
+        ports:
+          - 6379:6379
+
+    env:
+      DB: mariadb
+      TYPE: server
+
+    steps:
+      - name: Checkout PR Code
+        uses: actions/checkout@v4
+
+      - name: Setup CI Environment
+        uses: ./.github/actions/setup
+
+      - name: Run Inventory Tests
+        run: |
+          cd ~/frappe-bench
+          echo "Running Inventory Tests..."
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Log"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Serial Number Creator"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Subcontracting Log"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "Diamond Conversion"
+          bench --site test_site run-tests --app jewellery_erpnext --doctype "MOP Settings"
+
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mop_weight_recalc
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_snc_submit_guard
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_repack
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_validate_pcs_batch_split
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_batch_rate
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_sample_goods_guard
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_entered_metal_rate
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry

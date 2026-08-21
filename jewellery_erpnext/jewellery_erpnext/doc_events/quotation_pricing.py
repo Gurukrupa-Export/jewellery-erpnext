@@ -157,8 +157,8 @@ def _apply_kg_gk_diamond_size_mm(doc, diamond, diamond_price_list_customer, cust
 	entries = frappe.db.sql(
 		"""
 		SELECT name, supplier_fg_purchase_rate, rate,
-			custom_outright_handling_charges_rate, custom_outright_handling_charges_in_percentage,
-			custom_outwork_handling_charges_rate, custom_outwork_handling_charges_in_percentage
+			outright_handling_charges_rate, outright_handling_charges_in_percentage,
+			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
 		FROM `tabDiamond Price List`
 		WHERE customer = %s AND price_list_type = %s AND size_in_mm = %s
 		ORDER BY creation DESC LIMIT 1
@@ -177,8 +177,8 @@ def _apply_kg_gk_diamond_sieve(doc, diamond, price_list_type, customer):
 	entries = frappe.db.sql(
 		"""
 		SELECT name, supplier_fg_purchase_rate, rate,
-			custom_outright_handling_charges_rate, custom_outright_handling_charges_in_percentage,
-			custom_outwork_handling_charges_rate, custom_outwork_handling_charges_in_percentage
+			outright_handling_charges_rate, outright_handling_charges_in_percentage,
+			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
 		FROM `tabDiamond Price List`
 		WHERE customer = %s AND price_list_type = %s AND sieve_size_range = %s
 		ORDER BY creation DESC LIMIT 1
@@ -189,6 +189,9 @@ def _apply_kg_gk_diamond_sieve(doc, diamond, price_list_type, customer):
 	if entries:
 		entry = entries[0]
 		diamond.total_diamond_rate = entry.get("rate", 0)
+		diamond.diamond_rate_for_specified_quantity = (
+			diamond.total_diamond_rate * diamond.quantity
+		)
 		diamond.fg_purchase_rate = entry.get("supplier_fg_purchase_rate", 0)
 		diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 
@@ -197,8 +200,8 @@ def _apply_kg_gk_diamond_weight(doc, diamond, price_list_type, customer):
 	entries = frappe.db.sql(
 		"""
 		SELECT name, from_weight, to_weight, supplier_fg_purchase_rate, rate,
-			custom_outright_handling_charges_rate, custom_outright_handling_charges_in_percentage,
-			custom_outwork_handling_charges_rate, custom_outwork_handling_charges_in_percentage
+			outright_handling_charges_rate, outright_handling_charges_in_percentage,
+			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
 		FROM `tabDiamond Price List`
 		WHERE customer = %s AND price_list_type = %s AND %s BETWEEN from_weight AND to_weight
 		ORDER BY creation DESC LIMIT 1
@@ -217,13 +220,13 @@ def _apply_handling_charges(diamond, entry, multiplier):
 	"""Apply outwork/outright handling charges to diamond based on customer item status."""
 	if diamond.is_customer_item:
 		diamond.total_diamond_rate = entry.get(
-			"custom_outwork_handling_charges_rate", 0
+			"outwork_handling_charges_rate", 0
 		)
 		diamond.diamond_rate_for_specified_quantity = (
 			diamond.total_diamond_rate * multiplier
 		)
-		if entry.get("custom_outwork_handling_charges_rate") == 0:
-			percentage = entry.get("custom_outwork_handling_charges_in_percentage", 0)
+		if entry.get("outwork_handling_charges_rate") == 0:
+			percentage = entry.get("outwork_handling_charges_in_percentage", 0)
 			amount = entry.get("rate", 0) * (percentage / 100)
 			diamond.total_diamond_rate = amount
 			diamond.diamond_rate_for_specified_quantity = (
@@ -231,13 +234,13 @@ def _apply_handling_charges(diamond, entry, multiplier):
 			)
 	else:
 		diamond.total_diamond_rate = entry.get("rate", 0) + entry.get(
-			"custom_outright_handling_charges_rate", 0
+			"outright_handling_charges_rate", 0
 		)
 		diamond.diamond_rate_for_specified_quantity = (
 			diamond.total_diamond_rate * multiplier
 		)
-		if entry.get("custom_outright_handling_charges_rate") == 0:
-			percentage = entry.get("custom_outright_handling_charges_in_percentage", 0)
+		if entry.get("outright_handling_charges_rate") == 0:
+			percentage = entry.get("outright_handling_charges_in_percentage", 0)
 			rate = entry.get("rate", 0) * (percentage / 100)
 			diamond.total_diamond_rate = rate + entry.get("rate", 0)
 			diamond.diamond_rate_for_specified_quantity = (
@@ -250,8 +253,8 @@ def _apply_standard_diamond_pricing(doc, diamond, price_list_type):
 	entries = frappe.db.sql(
 		"""
 		SELECT name, from_weight, to_weight, supplier_fg_purchase_rate, rate,
-			custom_outright_handling_charges_rate, custom_outright_handling_charges_in_percentage,
-			custom_outwork_handling_charges_rate, custom_outwork_handling_charges_in_percentage
+			outright_handling_charges_rate, outright_handling_charges_in_percentage,
+			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
 		FROM `tabDiamond Price List`
 		WHERE customer = %s AND price_list_type = %s AND %s BETWEEN from_weight AND to_weight
 		ORDER BY creation DESC LIMIT 1
@@ -270,8 +273,8 @@ def _apply_standard_diamond_sieve(doc, diamond, price_list_type):
 	entries = frappe.db.sql(
 		"""
 		SELECT name, supplier_fg_purchase_rate, rate,
-			custom_outright_handling_charges_rate, custom_outright_handling_charges_in_percentage,
-			custom_outwork_handling_charges_rate, custom_outwork_handling_charges_in_percentage
+			outright_handling_charges_rate, outright_handling_charges_in_percentage,
+			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
 		FROM `tabDiamond Price List`
 		WHERE customer = %s AND price_list_type = %s AND sieve_size_range = %s
 		ORDER BY creation DESC LIMIT 1
@@ -282,6 +285,9 @@ def _apply_standard_diamond_sieve(doc, diamond, price_list_type):
 	if entries:
 		entry = entries[0]
 		diamond.total_diamond_rate = entry.get("rate", 0)
+		diamond.diamond_rate_for_specified_quantity = (
+			diamond.total_diamond_rate * diamond.quantity
+		)
 		diamond.fg_purchase_rate = entry.get("supplier_fg_purchase_rate", 0)
 		diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 
@@ -290,8 +296,8 @@ def _apply_standard_diamond_size_mm(doc, diamond, price_list_type):
 	entries = frappe.db.sql(
 		"""
 		SELECT name, supplier_fg_purchase_rate, rate,
-			custom_outright_handling_charges_rate, custom_outright_handling_charges_in_percentage,
-			custom_outwork_handling_charges_rate, custom_outwork_handling_charges_in_percentage
+			outright_handling_charges_rate, outright_handling_charges_in_percentage,
+			outwork_handling_charges_rate, outwork_handling_charges_in_percentage
 		FROM `tabDiamond Price List`
 		WHERE customer = %s AND price_list_type = %s AND size_in_mm = %s
 		ORDER BY creation DESC LIMIT 1
@@ -345,8 +351,8 @@ def _apply_making_charge_metal(self, doc, metal, customer):
 				"rate_per_gm",
 				"supplier_fg_purchase_rate",
 				"wastage",
-				"custom_subcontracting_rate",
-				"custom_subcontracting_wastage",
+				"subcontracting_rate",
+				"subcontracting_wastage",
 			],
 		)
 		if subcategories:
@@ -363,8 +369,8 @@ def _apply_making_charge_metal(self, doc, metal, customer):
 				fg_purchase_rate = match.get("supplier_fg_purchase_rate", 0)
 				fg_purchase_amount = fg_purchase_rate * metal.quantity
 				if metal.is_customer_item:
-					metal.rate = match.get("custom_subcontracting_rate", 0)
-					wastage_rate = match.get("custom_subcontracting_wastage", 0)
+					metal.rate = match.get("subcontracting_rate", 0)
+					wastage_rate = match.get("subcontracting_wastage", 0)
 					fg_purchase_rate = 0
 					fg_purchase_amount = 0
 					rate_per_gm = 0
@@ -418,8 +424,8 @@ def _apply_making_charge_finding(self, doc, find, customer):
 				"rate_per_gm",
 				"supplier_fg_purchase_rate",
 				"wastage",
-				"custom_subcontracting_rate",
-				"custom_subcontracting_wastage",
+				"subcontracting_rate",
+				"subcontracting_wastage",
 			],
 		)
 		if subcategories:
@@ -436,9 +442,9 @@ def _apply_making_charge_finding(self, doc, find, customer):
 			fg_purchase_rate = matching_subcategory.get("supplier_fg_purchase_rate", 0)
 			fg_purchase_amount = fg_purchase_rate * find.quantity
 			if find.is_customer_item:
-				find.rate = matching_subcategory.get("custom_subcontracting_rate", 0)
+				find.rate = matching_subcategory.get("subcontracting_rate", 0)
 				wastage_rate = matching_subcategory.get(
-					"custom_subcontracting_wastage", 0
+					"subcontracting_wastage", 0
 				)
 				fg_purchase_rate = 0
 				fg_purchase_amount = 0

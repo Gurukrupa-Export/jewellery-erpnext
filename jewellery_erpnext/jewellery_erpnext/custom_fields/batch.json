@@ -58,6 +58,18 @@
   },
   {
    "dt": "Batch",
+   "fieldname": "custom_employee",
+   "fieldtype": "Link",
+   "insert_after": "custom_customer",
+   "label": "Employee",
+   "module": "Jewellery Erpnext",
+   "options": "Employee",
+   "read_only": 1,
+   "no_copy": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "dt": "Batch",
    "fieldname": "custom_origin_entries",
    "fieldtype": "Table",
    "insert_after": "custom_section_break_jhbup",

@@ -25,7 +25,9 @@ frappe.ui.form.on("Gemstone Conversion", {
 					loss_type: frm.doc.loss_type,
 				},
 				callback: (r) => {
-					frm.set_value("g_loss_item", r.message);
+					if ((frm.doc.is_subcontracting == 0 && frm.doc.workflow_state == 'Draft') || (frm.doc.is_subcontracting == 0 && frm.doc.workflow_state == 'Receive')){
+						frm.set_value("g_loss_item", r.message);
+					}
 				},
 			});
 			frm.refresh_field("g_loss_item");
@@ -49,8 +51,10 @@ frappe.ui.form.on("Gemstone Conversion", {
 		calculate_Gemstone(frm);
 	},
 	g_source_qty(frm) {
+		set_batch_filter(frm, "batch");
 		// Calculate Gemstone
 		calculate_Gemstone(frm);
+
 	},
 	g_target_qty(frm) {
 		// Calculate Gemstone
@@ -69,12 +73,12 @@ frappe.ui.form.on("Gemstone Conversion", {
 			},
 			callback: (r) => {
 				frm.set_value("batch_avail_qty", r.message[0]);
-				frm.set_value("supplier", r.message[1]);
+				// frm.set_value("supplier", r.message[1]);
 				frm.set_value("customer", r.message[2]);
 				frm.set_value("inventory_type", r.message[3]);
 
 				frm.refresh_field("batch_available_qty");
-				frm.refresh_field("supplier");
+				// frm.refresh_field("supplier");
 				frm.refresh_field("customer");
 				frm.refresh_field("inventory_type");
 			},

@@ -9,12 +9,9 @@ frappe.ui.form.on("Department IR", {
 		frm.fields_dict["department_ir_operation"].grid.add_new_row = false;
 		$(frm.fields_dict["department_ir_operation"].grid.wrapper).find(".grid-add-row").hide();
 	},
-	// validate: function (frm) {
-	// 	console.log(frm.doc.department_ir_operation.length);
-	// 	if (frm.doc.department_ir_operation.length > 30) {
-	// 		frappe.throw(__("Only 30 MOP allowed in one document"));
-	// 	}
-	// },
+	async validate(frm) {
+		await validate_department_ir_wo_limit(frm);
+	},
 	setup: function (frm) {
 		frm.set_query("receive_against", function (doc) {
 			return {
@@ -96,7 +93,7 @@ frappe.ui.form.on("Department IR", {
 			frm.refresh_field("department_ir_operation");
 		}
 	},
-	scan_mwo(frm) {
+	async scan_mwo(frm) {
 		if (frm.doc.scan_mwo) {
 			frm.doc.department_ir_operation.forEach(function (item) {
 				if (item.manufacturing_work_order == frm.doc.scan_mwo)
@@ -107,6 +104,15 @@ frappe.ui.form.on("Department IR", {
 			// }
 			if (!frm.doc.current_department) {
 				frappe.throw(__("Please select current department first"));
+			}
+			let wo_limit = await get_department_ir_wo_limit(frm);
+			if (wo_limit.limit > 0 && frm.doc.department_ir_operation.length >= wo_limit.limit) {
+				frappe.throw(
+					__("Only {0} work order(s) allowed per Department IR for department {1}.", [
+						wo_limit.limit,
+						wo_limit.department,
+					])
+				);
 			}
 			var query_filters = {
 				company: frm.doc.company,
@@ -301,4 +307,40 @@ function set_html(frm) {
 			}
 		},
 	});
+}
+
+// Cap on the number of Manufacturing Work Orders in one Department IR (both Issue and
+// Receive). The limit is maintained on the Department doctype
+// (custom_department_ir_work_order_limit); 0 or unset means no limit. All three
+// department fields are checked (current/previous/next, since which are populated
+// depends on Issue vs Receive), and the strictest configured limit applies. Casting is
+// exempted purely by setting the casting department's limit to 0 — no code check.
+async function get_department_ir_wo_limit(frm) {
+	const depts = [frm.doc.current_department, frm.doc.previous_department, frm.doc.next_department].filter(
+		Boolean
+	);
+	const seen = new Set();
+	let applicable = 0;
+	let department = null;
+	for (const d of depts) {
+		if (seen.has(d)) continue;
+		seen.add(d);
+		const r = await frappe.db.get_value("Department", d, "custom_department_ir_work_order_limit");
+		const lim = cint(r && r.message && r.message.custom_department_ir_work_order_limit);
+		if (lim > 0 && (applicable === 0 || lim < applicable)) {
+			applicable = lim;
+			department = d;
+		}
+	}
+	return { limit: applicable, department: department };
+}
+
+async function validate_department_ir_wo_limit(frm) {
+	const { limit, department } = await get_department_ir_wo_limit(frm);
+	const count = (frm.doc.department_ir_operation || []).length;
+	if (limit > 0 && count > limit) {
+		frappe.throw(
+			__("Only {0} work order(s) allowed per Department IR for department {1}.", [limit, department])
+		);
+	}
 }

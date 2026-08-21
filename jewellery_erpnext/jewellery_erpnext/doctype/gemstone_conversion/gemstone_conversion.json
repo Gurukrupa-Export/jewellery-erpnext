@@ -1,8 +1,8 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "hash",
- "creation": "2024-02-02 21:38:56.883297",
+ "autoname": "GCON.#####",
+ "creation": "2026-07-02 16:01:15.497866",
  "default_view": "List",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -27,6 +27,11 @@
   "column_break_aw0qk",
   "stock_entry",
   "gemstone_converter_tab",
+  "conversion_type",
+  "is_subcontracting",
+  "supplier",
+  "to_employee",
+  "section_break_ausz",
   "g_source_item",
   "g_source_qty",
   "batch",
@@ -42,8 +47,16 @@
   "batch_avail_qty",
   "inventory_type",
   "customer",
-  "supplier",
-  "amended_from"
+  "fg_subcontracting_po",
+  "amended_from",
+  "issue_stock_entry",
+  "receive_stock_entry",
+  "loss_stock_entry",
+  "target_transfer_stock_entry",
+  "rate_factor",
+  "issue_time",
+  "receive_time",
+  "conversion_cost"
  ],
  "fields": [
   {
@@ -78,7 +91,6 @@
    "fieldtype": "Link",
    "label": "Manufacturer",
    "options": "Manufacturer",
-   "read_only": 1,
    "reqd": 1
   },
   {
@@ -148,6 +160,7 @@
    "fieldname": "g_source_item",
    "fieldtype": "Link",
    "label": "Source Item",
+   "link_filters": "[[\"Item\",\"variant_of\",\"=\",\"G\"]]",
    "options": "Item"
   },
   {
@@ -161,11 +174,9 @@
    "fieldname": "g_loss_item",
    "fieldtype": "Link",
    "label": "Loss Item",
-   "options": "Item",
-   "read_only": 1
+   "options": "Item"
   },
   {
-   "depends_on": "eval:doc.g_loss_item",
    "fieldname": "g_loss_qty",
    "fieldtype": "Float",
    "hidden": 1,
@@ -182,6 +193,7 @@
    "fieldtype": "Link",
    "hidden": 1,
    "label": "Target Item",
+   "link_filters": "[[\"Item\",\"variant_of\",\"=\",\"G\"]]",
    "options": "Item"
   },
   {
@@ -229,19 +241,32 @@
    "read_only": 1
   },
   {
-   "depends_on": "eval:doc.batch",
+   "depends_on": "eval:doc.is_subcontracting",
    "fieldname": "supplier",
    "fieldtype": "Link",
    "label": "Supplier",
-   "options": "Supplier",
+   "mandatory_depends_on": "eval:doc.is_subcontracting",
+   "options": "Supplier"
+  },
+  {
+   "fieldname": "fg_subcontracting_po",
+   "fieldtype": "Link",
+   "label": "FG Subcontracting PO",
+   "no_copy": 1,
+   "options": "Purchase Order",
    "read_only": 1
   },
   {
    "depends_on": "eval:doc.batch",
    "fieldname": "batch_avail_qty",
    "fieldtype": "Float",
-   "label": "Batch Available Qty",
-   "read_only": 1
+   "label": "Batch Available Qty"
+  },
+  {
+   "default": "1.00",
+   "fieldname": "rate_factor",
+   "fieldtype": "Float",
+   "label": "Rate Factor"
   },
   {
    "fieldname": "column_break_pfim",
@@ -251,14 +276,14 @@
    "fieldname": "branch",
    "fieldtype": "Link",
    "label": "Branch",
+   "mandatory_depends_on": "eval:doc.company == 'Gurukrupa Export Private Limited'",
    "options": "Branch"
   },
   {
    "fieldname": "loss_type",
    "fieldtype": "Link",
    "label": "Loss Type",
-   "options": "Loss Type",
-   "reqd": 1
+   "options": "Loss Type"
   },
   {
    "fieldname": "section_break_l5w6",
@@ -269,8 +294,73 @@
    "fieldtype": "Table",
    "label": "SC Target Table",
    "options": "SC Target Table"
+  },
+  {
+   "fieldname": "section_break_ausz",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "conversion_type",
+   "fieldtype": "Select",
+   "label": "Conversion Type",
+   "options": "\nResize\nConversion"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_subcontracting",
+   "fieldtype": "Check",
+   "label": "Is Subcontracting"
+  },
+  {
+   "depends_on": "eval:doc.conversion_type == 'Resize' && doc.is_subcontracting == 0",
+   "fieldname": "to_employee",
+   "fieldtype": "Link",
+   "label": "To Employee",
+   "mandatory_depends_on": "eval:doc.conversion_type == 'Resize' && doc.is_subcontracting == 0",
+   "options": "Employee"
+  },
+  {
+   "fieldname": "issue_stock_entry",
+   "fieldtype": "Link",
+   "label": "Issue Stock Entry",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "receive_stock_entry",
+   "fieldtype": "Link",
+   "label": "Receive Stock Entry",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "loss_stock_entry",
+   "fieldtype": "Link",
+   "label": "Loss Stock Entry",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "target_transfer_stock_entry",
+   "fieldtype": "Link",
+   "label": "Target Transfer Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "issue_time",
+   "fieldtype": "Datetime",
+   "label": "Issue Time"
+  },
+  {
+   "fieldname": "receive_time",
+   "fieldtype": "Datetime",
+   "label": "Receive Time"
+  },
+  {
+   "fieldname": "conversion_cost",
+   "fieldtype": "Currency",
+   "label": "Conversion Cost"
   }
  ],
+ "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [
@@ -279,24 +369,14 @@
    "link_fieldname": "custom_gemstone_conversion"
   }
  ],
- "modified": "2024-12-11 11:53:51.714987",
+ "modified": "2026-07-22 21:23:21.467050",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Gemstone Conversion",
- "naming_rule": "Random",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "print": 1,
-   "read": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
+ "permissions": [],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []

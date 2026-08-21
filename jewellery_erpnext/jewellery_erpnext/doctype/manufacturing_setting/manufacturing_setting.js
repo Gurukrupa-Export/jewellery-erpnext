@@ -31,6 +31,32 @@ frappe.ui.form.on("Manufacturing Setting", {
 				},
 			};
 		});
+
+		frm.set_query("from_purity", "diamond_conversion_purity", function () {
+			return {
+				filters: {
+					is_diamond_grade: 1,
+				},
+			};
+		});
+
+		frm.set_query("to_purity", "diamond_conversion_purity", function () {
+			return {
+				filters: {
+					is_diamond_grade: 1,
+				},
+			};
+		});
+
+		// Restrictions are declared against the item TEMPLATE, so every variant of it is
+		// covered by one row (F alone has >11k variants).
+		frm.set_query("variant", "refining_variant_restrictions", function () {
+			return {
+				filters: {
+					has_variants: 1,
+				},
+			};
+		});
 	},
 });
 

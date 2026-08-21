@@ -2,14 +2,17 @@ import copy
 
 import frappe
 from erpnext.stock.doctype.batch.batch import get_batch_qty
-from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import (
-	get_auto_batch_nos,
-)
 from frappe import _
 from frappe.utils import flt, nowtime
 
+from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import (
+	capped_auto_batch_nos,
+)
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils import (
 	get_fifo_batches,
+)
+from jewellery_erpnext.jewellery_erpnext.customization.utils.sample_goods import (
+	get_sample_batches,
 )
 
 
@@ -74,7 +77,7 @@ def update_alloy_betch(self):
 			_("Selected batch does not have sufficient qty for transaction")
 		)
 	else:
-		batch_data = get_auto_batch_nos(
+		batch_data = capped_auto_batch_nos(
 			frappe._dict(
 				{
 					"posting_date": self.get("posting_date") or self.get("date"),
@@ -121,8 +124,38 @@ def update_alloy_betch(self):
 		# self.source_alloy_batch = batch_data.batch_no
 
 
+def get_batch_lane_map(batch_nos):
+	"""``{batch_no: (inventory_type, customer)}`` for every batch in ``batch_nos``.
+
+	One bulk read instead of a ``get_value`` per candidate batch -- the house
+	bulk-prefetch convention, and this runs inside ``validate`` on every save.
+
+	A NULL ``custom_inventory_type`` is normalised to "Regular Stock": untyped
+	batches are company stock, and treating them as a distinct ownership made
+	them silently unallocatable (``None != "Regular Stock"``), which surfaced as
+	a bogus "source quantity is not available" throw rather than a diagnosable one.
+	"""
+	batch_nos = {b for b in batch_nos if b}
+	if not batch_nos:
+		return {}
+
+	return {
+		row.name: (row.custom_inventory_type or "Regular Stock", row.custom_customer)
+		for row in frappe.get_all(
+			"Batch",
+			filters={"name": ["in", list(batch_nos)]},
+			fields=["name", "custom_inventory_type", "custom_customer"],
+		)
+	}
+
+
 def update_source_betch(self):
-	batch_data = get_auto_batch_nos(
+	# Cap each batch at its authoritative Serial-and-Batch balance so an orphan
+	# bundle (docstatus=1, no SLE) can't inflate availability and seed a phantom
+	# row that later throws BatchNegativeStockError at SE submit. qty is omitted
+	# deliberately -> capped_auto_batch_nos returns ALL real batches so the
+	# filtering below runs against the full set.
+	batch_data = capped_auto_batch_nos(
 		frappe._dict(
 			{
 				"posting_date": self.get("posting_date") or self.get("date"),
@@ -137,53 +170,62 @@ def update_source_betch(self):
 	if not batch_data:
 		frappe.throw(_("No batch available for given warehouse"))
 	self.source_batch_details = []
-	inventory_type = "Regular Stock"
-	if self.customer and self.is_customer_metal:
-		inventory_type = "Customer Goods"
-	if batch_data:
-		remaining_qty = 0
-		total_qty = 0
+	# In melting-loss mode only the Loss Qty is consumed (RM -> Scrap); the
+	# remainder is untouched. Conversion mode allocates source_qty.
+	is_melting_loss = bool(self.get("is_melting_loss"))
+	required_qty = flt(self.loss_qty) if is_melting_loss else flt(self.source_qty)
 
-		for i in batch_data:
-			custom_inventory_type, custom_customer = frappe.db.get_value(
-				"Batch", i.batch_no, ["custom_inventory_type", "custom_customer"]
-			)
+	lane_map = get_batch_lane_map([i.batch_no for i in batch_data])
 
-			# Proceed only if inventory type matches
-			if custom_inventory_type != inventory_type:
-				continue
+	# Conversion mode draws FIFO across every ownership present in the warehouse and
+	# splits the result into per-(inventory_type, customer) lanes downstream -- the
+	# operator no longer declares the ownership up front, so there is no
+	# inventory-type or customer filter here.
+	#
+	# Melting loss stays single-lane on purpose: make_melting_loss_stock_entry books
+	# ONE scrap row force-typed "Regular Stock", so admitting a customer's batch here
+	# would silently convert customer metal into company scrap. Restrict it instead of
+	# mis-booking it; lane-splitting the loss flow is separate work.
+	#
+	# Customer Sample Goods is excluded in both modes. Sample stock may only appear as
+	# a source row on the three Customer Goods movements -- "Repack-Metal Conversion"
+	# is not in SAMPLE_ALLOWED_SE_TYPES -- so allocating one here would make the doc
+	# un-submittable at validate_sample_goods_not_consumed. Mirrors the FIFO skip in
+	# customization/stock_entry/doc_events/se_utils.py.
+	sample_batches = get_sample_batches([i.batch_no for i in batch_data])
 
-			# Determine the quantity to be assigned
-			qty = 0
-			if total_qty != flt(self.source_qty):
-				if (
-					custom_inventory_type == "Customer Goods"
-					and custom_customer == self.customer
-				) or custom_inventory_type == "Regular Stock":
-					# If the current batch has more quantity than needed, use the difference
-					if flt(self.source_qty) > remaining_qty + i.qty:
-						qty = i.qty
-						remaining_qty += i.qty
-					else:
-						qty = flt(self.source_qty) - remaining_qty
-						remaining_qty = flt(
-							self.source_qty
-						)  # Ensure remaining_qty equals source_qty
-					total_qty += qty
+	remaining_qty = 0
+	total_qty = 0
 
-					# Append details to source_batch_details
-					self.append(
-						"source_batch_details", {"qty": qty, "batch": i.batch_no}
-					)
+	for i in batch_data:
+		if i.batch_no in sample_batches:
+			continue
 
-			if remaining_qty >= flt(self.source_qty):
-				break  # Stop if we have filled the required quantity
+		inventory_type, _customer = lane_map.get(i.batch_no, ("Regular Stock", None))
+		if is_melting_loss and inventory_type != "Regular Stock":
+			continue
 
-		if total_qty != flt(self.source_qty):
-			frappe.throw(
-				_(
-					"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
-						total_qty
-					)
+		if total_qty != required_qty:
+			# If the current batch has more quantity than needed, use the difference
+			if required_qty > remaining_qty + i.qty:
+				qty = i.qty
+				remaining_qty += i.qty
+			else:
+				qty = required_qty - remaining_qty
+				remaining_qty = required_qty  # Ensure remaining_qty equals required_qty
+			total_qty += qty
+
+			# Append details to source_batch_details, preserving FIFO order
+			self.append("source_batch_details", {"qty": qty, "batch": i.batch_no})
+
+		if remaining_qty >= required_qty:
+			break  # Stop if we have filled the required quantity
+
+	if total_qty != required_qty:
+		frappe.throw(
+			_(
+				"The source quantity is not available for the given warehouse. The available quantity is {}.".format(
+					total_qty
 				)
 			)
+		)

@@ -25,7 +25,9 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 
 class SerialNumberCreator(Document):
 	def validate(self):
-		pass
+		# Runs on draft save AND on submit (_submit -> save), so a document created
+		# before this existed repairs itself the next time it is saved or submitted.
+		split_source_rows_by_reservation(self)
 
 	def before_insert(self):
 		validate_not_metal_only(self)
@@ -215,7 +217,7 @@ def _warehouses_with_physical_batch(item_code, batch_no):
 	return out
 
 
-def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates):
+def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates, used=None):
 	"""First candidate warehouse whose physical batch qty covers ``requested_qty``.
 
 	Mirror of ``pc_tagging_stock_sync._pick_source_warehouse``. ``candidates`` is an
@@ -224,16 +226,22 @@ def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates):
 	validator to check). For batch lines, returns the first candidate whose physical
 	batch qty + ``TOLERANCE`` >= ``requested_qty``; ``None`` if none qualifies (the
 	caller decides how to handle that).
+
+	``used`` is an optional ``{warehouse: qty}`` ledger of what sibling rows of the same
+	(item, batch) group have already claimed, subtracted from each candidate's physical
+	qty. Two rows of a warehouse-split group would otherwise both resolve to the largest
+	reserved warehouse and overdraw it. Left ``None`` the function behaves exactly as it
+	did before the ledger existed.
 	"""
 	if not candidates:
 		return None
 	if not batch_no:
 		return candidates[0]
 	for wh in candidates:
-		if (
-			flt(_physical_batch_qty(item_code, batch_no, wh) or 0) + TOLERANCE
-			>= requested_qty
-		):
+		available = flt(_physical_batch_qty(item_code, batch_no, wh) or 0) - flt(
+			(used or {}).get(wh, 0)
+		)
+		if available + TOLERANCE >= requested_qty:
 			return wh
 	return None
 
@@ -276,12 +284,377 @@ def _sre_reserves_batch(sre_name, batch_no):
 	return (not sre_batches) or (batch_no in sre_batches)
 
 
+def _pmo_mwo_names(doc):
+	"""``(pmo, [submitted MWO names])`` for this SNC's Parent Manufacturing Order.
+
+	This is the ONLY scope reservations are ever read from. Stock reserved for a
+	different job — even the same item and batch, even in the same warehouse — must
+	never be drawn on here. Falls back to the SNC's own MWO when the PMO has no
+	submitted work orders.
+	"""
+	mwo_name = cstr(getattr(doc, "manufacturing_work_order", None) or "").strip()
+	pmo = (
+		frappe.db.get_value("Manufacturing Work Order", mwo_name, "manufacturing_order")
+		if mwo_name
+		else None
+	)
+	names = (
+		frappe.get_all(
+			"Manufacturing Work Order",
+			{"manufacturing_order": pmo, "docstatus": 1},
+			pluck="name",
+		)
+		if pmo
+		else []
+	)
+	return pmo, (names or ([mwo_name] if mwo_name else []))
+
+
+def _active_sres_for(item_code, batch_no, mwo_names, warehouse=None, exclude=None):
+	"""``[(sre_dict, remaining_qty)]`` for live reservations of ``(item, batch)``.
+
+	Sorted remaining desc, then warehouse asc — deterministic regardless of DB row order.
+
+	Only ACTIVE reservations are candidates. A fully-delivered SRE (status
+	"Delivered"/"Cancelled" or ``delivered_qty >= reserved_qty``) is already consumed:
+	its warehouse is stale (the batch was physically moved out), its qty must not be
+	summed, and it must never be re-consumed. Remaining qty — not the status label — is
+	the authoritative "still active" guard; it also covers the Partially Delivered /
+	Partially Used / Closed states the coarse status filter does not catch.
+
+	``remaining`` is BATCH-scoped: a Serial-and-Batch reservation is capped by that
+	batch's own undelivered child qty, so an SRE covering three batches cannot lend its
+	whole header qty to one of them. A Qty-based SRE has no batch children and reserves
+	at item level, so it keeps the header remainder — the original behaviour, mirroring
+	``_sre_reserves_batch``.
+	"""
+	if not mwo_names:
+		return []
+
+	filters = {
+		"item_code": item_code,
+		"docstatus": 1,
+		"status": ["not in", ["Cancelled", "Delivered"]],
+		"manufacturing_work_order": ["in", mwo_names],
+	}
+	if warehouse:
+		filters["warehouse"] = warehouse
+
+	sres = frappe.get_all(
+		"Stock Reservation Entry",
+		filters=filters,
+		fields=["name", "warehouse", "reserved_qty", "delivered_qty"],
+	)
+	if exclude:
+		sres = [s for s in sres if s["name"] not in exclude]
+	if not sres:
+		return []
+
+	# One bulk child query for the whole set, instead of a _sre_reserves_batch
+	# round-trip per SRE.
+	children = {}
+	for child in frappe.get_all(
+		"Serial and Batch Entry",
+		filters={
+			"parent": ["in", [s["name"] for s in sres]],
+			"parenttype": "Stock Reservation Entry",
+		},
+		fields=["parent", "batch_no", "qty", "delivered_qty"],
+	):
+		children.setdefault(child["parent"], []).append(child)
+
+	out = []
+	for sre in sres:
+		header_remaining = flt(sre["reserved_qty"]) - flt(sre["delivered_qty"])
+		kids = children.get(sre["name"])
+		if kids:
+			if batch_no and batch_no not in {k["batch_no"] for k in kids}:
+				continue
+			scoped = sum(
+				flt(k["qty"]) - flt(k["delivered_qty"])
+				for k in kids
+				if not batch_no or k["batch_no"] == batch_no
+			)
+			remaining = min(header_remaining, scoped)
+		else:
+			remaining = header_remaining
+		# Round to the site's 3dp stock precision BEFORE the liveness test, so the
+		# threshold and the returned value agree. Filtering on the raw remainder and
+		# returning the rounded one lets a remainder in (TOLERANCE, 0.0005) come back
+		# as 0.0: the caller would see a "live" reservation that contributes no
+		# capacity, marking sre_matched True — which consumes the SRE and skips the
+		# PC-Receive / Stock-Entry warehouse fallbacks on the strength of nothing.
+		# ``_reserved_warehouse_caps`` already rounds-then-filters; match it.
+		remaining = flt(remaining, 3)
+		if remaining <= TOLERANCE:
+			continue
+		out.append((sre, remaining))
+
+	out.sort(key=lambda t: (-t[1], t[0]["warehouse"] or ""))
+	return out
+
+
+def _reserved_warehouse_caps(item_code, batch_no, mwo_names):
+	"""``[(warehouse, cap_qty, [sre_names])]`` — where this job may draw the batch from.
+
+	``cap = min(sum of reserved-remaining in that warehouse, physical batch qty there)``.
+	The physical cap stops the allocator promising stock the negative-batch validator
+	would reject at submit; the reservation cap stops it eating another job's metal. A
+	warehouse that merely HOLDS the batch without a reservation for this PMO never
+	appears in the result at all — that exclusion is structural, not a filter.
+
+	Sorted capacity desc, then warehouse asc.
+	"""
+	per_wh = {}
+	for sre, remaining in _active_sres_for(item_code, batch_no, mwo_names):
+		wh = sre["warehouse"]
+		if not wh:
+			continue
+		entry = per_wh.setdefault(wh, {"reserved": 0.0, "sres": []})
+		entry["reserved"] += remaining
+		entry["sres"].append(sre["name"])
+
+	caps = []
+	for wh, entry in per_wh.items():
+		cap = flt(entry["reserved"], 3)
+		if batch_no:
+			cap = min(cap, _physical_batch_qty(item_code, batch_no, wh))
+		cap = flt(cap, 3)
+		if cap > TOLERANCE:
+			caps.append((wh, cap, entry["sres"]))
+
+	caps.sort(key=lambda t: (-t[1], t[0]))
+	return caps
+
+
+def _allocate_qty_across_warehouses(total_qty, caps):
+	"""Greedy split of ``total_qty`` over ``caps`` → ``[(warehouse, qty)]`` or ``None``.
+
+	``None`` means the reservations cannot cover the full qty. The caller then leaves the
+	row alone so the existing single-warehouse resolution — and its fail-fast throw —
+	still applies. Splitting a partially-reserved row would either strand the residue on
+	an unreserved warehouse (another job's stock) or silently under-consume.
+
+	Never emits a zero/negative row, and the allocations sum to the caller's
+	``total_qty`` exactly: the sub-milligram residue between ``total_qty`` and its 3dp
+	rounding is folded back into the first allocation, so the per-item totals
+	``calulate_id_wise_sum_up`` checks cannot drift.
+	"""
+	total = flt(total_qty, 3)
+	if total <= TOLERANCE or not caps:
+		return None
+
+	allocations = []
+	need = total
+	for wh, cap, _sres in caps:
+		if need <= TOLERANCE:
+			break
+		take = flt(min(flt(cap, 3), need), 3)
+		if take <= TOLERANCE:
+			continue
+		allocations.append([wh, take])
+		need = flt(need - take, 3)
+
+	if need > TOLERANCE or not allocations:
+		return None
+
+	residue = flt(total_qty) - sum(a[1] for a in allocations)
+	if residue:
+		allocations[0][1] = allocations[0][1] + residue
+
+	return [(wh, qty) for wh, qty in allocations]
+
+
+def _allocate_pcs_across_rows(item_code, total_pcs, allocations):
+	"""Distribute ``total_pcs`` over split rows, preserving the per-item total.
+
+	Two regimes, matching the D/G-vs-other boundary ``_append_fg_rows_aggregated``
+	already draws:
+
+	* Diamond/Gemstone (``D``/``G`` prefix) — fg_details SUMS pcs across rows, and each
+	  warehouse holds a distinct set of physical stones, so split proportionally to the
+	  allocated weight (integer largest-remainder, total preserved, and no qty-bearing
+	  row left at 0 while the count allows).
+	* Metal / findings / everything else — fg_details takes ``max()``, so the whole count
+	  goes on the largest allocation and the rest get 0. That preserves both the sum and
+	  the max, and it is physically honest: a 0.02 g residue in another warehouse is not
+	  "a piece".
+
+	Never returns ``None`` for a row: ``Stock Entry Detail.pcs`` is a Data field with
+	``default: "1"``, so a ``None`` would silently become 1 and inflate the count.
+	"""
+	count = len(allocations)
+	if count <= 1:
+		return [flt(total_pcs)] * count
+
+	total = flt(total_pcs)
+	if total <= 0:
+		return [0.0] * count
+
+	is_stone = (item_code or "")[:1].upper() in ("D", "G")
+	whole = cint(total)
+	if not is_stone or whole != total or whole < count:
+		# Metal/other, a fractional count, or fewer stones than rows: keep the count
+		# whole on the largest allocation rather than inventing fractional stones.
+		parts = [0.0] * count
+		parts[0] = total
+		return parts
+
+	total_qty = sum(flt(qty) for _wh, qty in allocations) or 1
+	exact = [whole * flt(qty) / total_qty for _wh, qty in allocations]
+	parts = [int(x) for x in exact]
+	for idx in sorted(range(count), key=lambda i: -(exact[i] - parts[i]))[
+		: whole - sum(parts)
+	]:
+		parts[idx] += 1
+
+	# A warehouse that physically holds part of the batch holds at least one stone.
+	for idx in range(count):
+		if parts[idx]:
+			continue
+		donor = max(range(count), key=lambda i: parts[i])
+		if parts[donor] > 1:
+			parts[donor] -= 1
+			parts[idx] = 1
+
+	return [flt(p) for p in parts]
+
+
+def _reserved_summary_text(item_code, batch_no, mwo_names):
+	"""``"WH A: 3.557, WH B: 0.02 (total 3.577)"`` — what THIS job has reserved."""
+	caps = _reserved_warehouse_caps(item_code, batch_no, mwo_names)
+	if not caps:
+		return "none"
+	total = flt(sum(cap for _wh, cap, _sres in caps), 3)
+	return ", ".join(f"{wh}: {cap}" for wh, cap, _sres in caps) + f" (total {total})"
+
+
+def _group_source_pcs(item_code, rows):
+	"""Pcs total for an (item, batch) group, mirroring ``_append_fg_rows_aggregated``."""
+	values = [flt(row.pcs or 0) for row in rows]
+	if not values:
+		return 0.0
+	if (item_code or "")[:1].upper() in ("D", "G"):
+		return flt(sum(values))
+	return flt(max(values))
+
+
+def _same_allocation(rows, allocations):
+	"""True when the source rows already match the allocation exactly."""
+	if len(rows) != len(allocations):
+		return False
+	for row, (wh, qty) in zip(rows, allocations):
+		if row.s_warehouse != wh or flt(row.qty, 3) != flt(qty, 3):
+			return False
+	return True
+
+
+def split_source_rows_by_reservation(doc):
+	"""Key ``source_table`` by (item, batch, **warehouse**) instead of (item, batch).
+
+	One (item, batch) can legitimately be reserved for this job across SEVERAL
+	warehouses — e.g. 3.557 g of a 22KT batch in Waxing WO plus a 0.02 g remainder in
+	Model Making WO. A single row carrying the combined 3.577 g cannot name one source
+	warehouse, and ``_pick_source_warehouse`` rightly refuses to draw the whole amount
+	from a warehouse holding only part of it. Splitting the row per reserved warehouse
+	is the only representation that matches the physical stock.
+
+	``fg_details`` is deliberately untouched: it stays aggregated per item, which is what
+	``calulate_id_wise_sum_up`` and the FG BOM expect. Only the source rows change, and
+	the split preserves the per-item qty total, so that check still balances.
+
+	Runs from ``validate`` so it applies on a plain draft save — the operator sees the
+	split before submitting — AND on submit. ``_save`` persists child rows through
+	``update_children()`` before ``on_submit`` fires, so the split rows already carry
+	names when ``to_prepare_data_for_make_mnf_stock_entry`` writes back to them.
+
+	Idempotent: the allocation is recomputed from the GROUP total, never from the
+	individual rows, and nothing is consumed until submit — so a second pass sees the
+	same reservations and physical qtys, produces the same allocation, and writes
+	nothing. Convergent too: if the reservations later collapse onto one warehouse the
+	group merges back to a single row.
+	"""
+	if doc.docstatus == 2 or doc.flags.get("ignore_snc_source_split"):
+		return
+	if not doc.source_table or not doc.manufacturing_work_order:
+		return
+
+	_pmo, mwo_names = _pmo_mwo_names(doc)
+	if not mwo_names:
+		return
+
+	groups = {}
+	for row in doc.source_table:
+		groups.setdefault((row.row_material, row.batch_no), []).append(row)
+
+	new_rows = []
+	changed = False
+	for (item_code, batch_no), rows in groups.items():
+		if not item_code:
+			new_rows.extend(rows)
+			continue
+
+		group_qty = flt(sum(flt(row.qty) for row in rows), 3)
+		caps = _reserved_warehouse_caps(item_code, batch_no, mwo_names)
+		allocations = _allocate_qty_across_warehouses(group_qty, caps)
+
+		if not allocations or _same_allocation(rows, allocations):
+			new_rows.extend(rows)
+			continue
+
+		changed = True
+		pcs_parts = _allocate_pcs_across_rows(
+			item_code, _group_source_pcs(item_code, rows), allocations
+		)
+		template = rows[0]
+		for idx, ((wh, qty), pcs) in enumerate(zip(allocations, pcs_parts)):
+			if idx < len(rows):
+				# Reuse the existing child so its name survives — an UPDATE rather than a
+				# delete + re-insert, which keeps db_set write-backs and version history
+				# addressing the same rows.
+				row = rows[idx]
+				row.qty = qty
+				row.pcs = pcs
+				row.s_warehouse = wh
+			else:
+				row = {
+					"row_material": item_code,
+					"batch_no": batch_no,
+					"qty": qty,
+					"pcs": pcs,
+					"s_warehouse": wh,
+					"uom": template.uom,
+					"inventory_type": template.inventory_type,
+					"customer": template.customer,
+					"sub_setting_type": template.sub_setting_type,
+					"sed_item": template.sed_item,
+					"is_customer_item": template.is_customer_item,
+					"default_bom_rm": template.default_bom_rm,
+					"bom_qty": template.bom_qty,
+					"bom_pcs": template.bom_pcs,
+				}
+			new_rows.append(row)
+		# Surplus rows (reservations collapsed onto fewer warehouses) are dropped here.
+
+	if not changed:
+		return
+
+	doc.set("source_table", [])
+	for row in new_rows:
+		doc.append("source_table", row)
+	# Re-appended child Documents keep their old idx, so renumber explicitly.
+	for idx, row in enumerate(doc.source_table, start=1):
+		row.idx = idx
+
+
 def to_prepare_data_for_make_mnf_stock_entry(self):
 	"""Use source_table (batch-wise) for stock entry creation.
 
-	source_table has one row per (item_code, batch_no) with all batch detail
-	needed for the manufacturing stock entry (s_warehouse, inventory_type, etc.).
-	fg_details is kept for BOM creation (aggregated item/qty/pcs).
+	source_table has one row per (item_code, batch_no, s_warehouse) with all batch
+	detail needed for the manufacturing stock entry (inventory_type, pcs, etc.). One
+	(item, batch) can span several rows when the job's reservation for it is spread over
+	more than one warehouse — see ``split_source_rows_by_reservation``. fg_details is
+	kept for BOM creation (aggregated item/qty/pcs).
 	"""
 
 	# Build row_data from source_table (batch-wise) for stock entry
@@ -317,6 +690,13 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 				"pcs": row.pcs,
 				"s_warehouse": row.s_warehouse,
 				"sub_setting_type": row.sub_setting_type,
+				# 1:1 back-link to the SNC Source Table child. Warehouse write-backs key
+				# on this: sibling rows of a warehouse-split group share item AND batch,
+				# so an (item, batch) match would overwrite every sibling's warehouse with
+				# whichever row was resolved last. create_manufacturing_entry reads the
+				# keys it needs individually (it never **-splats the dict), so the extra
+				# key is inert downstream.
+				"snc_source_row": row.name,
 			}
 		)
 
@@ -345,316 +725,331 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 		from jewellery_erpnext.jewellery_erpnext.lock_order import (
 			lock_bins,
 			preallocate_series_for_docs,
+			series_stubs,
 		)
 
-		preallocate_series_for_docs(frappe.new_doc("Stock Entry"))
-		lock_bins([(r["item_code"], r.get("s_warehouse")) for r in row_data])
+		# Pin the naming counter of each nested SE type this cascade mints (the loss
+		# Repack SEs and the Manufacture SE) -- per-(company x type) Document Naming
+		# Rule counter post-reshard, or the tabSeries fallback. A blank stub matches
+		# no rule and would pin the wrong (shared MAT-STE-) row instead.
+		preallocate_series_for_docs(
+			*series_stubs(self.company, "Repack", "Manufacture")
+		)
+		_pmo, all_pmo_mwos = _pmo_mwo_names(self)
+
+		# Group the source rows by (item, batch). One (item, batch) can span several rows
+		# when the job's reservation for it is spread over more than one warehouse. Every
+		# row of such a group sees the SAME reservations, so reservation consumption and
+		# loss must be accounted ONCE per group: per-row accounting would consume the same
+		# SREs repeatedly and book a phantom Repack(Loss) for every sibling.
+		row_groups = {}
+		for row in row_data:
+			if not row.get("s_warehouse"):
+				continue
+			row_groups.setdefault((row["item_code"], row.get("batch_no")), []).append(
+				row
+			)
+
+		# Pre-lock every Bin this cascade may draw from — each row's own warehouse plus
+		# every reserved warehouse a row could still be re-pointed at below.
+		group_caps = {}
+		lock_targets = [(r["item_code"], r.get("s_warehouse")) for r in row_data]
+		for (item_code, batch_no), rows in row_groups.items():
+			caps = _reserved_warehouse_caps(item_code, batch_no, all_pmo_mwos)
+			group_caps[(item_code, batch_no)] = caps
+			lock_targets.extend((item_code, wh) for wh, _cap, _sres in caps)
+		lock_bins(lock_targets)
+
+		src_by_name = {r.name: r for r in self.source_table}
+
+		def _write_back_warehouse(row):
+			"""Persist the resolved warehouse onto THIS row's source_table child.
+
+			Keyed on the child row name, not (item, batch): sibling rows of a split group
+			share item and batch, so an (item, batch) match would overwrite every sibling's
+			warehouse with whichever row happened to be resolved last.
+			"""
+			st_row = src_by_name.get(row.get("snc_source_row"))
+			if st_row and st_row.s_warehouse != row["s_warehouse"]:
+				st_row.s_warehouse = row["s_warehouse"]
+				st_row.db_set("s_warehouse", row["s_warehouse"])
 
 		bins_to_update = set()
-		for row in row_data:
-			if row.get("s_warehouse"):
-				pmo = frappe.db.get_value(
-					"Manufacturing Work Order",
-					self.manufacturing_work_order,
-					"manufacturing_order",
-				)
-				# sales_order = frappe.db.get_value(
-				# 	"Parent Manufacturing Order", pmo, "sales_order"
-				# )
+		consumed_sres = set()
+		for (item_code, batch_no), rows in row_groups.items():
+			group_qty = flt(sum(flt(r["qty"]) for r in rows), 3)
+			sre_reserved_qty_total = 0.0
+			used = {}
 
-				sre_reserved_qty_total = 0.0
+			# ── PRIORITY 1: SRE — capture warehouse + consume reservations ──
+			# Scoped to the MWOs of this PMO only; stock reserved for another job is
+			# never a candidate, however much of the batch it holds.
+			active_sres = _active_sres_for(
+				item_code, batch_no, all_pmo_mwos, exclude=consumed_sres
+			)
+			sre_matched = bool(active_sres)
 
-				# ── PRIORITY 1: SRE — capture warehouse + consume reservations ──
-				# Find all MWOs linked to this PMO for comprehensive SRE lookup
-				all_pmo_mwos = frappe.get_all(
-					"Manufacturing Work Order",
-					{"manufacturing_order": pmo, "docstatus": 1},
-					pluck="name",
-				)
-				if not all_pmo_mwos:
-					all_pmo_mwos = [self.manufacturing_work_order]
+			if sre_matched:
+				sre_warehouses = [
+					wh for wh, _cap, _sres in group_caps[(item_code, batch_no)]
+				]
 
-				# Only ACTIVE reservations are candidates. A fully-delivered SRE
-				# (status "Delivered"/"Cancelled" or delivered_qty >= reserved_qty) is
-				# already consumed: its warehouse is stale (the batch was physically
-				# moved out), its qty must not be summed, and it must never be
-				# re-consumed. Pulling status/qty fields here lets us filter without a
-				# get_doc round-trip per SRE.
-				linked_sres = frappe.get_all(
-					"Stock Reservation Entry",
-					filters={
-						"item_code": row["item_code"],
-						"docstatus": 1,
-						"status": ["not in", ["Cancelled", "Delivered"]],
-						"manufacturing_work_order": ["in", all_pmo_mwos],
-					},
-					fields=["name", "warehouse", "reserved_qty", "delivered_qty"],
-				)
-
-				row_batch = row.get("batch_no")
-
-				# Keep only SREs that reserve THIS row's batch AND still have
-				# undelivered qty. remaining-qty (not the status label) is the
-				# authoritative "still active" guard — it also covers Partially
-				# Delivered / Partially Used / Closed states the coarse status filter
-				# above does not catch.
-				active_sres = []
-				for sre in linked_sres:
-					if row_batch and not _sre_reserves_batch(sre["name"], row_batch):
-						continue
-					remaining = flt(sre["reserved_qty"]) - flt(sre["delivered_qty"])
-					if remaining <= TOLERANCE:
-						continue
-					active_sres.append((sre, remaining))
-
-				sre_matched = bool(active_sres)
-
-				if sre_matched:
-					# Deterministic order independent of DB row order: remaining-qty
-					# desc, then warehouse name asc as tie-break.
-					active_sres.sort(key=lambda t: (-t[1], t[0]["warehouse"] or ""))
-
-					# Build an ordered, deduped candidate warehouse list and pick the
-					# first that PHYSICALLY covers the full row qty. Active-SRE
-					# warehouses come first (highest remaining first) — the live
-					# reservation is the authoritative physical location — and the
-					# original source_table s_warehouse is appended as a last-resort
-					# fallback. For batch rows _pick_source_warehouse skips any
-					# candidate that cannot cover the qty: this is what stops a stale
-					# reservation pointing at a partially-stocked warehouse from being
-					# adopted and driving the Manufacture entry negative. For non-batch
-					# (qty-based) rows there is no batch validator, so the first
-					# candidate (the top active-SRE warehouse) is adopted — preserving
-					# the previous behaviour of trusting the reservation warehouse.
+				# Largest row first, so the biggest requirement claims the warehouse that
+				# can actually hold it before a small sibling nibbles at it.
+				for row in sorted(rows, key=lambda r: -flt(r["qty"])):
+					# Candidate order: the row's OWN warehouse first when it still carries
+					# a live reservation — that is the allocation
+					# split_source_rows_by_reservation sized this row against — then the
+					# remaining reserved warehouses by capacity, then the row's own
+					# warehouse as the last-resort fallback. Without the first entry a
+					# 0.02 g sibling would resolve to the 3.557 g warehouse: both rows
+					# would target it and the Manufacture entry would go negative. For
+					# single-row groups the first entry never applies, so resolution is
+					# exactly what it was before.
+					own = row.get("s_warehouse")
 					candidates = []
-					for sre, _rem in active_sres:
-						if sre["warehouse"] and sre["warehouse"] not in candidates:
-							candidates.append(sre["warehouse"])
-					if row.get("s_warehouse") and row["s_warehouse"] not in candidates:
-						candidates.append(row["s_warehouse"])
+					if len(rows) > 1 and own in sre_warehouses:
+						candidates.append(own)
+					for wh in sre_warehouses:
+						if wh not in candidates:
+							candidates.append(wh)
+					if own and own not in candidates:
+						candidates.append(own)
 
 					resolved_wh = _pick_source_warehouse(
-						row["item_code"], row_batch, flt(row["qty"], 3), candidates
+						item_code, batch_no, flt(row["qty"], 3), candidates, used=used
 					)
 					if resolved_wh:
 						row["s_warehouse"] = resolved_wh
-					elif row_batch:
-						# No candidate physically covers the full qty — fail fast with
-						# an actionable message instead of a cryptic BatchNegativeStock
-						# error on the auto-created Manufacture entry.
-						holders = _warehouses_with_physical_batch(
-							row["item_code"], row_batch
+						used[resolved_wh] = flt(
+							flt(used.get(resolved_wh, 0)) + flt(row["qty"], 3), 3
 						)
+					elif batch_no:
+						# No candidate physically covers the qty — fail fast with an
+						# actionable message instead of a cryptic BatchNegativeStock error
+						# on the auto-created Manufacture entry.
+						holders = _warehouses_with_physical_batch(item_code, batch_no)
 						holders_str = (
 							", ".join(f"{wh}: {qty}" for wh, qty in holders) or "none"
 						)
 						frappe.throw(
 							_(
 								"Batch {0} of {1} does not have {2} available in any "
-								"reserved/source warehouse. Physical stock — {3}."
+								"reserved/source warehouse.<br><br>"
+								"<b>Reserved for this job</b> — {3}.<br>"
+								"<b>Physical stock (all warehouses)</b> — {4}.<br><br>"
+								"Stock in a warehouse without a reservation for this job "
+								"cannot be consumed here."
 							).format(
-								row_batch,
-								row["item_code"],
+								batch_no,
+								item_code,
 								flt(row["qty"], 3),
+								_reserved_summary_text(
+									item_code, batch_no, all_pmo_mwos
+								),
 								holders_str,
 							)
 						)
 
-					# Sum REMAINING qty (not reserved_qty) over active SREs so a
-					# partially-delivered reservation does not inflate loss_qty into a
-					# phantom Repack(Loss).
-					sre_reserved_qty_total = sum(rem for _sre, rem in active_sres)
+				# Sum REMAINING qty (not reserved_qty) over the group's active SREs so a
+				# partially-delivered reservation does not inflate loss_qty into a phantom
+				# Repack(Loss). Summed once for the GROUP — the split rows share these
+				# reservations, so per-row summing would multiply the loss by the number of
+				# siblings.
+				sre_reserved_qty_total = sum(rem for _sre, rem in active_sres)
 
-					# Consume ONLY the active SREs (mark Delivered). A fully-delivered
-					# SRE is excluded above and is never re-consumed.
-					from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
-						consume_stock_reservation_entry,
+				# Consume ONLY the active SREs (mark Delivered). A fully-delivered SRE is
+				# excluded above and is never re-consumed; consumed_sres additionally stops
+				# an item-level (Qty-based) reservation, which matches every batch, from
+				# being consumed twice by two different batch groups.
+				from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+					consume_stock_reservation_entry,
+				)
+
+				for sre, _rem in active_sres:
+					frappe.clear_document_cache("Bin")
+					sre_doc = frappe.get_doc("Stock Reservation Entry", sre["name"])
+					consume_stock_reservation_entry(sre_doc, update_bin=False)
+					consumed_sres.add(sre["name"])
+					if sre_doc.item_code and sre_doc.warehouse:
+						bins_to_update.add((sre_doc.item_code, sre_doc.warehouse))
+					frappe.clear_document_cache("Bin")
+
+				# Persist the corrected source warehouses back to source_table
+				for row in rows:
+					_write_back_warehouse(row)
+
+			if not sre_matched:
+				# ── PRIORITY 2: Product Certification Receive ──
+				pc_receive_data = frappe.db.sql(
+					"""
+					SELECT se_item.t_warehouse, se_item.qty
+					FROM `tabStock Entry` se
+					JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
+					JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
+					WHERE pc.type = 'Receive'
+					  AND se.docstatus = 1
+					  AND EXISTS(
+					      SELECT 1 FROM `tabProduct Details` pd
+					      WHERE pd.parent = pc.name
+					        AND (pd.manufacturing_work_order = %(mwo)s
+					             OR pd.parent_manufacturing_order = %(pmo)s)
+					  )
+					  AND se_item.item_code = %(item_code)s
+					ORDER BY se.creation DESC LIMIT 1
+				""",
+					{
+						"mwo": self.manufacturing_work_order,
+						"pmo": pmo,
+						"item_code": item_code,
+					},
+					as_dict=1,
+				)
+
+				if pc_receive_data:
+					candidate_wh = pc_receive_data[0].t_warehouse
+					# Only use the PC Receive warehouse if the batch actually has stock
+					# there. A later SE (e.g. pc_tagging_stock_sync return) may have
+					# moved it back to Tagging, creating a different batch_no. Using
+					# the stale PC WH in that case causes BatchNegativeStockError.
+					batch_qty_at_candidate = (
+						flt(get_batch_qty(batch_no, candidate_wh, item_code))
+						if batch_no
+						else flt(pc_receive_data[0].qty)
 					)
-
-					for sre, _rem in active_sres:
-						frappe.clear_document_cache("Bin")
-						sre_doc = frappe.get_doc("Stock Reservation Entry", sre["name"])
-						consume_stock_reservation_entry(sre_doc, update_bin=False)
-						if sre_doc.item_code and sre_doc.warehouse:
-							bins_to_update.add((sre_doc.item_code, sre_doc.warehouse))
-						frappe.clear_document_cache("Bin")
-
-					# Persist the corrected source warehouse back to source_table
-					for st_row in self.source_table:
-						if st_row.row_material == row[
-							"item_code"
-						] and st_row.batch_no == row.get("batch_no"):
-							st_row.s_warehouse = row["s_warehouse"]
-							st_row.db_set(
-								"s_warehouse",
-								row["s_warehouse"],
-							)
-
-				if not sre_matched:
-					# ── PRIORITY 2: Product Certification Receive ──
-					pc_receive_data = frappe.db.sql(
-						"""
-						SELECT se_item.t_warehouse, se_item.qty
-						FROM `tabStock Entry` se
-						JOIN `tabStock Entry Detail` se_item ON se.name = se_item.parent
-						JOIN `tabProduct Certification` pc ON se.product_certification = pc.name
-						WHERE pc.type = 'Receive'
-						  AND se.docstatus = 1
-						  AND EXISTS(
-						      SELECT 1 FROM `tabProduct Details` pd
-						      WHERE pd.parent = pc.name
-						        AND (pd.manufacturing_work_order = %(mwo)s
-						             OR pd.parent_manufacturing_order = %(pmo)s)
-						  )
-						  AND se_item.item_code = %(item_code)s
-						ORDER BY se.creation DESC LIMIT 1
-					""",
-						{
-							"mwo": self.manufacturing_work_order,
-							"pmo": pmo,
-							"item_code": row["item_code"],
-						},
-						as_dict=1,
-					)
-
-					if pc_receive_data:
-						candidate_wh = pc_receive_data[0].t_warehouse
-						batch_no = row.get("batch_no")
-						# Only use the PC Receive warehouse if the batch actually has stock
-						# there. A later SE (e.g. pc_tagging_stock_sync return) may have
-						# moved it back to Tagging, creating a different batch_no. Using
-						# the stale PC WH in that case causes BatchNegativeStockError.
-						batch_qty_at_candidate = (
-							flt(get_batch_qty(batch_no, candidate_wh, row["item_code"]))
-							if batch_no
-							else flt(pc_receive_data[0].qty)
-						)
-						if batch_qty_at_candidate > 0:
-							sre_reserved_qty_total = flt(pc_receive_data[0].qty)
+					if batch_qty_at_candidate > 0:
+						sre_reserved_qty_total = flt(pc_receive_data[0].qty)
+						for row in rows:
 							row["s_warehouse"] = candidate_wh
-							for st_row in self.source_table:
-								if (
-									st_row.row_material == row["item_code"]
-									and st_row.batch_no == batch_no
-								):
-									st_row.s_warehouse = candidate_wh
-									st_row.db_set(
-										"s_warehouse",
-										candidate_wh,
-									)
-					else:
-						# ── PRIORITY 3: Stock Entry linked to PMO ──
-						se_wh = frappe.db.sql(
-							"""
-							SELECT sed.t_warehouse, sed.s_warehouse
-							FROM `tabStock Entry Detail` sed
-							JOIN `tabStock Entry` se ON se.name = sed.parent
-							WHERE se.manufacturing_order = %s
-							  AND sed.item_code = %s
-							  AND se.docstatus = 1
-							ORDER BY se.creation DESC
-							LIMIT 1
-						""",
-							(self.parent_manufacturing_order, row["item_code"]),
-							as_dict=True,
-						)
+							_write_back_warehouse(row)
+				else:
+					# ── PRIORITY 3: Stock Entry linked to PMO ──
+					se_wh = frappe.db.sql(
+						"""
+						SELECT sed.t_warehouse, sed.s_warehouse
+						FROM `tabStock Entry Detail` sed
+						JOIN `tabStock Entry` se ON se.name = sed.parent
+						WHERE se.manufacturing_order = %s
+						  AND sed.item_code = %s
+						  AND se.docstatus = 1
+						ORDER BY se.creation DESC
+						LIMIT 1
+					""",
+						(self.parent_manufacturing_order, item_code),
+						as_dict=True,
+					)
 
-						if se_wh:
-							fallback_wh = se_wh[0].t_warehouse or se_wh[0].s_warehouse
-							if fallback_wh:
+					if se_wh:
+						fallback_wh = se_wh[0].t_warehouse or se_wh[0].s_warehouse
+						if fallback_wh:
+							for row in rows:
 								row["s_warehouse"] = fallback_wh
-								for st_row in self.source_table:
-									if st_row.row_material == row[
-										"item_code"
-									] and st_row.batch_no == row.get("batch_no"):
-										st_row.s_warehouse = row["s_warehouse"]
-										st_row.db_set(
-											"s_warehouse",
-											row["s_warehouse"],
-										)
+								_write_back_warehouse(row)
 
-				loss_qty = sre_reserved_qty_total - flt(row["qty"])
+			# Group-level, so a warehouse split yields the SAME loss the single row would
+			# have produced (3.557 + 0.02 consumed against 3.577 reserved -> zero loss).
+			loss_qty = flt(sre_reserved_qty_total - group_qty, 3)
 
-				if loss_qty > 0:
-					variant_of = frappe.db.get_value(
-						"Item", row["item_code"], "variant_of"
-					)
-					loss_warehouse = None
-					variant_loss_details = frappe.db.get_value(
-						"Variant Loss Warehouse",
-						{
-							"parent": self.manufacturer,
-							"variant": variant_of or row["item_code"],
-						},
-						[
-							"loss_warehouse",
-							"consider_department_warehouse",
-							"warehouse_type",
-						],
-						as_dict=1,
-					)
+			if loss_qty > 0:
+				variant_of = frappe.db.get_value("Item", item_code, "variant_of")
+				loss_warehouse = None
+				variant_loss_details = frappe.db.get_value(
+					"Variant Loss Warehouse",
+					{
+						"parent": self.manufacturer,
+						"variant": variant_of or item_code,
+					},
+					[
+						"loss_warehouse",
+						"consider_department_warehouse",
+						"warehouse_type",
+					],
+					as_dict=1,
+				)
 
-					if variant_loss_details:
-						if variant_loss_details.get("loss_warehouse"):
-							loss_warehouse = variant_loss_details.get("loss_warehouse")
-						elif variant_loss_details.get(
-							"consider_department_warehouse"
-						) and variant_loss_details.get("warehouse_type"):
-							loss_warehouse = frappe.db.get_value(
-								"Warehouse",
-								{
-									"disabled": 0,
-									"department": self.department,
-									"warehouse_type": variant_loss_details.get(
-										"warehouse_type"
-									),
-								},
-							)
-
-					if loss_warehouse:
-						# Duplicate guard: skip if a Repack entry already exists for this SNC + item
-						existing_loss_se = frappe.db.sql(
-							"""
-							SELECT se.name
-							FROM `tabStock Entry` se
-							JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
-							WHERE se.custom_serial_number_creator = %s
-							  AND se.stock_entry_type = 'Repack'
-							  AND se.docstatus != 2
-							  AND sed.item_code = %s
-							LIMIT 1
-							""",
-							(self.name, row["item_code"]),
+				if variant_loss_details:
+					if variant_loss_details.get("loss_warehouse"):
+						loss_warehouse = variant_loss_details.get("loss_warehouse")
+					elif variant_loss_details.get(
+						"consider_department_warehouse"
+					) and variant_loss_details.get("warehouse_type"):
+						loss_warehouse = frappe.db.get_value(
+							"Warehouse",
+							{
+								"disabled": 0,
+								"department": self.department,
+								"warehouse_type": variant_loss_details.get(
+									"warehouse_type"
+								),
+							},
 						)
-						if existing_loss_se:
-							frappe.msgprint(
-								_(
-									"Repack (Loss) Stock Entry already exists for {0}"
-								).format(row["item_code"])
-							)
-						else:
-							se_loss = frappe.new_doc("Stock Entry")
-							se_loss.stock_entry_type = "Repack"
-							se_loss.purpose = "Repack"
-							se_loss.company = self.company
-							se_loss.custom_serial_number_creator = self.name
+
+				if loss_warehouse:
+					# Duplicate guard: skip if a Repack entry already exists for this
+					# SNC + item + batch. Keying on item alone would silently swallow a
+					# genuine loss on a second batch of the same item and strand the metal
+					# in WIP.
+					existing_loss_se = frappe.db.sql(
+						"""
+						SELECT se.name
+						FROM `tabStock Entry` se
+						JOIN `tabStock Entry Detail` sed ON sed.parent = se.name
+						WHERE se.custom_serial_number_creator = %s
+						  AND se.stock_entry_type = 'Repack'
+						  AND se.docstatus != 2
+						  AND sed.item_code = %s
+						  AND sed.batch_no <=> %s
+						LIMIT 1
+						""",
+						(self.name, item_code, batch_no),
+					)
+					if existing_loss_se:
+						frappe.msgprint(
+							_(
+								"Repack (Loss) Stock Entry already exists for {0} (batch {1})"
+							).format(item_code, batch_no or "-")
+						)
+					else:
+						# Draw the loss from whatever reserved capacity the group did not
+						# consume. A split group can leave residue in more than one
+						# warehouse, and Repack cannot take more of a batch out of a
+						# warehouse than it physically holds.
+						residual = []
+						for wh, cap, _sres in group_caps.get((item_code, batch_no), []):
+							left = flt(flt(cap, 3) - flt(used.get(wh, 0)), 3)
+							if left > TOLERANCE:
+								residual.append((wh, left, _sres))
+						loss_alloc = _allocate_qty_across_warehouses(
+							loss_qty, residual
+						) or [(rows[0]["s_warehouse"], loss_qty)]
+
+						se_loss = frappe.new_doc("Stock Entry")
+						se_loss.stock_entry_type = "Repack"
+						se_loss.purpose = "Repack"
+						se_loss.company = self.company
+						se_loss.custom_serial_number_creator = self.name
+						for loss_wh, loss_row_qty in loss_alloc:
 							se_loss.append(
 								"items",
 								{
-									"item_code": row["item_code"],
-									"qty": loss_qty,
-									"s_warehouse": row["s_warehouse"],
+									"item_code": item_code,
+									"qty": loss_row_qty,
+									"s_warehouse": loss_wh,
 									"t_warehouse": loss_warehouse,
-									"batch_no": row.get("batch_no"),
-									"inventory_type": row.get("inventory_type"),
-									"customer": row.get("customer"),
+									"batch_no": batch_no,
+									"inventory_type": rows[0].get("inventory_type"),
+									"customer": rows[0].get("customer"),
 									"use_serial_batch_fields": 1,
 								},
 							)
-							se_loss.insert(ignore_permissions=True)
-							se_loss.submit()
+						se_loss.insert(ignore_permissions=True)
+						se_loss.submit()
 
-				frappe.clear_cache()
+			# (perf/lock-hold) Removed a per-row global frappe.clear_cache() here: it
+			# wiped the entire cache on every source row, forcing cold re-reads for the
+			# rest of the held-lock window. The only per-row staleness that matters (Bin
+			# qty after SRE consume) is already handled by the scoped
+			# clear_document_cache("Bin") at the consume step above.
 
 		if bins_to_update:
 			from erpnext.stock.utils import get_or_make_bin

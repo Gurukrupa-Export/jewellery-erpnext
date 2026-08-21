@@ -14,6 +14,7 @@
   "column_break_jtffh",
   "manufacturer",
   "date_time",
+  "issue_submitted_on",
   "section_break_5eq34",
   "type",
   "transfer_type",
@@ -23,9 +24,11 @@
   "section_break_pk7m5",
   "operation",
   "employee",
+  "is_repeat_receive",
+  "worker_performance",
   "column_break_mooif",
   "show_manufacturing_operation",
-  "is_main_slip_required",
+  "is_raw_material",
   "is_qc_reqd",
   "section_break_unylm",
   "next_operation",
@@ -45,6 +48,9 @@
   "section_break_shn6x",
   "employee_ir_operations",
   "summary",
+  "fg_bom_fields_section",
+  "refresh_fg_bom_fields",
+  "custom_fg_bom_fields",
   "section_break_dxdag",
   "employee_loss_details",
   "mop_loss_details_total",
@@ -68,6 +74,27 @@
    "read_only": 1
   },
   {
+   "collapsible": 1,
+   "depends_on": "eval:doc.type == \"Receive\"",
+   "fieldname": "fg_bom_fields_section",
+   "fieldtype": "Section Break",
+   "label": "FG BOM Fields"
+  },
+  {
+   "depends_on": "eval:doc.type == \"Receive\"",
+   "description": "Loads the subcategory-driven fields configured in FG BOM Field Configuration.",
+   "fieldname": "refresh_fg_bom_fields",
+   "fieldtype": "Button",
+   "label": "Load FG BOM Fields"
+  },
+  {
+   "depends_on": "eval:doc.type == \"Receive\"",
+   "fieldname": "custom_fg_bom_fields",
+   "fieldtype": "Table",
+   "label": "FG BOM Fields",
+   "options": "Employee IR FG BOM Field"
+  },
+  {
    "fieldname": "type",
    "fieldtype": "Select",
    "in_list_view": 1,
@@ -83,6 +110,25 @@
    "options": "Employee"
   },
   {
+   "default": "0",
+   "description": "Server-stamped: at least one work order on this Receive already completed a cycle at this operation. Drives the Worker Performance depends_on; never set by the user.",
+   "fieldname": "is_repeat_receive",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Is Repeat Receive",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "default": "NO",
+   "depends_on": "eval:doc.is_repeat_receive && doc.type==\"Receive\"",
+   "fieldname": "worker_performance",
+   "fieldtype": "Select",
+   "label": "Worker Performance",
+   "no_copy": 1,
+   "options": "NO\nYES"
+  },
+  {
    "depends_on": "eval:doc.type==\"Issue\"",
    "fieldname": "next_operation",
    "fieldtype": "Link",
@@ -96,6 +142,14 @@
    "fieldtype": "Datetime",
    "label": "Date / Time",
    "no_copy": 1
+  },
+  {
+   "fieldname": "issue_submitted_on",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Issue Submitted On",
+   "no_copy": 1,
+   "read_only": 1
   },
   {
    "fieldname": "operation",
@@ -179,10 +233,10 @@
   },
   {
    "default": "0",
-   "fetch_from": "operation.is_main_slip_required",
-   "fieldname": "is_main_slip_required",
+   "fetch_from": "operation.is_raw_material",
+   "fieldname": "is_raw_material",
    "fieldtype": "Check",
-   "label": "Is Main Slip Required"
+   "label": "Is Raw Material"
   },
   {
    "collapsible": 1,
