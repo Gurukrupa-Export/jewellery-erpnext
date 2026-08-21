@@ -3105,6 +3105,14 @@ def create_test_data():
 
 			_ensure_customer_gold_rate_fields()
 
+			# custom_gold_nominal_value anchors insert_after on custom_gold_rate_per_gram,
+			# so it MUST follow the snapshot patch above.
+			from jewellery_erpnext.patches.add_customer_gold_nominal_value_field import (
+				execute as _ensure_customer_gold_nominal_value_field,
+			)
+
+			_ensure_customer_gold_nominal_value_field()
+
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (
 				execute as _ensure_missing_ui_custom_fields,

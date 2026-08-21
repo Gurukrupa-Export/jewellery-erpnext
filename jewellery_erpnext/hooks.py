@@ -200,6 +200,11 @@ doc_events = {
 			"jewellery_erpnext.customer_subcontracting.doctype.subcontracting_log.subcontracting_log.create_subcontracting_log",
 			# "jewellery_erpnext.customer_subcontracting.sub_utils.repack.create_gold_repack",
 			"jewellery_erpnext.customer_subcontracting.sub_utils.snc.stamp_snc_requirement",
+			# Runs last so the rows it copies are final. This is the MONETARY ledger and is
+			# separate from create_subcontracting_log above, which is a weight ledger keyed
+			# off a hardcoded ENTRY_TYPE dict -- see customer_gold_ledger.py for why the two
+			# are not merged. No-op unless Customer Gold Flow is enabled.
+			"jewellery_erpnext.customer_subcontracting.doctype.customer_gold_ledger.customer_gold_ledger.create_customer_gold_ledger",
 		],
 		"before_cancel": [
 			_EOD_LOCK_VALIDATOR,
@@ -208,7 +213,12 @@ doc_events = {
 			# flow, so a cancel can't race a concurrent submit into a 1213 deadlock.
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.prelock_bins_on_cancel",
 		],
-		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
+		"on_cancel": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_cancel",
+			# Flags the monetary ledger rows cancelled -- never deletes them. No-op unless
+			# Customer Gold Flow is enabled.
+			"jewellery_erpnext.customer_subcontracting.doctype.customer_gold_ledger.customer_gold_ledger.cancel_customer_gold_ledger",
+		],
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
 	},

@@ -1,0 +1,236 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "hash",
+ "creation": "2026-08-24 09:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "receipt_section",
+  "customer",
+  "company",
+  "item",
+  "batch",
+  "column_break_receipt",
+  "reference_doctype",
+  "reference_docname",
+  "posting_date",
+  "is_cancelled",
+  "quantity_section",
+  "quantity",
+  "pure_qty",
+  "column_break_quantity",
+  "stock_uom",
+  "valuation_section",
+  "nominal_rate_per_gram",
+  "nominal_value",
+  "column_break_valuation",
+  "gold_rate_reference",
+  "gold_rate_date",
+  "liability_account"
+ ],
+ "fields": [
+  {
+   "fieldname": "receipt_section",
+   "fieldtype": "Section Break",
+   "label": "Receipt"
+  },
+  {
+   "fieldname": "customer",
+   "fieldtype": "Link",
+   "options": "Customer",
+   "label": "Customer",
+   "reqd": 1,
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "options": "Company",
+   "label": "Company",
+   "reqd": 1,
+   "read_only": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "item",
+   "fieldtype": "Link",
+   "options": "Item",
+   "label": "Item",
+   "reqd": 1,
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "batch",
+   "fieldtype": "Link",
+   "options": "Batch",
+   "label": "Batch",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "column_break_receipt",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "options": "DocType",
+   "label": "Reference Document Type",
+   "reqd": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference_docname",
+   "fieldtype": "Dynamic Link",
+   "options": "reference_doctype",
+   "label": "Reference Document",
+   "reqd": 1,
+   "read_only": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "reqd": 1,
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "is_cancelled",
+   "fieldtype": "Check",
+   "label": "Is Cancelled",
+   "default": "0",
+   "read_only": 1,
+   "in_standard_filter": 1,
+   "description": "Set when the source receipt is cancelled. Rows are never deleted -- the audit trail is the point. Balance calculations must exclude rows where this is set."
+  },
+  {
+   "fieldname": "quantity_section",
+   "fieldtype": "Section Break",
+   "label": "Quantity"
+  },
+  {
+   "fieldname": "quantity",
+   "fieldtype": "Float",
+   "label": "Quantity",
+   "reqd": 1,
+   "read_only": 1,
+   "precision": "3",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "pure_qty",
+   "fieldtype": "Float",
+   "label": "Pure Quantity",
+   "read_only": 1,
+   "precision": "3",
+   "description": "Pure gold equivalent. The receipt validator refuses to save a row whose pure quantity could not be computed, so a zero here means a genuine zero -- the column itself is NOT NULL, as every Frappe Float is."
+  },
+  {
+   "fieldname": "column_break_quantity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "options": "UOM",
+   "label": "Stock UOM",
+   "read_only": 1
+  },
+  {
+   "fieldname": "valuation_section",
+   "fieldtype": "Section Break",
+   "label": "Valuation"
+  },
+  {
+   "fieldname": "nominal_rate_per_gram",
+   "fieldtype": "Currency",
+   "label": "Nominal Rate Per Gram",
+   "read_only": 1,
+   "precision": "4",
+   "description": "Frozen per-gram rate this row was valued at. Precision 4 because currency_precision is 2 on these sites and truncates a per-gram gold rate."
+  },
+  {
+   "fieldname": "nominal_value",
+   "fieldtype": "Currency",
+   "label": "Nominal Value",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "Quantity x nominal rate. Ties to the row's stock_value_difference and to the GL credit on the liability account."
+  },
+  {
+   "fieldname": "column_break_valuation",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "gold_rate_reference",
+   "fieldtype": "Link",
+   "options": "Gold Rates",
+   "label": "Gold Rates Reference",
+   "read_only": 1
+  },
+  {
+   "fieldname": "gold_rate_date",
+   "fieldtype": "Date",
+   "label": "Gold Rate Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "liability_account",
+   "fieldtype": "Link",
+   "options": "Account",
+   "label": "Customer Gold Liability Account",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-08-24 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Customer Subcontracting",
+ "name": "Customer Gold Ledger",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Stock Manager",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1
+  }
+ ],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

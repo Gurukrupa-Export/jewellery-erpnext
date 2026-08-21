@@ -24,6 +24,15 @@ SE_TYPE = "Customer Goods Received"
 CUSTOMER = "GJCU0009"
 OTHER_CUSTOMER = "MHCU0012"
 BATCH = "GJCU0009-2F07-M-G-24KT-99.9-Y-01"
+COMPANY = "KG GK Jewellers Private Limited"
+LIABILITY_ACCOUNT = "Customer Gold Payable - KGJPL"
+
+#: Canned company accounts. Root type is enforced at CONFIGURATION time by
+#: Subcontracting Settings, not here, so the receipt path only re-checks the company.
+ACCOUNTS = frappe._dict(
+	liability_account=LIABILITY_ACCOUNT,
+	cogs_adjustment_account="Stock Adjustment - KGJPL",
+)
 
 SETTINGS = frappe._dict(
 	customer_goods_stock_entry_type=SE_TYPE,
@@ -55,8 +64,17 @@ def _item_row(idx=1, **overrides):
 		customer=CUSTOMER,
 		inventory_type="Customer Goods",
 		batch_no=BATCH,
+		# Day 5: the valuation step reads these. custom_pure_qty is computed upstream by
+		# doc_events.stock_entry.before_validate, which is FIRST in the ordered list, so a
+		# realistic fake carries it already populated.
+		custom_pure_qty=10,
+		conversion_factor=1,
+		transfer_qty=10,
+		uom="Gram",
 	)
 	row.update(overrides)
+	# frappe._dict has no precision(); the real Document child row does.
+	row.precision = lambda fieldname: 2
 	return row
 
 
@@ -69,15 +87,22 @@ def _entry(**overrides):
 		stock_entry_type=SE_TYPE,
 		posting_date="2026-08-15",
 		_customer=CUSTOMER,
+		company=COMPANY,
 		items=[_item_row()],
 	)
 	doc.update(overrides)
+	doc.precision = lambda fieldname: 2
+	# frappe._dict.set() exists, but the real Document.set is what the code calls.
+	doc.set = lambda fieldname, value: doc.update({fieldname: value})
 	return doc
 
 
 def _db_get_value(doctype, name, fieldname=None, as_dict=False):
 	if doctype == "Stock Entry Type":
 		return "Material Receipt"
+	if doctype == "Account":
+		# The receipt re-asserts that the configured account belongs to this company.
+		return COMPANY if name == LIABILITY_ACCOUNT else "Some Other Company"
 	if doctype == "Batch":
 		if name == BATCH:
 			return frappe._dict(
@@ -97,6 +122,7 @@ def _db_get_value(doctype, name, fieldname=None, as_dict=False):
 
 @patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_company_settings", return_value=ACCOUNTS)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
 class TestCustomerGoldReceiptRules(IntegrationTestCase):
@@ -178,6 +204,7 @@ class TestCustomerGoldReceiptRules(IntegrationTestCase):
 
 @patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_company_settings", return_value=ACCOUNTS)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=False)
 class TestCustomerGoldReceiptDisabled(IntegrationTestCase):
@@ -222,6 +249,7 @@ NEW_RATE = frappe._dict(
 
 
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_company_settings", return_value=ACCOUNTS)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
 class TestCustomerGoldRateSnapshot(IntegrationTestCase):
@@ -319,6 +347,7 @@ class TestCustomerGoldRateSnapshot(IntegrationTestCase):
 
 
 @patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_company_settings", return_value=ACCOUNTS)
 @patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
 @patch(f"{MOD}.is_customer_gold_enabled", return_value=False)
 class TestCustomerGoldRateSnapshotDisabled(IntegrationTestCase):
@@ -348,3 +377,144 @@ class TestCustomerGoldRateSnapshotDisabled(IntegrationTestCase):
 		) as mock_resolve:
 			validate_customer_gold_receipt(doc)
 		mock_resolve.assert_not_called()
+
+
+@patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_company_settings", return_value=ACCOUNTS)
+@patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.is_customer_gold_enabled", return_value=True)
+class TestCustomerGoldNominalValuation(IntegrationTestCase):
+	"""Day 5 -- the nominal rate and the liability counter-leg.
+
+	These assert what the row CARRIES after validation. What ERPNext then does with it --
+	SLE ``incoming_rate``, ``stock_value_difference``, the two GL legs and the tie-out --
+	cannot be reached from a ``frappe._dict`` fake and was verified against a real submitted
+	document instead; see the Day-5 report.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_basic_rate_is_the_frozen_per_gram_rate(self, *_mocks):
+		doc = _entry()
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].basic_rate, RATE.per_gram_rate)
+
+	def test_basic_amount_is_qty_times_rate(self, *_mocks):
+		doc = _entry()
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].basic_amount, 10 * RATE.per_gram_rate)
+
+	def test_set_basic_rate_manually_is_stamped(self, *_mocks):
+		# Without this ERPNext wipes basic_rate for any allow_zero_valuation_rate row
+		# (stock_entry.py:1444). The flag makes set_basic_rate `continue` past the row.
+		doc = _entry()
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].set_basic_rate_manually, 1)
+
+	def test_allow_zero_valuation_rate_is_left_alone(self, *_mocks):
+		# Deliberately NOT cleared: it is load-bearing for later outward movements of this
+		# stock, and clearing it would mean editing a shared hook.
+		doc = _entry()
+		doc.get("items")[0].allow_zero_valuation_rate = 1
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].allow_zero_valuation_rate, 1)
+
+	def test_expense_account_is_the_liability_account(self, *_mocks):
+		doc = _entry()
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].expense_account, LIABILITY_ACCOUNT)
+
+	def test_document_carries_its_own_nominal_total(self, *_mocks):
+		doc = _entry()
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("custom_gold_nominal_value"), 10 * RATE.per_gram_rate)
+
+	def test_multi_row_total_sums(self, *_mocks):
+		doc = _entry(items=[_item_row(1), _item_row(2, qty=4, transfer_qty=4)])
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("custom_gold_nominal_value"), 14 * RATE.per_gram_rate)
+
+	def test_api_supplied_basic_rate_is_overwritten(self, *_mocks):
+		doc = _entry(items=[_item_row(1, basic_rate=1, basic_amount=1)])
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].basic_rate, RATE.per_gram_rate)
+		self.assertEqual(doc.get("items")[0].basic_amount, 10 * RATE.per_gram_rate)
+
+	def test_api_supplied_expense_account_is_overwritten(self, *_mocks):
+		doc = _entry(items=[_item_row(1, expense_account="Some Wrong Account - KGJPL")])
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].expense_account, LIABILITY_ACCOUNT)
+
+	def test_zero_snapshot_rate_blocks(self, *_mocks):
+		zero = frappe._dict(RATE)
+		zero.per_gram_rate = 0
+		with patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=zero):
+			with self.assertRaises(frappe.ValidationError):
+				validate_customer_gold_receipt(_entry())
+
+	def test_missing_company_blocks(self, *_mocks):
+		with self.assertRaises(frappe.ValidationError):
+			validate_customer_gold_receipt(_entry(company=None))
+
+	def test_liability_account_of_another_company_blocks(self, *_mocks):
+		# The Single's child table can be edited after a receipt is drafted; posting to
+		# another company's ledger is unrecoverable without a cancel.
+		other = frappe._dict(
+			liability_account="Foreign Co Payable - XYZ",
+			cogs_adjustment_account="Stock Adjustment - KGJPL",
+		)
+		with patch(f"{MOD}.get_customer_gold_company_settings", return_value=other):
+			with self.assertRaises(frappe.ValidationError):
+				validate_customer_gold_receipt(_entry())
+
+	def test_conversion_factor_other_than_one_blocks(self, *_mocks):
+		# The frozen rate is per gram; a converted UOM would be wrong by exactly the factor.
+		with self.assertRaises(frappe.ValidationError):
+			validate_customer_gold_receipt(
+				_entry(items=[_item_row(1, uom="Kg", conversion_factor=1000)])
+			)
+
+	def test_uncomputed_pure_qty_blocks(self, *_mocks):
+		# A silent zero here is what let 22,140 g go unrecorded.
+		with self.assertRaises(frappe.ValidationError):
+			validate_customer_gold_receipt(
+				_entry(items=[_item_row(1, custom_pure_qty=0)])
+			)
+
+
+@patch(f"{MOD}.resolve_customer_gold_rate_for_date", return_value=RATE)
+@patch(f"{MOD}.frappe.db.get_value", side_effect=_db_get_value)
+@patch(f"{MOD}.get_customer_gold_company_settings", return_value=ACCOUNTS)
+@patch(f"{MOD}.get_customer_gold_settings", return_value=SETTINGS)
+@patch(f"{MOD}.is_customer_gold_enabled", return_value=False)
+class TestCustomerGoldNominalValuationDisabled(IntegrationTestCase):
+	"""With the flag off, nothing is valued and nothing is re-accounted."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_no_rate_written(self, *_mocks):
+		doc = _entry()
+		validate_customer_gold_receipt(doc)
+		self.assertIsNone(doc.get("items")[0].get("basic_rate"))
+
+	def test_no_expense_account_written(self, *_mocks):
+		doc = _entry()
+		validate_customer_gold_receipt(doc)
+		self.assertIsNone(doc.get("items")[0].get("expense_account"))
+
+	def test_no_nominal_total_written(self, *_mocks):
+		doc = _entry()
+		validate_customer_gold_receipt(doc)
+		self.assertIsNone(doc.get("custom_gold_nominal_value"))
+
+	def test_other_stock_entry_type_untouched_even_when_enabled(self, *_mocks):
+		with patch(f"{MOD}.is_customer_gold_enabled", return_value=True):
+			doc = _entry(stock_entry_type="Customer Goods Transfer")
+			validate_customer_gold_receipt(doc)
+			self.assertIsNone(doc.get("items")[0].get("basic_rate"))
+			self.assertIsNone(doc.get("items")[0].get("expense_account"))

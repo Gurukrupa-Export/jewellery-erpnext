@@ -132,5 +132,5 @@ def execute():
 
 	create_custom_fields(custom_fields, ignore_validate=True)
 	frappe.logger().info(
-		"add_customer_gold_rate_snapshot_fields: ensured 8 Customer Gold rate fields on Stock Entry"
+		"add_customer_gold_rate_snapshot_fields: ensured 9 Customer Gold rate fields on Stock Entry"
 	)
