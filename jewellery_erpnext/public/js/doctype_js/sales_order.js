@@ -1,3 +1,66 @@
+if (!erpnext.utils.BarcodeScanner.prototype.__serial_link_row_patch) {
+	const _update_table = erpnext.utils.BarcodeScanner.prototype.update_table;
+	const _get_row_to_modify_on_scan = erpnext.utils.BarcodeScanner.prototype.get_row_to_modify_on_scan;
+
+	erpnext.utils.BarcodeScanner.prototype.update_table = function (data) {
+		// stash the serial being scanned so get_row_to_modify_on_scan can see it
+		this.__scanned_serial_no = data && data.serial_no;
+		return _update_table.call(this, data);
+	};
+
+	erpnext.utils.BarcodeScanner.prototype.get_row_to_modify_on_scan = function (...args) {
+		const row = _get_row_to_modify_on_scan.apply(this, args);
+		const serial_no = this.__scanned_serial_no;
+		const field = row && frappe.meta.get_field(row.doctype, this.serial_no_field);
+
+		// A Link serial_no field can only hold ONE serial. If the matched row already
+		// has a *different* serial in it, don't reuse that row (core would otherwise
+		// merge "serial1\nserial2" into a single Link field) - fall back to an empty
+		// row, or let update_table() add a brand new row instead.
+		if (
+			row &&
+			field &&
+			field.fieldtype === "Link" &&
+			serial_no &&
+			row[this.serial_no_field] &&
+			row[this.serial_no_field] !== serial_no
+		) {
+			return this.frm.doc[this.items_table_name].find((d) => !d.item_code);
+		}
+
+		return row;
+	};
+
+	const _set_item = erpnext.utils.BarcodeScanner.prototype.set_item;
+	erpnext.utils.BarcodeScanner.prototype.set_item = function (
+		row,
+		item_code,
+		barcode,
+		batch_no,
+		serial_no
+	) {
+		const field = frappe.meta.get_field(row.doctype, this.serial_no_field);
+
+		// core's "Scan barcode for item" dialog (triggered when frm.has_items is
+		// already true) is built to accumulate several scans into ONE row as a
+		// combined qty + newline-joined serial_no. A Link serial_no field can only
+		// ever hold one value, so that dialog must never be used here - force the
+		// plain qty-increment path instead, which (together with the
+		// get_row_to_modify_on_scan patch above) always lands a new/different
+		// serial on its own row.
+		if (field && field.fieldtype === "Link" && this.frm.has_items) {
+			this.frm.has_items = false;
+			const result = _set_item.call(this, row, item_code, barcode, batch_no, serial_no);
+			this.frm.has_items = true;
+			return result;
+		}
+
+		return _set_item.call(this, row, item_code, barcode, batch_no, serial_no);
+	};
+
+	erpnext.utils.BarcodeScanner.prototype.__serial_link_row_patch = true;
+}
+
 frappe.ui.form.on("Sales Order", {
 	gold_rate_with_gst: function (frm) {
 		if (frm.doc.gold_rate_with_gst) {
