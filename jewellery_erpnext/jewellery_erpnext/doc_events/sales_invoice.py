@@ -1952,11 +1952,9 @@ def update_income_account(self):
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_completed_product_return_orders(
-	doctype, txt, searchfield, start, page_len, filters
-):
-	return frappe.db.sql(
-		"""
+def get_completed_product_return_orders(doctype, txt, searchfield, start, page_len, filters):
+
+    return frappe.db.sql("""
         SELECT pro.name
         FROM `tabProduct Return Order Form` pro
         WHERE pro.docstatus = 1
@@ -1974,10 +1972,10 @@ def get_completed_product_return_orders(
           )
         ORDER BY pro.modified DESC
         LIMIT %(start)s, %(page_len)s
-    """,
-		{
-			"txt": f"%{txt}%",
-			"start": start,
-			"page_len": page_len,
-		},
-	)
+    """, {
+        "txt": f"%{txt}%",
+        "start": start,
+        "page_len": page_len,
+    })
+
+
