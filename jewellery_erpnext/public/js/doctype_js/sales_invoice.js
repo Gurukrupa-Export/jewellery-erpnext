@@ -23,7 +23,7 @@ frappe.ui.form.on("Sales Invoice", {
 		);
 
 		
-    frm.add_custom_button(__("Get Product Return Order Form"), function () {
+  frm.add_custom_button(__("Get Product Return Order Form"), function () {
 
     frappe.prompt(
         [
@@ -75,6 +75,7 @@ frappe.ui.form.on("Sales Invoice", {
                             fields: [
                                 "name",
                                 "item_code",
+                                "item_name",
                                 "serial_no",
                                 "new_bom",
                                 "rate",
@@ -96,22 +97,20 @@ frappe.ui.form.on("Sales Invoice", {
 
                                 let d = frm.add_child("items");
 
-                                d.item_code = row.item_code;
-                                d.custom_serial_no = row.serial_no;
-                                d.item_name = row.item_name;
-                                d.serial_no = row.serial_no;
+                                // PRO name is always `<PRF name>-<PRF row idx>` — reliable
+                                // even when item_code/serial_no are blank on the PRF row
+                                let matched_pro = pro_list.find(function (pro) {
+                                    return pro.name === (prf.name + "-" + row.idx);
+                                });
+
+                                d.item_code = (matched_pro && matched_pro.item_code) || row.item_code;
+                                d.custom_serial_no = (matched_pro && matched_pro.serial_no) || row.serial_no;
+                                d.item_name = (matched_pro && matched_pro.item_name) || row.item_name;
+                                d.serial_no = d.custom_serial_no;
                                 d.qty = -Math.abs(row.qty);
                                 d.income_account = "Sales - KGJPL";
+                                d.sales_order = "";
                                 d.uom = row.uom;
-
-
-                                // Match Product Return Order
-                                let matched_pro = pro_list.find(function (pro) {
-                                    return (
-                                        pro.item_code === row.item_code &&
-                                        pro.serial_no === row.serial_no
-                                    );
-                                });
 
 
                                 if (matched_pro && matched_pro.new_bom) {
