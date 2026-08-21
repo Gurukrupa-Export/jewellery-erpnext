@@ -859,6 +859,28 @@ frappe.ui.form.on("Stock Entry Detail", {
 			},
 		});
 	},
+	edit_bom: function (frm, cdt, cdn) {
+		let row = locals[cdt][cdn];
+
+		if (frm.doc.__islocal) {
+			frappe.throw(__("Please save document to edit the BOM."));
+		}
+
+		let serial_no = ((row.serial_no || "") + "").split("\n")[0].trim();
+		if (!serial_no) {
+			frappe.msgprint(__("Row #{0} has no Serial No, so it has no BOM to edit.", [row.idx]));
+			return;
+		}
+
+		frappe.db.get_value("Serial No", serial_no, "custom_bom_no").then((r) => {
+			let bom = r.message && r.message.custom_bom_no;
+			if (!bom) {
+				frappe.msgprint(__("Serial No {0} has no linked BOM.", [serial_no]));
+				return;
+			}
+			open_stock_entry_edit_bom_dialog(frm, serial_no, bom);
+		});
+	},
 	items_add: function (frm, cdt, cdn) {
 		var row = locals[cdt][cdn];
 		row.from_job_card = frm.doc.from_job_card;
@@ -892,6 +914,859 @@ frappe.ui.form.on("Stock Entry Detail", {
 		}
 	},
 });
+
+// -- Edit BOM (Stock Entry Detail) -------------------------------------------
+// Mirrors Sales Order Item's "Edit BOM" button/dialog (public/js/doctype_js/
+// sales_order.js), adapted for Stock Entry:
+//  - Stock Entry Detail has no field like Sales Order Item's own `bom` Link (its
+//    core `bom_no` is unused by this app -- confirmed 0% populated on live data),
+//    so the target BOM is resolved via row.serial_no -> Serial No.custom_bom_no
+//    (see the `edit_bom` handler above), same lookup
+//    doc_events/sales_order.py::create_serial_no_bom already uses.
+//  - Sales Order's dialog re-derives several display columns (actual_rate,
+//    customer_metal_purity, difference) from the *customer's* metal purity and
+//    the Sales Order's own gold_rate_with_gst -- neither concept applies to a
+//    Stock Entry row. This version reads those columns directly off the BOM's
+//    own stored child-row values instead (BOM Metal/Diamond/Gemstone/Finding
+//    Detail already carry rate/amount/difference/customer_metal_purity), so no
+//    customer/gold-rate context is needed and no async per-row recompute runs.
+let open_stock_entry_edit_bom_dialog = (frm, serial_no, bom) => {
+	const metal_fields = [
+		{ fieldtype: "Data", fieldname: "docname", read_only: 1, hidden: 1 },
+		{
+			fieldtype: "Link",
+			fieldname: "metal_type",
+			label: __("Metal Type"),
+			read_only: 1,
+			columns: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "metal_touch",
+			label: __("Metal Touch"),
+			read_only: 1,
+			columns: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "metal_purity",
+			label: __("Metal Purity"),
+			read_only: 1,
+			columns: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "customer_metal_purity",
+			label: __("Customer Metal Purity"),
+			read_only: 1,
+			columns: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "metal_colour",
+			label: __("Metal Colour"),
+			read_only: 1,
+			columns: 1,
+			options: "Attribute Value",
+		},
+		{ fieldtype: "Column Break", fieldname: "clb1" },
+		{
+			fieldtype: "Float",
+			fieldname: "quantity",
+			label: __("Weight In Gms"),
+			read_only: 1,
+			columns: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "quantity_3",
+			label: __("Weight In Gms(2 digits)"),
+			read_only: 1,
+			columns: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "rate",
+			label: __("Gold Rate"),
+			columns: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "amount",
+			label: __("Gold Amount"),
+			read_only: 1,
+			columns: 1,
+			in_list_view: 1,
+		},
+		{ fieldtype: "Column Break", fieldname: "clb2" },
+		{
+			fieldtype: "Currency",
+			fieldname: "making_rate",
+			label: __("Making Rate"),
+			columns: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "making_amount",
+			label: __("Making Amount"),
+			read_only: 1,
+			columns: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "wastage_rate",
+			label: __("Wastage Rate"),
+			columns: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "wastage_amount",
+			label: __("Wastage Amount"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "difference",
+			label: __("Difference(Based on Metal Purity)"),
+			columns: 1,
+			read_only: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "difference_qty",
+			label: __("Difference(Based on Roundoff)"),
+			read_only: 1,
+		},
+		{
+			fieldtype: "Check",
+			fieldname: "is_customer_item",
+			label: __("Is Customer Item"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+	];
+
+	const diamond_fields = [
+		{ fieldtype: "Data", fieldname: "docname", read_only: 1, hidden: 1 },
+		{
+			fieldtype: "Link",
+			fieldname: "diamond_type",
+			label: __("Diamond Type"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "stone_shape",
+			label: __("Stone Shape"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Data",
+			fieldname: "diamond_cut",
+			label: __("Diamond Cut"),
+			columns: 1,
+			read_only: 1,
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "quality",
+			label: __("Diamond Quality"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "handling_rate",
+			label: __("Diamond Handling Rate"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{ fieldtype: "Column Break", fieldname: "clb1" },
+		{
+			fieldtype: "Link",
+			fieldname: "sub_setting_type",
+			label: __("Sub Setting Type"),
+			columns: 1,
+			read_only: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Int",
+			fieldname: "pcs",
+			label: __("Pcs"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "quantity",
+			label: __("Weight In Cts"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "quantity_3",
+			label: __("Weight In Cts(2 digits)"),
+			columns: 1,
+			read_only: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "total_diamond_rate",
+			columns: 1,
+			label: __("Total Diamond Rate"),
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "diamond_rate_for_specified_quantity",
+			columns: 1,
+			label: __("Amount"),
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "difference",
+			label: __("Difference"),
+			read_only: 1,
+		},
+		{
+			fieldtype: "Check",
+			fieldname: "is_customer_item",
+			label: __("Is Customer Item"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+	];
+
+	const gemstone_fields = [
+		{ fieldtype: "Data", fieldname: "docname", read_only: 1, hidden: 1 },
+		{
+			fieldtype: "Link",
+			fieldname: "gemstone_type",
+			label: __("Gemstone Type"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "cut_or_cab",
+			label: __("Cut And Cab"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "stone_shape",
+			label: __("Stone Shape"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{ fieldtype: "Column Break", fieldname: "clb1" },
+		{
+			fieldtype: "Link",
+			fieldname: "gemstone_quality",
+			label: __("Gemstone Quality"),
+			read_only: 1,
+			columns: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "gemstone_size",
+			label: __("Gemstone Size"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "sub_setting_type",
+			label: __("Sub Setting Type"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{ fieldtype: "Column Break", fieldname: "clb2" },
+		{
+			fieldtype: "Int",
+			fieldname: "pcs",
+			label: __("Pcs"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "quantity",
+			label: __("Weight In Cts"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "quantity_3",
+			label: __("Weight In Cts(2 digits)"),
+			columns: 1,
+			read_only: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "total_gemstone_rate",
+			columns: 1,
+			label: __("Total Gemstone Rate"),
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "gemstone_rate_for_specified_quantity",
+			columns: 1,
+			label: __("Amount"),
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "difference",
+			label: __("Difference"),
+			read_only: 1,
+		},
+		{
+			fieldtype: "Check",
+			fieldname: "is_customer_item",
+			label: __("Is Customer Item"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+	];
+
+	const finding_fields = [
+		{ fieldtype: "Data", fieldname: "docname", read_only: 1, hidden: 1 },
+		{
+			fieldtype: "Link",
+			fieldname: "metal_type",
+			columns: 1,
+			label: __("Metal Type"),
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "finding_category",
+			columns: 1,
+			label: __("Category"),
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "finding_type",
+			columns: 1,
+			label: __("Type"),
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "metal_touch",
+			columns: 1,
+			label: __("Metal Touch"),
+			read_only: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "metal_purity",
+			columns: 1,
+			label: __("Metal Purity"),
+			read_only: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "customer_metal_purity",
+			label: __("Customer Metal Purity"),
+			read_only: 1,
+			columns: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{ fieldtype: "Column Break", fieldname: "clb1" },
+		{
+			fieldtype: "Link",
+			fieldname: "finding_size",
+			columns: 1,
+			label: __("Size"),
+			read_only: 1,
+			in_list_view: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "metal_colour",
+			columns: 1,
+			label: __("Metal Colour"),
+			read_only: 1,
+			options: "Attribute Value",
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "quantity",
+			columns: 1,
+			label: __("Quantity"),
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "quantity_3",
+			columns: 1,
+			label: __("Quantity(2 digits)"),
+			read_only: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "rate",
+			columns: 1,
+			label: __("Rate"),
+			in_list_view: 1,
+		},
+		{ fieldtype: "Column Break", fieldname: "clb2" },
+		{
+			fieldtype: "Currency",
+			fieldname: "amount",
+			columns: 1,
+			label: __("Amount"),
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "making_rate",
+			label: __("Making Rate"),
+			columns: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "making_amount",
+			label: __("Making Amount"),
+			read_only: 1,
+			columns: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "wastage_rate",
+			label: __("Wastage Rate"),
+			columns: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "wastage_amount",
+			label: __("Wastage Amount"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Currency",
+			fieldname: "difference",
+			label: __("Difference(Based on Metal Purity)"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Check",
+			fieldname: "is_customer_item",
+			label: __("Is Customer Item"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+	];
+
+	const other_fields = [
+		{ fieldtype: "Data", fieldname: "docname", read_only: 1, hidden: 1 },
+		{
+			fieldtype: "Link",
+			fieldname: "item_code",
+			read_only: 1,
+			options: "Item",
+			columns: 2,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "weight",
+			read_only: 1,
+			label: __("WT in (GMS)"),
+			columns: 2,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Float",
+			fieldname: "qty",
+			read_only: 1,
+			label: __("Qty"),
+			columns: 2,
+			in_list_view: 1,
+		},
+		{
+			fieldtype: "Link",
+			fieldname: "uom",
+			columns: 1,
+			read_only: 1,
+			label: __("UOM"),
+			in_list_view: 1,
+			options: "UOM",
+		},
+		{
+			fieldtype: "Check",
+			fieldname: "is_customer_item",
+			label: __("Is Customer Item"),
+			columns: 1,
+			read_only: 1,
+			in_list_view: 1,
+		},
+	];
+
+	const dialog = new frappe.ui.Dialog({
+		title: __("Edit BOM"),
+		fields: [
+			{
+				fieldname: "serial_no",
+				fieldtype: "Link",
+				label: __("Serial No"),
+				options: "Serial No",
+				read_only: 1,
+				default: serial_no,
+			},
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "bom",
+				fieldtype: "Link",
+				label: __("BOM"),
+				options: "BOM",
+				read_only: 1,
+				default: bom,
+			},
+			{ fieldtype: "Section Break" },
+			{
+				fieldname: "metal_detail",
+				fieldtype: "Table",
+				label: __("Metal Detail"),
+				cannot_add_rows: true,
+				cannot_delete_rows: true,
+				fields: metal_fields,
+			},
+			{
+				fieldname: "finding_detail",
+				fieldtype: "Table",
+				label: __("Finding Detail"),
+				cannot_add_rows: true,
+				cannot_delete_rows: true,
+				fields: finding_fields,
+			},
+			{
+				fieldname: "diamond_detail",
+				fieldtype: "Table",
+				label: __("Diamond Detail"),
+				cannot_add_rows: true,
+				cannot_delete_rows: true,
+				fields: diamond_fields,
+			},
+			{
+				fieldname: "gemstone_detail",
+				fieldtype: "Table",
+				label: __("Gemstone Detail"),
+				cannot_add_rows: true,
+				cannot_delete_rows: true,
+				fields: gemstone_fields,
+			},
+			{
+				fieldname: "other_detail",
+				fieldtype: "Table",
+				label: __("Other Detail"),
+				cannot_add_rows: true,
+				cannot_delete_rows: true,
+				fields: other_fields,
+			},
+			{ fieldtype: "Section Break" },
+			{
+				fieldname: "gross_weight",
+				fieldtype: "Float",
+				label: __("Gross Weight (In Gram)"),
+				read_only: 1,
+			},
+			{ fieldname: "net_weight", fieldtype: "Float", label: __("Net Weight"), read_only: 1 },
+			{ fieldtype: "Column Break" },
+			{ fieldname: "metal_amount", fieldtype: "Currency", label: __("Metal Amount"), read_only: 1 },
+			{ fieldname: "making_amount", fieldtype: "Currency", label: __("Making Amount"), read_only: 1 },
+			{ fieldtype: "Section Break" },
+			{ fieldname: "finding_weight", fieldtype: "Float", label: __("Finding Weight"), read_only: 1 },
+			{ fieldname: "finding_amount", fieldtype: "Currency", label: __("Finding Amount"), read_only: 1 },
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "other_weight",
+				fieldtype: "Float",
+				label: __("Other Materials Weight (in Gram)"),
+				read_only: 1,
+			},
+			{
+				fieldname: "other_material_amount",
+				fieldtype: "Currency",
+				label: __("Other Materials Amount"),
+				read_only: 1,
+			},
+			{ fieldtype: "Section Break" },
+			{
+				fieldname: "diamond_weight",
+				fieldtype: "Float",
+				label: __("Diamond Weight (in carat)"),
+				read_only: 1,
+			},
+			{ fieldname: "diamond_amount", fieldtype: "Currency", label: __("Diamond Amount"), read_only: 1 },
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "gemstone_weight",
+				fieldtype: "Float",
+				label: __("Gemstone Weight (in carat)"),
+				read_only: 1,
+			},
+			{
+				fieldname: "gemstone_amount",
+				fieldtype: "Currency",
+				label: __("Gemstone Amount"),
+				read_only: 1,
+			},
+			{ fieldtype: "Section Break" },
+			{ fieldname: "wastage_amount", fieldtype: "Currency", label: __("Wastage Amount"), read_only: 1 },
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "certification_amount",
+				fieldtype: "Currency",
+				label: __("Certification Amount"),
+				read_only: 1,
+			},
+			{ fieldtype: "Section Break" },
+			{
+				fieldname: "hallmarking_amount",
+				fieldtype: "Currency",
+				label: __("Hallmarking Amount"),
+				read_only: 1,
+			},
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "custom_duty_amount",
+				fieldtype: "Currency",
+				label: __("Custom Duty Amount"),
+				read_only: 1,
+			},
+			{ fieldtype: "Column Break" },
+			{ fieldname: "freight_amount", fieldtype: "Currency", label: __("Freight Amount"), read_only: 1 },
+		],
+		primary_action: function () {
+			const metal_detail = dialog.get_values()["metal_detail"] || [];
+			const diamond_detail = dialog.get_values()["diamond_detail"] || [];
+			const gemstone_detail = dialog.get_values()["gemstone_detail"] || [];
+			const finding_detail = dialog.get_values()["finding_detail"] || [];
+			const other_detail = dialog.get_values()["other_detail"] || [];
+
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.doc_events.quotation.update_bom_detail",
+				freeze: true,
+				args: {
+					parent_doctype: "BOM",
+					parent_doctype_name: bom,
+					metal_detail: metal_detail,
+					diamond_detail: diamond_detail,
+					gemstone_detail: gemstone_detail,
+					finding_detail: finding_detail,
+					other_detail: other_detail,
+				},
+				callback: function () {
+					frm.reload_doc();
+				},
+			});
+			dialog.hide();
+		},
+		primary_action_label: __("Update"),
+	});
+
+	frappe.call({
+		method: "frappe.client.get",
+		freeze: true,
+		args: { doctype: "BOM", name: bom },
+		callback(r) {
+			if (r.message) {
+				populate_stock_entry_bom_dialog(r.message, dialog);
+			}
+		},
+	});
+
+	dialog.show();
+	dialog.$wrapper.find(".modal-dialog").css("max-width", "90%");
+};
+
+// Reads the BOM's own stored child-row values directly -- no customer/gold-rate
+// recompute, unlike Sales Order's set_edit_bom_details (see comment above).
+let populate_stock_entry_bom_dialog = (doc, dialog) => {
+	dialog.fields_dict.metal_detail.df.data = (doc.metal_detail || []).map((d) => ({
+		docname: d.name,
+		metal_type: d.metal_type,
+		metal_touch: d.metal_touch,
+		metal_purity: d.metal_purity,
+		customer_metal_purity: d.customer_metal_purity,
+		metal_colour: d.metal_colour,
+		is_customer_item: d.is_customer_item,
+		quantity: d.quantity,
+		quantity_3: d.quantity_3,
+		rate: d.rate,
+		amount: d.amount,
+		making_rate: d.making_rate,
+		making_amount: d.making_amount,
+		wastage_rate: d.wastage_rate,
+		wastage_amount: d.wastage_amount,
+		difference: d.difference,
+		difference_qty: d.difference_qty,
+	}));
+	dialog.fields_dict.metal_detail.grid.refresh();
+
+	dialog.fields_dict.diamond_detail.df.data = (doc.diamond_detail || []).map((d) => ({
+		docname: d.name,
+		diamond_type: d.diamond_type,
+		stone_shape: d.stone_shape,
+		diamond_cut: d.diamond_cut,
+		quality: d.quality,
+		handling_rate: d.handling_rate,
+		sub_setting_type: d.sub_setting_type,
+		pcs: d.pcs,
+		quantity: d.quantity,
+		quantity_3: d.quantity_3,
+		total_diamond_rate: d.total_diamond_rate,
+		diamond_rate_for_specified_quantity: d.diamond_rate_for_specified_quantity,
+		difference: d.difference,
+		is_customer_item: d.is_customer_item,
+	}));
+	dialog.fields_dict.diamond_detail.grid.refresh();
+
+	dialog.fields_dict.gemstone_detail.df.data = (doc.gemstone_detail || []).map((d) => ({
+		docname: d.name,
+		gemstone_type: d.gemstone_type,
+		cut_or_cab: d.cut_or_cab,
+		stone_shape: d.stone_shape,
+		gemstone_quality: d.gemstone_quality,
+		gemstone_size: d.gemstone_size,
+		sub_setting_type: d.sub_setting_type,
+		pcs: d.pcs,
+		quantity: d.quantity,
+		quantity_3: d.quantity_3,
+		total_gemstone_rate: d.total_gemstone_rate,
+		gemstone_rate_for_specified_quantity: d.gemstone_rate_for_specified_quantity,
+		difference: d.difference,
+		is_customer_item: d.is_customer_item,
+	}));
+	dialog.fields_dict.gemstone_detail.grid.refresh();
+
+	dialog.fields_dict.finding_detail.df.data = (doc.finding_detail || []).map((d) => ({
+		docname: d.name,
+		metal_type: d.metal_type,
+		finding_category: d.finding_category,
+		finding_type: d.finding_type,
+		finding_size: d.finding_size,
+		metal_touch: d.metal_touch,
+		metal_purity: d.metal_purity,
+		customer_metal_purity: d.customer_metal_purity,
+		metal_colour: d.metal_colour,
+		quantity: d.quantity,
+		quantity_3: d.quantity_3,
+		rate: d.rate,
+		amount: d.amount,
+		making_rate: d.making_rate,
+		making_amount: d.making_amount,
+		wastage_rate: d.wastage_rate,
+		wastage_amount: d.wastage_amount,
+		difference: d.difference,
+		is_customer_item: d.is_customer_item,
+	}));
+	dialog.fields_dict.finding_detail.grid.refresh();
+
+	dialog.fields_dict.other_detail.df.data = (doc.other_detail || []).map((d) => ({
+		docname: d.name,
+		item_code: d.item_code,
+		qty: d.qty,
+		weight: d.weight,
+		uom: d.uom,
+	}));
+	dialog.fields_dict.other_detail.grid.refresh();
+
+	let total_wastage_amount = doc.total_wastage_amount || 0;
+	for (let row of doc.finding_detail || []) {
+		total_wastage_amount += row.wastage_amount || 0;
+	}
+
+	dialog.set_value("gross_weight", doc.gross_weight);
+	dialog.set_value("net_weight", doc.metal_and_finding_weight || 0);
+	dialog.set_value("metal_amount", doc.total_metal_amount);
+	dialog.set_value("making_amount", doc.making_charge);
+	dialog.set_value("finding_weight", doc.total_finding_weight_per_gram || 0);
+	dialog.set_value("finding_amount", doc.finding_bom_amount);
+	dialog.set_value("other_weight", doc.other_weight || 0);
+	dialog.set_value("diamond_weight", doc.diamond_weight || 0);
+	dialog.set_value("diamond_amount", doc.total_diamond_amount);
+	dialog.set_value("gemstone_weight", doc.gemstone_weight || 0);
+	dialog.set_value("gemstone_amount", doc.total_gemstone_amount);
+	dialog.set_value("wastage_amount", total_wastage_amount);
+	dialog.set_value("certification_amount", doc.certification_amount);
+	dialog.set_value("hallmarking_amount", doc.hallmarking_amount);
+	dialog.set_value("custom_duty_amount", doc.custom_duty_amount);
+	dialog.set_value("freight_amount", doc.freight_amount);
+};
 
 erpnext.stock.select_batch_and_serial_no = (frm, item) => {
 	let get_warehouse_type_and_name = (item) => {

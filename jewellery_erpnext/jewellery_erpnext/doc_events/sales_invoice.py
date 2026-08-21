@@ -21,6 +21,20 @@ def _so_gold_rate_changed(si_gold_rate, sales_order):
 	return abs(flt(si_gold_rate) - flt(so_gold_rate)) > 0.001
 
 
+def _linked_sales_order(self):
+	"""The single Sales Order this invoice's items map to, or None if the invoice
+	is standalone or its items span more than one Sales Order (ambiguous -- no
+	single order rate to lock to, leave gold_rate as entered).
+	"""
+	sales_orders = {getattr(row, "sales_order", None) for row in self.items} - {
+		None,
+		"",
+	}
+	if len(sales_orders) == 1:
+		return sales_orders.pop()
+	return None
+
+
 def before_validate(self, method):
 	if self.is_return:
 		for row in self.get("invoice_item") or []:
@@ -40,6 +54,11 @@ def before_validate(self, method):
 				row for row in self.items if row.item_code != "Subcontracting Charges"
 			]
 	if self.sales_type != "Certification":
+		sales_order = _linked_sales_order(self)
+		if sales_order and _so_gold_rate_changed(self.gold_rate, sales_order):
+			self.gold_rate = frappe.db.get_value(
+				"Sales Order", sales_order, "gold_rate"
+			)
 		if self.gold_rate:
 			self.gold_rate_with_gst = round(self.gold_rate * 1.03, 3)
 		if self.item_same_as_above:
