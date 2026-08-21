@@ -386,6 +386,77 @@ def get_current_mop_balance_rows(
 	return list(reversed(list(latest_by_key.values())))
 
 
+def get_mwo_balance_rows(manufacturing_work_order, include_fields=None, keys=None):
+	"""Return the latest non-cancelled MOP Log row per item/batch for a whole MWO.
+
+	:func:`get_current_mop_balance_rows` answers "what did operation X last
+	record?". This answers "what does this Manufacturing Work Order hold right
+	now?" — and for availability checks the second question is the correct one.
+
+	The distinction is forced by how the number is written.
+	:func:`create_mop_log_for_stock_transfer_to_mo` computes
+	``qty_after_transaction_batch_based`` as an MWO-wide running sum
+	(``WHERE manufacturing_work_order = %s AND is_cancelled = 0``; the per-MOP
+	narrowing right below it is commented out) and only then stamps the row with
+	a single operation. **A per-MOP balance does not exist in this field.** A
+	MOP-scoped read returns the MWO-wide total frozen at whenever THAT operation
+	last wrote, and goes stale the moment any other operation under the same MWO
+	posts a row — a Department/Employee IR handoff clone, a loss attribution, a
+	receive.
+
+	That staleness is not hypothetical: on handoff the source operation is
+	explicitly zeroed and the destination carries the balance forward, while
+	``Stock Reservation Entry.manufacturing_operation`` keeps pointing at the
+	operation the reservation was created against. Reading the SRE's stamp
+	therefore returns the zeroed row and blocks a receive the operator can
+	legitimately make.
+
+	Reading the latest row MWO-wide is the only scope invariant to which
+	operation the reader happens to be standing on, and it always reflects every
+	non-cancelled delta — including a loss booked at a sibling operation, which
+	an opened-MOP-scoped read would miss.
+
+	Operations under one MWO form a linear chain (``previous_mop``), so "latest
+	across the MWO" is a well-defined current state and not a merge of
+	concurrent branches.
+
+	Index-served by ``mop_mwo_idx`` (manufacturing_work_order, is_cancelled,
+	item_code, batch_no) from ``add_make_receive_entry_indexes``.
+
+	Dedup rule, ordering and return shape are deliberately identical to
+	:func:`get_current_mop_balance_rows` so the two stay drop-in
+	interchangeable. ``creation desc`` is kept bare on purpose — MOP Log has no
+	``autoname``, so ``name`` is a hash and would be a false tiebreak.
+	"""
+	fields = list(
+		dict.fromkeys((include_fields or current_balance_fields) + ["name", "creation"])
+	)
+	filters = {
+		"manufacturing_work_order": manufacturing_work_order,
+		"is_cancelled": 0,
+	}
+	if keys:
+		item_codes = sorted({k[0] for k in keys if k and k[0]})
+		if not item_codes:
+			return []
+		filters["item_code"] = ["in", item_codes]
+	mop_logs = frappe.db.get_all(
+		"MOP Log",
+		filters=filters,
+		fields=fields,
+		order_by="creation desc",
+	)
+	if not mop_logs:
+		return []
+
+	latest_by_key = {}
+	for log in mop_logs:
+		key = (log.get("item_code"), log.get("batch_no"))
+		if key not in latest_by_key:
+			latest_by_key[key] = log
+	return list(reversed(list(latest_by_key.values())))
+
+
 def get_mop_transfer_pcs_rows(manufacturing_work_order, keys=None):
 	"""Return per-row incoming-transfer PCS rows for a MWO, grouped by item/batch.
 
@@ -485,6 +556,13 @@ def get_available_qty_pcs_for_mop_item(
 	    no PCS field, so it is excluded from the candidate set (treating it
 	    as 0 would force Available PCS to 0 incorrectly per spec).
 	  * 0 falls through when no MOP Log row exists for (item, batch).
+
+	The default lookup is scoped to the single ``manufacturing_operation``.
+	Callers that must agree with each other about availability — the Make
+	Receive Entry popup and its server validator — instead build an MWO-scoped
+	map with :func:`get_mwo_balance_rows` and pass it as
+	``mop_log_balance_map``, because the underlying balance is an MWO-wide
+	running sum with no per-operation meaning.
 	"""
 	is_pcs_item = bool(item_code) and item_code[0] in ("D", "G")
 
