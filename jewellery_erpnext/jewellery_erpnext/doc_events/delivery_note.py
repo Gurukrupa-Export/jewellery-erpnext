@@ -297,13 +297,14 @@ def update_dn_einvoice_items(self):
 	):
 		for data in bucket.values():
 			data["rate"] = data["amount"] / data["qty"] if data["qty"] else 0
+			qty = -data["qty"] if self.is_return else data["qty"]
 			self.append(
 				"custom_invoice_item",
 				{
 					"item_code": data["item_code"],
 					"item_name": data["item_name"],
 					"uom": data["uom"],
-					"qty": data["qty"],
+					"qty": qty,
 					"rate": data["rate"],
 					"amount": flt(data["amount"], 3),
 				},
