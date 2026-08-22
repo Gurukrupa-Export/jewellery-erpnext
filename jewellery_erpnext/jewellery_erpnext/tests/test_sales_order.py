@@ -84,6 +84,47 @@ class TestSalesOrder(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			so_events.validate_sales_type(d)
 
+	def test_set_company_address_from_branch_overrides_default_company_address(self):
+		# Regression: core ERPNext's default company-address picker only
+		# respects a single "Is Primary Address" company Address, ignoring
+		# which branch a Sales Order is actually raised from. On a
+		# multi-branch company this let company_address default to a
+		# different branch's (e.g. Chennai's) address even when branch was
+		# Surat, so India Compliance compared the wrong GSTIN pair and
+		# threw "Company GSTIN and Party GSTIN are same" the moment the
+		# customer's own address happened to be that same primary address.
+		from jewellery_erpnext.jewellery_erpnext.doc_events import (
+			sales_order as so_events,
+		)
+
+		d = type("SO", (), {})()
+		d.branch = "Surat Factory"
+		d.company_address = "Gurukrupa Export Private Limited - Chennai-Billing"
+
+		with patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.sales_order.frappe.db.get_value",
+			return_value="Gurukrupa Export Private Limited - Surat Factory-Billing",
+		):
+			so_events.set_company_address_from_branch(d)
+
+		self.assertEqual(
+			d.company_address,
+			"Gurukrupa Export Private Limited - Surat Factory-Billing",
+		)
+
+	def test_set_company_address_from_branch_noop_without_branch(self):
+		from jewellery_erpnext.jewellery_erpnext.doc_events import (
+			sales_order as so_events,
+		)
+
+		d = type("SO", (), {})()
+		d.branch = None
+		d.company_address = "Some Existing Address"
+
+		so_events.set_company_address_from_branch(d)
+
+		self.assertEqual(d.company_address, "Some Existing Address")
+
 	def test_validate_snc_sets_reserved_on_save_and_active_on_cancel(self):
 		from jewellery_erpnext.jewellery_erpnext.doc_events import (
 			sales_order as so_events,

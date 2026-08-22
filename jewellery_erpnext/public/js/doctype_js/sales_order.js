@@ -191,6 +191,7 @@ frappe.ui.form.on("Sales Order", {
 	},
 	onload_post_render(frm) {
 		filter_customer(frm);
+		set_company_address_from_branch(frm);
 	},
 	sales_type(frm) {
 		filter_customer(frm);
@@ -200,7 +201,27 @@ frappe.ui.form.on("Sales Order", {
 	customer(frm) {
 		get_sales_type(frm);
 	},
+	branch(frm) {
+		set_company_address_from_branch(frm);
+	},
 });
+
+// Each Branch carries its own registered address/GSTIN, but core ERPNext's
+// customer-triggered get_party_details() only fetches the Company's single
+// "Is Primary Address" flagged Address, ignoring which branch is actually
+// selling. Re-derive company_address (and company_gstin, via its own
+// fetch_from) from the selected branch so the form shows the right GSTIN
+// immediately, ahead of the same fix on the server (doc_events/sales_order.py
+// set_company_address_from_branch).
+function set_company_address_from_branch(frm) {
+	if (!frm.doc.branch) return;
+	frappe.db.get_value("Branch", frm.doc.branch, "branch_address").then((r) => {
+		const branch_address = r.message && r.message.branch_address;
+		if (branch_address && branch_address !== frm.doc.company_address) {
+			frm.set_value("company_address", branch_address);
+		}
+	});
+}
 
 let filter_customer = (frm) => {
 	if (frm.doc.sales_type) {
