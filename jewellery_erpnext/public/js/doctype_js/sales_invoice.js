@@ -22,8 +22,7 @@ frappe.ui.form.on("Sales Invoice", {
 			"E Invoice Item"
 		);
 
-		
-  frm.add_custom_button(__("Get Product Return Order Form"), function () {
+frm.add_custom_button(__("Get Product Return Order Form"), function () {
 
     frappe.prompt(
         [
