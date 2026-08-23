@@ -21,6 +21,20 @@ def _so_gold_rate_changed(si_gold_rate, sales_order):
 	return abs(flt(si_gold_rate) - flt(so_gold_rate)) > 0.001
 
 
+def _linked_sales_order(self):
+	"""The single Sales Order this invoice's items map to, or None if the invoice
+	is standalone or its items span more than one Sales Order (ambiguous -- no
+	single order rate to lock to, leave gold_rate as entered).
+	"""
+	sales_orders = {getattr(row, "sales_order", None) for row in self.items} - {
+		None,
+		"",
+	}
+	if len(sales_orders) == 1:
+		return sales_orders.pop()
+	return None
+
+
 def before_validate(self, method):
 	if self.is_return:
 		for row in self.get("invoice_item") or []:
@@ -40,6 +54,11 @@ def before_validate(self, method):
 				row for row in self.items if row.item_code != "Subcontracting Charges"
 			]
 	if self.sales_type != "Certification":
+		sales_order = _linked_sales_order(self)
+		if sales_order and _so_gold_rate_changed(self.gold_rate, sales_order):
+			self.gold_rate = frappe.db.get_value(
+				"Sales Order", sales_order, "gold_rate"
+			)
 		if self.gold_rate:
 			self.gold_rate_with_gst = round(self.gold_rate * 1.03, 3)
 		if self.item_same_as_above:
@@ -577,9 +596,17 @@ def set_gst_details(self):
 	account_rate_map = {}
 	for r in template_rates:
 		tax_type = r.tax_type or ""
-		if "Output" not in tax_type or "RCM" in tax_type:
+		if "Output" not in tax_type:
 			continue
-		account_rate_map[r.tax_type] = flt(r.tax_rate)
+		rate = flt(r.tax_rate)
+		if "RCM" in tax_type:
+			# Sales Taxes and Charges encodes the RCM deduction as a
+			# negative rate directly on the row (no add_deduct_tax flag,
+			# unlike the purchase side) -- the item's own Item Tax
+			# Template only stores the positive magnitude, so negate it
+			# here to match what the header row actually needs.
+			rate = -abs(rate)
+		account_rate_map[r.tax_type] = rate
 
 	self.taxes = []
 	tax_rows = frappe.get_all(
@@ -1925,11 +1952,9 @@ def update_income_account(self):
 
 @frappe.whitelist()
 @frappe.validate_and_sanitize_search_inputs
-def get_completed_product_return_orders(
-	doctype, txt, searchfield, start, page_len, filters
-):
-	return frappe.db.sql(
-		"""
+def get_completed_product_return_orders(doctype, txt, searchfield, start, page_len, filters):
+
+    return frappe.db.sql("""
         SELECT pro.name
         FROM `tabProduct Return Order Form` pro
         WHERE pro.docstatus = 1
@@ -1947,10 +1972,9 @@ def get_completed_product_return_orders(
           )
         ORDER BY pro.modified DESC
         LIMIT %(start)s, %(page_len)s
-    """,
-		{
-			"txt": f"%{txt}%",
-			"start": start,
-			"page_len": page_len,
-		},
-	)
+    """, {
+        "txt": f"%{txt}%",
+        "start": start,
+        "page_len": page_len,
+    })
+

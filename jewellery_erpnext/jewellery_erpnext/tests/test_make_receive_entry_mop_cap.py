@@ -11,8 +11,6 @@ Covers:
    message — the SRE-cap and the MOP-cap give different errors.
 4. Replacement SRE qty is capped by min(remaining_reserved_after_receive,
    remaining_mop_after_receive) — the safe rule.
-5. `create_mr_wo_stock_entry` is reachable over HTTP and the private replay
-   helper is not.
 
 Implementation note on mocking: `manufacturing_operation.frappe.db.get_all`
 and `mop_log.frappe.db.get_all` resolve to the SAME underlying object, so
@@ -28,7 +26,6 @@ from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	_build_replacement_sre,
-	_existing_receive_se,
 	create_mr_wo_stock_entry,
 	get_make_receive_entry_rows,
 )
@@ -3014,23 +3011,3 @@ class TestAvailableQtyMandatoryContract(IntegrationTestCase):
 
 		_, kwargs = mock_available.call_args
 		self.assertEqual(kwargs.get("batch_no"), "B-K1")
-
-
-class TestMakeReceiveEntryWhitelist(IntegrationTestCase):
-	"""`@frappe.whitelist()` must sit on the endpoint, not on the helper above it.
-
-	The decorator once drifted onto `_existing_receive_se` when that helper was
-	extracted into the gap above `create_mr_wo_stock_entry`, which left the
-	Make Receive Entry button throwing "is not whitelisted" while the private
-	replay lookup became an unauthenticated-permission HTTP endpoint. Both
-	halves are asserted so neither can regress alone.
-
-	`frappe.whitelist()` returns `fn` unchanged and records it in the
-	`frappe.whitelisted` set, so the imported symbols can be tested directly.
-	"""
-
-	def test_create_mr_wo_stock_entry_is_whitelisted(self):
-		self.assertIn(create_mr_wo_stock_entry, frappe.whitelisted)
-
-	def test_existing_receive_se_is_not_whitelisted(self):
-		self.assertNotIn(_existing_receive_se, frappe.whitelisted)

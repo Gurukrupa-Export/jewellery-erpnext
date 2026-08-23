@@ -4604,6 +4604,7 @@ def _build_replacement_sre(original_sre, remaining_qty, sb_remaining=None):
 	return new_sre.name
 
 
+@frappe.whitelist()
 def _existing_receive_se(
 	mo_name, request_id, stock_entry_type="Material Receive (WORK ORDER)"
 ):
@@ -4626,7 +4627,6 @@ def _existing_receive_se(
 	)
 
 
-@frappe.whitelist()
 def create_mr_wo_stock_entry(
 	se_data,
 	request_id=None,

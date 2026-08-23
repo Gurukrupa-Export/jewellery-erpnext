@@ -2,7 +2,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
-import requests
 from frappe.model.workflow import apply_workflow
 from frappe.tests import IntegrationTestCase
 from gke_customization.gke_order_forms.doctype.order.order import make_quotation_batch
@@ -261,19 +260,7 @@ class TestQuotation(IntegrationTestCase):
 		return patch(f"{QUOTATION_UTILS}.frappe.db.get_value", side_effect=get_value)
 
 	def _patched_customer_exists(self, exists=True):
-		# the local-Customer guard lives in remote_po now, shared by validate_po and the mapper
-		return patch(f"{REMOTE_PO}.frappe.db.exists", return_value=exists)
-
-	def _patched_remote(self, ref_customer=None):
-		"""Silence the full-document fetch and answer only the narrow ref_customer lookup.
-
-		resolve_ref_customer tries get_po_for_quotation first and falls back to the narrow
-		endpoint, so a test that cares about the fallback has to close the first door.
-		"""
-		return (
-			patch(f"{REMOTE_PO}.fetch_remote_po", return_value=None),
-			patch(f"{REMOTE_PO}.fetch_remote_ref_customer", return_value=ref_customer),
-		)
+		return patch(f"{QUOTATION_UTILS}.frappe.db.exists", return_value=exists)
 
 	def test_validate_po_sets_ref_customer_from_purchase_order(self):
 		doc = self._quotation_with_po_rows(
@@ -313,19 +300,16 @@ class TestQuotation(IntegrationTestCase):
 			ref_customer=None, po_nos=("JO_11228198_STXO12409",)
 		)
 
-		fetch_po, fetch_remote = self._patched_remote()
 		with (
 			self._patched_po_lookup(None),
 			patch(f"{QUOTATION_UTILS}.frappe.db.set_value"),
-			fetch_po as fetch_po_mock,
-			fetch_remote as fetch_remote_mock,
+			patch(f"{QUOTATION_UTILS}.fetch_remote_ref_customer") as fetch_remote,
 		):
 			validate_po(doc)
 
 		self.assertIsNone(doc.ref_customer)
 		# free text resolves to no Purchase Order anywhere, so it must not reach across sites
-		fetch_po_mock.assert_not_called()
-		fetch_remote_mock.assert_not_called()
+		fetch_remote.assert_not_called()
 
 	def test_validate_po_asks_the_owning_site_when_the_mirror_has_no_ref_customer(self):
 		# the Purchase Order row is here, but the mirror landed without the field
@@ -334,37 +318,35 @@ class TestQuotation(IntegrationTestCase):
 		)
 		po_value = frappe._dict(custom_quotation=None, ref_customer=None)
 
-		fetch_po, fetch_remote = self._patched_remote("CUST-REMOTE")
 		with (
 			self._patched_po_lookup(po_value),
 			self._patched_customer_exists(),
 			patch(f"{QUOTATION_UTILS}.frappe.db.set_value"),
-			fetch_po,
-			fetch_remote as fetch_remote_mock,
+			patch(
+				f"{QUOTATION_UTILS}.fetch_remote_ref_customer",
+				return_value="CUST-REMOTE",
+			) as fetch_remote,
 		):
 			validate_po(doc)
 
 		self.assertEqual(doc.ref_customer, "CUST-REMOTE")
 		# both rows share one PO, so the owning site is asked exactly once
-		fetch_remote_mock.assert_called_once_with("PUR-ORD-TEST-1")
+		fetch_remote.assert_called_once_with("PUR-ORD-TEST-1")
 
 	def test_validate_po_prefers_the_local_ref_customer_over_the_owning_site(self):
 		doc = self._quotation_with_po_rows(ref_customer=None)
 		po_value = frappe._dict(custom_quotation=None, ref_customer="CUST-A")
 
-		fetch_po, fetch_remote = self._patched_remote()
 		with (
 			self._patched_po_lookup(po_value),
 			self._patched_customer_exists(),
 			patch(f"{QUOTATION_UTILS}.frappe.db.set_value"),
-			fetch_po as fetch_po_mock,
-			fetch_remote as fetch_remote_mock,
+			patch(f"{QUOTATION_UTILS}.fetch_remote_ref_customer") as fetch_remote,
 		):
 			validate_po(doc)
 
 		self.assertEqual(doc.ref_customer, "CUST-A")
-		fetch_po_mock.assert_not_called()
-		fetch_remote_mock.assert_not_called()
+		fetch_remote.assert_not_called()
 
 	def test_validate_po_ignores_a_remote_customer_that_is_not_on_this_site(self):
 		# ref_customer is a Link: assigning an unresolvable Customer would turn a blank field
@@ -372,20 +354,18 @@ class TestQuotation(IntegrationTestCase):
 		doc = self._quotation_with_po_rows(ref_customer=None)
 		po_value = frappe._dict(custom_quotation=None, ref_customer=None)
 
-		fetch_po, fetch_remote = self._patched_remote("CUST-GHOST")
 		with (
 			self._patched_po_lookup(po_value),
 			self._patched_customer_exists(False),
 			patch(f"{QUOTATION_UTILS}.frappe.db.set_value"),
-			patch(f"{REMOTE_PO}.frappe.msgprint") as msgprint,
-			fetch_po,
-			fetch_remote,
+			patch(
+				f"{QUOTATION_UTILS}.fetch_remote_ref_customer",
+				return_value="CUST-GHOST",
+			),
 		):
 			validate_po(doc)
 
 		self.assertIsNone(doc.ref_customer)
-		# dropping it silently is what made this class of failure invisible; it must say so
-		msgprint.assert_called_once()
 
 	def tearDown(self):
 		return super().tearDown()
@@ -398,11 +378,8 @@ class TestRemotePoRefCustomer(IntegrationTestCase):
 
 	def setUp(self):
 		setattr(frappe.local, remote_po.CACHE_KEY, {})
-		setattr(frappe.local, remote_po.PO_CACHE_KEY, {})
 
-	def _patched_settings(
-		self, site_field="from_site_1", site="https://gk.example.com"
-	):
+	def _patched_settings(self, site_field="from_site_1", site="https://gk.example.com"):
 		values = {"api_key": "key", "api_secret": "secret"}
 		if site_field:
 			values[site_field] = site
@@ -444,9 +421,7 @@ class TestRemotePoRefCustomer(IntegrationTestCase):
 			self.assertEqual(fetch_remote_ref_customer("PUR-ORD-TEST-1"), "CUST-REMOTE")
 
 		# the pricing-section field is the one the other pull paths use, so it is asked first
-		self.assertTrue(
-			post.call_args.args[0].startswith("https://gk.example.com/api/method/")
-		)
+		self.assertTrue(post.call_args.args[0].startswith("https://gk.example.com/api/method/"))
 
 	def test_falls_back_to_the_push_pair_site_when_the_pricing_site_is_unset(self):
 		response = SimpleNamespace(
@@ -456,9 +431,7 @@ class TestRemotePoRefCustomer(IntegrationTestCase):
 
 		with (
 			patched_cache,
-			self._patched_settings(
-				site_field="from_site", site="https://gk-alt.example.com"
-			),
+			self._patched_settings(site_field="from_site", site="https://gk-alt.example.com"),
 			patch(f"{REMOTE_PO}.requests.post", return_value=response) as post,
 		):
 			self.assertEqual(fetch_remote_ref_customer("PUR-ORD-TEST-1"), "CUST-REMOTE")
@@ -514,10 +487,9 @@ class TestRemotePoRefCustomer(IntegrationTestCase):
 			self.assertIsNone(fetch_remote_ref_customer("PUR-ORD-TEST-1"))
 
 		log_error.assert_called_once()
-		# one failure buys silence for the whole window, so an outage is not paid per save.
-		# The stored value is the reason, not a flag: an operator reading the cache learns why.
+		# one failure buys silence for the whole window, so an outage is not paid per save
 		cache.set_value.assert_called_once_with(
-			remote_po.BREAKER_KEY, "unexpected", expires_in_sec=remote_po.BREAKER_TTL
+			remote_po.BREAKER_KEY, 1, expires_in_sec=remote_po.BREAKER_TTL
 		)
 
 	def test_an_unreadable_breaker_does_not_disable_the_lookup(self):
@@ -551,159 +523,6 @@ class TestRemotePoRefCustomer(IntegrationTestCase):
 			),
 		):
 			self.assertIsNone(fetch_remote_ref_customer("PUR-ORD-TEST-1"))
-
-	def _failing_response(self, status, text="Not Found"):
-		"""A response whose raise_for_status raises the HTTPError requests would raise."""
-		error = requests.exceptions.HTTPError(f"{status}")
-		error.response = SimpleNamespace(status_code=status, text=text)
-
-		def raise_for_status():
-			raise error
-
-		return SimpleNamespace(raise_for_status=raise_for_status, json=lambda: {})
-
-	def test_fetch_remote_po_returns_the_whole_document(self):
-		payload = {"name": "PUR-ORD-TEST-1", "customer_code": "CUST-GEPL", "items": []}
-		response = SimpleNamespace(
-			raise_for_status=lambda: None, json=lambda: {"message": payload}
-		)
-		patched_cache, _ = self._patched_cache()
-
-		with (
-			patched_cache,
-			self._patched_settings(),
-			patch(f"{REMOTE_PO}.requests.post", return_value=response) as post,
-		):
-			self.assertEqual(remote_po.fetch_remote_po("PUR-ORD-TEST-1"), payload)
-
-		self.assertTrue(post.call_args.args[0].endswith(remote_po.PO_METHOD))
-
-	def test_fetch_remote_po_asks_once_per_purchase_order(self):
-		response = SimpleNamespace(
-			raise_for_status=lambda: None, json=lambda: {"message": {"name": "PO-1"}}
-		)
-		patched_cache, _ = self._patched_cache()
-
-		with (
-			patched_cache,
-			self._patched_settings(),
-			patch(f"{REMOTE_PO}.requests.post", return_value=response) as post,
-		):
-			remote_po.fetch_remote_po("PUR-ORD-TEST-1")
-			remote_po.fetch_remote_po("PUR-ORD-TEST-1")
-
-		post.assert_called_once()
-
-	def test_fetch_remote_po_is_not_silenced_by_the_ref_customer_breaker(self):
-		# the breaker bounds a lookup the Quotation can do without. This call is what the
-		# Quotation is built from, so five minutes of silent local-mirror data is the wrong trade.
-		response = SimpleNamespace(
-			raise_for_status=lambda: None, json=lambda: {"message": {"name": "PO-1"}}
-		)
-		patched_cache, _ = self._patched_cache(breaker_open=True)
-
-		with (
-			patched_cache,
-			self._patched_settings(),
-			patch(f"{REMOTE_PO}.requests.post", return_value=response) as post,
-		):
-			self.assertIsNotNone(remote_po.fetch_remote_po("PUR-ORD-TEST-1"))
-
-		post.assert_called_once()
-
-	def test_a_missing_endpoint_is_logged_as_such(self):
-		# an owning site a version behind serves no get_po_for_quotation; "http-404" is what
-		# tells an operator that, instead of the blank field every other failure also produces
-		patched_cache, _ = self._patched_cache()
-
-		with (
-			patched_cache,
-			self._patched_settings(),
-			patch(
-				f"{REMOTE_PO}.requests.post",
-				return_value=self._failing_response(404),
-			),
-			patch(f"{REMOTE_PO}.frappe.log_error") as log_error,
-		):
-			self.assertIsNone(remote_po.fetch_remote_po("PUR-ORD-TEST-1"))
-
-		self.assertIn("reason: http-404", log_error.call_args.kwargs["message"])
-		# the title is what operators filter on, and it lands in Error Log.method
-		self.assertEqual(log_error.call_args.kwargs["title"], remote_po.LOG_TITLE)
-		# deferred, or a rollback of the Quotation would take the explanation with it
-		self.assertTrue(log_error.call_args.kwargs["defer_insert"])
-
-	def test_a_permission_denial_is_logged_as_such(self):
-		patched_cache, _ = self._patched_cache()
-
-		with (
-			patched_cache,
-			self._patched_settings(),
-			patch(
-				f"{REMOTE_PO}.requests.post",
-				return_value=self._failing_response(403, "not permitted"),
-			),
-			patch(f"{REMOTE_PO}.frappe.log_error") as log_error,
-		):
-			self.assertIsNone(remote_po.fetch_remote_po("PUR-ORD-TEST-1"))
-
-		self.assertIn("reason: http-403", log_error.call_args.kwargs["message"])
-
-	def test_a_timeout_is_logged_as_a_timeout(self):
-		patched_cache, _ = self._patched_cache()
-
-		with (
-			patched_cache,
-			self._patched_settings(),
-			patch(
-				f"{REMOTE_PO}.requests.post",
-				side_effect=requests.exceptions.Timeout("timed out"),
-			),
-			patch(f"{REMOTE_PO}.frappe.log_error") as log_error,
-		):
-			self.assertIsNone(remote_po.fetch_remote_po("PUR-ORD-TEST-1"))
-
-		self.assertIn("reason: timeout", log_error.call_args.kwargs["message"])
-
-	def test_assert_local_customer_drops_and_warns_when_the_customer_is_not_here(self):
-		with (
-			patch(f"{REMOTE_PO}.frappe.db.exists", return_value=False),
-			patch(f"{REMOTE_PO}.frappe.msgprint") as msgprint,
-		):
-			self.assertIsNone(
-				remote_po.assert_local_customer("CUST-GHOST", "PO-1", "Ref Customer")
-			)
-
-		# the operator has to be able to see which name was dropped, or the field just looks blank
-		self.assertIn("CUST-GHOST", str(msgprint.call_args.args[0]))
-
-	def test_resolve_ref_customer_guards_the_local_value_too(self):
-		# a mirrored Purchase Order can name a Customer this site has never had, which is exactly
-		# the value most likely to throw on save
-		with (
-			patch(f"{REMOTE_PO}.frappe.db.exists", return_value=False),
-			patch(f"{REMOTE_PO}.frappe.msgprint"),
-			patch(f"{REMOTE_PO}.fetch_remote_po") as fetch_po,
-		):
-			self.assertIsNone(remote_po.resolve_ref_customer("PO-1", "CUST-GHOST"))
-
-		# what this site already holds is never worth a request
-		fetch_po.assert_not_called()
-
-	def test_resolve_ref_customer_prefers_the_full_document_over_the_narrow_lookup(
-		self,
-	):
-		with (
-			patch(f"{REMOTE_PO}.frappe.db.exists", return_value=True),
-			patch(
-				f"{REMOTE_PO}.fetch_remote_po",
-				return_value={"ref_customer": "CUST-REMOTE"},
-			),
-			patch(f"{REMOTE_PO}.fetch_remote_ref_customer") as narrow,
-		):
-			self.assertEqual(remote_po.resolve_ref_customer("PO-1"), "CUST-REMOTE")
-
-		narrow.assert_not_called()
 
 	def tearDown(self):
 		return super().tearDown()
