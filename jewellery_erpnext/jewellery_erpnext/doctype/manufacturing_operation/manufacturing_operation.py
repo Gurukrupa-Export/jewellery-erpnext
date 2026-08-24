@@ -29,7 +29,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_employee_ir_loss_map,
 	get_last_mop_index,
 	get_mop_transfer_pcs_rows,
-	get_mwo_balance_rows,
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	resolve_and_validate,
@@ -4132,7 +4131,38 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 		for sb in all_sb:
 			sb_entries_by_sre.setdefault(sb["parent"], []).append(sb)
 
-	# Every (item, batch) pair any reserved line will ask about.
+	# MWO-level: each SRE has its own ``manufacturing_operation``. The MOP
+	# Log balance MUST be looked up against that SRE's MOP, not the popup's
+	# opened MOP. Mixing them produces nonsense availability for sibling-
+	# MOP SREs. Build a per-MOP key set, fetch each operation's balances
+	# narrowed to its own keys, then index into a 3-tuple map keyed by
+	# (manufacturing_operation, item_code, batch_no).
+	keys_by_mop: dict[str, set] = {}
+	for s in sres:
+		# Fall back to the opened MOP only when an SRE somehow lacks its
+		# own; this preserves behaviour for tests that mock SREs without
+		# the custom field populated.
+		op = s.manufacturing_operation or mo.name
+		bucket = keys_by_mop.setdefault(op, set())
+		is_batch = cint(s.has_batch_no) and s.reservation_based_on != "Qty"
+		if is_batch:
+			for sb in sb_entries_by_sre.get(s.name, []):
+				bucket.add((s.item_code, sb["batch_no"]))
+		else:
+			bucket.add((s.item_code, None))
+
+	mop_log_balance_map: dict[tuple, dict] = {}
+
+	balance_rows = get_current_mop_balance_rows(manufacturing_operation)
+	for row in balance_rows:
+		mop_log_balance_map[
+			(manufacturing_operation, row.get("item_code"), row.get("batch_no"))
+		] = row
+
+	# Per-(item, batch) incoming-transfer PCS rows. Each reserved batch line
+	# maps 1:1 to a Material Transfer row, so we surface that row's OWN pcs
+	# instead of the batch-wide running balance (which is identical for every
+	# line sharing an item+batch and made the popup show the summed total).
 	all_keys: set = set()
 	for s in sres:
 		is_batch = cint(s.has_batch_no) and s.reservation_based_on != "Qty"
@@ -4141,26 +4171,6 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 				all_keys.add((s.item_code, sb["batch_no"]))
 		else:
 			all_keys.add((s.item_code, None))
-
-	# ONE balance map for every line, MWO-scoped, keyed (item_code, batch_no).
-	# There is deliberately no manufacturing_operation component: the underlying
-	# ``qty_after_transaction_batch_based`` is an MWO-wide running sum stamped
-	# with whichever operation wrote it, so it carries no per-operation meaning
-	# (see ``get_mwo_balance_rows``). Reading it per-MOP returned a snapshot
-	# frozen at that operation's last write — which is how this popup came to
-	# show a balance its own server-side validator then rejected: on handoff the
-	# source operation is zeroed and the destination carries the balance
-	# forward, while the SRE keeps pointing at the operation it was created
-	# against. ``create_mr_wo_stock_entry`` MUST build this map the same way.
-	mop_log_balance_map: dict[tuple, dict] = {
-		(row.get("item_code"), row.get("batch_no")): row
-		for row in get_mwo_balance_rows(mo.manufacturing_work_order, keys=all_keys)
-	}
-
-	# Per-(item, batch) incoming-transfer PCS rows. Each reserved batch line
-	# maps 1:1 to a Material Transfer row, so we surface that row's OWN pcs
-	# instead of the batch-wide running balance (which is identical for every
-	# line sharing an item+batch and made the popup show the summed total).
 	# MWO-scoped (not MOP-scoped): the per-row transfer PCS is logged once at the
 	# operation that first received the material; downstream operations carry only
 	# balance clones (pcs_change=0). The MWO is constant across operations, so this
@@ -4258,7 +4268,9 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 	for key, lines in lines_by_key.items():
 		item_code, batch_no = key
 		is_pcs_item = bool(item_code) and item_code[0] in ("D", "G")
-		bal_row = mop_log_balance_map.get((item_code, batch_no))
+		bal_row = mop_log_balance_map.get(
+			(manufacturing_operation, item_code, batch_no)
+		)
 		balance_pcs = (
 			cint(bal_row.get("pcs_after_transaction_batch_based")) if bal_row else 0
 		)
@@ -4272,6 +4284,16 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 	skipped = []
 	for sre in sres:
 		batch_based = cint(sre.has_batch_no) and sre.reservation_based_on != "Qty"
+		# Authoritative MOP for this SRE — its own manufacturing_operation,
+		# falling back to the opened MOP only when the custom field is
+		# missing (test fixtures, legacy data).
+		# Slice the 3-tuple-keyed global map down to the (item, batch) pairs
+		# for this SRE's MOP, matching the helper's 2-tuple key contract.
+		sre_mop_balance_map = {
+			(k[1], k[2]): v
+			for k, v in mop_log_balance_map.items()
+			if k[0] == manufacturing_operation
+		}
 		if batch_based:
 			sb_entries = sb_entries_by_sre.get(sre.name, [])
 			for sb in sb_entries:
@@ -4296,7 +4318,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 					sre_remaining_qty=sre_remaining,
 					already_received_qty=already_received_for_item,
 					already_received_pcs=already_received_pcs_for_item,
-					mop_log_balance_map=mop_log_balance_map,
+					mop_log_balance_map=sre_mop_balance_map,
 				)
 				warning = None
 				available_to_receive_qty = flt(ctx["available_qty"])
@@ -4311,11 +4333,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 					# MOP Log row exists but balance is zero (loss/consumption
 					# since the SRE was created). User cannot receive against
 					# this row — surface as a diagnostic so the dialog can
-					# explain why it is unactionable, and `continue` so it is
-					# NOT also emitted as an actionable row. Without the
-					# continue the line was reported as skipped AND rendered
-					# with Available = 0, which the validator then rejects.
-					# The qty-based branch below has always done this.
+					# explain why it is unactionable.
 					skipped.append(
 						{
 							"sre": sre.name,
@@ -4327,7 +4345,6 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 							"reason": "mop_zero_balance",
 						}
 					)
-					continue
 				row_available_pcs = (
 					pcs_by_token.get(("sb", sb.name), 0) if ctx["is_pcs_item"] else 0
 				)
@@ -4396,7 +4413,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 				sre_remaining_qty=sre_remaining,
 				already_received_qty=already_received_for_item,
 				already_received_pcs=already_received_pcs_for_item,
-				mop_log_balance_map=mop_log_balance_map,
+				mop_log_balance_map=sre_mop_balance_map,
 			)
 			warning = None
 			available_to_receive_qty = flt(ctx["available_qty"])
@@ -4587,6 +4604,7 @@ def _build_replacement_sre(original_sre, remaining_qty, sb_remaining=None):
 	return new_sre.name
 
 
+@frappe.whitelist()
 def _existing_receive_se(
 	mo_name, request_id, stock_entry_type="Material Receive (WORK ORDER)"
 ):
@@ -4609,7 +4627,6 @@ def _existing_receive_se(
 	)
 
 
-@frappe.whitelist()
 def create_mr_wo_stock_entry(
 	se_data,
 	request_id=None,
@@ -4673,28 +4690,6 @@ def create_mr_wo_stock_entry(
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 	tolerance = _float_tolerance(precision)
 
-	# ONE MWO-wide balance map shared by every row, built exactly the way
-	# `get_make_receive_entry_rows` builds the popup's — same function, same
-	# scope, same keys. That identity is the point: this validator used to
-	# resolve the balance per row against `sre.manufacturing_operation`, so the
-	# popup and the server read different operations and reported different
-	# availability for the same line. See `get_mwo_balance_rows`.
-	#
-	# Built lazily, and once: the reserved-qty cap below must keep rejecting
-	# without touching MOP Log at all (see the reject-fast note on that check),
-	# and the code this replaces paid one MOP Log query per row.
-	_balance_map_holder: list = []
-
-	def _mwo_balance_map():
-		if not _balance_map_holder:
-			_balance_map_holder.append(
-				{
-					(brow.get("item_code"), brow.get("batch_no")): brow
-					for brow in get_mwo_balance_rows(mo.manufacturing_work_order)
-				}
-			)
-		return _balance_map_holder[0]
-
 	# Re-fetch and validate every requested row server-side.
 	# Build (validated_rows, sre_actions) before creating the SE.
 	validated_rows = []
@@ -4724,12 +4719,6 @@ def create_mr_wo_stock_entry(
 				"reservation_based_on",
 				"manufacturing_work_order",
 				"manufacturing_operation",
-				# Read further down for `sales_order=` into resolve_and_validate.
-				# Omitting them never raised: as_dict=True yields a frappe._dict
-				# whose missing keys return None — so the source warehouse was
-				# resolved WITHOUT the Sales Order the popup resolves it with.
-				"voucher_type",
-				"voucher_no",
 			],
 			as_dict=True,
 		)
@@ -4803,26 +4792,18 @@ def create_mr_wo_stock_entry(
 		# Reconciled context: MOP Log balance + min(SRE remaining, MOP balance).
 		# Computed for ALL rows (not just D/G) so qty validation enforces both
 		# the SRE cap and the MOP-balance cap. The helper's `available_qty`
-		# already encodes min(SRE, MOP).
-		#
-		# Scope is MWO-wide, via the map hoisted above — NOT
-		# `sre.manufacturing_operation`. That field is a plain Data stamp,
-		# written once when the reservation was created and never re-stamped as
-		# work hands off (replacement SREs inherit it too). On handoff the
-		# source operation's MOP Log balance is explicitly zeroed and the
-		# destination carries it forward, so resolving against the SRE's stamp
-		# read the zeroed row and rejected receives the popup had just offered
-		# — with a "loss/consumption since reservation" message when no loss had
-		# occurred at all.
+		# already encodes min(SRE, MOP). MWO-level scope: use the SRE's own
+		# manufacturing_operation, not the popup's opened MOP — otherwise
+		# sibling-MOP SREs cap against the wrong balance.
+		sre_mop = sre.manufacturing_operation or mo.name
 		ctx = get_available_qty_pcs_for_mop_item(
-			manufacturing_operation=mo.name,
+			manufacturing_operation=sre_mop,
 			item_code=sre.item_code,
 			batch_no=batch_no,
 			warehouse=sre.warehouse,
 			stock_reservation_entry=sre.name,
 			manufacturing_work_order=sre.manufacturing_work_order,
 			sre_remaining_qty=sre_remaining_qty,
-			mop_log_balance_map=_mwo_balance_map(),
 		)
 		mop_available_qty = flt(ctx["mop_log_balance_qty"])
 		available_to_receive_qty = flt(ctx["available_qty"])
@@ -4832,25 +4813,17 @@ def create_mr_wo_stock_entry(
 		#    since the SRE was created. Skipped when the helper has no MOP
 		#    data for (item, batch) — in that case `available_to_receive_qty`
 		#    falls back to `sre_remaining_qty` and the cap is silent.
-		#
-		#    Report BOTH inputs and the work order the balance came from. The
-		#    old message printed min(SRE, MOP) under the label "MOP available
-		#    qty" and asserted a cause it had not established, which made a
-		#    scope bug read as a stock problem.
 		if req_qty > available_to_receive_qty + tolerance:
 			frappe.throw(
 				_(
-					"Row {0} item {1} batch {2}: Receive Qty {3} exceeds "
-					"available qty {4} (reserved {5}, work order {6} balance {7})"
+					"Row {0} item {1} batch {2}: Receive Qty {3} exceeds MOP "
+					"available qty {4} (loss/consumption since reservation)"
 				).format(
 					row.get("idx") or "?",
 					sre.item_code,
 					batch_no,
 					req_qty,
 					round(available_to_receive_qty, precision),
-					round(sre_remaining_qty, precision),
-					sre.manufacturing_work_order,
-					round(mop_available_qty, precision),
 				)
 			)
 

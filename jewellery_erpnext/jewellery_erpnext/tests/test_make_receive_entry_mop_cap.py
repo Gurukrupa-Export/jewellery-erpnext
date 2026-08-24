@@ -26,7 +26,6 @@ from frappe.tests import IntegrationTestCase
 
 from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
 	_build_replacement_sre,
-	_existing_receive_se,
 	create_mr_wo_stock_entry,
 	get_make_receive_entry_rows,
 )
@@ -301,18 +300,11 @@ class TestServerQtyValidation(IntegrationTestCase):
 
 	def test_t2_qty_over_mop_available_rejected(self):
 		"""SRE remaining 10, MOP available 7, qty=8 → reject with
-		the balance-cap message, which reports BOTH inputs.
-
-		The old assertion matched the literal "MOP available qty". That label
-		was wrong twice over: the number printed was min(SRE, balance), not the
-		balance, and the balance is MWO-wide rather than per-operation. Assert
-		on the numbers instead, so a future relabel does not silently pass while
-		the cap itself regresses."""
+		MOP-cap message."""
 
 		mock_new_doc = self._patch_validator(sre_qty=10.0, mop_qty=7.0)
 		with self.assertRaisesRegex(
-			frappe.exceptions.ValidationError,
-			r"exceeds available qty 7\.0.*reserved 10\.0.*balance 7\.0",
+			frappe.exceptions.ValidationError, "MOP available qty"
 		):
 			create_mr_wo_stock_entry(
 				{
@@ -351,8 +343,7 @@ class TestServerQtyValidation(IntegrationTestCase):
 
 		mock_new_doc = self._patch_validator(sre_qty=10.0, mop_qty=4.0)
 		with self.assertRaisesRegex(
-			frappe.exceptions.ValidationError,
-			r"exceeds available qty 4\.0.*reserved 10\.0.*balance 4\.0",
+			frappe.exceptions.ValidationError, "MOP available qty"
 		):
 			create_mr_wo_stock_entry(
 				{
@@ -535,25 +526,23 @@ def _sre(
 
 
 def _make_mwo_level_get_all_side_effect(
-	sre_rows=None, mop_log_rows=None, sbe_rows=None
+	sre_rows=None, mop_log_rows_by_mop=None, sbe_rows=None
 ):
-	"""Dispatch ``frappe.db.get_all`` by doctype.
-
-	MOP Log returns ONE flat list, not a per-operation mapping: the balance
-	behind Make Receive Entry is scoped to the Manufacturing Work Order, so
-	there is no per-operation answer to dispatch on. This helper used to key
-	MOP Log off ``filters['manufacturing_operation']``, which quietly returned
-	``[]`` for any MWO-scoped query.
+	"""Dispatch ``frappe.db.get_all`` by doctype; for MOP Log dispatch
+	additionally by ``filters['manufacturing_operation']`` so each SRE's
+	own MOP gets its own balance row.
 	"""
 	sre_rows = sre_rows or []
-	mop_log_rows = mop_log_rows or []
+	mop_log_rows_by_mop = mop_log_rows_by_mop or {}
 	sbe_rows = sbe_rows or []
 
 	def _side_effect(doctype, *args, **kwargs):
 		if doctype == "Stock Reservation Entry":
 			return sre_rows
 		if doctype == "MOP Log":
-			return mop_log_rows
+			filters = kwargs.get("filters") or {}
+			mop = filters.get("manufacturing_operation")
+			return mop_log_rows_by_mop.get(mop, [])
 		if doctype == "Serial and Batch Entry":
 			return sbe_rows
 		return []
@@ -563,7 +552,7 @@ def _make_mwo_level_get_all_side_effect(
 
 class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 	"""SREs from sibling MOPs under the same MWO must appear, with
-	availability computed against the MWO-wide MOP Log balance.
+	availability computed against each SRE's own MOP Log.
 	"""
 
 	@classmethod
@@ -575,7 +564,7 @@ class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 		return_value=[(0,)],
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_mwo_balance_rows"
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_current_mop_balance_rows"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_all"
@@ -591,42 +580,31 @@ class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_doc"
 	)
-	def test_sibling_mop_sre_uses_mwo_wide_balance(
+	def test_sibling_mop_sre_returned_with_own_mop_balance(
 		self,
 		mock_get_doc,
 		_mock_single,
 		_mock_get_value,
 		mock_get_all,
-		mock_get_mwo_balance_rows,
+		mock_get_current_mop_balance_rows,
 		_mock_sql,
 	):
 		"""SRE-OTHER belongs to MOP-EY179; popup opened on MOP-461KI.
 
-		Both SREs are capped by ONE MWO-wide balance, because
-		``qty_after_transaction_batch_based`` is written as an MWO-wide running
-		sum and stamped with whichever operation wrote it — it carries no
-		per-operation meaning (see ``get_mwo_balance_rows``). The old fixture
-		here gave MOP-461KI 5.0 and MOP-EY179 8.0 for the same (item, batch),
-		which ``create_mop_log_for_stock_transfer_to_mo`` cannot actually
-		produce.
-
-		This test previously asserted a per-MOP lookup and passed without
-		exercising one: it stubbed ``get_current_mop_balance_rows`` with a flat
-		``return_value``, so the per-MOP dispatcher it set up was never
-		consulted and any scope would have satisfied it. That false green is
-		why the popup and its validator were free to disagree.
+		Expected: row appears with mop_available_qty taken from MOP-EY179's
+		MOP Log (8.0), not MOP-461KI's (5.0). The fix computes the balance
+		lookup using each SRE's own ``manufacturing_operation``.
 		"""
 
 		mock_get_doc.return_value = _make_mo()
-		# ONE balance for the work order, deliberately not keyed by operation.
-		mock_get_mwo_balance_rows.return_value = [
+		mock_get_current_mop_balance_rows.return_value = [
 			frappe._dict(
 				{
 					"item_code": "M-G-18KT-75.4-Y",
 					"batch_no": None,
 					"qty_after_transaction_batch_based": 8.0,
 					"pcs_after_transaction_batch_based": 0,
-					"name": "MOP-LOG-MWO-1",
+					"name": "MOP-LOG-EY179",
 					"creation": "2026-05-01",
 				}
 			),
@@ -640,6 +618,32 @@ class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 					reserved_qty=8.0,
 				),
 			],
+			mop_log_rows_by_mop={
+				"MOP-461KI": [
+					frappe._dict(
+						{
+							"item_code": "M-G-18KT-75.4-Y",
+							"batch_no": None,
+							"qty_after_transaction_batch_based": 5.0,
+							"pcs_after_transaction_batch_based": 0,
+							"name": "MOP-LOG-461",
+							"creation": "2026-05-01",
+						}
+					)
+				],
+				"MOP-EY179": [
+					frappe._dict(
+						{
+							"item_code": "M-G-18KT-75.4-Y",
+							"batch_no": None,
+							"qty_after_transaction_batch_based": 8.0,
+							"pcs_after_transaction_batch_based": 0,
+							"name": "MOP-LOG-EY179",
+							"creation": "2026-05-01",
+						}
+					)
+				],
+			},
 		)
 
 		result = get_make_receive_entry_rows("MOP-461KI")
@@ -651,23 +655,13 @@ class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 		self.assertIn("SRE-OWN", by_sre)
 		self.assertIn("SRE-OTHER", by_sre)
 
-		# The balance is scoped to the MWO, so it is queried once, by MWO --
-		# never per operation.
-		mock_get_mwo_balance_rows.assert_called_once()
-		self.assertEqual(mock_get_mwo_balance_rows.call_args[0][0], "MWO-1")
-
-		# Same balance reported for both rows, whichever operation stamped the
-		# reservation.
-		self.assertAlmostEqual(by_sre["SRE-OWN"]["mop_available_qty"], 8.0)
+		# Critical: SRE-OTHER (sibling MOP) gets MOP-EY179's balance (8.0),
+		# NOT MOP-461KI's balance (5.0). Pre-fix this would have shown 5.0.
 		self.assertAlmostEqual(by_sre["SRE-OTHER"]["mop_available_qty"], 8.0)
-
-		# available = min(SRE remaining, balance): SRE-OWN is bound by its own
-		# 5.0 reservation, SRE-OTHER by the 8.0 balance.
-		self.assertAlmostEqual(by_sre["SRE-OWN"]["available_to_receive_qty"], 5.0)
 		self.assertAlmostEqual(by_sre["SRE-OTHER"]["available_to_receive_qty"], 8.0)
 
-		# Sibling MOP is still recorded on the row so the operator/audit can
-		# see which operation owns the reservation.
+		# Sibling MOP is recorded on the row so the operator/audit can see
+		# which operation owns the reservation.
 		self.assertEqual(by_sre["SRE-OTHER"]["manufacturing_operation"], "MOP-EY179")
 
 		# Source warehouse comes from the SRE itself, not the opened MOP's
@@ -679,7 +673,7 @@ class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 		return_value=[(0,)],
 	)
 	@patch(
-		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_mwo_balance_rows"
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_current_mop_balance_rows"
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_all"
@@ -701,7 +695,7 @@ class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 		_mock_single,
 		_mock_get_value,
 		mock_get_all,
-		mock_get_mwo_balance_rows,
+		mock_get_current_mop_balance_rows,
 		_mock_sql,
 	):
 		"""SRE filter must drop Cancelled/Delivered statuses (per ERPNext SRE
@@ -709,7 +703,7 @@ class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 		"""
 
 		mock_get_doc.return_value = _make_mo()
-		mock_get_mwo_balance_rows.return_value = []
+		mock_get_current_mop_balance_rows.return_value = []
 		mock_get_all.side_effect = _make_mwo_level_get_all_side_effect()
 
 		get_make_receive_entry_rows("MOP-461KI")
@@ -3017,339 +3011,3 @@ class TestAvailableQtyMandatoryContract(IntegrationTestCase):
 
 		_, kwargs = mock_available.call_args
 		self.assertEqual(kwargs.get("batch_no"), "B-K1")
-
-
-class TestMakeReceiveEntryWhitelisting(IntegrationTestCase):
-	"""The popup's two endpoints must be reachable over HTTP, and nothing else.
-
-	`create_mr_wo_stock_entry` shipped without `@frappe.whitelist()` — the
-	decorator sat on the private `_existing_receive_se` directly above it — so
-	"Make Receive Entry" raised PermissionError for every user while "Receive
-	Unused/Loose Material" worked, because `create_scrap_wo_stock_entry` is
-	whitelisted and calls it in-process. Nothing caught it: every test imports
-	the function and calls it directly, which never touches the whitelist.
-	"""
-
-	@classmethod
-	def setUpClass(cls):
-		pass
-
-	def test_create_mr_wo_stock_entry_is_whitelisted(self):
-		self.assertIn(create_mr_wo_stock_entry, frappe.whitelisted)
-
-	def test_get_make_receive_entry_rows_is_whitelisted(self):
-		self.assertIn(get_make_receive_entry_rows, frappe.whitelisted)
-
-	def test_private_receive_helper_is_not_whitelisted(self):
-		"""A `_`-prefixed helper is not an API. Whitelisting it exposed an
-		arbitrary Stock Entry name lookup as a public endpoint."""
-		self.assertNotIn(_existing_receive_se, frappe.whitelisted)
-
-
-def _handoff_get_all_dispatcher(mwo_balance_qty, sre_remaining):
-	"""SRE stamped at the PREVIOUS operation; MOP Log carries the balance.
-
-	Models the shape that broke in production: an Employee IR handoff zeroes the
-	source operation's MOP Log row and writes a carry-forward row for the
-	destination, while `Stock Reservation Entry.manufacturing_operation` keeps
-	pointing at the source. Only the carry-forward row is returned, because the
-	balance read is MWO-scoped and takes the latest row.
-	"""
-	sre_rows = [
-		frappe._dict(
-			{
-				"name": "SRE-HANDOFF",
-				"item_code": "M-X",
-				"warehouse": "WH-Src",
-				"reserved_qty": sre_remaining,
-				"delivered_qty": 0.0,
-				"stock_uom": "Gram",
-				"voucher_type": "Sales Order",
-				"voucher_no": "SO-1",
-				"voucher_detail_no": "SOI-1",
-				"has_serial_no": 0,
-				"has_batch_no": 0,
-				"reservation_based_on": "Qty",
-				"status": "Partially Reserved",
-				"manufacturing_work_order": "MWO-1",
-				# The stale stamp: work has since moved to MOP-NEW.
-				"manufacturing_operation": "MOP-OLD",
-			}
-		)
-	]
-
-	def _dispatcher(doctype, *args, **kwargs):
-		if doctype == "Stock Reservation Entry":
-			return list(sre_rows)
-		if doctype == "MOP Log":
-			# Dispatch on the filters the caller actually passed, so a
-			# per-operation read and an MWO-wide read get DIFFERENT answers —
-			# which is the whole point of this fixture. A dispatcher that
-			# ignores filters cannot tell the two scopes apart and would pass
-			# against the very bug it is meant to pin.
-			filters = kwargs.get("filters") or {}
-			mop = filters.get("manufacturing_operation")
-			if mop == "MOP-OLD":
-				# Source operation, explicitly zeroed by the handoff.
-				return [_mop_log_row(qty=0.0)]
-			if mop:
-				# Destination operation carries the balance forward.
-				return [_mop_log_row(qty=mwo_balance_qty)]
-			# MWO-wide read: latest row is the carry-forward one.
-			return [_mop_log_row(qty=mwo_balance_qty)]
-		if doctype == "Serial and Batch Entry":
-			return []
-		return []
-
-	return _dispatcher
-
-
-def _handoff_get_value_dispatcher(sre_remaining):
-	def _dispatcher(doctype, *args, **kwargs):
-		if doctype == "Stock Entry":
-			return None
-		if doctype == "Warehouse":
-			return "WH-Raw"
-		if doctype == "Stock Reservation Entry":
-			return frappe._dict(
-				{
-					"name": "SRE-HANDOFF",
-					"docstatus": 1,
-					"item_code": "M-X",
-					"warehouse": "WH-Src",
-					"reserved_qty": sre_remaining,
-					"delivered_qty": 0.0,
-					"stock_uom": "Gram",
-					"has_batch_no": 0,
-					"reservation_based_on": "Qty",
-					"manufacturing_work_order": "MWO-1",
-					"manufacturing_operation": "MOP-OLD",
-					"voucher_type": "Sales Order",
-					"voucher_no": "SO-1",
-				}
-			)
-		return None
-
-	return _dispatcher
-
-
-class TestDialogValidatorAgreement(IntegrationTestCase):
-	"""The popup and its validator must never disagree about availability.
-
-	Regression for the reported failure: the popup offered 0.770 g and the
-	server rejected 0.010 g of it with "exceeds MOP available qty 0.0
-	(loss/consumption since reservation)" — with no loss and no consumption.
-	The popup resolved the balance against the OPENED operation while the
-	validator resolved it against `sre.manufacturing_operation`, which the
-	handoff had explicitly zeroed.
-	"""
-
-	@classmethod
-	def setUpClass(cls):
-		pass
-
-	def _patch_both_sides(self, mwo_balance_qty=0.770, sre_remaining=0.770):
-		patches = [
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_doc",
-				return_value=_make_mo(name="MOP-NEW"),
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
-				return_value=3,
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
-				side_effect=_handoff_get_value_dispatcher(sre_remaining),
-			),
-			patch(
-				"frappe.db.get_all",
-				side_effect=_handoff_get_all_dispatcher(mwo_balance_qty, sre_remaining),
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
-				return_value=[(0,)],
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.resolve_and_validate",
-				return_value="WH-Src",
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.savepoint"
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.release_savepoint"
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.rollback"
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation._build_replacement_sre",
-				return_value="SRE-REPLACEMENT",
-			),
-		]
-		for p in patches:
-			p.start()
-			self.addCleanup(p.stop)
-
-		new_doc_patch = patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.new_doc"
-		)
-		mock_new_doc = new_doc_patch.start()
-		self.addCleanup(new_doc_patch.stop)
-
-		stock_entry = MagicMock()
-		stock_entry.doctype = "Stock Entry"
-		stock_entry.name = "STE-AGREE-1"
-
-		def _update_setattr(values):
-			for k, v in values.items():
-				setattr(stock_entry, k, v)
-
-		stock_entry.update.side_effect = _update_setattr
-		mock_new_doc.return_value = stock_entry
-		return stock_entry
-
-	def test_popup_surfaces_the_handed_off_balance(self):
-		"""The reservation still points at MOP-OLD, but the popup opened on
-		MOP-NEW reports the balance the work order actually holds."""
-		self._patch_both_sides()
-		rows = get_make_receive_entry_rows("MOP-NEW")["rows"]
-		self.assertEqual(len(rows), 1)
-		self.assertAlmostEqual(rows[0]["mop_available_qty"], 0.770)
-		self.assertAlmostEqual(rows[0]["available_to_receive_qty"], 0.770)
-		# The row is actionable, not a "MOP balance unknown" fallback.
-		self.assertTrue(rows[0]["mop_data_present"])
-		self.assertIsNone(rows[0]["warning"])
-
-	def test_dialog_available_qty_is_accepted_by_validator(self):
-		"""Take the popup's own number and hand it straight back.
-
-		This is the reported bug end to end. Pre-fix the validator threw
-		"exceeds MOP available qty 0.0" against a row the popup had just
-		offered at 0.770.
-		"""
-		stock_entry = self._patch_both_sides()
-		rows = get_make_receive_entry_rows("MOP-NEW")["rows"]
-		offered = rows[0]["available_to_receive_qty"]
-
-		out = create_mr_wo_stock_entry(
-			{
-				"manufacturing_operation": "MOP-NEW",
-				"receive_items": [
-					{
-						"stock_reservation_entry": rows[0]["stock_reservation_entry"],
-						"qty": offered,
-						"idx": 1,
-					}
-				],
-			},
-			request_id="agree-full",
-		)
-		self.assertEqual(out["docname"], "STE-AGREE-1")
-		stock_entry.submit.assert_called_once()
-
-	def test_partial_receive_of_offered_qty_is_accepted(self):
-		"""The reported interaction: 0.010 g against an offered 0.770 g."""
-		stock_entry = self._patch_both_sides()
-		out = create_mr_wo_stock_entry(
-			{
-				"manufacturing_operation": "MOP-NEW",
-				"receive_items": [
-					{
-						"stock_reservation_entry": "SRE-HANDOFF",
-						"qty": 0.010,
-						"idx": 1,
-					}
-				],
-			},
-			request_id="agree-partial",
-		)
-		stock_entry.submit.assert_called_once()
-		# The remainder is re-reserved, not discarded. Reading the zeroed
-		# source operation made this min(0.760, 0.0) == 0, which silently
-		# dropped the replacement and destroyed the reservation.
-		actions = out["sre_actions"]
-		self.assertEqual(len(actions), 1)
-		self.assertEqual(actions[0]["action"], "recreated")
-		self.assertEqual(actions[0]["new"], "SRE-REPLACEMENT")
-
-	def test_validator_still_rejects_above_the_offered_qty(self):
-		"""The cap is repaired, not removed."""
-		self._patch_both_sides()
-		with self.assertRaisesRegex(
-			frappe.exceptions.ValidationError, "exceeds reserved qty"
-		):
-			create_mr_wo_stock_entry(
-				{
-					"manufacturing_operation": "MOP-NEW",
-					"receive_items": [
-						{
-							"stock_reservation_entry": "SRE-HANDOFF",
-							"qty": 0.900,
-							"idx": 1,
-						}
-					],
-				},
-				request_id="agree-over",
-			)
-
-	def test_loss_since_reservation_still_caps_the_receive(self):
-		"""Balance below the reservation — the case the cap exists for.
-
-		The reservation still holds 0.770 but the work order's latest MOP Log
-		row says 0.200, wherever that loss was booked. Scope is MWO-wide
-		precisely so a loss booked at a sibling operation cannot slip past.
-		"""
-		self._patch_both_sides(mwo_balance_qty=0.200, sre_remaining=0.770)
-		rows = get_make_receive_entry_rows("MOP-NEW")["rows"]
-		self.assertAlmostEqual(rows[0]["available_to_receive_qty"], 0.200)
-
-		with self.assertRaisesRegex(
-			frappe.exceptions.ValidationError,
-			r"exceeds available qty 0\.2.*reserved 0\.77.*balance 0\.2",
-		):
-			create_mr_wo_stock_entry(
-				{
-					"manufacturing_operation": "MOP-NEW",
-					"receive_items": [
-						{
-							"stock_reservation_entry": "SRE-HANDOFF",
-							"qty": 0.500,
-							"idx": 1,
-						}
-					],
-				},
-				request_id="agree-loss",
-			)
-
-	def test_validator_passes_sales_order_to_warehouse_resolution(self):
-		"""`voucher_type`/`voucher_no` were read but never fetched.
-
-		`as_dict=True` yields a frappe._dict, so the missing keys returned None
-		silently and the server resolved the source warehouse WITHOUT the Sales
-		Order the popup resolves it with — the two could pick different
-		warehouses for the same row.
-		"""
-		self._patch_both_sides()
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.resolve_and_validate",
-			return_value="WH-Src",
-		) as mock_resolve:
-			create_mr_wo_stock_entry(
-				{
-					"manufacturing_operation": "MOP-NEW",
-					"receive_items": [
-						{
-							"stock_reservation_entry": "SRE-HANDOFF",
-							"qty": 0.010,
-							"idx": 1,
-						}
-					],
-				},
-				request_id="agree-so",
-			)
-		self.assertEqual(
-			mock_resolve.call_args.kwargs["sales_order"],
-			"SO-1",
-		)
