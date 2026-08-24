@@ -7,7 +7,7 @@ from frappe.query_builder import DocType
 from frappe.query_builder.functions import Max
 from frappe.utils import cint, cstr, flt, get_datetime
 
-from jewellery_erpnext.utils import get_mwo_refining_cutoff, is_mwo_refined
+from jewellery_erpnext.utils import get_mwo_refining_cutoff
 
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
 select_fields = [
@@ -279,6 +279,32 @@ def get_mop_opening_balances(manufacturing_operation, item_code, batch_no, mwo=N
 	totals["qty_item"] = flt(totals["qty_item"], 3)
 	totals["qty_batch"] = flt(totals["qty_batch"], 3)
 	return totals
+
+
+def drop_pre_refining_rows(rows, manufacturing_work_order):
+	"""Drop source rows that pre-date the MWO's Work Order Refining cutoff.
+
+	Refining zeroes the MWO, so a pre-refining row describes metal that no longer
+	exists and must never be cloned into a downstream operation. Rows written AFTER
+	the cutoff describe a recast -- an expected manual flow, since
+	``complete_refining`` only advises the Work Order action -- and must be.
+
+	The clone writers used to answer this with a blanket ``is_mwo_refined`` early
+	return, which threw away the post-refining balance too: a Department IR handoff
+	after a recast wrote no ledger rows at all, so the receiving operation opened at
+	0 while the metal stayed stranded on the source operation. Filtering by the
+	cutoff keeps the guard's intent (no stale pre-refining figures) without deleting
+	the live balance.
+
+	Callers must include ``creation`` in the fields they fetch.
+	"""
+	if not rows:
+		return rows
+	cutoff = get_mwo_refining_cutoff(manufacturing_work_order)
+	if not cutoff:
+		return rows
+	cutoff = get_datetime(cutoff)
+	return [r for r in rows if get_datetime(r.get("creation")) > cutoff]
 
 
 def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
@@ -653,14 +679,12 @@ def get_available_qty_pcs_for_mop_item(
 def create_mop_log_for_department_ir(
 	self, row, to_warehouse, from_warehouse, operation
 ):
-	# A refined MWO's metal is gone (the Refining Entry zeroed the balance). Cloning
-	# the source operation's log history into the post-refining operation would carry
-	# stale pre-refining qty_after_transaction values forward — the cloned rows'
-	# validate would recompute the new operation's weight buckets back to the
-	# pre-refining figures, and EOD sync would see phantom stock to move.
-	if is_mwo_refined(row.manufacturing_work_order):
-		return
-
+	# A refined MWO's PRE-refining rows are gone (the Refining Entry zeroed the
+	# balance); cloning them forward would recompute the new operation's weight
+	# buckets back to the pre-refining figures and give EOD sync phantom stock to
+	# move. Post-refining rows are a recast and must still be carried -- see
+	# drop_pre_refining_rows. This used to early-return on is_mwo_refined, which
+	# dropped the recast balance too and opened the receiving operation at 0.
 	mop_logs = []
 	is_receive = getattr(self, "type", None) == "Receive" and getattr(
 		self, "receive_against", None
@@ -675,7 +699,7 @@ def create_mop_log_for_department_ir(
 				"voucher_type": "Department IR",
 				"voucher_no": self.receive_against,
 			},
-			fields=select_fields,
+			fields=select_fields + ["creation"],
 			order_by="creation asc",
 		)
 
@@ -689,6 +713,10 @@ def create_mop_log_for_department_ir(
 			row.manufacturing_operation,
 			include_fields=select_fields,
 		)
+
+	# Dedup first, then drop by cutoff: a key whose latest row is post-refining
+	# carries forward; a key with only pre-refining rows drops out entirely.
+	mop_logs = drop_pre_refining_rows(mop_logs, row.manufacturing_work_order)
 
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")
@@ -730,17 +758,17 @@ def _get_mop_logs_for_employee_ir_issue(row, department_receive_id):
 
 
 def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
-	# Same guard as the Department IR clone above: a refined MWO has no metal left,
-	# so no balance may be issued to an employee from it. On healthy data the
-	# balance snapshot is already 0; on pre-fix data it can still hold phantom
-	# pre-refining rows that must not be propagated.
-	if is_mwo_refined(row.manufacturing_work_order):
-		return
-
+	# Same treatment as the Department IR clone above: a refined MWO's pre-refining
+	# balance must not be issued to an employee, but its post-refining recast
+	# balance must be. A blanket refusal here stranded the metal on the source
+	# operation.
 	department_receive_id = frappe.db.get_value(
 		"Manufacturing Operation", row.manufacturing_operation, "department_receive_id"
 	)
-	mop_logs = _get_mop_logs_for_employee_ir_issue(row, department_receive_id)
+	mop_logs = drop_pre_refining_rows(
+		_get_mop_logs_for_employee_ir_issue(row, department_receive_id),
+		row.manufacturing_work_order,
+	)
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = log.item_code

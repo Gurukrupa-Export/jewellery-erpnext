@@ -21,6 +21,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_employee_ir_receive,
 	create_mop_log_for_stock_transfer_to_mo,
 	creste_mop_log_for_employee_ir,
+	drop_pre_refining_rows,
 	get_current_mop_balance_rows,
 	get_mop_opening_balances,
 	get_mwo_balance_rows,
@@ -1052,7 +1053,7 @@ class TestDepartmentIRCloneDedupes(IntegrationTestCase):
 		]
 		created = MagicMock()
 		with (
-			patch(f"{MOP_LOG}.is_mwo_refined", return_value=False),
+			patch(f"{MOP_LOG}.get_mwo_refining_cutoff", return_value=None),
 			patch(
 				f"{MOP_LOG}.get_current_mop_balance_rows", return_value=snapshot
 			) as mock_snapshot,
@@ -1147,3 +1148,81 @@ class TestRepairPatchClassification(IntegrationTestCase):
 		self.assertEqual(out["corrections"], [])
 		self.assertEqual(len(out["review"]), 2)
 		appended.assert_not_called()
+
+
+class TestRefinedMwoCloneKeepsRecastBalance(IntegrationTestCase):
+	"""Refining must drop the PRE-refining balance, not the recast that follows it.
+
+	The clone writers used to early-return on ``is_mwo_refined``, so a Department IR
+	handoff after a recast wrote no ledger rows at all: the receiving operation opened
+	at 0 while the metal stayed stranded on the source. Observed on kg-gk as
+	``MOP-N632Z`` at 0.000 against 2.34 held on ``MOP-5W4B8``.
+	"""
+
+	CUTOFF = "2026-08-24 12:40:47"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _rows():
+		return [
+			_sample_log(
+				name="L-PRE",
+				creation="2026-08-24 12:30:00",
+				item_code="M-G-22KT-91.75-Y",
+				batch_no="BATCH-OLD",
+				qty_after_transaction_batch_based=3.25,
+			),
+			_sample_log(
+				name="L-POST",
+				creation="2026-08-24 12:58:18",
+				item_code="M-G-22KT-91.75-Y",
+				batch_no="BATCH-A",
+				qty_after_transaction_batch_based=2.34,
+			),
+		]
+
+	def test_unrefined_mwo_keeps_every_row(self):
+		with patch(f"{MOP_LOG}.get_mwo_refining_cutoff", return_value=None):
+			out = drop_pre_refining_rows(self._rows(), "MWO-TEST-001")
+		self.assertEqual(len(out), 2)
+
+	def test_pre_refining_row_dropped_recast_kept(self):
+		with patch(f"{MOP_LOG}.get_mwo_refining_cutoff", return_value=self.CUTOFF):
+			out = drop_pre_refining_rows(self._rows(), "MWO-TEST-001")
+		self.assertEqual([r.name for r in out], ["L-POST"])
+		self.assertEqual(out[0].qty_after_transaction_batch_based, 2.34)
+
+	def test_only_pre_refining_rows_drops_everything(self):
+		rows = [r for r in self._rows() if r.name == "L-PRE"]
+		with patch(f"{MOP_LOG}.get_mwo_refining_cutoff", return_value=self.CUTOFF):
+			out = drop_pre_refining_rows(rows, "MWO-TEST-001")
+		self.assertEqual(out, [])
+
+	def test_department_ir_clones_the_recast_balance(self):
+		"""The end of the reported chain: the handoff must carry 2.34, not nothing."""
+		row = FrappeDict(
+			{
+				"name": "dir-row-1",
+				"manufacturing_operation": "MOP-5W4B8",
+				"manufacturing_work_order": "MWO-KGJPL-NP00004-003-5-91.75-Y-01",
+			}
+		)
+		dir_doc = FrappeDict(
+			{"name": "DIR-658", "type": "Issue", "receive_against": None}
+		)
+		created = MagicMock()
+		with (
+			patch(f"{MOP_LOG}.get_mwo_refining_cutoff", return_value=self.CUTOFF),
+			patch(f"{MOP_LOG}.get_current_mop_balance_rows", return_value=self._rows()),
+			patch(f"{MOP_LOG}.frappe.new_doc", return_value=created),
+		):
+			create_mop_log_for_department_ir(
+				dir_doc, row, "WH-Dept", "WH-Transit", "MOP-N632Z"
+			)
+		# exactly one clone -- the post-refining row -- onto the receiving operation
+		self.assertEqual(created.save.call_count, 1)
+		self.assertEqual(created.qty_after_transaction_batch_based, 2.34)
+		self.assertEqual(created.manufacturing_operation, "MOP-N632Z")
