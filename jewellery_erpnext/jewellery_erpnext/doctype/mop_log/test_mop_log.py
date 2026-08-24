@@ -20,7 +20,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	create_mop_log_for_employee_ir_receive,
 	creste_mop_log_for_employee_ir,
 	get_current_mop_balance_rows,
-	get_mwo_balance_rows,
 	resolve_employee_ir_issue_voucher_for_receive,
 )
 
@@ -106,118 +105,6 @@ class TestCurrentMOPBalanceRows(IntegrationTestCase):
 		self.assertEqual(
 			out_by_key[("M-A", None)].qty_after_transaction_batch_based, 5.0
 		)
-
-
-class TestMwoBalanceRows(IntegrationTestCase):
-	"""``get_mwo_balance_rows`` — the work-order-scoped balance reader.
-
-	``qty_after_transaction_batch_based`` is written as an MWO-wide running sum
-	and then stamped with whichever operation wrote it, so reading it per
-	operation returns a snapshot frozen at that operation's last write. This
-	reader is the scope that stays correct as work hands off between
-	operations.
-	"""
-
-	@classmethod
-	def setUpClass(cls):
-		pass
-
-	def test_scopes_by_mwo_never_by_operation(self):
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
-			return_value=[],
-		) as mock_get_all:
-			get_mwo_balance_rows("MWO-TEST-001")
-
-		filters = mock_get_all.call_args.kwargs["filters"]
-		self.assertEqual(filters["manufacturing_work_order"], "MWO-TEST-001")
-		self.assertEqual(filters["is_cancelled"], 0)
-		self.assertNotIn("manufacturing_operation", filters)
-
-	def test_keeps_latest_row_per_item_batch_across_operations(self):
-		"""The handoff shape: the source operation is zeroed, then the
-		destination carries the balance forward. Latest wins, and it is the
-		carry-forward row — not the zeroed one."""
-		rows = [
-			_sample_log(
-				name="LOG-CARRY-FORWARD",
-				creation="2026-04-17 10:05:19.066796",
-				item_code="F-A",
-				batch_no="B1",
-				manufacturing_operation="MOP-NEW",
-				qty_after_transaction_batch_based=0.770,
-			),
-			_sample_log(
-				name="LOG-SOURCE-ZEROED",
-				creation="2026-04-17 10:05:19.031109",
-				item_code="F-A",
-				batch_no="B1",
-				manufacturing_operation="MOP-OLD",
-				qty_after_transaction_batch_based=0.0,
-			),
-			_sample_log(
-				name="LOG-SOURCE-PRE-HANDOFF",
-				creation="2026-04-17 10:05:19.018149",
-				item_code="F-A",
-				batch_no="B1",
-				manufacturing_operation="MOP-OLD",
-				qty_after_transaction_batch_based=0.770,
-			),
-		]
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
-			return_value=rows,
-		):
-			out = get_mwo_balance_rows("MWO-TEST-001")
-
-		self.assertEqual(len(out), 1)
-		self.assertEqual(out[0].name, "LOG-CARRY-FORWARD")
-		self.assertEqual(out[0].qty_after_transaction_batch_based, 0.770)
-
-	def test_narrows_by_item_codes_when_keys_given(self):
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
-			return_value=[],
-		) as mock_get_all:
-			get_mwo_balance_rows("MWO-TEST-001", keys={("M-A", None), ("D-A", "B1")})
-
-		self.assertEqual(
-			mock_get_all.call_args.kwargs["filters"]["item_code"],
-			["in", ["D-A", "M-A"]],
-		)
-
-	def test_empty_key_set_short_circuits_without_querying(self):
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
-			return_value=[],
-		) as mock_get_all:
-			self.assertEqual(
-				get_mwo_balance_rows("MWO-TEST-001", keys={(None, None)}), []
-			)
-		mock_get_all.assert_not_called()
-
-
-class TestCurrentMopBalanceRowsUnchanged(IntegrationTestCase):
-	"""Lock on the promise made when the MWO-scoped reader was added: it is
-	additive. Fourteen production call sites legitimately want per-operation
-	semantics, so ``get_current_mop_balance_rows`` must keep filtering by
-	``manufacturing_operation`` and nothing else."""
-
-	@classmethod
-	def setUpClass(cls):
-		pass
-
-	def test_still_scopes_by_operation_not_by_mwo(self):
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_all",
-			return_value=[],
-		) as mock_get_all:
-			get_current_mop_balance_rows("MOP-TEST-001")
-
-		filters = mock_get_all.call_args.kwargs["filters"]
-		self.assertEqual(filters["manufacturing_operation"], "MOP-TEST-001")
-		self.assertEqual(filters["is_cancelled"], 0)
-		self.assertNotIn("manufacturing_work_order", filters)
 
 
 class TestEmployeeIRIssueMOPLogSource(IntegrationTestCase):

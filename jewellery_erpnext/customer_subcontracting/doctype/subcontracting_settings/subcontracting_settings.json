@@ -5,107 +5,9 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "customer_gold_section",
-  "enable_customer_gold_flow",
-  "receipt_section",
-  "customer_24kt_item",
-  "column_break_receipt",
-  "customer_goods_stock_entry_type",
-  "gold_rate_section",
-  "gold_rate_source",
-  "gold_rate_field",
-  "column_break_gold_rate",
-  "gold_rate_unit",
-  "accounting_section",
-  "company_accounts",
-  "repack_section",
   "category"
  ],
  "fields": [
-  {
-   "fieldname": "customer_gold_section",
-   "fieldtype": "Section Break",
-   "label": "Customer Gold"
-  },
-  {
-   "default": "0",
-   "description": "Master switch for the Customer Gold flow. When off, Customer Gold configuration may be left incomplete and no Customer Gold validation is applied.",
-   "fieldname": "enable_customer_gold_flow",
-   "fieldtype": "Check",
-   "label": "Enable Customer Gold Flow"
-  },
-  {
-   "depends_on": "enable_customer_gold_flow",
-   "fieldname": "receipt_section",
-   "fieldtype": "Section Break",
-   "label": "Receipt"
-  },
-  {
-   "description": "The only item accepted on a Customer Gold receipt. Must be an enabled, batch-controlled stock item.",
-   "fieldname": "customer_24kt_item",
-   "fieldtype": "Link",
-   "label": "Customer 24KT Item",
-   "options": "Item"
-  },
-  {
-   "fieldname": "column_break_receipt",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Stock Entry Type that represents a Customer Gold receipt. Its purpose must be Material Receipt.",
-   "fieldname": "customer_goods_stock_entry_type",
-   "fieldtype": "Link",
-   "label": "Customer Goods Stock Entry Type",
-   "options": "Stock Entry Type"
-  },
-  {
-   "depends_on": "enable_customer_gold_flow",
-   "fieldname": "gold_rate_section",
-   "fieldtype": "Section Break",
-   "label": "Gold Rate"
-  },
-  {
-   "description": "Value of Particulars on the Gold Rates branchs row to read, for example Jain Jewels.",
-   "fieldname": "gold_rate_source",
-   "fieldtype": "Data",
-   "label": "Gold Rate Source"
-  },
-  {
-   "description": "Column on Gold Rates branchs holding the rate.",
-   "fieldname": "gold_rate_field",
-   "fieldtype": "Select",
-   "label": "Gold Rate Field",
-   "options": "\nlive_rate\n9_am\n3_pm\n11_pm"
-  },
-  {
-   "fieldname": "column_break_gold_rate",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Unit stored in Gold Rates. Per 10 Gram will later be converted to a per-gram rate before customer gold valuation.",
-   "fieldname": "gold_rate_unit",
-   "fieldtype": "Select",
-   "label": "Gold Rate Unit",
-   "options": "\nPer Gram\nPer 10 Gram"
-  },
-  {
-   "depends_on": "enable_customer_gold_flow",
-   "description": "Accounts are company specific. Add one row per company that receives customer gold.",
-   "fieldname": "accounting_section",
-   "fieldtype": "Section Break",
-   "label": "Accounting"
-  },
-  {
-   "fieldname": "company_accounts",
-   "fieldtype": "Table",
-   "label": "Company Accounts",
-   "options": "Customer Gold Company Account"
-  },
-  {
-   "fieldname": "repack_section",
-   "fieldtype": "Section Break",
-   "label": "Repack"
-  },
   {
    "fieldname": "category",
    "fieldtype": "Table",
@@ -117,7 +19,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-08-20 09:00:00.000000",
+ "modified": "2026-05-21 11:09:10.615020",
  "modified_by": "Administrator",
  "module": "Customer Subcontracting",
  "name": "Subcontracting Settings",
