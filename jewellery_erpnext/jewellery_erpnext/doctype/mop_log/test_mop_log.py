@@ -17,9 +17,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.test_m
 )
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	_get_mop_logs_for_employee_ir_issue,
+	create_mop_log_for_department_ir,
 	create_mop_log_for_employee_ir_receive,
+	create_mop_log_for_stock_transfer_to_mo,
 	creste_mop_log_for_employee_ir,
 	get_current_mop_balance_rows,
+	get_mop_opening_balances,
 	get_mwo_balance_rows,
 	resolve_employee_ir_issue_voucher_for_receive,
 )
@@ -111,11 +114,11 @@ class TestCurrentMOPBalanceRows(IntegrationTestCase):
 class TestMwoBalanceRows(IntegrationTestCase):
 	"""``get_mwo_balance_rows`` — the work-order-scoped balance reader.
 
-	``qty_after_transaction_batch_based`` is written as an MWO-wide running sum
-	and then stamped with whichever operation wrote it, so reading it per
-	operation returns a snapshot frozen at that operation's last write. This
-	reader is the scope that stays correct as work hands off between
-	operations.
+	``qty_after_transaction_batch_based`` is a PER-OPERATION running balance
+	(see ``get_mop_opening_balances``); it used to be an MWO-wide running sum,
+	which folded residue stranded on one operation into the next operation's
+	opening balance. This reader deliberately spans the work order for callers
+	that want the whole MWO's picture rather than one operation's.
 	"""
 
 	@classmethod
@@ -314,15 +317,19 @@ class TestResolveEmployeeIRIssueVoucher(IntegrationTestCase):
 		doc = MagicMock()
 		doc.emp_ir_id = "EMP-IR-ISSUE-01"
 		row = MockRow()
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_value",
-			return_value=FrappeDict({"docstatus": 1, "type": "Issue"}),
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.exists",
-			return_value=True,
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.sql",
-		) as mock_sql:
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.get_value",
+				return_value=FrappeDict({"docstatus": 1, "type": "Issue"}),
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.exists",
+				return_value=True,
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.sql",
+			) as mock_sql,
+		):
 			out = resolve_employee_ir_issue_voucher_for_receive(doc, row)
 		self.assertEqual(out, "EMP-IR-ISSUE-01")
 		mock_sql.assert_not_called()
@@ -751,3 +758,392 @@ def create_test_manufacturing_operation():
 	mo.save()
 
 	return mo
+
+
+MOP_LOG = "jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log"
+MFG_OP = (
+	"jewellery_erpnext.jewellery_erpnext.doctype."
+	"manufacturing_operation.manufacturing_operation"
+)
+
+
+class MockStockEntry:
+	doctype = "Stock Entry"
+	stock_entry_type = "Material Transfer (WORK ORDER)"
+	name = "MAT-STE-TEST-001"
+
+	def __init__(self, mwo="MWO-TEST-001"):
+		self._mwo = mwo
+
+	def get(self, key, default=None):
+		if key == "manufacturing_work_order":
+			return self._mwo
+		return default
+
+
+def _se_row(**overrides):
+	base = {
+		"name": "se-child-1",
+		"item_code": "M-G-22KT-91.75-Y",
+		"batch_no": "BATCH-A",
+		"qty": 3.21,
+		"pcs": 0,
+		"s_warehouse": "WH-Employee",
+		"t_warehouse": "WH-Dept",
+		"manufacturing_operation": "MOP-FRESH",
+		"serial_and_batch_bundle": None,
+	}
+	base.update(overrides)
+	return FrappeDict(base)
+
+
+class TestMopOpeningBalances(IntegrationTestCase):
+	"""``get_mop_opening_balances`` — the per-operation opening balance.
+
+	Regression cover for the MWO-wide sum: residue stranded on an earlier
+	operation of the same work order must not become the next operation's
+	opening balance.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_fresh_operation_opens_at_zero(self):
+		with patch(f"{MOP_LOG}.frappe.db.get_all", return_value=[]):
+			out = get_mop_opening_balances(
+				"MOP-FRESH", "M-G-22KT-91.75-Y", "BATCH-A", "MWO-TEST-001"
+			)
+		self.assertEqual(out["qty_batch"], 0.0)
+		self.assertEqual(out["qty_item"], 0.0)
+		self.assertEqual(out["qty_prefix"], 0.0)
+
+	def test_scopes_by_operation_never_by_work_order(self):
+		"""The bug in one assertion: the query must not span the work order."""
+		with patch(f"{MOP_LOG}.frappe.db.get_all", return_value=[]) as mock_get_all:
+			get_mop_opening_balances(
+				"MOP-FRESH", "M-G-22KT-91.75-Y", "BATCH-A", "MWO-TEST-001"
+			)
+		filters = mock_get_all.call_args.kwargs["filters"]
+		self.assertEqual(filters["manufacturing_operation"], "MOP-FRESH")
+		self.assertNotIn("manufacturing_work_order", filters)
+
+	def test_tiers_split_by_prefix_item_and_batch(self):
+		rows = [
+			_sample_log(
+				name="L1",
+				creation="2026-08-24 10:00:00",
+				item_code="M-G-22KT-91.75-Y",
+				batch_no="BATCH-A",
+				qty_after_transaction_batch_based=3.24,
+			),
+			_sample_log(
+				name="L2",
+				creation="2026-08-24 10:00:01",
+				item_code="M-G-22KT-91.75-Y",
+				batch_no="BATCH-B",
+				qty_after_transaction_batch_based=0.01,
+			),
+			_sample_log(
+				name="L3",
+				creation="2026-08-24 10:00:02",
+				item_code="F-FINDING",
+				batch_no="BATCH-C",
+				qty_after_transaction_batch_based=9.0,
+			),
+		]
+		with (
+			patch(f"{MOP_LOG}.frappe.db.get_all", return_value=rows),
+			patch(f"{MOP_LOG}.get_mwo_refining_cutoff", return_value=None),
+		):
+			out = get_mop_opening_balances(
+				"MOP-X", "M-G-22KT-91.75-Y", "BATCH-A", "MWO-TEST-001"
+			)
+		# batch tier: only BATCH-A. item tier: both batches of that item.
+		# prefix tier: every M- item. The F- row belongs to none of them.
+		self.assertEqual(out["qty_batch"], 3.24)
+		self.assertEqual(out["qty_item"], 3.25)
+		self.assertEqual(out["qty_prefix"], 3.25)
+
+	def test_pre_refining_rows_are_ignored(self):
+		"""Refining kills the MWO; a surviving pre-refining row must not revive it."""
+		rows = [
+			_sample_log(
+				name="L-PRE",
+				creation="2026-08-24 10:01:46",
+				item_code="M-G-22KT-91.75-Y",
+				batch_no="BATCH-A",
+				qty_after_transaction_batch_based=0.01,
+			)
+		]
+		with (
+			patch(f"{MOP_LOG}.frappe.db.get_all", return_value=rows),
+			patch(
+				f"{MOP_LOG}.get_mwo_refining_cutoff",
+				return_value="2026-08-24 10:03:18",
+			),
+		):
+			out = get_mop_opening_balances(
+				"MOP-I5D24", "M-G-22KT-91.75-Y", "BATCH-A", "MWO-TEST-001"
+			)
+		self.assertEqual(out["qty_batch"], 0.0)
+
+
+class TestStockTransferBalanceIsPerOperation(IntegrationTestCase):
+	"""The reported defect, end to end through the writer.
+
+	`MWO-KGJPL-RI02163-054-1-91.75-Y-01`: 3.26 issued, 0.02 booked as loss,
+	3.23 returned, leaving 0.01 stranded. The next casting issued 3.21 and the
+	operation opened at 3.22 because the balance was summed across the work
+	order. It must open at 3.21.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _write(self, opening_rows):
+		created = MagicMock()
+		with (
+			patch(f"{MOP_LOG}.frappe.db.get_all", return_value=opening_rows),
+			patch(f"{MOP_LOG}.get_mwo_refining_cutoff", return_value=None),
+			patch(f"{MOP_LOG}.get_last_mop_index", return_value=None),
+			patch(f"{MOP_LOG}.frappe.new_doc", return_value=created),
+		):
+			create_mop_log_for_stock_transfer_to_mo(MockStockEntry(), _se_row())
+		return created
+
+	def test_fresh_operation_records_only_what_was_issued(self):
+		created = self._write([])
+		self.assertEqual(created.qty_change, 3.21)
+		self.assertEqual(created.qty_after_transaction_batch_based, 3.21)
+		self.assertEqual(created.qty_after_transaction_item_based, 3.21)
+		self.assertEqual(created.qty_after_transaction, 3.21)
+		created.save.assert_called_once()
+
+	def test_operation_with_own_balance_adds_to_it(self):
+		"""Per-operation carry-forward still works — only the MWO-wide leak is gone."""
+		created = self._write(
+			[
+				_sample_log(
+					name="L-OWN",
+					creation="2026-08-24 10:00:00",
+					item_code="M-G-22KT-91.75-Y",
+					batch_no="BATCH-A",
+					qty_after_transaction_batch_based=1.0,
+				)
+			]
+		)
+		self.assertEqual(created.qty_after_transaction_batch_based, 4.21)
+
+
+class TestNewMopBaselineWrite(IntegrationTestCase):
+	"""``update_new_mop_wtg`` must write the inherited baseline as an absolute value.
+
+	The new operation has no rows of its own, so a computed running balance
+	would open it at ``-loss_qty`` instead of ``baseline - loss_qty``.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, loss_qty):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			update_new_mop_wtg,
+		)
+
+		new_mop = FrappeDict(
+			{"name": "MOP-NEW", "previous_mop": "MOP-SRC", "gross_wt": 0}
+		)
+		eir = FrappeDict({"name": "EIR-1", "doctype": "Employee IR"})
+		eir_row = FrappeDict(
+			{
+				"name": "eir-row-1",
+				"manufacturing_operation": "MOP-SRC",
+				"manufacturing_work_order": "MWO-TEST-001",
+			}
+		)
+		baseline = _sample_log(
+			name="L-BASE",
+			creation="2026-08-24 10:00:00",
+			item_code="M-G-22KT-91.75-Y",
+			batch_no="BATCH-A",
+			qty_after_transaction=3.24,
+			qty_after_transaction_item_based=3.24,
+			qty_after_transaction_batch_based=3.24,
+			pcs_after_transaction=0,
+			pcs_after_transaction_item_based=0,
+			pcs_after_transaction_batch_based=0,
+			manufacturing_operation="MOP-SRC",
+			manufacturing_work_order="MWO-TEST-001",
+			row_name="src-row",
+			from_warehouse="WH-A",
+			to_warehouse="WH-B",
+		)
+		loss_map = {}
+		if loss_qty:
+			loss_map[("MOP-SRC", "MWO-TEST-001", "M-G-22KT-91.75-Y", "BATCH-A")] = {
+				"loss_qty": loss_qty,
+				"loss_pcs": 0,
+			}
+
+		created = MagicMock()
+		with (
+			patch(f"{MFG_OP}.get_last_mop_index", return_value=None),
+			patch(f"{MFG_OP}.get_employee_ir_loss_map", return_value=loss_map),
+			patch(f"{MFG_OP}.get_current_mop_balance_rows", return_value=[baseline]),
+			patch(f"{MFG_OP}._float_tolerance", return_value=0.001),
+			patch(f"{MFG_OP}.frappe.new_doc", return_value=created),
+		):
+			update_new_mop_wtg(
+				new_mop,
+				employee_ir_doc=eir,
+				employee_ir_operation_row=eir_row,
+				from_warehouse="WH-Emp",
+				to_warehouse="WH-Dept",
+			)
+		return created
+
+	def test_baseline_cloned_verbatim_when_no_loss(self):
+		created = self._run(0)
+		self.assertEqual(created.qty_after_transaction_batch_based, 3.24)
+		self.assertEqual(created.qty_change, 0)
+		self.assertEqual(created.flow_index, 0)
+		self.assertEqual(created.manufacturing_operation, "MOP-NEW")
+
+	def test_baseline_reduced_by_loss_not_replaced_by_it(self):
+		created = self._run(0.01)
+		self.assertEqual(created.qty_after_transaction_batch_based, 3.23)
+		self.assertEqual(created.qty_change, -0.01)
+
+
+class TestDepartmentIRCloneDedupes(IntegrationTestCase):
+	"""Cloning every historical row doubled the ledger at each Department IR hop.
+
+	Observed on the reported MWO: 2 rows -> 4 -> 8, with stale pre-loss
+	balances interleaved with the true one.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_issue_clones_latest_snapshot_only(self):
+		row = FrappeDict(
+			{
+				"name": "dir-row-1",
+				"manufacturing_operation": "MOP-SRC",
+				"manufacturing_work_order": "MWO-TEST-001",
+			}
+		)
+		dir_doc = FrappeDict(
+			{"name": "DIR-1", "type": "Issue", "receive_against": None}
+		)
+		snapshot = [
+			_sample_log(
+				name="L-LATEST",
+				creation="2026-08-24 10:00:02",
+				item_code="M-G-22KT-91.75-Y",
+				batch_no="BATCH-A",
+				qty_after_transaction_batch_based=0.01,
+				flow_index=5,
+			)
+		]
+		created = MagicMock()
+		with (
+			patch(f"{MOP_LOG}.is_mwo_refined", return_value=False),
+			patch(
+				f"{MOP_LOG}.get_current_mop_balance_rows", return_value=snapshot
+			) as mock_snapshot,
+			patch(f"{MOP_LOG}.frappe.new_doc", return_value=created),
+		):
+			create_mop_log_for_department_ir(
+				dir_doc, row, "WH-Dept", "WH-Transit", "MOP-DEST"
+			)
+
+		mock_snapshot.assert_called_once()
+		self.assertEqual(mock_snapshot.call_args.args[0], "MOP-SRC")
+		self.assertEqual(created.save.call_count, 1)
+		self.assertEqual(created.qty_after_transaction_batch_based, 0.01)
+		self.assertEqual(created.manufacturing_operation, "MOP-DEST")
+		self.assertEqual(created.flow_index, 6)
+
+
+class TestRepairPatchClassification(IntegrationTestCase):
+	"""The repair script must never guess, and never invent metal.
+
+	Only findings it can prove are written; a shortfall (positive delta) points at a
+	different cause than this defect and would mean adding gold to the ledger, so it is
+	gated behind an explicit opt-in.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@staticmethod
+	def _finding(**overrides):
+		base = {
+			"manufacturing_work_order": "MWO-TEST-001",
+			"manufacturing_operation": "MOP-A",
+			"item_code": "M-G-22KT-91.75-Y",
+			"batch_no": "BATCH-A",
+			"expected": 3.21,
+			"actual": 3.22,
+			"delta": -0.01,
+			"straddles": False,
+			"already_repaired": False,
+			"latest_row": "row-1",
+			"latest_voucher": "Employee IR EIR-1",
+			"refined_on": "2026-08-24 10:03:18",
+		}
+		base.update(overrides)
+		return base
+
+	def _execute(self, findings, **kwargs):
+		from jewellery_erpnext.patches import (
+			repair_mwo_wide_mop_log_balances as patch_mod,
+		)
+
+		with (
+			patch.object(
+				patch_mod, "audit_post_refining_contamination", return_value=findings
+			),
+			patch.object(patch_mod, "recalculate_manufacturing_operation_weights"),
+			patch.object(patch_mod.frappe.db, "commit"),
+			patch.object(patch_mod, "_append_correction") as appended,
+		):
+			out = patch_mod.execute(**kwargs)
+		return out, appended
+
+	def test_dry_run_writes_nothing(self):
+		out, appended = self._execute([self._finding()])
+		self.assertEqual(len(out["corrections"]), 1)
+		appended.assert_not_called()
+
+	def test_inflation_is_repaired(self):
+		out, appended = self._execute([self._finding()], dry_run=False)
+		self.assertEqual(len(out["written"]), 1)
+		self.assertEqual(appended.call_count, 1)
+
+	def test_shortfall_needs_explicit_opt_in(self):
+		shortfall = self._finding(expected=2.36, actual=0.0, delta=2.36)
+		out, appended = self._execute([shortfall], dry_run=False)
+		self.assertEqual(out["corrections"], [])
+		self.assertEqual(len(out["review"]), 1)
+		appended.assert_not_called()
+
+		out, appended = self._execute([shortfall], dry_run=False, allow_increase=True)
+		self.assertEqual(len(out["corrections"]), 1)
+		self.assertEqual(appended.call_count, 1)
+
+	def test_straddling_and_already_repaired_are_never_written(self):
+		findings = [
+			self._finding(manufacturing_operation="MOP-STRADDLE", straddles=True),
+			self._finding(manufacturing_operation="MOP-DONE", already_repaired=True),
+		]
+		out, appended = self._execute(findings, dry_run=False)
+		self.assertEqual(out["corrections"], [])
+		self.assertEqual(len(out["review"]), 2)
+		appended.assert_not_called()
