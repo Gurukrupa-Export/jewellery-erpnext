@@ -3103,6 +3103,15 @@ def create_test_data():
 
 			_ensure_stock_entry_edit_bom_field()
 
+			# Stock Entry Detail.custom_jwelex_tag_no is patch-only for the same
+			# reason — set_jwelex_tag_no writes it on every Stock Entry save, so a
+			# missing column would raise "Unknown column" across the whole suite.
+			from jewellery_erpnext.patches.add_stock_entry_jwelex_tag_field import (
+				execute as _ensure_stock_entry_jwelex_tag_field,
+			)
+
+			_ensure_stock_entry_jwelex_tag_field()
+
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (
 				execute as _ensure_missing_ui_custom_fields,
