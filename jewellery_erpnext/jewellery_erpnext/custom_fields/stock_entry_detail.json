@@ -575,9 +575,10 @@
    "translatable": 0
   },
   {
+   "description": "Jwelex tags of this row's Serial Nos, one per line, aligned with serial_no. Stamped from Serial No.custom_jwelex_tag_no on every save.",
    "dt": "Stock Entry Detail",
    "fieldname": "custom_jwelex_tag_no",
-   "fieldtype": "Data",
+   "fieldtype": "Text",
    "insert_after": "serial_no",
    "label": "Jwelex Tag No",
    "module": "Jewellery Erpnext",
