@@ -1,6 +1,31 @@
 frappe.ui.form.off("Stock Entry", "get_items_from_transit_entry");
 
 frappe.ui.form.on("Stock Entry", {
+	gold_rate_with_gst(frm) {
+		if (frm.doc.gold_rate_with_gst) {
+			frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then((gold_gst_rate) => {
+				let gold_rate = flt(frm.doc.gold_rate_with_gst / (1 + flt(gold_gst_rate) / 100), 3);
+				if (gold_rate != flt(frm.doc.gold_rate, 3)) {
+					frappe.model.set_value(frm.doc.doctype, frm.doc.name, "gold_rate", gold_rate);
+				}
+			});
+		}
+	},
+	gold_rate(frm) {
+		if (frm.doc.gold_rate) {
+			frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then((gold_gst_rate) => {
+				let gold_rate_with_gst = flt(frm.doc.gold_rate * (1 + flt(gold_gst_rate) / 100), 3);
+				if (gold_rate_with_gst != flt(frm.doc.gold_rate_with_gst, 3)) {
+					frappe.model.set_value(
+						frm.doc.doctype,
+						frm.doc.name,
+						"gold_rate_with_gst",
+						gold_rate_with_gst
+					);
+				}
+			});
+		}
+	},
 	refresh(frm) {
 		set_html(frm);
 		if (
@@ -827,6 +852,22 @@ frappe.ui.form.on("Stock Entry Detail", {
 			frappe.db.get_value("Serial No", row.serial_no, ["custom_gross_wt"]).then((r) => {
 				frappe.model.set_value(cdt, cdn, "gross_weight", r.message.custom_gross_wt);
 			});
+		}
+
+		// Jwelex tag mirrors the row's Serial No. The field holds one tag, so a
+		// multi-serial row takes the first serial (same as the edit_bom handler below).
+		let first_serial = ((row.serial_no || "") + "").split("\n")[0].trim();
+		if (first_serial) {
+			frappe.db.get_value("Serial No", first_serial, "custom_jwelex_tag_no").then((r) => {
+				frappe.model.set_value(
+					cdt,
+					cdn,
+					"custom_jwelex_tag_no",
+					(r.message && r.message.custom_jwelex_tag_no) || ""
+				);
+			});
+		} else {
+			frappe.model.set_value(cdt, cdn, "custom_jwelex_tag_no", "");
 		}
 
 		if (row.serial_no && typeof row.serial_no === "string" && row.serial_no != "") {

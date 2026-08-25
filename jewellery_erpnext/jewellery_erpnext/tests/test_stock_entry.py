@@ -1367,6 +1367,8 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 		), patch.object(
 			cse_mod, "set_gross_wt", side_effect=_record("set_gross_wt")
 		), patch.object(
+			cse_mod, "set_jwelex_tag_no", side_effect=_record("set_jwelex_tag_no")
+		), patch.object(
 			cse_mod, "validate_warehouse", side_effect=_record("validate_warehouse")
 		):
 			cse_mod.before_validate(se, method=None)
@@ -1377,6 +1379,7 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 				"validate_sample_goods_not_consumed",
 				"set_employee",
 				"set_gross_wt",
+				"set_jwelex_tag_no",
 				"validate_warehouse",
 			],
 		)
@@ -1430,6 +1433,42 @@ class TestSeUtilsGuards(_StockEntryTestCase):
 		with patch.object(se_utils.frappe.db, "get_value") as gv:
 			se_utils.set_gross_wt(se)
 		gv.assert_not_called()
+
+	def test_set_jwelex_tag_no_from_serial_no(self):
+		row = _Row(serial_no="S-1", custom_jwelex_tag_no=None)
+		se = _Doc(items=[row])
+		with patch.object(
+			se_utils.frappe.db, "get_value", return_value="GXU56855"
+		) as gv:
+			se_utils.set_jwelex_tag_no(se)
+		gv.assert_called_once_with("Serial No", "S-1", "custom_jwelex_tag_no")
+		self.assertEqual(row.custom_jwelex_tag_no, "GXU56855")
+
+	def test_set_jwelex_tag_no_uses_first_of_multiple_serials(self):
+		"""``serial_no`` is newline-separated Text; a Data field holds one tag."""
+		row = _Row(serial_no="S-1\nS-2\nS-3", custom_jwelex_tag_no=None)
+		se = _Doc(items=[row])
+		with patch.object(
+			se_utils.frappe.db, "get_value", return_value="GXU56855"
+		) as gv:
+			se_utils.set_jwelex_tag_no(se)
+		gv.assert_called_once_with("Serial No", "S-1", "custom_jwelex_tag_no")
+		self.assertEqual(row.custom_jwelex_tag_no, "GXU56855")
+
+	def test_set_jwelex_tag_no_ignores_non_serialized_rows(self):
+		row = _Row(serial_no=None, custom_jwelex_tag_no="STALE")
+		se = _Doc(items=[row])
+		with patch.object(se_utils.frappe.db, "get_value") as gv:
+			se_utils.set_jwelex_tag_no(se)
+		gv.assert_not_called()
+		self.assertEqual(row.custom_jwelex_tag_no, "STALE")
+
+	def test_set_jwelex_tag_no_clears_when_serial_has_no_tag(self):
+		row = _Row(serial_no="S-1", custom_jwelex_tag_no="STALE")
+		se = _Doc(items=[row])
+		with patch.object(se_utils.frappe.db, "get_value", return_value=None):
+			se_utils.set_jwelex_tag_no(se)
+		self.assertIsNone(row.custom_jwelex_tag_no)
 
 	def test_validate_warehouse_same_from_to_throws(self):
 		se = _Doc(
