@@ -829,6 +829,22 @@ frappe.ui.form.on("Stock Entry Detail", {
 			});
 		}
 
+		// Jwelex tag mirrors the row's Serial No. The field holds one tag, so a
+		// multi-serial row takes the first serial (same as the edit_bom handler below).
+		let first_serial = ((row.serial_no || "") + "").split("\n")[0].trim();
+		if (first_serial) {
+			frappe.db.get_value("Serial No", first_serial, "custom_jwelex_tag_no").then((r) => {
+				frappe.model.set_value(
+					cdt,
+					cdn,
+					"custom_jwelex_tag_no",
+					(r.message && r.message.custom_jwelex_tag_no) || ""
+				);
+			});
+		} else {
+			frappe.model.set_value(cdt, cdn, "custom_jwelex_tag_no", "");
+		}
+
 		if (row.serial_no && typeof row.serial_no === "string" && row.serial_no != "") {
 			disableSaveButton();
 			serial_item.push(...row.serial_no.split("\n"));
