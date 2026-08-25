@@ -686,6 +686,82 @@ class TestMwoLevelMakeReceiveEntry(IntegrationTestCase):
 	)
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
+		return_value="WH-Raw - GEPL",
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_single_value",
+		return_value=3,
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.get_doc"
+	)
+	def test_each_row_keeps_its_own_reservation_warehouse(
+		self,
+		mock_get_doc,
+		_mock_single,
+		_mock_get_value,
+		mock_get_all,
+		mock_get_mwo_balance_rows,
+		_mock_sql,
+	):
+		"""Two reservations, same item and Sales Order, different warehouses.
+
+		The live shape behind the reported bug: SAL-ORD-2026-00068 carries 40+
+		submitted reservations for one metal batch, one per work order, each in
+		that order's own WIP warehouse. The source warehouse used to be
+		re-derived from (item, batch, Sales Order) with no work-order filter and
+		an unordered ``LIMIT 1``, so every row was handed an arbitrary sibling's
+		warehouse — Hammer WIP WH 39 for a MOP whose material sat in WH 20.
+		"""
+		mock_get_doc.return_value = _make_mo()
+		mock_get_mwo_balance_rows.return_value = [
+			frappe._dict(
+				{
+					"item_code": "M-G-18KT-75.4-Y",
+					"batch_no": None,
+					"qty_after_transaction_batch_based": 20.0,
+					"pcs_after_transaction_batch_based": 0,
+					"name": "MOP-LOG-MWO-1",
+					"creation": "2026-05-01",
+				}
+			),
+		]
+		mock_get_all.side_effect = _make_mwo_level_get_all_side_effect(
+			sre_rows=[
+				_sre(
+					"SRE-WH20",
+					manufacturing_operation="MOP-461KI",
+					warehouse="Hammer WIP WH 20 - GEPL",
+					reserved_qty=8.272,
+				),
+				_sre(
+					"SRE-WH39",
+					manufacturing_operation="MOP-EY179",
+					warehouse="Hammer WIP WH 39 - GEPL",
+					reserved_qty=5.0,
+				),
+			],
+		)
+
+		by_sre = {
+			r["stock_reservation_entry"]: r
+			for r in get_make_receive_entry_rows("MOP-461KI")["rows"]
+		}
+		self.assertEqual(by_sre["SRE-WH20"]["s_warehouse"], "Hammer WIP WH 20 - GEPL")
+		self.assertEqual(by_sre["SRE-WH39"]["s_warehouse"], "Hammer WIP WH 39 - GEPL")
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
+		return_value=[(0,)],
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_mwo_balance_rows"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_all"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.get_value",
 		return_value="Casting WO - GEPL",
 	)
 	@patch(
@@ -1303,10 +1379,6 @@ class TestMakeReceiveEntryPerRowPcs(IntegrationTestCase):
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.sql",
 				return_value=[],
-			),
-			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.resolve_and_validate",
-				return_value="WH-Resolved",
 			),
 			patch("frappe.db.get_all", side_effect=_dispatcher),
 		]
@@ -2676,7 +2748,8 @@ class TestPartialReceiveZeroBatchSkipsReplacement(IntegrationTestCase):
 		]
 
 		# get_value sequence: idempotency miss + t_warehouse + SRE re-fetch +
-		# sb_row re-fetch + source warehouse + Batch inventory-type/customer.
+		# sb_row re-fetch + Batch inventory-type/customer. No source-warehouse
+		# lookup: the row's own SRE warehouse is used verbatim.
 		mock_get_value.side_effect = [
 			None,
 			"WH-Raw",
@@ -2697,7 +2770,6 @@ class TestPartialReceiveZeroBatchSkipsReplacement(IntegrationTestCase):
 			frappe._dict(
 				{"name": "SB-1", "batch_no": "B1", "qty": 5.0, "delivered_qty": 0.0}
 			),
-			"WH-Src",
 			("Regular Stock", None),
 		]
 
@@ -2816,7 +2888,8 @@ class TestPartialReceiveZeroBatchSkipsReplacement(IntegrationTestCase):
 		]
 
 		# get_value sequence: idempotency miss + t_warehouse + SRE re-fetch +
-		# sb_row re-fetch + source warehouse + Batch (Customer Goods + customer).
+		# sb_row re-fetch + Batch (Customer Goods + customer). No source-warehouse
+		# lookup: the row's own SRE warehouse is used verbatim.
 		mock_get_value.side_effect = [
 			None,
 			"WH-Raw",
@@ -2842,7 +2915,6 @@ class TestPartialReceiveZeroBatchSkipsReplacement(IntegrationTestCase):
 					"delivered_qty": 0.0,
 				}
 			),
-			"WH-Src",
 			("Customer Goods", "KACU0043"),
 		]
 
@@ -3171,10 +3243,6 @@ class TestDialogValidatorAgreement(IntegrationTestCase):
 				return_value=[(0,)],
 			),
 			patch(
-				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.resolve_and_validate",
-				return_value="WH-Src",
-			),
-			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.frappe.db.savepoint"
 			),
 			patch(
@@ -3323,33 +3391,54 @@ class TestDialogValidatorAgreement(IntegrationTestCase):
 				request_id="agree-loss",
 			)
 
-	def test_validator_passes_sales_order_to_warehouse_resolution(self):
-		"""`voucher_type`/`voucher_no` were read but never fetched.
+	def test_validator_sources_from_the_sre_warehouse(self):
+		"""The source warehouse is read off the reservation being received.
 
-		`as_dict=True` yields a frappe._dict, so the missing keys returned None
-		silently and the server resolved the source warehouse WITHOUT the Sales
-		Order the popup resolves it with — the two could pick different
-		warehouses for the same row.
+		It used to be re-derived from (item, batch, Sales Order). One Sales
+		Order spans dozens of work orders that each reserve the same batch in
+		their own WIP warehouse, so that lookup returned an arbitrary sibling's
+		warehouse and the receive issued another work order's material.
 		"""
-		self._patch_both_sides()
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.resolve_and_validate",
-			return_value="WH-Src",
-		) as mock_resolve:
-			create_mr_wo_stock_entry(
-				{
-					"manufacturing_operation": "MOP-NEW",
-					"receive_items": [
-						{
-							"stock_reservation_entry": "SRE-HANDOFF",
-							"qty": 0.010,
-							"idx": 1,
-						}
-					],
-				},
-				request_id="agree-so",
-			)
+		stock_entry = self._patch_both_sides()
+		create_mr_wo_stock_entry(
+			{
+				"manufacturing_operation": "MOP-NEW",
+				"receive_items": [
+					{
+						"stock_reservation_entry": "SRE-HANDOFF",
+						"qty": 0.010,
+						"idx": 1,
+					}
+				],
+			},
+			request_id="agree-so",
+		)
+		# Row and header both carry SRE-HANDOFF's own warehouse.
 		self.assertEqual(
-			mock_resolve.call_args.kwargs["sales_order"],
-			"SO-1",
+			stock_entry.append.call_args_list[0][0][1]["s_warehouse"], "WH-Src"
+		)
+		self.assertEqual(stock_entry.from_warehouse, "WH-Src")
+
+	def test_popup_and_validator_agree_on_the_sre_warehouse(self):
+		"""Whatever the popup shows as Source Warehouse is what gets booked."""
+		stock_entry = self._patch_both_sides()
+		rows = get_make_receive_entry_rows("MOP-NEW")["rows"]
+		self.assertEqual(rows[0]["s_warehouse"], "WH-Src")
+
+		create_mr_wo_stock_entry(
+			{
+				"manufacturing_operation": "MOP-NEW",
+				"receive_items": [
+					{
+						"stock_reservation_entry": rows[0]["stock_reservation_entry"],
+						"qty": 0.010,
+						"idx": 1,
+					}
+				],
+			},
+			request_id="agree-wh",
+		)
+		self.assertEqual(
+			stock_entry.append.call_args_list[0][0][1]["s_warehouse"],
+			rows[0]["s_warehouse"],
 		)

@@ -33,6 +33,12 @@ import subprocess
 from pathlib import Path
 
 import frappe
+from frappe.utils import flt
+
+# row_name stamped on correcting rows appended by
+# patches/repair_mwo_wide_mop_log_balances.py, so they stay identifiable and
+# re-runs are no-ops.
+REPAIR_ROW_TAG = "repair-mwo-wide-balance"
 
 
 def _app_root() -> Path:
@@ -76,7 +82,8 @@ def get_deployment_parity_record() -> dict:
 			"has_receive_against_clone": '"voucher_no": self.receive_against' in text,
 			"has_max_issue_flow_slice": "max_issue_flow" in text,
 			"has_dir_receive_idempotency": (
-				'"voucher_type": "Department IR"' in text and '"voucher_no": self.name' in text
+				'"voucher_type": "Department IR"' in text
+				and '"voucher_no": self.name' in text
 			),
 			"has_validate_receive_lineage": "validate_receive_lineage" in text,
 		}
@@ -209,15 +216,18 @@ def _latest_submitted_receive() -> dict | None:
 
 
 def _mops_for_receive(receive_name: str) -> list[str]:
-	return frappe.db.sql(
-		"""
+	return (
+		frappe.db.sql(
+			"""
 		SELECT DISTINCT manufacturing_operation
 		FROM `tabDepartment IR Operation`
 		WHERE parent = %(p)s AND IFNULL(manufacturing_operation,'') != ''
 		""",
-		{"p": receive_name},
-		pluck="manufacturing_operation",
-	) or []
+			{"p": receive_name},
+			pluck="manufacturing_operation",
+		)
+		or []
+	)
 
 
 def get_sql_proof_templates() -> dict[str, str]:
@@ -326,7 +336,9 @@ def run_proof_query_pack(limit: int = 50) -> dict:
 		"stock_entry_multiple_mops_same_voucher": out["templates"][
 			"stock_entry_multiple_mops_same_voucher"
 		],
-		"snc_submitted_empty_source_table": out["templates"]["snc_submitted_empty_source_table"],
+		"snc_submitted_empty_source_table": out["templates"][
+			"snc_submitted_empty_source_table"
+		],
 		"pmo_submitted_recent_slice": out["templates"]["pmo_submitted_recent_slice"],
 		"submission_queue_department_ir_timeline": out["templates"][
 			"submission_queue_department_ir_timeline"
@@ -345,10 +357,12 @@ def run_proof_pack_audits(limit: int = 50) -> dict:
 	"""Bench entry: templates + executed proof queries + parity + DIR fallback errors."""
 	base = run_all_audits()
 	base["proof_pack"] = run_proof_query_pack(limit=limit)
-	base["stock_entry_legacy_balance_trace"] = get_stock_entry_legacy_balance_table_trace()
-	base["proof_pack"]["archive_hint"] = (
-		"Save this JSON from bench output to your ticket / evidence store; re-run after each deploy."
-	)
+	base[
+		"stock_entry_legacy_balance_trace"
+	] = get_stock_entry_legacy_balance_table_trace()
+	base["proof_pack"][
+		"archive_hint"
+	] = "Save this JSON from bench output to your ticket / evidence store; re-run after each deploy."
 	return base
 
 
@@ -527,7 +541,9 @@ def audit_employee_ir_diamond_lineage(
 		l for l in all_logs if l.get("item_code") and l["item_code"][0] in ("D", "G")
 	]
 	issue_logs = (
-		_mop_log_rows("AND voucher_type = 'Employee IR' AND voucher_no = %s", (issue_voucher,))
+		_mop_log_rows(
+			"AND voucher_type = 'Employee IR' AND voucher_no = %s", (issue_voucher,)
+		)
 		if issue_voucher
 		else []
 	)
@@ -600,16 +616,319 @@ def audit_employee_ir_diamond_lineage(
 		"key_set_diff": {
 			"in_stock_entry_only": sorted(se_keys - current_keys),
 			"in_current_balance_only": sorted(current_keys - se_keys),
-			"in_current_but_missing_from_issue_snapshot": sorted(current_keys - issue_keys),
+			"in_current_but_missing_from_issue_snapshot": sorted(
+				current_keys - issue_keys
+			),
 		},
 		"mop_log_diamond_rows": diamond_logs,
 		"issue_voucher_diamond_rows": issue_diamond_logs,
 		"stock_entry_diamond_lines": se_diamond_lines,
-		"diagnosis": diagnosis or [
+		"diagnosis": diagnosis
+		or [
 			"Diamond present uniformly in Stock Entry, MOP Log, Issue snapshot and header — "
 			"investigate UI / Receive form rendering instead of data lineage."
 		],
 	}
+
+
+def audit_mop_balance_drift(
+	mwos: list[str] | None = None, limit: int = 200
+) -> list[dict]:
+	"""Operations whose stored ``gross_wt`` disagrees with a per-operation ledger replay.
+
+	Read-only. This is the detector for the MWO-wide-balance bug: the MOP Log writer used
+	to derive ``qty_after_transaction*`` from ``SUM(qty_change)`` over the whole
+	Manufacturing Work Order, so residue stranded on a finished operation was folded into
+	the next operation's opening balance. A drifted operation shows a ``gross_wt`` above
+	the weight actually issued/received into it.
+
+	Compares three views of the same operation:
+
+	* ``ledger_gross`` -- sum of the latest MOP Log row per (item, batch), the value
+	  ``recalculate_manufacturing_operation_weights`` would write.
+	* ``stored_gross`` -- ``Manufacturing Operation.gross_wt``.
+	* ``received_gross_wt`` -- what the operator actually weighed in.
+
+	``mwos`` narrows the scan; omit it to sweep every MWO with active MOP Log rows.
+	"""
+	conditions = ""
+	params: dict = {}
+	if mwos:
+		conditions = "AND ml.manufacturing_work_order IN %(mwos)s"
+		params["mwos"] = tuple(mwos)
+
+	# Latest row per (operation, item, batch) -- same dedup as
+	# get_current_mop_balance_rows, expressed in SQL so the sweep stays one query.
+	rows = frappe.db.sql(
+		f"""
+		SELECT
+			ml.manufacturing_operation AS mop,
+			ml.manufacturing_work_order AS mwo,
+			ml.item_code,
+			ml.batch_no,
+			ml.qty_after_transaction_batch_based AS qty
+		FROM `tabMOP Log` ml
+		INNER JOIN (
+			SELECT manufacturing_operation, item_code, batch_no, MAX(creation) AS mx
+			FROM `tabMOP Log`
+			WHERE is_cancelled = 0 AND IFNULL(manufacturing_operation, '') != ''
+			GROUP BY manufacturing_operation, item_code, batch_no
+		) latest
+			ON latest.manufacturing_operation = ml.manufacturing_operation
+			AND latest.item_code <=> ml.item_code
+			AND latest.batch_no <=> ml.batch_no
+			AND latest.mx = ml.creation
+		WHERE ml.is_cancelled = 0
+		  {conditions}
+		""",
+		params,
+		as_dict=True,
+	)
+
+	ledger: dict[str, dict] = {}
+	for r in rows:
+		bucket = ledger.setdefault(r["mop"], {"mwo": r["mwo"], "ledger_gross": 0.0})
+		# Only metal-ish prefixes contribute to gross_wt in grams; D/G are carats and
+		# are converted by the recompute, so mirror FIELD_MAP's treatment.
+		first_char = (r.get("item_code") or "")[:1]
+		qty = flt(r.get("qty"))
+		if first_char in ("D", "G"):
+			bucket["ledger_gross"] += flt(qty * 0.2, 3)
+		elif first_char in ("M", "F", "O"):
+			bucket["ledger_gross"] += qty
+
+	if not ledger:
+		return []
+
+	stored = frappe.get_all(
+		"Manufacturing Operation",
+		filters={"name": ["in", list(ledger)]},
+		fields=[
+			"name",
+			"gross_wt",
+			"received_gross_wt",
+			"previous_mop",
+			"prev_gross_wt",
+			"status",
+			"department",
+			"manufacturing_work_order",
+		],
+		limit_page_length=0,
+	)
+
+	out: list[dict] = []
+	for mop in stored:
+		led = flt(ledger[mop["name"]]["ledger_gross"], 3)
+		stored_gross = flt(mop.get("gross_wt"), 3)
+		received = flt(mop.get("received_gross_wt"), 3)
+		ledger_vs_stored = flt(led - stored_gross, 3)
+		# A receive that weighed less than the operation carried is normal; what is not
+		# normal is the ledger holding MORE than was received into the operation.
+		received_vs_ledger = flt(led - received, 3) if received else 0.0
+		if not ledger_vs_stored and not received_vs_ledger:
+			continue
+		out.append(
+			{
+				"manufacturing_operation": mop["name"],
+				"manufacturing_work_order": mop.get("manufacturing_work_order"),
+				"department": mop.get("department"),
+				"status": mop.get("status"),
+				"ledger_gross": led,
+				"stored_gross": stored_gross,
+				"received_gross_wt": received,
+				"ledger_minus_stored": ledger_vs_stored,
+				"ledger_minus_received": received_vs_ledger,
+				"previous_mop": mop.get("previous_mop"),
+				"prev_gross_wt": flt(mop.get("prev_gross_wt"), 3),
+			}
+		)
+
+	out.sort(key=lambda r: abs(r["ledger_minus_received"]), reverse=True)
+	return out[:limit]
+
+
+def refining_cutoffs(mwos: list[str] | None = None) -> dict:
+	"""``{mwo: refined_on}`` for MWOs consumed by a submitted Work Order Refining Entry.
+
+	``refined_on`` is the entry's ``modified`` -- the moment the MWO's balances were
+	zeroed. Every MOP Log row at or before it describes metal that no longer exists.
+	"""
+	conditions = ""
+	params: dict = {}
+	if mwos:
+		conditions = "AND d.manufacturing_work_order IN %(mwos)s"
+		params["mwos"] = tuple(mwos)
+
+	rows = frappe.db.sql(
+		f"""
+		SELECT d.manufacturing_work_order AS mwo, MAX(re.modified) AS refined_on
+		FROM `tabManufacturing Work Order Refining Details` d
+		INNER JOIN `tabRefining Entry` re ON re.name = d.parent
+		WHERE d.parenttype = 'Refining Entry'
+		  AND re.docstatus = 1
+		  AND re.refining_type = 'Work Order Refining'
+		  {conditions}
+		GROUP BY d.manufacturing_work_order
+		""",
+		params,
+		as_dict=True,
+	)
+	return {r["mwo"]: r["refined_on"] for r in rows}
+
+
+def audit_post_refining_contamination(
+	mwos: list[str] | None = None, limit: int = 200
+) -> list[dict]:
+	"""Balances a refined MWO should not still be carrying.
+
+	Read-only, and the single source of truth the repair script consumes -- audit and
+	repair cannot disagree about what is wrong.
+
+	A Work Order Refining Entry zeroes the MWO, so the post-refining ledger can be
+	replayed from a known zero. For each ``(operation, item, batch)``::
+
+	    expected(op) = expected(op.previous_mop) + SUM(op's own qty_change)
+
+	with ``expected = 0`` where ``previous_mop`` is absent or itself pre-dates refining --
+	that operation starts a fresh chain and may only hold what was issued into it. A
+	handoff clone contributes ``qty_change = 0``, so carry-forward along a chain is
+	preserved; what the replay refuses to carry is residue from an operation the chain
+	*left behind*. That is the defect: 0.010g stranded on ``MOP-I5D24`` turned a 3.210g
+	re-cast issue on ``MOP-0K3Q4`` into a 3.220g balance.
+
+	An operation with any row at or before the cutoff **straddles** refining; its opening
+	balance is not derivable this way, and neither is that of anything downstream of it.
+	Those are reported with ``straddles = True`` and excluded from automatic repair.
+
+	Returns one entry per ``(operation, item, batch)`` that disagrees, each carrying
+	``expected`` (the replayed balance), ``actual`` (what the ledger holds) and ``delta``.
+	"""
+	cutoffs = refining_cutoffs(mwos)
+	if not cutoffs:
+		return []
+
+	rows = frappe.db.sql(
+		"""
+		SELECT
+			manufacturing_work_order AS mwo,
+			manufacturing_operation AS mop,
+			item_code,
+			batch_no,
+			qty_change,
+			qty_after_transaction_batch_based AS balance,
+			voucher_type,
+			voucher_no,
+			row_name,
+			name,
+			creation
+		FROM `tabMOP Log`
+		WHERE is_cancelled = 0
+		  AND IFNULL(manufacturing_operation, '') != ''
+		  AND manufacturing_work_order IN %(mwos)s
+		ORDER BY creation ASC
+		""",
+		{"mwos": tuple(cutoffs)},
+		as_dict=True,
+	)
+	if not rows:
+		return []
+
+	previous_mop = dict(
+		frappe.get_all(
+			"Manufacturing Operation",
+			filters={"name": ["in", sorted({r["mop"] for r in rows})]},
+			fields=["name", "previous_mop"],
+			as_list=True,
+			limit_page_length=0,
+		)
+	)
+
+	by_mwo: dict = {}
+	for r in rows:
+		by_mwo.setdefault(r["mwo"], []).append(r)
+
+	out: list[dict] = []
+	for mwo, mwo_rows in by_mwo.items():
+		refined_on = cutoffs[mwo]
+		# Three populations, and the distinction matters:
+		#   pre_only    -- every row pre-dates refining. The operation is dead; a
+		#                  successor of it starts a FRESH chain at 0. Derivable.
+		#   straddling  -- rows on both sides of the cutoff. Its own opening balance is
+		#                  not derivable, and neither is anything downstream of it.
+		#   post_only   -- entirely after refining. Replayable.
+		mops_pre = {r["mop"] for r in mwo_rows if r["creation"] <= refined_on}
+		mops_post = {r["mop"] for r in mwo_rows if r["creation"] > refined_on}
+		straddling = mops_pre & mops_post
+		pre_only = mops_pre - mops_post
+		underivable = set(straddling)
+
+		own_change: dict = {}
+		actual: dict = {}
+		latest: dict = {}
+		repaired: set = set()
+		order: list = []
+		for r in mwo_rows:
+			if r["creation"] <= refined_on:
+				continue
+			key = (r["mop"], r["item_code"], r["batch_no"])
+			if key not in own_change:
+				order.append(key)
+				own_change[key] = 0.0
+			if r["row_name"] == REPAIR_ROW_TAG:
+				# A correcting row is not a movement -- it restates the balance. Its
+				# effect is visible through `actual` only, so a repaired key reports
+				# delta 0 and drops out of the findings instead of re-reporting its
+				# own correction as fresh drift.
+				repaired.add(key)
+			else:
+				own_change[key] = flt(own_change[key] + flt(r["qty_change"]), 3)
+			actual[key] = flt(r["balance"], 3)
+			latest[key] = r
+
+		# `order` follows first-appearance in creation order, so a predecessor's
+		# closing balance is always resolved before its successor needs it.
+		expected: dict = {}
+		for key in order:
+			mop, item_code, batch_no = key
+			prev = previous_mop.get(mop)
+			if prev in underivable:
+				# Cannot trust the predecessor's closing balance, so cannot derive
+				# this one either.
+				underivable.add(mop)
+				opening = 0.0
+			elif not prev or prev in pre_only:
+				# Fresh chain: the predecessor's metal was consumed by refining, so
+				# this operation may hold only what was issued into it.
+				opening = 0.0
+			else:
+				opening = flt(expected.get((prev, item_code, batch_no), 0.0))
+			expected[key] = flt(opening + own_change[key], 3)
+
+		for key in order:
+			delta = flt(expected[key] - actual[key], 3)
+			if not delta:
+				continue
+			mop, item_code, batch_no = key
+			ref = latest[key]
+			out.append(
+				{
+					"manufacturing_work_order": mwo,
+					"manufacturing_operation": mop,
+					"item_code": item_code,
+					"batch_no": batch_no,
+					"expected": expected[key],
+					"actual": actual[key],
+					"delta": delta,
+					"straddles": mop in underivable,
+					"already_repaired": key in repaired,
+					"latest_row": ref["name"],
+					"latest_voucher": f"{ref['voucher_type']} {ref['voucher_no']}",
+					"refined_on": refined_on,
+				}
+			)
+
+	out.sort(key=lambda r: (r["straddles"], -abs(r["delta"])))
+	return out[:limit]
 
 
 def run_all_audits(receive_doc: str | None = None) -> dict:
@@ -661,6 +980,10 @@ def run_all_audits(receive_doc: str | None = None) -> dict:
 			)
 
 	out["server_scripts"] = audit_active_server_scripts()
-	out["submission_queue_duplicates"] = audit_submission_queue_department_ir_duplicates()
+	out[
+		"submission_queue_duplicates"
+	] = audit_submission_queue_department_ir_duplicates()
 	out["error_log_dir_fallback_recent"] = audit_error_log_dir_fallback(20)
+	out["mop_balance_drift"] = audit_mop_balance_drift()
+	out["post_refining_contamination"] = audit_post_refining_contamination()
 	return out
