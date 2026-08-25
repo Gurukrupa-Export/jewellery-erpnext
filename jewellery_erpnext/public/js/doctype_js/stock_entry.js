@@ -1,6 +1,31 @@
 frappe.ui.form.off("Stock Entry", "get_items_from_transit_entry");
 
 frappe.ui.form.on("Stock Entry", {
+	gold_rate_with_gst(frm) {
+		if (frm.doc.gold_rate_with_gst) {
+			frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then((gold_gst_rate) => {
+				let gold_rate = flt(frm.doc.gold_rate_with_gst / (1 + flt(gold_gst_rate) / 100), 3);
+				if (gold_rate != flt(frm.doc.gold_rate, 3)) {
+					frappe.model.set_value(frm.doc.doctype, frm.doc.name, "gold_rate", gold_rate);
+				}
+			});
+		}
+	},
+	gold_rate(frm) {
+		if (frm.doc.gold_rate) {
+			frappe.db.get_single_value("Jewellery Settings", "gold_gst_rate").then((gold_gst_rate) => {
+				let gold_rate_with_gst = flt(frm.doc.gold_rate * (1 + flt(gold_gst_rate) / 100), 3);
+				if (gold_rate_with_gst != flt(frm.doc.gold_rate_with_gst, 3)) {
+					frappe.model.set_value(
+						frm.doc.doctype,
+						frm.doc.name,
+						"gold_rate_with_gst",
+						gold_rate_with_gst
+					);
+				}
+			});
+		}
+	},
 	refresh(frm) {
 		set_html(frm);
 		if (
