@@ -28,9 +28,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_mop_transfer_pcs_rows,
 	get_mwo_balance_rows,
 )
-from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
-	resolve_and_validate,
-)
 from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
 from jewellery_erpnext.utils import set_values_in_bulk, update_existing
 
@@ -4333,17 +4330,15 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 						"stock_reservation_entry": sre.name,
 						"stock_reservation_entry_detail": sb.name,
 						"item_code": sre.item_code,
-						"s_warehouse": resolve_and_validate(
-							item_code=sre.item_code,
-							qty=available_to_receive_qty,
-							batch_no=sb.batch_no,
-							mwo=sre.manufacturing_work_order,
-							mop=sre.manufacturing_operation,
-							sales_order=sre.voucher_no
-							if sre.voucher_type == "Sales Order"
-							else None,
-						)
-						or sre.warehouse,
+						# The source is the warehouse of THIS reservation row —
+						# never re-derived. An active SRE is where the reserved WIP
+						# physically is (the standing rule in this app; see
+						# `pc_tagging_stock_sync`), and the same (item, batch) is
+						# routinely reserved by dozens of sibling work orders under
+						# one Sales Order, each in its own WIP warehouse. Resolving
+						# by item/batch/Sales Order therefore picked an arbitrary
+						# sibling's warehouse and issued another work order's metal.
+						"s_warehouse": sre.warehouse,
 						"t_warehouse": t_warehouse,
 						"batch_no": sb.batch_no,
 						# Reserved Qty in the popup is the SRE remaining
@@ -4421,17 +4416,9 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 					"stock_reservation_entry": sre.name,
 					"stock_reservation_entry_detail": None,
 					"item_code": sre.item_code,
-					"s_warehouse": resolve_and_validate(
-						item_code=sre.item_code,
-						qty=available_to_receive_qty,
-						batch_no=None,
-						mwo=sre.manufacturing_work_order,
-						mop=sre.manufacturing_operation,
-						sales_order=sre.voucher_no
-						if sre.voucher_type == "Sales Order"
-						else None,
-					)
-					or sre.warehouse,
+					# Same rule as the batch branch above: this reservation's own
+					# warehouse, never re-derived from item / Sales Order.
+					"s_warehouse": sre.warehouse,
 					"t_warehouse": t_warehouse,
 					"batch_no": None,
 					"reserved_qty": sre_remaining,
@@ -4721,12 +4708,6 @@ def create_mr_wo_stock_entry(
 				"reservation_based_on",
 				"manufacturing_work_order",
 				"manufacturing_operation",
-				# Read further down for `sales_order=` into resolve_and_validate.
-				# Omitting them never raised: as_dict=True yields a frappe._dict
-				# whose missing keys return None — so the source warehouse was
-				# resolved WITHOUT the Sales Order the popup resolves it with.
-				"voucher_type",
-				"voucher_no",
 			],
 			as_dict=True,
 		)
@@ -4882,21 +4863,15 @@ def create_mr_wo_stock_entry(
 					)
 				)
 
-		# Resolve warehouse with robust multi-source fallback + stock validation.
-		# Falls back to original sre.warehouse if validation fails (already active SRE).
-		resolved_warehouse = (
-			resolve_and_validate(
-				item_code=sre.item_code,
-				qty=req_qty,
-				batch_no=batch_no,
-				mwo=sre.manufacturing_work_order,
-				mop=sre.manufacturing_operation,
-				sales_order=sre.voucher_no
-				if sre.voucher_type == "Sales Order"
-				else None,
-			)
-			or sre.warehouse
-		)
+		# The SRE row being received IS the physical location of this material,
+		# so the source warehouse is read straight off it — exactly what
+		# `get_make_receive_entry_rows` shows the operator. This used to run a
+		# multi-source resolver keyed on (item, batch, Sales Order); because one
+		# Sales Order spans dozens of work orders that each reserve the same
+		# batch in their own WIP warehouse, that resolver returned an arbitrary
+		# sibling's warehouse (and would even adopt a Delivered reservation's),
+		# issuing material the operation had never been given.
+		resolved_warehouse = sre.warehouse
 
 		# Inventory type / customer must correspond to the batch actually being
 		# received — not the client payload. The receive dialog sends neither
@@ -4949,6 +4924,13 @@ def create_mr_wo_stock_entry(
 			}
 		)
 
+	# Each row now carries the warehouse of its OWN reservation, so the rows of
+	# one receive can legitimately span warehouses. The header default only
+	# means anything when they all agree; stamping row 0's warehouse on a mixed
+	# receive would mislabel the entry (the per-row `s_warehouse` below is what
+	# actually drives the ledger either way).
+	source_warehouses = {vrow["s_warehouse"] for vrow in validated_rows}
+
 	# Build the Stock Entry. All preceding validations succeeded.
 	frappe.db.savepoint("make_receive_entry")
 	try:
@@ -4961,19 +4943,19 @@ def create_mr_wo_stock_entry(
 				"manufacturing_operation": mo.name,
 				"department": mo.department,
 				"to_warehouse": t_warehouse,
-				"from_warehouse": validated_rows[0]["s_warehouse"],
+				"from_warehouse": next(iter(source_warehouses))
+				if len(source_warehouses) == 1
+				else None,
 			}
 		)
 
-		if (
-			se_doc.from_warehouse
-			and se_doc.to_warehouse
-			and se_doc.from_warehouse == se_doc.to_warehouse
-		):
+		# Checked against every row's source, not just the header: a mixed
+		# receive leaves the header blank, and one bad row must still be caught.
+		if t_warehouse and t_warehouse in source_warehouses:
 			frappe.throw(
 				_(
 					"Source Warehouse and Target Warehouse cannot be the same ({0}). Please check the department's warehouse configuration."
-				).format(se_doc.from_warehouse)
+				).format(t_warehouse)
 			)
 
 		if request_id:
