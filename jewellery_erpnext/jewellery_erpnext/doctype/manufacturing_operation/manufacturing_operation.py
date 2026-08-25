@@ -21,18 +21,12 @@ from frappe.utils import (
 )
 
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
-)
-from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_available_qty_pcs_for_mop_item,
 	get_current_mop_balance_rows,
 	get_employee_ir_loss_map,
 	get_last_mop_index,
 	get_mop_transfer_pcs_rows,
 	get_mwo_balance_rows,
-)
-from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
-	resolve_and_validate,
 )
 from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
 from jewellery_erpnext.utils import set_values_in_bulk, update_existing
@@ -4336,17 +4330,15 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 						"stock_reservation_entry": sre.name,
 						"stock_reservation_entry_detail": sb.name,
 						"item_code": sre.item_code,
-						"s_warehouse": resolve_and_validate(
-							item_code=sre.item_code,
-							qty=available_to_receive_qty,
-							batch_no=sb.batch_no,
-							mwo=sre.manufacturing_work_order,
-							mop=sre.manufacturing_operation,
-							sales_order=sre.voucher_no
-							if sre.voucher_type == "Sales Order"
-							else None,
-						)
-						or sre.warehouse,
+						# The source is the warehouse of THIS reservation row —
+						# never re-derived. An active SRE is where the reserved WIP
+						# physically is (the standing rule in this app; see
+						# `pc_tagging_stock_sync`), and the same (item, batch) is
+						# routinely reserved by dozens of sibling work orders under
+						# one Sales Order, each in its own WIP warehouse. Resolving
+						# by item/batch/Sales Order therefore picked an arbitrary
+						# sibling's warehouse and issued another work order's metal.
+						"s_warehouse": sre.warehouse,
 						"t_warehouse": t_warehouse,
 						"batch_no": sb.batch_no,
 						# Reserved Qty in the popup is the SRE remaining
@@ -4424,17 +4416,9 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 					"stock_reservation_entry": sre.name,
 					"stock_reservation_entry_detail": None,
 					"item_code": sre.item_code,
-					"s_warehouse": resolve_and_validate(
-						item_code=sre.item_code,
-						qty=available_to_receive_qty,
-						batch_no=None,
-						mwo=sre.manufacturing_work_order,
-						mop=sre.manufacturing_operation,
-						sales_order=sre.voucher_no
-						if sre.voucher_type == "Sales Order"
-						else None,
-					)
-					or sre.warehouse,
+					# Same rule as the batch branch above: this reservation's own
+					# warehouse, never re-derived from item / Sales Order.
+					"s_warehouse": sre.warehouse,
 					"t_warehouse": t_warehouse,
 					"batch_no": None,
 					"reserved_qty": sre_remaining,
@@ -4724,12 +4708,6 @@ def create_mr_wo_stock_entry(
 				"reservation_based_on",
 				"manufacturing_work_order",
 				"manufacturing_operation",
-				# Read further down for `sales_order=` into resolve_and_validate.
-				# Omitting them never raised: as_dict=True yields a frappe._dict
-				# whose missing keys return None — so the source warehouse was
-				# resolved WITHOUT the Sales Order the popup resolves it with.
-				"voucher_type",
-				"voucher_no",
 			],
 			as_dict=True,
 		)
@@ -4885,21 +4863,15 @@ def create_mr_wo_stock_entry(
 					)
 				)
 
-		# Resolve warehouse with robust multi-source fallback + stock validation.
-		# Falls back to original sre.warehouse if validation fails (already active SRE).
-		resolved_warehouse = (
-			resolve_and_validate(
-				item_code=sre.item_code,
-				qty=req_qty,
-				batch_no=batch_no,
-				mwo=sre.manufacturing_work_order,
-				mop=sre.manufacturing_operation,
-				sales_order=sre.voucher_no
-				if sre.voucher_type == "Sales Order"
-				else None,
-			)
-			or sre.warehouse
-		)
+		# The SRE row being received IS the physical location of this material,
+		# so the source warehouse is read straight off it — exactly what
+		# `get_make_receive_entry_rows` shows the operator. This used to run a
+		# multi-source resolver keyed on (item, batch, Sales Order); because one
+		# Sales Order spans dozens of work orders that each reserve the same
+		# batch in their own WIP warehouse, that resolver returned an arbitrary
+		# sibling's warehouse (and would even adopt a Delivered reservation's),
+		# issuing material the operation had never been given.
+		resolved_warehouse = sre.warehouse
 
 		# Inventory type / customer must correspond to the batch actually being
 		# received — not the client payload. The receive dialog sends neither
@@ -4952,6 +4924,13 @@ def create_mr_wo_stock_entry(
 			}
 		)
 
+	# Each row now carries the warehouse of its OWN reservation, so the rows of
+	# one receive can legitimately span warehouses. The header default only
+	# means anything when they all agree; stamping row 0's warehouse on a mixed
+	# receive would mislabel the entry (the per-row `s_warehouse` below is what
+	# actually drives the ledger either way).
+	source_warehouses = {vrow["s_warehouse"] for vrow in validated_rows}
+
 	# Build the Stock Entry. All preceding validations succeeded.
 	frappe.db.savepoint("make_receive_entry")
 	try:
@@ -4964,19 +4943,19 @@ def create_mr_wo_stock_entry(
 				"manufacturing_operation": mo.name,
 				"department": mo.department,
 				"to_warehouse": t_warehouse,
-				"from_warehouse": validated_rows[0]["s_warehouse"],
+				"from_warehouse": next(iter(source_warehouses))
+				if len(source_warehouses) == 1
+				else None,
 			}
 		)
 
-		if (
-			se_doc.from_warehouse
-			and se_doc.to_warehouse
-			and se_doc.from_warehouse == se_doc.to_warehouse
-		):
+		# Checked against every row's source, not just the header: a mixed
+		# receive leaves the header blank, and one bad row must still be caught.
+		if t_warehouse and t_warehouse in source_warehouses:
 			frappe.throw(
 				_(
 					"Source Warehouse and Target Warehouse cannot be the same ({0}). Please check the department's warehouse configuration."
-				).format(se_doc.from_warehouse)
+				).format(t_warehouse)
 			)
 
 		if request_id:
@@ -5975,89 +5954,63 @@ def update_new_mop_wtg(
 				).format(log.item_code, log.batch_no, loss_pcs, baseline_pcs_batch)
 			)
 
-		log["qty_change"] = -loss_qty
-		log["pcs_change"] = -loss_pcs
-		log["from_warehouse"] = from_warehouse if from_warehouse else log.from_warehouse
-		log["to_warehouse"] = to_warehouse if to_warehouse else log.to_warehouse
-		log["manufacturing_operation"] = self.name
-		create_mop_log(doc=employee_ir_doc, row=log)
+		# Write the baseline ABSOLUTELY, do not recompute it from a running
+		# balance. This row IS the new operation's opening balance, and the
+		# operation has no rows yet -- a computed balance would open the
+		# operation at -loss_qty instead of baseline - loss_qty. Every other
+		# clone writer (create_mop_log_for_department_ir,
+		# creste_mop_log_for_employee_ir, create_mop_log_for_employee_ir_receive)
+		# copies balances verbatim for the same reason.
+		mop_log = frappe.new_doc("MOP Log")
+		mop_log.item_code = log.item_code
+		mop_log.batch_no = log.batch_no
 
-		# mop_log = frappe.new_doc("MOP Log")
-		# mop_log.item_code = log.item_code
-		# mop_log.batch_no = log.batch_no
+		# Reduce all three balance tiers by loss_qty. When loss_qty is 0
+		# (no loss matches this row) the baseline is cloned verbatim.
+		mop_log.qty_after_transaction = flt(
+			flt(log.qty_after_transaction) - loss_qty, 3
+		)
+		mop_log.qty_after_transaction_item_based = flt(
+			flt(log.qty_after_transaction_item_based) - loss_qty, 3
+		)
+		mop_log.qty_after_transaction_batch_based = new_qty_batch
 
-		# # Reduce all three balance tiers by loss_qty. When loss_qty is 0
-		# # (no loss matches this row) the baseline is cloned verbatim.
-		# mop_log.qty_after_transaction = flt(
-		# 	flt(log.qty_after_transaction) - loss_qty, 3
-		# )
-		# mop_log.qty_after_transaction_item_based = flt(
-		# 	flt(log.qty_after_transaction_item_based) - loss_qty, 3
-		# )
-		# mop_log.qty_after_transaction_batch_based = new_qty_batch
+		mop_log.pcs_after_transaction = cint(log.pcs_after_transaction) - loss_pcs
+		mop_log.pcs_after_transaction_item_based = (
+			cint(log.pcs_after_transaction_item_based) - loss_pcs
+		)
+		mop_log.pcs_after_transaction_batch_based = new_pcs_batch
 
-		# mop_log.pcs_after_transaction = cint(log.pcs_after_transaction) - loss_pcs
-		# mop_log.pcs_after_transaction_item_based = (
-		# 	cint(log.pcs_after_transaction_item_based) - loss_pcs
-		# )
-		# mop_log.pcs_after_transaction_batch_based = new_pcs_batch
+		mop_log.qty_change = -loss_qty
+		mop_log.pcs_change = -loss_pcs
+		mop_log.from_warehouse = (
+			from_warehouse if from_warehouse else log.from_warehouse
+		)
+		mop_log.to_warehouse = to_warehouse if to_warehouse else log.to_warehouse
+		mop_log.manufacturing_operation = self.name
+		mop_log.manufacturing_work_order = log.manufacturing_work_order
+		mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
+		mop_log.is_synced = 0
+		# flow_index = 0: baseline + loss are part of the new MOP's initial
+		# balance tier, not a downstream movement.
+		mop_log.flow_index = 0
 
-		# mop_log.from_warehouse = from_warehouse if loss_bucket else log.from_warehouse
-		# mop_log.to_warehouse = to_warehouse if loss_bucket else log.to_warehouse
-		# mop_log.manufacturing_operation = self.name
-		# mop_log.manufacturing_work_order = log.manufacturing_work_order
-		# mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
-		# mop_log.is_synced = 0
-		# # flow_index = 0: baseline + loss are part of the new MOP's
-		# # initial baseline tier, not a downstream movement.
-		# mop_log.flow_index = 0
+		if loss_bucket:
+			# Tie the row to the EIR voucher so the cancel cascade
+			# (UPDATE tabMOP Log WHERE voucher_type=... AND voucher_no=...)
+			# picks it up symmetrically with the other EIR logs.
+			mop_log.voucher_type = employee_ir_doc.doctype
+			mop_log.voucher_no = employee_ir_doc.name
+			mop_log.row_name = employee_ir_operation_row.name
+		else:
+			# Plain baseline clone -- keep the prior voucher tagging so
+			# downstream readers that care about source provenance can still
+			# find the originating Manufacturing Operation.
+			mop_log.voucher_type = "Manufacturing Operation"
+			mop_log.voucher_no = log.manufacturing_operation
+			mop_log.row_name = log.row_name
 
-		# if loss_bucket:
-		# 	# Tie the row to the EIR voucher so the cancel cascade
-		# 	# (`UPDATE tabMOP Log WHERE voucher_type=… AND voucher_no=…`)
-		# 	# picks it up symmetrically with the other EIR logs.
-		# 	mop_log.voucher_type = "Employee IR"
-		# 	mop_log.voucher_no = employee_ir_doc.name
-		# 	mop_log.row_name = employee_ir_operation_row.name
-		# 	mop_log.qty_change = -loss_qty
-		# 	mop_log.pcs_change = -loss_pcs
-
-		# 	mop_log.loss_weight = flt(loss_bucket.get("loss_weight_grams"), 3)
-		# 	loss_types = loss_bucket.get("loss_types") or []
-		# 	mop_log.loss_type = ", ".join(loss_types) if loss_types else None
-		# 	source_rows_list = loss_bucket.get("source_rows") or []
-		# 	joined = ",".join(source_rows_list)
-		# 	mop_log.loss_source_row = joined[:140] if len(joined) > 140 else joined
-
-		# 	processed_loss_keys.add(key)
-		# else:
-		# 	# Plain baseline clone — keep the prior voucher tagging so
-		# 	# downstream readers that care about source provenance can
-		# 	# still find the originating Manufacturing Operation.
-		# 	mop_log.voucher_type = "Manufacturing Operation"
-		# 	mop_log.voucher_no = log.manufacturing_operation
-		# 	mop_log.row_name = log.row_name
-
-		# mop_log.save()
-
-	# Loss keys that didn't find a baseline row aren't valid: a loss can
-	# only reduce a balance the new operation actually starts with.
-	# unprocessed = set(loss_map.keys()) - processed_loss_keys
-	# if unprocessed:
-	# 	details = ", ".join(
-	# 		f"{item}/{batch or 'no-batch'}"
-	# 		for item, batch in sorted(
-	# 			unprocessed, key=lambda k: (k[0] or "", k[1] or "")
-	# 		)
-	# 	)
-	# 	frappe.throw(
-	# 		_(
-	# 			"Employee IR loss is booked against item(s)/batch(es) that "
-	# 			"are not present in the previous Manufacturing Operation's "
-	# 			"baseline: {0}. Loss can only be applied to balances the "
-	# 			"new operation actually inherits."
-	# # 		).format(details)
-	# 	)
+		mop_log.save()
 
 
 def get_warehouse_from_previous_stock_entry(
