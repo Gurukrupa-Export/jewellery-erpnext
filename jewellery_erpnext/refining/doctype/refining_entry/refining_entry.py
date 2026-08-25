@@ -2307,18 +2307,53 @@ class RefiningEntry(Document):
 					(mwo.manufacturing_work_order,),
 				)
 
-				op = frappe.db.get_value(
+				# Zero the LEDGER for every operation of this MWO that still holds a
+				# balance -- not just MWO.manufacturing_operation. Metal strands on
+				# earlier operations routinely (a rework loop, a short return), and a
+				# balance left behind here survives refining: the next operation's
+				# opening balance picks it up and inflates a freshly issued weight.
+				# That is how a re-cast of 3.210g came out as 3.220g.
+				ops = frappe.get_all(
+					"MOP Log",
+					filters={
+						"manufacturing_work_order": mwo.manufacturing_work_order,
+						"is_cancelled": 0,
+						"manufacturing_operation": ["is", "set"],
+					},
+					pluck="manufacturing_operation",
+					distinct=True,
+				)
+				current_op = frappe.db.get_value(
 					"Manufacturing Work Order",
 					mwo.manufacturing_work_order,
 					"manufacturing_operation",
 				)
-				if not op:
+				if current_op:
+					ops.append(current_op)
+				ops = sorted({o for o in ops if o})
+
+				if not ops:
+					# Never silently skip: a refined MWO with no resolvable operation
+					# means the ledger cannot be zeroed, and the next issue against it
+					# will open on whatever balance survives.
+					frappe.log_error(
+						title="Refining: no operation to zero",
+						message=(
+							f"Refining Entry {self.name}: Manufacturing Work Order "
+							f"{mwo.manufacturing_work_order} has no Manufacturing "
+							"Operation and no active MOP Log rows, so its ledger could "
+							"not be zeroed. Any later issue against this MWO will not "
+							"start from a verified zero balance."
+						),
+					)
 					continue
 
-				# Create a 0-balance MOP Log for every active item in the current operation
+				# Create a 0-balance MOP Log for every active item in each operation
 				# so that future operations read a 0 balance from the ledger.
-				balance_rows = get_current_mop_balance_rows(op)
-				if balance_rows:
+				for op in ops:
+					balance_rows = get_current_mop_balance_rows(op)
+					if not balance_rows:
+						continue
 					last_idx = get_last_mop_index(op) or 0
 					for bal in balance_rows:
 						qty = flt(bal.get("qty_after_transaction_batch_based"))
