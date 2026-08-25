@@ -264,6 +264,12 @@ frappe.ui.form.on("Material Request", {
 			},
 		});
 	},
+	material_request_type(frm) {
+		apply_reservation_warehouse(frm);
+	},
+	custom_manufacturer(frm) {
+		apply_reservation_warehouse(frm);
+	},
 	validate(frm) {
 		$.each(frm.doc.items || [], function (i, d) {
 			d.custom_insurance_amount = flt(d.custom_insurance_rate) * flt(d.qty);
@@ -344,11 +350,19 @@ frappe.ui.form.on("Material Request Item", {
 	item_code(frm, cdt, cdn) {
 		frm.trigger("custom_insurance_rate");
 		let d = locals[cdt][cdn];
-		frappe.db.get_value("Item", d.item_code, "item_group", function (r) {
+		frappe.db.get_value("Item", d.item_code, ["item_group", "variant_of"], function (r) {
+			if (!r) return;
+
 			if (r.item_group == "Metal - V") {
 				d.pcs = 1;
 				frm.refresh_field("items");
 			}
+
+			// custom_variant_of is a fetch_from field, so it is not populated on the row yet
+			// at this point. Stamp it from this same round-trip -- the server re-fetches it
+			// to the identical value on save -- and derive the warehouse off it.
+			frappe.model.set_value(cdt, cdn, "custom_variant_of", r.variant_of || null);
+			apply_reservation_warehouse(frm);
 		});
 		if (d.item_code) {
 			var args = {
@@ -413,6 +427,52 @@ frappe.ui.form.on("Material Request Item", {
 		frm.refresh_field("items");
 	},
 });
+
+// {variant: target_warehouse} from Manufacturer.custom_reservation_table, cached per
+// manufacturer on the form so re-deriving on every row edit costs at most one round-trip.
+function get_reservation_warehouses(frm, manufacturer) {
+	frm.__reservation_warehouses = frm.__reservation_warehouses || {};
+	if (frm.__reservation_warehouses[manufacturer]) {
+		return Promise.resolve(frm.__reservation_warehouses[manufacturer]);
+	}
+
+	return frappe
+		.call({
+			method: "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.get_reservation_warehouses",
+			args: { manufacturer: manufacturer },
+		})
+		.then((r) => {
+			const warehouse_map = (r && r.message) || {};
+			frm.__reservation_warehouses[manufacturer] = warehouse_map;
+			return warehouse_map;
+		});
+}
+
+// Derive set_warehouse from the manufacturer's reservation table. Re-runs whenever the item,
+// the manufacturer or the request type changes, so switching an M row to a D row re-routes it.
+// A value the user typed by hand survives until one of those inputs changes.
+function apply_reservation_warehouse(frm) {
+	if (frm.doc.material_request_type !== "Manufacture") return;
+
+	const manufacturer = frm.doc.custom_manufacturer || frappe.defaults.get_user_default("manufacturer");
+	if (!manufacturer) return;
+
+	const rows = frm.doc.items || [];
+	if (!rows.length) return;
+
+	get_reservation_warehouses(frm, manufacturer).then((warehouse_map) => {
+		// Every row must resolve to the same warehouse; an unmapped row yields undefined and
+		// fails this check, leaving a partially-mappable request alone rather than half-routed.
+		const targets = [...new Set(rows.map((row) => warehouse_map[row.custom_variant_of]))];
+		if (targets.length !== 1 || !targets[0]) return;
+		if (frm.doc.set_warehouse === targets[0]) return;
+
+		// ERPNext's set_warehouse handler cascades this to every row via autofill_warehouse,
+		// keeping header and rows consistent so reset_default_field_value cannot clear it.
+		frm.set_value("set_warehouse", targets[0]);
+	});
+}
+
 erpnext.stock.select_batch_and_serial_no = (frm, item) => {
 	let path = "assets/erpnext/js/utils/serial_no_batch_selector.js";
 
