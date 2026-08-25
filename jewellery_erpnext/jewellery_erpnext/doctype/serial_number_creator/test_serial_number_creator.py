@@ -32,6 +32,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_nu
 	_warehouse_has_batch_stock,
 	calulate_id_wise_sum_up,
 	split_source_rows_by_reservation,
+	to_prepare_data_for_make_mnf_stock_entry,
 	validate_qty,
 )
 
@@ -1119,6 +1120,49 @@ class TestSplitSourceRowsByReservation(IntegrationTestCase):
 
 	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
 	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps")
+	def test_shortfall_warns_on_the_draft_save(self, mock_caps, _mock_mwos):
+		# The silent no-op above is what let the 0.01 g gap reach submit unannounced.
+		mock_caps.return_value = [(_WAXING, 3.48, ["a"]), (_MODEL_MAKING, 0.02, ["b"])]
+		doc = self._snc(
+			[
+				{
+					"row_material": _LIVE_ITEM,
+					"qty": 3.577,
+					"pcs": 2,
+					"batch_no": _LIVE_BATCH,
+					"s_warehouse": _WAXING,
+				}
+			]
+		)
+		frappe.local.message_log = []
+		split_source_rows_by_reservation(doc)
+		messages = " ".join(str(m) for m in frappe.local.message_log)
+		self.assertIn("short by", messages)
+		self.assertIn("0.077", messages)
+
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(
+		f"{_SNC_MODULE}._reserved_warehouse_caps",
+		return_value=[(_WAXING, 3.577, ["a"])],
+	)
+	def test_no_warning_when_reservations_cover_the_rows(self, _mock_caps, _mock_mwos):
+		doc = self._snc(
+			[
+				{
+					"row_material": _LIVE_ITEM,
+					"qty": 3.577,
+					"pcs": 2,
+					"batch_no": _LIVE_BATCH,
+					"s_warehouse": _WAXING,
+				}
+			]
+		)
+		frappe.local.message_log = []
+		split_source_rows_by_reservation(doc)
+		self.assertNotIn("short by", " ".join(str(m) for m in frappe.local.message_log))
+
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps")
 	def test_collapses_back_when_reservations_merge(self, mock_caps, _mock_mwos):
 		# A draft split earlier; the reservations have since consolidated onto one
 		# warehouse, so the group must merge back to a single row.
@@ -1174,3 +1218,109 @@ class TestSplitSourceRowsByReservation(IntegrationTestCase):
 		)
 		split_source_rows_by_reservation(doc)
 		mock_caps.assert_not_called()
+
+
+_LOCK_MODULE = "jewellery_erpnext.jewellery_erpnext.lock_order"
+
+
+class _ReachedPriorityOne(Exception):
+	"""Marker: execution got past the reservation guard into warehouse resolution."""
+
+
+class TestSubmitReservationShortfallGuard(IntegrationTestCase):
+	"""A group needing more than this job has reserved must stop at submit, with the
+	numbers — not reach the Stock Entry and come back as ERPNext's NegativeStockError.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _doc(self, qty):
+		doc = frappe.new_doc("Serial Number Creator")
+		doc.manufacturing_work_order = "MWO-TEST-001"
+		doc.append(
+			"source_table",
+			{
+				"row_material": _LIVE_ITEM,
+				"qty": qty,
+				"pcs": 2,
+				"uom": "Gram",
+				"batch_no": _LIVE_BATCH,
+				"s_warehouse": _WAXING,
+			},
+		)
+		return doc
+
+	@patch(f"{_LOCK_MODULE}.lock_bins")
+	@patch(f"{_LOCK_MODULE}.preallocate_series_for_docs")
+	@patch(f"{_LOCK_MODULE}.series_stubs", return_value=[])
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(
+		f"{_SNC_MODULE}._warehouses_with_physical_batch",
+		return_value=[(_WAXING, 31.189)],
+	)
+	@patch(f"{_SNC_MODULE}._free_warehouse_qty", return_value=0.0)
+	@patch(
+		f"{_SNC_MODULE}._reserved_warehouse_caps",
+		return_value=[(_WAXING, 3.176, ["a"])],
+	)
+	def test_throws_when_reserved_is_short(
+		self, _caps, _free, _phys, _mwos, _stubs, _pre, _lock
+	):
+		# The live case: 3.186 needed, 3.176 reserved, every other gram in the warehouse
+		# reserved for OTHER sales orders (free = 0). Physical batch qty is plentiful, so
+		# the warehouse resolution downstream would happily pass.
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			to_prepare_data_for_make_mnf_stock_entry(self._doc(3.186))
+		message = str(ctx.exception)
+		self.assertIn("short by", message)
+		self.assertIn("0.01", message)
+
+	@patch(f"{_LOCK_MODULE}.lock_bins")
+	@patch(f"{_LOCK_MODULE}.preallocate_series_for_docs")
+	@patch(f"{_LOCK_MODULE}.series_stubs", return_value=[])
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(f"{_SNC_MODULE}._free_warehouse_qty", return_value=5.0)
+	@patch(
+		f"{_SNC_MODULE}._reserved_warehouse_caps",
+		return_value=[(_WAXING, 3.176, ["a"])],
+	)
+	def test_no_throw_when_free_stock_covers_the_excess(
+		self, _caps, _free, _mwos, _stubs, _pre, _lock
+	):
+		# Reservation is short, but the warehouse holds unreserved stock — that is how
+		# these submits passed before the guard existed, so it must not start blocking them.
+		with patch(f"{_SNC_MODULE}._active_sres_for", side_effect=_ReachedPriorityOne):
+			with self.assertRaises(_ReachedPriorityOne):
+				to_prepare_data_for_make_mnf_stock_entry(self._doc(3.186))
+
+	@patch(f"{_LOCK_MODULE}.lock_bins")
+	@patch(f"{_LOCK_MODULE}.preallocate_series_for_docs")
+	@patch(f"{_LOCK_MODULE}.series_stubs", return_value=[])
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(f"{_SNC_MODULE}._reserved_warehouse_caps", return_value=[])
+	def test_group_without_reservations_is_not_guarded(
+		self, _caps, _mwos, _stubs, _pre, _lock
+	):
+		# No reservation at all still falls through to the PC Receive / Stock Entry
+		# warehouse fallbacks — the guard must not hijack that path. Reaching
+		# _active_sres_for (PRIORITY 1) is the proof it was not thrown out before.
+		with patch(f"{_SNC_MODULE}._active_sres_for", side_effect=_ReachedPriorityOne):
+			with self.assertRaises(_ReachedPriorityOne):
+				to_prepare_data_for_make_mnf_stock_entry(self._doc(3.186))
+
+	@patch(f"{_LOCK_MODULE}.lock_bins")
+	@patch(f"{_LOCK_MODULE}.preallocate_series_for_docs")
+	@patch(f"{_LOCK_MODULE}.series_stubs", return_value=[])
+	@patch(f"{_SNC_MODULE}._pmo_mwo_names", return_value=("PMO-1", ["MWO-TEST-001"]))
+	@patch(
+		f"{_SNC_MODULE}._reserved_warehouse_caps",
+		return_value=[(_WAXING, 3.186, ["a"])],
+	)
+	def test_fully_reserved_group_passes_the_guard(
+		self, _caps, _mwos, _stubs, _pre, _lock
+	):
+		with patch(f"{_SNC_MODULE}._active_sres_for", side_effect=_ReachedPriorityOne):
+			with self.assertRaises(_ReachedPriorityOne):
+				to_prepare_data_for_make_mnf_stock_entry(self._doc(3.186))
