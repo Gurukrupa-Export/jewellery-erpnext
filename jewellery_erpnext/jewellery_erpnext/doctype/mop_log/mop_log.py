@@ -38,36 +38,37 @@ current_balance_fields = select_fields + [
 class MOPLog(Document):
 	def validate(self):
 		first_char = self.item_code[0] if self.item_code else None
-		qty_after_prefix = self.qty_after_transaction
-		pcs_after_prefix = self.pcs_after_transaction
 		prefix = FIELD_MAP.get(first_char)
-		if prefix:
-			if self.manufacturing_operation:
-				# Canonical lock order: take the Manufacturing Operation row lock up front
-				# (it is the terminal sink) so concurrent MOP-Log writers and Department-IR
-				# weight recompute acquire the MO in a consistent position relative to
-				# Bin/SLE — this breaks the MO<->Bin deadlock cycle. The set_value below
-				# would lock the same row a moment later anyway, so this adds no new lock.
-				frappe.db.get_value(
-					"Manufacturing Operation",
-					self.manufacturing_operation,
-					"name",
-					for_update=True,
-				)
-			update_value = {f"{prefix}_wt": qty_after_prefix}
-			if first_char in ("D", "G"):
-				update_value.update(
-					{
-						f"{prefix}_wt_in_gram": qty_after_prefix * 0.2,
-						f"{prefix}_pcs": pcs_after_prefix,
-					}
-				)
-			frappe.db.set_value(
-				"Manufacturing Operation",
-				self.manufacturing_operation,
-				update_value,
-			)
-			update_wt_detail(self.manufacturing_operation)
+		if not (prefix and self.manufacturing_operation):
+			return
+
+		# Canonical lock order: take the Manufacturing Operation row lock up front
+		# (it is the terminal sink) so concurrent MOP-Log writers and Department-IR
+		# weight recompute acquire the MO in a consistent position relative to
+		# Bin/SLE — this breaks the MO<->Bin deadlock cycle. The set_value inside the
+		# recompute below would lock the same row a moment later anyway, so this adds
+		# no new lock.
+		frappe.db.get_value(
+			"Manufacturing Operation",
+			self.manufacturing_operation,
+			"name",
+			for_update=True,
+		)
+
+		# Derive every bucket from the batch tier instead of stamping this one row's
+		# ``qty_after_transaction``. That field is a *family-wide* running total (every
+		# ``F-`` item shares the ``finding`` bucket), and only the last row written by
+		# create_mop_log_for_stock_transfer_to_mo actually holds it correctly: the clone
+		# writers copy it verbatim per row, and update_new_mop_wtg decrements it by a
+		# per-(item, batch) loss. Stamping it made the header last-writer-wins, so on an
+		# operation carrying two items of the same family every row but the last had its
+		# movement silently dropped from the header — MOP-7Q48F read finding_wt 1.945
+		# against a ledger of 0.608 + 1.323 = 1.931, hiding 0.014g of booked loss.
+		# Narrowed to this row's own family so a per-row save cannot touch a bucket
+		# authored outside MOP Log (the MWO->MOP seed, the Refining zero-out).
+		recalculate_manufacturing_operation_weights(
+			self.manufacturing_operation, pending=self, prefixes=(prefix,)
+		)
 
 
 def update_wt_detail(manufacturing_operation):
@@ -121,14 +122,31 @@ def update_wt_detail(manufacturing_operation):
 	)
 
 
-def recalculate_manufacturing_operation_weights(mop_name, pending=None):
+def recalculate_manufacturing_operation_weights(mop_name, pending=None, prefixes=None):
 	"""Recompute all weight buckets on a Manufacturing Operation from its
 	active MOP Log rows.
 
-	Called after bulk is_cancelled flips so the MOP stays in sync with the
-	remaining-active-rows balance.  ``pending`` is the in-flight MOPLog row
-	(self) when invoked from MOPLog.validate — it overrides the DB entry for
-	the same (item, batch) key, or drops it when is_cancelled=1.
+	This is the authoritative header writer. ``MOPLog.validate`` calls it for every
+	row it saves and the Department/Employee IR cancel legs call it after a bulk
+	is_cancelled flip, so the header is always the sum of the batch tier rather than
+	one row's stale snapshot of the family-wide tier.
+
+	``pending`` is the in-flight MOPLog row (self) when invoked from
+	MOPLog.validate — it overrides the DB entry for the same (item, batch) key,
+	or drops it when is_cancelled=1.
+
+	Rows at or before the MWO's Work Order Refining cutoff are ignored: refining
+	zeroes the MWO, so a surviving pre-refining row must not rebuild a header that
+	the Refining Entry deliberately set to 0. See :func:`drop_pre_refining_rows`.
+
+	``prefixes`` narrows the write to the named weight families (values of
+	``FIELD_MAP``, e.g. ``("finding",)``). MOPLog.validate passes the single family
+	its row belongs to, so a per-row save can only touch the bucket that row
+	actually moves and never clobbers a bucket authored outside MOP Log -- the
+	MWO->MOP weight copy in ``create_manufacturing_operation`` seeds diamond/gemstone
+	weights before any ledger row exists, and an unnarrowed recompute on the first
+	metal row would zero them. Omit it to rewrite every bucket (the cancel legs and
+	the repair patch do, deliberately).
 	"""
 	rows = frappe.db.sql(
 		"""
@@ -137,6 +155,7 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None):
 		    batch_no,
 		    qty_after_transaction_batch_based  AS qaf_batch,
 		    pcs_after_transaction_batch_based  AS pcs_batch,
+		    manufacturing_work_order,
 		    name,
 		    creation
 		FROM `tabMOP Log`
@@ -154,18 +173,37 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None):
 		key = (row["item_code"], row["batch_no"])
 		latest[key] = row
 
-	# Apply in-flight pending row (from MOPLog.validate).
+	# Dedup first, then drop by cutoff: a key whose latest row is post-refining
+	# carries forward; a key with only pre-refining rows drops out entirely.
+	mwo = next(
+		(
+			row.get("manufacturing_work_order")
+			for row in latest.values()
+			if row.get("manufacturing_work_order")
+		),
+		None,
+	) or getattr(pending, "manufacturing_work_order", None)
+	surviving = {
+		(row.get("item_code"), row.get("batch_no")): row
+		for row in drop_pre_refining_rows(list(latest.values()), mwo)
+	}
+
+	# Overlay the in-flight row (from MOPLog.validate) AFTER the cutoff: it is being
+	# written now, so it is post-refining by construction and needs no timestamp of
+	# its own -- which also keeps this path off the system time zone.
 	if pending is not None:
 		key = (pending.item_code, pending.batch_no)
 		if cint(pending.is_cancelled):
-			latest.pop(key, None)
+			surviving.pop(key, None)
 		else:
-			latest[key] = {
+			surviving[key] = {
 				"item_code": pending.item_code,
 				"batch_no": pending.batch_no,
 				"qaf_batch": flt(pending.qty_after_transaction_batch_based),
 				"pcs_batch": flt(pending.pcs_after_transaction_batch_based),
 			}
+
+	entries = list(surviving.values())
 
 	# Aggregate into weight buckets per item-type prefix.
 	buckets = {
@@ -179,7 +217,7 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None):
 		"gemstone_pcs": 0.0,
 		"other_wt": 0.0,
 	}
-	for entry in latest.values():
+	for entry in entries:
 		first_char = (entry.get("item_code") or "")[:1]
 		prefix = FIELD_MAP.get(first_char)
 		if not prefix:
@@ -192,6 +230,14 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None):
 			buckets[f"{prefix}_pcs"] += pcs
 		else:
 			buckets[f"{prefix}_wt"] += qty
+
+	if prefixes:
+		wanted = set()
+		for prefix in prefixes:
+			wanted.update({f"{prefix}_wt", f"{prefix}_wt_in_gram", f"{prefix}_pcs"})
+		buckets = {k: v for k, v in buckets.items() if k in wanted}
+		if not buckets:
+			return
 
 	frappe.db.set_value("Manufacturing Operation", mop_name, buckets)
 	update_wt_detail(mop_name)
