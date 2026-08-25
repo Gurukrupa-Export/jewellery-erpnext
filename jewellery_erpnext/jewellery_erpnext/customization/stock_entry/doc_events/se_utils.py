@@ -464,6 +464,26 @@ def set_gross_wt(self):
 			row.gross_weight = gross_weight
 
 
+def set_jwelex_tag_no(self):
+	"""Mirror ``Serial No.custom_jwelex_tag_no`` onto the row.
+
+	``Stock Entry Detail.serial_no`` is a newline-separated Text field, not a Link,
+	so Frappe's ``fetch_from`` cannot resolve it -- the value has to be stamped here.
+	The target field holds one tag, so a multi-serial row takes the first serial,
+	matching the ``edit_bom`` handler in ``public/js/doctype_js/stock_entry.js``.
+	"""
+	for row in self.items:
+		if not row.serial_no:
+			continue
+
+		serial_no = (row.serial_no or "").split("\n")[0].strip()
+		row.custom_jwelex_tag_no = (
+			frappe.db.get_value("Serial No", serial_no, "custom_jwelex_tag_no")
+			if serial_no
+			else None
+		)
+
+
 def validate_warehouse(self):
 	if self.stock_entry_type != "Material Transfer (WORK ORDER)":
 		return

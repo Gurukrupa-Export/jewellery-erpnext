@@ -369,6 +369,38 @@ def is_mwo_refined(manufacturing_work_order):
 	)
 
 
+def get_mwo_refining_cutoff(manufacturing_work_order):
+	"""Submit time of the Work Order Refining Entry that consumed this MWO's metal, else None.
+
+	Companion to :func:`is_mwo_refined`. Refining zeroes the MWO's balances, so every MOP
+	Log row created at or before this moment describes metal that no longer exists. Readers
+	that rebuild an opening balance from the ledger must ignore those rows: on data written
+	before the refining zero-out was made reliable, a pre-refining row can still be the
+	latest one for its (item, batch) and would resurrect a dead balance.
+
+	Recasting a refined MWO is an expected manual flow (``complete_refining`` only
+	*advises* the Work Order action), so this is a cutoff, never a reason to drop a real
+	movement -- post-refining stock movements must still be ledgered, just against a zero
+	opening balance.
+	"""
+	if not manufacturing_work_order:
+		return None
+	rows = frappe.db.sql(
+		"""
+		SELECT MAX(re.modified) AS refined_on
+		FROM `tabManufacturing Work Order Refining Details` d
+		INNER JOIN `tabRefining Entry` re ON re.name = d.parent
+		WHERE d.manufacturing_work_order = %s
+		  AND d.parenttype = 'Refining Entry'
+		  AND re.docstatus = 1
+		  AND re.refining_type = 'Work Order Refining'
+		""",
+		(manufacturing_work_order,),
+		as_dict=True,
+	)
+	return rows[0].get("refined_on") if rows else None
+
+
 def set_values_in_bulk(doctype, doclist, values):
 	Doc = frappe.qb.DocType(doctype)
 	query = frappe.qb.update(Doc)

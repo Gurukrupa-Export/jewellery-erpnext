@@ -63,3 +63,4 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_entered_metal_rate
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_stock_entry
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_customer_gold_receipt
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_make_receive_entry_mop_cap
