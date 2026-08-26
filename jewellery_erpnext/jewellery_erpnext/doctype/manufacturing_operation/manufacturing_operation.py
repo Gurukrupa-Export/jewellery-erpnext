@@ -5914,6 +5914,11 @@ def update_new_mop_wtg(
 		self.previous_mop,
 		exclude_voucher_no=employee_ir_doc.name if employee_ir_doc else None,
 	)
+
+	# First pass: validate each (item, batch) against its own loss bucket and work
+	# out the batch-tier balance. Nothing is written until every row has passed, so
+	# a throw below leaves no half-built baseline behind.
+	prepared = []
 	for log in mop_logs:
 		key = (log.item_code, log.batch_no)
 		loss_bucket = loss_map.get(key)
@@ -5954,31 +5959,69 @@ def update_new_mop_wtg(
 				).format(log.item_code, log.batch_no, loss_pcs, baseline_pcs_batch)
 			)
 
-		# Write the baseline ABSOLUTELY, do not recompute it from a running
-		# balance. This row IS the new operation's opening balance, and the
-		# operation has no rows yet -- a computed balance would open the
-		# operation at -loss_qty instead of baseline - loss_qty. Every other
-		# clone writer (create_mop_log_for_department_ir,
-		# creste_mop_log_for_employee_ir, create_mop_log_for_employee_ir_receive)
-		# copies balances verbatim for the same reason.
+		prepared.append(
+			{
+				"log": log,
+				"loss_bucket": loss_bucket,
+				"loss_qty": loss_qty,
+				"loss_pcs": loss_pcs,
+				"new_qty_batch": new_qty_batch,
+				"new_pcs_batch": new_pcs_batch,
+			}
+		)
+
+	# Second pass: write the rows, accumulating the family- and item-wide tiers as
+	# running totals over the batch tier.
+	#
+	# ``qty_after_transaction`` is the total for the item-code FAMILY (every ``F-``
+	# item shares the ``finding`` bucket) and ``*_item_based`` the total for one item
+	# code. Deriving them as ``source_value - loss_qty`` was a category error: loss_qty
+	# is scoped to one (item, batch), so when two findings lost weight in the same
+	# Employee IR each row netted only its own loss out of the shared family total and
+	# neither held the true figure. Accumulating instead makes the last row of each
+	# family carry the correct total, which is the invariant the tier always meant to
+	# hold. The same fix covers one item spread across several batches at the item tier.
+	#
+	# The batch tier is still written ABSOLUTELY from the previous operation's balance:
+	# this row IS the new operation's opening balance and the operation has no rows
+	# yet, so a computed balance would open it at -loss_qty instead of
+	# baseline - loss_qty.
+	running_qty_prefix: dict = {}
+	running_qty_item: dict = {}
+	running_pcs_prefix: dict = {}
+	running_pcs_item: dict = {}
+	for prep in prepared:
+		log = prep["log"]
+		loss_bucket = prep["loss_bucket"]
+		loss_qty = prep["loss_qty"]
+		loss_pcs = prep["loss_pcs"]
+		new_qty_batch = prep["new_qty_batch"]
+		new_pcs_batch = prep["new_pcs_batch"]
+
+		family = (log.item_code or "")[:1]
+		running_qty_prefix[family] = flt(
+			flt(running_qty_prefix.get(family)) + new_qty_batch, 3
+		)
+		running_qty_item[log.item_code] = flt(
+			flt(running_qty_item.get(log.item_code)) + new_qty_batch, 3
+		)
+		running_pcs_prefix[family] = (
+			cint(running_pcs_prefix.get(family)) + new_pcs_batch
+		)
+		running_pcs_item[log.item_code] = (
+			cint(running_pcs_item.get(log.item_code)) + new_pcs_batch
+		)
+
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = log.item_code
 		mop_log.batch_no = log.batch_no
 
-		# Reduce all three balance tiers by loss_qty. When loss_qty is 0
-		# (no loss matches this row) the baseline is cloned verbatim.
-		mop_log.qty_after_transaction = flt(
-			flt(log.qty_after_transaction) - loss_qty, 3
-		)
-		mop_log.qty_after_transaction_item_based = flt(
-			flt(log.qty_after_transaction_item_based) - loss_qty, 3
-		)
+		mop_log.qty_after_transaction = running_qty_prefix[family]
+		mop_log.qty_after_transaction_item_based = running_qty_item[log.item_code]
 		mop_log.qty_after_transaction_batch_based = new_qty_batch
 
-		mop_log.pcs_after_transaction = cint(log.pcs_after_transaction) - loss_pcs
-		mop_log.pcs_after_transaction_item_based = (
-			cint(log.pcs_after_transaction_item_based) - loss_pcs
-		)
+		mop_log.pcs_after_transaction = running_pcs_prefix[family]
+		mop_log.pcs_after_transaction_item_based = running_pcs_item[log.item_code]
 		mop_log.pcs_after_transaction_batch_based = new_pcs_batch
 
 		mop_log.qty_change = -loss_qty

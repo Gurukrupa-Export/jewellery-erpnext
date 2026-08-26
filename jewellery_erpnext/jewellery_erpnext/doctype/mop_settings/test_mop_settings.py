@@ -58,12 +58,14 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_mark_all_mwo_mop_logs_synced,
 	_mop_manufacturer_label,
 	_mwo_realized_by_artifact,
+	_pick_shortfall_warehouse,
 	_plan_mwo_group,
 	_preload_sre_warehouse_map,
 	_process_mwo_group,
 	_reconcile_reservations_bulk,
 	_reconcile_reservations_for_mwo,
 	_reserve_batch_at_physical_warehouse,
+	_reserve_batch_shortfall,
 	_reserve_sres_from_eod_se_rows,
 	_resolve_department_warehouse,
 	_resolve_eod_manufacturer_label,
@@ -72,6 +74,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_run_backlog_catchup,
 	_save_draft_eod_se,
 	_snapshot_mwo_sres_for_relocation,
+	_sre_remaining_for_batch,
 	_stamp_last_eod_sync,
 	_today_range,
 	_validate_eod_items_for_mwo_reservation,
@@ -1995,6 +1998,234 @@ class TestSreRelocation(IntegrationTestCase):
 		_cancel_sre_snapshots([{"sre": FrappeDict({"name": "SRE-1"})}])
 		fake.cancel.assert_called_once()
 
+	@staticmethod
+	def _batched_sre_row(name="SRE-1", warehouse="WH-SRE", qty=5.0):
+		return FrappeDict(
+			{
+				"name": name,
+				"item_code": "M-1",
+				"warehouse": warehouse,
+				"reserved_qty": qty,
+				"delivered_qty": 0.0,
+				"voucher_type": "Sales Order",
+				"voucher_no": "SO-1",
+				"voucher_detail_no": "row1",
+				"voucher_qty": qty,
+				"company": "Test Co",
+				"stock_uom": "Gram",
+				"reservation_based_on": "Serial and Batch",
+				"manufacturing_work_order": "MWO-1",
+				"manufacturing_operation": "MOP-A",
+			}
+		)
+
+	@patch(f"{_MOD}.frappe.get_all")
+	@patch(f"{_MOD}.frappe.get_cached_value", return_value=(1, 0))
+	@patch(f"{_MOD}.frappe.db.get_all")
+	def test_snapshot_skips_sre_for_a_batch_that_is_not_moving(
+		self, mock_db_get_all, _mock_cached, mock_get_all
+	):
+		# Live defect: 0.01 g of batch B2 sat at the same item + same warehouse as the
+		# batch being relocated. Cancelling it here left nothing for the SE-row rebuild
+		# to re-reserve, and the hard delete then made the loss permanent.
+		mock_db_get_all.return_value = [self._batched_sre_row(qty=0.01)]
+		mock_get_all.return_value = [
+			FrappeDict({"batch_no": "B2", "qty": 0.01, "delivered_qty": 0.0})
+		]
+		items = [
+			{"item_code": "M-1", "batch_no": "B1", "s_warehouse": "WH-SRE", "qty": 5.0}
+		]
+		self.assertEqual(
+			_snapshot_mwo_sres_for_relocation("MWO-1", items, "WH-DEPT"), []
+		)
+
+	@patch(f"{_MOD}.frappe.get_all")
+	@patch(f"{_MOD}.frappe.get_cached_value", return_value=(1, 0))
+	@patch(f"{_MOD}.frappe.db.get_all")
+	def test_snapshot_keeps_sre_when_one_of_its_batches_moves(
+		self, mock_db_get_all, _mock_cached, mock_get_all
+	):
+		mock_db_get_all.return_value = [self._batched_sre_row()]
+		mock_get_all.return_value = [
+			FrappeDict({"batch_no": "B1", "qty": 3.0, "delivered_qty": 0.0}),
+			FrappeDict({"batch_no": "B2", "qty": 2.0, "delivered_qty": 0.0}),
+		]
+		items = [
+			{"item_code": "M-1", "batch_no": "B1", "s_warehouse": "WH-SRE", "qty": 3.0}
+		]
+		snaps = _snapshot_mwo_sres_for_relocation("MWO-1", items, "WH-DEPT")
+		self.assertEqual(len(snaps), 1)
+		# The unmoved batch travels in the snapshot too: the caller's post-condition
+		# guard restores it after the wholesale cancel.
+		self.assertEqual(
+			[sb["batch_no"] for sb in snaps[0]["sb_entries"]], ["B1", "B2"]
+		)
+
+	@patch(f"{_MOD}.frappe.get_all")
+	@patch(f"{_MOD}.frappe.get_cached_value", return_value=(1, 0))
+	@patch(f"{_MOD}.frappe.db.get_all")
+	def test_snapshot_keeps_batched_sre_when_moved_row_has_no_batch(
+		self, mock_db_get_all, _mock_cached, mock_get_all
+	):
+		# A moved row without a batch says nothing about which lots travel, so every
+		# reservation at that warehouse stays a candidate (pre-batch behaviour).
+		mock_db_get_all.return_value = [self._batched_sre_row()]
+		mock_get_all.return_value = [
+			FrappeDict({"batch_no": "B2", "qty": 5.0, "delivered_qty": 0.0})
+		]
+		items = [
+			{"item_code": "M-1", "batch_no": None, "s_warehouse": "WH-SRE", "qty": 5.0}
+		]
+		self.assertEqual(
+			len(_snapshot_mwo_sres_for_relocation("MWO-1", items, "WH-DEPT")), 1
+		)
+
+
+# ---------------------------------------------------------------------------
+# TestReservationShortfall (a reservation that came back SHORT, not missing)
+# ---------------------------------------------------------------------------
+
+_SNC_MOD = (
+	"jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator"
+	".serial_number_creator"
+)
+_ERPNEXT_SRE = (
+	"erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry"
+	".get_available_qty_to_reserve"
+)
+
+
+class TestReservationShortfall(IntegrationTestCase):
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_SNC_MOD}._active_sres_for")
+	def test_remaining_sums_live_reservations_across_warehouses(self, mock_sres):
+		mock_sres.return_value = [
+			({"name": "a", "warehouse": "WH-1"}, 3.176),
+			({"name": "b", "warehouse": "WH-2"}, 0.01),
+		]
+		self.assertEqual(
+			_sre_remaining_for_batch("MWO-1", "M-1", "B1"),
+			3.186,
+		)
+
+	@patch(f"{_SNC_MOD}._active_sres_for", return_value=[])
+	def test_remaining_is_zero_without_reservations(self, _mock):
+		self.assertEqual(_sre_remaining_for_batch("MWO-1", "M-1", "B1"), 0.0)
+
+	def _patch_candidates(self, free_by_wh, inbound=None, own=None, wh_free=None):
+		"""Patch the candidate discovery so only ``free_by_wh`` warehouses are on offer."""
+		patches = [
+			patch(
+				f"{_MOD}._physical_batch_warehouses",
+				return_value={wh: 99.0 for wh in free_by_wh},
+			),
+			patch(f"{_MOD}._cancelled_and_sibling_sre_warehouses", return_value=[]),
+			patch(f"{_MOD}._mop_log_to_warehouses", return_value=[]),
+			patch(f"{_MOD}._warehouses_of_company", side_effect=lambda whs, _co: whs),
+			patch(
+				f"{_MOD}._free_batch_qty_to_reserve",
+				side_effect=lambda _i, wh, _b: free_by_wh.get(wh, 0.0),
+			),
+			patch(f"{_MOD}._mwo_inbound_batch_warehouses", return_value=inbound or []),
+			# The operation is a candidate hint only. Left unpatched it reaches
+			# frappe.get_cached_doc for an operation that does not exist on a fresh test
+			# site, which raised DoesNotExistError before the lookup was made fail-soft.
+			patch(f"{_MOD}._operation_department_warehouse", return_value=None),
+			patch(
+				f"{_MOD}.frappe.db.sql",
+				return_value=[(wh,) for wh in (own or [])],
+			),
+			patch(
+				_ERPNEXT_SRE,
+				side_effect=lambda _i, wh: (wh_free or {}).get(wh, 99.0),
+			),
+		]
+		for p in patches:
+			p.start()
+			self.addCleanup(p.stop)
+
+	def test_pick_prefers_where_this_job_put_the_batch(self):
+		# The floor's shared casting batch has a far bigger unreserved pool at Waxing, but
+		# the job's own transfer parked this metal at Model Making: reserve it there.
+		self._patch_candidates(
+			{"Waxing WO": 13.261, "Model Making WO": 0.24},
+			inbound=["Model Making WO"],
+		)
+		self.assertEqual(
+			_pick_shortfall_warehouse("MWO-1", "M-1", "B1", 0.01, "MOP-A", "Co"),
+			("Model Making WO", 0.24),
+		)
+
+	def test_pick_prefers_a_warehouse_the_job_already_reserves(self):
+		self._patch_candidates(
+			{"WH-Own": 0.5, "WH-Big": 20.0},
+			inbound=["WH-Big"],
+			own=["WH-Own"],
+		)
+		wh, _free = _pick_shortfall_warehouse("MWO-1", "M-1", "B1", 0.01, "MOP-A", "Co")
+		self.assertEqual(wh, "WH-Own")
+
+	def test_pick_clamps_to_warehouse_level_free_qty(self):
+		# Plenty of the batch is unreserved, but the Bin is fully reserved for other
+		# orders — consuming there would still throw NegativeStockError.
+		self._patch_candidates({"WH-Full": 10.0}, wh_free={"WH-Full": 0.0})
+		self.assertEqual(
+			_pick_shortfall_warehouse("MWO-1", "M-1", "B1", 0.01, "MOP-A", "Co"),
+			(None, 0.0),
+		)
+
+	def test_pick_validates_an_explicit_warehouse(self):
+		self._patch_candidates({"WH-A": 10.0, "WH-Thin": 0.001})
+		self.assertEqual(
+			_pick_shortfall_warehouse(
+				"MWO-1", "M-1", "B1", 0.01, "MOP-A", "Co", warehouse="WH-Thin"
+			),
+			(None, 0.0),
+		)
+
+	@patch(f"{_MOD}._build_and_submit_mwo_sre", return_value="SRE-NEW")
+	@patch(f"{_MOD}.frappe.get_cached_value", return_value=(1, 0, "Gram"))
+	@patch(f"{_MOD}._pick_shortfall_warehouse", return_value=("WH-1", 0.24))
+	@patch(f"{_MOD}._heal_ownership_allowed", return_value=True)
+	@patch(
+		f"{_MOD}._resolve_mwo_so_anchor",
+		return_value={
+			"sales_order": "SO-1",
+			"sales_order_item": "row1",
+			"base_mr_voucher_qty": None,
+		},
+	)
+	def test_reserve_shortfall_reserves_only_the_difference(
+		self, _anchor, _own, _pick, _cached, mock_build
+	):
+		out = _reserve_batch_shortfall("MWO-1", "M-1", "B1", 0.01, "MOP-A", "Co")
+		self.assertEqual(out["created"], "SRE-NEW")
+		# reserved_qty is the 6th positional arg of _build_and_submit_mwo_sre.
+		self.assertEqual(mock_build.call_args.args[5], 0.01)
+
+	@patch(f"{_MOD}._build_and_submit_mwo_sre")
+	@patch(f"{_MOD}._pick_shortfall_warehouse", return_value=(None, 0.0))
+	@patch(f"{_MOD}._heal_ownership_allowed", return_value=True)
+	@patch(
+		f"{_MOD}._resolve_mwo_so_anchor",
+		return_value={
+			"sales_order": "SO-1",
+			"sales_order_item": "row1",
+			"base_mr_voucher_qty": None,
+		},
+	)
+	@patch(f"{_MOD}._physical_batch_warehouses", return_value={})
+	def test_reserve_shortfall_skips_when_nothing_is_free(
+		self, _phys, _anchor, _own, _pick, mock_build
+	):
+		out = _reserve_batch_shortfall("MWO-1", "M-1", "B1", 0.01, "MOP-A", "Co")
+		self.assertNotIn("created", out)
+		self.assertIn("no warehouse", out["skipped"])
+		mock_build.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # TestReserveFromEodSeRows (build SO-anchored SREs from the submitted SE's rows)
@@ -2666,6 +2897,110 @@ class TestEodConsolidation(IntegrationTestCase):
 	@classmethod
 	def setUpClass(cls):
 		pass
+
+	@patch(f"{_MOD}.frappe.db.set_value")
+	@patch(f"{_MOD}.frappe.db.release_savepoint")
+	@patch(f"{_MOD}.frappe.db.savepoint")
+	@patch(f"{_MOD}._rollback_to_savepoint")
+	@patch(f"{_MOD}._stamp_last_eod_sync")
+	@patch(f"{_MOD}._mark_all_mwo_mop_logs_synced")
+	@patch(f"{_MOD}._hard_delete_cancelled_snapshots")
+	@patch(
+		f"{_MOD}._reserve_batch_shortfall",
+		return_value={"skipped": "no warehouse holds enough free batch qty"},
+	)
+	@patch(f"{_MOD}._reserve_batch_at_physical_warehouse", return_value=None)
+	@patch(f"{_MOD}._sre_remaining_for_batch", return_value=3.74)
+	@patch(f"{_MOD}._reserve_sres_from_eod_se_rows")
+	@patch(f"{_MOD}._cancel_sre_snapshots")
+	@patch(f"{_MOD}._snapshot_mwo_sres_for_relocation")
+	@patch(f"{_MOD}.frappe.get_doc")
+	@patch(f"{_MOD}.frappe.new_doc")
+	def test_reservation_that_comes_back_short_rolls_the_chunk_back(
+		self,
+		mock_new_doc,
+		mock_get_doc,
+		mock_snap,
+		_mock_cancel,
+		_mock_reserve,
+		_mock_remaining,
+		_mock_physical_heal,
+		_mock_heal,
+		mock_delete,
+		_mock_mark,
+		_mock_stamp,
+		_mock_rollback,
+		_mock_savepoint,
+		_mock_release,
+		_mock_set_value,
+	):
+		# Relocation gave back 3.74 of the 3.75 it cancelled. The old existence check saw
+		# "an SRE still exists" and hard-deleted the source anyway; the 0.01 only surfaced
+		# days later as NegativeStockError on the Manufacture entry.
+		se = FakeStockEntry("SE-SHORT-1")
+		mock_new_doc.return_value = se
+		mock_get_doc.return_value = se
+		mock_snap.return_value = [
+			{
+				"sre": FrappeDict(
+					{
+						"name": "SRE-1",
+						"item_code": "M-1",
+						"warehouse": "WH-SRE",
+						"manufacturing_operation": "MOP-1",
+					}
+				),
+				"remaining": 3.75,
+				"has_batch_no": 1,
+				"has_serial_no": 0,
+				"sb_entries": [{"batch_no": "B1", "qty": 3.75}],
+			}
+		]
+
+		failures = []
+		stats = {
+			"processed_mwos": 0,
+			"failed_mwos": 0,
+			"submitted_ses": [],
+			"draft_ses": [],
+		}
+		_commit_company_main_se(
+			"Co",
+			"MF-1",
+			[
+				{
+					"kind": "resolvable",
+					"company": "Co",
+					"manufacturer": "MF-1",
+					"mwo": "MWO-1",
+					"items": [
+						{
+							"item_code": "M-1",
+							"qty": 3.75,
+							"batch_no": "B1",
+							"s_warehouse": "WH-SRE",
+							"t_warehouse": "WH-D1",
+						}
+					],
+					"t_warehouse": "WH-D1",
+					"mop_data_list": [{"mop_name": "MOP-1"}],
+					"last_mop_name": "MOP-1",
+					"child_row_names": [],
+				}
+			],
+			failures,
+			stats,
+			sync_log_name=None,
+			selective=False,
+		)
+
+		# Rolled back: the cancellation is never made permanent, and the MWO is reported
+		# as failed instead of quietly losing 0.01 of reserved metal.
+		mock_delete.assert_not_called()
+		self.assertEqual(stats["processed_mwos"], 0)
+		self.assertEqual(stats["failed_mwos"], 1)
+		self.assertEqual(len(failures), 1)
+		self.assertIn("EOD reservation lost", failures[0]["error_message"])
 
 	@patch(f"{_MOD}.frappe.db.set_value")
 	@patch(f"{_MOD}.frappe.db.release_savepoint")
