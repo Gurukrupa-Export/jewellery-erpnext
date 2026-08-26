@@ -36,6 +36,31 @@ EXTERNAL_PRICING_CATEGORY = {
 }
 
 
+def secondary_item_row(value="Scrap"):
+	"""``{fieldname: value}`` for the Stock Entry Detail secondary-item Select.
+
+	ERPNext 16.33 renamed ``Stock Entry Detail.type`` to ``secondary_item_type``
+	(``erpnext.patches.v16_0.rename_secondary_item_type_field``), so the name has to be
+	resolved against the installed version rather than hard-coded — this app runs against
+	both sides of that rename.
+
+	It is not a cosmetic field. ``StockEntry.validate_warehouse`` keys the "this row is an
+	OUTPUT" branch off ``is_finished_item or <this field> or is_legacy_scrap_item``; a
+	Manufacture row that misses it falls through to the input branch, which clears
+	``t_warehouse`` and then throws "Source warehouse is mandatory for row N". Writing the
+	pre-rename name on a renamed site is silently dropped by ``get_valid_dict``, so the
+	stone and loss outputs of a repack died at insert with no hint of the cause.
+
+	Drop this helper and inline ``secondary_item_type`` once every site is on 16.33+.
+	"""
+	fieldname = (
+		"secondary_item_type"
+		if frappe.get_meta("Stock Entry Detail").has_field("secondary_item_type")
+		else "type"
+	)
+	return {fieldname: value}
+
+
 def _default_receiving_warehouse(company):
 	"""Company's default warehouse for a purchase, for stock lines with nowhere else to go."""
 	if not company:
@@ -743,7 +768,7 @@ class RefiningEntry(Document):
 				# Scrap-type by-product (NOT a finished good): the single finished good is
 				# the pure metal above, so the Manufacture auto-costs it from the consumed
 				# inputs and these land at zero valuation — mirrors create_repack_se.
-				"type": "Scrap",
+				**secondary_item_row(),
 				"is_finished_item": 0,
 				"use_serial_batch_fields": 1,
 				"allow_zero_valuation_rate": 1,
@@ -3425,7 +3450,7 @@ class RefiningEntry(Document):
 					"uom": "Carat",
 					"t_warehouse": self.refining_warehouse,
 					"batch_no": new_batch,
-					"type": "Scrap",
+					**secondary_item_row(),
 					"is_finished_item": 0,
 					"use_serial_batch_fields": 1,
 				},
@@ -3454,7 +3479,7 @@ class RefiningEntry(Document):
 					"uom": "Carat",
 					"t_warehouse": self.refining_warehouse,
 					"batch_no": new_batch,
-					"type": "Scrap",
+					**secondary_item_row(),
 					"is_finished_item": 0,
 					"use_serial_batch_fields": 1,
 				},
@@ -3485,7 +3510,7 @@ class RefiningEntry(Document):
 						"uom": "Gram",
 						"t_warehouse": self.refining_warehouse,
 						"batch_no": dust_batch,
-						"type": "Scrap",
+						**secondary_item_row(),
 						"is_finished_item": 0,
 						"use_serial_batch_fields": 1,
 					},
