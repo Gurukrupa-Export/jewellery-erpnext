@@ -31,6 +31,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_reconcile_reservations_for_mwo,
 	sync_mop_logs,
 )
+from jewellery_erpnext.utils import carat_to_gram
 
 
 def _row(item_code, batch_no, qaf_batch, pcs_batch=0, name=None, creation=None):
@@ -410,6 +411,66 @@ class TestRecalculateMopWeights(IntegrationTestCase):
 		self.assertAlmostEqual(out["net_wt"], 2.273, places=3)
 		self.assertAlmostEqual(out["finding_wt"], 2.334, places=3)
 		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.051, places=3)
+
+	def test_two_dg_rows_convert_once_not_per_row(self):
+		# MOP-050YL, the case this rule exists for. Per-row rounding gave
+		# flt(0.497 * 0.2, 3) + flt(0.067 * 0.2, 3) = 0.099 + 0.013 = 0.112, while the
+		# previous operation carried flt(0.564 * 0.2, 3) = 0.113 for the SAME two rows
+		# -- a 0.001 g gross_wt shortfall against prev_gross_wt with no physical cause.
+		rows = [
+			_row("D-NT-RO-6B-+6.5-7", "BD1", 0.497, pcs_batch=20),
+			_row("D-NT-RO-6B-+7.5-8", "BD2", 0.067, pcs_batch=2),
+		]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["diamond_wt"], 0.564, places=3)
+		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.113, places=3)
+		self.assertEqual(out["diamond_pcs"], 22)
+		self.assertAlmostEqual(out["gross_wt"], 0.113, places=3)
+
+	def test_per_row_rounding_up_does_not_manufacture_a_gain(self):
+		# The drift runs both ways. MOP-IN870's split rounded UP per row
+		# (0.036 + 0.036 = 0.072) where the carat total converts to 0.071, so the
+		# operation opened HEAVIER than its predecessor and tripped the unbacked-gain
+		# guard instead of the loss one.
+		rows = [
+			_row("D-X-1", "BD1", 0.178, pcs_batch=1),
+			_row("D-X-2", "BD2", 0.179, pcs_batch=1),
+		]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["diamond_wt"], 0.357, places=3)
+		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.071, places=3)
+
+	def test_gram_twin_is_a_pure_function_of_the_carat_bucket(self):
+		# The invariant itself, over splits that round differently per row. However
+		# the carats arrive, grams must equal carat_to_gram of the summed carats.
+		for split in (
+			[0.497, 0.067],
+			[0.178, 0.179],
+			[0.253],
+			[0.08, 0.173],
+			[1.19, 1.143],
+		):
+			with self.subTest(split=split):
+				out = self._run(
+					[
+						_row(f"D-X-{i}", f"BD{i}", ct, pcs_batch=1)
+						for i, ct in enumerate(split)
+					]
+					+ [
+						_row(f"G-X-{i}", f"BG{i}", ct, pcs_batch=1)
+						for i, ct in enumerate(split)
+					]
+				)
+				self.assertAlmostEqual(
+					out["diamond_wt_in_gram"],
+					carat_to_gram(out["diamond_wt"]),
+					places=3,
+				)
+				self.assertAlmostEqual(
+					out["gemstone_wt_in_gram"],
+					carat_to_gram(out["gemstone_wt"]),
+					places=3,
+				)
 
 	def test_no_active_rows_yields_zero_buckets(self):
 		out = self._run([])
