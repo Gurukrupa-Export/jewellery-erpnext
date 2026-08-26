@@ -7,7 +7,7 @@ from frappe.query_builder import DocType
 from frappe.query_builder.functions import Max
 from frappe.utils import cint, cstr, flt, get_datetime
 
-from jewellery_erpnext.utils import get_mwo_refining_cutoff
+from jewellery_erpnext.utils import carat_to_gram, get_mwo_refining_cutoff
 
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
 select_fields = [
@@ -99,12 +99,15 @@ def update_wt_detail(manufacturing_operation):
 			frappe.db.get_value("Manufacturing Operation", previous_mop, "gross_wt")
 			or 0
 		)
-	gross_wt = (
+	# Round once: every component is a precision-3 field, so float residue in the
+	# sum must not leak out as a sub-milligram delta against prev_gross_wt.
+	gross_wt = flt(
 		flt(net_wt)
 		+ flt(finding_wt)
 		+ flt(diamond_wt_in_gram)
 		+ flt(gemstone_wt_in_gram)
-		+ flt(other_wt)
+		+ flt(other_wt),
+		3,
 	)
 	# if loss_wt:
 	# 	if loss_wt > 0:
@@ -224,12 +227,28 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None, prefixes
 			continue
 		qty = flt(entry.get("qaf_batch"))
 		pcs = flt(entry.get("pcs_batch"))
+		buckets[f"{prefix}_wt"] += qty
 		if prefix in ("diamond", "gemstone"):
-			buckets[f"{prefix}_wt"] += qty
-			buckets[f"{prefix}_wt_in_gram"] += flt(qty * 0.2, 3)
 			buckets[f"{prefix}_pcs"] += pcs
-		else:
-			buckets[f"{prefix}_wt"] += qty
+
+	# Grams is a DERIVED view of the carat bucket, never its own tally. Rounding
+	# every (item, batch) row to 3 dp before summing let the two disagree:
+	# MOP-050YL carried flt(0.497 * 0.2, 3) + flt(0.067 * 0.2, 3) = 0.099 + 0.013
+	# = 0.112 g for 0.564 ct, where the carat total converts to 0.113. update_wt_detail
+	# then folded that half-milligram into gross_wt, so the operation opened 0.001 g
+	# short of prev_gross_wt with no physical loss behind it -- and the drift runs
+	# both ways (MOP-IN870 rounded UP, opening as an unbacked gain). Convert once --
+	# every other carat->gram site in the app already does (SerialNumberCreator's
+	# _compute_total_weight, the Department IR SUM(IF(uom = 'Carat', ...)) queries).
+	#
+	# This MUST stay ABOVE the ``prefixes`` filter below. Past that point the carat
+	# bucket a gram is derived from has already been dropped for every family the
+	# caller did not name, so a metal-only save would derive 0 and wipe a gram
+	# authored outside MOP Log. The carat buckets are deliberately left as summed:
+	# ``diamond_wt`` / ``gemstone_wt`` must read byte-identical to before, which is
+	# what keeps the product-tolerance and Employee IR carat surfaces untouched.
+	for prefix in ("diamond", "gemstone"):
+		buckets[f"{prefix}_wt_in_gram"] = carat_to_gram(buckets[f"{prefix}_wt"])
 
 	if prefixes:
 		wanted = set()
