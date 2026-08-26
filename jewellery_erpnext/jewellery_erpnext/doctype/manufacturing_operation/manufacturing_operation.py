@@ -29,7 +29,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_mwo_balance_rows,
 )
 from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
-from jewellery_erpnext.utils import set_values_in_bulk, update_existing
+from jewellery_erpnext.utils import carat_to_gram, set_values_in_bulk, update_existing
 
 
 class OperationSequenceError(frappe.ValidationError):
@@ -1556,8 +1556,6 @@ def get_material_wt(doc):
 	gross_wt = 0
 	net_wt = 0
 	finding_wt = 0
-	diamond_wt_in_gram = 0
-	gemstone_wt_in_gram = 0
 	diamond_wt = 0
 	gemstone_wt = 0
 	other_wt = 0
@@ -1585,14 +1583,18 @@ def get_material_wt(doc):
 			finding_wt += qty
 		elif variant_of == "D":
 			diamond_wt += qty
-			diamond_wt_in_gram += qty * 0.2
 			diamond_pcs += int(pcs)
 		elif variant_of == "G":
 			gemstone_wt += qty
-			gemstone_wt_in_gram += qty * 0.2
 			gemstone_pcs += int(pcs)
 		elif variant_of == "O":
 			other_wt += qty
+
+	# Same derived-view rule as recalculate_manufacturing_operation_weights, so this
+	# function and the MOP Log recompute can never disagree about the same ledger.
+	# This one used to convert per row and NOT round at all -- a third convention.
+	diamond_wt_in_gram = carat_to_gram(diamond_wt)
+	gemstone_wt_in_gram = carat_to_gram(gemstone_wt)
 
 	gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
 	if doc.get("is_finding"):
@@ -5880,11 +5882,20 @@ def update_new_mop_wtg(
 	    multiply by 0.2 here.
 	  * D/G PCS reduces by ``loss_pcs``. M/F/O PCS is left as the cloned
 	    baseline (``loss_pcs`` is forced to 0 for non-D/G prefixes).
-	  * Throws when a loss key has no matching baseline row on the
-	    previous MOP — a loss cannot be applied to an item/batch that
-	    isn't in the new operation's starting balance.
-	  * Throws when ``loss_qty`` would drive the cloned batch balance
-	    below zero (within precision-3 tolerance).
+	  * A loss key with NO matching baseline row on the previous MOP is
+	    silently SKIPPED, not thrown on — the orphan-loss throw was
+	    removed for good in 73dbe941. ``create_loss_stock_entries`` still
+	    posts the Process Loss Stock Entry for that key, so an orphan loss
+	    moves stock without reducing any MOP Log tier. Detect it with
+	    ``mop_lineage_audit.audit_mop_balance_drift``; do not re-add the
+	    throw here without also gating the Stock Entry.
+	  * Throws when ``loss_qty`` would make the cloned batch balance WORSE
+	    than the one it INHERITED — i.e. drive a healthy balance below
+	    zero, or push an already-negative inherited balance further down
+	    (both within precision-3 tolerance). The floor is a DELTA, not an
+	    absolute: a baseline that arrives negative is corruption from an
+	    earlier operation, a loss of 0.0 cannot have caused it, and
+	    blocking the receive would neither fix nor reveal it.
 	  * Idempotent on ``get_last_mop_index(self.name) is None`` — runs
 	    once per new operation.
 
@@ -5919,6 +5930,9 @@ def update_new_mop_wtg(
 	# out the batch-tier balance. Nothing is written until every row has passed, so
 	# a throw below leaves no half-built baseline behind.
 	prepared = []
+	# Inherited-anomaly findings, reported once AFTER the write pass so a throw
+	# below can never emit a half-true notice.
+	negative_baselines: list = []
 	for log in mop_logs:
 		key = (log.item_code, log.batch_no)
 		loss_bucket = loss_map.get(key)
@@ -5930,11 +5944,56 @@ def update_new_mop_wtg(
 		first_char = (log.item_code or "")[0] if log.item_code else ""
 		loss_pcs = raw_loss_pcs if first_char in ("D", "G") else 0
 
+		# The floor is a DELTA, not an absolute zero.
+		# ``qty_after_transaction_batch_based`` is inherited verbatim from the
+		# previous operation and can already BE negative: a Material Receive
+		# capped MWO-wide but posted per-MOP, a receive row whose batch_no
+		# differs from the transfer it answers, an FG-MWO seed row admitted by
+		# ``HAVING SUM(qty_change) > 0 OR SUM(pcs_change) > 0``, a refining pass
+		# that skips a negative row instead of clearing it. That is real
+		# corruption -- and it is not this Employee IR's doing. Comparing
+		# ``baseline - loss`` against a hard zero made a receive that books NO
+		# loss at all (empty loss_map, loss_qty 0.0) die with "0.0 exceeds the
+		# available balance (-0.28)", which is unanswerable on the shop floor:
+		# nothing the operator can change alters the inherited number.
+		#
+		# What must still be refused is this receive's loss making the balance
+		# WORSE: a healthy row may not be driven below zero, and a negative row
+		# may not be driven further down.
+		#
+		# The shortfall is ROUNDED before the comparison. All three operands are
+		# already flt(x, 3), so an unrounded ``new < floor - tolerance`` is
+		# decided by 1 ulp of the binary difference and disagrees with the
+		# intended rule for ~21% of milligram baselines. Rounding first makes
+		# baseline >= 0 byte-identical to the guard this replaces (qty_floor is
+		# 0.0, so flt(new - 0.0, 3) is new) and reduces baseline < 0 to the exact
+		# rule ``loss_qty > tolerance``.
 		baseline_qty_batch = flt(log.qty_after_transaction_batch_based, 3)
 		new_qty_batch = flt(baseline_qty_batch - loss_qty, 3)
-		if new_qty_batch < -tolerance:
-			frappe.throw(
-				_(
+		baseline_is_negative = baseline_qty_batch < -tolerance
+		qty_floor = baseline_qty_batch if baseline_is_negative else 0.0
+		if flt(new_qty_batch - qty_floor, 3) < -tolerance:
+			if baseline_is_negative:
+				qty_msg = _(
+					"Loss for Item {0}, Batch {1}, Manufacturing Operation "
+					"{2}, Manufacturing Work Order {3} ({4}) would push an "
+					"already negative inherited balance ({5}) further down to "
+					"{6}. That balance is a ledger anomaly carried forward from "
+					"an earlier operation, not an error in the loss you booked. "
+					"Remove the loss row for this batch to submit, and send the "
+					"Operation / Item / Batch above to Central for "
+					"reconciliation."
+				).format(
+					log.item_code,
+					log.batch_no,
+					self.previous_mop,
+					log.manufacturing_work_order,
+					loss_qty,
+					baseline_qty_batch,
+					new_qty_batch,
+				)
+			else:
+				qty_msg = _(
 					"Loss for Item {0}, Batch {1}, Manufacturing Operation "
 					"{2}, Manufacturing Work Order {3} ({4}) exceeds the "
 					"available balance ({5}) on the new operation baseline. "
@@ -5947,16 +6006,44 @@ def update_new_mop_wtg(
 					loss_qty,
 					baseline_qty_batch,
 				)
-			)
+			frappe.throw(qty_msg)
 
+		# Same delta rule. PCS is an Int column on both tiers, so the arithmetic
+		# is exact and carries no tolerance term -- adding one would invent a
+		# fractional-piece concept the tier does not have.
 		baseline_pcs_batch = cint(log.pcs_after_transaction_batch_based or 0)
 		new_pcs_batch = baseline_pcs_batch - loss_pcs
-		if new_pcs_batch < 0:
-			frappe.throw(
-				_(
+		pcs_floor = min(0, baseline_pcs_batch)
+		if new_pcs_batch < pcs_floor:
+			if baseline_pcs_batch < 0:
+				pcs_msg = _(
+					"Loss PCS for Item {0}, Batch {1} ({2}) would push an "
+					"already negative inherited PCS balance ({3}) further down "
+					"to {4}. Correct that balance on Manufacturing Operation "
+					"{5} before booking more loss against it."
+				).format(
+					log.item_code,
+					log.batch_no,
+					loss_pcs,
+					baseline_pcs_batch,
+					new_pcs_batch,
+					self.previous_mop,
+				)
+			else:
+				pcs_msg = _(
 					"Loss PCS for Item {0}, Batch {1} ({2}) exceeds the "
 					"available PCS ({3}) on the new operation baseline."
 				).format(log.item_code, log.batch_no, loss_pcs, baseline_pcs_batch)
+			frappe.throw(pcs_msg)
+
+		if baseline_is_negative or baseline_pcs_batch < 0:
+			negative_baselines.append(
+				"{0} / {1} (qty {2}, pcs {3})".format(
+					log.item_code,
+					log.batch_no or _("no batch"),
+					baseline_qty_batch,
+					baseline_pcs_batch,
+				)
 			)
 
 		prepared.append(
@@ -6054,6 +6141,60 @@ def update_new_mop_wtg(
 			mop_log.row_name = log.row_name
 
 		mop_log.save()
+
+	_report_inherited_negative_baselines(self, negative_baselines)
+
+
+def _report_inherited_negative_baselines(new_mop, negative_baselines):
+	"""Surface -- without blocking -- a batch balance inherited NEGATIVE.
+
+	A negative batch tier is impossible in reality, so it is corruption from an
+	earlier voucher. It is carried forward VERBATIM (clamping it up to zero would
+	invent metal), and the receive is allowed through because a loss of 0.0
+	cannot have caused it. The throw that used to fire here was, accidentally,
+	the only thing that made the anomaly visible at the moment of handoff, so it
+	is replaced by two channels rather than one:
+
+	* ``frappe.log_error`` -- the durable one. Employee IR submit can run through
+	  Frappe's Submission Queue, where a ``msgprint`` lands in the job log and
+	  never reaches the operator (same reason ``_warn_customer_loss_spill`` in
+	  employee_ir.py keeps a durable ``flags`` trace alongside its message).
+	* ``frappe.msgprint`` without ``alert=True`` -- a dialog the operator must
+	  dismiss, not a toast that vanishes during the submit's form reload.
+
+	Aggregated per new operation, so a MOP carrying several bad rows raises one
+	message rather than one per row. De-duplicated with ``dict.fromkeys`` rather
+	than ``sorted`` on purpose: ``batch_no`` is blank/None on unbatched items and
+	sorting mixed ``None``/``str`` keys would raise ``TypeError`` here -- AFTER
+	every MOP Log row is committed.
+
+	Everything below is advisory and runs after the baseline is written, so it
+	must never be able to fail the submit that wrote it.
+	"""
+	if not negative_baselines:
+		return
+
+	keys = ", ".join(dict.fromkeys(negative_baselines))
+	detail = _(
+		"Manufacturing Operation {0} handed Manufacturing Operation {1} a "
+		"negative balance for {2}. The new operation inherits it unchanged — "
+		"the loss booked here did not cause it. Downstream loss and gain "
+		"attribution on the NEXT receive reads this row, so repair it before "
+		"the work order moves on: run "
+		"jewellery_erpnext.mop_lineage_audit.audit_negative_batch_balances "
+		"on this work order."
+	).format(new_mop.previous_mop, new_mop.name, keys)
+
+	try:
+		frappe.log_error(
+			title=f"MOP inherited negative balance - {new_mop.name}"[:140],
+			message=detail,
+		)
+		frappe.msgprint(detail, indicator="orange")
+	except Exception:
+		# The durable record is audit_negative_batch_balances. Losing one
+		# advisory dialog is never worth losing a correct ledger write.
+		pass
 
 
 def get_warehouse_from_previous_stock_entry(
