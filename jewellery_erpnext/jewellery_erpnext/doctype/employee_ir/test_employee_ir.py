@@ -327,7 +327,11 @@ class TestManufacturingOperationBalance(IntegrationTestCase):
 		self.assertEqual(out["net_wt"], 0.23)
 		self.assertEqual(out["diamond_wt"], 1.008)
 		self.assertEqual(out["diamond_pcs"], 168)
-		self.assertAlmostEqual(out["gross_wt"], 0.4316, places=4)
+		# 1.008 ct -> flt(0.2016, 3) = 0.202. get_material_wt used to leave the gram
+		# twin UNROUNDED (0.2016) and so disagreed with the MOP Log recompute about
+		# the same ledger; both now derive it through carat_to_gram.
+		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.202, places=3)
+		self.assertAlmostEqual(out["gross_wt"], 0.432, places=3)
 
 
 class TestEmployeeIR(IntegrationTestCase):
