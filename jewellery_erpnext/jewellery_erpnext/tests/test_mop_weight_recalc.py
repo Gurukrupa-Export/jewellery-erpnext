@@ -106,9 +106,9 @@ class TestRecalcManufacturingOperationWeights(IntegrationTestCase):
 			patch.object(mod.frappe.db, "get_value", side_effect=fake_get_value),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.flt",
-				side_effect=lambda x, *args, **kwargs: float(x)
-				if x is not None
-				else 0.0,
+				side_effect=lambda x, *args, **kwargs: (
+					float(x) if x is not None else 0.0
+				),
 			),
 		):
 			mod.recalculate_manufacturing_operation_weights("MOP-X", pending=pending)
@@ -490,18 +490,26 @@ class TestItemLossItemResolution(IntegrationTestCase):
 	def test_without_loss_type_falls_back_to_source_variant(self):
 		resolved_item = _loss_item_doc("M-G-22KT-91.9-Y", variant_of="M")
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
-			side_effect=[None, "HSN-1"],
-		) as mock_get_value, patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
-			side_effect=[
-				[frappe._dict({"attribute": "Metal Type", "attribute_value": "Gold"})],
-				[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
-			],
-		), patch(
-			"jewellery_erpnext.utils.set_items_from_attribute",
-			return_value=resolved_item,
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				side_effect=[None, "HSN-1"],
+			) as mock_get_value,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=resolved_item,
+			),
 		):
 			result = get_item_loss_item("Test Co", "M-G-22KT-91.9-Y", "M")
 
@@ -513,22 +521,31 @@ class TestItemLossItemResolution(IntegrationTestCase):
 	def test_throws_when_target_loss_variant_unresolvable(self):
 		"""Mapping resolves to a loss_variant template, then creates the missing variant."""
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
-			return_value="ML",
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
-			side_effect=[
-				[frappe._dict({"attribute": "Metal Type", "attribute_value": "Gold"})],
-				[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
-			],
-		), patch(
-			"jewellery_erpnext.utils.set_items_from_attribute",
-			return_value=None,
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.create_loss_item",
-			return_value="ML-G-22KT-91.9-Y",
-		) as mock_create:
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				return_value="ML",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=None,
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.create_loss_item",
+				return_value="ML-G-22KT-91.9-Y",
+			) as mock_create,
+		):
 			result = get_item_loss_item("Test Co", "M-G-22KT-91.9-Y", "M", "Loss")
 
 		self.assertEqual(result, "ML-G-22KT-91.9-Y")
@@ -548,20 +565,29 @@ class TestLossMappingMatrix(IntegrationTestCase):
 		resolved_item = _loss_item_doc(
 			f"{expected_template}-VARIANT", variant_of=expected_template
 		)
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
-			side_effect=[expected_template, "HSN-1"],
-		) as mock_get_value, patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
-			side_effect=[
-				[frappe._dict({"attribute": "Metal Type", "attribute_value": "Gold"})],
-				[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
-			],
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.set_value"
-		), patch(
-			"jewellery_erpnext.utils.set_items_from_attribute",
-			return_value=resolved_item,
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				side_effect=[expected_template, "HSN-1"],
+			) as mock_get_value,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.set_value"
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=resolved_item,
+			),
 		):
 			result = get_item_loss_item("Test Co", source_item, variant_of, loss_type)
 
@@ -606,22 +632,32 @@ class TestLossMappingMatrix(IntegrationTestCase):
 		If anyone re-introduces that path, this test fails.
 		"""
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
-			side_effect=["ML", "HSN-1"],
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
-			side_effect=[
-				[frappe._dict({"attribute": "Metal Type", "attribute_value": "Gold"})],
-				[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
-			],
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_single_value"
-		) as mock_single, patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.set_value"
-		), patch(
-			"jewellery_erpnext.utils.set_items_from_attribute",
-			return_value=_loss_item_doc("ML-VARIANT", variant_of="ML"),
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				side_effect=["ML", "HSN-1"],
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_single_value"
+			) as mock_single,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.set_value"
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=_loss_item_doc("ML-VARIANT", variant_of="ML"),
+			),
 		):
 			get_item_loss_item("Test Co", "M-X", "M", "Loss")
 
@@ -1058,3 +1094,63 @@ class TestEodSyncIdempotentRerun(IntegrationTestCase):
 		]
 		self.assertEqual(stamp_calls, [])
 		mock_reconcile.assert_not_called()
+
+
+class TestRecalcPrefixNarrowing(IntegrationTestCase):
+	"""``prefixes`` limits the write to the families the caller names.
+
+	MOPLog.validate passes the single family of the row being saved, so a per-row
+	save can never rewrite a bucket authored outside MOP Log --
+	``create_manufacturing_operation`` seeds diamond/gemstone weights from the MWO
+	before any stone is issued, and an unnarrowed recompute on the first metal row
+	would zero them.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _bucket_writes(self, prefixes):
+		writes = []
+
+		def fake_set_value(doctype, name, value=None, *_args, **_kwargs):
+			if isinstance(value, dict):
+				writes.append(value)
+
+		rows = [
+			_row("M-G-22KT-91.75-Y", "B-M", 4.289),
+			_row("F-SOP", "B-1", 0.608, name="ML-SOP"),
+			_row("F-PSS", "B-2", 1.323, name="ML-PSS"),
+		]
+		with (
+			patch.object(mod.frappe.db, "sql", return_value=rows),
+			patch.object(mod.frappe.db, "set_value", side_effect=fake_set_value),
+			patch.object(mod, "update_wt_detail"),
+		):
+			mod.recalculate_manufacturing_operation_weights("MOP-X", prefixes=prefixes)
+		return writes
+
+	def test_narrowed_write_covers_only_the_named_family(self):
+		writes = self._bucket_writes(("finding",))
+		self.assertEqual(len(writes), 1, "expected exactly one bucket write")
+		bucket = writes[0]
+		# Both finding items summed -- the MOP-7Q48F figure.
+		self.assertAlmostEqual(bucket["finding_wt"], 1.931, places=3)
+		# A finding row must not touch any other family's bucket.
+		self.assertNotIn("net_wt", bucket)
+		self.assertNotIn("diamond_wt", bucket)
+		self.assertNotIn("gemstone_wt", bucket)
+		self.assertNotIn("other_wt", bucket)
+
+	def test_unnarrowed_write_still_covers_every_family(self):
+		"""The cancel legs and the repair patch rely on the full rewrite."""
+		writes = self._bucket_writes(None)
+		bucket = writes[0]
+		self.assertAlmostEqual(bucket["net_wt"], 4.289, places=3)
+		self.assertAlmostEqual(bucket["finding_wt"], 1.931, places=3)
+		self.assertIn("diamond_wt", bucket)
+		self.assertIn("gemstone_wt", bucket)
+
+	def test_unknown_family_writes_nothing(self):
+		writes = self._bucket_writes(("nosuchfamily",))
+		self.assertEqual(writes, [])

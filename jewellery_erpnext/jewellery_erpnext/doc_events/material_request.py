@@ -10,6 +10,8 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.material
 	make_mop_stock_entry,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.before_validate import (
+	get_variant_warehouse_map,
+	set_reservation_warehouse,
 	update_pure_qty,
 	validate_warehouse,
 )
@@ -106,6 +108,11 @@ def before_validate(self, method):
 
 		elif self.material_request_type == "Manufacture":
 			self.custom_transfer_type = "Transfer to Reserve"
+
+	# Deliberately after the block above: that derivation reads ``set_warehouse``, so it must
+	# keep seeing the pre-fill value for a Manufacture request to land on "Transfer to Reserve"
+	# rather than the branch-comparison path.
+	set_reservation_warehouse(self)
 
 	update_pure_qty(self)
 	validate_target_item(self)
@@ -718,6 +725,12 @@ def create_stock_entry(self, method):
 	se_doc.submit()
 
 	frappe.msgprint(_("Reserved Stock Entry {0} has been created").format(se_doc.name))
+
+
+@frappe.whitelist()
+def get_reservation_warehouses(manufacturer):
+	"""``{variant: target_warehouse}`` for the desk form's set_warehouse auto-fill."""
+	return get_variant_warehouse_map(manufacturer)
 
 
 @frappe.whitelist()
