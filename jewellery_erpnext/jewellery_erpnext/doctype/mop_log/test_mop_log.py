@@ -717,12 +717,19 @@ class TestMOPLog(IntegrationTestCase):
 			self.fail("validate() raised IndexError with empty item_code")
 
 	def test_mop_log_validate_with_diamond_prefix(self):
+		"""The header is derived from the BATCH tier, not stamped from the row.
+
+		``qty_after_transaction`` is the family-wide tier and is deliberately set to a
+		wrong value here: only ``*_batch_based`` may reach the header.
+		"""
 		mo = create_test_manufacturing_operation()
 
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = "D-001"
-		mop_log.qty_after_transaction = 10.0
-		mop_log.pcs_after_transaction = 20
+		mop_log.qty_after_transaction = 999.0
+		mop_log.pcs_after_transaction = 999
+		mop_log.qty_after_transaction_batch_based = 10.0
+		mop_log.pcs_after_transaction_batch_based = 20
 		mop_log.manufacturing_operation = mo.name
 
 		mop_log.validate()
@@ -731,6 +738,27 @@ class TestMOPLog(IntegrationTestCase):
 		self.assertEqual(updated_mo.diamond_wt, 10.0)
 		self.assertEqual(updated_mo.diamond_wt_in_gram, 10.0 * 0.2)  # 2.0
 		self.assertEqual(updated_mo.diamond_pcs, 20)
+
+	def test_mop_log_validate_only_touches_its_own_family(self):
+		"""A per-row save must not rewrite a bucket authored outside MOP Log.
+
+		``create_manufacturing_operation`` seeds diamond/gemstone weights from the
+		MWO before any stone is issued. An unnarrowed recompute on the first metal
+		row would zero them.
+		"""
+		mo = create_test_manufacturing_operation()
+
+		mop_log = frappe.new_doc("MOP Log")
+		mop_log.item_code = "M-001"
+		mop_log.qty_after_transaction_batch_based = 7.0
+		mop_log.manufacturing_operation = mo.name
+		mop_log.validate()
+
+		updated_mo = frappe.get_doc("Manufacturing Operation", mo.name)
+		self.assertEqual(updated_mo.net_wt, 7.0)
+		# Seeded by create_test_manufacturing_operation, no D/G ledger rows exist.
+		self.assertEqual(updated_mo.diamond_wt_in_gram, 2.0)
+		self.assertEqual(updated_mo.gemstone_wt_in_gram, 1.5)
 
 	def test_mop_log_validate_with_invalid_prefix(self):
 		mo = create_test_manufacturing_operation()
@@ -1017,6 +1045,141 @@ class TestNewMopBaselineWrite(IntegrationTestCase):
 		created = self._run(0.01)
 		self.assertEqual(created.qty_after_transaction_batch_based, 3.23)
 		self.assertEqual(created.qty_change, -0.01)
+
+
+class TestNewMopBaselineFamilyTotals(IntegrationTestCase):
+	"""Two items of one family losing weight in one Employee IR (MOP-7Q48F).
+
+	``qty_after_transaction`` is the family-wide tier and ``*_item_based`` the
+	per-item tier. Deriving them as ``source_value - loss_qty`` netted out only the
+	row's OWN loss, so whichever row saved last stamped a header that had silently
+	dropped every sibling's movement. Live data: findings 0.622 (SOP) and 1.353
+	(PSS) sharing a family total of 1.975, losing 0.014 and 0.030. The header read
+	1.945 == 0.622 + 1.323 -- the SOP finding at its PRE-loss weight -- against a
+	true batch-tier sum of 0.608 + 1.323 = 1.931.
+	"""
+
+	SOP = "F-G-22KT-91.75-Y-PO-SOP-1.60*10.00 MM"
+	PSS = "F-G-22KT-91.75-Y-SW-PSS-8.00 MM"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, order):
+		from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation import (
+			update_new_mop_wtg,
+		)
+
+		new_mop = FrappeDict(
+			{"name": "MOP-NEW", "previous_mop": "MOP-SRC", "gross_wt": 0}
+		)
+		eir = FrappeDict({"name": "EIR-1", "doctype": "Employee IR"})
+		eir_row = FrappeDict(
+			{
+				"name": "eir-row-1",
+				"manufacturing_operation": "MOP-SRC",
+				"manufacturing_work_order": "MWO-TEST-001",
+			}
+		)
+
+		def _finding(item_code, batch_no, batch_qty, family_qty, name):
+			# Every clone carries the family tier as of ITS own write, which is
+			# exactly how the stale snapshots reach the new operation.
+			return _sample_log(
+				name=name,
+				creation="2026-08-24 17:27:34",
+				item_code=item_code,
+				batch_no=batch_no,
+				qty_after_transaction=family_qty,
+				qty_after_transaction_item_based=batch_qty,
+				qty_after_transaction_batch_based=batch_qty,
+				pcs_after_transaction=0,
+				pcs_after_transaction_item_based=0,
+				pcs_after_transaction_batch_based=0,
+				manufacturing_operation="MOP-SRC",
+				manufacturing_work_order="MWO-TEST-001",
+				row_name="src-row",
+				from_warehouse="WH-A",
+				to_warehouse="WH-B",
+			)
+
+		rows = [
+			_finding(self.SOP, "B-SOP", 0.622, 1.992, "L-SOP"),
+			_finding(self.PSS, "B-PSS", 1.353, 1.975, "L-PSS"),
+		]
+		if order == "reversed":
+			rows.reverse()
+
+		loss_map = {
+			("MOP-SRC", "MWO-TEST-001", self.SOP, "B-SOP"): {
+				"loss_qty": 0.014,
+				"loss_pcs": 0,
+			},
+			("MOP-SRC", "MWO-TEST-001", self.PSS, "B-PSS"): {
+				"loss_qty": 0.030,
+				"loss_pcs": 0,
+			},
+		}
+
+		created = []
+
+		def _new_doc(_doctype):
+			doc = MagicMock()
+			created.append(doc)
+			return doc
+
+		with (
+			patch(f"{MFG_OP}.get_last_mop_index", return_value=None),
+			patch(f"{MFG_OP}.get_employee_ir_loss_map", return_value=loss_map),
+			patch(f"{MFG_OP}.get_current_mop_balance_rows", return_value=rows),
+			patch(f"{MFG_OP}._float_tolerance", return_value=0.001),
+			patch(f"{MFG_OP}.frappe.new_doc", side_effect=_new_doc),
+		):
+			update_new_mop_wtg(
+				new_mop,
+				employee_ir_doc=eir,
+				employee_ir_operation_row=eir_row,
+				from_warehouse="WH-Emp",
+				to_warehouse="WH-Dept",
+			)
+		return created
+
+	def test_family_tier_is_a_running_total_not_a_per_row_subtraction(self):
+		created = self._run("as-written")
+		self.assertEqual(len(created), 2)
+		sop, pss = created
+
+		# Batch tier: each row's own balance, baseline minus its own loss.
+		self.assertAlmostEqual(sop.qty_after_transaction_batch_based, 0.608, places=3)
+		self.assertAlmostEqual(pss.qty_after_transaction_batch_based, 1.323, places=3)
+
+		# Family tier: a running total, so the LAST row of the family -- the one
+		# whose value reaches the header -- carries the whole family balance.
+		self.assertAlmostEqual(pss.qty_after_transaction, 1.931, places=3)
+		self.assertAlmostEqual(
+			pss.qty_after_transaction,
+			sop.qty_after_transaction_batch_based
+			+ pss.qty_after_transaction_batch_based,
+			places=3,
+		)
+		# The exact number the bug produced: SOP carried at its pre-loss 0.622.
+		self.assertNotAlmostEqual(pss.qty_after_transaction, 1.945, places=3)
+
+		# Distinct item codes, so each item tier is its own balance.
+		self.assertAlmostEqual(sop.qty_after_transaction_item_based, 0.608, places=3)
+		self.assertAlmostEqual(pss.qty_after_transaction_item_based, 1.323, places=3)
+
+	def test_family_total_is_independent_of_row_order(self):
+		"""Last-writer-wins is exactly what the old code was sensitive to."""
+		created = self._run("reversed")
+		last = created[-1]
+		self.assertAlmostEqual(last.qty_after_transaction, 1.931, places=3)
+		self.assertAlmostEqual(
+			sum(c.qty_after_transaction_batch_based for c in created),
+			1.931,
+			places=3,
+		)
 
 
 class TestDepartmentIRCloneDedupes(IntegrationTestCase):

@@ -1750,15 +1750,18 @@ def _commit_se_chunk(
 			_eod_rows_from_submitted_se(submitted_se),
 			sync_log_name=sync_log_name,
 		)
-		# POST-CONDITION GUARD: never commit an orphaned cancellation. Re-reservation above
-		# silently skips a batched row whose batch is not physically at the SE row target, so a
-		# cancelled source SRE can end up with no active replacement — the exact defect that
-		# leaves Employee IR Process Loss with "No active Stock Reservation Entry found". For
-		# each cancelled batched snapshot with no live SRE, heal it at the batch's physical
-		# warehouse; if that is impossible, raise so the whole Phase-2 savepoint rolls back
-		# (SREs restored, submit undone) rather than leaving the reservation orphaned. Runs
-		# while the snapshots are still in memory and BEFORE _hard_delete_cancelled_snapshots
-		# makes the cancellation permanent. Scoped to this chunk's MWOs only.
+		# POST-CONDITION GUARD: never commit a cancellation the re-reservation did not
+		# replace IN FULL. Re-reservation above silently skips a batched row whose batch is
+		# not free at the SE row target, so a cancelled source SRE can come back missing —
+		# or, when one SRE covered more than the moved batch, come back SHORT. The qty each
+		# snapshot released is the authoritative requirement (it is what was cancelled), so
+		# compare it against what the batch now has reserved on this MWO. An existence check
+		# ("is there still an SRE for this batch?") passes the short case, and the missing
+		# grams only surface days later as NegativeStockError on the Manufacture entry.
+		# Anything still missing is healed; if it cannot be, raise so the whole Phase-2
+		# savepoint rolls back (SREs restored, submit undone) rather than committing the
+		# loss. Runs BEFORE _hard_delete_cancelled_snapshots makes the cancellation
+		# permanent. Scoped to this chunk's MWOs only.
 		for m in chunk:
 			for snap in snaps_by_mwo[m["mwo"]]:
 				for sb in snap.get("sb_entries") or []:
@@ -1766,26 +1769,49 @@ def _commit_se_chunk(
 					if not batch_no:
 						continue
 					item_code = snap["sre"].item_code
-					if _active_sre_exists(m["mwo"], item_code, batch_no):
+					snap_op = snap["sre"].manufacturing_operation
+					# MWO-scoped: this asks whether THIS relocation put back what it took,
+					# so a sibling MWO's reservation must not paper over the loss.
+					gap = flt(
+						flt(sb.get("qty"))
+						- _sre_remaining_for_batch(
+							m["mwo"], item_code, batch_no, pmo_wide=False
+						),
+						3,
+					)
+					if gap <= 0:
 						continue
 					healed = _reserve_batch_at_physical_warehouse(
 						m["mwo"],
 						item_code,
 						batch_no,
-						flt(sb.get("qty")),
-						snap["sre"].manufacturing_operation,
+						gap,
+						snap_op,
 						company,
 						sync_log_name=sync_log_name,
 					)
+					if not healed:
+						# That healer refuses outright when ANY active SRE exists for the
+						# batch — which is exactly the came-back-short case. Reserve just
+						# the missing difference instead of the whole balance.
+						healed = _reserve_batch_shortfall(
+							m["mwo"],
+							item_code,
+							batch_no,
+							gap,
+							snap_op,
+							company,
+							sync_log_name=sync_log_name,
+						).get("created")
 					if healed:
 						continue
 					frappe.throw(
 						_(
-							"EOD orphaned WIP reservation: MWO {0}, item {1}, batch {2} — the "
-							"source Stock Reservation Entry was cancelled but no warehouse "
-							"physically holds free batch qty to re-reserve. The chunk is rolled "
-							"back; investigate the batch's physical stock before re-running."
-						).format(m["mwo"], item_code, batch_no),
+							"EOD reservation lost: MWO {0}, item {1}, batch {2} — {3} of "
+							"the cancelled reservation could not be re-reserved after "
+							"relocation. The chunk is rolled back; investigate the batch's "
+							"physical stock before re-running."
+						).format(m["mwo"], item_code, batch_no, gap),
 						title=_("EOD Reservation Not Replaceable"),
 					)
 		for m in chunk:
@@ -2354,6 +2380,415 @@ def backfill_missing_wip_reservations(mwo=None, dry_run=True):
 	return report
 
 
+def _sre_remaining_for_batch(mwo, item_code, batch_no, pmo_wide=True):
+	"""Undelivered qty still reserved for (item, batch), across ALL warehouses.
+
+	``_active_sre_exists`` answers "is there a reservation at all?"; this answers "how much
+	is still reserved?" — the question a partially-lost reservation needs. Batch scoping is
+	delegated to the Serial Number Creator's ``_active_sres_for`` so the two readers cannot
+	drift: a Serial-and-Batch reservation is capped by that batch's own undelivered child
+	qty, while a Qty-based reservation (no batch children) reserves at item level and keeps
+	its header remainder.
+
+	``pmo_wide`` (default) counts every MWO of the job's Parent Manufacturing Order, which
+	is what a repair needs — reserving again for metal a sibling MWO already holds would
+	double-reserve it. The EOD post-condition guard passes ``False``: it asks whether THIS
+	relocation put back what it took, and a sibling's reservation must not paper over the
+	loss.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+		_active_sres_for,
+	)
+
+	if not (mwo and item_code):
+		return 0.0
+	scope = _pmo_mwo_scope(mwo) if pmo_wide else [mwo]
+	return flt(
+		sum(rem for _sre, rem in _active_sres_for(item_code, batch_no, scope)),
+		3,
+	)
+
+
+def _pmo_mwo_scope(mwo):
+	"""Every submitted MWO of this MWO's Parent Manufacturing Order.
+
+	A job's reservations do NOT all hang off the MWO whose MOP Log carries the balance: a
+	PMO splits into a main MWO and per-metal MWOs, the reservations are created against
+	whichever one issued the stock, and the same (item, batch) balance is visible from both.
+	Reading reservations MWO-by-MWO therefore reports zero for the sibling that holds the
+	balance — and a healer acting on that would mint a SECOND reservation for metal the job
+	already holds. Serial Number Creator reads reservations at exactly this scope
+	(``_pmo_mwo_names``), which is reused here so the two cannot disagree.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
+		_pmo_mwo_names,
+	)
+
+	_pmo, names = _pmo_mwo_names(frappe._dict({"manufacturing_work_order": mwo}))
+	return names or [mwo]
+
+
+def _mwo_inbound_batch_warehouses(mwo, item_code, batch_no):
+	"""Warehouses THIS JOB's own submitted Stock Entries last moved (item, batch) INTO.
+
+	Most recent first, across the PMO's MWOs (:func:`_pmo_mwo_scope`) — a metal MWO and its
+	main MWO are the same physical job. This is the only signal that distinguishes "the job's
+	metal is parked here" from "this warehouse happens to hold a lot of the shared casting
+	batch": a lost reservation must be re-taken where the job's own transfer put the stock,
+	not wherever the batch has the largest unreserved pool (which belongs to the floor, not
+	to this order).
+	"""
+	if not (mwo and item_code and batch_no):
+		return []
+	return [
+		r[0]
+		for r in frappe.db.sql(
+			"""
+			SELECT sed.t_warehouse
+			FROM `tabStock Entry Detail` sed
+			INNER JOIN `tabStock Entry` se ON se.name = sed.parent
+			WHERE se.docstatus = 1
+			  AND sed.custom_manufacturing_work_order IN %(mwos)s
+			  AND sed.item_code = %(item_code)s
+			  AND sed.batch_no = %(batch_no)s
+			  AND sed.t_warehouse IS NOT NULL AND sed.t_warehouse != ''
+			ORDER BY se.creation DESC
+			""",
+			{
+				"mwos": tuple(_pmo_mwo_scope(mwo)),
+				"item_code": item_code,
+				"batch_no": batch_no,
+			},
+		)
+		if r[0]
+	]
+
+
+def _operation_department_warehouse(operation):
+	"""Department warehouse of ``operation``, or ``None`` — never raises.
+
+	The operation is only a HINT for widening the candidate set; every candidate is
+	re-validated against free qty anyway. A Manufacturing Operation that has since been
+	deleted (or a stale name carried on an old reservation) must not take the whole repair
+	down with a DoesNotExistError.
+	"""
+	if not operation:
+		return None
+	try:
+		return _resolve_department_warehouse(
+			frappe.get_cached_doc("Manufacturing Operation", operation)
+		)
+	except Exception:
+		return None
+
+
+def _pick_shortfall_warehouse(
+	mwo, item_code, batch_no, shortfall, operation, company, warehouse=None
+):
+	"""``(warehouse, free_qty)`` that can absorb ``shortfall`` — ``(None, 0.0)`` if none can.
+
+	``free`` is ``min(free batch qty, free warehouse qty)``. The batch figure alone is not
+	enough: ERPNext's negative-stock check runs at the item+warehouse Bin level
+	(``actual_qty`` minus stock reserved for other orders), so a batch with plenty of free
+	lot qty in a Bin that is fully reserved would mint a reservation that still fails at
+	consumption — the exact failure this healer exists to prevent.
+
+	Candidate discovery matches :func:`_reserve_batch_at_physical_warehouse` (physical SBB
+	stock is ground truth; SRE history and MOP Log hints only broaden the set). Ranking is
+	deliberately NOT "most free wins" — that hands the job whichever warehouse holds the
+	biggest unreserved pool of a shared casting batch. Preference order:
+
+	  1. a warehouse where this MWO ALREADY reserves the batch (keeps consumption consolidated),
+	  2. the warehouse this MWO's own Stock Entries last moved the batch into (most recent first),
+	  3. anything else that physically holds the batch, most free first.
+
+	Pass ``warehouse`` to pin the choice (still validated against free qty).
+	"""
+	if warehouse:
+		candidates = {warehouse}
+	else:
+		candidates = set(_physical_batch_warehouses(item_code, batch_no))
+		candidates.update(
+			_cancelled_and_sibling_sre_warehouses(mwo, item_code, batch_no)
+		)
+		dept = _operation_department_warehouse(operation)
+		if dept:
+			candidates.add(dept)
+		candidates.update(_mop_log_to_warehouses(mwo, item_code, batch_no))
+		candidates = _warehouses_of_company(candidates, company)
+	if not candidates:
+		return None, 0.0
+
+	from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+		get_available_qty_to_reserve,
+	)
+
+	# Scoped to THIS batch, across the PMO's MWOs (see _pmo_mwo_scope): a warehouse where
+	# the job reserves some other lot of the same item is no better a home for this top-up
+	# than any other candidate, but one holding the SAME lot keeps consumption together.
+	own_whs = {
+		r[0]
+		for r in frappe.db.sql(
+			"""
+			SELECT DISTINCT sre.warehouse
+			FROM `tabStock Reservation Entry` sre
+			INNER JOIN `tabSerial and Batch Entry` sbe ON sbe.parent = sre.name
+			WHERE sre.docstatus = 1
+			  AND sre.manufacturing_work_order IN %(mwos)s
+			  AND sre.item_code = %(item_code)s
+			  AND sbe.batch_no = %(batch_no)s
+			""",
+			{
+				"mwos": tuple(_pmo_mwo_scope(mwo)),
+				"item_code": item_code,
+				"batch_no": batch_no,
+			},
+		)
+		if r[0]
+	}
+	inbound = _mwo_inbound_batch_warehouses(mwo, item_code, batch_no)
+	# Rank 0 for the most recent inbound, 1 for the next, ... so ties inside tier 2 keep
+	# the job's own chronology instead of falling back to pool size.
+	inbound_rank = {}
+	for idx, wh in enumerate(inbound):
+		inbound_rank.setdefault(wh, idx)
+
+	scored = []
+	for wh in candidates:
+		free = min(
+			_free_batch_qty_to_reserve(item_code, wh, batch_no),
+			flt(get_available_qty_to_reserve(item_code, wh)),
+		)
+		if free + 1e-6 < shortfall:
+			continue
+		if wh in own_whs:
+			tier, within = 0, 0
+		elif wh in inbound_rank:
+			tier, within = 1, inbound_rank[wh]
+		else:
+			tier, within = 2, 0
+		scored.append((tier, within, -free, wh))
+	if not scored:
+		return None, 0.0
+	scored.sort()
+	_tier, _within, neg_free, wh = scored[0]
+	return wh, -neg_free
+
+
+def _reserve_batch_shortfall(
+	mwo,
+	item_code,
+	batch_no,
+	shortfall,
+	operation,
+	company,
+	sync_log_name=None,
+	warehouse=None,
+	dry_run=False,
+):
+	"""Reserve exactly ``shortfall`` of (item, batch) for ``mwo``. Returns a result dict.
+
+	``{"created": <sre name>, "warehouse": ..., "free_qty": ...}`` on success,
+	``{"skipped": <reason>, ...}`` when it cannot be done — never a partial or oversized
+	reservation. Shared by :func:`heal_reservation_shortfall` (operator-run repair) and the
+	EOD post-condition guard, so both size the top-up the same way: only the missing
+	difference, never the whole balance, which would double-reserve the part that survived.
+	"""
+	result = {}
+	resolved = _resolve_mwo_so_anchor(mwo)
+	if not resolved:
+		return {"skipped": "no Sales Order anchor"}
+	if not _heal_ownership_allowed(item_code, batch_no, resolved):
+		return {"skipped": "Customer Goods batch owned by another customer"}
+
+	source_wh, free = _pick_shortfall_warehouse(
+		mwo, item_code, batch_no, shortfall, operation, company, warehouse
+	)
+	if not source_wh:
+		return {
+			"skipped": "no warehouse holds enough free batch qty",
+			"physical_warehouses": _physical_batch_warehouses(item_code, batch_no),
+		}
+
+	result["warehouse"] = source_wh
+	result["free_qty"] = flt(free, 3)
+	if dry_run:
+		result["would_heal"] = True
+		return result
+
+	has_batch_no, has_serial_no, stock_uom = frappe.get_cached_value(
+		"Item", item_code, ["has_batch_no", "has_serial_no", "stock_uom"]
+	)
+	result["created"] = _build_and_submit_mwo_sre(
+		company,
+		mwo,
+		item_code,
+		source_wh,
+		batch_no,
+		shortfall,
+		free,
+		operation,
+		resolved,
+		has_batch_no,
+		has_serial_no,
+		stock_uom,
+	)
+	result["healed"] = True
+	if sync_log_name:
+		_insert_sync_log_item(
+			sync_log_name,
+			{
+				"manufacturing_work_order": mwo,
+				"manufacturing_operation": operation or "",
+				"company": company,
+				"item_code": item_code,
+				"batch_no": batch_no,
+				"source_warehouse": source_wh,
+				"qty": 0,
+				"status": "Synced",
+				"sync_stage": "WIP Reservation Healed",
+				"stock_reservation_entry": result["created"],
+				"suggested_fix": (
+					f"Reservation shortfall of {flt(shortfall, 3)} {stock_uom or ''} "
+					f"re-reserved at {source_wh}".strip()
+				),
+			},
+		)
+	return result
+
+
+@frappe.whitelist()
+def heal_reservation_shortfall(mwo=None, dry_run=True, limit=None, warehouse=None):
+	"""Top up reservations that cover LESS than the MOP Log balance for an (item, batch).
+
+	``backfill_missing_wip_reservations`` heals a reservation that is entirely gone; it is
+	gated on ``_active_sre_exists``, so a reservation that merely went SHORT is invisible to
+	it. That gap is real: EOD relocation cancels source SREs by (MWO, item, source warehouse)
+	— batch-blind — and re-reserves only from the rows the consolidated Stock Entry actually
+	moved, so a same-item OTHER-batch reservation at that warehouse can be cancelled, never
+	rebuilt, and then hard-deleted. The MOP Log balance keeps counting the metal, every later
+	loss rebase carries the difference forward, and the shortfall finally surfaces as
+	``NegativeStockError`` when Serial Number Creator consumes the balance.
+
+	For each (item, batch) whose MOP balance exceeds what is still reserved, reserve ONLY the
+	difference, at a warehouse that physically holds the batch with enough free qty
+	(:func:`_pick_shortfall_warehouse`). Never reserves the whole balance — the existing
+	reservation still covers its part. Fails safe: reports and skips when no warehouse has
+	the free qty, when the batch is another customer's goods, or when the MWO has no Sales
+	Order anchor. Idempotent — a healed row reports zero shortfall on the next run.
+
+	Pass ``mwo`` to fix one work order; omit to scan live (submitted, not Completed) work
+	orders, optionally capped by ``limit``. ``warehouse`` pins where the top-up is taken from
+	(still validated against free qty) for when an operator knows better than the ranking.
+	``dry_run`` (default) only reports.
+
+	Run:  bench --site <site> execute \
+	  jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync.heal_reservation_shortfall \
+	  --kwargs "{'mwo': 'MWO-...', 'dry_run': False}"
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
+		get_current_mop_balance_rows,
+	)
+
+	dry_run = cint(dry_run)
+	if mwo:
+		mwos = [mwo]
+	else:
+		mwos = [
+			r[0]
+			for r in frappe.db.sql(
+				"""
+				SELECT name
+				FROM `tabManufacturing Work Order`
+				WHERE docstatus = 1
+				  AND IFNULL(status, '') != 'Completed'
+				ORDER BY modified DESC
+				"""
+			)
+		]
+		if limit:
+			mwos = mwos[: cint(limit)]
+
+	report = []
+	# One shortfall per (job, item, batch). A PMO's main MWO and its metal MWO see the SAME
+	# balance row and the SAME PMO-wide reservations, so without this a scan reports — and a
+	# live run would heal — the same gap once per sibling.
+	seen = set()
+	for mwo_name in mwos:
+		pmo, op, company = frappe.db.get_value(
+			"Manufacturing Work Order",
+			mwo_name,
+			["manufacturing_order", "manufacturing_operation", "company"],
+		) or (None, None, None)
+		if not op:
+			continue
+
+		balance_rows = get_current_mop_balance_rows(
+			op,
+			include_fields=[
+				"item_code",
+				"batch_no",
+				"qty_after_transaction_batch_based as qty",
+			],
+		)
+		for b in balance_rows:
+			item_code = b.get("item_code")
+			batch_no = b.get("batch_no")
+			qty = flt(b.get("qty"), 3)
+			# A non-batch balance row has no lot to reserve against; the Qty-based
+			# reservation path is item-level and is not what goes short here.
+			if not (item_code and batch_no) or qty <= 0:
+				continue
+
+			key = (pmo or mwo_name, item_code, batch_no)
+			if key in seen:
+				continue
+			seen.add(key)
+
+			reserved = _sre_remaining_for_batch(mwo_name, item_code, batch_no)
+			shortfall = flt(qty - reserved, 3)
+			if shortfall <= 0:
+				continue
+
+			entry = {
+				"mwo": mwo_name,
+				"operation": op,
+				"item_code": item_code,
+				"batch_no": batch_no,
+				"mop_balance": qty,
+				"reserved": reserved,
+				"shortfall": shortfall,
+			}
+
+			try:
+				entry.update(
+					_reserve_batch_shortfall(
+						mwo_name,
+						item_code,
+						batch_no,
+						shortfall,
+						op,
+						company,
+						warehouse=warehouse,
+						dry_run=dry_run,
+					)
+				)
+			except Exception as exc:
+				# One unrepairable row must not sink the whole report — the caller needs to
+				# see the rows that DID heal, and the reason this one did not, in the return
+				# value. ``bench execute`` swallows a raised exception and replaces it with
+				# an unrelated NameError, so an error carried in the row is the only form
+				# the operator actually gets to read.
+				entry["error"] = f"{type(exc).__name__}: {exc}"
+				frappe.log_error(
+					title=f"heal_reservation_shortfall: {mwo_name} / {batch_no}",
+					message=frappe.get_traceback(),
+				)
+			report.append(entry)
+
+	return report
+
+
 # ---------------------------------------------------------------------------
 # Data gathering: unsynced MOP groups (configurable window, with MWO filter)
 # ---------------------------------------------------------------------------
@@ -2758,12 +3193,36 @@ def _preload_sre_warehouse_map(mwo):
 def _snapshot_mwo_sres_for_relocation(mwo, items, t_warehouse):
 	"""Snapshot the MWO's submitted SREs that back the moved items at a source
 	warehouse other than ``t_warehouse``. Captures the data needed to recreate
-	them after the transfer. Returns a list of snapshot dicts."""
+	them after the transfer. Returns a list of snapshot dicts.
+
+	Batch-aware on purpose. Matching on (item_code, source warehouse) alone sweeps in a
+	reservation for a DIFFERENT batch of the same item parked at that warehouse — the EOD
+	Stock Entry never moves it, so ``_reserve_sres_from_eod_se_rows`` has no row to rebuild
+	it from and ``_hard_delete_cancelled_snapshots`` then makes the loss permanent. A
+	reservation is only a relocation candidate when at least one of the batches it reserves
+	is actually moving out of that warehouse in this run. (An SRE that reserves a mix of
+	moved and unmoved batches is still cancelled whole — ERPNext has no partial cancel — and
+	the caller's post-condition guard restores the unmoved remainder.)
+	"""
 	moved_items = {it["item_code"] for it in items}
 	source_whs = {it["s_warehouse"] for it in items if it.get("s_warehouse")}
 	source_whs.discard(t_warehouse)
 	if not moved_items or not source_whs:
 		return []
+
+	# {(item_code, s_warehouse): {batch_no, ...}}; a row without a batch means "cannot tell"
+	# for that key, so every reservation there stays a candidate (pre-batch behaviour).
+	moved_batches = {}
+	unbatched_keys = set()
+	for it in items:
+		wh = it.get("s_warehouse")
+		if not wh or wh == t_warehouse:
+			continue
+		key = (it["item_code"], wh)
+		if it.get("batch_no"):
+			moved_batches.setdefault(key, set()).add(it["batch_no"])
+		else:
+			unbatched_keys.add(key)
 
 	sres = frappe.db.get_all(
 		"Stock Reservation Entry",
@@ -2809,6 +3268,12 @@ def _snapshot_mwo_sres_for_relocation(mwo, items, t_warehouse):
 				rem = flt(sb.qty) - flt(sb.delivered_qty)
 				if rem > 1e-9:
 					sb_entries.append({"batch_no": sb.batch_no, "qty": rem})
+		key = (sre.item_code, sre.warehouse)
+		if sb_entries and key not in unbatched_keys:
+			# Reserves specific lots: relocate it only when this run moves one of them.
+			moving = moved_batches.get(key) or set()
+			if not any(sb["batch_no"] in moving for sb in sb_entries):
+				continue
 		snapshots.append(
 			{
 				"sre": sre,
