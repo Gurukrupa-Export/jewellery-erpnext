@@ -314,10 +314,14 @@ frappe.ui.form.on("Stock Entry", {
 		frm.set_query("item_template", function (doc) {
 			return { filters: { has_variants: 1 } };
 		});
+		// docstatus 1 only: MWO.manufacturing_operation is stamped in on_submit
+		// (create_manufacturing_operation), so a draft MWO carries a PMO but no
+		// operation and silently half-fills the header.
 		frm.set_query("manufacturing_work_order", function (doc) {
 			return {
 				filters: {
 					manufacturing_order: frm.doc.manufacturing_order,
+					docstatus: 1,
 				},
 			};
 		});
@@ -682,14 +686,29 @@ frappe.ui.form.on("Stock Entry", {
 		// });
 	},
 	manufacturing_work_order(frm) {
-		frappe.db
+		// Guard the empty case: frappe.call drops an undefined `filters` arg, and
+		// frappe.client.get_value then runs an unfiltered get_list and hands back the
+		// first arbitrary MWO in the table.
+		if (!frm.doc.manufacturing_work_order) {
+			return frm.set_value({ manufacturing_order: "", manufacturing_operation: "" });
+		}
+		// Returned so script_manager.trigger awaits this call instead of falling back
+		// to frappe.after_server_call(); two quick MWO changes used to land out of order.
+		return frappe.db
 			.get_value("Manufacturing Work Order", frm.doc.manufacturing_work_order, [
 				"manufacturing_order",
 				"manufacturing_operation",
 			])
 			.then((r) => {
-				frm.set_value("manufacturing_order", r.message.manufacturing_order);
-				frm.set_value("manufacturing_operation", r.message.manufacturing_operation);
+				// r.message is undefined whenever the request errored. Dereferencing it
+				// raised inside the promise and aborted *both* set_value calls silently,
+				// leaving manufacturing_operation blank. before_validate fills it server
+				// side either way; this just stops the form going out of sync.
+				const mwo = r.message || {};
+				return frm.set_value({
+					manufacturing_order: mwo.manufacturing_order || "",
+					manufacturing_operation: mwo.manufacturing_operation || "",
+				});
 			});
 	},
 	subcontractor(frm) {
