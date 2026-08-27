@@ -1434,41 +1434,88 @@ class TestSeUtilsGuards(_StockEntryTestCase):
 			se_utils.set_gross_wt(se)
 		gv.assert_not_called()
 
+	@staticmethod
+	def _tag_map(**tags):
+		"""``bulk_map`` shape: {serial: _dict(custom_jwelex_tag_no=...)}."""
+		return {s: frappe._dict(custom_jwelex_tag_no=t) for s, t in tags.items()}
+
 	def test_set_jwelex_tag_no_from_serial_no(self):
 		row = _Row(serial_no="S-1", custom_jwelex_tag_no=None)
 		se = _Doc(items=[row])
 		with patch.object(
-			se_utils.frappe.db, "get_value", return_value="GXU56855"
-		) as gv:
+			se_utils, "bulk_map", return_value=self._tag_map(**{"S-1": "GXU56855"})
+		) as bm:
 			se_utils.set_jwelex_tag_no(se)
-		gv.assert_called_once_with("Serial No", "S-1", "custom_jwelex_tag_no")
+		bm.assert_called_once_with("Serial No", ["S-1"], ["custom_jwelex_tag_no"])
 		self.assertEqual(row.custom_jwelex_tag_no, "GXU56855")
 
-	def test_set_jwelex_tag_no_uses_first_of_multiple_serials(self):
-		"""``serial_no`` is newline-separated Text; a Data field holds one tag."""
+	def test_set_jwelex_tag_no_joins_all_serials(self):
+		"""A row carries one serial per qty; the tag field mirrors that list."""
 		row = _Row(serial_no="S-1\nS-2\nS-3", custom_jwelex_tag_no=None)
 		se = _Doc(items=[row])
-		with patch.object(
-			se_utils.frappe.db, "get_value", return_value="GXU56855"
-		) as gv:
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": "T-2", "S-3": "T-3"})
+		with patch.object(se_utils, "bulk_map", return_value=tags):
 			se_utils.set_jwelex_tag_no(se)
-		gv.assert_called_once_with("Serial No", "S-1", "custom_jwelex_tag_no")
-		self.assertEqual(row.custom_jwelex_tag_no, "GXU56855")
+		self.assertEqual(row.custom_jwelex_tag_no, "T-1\nT-2\nT-3")
+
+	def test_set_jwelex_tag_no_keeps_blank_line_for_untagged_serial(self):
+		"""Line N must stay the tag of serial N, so a gap is preserved."""
+		row = _Row(serial_no="S-1\nS-2\nS-3", custom_jwelex_tag_no=None)
+		se = _Doc(items=[row])
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": None, "S-3": "T-3"})
+		with patch.object(se_utils, "bulk_map", return_value=tags):
+			se_utils.set_jwelex_tag_no(se)
+		self.assertEqual(row.custom_jwelex_tag_no, "T-1\n\nT-3")
+
+	def test_set_jwelex_tag_no_handles_crlf_and_trailing_newline(self):
+		row = _Row(serial_no="S-1\r\nS-2\n", custom_jwelex_tag_no=None)
+		se = _Doc(items=[row])
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": "T-2"})
+		with patch.object(se_utils, "bulk_map", return_value=tags) as bm:
+			se_utils.set_jwelex_tag_no(se)
+		bm.assert_called_once_with(
+			"Serial No", ["S-1", "S-2"], ["custom_jwelex_tag_no"]
+		)
+		self.assertEqual(row.custom_jwelex_tag_no, "T-1\nT-2")
+
+	def test_set_jwelex_tag_no_prefetches_once_for_all_rows(self):
+		"""Guards the N+1: one query per document, not per serial."""
+		rows = [
+			_Row(serial_no="S-1\nS-2", custom_jwelex_tag_no=None),
+			_Row(serial_no="S-3", custom_jwelex_tag_no=None),
+		]
+		se = _Doc(items=rows)
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": "T-2", "S-3": "T-3"})
+		with patch.object(se_utils, "bulk_map", return_value=tags) as bm:
+			se_utils.set_jwelex_tag_no(se)
+		bm.assert_called_once_with(
+			"Serial No", ["S-1", "S-2", "S-3"], ["custom_jwelex_tag_no"]
+		)
+		self.assertEqual(rows[0].custom_jwelex_tag_no, "T-1\nT-2")
+		self.assertEqual(rows[1].custom_jwelex_tag_no, "T-3")
 
 	def test_set_jwelex_tag_no_ignores_non_serialized_rows(self):
 		row = _Row(serial_no=None, custom_jwelex_tag_no="STALE")
 		se = _Doc(items=[row])
-		with patch.object(se_utils.frappe.db, "get_value") as gv:
+		with patch.object(se_utils, "bulk_map", return_value={}) as bm:
 			se_utils.set_jwelex_tag_no(se)
-		gv.assert_not_called()
+		bm.assert_called_once_with("Serial No", [], ["custom_jwelex_tag_no"])
 		self.assertEqual(row.custom_jwelex_tag_no, "STALE")
 
-	def test_set_jwelex_tag_no_clears_when_serial_has_no_tag(self):
-		row = _Row(serial_no="S-1", custom_jwelex_tag_no="STALE")
+	def test_set_jwelex_tag_no_clears_when_no_serial_has_a_tag(self):
+		"""Empty, not a run of blank lines."""
+		row = _Row(serial_no="S-1\nS-2", custom_jwelex_tag_no="STALE")
 		se = _Doc(items=[row])
-		with patch.object(se_utils.frappe.db, "get_value", return_value=None):
+		with patch.object(se_utils, "bulk_map", return_value={}):
 			se_utils.set_jwelex_tag_no(se)
 		self.assertIsNone(row.custom_jwelex_tag_no)
+
+	def test_get_jwelex_tag_no_matches_the_stamper(self):
+		"""The whitelisted client endpoint shares the resolver."""
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": None, "S-3": "T-3"})
+		with patch.object(se_utils, "bulk_map", return_value=tags):
+			self.assertEqual(se_utils.get_jwelex_tag_no("S-1\nS-2\nS-3"), "T-1\n\nT-3")
+			self.assertIsNone(se_utils.get_jwelex_tag_no(""))
 
 	def test_validate_warehouse_same_from_to_throws(self):
 		se = _Doc(

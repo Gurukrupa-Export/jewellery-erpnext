@@ -1,6 +1,12 @@
-"""Add ``Stock Entry Detail.custom_jwelex_tag_no`` -- the Jwelex tag of the row's
-Serial No, mirrored onto the Stock Entry row so a serialised entry can be reconciled
+"""Add ``Stock Entry Detail.custom_jwelex_tag_no`` -- the Jwelex tags of the row's
+Serial Nos, mirrored onto the Stock Entry row so a serialised entry can be reconciled
 against the legacy Jwelex system without opening each Serial No by hand.
+
+A row carries one serial per qty, so this field is ``Text`` -- the same fieldtype
+``serial_no`` itself uses -- and holds one tag per line, aligned line-for-line with
+``serial_no``. It was originally ``Data`` (first serial only); see
+``widen_stock_entry_jwelex_tag_field`` for the migration of sites that ran that
+version.
 
 ``Serial No.custom_jwelex_tag_no`` already exists (Data, written by
 ``gke_price_list/doctype/product_return_order``). Note the spelling: ``jwelex`` here,
@@ -31,7 +37,7 @@ from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 FIELD = {
 	"fieldname": "custom_jwelex_tag_no",
-	"fieldtype": "Data",
+	"fieldtype": "Text",
 	"label": "Jwelex Tag No",
 	"insert_after": "serial_no",
 	"read_only": 1,
@@ -39,8 +45,8 @@ FIELD = {
 	"translatable": 0,
 	"module": "Jewellery Erpnext",
 	"description": (
-		"Jwelex tag of this row's Serial No. Stamped from "
-		"Serial No.custom_jwelex_tag_no on every save."
+		"Jwelex tags of this row's Serial Nos, one per line, aligned with "
+		"serial_no. Stamped from Serial No.custom_jwelex_tag_no on every save."
 	),
 }
 
