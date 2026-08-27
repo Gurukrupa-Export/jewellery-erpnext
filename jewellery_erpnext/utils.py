@@ -8,6 +8,24 @@ from frappe import _
 from frappe.desk.reportview import get_match_cond
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
+from frappe.utils import flt
+
+# One carat is 0.2 g. A ``*_wt_in_gram`` field is a DERIVED view of its carat
+# counterpart -- convert the total once, at the end, never per ledger row.
+CARAT_TO_GRAM = 0.2
+
+
+def carat_to_gram(carats, precision=3):
+	"""Convert a carat total to grams, rounding exactly once.
+
+	Rounding each row before summing makes ``{diamond,gemstone}_wt_in_gram``
+	drift from ``{diamond,gemstone}_wt`` by up to half a milligram per row, which
+	surfaces downstream as a phantom ``gross_wt`` loss or gain against
+	``prev_gross_wt`` -- see ``recalculate_manufacturing_operation_weights``. The
+	carat total is rounded to the field's own precision first, so the invariant
+	holds against the value actually stored.
+	"""
+	return flt(flt(carats, precision) * CARAT_TO_GRAM, precision)
 
 
 @frappe.whitelist()
