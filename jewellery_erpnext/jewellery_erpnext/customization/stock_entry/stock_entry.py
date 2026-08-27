@@ -36,9 +36,51 @@ from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
 from jewellery_erpnext.utils import bulk_map
 
 
+def set_manufacturing_refs(self):
+	"""Derive the PMO / operation from the MWO whenever the browser fill did not land.
+
+	The client fill (public/js/doctype_js/stock_entry.js, manufacturing_work_order
+	handler) is a single un-awaited fetch with no error handler: if its response
+	carries no message the ``.then`` raises and *neither* field is written, and
+	nothing retries. That leaves a mandatory field blank with no way to re-pick it
+	by hand -- an FG MWO's operation is created "Finished", which the link query on
+	``manufacturing_operation`` hides.
+
+	Fill-if-empty only. ``Manufacturing Work Order.manufacturing_operation`` is a
+	moving pointer (Employee IR / Department IR re-point it as work advances), so
+	overwriting would silently rewrite a deliberately older operation.
+
+	All three are Custom Fields, so read them through getattr -- a doc built without
+	them must be a no-op here, never an AttributeError that aborts the whole save.
+	"""
+	mwo_name = getattr(self, "manufacturing_work_order", None)
+	if not mwo_name:
+		return
+
+	pmo = getattr(self, "manufacturing_order", None)
+	mop = getattr(self, "manufacturing_operation", None)
+	if pmo and mop:
+		return
+
+	mwo = frappe.db.get_value(
+		"Manufacturing Work Order",
+		mwo_name,
+		["manufacturing_order", "manufacturing_operation"],
+		as_dict=True,
+	)
+	if not mwo:
+		return
+
+	self.manufacturing_order = pmo or mwo.manufacturing_order
+	self.manufacturing_operation = mop or mwo.manufacturing_operation
+
+
 def before_validate(self, method):
 	if not in_configured_timeslot(self):
 		frappe.throw(_("Not Allowed to do entries, its freeze time"))
+	# Must precede set_employee: it reads self.manufacturing_operation to resolve
+	# to_employee on Material Transfer (WORK ORDER).
+	set_manufacturing_refs(self)
 	validate_customer_voucher(self)
 	validate_sample_goods_not_consumed(self)
 	set_employee(self)

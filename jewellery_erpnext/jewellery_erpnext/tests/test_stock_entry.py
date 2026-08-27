@@ -1356,6 +1356,10 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 			cse_mod, "in_configured_timeslot", return_value=True
 		), patch.object(
 			cse_mod,
+			"set_manufacturing_refs",
+			side_effect=_record("set_manufacturing_refs"),
+		), patch.object(
+			cse_mod,
 			"validate_customer_voucher",
 			side_effect=_record("validate_customer_voucher"),
 		), patch.object(
@@ -1375,6 +1379,9 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 		self.assertEqual(
 			calls,
 			[
+				# Must stay ahead of set_employee, which reads
+				# self.manufacturing_operation to resolve to_employee.
+				"set_manufacturing_refs",
 				"validate_customer_voucher",
 				"validate_sample_goods_not_consumed",
 				"set_employee",
@@ -1383,6 +1390,96 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 				"validate_warehouse",
 			],
 		)
+
+
+# --------------------------------------------------------- set_manufacturing_refs
+class TestSetManufacturingRefs(_StockEntryTestCase):
+	"""Server-side backstop for the browser fill on stock_entry.js.
+
+	The client handler is a single un-awaited fetch with no error handler; when its
+	response carries no message it raises inside the promise and leaves both header
+	fields unwritten. This guard re-derives them from the MWO on save.
+	"""
+
+	# as_dict=True yields a frappe._dict; the guard uses attribute access.
+	MWO = frappe._dict(manufacturing_order="PMO-1", manufacturing_operation="MOP-1")
+
+	def _run(self, se, mwo=None):
+		with patch.object(cse_mod.frappe.db, "get_value", return_value=mwo) as gv:
+			cse_mod.set_manufacturing_refs(se)
+		return gv
+
+	def test_fills_both_when_blank(self):
+		se = _Doc(
+			manufacturing_work_order="MWO-1",
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		self._run(se, self.MWO)
+		self.assertEqual(se.manufacturing_order, "PMO-1")
+		self.assertEqual(se.manufacturing_operation, "MOP-1")
+
+	def test_fills_operation_when_only_pmo_present(self):
+		"""The reported symptom: PMO landed, operation did not."""
+		se = _Doc(
+			manufacturing_work_order="MWO-1",
+			manufacturing_order="PMO-1",
+			manufacturing_operation="",
+		)
+		self._run(se, self.MWO)
+		self.assertEqual(se.manufacturing_operation, "MOP-1")
+		self.assertEqual(se.manufacturing_order, "PMO-1")
+
+	def test_never_overwrites_an_explicit_operation(self):
+		"""MWO.manufacturing_operation is a moving pointer — a deliberate older
+		operation must survive."""
+		se = _Doc(
+			manufacturing_work_order="MWO-1",
+			manufacturing_order="PMO-1",
+			manufacturing_operation="MOP-EARLIER",
+		)
+		gv = self._run(se, self.MWO)
+		self.assertEqual(se.manufacturing_operation, "MOP-EARLIER")
+		gv.assert_not_called()
+
+	def test_noop_without_mwo(self):
+		se = _Doc(
+			manufacturing_work_order=None,
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		gv = self._run(se)
+		gv.assert_not_called()
+		self.assertIsNone(se.manufacturing_operation)
+
+	def test_unknown_mwo_does_not_raise(self):
+		se = _Doc(
+			manufacturing_work_order="MWO-GONE",
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		self._run(se, None)
+		self.assertIsNone(se.manufacturing_operation)
+
+	def test_missing_custom_fields_are_a_noop(self):
+		"""A doc built without the Custom Fields must not raise AttributeError."""
+		se = _Doc()
+		gv = self._run(se)
+		gv.assert_not_called()
+
+	def test_draft_mwo_leaves_operation_blank(self):
+		"""MWO.manufacturing_operation is stamped in on_submit, so a draft MWO
+		legitimately has none — fill the PMO, leave the operation alone."""
+		se = _Doc(
+			manufacturing_work_order="MWO-DRAFT",
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		self._run(
+			se, frappe._dict(manufacturing_order="PMO-1", manufacturing_operation=None)
+		)
+		self.assertEqual(se.manufacturing_order, "PMO-1")
+		self.assertIsNone(se.manufacturing_operation)
 
 
 # ------------------------------------------------------------------- se_utils guards
