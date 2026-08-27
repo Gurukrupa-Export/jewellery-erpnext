@@ -15,9 +15,7 @@ frappe.ui.form.on("Manufacturing Plan", {
 						let item_codes = r.message || [];
 						if (!item_codes.length) {
 							frappe.msgprint(
-								__(
-									"All items in this Manufacturing Plan already have a CAD Manufacturing Work Order."
-								)
+								__("All items in this Manufacturing Plan already have a CAD Manufacturing Work Order.")
 							);
 							return;
 						}
@@ -74,11 +72,6 @@ frappe.ui.form.on("Manufacturing Plan", {
 			size: "extra-large",
 		});
 	},
-	manufacturing_end_date(frm) {
-		// Blanking the header must not wipe rows -- it only stops future pushes.
-		if (!frm.doc.manufacturing_end_date) return;
-		update_fields_in_child_table(frm, "manufacturing_end_date");
-	},
 	get_repair_order(frm) {
 		map_current_doc({
 			method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.manufacturing_plan.get_details_to_append",
@@ -128,38 +121,6 @@ frappe.ui.form.on("Manufacturing Plan", {
 		frm.dashboard.add_progress(__("Status"), bars, message);
 	},
 });
-
-frappe.ui.form.on("Manufacturing Plan Table", {
-	// Registered on the CHILD doctype, not the parent: grid.js triggers
-	// "<fieldname>_add" against the new row's own doctype, and script_manager's
-	// get_handlers keys off exactly that -- the same block on "Manufacturing Plan"
-	// is never reached.
-	manufacturing_plan_table_add(frm, cdt, cdn) {
-		// A row added after the header was set still inherits it.
-		if (!frm.doc.manufacturing_end_date) return;
-		locals[cdt][cdn].manufacturing_end_date = frm.doc.manufacturing_end_date;
-		frm.refresh_field("manufacturing_plan_table");
-	},
-
-	manufacturing_end_date(frm) {
-		// A per-row date overrides the bulk value, so the header no longer describes the
-		// grid and is cleared. Other rows keep whatever they already had.
-		//
-		// This re-enters the parent handler above, which returns on its falsy guard --
-		// one bounce, no recursion. The push in the other direction is a plain
-		// assignment (see update_fields_in_child_table), which Frappe does not treat as
-		// a child-field change, so it never re-enters this handler.
-		if (!frm.doc.manufacturing_end_date) return;
-		frm.set_value("manufacturing_end_date", null);
-	},
-});
-
-function update_fields_in_child_table(frm, fieldname) {
-	(frm.doc.manufacturing_plan_table || []).forEach((d) => {
-		d[fieldname] = frm.doc[fieldname];
-	});
-	frm.refresh_field("manufacturing_plan_table");
-}
 
 function show_cad_item_select_dialog(frm, item_codes) {
 	let rows_html = item_codes
@@ -257,6 +218,7 @@ function show_cad_reason_dialog(frm, item_codes) {
 		__("Submit")
 	);
 }
+
 
 var map_current_doc = function (opts) {
 	function _map(frm) {

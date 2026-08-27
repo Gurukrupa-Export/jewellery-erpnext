@@ -179,6 +179,9 @@ doc_events = {
 		"before_validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
+			# Runs last so it sees rows after update_batches has rebuilt self.items.
+			# No-op unless Customer Gold Flow is enabled on Subcontracting Settings.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_receipt",
 		],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
@@ -187,6 +190,9 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_child_batches",
+			# MUST stay after the two batch creators: a Customer Gold receipt carries no
+			# batch_no until create_parent_batches mints it.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_batches",
 		],
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
@@ -241,9 +247,9 @@ doc_events = {
 	},
 	"Purchase Invoice": {
 		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.validate",
 			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
-			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.update_effective_tax_rate",
-		]
+		],
 	},
 	"Supplier Quotation": {"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR},
 	"Supplier": {
@@ -282,7 +288,10 @@ doc_events = {
 	},
 	"Purchase Receipt": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.before_validate",
-		"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR,
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.validate",
+			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
+		],
 		"before_submit": "jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 		"on_submit": "jewellery_erpnext.jewellery_erpnext.customization.purchase_receipt.purchase_receipt.on_submit",
 	},

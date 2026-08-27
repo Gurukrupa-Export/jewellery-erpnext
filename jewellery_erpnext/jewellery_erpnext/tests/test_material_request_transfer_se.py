@@ -188,7 +188,9 @@ class TestMaterialRequestTransferType(IntegrationTestCase):
 			side_effect=_gv,
 		), patch.object(mr_mod, "update_pure_qty"), patch.object(
 			mr_mod, "validate_target_item"
-		), patch.object(mr_mod, "validate_warehouse"):
+		), patch.object(mr_mod, "validate_warehouse"), patch.object(
+			mr_mod, "set_reservation_warehouse"
+		):
 			mr_mod.before_validate(mr, None)
 		return mr.custom_transfer_type
 

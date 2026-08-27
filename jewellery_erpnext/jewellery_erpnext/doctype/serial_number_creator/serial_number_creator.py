@@ -217,6 +217,39 @@ def _warehouses_with_physical_batch(item_code, batch_no):
 	return out
 
 
+def _free_warehouse_qty(item_code, warehouse):
+	"""Unreserved qty of ``item`` in ``warehouse`` — Bin actual minus ALL reservations.
+
+	The negative-stock validator works at this level, not the batch level: a batch can have
+	plenty of physical qty in a Bin whose every gram is reserved for other sales orders.
+	Returns 0.0 on any error so a lookup failure can never manufacture headroom.
+	"""
+	from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+		get_available_qty_to_reserve,
+	)
+
+	if not (item_code and warehouse):
+		return 0.0
+	try:
+		return max(flt(get_available_qty_to_reserve(item_code, warehouse)), 0.0)
+	except Exception:
+		return 0.0
+
+
+def _physical_holders_text(item_code, batch_no, limit=5):
+	"""``"WH A: 31.189, WH B: 18.729 (+45 more warehouses)"`` — biggest holders first.
+
+	A shared casting batch sits in every WIP warehouse on the floor: the live case listed 47
+	of them and buried the two numbers that mattered. The tail is counted, not printed.
+	"""
+	holders = _warehouses_with_physical_batch(item_code, batch_no)
+	if not holders:
+		return "none"
+	shown = ", ".join(f"{wh}: {qty}" for wh, qty in holders[:limit])
+	rest = len(holders) - limit
+	return f"{shown} (+{rest} more warehouses)" if rest > 0 else shown
+
+
 def _pick_source_warehouse(item_code, batch_no, requested_qty, candidates, used=None):
 	"""First candidate warehouse whose physical batch qty covers ``requested_qty``.
 
@@ -598,6 +631,28 @@ def split_source_rows_by_reservation(doc):
 		caps = _reserved_warehouse_caps(item_code, batch_no, mwo_names)
 		allocations = _allocate_qty_across_warehouses(group_qty, caps)
 
+		# Reservations exist but do not cover the row: the allocator returns None and the
+		# rows are left alone, which used to be silent — the operator only found out at
+		# submit, from ERPNext's negative-stock error. Say it here, on the draft save, while
+		# there is still time to restore the reservation.
+		reserved_total = flt(sum(cap for _wh, cap, _sres in caps), 3)
+		if caps and group_qty > reserved_total + TOLERANCE:
+			frappe.msgprint(
+				_(
+					"{0} of {1} (batch {2}) is reserved for this job, but the source rows "
+					"need {3} — short by {4}. The difference has to come from unreserved "
+					"stock, and the submit will fail if none is free in those warehouses."
+				).format(
+					reserved_total,
+					item_code,
+					batch_no or "-",
+					group_qty,
+					flt(group_qty - reserved_total, 3),
+				),
+				title=_("Reservation Short"),
+				indicator="orange",
+			)
+
 		if not allocations or _same_allocation(rows, allocations):
 			new_rows.extend(rows)
 			continue
@@ -781,6 +836,52 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 			sre_reserved_qty_total = 0.0
 			used = {}
 
+			# Reserved LESS than this group needs: stop here with the numbers, instead of
+			# building a Stock Entry that ERPNext rejects deep inside update_stock_ledger
+			# with "N units ... are reserved for other sales orders". The warehouse
+			# resolution below only checks PHYSICAL batch qty, which happily passes when the
+			# shortfall is that the job's own reservation went short — a batch shared with
+			# other orders has plenty of physical stock, none of it consumable here. Only
+			# guards groups that HAVE reservations; a group with none still falls through to
+			# the PC Receive / Stock Entry warehouse fallbacks below.
+			reserved_caps = group_caps.get((item_code, batch_no)) or []
+			reserved_total = flt(sum(cap for _wh, cap, _sres in reserved_caps), 3)
+			# What ERPNext will actually let this entry consume: the job's own reservation
+			# (released as it is consumed) PLUS whatever is unreserved in those warehouses.
+			# Checking the reservation alone would block submits that legitimately draw a
+			# small excess from free floor stock — which is how they passed before this
+			# guard existed. Only stop when nothing can cover the difference.
+			consumable = flt(
+				sum(
+					flt(cap) + flt(_free_warehouse_qty(item_code, wh))
+					for wh, cap, _sres in reserved_caps
+				),
+				3,
+			)
+			if reserved_caps and group_qty > consumable + TOLERANCE:
+				frappe.throw(
+					_(
+						"{0} of {1} (batch {2}) is required, but this job has only {3} "
+						"reserved — short by {4}, and its warehouses hold no unreserved "
+						"stock to make up the difference.<br><br>"
+						"<b>Reserved for this job</b> — {5}.<br>"
+						"<b>Largest physical holders</b> — {6}.<br><br>"
+						"The rest of the stock there is reserved for other sales orders and "
+						"cannot be consumed here. Restore the missing reservation — run "
+						"<code>heal_reservation_shortfall</code> for this work order, or "
+						"deploy the <code>heal_lost_wip_reservations</code> patch — then "
+						"submit again."
+					).format(
+						group_qty,
+						item_code,
+						batch_no or "-",
+						reserved_total,
+						flt(group_qty - reserved_total, 3),
+						_reserved_summary_text(item_code, batch_no, all_pmo_mwos),
+						_physical_holders_text(item_code, batch_no),
+					)
+				)
+
 			# ── PRIORITY 1: SRE — capture warehouse + consume reservations ──
 			# Scoped to the MWOs of this PMO only; stock reserved for another job is
 			# never a candidate, however much of the batch it holds.
@@ -828,16 +929,13 @@ def to_prepare_data_for_make_mnf_stock_entry(self):
 						# No candidate physically covers the qty — fail fast with an
 						# actionable message instead of a cryptic BatchNegativeStock error
 						# on the auto-created Manufacture entry.
-						holders = _warehouses_with_physical_batch(item_code, batch_no)
-						holders_str = (
-							", ".join(f"{wh}: {qty}" for wh, qty in holders) or "none"
-						)
+						holders_str = _physical_holders_text(item_code, batch_no)
 						frappe.throw(
 							_(
 								"Batch {0} of {1} does not have {2} available in any "
 								"reserved/source warehouse.<br><br>"
 								"<b>Reserved for this job</b> — {3}.<br>"
-								"<b>Physical stock (all warehouses)</b> — {4}.<br><br>"
+								"<b>Largest physical holders</b> — {4}.<br><br>"
 								"Stock in a warehouse without a reservation for this job "
 								"cannot be consumed here."
 							).format(

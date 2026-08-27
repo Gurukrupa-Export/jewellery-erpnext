@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_import": 1,
  "allow_rename": 1,
  "autoname": "hash",
  "creation": "2024-01-15 17:29:48.589094",
@@ -352,7 +353,7 @@
    "label": "Department Comment",
    "options": "Department Comment"
   }
-  ],
+ ],
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [
@@ -365,7 +366,7 @@
    "link_fieldname": "custom_serial_number_creator"
   }
  ],
- "modified": "2026-04-29 10:37:55.855803",
+ "modified": "2026-08-25 15:01:35.111326",
  "modified_by": "Administrator",
  "module": "Jewellery Erpnext",
  "name": "Serial Number Creator",

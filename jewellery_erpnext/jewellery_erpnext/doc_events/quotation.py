@@ -3,6 +3,7 @@ from io import BytesIO
 
 import frappe
 from frappe import _
+from frappe.utils import flt
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
@@ -33,8 +34,53 @@ def update_status(quotation_id):
 		frappe.db.set_value("Quotation", quotation_id, "status", "Open")
 
 
+def sync_quotation_tax_rate_with_item(self):
+	"""
+	Quotation has no sales_type field (unlike Sales Order / Sales Invoice /
+	Delivery Note), so there's no business-rule template lookup to reuse
+	here (see sales_invoice.set_gst_details / sales_order.sync_header_tax_rate).
+	Fall back to whatever Item Tax Template the first item resolved on its
+	own (core's standard item / item group tax template matching).
+
+	Mirrors doc_events/purchase_invoice.py's sync_tax_row_rate_with_item(),
+	adapted for the Sales side's RCM convention: Sales Taxes and Charges
+	encodes the RCM deduction as a negative rate directly on the row (no
+	add_deduct_tax flag), while the item's own Item Tax Template only
+	stores the positive magnitude -- so RCM heads need negating.
+	"""
+	if not self.get("items") or not self.get("taxes"):
+		return
+
+	first_item = self.items[0]
+	item_tax_template = first_item.get("item_tax_template")
+	if not item_tax_template:
+		return
+
+	template_rates = {}
+	for row in frappe.get_all(
+		"Item Tax Template Detail",
+		filters={"parent": item_tax_template},
+		fields=["tax_type", "tax_rate"],
+	):
+		tax_type = row.tax_type or ""
+		if "Output" not in tax_type:
+			continue
+		rate = flt(row.tax_rate)
+		if "RCM" in tax_type:
+			rate = -abs(rate)
+		template_rates[tax_type] = rate
+
+	if not template_rates:
+		return
+
+	for tax in self.taxes:
+		if tax.account_head in template_rates:
+			tax.rate = flt(template_rates[tax.account_head], tax.precision("rate"))
+
+
 def validate(self, method):
 	validate_gold_rate_with_gst(self)
+	sync_quotation_tax_rate_with_item(self)
 	self.calculate_taxes_and_totals()
 	if self.workflow_state == "Creating BOM":
 		frappe.enqueue(
@@ -671,8 +717,9 @@ def validate_gold_rate_with_gst(self):
 						"Row {0} : Quotation Item Qty ({1}) cannot be greater than Order Form Qty ({2})"
 					).format(i.idx, i.qty, order_qty)
 				)
-	if not self.gold_rate_with_gst:
-		frappe.throw(_("Gold Rate with GST is mandatory."))
+		if i.metal_type=='Gold':
+			if not self.gold_rate_with_gst:
+				frappe.throw(_("Gold Rate with GST is mandatory."))
 
 
 def create_tracking_bom_directly(self):

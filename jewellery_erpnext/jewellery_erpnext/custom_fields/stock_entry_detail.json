@@ -573,6 +573,17 @@
    "print_hide": 1,
    "read_only": 1,
    "translatable": 0
+  },
+  {
+   "dt": "Stock Entry Detail",
+   "fieldname": "custom_jwelex_tag_no",
+   "fieldtype": "Data",
+   "insert_after": "serial_no",
+   "label": "Jwelex Tag No",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1,
+   "translatable": 0
   }
  ]
 }

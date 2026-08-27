@@ -4,8 +4,6 @@ on:
   pull_request:
     branches:
       - v16_develop_aerele
-      - kggk_uat
-      - kggk_prod
   workflow_dispatch:
 
 concurrency:
@@ -66,3 +64,5 @@ jobs:
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_manufacturing_operation_balance_details_report
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_process_loss_valuation
           bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.tests.test_mwo_photoshop_images
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.mop_log.test_mop_log
+          bench --site test_site run-tests --module jewellery_erpnext.jewellery_erpnext.doctype.mop_log.test_mop_lineage_stock_entry_bridge

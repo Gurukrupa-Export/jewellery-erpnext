@@ -5,9 +5,9 @@ import frappe
 from frappe.model.document import Document
 from frappe.query_builder import DocType
 from frappe.query_builder.functions import Max
-from frappe.utils import cint, cstr, flt
+from frappe.utils import cint, cstr, flt, get_datetime
 
-from jewellery_erpnext.utils import is_mwo_refined
+from jewellery_erpnext.utils import carat_to_gram, get_mwo_refining_cutoff
 
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
 select_fields = [
@@ -38,36 +38,37 @@ current_balance_fields = select_fields + [
 class MOPLog(Document):
 	def validate(self):
 		first_char = self.item_code[0] if self.item_code else None
-		qty_after_prefix = self.qty_after_transaction
-		pcs_after_prefix = self.pcs_after_transaction
 		prefix = FIELD_MAP.get(first_char)
-		if prefix:
-			if self.manufacturing_operation:
-				# Canonical lock order: take the Manufacturing Operation row lock up front
-				# (it is the terminal sink) so concurrent MOP-Log writers and Department-IR
-				# weight recompute acquire the MO in a consistent position relative to
-				# Bin/SLE — this breaks the MO<->Bin deadlock cycle. The set_value below
-				# would lock the same row a moment later anyway, so this adds no new lock.
-				frappe.db.get_value(
-					"Manufacturing Operation",
-					self.manufacturing_operation,
-					"name",
-					for_update=True,
-				)
-			update_value = {f"{prefix}_wt": qty_after_prefix}
-			if first_char in ("D", "G"):
-				update_value.update(
-					{
-						f"{prefix}_wt_in_gram": qty_after_prefix * 0.2,
-						f"{prefix}_pcs": pcs_after_prefix,
-					}
-				)
-			frappe.db.set_value(
-				"Manufacturing Operation",
-				self.manufacturing_operation,
-				update_value,
-			)
-			update_wt_detail(self.manufacturing_operation)
+		if not (prefix and self.manufacturing_operation):
+			return
+
+		# Canonical lock order: take the Manufacturing Operation row lock up front
+		# (it is the terminal sink) so concurrent MOP-Log writers and Department-IR
+		# weight recompute acquire the MO in a consistent position relative to
+		# Bin/SLE — this breaks the MO<->Bin deadlock cycle. The set_value inside the
+		# recompute below would lock the same row a moment later anyway, so this adds
+		# no new lock.
+		frappe.db.get_value(
+			"Manufacturing Operation",
+			self.manufacturing_operation,
+			"name",
+			for_update=True,
+		)
+
+		# Derive every bucket from the batch tier instead of stamping this one row's
+		# ``qty_after_transaction``. That field is a *family-wide* running total (every
+		# ``F-`` item shares the ``finding`` bucket), and only the last row written by
+		# create_mop_log_for_stock_transfer_to_mo actually holds it correctly: the clone
+		# writers copy it verbatim per row, and update_new_mop_wtg decrements it by a
+		# per-(item, batch) loss. Stamping it made the header last-writer-wins, so on an
+		# operation carrying two items of the same family every row but the last had its
+		# movement silently dropped from the header — MOP-7Q48F read finding_wt 1.945
+		# against a ledger of 0.608 + 1.323 = 1.931, hiding 0.014g of booked loss.
+		# Narrowed to this row's own family so a per-row save cannot touch a bucket
+		# authored outside MOP Log (the MWO->MOP seed, the Refining zero-out).
+		recalculate_manufacturing_operation_weights(
+			self.manufacturing_operation, pending=self, prefixes=(prefix,)
+		)
 
 
 def update_wt_detail(manufacturing_operation):
@@ -98,12 +99,15 @@ def update_wt_detail(manufacturing_operation):
 			frappe.db.get_value("Manufacturing Operation", previous_mop, "gross_wt")
 			or 0
 		)
-	gross_wt = (
+	# Round once: every component is a precision-3 field, so float residue in the
+	# sum must not leak out as a sub-milligram delta against prev_gross_wt.
+	gross_wt = flt(
 		flt(net_wt)
 		+ flt(finding_wt)
 		+ flt(diamond_wt_in_gram)
 		+ flt(gemstone_wt_in_gram)
-		+ flt(other_wt)
+		+ flt(other_wt),
+		3,
 	)
 	# if loss_wt:
 	# 	if loss_wt > 0:
@@ -121,14 +125,31 @@ def update_wt_detail(manufacturing_operation):
 	)
 
 
-def recalculate_manufacturing_operation_weights(mop_name, pending=None):
+def recalculate_manufacturing_operation_weights(mop_name, pending=None, prefixes=None):
 	"""Recompute all weight buckets on a Manufacturing Operation from its
 	active MOP Log rows.
 
-	Called after bulk is_cancelled flips so the MOP stays in sync with the
-	remaining-active-rows balance.  ``pending`` is the in-flight MOPLog row
-	(self) when invoked from MOPLog.validate — it overrides the DB entry for
-	the same (item, batch) key, or drops it when is_cancelled=1.
+	This is the authoritative header writer. ``MOPLog.validate`` calls it for every
+	row it saves and the Department/Employee IR cancel legs call it after a bulk
+	is_cancelled flip, so the header is always the sum of the batch tier rather than
+	one row's stale snapshot of the family-wide tier.
+
+	``pending`` is the in-flight MOPLog row (self) when invoked from
+	MOPLog.validate — it overrides the DB entry for the same (item, batch) key,
+	or drops it when is_cancelled=1.
+
+	Rows at or before the MWO's Work Order Refining cutoff are ignored: refining
+	zeroes the MWO, so a surviving pre-refining row must not rebuild a header that
+	the Refining Entry deliberately set to 0. See :func:`drop_pre_refining_rows`.
+
+	``prefixes`` narrows the write to the named weight families (values of
+	``FIELD_MAP``, e.g. ``("finding",)``). MOPLog.validate passes the single family
+	its row belongs to, so a per-row save can only touch the bucket that row
+	actually moves and never clobbers a bucket authored outside MOP Log -- the
+	MWO->MOP weight copy in ``create_manufacturing_operation`` seeds diamond/gemstone
+	weights before any ledger row exists, and an unnarrowed recompute on the first
+	metal row would zero them. Omit it to rewrite every bucket (the cancel legs and
+	the repair patch do, deliberately).
 	"""
 	rows = frappe.db.sql(
 		"""
@@ -137,6 +158,7 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None):
 		    batch_no,
 		    qty_after_transaction_batch_based  AS qaf_batch,
 		    pcs_after_transaction_batch_based  AS pcs_batch,
+		    manufacturing_work_order,
 		    name,
 		    creation
 		FROM `tabMOP Log`
@@ -154,18 +176,37 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None):
 		key = (row["item_code"], row["batch_no"])
 		latest[key] = row
 
-	# Apply in-flight pending row (from MOPLog.validate).
+	# Dedup first, then drop by cutoff: a key whose latest row is post-refining
+	# carries forward; a key with only pre-refining rows drops out entirely.
+	mwo = next(
+		(
+			row.get("manufacturing_work_order")
+			for row in latest.values()
+			if row.get("manufacturing_work_order")
+		),
+		None,
+	) or getattr(pending, "manufacturing_work_order", None)
+	surviving = {
+		(row.get("item_code"), row.get("batch_no")): row
+		for row in drop_pre_refining_rows(list(latest.values()), mwo)
+	}
+
+	# Overlay the in-flight row (from MOPLog.validate) AFTER the cutoff: it is being
+	# written now, so it is post-refining by construction and needs no timestamp of
+	# its own -- which also keeps this path off the system time zone.
 	if pending is not None:
 		key = (pending.item_code, pending.batch_no)
 		if cint(pending.is_cancelled):
-			latest.pop(key, None)
+			surviving.pop(key, None)
 		else:
-			latest[key] = {
+			surviving[key] = {
 				"item_code": pending.item_code,
 				"batch_no": pending.batch_no,
 				"qaf_batch": flt(pending.qty_after_transaction_batch_based),
 				"pcs_batch": flt(pending.pcs_after_transaction_batch_based),
 			}
+
+	entries = list(surviving.values())
 
 	# Aggregate into weight buckets per item-type prefix.
 	buckets = {
@@ -179,22 +220,156 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None):
 		"gemstone_pcs": 0.0,
 		"other_wt": 0.0,
 	}
-	for entry in latest.values():
+	for entry in entries:
 		first_char = (entry.get("item_code") or "")[:1]
 		prefix = FIELD_MAP.get(first_char)
 		if not prefix:
 			continue
 		qty = flt(entry.get("qaf_batch"))
 		pcs = flt(entry.get("pcs_batch"))
+		buckets[f"{prefix}_wt"] += qty
 		if prefix in ("diamond", "gemstone"):
-			buckets[f"{prefix}_wt"] += qty
-			buckets[f"{prefix}_wt_in_gram"] += flt(qty * 0.2, 3)
 			buckets[f"{prefix}_pcs"] += pcs
-		else:
-			buckets[f"{prefix}_wt"] += qty
+
+	# Grams is a DERIVED view of the carat bucket, never its own tally. Rounding
+	# every (item, batch) row to 3 dp before summing let the two disagree:
+	# MOP-050YL carried flt(0.497 * 0.2, 3) + flt(0.067 * 0.2, 3) = 0.099 + 0.013
+	# = 0.112 g for 0.564 ct, where the carat total converts to 0.113. update_wt_detail
+	# then folded that half-milligram into gross_wt, so the operation opened 0.001 g
+	# short of prev_gross_wt with no physical loss behind it -- and the drift runs
+	# both ways (MOP-IN870 rounded UP, opening as an unbacked gain). Convert once --
+	# every other carat->gram site in the app already does (SerialNumberCreator's
+	# _compute_total_weight, the Department IR SUM(IF(uom = 'Carat', ...)) queries).
+	#
+	# This MUST stay ABOVE the ``prefixes`` filter below. Past that point the carat
+	# bucket a gram is derived from has already been dropped for every family the
+	# caller did not name, so a metal-only save would derive 0 and wipe a gram
+	# authored outside MOP Log. The carat buckets are deliberately left as summed:
+	# ``diamond_wt`` / ``gemstone_wt`` must read byte-identical to before, which is
+	# what keeps the product-tolerance and Employee IR carat surfaces untouched.
+	for prefix in ("diamond", "gemstone"):
+		buckets[f"{prefix}_wt_in_gram"] = carat_to_gram(buckets[f"{prefix}_wt"])
+
+	if prefixes:
+		wanted = set()
+		for prefix in prefixes:
+			wanted.update({f"{prefix}_wt", f"{prefix}_wt_in_gram", f"{prefix}_pcs"})
+		buckets = {k: v for k, v in buckets.items() if k in wanted}
+		if not buckets:
+			return
 
 	frappe.db.set_value("Manufacturing Operation", mop_name, buckets)
 	update_wt_detail(mop_name)
+
+
+def get_mop_opening_balances(manufacturing_operation, item_code, batch_no, mwo=None):
+	"""Opening balance of ONE operation, for the three tiers MOP Log tracks.
+
+	The ``qty_after_transaction*`` / ``pcs_after_transaction*`` tiers are per-OPERATION
+	running balances -- that is how every reader treats them:
+	:func:`get_current_mop_balance_rows`,
+	:func:`recalculate_manufacturing_operation_weights`, :func:`update_wt_detail`, the
+	Make Receive Entry availability popup and the balance-details report. So the opening
+	balance is derived here from the operation's OWN latest row per
+	``(item_code, batch_no)``.
+
+	It is deliberately NOT ``SUM(qty_change)`` over the Manufacturing Work Order. A MWO
+	routinely carries residue stranded on a finished operation -- metal returned short of
+	the balance, a refined MWO, a rework loop -- and a MWO-wide sum folds that residue
+	into the next operation's opening balance, inflating it. That produced gross weights
+	0.01g above the received weight on re-cast operations.
+
+	Scoping the sum to the operation instead is NOT a fix on its own: baseline clone rows
+	carry ``qty_change = 0`` while carrying a non-zero balance, so summing changes within
+	one operation reads 0 for an operation that legitimately inherited a balance. The
+	inherited balance is written explicitly by the clone writers
+	(:func:`update_new_mop_wtg`, :func:`create_mop_log_for_department_ir`,
+	:func:`creste_mop_log_for_employee_ir`), and read back from here as an absolute value.
+
+	Rows at or before the MWO's Work Order Refining submit time are ignored: refining
+	zeroes the MWO, so a surviving pre-refining row must not resurrect a dead balance.
+	Recasting a refined MWO is an expected manual flow, so this only clamps the opening
+	balance -- the movement itself is still ledgered. See
+	:func:`~jewellery_erpnext.utils.get_mwo_refining_cutoff`.
+
+	A fresh operation has no rows and opens at zero, which is exactly right.
+	"""
+	empty = {
+		"qty_prefix": 0.0,
+		"qty_item": 0.0,
+		"qty_batch": 0.0,
+		"pcs_prefix": 0,
+		"pcs_item": 0,
+		"pcs_batch": 0,
+	}
+	if not (manufacturing_operation and item_code):
+		return empty
+
+	rows = get_current_mop_balance_rows(
+		manufacturing_operation,
+		include_fields=[
+			"item_code",
+			"batch_no",
+			"qty_after_transaction_batch_based",
+			"pcs_after_transaction_batch_based",
+		],
+	)
+	if not rows:
+		return empty
+
+	# Only pay for the refining lookup when there is actually a balance to clamp.
+	cutoff = get_mwo_refining_cutoff(mwo)
+
+	first_char = item_code[0]
+	totals = dict(empty)
+	for log in rows:
+		row_item = log.get("item_code") or ""
+		if not row_item.startswith(first_char):
+			continue
+		if cutoff and get_datetime(log.get("creation")) <= get_datetime(cutoff):
+			continue
+		qty = flt(log.get("qty_after_transaction_batch_based"))
+		pcs = cint(log.get("pcs_after_transaction_batch_based"))
+		totals["qty_prefix"] += qty
+		totals["pcs_prefix"] += pcs
+		if row_item != item_code:
+			continue
+		totals["qty_item"] += qty
+		totals["pcs_item"] += pcs
+		if log.get("batch_no") == batch_no:
+			totals["qty_batch"] += qty
+			totals["pcs_batch"] += pcs
+
+	totals["qty_prefix"] = flt(totals["qty_prefix"], 3)
+	totals["qty_item"] = flt(totals["qty_item"], 3)
+	totals["qty_batch"] = flt(totals["qty_batch"], 3)
+	return totals
+
+
+def drop_pre_refining_rows(rows, manufacturing_work_order):
+	"""Drop source rows that pre-date the MWO's Work Order Refining cutoff.
+
+	Refining zeroes the MWO, so a pre-refining row describes metal that no longer
+	exists and must never be cloned into a downstream operation. Rows written AFTER
+	the cutoff describe a recast -- an expected manual flow, since
+	``complete_refining`` only advises the Work Order action -- and must be.
+
+	The clone writers used to answer this with a blanket ``is_mwo_refined`` early
+	return, which threw away the post-refining balance too: a Department IR handoff
+	after a recast wrote no ledger rows at all, so the receiving operation opened at
+	0 while the metal stayed stranded on the source operation. Filtering by the
+	cutoff keeps the guard's intent (no stale pre-refining figures) without deleting
+	the live balance.
+
+	Callers must include ``creation`` in the fields they fetch.
+	"""
+	if not rows:
+		return rows
+	cutoff = get_mwo_refining_cutoff(manufacturing_work_order)
+	if not cutoff:
+		return rows
+	cutoff = get_datetime(cutoff)
+	return [r for r in rows if get_datetime(r.get("creation")) > cutoff]
 
 
 def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
@@ -225,69 +400,19 @@ def create_mop_log_for_stock_transfer_to_mo(doc, row, is_synced=False):
 		if doc.doctype == "Employee IR"
 		else doc.get("manufacturing_work_order")
 	)
-	# mop_op = row.get("manufacturing_operation")
-
-	# prepare prefix pattern e.g. 'D%' or 'G%'
-	prefix_like = f"{first_char}%"
-	sql = """
-	SELECT
-		COALESCE(SUM(CASE WHEN item_code LIKE %s THEN pcs_change END), 0) AS sum_pcs_prefix,
-		COALESCE(SUM(CASE WHEN item_code = %s THEN pcs_change END), 0) AS sum_pcs_item,
-		COALESCE(SUM(CASE WHEN item_code = %s AND batch_no = %s THEN pcs_change END), 0) AS sum_pcs_batch,
-		COALESCE(SUM(CASE WHEN item_code LIKE %s THEN qty_change END), 0) AS sum_qty_prefix,
-		COALESCE(SUM(CASE WHEN item_code = %s THEN qty_change END), 0) AS sum_qty_item,
-		COALESCE(SUM(CASE WHEN item_code = %s AND batch_no = %s THEN qty_change END), 0) AS sum_qty_batch
-	FROM `tabMOP Log`
-	WHERE manufacturing_work_order = %s
-	  AND is_cancelled = 0
-	"""
-	sql_params = [
-		prefix_like,
-		item_code,
-		item_code,
-		batch_no,
-		prefix_like,
-		item_code,
-		item_code,
-		batch_no,
-		mwo,
-	]
-
-	# if mop_op:
-	# 	previous_mop = frappe.db.get_value(
-	# 		"Manufacturing Operation", mop_op, "previous_mop"
-	# 	)
-	# 	if previous_mop:
-	# 		sql += " AND manufacturing_operation IN (%s, %s)"
-	# 		sql_params.extend([mop_op, previous_mop])
-	# 	else:
-	# 		sql += " AND manufacturing_operation = %s"
-	# 		sql_params.append(mop_op)
-
-	row_vals = frappe.db.sql(sql, tuple(sql_params), as_dict=True)
-
-	stats = (
-		row_vals[0]
-		if row_vals
-		else {
-			"sum_pcs_prefix": 0,
-			"sum_pcs_item": 0,
-			"sum_pcs_batch": 0,
-			"sum_qty_prefix": 0.0,
-			"sum_qty_item": 0.0,
-			"sum_qty_batch": 0.0,
-			"sum_qty_mop_total": 0.0,
-		}
+	opening = get_mop_opening_balances(
+		row.get("manufacturing_operation"), item_code, batch_no, mwo
 	)
+
 	last_mop_index = get_last_mop_index(row.manufacturing_operation)
 	# compute fields
-	pcs_after_prefix = pcs + cint(stats["sum_pcs_prefix"])
-	pcs_after_item = pcs + cint(stats["sum_pcs_item"])
-	pcs_after_batch = pcs + cint(stats["sum_pcs_batch"])
+	pcs_after_prefix = pcs + cint(opening["pcs_prefix"])
+	pcs_after_item = pcs + cint(opening["pcs_item"])
+	pcs_after_batch = pcs + cint(opening["pcs_batch"])
 
-	qty_after_prefix = qty + flt(stats["sum_qty_prefix"])
-	qty_after_item = qty + flt(stats["sum_qty_item"])
-	qty_after_batch = qty + flt(stats["sum_qty_batch"])
+	qty_after_prefix = flt(qty + flt(opening["qty_prefix"]), 3)
+	qty_after_item = flt(qty + flt(opening["qty_item"]), 3)
+	qty_after_batch = flt(qty + flt(opening["qty_batch"]), 3)
 	# create doc
 	mop_log = frappe.new_doc("MOP Log")
 	mop_log.item_code = item_code
@@ -364,6 +489,77 @@ def get_current_mop_balance_rows(
 	}
 	if exclude_voucher_no:
 		filters["voucher_no"] = ["!=", exclude_voucher_no]
+	if keys:
+		item_codes = sorted({k[0] for k in keys if k and k[0]})
+		if not item_codes:
+			return []
+		filters["item_code"] = ["in", item_codes]
+	mop_logs = frappe.db.get_all(
+		"MOP Log",
+		filters=filters,
+		fields=fields,
+		order_by="creation desc",
+	)
+	if not mop_logs:
+		return []
+
+	latest_by_key = {}
+	for log in mop_logs:
+		key = (log.get("item_code"), log.get("batch_no"))
+		if key not in latest_by_key:
+			latest_by_key[key] = log
+	return list(reversed(list(latest_by_key.values())))
+
+
+def get_mwo_balance_rows(manufacturing_work_order, include_fields=None, keys=None):
+	"""Return the latest non-cancelled MOP Log row per item/batch for a whole MWO.
+
+	:func:`get_current_mop_balance_rows` answers "what did operation X last
+	record?". This answers "what does this Manufacturing Work Order hold right
+	now?" — and for availability checks the second question is the correct one.
+
+	The distinction is forced by how the number is written.
+	:func:`create_mop_log_for_stock_transfer_to_mo` computes
+	``qty_after_transaction_batch_based`` as an MWO-wide running sum
+	(``WHERE manufacturing_work_order = %s AND is_cancelled = 0``; the per-MOP
+	narrowing right below it is commented out) and only then stamps the row with
+	a single operation. **A per-MOP balance does not exist in this field.** A
+	MOP-scoped read returns the MWO-wide total frozen at whenever THAT operation
+	last wrote, and goes stale the moment any other operation under the same MWO
+	posts a row — a Department/Employee IR handoff clone, a loss attribution, a
+	receive.
+
+	That staleness is not hypothetical: on handoff the source operation is
+	explicitly zeroed and the destination carries the balance forward, while
+	``Stock Reservation Entry.manufacturing_operation`` keeps pointing at the
+	operation the reservation was created against. Reading the SRE's stamp
+	therefore returns the zeroed row and blocks a receive the operator can
+	legitimately make.
+
+	Reading the latest row MWO-wide is the only scope invariant to which
+	operation the reader happens to be standing on, and it always reflects every
+	non-cancelled delta — including a loss booked at a sibling operation, which
+	an opened-MOP-scoped read would miss.
+
+	Operations under one MWO form a linear chain (``previous_mop``), so "latest
+	across the MWO" is a well-defined current state and not a merge of
+	concurrent branches.
+
+	Index-served by ``mop_mwo_idx`` (manufacturing_work_order, is_cancelled,
+	item_code, batch_no) from ``add_make_receive_entry_indexes``.
+
+	Dedup rule, ordering and return shape are deliberately identical to
+	:func:`get_current_mop_balance_rows` so the two stay drop-in
+	interchangeable. ``creation desc`` is kept bare on purpose — MOP Log has no
+	``autoname``, so ``name`` is a hash and would be a false tiebreak.
+	"""
+	fields = list(
+		dict.fromkeys((include_fields or current_balance_fields) + ["name", "creation"])
+	)
+	filters = {
+		"manufacturing_work_order": manufacturing_work_order,
+		"is_cancelled": 0,
+	}
 	if keys:
 		item_codes = sorted({k[0] for k in keys if k and k[0]})
 		if not item_codes:
@@ -485,6 +681,13 @@ def get_available_qty_pcs_for_mop_item(
 	    no PCS field, so it is excluded from the candidate set (treating it
 	    as 0 would force Available PCS to 0 incorrectly per spec).
 	  * 0 falls through when no MOP Log row exists for (item, batch).
+
+	The default lookup is scoped to the single ``manufacturing_operation``.
+	Callers that must agree with each other about availability — the Make
+	Receive Entry popup and its server validator — instead build an MWO-scoped
+	map with :func:`get_mwo_balance_rows` and pass it as
+	``mop_log_balance_map``, because the underlying balance is an MWO-wide
+	running sum with no per-operation meaning.
 	"""
 	is_pcs_item = bool(item_code) and item_code[0] in ("D", "G")
 
@@ -541,14 +744,12 @@ def get_available_qty_pcs_for_mop_item(
 def create_mop_log_for_department_ir(
 	self, row, to_warehouse, from_warehouse, operation
 ):
-	# A refined MWO's metal is gone (the Refining Entry zeroed the balance). Cloning
-	# the source operation's log history into the post-refining operation would carry
-	# stale pre-refining qty_after_transaction values forward — the cloned rows'
-	# validate would recompute the new operation's weight buckets back to the
-	# pre-refining figures, and EOD sync would see phantom stock to move.
-	if is_mwo_refined(row.manufacturing_work_order):
-		return
-
+	# A refined MWO's PRE-refining rows are gone (the Refining Entry zeroed the
+	# balance); cloning them forward would recompute the new operation's weight
+	# buckets back to the pre-refining figures and give EOD sync phantom stock to
+	# move. Post-refining rows are a recast and must still be carried -- see
+	# drop_pre_refining_rows. This used to early-return on is_mwo_refined, which
+	# dropped the recast balance too and opened the receiving operation at 0.
 	mop_logs = []
 	is_receive = getattr(self, "type", None) == "Receive" and getattr(
 		self, "receive_against", None
@@ -563,22 +764,24 @@ def create_mop_log_for_department_ir(
 				"voucher_type": "Department IR",
 				"voucher_no": self.receive_against,
 			},
-			fields=select_fields,
+			fields=select_fields + ["creation"],
 			order_by="creation asc",
 		)
 
 	else:
-		filters = {
-			"manufacturing_operation": row.manufacturing_operation,
-			"is_cancelled": 0,
-		}
-
-		mop_logs = frappe.db.get_all(
-			"MOP Log",
-			filters,
-			select_fields,
-			order_by="creation asc",
+		# Latest row per (item, batch), NOT every historical row. Cloning the whole
+		# history doubled the row count at every Department IR hop (2 -> 4 -> 8 ...)
+		# and left stale pre-loss balances interleaved with the true one, so which
+		# figure a reader saw depended on how it happened to dedup. Mirrors
+		# creste_mop_log_for_employee_ir, which already sources the same snapshot.
+		mop_logs = get_current_mop_balance_rows(
+			row.manufacturing_operation,
+			include_fields=select_fields,
 		)
+
+	# Dedup first, then drop by cutoff: a key whose latest row is post-refining
+	# carries forward; a key with only pre-refining rows drops out entirely.
+	mop_logs = drop_pre_refining_rows(mop_logs, row.manufacturing_work_order)
 
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")
@@ -620,17 +823,17 @@ def _get_mop_logs_for_employee_ir_issue(row, department_receive_id):
 
 
 def creste_mop_log_for_employee_ir(self, row, from_warehouse, to_warehouse):
-	# Same guard as the Department IR clone above: a refined MWO has no metal left,
-	# so no balance may be issued to an employee from it. On healthy data the
-	# balance snapshot is already 0; on pre-fix data it can still hold phantom
-	# pre-refining rows that must not be propagated.
-	if is_mwo_refined(row.manufacturing_work_order):
-		return
-
+	# Same treatment as the Department IR clone above: a refined MWO's pre-refining
+	# balance must not be issued to an employee, but its post-refining recast
+	# balance must be. A blanket refusal here stranded the metal on the source
+	# operation.
 	department_receive_id = frappe.db.get_value(
 		"Manufacturing Operation", row.manufacturing_operation, "department_receive_id"
 	)
-	mop_logs = _get_mop_logs_for_employee_ir_issue(row, department_receive_id)
+	mop_logs = drop_pre_refining_rows(
+		_get_mop_logs_for_employee_ir_issue(row, department_receive_id),
+		row.manufacturing_work_order,
+	)
 	for log in mop_logs:
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = log.item_code
@@ -925,22 +1128,14 @@ def create_mop_log_for_employee_ir_receive(
 		mop_log.batch_no = log.batch_no
 		mop_log.flow_index = log.flow_index + 1
 
-		# Carry loss audit metadata on the combined row (joined when more
-		# than one loss-detail row contributes). We deliberately do NOT set
-		# log_category="Loss Attribution" — that label is reserved for
-		# pre-existing legacy audit rows and would cause downstream
-		# consumers to mis-classify this real movement row.
+		# Loss is applied to the NEW operation by update_new_mop_wtg; nothing to
+		# carry here beyond marking the bucket consumed so a second source log
+		# matching the same (item, batch) does not absorb it again.
+		# NOTE: MOP Log has no loss_weight / loss_type / loss_source_row /
+		# log_category fields (neither in mop_log.json nor on the live site), so
+		# the assignments that used to sit here were silent no-ops.
 		if loss:
 			consumed_loss_keys.add(loss_key)
-			mop_log.loss_weight = flt(loss.get("loss_weight_grams"), 3)
-			loss_types = loss.get("loss_types") or []
-			mop_log.loss_type = ", ".join(loss_types) if loss_types else None
-			source_rows = loss.get("source_rows") or []
-			# loss_source_row is a Data field — guard against length blow-up
-			# by capping at 140 chars (Frappe Data default). Truncated
-			# entries still carry the first N references.
-			joined = ",".join(source_rows)
-			mop_log.loss_source_row = joined[:140] if len(joined) > 140 else joined
 
 		mop_log.save()
 

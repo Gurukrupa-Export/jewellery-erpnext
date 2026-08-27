@@ -43,6 +43,7 @@ def before_validate(self, method):
 		row for row in self.items if not row.get("custom_is_subcontracting_charge_row")
 	]
 
+	set_company_address_from_branch(self)
 	validate_sales_type(self)
 	validate_quotation_item(self)
 	set_repair_serial_bom(self)
@@ -56,6 +57,30 @@ def before_validate(self, method):
 	validate_item_dharm(self)
 	if not self.get("__islocal") and self.docstatus == 0:
 		set_bom_item_details(self)
+
+
+def set_company_address_from_branch(self):
+	"""
+	Each Branch carries its own registered ``branch_address`` (its own GST
+	registration/GSTIN) - but core ERPNext's default company-address picker
+	(``get_party_details`` -> ``get_company_address`` ->
+	``get_default_address("Company", company, sort_key="is_primary_address")``)
+	only respects a single company Address flagged "Is Primary Address",
+	regardless of which branch is actually transacting. On a multi-branch,
+	multi-GSTIN company this silently attaches the wrong company_address
+	(e.g. always the primary-flagged branch's address) to orders raised
+	from every other branch, corrupting tax_category and letting India
+	Compliance's company/party GSTIN checks compare the wrong pair.
+	Force company_address to the selling branch's own address whenever
+	branch is set, ahead of set_missing_tax_category_and_template()/
+	set_sales_type_tax_template() which both derive their GST logic from it.
+	"""
+	if not self.branch:
+		return
+
+	branch_address = frappe.db.get_value("Branch", self.branch, "branch_address")
+	if branch_address:
+		self.company_address = branch_address
 
 
 def set_missing_tax_category_and_template(self):
@@ -737,14 +762,23 @@ def sync_header_tax_rate(self, template):
 	if not self.taxes:
 		return
 
-	rate_by_account = {
-		d.tax_type: d.tax_rate
-		for d in frappe.get_all(
-			"Item Tax Template Detail",
-			filters={"parent": template},
-			fields=["tax_type", "tax_rate"],
-		)
-	}
+	rate_by_account = {}
+	for d in frappe.get_all(
+		"Item Tax Template Detail",
+		filters={"parent": template},
+		fields=["tax_type", "tax_rate"],
+	):
+		tax_type = d.tax_type or ""
+		rate = flt(d.tax_rate)
+		if "RCM" in tax_type:
+			# Sales Taxes and Charges encodes the RCM deduction as a
+			# negative rate directly on the row (no add_deduct_tax flag,
+			# unlike the purchase side) -- the item's own Item Tax
+			# Template only stores the positive magnitude, so negate it
+			# here; otherwise an RCM row would flip from a correct
+			# negative (deduct) rate to a wrong positive (add) one.
+			rate = -abs(rate)
+		rate_by_account[tax_type] = rate
 
 	for row in self.taxes:
 		if row.account_head in rate_by_account:
@@ -1053,11 +1087,7 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 		return
 	metal_prec = int(ctx.metal_precision or 3)
 
-	operational_cost = get_stock_entry_additional_cost(self, doc)
-	chain_weight = sum(
-		r.quantity for r in doc.finding_detail if r.finding_category == "Chains"
-	)
-	total_weight = doc.metal_and_finding_weight + chain_weight
+	# operational_cost = get_stock_entry_additional_cost(self, doc)
 	for s in doc.metal_detail:
 		customer_metal_purity = _metal_purity_cache.get(
 			(self.customer, s.metal_type, s.metal_touch)
@@ -1072,18 +1102,19 @@ def _process_metal_detail1(self, doc, ctx, cctx):
 				self, doc, s.metal_touch, ctx, cctx
 			)
 			# frappe.throw(str(sub_info))
-			
+
 			if s.is_customer_item:
 				s.rate = 0
 				# s.making_rate = operational_cost / total_weight
-				s.making_rate=sub_info.get("rate_per_gm", 0)
+				s.making_rate = sub_info.get("rate_per_gm", 0)
 				s.wastage_rate = 0
 				s.wastage_amount = 0
 			else:
 				s.rate = round(s.se_rate, 2)
 				s.wastage_rate = 0
 				# s.making_rate = operational_cost / total_weight
-				s.making_rate=sub_info.get("rate_per_gm", 0)
+				s.making_rate = sub_info.get("rate_per_gm", 0)
+				frappe.msgprint(f"{s.making_rate}")
 				s.wastage_amount = 0
 				s.customer_metal_purity = customer_metal_purity
 			s.amount = round(s.rate * s.quantity, 2)
@@ -1298,11 +1329,7 @@ def _process_finding_detail1(self, doc, ctx, cctx):
 
 	finding_cache = {}  # local per-BOM-doc: finding_type → find_data
 	f_metal_prec = int(ctx.metal_precision or 3)
-	operational_cost = get_stock_entry_additional_cost(self, doc)
-	chain_weight = sum(
-		r.quantity for r in doc.finding_detail if r.finding_category == "Chains"
-	)
-	total_weight = doc.metal_and_finding_weight + chain_weight
+
 	for f in doc.finding_detail:
 		# frappe.msgprint("jhgh")
 		customer_metal_purity = _metal_purity_cache.get(

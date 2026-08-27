@@ -2,7 +2,7 @@ import frappe
 from frappe import _
 
 from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.remote_po import (
-	resolve_ref_customer,
+	fetch_remote_ref_customer,
 )
 
 
@@ -52,12 +52,12 @@ def validate_po(self):
 
 			if not self.ref_customer and is_purchase_order:
 				# A Purchase Order mirrored onto this site can arrive without ref_customer, so
-				# fall back to the site that owns it. The shared resolver keeps the local-first
-				# order and the local-Customer guard identical to the mapper's.
-				ref_customer = resolve_ref_customer(
-					row.po_no, po_details.get("ref_customer")
-				)
-				if ref_customer:
+				# fall back to the site that owns it. Only assign a Customer that resolves
+				# locally: an unresolvable Link turns a blank field into a hard throw on save.
+				ref_customer = po_details.get(
+					"ref_customer"
+				) or fetch_remote_ref_customer(row.po_no)
+				if ref_customer and frappe.db.exists("Customer", ref_customer):
 					self.ref_customer = ref_customer
 
 
@@ -86,7 +86,6 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.doc_events.bom_utils import (
 	_calculate_diamond_amount,
 )
-
 
 def update_si(self):
 	invoice_data = {}

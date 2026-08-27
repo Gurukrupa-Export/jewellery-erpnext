@@ -61,10 +61,6 @@ class TestManufacturingPlan(IntegrationTestCase):
 			self.assertFalse(row.subcontracting)
 			self.assertFalse(row.subcontracting_qty)
 
-		# Rows here create PMOs, so each needs an Est. MFG End Date. Setting the header lets
-		# apply_manufacturing_end_date() stamp every row, and +1 day keeps it strictly before
-		# the Sales Order's delivery_date (transaction_date + 3).
-		man_plan.manufacturing_end_date = add_days(today(), 1)
 		man_plan.save()
 		expected_qty = sum(
 			row.manufacturing_order_qty for row in man_plan.manufacturing_plan_table
@@ -126,10 +122,6 @@ class TestManufacturingPlan(IntegrationTestCase):
 			self.assertEqual(row.purchase_type, "FG Purchase")
 			row.estimated_delivery_date = row.estimated_delivery_date or today()
 
-		# Est. MFG End Date is reqd on every row, subcontracting included. Setting the header
-		# lets apply_manufacturing_end_date() stamp them, which runs ahead of the framework's
-		# mandatory check. +1 day keeps it before the Sales Order delivery_date.
-		man_plan.manufacturing_end_date = add_days(today(), 1)
 		man_plan.save()
 		expected_qty = sum(
 			row.subcontracting_qty for row in man_plan.manufacturing_plan_table

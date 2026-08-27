@@ -21,6 +21,26 @@ frappe.ui.form.on("Sales Order", {
 		}
 	},
 	refresh: function (frm) {
+		patch_barcode_scanner_for_serial_no_rows(frm);
+		if (frm.is_new() && !frm.doc.sales_type) {
+			let quotation = (frm.doc.items || [])
+				.map((d) => d.prevdoc_docname)
+				.filter(Boolean)[0];
+			if (quotation) {
+				frappe.db.get_value(
+					"Quotation",
+					quotation,
+					"custom_sales_type",
+					(r) => {
+						if (r && r.custom_sales_type) {
+							frm.set_value("sales_type", r.custom_sales_type);
+						}
+					}
+				);
+			} else if (frm.doc.customer) {
+				get_sales_type(frm);
+			}
+		}
 		frm.add_custom_button(
 			__("Customer Approval"),
 			function () {
@@ -191,6 +211,7 @@ frappe.ui.form.on("Sales Order", {
 	},
 	onload_post_render(frm) {
 		filter_customer(frm);
+		set_company_address_from_branch(frm);
 	},
 	sales_type(frm) {
 		filter_customer(frm);
@@ -200,7 +221,27 @@ frappe.ui.form.on("Sales Order", {
 	customer(frm) {
 		get_sales_type(frm);
 	},
+	branch(frm) {
+		set_company_address_from_branch(frm);
+	},
 });
+
+// Each Branch carries its own registered address/GSTIN, but core ERPNext's
+// customer-triggered get_party_details() only fetches the Company's single
+// "Is Primary Address" flagged Address, ignoring which branch is actually
+// selling. Re-derive company_address (and company_gstin, via its own
+// fetch_from) from the selected branch so the form shows the right GSTIN
+// immediately, ahead of the same fix on the server (doc_events/sales_order.py
+// set_company_address_from_branch).
+function set_company_address_from_branch(frm) {
+	if (!frm.doc.branch) return;
+	frappe.db.get_value("Branch", frm.doc.branch, "branch_address").then((r) => {
+		const branch_address = r.message && r.message.branch_address;
+		if (branch_address && branch_address !== frm.doc.company_address) {
+			frm.set_value("company_address", branch_address);
+		}
+	});
+}
 
 let filter_customer = (frm) => {
 	if (frm.doc.sales_type) {
@@ -2069,6 +2110,33 @@ let set_edit_bom_details = (
 		},
 	});
 };
+function patch_barcode_scanner_for_serial_no_rows(frm) {
+	if (frm.__serial_no_barcode_scanner_patched) {
+		return;
+	}
+
+	let scanner = frm.cscript && frm.cscript.barcode_scanner;
+	if (!scanner) {
+		return;
+	}
+
+	frm.__serial_no_barcode_scanner_patched = true;
+
+	let original_get_row_to_modify_on_scan = scanner.get_row_to_modify_on_scan;
+	scanner.get_row_to_modify_on_scan = function (...args) {
+		if (this.__scanning_serial_no) {
+	
+			return undefined;
+		}
+		return original_get_row_to_modify_on_scan.apply(this, args);
+	};
+
+	let original_update_table = scanner.update_table;
+	scanner.update_table = function (data) {
+		this.__scanning_serial_no = !!data.serial_no;
+		return original_update_table.call(this, data);
+	};
+}
 
 function scan_api_call(input, callback) {
 	frappe
