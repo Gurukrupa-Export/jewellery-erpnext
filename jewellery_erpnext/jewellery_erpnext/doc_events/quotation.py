@@ -717,8 +717,9 @@ def validate_gold_rate_with_gst(self):
 						"Row {0} : Quotation Item Qty ({1}) cannot be greater than Order Form Qty ({2})"
 					).format(i.idx, i.qty, order_qty)
 				)
-	if not self.gold_rate_with_gst:
-		frappe.throw(_("Gold Rate with GST is mandatory."))
+		if i.metal_type=='Gold':
+			if not self.gold_rate_with_gst:
+				frappe.throw(_("Gold Rate with GST is mandatory."))
 
 
 def create_tracking_bom_directly(self):
