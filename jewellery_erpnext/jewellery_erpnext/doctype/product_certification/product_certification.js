@@ -65,11 +65,14 @@ frappe.ui.form.on("Product Certification", {
 			return frappe.db.get_value("Tree Number", scanned_value, "name").then((tree_res) => {
 				if (!(tree_res && tree_res.message && tree_res.message.name)) return false;
 
-				let duplicate = find_existing_row(frm, "tree_no", scanned_value);
-				if (duplicate) {
-					warn_already_scanned(__("Tree No"), scanned_value, duplicate);
-					return true;
-				}
+				// One tree is legitimately scanned more than once -- a tree can go for assay in
+				// several samples -- so a repeat scan adds another row rather than being
+				// refused. Only the WEIGHT needs care: set_fire_assy_issue_weight sums
+				// same-tree rows onto one exploded main row, so auto-filling the tree's full
+				// weight again would issue twice the metal. Repeats therefore open at 0 for
+				// the operator to type, and validate_fire_assy_weight still blocks a submit
+				// that leaves one at 0.
+				let already_scanned = find_existing_row(frm, "tree_no", scanned_value);
 
 				return (
 					frm
@@ -81,14 +84,21 @@ frappe.ui.form.on("Product Certification", {
 								tree_no: scanned_value,
 								main_slip: r.message.main_slip,
 								item_code: r.message.item_code || "",
-								// The metal drawn off the tree. 0 for a tree with no ledger --
-								// the operator types it, and validate_fire_assy_weight refuses
-								// a submit that still reads 0.
-								total_weight: r.message.total_weight || 0,
+								// The metal drawn off the tree. 0 for a tree with no ledger,
+								// and 0 for a repeat scan so two rows cannot sum to twice the
+								// tree's weight -- the operator types it, and
+								// validate_fire_assy_weight refuses a submit that still reads 0.
+								total_weight: already_scanned ? 0 : r.message.total_weight || 0,
 							});
 
 							frappe.show_alert({
-								message: __("Added Tree No: {0}", [scanned_value]),
+								message: already_scanned
+									? __("Added Tree No: {0} again (row {1}) — enter its weight", [
+											scanned_value,
+											already_scanned.idx,
+									  ])
+									: __("Added Tree No: {0}", [scanned_value]),
+								indicator: already_scanned ? "orange" : "green",
 							});
 
 							frm.refresh_field("product_details");
