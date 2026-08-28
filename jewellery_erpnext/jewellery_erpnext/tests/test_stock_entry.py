@@ -1356,6 +1356,10 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 			cse_mod, "in_configured_timeslot", return_value=True
 		), patch.object(
 			cse_mod,
+			"set_manufacturing_refs",
+			side_effect=_record("set_manufacturing_refs"),
+		), patch.object(
+			cse_mod,
 			"validate_customer_voucher",
 			side_effect=_record("validate_customer_voucher"),
 		), patch.object(
@@ -1375,6 +1379,9 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 		self.assertEqual(
 			calls,
 			[
+				# Must stay ahead of set_employee, which reads
+				# self.manufacturing_operation to resolve to_employee.
+				"set_manufacturing_refs",
 				"validate_customer_voucher",
 				"validate_sample_goods_not_consumed",
 				"set_employee",
@@ -1383,6 +1390,96 @@ class TestCustomizationBeforeValidate(_StockEntryTestCase):
 				"validate_warehouse",
 			],
 		)
+
+
+# --------------------------------------------------------- set_manufacturing_refs
+class TestSetManufacturingRefs(_StockEntryTestCase):
+	"""Server-side backstop for the browser fill on stock_entry.js.
+
+	The client handler is a single un-awaited fetch with no error handler; when its
+	response carries no message it raises inside the promise and leaves both header
+	fields unwritten. This guard re-derives them from the MWO on save.
+	"""
+
+	# as_dict=True yields a frappe._dict; the guard uses attribute access.
+	MWO = frappe._dict(manufacturing_order="PMO-1", manufacturing_operation="MOP-1")
+
+	def _run(self, se, mwo=None):
+		with patch.object(cse_mod.frappe.db, "get_value", return_value=mwo) as gv:
+			cse_mod.set_manufacturing_refs(se)
+		return gv
+
+	def test_fills_both_when_blank(self):
+		se = _Doc(
+			manufacturing_work_order="MWO-1",
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		self._run(se, self.MWO)
+		self.assertEqual(se.manufacturing_order, "PMO-1")
+		self.assertEqual(se.manufacturing_operation, "MOP-1")
+
+	def test_fills_operation_when_only_pmo_present(self):
+		"""The reported symptom: PMO landed, operation did not."""
+		se = _Doc(
+			manufacturing_work_order="MWO-1",
+			manufacturing_order="PMO-1",
+			manufacturing_operation="",
+		)
+		self._run(se, self.MWO)
+		self.assertEqual(se.manufacturing_operation, "MOP-1")
+		self.assertEqual(se.manufacturing_order, "PMO-1")
+
+	def test_never_overwrites_an_explicit_operation(self):
+		"""MWO.manufacturing_operation is a moving pointer — a deliberate older
+		operation must survive."""
+		se = _Doc(
+			manufacturing_work_order="MWO-1",
+			manufacturing_order="PMO-1",
+			manufacturing_operation="MOP-EARLIER",
+		)
+		gv = self._run(se, self.MWO)
+		self.assertEqual(se.manufacturing_operation, "MOP-EARLIER")
+		gv.assert_not_called()
+
+	def test_noop_without_mwo(self):
+		se = _Doc(
+			manufacturing_work_order=None,
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		gv = self._run(se)
+		gv.assert_not_called()
+		self.assertIsNone(se.manufacturing_operation)
+
+	def test_unknown_mwo_does_not_raise(self):
+		se = _Doc(
+			manufacturing_work_order="MWO-GONE",
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		self._run(se, None)
+		self.assertIsNone(se.manufacturing_operation)
+
+	def test_missing_custom_fields_are_a_noop(self):
+		"""A doc built without the Custom Fields must not raise AttributeError."""
+		se = _Doc()
+		gv = self._run(se)
+		gv.assert_not_called()
+
+	def test_draft_mwo_leaves_operation_blank(self):
+		"""MWO.manufacturing_operation is stamped in on_submit, so a draft MWO
+		legitimately has none — fill the PMO, leave the operation alone."""
+		se = _Doc(
+			manufacturing_work_order="MWO-DRAFT",
+			manufacturing_order=None,
+			manufacturing_operation=None,
+		)
+		self._run(
+			se, frappe._dict(manufacturing_order="PMO-1", manufacturing_operation=None)
+		)
+		self.assertEqual(se.manufacturing_order, "PMO-1")
+		self.assertIsNone(se.manufacturing_operation)
 
 
 # ------------------------------------------------------------------- se_utils guards
@@ -1434,41 +1531,88 @@ class TestSeUtilsGuards(_StockEntryTestCase):
 			se_utils.set_gross_wt(se)
 		gv.assert_not_called()
 
+	@staticmethod
+	def _tag_map(**tags):
+		"""``bulk_map`` shape: {serial: _dict(custom_jwelex_tag_no=...)}."""
+		return {s: frappe._dict(custom_jwelex_tag_no=t) for s, t in tags.items()}
+
 	def test_set_jwelex_tag_no_from_serial_no(self):
 		row = _Row(serial_no="S-1", custom_jwelex_tag_no=None)
 		se = _Doc(items=[row])
 		with patch.object(
-			se_utils.frappe.db, "get_value", return_value="GXU56855"
-		) as gv:
+			se_utils, "bulk_map", return_value=self._tag_map(**{"S-1": "GXU56855"})
+		) as bm:
 			se_utils.set_jwelex_tag_no(se)
-		gv.assert_called_once_with("Serial No", "S-1", "custom_jwelex_tag_no")
+		bm.assert_called_once_with("Serial No", ["S-1"], ["custom_jwelex_tag_no"])
 		self.assertEqual(row.custom_jwelex_tag_no, "GXU56855")
 
-	def test_set_jwelex_tag_no_uses_first_of_multiple_serials(self):
-		"""``serial_no`` is newline-separated Text; a Data field holds one tag."""
+	def test_set_jwelex_tag_no_joins_all_serials(self):
+		"""A row carries one serial per qty; the tag field mirrors that list."""
 		row = _Row(serial_no="S-1\nS-2\nS-3", custom_jwelex_tag_no=None)
 		se = _Doc(items=[row])
-		with patch.object(
-			se_utils.frappe.db, "get_value", return_value="GXU56855"
-		) as gv:
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": "T-2", "S-3": "T-3"})
+		with patch.object(se_utils, "bulk_map", return_value=tags):
 			se_utils.set_jwelex_tag_no(se)
-		gv.assert_called_once_with("Serial No", "S-1", "custom_jwelex_tag_no")
-		self.assertEqual(row.custom_jwelex_tag_no, "GXU56855")
+		self.assertEqual(row.custom_jwelex_tag_no, "T-1\nT-2\nT-3")
+
+	def test_set_jwelex_tag_no_keeps_blank_line_for_untagged_serial(self):
+		"""Line N must stay the tag of serial N, so a gap is preserved."""
+		row = _Row(serial_no="S-1\nS-2\nS-3", custom_jwelex_tag_no=None)
+		se = _Doc(items=[row])
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": None, "S-3": "T-3"})
+		with patch.object(se_utils, "bulk_map", return_value=tags):
+			se_utils.set_jwelex_tag_no(se)
+		self.assertEqual(row.custom_jwelex_tag_no, "T-1\n\nT-3")
+
+	def test_set_jwelex_tag_no_handles_crlf_and_trailing_newline(self):
+		row = _Row(serial_no="S-1\r\nS-2\n", custom_jwelex_tag_no=None)
+		se = _Doc(items=[row])
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": "T-2"})
+		with patch.object(se_utils, "bulk_map", return_value=tags) as bm:
+			se_utils.set_jwelex_tag_no(se)
+		bm.assert_called_once_with(
+			"Serial No", ["S-1", "S-2"], ["custom_jwelex_tag_no"]
+		)
+		self.assertEqual(row.custom_jwelex_tag_no, "T-1\nT-2")
+
+	def test_set_jwelex_tag_no_prefetches_once_for_all_rows(self):
+		"""Guards the N+1: one query per document, not per serial."""
+		rows = [
+			_Row(serial_no="S-1\nS-2", custom_jwelex_tag_no=None),
+			_Row(serial_no="S-3", custom_jwelex_tag_no=None),
+		]
+		se = _Doc(items=rows)
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": "T-2", "S-3": "T-3"})
+		with patch.object(se_utils, "bulk_map", return_value=tags) as bm:
+			se_utils.set_jwelex_tag_no(se)
+		bm.assert_called_once_with(
+			"Serial No", ["S-1", "S-2", "S-3"], ["custom_jwelex_tag_no"]
+		)
+		self.assertEqual(rows[0].custom_jwelex_tag_no, "T-1\nT-2")
+		self.assertEqual(rows[1].custom_jwelex_tag_no, "T-3")
 
 	def test_set_jwelex_tag_no_ignores_non_serialized_rows(self):
 		row = _Row(serial_no=None, custom_jwelex_tag_no="STALE")
 		se = _Doc(items=[row])
-		with patch.object(se_utils.frappe.db, "get_value") as gv:
+		with patch.object(se_utils, "bulk_map", return_value={}) as bm:
 			se_utils.set_jwelex_tag_no(se)
-		gv.assert_not_called()
+		bm.assert_called_once_with("Serial No", [], ["custom_jwelex_tag_no"])
 		self.assertEqual(row.custom_jwelex_tag_no, "STALE")
 
-	def test_set_jwelex_tag_no_clears_when_serial_has_no_tag(self):
-		row = _Row(serial_no="S-1", custom_jwelex_tag_no="STALE")
+	def test_set_jwelex_tag_no_clears_when_no_serial_has_a_tag(self):
+		"""Empty, not a run of blank lines."""
+		row = _Row(serial_no="S-1\nS-2", custom_jwelex_tag_no="STALE")
 		se = _Doc(items=[row])
-		with patch.object(se_utils.frappe.db, "get_value", return_value=None):
+		with patch.object(se_utils, "bulk_map", return_value={}):
 			se_utils.set_jwelex_tag_no(se)
 		self.assertIsNone(row.custom_jwelex_tag_no)
+
+	def test_get_jwelex_tag_no_matches_the_stamper(self):
+		"""The whitelisted client endpoint shares the resolver."""
+		tags = self._tag_map(**{"S-1": "T-1", "S-2": None, "S-3": "T-3"})
+		with patch.object(se_utils, "bulk_map", return_value=tags):
+			self.assertEqual(se_utils.get_jwelex_tag_no("S-1\nS-2\nS-3"), "T-1\n\nT-3")
+			self.assertIsNone(se_utils.get_jwelex_tag_no(""))
 
 	def test_validate_warehouse_same_from_to_throws(self):
 		se = _Doc(

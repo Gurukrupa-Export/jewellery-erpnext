@@ -314,10 +314,14 @@ frappe.ui.form.on("Stock Entry", {
 		frm.set_query("item_template", function (doc) {
 			return { filters: { has_variants: 1 } };
 		});
+		// docstatus 1 only: MWO.manufacturing_operation is stamped in on_submit
+		// (create_manufacturing_operation), so a draft MWO carries a PMO but no
+		// operation and silently half-fills the header.
 		frm.set_query("manufacturing_work_order", function (doc) {
 			return {
 				filters: {
 					manufacturing_order: frm.doc.manufacturing_order,
+					docstatus: 1,
 				},
 			};
 		});
@@ -682,14 +686,29 @@ frappe.ui.form.on("Stock Entry", {
 		// });
 	},
 	manufacturing_work_order(frm) {
-		frappe.db
+		// Guard the empty case: frappe.call drops an undefined `filters` arg, and
+		// frappe.client.get_value then runs an unfiltered get_list and hands back the
+		// first arbitrary MWO in the table.
+		if (!frm.doc.manufacturing_work_order) {
+			return frm.set_value({ manufacturing_order: "", manufacturing_operation: "" });
+		}
+		// Returned so script_manager.trigger awaits this call instead of falling back
+		// to frappe.after_server_call(); two quick MWO changes used to land out of order.
+		return frappe.db
 			.get_value("Manufacturing Work Order", frm.doc.manufacturing_work_order, [
 				"manufacturing_order",
 				"manufacturing_operation",
 			])
 			.then((r) => {
-				frm.set_value("manufacturing_order", r.message.manufacturing_order);
-				frm.set_value("manufacturing_operation", r.message.manufacturing_operation);
+				// r.message is undefined whenever the request errored. Dereferencing it
+				// raised inside the promise and aborted *both* set_value calls silently,
+				// leaving manufacturing_operation blank. before_validate fills it server
+				// side either way; this just stops the form going out of sync.
+				const mwo = r.message || {};
+				return frm.set_value({
+					manufacturing_order: mwo.manufacturing_order || "",
+					manufacturing_operation: mwo.manufacturing_operation || "",
+				});
 			});
 	},
 	subcontractor(frm) {
@@ -854,17 +873,15 @@ frappe.ui.form.on("Stock Entry Detail", {
 			});
 		}
 
-		// Jwelex tag mirrors the row's Serial No. The field holds one tag, so a
-		// multi-serial row takes the first serial (same as the edit_bom handler below).
-		let first_serial = ((row.serial_no || "") + "").split("\n")[0].trim();
-		if (first_serial) {
-			frappe.db.get_value("Serial No", first_serial, "custom_jwelex_tag_no").then((r) => {
-				frappe.model.set_value(
-					cdt,
-					cdn,
-					"custom_jwelex_tag_no",
-					(r.message && r.message.custom_jwelex_tag_no) || ""
-				);
+		// Jwelex tags mirror the row's Serial Nos, one per line. Resolved server-side
+		// so the form shows exactly what before_validate will store.
+		if (row.serial_no) {
+			frappe.call({
+				method: "jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.se_utils.get_jwelex_tag_no",
+				args: { serial_no: row.serial_no },
+				callback: function (r) {
+					frappe.model.set_value(cdt, cdn, "custom_jwelex_tag_no", r.message || "");
+				},
 			});
 		} else {
 			frappe.model.set_value(cdt, cdn, "custom_jwelex_tag_no", "");

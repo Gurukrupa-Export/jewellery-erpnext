@@ -174,7 +174,13 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
 	},
 	"Stock Entry": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
+		"validate": [
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
+			# Per-role Stock Entry Type whitelist. Fires only on a direct user save of
+			# the Stock Entry itself, never on the dozen cascades that mint one from
+			# another doctype's lifecycle -- see the module docstring.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.validate_stock_entry_type_permission",
+		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
@@ -323,6 +329,11 @@ doc_events = {
 # employee warehouses to the viewer's department; all shared warehouses stay visible.
 permission_query_conditions = {
 	"Warehouse": "jewellery_erpnext.jewellery_erpnext.doc_events.warehouse.get_permission_query_conditions",
+	# Per-role Stock Entry Type whitelist (Stock Entry Type.custom_allowed_roles).
+	# Filters the stock_entry_type dropdown, the list-view standard filter and report
+	# filters in one place -- the link search runs through frappe.get_list. Types with
+	# no roles listed stay visible to everyone.
+	"Stock Entry Type": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.get_permission_query_conditions",
 }
 
 override_whitelisted_methods = {
@@ -460,6 +471,13 @@ fixtures = [
 			]
 		],
 	},
+	# fixtures/stock_entry_type.json is imported on every migrate regardless of this
+	# list (import_fixtures walks the whole directory), and that import deletes and
+	# re-inserts each record -- so custom_allowed_roles set in the desk on a record
+	# present in the file is wiped unless the file carries it. Listing it here makes
+	# the file re-exportable, so `bench export-fixtures` can regenerate it from a
+	# configured site instead of it being hand-edited.
+	"Stock Entry Type",
 	# {
 	#     "doctype":"Custom Field", "filters":{"module":["in",["Jewellery Erpnext"]]}
 	# }
