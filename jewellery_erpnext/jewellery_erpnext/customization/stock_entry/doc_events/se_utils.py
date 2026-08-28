@@ -464,6 +464,58 @@ def set_gross_wt(self):
 			row.gross_weight = gross_weight
 
 
+def _row_serials(serial_no):
+	"""Serials of a Stock Entry Detail row, in row order.
+
+	``splitlines()`` rather than ``split("\\n")`` so a pasted CRLF list and a
+	trailing newline both behave. Interior blanks are kept: position is meaningful.
+	"""
+	return [s.strip() for s in (serial_no or "").splitlines()]
+
+
+def _join_tags(serials, tag_map):
+	"""Newline-joined Jwelex tags, aligned line-for-line with ``serials``.
+
+	A serial with no tag contributes a blank line, so line N of the result is the
+	tag of serial N and the two fields can be read side by side. Returns None when
+	no serial on the row has a tag, so the field reads empty rather than a run of
+	blank lines.
+	"""
+	tags = [((tag_map.get(s) or {}).get("custom_jwelex_tag_no") or "") for s in serials]
+	return "\n".join(tags) if any(tags) else None
+
+
+def set_jwelex_tag_no(self):
+	"""Mirror ``Serial No.custom_jwelex_tag_no`` onto each row, one tag per serial.
+
+	``Stock Entry Detail.serial_no`` is a newline-separated Text field, not a Link,
+	so Frappe's ``fetch_from`` cannot resolve it -- the value has to be stamped here.
+	A row carries as many serials as its qty, so the tag field mirrors that list.
+
+	One ``bulk_map`` for the whole document: a 42-row entry with 4 serials a row
+	would otherwise cost 168 round trips.
+	"""
+	rows = [(row, _row_serials(row.serial_no)) for row in self.items if row.serial_no]
+	tag_map = bulk_map(
+		"Serial No",
+		[s for _, serials in rows for s in serials],
+		["custom_jwelex_tag_no"],
+	)
+	for row, serials in rows:
+		row.custom_jwelex_tag_no = _join_tags(serials, tag_map)
+
+
+@frappe.whitelist()
+def get_jwelex_tag_no(serial_no):
+	"""Resolve a row's Jwelex tags for the Stock Entry Detail client handler.
+
+	Shares ``_row_serials`` / ``_join_tags`` with ``set_jwelex_tag_no`` so the form
+	shows exactly what the server will store.
+	"""
+	serials = _row_serials(serial_no)
+	return _join_tags(serials, bulk_map("Serial No", serials, ["custom_jwelex_tag_no"]))
+
+
 def validate_warehouse(self):
 	if self.stock_entry_type != "Material Transfer (WORK ORDER)":
 		return

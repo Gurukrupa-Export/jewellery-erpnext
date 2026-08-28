@@ -10,6 +10,8 @@ from jewellery_erpnext.jewellery_erpnext.customization.material_request.material
 	make_mop_stock_entry,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.before_validate import (
+	get_variant_warehouse_map,
+	set_reservation_warehouse,
 	update_pure_qty,
 	validate_warehouse,
 )
@@ -106,6 +108,11 @@ def before_validate(self, method):
 
 		elif self.material_request_type == "Manufacture":
 			self.custom_transfer_type = "Transfer to Reserve"
+
+	# Deliberately after the block above: that derivation reads ``set_warehouse``, so it must
+	# keep seeing the pre-fill value for a Manufacture request to land on "Transfer to Reserve"
+	# rather than the branch-comparison path.
+	set_reservation_warehouse(self)
 
 	update_pure_qty(self)
 	validate_target_item(self)
@@ -667,14 +674,53 @@ def create_stock_entry(self, method):
 	# on tabWarehouse, so it is the expensive half and worth collapsing hardest.
 	department_map = {}
 	reserve_warehouse_map = {}
+	source_warehouse_map = {}
 
 	for row in self.items:
-		if row.from_warehouse not in department_map:
+		# Source Warehouse is hidden on anything but a Material Transfer request, so only
+		# rows written by the Parent Manufacturing Order carry one; a row typed into the
+		# grid afterwards has it blank and no way for the user to fill it. Fall back to
+		# the request's own department, which the PMO derives from that very field, and
+		# from there to the department's Raw Material warehouse -- the warehouse the
+		# populated rows point at anyway.
+		if row.from_warehouse and row.from_warehouse not in department_map:
 			department_map[row.from_warehouse] = frappe.db.get_value(
 				"Warehouse", row.from_warehouse, "department"
 			)
 
-		department = department_map[row.from_warehouse]
+		department = department_map.get(row.from_warehouse) or self.custom_department
+
+		if not department:
+			frappe.throw(
+				_(
+					"Row {0} ({1}): could not determine a department. Set Source Warehouse on the row, or Department on this Material Request."
+				).format(row.idx, row.item_code)
+			)
+
+		s_warehouse = row.from_warehouse
+
+		if not s_warehouse:
+			if department not in source_warehouse_map:
+				source_warehouse_map[department] = frappe.db.get_value(
+					"Warehouse",
+					{
+						"disabled": 0,
+						"department": department,
+						"warehouse_type": "Raw Material",
+					},
+					"name",
+				)
+
+			s_warehouse = source_warehouse_map[department]
+
+			if not s_warehouse:
+				frappe.throw(
+					_(
+						"Row {0} ({1}): Source Warehouse is not set and no Raw Material warehouse exists for department {2}."
+					).format(row.idx, row.item_code, department)
+				)
+
+			row.from_warehouse = s_warehouse
 
 		if department not in reserve_warehouse_map:
 			t_warehouse = frappe.db.get_value(
@@ -685,7 +731,9 @@ def create_stock_entry(self, method):
 
 			if not t_warehouse:
 				frappe.throw(
-					_("Transit warehouse not found for {0}").format(department)
+					_(
+						"Row {0} ({1}): Reserve warehouse not found for department {2}."
+					).format(row.idx, row.item_code, department)
 				)
 
 			reserve_warehouse_map[department] = t_warehouse
@@ -697,7 +745,7 @@ def create_stock_entry(self, method):
 			{
 				"material_request": self.name,
 				"material_request_item": row.name,
-				"s_warehouse": row.from_warehouse,
+				"s_warehouse": s_warehouse,
 				"t_warehouse": t_warehouse,
 				"item_code": row.custom_alternative_item or row.item_code,
 				"qty": row.qty,
@@ -718,6 +766,12 @@ def create_stock_entry(self, method):
 	se_doc.submit()
 
 	frappe.msgprint(_("Reserved Stock Entry {0} has been created").format(se_doc.name))
+
+
+@frappe.whitelist()
+def get_reservation_warehouses(manufacturer):
+	"""``{variant: target_warehouse}`` for the desk form's set_warehouse auto-fill."""
+	return get_variant_warehouse_map(manufacturer)
 
 
 @frappe.whitelist()

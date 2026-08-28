@@ -36,6 +36,31 @@ EXTERNAL_PRICING_CATEGORY = {
 }
 
 
+def secondary_item_row(value="Scrap"):
+	"""``{fieldname: value}`` for the Stock Entry Detail secondary-item Select.
+
+	ERPNext 16.33 renamed ``Stock Entry Detail.type`` to ``secondary_item_type``
+	(``erpnext.patches.v16_0.rename_secondary_item_type_field``), so the name has to be
+	resolved against the installed version rather than hard-coded — this app runs against
+	both sides of that rename.
+
+	It is not a cosmetic field. ``StockEntry.validate_warehouse`` keys the "this row is an
+	OUTPUT" branch off ``is_finished_item or <this field> or is_legacy_scrap_item``; a
+	Manufacture row that misses it falls through to the input branch, which clears
+	``t_warehouse`` and then throws "Source warehouse is mandatory for row N". Writing the
+	pre-rename name on a renamed site is silently dropped by ``get_valid_dict``, so the
+	stone and loss outputs of a repack died at insert with no hint of the cause.
+
+	Drop this helper and inline ``secondary_item_type`` once every site is on 16.33+.
+	"""
+	fieldname = (
+		"secondary_item_type"
+		if frappe.get_meta("Stock Entry Detail").has_field("secondary_item_type")
+		else "type"
+	)
+	return {fieldname: value}
+
+
 def _default_receiving_warehouse(company):
 	"""Company's default warehouse for a purchase, for stock lines with nowhere else to go."""
 	if not company:
@@ -743,7 +768,7 @@ class RefiningEntry(Document):
 				# Scrap-type by-product (NOT a finished good): the single finished good is
 				# the pure metal above, so the Manufacture auto-costs it from the consumed
 				# inputs and these land at zero valuation — mirrors create_repack_se.
-				"type": "Scrap",
+				**secondary_item_row(),
 				"is_finished_item": 0,
 				"use_serial_batch_fields": 1,
 				"allow_zero_valuation_rate": 1,
@@ -2307,18 +2332,53 @@ class RefiningEntry(Document):
 					(mwo.manufacturing_work_order,),
 				)
 
-				op = frappe.db.get_value(
+				# Zero the LEDGER for every operation of this MWO that still holds a
+				# balance -- not just MWO.manufacturing_operation. Metal strands on
+				# earlier operations routinely (a rework loop, a short return), and a
+				# balance left behind here survives refining: the next operation's
+				# opening balance picks it up and inflates a freshly issued weight.
+				# That is how a re-cast of 3.210g came out as 3.220g.
+				ops = frappe.get_all(
+					"MOP Log",
+					filters={
+						"manufacturing_work_order": mwo.manufacturing_work_order,
+						"is_cancelled": 0,
+						"manufacturing_operation": ["is", "set"],
+					},
+					pluck="manufacturing_operation",
+					distinct=True,
+				)
+				current_op = frappe.db.get_value(
 					"Manufacturing Work Order",
 					mwo.manufacturing_work_order,
 					"manufacturing_operation",
 				)
-				if not op:
+				if current_op:
+					ops.append(current_op)
+				ops = sorted({o for o in ops if o})
+
+				if not ops:
+					# Never silently skip: a refined MWO with no resolvable operation
+					# means the ledger cannot be zeroed, and the next issue against it
+					# will open on whatever balance survives.
+					frappe.log_error(
+						title="Refining: no operation to zero",
+						message=(
+							f"Refining Entry {self.name}: Manufacturing Work Order "
+							f"{mwo.manufacturing_work_order} has no Manufacturing "
+							"Operation and no active MOP Log rows, so its ledger could "
+							"not be zeroed. Any later issue against this MWO will not "
+							"start from a verified zero balance."
+						),
+					)
 					continue
 
-				# Create a 0-balance MOP Log for every active item in the current operation
+				# Create a 0-balance MOP Log for every active item in each operation
 				# so that future operations read a 0 balance from the ledger.
-				balance_rows = get_current_mop_balance_rows(op)
-				if balance_rows:
+				for op in ops:
+					balance_rows = get_current_mop_balance_rows(op)
+					if not balance_rows:
+						continue
 					last_idx = get_last_mop_index(op) or 0
 					for bal in balance_rows:
 						qty = flt(bal.get("qty_after_transaction_batch_based"))
@@ -3390,7 +3450,7 @@ class RefiningEntry(Document):
 					"uom": "Carat",
 					"t_warehouse": self.refining_warehouse,
 					"batch_no": new_batch,
-					"type": "Scrap",
+					**secondary_item_row(),
 					"is_finished_item": 0,
 					"use_serial_batch_fields": 1,
 				},
@@ -3419,7 +3479,7 @@ class RefiningEntry(Document):
 					"uom": "Carat",
 					"t_warehouse": self.refining_warehouse,
 					"batch_no": new_batch,
-					"type": "Scrap",
+					**secondary_item_row(),
 					"is_finished_item": 0,
 					"use_serial_batch_fields": 1,
 				},
@@ -3450,7 +3510,7 @@ class RefiningEntry(Document):
 						"uom": "Gram",
 						"t_warehouse": self.refining_warehouse,
 						"batch_no": dust_batch,
-						"type": "Scrap",
+						**secondary_item_row(),
 						"is_finished_item": 0,
 						"use_serial_batch_fields": 1,
 					},

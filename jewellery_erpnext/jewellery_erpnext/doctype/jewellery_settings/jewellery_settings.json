@@ -60,7 +60,8 @@
   "wax_to_gold_18",
   "wax_to_gold_22",
   "wax_to_gold_24",
-  "wax_to_silver"
+  "wax_to_silver",
+  "wax_to_22kt_silver_ratio"
  ],
  "fields": [
   {
@@ -234,7 +235,7 @@
   {
    "fieldname": "wax_to_silver",
    "fieldtype": "Float",
-   "label": "Wax to Silver Ratio"
+   "label": "Wax To 20KT Silver Ratio"
   },
   {
    "fieldname": "cad_to_rpt",
@@ -356,6 +357,11 @@
    "fieldname": "inter_company_diamond_additional_cost",
    "fieldtype": "Data",
    "label": "Inter Company Diamond Additional Cost(in %)"
+  },
+  {
+   "fieldname": "wax_to_22kt_silver_ratio",
+   "fieldtype": "Float",
+   "label": "Wax To 22KT Silver Ratio"
   }
  ],
  "index_web_pages_for_search": 1,

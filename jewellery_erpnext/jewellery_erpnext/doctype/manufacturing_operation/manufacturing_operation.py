@@ -21,20 +21,15 @@ from frappe.utils import (
 )
 
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
-	create_mop_log_for_stock_transfer_to_mo as create_mop_log,
-)
-from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_available_qty_pcs_for_mop_item,
 	get_current_mop_balance_rows,
 	get_employee_ir_loss_map,
 	get_last_mop_index,
 	get_mop_transfer_pcs_rows,
-)
-from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
-	resolve_and_validate,
+	get_mwo_balance_rows,
 )
 from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
-from jewellery_erpnext.utils import set_values_in_bulk, update_existing
+from jewellery_erpnext.utils import carat_to_gram, set_values_in_bulk, update_existing
 
 
 class OperationSequenceError(frappe.ValidationError):
@@ -1561,8 +1556,6 @@ def get_material_wt(doc):
 	gross_wt = 0
 	net_wt = 0
 	finding_wt = 0
-	diamond_wt_in_gram = 0
-	gemstone_wt_in_gram = 0
 	diamond_wt = 0
 	gemstone_wt = 0
 	other_wt = 0
@@ -1590,14 +1583,18 @@ def get_material_wt(doc):
 			finding_wt += qty
 		elif variant_of == "D":
 			diamond_wt += qty
-			diamond_wt_in_gram += qty * 0.2
 			diamond_pcs += int(pcs)
 		elif variant_of == "G":
 			gemstone_wt += qty
-			gemstone_wt_in_gram += qty * 0.2
 			gemstone_pcs += int(pcs)
 		elif variant_of == "O":
 			other_wt += qty
+
+	# Same derived-view rule as recalculate_manufacturing_operation_weights, so this
+	# function and the MOP Log recompute can never disagree about the same ledger.
+	# This one used to convert per row and NOT round at all -- a third convention.
+	diamond_wt_in_gram = carat_to_gram(diamond_wt)
+	gemstone_wt_in_gram = carat_to_gram(gemstone_wt)
 
 	gross_wt = net_wt + finding_wt + diamond_wt_in_gram + gemstone_wt_in_gram + other_wt
 	if doc.get("is_finding"):
@@ -4131,38 +4128,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 		for sb in all_sb:
 			sb_entries_by_sre.setdefault(sb["parent"], []).append(sb)
 
-	# MWO-level: each SRE has its own ``manufacturing_operation``. The MOP
-	# Log balance MUST be looked up against that SRE's MOP, not the popup's
-	# opened MOP. Mixing them produces nonsense availability for sibling-
-	# MOP SREs. Build a per-MOP key set, fetch each operation's balances
-	# narrowed to its own keys, then index into a 3-tuple map keyed by
-	# (manufacturing_operation, item_code, batch_no).
-	keys_by_mop: dict[str, set] = {}
-	for s in sres:
-		# Fall back to the opened MOP only when an SRE somehow lacks its
-		# own; this preserves behaviour for tests that mock SREs without
-		# the custom field populated.
-		op = s.manufacturing_operation or mo.name
-		bucket = keys_by_mop.setdefault(op, set())
-		is_batch = cint(s.has_batch_no) and s.reservation_based_on != "Qty"
-		if is_batch:
-			for sb in sb_entries_by_sre.get(s.name, []):
-				bucket.add((s.item_code, sb["batch_no"]))
-		else:
-			bucket.add((s.item_code, None))
-
-	mop_log_balance_map: dict[tuple, dict] = {}
-
-	balance_rows = get_current_mop_balance_rows(manufacturing_operation)
-	for row in balance_rows:
-		mop_log_balance_map[
-			(manufacturing_operation, row.get("item_code"), row.get("batch_no"))
-		] = row
-
-	# Per-(item, batch) incoming-transfer PCS rows. Each reserved batch line
-	# maps 1:1 to a Material Transfer row, so we surface that row's OWN pcs
-	# instead of the batch-wide running balance (which is identical for every
-	# line sharing an item+batch and made the popup show the summed total).
+	# Every (item, batch) pair any reserved line will ask about.
 	all_keys: set = set()
 	for s in sres:
 		is_batch = cint(s.has_batch_no) and s.reservation_based_on != "Qty"
@@ -4171,6 +4137,26 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 				all_keys.add((s.item_code, sb["batch_no"]))
 		else:
 			all_keys.add((s.item_code, None))
+
+	# ONE balance map for every line, MWO-scoped, keyed (item_code, batch_no).
+	# There is deliberately no manufacturing_operation component: the underlying
+	# ``qty_after_transaction_batch_based`` is an MWO-wide running sum stamped
+	# with whichever operation wrote it, so it carries no per-operation meaning
+	# (see ``get_mwo_balance_rows``). Reading it per-MOP returned a snapshot
+	# frozen at that operation's last write — which is how this popup came to
+	# show a balance its own server-side validator then rejected: on handoff the
+	# source operation is zeroed and the destination carries the balance
+	# forward, while the SRE keeps pointing at the operation it was created
+	# against. ``create_mr_wo_stock_entry`` MUST build this map the same way.
+	mop_log_balance_map: dict[tuple, dict] = {
+		(row.get("item_code"), row.get("batch_no")): row
+		for row in get_mwo_balance_rows(mo.manufacturing_work_order, keys=all_keys)
+	}
+
+	# Per-(item, batch) incoming-transfer PCS rows. Each reserved batch line
+	# maps 1:1 to a Material Transfer row, so we surface that row's OWN pcs
+	# instead of the batch-wide running balance (which is identical for every
+	# line sharing an item+batch and made the popup show the summed total).
 	# MWO-scoped (not MOP-scoped): the per-row transfer PCS is logged once at the
 	# operation that first received the material; downstream operations carry only
 	# balance clones (pcs_change=0). The MWO is constant across operations, so this
@@ -4268,9 +4254,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 	for key, lines in lines_by_key.items():
 		item_code, batch_no = key
 		is_pcs_item = bool(item_code) and item_code[0] in ("D", "G")
-		bal_row = mop_log_balance_map.get(
-			(manufacturing_operation, item_code, batch_no)
-		)
+		bal_row = mop_log_balance_map.get((item_code, batch_no))
 		balance_pcs = (
 			cint(bal_row.get("pcs_after_transaction_batch_based")) if bal_row else 0
 		)
@@ -4284,16 +4268,6 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 	skipped = []
 	for sre in sres:
 		batch_based = cint(sre.has_batch_no) and sre.reservation_based_on != "Qty"
-		# Authoritative MOP for this SRE — its own manufacturing_operation,
-		# falling back to the opened MOP only when the custom field is
-		# missing (test fixtures, legacy data).
-		# Slice the 3-tuple-keyed global map down to the (item, batch) pairs
-		# for this SRE's MOP, matching the helper's 2-tuple key contract.
-		sre_mop_balance_map = {
-			(k[1], k[2]): v
-			for k, v in mop_log_balance_map.items()
-			if k[0] == manufacturing_operation
-		}
 		if batch_based:
 			sb_entries = sb_entries_by_sre.get(sre.name, [])
 			for sb in sb_entries:
@@ -4318,7 +4292,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 					sre_remaining_qty=sre_remaining,
 					already_received_qty=already_received_for_item,
 					already_received_pcs=already_received_pcs_for_item,
-					mop_log_balance_map=sre_mop_balance_map,
+					mop_log_balance_map=mop_log_balance_map,
 				)
 				warning = None
 				available_to_receive_qty = flt(ctx["available_qty"])
@@ -4333,7 +4307,11 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 					# MOP Log row exists but balance is zero (loss/consumption
 					# since the SRE was created). User cannot receive against
 					# this row — surface as a diagnostic so the dialog can
-					# explain why it is unactionable.
+					# explain why it is unactionable, and `continue` so it is
+					# NOT also emitted as an actionable row. Without the
+					# continue the line was reported as skipped AND rendered
+					# with Available = 0, which the validator then rejects.
+					# The qty-based branch below has always done this.
 					skipped.append(
 						{
 							"sre": sre.name,
@@ -4345,6 +4323,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 							"reason": "mop_zero_balance",
 						}
 					)
+					continue
 				row_available_pcs = (
 					pcs_by_token.get(("sb", sb.name), 0) if ctx["is_pcs_item"] else 0
 				)
@@ -4353,17 +4332,15 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 						"stock_reservation_entry": sre.name,
 						"stock_reservation_entry_detail": sb.name,
 						"item_code": sre.item_code,
-						"s_warehouse": resolve_and_validate(
-							item_code=sre.item_code,
-							qty=available_to_receive_qty,
-							batch_no=sb.batch_no,
-							mwo=sre.manufacturing_work_order,
-							mop=sre.manufacturing_operation,
-							sales_order=sre.voucher_no
-							if sre.voucher_type == "Sales Order"
-							else None,
-						)
-						or sre.warehouse,
+						# The source is the warehouse of THIS reservation row —
+						# never re-derived. An active SRE is where the reserved WIP
+						# physically is (the standing rule in this app; see
+						# `pc_tagging_stock_sync`), and the same (item, batch) is
+						# routinely reserved by dozens of sibling work orders under
+						# one Sales Order, each in its own WIP warehouse. Resolving
+						# by item/batch/Sales Order therefore picked an arbitrary
+						# sibling's warehouse and issued another work order's metal.
+						"s_warehouse": sre.warehouse,
 						"t_warehouse": t_warehouse,
 						"batch_no": sb.batch_no,
 						# Reserved Qty in the popup is the SRE remaining
@@ -4413,7 +4390,7 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 				sre_remaining_qty=sre_remaining,
 				already_received_qty=already_received_for_item,
 				already_received_pcs=already_received_pcs_for_item,
-				mop_log_balance_map=sre_mop_balance_map,
+				mop_log_balance_map=mop_log_balance_map,
 			)
 			warning = None
 			available_to_receive_qty = flt(ctx["available_qty"])
@@ -4441,17 +4418,9 @@ def get_make_receive_entry_rows(manufacturing_operation, target_warehouse=None):
 					"stock_reservation_entry": sre.name,
 					"stock_reservation_entry_detail": None,
 					"item_code": sre.item_code,
-					"s_warehouse": resolve_and_validate(
-						item_code=sre.item_code,
-						qty=available_to_receive_qty,
-						batch_no=None,
-						mwo=sre.manufacturing_work_order,
-						mop=sre.manufacturing_operation,
-						sales_order=sre.voucher_no
-						if sre.voucher_type == "Sales Order"
-						else None,
-					)
-					or sre.warehouse,
+					# Same rule as the batch branch above: this reservation's own
+					# warehouse, never re-derived from item / Sales Order.
+					"s_warehouse": sre.warehouse,
 					"t_warehouse": t_warehouse,
 					"batch_no": None,
 					"reserved_qty": sre_remaining,
@@ -4604,7 +4573,6 @@ def _build_replacement_sre(original_sre, remaining_qty, sb_remaining=None):
 	return new_sre.name
 
 
-@frappe.whitelist()
 def _existing_receive_se(
 	mo_name, request_id, stock_entry_type="Material Receive (WORK ORDER)"
 ):
@@ -4627,6 +4595,7 @@ def _existing_receive_se(
 	)
 
 
+@frappe.whitelist()
 def create_mr_wo_stock_entry(
 	se_data,
 	request_id=None,
@@ -4689,6 +4658,28 @@ def create_mr_wo_stock_entry(
 
 	precision = cint(frappe.db.get_single_value("System Settings", "float_precision"))
 	tolerance = _float_tolerance(precision)
+
+	# ONE MWO-wide balance map shared by every row, built exactly the way
+	# `get_make_receive_entry_rows` builds the popup's — same function, same
+	# scope, same keys. That identity is the point: this validator used to
+	# resolve the balance per row against `sre.manufacturing_operation`, so the
+	# popup and the server read different operations and reported different
+	# availability for the same line. See `get_mwo_balance_rows`.
+	#
+	# Built lazily, and once: the reserved-qty cap below must keep rejecting
+	# without touching MOP Log at all (see the reject-fast note on that check),
+	# and the code this replaces paid one MOP Log query per row.
+	_balance_map_holder: list = []
+
+	def _mwo_balance_map():
+		if not _balance_map_holder:
+			_balance_map_holder.append(
+				{
+					(brow.get("item_code"), brow.get("batch_no")): brow
+					for brow in get_mwo_balance_rows(mo.manufacturing_work_order)
+				}
+			)
+		return _balance_map_holder[0]
 
 	# Re-fetch and validate every requested row server-side.
 	# Build (validated_rows, sre_actions) before creating the SE.
@@ -4792,18 +4783,26 @@ def create_mr_wo_stock_entry(
 		# Reconciled context: MOP Log balance + min(SRE remaining, MOP balance).
 		# Computed for ALL rows (not just D/G) so qty validation enforces both
 		# the SRE cap and the MOP-balance cap. The helper's `available_qty`
-		# already encodes min(SRE, MOP). MWO-level scope: use the SRE's own
-		# manufacturing_operation, not the popup's opened MOP — otherwise
-		# sibling-MOP SREs cap against the wrong balance.
-		sre_mop = sre.manufacturing_operation or mo.name
+		# already encodes min(SRE, MOP).
+		#
+		# Scope is MWO-wide, via the map hoisted above — NOT
+		# `sre.manufacturing_operation`. That field is a plain Data stamp,
+		# written once when the reservation was created and never re-stamped as
+		# work hands off (replacement SREs inherit it too). On handoff the
+		# source operation's MOP Log balance is explicitly zeroed and the
+		# destination carries it forward, so resolving against the SRE's stamp
+		# read the zeroed row and rejected receives the popup had just offered
+		# — with a "loss/consumption since reservation" message when no loss had
+		# occurred at all.
 		ctx = get_available_qty_pcs_for_mop_item(
-			manufacturing_operation=sre_mop,
+			manufacturing_operation=mo.name,
 			item_code=sre.item_code,
 			batch_no=batch_no,
 			warehouse=sre.warehouse,
 			stock_reservation_entry=sre.name,
 			manufacturing_work_order=sre.manufacturing_work_order,
 			sre_remaining_qty=sre_remaining_qty,
+			mop_log_balance_map=_mwo_balance_map(),
 		)
 		mop_available_qty = flt(ctx["mop_log_balance_qty"])
 		available_to_receive_qty = flt(ctx["available_qty"])
@@ -4813,17 +4812,25 @@ def create_mr_wo_stock_entry(
 		#    since the SRE was created. Skipped when the helper has no MOP
 		#    data for (item, batch) — in that case `available_to_receive_qty`
 		#    falls back to `sre_remaining_qty` and the cap is silent.
+		#
+		#    Report BOTH inputs and the work order the balance came from. The
+		#    old message printed min(SRE, MOP) under the label "MOP available
+		#    qty" and asserted a cause it had not established, which made a
+		#    scope bug read as a stock problem.
 		if req_qty > available_to_receive_qty + tolerance:
 			frappe.throw(
 				_(
-					"Row {0} item {1} batch {2}: Receive Qty {3} exceeds MOP "
-					"available qty {4} (loss/consumption since reservation)"
+					"Row {0} item {1} batch {2}: Receive Qty {3} exceeds "
+					"available qty {4} (reserved {5}, work order {6} balance {7})"
 				).format(
 					row.get("idx") or "?",
 					sre.item_code,
 					batch_no,
 					req_qty,
 					round(available_to_receive_qty, precision),
+					round(sre_remaining_qty, precision),
+					sre.manufacturing_work_order,
+					round(mop_available_qty, precision),
 				)
 			)
 
@@ -4858,21 +4865,15 @@ def create_mr_wo_stock_entry(
 					)
 				)
 
-		# Resolve warehouse with robust multi-source fallback + stock validation.
-		# Falls back to original sre.warehouse if validation fails (already active SRE).
-		resolved_warehouse = (
-			resolve_and_validate(
-				item_code=sre.item_code,
-				qty=req_qty,
-				batch_no=batch_no,
-				mwo=sre.manufacturing_work_order,
-				mop=sre.manufacturing_operation,
-				sales_order=sre.voucher_no
-				if sre.voucher_type == "Sales Order"
-				else None,
-			)
-			or sre.warehouse
-		)
+		# The SRE row being received IS the physical location of this material,
+		# so the source warehouse is read straight off it — exactly what
+		# `get_make_receive_entry_rows` shows the operator. This used to run a
+		# multi-source resolver keyed on (item, batch, Sales Order); because one
+		# Sales Order spans dozens of work orders that each reserve the same
+		# batch in their own WIP warehouse, that resolver returned an arbitrary
+		# sibling's warehouse (and would even adopt a Delivered reservation's),
+		# issuing material the operation had never been given.
+		resolved_warehouse = sre.warehouse
 
 		# Inventory type / customer must correspond to the batch actually being
 		# received — not the client payload. The receive dialog sends neither
@@ -4925,6 +4926,13 @@ def create_mr_wo_stock_entry(
 			}
 		)
 
+	# Each row now carries the warehouse of its OWN reservation, so the rows of
+	# one receive can legitimately span warehouses. The header default only
+	# means anything when they all agree; stamping row 0's warehouse on a mixed
+	# receive would mislabel the entry (the per-row `s_warehouse` below is what
+	# actually drives the ledger either way).
+	source_warehouses = {vrow["s_warehouse"] for vrow in validated_rows}
+
 	# Build the Stock Entry. All preceding validations succeeded.
 	frappe.db.savepoint("make_receive_entry")
 	try:
@@ -4937,19 +4945,19 @@ def create_mr_wo_stock_entry(
 				"manufacturing_operation": mo.name,
 				"department": mo.department,
 				"to_warehouse": t_warehouse,
-				"from_warehouse": validated_rows[0]["s_warehouse"],
+				"from_warehouse": next(iter(source_warehouses))
+				if len(source_warehouses) == 1
+				else None,
 			}
 		)
 
-		if (
-			se_doc.from_warehouse
-			and se_doc.to_warehouse
-			and se_doc.from_warehouse == se_doc.to_warehouse
-		):
+		# Checked against every row's source, not just the header: a mixed
+		# receive leaves the header blank, and one bad row must still be caught.
+		if t_warehouse and t_warehouse in source_warehouses:
 			frappe.throw(
 				_(
 					"Source Warehouse and Target Warehouse cannot be the same ({0}). Please check the department's warehouse configuration."
-				).format(se_doc.from_warehouse)
+				).format(t_warehouse)
 			)
 
 		if request_id:
@@ -5874,11 +5882,20 @@ def update_new_mop_wtg(
 	    multiply by 0.2 here.
 	  * D/G PCS reduces by ``loss_pcs``. M/F/O PCS is left as the cloned
 	    baseline (``loss_pcs`` is forced to 0 for non-D/G prefixes).
-	  * Throws when a loss key has no matching baseline row on the
-	    previous MOP — a loss cannot be applied to an item/batch that
-	    isn't in the new operation's starting balance.
-	  * Throws when ``loss_qty`` would drive the cloned batch balance
-	    below zero (within precision-3 tolerance).
+	  * A loss key with NO matching baseline row on the previous MOP is
+	    silently SKIPPED, not thrown on — the orphan-loss throw was
+	    removed for good in 73dbe941. ``create_loss_stock_entries`` still
+	    posts the Process Loss Stock Entry for that key, so an orphan loss
+	    moves stock without reducing any MOP Log tier. Detect it with
+	    ``mop_lineage_audit.audit_mop_balance_drift``; do not re-add the
+	    throw here without also gating the Stock Entry.
+	  * Throws when ``loss_qty`` would make the cloned batch balance WORSE
+	    than the one it INHERITED — i.e. drive a healthy balance below
+	    zero, or push an already-negative inherited balance further down
+	    (both within precision-3 tolerance). The floor is a DELTA, not an
+	    absolute: a baseline that arrives negative is corruption from an
+	    earlier operation, a loss of 0.0 cannot have caused it, and
+	    blocking the receive would neither fix nor reveal it.
 	  * Idempotent on ``get_last_mop_index(self.name) is None`` — runs
 	    once per new operation.
 
@@ -5908,6 +5925,14 @@ def update_new_mop_wtg(
 		self.previous_mop,
 		exclude_voucher_no=employee_ir_doc.name if employee_ir_doc else None,
 	)
+
+	# First pass: validate each (item, batch) against its own loss bucket and work
+	# out the batch-tier balance. Nothing is written until every row has passed, so
+	# a throw below leaves no half-built baseline behind.
+	prepared = []
+	# Inherited-anomaly findings, reported once AFTER the write pass so a throw
+	# below can never emit a half-true notice.
+	negative_baselines: list = []
 	for log in mop_logs:
 		key = (log.item_code, log.batch_no)
 		loss_bucket = loss_map.get(key)
@@ -5919,11 +5944,56 @@ def update_new_mop_wtg(
 		first_char = (log.item_code or "")[0] if log.item_code else ""
 		loss_pcs = raw_loss_pcs if first_char in ("D", "G") else 0
 
+		# The floor is a DELTA, not an absolute zero.
+		# ``qty_after_transaction_batch_based`` is inherited verbatim from the
+		# previous operation and can already BE negative: a Material Receive
+		# capped MWO-wide but posted per-MOP, a receive row whose batch_no
+		# differs from the transfer it answers, an FG-MWO seed row admitted by
+		# ``HAVING SUM(qty_change) > 0 OR SUM(pcs_change) > 0``, a refining pass
+		# that skips a negative row instead of clearing it. That is real
+		# corruption -- and it is not this Employee IR's doing. Comparing
+		# ``baseline - loss`` against a hard zero made a receive that books NO
+		# loss at all (empty loss_map, loss_qty 0.0) die with "0.0 exceeds the
+		# available balance (-0.28)", which is unanswerable on the shop floor:
+		# nothing the operator can change alters the inherited number.
+		#
+		# What must still be refused is this receive's loss making the balance
+		# WORSE: a healthy row may not be driven below zero, and a negative row
+		# may not be driven further down.
+		#
+		# The shortfall is ROUNDED before the comparison. All three operands are
+		# already flt(x, 3), so an unrounded ``new < floor - tolerance`` is
+		# decided by 1 ulp of the binary difference and disagrees with the
+		# intended rule for ~21% of milligram baselines. Rounding first makes
+		# baseline >= 0 byte-identical to the guard this replaces (qty_floor is
+		# 0.0, so flt(new - 0.0, 3) is new) and reduces baseline < 0 to the exact
+		# rule ``loss_qty > tolerance``.
 		baseline_qty_batch = flt(log.qty_after_transaction_batch_based, 3)
 		new_qty_batch = flt(baseline_qty_batch - loss_qty, 3)
-		if new_qty_batch < -tolerance:
-			frappe.throw(
-				_(
+		baseline_is_negative = baseline_qty_batch < -tolerance
+		qty_floor = baseline_qty_batch if baseline_is_negative else 0.0
+		if flt(new_qty_batch - qty_floor, 3) < -tolerance:
+			if baseline_is_negative:
+				qty_msg = _(
+					"Loss for Item {0}, Batch {1}, Manufacturing Operation "
+					"{2}, Manufacturing Work Order {3} ({4}) would push an "
+					"already negative inherited balance ({5}) further down to "
+					"{6}. That balance is a ledger anomaly carried forward from "
+					"an earlier operation, not an error in the loss you booked. "
+					"Remove the loss row for this batch to submit, and send the "
+					"Operation / Item / Batch above to Central for "
+					"reconciliation."
+				).format(
+					log.item_code,
+					log.batch_no,
+					self.previous_mop,
+					log.manufacturing_work_order,
+					loss_qty,
+					baseline_qty_batch,
+					new_qty_batch,
+				)
+			else:
+				qty_msg = _(
 					"Loss for Item {0}, Batch {1}, Manufacturing Operation "
 					"{2}, Manufacturing Work Order {3} ({4}) exceeds the "
 					"available balance ({5}) on the new operation baseline. "
@@ -5936,101 +6006,195 @@ def update_new_mop_wtg(
 					loss_qty,
 					baseline_qty_batch,
 				)
-			)
+			frappe.throw(qty_msg)
 
+		# Same delta rule. PCS is an Int column on both tiers, so the arithmetic
+		# is exact and carries no tolerance term -- adding one would invent a
+		# fractional-piece concept the tier does not have.
 		baseline_pcs_batch = cint(log.pcs_after_transaction_batch_based or 0)
 		new_pcs_batch = baseline_pcs_batch - loss_pcs
-		if new_pcs_batch < 0:
-			frappe.throw(
-				_(
+		pcs_floor = min(0, baseline_pcs_batch)
+		if new_pcs_batch < pcs_floor:
+			if baseline_pcs_batch < 0:
+				pcs_msg = _(
+					"Loss PCS for Item {0}, Batch {1} ({2}) would push an "
+					"already negative inherited PCS balance ({3}) further down "
+					"to {4}. Correct that balance on Manufacturing Operation "
+					"{5} before booking more loss against it."
+				).format(
+					log.item_code,
+					log.batch_no,
+					loss_pcs,
+					baseline_pcs_batch,
+					new_pcs_batch,
+					self.previous_mop,
+				)
+			else:
+				pcs_msg = _(
 					"Loss PCS for Item {0}, Batch {1} ({2}) exceeds the "
 					"available PCS ({3}) on the new operation baseline."
 				).format(log.item_code, log.batch_no, loss_pcs, baseline_pcs_batch)
+			frappe.throw(pcs_msg)
+
+		if baseline_is_negative or baseline_pcs_batch < 0:
+			negative_baselines.append(
+				"{0} / {1} (qty {2}, pcs {3})".format(
+					log.item_code,
+					log.batch_no or _("no batch"),
+					baseline_qty_batch,
+					baseline_pcs_batch,
+				)
 			)
 
-		log["qty_change"] = -loss_qty
-		log["pcs_change"] = -loss_pcs
-		log["from_warehouse"] = from_warehouse if from_warehouse else log.from_warehouse
-		log["to_warehouse"] = to_warehouse if to_warehouse else log.to_warehouse
-		log["manufacturing_operation"] = self.name
-		create_mop_log(doc=employee_ir_doc, row=log)
+		prepared.append(
+			{
+				"log": log,
+				"loss_bucket": loss_bucket,
+				"loss_qty": loss_qty,
+				"loss_pcs": loss_pcs,
+				"new_qty_batch": new_qty_batch,
+				"new_pcs_batch": new_pcs_batch,
+			}
+		)
 
-		# mop_log = frappe.new_doc("MOP Log")
-		# mop_log.item_code = log.item_code
-		# mop_log.batch_no = log.batch_no
+	# Second pass: write the rows, accumulating the family- and item-wide tiers as
+	# running totals over the batch tier.
+	#
+	# ``qty_after_transaction`` is the total for the item-code FAMILY (every ``F-``
+	# item shares the ``finding`` bucket) and ``*_item_based`` the total for one item
+	# code. Deriving them as ``source_value - loss_qty`` was a category error: loss_qty
+	# is scoped to one (item, batch), so when two findings lost weight in the same
+	# Employee IR each row netted only its own loss out of the shared family total and
+	# neither held the true figure. Accumulating instead makes the last row of each
+	# family carry the correct total, which is the invariant the tier always meant to
+	# hold. The same fix covers one item spread across several batches at the item tier.
+	#
+	# The batch tier is still written ABSOLUTELY from the previous operation's balance:
+	# this row IS the new operation's opening balance and the operation has no rows
+	# yet, so a computed balance would open it at -loss_qty instead of
+	# baseline - loss_qty.
+	running_qty_prefix: dict = {}
+	running_qty_item: dict = {}
+	running_pcs_prefix: dict = {}
+	running_pcs_item: dict = {}
+	for prep in prepared:
+		log = prep["log"]
+		loss_bucket = prep["loss_bucket"]
+		loss_qty = prep["loss_qty"]
+		loss_pcs = prep["loss_pcs"]
+		new_qty_batch = prep["new_qty_batch"]
+		new_pcs_batch = prep["new_pcs_batch"]
 
-		# # Reduce all three balance tiers by loss_qty. When loss_qty is 0
-		# # (no loss matches this row) the baseline is cloned verbatim.
-		# mop_log.qty_after_transaction = flt(
-		# 	flt(log.qty_after_transaction) - loss_qty, 3
-		# )
-		# mop_log.qty_after_transaction_item_based = flt(
-		# 	flt(log.qty_after_transaction_item_based) - loss_qty, 3
-		# )
-		# mop_log.qty_after_transaction_batch_based = new_qty_batch
+		family = (log.item_code or "")[:1]
+		running_qty_prefix[family] = flt(
+			flt(running_qty_prefix.get(family)) + new_qty_batch, 3
+		)
+		running_qty_item[log.item_code] = flt(
+			flt(running_qty_item.get(log.item_code)) + new_qty_batch, 3
+		)
+		running_pcs_prefix[family] = (
+			cint(running_pcs_prefix.get(family)) + new_pcs_batch
+		)
+		running_pcs_item[log.item_code] = (
+			cint(running_pcs_item.get(log.item_code)) + new_pcs_batch
+		)
 
-		# mop_log.pcs_after_transaction = cint(log.pcs_after_transaction) - loss_pcs
-		# mop_log.pcs_after_transaction_item_based = (
-		# 	cint(log.pcs_after_transaction_item_based) - loss_pcs
-		# )
-		# mop_log.pcs_after_transaction_batch_based = new_pcs_batch
+		mop_log = frappe.new_doc("MOP Log")
+		mop_log.item_code = log.item_code
+		mop_log.batch_no = log.batch_no
 
-		# mop_log.from_warehouse = from_warehouse if loss_bucket else log.from_warehouse
-		# mop_log.to_warehouse = to_warehouse if loss_bucket else log.to_warehouse
-		# mop_log.manufacturing_operation = self.name
-		# mop_log.manufacturing_work_order = log.manufacturing_work_order
-		# mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
-		# mop_log.is_synced = 0
-		# # flow_index = 0: baseline + loss are part of the new MOP's
-		# # initial baseline tier, not a downstream movement.
-		# mop_log.flow_index = 0
+		mop_log.qty_after_transaction = running_qty_prefix[family]
+		mop_log.qty_after_transaction_item_based = running_qty_item[log.item_code]
+		mop_log.qty_after_transaction_batch_based = new_qty_batch
 
-		# if loss_bucket:
-		# 	# Tie the row to the EIR voucher so the cancel cascade
-		# 	# (`UPDATE tabMOP Log WHERE voucher_type=… AND voucher_no=…`)
-		# 	# picks it up symmetrically with the other EIR logs.
-		# 	mop_log.voucher_type = "Employee IR"
-		# 	mop_log.voucher_no = employee_ir_doc.name
-		# 	mop_log.row_name = employee_ir_operation_row.name
-		# 	mop_log.qty_change = -loss_qty
-		# 	mop_log.pcs_change = -loss_pcs
+		mop_log.pcs_after_transaction = running_pcs_prefix[family]
+		mop_log.pcs_after_transaction_item_based = running_pcs_item[log.item_code]
+		mop_log.pcs_after_transaction_batch_based = new_pcs_batch
 
-		# 	mop_log.loss_weight = flt(loss_bucket.get("loss_weight_grams"), 3)
-		# 	loss_types = loss_bucket.get("loss_types") or []
-		# 	mop_log.loss_type = ", ".join(loss_types) if loss_types else None
-		# 	source_rows_list = loss_bucket.get("source_rows") or []
-		# 	joined = ",".join(source_rows_list)
-		# 	mop_log.loss_source_row = joined[:140] if len(joined) > 140 else joined
+		mop_log.qty_change = -loss_qty
+		mop_log.pcs_change = -loss_pcs
+		mop_log.from_warehouse = (
+			from_warehouse if from_warehouse else log.from_warehouse
+		)
+		mop_log.to_warehouse = to_warehouse if to_warehouse else log.to_warehouse
+		mop_log.manufacturing_operation = self.name
+		mop_log.manufacturing_work_order = log.manufacturing_work_order
+		mop_log.serial_and_batch_bundle = log.serial_and_batch_bundle
+		mop_log.is_synced = 0
+		# flow_index = 0: baseline + loss are part of the new MOP's initial
+		# balance tier, not a downstream movement.
+		mop_log.flow_index = 0
 
-		# 	processed_loss_keys.add(key)
-		# else:
-		# 	# Plain baseline clone — keep the prior voucher tagging so
-		# 	# downstream readers that care about source provenance can
-		# 	# still find the originating Manufacturing Operation.
-		# 	mop_log.voucher_type = "Manufacturing Operation"
-		# 	mop_log.voucher_no = log.manufacturing_operation
-		# 	mop_log.row_name = log.row_name
+		if loss_bucket:
+			# Tie the row to the EIR voucher so the cancel cascade
+			# (UPDATE tabMOP Log WHERE voucher_type=... AND voucher_no=...)
+			# picks it up symmetrically with the other EIR logs.
+			mop_log.voucher_type = employee_ir_doc.doctype
+			mop_log.voucher_no = employee_ir_doc.name
+			mop_log.row_name = employee_ir_operation_row.name
+		else:
+			# Plain baseline clone -- keep the prior voucher tagging so
+			# downstream readers that care about source provenance can still
+			# find the originating Manufacturing Operation.
+			mop_log.voucher_type = "Manufacturing Operation"
+			mop_log.voucher_no = log.manufacturing_operation
+			mop_log.row_name = log.row_name
 
-		# mop_log.save()
+		mop_log.save()
 
-	# Loss keys that didn't find a baseline row aren't valid: a loss can
-	# only reduce a balance the new operation actually starts with.
-	# unprocessed = set(loss_map.keys()) - processed_loss_keys
-	# if unprocessed:
-	# 	details = ", ".join(
-	# 		f"{item}/{batch or 'no-batch'}"
-	# 		for item, batch in sorted(
-	# 			unprocessed, key=lambda k: (k[0] or "", k[1] or "")
-	# 		)
-	# 	)
-	# 	frappe.throw(
-	# 		_(
-	# 			"Employee IR loss is booked against item(s)/batch(es) that "
-	# 			"are not present in the previous Manufacturing Operation's "
-	# 			"baseline: {0}. Loss can only be applied to balances the "
-	# 			"new operation actually inherits."
-	# # 		).format(details)
-	# 	)
+	_report_inherited_negative_baselines(self, negative_baselines)
+
+
+def _report_inherited_negative_baselines(new_mop, negative_baselines):
+	"""Surface -- without blocking -- a batch balance inherited NEGATIVE.
+
+	A negative batch tier is impossible in reality, so it is corruption from an
+	earlier voucher. It is carried forward VERBATIM (clamping it up to zero would
+	invent metal), and the receive is allowed through because a loss of 0.0
+	cannot have caused it. The throw that used to fire here was, accidentally,
+	the only thing that made the anomaly visible at the moment of handoff, so it
+	is replaced by two channels rather than one:
+
+	* ``frappe.log_error`` -- the durable one. Employee IR submit can run through
+	  Frappe's Submission Queue, where a ``msgprint`` lands in the job log and
+	  never reaches the operator (same reason ``_warn_customer_loss_spill`` in
+	  employee_ir.py keeps a durable ``flags`` trace alongside its message).
+	* ``frappe.msgprint`` without ``alert=True`` -- a dialog the operator must
+	  dismiss, not a toast that vanishes during the submit's form reload.
+
+	Aggregated per new operation, so a MOP carrying several bad rows raises one
+	message rather than one per row. De-duplicated with ``dict.fromkeys`` rather
+	than ``sorted`` on purpose: ``batch_no`` is blank/None on unbatched items and
+	sorting mixed ``None``/``str`` keys would raise ``TypeError`` here -- AFTER
+	every MOP Log row is committed.
+
+	Everything below is advisory and runs after the baseline is written, so it
+	must never be able to fail the submit that wrote it.
+	"""
+	if not negative_baselines:
+		return
+
+	keys = ", ".join(dict.fromkeys(negative_baselines))
+	detail = _(
+		"Manufacturing Operation {0} handed Manufacturing Operation {1} a "
+		"negative balance for {2}. The new operation inherits it unchanged — "
+		"the loss booked here did not cause it. Downstream loss and gain "
+		"attribution on the NEXT receive reads this row, so repair it before "
+		"the work order moves on: run "
+		"jewellery_erpnext.mop_lineage_audit.audit_negative_batch_balances "
+		"on this work order."
+	).format(new_mop.previous_mop, new_mop.name, keys)
+
+	try:
+		frappe.log_error(
+			title=f"MOP inherited negative balance - {new_mop.name}"[:140],
+			message=detail,
+		)
+		frappe.msgprint(detail, indicator="orange")
+	except Exception:
+		# The durable record is audit_negative_batch_balances. Losing one
+		# advisory dialog is never worth losing a correct ledger write.
+		pass
 
 
 def get_warehouse_from_previous_stock_entry(

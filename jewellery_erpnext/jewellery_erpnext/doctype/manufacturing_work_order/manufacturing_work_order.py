@@ -17,7 +17,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_ev
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	create_snc_from_mwo_submit,
 )
-from jewellery_erpnext.utils import get_item_from_attribute, set_values_in_bulk
+from jewellery_erpnext.utils import (
+	carat_to_gram,
+	get_item_from_attribute,
+	set_values_in_bulk,
+)
 
 
 class ManufacturingWorkOrder(Document):
@@ -127,7 +131,6 @@ class ManufacturingWorkOrder(Document):
 						SUM(received_gross_wt) AS received_gross_wt,
 						SUM(received_net_wt) AS received_net_wt,
 						SUM(loss_wt) AS loss_wt,
-						SUM(diamond_wt_in_gram) AS diamond_wt_in_gram,
 						SUM(diamond_pcs) AS diamond_pcs,
 						SUM(gemstone_pcs) AS gemstone_pcs
 					FROM `tabManufacturing Operation`
@@ -150,9 +153,21 @@ class ManufacturingWorkOrder(Document):
 					self.received_gross_wt = flt(agg.get("received_gross_wt"))
 					self.received_net_wt = flt(agg.get("received_net_wt"))
 					self.loss_wt = flt(agg.get("loss_wt"))
-					self.diamond_wt_in_gram = flt(agg.get("diamond_wt_in_gram"))
 					self.diamond_pcs = flt(agg.get("diamond_pcs"))
 					self.gemstone_pcs = flt(agg.get("gemstone_pcs"))
+
+		# The carat->gram twins are DERIVED, never summed: SUM(diamond_wt_in_gram) over
+		# siblings adds values that were each already rounded to 3, so it drifts from
+		# flt(carats * 0.2, 3). Derived here rather than inside the `if sibling_mwos:`
+		# block above so the invariant also holds on the no-sibling path, where `agg`
+		# never runs and self.* is written through unchanged.
+		#
+		# Manufacturing Work Order has no gemstone_wt_in_gram column at all -- only the
+		# Manufacturing Operation carries it -- which is why the FG MOP's gemstone carats
+		# were refreshed from the sibling sum while its gram twin was left stale. It goes
+		# into the MOP write below only.
+		self.diamond_wt_in_gram = carat_to_gram(self.diamond_wt)
+		gemstone_wt_in_gram = carat_to_gram(self.gemstone_wt)
 
 		frappe.db.set_value(
 			"Manufacturing Work Order",
@@ -200,6 +215,7 @@ class ManufacturingWorkOrder(Document):
 					"received_net_wt": self.received_net_wt,
 					"loss_wt": self.loss_wt,
 					"diamond_wt_in_gram": self.diamond_wt_in_gram,
+					"gemstone_wt_in_gram": gemstone_wt_in_gram,
 					"diamond_pcs": self.diamond_pcs,
 					"gemstone_pcs": self.gemstone_pcs,
 				},
@@ -922,7 +938,11 @@ def create_manufacturing_operation(doc):
 	mop.received_gross_wt = doc.received_gross_wt
 	mop.received_net_wt = doc.received_net_wt
 	mop.loss_wt = doc.loss_wt
-	mop.diamond_wt_in_gram = doc.diamond_wt_in_gram
+	# Derived twins, not copies. Manufacturing Work Order has no gemstone_wt_in_gram
+	# column, so copying diamond_wt_in_gram verbatim seeded an operation whose gemstone
+	# grams were 0 while its gemstone carats were not.
+	mop.diamond_wt_in_gram = carat_to_gram(doc.diamond_wt)
+	mop.gemstone_wt_in_gram = carat_to_gram(doc.gemstone_wt)
 	mop.diamond_pcs = doc.diamond_pcs
 	mop.gemstone_pcs = doc.gemstone_pcs
 
