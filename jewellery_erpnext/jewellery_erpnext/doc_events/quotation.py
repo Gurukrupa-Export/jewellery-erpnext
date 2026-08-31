@@ -1379,8 +1379,9 @@ def validate_gold_rate_with_gst(self):
 							i.idx, i.qty, order_qty
 						)
 					)
-	if not self.gold_rate_with_gst:
-		frappe.throw("Gold Rate with GST is mandatory.")
+		if i.metal_type=='Gold':
+			if not self.gold_rate_with_gst:
+				frappe.throw("Gold Rate with GST is mandatory.")
 
 
 
