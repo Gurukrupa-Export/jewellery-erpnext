@@ -2,6 +2,7 @@ import json
 
 import frappe
 from erpnext.setup.utils import get_exchange_rate
+from frappe import _
 from frappe.utils import flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.remote_po import (
@@ -327,6 +328,53 @@ def get_po_ref_customer(po_name):
 	return frappe.db.get_value("Purchase Order", po_name, "ref_customer")
 
 
+def validate_copy_bom(po_doc):
+	"""Refuse to build a Quotation from a Purchase Order whose rows carry no usable Copy BOM.
+
+	Copy BOM is the origin of the whole manufacturing chain: it becomes Quotation Item.copy_bom,
+	the source the Tracking BOM is built from, and -- via Sales Order Item.copy_bom -- the BOM that
+	the Manufacturing Plan, PMO, MWO and MOP all run on. Letting a blank one through would put the
+	error at the far end of an enqueued background job instead of on the button the user pressed.
+
+	The existence check is not padding. This site works from mirrored Purchase Orders, and
+	gke_customization only replicates a BOM when setting_type == "Close" and bom_type == "Template"
+	(gke_order_forms/doc_events/item.py), so a mirrored PO can legitimately name a BOM that was
+	never pushed here. Unchecked, that surfaces as a raw DoesNotExistError inside the BOM job.
+
+	Both problems are reported together, per row, so a PO with several bad rows takes one round
+	trip to fix rather than one per row.
+	"""
+	missing = []
+	unknown = []
+
+	for row in po_doc.items:
+		copy_bom = row.get("custom_copy_bom")
+		if not copy_bom:
+			missing.append(row.idx)
+		elif not frappe.db.exists("BOM", copy_bom):
+			unknown.append((row.idx, copy_bom))
+
+	errors = []
+	if missing:
+		errors.append(
+			_("Row #{0}: Copy BOM is not set on Purchase Order {1}.").format(
+				", #".join(str(idx) for idx in missing), po_doc.name
+			)
+		)
+	for idx, copy_bom in unknown:
+		errors.append(
+			_(
+				"Row #{0}: BOM {1} from Purchase Order {2} does not exist on this site."
+			).format(idx, copy_bom, po_doc.name)
+		)
+
+	if errors:
+		frappe.throw(
+			"<br>".join(errors),
+			title=_("Cannot create Quotation from this Purchase Order"),
+		)
+
+
 @frappe.whitelist()
 def make_quotation(source_name, target_doc=None):
 	def set_missing_values(source, target):
@@ -388,6 +436,8 @@ def make_quotation(source_name, target_doc=None):
 
 	target_doc.po_no = po_doc.custom_customer_po
 
+	validate_copy_bom(po_doc)
+
 	for row in po_doc.items:
 		target_doc.append(
 			"items",
@@ -404,6 +454,11 @@ def make_quotation(source_name, target_doc=None):
 				"custom_customer_good": "No",
 				"po_no": po_doc.get("name"),
 				"custom_po_details": row.name,
+				# The BOM the customer ordered against. It is the single origin of copy_bom for
+				# the whole manufacturing chain (Quotation -> Sales Order -> Manufacturing Plan
+				# -> PMO -> MWO -> MOP), replacing the item's master BOM that the Quotation used
+				# to look up for itself.
+				"copy_bom": row.get("custom_copy_bom"),
 			},
 		)
 	set_missing_values(po_doc, target_doc)
