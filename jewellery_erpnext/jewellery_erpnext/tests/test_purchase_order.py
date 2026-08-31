@@ -241,6 +241,7 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 			company="Test Company",
 			items=[
 				frappe._dict(
+					idx=1,
 					name="ItemDet-1",
 					branch="B1",
 					project="P1",
@@ -248,6 +249,7 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 					qty=1,
 					diamond_quality="VVS",
 					rate=500,
+					custom_copy_bom="BOM-PO-1",
 				)
 			],
 		)
@@ -263,12 +265,117 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		mock_get_exchange_rate.return_value = 1
 		with patch(
 			"erpnext.controllers.accounts_controller.get_default_taxes_and_charges"
-		) as mock_get_taxes:
+		) as mock_get_taxes, patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.exists",
+			return_value=True,
+		):
 			mock_get_taxes.return_value = {"taxes": []}
 			res = po_events.make_quotation("PO-1", None)
 			self.assertEqual(res.po_no, "CUST-PO")
 			self.assertEqual(len(res.items), 1)
 			self.assertEqual(res.ref_customer, "Customer X")
+			# The Purchase Order's Copy BOM is the origin of the whole manufacturing chain.
+			self.assertEqual(res.items[0]["copy_bom"], "BOM-PO-1")
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.get_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
+	)
+	def test_make_quotation_without_copy_bom_throws(self, mock_new_doc, mock_get_doc):
+		"""A Purchase Order row with no Copy BOM must never reach a Quotation.
+
+		Copy BOM is the origin of the manufacturing chain, so the failure belongs on the
+		button the user pressed, not at the far end of the enqueued BOM job.
+		"""
+		po_doc = DummyPO(
+			company="Test Company",
+			items=[
+				frappe._dict(
+					idx=1, name="ItemDet-1", item_code="Item1", qty=1, rate=500
+				)
+			],
+		)
+		mock_get_doc.side_effect = (
+			lambda dt, name=None, **kwargs: po_doc
+			if dt == "Purchase Order"
+			else (dt if not isinstance(dt, str) else None)
+		)
+		mock_new_doc.return_value = DummyQuotation()
+
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			po_events.make_quotation("PO-1", None)
+
+		self.assertIn("Copy BOM", str(ctx.exception))
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.get_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.new_doc"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.exists",
+		return_value=False,
+	)
+	def test_make_quotation_unknown_copy_bom_throws(
+		self, mock_exists, mock_new_doc, mock_get_doc
+	):
+		"""A mirrored Purchase Order can name a BOM that was never replicated to this site.
+
+		gke_customization only pushes a BOM when setting_type == "Close" and
+		bom_type == "Template", so this is a real state, not a hypothetical one. It must read
+		as a Copy BOM problem rather than a raw DoesNotExistError.
+		"""
+		po_doc = DummyPO(
+			company="Test Company",
+			items=[
+				frappe._dict(
+					idx=1,
+					name="ItemDet-1",
+					item_code="Item1",
+					qty=1,
+					rate=500,
+					custom_copy_bom="BOM-NOT-HERE",
+				)
+			],
+		)
+		mock_get_doc.side_effect = (
+			lambda dt, name=None, **kwargs: po_doc
+			if dt == "Purchase Order"
+			else (dt if not isinstance(dt, str) else None)
+		)
+		mock_new_doc.return_value = DummyQuotation()
+
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			po_events.make_quotation("PO-1", None)
+
+		self.assertIn("BOM-NOT-HERE", str(ctx.exception))
+
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.exists",
+		return_value=True,
+	)
+	def test_validate_copy_bom_reports_every_bad_row(self, mock_exists):
+		"""One round trip to fix a Purchase Order, not one per bad row."""
+		mock_exists.side_effect = lambda dt, name: name != "BOM-NOT-HERE"
+		po_doc = DummyPO(
+			items=[
+				frappe._dict(idx=1, item_code="Item1", custom_copy_bom="BOM-OK"),
+				frappe._dict(idx=2, item_code="Item2"),
+				frappe._dict(idx=3, item_code="Item3", custom_copy_bom="BOM-NOT-HERE"),
+			]
+		)
+
+		with self.assertRaises(frappe.ValidationError) as ctx:
+			po_events.validate_copy_bom(po_doc)
+
+		message = str(ctx.exception)
+		self.assertIn("Row #2", message)
+		self.assertIn("Row #3", message)
+		self.assertIn("BOM-NOT-HERE", message)
+		self.assertNotIn("BOM-OK", message)
 
 	def test_set_gst_details_invalid_purchase_type(self):
 		po = DummyPO(purchase_type="Invalid Type")
@@ -622,7 +729,16 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		mock_get_doc,
 	):
 		po_doc = DummyPO(
-			items=[frappe._dict(name="ItemDet-1", item_code="Item1", qty=1, rate=500)]
+			items=[
+				frappe._dict(
+					idx=1,
+					name="ItemDet-1",
+					item_code="Item1",
+					qty=1,
+					rate=500,
+					custom_copy_bom="BOM-PO-1",
+				)
+			]
 		)
 		quotation_doc = DummyQuotation()
 		mock_get_doc.side_effect = (
@@ -635,7 +751,10 @@ class TestPurchaseOrderEvents(IntegrationTestCase):
 		mock_get_exchange_rate.return_value = 1
 		with patch(
 			"erpnext.controllers.accounts_controller.get_default_taxes_and_charges"
-		) as mock_get_taxes:
+		) as mock_get_taxes, patch(
+			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.frappe.db.exists",
+			return_value=True,
+		):
 			mock_get_taxes.return_value = {"taxes": []}
 			res = po_events.make_quotation("PO-2", None)
 			self.assertEqual(res.items[0].get("branch"), None)
