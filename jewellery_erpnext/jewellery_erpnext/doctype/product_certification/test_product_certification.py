@@ -2089,18 +2089,23 @@ class TestDuplicateProductRows(IntegrationTestCase):
 			]
 		)
 
-	def test_duplicate_tree_throws(self):
-		# set_fire_assy_issue_weight does sum same-tree rows onto one exploded main row, so a
-		# duplicate never double-issued -- but now that a scan auto-fills the tree's weight,
-		# two rows would sum to twice the metal.
+	def test_duplicate_tree_is_allowed(self):
+		# One tree goes for assay in several samples, so the same Tree No may be scanned more
+		# than once. set_fire_assy_issue_weight sums those rows onto one exploded main row,
+		# which is the intended behaviour; the scan handler protects the weight by leaving a
+		# repeat row at 0 rather than re-filling the tree's full weight.
+		_check_duplicates(
+			[{"tree_no": "TREE-A"}, {"tree_no": "TREE-B"}, {"tree_no": "TREE-A"}]
+		)
+
+	def test_duplicate_serial_still_throws_alongside_trees(self):
+		# Relaxing trees must not relax the serial guard: one serial is one physical piece.
 		with self.assertRaises(ValidationError) as cm:
 			_check_duplicates(
-				[{"tree_no": "TREE-A"}, {"tree_no": "TREE-B"}, {"tree_no": "TREE-A"}]
+				[{"tree_no": "TREE-A"}, {"serial_no": "SN1"}, {"serial_no": "SN1"}]
 			)
 		msg = frappe.utils.strip_html(str(cm.exception))
-		self.assertIn("Row #3", msg)
-		self.assertIn("Row #1", msg)
-		self.assertIn("TREE-A", msg)
+		self.assertIn("SN1", msg)
 
 	def test_distinct_tree_rows_pass(self):
 		_check_duplicates([{"tree_no": "TREE-A"}, {"tree_no": "TREE-B"}])

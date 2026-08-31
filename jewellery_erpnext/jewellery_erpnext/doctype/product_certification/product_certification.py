@@ -187,17 +187,19 @@ class ProductCertification(Document):
 		of the guard -- ``product_details`` is ``allow_bulk_edit``, so the grid and the paste
 		dialog can produce the same duplicates the barcode gun does.
 
-		Tree rows are covered too. ``set_fire_assy_issue_weight`` does sum same-tree rows onto a
-		single exploded main row, so a duplicate never double-issued -- but now that a scan
-		auto-fills the tree's weight, two rows would sum to twice the metal.
+		Tree rows are deliberately NOT covered: one tree is legitimately scanned several times
+		(a tree goes for assay in more than one sample), and ``set_fire_assy_issue_weight``
+		sums same-tree rows onto a single exploded main row, which is the intended behaviour.
+		The weight is what needs care, not the row count -- so the scan handler auto-fills the
+		tree's weight only on the FIRST row for that tree and leaves repeats at 0 for the
+		operator to type, and ``validate_fire_assy_weight`` still refuses a submit that leaves
+		one at 0.
 		"""
 		seen = {}
 		for row in self.product_details:
 			# A row carries exactly one of tree / serial / work order, so whichever it has is
 			# its identity.
-			if row.get("tree_no"):
-				key = ("Tree No", row.tree_no)
-			elif row.get("serial_no"):
+			if row.get("serial_no"):
 				key = ("Serial No", row.serial_no)
 			elif row.get("manufacturing_work_order"):
 				key = ("Manufacturing Work Order", row.manufacturing_work_order)
