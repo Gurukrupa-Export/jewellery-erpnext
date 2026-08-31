@@ -31,14 +31,23 @@ Notes:
     ``before_validate`` metal branch resolves without a Main Slip link.
   * Warehouse resolution reuses existing app resolvers (``Warehouse`` custom fields
     ``employee`` / ``department``); MSL is the employee's Raw-Material warehouse.
-  * **Receive returns the batches the Issue put in.** The MSL warehouse is the *employee's*, so it
-    pools metal from every tree, main slip and EIR injection for that operator — warehouse-wide
-    FIFO would hand back whichever batch happens to be oldest, i.e. someone else's (a Customer
-    Goods batch in, company metal out). ``receive_material`` therefore resolves each batch itself
-    via ``_allocate_tree_batches`` and pre-stamps the rows, which makes
+  * **Receive returns the tree's own metal first, and never crosses ownership.** The MSL warehouse
+    is the *employee's*, so it pools metal from every tree for that operator — warehouse-wide FIFO
+    would hand back whichever batch happens to be oldest, i.e. someone else's (a Customer Goods
+    batch in, company metal out). ``receive_material`` therefore resolves each batch itself via
+    ``_allocate_tree_legs`` and pre-stamps the rows, which makes
     ``_apply_fifo_batches_to_stock_entry`` a no-op for them (``_expand_source_rows_for_fifo``
     early-returns on a row that already carries ``batch_no``). ``issue_material`` keeps plain FIFO
     — sourcing fresh metal from the department pool is exactly what it should do.
+
+    Batch identity is the mechanism, not the goal. Casting does not preserve it: every tree for the
+    operator issues into the same MSL warehouse and the untagged ``Material Transfer (WORK ORDER)``
+    draws consume it oldest-first, so an early tree's batch is routinely drained to zero by later
+    trees' operations while it still holds a real ledger claim. So the pool is the tree's own
+    batches (``_tree_owed_batches``) and then, only if those fall short, other batches at the same
+    warehouse in the same ``(inventory_type, customer)`` tier (``_tree_fallback_batches``), warned
+    on the voucher. Ownership — the thing the GEPL-TR-26-00150 regression actually violated — is
+    never relaxed; when no same-tier metal exists, ``_throw_tree_shortfall`` still refuses.
 """
 
 import json
@@ -358,20 +367,20 @@ def _batch_ownership(batch_nos):
 	return {b: (m.inventory_type, m.customer) for b, m in ranks.items()}
 
 
-def _tree_owed_batches(se, tree, item_code, msl_wh):
-	"""``[(batch_no, qty)]`` this tree still owes back at ``msl_wh``, in FIFO order.
+def _tree_netted_owed(tree, item_code, msl_wh):
+	"""``{batch_no: qty}`` this tree's own Stock Entries still owe back at ``msl_wh``, UNCAPPED.
 
 	The tree's own Stock Entries ARE the record — ``custom_tree_number`` is stamped on every leg
-	(``_new_transfer_se``) — so the pool is derived on the fly rather than cached in a field that
+	(``_new_transfer_se``) — so the claim is derived on the fly rather than cached in a field that
 	could drift: per batch, ``issued into MSL - already taken back out of MSL``. Only
 	``docstatus = 1`` counts, so a reversed tree (``cancel_tree_stock_entries``) drops out of the
 	netting for free.
 
-	The netted result is then capped at what is PHYSICALLY left of each batch at MSL. That cap is
-	load-bearing, not defensive: the MSL warehouse is the *employee's* (shared by every tree, main
-	slip and EIR injection for that operator), and the casting Employee IR's gain injection draws
-	this tree's own metal out of it without stamping ``custom_tree_number``. Casting mints no new
-	batch at MSL, so the leftover genuinely IS the issued batch — only its quantity moves.
+	This is a GROSS claim, not a balance, and must never be disbursed against directly. The untagged
+	``Material Transfer (WORK ORDER)`` draws that legitimately consume the tree's metal out of MSL
+	carry no ``custom_tree_number``, so they are invisible here — which is why the site-wide total of
+	this number runs far above the physical stock backing it. ``_tree_owed_batches`` is the caller
+	that caps it; the ledger's ``pending_qty`` is the caller-side bound on what may actually move.
 
 	The loss leg's produce row can never be double-counted: it carries no ``s_warehouse`` and its
 	item is the ML variant, so the warehouse and ``item_code`` predicates both exclude it.
@@ -400,7 +409,27 @@ def _tree_owed_batches(se, tree, item_code, msl_wh):
 			owed[r.batch_no] = flt(owed.get(r.batch_no)) - qty
 
 	eps = _pending_eps()
-	owed = {b: q for b, q in owed.items() if q > eps}
+	return {b: q for b, q in owed.items() if q > eps}
+
+
+def _tree_owed_batches(se, tree, item_code, msl_wh):
+	"""``[(batch_no, qty)]`` of the tree's OWN issued batches still available at ``msl_wh``.
+
+	``_tree_netted_owed`` capped at what is PHYSICALLY left of each batch at MSL. That cap is
+	load-bearing, not defensive: the MSL warehouse is the *employee's*, shared by every tree for that
+	operator, and the casting Employee IR's gain draws this tree's own metal out of it without
+	stamping ``custom_tree_number``. Without the cap the netting would hand back metal that has
+	already been consumed — site-wide it over-claims by kilograms.
+
+	What the cap CANNOT do is keep the tree solvent. Casting mints no new batch at MSL, but other
+	trees' Issue legs continuously bring NEWER batches into the same warehouse while the untagged
+	draws consume it oldest-first — so an early tree's batch is routinely consumed down to zero by
+	later trees' operations, each of which correctly drew its own share. When that happens this pool
+	goes empty while the tree still holds a real ledger claim, and ``_tree_fallback_batches`` takes
+	over within the same ownership tier.
+	"""
+	eps = _pending_eps()
+	owed = _tree_netted_owed(tree, item_code, msl_wh)
 	if not owed:
 		return []
 
@@ -435,6 +464,145 @@ def _tree_owed_batches(se, tree, item_code, msl_wh):
 	# see _allocate_tree_legs.
 	ranks = batch_priority_map([b for b, _q in out])
 	out.sort(key=lambda bq: batch_sort_key(bq[0], ranks.get(bq[0]), "consume"))
+	return out
+
+
+def _tree_issued_tiers(owed_batches):
+	"""``{(inventory_type, customer)}`` — the ownership tiers this tree issued into MSL.
+
+	Normalised through ``normalize_ownership`` so a blank ``inventory_type`` collapses to the company
+	default exactly as the row builders do. Without that, a tree that issued unlabelled metal would
+	match no candidate and the fallback would be silently dead.
+	"""
+	if not owed_batches:
+		return set()
+
+	ranks = batch_priority_map(list(owed_batches))
+	tiers = set()
+	for batch_no in owed_batches:
+		meta = ranks.get(batch_no)
+		tiers.add(
+			normalize_ownership(
+				meta.inventory_type if meta else None,
+				meta.customer if meta else None,
+				batch_no=batch_no,
+			)
+		)
+	return tiers
+
+
+def _tree_fallback_batches(se, tree, item_code, msl_wh, offered, limit):
+	"""``[(batch_no, qty)]`` of SAME-OWNERSHIP-TIER metal at ``msl_wh`` standing in for the tree's
+	own, already-consumed batches.
+
+	Batch identity does not survive casting. The MSL warehouse is the *employee's* shared pool: every
+	tree for that operator issues into it, and the untagged ``Material Transfer (WORK ORDER)`` draws
+	consume it oldest-first, so an early tree's batch is routinely drained by later trees' operations
+	while newer trees' issues sit alongside it. Observed in production: seventeen trees shared one
+	batch at a single casting warehouse, each correctly drawing back its own share, until the batch
+	hit zero — permanently blocking every tree that still held a claim on it, for Receive AND for the
+	write-off inside ``Tree Number.submit_tree``.
+
+	What DOES survive is ownership, and that is the invariant the batch restriction was written to
+	protect: GEPL-TR-26-00150 repaid a Customer-Goods issue with a company batch that merely happened
+	to be older, which the module docstring names as "a Customer Goods batch in, company metal out".
+	Batch identity was the mechanism; ownership was the goal. So substitution is confined to the same
+	``(inventory_type, customer)``: company metal only ever replaced by company metal, a customer's
+	only by that same customer's own. A tier with no candidate still throws.
+
+	``offered`` is ``{batch_no: qty}`` the tree's own pool already puts up, and is SUBTRACTED from
+	each candidate rather than used to skip it. A batch the tree issued 81 g of, sitting in a
+	warehouse that holds 327 g of it, must still be able to supply the other 246 g -- that metal is
+	no more and no less "someone else's" than a different batch of the same tier would be. Skipping
+	such a batch outright would strand a tree next to metal it is entitled to.
+
+	``limit`` is the caller's UNMET need — bounded by the ledger's ``pending_qty`` at the
+	``receive_material`` guard — never the netted owed. See ``_tree_netted_owed`` on why that number
+	must not be disbursed against.
+	"""
+	eps = _pending_eps()
+	prec = _se_precision()
+	limit = flt(limit, prec)
+	if limit <= eps:
+		return []
+
+	tiers = _tree_issued_tiers(_tree_netted_owed(tree, item_code, msl_wh))
+	if not tiers:
+		return []
+
+	# No `batch_no` filter — that restriction is exactly what this fallback exists to lift. `qty` is
+	# still withheld so a phantom batch cannot FIFO-truncate real ones before the tier filter runs.
+	_ensure_posting_datetime(se)
+	available = (
+		capped_auto_batch_nos(
+			frappe._dict(
+				posting_date=se.posting_date,
+				posting_time=se.posting_time,
+				item_code=item_code,
+				warehouse=msl_wh,
+				for_stock_levels=False,
+				consider_negative_batches=False,
+			)
+		)
+		or []
+	)
+	offered = offered or {}
+	candidates = []
+	for b in available:
+		if not b.batch_no:
+			continue
+		free = flt(flt(b.qty) - flt(offered.get(b.batch_no)), prec)
+		if free > eps:
+			candidates.append((b.batch_no, free))
+	if not candidates:
+		return []
+
+	ranks = batch_priority_map([b for b, _q in candidates])
+	same_tier = []
+	for batch_no, free in candidates:
+		meta = ranks.get(batch_no)
+		owner = normalize_ownership(
+			meta.inventory_type if meta else None,
+			meta.customer if meta else None,
+			batch_no=batch_no,
+			item_code=item_code,
+		)
+		if owner in tiers:
+			same_tier.append((batch_no, free))
+
+	# Same consume ordering the tree's own pool uses, so a customer's metal is still handed back
+	# before the company's when a tree spans both tiers.
+	same_tier.sort(key=lambda bq: batch_sort_key(bq[0], ranks.get(bq[0]), "consume"))
+
+	out = []
+	remaining = limit
+	for batch_no, avail in same_tier:
+		if remaining <= eps:
+			break
+		take = flt(min(flt(avail), remaining), prec)
+		if take <= eps:
+			continue
+		out.append((batch_no, take))
+		remaining = flt(remaining - take, prec)
+	return out
+
+
+def _merge_pool(*pools):
+	"""Concatenate allocation pools, summing duplicate batches, first-seen order preserved.
+
+	``allocate_in_order`` keys its shared ``taken`` ledger by batch, so the same batch appearing
+	twice would have the second entry's free qty computed against the first entry's consumption --
+	silently under-offering. One entry per batch keeps that arithmetic honest.
+	"""
+	out, index = [], {}
+	for pool in pools:
+		for batch_no, qty in pool or []:
+			if batch_no in index:
+				i = index[batch_no]
+				out[i] = (batch_no, flt(out[i][1]) + flt(qty))
+			else:
+				index[batch_no] = len(out)
+				out.append((batch_no, flt(qty)))
 	return out
 
 
@@ -493,9 +661,30 @@ def _allocate_tree_legs(se, tree, item_code, msl_wh, recv, loss):
 	So: pass 1 takes ``recv`` from the pool in ``consume_rank`` order, pass 2 takes
 	``loss`` from what is LEFT, re-sorted into ``loss_rank`` order. A shared
 	``taken`` ledger keeps the two passes from double-booking a batch.
+
+	The pool is the tree's own issued batches first, and only if those cannot cover the need is it
+	extended with same-ownership-tier substitutes (``_tree_fallback_batches``) — the tree's own metal
+	is always returned before anyone else's. Extending the pool cannot over-disburse: ``recv + loss``
+	is already capped at the ledger's ``pending_qty`` by the ``receive_material`` guard, and
+	``allocate_in_order`` never takes more than it is asked for.
 	"""
 	prec = _se_precision()
 	pool = _tree_owed_batches(se, tree, item_code, msl_wh)
+
+	need = flt(flt(recv, prec) + flt(loss, prec), prec)
+	pool_total = flt(sum(flt(q) for _b, q in pool), prec)
+	substituted = []
+	if pool_total < flt(need - _pending_eps(), prec):
+		substituted = _tree_fallback_batches(
+			se,
+			tree,
+			item_code,
+			msl_wh,
+			offered={b: q for b, q in pool},
+			limit=flt(need - pool_total, prec),
+		)
+		pool = _merge_pool(pool, substituted)
+
 	ranks = batch_priority_map([b for b, _q in pool], with_no_wastage=True)
 	taken = {}
 
@@ -507,9 +696,9 @@ def _allocate_tree_legs(se, tree, item_code, msl_wh, recv, loss):
 
 	shortfall = flt(recv_short + loss_short, prec)
 	if shortfall > _pending_eps():
-		need = flt(flt(recv, prec) + flt(loss, prec), prec)
 		_throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec)
 
+	_warn_tree_batch_substitution(tree, item_code, msl_wh, substituted, prec)
 	return recv_alloc, loss_alloc, ranks
 
 
@@ -546,25 +735,61 @@ def _warn_tree_customer_loss(customer_loss, prec):
 	)
 
 
-def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
-	"""Fail fast rather than falling back to warehouse-wide FIFO.
+def _warn_tree_batch_substitution(tree, item_code, msl_wh, substituted, prec):
+	"""ONE orange warning when a tree is repaid from a batch it did not itself issue.
 
-	The MSL pool holds other operators' and other customers' metal, so a fallback
-	would silently hand back material this tree never issued.
+	Never silent, and never a throw. The substitution is always within the same ownership tier, so
+	it needs no approval -- but this site runs batch-wise valuation, where batches of the same item
+	carry materially different rates. Which batch moves is therefore a real GL movement, not a
+	bookkeeping label, and the operator has to be able to see it on the voucher.
+	"""
+	if not substituted:
+		return
+
+	merged = {}
+	for batch_no, qty in substituted:
+		merged[batch_no] = flt(flt(merged.get(batch_no)) + flt(qty), prec)
+	total = flt(sum(merged.values()), prec)
+
+	frappe.msgprint(
+		_(
+			"Tree {0}: what this tree issued of {1} is no longer available at {2}, so {3} g was "
+			"returned from batches of the SAME ownership beyond this tree's own issue. Same owner, "
+			"different metal — valuation follows the batch that actually moved:"
+		).format(tree.name, item_code, msl_wh, frappe.bold(total))
+		+ "<br><br>"
+		+ "<br>".join(
+			"{0}: {1}".format(frappe.bold(b), flt(q, prec))
+			for b, q in sorted(merged.items())
+		),
+		title=_("Substitute Batch Returned"),
+		indicator="orange",
+	)
+
+
+def _throw_tree_shortfall(tree, item_code, msl_wh, need, shortfall, pool, prec):
+	"""Fail fast once even same-ownership-tier metal cannot cover the need.
+
+	The tree's own issued batches are drawn first, and substitutes are confined to the same
+	``(inventory_type, customer)`` (``_tree_fallback_batches``). Reaching here means the warehouse
+	holds no metal this tree is entitled to at all — returning anything else would cross an
+	ownership boundary, which is the defect this whole restriction exists to prevent.
 	"""
 	frappe.throw(
 		_(
-			"Tree {0}, Item {1}: need {2} but only {3} of the batches this tree issued into "
-			"{4} is still available ({5}). Returning any other batch would hand back material "
-			"this tree never issued — check whether it was already drawn out for another job."
+			"Tree {0}, Item {1}: cannot return {2} from {3} — short by {4}. The batches this tree "
+			"issued have already been consumed there, and no remaining batch at that warehouse "
+			"shares this tree's ownership, so none may stand in for them. Available to this "
+			"tree: {5}."
 		).format(
 			tree.name,
 			item_code,
 			flt(need, prec),
-			flt(need - shortfall, prec),
 			msl_wh,
-			", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("none"),
-		)
+			flt(shortfall, prec),
+			", ".join(f"{b}: {flt(q, prec)}" for b, q in pool) or _("nothing"),
+		),
+		title=_("Tree Material Not Available"),
 	)
 
 
