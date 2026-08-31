@@ -301,6 +301,18 @@
    "options": "BOM"
   },
   {
+   "dt": "Purchase Order Item",
+   "description": "Origin BOM this row came from, carried through from the Order via Quotation, Sales Order and Manufacturing Plan. Not the item's master BOM.",
+   "fieldname": "custom_copy_bom",
+   "fieldtype": "Link",
+   "insert_after": "manufacturing_bom",
+   "is_system_generated": 1,
+   "label": "Copy BOM",
+   "module": "Jewellery Erpnext",
+   "options": "BOM",
+   "read_only": 1
+  },
+  {
    "depends_on": "eval: parent.purchase_type == 'FG Purchase';",
    "dt": "Purchase Order Item",
    "fieldname": "edit_bom",
