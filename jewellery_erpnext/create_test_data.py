@@ -3708,7 +3708,7 @@ def setup_data():
 		)
 
 	create_warehouse_and_department()
-	print("Setup for the test data has been completed")
+	print("Demo data has been setted up")
 
 
 def create_warehouse_and_department():
