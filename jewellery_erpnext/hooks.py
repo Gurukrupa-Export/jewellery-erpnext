@@ -341,6 +341,9 @@ override_whitelisted_methods = {
 	"erpnext.stock.doctype.material_request.material_request.make_stock_entry": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.make_stock_entry",
 	"erpnext.stock.doctype.stock_entry.stock_entry.make_stock_in_entry": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
 	"frappe.desk.doctype.bulk_update.bulk_update.submit_cancel_or_update_docs": "jewellery_erpnext.jewellery_erpnext.doc_events.bulk_update.custom_submit_cancel_or_update_docs",
+	# Core returns None when a title-link doctype's title_field is empty, which blanks the
+	# Link input until a page reload (Manufacturing Operation with no `operation`).
+	"frappe.desk.search.get_link_title": "jewellery_erpnext.jewellery_erpnext.doc_events.search.get_link_title",
 }
 
 override_doctype_class = {
