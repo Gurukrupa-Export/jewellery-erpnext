@@ -15,11 +15,8 @@ def before_validate(self, method=None):
 	assign_zero_tax_template_for_untaxed_items(self)
 
 
-def validate(self, method=None):
-	update_effective_tax_rate(self)
-
-
 ZERO_TAX_TEMPLATE_TITLE = "Zero Tax (Auto)"
+ZERO_TAX_TEMPLATE_MARKER = "custom_is_auto_zero_tax"
 
 
 def assign_zero_tax_template_for_untaxed_items(self):
@@ -56,7 +53,10 @@ def assign_zero_tax_template_for_untaxed_items(self):
 def get_or_create_zero_tax_template(company, account_heads):
 	name = frappe.db.get_value(
 		"Item Tax Template",
-		{"company": company, "title": ZERO_TAX_TEMPLATE_TITLE},
+		{
+			"company": company,
+			"custom_is_auto_zero_tax": 1,
+		},
 		"name",
 	)
 	template = (
@@ -67,6 +67,7 @@ def get_or_create_zero_tax_template(company, account_heads):
 	if not name:
 		template.title = ZERO_TAX_TEMPLATE_TITLE
 		template.company = company
+		template.custom_is_auto_zero_tax = 1
 
 	# India Compliance's Item Tax Template validate hook throws "GST Rate
 	# cannot be zero for Taxable GST Treatment" unless gst_treatment is
@@ -83,9 +84,7 @@ def get_or_create_zero_tax_template(company, account_heads):
 		return template.name
 
 	for account_head in missing_heads:
-		template.append(
-			"taxes", {"tax_type": account_head, "tax_rate": 0, "not_applicable": 1}
-		)
+		template.append("taxes", {"tax_type": account_head, "tax_rate": 0})
 
 	template.flags.ignore_permissions = True
 	template.save()
@@ -167,19 +166,3 @@ def update_expense_account(self):
 		if expense_account:
 			for row in self.items:
 				row.expense_account = expense_account
-
-
-def update_effective_tax_rate(self, method=None):
-	# Each item is now taxed at its own Item Tax Template rate (see
-	# assign_zero_tax_template_for_untaxed_items), so a single row's `rate`
-	# no longer reflects one flat percentage -- display the row's real
-	# blended rate (tax_amount / net_total) instead of the stale Purchase
-	# Taxes and Charges Template default.
-	if not self.get("taxes") or not self.net_total:
-		return
-
-	for tax in self.taxes:
-		if tax.charge_type == "On Net Total":
-			tax.rate = flt(
-				flt(tax.tax_amount) / self.net_total * 100, tax.precision("rate")
-			)
