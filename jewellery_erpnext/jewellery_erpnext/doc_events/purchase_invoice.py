@@ -10,12 +10,86 @@ class CustomPurchaseInvoice(ERPNextPurchaseInvoice):
 		pass
 
 
-def before_validate(self):
+def before_validate(self, method=None):
 	update_expense_account(self)
+	assign_zero_tax_template_for_untaxed_items(self)
 
 
 def validate(self, method=None):
-	sync_tax_row_rate_with_item(self)
+	update_effective_tax_rate(self)
+
+
+ZERO_TAX_TEMPLATE_TITLE = "Zero Tax (Auto)"
+
+
+def assign_zero_tax_template_for_untaxed_items(self):
+	# Each item should be taxed independently at its own Item Tax Template
+	# rate. Core ERPNext's per-item tax engine (get_current_tax_and_net_amount)
+	# already does this correctly when an item has a template -- but an item
+	# with NO item_tax_template doesn't fall back to 0: core's get_item_tax_map()
+	# seeds every account head from the Purchase Taxes and Charges row's own
+	# `rate`, so a template-less item would silently get taxed at that shared
+	# rate instead of being left untaxed. Give it an explicit zero-rated Item
+	# Tax Template (one per company, auto-provisioned and grown as needed) so
+	# core's own tested engine treats it as genuinely not applicable -- this
+	# avoids hand-computing tax_amount/grand_total/rounding ourselves.
+	if not self.get("items") or not self.get("taxes"):
+		return
+
+	account_heads = sorted({tax.account_head for tax in self.taxes if tax.account_head})
+	if not account_heads:
+		return
+
+	untaxed_items = [
+		item
+		for item in self.items
+		if item.get("item_code") and not item.get("item_tax_template")
+	]
+	if not untaxed_items:
+		return
+
+	zero_tax_template = get_or_create_zero_tax_template(self.company, account_heads)
+	for item in untaxed_items:
+		item.item_tax_template = zero_tax_template
+
+
+def get_or_create_zero_tax_template(company, account_heads):
+	name = frappe.db.get_value(
+		"Item Tax Template",
+		{"company": company, "title": ZERO_TAX_TEMPLATE_TITLE},
+		"name",
+	)
+	template = (
+		frappe.get_doc("Item Tax Template", name)
+		if name
+		else frappe.new_doc("Item Tax Template")
+	)
+	if not name:
+		template.title = ZERO_TAX_TEMPLATE_TITLE
+		template.company = company
+
+	# India Compliance's Item Tax Template validate hook throws "GST Rate
+	# cannot be zero for Taxable GST Treatment" unless gst_treatment is
+	# explicitly non-Taxable. "Non-GST" is used (rather than "Nil-Rated")
+	# because these items never had any tax info asserted for them, and it
+	# keeps them out of the Nil-Rated/Exempted GSTR-3B bucket.
+	needs_treatment_fix = template.get("gst_treatment") != "Non-GST"
+	if needs_treatment_fix:
+		template.gst_treatment = "Non-GST"
+
+	existing_heads = {row.tax_type for row in template.taxes}
+	missing_heads = [head for head in account_heads if head not in existing_heads]
+	if not missing_heads and not needs_treatment_fix and name:
+		return template.name
+
+	for account_head in missing_heads:
+		template.append(
+			"taxes", {"tax_type": account_head, "tax_rate": 0, "not_applicable": 1}
+		)
+
+	template.flags.ignore_permissions = True
+	template.save()
+	return template.name
 
 
 def sync_tax_row_rate_with_item(self):
@@ -96,10 +170,16 @@ def update_expense_account(self):
 
 
 def update_effective_tax_rate(self, method=None):
-	# pass
-	if not self.net_total:
+	# Each item is now taxed at its own Item Tax Template rate (see
+	# assign_zero_tax_template_for_untaxed_items), so a single row's `rate`
+	# no longer reflects one flat percentage -- display the row's real
+	# blended rate (tax_amount / net_total) instead of the stale Purchase
+	# Taxes and Charges Template default.
+	if not self.get("taxes") or not self.net_total:
 		return
 
 	for tax in self.taxes:
-		if tax.charge_type == "On Net Total" and tax.tax_amount:
-			tax.rate = flt(tax.tax_amount / self.net_total * 100, tax.precision("rate"))
+		if tax.charge_type == "On Net Total":
+			tax.rate = flt(
+				flt(tax.tax_amount) / self.net_total * 100, tax.precision("rate")
+			)
