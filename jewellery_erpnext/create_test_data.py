@@ -1080,7 +1080,7 @@ def create_test_data():
 					"item_category": "Mugappu",
 					"item_subcategory": "Casual Mugappu",
 					"item_category_code": "MU",
-					"setting_type": "Close",
+					"setting_type": "Nova Glow",
 					"sequence": "01087",
 					"productivity": "Studded",
 					"designer": frappe.db.exists(
