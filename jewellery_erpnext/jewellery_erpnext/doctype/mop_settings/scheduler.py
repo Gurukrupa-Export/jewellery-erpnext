@@ -32,20 +32,45 @@ def _parse_time_of_day(value):
 	return get_time(value)
 
 
-def _scheduler_already_attempted_today(now):
-	"""True when a Scheduler-triggered MOP EOD Sync Log already exists for today.
+# Statuses that mean "the run was cut short by something outside the sync" -- an OOM-killed
+# or restarted DB server, an RQ job timeout, a stranded lock the hourly job had to clear.
+# Retrying these the same day is worth a second attempt; anything else is not.
+_RETRYABLE_SYNC_LOG_STATUSES = ("Timeout Released", "Failed")
 
-	The once-per-day attempt guard keys off the Sync Log (created at enqueue time)
-	rather than ``eod_sync_last_completed_on`` (set only on success), so a failed or
-	timed-out run does not re-fire the heavy job on every subsequent tick the same
-	day. Manual runs are excluded, leaving the manual button free for same-day retries.
+# Hard ceiling on Scheduler attempts per day. The heavy job must never re-fire on every
+# per-minute tick, so one retry is the whole allowance: attempt, retry, then wait for
+# tomorrow (or the manual button).
+_MAX_SCHEDULER_ATTEMPTS_PER_DAY = 2
+
+
+def _scheduler_already_attempted_today(now):
+	"""True when today's Scheduler run is done and must not be re-enqueued.
+
+	The once-per-day attempt guard keys off the Sync Log (created at enqueue time) rather
+	than ``eod_sync_last_completed_on`` (set only on success), so a run does not re-fire
+	the heavy job on every subsequent tick. Manual runs are excluded, leaving the manual
+	button free for same-day retries.
+
+	**One retry is allowed for infrastructure faults.** The guard used to treat *any*
+	Sync Log for today as "attempted", which could not tell "failed deterministically,
+	retrying is pointless" from "the DB server was killed, retrying would work fine". On
+	2026-08-05 MariaDB was OOM-killed mid-run at 19:06 and the day was simply forfeited --
+	no retry ever fired. Now a log left in ``Timeout Released`` / ``Failed`` does not block
+	a second attempt, while ``_MAX_SCHEDULER_ATTEMPTS_PER_DAY`` keeps the anti-thrash
+	guarantee the original guard was written for.
 	"""
-	return bool(
-		frappe.db.exists(
-			"MOP EOD Sync Log",
-			{"trigger_type": "Scheduler", "posting_date": getdate(now)},
-		)
+	logs = frappe.get_all(
+		"MOP EOD Sync Log",
+		filters={"trigger_type": "Scheduler", "posting_date": getdate(now)},
+		fields=["status"],
 	)
+	if not logs:
+		return False
+	if len(logs) >= _MAX_SCHEDULER_ATTEMPTS_PER_DAY:
+		return True
+	# Block while a run is still in flight, or once one has genuinely settled. Only a
+	# cut-short run leaves the door open for the retry.
+	return not all(log.status in _RETRYABLE_SYNC_LOG_STATUSES for log in logs)
 
 
 def check_and_enqueue_eod_sync():

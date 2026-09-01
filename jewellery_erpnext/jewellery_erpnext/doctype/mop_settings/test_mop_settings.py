@@ -12,6 +12,7 @@ from frappe.types.frappedict import _dict as FrappeDict
 from frappe.utils import add_to_date, now_datetime
 
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.eod_lock import (
+	ensure_eod_sync_lock_released,
 	is_eod_sync_locked,
 	release_eod_sync_lock,
 	release_expired_eod_sync_lock,
@@ -54,6 +55,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_heal_missing_sre_in_plan,
 	_heal_ownership_allowed,
 	_insert_sync_log_item,
+	_is_connection_lost,
 	_is_recoverable_error,
 	_mark_all_mwo_mop_logs_synced,
 	_mop_manufacturer_label,
@@ -302,6 +304,66 @@ class TestReleaseExpiredEodSyncLock(IntegrationTestCase):
 		mock_commit.assert_not_called()
 
 
+class TestEnsureEodSyncLockReleased(IntegrationTestCase):
+	"""The last-resort net in ``sync_mop_logs``' ``finally``.
+
+	Covers the exit path that leaked the lock on 2026-08-05: the failure handler itself
+	raised on the dead connection, so its own ``release_eod_sync_lock`` never ran.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	@patch(f"{_MOD}.frappe.db.commit")
+	@patch(f"{_MOD}.frappe.db.set_value")
+	@patch(f"{_MOD}.frappe.db.get_value")
+	def test_releases_a_lock_that_leaked(self, mock_gv, mock_sv, mock_commit):
+		# eod_sync_running is still 1 as the run unwinds → intervene.
+		mock_gv.side_effect = [1, "Running"]
+		self.assertTrue(ensure_eod_sync_lock_released(sync_log_name="LOG-1"))
+		values = mock_sv.call_args_list[0].args[2]
+		self.assertEqual(values["eod_sync_running"], 0)
+		# Must NOT stamp completion: the day did not finish, and marking it complete
+		# would make the scheduler skip it.
+		self.assertNotIn("eod_sync_last_completed_on", values)
+		mock_commit.assert_called_once()
+
+	@patch(f"{_MOD}.frappe.db.commit")
+	@patch(f"{_MOD}.frappe.db.set_value")
+	@patch(f"{_MOD}.frappe.db.get_value")
+	def test_is_a_no_op_on_the_normal_success_path(self, mock_gv, mock_sv, mock_commit):
+		# The success path already released the lock, so this must do nothing at all.
+		mock_gv.return_value = 0
+		self.assertFalse(ensure_eod_sync_lock_released(sync_log_name="LOG-1"))
+		mock_sv.assert_not_called()
+		mock_commit.assert_not_called()
+
+	@patch(f"{_MOD}.frappe.logger")
+	@patch(f"{_MOD}.frappe.db.connect")
+	@patch(f"{_MOD}.frappe.db.get_value")
+	def test_retries_once_with_a_fresh_connection(
+		self, mock_gv, mock_connect, mock_log
+	):
+		# First read fails on the dead socket; a restarted MariaDB is usually back by
+		# the time the run unwinds, so one reconnect attempt is worth it.
+		import MySQLdb
+
+		mock_gv.side_effect = [
+			MySQLdb.OperationalError(2013, "Lost connection"),
+			0,
+		]
+		self.assertFalse(ensure_eod_sync_lock_released())
+		mock_connect.assert_called_once()
+
+	@patch(f"{_MOD}.frappe.logger")
+	@patch(f"{_MOD}.frappe.db.connect", side_effect=Exception("server still down"))
+	@patch(f"{_MOD}.frappe.db.get_value", side_effect=Exception("dead socket"))
+	def test_never_raises_when_the_db_stays_down(self, mock_gv, mock_connect, mock_log):
+		# It runs in a `finally`; raising here would mask the original exception.
+		self.assertFalse(ensure_eod_sync_lock_released())
+
+
 # ---------------------------------------------------------------------------
 # validate_not_eod_sync_locked
 # ---------------------------------------------------------------------------
@@ -345,8 +407,11 @@ class TestCheckAndEnqueueEodSync(IntegrationTestCase):
 	"""Tests for the per-minute scheduler entry point.
 
 	Mocks are started in setUp (keyed dict) to avoid decorator-ordering pitfalls.
-	``new_doc``/``set_value``/``exists`` keep the Sync-Log creation block inert so
+	``new_doc``/``set_value``/``get_all`` keep the Sync-Log creation block inert so
 	the time-gate logic is asserted in isolation.
+
+	``get_all`` (not ``exists``) backs the attempt guard: it now inspects each of today's
+	Scheduler log STATUSES, because a run cut short by infrastructure earns one retry.
 	"""
 
 	@classmethod
@@ -358,7 +423,7 @@ class TestCheckAndEnqueueEodSync(IntegrationTestCase):
 			"rel": patch(f"{_SCHED_MOD}.release_expired_eod_sync_lock"),
 			"now": patch(f"{_SCHED_MOD}.now_datetime"),
 			"gv": patch(f"{_SCHED_MOD}.frappe.db.get_value"),
-			"exists": patch(f"{_SCHED_MOD}.frappe.db.exists"),
+			"logs": patch(f"{_SCHED_MOD}.frappe.get_all"),
 			"new_doc": patch(f"{_SCHED_MOD}.frappe.new_doc"),
 			"set_value": patch(f"{_SCHED_MOD}.frappe.db.set_value"),
 			"queued": patch(f"{_SCHED_MOD}.set_eod_sync_queued"),
@@ -368,8 +433,12 @@ class TestCheckAndEnqueueEodSync(IntegrationTestCase):
 		for p in patchers.values():
 			self.addCleanup(p.stop)
 		# Defaults: configured time 02:00, idle, no prior Scheduler attempt today.
-		self.m["exists"].return_value = False
+		self.m["logs"].return_value = []
 		self.m["gv"].return_value = self._make_settings()
+
+	def _todays_logs(self, *statuses):
+		"""Stand in for today's Scheduler-triggered MOP EOD Sync Logs."""
+		self.m["logs"].return_value = [FrappeDict({"status": s}) for s in statuses]
 
 	def _make_settings(self, **overrides):
 		base = FrappeDict(
@@ -414,18 +483,53 @@ class TestCheckAndEnqueueEodSync(IntegrationTestCase):
 		self._assert_not_enqueued()
 
 	def test_no_enqueue_when_already_attempted_today(self):
-		# Once-per-day: a Scheduler log already exists for today → skip even though due.
+		# Once-per-day: a settled Scheduler log already exists for today → skip even
+		# though due.
 		self.m["now"].return_value = datetime(2026, 5, 31, 2, 17, 0)
-		self.m["exists"].return_value = True
+		self._todays_logs("Completed")
 		self._run()
 		self._assert_not_enqueued()
 
-	def test_failed_run_does_not_refire(self):
-		# A prior run FAILED today (last_completed_on still None, so the completed-today
-		# guard passes), but a Scheduler log exists → the attempt guard stops the re-run.
+	def test_no_enqueue_while_a_run_is_still_in_flight(self):
+		# "Running" is not a settled state: it must block, or the per-minute tick would
+		# pile a second heavy job on top of the one already working.
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 17, 0)
+		self._todays_logs("Running")
+		self._run()
+		self._assert_not_enqueued()
+
+	def test_partially_completed_run_does_not_refire(self):
+		# A run that did real work and finished is settled — the day is done.
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 17, 0)
+		self._todays_logs("Partially Completed")
+		self._run()
+		self._assert_not_enqueued()
+
+	def test_cut_short_run_retries_once(self):
+		# 2026-08-05 regression: MariaDB was OOM-killed mid-run at 19:06, the Sync Log was
+		# left "Timeout Released", and the day was silently forfeited because ANY log for
+		# today counted as "attempted". An infrastructure fault must earn one retry.
 		self.m["now"].return_value = datetime(2026, 5, 31, 2, 17, 0)
 		self.m["gv"].return_value = self._make_settings(eod_sync_last_completed_on=None)
-		self.m["exists"].return_value = True
+		self._todays_logs("Timeout Released")
+		self._run()
+		self._assert_enqueued()
+
+	def test_failed_run_retries_once(self):
+		# Same allowance for a "Failed" log — the status the hardened handler now writes
+		# when the connection dies.
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 17, 0)
+		self.m["gv"].return_value = self._make_settings(eod_sync_last_completed_on=None)
+		self._todays_logs("Failed")
+		self._run()
+		self._assert_enqueued()
+
+	def test_second_cut_short_run_does_not_refire(self):
+		# The cap is what preserves the original anti-thrash guarantee: attempt, retry,
+		# then stop — never once per minute for the rest of the day.
+		self.m["now"].return_value = datetime(2026, 5, 31, 2, 17, 0)
+		self.m["gv"].return_value = self._make_settings(eod_sync_last_completed_on=None)
+		self._todays_logs("Timeout Released", "Failed")
 		self._run()
 		self._assert_not_enqueued()
 
@@ -6179,6 +6283,62 @@ class TestRecoverableErrors(IntegrationTestCase):
 		self.assertFalse(_is_recoverable_error(AttributeError("typo")))
 		self.assertFalse(_is_recoverable_error(RuntimeError("boom")))
 
+	def test_lost_connection_is_recoverable(self):
+		"""2026-08-05: MariaDB was OOM-killed at 19:06:45; the run raised 2013 at 19:06:46.
+
+		Nothing about the sync was broken -- the server vanished. Reporting that as
+		"Unexpected top-level exception" sent people hunting a defect that did not exist.
+		"""
+		import MySQLdb
+
+		for code, label in (
+			(2013, "Lost connection to MySQL server during query"),
+			(2006, "MySQL server has gone away"),
+			(2003, "Can't connect to MySQL server"),
+			(2002, "Can't connect to local MySQL server"),
+		):
+			with self.subTest(code=code):
+				exc = MySQLdb.OperationalError(code, label)
+				self.assertTrue(_is_connection_lost(exc))
+				self.assertTrue(_is_recoverable_error(exc))
+
+	def test_a_real_query_error_is_not_mistaken_for_connection_loss(self):
+		"""The code check is what keeps this precise.
+
+		``OperationalError`` also covers ordinary query faults. Matching the CLASS alone
+		would silently reclassify real defects as "cut short" and stop reporting them.
+		"""
+		import MySQLdb
+
+		for code, label in (
+			(1054, "Unknown column 'nope' in 'field list'"),
+			(1205, "Lock wait timeout exceeded"),
+			(1146, "Table 'x' doesn't exist"),
+		):
+			with self.subTest(code=code):
+				self.assertFalse(
+					_is_connection_lost(MySQLdb.OperationalError(code, label))
+				)
+
+	def test_connection_loss_is_detected_for_either_driver(self):
+		"""Frappe picks its driver at runtime from ``use_mysqlclient``.
+
+		``MySQLdb.OperationalError`` and ``pymysql.err.OperationalError`` are *different*
+		classes, so binding to only the active one goes blind the moment a site flips
+		that flag.
+		"""
+		import MySQLdb
+		import pymysql
+
+		self.assertTrue(_is_connection_lost(MySQLdb.OperationalError(2013, "lost")))
+		self.assertTrue(_is_connection_lost(pymysql.err.OperationalError(2013, "lost")))
+		self.assertTrue(_is_connection_lost(MySQLdb.InterfaceError("cursor closed")))
+		self.assertTrue(_is_connection_lost(pymysql.err.InterfaceError("closed")))
+
+	def test_a_non_db_exception_carrying_the_code_is_not_connection_loss(self):
+		# The code is only consulted for real driver exception classes.
+		self.assertFalse(_is_connection_lost(ValueError(2013, "not a db error")))
+
 	def test_deadlock_is_recoverable_when_frappe_exposes_it(self):
 		exc_cls = getattr(frappe, "QueryDeadlockError", None)
 		if not (isinstance(exc_cls, type) and issubclass(exc_cls, BaseException)):
@@ -6832,6 +6992,70 @@ class TestWMopEodSyncErrorHandling(IntegrationTestCase):
 		mock_release.assert_called_once()
 		self.assertFalse(mock_release.call_args[1].get("success"))
 		mock_create_err.assert_called_once()
+
+	@patch(f"{_MOD}._resolve_run_range", return_value=(None, None))
+	@patch(f"{_MOD}.frappe.logger")
+	@patch(f"{_MOD}._get_unsynced_mop_groups")
+	@patch(f"{_MOD}.release_eod_sync_lock")
+	@patch(f"{_MOD}._create_consolidated_error_log")
+	def test_lock_is_released_even_when_error_logging_fails(
+		self,
+		mock_create_err,
+		mock_release,
+		mock_get_groups,
+		mock_logger,
+		mock_resolve_run,
+	):
+		"""THE 2026-08-05 regression.
+
+		The run died on a lost connection, then the handler's own
+		``_create_consolidated_error_log`` raised on that same dead connection. The second
+		exception escaped ``sync_mop_logs``, so ``release_eod_sync_lock`` never ran and
+		``eod_sync_running=1`` stayed committed with a 4-hour ``eod_sync_lock_until`` --
+		freezing save/submit/cancel on Employee IR, Department IR, MOP Log, Stock Entry and
+		Stock Reconciliation for the whole window.
+
+		Releasing the lock must not depend on being able to describe why the run failed.
+		"""
+		import MySQLdb
+
+		mock_get_groups.side_effect = MySQLdb.OperationalError(
+			2013, "Lost connection to MySQL server during query"
+		)
+		mock_create_err.side_effect = MySQLdb.OperationalError(
+			2013, "Lost connection to MySQL server during query"
+		)
+
+		# Must not raise: the failure handler has to survive its own diagnostics failing.
+		sync_mop_logs(sync_log_name="LOG-TEST-002")
+
+		mock_release.assert_called_once()
+		self.assertFalse(mock_release.call_args[1].get("success"))
+
+	@patch(f"{_MOD}._resolve_run_range", return_value=(None, None))
+	@patch(f"{_MOD}.frappe.logger")
+	@patch(f"{_MOD}._get_unsynced_mop_groups")
+	@patch(f"{_MOD}.release_eod_sync_lock")
+	@patch(f"{_MOD}._create_consolidated_error_log", return_value="ERROR-LOG-001")
+	def test_lock_is_released_before_the_error_log_is_written(
+		self,
+		mock_create_err,
+		mock_release,
+		mock_get_groups,
+		mock_logger,
+		mock_resolve_run,
+	):
+		"""Ordering is the fix, so assert the ordering, not just that both happened."""
+		calls = []
+		mock_release.side_effect = lambda *a, **kw: calls.append("release")
+		mock_create_err.side_effect = lambda *a, **kw: (
+			calls.append("error_log") or "ERROR-LOG-001"
+		)
+		mock_get_groups.side_effect = Exception("boom")
+
+		sync_mop_logs(sync_log_name="LOG-TEST-003")
+
+		self.assertEqual(calls[:2], ["release", "error_log"])
 
 	@patch(f"{_MOD}.frappe.db", new_callable=MagicMock)
 	@patch(f"{_MOD}._mwo_realized_by_artifact", return_value=None)

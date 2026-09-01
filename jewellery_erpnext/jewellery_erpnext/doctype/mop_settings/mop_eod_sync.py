@@ -86,9 +86,136 @@ from frappe.utils import (
 
 from .eod_lock import (
 	_SOFT_DEADLINE_MINUTES,
+	ensure_eod_sync_lock_released,
 	release_eod_sync_lock,
 	set_eod_sync_running,
 )
+
+# MySQL/MariaDB *client* error codes that mean "the connection died", as opposed to "the
+# query was wrong": CR_CONN_HOST_ERROR, CR_CONNECTION_ERROR, CR_SERVER_GONE_ERROR and
+# CR_SERVER_LOST. Matched by CODE rather than by exception class on purpose -- a bare
+# OperationalError also covers ordinary query faults (bad column, constraint violation),
+# and those must stay non-recoverable or a real defect would be reported as "cut short".
+_CONNECTION_LOST_CODES = frozenset({2002, 2003, 2006, 2013})
+
+
+def _db_exception_classes(*names):
+	"""Collect driver exception classes by name, across every driver that could raise one.
+
+	Frappe chooses its MariaDB driver at runtime from the ``use_mysqlclient`` site flag
+	(``frappe/database/__init__.py``), and BOTH drivers are installed in this env --
+	``MySQLdb.OperationalError`` and ``pymysql.err.OperationalError`` are *different
+	classes*, so `isinstance` against one does not match the other. Binding to just the
+	live ``frappe.db`` would therefore go blind the moment a site flips that flag, or when
+	a library in the stack talks to the other driver directly.
+
+	So: read the live ``frappe.db`` first (authoritative for the active connection), then
+	add the same names from both driver modules when importable. Precision does not come
+	from the class anyway -- it comes from the error-code check in
+	:func:`_is_connection_lost` -- so a wider class net costs nothing and closes that gap.
+
+	Every lookup is defensive: a driver that is absent or stops exporting a name can never
+	break this module's import.
+	"""
+	sources = [getattr(frappe, "db", None)]
+	for module_name in ("MySQLdb", "pymysql"):
+		try:
+			sources.append(__import__(module_name))
+		except Exception:
+			pass
+
+	classes = []
+	for source in sources:
+		for name in names:
+			candidate = getattr(source, name, None)
+			if (
+				isinstance(candidate, type)
+				and issubclass(candidate, BaseException)
+				and candidate not in classes
+			):
+				classes.append(candidate)
+	return classes
+
+
+def _is_connection_lost(exc):
+	"""True when ``exc`` means the database connection went away mid-run.
+
+	This is the MariaDB-was-killed case, observed on 2026-08-05: the OOM killer took
+	mariadbd down at 19:06:45 and the run raised ``(2013, 'Lost connection to MySQL server
+	during query')`` 1.1s later. Nothing about the sync was broken -- the server vanished.
+
+	``InterfaceError`` needs no code check: it only ever means the cursor/connection is
+	already dead.
+	"""
+	interface_errors = tuple(_db_exception_classes("InterfaceError"))
+	if interface_errors and isinstance(exc, interface_errors):
+		return True
+
+	operational_errors = tuple(_db_exception_classes("OperationalError"))
+	if not operational_errors or not isinstance(exc, operational_errors):
+		return False
+	args = getattr(exc, "args", None) or ()
+	return bool(args) and args[0] in _CONNECTION_LOST_CODES
+
+
+def _reconnect_if_connection_lost(exc):
+	"""Re-establish ``frappe.db`` after a connection loss, so recovery steps can run.
+
+	Every step of the failure path -- releasing the lock, writing the Error Log, stamping
+	the Sync Log -- needs a working connection. When the server itself died there is none,
+	so the handler used to fail on its own first query. Rebuilding the connection here is
+	what lets the rest of the handler do its job.
+
+	``frappe.db.connect()`` replaces both ``_conn`` and ``_cursor`` (see
+	``frappe/database/database.py``), so the dead socket is fully discarded. Returns True
+	when a usable connection is in place, False when reconnecting was not possible -- the
+	caller must stay defensive either way, because the server may still be down.
+	"""
+	if not _is_connection_lost(exc):
+		return True
+	db = getattr(frappe, "db", None)
+	if db is None:
+		return False
+	try:
+		db.connect()
+	except Exception:
+		frappe.logger().exception(
+			"MOP EOD Sync: database connection was lost and could not be re-established; "
+			"the EOD lock is released on a best-effort basis below."
+		)
+		return False
+	frappe.logger().warning(
+		"MOP EOD Sync: database connection was lost mid-run and has been re-established "
+		"for cleanup. This normally means the DB server restarted or was OOM-killed -- "
+		"check `journalctl -u mariadb` around this timestamp."
+	)
+	return True
+
+
+def _release_eod_sync_lock_safely(sync_log_name=None, error_log_name=None):
+	"""Release the EOD lock, swallowing any error so cleanup can continue.
+
+	The lock is the one piece of state whose leakage is felt outside this job: while
+	``eod_sync_running=1`` and ``eod_sync_lock_until`` is in the future,
+	``validate_not_eod_sync_locked`` blocks save/submit/cancel on Employee IR, Department
+	IR, MOP Log, Stock Entry and Stock Reconciliation. A failure to release it is a
+	production outage, so it is attempted before -- and independently of -- any diagnostics.
+
+	Returns True when the lock was cleared.
+	"""
+	try:
+		release_eod_sync_lock(
+			success=False, error_log_name=error_log_name, sync_log_name=sync_log_name
+		)
+		return True
+	except Exception:
+		frappe.logger().exception(
+			"MOP EOD Sync: FAILED to release the EOD sync lock. Transactions on Employee "
+			"IR / Department IR / MOP Log / Stock Entry / Stock Reconciliation stay blocked "
+			"until eod_sync_lock_until passes or the hourly release_expired_eod_sync_lock "
+			"job runs."
+		)
+		return False
 
 
 def _is_recoverable_error(exc):
@@ -99,11 +226,17 @@ def _is_recoverable_error(exc):
 	continue it -- so the Sync Log should say `Partially Completed`, not `Failed`, and the
 	consolidated Error Log should not read like a code defect.
 
+	A lost DB connection belongs in exactly the same bucket and used to be missing from it:
+	an OOM-killed MariaDB was reported as "Unexpected top-level exception in sync_mop_logs",
+	sending people hunting a code defect that was not there. See :func:`_is_connection_lost`.
+
 	``JobTimeoutException`` is the one actually observed in ``worker.log`` (three times, each
 	firing *inside* the recovery handler's own ``rollback to savepoint``). Resolved lazily and
 	defensively: rq is an indirect dependency and these frappe attributes have moved between
 	versions, so a missing name must never break the import of this module.
 	"""
+	if _is_connection_lost(exc):
+		return True
 	candidates = []
 	for name in ("QueryDeadlockError", "QueryTimeoutError"):
 		candidate = getattr(frappe, name, None)
@@ -371,18 +504,28 @@ def sync_mop_logs(
 
 	except Exception as exc:
 		tb = frappe.get_traceback()
-		# A deadlock, lock-wait timeout or RQ job timeout means the run was CUT SHORT, not
-		# that it is broken: whatever committed stays committed, the rest is still unsynced,
-		# and the next run continues. Reporting that as "Failed with unexpected error" sent
-		# people hunting a code defect that was not there. Same distinction Repost Item
-		# Valuation draws with its RecoverableErrors set.
+		# A deadlock, lock-wait timeout, RQ job timeout or a LOST DB CONNECTION means the
+		# run was CUT SHORT, not that it is broken: whatever committed stays committed, the
+		# rest is still unsynced, and the next run continues. Reporting that as "Failed with
+		# unexpected error" sent people hunting a code defect that was not there. Same
+		# distinction Repost Item Valuation draws with its RecoverableErrors set.
+		connection_lost = _is_connection_lost(exc)
 		recoverable = _is_recoverable_error(exc)
+		# The database may be GONE -- an OOM-killed MariaDB is what produced the
+		# 2026-08-05 failure. Everything below needs a live connection, so rebuild one
+		# before touching the DB at all.
+		_reconnect_if_connection_lost(exc)
 		failures.append(
 			{
 				"step": "top_level",
 				"advisory": recoverable,
 				"error_message": (
-					"EOD sync was cut short by a timeout or lock contention "
+					"EOD sync was cut short: the database connection was lost mid-run "
+					f"({type(exc).__name__}). The DB server restarted, was killed or "
+					"stopped accepting the connection. Committed chunks are durable; the "
+					"remaining MOP Logs stay unsynced for the next run."
+					if connection_lost
+					else "EOD sync was cut short by a timeout or lock contention "
 					f"({type(exc).__name__}). Committed chunks are durable; the remaining "
 					"MOP Logs stay unsynced for the next run."
 					if recoverable
@@ -390,7 +533,12 @@ def sync_mop_logs(
 				),
 				"traceback": tb,
 				"suggested_fix": (
-					"No code fix implied. Re-run the sync (or let the next scheduled run "
+					"No code fix implied -- this is an infrastructure fault. Check "
+					"`journalctl -u mariadb` around this timestamp for an OOM kill, crash "
+					"or restart, and verify innodb_buffer_pool_size leaves room for the "
+					"bench's workers. The next scheduled run continues from here."
+					if connection_lost
+					else "No code fix implied. Re-run the sync (or let the next scheduled run "
 					"continue). If it recurs, lower MOP Settings > Max Rows per Stock Entry "
 					"or the soft deadline so each unit of work finishes sooner."
 					if recoverable
@@ -398,34 +546,80 @@ def sync_mop_logs(
 				),
 			}
 		)
-		error_log_name = _create_consolidated_error_log(failures, stats, sync_log_name)
-		release_eod_sync_lock(
-			success=False, error_log_name=error_log_name, sync_log_name=sync_log_name
-		)
-		if sync_log_name:
-			frappe.db.set_value(
-				"MOP EOD Sync Log",
-				sync_log_name,
-				{
-					# Partially Completed, not Failed: a cut-short run that committed
-					# chunks really did sync them, and the status is what operators triage on.
-					"status": "Partially Completed"
-					if recoverable and stats["processed_mwos"] > 0
-					else "Failed",
-					"completed_on": now_datetime(),
-					"error_log": error_log_name or "",
-					"last_error": tb[:2000] if tb else "",
-					"progress_message": (
-						f"Sync cut short by {type(exc).__name__} after "
-						f"{stats['processed_mwos']} MWO(s). Remaining MOP Logs are unsynced "
-						"and will be retried."
-						if recoverable
-						else "Sync failed with unexpected error."
-					),
-				},
-				update_modified=False,
+
+		# Release the lock BEFORE writing the Error Log. The ordering IS the fix: the old
+		# code called _create_consolidated_error_log() first, and when that raised on the
+		# dead connection the new exception escaped sync_mop_logs entirely, so
+		# release_eod_sync_lock() never ran. eod_sync_running=1 and a 4-hour
+		# eod_sync_lock_until stayed committed, and validate_not_eod_sync_locked then
+		# blocked every save/submit/cancel on Employee IR, Department IR, MOP Log, Stock
+		# Entry and Stock Reconciliation for that whole window (observed 2026-08-05: lock
+		# stranded until the next day's scheduler tick auto-released it at 09:39).
+		# Describing the failure is diagnostics; clearing the lock is production uptime.
+		_release_eod_sync_lock_safely(sync_log_name=sync_log_name)
+
+		# Diagnostics second, and never allowed to break the handler. `tabError Log` is
+		# MyISAM and comes back "marked as crashed" after every hard kill, so this is the
+		# single most likely write to fail at exactly the moment it is needed.
+		error_log_name = None
+		try:
+			error_log_name = _create_consolidated_error_log(
+				failures, stats, sync_log_name
 			)
-			frappe.db.commit()
+		except Exception:
+			frappe.logger().exception(
+				"MOP EOD Sync: could not write the consolidated Error Log; the lock was "
+				"already released and the traceback is preserved on the Sync Log."
+			)
+		if error_log_name:
+			# Re-attach the Error Log to MOP Settings, which the early release could not know.
+			try:
+				frappe.db.set_value(
+					"MOP Settings",
+					"MOP Settings",
+					"eod_sync_last_error_log",
+					error_log_name,
+				)
+				frappe.db.commit()
+			except Exception:
+				frappe.logger().exception(
+					"MOP EOD Sync: could not record eod_sync_last_error_log"
+				)
+
+		if sync_log_name:
+			try:
+				frappe.db.set_value(
+					"MOP EOD Sync Log",
+					sync_log_name,
+					{
+						# Partially Completed, not Failed: a cut-short run that committed
+						# chunks really did sync them, and the status is what operators triage on.
+						"status": "Partially Completed"
+						if recoverable and stats["processed_mwos"] > 0
+						else "Failed",
+						"completed_on": now_datetime(),
+						"error_log": error_log_name or "",
+						"last_error": tb[:2000] if tb else "",
+						"progress_message": (
+							"Sync cut short: the database connection was lost after "
+							f"{stats['processed_mwos']} MWO(s). Remaining MOP Logs are "
+							"unsynced and will be retried. Check the DB server logs."
+							if connection_lost
+							else f"Sync cut short by {type(exc).__name__} after "
+							f"{stats['processed_mwos']} MWO(s). Remaining MOP Logs are unsynced "
+							"and will be retried."
+							if recoverable
+							else "Sync failed with unexpected error."
+						),
+					},
+					update_modified=False,
+				)
+				frappe.db.commit()
+			except Exception:
+				frappe.logger().exception(
+					"MOP EOD Sync: could not finalize MOP EOD Sync Log %s",
+					sync_log_name,
+				)
 
 	finally:
 		frappe.flags.in_eod_mop_sync = False
@@ -444,6 +638,13 @@ def sync_mop_logs(
 				frappe.db.commit()
 		except Exception:
 			frappe.logger().exception("MOP EOD Sync: final sync log flush failed")
+
+		# Absolute last resort. Every normal path already released the lock, but a run cut
+		# short inside its OWN failure handler (dead connection, or a JobTimeoutException
+		# firing during recovery) would otherwise leave eod_sync_running=1 and freeze
+		# transactions on five doctypes for the rest of the 4-hour window. Checks committed
+		# state, so this is a no-op whenever the lock is already clear.
+		ensure_eod_sync_lock_released(sync_log_name=sync_log_name)
 
 	return {
 		"processed": stats["processed_mwos"],
@@ -2038,10 +2239,23 @@ def _create_consolidated_error_log(failures, stats, sync_log_name=None):
 	]
 
 	msg = "\n".join(lines)
-	error_log = frappe.log_error(
-		title=f"MOP EOD Sync Failed - {now}",
-		message=msg,
-	)
+	# `tabError Log` is MyISAM on these sites and comes back "marked as crashed" after every
+	# hard kill of the DB server (observed 2026-08-01 and 2026-08-05), so the one write most
+	# likely to fail is the one describing why the run failed. Never let losing the
+	# diagnostic take the caller down with it -- the traceback is also stamped on the Sync
+	# Log, and the caller's lock release must not depend on this succeeding.
+	try:
+		error_log = frappe.log_error(
+			title=f"MOP EOD Sync Failed - {now}",
+			message=msg,
+		)
+	except Exception:
+		frappe.logger().exception(
+			"MOP EOD Sync: could not write the consolidated Error Log (is `tabError Log` "
+			"marked as crashed? check `CHECK TABLE` and the DB server logs). Full detail:\n%s",
+			msg,
+		)
+		return None
 	return error_log.name if error_log else None
 
 
