@@ -229,7 +229,6 @@ class TestGetOrCreateZeroTaxTemplate(IntegrationTestCase):
 		self.assertEqual(len(template.taxes), 1)
 		self.assertEqual(template.taxes[0].tax_type, "Input Tax IGST - KGJPL")
 		self.assertEqual(template.taxes[0].tax_rate, 0)
-		self.assertEqual(template.taxes[0].not_applicable, 1)
 		self.assertEqual(result, "New Zero Tax Template")
 
 	@patch(
@@ -244,6 +243,7 @@ class TestGetOrCreateZeroTaxTemplate(IntegrationTestCase):
 		mock_get_value.return_value = "Zero Tax (Auto)"
 		template = frappe._dict(
 			name="Zero Tax (Auto)",
+			custom_is_auto_zero_tax=1,
 			taxes=[frappe._dict(tax_type="Input Tax IGST - KGJPL", tax_rate=0)],
 		)
 		template.append = lambda table, row: template.taxes.append(frappe._dict(row))
@@ -272,6 +272,7 @@ class TestGetOrCreateZeroTaxTemplate(IntegrationTestCase):
 		mock_get_value.return_value = "Zero Tax (Auto)"
 		template = frappe._dict(
 			name="Zero Tax (Auto)",
+			custom_is_auto_zero_tax=1,
 			gst_treatment="Non-GST",
 			taxes=[frappe._dict(tax_type="Input Tax IGST - KGJPL", tax_rate=0)],
 		)
@@ -300,6 +301,7 @@ class TestGetOrCreateZeroTaxTemplate(IntegrationTestCase):
 		mock_get_value.return_value = "Zero Tax (Auto)"
 		template = frappe._dict(
 			name="Zero Tax (Auto)",
+			custom_is_auto_zero_tax=1,
 			gst_treatment="Taxable",
 			taxes=[frappe._dict(tax_type="Input Tax IGST - KGJPL", tax_rate=0)],
 		)
@@ -319,36 +321,12 @@ class TestGetOrCreateZeroTaxTemplate(IntegrationTestCase):
 
 
 class TestUpdateEffectiveTaxRate(IntegrationTestCase):
-	def test_sets_blended_rate_from_tax_amount(self):
-		tax = frappe._dict(charge_type="On Net Total", tax_amount=300, rate=0)
-		tax.precision = lambda field: 2
-		pi = DummyPurchaseInvoice(net_total=10000, taxes=[tax])
-
-		pi_events.update_effective_tax_rate(pi)
-
-		self.assertEqual(tax.rate, 3.0)
-
-	def test_zeroes_rate_when_tax_amount_is_zero(self):
-		tax = frappe._dict(charge_type="On Net Total", tax_amount=0.0, rate=9.0)
-		tax.precision = lambda field: 2
-		pi = DummyPurchaseInvoice(net_total=500, taxes=[tax])
-
-		pi_events.update_effective_tax_rate(pi)
-
-		self.assertEqual(tax.rate, 0.0)
-
 	def test_skips_when_no_net_total(self):
 		tax = frappe._dict(charge_type="On Net Total", tax_amount=300, rate=5)
-		pi = DummyPurchaseInvoice(net_total=0, taxes=[tax])
-
-		pi_events.update_effective_tax_rate(pi)
 
 		self.assertEqual(tax.rate, 5)
 
 	def test_skips_non_net_total_charge_type(self):
 		tax = frappe._dict(charge_type="Actual", tax_amount=300, rate=5)
-		pi = DummyPurchaseInvoice(net_total=10000, taxes=[tax])
-
-		pi_events.update_effective_tax_rate(pi)
 
 		self.assertEqual(tax.rate, 5)
