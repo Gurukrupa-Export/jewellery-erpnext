@@ -613,6 +613,31 @@ def _row_tree_and_item(row):
 	return tree_name, _metal_item(mwo)
 
 
+def row_tree_name(row):
+	"""The Tree Number this Employee IR Operation row draws from, or ``None``.
+
+	Same precedence as ``_row_tree_and_item`` -- the value pinned on the row first, then the live
+	``MWO.tree_number`` -- but it stops there. Callers that only need provenance (stamping a Stock
+	Entry, say) should not pay for ``_metal_item``'s attribute resolution, nor inherit its failure
+	modes on a work order whose metal attributes are incomplete.
+
+	The row value is empty for most of a Receive: ``pin_tree_numbers_on_receive`` runs after the
+	operation loop has already built and submitted its Stock Entries, so the ``MWO`` fallback is
+	what actually resolves the tree at stamping time.
+
+	Reads a single field with ``get_cached_value`` rather than loading the work order, and so
+	returns ``None`` for a work order that no longer exists instead of raising. That tolerance is
+	deliberate: the callers are stamping provenance onto a Stock Entry, and a stale row must
+	degrade to "no tree", never abort a Receive that is otherwise valid. ``_row_tree_and_item``
+	keeps its own ``get_cached_doc`` read because it needs the whole document for ``_metal_item``.
+	"""
+	if not row.manufacturing_work_order:
+		return None
+	return getattr(row, "tree_number", None) or frappe.get_cached_value(
+		"Manufacturing Work Order", row.manufacturing_work_order, "tree_number"
+	)
+
+
 def tree_draw_by_tree(eir):
 	"""``{tree_name: {metal_item: qty}}`` — metal this receive draws OUT of each tree.
 

@@ -48,6 +48,11 @@ def _issue_evidence(tree_names):
 	The tree "Issue Material" button stamps ``Stock Entry.custom_tree_number`` and moves
 	Dept RM -> MSL. A submitted entry is the only authoritative proof that metal was issued;
 	the ledger column alone is not (it is what we are auditing).
+
+	``employee_ir`` must be empty. The casting Employee IR's injection entries are tree-stamped
+	too, but they move metal OUT of the tree's pool into a department warehouse -- and because
+	that target is a ``t_warehouse``, counting them here would read a draw as an issue and invert
+	the very finding this audit exists to make.
 	"""
 	if not tree_names:
 		return {}
@@ -57,6 +62,7 @@ def _issue_evidence(tree_names):
 			"custom_tree_number": ["in", list(tree_names)],
 			"docstatus": 1,
 			"auto_created": 1,
+			"employee_ir": ["in", ["", None]],
 		},
 		fields=["name", "custom_tree_number"],
 	)

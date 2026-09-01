@@ -757,10 +757,15 @@ def scan_mwo_dir(doc):
 
 
 def scan_mwo_eir(doc):
+	# Mirrors employee_ir.js `scan_mwo`. Keep the message in step with the client handler AND
+	# with validate_duplication_and_gr_wt's server guard -- this double is the only thing the
+	# suite exercises, so it drifts silently if production changes and this does not.
 	for item in doc.employee_ir_operations:
 		if item.manufacturing_work_order == doc.scan_mwo:
 			frappe.throw(
-				"{} Manufacturing Work Order already exists".format(doc.scan_mwo)
+				"Manufacturing Work Order {0} is already scanned on this Employee IR.".format(
+					doc.scan_mwo
+				)
 			)
 
 	values = frappe.get_last_doc(
