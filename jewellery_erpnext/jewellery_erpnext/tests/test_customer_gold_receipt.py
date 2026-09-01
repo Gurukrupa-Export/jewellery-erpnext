@@ -16,8 +16,18 @@ from jewellery_erpnext.customer_subcontracting.customer_gold_receipt import (
 	validate_customer_gold_batches,
 	validate_customer_gold_receipt,
 )
+from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
+	_PURE_QTY_LEGACY_EXCLUDED_TYPES,
+	_pure_qty_excluded_types,
+)
 
 MOD = "jewellery_erpnext.customer_subcontracting.customer_gold_receipt"
+#: ``_pure_qty_excluded_types`` imports the two settings helpers INSIDE the function,
+#: so they must be patched where they are defined, not on the stock_entry module.
+SE_MOD = (
+	"jewellery_erpnext.customer_subcontracting.doctype."
+	"subcontracting_settings.subcontracting_settings"
+)
 
 ITEM = "M-G-24KT-99.9-Y"
 SE_TYPE = "Customer Goods Received"
@@ -370,3 +380,41 @@ class TestCustomerGoldRateSnapshotDisabled(IntegrationTestCase):
 		) as mock_resolve:
 			validate_customer_gold_receipt(doc)
 		mock_resolve.assert_not_called()
+
+
+class TestPureQtyExclusion(IntegrationTestCase):
+	"""``_pure_qty_excluded_types`` decides whether a customer receipt gets a pure quantity.
+
+	The exclusion at ``doc_events.stock_entry.before_validate`` is why customer metal carried
+	``custom_pure_qty = 0``: the rows were never reached. Un-excluding is scoped to the
+	CONFIGURED receipt type and only while the flag is on, so a site with the flag off keeps
+	byte-identical behaviour.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def test_flag_off_keeps_every_legacy_exclusion(self):
+		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=False):
+			self.assertEqual(_pure_qty_excluded_types(), _PURE_QTY_LEGACY_EXCLUDED_TYPES)
+
+	def test_flag_on_unexcludes_only_the_configured_type(self):
+		settings = frappe._dict(customer_goods_stock_entry_type="Customer Goods Received")
+		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=True), patch(f"{SE_MOD}.get_customer_gold_settings", return_value=settings):
+			excluded = _pure_qty_excluded_types()
+		self.assertNotIn("Customer Goods Received", excluded)
+		# Transfer and Issue are deliberately untouched -- not analysed by this project.
+		self.assertIn("Customer Goods Transfer", excluded)
+		self.assertIn("Customer Goods Issue", excluded)
+
+	def test_flag_on_but_unconfigured_keeps_legacy(self):
+		settings = frappe._dict(customer_goods_stock_entry_type=None)
+		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=True), patch(f"{SE_MOD}.get_customer_gold_settings", return_value=settings):
+			self.assertEqual(_pure_qty_excluded_types(), _PURE_QTY_LEGACY_EXCLUDED_TYPES)
+
+	def test_a_differently_named_configured_type_is_honoured(self):
+		settings = frappe._dict(customer_goods_stock_entry_type="CG Intake")
+		with patch(f"{SE_MOD}.is_customer_gold_enabled", return_value=True), patch(f"{SE_MOD}.get_customer_gold_settings", return_value=settings):
+			# Nothing is un-excluded, because "CG Intake" was never in the legacy list.
+			self.assertEqual(_pure_qty_excluded_types(), _PURE_QTY_LEGACY_EXCLUDED_TYPES)
