@@ -38,6 +38,10 @@ from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.s
 	is_customer_gold_enabled,
 )
 
+from jewellery_erpnext.jewellery_erpnext.customization.utils.row_ownership import (
+	DEFAULT_INVENTORY_TYPE,
+)
+
 CUSTOMER_GOODS = "Customer Goods"
 
 #: Snapshot fields written by ``set_customer_gold_rate_snapshot``. Provisioned by
@@ -130,14 +134,25 @@ def _validate_rows(doc, settings, customer):
 	configured_item = settings.customer_24kt_item
 
 	for row in doc.get("items") or []:
-		if row.get("inventory_type") and row.inventory_type != CUSTOMER_GOODS:
+		# ``Regular Stock`` here is NOT a caller's choice -- it is the framework's own
+		# blanket default. ``doc_events.stock_entry.before_validate`` runs FIRST in the
+		# before_validate chain (hooks.py) and ends with an unconditional
+		# ``if not row.inventory_type: row.inventory_type = "Regular Stock"``, so by the
+		# time this validator runs (last in that chain) every row already carries it.
+		# Treating it as "supplied" made every server-created Customer Gold receipt throw
+		# -- the API path the server-side tagging below exists to protect. Only the browser
+		# got through, because stock_entry.js sets Customer Goods before the save is sent.
+		# So blank and the default are both overridable; a DELIBERATE other ownership class
+		# (Customer Stock, Pure Metal) still hard-fails.
+		supplied = row.get("inventory_type")
+		if supplied and supplied not in (CUSTOMER_GOODS, DEFAULT_INVENTORY_TYPE):
 			frappe.throw(
 				_(
 					"Row #{0}: Customer Gold receipt requires Inventory Type {1}, but {2} was supplied."
 				).format(
 					row.idx,
 					frappe.bold(CUSTOMER_GOODS),
-					frappe.bold(row.inventory_type),
+					frappe.bold(supplied),
 				),
 				title=_("Invalid Inventory Type"),
 			)

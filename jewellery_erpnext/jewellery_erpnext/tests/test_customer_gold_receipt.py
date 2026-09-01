@@ -135,9 +135,31 @@ class TestCustomerGoldReceiptRules(IntegrationTestCase):
 			validate_customer_gold_receipt(doc)
 
 	def test_wrong_inventory_type_blocks(self, *_mocks):
-		doc = _entry(items=[_item_row(inventory_type="Regular Stock")])
+		"""A DELIBERATE other ownership class still hard-fails.
+
+		"Customer Stock" is a real Inventory Type and a real ownership class -- nothing in
+		the framework ever stamps it by default, so its presence is always a caller's
+		choice and always wrong on a Customer Gold receipt.
+		"""
+		doc = _entry(items=[_item_row(inventory_type="Customer Stock")])
 		with self.assertRaises(frappe.ValidationError):
 			validate_customer_gold_receipt(doc)
+
+	def test_framework_default_regular_stock_is_overridden_not_blocked(self, *_mocks):
+		"""Regression: "Regular Stock" is the framework's own default, not a caller choice.
+
+		``doc_events.stock_entry.before_validate`` runs FIRST in the before_validate chain
+		and ends with an unconditional ``if not row.inventory_type: row.inventory_type =
+		"Regular Stock"``. This validator runs LAST, so on a REAL document every row always
+		arrives carrying it. Rejecting it made every server-created Customer Gold receipt
+		throw "requires Inventory Type Customer Goods, but Regular Stock was supplied" --
+		only the browser got through, because stock_entry.js sets Customer Goods before the
+		save is sent. Caught by driving an actual Stock Entry on alfarsi; the previous
+		version of this test asserted the broken behaviour.
+		"""
+		doc = _entry(items=[_item_row(inventory_type="Regular Stock")])
+		validate_customer_gold_receipt(doc)
+		self.assertEqual(doc.get("items")[0].inventory_type, "Customer Goods")
 
 	def test_blank_inventory_type_is_set_server_side(self, *_mocks):
 		doc = _entry(items=[_item_row(inventory_type=None)])
