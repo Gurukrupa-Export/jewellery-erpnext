@@ -1,11 +1,21 @@
-"""Provision ``Serial No.stamping_no`` — last 6 digits for stamping purposes.
+"""Provision ``Serial No.custom_stamping_no`` — year-based sequential stamping number.
 
-This field stores the last 6 digits of the serial number and is used for stamping
-purposes on jewellery items. For example, if the serial number is "KLHGX62F0297",
-the stamping_no will be "2F0297".
+This field stores a unique sequential stamping number for each Serial No based on
+creation year. The format is "2" + year code + 4-digit sequence number.
+
+Year code is derived from year (A=2021, B=2022, C=2023, D=2024, E=2025, F=2026, G=2027, etc.)
+The sequence resets for each new year.
+
+Examples:
+- 2026: 2F0001, 2F0002, 2F0003, ...
+- 2027: 2G0001, 2G0002, 2G0003, ...
+- 2028: 2H0001, 2H0002, ...
+
+This allows quick lookup and identification during stamping processes, with year visibility.
 
 The field is automatically populated when a new Serial No is created, and this
-patch populates the field for all existing Serial No records.
+patch populates the field for all existing Serial No records with sequential numbers
+ordered by creation date within each year.
 
 """
 
@@ -35,20 +45,36 @@ def execute():
 		"add_serial_no_stamping_no_field: ensured Serial No.custom_stamping_no (Data)"
 	)
 
-	# Backfill existing Serial No records with custom_stamping_no
-	serial_nos = frappe.db.get_all("Serial No", fields=["name", "serial_no"])
+	# Backfill existing Serial No records with year-based sequential custom_stamping_no
+	# Get all Serial No records ordered by creation date
+	serial_nos = frappe.db.get_all(
+		"Serial No", fields=["name", "creation"], order_by="creation asc"
+	)
 
+	# Group by year and assign sequential numbers
+	year_sequences = {}
 	for serial_no_doc in serial_nos:
-		if serial_no_doc.serial_no:
-			custom_stamping_no = serial_no_doc.serial_no[-6:].upper()
-			frappe.db.set_value(
-				"Serial No",
-				serial_no_doc.name,
-				"custom_stamping_no",
-				custom_stamping_no,
-				update_modified=False,
-			)
+		creation_year = serial_no_doc.creation.year
+
+		# Convert year to letter code (A=2021, B=2022, ... F=2026, G=2027)
+		year_code = chr(65 + (creation_year - 2021))
+
+		# Track sequence per year
+		if creation_year not in year_sequences:
+			year_sequences[creation_year] = 1
+		else:
+			year_sequences[creation_year] += 1
+
+		# Format as "2" + year_code + 4-digit sequence number
+		custom_stamping_no = f"2{year_code}{year_sequences[creation_year]:04d}"
+		frappe.db.set_value(
+			"Serial No",
+			serial_no_doc.name,
+			"custom_stamping_no",
+			custom_stamping_no,
+			update_modified=False,
+		)
 
 	frappe.logger().info(
-		f"add_serial_no_stamping_no_field: backfilled {len(serial_nos)} Serial No records with custom_stamping_no"
+		f"add_serial_no_stamping_no_field: backfilled {len(serial_nos)} Serial No records with year-based sequential stamping numbers"
 	)

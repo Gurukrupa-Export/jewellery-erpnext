@@ -2,9 +2,32 @@ import frappe
 
 
 def set_stamping_no(self, method):
-	"""Extract last 6 digits of serial number for stamping purposes"""
-	if self.serial_no:
-		self.custom_stamping_no = self.serial_no[-6:].upper()
+	"""Generate unique sequential stamping number based on creation year and sequence"""
+	if not self.custom_stamping_no:  # Only set if not already set
+		from datetime import datetime
+
+		# Get current year and convert to letter code (A=2021, B=2022, ... F=2026, G=2027)
+		current_year = datetime.now().year
+		year_code = chr(65 + (current_year - 2021))  # A starts at 2021
+
+		# Get the count of Serial No created in current year
+		from frappe.utils import get_datetime
+
+		year_start = get_datetime(f"{current_year}-01-01")
+
+		sequence = (
+			frappe.db.count(
+				"Serial No",
+				filters={
+					"creation": [">=", year_start],
+					"custom_stamping_no": ["is", "not set"],
+				},
+			)
+			+ 1
+		)
+
+		# Format as "2" + year_code + 4-digit sequence
+		self.custom_stamping_no = f"2{year_code}{sequence:04d}"
 
 
 def update_table(self, method):
