@@ -12,9 +12,11 @@ Grant frappe's built-in ``All`` role to keep a type open to everyone. Enforcemen
 hook that filters the dropdown, and a Stock Entry ``validate`` handler that blocks the
 API bypass.
 
-Because the rule is strict, the grants must live in ``fixtures/stock_entry_type.json`` --
-the fixture import deletes and re-inserts every record it names, so a grant made only in
-the desk is wiped by the next migrate, and a wiped grant locks the type for everyone.
+Grants are set in the desk and persist there. They used to be wiped by every migrate,
+because the masters shipped as a fixture and a fixture import deletes and re-creates each
+record it names -- taking these child rows with it. See
+``patches/seed_stock_entry_types.py``, which replaced that fixture with create-only
+seeding.
 
 Because ``after_migrate`` is disabled (``hooks.py:12``) and ``install-app`` marks patches
 complete WITHOUT running them on fresh / CI sites, a ``custom_fields/`` declaration alone
