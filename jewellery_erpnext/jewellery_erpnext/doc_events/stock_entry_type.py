@@ -17,10 +17,13 @@ Semantics -- a strict whitelist
   DocType permissions grid.
 * ``Administrator`` and ``System Manager`` bypass both layers.
 
-Because the rule is strict, ``fixtures/stock_entry_type.json`` **must** carry the
-grants: the fixture import deletes and re-inserts every record it names, so a grant
-made only in the desk is wiped by the next ``bench migrate`` -- and a wiped grant no
-longer means "open to all", it means nobody can pick that type.
+Grants are ordinary desk configuration and nothing overwrites them. They used to be
+destroyed by every ``bench migrate``: the masters shipped as
+``fixtures/stock_entry_type.json``, and a fixture import deletes and re-creates each
+record it names, taking these child rows with it. The fixture is gone --
+``patches/seed_stock_entry_types.py`` now creates the masters only when missing -- and
+"Stock Entry Type" is deliberately absent from the ``fixtures`` hook so an
+``export-fixtures`` cannot bring the file back.
 
 Two layers
 ----------
