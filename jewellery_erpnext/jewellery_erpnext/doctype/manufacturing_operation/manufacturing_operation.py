@@ -29,7 +29,12 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_mwo_balance_rows,
 )
 from jewellery_erpnext.refining.constants import BATCH_TYPE_UNUSED
-from jewellery_erpnext.utils import carat_to_gram, set_values_in_bulk, update_existing
+from jewellery_erpnext.utils import (
+	carat_to_gram,
+	clamp_negative_balance,
+	set_values_in_bulk,
+	update_existing,
+)
 
 
 class OperationSequenceError(frappe.ValidationError):
@@ -1572,10 +1577,17 @@ def get_material_wt(doc):
 		],
 	)
 	for row in mop_logs:
-		qty = flt(row.qty, 3)
-		pcs = row.pcs or 0
 		if not row.item_code:
 			continue
+		# Same rule as recalculate_manufacturing_operation_weights: a negative batch
+		# balance is corruption, not stock. Kept in lockstep so this parallel reader
+		# and the MOP Log recompute can never disagree about the same ledger -- which
+		# is exactly what the comment below already claims. This path is dead today
+		# (sync_weights_from_mop_log is commented out in validate) but is one line from
+		# live, and it swallows exceptions, so an un-clamped re-enable would silently
+		# reintroduce the understatement with no test failure.
+		qty, pcs = clamp_negative_balance(row.qty, row.pcs)
+		qty = flt(qty, 3)
 		variant_of = row.item_code[0]
 		if variant_of == "M":
 			net_wt += qty
