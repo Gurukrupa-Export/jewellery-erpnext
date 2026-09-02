@@ -22,6 +22,11 @@ ordered by creation date within each year.
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
+from jewellery_erpnext.jewellery_erpnext.doc_events.serial_no import (
+	next_stamping_sequence,
+	stamping_year_code,
+)
+
 
 def execute():
 	# Create the custom field
@@ -45,36 +50,35 @@ def execute():
 		"add_serial_no_stamping_no_field: ensured Serial No.custom_stamping_no (Data)"
 	)
 
-	# Backfill existing Serial No records with year-based sequential custom_stamping_no
-	# Get all Serial No records ordered by creation date
-	serial_nos = frappe.db.get_all(
-		"Serial No", fields=["name", "creation"], order_by="creation asc"
+	# Backfill only pieces that have never been stamped. A stamping number ends up
+	# physically on the piece, so a re-run (create_test_data calls this to provision
+	# test_site) must never renumber one that already carries a value -- seed each
+	# year's counter from the numbers already issued instead.
+	unstamped = frappe.db.get_all(
+		"Serial No",
+		filters={"custom_stamping_no": ["is", "not set"]},
+		fields=["name", "creation"],
+		order_by="creation asc",
 	)
 
-	# Group by year and assign sequential numbers
 	year_sequences = {}
-	for serial_no_doc in serial_nos:
+	for serial_no_doc in unstamped:
 		creation_year = serial_no_doc.creation.year
+		prefix = f"2{stamping_year_code(creation_year)}"
 
-		# Convert year to letter code (A=2021, B=2022, ... F=2026, G=2027)
-		year_code = chr(65 + (creation_year - 2021))
-
-		# Track sequence per year
 		if creation_year not in year_sequences:
-			year_sequences[creation_year] = 1
+			year_sequences[creation_year] = next_stamping_sequence(prefix)
 		else:
 			year_sequences[creation_year] += 1
 
-		# Format as "2" + year_code + 4-digit sequence number
-		custom_stamping_no = f"2{year_code}{year_sequences[creation_year]:04d}"
 		frappe.db.set_value(
 			"Serial No",
 			serial_no_doc.name,
 			"custom_stamping_no",
-			custom_stamping_no,
+			f"{prefix}{year_sequences[creation_year]:04d}",
 			update_modified=False,
 		)
 
 	frappe.logger().info(
-		f"add_serial_no_stamping_no_field: backfilled {len(serial_nos)} Serial No records with year-based sequential stamping numbers"
+		f"add_serial_no_stamping_no_field: backfilled {len(unstamped)} Serial No records with year-based sequential stamping numbers"
 	)
