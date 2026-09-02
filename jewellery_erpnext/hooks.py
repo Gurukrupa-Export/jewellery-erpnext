@@ -252,6 +252,7 @@ doc_events = {
 		"on_cancel": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.on_cancel",
 	},
 	"Purchase Invoice": {
+		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.before_validate",
 		"validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.validate",
 			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
@@ -281,7 +282,8 @@ doc_events = {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Serial No": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table"
+		"before_insert": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.set_stamping_no",
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table",
 	},
 	"Material Request": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
@@ -341,6 +343,9 @@ override_whitelisted_methods = {
 	"erpnext.stock.doctype.material_request.material_request.make_stock_entry": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.make_stock_entry",
 	"erpnext.stock.doctype.stock_entry.stock_entry.make_stock_in_entry": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
 	"frappe.desk.doctype.bulk_update.bulk_update.submit_cancel_or_update_docs": "jewellery_erpnext.jewellery_erpnext.doc_events.bulk_update.custom_submit_cancel_or_update_docs",
+	# Core returns None when a title-link doctype's title_field is empty, which blanks the
+	# Link input until a page reload (Manufacturing Operation with no `operation`).
+	"frappe.desk.search.get_link_title": "jewellery_erpnext.jewellery_erpnext.doc_events.search.get_link_title",
 }
 
 override_doctype_class = {
