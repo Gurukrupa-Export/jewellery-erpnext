@@ -3013,6 +3013,12 @@ def create_test_data():
 
 			_ensure_mr_is_free_item_field()
 
+			from jewellery_erpnext.patches.seed_stock_entry_types import (
+				execute as _seed_stock_entry_types,
+			)
+
+			_seed_stock_entry_types()
+
 			from jewellery_erpnext.patches.add_stock_entry_type_allowed_roles import (
 				execute as _ensure_stock_entry_type_allowed_roles_field,
 			)
