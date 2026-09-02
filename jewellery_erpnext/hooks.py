@@ -282,7 +282,8 @@ doc_events = {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Serial No": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table"
+		"before_insert": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.set_stamping_no",
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table",
 	},
 	"Material Request": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
