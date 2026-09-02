@@ -1,33 +1,64 @@
 import frappe
+from frappe.utils import now_datetime
+
+STAMPING_NO_FIELD = "custom_stamping_no"
+
+# Year code: A=2021, B=2022, ... F=2026, G=2027.
+_YEAR_CODE_EPOCH = 2021
 
 
-def set_stamping_no(self, method):
-	"""Generate unique sequential stamping number based on creation year and sequence"""
-	if not self.custom_stamping_no:  # Only set if not already set
-		from datetime import datetime
+def set_stamping_no(self, method=None):
+	"""Stamp a Serial No with a unique, year-scoped sequential number -- once.
 
-		# Get current year and convert to letter code (A=2021, B=2022, ... F=2026, G=2027)
-		current_year = datetime.now().year
-		year_code = chr(65 + (current_year - 2021))  # A starts at 2021
+	Format is "2" + year code + a 4-digit sequence that restarts each year, so the
+	third piece serialised in 2026 is ``2F0003``.
+	"""
+	if self.get(STAMPING_NO_FIELD):
+		# before_save fires on every later update too -- never re-stamp a piece.
+		return
 
-		# Get the count of Serial No created in current year
-		from frappe.utils import get_datetime
+	if not _has_stamping_no_field():
+		return
 
-		year_start = get_datetime(f"{current_year}-01-01")
+	prefix = f"2{stamping_year_code(now_datetime().year)}"
+	self.set(STAMPING_NO_FIELD, f"{prefix}{next_stamping_sequence(prefix):04d}")
 
-		sequence = (
-			frappe.db.count(
-				"Serial No",
-				filters={
-					"creation": [">=", year_start],
-					"custom_stamping_no": ["is", "not set"],
-				},
-			)
-			+ 1
-		)
 
-		# Format as "2" + year_code + 4-digit sequence
-		self.custom_stamping_no = f"2{year_code}{sequence:04d}"
+def _has_stamping_no_field():
+	"""``True`` when ``Serial No.custom_stamping_no`` exists on this site.
+
+	The column is provisioned only by ``add_serial_no_stamping_no_field``, and
+	``bench install-app`` marks every patch as already applied on a fresh site -- so a
+	freshly installed site never runs it and has no column. Without this guard the
+	attribute lookup takes down EVERY Serial No save with ``AttributeError``.
+	``frappe.get_meta`` is request-cached, so the check is effectively free.
+	"""
+	return frappe.get_meta("Serial No").has_field(STAMPING_NO_FIELD)
+
+
+def stamping_year_code(year):
+	return chr(ord("A") + (year - _YEAR_CODE_EPOCH))
+
+
+def next_stamping_sequence(prefix):
+	"""One past the highest sequence already issued under ``prefix``.
+
+	Counting rows is what broke this before: the count was of Serial Nos with NO
+	stamping number, which is 0 on a backfilled site, so every new piece was handed
+	``0001``. Read the high-water mark off the numbers actually issued instead, and
+	compare the sequences numerically -- a plain ``MAX()`` over the strings ranks
+	``2F9999`` above ``2F10000`` once a year passes 9,999 pieces.
+	"""
+	highest = frappe.db.sql(
+		"""
+		select max(cast(substring(custom_stamping_no, %(offset)s) as unsigned))
+		from `tabSerial No`
+		where custom_stamping_no like %(prefix)s
+		""",
+		{"offset": len(prefix) + 1, "prefix": f"{prefix}%"},
+	)[0][0]
+
+	return (highest or 0) + 1
 
 
 def update_table(self, method):
