@@ -3081,6 +3081,16 @@ def create_test_data():
 
 			_ensure_serial_no_sales_reference_fields()
 
+			# Serial No.custom_stamping_no is patch-only for the same reason. `bench
+			# install-app` marks every patch as already applied on a fresh site, so
+			# `bench migrate` never runs it and set_stamping_no -- a before_save hook on
+			# EVERY Serial No -- had no field to read.
+			from jewellery_erpnext.patches.add_serial_no_stamping_no_field import (
+				execute as _ensure_serial_no_stamping_no_field,
+			)
+
+			_ensure_serial_no_stamping_no_field()
+
 			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /
