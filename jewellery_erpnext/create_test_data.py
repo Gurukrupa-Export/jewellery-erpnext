@@ -3124,6 +3124,17 @@ def create_test_data():
 
 			_ensure_stock_entry_jwelex_tag_field()
 
+			# Item Tax Template.custom_is_auto_zero_tax is NOT in the git_action_v16
+			# fixtures either — same reasoning as the other custom-field patches above:
+			# it must be provisioned here for test_site, else get_or_create_zero_tax_template
+			# raises "Unknown column 'custom_is_auto_zero_tax'" the moment a Purchase
+			# Invoice with an untaxed item is saved.
+			from jewellery_erpnext.patches.add_zero_tax_template_auto_flag import (
+				execute as _ensure_zero_tax_template_auto_flag,
+			)
+
+			_ensure_zero_tax_template_auto_flag()
+
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (
 				execute as _ensure_missing_ui_custom_fields,

@@ -253,10 +253,7 @@ doc_events = {
 	},
 	"Purchase Invoice": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.before_validate",
-		"validate": [
-			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.validate",
-			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
-		],
+		"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR,
 	},
 	"Supplier Quotation": {"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR},
 	"Supplier": {
