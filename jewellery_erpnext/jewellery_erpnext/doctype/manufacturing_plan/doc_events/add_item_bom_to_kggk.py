@@ -1,3 +1,28 @@
+"""Manufacturing Plan -> KGGK testing site.
+
+Thin delegation. The push itself lives in one module in ``gke_customization``, next to the
+Data Migration in KGGK settings it reads.
+
+The import is deliberately inside the function: ``gke_customization`` imports this app, so a
+module-level import here would close the loop.
+
+This is the *testing* flow, gated behind the "Send Manufacturing Plan Data to Testing Site"
+switch. The live Item/BOM sync is a separate thing entirely - different hooks, different
+target, different credentials - and nothing here touches it.
+"""
+
+
+def add_item_bom_to_kggk(doc, method=None):
+	"""on_submit entry point. Queues the subcontracting rows; never blocks the submit."""
+	from gke_customization.gke_order_forms.doc_events import kggk_sync
+
+	return kggk_sync.on_submit(doc, method)
+
+
+# ---------------------------------------------------------------------------
+# Preserved from New-Gurukrupa-Export: the original commented-out draft of this
+# sync, kept verbatim so the earlier work is not lost. It defines no live code.
+# ---------------------------------------------------------------------------
 
 # import frappe
 
