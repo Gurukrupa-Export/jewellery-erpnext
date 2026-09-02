@@ -1,41 +1,22 @@
 """Manufacturing Plan -> KGGK testing site.
 
-Thin delegation. The push itself lives in ``gke_customization`` next to the Data Migration in
-KGGK settings it reads, so there is one pipeline rather than two that drift apart.
+Thin delegation. The push itself lives in one module in ``gke_customization``, next to the
+Data Migration in KGGK settings it reads.
 
-The imports are deliberately inside the functions: ``gke_customization`` imports this app, so
-a module-level import here would close the loop.
+The import is deliberately inside the function: ``gke_customization`` imports this app, so a
+module-level import here would close the loop.
 
-This is the *testing* flow. It reads the Testing Site fields and is gated behind the
-"Send Manufacturing Plan Data to Testing Site" switch. The live Item/BOM sync is a separate
-thing entirely - different hooks, different target, different credentials - and nothing here
-touches it.
+This is the *testing* flow, gated behind the "Send Manufacturing Plan Data to Testing Site"
+switch. The live Item/BOM sync is a separate thing entirely - different hooks, different
+target, different credentials - and nothing here touches it.
 """
-
-import frappe
-
-
-def _plan_sync():
-	from gke_customization.gke_order_forms.doc_events import manufacturing_plan
-
-	return manufacturing_plan
 
 
 def add_item_bom_to_kggk(doc, method=None):
 	"""on_submit entry point. Queues the subcontracting rows; never blocks the submit."""
-	return _plan_sync().on_submit(doc, method)
+	from gke_customization.gke_order_forms.doc_events import kggk_sync
 
-
-@frappe.whitelist()
-def sync_plan(plan_name):
-	"""Manual re-push for one Manufacturing Plan."""
-	return _plan_sync().sync_plan(plan_name)
-
-
-@frappe.whitelist()
-def is_testing_sync_enabled():
-	"""Whether the form should offer the push button at all."""
-	return _plan_sync().is_testing_sync_enabled()
+	return kggk_sync.on_submit(doc, method)
 
 
 # ---------------------------------------------------------------------------
