@@ -12,7 +12,7 @@ frappe.ui.form.on("Manufacturing Plan", {
 				},
 			};
 		});
-		kggk_sync_indicator(frm);
+		kggk_push_button(frm);
 	},
 	setup(frm) {
 		var parent_fields = [["diamond_quality", "Diamond Quality"]];
@@ -241,67 +241,50 @@ function set_item_attribute_filters_on_fields_in_child_doctype(frm, fields) {
 	});
 }
 
-// ─── KGGK sync ───────────────────────────────────────────────────────────────────
-// Submitting the plan queues the push automatically. This is the visible answer to
-// "did it go?" plus a button to re-push whatever is still outstanding. Counts come
-// from the sync markers on the Item and BOM records themselves — there is no log
-// doctype behind this.
+// ─── KGGK testing push ───────────────────────────────────────────────────────────
+// Submitting the plan queues the push automatically. This is the manual re-push for
+// when you want to send the same rows again without amending the plan.
+//
+// There is no synced/total indicator: it counted marker fields on Item and BOM that
+// deliberately no longer exist, because this must add nothing to the live doctypes.
+// The answer to "what did the target refuse" is an Error Log on the target itself,
+// written only when something actually went wrong.
 
-function kggk_sync_indicator(frm) {
-	if (frm.doc.docstatus !== 1 || frm.is_new()) return;
+function kggk_push_button(frm) {
+	if (frm.is_new() || frm.doc.docstatus !== 1) return;
 
+	const rows = (frm.doc.manufacturing_plan_table || []).filter((r) => cint(r.subcontracting));
+	if (!rows.length) return;
+
+	// The switch is read from the server, never guessed from the form. With it off the
+	// button is not offered at all — and sync_plan re-checks it anyway, so a form left
+	// open from before it was turned off still cannot push.
 	frappe.call({
-		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events.add_item_bom_to_kggk.get_plan_sync_status",
-		args: { plan_name: frm.doc.name },
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events.add_item_bom_to_kggk.is_testing_sync_enabled",
 		callback(r) {
-			if (r.exc || !r.message || !r.message.has_rows) return;
-			const d = r.message;
-			const pending =
-				d.total_items - d.synced_items + (d.total_boms - d.synced_boms);
+			if (r.exc || !r.message) return;
 
-			frm.dashboard.add_indicator(
-				__("KGGK: {0}/{1} items, {2}/{3} BOMs synced", [
-					d.synced_items,
-					d.total_items,
-					d.synced_boms,
-					d.total_boms,
-				]),
-				pending === 0 ? "green" : d.synced_items || d.synced_boms ? "orange" : "red"
-			);
-
-			if (pending > 0) {
-				frm.add_custom_button(
-					__("Sync to KGGK"),
-					() => kggk_sync_now(frm, pending),
-					__("KGGK")
+			frm.add_custom_button(__("Push to KGGK Testing"), () => {
+				frappe.confirm(
+					__("Push {0} subcontracting row(s) to the KGGK testing site?", [rows.length]),
+					() => {
+						frappe.call({
+							method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events.add_item_bom_to_kggk.sync_plan",
+							args: { plan_name: frm.doc.name },
+							freeze: true,
+							freeze_message: __("Queueing push..."),
+							callback(res) {
+								if (res.exc) return;
+								const out = res.message || {};
+								frappe.show_alert({
+									message: out.message || __("Queued."),
+									indicator: out.queued ? "blue" : "orange",
+								});
+							},
+						});
+					}
 				);
-			}
-			frm.add_custom_button(
-				__("Re-sync All Rows"),
-				() => kggk_sync_now(frm, d.total_items + d.total_boms, 0),
-				__("KGGK")
-			);
+			});
 		},
 	});
-}
-
-function kggk_sync_now(frm, count, only_unsynced = 1) {
-	frappe.confirm(
-		__("Queue {0} record(s) for sync to KGGK?", [count]),
-		() => {
-			frappe.call({
-				method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_plan.doc_events.add_item_bom_to_kggk.sync_plan",
-				args: { plan_name: frm.doc.name, only_unsynced: only_unsynced },
-				freeze: true,
-				freeze_message: __("Queueing sync..."),
-				callback(r) {
-					if (r.exc) return;
-					frappe.show_alert({
-						message: (r.message && r.message.message) || __("Queued."),
-						indicator: r.message && r.message.queued ? "blue" : "orange",
-					});
-				},
-			});
-		}
-	);
 }
