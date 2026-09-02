@@ -6,7 +6,7 @@ from erpnext.stock.doctype.batch.batch import get_batch_qty
 from erpnext.stock.doctype.stock_entry.stock_entry import StockEntry
 from frappe import _
 from frappe.utils import flt
-
+from jewellery_erpnext.jewellery_erpnext.doc_events.stock_transactions import set_batch_certificate_id
 from jewellery_erpnext.jewellery_erpnext.customization.stock.batch_valuation_ledger import BatchValuationLedger
 
 from jewellery_erpnext.jewellery_erpnext.customization.stock_entry.doc_events.inventory_utils import (
@@ -37,6 +37,7 @@ def before_validate(self, method):
 
 def on_submit(self, method):
 	validate_inventory_dimention(self)
+	set_batch_certificate_id(self)
 
 
 class CustomStockEntry(StockEntry):

@@ -133,9 +133,21 @@ class CustomSerialBatchCreation(SerialBatchCreation):
 		return custom_create_batch(self)
 
 
+def get_row_certificate_id(voucher_type, voucher_detail_no):
+	child_doctype = {
+		"Stock Entry": "Stock Entry Detail",
+		"Purchase Receipt": "Purchase Receipt Item",
+		"Sales Invoice": "Sales Invoice Item",
+	}.get(voucher_type)
+
+	if not child_doctype or not voucher_detail_no:
+		return None
+
+	return frappe.db.get_value(child_doctype, voucher_detail_no, "custom_certificate_id")
+
+
 def custom_create_batch(self):
 	from erpnext.stock.doctype.batch.batch import make_batch
-
 	return make_batch(
 		frappe._dict(
 			{
@@ -143,6 +155,9 @@ def custom_create_batch(self):
 				"reference_doctype": self.get("voucher_type"),
 				"reference_name": self.get("voucher_no"),
 				"custom_voucher_detail_no": self.get("voucher_detail_no"),
+				"custom_certificate_id": get_row_certificate_id(
+					self.get("voucher_type"), self.get("voucher_detail_no")
+				),
 			}
 		)
 	)

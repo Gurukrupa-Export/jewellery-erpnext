@@ -284,6 +284,7 @@ def make_subcontracting_order(doc):
                     "item_code": (row.item_code),
                     "qty": row.subcontracting_qty,
                     "manufacturing_bom": row.manufacturing_bom,
+                    "custom_copy_bom": row.copy_bom,
                     "diamond_quality": row.diamond_quality,
                     "custom_manufacturing_plan": doc.name,
                     "custom_m_plan_details": row.name,
@@ -301,6 +302,9 @@ def make_subcontracting_order(doc):
                     "qty": 1,
                     "fg_item": row.item_code,
                     "fg_item_qty": row.subcontracting_qty,
+                    # item_code here is the generic service item -- this stamps the
+                    # origin BOM of fg_item, the thing actually being made.
+                    "custom_copy_bom": row.copy_bom,
                     "schedule_date": row.estimated_delivery_date,
                     "custom_child_po_no": row.child_po,
                     "custom_m_plan_details": row.name,
