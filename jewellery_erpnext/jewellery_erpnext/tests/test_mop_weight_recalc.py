@@ -1215,3 +1215,122 @@ class TestRecalcPrefixNarrowing(IntegrationTestCase):
 	def test_unknown_family_writes_nothing(self):
 		writes = self._bucket_writes(("nosuchfamily",))
 		self.assertEqual(writes, [])
+
+
+class TestNegativeBatchBalanceIsNotStock(IntegrationTestCase):
+	"""A negative (item, batch) balance must not reach a header weight bucket.
+
+	MOP-3DP57 reported gross_wt 16.440 against a Serial Number Creator total_weight of
+	16.720. The 0.280 g gap was one gold batch, KG2F081-MGL229175Y0-P29A8, sitting at
+	-0.28 -- a Material Receive (WORK ORDER) that returned 0.28 g of a SHARED casting
+	batch under an operation that had never been issued it, so the row wrote 0 - 0.28.
+	Every other reader of this ledger already drops or clamps such a row; this recompute
+	was the only one that summed it.
+
+	The clamp is HEADER-ONLY. See TestNewMopBaselineNegativeInheritance in
+	doctype/mop_log/test_mop_log.py, which asserts the LEDGER keeps carrying -0.28
+	forward. Both are correct: the ledger stays honest, the header stops reporting a
+	phantom as a holding.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	_run = TestRecalculateMopWeights._run
+
+	def test_negative_batch_contributes_zero_to_net_wt(self):
+		"""The minimal P29A8 shape: a real batch plus a phantom negative."""
+		rows = [
+			_row("M-G-22KT-91.75-Y", "KG2F081-MGL229175Y0-12L9U", 18.7, name="ML-1"),
+			_row("M-G-22KT-91.75-Y", "KG2F081-MGL229175Y0-P29A8", -0.28, name="ML-2"),
+		]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["net_wt"], 18.7, places=3)
+		self.assertEqual(out["gross_wt"], 18.7)
+
+	def test_mop_3dp57_reconciles_with_its_serial_number_creator(self):
+		"""The full incident: five gold batches + four diamond batches + the phantom.
+
+		The SNC and the Stock Reservation Entries both read 16.236 g gold + 2.418 ct.
+		The header must agree: 16.236 + carat_to_gram(2.418) = 16.236 + 0.484 = 16.720.
+		"""
+		rows = [
+			_row("M-G-22KT-91.75-Y", "B-12L9U", 15.92, pcs_batch=1, name="ML-1"),
+			_row("M-G-22KT-91.75-Y", "B-1U6V7", 0.128, pcs_batch=1, name="ML-2"),
+			_row("M-G-22KT-91.75-Y", "B-2S9L7", 0.118, pcs_batch=1, name="ML-3"),
+			_row("M-G-22KT-91.75-Y", "B-5IB55", 0.037, pcs_batch=1, name="ML-4"),
+			_row("M-G-22KT-91.75-Y", "B-JR944", 0.033, pcs_batch=1, name="ML-5"),
+			# the phantom -- a foreign batch this MWO was never issued
+			_row("M-G-22KT-91.75-Y", "B-P29A8", -0.28, name="ML-6"),
+			_row("D-NT-RO-6B-+6.5-7", "B-75JG2", 0.196, pcs_batch=8, name="ML-7"),
+			_row("D-NT-RO-6B-+7.5-8", "B-E340Q", 1.427, pcs_batch=42, name="ML-8"),
+			_row("D-NT-RO-6B-+8.5-9", "B-68F2Q", 0.684, pcs_batch=16, name="ML-9"),
+			_row("D-NT-RO-6B-+9.5-10", "B-136TQ", 0.111, pcs_batch=2, name="ML-10"),
+		]
+		out = self._run(rows)
+		# Buckets accumulate unrounded -- update_wt_detail rounds ONCE into gross_wt,
+		# which is why gross_wt alone is asserted exactly.
+		self.assertAlmostEqual(out["net_wt"], 16.236, places=3)
+		self.assertAlmostEqual(out["diamond_wt"], 2.418, places=3)
+		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.484, places=3)
+		self.assertEqual(out["diamond_pcs"], 68)
+		self.assertEqual(out["gross_wt"], 16.72)
+
+	def test_positive_balances_are_byte_identical(self):
+		"""The clamp is max(), not a tolerance -- healthy ledgers must not move.
+
+		A tolerance would also discard sub-milligram POSITIVE balances, widening the
+		blast radius from "operations carrying corruption" to "everything".
+		"""
+		rows = [
+			_row("M-G-18KT", "B1", 0.0001, name="ML-1"),
+			_row("M-G-18KT", "B2", 0.0004, name="ML-2"),
+		]
+		out = self._run(rows)
+		# Compared against the RAW float sum, not a rounded literal: max() must return
+		# a positive input unchanged, so the accumulation is bit-for-bit what an
+		# unclamped recompute would produce. A places=3 assert would pass trivially.
+		self.assertEqual(out["net_wt"], 0.0001 + 0.0004)
+
+	def test_negative_qty_with_positive_pcs_keeps_the_pcs(self):
+		"""qty and pcs clamp INDEPENDENTLY.
+
+		The FG-MWO seed's ``HAVING SUM(qty_change) > 0 OR SUM(pcs_change) > 0`` admits a
+		qty-negative row whose pcs sum is positive. Dropping the whole row on a qty
+		signal would silently delete a stone COUNT that Product Certification and the
+		Employee IR PCS cap still read.
+		"""
+		rows = [_row("D-NT-RO", "B1", -0.5, pcs_batch=4, name="ML-1")]
+		out = self._run(rows)
+		self.assertEqual(out["diamond_wt"], 0.0)
+		self.assertEqual(out["diamond_wt_in_gram"], 0.0)
+		self.assertEqual(out["diamond_pcs"], 4)
+
+	def test_positive_qty_with_negative_pcs_keeps_the_qty(self):
+		"""The mirror case, live on kg-gk as MOP-5HM44.
+
+		MAT-STE-10952 issued out qty and pcs; MAT-STE-10954 returned the qty but not
+		the pcs, leaving bal_qty 0.04 against bal_pcs -1.
+		"""
+		rows = [_row("G-GRS-PR-SEP", "B1", 0.04, pcs_batch=-1, name="ML-1")]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["gemstone_wt"], 0.04, places=3)
+		self.assertEqual(out["gemstone_pcs"], 0)
+		self.assertEqual(out["gemstone_wt_in_gram"], carat_to_gram(0.04))
+
+	def test_gram_twin_is_a_pure_function_of_the_clamped_carat_bucket(self):
+		"""The clamp sits ABOVE the carat->gram derivation.
+
+		If it sat below, diamond_wt_in_gram would be derived from the RAW carat total
+		and normalize_mop_carat_to_gram_buckets -- which detects on exactly this
+		invariant -- would fire on every clamped MOP forever.
+		"""
+		rows = [
+			_row("D-NT-RO", "B1", 2.418, pcs_batch=68, name="ML-1"),
+			_row("D-NT-RO", "B2", -1.4, pcs_batch=0, name="ML-2"),
+		]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["diamond_wt"], 2.418, places=3)
+		self.assertEqual(out["diamond_wt_in_gram"], carat_to_gram(out["diamond_wt"]))
+		self.assertEqual(out["diamond_wt_in_gram"], 0.484)
