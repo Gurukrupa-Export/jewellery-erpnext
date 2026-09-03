@@ -253,10 +253,7 @@ doc_events = {
 	},
 	"Purchase Invoice": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.before_validate",
-		"validate": [
-			"jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice.validate",
-			_SUPPLIER_ALLOWED_ITEM_VALIDATOR,
-		],
+		"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR,
 	},
 	"Supplier Quotation": {"validate": _SUPPLIER_ALLOWED_ITEM_VALIDATOR},
 	"Supplier": {
@@ -282,7 +279,8 @@ doc_events = {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Serial No": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table"
+		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.set_stamping_no",
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table",
 	},
 	"Material Request": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
@@ -475,13 +473,11 @@ fixtures = [
 			]
 		],
 	},
-	# fixtures/stock_entry_type.json is imported on every migrate regardless of this
-	# list (import_fixtures walks the whole directory), and that import deletes and
-	# re-inserts each record -- so custom_allowed_roles set in the desk on a record
-	# present in the file is wiped unless the file carries it. Listing it here makes
-	# the file re-exportable, so `bench export-fixtures` can regenerate it from a
-	# configured site instead of it being hand-edited.
-	"Stock Entry Type",
+	# Deliberately NOT listed here: "Stock Entry Type". Its masters are seeded by
+	# patches/seed_stock_entry_types.py instead, create-only. Shipping them as a fixture
+	# made every migrate delete and re-create the records, which destroyed the
+	# custom_allowed_roles rows an administrator had set in the desk. Re-adding it here
+	# would let `bench export-fixtures` recreate the file and reinstate that wipe.
 	# {
 	#     "doctype":"Custom Field", "filters":{"module":["in",["Jewellery Erpnext"]]}
 	# }

@@ -500,7 +500,7 @@ def create_man_plan(self):
 	man_plan.company = "Test_Company"
 	man_plan.branch = self.branch
 	if man_plan.setting_type:
-		man_plan.setting_type = "Close"
+		man_plan.setting_type = "Nova Glow"
 	man_plan.is_subcontracting = "No"
 	man_plan.save()
 	man_plan.submit()

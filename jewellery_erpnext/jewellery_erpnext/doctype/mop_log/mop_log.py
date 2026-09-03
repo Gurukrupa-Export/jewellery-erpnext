@@ -7,7 +7,11 @@ from frappe.query_builder import DocType
 from frappe.query_builder.functions import Max
 from frappe.utils import cint, cstr, flt, get_datetime
 
-from jewellery_erpnext.utils import carat_to_gram, get_mwo_refining_cutoff
+from jewellery_erpnext.utils import (
+	carat_to_gram,
+	clamp_negative_balance,
+	get_mwo_refining_cutoff,
+)
 
 FIELD_MAP = {"M": "net", "F": "finding", "D": "diamond", "G": "gemstone", "O": "other"}
 select_fields = [
@@ -150,6 +154,17 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None, prefixes
 	weights before any ledger row exists, and an unnarrowed recompute on the first
 	metal row would zero them. Omit it to rewrite every bucket (the cancel legs and
 	the repair patch do, deliberately).
+
+	NEGATIVE BALANCES ARE CLAMPED OUT of the buckets (see
+	``jewellery_erpnext.utils.clamp_negative_balance``). A negative ``(item, batch)``
+	balance is ledger corruption, not stock, and every other reader of this tier already
+	refuses to count it -- this function summing it raw is what made MOP-3DP57 report
+	gross_wt 16.440 against a Serial Number Creator total_weight of 16.720. The clamp is
+	HEADER-ONLY: the MOP Log rows keep their negative values, so
+	``audit_negative_batch_balances`` still finds them and ``update_new_mop_wtg`` still
+	clones an inherited negative forward rather than inventing metal. Anything that
+	replays this ledger to compare against a header must clamp identically --
+	``audit_mop_balance_drift`` and ``patches/repair_mop_header_weight_buckets`` do.
 	"""
 	rows = frappe.db.sql(
 		"""
@@ -225,8 +240,19 @@ def recalculate_manufacturing_operation_weights(mop_name, pending=None, prefixes
 		prefix = FIELD_MAP.get(first_char)
 		if not prefix:
 			continue
-		qty = flt(entry.get("qaf_batch"))
-		pcs = flt(entry.get("pcs_batch"))
+		# A negative batch balance is corruption, not stock -- an operation cannot hold
+		# less than none of a batch. Clamped HERE, and only here, for three reasons:
+		# this sits BELOW the latest-per-key dedup, the refining cutoff and the pending
+		# overlay (clamping in the SQL above would drop the LATEST row for a negative
+		# key and silently promote an earlier, superseded positive one to "latest"),
+		# and ABOVE both the carat->gram derivation and the ``prefixes`` narrowing, so
+		# the gram twin stays a pure function of the CLAMPED carat bucket -- which is
+		# the invariant normalize_mop_carat_to_gram_buckets detects on.
+		# HEADER-ONLY: the ledger row keeps its negative value so
+		# audit_negative_batch_balances still reports it. See clamp_negative_balance.
+		qty, pcs = clamp_negative_balance(
+			entry.get("qaf_batch"), entry.get("pcs_batch")
+		)
 		buckets[f"{prefix}_wt"] += qty
 		if prefix in ("diamond", "gemstone"):
 			buckets[f"{prefix}_pcs"] += pcs
