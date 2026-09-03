@@ -39,7 +39,7 @@ from pathlib import Path
 import frappe
 from frappe.utils import cint, flt
 
-from jewellery_erpnext.utils import carat_to_gram
+from jewellery_erpnext.utils import carat_to_gram, clamp_negative_balance
 
 # row_name stamped on correcting rows appended by
 # patches/repair_mwo_wide_mop_log_balances.py, so they stay identifiable and
@@ -737,8 +737,17 @@ def audit_mop_balance_drift(
 		# sums the family in CARATS and converts the gram twin ONCE, so carats accumulate
 		# here and convert per family below -- rounding per row would make this detector
 		# report a phantom 0.001 g drift against a correctly written header.
+		#
+		# Clamped, because the WRITER clamps: recalculate_manufacturing_operation_weights
+		# drops negative batch balances from the header buckets. Replaying them RAW here
+		# would report ledger_minus_stored == -|negative| on every operation carrying a
+		# negative key -- a false drift hit on data the writer handled correctly. The two
+		# auditors ask different questions from one shared definition: THIS one answers
+		# "does the stored header match what the writer would write"; "which keys are
+		# corrupt" is audit_negative_batch_balances', which reads the RAW qty via
+		# _is_negative and must keep doing so.
 		first_char = (r.get("item_code") or "")[:1]
-		qty = flt(r.get("qty"))
+		qty, _pcs = clamp_negative_balance(r.get("qty"))
 		if first_char == "D":
 			bucket["diamond_ct"] += qty
 		elif first_char == "G":
