@@ -134,6 +134,16 @@
   },
   {
    "dt": "Quotation",
+   "fieldname": "custom_gk_purchase_order",
+   "fieldtype": "Data",
+   "insert_after": "valid_till",
+   "label": "GK Purchase Order",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
    "fieldname": "custom_updated_shipping_territory",
    "fieldtype": "Table MultiSelect",
    "insert_after": "branch",
