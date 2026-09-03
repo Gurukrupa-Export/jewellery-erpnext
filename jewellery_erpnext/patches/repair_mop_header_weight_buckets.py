@@ -66,6 +66,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_current_mop_balance_rows,
 	recalculate_manufacturing_operation_weights,
 )
+from jewellery_erpnext.utils import clamp_negative_balance
 
 TOLERANCE = 0.0005
 
@@ -77,6 +78,13 @@ BUCKET_FIELD = {prefix: f"{prefix}_wt" for prefix in FIELD_MAP.values()}
 
 def _raw_ledger_totals(mops=None):
 	"""``{mop: {prefix: total}}`` from the latest non-cancelled row per (item, batch).
+
+	Negative balances are clamped to 0 (``GREATEST(..., 0)``) because the WRITER this
+	patch repairs toward -- recalculate_manufacturing_operation_weights -- clamps them.
+	Detector and writer MUST agree: summing raw here would flag every operation carrying
+	a negative key as drifted, forever, and the repair would rewrite the identical value
+	it just "corrected", so detect() would never converge. This patch IS registered in
+	patches.txt, so that loop would run on every bench migrate.
 
 	One grouped query over the whole table so the scan does not cost a round trip per
 	operation. The refining cutoff is applied later, per candidate, because it needs a
@@ -93,7 +101,7 @@ def _raw_ledger_totals(mops=None):
 		f"""
 		SELECT l.manufacturing_operation AS mop,
 		       SUBSTRING(l.item_code, 1, 1) AS prefix_char,
-		       SUM(l.qty_after_transaction_batch_based) AS ledger
+		       SUM(GREATEST(l.qty_after_transaction_batch_based, 0)) AS ledger
 		FROM `tabMOP Log` l
 		INNER JOIN (
 			SELECT manufacturing_operation, item_code, batch_no, MAX(creation) AS mx
@@ -122,7 +130,12 @@ def _raw_ledger_totals(mops=None):
 
 
 def _post_cutoff_totals(mop_name, mwo):
-	"""``{prefix: total}`` counting only rows that survive the MWO's refining cutoff."""
+	"""``{prefix: total}`` counting only rows that survive the MWO's refining cutoff.
+
+	Clamps negatives for the same reason as :func:`_raw_ledger_totals` -- this is the
+	figure a correction is actually written from, so it must equal what the writer
+	would produce.
+	"""
 	rows = drop_pre_refining_rows(
 		get_current_mop_balance_rows(
 			mop_name,
@@ -140,10 +153,8 @@ def _post_cutoff_totals(mop_name, mwo):
 		prefix = FIELD_MAP.get((row.get("item_code") or "")[:1])
 		if not prefix:
 			continue
-		totals[prefix] = flt(
-			flt(totals.get(prefix)) + flt(row.get("qty_after_transaction_batch_based")),
-			3,
-		)
+		qty, _pcs = clamp_negative_balance(row.get("qty_after_transaction_batch_based"))
+		totals[prefix] = flt(flt(totals.get(prefix)) + qty, 3)
 	return totals
 
 

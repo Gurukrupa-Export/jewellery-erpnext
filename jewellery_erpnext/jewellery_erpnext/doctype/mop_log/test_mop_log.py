@@ -1723,3 +1723,84 @@ class TestRefinedMwoCloneKeepsRecastBalance(IntegrationTestCase):
 		self.assertEqual(created.save.call_count, 1)
 		self.assertEqual(created.qty_after_transaction_batch_based, 2.34)
 		self.assertEqual(created.manufacturing_operation, "MOP-N632Z")
+
+
+class TestNegativeBalanceContractBoundary(IntegrationTestCase):
+	"""The header clamps; the ledger does not. Both halves asserted side by side.
+
+	This class exists because the two behaviours look contradictory. ``gross_wt`` must
+	stop counting a negative batch balance, while ``audit_negative_batch_balances`` must
+	keep reporting the very same row. If someone "simplifies" them into one rule, one of
+	these tests fails -- which is the point.
+	"""
+
+	ITEM = "M-G-22KT-91.75-Y"
+	NEG = "KG2F081-MGL229175Y0-P29A8"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _rows(self):
+		return [
+			{
+				"mop": "MOP-ORIGIN",
+				"mwo": "MWO-TEST-001",
+				"item_code": self.ITEM,
+				"batch_no": self.NEG,
+				"qty": -0.28,
+				"pcs": 0,
+				"voucher_type": "Stock Entry",
+				"voucher_no": "MAT-STE-06205",
+				"mop_log": "ML-1",
+				"creation": "2026-08-20 10:00:00",
+			},
+			{
+				"mop": "MOP-ORIGIN",
+				"mwo": "MWO-TEST-001",
+				"item_code": self.ITEM,
+				"batch_no": "B-12L9U",
+				"qty": 18.7,
+				"pcs": 1,
+				"voucher_type": "Stock Entry",
+				"voucher_no": "MAT-STE-05430",
+				"mop_log": "ML-2",
+				"creation": "2026-08-20 10:00:00",
+			},
+		]
+
+	def test_drift_auditor_clamps_so_a_clamped_header_is_not_drift(self):
+		"""The drift replay must mirror the WRITER, or every clamped MOP is a false hit."""
+		from jewellery_erpnext.mop_lineage_audit import audit_mop_balance_drift
+
+		stored = [
+			{
+				"name": "MOP-ORIGIN",
+				# what the clamped writer produces: 18.7, NOT 18.42
+				"gross_wt": 18.7,
+				"received_gross_wt": 18.7,
+				"manufacturing_work_order": "MWO-TEST-001",
+				"department": "Model Making",
+				"status": "Finished",
+			}
+		]
+		with (
+			patch(f"{AUDIT}._latest_mop_log_balance_rows", return_value=self._rows()),
+			patch(f"{AUDIT}.frappe.get_all", return_value=stored),
+		):
+			hits = audit_mop_balance_drift()
+		self.assertEqual(
+			[h for h in hits if h.get("manufacturing_operation") == "MOP-ORIGIN"],
+			[],
+			"a correctly clamped header must not be reported as ledger drift",
+		)
+
+	def test_negative_auditor_does_not_clamp_and_still_reports_the_row(self):
+		"""The detector reads RAW qty. If it clamped too, nothing would ever be found."""
+		from jewellery_erpnext.mop_lineage_audit import audit_negative_batch_balances
+
+		with patch(f"{AUDIT}._latest_mop_log_balance_rows", return_value=self._rows()):
+			found = audit_negative_batch_balances()
+		self.assertEqual(len(found), 1)
+		self.assertEqual(found[0]["batch_no"], self.NEG)
+		self.assertEqual(found[0]["qty"], -0.28)

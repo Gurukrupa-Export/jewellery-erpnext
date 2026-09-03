@@ -119,6 +119,21 @@ class ManufacturingWorkOrder(Document):
 					seen_mwos.add(mop.manufacturing_work_order)
 
 			if latest_mop_names:
+				# SUM over sibling HEADERS, not ledger rows. Each is written by
+				# recalculate_manufacturing_operation_weights, which clamps negative batch
+				# balances (jewellery_erpnext.utils.clamp_negative_balance), so a negative
+				# gross_wt can no longer reach here from the ledger. Deliberately NOT
+				# guarded with GREATEST(gross_wt, 0): after that clamp a negative sibling
+				# header is itself a broken invariant that audit_mop_balance_drift should
+				# REPORT, not a value this aggregate should quietly absorb -- and a second
+				# clamp here would be a second, independent definition of the same rule.
+				#
+				# This force-write is how an FG MOP carries a number its own ledger never
+				# produced: MOP-3DP57's own rows summed to 16.236 g while its header held
+				# 15.956, inherited from a sibling contaminated by a phantom -0.28 batch.
+				# Headers written before the clamp shipped are corrected by
+				# patches/repair_mop_header_weight_buckets, whose _reroll_parents re-runs
+				# this method over the corrected siblings.
 				agg = frappe.db.sql(
 					"""
 					SELECT
