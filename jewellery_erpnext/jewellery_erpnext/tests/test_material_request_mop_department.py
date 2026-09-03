@@ -5,14 +5,22 @@
 Manufacturing Operation's department.
 
 The check lives in ``material_request.before_update_after_submit`` and compares the
-Request Items' warehouse department against ``Manufacturing Operation.department``.
+department of the warehouse the material actually sits in against
+``Manufacturing Operation.department``. That is normally the Request Items' warehouse, but
+a completed Transfer to Department has moved the material on to
+``custom_destination_warehouse`` -- see ``_current_material_warehouse``.
+
 It deliberately does NOT key on ``Material Request.custom_department`` -- that field
 is a write-once stamp of the *source* (bagging) department and never equals the
 operation's department.
 
-It applies only to an operation that has been walked into a department by a
-Department IR (``previous_mop`` set). The MWO's first operation is a gathering point
+On the classic path it applies only to an operation that has been walked into a department
+by a Department IR (``previous_mop`` set). The MWO's first operation is a gathering point
 in the default department and is exempt.
+
+That exemption does NOT survive a Transfer to Department: once the operator has staged the
+material into a named department every operation is checked, gathering point included, and
+the message tells them to change the operation rather than move the material again.
 """
 
 from types import SimpleNamespace
@@ -33,12 +41,22 @@ def _mr(
 	mop=_MOP,
 	warehouse="WH-Setting",
 	workflow_state="Material Transferred to MOP",
+	transfer_se=None,
+	destination_warehouse=None,
 ):
+	"""A Material Request as before_update_after_submit reads it.
+
+	``transfer_se`` / ``destination_warehouse`` describe a request that has already been
+	through Transfer to Department: the material has moved on, so the guard must read the
+	destination rather than the Request Items' (now stale) warehouse.
+	"""
 	return SimpleNamespace(
 		name="MR-001",
 		workflow_state=workflow_state,
 		custom_manufacturing_operation=mop,
 		custom_department=custom_department,
+		custom_department_transfer_se=transfer_se,
+		custom_destination_warehouse=destination_warehouse,
 		items=[SimpleNamespace(warehouse=warehouse)] if warehouse is not None else [],
 	)
 
@@ -60,6 +78,10 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 	def _run(self, doc, mop_row, warehouse_dept=None):
 		"""Run before_update_after_submit with both Stock Entry makers stubbed.
 
+		``warehouse_dept`` is either one department for every warehouse, or a
+		``{warehouse: department}`` map when a test needs to prove *which* warehouse the
+		guard consulted.
+
 		Returns (department_maker_mock, plain_maker_mock) so callers can assert that
 		nothing was created on the throwing paths.
 		"""
@@ -68,6 +90,8 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 			if doctype == "Manufacturing Operation":
 				return mop_row
 			if doctype == "Warehouse":
+				if isinstance(warehouse_dept, dict):
+					return warehouse_dept.get(name)
 				return warehouse_dept
 			return None
 
@@ -198,6 +222,147 @@ class TestTransferToMopDepartmentGuard(IntegrationTestCase):
 		)
 		msg, _d, _p = self._run_expecting_throw(doc, row, "Diamond Setting - GEPL")
 		self.assertIn("Finished", msg)
+
+	# --- after a Transfer to Department, the material has moved -----------
+
+	def test_uses_destination_warehouse_once_a_department_transfer_happened(self):
+		"""The Request Items' warehouse is stale from that point on.
+
+		Same warehouse map either way, so only the choice of warehouse can decide the
+		outcome: WH-Bagging is in the wrong department, WH-Dest is in the operation's.
+		"""
+		doc = _mr(
+			custom_department="Diamond Bagging - GEPL",
+			warehouse="WH-Bagging",
+			transfer_se="SE-DEPT-1",
+			destination_warehouse="WH-Dest",
+		)
+		row = _mop_row("Pre Polish - GEPL")
+		warehouses = {
+			"WH-Bagging": "Diamond Bagging - GEPL",
+			"WH-Dest": "Pre Polish - GEPL",
+		}
+
+		dept_se, plain_se = self._run(doc, row, warehouses)
+
+		dept_se.assert_called_once_with(doc, mop=_MOP)
+		plain_se.assert_not_called()
+
+	def test_destination_in_another_department_throws_naming_it(self):
+		doc = _mr(
+			custom_department="Diamond Bagging - GEPL",
+			warehouse="WH-Bagging",
+			transfer_se="SE-DEPT-1",
+			destination_warehouse="WH-Dest",
+		)
+		row = _mop_row("Pre Polish - GEPL")
+		warehouses = {
+			"WH-Bagging": "Pre Polish - GEPL",  # would have PASSED on the old reading
+			"WH-Dest": "Diamond Setting - GEPL",
+		}
+
+		msg, dept_se, plain_se = self._run_expecting_throw(doc, row, warehouses)
+
+		self.assertIn("Diamond Setting - GEPL", msg)  # where the material actually is
+		self.assertIn("Pre Polish - GEPL", msg)  # the operation's department
+		dept_se.assert_not_called()
+		plain_se.assert_not_called()
+
+	def test_missing_destination_warehouse_throws(self):
+		doc = _mr(
+			custom_department="Diamond Bagging - GEPL",
+			warehouse="WH-Bagging",
+			transfer_se="SE-DEPT-1",
+			destination_warehouse=None,
+		)
+		row = _mop_row("Pre Polish - GEPL")
+		msg, dept_se, _p = self._run_expecting_throw(doc, row, "Pre Polish - GEPL")
+
+		self.assertIn("Warehouse is missing", msg)
+		dept_se.assert_not_called()
+
+	def test_mismatch_tells_the_operator_to_change_the_operation(self):
+		"""The remedy is the opposite of the classic path's.
+
+		The material was just deliberately placed in a department, so it is the operation
+		that has to change -- not the material that has to move again.
+		"""
+		doc = _mr(
+			custom_department="Diamond Bagging - GEPL",
+			warehouse="WH-Bagging",
+			transfer_se="SE-DEPT-1",
+			destination_warehouse="WH-Dest",
+		)
+		row = _mop_row("Pre Polish - GEPL")
+		warehouses = {
+			"WH-Bagging": "Pre Polish - GEPL",
+			"WH-Dest": "Diamond Setting - GEPL",
+		}
+
+		msg, _d, _p = self._run_expecting_throw(doc, row, warehouses)
+
+		self.assertIn("Select a Manufacturing Operation in Diamond Setting - GEPL", msg)
+		self.assertIn("WH-Dest", msg)
+		self.assertNotIn("Transfer the material", msg)
+
+	# --- the gathering-point exemption does not survive a transfer -------
+
+	def test_never_moved_mop_is_validated_after_a_department_transfer(self):
+		"""Exempt on the classic path, NOT once the operator has staged the material.
+
+		This is the case that used to pass with no department check at all.
+		"""
+		doc = _mr(
+			custom_department="Diamond Bagging - GEPL",
+			warehouse="WH-Bagging",
+			transfer_se="SE-DEPT-1",
+			destination_warehouse="WH-Dest",
+		)
+		row = _mop_row("Manufacturing Plan & Management - GEPL", previous_mop=None)
+		warehouses = {
+			"WH-Bagging": "Diamond Bagging - GEPL",
+			"WH-Dest": "Diamond Setting - GEPL",
+		}
+
+		msg, dept_se, plain_se = self._run_expecting_throw(doc, row, warehouses)
+
+		self.assertIn("Diamond Setting - GEPL", msg)
+		dept_se.assert_not_called()
+		plain_se.assert_not_called()
+
+	def test_never_moved_mop_in_the_destination_department_still_passes(self):
+		doc = _mr(
+			custom_department="Diamond Bagging - GEPL",
+			warehouse="WH-Bagging",
+			transfer_se="SE-DEPT-1",
+			destination_warehouse="WH-Dest",
+		)
+		row = _mop_row("Diamond Setting - GEPL", previous_mop=None)
+		warehouses = {
+			"WH-Bagging": "Diamond Bagging - GEPL",
+			"WH-Dest": "Diamond Setting - GEPL",
+		}
+
+		dept_se, _p = self._run(doc, row, warehouses)
+
+		dept_se.assert_called_once_with(doc, mop=_MOP)
+
+	def test_request_item_warehouse_still_used_without_a_transfer(self):
+		"""Regression: nothing changes for a request that never took the department route."""
+		doc = _mr(
+			custom_department="Diamond Bagging - GEPL",
+			warehouse="WH-Bagging",
+			destination_warehouse="WH-Dest",  # set, but no transfer SE -- must be ignored
+		)
+		row = _mop_row("Diamond Setting - GEPL")
+		warehouses = {
+			"WH-Bagging": "Diamond Setting - GEPL",
+			"WH-Dest": "Pre Polish - GEPL",
+		}
+
+		dept_se, _p = self._run(doc, row, warehouses)
+
+		dept_se.assert_called_once_with(doc, mop=_MOP)
 
 	# --- pre-existing guards keep priority -------------------------------
 

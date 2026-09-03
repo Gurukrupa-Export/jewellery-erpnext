@@ -7,6 +7,7 @@ from frappe.utils import flt, nowdate
 
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request import (
 	make_department_mop_stock_entry,
+	make_department_transfer_stock_entry,
 	make_mop_stock_entry,
 )
 from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils.before_validate import (
@@ -130,7 +131,61 @@ def before_validate(self, method):
 			)
 
 
+def _current_material_warehouse(self):
+	"""Where this request's material physically sits right now.
+
+	Normally the Request Items' warehouse -- the "Material Transfer From Reserve" Stock Entry
+	put it there on submit. But a Transfer to Department moves it on to
+	``custom_destination_warehouse``, and from that state the operator can still go on to
+	Transfer to MOP, so the Request Item warehouse is stale for the rest of the document's
+	life. ``custom_department_transfer_se`` is the marker that the move actually happened.
+
+	``getattr`` rather than ``self.get``: the tests drive this path with ``SimpleNamespace``
+	documents, which carry no ``get``.
+	"""
+	if getattr(self, "custom_department_transfer_se", None):
+		return getattr(self, "custom_destination_warehouse", None)
+
+	return self.items[0].warehouse if self.items else None
+
+
+def _workflow_action_just_applied(self):
+	"""True when this save is the one that moved the document to a new workflow state.
+
+	``before_update_after_submit`` fires on EVERY update-after-submit save -- any Update on a
+	submitted document -- not only the save ``apply_workflow`` performs. The dispatch below
+	keys on the *current* state, so without this the Transfer to MOP guards would re-run on
+	every later Update, long after the material has left the warehouse they compare against.
+	That leaves the document unsaveable, with no way for the operator to get past a check
+	whose premise no longer holds.
+
+	``check_if_latest`` loads ``_doc_before_save`` before the before-save methods run
+	(frappe ``model/document.py``), so the previous value is always available here. An object
+	with no earlier version -- the SimpleNamespace stand-ins the tests build -- counts as a
+	transition: there is no prior state it could already have been in.
+	"""
+	before = (
+		self.get_doc_before_save() if hasattr(self, "get_doc_before_save") else None
+	)
+	return not before or before.get("workflow_state") != self.workflow_state
+
+
 def before_update_after_submit(self, method):
+	"""Dispatch the workflow's final step, whichever route ``custom_operation_type`` chose.
+
+	The routes are mutually exclusive per transition -- the workflow conditions see to that --
+	but they are not exclusive over the document's life: "Material Transferred to Department"
+	also offers Transfer to MOP, so a request can pass through both branches in turn.
+
+	Everything here belongs to the workflow action, so nothing runs on a plain Update.
+	"""
+	if not _workflow_action_just_applied(self):
+		return
+
+	if self.workflow_state == "Material Transferred to Department":
+		make_department_transfer_stock_entry(self)
+		return
+
 	if self.workflow_state != "Material Transferred to MOP":
 		return
 
@@ -154,30 +209,61 @@ def before_update_after_submit(self, method):
 	if mop_fields.status == "Finished":
 		frappe.throw(_("Cannot select an operation that is already Finished."))
 
-	# The material physically sits in the Request Items' warehouse -- the
-	# "Material Transfer From Reserve" Stock Entry put it there on submit. Gate
-	# BOTH branches on that department matching the operation's: ``custom_department``
-	# is a write-once stamp of the *source* (bagging) department and is never equal
-	# to the operation's department, so keying the guard on it -- or leaving it, as
-	# before, only on the no-``custom_department`` branch -- lets every wrong-department
-	# operation through.
+	# Gate BOTH branches on the department the material actually sits in matching the
+	# operation's -- see ``_current_material_warehouse`` for which warehouse that is.
+	# Deliberately NOT ``custom_department``: that is a write-once stamp of the *source*
+	# (bagging) department and is never equal to the operation's department, so keying the
+	# guard on it -- or leaving it, as before, only on the no-``custom_department`` branch --
+	# lets every wrong-department operation through.
 	#
-	# Only enforce once the operation has been walked into a department by a
-	# Department IR. The MWO's first operation is minted in Manufacturing Setting's
-	# ``default_department`` (manufacturing_work_order.create_manufacturing_operation)
-	# and acts as a gathering point for material staged across several departments,
-	# so it can never match and must not be blocked.
-	# department_ir.create_operation_for_next_dept_new stamps ``previous_mop`` on
-	# every Department-IR-created operation, so its absence marks a never-moved one.
-	if mop_fields.previous_mop:
-		if not self.items or not self.items[0].warehouse:
-			frappe.throw(_("Warehouse is missing from Request Items."))
+	# The same rule, but the exemption and the remedy differ by route:
+	#
+	# * Classic path -- the material is still in the Request Items' warehouse and can be
+	#   moved, so a mismatch means "move the material first". Enforced only once the
+	#   operation has been walked into a department by a Department IR: the MWO's first
+	#   operation is minted in Manufacturing Setting's ``default_department``
+	#   (manufacturing_work_order.create_manufacturing_operation) and acts as a gathering
+	#   point for material staged across several departments, so it can never match and must
+	#   not be blocked. department_ir.create_operation_for_next_dept_new stamps
+	#   ``previous_mop`` on every Department-IR-created operation, so its absence marks a
+	#   never-moved one.
+	#
+	# * Department route -- the operator has already chosen where this material lives and a
+	#   Stock Entry has put it there. NOTHING is exempt, gathering point included, and the
+	#   remedy is the other way round: pick an operation in that department.
+	transferred_to_department = bool(
+		getattr(self, "custom_department_transfer_se", None)
+	)
+
+	if transferred_to_department or mop_fields.previous_mop:
+		current_warehouse = _current_material_warehouse(self)
+
+		if not current_warehouse:
+			frappe.throw(
+				_("Destination Warehouse is missing from this Material Request.")
+				if transferred_to_department
+				else _("Warehouse is missing from Request Items.")
+			)
 
 		row_department = frappe.db.get_value(
-			"Warehouse", self.items[0].warehouse, "department"
+			"Warehouse", current_warehouse, "department"
 		)
 
 		if mop_fields.department != row_department:
+			if transferred_to_department:
+				frappe.throw(
+					_(
+						"Manufacturing Operation {0} belongs to department {1}, but this "
+						"Material Request's material was transferred to {2} in department "
+						"{3}. Select a Manufacturing Operation in {3}."
+					).format(
+						self.custom_manufacturing_operation,
+						mop_fields.department or _("(not set)"),
+						current_warehouse,
+						row_department or _("(not set)"),
+					)
+				)
+
 			frappe.throw(
 				_(
 					"Material is in department {0}, but Manufacturing Operation {1} "
