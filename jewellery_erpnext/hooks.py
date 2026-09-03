@@ -175,6 +175,11 @@ doc_events = {
 	},
 	"Stock Entry": {
 		"validate": [
+			# Fills to_<dimension> from <dimension> on every row. Must be at `validate`, not
+			# `before_validate`: StockEntry.validate_warehouse() has not yet resolved
+			# t_warehouse there, and validate_customer_gold_receipt (last before_validate
+			# hook) still rewrites inventory_type afterwards. See the function docstring.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.set_target_inventory_dimensions",
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
 			# Per-role Stock Entry Type whitelist. Fires only on a direct user save of
 			# the Stock Entry itself, never on the dozen cascades that mint one from

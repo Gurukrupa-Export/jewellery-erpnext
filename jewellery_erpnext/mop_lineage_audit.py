@@ -641,7 +641,9 @@ def audit_employee_ir_diamond_lineage(
 	}
 
 
-def _latest_mop_log_balance_rows(mwos: list[str] | None = None) -> list[dict]:
+def _latest_mop_log_balance_rows(
+	mwos: list[str] | None = None, mops: list[str] | None = None
+) -> list[dict]:
 	"""Latest non-cancelled MOP Log row per ``(operation, item, batch)``.
 
 	The SQL shape :func:`audit_mop_balance_drift` has always used, factored out so
@@ -654,12 +656,25 @@ def _latest_mop_log_balance_rows(mwos: list[str] | None = None) -> list[dict]:
 	Caveat inherited from the original: ``MAX(creation)`` + join returns ALL rows
 	tied at the max creation, where ``get_current_mop_balance_rows`` picks exactly
 	one. ``creation`` is datetime(6), so ties are effectively impossible.
+
+	``mops`` is pushed into BOTH query levels; ``mwos`` deliberately is not. Only the
+	outer WHERE was ever filtered, so a "scoped" call still materialised the whole
+	ledger's GROUP BY -- the scoping was cosmetic. ``manufacturing_operation`` IS a
+	GROUP BY key of the derived table, so restricting it there is exactly equivalent
+	and lands on ``mop_balance_idx``. ``manufacturing_work_order`` is NOT a group key
+	and is a ``Data`` pseudo-FK (DATA-002), so pushing it down could change which row
+	is "latest" for a key whose MWO is blank or wrong.
 	"""
 	conditions = ""
+	inner_conditions = ""
 	params: dict = {}
 	if mwos:
 		conditions = "AND ml.manufacturing_work_order IN %(mwos)s"
 		params["mwos"] = tuple(mwos)
+	if mops:
+		conditions += " AND ml.manufacturing_operation IN %(mops)s"
+		inner_conditions = "AND manufacturing_operation IN %(mops)s"
+		params["mops"] = tuple(mops)
 
 	return frappe.db.sql(
 		f"""
@@ -679,6 +694,7 @@ def _latest_mop_log_balance_rows(mwos: list[str] | None = None) -> list[dict]:
 			SELECT manufacturing_operation, item_code, batch_no, MAX(creation) AS mx
 			FROM `tabMOP Log`
 			WHERE is_cancelled = 0 AND IFNULL(manufacturing_operation, '') != ''
+			  {inner_conditions}
 			GROUP BY manufacturing_operation, item_code, batch_no
 		) latest
 			ON latest.manufacturing_operation = ml.manufacturing_operation
@@ -815,6 +831,7 @@ def audit_negative_batch_balances(
 	limit: int = 200,
 	tolerance: float = 0.001,
 	rows: list[dict] | None = None,
+	mops: list[str] | None = None,
 ) -> list[dict]:
 	"""``(operation, item, batch)`` keys whose CURRENT balance is negative.
 
@@ -855,7 +872,7 @@ def audit_negative_batch_balances(
 	:func:`audit_mop_balance_drift` -- see the note on its ``rows`` argument.
 	"""
 	if rows is None:
-		rows = _latest_mop_log_balance_rows(mwos)
+		rows = _latest_mop_log_balance_rows(mwos, mops)
 	if not rows:
 		return []
 
@@ -929,7 +946,151 @@ def audit_negative_batch_balances(
 
 	# Origins first -- that is where the investigation starts -- then by size.
 	out.sort(key=lambda r: (r["inherited"], -abs(flt(r["qty"]))))
-	return out[:limit]
+	# ``limit=0`` returns everything. The sort puts origins FIRST, so truncating drops
+	# CLONES preferentially -- which silently corrupts any downstream clone count or
+	# per-origin roll-up. Callers that aggregate must pass limit=0.
+	return out[:limit] if limit else out
+
+
+def operation_ancestors(mop: str, max_depth: int = 200) -> list[str]:
+	"""``mop`` plus its ``previous_mop`` chain, oldest last. Bounded and cycle-safe.
+
+	Any SCOPED negative-balance query must include these. ``_origin`` only steps onto a
+	predecessor that is itself negative for the same key, so a scope that omits the
+	ancestors makes every inherited row look like its own origin -- scoping to
+	``MOP-A463A`` alone reports ``inherited=False, origin=MOP-A463A`` where the full
+	sweep correctly reports ``origin=MOP-49T4D``.
+	"""
+	chain: list[str] = []
+	seen: set = set()
+	cur = mop
+	while cur and cur not in seen and len(chain) < max_depth:
+		seen.add(cur)
+		chain.append(cur)
+		cur = frappe.db.get_value("Manufacturing Operation", cur, "previous_mop")
+	return chain
+
+
+def negative_balance_findings(
+	mwos: list[str] | None = None,
+	mops: list[str] | None = None,
+	include_ancestors: bool = True,
+	tolerance: float = 0.001,
+	rows: list[dict] | None = None,
+) -> dict:
+	"""Enriched view of :func:`audit_negative_batch_balances` -- one detector, many surfaces.
+
+	Read-only. Adds what a report or an operator needs and the raw detector does not
+	carry: the PCS/UOM context, how much ``gross_wt`` each key suppresses in GRAMS, and
+	how far the defect has been cloned.
+
+	``understatement_g`` is the number to aggregate. The raw ``qty`` column mixes Grams
+	(M/F/O) and Carats (D/G), so summing it is a unit error; this converts D/G through
+	``carat_to_gram`` and reports 0 for a prefix outside ``FIELD_MAP``, which never
+	reaches a weight bucket at all.
+
+	Clone counts are derived by grouping on ``(origin_mop, item, batch)`` BEFORE any
+	display filter, and the detector is called with ``limit=0`` -- it sorts origins
+	first, so a truncated call would drop clones preferentially and undercount.
+	"""
+	from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import FIELD_MAP
+
+	if rows is None:
+		scope = list(mops) if mops else None
+		if scope and include_ancestors:
+			expanded: list[str] = []
+			for mop in scope:
+				expanded.extend(operation_ancestors(mop))
+			scope = sorted(set(expanded))
+		rows = _latest_mop_log_balance_rows(mwos, scope)
+
+	findings = audit_negative_batch_balances(rows=rows, tolerance=tolerance, limit=0)
+	if not findings:
+		return {"findings": [], "by_operation": {}, "totals": _empty_negative_totals()}
+
+	clone_counts: dict = {}
+	for f in findings:
+		key = (f["origin_mop"], f["item_code"], f["batch_no"])
+		clone_counts[key] = clone_counts.get(key, 0) + 1
+
+	mop_meta = {
+		d.name: d
+		for d in frappe.get_all(
+			"Manufacturing Operation",
+			filters={
+				"name": ["in", sorted({f["manufacturing_operation"] for f in findings})]
+			},
+			fields=["name", "manufacturing_order", "for_fg", "gross_wt"],
+			limit_page_length=0,
+		)
+	}
+	uoms = {
+		d.name: d.stock_uom
+		for d in frappe.get_all(
+			"Item",
+			filters={
+				"name": [
+					"in",
+					sorted({f["item_code"] for f in findings if f["item_code"]}),
+				]
+			},
+			fields=["name", "stock_uom"],
+			limit_page_length=0,
+		)
+	}
+
+	by_operation: dict = {}
+	for f in findings:
+		prefix = FIELD_MAP.get((f["item_code"] or "")[:1])
+		qty = flt(f["qty"])
+		if not prefix or qty >= 0:
+			understatement = 0.0
+		elif prefix in ("diamond", "gemstone"):
+			understatement = carat_to_gram(abs(qty))
+		else:
+			understatement = flt(abs(qty), 3)
+
+		meta = mop_meta.get(f["manufacturing_operation"]) or {}
+		f["understatement_g"] = understatement
+		f["understatement_pcs"] = max(0, -cint(f.get("pcs")))
+		f["downstream_clone_count"] = (
+			clone_counts[(f["origin_mop"], f["item_code"], f["batch_no"])] - 1
+		)
+		f["parent_manufacturing_order"] = meta.get("manufacturing_order")
+		f["for_fg"] = cint(meta.get("for_fg"))
+		f["stored_gross_wt"] = flt(meta.get("gross_wt"))
+		f["uom"] = uoms.get(f["item_code"])
+
+		agg = by_operation.setdefault(
+			f["manufacturing_operation"],
+			{"understatement_g": 0.0, "understatement_pcs": 0, "keys": 0},
+		)
+		agg["understatement_g"] = flt(agg["understatement_g"] + understatement, 3)
+		agg["understatement_pcs"] += f["understatement_pcs"]
+		agg["keys"] += 1
+
+	totals = {
+		"keys": len(findings),
+		"origin_keys": sum(1 for f in findings if not f["inherited"]),
+		"inherited_keys": sum(1 for f in findings if f["inherited"]),
+		"operations": len(by_operation),
+		"mwos": len({f["manufacturing_work_order"] for f in findings}),
+		"understatement_g": flt(sum(f["understatement_g"] for f in findings), 3),
+		"understatement_pcs": sum(f["understatement_pcs"] for f in findings),
+	}
+	return {"findings": findings, "by_operation": by_operation, "totals": totals}
+
+
+def _empty_negative_totals() -> dict:
+	return {
+		"keys": 0,
+		"origin_keys": 0,
+		"inherited_keys": 0,
+		"operations": 0,
+		"mwos": 0,
+		"understatement_g": 0.0,
+		"understatement_pcs": 0,
+	}
 
 
 def refining_cutoffs(mwos: list[str] | None = None) -> dict:

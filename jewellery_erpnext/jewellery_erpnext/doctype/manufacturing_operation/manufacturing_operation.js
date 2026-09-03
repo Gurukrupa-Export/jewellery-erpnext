@@ -10,6 +10,7 @@ frappe.ui.form.on("Manufacturing Operation", {
 			frm.set_df_property("employee_source_table", "hidden", 1);
 		}
 		set_html(frm);
+		set_negative_balance_headline(frm);
 
 		if (frm.doc.is_last_operation && frm.doc.for_fg && ["Not Started", "WIP"].includes(frm.doc.status)) {
 			frm.add_custom_button(__("Finish"), async () => {
@@ -809,3 +810,48 @@ frappe.ui.form.on("Employee Target Table", {
 		});
 	},
 });
+
+// A negative MOP Log batch balance is ledger corruption, not stock. gross_wt no longer
+// COUNTS one, so the number on screen is right -- but the ledger underneath still carries
+// the anomaly, and an operator reconciling against a physical weighing is entitled to know
+// before they go looking for missing metal. Wording deliberately mirrors the guard text in
+// manufacturing_operation.py so the dialog, the Error Log entry and this banner tell one story.
+function set_negative_balance_headline(frm) {
+	if (frm.doc.__islocal || !frm.doc.manufacturing_work_order) return;
+	frappe.call({
+		method: "jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_operation.manufacturing_operation.get_negative_balance_notice",
+		args: { manufacturing_operation: frm.doc.name },
+		callback: function (r) {
+			const m = r && r.message;
+			if (!m || !m.affected) return;
+
+			const grams = format_number(m.understatement_g, null, 3);
+			const where = m.inherited_via_rollup
+				? __("inherited through the work-order weight roll-up")
+				: __("carried on this operation's ledger");
+			const origin = (m.origins || []).map((o) => o.origin_mop).join(", ");
+			const tail = origin ? __("Originates at {0}.", [origin]) : "";
+
+			// Cleared only inside this branch -- a blanket clear would silently eat any
+			// headline another handler sets later.
+			frm.dashboard.clear_headline();
+			frm.dashboard.set_headline_alert(
+				__(
+					"Ledger anomaly: {0} g of negative batch balance is excluded from Gross Wt ({1}). {2} This is a data fault, not an operator error \u2014 send the Operation, Item and Batch to Central for reconciliation.",
+					[grams, where, tail]
+				),
+				"red"
+			);
+
+			frm.add_custom_button(
+				__("Negative Balance Detail"),
+				() =>
+					frappe.set_route("query-report", "MOP Negative Batch Balance", {
+						manufacturing_operation: frm.doc.name,
+						origins_only: 0,
+					}),
+				__("Diagnostics")
+			);
+		},
+	});
+}
