@@ -3013,6 +3013,36 @@ def create_test_data():
 
 			_ensure_mr_is_free_item_field()
 
+			from jewellery_erpnext.patches.add_mr_department_transfer_fields import (
+				execute as _ensure_mr_department_transfer_fields,
+			)
+
+			_ensure_mr_department_transfer_fields()
+
+			# Beyond the Workflow State master this is a no-op on a site with no Material
+			# Request workflow, which is every test site -- that workflow has only ever
+			# lived in the production database.
+			from jewellery_erpnext.patches.add_mr_transfer_to_department_workflow import (
+				execute as _ensure_mr_transfer_to_department_workflow,
+			)
+
+			_ensure_mr_transfer_to_department_workflow()
+
+			# A no-op here -- the two patches above now create everything with the corrected
+			# values -- but wired in for the same reason every other patch is: install-app
+			# marks patches complete without running them.
+			from jewellery_erpnext.patches.update_mr_department_transfer_visibility import (
+				execute as _update_mr_department_transfer_visibility,
+			)
+
+			_update_mr_department_transfer_visibility()
+
+			from jewellery_erpnext.patches.add_mr_department_to_mop_transition import (
+				execute as _add_mr_department_to_mop_transition,
+			)
+
+			_add_mr_department_to_mop_transition()
+
 			from jewellery_erpnext.patches.seed_stock_entry_types import (
 				execute as _seed_stock_entry_types,
 			)
