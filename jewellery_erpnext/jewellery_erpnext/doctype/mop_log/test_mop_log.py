@@ -1804,3 +1804,112 @@ class TestNegativeBalanceContractBoundary(IntegrationTestCase):
 		self.assertEqual(len(found), 1)
 		self.assertEqual(found[0]["batch_no"], self.NEG)
 		self.assertEqual(found[0]["qty"], -0.28)
+
+	def test_limit_zero_returns_every_row(self):
+		"""The sort puts origins first, so truncation drops CLONES preferentially.
+
+		Any caller that aggregates (clone counts, per-origin roll-ups) must pass
+		``limit=0`` or it silently undercounts.
+		"""
+		from jewellery_erpnext.mop_lineage_audit import audit_negative_batch_balances
+
+		rows = self._rows()
+		for i in range(5):
+			rows.append(
+				{
+					"mop": f"MOP-CLONE-{i}",
+					"mwo": "MWO-TEST-001",
+					"item_code": self.ITEM,
+					"batch_no": self.NEG,
+					"qty": -0.28,
+					"pcs": 0,
+					"voucher_type": "Department IR",
+					"voucher_no": f"DIR-{i}",
+					"mop_log": f"ML-C{i}",
+					"creation": "2026-08-21 10:00:00",
+				}
+			)
+		with patch(f"{AUDIT}._latest_mop_log_balance_rows", return_value=rows):
+			self.assertEqual(len(audit_negative_batch_balances(limit=0)), 6)
+			self.assertEqual(len(audit_negative_batch_balances(limit=2)), 2)
+
+
+class TestNegativeBalanceFindingsEnrichment(IntegrationTestCase):
+	"""``understatement_g`` is the only unit-safe aggregate over this ledger."""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run(self, rows, lineage=None):
+		"""``lineage`` maps child -> previous_mop so the origin walk has a chain."""
+		from jewellery_erpnext.mop_lineage_audit import negative_balance_findings
+
+		lineage = lineage or {}
+
+		def fake_get_value(doctype, name, fields, *a, **kw):
+			if kw.get("as_dict") or (isinstance(fields, list) and len(fields) > 1):
+				return {
+					"name": name,
+					"previous_mop": lineage.get(name),
+					"status": "Finished",
+					"department": "Model Making",
+				}
+			return lineage.get(name)
+
+		with (
+			patch(f"{AUDIT}.frappe.get_all", return_value=[]),
+			patch(f"{AUDIT}.frappe.db.get_value", side_effect=fake_get_value),
+		):
+			return negative_balance_findings(rows=rows)
+
+	def _row(self, mop, item, batch, qty, pcs=0, creation="2026-08-20 10:00:00"):
+		return {
+			"mop": mop,
+			"mwo": "MWO-TEST-001",
+			"item_code": item,
+			"batch_no": batch,
+			"qty": qty,
+			"pcs": pcs,
+			"voucher_type": "Stock Entry",
+			"voucher_no": "STE-1",
+			"mop_log": f"ML-{mop}",
+			"creation": creation,
+		}
+
+	def test_metal_understatement_is_the_absolute_grams(self):
+		out = self._run([self._row("MOP-A", "M-G-22KT-91.75-Y", "B-P29A8", -0.28)])
+		self.assertEqual(out["totals"]["understatement_g"], 0.28)
+
+	def test_carat_item_is_converted_not_reported_raw(self):
+		"""A -1.4 ct stone suppresses 0.28 g, not 1.4. Summing raw qty is a unit error."""
+		out = self._run([self._row("MOP-A", "D-NT-RO", "B-1", -1.4)])
+		self.assertEqual(out["totals"]["understatement_g"], 0.28)
+
+	def test_pcs_only_negative_reports_zero_grams_but_is_still_found(self):
+		"""The MOP-5HM44 shape: qty positive, pcs negative. Affects pcs, not gross_wt."""
+		out = self._run([self._row("MOP-B", "G-GRS-PR", "B-2", 0.04, pcs=-1)])
+		self.assertEqual(out["totals"]["keys"], 1)
+		self.assertEqual(out["totals"]["understatement_g"], 0.0)
+		self.assertEqual(out["totals"]["understatement_pcs"], 1)
+
+	def test_clone_count_is_group_size_minus_one(self):
+		"""One defect cloned down a chain is ONE origin with N-1 clones, not N defects.
+
+		This is what lets the report collapse the live incident -- ten operations
+		carrying the same -0.28 -- into a single row reading "Clones = 9".
+		"""
+		rows = [
+			self._row("MOP-ORIGIN", "M-G-22KT", "B-P29A8", -0.28),
+			self._row("MOP-C1", "M-G-22KT", "B-P29A8", -0.28),
+			self._row("MOP-C2", "M-G-22KT", "B-P29A8", -0.28),
+		]
+		lineage = {"MOP-C2": "MOP-C1", "MOP-C1": "MOP-ORIGIN"}
+		out = self._run(rows, lineage=lineage)
+		self.assertEqual(out["totals"]["keys"], 3)
+		self.assertEqual(out["totals"]["origin_keys"], 1)
+		self.assertEqual(out["totals"]["inherited_keys"], 2)
+		self.assertTrue(all(f["origin_mop"] == "MOP-ORIGIN" for f in out["findings"]))
+		self.assertTrue(all(f["downstream_clone_count"] == 2 for f in out["findings"]))
+		# the SAME 0.28 g defect, counted once per operation it reached
+		self.assertEqual(out["totals"]["understatement_g"], 0.84)

@@ -6262,3 +6262,135 @@ def get_mop_log_balance(manufacturing_operation):
 			"to_warehouse as t_warehouse",
 		],
 	)
+
+
+@frappe.whitelist()
+def get_negative_balance_notice(manufacturing_operation: str) -> dict:
+	"""Is this operation's ``gross_wt`` reduced by a negative batch balance, and by how much?
+
+	Read-only, for the form banner. ``gross_wt`` no longer COUNTS a negative balance, so
+	the number on screen is correct -- but the ledger underneath still carries the
+	anomaly, and the operator is entitled to know that before they reconcile against a
+	physical weighing.
+
+	Scoped to this operation PLUS its ``previous_mop`` ancestors. The origin walk in
+	``audit_negative_batch_balances`` only steps onto a predecessor that is itself
+	negative for the same key, so a scope without the ancestors reports every inherited
+	row as its own origin -- scoping to MOP-A463A alone claims it is the origin where the
+	full sweep correctly names MOP-49T4D.
+
+	An FG operation is a special case: its header is authored by ``sync_mwo_weights`` from
+	the SIBLING work orders, not by its own ledger, so its own rows can be clean while the
+	number it displays was contaminated. MOP-3DP57's nine rows summed to 16.236 g with no
+	phantom row at all, yet its header stored 15.956. For those we look at the siblings.
+	"""
+	frappe.has_permission(
+		"Manufacturing Operation", doc=manufacturing_operation, throw=True
+	)
+
+	from jewellery_erpnext.mop_lineage_audit import negative_balance_findings
+
+	header = (
+		frappe.db.get_value(
+			"Manufacturing Operation",
+			manufacturing_operation,
+			["name", "for_fg", "manufacturing_work_order", "manufacturing_order"],
+			as_dict=True,
+		)
+		or {}
+	)
+	if not header:
+		return {"affected": False}
+
+	own = negative_balance_findings(mops=[manufacturing_operation])
+	inherited_via_rollup = False
+
+	if (
+		not own["findings"]
+		and cint(header.get("for_fg"))
+		and header.get("manufacturing_order")
+	):
+		sibling_mwos = frappe.get_all(
+			"Manufacturing Work Order",
+			filters={
+				"manufacturing_order": header["manufacturing_order"],
+				"name": ["!=", header.get("manufacturing_work_order")],
+				"for_fg": 0,
+				"docstatus": 1,
+			},
+			pluck="name",
+		)
+		if sibling_mwos:
+			# Mirror sync_mwo_weights EXACTLY: it sums the LATEST MOP of each sibling
+			# MWO, not every operation on them. Summing all of them would count the same
+			# cloned defect once per operation it reached -- reporting 2.8 g where the FG
+			# header actually carries 0.28 g.
+			rollup_mops = []
+			seen_mwos: set = set()
+			for mop in frappe.get_all(
+				"Manufacturing Operation",
+				filters={"manufacturing_work_order": ["in", sibling_mwos]},
+				fields=["name", "manufacturing_work_order"],
+				order_by="creation desc",
+				limit_page_length=0,
+			):
+				if mop.manufacturing_work_order not in seen_mwos:
+					rollup_mops.append(mop.name)
+					seen_mwos.add(mop.manufacturing_work_order)
+			if rollup_mops:
+				own = negative_balance_findings(mops=rollup_mops)
+				own["findings"] = [
+					f
+					for f in own["findings"]
+					if f["manufacturing_operation"] in set(rollup_mops)
+				]
+				inherited_via_rollup = bool(own["findings"])
+
+	if not own["findings"]:
+		return {"affected": False}
+
+	totals = own["totals"]
+	# THIS operation's own number, not the lineage total. The scope deliberately spans
+	# the ancestor chain so the origin walk is correct, but telling an operator their
+	# operation is short 2.8 g when it is short 0.28 g would be alarming and wrong --
+	# 2.8 is the same 0.28 g defect counted once per operation it was cloned onto.
+	this_op = (own["by_operation"] or {}).get(manufacturing_operation) or {}
+	own_understatement_g = flt(this_op.get("understatement_g"))
+	own_understatement_pcs = cint(this_op.get("understatement_pcs"))
+	if inherited_via_rollup:
+		# An FG header is summed from the sibling MWOs' LATEST operations, so the amount
+		# it carries is the sum over exactly those. Summed from the FILTERED findings,
+		# not from ``by_operation`` -- that aggregate is built before the filter and
+		# still spans the ancestor chain the origin walk needed.
+		own_understatement_g = flt(
+			sum(flt(f.get("understatement_g")) for f in own["findings"]), 3
+		)
+		own_understatement_pcs = sum(
+			cint(f.get("understatement_pcs")) for f in own["findings"]
+		)
+	origins = [
+		{
+			"origin_mop": f["origin_mop"],
+			"item_code": f["item_code"],
+			"batch_no": f["batch_no"],
+			"qty": f["qty"],
+			"uom": f.get("uom"),
+			"latest_voucher": f.get("latest_voucher"),
+		}
+		for f in own["findings"]
+		if not f["inherited"]
+	]
+	return {
+		"affected": True,
+		# what THIS operation's gross_wt is missing
+		"understatement_g": own_understatement_g,
+		"understatement_pcs": own_understatement_pcs,
+		# lineage context -- the same defect, counted once per operation it reached
+		"chain_understatement_g": totals["understatement_g"],
+		"chain_key_count": totals["keys"],
+		"key_count": len(own["findings"])
+		if inherited_via_rollup
+		else (cint(this_op.get("keys")) or totals["keys"]),
+		"origins": origins,
+		"inherited_via_rollup": inherited_via_rollup,
+	}

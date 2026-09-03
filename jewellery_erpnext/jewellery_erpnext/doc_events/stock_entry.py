@@ -42,6 +42,90 @@ from jewellery_erpnext.utils import (
 MANUFACTURER = frappe.defaults.get_user_default("manufacturer")
 
 
+def set_target_inventory_dimensions(self, method=None):
+	"""Mirror every registered inventory dimension from a row's SOURCE field onto its TARGET field.
+
+	ERPNext reads the INWARD leg's dimension off ``to_<source_fieldname>`` and the OUTWARD
+	leg off ``<source_fieldname>`` -- erpnext/controllers/stock_controller.py:1186-1195,
+	where the inward branch ``continue``s and so skips every fallback. Nothing in this bench
+	has ever written ``to_inventory_type`` (0 of 992,836 Stock Entry Detail rows on ``gk``),
+	while the blanket default in ``before_validate`` below forces ``inventory_type`` to
+	"Regular Stock" on every row. So every inward Stock Entry SLE carried a NULL Inventory
+	Type and every outward twin carried "Regular Stock".
+
+	That was harmless until ``StockLedgerEntry.validate_serial_no_inventory_dimension``
+	(erpnext#58394, backported as #58419, landed here with erpnext 16.34.1) started
+	comparing an outward serialized SLE against that serial's LAST INWARD SLE, rejecting
+	the mismatch with ``Inventory Type: expected "Not Set", got "Regular Stock"``.
+
+	MUST run at ``validate``, not ``before_validate``:
+
+	* ``StockEntry.validate_warehouse()`` (erpnext stock_entry.py, called from
+	  ``validate()``) is what fills ``d.t_warehouse`` from the header and NULLs it on
+	  Material Issue and Manufacture-consume rows. A ``t_warehouse``-gated mirror running
+	  earlier is wrong in both directions.
+	* ``customer_gold_receipt.validate_customer_gold_receipt`` is the LAST
+	  ``before_validate`` hook (hooks.py) and unconditionally rewrites ``row.inventory_type``
+	  to "Customer Goods". Mirroring beside the blanket default would freeze "Regular Stock"
+	  into ``to_inventory_type`` and tag a customer's gold as company stock -- a worse
+	  instance of the bug this fixes.
+
+	The target NEVER diverges from the source, so this overwrites rather than falling back
+	with ``or``. The Batch minted by this same row reads ``inventory_type``, not
+	``to_inventory_type`` (customization/batch/doc_events/utils.py), so a divergent target
+	would tag the inward SLE with a lane the batch it holds does not have. Every builder in
+	this app expresses an ownership change as a separate consume row plus a separate produce
+	row (metal_conversions.py, melting_loss.py, swap_metal.py), never as one row with two
+	lanes -- there is no legitimate divergent value to preserve.
+
+	Driven off the registered dimension list rather than a hardcoded fieldname because
+	``Customer`` is a live second dimension on ``kg-gk`` and ``alfarsi`` (``gk`` has only
+	``Inventory Type``) and ``to_customer`` has exactly the same never-written defect. The
+	``has_field`` guard is load-bearing: ``to_customer`` exists on Stock Entry Detail only
+	via the gke_customization fixture.
+
+	NOTE: if the Inventory Dimension is ever set ``reqd = 1``,
+	``StockController.validate_inventory_dimension_mandatory`` runs from inside
+	``StockEntry.validate()`` -- i.e. BEFORE this hook -- and will demand
+	``to_inventory_type``. Move the call into a ``CustomStockEntry.validate_warehouse``
+	override (``super()`` first) at that point.
+	"""
+	from erpnext.stock.doctype.inventory_dimension.inventory_dimension import (
+		get_document_wise_inventory_dimensions,
+	)
+
+	if self.docstatus > 1:
+		return
+
+	# @request_cache'd upstream, so this is one query per request no matter how many
+	# Stock Entries a cascade saves.
+	dimensions = get_document_wise_inventory_dimensions("Stock Entry Detail")
+	if not dimensions:
+		return
+
+	meta = frappe.get_meta("Stock Entry Detail")
+	pairs = []
+	for dimension in dimensions:
+		source = dimension.get("source_fieldname")
+		# A dimension whose source already starts with "to_" is read for BOTH legs off the
+		# same field (stock_controller.py:1189-1190) -- nothing to mirror.
+		if not source or source.startswith("to_"):
+			continue
+
+		target = f"to_{source}"
+		if meta.has_field(source) and meta.has_field(target):
+			pairs.append((source, target))
+
+	if not pairs:
+		return
+
+	for row in self.items:
+		for source, target in pairs:
+			# ``or None`` matters: rows already hold "" as well as NULL, and the validator
+			# compares with ``!=``, so "" vs None would be a false mismatch.
+			row.set(target, (row.get(source) or None) if row.t_warehouse else None)
+
+
 def before_validate(self, method):
 	validate_ir(self)
 	if self.docstatus == 0:

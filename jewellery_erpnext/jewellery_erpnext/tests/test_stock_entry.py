@@ -2766,3 +2766,179 @@ class TestConvertMetalPurity(_StockEntryTestCase):
 
 		doc.save.assert_called_once()
 		doc.submit.assert_called_once()
+
+
+# ------------------------------------------- set_target_inventory_dimensions
+class _DimRow(_Row):
+	"""Stock Entry Detail row that also answers ``.set()`` like a real Document."""
+
+	def set(self, key, value):
+		setattr(self, key, value)
+
+
+class _Meta:
+	def __init__(self, fields):
+		self._fields = set(fields)
+
+	def has_field(self, fieldname):
+		return fieldname in self._fields
+
+
+_SED_FIELDS = ("inventory_type", "to_inventory_type", "customer", "to_customer")
+
+_INVENTORY_TYPE_DIM = {
+	"source_fieldname": "inventory_type",
+	"target_fieldname": "inventory_type",
+}
+_CUSTOMER_DIM = {"source_fieldname": "customer", "target_fieldname": "customer"}
+
+
+class TestSetTargetInventoryDimensions(_StockEntryTestCase):
+	"""ERPNext reads the INWARD leg's dimension off ``to_<field>``; nothing ever wrote it.
+
+	See ``set_target_inventory_dimensions`` -- these pin the two decisions that make the
+	fix correct rather than merely present: the mirror overwrites (never falls back with
+	``or``), and it is driven off the registered dimension list rather than a hardcoded
+	``inventory_type``.
+	"""
+
+	def _run(
+		self, rows, dimensions=(_INVENTORY_TYPE_DIM,), fields=_SED_FIELDS, docstatus=0
+	):
+		se = _Doc(docstatus=docstatus, items=list(rows))
+		meta = _Meta(fields)
+		target = (
+			"erpnext.stock.doctype.inventory_dimension.inventory_dimension"
+			".get_document_wise_inventory_dimensions"
+		)
+		with patch(
+			target, return_value=[frappe._dict(d) for d in dimensions]
+		) as dim_mock, patch.object(
+			se_events.frappe, "get_meta", return_value=meta
+		) as meta_mock:
+			se_events.set_target_inventory_dimensions(se)
+		return se, dim_mock, meta_mock
+
+	def test_transfer_row_mirrors_source_onto_target(self):
+		row = _DimRow(
+			inventory_type="Regular Stock", s_warehouse="WH-A", t_warehouse="WH-B"
+		)
+		self._run([row])
+		self.assertEqual(row.to_inventory_type, "Regular Stock")
+
+	def test_produce_only_row_mirrors(self):
+		"""A produce row's own inventory_type IS the ownership of the thing it creates."""
+		row = _DimRow(
+			inventory_type="Customer Goods", s_warehouse=None, t_warehouse="WH-B"
+		)
+		self._run([row])
+		self.assertEqual(row.to_inventory_type, "Customer Goods")
+
+	def test_consume_only_row_gets_none(self):
+		"""No t_warehouse means no inward leg, so the target field must stay empty."""
+		row = _DimRow(
+			inventory_type="Regular Stock", s_warehouse="WH-A", t_warehouse=None
+		)
+		self._run([row])
+		self.assertIsNone(row.to_inventory_type)
+
+	def test_divergent_existing_target_is_overwritten(self):
+		"""The decision test: an ``or`` fallback would preserve "Regular Stock" here.
+
+		The Batch minted by this row reads ``inventory_type``, so a surviving divergent
+		target would tag the inward SLE with a lane the batch does not have.
+		"""
+		row = _DimRow(
+			inventory_type="Customer Goods",
+			to_inventory_type="Regular Stock",
+			s_warehouse="WH-A",
+			t_warehouse="WH-B",
+		)
+		self._run([row])
+		self.assertEqual(row.to_inventory_type, "Customer Goods")
+
+	def test_blank_string_source_normalises_to_none(self):
+		"""'' vs None is a false mismatch: the validator compares with ``!=``."""
+		row = _DimRow(inventory_type="", s_warehouse="WH-A", t_warehouse="WH-B")
+		self._run([row])
+		self.assertIsNone(row.to_inventory_type)
+
+	def test_stale_target_cleared_when_t_warehouse_removed(self):
+		row = _DimRow(
+			inventory_type="Regular Stock",
+			to_inventory_type="Regular Stock",
+			s_warehouse="WH-A",
+			t_warehouse=None,
+		)
+		self._run([row])
+		self.assertIsNone(row.to_inventory_type)
+
+	def test_no_dimensions_registered_short_circuits(self):
+		row = _DimRow(
+			inventory_type="Regular Stock", s_warehouse="WH-A", t_warehouse="WH-B"
+		)
+		_, _, meta_mock = self._run([row], dimensions=())
+		meta_mock.assert_not_called()
+		self.assertFalse(hasattr(row, "to_inventory_type"))
+
+	def test_cancelled_document_short_circuits(self):
+		row = _DimRow(
+			inventory_type="Regular Stock", s_warehouse="WH-A", t_warehouse="WH-B"
+		)
+		_, dim_mock, _ = self._run([row], docstatus=2)
+		dim_mock.assert_not_called()
+		self.assertFalse(hasattr(row, "to_inventory_type"))
+
+	def test_source_already_prefixed_to_is_skipped(self):
+		"""stock_controller reads both legs off the same field for such a dimension."""
+		row = _DimRow(
+			to_inventory_type="Regular Stock", s_warehouse="WH-A", t_warehouse="WH-B"
+		)
+		self._run([row], dimensions=({"source_fieldname": "to_inventory_type"},))
+		self.assertEqual(row.to_inventory_type, "Regular Stock")
+
+	def test_missing_target_field_skips_only_that_dimension(self):
+		"""``to_customer`` ships from gke_customization only -- absence must not break the rest."""
+		row = _DimRow(
+			inventory_type="Customer Goods",
+			customer="CUST-001",
+			s_warehouse="WH-A",
+			t_warehouse="WH-B",
+		)
+		self._run(
+			[row],
+			dimensions=(_INVENTORY_TYPE_DIM, _CUSTOMER_DIM),
+			fields=("inventory_type", "to_inventory_type", "customer"),
+		)
+		self.assertEqual(row.to_inventory_type, "Customer Goods")
+		self.assertFalse(hasattr(row, "to_customer"))
+
+	def test_both_registered_dimensions_are_mirrored(self):
+		"""kg-gk and alfarsi register Customer as well as Inventory Type."""
+		row = _DimRow(
+			inventory_type="Customer Goods",
+			customer="CUST-001",
+			s_warehouse="WH-A",
+			t_warehouse="WH-B",
+		)
+		self._run([row], dimensions=(_INVENTORY_TYPE_DIM, _CUSTOMER_DIM))
+		self.assertEqual(row.to_inventory_type, "Customer Goods")
+		self.assertEqual(row.to_customer, "CUST-001")
+
+	def test_every_row_is_visited(self):
+		rows = [
+			_DimRow(
+				inventory_type="Regular Stock", s_warehouse="WH-A", t_warehouse="WH-B"
+			),
+			_DimRow(
+				inventory_type="Customer Goods", s_warehouse=None, t_warehouse="WH-C"
+			),
+			_DimRow(
+				inventory_type="Regular Stock", s_warehouse="WH-A", t_warehouse=None
+			),
+		]
+		self._run(rows)
+		self.assertEqual(
+			[r.to_inventory_type for r in rows],
+			["Regular Stock", "Customer Goods", None],
+		)
