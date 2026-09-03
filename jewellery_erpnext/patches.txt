@@ -93,3 +93,4 @@ jewellery_erpnext.patches.move_delivery_note_invoice_item
 jewellery_erpnext.patches.add_zero_tax_template_auto_flag
 jewellery_erpnext.patches.move_item_theme_code_section
 jewellery_erpnext.patches.move_final_sketch_section
+jewellery_erpnext.patches.move_item_customer_items_to_sales
