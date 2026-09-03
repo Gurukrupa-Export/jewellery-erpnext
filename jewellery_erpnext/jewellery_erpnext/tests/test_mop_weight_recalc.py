@@ -613,6 +613,102 @@ class TestItemLossItemResolution(IntegrationTestCase):
 		mock_create.assert_called_once_with("ML", {"Metal Type": "Gold"})
 
 
+def _stored_loss_item_doc(name, variant_of="ML", is_new=False, **stored):
+	"""A loss Item stand-in whose ``.get()`` answers from a real field dict.
+
+	A bare MagicMock invents a fresh mock per ``.get()``, which always reads as a
+	diff -- fine for "did we save at all", useless for "did we correctly skip the
+	save". These tests pin the diff guard in ``_sync_loss_item``.
+	"""
+	fields = {
+		"include_item_in_manufacturing": 1,
+		"has_variants": 0,
+		"is_stock_item": 1,
+		"has_batch_no": 1,
+		"create_new_batch": 1,
+		"gst_hsn_code": "HSN-1",
+	}
+	fields.update(stored)
+	doc = MagicMock()
+	doc.name = name
+	doc.variant_of = variant_of
+	doc.get.side_effect = fields.get
+	doc.is_new.return_value = is_new
+	return doc
+
+
+class TestLossItemSyncGuard(IntegrationTestCase):
+	"""``get_item_loss_item`` runs on every loss posting.
+
+	It used to re-save the resolved Item unconditionally, which re-ran every Item
+	hook (including DB-resident Server Scripts) thousands of times a day and could
+	throw ``cant_change`` on an item that needed no change at all.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _resolve(self, resolved_item):
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				side_effect=["ML", "HSN-1"],
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=resolved_item,
+			),
+		):
+			return get_item_loss_item("Test Co", "M-G-22KT-91.9-Y", "M", "Loss")
+
+	def test_matching_loss_item_is_not_resaved(self):
+		# Every tracked flag already matches -> zero writes, name still returned.
+		item = _stored_loss_item_doc("ML-G-22KT-91.9-Y")
+
+		self.assertEqual(self._resolve(item), "ML-G-22KT-91.9-Y")
+		item.save.assert_not_called()
+		item.update.assert_not_called()
+
+	def test_only_the_differing_field_is_written(self):
+		item = _stored_loss_item_doc("ML-G-22KT-91.9-Y", has_batch_no=0)
+
+		self.assertEqual(self._resolve(item), "ML-G-22KT-91.9-Y")
+		item.save.assert_called_once()
+		(changed,), _kwargs = item.update.call_args
+		self.assertEqual(changed, {"has_batch_no": 1})
+
+	def test_new_loss_variant_is_forced_batch_only(self):
+		# create_variant copies has_serial_no down from the loss template. A
+		# serialized loss item cannot receive stock (no serial series is ever
+		# configured), so a new variant must be normalised to batch-only.
+		item = _stored_loss_item_doc("ML-G-22KT-91.9-Y", is_new=True, has_serial_no=1)
+
+		self.assertEqual(self._resolve(item), "ML-G-22KT-91.9-Y")
+		item.save.assert_called_once()
+		(changed,), _kwargs = item.update.call_args
+		self.assertEqual(changed, {"has_serial_no": 0})
+
+	def test_existing_serialized_item_is_left_alone(self):
+		# has_serial_no is in ERPNext's cant_change restricted set: touching it on
+		# an item that already has submitted stock throws. Never attempt it.
+		item = _stored_loss_item_doc("ML-G-22KT-91.9-Y", is_new=False, has_serial_no=1)
+
+		self.assertEqual(self._resolve(item), "ML-G-22KT-91.9-Y")
+		item.save.assert_not_called()
+
+
 class TestLossMappingMatrix(IntegrationTestCase):
 	"""Variant + loss_type combinations described in the spec must all
 	resolve via Variant Loss Table.
