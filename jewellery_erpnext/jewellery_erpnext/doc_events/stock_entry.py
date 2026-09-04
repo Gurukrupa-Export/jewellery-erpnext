@@ -41,6 +41,45 @@ from jewellery_erpnext.utils import (
 
 MANUFACTURER = frappe.defaults.get_user_default("manufacturer")
 
+#: Stock Entry Types historically skipped by the ``custom_pure_qty`` computation below.
+#: The exclusion is why customer metal carries ``pure_qty = 0`` -- the rows were never
+#: reached, so the zeros are "never computed", not "computed as zero". Nothing is wrong with
+#: the inputs: the 24KT item carries its Metal Purity attribute and Manufacturing Setting
+#: resolves ``pure_gold_item``.
+_PURE_QTY_LEGACY_EXCLUDED_TYPES = (
+	"Customer Goods Transfer",
+	"Customer Goods Issue",
+	"Customer Goods Received",
+)
+
+
+def _pure_qty_excluded_types():
+	"""Which Stock Entry Types skip the ``custom_pure_qty`` computation.
+
+	When the Customer Gold flow is ON, the configured receipt type is removed from the
+	exclusion list so customer receipts finally get a real pure quantity -- the balance
+	calculation, PMO allocation and the per-serial split all read it, and a wrong zero would
+	propagate into every one of them.
+
+	Scoped deliberately: only the CONFIGURED receipt type is un-excluded, and only while the
+	flag is on. Transfer and Issue keep their historical behaviour, because this project has
+	not analysed them. Every site with the flag off -- which is every site today -- keeps
+	exactly its previous behaviour.
+	"""
+	from jewellery_erpnext.customer_subcontracting.doctype.subcontracting_settings.subcontracting_settings import (
+		get_customer_gold_settings,
+		is_customer_gold_enabled,
+	)
+
+	if not is_customer_gold_enabled():
+		return _PURE_QTY_LEGACY_EXCLUDED_TYPES
+
+	configured_type = get_customer_gold_settings().get("customer_goods_stock_entry_type")
+	if not configured_type:
+		return _PURE_QTY_LEGACY_EXCLUDED_TYPES
+
+	return tuple(t for t in _PURE_QTY_LEGACY_EXCLUDED_TYPES if t != configured_type)
+
 
 def before_validate(self, method):
 	validate_ir(self)
@@ -99,11 +138,10 @@ def before_validate(self, method):
 						row.manufacturing_operation
 					)
 				)
-		if row.custom_variant_of in ["M", "F"] and self.stock_entry_type not in [
-			"Customer Goods Transfer",
-			"Customer Goods Issue",
-			"Customer Goods Received",
-		]:
+		if (
+			row.custom_variant_of in ["M", "F"]
+			and self.stock_entry_type not in _pure_qty_excluded_types()
+		):
 			if not pure_item_purity:
 				if self.stock_entry_type == "Material Transfer":
 					manufacturer = None
