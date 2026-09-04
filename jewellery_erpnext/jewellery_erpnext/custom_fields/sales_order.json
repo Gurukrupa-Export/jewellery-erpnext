@@ -326,6 +326,17 @@
   },
   {
    "dt": "Sales Order",
+   "fieldname": "custom_flow_type",
+   "fieldtype": "Select",
+   "insert_after": "sales_type",
+   "is_system_generated": 1,
+   "label": "Flow Type",
+   "module": "Jewellery Erpnext",
+   "options": "\nMTO\nMTBI\nMTR\nFILLER\nGCC\nUS\nJWO\nPROTO\nSTT\nPCPM",
+   "read_only": 1
+  },
+  {
+   "dt": "Sales Order",
    "fieldname": "section_gst_breakup",
    "fieldtype": "Section Break",
    "insert_after": "other_charges_calculation",
