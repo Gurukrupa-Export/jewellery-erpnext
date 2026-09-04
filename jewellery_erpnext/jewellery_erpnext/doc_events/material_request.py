@@ -32,6 +32,17 @@ def _get_default_gemstone_item(manufacturer):
 	)
 
 
+def _get_default_finding_item(manufacturer):
+	"""Get the default dummy finding item for a manufacturer."""
+	if not manufacturer:
+		return None
+	return frappe.db.get_value(
+		"Manufacturing Setting",
+		{"manufacturer": manufacturer},
+		"default_finding_item",
+	)
+
+
 # def _is_dummy_gemstone_item(item_code, manufacturer):
 # 	"""Check if item is the default dummy gemstone item."""
 # 	default_gemstone_item = _get_default_gemstone_item(manufacturer)
@@ -77,6 +88,57 @@ def validate_gemstone_alternative_items(self, method=None):
 					_(
 						"Row {0}: Alternative Item cannot be dummy gemstone item."
 					).format(idx)
+				)
+
+	if errors:
+		frappe.throw("<br>".join(errors))
+
+
+def validate_finding_alternative_items(self, method=None):
+	"""Enforce alternative item selection for dummy finding items on reservation.
+
+	Mirrors validate_gemstone_alternative_items: when the MR workflow moves to
+	'Material Reserved', every row carrying the dummy finding item must have a
+	real finding item code in custom_alternative_item.
+	"""
+	# Run only when clicking "Send for Reservation"
+	if self.workflow_state != "Material Reserved":
+		return
+
+	if self.material_request_type != "Manufacture":
+		return
+
+	manufacturer = self.custom_manufacturer or frappe.defaults.get_user_default(
+		"manufacturer"
+	)
+
+	if not manufacturer:
+		return
+
+	default_finding_item = _get_default_finding_item(manufacturer)
+
+	if not default_finding_item:
+		return
+
+	errors = []
+
+	for idx, row in enumerate(self.items, 1):
+		# Check only dummy finding items
+		if row.item_code == default_finding_item:
+			# Alternative item mandatory
+			if not row.custom_alternative_item:
+				errors.append(
+					_(
+						"Row {0}: Please select Alternative Item for dummy finding item."
+					).format(idx)
+				)
+
+			# Prevent same dummy item again
+			elif row.custom_alternative_item == default_finding_item:
+				errors.append(
+					_("Row {0}: Alternative Item cannot be dummy finding item.").format(
+						idx
+					)
 				)
 
 	if errors:
@@ -729,6 +791,7 @@ def make_in_transit_stock_entry(
 @frappe.whitelist()
 def create_stock_entry(self, method):
 	validate_gemstone_alternative_items(self)
+	validate_finding_alternative_items(self)
 
 	if (
 		self.workflow_state != "Material Reserved"

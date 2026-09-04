@@ -1843,6 +1843,21 @@ def create_test_data():
 
 			item.insert(ignore_permissions=True)
 
+		if not frappe.db.exists("Item", "F-PER-DUM-PRE-CC"):
+			item = frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "F-PER-DUM-PRE-CC",
+					"item_name": "Default Dummy Finding",
+					"item_group": "Finding DNU",
+					"stock_uom": "Gram",
+					"is_stock_item": 0,
+					"disabled": 0,
+				}
+			)
+
+			item.insert(ignore_permissions=True)
+
 		if not frappe.db.exists("Manufacturing Setting", "Shubh"):
 			frappe.get_doc(
 				{
@@ -1861,6 +1876,7 @@ def create_test_data():
 					"pure_gold_item": "M-G-24KT-99.9-Y",
 					"subcontracting_repack_item": "M-G-24KT-99.9-Y",
 					"default_gemstone_item": "G-PER-DUM-PRE-CC",
+					"default_finding_item": "F-PER-DUM-PRE-CC",
 					"addition_maximum_item__tolerance_percentage": 50000,
 					"powder_value": 1000,
 					"power_value_individual": 1000,
