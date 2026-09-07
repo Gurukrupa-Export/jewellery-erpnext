@@ -23,6 +23,9 @@
   "supplier",
   "estimated_date",
   "purchase_type",
+  "order_type",
+  "sales_type",
+  "flow_type",
   "get_mwo",
   "get_sales_order",
   "get_repair_order",
@@ -169,6 +172,26 @@
    "fieldtype": "Link",
    "label": "Purchase Type",
    "options": "Purchase Type"
+  },
+  {
+   "description": "Read from the plan's source Sales Orders. No fetch_from: a plan has no single Sales Order link, so set_order_dimensions() stamps this on every validate and throws if the source orders disagree.",
+   "fieldname": "order_type",
+   "fieldtype": "Data",
+   "label": "Order Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sales_type",
+   "fieldtype": "Link",
+   "label": "Sales Type",
+   "options": "Sales Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "flow_type",
+   "fieldtype": "Data",
+   "label": "Flow Type",
+   "read_only": 1
   },
   {
    "fieldname": "get_mwo",
