@@ -641,6 +641,37 @@ def get_scrap_warehouse(department):
 	return scrap_wareouse
 
 
+def _get_gemstone_pr_neighbours(source_pr):
+	"""Return immediate lower and higher Gemstone PR neighbours from Item Attribute Value."""
+	rows = frappe.db.sql(
+		"""
+		SELECT
+			MAX(
+				CASE
+					WHEN CAST(attribute_value AS DECIMAL(10,2)) < %(source_pr)s
+					THEN CAST(attribute_value AS DECIMAL(10,2))
+				END
+			) AS lower_value,
+			MIN(
+				CASE
+					WHEN CAST(attribute_value AS DECIMAL(10,2)) > %(source_pr)s
+					THEN CAST(attribute_value AS DECIMAL(10,2))
+				END
+			) AS higher_value
+		FROM `tabItem Attribute Value`
+		WHERE parent = 'Gemstone PR'
+		""",
+		{"source_pr": source_pr},
+		as_dict=True,
+	)
+	neighbours = []
+	if rows[0].lower_value is not None:
+		neighbours.append(float(rows[0].lower_value))
+	if rows[0].higher_value is not None:
+		neighbours.append(float(rows[0].higher_value))
+	return neighbours
+
+
 def validate_gemstone_item(self):
 	src_item = json.loads(
 		frappe.db.sql(
@@ -656,6 +687,8 @@ def validate_gemstone_item(self):
 	)
 	s_gemstone_size = src_item.get("Gemstone Size")
 	s_gemstone_size = eval("*".join(s_gemstone_size.replace(" MM", "").split("*")))
+	src_pr = flt(src_item.get("Gemstone PR"))
+	allowed_prs = _get_gemstone_pr_neighbours(src_pr)
 
 	for target_row in self.sc_target_table:
 		if target_row.item_code == self.g_source_item:
@@ -681,8 +714,17 @@ def validate_gemstone_item(self):
 			frappe.throw(f"Item Missmatch {target_row.item_code}")
 
 		for attribute in src_item:
-			if attribute == "Stone Shape" or attribute == "Gemstone PR":
+			if attribute == "Stone Shape":
 				continue
+
+			elif attribute == "Gemstone PR":
+				target_pr = flt(item.get(attribute))
+				if target_pr not in allowed_prs:
+					frappe.throw(
+						f"Gemstone PR for this item {target_row.item_code} must be one of "
+						f"{', '.join(str(v) for v in allowed_prs)} "
+						f"(source {self.g_source_item} is {src_pr})"
+					)
 
 			elif attribute == "Gemstone Size":
 				t_gemstone_size = item.get(attribute)
