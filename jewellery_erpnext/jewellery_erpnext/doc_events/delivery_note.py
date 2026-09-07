@@ -25,19 +25,19 @@ def validate(self, method):
 		float(r.custom_other_weight or 0) for r in self.items
 	)
 	self.custom_metal_weight = sum(
-		float(r.custom_metal_weight or 0) for r in self.items
+		float(r.get("custom_metal_weight") or 0) for r in self.items
 	)
 	self.custom_finding_weight = sum(
-		float(r.custom_finding_weight or 0) for r in self.items
+		float(r.get("custom_finding_weight") or 0) for r in self.items
 	)
 	self.custom_diamond_weight = sum(
-		float(r.custom_diamond_weight or 0) for r in self.items
+		float(r.get("custom_diamond_weight") or 0) for r in self.items
 	)
 	self.custom_gemstone_weight = sum(
-		float(r.custom_gemstone_weight or 0) for r in self.items
+		float(r.get("custom_gemstone_weight") or 0) for r in self.items
 	)
 	self.custom_gross_weight = sum(
-		float(r.custom_gross_weight or 0) for r in self.items
+		float(r.get("custom_gross_weight") or 0) for r in self.items
 	)
 
 	# The e-invoice item table and GST used to be copied straight from the
