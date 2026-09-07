@@ -1,0 +1,14 @@
+{
+ "Stock Entry Type": [
+  {
+   "description": "Only these roles can see and use this Stock Entry Type. Leave empty and nobody can - grant the All role to keep it open to everyone. Administrator and System Manager always bypass.",
+   "dt": "Stock Entry Type",
+   "fieldname": "custom_allowed_roles",
+   "fieldtype": "Table MultiSelect",
+   "insert_after": "add_to_transit",
+   "label": "Allowed Roles",
+   "module": "Jewellery Erpnext",
+   "options": "Has Role"
+  }
+ ]
+}

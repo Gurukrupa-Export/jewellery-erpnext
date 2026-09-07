@@ -31,6 +31,7 @@ from jewellery_erpnext.jewellery_erpnext.doctype.mop_settings.mop_eod_sync impor
 	_reconcile_reservations_for_mwo,
 	sync_mop_logs,
 )
+from jewellery_erpnext.utils import carat_to_gram
 
 
 def _row(item_code, batch_no, qaf_batch, pcs_batch=0, name=None, creation=None):
@@ -106,9 +107,9 @@ class TestRecalcManufacturingOperationWeights(IntegrationTestCase):
 			patch.object(mod.frappe.db, "get_value", side_effect=fake_get_value),
 			patch(
 				"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.flt",
-				side_effect=lambda x, *args, **kwargs: float(x)
-				if x is not None
-				else 0.0,
+				side_effect=lambda x, *args, **kwargs: (
+					float(x) if x is not None else 0.0
+				),
 			),
 		):
 			mod.recalculate_manufacturing_operation_weights("MOP-X", pending=pending)
@@ -411,6 +412,66 @@ class TestRecalculateMopWeights(IntegrationTestCase):
 		self.assertAlmostEqual(out["finding_wt"], 2.334, places=3)
 		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.051, places=3)
 
+	def test_two_dg_rows_convert_once_not_per_row(self):
+		# MOP-050YL, the case this rule exists for. Per-row rounding gave
+		# flt(0.497 * 0.2, 3) + flt(0.067 * 0.2, 3) = 0.099 + 0.013 = 0.112, while the
+		# previous operation carried flt(0.564 * 0.2, 3) = 0.113 for the SAME two rows
+		# -- a 0.001 g gross_wt shortfall against prev_gross_wt with no physical cause.
+		rows = [
+			_row("D-NT-RO-6B-+6.5-7", "BD1", 0.497, pcs_batch=20),
+			_row("D-NT-RO-6B-+7.5-8", "BD2", 0.067, pcs_batch=2),
+		]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["diamond_wt"], 0.564, places=3)
+		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.113, places=3)
+		self.assertEqual(out["diamond_pcs"], 22)
+		self.assertAlmostEqual(out["gross_wt"], 0.113, places=3)
+
+	def test_per_row_rounding_up_does_not_manufacture_a_gain(self):
+		# The drift runs both ways. MOP-IN870's split rounded UP per row
+		# (0.036 + 0.036 = 0.072) where the carat total converts to 0.071, so the
+		# operation opened HEAVIER than its predecessor and tripped the unbacked-gain
+		# guard instead of the loss one.
+		rows = [
+			_row("D-X-1", "BD1", 0.178, pcs_batch=1),
+			_row("D-X-2", "BD2", 0.179, pcs_batch=1),
+		]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["diamond_wt"], 0.357, places=3)
+		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.071, places=3)
+
+	def test_gram_twin_is_a_pure_function_of_the_carat_bucket(self):
+		# The invariant itself, over splits that round differently per row. However
+		# the carats arrive, grams must equal carat_to_gram of the summed carats.
+		for split in (
+			[0.497, 0.067],
+			[0.178, 0.179],
+			[0.253],
+			[0.08, 0.173],
+			[1.19, 1.143],
+		):
+			with self.subTest(split=split):
+				out = self._run(
+					[
+						_row(f"D-X-{i}", f"BD{i}", ct, pcs_batch=1)
+						for i, ct in enumerate(split)
+					]
+					+ [
+						_row(f"G-X-{i}", f"BG{i}", ct, pcs_batch=1)
+						for i, ct in enumerate(split)
+					]
+				)
+				self.assertAlmostEqual(
+					out["diamond_wt_in_gram"],
+					carat_to_gram(out["diamond_wt"]),
+					places=3,
+				)
+				self.assertAlmostEqual(
+					out["gemstone_wt_in_gram"],
+					carat_to_gram(out["gemstone_wt"]),
+					places=3,
+				)
+
 	def test_no_active_rows_yields_zero_buckets(self):
 		out = self._run([])
 		self.assertEqual(out["net_wt"], 0.0)
@@ -490,18 +551,26 @@ class TestItemLossItemResolution(IntegrationTestCase):
 	def test_without_loss_type_falls_back_to_source_variant(self):
 		resolved_item = _loss_item_doc("M-G-22KT-91.9-Y", variant_of="M")
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
-			side_effect=[None, "HSN-1"],
-		) as mock_get_value, patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
-			side_effect=[
-				[frappe._dict({"attribute": "Metal Type", "attribute_value": "Gold"})],
-				[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
-			],
-		), patch(
-			"jewellery_erpnext.utils.set_items_from_attribute",
-			return_value=resolved_item,
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				side_effect=[None, "HSN-1"],
+			) as mock_get_value,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=resolved_item,
+			),
 		):
 			result = get_item_loss_item("Test Co", "M-G-22KT-91.9-Y", "M")
 
@@ -513,26 +582,131 @@ class TestItemLossItemResolution(IntegrationTestCase):
 	def test_throws_when_target_loss_variant_unresolvable(self):
 		"""Mapping resolves to a loss_variant template, then creates the missing variant."""
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
-			return_value="ML",
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
-			side_effect=[
-				[frappe._dict({"attribute": "Metal Type", "attribute_value": "Gold"})],
-				[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
-			],
-		), patch(
-			"jewellery_erpnext.utils.set_items_from_attribute",
-			return_value=None,
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.create_loss_item",
-			return_value="ML-G-22KT-91.9-Y",
-		) as mock_create:
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				return_value="ML",
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=None,
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.create_loss_item",
+				return_value="ML-G-22KT-91.9-Y",
+			) as mock_create,
+		):
 			result = get_item_loss_item("Test Co", "M-G-22KT-91.9-Y", "M", "Loss")
 
 		self.assertEqual(result, "ML-G-22KT-91.9-Y")
 		mock_create.assert_called_once_with("ML", {"Metal Type": "Gold"})
+
+
+def _stored_loss_item_doc(name, variant_of="ML", is_new=False, **stored):
+	"""A loss Item stand-in whose ``.get()`` answers from a real field dict.
+
+	A bare MagicMock invents a fresh mock per ``.get()``, which always reads as a
+	diff -- fine for "did we save at all", useless for "did we correctly skip the
+	save". These tests pin the diff guard in ``_sync_loss_item``.
+	"""
+	fields = {
+		"include_item_in_manufacturing": 1,
+		"has_variants": 0,
+		"is_stock_item": 1,
+		"has_batch_no": 1,
+		"create_new_batch": 1,
+		"gst_hsn_code": "HSN-1",
+	}
+	fields.update(stored)
+	doc = MagicMock()
+	doc.name = name
+	doc.variant_of = variant_of
+	doc.get.side_effect = fields.get
+	doc.is_new.return_value = is_new
+	return doc
+
+
+class TestLossItemSyncGuard(IntegrationTestCase):
+	"""``get_item_loss_item`` runs on every loss posting.
+
+	It used to re-save the resolved Item unconditionally, which re-ran every Item
+	hook (including DB-resident Server Scripts) thousands of times a day and could
+	throw ``cant_change`` on an item that needed no change at all.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _resolve(self, resolved_item):
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				side_effect=["ML", "HSN-1"],
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=resolved_item,
+			),
+		):
+			return get_item_loss_item("Test Co", "M-G-22KT-91.9-Y", "M", "Loss")
+
+	def test_matching_loss_item_is_not_resaved(self):
+		# Every tracked flag already matches -> zero writes, name still returned.
+		item = _stored_loss_item_doc("ML-G-22KT-91.9-Y")
+
+		self.assertEqual(self._resolve(item), "ML-G-22KT-91.9-Y")
+		item.save.assert_not_called()
+		item.update.assert_not_called()
+
+	def test_only_the_differing_field_is_written(self):
+		item = _stored_loss_item_doc("ML-G-22KT-91.9-Y", has_batch_no=0)
+
+		self.assertEqual(self._resolve(item), "ML-G-22KT-91.9-Y")
+		item.save.assert_called_once()
+		(changed,), _kwargs = item.update.call_args
+		self.assertEqual(changed, {"has_batch_no": 1})
+
+	def test_new_loss_variant_is_forced_batch_only(self):
+		# create_variant copies has_serial_no down from the loss template. A
+		# serialized loss item cannot receive stock (no serial series is ever
+		# configured), so a new variant must be normalised to batch-only.
+		item = _stored_loss_item_doc("ML-G-22KT-91.9-Y", is_new=True, has_serial_no=1)
+
+		self.assertEqual(self._resolve(item), "ML-G-22KT-91.9-Y")
+		item.save.assert_called_once()
+		(changed,), _kwargs = item.update.call_args
+		self.assertEqual(changed, {"has_serial_no": 0})
+
+	def test_existing_serialized_item_is_left_alone(self):
+		# has_serial_no is in ERPNext's cant_change restricted set: touching it on
+		# an item that already has submitted stock throws. Never attempt it.
+		item = _stored_loss_item_doc("ML-G-22KT-91.9-Y", is_new=False, has_serial_no=1)
+
+		self.assertEqual(self._resolve(item), "ML-G-22KT-91.9-Y")
+		item.save.assert_not_called()
 
 
 class TestLossMappingMatrix(IntegrationTestCase):
@@ -548,20 +722,29 @@ class TestLossMappingMatrix(IntegrationTestCase):
 		resolved_item = _loss_item_doc(
 			f"{expected_template}-VARIANT", variant_of=expected_template
 		)
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
-			side_effect=[expected_template, "HSN-1"],
-		) as mock_get_value, patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
-			side_effect=[
-				[frappe._dict({"attribute": "Metal Type", "attribute_value": "Gold"})],
-				[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
-			],
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.set_value"
-		), patch(
-			"jewellery_erpnext.utils.set_items_from_attribute",
-			return_value=resolved_item,
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				side_effect=[expected_template, "HSN-1"],
+			) as mock_get_value,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.set_value"
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=resolved_item,
+			),
 		):
 			result = get_item_loss_item("Test Co", source_item, variant_of, loss_type)
 
@@ -606,22 +789,32 @@ class TestLossMappingMatrix(IntegrationTestCase):
 		If anyone re-introduces that path, this test fails.
 		"""
 
-		with patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
-			side_effect=["ML", "HSN-1"],
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
-			side_effect=[
-				[frappe._dict({"attribute": "Metal Type", "attribute_value": "Gold"})],
-				[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
-			],
-		), patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_single_value"
-		) as mock_single, patch(
-			"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.set_value"
-		), patch(
-			"jewellery_erpnext.utils.set_items_from_attribute",
-			return_value=_loss_item_doc("ML-VARIANT", variant_of="ML"),
+		with (
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_value",
+				side_effect=["ML", "HSN-1"],
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_all",
+				side_effect=[
+					[
+						frappe._dict(
+							{"attribute": "Metal Type", "attribute_value": "Gold"}
+						)
+					],
+					[{"item_attribute": "Metal Type", "attribute_value": "Gold"}],
+				],
+			),
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.get_single_value"
+			) as mock_single,
+			patch(
+				"jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip.frappe.db.set_value"
+			),
+			patch(
+				"jewellery_erpnext.utils.set_items_from_attribute",
+				return_value=_loss_item_doc("ML-VARIANT", variant_of="ML"),
+			),
 		):
 			get_item_loss_item("Test Co", "M-X", "M", "Loss")
 
@@ -1058,3 +1251,182 @@ class TestEodSyncIdempotentRerun(IntegrationTestCase):
 		]
 		self.assertEqual(stamp_calls, [])
 		mock_reconcile.assert_not_called()
+
+
+class TestRecalcPrefixNarrowing(IntegrationTestCase):
+	"""``prefixes`` limits the write to the families the caller names.
+
+	MOPLog.validate passes the single family of the row being saved, so a per-row
+	save can never rewrite a bucket authored outside MOP Log --
+	``create_manufacturing_operation`` seeds diamond/gemstone weights from the MWO
+	before any stone is issued, and an unnarrowed recompute on the first metal row
+	would zero them.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _bucket_writes(self, prefixes):
+		writes = []
+
+		def fake_set_value(doctype, name, value=None, *_args, **_kwargs):
+			if isinstance(value, dict):
+				writes.append(value)
+
+		rows = [
+			_row("M-G-22KT-91.75-Y", "B-M", 4.289),
+			_row("F-SOP", "B-1", 0.608, name="ML-SOP"),
+			_row("F-PSS", "B-2", 1.323, name="ML-PSS"),
+		]
+		with (
+			patch.object(mod.frappe.db, "sql", return_value=rows),
+			patch.object(mod.frappe.db, "set_value", side_effect=fake_set_value),
+			patch.object(mod, "update_wt_detail"),
+		):
+			mod.recalculate_manufacturing_operation_weights("MOP-X", prefixes=prefixes)
+		return writes
+
+	def test_narrowed_write_covers_only_the_named_family(self):
+		writes = self._bucket_writes(("finding",))
+		self.assertEqual(len(writes), 1, "expected exactly one bucket write")
+		bucket = writes[0]
+		# Both finding items summed -- the MOP-7Q48F figure.
+		self.assertAlmostEqual(bucket["finding_wt"], 1.931, places=3)
+		# A finding row must not touch any other family's bucket.
+		self.assertNotIn("net_wt", bucket)
+		self.assertNotIn("diamond_wt", bucket)
+		self.assertNotIn("gemstone_wt", bucket)
+		self.assertNotIn("other_wt", bucket)
+
+	def test_unnarrowed_write_still_covers_every_family(self):
+		"""The cancel legs and the repair patch rely on the full rewrite."""
+		writes = self._bucket_writes(None)
+		bucket = writes[0]
+		self.assertAlmostEqual(bucket["net_wt"], 4.289, places=3)
+		self.assertAlmostEqual(bucket["finding_wt"], 1.931, places=3)
+		self.assertIn("diamond_wt", bucket)
+		self.assertIn("gemstone_wt", bucket)
+
+	def test_unknown_family_writes_nothing(self):
+		writes = self._bucket_writes(("nosuchfamily",))
+		self.assertEqual(writes, [])
+
+
+class TestNegativeBatchBalanceIsNotStock(IntegrationTestCase):
+	"""A negative (item, batch) balance must not reach a header weight bucket.
+
+	MOP-3DP57 reported gross_wt 16.440 against a Serial Number Creator total_weight of
+	16.720. The 0.280 g gap was one gold batch, KG2F081-MGL229175Y0-P29A8, sitting at
+	-0.28 -- a Material Receive (WORK ORDER) that returned 0.28 g of a SHARED casting
+	batch under an operation that had never been issued it, so the row wrote 0 - 0.28.
+	Every other reader of this ledger already drops or clamps such a row; this recompute
+	was the only one that summed it.
+
+	The clamp is HEADER-ONLY. See TestNewMopBaselineNegativeInheritance in
+	doctype/mop_log/test_mop_log.py, which asserts the LEDGER keeps carrying -0.28
+	forward. Both are correct: the ledger stays honest, the header stops reporting a
+	phantom as a holding.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	_run = TestRecalculateMopWeights._run
+
+	def test_negative_batch_contributes_zero_to_net_wt(self):
+		"""The minimal P29A8 shape: a real batch plus a phantom negative."""
+		rows = [
+			_row("M-G-22KT-91.75-Y", "KG2F081-MGL229175Y0-12L9U", 18.7, name="ML-1"),
+			_row("M-G-22KT-91.75-Y", "KG2F081-MGL229175Y0-P29A8", -0.28, name="ML-2"),
+		]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["net_wt"], 18.7, places=3)
+		self.assertEqual(out["gross_wt"], 18.7)
+
+	def test_mop_3dp57_reconciles_with_its_serial_number_creator(self):
+		"""The full incident: five gold batches + four diamond batches + the phantom.
+
+		The SNC and the Stock Reservation Entries both read 16.236 g gold + 2.418 ct.
+		The header must agree: 16.236 + carat_to_gram(2.418) = 16.236 + 0.484 = 16.720.
+		"""
+		rows = [
+			_row("M-G-22KT-91.75-Y", "B-12L9U", 15.92, pcs_batch=1, name="ML-1"),
+			_row("M-G-22KT-91.75-Y", "B-1U6V7", 0.128, pcs_batch=1, name="ML-2"),
+			_row("M-G-22KT-91.75-Y", "B-2S9L7", 0.118, pcs_batch=1, name="ML-3"),
+			_row("M-G-22KT-91.75-Y", "B-5IB55", 0.037, pcs_batch=1, name="ML-4"),
+			_row("M-G-22KT-91.75-Y", "B-JR944", 0.033, pcs_batch=1, name="ML-5"),
+			# the phantom -- a foreign batch this MWO was never issued
+			_row("M-G-22KT-91.75-Y", "B-P29A8", -0.28, name="ML-6"),
+			_row("D-NT-RO-6B-+6.5-7", "B-75JG2", 0.196, pcs_batch=8, name="ML-7"),
+			_row("D-NT-RO-6B-+7.5-8", "B-E340Q", 1.427, pcs_batch=42, name="ML-8"),
+			_row("D-NT-RO-6B-+8.5-9", "B-68F2Q", 0.684, pcs_batch=16, name="ML-9"),
+			_row("D-NT-RO-6B-+9.5-10", "B-136TQ", 0.111, pcs_batch=2, name="ML-10"),
+		]
+		out = self._run(rows)
+		# Buckets accumulate unrounded -- update_wt_detail rounds ONCE into gross_wt,
+		# which is why gross_wt alone is asserted exactly.
+		self.assertAlmostEqual(out["net_wt"], 16.236, places=3)
+		self.assertAlmostEqual(out["diamond_wt"], 2.418, places=3)
+		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.484, places=3)
+		self.assertEqual(out["diamond_pcs"], 68)
+		self.assertEqual(out["gross_wt"], 16.72)
+
+	def test_positive_balances_are_byte_identical(self):
+		"""The clamp is max(), not a tolerance -- healthy ledgers must not move.
+
+		A tolerance would also discard sub-milligram POSITIVE balances, widening the
+		blast radius from "operations carrying corruption" to "everything".
+		"""
+		rows = [
+			_row("M-G-18KT", "B1", 0.0001, name="ML-1"),
+			_row("M-G-18KT", "B2", 0.0004, name="ML-2"),
+		]
+		out = self._run(rows)
+		# Compared against the RAW float sum, not a rounded literal: max() must return
+		# a positive input unchanged, so the accumulation is bit-for-bit what an
+		# unclamped recompute would produce. A places=3 assert would pass trivially.
+		self.assertEqual(out["net_wt"], 0.0001 + 0.0004)
+
+	def test_negative_qty_with_positive_pcs_keeps_the_pcs(self):
+		"""qty and pcs clamp INDEPENDENTLY.
+
+		The FG-MWO seed's ``HAVING SUM(qty_change) > 0 OR SUM(pcs_change) > 0`` admits a
+		qty-negative row whose pcs sum is positive. Dropping the whole row on a qty
+		signal would silently delete a stone COUNT that Product Certification and the
+		Employee IR PCS cap still read.
+		"""
+		rows = [_row("D-NT-RO", "B1", -0.5, pcs_batch=4, name="ML-1")]
+		out = self._run(rows)
+		self.assertEqual(out["diamond_wt"], 0.0)
+		self.assertEqual(out["diamond_wt_in_gram"], 0.0)
+		self.assertEqual(out["diamond_pcs"], 4)
+
+	def test_positive_qty_with_negative_pcs_keeps_the_qty(self):
+		"""The mirror case, live on kg-gk as MOP-5HM44.
+
+		MAT-STE-10952 issued out qty and pcs; MAT-STE-10954 returned the qty but not
+		the pcs, leaving bal_qty 0.04 against bal_pcs -1.
+		"""
+		rows = [_row("G-GRS-PR-SEP", "B1", 0.04, pcs_batch=-1, name="ML-1")]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["gemstone_wt"], 0.04, places=3)
+		self.assertEqual(out["gemstone_pcs"], 0)
+		self.assertEqual(out["gemstone_wt_in_gram"], carat_to_gram(0.04))
+
+	def test_gram_twin_is_a_pure_function_of_the_clamped_carat_bucket(self):
+		"""The clamp sits ABOVE the carat->gram derivation.
+
+		If it sat below, diamond_wt_in_gram would be derived from the RAW carat total
+		and normalize_mop_carat_to_gram_buckets -- which detects on exactly this
+		invariant -- would fire on every clamped MOP forever.
+		"""
+		rows = [
+			_row("D-NT-RO", "B1", 2.418, pcs_batch=68, name="ML-1"),
+			_row("D-NT-RO", "B2", -1.4, pcs_batch=0, name="ML-2"),
+		]
+		out = self._run(rows)
+		self.assertAlmostEqual(out["diamond_wt"], 2.418, places=3)
+		self.assertEqual(out["diamond_wt_in_gram"], carat_to_gram(out["diamond_wt"]))
+		self.assertEqual(out["diamond_wt_in_gram"], 0.484)

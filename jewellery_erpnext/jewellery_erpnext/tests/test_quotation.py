@@ -114,7 +114,10 @@ class TestQuotation(IntegrationTestCase):
 		)
 
 	def test_validate_gold_rate_with_gst_raises_when_missing(self):
-		dummy = SimpleNamespace(items=[], gold_rate_with_gst=None)
+		row = frappe._dict()
+		row.metal_type = "Gold"
+		row.order_form_id = None
+		dummy = SimpleNamespace(items=[row], gold_rate_with_gst=None)
 		with self.assertRaises(frappe.ValidationError):
 			validate_gold_rate_with_gst(dummy)
 

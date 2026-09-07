@@ -17,7 +17,11 @@ from jewellery_erpnext.jewellery_erpnext.doctype.manufacturing_work_order.doc_ev
 from jewellery_erpnext.jewellery_erpnext.doctype.serial_number_creator.serial_number_creator import (
 	create_snc_from_mwo_submit,
 )
-from jewellery_erpnext.utils import get_item_from_attribute, set_values_in_bulk
+from jewellery_erpnext.utils import (
+	carat_to_gram,
+	get_item_from_attribute,
+	set_values_in_bulk,
+)
 
 
 class ManufacturingWorkOrder(Document):
@@ -115,6 +119,21 @@ class ManufacturingWorkOrder(Document):
 					seen_mwos.add(mop.manufacturing_work_order)
 
 			if latest_mop_names:
+				# SUM over sibling HEADERS, not ledger rows. Each is written by
+				# recalculate_manufacturing_operation_weights, which clamps negative batch
+				# balances (jewellery_erpnext.utils.clamp_negative_balance), so a negative
+				# gross_wt can no longer reach here from the ledger. Deliberately NOT
+				# guarded with GREATEST(gross_wt, 0): after that clamp a negative sibling
+				# header is itself a broken invariant that audit_mop_balance_drift should
+				# REPORT, not a value this aggregate should quietly absorb -- and a second
+				# clamp here would be a second, independent definition of the same rule.
+				#
+				# This force-write is how an FG MOP carries a number its own ledger never
+				# produced: MOP-3DP57's own rows summed to 16.236 g while its header held
+				# 15.956, inherited from a sibling contaminated by a phantom -0.28 batch.
+				# Headers written before the clamp shipped are corrected by
+				# patches/repair_mop_header_weight_buckets, whose _reroll_parents re-runs
+				# this method over the corrected siblings.
 				agg = frappe.db.sql(
 					"""
 					SELECT
@@ -127,7 +146,6 @@ class ManufacturingWorkOrder(Document):
 						SUM(received_gross_wt) AS received_gross_wt,
 						SUM(received_net_wt) AS received_net_wt,
 						SUM(loss_wt) AS loss_wt,
-						SUM(diamond_wt_in_gram) AS diamond_wt_in_gram,
 						SUM(diamond_pcs) AS diamond_pcs,
 						SUM(gemstone_pcs) AS gemstone_pcs
 					FROM `tabManufacturing Operation`
@@ -150,9 +168,21 @@ class ManufacturingWorkOrder(Document):
 					self.received_gross_wt = flt(agg.get("received_gross_wt"))
 					self.received_net_wt = flt(agg.get("received_net_wt"))
 					self.loss_wt = flt(agg.get("loss_wt"))
-					self.diamond_wt_in_gram = flt(agg.get("diamond_wt_in_gram"))
 					self.diamond_pcs = flt(agg.get("diamond_pcs"))
 					self.gemstone_pcs = flt(agg.get("gemstone_pcs"))
+
+		# The carat->gram twins are DERIVED, never summed: SUM(diamond_wt_in_gram) over
+		# siblings adds values that were each already rounded to 3, so it drifts from
+		# flt(carats * 0.2, 3). Derived here rather than inside the `if sibling_mwos:`
+		# block above so the invariant also holds on the no-sibling path, where `agg`
+		# never runs and self.* is written through unchanged.
+		#
+		# Manufacturing Work Order has no gemstone_wt_in_gram column at all -- only the
+		# Manufacturing Operation carries it -- which is why the FG MOP's gemstone carats
+		# were refreshed from the sibling sum while its gram twin was left stale. It goes
+		# into the MOP write below only.
+		self.diamond_wt_in_gram = carat_to_gram(self.diamond_wt)
+		gemstone_wt_in_gram = carat_to_gram(self.gemstone_wt)
 
 		frappe.db.set_value(
 			"Manufacturing Work Order",
@@ -200,6 +230,7 @@ class ManufacturingWorkOrder(Document):
 					"received_net_wt": self.received_net_wt,
 					"loss_wt": self.loss_wt,
 					"diamond_wt_in_gram": self.diamond_wt_in_gram,
+					"gemstone_wt_in_gram": gemstone_wt_in_gram,
 					"diamond_pcs": self.diamond_pcs,
 					"gemstone_pcs": self.gemstone_pcs,
 				},
@@ -922,7 +953,11 @@ def create_manufacturing_operation(doc):
 	mop.received_gross_wt = doc.received_gross_wt
 	mop.received_net_wt = doc.received_net_wt
 	mop.loss_wt = doc.loss_wt
-	mop.diamond_wt_in_gram = doc.diamond_wt_in_gram
+	# Derived twins, not copies. Manufacturing Work Order has no gemstone_wt_in_gram
+	# column, so copying diamond_wt_in_gram verbatim seeded an operation whose gemstone
+	# grams were 0 while its gemstone carats were not.
+	mop.diamond_wt_in_gram = carat_to_gram(doc.diamond_wt)
+	mop.gemstone_wt_in_gram = carat_to_gram(doc.gemstone_wt)
 	mop.diamond_pcs = doc.diamond_pcs
 	mop.gemstone_pcs = doc.gemstone_pcs
 

@@ -188,7 +188,9 @@ class TestMaterialRequestTransferType(IntegrationTestCase):
 			side_effect=_gv,
 		), patch.object(mr_mod, "update_pure_qty"), patch.object(
 			mr_mod, "validate_target_item"
-		), patch.object(mr_mod, "validate_warehouse"):
+		), patch.object(mr_mod, "validate_warehouse"), patch.object(
+			mr_mod, "set_reservation_warehouse"
+		):
 			mr_mod.before_validate(mr, None)
 		return mr.custom_transfer_type
 
@@ -454,7 +456,7 @@ class TestCreateStockEntryReserveMemo(IntegrationTestCase):
 	def setUpClass(cls):
 		pass
 
-	def _run(self, from_warehouses, department_of):
+	def _run(self, from_warehouses, department_of, custom_department=None):
 		calls = []
 
 		def _gv(doctype, filters, fieldname, *a, **kw):
@@ -464,6 +466,8 @@ class TestCreateStockEntryReserveMemo(IntegrationTestCase):
 			if doctype == "Warehouse" and fieldname == "department":
 				return department_of[filters]
 			if doctype == "Warehouse" and fieldname == "name":
+				if filters["warehouse_type"] == "Raw Material":
+					return f"RM-{filters['department']}"
 				return f"RESERVE-{filters['department']}"
 			raise AssertionError(f"unexpected get_value {doctype}.{fieldname}")
 
@@ -475,9 +479,11 @@ class TestCreateStockEntryReserveMemo(IntegrationTestCase):
 			manufacturing_order="PMO-1",
 			material_request_type="Material Transfer",
 			custom_transfer_type="Transfer to Reserve",
+			custom_department=custom_department,
 			items=[
 				SimpleNamespace(
 					name=f"MRI-{i}",
+					idx=i + 1,
 					from_warehouse=wh,
 					item_code="ITEM-1",
 					custom_alternative_item=None,
@@ -537,7 +543,10 @@ class TestCreateStockEntryReserveMemo(IntegrationTestCase):
 			manufacturing_order="PMO-1",
 			material_request_type="Material Transfer",
 			custom_transfer_type="Transfer to Reserve",
-			items=[SimpleNamespace(from_warehouse="CAST-RM")],
+			custom_department=None,
+			items=[
+				SimpleNamespace(idx=1, item_code="ITEM-1", from_warehouse="CAST-RM")
+			],
 		)
 
 		with patch.object(mr_mod.frappe.db, "get_value", side_effect=_gv), patch.object(
@@ -547,6 +556,79 @@ class TestCreateStockEntryReserveMemo(IntegrationTestCase):
 				mr_mod.create_stock_entry(mr, None)
 
 		self.assertIn("Casting", throw.call_args[0][0])
+
+	def test_blank_source_falls_back_to_request_department(self):
+		"""A hand-added row has no Source Warehouse: the request's department carries it."""
+		rows = self._run([None], {}, custom_department="Diamond Bagging")
+
+		self.assertEqual(rows.count(("Warehouse", "department")), 0)
+		self.assertEqual(rows.count(("Warehouse", "name")), 2)
+
+	def test_blank_source_reuses_the_populated_rows_department_lookup(self):
+		"""Mixed rows: the blank one resolves without a second Reserve lookup."""
+		rows = self._run(
+			["CAST-RM", None], {"CAST-RM": "Casting"}, custom_department="Casting"
+		)
+
+		self.assertEqual(rows.count(("Warehouse", "department")), 1)
+		self.assertEqual(rows.count(("Warehouse", "name")), 2)
+
+	def test_blank_source_and_no_department_names_the_row(self):
+		def _gv(doctype, filters, fieldname, *a, **kw):
+			if doctype == "Transfer Type":
+				return "SE Type"
+			return None
+
+		mr = SimpleNamespace(
+			name="MR-1",
+			company="KGJPL",
+			workflow_state="Material Reserved",
+			custom_reserve_se=None,
+			manufacturing_order="PMO-1",
+			material_request_type="Material Transfer",
+			custom_transfer_type="Transfer to Reserve",
+			custom_department=None,
+			items=[SimpleNamespace(idx=2, item_code="D-NT-RO-6G", from_warehouse=None)],
+		)
+
+		with patch.object(mr_mod.frappe.db, "get_value", side_effect=_gv), patch.object(
+			mr_mod.frappe, "new_doc", return_value=MagicMock()
+		), patch.object(mr_mod.frappe, "throw", side_effect=RuntimeError) as throw:
+			with self.assertRaises(RuntimeError):
+				mr_mod.create_stock_entry(mr, None)
+
+		msg = throw.call_args[0][0]
+		self.assertIn("2", msg)
+		self.assertIn("D-NT-RO-6G", msg)
+		self.assertNotIn("None", msg)
+
+	def test_blank_source_and_no_raw_material_warehouse_names_the_row(self):
+		def _gv(doctype, filters, fieldname, *a, **kw):
+			if doctype == "Transfer Type":
+				return "SE Type"
+			return None  # no Raw Material warehouse for the department
+
+		mr = SimpleNamespace(
+			name="MR-1",
+			company="KGJPL",
+			workflow_state="Material Reserved",
+			custom_reserve_se=None,
+			manufacturing_order="PMO-1",
+			material_request_type="Material Transfer",
+			custom_transfer_type="Transfer to Reserve",
+			custom_department="Diamond Bagging",
+			items=[SimpleNamespace(idx=2, item_code="D-NT-RO-6G", from_warehouse="")],
+		)
+
+		with patch.object(mr_mod.frappe.db, "get_value", side_effect=_gv), patch.object(
+			mr_mod.frappe, "new_doc", return_value=MagicMock()
+		), patch.object(mr_mod.frappe, "throw", side_effect=RuntimeError) as throw:
+			with self.assertRaises(RuntimeError):
+				mr_mod.create_stock_entry(mr, None)
+
+		msg = throw.call_args[0][0]
+		self.assertIn("Diamond Bagging", msg)
+		self.assertIn("D-NT-RO-6G", msg)
 
 	def tearDown(self):
 		return super().tearDown()

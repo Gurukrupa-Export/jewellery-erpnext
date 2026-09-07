@@ -8,6 +8,59 @@ from frappe import _
 from frappe.desk.reportview import get_match_cond
 from frappe.query_builder import CustomFunction
 from frappe.query_builder.functions import Locate
+from frappe.utils import flt
+
+# One carat is 0.2 g. A ``*_wt_in_gram`` field is a DERIVED view of its carat
+# counterpart -- convert the total once, at the end, never per ledger row.
+CARAT_TO_GRAM = 0.2
+
+
+def carat_to_gram(carats, precision=3):
+	"""Convert a carat total to grams, rounding exactly once.
+
+	Rounding each row before summing makes ``{diamond,gemstone}_wt_in_gram``
+	drift from ``{diamond,gemstone}_wt`` by up to half a milligram per row, which
+	surfaces downstream as a phantom ``gross_wt`` loss or gain against
+	``prev_gross_wt`` -- see ``recalculate_manufacturing_operation_weights``. The
+	carat total is rounded to the field's own precision first, so the invariant
+	holds against the value actually stored.
+	"""
+	return flt(flt(carats, precision) * CARAT_TO_GRAM, precision)
+
+
+def clamp_negative_balance(qty, pcs=0):
+	"""What a MOP Log ``(item, batch)`` balance contributes to a HEADER tally.
+
+	A negative batch balance says the ledger consumed more of a batch than it ever
+	held -- physically impossible, so it is corruption, not stock. Every other reader
+	of that tier already refuses to count it: SerialNumberCreator's source-row builder
+	(``if qty <= 0: continue``), the EOD Stock Entry builder, the PC-to-Tagging
+	transfer builder, and ``get_available_qty_pcs_for_mop_item``'s ``max(0.0, ...)``.
+	``recalculate_manufacturing_operation_weights`` was the only one that summed it,
+	which is why MOP-3DP57 read gross_wt 16.440 against a Serial Number Creator
+	total_weight of 16.720 -- one gold batch ``KG2F081-MGL229175Y0-P29A8`` sitting at
+	-0.28, returned by a Material Receive stamped to an operation that never held it.
+
+	Clamps WITHOUT a tolerance. ``max`` leaves every non-negative row byte-identical,
+	so the blast radius is exactly the corrupt rows; a tolerance would also discard
+	sub-milligram POSITIVE balances and change the answer for healthy ledgers.
+
+	qty and pcs are clamped INDEPENDENTLY, mirroring
+	``get_available_qty_pcs_for_mop_item``. The two tiers disagree in sign on real
+	data -- the FG-MWO seed's ``HAVING SUM(qty_change) > 0 OR SUM(pcs_change) > 0``
+	admits a qty-negative row whose pcs sum is positive -- so dropping a whole row on
+	a qty signal would silently delete a stone COUNT that Product Certification and
+	the Employee IR PCS cap still read.
+
+	HEADER-ONLY, and that is the whole contract. The MOP Log row keeps its negative
+	value: the audit trail must stay honest, ``audit_negative_batch_balances`` must
+	keep finding it, and ``update_new_mop_wtg``'s delta floor deliberately clones an
+	inherited negative forward rather than inventing metal. Clamping the LEDGER would
+	add metal no Stock Ledger Entry ever created; clamping the HEADER only stops a
+	phantom from being reported as a holding. See TestNewMopBaselineNegativeInheritance,
+	which asserts the opposite of this function about the same -0.28 -- both are correct.
+	"""
+	return max(0.0, flt(qty)), max(0.0, flt(pcs))
 
 
 @frappe.whitelist()
@@ -367,6 +420,38 @@ def is_mwo_refined(manufacturing_work_order):
 			(manufacturing_work_order,),
 		)
 	)
+
+
+def get_mwo_refining_cutoff(manufacturing_work_order):
+	"""Submit time of the Work Order Refining Entry that consumed this MWO's metal, else None.
+
+	Companion to :func:`is_mwo_refined`. Refining zeroes the MWO's balances, so every MOP
+	Log row created at or before this moment describes metal that no longer exists. Readers
+	that rebuild an opening balance from the ledger must ignore those rows: on data written
+	before the refining zero-out was made reliable, a pre-refining row can still be the
+	latest one for its (item, batch) and would resurrect a dead balance.
+
+	Recasting a refined MWO is an expected manual flow (``complete_refining`` only
+	*advises* the Work Order action), so this is a cutoff, never a reason to drop a real
+	movement -- post-refining stock movements must still be ledgered, just against a zero
+	opening balance.
+	"""
+	if not manufacturing_work_order:
+		return None
+	rows = frappe.db.sql(
+		"""
+		SELECT MAX(re.modified) AS refined_on
+		FROM `tabManufacturing Work Order Refining Details` d
+		INNER JOIN `tabRefining Entry` re ON re.name = d.parent
+		WHERE d.manufacturing_work_order = %s
+		  AND d.parenttype = 'Refining Entry'
+		  AND re.docstatus = 1
+		  AND re.refining_type = 'Work Order Refining'
+		""",
+		(manufacturing_work_order,),
+		as_dict=True,
+	)
+	return rows[0].get("refined_on") if rows else None
 
 
 def set_values_in_bulk(doctype, doclist, values):

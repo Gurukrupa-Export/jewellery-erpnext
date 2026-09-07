@@ -1134,6 +1134,7 @@ def _run(
 	loss_item="GOLD-18KT-ML",
 	owed=None,
 	ownership=None,
+	fallback=None,
 ):
 	"""Call an op helper with persistence + warehouse/loss-item resolution mocked.
 
@@ -1145,6 +1146,9 @@ def _run(
 	single unbounded batch per item so shape-focused tests need not model batch provenance;
 	``TestTreeOwedBatches`` / ``TestReceiveBatchParity`` cover that layer directly.
 	``ownership`` stubs ``_batch_ownership`` (``{batch_no: (inventory_type, customer)}``).
+	``fallback`` stubs the same-ownership-tier substitute pool (``_tree_fallback_batches``), in the
+	same shape as ``owed``. It defaults to EMPTY, not to an unbounded batch: a test that does not
+	opt in gets the strict pre-fallback behaviour, and no test reaches the database for it.
 	"""
 	fakes = _RunResult()
 
@@ -1159,6 +1163,29 @@ def _run(
 		if isinstance(owed, dict):
 			return list(owed.get(item_code, []))
 		return list(owed)
+
+	def _fallback(_se, _tree, item_code, _msl_wh, offered=None, limit=None):
+		if fallback is None:
+			return []
+		rows = (
+			list(fallback.get(item_code, []))
+			if isinstance(fallback, dict)
+			else list(fallback)
+		)
+		# Mirror the real helper: SUBTRACT what the own pool already offers (never skip the
+		# batch outright), and stop at `limit`.
+		out = []
+		remaining = float(limit) if limit is not None else float("inf")
+		for batch_no, avail in rows:
+			if remaining <= 0:
+				break
+			free = float(avail) - float((offered or {}).get(batch_no, 0))
+			if free <= 0:
+				continue
+			take = min(free, remaining)
+			out.append((batch_no, take))
+			remaining -= take
+		return out
 
 	def _priority(batch_nos, with_no_wastage=False):
 		# Same `ownership` stub the legacy _batch_ownership patch below uses, in the
@@ -1185,6 +1212,7 @@ def _run(
 		patch.object(tse, "validate_no_prior_period_pending"),
 		patch.object(tse, "batch_priority_map", side_effect=_priority),
 		patch.object(tse, "_tree_owed_batches", side_effect=_owed),
+		patch.object(tse, "_tree_fallback_batches", side_effect=_fallback),
 		patch.object(tse, "_batch_ownership", return_value=ownership or {}),
 		patch.object(tse, "_resolve_source_warehouse", return_value=source_wh),
 		patch.object(tse, "_resolve_msl_warehouse", return_value=msl_wh),
@@ -1957,6 +1985,251 @@ class TestTreeOwedBatches(IntegrationTestCase):
 		self.assertEqual(out, [])
 
 
+class TestTreeFallbackBatches(IntegrationTestCase):
+	"""``_tree_fallback_batches`` — same-ownership-tier stand-ins for a consumed batch.
+
+	Regression origin: KGJPL-TR-26-00015. Seventeen trees issued into ONE batch at the casting
+	employee's shared MSL warehouse; the untagged ``Material Transfer (WORK ORDER)`` draws consumed
+	it oldest-first until it hit exactly zero, each tree having correctly drawn its own share. Three
+	trees were left holding a real ledger claim against a batch that no longer existed — unable to
+	Receive, and unable even to write off through ``submit_tree``, which settles leftovers through
+	this same allocator. Batch identity does not survive casting; ownership does, and ownership is
+	what the GEPL-TR-26-00150 regression actually violated.
+	"""
+
+	MSL = "EMP-MSL"
+
+	def _call(
+		self, own, available, ownership, limit, offered=None, item_code="GOLD-18KT"
+	):
+		se = SimpleNamespace(posting_date="2026-08-27", posting_time="10:00:00")
+
+		def _priority(batch_nos, with_no_wastage=False):
+			out = {}
+			for b in batch_nos or []:
+				inv, cust = ownership.get(b, (None, None))
+				out[b] = frappe._dict(
+					inventory_type=inv, customer=cust, creation="", no_wastage=False
+				)
+			return out
+
+		with (
+			patch.object(tse, "_tree_netted_owed", return_value=dict(own)),
+			patch.object(tse, "_ensure_posting_datetime"),
+			patch.object(
+				tse,
+				"capped_auto_batch_nos",
+				return_value=[frappe._dict(b) for b in available],
+			),
+			patch.object(tse, "batch_priority_map", side_effect=_priority),
+			patch.object(tse, "_pending_eps", return_value=0.0005),
+			patch.object(tse, "_se_precision", return_value=3),
+		):
+			return tse._tree_fallback_batches(
+				se,
+				SimpleNamespace(name="TREE-1"),
+				item_code,
+				self.MSL,
+				offered=dict(offered or {}),
+				limit=limit,
+			)
+
+	REG = ("Regular Stock", None)
+	CUST1 = ("Customer Goods", "CUST-1")
+	CUST2 = ("Customer Goods", "CUST-2")
+
+	def test_company_metal_stands_in_for_a_consumed_company_batch(self):
+		"""The KGJPL-TR-26-00015 case: own batch gone, same-tier metal present."""
+		out = self._call(
+			own={"B-GONE": 471.18},
+			available=[{"batch_no": "B-OTHER", "qty": 388.608}],
+			ownership={"B-GONE": self.REG, "B-OTHER": self.REG},
+			limit=5.0,
+		)
+		self.assertEqual(out, [("B-OTHER", 5.0)])
+
+	def test_customer_metal_never_repays_a_company_issue(self):
+		out = self._call(
+			own={"B-GONE": 6.0},
+			available=[{"batch_no": "B-CUST", "qty": 50.0}],
+			ownership={"B-GONE": self.REG, "B-CUST": self.CUST1},
+			limit=5.0,
+		)
+		self.assertEqual(out, [])
+
+	def test_company_metal_never_repays_a_customer_issue(self):
+		"""The GEPL-TR-26-00150 regression, restated for the fallback."""
+		out = self._call(
+			own={"B-CUST": 6.0},
+			available=[{"batch_no": "B-REG", "qty": 50.0}],
+			ownership={"B-CUST": self.CUST1, "B-REG": self.REG},
+			limit=5.0,
+		)
+		self.assertEqual(out, [])
+
+	def test_one_customers_issue_is_repaid_only_from_that_same_customer(self):
+		out = self._call(
+			own={"B-C1": 6.0},
+			available=[
+				{"batch_no": "B-C2", "qty": 50.0},
+				{"batch_no": "B-C1B", "qty": 50.0},
+			],
+			ownership={
+				"B-C1": self.CUST1,
+				"B-C1B": self.CUST1,
+				"B-C2": self.CUST2,
+			},
+			limit=4.0,
+		)
+		self.assertEqual(out, [("B-C1B", 4.0)])
+
+	def test_blank_inventory_type_is_company_metal_on_both_sides(self):
+		"""``normalize_ownership`` collapses a blank type to the company default.
+
+		Without that, a tree that issued unlabelled metal would match no candidate and the
+		fallback would be silently dead for exactly the commonest case.
+		"""
+		out = self._call(
+			own={"B-GONE": 6.0},
+			available=[{"batch_no": "B-REG", "qty": 50.0}],
+			ownership={"B-GONE": (None, None), "B-REG": self.REG},
+			limit=5.0,
+		)
+		self.assertEqual(out, [("B-REG", 5.0)])
+
+	def test_limit_caps_the_substitution_not_the_pool(self):
+		"""``limit`` is the caller's unmet need, itself bounded by the ledger's pending."""
+		out = self._call(
+			own={"B-GONE": 9999.0},
+			available=[{"batch_no": "B-REG", "qty": 500.0}],
+			ownership={"B-GONE": self.REG, "B-REG": self.REG},
+			limit=3.0,
+		)
+		self.assertEqual(out, [("B-REG", 3.0)])
+
+	def test_spills_across_several_same_tier_batches(self):
+		out = self._call(
+			own={"B-GONE": 100.0},
+			available=[
+				{"batch_no": "B-A", "qty": 2.0},
+				{"batch_no": "B-B", "qty": 10.0},
+			],
+			ownership={"B-GONE": self.REG, "B-A": self.REG, "B-B": self.REG},
+			limit=6.0,
+		)
+		self.assertEqual(out, [("B-A", 2.0), ("B-B", 4.0)])
+
+	def test_customer_tier_comes_back_first_when_the_tree_spans_both(self):
+		out = self._call(
+			own={"B-C1": 5.0, "B-GONE": 5.0},
+			available=[
+				{"batch_no": "B-REG", "qty": 50.0},
+				{"batch_no": "B-C1B", "qty": 3.0},
+			],
+			ownership={
+				"B-C1": self.CUST1,
+				"B-C1B": self.CUST1,
+				"B-GONE": self.REG,
+				"B-REG": self.REG,
+			},
+			limit=5.0,
+		)
+		self.assertEqual(out, [("B-C1B", 3.0), ("B-REG", 2.0)])
+
+	def test_what_the_own_pool_already_offers_is_not_offered_twice(self):
+		"""The own pool puts up all 4.0 of B-MINE, so the fallback must not re-offer any of it."""
+		out = self._call(
+			own={"B-MINE": 4.0},
+			available=[
+				{"batch_no": "B-MINE", "qty": 4.0},
+				{"batch_no": "B-REG", "qty": 50.0},
+			],
+			ownership={"B-MINE": self.REG, "B-REG": self.REG},
+			limit=2.0,
+			offered={"B-MINE": 4.0},
+		)
+		self.assertEqual(out, [("B-REG", 2.0)])
+
+	def test_the_residual_of_the_trees_own_batch_is_still_available_to_it(self):
+		"""Owed 81.38 of a batch the warehouse holds 326.814 of: the other 245.434 is same-tier
+		metal like any other, and stranding the tree next to it would be the same bug in a new
+		place. Regression: KGJPL-TR-26-00040 projected 223.61 g short while that residual sat
+		unclaimed in its own batch.
+		"""
+		out = self._call(
+			own={"B-MINE": 81.38},
+			available=[{"batch_no": "B-MINE", "qty": 326.814}],
+			ownership={"B-MINE": self.REG},
+			limit=100.0,
+			offered={"B-MINE": 81.38},
+		)
+		self.assertEqual(out, [("B-MINE", 100.0)])
+
+	def test_a_tree_that_issued_nothing_gets_no_substitute(self):
+		out = self._call(
+			own={},
+			available=[{"batch_no": "B-REG", "qty": 50.0}],
+			ownership={"B-REG": self.REG},
+			limit=5.0,
+		)
+		self.assertEqual(out, [])
+
+	def test_zero_limit_short_circuits_before_any_query(self):
+		se = SimpleNamespace(posting_date="2026-08-27", posting_time="10:00:00")
+		with (
+			patch.object(tse, "_tree_netted_owed") as netted,
+			patch.object(tse, "capped_auto_batch_nos") as avail,
+			patch.object(tse, "_pending_eps", return_value=0.0005),
+			patch.object(tse, "_se_precision", return_value=3),
+		):
+			out = tse._tree_fallback_batches(
+				se,
+				SimpleNamespace(name="TREE-1"),
+				"GOLD-18KT",
+				self.MSL,
+				offered={},
+				limit=0.0,
+			)
+		self.assertEqual(out, [])
+		netted.assert_not_called()
+		avail.assert_not_called()
+
+	def test_empty_same_tier_pool_returns_empty_so_the_caller_throws(self):
+		out = self._call(
+			own={"B-GONE": 6.0},
+			available=[],
+			ownership={"B-GONE": self.REG},
+			limit=5.0,
+		)
+		self.assertEqual(out, [])
+
+
+class TestMergePool(IntegrationTestCase):
+	"""``_merge_pool`` — one entry per batch, first-seen order.
+
+	``allocate_in_order`` keys its shared ``taken`` ledger by batch, so a batch appearing twice
+	would have the second entry's free qty measured against the first entry's consumption and
+	silently under-offer. That is reachable in production the moment the fallback tops up a batch
+	the tree's own pool already put up.
+	"""
+
+	def test_duplicate_batches_are_summed_not_repeated(self):
+		self.assertEqual(
+			tse._merge_pool([("B-1", 2.0)], [("B-1", 3.0)]),
+			[("B-1", 5.0)],
+		)
+
+	def test_first_seen_order_is_preserved(self):
+		self.assertEqual(
+			tse._merge_pool([("B-A", 1.0), ("B-B", 1.0)], [("B-C", 1.0), ("B-A", 4.0)]),
+			[("B-A", 5.0), ("B-B", 1.0), ("B-C", 1.0)],
+		)
+
+	def test_empty_and_none_pools_are_tolerated(self):
+		self.assertEqual(tse._merge_pool([], None, [("B-1", 1.0)]), [("B-1", 1.0)])
+		self.assertEqual(tse._merge_pool(), [])
+
+
 class TestAllocateTreeBatches(IntegrationTestCase):
 	def _alloc(self, pool, need):
 		with (
@@ -2152,7 +2425,7 @@ class TestReceiveTwoPassOwnership(IntegrationTestCase):
 		"B-REG": ("Regular Stock", None),
 	}
 
-	def _receive(self, recv, loss, owed, ownership=None):
+	def _receive(self, recv, loss, owed, ownership=None, fallback=None):
 		# _new_transfer_se resolves the SE company via get_cached_value on a
 		# warehouse name this pure-logic harness never creates; the shared _run
 		# helper does not stub it.
@@ -2163,6 +2436,7 @@ class TestReceiveTwoPassOwnership(IntegrationTestCase):
 				[{"item_code": "GOLD-18KT", "receive_qty": recv, "loss_qty": loss}],
 				owed=owed,
 				ownership=self.OWN if ownership is None else ownership,
+				fallback=fallback,
 			)
 
 	@staticmethod
@@ -2233,3 +2507,120 @@ class TestReceiveTwoPassOwnership(IntegrationTestCase):
 		)
 		self.assertEqual(self._by_batch(se_recv), {"B-1": 4.0})
 		self.assertEqual(self._by_batch(se_loss), {"B-1": 1.0, "B-2": 1.0})
+
+
+class TestReceiveWithSubstituteBatch(IntegrationTestCase):
+	"""End-to-end through ``receive_material`` when the tree's own batch has been consumed.
+
+	The production case this exists for: KGJPL-TR-26-00015 held 255.37 g of ledger pending against
+	a batch that seventeen trees had shared and the casting draws had taken to exactly zero, so
+	every Receive AND the ``submit_tree`` write-off threw for good. The tree's own metal must still
+	be returned first; only the remainder may come from a same-ownership-tier batch.
+	"""
+
+	OWN = {
+		"B-MINE": ("Regular Stock", None),
+		"B-SUB": ("Regular Stock", None),
+		"B-SUB2": ("Regular Stock", None),
+		"B-CUST": ("Customer Goods", "MHCU0012"),
+	}
+
+	def _tree(self, issue=20.0):
+		return _new_tree(
+			material_details=[
+				{
+					"item_code": "GOLD-18KT",
+					"issue_qty": issue,
+					"receive_qty": 0,
+					"loss_qty": 0,
+					"pending_qty": issue,
+				}
+			]
+		)
+
+	def _receive(self, recv, loss, owed, fallback=None, ownership=None):
+		with patch.object(tse.frappe, "get_cached_value", return_value="CO"):
+			return _run(
+				tse.receive_material,
+				self._tree(),
+				[{"item_code": "GOLD-18KT", "receive_qty": recv, "loss_qty": loss}],
+				owed=owed,
+				ownership=self.OWN if ownership is None else ownership,
+				fallback=fallback,
+			)
+
+	@staticmethod
+	def _by_batch(se):
+		out = {}
+		for row in se.items:
+			if not getattr(row, "s_warehouse", None):
+				continue  # produce row of the loss pair
+			out[row.batch_no] = out.get(row.batch_no, 0) + row.qty
+		return out
+
+	def test_a_fully_consumed_own_pool_can_still_receive(self):
+		"""KGJPL-TR-26-00015 itself: own pool empty, same-tier metal at the warehouse."""
+		(se_recv,) = self._receive(5.0, 0.0, owed=[], fallback=[("B-SUB", 388.608)])
+		self.assertEqual(self._by_batch(se_recv), {"B-SUB": 5.0})
+
+	def test_the_trees_own_batch_is_exhausted_before_any_substitute(self):
+		(se_recv,) = self._receive(
+			5.0, 0.0, owed=[("B-MINE", 2.0)], fallback=[("B-SUB", 100.0)]
+		)
+		self.assertEqual(self._by_batch(se_recv), {"B-MINE": 2.0, "B-SUB": 3.0})
+
+	def test_substitution_is_capped_at_the_need_not_the_available_pool(self):
+		(se_recv,) = self._receive(5.0, 0.0, owed=[], fallback=[("B-SUB", 9999.0)])
+		self.assertAlmostEqual(sum(self._by_batch(se_recv).values()), 5.0, places=3)
+
+	def test_no_same_tier_metal_still_throws(self):
+		with self.assertRaises(frappe.ValidationError):
+			self._receive(5.0, 0.0, owed=[], fallback=[])
+
+	def test_submit_tree_write_off_can_use_a_substitute(self):
+		"""``submit_tree`` settles leftovers with recv = 0 through this same allocator.
+
+		Before the fallback existed, a tree whose batch was consumed could not even be closed.
+		"""
+		(se_loss,) = self._receive(0.0, 4.0, owed=[], fallback=[("B-SUB", 50.0)])
+		self.assertEqual(self._by_batch(se_loss), {"B-SUB": 4.0})
+
+	def test_substitute_rows_carry_the_batch_ownership_across(self):
+		(se_recv,) = self._receive(5.0, 0.0, owed=[], fallback=[("B-SUB", 50.0)])
+		(row,) = [r for r in se_recv.items if getattr(r, "s_warehouse", None)]
+		self.assertEqual(row.batch_no, "B-SUB")
+		self.assertEqual(row.inventory_type, "Regular Stock")
+		# _append_item only stamps `customer` when the batch has one — company metal must not
+		# carry a stray customer across the substitution.
+		self.assertIsNone(getattr(row, "customer", None))
+
+	def test_both_legs_share_one_extended_pool_without_double_booking(self):
+		se_recv, se_loss = self._receive(
+			3.0, 2.0, owed=[("B-MINE", 1.0)], fallback=[("B-SUB", 4.0)]
+		)
+		taken = {}
+		for se in (se_recv, se_loss):
+			for batch, qty in self._by_batch(se).items():
+				taken[batch] = taken.get(batch, 0) + qty
+		self.assertLessEqual(taken["B-MINE"], 1.0)
+		self.assertLessEqual(taken["B-SUB"], 4.0)
+		self.assertAlmostEqual(sum(taken.values()), 5.0, places=3)
+
+	def test_a_sufficient_own_pool_never_consults_the_fallback(self):
+		"""No behaviour change for the ordinary case — the fallback is not even called."""
+		with patch.object(tse, "_tree_fallback_batches") as fb:
+			with patch.object(tse.frappe, "get_cached_value", return_value="CO"):
+				_run(
+					tse.receive_material,
+					self._tree(),
+					[
+						{
+							"item_code": "GOLD-18KT",
+							"receive_qty": 4.0,
+							"loss_qty": 0,
+						}
+					],
+					owed=[("B-MINE", 10.0)],
+					ownership=self.OWN,
+				)
+		fb.assert_not_called()

@@ -174,11 +174,25 @@ doc_events = {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.item_attribute.validate"
 	},
 	"Stock Entry": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
+		"validate": [
+			# Fills to_<dimension> from <dimension> on every row. Must be at `validate`, not
+			# `before_validate`: StockEntry.validate_warehouse() has not yet resolved
+			# t_warehouse there, and validate_customer_gold_receipt (last before_validate
+			# hook) still rewrites inventory_type afterwards. See the function docstring.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.set_target_inventory_dimensions",
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.validate_material_request_warehouses",
+			# Per-role Stock Entry Type whitelist. Fires only on a direct user save of
+			# the Stock Entry itself, never on the dozen cascades that mint one from
+			# another doctype's lifecycle -- see the module docstring.
+			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.validate_stock_entry_type_permission",
+		],
 		"before_save": [_EOD_LOCK_VALIDATOR, _RECON_WINDOW_MOVEMENT_VALIDATOR],
 		"before_validate": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_validate",
 			"jewellery_erpnext.jewellery_erpnext.customization.stock_entry.stock_entry.before_validate",
+			# Runs last so it sees rows after update_batches has rebuilt self.items.
+			# No-op unless Customer Gold Flow is enabled on Subcontracting Settings.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_receipt",
 		],
 		"before_submit": [
 			_EOD_LOCK_VALIDATOR,
@@ -187,6 +201,9 @@ doc_events = {
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.before_submit",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_parent_batches",
 			"jewellery_erpnext.customer_subcontracting.batch_rename.create_child_batches",
+			# MUST stay after the two batch creators: a Customer Gold receipt carries no
+			# batch_no until create_parent_batches mints it.
+			"jewellery_erpnext.customer_subcontracting.customer_gold_receipt.validate_customer_gold_batches",
 		],
 		"on_submit": [
 			"jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.onsubmit",
@@ -269,7 +286,8 @@ doc_events = {
 		"on_trash": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_reference.clear_serial_reference",
 	},
 	"Serial No": {
-		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table"
+		"before_save": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.set_stamping_no",
+		"validate": "jewellery_erpnext.jewellery_erpnext.doc_events.serial_no.update_table",
 	},
 	"Material Request": {
 		"before_validate": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.before_validate",
@@ -317,6 +335,11 @@ doc_events = {
 # employee warehouses to the viewer's department; all shared warehouses stay visible.
 permission_query_conditions = {
 	"Warehouse": "jewellery_erpnext.jewellery_erpnext.doc_events.warehouse.get_permission_query_conditions",
+	# Per-role Stock Entry Type whitelist (Stock Entry Type.custom_allowed_roles).
+	# Filters the stock_entry_type dropdown, the list-view standard filter and report
+	# filters in one place -- the link search runs through frappe.get_list. Types with
+	# no roles listed stay visible to everyone.
+	"Stock Entry Type": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry_type.get_permission_query_conditions",
 }
 
 override_whitelisted_methods = {
@@ -324,6 +347,9 @@ override_whitelisted_methods = {
 	"erpnext.stock.doctype.material_request.material_request.make_stock_entry": "jewellery_erpnext.jewellery_erpnext.doc_events.material_request.make_stock_entry",
 	"erpnext.stock.doctype.stock_entry.stock_entry.make_stock_in_entry": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.make_stock_in_entry",
 	"frappe.desk.doctype.bulk_update.bulk_update.submit_cancel_or_update_docs": "jewellery_erpnext.jewellery_erpnext.doc_events.bulk_update.custom_submit_cancel_or_update_docs",
+	# Core returns None when a title-link doctype's title_field is empty, which blanks the
+	# Link input until a page reload (Manufacturing Operation with no `operation`).
+	"frappe.desk.search.get_link_title": "jewellery_erpnext.jewellery_erpnext.doc_events.search.get_link_title",
 }
 
 override_doctype_class = {
@@ -454,6 +480,11 @@ fixtures = [
 			]
 		],
 	},
+	# Deliberately NOT listed here: "Stock Entry Type". Its masters are seeded by
+	# patches/seed_stock_entry_types.py instead, create-only. Shipping them as a fixture
+	# made every migrate delete and re-create the records, which destroyed the
+	# custom_allowed_roles rows an administrator had set in the desk. Re-adding it here
+	# would let `bench export-fixtures` recreate the file and reinstate that wipe.
 	# {
 	#     "doctype":"Custom Field", "filters":{"module":["in",["Jewellery Erpnext"]]}
 	# }

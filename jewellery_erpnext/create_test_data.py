@@ -3013,6 +3013,18 @@ def create_test_data():
 
 			_ensure_mr_is_free_item_field()
 
+			from jewellery_erpnext.patches.seed_stock_entry_types import (
+				execute as _seed_stock_entry_types,
+			)
+
+			_seed_stock_entry_types()
+
+			from jewellery_erpnext.patches.add_stock_entry_type_allowed_roles import (
+				execute as _ensure_stock_entry_type_allowed_roles_field,
+			)
+
+			_ensure_stock_entry_type_allowed_roles_field()
+
 			from jewellery_erpnext.fetch_from_guard import ensure_fetch_from_columns
 
 			ensure_fetch_from_columns()
@@ -3075,6 +3087,16 @@ def create_test_data():
 
 			_ensure_serial_no_sales_reference_fields()
 
+			# Serial No.custom_stamping_no is patch-only for the same reason. `bench
+			# install-app` marks every patch as already applied on a fresh site, so
+			# `bench migrate` never runs it and set_stamping_no -- a before_save hook on
+			# EVERY Serial No -- had no field to read.
+			from jewellery_erpnext.patches.add_serial_no_stamping_no_field import (
+				execute as _ensure_serial_no_stamping_no_field,
+			)
+
+			_ensure_serial_no_stamping_no_field()
+
 			# Batch.custom_employee (employee-wise refining) is NOT in the
 			# git_action_v16 fixtures, so — like the other custom-field patches above —
 			# it must be provisioned here for test_site, else get_scrap_items_balance /
@@ -3102,6 +3124,15 @@ def create_test_data():
 			)
 
 			_ensure_stock_entry_edit_bom_field()
+
+			# Stock Entry Detail.custom_jwelex_tag_no is patch-only for the same
+			# reason — set_jwelex_tag_no writes it on every Stock Entry save, so a
+			# missing column would raise "Unknown column" across the whole suite.
+			from jewellery_erpnext.patches.add_stock_entry_jwelex_tag_field import (
+				execute as _ensure_stock_entry_jwelex_tag_field,
+			)
+
+			_ensure_stock_entry_jwelex_tag_field()
 
 			# Masters (the REF-* Items) MUST be seeded before the price list:
 			from jewellery_erpnext.patches.add_missing_ui_custom_fields import (

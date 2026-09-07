@@ -246,7 +246,9 @@ class TestEmployeeIRReceiveDelayGuard(IntegrationTestCase):
 	@patch(
 		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.resolve_employee_ir_issue_voucher_for_receive"
 	)
-	def test_multiple_issues_still_block_until_delays_elapse(self, _resolve, _get_value):
+	def test_multiple_issues_still_block_until_delays_elapse(
+		self, _resolve, _get_value
+	):
 		row_a = self._mock_row(mop="MOP-A", name="row-a", idx=1)
 		row_b = self._mock_row(mop="MOP-B", name="row-b", idx=2)
 
@@ -325,7 +327,11 @@ class TestManufacturingOperationBalance(IntegrationTestCase):
 		self.assertEqual(out["net_wt"], 0.23)
 		self.assertEqual(out["diamond_wt"], 1.008)
 		self.assertEqual(out["diamond_pcs"], 168)
-		self.assertAlmostEqual(out["gross_wt"], 0.4316, places=4)
+		# 1.008 ct -> flt(0.2016, 3) = 0.202. get_material_wt used to leave the gram
+		# twin UNROUNDED (0.2016) and so disagreed with the MOP Log recompute about
+		# the same ledger; both now derive it through carat_to_gram.
+		self.assertAlmostEqual(out["diamond_wt_in_gram"], 0.202, places=3)
+		self.assertAlmostEqual(out["gross_wt"], 0.432, places=3)
 
 
 class TestEmployeeIR(IntegrationTestCase):
@@ -675,20 +681,30 @@ class TestEmployeeIR(IntegrationTestCase):
 			},
 		)
 
+		# All three balance tiers must agree for a single row. The family tier
+		# (qty_after_transaction) is by construction the SUM of that family's batch
+		# tiers -- get_mop_opening_balances derives all three from
+		# qty_after_transaction_batch_based, so on an operation whose only row is
+		# this one they are necessarily equal. Carrying family=3 against batch=1
+		# claimed 2g of metal with no ledger row behind it, and only survived
+		# because MOPLog.validate used to stamp the header from the family tier.
+		# It now derives the header from the batch tier, so gross_wt would read 1,
+		# equal to received_gross_wt below, and book_metal_loss' `gwt != r_gwt`
+		# gate would skip -- leaving employee_loss_details empty.
 		mop_log = frappe.new_doc("MOP Log")
 		mop_log.item_code = "M-G-22KT-91.6-Y"
 		mop_log.pcs_after_transaction = 3
 		mop_log.qty_after_transaction = 3
-		mop_log.pcs_after_transaction_item_based = 1
-		mop_log.pcs_after_transaction_batch_based = 1
+		mop_log.pcs_after_transaction_item_based = 3
+		mop_log.pcs_after_transaction_batch_based = 3
 		mop_log.from_warehouse = from_warehouse
 		mop_log.to_warehouse = to_warehouse
 		mop_log.voucher_type = "Employee IR"
 		mop_log.voucher_no = eir_issue.name
 		mop_log.row_name = eir_issue.employee_ir_operations[0].name
 
-		mop_log.qty_after_transaction_item_based = 1
-		mop_log.qty_after_transaction_batch_based = 1
+		mop_log.qty_after_transaction_item_based = 3
+		mop_log.qty_after_transaction_batch_based = 3
 		mop_log.manufacturing_operation = eir_issue.employee_ir_operations[
 			0
 		].manufacturing_operation

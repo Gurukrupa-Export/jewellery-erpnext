@@ -193,11 +193,14 @@ def get_gold_rate(self):
 				item.difference = item.amount - company_amount
 			else:
 				item.difference = 0
-		# Add the current item's amount to the total amount
-	# 	if item.parentfield == "finding_detail":
-	# 		finding_amount += item.amount
-	# 	amount += item.amount
+		# Add the current item's amount to the total amount.
+		# Mirrors update_totals() in doc_events/bom.py, which also sums
+		# metal_detail + finding_detail into gold_bom_amount, so the value
+		# computed here at creation matches the one written on Update.
+		amount += flt(item.amount)
 
+	# finding_bom_amount is computed by TrackingBom.calculate_rates() instead;
+	# a db_set here would fail because validate() is called before insert().
 	# if finding_amount:
 	# 	self.db_set("finding_bom_amount", finding_amount)
 
@@ -318,7 +321,15 @@ def _calculate_diamond_amount(self, diamond, range_det, diamond_price_list_data)
 	diamond_price_list = diamond_price_list_data.get(key)
 
 	if not diamond_price_list:
-		return 0
+		# No price row for this customer/price_list_type. Do NOT report 0 and
+		# thereby zero the header: an upstream engine may already have priced
+		# this row against a different customer -- _apply_kg_gk_pricing prices
+		# off the *ref* customer, and on KG GK docs that is the only customer
+		# the Diamond Price List has rows for. Fall back to the row's own rate,
+		# which is 0 anyway when nothing priced it, so this can only preserve.
+		amount = flt(diamond.total_diamond_rate) * flt(diamond.quantity)
+		diamond.diamond_rate_for_specified_quantity = amount
+		return amount
 
 	# Get Handling Rate of the Diamond if it is a cutomer provided Diamond
 	# handling_rate = diamond_price_list[0].get("handling_rate")

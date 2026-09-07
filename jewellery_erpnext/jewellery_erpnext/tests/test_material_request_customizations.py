@@ -12,6 +12,9 @@ from frappe.tests import IntegrationTestCase
 from jewellery_erpnext.jewellery_erpnext.customization.material_request import (
 	material_request as mr_custom,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.material_request.utils import (
+	before_validate as mr_before_validate,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events import material_request as mr_mod
 
 _MR_EVENTS = "jewellery_erpnext.jewellery_erpnext.doc_events.material_request"
@@ -507,8 +510,9 @@ _MR_BV = "jewellery_erpnext.jewellery_erpnext.customization.material_request.uti
 
 
 class TestUpdatePureQty(IntegrationTestCase):
-
-	@patch("jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils.prefetch_purity_percentages")
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.customization.utils.metal_utils.prefetch_purity_percentages"
+	)
 	@patch("frappe.db.get_value")
 	def test_throws_if_pure_gold_item_missing(self, mock_get_value, mock_prefetch):
 		mock_get_value.return_value = None
@@ -653,3 +657,134 @@ class TestMakeStockEntry(IntegrationTestCase):
 
 		mock_get_mapped_doc.side_effect = mock_get_mapped
 		mr_mod.make_stock_entry("MR-1")
+
+
+_GEPL = "Gurukrupa Export Private Limited"
+
+
+def _reservation_mr(**kwargs):
+	"""Minimal Manufacture MR. SimpleNamespace, not MagicMock: the rule branches on
+	falsiness of set_warehouse/custom_manufacturer, which a MagicMock would make truthy."""
+	doc = {
+		"material_request_type": "Manufacture",
+		"set_warehouse": None,
+		"custom_manufacturer": "Shubh",
+		"company": _GEPL,
+		"items": [],
+	}
+	doc.update(kwargs)
+	return SimpleNamespace(**doc)
+
+
+def _reservation_row(variant, warehouse=None):
+	return SimpleNamespace(custom_variant_of=variant, warehouse=warehouse)
+
+
+@patch("frappe.get_cached_value", return_value=_GEPL)
+@patch(
+	f"{_MR_BV}.get_variant_warehouse_map",
+	return_value={
+		"M": "Waxing RSV - GEPL",
+		"D": "Diamond Setting RSV - GEPL",
+		"G": "Diamond Setting RSV - GEPL",
+		"F": "Central RSV - GEPL",
+	},
+)
+class TestSetReservationWarehouse(IntegrationTestCase):
+	def test_fills_header_and_empty_rows(self, mock_map, mock_cached):
+		mr = _reservation_mr(items=[_reservation_row("M")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertEqual(mr.set_warehouse, "Waxing RSV - GEPL")
+		self.assertEqual(mr.items[0].warehouse, "Waxing RSV - GEPL")
+
+	def test_distinct_variants_sharing_one_warehouse_still_fill(
+		self, mock_map, mock_cached
+	):
+		# D and G both map to Diamond Setting RSV, so the header can still express it.
+		mr = _reservation_mr(items=[_reservation_row("D"), _reservation_row("G")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertEqual(mr.set_warehouse, "Diamond Setting RSV - GEPL")
+
+	def test_leaves_rows_that_already_match(self, mock_map, mock_cached):
+		mr = _reservation_mr(items=[_reservation_row("M", "Waxing RSV - GEPL")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertEqual(mr.set_warehouse, "Waxing RSV - GEPL")
+
+	def test_ignores_non_manufacture_type(self, mock_map, mock_cached):
+		mr = _reservation_mr(
+			material_request_type="Material Transfer", items=[_reservation_row("M")]
+		)
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+
+	def test_never_overwrites_an_existing_warehouse(self, mock_map, mock_cached):
+		mr = _reservation_mr(
+			set_warehouse="RM Procurement - GEPL", items=[_reservation_row("M")]
+		)
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertEqual(mr.set_warehouse, "RM Procurement - GEPL")
+
+	def test_ignores_rows_routed_elsewhere(self, mock_map, mock_cached):
+		mr = _reservation_mr(items=[_reservation_row("M", "RM Procurement - GEPL")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+		self.assertEqual(mr.items[0].warehouse, "RM Procurement - GEPL")
+
+	def test_ignores_unmapped_variant(self, mock_map, mock_cached):
+		# The dummy gemstone item carries variant_of = NULL.
+		mr = _reservation_mr(items=[_reservation_row(None)])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+
+	def test_ignores_partially_mappable_request(self, mock_map, mock_cached):
+		mr = _reservation_mr(items=[_reservation_row("M"), _reservation_row(None)])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+		self.assertIsNone(mr.items[0].warehouse)
+
+	def test_ignores_variants_resolving_to_different_warehouses(
+		self, mock_map, mock_cached
+	):
+		mr = _reservation_mr(items=[_reservation_row("M"), _reservation_row("D")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+
+	def test_ignores_empty_items(self, mock_map, mock_cached):
+		mr = _reservation_mr(items=[])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+
+	def test_ignores_warehouse_of_another_company(self, mock_map, mock_cached):
+		mock_cached.return_value = "KG GK Jewellers Private Limited"
+		mr = _reservation_mr(items=[_reservation_row("M")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+
+	@patch("frappe.defaults.get_user_default", return_value=None)
+	def test_ignores_missing_manufacturer(self, mock_default, mock_map, mock_cached):
+		mock_map.return_value = {}
+		mr = _reservation_mr(custom_manufacturer=None, items=[_reservation_row("M")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertIsNone(mr.set_warehouse)
+
+	@patch("frappe.defaults.get_user_default", return_value="Shubh")
+	def test_falls_back_to_session_default_manufacturer(
+		self, mock_default, mock_map, mock_cached
+	):
+		mr = _reservation_mr(custom_manufacturer=None, items=[_reservation_row("M")])
+		mr_before_validate.set_reservation_warehouse(mr)
+
+		self.assertEqual(mr.set_warehouse, "Waxing RSV - GEPL")
+		mock_map.assert_called_once_with("Shubh")

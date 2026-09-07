@@ -280,13 +280,10 @@ class ManufacturingPlan(Document):
 
 		if self.select_manufacture_order in ["Manufacturing", "Repair"]:
 			SalesOrderItem = frappe.qb.DocType("Sales Order Item")
-			Item = frappe.qb.DocType("Item")
 			SalesOrder = frappe.qb.DocType("Sales Order")
 
 			query = (
 				frappe.qb.from_(SalesOrderItem)
-				.join(Item)
-				.on(SalesOrderItem.item_code == Item.name)
 				.join(SalesOrder)
 				.on(SalesOrderItem.parent == SalesOrder.name)
 				.select(
@@ -294,9 +291,9 @@ class ManufacturingPlan(Document):
 					SalesOrderItem.parent.as_("sales_order"),
 					SalesOrderItem.item_code,
 					SalesOrderItem.bom,
+					SalesOrderItem.copy_bom,
 					SalesOrderItem.custom_tracking_bom,
 					SalesOrder.customer,
-					Item.master_bom.as_("master_bom"),
 					SalesOrderItem.diamond_quality,
 					SalesOrderItem.custom_customer_sample.as_("customer_sample"),
 					SalesOrderItem.custom_customer_voucher_no.as_(
@@ -349,7 +346,11 @@ class ManufacturingPlan(Document):
 
 		self.manufacturing_plan_table = []
 		for item_row in items:
-			bom = item_row.get("bom") or item_row.get("master_bom")
+			# copy_bom carries the Purchase Order's Copy BOM down the chain (Quotation Item ->
+			# Sales Order Item -> here -> PMO.master_bom -> MWO.master_bom -> MOP.design_id_bom).
+			# It deliberately does not fall back to Item.master_bom: manufacturing must run on
+			# the BOM the customer ordered against, never on the item's master BOM.
+			bom = item_row.get("copy_bom")
 			if not bom and (
 				item_row.get("order_form_type") == "Repair Order"
 				or self.select_manufacture_order == "Repair"
@@ -374,7 +375,9 @@ class ManufacturingPlan(Document):
 				item_code = item_row["item_code"]
 				frappe.throw(
 					_(
-						f"Sales Order BOM Not Found.</br>Please Set Master BOM for <b>{item_code}</b> into Item Master"
+						f"Copy BOM Not Found for <b>{item_code}</b>.</br>"
+						"Set Copy BOM on the Purchase Order the Quotation was raised against, "
+						"then recreate the Quotation and Sales Order."
 					)
 				)
 
@@ -398,7 +401,6 @@ class ManufacturingPlan(Document):
 def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filters):
 	SalesOrder = frappe.qb.DocType("Sales Order")
 	SalesOrderItem = frappe.qb.DocType("Sales Order Item")
-	Item = frappe.qb.DocType("Item")
 
 	conditions = (
 		(SalesOrderItem.qty > SalesOrderItem.manufacturing_order_qty)
@@ -426,8 +428,6 @@ def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filt
 		frappe.qb.from_(SalesOrder)
 		.distinct()
 		.from_(SalesOrderItem)
-		.join(Item)
-		.on(SalesOrderItem.item_code == Item.name)
 		.select(
 			SalesOrder.name,
 			SalesOrder.transaction_date,
@@ -438,7 +438,8 @@ def get_pending_ppo_sales_order(doctype, txt, searchfield, start, page_len, filt
 			(SalesOrder.name == SalesOrderItem.parent)
 			& (SalesOrder.docstatus == 1)
 			& conditions
-			& (Item.master_bom.isnotnull() | SalesOrderItem.bom.isnotnull())
+			& SalesOrderItem.copy_bom.isnotnull()
+			& (SalesOrderItem.copy_bom != "")
 		)
 		.orderby(SalesOrder.transaction_date, order=frappe.qb.desc)
 		.limit(page_len)

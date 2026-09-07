@@ -17,10 +17,16 @@ def _apply_kg_gk_pricing(
 	gemstone_price_list_ref_customer,
 	diamond_price_list_customer,
 	gemstone_price_list_customer,
-	diamond_price_list,
+	diamond_price_list_ref,
 	gemstone_price_list,
 ):
-	"""Apply KG GK Jewellers Private Limited specific pricing logic."""
+	"""Apply KG GK Jewellers Private Limited specific pricing logic.
+
+	Diamonds are priced off the *ref customer's* price list, so
+	`diamond_price_list_ref` must be the list fetched for `ref_customer` /
+	`diamond_price_list_ref_customer` -- the same pair the gate and every
+	sub-branch below key on.
+	"""
 	doc.company = self.company
 
 	# Diamond pricing for KG GK
@@ -28,13 +34,19 @@ def _apply_kg_gk_pricing(
 		diamond.rate = doc.gold_rate_with_gst
 		if self.custom_customer_diamond == "Yes":
 			diamond.is_customer_item = 1
-		if diamond_price_list and any(
+		# Without a quality the Diamond Price List lookup in
+		# bom_utils._calculate_diamond_amount can never match, because
+		# diamond_quality is reqd on that doctype. Guarded so a blank header
+		# never wipes a quality copied from the template BOM.
+		if row.diamond_quality:
+			diamond.quality = row.diamond_quality
+		if diamond_price_list_ref and any(
 			dpl["price_list_type"] == diamond_price_list_ref_customer
-			for dpl in diamond_price_list
+			for dpl in diamond_price_list_ref
 		):
 			if diamond_price_list_ref_customer == "Size (in mm)":
 				_apply_kg_gk_diamond_size_mm(
-					doc, diamond, diamond_price_list_customer, ref_customer
+					doc, diamond, diamond_price_list_ref_customer, ref_customer
 				)
 			if diamond_price_list_ref_customer == "Sieve Size Range":
 				_apply_kg_gk_diamond_sieve(
@@ -81,8 +93,19 @@ def _apply_standard_pricing(
 	gemstone_price_list_customer,
 	diamond_price_list,
 	gemstone_price_list,
+	diamond_customer=None,
 ):
-	"""Apply standard company pricing logic (non-KG GK)."""
+	"""Apply standard company pricing logic (non-KG GK).
+
+	`diamond_customer` is the customer the diamond price list is keyed on. It is
+	normally `doc.customer`, but falls back to the quotation's ref customer when
+	the party holds no Diamond Price List rows at all -- see
+	_apply_customer_pricing. Metal, finding and gemstone stay on `doc.customer`:
+	they price off Metal Criteria / Making Charge Price, which *are* keyed on the
+	party.
+	"""
+	if not diamond_customer:
+		diamond_customer = doc.customer
 	# Set customer item flags
 	for item in doc.metal_detail + doc.finding_detail:
 		if (
@@ -119,12 +142,18 @@ def _apply_standard_pricing(
 			dpl["price_list_type"] == diamond_price_list_customer
 			for dpl in diamond_price_list
 		):
-			_apply_standard_diamond_pricing(doc, diamond, diamond_price_list_customer)
+			_apply_standard_diamond_pricing(
+				doc, diamond, diamond_price_list_customer, diamond_customer
+			)
 
 		if diamond_price_list_customer == "Sieve Size Range":
-			_apply_standard_diamond_sieve(doc, diamond, diamond_price_list_customer)
+			_apply_standard_diamond_sieve(
+				doc, diamond, diamond_price_list_customer, diamond_customer
+			)
 		if diamond_price_list_customer == "Size (in mm)":
-			_apply_standard_diamond_size_mm(doc, diamond, diamond_price_list_customer)
+			_apply_standard_diamond_size_mm(
+				doc, diamond, diamond_price_list_customer, diamond_customer
+			)
 
 		if row.diamond_quality:
 			diamond.quality = row.diamond_quality
@@ -153,7 +182,7 @@ def _apply_standard_pricing(
 # --- Diamond pricing helpers ---
 
 
-def _apply_kg_gk_diamond_size_mm(doc, diamond, diamond_price_list_customer, customer):
+def _apply_kg_gk_diamond_size_mm(doc, diamond, price_list_type, customer):
 	entries = frappe.db.sql(
 		"""
 		SELECT name, supplier_fg_purchase_rate, rate,
@@ -163,7 +192,7 @@ def _apply_kg_gk_diamond_size_mm(doc, diamond, diamond_price_list_customer, cust
 		WHERE customer = %s AND price_list_type = %s AND size_in_mm = %s
 		ORDER BY creation DESC LIMIT 1
 	""",
-		(doc.customer, diamond_price_list_customer, diamond.size_in_mm),
+		(customer, price_list_type, diamond.size_in_mm),
 		as_dict=True,
 	)
 	if entries:
@@ -219,9 +248,7 @@ def _apply_kg_gk_diamond_weight(doc, diamond, price_list_type, customer):
 def _apply_handling_charges(diamond, entry, multiplier):
 	"""Apply outwork/outright handling charges to diamond based on customer item status."""
 	if diamond.is_customer_item:
-		diamond.total_diamond_rate = entry.get(
-			"outwork_handling_charges_rate", 0
-		)
+		diamond.total_diamond_rate = entry.get("outwork_handling_charges_rate", 0)
 		diamond.diamond_rate_for_specified_quantity = (
 			diamond.total_diamond_rate * multiplier
 		)
@@ -248,8 +275,9 @@ def _apply_handling_charges(diamond, entry, multiplier):
 			)
 
 
-def _apply_standard_diamond_pricing(doc, diamond, price_list_type):
+def _apply_standard_diamond_pricing(doc, diamond, price_list_type, customer=None):
 	"""Weight-based diamond pricing for standard companies."""
+	customer = customer or doc.customer
 	entries = frappe.db.sql(
 		"""
 		SELECT name, from_weight, to_weight, supplier_fg_purchase_rate, rate,
@@ -259,7 +287,7 @@ def _apply_standard_diamond_pricing(doc, diamond, price_list_type):
 		WHERE customer = %s AND price_list_type = %s AND %s BETWEEN from_weight AND to_weight
 		ORDER BY creation DESC LIMIT 1
 	""",
-		(doc.customer, price_list_type, diamond.weight_per_pcs),
+		(customer, price_list_type, diamond.weight_per_pcs),
 		as_dict=True,
 	)
 	if entries:
@@ -269,7 +297,8 @@ def _apply_standard_diamond_pricing(doc, diamond, price_list_type):
 		_apply_handling_charges(diamond, entry, diamond.weight_per_pcs)
 
 
-def _apply_standard_diamond_sieve(doc, diamond, price_list_type):
+def _apply_standard_diamond_sieve(doc, diamond, price_list_type, customer=None):
+	customer = customer or doc.customer
 	entries = frappe.db.sql(
 		"""
 		SELECT name, supplier_fg_purchase_rate, rate,
@@ -279,7 +308,7 @@ def _apply_standard_diamond_sieve(doc, diamond, price_list_type):
 		WHERE customer = %s AND price_list_type = %s AND sieve_size_range = %s
 		ORDER BY creation DESC LIMIT 1
 	""",
-		(doc.customer, price_list_type, diamond.sieve_size_range),
+		(customer, price_list_type, diamond.sieve_size_range),
 		as_dict=True,
 	)
 	if entries:
@@ -292,7 +321,8 @@ def _apply_standard_diamond_sieve(doc, diamond, price_list_type):
 		diamond.fg_purchase_amount = diamond.fg_purchase_rate * diamond.quantity
 
 
-def _apply_standard_diamond_size_mm(doc, diamond, price_list_type):
+def _apply_standard_diamond_size_mm(doc, diamond, price_list_type, customer=None):
+	customer = customer or doc.customer
 	entries = frappe.db.sql(
 		"""
 		SELECT name, supplier_fg_purchase_rate, rate,
@@ -302,7 +332,7 @@ def _apply_standard_diamond_size_mm(doc, diamond, price_list_type):
 		WHERE customer = %s AND price_list_type = %s AND size_in_mm = %s
 		ORDER BY creation DESC LIMIT 1
 	""",
-		(doc.customer, price_list_type, diamond.size_in_mm),
+		(customer, price_list_type, diamond.size_in_mm),
 		as_dict=True,
 	)
 	if entries:
@@ -443,9 +473,7 @@ def _apply_making_charge_finding(self, doc, find, customer):
 			fg_purchase_amount = fg_purchase_rate * find.quantity
 			if find.is_customer_item:
 				find.rate = matching_subcategory.get("subcontracting_rate", 0)
-				wastage_rate = matching_subcategory.get(
-					"subcontracting_wastage", 0
-				)
+				wastage_rate = matching_subcategory.get("subcontracting_wastage", 0)
 				fg_purchase_rate = 0
 				fg_purchase_amount = 0
 				rate_per_gm = 0

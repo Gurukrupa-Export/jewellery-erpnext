@@ -1,0 +1,62 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-08-20 09:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "customer_gold_liability_account",
+  "column_break_accounts",
+  "customer_gold_cogs_adjustment_account"
+ ],
+ "fields": [
+  {
+   "columns": 3,
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "columns": 4,
+   "description": "Credited when customer gold is received. Must be a non-group Liability account of the selected Company.",
+   "fieldname": "customer_gold_liability_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer Gold Liability Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "column_break_accounts",
+   "fieldtype": "Column Break"
+  },
+  {
+   "columns": 4,
+   "description": "Used when customer-owned value is settled at delivery. Classification pending Finance approval - see docs/GK-CUSTOMER-GIVEN-GOLD-20260820-DAY3-IMPLEMENTATION.md",
+   "fieldname": "customer_gold_cogs_adjustment_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Customer Gold COGS Adjustment Account",
+   "options": "Account"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-20 09:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Customer Subcontracting",
+ "name": "Customer Gold Company Account",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

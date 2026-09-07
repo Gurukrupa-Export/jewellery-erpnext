@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import frappe
-from frappe.tests.utils import FrappeTestCase
+from frappe.tests import UnitTestCase
 
 try:
 	from jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry import (
@@ -26,7 +26,7 @@ import unittest
 	update_balance_table is None,
 	"update_balance_table was removed; MOP Log is now the source of truth.",
 )
-class TestStockEntryLegacyBalanceTable(FrappeTestCase):
+class TestStockEntryLegacyBalanceTable(UnitTestCase):
 	def test_update_balance_table_appends_rows_per_legacy_key(self):
 		mop_doc = MagicMock()
 		mop_doc.append = MagicMock()
@@ -55,30 +55,44 @@ class TestStockEntryLegacyBalanceTable(FrappeTestCase):
 		self.assertEqual(first_table, "department_source_table")
 
 
-class TestMopLogStockEntryWriter(FrappeTestCase):
-	@patch("jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.db.sql")
+class TestMopLogStockEntryWriter(UnitTestCase):
+	# Patch the two seams the writer actually reads, NOT frappe.db.sql wholesale:
+	# a module-wide sql patch also answers Frappe's lazy Meta load (property
+	# setters), which then chokes on the stub payload.
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.get_last_mop_index"
+	)
+	@patch(
+		"jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.get_mop_opening_balances"
+	)
 	@patch("jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log.frappe.new_doc")
 	def test_create_mop_log_for_stock_transfer_sets_stock_entry_voucher(
-		self, mock_new_doc, mock_sql
+		self, mock_new_doc, mock_opening, mock_last_index
 	):
 		from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 			create_mop_log_for_stock_transfer_to_mo,
 		)
 
-		mock_sql.return_value = [
-			{
-				"sum_pcs_prefix": 0,
-				"sum_pcs_item": 0,
-				"sum_pcs_batch": 0,
-				"sum_qty_prefix": 0.0,
-				"sum_qty_item": 0.0,
-				"sum_qty_batch": 0.0,
-			}
-		]
+		# a fresh operation opens at zero on every tier
+		mock_opening.return_value = {
+			"qty_prefix": 0.0,
+			"qty_item": 0.0,
+			"qty_batch": 0.0,
+			"pcs_prefix": 0,
+			"pcs_item": 0,
+			"pcs_batch": 0,
+		}
+		mock_last_index.return_value = None
 		mock_log = MagicMock()
 		mock_new_doc.return_value = mock_log
 
-		se = frappe._dict(name="SE-TEST-001", manufacturing_work_order="MWO-1")
+		# `doctype` is what the writer stamps onto voucher_type -- without it the
+		# assertion below can only ever see None.
+		se = frappe._dict(
+			doctype="Stock Entry",
+			name="SE-TEST-001",
+			manufacturing_work_order="MWO-1",
+		)
 		row = frappe._dict(
 			name="sed-1",
 			item_code="M-G-22KT-TEST",
@@ -98,7 +112,7 @@ class TestMopLogStockEntryWriter(FrappeTestCase):
 		mock_log.save.assert_called_once()
 
 
-class TestMopLineageAuditProofPack(FrappeTestCase):
+class TestMopLineageAuditProofPack(UnitTestCase):
 	def test_get_sql_proof_templates_keys(self):
 		from jewellery_erpnext.mop_lineage_audit import get_sql_proof_templates
 
@@ -116,7 +130,7 @@ class TestMopLineageAuditProofPack(FrappeTestCase):
 		self.assertIn("department_source_table", trace["legacy_keys_in_mop_data"])
 
 
-class TestStockEntryMopLogBridge(FrappeTestCase):
+class TestStockEntryMopLogBridge(UnitTestCase):
 	"""Cover the Stock Entry -> MOP Log bridge that fixes diamond visibility
 	on Employee IR Receive after MR-driven bagging transfers."""
 
@@ -241,7 +255,7 @@ class TestStockEntryMopLogBridge(FrappeTestCase):
 		self.assertEqual(params, ("SE-BRIDGE-001",))
 
 
-class TestEmployeeIrReceiveDiamondParity(FrappeTestCase):
+class TestEmployeeIrReceiveDiamondParity(UnitTestCase):
 	"""Server-side row builder for Employee IR must surface diamond / gemstone
 	header weights so Receive does not render blank diamond columns."""
 
@@ -274,7 +288,7 @@ class TestEmployeeIrReceiveDiamondParity(FrappeTestCase):
 		self.assertEqual(payload["gemstone_pcs"], 1)
 
 
-class TestEmployeeIrDiamondLineageAudit(FrappeTestCase):
+class TestEmployeeIrDiamondLineageAudit(UnitTestCase):
 	"""Audit helper used during staging verification of the failing chain."""
 
 	def test_diagnoses_missing_mop_log_when_se_exists(self):
