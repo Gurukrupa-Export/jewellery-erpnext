@@ -323,6 +323,10 @@ def make_subcontracting_order(doc):
         po_doc.purchase_type = supplier_wise_items[row].get("purchase_type")
         po_doc.ref_customer = supplier_wise_items[row].get("ref_customer")
         po_doc.manufacturing_plan = doc.name
+        # Order/sales/flow type ride down from the source Sales Orders via the plan header, which
+        # `source_order_dimensions(strict=True)` has already proven unanimous at submit.
+        for target_field in ORDER_DIMENSION_MAP.values():
+            po_doc.set(target_field, doc.get(target_field))
         po_doc.custom_customer_po = supplier_wise_items[row].get("custom_customer_po")
         po_doc.is_subcontracted = supplier_wise_items[row].get("is_subcontracted")
         if gold_rate:
@@ -330,6 +334,60 @@ def make_subcontracting_order(doc):
         for item in supplier_wise_items[row]["items"]:
             po_doc.append("items", item)
         po_doc.save()
+
+
+# Sales Order fieldname -> Manufacturing Plan / Purchase Order fieldname. The Sales Order side is
+# a mix of a standard field, an old unprefixed custom field and a new one, so the names differ.
+ORDER_DIMENSION_MAP = {
+    "order_type": "custom_order_type",
+    "sales_type": "custom_sales_type",
+    "custom_flow_type": "custom_flow_type",
+}
+
+
+def source_order_dimensions(doc, strict=False):
+    """Order type / sales type / flow type read off the Manufacturing Plan's source Sales Orders.
+
+    Returns a `{target_fieldname: value}` dict for the Manufacturing Plan / Purchase Order side.
+
+    Mirrors `_source_gold_rate`: a single header value can only be stamped when every source Sales
+    Order agrees. On save (`strict=False`) a disagreement just leaves the field blank so the plan
+    stays editable. On submit of a subcontracting plan (`strict=True`) those values are about to
+    ride onto a supplier's Purchase Order, where a wrong one is not recoverable -- so a mismatch is
+    a planning error and throws.
+    """
+    sales_orders = {
+        row.sales_order
+        for row in doc.manufacturing_plan_table
+        if row.get("sales_order")
+    }
+    if not sales_orders:
+        return {}
+
+    # One query however many orders feed the plan -- a 133-row plan can span dozens of them.
+    rows = frappe.get_all(
+        "Sales Order",
+        filters={"name": ["in", list(sales_orders)]},
+        fields=["name", *ORDER_DIMENSION_MAP],
+    )
+
+    values = {}
+    for so_field, target_field in ORDER_DIMENSION_MAP.items():
+        distinct = {row.get(so_field) for row in rows}
+        if len(distinct) == 1:
+            values[target_field] = distinct.pop()
+        elif strict:
+            detail = ", ".join(
+                f"{row.name}: {row.get(so_field) or _('(blank)')}"
+                for row in sorted(rows, key=lambda r: r.name)
+            )
+            frappe.throw(
+                _(
+                    "All Sales Orders on a subcontracting Manufacturing Plan must share the same {0}. Found -- {1}"
+                ).format(frappe.get_meta("Sales Order").get_label(so_field), detail)
+            )
+
+    return values
 
 
 def _source_gold_rate(doc):

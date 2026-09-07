@@ -27,6 +27,17 @@
   },
   {
    "dt": "Quotation",
+   "fieldname": "custom_flow_type",
+   "fieldtype": "Select",
+   "insert_after": "custom_sales_type",
+   "is_system_generated": 1,
+   "label": "Flow Type",
+   "module": "Jewellery Erpnext",
+   "options": "\nMTO\nMTBI\nMTR\nFILLER\nGCC\nUS\nJWO\nPROTO\nSTT\nPCPM",
+   "read_only": 1
+  },
+  {
+   "dt": "Quotation",
    "fetch_from": "company_address.gstin",
    "fieldname": "company_gstin",
    "fieldtype": "Data",

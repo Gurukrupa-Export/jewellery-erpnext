@@ -112,6 +112,39 @@
      },
      {
       "dt": "Purchase Order",
+      "description": "Data, not Select: the Sales Order's order_type options live only as a database Property Setter, so a hard-coded Select here would break Manufacturing Plan submit the day that list is edited.",
+      "fieldname": "custom_order_type",
+      "fieldtype": "Data",
+      "insert_after": "ref_customer",
+      "is_system_generated": 1,
+      "label": "Order Type",
+      "module": "Jewellery Erpnext",
+      "read_only": 1
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "custom_sales_type",
+      "fieldtype": "Link",
+      "insert_after": "custom_order_type",
+      "is_system_generated": 1,
+      "label": "Sales Type",
+      "module": "Jewellery Erpnext",
+      "options": "Sales Type",
+      "read_only": 1
+     },
+     {
+      "dt": "Purchase Order",
+      "fieldname": "custom_flow_type",
+      "fieldtype": "Select",
+      "insert_after": "custom_sales_type",
+      "is_system_generated": 1,
+      "label": "Flow Type",
+      "module": "Jewellery Erpnext",
+      "options": "\nMTO\nMTBI\nMTR\nFILLER\nGCC\nUS\nJWO\nPROTO\nSTT\nPCPM",
+      "read_only": 1
+     },
+     {
+      "dt": "Purchase Order",
       "fetch_from": "supplier_address.gst_category",
       "fieldname": "gst_category",
       "fieldtype": "Data",

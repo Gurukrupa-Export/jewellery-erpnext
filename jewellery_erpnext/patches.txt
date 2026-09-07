@@ -7,3 +7,4 @@ jewellery_erpnext.patches.remove_se_custom_fields
 jewellery_erpnext.patches.add_department_index
 jewellery_erpnext.patches.add_item_index
 jewellery_erpnext.patches.add_purchase_order_item_copy_bom_field
+jewellery_erpnext.patches.add_order_flow_sales_type_fields

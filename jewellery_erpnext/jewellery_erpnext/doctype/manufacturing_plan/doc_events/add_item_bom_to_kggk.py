@@ -1,4 +1,4 @@
-"""Manufacturing Plan -> KGGK testing site.
+"""Manufacturing Plan -> KGGK.
 
 Thin delegation. The push itself lives in one module in ``gke_customization``, next to the
 Data Migration in KGGK settings it reads.
@@ -6,9 +6,9 @@ Data Migration in KGGK settings it reads.
 The import is deliberately inside the function: ``gke_customization`` imports this app, so a
 module-level import here would close the loop.
 
-This is the *testing* flow, gated behind the "Send Manufacturing Plan Data to Testing Site"
-switch. The live Item/BOM sync is a separate thing entirely - different hooks, different
-target, different credentials - and nothing here touches it.
+There is one KGGK target and one engine behind it - Item saves, BOM saves, plan submits and
+the hourly reconciler all end up in the same place - gated behind the "Enable KGGK Sync"
+switch, which is off until somebody turns it on.
 """
 
 
