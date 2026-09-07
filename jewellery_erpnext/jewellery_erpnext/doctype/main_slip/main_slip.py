@@ -4,7 +4,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import flt
+from frappe.utils import cstr, flt
 
 from jewellery_erpnext.jewellery_erpnext.customization.utils.ownership_priority import (
 	stamp_produce_rows_from_consumes,
@@ -811,18 +811,47 @@ def get_item_loss_item(company, item, variant_of="M", loss_type=None):
 	)
 
 	if loss_item:
-		loss_item.include_item_in_manufacturing = 1
-		loss_item.has_variants = 0
-		loss_item.is_stock_item = 1
-		loss_item.has_batch_no = 1
-		loss_item.create_new_batch = 1
-		loss_item.gst_hsn_code = frappe.db.get_value(
-			"Item", loss_item.variant_of, "gst_hsn_code"
-		)
-		loss_item.save()
-		return loss_item.name
+		return _sync_loss_item(loss_item)
 	else:
 		return create_loss_item(variant_name, item_attr_dict)
+
+
+def _sync_loss_item(loss_item):
+	"""Save the resolved loss item only when a tracked field actually differs.
+
+	``get_item_loss_item`` runs on every loss posting, so an unconditional
+	``save()`` re-ran every Item hook -- including DB-resident Server Scripts,
+	which are invisible to git -- thousands of times a day. Three of the flags
+	below are in ERPNext's ``cant_change`` restricted set, so a no-op re-save is
+	not free: it is a chance to throw on an item we had no need to touch.
+	"""
+	desired = {
+		"include_item_in_manufacturing": 1,
+		"has_variants": 0,
+		"is_stock_item": 1,
+		"has_batch_no": 1,
+		"create_new_batch": 1,
+		"gst_hsn_code": frappe.db.get_value(
+			"Item", loss_item.variant_of, "gst_hsn_code"
+		),
+	}
+	if loss_item.is_new():
+		# Loss stock is batch-tracked, never serialized: has_serial_no wins over
+		# has_batch_no in ERPNext's bundle dispatch (stock/serial_batch_bundle.py)
+		# and no serial series is ever configured for a loss variant, so a
+		# serialized loss item cannot receive stock at all. Only set on a new doc --
+		# cant_change blocks the field once the item has submitted stock.
+		desired["has_serial_no"] = 0
+
+	# cstr mirrors cant_change's own diff (0 vs None must not read as a change),
+	# so we save exactly when ERPNext would consider something changed.
+	changed = {f: v for f, v in desired.items() if cstr(loss_item.get(f)) != cstr(v)}
+	if not changed:
+		return loss_item.name
+
+	loss_item.update(changed)
+	loss_item.save()
+	return loss_item.name
 
 
 def get_main_slip_item(main_slip):
@@ -852,6 +881,9 @@ def create_loss_item(item, item_attr_dict):
 	variant.include_item_in_manufacturing = 1
 	variant.is_stock_item = 1
 	variant.has_batch_no = 1
+	# Batch-tracked, never serialized -- create_variant copies has_serial_no down
+	# from the loss template, and a serialized loss item cannot receive stock.
+	variant.has_serial_no = 0
 	variant.create_new_batch = 1
 	variant.gst_hsn_code = frappe.db.get_value(
 		"Item", variant.variant_of, "gst_hsn_code"
