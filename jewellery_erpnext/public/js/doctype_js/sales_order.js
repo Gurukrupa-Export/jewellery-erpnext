@@ -138,6 +138,7 @@ frappe.ui.form.on("Sales Order", {
 
 	onload_post_render(frm) {
 		filter_customer(frm);
+		get_sales_type_from_quotation(frm);
 	},
 	sales_type(frm) {
 		filter_customer(frm);
@@ -1936,6 +1937,19 @@ let add_row = (serial_no, frm, row) => {
 	});
 };
 
+let get_sales_type_from_quotation = (frm) => {
+	// when Sales Order is created from a Quotation, fetch sales type from it
+	if (!frm.doc.__islocal || frm.doc.sales_type) return;
+
+	let quotation = (frm.doc.items || []).map((d) => d.prevdoc_docname).filter(Boolean)[0];
+	if (!quotation) return;
+
+	frappe.db.get_value("Quotation", quotation, "custom_sales_type", (r) => {
+		if (r && r.custom_sales_type) {
+			frm.set_value("sales_type", r.custom_sales_type);
+		}
+	});
+};
 let get_sales_type = (frm) => {
 	// get purchase type using customer
 	frm.set_value("sales_type", "");
