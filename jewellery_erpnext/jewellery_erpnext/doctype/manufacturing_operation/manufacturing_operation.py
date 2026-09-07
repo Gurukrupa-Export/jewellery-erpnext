@@ -1283,10 +1283,22 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	# if ownership_tag := _derive_ownership_tag(row_data):
 	# 	frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", ownership_tag)
 
-	# Order Type of the source Sales Order / Quotation, already available on the Serial
-	# Number Creator via its own order_type fetch_from (parent_manufacturing_order.order_type).
+	# Order Type / Sales Type / Flow Type of the source Sales Order / Quotation, all three
+	# already available on the Serial Number Creator via its own fetch_from chain
+	# (parent_manufacturing_order.<field>, itself fetched from the Sales Order). They are read
+	# off `doc` rather than `pmo_det` because pmo_det is a fixed field list that does not carry
+	# them, and Manufacturing Operation has no such fields of its own.
+	#
+	# custom_sales_type is NOT a duplicate of custom_ownership_tag above: the ownership tag is
+	# an ownership marker that is only seeded from sales_type and is meant to be overwritten by
+	# the ledger-derived value (see the commented line above), whereas custom_sales_type is the
+	# order-chain stamp that must keep reflecting what was sold. Do not merge them.
 	if doc.get("order_type"):
 		frappe.db.set_value("Serial No", sr_no, "custom_order_type", doc.order_type)
+	if doc.get("sales_type"):
+		frappe.db.set_value("Serial No", sr_no, "custom_sales_type", doc.sales_type)
+	if doc.get("flow_type"):
+		frappe.db.set_value("Serial No", sr_no, "custom_flow_type", doc.flow_type)
 	if doc.for_fg:
 		for row in doc.fg_details:
 			for entry in row_data:
