@@ -58,56 +58,49 @@ frappe.ui.form.on("Material Request", {
 		// if (!frm.doc.custom_mop_se && frm.doc.docstatus == 1) {
 		// 	frm.add_custom_button(__("Transfer To MOP"), () => frm.events.make_stock_entry(frm));
 		// }
-		if (
-			["Material Transferred to Department", "Material Transferred"].includes(frm.doc.workflow_state) &&
-			frm.doc.custom_operation_type == "Transfer to Department"
-		) {
-			if (!frm.custom_buttons["Update Department"]) {
-				frm.add_custom_button("Update Department", function () {
-					let dialog = new frappe.ui.Dialog({
-						title: "Update Department",
-						fields: [
-							{
-								label: "Department",
-								fieldname: "department",
-								fieldtype: "Link",
-								options: "Department",
-								reqd: 1,
-								get_query: function () {
-									return {
-										filters: {
-											company: frm.doc.company,
-										},
-									};
-								},
-							},
-						],
-						primary_action_label: "Submit",
-						primary_action: function (values) {
-							frappe.call({
-								method: "jewellery_erpnext.jewellery_erpnext.customization.material_request.material_request.update_department_and_create_stock_entry",
-								// args: {
-								//     docname: frm.doc.name,
-								//     new_department: values.department
-								// },
-								args: {
-									material_request_name: frm.doc.name, // <-- use correct argument name
-									new_department: values.department,
-								},
-								callback: function (r) {
-									if (!r.exc) {
-										frappe.msgprint("Department updated successfully");
-										frm.reload_doc();
-									}
-								},
-							});
-							dialog.hide();
-						},
-					});
-					dialog.show();
-				});
-			}
+		// The department route has no button of its own: "Transfer to Department" is a
+		// workflow transition, so it appears in the Actions menu beside — and, by its
+		// condition on custom_operation_type, instead of — "Transfer to MOP". The old
+		// "Update Department" dialog that used to live here is gone; it wrote a
+		// stock_entry_type that exists on no site, and would now collide with the real
+		// route in exactly the state the real route puts the document in.
+		frm.trigger("destination_warehouse_query");
+	},
+	// Only warehouses that actually sit in the chosen department can receive the
+	// material — the server asserts the same thing before it builds the Stock Entry.
+	destination_warehouse_query(frm) {
+		frm.set_query("custom_destination_warehouse", function () {
+			return {
+				filters: {
+					company: frm.doc.company,
+					department: frm.doc.custom_destination_department,
+					is_group: 0,
+					disabled: 0,
+				},
+			};
+		});
+	},
+	custom_destination_department(frm) {
+		// The warehouse is scoped by the department, so a department change invalidates
+		// whatever was picked under the previous one.
+		if (frm.doc.custom_destination_warehouse) {
+			frm.set_value("custom_destination_warehouse", null);
 		}
+	},
+	custom_operation_type(frm) {
+		// Leaving the department route drops a destination that was never acted on: with no
+		// Stock Entry behind them those two values describe nothing, and the fields would
+		// otherwise stay visible (depends_on keeps any value on show) carrying an abandoned
+		// attempt. A completed transfer is the opposite case — its values ARE the record of
+		// where the material went, and read_only_depends_on has already locked them — so
+		// they are kept whatever the Operation Type is switched to afterwards.
+		if (frm.doc.custom_operation_type === "Transfer to Department") return;
+		if (frm.doc.custom_department_transfer_se) return;
+
+		// Nulling the department cascades into the handler above, which clears the
+		// warehouse; the second call is then a no-op, kept so the intent reads plainly.
+		frm.set_value("custom_destination_department", null);
+		frm.set_value("custom_destination_warehouse", null);
 	},
 	// manufacturing_operation_query(frm) {
 	// 	frappe.db
@@ -186,7 +179,13 @@ frappe.ui.form.on("Material Request", {
 	// (doc_events/material_request.before_update_after_submit) is the hard block.
 	custom_manufacturing_operation(frm) {
 		const mop = frm.doc.custom_manufacturing_operation;
-		const warehouse = (frm.doc.items || []).length && frm.doc.items[0].warehouse;
+		const transferred = !!frm.doc.custom_department_transfer_se;
+		// Mirrors _current_material_warehouse on the server: a completed Transfer to
+		// Department has moved the material on, so the Request Item warehouse is stale
+		// from that point and the two would otherwise disagree about where it sits.
+		const warehouse = transferred
+			? frm.doc.custom_destination_warehouse
+			: (frm.doc.items || []).length && frm.doc.items[0].warehouse;
 		if (!mop || !warehouse) return;
 
 		Promise.all([
@@ -195,16 +194,24 @@ frappe.ui.form.on("Material Request", {
 		]).then(([mop_res, wh_res]) => {
 			const mop_dept = mop_res.message && mop_res.message.department;
 			const row_dept = wh_res.message && wh_res.message.department;
-			// Mirrors the server guard: an operation that has never been moved by a
-			// Department IR sits in the default department and is a gathering point.
-			const moved = mop_res.message && mop_res.message.previous_mop;
-			if (moved && mop_dept && row_dept && mop_dept !== row_dept) {
+			// Mirrors the server guard's exemption: an operation that has never been moved
+			// by a Department IR sits in the default department and is a gathering point.
+			// That exemption does not survive a Transfer to Department — the operator has
+			// already chosen where this material lives.
+			const enforced = transferred || (mop_res.message && mop_res.message.previous_mop);
+			if (enforced && mop_dept && row_dept && mop_dept !== row_dept) {
 				frappe.show_alert(
 					{
-						message: __(
-							"Material is in {0}; operation {1} is in {2}. Transfer it to {2} first.",
-							[row_dept, mop, mop_dept]
-						),
+						message: transferred
+							? __(
+									"Operation {0} is in {1}; this material was transferred to {2}. Select an operation in {2}.",
+									[mop, mop_dept, row_dept]
+							  )
+							: __("Material is in {0}; operation {1} is in {2}. Transfer it to {2} first.", [
+									row_dept,
+									mop,
+									mop_dept,
+							  ]),
 						indicator: "orange",
 					},
 					10

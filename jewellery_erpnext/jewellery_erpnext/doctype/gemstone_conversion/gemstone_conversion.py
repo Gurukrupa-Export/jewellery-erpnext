@@ -16,8 +16,6 @@ from jewellery_erpnext.jewellery_erpnext.doctype.main_slip.main_slip import (
 
 # The single attribute a conversion is allowed to change between source and target.
 GEMSTONE_PR_ATTRIBUTE = "Gemstone PR"
-# It may move by one or two 5-point notches, up or down -- never by zero.
-ALLOWED_GEMSTONE_PR_DELTAS = (-10.0, -5.0, 5.0, 10.0)
 
 
 def _format_gemstone_pr(value):
@@ -650,14 +648,48 @@ def _get_gemstone_pr(item_code, attributes):
 		)
 
 
-def validate_gemstone_item(self):
-	"""Target items may differ from the source only in Gemstone PR, by one or two notches.
+def _get_gemstone_pr_neighbours(source_pr):
+	"""Return immediate lower and higher Gemstone PR neighbours from Item Attribute Value."""
+	rows = frappe.db.sql(
+		"""
+		SELECT
+			MAX(
+				CASE
+					WHEN CAST(attribute_value AS DECIMAL(10,2)) < %(source_pr)s
+					THEN CAST(attribute_value AS DECIMAL(10,2))
+				END
+			) AS lower_value,
+			MIN(
+				CASE
+					WHEN CAST(attribute_value AS DECIMAL(10,2)) > %(source_pr)s
+					THEN CAST(attribute_value AS DECIMAL(10,2))
+				END
+			) AS higher_value
+		FROM `tabItem Attribute Value`
+		WHERE parent = 'Gemstone PR'
+		""",
+		{"source_pr": source_pr},
+		as_dict=True,
+	)
+	neighbours = []
+	if rows[0].lower_value is not None:
+		neighbours.append(float(rows[0].lower_value))
+	if rows[0].higher_value is not None:
+		neighbours.append(float(rows[0].higher_value))
+	return neighbours
 
-	Every other attribute must match exactly. The auto-appended loss row is exempt --
-	it is a different item by design and is never a conversion target.
+
+def validate_gemstone_item(self):
+	"""Target items must differ from the source in Gemstone PR.
+
+	Allowed values are the immediate neighbours of the source PR from the
+	Item Attribute Value table. Every other attribute must match exactly.
+	The auto-appended loss row is exempt -- it is a different item by design
+	and is never a conversion target.
 	"""
 	src_attributes = _get_item_attributes(self.g_source_item)
 	src_pr = _get_gemstone_pr(self.g_source_item, src_attributes)
+	allowed_prs = _get_gemstone_pr_neighbours(src_pr)
 
 	for target_row in self.sc_target_table:
 		if target_row.item_code == self.g_source_item:
@@ -687,15 +719,12 @@ def validate_gemstone_item(self):
 				)
 
 		target_pr = _get_gemstone_pr(target_row.item_code, target_attributes)
-		if flt(target_pr - src_pr, 2) not in ALLOWED_GEMSTONE_PR_DELTAS:
+		if target_pr not in allowed_prs:
 			frappe.throw(
 				_("{0} for item {1} must be one of {2} (source {3} is {4}).").format(
 					GEMSTONE_PR_ATTRIBUTE,
 					target_row.item_code,
-					", ".join(
-						_format_gemstone_pr(src_pr + delta)
-						for delta in ALLOWED_GEMSTONE_PR_DELTAS
-					),
+					", ".join(_format_gemstone_pr(v) for v in allowed_prs),
 					self.g_source_item,
 					_format_gemstone_pr(src_pr),
 				)

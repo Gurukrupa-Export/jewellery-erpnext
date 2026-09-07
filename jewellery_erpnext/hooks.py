@@ -343,6 +343,9 @@ override_whitelisted_methods = {
 	# Core returns None when a title-link doctype's title_field is empty, which blanks the
 	# Link input until a page reload (Manufacturing Operation with no `operation`).
 	"frappe.desk.search.get_link_title": "jewellery_erpnext.jewellery_erpnext.doc_events.search.get_link_title",
+	"erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.make_purchase_receipt",
+	"erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_order.make_purchase_invoice",
+	"erpnext.stock.doctype.purchase_receipt.purchase_receipt.make_purchase_invoice": "jewellery_erpnext.jewellery_erpnext.doc_events.purchase_receipt.make_purchase_invoice",
 }
 
 override_doctype_class = {

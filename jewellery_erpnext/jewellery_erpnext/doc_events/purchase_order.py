@@ -8,6 +8,10 @@ from frappe.utils import flt
 from jewellery_erpnext.jewellery_erpnext.customization.quotation.doc_events.remote_po import (
 	fetch_remote_ref_customer,
 )
+from jewellery_erpnext.jewellery_erpnext.customization.utils.internal_transfer import (
+	fill_purchase_invoice_references,
+	fill_purchase_receipt_references,
+)
 from jewellery_erpnext.jewellery_erpnext.doc_events.purchase_invoice import (
 	_get_rcm_base_account_head,
 )
@@ -464,3 +468,60 @@ def make_quotation(source_name, target_doc=None):
 	set_missing_values(po_doc, target_doc)
 
 	return target_doc
+
+
+@frappe.whitelist()
+def make_purchase_receipt(source_name, target_doc=None, args=None):
+	"""Override of erpnext...purchase_order.make_purchase_receipt (registered in
+	hooks.py's override_whitelisted_methods) that also fills in the internal-transfer
+	reference fields core ERPNext's mapper leaves blank.
+
+	Core's PO -> Purchase Receipt mapper never sets `inter_company_reference` (header)
+	or `delivery_note_item` (per item row) -- those are only ever set by ERPNext's
+	Delivery Note -> Purchase Receipt mapper. For an internal transfer (is_internal_supplier
+	and represents_company == company), that gap makes every Purchase Receipt created via
+	the Purchase Order's "Create" button fail on submit with "Internal Sale or Delivery
+	Reference missing", even though the correct Delivery Note is unambiguously findable
+	through the same Sales Order the Purchase Order was itself created from.
+
+	Delegates to core's real make_purchase_receipt first and only augments the result --
+	does not reimplement it -- so partial-receipt qty math, tax handling, and any future
+	core changes to that logic keep working unchanged for every other Purchase Order.
+	"""
+	from erpnext.buying.doctype.purchase_order.purchase_order import (
+		make_purchase_receipt as _core_make_purchase_receipt,
+	)
+
+	doc = _core_make_purchase_receipt(source_name, target_doc, args)
+
+	if doc.get("is_return"):
+		return doc
+	if not (doc.get("is_internal_supplier") and doc.represents_company == doc.company):
+		return doc
+
+	fill_purchase_receipt_references(doc)
+	return doc
+
+
+@frappe.whitelist()
+def make_purchase_invoice(source_name, target_doc=None, args=None):
+	"""Override of erpnext...purchase_order.make_purchase_invoice (registered in
+	hooks.py's override_whitelisted_methods) -- the Purchase Invoice counterpart of
+	`make_purchase_receipt` above. See that function's docstring for the general shape
+	of the problem; the difference here is Purchase Invoice Item carries no
+	sales_order/sales_order_item of its own, so get_sales_invoice_item_links() resolves
+	through the source Purchase Order Item's po_detail link first.
+	"""
+	from erpnext.buying.doctype.purchase_order.purchase_order import (
+		make_purchase_invoice as _core_make_purchase_invoice,
+	)
+
+	doc = _core_make_purchase_invoice(source_name, target_doc, args)
+
+	if doc.get("is_return"):
+		return doc
+	if not (doc.get("is_internal_supplier") and doc.represents_company == doc.company):
+		return doc
+
+	fill_purchase_invoice_references(doc)
+	return doc
