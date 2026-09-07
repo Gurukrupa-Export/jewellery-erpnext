@@ -82,7 +82,6 @@ jewellery_erpnext.patches.add_stock_entry_jwelex_tag_field
 jewellery_erpnext.patches.widen_stock_entry_jwelex_tag_field
 jewellery_erpnext.patches.backfill_stock_entry_jwelex_tag_no
 
-jewellery_erpnext.patches.normalize_mop_carat_to_gram_buckets
-jewellery_erpnext.patches.seed_stock_entry_types
-jewellery_erpnext.patches.backfill_stock_entry_target_inventory_dimensions
+# kggk-prod as a result -- the "Get Items From > Purchase Order" client script writes it.
 jewellery_erpnext.patches.add_quotation_gk_purchase_order_field
+jewellery_erpnext.patches.add_order_sales_flow_type_fields
