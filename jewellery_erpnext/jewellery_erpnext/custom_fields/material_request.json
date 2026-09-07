@@ -318,13 +318,13 @@
   },
   {
    "allow_on_submit": 1,
-   "depends_on": "eval:doc.workflow_state == \"Material Transferred\" || doc.workflow_state ==\"Material Transferred to MOP\";",
+   "depends_on": "eval:(doc.workflow_state == \"Material Transferred\" || doc.workflow_state == \"Material Transferred to Department\" || doc.workflow_state == \"Material Transferred to MOP\") && doc.custom_operation_type != \"Transfer to Department\";",
    "dt": "Material Request",
    "fieldname": "custom_manufacturing_operation",
    "fieldtype": "Link",
    "insert_after": "custom_manufacturing_plan_id",
    "label": "Manufacturing Operation",
-   "mandatory_depends_on": "eval:doc.workflow_state == \"Material Transferred\";",
+   "mandatory_depends_on": "eval:(doc.workflow_state == \"Material Transferred\" || doc.workflow_state == \"Material Transferred to Department\") && doc.custom_operation_type != \"Transfer to Department\";",
    "module": "Jewellery Erpnext",
    "options": "Manufacturing Operation",
    "read_only_depends_on": "eval:doc.workflow_state ==\"Material Transferred to MOP\";"
@@ -337,6 +337,50 @@
    "label": "Item Type",
    "module": "Jewellery Erpnext",
    "options": "\nGemstone\nDiamond"
+  },
+  {
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.custom_operation_type == \"Transfer to Department\" || doc.custom_destination_department || doc.custom_destination_warehouse",
+   "description": "Department the material is being transferred to. Only used when Operation Type is Transfer to Department.",
+   "dt": "Material Request",
+   "fieldname": "custom_destination_department",
+   "fieldtype": "Link",
+   "insert_after": "custom_operation_type",
+   "label": "Destination Department",
+   "mandatory_depends_on": "eval:doc.custom_operation_type == \"Transfer to Department\"",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Department",
+   "read_only_depends_on": "eval:doc.custom_department_transfer_se"
+  },
+  {
+   "allow_on_submit": 1,
+   "depends_on": "eval:doc.custom_operation_type == \"Transfer to Department\" || doc.custom_destination_department || doc.custom_destination_warehouse",
+   "description": "Warehouse in the destination department that receives the material. The Stock Entry runs Target Warehouse -> this warehouse.",
+   "dt": "Material Request",
+   "fieldname": "custom_destination_warehouse",
+   "fieldtype": "Link",
+   "insert_after": "custom_destination_department",
+   "label": "Destination Warehouse",
+   "mandatory_depends_on": "eval:doc.custom_operation_type == \"Transfer to Department\"",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Warehouse",
+   "read_only_depends_on": "eval:doc.custom_department_transfer_se"
+  },
+  {
+   "allow_on_submit": 1,
+   "description": "Material Transfer (DEPARTMENT) Stock Entry created by the Transfer to Department action. Its presence stops a second one being created.",
+   "dt": "Material Request",
+   "fieldname": "custom_department_transfer_se",
+   "fieldtype": "Link",
+   "insert_after": "custom_mop_se",
+   "label": "Department Transfer SE",
+   "module": "Jewellery Erpnext",
+   "no_copy": 1,
+   "options": "Stock Entry",
+   "print_hide": 1,
+   "read_only": 1
   }
  ]
 }

@@ -1,7 +1,11 @@
 # Copyright (c) 2026, Nirali and contributors
 # For license information, please see license.txt
 
-"""Unit tests for the Material Request customizations: Gemstone validation, Department SE, MOP SE."""
+"""Unit tests for the Material Request customizations: Gemstone validation, MOP SE.
+
+The department-transfer route has its own file,
+``test_material_request_department_transfer``.
+"""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -76,59 +80,6 @@ class TestValidateGemstoneAlternativeItems(IntegrationTestCase):
 		mr_mod.validate_gemstone_alternative_items(mr)  # Should not throw
 
 
-class TestUpdateDepartmentAndCreateStockEntry(IntegrationTestCase):
-	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
-	@patch(f"{_MR_CUSTOM}.frappe.db.sql", return_value=[])
-	@patch(f"{_MR_CUSTOM}.frappe.db.get_value", return_value="WH-RESERVE")
-	@patch(f"{_MR_CUSTOM}.make_department_stock_entry", return_value="SE-NEW-1")
-	def test_updates_department_and_creates_se(
-		self, mock_make_se, mock_get_value, mock_sql, mock_get_doc
-	):
-		doc = MagicMock()
-		doc.custom_department = "Dept A"
-		mock_get_doc.return_value = doc
-
-		mr_custom.update_department_and_create_stock_entry("MR-1", "Dept B")
-		doc.db_set.assert_called_once_with(
-			{
-				"custom_department": "Dept B",
-				"custom_custom_counter": 1,
-				"workflow_state": "Material Transferred to Department",
-				"custom_operation_type": "Transfer to Department",
-			}
-		)
-		mock_make_se.assert_called_once()
-
-	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
-	def test_throws_when_same_department(self, mock_get_doc):
-		doc = MagicMock()
-		doc.custom_department = "Dept A"
-		mock_get_doc.return_value = doc
-
-		with self.assertRaises(frappe.ValidationError) as ctx:
-			mr_custom.update_department_and_create_stock_entry("MR-1", "Dept A")
-		self.assertIn("Raw material is already in this department", str(ctx.exception))
-
-	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
-	@patch(f"{_MR_CUSTOM}.frappe.db.sql")
-	@patch(f"{_MR_CUSTOM}.frappe.db.get_value", return_value="WH-RESERVE-A")
-	def test_throws_when_last_se_t_warehouse_is_same(
-		self, mock_get_value, mock_sql, mock_get_doc
-	):
-		doc = MagicMock()
-		doc.custom_department = "Dept Old"
-		mock_get_doc.return_value = doc
-
-		# mock_sql returning last stock entry
-		mock_sql.return_value = [
-			{"name": "SE-1", "s_warehouse": "WH-S", "t_warehouse": "WH-RESERVE-A"}
-		]
-
-		with self.assertRaises(frappe.ValidationError) as ctx:
-			mr_custom.update_department_and_create_stock_entry("MR-1", "Dept A")
-		self.assertIn("Raw material is already in this department", str(ctx.exception))
-
-
 class TestMakeMopStockEntry(IntegrationTestCase):
 	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
 	@patch(f"{_MR_CUSTOM}.frappe.db.get_value")
@@ -183,77 +134,27 @@ class TestMakeMopStockEntry(IntegrationTestCase):
 		mock_get_value.side_effect = _gv
 
 		mr_obj = MagicMock()
-		mr_obj.get.return_value = "SE-OLD"
+		# Answers per key, not one value for every key: custom_mop_se must come back empty
+		# or the idempotency guard returns before the in-transit check is reached.
+		mr_obj.get.side_effect = lambda k: {"custom_reserve_se": "SE-OLD"}.get(k)
 
 		with self.assertRaises(frappe.ValidationError) as ctx:
 			mr_custom.make_mop_stock_entry(mr_obj, mop="MOP-1")
 		self.assertIn("in-transit status", str(ctx.exception))
 
-
-class TestMakeDepartmentStockEntry(IntegrationTestCase):
-	@patch(f"{_MR_CUSTOM}.frappe.db.set_value")
-	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
-	@patch(f"{_MR_CUSTOM}.frappe.copy_doc")
-	@patch(f"{_MR_CUSTOM}.frappe.db.get_value")
-	@patch(f"{_MR_CUSTOM}.frappe.db.sql")
-	def test_creates_department_stock_entry(
-		self, mock_sql, mock_get_value, mock_copy, mock_get_doc, mock_set_value
-	):
-		se = MagicMock()
-		se.items = [MagicMock(material_request_item="MRI-1")]
-		mock_copy.return_value = se
-
-		mock_get_value.return_value = "WH-TARGET-RES"
-		mock_sql.return_value = [{"t_warehouse": "WH-SRC-PREV"}]
-
-		mr_obj = MagicMock()
-		mr_obj.name = "MR-1"
-		mr_obj.get.side_effect = (
-			lambda k: "SE-RESERVE"
-			if k == "custom_reserve_se"
-			else "DEPT-A"
-			if k == "custom_department"
-			else None
-		)
-
-		# For `self.custom_material_request_department_transfer[-1]`
-		child_row = MagicMock()
-		mr_obj.custom_material_request_department_transfer = [child_row]
-
-		mr_custom.make_department_stock_entry(mr_obj)
-
-		se.save.assert_called_once()
-		se.submit.assert_called_once()
-		self.assertEqual(se.stock_entry_type, "Material Transfered to Department")
-		self.assertEqual(se.to_department, "DEPT-A")
-		self.assertEqual(se.to_warehouse, "WH-TARGET-RES")
-		self.assertEqual(se.items[0].s_warehouse, "WH-SRC-PREV")
-		self.assertEqual(se.items[0].t_warehouse, "WH-TARGET-RES")
-
-		child_row.db_set.assert_called_once_with("stock_entry_created", 1)
-
-	def test_returns_none_if_no_reserve_se(self):
-		mr_obj = MagicMock()
-		mr_obj.get.return_value = None
-		self.assertIsNone(mr_custom.make_department_stock_entry(mr_obj))
-
 	@patch(f"{_MR_CUSTOM}.frappe.copy_doc")
 	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
-	@patch(f"{_MR_CUSTOM}.frappe.db.get_value", return_value=None)
-	def test_throws_if_reserve_warehouse_missing(
-		self, mock_get_value, mock_get_doc, mock_copy
-	):
+	def test_returns_none_when_mop_se_already_stamped(self, mock_get_doc, mock_copy):
+		"""before_update_after_submit re-fires on every Update in this state."""
 		mr_obj = MagicMock()
-		mr_obj.get.side_effect = (
-			lambda k: "SE-RESERVE" if k == "custom_reserve_se" else "DEPT-A"
-		)
-		child_row = MagicMock()
-		mr_obj.custom_material_request_department_transfer = [child_row]
+		mr_obj.get.side_effect = lambda k: {
+			"custom_mop_se": "SE-MOP-1",
+			"custom_reserve_se": "SE-OLD",
+		}.get(k)
 
-		with self.assertRaises(Exception) as ctx:
-			mr_custom.make_department_stock_entry(mr_obj)
-		self.assertIn("No warehouse for Selected Department", str(ctx.exception))
-		self.assertEqual(len(mr_obj.custom_material_request_department_transfer), 0)
+		self.assertIsNone(mr_custom.make_mop_stock_entry(mr_obj, mop="MOP-1"))
+		mock_copy.assert_not_called()
+		mr_obj.db_set.assert_not_called()
 
 
 class TestMakeDepartmentMopStockEntry(IntegrationTestCase):
@@ -266,12 +167,69 @@ class TestMakeDepartmentMopStockEntry(IntegrationTestCase):
 	@patch(f"{_MR_CUSTOM}.frappe.db.get_value")
 	def test_throws_if_in_transit(self, mock_get_value, mock_get_doc):
 		mr_obj = MagicMock()
-		mr_obj.get.return_value = "SE-RESERVE"
+		# Answers per key, not one value for every key: custom_mop_se must come back empty
+		# or the idempotency guard returns before the in-transit check is reached.
+		mr_obj.get.side_effect = lambda k: {"custom_reserve_se": "SE-RESERVE"}.get(k)
 		mock_get_value.return_value = {"department_ir_status": "In-Transit"}
 
 		with self.assertRaises(frappe.ValidationError) as ctx:
 			mr_custom.make_department_mop_stock_entry(mr_obj, mop="MOP-1")
 		self.assertIn("in-transit status", str(ctx.exception))
+
+	@patch(f"{_MR_CUSTOM}.frappe.copy_doc")
+	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
+	def test_returns_none_when_mop_se_already_stamped(self, mock_get_doc, mock_copy):
+		mr_obj = MagicMock()
+		mr_obj.get.side_effect = lambda k: {
+			"custom_mop_se": "SE-MOP-1",
+			"custom_reserve_se": "SE-RESERVE",
+		}.get(k)
+
+		self.assertIsNone(
+			mr_custom.make_department_mop_stock_entry(mr_obj, mop="MOP-1")
+		)
+		mock_copy.assert_not_called()
+		mr_obj.db_set.assert_not_called()
+
+	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
+	@patch(f"{_MR_CUSTOM}.frappe.copy_doc")
+	@patch(f"{_MR_CUSTOM}.frappe.db.sql")
+	@patch(f"{_MR_CUSTOM}.frappe.db.get_value")
+	@patch(f"{_MR_CUSTOM}.frappe.get_cached_value", return_value=("MWO-1", "MO-1"))
+	def test_sources_from_the_destination_warehouse_after_a_department_transfer(
+		self, mock_cached, mock_get_value, mock_sql, mock_copy, mock_get_doc
+	):
+		"""The last-Stock-Entry query is not consulted once the move is on the record."""
+		se = MagicMock()
+		se.items = [MagicMock(material_request_item="MRI-1")]
+		mock_copy.return_value = se
+
+		def _gv(doctype, name, field=None, **kwargs):
+			if doctype == "Manufacturing Operation":
+				return {
+					"department": "Dept A",
+					"status": "Not Started",
+					"employee": None,
+					"department_ir_status": None,
+				}
+			return "WH-DEPT-MFG"
+
+		mock_get_value.side_effect = _gv
+
+		mr_obj = MagicMock()
+		mr_obj.name = "MR-1"
+		mr_obj.get.side_effect = lambda k: {
+			"custom_reserve_se": "SE-RESERVE",
+			"custom_department": "DEPT-A",
+			"custom_department_transfer_se": "SE-DEPT-1",
+			"custom_destination_warehouse": "WH-DEST",
+		}.get(k)
+
+		mr_custom.make_department_mop_stock_entry(mr_obj, mop="MOP-1")
+
+		self.assertEqual(se.items[0].s_warehouse, "WH-DEST")
+		self.assertEqual(se.items[0].t_warehouse, "WH-DEPT-MFG")
+		mock_sql.assert_not_called()
 
 	@patch(f"{_MR_CUSTOM}.frappe.get_doc")
 	@patch(f"{_MR_CUSTOM}.frappe.copy_doc")
