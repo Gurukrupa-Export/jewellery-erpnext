@@ -24,6 +24,7 @@
   "total_weight",
   "manufacturing_details_section",
   "fg_serial_no",
+    "ref_customer",
   "column_break_z1ja",
   "fg_bom",
   "section_break_a8aud",
@@ -352,6 +353,12 @@
    "fieldtype": "Table",
    "label": "Department Comment",
    "options": "Department Comment"
+  },
+   {
+   "fieldname": "ref_customer",
+   "fieldtype": "Link",
+   "label": "Ref Customer",
+   "options": "Customer"
   }
  ],
  "index_web_pages_for_search": 1,
