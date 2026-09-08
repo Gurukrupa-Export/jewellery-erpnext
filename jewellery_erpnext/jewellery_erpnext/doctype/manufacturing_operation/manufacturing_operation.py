@@ -1268,31 +1268,11 @@ def create_manufacturing_entry(doc, row_data, mo_data=None):
 	frappe.db.set_value(
 		"Serial No", sr_no, "custom_repair_type", pmo_det.get("repair_type")
 	)
-	# Ownership marker. Sales Type is stamped first as an early default (custom_ownership_tag
-	# is a plain Data field, since Sales Type is a free-form master not limited to
-	# Outright/Outwork/Hybrid), then immediately overwritten by the ledger-derived value
-	# when one is derivable, so the final value always reflects what was actually consumed
-	# rather than what was quoted/sold.
-	sales_type = (
-		frappe.db.get_value("Sales Order", doc.sales_order_id, "sales_type")
-		if doc.get("sales_order_id")
-		else None
-	)
-	if sales_type:
-		frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", sales_type)
-	# if ownership_tag := _derive_ownership_tag(row_data):
-	# 	frappe.db.set_value("Serial No", sr_no, "custom_ownership_tag", ownership_tag)
-
 	# Order Type / Sales Type / Flow Type of the source Sales Order / Quotation, all three
 	# already available on the Serial Number Creator via its own fetch_from chain
 	# (parent_manufacturing_order.<field>, itself fetched from the Sales Order). They are read
 	# off `doc` rather than `pmo_det` because pmo_det is a fixed field list that does not carry
 	# them, and Manufacturing Operation has no such fields of its own.
-	#
-	# custom_sales_type is NOT a duplicate of custom_ownership_tag above: the ownership tag is
-	# an ownership marker that is only seeded from sales_type and is meant to be overwritten by
-	# the ledger-derived value (see the commented line above), whereas custom_sales_type is the
-	# order-chain stamp that must keep reflecting what was sold. Do not merge them.
 	if doc.get("order_type"):
 		frappe.db.set_value("Serial No", sr_no, "custom_order_type", doc.order_type)
 	if doc.get("sales_type"):
@@ -1730,34 +1710,6 @@ def _snc_se_detail_maps(se_name):
 		for r in se_rates
 	}
 	return rate_map, inv_map
-
-
-def _derive_ownership_tag(row_data):
-	"""Outright / Outwork / Hybrid for the FG serial, from the material consumed.
-
-	``row_data`` is the batch-corrected consumption list built in
-	``to_prepare_data_for_make_mnf_stock_entry`` (serial_number_creator.py): the same
-	``inventory_type`` that lands on the Manufacture SE rows, with the Batch master
-	taking precedence over the upstream Stock Entry Detail.
-
-	Deliberately NOT derived from ``_snc_se_detail_maps``' ``inv_map``: that query has
-	no ``is_finished_item = 0`` filter, so the FG row's hardcoded "Regular Stock" would
-	turn every pure customer-material job into Hybrid. ``row_data`` is consumption-only.
-
-	Blank inventory types are ignored rather than assumed Regular Stock, so a job whose
-	rows carry no type is left untagged instead of silently mislabelled Outright (or
-	promoted to Hybrid). Returns ``None`` when nothing is derivable.
-	"""
-	types = {(row.get("inventory_type") or "").strip() for row in (row_data or [])}
-	types.discard("")
-
-	if not types:
-		return None
-	if types == {"Customer Goods"}:
-		return "Outwork"
-	if "Customer Goods" in types:
-		return "Hybrid"
-	return "Outright"
 
 
 def _stone_se_rate(consumed_rate, item_valuation_rate):
