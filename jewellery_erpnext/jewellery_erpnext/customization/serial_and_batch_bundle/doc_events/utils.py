@@ -3,7 +3,7 @@ from erpnext.stock.serial_batch_bundle import SerialBatchBundle, SerialBatchCrea
 from frappe.utils import flt
 from frappe import _, _dict, bold
 from frappe.utils import add_days, cint, cstr, flt, get_link_to_form, now, nowtime, today
-
+from erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle import combine_datetime
 def update_parent_batch_id(self):
 	if self.type_of_transaction == "Inward" and self.voucher_type in [
 		"Purchase Receipt",
@@ -61,6 +61,7 @@ class CustomSerialBatchBundle(SerialBatchBundle):
 				"warehouse": self.warehouse,
 				"posting_date": self.sle.posting_date,
 				"posting_time": self.sle.posting_time,
+				"posting_datetime": combine_datetime(self.sle.posting_date, self.sle.posting_time),
 				"voucher_type": self.sle.voucher_type,
 				"voucher_no": self.sle.voucher_no,
 				"voucher_detail_no": self.sle.voucher_detail_no,
@@ -158,6 +159,7 @@ def custom_create_batch(self):
 				"custom_certificate_id": get_row_certificate_id(
 					self.get("voucher_type"), self.get("voucher_detail_no")
 				),
+				"manufacturing_date": self.get("posting_date"),
 			}
 		)
 	)
