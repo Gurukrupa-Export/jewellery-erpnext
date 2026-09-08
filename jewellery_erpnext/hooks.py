@@ -223,6 +223,13 @@ doc_events = {
 		"before_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.guard_warehouse_change",
 		"on_update_after_submit": "jewellery_erpnext.jewellery_erpnext.doc_events.stock_entry.on_update_after_submit",
 	},
+	"Stock Entry Type": {
+		# Keep the Stock Entry naming shard complete. A type added after the shard would
+		# otherwise have no Document Naming Rule, so its first document would fall back to
+		# the single shared MAT-STE- tabSeries row and reintroduce the 1213 contention.
+		# No-op on a site that has not been sharded. See the patch module docstring.
+		"after_insert": "jewellery_erpnext.patches.shard_stock_entry_naming_by_type.on_stock_entry_type_insert",
+	},
 	"Manufacturing Work Order": {
 		"validate": "jewellery_erpnext.jewellery_erpnext.doctype.mould.doc_events.mwo_sync.sync_mould_id",
 		"before_submit": [
