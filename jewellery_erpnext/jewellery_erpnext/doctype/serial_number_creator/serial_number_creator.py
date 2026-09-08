@@ -18,6 +18,8 @@ from frappe.utils import (
 	nowdate,
 )
 
+from jewellery_erpnext.utils import carat_to_gram
+
 from jewellery_erpnext.jewellery_erpnext.doctype.mop_log.mop_log import (
 	get_current_mop_balance_rows,
 )
@@ -111,8 +113,12 @@ class SerialNumberCreator(Document):
 				continue
 			first_char = row.row_material[0] if row.row_material else ""
 			if first_char in ("D", "G"):
-				# Carat items → convert to grams
-				total += flt(row.qty) * 0.2
+				# Carat items → convert to grams, rounding once via carat_to_gram
+				# (the same round-of-sum mop_log.update_wt_detail, sync_mwo_weights
+				# and create_finished_goods_bom use). The previous raw ``* 0.2``
+				# converted each row unrounded, which could drift +0.001 from the
+				# BOM/MWO total at a rounding boundary.
+				total += carat_to_gram(flt(row.qty))
 			else:
 				total += flt(row.qty)
 		self.total_weight = flt(total, 3)
