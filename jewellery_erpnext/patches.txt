@@ -95,8 +95,15 @@ jewellery_erpnext.patches.move_item_theme_code_section
 jewellery_erpnext.patches.move_final_sketch_section
 jewellery_erpnext.patches.move_item_customer_items_to_sales
 jewellery_erpnext.patches.add_quotation_gk_purchase_order_field
+jewellery_erpnext.patches.add_quotation_gk_purchase_order_field
+jewellery_erpnext.patches.move_department_tables_to_sections
 jewellery_erpnext.patches.add_mr_department_transfer_fields
 jewellery_erpnext.patches.add_mr_transfer_to_department_workflow
 jewellery_erpnext.patches.update_mr_department_transfer_visibility
 jewellery_erpnext.patches.add_mr_department_to_mop_transition
 jewellery_erpnext.patches.add_sales_invoice_bom_summary_fields
+# Re-registered: commit 2d3ed5fd replaced this line instead of appending, so the patch has been
+# on disk but unregistered since. Its field, Quotation.custom_gk_purchase_order, is missing on
+# kggk-prod as a result -- the "Get Items From > Purchase Order" client script writes it.
+jewellery_erpnext.patches.add_quotation_gk_purchase_order_field
+jewellery_erpnext.patches.add_order_sales_flow_type_fields
