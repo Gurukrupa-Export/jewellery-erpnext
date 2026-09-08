@@ -164,45 +164,88 @@ def _coverage(company, reenablable=()):
 	caller re-enables them — so they are excluded from the conflict report. Without this,
 	restoring a rolled-back shard reports every restored type as broken.
 
-	Returns ``(covered, conflicts)`` where ``covered`` maps type -> rule name for rules that
-	FULLY cover the pair — active, and conditioned on exactly ``company`` + ``stock_entry_type``
-	and nothing else — and ``conflicts`` lists ``(type, reason, rule)`` for everything the
-	planner must NOT silently skip:
+	Returns ``(covered, conflicts)``. ``covered`` maps type -> rule name; ``conflicts`` lists
+	``(type, reason, rule)`` for everything the planner must NOT silently skip.
 
-	* a rule exists but is **disabled** (names nothing today; the post-rollback state);
-	* a rule carries **extra conditions**, so it covers only a subset of that type;
-	* **several** rules claim the same pair.
+	COVERAGE IS DECIDED BY ASKING FRAPPE, NOT BY INSPECTING CONDITIONS
+	-----------------------------------------------------------------
+	A rule's conditions carry an OPERATOR (``=``, ``!=``, ``>``, ``<``, ``>=``, ``<=``) and
+	rules are evaluated in ``priority desc`` order. Reconstructing that from
+	``(field, value)`` pairs got it wrong: a rule conditioned ``company != X`` read as
+	``company = X``, and a higher-priority generic rule that actually wins was invisible.
 
-	A conflict is reported to the operator rather than treated as coverage or overwritten,
-	because either answer could be wrong and only a human knows which.
+	So the decision is delegated to :func:`lock_order.document_naming_rule_for_doc`, which
+	resolves the rule through frappe's own ``get_doctype_map(filters={"disabled": 0},
+	order_by="priority desc")`` + ``evaluate_filters`` — the very code path ``set_new_name``
+	takes. Whatever it returns for a stub of this ``(company, type)`` IS the rule that will
+	name the document. The structural checks below survive only to explain WHY a type is not
+	covered; they never grant coverage.
 	"""
+	from jewellery_erpnext.jewellery_erpnext.lock_order import (
+		document_naming_rule_for_doc,
+	)
+
 	reenablable = set(reenablable or ())
-	covered, conflicts, seen = {}, [], {}
-	for r in _rule_rows():
-		if r.company != company or not r.setype:
+	rows = [r for r in _rule_rows() if r.company == company and r.setype]
+
+	# Structural facts per type, used for conflict REASONS and for duplicate detection.
+	by_type = {}
+	for r in rows:
+		by_type.setdefault(r.setype, []).append(r)
+
+	covered, conflicts = {}, []
+	for setype, candidates in sorted(by_type.items()):
+		active = [r for r in candidates if not r.disabled]
+		ours_disabled = [r for r in candidates if r.disabled and r.name in reenablable]
+
+		# A rule this patch created that a previous rollback() disabled is the expected
+		# rolled-back state, not a conflict — the caller re-enables it. It must also count as
+		# coverage, or _plan would mint a duplicate rule beside it.
+		if not active and ours_disabled:
+			covered[setype] = ours_disabled[0].name
 			continue
-		if r.disabled:
-			if r.name in reenablable:
-				# Ours, and about to be re-enabled — it IS the coverage for this type. It
-				# must not be reported as a conflict (it is the expected rolled-back state)
-				# NOR left uncovered, which would make _plan mint a duplicate rule beside it.
-				seen[r.setype] = r.name
-				covered[r.setype] = r.name
-			else:
-				conflicts.append((r.setype, "rule exists but is DISABLED", r.name))
+
+		if len(active) > 1:
+			# Which one wins depends on priority and creation order, so the prefix is
+			# unpredictable and a later priority edit silently changes it. Never "covered".
+			for r in active[1:]:
+				conflicts.append(
+					(setype, "multiple active rules claim this type", r.name)
+				)
 			continue
-		if r.n_conditions != 2:
+
+		if not active:
+			for r in candidates:
+				conflicts.append((setype, "rule exists but is DISABLED", r.name))
+			continue
+
+		rule = active[0]
+		if rule.n_conditions != 2:
 			conflicts.append(
-				(r.setype, f"rule has {r.n_conditions} conditions (expected 2)", r.name)
+				(
+					setype,
+					f"rule has {rule.n_conditions} conditions (expected 2)",
+					rule.name,
+				)
 			)
 			continue
-		if r.setype in seen:
+
+		# The authoritative check: does frappe actually pick this rule for this pair?
+		stub = frappe.new_doc(_DOCTYPE)
+		stub.company = company
+		stub.stock_entry_type = setype
+		effective = document_naming_rule_for_doc(stub)
+		if effective != rule.name:
 			conflicts.append(
-				(r.setype, "multiple active rules claim this type", r.name)
+				(
+					setype,
+					f"frappe resolves {effective or 'no rule'}, not this one",
+					rule.name,
+				)
 			)
 			continue
-		seen[r.setype] = r.name
-		covered[r.setype] = r.name
+
+		covered[setype] = rule.name
 	return covered, conflicts
 
 
@@ -377,10 +420,20 @@ def shard(company=None, confirm=False, all_types=True):
 			print(f"    {setype[:44]:<45} {reason:<42} ({rule})")
 
 	if not plan and not to_reenable:
-		print(
-			"\n[shard] Nothing to do: every stock_entry_type already has an active rule."
-		)
-		return
+		if conflicts:
+			# NOT "nothing to do": a conflicted type is excluded from the plan, so an empty
+			# plan here means the only outstanding work is a conflict a human must resolve.
+			# Saying "every type already has an active rule" would be a flat lie, and on
+			# confirm=True this path must still fail closed (checked below).
+			print(
+				f"\n[shard] No rules to create, but {len(conflicts)} conflict(s) remain "
+				f"UNRESOLVED — those types still fall back to MAT-STE-."
+			)
+		else:
+			print(
+				"\n[shard] Nothing to do: every stock_entry_type already has an active rule."
+			)
+			return
 
 	if not plan:
 		print("\n[shard] No new rules needed — only re-enabling.")
@@ -405,6 +458,17 @@ def shard(company=None, confirm=False, all_types=True):
 			"\n[shard] DRY-RUN only — nothing changed. Re-run with confirm=True to apply."
 		)
 		return
+
+	if conflicts:
+		# FAIL CLOSED. Applying while a type is unresolved would mark the company ACTIVE
+		# while that type still falls back to MAT-STE- — and ACTIVE is what
+		# sharded_companies() and repair_missing_rules() trust. There is deliberately no
+		# override: ACTIVE must always mean fully covered.
+		frappe.throw(
+			f"Resolve all {len(conflicts)} Document Naming Rule conflict(s) before applying "
+			f"the Stock Entry naming shard for {company!r}. Re-run the dry run to list them; "
+			f"nothing has been changed."
+		)
 
 	for rule in to_reenable:
 		frappe.db.set_value(
@@ -447,11 +511,8 @@ def shard(company=None, confirm=False, all_types=True):
 		f"{frappe.db.get_value('Company', company, 'abbr')}-SE-<type>-<yy>-#####."
 	)
 	print(f"[shard] Recorded {len(all_recorded)} rule name(s); state -> {_ACTIVE}.")
-	if conflicts:
-		print(
-			f"[shard] {len(conflicts)} conflicting type(s) were NOT covered — see above; "
-			f"they still fall back to MAT-STE-."
-		)
+	# No conflict summary here: apply is unreachable while any conflict remains (see the
+	# fail-closed throw above), so reaching this line means coverage is complete.
 
 
 def rollback(company=None):
@@ -544,15 +605,31 @@ def verify_shard(company=None, verbose=True):
 	)
 	state = _get_state(company)
 	if verbose:
+		# Uncovered and conflicting mean different things and are reported separately:
+		# "uncovered" is what falls back to MAT-STE- right now; "conflicts" is the subset a
+		# human must resolve before shard() will apply at all.
 		print(f"[verify] company={company!r}  state={state}")
 		print(f"[verify] covered by an active rule : {len(covered)}")
-		print(f"[verify] NOT covered               : {len(uncovered)}")
+
+		print(
+			f"\n[verify] NOT COVERED ({len(uncovered)}) — these fall back to MAT-STE-:"
+		)
+		if not uncovered:
+			print("    (none)")
 		for t in uncovered:
-			why = next((r for s, r, _ in conflicts if s == t), "no rule")
-			print(f"    {t[:44]:<45} {why:<42} docs={counts.get(t, 0)}")
+			print(f"    {t[:52]:<53} docs={counts.get(t, 0)}")
+
+		print(
+			f"\n[verify] CONFLICTS ({len(conflicts)}) — resolve before shard() will apply:"
+		)
+		if not conflicts:
+			print("    (none)")
+		for setype, why, rule in conflicts:
+			print(f"    {setype[:40]:<41} {why:<48} ({rule})")
+
 		if state == _ACTIVE and uncovered:
 			print(
-				"[verify] State is ACTIVE but some types fall back to MAT-STE- — "
+				"\n[verify] State is ACTIVE but some types fall back to MAT-STE- — "
 				"run repair_missing_rules()."
 			)
 	return {"state": state, "uncovered": uncovered, "conflicts": conflicts}

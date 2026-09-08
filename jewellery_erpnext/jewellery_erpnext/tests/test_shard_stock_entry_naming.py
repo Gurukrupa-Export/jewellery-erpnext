@@ -4,22 +4,33 @@
 """Unit tests for the gated Stock Entry naming shard
 (``jewellery_erpnext.patches.shard_stock_entry_naming_by_type``).
 
-These cover the three findings raised on PR #1225:
+These cover the findings raised across three review rounds on PR #1225:
 
 * rollback must disable ONLY the rules the patch created — on kggk-prod the old
   prefix-matching predicate also swept up five pre-existing ``KGJPL-SE-*`` Customer-Goods
   rules created months earlier;
 * every defined Stock Entry Type must be covered, and a type created later must not
   silently fall back to the shared ``MAT-STE-`` row;
-* a dry run must write nothing.
+* a dry run must write nothing;
+* rollback must be reversible — ``shard -> rollback -> shard`` restores, and a rolled-back
+  company must not look sharded to the new-type hook;
+* coverage must reflect what frappe ACTUALLY resolves (condition operator + rule priority),
+  not what a ``(field, value)`` reduction suggests;
+* a conflict must block apply, so ``ACTIVE`` always means fully covered.
+
+``TestRealDocumentNamingRule`` at the bottom creates real records and is the only class here
+that is not pure-mock; it exists because the operator/priority bug was invisible to mocks
+asserting against the same model that was wrong.
 """
 
 import json
 from unittest.mock import MagicMock, patch
 
 import frappe
+from frappe.model.naming import set_new_name
 from frappe.tests import IntegrationTestCase
 
+from jewellery_erpnext.jewellery_erpnext import lock_order as shard_mod_lock_order
 from jewellery_erpnext.patches import shard_stock_entry_naming_by_type as shard_mod
 
 _COMPANY = "KG GK Jewellers Private Limited"
@@ -144,15 +155,26 @@ class TestShardPlan(IntegrationTestCase):
 
 
 class TestCoverageIsActiveOnly(IntegrationTestCase):
-	"""Round-2 Finding 1: only an ACTIVE, exactly-matching rule counts as coverage.
+	"""Only an ACTIVE rule that frappe ACTUALLY resolves counts as coverage.
 
-	A disabled rule names nothing, so treating it as coverage leaves the type on the shared
-	MAT-STE- row — and after a rollback it made the whole shard un-reappliable.
+	Round 2: a disabled rule names nothing, so treating it as coverage leaves the type on the
+	shared MAT-STE- row — and after a rollback it made the shard un-reappliable.
+	Round 3: coverage is decided by asking ``document_naming_rule_for_doc`` rather than by
+	inferring from (field, value) pairs, which ignored the condition OPERATOR and rule
+	PRIORITY. ``_effective`` below stands in for frappe's resolver.
 	"""
 
 	@classmethod
 	def setUpClass(cls):
 		pass
+
+	def _effective(self, mapping):
+		"""Patch the resolver: {stock_entry_type: rule_name frappe would pick}."""
+		return patch.object(
+			shard_mod_lock_order,
+			"document_naming_rule_for_doc",
+			side_effect=lambda doc: mapping.get(doc.stock_entry_type),
+		)
 
 	def _rows(self, *specs):
 		return [
@@ -167,7 +189,7 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 			shard_mod,
 			"_rule_rows",
 			return_value=self._rows(("R1", "Manufacture", 1, 2)),
-		):
+		), self._effective({}):
 			covered, conflicts = shard_mod._coverage(_COMPANY)
 		self.assertEqual(covered, {})
 		self.assertEqual([(t, r) for t, _why, r in conflicts], [("Manufacture", "R1")])
@@ -178,28 +200,53 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 		# so assuming general coverage would leave the rest on MAT-STE-.
 		with patch.object(
 			shard_mod, "_rule_rows", return_value=self._rows(("R1", "Repack", 0, 3))
-		):
+		), self._effective({}):
 			covered, conflicts = shard_mod._coverage(_COMPANY)
 		self.assertEqual(covered, {})
 		self.assertIn("3 conditions", conflicts[0][1])
 
-	def test_duplicate_active_rules_are_a_conflict(self):
+	def test_duplicate_active_rules_are_a_conflict_and_NOT_covered(self):
+		# Round 3: previously the first rule landed in `covered` and the second in
+		# `conflicts`, so the type was BOTH. Which rule frappe picks depends on priority and
+		# creation order, so the prefix is unpredictable and a priority edit silently changes
+		# it — that is not coverage.
 		with patch.object(
 			shard_mod,
 			"_rule_rows",
 			return_value=self._rows(("R1", "Repack", 0, 2), ("R2", "Repack", 0, 2)),
-		):
+		), self._effective({"Repack": "R1"}):
 			covered, conflicts = shard_mod._coverage(_COMPANY)
-		self.assertEqual(covered, {"Repack": "R1"})
+		self.assertEqual(covered, {}, "a duplicated type is never covered")
 		self.assertIn("multiple active rules", conflicts[0][1])
 
-	def test_plain_active_rule_is_coverage(self):
+	def test_plain_active_rule_frappe_resolves_is_coverage(self):
 		with patch.object(
 			shard_mod, "_rule_rows", return_value=self._rows(("R1", "Repack", 0, 2))
-		):
+		), self._effective({"Repack": "R1"}):
 			covered, conflicts = shard_mod._coverage(_COMPANY)
 		self.assertEqual(covered, {"Repack": "R1"})
 		self.assertEqual(conflicts, [])
+
+	def test_rule_frappe_does_not_resolve_is_NOT_coverage(self):
+		# The operator blind spot: a rule conditioned `company != X` reduces to the same
+		# (field, value) pair as `company = X`, so the old structural check called it
+		# covered. Frappe's evaluator does not, and frappe is the authority.
+		with patch.object(
+			shard_mod, "_rule_rows", return_value=self._rows(("R1", "Repack", 0, 2))
+		), self._effective({"Repack": None}):
+			covered, conflicts = shard_mod._coverage(_COMPANY)
+		self.assertEqual(covered, {})
+		self.assertIn("no rule", conflicts[0][1])
+
+	def test_rule_shadowed_by_higher_priority_is_NOT_coverage(self):
+		# The priority blind spot: an exact (company, type) rule exists, but a
+		# higher-priority rule wins. Only the winner names the document.
+		with patch.object(
+			shard_mod, "_rule_rows", return_value=self._rows(("R1", "Repack", 0, 2))
+		), self._effective({"Repack": "GENERIC-HIGH-PRIORITY"}):
+			covered, conflicts = shard_mod._coverage(_COMPANY)
+		self.assertEqual(covered, {})
+		self.assertIn("GENERIC-HIGH-PRIORITY", conflicts[0][1])
 
 	def test_reenablable_rule_counts_as_coverage_not_a_conflict(self):
 		# A disabled rule THIS patch created and is about to re-enable is the expected
@@ -210,7 +257,7 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 			shard_mod,
 			"_rule_rows",
 			return_value=self._rows(("R1", "Manufacture", 1, 2)),
-		):
+		), self._effective({}):
 			covered, conflicts = shard_mod._coverage(_COMPANY, reenablable=["R1"])
 		self.assertEqual(covered, {"Manufacture": "R1"})
 		self.assertEqual(conflicts, [])
@@ -240,6 +287,125 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 		self.assertEqual(plan, [])
 		self.assertEqual(skipped, [])
 		self.assertEqual(len(conflicts), 1)
+
+	def tearDown(self):
+		return super().tearDown()
+
+
+class TestFailClosedOnConflicts(IntegrationTestCase):
+	"""Round-3 Finding 3: a conflict must block apply, so ACTIVE always means fully covered.
+
+	``sharded_companies()`` and ``repair_missing_rules()`` both trust ACTIVE. Applying while a
+	type is unresolved marked the company healthy while that type still fell back to MAT-STE-.
+	"""
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def _run_with_conflicts(self, conflicts, confirm):
+		plan = [
+			{
+				"setype": "Manufacture",
+				"prefix": "KGJPL-SE-MF-.YY.-",
+				"seed_to": 0,
+				"docs": 3,
+			}
+		]
+		with patch.object(
+			shard_mod, "_plan", return_value=(plan, [], conflicts)
+		), patch.object(
+			shard_mod, "_default_company", return_value=_COMPANY
+		), patch.object(shard_mod, "_get_created", return_value=None), patch.object(
+			shard_mod, "_get_state", return_value=shard_mod._NOT_APPLIED
+		), patch.object(shard_mod.frappe, "get_doc") as mock_get_doc, patch.object(
+			shard_mod, "_set_state"
+		) as mock_state, patch.object(shard_mod.frappe.db, "commit") as mock_commit:
+			shard_mod.shard(confirm=confirm)
+		return mock_get_doc, mock_state, mock_commit
+
+	def test_apply_throws_and_changes_nothing_when_conflicts_remain(self):
+		conflicts = [("Repack", "rule exists but is DISABLED", "R1")]
+		with self.assertRaises(frappe.ValidationError):
+			self._run_with_conflicts(conflicts, confirm=True)
+
+	def test_apply_writes_nothing_when_it_throws(self):
+		conflicts = [("Repack", "rule exists but is DISABLED", "R1")]
+		try:
+			mock_get_doc, mock_state, mock_commit = self._run_with_conflicts(
+				conflicts, confirm=True
+			)
+		except frappe.ValidationError:
+			pass
+		else:  # pragma: no cover - the throw is the point of this test
+			self.fail("expected a ValidationError")
+
+	def test_throws_even_when_there_is_nothing_to_create(self):
+		# The case the first fail-closed attempt missed, caught end-to-end on a real bench:
+		# a conflicted type is EXCLUDED from the plan, so a site whose only outstanding work
+		# is a conflict produces an EMPTY plan. The old "nothing to do" early return fired
+		# before the conflict gate and returned success, reporting "every stock_entry_type
+		# already has an active rule" while one type still fell back to MAT-STE-.
+		conflicts = [("Manufacture", "multiple active rules claim this type", "R2")]
+		with patch.object(
+			shard_mod, "_plan", return_value=([], [], conflicts)
+		), patch.object(
+			shard_mod, "_default_company", return_value=_COMPANY
+		), patch.object(shard_mod, "_get_created", return_value=None), patch.object(
+			shard_mod, "_get_state", return_value=shard_mod._ACTIVE
+		), patch.object(shard_mod.frappe, "get_doc") as mock_get_doc, patch.object(
+			shard_mod, "_set_state"
+		) as mock_state:
+			with self.assertRaises(frappe.ValidationError):
+				shard_mod.shard(confirm=True)
+		mock_get_doc.assert_not_called()
+		mock_state.assert_not_called()
+
+	def test_empty_plan_with_no_conflicts_is_a_clean_noop(self):
+		with patch.object(shard_mod, "_plan", return_value=([], [], [])), patch.object(
+			shard_mod, "_default_company", return_value=_COMPANY
+		), patch.object(shard_mod, "_get_created", return_value=None), patch.object(
+			shard_mod, "_get_state", return_value=shard_mod._ACTIVE
+		), patch.object(shard_mod, "_set_state") as mock_state:
+			shard_mod.shard(confirm=True)  # must NOT raise
+		mock_state.assert_not_called()
+
+	def test_dry_run_still_reports_conflicts_without_throwing(self):
+		# Nothing is hidden — the operator must be able to SEE what to resolve.
+		conflicts = [("Repack", "rule exists but is DISABLED", "R1")]
+		mock_get_doc, mock_state, mock_commit = self._run_with_conflicts(
+			conflicts, confirm=False
+		)
+		mock_get_doc.assert_not_called()
+		mock_state.assert_not_called()
+		mock_commit.assert_not_called()
+
+	def test_apply_proceeds_when_there_are_no_conflicts(self):
+		doc = MagicMock()
+		doc.name = "NEW-RULE"
+		plan = [
+			{
+				"setype": "Manufacture",
+				"prefix": "KGJPL-SE-MF-.YY.-",
+				"seed_to": 0,
+				"docs": 3,
+			}
+		]
+		with patch.object(
+			shard_mod, "_plan", return_value=(plan, [], [])
+		), patch.object(
+			shard_mod, "_default_company", return_value=_COMPANY
+		), patch.object(shard_mod, "_get_created", return_value=None), patch.object(
+			shard_mod, "_get_state", return_value=shard_mod._NOT_APPLIED
+		), patch.object(shard_mod.frappe, "get_doc", return_value=doc), patch.object(
+			shard_mod, "_record_created", return_value=["NEW-RULE"]
+		), patch.object(shard_mod, "_set_state") as mock_state, patch.object(
+			shard_mod.frappe.db, "commit"
+		), patch.object(shard_mod.frappe, "clear_cache"), patch.object(
+			shard_mod.frappe, "cache_manager"
+		), patch.object(shard_mod.frappe.db, "get_value", return_value="KGJPL"):
+			shard_mod.shard(confirm=True)
+		mock_state.assert_called_once_with(_COMPANY, shard_mod._ACTIVE)
 
 	def tearDown(self):
 		return super().tearDown()
@@ -380,6 +546,29 @@ class TestVerifyShard(IntegrationTestCase):
 			out = shard_mod.verify_shard(_COMPANY, verbose=False)
 		self.assertEqual(out["uncovered"], ["B", "C"])
 		self.assertEqual(out["state"], shard_mod._ACTIVE)
+
+	def test_reports_uncovered_and_conflicts_as_separate_sections(self):
+		# They mean different things: "uncovered" is what falls back to MAT-STE- right now;
+		# "conflicts" is the subset a human must resolve before shard() will apply at all.
+		import io
+		from contextlib import redirect_stdout
+
+		buf = io.StringIO()
+		with patch.object(
+			shard_mod,
+			"_coverage",
+			return_value=({"A": "R1"}, [("B", "rule exists but is DISABLED", "R2")]),
+		), patch.object(
+			shard_mod, "_historical_counts", return_value={"A": 10, "B": 7}
+		), patch.object(
+			shard_mod.frappe, "get_all", return_value=["A", "B", "C"]
+		), patch.object(shard_mod, "_get_state", return_value=shard_mod._ACTIVE):
+			with redirect_stdout(buf):
+				out = shard_mod.verify_shard(_COMPANY, verbose=True)
+		text = buf.getvalue()
+		self.assertIn("NOT COVERED (2)", text)
+		self.assertIn("CONFLICTS (1)", text)
+		self.assertEqual(out["uncovered"], ["B", "C"])  # A is covered
 
 	def test_repair_refuses_unless_active(self):
 		with patch.object(
@@ -574,4 +763,123 @@ class TestEnsureRulesForNewType(IntegrationTestCase):
 		mock_log.assert_called_once()
 
 	def tearDown(self):
+		return super().tearDown()
+
+
+class TestRealDocumentNamingRule(IntegrationTestCase):
+	"""Integration test against REAL Document Naming Rules — no mocks.
+
+	Round-3 blocker 1 existed because ``_coverage`` modelled frappe's rule evaluation instead
+	of invoking it: a rule conditioned ``company != X`` reduced to the same ``(field, value)``
+	pair as ``company = X``, and rule ``priority`` was ignored entirely. Mock-based tests
+	cannot catch that class of bug, because they assert against the same model that is wrong.
+
+	These cases create real ``Stock Entry Type`` and ``Document Naming Rule`` records and let
+	frappe resolve them, so the operator/priority semantics are exercised for real.
+
+	Runs on CI's disposable ``test_site``. Records are removed in ``tearDown`` so the module
+	is safe to re-run on a persistent site.
+	"""
+
+	TYPE_A = "ZZ Shard Probe A"
+	TYPE_B = "ZZ Shard Probe B"
+
+	@classmethod
+	def setUpClass(cls):
+		pass
+
+	def setUp(self):
+		self.company = frappe.get_all("Company", pluck="name")[0]
+		self._made = []
+		for t in (self.TYPE_A, self.TYPE_B):
+			if not frappe.db.exists("Stock Entry Type", t):
+				frappe.get_doc(
+					{
+						"doctype": "Stock Entry Type",
+						"name": t,
+						"purpose": "Material Transfer",
+					}
+				).insert(ignore_permissions=True)
+			self._made.append(("Stock Entry Type", t))
+
+	def _rule(self, setype, prefix, *, condition="=", priority=0, company=None):
+		doc = frappe.get_doc(
+			{
+				"doctype": "Document Naming Rule",
+				"document_type": "Stock Entry",
+				"priority": priority,
+				"prefix": prefix,
+				"prefix_digits": 5,
+				"counter": 0,
+				"disabled": 0,
+				"conditions": [
+					{
+						"field": "company",
+						"condition": condition,
+						"value": company or self.company,
+					},
+					{"field": "stock_entry_type", "condition": "=", "value": setype},
+				],
+			}
+		).insert(ignore_permissions=True)
+		self._made.append(("Document Naming Rule", doc.name))
+		frappe.cache_manager.clear_doctype_map("Document Naming Rule", "Stock Entry")
+		return doc
+
+	def _stub(self, setype):
+		d = frappe.new_doc("Stock Entry")
+		d.company = self.company
+		d.stock_entry_type = setype
+		return d
+
+	def test_equals_rule_is_resolved_and_counted_as_coverage(self):
+		rule = self._rule(self.TYPE_A, "ZZA-SE-PROBE-.YY.-")
+		self.assertEqual(
+			shard_mod_lock_order.document_naming_rule_for_doc(self._stub(self.TYPE_A)),
+			rule.name,
+		)
+		covered, _conflicts = shard_mod._coverage(self.company)
+		self.assertEqual(covered.get(self.TYPE_A), rule.name)
+
+	def test_not_equals_rule_is_NOT_coverage(self):
+		# The exact blind spot: same (field, value) pair, opposite meaning.
+		self._rule(self.TYPE_B, "ZZB-SE-PROBE-.YY.-", condition="!=")
+		self.assertIsNone(
+			shard_mod_lock_order.document_naming_rule_for_doc(self._stub(self.TYPE_B))
+		)
+		covered, conflicts = shard_mod._coverage(self.company)
+		self.assertNotIn(self.TYPE_B, covered)
+		self.assertTrue(any(c[0] == self.TYPE_B for c in conflicts))
+
+	def test_higher_priority_rule_wins_and_shadows_the_exact_one(self):
+		low = self._rule(self.TYPE_A, "ZZA-SE-LOW-.YY.-", priority=0)
+		high = self._rule(self.TYPE_A, "ZZA-SE-HIGH-.YY.-", priority=10)
+		effective = shard_mod_lock_order.document_naming_rule_for_doc(
+			self._stub(self.TYPE_A)
+		)
+		self.assertEqual(effective, high.name, "frappe orders by priority desc")
+		self.assertNotEqual(effective, low.name)
+		# Two active rules claim the pair, so the type must not be reported as covered.
+		covered, conflicts = shard_mod._coverage(self.company)
+		self.assertNotIn(self.TYPE_A, covered)
+		self.assertTrue(any(c[0] == self.TYPE_A for c in conflicts))
+
+	def test_naming_actually_uses_the_rule_and_increments_its_counter(self):
+		rule = self._rule(self.TYPE_A, "ZZA-SE-MINT-.YY.-")
+		before = frappe.db.get_value("Document Naming Rule", rule.name, "counter")
+		doc = self._stub(self.TYPE_A)
+		set_new_name(doc)
+		after = frappe.db.get_value("Document Naming Rule", rule.name, "counter")
+		self.assertTrue(
+			doc.name.startswith("ZZA-SE-MINT-"), f"unexpected name {doc.name!r}"
+		)
+		self.assertEqual(after, before + 1)
+		self.assertFalse(doc.name.startswith("MAT-STE-"))
+
+	def tearDown(self):
+		for doctype, name in reversed(self._made):
+			if frappe.db.exists(doctype, name):
+				frappe.delete_doc(doctype, name, force=1, ignore_permissions=True)
+		frappe.cache_manager.clear_doctype_map("Document Naming Rule", "Stock Entry")
+		frappe.db.commit()
 		return super().tearDown()
