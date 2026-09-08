@@ -98,8 +98,8 @@ def _set_state(company, state):
 	frappe.db.set_default(_state_key(company), state)
 
 
-def _get_created(company):
-	"""Rule names this patch previously created for ``company`` (``None`` if it never ran)."""
+def _get_created_raw(company):
+	"""Raw recorded entries — a mix of plain names (legacy) and identity dicts."""
 	raw = frappe.db.get_default(_created_key(company))
 	if not raw:
 		return None
@@ -109,11 +109,92 @@ def _get_created(company):
 		return None
 
 
-def _record_created(company, names):
-	"""Append ``names`` to the recorded set for ``company`` (idempotent, order-stable)."""
-	merged = list(dict.fromkeys((_get_created(company) or []) + list(names)))
+def _get_created(company):
+	"""Rule NAMES this patch previously created for ``company`` (``None`` if it never ran).
+
+	Accepts both record shapes: the original plain-string list and the richer identity dicts
+	written since — so an existing record is never stranded by the format change.
+	"""
+	entries = _get_created_raw(company)
+	if entries is None:
+		return None
+	return [e["name"] if isinstance(e, dict) else e for e in entries]
+
+
+def _created_identity(company, rule):
+	"""The recorded identity for ``rule``, or ``None`` for a legacy string-only record."""
+	for e in _get_created_raw(company) or []:
+		if isinstance(e, dict) and e.get("name") == rule:
+			return e
+	return None
+
+
+def _record_created(company, entries):
+	"""Append ``entries`` to the record for ``company`` (idempotent, order-stable).
+
+	Each entry may be a plain rule name or an identity dict
+	``{name, company, stock_entry_type, prefix}``. The identity form is what lets
+	:func:`_validate_recorded_rule` PROVE a rolled-back rule still represents the pair it was
+	created for, instead of inferring it from whatever the rule now says.
+	"""
+	existing = _get_created_raw(company) or []
+	seen = {e["name"] if isinstance(e, dict) else e for e in existing}
+	merged = list(existing)
+	for e in entries:
+		name = e["name"] if isinstance(e, dict) else e
+		if name not in seen:
+			seen.add(name)
+			merged.append(e)
 	frappe.db.set_default(_created_key(company), json.dumps(merged))
-	return merged
+	return [e["name"] if isinstance(e, dict) else e for e in merged]
+
+
+def _validate_recorded_rule(rule, company, setype):
+	"""Return a problem description if ``rule`` is not safe to re-enable, else ``None``.
+
+	A rollback leaves the rule in place but disabled, and a disabled rule can be edited.
+	Re-enabling on the strength of its NAME alone would trust whatever it now points at —
+	possibly a different company, type or prefix. Everything that defines the rule's identity
+	is therefore re-checked, and against the recorded identity when one was stored.
+	"""
+	if not frappe.db.exists("Document Naming Rule", rule):
+		return "recorded rule no longer exists"
+
+	doc = frappe.get_doc("Document Naming Rule", rule)
+	if doc.document_type != _DOCTYPE:
+		return f"document_type drifted to {doc.document_type!r}"
+	if not (doc.prefix or "").strip():
+		return "prefix is empty"
+
+	conds = {(c.field, c.condition): c.value for c in doc.conditions}
+	if len(doc.conditions) != 2:
+		return f"has {len(doc.conditions)} conditions (expected 2)"
+	if conds.get(("company", "=")) != company:
+		return f"company condition drifted (expected {company!r})"
+	if conds.get(("stock_entry_type", "=")) != setype:
+		return f"stock_entry_type condition drifted (expected {setype!r})"
+
+	identity = _created_identity(company, rule)
+	if identity:
+		for field, actual in (
+			("stock_entry_type", setype),
+			("prefix", doc.prefix),
+		):
+			if identity.get(field) and identity[field] != actual:
+				return (
+					f"{field} drifted from recorded {identity[field]!r} to {actual!r}"
+				)
+		return None
+
+	# LEGACY record (a bare rule name, written before identities were stored): there is no
+	# recorded type to compare against, so type drift cannot be PROVEN here. Deliberately do
+	# NOT guess the type back from the prefix abbreviation: `_harvest_abbreviations` reads the
+	# live rules, so a drifted rule poisons the expected abbreviation for OTHER types and the
+	# check reports healthy rules as drifted — a false positive that would block a legitimate
+	# restore, which is worse than the gap it closes. Such drift is instead caught by the
+	# post-write verification in `_verify_or_rollback`, which re-resolves every type for real.
+	# `_upgrade_record_identities` closes the gap permanently after one healthy apply.
+	return None
 
 
 def _default_company():
@@ -193,16 +274,31 @@ def _coverage(company, reenablable=()):
 	for r in rows:
 		by_type.setdefault(r.setype, []).append(r)
 
+	# EVERY defined type is resolved, not just those that already have an exact candidate.
+	# A rule conditioned on company ALONE has no stock_entry_type, so it never appears in
+	# `by_type` — yet it matches every Stock Entry of that company and, at a higher priority,
+	# wins over an exact rule. Iterating only `by_type` made such a rule invisible: the
+	# planner saw the type as missing, created a priority-0 exact rule, frappe kept resolving
+	# the generic one, and the shard was marked ACTIVE anyway. Asking the resolver for every
+	# type surfaces that in the DRY RUN, before anything is written.
 	covered, conflicts = {}, []
-	for setype, candidates in sorted(by_type.items()):
+	for setype in sorted(frappe.get_all("Stock Entry Type", pluck="name")):
+		candidates = by_type.get(setype, [])
 		active = [r for r in candidates if not r.disabled]
 		ours_disabled = [r for r in candidates if r.disabled and r.name in reenablable]
 
 		# A rule this patch created that a previous rollback() disabled is the expected
 		# rolled-back state, not a conflict — the caller re-enables it. It must also count as
-		# coverage, or _plan would mint a duplicate rule beside it.
+		# coverage, or _plan would mint a duplicate rule beside it. Its identity is validated
+		# first: a disabled rule can be edited, and re-enabling it blindly would trust
+		# whatever it now points at.
 		if not active and ours_disabled:
-			covered[setype] = ours_disabled[0].name
+			rule = ours_disabled[0]
+			problem = _validate_recorded_rule(rule.name, company, setype)
+			if problem:
+				conflicts.append((setype, problem, rule.name))
+			else:
+				covered[setype] = rule.name
 			continue
 
 		if len(active) > 1:
@@ -215,8 +311,24 @@ def _coverage(company, reenablable=()):
 			continue
 
 		if not active:
-			for r in candidates:
-				conflicts.append((setype, "rule exists but is DISABLED", r.name))
+			if candidates:
+				for r in candidates:
+					conflicts.append((setype, "rule exists but is DISABLED", r.name))
+				continue
+			# No candidate at all. Genuinely missing -> plannable, UNLESS some other rule
+			# (generic, or bound to a different type) already resolves for this pair.
+			stub = frappe.new_doc(_DOCTYPE)
+			stub.company = company
+			stub.stock_entry_type = setype
+			shadow = document_naming_rule_for_doc(stub)
+			if shadow:
+				conflicts.append(
+					(
+						setype,
+						f"no exact rule, but frappe resolves {shadow} for this type",
+						shadow,
+					)
+				)
 			continue
 
 		rule = active[0]
@@ -369,6 +481,74 @@ def _plan(company, all_types=False, reenablable=()):
 	return plan, skipped, conflicts
 
 
+def _upgrade_record_identities(company, covered):
+	"""Rewrite legacy bare-name record entries as full identity dicts.
+
+	Runs only once coverage has been VERIFIED, so what is recorded is known-good. After this,
+	a later rollback→edit→reapply can be refused at the pre-write drift gate instead of
+	relying on post-write verification, because each rule's intended (company, type, prefix)
+	is finally written down. Entries that already carry an identity are left untouched.
+	"""
+	entries = _get_created_raw(company) or []
+	rule_to_type = {rule: setype for setype, rule in covered.items()}
+	upgraded, changed = [], 0
+	for e in entries:
+		if isinstance(e, dict):
+			upgraded.append(e)
+			continue
+		setype = rule_to_type.get(e)
+		if not setype or not frappe.db.exists("Document Naming Rule", e):
+			upgraded.append(e)  # not ours to describe, or gone — leave as-is
+			continue
+		upgraded.append(
+			{
+				"name": e,
+				"company": company,
+				"stock_entry_type": setype,
+				"prefix": frappe.db.get_value("Document Naming Rule", e, "prefix"),
+			}
+		)
+		changed += 1
+	if changed:
+		frappe.db.set_default(_created_key(company), json.dumps(upgraded))
+	return changed
+
+
+def _verify_or_rollback(company):
+	"""Re-resolve every Stock Entry Type after writing; roll back and throw unless all covered.
+
+	Called while the rule inserts/re-enables are still UNCOMMITTED, so a failure leaves the
+	site exactly as it was. The naming-rule map is cleared first: the resolver reads it, and a
+	stale map would happily confirm the plan we just wrote instead of the current reality.
+	"""
+	frappe.cache_manager.clear_doctype_map("Document Naming Rule", _DOCTYPE)
+	covered, conflicts = _coverage(company)
+	missing = sorted(
+		set(frappe.get_all("Stock Entry Type", pluck="name")) - set(covered)
+	)
+	if not missing and not conflicts:
+		# Coverage is proven, so anything recorded without an identity can now be described
+		# safely. Doing it here (and only here) means the record only ever gains identities
+		# that were verified true at the time of writing.
+		if _upgrade_record_identities(company, covered):
+			print("[shard] Upgraded legacy rule record entries to full identities.")
+		return
+
+	frappe.db.rollback()
+	frappe.cache_manager.clear_doctype_map("Document Naming Rule", _DOCTYPE)
+	detail = []
+	if missing:
+		detail.append(f"{len(missing)} type(s) still uncovered: {missing[:8]}")
+	if conflicts:
+		detail.append(
+			f"{len(conflicts)} conflict(s): {[(c[0], c[1]) for c in conflicts[:5]]}"
+		)
+	frappe.throw(
+		"Stock Entry naming shard verification FAILED after writing — everything has been "
+		"rolled back and the site is unchanged. " + "; ".join(detail)
+	)
+
+
 def shard(company=None, confirm=False, all_types=True):
 	"""Dry-run (default) or apply the per-type Stock Entry naming shard.
 
@@ -390,12 +570,26 @@ def shard(company=None, confirm=False, all_types=True):
 	# (prefix taken) nor desirable (the counter would restart). Resolved BEFORE planning so
 	# they are not also reported as conflicts.
 	recorded = _get_created(company) or []
-	to_reenable = [
-		r
-		for r in recorded
-		if frappe.db.exists("Document Naming Rule", r)
-		and frappe.db.get_value("Document Naming Rule", r, "disabled")
-	]
+	to_reenable, drifted = [], []
+	for r in recorded:
+		if not frappe.db.exists("Document Naming Rule", r):
+			continue
+		if not frappe.db.get_value("Document Naming Rule", r, "disabled"):
+			continue
+		# Validate against the type the rule CURRENTLY claims; _coverage independently
+		# validates against the type it is meant to cover, and reports drift as a conflict
+		# (which fails the apply closed). This second check is defence in depth: a rule that
+		# cannot prove its identity is never re-enabled, whatever else happens.
+		setype = frappe.db.get_value(
+			"Document Naming Rule Condition",
+			{"parent": r, "field": "stock_entry_type"},
+			"value",
+		)
+		problem = _validate_recorded_rule(r, company, setype)
+		if problem:
+			drifted.append((r, problem))
+		else:
+			to_reenable.append(r)
 
 	plan, skipped, conflicts = _plan(
 		company, all_types=all_types, reenablable=to_reenable
@@ -411,6 +605,13 @@ def shard(company=None, confirm=False, all_types=True):
 		print(
 			f"[shard] {len(to_reenable)} previously created rule(s) are DISABLED and will be re-enabled."
 		)
+	if drifted:
+		print(
+			f"\n[shard] {len(drifted)} recorded rule(s) were EDITED since rollback and will NOT be\n"
+			f"[shard] re-enabled — they no longer prove the pair they were created for:"
+		)
+		for rule, problem in drifted:
+			print(f"    {rule:<16} {problem}")
 	if conflicts:
 		print(
 			f"\n[shard] {len(conflicts)} CONFLICT(S) — these types are NOT covered and NOT safe to\n"
@@ -433,6 +634,19 @@ def shard(company=None, confirm=False, all_types=True):
 			print(
 				"\n[shard] Nothing to do: every stock_entry_type already has an active rule."
 			)
+			if confirm:
+				# Nothing to write, but a confirmed run still VERIFIES. That makes ACTIVE
+				# reflect reality when the company was already fully covered (by rules someone
+				# else created, or an earlier run whose state was never set), and it is where
+				# legacy record entries get upgraded to full identities.
+				_verify_or_rollback(company)
+				if state != _ACTIVE:
+					_set_state(company, _ACTIVE)
+					print(f"[shard] Coverage verified; state {state} -> {_ACTIVE}.")
+				else:
+					print("[shard] Coverage verified; state unchanged.")
+				frappe.clear_cache(doctype=_DOCTYPE)
+				frappe.db.commit()
 			return
 
 	if not plan:
@@ -459,6 +673,17 @@ def shard(company=None, confirm=False, all_types=True):
 		)
 		return
 
+	if drifted:
+		# Reapply flow: "any edited/drifted? -> STOP / human review". A recorded rule that
+		# was edited while disabled cannot be silently skipped and replaced either — the
+		# operator must see what changed and decide, because the edit may have been deliberate.
+		frappe.throw(
+			f"{len(drifted)} recorded Document Naming Rule(s) were edited since rollback and "
+			f"no longer match what this patch created: "
+			f"{[(r, p) for r, p in drifted[:5]]}. Review them by hand (re-point or delete the "
+			f"record) before re-applying; nothing has been changed."
+		)
+
 	if conflicts:
 		# FAIL CLOSED. Applying while a type is unresolved would mark the company ACTIVE
 		# while that type still falls back to MAT-STE- — and ACTIVE is what
@@ -475,7 +700,7 @@ def shard(company=None, confirm=False, all_types=True):
 			"Document Naming Rule", rule, "disabled", 0, update_modified=False
 		)
 
-	created_names = []
+	created_entries = []
 	for p in plan:
 		doc = frappe.get_doc(
 			{
@@ -497,16 +722,33 @@ def shard(company=None, confirm=False, all_types=True):
 			}
 		)
 		doc.insert(ignore_permissions=True)
-		created_names.append(doc.name)
+		# Record the full identity, not just the name, so a later re-enable can PROVE the
+		# rule still represents this (company, type, prefix) rather than infer it.
+		created_entries.append(
+			{
+				"name": doc.name,
+				"company": company,
+				"stock_entry_type": p["setype"],
+				"prefix": p["prefix"],
+			}
+		)
 
-	# Record the EXACT names before committing, so rollback() never has to guess.
-	all_recorded = _record_created(company, created_names)
+	# Record the EXACT identities before committing, so rollback() never has to guess and
+	# a later re-enable can PROVE what each rule was created for.
+	all_recorded = _record_created(company, created_entries)
+
+	# POST-WRITE VERIFICATION. Everything above is still uncommitted. Re-resolve every type
+	# through frappe now that the rules actually exist, because a plan that looked safe is not
+	# proof: a pre-existing higher-priority rule can still win over a rule we just created.
+	# ACTIVE must mean "frappe really resolves every type to the intended rule", not "the
+	# writes succeeded". Cache first — the resolver reads the doctype map.
+	_verify_or_rollback(company)
+
 	_set_state(company, _ACTIVE)
 	frappe.clear_cache(doctype=_DOCTYPE)
-	frappe.cache_manager.clear_doctype_map("Document Naming Rule", _DOCTYPE)
 	frappe.db.commit()
 	print(
-		f"\n[shard] APPLIED: created {len(created_names)} rule(s), re-enabled "
+		f"\n[shard] APPLIED: created {len(created_entries)} rule(s), re-enabled "
 		f"{len(to_reenable)}. New Stock Entries will name off "
 		f"{frappe.db.get_value('Company', company, 'abbr')}-SE-<type>-<yy>-#####."
 	)
@@ -567,7 +809,10 @@ def rollback(company=None):
 	print(f"[shard] Rolled back: disabled {disabled} rule(s) for {company!r}.")
 	if missing:
 		print(f"[shard] {missing} recorded rule(s) no longer exist — skipped.")
-	untouched = sum(1 for (co, _t) in _rule_map() if co == company) - disabled
+	# Clamped: _rule_map() only sees rules carrying BOTH company and stock_entry_type
+	# conditions, so a recorded rule shaped otherwise can make the subtraction go negative
+	# and print a nonsense count.
+	untouched = max(0, sum(1 for (co, _t) in _rule_map() if co == company) - disabled)
 	print(f"[shard] Left {untouched} pre-existing rule(s) for this company untouched.")
 	print(f"[shard] State -> {_ROLLED_BACK}. Re-run shard(confirm=True) to restore.")
 

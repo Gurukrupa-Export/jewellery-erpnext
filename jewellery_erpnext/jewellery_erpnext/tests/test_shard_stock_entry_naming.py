@@ -257,10 +257,29 @@ class TestCoverageIsActiveOnly(IntegrationTestCase):
 			shard_mod,
 			"_rule_rows",
 			return_value=self._rows(("R1", "Manufacture", 1, 2)),
-		), self._effective({}):
+		), self._effective({}), patch.object(
+			shard_mod, "_validate_recorded_rule", return_value=None
+		):
 			covered, conflicts = shard_mod._coverage(_COMPANY, reenablable=["R1"])
 		self.assertEqual(covered, {"Manufacture": "R1"})
 		self.assertEqual(conflicts, [])
+
+	def test_reenablable_rule_that_DRIFTED_is_a_conflict_not_coverage(self):
+		# Round 4: a rollback leaves the rule in place but disabled, and a disabled rule can
+		# be edited. Re-enabling on the strength of its recorded NAME would trust whatever it
+		# now points at, so identity is revalidated and failure becomes a conflict.
+		with patch.object(
+			shard_mod,
+			"_rule_rows",
+			return_value=self._rows(("R1", "Manufacture", 1, 2)),
+		), self._effective({}), patch.object(
+			shard_mod,
+			"_validate_recorded_rule",
+			return_value="stock_entry_type condition drifted (expected 'Manufacture')",
+		):
+			covered, conflicts = shard_mod._coverage(_COMPANY, reenablable=["R1"])
+		self.assertEqual(covered, {})
+		self.assertIn("drifted", conflicts[0][1])
 
 	def test_reenablable_rule_is_not_replanned(self):
 		with _PlanHarness(
@@ -361,14 +380,49 @@ class TestFailClosedOnConflicts(IntegrationTestCase):
 		mock_get_doc.assert_not_called()
 		mock_state.assert_not_called()
 
-	def test_empty_plan_with_no_conflicts_is_a_clean_noop(self):
+	def _noop_run(self, state, verify_side_effect=None):
+		"""shard(confirm=True) with an empty plan and no conflicts.
+
+		``_verify_or_rollback`` MUST be patched: a confirmed run always verifies, and the real
+		implementation resolves every Stock Entry Type against whatever the site happens to
+		contain. Leaving it live made this test pass only on an already-sharded bench and fail
+		on CI's fresh test_site — a unit test must not depend on site state.
+		"""
 		with patch.object(shard_mod, "_plan", return_value=([], [], [])), patch.object(
 			shard_mod, "_default_company", return_value=_COMPANY
 		), patch.object(shard_mod, "_get_created", return_value=None), patch.object(
-			shard_mod, "_get_state", return_value=shard_mod._ACTIVE
-		), patch.object(shard_mod, "_set_state") as mock_state:
-			shard_mod.shard(confirm=True)  # must NOT raise
-		mock_state.assert_not_called()
+			shard_mod, "_get_state", return_value=state
+		), patch.object(
+			shard_mod, "_verify_or_rollback", side_effect=verify_side_effect
+		) as mock_verify, patch.object(
+			shard_mod, "_set_state"
+		) as mock_state, patch.object(shard_mod.frappe.db, "commit"), patch.object(
+			shard_mod.frappe, "clear_cache"
+		):
+			shard_mod.shard(confirm=True)
+		return mock_verify, mock_state
+
+	def test_empty_plan_with_no_conflicts_still_verifies(self):
+		# Nothing to write, but a confirmed run must still prove coverage — that is what
+		# makes ACTIVE mean "frappe really resolves every type", not "this patch wrote rules".
+		mock_verify, mock_state = self._noop_run(shard_mod._ACTIVE)
+		mock_verify.assert_called_once_with(_COMPANY)
+		mock_state.assert_not_called()  # already ACTIVE, nothing to change
+
+	def test_empty_plan_activates_an_already_covered_company(self):
+		# Round-4 finding 34: a company fully covered by rules someone else created should
+		# end up ACTIVE rather than stuck in NOT_APPLIED.
+		mock_verify, mock_state = self._noop_run(shard_mod._NOT_APPLIED)
+		mock_verify.assert_called_once_with(_COMPANY)
+		mock_state.assert_called_once_with(_COMPANY, shard_mod._ACTIVE)
+
+	def test_empty_plan_does_not_activate_when_verification_fails(self):
+		# Verification throws (it has already rolled back); the state must not be touched.
+		with self.assertRaises(frappe.ValidationError):
+			self._noop_run(
+				shard_mod._NOT_APPLIED,
+				verify_side_effect=frappe.ValidationError("verification failed"),
+			)
 
 	def test_dry_run_still_reports_conflicts_without_throwing(self):
 		# Nothing is hidden — the operator must be able to SEE what to resolve.
@@ -400,11 +454,15 @@ class TestFailClosedOnConflicts(IntegrationTestCase):
 		), patch.object(shard_mod.frappe, "get_doc", return_value=doc), patch.object(
 			shard_mod, "_record_created", return_value=["NEW-RULE"]
 		), patch.object(shard_mod, "_set_state") as mock_state, patch.object(
-			shard_mod.frappe.db, "commit"
-		), patch.object(shard_mod.frappe, "clear_cache"), patch.object(
-			shard_mod.frappe, "cache_manager"
-		), patch.object(shard_mod.frappe.db, "get_value", return_value="KGJPL"):
+			shard_mod, "_verify_or_rollback"
+		) as mock_verify, patch.object(shard_mod.frappe.db, "commit"), patch.object(
+			shard_mod.frappe, "clear_cache"
+		), patch.object(shard_mod.frappe, "cache_manager"), patch.object(
+			shard_mod.frappe.db, "get_value", return_value="KGJPL"
+		):
 			shard_mod.shard(confirm=True)
+		# Verification must run BEFORE the state is set, every time.
+		mock_verify.assert_called_once_with(_COMPANY)
 		mock_state.assert_called_once_with(_COMPANY, shard_mod._ACTIVE)
 
 	def tearDown(self):
@@ -466,10 +524,16 @@ class TestShardLifecycle(IntegrationTestCase):
 		), patch.object(shard_mod.frappe.db, "exists", return_value=True), patch.object(
 			shard_mod.frappe.db,
 			"get_value",
-			side_effect=lambda dt, n, f, **k: disabled.get(n, 0),
+			side_effect=lambda dt, n, f=None, **k: (
+				"Manufacture"
+				if dt == "Document Naming Rule Condition"
+				else disabled.get(n if isinstance(n, str) else None, 0)
+			),
 		), patch.object(shard_mod.frappe.db, "set_value") as mock_set, patch.object(
 			shard_mod, "_record_created", return_value=list(disabled)
 		), patch.object(shard_mod, "_set_state") as mock_state, patch.object(
+			shard_mod, "_validate_recorded_rule", return_value=None
+		), patch.object(shard_mod, "_verify_or_rollback"), patch.object(
 			shard_mod.frappe.db, "commit"
 		), patch.object(shard_mod.frappe, "clear_cache"), patch.object(
 			shard_mod.frappe, "cache_manager"
@@ -595,10 +659,16 @@ class TestShardDryRun(IntegrationTestCase):
 				"docs": 3,
 			}
 		]
+		# _get_created must be pinned: with rules recorded on the site, shard() scans them for
+		# re-enablement and _validate_recorded_rule reads each one with frappe.get_doc — which
+		# this test asserts is never called. Leaving it live made the test pass only on a
+		# bench that had no recorded rules.
 		with patch.object(
 			shard_mod, "_plan", return_value=(plan, [], [])
 		), patch.object(
 			shard_mod, "_default_company", return_value=_COMPANY
+		), patch.object(shard_mod, "_get_created", return_value=None), patch.object(
+			shard_mod, "_get_state", return_value=shard_mod._NOT_APPLIED
 		), patch.object(shard_mod.frappe, "get_doc") as mock_get_doc, patch.object(
 			shard_mod, "_record_created"
 		) as mock_record, patch.object(shard_mod.frappe.db, "commit") as mock_commit:
@@ -875,6 +945,39 @@ class TestRealDocumentNamingRule(IntegrationTestCase):
 		)
 		self.assertEqual(after, before + 1)
 		self.assertFalse(doc.name.startswith("MAT-STE-"))
+
+	def test_apply_refuses_when_a_generic_rule_shadows_the_new_exact_rule(self):
+		# Round-4 blocker 1, the case mocks cannot prove. A company-ONLY rule carries no
+		# stock_entry_type, so it never appears among the exact (company, type) candidates —
+		# yet at a higher priority frappe resolves it for every type. The planner must see
+		# the shadow and refuse rather than create a priority-0 rule and mark ACTIVE.
+		self._rule_company_only("ZZGEN-SE-ALL-.YY.-", priority=100)
+		covered, conflicts = shard_mod._coverage(self.company)
+		self.assertNotIn(self.TYPE_A, covered)
+		reason = next((why for t, why, _ in conflicts if t == self.TYPE_A), "")
+		self.assertTrue(reason, "the shadowed type must be reported as a conflict")
+
+		with self.assertRaises(frappe.ValidationError):
+			shard_mod.shard(company=self.company, confirm=True, all_types=True)
+
+	def _rule_company_only(self, prefix, *, priority=0):
+		doc = frappe.get_doc(
+			{
+				"doctype": "Document Naming Rule",
+				"document_type": "Stock Entry",
+				"priority": priority,
+				"prefix": prefix,
+				"prefix_digits": 5,
+				"counter": 0,
+				"disabled": 0,
+				"conditions": [
+					{"field": "company", "condition": "=", "value": self.company}
+				],
+			}
+		).insert(ignore_permissions=True)
+		self._made.append(("Document Naming Rule", doc.name))
+		frappe.cache_manager.clear_doctype_map("Document Naming Rule", "Stock Entry")
+		return doc
 
 	def tearDown(self):
 		for doctype, name in reversed(self._made):
